@@ -216,6 +216,8 @@ struct LightUniform {
     night_stars: [f32; 4],
     /// x: seconds for animated procedural materials (Lighting::time).
     anim: [f32; 4],
+    /// Fog integration sequence phase and temporal accumulation enabled.
+    fog_sampling: [f32; 4],
 }
 
 #[repr(C)]
@@ -362,6 +364,8 @@ pub struct Lighting {
     pub lod_pixels: f32,
     /// 1: sky visibility, canopy sun and bounce from the GI volume; 0: off.
     pub gi: f32,
+    /// Low-cost diffuse room return in lux, attenuated by material/contact AO.
+    pub indirect_fill_lux: f32,
     /// Analytic near-field visibility from moving opaque car geometry.
     pub contact_occlusion: f32,
     /// Visibility along the glossy reflected direction.
@@ -430,6 +434,7 @@ impl Lighting {
             "saturation" => self.saturation = f,
             "lod_pixels" => self.lod_pixels = f,
             "gi" => self.gi = f,
+            "indirect_fill_lux" if f.is_finite() && f >= 0.0 => self.indirect_fill_lux = f,
             "contact_occlusion" => self.contact_occlusion = f,
             "reflection_occlusion" => self.reflection_occlusion = f,
             "near_shadows" => self.near_shadows = f,
@@ -491,6 +496,7 @@ impl Default for Lighting {
             saturation: 1.0,
             lod_pixels: 1.0,
             gi: 1.0,
+            indirect_fill_lux: 0.0,
             contact_occlusion: 1.0,
             reflection_occlusion: 1.0,
             near_shadows: 1.0,
@@ -715,6 +721,7 @@ pub struct Renderer {
     exhaust: crate::exhaust::ExhaustRenderer,
     wheel_particles: crate::wheel_particles::WheelParticles,
     headlight_state: std::sync::Mutex<Vec<crate::headlights::SpotLight>>,
+    headlight_exclusions: std::sync::Mutex<Vec<(u32,u32)>>,
     local_light_state: std::sync::Mutex<Vec<crate::headlights::LocalLight>>,
     spot_falloff: std::sync::Mutex<Vec<f32>>,
     spot_softness: std::sync::Mutex<f32>,
@@ -1016,6 +1023,59 @@ fn texture_array(gpu: &Gpu, label: &'static str, images: &[Option<&image::RgbaIm
 
 /// SH9 projection of an equirectangular sky (radiance in, irradiance
 /// coefficients out), leaving out the sun: the sun is its own light.
+fn scene_environment(gpu: &Gpu, scene: &Scene, light: &Lighting) -> (wgpu::Texture, [[f32;4];9], Vec3, f32, f32, f32) {
+        // Sky: turn the HDRI so its sun sits where our sun is, scale it so
+        // its diffuse light matches `sky_lux`.
+        let (sw, shh, spx) = scene.sky.clone().unwrap_or((2, 1, vec![[0.5, 0.6, 0.8, 1.0]; 2]));
+        let (mut bx, mut by, mut bv) = (0, 0, 0.0f32);
+        for y in 0..shh / 2 {
+            for x in 0..sw {
+                let c = spx[(y * sw + x) as usize];
+                let l = c[0] + c[1] + c[2];
+                if l > bv {
+                    (bx, by, bv) = (x, y, l);
+                }
+            }
+        }
+        let hdri_az = ((bx as f32 + 0.5) / sw as f32 - 0.5) * 2.0 * PI;
+        let our_az = light.sun_dir.x.atan2(-light.sun_dir.z);
+        let rotation = if scene.sky_physical { 0.0 } else { hdri_az - our_az };
+        let _ = by;
+        let mean: f32 = spx.iter().map(|c| c[0] + c[1] + c[2]).sum::<f32>() / (spx.len() as f32 * 3.0);
+        let (raw_sh, raw_horizon) = if scene.sky_physical {
+            // Baked atmosphere is already calibrated and contains no solar
+            // disc. Integrate every finite texel; no HDRI sun clipping.
+            sky_sh_small(sw, shh, &spx, 0.0, f32::MAX)
+        } else { sky_sh(sw, shh, &spx, rotation, mean * 8.0) };
+        let up = eval_irradiance_up(&raw_sh).max(1e-6);
+        let sky_scale = if scene.sky_physical { 1.0 } else { light.sky_lux / up };
+        let sky_limit = if scene.sky_physical {
+            spx.iter().flat_map(|p|p[..3].iter().copied()).fold(0.0,f32::max)
+        } else { mean * 8.0 * sky_scale };
+        let mut sky_sh = raw_sh;
+        for c in sky_sh.iter_mut() {
+            for k in 0..3 {
+                c[k] *= sky_scale;
+            }
+        }
+        let sky_tex = gpu.device.create_texture_with_data(
+            &gpu.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("sky"),
+                size: wgpu::Extent3d { width: sw, height: shh, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            Default::default(),
+            bytemuck::cast_slice(&spx),
+        );
+    (sky_tex, sky_sh, raw_horizon * sky_scale, sky_scale, sky_limit, rotation)
+}
+
 fn sky_sh(w: u32, h: u32, px: &[[f32; 4]], rotation: f32, clamp: f32) -> ([[f32; 4]; 9], Vec3) {
     // A coarse HDRI texel covers a finite spherical patch. Point sampling a
     // 2x1 constant fallback (especially with step=4) turns it into a false
@@ -1186,6 +1246,17 @@ impl Renderer {
             }
         }
         gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(&words));
+        Ok(())
+    }
+
+    /// Upload probe words prepared off the render thread with irradiance_volume::pack*.
+    /// The reserved grid must match; encoding/validation of probes belongs to packing.
+    pub fn set_packed_irradiance_volume(&self, gpu:&Gpu, words:&[u32])->Result<(),String> {
+        let (offset,grid)=self.irradiance_volume.ok_or("no reserved probe volume")?;
+        let header=[grid.origin.x.to_bits(),grid.origin.y.to_bits(),grid.origin.z.to_bits(),grid.cell.to_bits(),grid.dims[0],grid.dims[1],grid.dims[2]];
+        if words.len()!=crate::irradiance_volume::HEADER_WORDS+grid.count()*crate::irradiance_volume::PROBE_WORDS
+            || words[..7]!=header || words[7]>7 { return Err("packed irradiance grid mismatch".into()); }
+        gpu.queue.write_buffer(&self.aux_buffer,(offset*4)as u64,bytemuck::cast_slice(words));
         Ok(())
     }
 
@@ -1728,55 +1799,7 @@ impl Renderer {
         let solid_occluders = buffer(gpu, "solid occluders", if solids.is_empty() { &[0u8; 48] } else { bytemuck::cast_slice(&solids) }, wgpu::BufferUsages::STORAGE);
         startup.mark("solid_occluder_resources");
 
-        // Sky: turn the HDRI so its sun sits where our sun is, scale it so
-        // its diffuse light matches `sky_lux`.
-        let (sw, shh, spx) = scene.sky.clone().unwrap_or((2, 1, vec![[0.5, 0.6, 0.8, 1.0]; 2]));
-        let (mut bx, mut by, mut bv) = (0, 0, 0.0f32);
-        for y in 0..shh / 2 {
-            for x in 0..sw {
-                let c = spx[(y * sw + x) as usize];
-                let l = c[0] + c[1] + c[2];
-                if l > bv {
-                    (bx, by, bv) = (x, y, l);
-                }
-            }
-        }
-        let hdri_az = ((bx as f32 + 0.5) / sw as f32 - 0.5) * 2.0 * PI;
-        let our_az = light.sun_dir.x.atan2(-light.sun_dir.z);
-        let rotation = if scene.sky_physical { 0.0 } else { hdri_az - our_az };
-        let _ = by;
-        let mean: f32 = spx.iter().map(|c| c[0] + c[1] + c[2]).sum::<f32>() / (spx.len() as f32 * 3.0);
-        let (raw_sh, raw_horizon) = if scene.sky_physical {
-            // Baked atmosphere is already calibrated and contains no solar
-            // disc. Integrate every finite texel; no HDRI sun clipping.
-            sky_sh_small(sw, shh, &spx, 0.0, f32::MAX)
-        } else { sky_sh(sw, shh, &spx, rotation, mean * 8.0) };
-        let up = eval_irradiance_up(&raw_sh).max(1e-6);
-        let sky_scale = if scene.sky_physical { 1.0 } else { light.sky_lux / up };
-        let sky_limit = if scene.sky_physical {
-            spx.iter().flat_map(|p|p[..3].iter().copied()).fold(0.0,f32::max)
-        } else { mean * 8.0 * sky_scale };
-        let mut sky_sh = raw_sh;
-        for c in sky_sh.iter_mut() {
-            for k in 0..3 {
-                c[k] *= sky_scale;
-            }
-        }
-        let sky_tex = gpu.device.create_texture_with_data(
-            &gpu.queue,
-            &wgpu::TextureDescriptor {
-                label: Some("sky"),
-                size: wgpu::Extent3d { width: sw, height: shh, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba32Float,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            },
-            Default::default(),
-            bytemuck::cast_slice(&spx),
-        );
+        let (sky_tex, sky_sh, raw_horizon_scaled, sky_scale, sky_limit, rotation) = scene_environment(gpu, scene, light);
         let shadow_samp = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -1840,6 +1863,7 @@ impl Renderer {
             exhaust,
             wheel_particles,
             headlight_state: Default::default(),
+            headlight_exclusions: Default::default(),
             camera_up_axes: Default::default(),
             camera_projections: Default::default(),
             local_light_state: Default::default(),
@@ -1950,7 +1974,7 @@ impl Renderer {
             instances: scene.instances.len() as u32,
             sky_view: sky_tex.create_view(&Default::default()),
             sky_sh,
-            sky_horizon: raw_horizon * sky_scale,
+            sky_horizon: raw_horizon_scaled,
             sky_scale,
             sky_limit,
             sky_rotation: rotation,
@@ -2424,7 +2448,14 @@ impl Renderer {
     }
     pub fn set_headlights(&self,lights:&[crate::headlights::SpotLight])->Result<(),String> {
         let validated=crate::headlights::validate(lights)?;
-        *self.headlight_state.lock().unwrap()=validated;Ok(())
+        *self.headlight_state.lock().unwrap()=validated;
+        self.headlight_exclusions.lock().unwrap().clear();Ok(())
+    }
+
+    /// Per-lamp owner instance ranges (start, count), in set_headlights order.
+    /// Reset by set_headlights, so unrelated spotlights never inherit exclusions.
+    pub fn set_headlight_exclusions(&self, ranges: &[(u32,u32)]) {
+        *self.headlight_exclusions.lock().unwrap() = ranges.iter().copied().take(crate::headlights::MAX_LIGHTS).collect();
     }
 
     /// Short-range direct spill, independently bounded from shadowed lights.
@@ -2478,6 +2509,15 @@ impl Renderer {
     /// render thread; this uploads only the small radiance LUT and commits its
     /// diffuse SH, reflection/background data and direct solar state together.
     /// Geometry, instances, controllers and the race are not reconstructed.
+    /// Update sky radiance/rotation without rebuilding geometry, pipelines or texture arrays.
+    pub fn update_scene_environment(&mut self, gpu: &Gpu, scene: &Scene, light: &Lighting) {
+        let (texture, sh, horizon, scale, limit, rotation) = scene_environment(gpu, scene, light);
+        self.sky_view = texture.create_view(&Default::default());
+        self.sky_sh = sh; self.sky_horizon = horizon; self.sky_scale = scale;
+        self.sky_limit = limit; self.sky_rotation = rotation;
+        self.invalidate_dynamic_shadow(); self.reset_history();
+    }
+
     pub fn update_sky(&mut self, gpu:&Gpu, sky:&crate::atmosphere::BakedSky,
         light:&mut Lighting)->Result<(),String> {
         sky.validate()?;
@@ -3029,6 +3069,9 @@ impl Renderer {
         self.fx.0.lock().unwrap().as_ref().map_or_else(Vec::new, |fx| fx.quality_stats())
     }
 
+    /// Compile effect pipelines during loading instead of the first explosion.
+    pub fn prepare_effects(&self, gpu: &Gpu) { self.fx.prepare(gpu); }
+
     pub fn set_effects(&self, gpu: &Gpu, time: f32, puffs: Option<&[crate::fx::Puff]>) -> Result<(), String> {
         self.fx.set(gpu, time, puffs);
         Ok(())
@@ -3541,6 +3584,7 @@ impl Renderer {
             night_stars: [light.night_stars[0], light.night_stars[1],
                 if self.zero_sun_fast_path {1.0} else {0.0}, light.night_stars[3]],
             anim: [light.time, light.emissive_scale(), 1.2 * 2f32.powf(light.ev100), if light.sun_disc {light.sun_radius} else {0.0}],
+            fog_sampling: [((frame % 16) * 7 % 16) as f32 / 16.0, if taa_on { 1.0 } else { 0.0 }, light.indirect_fill_lux.max(0.0), 0.0],
         };
         let exposure = 1.0 / (1.2 * 2f32.powf(light.ev100));
 
@@ -3655,6 +3699,9 @@ impl Renderer {
             // 1 is already a split-screen camera: it must retain NO_SHADOW
             // receivers. Reserve 2 for the actual perspective shadow pass.
             vu.extra[1]=2.0;
+            if let Some(&(start,count))=self.headlight_exclusions.lock().unwrap().get(index) {
+                vu.grass[2]=start as f32; vu.grass[3]=count as f32;
+            }
             gpu.queue.write_buffer(&target.uniform,0,bytemuck::bytes_of(&vu));
             let layer=self.headlights.layer(index as u32);
             self.cull_and_raster(&mut enc,gpu,target,None,&layer,&mut ts,&mut names,"headlight shadow cull",RasterPass::Headlight);
@@ -4248,7 +4295,7 @@ impl Renderer {
                             .max(light.fx_white_floor.max(0.0) * 1.2 * 2f32.powf(light.ev100));
                         let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("fx"); (qs, timestamp_pair(&mut ts)) });
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
-                        let out = fx.render(gpu, &mut enc, vi, &resolved, &depth_v, *cam, view_m, proj * view_m, vp, white, light, Vec3::from_slice(&self.sky_sh[0][..3]) * 0.282095, self.sky_horizon, Some((&shadow_v, svp)))?;
+                        let out = fx.render(gpu, &mut enc, vi, &resolved, &depth_v, *cam, view_m, proj * view_m, vp, white, light, Vec3::from_slice(&self.sky_sh[0][..3]) * 0.282095, self.sky_horizon, camera_sun_visibility[vi], Some((&shadow_v, svp)))?;
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
                         out
                     }
@@ -5179,7 +5226,8 @@ mod layout_tests {
     #[test]
     fn near_light_uniform_and_projection_cover_each_separated_car() {
         use glam::Vec3;
-        assert_eq!(std::mem::size_of::<LightUniform>(), 416);
+        assert_eq!(std::mem::size_of::<LightUniform>(), 432);
+        assert_eq!(std::mem::offset_of!(LightUniform, fog_sampling), 416);
         assert_eq!(std::mem::offset_of!(LightUniform, anim), 400);
         assert_eq!(std::mem::offset_of!(LightUniform, fog_scattering), 144);
         assert_eq!(std::mem::offset_of!(LightUniform, near_shadow_view_proj), 304);

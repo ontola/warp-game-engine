@@ -19,6 +19,8 @@ pub fn run(args: &crate::Args) -> Result<(), String> {
         ("sniper-poison", "Sniper + Poison + Heavy Rounds", &["sniper", "poison", "heavy_rounds"]),
         ("shotgun-heavy", "Shotgun + Extra Barrel + Heavy Rounds", &["shotgun", "extra_barrel", "heavy_rounds"]),
         ("minigun", "Uzi + Rapid Fire x2 + Big Mag", &["uzi", "rapid_fire", "rapid_fire", "big_mag"]),
+        ("explosive", "Explosive Rounds x1", &["explosive"]),
+        ("explosive-stacked", "Explosive Rounds x3", &["explosive", "explosive", "explosive"]),
         ("explosive-heavy", "Explosive + Heavy Rounds + Big Mag x2", &["explosive", "heavy_rounds", "big_mag", "big_mag"]),
         ("sniper-cooling", "Sniper + Chilling Rounds + Big Mag", &["sniper", "chilling_rounds", "big_mag"]),
     ];

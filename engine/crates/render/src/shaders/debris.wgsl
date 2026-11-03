@@ -12,8 +12,10 @@ struct Uniform {
     dims: vec4<u32>,
     // spawns, capacity, first instance, steps
     counts: vec4<u32>,
-    // kill y, settle speed, reset (1: kill all), unused
+    // kill y, settle speed, reset (1: kill all), base lava height
     extra: vec4<f32>,
+    // raised lava height, half extent, border inset, full coverage
+    lava: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniform;
 @group(0) @binding(1) var<storage, read_write> shards: array<Shard>;
@@ -69,10 +71,29 @@ fn simulate(@builtin(global_invocation_id) id: vec3<u32>) {
     var vel = s.vel_life.xyz;
     var age = s.pos_age.w;
     var angle = s.size_angle.w;
-    let life = s.vel_life.w;
+    var life = s.vel_life.w;
+    var burning = (s.mesh.w & 0x80000000u) != 0u;
+    let start_rotation = rotation(s.axis_spin.xyz,angle);
+    let extent = dot(abs(vec3<f32>(start_rotation[0].y,start_rotation[1].y,start_rotation[2].y)),s.size_angle.xyz);
     for (var k = 0u; k < u.counts.w; k++) {
         if age >= life { break; }
         age += dt;
+        var surface = u.extra.w;
+        let xz = abs(pos.xz);
+        if u.lava.w > 0.5 || (all(xz <= vec2<f32>(u.lava.y)) && max(xz.x,xz.y) >= u.lava.y-u.lava.z) {
+            surface = max(surface,u.lava.x);
+        }
+        if !burning && pos.y - extent * 0.5 <= surface && !solid(pos) {
+            burning = true;
+            s.mesh.w |= 0x80000000u;
+            life = min(life,age+2.4);
+            pos.y = min(pos.y,surface+extent*0.5);
+            vel = vec3<f32>(0.0,-(extent+0.3)/2.4,0.0);
+        }
+        if burning {
+            pos += vel * dt;
+            continue;
+        }
         vel.y -= u.sim.y * dt;
         var next = pos + vel * dt;
         if solid(next) {
@@ -116,6 +137,8 @@ fn simulate(@builtin(global_invocation_id) id: vec3<u32>) {
     let largest = max(size.x, max(size.y, size.z));
     inst.sphere = vec4<f32>(pos, bitcast<f32>(s.mesh.z) * largest);
     inst.scale = largest;
+    // Bit 7 is the GPU molten-surface instance flag; clear it on recycled slots.
+    inst.flags = (inst.flags & ~128u) | select(0u,128u,burning);
     inst.first_cluster = s.mesh.x;
     inst.cluster_count = s.mesh.y;
     instances[u.counts.z + id.x] = inst;

@@ -1,0 +1,27 @@
+{
+  "size": [
+    3840,
+    2160
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "bots pause",
+        "arena island 42",
+        "sky afternoon:clear",
+        "teleport 0 0 30 25",
+        "aim 0 75 -24 0"
+      ],
+      "ticks": 1,
+      "capture": "lava-shadows.png"
+    },
+    {
+      "cmd": "light shadow_strength=0",
+      "capture": "lava-no-shadows.png"
+    },
+    {
+      "cmd": "light shadow_strength=1",
+      "capture": "lava-restored-shadows.png"
+    }
+  ]
+}

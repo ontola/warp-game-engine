@@ -27,6 +27,7 @@ struct Light {
     near_shadow: vec4<f32>, // world texel size, blend-start radius, enabled
     night_stars: vec4<f32>, // peak radiance, zenith optical depth, zero-sun fast path, seed
     anim: vec4<f32>,        // x: seconds for animated procedural materials, y: emission scale, z: radiance shown as white
+    fog_sampling: vec4<f32>, // x: sequence phase, y: temporal accumulation enabled, z: diffuse room return (lux)
 };
 
 struct Cluster {
@@ -339,6 +340,45 @@ fn screen_space_ao(px: vec2<i32>, size: vec2<u32>, p: vec3<f32>, n: vec3<f32>, d
     let ox = clamp((d_r + d_l) * scale, 0.0, 1.0) * step(abs(d_r - d_l) * scale, 1.6);
     let oy = clamp((d_u + d_d) * scale, 0.0, 1.0) * step(abs(d_u - d_d) * scale, 1.6);
     return 1.0 - clamp((ox + oy) * 0.22 * fade, 0.0, 0.48);
+}
+
+// Short directional contact shadow supplements the finite spotlight map.
+// Four depth taps, only nearby receivers; no ambient darkening of lit faces.
+fn local_contact_shadow(p:vec3<f32>, normal:vec3<f32>, towards:vec3<f32>, size:vec2<u32>, dist:f32)->f32 {
+    if gi.params.x<0.5 || dist>=32.0 {return 1.0;}
+    let origin=p+normal*0.018;
+    var occlusion=0.0;
+    for(var i=0u;i<4u;i++) {
+        let travel=0.045*exp2(f32(i));
+        let q=origin+towards*travel;
+        let clip=view.view_proj*vec4<f32>(q,1.0);
+        if clip.w<=0.0 {continue;}
+        let uv=clip.xy/clip.w*vec2<f32>(0.5,-0.5)+vec2<f32>(0.5);
+        if any(uv<=vec2<f32>(0.0)) || any(uv>=vec2<f32>(1.0)) {continue;}
+        let pixel=vec2<i32>(uv*vec2<f32>(size));
+        let depth=textureLoad(depth_tex,pixel,0);
+        if depth<=0.0 {continue;}
+        let ndc=(vec2<f32>(pixel)+0.5)/vec2<f32>(size)*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0);
+        let hit=view.inv_view_proj*vec4<f32>(ndc,depth,1.0);
+        let gap=distance(q,view.cam.xyz)-distance(hit.xyz/hit.w,view.cam.xyz);
+        // Reject distant foreground silhouettes rather than stretching shadows.
+        let blocked=smoothstep(0.012,0.035,gap)*(1.0-smoothstep(0.07,0.13,gap));
+        occlusion=max(occlusion,blocked);
+    }
+    return 1.0-occlusion*(1.0-smoothstep(22.0,32.0,dist));
+}
+
+fn contact_headlight_radiance(p:vec3<f32>,n:vec3<f32>,surface_n:vec3<f32>,v:vec3<f32>,diffuse:vec3<f32>,rough:f32,f0:vec3<f32>,size:vec2<u32>,dist:f32)->vec3<f32> {
+    var result=vec3<f32>(0.0);
+    for(var index=0u;index<incident_light_count(p);index++) {
+        if dot(n,incident_light_position(index)-p)<=0.0 {continue;}
+        let sample=incident_light_sample(index,p,surface_n);
+        if all(sample.irradiance==vec3<f32>(0.0)) {continue;}
+        var contact=1.0;
+        if index<min(headlights.count.x,8u) {contact=local_contact_shadow(p,surface_n,sample.direction,size,dist);}
+        result+=sample.irradiance*contact*(diffuse*max(dot(n,sample.direction),0.0)+ggx(n,v,sample.direction,rough,f0));
+    }
+    return result;
 }
 
 // Smooth projected-area approximation for diffuse contact, and opaque ray
@@ -780,20 +820,40 @@ fn apply_distance_fog(radiance: vec3<f32>, distance: f32, direction: vec3<f32>) 
     if light.fog.z > 0.0 {
         if light.fog.y <= 0.0 { return radiance; }
         let column = fog_column(distance, view.cam.y, direction.y, light.fog.z);
-        // Direct sunlight in the local air is occluded by scene geometry too.
-        // Four samples cover the segment; diffuse skylight remains in shade.
+        // Night/occluded sun contributes no directional scattering. Avoid
+        // marching solar shadows when only diffuse skylight remains.
+        if light.sun_dir.w <= 0.0 || view.fog_cull.z <= 0.0 || light.sun_color.w <= 0.0 {
+            return fog_segment(radiance, fog_scattering_source(direction), light.fog.y * column);
+        }
+        // Stratified integration avoids coherent four-slice light curtains.
+        // Offset the strata per pixel; TAA/spatial filtering can resolve the
+        // fine sampling error instead of preserving large bright bands.
+        let clip = view.view_proj * vec4<f32>(view.cam.xyz + direction, 1.0);
+        let pixel = floor((clip.xy / clip.w * 0.5 + 0.5) * view.size.xy);
+        let temporal = light.fog_sampling.y > 0.5;
+        let jitter = select(0.5, fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715)))
+            + light.fog_sampling.x), temporal);
+        // Paused/no-TAA captures cannot resolve stochastic error over time.
+        let samples = select(32u, 8u, temporal);
         var visible = 0.0;
-        for (var i = 0u; i < 4u; i++) {
-            let p = view.cam.xyz + direction * distance * (f32(i) + 0.5) / 4.0;
+        var weight_sum = 0.0;
+        for (var i = 0u; i < samples; i++) {
+            let t = distance * (f32(i) + jitter) / f32(samples);
+            let p = view.cam.xyz + direction * t;
             let q = light.shadow_view_proj * vec4<f32>(p,1.0);
             let uv = q.xy * vec2<f32>(0.5,-0.5) + 0.5;
-            var sample = 1.0;
+            var visibility = 1.0;
             if all(uv>=vec2<f32>(0.0)) && all(uv<=vec2<f32>(1.0)) && q.z>=0.0 && q.z<=1.0 {
-                sample = textureSampleCompareLevel(shadow_tex,shadow_samp,uv,q.z-0.0002);
+                visibility = textureSampleCompareLevel(shadow_tex,shadow_samp,uv,q.z-0.0002);
             }
-            visible += sample;
+            // Scattering near the camera contributes more than distant air:
+            // density times transmission along the camera-to-sample segment.
+            let weight = exp(-max(p.y, 0.0) / light.fog.z
+                - light.fog.y * fog_column(t, view.cam.y, direction.y, light.fog.z));
+            visible += visibility * weight;
+            weight_sum += weight;
         }
-        visible = mix(1.0, visible * 0.25, light.sun_color.w);
+        visible = mix(1.0, visible / max(weight_sum, 0.000001), light.sun_color.w);
         let diffuse = light.fog_scattering.rgb * max(light.sh[0].rgb * 0.282095, vec3<f32>(0.0));
         let source = diffuse + (fog_scattering_source(direction) - diffuse) * visible;
         return fog_segment(radiance, source, light.fog.y * column);
@@ -1103,8 +1163,12 @@ fn distant_sun_visibility(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
             // pushes receivers through their own crowns. Keep numerical bias
             // in world units and use one bilinear comparison footprint: the
             // map already integrates a much larger area than the close maps.
-            let bias = min(0.06, far_sun.params.x * 0.1);
-            let c = far_sun.view_proj * vec4<f32>(p + (n + light.sun_dir.xyz) * bias, 1.0);
+            // Compact architectural caches need half a texel of geometric
+            // normal bias on grazing roofs; keep the forest policy unchanged.
+            let architecture = far_sun.params.w > 0.5;
+            let bias = min(0.06, far_sun.params.x * select(0.1, 0.5, architecture));
+            let receiver_n = select(n, plane_n, architecture);
+            let c = far_sun.view_proj * vec4<f32>(p + (receiver_n + light.sun_dir.xyz) * bias, 1.0);
             let uv = c.xy * vec2<f32>(0.5,-0.5) + 0.5;
             mapped = textureSampleCompareLevel(far_sun_tex, shadow_samp, uv, 0, c.z);
         }
@@ -2054,6 +2118,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
           }
         }
         direct=diffuse*sun_e*sun+sun_e*back/PI+sun_e*ggx(n,v,l,rough,f0);
+        // Authored diffuse room return; retain crevice and contact occlusion.
+        // z is irradiance in lux, independent of exposure and direct shadow bias.
+        ambient += vec3<f32>(1.0,0.97,0.92)*light.fog_sampling.z*ao*contact.x;
         indirect=diffuse*ambient;
         specular=env*env_brdf(f0,rough,ndv)*ao;
     }
@@ -2076,7 +2143,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     if FEATURE_GRASS && grass {
         direct += headlight_grass_radiance(p,v,base,rough);
     } else {
-        direct += headlight_radiance(p,n,v,diffuse,rough,f0);
+        direct += contact_headlight_radiance(p,n,visibility_n,v,diffuse,rough,f0,size,dist);
     }
     var rad = direct + indirect + specular;
     // Emission is scaled by Lighting::emissive_scale (exposure compensation).
@@ -2086,8 +2153,31 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     // with a texture layer the picture glows (screens), else the tint.
     if (m.flags & 1024u) != 0u { rad += select(m.tint, base, m.layer >= 0) * m.scale * emit; }
     rad += surface_emit * emit;
-    // LAVA: unlit, flowing molten rock; `tint * scale` is the radiance of white.
-    if FEATURE_PROCEDURAL && (m.flags & 4096u) != 0u { rad = proc_lava(p, light.anim.x, max(length(fp.dx), length(fp.dy))) * m.tint * m.scale * emit; }
+    // LAVA: molten emission plus sunlight reflected by the cooler surface.
+    if FEATURE_PROCEDURAL && (inst.pad & 128u) != 0u {
+        rad = proc_lava(p * 1200.0, light.anim.x * 6.0, max(length(fp.dx),length(fp.dy)) * 1200.0)
+            * vec3<f32>(1.0,0.20,0.02) * 5000.0 * emit;
+    }
+    if FEATURE_PROCEDURAL && (m.flags & 4096u) != 0u {
+        var lava_p = p; var lava_time = light.anim.x;
+        var lava_footprint = max(length(fp.dx), length(fp.dy));
+        if m.layer == -2 {
+            // Small molten chambers: anchor the flowing field to the mesh UVs.
+            lava_p = vec3<f32>(uv.x, 0.0, uv.y) * 3000.0;
+            lava_footprint = max(length(duv_x), length(duv_y)) * 3000.0;
+            lava_time *= 6.0;
+        }
+        let lava_color = proc_lava(lava_p, lava_time, lava_footprint);
+        rad = lava_color * m.tint * m.scale * emit;
+        if m.layer != -2 {
+            // World pools retain their own glow in shade/night. The cooler
+            // crust reflects more daylight than the bright molten veins;
+            // reuse the stadium/dynamic sun visibility already sampled above.
+            let hot = smoothstep(0.05, 0.7, lava_color.r);
+            let lava_albedo = mix(vec3<f32>(0.20, 0.12, 0.06), vec3<f32>(0.08, 0.045, 0.02), hot);
+            rad += lava_albedo * sun_e * sun / PI;
+        }
+    }
     // Hit flash (instance bits 16..23): the body itself lights up white,
     // nearly evenly; a slight facing term keeps its form readable.
     let flash = f32((inst.pad >> 16u) & 0xffu) / 255.0;

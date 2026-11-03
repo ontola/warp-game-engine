@@ -22,6 +22,7 @@ struct State {
 pub(crate) struct Resources {
     pub enabled:bool,
     pub lod_pixels:f32,
+    min_extent:f32,
     pub uniform:wgpu::Buffer,
     pub instances:wgpu::Buffer,
     pub wind:wgpu::Buffer,
@@ -44,7 +45,7 @@ pub(crate) fn effective_lod(configured:f32,requested:f32)->f32 {
     // ordinary distant maps no longer simplify at several world metres.
     if requested.is_finite()&&requested>=0.0 {configured.min(requested*2.0)}else{configured}
 }
-fn fit(instances:&[GpuInstance],sun:Vec3)->Projection {
+fn fit(instances:&[GpuInstance],sun:Vec3,min_extent:f32)->Projection {
     let z=sun.normalize_or(Vec3::Y);
     let up=if z.y.abs()>0.99{Vec3::Z}else{Vec3::Y};
     let x=up.cross(z).normalize();let y=z.cross(x);
@@ -58,7 +59,7 @@ fn fit(instances:&[GpuInstance],sun:Vec3)->Projection {
     let centre=(lo+hi)*0.5;
     // Every source crown stays inside the fully weighted 0.8 NDC region.
     // Scene fit also means four views share exactly the same coverage/cache.
-    let extent=(((hi-lo).max_element()*0.5+16.)/0.8/128.).ceil().max(8.)*128.;
+    let extent=(((hi-lo).max_element()*0.5+16.)/0.8/128.).ceil().max(min_extent/128.)*128.;
     let focus=x*centre.x+y*centre.y;
     let mut bounds=crate::stability::SunSceneBounds::default();bounds.extend_instances(instances);
     let raw=bounds.depth_range(sun,&[focus]);
@@ -71,9 +72,17 @@ fn fit(instances:&[GpuInstance],sun:Vec3)->Projection {
 }
 impl Resources {
     pub fn new(gpu:&Gpu,scene:&Scene)->Self {
-        let enabled=std::env::var("KERN_FAR_SUN_SHADOW").as_deref()==Ok("1");
+        let explicit=!scene.static_sun_instances.is_empty();
+        let enabled=explicit || std::env::var("KERN_FAR_SUN_SHADOW").as_deref()==Ok("1");
+        let min_extent=if explicit{128.}else{1024.};
         let lod_pixels=configured_lod(std::env::var("KERN_FAR_SUN_LOD").ok().as_deref());
         let mut owners:Vec<_>=if enabled{scene.instances.iter().map(eligible).collect()}else{Vec::new()};
+        if explicit {
+            owners.fill(false);
+            for &index in &scene.static_sun_instances {
+                owners[index]=eligible(&scene.instances[index]);
+            }
+        }
         if enabled {if let Some(a)=&scene.baked_animations {for p in &a.parts{owners[p.owner as usize]=false;}}}
         let sources:Vec<_>=scene.instances.iter().zip(&owners).map(|(&i,&owner)|if owner{i}else{hidden(i)}).collect();
         let capacity=sources.iter().map(|i|i.cluster_count as u64).sum::<u64>().clamp(1,crate::frame::MAX_VISIBLE as u64) as u32;
@@ -86,7 +95,7 @@ impl Resources {
         let target=texture.create_view(&Default::default());
         let array_view=wgpu::TextureViewDescriptor{dimension:Some(wgpu::TextureViewDimension::D2Array),..Default::default()};
         let view=texture.create_view(&array_view);let empty=empty_texture.create_view(&array_view);
-        Self{enabled,lod_pixels,uniform,instances,wind,_texture:texture,view,target,empty,capacity,state:std::sync::Mutex::new(State{sources,owners,dirty:true,key:None,projection:Projection{vp:Mat4::IDENTITY,eye:Vec3::ZERO,extent:1024.}})}
+        Self{enabled,lod_pixels,min_extent,uniform,instances,wind,_texture:texture,view,target,empty,capacity,state:std::sync::Mutex::new(State{sources,owners,dirty:true,key:None,projection:Projection{vp:Mat4::IDENTITY,eye:Vec3::ZERO,extent:1024.}})}
     }
     pub fn update(&self,gpu:&Gpu,first:usize,input:&[GpuInstance]) {
         if !self.enabled{return;}
@@ -106,8 +115,8 @@ impl Resources {
         if !self.enabled{return None;}
         let key=[sun.x.to_bits(),sun.y.to_bits(),sun.z.to_bits(),alpha.to_bits(),lod.to_bits()];
         let mut s=self.state.lock().unwrap();let changed=s.dirty||s.key!=Some(key);
-        if changed{s.projection=fit(&s.sources,sun);s.key=Some(key);s.dirty=true;
-            gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform{view_proj:s.projection.vp.to_cols_array_2d(),params:[2.*s.projection.extent/SIZE as f32,0.8,1.,0.]}));}
+        if changed{s.projection=fit(&s.sources,sun,self.min_extent);s.key=Some(key);s.dirty=true;
+            gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform{view_proj:s.projection.vp.to_cols_array_2d(),params:[2.*s.projection.extent/SIZE as f32,0.8,1.,if self.min_extent<1024.{1.}else{0.}]}));}
         Some((s.projection,changed))
     }
     /// Only submission makes the pending cache contents reusable. A frame
@@ -120,7 +129,7 @@ impl Resources {
     fn source(p:Vec3,r:f32,flags:u32)->GpuInstance {let mut i=GpuInstance::zeroed();i.rows[0][0]=1.;i.rows[1][1]=1.;i.rows[2][2]=1.;i.scale=1.;i.sphere=[p.x,p.y,p.z,r];i.cluster_count=1;i.flags=flags;i}
     #[test]fn far_sun_fit_covers_all_crowns_and_remote_casters(){
         let sources=[source(Vec3::new(-1800.,120.,350.),15.,FOLIAGE),source(Vec3::new(2400.,600.,-2600.),25.,FOLIAGE),source(Vec3::new(0.,900.,5000.),600.,0)];
-        for sun in [Vec3::Y,Vec3::new(0.9,0.035,0.3).normalize(),Vec3::new(0.3,0.8,0.4).normalize()]{let p=fit(&sources,sun);
+        for sun in [Vec3::Y,Vec3::new(0.9,0.035,0.3).normalize(),Vec3::new(0.3,0.8,0.4).normalize()]{let p=fit(&sources,sun,1024.);
             for i in &sources[..2]{let q=p.vp.project_point3(Vec3::from_slice(&i.sphere));assert!(q.x.abs()<0.8&&q.y.abs()<0.8);assert!(q.z>0.&&q.z<1.);}
             assert!(p.extent>=1024.);assert!(p.vp.is_finite());
             let q=p.vp.project_point3(Vec3::from_slice(&sources[2].sphere));assert!(q.z>0.&&q.z<1.);
@@ -129,7 +138,40 @@ impl Resources {
         }
     }
     #[test]fn far_sun_static_ownership_excludes_every_animated_class(){for f in [SOLID,NO_SHADOW,LIVE_GRASS,WIND_GRASS,PART_WIND]{assert!(!eligible(&source(Vec3::ZERO,1.,f)));}assert!(eligible(&source(Vec3::ZERO,1.,FOLIAGE)));assert!(eligible(&source(Vec3::ZERO,1.,0)));assert_eq!(std::mem::size_of::<Uniform>(),80);}
-    #[test]fn far_sun_fit_is_bit_exact_across_repeated_views(){let s=[source(Vec3::new(450.,20.,-900.),12.,FOLIAGE)];let a=fit(&s,Vec3::new(0.4,0.8,0.2).normalize());for _ in 0..4{let b=fit(&s,Vec3::new(0.4,0.8,0.2).normalize());assert_eq!(a.vp.to_cols_array(),b.vp.to_cols_array());}}
+    #[test]fn far_sun_fit_is_bit_exact_across_repeated_views(){let s=[source(Vec3::new(450.,20.,-900.),12.,FOLIAGE)];let a=fit(&s,Vec3::new(0.4,0.8,0.2).normalize(),1024.);for _ in 0..4{let b=fit(&s,Vec3::new(0.4,0.8,0.2).normalize(),1024.);assert_eq!(a.vp.to_cols_array(),b.vp.to_cols_array());}}
+    #[test]
+    #[ignore = "requires GPU; run serially without a game"]
+    fn explicit_cache_reuses_and_only_tracks_selected_sources(){
+        let gpu=Gpu::new().unwrap();let mut scene=Scene::default();
+        scene.instances=vec![source(Vec3::ZERO,20.,0),source(Vec3::X*40.,1.,0)];
+        scene.static_sun_instances=vec![0];
+        let cache=Resources::new(&gpu,&scene);
+        assert_eq!(cache.state.lock().unwrap().owners,vec![true,false]);
+        let sun=Vec3::new(0.3,0.8,0.4).normalize();
+        assert!(cache.prepare(&gpu,sun,0.5,0.5).unwrap().1);
+        cache.submitted();
+        assert!(!cache.prepare(&gpu,sun,0.5,0.5).unwrap().1);
+        scene.instances[1].rows[0][3]+=10.;
+        cache.update(&gpu,1,&scene.instances[1..]);
+        assert!(!cache.prepare(&gpu,sun,0.5,0.5).unwrap().1);
+        scene.instances[0].rows[0][3]+=10.;scene.instances[0].sphere[0]+=10.;
+        cache.update(&gpu,0,&scene.instances[..1]);
+        assert!(cache.prepare(&gpu,sun,0.5,0.5).unwrap().1);
+        cache.submitted();
+        assert!(cache.prepare(&gpu,Vec3::Y,0.5,0.5).unwrap().1);
+    }
+    #[test]fn explicit_stadium_cache_fits_small_scene_without_camera_dependence(){
+        let sources=[source(Vec3::new(-120.,30.,0.),40.,0),source(Vec3::new(120.,40.,0.),40.,0)];
+        for sun in [Vec3::Y,Vec3::new(0.9,0.1,0.3).normalize()] {
+            let p=fit(&sources,sun,128.);
+            assert!(p.extent<1024.);
+            for i in &sources {for bits in 0..8 {
+                let d=Vec3::new(if bits&1==0{-1.}else{1.},if bits&2==0{-1.}else{1.},if bits&4==0{-1.}else{1.});
+                let q=p.vp.project_point3(Vec3::from_slice(&i.sphere)+d*i.sphere[3]);
+                assert!(q.x.abs()<0.8 && q.y.abs()<0.8 && q.z>0.05 && q.z<0.95);
+            }}
+        }
+    }
     #[test]fn far_sun_lod_is_bounded_without_losing_source_reference(){
         for v in [None,Some("bad"),Some("NaN"),Some("inf"),Some("-1"),Some("20")]{assert_eq!(configured_lod(v),0.5);}
         assert_eq!(configured_lod(Some("0")),0.0);assert_eq!(configured_lod(Some("0.25")),0.25);

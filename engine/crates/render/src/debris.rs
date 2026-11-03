@@ -149,8 +149,11 @@ impl<'a> BurstSpec<'a> {
 
 /// Simulation constants (defaults from the Godot shader).
 #[derive(Clone, Copy, Debug)]
-pub struct Tuning { pub gravity: f32, pub bounce: f32, pub friction: f32, pub kill_y: f32 }
-impl Default for Tuning { fn default() -> Self { Tuning { gravity: 21.0, bounce: 0.34, friction: 0.76, kill_y: -60.0 } } }
+pub struct Tuning { pub gravity: f32, pub bounce: f32, pub friction: f32, pub kill_y: f32, pub lava: Option<LavaSurface> }
+/// Base pool plus an optional raised pool or inward-moving border.
+#[derive(Clone, Copy, Debug)]
+pub struct LavaSurface { pub base: f32, pub raised: f32, pub half: f32, pub inset: f32, pub full: bool }
+impl Default for Tuning { fn default() -> Self { Tuning { gravity: 21.0, bounce: 0.34, friction: 0.76, kill_y: -60.0, lava: None } } }
 
 /// Where a scene's debris pool lives (set by [`Debris::reserve`]).
 #[derive(Clone, Copy, Debug)]
@@ -377,6 +380,7 @@ struct Uniform {
     dims: [u32; 4],
     counts: [u32; 4],
     extra: [f32; 4],
+    lava: [f32; 4],
 }
 
 /// Renderer side: buffers, pipelines and the pending dispatch.
@@ -438,7 +442,8 @@ impl DebrisRenderer {
             u.dims = [o.dims[0], o.dims[1], o.dims[2], o.words() as u32];
         }
         u.sim = [STEP, tuning.gravity, tuning.bounce, tuning.friction];
-        u.extra = [tuning.kill_y, 0.5, 0.0, 0.0];
+        u.extra = [tuning.kill_y, 0.5, 0.0, tuning.lava.map_or(-1e20, |l|l.base)];
+        u.lava = tuning.lava.map_or([-1e20,0.0,0.0,0.0],|l|[l.raised,l.half,l.inset,if l.full {1.0}else{0.0}]);
         u.counts[1] = self.spec.capacity;
         u.counts[2] = self.spec.first;
         st.uniform = Some(u);
@@ -581,7 +586,7 @@ mod tests {
         let module = naga::front::wgsl::parse_str(SHADER).unwrap_or_else(|e| panic!("{}", e.emit_to_string(SHADER)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap();
         assert_eq!(std::mem::size_of::<Shard>(), 80);
-        assert_eq!(std::mem::size_of::<Uniform>(), 80);
+        assert_eq!(std::mem::size_of::<Uniform>(), 96);
     }
 
     #[test]
@@ -657,6 +662,38 @@ mod tests {
         for _ in 0..12 {frame(&mut d,10);}
         let fallen=r.debris_debug_instances(&gpu).unwrap();
         assert!(raised.iter().zip(&fallen).filter(|(a,_)|a.cluster_count>0).all(|(a,b)|b.rows[1][3]<a.rows[1][3]),"gravity returns the lifted cloud");
+    }
+
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn lava_contact_glows_sinks_and_recycled_slots_start_cold() {
+        use crate::{Camera,Lighting,Renderer,ViewRect};
+        let gpu=Gpu::new().unwrap();let mut scene=Scene::default();
+        let m=scene.add_material(crate::scene::Material{tint:[0.4;3],layer:-1,roughness:0.8,flags:0,scale:1.0,metal:0.0});
+        let mesh=scene.add_mesh(&crate::primitives::cube(m).mesh());
+        let occ=Occupancy::new(Vec3::splat(-8.0),Vec3::splat(8.0),0.5);
+        let mut debris=Debris::reserve(&mut scene,1,occ,false);
+        debris.tuning.lava=Some(LavaSurface{base:0.0,raised:0.0,half:4.0,inset:0.0,full:false});
+        let light=Lighting::default();let renderer=Renderer::new(&gpu,&scene,&light);
+        let output=Renderer::output_texture(&gpu,64,64);
+        let view=[ViewRect{cam:Camera{pos:Vec3::new(0.0,3.0,8.0),target:Vec3::ZERO,fov_y:1.0,near:0.1},x:0,y:0,w:64,h:64}];
+        let step=|d:&mut Debris,n:usize|{for _ in 0..n {d.advance(STEP);d.flush(&gpu,&renderer).unwrap();renderer.try_render_into(&gpu,&view,&light,&output).unwrap();}};
+        debris.spawn(&scene,mesh,Vec3::new(0.0,2.0,0.0),Vec3::ZERO,Vec3::ONE,0.0,10.0);
+        step(&mut debris,80);
+        let a=renderer.debris_debug_instances(&gpu).unwrap()[0];
+        assert_ne!(a.flags & crate::scene::MOLTEN_DEBRIS,0);
+        step(&mut debris,20);
+        let b=renderer.debris_debug_instances(&gpu).unwrap()[0];
+        let drop=a.rows[1][3]-b.rows[1][3];
+        assert!(drop>0.02 && drop<0.3,"slow sink, got {drop}");
+        step(&mut debris,300);
+        assert_eq!(renderer.debris_debug_instances(&gpu).unwrap()[0].cluster_count,0);
+        debris.clear();
+        // Let the clear dispatch finish before reusing the single slot.
+        step(&mut debris,1);
+        debris.spawn(&scene,mesh,Vec3::new(0.0,6.0,0.0),Vec3::ZERO,Vec3::ONE,0.0,10.0);
+        step(&mut debris,1);
+        assert_eq!(renderer.debris_debug_instances(&gpu).unwrap()[0].flags & crate::scene::MOLTEN_DEBRIS,0);
     }
 
     #[test]

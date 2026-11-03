@@ -179,6 +179,12 @@ fn projected(err: f32, c: vec3<f32>, r: f32) -> f32 {
 // The optional one-thread-per-owner broadphase uses exactly the same policy
 // as the legacy workgroup path: 0 rejected, 1 candidate, 2 early grass reject.
 fn instance_policy(id: u32, inst: Instance) -> u32 {
+    // Only this spotlight excludes its emitter body. Sun and other lamps
+    // still see it, including remote players with no local camera view.
+    if view.extra.y>1.5 && view.grass.w>0.0 {
+        let first=u32(view.grass.z); let count=u32(view.grass.w);
+        if id>=first && id-first<count {return 0u;}
+    }
     // Unoccupied fixed-pool slots have no geometry. This is uniform across
     // the workgroup, so skip the frustum test/barrier without divergence.
     if inst.cluster_count == 0u {
@@ -589,6 +595,10 @@ fn scatter(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroup
 fn cull_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
     let id=gid.x+gid.y*65535u*64u;
     if id>=INSTANCE_COUNT {return;}
+    if view.extra.y>1.5 && view.grass.w>0.0 {
+        let first=u32(view.grass.z); let count=u32(view.grass.w);
+        if id>=first && id-first<count {return;}
+    }
     let inst=instances[id];
     if inst.cluster_count==0u {return;}
     let shadow=view.params.z>0.5 || view.extra.y>1.5;

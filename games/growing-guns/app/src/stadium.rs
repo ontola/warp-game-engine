@@ -75,7 +75,7 @@ fn roof_proxies(geo: Stadium) -> Vec<Affine3A> {
         Affine3A::from_cols(tangent.into(),(Vec3::Y*0.5).into(),radial.into(),((outer+inner)*0.5).into())
     }).collect()
 }
-const MARKS: usize = 256;
+const MARKS: usize = 768;
 const TV_COUNT: usize = 4;
 const TV_WIDTH: f32 = 26.0;
 const TV_HEIGHT: f32 = TV_WIDTH * 9.0 / 16.0;
@@ -137,6 +137,7 @@ impl Rng {
 }
 
 type Probes = Vec<render::irradiance_volume::Probe>;
+enum SunUpload { Packed(Vec<u32>), Probes(Probes) }
 
 /// One stadium sky-occlusion bake (`render::sky_occlusion::bake_diffuse`).
 #[derive(Clone)]
@@ -196,6 +197,45 @@ fn bake_sky(grid: render::irradiance_volume::Grid, boxes: &[Affine3A], reflectan
     bake
 }
 
+// Flat irregular stains, never flattened spheres hovering across several rows.
+fn stain_mesh(material: u32) -> Primitive {
+    let mut mesh = Primitive { material, ..Default::default() };
+    mesh.vertices.push(render::cluster::Vertex { pos:[0.0;3], normal:Vec3::Y.to_array(), uv:[0.5;2] });
+    for i in 0..24 {
+        let a = i as f32 * TAU / 24.0;
+        let r = 0.76 + 0.16 * (a * 5.0).sin() + 0.08 * (a * 9.0 + 1.0).sin();
+        mesh.vertices.push(render::cluster::Vertex { pos:[a.cos()*r,0.0,a.sin()*r], normal:Vec3::Y.to_array(), uv:[0.5+a.cos()*0.5,0.5+a.sin()*0.5] });
+        mesh.indices.extend([0, (i+1)%24+1, i+1]);
+    }
+    mesh
+}
+
+fn mark_surface(pieces: &[growing_guns::stadium::Piece], p: Vec3, radius: f32) -> Option<(Vec3, Vec3, f32)> {
+    let mut best = None;
+    let mut distance = f32::INFINITY;
+    for piece in pieces {
+        let rotation = Quat::from_rotation_y(piece.yaw);
+        let local = rotation.conjugate() * (p-piece.center);
+        let half = piece.size * 0.5;
+        // Real tread and inward riser, not an imaginary smooth slope.
+        for (axis, sign) in [(1usize,1.0f32),(2usize,-1.0f32)] {
+            let axes = if axis==1 {[0,2]} else {[0,1]};
+            let r = radius.min(half[axes[0]]*0.8).min(half[axes[1]]*0.8).max(0.02);
+            let mut q = local;
+            q[axis] = half[axis] * sign;
+            for &a in &axes {q[a]=q[a].clamp(-half[a]+r,half[a]-r);}
+            let d = q.distance_squared(local);
+            if d < distance {
+                distance=d;
+                let mut n=Vec3::ZERO;n[axis]=sign;
+                let n=rotation*n;
+                best=Some((piece.center+rotation*q+n*0.012,n,r));
+            }
+        }
+    }
+    best
+}
+
 pub struct StadiumVisuals {
     enabled: bool,
     /// Bake the sky cache on worker threads and keep the previous one until
@@ -203,7 +243,7 @@ pub struct StadiumVisuals {
     /// the audio). Off for scripts and benches, so their captures stay exact.
     pub bake_in_background: bool,
     sky_job: Option<std::sync::mpsc::Receiver<SkyBake>>,
-    sun_job: Option<(Vec3, std::sync::mpsc::Receiver<Result<Probes, String>>)>,
+    sun_job: Option<(Vec3, std::sync::mpsc::Receiver<Result<SunUpload, String>>)>,
     sky_boxes: Vec<Affine3A>,
     sky_planes: Vec<[f32;4]>,
     sky_probes: Vec<render::irradiance_volume::Probe>,
@@ -235,6 +275,7 @@ pub struct StadiumVisuals {
     blood: usize,
     gore: usize,
     pub geo: Stadium,
+    mark_surfaces: Vec<growing_guns::stadium::Piece>,
     lights: Vec<LocalLight>,
     /// Narrow scatter-only beams inside each floodlight's cone, for the
     /// night's volumetric light (they light no surface).
@@ -253,7 +294,7 @@ impl StadiumVisuals {
                 stands:Slots::reserve(scene,0),roof:Slots::reserve(scene,0),tv:Slots::reserve(scene,0),tv_mesh:[0;2],
                 stone:[0;6],masonry:None,roof_stone:[0;6],wall_stone:[0;6],lamp:0,shaft:0,bank:0,looks:Vec::new(),
                 crowd,sound:CrowdSound::new(None),marks:Slots::reserve(scene,0),mark_ring:Vec::new(),mark_next:0,
-                scorch:0,blood:0,gore:0,geo:Stadium::new(80.0,true,12.0),lights:Vec::new(),beams:Vec::new(),rng:Rng(1) };
+                scorch:0,blood:0,gore:0,geo:Stadium::new(80.0,true,12.0),mark_surfaces:Vec::new(),lights:Vec::new(),beams:Vec::new(),rng:Rng(1) };
         }
         let cube = |scene: &mut Scene, m: u32| scene.add_mesh(&primitives::cube(m).mesh());
         let quarry: Vec<[f32; 3]> = SANDSTONE.iter().chain(LIMESTONE.iter()).map(|c| [0, 1, 2].map(|k| c[k] + (ARENA_STONE[k] - c[k]) * 0.22)).collect();
@@ -315,13 +356,17 @@ impl StadiumVisuals {
                 looks.push((body, arms));
             }
         }
-        let scorch = { let m = mat(scene, [0.04, 0.035, 0.03], 1.0); scene.add_mesh(&primitives::sphere(m, 4, 10).mesh()) };
-        let blood = { let m = mat(scene, [0.48, 0.04, 0.03], 0.4); scene.add_mesh(&primitives::sphere(m, 4, 10).mesh()) };
+        let scorch = { let m = mat(scene, [0.04, 0.035, 0.03], 1.0); scene.add_mesh(&stain_mesh(m).mesh()) };
+        let blood = { let m = mat(scene, [0.48, 0.04, 0.03], 0.4); scene.add_mesh(&stain_mesh(m).mesh()) };
         let gore = { let m = mat(scene, [0.42, 0.03, 0.02], 0.5); scene.add_mesh(&primitives::hewn_block(m, 1, 0.2, 0.2, 9).mesh()) };
         let pieces = SEGMENTS * (ROWS + 4) + SEGMENTS / 2 + 16;
         let stands = Slots::reserve(scene, pieces);
         // The colosseum walls and tiers occlude direct sun and atmospheric haze.
         let roof = Slots::reserve(scene, 1);
+        // Immutable architecture gets a world-fixed sun map beyond the moving
+        // detailed maps. Do not cache the crowd, gore, or destructible arena.
+        scene.static_sun_instances.extend(stands.first..stands.first+stands.capacity());
+        scene.static_sun_instances.extend(roof.first..roof.first+roof.capacity());
         let tv = Slots::reserve(scene, TV_COUNT * 4);
         for i in 0..tv.capacity() { scene.instances[tv.first + i].flags |= NO_SHADOW; }
         let marks = Slots::reserve(scene, MARKS);
@@ -330,7 +375,7 @@ impl StadiumVisuals {
         if detailed { crowd.arm_pivot(0.655); }
         StadiumVisuals { enabled:true, bake_in_background: false, sky_job: None, sun_job: None, sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_emission: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
 
-            scorch, blood, gore, geo: Stadium::new(80.0, true, 12.0), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
+            scorch, blood, gore, geo: Stadium::new(80.0, true, 12.0), mark_surfaces: Vec::new(), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
 
     /// Give the crowd its voice (recordings and a speaker).
@@ -341,6 +386,7 @@ impl StadiumVisuals {
         if !self.enabled { self.geo=world.arena.stadium; return; }
         let a = &world.arena;
         self.geo = a.stadium;
+        self.mark_surfaces = self.geo.pieces().into_iter().filter(|p| matches!(p.kind, PieceKind::Step | PieceKind::Facade | PieceKind::Wall)).collect();
         self.rng = Rng(a.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         self.stands.clear(scene);
         self.roof.clear(scene);
@@ -413,11 +459,17 @@ impl StadiumVisuals {
             let r = (inner + ROWS as f32 * ROW_DEPTH * 0.72) * sq(ang);
             self.stands.add(scene, self.shaft, box_xf(dir * r + Vec3::Y * tower_h * 0.5, Vec3::new(2.0, tower_h, 2.0), 0.0));
             let at = dir * (r - 2.2) + Vec3::Y * (tower_h + 1.2);
-            let face = Quat::from_rotation_arc(Vec3::Z, -dir) * Quat::from_rotation_x(0.5);
+            let aim = Vec3::Y * (base * 0.65);
+            let face = Quat::from_rotation_arc(Vec3::Z, (aim - at).normalize());
             self.stands.add(scene, self.bank, Affine3A::from_scale_rotation_translation(Vec3::new(6.0, 3.2, 0.6), face, at));
-            // Godot SpotLight3D: energy 5, 38 degrees, aimed at the centre.
-            self.lights.push(LocalLight { position: at, direction: (-at).normalize(), intensity_cd: Vec3::new(1.0, 0.96, 0.86) * 5.0 * 37_000.0,
-                range_m: (r + 30.0).min(200.0), inner_cos: (30f32).to_radians().cos(), outer_cos: (38f32).to_radians().cos(), source_radius_m: 1.0, falloff: 1.0 });
+            // Emit just in front of the bank's 0.6 m thick housing. An
+            // emitter at its centre lets that housing occlude its own cone.
+            let emitter = at + face * Vec3::Z * 0.4;
+            // Cover the opposite bowl, with headroom before the range fade.
+            // The old radius + 30 m cut the beam off near midfield.
+            let range = ((emitter.length() + self.geo.wall_r() * sq(PI * 0.25)) / 0.70).min(500.0);
+            self.lights.push(LocalLight { position: emitter, direction: (aim - emitter).normalize(), intensity_cd: Vec3::new(1.0, 0.96, 0.86) * 5.0 * 37_000.0,
+                range_m: range, inner_cos: (30f32).to_radians().cos(), outer_cos: (38f32).to_radians().cos(), source_radius_m: 1.0, falloff: 1.0 });
             // Three lamps across the bank, fanned over the field: the beams one
             // sees in the night air. Same intensity and falloff as the flood.
             let flood = *self.lights.last().unwrap();
@@ -526,10 +578,20 @@ impl StadiumVisuals {
     fn blast(&mut self, scene: &mut Scene, fx: &mut Particles, blasts: &mut render::fx::Effects, pos: Vec3, radius: f32, now: f32) -> usize {
         self.crowd.flee(pos, radius, now);
         let dead = self.crowd.kill_near(pos, radius, usize::MAX);
-        self.mark(scene, pos, (radius * 1.2).clamp(2.5, 8.0), self.scorch);
+        let outward = Vec3::new(pos.x, 0.0, pos.z).normalize_or(Vec3::X);
+        let tangent = Vec3::Y.cross(outward);
+        let slope = (outward * ROW_DEPTH + Vec3::Y * ROW_RISE).normalize();
+        let reach = (radius * 0.5).clamp(1.0, 4.0);
+        for i in 0..48 {
+            let angle = i as f32 * 2.399963;
+            let r = ((i as f32 + 0.5) / 48.0).sqrt() * reach;
+            let p = pos + tangent * angle.cos() * r + slope * angle.sin() * r;
+            let diameter = self.rng.range(0.45, 1.1) * (1.0 - 0.3 * r / reach);
+            self.mark(scene, p, diameter, self.scorch);
+        }
         if !dead.is_empty() {
             let mag = (1.0 + dead.len() as f32 * 0.035).clamp(1.0, 2.0);
-            for &p in dead.iter().take(22) { let s = self.rng.range(1.4, 2.4) * mag; self.mark(scene, p, s, self.blood); }
+            for i in 0..dead.len().min(32) { let p = dead[i * dead.len() / dead.len().min(32)]; let s = self.rng.range(0.28, 0.65) * mag; self.mark(scene, p, s, self.blood); }
             self.gore(scene, fx, pos, dead.len());
             blasts.blood_mist(now, pos, (radius * 0.75).max(1.2), dead.len());
         }
@@ -543,17 +605,9 @@ impl StadiumVisuals {
 
     /// A flat mark on the stands' slope (visible from the arena floor).
     fn mark(&mut self, scene: &mut Scene, p: Vec3, diameter: f32, mesh: usize) {
-        let flat = Vec2::new(p.x, p.z);
-        let g = &self.geo;
-        let r = (flat.length() / sq(p.z.atan2(p.x))).clamp(g.inner_r + 0.2, g.inner_r + ROWS as f32 * ROW_DEPTH - 0.2);
-        let dir = Vec3::new(flat.x, 0.0, flat.y).normalize_or(Vec3::X);
-        let pitch = ROW_RISE.atan2(ROW_DEPTH);
-        let n = (Vec3::Y * pitch.cos() - dir * pitch.sin()).normalize();
-        let s = sq(p.z.atan2(p.x));
-        let y = g.base_y + (r - g.inner_r) / ROW_DEPTH * ROW_RISE;
-        let at = Vec3::new(dir.x * r * s, y, dir.z * r * s) + n * 0.08;
-        let rot = Quat::from_rotation_arc(Vec3::Y, n) * Quat::from_rotation_y(self.rng.f() * TAU);
-        let xf = Affine3A::from_scale_rotation_translation(Vec3::new(diameter * 0.5, 0.02, diameter * 0.5 * self.rng.range(0.75, 1.0)), rot, at);
+        let Some((at, normal, radius)) = mark_surface(&self.mark_surfaces, p, diameter * 0.5) else { return; };
+        let rot = Quat::from_rotation_arc(Vec3::Y, normal) * Quat::from_rotation_y(self.rng.f() * TAU);
+        let xf = Affine3A::from_scale_rotation_translation(Vec3::new(radius, 1.0, radius), rot, at);
         if self.mark_ring.len() < MARKS {
             if let Some(id) = self.marks.add(scene, mesh, xf) { self.mark_ring.push(id); }
         } else {
@@ -590,10 +644,15 @@ impl StadiumVisuals {
 
     pub fn invalidate_lighting(&mut self) { self.sky_dirty=true; }
 
-    fn upload_sun(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, probes: &[render::irradiance_volume::Probe]) -> Result<(), String> {
-        if std::env::var("GG_LAVA_BOUNCE").as_deref()!=Ok("0") { renderer.set_sky_sun_emission(gpu, probes, &self.sky_emission, &self.sky_planes) }
-        else if self.sky_planes.is_empty() { renderer.set_sky_sun(gpu, probes) }
-        else { renderer.set_sky_sun_separated(gpu, probes, &self.sky_planes) }
+    fn upload_sun(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, upload: SunUpload) -> Result<(), String> {
+        let start=std::time::Instant::now();
+        let result=match upload {
+            SunUpload::Packed(words)=>renderer.set_packed_irradiance_volume(gpu,&words),
+            SunUpload::Probes(probes) if self.sky_planes.is_empty()=>renderer.set_sky_sun(gpu,&probes),
+            SunUpload::Probes(probes)=>renderer.set_sky_sun_separated(gpu,&probes,&self.sky_planes),
+        };
+        crate::play::hitch("stadium light upload",start);
+        result
     }
 
     pub fn lights(&self) -> &[LocalLight] { &self.lights }
@@ -608,7 +667,7 @@ impl StadiumVisuals {
                     Ok(probes) => {
                         let sun = *sun;
                         self.sun_job = None;
-                        self.upload_sun(gpu, renderer, &probes?)?;
+                        self.upload_sun(gpu, renderer, probes?)?;
                         self.sky_sun = Some(sun);
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -619,18 +678,25 @@ impl StadiumVisuals {
             if self.sky_job.is_none() && self.sun_job.is_none() && (self.sky_dirty || self.sky_sun!=Some(light.sun_dir)) {
                 self.sky_dirty=false;
                 let (boxes, sky, reflectance, sun) = (self.sky_boxes.clone(), self.sky_probes.clone(), self.sky_reflectance, light.sun_dir);
-                let bake = move || {
+                // RGB9E5 packing performs hundreds of thousands of log/pow
+                // operations. Finish it in the worker, not on the draw thread.
+                let emission=(std::env::var("GG_LAVA_BOUNCE").as_deref()!=Ok("0")).then(||self.sky_emission.clone());
+                let planes=self.sky_planes.clone();
+                let bake = move || -> Result<SunUpload,String> {
                     let start=std::time::Instant::now();
-                    let probes=bake_sun_cached(grid,&boxes,&sky,reflectance,sun);
-                    eprintln!("stadium sun return: {:.1} ms bake",start.elapsed().as_secs_f64()*1000.0);
-                    probes
+                    let probes=bake_sun_cached(grid,&boxes,&sky,reflectance,sun)?;
+                    let upload=if let Some(emission)=emission {
+                        SunUpload::Packed(render::irradiance_volume::pack_sky_emission(&grid,&probes,&emission,&planes)?)
+                    } else { SunUpload::Probes(probes) };
+                    eprintln!("stadium sun return: {:.1} ms bake+pack",start.elapsed().as_secs_f64()*1000.0);
+                    Ok(upload)
                 };
                 if self.bake_in_background {
                     let (tx, rx) = std::sync::mpsc::channel();
                     std::thread::spawn(move || { let _ = tx.send(bake()); });
                     self.sun_job = Some((sun, rx));
                 } else {
-                    self.upload_sun(gpu, renderer, &bake()?)?;
+                    self.upload_sun(gpu, renderer, bake()?)?;
                     self.sky_sun = Some(sun);
                 }
             }
@@ -750,5 +816,22 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod mark_tests {
+    use super::*;
+    #[test]
+    fn stains_lie_on_real_faces_and_fit_within_them() {
+        let piece=growing_guns::stadium::Piece{center:Vec3::ZERO,size:Vec3::new(4.0,1.4,2.2),yaw:0.4,kind:PieceKind::Step};
+        let rot=Quat::from_rotation_y(piece.yaw);
+        for local in [Vec3::new(0.0,1.2,0.0),Vec3::new(0.0,0.0,-1.8),Vec3::new(1.98,1.0,0.98)] {
+            let (at,n,r)=mark_surface(&[piece],rot*local,2.0).unwrap();
+            let p=rot.conjugate()*(at-n*0.012);let n=rot.conjugate()*n;let half=piece.size*0.5;
+            let axis=if n.y>0.5{1}else{2};assert!((p[axis].abs()-half[axis]).abs()<1e-5);
+            for i in 0..3 {if i!=axis{assert!(p[i].abs()+r<=half[i]+1e-5);}}
+        }
+        assert!(stain_mesh(0).vertices.iter().all(|v|v.pos[1]==0.0));
     }
 }

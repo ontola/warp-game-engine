@@ -504,29 +504,29 @@ impl Menus {
     }
 
     fn start(&self, d: &mut HudDrawList, ctx: &Ctx, u: f32, clip: [f32; 4]) {
-        // Godot's Dim (black 0.32) and the logo, 440 x 190 from y 20.
-        d.rect(clip, [0.0, 0.0, 0.0, 0.32], clip);
-        logo(d, [clip[2] * 0.5 - 220.0 * u, 20.0 * u, 440.0 * u, 190.0 * u], clip);
         let list = items(Screen::Start, ctx);
-        let (pw, ph) = (350.0 * u, 446.0 * u);
-        let panel = [52.0 * u, clip[3] * 0.5 - ph * 0.5, pw, ph];
+        self.side_menu(d, &list, ctx, u, clip);
+    }
+
+    fn side_menu(&self, d: &mut HudDrawList, list: &[Item], ctx: &Ctx, u: f32, clip: [f32; 4]) {
+        // Godot's left-side gothic frame, sized from its current contents.
+        // Both painting and hit targets use the same fitted scale.
+        let u = u.min(clip[3] / (column_height(list, 1.0) + 100.0)).min(clip[2] / 840.0);
+        let ch = column_height(list, u);
+        let ph = ch + 80.0 * u;
+        let pw = 390.0 * u;
+        let panel = [32.0 * u, (clip[3] - ph) * 0.5, pw, ph];
+        d.rect(clip, [0.02, 0.01, 0.015, 0.22], clip);
         gothic_frame(d, panel, u, 424242, clip);
-        // The VBox centres its content between the crest and the bottom trim.
-        let ch = column_height(&list, u);
-        let top = panel[1] + 42.0 * u + ((ph - 60.0 * u - ch) * 0.5).max(0.0);
-        self.column(d, &list, [panel[0] + 22.0 * u, top, pw - 44.0 * u, ch], ctx, true, u, clip);
+        self.column(d, list, [panel[0] + 24.0*u, panel[1] + 48.0*u, pw - 48.0*u, ch], ctx, true, u, clip);
+        let remaining = clip[2] - panel[0] - pw;
+        let lw = (440.0*u).min(remaining - 32.0*u);
+        logo(d, [panel[0] + pw + (remaining-lw)*0.5, 28.0*u, lw, lw*190.0/440.0], clip);
     }
 
     fn pause(&self, d: &mut HudDrawList, _world: &World, ctx: &Ctx, u: f32, clip: [f32; 4]) {
-        d.rect(clip, [0.0, 0.0, 0.0, 0.55], clip);
-        logo(d, [clip[2] * 0.5 - 250.0 * u, 15.0 * u, 500.0 * u, 180.0 * u], clip);
         let list = items(Screen::Pause, ctx);
-        let inner = column_height(&list, u);
-        let pw = 350.0 * u + 52.0 * u;
-        let ph = inner + 44.0 * u;
-        let panel = [clip[2] * 0.5 - pw * 0.5, (clip[3] * 0.5 - ph * 0.5).max(200.0 * u), pw, ph];
-        menu_panel(d, panel, u, clip);
-        self.column(d, &list, [panel[0] + 26.0 * u, panel[1] + 22.0 * u, pw - 52.0 * u, inner], ctx, false, u, clip);
+        self.side_menu(d, &list, ctx, u, clip);
         // The arena seed, bottom right.
         Label::new(BODY, 13.0 * u, [0.72, 0.72, 0.85, 0.85]).outline(3.0 * u, [0.0, 0.0, 0.0, 0.85]).right()
             .draw(d, &format!("arena seed {}", ctx.seed), clip[2] - 12.0 * u, clip[3] - 18.0 * u, clip);
@@ -978,7 +978,7 @@ pub fn join_prompt(d: &mut HudDrawList) {
 pub fn splitscreen_hint(d: &mut HudDrawList) {
     let [w, h] = d.size.map(|v| v as f32);
     let u = h / DESIGN_H;
-    Label::new(BODY, 14.0 * u, [1.0, 0.9, 0.45, 1.0]).outline(4.0 * u, [0.0, 0.0, 0.0, 0.85]).draw(d, "2-PLAYER: open menu (Esc) → SPLITSCREEN", 16.0 * u, 24.0 * u, [0.0, 0.0, w, h]);
+    Label::new(BODY, 14.0 * u, [1.0, 0.9, 0.45, 1.0]).outline(1.25 * u, [0.0, 0.0, 0.0, 0.85]).draw(d, "2-PLAYER: open menu (Esc) → SPLITSCREEN", 16.0 * u, 24.0 * u, [0.0, 0.0, w, h]);
 }
 
 /// The per-player PLAYER MENU (Godot `_build_pause_menu` in
@@ -1013,6 +1013,24 @@ mod pointer_tests {
         app::Pointer { position: Some([r[0] + r[2] * 0.5, r[1] + r[3] * 0.5]), moved: true, pressed: click, held: click, wheel: 0.0, ..Default::default() }
     }
     fn draw(m: &Menus, w: &World, h: &Hud, c: &Ctx) { m.draw(&mut HudDrawList::new(SIZE), w, h, c); }
+
+    #[test]
+    fn main_menus_keep_every_hit_target_inside_the_screen() {
+        let w = World::new(1, &[false, true]);
+        let h = Hud::new(&w);
+        for size in [[1280,720], [1920,1080], [3840,2160], [1024,768], [800,600]] {
+            for screen in [Screen::Start, Screen::Pause] {
+                let mut m = Menus::default(); m.open(screen);
+                m.draw(&mut HudDrawList::new(size), &w, &h, &ctx());
+                assert!(!m.hits.borrow().is_empty());
+                for hit in m.hits.borrow().iter() {
+                    let [x,y,w,h] = hit.rect;
+                    assert!(x>=0.0 && y>=0.0 && x+w<=size[0] as f32 && y+h<=size[1] as f32,
+                        "screen={screen:?} size={size:?} rect={:?}", hit.rect);
+                }
+            }
+        }
+    }
 
     #[test]
     fn painted_buttons_hover_click_and_reject_stale_targets() {

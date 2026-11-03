@@ -1,6 +1,7 @@
 //! The match's sky, rendering only (the simulation never sees it):
 //!
-//! - `godot` (default): Godot's gradient sky and fixed sun (`view::sky`,
+//! - `random` (default): seeded random time and weather for each arena;
+//! - `godot`: Godot's gradient sky and fixed sun (`view::sky`,
 //!   `view::lighting`), so parity captures and golden images hold;
 //! - a procedural preset from `render::sky`: `noon`, `sunset:mist`,
 //!   `night:haze` (time sunrise|morning|noon|afternoon|sunset|night, weather
@@ -19,6 +20,7 @@ use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SkyChoice {
+    Random,
     Godot,
     Preset(LiveSettings),
     Rounds(WeatherLook),
@@ -32,6 +34,7 @@ impl SkyChoice {
         let rest: Vec<&str> = parts.collect();
         let weather = |w: Option<&&str>| w.map_or(Ok(WeatherLook::Clear), |w| WeatherLook::parse(w));
         match head {
+            "random" if rest.is_empty() => Ok(Self::Random),
             "godot" if rest.is_empty() => Ok(Self::Godot),
             "rounds" if rest.len() <= 1 => Ok(Self::Rounds(weather(rest.first())?)),
             "cycle" if rest.len() <= 2 => {
@@ -60,12 +63,13 @@ impl SkyChoice {
     }
 
     fn usage(s: &str) -> String {
-        format!("unknown sky {s}: godot | TIME[:WEATHER] | rounds[:WEATHER] | cycle[:WEATHER][:MINUTES]; \
+        format!("unknown sky {s}: random | godot | TIME[:WEATHER] | rounds[:WEATHER] | cycle[:WEATHER][:MINUTES]; \
             TIME sunrise|morning|noon|afternoon|sunset|night, WEATHER clear|haze|mist")
     }
 
     pub fn name(&self) -> String {
         match self {
+            Self::Random => "random".into(),
             Self::Godot => "godot".into(),
             Self::Preset(s) => format!("{}:{}", s.time.key(), s.atmosphere.key()),
             Self::Rounds(w) => format!("rounds:{}", w.key()),
@@ -79,8 +83,29 @@ impl SkyChoice {
         self.sky_settings(round, seconds).map(|s| if s.exposure() < MIN_EV100 { s.with_exposure(MIN_EV100) } else { s })
     }
 
+    /// Seeded from the arena so clients and F12 replays agree without touching
+    /// gameplay RNG. Blackout overrides every selected mode, including cycles.
+    pub fn for_arena(&self, round: u32, seconds: f32, seed: u64, blackout: bool) -> Option<LiveSettings> {
+        let selected = if matches!(self, Self::Random) { Some(Self::random_settings(seed)) }
+            else { self.settings(round,seconds) };
+        let selected = if blackout {
+            Some(LiveSettings::preset(DayTime::Night,selected.map_or(WeatherLook::Clear,|s|s.atmosphere)))
+        } else {selected};
+        selected.map(|s|if s.exposure()<MIN_EV100{s.with_exposure(MIN_EV100)}else{s})
+    }
+
+    fn random_settings(seed: u64) -> LiveSettings {
+        let mut n=seed.wrapping_add(0x9e3779b97f4a7c15);
+        n=(n^(n>>30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        n=(n^(n>>27)).wrapping_mul(0x94d049bb133111eb);n^=n>>31;
+        let time=[DayTime::Sunrise,DayTime::Morning,DayTime::Noon,DayTime::Afternoon,DayTime::Sunset,DayTime::Night][(n%6) as usize];
+        let weather=[WeatherLook::Clear,WeatherLook::Haze,WeatherLook::Mist][((n/6)%3) as usize];
+        LiveSettings::preset(time,weather)
+    }
+
     fn sky_settings(&self, round: u32, seconds: f32) -> Option<LiveSettings> {
         match *self {
+            Self::Random => Some(Self::random_settings(round as u64)),
             Self::Godot => None,
             Self::Preset(s) => Some(s),
             Self::Rounds(w) => Some(LiveSettings::preset(DayTime::Morning.step((round.saturating_sub(1) % 6) as i8), w)),
@@ -106,10 +131,9 @@ pub fn floodlights(elevation_degrees: f64) -> f32 {
     1.0 + (NIGHT_FLOODLIGHTS - 1.0) * night_weight(elevation_degrees)
 }
 
-/// Tuned on the night captures (scripts/sky.json): at EV 11 and 12x the floor,
-/// walls and players read clearly. The banks point
-/// at the centre, so the crowd in the stands falls dark.
-pub const NIGHT_FLOODLIGHTS: f32 = 12.0;
+/// Full-bowl coverage needs less power than the old short-range lamps.
+/// At EV 11 this keeps exposed stone readable without washing out the night.
+pub const NIGHT_FLOODLIGHTS: f32 = 4.0;
 
 /// Volumetric light (the floodlight beams, haze around the lamps) for a sky:
 /// only once the sun is below the horizon (fading in to -6 deg), so day,
@@ -122,6 +146,13 @@ pub fn volumetric(settings: &LiveSettings) -> Option<Volumetric> {
     let night = t * t * (3.0 - 2.0 * t);
     let density = match settings.atmosphere { WeatherLook::Clear => NIGHT_AIR_DENSITY, WeatherLook::Haze => 2.5 * NIGHT_AIR_DENSITY, WeatherLook::Mist => 5.0 * NIGHT_AIR_DENSITY };
     Some(Volumetric { density: density * night, ..NIGHT_AIR })
+}
+
+/// Modest stadium bounce approximation, fading in after sunset.
+/// Surface AO/contact shadows still occlude it; blackout explicitly disables it.
+pub fn indirect_fill(elevation_degrees: f64) -> f32 {
+    let t = (-elevation_degrees / 6.0).clamp(0.0, 1.0) as f32;
+    100.0 * t*t*(3.0-2.0*t)
 }
 
 /// Scattering per metre of clear night air over the arena (`volumetric`).
@@ -164,11 +195,11 @@ pub struct Sky {
 impl Sky {
     pub fn new(choice: SkyChoice) -> Self { Self { choice, applied: None, live: None } }
 
-    /// `--sky`, else `GG_SKY`, else Godot's.
+    /// `--sky`, else `GG_SKY`, else randomized per arena.
     pub fn from_args(arg: Option<&str>) -> Result<SkyChoice, String> {
         match arg.map(str::to_string).or_else(|| std::env::var("GG_SKY").ok()) {
             Some(s) => SkyChoice::parse(&s),
-            None => Ok(SkyChoice::Godot),
+            None => Ok(SkyChoice::Random),
         }
     }
 }
@@ -176,6 +207,24 @@ impl Sky {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn random_skies_vary_reproducibly_and_blackouts_are_always_night() {
+        let random=SkyChoice::parse("random").unwrap();let mut seen=std::collections::BTreeSet::new();
+        for seed in 0..200 {
+            let sky=random.for_arena(1,0.0,seed,false).unwrap();
+            assert_eq!(Some(sky),random.for_arena(1,0.0,seed,false));
+            seen.insert(format!("{}:{}",sky.time.key(),sky.atmosphere.key()));
+            for mode in [random,SkyChoice::Godot,SkyChoice::parse("noon:mist").unwrap(),SkyChoice::parse("cycle:haze").unwrap()] {
+                let night=mode.for_arena(3,seed as f32,seed,true).unwrap();
+                assert_eq!(night.time,DayTime::Night);assert!(night.solar().elevation_degrees<0.0);
+            }
+        }
+        assert_eq!(seen.len(),18);
+        let choice=SkyChoice::parse("noon:mist").unwrap();
+        assert_eq!(choice.for_arena(2,0.0,1,true).unwrap().atmosphere,WeatherLook::Mist);
+        assert_eq!(choice.for_arena(3,0.0,2,false).unwrap().time,DayTime::Noon);
+    }
 
     #[test]
     fn choices_parse_and_name() {

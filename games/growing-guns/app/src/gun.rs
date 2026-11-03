@@ -68,15 +68,15 @@ pub fn grow_ease(t: f32) -> f32 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Mat { Metal, Dark, Barrel, Polymer, Recess, Slot, Bolt, Pad, Lens, Indicator, Poison, Cooling, Glass }
-pub const MATS: [Mat; 13] = [Mat::Metal, Mat::Dark, Mat::Barrel, Mat::Polymer, Mat::Recess, Mat::Slot, Mat::Bolt, Mat::Pad, Mat::Lens, Mat::Indicator, Mat::Poison, Mat::Cooling, Mat::Glass];
+pub enum Mat { Metal, Dark, Barrel, Polymer, Recess, Slot, Bolt, Pad, Lens, Indicator, Poison, Cooling, Glass, Fire }
+pub const MATS: [Mat; 14] = [Mat::Metal, Mat::Dark, Mat::Barrel, Mat::Polymer, Mat::Recess, Mat::Slot, Mat::Bolt, Mat::Pad, Mat::Lens, Mat::Indicator, Mat::Poison, Mat::Cooling, Mat::Glass, Mat::Fire];
 
 /// Unit shapes: a box (side 1), cylinders of height 1 along Y with radius 1
 /// at the top (tapering to `bottom` below), rings around Y of radius 1.
 /// Grip shapes instead use the metre-sized GRIP_SECTIONS below.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Shape { Box, Cyl, Taper85, Taper105, Ring18, Ring25, Grip, GripPanel, Drum, Vial }
-pub const SHAPES: [Shape; 10] = [Shape::Box, Shape::Cyl, Shape::Taper85, Shape::Taper105, Shape::Ring18, Shape::Ring25, Shape::Grip, Shape::GripPanel, Shape::Drum, Shape::Vial];
+pub enum Shape { Box, Cyl, Taper85, Taper105, Ring18, Ring25, Grip, GripPanel, Drum, Vial, VentedTube }
+pub const SHAPES: [Shape; 11] = [Shape::Box, Shape::Cyl, Shape::Taper85, Shape::Taper105, Shape::Ring18, Shape::Ring25, Shape::Grip, Shape::GripPanel, Shape::Drum, Shape::Vial, Shape::VentedTube];
 
 /// Selected once at scene creation; simulation stats and attachment IDs stay shared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -113,6 +113,7 @@ pub struct Look {
     shroud_frac: f32,
     tube: bool,
     tube_length: f32,
+    tube_radius: f32,
     rail: f32,
     poison: f32,
     cooling: f32,
@@ -184,6 +185,7 @@ impl Look {
             scope: w.spread < 0.003, stock: barrel_length > 0.55 && !tube, foregrip: barrel_length > 0.55,
             shroud: bps >= SHROUD_BPS_APPEAR && !minigun, shroud_extent: if n > 1 { span * 0.5 + clearance } else { clearance }, shroud_frac: lerp(0.34, 0.92, bps_factor),
             tube, tube_length: lerp(0.14, 0.46, blast),
+            tube_radius: receiver.y * 0.5 * lerp(0.55, 1.0, blast),
             rail: ((w.damage_mult - 1.15) / 0.35).clamp(0.0, 1.0),
             poison: (w.poison / 0.7).clamp(0.0, 1.0), cooling: (w.cooling / 0.52).clamp(0.0, 1.0),
         }
@@ -409,8 +411,10 @@ pub fn build(l: &Look) -> Build {
     }
     b.group(9);
     if l.tube {
-        let r = rs.y * 0.5;
-        b.cyl(Shape::Cyl, r, l.tube_length, Vec3::new(0.0, 0.0, rs.z * 0.5 + l.tube_length * 0.5 - JOINT), Dark, Motion::Fixed);
+        let r = l.tube_radius;
+        let center = Vec3::new(0.0, 0.0, rs.z * 0.5 + l.tube_length * 0.5 - JOINT);
+        b.cyl(Shape::VentedTube, r, l.tube_length, center, Dark, Motion::Fixed);
+        b.cyl(Shape::Vial, r * 0.78, l.tube_length * 0.90, center, Fire, Motion::Fixed);
     }
     b.group(10);
     if !l.scope {

@@ -352,6 +352,15 @@ impl World {
         let mut k = 0;
         while k < self.pickups.len() {
             let mut pk = self.pickups[k].clone();
+            // Destruction can remove the stone supporting a settled item.
+            if pk.grounded.is_some() && shape::raycast(&self.arena.grid, pk.pos, Vec3::NEG_Y, 0.6).is_none() {
+                pk.grounded = None;
+                pk.vy = 0.0;
+            }
+            if pk.pos.y < self.lava_surface_at(pk.pos) {
+                self.pickups.remove(k);
+                continue;
+            }
             match pk.grounded.as_mut() {
                 Some(t) => { *t += DT64; if *t >= PICKUP_LIFETIME { self.pickups.remove(k); continue; } }
                 None => {
@@ -361,10 +370,8 @@ impl World {
                         Some((t, _, _)) => { pk.pos.y -= t; pk.pos.y += 0.42; pk.grounded = Some(0.0); }
                         None => pk.pos.y += step,
                     }
-                    // Over an island arena's lava a missed drop falls on for the
-                    // rest of the round, holding its place under the cap of four
-                    // (Godot frees a pickup only when taken or after landing).
-                    if pk.pos.y < crate::FELL_OFF_Y && self.arena.variant != crate::arena::Variant::Island { self.pickups.remove(k); continue; }
+                    // Lost drops must release their slot and their beam, including islands.
+                    if pk.pos.y < crate::FELL_OFF_Y { self.pickups.remove(k); continue; }
                 }
             }
             let taker = self.players.iter().position(|p| {

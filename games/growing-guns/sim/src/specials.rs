@@ -51,6 +51,7 @@ impl ProjectileKind {
     /// (arm delay, fuse, proximity radius) for the thrown kinds.
     fn timing(self) -> (f64, f64, f32) {
         match self {
+            ProjectileKind::Howitzer | ProjectileKind::SiegeBolt => (0.0, 15.0, 0.0),
             ProjectileKind::Grenade => (0.04, 4.0, 0.62),
             ProjectileKind::Cluster => (0.04, 4.0, 0.62 * 1.22),
             ProjectileKind::Fragment => (0.12, 1.8, 0.62 * 0.55),
@@ -58,7 +59,7 @@ impl ProjectileKind {
             ProjectileKind::DashBomb => (DASH_BOMB_FUSE, DASH_BOMB_FUSE, 0.0),
         }
     }
-    fn thrown(self) -> bool { matches!(self, ProjectileKind::Grenade | ProjectileKind::Cluster | ProjectileKind::Fragment) }
+    fn thrown(self) -> bool { matches!(self, ProjectileKind::Grenade | ProjectileKind::Cluster | ProjectileKind::Fragment | ProjectileKind::Howitzer) }
 }
 
 impl World {
@@ -259,6 +260,33 @@ impl World {
         while k < self.projectiles.len() {
             let mut g = self.projectiles[k].clone();
             g.age += DT64;
+            if g.kind == ProjectileKind::SiegeBolt {
+                if g.age >= 8.0 { self.projectiles.remove(k); continue; }
+                g.vel.y -= GRENADE_GRAVITY * DT;
+                let step = g.vel * DT;
+                let len = step.length();
+                let dir = step.normalize_or_zero();
+                let wall = shape::raycast(&self.arena.grid, g.pos, dir, len + 0.22);
+                let mut limit = wall.map_or(len, |(t,_,_)| (t-0.22).max(0.0));
+                let mut victim = None;
+                for (j,p) in self.players.iter().enumerate() {
+                    if j == g.owner || !p.alive || p.ghost || self.allied(j,g.owner) { continue; }
+                    for (c,radii,_) in p.hitboxes() {
+                        if let Some((t,_)) = crate::combat::ray_ellipsoid(g.pos,dir,c,radii+Vec3::splat(0.22),p.yaw,limit) {
+                            limit=t; victim=Some(j);
+                        }
+                    }
+                }
+                if let Some(j) = victim {
+                    let damage=self.players[j].health.max(1);
+                    self.apply_damage(j,damage,Some(g.owner),Blow { dir, ..Blow::plain(g.pos+dir*limit) });
+                }
+                if victim.is_some() || wall.is_some() { self.projectiles.remove(k); continue; }
+                g.pos += step;
+                self.projectiles[k]=g;
+                k+=1;
+                continue;
+            }
             let (arm, fuse, near) = g.kind.timing();
             let mut boom = false;
             match g.kind {
@@ -273,7 +301,7 @@ impl World {
             }
             if !boom && g.kind.thrown() {
                 // Damped, then gravity, then the move (GodotPhysics order).
-                g.vel *= (1.0 - GRENADE_DAMP * DT).max(0.0);
+                if g.kind != ProjectileKind::Howitzer { g.vel *= (1.0 - GRENADE_DAMP * DT).max(0.0); }
                 g.vel.y -= GRENADE_GRAVITY * DT;
                 let step = g.vel * DT;
                 let len = step.length();
@@ -313,7 +341,9 @@ impl World {
             ProjectileKind::Grenade | ProjectileKind::Mine => (6.0, 100.0, Blast::grenade(0.4, 20)),
             ProjectileKind::Cluster => (3.5, 35.0, Blast::grenade(0.35, 12)),
             ProjectileKind::Fragment => (3.2, 48.0, Blast::grenade(0.4, 14)),
+            ProjectileKind::Howitzer => (10.0, 120.0, Blast::grenade(0.5, 28)),
             ProjectileKind::DashBomb => (2.8, 42.0, Blast::grenade(0.4, 10)),
+            ProjectileKind::SiegeBolt => return,
         };
         self.blast(pos, radius, damage, owner, b);
         self.carves.push(Carve { pos, radius: radius * 0.52, damage });

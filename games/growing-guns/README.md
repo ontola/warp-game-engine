@@ -1,5 +1,22 @@
 # Growing Guns on Warp
 
+Explosive rounds add a quiet, bounded gas-rise/sine thump beneath the normal report
+(16 dB below the RMB launcher before overlap attenuation). Their growing rear
+chamber starts at 55% diameter and grows with blast radius. Its smooth 48-sided
+shell has beveled rims, four real longitudinal openings, thick metal edges and a flowing,
+UV-anchored molten core. The existing explosion after-rumble is unchanged.
+
+Transition/impact flashes render below the HUD, death tint and menus, including
+VR background tints. The spare-controller hint lasts six seconds after a device
+connects; labels use actual glyph strokes. Sky-only changes update environment
+resources without rebuilding renderer pipelines. Blood/scorch on the crowd stands
+projects onto real tread/riser faces with bounded footprints and spatial sampling;
+these are surface marks, not destructible stadium craters. Active fire keeps at
+least half-resolution soft FX and smoother billow geometry; smoke-only aftermath
+retains adaptive resolution. Heavy overlapping fire therefore costs more GPU work.
+Desktop playtests start with standard equipment; do not pre-stack uzi/bazooka cards.
+
+
 A port of **[Growing Guns (Godot)](https://github.com/ontola/growing-guns)**
 to [Warp](../../engine/README.md). The Godot game is the reference: a fast
 last-man-standing arena shooter where the loser of a round picks a card that
@@ -29,7 +46,7 @@ missing.
 | Bots | Done | Aim, reaction, strafing, jumps, pickups and specials; they keep to lava islands. Versus reserves eight visual seats so adding/removing bots keeps the renderer |
 | Characters | Close | Knight, paladin and zombie with textures and clips, GPU skinning, 11-body ragdolls with approximate angular limits, progressive end-range resistance and weak damped neutral-pose springs; bullet hits wake and push the struck limb at the contact point, with blood feedback; model-derived head/body gibs. Cuts use cached model geometry; animated skin-aware dismemberment, aim and strafe layers remain incomplete |
 | Effects | Done | Muzzle flash and shot light, bullet streaks, blasts with a short, smoothly fading fireball light (no expanding light ring), experimental baked volumetric smoke, adaptive per-view quality and a gradual tail up to 4.6 seconds on full desktop quality (64 active plumes plus up to 32 fading out; low/minimum retain billows), sparks, chips, scorch and blood, air strike rocket and white-out; ion cannon charges as one depth-clipped luminous volume (including from inside and when looking up/down), with wide bloom and bright ground illumination, with a dense field of bright soft blue dots across the impact disc that appear on live solid ground, lift like glowing sand with independent delays, varied speeds and acceleration, then suddenly become upward streaks from their exact positions at impact and nearly vertical rubble lift/fall |
-| Sky and light | Done | Godot's sky by default; procedural time of day and weather, per round or as a cycle; visible sun and GPU lens flare with per-view occlusion; floodlights with shadows at night |
+| Sky and light | Done | Random time of day and weather by default; fixed presets or a day cycle; persistent stadium sun shadows beyond the camera maps; visible sun and GPU lens flare with per-view occlusion; floodlights with shadows at night |
 | Gameplay replay | Added | F12 saves a screenshot plus a bounded state replay; F9 review, pause/step/seek, saved frames and headless re-render after code edits. Local/host recording; see below for visual-history limits |
 | HUD and menus | Done | Godot's layout, fonts (Anton, Barlow) and timing; mouse, keyboard and pads; see [docs/ui-parity.md](docs/ui-parity.md) |
 | Standalone Quest VR | Experimental | Native Android/OpenXR APK uses this same app and Warp renderer, all 49 cards and tracked growing gun. Shared minimum graphics profile removes stadium/crowd/TVs and GPU rubble; simple blocks, primitive characters and vertex lighting keep the full eye resolution. Draws directly into runtime eye attachments; measured near 120 fps at 1440×1584 per eye with short dips before restoring gameplay FX. Bullet tracers use a round, eye-facing glow and a short soft wake without bloom, including minimum graphics. Muzzle flashes use the current tracked barrel position. Minimum lava has animated glowing cracks and dark crust from a small baked texture field. Explosions and ion warning columns now have an in-place minimum path; full-field VR flashes use a projection layer. Wider cube joints improve separation without adding triangles; distant unfiltered edges can still alias. Cage bars retain their small authored mesh on PC and VR; a long chain no longer lets coarse LODs erase them. Audio starts after headset focus so a sleeping headset cannot abort launch. The previous lava/effects APK was installed; its active 64-sample Quest run averaged 107 fps (median 118, lowest one-second sample 46) at full eye resolution and 120 Hz, so stable 120 fps is not yet achieved. Detailed profiling identifies repeated HUD glyph warmup/atlas work and large FX as hitch sources; the earlier lava added about 2.67 ms GPU time in a controlled paired Quest probe; the new single-read colour bake reduced that isolated cost to about 0.23 ms before the latest main integration. [Cost investigation and limits](../../engine/docs/quest-profile-2026-10-31.md). The new label cache, bounded explosion coverage and round tracers build into a signed APK; the integrated version is installed and launched, with an active-headset playtest still required. [Optimization measurements](../../engine/docs/quest-optimization-2026-11-01.md). Low and full profiles remain available on PC. Local bots, stereo, snap turn and original menus; desktop replay recording excludes VR poses. [Build, controls and validation limits](../../engine/docs/quest-native.md). The earlier simplified WebXR demo remains separate. |
@@ -42,7 +59,7 @@ missing.
 | GameNight | Done | Party settings, the next round's modifier, live knobs, each player's own stick sensitivity, the session assistant (MCP), loading and pause |
 | Debug card editing | Done | F3: LMB adds; RMB removes one owned copy and updates stats. Start/pause menus include RESTART MATCH. |
 | Menu backdrop | Not yet | Godot's cinematic lava fort behind the start menu |
-| Ghost mines | Not yet | Dead players planting mines |
+| After elimination | Done | After the card pick, humans receive a random howitzer or giant crossbow at a seeded audience seat; ballistic shells (4.5 s reload, 10 m blast) or fast lethal bolts (3 s reload, no blast). Replaces roaming ghosts/mines. |
 
 ### Round modifiers
 
@@ -320,3 +337,126 @@ Smoke takes colored skylight, sun visibility and haze into account. The
 colosseum tiers cast sunlight shadows; local atmospheric solar scattering
 samples those shadows along the view ray. The visible solar disc shares the
 lighting direction and is enabled for the default sky as well as presets.
+
+Close stone surfaces use bounded parallax occlusion mapping from the existing
+quarry height field, adding view-dependent depth to cuts and pits. It fades
+at distance and extreme grazing angles; silhouettes and collision are unchanged.
+
+Players crossing the outer audience wall are eliminated, including invulnerable
+players and bots. The boundary follows the rounded-square stadium and does not
+limit jump height. Eliminated ghosts return inside. Gun heat resets every round
+and on match restart, including its uploaded barrel material.
+
+Lava deaths show a burning body sinking over roughly 2.4 seconds. The victim
+camera follows that same body with a light hot tint; actual upright flame billows
+are visible locally and to observers. Card selection waits for the brief burn
+presentation. The body uses the lava height at contact, including raised lava.
+
+The skinning actor budget includes eight player models plus eight lava twins,
+so a full reserved roster does not force burning bodies into primitive blobs.
+
+Lava-death flames originate below the surface, with varied heights and positions
+instead of orbiting the head. GPU rock debris also switches to the shared molten
+shader on lava contact and sinks slowly. Detection, motion and shading stay on
+the GPU; rocks do not each allocate extra flame particles or require readback.
+
+Normal play now defaults to randomized time of day and clear/haze/mist per arena.
+The arena seed keeps multiplayer views and F12 replays consistent. `sky random`
+restores this mode after choosing a fixed preset. Blackout always forces night,
+including with a fixed daytime preset or a running day cycle, preserving weather.
+Local playtests launch with `--fullscreen` and standard starting equipment; do not preload double Uzi + double bazooka.
+
+Stadium walls, tiers and roof use an explicit 4096-square static sun cache. It is fitted to the architecture and shared across views, rebuilding for geometry/sun changes rather than camera motion. Destructible blocks and actors retain dynamic shadows. `scripts/stadium-shadows.json` checks distant-to-near views at 3840×2160.
+
+World lava pools keep their molten emission in shade and reflect a modest amount of direct sunlight on the cooler crust, so stadium and block shadows remain visible. Small gun cores, burning bodies and molten GPU debris retain their emission-only treatment. `scripts/lava-shadows.json` captures the pool with sun shadows on/off at identical simulation time.
+
+Night floodlights use their shadow maps without the old five unshadowed fill lights. Those synthetic bounce lights illuminated the inside of walls regardless of the floodlight position. `GG_BOUNCE` now defaults to zero and remains a diagnostic opt-in; physical floodlight bounce against destructible arena geometry is not implemented. Lava emission and the existing cached lava illumination remain. Verified against F12 capture `growing-guns---warp-1793542197843` by replaying the same camera/frame with only flood bounce changed.
+
+
+SDF stone prototype is enabled by default: a cached palette of noise-rounded masonry meshes. Four seeds persist through intact/cracked/crumbling stages; the collision boxes and destruction rules are unchanged. Broad faces stay flat, while localized rounding removes uneven pieces of edges. The meshes use the ordinary cluster LOD and shadow passes; no per-pixel SDF march or per-round mesh cooking is added. `GG_STONE_SHAPE=quarried` retains the angular shape for comparison. Reduced/minimum graphics still use their cheaper shapes.
+
+The shared stone material now uses porous, granular relief instead of the large Voronoi fracture plates. Three bands of irregular pits are baked once into a periodic 1024-square height/normal/roughness source (the GPU texture-array dimensions are unchanged). Existing near-field parallax reads that same height. Tiny pores are material relief; silhouette-scale erosion belongs to the block mesh. `scripts/weathered-stones.json` captures a wall/tower view and two other lighting settings at fixed cameras.
+
+### Native frame pacing diagnostics
+
+`WARP_FRAME_LOG=path.jsonl` records complete frame intervals, CPU tick/draw,
+submission/presentation and asynchronous GPU timings. Its `detail` object
+separates the Windows event-loop gap, input polling, window maintenance and GPU
+profile collection, with raw mouse event counts. GPU milliseconds alone do not
+measure live frame pacing. The Windows shell now gives rendering a turn during
+captured mouse input at the frame deadline: continuous input must not starve
+low-priority paint messages. Mouse deltas still accumulate normally.
+
+Explosion pipelines are prepared with the scene, before play begins, to avoid
+first-use shader compilation during combat. Frame diagnostics also include raw
+mouse delta totals/peaks, per-tick look input and rendered camera direction.
+
+Sunlit fog now integrates shadow visibility with density/transmission weighting:
+eight temporally stratified samples during TAA, 32 deterministic samples without
+TAA. This replaces four fixed samples that produced pale vertical bands beside
+occluders. Verified against the saved F12 replay at frame 2320, alpha 0.5979115
+(afternoon mist); live temporal quality and mouse snapping remain under review.
+
+The forced Windows redraw also reserves a 1 ms input-dispatch slice after each
+render. Without it, a draw taking the full frame budget could trigger another
+render on every queued mouse packet, delaying motion and then releasing it in
+large batches (especially on heavier night scenes). Input is accumulated without
+discarding or clamping deltas.
+
+Night fog skips solar-shadow integration when the sun contributes no light.
+
+Stone variation: twelve cached weathered forms have different initial erosion and tint. A mixed per-chunk seed selects the form and one of 24 proper cube orientations, applied before stretching to the collision box. Forms and orientation stay stable through damage and across frames, without changing collision or adding per-frame mesh generation.
+
+Smoke uses the surface atmosphere's exponential height density, sky mean radiance and directional solar scattering instead of blending straight to the horizon colour. Four density/transmission-weighted sun-shadow samples per plume pixel approximate the intervening haze; this stays outside the volume density loop. Smoke retains its own albedo and internal shading. Local-light scattering and multiple scattering within smoke remain approximations.
+
+Floodlight surface shadows use a centimetre-scale world-space receiver offset, rather than a constant perspective-depth subtraction that grew into metre-scale light leaks at stadium distances.
+
+Night stadium surfaces receive a restrained 100 lux diffuse room-return approximation, fading in below the horizon and retaining material/contact AO. This is an artistic bounce approximation, not traced GI; blackout disables it and daytime is unchanged. It adds no shadow maps, raymarches or render passes.
+
+Night floodlight coverage spans the stadium diameter with 30% range headroom,
+instead of stopping near midfield. Banks and their beams aim at the same raised
+centre target, keeping opposite walls within the cone. Four existing shadow maps
+remain; no extra lights or GI passes. Renderer finite-light range supports 500 m.
+Night power is retuned from 12x to 4x with the wider coverage to retain contrast.
+
+Quarried blocks use tighter bevels and four irregular planar corner breaks.
+Larger porous cavities and mineral flecks retain surface character at medium
+distance, using the same cached mesh and texture budgets. Lava patch sampling
+excludes samples outside the floor perimeter, preventing false corner glows.
+
+Nearby stone contacts supplement spotlight shadow maps with four short depth
+samples toward each shadowed lamp, fading out between 22 and 32 metres. This
+adds directional contact shadows without darkening every lit edge; off-screen
+occluders still depend on the existing shadow maps. Blackout flashlights exclude
+only their owner's body/head/eyes from their own shadow pass. Other players and
+the level continue to cast shadows, and the owner's shadows under other lights
+remain intact. Both spatial and simple instance culling honour this exclusion.
+Spotlight soft-shadow taps compare against the local receiver plane instead of
+a constant centre depth, reducing false self-shadowing on sloping faces. Their
+rotation uses an integer screen-pixel hash instead of lamp-space gradient noise,
+so close/grazing stone surfaces no longer stretch the sampling pattern into lines.
+Receiver-plane extrapolation is capped at 2 cm of light-space distance in both
+blocker search and filtering, preventing bright dotted leaks on curved bevels.
+
+Howitzer mode preserves elimination and round scoring. Mouse/stick aims the fixed
+gun with reduced sensitivity; elevation is shown in the HUD, LMB/RT fires. Camera
+pitch has a 0.55 rad offset below howitzer barrel elevation so the arena remains visible.
+Shells fly at 42 m/s with 14.7 m/s^2 gravity, explode on terrain contact (120 base
+damage, 10 m radius), and expire after 15 s. No homing or trajectory assistance.
+Card weapons remain intact for the next round; parked co-op bots never get guns.
+
+Audience artillery update: after the card pick, each eliminated human receives a fixed random 50/50 howitzer or giant crossbow for that life (no weapon switching). Howitzer barrel offset is now 0.55 rad above the camera instead of 0.9; it can aim slightly downward. Crossbow offset is 0.18 rad, bolt speed 150 m/s, gravity 14.7 m/s^2, reload 3 seconds, swept hit radius 0.22 m, lifetime 8 seconds. Bolts stop at stone and deal the victim's remaining health on contact without any blast or terrain carve. Existing team protection, spawn invulnerability and Phoenix/revive rules still apply. Both weapons return to the normal loadout next round.
+
+Crossbow aiming: hold RMB/LT for 30-degree zoom with reduced look sensitivity. A yellow crosshair shows the launch direction (unzoomed sight reference at 100m; not a predicted impact marker). Scoped camera sits on the bolt axis in front of the weapon. Bolts travel at 150m/s; gravity still produces a small drop.
+
+Rock hit cleanup: removed legacy opaque grey cube dust from bullet impacts and destruction bursts. Textured GPU chips/rubble, impact sparks and explosion smoke remain.
+
+Airstrike laser: originates at the moving rocket nose using the same interpolated flight pose; no beam behind it. Beam width and minimum screen width reduced40%, target light increased50% with unchanged7m range.
+
+Airstrike rocket visual: solid shaded olive casing, dark pointed nose, orange identification band, four swept tail fins and a separate glowing exhaust throat. Exhaust plumes start behind the nozzle, including at maximum approach length, so they no longer wash over the missile body. Shared combined mesh; flight and laser attachment unchanged.
+
+Airstrike visual tuning: rocket length increased65% without increasing diameter; nose laser and exhaust anchors follow the longer mesh. Soft warm source bloom and restrained lens ghosts on approach.
+
+Rocket exhaust: soft warm/white engine bloom replaces hard flare bars; large lens ghosts reduced. Engine/plume bloom has deterministic smooth random24Hz intensity surges. Lit world-space smoke persists3s behind the flight path, at most4 active trails and3 billows per2 simulation ticks per trail, under the shared puff cap. Inbound rumble increased6dB and audible distance scale58m to80m; existing master limiting retained.
+
+Ground blast dust: small lit smoke billows sweep outward along nearby solid ground, rapidly decelerate and fade in about a second. Ground/wall checks skip lava, drops and obstructions; up to 100 irregularly scattered puffs per large blast and 384 live dust puffs. Motion is GPU-driven and shares the existing smoke lighting, with six proxy vertices and six density samples per dust puff.

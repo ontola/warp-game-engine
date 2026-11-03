@@ -46,7 +46,6 @@ pub(super) const DAY_GAIN: f32 = 2.5;
 /// Godot `pickup_item.gd` drop height (flow.rs `PICKUP_HEIGHT`).
 const SKY_Y: f32 = 52.0;
 /// Godot `_compute_landing_pos`: ray hit plus 0.42 m.
-const LAND_LIFT: f32 = 0.42;
 /// Godot ground light: energy 8, range 5.5, 8 cm over the landing spot.
 const LIGHT_ENERGY: f32 = 8.0;
 const LIGHT_RANGE: f32 = 5.5;
@@ -99,13 +98,13 @@ pub(super) struct Beams {
 }
 
 /// Where a pickup comes down: straight below its drop point.
-fn landing(world: &World, p: &Pickup) -> Vec3 {
-    if p.grounded.is_some() { return p.pos; }
-    let sky = Vec3::new(p.pos.x, SKY_Y, p.pos.z);
-    match growing_guns::shape::raycast(&world.arena.grid, sky, Vec3::NEG_Y, 500.0) {
-        Some((t, _, _)) => sky + Vec3::NEG_Y * t + Vec3::Y * LAND_LIFT,
-        None => sky + Vec3::NEG_Y * 48.0 + Vec3::Y * LAND_LIFT,
-    }
+fn landing(world: &World, p: &Pickup) -> Option<Vec3> {
+    // Trace beneath the actual item: a ledge above a falling pickup must
+    // not leave its marker hanging overhead. No made-up landing over lava.
+    let from = p.pos + Vec3::Y * 0.1;
+    let (t, _, _) = growing_guns::shape::raycast(&world.arena.grid, from, Vec3::NEG_Y, 500.0)?;
+    let ground = from - Vec3::Y * t;
+    (ground.y > world.lava_surface_at(ground)).then_some(ground + Vec3::Y * 0.02)
 }
 
 impl Beams {
@@ -117,7 +116,7 @@ impl Beams {
         self.sprites.clear();
         let pulse = (clock * 4.2).sin();
         for p in &world.pickups {
-            let land = landing(world, p);
+            let Some(land) = landing(world, p) else { continue; };
             let color = linear(beam_color(p.kind));
             self.lights.push(LocalLight {
                 position: land + Vec3::Y * 0.08, direction: Vec3::NEG_Y,

@@ -219,6 +219,10 @@ impl LavaLight {
         let mut open = 0;
         for (u, v) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
             let p = Vec2::new((x as f32 + u) * CELL, (z as f32 + v) * CELL);
+            // Boundary cells extend outside the square floor. That is the
+            // exterior pool, not a hole: counting it created phantom orange
+            // patch lights inside intact perimeter walls. The ring owns it.
+            if p.abs().max_element() >= world.arena.size * 0.5 { continue; }
             if !world.arena.grid.query_with_scratch(p, p, &mut self.query).iter().any(|&j| world.arena.chunk(j).is_some_and(|c| covers(c, p))) { open += 1; }
         }
         open as f32 / 4.0
@@ -309,6 +313,10 @@ mod tests {
         let mut open = 0;
         for (u, v) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
             let p = Vec2::new((x as f32 + u) * CELL, (z as f32 + v) * CELL);
+            // Boundary cells extend outside the square floor. That is the
+            // exterior pool, not a hole: counting it created phantom orange
+            // patch lights inside intact perimeter walls. The ring owns it.
+            if p.abs().max_element() >= world.arena.size * 0.5 { continue; }
             if !world.arena.grid.query(p, p).into_iter().any(|j| world.arena.chunk(j).is_some_and(|c| covers(c, p))) { open += 1; }
         }
         open as f32 / 4.0
@@ -367,6 +375,24 @@ mod tests {
             expected.pose(world);
             assert_eq!(actual.lights.iter().map(light_bits).collect::<Vec<_>>(), expected.lights.iter().map(light_bits).collect::<Vec<_>>(), "posed lights");
         }
+    }
+
+    #[test]
+    fn sealed_floor_has_no_phantom_edge_lava_patches() {
+        let mut world = World::new(4, &[false, false]);
+        world.arena = Arena::empty();
+        world.arena.size = 12.0;
+        world.arena.chunks.push(Chunk {
+            center: Vec3::ZERO, half: Vec3::new(6.0, 0.5, 6.0), yaw: 0.0,
+            kind: Kind::Floor, volume: 0, max_hp: 50.0, hp: 50.0, alive: true, seed: 0,
+        });
+        world.arena.grid = BoxGrid::new(world.arena.chunks.iter().map(Chunk::shape).collect(), 4.0);
+        let mut light = LavaLight::default();
+        light.set(&world);
+        assert!(light.patches.is_empty(), "outside samples must not create interior glow");
+        let removed = world.arena.carve(&[Carve { pos: Vec3::ZERO, radius: 20.0, damage: 900.0 }]).removed;
+        light.broken(&world, &removed);
+        assert!(!light.patches.is_empty(), "real destroyed floor still lights its lava");
     }
 
     #[test]

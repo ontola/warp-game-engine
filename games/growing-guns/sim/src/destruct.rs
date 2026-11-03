@@ -147,7 +147,7 @@ fn tiles(b: &Block) -> Vec<(Block, [u64; 3])> {
 
 /// Split one volume into chunks (Godot `_build_chunks`): jittered edges per
 /// axis and a running-bond shift on alternate courses.
-fn split(b: &Block, seeds: [u64; 3], volume: u32, out: &mut Vec<Chunk>) {
+fn split(b: &Block, seeds: [u64; 3], volume: u32, close_floor_start: bool, out: &mut Vec<Chunk>) {
     let size = b.half * 2.0;
     let seed = hash_block(b);
     let grid = [axis_chunks(size.x), axis_chunks(size.y), axis_chunks(size.z)];
@@ -163,7 +163,21 @@ fn split(b: &Block, seeds: [u64; 3], volume: u32, out: &mut Vec<Chunk>) {
                 let csize = hi - lo;
                 let mut local = (lo + hi) * 0.5;
                 let bond = (grid[0] > 1 && y % 2 == 1) || (grid[1] <= 1 && grid[2] > 1 && grid[0] > 1 && z % 2 == 1);
-                if bond { local.x += size.x / grid[0] as f32 * 0.5; }
+                if bond {
+                    let shift = size.x / grid[0] as f32 * 0.5;
+                    local.x += shift;
+                    // Running bond shifts the entire course. Its first tile
+                    // needs a closing stone, otherwise lava shows by the wall.
+                    // Internal tile seams already have the preceding overhang.
+                    if close_floor_start && x == 0 {
+                        let cap_size = Vec3::new(shift, csize.y, csize.z);
+                        let cap_pos = Vec3::new(-size.x * 0.5 + shift * 0.5, local.y, local.z);
+                        let hp = chunk_max_health(cap_size);
+                        out.push(Chunk { center: b.center + rot * cap_pos, half: cap_size * 0.5,
+                            yaw: b.yaw, kind: b.kind, volume, max_hp: hp, hp, alive: true,
+                            seed: (seed as u32) ^ 0xE0D6_E000 ^ ((y as u32) << 8) ^ z as u32 });
+                    }
+                }
                 let hp = chunk_max_health(csize);
                 let cs = (seed as u32) ^ ((x as u32) | (y as u32) << 8 | (z as u32) << 16).wrapping_mul(0x9E37_79B1);
                 out.push(Chunk { center: b.center + rot * local, half: csize * 0.5, yaw: b.yaw, kind: b.kind, volume,
@@ -180,7 +194,9 @@ impl Arena {
         let mut volume = 0u32;
         for b in &self.blocks {
             for (t, seeds) in tiles(b) {
-                split(&t, seeds, volume, &mut chunks);
+                let local = Quat::from_rotation_y(-b.yaw) * (t.center - b.center);
+                let close_floor_start = b.kind == Kind::Floor && local.x - t.half.x <= -b.half.x + 0.001;
+                split(&t, seeds, volume, close_floor_start, &mut chunks);
                 volume += 1;
             }
         }
@@ -355,9 +371,8 @@ mod tests {
                     if !solid(&a, p) { missing.push(p); }
                 }
                 for zi in 0..(a.size as i32 * 4 - 8) {
-                    // The floor's top layer, away from the outer edge (Godot's
-                    // bond leaves half a brick open at the first tile's edge).
-                    let p = Vec3::new(-half + 2.0 + xi as f32 * 0.25, -0.5, -half + 2.0 + zi as f32 * 0.25);
+                    // Include the outer row ends that used to expose lava.
+                    let p = Vec3::new(-half + 0.05 + xi as f32 * 0.25, -0.5, -half + 0.05 + zi as f32 * 0.25);
                     if p.x < half - 2.0 && p.z < half - 2.0 && !solid(&a, p) { missing.push(p); }
                 }
             }

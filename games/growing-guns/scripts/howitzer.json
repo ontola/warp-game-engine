@@ -1,0 +1,50 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "ticks": 160,
+      "cmd": [
+        "bots pause",
+        "sky afternoon:clear",
+        "teleport 0 0 -30 0"
+      ]
+    },
+    {
+      "press": [
+        "SOUTH"
+      ],
+      "ticks": 40
+    },
+    {
+      "state": "howitzer.json",
+      "capture": "howitzer.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "firing.png",
+      "hold": [
+        "RIGHT_TRIGGER"
+      ]
+    },
+    {
+      "ticks": 180,
+      "capture": "impact.png",
+      "state": "impact.json"
+    },
+    {
+      "ticks": 150,
+      "capture": "after-impact.png",
+      "state": "after-impact.json"
+    },
+    {
+      "ticks": 2,
+      "state": "new-round.json",
+      "cmd": [
+        "round"
+      ]
+    }
+  ]
+}

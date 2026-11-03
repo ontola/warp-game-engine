@@ -1,0 +1,48 @@
+{
+  "size": [
+    2560,
+    1440
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "bots pause",
+        "health 0 50000",
+        "arena 1",
+        "sky morning:clear",
+        "teleport 0 -30.7 0.9 -25",
+        "aim 0 -33.1 2.3 -30",
+        "teleport 1 -29.5 1 -24",
+        "teleport 2 -27 1 -24",
+        "teleport 3 -25 1 -24"
+      ],
+      "ticks": 30
+    },
+    {
+      "cmd": [
+        "teleport 0 -30.7 0.9 -25",
+        "aim 0 -33.1 2.3 -30"
+      ],
+      "ticks": 1,
+      "capture": "wall-tower.png",
+      "state": "wall-tower.json"
+    },
+    {
+      "cmd": [
+        "sky sunset:haze"
+      ],
+      "ticks": 1,
+      "capture": "sunset.png"
+    },
+    {
+      "cmd": [
+        "sky morning:mist",
+        "teleport 0 -23 18 -22",
+        "aim 0 -33 6 -32"
+      ],
+      "ticks": 4,
+      "capture": "overview.png",
+      "state": "overview.json"
+    }
+  ]
+}

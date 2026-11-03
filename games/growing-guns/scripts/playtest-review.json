@@ -1,0 +1,69 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "bots pause",
+        "health 0 50000",
+        "arena 3727468729",
+        "sky afternoon:haze",
+        "teleport 0 -29.798 0.9 8.253",
+        "aim 0 -30.6 1.062 7.992"
+      ],
+      "ticks": 1,
+      "capture": "floor-edge.png",
+      "state": "floor-edge.json",
+      "expect": "/arena/seed",
+      "equals": 3727468729
+    },
+    {
+      "cmd": [
+        "menu none",
+        "arena island 1",
+        "sky sunset:mist",
+        "health 0 100",
+        "teleport 0 32.25 -1 0",
+        "aim 0 0 0 0"
+      ],
+      "ticks": 10,
+      "capture": "lava-early.png",
+      "state": "lava-early.json",
+      "expect": "/players/0/alive",
+      "equals": false
+    },
+    {
+      "look": [
+        0.003,
+        0.0
+      ],
+      "ticks": 70,
+      "capture": "lava-late.png",
+      "state": "lava-late.json"
+    },
+    {
+      "cmd": [
+        "pickup plus_one 0 0 -5"
+      ],
+      "ticks": 1,
+      "expect": "/pickups",
+      "equals": 0
+    },
+    {
+      "cmd": [
+        "menu start"
+      ],
+      "ticks": 1,
+      "capture": "start-menu.png"
+    },
+    {
+      "cmd": [
+        "menu pause"
+      ],
+      "ticks": 1,
+      "capture": "pause-menu.png"
+    }
+  ]
+}

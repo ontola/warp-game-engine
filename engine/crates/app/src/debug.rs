@@ -275,6 +275,7 @@ impl EngineDebug {
             self.passes.clear();
         }
         for sample in renderer.drain_gpu_profiles(gpu).samples {
+            crate::frame_log::gpu(sample.frame_id,sample.covered_union_ms,&sample.gpu_ms);
             for (name, ms) in sample.gpu_ms {
                 match self.passes.iter_mut().find(|p| p.0 == name) {
                     Some(p) => p.1 += (ms - p.1) * 0.1,

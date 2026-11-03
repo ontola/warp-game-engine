@@ -1,0 +1,12 @@
+{
+  "size": [1600,900],
+  "steps": [
+    {"cmd":["bots pause","menu pause"],"ticks":1,"capture":"transition-pause.png"},
+    {"cmd":"menu none","ticks":160},
+    {"cmd":"teleport 0 0 -30 0","ticks":5},
+    {"expect":"/players/0/ghost","equals":true},
+    {"cmd":"boom 0 0 0 32 0","ticks":1,"capture":"death-flash-cards.png"},
+    {"cmd":"round","ticks":90},
+    {"cmd":"give 0 explosive","ticks":90,"capture":"explosive-rounds-gameplay.png"}
+  ]
+}

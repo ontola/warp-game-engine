@@ -26,6 +26,7 @@ pub mod ui;
 pub mod manners;
 pub mod screenshot;
 pub mod quality;
+mod frame_log;
 
 pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning};
 pub use text::{FieldEvent, TextEvent, TextField};
@@ -455,6 +456,11 @@ struct Shell<'g> {
     focused: bool,
     acc: f32,
     last: Instant,
+    last_frame_end: Instant,
+    mouse_events: u32,
+    mouse_delta: [f64; 2],
+    mouse_peak: f64,
+    cursor_events: u32,
     started: Instant,
     frames: u64,
     screenshot: bool,
@@ -492,7 +498,7 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
         println!("{}: adaptive quality enabled, {}", cfg.title, q.label());
     }
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, toast: None, fps: 0.0, debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, started: Instant::now(), frames: 0, screenshot: false, toast: None, fps: 0.0, debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -515,6 +521,8 @@ impl Shell<'_> {
     }
 
     fn frame(&mut self) -> Result<(), String> {
+        let frame_started = Instant::now();
+        let event_gap_ms = (frame_started - self.last_frame_end).as_secs_f64() * 1000.0;
         let wish = self.game.screen();
         if self.manners.wish(wish, self.focused) && wish == Screen::Hidden { self.capture_mouse(false); }
         self.screen = self.manners.screen;
@@ -522,6 +530,8 @@ impl Shell<'_> {
         // Hidden: keep ticking (messages, warm loading) at a few frames a second.
         if self.screen == Screen::Hidden { std::thread::sleep(std::time::Duration::from_millis(50)); }
         let now = Instant::now();
+        let window_ms = (now - frame_started).as_secs_f64() * 1000.0;
+        let frame_interval_ms=(now-self.last).as_secs_f64()*1000.0;
         let dt = (now - self.last).as_secs_f32().min(0.1);
         self.last = now;
         if dt > 0.0 { self.fps += (1.0 / dt - self.fps) * 0.05; }
@@ -536,12 +546,16 @@ impl Shell<'_> {
                 println!("{} adaptive quality: {}", manners::stamp(), q.label());
             }
         }
+        let input_started = Instant::now();
         self.devices.poll();
         self.game.tuning(&mut self.devices.tuning);
         self.sync_capture();
+        let input_ms = input_started.elapsed().as_secs_f64() * 1000.0;
         let step = 1.0 / self.cfg.tick_hz;
         self.acc += dt;
+        let tick_started=Instant::now();
         let mut steps = 0;
+        let mut input_look = Vec::new();
         while self.acc >= step && steps < 6 {
             self.acc -= step;
             steps += 1;
@@ -549,9 +563,11 @@ impl Shell<'_> {
             self.game.pointer(self.devices.pointer(), size);
             let devices = self.devices.device_controls(step);
             let controls = seat_controls(self.game, &devices);
+            if frame_log::enabled() { input_look.push(controls.iter().map(|c| c.look).collect::<Vec<_>>()); }
             self.game.tick(&controls);
             self.sync_capture();
         }
+        let tick_ms=tick_started.elapsed().as_secs_f64()*1000.0;
         if steps == 6 { self.acc = 0.0; }
         let wants_text = self.game.text_input();
         if wants_text != self.ime && let Some(w) = &self.window { w.set_ime_allowed(wants_text); self.ime = wants_text; }
@@ -567,7 +583,9 @@ impl Shell<'_> {
         let split = self.game.split();
         if live.renderer.is_none() { self.game.loading(75, "building the scene"); }
         let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, renderer: &mut live.renderer };
+        let draw_started=Instant::now();
         let mut draw = self.game.draw(&mut frame)?;
+        let draw_ms=draw_started.elapsed().as_secs_f64()*1000.0;
         let Some(renderer) = &live.renderer else { return Err("the game drew without a scene".into()) };
         draw.light = self.debug.light(draw.light);
         if let Some(q) = &self.quality {
@@ -579,7 +597,9 @@ impl Shell<'_> {
             self.debug.options()
         };
         self.debug.sync_options(renderer, debug_options);
-        self.debug.profile(&live.gpu, renderer, self.debug.open() || self.cfg.frames > 0);
+        let profile_started = Instant::now();
+        self.debug.profile(&live.gpu, renderer, self.debug.open() || self.cfg.frames > 0 || frame_log::enabled());
+        let profile_ms = profile_started.elapsed().as_secs_f64() * 1000.0;
         if self.debug.open() {
             let quality_label = self.quality.as_ref().map(|q| q.label());
             self.debug.refresh(self.game.debug(), self.cfg.max_render_height, self.fps, quality_label.as_deref());
@@ -633,6 +653,7 @@ impl Shell<'_> {
         if self.debug.open() { self.debug.draw(&mut draw.hud); }
         // Nothing to show on a window without pixels; the game keeps ticking.
         if self.zero_size || live.is_lost() { return Ok(()); }
+        let present_started=Instant::now();
         match live.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) | wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
                 let view = tex.texture.create_view(&Default::default());
@@ -654,6 +675,20 @@ impl Shell<'_> {
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => live.surface.configure(&live.gpu.device, &live.config),
             _ => {}
         }
+        if frame_log::enabled() {
+            frame_log::frame(self.frames, frame_interval_ms, tick_ms, draw_ms, present_started.elapsed().as_secs_f64()*1000.0, render_height.unwrap_or(size[1]), self.focused,
+                serde_json::json!({"frame_ms": frame_started.elapsed().as_secs_f64()*1000.0, "event_gap_ms": event_gap_ms,
+                    "window_ms": window_ms, "input_ms": input_ms, "profile_ms": profile_ms,
+                    "mouse_events": self.mouse_events, "cursor_events": self.cursor_events,
+                    "mouse_delta": self.mouse_delta, "mouse_peak": self.mouse_peak, "captured": self.devices.mouse_captured,
+                    "input_look": input_look, "alpha": self.acc / step,
+                    "camera_directions": draw.cameras.iter().map(|c| (c.target-c.pos).normalize_or_zero().to_array()).collect::<Vec<_>>()}));
+        }
+        self.mouse_events = 0;
+        self.mouse_delta = [0.0; 2];
+        self.mouse_peak = 0.0;
+        self.cursor_events = 0;
+        self.last_frame_end = Instant::now();
         Ok(())
     }
 
@@ -730,6 +765,12 @@ impl Shell<'_> {
     }
 }
 
+/// Bound paint starvation without starving input when drawing uses a full frame.
+#[cfg(any(windows, test))]
+fn input_redraw_due(frame_age: std::time::Duration, dispatch_age: std::time::Duration, hz: f64) -> bool {
+    frame_age.as_secs_f64() >= 1.0 / hz && dispatch_age >= std::time::Duration::from_millis(1)
+}
+
 impl ApplicationHandler for Shell<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() { return; }
@@ -774,8 +815,39 @@ impl ApplicationHandler for Shell<'_> {
         if let Err(e) = result { self.error = Some(e); event_loop.exit(); }
     }
 
-    fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
-        if let DeviceEvent::MouseMotion { delta } = event { self.devices.mouse_motion(delta.0, delta.1); }
+    fn device_event(&mut self, event_loop: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
+        if let DeviceEvent::MouseMotion { delta } = event {
+            self.mouse_events = self.mouse_events.saturating_add(1);
+            self.mouse_delta[0] += delta.0;
+            self.mouse_delta[1] += delta.1;
+            self.mouse_peak = self.mouse_peak.max(delta.0.abs()).max(delta.1.abs());
+            self.devices.mouse_motion(delta.0, delta.1);
+            // Win32 dispatches queued input before WM_PAINT. A continuous raw
+            // mouse stream can therefore starve RedrawRequested for hundreds
+            // of milliseconds, even with ControlFlow::Poll. Give rendering a
+            // turn at the frame deadline while continuing to accumulate every
+            // mouse delta. This runs on the same event thread as normal draws.
+            #[cfg(windows)]
+            if self.focused && self.devices.mouse_captured && !self.zero_size
+                && !self.manners.offscreen() && self.frames > 0 && !event_loop.exiting()
+            {
+                let target = match self.debug.target_fps() {
+                    Some(user) => user,
+                    None => self.game.target_fps().or(self.cfg.target_fps),
+                };
+                let hz = target.map(f64::from).or(self.screen_refresh_hz).unwrap_or(120.0).clamp(30.0, 240.0);
+                // A slow draw can already exhaust the frame deadline. Do not
+                // immediately draw again on the very next mouse packet: that
+                // services one old packet per frame and starves the input queue.
+                // Reserve a small dispatch slice after drawing to drain the
+                // queued motion before yielding back to rendering.
+                if input_redraw_due(self.last.elapsed(), self.last_frame_end.elapsed(), hz) {
+                    self.redraw(event_loop);
+                }
+            }
+            #[cfg(not(windows))]
+            let _ = event_loop;
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
@@ -794,6 +866,7 @@ impl ApplicationHandler for Shell<'_> {
                 if !focused { self.capture_mouse(false); self.devices.cursor(None); }
             }
             WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_events = self.cursor_events.saturating_add(1);
                 let p = [position.x as f32, position.y as f32];
                 self.debug.pointer_move(p);
                 self.devices.cursor(Some(p));
@@ -914,6 +987,20 @@ mod shortcut_tests {
         fn text_input(&self) -> bool { self.typing }
         fn function_key(&mut self, n: u8) -> bool { self.received.push(n); true }
     }
+    #[test]
+    fn slow_render_leaves_time_to_drain_mouse_backlog() {
+        use std::time::Duration;
+        // A 12 ms draw missed 120 Hz. All 100 already-queued packets in a
+        // 0.5 ms dispatch burst must reach input before another forced draw.
+        for packet in 1..=100 {
+            let dispatch = Duration::from_micros(packet * 5);
+            assert!(!input_redraw_due(Duration::from_millis(12) + dispatch, dispatch, 120.0));
+        }
+        assert!(input_redraw_due(Duration::from_millis(13), Duration::from_millis(1), 120.0));
+        assert!(!input_redraw_due(Duration::from_millis(7), Duration::from_millis(3), 120.0));
+        assert!(input_redraw_due(Duration::from_millis(9), Duration::from_millis(5), 120.0));
+    }
+
     #[test]
     fn engine_shortcuts_cannot_be_claimed_by_games_or_text_fields() {
         for typing in [false, true] {

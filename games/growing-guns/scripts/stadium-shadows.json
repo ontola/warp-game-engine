@@ -1,0 +1,44 @@
+{
+  "size": [
+    3840,
+    2160
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "bots pause",
+        "health 0 50000",
+        "arena 42",
+        "sky afternoon:clear"
+      ],
+      "ticks": 300
+    },
+    {
+      "cmd": [
+        "teleport 0 -45 18 0",
+        "aim 0 150 25 0"
+      ],
+      "ticks": 1,
+      "capture": "far.png",
+      "state": "far.json"
+    },
+    {
+      "cmd": [
+        "teleport 0 0 18 0",
+        "aim 0 150 25 0"
+      ],
+      "ticks": 1,
+      "capture": "middle.png",
+      "state": "middle.json"
+    },
+    {
+      "cmd": [
+        "teleport 0 45 18 0",
+        "aim 0 150 25 0"
+      ],
+      "ticks": 1,
+      "capture": "near.png",
+      "state": "near.json"
+    }
+  ]
+}

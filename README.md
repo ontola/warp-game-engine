@@ -73,3 +73,7 @@ Growing Guns stadium lighting now has [cached diffuse sky return](engine/docs/st
 including invalid-probe rejection and a shadowed first bounce of sunlight.
 Sun direction changes currently require a synchronous cache rebuild; animated
 day/night and multiple bounces remain future work. See the report for timings.
+
+Growing Guns floor courses now receive an extra closing stone at the outer start of staggered rows, covering the half-block lava gaps without overlapping internal tile seams. Weathered stones use normal-aware cluster simplification so distant geometry preserves their shading. Stadium floodlight emitters sit in front of their lamp housings instead of inside the shadow-casting boxes.
+
+The lava sinking sequence keeps mouse capture until card selection appears: look input is slowed to 30%, with a small continuous tremor and a gradually rising gaze. Missed pickups are removed at lava contact, settled pickups fall again when their support is destroyed, and drop beams trace beneath the actual item. Start and pause menus retain the Godot gothic side frame and fit their contents to viewport height. Final SDR output uses stable one-code-value dithering after tone mapping to reduce near-black banding.

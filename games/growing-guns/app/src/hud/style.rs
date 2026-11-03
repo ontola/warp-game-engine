@@ -76,10 +76,10 @@ impl Label {
     pub fn right(mut self) -> Self { self.align = TextAlign::Right; self }
     /// A hard drop shadow down and right (Godot's `display_label`).
     pub fn shadow(mut self, px: f32, c: C) -> Self { self.shadow = Some((px, c)); self }
-    /// A dark edge all round (Godot's `outline_size`), drawn as offset copies.
+    /// A dark edge all round (Godot's `outline_size`), rasterized from the actual glyph outline.
     pub fn outline(mut self, px: f32, c: C) -> Self { self.outline = Some((px, c)); self }
     /// The label role: Barlow ExtraBold with a dark outline (`size` px).
-    pub fn label(size: f32, color: C) -> Self { Label::new(bold(), size, color).outline((size * 0.2).max(2.0), with_alpha(BLACK, 0.9)) }
+    pub fn label(size: f32, color: C) -> Self { Label::new(bold(), size, color).outline((size * 0.07).max(1.0), with_alpha(BLACK, 0.9)) }
     /// Poster display text: bone white with a hard red shadow of 7% of the size.
     pub fn poster(size: f32) -> Self { Label::new(display(), size, BONE).shadow((size * 0.07).max(2.0), RED) }
 
@@ -95,12 +95,12 @@ impl Label {
             if c[3] <= 0.003 { return; }
             d.text.push(TextRun { id: next_id(d), text: text.into(), position: [left + dx, top + dy], bounds: clip, font_size: self.size, color: bytes(c), font: self.font, align: self.align, width: w });
         };
-        if let Some((px, c)) = self.outline {
-            let a = with_alpha(c, self.color[3]);
-            for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0), (0.0, -1.4), (0.0, 1.4), (-1.4, 0.0), (1.4, 0.0)] { run(d, dx * px * 0.5, dy * px * 0.5, a); }
-        }
         if let Some((px, c)) = self.shadow { run(d, px, px, with_alpha(c, self.color[3])); }
+        let id = next_id(d);
         run(d, 0.0, 0.0, self.color);
+        if let Some((px, c)) = self.outline {
+            d.outline(id, px, bytes(with_alpha(c, self.color[3])));
+        }
     }
     pub fn width(&self, text: &str) -> f32 { render::hud::measure(text, self.font, self.size)[0] }
 }
@@ -373,5 +373,18 @@ pub fn draw_icon(d: &mut HudDrawList, kind: &str, r: [f32; 4], color: C, clip: [
             let pts: Vec<[f32; 2]> = (0..10).map(|i| { let a = -PI * 0.5 + TAU * i as f32 / 10.0; let k = if i % 2 == 0 { 0.46 } else { 0.2 }; at(c, [a.cos() * s * k, a.sin() * s * k]) }).collect();
             d.polygon(&pts, color, clip);
         }
+    }
+}
+
+#[cfg(test)]
+mod stroke_tests {
+    use super::*;
+    #[test]
+    fn outline_is_one_glyph_run_with_a_true_stroke() {
+        let mut d=HudDrawList::new([1280,720]);
+        Label::label(24.0,BONE).draw(&mut d,"SPLITSCREEN",20.0,40.0,[0.0,0.0,1280.0,720.0]);
+        assert_eq!(d.text.len(),1);
+        assert_eq!(d.outlines.len(),1);
+        assert!(d.outlines.contains_key(&d.text[0].id));
     }
 }

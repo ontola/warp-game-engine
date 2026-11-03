@@ -1,0 +1,73 @@
+{
+  "size": [
+    1600,
+    900
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "bots pause",
+        "sky random"
+      ],
+      "ticks": 100,
+      "capture": "random-a.png",
+      "state": "random-a.json"
+    },
+    {
+      "cmd": [
+        "round",
+        "sky random"
+      ],
+      "ticks": 100,
+      "capture": "random-b.png",
+      "state": "random-b.json"
+    },
+    {
+      "cmd": [
+        "round",
+        "sky random"
+      ],
+      "ticks": 100,
+      "capture": "random-c.png",
+      "state": "random-c.json"
+    },
+    {
+      "cmd": [
+        "sky noon:mist",
+        "modifier blackout",
+        "round"
+      ],
+      "ticks": 100,
+      "capture": "blackout-night.png"
+    },
+    {
+      "expect": "/sky/applied/time_of_day",
+      "equals": "night"
+    },
+    {
+      "expect": "/sky/applied/atmosphere",
+      "equals": "mist"
+    },
+    {
+      "cmd": "sky cycle:haze",
+      "ticks": 2
+    },
+    {
+      "expect": "/sky/applied/time_of_day",
+      "equals": "night"
+    },
+    {
+      "cmd": [
+        "sky noon:mist",
+        "modifier none",
+        "round"
+      ],
+      "ticks": 100,
+      "capture": "restored-noon.png"
+    },
+    {
+      "expect": "/sky/applied/time_of_day",
+      "equals": "noon"
+    }
+  ]
+}

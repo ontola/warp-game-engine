@@ -23,6 +23,9 @@ struct FxUniform {
     fog: vec4<f32>,
     horizon: vec4<f32>,
     sun_vp: mat4x4<f32>,
+    fog_scattering: vec4<f32>,
+    sun_direction: vec4<f32>,
+    sky_mean: vec4<f32>,
 };
 struct Puff {
     // centre, kind (0 smoke, 1 fire, 2 ember, 3 heat, 4 column, 5 streak, 6 mote, 7 baked smoke)
@@ -65,13 +68,70 @@ fn smoke_visibility(world: vec3<f32>) -> f32 {
     }}
     return mix(1.0,lit,u.sunlight.w);
 }
+fn fog_column(distance_m: f32, height: f32, vertical: f32, height_scale: f32) -> f32 {
+    let extent = max(distance_m, 0.0);
+    let end = height + vertical * extent;
+    if max(height, end) <= 0.0 { return extent; }
+    if min(height, end) >= 0.0 {
+        let q = vertical * extent / height_scale;
+        if abs(q) < 0.001 {
+            return extent * exp(-height / height_scale) * (1.0 - q * 0.5 + q * q / 6.0);
+        }
+        return height_scale * (exp(-height / height_scale) - exp(-end / height_scale)) / vertical;
+    }
+    let a = min(height, 0.0) + height_scale * (1.0 - exp(-max(height, 0.0) / height_scale));
+    let b = min(end, 0.0) + height_scale * (1.0 - exp(-max(end, 0.0) / height_scale));
+    return (b - a) / vertical;
+}
+
+// Normalised Cornette-Shanks phase, matching the atmospheric aerosol model.
+// Direction points FROM camera TO surface, so forward scattering peaks
+// when looking toward the sun. No baked planet horizon participates here.
+fn fog_phase(mu: f32, g: f32) -> f32 {
+    return 3.0 * (1.0 - g * g) * (1.0 + mu * mu)
+        / (8.0 * 3.14159265 * (2.0 + g * g) * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
+}
+
+// Fog is evaluated once per plume pixel, outside the density raymarch.
+// Four deterministic quadrature points avoid temporal shimmer in post-TAA FX.
+// This shares the surface atmosphere, with a bounded shadow integration cost.
+fn smoke_atmosphere(world: vec3<f32>) -> vec4<f32> {
+    let delta = world-u.camera_near.xyz;
+    let distance = max(length(delta), 0.0001);
+    let direction = delta/distance;
+    if u.fog.w <= 0.0 {
+        let linear = clamp((distance-u.fog.x)/max(u.fog.y-u.fog.x,1.0),0.0,1.0);
+        let amount = max(linear,1.0-exp(-u.fog.z*distance));
+        return vec4<f32>(u.horizon.rgb*amount,1.0-amount);
+    }
+    if u.fog.z <= 0.0 { return vec4<f32>(0.0,0.0,0.0,1.0); }
+    let transmission = exp(-u.fog.z*fog_column(distance,u.camera_near.y,direction.y,u.fog.w));
+    var visibility = 1.0;
+    if u.sun_direction.w > 0.0 && u.sunlight.w > 0.0 && any(u.sunlight.rgb > vec3<f32>(0.0)) {
+        var visible = 0.0;
+        var weights = 0.0;
+        for(var i=0u;i<4u;i++) {
+            let t = distance*(f32(i)+0.5)/4.0;
+            let point = u.camera_near.xyz+direction*t;
+            let weight = exp(-max(point.y,0.0)/u.fog.w
+                -u.fog.z*fog_column(t,u.camera_near.y,direction.y,u.fog.w));
+            visible += smoke_visibility(point)*weight;
+            weights += weight;
+        }
+        visibility = visible/max(weights,0.000001);
+    }
+    let solar = u.sunlight.rgb*3.14159265
+        *fog_phase(clamp(dot(direction,u.sun_direction.xyz),-1.0,1.0),u.fog_scattering.w)*visibility*u.sun_direction.w;
+    let source = u.fog_scattering.rgb*(u.sky_mean.rgb+solar);
+    return vec4<f32>(source*(1.0-transmission),transmission);
+}
+fn smoke_illumination(world: vec3<f32>, self_light: f32, albedo: vec3<f32>) -> vec3<f32> {
+    return albedo*(u.ambient.rgb*(0.35+0.65*self_light)
+        +u.sunlight.rgb*(0.40*self_light*smoke_visibility(world)));
+}
 fn smoke_radiance(world: vec3<f32>, self_light: f32, albedo: vec3<f32>) -> vec3<f32> {
-    let illumination = u.ambient.rgb * (0.35 + 0.65*self_light)
-        + u.sunlight.rgb * (0.40*self_light*smoke_visibility(world));
-    let distance = length(world-u.camera_near.xyz);
-    let linear = clamp((distance-u.fog.x)/max(u.fog.y-u.fog.x,1.0),0.0,1.0);
-    let fog = max(linear,1.0-exp(-u.fog.z*distance));
-    return mix(albedo*illumination,u.horizon.rgb,fog);
+    let atmosphere = smoke_atmosphere(world);
+    return smoke_illumination(world,self_light,albedo)*atmosphere.w+atmosphere.rgb;
 }
 
 // Billows use 32 x 18; tiny embers and heat shells retain 16 x 9.
@@ -107,13 +167,19 @@ fn sphere_uv(v: u32, segments: u32, rings: u32) -> vec2<f32> {
 // Godot's TRANS_EXPO / EASE_OUT.
 fn expo_out(t: f32) -> f32 { return select(1.0 - pow(2.0, -10.0 * t), 1.0, t >= 1.0); }
 
+// Ground dust packs horizontal travel in extra.rgb. All other billows keep
+// their original tint layout; both quality paths share this smooth motion.
+fn dust_drift(p:Puff, age:f32)->vec3<f32> {
+    if p.center_kind.w==0.0 && p.az.w>=3.0 {return p.extra.xyz*(1.0-pow(1.0-age,4.0));}
+    return vec3<f32>(0.0);
+}
 @vertex
 fn fx_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V {
     let id = order[ii];
     let p = puffs[id];
     let kind = u32(p.center_kind.w + 0.5);
-    let segments = select(16u, 32u, kind <= 1u);
-    let rings = select(9u, 18u, kind <= 1u);
+    let segments = select(16u, 48u, kind <= 1u);
+    let rings = select(9u, 24u, kind <= 1u);
     let n = sphere(vi, segments, rings);
     var local = n * 0.5;
     let anim = clamp((u.clock.x - p.timing.x) / max(p.timing.y, 1e-4), 0.0, 1.0);
@@ -121,7 +187,7 @@ fn fx_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V 
     out.id = id;
     out.uv = sphere_uv(vi, segments, rings);
     out.shade = 0.0;
-    var world = p.center_kind.xyz;
+    var world = p.center_kind.xyz + dust_drift(p,anim);
     var normal = n;
     if kind <= 1u {
         // Billow: staggered age, lumps, linear growth, rising pivot.
@@ -425,8 +491,10 @@ fn fx_mote(in: V) -> @location(0) vec4<f32> {
 @fragment
 fn fx_billow(in: V) -> @location(0) vec4<f32> {
     let p = puffs[in.id];
+
     let gap = billow_depth_gap(in.world, in.position.xy);
     if gap <= 0.0 { discard; }
+
     let view = normalize(u.camera_near.xyz - in.world);
     let continuous = p.az.w >= 2.0;
     let signed_facing = dot(normalize(in.normal), view);
@@ -436,18 +504,18 @@ fn fx_billow(in: V) -> @location(0) vec4<f32> {
     let facing = abs(signed_facing);
     let fres = pow(1.0 - facing, 2.1);
     let age = in.age;
-    let fade_in = smoothstep(0.0, 0.12, age);
+    let fade_in = smoothstep(0.0, select(0.12,0.025,p.center_kind.w==0.0 && p.az.w>=3.0), age);
     let t = clamp((age - 0.12) / 0.88, 0.0, 1.0);
     // Long tail with a soft landing.
     let fade_out = pow(1.0 - t, p.extra.w) * (1.0 - smoothstep(0.5, 1.0, t));
     var alpha = p.body.a * fade_in * fade_out * smoothstep(0.0, 0.85, facing);
     if continuous {
-        let q = (in.world-p.center_kind.xyz) / max(length(p.ax.xyz), 0.01) * 16.0;
+        let q = (in.world-p.center_kind.xyz-dust_drift(p,age)) / max(length(p.ax.xyz), 0.01) * 16.0;
         let density = 0.75 + 0.25 * sin(q.x+q.y*0.7+p.ax.w*30.0) * sin(q.z-q.y);
         alpha *= facing * density;
     }
     // Soft particles: dissolve where the puff meets solid geometry.
-    alpha *= clamp(gap / 1.6, 0.0, 1.0);
+    alpha *= clamp(gap / select(1.6,0.35,p.center_kind.w==0.0 && p.az.w>=3.0), 0.0, 1.0);
     let cell = floor(in.uv * vec2<f32>(8.0, 5.0));
     let band = select((cell.x + cell.y) % 3.0 - 1.0, in.shade, continuous);
     var color: vec3<f32>;
@@ -473,7 +541,7 @@ fn fx_billow(in: V) -> @location(0) vec4<f32> {
         if !continuous { grey = floor(grey * 16.0 + 0.5) / 16.0; }
         // Godot's arena haze lifts its unshaded smoke to a mid grey that
         // darkens the background by about a quarter; match that.
-        color = vec3<f32>(select(grey * 3.0 + 0.12, grey, continuous)) * p.extra.rgb;
+        color = vec3<f32>(select(grey * 3.0 + 0.12, grey, continuous)) * select(p.extra.rgb,vec3<f32>(1.0),p.center_kind.w==0.0 && p.az.w>=3.0);
         alpha *= 0.75;
     }
     if alpha < 0.0005 { discard; }
@@ -662,8 +730,10 @@ fn fx_smoke(in: V) -> @location(0) vec4<f32> {
     var color = vec3<f32>(0.0);
     // One world-shadow query per plume pixel, rather than per volume step.
     let world = smoke_world(p, vec3<f32>(0.5));
-    let ambient_light = smoke_radiance(world, 0.0, p.body.rgb);
-    let direct_light = smoke_radiance(world, 1.0, p.body.rgb) - ambient_light;
+    let atmosphere = smoke_atmosphere(world);
+    let unattenuated_ambient = p.body.rgb*u.ambient.rgb*0.35;
+    let ambient_light = unattenuated_ambient*atmosphere.w+atmosphere.rgb;
+    let direct_light = (smoke_illumination(world,1.0,p.body.rgb)-unattenuated_ambient)*atmosphere.w;
     for (var k = first; k < end; k++) {
         let point = origin + direction * (full_entry + (f32(k) + 0.5) * step);
         let field = smoke_sample(point, frame);
@@ -685,7 +755,7 @@ fn fx_smoke(in: V) -> @location(0) vec4<f32> {
 fn compact_billow(p:Puff)->vec4<f32> {
  let anim=clamp((u.clock.x-p.timing.x)/max(p.timing.y,0.0001),0.0,1.0);
  let age=clamp((anim-p.ay.w)*(1.0+p.timing.w)/max(1.0-p.ay.w,0.001),0.0,1.0);
- let centre=p.center_kind.xyz+vec3<f32>(0.0,p.timing.z*anim,0.0);
+ let centre=p.center_kind.xyz+dust_drift(p,anim)+vec3<f32>(0.0,p.timing.z*anim,0.0);
  let radius=max(length(p.ax.xyz),max(length(p.ay.xyz),length(p.az.xyz)))*0.5*mix(0.35,1.0,age);
  return vec4<f32>(centre,select(radius,0.0,anim<=p.ay.w||age>=1.0));
 }
@@ -711,13 +781,30 @@ fn compact_billow(p:Puff)->vec4<f32> {
  let ray=normalize(in.world-u.camera_near.xyz);let offset=u.camera_near.xyz-ball.xyz;
  let b=dot(offset,ray);let d=b*b-dot(offset,offset)+ball.w*ball.w;if d<=0.0 {discard;}
  let root=sqrt(d);let entry=max(-b-root,u.camera_near.w);
- let screen=in.position.xy*u.size.zw;let forward=max(-(u.view*vec4<f32>(ray,0.0)).z,0.0001);
+ let screen=select(in.position.xy*u.size.zw,soft_depth_uv(in.position.xy),u.smoke.y>1.0);let forward=max(-(u.view*vec4<f32>(ray,0.0)).z,0.0001);
  let exit=min(-b+root,depth_metres(screen)/forward);if exit<=entry {discard;}
+ if p.center_kind.w==0.0 && p.az.w>=3.0 {
+  // Tiny dust volumes: six proxy vertices and six cheap density samples.
+  // Same atmosphere and lighting as smoke, without thousands of shell vertices.
+  let age=in.age;let step=(exit-entry)/6.0;var optical=0.0;
+  for(var i=0u;i<6u;i++) {
+   let point=u.camera_near.xyz+ray*(entry+(f32(i)+0.5)*step);
+   let q=(point-ball.xyz)/ball.w;
+   let shape=1.0-smoothstep(0.15,1.0,length(q*vec3<f32>(1.0,1.8,1.0)));
+   let seed=p.ax.w*61.0;
+   let noise=0.65+0.35*sin(q.x*8.0+seed+age)*sin(q.z*7.0-q.y*9.0+seed);
+   optical+=shape*noise*step/ball.w;
+  }
+  let fade=smoothstep(0.0,0.025,age)*(1.0-smoothstep(0.35,1.0,age));
+  let alpha=(1.0-exp(-optical*4.0))*fade;
+  let color=smoke_radiance(ball.xyz,0.55,p.body.rgb);
+  return fx_output(vec4<f32>(fp16_safe(color)*alpha,alpha));
+ }
  let density=clamp((exit-entry)/ball.w,0.0,1.0);
  let age=clamp((in.age-p.ay.w)*(1.0+p.timing.w)/max(1.0-p.ay.w,0.001),0.0,1.0);
- let fade=smoothstep(0.0,0.12,age)*(1.0-age)*(1.0-age);
+ let fade=smoothstep(0.0,select(0.12,0.025,p.center_kind.w==0.0 && p.az.w>=3.0),age)*(1.0-age)*(1.0-age);
  let alpha=p.body.a*fade*density;
- var color=p.body.rgb*p.extra.rgb*0.6;
+ var color=p.body.rgb*select(p.extra.rgb,vec3<f32>(1.0),p.center_kind.w==0.0 && p.az.w>=3.0)*0.6;
  if p.center_kind.w>0.5 {
   color=mix(vec3<f32>(3.0,0.12,0.005),vec3<f32>(9.0,2.0,0.12),density*(1.0-age));
   return fx_output(vec4<f32>(color*u.clock.y*fade*density,0.0));
