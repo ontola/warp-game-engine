@@ -1,6 +1,8 @@
 //! Shared graphics modifiers: the simulation and collision do not change.
 //! PC: --graphics full|low|minimum (or GG_GRAPHICS), else the Settings choice
-//! (`graphics_choice` in settings.json), else by chip. Quest selects minimum. Without
+//! (`graphics_choice` in settings.json), else AUTO: what a start-menu probe
+//! measured on this machine, screen and build (`graphics-probe.json`), else
+//! by chip until the probe has run. Quest selects minimum. Without
 //! an override the game may switch between rounds (`switch`), rebuilding its
 //! visuals.
 use std::sync::{Mutex, OnceLock};
@@ -61,7 +63,64 @@ fn saved_choice()->Option<String> {
 }
 /// Without --graphics or GG_GRAPHICS: base Apple chips (M1, M2, M3, M4 without
 /// Pro/Max/Ultra, 7-10 GPU cores) get LOW; full quality ran far too slow on an M1.
+/// AUTO: this session's probe decision, else the newest probe for this chip
+/// and build, else by chip.
 pub fn auto()->Graphics {
+    if let Some(p)=*PROBED.lock().unwrap() {return p;}
+    if let Some(p)=cached_probe(None) {return p;}
+    by_chip()
+}
+static PROBED:Mutex<Option<Graphics>>=Mutex::new(None);
+/// The probe's decision for this session (AUTO resolves to it).
+pub fn set_probed(profile:Graphics) {*PROBED.lock().unwrap()=Some(profile);}
+
+/// The probe cache: per chip, build and output size, newest last.
+fn cache_path()->Option<std::path::PathBuf> {Some(crate::play::settings_path()?.with_file_name("graphics-probe.json"))}
+/// This build: the executable's size and modification time.
+fn build_id()->String {
+    std::env::current_exe().ok().and_then(|e|std::fs::metadata(e).ok()).map_or_else(String::new,|m|{
+        let t=m.modified().ok().and_then(|t|t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0,|d|d.as_secs());
+        format!("{}-{t}",m.len())})
+}
+fn cache_entries()->Vec<serde_json::Value> {
+    cache_path().and_then(|p|std::fs::read_to_string(p).ok()).and_then(|t|serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v|v.get("entries")?.as_array().cloned()).unwrap_or_default()
+}
+/// The cached probe decision for this chip and build, for `size` (None: any
+/// size, the newest; the window's size is not known before the scene).
+pub fn cached_probe(size:Option<[u32;2]>)->Option<Graphics> {
+    let (chip,build)=(chip_name().unwrap_or_default(),build_id());
+    cache_entries().iter().rev().find(|e| e["chip"]==chip.as_str() && e["build"]==build.as_str()
+        && size.is_none_or(|s|e["output"]==serde_json::json!(s)))
+        .and_then(|e|Graphics::parse(e["profile"].as_str()?).ok())
+}
+/// Remember a probe decision (keeps the newest 8).
+pub fn cache_probe(size:[u32;2],profile:Graphics,gpu_ms:f64) {
+    let Some(path)=cache_path() else {return};
+    let (chip,build)=(chip_name().unwrap_or_default(),build_id());
+    let mut entries:Vec<_>=cache_entries().into_iter().filter(|e|!(e["chip"]==chip.as_str() && e["build"]==build.as_str() && e["output"]==serde_json::json!(size))).collect();
+    entries.push(serde_json::json!({"chip":chip,"build":build,"output":size,"profile":profile.name(),"gpu_ms_median":gpu_ms}));
+    let skip=entries.len().saturating_sub(8);
+    if let Some(d)=path.parent() {let _=std::fs::create_dir_all(d);}
+    let _=std::fs::write(path,serde_json::to_string_pretty(&serde_json::json!({"entries":entries[skip..]})).unwrap_or_default());
+}
+
+/// `quality.log` beside the settings (Application Support in the Mac app):
+/// probe numbers and every adaptive decision, for players to send. Kept
+/// under 256 KiB with one older file.
+pub fn log(line:&str) {
+    let dir=std::env::var_os("HOME").filter(|_|cfg!(target_os="macos")).map(|h|std::path::PathBuf::from(h).join("Library/Application Support/Growing Guns"))
+        .or_else(||crate::play::settings_path()?.parent().map(std::path::Path::to_path_buf));
+    let Some(dir)=dir else {return};
+    let _=std::fs::create_dir_all(&dir);
+    let path=dir.join("quality.log");
+    if std::fs::metadata(&path).is_ok_and(|m|m.len()>256*1024) {let _=std::fs::rename(&path,dir.join("quality.log.1"));}
+    let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0,|d|d.as_secs());
+    use std::io::Write;
+    if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open(path) {let _=writeln!(f,"{stamp} {line}");}
+}
+
+fn by_chip()->Graphics {
     static AUTO:OnceLock<Graphics>=OnceLock::new();
     *AUTO.get_or_init(||{
     let chip=chip_name();

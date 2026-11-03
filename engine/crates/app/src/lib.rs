@@ -178,10 +178,42 @@ pub trait Game {
     /// so a game with cheaper content (fewer effects, simpler scenery) can
     /// switch to it. Called again after as long if it is still too slow.
     fn content_too_heavy(&mut self) {}
+    /// A representative scene is on screen (behind a start menu, say) and
+    /// the game wants to know what it costs here: Some(key) asks the shell to
+    /// measure it once per key ([`ProbeResult`] to [`Game::probed`]). The HUD
+    /// keeps its frame rate meanwhile; the scene renders every other frame.
+    fn probe_scene(&self) -> Option<u64> { None }
+    fn probed(&mut self, _result: ProbeResult) {}
+    /// A line about adaptive quality or a probe, for the game's own log.
+    fn quality_event(&mut self, _line: &str) {}
     /// Target framerate for dynamic adaptive graphics quality (e.g. Some(60.0)).
     /// None falls back to `Config::target_fps`, `WARP_TARGET_FPS`, or the monitor refresh rate.
     fn target_fps(&self) -> Option<f32> { None }
 }
+
+/// What a start probe measured: GPU milliseconds per scene frame (covered
+/// union of the async profile, so vsync hides nothing) at adaptive
+/// quality's top rung.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ProbeResult {
+    pub key: u64,
+    pub frames: usize,
+    pub gpu_ms_median: f64,
+    pub gpu_ms_p90: f64,
+    /// The 3D picture's size and the window's.
+    pub render_size: [u32; 2],
+    pub output_size: [u32; 2],
+    /// The frame rate adaptive quality aims for here.
+    pub target_fps: f64,
+    pub adapter: String,
+}
+
+/// A probe in progress.
+struct Probe { key: u64, started: Instant, render_size: [u32; 2] }
+/// Probe samples before this are pipeline and cache warmup.
+const PROBE_WARMUP: std::time::Duration = std::time::Duration::from_millis(300);
+const PROBE_FRAMES: usize = 60;
+const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Engine-owned keys, shared with alternate presentation shells such as Sideways.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -563,6 +595,9 @@ struct Shell<'g> {
     screen_refresh_hz: Option<f64>,
     /// When the scene was last rendered (see [`Shell::scene_due`]).
     last_scene: Instant,
+    probe: Option<Probe>,
+    /// The last probe key measured (or abandoned).
+    probed: Option<u64>,
     /// Scene frames and loop iterations since `stats_at`, logged every 2 s.
     scene_frames: u32,
     loop_frames: u32,
@@ -596,7 +631,7 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
         println!("{}: adaptive quality enabled, {}", cfg.title, q.label());
     }
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), probe: None, probed: None, scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -633,17 +668,22 @@ impl Shell<'_> {
         let dt = (now - self.last).as_secs_f32().min(0.1);
         self.last = now;
         if let Some(q) = &mut self.quality {
-            q.set_enabled(self.debug.adaptive_quality() && !self.game.fixed_quality());
+            // A probe measures the top rung; adaptation resumes after it.
+            q.set_enabled(self.debug.adaptive_quality() && !self.game.fixed_quality() && self.probe.is_none());
             let target = match self.debug.target_fps() {
                 Some(user) => user,
                 None => self.game.target_fps().or(self.cfg.target_fps),
             };
             q.set_target_fps(target, self.screen_refresh_hz);
             if self.focused && !self.zero_size && q.frame(f64::from(dt) * 1000.0, now) {
-                println!("{} adaptive quality: {}", manners::stamp(), q.label());
+                let line = format!("adaptive quality: {}", q.label());
+                println!("{} {line}", manners::stamp());
+                self.game.quality_event(&line);
             }
             if q.content_too_heavy(now) {
-                println!("{} adaptive quality: content too heavy at {}", manners::stamp(), q.label());
+                let line = format!("adaptive quality: content too heavy at {}", q.label());
+                println!("{} {line}", manners::stamp());
+                self.game.quality_event(&line);
                 self.game.content_too_heavy();
             }
         }
@@ -688,6 +728,9 @@ impl Shell<'_> {
         // so the menu answers clicks even when the scene takes 500 ms.
         let scene = !self.debug.open() || self.last_scene.elapsed().as_secs_f32() >= 1.0
             || self.debug.changed.is_some_and(|t| t > self.last_scene && t.elapsed().as_secs_f32() >= 0.25);
+        // A probe draws the scene every other frame: the HUD (a start menu)
+        // keeps its rate while GPU timestamps measure the scene.
+        let scene = scene && (self.probe.is_none() || self.loop_frames % 2 == 0);
         // The fps shown counts scene frames only, not HUD-only redraws.
         if scene {
             // Mean scene frame time, not mean of 1/dt: that read 100+ fps
@@ -714,7 +757,7 @@ impl Shell<'_> {
         };
         self.debug.sync_options(renderer, debug_options);
         let profile_started = Instant::now();
-        self.debug.profile(&live.gpu, renderer, self.debug.open() || self.cfg.frames > 0 || frame_log::enabled());
+        self.debug.profile(&live.gpu, renderer, self.debug.open() || self.cfg.frames > 0 || frame_log::enabled() || self.probe.is_some());
         let profile_ms = profile_started.elapsed().as_secs_f64() * 1000.0;
         if self.debug.open() {
             let quality_label = self.quality.as_ref().map(|q| q.label());
@@ -741,6 +784,7 @@ impl Shell<'_> {
             }
             (None, h) => h,
         };
+        let adapter = live.gpu.info.name.clone();
         let seconds = self.stats_at.elapsed().as_secs_f32();
         if seconds >= 2.0 {
             println!("{} frames: scene {:.1}/s, loop {:.1}/s, render {}x{} of {}x{}, debug menu {}", manners::stamp(),
@@ -837,7 +881,52 @@ impl Shell<'_> {
         self.mouse_peak = 0.0;
         self.cursor_events = 0;
         self.last_frame_end = Instant::now();
+        self.step_probe(size, render_height, &adapter);
         Ok(())
+    }
+
+    /// Start, sample or finish a start probe (see [`Game::probe_scene`]).
+    fn step_probe(&mut self, size: [u32; 2], render_height: Option<u32>, adapter: &str) {
+        let key = if self.focused && !self.zero_size { self.game.probe_scene() } else { None };
+        match (&self.probe, key) {
+            (None, Some(k)) if self.probed != Some(k) => {
+                let h = render_height.unwrap_or(size[1]);
+                let render_size = [(size[0] as u64 * h as u64 / size[1].max(1) as u64) as u32, h];
+                self.debug.covered.clear();
+                self.probe = Some(Probe { key: k, started: Instant::now(), render_size });
+                let line = format!("probe {k:x}: measuring {}x{} of {}x{}", render_size[0], render_size[1], size[0], size[1]);
+                println!("{} {line}", manners::stamp());
+                self.game.quality_event(&line);
+            }
+            (Some(p), k) if k != Some(p.key) => {
+                let line = format!("probe {:x}: abandoned (the scene changed)", p.key);
+                self.game.quality_event(&line);
+                self.probed = Some(p.key);
+                self.probe = None;
+            }
+            _ => {}
+        }
+        let Some(p) = &self.probe else { return };
+        let elapsed = p.started.elapsed();
+        if elapsed < PROBE_WARMUP { self.debug.covered.clear(); return; }
+        if self.debug.covered.len() < PROBE_FRAMES && elapsed < PROBE_LIMIT { return; }
+        let mut ms = std::mem::take(&mut self.debug.covered);
+        ms.retain(|v| v.is_finite() && *v > 0.0);
+        let p = self.probe.take().unwrap();
+        self.probed = Some(p.key);
+        if ms.is_empty() {
+            self.game.quality_event(&format!("probe {:x}: no GPU timestamps; nothing measured", p.key));
+            return;
+        }
+        ms.sort_by(f64::total_cmp);
+        let target_fps = self.quality.as_ref().map_or(60.0, |q| f64::from(q.target_fps()));
+        let result = ProbeResult { key: p.key, frames: ms.len(), gpu_ms_median: ms[ms.len() / 2], gpu_ms_p90: ms[((ms.len() - 1) as f64 * 0.9) as usize],
+            render_size: p.render_size, output_size: size, target_fps, adapter: adapter.to_string() };
+        let line = format!("probe {:x}: {} frames in {:.1} s, GPU median {:.2} ms, p90 {:.2} ms at {}x{} of {}x{} ({}, target {:.0} fps)",
+            p.key, result.frames, elapsed.as_secs_f32(), result.gpu_ms_median, result.gpu_ms_p90, p.render_size[0], p.render_size[1], size[0], size[1], adapter, target_fps);
+        println!("{} {line}", manners::stamp());
+        self.game.quality_event(&line);
+        self.game.probed(result);
     }
 
     /// Replace a lost device: a new device, surface and presenter; the game
