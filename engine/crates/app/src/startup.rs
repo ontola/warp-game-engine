@@ -4,6 +4,28 @@ use std::sync::{OnceLock, atomic::{AtomicBool, Ordering}};
 use winit::window::Icon;
 static ICON: OnceLock<Icon> = OnceLock::new();
 static READY: AtomicBool = AtomicBool::new(false);
+static TITLE: OnceLock<String> = OnceLock::new();
+
+/// Why the process is ending, on stderr and appended to
+/// `<temp>/warp-exit.log` (a GUI-subsystem binary has no console, so a
+/// window close, an Esc quit, a frame error or a panic would otherwise
+/// leave no trace).
+pub fn note_exit(why: &str) {
+    note(&format!("exit: {why}"));
+}
+
+/// One line on stderr and in `<temp>/warp-exit.log`, for events around a
+/// game's end (a lost host connection) worth finding after the fact.
+pub fn note(why: &str) {
+    let title = TITLE.get().map(String::as_str).unwrap_or("warp");
+    eprintln!("{title}: {why}");
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    let line = format!("{secs:.3} {title} pid {}: {}\n", std::process::id(), why.replace('\n', " | "));
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(std::env::temp_dir().join("warp-exit.log")) {
+        use std::io::Write;
+        let _ = f.write_all(line.as_bytes());
+    }
+}
 
 pub fn interactive(args: &[String]) -> bool {
     if args.iter().any(|a| matches!(a.as_str(), "--shot"|"--bench"|"--profile"|"--profile-frames"|"--headless"|"--help"|"--version"|"--script"|"--dump"|"--smoke-frames")) {return false;}
@@ -12,6 +34,12 @@ pub fn interactive(args: &[String]) -> bool {
 pub fn fullscreen(args: &[String]) -> bool { !args.iter().any(|a|a=="--windowed") }
 
 pub fn init(title: &str, png: Option<&[u8]>) {
+    let _ = TITLE.set(title.to_owned());
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        note_exit(&format!("panic: {info}"));
+        prev(info);
+    }));
     #[cfg(windows)] windows::console(title);
     let rgba=png.and_then(|p|image::load_from_memory(p).ok()).map(|p|p.thumbnail(64,64).to_rgba8())
         .unwrap_or_else(||image::RgbaImage::from_fn(32,32,|x,y| {

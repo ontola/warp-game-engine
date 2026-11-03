@@ -155,7 +155,7 @@ impl Party {
                     }
                     Command::Action { key, .. } if key == "new_run" => out.push(Ev::NewRun),
                     Command::Disconnected(e) => {
-                        eprintln!("gamenight: {e}");
+                        app::startup::note(&format!("gamenight disconnected: {e}"));
                         self.phase = Phase::Idle;
                     }
                     Command::Error(e) => eprintln!("gamenight: {e}"),
