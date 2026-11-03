@@ -79,7 +79,7 @@ impl Marks {
             }
         }
         for wd in &w.run.wards {
-            self.ward(wd.z, wd.lo, wd.hi, wd.open, time);
+            self.ward(wd, time);
         }
         for &id in w.wizards.iter().chain(&w.enemies) {
             if let Some(a) = w.actor(id) {
@@ -386,16 +386,20 @@ impl Marks {
     /// A curtain of pale haze across the ground at `z`, thickest at the
     /// floor, curling slowly upward, with runes flickering along its foot;
     /// it thins away as the ward opens.
-    fn ward(&mut self, z: f32, lo: f32, hi: f32, open: f32, time: f32) {
+    fn ward(&mut self, wd: &spellstorm::run::Ward, time: f32) {
+        let open = wd.open;
         if open <= 0.0 {
             return;
         }
-        // One curtain across the way, its haze and runes drawn by fx.wgsl
-        // `ward` (Run._ward_wall: 2 m wider than the way, 3.2 m high).
-        let width = hi - lo + 2.0;
+        // One curtain across the way, turned with the path there, its haze
+        // drawn by fx.wgsl `ward` (Run._ward_wall: 2 m wider than the way,
+        // 3.2 m high).
+        let width = wd.hi - wd.lo + 2.0;
         let height = 3.2;
-        let at = Vec3::new((lo + hi) * 0.5, height * 0.5, z);
-        let mut s = Sprite::fixed(at, [width, height], Vec3::X, Vec3::Y, IMAGE, uv(Cell::Wisp), linear3(MIST) * LIT * 3.4);
+        let m = wd.mid();
+        let at = Vec3::new(m.x, height * 0.5, m.y);
+        let a = wd.across();
+        let mut s = Sprite::fixed(at, [width, height], Vec3::new(a.x, 0.0, a.y), Vec3::Y, IMAGE, uv(Cell::Wisp), linear3(MIST) * LIT * 3.4);
         s.alpha_cut = 0.0;
         s.depth_bias = 0.3;
         s.effect = crate::effects::WARD;

@@ -95,12 +95,11 @@ fn shrines_rise_ahead_and_before_their_ward() {
                 for a in &w.run.altars[seen..] {
                     let at = p(a.pos);
                     // Up against a shut wall is as far ahead as anything can be.
-                    let at_wall = w.run.wards.iter().any(|wd| wd.k >= 0 && !wd.opening && (a.pos.z - wd.z - 2.0).abs() < 0.5);
+                    let at_wall = w.run.wards.iter().any(|wd| wd.k >= 0 && !wd.opening && (wd.past(glam::Vec2::new(a.pos.x, a.pos.z)).0 + 2.0).abs() < 0.5);
                     assert!(at_wall || at + 2.5 >= front, "seed {seed}: shrine {} altar at {at} m, behind the front at {front} m (clearings {:?})", seen / 4, w.level.clearing_at);
-                    // The way on runs to lower z; a shut wall is a line across it.
-                    for wd in w.run.wards.iter().filter(|wd| wd.k >= 0 && !wd.opening) {
-                        let near = (a.pos.z - wd.z).abs() < 12.0 && a.pos.x > wd.lo - 1.0 && a.pos.x < wd.hi + 1.0;
-                        assert!(!near || a.pos.z > wd.z + 1.0, "seed {seed}: an altar at {:?}, past the ward at z {}", a.pos, wd.z);
+                    for wd in w.run.wards.iter().filter(|wd| wd.k == (seen / 4) as i32 && !wd.opening) {
+                        let (d, within) = wd.past(glam::Vec2::new(a.pos.x, a.pos.z));
+                        assert!(!within || d < -1.0 || d > 12.0, "seed {seed}: an altar at {:?}, {d} m past the ward", a.pos);
                     }
                 }
                 seen = w.run.altars.len();

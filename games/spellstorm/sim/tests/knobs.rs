@@ -33,7 +33,7 @@ fn a_new_player_meets_only_the_clearing_walls() {
     assert!(errors.is_empty(), "{errors:?}");
     let w = World::new(&[Seat::player(0, "Joep")], 7, Settings::default());
     assert!(w.run.practice.is_none());
-    assert_eq!(w.run.wards.len(), 2, "{:?}", w.run.wards.iter().map(|x| x.z).collect::<Vec<_>>());
+    assert_eq!(w.run.wards.len(), 2, "{:?}", w.run.wards.iter().map(|x| x.c).collect::<Vec<_>>());
     assert!(w.run.wards.iter().all(|x| x.check.is_none()));
     reset();
 }
