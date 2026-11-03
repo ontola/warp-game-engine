@@ -284,6 +284,54 @@ impl Output {
 }
 
 /// A screenshot's line along the bottom of the screen.
+/// A frozen frame waiting for its crop rectangle (Shift+F12): shown dimmed
+/// outside the rectangle while the mouse drags it; Esc cancels.
+struct Crop {
+    saved: screenshot::Saved,
+    size: [u32; 2],
+    picture: Arc<render::picture::Picture>,
+    start: Option<[f32; 2]>,
+    cursor: [f32; 2],
+}
+
+impl Crop {
+    const IMAGE: render::hud::HudImage = render::hud::HudImage(u64::MAX - 40);
+
+    /// x, y, width, height in frame pixels.
+    fn rect(&self) -> Option<[f32; 4]> {
+        let a = self.start?;
+        let b = self.cursor;
+        let (x0, y0) = (a[0].min(b[0]).max(0.0), a[1].min(b[1]).max(0.0));
+        let (x1, y1) = (a[0].max(b[0]).min(self.size[0] as f32), a[1].max(b[1]).min(self.size[1] as f32));
+        Some([x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)])
+    }
+
+    fn draw(&self, hud: &mut HudDrawList) {
+        let [w, h] = self.size.map(|v| v as f32);
+        let clip = [0.0, 0.0, w, h];
+        hud.provide_image(Self::IMAGE, &self.picture, render::hud::ImageFilter::Linear);
+        hud.image([0.0, 0.0, w, h], Self::IMAGE, [0.0, 0.0, 1.0, 1.0], [1.0; 4], clip);
+        let dim = [0.0, 0.0, 0.0, 0.55];
+        match self.rect() {
+            Some([x, y, rw, rh]) => {
+                hud.rect([0.0, 0.0, w, y], dim, clip);
+                hud.rect([0.0, y + rh, w, h - y - rh], dim, clip);
+                hud.rect([0.0, y, x, rh], dim, clip);
+                hud.rect([x + rw, y, w - x - rw, rh], dim, clip);
+                let white = [1.0, 1.0, 1.0, 0.9];
+                for (a, b) in [([x, y], [x + rw, y]), ([x + rw, y], [x + rw, y + rh]), ([x + rw, y + rh], [x, y + rh]), ([x, y + rh], [x, y])] {
+                    hud.line(a, b, 2.0, white, clip);
+                }
+            }
+            None => hud.rect(clip, dim, clip),
+        }
+        let s = (h / 1080.0).clamp(0.6, 2.0);
+        hud.text.push(render::hud::TextRun { id: u64::MAX - 41, text: "drag a rectangle to crop, Esc cancels".into(), position: [16.0 * s, 16.0 * s],
+            bounds: clip, font_size: 22.0 * s, color: [255, 255, 255, 230], font: render::hud::FontFace::Body,
+            align: render::hud::TextAlign::Left, width: w * 0.6 });
+    }
+}
+
 fn toast(hud: &mut HudDrawList, line: &str) {
     let [w, h] = hud.size.map(|v| v as f32);
     let s = (h / 1080.0).clamp(0.6, 2.0);
@@ -475,6 +523,9 @@ struct Shell<'g> {
     started: Instant,
     frames: u64,
     screenshot: bool,
+    /// Shift+F12: after the frame is saved, drag a rectangle of it.
+    crop_requested: bool,
+    crop: Option<Crop>,
     /// The last screenshot's line and until when it shows.
     toast: Option<(String, Instant)>,
     /// Smoothed frames per second, for screenshot metadata.
@@ -513,7 +564,7 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
         println!("{}: adaptive quality enabled, {}", cfg.title, q.label());
     }
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, toast: None, fps: 0.0, debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, toast: None, fps: 0.0, debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -645,12 +696,26 @@ impl Shell<'_> {
                 if let Some(q) = &self.quality {
                     metadata["render"]["adaptive_quality"] = q.metadata();
                 }
-                let line = screenshot::save_with(screenshot::Shot { title: &self.cfg.title, size, rgba: &rgba, metadata }, |path| self.game.feedback_replay(path, (self.acc / step).clamp(0.0, 1.0))).unwrap_or_else(|e| { eprintln!("screenshot failed: {e}"); format!("screenshot failed: {e}") });
+                let saved = screenshot::save_full(screenshot::Shot { title: &self.cfg.title, size, rgba: &rgba, metadata }, |path| self.game.feedback_replay(path, (self.acc / step).clamp(0.0, 1.0)));
+                let line = match saved {
+                    Ok(saved) if std::mem::take(&mut self.crop_requested) => {
+                        let line = saved.line.clone();
+                        if let Ok(picture) = render::picture::Picture::new(size[0], size[1], rgba.clone()) {
+                            self.crop = Some(Crop { saved, size, picture: Arc::new(picture), start: None, cursor: [0.0; 2] });
+                            self.capture_mouse(false);
+                            if let Some(w) = &self.window { w.set_cursor(winit::window::CursorIcon::Crosshair); }
+                        }
+                        line
+                    }
+                    Ok(saved) => saved.line,
+                    Err(e) => { eprintln!("screenshot failed: {e}"); format!("screenshot failed: {e}") }
+                };
                 self.toast = Some((line, Instant::now() + std::time::Duration::from_secs(4)));
             }
             if to_game { self.game.captured(size, rgba); }
         }
         if self.toast.as_ref().is_some_and(|(_, until)| Instant::now() > *until) { self.toast = None; }
+        if let Some(crop) = &self.crop { draw.hud.begin_overlay(); crop.draw(&mut draw.hud); }
         if let Some((line, _)) = &self.toast { toast(&mut draw.hud, line); }
         if self.debug.open() { self.debug.draw(&mut draw.hud); }
         // Nothing to show on a window without pixels; the game keeps ticking.
@@ -743,7 +808,27 @@ impl Shell<'_> {
         used
     }
 
+    /// Left button down starts the rectangle, up saves it.
+    fn crop_drag(&mut self, state: ElementState) {
+        let Some(crop) = &mut self.crop else { return };
+        if state == ElementState::Pressed { crop.start = Some(crop.cursor); return; }
+        let Some([x, y, w, h]) = crop.rect() else { return };
+        if w < 4.0 || h < 4.0 { crop.start = None; return; }
+        let rect = [x.round() as u32, y.round() as u32, w.round() as u32, h.round() as u32];
+        let line = screenshot::save_crop(&self.cfg.title, &crop.saved, &crop.picture.rgba, crop.size, rect)
+            .unwrap_or_else(|e| { eprintln!("screenshot crop failed: {e}"); format!("crop failed: {e}") });
+        self.end_crop(line);
+    }
+
+    fn end_crop(&mut self, line: String) {
+        self.crop = None;
+        if let Some(w) = &self.window { w.set_cursor(winit::window::CursorIcon::Default); }
+        self.toast = Some((line, Instant::now() + std::time::Duration::from_secs(4)));
+        self.sync_capture();
+    }
+
     fn sync_capture(&mut self) {
+        if self.crop.is_some() { return; }
         let capture = if self.debug.open() { Some(false) } else { self.game.mouse_capture() };
         if let Some(want) = capture {
             let want = want && self.cfg.keyboard && self.focused && self.screen != Screen::Hidden;
@@ -818,6 +903,7 @@ impl ApplicationHandler for Shell<'_> {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = [position.x as f32, position.y as f32];
+                if let Some(crop) = &mut self.crop { crop.cursor = p; return; }
                 self.debug.pointer_move(p);
                 self.devices.cursor(Some(p));
             }
@@ -831,6 +917,10 @@ impl ApplicationHandler for Shell<'_> {
                 self.devices.wheel(lines);
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                if self.crop.is_some() {
+                    if button == MouseButton::Left { self.crop_drag(state); }
+                    return;
+                }
                 if self.debug.open() && button == MouseButton::Left {
                     let action = if state == ElementState::Pressed { self.debug.pointer_down(self.size()).1 } else { self.debug.pointer_up() };
                     if let Some(a) = action { self.game.debug_action(a); }
@@ -850,6 +940,10 @@ impl ApplicationHandler for Shell<'_> {
             },
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
+                if self.crop.is_some() {
+                    if code == KeyCode::Escape && event.state == ElementState::Pressed { self.end_crop("crop cancelled".into()); }
+                    return;
+                }
                 match route_function_key(self.game, code, event.state, event.repeat) {
                     KeyRoute::Engine(action) => {
                         match action {
@@ -857,7 +951,10 @@ impl ApplicationHandler for Shell<'_> {
                             EngineShortcut::Fullscreen => if let Some(w) = &self.window {
                                 w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) });
                             },
-                            EngineShortcut::Screenshot => self.screenshot = true,
+                            EngineShortcut::Screenshot => if self.crop.is_none() {
+                                self.screenshot = true;
+                                self.crop_requested = self.modifiers.shift_key();
+                            },
                         }
                         self.sync_capture();
                         return;
