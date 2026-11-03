@@ -1,7 +1,7 @@
 //! Engine measurement on a small game scene: startup phases, then steady
 //! frames with CPU submit, wall (submit + GPU wait) and per-pass GPU time.
 //!
-//!   growing-guns bench [--views N] [--size WxH] [--frames N] [--light full|lean] [--empty] [--no-gpu-profile]
+//!   growing-guns bench [--views N] [--size WxH] [--frames N] [--light full|lean] [--empty] [--no-gpu-profile] [--no-local-lights]
 //!   growing-guns bench --stress explosions --cpu-thread --csv frames.csv
 use crate::{view, Args};
 use glam::Vec3;
@@ -159,7 +159,8 @@ pub fn run(args: &Args) -> Result<(), String> {
             vis.flush(&gpu, &renderer, &light)?;
             renderer.set_sprites(&gpu, vis.sprites())?;
             renderer.update_instances(&gpu, vis.first_dynamic, vis.dynamic())?;
-            renderer.set_local_lights(&vis.local_lights())?;
+            // `--no-local-lights` measures what the floods, lamps and lava lights cost.
+            renderer.set_local_lights(&if args.flag("--no-local-lights") { Vec::new() } else { vis.local_lights() })?;
         }
         renderer.set_gpu_profile_frame_id(f as u64);
         renderer.try_render_into(&gpu, &cams(&world), &light, &output)?;
