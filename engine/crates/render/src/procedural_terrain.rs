@@ -327,6 +327,7 @@ impl TerrainView {
     }
 
     /// Whether a sphere can be inside the view cone.
+    #[cfg(test)]
     fn sees(&self, centre: Vec3, radius: f32) -> bool { self.sees_within(centre, radius, 0.0) }
 
     /// [`Self::sees`] with the cone widened by `margin` radians.

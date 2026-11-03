@@ -5,6 +5,140 @@ a pool of full assemblies, alpha card trees, whole-plant voxel proxies, the
 painted far layer) with one representation per tree, after Unreal 5.7's
 Nanite Foliage and Assemblies.
 
+**Handoff:** read [Handoff (3 Nov 2026, evening)](#handoff-3-nov-2026-evening)
+first. It is the current state, the open issues and the next tasks; the
+sections after it are the history that led there.
+
+## Handoff (3 Nov 2026, evening)
+
+Vegetation and terrain_fly frame time, as left by the session that did the
+work from 2 to 3 Nov. Everything below is on `main`.
+
+### State per step
+
+| Step | State | Commits |
+|---|---|---|
+| Virtual tree assemblies (milestone 1), voxel splats lit by shade (milestone 3), cards as low-end fallback (milestone 4) | Done | see "Status (2 Nov)" below |
+| GPU-streamed assemblies (milestone 2) | Parked, see below | |
+| Shade split into terrain / voxels / rest pipelines, compile-time features | Done, same image | 6e420da, b6f7119, ce4f1d0, d368807, a986272 |
+| Distant ground's sun march once per terrain_coarse quad | Done, 53-54 dB | e9afabf |
+| Shared sun map 180 m with a 55 % fade; full/card tier hysteresis (Joep: shadow seam, blinking trees) | Done | 2fb7e25 |
+| Voxel proxies 6 px loosening from 50 m (12 px at 200 m; was 25 px: "cubes") | Done | bd6ed85 |
+| Round, jittered splats sized by opacity; normals rounded per pixel | Done, Joep still finds far trees blobby | ead0617 |
+| Terrain: per-frame patch build budget, offscreen_factor 2.5 + 15 deg cone margin, reselect thresholds; terrain_fly yaw/pitch interpolated (mouse-turn hitches) | Done, CPU-tested, NOT measured on the GPU | 540c40e |
+| Red trees: MOLTEN_DEBRIS (Growing Guns lava) shared bit 7 with part_wind's HISTORY_EPOCH | Fixed: molten only without PART_WIND | e5d216d |
+| fps counter: scene frames only, mean frame time, worst frame of the last second | Done | c7f1dc8, 2afdffc |
+| Crop screenshots: Shift+F12 or F12 twice, then drag a rectangle | Done, not tried by Joep yet | 063b5a6, 94f16a5, a979660 |
+| Nanite-style voxels at about 1 px (HZB two-pass brick culling) | Designed below, not started | |
+
+### Measured (M5 Pro, terrain_fly 2560x1440, `--bench 120`)
+
+- **fps at the four playtest cameras:** 54.4 / 46.7 / 45.7 / 41.7 before
+  bd6ed85. The finer proxies cost 5-10 %.
+- **Cameras:** `build/screenshots/terrain-fly-1793630336696.json`,
+  `-1793630348490`, `-1793630353351`, `-1793630402380`.
+- **Joep's playtest spots:** `-1793694348617` (x 713 z 83) and
+  `-1793695131755` (x 164 z -163).
+- **Per-pass trace:** see "Frame time state" below. Terrain shade about
+  5 ms is the largest pass, then voxel surface, splats and splat raster.
+- **Sideways (2 views, 1440p):** about 14 ms per view-frame. Raster
+  (4.8 ms) and cull (3.0 ms) outweigh shade there.
+- **Joep's window (5120x2880, 120 Hz):** adaptive quality aims at 120 fps
+  and falls to render scale 0.67 within 3 s. It renders 1713x964 and
+  upscales 3x (bilinear, `render/src/present.rs`). Every voxel looks 3x
+  larger than in a 1440p shot.
+
+### Flags and environment
+
+- **Render switches:** `KERN_SHADE_CLASSES=0`, `KERN_TERRAIN_COARSE=0`,
+  `KERN_VOXEL_SURFACE=0`, `KERN_VOXEL_PASS=0` and `KERN_SKY_VIS_CACHE=0`
+  switch the respective splits off.
+- **Shadows:** `KERN_SHADOW_REACH` (180) sets the shared sun map's reach.
+- **Pool log:** `KERN_POOL_LOG=1` logs tree pool churn.
+- **A/B only, off by default:** `KERN_COARSE_FOOTPRINT_M` and
+  `KERN_VOXEL_SELF_SHADOW_COARSER`. Neither was worth its image change;
+  the shots are in `build/screenshots/ab-tradeoffs/`.
+- **terrain_fly options:**
+  - `--proxy-px` (6) and `--proxy-from` (50);
+  - `--cards N` (the fallback card ring);
+  - `--taa 0/1`;
+  - `--profile low` (simple lighting, 720p, 30 full trees).
+- **Render height:** `WARP_RENDER_HEIGHT=N` fixes the render height
+  (0 = native).
+
+### How to test headless
+
+- **fps:** `terrain_fly --track --from build/screenshots/terrain-fly-<id>.json --bench 120 --size 2560x1440`.
+- **A shot:** `--shot out.png` instead of `--bench`. Add `--size 5120x2880`
+  with `WARP_RENDER_HEIGHT=965` to see what Joep's window shows.
+- **Per pass:** use `xctrace record --template 'Metal System Trace'` and
+  sum the encoder intervals; the parse scripts are described under
+  "Measuring" above. `--bench` timestamps overlap on Metal, so compare by
+  fps or xctrace.
+- **Motion:** `--pan DEG --dump N DIR` writes N frames turning DEG per
+  frame. Use it for shimmer, and with the HUD's "worst ms" for turn
+  hitches.
+- **Terrain churn on the CPU:** run `cargo test -p render --lib
+  procedural_terrain::tests`.
+- **Sideways A/B:** `sideways shot X.png --views 2 --size 2560x1440 --taa 64`.
+
+### Known traps
+
+- **Metal timestamps:** per-pass GPU timestamps overlap on Metal. Measure
+  with fps deltas or xctrace.
+- **Shade cost is kernel size:** it comes from register pressure, not
+  runtime branches. Win by compiling code out (override constants, separate
+  pipelines); a runtime skip gains nothing.
+- **Shared instance flags:** all 32 bits of `GpuInstance::flags` are taken
+  (see scene.rs). A new flag must share a bit safely, as `is_molten` does.
+- **Joep's Mac:** someone may be playing on it.
+  - Never open, focus or relaunch a game window unless he asks.
+  - No GPU runs while he plays: they share his GPU, and his 5 fps report
+    was partly that.
+  - Ask before closing a window.
+- **Cloud sessions:** they have no GPU, so they can only do CPU tests.
+- **Splat budget:** 4M splats per view. Finer than about 4 px proxies
+  overflows at wide views and trees vanish. That is the reason for the
+  culling work below.
+
+### Next tasks, in order
+
+1. **GPU-check 540c40e (turn hitches) and e5d216d (red trees)** when
+   Joep allows a GPU run:
+   - `--pan 30 --dump 60` at his spots, and the worst ms against 1df3ca9;
+   - check that the hidden-build swap does not pop visibly.
+2. **Adaptive quality on 5K/120 Hz.**
+   - Decide with Joep: target 60 fps, or an adaptive base above 1440p.
+   - At 0.67 times 1440p a 5K screen shows everything 3x blurred.
+3. **Nanite-style voxels at about 1 px of the presented image.** Joep:
+   "Nanite is 1 voxel per pixel". The steps:
+   - Group each level's splat cells (`voxel_forest.rs::splat_cells`, a flat
+     list per level) into bricks of 4x4x4 cells, each with a local AABB and
+     a cell range.
+   - In `voxel_splats`, test bricks instead of cells:
+     - frustum first;
+     - then occlusion against an HZB, two-pass like Nanite. Pass 1 draws
+       the bricks visible last frame (a per-view bit per brick) into the
+       visibility buffer. Build the HZB from that depth plus the opaque
+       scene (`pyramid.encode` in frame.rs already builds one). Pass 2
+       tests the rest against it.
+     - The splat count is then bounded by screen pixels times overdraw,
+       not by tree count.
+   - Choose the level so a voxel is about 1-1.5 *presented* pixels: divide
+     `proxy_pixels` by the render scale.
+   - Check that the cooked proxy has fine enough levels at 150-400 m
+     (cell size in metres per level).
+   - At 1 px, quads per voxel may cost too much in the vertex stage.
+     Measure; a compute rasterizer of bricks is the fallback.
+4. **Indirect visible-tree list for voxel splats and sun splats** (about
+   +1.5 fps). With nothing drawn they cost 0.59 + 0.50 ms for 131k
+   one-tree workgroups. A list needs a storage binding in voxel group 2,
+   which is near the 16-buffer limit. Superseded if step 3 restructures
+   voxel_splats.
+5. **The near ground material** (`field_surface`, about 4 ms). No block
+   dominates. Only a cheaper formulation of its layers, or image changes,
+   remain.
+
 ## Why
 
 Joep's terrain_fly playtest (2 Nov 2026, four cameras, 2560x1440, M5 Pro)
