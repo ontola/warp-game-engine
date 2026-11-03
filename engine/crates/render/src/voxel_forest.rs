@@ -300,6 +300,7 @@ pub(crate) struct TemporalInputs<'a> {
     pub snapshot_valid: bool,
 }
 struct TemporalPipelines {
+    gbuffer: wgpu::ComputePipeline,
     data_layout: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
     pipelines: [wgpu::ComputePipeline;8],
@@ -377,6 +378,16 @@ fn create_data_layout(gpu:&Gpu,temporal:bool)->wgpu::BindGroupLayout {
     let entries = data_bindings(temporal);
     gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("voxel data"),
         entries:&entries.into_iter().map(|(binding,ty)|wgpu::BindGroupLayoutEntry {binding,ty,visibility:wgpu::ShaderStages::COMPUTE,count:None}).collect::<Vec<_>>()})
+}
+fn surface_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> wgpu::ComputePipeline {
+    let coarser: Vec<(&str, f64)> = std::env::var("KERN_VOXEL_SELF_SHADOW_COARSER").ok().and_then(|v| v.parse().ok())
+        .map(|v: f64| ("VOXEL_SELF_SHADOW_COARSER", v)).into_iter().collect();
+    let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("voxel surface"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+    gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("voxel_splat_gbuffer"), layout: Some(layout), module: &module,
+        entry_point: Some("voxel_splat_gbuffer"), compilation_options: wgpu::PipelineCompilationOptions {
+            constants: &coarser, ..Default::default() }, cache: gpu.pipeline_cache() })
 }
 fn sun_splat_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> wgpu::ComputePipeline {
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -731,14 +742,7 @@ impl VoxelRenderer {
         let specialized_source = integrator_options.specialize(&temporal_source(&source,false).expect("invalid voxel temporal blocks"))
             .expect("invalid voxel integrator option shader");
         let [bins, tiles, clear, integrate,intervals,scatter,splats,resolve] = pipelines(gpu, &pipeline_layout, &specialized_source, scene.voxel_active_tiles,integrator_options.global_intervals);
-        let gbuffer = {
-            let coarser: Vec<(&str, f64)> = std::env::var("KERN_VOXEL_SELF_SHADOW_COARSER").ok().and_then(|v| v.parse().ok())
-                .map(|v: f64| ("VOXEL_SELF_SHADOW_COARSER", v)).into_iter().collect();
-            let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("voxel surface"), source: wgpu::ShaderSource::Wgsl(specialized_source.as_str().into()) });
-            gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("voxel_splat_gbuffer"), layout: Some(&pipeline_layout),
-                module: &module, entry_point: Some("voxel_splat_gbuffer"), compilation_options: wgpu::PipelineCompilationOptions { constants: &coarser,
-                    ..Default::default() }, cache: gpu.pipeline_cache() })
-        };
+        let gbuffer = surface_pipeline(gpu, &pipeline_layout, &specialized_source);
         eprintln!("voxel integrator: interval_capacity=64 active_capacity=16 empty_ceiling={} (accepted skip fix; bounded prototype, complete scan on cache overflow)",
             integrator_options.empty_ceiling);
         eprintln!("voxel normals: antipodal_requested={antipodal_requested} antipodal_eligible={antipodal_eligible} antipodal_enabled={} normal_lobes={} cell_bytes=176 (experimental; exact pairs, generic fallback)",
@@ -877,7 +881,8 @@ impl VoxelRenderer {
             let layout=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label:Some("temporal voxel forest"),bind_group_layouts:&[Some(&self.scene_layout),Some(&self.view_layout),Some(&data_layout)],immediate_size:0});
             let pipelines=pipelines(gpu,&layout,&source,self.active_tiles,self.integrator_options.global_intervals);
-            TemporalPipelines {data_layout,layout,pipelines}
+            let gbuffer = surface_pipeline(gpu, &layout, &source);
+            TemporalPipelines {data_layout,layout,pipelines,gbuffer}
         })?;
         *temporal=Some(prepared);Ok(())
     }
@@ -1199,7 +1204,7 @@ impl VoxelRenderer {
                     timestamp_writes: times[3].map(|(query_set, i)| wgpu::ComputePassTimestampWrites {
                         query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
                 pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind, &[]);
-                pass.set_pipeline(&self.gbuffer);
+                pass.set_pipeline(temporal_pipelines.map_or(&self.gbuffer, |p| &p.gbuffer));
                 pass.dispatch_workgroups(size.0.div_ceil(8), size.1.div_ceil(8), 1);
             }
             if stage == Stage::Splats || scene_targets.is_some() { return Ok(()); }
