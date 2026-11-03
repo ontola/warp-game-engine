@@ -61,6 +61,9 @@ pub struct Frame<'a> {
     pub dt: f32,
     /// Interpolation between the previous and the latest tick, 0..1.
     pub alpha: f32,
+    /// Frames per second that render the scene: frames that only redraw the
+    /// HUD over the last scene image (debug menu open) do not count.
+    pub scene_fps: f32,
     /// How two views share the screen ([`Game::split`]).
     pub split: render::SplitLayout,
     renderer: &'a mut Option<Renderer>,
@@ -69,7 +72,7 @@ pub struct Frame<'a> {
 impl<'a> Frame<'a> {
     /// Frame access for an external presentation shell, including OpenXR.
     pub fn new(gpu: &'a Gpu, renderer: &'a mut Option<Renderer>, size: [u32; 2], dt: f32, alpha: f32) -> Self {
-        Self { gpu, renderer, size, dt, alpha, split: render::SplitLayout::SideBySide }
+        Self { gpu, renderer, size, dt, alpha, split: render::SplitLayout::SideBySide, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 } }
     }
 
     /// Upload a scene: creates the renderer, or replaces it.
@@ -385,7 +388,7 @@ impl<'g> Headless<'g> {
     pub fn render_at(&mut self, game: &mut dyn Game, alpha: f32) -> Result<profile::DrawTimings, String> {
         if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) { return Err("alpha must be in 0..1".into()); }
         let split = game.split();
-        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha, split, renderer: &mut self.renderer };
+        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha, split, scene_fps: self.tick_hz, renderer: &mut self.renderer };
         let started = Instant::now();
         let draw = game.draw(&mut frame)?;
         let game_ms = started.elapsed().as_secs_f64() * 1000.;
@@ -540,6 +543,10 @@ struct Shell<'g> {
     screen_refresh_hz: Option<f64>,
     /// When the scene was last rendered (see [`Shell::scene_due`]).
     last_scene: Instant,
+    /// Scene frames and loop iterations since `stats_at`, logged every 2 s.
+    scene_frames: u32,
+    loop_frames: u32,
+    stats_at: Instant,
     error: Option<String>,
     modifiers: ModifiersState,
     /// IME composition in progress: key text is the IME's until it commits.
@@ -569,7 +576,7 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
         println!("{}: adaptive quality enabled, {}", cfg.title, q.label());
     }
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -601,7 +608,6 @@ impl Shell<'_> {
         let now = Instant::now();
         let dt = (now - self.last).as_secs_f32().min(0.1);
         self.last = now;
-        if dt > 0.0 { self.fps += (1.0 / dt - self.fps) * 0.05; }
         if let Some(q) = &mut self.quality {
             q.set_enabled(self.debug.adaptive_quality() && !self.game.fixed_quality());
             let target = match self.debug.target_fps() {
@@ -643,7 +649,20 @@ impl Shell<'_> {
         let size = [live.config.width, live.config.height];
         let split = self.game.split();
         if live.renderer.is_none() { self.game.loading(75, "building the scene"); }
-        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, renderer: &mut live.renderer };
+        // While the debug menu is open the scene renders about once a second
+        // and shortly after a change; frames in between only redraw the HUD,
+        // so the menu answers clicks even when the scene takes 500 ms.
+        let scene = !self.debug.open() || self.last_scene.elapsed().as_secs_f32() >= 1.0
+            || self.debug.changed.is_some_and(|t| t > self.last_scene && t.elapsed().as_secs_f32() >= 0.25);
+        // The fps shown counts scene frames only, not HUD-only redraws.
+        if scene {
+            let scene_dt = self.last_scene.elapsed().as_secs_f32().min(1.0);
+            if scene_dt > 0.0 { self.fps += (1.0 / scene_dt - self.fps) * 0.05; }
+            self.last_scene = Instant::now();
+            self.scene_frames += 1;
+        }
+        self.loop_frames += 1;
+        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, scene_fps: self.fps, renderer: &mut live.renderer };
         let mut draw = self.game.draw(&mut frame)?;
         let Some(renderer) = &live.renderer else { return Err("the game drew without a scene".into()) };
         draw.light = self.debug.light(draw.light);
@@ -680,12 +699,14 @@ impl Shell<'_> {
             }
             (None, h) => h,
         };
-        // While the debug menu is open the scene renders about once a second
-        // and shortly after a change; frames in between only redraw the HUD,
-        // so the menu answers clicks even when the scene takes 500 ms.
-        let scene = !self.debug.open() || self.last_scene.elapsed().as_secs_f32() >= 1.0
-            || self.debug.changed.is_some_and(|t| t > self.last_scene && t.elapsed().as_secs_f32() >= 0.25);
-        if scene { self.last_scene = Instant::now(); }
+        let seconds = self.stats_at.elapsed().as_secs_f32();
+        if seconds >= 2.0 {
+            println!("{} frames: scene {:.1}/s, loop {:.1}/s, render {}x{} of {}x{}, debug menu {}", manners::stamp(),
+                self.scene_frames as f32 / seconds, self.loop_frames as f32 / seconds,
+                render_height.map_or(size[0], |h| (size[0] as u64 * h as u64 / size[1].max(1) as u64) as u32), render_height.unwrap_or(size[1]),
+                size[0], size[1], if self.debug.open() { "open" } else { "closed" });
+            (self.scene_frames, self.loop_frames, self.stats_at) = (0, 0, Instant::now());
+        }
         let (to_file, to_game) = (std::mem::take(&mut self.screenshot), self.game.wants_capture());
         if to_file || to_game {
             let target = offscreen(&live.gpu, size, wgpu::TextureFormat::Rgba8UnormSrgb);
