@@ -29,6 +29,8 @@ pub mod startup;
 pub mod screenshot;
 pub mod quality;
 pub mod profile;
+pub mod frame_rate;
+pub use frame_rate::FrameRate;
 
 pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning};
 pub use text::{FieldEvent, TextEvent, TextField};
@@ -64,6 +66,8 @@ pub struct Frame<'a> {
     /// Frames per second that render the scene: frames that only redraw the
     /// HUD over the last scene image (debug menu open) do not count.
     pub scene_fps: f32,
+    /// The longest scene frame of the last second, in ms (hitches the mean hides).
+    pub scene_worst_ms: f32,
     /// How two views share the screen ([`Game::split`]).
     pub split: render::SplitLayout,
     renderer: &'a mut Option<Renderer>,
@@ -72,7 +76,7 @@ pub struct Frame<'a> {
 impl<'a> Frame<'a> {
     /// Frame access for an external presentation shell, including OpenXR.
     pub fn new(gpu: &'a Gpu, renderer: &'a mut Option<Renderer>, size: [u32; 2], dt: f32, alpha: f32) -> Self {
-        Self { gpu, renderer, size, dt, alpha, split: render::SplitLayout::SideBySide, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 } }
+        Self { gpu, renderer, size, dt, alpha, split: render::SplitLayout::SideBySide, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0 }
     }
 
     /// Upload a scene: creates the renderer, or replaces it.
@@ -388,7 +392,7 @@ impl<'g> Headless<'g> {
     pub fn render_at(&mut self, game: &mut dyn Game, alpha: f32) -> Result<profile::DrawTimings, String> {
         if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) { return Err("alpha must be in 0..1".into()); }
         let split = game.split();
-        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha, split, scene_fps: self.tick_hz, renderer: &mut self.renderer };
+        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha, split, scene_fps: self.tick_hz, scene_worst_ms: 1000.0 / self.tick_hz, renderer: &mut self.renderer };
         let started = Instant::now();
         let draw = game.draw(&mut frame)?;
         let game_ms = started.elapsed().as_secs_f64() * 1000.;
@@ -538,6 +542,7 @@ struct Shell<'g> {
     toast: Option<(String, Instant)>,
     /// Smoothed frames per second, for screenshot metadata.
     fps: f32,
+    rate: FrameRate,
     debug: debug::EngineDebug,
     quality: Option<quality::AdaptiveQuality>,
     screen_refresh_hz: Option<f64>,
@@ -576,7 +581,7 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
         println!("{}: adaptive quality enabled, {}", cfg.title, q.label());
     }
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -656,13 +661,15 @@ impl Shell<'_> {
             || self.debug.changed.is_some_and(|t| t > self.last_scene && t.elapsed().as_secs_f32() >= 0.25);
         // The fps shown counts scene frames only, not HUD-only redraws.
         if scene {
-            let scene_dt = self.last_scene.elapsed().as_secs_f32().min(1.0);
-            if scene_dt > 0.0 { self.fps += (1.0 / scene_dt - self.fps) * 0.05; }
+            // Mean scene frame time, not mean of 1/dt: that read 100+ fps
+            // through 200 ms hitches on fast mouse turns.
+            self.rate.push(self.last_scene.elapsed().as_secs_f32(), Instant::now());
+            self.fps = self.rate.fps();
             self.last_scene = Instant::now();
             self.scene_frames += 1;
         }
         self.loop_frames += 1;
-        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, scene_fps: self.fps, renderer: &mut live.renderer };
+        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, scene_fps: self.fps, scene_worst_ms: self.rate.worst_ms(), renderer: &mut live.renderer };
         let mut draw = self.game.draw(&mut frame)?;
         let Some(renderer) = &live.renderer else { return Err("the game drew without a scene".into()) };
         draw.light = self.debug.light(draw.light);

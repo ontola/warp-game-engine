@@ -153,6 +153,7 @@ struct Fly {
     stats: Stats,
     jumps: u32,
     fps: f32,
+    worst_ms: f32,
     /// --track: a winding gravel road the land is bent to (render::world_constraints),
     /// baked for the seed and style it was made for.
     track: bool,
@@ -162,7 +163,7 @@ struct Fly {
 impl Fly {
     fn new(seed: u32, style: usize, world: World) -> Result<Self, String> {
         let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, speed: 40.0, hug: None, wheel: 0.0,
-            building: None, gpu: None, stale: false, world, built_world: world, world_at: None, terrain_settings: Settings::default(), terrain: None, trees: None, light: Lighting::default(), stats: Stats::default(), jumps: 0, fps: 0.0,
+            building: None, gpu: None, stale: false, world, built_world: world, world_at: None, terrain_settings: Settings::default(), terrain: None, trees: None, light: Lighting::default(), stats: Stats::default(), jumps: 0, fps: 0.0, worst_ms: 0.0,
             track: std::env::args().any(|a| a == "--track"), constraints: None };
         fly.bake_track();
         if let Some((start, yaw)) = fly.track_start() { fly.pos = start; fly.yaw = yaw; fly.pitch = -0.05; }
@@ -349,11 +350,12 @@ impl Game for Fly {
         }
         // Scene frames only: with the debug menu open the HUD redraws faster.
         self.fps = frame.scene_fps;
+        self.worst_ms = frame.scene_worst_ms;
 
         let s = self.sample(pos.x, pos.z);
         let above = pos.y - s.pos.y;
         let lines = [
-            format!("{}  seed {}  {:.0} fps", STYLES[self.style], self.seed, self.fps),
+            format!("{}  seed {}  {:.0} fps  worst {:.0} ms", STYLES[self.style], self.seed, self.fps, self.worst_ms),
             format!("x {:.0}  z {:.0}  height {:.0} m  {:.0} m above ground", pos.x, pos.z, pos.y, above),
             format!("speed {:.0} m/s{}", self.speed, if self.hug.is_some() { "  ground hug" } else { "" }),
             format!("patches {}  overflow {}  finest {}  lod x{:.2}", self.stats.patches, self.stats.overflow, self.stats.finest_level, self.stats.lod_scale),
