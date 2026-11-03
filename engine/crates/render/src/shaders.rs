@@ -75,7 +75,7 @@ impl Snapshot {
         &self.files[BUILT_IN.iter().position(|(n, _)| *n == name).expect("registered shader")]
     }
     pub(crate) fn shade(&self) -> String {
-        SHARED_NAMES.map(|name| self.source(name)).join("\n")
+        format!("{}\n{}", include_str!("shaders/virtual_member.wgsl"), SHARED_NAMES.map(|name| self.source(name)).join("\n"))
     }
     pub(crate) fn lighting(&self) -> LightingSources {
         let shade = self.shade();

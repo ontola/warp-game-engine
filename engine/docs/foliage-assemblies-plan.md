@@ -9,6 +9,27 @@ Nanite Foliage and Assemblies.
 first. It is the current state, the open issues and the next tasks; the
 sections after it are the history that led there.
 
+## Real recipe adapter and shared renderer addressing (3 November 2026)
+
+`CookedPlant::shared_selection_recipe` now supplies the GPU selector with real
+source branch identities and measured voxel candidates from the existing cook.
+Geometry/voxel arrays are not duplicated per tree. Bounds include the full wind
+ancestor chain. Optical thresholds gate regular voxel selection; a separately
+marked resident root is reserved for explicit overflow fallback. Exact source
+leaves remain available. Simplified-triangle candidate export is still missing.
+
+Real-GPU selection test: 1,200 instances of a small three-branch cooked plant,
+3,600 exact-source records or 1,200 admitted whole-subtree voxel records, no
+fallbacks. This tests real cooker data but is NOT 1,200 detailed rendered trees.
+The production cull/raster/shade/motion shaders now share `virtual_member.wgsl`;
+instance flags use the same field name and unchanged binary layout. GPU rendering
+of expanded versus virtual source matched all pixels at three wind timestamps
+in a 128x128 diagnostic. Forty-nine shader checks passed.
+
+The selector still does not drive production draws. GPU transient owner/pose
+allocation and source/voxel consumers remain the next integration step; the CPU
+240-tree pool, lighting budget and shadow-cache work are not marked complete.
+
 ## GPU selection core checkpoint (3 November 2026)
 
 `render::foliage_select` is now a separately tested experimental API. It accepts

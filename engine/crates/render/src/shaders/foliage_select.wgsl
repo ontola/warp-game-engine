@@ -78,7 +78,7 @@ fn walk(tree:u32,start:u32,phase:u32) {
    // rejection; if output fills, the resident root is an explicit fallback.
    atomicAdd(&counters[2],1u);
   }
-  if node.links.x==NONE || error_pixels(s,node.error.x*t.scale.x)<=view.pixels.z {
+  if node.links.x==NONE || ((node.links.w&1u)==0u && error_pixels(s,node.error.x*t.scale.x)<=view.pixels.z) {
    emit(tree,n);n=node.links.y;
   }else{n=node.links.x;}
  }

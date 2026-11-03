@@ -22,6 +22,10 @@ use std::{
     ops::Range,
 };
 
+#[path = "vegetation_selection.rs"]
+mod selection;
+pub use selection::{SharedSelectionRecipe, SelectedRepresentation};
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Primitive {
     mesh: ClusterMesh,
@@ -1720,6 +1724,119 @@ mod tests {
         Assembly::from_parts(Parameters {density:1,..Parameters::conifer_twig(17)},vec![geometry],branches,
             instances,vec![Material {tint:[0.17,0.32,0.09],layer:-1,roughness:0.8,
                 flags:crate::scene::THIN_FOLIAGE|crate::scene::TWO_SIDED,scale:1.0,metal:0.0}],Limits::default()).unwrap()
+    }
+
+    #[test]
+    #[ignore="exclusive GPU fixture"]
+    fn virtual_source_matches_expanded_gpu() {
+        use crate::{Camera,Lighting,Renderer,ViewRect};
+        let source=aggregate_fixture();let cooked=CookedPlant::cook_source(&source).unwrap();
+        let gpu=crate::Gpu::new().unwrap();let light=Lighting::default();
+        let mut frames=Vec::new();
+        for virtual_members in [false,true] {
+            let mut scene=Scene::default();let mut builder=SceneVegetation::new(&mut scene,AttachLimits {virtual_members,..Default::default()}).unwrap();
+            builder.append(&cooked,instance(1,Mat4::IDENTITY)).unwrap();builder.finish_source().unwrap();
+            let renderer=Renderer::new(&gpu,&scene,&light);
+            let view=[ViewRect {cam:Camera {pos:Vec3::new(0.3,0.4,1.6),target:Vec3::new(0.3,0.4,0.),fov_y:1.,near:0.05},x:0,y:0,w:128,h:128}];
+            let picks=(0..16).flat_map(|y|(0..16).map(move|x|(4+x*8,4+y*8))).collect::<Vec<_>>();
+            let mut sequence=Vec::new();
+            for time_seconds in [0.,1.,1.4] {
+                renderer.set_wind(&gpu,&crate::wind::WindState {time_seconds,strength:0.8,..Default::default()}).unwrap();
+                let (image,stats)=renderer.try_render_views(&gpu,&view,&light,128,128,&picks).unwrap();
+                assert!(stats.picks.iter().any(Option::is_some),"fixture must draw source geometry");sequence.push(image);
+            }
+            frames.push(sequence);
+        }
+        for (a,b) in frames[0].iter().zip(&frames[1]) {
+            let error=a.iter().zip(b).map(|(&a,&b)|a.abs_diff(b)as u64).sum::<u64>()as f64/a.len()as f64;
+            let different=a.chunks_exact(4).zip(b.chunks_exact(4)).filter(|(a,b)|a!=b).count();
+            eprintln!("virtual/expanded source: RGBA MAE={error}, changed pixels={different}/16384");
+            assert!(error<0.5,"virtual source differs from expanded reference: {error}");
+            assert!(different<164,"more than 1 percent of source pixels changed");
+        }
+    }
+
+    #[test]
+    fn shared_selection_uses_real_optical_evidence_and_stable_source_ids() {
+        use crate::aggregate_lod::Policy;
+        let source=aggregate_fixture();let cooked=CookedPlant::cook_aggregate(&source,aggregate_config()).unwrap();
+        let fine=cooked.shared_selection_recipe(Policy::default()).unwrap();
+        assert_eq!(fine.nodes.len(),4); // resident fallback + three exact branches
+        assert_eq!(fine.nodes[0].links[3],1);
+        let ids=fine.representations.iter().filter_map(|r|match r {
+            SelectedRepresentation::SourceBranch {branch_id,..}=>Some(*branch_id),_=>None}).collect::<Vec<_>>();
+        assert_eq!(ids,vec![10,11,12]);
+        for maximum in [0.0,0.08,1.0] {
+            let recipe=cooked.shared_selection_recipe(Policy {allow_sampled_optics:true,max_coverage_error:maximum,max_color_error:maximum,..Policy::default()}).unwrap();
+            for node in recipe.nodes.iter().skip(1) {
+                if let SelectedRepresentation::Voxel {branch,branch_id,level}=recipe.representations[node.links[2]as usize] {
+                    let b=&cooked.branches[branch as usize];assert_eq!(b.id,branch_id);
+                    assert!(b.aggregate.iter().any(|c|!c.source_only&&c.level==level&&c.spatial_error==node.error[0]
+                        &&c.voxel_coverage_error<=maximum&&c.voxel_color_error<=maximum));
+                }
+            }
+        }
+        // Sweep independently articulated branches, retaining all original
+        // source vertices. Bounds must cover motion, not only rest geometry.
+        for phase in [-1.0f32,-0.5,0.0,0.5,1.0] {
+            let mut poses=Vec::<Mat4>::new();
+            for b in &cooked.branches {
+                let pose=b.rest*Mat4::from_quat(Quat::from_axis_angle(Vec3::new(0.3,1.,0.4).normalize(),phase*b.max_angle));
+                poses.push(b.parent.map_or(pose,|parent|poses[parent as usize]*pose));
+            }
+            for p in &cooked.placements {
+                let rep=fine.representations.iter().position(|r|matches!(r,SelectedRepresentation::SourceBranch {branch,..} if *branch==p.branch as u32)).unwrap();
+                let bound=fine.nodes.iter().find(|n|n.links[2]==rep as u32).unwrap().sphere;
+                for v in &cooked.primitives[p.primitive].mesh.vertices {
+                    let point=(poses[p.branch]*p.rest).transform_point3(Vec3::from(v.pos));
+                    assert!(point.distance(Vec3::from_slice(&bound))<=bound[3]+1e-4);
+                }
+            }
+        }
+        assert_eq!(cooked.stats().placements,4);assert_eq!(cooked.stats().primitive_meshes,1);
+    }
+
+    #[test]
+    #[ignore="exclusive GPU fixture"]
+    fn shared_selection_gpu_uses_cooked_plant_for_more_than_240_instances() {
+        use crate::foliage_select::{Selector,Instance};
+        let cooked=CookedPlant::cook_aggregate(&aggregate_fixture(),aggregate_config()).unwrap();
+        let gpu=crate::Gpu::new().unwrap();
+        let depth=gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("empty selection fixture depth"),
+            size:wgpu::Extent3d {width:1,height:1,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,
+            format:wgpu::TextureFormat::R32Float,usage:wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]}).create_view(&Default::default());
+        for coarse in [false,true] {
+            let recipe=cooked.shared_selection_recipe(crate::aggregate_lod::Policy {allow_sampled_optics:coarse,max_coverage_error:1.,max_color_error:1.,..Default::default()}).unwrap();
+            let instance=Instance {rows:[[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.]],scale:[1.,0.,0.,0.],info:[0,29,0,0]};
+            let trees=vec![instance;1200];let selector=Selector::new(&gpu,&recipe.nodes,&trees,4096,4096).unwrap();
+            let vp=Mat4::from_translation(Vec3::new(0.,0.,0.5))*Mat4::from_scale(Vec3::splat(0.1));
+            let mut enc=gpu.device.create_command_encoder(&Default::default());
+            selector.first(&gpu,&mut enc,vp,vp,[128;2],if coarse{1e6}else{0.},false,&depth).unwrap();
+            selector.second(&gpu,&mut enc,&depth);gpu.queue.submit([enc.finish()]);
+            let read=|buffer:&wgpu::Buffer|->Vec<u32> {
+                let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("shared recipe oracle"),size:buffer.size(),
+                    usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+                let mut enc=gpu.device.create_command_encoder(&Default::default());enc.copy_buffer_to_buffer(buffer,0,&out,0,buffer.size());
+                let submission=gpu.queue.submit([enc.finish()]);let(tx,rx)=std::sync::mpsc::sync_channel(1);
+                out.slice(..).map_async(wgpu::MapMode::Read,move|r|{let _=tx.send(r);});
+                gpu.device.poll(wgpu::PollType::Wait {submission_index:Some(submission),timeout:Some(std::time::Duration::from_secs(30))}).unwrap();rx.recv().unwrap().unwrap();
+                let bytes=out.slice(..).get_mapped_range().unwrap();bytes.chunks_exact(4).map(bytemuck::pod_read_unaligned).collect()
+            };
+            let counters=read(&selector.counters);let records=read(&selector.records);let fallback=read(&selector.fallback);
+            assert_eq!(counters[0],if coarse{1200}else{3600});assert!(fallback.iter().all(|&v|v==0));
+            let mut cuts=vec![Vec::new();1200];
+            for r in records.chunks_exact(4).take(counters[0]as usize) {
+                assert_eq!(r[3],29);cuts[r[0]as usize].push(recipe.representations[r[2]as usize]);
+            }
+            for cut in cuts {
+                if coarse {assert!(matches!(cut.as_slice(),[SelectedRepresentation::Voxel {branch:0,..}]));}
+                else {
+                    let mut ids=cut.iter().map(|r|match r {SelectedRepresentation::SourceBranch {branch_id,..}=>*branch_id,_=>panic!("unexpected voxel")}).collect::<Vec<_>>();
+                    ids.sort();assert_eq!(ids,vec![10,11,12]);
+                }
+            }
+            eprintln!("real cooked recipe: instances=1200 shared_nodes={} coarse={coarse} records={} fallback=0",recipe.nodes.len(),counters[0]);
+        }
     }
 
     fn aggregate_config() -> crate::vegetation_aggregate::Config {

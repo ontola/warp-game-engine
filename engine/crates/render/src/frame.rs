@@ -79,7 +79,7 @@ const TIMESTAMP_CAPACITY: u32 = 512; // includes per-view aggregate depth/materi
 
 /// Keep the grass rejection in culling identical to its opaque raster path.
 pub(crate) fn cull_source() -> String {
-    format!("{}\n{}\n{}\n{}\n{}", include_str!("shaders/grass_common.wgsl"), include_str!("shaders/cull.wgsl"), include_str!("shaders/cluster_traversal.wgsl"), crate::receiver_shadow_demand::cull_source(),crate::source_replacement::query_source())
+    format!("{}\n{}\n{}\n{}\n{}", concat!(include_str!("shaders/virtual_member.wgsl"), "\n", include_str!("shaders/grass_common.wgsl")), include_str!("shaders/cull.wgsl"), include_str!("shaders/cluster_traversal.wgsl"), crate::receiver_shadow_demand::cull_source(),crate::source_replacement::query_source())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -5091,7 +5091,7 @@ mod layout_tests {
     fn zero_sun_guard_returns_before_shared_direct_visibility_queries() {
         // Inspect composed WGSL, not an isolated replacement shader. An early
         // guard must precede any texture/world query in both public helpers.
-        let source = crate::shaders::SHARED_NAMES.map(crate::shaders::built_in).join("\n");
+        let source = format!("{}\n{}", include_str!("shaders/virtual_member.wgsl"), crate::shaders::SHARED_NAMES.map(crate::shaders::built_in).join("\n"));
         let module = naga::front::wgsl::parse_str(&source)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())

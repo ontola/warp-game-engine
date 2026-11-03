@@ -1012,7 +1012,7 @@ mod molten_tests {
         assert!(!is_molten(0));
         assert_eq!(MOLTEN_DEBRIS, crate::part_wind::HISTORY_EPOCH, "the shared bit this guards");
         // The shader's test is the same mask.
-        assert!(include_str!("shaders/shade.wgsl").contains("(inst.pad & (128u | 32u)) == 128u"));
+        assert!(include_str!("shaders/shade.wgsl").contains("(inst.flags & (128u | 32u)) == 128u"));
         assert_eq!(PART_WIND, 32);
     }
 }

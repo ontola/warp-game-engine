@@ -3,41 +3,24 @@ struct MotionUniform {
     camera: vec4<f32>, size: vec4<f32>, flags: vec4<u32>,
     grass: vec4<f32>,
 };
-struct MotionInstance {
+struct Instance {
     r0: vec4<f32>, r1: vec4<f32>, r2: vec4<f32>, sphere: vec4<f32>,
     first_cluster: u32, cluster_count: u32, scale: f32, flags: u32,
 };
 @group(0) @binding(0) var<uniform> motion: MotionUniform;
-@group(0) @binding(1) var<storage,read> current_instances: array<MotionInstance>;
-@group(0) @binding(2) var<storage,read> previous_instances: array<MotionInstance>;
+@group(0) @binding(1) var<storage,read> current_instances: array<Instance>;
+@group(0) @binding(2) var<storage,read> previous_instances: array<Instance>;
 
-// Virtual assembly members (vegetation_asset AttachLimits::virtual_members):
-// bit 31, the branch owner (19 bits) and its template (12 bits). The owner's
-// rows are its part_wind pose and its first_cluster packs the templates
-// (start << 12 | count); a member is pose x template.
-const VIRTUAL_MEMBER: u32 = 0x80000000u;
-fn member_slot(id: u32) -> u32 { return select(id, (id >> 12u) & 0x7ffffu, (id & VIRTUAL_MEMBER) != 0u); }
-fn compose_member(owner: MotionInstance, t: MotionInstance) -> MotionInstance {
-    var m = t;
-    m.r0 = owner.r0.x * t.r0 + owner.r0.y * t.r1 + owner.r0.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r0.w);
-    m.r1 = owner.r1.x * t.r0 + owner.r1.y * t.r1 + owner.r1.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r1.w);
-    m.r2 = owner.r2.x * t.r0 + owner.r2.y * t.r1 + owner.r2.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r2.w);
-    let c = vec4<f32>(t.sphere.xyz, 1.0);
-    m.sphere = vec4<f32>(dot(owner.r0, c), dot(owner.r1, c), dot(owner.r2, c), -t.sphere.w * owner.scale);
-    m.scale = t.scale * owner.scale;
-    // The owner's history epoch (bit 7) marks a woken pose for motion.
-    m.flags = (t.flags & ~0x80u) | (owner.flags & 0x80u);
-    return m;
-}
-fn current_at(id: u32) -> MotionInstance {
+// Address/deformation composition is shared in virtual_member.wgsl.
+fn current_at(id: u32) -> Instance {
     if (id & VIRTUAL_MEMBER) == 0u { return current_instances[id]; }
-    let owner = current_instances[(id >> 12u) & 0x7ffffu];
-    return compose_member(owner, current_instances[(owner.first_cluster >> 12u) + (id & 0xfffu)]);
+    let owner = current_instances[member_owner(id)];
+    return compose_member(owner, current_instances[member_template(owner,id)]);
 }
-fn previous_at(id: u32) -> MotionInstance {
+fn previous_at(id: u32) -> Instance {
     if (id & VIRTUAL_MEMBER) == 0u { return previous_instances[id]; }
-    let owner = previous_instances[(id >> 12u) & 0x7ffffu];
-    return compose_member(owner, previous_instances[(owner.first_cluster >> 12u) + (id & 0xfffu)]);
+    let owner = previous_instances[member_owner(id)];
+    return compose_member(owner, previous_instances[member_template(owner,id)]);
 }
 @group(0) @binding(3) var<storage,read> current_wind: array<vec4<f32>>;
 @group(0) @binding(4) var<storage,read> previous_wind: array<vec4<f32>>;
@@ -57,10 +40,10 @@ struct MotionOut { @location(0) vector: vec2<f32>, @location(1) depth: f32, @loc
     return vec4<f32>(array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0))[index],0.0,1.0);
 }
 fn finite4(v:vec4<f32>)->bool { return all(abs(v)<vec4<f32>(1e30)); }
-fn transform(inst:MotionInstance,p:vec3<f32>)->vec3<f32> {
+fn transform(inst:Instance,p:vec3<f32>)->vec3<f32> {
     let v=vec4<f32>(p,1.0);return vec3<f32>(dot(inst.r0,v),dot(inst.r1,v),dot(inst.r2,v));
 }
-fn rest_root(inst:MotionInstance)->vec3<f32> {return vec3<f32>(inst.r0.w,inst.r1.w,inst.r2.w);}
+fn rest_root(inst:Instance)->vec3<f32> {return vec3<f32>(inst.r0.w,inst.r1.w,inst.r2.w);}
 fn deform(p:vec3<f32>,root_y:f32,shear:vec2<f32>)->vec3<f32> {return p+vec3<f32>(shear.x,0.0,shear.y)*(p.y-root_y);}
 
 // Source primitives have stable owner IDs even when several share one branch

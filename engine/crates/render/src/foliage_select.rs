@@ -19,7 +19,8 @@ pub struct Node {
     pub sphere:[f32;4],
     /// Geometric/aggregate error in metres. Remaining components reserved.
     pub error:[f32;4],
-    /// First child (NONE for leaf), exclusive subtree end, representation ID, reserved.
+    /// First child (NONE for leaf), exclusive subtree end, representation ID, flags.
+    /// Flag bit 0: resident overflow fallback only; always refine normally.
     pub links:[u32;4],
 }
 #[repr(C)]
