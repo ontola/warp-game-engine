@@ -25,7 +25,20 @@ impl Graphics {
     pub const FULL: Self=Self {minimal_forward:false,characters:true,stadium:true,sky_occlusion:true,simple_blocks:false,simple_guns:false,simple_lighting:false,debris_capacity:4096,debris_divisor:1,debris_size:1.0,particles:768,lod_pixels:1.0};
     pub const LOW: Self=Self {minimal_forward:false,characters:true,stadium:false,sky_occlusion:false,simple_blocks:true,simple_guns:true,simple_lighting:true,debris_capacity:128,debris_divisor:16,debris_size:1.6,particles:128,lod_pixels:4.0};
     pub const MINIMUM:Self=Self {minimal_forward:true,characters:false,debris_capacity:0,particles:32,lod_pixels:16.0,..Self::LOW};
-    pub fn parse(s:&str)->Result<Self,String> {match s {"full"=>Ok(Self::FULL),"low"=>Ok(Self::LOW),"minimum"=>Ok(Self::MINIMUM),_=>Err(format!("unknown graphics profile {s}; use full, low or minimum"))}}
+    /// A profile name, optionally with switches for measuring one part at a
+    /// time: `full:sky_occlusion=0,stadium=1`.
+    pub fn parse(s:&str)->Result<Self,String> {
+        let (name,switches)=s.split_once(':').unwrap_or((s,""));
+        let mut g=match name {"full"=>Self::FULL,"low"=>Self::LOW,"minimum"=>Self::MINIMUM,_=>return Err(format!("unknown graphics profile {s}; use full, low or minimum"))};
+        for kv in switches.split(',').filter(|kv|!kv.is_empty()) {
+            let (k,v)=kv.split_once('=').ok_or(format!("graphics switch {kv}: use NAME=0|1"))?;
+            let on=v=="1";
+            match k {"stadium"=>g.stadium=on,"characters"=>g.characters=on,"sky_occlusion"=>g.sky_occlusion=on,"simple_blocks"=>g.simple_blocks=on,
+                "simple_guns"=>g.simple_guns=on,"simple_lighting"=>g.simple_lighting=on,"minimal_forward"=>g.minimal_forward=on,
+                _=>return Err(format!("unknown graphics switch {k}"))}
+        }
+        Ok(g)
+    }
     pub fn debris_count(self,count:u32)->u32 {count.div_ceil(self.debris_divisor).min(self.debris_capacity as u32)}
     pub fn name(self)->&'static str {if self==Self::FULL {"full"} else if self==Self::LOW {"low"} else {"minimum"}}
     /// One step cheaper, if there is one.
