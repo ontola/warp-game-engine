@@ -98,6 +98,28 @@ fn run() -> Result<(), String> {
                 wz.enchant_time = s.n.duration.max(30.0);
                 wz.enchant = Some(Box::new(s));
             }
+            // --cast poison,fire,air: the first wizard's spray or beam of
+            // that queue, running (a look at a stream).
+            if let Some(list) = arg("--cast") {
+                game.step(&[]);
+                let els: Vec<spellstorm::El> = list.split(',').filter_map(|k| spellstorm::el::ALL.iter().copied().find(|e| format!("{e:?}").eq_ignore_ascii_case(k))).collect();
+                let id = game.world.wizards[0];
+                let mods = game.world.a(id).mods.clone();
+                let s = spellstorm::compose(&els, spellstorm::Form::Cast, &mods);
+                let at = game.world.pos(id) + glam::Vec3::new(0.0, 1.2, 0.0);
+                eprintln!("cast: {} {:?}", s.name, s.shape);
+                match s.shape {
+                    spellstorm::Shape::Spray => {
+                        let c = game.world.start_spray(id, &s, at);
+                        game.world.wiz_mut(id).channel = Some(c);
+                    }
+                    spellstorm::Shape::Beam => {
+                        let c = game.world.start_beam(id, &s, at);
+                        game.world.wiz_mut(id).channel = Some(c);
+                    }
+                    _ => {}
+                }
+            }
             let ticks = numf("--ticks", 240.0) as u32;
             // --skip: past this level's fights to its last shrine and portal.
             if flag("--skip") {
