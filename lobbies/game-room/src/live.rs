@@ -695,10 +695,6 @@ impl Game for Lobby {
     /// Escape is the mouse's Start: the room never closes on it.
     fn escape(&mut self) -> bool { self.mouse_escape(); true }
 
-    /// A room people look at more than move in: adaptive quality only lowers
-    /// the resolution when it can't keep 60 fps, not to chase a 120 Hz screen.
-    fn target_fps(&self) -> Option<f32> { Some(60.0) }
-
     fn title(&self) -> Option<String> { Some("GameNight Game Room".into()) }
 
     fn screen(&self) -> app::Screen {
