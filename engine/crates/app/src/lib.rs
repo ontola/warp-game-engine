@@ -6,7 +6,8 @@
 //! Built-in keys: click captures the mouse, Esc releases it (or quits when
 //! released). F10 always opens the engine debug menu ([`debug`]), F11 toggles
 //! fullscreen, F12 saves a feedback screenshot (PNG, JSON and the clipboard;
-//! see [`screenshot`]). These reserved keys run before game/menu/text input.
+//! see [`screenshot`]); Shift+F12, or F12 twice, then a dragged rectangle
+//! saves a crop of it. These reserved keys run before game/menu/text input.
 //! F1 to F9 belong to [`Game::function_key`].
 //!
 //! Text entry: while [`Game::text_input`] is true the keyboard types
@@ -526,6 +527,10 @@ struct Shell<'g> {
     /// Shift+F12: after the frame is saved, drag a rectangle of it.
     crop_requested: bool,
     crop: Option<Crop>,
+    /// The last F12 frame: a second F12 soon after crops it (no modifier).
+    last_shot: Option<(Instant, Crop)>,
+    /// Shift as seen by key events: ModifiersChanged alone missed it on macOS.
+    shift_down: bool,
     /// The last screenshot's line and until when it shows.
     toast: Option<(String, Instant)>,
     /// Smoothed frames per second, for screenshot metadata.
@@ -564,7 +569,7 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
         println!("{}: adaptive quality enabled, {}", cfg.title, q.label());
     }
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, toast: None, fps: 0.0, debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -698,10 +703,13 @@ impl Shell<'_> {
                 }
                 let saved = screenshot::save_full(screenshot::Shot { title: &self.cfg.title, size, rgba: &rgba, metadata }, |path| self.game.feedback_replay(path, (self.acc / step).clamp(0.0, 1.0)));
                 let line = match saved {
-                    Ok(saved) if std::mem::take(&mut self.crop_requested) => {
+                    Ok(saved) => {
                         let line = saved.line.clone();
-                        if let Ok(picture) = render::picture::Picture::new(size[0], size[1], rgba.clone()) {
-                            self.crop = Some(Crop { saved, size, picture: Arc::new(picture), start: None, cursor: [0.0; 2] });
+                        let crop = render::picture::Picture::new(size[0], size[1], rgba.clone()).ok()
+                            .map(|picture| Crop { saved, size, picture: Arc::new(picture), start: None, cursor: [0.0; 2] });
+                        match (crop, std::mem::take(&mut self.crop_requested)) {
+                          (Some(crop), true) => {
+                            self.crop = Some(crop);
                             // capture_mouse(false), field by field: `live` is borrowed.
                             self.devices.reset_mouse();
                             self.devices.mouse_captured = false;
@@ -710,10 +718,14 @@ impl Shell<'_> {
                                 w.set_cursor_visible(true);
                                 w.set_cursor(winit::window::CursorIcon::Crosshair);
                             }
+                            line
+                          }
+                          (crop, _) => {
+                            if let Some(crop) = crop { self.last_shot = Some((Instant::now(), crop)); }
+                            format!("{line}  (F12 again: crop)")
+                          }
                         }
-                        line
                     }
-                    Ok(saved) => saved.line,
                     Err(e) => { eprintln!("screenshot failed: {e}"); format!("screenshot failed: {e}") }
                 };
                 self.toast = Some((line, Instant::now() + std::time::Duration::from_secs(4)));
@@ -812,6 +824,12 @@ impl Shell<'_> {
         // The pointer works the menu while it is open.
         if !was_open && self.debug.open() { self.capture_mouse(false); }
         used
+    }
+
+    fn start_crop(&mut self, crop: Crop) {
+        self.crop = Some(crop);
+        self.capture_mouse(false);
+        if let Some(w) = &self.window { w.set_cursor(winit::window::CursorIcon::Crosshair); }
     }
 
     /// Left button down starts the rectangle, up saves it.
@@ -946,6 +964,7 @@ impl ApplicationHandler for Shell<'_> {
             },
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
+                if matches!(code, KeyCode::ShiftLeft | KeyCode::ShiftRight) { self.shift_down = event.state == ElementState::Pressed; }
                 if self.crop.is_some() {
                     if code == KeyCode::Escape && event.state == ElementState::Pressed { self.end_crop("crop cancelled".into()); }
                     return;
@@ -958,8 +977,11 @@ impl ApplicationHandler for Shell<'_> {
                                 w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) });
                             },
                             EngineShortcut::Screenshot => if self.crop.is_none() {
-                                self.screenshot = true;
-                                self.crop_requested = self.modifiers.shift_key();
+                                let shift = self.modifiers.shift_key() || self.shift_down;
+                                let again = self.last_shot.take().filter(|(at, _)| at.elapsed().as_secs_f32() < 1.5);
+                                println!("F12: shift {shift}, again {}", again.is_some());
+                                if let Some((_, crop)) = again { self.start_crop(crop); }
+                                else { self.screenshot = true; self.crop_requested = shift; }
                             },
                         }
                         self.sync_capture();
