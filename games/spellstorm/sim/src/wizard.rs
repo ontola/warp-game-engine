@@ -75,7 +75,7 @@ const PLANT: &[Form] = &[Form::Cast, Form::Nova, Form::Plant];
 const ENCHANT: &[Form] = &[Form::Cast, Form::Nova, Form::Plant, Form::Enchant];
 pub const STAGE_FORMS: [&[Form]; STAGES] = [CAST, CAST, NOVA, NOVA, PLANT, PLANT, PLANT, ENCHANT, ENCHANT, ENCHANT];
 const STAGE_BASE: [i32; STAGES] = [2, 3, 3, 4, 4, 4, 4, 4, 4, 4];
-const STAGE_LB: [i32; STAGES] = [0, 0, 0, 0, 0, 1, 1, 2, 3, 4];
+const STAGE_LB: [i32; STAGES] = [0, 0, 0, 0, 0, 0, 0, 1, 2, 4];
 pub const ALL_UNLOCKED: i32 = 99;
 
 /// One controller, read the same way whatever it is (pad.gd).
