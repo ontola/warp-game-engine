@@ -179,7 +179,7 @@ impl<In: Message, Out: Message> Client<In, Out> {
         let (mut send, mut recv, ep, conn) = rt.block_on(async {
             let ep = endpoint(lan, vec![]).await?;
             let conn = tokio::time::timeout(std::time::Duration::from_secs(20), ep.connect(addr, &alpn)).await
-                .map_err(|_| "timed out connecting".to_string())?.map_err(|e| e.to_string())?;
+                .map_err(|_| "timed out connecting".to_string())?.map_err(|e| connect_error(&e.to_string()))?;
             let (send, recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
             Ok::<_, String>((send, recv, ep, conn))
         })?;
@@ -258,5 +258,23 @@ mod tests {
         drop(client);
         wait(|| match host.poll() { Some(HostEvent::Left { client }) => Some(client), _ => None });
         assert!(parse_ticket("zz").is_err());
+    }
+}
+
+/// A TLS ALPN mismatch means host and client run different game versions;
+/// say that instead of "error 120: peer doesn't support any known protocol".
+fn connect_error(e: &str) -> String {
+    if e.contains("error 120") || e.contains("known protocol") || e.contains("no_application_protocol") {
+        "the host runs a different version of this game; both players need the same (latest) build".into()
+    } else { e.to_string() }
+}
+
+#[cfg(test)]
+mod connect_error_tests {
+    #[test]
+    fn version_mismatch_reads_as_one() {
+        let e = super::connect_error("aborted by peer: the cryptographic handshake failed: error 120: peer doesn't support any known protocol");
+        assert!(e.contains("different version"));
+        assert_eq!(super::connect_error("timed out"), "timed out");
     }
 }
