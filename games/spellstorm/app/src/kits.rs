@@ -135,7 +135,7 @@ impl Kits {
         let mut kits = HashMap::new();
         for (name, v) in &file.kits {
             let Some(nodes) = v["nodes"].as_array() else { continue };
-            let nodes = nodes
+            let nodes: Vec<Node> = nodes
                 .iter()
                 .map(|n| Node {
                     name: n["name"].as_str().unwrap_or("").to_string(),
@@ -158,6 +158,12 @@ impl Kits {
             let named = v["named"].as_object().map(|o| o.iter().filter_map(|(k, i)| Some((k.clone(), index(i)?))).collect()).unwrap_or_default();
             let eyes = v["eyes"].as_array().map(|a| a.iter().filter_map(index).collect()).unwrap_or_default();
             let base_scale = v["base_scale"].as_f64().unwrap_or(1.0) as f32;
+            let mut nodes = nodes;
+            // A burrower's body was hidden in Godot until its script showed
+            // it (Enemy._go_under at spawn); here the view shows and sinks it.
+            if name.starts_with("enemy/") && let Some(root) = nodes.first_mut() {
+                root.visible = true;
+            }
             kits.insert(name.clone(), Kit { nodes, named, eyes, base_scale });
         }
         Ok(Kits { dir, file, bin, kits })
