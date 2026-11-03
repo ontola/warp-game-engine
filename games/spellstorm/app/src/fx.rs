@@ -363,6 +363,19 @@ pub fn particles(c: C, amount: u32, life: f32, size: f32) -> Em {
 
 /// Parts.style: element `e`'s own particles. Returns the smoke that curls
 /// off fire too, when `smoke`.
+/// How heavy a spell looks: 1 with one of its element, more with two or
+/// three of the same (Joep: two fire is a bigger, fiercer flamethrower).
+fn heft(s: &spellstorm::Spell) -> f32 {
+    let k = s.counts.iter().map(|c| c.1).max().unwrap_or(1).max(1) as f32;
+    1.0 + 0.6 * (k - 1.0)
+}
+
+/// A spell's elements besides its main one, each with how many: they run
+/// through its look (poison and fire make a poison fire, Joep).
+fn others(s: &spellstorm::Spell) -> Vec<(El, u8)> {
+    s.counts.iter().filter(|c| Some(c.0) != s.primary && c.1 > 0).copied().collect()
+}
+
 pub fn style(p: &mut Em, e: El, smoke: bool) -> Option<Em> {
     let c = el_c(e);
     let size = p.size;
@@ -1058,6 +1071,19 @@ impl Fx {
         let t = self.time;
         let ot = o.t as f32;
         let c = o.spell.primary.map(el_c).unwrap_or([1.0, 0.8, 0.5, 1.0]);
+        // Its other elements burn, swirl or crackle round the big thing
+        // too, so the mix shows (Joep).
+        if let Some(at) = o.thing.map(|th| if o.spell.primary == Some(El::Fire) { o.target + th } else { th }) {
+            for (i, (e2, n2)) in others(&o.spell).into_iter().enumerate() {
+                let mut q = particles(el_c(e2), 20 * n2 as u32 + 12, 0.6, 0.7);
+                let _ = style(&mut q, e2, false);
+                q.sphere = 1.0;
+                q.dir = Vec3::Y;
+                q.spread = 120.0;
+                q.v = (0.5, 2.0);
+                self.stream((key, 20 + i as u8), q, at, dt);
+            }
+        }
         match o.spell.primary {
             Some(El::Fire) => {
                 let Some(off) = o.thing else { return };
@@ -1200,6 +1226,17 @@ impl Fx {
             if let Ok(b) = w.ecs.get::<&SBolt>(id) {
                 if b.flight.zap {
                     continue;
+                }
+                // Its other elements trail off it in their own way: a fire
+                // bolt with poison in it sheds green flames too.
+                for (i, &(e2, n2)) in b.spell.counts.iter().filter(|c| Some(c.0) != b.el && c.1 > 0).enumerate() {
+                    let mut q = particles(el_c(e2), (5.0 * n2 as f32 + 4.0 * b.size) as u32 + 3, 0.35, 0.16 + 0.12 * b.size);
+                    let _ = style(&mut q, e2, false);
+                    q.sphere = 0.1 + 0.05 * b.size;
+                    q.dir = -b.vel.normalize_or(Vec3::Z) + Vec3::Y * 0.3;
+                    q.spread = 40.0;
+                    q.v = (0.3, 1.2);
+                    self.stream((key, 3 + i as u8), q, b.pos, dt);
                 }
                 if b.el == Some(El::Fire) {
                     // A fire bolt is a knot of the flamethrower's flames
@@ -1370,19 +1407,37 @@ impl Fx {
                     body.params = [t, (key % 97) as f32, 0.0, 0.0];
                     self.live.push(body);
                 }
+                // Two or three of it: a bigger, denser, wider stream.
+                let h = heft(&s.spell);
+                p.amount = (p.amount as f32 * h) as u32;
+                p.size *= 1.0 + 0.3 * (h - 1.0);
+                p.spread *= 1.0 + 0.4 * (h - 1.0);
+                // Its other elements burn, drip or crackle through it.
+                for (i, (e2, n2)) in others(&s.spell).into_iter().enumerate() {
+                    let mut q = particles(el_c(e2), ((p.amount as f32) * 0.35 * n2 as f32) as u32 + 6, p.life, p.size);
+                    let sm2 = style(&mut q, e2, false);
+                    let _ = sm2;
+                    q.dir = p.dir;
+                    q.spread = p.spread * 1.2;
+                    q.v = p.v;
+                    q.damp = p.damp;
+                    self.stream((key, 3 + i as u8), q, s.at, dt);
+                }
                 self.stream((key, 0), p, s.at, dt);
-                if let Some(sm) = smoke {
+                if let Some(mut sm) = smoke {
+                    sm.amount = (sm.amount as f32 * h) as u32;
                     self.stream((key, 1), sm, s.at, dt);
                 }
+                let h_light = h;
                 if e == El::Fire {
                     // A flamethrower floods its surroundings: brighter, wider
                     // and warmer (orange-yellow) than other sprays, and lit
                     // along the jet as well as at the staff.
                     let warm = rgba(1.0, 0.62, 0.22, 1.0);
-                    self.light(s.at + s.dir * 1.0, warm, 3.2, 11.0);
-                    self.light(s.at + s.dir * 4.0, warm, 2.4, 9.0);
+                    self.light(s.at + s.dir * 1.0, warm, 3.2 * h_light, 11.0 + 3.0 * (h_light - 1.0));
+                    self.light(s.at + s.dir * 4.0, warm, 2.4 * h_light, 9.0 + 3.0 * (h_light - 1.0));
                 } else {
-                    self.light(s.at + s.dir * 2.0, el_c(e), 1.2, 6.0);
+                    self.light(s.at + s.dir * 2.0, el_c(e), 1.2 * h_light, 6.0);
                 }
             } else if let Ok(b) = w.ecs.get::<&Beam>(id) {
                 let e = b.spell.primary.unwrap_or(El::Lightning);
@@ -1390,14 +1445,44 @@ impl Fx {
                 let c3 = linear3([c[0], c[1], c[2]]);
                 let d = b.to - b.from;
                 let len = d.length();
+                let h = heft(&b.spell);
                 if len > 0.05 {
                     let mid = (b.from + b.to) * 0.5;
+                    let dir = d / len;
                     let wob = 1.0 + 0.15 * (t * 30.0).sin();
-                    self.live.push(Sprite::shaft(mid, [0.35 * wob, len], d / len, IMAGE, uv(Cell::Line), c3 * 2.0));
-                    self.live.push(Sprite::shaft(mid, [0.1, len], d / len, IMAGE, uv(Cell::Line), Vec3::ONE * 3.0));
+                    // Mixed, its colour runs between them (poison fire: a
+                    // sickly green-orange, not plain green).
+                    let total: f32 = b.spell.counts.iter().map(|c| c.1 as f32).sum::<f32>().max(1.0);
+                    let mut mixed = c3 * (b.spell.count(e) as f32).max(1.0);
+                    for (e2, n2) in others(&b.spell) {
+                        let c2 = el_c(e2);
+                        mixed += linear3([c2[0], c2[1], c2[2]]) * n2 as f32;
+                    }
+                    let c3 = c3.lerp(mixed / total, 0.6);
+                    self.live.push(Sprite::shaft(mid, [0.35 * wob * h, len], dir, IMAGE, uv(Cell::Line), c3 * 2.0));
+                    self.live.push(Sprite::shaft(mid, [0.1 * h, len], dir, IMAGE, uv(Cell::Line), Vec3::ONE * 3.0));
+                    // Its other elements twist round it and fly off it all
+                    // along: a poison beam with fire in it burns green and
+                    // orange, flames licking up off it.
+                    for (i, (e2, n2)) in others(&b.spell).into_iter().enumerate() {
+                        let c2 = el_c(e2);
+                        let w2 = (0.55 + 0.15 * n2 as f32) * h * (1.0 + 0.3 * (t * 23.0 + i as f32 * 2.1).sin());
+                        self.live.push(Sprite::shaft(mid, [w2, len], dir, IMAGE, uv(Cell::Line), linear3([c2[0], c2[1], c2[2]]) * 1.4));
+                        let mut q = particles(c2, (16.0 * n2 as f32 * h) as u32 + 10, 0.5, 0.45 * h);
+                        let _ = style(&mut q, e2, false);
+                        q.dir = Vec3::Y;
+                        q.spread = 60.0;
+                        q.v = (0.4, 1.4);
+                        q.sphere = 0.16 * h;
+                        let pieces = ((len / 1.5) as usize).clamp(1, 8);
+                        for j in 0..pieces {
+                            let at = b.from + d * ((j as f32 + 0.5) / pieces as f32);
+                            self.stream((key, 10 + (i * 8 + j) as u8), q, at, dt);
+                        }
+                    }
                 }
-                self.halo(b.to, c, 1.4, 0.8);
-                self.light(b.to + Vec3::Y * 0.3, c, 1.5, 5.0);
+                self.halo(b.to, c, 1.4 * h, 0.8);
+                self.light(b.to + Vec3::Y * 0.3, c, 1.5 * h, 5.0);
             } else if let Ok(tr) = w.ecs.get::<&Trap>(id) {
                 if !tr.done {
                     let e = tr.spell.primary.unwrap_or(El::Fire);
@@ -1406,7 +1491,8 @@ impl Fx {
                     // A circle of runes worn into the floor, lit from below in
                     // its element's colour and breathing (spells.wgsl trap).
                     let r = tr.trigger_r() as f32;
-                    let mut s = flat_sprite(tr.pos + Vec3::Y * 0.05, r, Cell::Patch, linear3([c[0], c[1], c[2]]) * 1.6).solid();
+                    let h = heft(&tr.spell);
+                    let mut s = flat_sprite(tr.pos + Vec3::Y * 0.05, r, Cell::Patch, linear3([c[0], c[1], c[2]]) * 1.6 * h).solid();
                     s.effect = crate::effects::TRAP;
                     s.params = [arm, (key % 97) as f32 * 0.37, t, 0.0];
                     self.live.push(s);
@@ -1415,9 +1501,16 @@ impl Fx {
                 let e = s.spell.primary.unwrap_or(El::Fire);
                 let c = el_c(e);
                 let at = s.pos + Vec3::Y * 1.2;
-                self.live.push(glow_sprite(at, 0.4, Cell::Spark, linear3([c[0], c[1], c[2]]) * 2.5));
-                self.halo(at, c, 1.6, 0.6);
-                self.light(at, c, 0.8, 4.0);
+                let h = heft(&s.spell);
+                self.live.push(glow_sprite(at, 0.4 * h, Cell::Spark, linear3([c[0], c[1], c[2]]) * 2.5));
+                self.halo(at, c, 1.6 * h, 0.6);
+                self.light(at, c, 0.8 * h, 4.0 + 1.5 * (h - 1.0));
+                for (i, (e2, _)) in others(&s.spell).into_iter().enumerate() {
+                    let c2 = el_c(e2);
+                    let a = t * 2.5 + i as f32 * 2.1;
+                    let orb = at + Vec3::new(a.cos(), 0.15 * (a * 2.0).sin(), a.sin()) * 0.45 * h;
+                    self.live.push(glow_sprite(orb, 0.18 * h, Cell::Spark, linear3([c2[0], c2[1], c2[2]]) * 2.0));
+                }
             }
         }
         for &id in &w.fields {
