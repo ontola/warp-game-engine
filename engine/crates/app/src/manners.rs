@@ -161,7 +161,7 @@ impl Manners {
 }
 
 /// This executable's name, to tell a game's window lines from the lobby's.
-fn process() -> &'static str {
+pub fn process() -> &'static str {
     static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     NAME.get_or_init(|| std::env::current_exe().ok().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned())).unwrap_or_default())
 }

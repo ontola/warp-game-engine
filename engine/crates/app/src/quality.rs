@@ -140,6 +140,14 @@ impl AdaptiveQuality {
         true
     }
 
+    /// Frames that are not measured (a hidden window): forget the samples
+    /// and any slow streak, so they cannot lower quality later either.
+    pub fn idle(&mut self) {
+        self.samples.clear();
+        self.starved_since = None;
+        self.calm_since = None;
+    }
+
     /// Feed one presented frame interval in milliseconds. Returns true when the rung changed.
     pub fn frame(&mut self, dt_ms: f64, now: Instant) -> bool {
         if !self.enabled || !dt_ms.is_finite() || dt_ms <= 0.0 { return false; }
@@ -285,6 +293,19 @@ mod tests {
         // Making the target again resets it.
         run(&mut q, &mut now, 16.0, 60);
         run(&mut q, &mut now, 33.0, 30 * 2);
+        assert!(!q.content_too_heavy(now));
+    }
+
+    #[test]
+    fn idle_frames_of_a_hidden_window_never_count() {
+        let mut now = Instant::now();
+        let mut q = quality(now);
+        q.target_ms = 1000.0 / 120.0;
+        // Half a window of 20 fps while hidden, then shown and fast.
+        run(&mut q, &mut now, 50.0, WINDOW / 2 - 1);
+        q.idle();
+        run(&mut q, &mut now, 8.0, WINDOW * 4);
+        assert_eq!(q.level, 0);
         assert!(!q.content_too_heavy(now));
     }
 
