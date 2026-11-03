@@ -41,7 +41,9 @@ fn run() -> Result<(), String> {
         let options = game_room::stage::Options::from_args(numf, flag, |k| arg(k).is_some());
         let mut lobby = game_room::live::Lobby::connect(options)?;
         // Controllers come from the host as frames; the mouse points and clicks but is nobody.
-        let cfg = app::Config { title: "GameNight Game Room".into(), size: [1600, 900], fullscreen: !flag("--windowed"), keyboard: false, pointer: true, frames: numf("--frames", 0.0) as u64, ..Default::default() };
+        let cfg = app::Config { title: "GameNight Game Room".into(), size: [1600, 900], fullscreen: !flag("--windowed"), keyboard: false, pointer: true, frames: numf("--frames", 0.0) as u64,
+            // Native resolution: the room is text and pixel art, soft when upscaled from 1440p.
+            max_render_height: Some(0), ..Default::default() };
         return app::run(cfg, &mut lobby);
     }
     if matches!(args.get(1).map(String::as_str), Some("play") | Some("live-shot")) {

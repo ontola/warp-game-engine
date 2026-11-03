@@ -242,7 +242,8 @@ pub struct Config {
     pub frames: u64,
     /// Render the 3D views at most this many pixels tall and scale them up
     /// (the HUD stays sharp): a 5K Retina screen shades 7x the pixels of
-    /// 1080p. `WARP_RENDER_HEIGHT` overrides it, 0 for native.
+    /// 1080p. `WARP_RENDER_HEIGHT` overrides it. Some(0) is native, also
+    /// under adaptive quality (which otherwise starts from 1440p at most).
     pub max_render_height: Option<u32>,
     /// Target framerate for dynamic adaptive graphics quality.
     /// None checks `Game::target_fps`, `WARP_TARGET_FPS`, or the monitor refresh rate.
@@ -718,6 +719,8 @@ impl Shell<'_> {
         }
         let base_height = self.debug.render_height().unwrap_or_else(|| std::env::var("WARP_RENDER_HEIGHT").ok().and_then(|v| v.parse().ok()).or(self.cfg.max_render_height));
         let render_height = match (&self.quality, base_height) {
+            // 0 is native: adaptive quality scales down from the full window.
+            (Some(q), Some(0)) => { let h = q.render_height(size[1]); (h < size[1]).then_some(h) }
             (Some(q), Some(h)) => Some(q.render_height(h)),
             (Some(q), None) => {
                 // A 5K or 4K window starts from about 1440p, not native.

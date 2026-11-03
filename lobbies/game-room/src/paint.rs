@@ -69,24 +69,30 @@ pub struct Show {
 }
 
 /// Godot's draw calls on one screen's rectangle in an atlas draw list.
+/// Painters draw in the screen's own pixels (`size`); `k` atlas pixels
+/// stand for each, so a screen shown big on a 4K TV stays sharp.
 pub struct Canvas<'a> {
     list: &'a mut HudDrawList,
     origin: [f32; 2],
     pub size: [f32; 2],
+    k: f32,
 }
 
 fn srgb(c: Color) -> [f32; 4] { [c.r.clamp(0.0, 1.0), c.g.clamp(0.0, 1.0), c.b.clamp(0.0, 1.0), c.a.clamp(0.0, 1.0)] }
 
 impl<'a> Canvas<'a> {
-    pub fn new(list: &'a mut HudDrawList, rect: [u32; 4]) -> Self {
-        Self { list, origin: [rect[0] as f32, rect[1] as f32], size: [rect[2] as f32, rect[3] as f32] }
+    pub fn new(list: &'a mut HudDrawList, rect: [u32; 4]) -> Self { Self::scaled(list, rect, 1.0) }
+
+    /// A screen painted at `k` atlas pixels per screen pixel into `rect`.
+    pub fn scaled(list: &'a mut HudDrawList, rect: [u32; 4], k: f32) -> Self {
+        Self { list, origin: [rect[0] as f32, rect[1] as f32], size: [rect[2] as f32 / k, rect[3] as f32 / k], k }
     }
 
-    fn clip(&self) -> [f32; 4] { [self.origin[0], self.origin[1], self.size[0], self.size[1]] }
+    fn clip(&self) -> [f32; 4] { [self.origin[0], self.origin[1], self.size[0] * self.k, self.size[1] * self.k] }
     /// Draw `dx` further right (a prompt centred in a wider screen).
-    pub fn shift(&mut self, dx: f32) { self.origin[0] += dx; self.size[0] -= dx; }
+    pub fn shift(&mut self, dx: f32) { self.origin[0] += dx * self.k; self.size[0] -= dx; }
 
-    fn at(&self, p: [f32; 2]) -> [f32; 2] { [self.origin[0] + p[0], self.origin[1] + p[1]] }
+    fn at(&self, p: [f32; 2]) -> [f32; 2] { [self.origin[0] + p[0] * self.k, self.origin[1] + p[1] * self.k] }
 
     /// Later shapes go over the text drawn so far (text otherwise draws last).
     pub fn over(&mut self) { self.list.begin_overlay(); }
@@ -94,26 +100,26 @@ impl<'a> Canvas<'a> {
     pub fn rect(&mut self, r: [f32; 4], c: Color) {
         let p = self.at([r[0], r[1]]);
         let clip = self.clip();
-        self.list.rect([p[0], p[1], r[2], r[3]], srgb(c), clip);
+        self.list.rect([p[0], p[1], r[2] * self.k, r[3] * self.k], srgb(c), clip);
     }
 
     /// A one-pixel line, as Godot's draw_line with its default width.
     pub fn line(&mut self, a: [f32; 2], b: [f32; 2], c: Color, width: f32) {
         let clip = self.clip();
         let (a, b) = (self.at(a), self.at(b));
-        self.list.line(a, b, width, srgb(c), clip);
+        self.list.line(a, b, width * self.k, srgb(c), clip);
     }
 
     pub fn circle(&mut self, center: [f32; 2], radius: f32, c: Color) {
         let clip = self.clip();
         let center = self.at(center);
-        self.list.circle(center, radius, srgb(c), clip);
+        self.list.circle(center, radius * self.k, srgb(c), clip);
     }
 
     pub fn arc(&mut self, center: [f32; 2], radius: f32, from: f32, to: f32, width: f32, c: Color) {
         let clip = self.clip();
         let center = self.at(center);
-        self.list.arc(center, radius, from, to, width, srgb(c), clip);
+        self.list.arc(center, radius * self.k, from, to, width * self.k, srgb(c), clip);
     }
 
     pub fn polygon(&mut self, points: &[[f32; 2]], c: Color) {
@@ -165,8 +171,8 @@ impl<'a> Canvas<'a> {
         let id = self.list.text.len() as u64 + 1;
         let to8 = |v: f32| (v * 255.0).round() as u8;
         let s = srgb(c);
-        self.list.text.push(TextRun { id, text: text.into(), position: p, bounds: self.clip(), font_size: size,
-            color: [to8(s[0]), to8(s[1]), to8(s[2]), to8(s[3])], font: face, align, width });
+        self.list.text.push(TextRun { id, text: text.into(), position: p, bounds: self.clip(), font_size: size * self.k,
+            color: [to8(s[0]), to8(s[1]), to8(s[2]), to8(s[3])], font: face, align, width: width * self.k });
     }
 }
 

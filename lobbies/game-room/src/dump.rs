@@ -77,7 +77,16 @@ pub struct Tuning {
 
 /// Where a painted screen sits: its albedo layer and pixel rectangle there.
 #[derive(Clone, Copy, Debug)]
-pub struct ScreenRect { pub layer: i32, pub rect: [u32; 4] }
+pub struct ScreenRect {
+    pub layer: i32,
+    pub rect: [u32; 4],
+    /// Atlas pixels per screen pixel.
+    pub k: f32,
+}
+
+/// The live lobby paints its screens at twice their own pixels: the TV and
+/// Up next show bigger than that on a 4K screen, and text went soft.
+const SCREEN_SCALE: f32 = 2.0;
 
 /// Painted screens share 2048-pixel layers, packed in shelves.
 #[derive(Default)]
@@ -253,7 +262,7 @@ impl Room {
         if let Some(&v) = layers.get(&tex) { return v; }
         let t = &self.dump.textures[tex];
         let v = if let Some(name) = t.screen.clone() {
-            let rect = self.place(scene, t.width, t.height);
+            let rect = self.place(scene, t.width, t.height, if self.live { SCREEN_SCALE } else { 1.0 });
             self.screens.insert(name, rect);
             self.screen_of_texture.insert(tex, rect);
             let side = render::screen::SIZE as f32;
@@ -274,10 +283,12 @@ impl Room {
 
     /// A free rectangle for a painted screen, with a margin so mips do not
     /// bleed between neighbours.
-    fn place(&mut self, scene: &mut Scene, w: u32, h: u32) -> ScreenRect {
+    /// `k` atlas pixels per screen pixel, as far as the layer allows.
+    fn place(&mut self, scene: &mut Scene, w: u32, h: u32, k: f32) -> ScreenRect {
         const PAD: u32 = 8;
         let side = render::screen::SIZE;
-        let (w, h) = (w.min(side - PAD), h.min(side - PAD));
+        let k = k.min((side - PAD) as f32 / w.max(1) as f32).min((side - PAD) as f32 / h.max(1) as f32).max(1.0);
+        let (w, h) = (((w as f32 * k).round() as u32).min(side - PAD), ((h as f32 * k).round() as u32).min(side - PAD));
         let a = &mut self.atlas;
         if a.layer >= 0 && a.x + w + PAD > side { a.x = 0; a.y += a.row; a.row = 0; }
         if a.layer < 0 || a.y + h + PAD > side {
@@ -286,7 +297,7 @@ impl Room {
             a.y = 0;
             a.row = 0;
         }
-        let rect = ScreenRect { layer: a.layer, rect: [a.x, a.y, w, h] };
+        let rect = ScreenRect { layer: a.layer, rect: [a.x, a.y, w, h], k };
         a.x += w + PAD;
         a.row = a.row.max(h + PAD);
         rect
