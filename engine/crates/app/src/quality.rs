@@ -46,6 +46,9 @@ const CALM: f64 = 1.04;
 const SETTLE: Duration = Duration::from_millis(600);
 const FIRST_TRY_UP: Duration = Duration::from_secs(3);
 const MAX_TRY_UP: Duration = Duration::from_secs(40);
+/// Missing the target this long on the lowest rung means the content is too
+/// heavy for this machine: the game is told (`Game::content_too_heavy`).
+pub const TOO_HEAVY_AFTER: Duration = Duration::from_secs(12);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rung {
@@ -68,6 +71,8 @@ pub struct AdaptiveQuality {
     try_up: Duration,
     probing: Option<Instant>,
     enabled: bool,
+    /// Since when frames have been slow on the lowest rung.
+    starved_since: Option<Instant>,
 }
 
 impl AdaptiveQuality {
@@ -88,6 +93,7 @@ impl AdaptiveQuality {
             try_up: FIRST_TRY_UP,
             probing: None,
             enabled: true,
+            starved_since: None,
         })
     }
 
@@ -95,7 +101,7 @@ impl AdaptiveQuality {
     pub fn set_enabled(&mut self, enabled: bool) {
         if self.enabled != enabled {
             self.enabled = enabled;
-            if !enabled { self.level = 0; }
+            if !enabled { self.level = 0; self.starved_since = None; }
         }
     }
 
@@ -122,6 +128,15 @@ impl AdaptiveQuality {
 
     pub fn level(&self) -> usize { self.level }
 
+    /// The lowest rung has missed the target for [`TOO_HEAVY_AFTER`]: true
+    /// once, then the wait starts over (the game lowers its content, and the
+    /// controller gets the same time to settle on the lighter scene).
+    pub fn content_too_heavy(&mut self, now: Instant) -> bool {
+        if !self.starved_since.is_some_and(|t| now.duration_since(t) >= TOO_HEAVY_AFTER) { return false; }
+        self.starved_since = Some(now);
+        true
+    }
+
     /// Feed one presented frame interval in milliseconds. Returns true when the rung changed.
     pub fn frame(&mut self, dt_ms: f64, now: Instant) -> bool {
         if !self.enabled || !dt_ms.is_finite() || dt_ms <= 0.0 { return false; }
@@ -135,6 +150,7 @@ impl AdaptiveQuality {
         let median = sorted[sorted.len() / 2];
         if median > self.target_ms * SLOW {
             self.calm_since = None;
+            if self.level == LADDER.len() - 1 { self.starved_since.get_or_insert(now); }
             if self.probing.take().is_some_and(|t| now.duration_since(t) < self.try_up) {
                 self.try_up = (self.try_up * 2).min(MAX_TRY_UP);
             }
@@ -145,6 +161,7 @@ impl AdaptiveQuality {
             self.probing = None;
             self.try_up = FIRST_TRY_UP;
         }
+        self.starved_since = None;
         if median <= self.target_ms * CALM {
             let since = *self.calm_since.get_or_insert(now);
             if self.level > 0 && now.duration_since(since) >= self.try_up {
@@ -161,6 +178,7 @@ impl AdaptiveQuality {
         let next = (self.level as isize + by).clamp(0, LADDER.len() as isize - 1) as usize;
         if next == self.level { return false; }
         self.level = next;
+        self.starved_since = None;
         self.changed = now;
         self.calm_since = None;
         self.samples.clear();
@@ -245,7 +263,25 @@ mod tests {
             try_up: FIRST_TRY_UP,
             probing: None,
             enabled: true,
+            starved_since: None,
         }
+    }
+
+    #[test]
+    fn content_is_too_heavy_only_after_the_lowest_rung_keeps_missing() {
+        let mut now = Instant::now();
+        let mut q = quality(now);
+        // 30 fps against 60: the ladder bottoms out first, then the wait runs.
+        run(&mut q, &mut now, 33.0, 30 * 6);
+        assert_eq!(q.level, LADDER.len() - 1);
+        assert!(!q.content_too_heavy(now));
+        run(&mut q, &mut now, 33.0, 30 * 13);
+        assert!(q.content_too_heavy(now));
+        assert!(!q.content_too_heavy(now), "once, then the wait starts over");
+        // Making the target again resets it.
+        run(&mut q, &mut now, 16.0, 60);
+        run(&mut q, &mut now, 33.0, 30 * 6);
+        assert!(!q.content_too_heavy(now));
     }
 
     #[test]

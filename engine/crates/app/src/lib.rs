@@ -173,6 +173,11 @@ pub trait Game {
     fn text(&mut self, _event: TextEvent) {}
     /// Frame review needs fixed quality even when a slow seek misses its budget.
     fn fixed_quality(&self) -> bool { false }
+    /// Adaptive quality has been on its lowest rung and still missed the
+    /// target for [`quality::TOO_HEAVY_AFTER`]: resolution and grass are spent,
+    /// so a game with cheaper content (fewer effects, simpler scenery) can
+    /// switch to it. Called again after as long if it is still too slow.
+    fn content_too_heavy(&mut self) {}
     /// Target framerate for dynamic adaptive graphics quality (e.g. Some(60.0)).
     /// None falls back to `Config::target_fps`, `WARP_TARGET_FPS`, or the monitor refresh rate.
     fn target_fps(&self) -> Option<f32> { None }
@@ -633,6 +638,10 @@ impl Shell<'_> {
             q.set_target_fps(target, self.screen_refresh_hz);
             if self.focused && !self.zero_size && q.frame(f64::from(dt) * 1000.0, now) {
                 println!("{} adaptive quality: {}", manners::stamp(), q.label());
+            }
+            if q.content_too_heavy(now) {
+                println!("{} adaptive quality: content too heavy at {}", manners::stamp(), q.label());
+                self.game.content_too_heavy();
             }
         }
         let input_started = Instant::now();

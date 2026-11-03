@@ -52,7 +52,31 @@ impl Args {
     }
 }
 
+/// A macOS app (`tools/package-mac.sh`) keeps the game's files in
+/// Contents/Resources and starts in a read-only `/`: point the game at its
+/// files, and screenshots, replays and the pipeline cache at Application
+/// Support. Variables already set win.
+fn use_app_bundle() {
+    let Some(macos) = std::env::current_exe().ok().and_then(|e| e.parent().map(std::path::PathBuf::from)) else { return };
+    let resources = macos.join("../Resources");
+    if !macos.ends_with("Contents/MacOS") || !resources.join("mods").is_dir() { return; }
+    let Some(home) = std::env::var_os("HOME") else { return };
+    let data = std::path::PathBuf::from(home).join("Library/Application Support/Growing Guns");
+    let _ = std::fs::create_dir_all(&data);
+    let mut vars = vec![("GG_SOUNDS", resources.join("audio")), ("GG_MUSIC", resources.join("music")), ("GG_SFX", resources.join("sounds")),
+        ("GG_MODS", resources.join("mods")), ("GG_CHARACTERS", resources.join("assets/characters")),
+        ("WARP_AUDIO_IR_DIR", resources.join("engine/assets/sound/ir")), ("WARP_SCREENSHOTS", data.join("screenshots")),
+        ("KERN_PIPELINE_CACHE_DIR", data.join("pipeline-cache"))];
+    if resources.join("audio/crowd").is_dir() { vars.push(("GG_CROWD", resources.join("audio/crowd"))); }
+    // Done before game/audio/renderer worker threads start.
+    for (name, value) in vars {
+        if std::env::var_os(name).is_none() { unsafe { std::env::set_var(name, value) } }
+    }
+    let _ = std::env::set_current_dir(&data);
+}
+
 pub fn desktop_main() {
+    use_app_bundle();
     let list: Vec<String> = std::env::args().skip(1).collect();
     let cmd = list.first().cloned().unwrap_or_else(|| "play".into());
     let args = Args { list };

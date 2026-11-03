@@ -350,6 +350,7 @@ impl Gg {
     /// A new round: refill the arena slots; the renderer is kept.
     fn new_arena(&mut self) {
         self.recorder.barrier();
+        self.apply_graphics_choice();
         // Also between ticks (debug commands, live tools): clients need it.
         self.session.mark_arena();
         self.vis.set_arena(&self.world);
@@ -546,7 +547,7 @@ fn menu_ctx<'a>(session: &Session, world: &World, start_seats: &[usize], ticket:
 
 /// `$XDG_CONFIG_HOME/growing-guns/settings.json` (or ~/.config/...), or
 /// `%APPDATA%\growing-guns\settings.json` on Windows.
-fn settings_path() -> Option<std::path::PathBuf> {
+pub(crate) fn settings_path() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("APPDATA").map(std::path::PathBuf::from))
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
@@ -661,6 +662,29 @@ impl Gg {
             }
             Err(e) => { self.ui.notice = Some(format!("Could not join: {e}")); }
         }
+    }
+
+    /// Between rounds: build the views anew if the Settings choice (or an
+    /// automatic downgrade) changed the graphics profile.
+    fn apply_graphics_choice(&mut self) {
+        if crate::graphics::fixed() || self.replay.is_some() || self.settings_file.is_none() { return; }
+        let want = crate::graphics::chosen(self.ui.graphics);
+        if want != crate::graphics::get() { self.use_graphics(want); }
+    }
+
+    /// Switch the graphics profile now, building every view anew.
+    fn use_graphics(&mut self, want: crate::graphics::Graphics) {
+        crate::graphics::switch(want);
+        println!("graphics: {}", want.name());
+        let bake = self.vis.stadium.bake_in_background;
+        let crowd = std::mem::replace(&mut self.vis.stadium.sound, crate::crowd_sound::CrowdSound::new(None));
+        self.vis = view::Visuals::build(&self.world);
+        self.vis.stadium.bake_in_background = bake;
+        self.vis.stadium.set_sound(crowd);
+        let start = matches!(self.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
+        self.vis.hide_own_bodies(if start { &[] } else { &self.slots });
+        self.hud.sync(&self.world);
+        self.rebuild = true;
     }
 
     /// Godot `MenuHelpers.save_settings`.
@@ -841,6 +865,16 @@ impl Gg {
 
 impl app::Game for Gg {
     fn fixed_quality(&self) -> bool { self.replay.as_ref().is_some_and(|r| app::Game::fixed_quality(&**r)) || self.recorder.disabled }
+    /// Resolution is already at its floor: step the graphics profile down for
+    /// the next round and remember it (Settings shows it and can undo it).
+    fn content_too_heavy(&mut self) {
+        if crate::graphics::fixed() || self.replay.is_some() || self.settings_file.is_none() { return; }
+        let Some(lower) = crate::graphics::chosen(self.ui.graphics).lower() else { return };
+        self.ui.graphics = lower.name();
+        self.save_settings();
+        println!("graphics: too slow, {} from the next round", lower.name());
+        self.hud.announce(format!("Graphics lowered to {} for speed (Settings)", lower.name().to_uppercase()), 4.0, 0.0);
+    }
 
     fn local_players(&self) -> usize { if self.replay.is_some() { 1 } else { self.slots.len() } }
 
@@ -1243,7 +1277,7 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | debug [on|off] | debug tab cards|items|sky|modes | debug player P | debug focus search|N | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | remove P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | knobs | knob NAME VALUE | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | debug [on|off] | debug tab cards|items|sky|modes | debug player P | debug focus search|N | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | remove P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | knobs | knob NAME VALUE | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | graphics auto|full|low|minimum | cage | rematch | extend".into()),
             // The keyboard focus on a text field of the open menu.
             "focus" => {
                 use hud::menus::Field;
@@ -1333,6 +1367,13 @@ impl app::Game for Gg {
                 Ok(format!("{} = {} in mods/{rel}", name.trim(), value.trim()))
             }
             "round" => { self.world.next_round(); self.new_arena(); Ok(format!("round {}", self.world.round)) }
+            "graphics" => {
+                let choice = w.get(1).copied().unwrap_or("auto");
+                let want = if choice == "auto" { crate::graphics::auto() } else { crate::graphics::Graphics::parse(choice)? };
+                if crate::graphics::fixed() { return Err("--graphics or GG_GRAPHICS fixes the profile".into()); }
+                if want != crate::graphics::get() { self.use_graphics(want); }
+                Ok(format!("graphics {}", want.name()))
+            }
             "cage" => { self.world.release_cage(); Ok("cage open".into()) }
             "rematch" => { self.world.restart_match(); self.new_arena(); Ok("rematch".into()) }
             "extend" => { self.world.extend_match(); Ok(format!("first to {}", self.world.rounds_to_win)) }

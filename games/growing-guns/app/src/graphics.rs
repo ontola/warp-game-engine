@@ -1,6 +1,9 @@
-//! Shared startup graphics modifiers: the simulation and collision do not change.
-//! PC: --graphics full|low|minimum (or GG_GRAPHICS). Quest selects minimum.
-use std::sync::OnceLock;
+//! Shared graphics modifiers: the simulation and collision do not change.
+//! PC: --graphics full|low|minimum (or GG_GRAPHICS), else the Settings choice
+//! (`graphics` in settings.json), else by chip. Quest selects minimum. Without
+//! an override the game may switch between rounds (`switch`), rebuilding its
+//! visuals.
+use std::sync::{Mutex, OnceLock};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Graphics {
     pub stadium: bool,
@@ -22,20 +25,49 @@ impl Graphics {
     pub const MINIMUM:Self=Self {minimal_forward:true,characters:false,debris_capacity:0,particles:32,lod_pixels:16.0,..Self::LOW};
     pub fn parse(s:&str)->Result<Self,String> {match s {"full"=>Ok(Self::FULL),"low"=>Ok(Self::LOW),"minimum"=>Ok(Self::MINIMUM),_=>Err(format!("unknown graphics profile {s}; use full, low or minimum"))}}
     pub fn debris_count(self,count:u32)->u32 {count.div_ceil(self.debris_divisor).min(self.debris_capacity as u32)}
+    pub fn name(self)->&'static str {if self==Self::FULL {"full"} else if self==Self::LOW {"low"} else {"minimum"}}
+    /// One step cheaper, if there is one.
+    pub fn lower(self)->Option<Self> {if self==Self::FULL {Some(Self::LOW)} else if self==Self::LOW {Some(Self::MINIMUM)} else {None}}
 }
-static GRAPHICS:OnceLock<Graphics>=OnceLock::new();
+static GRAPHICS:Mutex<Option<Graphics>>=Mutex::new(None);
+/// --graphics or GG_GRAPHICS chose the profile: the game does not change it.
+static FIXED:OnceLock<bool>=OnceLock::new();
+/// A fixed profile (--graphics, Quest), before the scene is created.
 pub fn configure(profile:Graphics)->Result<(),String> {
-    if let Some(current)=GRAPHICS.get() {return if *current==profile {Ok(())}else{Err("graphics profile is fixed when the scene is created; restart to change it".into())};}
-    GRAPHICS.set(profile).map_err(|_|"graphics profile already configured".into())
+    let mut current=GRAPHICS.lock().unwrap();
+    if let Some(current)=*current {return if current==profile {Ok(())}else{Err("graphics profile is fixed when the scene is created; restart to change it".into())};}
+    *current=Some(profile);
+    let _=FIXED.set(true);
+    Ok(())
 }
-pub fn get()->Graphics {*GRAPHICS.get_or_init(||std::env::var("GG_GRAPHICS").ok().and_then(|s|Graphics::parse(&s).ok()).unwrap_or_else(auto))}
+pub fn get()->Graphics {*GRAPHICS.lock().unwrap().get_or_insert_with(initial)}
+/// Whether --graphics or GG_GRAPHICS set the profile (Settings and the
+/// automatic downgrade then leave it alone).
+pub fn fixed()->bool {*FIXED.get_or_init(||std::env::var("GG_GRAPHICS").is_ok_and(|s|Graphics::parse(&s).is_ok()))}
+/// Change the profile; the caller rebuilds every view that read the old one.
+pub fn switch(profile:Graphics) {*GRAPHICS.lock().unwrap()=Some(profile);}
+/// The Settings choice: "auto" (by chip) or a profile name.
+pub fn chosen(choice:&str)->Graphics {Graphics::parse(choice).unwrap_or_else(|_|auto())}
+fn initial()->Graphics {
+    if let Some(p)=std::env::var("GG_GRAPHICS").ok().and_then(|s|Graphics::parse(&s).ok()) {return p;}
+    saved_choice().map_or_else(auto,|c|chosen(&c))
+}
+/// `graphics` from settings.json, read before the menus load it so the first
+/// scene is built with it.
+fn saved_choice()->Option<String> {
+    let text=std::fs::read_to_string(crate::play::settings_path()?).ok()?;
+    serde_json::from_str::<serde_json::Value>(&text).ok()?.get("graphics")?.as_str().map(str::to_owned)
+}
 /// Without --graphics or GG_GRAPHICS: base Apple chips (M1, M2, M3, M4 without
 /// Pro/Max/Ultra, 7-10 GPU cores) get LOW; full quality ran far too slow on an M1.
-fn auto()->Graphics {
+pub fn auto()->Graphics {
+    static AUTO:OnceLock<Graphics>=OnceLock::new();
+    *AUTO.get_or_init(||{
     let chip=chip_name();
     let profile=if chip.as_deref().is_some_and(base_apple_chip) {Graphics::LOW} else {Graphics::FULL};
-    if let Some(chip)=chip {eprintln!("graphics: {chip} -> {}",if profile==Graphics::LOW {"low"} else {"full"});}
+    if let Some(chip)=chip {eprintln!("graphics: {chip} -> {}",profile.name());}
     profile
+    })
 }
 #[cfg(target_os="macos")]
 fn chip_name()->Option<String> {
@@ -57,6 +89,14 @@ fn base_apple_chip(name:&str)->bool {
         assert!(Graphics::LOW.simple_blocks && Graphics::LOW.debris_size>1.0);
         assert!(Graphics::parse("typo").is_err());
         assert!(!Graphics::FULL.simple_guns && Graphics::LOW.simple_guns && Graphics::MINIMUM.simple_guns);
+    }
+    #[test] fn profiles_step_down_to_minimum_and_name_themselves() {
+        assert_eq!(Graphics::FULL.lower(),Some(Graphics::LOW));
+        assert_eq!(Graphics::LOW.lower(),Some(Graphics::MINIMUM));
+        assert_eq!(Graphics::MINIMUM.lower(),None);
+        for g in [Graphics::FULL,Graphics::LOW,Graphics::MINIMUM] {assert_eq!(Graphics::parse(g.name()),Ok(g));}
+        assert_eq!(chosen("low"),Graphics::LOW);
+        assert_eq!(chosen("auto"),auto());
     }
     #[test] fn only_base_apple_chips_default_to_low() {
         assert!(base_apple_chip("Apple M1") && base_apple_chip("Apple M2") && base_apple_chip("Apple M4"));

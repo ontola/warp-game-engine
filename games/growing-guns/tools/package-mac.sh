@@ -8,8 +8,11 @@
 #   cargo build --release -p growing-guns-app
 #   games/growing-guns/tools/package-mac.sh target/release/growing-guns ~/dev/gg-package ~/dev/growing-guns
 #
-# Signs ad hoc unless SIGN_IDENTITY names a codesigning identity (a Developer
-# ID with notarisation is what lets other Macs open it without a warning).
+# Signs ad hoc by default. For other Macs to open it without a warning, sign
+# with a Developer ID and notarise with a notarytool keychain profile (made
+# once with `xcrun notarytool store-credentials NAME`):
+#   SIGN_IDENTITY="Developer ID Application: Argu B.V." NOTARY_PROFILE=NAME \
+#       games/growing-guns/tools/package-mac.sh ...
 set -eu
 [ $# -ge 2 ] || { echo "usage: $0 EXECUTABLE OUT_DIRECTORY [GODOT_PROJECT]" >&2; exit 2; }
 executable=$1
@@ -41,22 +44,9 @@ if [ -n "$godot" ]; then
     recordings=$(cd "$godot" && pwd)
 fi
 
-# The game looks beside its executable; point it at Resources instead, and
-# keep screenshots and replays out of the (read-only, signed) bundle.
-cat > "$app/Contents/MacOS/launch" <<'EOF'
-#!/bin/sh
-here=$(cd "$(dirname "$0")" && pwd)
-r="$here/../Resources"
-data="$HOME/Library/Application Support/Growing Guns"
-mkdir -p "$data"
-cd "$data"
-export GG_SOUNDS="$r/audio" GG_MUSIC="$r/music" GG_SFX="$r/sounds" GG_MODS="$r/mods"
-export GG_CHARACTERS="$r/assets/characters" WARP_AUDIO_IR_DIR="$r/engine/assets/sound/ir"
-export WARP_SCREENSHOTS="$data/screenshots"
-[ -d "$r/audio/crowd" ] && export GG_CROWD="$r/audio/crowd"
-exec "$here/growing-guns" play --fullscreen "$@"
-EOF
-chmod +x "$app/Contents/MacOS/launch" "$app/Contents/MacOS/growing-guns"
+# The game finds Contents/Resources itself and keeps screenshots, replays
+# and its pipeline cache in Application Support (`use_app_bundle`).
+chmod +x "$app/Contents/MacOS/growing-guns"
 
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -69,7 +59,7 @@ cat > "$app/Contents/Info.plist" <<EOF
     <key>CFBundleVersion</key><string>$version.$commit</string>
     <key>CFBundleShortVersionString</key><string>$version</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleExecutable</key><string>launch</string>
+    <key>CFBundleExecutable</key><string>growing-guns</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.action-games</string>
@@ -97,12 +87,26 @@ EOF
 
 # Copied files carry Finder/provenance attributes that codesign rejects.
 xattr -cr "$app"
-codesign --force --deep --sign "${SIGN_IDENTITY:--}" "$app"
+identity=${SIGN_IDENTITY:--}
+if [ "$identity" = - ]; then
+    codesign --force --sign - "$app"
+else
+    # Notarisation needs the hardened runtime and a secure timestamp. The game
+    # needs no entitlements: no JIT (Luau interprets), no camera/microphone.
+    codesign --force --options runtime --timestamp --sign "$identity" "$app"
+fi
 codesign --verify --deep --strict "$app"
 
 # Drag-to-Applications disk image.
+dmg="$destination/growing-guns-mac-$commit.dmg"
 stage=$(mktemp -d)
 cp -R "$app" "$stage/"
 ln -s /Applications "$stage/Applications"
-hdiutil create -quiet -volname "Growing Guns" -srcfolder "$stage" -fs HFS+ -format UDZO "$destination/growing-guns-mac-$commit.dmg"
-echo "$destination/growing-guns-mac-$commit.dmg"
+hdiutil create -quiet -volname "Growing Guns" -srcfolder "$stage" -fs HFS+ -format UDZO "$dmg"
+if [ "$identity" != - ]; then codesign --force --timestamp --sign "$identity" "$dmg"; fi
+if [ -n "${NOTARY_PROFILE:-}" ]; then
+    xcrun notarytool submit "$dmg" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun stapler staple "$dmg"
+    spctl --assess --type open --context context:primary-signature -vv "$dmg"
+fi
+echo "$dmg"
