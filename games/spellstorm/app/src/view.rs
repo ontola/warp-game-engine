@@ -491,6 +491,14 @@ impl View {
             let ea = self.enemy_anims.entry(id).or_default();
             let model = ea.model(kit.base_scale, &a, &e, time, seed, dt);
             seen.push(id);
+            // Dust kicked up over a burrower tunnelling (the mound's dust).
+            if e.under && a.alive {
+                ea.dust -= dt;
+                if ea.dust <= 0.0 {
+                    ea.dust = 0.12 - 0.06 * e.heave;
+                    self.fx.puff(a.pos + Vec3::Y * 0.1, [0.35, 0.27, 0.18, 0.6], 0.18 + 0.2 * e.heave);
+                }
+            }
             let at = Mat4::from_rotation_translation(Quat::from_rotation_y(a.yaw), a.pos) * model;
             // Bodies that fall apart go to pieces once (a blow-up after its fuse).
             if let Some(t) = ea.dead_t.filter(|_| !ea.scattered) {

@@ -152,6 +152,10 @@ pub struct EnemyAnim {
     pub dead_t: Option<f32>,
     /// Thrown apart into pieces (the view's debris has them now).
     pub scattered: bool,
+    /// How far a burrower's body is sunk into the floor (0 up, 1 under).
+    sunk: f32,
+    /// Until the next puff of dust over a burrower.
+    pub dust: f32,
 }
 
 /// How a monster's body goes (Enemy._death), by its model.
@@ -331,6 +335,27 @@ impl EnemyAnim {
                     pos.y = 0.15 * k - 1.95 * ((t - 2.0) / 1.4).clamp(0.0, 1.0);
                     scale = b;
                 }
+            }
+        }
+        // A burrower under the floor: only the ridge of its back breaks the
+        // ground (Godot's dirt mound), heaving up as it winds up to burst
+        // out; it bursts up from deep down (Enemy._erupt).
+        if a.alive {
+            if e.under {
+                self.sunk = (self.sunk + dt / 0.35).min(1.0);
+                let ridge = -0.74 + 0.3 * e.heave + ((time * 1000.0 / 90.0).sin()).abs() * 0.04;
+                pos.y = lerp(pos.y, ridge, self.sunk * self.sunk);
+                rot.x = 0.0;
+                rot.z = (time * 37.0).sin() * 0.05 * e.heave;
+            } else if e.rise_t > 0.0 {
+                self.sunk = 0.0;
+                let k = 1.0 - (e.rise_t / 0.22).clamp(0.0, 1.0) as f32;
+                // TRANS_BACK, EASE_OUT: overshoots a little at the top.
+                let c = 1.70158;
+                let back = 1.0 + (c + 1.0) * (k - 1.0).powi(3) + c * (k - 1.0).powi(2);
+                pos.y += e.rise_from * (1.0 - back);
+            } else {
+                self.sunk = 0.0;
             }
         }
         trs(pos, euler(rot), Vec3::new(scale.x, scale.y, scale.z))

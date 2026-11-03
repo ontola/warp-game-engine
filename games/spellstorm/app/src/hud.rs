@@ -416,7 +416,9 @@ fn on_screen(vp: &Mat4, at: Vec3, size: [u32; 2], s: f32) -> Option<Vec2> {
 fn enemy_bars(p: &mut Painter, w: &World, vp: &Mat4, size: [u32; 2]) {
     for &id in &w.enemies {
         let Some(a) = w.actor(id) else { continue };
-        if !a.alive || a.hp >= a.max_hp || a.max_hp <= 0.0 {
+        // A burrower under the floor shows no bar (Enemy._go_under).
+        let under = w.ecs.get::<&spellstorm::enemy::Enemy>(id).is_ok_and(|e| e.under);
+        if under || !a.alive || a.hp >= a.max_hp || a.max_hp <= 0.0 {
             continue;
         }
         let r = a.radius as f32;
