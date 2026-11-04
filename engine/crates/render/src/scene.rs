@@ -421,6 +421,7 @@ pub struct Scene {
     pub terrain_visual_offset_m: f32,
     /// Optional bounded validation forest; absent in normal live scenes.
     pub voxel_forest: Option<crate::foliage_volume_data::GpuForest>,
+    pub gpu_forest: Option<crate::foliage_runtime::Spec>,
     /// Shared source-derived whole-plant volumes and a world-grid index.
     /// Experimental native renderer; source is retained unless explicitly enabled.
     pub foliage_world: Option<crate::foliage_world::WorldField>,

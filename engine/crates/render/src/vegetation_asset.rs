@@ -1098,7 +1098,7 @@ fn fnv64(hash: u64, bytes: &[u8]) -> u64 {
 /// the engine (recipe, build seed, configs; their Debug text will do).
 pub fn cook_key(what: &str) -> u64 {
     static CODE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    let code = *CODE.get_or_init(|| COOK_SOURCES.iter().fold(0xcbf29ce484222325, |h, s| fnv64(h, s.as_bytes())));
+    let code = *CODE.get_or_init(|| COOK_SOURCES.iter().fold(0xcbf29ce484222325, |h, s| fnv64(h, s.split("\n#[cfg(test)]").next().unwrap_or(s).as_bytes())));
     fnv64(fnv64(code, &COOK_FILE_VERSION.to_le_bytes()), what.as_bytes())
 }
 
@@ -1151,7 +1151,7 @@ impl CookedPlant {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{
         foliage_assembly::{self, Limits, Parameters},
@@ -1701,7 +1701,7 @@ mod tests {
 
     // Tiny closed solids exercise the real optical cooker and scene adapter
     // without depending on game recipes or flattening a production tree.
-    fn aggregate_fixture() -> Assembly {
+    pub(crate) fn aggregate_fixture() -> Assembly {
         use crate::foliage_assembly::{BranchGroup,PartGeometry,PartInstance};
         let positions=[Vec3::ZERO,Vec3::X*0.24,Vec3::Y*0.38,Vec3::Z*0.20];
         let mut geometry=PartGeometry {id:1,vertices:vec![],indices:vec![]};
@@ -1753,6 +1753,43 @@ mod tests {
             eprintln!("virtual/expanded source: RGBA MAE={error}, changed pixels={different}/16384");
             assert!(error<0.5,"virtual source differs from expanded reference: {error}");
             assert!(different<164,"more than 1 percent of source pixels changed");
+        }
+    }
+
+    #[test]
+    #[ignore="exclusive GPU forest integration fixture"]
+    fn gpu_forest_renders_source_wind_without_cpu_pool() {
+        use crate::{Camera,Lighting,Renderer,ViewRect};
+        let source=aggregate_fixture();let mut cooked=CookedPlant::cook_aggregate(&source,aggregate_config()).unwrap();
+        cooked.cook_proxy(&source,aggregate_config(),3).unwrap();
+        let gpu=crate::Gpu::new().unwrap();let light=Lighting {gi:0.,shadow_strength:0.,..Default::default()};
+        let policy=crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()};
+        let mut sequences=Vec::new();
+        for gpu_owned in [false,true] {
+            let mut scene=Scene::default();
+            if gpu_owned {
+                crate::foliage_runtime::plant(&mut scene,std::slice::from_ref(&cooked),&[crate::recipe_forest::Tree {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}],16,policy).unwrap();
+                assert!(scene.part_wind.is_empty());assert!(scene.gpu_forest.is_some());
+            } else {
+                let mut builder=SceneVegetation::new(&mut scene,AttachLimits {virtual_members:true,..Default::default()}).unwrap();
+                builder.append(&cooked,instance(1,Mat4::IDENTITY)).unwrap();
+                builder.append_proxy(&cooked,instance(2,Mat4::IDENTITY)).unwrap();builder.finish_aggregate(policy).unwrap();
+            }
+            let renderer=Renderer::new(&gpu,&scene,&light);
+            if !gpu_owned {renderer.set_plant_proxies(&gpu,&[(3,ProxyShow::Hidden)]).unwrap();}
+            let picks=(0..16).flat_map(|y|(0..16).map(move|x|(4+x*8,4+y*8))).collect::<Vec<_>>();
+            let mut frames=Vec::new();
+            for (time,x) in [(0.,0.3),(1.,0.4),(1.4,0.5),(2.,0.3)] {
+                renderer.set_wind(&gpu,&crate::wind::WindState {time_seconds:time,strength:0.8,..Default::default()}).unwrap();
+                let views=[ViewRect {cam:Camera {pos:Vec3::new(x,0.4,1.6),target:Vec3::new(0.3,0.4,0.),fov_y:1.,near:0.05},x:0,y:0,w:128,h:128}];
+                let (image,stats)=renderer.try_render_views(&gpu,&views,&light,128,128,&picks).unwrap();
+                assert!(stats.picks.iter().any(Option::is_some),"GPU forest must render actual source geometry");frames.push(image);
+            }
+            sequences.push(frames);
+        }
+        for (a,b) in sequences[0].iter().zip(&sequences[1]) {
+            let mae=a.iter().zip(b).map(|(&a,&b)|a.abs_diff(b)as u64).sum::<u64>()as f64/a.len()as f64;
+            eprintln!("GPU forest vs legacy source wind: RGBA MAE={mae}");assert!(mae<0.5);
         }
     }
 
@@ -1839,7 +1876,7 @@ mod tests {
         }
     }
 
-    fn aggregate_config() -> crate::vegetation_aggregate::Config {
+    pub(crate) fn aggregate_config() -> crate::vegetation_aggregate::Config {
         crate::vegetation_aggregate::Config {reference_cell_size:0.05,triangle_refinements:true,levels:2,diagnostic_resolution:4,
             max_placements:4,max_source_triangles:16,max_samples:100_000,max_reference_voxels:4096,
             max_diagnostic_steps:2_000_000,..Default::default()}

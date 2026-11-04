@@ -1,0 +1,2092 @@
+{
+  "executable_sha256": "c6ef5e7ab5c0a7c207f179392da4fa6575dad9ea03e5222780c6fdfd2ebec7e1",
+  "executable_bytes": 40675328,
+  "mode": "native 1713x964, one view, no DLSS",
+  "scenario": {
+    "style": "alpine",
+    "seed": 1,
+    "pos": [
+      0,
+      691,
+      0
+    ],
+    "yaw_deg": 0,
+    "pitch_deg": 0,
+    "speed": 15
+  },
+  "frames_rendered": 80,
+  "warmup_excluded_before_sequence": 12,
+  "raw_artifacts": "build\\gpu-forest-20261104-parallel",
+  "runs": [
+    {
+      "radius_m": 500,
+      "gpu_mode": 0,
+      "repeat": 0,
+      "gpu_samples": 68,
+      "gpu_covered_median_ms": 16.033103999999998,
+      "passes": {
+        "aggregate error selection": {
+          "median_per_frame_ms": 0.010144,
+          "median_when_present_ms": 0.010144,
+          "frames_present": 68
+        },
+        "bloom": {
+          "median_per_frame_ms": 0.046048,
+          "median_when_present_ms": 0.046048,
+          "frames_present": 68
+        },
+        "canopy sky transmittance": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.09935999999999999,
+          "frames_present": 2
+        },
+        "canopy volume": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.24969599999999997,
+          "frames_present": 2
+        },
+        "exhaust": {
+          "median_per_frame_ms": 0.000336,
+          "median_when_present_ms": 0.000336,
+          "frames_present": 68
+        },
+        "filter canopy": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.009919999999999998,
+          "frames_present": 2
+        },
+        "motion vectors": {
+          "median_per_frame_ms": 0.059376,
+          "median_when_present_ms": 0.059376,
+          "frames_present": 68
+        },
+        "near shadow cull": {
+          "median_per_frame_ms": 0.067776,
+          "median_when_present_ms": 0.067776,
+          "frames_present": 68
+        },
+        "near shadow raster": {
+          "median_per_frame_ms": 0.13088,
+          "median_when_present_ms": 0.13088,
+          "frames_present": 68
+        },
+        "shade": {
+          "median_per_frame_ms": 0.310176,
+          "median_when_present_ms": 0.310176,
+          "frames_present": 68
+        },
+        "shade terrain": {
+          "median_per_frame_ms": 0.871728,
+          "median_when_present_ms": 0.871728,
+          "frames_present": 68
+        },
+        "shade voxels": {
+          "median_per_frame_ms": 0.09329599999999999,
+          "median_when_present_ms": 0.09329599999999999,
+          "frames_present": 68
+        },
+        "shadow cull": {
+          "median_per_frame_ms": 0.082448,
+          "median_when_present_ms": 0.082448,
+          "frames_present": 68
+        },
+        "shadow raster": {
+          "median_per_frame_ms": 0.23031999999999997,
+          "median_when_present_ms": 0.23031999999999997,
+          "frames_present": 68
+        },
+        "taa": {
+          "median_per_frame_ms": 0.05305599999999999,
+          "median_when_present_ms": 0.05305599999999999,
+          "frames_present": 68
+        },
+        "terrain coarse": {
+          "median_per_frame_ms": 0.26804799999999995,
+          "median_when_present_ms": 0.26804799999999995,
+          "frames_present": 68
+        },
+        "tonemap": {
+          "median_per_frame_ms": 0.04392,
+          "median_when_present_ms": 0.04392,
+          "frames_present": 68
+        },
+        "tree occluder cull": {
+          "median_per_frame_ms": 1.259232,
+          "median_when_present_ms": 1.259232,
+          "frames_present": 68
+        },
+        "tree occluder raster": {
+          "median_per_frame_ms": 6.343968,
+          "median_when_present_ms": 6.343968,
+          "frames_present": 68
+        },
+        "tree occlusion pyramid": {
+          "median_per_frame_ms": 0.08366399999999999,
+          "median_when_present_ms": 0.08366399999999999,
+          "frames_present": 68
+        },
+        "tree remaining cull": {
+          "median_per_frame_ms": 0.862768,
+          "median_when_present_ms": 0.862768,
+          "frames_present": 68
+        },
+        "tree remaining raster": {
+          "median_per_frame_ms": 0.516432,
+          "median_when_present_ms": 0.516432,
+          "frames_present": 68
+        },
+        "vegetation branch poses": {
+          "median_per_frame_ms": 0.09307199999999999,
+          "median_when_present_ms": 0.09307199999999999,
+          "frames_present": 68
+        },
+        "voxel near sun splat raster": {
+          "median_per_frame_ms": 0.053936,
+          "median_when_present_ms": 0.053936,
+          "frames_present": 68
+        },
+        "voxel near sun splats": {
+          "median_per_frame_ms": 0.318432,
+          "median_when_present_ms": 0.318432,
+          "frames_present": 68
+        },
+        "voxel splat raster": {
+          "median_per_frame_ms": 0.359456,
+          "median_when_present_ms": 0.359456,
+          "frames_present": 68
+        },
+        "voxel splat resolve": {
+          "median_per_frame_ms": 0.230304,
+          "median_when_present_ms": 0.230304,
+          "frames_present": 68
+        },
+        "voxel splats": {
+          "median_per_frame_ms": 1.763216,
+          "median_when_present_ms": 1.763216,
+          "frames_present": 68
+        },
+        "voxel sun splat raster": {
+          "median_per_frame_ms": 0.20959999999999998,
+          "median_when_present_ms": 0.20959999999999998,
+          "frames_present": 68
+        },
+        "voxel sun splats": {
+          "median_per_frame_ms": 0.250688,
+          "median_when_present_ms": 0.250688,
+          "frames_present": 68
+        },
+        "wheel particles": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        }
+      },
+      "cpu_tree_pool_median_ms": 0.0030499999999999998,
+      "cpu_terrain_median_ms": 4.3698999999999995,
+      "cpu_render_encode_median_ms": 2.28765,
+      "diagnostics": null
+    },
+    {
+      "radius_m": 500,
+      "gpu_mode": 0,
+      "repeat": 1,
+      "gpu_samples": 68,
+      "gpu_covered_median_ms": 16.300272,
+      "passes": {
+        "aggregate error selection": {
+          "median_per_frame_ms": 0.010176,
+          "median_when_present_ms": 0.010176,
+          "frames_present": 68
+        },
+        "bloom": {
+          "median_per_frame_ms": 0.04678399999999999,
+          "median_when_present_ms": 0.04678399999999999,
+          "frames_present": 68
+        },
+        "canopy sky transmittance": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.099696,
+          "frames_present": 2
+        },
+        "canopy volume": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.24926399999999999,
+          "frames_present": 2
+        },
+        "exhaust": {
+          "median_per_frame_ms": 0.000736,
+          "median_when_present_ms": 0.000736,
+          "frames_present": 68
+        },
+        "filter canopy": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.00992,
+          "frames_present": 2
+        },
+        "motion vectors": {
+          "median_per_frame_ms": 0.0596,
+          "median_when_present_ms": 0.0596,
+          "frames_present": 68
+        },
+        "near shadow cull": {
+          "median_per_frame_ms": 0.067632,
+          "median_when_present_ms": 0.067632,
+          "frames_present": 68
+        },
+        "near shadow raster": {
+          "median_per_frame_ms": 0.13328,
+          "median_when_present_ms": 0.13328,
+          "frames_present": 68
+        },
+        "shade": {
+          "median_per_frame_ms": 0.310368,
+          "median_when_present_ms": 0.310368,
+          "frames_present": 68
+        },
+        "shade terrain": {
+          "median_per_frame_ms": 0.876848,
+          "median_when_present_ms": 0.876848,
+          "frames_present": 68
+        },
+        "shade voxels": {
+          "median_per_frame_ms": 0.09361599999999999,
+          "median_when_present_ms": 0.09361599999999999,
+          "frames_present": 68
+        },
+        "shadow cull": {
+          "median_per_frame_ms": 0.08343999999999999,
+          "median_when_present_ms": 0.08343999999999999,
+          "frames_present": 68
+        },
+        "shadow raster": {
+          "median_per_frame_ms": 0.23328,
+          "median_when_present_ms": 0.23328,
+          "frames_present": 68
+        },
+        "taa": {
+          "median_per_frame_ms": 0.053391999999999995,
+          "median_when_present_ms": 0.053391999999999995,
+          "frames_present": 68
+        },
+        "terrain coarse": {
+          "median_per_frame_ms": 0.26976,
+          "median_when_present_ms": 0.26976,
+          "frames_present": 68
+        },
+        "tonemap": {
+          "median_per_frame_ms": 0.043856,
+          "median_when_present_ms": 0.043856,
+          "frames_present": 68
+        },
+        "tree occluder cull": {
+          "median_per_frame_ms": 1.271696,
+          "median_when_present_ms": 1.271696,
+          "frames_present": 68
+        },
+        "tree occluder raster": {
+          "median_per_frame_ms": 6.590192,
+          "median_when_present_ms": 6.590192,
+          "frames_present": 68
+        },
+        "tree occlusion pyramid": {
+          "median_per_frame_ms": 0.083392,
+          "median_when_present_ms": 0.083392,
+          "frames_present": 68
+        },
+        "tree remaining cull": {
+          "median_per_frame_ms": 0.883408,
+          "median_when_present_ms": 0.883408,
+          "frames_present": 68
+        },
+        "tree remaining raster": {
+          "median_per_frame_ms": 0.510432,
+          "median_when_present_ms": 0.510432,
+          "frames_present": 68
+        },
+        "vegetation branch poses": {
+          "median_per_frame_ms": 0.09296,
+          "median_when_present_ms": 0.09296,
+          "frames_present": 68
+        },
+        "voxel near sun splat raster": {
+          "median_per_frame_ms": 0.05379199999999999,
+          "median_when_present_ms": 0.05379199999999999,
+          "frames_present": 68
+        },
+        "voxel near sun splats": {
+          "median_per_frame_ms": 0.320208,
+          "median_when_present_ms": 0.320208,
+          "frames_present": 68
+        },
+        "voxel splat raster": {
+          "median_per_frame_ms": 0.35963199999999995,
+          "median_when_present_ms": 0.35963199999999995,
+          "frames_present": 68
+        },
+        "voxel splat resolve": {
+          "median_per_frame_ms": 0.276688,
+          "median_when_present_ms": 0.276688,
+          "frames_present": 68
+        },
+        "voxel splats": {
+          "median_per_frame_ms": 1.833696,
+          "median_when_present_ms": 1.833696,
+          "frames_present": 68
+        },
+        "voxel sun splat raster": {
+          "median_per_frame_ms": 0.20936,
+          "median_when_present_ms": 0.20936,
+          "frames_present": 68
+        },
+        "voxel sun splats": {
+          "median_per_frame_ms": 0.252432,
+          "median_when_present_ms": 0.252432,
+          "frames_present": 68
+        },
+        "wheel particles": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        }
+      },
+      "cpu_tree_pool_median_ms": 0.0033,
+      "cpu_terrain_median_ms": 4.8849,
+      "cpu_render_encode_median_ms": 2.5208500000000003,
+      "diagnostics": null
+    },
+    {
+      "radius_m": 500,
+      "gpu_mode": 0,
+      "repeat": 2,
+      "gpu_samples": 68,
+      "gpu_covered_median_ms": 16.077728,
+      "passes": {
+        "aggregate error selection": {
+          "median_per_frame_ms": 0.010159999999999999,
+          "median_when_present_ms": 0.010159999999999999,
+          "frames_present": 68
+        },
+        "bloom": {
+          "median_per_frame_ms": 0.046096,
+          "median_when_present_ms": 0.046096,
+          "frames_present": 68
+        },
+        "canopy sky transmittance": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.099408,
+          "frames_present": 2
+        },
+        "canopy volume": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.24897599999999998,
+          "frames_present": 2
+        },
+        "exhaust": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        },
+        "filter canopy": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.009856,
+          "frames_present": 2
+        },
+        "motion vectors": {
+          "median_per_frame_ms": 0.05928,
+          "median_when_present_ms": 0.05928,
+          "frames_present": 68
+        },
+        "near shadow cull": {
+          "median_per_frame_ms": 0.068272,
+          "median_when_present_ms": 0.068272,
+          "frames_present": 68
+        },
+        "near shadow raster": {
+          "median_per_frame_ms": 0.13497599999999998,
+          "median_when_present_ms": 0.13497599999999998,
+          "frames_present": 68
+        },
+        "shade": {
+          "median_per_frame_ms": 0.31113599999999997,
+          "median_when_present_ms": 0.31113599999999997,
+          "frames_present": 68
+        },
+        "shade terrain": {
+          "median_per_frame_ms": 0.8709119999999999,
+          "median_when_present_ms": 0.8709119999999999,
+          "frames_present": 68
+        },
+        "shade voxels": {
+          "median_per_frame_ms": 0.093424,
+          "median_when_present_ms": 0.093424,
+          "frames_present": 68
+        },
+        "shadow cull": {
+          "median_per_frame_ms": 0.083456,
+          "median_when_present_ms": 0.083456,
+          "frames_present": 68
+        },
+        "shadow raster": {
+          "median_per_frame_ms": 0.230864,
+          "median_when_present_ms": 0.230864,
+          "frames_present": 68
+        },
+        "taa": {
+          "median_per_frame_ms": 0.052912,
+          "median_when_present_ms": 0.052912,
+          "frames_present": 68
+        },
+        "terrain coarse": {
+          "median_per_frame_ms": 0.268896,
+          "median_when_present_ms": 0.268896,
+          "frames_present": 68
+        },
+        "tonemap": {
+          "median_per_frame_ms": 0.043872,
+          "median_when_present_ms": 0.043872,
+          "frames_present": 68
+        },
+        "tree occluder cull": {
+          "median_per_frame_ms": 1.300176,
+          "median_when_present_ms": 1.300176,
+          "frames_present": 68
+        },
+        "tree occluder raster": {
+          "median_per_frame_ms": 6.696064,
+          "median_when_present_ms": 6.696064,
+          "frames_present": 68
+        },
+        "tree occlusion pyramid": {
+          "median_per_frame_ms": 0.083408,
+          "median_when_present_ms": 0.083408,
+          "frames_present": 68
+        },
+        "tree remaining cull": {
+          "median_per_frame_ms": 0.851056,
+          "median_when_present_ms": 0.851056,
+          "frames_present": 68
+        },
+        "tree remaining raster": {
+          "median_per_frame_ms": 0.5121279999999999,
+          "median_when_present_ms": 0.5121279999999999,
+          "frames_present": 68
+        },
+        "vegetation branch poses": {
+          "median_per_frame_ms": 0.093328,
+          "median_when_present_ms": 0.093328,
+          "frames_present": 68
+        },
+        "voxel near sun splat raster": {
+          "median_per_frame_ms": 0.053984,
+          "median_when_present_ms": 0.053984,
+          "frames_present": 68
+        },
+        "voxel near sun splats": {
+          "median_per_frame_ms": 0.32248,
+          "median_when_present_ms": 0.32248,
+          "frames_present": 68
+        },
+        "voxel splat raster": {
+          "median_per_frame_ms": 0.35951999999999995,
+          "median_when_present_ms": 0.35951999999999995,
+          "frames_present": 68
+        },
+        "voxel splat resolve": {
+          "median_per_frame_ms": 0.265872,
+          "median_when_present_ms": 0.265872,
+          "frames_present": 68
+        },
+        "voxel splats": {
+          "median_per_frame_ms": 1.814944,
+          "median_when_present_ms": 1.814944,
+          "frames_present": 68
+        },
+        "voxel sun splat raster": {
+          "median_per_frame_ms": 0.209312,
+          "median_when_present_ms": 0.209312,
+          "frames_present": 68
+        },
+        "voxel sun splats": {
+          "median_per_frame_ms": 0.25305599999999995,
+          "median_when_present_ms": 0.25305599999999995,
+          "frames_present": 68
+        },
+        "wheel particles": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        }
+      },
+      "cpu_tree_pool_median_ms": 0.0031999999999999997,
+      "cpu_terrain_median_ms": 4.58235,
+      "cpu_render_encode_median_ms": 2.5744999999999996,
+      "diagnostics": null
+    },
+    {
+      "radius_m": 500,
+      "gpu_mode": 1,
+      "repeat": 0,
+      "gpu_samples": 68,
+      "gpu_covered_median_ms": 15.816544,
+      "passes": {
+        "GPU forest selection residency poses": {
+          "median_per_frame_ms": 0.70208,
+          "median_when_present_ms": 0.70208,
+          "frames_present": 68
+        },
+        "bloom": {
+          "median_per_frame_ms": 0.045472,
+          "median_when_present_ms": 0.045472,
+          "frames_present": 68
+        },
+        "canopy sky transmittance": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.10062399999999999,
+          "frames_present": 2
+        },
+        "canopy volume": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.42272,
+          "frames_present": 2
+        },
+        "exhaust": {
+          "median_per_frame_ms": 0.000768,
+          "median_when_present_ms": 0.000768,
+          "frames_present": 68
+        },
+        "filter canopy": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.010432,
+          "frames_present": 2
+        },
+        "motion vectors": {
+          "median_per_frame_ms": 0.060624,
+          "median_when_present_ms": 0.060624,
+          "frames_present": 68
+        },
+        "near shadow cull": {
+          "median_per_frame_ms": 0.057536,
+          "median_when_present_ms": 0.057536,
+          "frames_present": 68
+        },
+        "near shadow raster": {
+          "median_per_frame_ms": 0.15443199999999999,
+          "median_when_present_ms": 0.15443199999999999,
+          "frames_present": 68
+        },
+        "shade": {
+          "median_per_frame_ms": 0.309392,
+          "median_when_present_ms": 0.309392,
+          "frames_present": 68
+        },
+        "shade terrain": {
+          "median_per_frame_ms": 0.897648,
+          "median_when_present_ms": 0.897648,
+          "frames_present": 68
+        },
+        "shade voxels": {
+          "median_per_frame_ms": 0.09176,
+          "median_when_present_ms": 0.09176,
+          "frames_present": 68
+        },
+        "shadow cull": {
+          "median_per_frame_ms": 0.07292799999999999,
+          "median_when_present_ms": 0.07292799999999999,
+          "frames_present": 68
+        },
+        "shadow raster": {
+          "median_per_frame_ms": 0.225536,
+          "median_when_present_ms": 0.225536,
+          "frames_present": 68
+        },
+        "taa": {
+          "median_per_frame_ms": 0.05358399999999999,
+          "median_when_present_ms": 0.05358399999999999,
+          "frames_present": 68
+        },
+        "terrain coarse": {
+          "median_per_frame_ms": 0.27371199999999996,
+          "median_when_present_ms": 0.27371199999999996,
+          "frames_present": 68
+        },
+        "tonemap": {
+          "median_per_frame_ms": 0.044,
+          "median_when_present_ms": 0.044,
+          "frames_present": 68
+        },
+        "tree occluder cull": {
+          "median_per_frame_ms": 1.218096,
+          "median_when_present_ms": 1.218096,
+          "frames_present": 68
+        },
+        "tree occluder raster": {
+          "median_per_frame_ms": 5.643216,
+          "median_when_present_ms": 5.643216,
+          "frames_present": 68
+        },
+        "tree occlusion pyramid": {
+          "median_per_frame_ms": 0.083504,
+          "median_when_present_ms": 0.083504,
+          "frames_present": 68
+        },
+        "tree remaining cull": {
+          "median_per_frame_ms": 1.130688,
+          "median_when_present_ms": 1.130688,
+          "frames_present": 68
+        },
+        "tree remaining raster": {
+          "median_per_frame_ms": 0.9479199999999999,
+          "median_when_present_ms": 0.9479199999999999,
+          "frames_present": 68
+        },
+        "voxel near sun splat raster": {
+          "median_per_frame_ms": 0.043296,
+          "median_when_present_ms": 0.043296,
+          "frames_present": 68
+        },
+        "voxel near sun splats": {
+          "median_per_frame_ms": 0.278352,
+          "median_when_present_ms": 0.278352,
+          "frames_present": 68
+        },
+        "voxel splat raster": {
+          "median_per_frame_ms": 0.31057599999999996,
+          "median_when_present_ms": 0.31057599999999996,
+          "frames_present": 68
+        },
+        "voxel splat resolve": {
+          "median_per_frame_ms": 0.24915199999999998,
+          "median_when_present_ms": 0.24915199999999998,
+          "frames_present": 68
+        },
+        "voxel splats": {
+          "median_per_frame_ms": 1.86784,
+          "median_when_present_ms": 1.86784,
+          "frames_present": 68
+        },
+        "voxel sun splat raster": {
+          "median_per_frame_ms": 0.18064,
+          "median_when_present_ms": 0.18064,
+          "frames_present": 68
+        },
+        "voxel sun splats": {
+          "median_per_frame_ms": 0.203296,
+          "median_when_present_ms": 0.203296,
+          "frames_present": 68
+        },
+        "wheel particles": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        }
+      },
+      "cpu_tree_pool_median_ms": 0.0,
+      "cpu_terrain_median_ms": 4.15945,
+      "cpu_render_encode_median_ms": 2.4627999999999997,
+      "diagnostics": {
+        "trees": 4841,
+        "branch_capacity": 4096,
+        "selected_records": 4068,
+        "tested_nodes": 8343,
+        "source_slots": 1902,
+        "voxel_slots": 2166,
+        "shadow_voxel_slots": 4000,
+        "direct_roots": 178,
+        "fallback_trees": 2598,
+        "retained": 4058,
+        "assigned": 10,
+        "slot_failures": 0,
+        "hash_failures": 0
+      }
+    },
+    {
+      "radius_m": 500,
+      "gpu_mode": 1,
+      "repeat": 1,
+      "gpu_samples": 68,
+      "gpu_covered_median_ms": 16.04936,
+      "passes": {
+        "GPU forest selection residency poses": {
+          "median_per_frame_ms": 0.7019359999999999,
+          "median_when_present_ms": 0.7019359999999999,
+          "frames_present": 68
+        },
+        "bloom": {
+          "median_per_frame_ms": 0.045712,
+          "median_when_present_ms": 0.045712,
+          "frames_present": 68
+        },
+        "canopy sky transmittance": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.099808,
+          "frames_present": 2
+        },
+        "canopy volume": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.24057599999999998,
+          "frames_present": 2
+        },
+        "exhaust": {
+          "median_per_frame_ms": 0.000768,
+          "median_when_present_ms": 0.000768,
+          "frames_present": 68
+        },
+        "filter canopy": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.009999999999999998,
+          "frames_present": 2
+        },
+        "motion vectors": {
+          "median_per_frame_ms": 0.06027199999999999,
+          "median_when_present_ms": 0.06027199999999999,
+          "frames_present": 68
+        },
+        "near shadow cull": {
+          "median_per_frame_ms": 0.05755199999999999,
+          "median_when_present_ms": 0.05755199999999999,
+          "frames_present": 68
+        },
+        "near shadow raster": {
+          "median_per_frame_ms": 0.15648,
+          "median_when_present_ms": 0.15648,
+          "frames_present": 68
+        },
+        "shade": {
+          "median_per_frame_ms": 0.310752,
+          "median_when_present_ms": 0.310752,
+          "frames_present": 68
+        },
+        "shade terrain": {
+          "median_per_frame_ms": 0.895728,
+          "median_when_present_ms": 0.895728,
+          "frames_present": 68
+        },
+        "shade voxels": {
+          "median_per_frame_ms": 0.091568,
+          "median_when_present_ms": 0.091568,
+          "frames_present": 68
+        },
+        "shadow cull": {
+          "median_per_frame_ms": 0.072784,
+          "median_when_present_ms": 0.072784,
+          "frames_present": 68
+        },
+        "shadow raster": {
+          "median_per_frame_ms": 0.22705599999999998,
+          "median_when_present_ms": 0.22705599999999998,
+          "frames_present": 68
+        },
+        "taa": {
+          "median_per_frame_ms": 0.053487999999999994,
+          "median_when_present_ms": 0.053487999999999994,
+          "frames_present": 68
+        },
+        "terrain coarse": {
+          "median_per_frame_ms": 0.27264,
+          "median_when_present_ms": 0.27264,
+          "frames_present": 68
+        },
+        "tonemap": {
+          "median_per_frame_ms": 0.04392,
+          "median_when_present_ms": 0.04392,
+          "frames_present": 68
+        },
+        "tree occluder cull": {
+          "median_per_frame_ms": 1.23776,
+          "median_when_present_ms": 1.23776,
+          "frames_present": 68
+        },
+        "tree occluder raster": {
+          "median_per_frame_ms": 5.529439999999999,
+          "median_when_present_ms": 5.529439999999999,
+          "frames_present": 68
+        },
+        "tree occlusion pyramid": {
+          "median_per_frame_ms": 0.083312,
+          "median_when_present_ms": 0.083312,
+          "frames_present": 68
+        },
+        "tree remaining cull": {
+          "median_per_frame_ms": 1.1075679999999999,
+          "median_when_present_ms": 1.1075679999999999,
+          "frames_present": 68
+        },
+        "tree remaining raster": {
+          "median_per_frame_ms": 0.957168,
+          "median_when_present_ms": 0.957168,
+          "frames_present": 68
+        },
+        "voxel near sun splat raster": {
+          "median_per_frame_ms": 0.043344,
+          "median_when_present_ms": 0.043344,
+          "frames_present": 68
+        },
+        "voxel near sun splats": {
+          "median_per_frame_ms": 0.2828,
+          "median_when_present_ms": 0.2828,
+          "frames_present": 68
+        },
+        "voxel splat raster": {
+          "median_per_frame_ms": 0.30688,
+          "median_when_present_ms": 0.30688,
+          "frames_present": 68
+        },
+        "voxel splat resolve": {
+          "median_per_frame_ms": 0.258096,
+          "median_when_present_ms": 0.258096,
+          "frames_present": 68
+        },
+        "voxel splats": {
+          "median_per_frame_ms": 1.9043999999999999,
+          "median_when_present_ms": 1.9043999999999999,
+          "frames_present": 68
+        },
+        "voxel sun splat raster": {
+          "median_per_frame_ms": 0.18054399999999998,
+          "median_when_present_ms": 0.18054399999999998,
+          "frames_present": 68
+        },
+        "voxel sun splats": {
+          "median_per_frame_ms": 0.202592,
+          "median_when_present_ms": 0.202592,
+          "frames_present": 68
+        },
+        "wheel particles": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        }
+      },
+      "cpu_tree_pool_median_ms": 0.0,
+      "cpu_terrain_median_ms": 4.09095,
+      "cpu_render_encode_median_ms": 2.76705,
+      "diagnostics": {
+        "trees": 4841,
+        "branch_capacity": 4096,
+        "selected_records": 4068,
+        "tested_nodes": 8343,
+        "source_slots": 1902,
+        "voxel_slots": 2166,
+        "shadow_voxel_slots": 4000,
+        "direct_roots": 178,
+        "fallback_trees": 2598,
+        "retained": 4058,
+        "assigned": 10,
+        "slot_failures": 0,
+        "hash_failures": 0
+      }
+    },
+    {
+      "radius_m": 500,
+      "gpu_mode": 1,
+      "repeat": 2,
+      "gpu_samples": 68,
+      "gpu_covered_median_ms": 15.927328,
+      "passes": {
+        "GPU forest selection residency poses": {
+          "median_per_frame_ms": 0.70136,
+          "median_when_present_ms": 0.70136,
+          "frames_present": 68
+        },
+        "bloom": {
+          "median_per_frame_ms": 0.046256,
+          "median_when_present_ms": 0.046256,
+          "frames_present": 68
+        },
+        "canopy sky transmittance": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.099408,
+          "frames_present": 2
+        },
+        "canopy volume": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.240448,
+          "frames_present": 2
+        },
+        "exhaust": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        },
+        "filter canopy": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.009919999999999998,
+          "frames_present": 2
+        },
+        "motion vectors": {
+          "median_per_frame_ms": 0.060576,
+          "median_when_present_ms": 0.060576,
+          "frames_present": 68
+        },
+        "near shadow cull": {
+          "median_per_frame_ms": 0.057504,
+          "median_when_present_ms": 0.057504,
+          "frames_present": 68
+        },
+        "near shadow raster": {
+          "median_per_frame_ms": 0.154656,
+          "median_when_present_ms": 0.154656,
+          "frames_present": 68
+        },
+        "shade": {
+          "median_per_frame_ms": 0.32555199999999995,
+          "median_when_present_ms": 0.32555199999999995,
+          "frames_present": 68
+        },
+        "shade terrain": {
+          "median_per_frame_ms": 0.9006879999999999,
+          "median_when_present_ms": 0.9006879999999999,
+          "frames_present": 68
+        },
+        "shade voxels": {
+          "median_per_frame_ms": 0.091168,
+          "median_when_present_ms": 0.091168,
+          "frames_present": 68
+        },
+        "shadow cull": {
+          "median_per_frame_ms": 0.072848,
+          "median_when_present_ms": 0.072848,
+          "frames_present": 68
+        },
+        "shadow raster": {
+          "median_per_frame_ms": 0.225984,
+          "median_when_present_ms": 0.225984,
+          "frames_present": 68
+        },
+        "taa": {
+          "median_per_frame_ms": 0.053424,
+          "median_when_present_ms": 0.053424,
+          "frames_present": 68
+        },
+        "terrain coarse": {
+          "median_per_frame_ms": 0.27083199999999996,
+          "median_when_present_ms": 0.27083199999999996,
+          "frames_present": 68
+        },
+        "tonemap": {
+          "median_per_frame_ms": 0.043904,
+          "median_when_present_ms": 0.043904,
+          "frames_present": 68
+        },
+        "tree occluder cull": {
+          "median_per_frame_ms": 1.203136,
+          "median_when_present_ms": 1.203136,
+          "frames_present": 68
+        },
+        "tree occluder raster": {
+          "median_per_frame_ms": 5.337408,
+          "median_when_present_ms": 5.337408,
+          "frames_present": 68
+        },
+        "tree occlusion pyramid": {
+          "median_per_frame_ms": 0.0832,
+          "median_when_present_ms": 0.0832,
+          "frames_present": 68
+        },
+        "tree remaining cull": {
+          "median_per_frame_ms": 1.1006399999999998,
+          "median_when_present_ms": 1.1006399999999998,
+          "frames_present": 68
+        },
+        "tree remaining raster": {
+          "median_per_frame_ms": 0.946512,
+          "median_when_present_ms": 0.946512,
+          "frames_present": 68
+        },
+        "voxel near sun splat raster": {
+          "median_per_frame_ms": 0.042992,
+          "median_when_present_ms": 0.042992,
+          "frames_present": 68
+        },
+        "voxel near sun splats": {
+          "median_per_frame_ms": 0.27883199999999997,
+          "median_when_present_ms": 0.27883199999999997,
+          "frames_present": 68
+        },
+        "voxel splat raster": {
+          "median_per_frame_ms": 0.306208,
+          "median_when_present_ms": 0.306208,
+          "frames_present": 68
+        },
+        "voxel splat resolve": {
+          "median_per_frame_ms": 0.278016,
+          "median_when_present_ms": 0.278016,
+          "frames_present": 68
+        },
+        "voxel splats": {
+          "median_per_frame_ms": 1.8913119999999999,
+          "median_when_present_ms": 1.8913119999999999,
+          "frames_present": 68
+        },
+        "voxel sun splat raster": {
+          "median_per_frame_ms": 0.18052799999999997,
+          "median_when_present_ms": 0.18052799999999997,
+          "frames_present": 68
+        },
+        "voxel sun splats": {
+          "median_per_frame_ms": 0.20392,
+          "median_when_present_ms": 0.20392,
+          "frames_present": 68
+        },
+        "wheel particles": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        }
+      },
+      "cpu_tree_pool_median_ms": 0.0,
+      "cpu_terrain_median_ms": 4.58775,
+      "cpu_render_encode_median_ms": 2.60595,
+      "diagnostics": {
+        "trees": 4841,
+        "branch_capacity": 4096,
+        "selected_records": 4068,
+        "tested_nodes": 8343,
+        "source_slots": 1902,
+        "voxel_slots": 2166,
+        "shadow_voxel_slots": 4000,
+        "direct_roots": 178,
+        "fallback_trees": 2598,
+        "retained": 4058,
+        "assigned": 10,
+        "slot_failures": 0,
+        "hash_failures": 0
+      }
+    },
+    {
+      "radius_m": 2500,
+      "gpu_mode": 0,
+      "repeat": 0,
+      "gpu_samples": 68,
+      "gpu_covered_median_ms": 16.346975999999998,
+      "passes": {
+        "aggregate error selection": {
+          "median_per_frame_ms": 0.010176,
+          "median_when_present_ms": 0.010176,
+          "frames_present": 68
+        },
+        "bloom": {
+          "median_per_frame_ms": 0.045584,
+          "median_when_present_ms": 0.045584,
+          "frames_present": 68
+        },
+        "canopy sky transmittance": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.099424,
+          "frames_present": 2
+        },
+        "canopy volume": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.388544,
+          "frames_present": 2
+        },
+        "exhaust": {
+          "median_per_frame_ms": 0.0007520000000000001,
+          "median_when_present_ms": 0.0007520000000000001,
+          "frames_present": 68
+        },
+        "filter canopy": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.010192,
+          "frames_present": 2
+        },
+        "motion vectors": {
+          "median_per_frame_ms": 0.059088,
+          "median_when_present_ms": 0.059088,
+          "frames_present": 68
+        },
+        "near shadow cull": {
+          "median_per_frame_ms": 0.116256,
+          "median_when_present_ms": 0.116256,
+          "frames_present": 68
+        },
+        "near shadow raster": {
+          "median_per_frame_ms": 0.13508799999999999,
+          "median_when_present_ms": 0.13508799999999999,
+          "frames_present": 68
+        },
+        "shade": {
+          "median_per_frame_ms": 0.305728,
+          "median_when_present_ms": 0.305728,
+          "frames_present": 68
+        },
+        "shade terrain": {
+          "median_per_frame_ms": 0.71304,
+          "median_when_present_ms": 0.71304,
+          "frames_present": 68
+        },
+        "shade voxels": {
+          "median_per_frame_ms": 0.118736,
+          "median_when_present_ms": 0.118736,
+          "frames_present": 68
+        },
+        "shadow cull": {
+          "median_per_frame_ms": 0.131328,
+          "median_when_present_ms": 0.131328,
+          "frames_present": 68
+        },
+        "shadow raster": {
+          "median_per_frame_ms": 0.23224,
+          "median_when_present_ms": 0.23224,
+          "frames_present": 68
+        },
+        "taa": {
+          "median_per_frame_ms": 0.053408,
+          "median_when_present_ms": 0.053408,
+          "frames_present": 68
+        },
+        "terrain coarse": {
+          "median_per_frame_ms": 0.21012799999999998,
+          "median_when_present_ms": 0.21012799999999998,
+          "frames_present": 68
+        },
+        "tonemap": {
+          "median_per_frame_ms": 0.043904,
+          "median_when_present_ms": 0.043904,
+          "frames_present": 68
+        },
+        "tree occluder cull": {
+          "median_per_frame_ms": 1.382672,
+          "median_when_present_ms": 1.382672,
+          "frames_present": 68
+        },
+        "tree occluder raster": {
+          "median_per_frame_ms": 6.724416,
+          "median_when_present_ms": 6.724416,
+          "frames_present": 68
+        },
+        "tree occlusion pyramid": {
+          "median_per_frame_ms": 0.083312,
+          "median_when_present_ms": 0.083312,
+          "frames_present": 68
+        },
+        "tree remaining cull": {
+          "median_per_frame_ms": 0.8609279999999999,
+          "median_when_present_ms": 0.8609279999999999,
+          "frames_present": 68
+        },
+        "tree remaining raster": {
+          "median_per_frame_ms": 0.5114879999999999,
+          "median_when_present_ms": 0.5114879999999999,
+          "frames_present": 68
+        },
+        "vegetation branch poses": {
+          "median_per_frame_ms": 0.094752,
+          "median_when_present_ms": 0.094752,
+          "frames_present": 68
+        },
+        "voxel near sun splat raster": {
+          "median_per_frame_ms": 0.05409599999999999,
+          "median_when_present_ms": 0.05409599999999999,
+          "frames_present": 68
+        },
+        "voxel near sun splats": {
+          "median_per_frame_ms": 0.32599999999999996,
+          "median_when_present_ms": 0.32599999999999996,
+          "frames_present": 68
+        },
+        "voxel splat raster": {
+          "median_per_frame_ms": 0.455856,
+          "median_when_present_ms": 0.455856,
+          "frames_present": 68
+        },
+        "voxel splat resolve": {
+          "median_per_frame_ms": 0.35153599999999996,
+          "median_when_present_ms": 0.35153599999999996,
+          "frames_present": 68
+        },
+        "voxel splats": {
+          "median_per_frame_ms": 1.905008,
+          "median_when_present_ms": 1.905008,
+          "frames_present": 68
+        },
+        "voxel sun splat raster": {
+          "median_per_frame_ms": 0.20951999999999998,
+          "median_when_present_ms": 0.20951999999999998,
+          "frames_present": 68
+        },
+        "voxel sun splats": {
+          "median_per_frame_ms": 0.2592,
+          "median_when_present_ms": 0.2592,
+          "frames_present": 68
+        },
+        "wheel particles": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        }
+      },
+      "cpu_tree_pool_median_ms": 0.00275,
+      "cpu_terrain_median_ms": 3.8891500000000003,
+      "cpu_render_encode_median_ms": 2.60635,
+      "diagnostics": null
+    },
+    {
+      "radius_m": 2500,
+      "gpu_mode": 0,
+      "repeat": 1,
+      "gpu_samples": 68,
+      "gpu_covered_median_ms": 16.101167999999998,
+      "passes": {
+        "aggregate error selection": {
+          "median_per_frame_ms": 0.010176,
+          "median_when_present_ms": 0.010176,
+          "frames_present": 68
+        },
+        "bloom": {
+          "median_per_frame_ms": 0.04568,
+          "median_when_present_ms": 0.04568,
+          "frames_present": 68
+        },
+        "canopy sky transmittance": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.100752,
+          "frames_present": 2
+        },
+        "canopy volume": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.250944,
+          "frames_present": 2
+        },
+        "exhaust": {
+          "median_per_frame_ms": 0.0007520000000000001,
+          "median_when_present_ms": 0.0007520000000000001,
+          "frames_present": 68
+        },
+        "filter canopy": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.009888,
+          "frames_present": 2
+        },
+        "motion vectors": {
+          "median_per_frame_ms": 0.059184,
+          "median_when_present_ms": 0.059184,
+          "frames_present": 68
+        },
+        "near shadow cull": {
+          "median_per_frame_ms": 0.116064,
+          "median_when_present_ms": 0.116064,
+          "frames_present": 68
+        },
+        "near shadow raster": {
+          "median_per_frame_ms": 0.13547199999999998,
+          "median_when_present_ms": 0.13547199999999998,
+          "frames_present": 68
+        },
+        "shade": {
+          "median_per_frame_ms": 0.310496,
+          "median_when_present_ms": 0.310496,
+          "frames_present": 68
+        },
+        "shade terrain": {
+          "median_per_frame_ms": 0.709408,
+          "median_when_present_ms": 0.709408,
+          "frames_present": 68
+        },
+        "shade voxels": {
+          "median_per_frame_ms": 0.11788799999999999,
+          "median_when_present_ms": 0.11788799999999999,
+          "frames_present": 68
+        },
+        "shadow cull": {
+          "median_per_frame_ms": 0.13131199999999998,
+          "median_when_present_ms": 0.13131199999999998,
+          "frames_present": 68
+        },
+        "shadow raster": {
+          "median_per_frame_ms": 0.23260799999999998,
+          "median_when_present_ms": 0.23260799999999998,
+          "frames_present": 68
+        },
+        "taa": {
+          "median_per_frame_ms": 0.053503999999999996,
+          "median_when_present_ms": 0.053503999999999996,
+          "frames_present": 68
+        },
+        "terrain coarse": {
+          "median_per_frame_ms": 0.209248,
+          "median_when_present_ms": 0.209248,
+          "frames_present": 68
+        },
+        "tonemap": {
+          "median_per_frame_ms": 0.04384,
+          "median_when_present_ms": 0.04384,
+          "frames_present": 68
+        },
+        "tree occluder cull": {
+          "median_per_frame_ms": 1.3315039999999998,
+          "median_when_present_ms": 1.3315039999999998,
+          "frames_present": 68
+        },
+        "tree occluder raster": {
+          "median_per_frame_ms": 6.662848,
+          "median_when_present_ms": 6.662848,
+          "frames_present": 68
+        },
+        "tree occlusion pyramid": {
+          "median_per_frame_ms": 0.083488,
+          "median_when_present_ms": 0.083488,
+          "frames_present": 68
+        },
+        "tree remaining cull": {
+          "median_per_frame_ms": 0.8564,
+          "median_when_present_ms": 0.8564,
+          "frames_present": 68
+        },
+        "tree remaining raster": {
+          "median_per_frame_ms": 0.54128,
+          "median_when_present_ms": 0.54128,
+          "frames_present": 68
+        },
+        "vegetation branch poses": {
+          "median_per_frame_ms": 0.095104,
+          "median_when_present_ms": 0.095104,
+          "frames_present": 68
+        },
+        "voxel near sun splat raster": {
+          "median_per_frame_ms": 0.053919999999999996,
+          "median_when_present_ms": 0.053919999999999996,
+          "frames_present": 68
+        },
+        "voxel near sun splats": {
+          "median_per_frame_ms": 0.32592,
+          "median_when_present_ms": 0.32592,
+          "frames_present": 68
+        },
+        "voxel splat raster": {
+          "median_per_frame_ms": 0.455712,
+          "median_when_present_ms": 0.455712,
+          "frames_present": 68
+        },
+        "voxel splat resolve": {
+          "median_per_frame_ms": 0.341072,
+          "median_when_present_ms": 0.341072,
+          "frames_present": 68
+        },
+        "voxel splats": {
+          "median_per_frame_ms": 1.8433599999999999,
+          "median_when_present_ms": 1.8433599999999999,
+          "frames_present": 68
+        },
+        "voxel sun splat raster": {
+          "median_per_frame_ms": 0.209504,
+          "median_when_present_ms": 0.209504,
+          "frames_present": 68
+        },
+        "voxel sun splats": {
+          "median_per_frame_ms": 0.25792,
+          "median_when_present_ms": 0.25792,
+          "frames_present": 68
+        },
+        "wheel particles": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        }
+      },
+      "cpu_tree_pool_median_ms": 0.003,
+      "cpu_terrain_median_ms": 4.64345,
+      "cpu_render_encode_median_ms": 2.6803,
+      "diagnostics": null
+    },
+    {
+      "radius_m": 2500,
+      "gpu_mode": 0,
+      "repeat": 2,
+      "gpu_samples": 68,
+      "gpu_covered_median_ms": 16.416112,
+      "passes": {
+        "aggregate error selection": {
+          "median_per_frame_ms": 0.010048,
+          "median_when_present_ms": 0.010048,
+          "frames_present": 68
+        },
+        "bloom": {
+          "median_per_frame_ms": 0.045424,
+          "median_when_present_ms": 0.045424,
+          "frames_present": 68
+        },
+        "canopy sky transmittance": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.099488,
+          "frames_present": 2
+        },
+        "canopy volume": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.251472,
+          "frames_present": 2
+        },
+        "exhaust": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        },
+        "filter canopy": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.009824,
+          "frames_present": 2
+        },
+        "motion vectors": {
+          "median_per_frame_ms": 0.058927999999999994,
+          "median_when_present_ms": 0.058927999999999994,
+          "frames_present": 68
+        },
+        "near shadow cull": {
+          "median_per_frame_ms": 0.116016,
+          "median_when_present_ms": 0.116016,
+          "frames_present": 68
+        },
+        "near shadow raster": {
+          "median_per_frame_ms": 0.12936,
+          "median_when_present_ms": 0.12936,
+          "frames_present": 68
+        },
+        "shade": {
+          "median_per_frame_ms": 0.321152,
+          "median_when_present_ms": 0.321152,
+          "frames_present": 68
+        },
+        "shade terrain": {
+          "median_per_frame_ms": 0.7088,
+          "median_when_present_ms": 0.7088,
+          "frames_present": 68
+        },
+        "shade voxels": {
+          "median_per_frame_ms": 0.117056,
+          "median_when_present_ms": 0.117056,
+          "frames_present": 68
+        },
+        "shadow cull": {
+          "median_per_frame_ms": 0.131376,
+          "median_when_present_ms": 0.131376,
+          "frames_present": 68
+        },
+        "shadow raster": {
+          "median_per_frame_ms": 0.23112,
+          "median_when_present_ms": 0.23112,
+          "frames_present": 68
+        },
+        "taa": {
+          "median_per_frame_ms": 0.054751999999999995,
+          "median_when_present_ms": 0.054751999999999995,
+          "frames_present": 68
+        },
+        "terrain coarse": {
+          "median_per_frame_ms": 0.209104,
+          "median_when_present_ms": 0.209104,
+          "frames_present": 68
+        },
+        "tonemap": {
+          "median_per_frame_ms": 0.043808,
+          "median_when_present_ms": 0.043808,
+          "frames_present": 68
+        },
+        "tree occluder cull": {
+          "median_per_frame_ms": 1.316112,
+          "median_when_present_ms": 1.316112,
+          "frames_present": 68
+        },
+        "tree occluder raster": {
+          "median_per_frame_ms": 6.762608,
+          "median_when_present_ms": 6.762608,
+          "frames_present": 68
+        },
+        "tree occlusion pyramid": {
+          "median_per_frame_ms": 0.083424,
+          "median_when_present_ms": 0.083424,
+          "frames_present": 68
+        },
+        "tree remaining cull": {
+          "median_per_frame_ms": 0.8632639999999999,
+          "median_when_present_ms": 0.8632639999999999,
+          "frames_present": 68
+        },
+        "tree remaining raster": {
+          "median_per_frame_ms": 0.513184,
+          "median_when_present_ms": 0.513184,
+          "frames_present": 68
+        },
+        "vegetation branch poses": {
+          "median_per_frame_ms": 0.095328,
+          "median_when_present_ms": 0.095328,
+          "frames_present": 68
+        },
+        "voxel near sun splat raster": {
+          "median_per_frame_ms": 0.05416,
+          "median_when_present_ms": 0.05416,
+          "frames_present": 68
+        },
+        "voxel near sun splats": {
+          "median_per_frame_ms": 0.32767999999999997,
+          "median_when_present_ms": 0.32767999999999997,
+          "frames_present": 68
+        },
+        "voxel splat raster": {
+          "median_per_frame_ms": 0.45611199999999996,
+          "median_when_present_ms": 0.45611199999999996,
+          "frames_present": 68
+        },
+        "voxel splat resolve": {
+          "median_per_frame_ms": 0.334928,
+          "median_when_present_ms": 0.334928,
+          "frames_present": 68
+        },
+        "voxel splats": {
+          "median_per_frame_ms": 1.9669599999999998,
+          "median_when_present_ms": 1.9669599999999998,
+          "frames_present": 68
+        },
+        "voxel sun splat raster": {
+          "median_per_frame_ms": 0.209568,
+          "median_when_present_ms": 0.209568,
+          "frames_present": 68
+        },
+        "voxel sun splats": {
+          "median_per_frame_ms": 0.252416,
+          "median_when_present_ms": 0.252416,
+          "frames_present": 68
+        },
+        "wheel particles": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        }
+      },
+      "cpu_tree_pool_median_ms": 0.0025,
+      "cpu_terrain_median_ms": 3.8427499999999997,
+      "cpu_render_encode_median_ms": 2.2637,
+      "diagnostics": null
+    },
+    {
+      "radius_m": 2500,
+      "gpu_mode": 1,
+      "repeat": 0,
+      "gpu_samples": 68,
+      "gpu_covered_median_ms": 17.335136,
+      "passes": {
+        "GPU forest selection residency poses": {
+          "median_per_frame_ms": 0.7893439999999999,
+          "median_when_present_ms": 0.7893439999999999,
+          "frames_present": 68
+        },
+        "bloom": {
+          "median_per_frame_ms": 0.046079999999999996,
+          "median_when_present_ms": 0.046079999999999996,
+          "frames_present": 68
+        },
+        "canopy sky transmittance": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.09964799999999999,
+          "frames_present": 2
+        },
+        "canopy volume": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.24256,
+          "frames_present": 2
+        },
+        "exhaust": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        },
+        "filter canopy": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.009856,
+          "frames_present": 2
+        },
+        "motion vectors": {
+          "median_per_frame_ms": 0.059808,
+          "median_when_present_ms": 0.059808,
+          "frames_present": 68
+        },
+        "near shadow cull": {
+          "median_per_frame_ms": 0.109952,
+          "median_when_present_ms": 0.109952,
+          "frames_present": 68
+        },
+        "near shadow raster": {
+          "median_per_frame_ms": 0.14984,
+          "median_when_present_ms": 0.14984,
+          "frames_present": 68
+        },
+        "shade": {
+          "median_per_frame_ms": 0.302928,
+          "median_when_present_ms": 0.302928,
+          "frames_present": 68
+        },
+        "shade terrain": {
+          "median_per_frame_ms": 0.77112,
+          "median_when_present_ms": 0.77112,
+          "frames_present": 68
+        },
+        "shade voxels": {
+          "median_per_frame_ms": 0.11638399999999999,
+          "median_when_present_ms": 0.11638399999999999,
+          "frames_present": 68
+        },
+        "shadow cull": {
+          "median_per_frame_ms": 0.114176,
+          "median_when_present_ms": 0.114176,
+          "frames_present": 68
+        },
+        "shadow raster": {
+          "median_per_frame_ms": 0.229968,
+          "median_when_present_ms": 0.229968,
+          "frames_present": 68
+        },
+        "taa": {
+          "median_per_frame_ms": 0.054352,
+          "median_when_present_ms": 0.054352,
+          "frames_present": 68
+        },
+        "terrain coarse": {
+          "median_per_frame_ms": 0.212608,
+          "median_when_present_ms": 0.212608,
+          "frames_present": 68
+        },
+        "tonemap": {
+          "median_per_frame_ms": 0.043887999999999996,
+          "median_when_present_ms": 0.043887999999999996,
+          "frames_present": 68
+        },
+        "tree occluder cull": {
+          "median_per_frame_ms": 1.240272,
+          "median_when_present_ms": 1.240272,
+          "frames_present": 68
+        },
+        "tree occluder raster": {
+          "median_per_frame_ms": 5.71152,
+          "median_when_present_ms": 5.71152,
+          "frames_present": 68
+        },
+        "tree occlusion pyramid": {
+          "median_per_frame_ms": 0.08416,
+          "median_when_present_ms": 0.08416,
+          "frames_present": 68
+        },
+        "tree remaining cull": {
+          "median_per_frame_ms": 1.1333600000000001,
+          "median_when_present_ms": 1.1333600000000001,
+          "frames_present": 68
+        },
+        "tree remaining raster": {
+          "median_per_frame_ms": 0.932736,
+          "median_when_present_ms": 0.932736,
+          "frames_present": 68
+        },
+        "voxel near sun splat raster": {
+          "median_per_frame_ms": 0.04312,
+          "median_when_present_ms": 0.04312,
+          "frames_present": 68
+        },
+        "voxel near sun splats": {
+          "median_per_frame_ms": 0.286736,
+          "median_when_present_ms": 0.286736,
+          "frames_present": 68
+        },
+        "voxel splat raster": {
+          "median_per_frame_ms": 1.0108479999999997,
+          "median_when_present_ms": 1.0108479999999997,
+          "frames_present": 68
+        },
+        "voxel splat resolve": {
+          "median_per_frame_ms": 0.39548799999999995,
+          "median_when_present_ms": 0.39548799999999995,
+          "frames_present": 68
+        },
+        "voxel splats": {
+          "median_per_frame_ms": 2.463184,
+          "median_when_present_ms": 2.463184,
+          "frames_present": 68
+        },
+        "voxel sun splat raster": {
+          "median_per_frame_ms": 0.18048,
+          "median_when_present_ms": 0.18048,
+          "frames_present": 68
+        },
+        "voxel sun splats": {
+          "median_per_frame_ms": 0.206176,
+          "median_when_present_ms": 0.206176,
+          "frames_present": 68
+        },
+        "wheel particles": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        }
+      },
+      "cpu_tree_pool_median_ms": 0.0,
+      "cpu_terrain_median_ms": 5.06595,
+      "cpu_render_encode_median_ms": 3.12195,
+      "diagnostics": {
+        "trees": 62274,
+        "branch_capacity": 4096,
+        "selected_records": 4068,
+        "tested_nodes": 57829,
+        "source_slots": 1902,
+        "voxel_slots": 2166,
+        "shadow_voxel_slots": 4000,
+        "direct_roots": 4082,
+        "fallback_trees": 14449,
+        "retained": 4058,
+        "assigned": 10,
+        "slot_failures": 0,
+        "hash_failures": 0
+      }
+    },
+    {
+      "radius_m": 2500,
+      "gpu_mode": 1,
+      "repeat": 1,
+      "gpu_samples": 68,
+      "gpu_covered_median_ms": 17.551952,
+      "passes": {
+        "GPU forest selection residency poses": {
+          "median_per_frame_ms": 0.789056,
+          "median_when_present_ms": 0.789056,
+          "frames_present": 68
+        },
+        "bloom": {
+          "median_per_frame_ms": 0.045871999999999996,
+          "median_when_present_ms": 0.045871999999999996,
+          "frames_present": 68
+        },
+        "canopy sky transmittance": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.09924799999999999,
+          "frames_present": 2
+        },
+        "canopy volume": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.24328,
+          "frames_present": 2
+        },
+        "exhaust": {
+          "median_per_frame_ms": 0.0007199999999999999,
+          "median_when_present_ms": 0.0007199999999999999,
+          "frames_present": 68
+        },
+        "filter canopy": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.009904,
+          "frames_present": 2
+        },
+        "motion vectors": {
+          "median_per_frame_ms": 0.060048,
+          "median_when_present_ms": 0.060048,
+          "frames_present": 68
+        },
+        "near shadow cull": {
+          "median_per_frame_ms": 0.109792,
+          "median_when_present_ms": 0.109792,
+          "frames_present": 68
+        },
+        "near shadow raster": {
+          "median_per_frame_ms": 0.151744,
+          "median_when_present_ms": 0.151744,
+          "frames_present": 68
+        },
+        "shade": {
+          "median_per_frame_ms": 0.30376000000000003,
+          "median_when_present_ms": 0.30376000000000003,
+          "frames_present": 68
+        },
+        "shade terrain": {
+          "median_per_frame_ms": 0.75488,
+          "median_when_present_ms": 0.75488,
+          "frames_present": 68
+        },
+        "shade voxels": {
+          "median_per_frame_ms": 0.117536,
+          "median_when_present_ms": 0.117536,
+          "frames_present": 68
+        },
+        "shadow cull": {
+          "median_per_frame_ms": 0.114128,
+          "median_when_present_ms": 0.114128,
+          "frames_present": 68
+        },
+        "shadow raster": {
+          "median_per_frame_ms": 0.227984,
+          "median_when_present_ms": 0.227984,
+          "frames_present": 68
+        },
+        "taa": {
+          "median_per_frame_ms": 0.054144,
+          "median_when_present_ms": 0.054144,
+          "frames_present": 68
+        },
+        "terrain coarse": {
+          "median_per_frame_ms": 0.213584,
+          "median_when_present_ms": 0.213584,
+          "frames_present": 68
+        },
+        "tonemap": {
+          "median_per_frame_ms": 0.043872,
+          "median_when_present_ms": 0.043872,
+          "frames_present": 68
+        },
+        "tree occluder cull": {
+          "median_per_frame_ms": 1.2663039999999999,
+          "median_when_present_ms": 1.2663039999999999,
+          "frames_present": 68
+        },
+        "tree occluder raster": {
+          "median_per_frame_ms": 5.6668959999999995,
+          "median_when_present_ms": 5.6668959999999995,
+          "frames_present": 68
+        },
+        "tree occlusion pyramid": {
+          "median_per_frame_ms": 0.08348799999999999,
+          "median_when_present_ms": 0.08348799999999999,
+          "frames_present": 68
+        },
+        "tree remaining cull": {
+          "median_per_frame_ms": 1.153328,
+          "median_when_present_ms": 1.153328,
+          "frames_present": 68
+        },
+        "tree remaining raster": {
+          "median_per_frame_ms": 0.951456,
+          "median_when_present_ms": 0.951456,
+          "frames_present": 68
+        },
+        "voxel near sun splat raster": {
+          "median_per_frame_ms": 0.043376,
+          "median_when_present_ms": 0.043376,
+          "frames_present": 68
+        },
+        "voxel near sun splats": {
+          "median_per_frame_ms": 0.287888,
+          "median_when_present_ms": 0.287888,
+          "frames_present": 68
+        },
+        "voxel splat raster": {
+          "median_per_frame_ms": 1.013328,
+          "median_when_present_ms": 1.013328,
+          "frames_present": 68
+        },
+        "voxel splat resolve": {
+          "median_per_frame_ms": 0.36904,
+          "median_when_present_ms": 0.36904,
+          "frames_present": 68
+        },
+        "voxel splats": {
+          "median_per_frame_ms": 2.53368,
+          "median_when_present_ms": 2.53368,
+          "frames_present": 68
+        },
+        "voxel sun splat raster": {
+          "median_per_frame_ms": 0.180448,
+          "median_when_present_ms": 0.180448,
+          "frames_present": 68
+        },
+        "voxel sun splats": {
+          "median_per_frame_ms": 0.20585599999999998,
+          "median_when_present_ms": 0.20585599999999998,
+          "frames_present": 68
+        },
+        "wheel particles": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        }
+      },
+      "cpu_tree_pool_median_ms": 0.0,
+      "cpu_terrain_median_ms": 4.36325,
+      "cpu_render_encode_median_ms": 2.8133,
+      "diagnostics": {
+        "trees": 62274,
+        "branch_capacity": 4096,
+        "selected_records": 4068,
+        "tested_nodes": 57829,
+        "source_slots": 1902,
+        "voxel_slots": 2166,
+        "shadow_voxel_slots": 4000,
+        "direct_roots": 4082,
+        "fallback_trees": 14449,
+        "retained": 4058,
+        "assigned": 10,
+        "slot_failures": 0,
+        "hash_failures": 0
+      }
+    },
+    {
+      "radius_m": 2500,
+      "gpu_mode": 1,
+      "repeat": 2,
+      "gpu_samples": 68,
+      "gpu_covered_median_ms": 17.217135999999996,
+      "passes": {
+        "GPU forest selection residency poses": {
+          "median_per_frame_ms": 0.78672,
+          "median_when_present_ms": 0.78672,
+          "frames_present": 68
+        },
+        "bloom": {
+          "median_per_frame_ms": 0.045599999999999995,
+          "median_when_present_ms": 0.045599999999999995,
+          "frames_present": 68
+        },
+        "canopy sky transmittance": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.09979199999999999,
+          "frames_present": 2
+        },
+        "canopy volume": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.242448,
+          "frames_present": 2
+        },
+        "exhaust": {
+          "median_per_frame_ms": 0.000736,
+          "median_when_present_ms": 0.000736,
+          "frames_present": 68
+        },
+        "filter canopy": {
+          "median_per_frame_ms": 0.0,
+          "median_when_present_ms": 0.009871999999999999,
+          "frames_present": 2
+        },
+        "motion vectors": {
+          "median_per_frame_ms": 0.060128,
+          "median_when_present_ms": 0.060128,
+          "frames_present": 68
+        },
+        "near shadow cull": {
+          "median_per_frame_ms": 0.109664,
+          "median_when_present_ms": 0.109664,
+          "frames_present": 68
+        },
+        "near shadow raster": {
+          "median_per_frame_ms": 0.156416,
+          "median_when_present_ms": 0.156416,
+          "frames_present": 68
+        },
+        "shade": {
+          "median_per_frame_ms": 0.305088,
+          "median_when_present_ms": 0.305088,
+          "frames_present": 68
+        },
+        "shade terrain": {
+          "median_per_frame_ms": 0.7370559999999999,
+          "median_when_present_ms": 0.7370559999999999,
+          "frames_present": 68
+        },
+        "shade voxels": {
+          "median_per_frame_ms": 0.11838399999999999,
+          "median_when_present_ms": 0.11838399999999999,
+          "frames_present": 68
+        },
+        "shadow cull": {
+          "median_per_frame_ms": 0.11408,
+          "median_when_present_ms": 0.11408,
+          "frames_present": 68
+        },
+        "shadow raster": {
+          "median_per_frame_ms": 0.230464,
+          "median_when_present_ms": 0.230464,
+          "frames_present": 68
+        },
+        "taa": {
+          "median_per_frame_ms": 0.053936,
+          "median_when_present_ms": 0.053936,
+          "frames_present": 68
+        },
+        "terrain coarse": {
+          "median_per_frame_ms": 0.213408,
+          "median_when_present_ms": 0.213408,
+          "frames_present": 68
+        },
+        "tonemap": {
+          "median_per_frame_ms": 0.043824,
+          "median_when_present_ms": 0.043824,
+          "frames_present": 68
+        },
+        "tree occluder cull": {
+          "median_per_frame_ms": 1.255744,
+          "median_when_present_ms": 1.255744,
+          "frames_present": 68
+        },
+        "tree occluder raster": {
+          "median_per_frame_ms": 5.362,
+          "median_when_present_ms": 5.362,
+          "frames_present": 68
+        },
+        "tree occlusion pyramid": {
+          "median_per_frame_ms": 0.083616,
+          "median_when_present_ms": 0.083616,
+          "frames_present": 68
+        },
+        "tree remaining cull": {
+          "median_per_frame_ms": 1.138768,
+          "median_when_present_ms": 1.138768,
+          "frames_present": 68
+        },
+        "tree remaining raster": {
+          "median_per_frame_ms": 0.978688,
+          "median_when_present_ms": 0.978688,
+          "frames_present": 68
+        },
+        "voxel near sun splat raster": {
+          "median_per_frame_ms": 0.043184,
+          "median_when_present_ms": 0.043184,
+          "frames_present": 68
+        },
+        "voxel near sun splats": {
+          "median_per_frame_ms": 0.28571199999999997,
+          "median_when_present_ms": 0.28571199999999997,
+          "frames_present": 68
+        },
+        "voxel splat raster": {
+          "median_per_frame_ms": 1.014352,
+          "median_when_present_ms": 1.014352,
+          "frames_present": 68
+        },
+        "voxel splat resolve": {
+          "median_per_frame_ms": 0.38312,
+          "median_when_present_ms": 0.38312,
+          "frames_present": 68
+        },
+        "voxel splats": {
+          "median_per_frame_ms": 2.49568,
+          "median_when_present_ms": 2.49568,
+          "frames_present": 68
+        },
+        "voxel sun splat raster": {
+          "median_per_frame_ms": 0.18048,
+          "median_when_present_ms": 0.18048,
+          "frames_present": 68
+        },
+        "voxel sun splats": {
+          "median_per_frame_ms": 0.20518399999999998,
+          "median_when_present_ms": 0.20518399999999998,
+          "frames_present": 68
+        },
+        "wheel particles": {
+          "median_per_frame_ms": 0.00031999999999999997,
+          "median_when_present_ms": 0.00031999999999999997,
+          "frames_present": 68
+        }
+      },
+      "cpu_tree_pool_median_ms": 0.0,
+      "cpu_terrain_median_ms": 4.0554,
+      "cpu_render_encode_median_ms": 2.2465,
+      "diagnostics": {
+        "trees": 62274,
+        "branch_capacity": 4096,
+        "selected_records": 4068,
+        "tested_nodes": 57829,
+        "source_slots": 1902,
+        "voxel_slots": 2166,
+        "shadow_voxel_slots": 4000,
+        "direct_roots": 4082,
+        "fallback_trees": 14449,
+        "retained": 4058,
+        "assigned": 10,
+        "slot_failures": 0,
+        "hash_failures": 0
+      }
+    }
+  ]
+}

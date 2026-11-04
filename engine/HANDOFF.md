@@ -1,3 +1,28 @@
+## 2026-11-04 Actual GPU forest runtime (opt-in, no CPU Pool)
+
+`WARP_TERRAIN_GPU_FOREST=1` in terrain_fly now connects shared recipes,
+GPU demand/complete-cut budgeting, persistent slots, articulated branch wind,
+source/voxel draws and separate sun voxel choices. No Pool construction/update
+in that route. Default is unchanged. 4096 branch outputs, not 240 full trees.
+Full scene tested with 62,274 roots. A parallel blocked prefix replaced the
+serial budget scan; selection/residency/poses median 0.789 ms for that population.
+
+Three alternating pairs per size, same executable, native1713x964 one view:
+500 m old/new GPU covered 16.078/15.927 ms; 2500 m 16.347/17.335 ms. No overall
+speedup or 120 FPS claim. Root fallback still causes visual differences. Full
+report, per-pass JSON, tests and exact executable hash:
+`docs/foliage-runtime-2026-11-04.md`. Raw captures `build/gpu-forest-20261104-parallel`.
+No interactive playtest launched. Video reference uR5EvBWxN14 is user-supplied
+architecture context, not independently verified imagery/performance.
+
+Corrected stale voxel-composite timestamps, source needles mistakenly used for
+near shadows, inflated canopy bounds, and branch-pack limits applied to roots.
+Tests cover actual source/voxel wind rendering, budget exhaustion, teleports,
+four views, off-camera sun casters, generations and deterministic near priority.
+Remaining: workload-balanced/history-first cluster traversal, animated shadow
+page caching, far spatial-cell aggregates without per-tree records, broader
+optical/temporal acceptance. See the integration gate; do not claim full Nanite.
+
 ## 2026-11-01 SpaceRacer native 4K profiling and reflections
 
 City reflection BVH uses surface-area splits + threaded escape indices (aux

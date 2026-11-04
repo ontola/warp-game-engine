@@ -619,6 +619,9 @@ pub(crate) fn replacement_materials(scene: &Scene) -> Vec<u32> {
     // A single per-view branch decision replaces every shared primitive of
     // that branch, without a new per-stage storage binding or a second source
     // mesh. Shadow passes ignore dynamic replacements and retain the members.
+    if let Some(spec)=&scene.gpu_forest {
+        for slot in 0..spec.slots {result[(spec.first_owner+slot)as usize]=0x8000_0000|slot;}
+    }
     for group in &scene.foliage_source_groups {
         let replacement=result[group.owner as usize];
         assert!(replacement&0x8000_0000!=0,"shared foliage proxy needs a dynamic representation");
@@ -646,7 +649,7 @@ fn temporal_compatibility(scene:&Scene)->Result<(),String> {
         if scene.baked_animations.as_ref().is_some_and(|animation|animation.parts.iter().any(|part|part.owner==owner)) {
             return Err(format!("voxel owner {owner} uses baked animation without matching volume deformation"));
         }
-        if source.flags&crate::scene::PART_WIND!=0 && !scene.part_wind.iter().any(|part|part.owner==Some(owner)&&part.volume==Some(index as u32)) {
+        if scene.gpu_forest.is_none() && source.flags&crate::scene::PART_WIND!=0 && !scene.part_wind.iter().any(|part|part.owner==Some(owner)&&part.volume==Some(index as u32)) {
             return Err(format!("voxel owner {owner} needs a matching rigid-part volume pose for temporal reprojection"));
         }
     }
@@ -911,8 +914,8 @@ impl VoxelRenderer {
     /// Asset grids and cells remain immutable; the 96-byte tree layout is unchanged.
     pub(crate) fn has_visibility_stream(&self)->bool {self.integrator_options.global_intervals}
     /// GPU scopes for the eight timestamp slots render() takes, None when unused.
-    pub(crate) fn timing_names(&self)->[Option<&'static str>;8] {
-        if self.raster.is_some() {return [Some("voxel splats"),None,Some("voxel splat raster"),Some("voxel splat resolve"),Some("voxel composite"),self.brick_hzb.as_ref().map(|_|"voxel brick hzb"),self.brick_hzb.as_ref().map(|_|"voxel brick cull"),self.brick_hzb.as_ref().map(|_|"voxel brick raster")];}
+    pub(crate) fn timing_names(&self,scene_surface:bool)->[Option<&'static str>;8] {
+        if self.raster.is_some() {return [Some("voxel splats"),None,Some("voxel splat raster"),Some("voxel splat resolve"),(!scene_surface).then_some("voxel composite"),self.brick_hzb.as_ref().map(|_|"voxel brick hzb"),self.brick_hzb.as_ref().map(|_|"voxel brick cull"),self.brick_hzb.as_ref().map(|_|"voxel brick raster")];}
         [Some("voxel bins"),Some("voxel tiles"),self.has_visibility_stream().then_some("voxel visibility"),Some("voxel integrate"),Some("voxel composite"),None,None,None]
     }
     pub(crate) fn tree_buffer(&self) -> &wgpu::Buffer { &self.data[3] }

@@ -706,6 +706,12 @@ fn recipe_spruces(scene: &mut Scene, biome: &render::biome::Biome, near: &[(Vec3
     let policy = render::aggregate_lod::Policy { proxy_pixels: arg("--proxy-px").unwrap_or(6.0),
         proxy_pixels_from: arg("--proxy-from").unwrap_or(50.0), ..defaults };
     let started = std::time::Instant::now();
+    if std::env::var("WARP_TERRAIN_GPU_FOREST").as_deref()==Ok("1") {
+        let slots=std::env::var("WARP_GPU_BRANCH_SLOTS").ok().and_then(|s|s.parse().ok()).unwrap_or(4096);
+        render::foliage_runtime::plant(scene,cooked,&trees,slots,policy)?;
+        println!("GPU forest: {} permanent trees, {slots} branch slots, NO CPU Pool",trees.len());
+        return Ok(None);
+    }
     if far.is_empty() {
         recipe_forest::plant(scene, cooked, &trees, near.len(), policy)?;
         println!("{} full trees planted in {} ms", trees.len(), started.elapsed().as_millis());
@@ -819,6 +825,11 @@ fn main() -> Result<(), String> {
     // Full spruces share their sprays per species (virtual members), so
     // dozens fit where 12 did (docs/foliage-assemblies-plan.md).
     recipe_forest::set_virtual_members(true);
+    if std::env::var("WARP_TERRAIN_GPU_FOREST").as_deref()==Ok("1") {
+        for name in ["KERN_TREE_OCCLUSION", "KERN_CLUSTER_TRAVERSAL"] {
+            if std::env::var_os(name).is_none() {unsafe {std::env::set_var(name,"1");}}
+        }
+    }
     // Distant fir cards cast shadows from cached foliage sun pages; without
     // them tree shadows popped in at the edge of the near shadow map. Headless
     // 1440p: the same GPU time, and unlike KERN_FAR_SUN_SHADOW no striping
@@ -868,7 +879,7 @@ fn main() -> Result<(), String> {
         let mut headless = app::Headless::new(&gpu, [w, h], TICK_HZ)?;
         let mut times = Vec::new();
         let mut cpu_times = Vec::new();
-        let mut profiler = app::debug::EngineDebug::default();
+        let mut gpu_samples = Vec::new();
         let forward = Controls { mv: [0.0, 1.0], ..Default::default() };
         let frames = n.parse::<u32>().map_err(|_| "--fly N")?;
         if frames <= 5 { return Err("--fly needs at least six frames".into()); }
@@ -885,11 +896,18 @@ fn main() -> Result<(), String> {
                 // Rebuilds may replace a Renderer at the same address. Enable
                 // profiling on the actual instance, not just pointer changes.
                 renderer.set_async_gpu_profiling(&gpu,true)?;
-                profiler.profile(&gpu,renderer,true);
+                for sample in renderer.drain_gpu_profiles(&gpu).samples {
+                    gpu_samples.push(serde_json::json!({"frame":sample.render_sequence,"output":sample.output_size,"views":sample.views,
+                        "covered_ms":sample.covered_interval_ms,"passes":sample.gpu_ms}));
+                }
             }
             if i+1 == frames { if let Some(path) = arg("--fly-shot") { render::write_png(std::path::Path::new(&path), w, h, &rgba)?; } }
         }
+        if let Some(renderer)=headless.renderer() {
+            if let Some(stats)=renderer.gpu_forest_diagnostics(&gpu)? {println!("GPU forest final: {}",serde_json::to_string(&stats).map_err(|e|e.to_string())?);}
+        }
         if let Some(path) = arg("--fly-times") {
+            std::fs::write(format!("{path}.gpu.json"),serde_json::to_vec(&gpu_samples).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
             std::fs::write(format!("{path}.cpu.json"),serde_json::to_vec(&cpu_times).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
             std::fs::write(path, serde_json::to_vec(&times).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
         }
