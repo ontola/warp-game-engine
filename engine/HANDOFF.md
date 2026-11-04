@@ -1,3 +1,39 @@
+## 2026-11-04 Shadow tile damage and sparse clear building block
+
+Added shadow_damage.rs + shaders/shadow_damage{,_clear}.wgsl. NOT CONNECTED to
+normal raster yet: no render savings or finished animated shadow cache claimed.
+Do not simply disable frame.rs forest invalidation: both source and voxel raster
+must honor the same tile mask after sparse clearing or stale depths remain.
+
+GPU compares exact 128-byte source/voxel snapshots (including common shadow
+choices) and marks old/new world bounds in a 64x64 tile mask (512 bytes). Source
+sphere is already world-space, voxel low/high are world bounds. Removal, changes
+and initial/epoch/projection invalidation covered. CPU does not select casters.
+Sparse clear uses Load and only writes far depth in dirty tiles. No pose freeze
+or quantization. Dense wind may dirty most tiles. Projection changes currently
+force all tiles; stable/scrolling world coverage is still required.
+
+Release compile, both Naga shaders, DX12 software-adapter functional test PASS:
+`KERN_ADAPTER=software WGPU_BACKEND=dx12 cargo test --locked --release -p render
+--lib shadow_damage::tests -- --include-ignored --test-threads=1 --nocapture`
+2 passed, 1.41 s execution; build 4m40s including shared-target contention.
+The oracle compares every pixel of a raw 64x64 Depth32Float buffer with the mask:
+marked tiles clear to 1, all others remain exactly 0.25; also checks old/new
+positions, hidden voxel/source, unchanged reuse, epoch and projection changes.
+No hardware timings or production integration evidence. Both other games remain
+live (CIM verifies PIDs 32908/22888). Own build/test sessions 16011 and 76378 have
+exited 0; no owned test remains. See docs/foliage-shadow-damage-2026-11-04.md.
+
+Next: use this beside shared shadow_cache, encode after GPU materialization;
+attach identical mask to source raster and voxel splat raster (plus early bound
+rejection); clear only dirty tiles, load retained depth; wire asset/terrain/
+material/target invalidation epochs and fail/abandon invalidation. Source raster
+currently groups0/1, voxel splat raster group0; uniform mask needs no extra
+storage binding. VoxelRenderer::tree_buffer exposes current volumes; common
+runtime choices contain shadow policy at word16384+slot. Source/voxel/page
+mutation must be included. Keep near/lamp/legacy behavior independent. Full
+redraw comparison + measured normal integration still required before gate pass.
+
 ## 2026-11-04 Complete resident intermediate cuts
 
 Normal shared selector gates refinement on all visible immediate children being
