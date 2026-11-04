@@ -87,6 +87,7 @@ impl TerrainWorld<'_> {
 pub struct Cell { pub i: i32, pub j: i32, seed: u32 }
 
 impl Cell {
+    pub const fn new(i:i32,j:i32,seed:u32)->Self {Self {i,j,seed}}
     /// A uniform 0..1 number, channel `k`. Channels 1-3 are the placer's
     /// (jitter x, jitter z, roll); rules use 4 and up.
     pub fn hash(&self, k: u32) -> f32 { forest_field::hash(self.i, self.j, k, self.seed) }

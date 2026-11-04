@@ -1089,9 +1089,9 @@ fn next_proxy_id() -> u64 {
 // layout changes.
 const COOK_MAGIC: &[u8; 8] = b"WARPCOOK";
 const COOK_FILE_VERSION: u32 = 1;
-const COOK_SOURCES: [&str; 9] = [include_str!("vegetation_asset.rs"), include_str!("vegetation_aggregate.rs"),
+const COOK_SOURCES: [&str; 10] = [include_str!("vegetation_asset.rs"), include_str!("vegetation_aggregate.rs"),
     include_str!("vegetation_clod.rs"), include_str!("foliage_voxel.rs"), include_str!("foliage_assembly.rs"),
-    include_str!("plant_recipe.rs"), include_str!("cluster.rs"), include_str!("aggregate_lod.rs"), include_str!("vegetation_cell.rs")];
+    include_str!("plant_recipe.rs"), include_str!("cluster.rs"), include_str!("aggregate_lod.rs"), include_str!("vegetation_cell.rs"), include_str!("recipe_forest.rs")];
 
 fn fnv64(hash: u64, bytes: &[u8]) -> u64 {
     bytes.iter().fold(hash, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3))
@@ -1771,7 +1771,7 @@ pub(crate) mod tests {
         for gpu_owned in [false,true] {
             let mut scene=Scene::default();
             if gpu_owned {
-                crate::foliage_runtime::plant(&mut scene,std::slice::from_ref(&cooked),&[crate::recipe_forest::Tree {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}],16,policy).unwrap();
+                crate::foliage_runtime::plant(&mut scene,std::slice::from_ref(&cooked),&[crate::recipe_forest::Tree {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}],16,policy).unwrap();
                 assert!(scene.part_wind.is_empty());assert!(scene.gpu_forest.is_some());
             } else {
                 let mut builder=SceneVegetation::new(&mut scene,AttachLimits {virtual_members:true,..Default::default()}).unwrap();

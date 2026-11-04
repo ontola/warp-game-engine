@@ -1,3 +1,42 @@
+## 2026-11-04 Terrain demo uses unified streamed grass cells
+
+terrain_fly --grass now attaches grass and trees together with Species and
+plant_species_population. Removed its Scene.meadow construction, independent
+meadow ground field and streaming worker. Two cached 3x3 cells each contain
+1080 ribbon placements / 37 articulated nodes / 9 shape-palette mesh bindings.
+The existing grass checkbox selects content, not a legacy backend; default remains
+off. A single population transaction streams trees and grass, with stable cell IDs
+and road/rock/snow/water exclusions. Grass domain 240 m, combined refresh at 60 m;
+GPU chooses source/voxel cuts, CPU does not choose near-source cells. Full grass
+capacity is reserved even if initial terrain is bare.
+
+RootPlacement gains unit world-space up. Validation rejects zero/nonunit/nonfinite
+vectors; orientation edits increment generation. Initial attachment, relocation
+and legacy recipe transforms use the same orientation. Existing tree callers in
+Sideways and examples explicitly use Y. Root GPU ABI unchanged. A local plane
+orients each grass cell; this is NOT per-blade curved-ground attachment or corrected
+basal wind. Group-pivot wind and finite loaded radius remain limitations.
+
+Added --validate-world: consumes the exact normal scene build, prints JSON and
+exits without a GPU adapter/window. It is not a renderer validation or benchmark.
+CPU evidence (release, lowland seed1):
+- 400 m trees + grass: 83,547 active roots, 743 hierarchy nodes, no legacy meadow;
+  cold scene 63,772 ms, mostly tree recooking; grass cells 1,193/1,230 ms.
+- Default 2,500 m tree radius + grass, warm: 151,058 roots / 302,116 reserved,
+  4,096 branch slots, 743 nodes, 28 total scene meshes; scene 3,077 ms.
+  Grass world generation 817 ms; grass cached assets 5.6/6.0 ms.
+- Grass only: 79,946 roots / 159,892 reserved, 74 nodes, 9 total scene meshes;
+  warm scene 1,812 ms. See build/vegetation-cell-integration/*.txt (local evidence).
+
+Checks: cargo check --locked -p render -p app -p cli --all-targets PASS.
+CPU tests: full tilted production cell initial/streamed transform 1 PASS; population
+lifecycle/orientation 3 PASS; shared cell 2 PASS; legacy proxy relocation 1 PASS;
+terrain demo streaming/road exclusion/catalog offset 1 PASS. Actual production
+mixed-species scene build and grass-only build PASS as above. Hardware rendering,
+LOD/wind images and performance pending: Sideways PID51952 remained running and
+was not touched. Full vegetation architecture is NOT complete; preserve remaining
+consumer-aware publication, page lifecycle, far-cell hierarchy and frame gates.
+
 ## 2026-11-04 Bounded common-assembly spatial cell composer
 
 vegetation_cell::compose combines repeated source assemblies into one cell root.

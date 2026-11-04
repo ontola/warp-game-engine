@@ -93,6 +93,31 @@ pub fn cook_meadow_variants(variants:&[(u64,f32)],cache:Option<&Path>)->Result<V
     }).collect()
 }
 
+/// Nine reusable patches per world cell; the runtime sees one cell root.
+pub const MEADOW_CELL_SIZE: f32 = 1.5;
+pub fn cook_meadow_cells(variants:&[(u64,f32)],cache:Option<&Path>)->Result<Vec<Cooked>,String> {
+    use crate::foliage_assembly::{self,Parameters,Limits,MeadowBladeBudget};
+    let config=Config {reference_cell_size:0.04,triangle_refinements:true,..Config::default()};
+    variants.iter().map(|&(seed,season)| {
+        let started=std::time::Instant::now();
+        let mut parameters=Parameters::meadow_patch(seed);parameters.season=season;
+        let cook=|| {
+            let source=foliage_assembly::generate_meadow_patch_budget(parameters,MeadowBladeBudget::Blades120,Limits::meadow_patch())?;
+            let members=(0..9).map(|i|crate::vegetation_cell::Placement {id:i+1,
+                rest:Mat4::from_rotation_translation(glam::Quat::from_rotation_y(i as f32*2.399963),
+                    Vec3::new((i%3)as f32*0.5-0.5,0.,(i/3)as f32*0.5-0.5))}).collect::<Vec<_>>();
+            let cell=crate::vegetation_cell::compose(seed,&source,&members,Limits {max_branches:64,max_instances:1080,..Limits::default()})?;
+            let mut plant=CookedPlant::cook_aggregate(&cell,config)?;
+            plant.cook_proxy(&cell,config,7)?;Ok(plant)
+        };
+        let (plant,loaded)=match cache {
+            Some(path)=>CookedPlant::cached(path,&format!("meadow cell 3x3 {parameters:?} {config:?} levels7"),cook)?,
+            None=>(cook()?,false),
+        };
+        Ok(Cooked {plant,loaded,millis:started.elapsed().as_secs_f64()*1000.})
+    }).collect()
+}
+
 /// Wood of the card tier is cut at this error (metres); its foliage is cards.
 pub const CARD_WOOD_ERROR_M: f32 = 0.03;
 
@@ -168,7 +193,7 @@ fn limits(variants: &[CookedPlant], full: usize) -> AttachLimits {
 }
 
 fn root(t: &Tree) -> Mat4 {
-    Mat4::from_scale_rotation_translation(Vec3::splat(t.scale), Quat::from_rotation_y(t.yaw), t.pos)
+    Mat4::from_scale_rotation_translation(Vec3::splat(t.scale), Quat::from_rotation_arc(Vec3::Y,t.up)*Quat::from_rotation_y(t.yaw), t.pos)
 }
 
 fn instance(i: usize, t: &Tree) -> PlantInstance {
@@ -489,7 +514,7 @@ mod streaming_tests {
 
     #[test]
     fn relocated_proxy_keeps_local_samples_owner_and_asset() {
-        let old = Tree {pos:Vec3::new(100.0,20.0,-30.0),yaw:0.7,scale:1.3,variant:0};
+        let old = Tree {up:Vec3::Y,pos:Vec3::new(100.0,20.0,-30.0),yaw:0.7,scale:1.3,variant:0};
         let inv = root(&old).inverse();
         let transform = root(&old);
         let mut volume = crate::foliage_volume_data::GpuTree::zeroed();

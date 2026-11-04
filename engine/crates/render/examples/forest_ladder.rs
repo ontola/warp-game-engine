@@ -164,7 +164,7 @@ fn main() -> Result<(), String> {
     let mut report = Vec::new();
     for (si, (name, recipe)) in species.iter().enumerate() {
         if species_only.as_ref().is_some_and(|s| s != name) { continue; }
-        let tree = [Tree { pos: Vec3::ZERO, yaw: 0.4, scale: 1.0, variant: 0 }];
+        let tree = [Tree { up:Vec3::Y, pos: Vec3::ZERO, yaw: 0.4, scale: 1.0, variant: 0 }];
         let render = |tier: Option<Tier>, d: f32| -> Result<Vec<u8>, String> {
             let s = scene(tier, &cooked[si].plant, &cards[si], &tree, 3000.)?;
             let renderer = Renderer::new(&gpu, &s, &light);
@@ -234,7 +234,7 @@ fn main() -> Result<(), String> {
     if args.iter().any(|a| a == "--no-grove") { println!("{table}"); return Ok(()); }
     // Perf: a 20 x 20 grove, 8 m apart, seen from 60 m out and 20 m up.
     table += "\n## Grove timing (20 x 20 spruces, 2560x1440, median of 8 frames, ms; full tiers: nearest 12 full, rest proxies)\n\n| tier | GPU total | top passes |\n|---|---|---|\n";
-    let mut grove: Vec<Tree> = (0..400).map(|i| Tree { pos: Vec3::new((i % 20) as f32 * 8. - 76., 0., (i / 20) as f32 * 8. - 76.),
+    let mut grove: Vec<Tree> = (0..400).map(|i| Tree { up:Vec3::Y, pos: Vec3::new((i % 20) as f32 * 8. - 76., 0., (i / 20) as f32 * 8. - 76.),
         yaw: i as f32 * 0.7, scale: 0.9 + 0.2 * ((i * 37 % 11) as f32 / 10.), variant: 0 }).collect();
     let cam = ViewRect { cam: Camera { pos: Vec3::new(0., 20., 140.), target: Vec3::new(0., 6., 0.), fov_y: FOV_DEG.to_radians(), near: 0.05 },
         x: 0, y: 0, w: W, h: H };
