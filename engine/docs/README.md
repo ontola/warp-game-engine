@@ -23,6 +23,9 @@ Start with the overview, then build and run something.
 one GPU route, shared assemblies, residency, wind and shadow consumers. Architecture
 integration takes precedence over visual tuning; old opt-in plans are historical.
 
+[GPU subtree work queues](foliage-wavefront-2026-11-04.md): connected traversal,
+overflow guarantees, regression tests and measured cost on 62,274 roots.
+
 [Continue the shared-assembly and brick-visibility work](vegetation-next-agent.md):
 reproduction commands, current performance, source reference and next steps.
 

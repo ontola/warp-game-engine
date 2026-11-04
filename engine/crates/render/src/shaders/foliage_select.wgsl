@@ -1,4 +1,4 @@
-// Experimental shared-recipe traversal. No CPU near-tree shortlist.
+// Shared-recipe traversal. No CPU near-tree shortlist.
 struct Node { sphere:vec4<f32>, error:vec4<f32>, links:vec4<u32> };
 // links: first child (or NONE), exclusive subtree end, representation, reserved.
 struct Tree { x:vec4<f32>, y:vec4<f32>, z:vec4<f32>, scale:vec4<f32>, info:vec4<u32> };
@@ -15,8 +15,13 @@ struct View { consumers:array<Consumer,32>, consumer_count:vec4<u32>, vp:mat4x4<
 @group(0) @binding(7) var hzb:texture_2d<f32>;
 @group(0) @binding(8) var<storage,read_write> direct_roots:array<u32>;
 // Per-root demand and stable prefix within a projected-size priority bucket.
-@group(0) @binding(9) var<storage,read_write> demand:array<vec4<u32>>;
+struct Demand { count:atomic<u32>, bucket:u32, prefix:u32, failed:atomic<u32> };
+@group(0) @binding(9) var<storage,read_write> demand:array<Demand>;
 @group(0) @binding(10) var<storage,read_write> bucket_cost:array<u32>;
+struct WorkQueue { count:atomic<u32>, padding:array<u32,3>, tasks:array<vec2<u32>> };
+@group(0) @binding(11) var<storage,read_write> input_work:WorkQueue;
+@group(0) @binding(12) var<storage,read_write> output_work:WorkQueue;
+@group(0) @binding(13) var<storage,read> child_list:array<u32>;
 const NONE:u32=0xffffffffu;
 fn sphere(t:Tree,n:Node)->vec4<f32> {
  let p=vec4<f32>(n.sphere.xyz,1.0);
@@ -106,9 +111,10 @@ fn walk(tree:u32,start:u32,phase:u32) {
 @compute @workgroup_size(64) fn first(@builtin(global_invocation_id) id:vec3<u32>) {
  if id.x<view.counts.x {
   if view.consumer_count.y!=0u {
-   let d=demand[id.x];var before=d.z+bucket_cost[32u+(id.x/256u)*32u+d.y];
-   for(var b=d.y+1u;b<32u;b++){before+=bucket_cost[b];}
-   if d.w!=0u || (d.x!=0u && before+d.x>view.consumer_count.y) {
+   let bucket=demand[id.x].bucket;let count=atomicLoad(&demand[id.x].count);
+   var before=demand[id.x].prefix+bucket_cost[32u+(id.x/256u)*32u+bucket];
+   for(var b=bucket+1u;b<32u;b++){before+=bucket_cost[b];}
+   if atomicLoad(&demand[id.x].failed)!=0u || (count!=0u && before+count>view.consumer_count.y) {
     atomicStore(&fallback[id.x],2u);return;
    }
   }
@@ -131,18 +137,9 @@ fn walk(tree:u32,start:u32,phase:u32) {
 // Count the complete requested cut before writing any shared queue. Admission
 // is deterministic (projected size bucket, then stable root ID), not atomic
 // thread arrival order. Whole-root voxel cuts consume no branch slots.
-@compute @workgroup_size(64) fn count_demand(@builtin(global_invocation_id) id:vec3<u32>) {
+@compute @workgroup_size(64) fn seed_demand(@builtin(global_invocation_id) id:vec3<u32>) {
  let tree=id.x;if tree>=view.counts.x{return;}
- let t=trees[tree];let root=nodes[t.info.x];let end=root.links.y;var n=t.info.x;var count=0u;
- loop {
-  if n>=end {break;}
-  let node=nodes[n];let s=sphere(t,node);
-  if !visible(s){n=node.links.y;continue;}
-  if node.links.x==NONE || ((node.links.w&1u)==0u && error_pixels(s,node.error.x*t.scale.x)<=view.pixels.z) {
-   if (node.links.w&2u)==0u {count++;}
-   n=node.links.y;
-  }else{n=node.links.x;}
- }
+ let t=trees[tree];let root=nodes[t.info.x];
  let s=sphere(t,root);var priority=0.0;
  for(var i=0u;i<view.consumer_count.x;i++) {
   let c=view.consumers[i];
@@ -153,13 +150,84 @@ fn walk(tree:u32,start:u32,phase:u32) {
   }
  }
  let bucket=u32(clamp(floor(log2(max(priority,1.0))),0.0,31.0));
- let oversize=u32(count>view.consumer_count.y);
- demand[tree]=vec4<u32>(select(count,0u,oversize!=0u),bucket,0u,oversize);
+ atomicStore(&demand[tree].count,0u);demand[tree].bucket=bucket;demand[tree].prefix=0u;
+ atomicStore(&demand[tree].failed,0u);
+ if visit(tree,t.info.x,false) {
+  let slot=atomicAdd(&input_work.count,1u);
+  input_work.tasks[slot]=vec2<u32>(tree,t.info.x);
+ }
+}
+// GPU-produced breadth frontiers. Dispatch boundaries publish all task writes;
+// no spin loops, CPU counts or device-wide synchronization inside a shader.
+@compute @workgroup_size(1) fn prepare_wave() {
+ let count=min(atomicLoad(&input_work.count),arrayLength(&input_work.tasks));
+ atomicStore(&counters[8],min(count,32768u));
+ atomicStore(&counters[9],(count+32767u)/32768u);atomicStore(&counters[10],1u);
+ atomicStore(&output_work.count,0u);
+}
+// A frontier item is a subtree to expand, not a leaf. Lanes process its
+// immediate child span together; only refined internal children re-enter the
+// queue. This bounds storage by active branches rather than emitted needles.
+fn visit(tree:u32,n:u32,write_records:bool)->bool {
+ let node=nodes[n];let t=trees[tree];let s=sphere(t,node);
+ if write_records {atomicAdd(&counters[4],1u);}
+ if !visible(s){if write_records {atomicAdd(&counters[5],1u);}return false;}
+ if node.links.x==NONE || ((node.links.w&1u)==0u && error_pixels(s,node.error.x*t.scale.x)<=view.pixels.z) {
+  if write_records {emit(tree,n);}else if (node.links.w&2u)==0u {atomicAdd(&demand[tree].count,1u);}
+  return false;
+ }
+ return true;
+}
+var<workgroup> expand:u32;
+var<workgroup> task_shared:vec2<u32>;
+fn wave(at:u32,lane:u32,write_records:bool) {
+ if lane==0u {
+  expand=0u;task_shared=vec2<u32>(0u);
+  if at<min(atomicLoad(&input_work.count),arrayLength(&input_work.tasks)) {
+   let task=input_work.tasks[at];task_shared=task;
+   if atomicLoad(&fallback[task.x])==0u {expand=u32(visit(task.x,task.y,write_records));}
+  }
+ }
+ let needs_expansion=workgroupUniformLoad(&expand);
+ let task=workgroupUniformLoad(&task_shared);
+ if needs_expansion==0u {return;}
+ let start=child_list[task.y*2u];let count=child_list[task.y*2u+1u];
+ for(var i=lane;i<count;i+=64u) {
+  let child=child_list[start+i];
+  if visit(task.x,child,write_records) {
+   let slot=atomicAdd(&output_work.count,1u);
+   atomicMax(&counters[15],slot+1u);
+   if slot<arrayLength(&output_work.tasks) {output_work.tasks[slot]=vec2<u32>(task.x,child);}
+   else {atomicStore(&fallback[task.x],3u);atomicStore(&demand[task.x].failed,1u);atomicAdd(&counters[11],1u);}
+  }
+ }
+}
+@compute @workgroup_size(64) fn count_wave(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32){wave(group.x+group.y*32768u,lane,false);}
+@compute @workgroup_size(64) fn emit_wave(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32){wave(group.x+group.y*32768u,lane,true);}
+@compute @workgroup_size(64) fn seed_emit(@builtin(global_invocation_id) id:vec3<u32>) {
+ let tree=id.x;if tree>=view.counts.x{return;}
+ let bucket=demand[tree].bucket;let count=atomicLoad(&demand[tree].count);
+ var before=demand[tree].prefix+bucket_cost[32u+(tree/256u)*32u+bucket];
+ for(var b=bucket+1u;b<32u;b++){before+=bucket_cost[b];}
+ if atomicLoad(&fallback[tree])!=0u {return;}
+ if atomicLoad(&demand[tree].failed)!=0u || (count!=0u && before+count>view.consumer_count.y) {
+  atomicStore(&fallback[tree],2u);return;
+ }
+ if visit(tree,trees[tree].info.x,true) {
+  let slot=atomicAdd(&input_work.count,1u);
+  // At most one seed per root; construction guarantees queue >= root count.
+  input_work.tasks[slot]=vec2<u32>(tree,trees[tree].info.x);
+ }
 }
 @compute @workgroup_size(32) fn prefix_demand(@builtin(local_invocation_index) bucket:u32,@builtin(workgroup_id) block:vec3<u32>) {
  var sum=0u;let end=min((block.x+1u)*256u,view.counts.x);
  for(var tree=block.x*256u;tree<end;tree++) {
-  let d=demand[tree].xy;if d.y==bucket {demand[tree].z=sum;sum+=d.x;}
+  if demand[tree].bucket==bucket {
+   let count=atomicLoad(&demand[tree].count);
+   if count>view.consumer_count.y {atomicStore(&demand[tree].failed,1u);}
+   demand[tree].prefix=sum;
+   if atomicLoad(&demand[tree].failed)==0u {sum+=count;}
+  }
  }
  bucket_cost[32u+block.x*32u+bucket]=sum;
 }
