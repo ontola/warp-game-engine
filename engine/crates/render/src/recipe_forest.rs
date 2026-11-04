@@ -93,13 +93,8 @@ pub fn cook_cards(variants: &[(WoodyRecipe, u64)], cache: Option<&Path>) -> Resu
 }
 
 /// One tree: its foot, turn about +Y, uniform scale and cooked variant.
-#[derive(Clone, Copy, Debug)]
-pub struct Tree {
-    pub pos: Vec3,
-    pub yaw: f32,
-    pub scale: f32,
-    pub variant: usize,
-}
+/// Compatibility name for the shared vegetation placement contract.
+pub type Tree = crate::foliage_runtime::RootPlacement;
 
 /// Put `trees` into `scene`: the first `full` as full assemblies, the rest
 /// as whole-plant proxies (pass them nearest first). `policy` sets the

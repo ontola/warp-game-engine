@@ -7,8 +7,7 @@
 //!   cargo run --release -p app --example terrain_fly -- --profile low   (Quest-class settings)
 //!   cargo run --release -p app --example terrain_fly -- --shot fly.png
 //!   cargo run --release -p app --example terrain_fly -- --fullscreen --frames 600   # fps benchmark
-//!   ... --no-trees --grass --recipe N   (N nearest trees in full, default 240; then voxel proxies; --cards N for a card ring)
-//!   ... --firs   (the old forest: Sideways' fir cards, for A/B runs)   --proxy-px N   (proxy cell pixels, default 8)
+//!   ... --grass --branch-slots 4096   (bounded GPU vegetation residency)
 //!   cargo run --release -p app --example terrain_fly -- --bench 120 [--size 2560x1440]   # headless GPU pass times
 //!
 //! Mouse or right stick looks, WASD or left stick flies, Space or A climbs,
@@ -21,13 +20,11 @@
 //!
 //! Grass (render's meadow) and trees (one recipe spruce, three seeds) cover a
 //! disc around the camera; the scene is rebuilt on another thread as it moves.
-//! The nearest spruces are full assemblies (branch wind, per-branch source or
-//! voxels); every other one is the same cooked plant as one voxel proxy.
+//! GPU visibility and detail selection cover every root with shared recipes,
+//! articulated wind and bounded source/voxel residency.
 use app::{Buttons, Controls, Draw, Frame, Game, Pointer};
-use glam::{Affine3A, Quat, Vec2, Vec3};
-use render::cluster::{ClusterMesh, Part, SimplificationPolicy};
+use glam::{Vec2, Vec3};
 use render::debug_ui::{DebugAction, DebugControl, DebugMenu, DebugValue};
-use render::scene::{GeometryCategory, ALPHA_TEST, TWO_SIDED};
 use render::recipe_forest;
 use render::vegetation_asset::CookedPlant;
 use render::atmosphere::{Atmosphere, AtmosphereCache, BakeQuality, SolarState};
@@ -71,10 +68,6 @@ fn sun_degrees(env: &render::biome::Environment) -> (f32, f32) {
 const GRASS_RECENTRE: f32 = 150.0;
 /// Without grass in view, trees follow the camera in bigger steps.
 const TREES_RECENTRE: f32 = 300.0;
-/// Recipe spruces only matter up close: low over the ground (below
-/// `RECIPE_CEILING`) the scene follows every `RECIPE_RECENTRE` metres.
-const RECIPE_RECENTRE: f32 = 100.0;
-const RECIPE_CEILING: f32 = 30.0;
 /// Mountain shadows past the shadow maps come from a heightfield this many
 /// metres square at this spacing, rebuilt once the camera has moved
 /// `SHADOW_RECENTRE` from its centre.
@@ -89,11 +82,11 @@ const GRASS_CEILING: f32 = 120.0;
 /// blades the terrain shader draws the field as a canopy.
 const GRASS_RADIUS: f32 = 45.0;
 
-type Built = Result<(Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>, Option<recipe_forest::Pool>), String>;
+type Built = Result<(Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>), String>;
 /// A scene from the builder thread, with its renderer when the thread had
 /// the GPU (every rebuild after the first): the swap then costs nothing on
 /// the frame instead of ~300 ms of uploads.
-type Ready = Result<(Option<(render::Renderer, ProceduralTerrain)>, Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>, Option<recipe_forest::Pool>), String>;
+type Ready = Result<(Option<(render::Renderer, ProceduralTerrain)>, Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>), String>;
 
 /// What goes into a scene besides the terrain; changing it rebuilds.
 #[derive(Clone, Copy, PartialEq)]
@@ -104,12 +97,8 @@ struct World {
     tree_density: f32,
     /// Trees are placed this far around the camera (metres).
     tree_radius: f32,
-    /// The nearest this many spruces are full assemblies; the rest are
-    /// whole-plant voxel proxies of the same cooked spruce.
-    recipe_trees: u32,
-    /// The old forest instead: Sideways' fir cards past the recipe spruces.
-    /// On the Mac they were 39M camera and 67M near shadow triangles.
-    firs: bool,
+    /// Bounded GPU branch residency, shared by every camera and shadow consumer.
+    branch_slots: u32,
 }
 
 // Debug menu ids (app::debug::GAME_IDS and up).
@@ -120,8 +109,7 @@ const TREE_DENSITY: u32 = 1003;
 const TREE_RADIUS: u32 = 1004;
 const CELL_PX: u32 = 1005;
 const ERROR_PX: u32 = 1006;
-const RECIPE_TREES: u32 = 1007;
-const FIRS: u32 = 1008;
+const BRANCH_SLOTS: u32 = 1007;
 
 struct Fly {
     seed: u32,
@@ -151,15 +139,11 @@ struct Fly {
     /// Centre of the grass and trees in the current scene.
     world_at: Option<Vec3>,
     stream_ground: bool,
-    stream_forest: bool,
-    forest_building: Option<Receiver<(Vec3, Vec<recipe_forest::Tree>, render::scene::Heightfield, Vec<f32>)>>,
-    forest_material: Option<(usize, Material)>,
     meadow_at: Option<Vec3>,
     meadow_building: Option<Receiver<(Vec3, [f32; 2], Vec<[f32; 4]>)>>,
     /// Terrain LOD from the debug menu, kept across rebuilds.
     terrain_settings: Settings,
     terrain: Option<ProceduralTerrain>,
-    trees: Option<recipe_forest::Pool>,
     light: Lighting,
     stats: Stats,
     last_updates: [f64;2],
@@ -175,7 +159,7 @@ struct Fly {
 impl Fly {
     fn new(seed: u32, style: usize, world: World) -> Result<Self, String> {
         let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, turn: (0.0, 0.0), speed: 40.0, hug: None, wheel: 0.0,
-            building: None, gpu: None, stale: false, world, built_world: world, world_at: None, forest_building: None, forest_material: None, stream_forest: std::env::var("WARP_TERRAIN_STREAM_FOREST").as_deref() == Ok("1"), stream_ground: std::env::var("WARP_TERRAIN_STREAM_GROUND").as_deref() == Ok("1"), meadow_at: None, meadow_building: None, terrain_settings: Settings::default(), terrain: None, trees: None, light: Lighting::default(), stats: Stats::default(), last_updates: [0.0;2], jumps: 0, fps: 0.0, worst_ms: 0.0,
+            building: None, gpu: None, stale: false, world, built_world: world, world_at: None, stream_ground: std::env::var("WARP_TERRAIN_STREAM_GROUND").as_deref() == Ok("1"), meadow_at: None, meadow_building: None, terrain_settings: Settings::default(), terrain: None, light: Lighting::default(), stats: Stats::default(), last_updates: [0.0;2], jumps: 0, fps: 0.0, worst_ms: 0.0,
             track: std::env::args().any(|a| a == "--track"), constraints: None };
         fly.bake_track();
         if let Some((start, yaw)) = fly.track_start() { fly.pos = start; fly.yaw = yaw; fly.pitch = -0.05; }
@@ -254,18 +238,17 @@ impl Fly {
         let world = World { grass: if self.stream_ground { self.world.grass } else { self.grass_wanted() }, tree_density: self.world.tree_density / 0.6 * environment(self.style).biome.tree_density, ..self.world };
         self.built_world = World { grass: world.grass, ..self.world };
         self.meadow_building = None;
-        self.forest_building = None;
         let (tx, rx) = channel();
         let (gpu, settings) = (self.gpu.clone(), self.terrain_settings);
         std::thread::spawn(move || {
             let biome = env.biome;
             let started = std::time::Instant::now();
-            let ready = build_scene(seed, style, &biome, &palette, sun_degrees(&env), pos, world, track).map(|(scene, light, pool, at, trees)| {
+            let ready = build_scene(seed, style, &biome, &palette, sun_degrees(&env), pos, world, track).map(|(scene, light, pool, at)| {
                 let scene_ms = started.elapsed().as_secs_f64() * 1000.0;
                 let renderer_started = std::time::Instant::now();
                 let built = gpu.map(|gpu| renderer_for(&gpu, &scene, &light, pool.clone(), settings));
                 eprintln!("terrain stream: scene_cpu_ms={scene_ms:.2} renderer_build_wall_ms={:.2}", renderer_started.elapsed().as_secs_f64()*1000.0);
-                (built, scene, light, pool, at, trees)
+                (built, scene, light, pool, at)
             });
             let _ = tx.send(ready);
         });
@@ -282,14 +265,9 @@ impl Fly {
         let want = World { grass: if self.stream_ground { self.world.grass } else { self.grass_wanted() }, ..self.world };
         if want != self.built_world { return true; }
         if !self.stream_ground {
-            let low = self.pos.y - self.ground(self.pos.x, self.pos.z) < RECIPE_CEILING;
-            let reach = if want.trees && want.recipe_trees > 0 && low { RECIPE_RECENTRE }
-                else if want.grass { GRASS_RECENTRE } else if want.trees { TREES_RECENTRE } else { SHADOW_RECENTRE };
-            return self.world_at.is_none_or(|c| (c - self.pos).with_y(0.0).length() > reach);
+            let reach = if want.grass { GRASS_RECENTRE } else if want.trees { TREES_RECENTRE } else { SHADOW_RECENTRE };
+            return self.world_at.is_none_or(|c| (c-self.pos).with_y(0.0).length()>reach);
         }
-        // Near assemblies already move through Pool::update. Meadow ground
-        // streams independently; neither needs a new forest or renderer.
-        if self.stream_forest && self.trees.is_some() && self.forest_material.is_some() { return false; }
         let reach = if self.world.trees { TREES_RECENTRE } else { SHADOW_RECENTRE };
         self.world_at.is_none_or(|c| (c - self.pos).with_y(0.0).length() > reach)
     }
@@ -374,10 +352,7 @@ impl Game for Fly {
         };
         if let Some(built) = ready {
             self.building = None;
-            let (prebuilt, scene, light, pool, world_at, trees) = built??;
-            self.trees = trees;
-            self.forest_material = scene.materials.iter().find(|m| m.flags & TERRAIN != 0 && m.scale < 0.0)
-                .map(|m| {let i=(-m.scale-1.0).round() as usize+2; (i,scene.materials[i])});
+            let (prebuilt, scene, light, pool, world_at) = built??;
             match prebuilt {
                 Some((renderer, terrain)) => { frame.set_renderer(renderer); self.terrain = Some(terrain); }
                 None => { frame.set_scene(&scene, &light); self.terrain = Some(ProceduralTerrain::new(pool, self.terrain_settings)); }
@@ -389,42 +364,6 @@ impl Game for Fly {
             if std::mem::take(&mut self.stale) { self.rebuild()?; }
         }
         if self.building.is_none() && self.world_stale() { self.rebuild()?; }
-        if self.stream_ground && self.stream_forest && self.building.is_none() && self.trees.is_some() && self.forest_material.is_some() {
-            if let Some((centre, trees, hf, sun)) = self.forest_building.as_ref().and_then(|rx| rx.try_recv().ok()) {
-                self.forest_building = None;
-                let started = std::time::Instant::now();
-                let gpu = frame.gpu.clone();
-                let count = trees.len();
-                let renderer = frame.renderer_mut().ok_or("forest stream has no renderer")?;
-                if self.trees.as_mut().unwrap().replace_trees(renderer, &gpu, trees)? {
-                    renderer.update_baked_terrain_sun(&gpu, hf, &sun)?;
-                    let (i, material) = self.forest_material.as_mut().unwrap();
-                    material.tint[2] = centre.x; material.roughness = centre.z;
-                    renderer.update_materials(&gpu, *i, &[*material])?;
-                    self.world_at = Some(centre);
-                    eprintln!("terrain stream: forest_instances={count} retained_renderer=true enqueue_cpu_ms={:.2}", started.elapsed().as_secs_f64()*1000.0);
-                } else {
-                    eprintln!("terrain stream: forest capacity/species/scale changed; explicit rebuild fallback");
-                    self.rebuild()?;
-                }
-            }
-            if self.building.is_none() && self.forest_building.is_none() && self.world_at.is_some_and(|p| (p-self.pos).with_y(0.0).length() > TREES_RECENTRE) {
-                let (tx, rx) = channel();
-                let (seed, style, centre, sun) = (self.seed, self.style(), self.pos, self.light.sun_dir);
-                let biome = environment(self.style).biome;
-                let world = World {tree_density: self.world.tree_density / 0.6 * biome.tree_density, ..self.world};
-                let track = self.current_track().cloned();
-                std::thread::spawn(move || {
-                    let started = std::time::Instant::now();
-                    let trees = forest(seed, &style, &biome, centre, world, track.as_deref()).into_iter()
-                        .map(|(pos,yaw,scale,variant)| recipe_forest::Tree {pos,yaw,scale:scale.y,variant}).collect();
-                    let (hf, sun) = procedural_terrain::sun_heightfield(seed, &style, [centre.x,centre.z], SHADOW_SIZE, SHADOW_CELL, sun);
-                    eprintln!("terrain stream: forest_sample_cpu_ms={:.2}",started.elapsed().as_secs_f64()*1000.0);
-                    let _ = tx.send((centre,trees,hf,sun));
-                });
-                self.forest_building = Some(rx);
-            }
-        }
         if self.stream_ground && self.building.is_none() && self.built_world.grass {
             if let Some((centre, origin, samples)) = self.meadow_building.as_ref().and_then(|rx| rx.try_recv().ok()) {
                 let gpu = frame.gpu.clone();
@@ -454,14 +393,6 @@ impl Game for Fly {
             let started=std::time::Instant::now();
             self.stats = terrain.update(frame.gpu, renderer, &[TerrainView::new(&cam, w, h)])?;
             self.last_updates=[started.elapsed().as_secs_f64()*1000.0,0.0];
-            // The full spruces follow the camera (recipe_forest::Pool).
-            if let Some(trees) = &mut self.trees {
-                let started=std::time::Instant::now();
-                let stats = trees.update(renderer, frame.gpu, &[pos])?;
-                self.last_updates[1]=started.elapsed().as_secs_f64()*1000.0;
-                // KERN_POOL_LOG=1: full-tree moves per update (tier churn checks).
-                if stats.moved > 0 && std::env::var("KERN_POOL_LOG").as_deref() == Ok("1") { eprintln!("pool moved {}", stats.moved); }
-            }
         }
         // Scene frames only: with the debug menu open the HUD redraws faster.
         self.fps = frame.scene_fps;
@@ -495,8 +426,7 @@ impl Game for Fly {
         (menu, vec![
             toggle(TREES, "Trees", w.trees, "Spruce forest around the camera."),
             number(TREE_DENSITY, "Tree density", f64::from(w.tree_density) * 100.0, (5.0, 100.0, 5.0, 0), "%", "Share of forest ground that grows a tree."),
-            number(RECIPE_TREES, "Full spruces near camera", f64::from(w.recipe_trees), (0.0, 480.0, 12.0, 0), "", "The nearest spruces are full assemblies (detailed sprays, branch wind); the rest are voxel proxies of the same spruce."),
-            toggle(FIRS, "Old fir cards", w.firs, "The old forest past the full spruces: Sideways' fir meshes instead of voxel proxies."),
+            number(BRANCH_SLOTS, "GPU branch budget", f64::from(w.branch_slots), (256.0, 16384.0, 256.0, 0), "", "Shared resident branch capacity; the GPU selects detail for all trees."),
             number(TREE_RADIUS, "Tree radius", f64::from(w.tree_radius), (200.0, 3000.0, 100.0, 0), "m", "Trees are placed this far around the camera."),
             toggle(GRASS, "Grass in scene", w.grass, "Builds the meadow (45 m of blades, canopy shading beyond) below 120 m above ground. Expensive. The Grass menu only hides it."),
             number(CELL_PX, "Terrain cell size", f64::from(t.cell_pixels), (4.0, 96.0, 4.0, 0), "px", "Largest projected terrain cell before a patch splits."),
@@ -509,9 +439,8 @@ impl Game for Fly {
             DebugAction::ResetDefaults => { self.world = World::default(); self.terrain_settings = Settings::default(); }
             DebugAction::SetToggle { id: TREES, value } => self.world.trees = value,
             DebugAction::SetToggle { id: GRASS, value } => self.world.grass = value,
-            DebugAction::SetToggle { id: FIRS, value } => self.world.firs = value,
             DebugAction::SetNumber { id: TREE_DENSITY, value } => self.world.tree_density = (value / 100.0).clamp(0.05, 1.0) as f32,
-            DebugAction::SetNumber { id: RECIPE_TREES, value } => self.world.recipe_trees = value.clamp(0.0, 480.0) as u32,
+            DebugAction::SetNumber { id: BRANCH_SLOTS, value } => self.world.branch_slots = value.clamp(256.0, 16384.0) as u32,
             DebugAction::SetNumber { id: TREE_RADIUS, value } => self.world.tree_radius = value.clamp(200.0, 3000.0) as f32,
             DebugAction::SetNumber { id: CELL_PX, value } => self.terrain_settings.cell_pixels = value.clamp(4.0, 96.0) as f32,
             DebugAction::SetNumber { id: ERROR_PX, value } => self.terrain_settings.error_pixels = value.clamp(0.25, 12.0) as f32,
@@ -526,7 +455,7 @@ impl Game for Fly {
         let g = self.sample(self.pos.x, self.pos.z);
         Some(serde_json::json!({
             "style": STYLES[self.style], "seed": self.seed, "pos": self.pos.to_array(),
-            "trees": self.built_world.trees, "grass": self.built_world.grass, "tree_density": self.world.tree_density, "tree_radius_m": self.world.tree_radius, "recipe_trees": self.world.recipe_trees, "firs": self.world.firs,
+            "trees": self.built_world.trees, "grass": self.built_world.grass, "tree_density": self.world.tree_density, "tree_radius_m": self.world.tree_radius, "branch_slots": self.world.branch_slots, "vegetation_backend": "gpu",
             "yaw_deg": self.yaw.to_degrees(), "pitch_deg": self.pitch.to_degrees(),
             "above_ground_m": self.pos.y - g.pos.y, "speed": self.speed, "ground_hug": self.hug, "fps": self.fps,
             "terrain": {"patches": self.stats.patches, "overflow": self.stats.overflow, "finest_level": self.stats.finest_level, "lod_scale": self.stats.lod_scale},
@@ -563,7 +492,7 @@ impl Game for Fly {
 }
 
 impl Default for World {
-    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, recipe_trees: 240, firs: false } }
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, branch_slots: 4096 } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
@@ -581,18 +510,9 @@ fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &
     scene.add_texture_with_normal_encoding(&root.join("gravel_ground_01_albedo.jpg"), render::scene::NormalEncoding::SrgbTransferred)?;
     scene.add_texture(&root.join("mossy_rock_albedo.jpg"))?;
     let material = scene.add_material(Material { tint: [1.0; 3], layer: t0, roughness: 0.9, flags: TERRAIN | SURFACE, scale: 4.0, metal: 0.0 });
-    let mut tree_pool = None;
     if world.trees {
-        let layer_only = std::env::args().any(|a| a == "--forest-layer-only");
-        let mut trees = if layer_only { Vec::new() } else { forest(seed, &style, biome, centre, world, track.as_deref()) };
-        trees.sort_by(|a, b| (a.0 - centre).length_squared().total_cmp(&(b.0 - centre).length_squared()));
-        let near = (world.recipe_trees as usize).min(trees.len());
-        if world.firs {
-            let firs_only: Vec<_> = trees[near..].iter().map(|&(p, y, s, v)| (p, y, s, v % 3)).collect();
-            firs(&mut scene, &assets, &firs_only)?;
-        }
-        let far = if world.firs { &[][..] } else { &trees[near..] };
-        tree_pool = recipe_spruces(&mut scene, biome, &trees[..near], far)?;
+        let roots = forest(seed, &style, biome, centre, world, track.as_deref());
+        recipe_spruces(&mut scene, biome, &roots, world.branch_slots)?;
     }
     let mut pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
     // Beyond the trees the terrain draws the same forest as colour, out to
@@ -600,10 +520,9 @@ fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &
     procedural_terrain::vegetation_style(&mut scene, material, palette);
     // Drawn trees hand over to the painted forest in the outer 15 % of their
     // radius, tree by tree (forest_field::handover_keep), so the forest share
-    // holds across the ring. --forest-layer-only paints it everywhere (the
-    // reference for that share).
+    // holds across the ring.
     if world.trees {
-        let (start, end) = if std::env::args().any(|a| a == "--forest-layer-only") { (0.0, 1.0) } else { handover_band(world) };
+        let (start, end) = handover_band(world);
         procedural_terrain::far_forest_handover(&mut scene, material, [centre.x, centre.z], start, end, world.tree_density, &palette.forest);
     }
     // The --track road: the land bends to it, and its pixels draw gravel.
@@ -639,7 +558,7 @@ fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &
     for kv in std::env::args().collect::<Vec<_>>().windows(2).filter(|w| w[0] == "--light").flat_map(|w| w[1].split(',').map(String::from).collect::<Vec<_>>()) {
         if let Err(e) = light.set(&kv) { eprintln!("--light {kv}: {e}"); }
     }
-    Ok((scene, light, pool, Some(centre), tree_pool))
+    Ok((scene, light, pool, Some(centre)))
 }
 
 /// The renderer for `scene`, built on the scene thread: the swap then
@@ -650,32 +569,9 @@ fn renderer_for(gpu: &render::Gpu, scene: &Scene, light: &Lighting, pool: proced
     (render::Renderer::new(gpu, scene, light), ProceduralTerrain::new(pool, settings))
 }
 
-/// Sideways' fir cards at these spots, as before the recipe spruces took
-/// over. Materials 1..=4, as tree_meshes() expects: call before any other.
-fn firs(scene: &mut Scene, assets: &std::path::Path, spots: &[(Vec3, f32, Vec3, usize)]) -> Result<(), String> {
-    let m = |layer, flags| Material { tint: [1.0; 3], layer, roughness: 0.9, flags, scale: 1.0, metal: 0.0 };
-    for wood in ["trunk_a_albedo.jpg", "trunk_b_albedo.jpg", "bark_albedo.jpg"] {
-        let layer = scene.add_texture(&assets.join("trees").join(wood))?;
-        scene.add_material(m(layer, 0));
-    }
-    let crown = scene.add_texture(&assets.join("trees/authored_pine_albedo.png"))?;
-    scene.add_material(Material { tint: [0.62, 0.66, 0.55], ..m(crown, ALPHA_TEST | TWO_SIDED) });
-    let meshes: Vec<usize> = tree_meshes()?.iter().map(|cm| scene.add_mesh(cm)).collect();
-    for &(pos, yaw, scale, variant) in spots {
-        scene.add_classified_instance(meshes[variant], Affine3A::from_scale_rotation_translation(scale, Quat::from_rotation_y(yaw), pos), GeometryCategory::Trees);
-        scene.mark_foliage();
-    }
-    Ok(())
-}
-
-/// Recipe spruces (render::recipe_forest): three seeds, cooked once and
-/// shared. Every spot is the plant as one voxel proxy, and as many full
-/// assemblies as `near` has follow the camera (the returned pool). Without
-/// `far` (the firs draw those) the `near` spots are full and fixed.
-/// The biome's species (render::biome::Biome::species), cooked once per
-/// biome in this run (and from the disk cache across runs), and their cards.
-fn cooked_flora(biome: &render::biome::Biome) -> Result<&'static (Vec<CookedPlant>, Vec<render::plant_mesh_lod::PlantCards>), String> {
-    type Flora = (Vec<CookedPlant>, Vec<render::plant_mesh_lod::PlantCards>);
+/// Shared recipes are cooked once per biome, independently of world population.
+fn cooked_flora(biome: &render::biome::Biome) -> Result<&'static Vec<CookedPlant>, String> {
+    type Flora = Vec<CookedPlant>;
     static COOKED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<&'static str, &'static Flora>>> = std::sync::OnceLock::new();
     let mut map = COOKED.get_or_init(Default::default).lock().unwrap();
     if let Some(&flora) = map.get(biome.name) { return Ok(flora); }
@@ -686,82 +582,19 @@ fn cooked_flora(biome: &render::biome::Biome) -> Result<&'static (Vec<CookedPlan
     for (c, (name, _)) in cooked.iter().zip(&species) {
         eprintln!("{name}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
     }
-    let cards = recipe_forest::cook_cards(&recipes, Some(&cache))?;
-    let flora: &'static Flora = Box::leak(Box::new((cooked.into_iter().map(|c| c.plant).collect(), cards)));
+    let flora: &'static Flora = Box::leak(Box::new(cooked.into_iter().map(|c| c.plant).collect()));
     map.insert(biome.name, flora);
     Ok(flora)
 }
 
-fn recipe_spruces(scene: &mut Scene, biome: &render::biome::Biome, near: &[(Vec3, f32, Vec3, usize)], far: &[(Vec3, f32, Vec3, usize)]) -> Result<Option<recipe_forest::Pool>, String> {
-    if near.is_empty() && far.is_empty() { return Ok(None); }
-    let (cooked, baked) = cooked_flora(biome)?;
-    // The firs are ~15 m; the recipe is 16 m, scaled like them.
-    let trees: Vec<recipe_forest::Tree> = near.iter().chain(far).map(|&(pos, yaw, scale, variant)|
-        recipe_forest::Tree { pos, yaw, scale: scale.y, variant }).collect();
-    let arg = |k: &str| std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == k).and_then(|w| w[1].parse().ok());
-    let defaults = recipe_forest::game_policy();
-    // Proxies start past the 240 full trees (~110 m): 6 px cells loosening
-    // from 50 m, 12 px at 200 m. 8 px from 20 m (25 px at 200 m) read as
-    // cubes in Joep's playtest; this costs 5-10 % fps, 4 px about 22 %.
-    let policy = render::aggregate_lod::Policy { proxy_pixels: arg("--proxy-px").unwrap_or(6.0),
-        proxy_pixels_from: arg("--proxy-from").unwrap_or(50.0), ..defaults };
-    let started = std::time::Instant::now();
-    if std::env::var("WARP_TERRAIN_GPU_FOREST").as_deref()==Ok("1") {
-        let slots=std::env::var("WARP_GPU_BRANCH_SLOTS").ok().and_then(|s|s.parse().ok()).unwrap_or(4096);
-        render::foliage_runtime::plant(scene,cooked,&trees,slots,policy)?;
-        println!("GPU forest: {} permanent trees, {slots} branch slots, NO CPU Pool",trees.len());
-        return Ok(None);
-    }
-    if far.is_empty() {
-        recipe_forest::plant(scene, cooked, &trees, near.len(), policy)?;
-        println!("{} full trees planted in {} ms", trees.len(), started.elapsed().as_millis());
-        return Ok(None);
-    }
-    // Three variants: the full set is shared out over them.
-    let slots = near.len().div_ceil(cooked.len());
-    let reserve = if std::env::var("WARP_TERRAIN_STREAM_FOREST").as_deref() == Ok("1") { trees.len()/2 } else { 0 };
-    let (_, mut pool) = recipe_forest::plant_streamed_reserved(scene, cooked, &trees, slots, policy, reserve)?;
-    // Card trees (plant_mesh_lod) are the low-end fallback now: --cards N
-    // per variant within --card-radius (150 m). Past the 240 full trees the
-    // voxel proxies hold the source's look about as well and, lit by shade,
-    // cost less: at the four playtest cameras 30.9, 29.5, 30.1, 26.6 fps with
-    // no cards against 27.5, 24.7, 27.4, 23.8 with 150 a species.
-    let (cards, card_radius) = (arg("--cards").unwrap_or(0.0f32) as usize, arg("--card-radius").unwrap_or(150.0f32));
-    if cards > 0 { recipe_forest::add_cards(scene, &mut pool, baked, cards, card_radius)?; }
-    println!("{} trees ({slots} full per variant following the camera, {cards} card trees per variant within {card_radius} m) planted in {} ms",
-        trees.len(), started.elapsed().as_millis());
-    Ok(Some(pool))
-}
-
-type Surfaces = Vec<(String, Vec<render::cluster::Vertex>, Vec<u32>)>;
-
-/// Sideways' three fir meshes as read from disk, once.
-fn fir_surfaces() -> Result<&'static [Surfaces], String> {
-    static SURFACES: std::sync::OnceLock<Result<Vec<Surfaces>, String>> = std::sync::OnceLock::new();
-    SURFACES.get_or_init(|| {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/sideways/assets/meshes");
-        ["a", "b", "c"].iter().map(|v| {
-            let path = dir.join(format!("fir_{v}_near.kmesh"));
-            render::cluster::read_kmesh(&std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?)
-        }).collect()
-    }).as_deref().map_err(Clone::clone)
-}
-
-/// Wood uses materials 1..=3 (trunk a, trunk b, bark), needles material 4.
-fn fir_material(name: &str) -> u32 {
-    if name.contains("trunk_b") { 2 } else if name.contains("trunk") { 1 } else if name.contains("bark") { 3 } else { 4 }
-}
-
-/// Sideways' three firs as cluster meshes, built once.
-fn tree_meshes() -> Result<&'static [ClusterMesh], String> {
-    static MESHES: std::sync::OnceLock<Result<Vec<ClusterMesh>, String>> = std::sync::OnceLock::new();
-    let built = MESHES.get_or_init(|| {
-        fir_surfaces()?.iter().map(|surfaces| {
-            let parts: Vec<Part> = surfaces.iter().map(|(name, vertices, indices)| Part { vertices, indices, material: fir_material(name) }).collect();
-            Ok(ClusterMesh::build_with_policy(&parts, |p| if p.material == 4 { SimplificationPolicy::AlphaCards } else { SimplificationPolicy::TexturedGeometry }))
-        }).collect()
-    });
-    built.as_deref().map_err(Clone::clone)
+fn recipe_spruces(scene: &mut Scene, biome: &render::biome::Biome, spots: &[(Vec3, f32, Vec3, usize)], branch_slots:u32) -> Result<(), String> {
+    if spots.is_empty() {return Ok(());}
+    let cooked=cooked_flora(biome)?;
+    let roots=spots.iter().map(|&(pos,yaw,scale,variant)| render::foliage_runtime::RootPlacement {pos,yaw,scale:scale.y,variant}).collect::<Vec<_>>();
+    let policy=render::aggregate_lod::Policy {max_error_pixels:32.0,allow_sampled_optics:true,measured_source_cuts:false,proxy_pixels:6.0,proxy_pixels_from:50.0,..Default::default()};
+    render::foliage_runtime::plant(scene,cooked,&roots,branch_slots,policy)?;
+    println!("GPU vegetation: {} permanent roots, {branch_slots} shared branch slots",roots.len());
+    Ok(())
 }
 
 /// Trees within `world.tree_radius` of `centre`, from the engine's forest
@@ -822,31 +655,20 @@ fn meadow(seed: u32, style: &Style, dry_season: f32, centre: Vec3) -> Result<Mea
 }
 
 fn main() -> Result<(), String> {
-    // Full spruces share their sprays per species (virtual members), so
-    // dozens fit where 12 did (docs/foliage-assemblies-plan.md).
-    recipe_forest::set_virtual_members(true);
-    if std::env::var("WARP_TERRAIN_GPU_FOREST").as_deref()==Ok("1") {
-        for name in ["KERN_TREE_OCCLUSION", "KERN_CLUSTER_TRAVERSAL"] {
-            if std::env::var_os(name).is_none() {unsafe {std::env::set_var(name,"1");}}
-        }
-    }
-    // Distant fir cards cast shadows from cached foliage sun pages; without
-    // them tree shadows popped in at the edge of the near shadow map. Headless
-    // 1440p: the same GPU time, and unlike KERN_FAR_SUN_SHADOW no striping
-    // on the terrain. An explicit KERN_PAGED_FOLIAGE_SUN=0 still wins. Voxel
-    // proxies cast into the sun maps themselves.
-    if std::env::var_os("KERN_PAGED_FOLIAGE_SUN").is_none() && std::env::args().any(|a| a == "--firs") {
-        // Single-threaded here: nothing has started yet.
-        unsafe { std::env::set_var("KERN_PAGED_FOLIAGE_SUN", "1"); }
+    // Normal vegetation renderer. These diagnostic overrides can disable a
+    // culling stage, but never select a different CPU population backend.
+    for name in ["KERN_TREE_OCCLUSION", "KERN_CLUSTER_TRAVERSAL"] {
+        if std::env::var_os(name).is_none() {unsafe {std::env::set_var(name,"1");}}
     }
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.windows(2).find(|w| w[0] == k).map(|w| w[1].clone());
-    // --profile low: a Quest-class budget. Simple lighting (no shadow maps,
-    // GI or occlusion), 720p rendering, no TAA and 30 full trees; the voxel
-    // forest keeps its reach (simple lighting has no painted far forest, so
-    // shorter left the hills bare). M5 Pro at 1280x720: 116-199 fps at the
-    // playtest cameras, against 75-84 at full quality. Explicit flags and
-    // KERN_/WARP_ variables still win.
+    for retired in ["--recipe", "--firs", "--cards", "--forest-layer-only"] {
+        if args.iter().any(|a| a == retired) {
+            return Err(format!("{retired} selected a retired CPU forest mode; use --branch-slots N for the GPU residency budget"));
+        }
+    }
+    // Low profile changes lighting/resolution and the shared branch budget,
+    // never the population backend. Historical CPU-pool timings do not apply.
     let low = arg("--profile").as_deref() == Some("low");
     if low {
         // Single-threaded here: nothing has started yet.
@@ -856,9 +678,8 @@ fn main() -> Result<(), String> {
     let seed = arg("--seed").map(|s| s.parse().map_err(|_| "--seed N")).transpose()?.unwrap_or(1);
     let style = arg("--style").map(|s| STYLES.iter().position(|n| *n == s).ok_or("--style default|lowland|alpine|polder|tundra|desert")).transpose()?.unwrap_or(0);
     let world = World { trees: !args.iter().any(|a| a == "--no-trees"), grass: args.iter().any(|a| a == "--grass"),
-        firs: args.iter().any(|a| a == "--firs"),
         tree_radius: arg("--tree-radius").map(|n| n.parse().map_err(|_| "--tree-radius M")).transpose()?.unwrap_or(World::default().tree_radius),
-        recipe_trees: arg("--recipe").map(|n| n.parse().map_err(|_| "--recipe N")).transpose()?.unwrap_or(if low { 30 } else { World::default().recipe_trees }), ..World::default() };
+        branch_slots: arg("--branch-slots").map(|n|n.parse().map_err(|_|"--branch-slots N")).transpose()?.unwrap_or(if low {512}else{4096}), ..World::default() };
     let mut game = Fly::new(seed, style, world)?;
     // --bench N: N headless frames at --size (default 2560x1440), GPU pass times.
     if let Some(n) = arg("--bench") {

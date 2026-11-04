@@ -1,4 +1,21 @@
-## 2026-11-04 Actual GPU forest runtime (opt-in, no CPU Pool)
+## 2026-11-04 Architecture first: normal GPU forest route
+
+User explicitly requires coherent production architecture before visual polish,
+not another opt-in checkpoint. See docs/vegetation-architecture.md for ownership,
+frame graph, implementation order and honest connected/missing status.
+
+terrain_fly no longer constructs or updates recipe_forest::Pool, sorts nearest
+trees on CPU, or carries an alternate fir/card backend. All roots use the GPU
+runtime. --branch-slots controls the shared resident branch budget (4096 normal,
+512 low profile). Retired CPU-mode arguments fail explicitly. RootPlacement now
+belongs to foliage_runtime; recipe_forest::Tree is a compatibility alias.
+
+This does NOT complete page streaming, work-queue traversal, shared grass,
+incremental world-cell updates or animated shadow-page caching. Scene recentering
+still rebuilds the renderer. Existing game callers are not silently migrated.
+Historical benchmark reports below retain their original experimental status.
+
+## 2026-11-04 Actual GPU forest runtime (historical opt-in measurement)
 
 `WARP_TERRAIN_GPU_FOREST=1` in terrain_fly now connects shared recipes,
 GPU demand/complete-cut budgeting, persistent slots, articulated branch wind,

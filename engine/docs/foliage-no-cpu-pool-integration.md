@@ -1,9 +1,11 @@
 # GPU forest integration: completion contract
 
 User requirement, 3 November 2026: finish the terrain demo route without a CPU
-near-tree pool dependency. **Status, 4 November: integrated and opt-in, visual/performance acceptance pending.**
-`WARP_TERRAIN_GPU_FOREST=1` now renders actual source and voxels in `terrain_fly`
-without constructing/updating `Pool`. The default route remains unchanged.
+near-tree pool dependency. **Updated 4 November: the GPU runtime is the normal
+terrain route; the CPU pool and alternate forest modes have been removed from
+that demo.** No `WARP_TERRAIN_GPU_FOREST` opt-in is required.
+The [production architecture contract](vegetation-architecture.md) defines the
+remaining work and supersedes the opt-in rollout requirements below.
 See [runtime evidence and remaining limits](foliage-runtime-2026-11-04.md).
 
 ## Available building blocks

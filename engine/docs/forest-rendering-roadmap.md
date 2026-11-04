@@ -1,5 +1,10 @@
 # Bosrendering in Warp
 
+Actuele richting: [production architecture contract](vegetation-architecture.md).
+De GPU-runtime is nu de normale terrain-route; de CPU-boompool is daar verwijderd.
+Architectuur gaat voor visuele afwerking. Opt-in-beschrijvingen hieronder zijn
+historisch; ontbrekende integraties staan expliciet in het contract.
+
 Actueel, **4 november 2026**: [GPU-runtime zonder CPU-boompool](foliage-runtime-2026-11-04.md) is opt-in gekoppeld aan echte source/voxel-draws, wind en afzonderlijke schaduwkeuzes. De passages hieronder zijn historische meetstappen, geen volledige beschrijving van de huidige rasterroute. Volledige Nanite-pariteit en 8,33 ms zijn niet bereikt.
 
 Nieuwe opt-in stap, **29 oktober 2026 - parallelle brickzichtbaarheid**:
