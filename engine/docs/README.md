@@ -35,6 +35,10 @@ This report precedes the connected streaming service described above.
 [Asset demand and safe publication](foliage-asset-publication-2026-11-04.md): compact
 GPU requests, pinned fallback and generation validation; physical paging still open.
 
+[Shadow tile damage and sparse clear](foliage-shadow-damage-2026-11-04.md):
+GPU old/new caster damage and exact retained-depth oracle; normal raster integration
+is still pending, so this does not yet reduce shadow cost.
+
 [Shared articulated forest poses](foliage-shared-poses-2026-11-04.md): GPU ancestry
 deduplication, bounded cache fallback and independent matrix validation.
 

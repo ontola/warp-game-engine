@@ -128,6 +128,7 @@ pub mod upscale;
 mod stability;
 mod far_sun;
 mod foliage_sun_pages;
+mod shadow_damage;
 mod world_visibility;
 mod transparency;
 mod volume_view;
