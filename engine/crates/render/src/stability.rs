@@ -55,7 +55,12 @@ pub fn stable_shadow_depth(centre: Vec3, sun_dir: Vec3, extent: f32, resolution:
     let view=Mat4::from_cols(
         Vec4::new(x.x,y.x,z.x,0.0),Vec4::new(x.y,y.y,z.y,0.0),
         Vec4::new(x.z,y.z,z.z,0.0),Vec4::new(-cx,-cy,-eye,1.0));
-    Mat4::orthographic_rh(-extent,extent,-extent,extent,1.0,range[1]-range[0]+2.0)*view
+    let mut projection=Mat4::orthographic_rh(-extent,extent,-extent,extent,1.0,range[1]-range[0]+2.0)*view;
+    // Canonical texel translations avoid cancellation roundoff from cx/extent.
+    // Power-of-two map sizes then produce exact reusable depth permutations.
+    projection.w_axis.x=-(x.dot(centre)/texel).round()*(2.0/resolution.max(1)as f32);
+    projection.w_axis.y=-(y.dot(centre)/texel).round()*(2.0/resolution.max(1)as f32);
+    projection
 }
 
 pub fn shadow_eye(focus:Vec3,sun_dir:Vec3,range:[f32;2])->Vec3 {
@@ -71,7 +76,7 @@ impl Default for SunSceneBounds {
     fn default()->Self {Self{min:Vec3::splat(f32::INFINITY),max:Vec3::splat(f32::NEG_INFINITY)}}
 }
 impl SunSceneBounds {
-    fn sphere(&mut self,p:Vec3,r:f32) {
+    pub(crate) fn sphere(&mut self,p:Vec3,r:f32) {
         if p.is_finite() && r.is_finite() && r>=0.0 {
             self.min=self.min.min(p-Vec3::splat(r));self.max=self.max.max(p+Vec3::splat(r));
         }
@@ -92,6 +97,13 @@ impl SunSceneBounds {
     }
     pub(crate) fn from_scene(scene:&crate::scene::Scene)->Self {
         let mut bounds=Self::default();bounds.extend_instances(&scene.instances);
+        if let Some(forest)=&scene.gpu_forest {
+            for &root in &forest.roots {
+                if let Some(s)=crate::foliage_runtime::root_shadow_sphere(root,forest.nodes[root.info[0]as usize].sphere) {
+                    bounds.sphere(Vec3::from_slice(&s),s[3]);
+                }
+            }
+        }
         // Rigid child rotations preserve each local translation length. The
         // sum of root-to-part lengths bounds EVERY possible articulated pose.
         let mut bind:Vec<Mat4>=Vec::with_capacity(scene.part_wind.len());

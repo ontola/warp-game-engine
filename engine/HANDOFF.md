@@ -1,3 +1,39 @@
+## 2026-11-04 World-depth GPU forest sun and exact integer shadow scrolling
+
+Normal GPU-forest scenes now always build SunSceneBounds. Initial population uses
+conservative animated hierarchy root spheres; commit_gpu_forest_roots extends
+bounds for changed active roots, including nonresident ones. CPU only handles
+world transactions, not visible-tree selection. RootTemplate retains one local
+sphere per species; no GPU upload ABI changed. Inactive/removed roots ignored;
+bounds never shrink. Existing source/skinned/etc bounds continue unchanged.
+
+stable_shadow_depth canonicalizes XY translation to exact texel increments.
+Damage accepts only identical basis/scale/depth/epoch/size with exact integral XY
+translation smaller than map size. It copies old depth to a lazy scratch texture
+and remaps integer samples; reset marks newly exposed edge tiles, then normal
+caster damage and sparse clear/raster apply. Fractional, Z, sun, scale and
+nonoverlapping changes retain full redraw. encode_scrolled is wired into normal
+shared sun; ordinary/near/headlamp/legacy split routes stay independent.
+
+Costs: extra 64MiB Depth32 scratch at4096 (16MiB at2048) allocated only on first
+scroll, full-map copy+read+write on scroll frames. This is a bounded scrolling
+map, NOT virtual shadow pages. Existing shadow tile damage and clear timestamp
+includes it. No speedup acceptance without hardware measurements.
+
+CHECKS: cargo check --locked -p render --tests PASS. Release software DX12
+shadow_damage::tests 6 PASS (11.96s; compile3m21s), including nine signed shifts
+with36,864 distinct raw-depth comparisons plus the earlier mask/clear/query tests.
+CPU checks exact/fractional/changed-depth/basis/no-overlap and transformed animated
+root envelopes. stability::tests13 PASS; static_sun::tests8 PASS.
+GPU still occupied: Sideways51952 creation17:37:11.739408 remains untouched.
+Complete renderer depth oracle and hardware timings remain NOT RUN. Do not run
+full renderer on WARP (>17GB previous attempt). Small fixtures are fine.
+
+Remaining full goal: upstream consumer-aware two-phase assembly publication,
+asset lifecycle/fault granularity, full hardware/normal integration validation,
+unified grass/tree assemblies and far cell aggregates. Shadow precision after
+scene-wide depth expansion and scroll bandwidth savings both need measurement.
+
 ## 2026-11-04 Early dirty-bound source and voxel sun work rejection
 
 Normal GPU-forest shared sun now rejects clean owners before source cluster /

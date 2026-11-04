@@ -42,7 +42,7 @@ impl Spec {
     }
 }
 #[derive(Clone,Copy,Debug)]
-struct RootTemplate {proxy:GpuTree,source:GpuInstance,node:u32,branch:u32}
+struct RootTemplate {proxy:GpuTree,source:GpuInstance,node:u32,branch:u32,shadow_sphere:[f32;4]}
 fn transform(p:RootPlacement)->Mat4 {Mat4::from_scale_rotation_translation(Vec3::splat(p.scale),glam::Quat::from_rotation_y(p.yaw),p.pos)}
 fn rows(m:Mat4)->[[f32;4];3] {[m.row(0).to_array(),m.row(1).to_array(),m.row(2).to_array()]}
 fn matrix(r:[[f32;4];3])->Mat4 {Mat4::from_cols(
@@ -95,7 +95,7 @@ pub fn plant_population(scene:&mut Scene,plants:&[crate::vegetation_asset::Cooke
     let proxy_start=forest.instances.len()-trees.len();
     let proxies=forest.instances[proxy_start..].to_vec();
     let template_volumes=forest.instances[proxy_start-plants.len()..proxy_start].to_vec();
-    let templates=template_volumes.iter().map(|v|RootTemplate {proxy:*v,source:scene.instances[v.meta[0]as usize],node:0,branch:0}).collect::<Vec<_>>();
+    let templates=template_volumes.iter().map(|v|RootTemplate {proxy:*v,source:scene.instances[v.meta[0]as usize],node:0,branch:0,shadow_sphere:[0.;4]}).collect::<Vec<_>>();
     for v in &template_volumes {let owner=&mut scene.instances[v.meta[0]as usize];owner.sphere[3]=-1.;owner.flags=0;}
 
     let mut nodes=Vec::new();let mut representations=Vec::new();let mut root_nodes=Vec::new();
@@ -131,7 +131,7 @@ pub fn plant_population(scene:&mut Scene,plants:&[crate::vegetation_asset::Cooke
     forest.instances=(0..slots).map(|slot|GpuTree {meta:[first_owner+slot,placeholder.meta[1],placeholder.meta[2],u32::MAX],..placeholder}).collect();
     forest.instances.extend_from_slice(&proxies);
     let mut templates=templates;
-    for (i,t) in templates.iter_mut().enumerate(){t.node=root_nodes[i];t.branch=handles[i].pose_range.start as u32;}
+    for (i,t) in templates.iter_mut().enumerate(){t.node=root_nodes[i];t.shadow_sphere=nodes[t.node as usize].sphere;t.branch=handles[i].pose_range.start as u32;}
     let roots=trees.iter().enumerate().map(|(i,t)| {
         let m=Mat4::from_scale_rotation_translation(Vec3::splat(t.scale),glam::Quat::from_rotation_y(t.yaw),t.pos);
         // sqrt(norm1*normInf) conservatively bounds rotated scales.
@@ -199,7 +199,17 @@ fn relocated(template:RootTemplate,placement:RootPlacement,owner:u32,generation:
     let col=(0..3).map(|c|m.col(c).truncate().abs().element_sum()).fold(0.,f32::max);
     RootChange {slot:0,pad:[0;3],proxy,source,root:Instance {rows:rows(m),scale:[(row*col).sqrt(),0.,0.,0.],info:[template.node,generation,template.branch,u32::from(inactive)]}}
 }
+/// Same conservative animated root envelope used by GPU hierarchy selection.
+/// Used only when the world population changes, never for per-frame selection.
+pub(crate) fn root_shadow_sphere(root:Instance,local:[f32;4])->Option<[f32;4]> {
+    if root.info[3]!=0 {return None;}
+    let centre=matrix(root.rows).transform_point3(Vec3::from_slice(&local));
+    Some(centre.extend(local[3]*root.scale[0]+root.scale[1]).to_array())
+}
 impl Runtime {
+    pub(crate) fn root_shadow_bound(&self,root:Instance)->Option<[f32;4]> {
+        self.templates.iter().find(|t|t.node==root.info[0]).and_then(|t|root_shadow_sphere(root,t.shadow_sphere))
+    }
     pub(crate) fn asset_selector(&self)->&Selector {&self.selector}
     pub fn new(gpu:&Gpu,spec:&Spec,instances:&wgpu::Buffer,volumes:&wgpu::Buffer)->Result<Self,String> {
         Self::with_pose_capacity(gpu,spec,instances,volumes,None)
