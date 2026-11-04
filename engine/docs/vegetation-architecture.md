@@ -1,163 +1,173 @@
-# Vegetation architecture: production contract
+# Warp vegetation: implementation checklist
 
-4 November 2026. This is the current direction, superseding opt-in rollout plans
-in earlier reports. Architecture and integration precede visual tuning. The
-terrain demo uses GPU forest selection normally; it no longer builds a CPU
-near-tree pool. This document does **not** claim the entire design is implemented.
+Updated 4 November 2026. **This is the single authoritative checklist.**
+Older reports and `engine/HANDOFF.md` contain supporting history, not separate
+plans. Architecture first; no interactive playtest until requested.
 
-## Ownership and lifecycle
+## Where we are
 
-The CPU authors species, deterministic growth parameters, world cells and root
-placements. It may cook/cache/upload assets and stream cells. It must not select
-which trees receive detailed geometry each frame. A CPU worker generating world
-data is not a CPU visibility pool.
+**Overall status: incomplete.** The normal renderer uses GPU vegetation, but it
+still lacks the integrated geometry hierarchy, budget refinement and visibility
+pipeline needed to scale. The current image and performance are not accepted.
 
-One cooked species contains a parent-first articulated assembly, shared geometry
-clusters, measured geometric error, material/coverage data, and voxel equivalents
-of its subtrees. Growth stages are recipe variants sharing primitive assets, not
-copies of the world population. Grass, shrubs and trees must use this contract;
-different cooking strategies are allowed, separate visibility/residency systems
-are not the destination.
+**Current item: G1.2 — validate cooked intermediate geometry groups.**
+Next: G1.3 (GPU integration), then G2 (budget refinement). Do not add another
+rendering backend or spend this phase tuning colors to disguise missing detail.
 
-World roots have stable cell/local identities and generations. Root deletion or
-replacement invalidates dependent residency, motion and shadow cache entries.
-Streaming cells must not rebuild the renderer or reassign all surviving IDs.
-Asset pages are addressed independently of transient draw slots. Missing pages
-request uploads and select an already resident ancestor, never an empty hole.
+Latest measured route: lowland + grass, 1280x720, one view, 240 frames at 1 m/s,
+120 warm GPU samples per run. Three runs: covered GPU medians
+15.57 / 15.93 / 15.77 ms; selection 5.22 / 5.15 / 5.02 ms.
+The preceding pre-filtered baseline was approximately 11.87 ms covered GPU.
+This is a regression, not progress toward the performance target.
+Final diagnostics: 151,058 active plant roots (including grass cells), 4,096
+branch slots, 82,097 emergency fallbacks. Evidence:
+`build/playtest-unified/projection-cache*.json.gpu.json` and corresponding logs.
+These local artifacts are ignored by Git; measurements are recorded here.
 
-## Required frame graph
+## Rules for checking boxes
 
-1. Apply queued world/asset changes; retain previous transforms and generation IDs.
-2. Build camera and shadow consumer requests. One shared residency domain serves
-   all players. Camera occlusion must never remove an off-camera shadow caster.
-3. Cull roots and traverse shared cluster hierarchies with bounded GPU work queues.
-   Select cuts by projected error and measured representation error. Reuse previous
-   visibility for phase one, build current depth, then recover disoccluded work.
-4. Combine requests and allocate persistent slots on GPU. Budget admission must
-   publish complete cuts. Overflow chooses a resident ancestor deterministically.
-5. Evaluate the needed articulated poses once; source, voxels, shadows and motion
-   consume the same pose and epoch. Wind bounds cover the entire permitted motion.
-6. Build consumer-specific indirect draw lists. Shared residency does not mean
-   every shadow view must rasterize the finest camera representation.
-7. Update dirty shadow pages; retain unaffected pages. Invalidation includes sun
-   changes, cell edits, representation replacement and animated caster bounds.
-8. Render source clusters or voxel regions, resolve materials, light and reconstruct.
-   Debug readbacks are asynchronous/explicit; CPU decisions never await GPU counts.
+- `[x]` means the stated, narrow item has evidence. It does not complete its parent gate.
+- `[ ]` means missing, in progress, or not sufficiently verified. Label ongoing work explicitly.
+- An integrated gate needs normal-renderer evidence, lifecycle/overflow checks,
+  images in motion and pass timings. A standalone module or passing unit test
+  cannot complete an integration gate.
+- Keep IDs stable. Record the commit, relevant test/run, result and remaining
+  limitation when checking an item. Reopen it if a regression contradicts it.
+- Every progress update names the item worked on, what changed, what was checked,
+  and the next item. Do not substitute activity or new modules for completed gates.
+- Do not change the target or silently remove requirements to make the checklist green.
 
-History-first visibility cannot be bolted onto the shared selection pass using
-one camera's HZB: that would drop casters required by other consumers. Likewise,
-provisional depth from an incomplete cut cannot survive publication failure.
+## Foundations already connected
 
-## Connected implementation versus remaining work
+- [x] F1 — Normal terrain demo uses GPU selection without a CPU near-tree detail pool.
+  Evidence: `foliage_runtime.rs`, `terrain_fly`; normal route measurements above.
+- [x] F2 — Explicit camera/shadow consumer roles, including orthographic cameras
+  and perspective lights. Evidence: `c563b33`, selector consumer-role GPU fixtures.
+- [x] F3 — Bounded GPU frontier with tested overflow recovery and local unary-chain
+  traversal. Evidence: `bb889e9`, `c8b2b61`; all 11 selector tests passed.
+- [x] F4 — Stable root IDs/generations and queued cell replacement without rebuilding
+  the whole renderer. Evidence: `foliage_population.rs`, `foliage_world.wgsl`,
+  lifecycle fixtures; capacity growth remains G7.2.
+- [x] F5 — Terrain grass enters the same population/selection machinery as trees.
+  Evidence: `5dce9e3`; 3x3 patch cells and mixed species in normal route.
+  This does NOT establish acceptable grass LODs, lighting or performance.
 
-| Contract | Current implementation | Required next work |
-| --- | --- | --- |
-| Shared species assemblies | CookedPlant, shared_selection_recipe, shared source/voxel catalogs | Growth variant reuse and runtime asset content edits; source/voxel payloads now relocate behind stable logical IDs |
-| Permanent population | Stable WorldRoot IDs, reserved slots and generations; worker-prepared deltas publish without renderer rebuild | Automatic capacity growth and asset paging; current root capacity is fixed and excess is rejected |
-| GPU selection | Explicit camera/shadow consumer roles (including orthographic cameras and perspective lamps), deterministic complete-tree budget; GPU work queues distribute refining subtrees across workgroups | Integrate history-first traversal with safe publication across consumers |
-| Occlusion | Normal per-view source route uses pixel-history scheduling, bounded deferred-cluster recovery and current depth; queue overflow re-scans the complementary cut | Feed safe visibility into shared assembly traversal/publication; current camera recovery is downstream of residency |
-| Residency | GPU branch slots and logical requests; bounded physical source/voxel arenas, asynchronous shared bundle demand, chunked uploads and generation-safe eviction; complete resident intermediate cuts on detail faults, one-mip pinned root/proxy fallback and evictable whole-root detail | Articulated branch mip-bundle granularity; defragmentation and asset-content lifecycle |
-| Wind | GPU demand-deduplicated ancestor poses, GPU-sized indirect parent-depth dispatches and shared root poses; source/voxel/shadow transforms agree | Hardware validation/timing of indirect dispatch change (software oracle passes), active-root compaction, recipe growth/season lifecycle |
-| Shadows | Independent source/voxel choices; normal shared sun uses GPU tile damage, sparse clear and source/voxel fragment masks plus early source-owner/voxel bounds rejection; exact integer XY scrolling with root-aware absolute depth | Full renderer depth validation and timing; virtual page coverage; sun/scale/depth changes invalidate the map |
-| Far population | One resident voxel record per tree, painted terrain beyond population; bounded shared-assembly cell composer now available | Integrate spatial-cell aggregates and streaming without per-tree records at extreme distance |
-| Grass | Terrain demo grass now uses 3x3 shared-patch cells in the tree population and streaming transaction; oriented roots follow local terrain planes; basal shear preserves group feet in shared source/voxel poses; mixed categories and empty articulation roots supported | Verify normal GPU rendering/performance; per-blade curved-ground attachment and hardware validation of basal shear; migrate remaining game meadow paths |
+## G1 — Nested geometry hierarchy (NOT COMPLETE)
 
-The common cut currently satisfies the most demanding consumer. This is correct
-but can over-refine other views. The branch output budget is bounded separately
-from the number of world roots. Source and voxel payloads use bounded caches and one publication owner. Host
-catalogs remain resident; non-forest/dynamic geometry has explicit pinned ownership.
-Source admission currently requests all cluster pages of a source branch, including
-its CLOD levels, rather than faulting individual selected clusters. See
-[voxel cache](foliage-cache-2026-11-04.md) and
-[source paging](foliage-source-pages-2026-11-04.md).
+- [ ] G1.1 — Cook a deterministic spatial hierarchy independently of wind joints.
+  Parent membership must be the exact disjoint union of children; original source
+  IDs and shared primitives are retained. **Implemented locally; not committed yet.**
+- [ ] G1.2 — Cook internal-group voxel assets, optical errors, support and discarded
+  motion bounds in a shared ancestor frame. **In progress:** new coverage test and
+  19 CPU asset tests passed; production lowland/grass cook still running.
+- [ ] G1.3 — Export nested groups into the NORMAL GPU selector, asset page tables,
+  materialization and shadow representations. No synthetic extra wind joints,
+  duplicate geometry or new backend. Current selector still flattens branch chains.
+- [ ] G1.4 — Validate mixed coarse/fine cuts against original source membership,
+  animated bounds, depth and image sequences. Repeated normal-route measurements
+  must show the cost and fidelity of this integration, not just the cook.
 
-## Implementation order and completion gates
+## G2 — Budget-aware refinement (NOT COMPLETE)
 
-1. **One production route:** remove the demo's CPU pool and alternate population
-   modes; keep historical evidence and compatibility APIs for existing callers.
-2. **Traversal and identity:** persistent cell/root update API, bounded GPU queues,
-   two-phase recovery and publication. No full-renderer rebuild on cell changes.
-3. **Asset residency:** page tables, request compaction, upload budgets, ancestor
-   fallback and generation-safe eviction. Test an intentionally undersized cache.
-4. **Animation and shadows:** evaluate shared ancestry once, dirty-page scheduling,
-   independently budgeted shadow representations, moving sun and moving wind.
-5. **Unified vegetation:** migrate grass to the same production machinery, then
-   add species/growth variation and extreme-distance cell aggregates.
+- [ ] G2.1 — Start from a complete resident cut; refine by projected benefit and
+  incremental cost. Retain intermediate parents when refinement cannot fit.
+  Replace the current whole-plant all-or-nothing admission.
+- [ ] G2.2 — Publish a replacement only when ALL required children are resident
+  and allocated. Report actual achieved error when budgets prevent requested detail.
+  Do not hide this behind larger pools or relaxed optical thresholds.
+- [ ] G2.3 — Test undersized budgets, deterministic priority, teleport and changing
+  demand. Show fallback counts and representation distributions during motion;
+  emergency proxies must not remain the normal appearance of the forest.
 
-Each gate requires code connected to the normal renderer, focused GPU regression
-tests, bounded-memory/overflow evidence and frame-pass measurements. A new module,
-shader fixture, environment flag or attractive screenshot alone does not finish
-a gate. Do not hide unfinished integration behind another backend switch.
+## G3 — Consumer-aware two-phase visibility (NOT COMPLETE)
 
-Required regression cases: empty world, heavy oversubscription, teleport, four
-cameras, off-screen casters, cell replacement, page eviction, wind, changing sun,
-source/voxel transitions and motion history. Measure traversal, residency, poses,
-source/voxel raster, shadows and shading independently. Historical one-view
-1713x964 results do not establish the 4K-output/four-player/8.33-ms target.
+- [x] G3.1 — Downstream per-view source history/recovery exists.
+  Evidence: `foliage-history-2026-11-04.md`; this runs AFTER shared residency.
+- [ ] G3.2 — Move safe history-first visibility into shared hierarchy traversal;
+  build current depth and recover disoccluded groups before final publication.
+- [ ] G3.3 — Preserve off-camera shadow casters and independently choose consumer
+  detail. One demanding shadow/camera must not force every consumer to rasterize
+  its finest cut. Shared residency remains a single ownership domain.
+- [ ] G3.4 — Prove recovery for four cameras, turns, teleports, hidden back rows,
+  queue overflow and rejected publication. No depth from a failed partial cut
+  may survive. Compare raw visibility/depth, not only screenshots.
 
-## Present limitations
+## G4 — Bounded paging and lifecycle (NOT COMPLETE)
 
-The normal route and bounded GPU traversal are connected. The rest of the
-second gate now has stable population updates and downstream history-first source
-recovery; shared assembly publication remains open. See
-[history/recovery measurements](foliage-history-2026-11-04.md).
-Existing games using legacy forest
-APIs are not silently migrated. The compatibility Tree alias points to the new
-RootPlacement type; the GPU runtime no longer depends on recipe_forest::Tree.
-Visual tuning is deferred, but missing geometry and invalid lighting remain
-correctness failures. See foliage-runtime-2026-11-04.md for prior measurements;
-its opt-in status describes the historical experiment, not the current default.
+- [x] G4.1 — Bounded physical source/voxel caches, async demand, incremental uploads,
+  generation-safe eviction and resident-ancestor fallback are connected.
+  Evidence: `foliage-cache-2026-11-04.md`, `foliage-source-pages-2026-11-04.md`,
+  `05042af` root pinning and normal cold-cache fixture.
+- [ ] G4.2 — Page the new geometry groups through the same owner; account for all
+  bytes and keep permanent fallback pins bounded. Validate an undersized cache.
+- [ ] G4.3 — Refine page granularity beyond whole branch/CLOD/mip bundles where
+  needed; validate fragmentation/reclamation and asset-content replacement.
+- [ ] G4.4 — Verify no holes, stale generations or full renderer rebuilds across
+  eviction, removal/reinsertion, empty world and heavy oversubscription.
 
-## Current production cook gate (4 November)
+## G5 — Shared wind and animated shadow caching (NOT COMPLETE)
 
-Before scale-aware filtering, normal lowland grass had zero optically admitted voxel candidates at the current
-8% coverage/color policy; four of six tree species have no admitted whole-root
-candidate. Selection therefore refines into expensive branches and budget failure
-uses the coarse emergency proxy. Cooked voxel data and a shared renderer are not
-proof that an effective intermediate LOD exists. `terrain_fly --validate-world`
-reports the actual per-species admission evidence. Improving the representation
-and optical evidence is a prerequisite for accepting unified vegetation, not
-visual polish to postpone after a performance claim.
+- [x] G5.1 — Demand-deduplicated ancestor poses and indirect depth dispatches are
+  connected. Source, voxel and shadow paths share poses; bounded fallback exists.
+  Evidence: runtime pose fixtures; cached-sun raw-depth oracle passed six steps.
+- [x] G5.2 — Shared sun tile damage, sparse clear and exact integer XY scrolling
+  are connected. Evidence: runtime cached/full sun depth oracle and prior handoff.
+- [ ] G5.3 — Extend pose/frame mapping and shadow invalidation to geometry-group
+  replacement and animated group bounds; verify source/voxel/motion agreement.
+- [ ] G5.4 — Complete virtual shadow coverage and independently budgeted caster
+  detail; measure cache reuse with wind, changing sun and moving consumers.
+- [ ] G5.5 — Compact inactive pose/root work and scale animation work by visible
+  error while retaining stable distant wind. Prove savings with pass timings.
 
-Scale-aware filtered evidence now admits conditional intermediates only below
-a one-pixel footprint in every consumer. Unary chains stay local to GPU tasks.
-This removes a frontier-overflow regression, but measured selection remains
-slower than the prior baseline and emergency fallback remains widespread.
-See the newest engine/HANDOFF.md entry; this gate is NOT complete.
+## G6 — Unified vegetation and extreme-distance aggregates (NOT COMPLETE)
 
-## Required geometry-group hierarchy and budget refinement
+- [ ] G6.1 — Accept grass/tree source-to-voxel transitions in motion: coverage,
+  silhouette, color, normals and shadow density must remain comparable. No green
+  sheets, visible ball crowns, abrupt darkening or unexplained flicker.
+- [ ] G6.2 — Integrate hierarchical spatial-cell aggregates at extreme distance,
+  removing mandatory per-tree records there. Stream through the same lifecycle.
+- [ ] G6.3 — Validate grass attachment on curved/sloping ground and basal wind;
+  migrate remaining game meadow paths to the common representation machinery.
+- [ ] G6.4 — Integrate reusable species/growth/season variants and asset updates;
+  verify primitive sharing, stable identities and animated representation bounds.
 
-Code inspection after the filtered-optics work found a structural gap:
-`cook_aggregate` cooks each branch's own members plus one all-descendant root;
-`shared_selection_recipe` then flattens those branch chains under the root.
-The articulation tree is not a nested geometry-group hierarchy. Adding more mip
-levels to each chain does not supply complete intermediate groups of branches.
+## G7 — World scalability (NOT COMPLETE)
 
-Next integration (normal route, no alternate backend):
+- [ ] G7.1 — Demonstrate bounded GPU/CPU memory and work as world population grows;
+  publish root/group/cluster/voxel counts at multiple distances.
+- [ ] G7.2 — Grow/stream root capacity safely without reassigning surviving IDs or
+  rebuilding the renderer. Current reserved capacity rejects excess roots.
 
-1. Keep articulation identity separate from geometry-group identity. Cook a
-   bounded spatial hierarchy over exact source member sets. Each parent must
-   cover exactly the disjoint union of its children; retain stable member IDs.
-   Shared primitives remain instanced, never copied into per-world-tree assets.
-2. Each internal group needs its own aggregate volume, sampled optical evidence,
-   support bound and discarded-motion bound. Store it in the common ancestor's
-   articulated frame. Do not substitute a branch-own-members volume for a
-   subtree: that silently drops descendant needles/leaves.
-3. Export this nested hierarchy through the existing selector and logical asset
-   pages. Leaf source membership, articulated poses, materialization and shadow
-   choices must reference the same group identity and generation. Cache budgets
-   must include the new group payloads; no enlarged permanent pin set.
-4. Begin budget refinement from a complete resident cut. Admit replacements by
-   projected benefit and incremental representation cost, preserving the parent
-   until all selected children are resident and their publication fits. Under
-   pressure keep the best complete intermediate cut, not an arbitrary partial
-   branch set. Explicitly report achieved error when the budget prevents the
-   requested pixel bound. A larger slot pool is not the solution.
-5. Verify source-ID coverage/no overlap at every cut, animated envelope bounds,
-   missing-page recovery, budget exhaustion, four-consumer shadow retention,
-   teleport and generation replacement. Compare selected IDs/depth as well as
-   final images and warm pass times on the normal terrain demo.
+## G8 — Acceptance and delivery (NOT COMPLETE)
 
-This is required before calling the current assembly traversal equivalent to
-Nanite-style hierarchical refinement. Current whole-root emergency fallback
-remains a correctness safety net, not an acceptable steady-state forest LOD.
+- [ ] G8.1 — Run normal-route regression matrix: empty world, oversubscription,
+  teleport, four cameras, off-screen casters, cell replacement, eviction, wind,
+  changing sun, source/voxel transitions and motion history.
+- [ ] G8.2 — Capture comparable moving views and raw buffers for suspected
+  correctness faults. Fix missing geometry and invalid lighting before polish.
+- [ ] G8.3 — Measure traversal, residency, poses, source/voxel raster, shadows and
+  shading separately; exclude warmup/startup/readback. Use at least three serial
+  repeats and alternating before/after runs for performance acceptance. Record
+  hardware, resolution, reconstruction, scene and executable/commit identity.
+- [ ] G8.4 — Demonstrate **4K output, four players, 120 FPS / 8.33 ms**, with DLSS
+  mode and internal resolutions stated. Current single-view 720p data does not
+  establish this. Any target change requires explicit user agreement.
+- [ ] G8.5 — Commit/push the integrated work to main, update this checklist with
+  evidence, and audit every unchecked requirement before claiming completion.
+
+## Non-negotiable design contracts
+
+CPU work may author/cook species, generate deterministic placements, upload assets
+and stream cells. It must not choose detailed trees per frame or await GPU counts.
+Geometry-group identity, articulated joint identity, asset page identity and
+transient draw-slot identity are distinct. Missing detail retains a complete
+resident ancestor. Growth variants share primitive assets. Physics remains
+120 Hz/four substeps. No renewed Godot comparison.
+
+## Progress log
+
+- 4 Nov, `c8b2b61`: shared unary-bound projections; 11 selector tests passed;
+  three measured runs remain too slow. Identified missing geometry groups.
+- 4 Nov, local/uncommitted: G1.1/G1.2 topology and aggregate cook added in
+  `vegetation_geometry.rs`; source partition fixture passes. Production cook
+  pending. G1.3 is explicitly not implemented; no visual/FPS improvement claimed.
