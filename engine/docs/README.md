@@ -24,7 +24,9 @@ one GPU route, shared assemblies, residency, wind and shadow consumers. Architec
 integration takes precedence over visual tuning; old opt-in plans are historical.
 
 [Bounded voxel asset streaming](foliage-cache-2026-11-04.md): normal-frame demand
-service, pinned fallback, chunked uploads and eviction. Source paging still open.
+service, pinned fallback, chunked uploads and eviction.
+[Source paging](foliage-source-pages-2026-11-04.md) shares demand and publication,
+with bounded source arenas and pinned dynamic geometry.
 
 [Relocatable voxel page payloads](foliage-page-layout-2026-11-04.md): shared grid,
 cell and splat relocation; bounded allocation and address-independent appearance.

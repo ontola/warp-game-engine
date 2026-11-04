@@ -20,10 +20,14 @@ pub struct Branch {
 #[derive(Clone,Debug)]
 pub struct Spec {
     pub page_budget:crate::foliage_pages::cache::Budget,
+    pub source_budget:crate::foliage_pages::source::Budget,
     pub nodes:Vec<Node>,pub roots:Vec<Instance>,branches:Vec<Branch>,representations:Vec<[u32;4]>,
     proxies:Vec<GpuTree>,templates:Vec<RootTemplate>,population:crate::foliage_population::Population,pub first_owner:u32,pub slots:u32,pub error:f32,
 }
 impl Spec {
+    pub(crate) fn source_page_instances(&self)->Vec<Option<GpuInstance>> {
+        self.representations.iter().map(|r|(r[1]==0).then(||self.branches[r[0]as usize].source)).collect()
+    }
     pub(crate) fn voxel_page_dependencies(&self,levels:usize)->Result<(Vec<Vec<usize>>,Vec<bool>),String> {
         let mut pinned=vec![false;levels];
         let range=|v:GpuTree|->Result<Vec<usize>,String>{let start=v.meta[1]as usize;let end=start.checked_add(v.meta[2]as usize).ok_or("voxel dependency overflow")?;if end>levels{return Err("voxel dependency outside catalog".into());}Ok((start..end).collect())};
@@ -138,7 +142,7 @@ pub fn plant_population(scene:&mut Scene,plants:&[crate::vegetation_asset::Cooke
         Instance {rows:rows(m),scale:[(row*col).sqrt(),0.,0.,0.],info:[root_nodes[t.variant],population.generations[i],handles[t.variant].pose_range.start as u32,u32::from(population.slots[i].is_none())]}
     }).collect();
     scene.voxel_forest=Some(forest);scene.voxel_proxies=trees.len()as u32;
-    scene.gpu_forest=Some(Spec {page_budget:Default::default(),nodes,roots,branches,representations,proxies,templates,population,first_owner,slots,error:policy.max_error_pixels.max(0.25)});
+    scene.gpu_forest=Some(Spec {page_budget:Default::default(),source_budget:Default::default(),nodes,roots,branches,representations,proxies,templates,population,first_owner,slots,error:policy.max_error_pixels.max(0.25)});
     Ok(())
 }
 
@@ -422,7 +426,7 @@ impl Runtime {
         for frame in 0..32 {
             renderer.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();let d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();
             let cache=renderer.foliage_page_stats().unwrap();assert!(cache.frame_upload_bytes<=8*1024*1024);
-            if frame==0 {assert_eq!(d.source_slots,0);assert_eq!(d.fallback_trees,1);}
+            if frame==0 {assert_eq!(d.source_slots,0);assert_eq!(d.fallback_trees,1);let source=cache.source.unwrap();assert!(source.resident_pages<source.total_pages,"source details must really cold-start unloaded");}
             if d.fallback_trees==1 {assert_eq!(d.source_slots+d.voxel_slots,0,"fallback must suppress every partial branch");}else{assert_eq!(d.source_slots,3,"loaded cut must be complete");}
             if d.source_slots==3 {assert_eq!(d.fallback_trees,0);recovered=true;break;}
         }

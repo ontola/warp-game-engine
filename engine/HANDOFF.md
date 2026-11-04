@@ -1,3 +1,41 @@
+## 2026-11-04 Source paging integrated with common forest publication
+
+Normal GPU forest now creates bounded source vertex/index/triangle arenas before
+binding the renderer. Stable cluster IDs address relocated payloads. Source and
+voxel dependencies share GPU feedback, complete-bundle admission, generation
+publication and frame upload budgets. Source page misses keep complete voxel
+fallbacks; no CPU tree shortlist. Source admission still loads all source-branch
+CLOD pages, not fine-grained selected-cluster faults. Host catalogs stay resident.
+
+120 release foliage-filter tests PASS at 16:21:52. Includes raw source GPU payload
+checks through partial uploads and twice eviction/reload, combined publication
+where loaded voxels cannot publish missing source geometry, genuine normal source
+cold-start, terrain fixed-address writes and compact static pins. Initial visual
+probe exposed a terrain-address regression; corrected by preserving its reserved
+vertex prefix (also skinning). Shared terrain topology is retained once per page;
+contiguous cluster headers upload together and identity prefixes avoid CPU maps.
+
+Default: source buffers 76,508,384 bytes including pinned terrain/ordinary assets;
+1 -> 16 source pages, voxels 27 -> 507, all complete by frame 63. Joint upload peak
+1,204,984 bytes. 62-MiB vertex pressure leaves 2 source pages, uses coarser voxels,
+no churn. 61 MiB explicitly rejects pinned-data overflow. Images MAE ~0.022/255.
+Docs/evidence: docs/foliage-source-pages-2026-11-04*. Local build/foliage-source.
+
+IMPORTANT: final performance runs overlap OTHER agents' games. Spellstorm PID
+32908 started 16:22:32; Growing Guns PID 22888 started 16:25:07. They were left
+untouched. Our final session 31085 has completed, no owned GPU jobs remain.
+Do not start GPU tests/benchmarks until checking those processes are gone (or
+explicitly authorized coordination). Previous corrected version measured
+10.225 -> 10.293 ms covered, but final CPU-startup-cleaned binary requires a new
+uncontended measurement. Final timings rejected, saved historical summary retained.
+
+NEXT: confirm final source paging timings when GPU free. Open gates remain:
+intermediate ancestor fallback/tighter pins, shared consumer-aware upstream
+history/publication, animated shadow caching, unified meadow/trees, far cell
+aggregates and growth/content lifecycle. Current dynamic shadow invalidation is
+every frame; future caching MUST invalidate on asset generation changes too.
+Architecture/8.33-ms target NOT complete. Goal active.
+
 ## 2026-11-04 Bounded normal-path voxel cache and stable surface identity
 
 Normal GPU forest now owns bounded index/cell/splat arenas, async GPU demand
