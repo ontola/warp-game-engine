@@ -93,6 +93,7 @@ fn selection_unpack(w:u32)->vec4<u32> {
 }
 
 @group(1) @binding(6) var<uniform> tree_phase: vec4<f32>; // x: 0 reference, 1 occluders, 2 remainder; y split metres; z enables Hi-Z rejection
+@group(1) @binding(15) var<uniform> tree_history:array<vec4<u32>,4096>;
 @group(1) @binding(7) var tree_hiz: texture_2d<f32>;
 // Original source-owner IDs, independent of camera visibility. Header:
 // static count, dynamic count, static word offset, dynamic word offset.
@@ -133,7 +134,12 @@ fn tree_occluded(root:vec3<f32>,radius:f32)->bool {
     let first_pixel=vec2<u32>(clamp(floor(lo*vec2<f32>(size)-1.001),vec2<f32>(0.0),last));
     let last_pixel=vec2<u32>(clamp(ceil(hi*vec2<f32>(size)+1.001),vec2<f32>(0.0),last));
     let levels=textureNumLevels(tree_hiz);
-    for(var level=0u;level<levels;level++) {
+    // A footprint spanning N pixels cannot fit two texels below
+    // floor(log2(N))-1. Skip those provably unusable levels, preserving the
+    // exact first accepted mip (including odd-dimension edge folding).
+    let span=max(last_pixel.x-first_pixel.x,last_pixel.y-first_pixel.y)+1u;
+    let start=select(0u,firstLeadingBit(span)-1u,span>1u);
+    for(var level=start;level<levels;level++) {
         let dimensions=textureDimensions(tree_hiz,i32(level));
         let end=dimensions-vec2<u32>(1u);
         let first=min(first_pixel>>vec2<u32>(level),end);
@@ -213,9 +219,10 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
     if view.params.z<0.5 && view.extra.y<1.5 && (spatial.header.w&8u)!=0u {
         if source_replacement_owner_selected(spatial.header.z,member_slot(id)) {return 0u;}
     }
-    if tree_phase.x>0.5 {
+    if tree_phase.x>1.5 && tree_phase.w>0.5 && ((inst.flags>>24u)&7u)!=2u {return 0u;}
+    if tree_phase.x>0.5 && tree_phase.w<0.5 {
         let tree=((inst.flags>>24u)&7u)==2u;
-        let first=!tree || distance(inst.sphere.xyz,view.cam.xyz)
+        var first=!tree || distance(inst.sphere.xyz,view.cam.xyz)
             -(inst.sphere.w+cull_wind[member_slot(id)].z)<=tree_phase.y;
         if (tree_phase.x<1.5)!=first {return 0u;}
     }
@@ -397,6 +404,27 @@ fn cull_cluster(id:u32,inst:Instance,ci:u32,base_thr:f32,wind_pad:f32) {
     // light-space footprint misses every requested tile. No camera visibility,
     // receiver Z range, material or shadow LOD substitutes for this test.
     if !receiver_shadow_keep(cc,radius) {return;}
+    if tree_phase.x>0.5 && tree_phase.w>0.5 {
+        let key=tree_history_keys(id,ci);
+        let a=(tree_history[key.x>>7u][(key.x>>5u)&3u]&(1u<<(key.x&31u)))!=0u;
+        let b=(tree_history[key.y>>7u][(key.y>>5u)&3u]&(1u<<(key.y&31u)))!=0u;
+        // Empty coverage proofs cannot save work. Render the complete current cut
+        // directly until the periodic GPU-only probe; this never hides geometry.
+        let policy=tree_history[2048];
+        let direct=policy.y==0u && (policy.x&31u)!=0u;
+        let first=direct || ((inst.flags>>24u)&7u)!=2u || (a && b);
+        if tree_phase.x<1.5 && !first {
+            let pending=atomicAdd(&counter[19],1u);
+            if pending<u32(tree_phase.y) {
+                let at=max_visible+pending*3u;
+                visible[at]=vec2<u32>(id,ci);
+                visible[at+1u]=bitcast<vec2<u32>>(cc.xy);
+                visible[at+2u]=bitcast<vec2<u32>>(vec2<f32>(cc.z,radius));
+            }
+            return;
+        }
+        if tree_phase.x>1.5 && first {return;}
+    }
     if tree_phase.x>1.5 {
         atomicAdd(&counter[17],1u);
         if tree_occluded(cc,radius) {atomicAdd(&counter[18],1u);return;}
@@ -620,7 +648,50 @@ fn finalize() {
 fn prepare_tree_phase() {
     atomicStore(&counter[12],min(atomicLoad(&counter[0]),u32(view.params.w)));
     for(var i=4u;i<12u;i++){atomicStore(&counter[i],0u);}
+    if tree_phase.w>0.5 {
+        let pending=atomicLoad(&counter[19]);
+        let groups=select((pending+63u)/64u,INSTANCE_COUNT,pending>u32(tree_phase.y));
+        args[0]=min(groups,65535u);args[1]=(groups+65534u)/65535u;args[2]=1u;
+    }
 }
+// Phase one already did current LOD/frustum selection. Recover only deferred
+// clusters, not a second full-world traversal. Queue overflow uses the complete
+// complementary scan, preserving the first-pass visibility prefix.
+@compute @workgroup_size(64)
+fn recover_tree_clusters(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+    if lane==0u {tree_pending=atomicLoad(&counter[19]);}
+    workgroupBarrier();
+    let work=group.x+group.y*65535u;let pending=workgroupUniformLoad(&tree_pending);
+    if pending>u32(tree_phase.y) {cull_instance(work,lane);return;}
+    if lane<7u {atomicStore(&tree_group_counts[lane],0u);}
+    workgroupBarrier();
+    let index=work*64u+lane;var record=vec2<u32>(0u);var keep=false;
+    if index<pending {
+        let at=u32(view.params.w)+index*3u;record=visible[at];
+        let xy=bitcast<vec2<f32>>(visible[at+1u]);let zr=bitcast<vec2<f32>>(visible[at+2u]);
+        keep=!tree_occluded(vec3<f32>(xy,zr.x),zr.y);
+        if !keep {atomicAdd(&tree_group_counts[6],1u);}
+    }
+    var local=0u;if keep {local=atomicAdd(&tree_group_counts[0],1u);}
+    workgroupBarrier();
+    if lane==0u {
+        tree_output_base=atomicAdd(&counter[0],atomicLoad(&tree_group_counts[0]));
+        atomicAdd(&counter[17],min(64u,pending-work*64u));
+        atomicAdd(&counter[18],atomicLoad(&tree_group_counts[6]));
+    }
+    workgroupBarrier();
+    if keep && tree_output_base+local<u32(view.params.w) {
+        visible[tree_output_base+local]=record;let triangles=clusters[record.y].tri_count;
+        atomicAdd(&tree_group_counts[1],triangles);
+        if CLUSTER_BUCKETS {atomicAdd(&tree_group_counts[2u+cluster_bucket(triangles)],1u);}
+    }
+    workgroupBarrier();
+    if lane==0u {atomicAdd(&counter[1],atomicLoad(&tree_group_counts[1]));}
+    if CLUSTER_BUCKETS && lane<4u {atomicAdd(&counter[4u+lane],atomicLoad(&tree_group_counts[2u+lane]));}
+}
+var<workgroup> tree_pending:u32;
+var<workgroup> tree_output_base:u32;
+var<workgroup> tree_group_counts:array<atomic<u32>,7>;
 
 @compute @workgroup_size(64)
 fn scatter(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {

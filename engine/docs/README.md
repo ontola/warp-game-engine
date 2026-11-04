@@ -23,6 +23,9 @@ Start with the overview, then build and run something.
 one GPU route, shared assemblies, residency, wind and shadow consumers. Architecture
 integration takes precedence over visual tuning; old opt-in plans are historical.
 
+[History-first source recovery](foliage-history-2026-11-04.md): bounded deferred
+clusters, current-depth proofs, sparse-coverage scheduling and measured limits.
+
 [Stable streamed forest population](foliage-population-2026-11-04.md): worker
 preparation, incremental GPU publication and retained root identity/history.
 

@@ -311,7 +311,11 @@ impl Runtime {
         let gpu=Gpu::new().unwrap();let light=Lighting {gi:1.,sun_lux:0.,shadow_strength:0.,..Default::default()};let renderer=Renderer::new(&gpu,&scene,&light);
         let views=(0..2).map(|i|ViewRect {cam:Camera {pos:Vec3::new(i as f32*8.+0.3,0.4,1.6),target:Vec3::new(i as f32*8.+0.3,0.4,0.),fov_y:1.,near:0.05},x:i*128,y:0,w:128,h:128}).collect::<Vec<_>>();
         let draw=||{renderer.try_render_views(&gpu,&views,&light,256,128,&[]).unwrap();renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap()};
-        assert_eq!(draw().source_slots,6);assert_eq!(draw().retained,6);
+        assert_eq!(draw().source_slots,6);
+        let first=renderer.debug_tree_occlusion(&gpu,0,None).unwrap();
+        assert!(first.history_first);assert_eq!(first.phase1_clusters,0);assert!(first.phase2_clusters>0);
+        assert_eq!(draw().retained,6);
+        let next=renderer.debug_tree_occlusion(&gpu,0,None).unwrap();assert!(next.phase1_clusters>0);
         let reordered=renderer.replace_gpu_forest_roots(&gpu,&[original[1],original[0]]).unwrap();assert_eq!(reordered.changed,0);assert_eq!(reordered.upload_bytes,0);assert_eq!(draw().retained,6);
         let pending=renderer.gpu_forest_population_seed().unwrap();
         let stale=std::thread::spawn(move||pending.prepare(&[]).unwrap()).join().unwrap();
@@ -321,6 +325,23 @@ impl Runtime {
         let bad=[root(30,0.),root(40,8.),root(50,16.),root(60,24.)];assert!(renderer.replace_gpu_forest_roots(&gpu,&bad).is_err());assert_eq!(draw().active_roots,2);
         let stats=renderer.replace_gpu_forest_roots(&gpu,&[]).unwrap();assert_eq!(stats.changed,2);let d=draw();assert_eq!(d.active_roots,0);assert_eq!(d.source_slots+d.voxel_slots+d.direct_roots,0);
         renderer.replace_gpu_forest_roots(&gpu,&original).unwrap();let d=draw();assert_eq!(d.active_roots,2);assert_eq!(d.source_slots,6);assert_eq!(d.assigned,6);
+    }
+    #[test]
+    #[ignore="exclusive GPU deferred queue overflow fixture"]
+    fn gpu_history_queue_overflow_preserves_pixels() {
+        use super::*;use crate::{Camera,Lighting,Renderer,ViewRect};
+        let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
+        let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
+        let mut scene=Scene::default();plant(&mut scene,&[cooked],&[RootPlacement {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}],8,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
+        let gpu=Gpu::new().unwrap();let light=Lighting {gi:0.,sun_lux:0.,shadow_strength:0.,..Default::default()};
+        let regular=Renderer::new(&gpu,&scene,&light);let mut tiny=Renderer::new(&gpu,&scene,&light);tiny.test_tree_deferred_capacity(&gpu,1);
+        let views=[ViewRect {cam:Camera {pos:Vec3::new(0.3,0.4,1.6),target:Vec3::new(0.3,0.4,0.),fov_y:1.,near:0.05},x:0,y:0,w:128,h:128}];
+        for frame in 0..3 {
+            let (a,_)=regular.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();
+            let (b,_)=tiny.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();
+            assert_eq!(a,b,"deferred overflow must recover the same source geometry");
+            if frame==0 {assert!(tiny.debug_tree_occlusion(&gpu,0,None).unwrap().deferred_overflow);}
+        }
     }
     #[test]
     #[ignore="exclusive GPU forest draw fixture"]

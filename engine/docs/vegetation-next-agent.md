@@ -1,5 +1,10 @@
 # Vegetation: next-agent hand-off
 
+**Historical fixture hand-off (29 October).** For current production work use
+[vegetation-architecture.md](vegetation-architecture.md) and the newest entries
+in [HANDOFF](../HANDOFF.md). The terrain demo now uses the GPU assembly route
+normally; opt-in statements below describe these older Sideways fixtures.
+
 The user wants a Nanite-inspired architecture: detailed shared twig/leaf
 assemblies, GPU pose animation, volume-preserving distant representations,
 and scalable lighting/shadows. Preserve the approved r4 spruce geometry.

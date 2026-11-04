@@ -19,6 +19,10 @@ pub struct Diagnostics {
     pub render_sequence: u64,
     pub view_index: usize,
     pub split_m: f32,
+    pub history_first:bool,
+    pub deferred_capacity:u32,
+    pub deferred_clusters:u32,
+    pub deferred_overflow:bool,
     pub phase1_clusters: u32,
     pub phase2_clusters: u32,
     pub instances_tested: u32,
@@ -31,6 +35,11 @@ pub struct Diagnostics {
 }
 
 pub(crate) struct Resources {
+    pub history_first:bool,
+    pub deferred_capacity:u32,
+    pub history:Mutex<Vec<wgpu::Buffer>>,
+    pub empty_history:wgpu::Buffer,
+    history_pipeline:wgpu::ComputePipeline,
     pub enabled: bool,
     pub rejection_enabled: bool,
     pub disabled_reason: Option<&'static str>,
@@ -41,8 +50,11 @@ pub(crate) struct Resources {
     pub targets: Mutex<Vec<Option<PyramidTarget>>>,
 }
 impl Resources {
-    pub fn new(gpu: &Gpu, bucketed: bool) -> Self {
-        let requested = std::env::var("KERN_TREE_OCCLUSION").as_deref() == Ok("1");
+    pub fn new(gpu: &Gpu, bucketed: bool, gpu_forest:bool) -> Self {Self::with_history_capacity(gpu,bucketed,gpu_forest,262144)}
+    pub(crate) fn with_history_capacity(gpu:&Gpu,bucketed:bool,gpu_forest:bool,deferred_capacity:u32)->Self {
+        assert!((1..=262144).contains(&deferred_capacity));
+        let requested = gpu_forest || std::env::var("KERN_TREE_OCCLUSION").as_deref() == Ok("1");
+        let history_first=gpu_forest && bucketed;
         let enabled = requested && bucketed;
         let rejection_enabled = enabled
             && std::env::var("KERN_TREE_OCCLUSION_REJECT").as_deref() != Ok("0");
@@ -50,7 +62,7 @@ impl Resources {
             else if !requested { Some("not_requested") } else { None };
         let control = |phase: f32| gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("immutable tree occlusion phase"),
-            contents: bytemuck::cast_slice(&[phase, SPLIT_METRES, if rejection_enabled {1.0} else {0.0}, 0.0]),
+            contents: bytemuck::cast_slice(&[phase, if history_first {deferred_capacity as f32}else{SPLIT_METRES}, if rejection_enabled {1.0} else {0.0}, if history_first {1.0}else{0.0}]),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let empty = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -58,9 +70,30 @@ impl Resources {
             mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::R32Float, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
         }).create_view(&Default::default());
-        if requested { eprintln!("Tree occlusion: enabled={enabled}, rejection_enabled={rejection_enabled}, split={SPLIT_METRES}m, disabled_reason={disabled_reason:?}; current-frame real alpha depth, camera only"); }
-        Self { enabled, rejection_enabled, disabled_reason, reference: control(0.0), phases: [control(1.0), control(2.0)],
+        if requested { eprintln!("Tree occlusion: enabled={enabled}, rejection_enabled={rejection_enabled}, history_first={history_first}, split={SPLIT_METRES}m (legacy only), disabled_reason={disabled_reason:?}; current-frame real alpha depth, camera only"); }
+        let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("tree pixel visibility history"),source:wgpu::ShaderSource::Wgsl(concat!(include_str!("shaders/tree_history_key.wgsl"),"\n",include_str!("shaders/tree_history.wgsl")).into())});
+        let history_pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("tree pixel visibility history"),layout:None,module:&module,entry_point:Some("gather"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
+        let empty_history=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("disabled tree history"),size:65536,usage:wgpu::BufferUsages::UNIFORM,mapped_at_creation:false});
+        Self { history_first,deferred_capacity,history:Mutex::new(Vec::new()),empty_history,history_pipeline,enabled, rejection_enabled, disabled_reason, reference: control(0.0), phases: [control(1.0), control(2.0)],
             empty, pyramid: enabled.then(||DepthPyramid::new(gpu)), targets: Mutex::new(Vec::new()) }
+    }
+    pub fn history_buffer(&self,gpu:&Gpu,view:usize,owners:u32)->wgpu::Buffer {
+        if !self.history_first {return self.empty_history.clone();}
+        assert!(owners<=1<<19,"GPU forest owner ID capacity");
+        let mut all=self.history.lock().unwrap();
+        while all.len()<=view {all.push(gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("per-view source visibility history"),size:65536,usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false}));}
+        all[view].clone()
+    }
+    pub fn capture_history(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,history:&wgpu::Buffer,visibility:&wgpu::TextureView,visible:&wgpu::Buffer,size:(u32,u32),time:Option<(&wgpu::QuerySet,u32)>) {
+        if !self.history_first {return;}
+        enc.clear_buffer(history,0,Some(32768));
+        let layout=self.history_pipeline.get_bind_group_layout(0);
+        let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("tree pixel history"),layout:&layout,entries:&[
+            wgpu::BindGroupEntry {binding:0,resource:wgpu::BindingResource::TextureView(visibility)},
+            wgpu::BindGroupEntry {binding:1,resource:visible.as_entire_binding()},
+            wgpu::BindGroupEntry {binding:2,resource:history.as_entire_binding()}]});
+        let mut pass=enc.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("tree visibility history"),timestamp_writes:time.map(|(query_set,i)|wgpu::ComputePassTimestampWrites {query_set,beginning_of_pass_write_index:Some(i),end_of_pass_write_index:Some(i+1)})});
+        pass.set_pipeline(&self.history_pipeline);pass.set_bind_group(0,&bind,&[]);pass.dispatch_workgroups(size.0.div_ceil(8),size.1.div_ceil(8),1);
     }
     pub fn decode(&self, words: &[u32], frame_id:u64, render_sequence:u64, view_index:usize) -> Result<Diagnostics,String> {
         if words.len() != COUNTER_WORDS { return Err("invalid tree occlusion counter size".into()); }
@@ -72,7 +105,7 @@ impl Resources {
             return Err("tree occlusion rejection counters are nonzero while rejection is disabled".into());
         }
         Ok(Diagnostics { enabled:self.enabled, rejection_enabled:self.rejection_enabled, disabled_reason:self.disabled_reason, frame_id, render_sequence, view_index,
-            split_m:SPLIT_METRES, phase1_clusters:if self.enabled {words[13]} else {words[0]},
+            split_m:if self.history_first {0.0}else{SPLIT_METRES},history_first:self.history_first,deferred_capacity:self.deferred_capacity,deferred_clusters:words[19],deferred_overflow:self.history_first&&words[19]>self.deferred_capacity, phase1_clusters:if self.enabled {words[13]} else {words[0]},
             phase2_clusters:words[14], instances_tested:words[15], instances_rejected:words[16],
             clusters_tested:words[17], clusters_rejected:words[18], instance_groups:None,cluster_traversal:None })
     }
@@ -81,6 +114,41 @@ impl Resources {
 #[cfg(test)]
 mod tests {
     use glam::{Mat4,Vec3};
+    #[test]
+    fn history_hiz_mip_start_preserves_exact_odd_size_footprints() {
+        for width in [1u32,2,3,5,7,31,32,33,65,127,128,129,1713] {
+            let levels=32-width.leading_zeros();
+            for first in (0..width).step_by(7) {for last in (first..width).step_by(11) {
+                let span=last-first+1;let start=(31-span.leading_zeros()).saturating_sub(1);
+                let find=|start| (start..levels).find(|&l| {let end=(width>>l).max(1)-1;(last>>l).min(end)-(first>>l).min(end)<=1});
+                assert_eq!(find(0),find(start));
+            }}
+        }
+    }
+    #[test]
+    #[ignore="exclusive GPU visibility history readback"]
+    fn gpu_cluster_history_matches_pixel_oracle_and_clears() {
+        use wgpu::util::DeviceExt;
+        let gpu=crate::Gpu::new().unwrap();let r=super::Resources::new(&gpu,true,true);
+        let history=r.history_buffer(&gpu,0,100);
+        let records=(0..64u32).map(|i|[0x80000000|(i<<12)|(i%7),i*97]).collect::<Vec<_>>();
+        let input=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("history oracle records"),contents:bytemuck::cast_slice(&records),usage:wgpu::BufferUsages::STORAGE});
+        let texture=gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("history oracle pixels"),size:wgpu::Extent3d {width:8,height:8,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::R32Uint,usage:wgpu::TextureUsages::COPY_DST|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]});
+        let hash=|mut x:u32|{x=(x^(x>>16)).wrapping_mul(0x7feb352d);x=(x^(x>>15)).wrapping_mul(0x846ca68b);x^(x>>16)};
+        for clear in [false,true] {
+            let pixels=(0..64u32).map(|i|if clear || i%7==0 {u32::MAX}else{i<<7}).collect::<Vec<_>>();
+            gpu.queue.write_texture(wgpu::TexelCopyTextureInfo {texture:&texture,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},bytemuck::cast_slice(&pixels),wgpu::TexelCopyBufferLayout {offset:0,bytes_per_row:Some(32),rows_per_image:Some(8)},wgpu::Extent3d {width:8,height:8,depth_or_array_layers:1});
+            let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("history oracle readback"),size:65536,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+            let mut enc=gpu.device.create_command_encoder(&Default::default());r.capture_history(&gpu,&mut enc,&history,&texture.create_view(&Default::default()),&input,(8,8),None);
+            enc.copy_buffer_to_buffer(&history,0,&read,0,65536);gpu.queue.submit(Some(enc.finish()));
+            read.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
+            let mapped=read.slice(..).get_mapped_range().unwrap();let actual:&[u32]=bytemuck::cast_slice(&mapped);let mut expected=vec![0u32;16384];
+            for pixel in pixels.into_iter().filter(|p|*p!=u32::MAX) {let pair=records[(pixel>>7)as usize];let seed=pair[0]^pair[1].wrapping_mul(0x9e3779b9);
+                for key in [hash(seed)&0x3ffff,hash(seed^0x85ebca6b)&0x3ffff] {expected[(key>>5)as usize]|=1<<(key&31);}}
+            expected[8192]=if clear {2}else{1};
+            assert_eq!(actual,expected);drop(mapped);read.unmap();
+        }
+    }
     // Independent clip projection oracle: near-plane or W
     // crossings must never become an occluded box. Mirrors only the geometric
     // contract, not shader sampling or its pixel-coordinate arithmetic.
