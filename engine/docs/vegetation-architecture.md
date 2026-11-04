@@ -56,7 +56,7 @@ provisional depth from an incomplete cut cannot survive publication failure.
 | Permanent population | Stable WorldRoot IDs, reserved slots and generations; worker-prepared deltas publish without renderer rebuild | Automatic capacity growth and asset paging; current root capacity is fixed and excess is rejected |
 | GPU selection | Consumer union, deterministic complete-tree budget; GPU work queues distribute refining subtrees across workgroups | Integrate history-first traversal with safe publication across consumers |
 | Occlusion | Normal per-view source route uses pixel-history scheduling, bounded deferred-cluster recovery and current depth; queue overflow re-scans the complementary cut | Feed safe visibility into shared assembly traversal/publication; current camera recovery is downstream of residency |
-| Residency | Persistent GPU branch hash/slots; compact logical asset requests; pinned root fallback and generation-checked publication | Persistent budgeted pools, bounded uploads and eviction; voxel relocation/allocator connected at initial upload, catalogs still fully resident |
+| Residency | GPU branch slots and logical requests; bounded physical voxel arenas, asynchronous bundle demand, chunked uploads and generation-safe eviction; pinned root fallback | Source geometry paging, tighter ancestor pins and intermediate ancestor fallback; defragmentation and asset-content lifecycle |
 | Wind | GPU demand-deduplicated ancestor poses, parent-depth queues and shared root poses; source/voxel/shadow transforms agree | Indirect depth-queue dispatch, active-root compaction, recipe growth/season lifecycle |
 | Shadows | Independent source/voxel choices from common residency | Animated dirty-page cache; current dynamic sun is invalidated every frame |
 | Far population | One resident voxel record per tree, painted terrain beyond population | Spatial-cell aggregates without per-tree records at extreme distance |
@@ -64,7 +64,8 @@ provisional depth from an incomplete cut cannot survive publication failure.
 
 The common cut currently satisfies the most demanding consumer. This is correct
 but can over-refine other views. The branch output budget is bounded separately
-from the number of world roots. Asset memory is not yet bounded by a page cache.
+from the number of world roots. Voxel payload memory is bounded by a page cache; source geometry and host catalogs
+are still fully resident. See [cache contract and evidence](foliage-cache-2026-11-04.md).
 
 ## Implementation order and completion gates
 

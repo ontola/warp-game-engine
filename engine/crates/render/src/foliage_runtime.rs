@@ -19,8 +19,23 @@ pub struct Branch {
 }
 #[derive(Clone,Debug)]
 pub struct Spec {
+    pub page_budget:crate::foliage_pages::cache::Budget,
     pub nodes:Vec<Node>,pub roots:Vec<Instance>,branches:Vec<Branch>,representations:Vec<[u32;4]>,
     proxies:Vec<GpuTree>,templates:Vec<RootTemplate>,population:crate::foliage_population::Population,pub first_owner:u32,pub slots:u32,pub error:f32,
+}
+impl Spec {
+    pub(crate) fn voxel_page_dependencies(&self,levels:usize)->Result<(Vec<Vec<usize>>,Vec<bool>),String> {
+        let mut pinned=vec![false;levels];
+        let range=|v:GpuTree|->Result<Vec<usize>,String>{let start=v.meta[1]as usize;let end=start.checked_add(v.meta[2]as usize).ok_or("voxel dependency overflow")?;if end>levels{return Err("voxel dependency outside catalog".into());}Ok((start..end).collect())};
+        for proxy in &self.proxies {for id in range(*proxy)?{pinned[id]=true;}}
+        let deps=self.representations.iter().map(|rep|{let branch=&self.branches[rep[0]as usize];
+            // Source trunk casts source shadows; all other branches may select
+            // adaptive voxel shadow mips independently of the camera mip.
+            if rep[1]==0 && branch.info[1]==0 {Ok(Vec::new())}else{range(branch.volume)}
+        }).collect::<Result<Vec<_>,String>>()?;
+        for node in &self.nodes {if node.links[3]&2!=0 {for &id in &deps[node.links[2]as usize]{pinned[id]=true;}}}
+        Ok((deps,pinned))
+    }
 }
 #[derive(Clone,Copy,Debug)]
 struct RootTemplate {proxy:GpuTree,source:GpuInstance,node:u32,branch:u32}
@@ -123,7 +138,7 @@ pub fn plant_population(scene:&mut Scene,plants:&[crate::vegetation_asset::Cooke
         Instance {rows:rows(m),scale:[(row*col).sqrt(),0.,0.,0.],info:[root_nodes[t.variant],population.generations[i],handles[t.variant].pose_range.start as u32,u32::from(population.slots[i].is_none())]}
     }).collect();
     scene.voxel_forest=Some(forest);scene.voxel_proxies=trees.len()as u32;
-    scene.gpu_forest=Some(Spec {nodes,roots,branches,representations,proxies,templates,population,first_owner,slots,error:policy.max_error_pixels.max(0.25)});
+    scene.gpu_forest=Some(Spec {page_budget:Default::default(),nodes,roots,branches,representations,proxies,templates,population,first_owner,slots,error:policy.max_error_pixels.max(0.25)});
     Ok(())
 }
 
@@ -180,6 +195,7 @@ fn relocated(template:RootTemplate,placement:RootPlacement,owner:u32,generation:
     RootChange {slot:0,pad:[0;3],proxy,source,root:Instance {rows:rows(m),scale:[(row*col).sqrt(),0.,0.,0.],info:[template.node,generation,template.branch,u32::from(inactive)]}}
 }
 impl Runtime {
+    pub(crate) fn asset_selector(&self)->&Selector {&self.selector}
     pub fn new(gpu:&Gpu,spec:&Spec,instances:&wgpu::Buffer,volumes:&wgpu::Buffer)->Result<Self,String> {
         Self::with_pose_capacity(gpu,spec,instances,volumes,None)
     }
@@ -394,6 +410,25 @@ impl Runtime {
     }
 
     #[test]
+    #[ignore="exclusive GPU cold asset streaming draw fixture"]
+    fn gpu_foliage_cache_cold_start_recovers_real_draws() {
+        use super::*;use crate::{Camera,Lighting,Renderer,ViewRect};
+        let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
+        let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
+        let mut scene=Scene::default();plant(&mut scene,&[cooked],&[RootPlacement {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}],8,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
+        let gpu=Gpu::new().unwrap();let light=Lighting {gi:1.,sun_lux:0.,shadow_strength:0.,..Default::default()};let renderer=Renderer::new(&gpu,&scene,&light);
+        let views=[ViewRect {cam:Camera {pos:Vec3::new(0.3,0.4,1.6),target:Vec3::new(0.3,0.4,0.),fov_y:1.,near:0.05},x:0,y:0,w:128,h:128}];
+        let mut recovered=false;
+        for frame in 0..32 {
+            renderer.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();let d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();
+            let cache=renderer.foliage_page_stats().unwrap();assert!(cache.frame_upload_bytes<=8*1024*1024);
+            if frame==0 {assert_eq!(d.source_slots,0);assert_eq!(d.fallback_trees,1);}
+            if d.fallback_trees==1 {assert_eq!(d.source_slots+d.voxel_slots,0,"fallback must suppress every partial branch");}else{assert_eq!(d.source_slots,3,"loaded cut must be complete");}
+            if d.source_slots==3 {assert_eq!(d.fallback_trees,0);recovered=true;break;}
+        }
+        assert!(recovered,"normal async cache must publish loaded geometry without a CPU tree shortlist");
+    }
+    #[test]
     #[ignore="exclusive GPU streamed population fixture"]
     fn gpu_population_updates_retain_slots_and_recover_from_empty() {
         use super::*;use crate::{Camera,Lighting,Renderer,ViewRect,foliage_population::WorldRoot};
@@ -404,6 +439,7 @@ impl Runtime {
         let mut scene=Scene::default();plant_population(&mut scene,&[cooked],&original,3,8,policy).unwrap();
         let gpu=Gpu::new().unwrap();let light=Lighting {gi:1.,sun_lux:0.,shadow_strength:0.,..Default::default()};let renderer=Renderer::new(&gpu,&scene,&light);
         let views=(0..2).map(|i|ViewRect {cam:Camera {pos:Vec3::new(i as f32*8.+0.3,0.4,1.6),target:Vec3::new(i as f32*8.+0.3,0.4,0.),fov_y:1.,near:0.05},x:i*128,y:0,w:128,h:128}).collect::<Vec<_>>();
+        renderer.test_warm_foliage_assets(&gpu);
         let draw=||{renderer.try_render_views(&gpu,&views,&light,256,128,&[]).unwrap();renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap()};
         assert_eq!(draw().source_slots,6);
         let first=renderer.debug_tree_occlusion(&gpu,0,None).unwrap();
@@ -429,6 +465,7 @@ impl Runtime {
         let mut scene=Scene::default();plant(&mut scene,&[cooked],&[RootPlacement {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}],8,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
         let gpu=Gpu::new().unwrap();let light=Lighting {gi:0.,sun_lux:0.,shadow_strength:0.,..Default::default()};
         let regular=Renderer::new(&gpu,&scene,&light);let mut tiny=Renderer::new(&gpu,&scene,&light);tiny.test_tree_deferred_capacity(&gpu,1);
+        regular.test_warm_foliage_assets(&gpu);tiny.test_warm_foliage_assets(&gpu);
         let views=[ViewRect {cam:Camera {pos:Vec3::new(0.3,0.4,1.6),target:Vec3::new(0.3,0.4,0.),fov_y:1.,near:0.05},x:0,y:0,w:128,h:128}];
         for frame in 0..3 {
             let (a,_)=regular.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();
@@ -470,6 +507,7 @@ impl Runtime {
         // cameras. No host assignment, renderer rebuild or root upload occurs.
         let trees=(0..4).map(|i|RootPlacement {pos:Vec3::X*(i as f32*8.),..tree}).collect::<Vec<_>>();
         let mut scene=Scene::default();plant(&mut scene,&[cooked],&trees,16,policy).unwrap();let renderer=Renderer::new(&gpu,&scene,&light);
+        renderer.test_warm_foliage_assets(&gpu);
         let night=Lighting {sun_lux:0.,..light.clone()};
         for index in [0,3,1,2,0] {
             let v=[ViewRect {cam:cam(index as f32*8.),x:0,y:0,w:128,h:128}];

@@ -623,6 +623,14 @@ fn recipe_spruces(scene:&mut Scene,biome:&render::biome::Biome,roots:&[WorldRoot
     let policy=render::aggregate_lod::Policy {max_error_pixels:32.,allow_sampled_optics:true,measured_source_cuts:false,proxy_pixels:6.,proxy_pixels_from:50.,..Default::default()};
     let capacity=(roots.len()*2).max(16384);
     render::foliage_runtime::plant_population(scene,cooked,roots,capacity,branch_slots,policy)?;
+    // Budget override for reproducible pressure tests; the same cache path is
+    // used at every size, including normal gameplay.
+    let args=std::env::args().collect::<Vec<_>>();
+    if let Some(value)=args.windows(2).find(|a|a[0]=="--voxel-cache-mib") {
+        let mib=value[1].parse::<u32>().map_err(|_|"--voxel-cache-mib needs a positive integer")?;
+        let bytes=mib.checked_mul(1024*1024).filter(|n|*n>0).ok_or("voxel cache budget overflow/zero")?;
+        scene.gpu_forest.as_mut().unwrap().page_budget.cells=bytes/176;
+    }
     println!("GPU vegetation: {} world roots, {capacity} reserved roots, {branch_slots} shared branch slots",roots.len());Ok(())
 }
 
@@ -730,6 +738,7 @@ fn main() -> Result<(), String> {
         let mut times = Vec::new();
         let mut cpu_times = Vec::new();
         let mut gpu_samples = Vec::new();
+        let mut page_samples = Vec::new();
         let forward = Controls { mv: [0.0, 1.0], ..Default::default() };
         let frames = n.parse::<u32>().map_err(|_| "--fly N")?;
         if frames <= 5 { return Err("--fly needs at least six frames".into()); }
@@ -745,6 +754,7 @@ fn main() -> Result<(), String> {
             if let Some(renderer)=headless.renderer() {
                 // Rebuilds may replace a Renderer at the same address. Enable
                 // profiling on the actual instance, not just pointer changes.
+                if let Some(stats)=renderer.foliage_page_stats(){page_samples.push(serde_json::json!({"frame":i,"cache":stats}));}
                 renderer.set_async_gpu_profiling(&gpu,true)?;
                 for sample in renderer.drain_gpu_profiles(&gpu).samples {
                     gpu_samples.push(serde_json::json!({"frame":sample.render_sequence,"output":sample.output_size,"views":sample.views,
@@ -754,6 +764,7 @@ fn main() -> Result<(), String> {
             if i+1 == frames { if let Some(path) = arg("--fly-shot") { render::write_png(std::path::Path::new(&path), w, h, &rgba)?; } }
         }
         if let Some(renderer)=headless.renderer() {
+            if let Some(stats)=renderer.foliage_page_stats(){println!("GPU voxel page cache: {}",serde_json::to_string(&stats).map_err(|e|e.to_string())?);}
             if let Some(stats)=renderer.gpu_forest_diagnostics(&gpu)? {println!("GPU forest final: {}",serde_json::to_string(&stats).map_err(|e|e.to_string())?);
             let d=renderer.debug_tree_occlusion(&gpu,0,None)?;
             println!("GPU tree recovery final: {}",serde_json::json!({"history_first":d.history_first,"phase1_clusters":d.phase1_clusters,"phase2_clusters":d.phase2_clusters,"deferred_clusters":d.deferred_clusters,"deferred_capacity":d.deferred_capacity,"deferred_overflow":d.deferred_overflow,"clusters_tested":d.clusters_tested,"clusters_rejected":d.clusters_rejected}));
@@ -761,6 +772,7 @@ fn main() -> Result<(), String> {
         }
         if let Some(path) = arg("--fly-times") {
             std::fs::write(format!("{path}.gpu.json"),serde_json::to_vec(&gpu_samples).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+            std::fs::write(format!("{path}.pages.json"),serde_json::to_vec(&page_samples).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
             std::fs::write(format!("{path}.cpu.json"),serde_json::to_vec(&cpu_times).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
             std::fs::write(path, serde_json::to_vec(&times).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
         }

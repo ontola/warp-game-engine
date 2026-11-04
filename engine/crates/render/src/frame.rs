@@ -1448,6 +1448,7 @@ impl Renderer {
         let gpu_forest=scene.gpu_forest.as_ref().map(|spec| crate::foliage_runtime::Runtime::new(gpu,spec,&instances,
             voxel_forest.as_ref().expect("GPU forest volumes").tree_buffer()).map(|runtime|(runtime,spec.first_owner)))
             .transpose().expect("invalid GPU forest runtime");
+        if let (Some(voxels),Some((forest,_)))=(&voxel_forest,&gpu_forest){voxels.initialize_pages(gpu,forest).expect("invalid voxel cache publication");}
         let foliage_world=scene.foliage_world.as_ref().map(|field|
             crate::foliage_world_render::WorldRenderer::new(gpu,field,scene.instances.len()as u32,
                 &voxel_scene_layout,&volume_view_layout,scene.foliage_world_error_pixels))
@@ -2701,6 +2702,8 @@ impl Renderer {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_warm_foliage_assets(&self,gpu:&Gpu){if let(Some(v),Some((r,_)))=(&self.voxel_forest,&self.gpu_forest){v.warm_page_fixture(gpu,r);}}
+    #[cfg(test)]
     pub(crate) fn test_tree_deferred_capacity(&mut self,gpu:&Gpu,capacity:u32) {
         assert!(self.cluster_views.lock().unwrap().is_empty());
         self.tree_occlusion=crate::tree_occlusion::Resources::with_history_capacity(gpu,self.cluster_buckets,self.gpu_forest.is_some(),capacity);
@@ -3466,6 +3469,7 @@ impl Renderer {
         forward.lock().unwrap().render(gpu,views,&matrices,&camera_views,&self.sprites,&self.fx,light,&self.headlight_state.lock().unwrap(),None,Some(targets))
     }
 
+    pub fn foliage_page_stats(&self)->Option<crate::foliage_pages::cache::Stats>{self.voxel_forest.as_ref().and_then(|v|v.page_stats())}
     fn frame_output(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: Readback) -> Result<(wgpu::Texture, Vec<u8>, FrameStats), String> {
         self.frame_output_into(gpu, views, light, out_w, out_h, picks, readback, None)
     }
@@ -3494,6 +3498,7 @@ impl Renderer {
         let mut cpu = crate::cpu_spans::Spans::start(self.cpu_spans.as_ref());
         let mut color_diagnostics = self.color_diagnostics.lock().unwrap();
         color_diagnostics.context = None;
+        if let (Some(voxels),Some((forest,_)))=(&self.voxel_forest,&self.gpu_forest){voxels.service_pages(gpu,forest)?;}
         let mut shadow_validation=self.async_shadow_validation.as_ref().map(|state|state.lock().unwrap());
         if let Some(state)=shadow_validation.as_mut() {state.drain(gpu)?;}
         let async_pages=readback==Readback::None && shadow_validation.is_some();

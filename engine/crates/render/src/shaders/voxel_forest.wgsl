@@ -1059,7 +1059,7 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
 // also six frustum planes and direction+texel, as f32 bits; record 11 x the
 // tree count), then four records per tree drawn this view (owner rows,
 // level origin and cell, as f32 bits), then one record per splat: tree, cell
-// index, packed coord, 16-bit alpha | faces << 16.
+// index, packed coord, 16-bit alpha | faces << 16 | appearance seed << 19.
 @group(2) @binding(15) var<storage,read_write> volume_splats: array<vec4<u32>>;
 // Indirect draw arguments: vertex count, instance count, first vertex, first instance.
 @group(2) @binding(16) var<storage,read_write> volume_splat_draw: array<atomic<u32>>;
@@ -1173,16 +1173,18 @@ fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:
     // Faint cells are thinned to VOLUME_SPLAT_MIN_ALPHA: kept with
     // probability alpha/min by a hash stable per tree and cell (no flicker),
     // so expected coverage holds while the raster draws far fewer quads.
+    let stable=volume_trees[index].bounds_max.w;
+    let appearance=select(index,u32(max(stable-1.0,0.0)),stable>0.0);
     var kept_alpha=alpha;
     if alpha<VOLUME_SPLAT_MIN_ALPHA {
-        let h=volume_splat_hash(index*0x9e3779b9u^cell_ref.y);
+        let h=volume_splat_hash(appearance*0x9e3779b9u^cell_ref.y);
         if f32(h>>8u)/16777216.0>=alpha/VOLUME_SPLAT_MIN_ALPHA {return;}
         kept_alpha=VOLUME_SPLAT_MIN_ALPHA;
     }
     let faces=select(0u,1u,toward.x>0.0)|select(0u,2u,toward.y>0.0)|select(0u,4u,toward.z>0.0);
     let slot=volume_splat_first()+atomicAdd(&volume_splat_draw[1],1u);
     if slot>=arrayLength(&volume_splats) {return;}
-    volume_splats[slot]=vec4<u32>(index,cell_ref.x,cell_ref.y,u32(kept_alpha*65535.0+0.5)|(faces<<16u));
+    volume_splats[slot]=vec4<u32>(index,cell_ref.x,cell_ref.y,u32(kept_alpha*65535.0+0.5)|(faces<<16u)|((volume_splat_hash(appearance)&8191u)<<19u));
 }
 
 // Experimental current-frame, two-phase brick culling. Seed trees are drawn
@@ -1440,7 +1442,8 @@ fn voxel_splat_gbuffer(@builtin(global_invocation_id) id:vec3<u32>) {
         let right=normalize(vec3<f32>(view.view_proj[0].x,view.view_proj[1].x,view.view_proj[2].x));
         let up=normalize(vec3<f32>(view.view_proj[0].y,view.view_proj[1].y,view.view_proj[2].y));
         let scale=length(vec3<f32>(r0.x,r1.x,r2.x));
-        let key=volume_splat_hash(record.x)^record.y;
+        // Match raster jitter exactly; physical slots/addresses are not appearance.
+        let key=volume_splat_hash(record.w>>19u)^record.z;
         let jitter=vec2<f32>(f32(volume_splat_hash(key)&0xffffu),f32(volume_splat_hash(key^0x9e3779b9u)&0xffffu))/65535.0-0.5;
         let centre=vec3<f32>(dot(r0,local),dot(r1,local),dot(r2,local))+(right*jitter.x+up*jitter.y)*0.5*g.w*scale;
         let half=0.688*g.w*scale*sqrt(max(f32(record.w&0xffffu)/65535.0,0.25));
