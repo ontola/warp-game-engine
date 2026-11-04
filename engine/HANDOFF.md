@@ -1,3 +1,33 @@
+## 2026-11-04 Reuse unary-chain consumer projection; identify missing group hierarchy
+
+Normal queued selector caches the projected error scale for equal bounds across
+unary representations. Visibility and spatial/filtered-optics channels share
+one consumer loop; equal-bound single children reuse proven visibility for
+asset readiness. Changed bounds invalidate the local cache. Near-plane crossing
+retains conservative refinement. Serial traversal remains the reference.
+All 11 selector tests pass (including serial/queued cut equality, optical gate,
+consumer roles, missing pages and queue overflow); release terrain build passes.
+
+Three serial headless runs, same executable, lowland+grass, 1280x720, one view,
+240 frames, speed1, excluding frames<120 (120 GPU samples/run). Upper-middle
+medians: covered [15.574368,15.934432,15.770176] ms; selection
+[5.223200,5.147936,5.018592] ms. Prior single-run selection was 5.587296 ms;
+not an alternating before/after statistical acceptance. Still worse than the
+older pre-filtered baseline. Evidence build/playtest-unified/projection-cache*
+json.gpu.json and logs. Final counts match the previous run exactly, including
+4044 records and 82097 fallback roots. Frame image inspected; still unacceptable
+ball crowns/shadows. Image is NOT pixel-identical (scene mean abs RGB difference
+~0.0042..0.0057 normalized); no raw-buffer equivalence claimed from PNGs.
+
+Important structural finding: shared_selection_recipe FLATTENS branch chains
+under a whole-root chain. cook_aggregate supplies branch-own-members volumes
+and one all-descendant root, not a nested spatial geometry-group hierarchy.
+This prevents smooth budget refinement across intermediate groups. Added the
+required integrated group-cook/cache/selection/publication work to
+engine/docs/vegetation-architecture.md. Implement that before treating a new
+budget allocator as the solution; never mistake articulation hierarchy for
+geometry hierarchy or use own-members voxels as descendant coverage.
+No interactive playtest. Architecture objective remains incomplete.
 ## 2026-11-04 Scale-aware optics and bounded unary traversal (unfinished performance work)
 
 Cook now measures filtered opacity/premultiplied-color RMSE at 2/4/8/16 sample

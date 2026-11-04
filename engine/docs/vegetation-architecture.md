@@ -124,3 +124,40 @@ a one-pixel footprint in every consumer. Unary chains stay local to GPU tasks.
 This removes a frontier-overflow regression, but measured selection remains
 slower than the prior baseline and emergency fallback remains widespread.
 See the newest engine/HANDOFF.md entry; this gate is NOT complete.
+
+## Required geometry-group hierarchy and budget refinement
+
+Code inspection after the filtered-optics work found a structural gap:
+`cook_aggregate` cooks each branch's own members plus one all-descendant root;
+`shared_selection_recipe` then flattens those branch chains under the root.
+The articulation tree is not a nested geometry-group hierarchy. Adding more mip
+levels to each chain does not supply complete intermediate groups of branches.
+
+Next integration (normal route, no alternate backend):
+
+1. Keep articulation identity separate from geometry-group identity. Cook a
+   bounded spatial hierarchy over exact source member sets. Each parent must
+   cover exactly the disjoint union of its children; retain stable member IDs.
+   Shared primitives remain instanced, never copied into per-world-tree assets.
+2. Each internal group needs its own aggregate volume, sampled optical evidence,
+   support bound and discarded-motion bound. Store it in the common ancestor's
+   articulated frame. Do not substitute a branch-own-members volume for a
+   subtree: that silently drops descendant needles/leaves.
+3. Export this nested hierarchy through the existing selector and logical asset
+   pages. Leaf source membership, articulated poses, materialization and shadow
+   choices must reference the same group identity and generation. Cache budgets
+   must include the new group payloads; no enlarged permanent pin set.
+4. Begin budget refinement from a complete resident cut. Admit replacements by
+   projected benefit and incremental representation cost, preserving the parent
+   until all selected children are resident and their publication fits. Under
+   pressure keep the best complete intermediate cut, not an arbitrary partial
+   branch set. Explicitly report achieved error when the budget prevents the
+   requested pixel bound. A larger slot pool is not the solution.
+5. Verify source-ID coverage/no overlap at every cut, animated envelope bounds,
+   missing-page recovery, budget exhaustion, four-consumer shadow retention,
+   teleport and generation replacement. Compare selected IDs/depth as well as
+   final images and warm pass times on the normal terrain demo.
+
+This is required before calling the current assembly traversal equivalent to
+Nanite-style hierarchical refinement. Current whole-root emergency fallback
+remains a correctness safety net, not an acceptable steady-state forest LOD.
