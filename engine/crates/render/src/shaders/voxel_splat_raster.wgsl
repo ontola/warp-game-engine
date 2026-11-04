@@ -46,9 +46,9 @@ fn hash(x: u32) -> u32 {
     let view_proj = mat4x4<f32>(bitcast<vec4<f32>>(splats[0]), bitcast<vec4<f32>>(splats[1]), bitcast<vec4<f32>>(splats[2]), bitcast<vec4<f32>>(splats[3]));
     let right = normalize(vec3<f32>(view_proj[0].x, view_proj[1].x, view_proj[2].x));
     let up = normalize(vec3<f32>(view_proj[0].y, view_proj[1].y, view_proj[2].y));
-    // Keyed on the tree and cell, not the per-frame list slot, so a still
-    // image does not shimmer.
-    out.key = hash(record.x) ^ record.y;
+    // Local cell coordinate is stable when physical asset pages relocate.
+    // record.y is a physical cell address and must never seed appearance.
+    out.key = hash(record.x) ^ record.z;
     // A stable offset of up to a quarter cell: discs do not line up in rows.
     let jitter = vec2<f32>(f32(hash(out.key) & 0xffffu), f32(hash(out.key ^ 0x9e3779b9u) & 0xffffu)) / 65535.0 - 0.5;
     let shift = (right * jitter.x + up * jitter.y) * 0.5 * grid.w * scale;

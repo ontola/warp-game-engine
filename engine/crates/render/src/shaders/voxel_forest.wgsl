@@ -1175,7 +1175,7 @@ fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:
     // so expected coverage holds while the raster draws far fewer quads.
     var kept_alpha=alpha;
     if alpha<VOLUME_SPLAT_MIN_ALPHA {
-        let h=volume_splat_hash(index*0x9e3779b9u^cell_ref.x);
+        let h=volume_splat_hash(index*0x9e3779b9u^cell_ref.y);
         if f32(h>>8u)/16777216.0>=alpha/VOLUME_SPLAT_MIN_ALPHA {return;}
         kept_alpha=VOLUME_SPLAT_MIN_ALPHA;
     }
