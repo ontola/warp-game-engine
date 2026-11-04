@@ -554,6 +554,11 @@ impl World {
     }
 
     fn bolt_end(&mut self, bo: &Bolt, at: Vec3) {
+        self.ev(Ev::Impact {
+            at,
+            el: bo.el,
+            size: bo.size as f32,
+        });
         if !bo.charmed.is_empty() {
             self.charm_end(bo, at);
         }
