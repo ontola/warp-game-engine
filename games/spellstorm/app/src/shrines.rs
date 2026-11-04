@@ -268,9 +268,12 @@ impl Shrines {
             let base = Vec3::new(at.x, 0.0, at.z);
             self.beam(base, c, grave_in * (1.0 + if near { 0.6 } else { 0.0 } + 1.6 * k), time);
             let pool = grave_in * (0.6 + if near { 0.3 } else { 0.0 } + 0.6 * k);
-            let mut s = Sprite::billboard(base + Vec3::Y * 0.3, [4.5, 4.5], IMAGE, uv(Cell::HaloOut), linear3(c) * pool * 1.4);
+            // Flat on the ground: a billboard here sinks into the floor and
+            // is cut off along a straight line.
+            let mut s = Sprite::fixed(base + Vec3::Y * 0.05, [4.5, 4.5], Vec3::X, Vec3::Z, IMAGE, uv(Cell::HaloOut), linear3(c) * pool * 1.4);
             s.additive = true;
             s.alpha_cut = 0.0;
+            s.depth_bias = 0.2;
             self.sprites.push(s);
             self.lights.push(omni(base + Vec3::Y * 1.4, c, grave_in * (1.5 + if near { 1.5 } else { 0.0 } + 3.0 * k), 7.0));
             if near {
