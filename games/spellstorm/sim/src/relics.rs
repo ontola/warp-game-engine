@@ -259,8 +259,23 @@ impl Mods {
                 }
             }
         }
+        // Tomes stack (Joep: you keep getting stronger), but the ones that
+        // shrink a number stop short of nothing: no free spells, no
+        // instant wind-ups, never untouchable.
+        m.charge = m.charge.max(0.25);
+        m.cost = m.cost.max(0.3);
+        m.guard = m.guard.max(0.3);
+        m.swing = m.swing.max(0.25);
+        m.speed = m.speed.min(2.0);
+        m.reach = m.reach.min(2.5);
         m
     }
+}
+
+/// May tome `i` be taken again? Every tome adds up but the ones that only
+/// switch something on (Echo Stone, Mason's Chisel, Pilgrim Boots).
+pub fn stacks(i: usize) -> bool {
+    all().get(i).is_some_and(|t| !t.mods.iter().any(|m| matches!(m, M::Echo | M::Planter | M::Firewalker)))
 }
 
 /// Is tome `i` any use to someone who `has` what a need asks for? A tome
@@ -282,6 +297,17 @@ pub fn pick(n: usize, rng: &mut Pcg, avoid: &[usize], has: &dyn Fn(Need) -> bool
         while out.len() < n && !pool.is_empty() {
             let i = rng.next_u32() as usize % pool.len();
             out.push(pool.remove(i));
+        }
+    }
+    // Every tome already carried (Joep: two wizards held all 32 and the
+    // shrines stood empty): repeats then, of the usable ones first.
+    if out.is_empty() {
+        let (mut pool, mut rest): (Vec<usize>, Vec<usize>) = (0..all().len()).partition(|&i| usable(i, has));
+        for pool in [&mut pool, &mut rest] {
+            while out.len() < n && !pool.is_empty() {
+                let i = rng.next_u32() as usize % pool.len();
+                out.push(pool.remove(i));
+            }
         }
     }
     out

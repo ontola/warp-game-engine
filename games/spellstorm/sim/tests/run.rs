@@ -149,9 +149,10 @@ fn nobody_gets_past_a_shut_wall_and_unlocks_wait_for_it() {
 }
 
 #[test]
-fn a_shrine_with_no_tome_left_still_opens_its_wall() {
+fn a_shrine_still_offers_tomes_when_every_tome_is_carried() {
     // Joep, level 4: both wizards carried all 32 tomes, so the shrine raised
-    // none, said "take your tome" and its wall never opened.
+    // none, said "take your tome" and its wall never opened. Now it offers
+    // repeats, and the bots take them.
     let mut w = bots(2, 7);
     let n = spellstorm::relics::all().len();
     for id in w.wizards.clone() {
@@ -167,6 +168,6 @@ fn a_shrine_with_no_tome_left_still_opens_its_wall() {
             break;
         }
     }
-    assert!(w.run.altars.is_empty(), "no tome is left to raise");
-    assert!(opened, "the first wall must open with no tome to take");
+    assert!(!w.run.altars.is_empty(), "a shrine offers repeats once every tome is carried");
+    assert!(opened, "the first wall must open");
 }
