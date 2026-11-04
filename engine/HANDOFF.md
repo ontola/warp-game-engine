@@ -1,3 +1,38 @@
+## 2026-11-04 Bound root fallback pins; failed playtest remains unaccepted
+
+User rejected the playtest: coarse ball-like trees, flicker/pop-in and very low
+perceived frame rate. No more unsolicited interactive tests. That playtest has
+exited. A default-cache launch had panicked (pinned ancestors exceeded 64 MiB cell
+budget); temporarily launching with 256 MiB got it running, not acceptable quality.
+
+Root physical dependencies now request only the explicitly chosen mip because
+direct-root materialization exposes exactly one level. Permanent emergency
+proxies expose only their coarsest mip. Only hierarchy-root logical pages are
+pinned; finer whole-root candidates are evictable. Articulated branch bundles
+remain complete for independent adaptive shadow mip selection. Default budgets
+are unchanged. This fixes mandatory residency rather than increasing a cap.
+
+CPU root dependency test passes. Real NVIDIA/Vulkan GPU tests pass: shared
+rigid/basal poses including hash overflow; normal renderer cold-cache fallback to
+complete source draw; raw cached/full sun depth equality across six steps with
+wind, four views, population removal/reinsert, sun and camera changes. Release
+terrain demo build passes. Normal lowland+grass headless rendering now starts at
+default 64 MiB voxel-cell budget (88,126,720 bytes entire voxel arena).
+
+Three 120-frame 1280x720 one-camera bench runs: 69.8/67.5/62.0 wall FPS,
+INCLUDING readback, only two warmup frames; NOT steady GPU frame times or gameplay
+claims. Follow-up --fly 240 --speed 0 clamps speed to 1 m/s. Raw per-pass samples
+and page states are in build/playtest-unified/residency-times.json.*; last 120
+samples used for warm pass analysis. The warm image still has unacceptable
+coarse crowns and extreme forest shadows. Do not call the visual bug fixed.
+Final population: 151058 active / 302116 reserved roots, 4096 branch capacity,
+4044 selected (773 source, 3271 voxel), 11276 direct roots, 82146 fallback roots.
+Cache: 1104 resident pages, no pending upload/misses/evictions, source 20/20 pages.
+Thus loading alone does not explain persistent coarseness; shared cut pressure,
+consumer-aware publication and multi-level spatial aggregates remain necessary.
+Artifacts: build/playtest-unified/{bounded-cache-bench*.log,residency-warm.log,
+residency-warm.png,cold-start-oracle.log,shadow-depth-oracle.log}. Not a 4K/4p test.
+
 ## 2026-11-04 Explicit vegetation consumer ownership
 
 Normal renderer now labels camera and shadow consumers explicitly. Shared
