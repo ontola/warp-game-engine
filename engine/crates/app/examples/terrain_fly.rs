@@ -591,6 +591,11 @@ fn recipe_spruces(scene:&mut Scene,biome:&render::biome::Biome,season:f32,world:
     let species=cooked.into_iter().flat_map(|c|c.iter()).map(|plant|render::foliage_runtime::Species {plant,category:render::scene::GeometryCategory::Trees,deformation:render::foliage_runtime::Deformation::Rigid})
         .chain(grass.iter().map(|c|render::foliage_runtime::Species {plant:&c.plant,category:render::scene::GeometryCategory::Grass,deformation:render::foliage_runtime::Deformation::BasalShear})).collect::<Vec<_>>();
     let policy=render::aggregate_lod::Policy {max_error_pixels:32.,allow_sampled_optics:true,measured_source_cuts:false,proxy_pixels:6.,proxy_pixels_from:50.,..Default::default()};
+    if std::env::args().any(|a|a=="--validate-world") {
+        for (index,species) in species.iter().enumerate() {
+            println!("vegetation selection evidence {index}: {}",serde_json::to_string(&species.plant.selection_evidence(policy)).map_err(|e|e.to_string())?);
+        }
+    }
     // Reserve the complete grass domain even when the initial location is
     // bare. Entering a meadow must not overflow an initially tiny population.
     let grass_capacity=if world.grass {((2.*GRASS_RADIUS/recipe_forest::MEADOW_CELL_SIZE).ceil()as usize+3).pow(2)} else {0};
