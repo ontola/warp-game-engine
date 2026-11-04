@@ -2675,7 +2675,7 @@ fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
     let b1=clamp(dot(tv,pv)*inv,0.0,1.0);let b2=clamp(dot(dir,cross(tv,e1))*inv,0.0,1.0-b1);let b0=1.0-b1-b2;
     let p=points[0]*b0+points[1]*b1+points[2]*b2;
     let authored=normals[0]*b0+normals[1]*b1+normals[2]*b2;
-    var n=normalize(wind_normal(member_slot(vis.x),vec3<f32>(dot(inst.r0.xyz,authored),dot(inst.r1.xyz,authored),dot(inst.r2.xyz,authored))));
+    var n=normalize(wind_normal(member_slot(vis.x),xform_dir(inst,authored)));
     if dot(n,dir)>0.0 {n=-n;}
     let m=materials[cl.material];var base=m.tint;
     if m.layer>=0 {let uv=uvs[0]*b0+uvs[1]*b1+uvs[2]*b2;

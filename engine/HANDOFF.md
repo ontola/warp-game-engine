@@ -1,3 +1,28 @@
+## 2026-11-04 Shared basal deformation for terrain grass
+
+Species now explicitly selects Rigid or BasalShear, independent of its diagnostic
+category. Terrain grass uses BasalShear in the normal shared GPU pose evaluator
+and its serial overflow fallback. The affine deformation preserves each group's
+local y=0 plane and determinant, moving higher points along projected wind.
+Source, voxel, shadow and motion-history consumers reuse that pose. Source
+member sphere scales include the conservative shear norm bound; existing cooked
+rotational displacement envelopes contain the shear. Simple-profile shading now
+uses the same inverse-transpose normal transform as the main profile.
+
+This is affine group bending, not per-blade curved bending or curved-terrain foot
+attachment. Only a fixed root with direct child groups is supported; nested
+shears are rejected before scene mutation. Whole-cell coarse proxies retain the
+fixed root pose and existing motion-error budget, not individually animated blades.
+
+Validation: release basal filter 4 passed (2 new + 2 existing); materialize and
+composed shader validation, tilted production cell attachment, actual meadow
+attachment, and cell composition tests all passed (6 additional tests).
+cargo check --locked -p render --tests -p app --example terrain_fly passed.
+The ignored GPU shared-pose/overflow oracle now covers rigid and basal modes but
+has NOT been run in this iteration. Sideways PID 51952 remains live; no GPU
+performance, visual equivalence or 8.33 ms claim. Full renderer GPU validation,
+consumer-aware shared publication and hierarchical far aggregates remain open.
+
 ## 2026-11-04 Terrain demo uses unified streamed grass cells
 
 terrain_fly --grass now attaches grass and trees together with Species and

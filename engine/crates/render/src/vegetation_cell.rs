@@ -100,7 +100,7 @@ mod tests {
         assert_eq!(cooked.stats().primitive_meshes,9);assert_eq!(cooked.stats().placements,240);
         let mut scene=crate::Scene::default();
         crate::foliage_runtime::plant_species_population(&mut scene,
-            &[crate::foliage_runtime::Species {plant:&cooked,category:crate::scene::GeometryCategory::Grass}],
+            &[crate::foliage_runtime::Species {plant:&cooked,category:crate::scene::GeometryCategory::Grass,deformation:crate::foliage_runtime::Deformation::BasalShear}],
             &[crate::foliage_population::WorldRoot {id:123,placement:crate::foliage_runtime::RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}}],
             1,16,crate::aggregate_lod::Policy {allow_sampled_optics:true,..Default::default()}).unwrap();
         let spec=scene.gpu_forest.as_ref().unwrap();
