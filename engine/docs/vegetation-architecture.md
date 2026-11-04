@@ -10,8 +10,8 @@ plans. Architecture first; no interactive playtest until requested.
 still lacks the integrated geometry hierarchy, budget refinement and visibility
 pipeline needed to scale. The current image and performance are not accepted.
 
-**Current item: G1.2 — validate cooked intermediate geometry groups.**
-Next: G1.3 (GPU integration), then G2 (budget refinement). Do not add another
+**Current item: G1.3 — integrate cooked groups into GPU selection and paging.**
+Next: G1.4 (integrated correctness/performance), then G2 (budget refinement). Do not add another
 rendering backend or spend this phase tuning colors to disguise missing detail.
 
 Latest measured route: lowland + grass, 1280x720, one view, 240 frames at 1 m/s,
@@ -54,12 +54,14 @@ These local artifacts are ignored by Git; measurements are recorded here.
 
 ## G1 — Nested geometry hierarchy (NOT COMPLETE)
 
-- [ ] G1.1 — Cook a deterministic spatial hierarchy independently of wind joints.
+- [x] G1.1 — Cook a deterministic spatial hierarchy independently of wind joints.
   Parent membership must be the exact disjoint union of children; original source
-  IDs and shared primitives are retained. **Implemented locally; not committed yet.**
-- [ ] G1.2 — Cook internal-group voxel assets, optical errors, support and discarded
-  motion bounds in a shared ancestor frame. **In progress:** new coverage test and
-  19 CPU asset tests passed; production lowland/grass cook still running.
+  IDs and shared primitives are retained. Evidence: `97cf333`, deterministic split and exact source-partition tests.
+- [x] G1.2 — Cook internal-group voxel assets, optical errors, support and discarded
+  motion bounds in a shared ancestor frame. Evidence: `97cf333`; all 19 CPU asset tests
+  passed, including animated displacement and cache round trip. Normal production
+  CPU cook passed for six tree species and two grass cells. This checks the cook,
+  NOT GPU integration or rendered LOD quality.
 - [ ] G1.3 — Export nested groups into the NORMAL GPU selector, asset page tables,
   materialization and shadow representations. No synthetic extra wind joints,
   duplicate geometry or new backend. Current selector still flattens branch chains.
@@ -171,3 +173,11 @@ resident ancestor. Growth variants share primitive assets. Physics remains
 - 4 Nov, local/uncommitted: G1.1/G1.2 topology and aggregate cook added in
   `vegetation_geometry.rs`; source partition fixture passes. Production cook
   pending. G1.3 is explicitly not implemented; no visual/FPS improvement claimed.
+- 4 Nov, `97cf333`: G1.1/G1.2 checked. Balanced species-local groups preserve
+  exact source partition and reuse existing articulated frames (no extra joints).
+  Intermediate groups have voxel assets and measured error/motion bounds.
+  19 CPU asset tests pass; four GPU tests not run for this cook-only change.
+  Production tree group counts: 113/121/121/121/81/81; grass: 71/71.
+  Cold scene cook 88.48 s; cached scene load 2.73 s. Logs:
+  `build/playtest-unified/geometry-groups-cook.log` and `geometry-groups-cached.log`.
+  G1.3 remains unchecked: the current selector still uses the old flat branch cut.
