@@ -23,6 +23,9 @@ Start with the overview, then build and run something.
 one GPU route, shared assemblies, residency, wind and shadow consumers. Architecture
 integration takes precedence over visual tuning; old opt-in plans are historical.
 
+[Stable streamed forest population](foliage-population-2026-11-04.md): worker
+preparation, incremental GPU publication and retained root identity/history.
+
 [GPU subtree work queues](foliage-wavefront-2026-11-04.md): connected traversal,
 overflow guarantees, regression tests and measured cost on 62,274 roots.
 

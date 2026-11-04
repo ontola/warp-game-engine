@@ -91,6 +91,7 @@ pub mod foliage_assembly;
 pub mod foliage_select;
 pub mod foliage_residency;
 pub mod foliage_runtime;
+pub mod foliage_population;
 pub mod plant_recipe;
 pub mod plant_species;
 mod owner_ranges;

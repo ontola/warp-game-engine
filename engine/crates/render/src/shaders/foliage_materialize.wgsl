@@ -17,7 +17,7 @@ struct State {wind:vec4<f32>,counts:vec4<u32>};
 @group(0) @binding(9) var<storage,read_write> volumes:array<Volume>;
 @group(0) @binding(10) var<storage,read_write> choices:array<u32>;
 @group(0) @binding(11) var<storage,read> direct_roots:array<u32>;
-@group(0) @binding(12) var<storage,read_write> root_history:array<u32>;
+@group(0) @binding(12) var<storage,read_write> root_history:array<vec4<u32>>;
 fn multiply(a:array<vec4<f32>,3>,b:array<vec4<f32>,3>)->array<vec4<f32>,3> {
  var out:array<vec4<f32>,3>;
  for(var i=0u;i<3u;i++){out[i]=a[i].x*b[0]+a[i].y*b[1]+a[i].z*b[2]+vec4<f32>(0.,0.,0.,a[i].w);}return out;
@@ -70,7 +70,12 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
   choices[i+16384u]=select(0u,765u,rep.y==1u || branch.info.y!=0u);
  }else {
   let tree=i-state.counts.x;if tree>=state.counts.z {return;}
-  let root=roots[tree];let m=pose(root,root.info.z);let original=proxies[tree];
+  let root=roots[tree];let original=proxies[tree];
+  if root.info.w!=0u {
+   var hidden=original;hidden.low.w=1.;volumes[i]=hidden;
+   sources[original.identity.x].sphere.w=-1.;return;
+  }
+  let m=pose(root,root.info.z);
   let delta=multiply(m,original.inverse);
   var volume=bounds(original,delta,original.low.xyz,original.high.xyz);volume.inverse=inverse(m);
   let direct=direct_roots[tree];var history=0u;
@@ -85,7 +90,10 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
   }
   volumes[i]=volume;
   let owner=original.identity.x;var source=sources[owner];source.rows=m;
-  if root_history[tree]!=history {source.flags=source.flags^128u;root_history[tree]=history;}
+  let previous=root_history[tree];var epoch=previous.z;
+  if previous.w==0u || previous.x!=history || previous.y!=root.info.y {epoch=epoch^128u;}
+  source.flags=(source.flags&~128u)|epoch;
+  root_history[tree]=vec4<u32>(history,root.info.y,epoch,1u);
   // Preserve the authored crown sphere for canopy density. Selection bounds
   // include conservative support/wind margins and would darken the forest.
   // Voxel visibility uses the independently animated volume bounds above.

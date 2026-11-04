@@ -109,7 +109,7 @@ fn walk(tree:u32,start:u32,phase:u32) {
  }
 }
 @compute @workgroup_size(64) fn first(@builtin(global_invocation_id) id:vec3<u32>) {
- if id.x<view.counts.x {
+ if id.x<view.counts.x && trees[id.x].info.w==0u {
   if view.consumer_count.y!=0u {
    let bucket=demand[id.x].bucket;let count=atomicLoad(&demand[id.x].count);
    var before=demand[id.x].prefix+bucket_cost[32u+(id.x/256u)*32u+bucket];
@@ -139,6 +139,9 @@ fn walk(tree:u32,start:u32,phase:u32) {
 // thread arrival order. Whole-root voxel cuts consume no branch slots.
 @compute @workgroup_size(64) fn seed_demand(@builtin(global_invocation_id) id:vec3<u32>) {
  let tree=id.x;if tree>=view.counts.x{return;}
+ atomicStore(&demand[tree].count,0u);demand[tree].bucket=0u;demand[tree].prefix=0u;
+ atomicStore(&demand[tree].failed,0u);
+ if trees[tree].info.w!=0u {return;}
  let t=trees[tree];let root=nodes[t.info.x];
  let s=sphere(t,root);var priority=0.0;
  for(var i=0u;i<view.consumer_count.x;i++) {
@@ -206,6 +209,7 @@ fn wave(at:u32,lane:u32,write_records:bool) {
 @compute @workgroup_size(64) fn emit_wave(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32){wave(group.x+group.y*32768u,lane,true);}
 @compute @workgroup_size(64) fn seed_emit(@builtin(global_invocation_id) id:vec3<u32>) {
  let tree=id.x;if tree>=view.counts.x{return;}
+ if trees[tree].info.w!=0u {return;}
  let bucket=demand[tree].bucket;let count=atomicLoad(&demand[tree].count);
  var before=demand[tree].prefix+bucket_cost[32u+(tree/256u)*32u+bucket];
  for(var b=bucket+1u;b<32u;b++){before+=bucket_cost[b];}

@@ -1,3 +1,24 @@
+## 2026-11-04 Stable streamed population, no renderer rebuild
+
+Normal terrain route uses WorldRoot stable IDs, reserved root slots/generations,
+worker-prepared population transactions and bounded GPU scatter publication.
+Unchanged roots retain branch residency and motion history; stale transactions,
+invalid roots and capacity excess are rejected. CPU does world generation, not
+per-frame selection. Forest/ground/sun recenter independently of renderer lifetime.
+
+109 foliage-filter tests pass including exclusive GPU fixtures. 300-frame native
+1713x964 one-view route crosses three forest updates: 53xx–69xx roots changed,
+48k–57k retained. Final CPU publication 5.20/4.19/4.36 ms versus the first synchronous
+36–61 ms implementation (engineering observations, not paired frame benchmarks).
+GPU covered median 10.113 ms on this moving route excludes the separate scatter
+submission. No 8.33 ms/four-player claim; terrain/readback hitches remain.
+
+See docs/foliage-population-2026-11-04.md and its evidence JSON. Root capacity is
+fixed (demo reserves 2x initial, minimum16k); no asset paging or automatic growth.
+Next: safe history-first traversal/publication across camera+shadow consumers,
+then asset pages, shared pose/shadow caching and grass migration. Do not claim
+these gates complete. No interactive playtest opened.
+
 ## 2026-11-04 GPU subtree work queues on the normal route
 
 Selector::union uses GPU-generated bounded frontiers for both demand and emission.

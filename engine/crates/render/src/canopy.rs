@@ -362,11 +362,13 @@ impl CanopyClipmap {
     /// mass budget. GPU texture/pipelines remain resident; every view shares
     /// the new metadata. Do not bypass overflow checks for streamed vegetation.
     pub(crate) fn prepare_proxy_update(&self, first: usize, instances: &[GpuInstance]) -> Result<ProxyBudget, String> {
-        if first.checked_add(instances.len()).is_none_or(|n|n>self.initial_crowns.len()) {return Err("canopy proxy range exceeds reserved scene".into());}
+        self.prepare_proxy_edits(instances.iter().enumerate().map(|(i,s)|(first+i,s)))
+    }
+    pub(crate) fn prepare_proxy_edits<'a>(&self, edits:impl IntoIterator<Item=(usize,&'a GpuInstance)>)->Result<ProxyBudget,String> {
         let mut crowns=(*self.initial_crowns).clone();
         let mut heights=(*self.initial_heights).clone();
-        for (k,instance) in instances.iter().enumerate() {
-            let i=first+k;
+        for (i,instance) in edits {
+            if i>=crowns.len(){return Err("canopy proxy range exceeds reserved scene".into());}
             if instance.cluster_count!=0 || self.source_crowns.ids.get(i).copied().unwrap_or(0)!=0 {return Err("canopy relocation only supports geometry-free proxies".into());}
             crowns[i]=None;heights[i]=None;
             if instance.flags & FOLIAGE == 0 {continue;}
