@@ -875,6 +875,46 @@ impl Fx {
         }
     }
 
+    /// A bolt ending at `at`: a small splash of its element, never smoke
+    /// or a blast (there are many of them).
+    fn impact(&mut self, at: Vec3, el: Option<El>, size: f32) {
+        let k = (0.6 + size * 0.5).clamp(0.5, 1.6);
+        let at = if at.y < 0.1 { at + Vec3::Y * 0.1 } else { at };
+        let Some(e) = el else {
+            self.burst(at, rgba(1.0, 0.95, 0.85, 1.0), (6.0 * k) as u32, 3.0, 0.08, None);
+            return;
+        };
+        let c = el_c(e);
+        let mut p = particles(c, (10.0 * k) as u32 + 4, 0.4, 0.3 * k);
+        let _ = style(&mut p, e, false);
+        p.dir = Vec3::Y;
+        p.spread = 70.0;
+        p.v = (1.5 * k, 4.0 * k);
+        match e {
+            El::Earth | El::Mud | El::Magma | El::Ice => {
+                self.chunks(at, 0.4 * k, e, (6.0 * k) as u32 + 2, 0.12 * k);
+                if e == El::Earth {
+                    self.puff(at, rgba(0.5, 0.45, 0.38, 1.0), 0.4 * k);
+                }
+            }
+            El::Fire => {
+                p.gravity = Vec3::Y * 3.0;
+                p.v = (0.8, 2.2 * k);
+                self.emit(p, at, p.amount);
+                self.puff(at + Vec3::Y * 0.2, rgba(0.2, 0.18, 0.17, 1.0), 0.35 * k);
+            }
+            El::Steam | El::Air => self.puff(at, if e == El::Steam { rgba(0.95, 0.96, 1.0, 1.0) } else { rgba(0.8, 0.85, 0.8, 1.0) }, 0.5 * k),
+            El::Void => {
+                p.sphere = 0.6 * k;
+                p.v = (0.0, 0.2);
+                p.radial = (-6.0, -4.0);
+                self.emit(p, at, p.amount);
+            }
+            _ => self.emit(p, at, p.amount),
+        }
+        self.flash(at, c, 0.5 * k, 0.12);
+    }
+
     /// How element `e` crashes out at `at`, `r` across, at `k` of its full
     /// size (a nova's element, or one riding in it at half): every element
     /// its own way (Joep: a lame Crushing Eruption). `thrown`: a bomb or a
@@ -1078,6 +1118,7 @@ impl Fx {
                 self.burst(at, c, 8, 6.0, 0.35, Some(El::Lightning));
                 self.sand(at, radius);
             }
+            Ev::Impact { at, el, size } => self.impact(at, el, size),
             Ev::Land { at, r, el, ref payload } => {
                 if let Some(e) = el {
                     self.crash(at, r, e, 1.0, true);
@@ -1691,6 +1732,13 @@ impl Fx {
                 }
                 self.halo(b.to, c, 1.4 * h, 0.8);
                 self.light(b.to + Vec3::Y * 0.3, c, 1.5 * h, 5.0);
+                // Where it burns in: its element spits off the spot.
+                let mut q = particles(c, (30.0 * h) as u32 + 10, 0.35, 0.35 * h);
+                let _ = style(&mut q, e, false);
+                q.dir = Vec3::Y - d.normalize_or_zero() * 0.6;
+                q.spread = 70.0;
+                q.v = (1.5, 4.0);
+                self.stream((key, 60), q, b.to, dt);
             } else if let Ok(tr) = w.ecs.get::<&Trap>(id) {
                 if !tr.done {
                     let e = tr.spell.primary.unwrap_or(El::Fire);

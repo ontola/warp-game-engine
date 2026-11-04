@@ -152,6 +152,13 @@ pub enum Ev {
         /// Its other elements, most first: each shows its own way too.
         payload: Vec<El>,
     },
+    /// A bolt ending (on a monster, a wall or the floor): a small splash
+    /// of its element, `size` the bolt's.
+    Impact {
+        at: Vec3,
+        el: Option<El>,
+        size: f32,
+    },
     /// A thrown spell (a boulder, a lava bomb, a mud ball) landing, its
     /// splash `r` across: the view's crash of its elements.
     Land {
