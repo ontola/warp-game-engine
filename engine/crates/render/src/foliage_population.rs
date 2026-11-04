@@ -23,7 +23,7 @@ impl Population {
         let mut wanted=HashMap::with_capacity(roots.len());
         for root in roots {
             let p=root.placement;
-            if !p.pos.is_finite() || !p.yaw.is_finite() || !p.scale.is_finite() || p.scale<0.0001
+            if !p.up.is_finite() || (p.up.length_squared()-1.).abs()>1e-4 || !p.pos.is_finite() || !p.yaw.is_finite() || !p.scale.is_finite() || p.scale<0.0001
                 || wanted.insert(root.id,root).is_some() {return Err("invalid or duplicate forest world root".into());}
         }
         let mut next=self.clone();let mut changed=BTreeSet::new();let mut retained=0;
@@ -48,7 +48,17 @@ impl Population {
 
 #[cfg(test)] mod tests {
     use super::*;use glam::Vec3;
-    fn root(id:u64)->WorldRoot {WorldRoot {id,placement:RootPlacement {pos:Vec3::new(id as f32,0.,0.),yaw:0.,scale:1.,variant:0}}}
+    fn root(id:u64)->WorldRoot {WorldRoot {id,placement:RootPlacement {up:Vec3::Y,pos:Vec3::new(id as f32,0.,0.),yaw:0.,scale:1.,variant:0}}}
+    #[test] fn terrain_orientation_is_validated_and_invalidates_generation() {
+        let original=root(10);let population=Population::new(&[original],1).unwrap();
+        let mut tilted=original;tilted.placement.up=Vec3::new(0.3,1.,0.2).normalize();
+        let next=population.plan(&[tilted]).unwrap();assert_eq!(next.changed,[0]);
+        assert_eq!(next.next.generations[0],population.generations[0]+1);
+        for bad in [Vec3::ZERO,Vec3::splat(f32::NAN),Vec3::Y*2.] {
+            tilted.placement.up=bad;assert!(population.plan(&[tilted]).is_err());
+        }
+        assert_eq!(population.slots[0],Some(original));
+    }
     #[test] fn reorder_replace_delete_and_reuse_keep_identity() {
         let population=Population::new(&[root(10),root(20)],3).unwrap();
         let reorder=population.plan(&[root(20),root(10)]).unwrap();assert!(reorder.changed.is_empty());assert_eq!(reorder.retained,2);

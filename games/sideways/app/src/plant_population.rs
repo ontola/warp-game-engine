@@ -74,7 +74,7 @@ pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras:
     let near = |p: Vec3| cameras.iter().map(|c| c.distance(p)).fold(f32::INFINITY, f32::min);
     let mut trees: Vec<(f32, render::recipe_forest::Tree)> = chunks.iter().flat_map(|c| &c.trees).map(|spot| {
         let pos = Vec3::new(spot.pos.0, spot.pos.1, spot.pos.2);
-        (near(pos), render::recipe_forest::Tree { pos, yaw: spot.yaw,
+        (near(pos), render::recipe_forest::Tree { up:Vec3::Y, pos, yaw: spot.yaw,
             scale: crate::tree_assets::native_scale(spot).y, variant: stage_index(stage, spot.pos.0, spot.pos.2) })
     }).collect();
     trees.sort_by(|a, b| a.0.total_cmp(&b.0));

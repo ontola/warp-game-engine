@@ -9,7 +9,11 @@ use wgpu::util::DeviceExt;
 
 /// World placement independent of any camera, renderer tier or CPU near pool.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RootPlacement {pub pos:Vec3,pub yaw:f32,pub scale:f32,pub variant:usize}
+pub struct RootPlacement {
+    pub pos:Vec3,pub yaw:f32,pub scale:f32,pub variant:usize,
+    /// Unit world-space up vector. Trees normally use Y; cells can follow terrain.
+    pub up:Vec3,
+}
 
 #[repr(C)]
 #[derive(Clone,Copy,Debug,Pod,Zeroable)]
@@ -43,7 +47,7 @@ impl Spec {
 }
 #[derive(Clone,Copy,Debug)]
 struct RootTemplate {proxy:GpuTree,source:GpuInstance,node:u32,branch:u32,shadow_sphere:[f32;4]}
-fn transform(p:RootPlacement)->Mat4 {Mat4::from_scale_rotation_translation(Vec3::splat(p.scale),glam::Quat::from_rotation_y(p.yaw),p.pos)}
+fn transform(p:RootPlacement)->Mat4 {Mat4::from_scale_rotation_translation(Vec3::splat(p.scale),glam::Quat::from_rotation_arc(Vec3::Y,p.up)*glam::Quat::from_rotation_y(p.yaw),p.pos)}
 fn rows(m:Mat4)->[[f32;4];3] {[m.row(0).to_array(),m.row(1).to_array(),m.row(2).to_array()]}
 fn matrix(r:[[f32;4];3])->Mat4 {Mat4::from_cols(
     Vec4::new(r[0][0],r[1][0],r[2][0],0.),Vec4::new(r[0][1],r[1][1],r[2][1],0.),
@@ -85,7 +89,7 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
         return Err("attach all GPU forest species together before other articulated vegetation".into());
     }
     let population=crate::foliage_population::Population::new(world,capacity)?;
-    let parked=RootPlacement {pos:Vec3::new(0.,-100000.,0.),yaw:0.,scale:1.,variant:0};
+    let parked=RootPlacement {up:Vec3::Y,pos:Vec3::new(0.,-100000.,0.),yaw:0.,scale:1.,variant:0};
     let trees=population.slots.iter().map(|r|r.map(|r|r.placement).unwrap_or(parked)).collect::<Vec<_>>();
     if slots==0 || slots as usize>crate::voxel_forest::MAX_VIEW_GROUPS || trees.is_empty() || plants.is_empty()
         || trees.iter().any(|t|t.variant>=plants.len()||!t.scale.is_finite()||t.scale<=0.) {return Err("invalid GPU forest population/budget".into());}
@@ -102,7 +106,7 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
 
     }
     for (i,t) in trees.iter().enumerate() {
-        let root=Mat4::from_scale_rotation_translation(Vec3::splat(t.scale),glam::Quat::from_rotation_y(t.yaw),t.pos);
+        let root=transform(*t);
         builder.append_proxy(&plants[t.variant],PlantInstance {id:(plants.len()+i+1)as u64,generation:0,root,category:species[t.variant].category})?;
     }
     builder.finish_aggregate(policy)?;
@@ -148,7 +152,7 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
     let mut templates=templates;
     for (i,t) in templates.iter_mut().enumerate(){t.node=root_nodes[i];t.shadow_sphere=nodes[t.node as usize].sphere;t.branch=handles[i].pose_range.start as u32;}
     let roots=trees.iter().enumerate().map(|(i,t)| {
-        let m=Mat4::from_scale_rotation_translation(Vec3::splat(t.scale),glam::Quat::from_rotation_y(t.yaw),t.pos);
+        let m=transform(*t);
         // sqrt(norm1*normInf) conservatively bounds rotated scales.
         let row=(0..3).map(|r|m.row(r).truncate().abs().element_sum()).fold(0.,f32::max);
         let col=(0..3).map(|c|m.col(c).truncate().abs().element_sum()).fold(0.,f32::max);
@@ -187,7 +191,7 @@ impl PopulationSeed {
         let started=std::time::Instant::now();
         if roots.iter().any(|r|r.placement.variant>=self.templates.len()){return Err("unknown forest species".into());}
         let update=self.base.plan(roots)?;
-        let parked=RootPlacement {pos:Vec3::new(0.,-100000.,0.),yaw:0.,scale:1.,variant:0};
+        let parked=RootPlacement {up:Vec3::Y,pos:Vec3::new(0.,-100000.,0.),yaw:0.,scale:1.,variant:0};
         let changes=update.changed.iter().map(|&slot| {
             let p=update.next.slots[slot].map(|r|r.placement).unwrap_or(parked);
             let mut change=relocated(self.templates[p.variant],p,self.owners[slot],update.next.generations[slot],update.next.slots[slot].is_none());change.slot=slot as u32;change
@@ -374,13 +378,33 @@ impl Runtime {
 
 #[cfg(test)] mod tests {
     #[test]
+    fn tilted_cell_initial_and_streamed_placements_match() {
+        use super::*;
+        let cooked=crate::recipe_forest::cook_meadow_cells(&[(47,0.2)],None).unwrap();
+        assert_eq!(cooked[0].plant.stats().placements,1080);
+        assert_eq!(cooked[0].plant.stats().branches,37);
+        let p=RootPlacement {pos:Vec3::new(3.,2.,-4.),yaw:0.8,scale:1.1,variant:0,up:Vec3::new(-0.3,1.,0.2).normalize()};
+        let world=[crate::foliage_population::WorldRoot {id:1,placement:p}];
+        let species=[Species {plant:&cooked[0].plant,category:crate::scene::GeometryCategory::Grass}];
+        let mut scene=Scene::default();plant_species_population(&mut scene,&species,&world,2,64,crate::aggregate_lod::Policy {allow_sampled_optics:true,..Default::default()}).unwrap();
+        let spec=scene.gpu_forest.as_ref().unwrap();
+        let m=matrix(spec.roots[0].rows);
+        assert!(m.transform_vector3(Vec3::Y).normalize().abs_diff_eq(p.up,1e-5));
+        let relocated=relocated(spec.templates[0],p,spec.proxies[0].meta[0],spec.roots[0].info[1],false);
+        assert!(matrix(relocated.root.rows).abs_diff_eq(m,1e-6));
+        assert!(matrix(relocated.proxy.inverse).abs_diff_eq(matrix(spec.proxies[0].inverse),1e-5));
+        for (a,b) in relocated.proxy.bounds_min.into_iter().zip(spec.proxies[0].bounds_min) {assert!((a-b).abs()<1e-4);}
+        for (a,b) in relocated.proxy.bounds_max.into_iter().zip(spec.proxies[0].bounds_max) {assert!((a-b).abs()<1e-4);}
+    }
+
+    #[test]
     fn mixed_species_share_catalog_and_preserve_categories_on_replacement() {
         use super::*;
         use crate::scene::GeometryCategory::{Trees,Grass};
         let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
         let mut plant=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();plant.cook_proxy(&source,config,3).unwrap();
-        let placement=RootPlacement {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0};
-        let mut world=vec![crate::foliage_population::WorldRoot {id:10,placement},crate::foliage_population::WorldRoot {id:20,placement:RootPlacement {pos:Vec3::X,variant:1,..placement}}];
+        let placement=RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0};
+        let mut world=vec![crate::foliage_population::WorldRoot {id:10,placement},crate::foliage_population::WorldRoot {id:20,placement:RootPlacement {up:Vec3::Y,pos:Vec3::X,variant:1,..placement}}];
         let mut reference=Scene::default();plant_population(&mut reference,std::slice::from_ref(&plant),&world[..1],4,8,Default::default()).unwrap();
         let mut scene=Scene::default();
         plant_species_population(&mut scene,&[Species {plant:&plant,category:Trees},Species {plant:&plant,category:Grass}],&world,4,8,Default::default()).unwrap();
@@ -409,7 +433,7 @@ impl Runtime {
         let plant=&cooked[0].plant;
         // Three ribbon shapes with three shared palette bindings, not one mesh per blade.
         assert_eq!(plant.stats().primitive_meshes,9);assert_eq!(plant.stats().placements,120);
-        let world=[crate::foliage_population::WorldRoot {id:1,placement:RootPlacement {pos:Vec3::ZERO,yaw:0.4,scale:1.,variant:0}}];
+        let world=[crate::foliage_population::WorldRoot {id:1,placement:RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.4,scale:1.,variant:0}}];
         let mut scene=Scene::default();plant_species_population(&mut scene,&[Species {plant,category:crate::scene::GeometryCategory::Grass}],&world,4,16,crate::aggregate_lod::Policy {allow_sampled_optics:true,..Default::default()}).unwrap();
         let spec=scene.gpu_forest.as_ref().unwrap();
         assert!(scene.meadow.is_none());assert!(scene.part_wind.is_empty());
@@ -430,7 +454,7 @@ impl Runtime {
         use super::*;
         let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
         let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
-        let trees=[RootPlacement {pos:Vec3::ZERO,yaw:0.4,scale:1.2,variant:0},RootPlacement {pos:Vec3::X*0.6,yaw:-0.7,scale:0.8,variant:0}];
+        let trees=[RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.4,scale:1.2,variant:0},RootPlacement {up:Vec3::Y,pos:Vec3::X*0.6,yaw:-0.7,scale:0.8,variant:0}];
         let mut scene=Scene::default();plant(&mut scene,&[cooked],&trees,8,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
         let mut spec=scene.gpu_forest.clone().unwrap();assert_eq!(spec.branches.len(),3);
         spec.branches[2].info[0]=1; // Shared ancestor requested by both selected branches.
@@ -496,7 +520,7 @@ impl Runtime {
         let config=crate::vegetation_asset::tests::aggregate_config();
         let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();
         cooked.cook_proxy(&source,config,3).unwrap();
-        let trees=vec![RootPlacement {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0};20000];
+        let trees=vec![RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0};20000];
         let mut scene=Scene::default();
         plant(&mut scene,&[cooked],&trees,8,crate::aggregate_lod::Policy::default()).unwrap();
         let spec=scene.gpu_forest.as_ref().unwrap();
@@ -511,7 +535,7 @@ impl Runtime {
         use super::*;use crate::{Camera,Lighting,Renderer,ViewRect};
         let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
         let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
-        let mut scene=Scene::default();plant(&mut scene,&[cooked],&[RootPlacement {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}],8,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
+        let mut scene=Scene::default();plant(&mut scene,&[cooked],&[RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}],8,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
         let gpu=Gpu::new().unwrap();let light=Lighting {gi:1.,sun_lux:0.,shadow_strength:0.,..Default::default()};let renderer=Renderer::new(&gpu,&scene,&light);
         let views=[ViewRect {cam:Camera {pos:Vec3::new(0.3,0.4,1.6),target:Vec3::new(0.3,0.4,0.),fov_y:1.,near:0.05},x:0,y:0,w:128,h:128}];
         let mut recovered=false;
@@ -531,7 +555,7 @@ impl Runtime {
         use super::*;use crate::{Camera,Lighting,Renderer,ViewRect,foliage_population::WorldRoot};
         let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
         let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
-        let original=[WorldRoot {id:42,placement:RootPlacement {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}}];
+        let original=[WorldRoot {id:42,placement:RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}}];
         let mut scene=Scene::default();plant_population(&mut scene,&[cooked],&original,2,8,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
         for b in &mut scene.gpu_forest.as_mut().unwrap().branches {b.animation=[0.12,2.,0.3,0.];}
         let gpu=Gpu::new().unwrap();let mut light=Lighting {gi:1.,near_shadows:0.,sun_dir:Vec3::new(0.3,1.,0.4).normalize(),..Default::default()};
@@ -562,7 +586,7 @@ impl Runtime {
         use super::*;use crate::{Camera,Lighting,Renderer,ViewRect,foliage_population::WorldRoot};
         let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
         let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
-        let root=|id,x|WorldRoot {id,placement:RootPlacement {pos:Vec3::X*x,yaw:0.,scale:1.,variant:0}};
+        let root=|id,x|WorldRoot {id,placement:RootPlacement {up:Vec3::Y,pos:Vec3::X*x,yaw:0.,scale:1.,variant:0}};
         let original=[root(10,0.),root(20,8.)];let policy=crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()};
         let mut scene=Scene::default();plant_population(&mut scene,&[cooked],&original,3,8,policy).unwrap();
         let gpu=Gpu::new().unwrap();let light=Lighting {gi:1.,sun_lux:0.,shadow_strength:0.,..Default::default()};let renderer=Renderer::new(&gpu,&scene,&light);
@@ -590,7 +614,7 @@ impl Runtime {
         use super::*;use crate::{Camera,Lighting,Renderer,ViewRect};
         let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
         let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
-        let mut scene=Scene::default();plant(&mut scene,&[cooked],&[RootPlacement {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}],8,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
+        let mut scene=Scene::default();plant(&mut scene,&[cooked],&[RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}],8,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
         let gpu=Gpu::new().unwrap();let light=Lighting {gi:0.,sun_lux:0.,shadow_strength:0.,..Default::default()};
         let regular=Renderer::new(&gpu,&scene,&light);let mut tiny=Renderer::new(&gpu,&scene,&light);tiny.test_tree_deferred_capacity(&gpu,1);
         regular.test_warm_foliage_assets(&gpu);tiny.test_warm_foliage_assets(&gpu);
@@ -618,7 +642,7 @@ impl Runtime {
         let reference=Renderer::new(&gpu,&reference,&light);
         let view=[ViewRect {cam:cam(0.),x:0,y:0,w:128,h:128}];
         let (expected,_)=reference.try_render_views(&gpu,&view,&light,128,128,&[]).unwrap();
-        let tree=RootPlacement {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0};
+        let tree=RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0};
         let mut scene=Scene::default();plant(&mut scene,std::slice::from_ref(&cooked),&[tree],1,policy).unwrap();
         let renderer=Renderer::new(&gpu,&scene,&light);
         let (actual,_)=renderer.try_render_views(&gpu,&view,&light,128,128,&[]).unwrap();
@@ -633,7 +657,7 @@ impl Runtime {
         let d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();assert_eq!(d.direct_roots,1);assert_eq!(d.voxel_slots,0);assert_eq!(d.source_slots,0);assert_eq!(d.fallback_trees,0);
         // Move between disjoint tree populations, then use four simultaneous
         // cameras. No host assignment, renderer rebuild or root upload occurs.
-        let trees=(0..4).map(|i|RootPlacement {pos:Vec3::X*(i as f32*8.),..tree}).collect::<Vec<_>>();
+        let trees=(0..4).map(|i|RootPlacement {up:Vec3::Y,pos:Vec3::X*(i as f32*8.),..tree}).collect::<Vec<_>>();
         let mut scene=Scene::default();plant(&mut scene,&[cooked],&trees,16,policy).unwrap();let renderer=Renderer::new(&gpu,&scene,&light);
         renderer.test_warm_foliage_assets(&gpu);
         let night=Lighting {sun_lux:0.,..light.clone()};
