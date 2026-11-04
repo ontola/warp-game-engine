@@ -167,6 +167,38 @@ impl GpuForest {
         self.instances.extend(other.instances.into_iter().map(|mut t| { t.meta[1] += levels as u32; t }));
         Ok(())
     }
+    /// Maximum appended splats per level before view/opacity rejection. Count
+    /// occupied grid entries, not unique cell payloads: aliases still rasterize
+    /// once per coordinate. Computed once for the shared asset catalog.
+    pub(crate) fn raster_work_bounds(&self) -> Result<Vec<u32>, String> {
+        let payload_count = |entries: &[u32]| -> Result<u32, String> {
+            if entries.iter().any(|&i| i as usize > self.cells.len()) {
+                return Err("raster work references a missing voxel cell".into());
+            }
+            u32::try_from(entries.iter().filter(|&&i| i != 0).count())
+                .map_err(|_| "raster work exceeds u32".into())
+        };
+        self.levels.iter().map(|level| {
+            let dims = &level.dims_offset[..3];
+            if dims.contains(&0) { return Err("raster work has empty dimensions".into()); }
+            let bricked = level.dims_offset[3] & BRICK_INDIRECTION != 0;
+            let length = dims.iter().try_fold(1usize, |n, &d|
+                n.checked_mul(if bricked { d.div_ceil(4) } else { d } as usize))
+                .ok_or("raster work grid overflow")?;
+            let base = (level.dims_offset[3] & !BRICK_INDIRECTION) as usize;
+            let end = base.checked_add(length).ok_or("raster work address overflow")?;
+            let entries = self.indices.get(base..end).ok_or("raster work grid outside catalog")?;
+            if !bricked { return payload_count(entries); }
+            let mut count = 0u32;
+            for &address in entries.iter().filter(|&&i| i != 0) {
+                let start = (address - 1) as usize;
+                let end = start.checked_add(64).ok_or("raster work brick overflow")?;
+                let brick = self.indices.get(start..end).ok_or("raster work brick outside catalog")?;
+                count = count.checked_add(payload_count(brick)?).ok_or("raster work sum overflow")?;
+            }
+            Ok(count)
+        }).collect()
+    }
     pub fn byte_len(&self) -> usize {
         self.levels.len() * std::mem::size_of::<GpuLevel>()
             + self.indices.len() * std::mem::size_of::<u32>()
@@ -436,6 +468,20 @@ pub fn pack_assets(assets: &[VoxelAsset], limits: AssetPackLimits) -> Result<Pac
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn raster_work_counts_grid_aliases_and_validates_addresses() {
+        let mut f=super::GpuForest {
+            levels:vec![super::GpuLevel {origin_cell:[0.,0.,0.,1.],dims_offset:[3,1,1,0]}],
+            indices:vec![1,0,1],cells:vec![bytemuck::Zeroable::zeroed()],instances:vec![]};
+        assert_eq!(f.raster_work_bounds().unwrap(),[2]);
+        super::pack_bricks(&mut f,128).unwrap();
+        assert_eq!(f.raster_work_bounds().unwrap(),[2]);
+        f.indices[0]=u32::MAX;
+        assert!(f.raster_work_bounds().is_err());
+        f.levels[0].dims_offset=[u32::MAX,u32::MAX,u32::MAX,0];
+        assert!(f.raster_work_bounds().is_err());
+    }
+
     use super::*;
     use crate::foliage_voxel::{BakeStats, PROJECTION_DIRECTIONS, VoxelLevel};
     use glam::{Affine3A, Quat};

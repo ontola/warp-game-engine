@@ -55,12 +55,33 @@ impl Spec {
     }
 }
 #[derive(Clone,Copy,Debug)]
-struct RootTemplate {proxy:GpuTree,source:GpuInstance,node:u32,branch:u32,shadow_sphere:[f32;4]}
+struct RootTemplate {proxy:GpuTree,source:GpuInstance,node:u32,branch:u32,shadow_sphere:[f32;4],proxy_work:f32}
 fn transform(p:RootPlacement)->Mat4 {Mat4::from_scale_rotation_translation(Vec3::splat(p.scale),glam::Quat::from_rotation_arc(Vec3::Y,p.up)*glam::Quat::from_rotation_y(p.yaw),p.pos)}
 fn rows(m:Mat4)->[[f32;4];3] {[m.row(0).to_array(),m.row(1).to_array(),m.row(2).to_array()]}
 fn matrix(r:[[f32;4];3])->Mat4 {Mat4::from_cols(
     Vec4::new(r[0][0],r[1][0],r[2][0],0.),Vec4::new(r[0][1],r[1][1],r[2][1],0.),
     Vec4::new(r[0][2],r[1][2],r[2][2],0.),Vec4::new(r[0][3],r[1][3],r[2][3],1.))}
+// The existing GPU ABI reserves two floats on nodes and roots. Integer work
+// bounds are exact up to 2^24; reject larger assets instead of rounding down.
+fn exact_work(value:u32)->Result<f32,String> {
+    if value>1<<24 {return Err("single representation raster work exceeds exact GPU metadata range".into());}
+    Ok(value as f32)
+}
+fn representation_raster_work(rep:[u32;4],branch:&Branch,counts:&[u32])->Result<[u32;2],String> {
+    if rep[1]==0 && branch.info[1]==0 {return Ok([0,0]);}
+    let start=branch.volume.meta[1]as usize;
+    let end=start.checked_add(branch.volume.meta[2]as usize).ok_or("raster work mip overflow")?;
+    let mips=counts.get(start..end).filter(|m|!m.is_empty()).ok_or("raster work missing volume mips")?;
+    if rep[1]==1 && rep[3]==0 && branch.info[0]==NONE {
+        let work=*mips.get(rep[2]as usize).ok_or("raster work root mip outside catalog")?;
+        return Ok([work,work]);
+    }
+    let shadow=*mips.iter().max().unwrap();
+    let camera=if rep[1]==0 {0} else {
+        *mips.get(..=rep[2]as usize).ok_or("raster work selected mip outside catalog")?.iter().max().unwrap()
+    };
+    Ok([camera,shadow])
+}
 /// The emergency stand-in must not pin its entire high-resolution mip chain.
 /// Ordinary root detail is requested separately through the selection hierarchy.
 fn coarse_proxy(mut v:GpuTree)->Result<GpuTree,String> {
@@ -144,7 +165,7 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
     let proxy_start=forest.instances.len()-trees.len();
     let proxies=forest.instances[proxy_start..].iter().copied().map(coarse_proxy).collect::<Result<Vec<_>,_>>()?;
     let template_volumes=forest.instances[proxy_start-plants.len()..proxy_start].iter().copied().map(coarse_proxy).collect::<Result<Vec<_>,_>>()?;
-    let templates=template_volumes.iter().map(|v|RootTemplate {proxy:*v,source:scene.instances[v.meta[0]as usize],node:0,branch:0,shadow_sphere:[0.;4]}).collect::<Vec<_>>();
+    let templates=template_volumes.iter().map(|v|RootTemplate {proxy:*v,source:scene.instances[v.meta[0]as usize],node:0,branch:0,shadow_sphere:[0.;4],proxy_work:0.}).collect::<Vec<_>>();
     for v in &template_volumes {let owner=&mut scene.instances[v.meta[0]as usize];owner.sphere[3]=-1.;owner.flags=0;}
 
     let mut nodes=Vec::new();let mut representations=Vec::new();let mut root_nodes=Vec::new();let mut group_fixups=Vec::new();
@@ -201,6 +222,14 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
         forest.append(packed.forest)?;
     }
     for (rep,variant,group) in group_fixups {representations[rep][3]=group_records[&(variant,group)]+1;}
+    let work=forest.raster_work_bounds()?;
+    for node in &mut nodes {
+        let rep=representations[node.links[2]as usize];
+        let branch=&branches[if rep[3]==0 {rep[0]} else {rep[3]-1}as usize];
+        let bound=representation_raster_work(rep,branch,&work)?;
+        node.error[2]=exact_work(bound[0])?;
+        node.error[3]=exact_work(bound[1])?;
+    }
     // Reference recipe carriers are not world instances. Keep the shared
     // negative-radius primitive templates; retire only their reference owners.
     for p in &scene.part_wind {if let Some(o)=p.owner {scene.instances[o as usize].sphere[3]=-1.;scene.instances[o as usize].first_cluster=0;}}
@@ -216,7 +245,7 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
     forest.instances=(0..slots).map(|slot|GpuTree {meta:[first_owner+slot,placeholder.meta[1],placeholder.meta[2],u32::MAX],..placeholder}).collect();
     forest.instances.extend_from_slice(&proxies);
     let mut templates=templates;
-    for (i,t) in templates.iter_mut().enumerate(){t.node=root_nodes[i];t.shadow_sphere=nodes[t.node as usize].sphere;t.branch=handles[i].pose_range.start as u32;}
+    for (i,t) in templates.iter_mut().enumerate(){t.proxy_work=exact_work(work[t.proxy.meta[1]as usize])?;t.node=root_nodes[i];t.shadow_sphere=nodes[t.node as usize].sphere;t.branch=handles[i].pose_range.start as u32;}
     let roots=trees.iter().enumerate().map(|(i,t)| {
         let m=transform(*t);
         // sqrt(norm1*normInf) conservatively bounds rotated scales.
@@ -224,7 +253,7 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
         let col=(0..3).map(|c|m.col(c).truncate().abs().element_sum()).fold(0.,f32::max);
         scene.instances[proxies[i].meta[0]as usize].flags|=PART_WIND;
         if population.slots[i].is_none(){let owner=&mut scene.instances[proxies[i].meta[0]as usize];owner.flags=PART_WIND;owner.sphere[3]=-1.;}
-        Instance {rows:rows(m),scale:[(row*col).sqrt(),0.,0.,0.],info:[root_nodes[t.variant],population.generations[i],handles[t.variant].pose_range.start as u32,u32::from(population.slots[i].is_none())]}
+        Instance {rows:rows(m),scale:[(row*col).sqrt(),0.,templates[t.variant].proxy_work,templates[t.variant].proxy_work],info:[root_nodes[t.variant],population.generations[i],handles[t.variant].pose_range.start as u32,u32::from(population.slots[i].is_none())]}
     }).collect();
     scene.voxel_forest=Some(forest);scene.voxel_proxies=trees.len()as u32;
     scene.gpu_forest=Some(Spec {page_budget:Default::default(),source_budget:Default::default(),nodes,roots,branches,representations,proxies,templates,population,first_owner,slots,error:policy.max_error_pixels.max(0.25)});
@@ -284,7 +313,7 @@ fn relocated(template:RootTemplate,placement:RootPlacement,owner:u32,generation:
     if inactive {source.flags=PART_WIND;source.sphere[3]=-1.;}
     let row=(0..3).map(|r|m.row(r).truncate().abs().element_sum()).fold(0.,f32::max);
     let col=(0..3).map(|c|m.col(c).truncate().abs().element_sum()).fold(0.,f32::max);
-    RootChange {slot:0,pad:[0;3],proxy,source,root:Instance {rows:rows(m),scale:[(row*col).sqrt(),0.,0.,0.],info:[template.node,generation,template.branch,u32::from(inactive)]}}
+    RootChange {slot:0,pad:[0;3],proxy,source,root:Instance {rows:rows(m),scale:[(row*col).sqrt(),0.,template.proxy_work,template.proxy_work],info:[template.node,generation,template.branch,u32::from(inactive)]}}
 }
 /// Same conservative animated root envelope used by GPU hierarchy selection.
 /// Used only when the world population changes, never for per-frame selection.
@@ -453,6 +482,24 @@ impl Runtime {
 }
 
 #[cfg(test)] mod tests {
+    #[test]
+    fn raster_work_covers_consumer_mip_ranges_and_root_fallbacks() {
+        use super::*;
+        let mut branch=Branch::zeroed();branch.volume.meta=[0,1,3,0];branch.info=[0,1,0,0];
+        // Non-monotonic occupancy intentionally prevents assuming mip zero is largest.
+        let counts=[999,7,13,2];
+        assert_eq!(representation_raster_work([0,1,0,0],&branch,&counts).unwrap(),[7,13]);
+        assert_eq!(representation_raster_work([0,1,1,0],&branch,&counts).unwrap(),[13,13]);
+        assert_eq!(representation_raster_work([0,0,0,0],&branch,&counts).unwrap(),[0,13]);
+        branch.info[0]=NONE;
+        assert_eq!(representation_raster_work([0,1,2,0],&branch,&counts).unwrap(),[2,2]);
+        // A geometry group may also have parent NONE, but uses an adaptive bundle.
+        assert_eq!(representation_raster_work([0,1,2,1],&branch,&counts).unwrap(),[13,13]);
+        branch.info[1]=0;
+        assert_eq!(representation_raster_work([0,0,0,0],&branch,&counts).unwrap(),[0,0]);
+        assert!(representation_raster_work([0,1,3,0],&branch,&counts).is_err());
+        assert!(exact_work((1<<24)+1).is_err());assert_eq!(exact_work(1<<24).unwrap(),16777216.);
+    }
     fn basal_reference(mut m:glam::Mat4,direction:glam::Vec2,angle:f32)->glam::Mat4 {
         let height=m.y_axis.truncate();let n=height.normalize();
         let wind=glam::Vec3::new(direction.x,0.,direction.y);
@@ -516,6 +563,17 @@ impl Runtime {
                 if !pins[deps[i][0]] {fine+=1;}
             }else if branch.info[1]!=0 {assert_eq!(deps[i].len(),branch.volume.meta[2]as usize,"adaptive articulated shadows retain their mip bundle");}
         }
+        let work=forest.raster_work_bounds().unwrap();
+        for node in &spec.nodes {
+            let rep=spec.representations[node.links[2]as usize];
+            let branch=&spec.branches[if rep[3]==0 {rep[0]}else{rep[3]-1}as usize];
+            let expected=representation_raster_work(rep,branch,&work).unwrap();
+            assert_eq!([node.error[2],node.error[3]],expected.map(|v|v as f32));
+        }
+        for (root,proxy) in spec.roots.iter().zip(&spec.proxies) {
+            let expected=work[proxy.meta[1]as usize]as f32;
+            assert_eq!([root.scale[2],root.scale[3]],[expected,expected]);
+        }
         assert!(fine>0,"detail must not all be pinned");
     }
     #[test]
@@ -533,6 +591,8 @@ impl Runtime {
         assert!(m.transform_vector3(Vec3::Y).normalize().abs_diff_eq(p.up,1e-5));
         let relocated=relocated(spec.templates[0],p,spec.proxies[0].meta[0],spec.roots[0].info[1],false);
         assert!(matrix(relocated.root.rows).abs_diff_eq(m,1e-6));
+        assert!(spec.roots[0].scale[2]>0.);
+        assert_eq!(relocated.root.scale,spec.roots[0].scale);
         assert!(matrix(relocated.proxy.inverse).abs_diff_eq(matrix(spec.proxies[0].inverse),1e-5));
         for (a,b) in relocated.proxy.bounds_min.into_iter().zip(spec.proxies[0].bounds_min) {assert!((a-b).abs()<1e-4);}
         for (a,b) in relocated.proxy.bounds_max.into_iter().zip(spec.proxies[0].bounds_max) {assert!((a-b).abs()<1e-4);}
