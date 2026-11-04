@@ -6,7 +6,8 @@ use crate::kits::Kit;
 use crate::look::Piece;
 use glam::{Mat4, Vec3};
 use kern::collide::YawBox;
-use physics::ragdoll::{Ragdoll, Segment};
+pub use physics::ragdoll::Segment;
+use physics::ragdoll::Ragdoll;
 use physics::Physics;
 use render::scene::MeshRef;
 
@@ -126,11 +127,29 @@ impl Dolls {
             let end = if far.distance(a) < 0.15 { a + (far - a).normalize_or(Vec3::NEG_Y) * 0.25 } else { far };
             segs.push(Segment { start: a, end, radius, parent: Some(0), anchor: a });
         }
+        self.throw(i, &segs, parts, xfs, vel, blow, force);
+    }
+
+    /// The first slot under `cap` with nobody in it.
+    pub fn free(&self, cap: usize) -> Option<usize> {
+        (0..cap).find(|&i| self.dolls.get(i).is_none_or(Option::is_none))
+    }
+
+    /// Body `i` goes limp as the capsules `segs` (parent before child),
+    /// piece `j` riding segment `parts[j]` from where it stands at `xfs[j]`:
+    /// thrown with `vel`, struck along `blow` as hard as `force`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn throw(&mut self, i: usize, segs: &[Segment], parts: Vec<usize>, xfs: &[Mat4], vel: Vec3, blow: Vec3, force: f32) -> bool {
+        self.clear(i);
+        if self.dolls.len() <= i {
+            self.dolls.resize_with(i + 1, || None);
+        }
         let blow = Vec3::new(blow.x, 0.0, blow.z).normalize_or_zero();
         let spin = Vec3::Y.cross(blow) * (2.5 + force * 0.5);
         let v = vel + blow * force + Vec3::Y * (1.0 + force * 0.25);
-        let Ok(rig) = Ragdoll::spawn(&mut self.phys, &segs, v, spin, 1u32 << (i % 16)) else { return };
+        let Ok(rig) = Ragdoll::spawn(&mut self.phys, segs, v, spin, 1u32 << (i % 32)) else { return false };
         self.dolls[i] = Some(Doll { rig, initial: xfs.to_vec(), parts });
+        true
     }
 
     /// Where piece `j` of fallen wizard `i` is now.
