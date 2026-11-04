@@ -75,10 +75,25 @@ fn use_app_bundle() {
     let _ = std::env::set_current_dir(&data);
 }
 
+/// The first word, or `play` with none or only flags (`open -a "Growing
+/// Guns" --args --graphics low` has no command in front of its flags).
+fn command(list: &[String]) -> String {
+    list.first().filter(|a| !a.starts_with('-')).cloned().unwrap_or_else(|| "play".into())
+}
+
+#[cfg(test)]
+#[test]
+fn flags_alone_mean_play() {
+    let list = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(command(&list(&[])), "play");
+    assert_eq!(command(&list(&["--emulate", "m1pro"])), "play");
+    assert_eq!(command(&list(&["bench", "--views", "1"])), "bench");
+}
+
 pub fn desktop_main() {
     use_app_bundle();
     let list: Vec<String> = std::env::args().skip(1).collect();
-    let cmd = list.first().cloned().unwrap_or_else(|| "play".into());
+    let cmd = command(&list);
     let args = Args { list };
     if let Some(profile) = args.value("--graphics").map(str::to_owned).or_else(|| std::env::var("GG_GRAPHICS").ok()) {
         if let Err(e) = graphics::Graphics::parse(&profile).and_then(graphics::configure) { eprintln!("{e}"); std::process::exit(1); }
