@@ -1,0 +1,10 @@
+[package]
+name = "body"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Bodies that move without being animated by hand: a standard skeleton, motion-captured clips and a gait"
+
+[dependencies]
+glam = "0.31"
+serde_json.workspace = true

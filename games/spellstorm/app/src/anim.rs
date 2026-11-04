@@ -157,7 +157,7 @@ pub struct EnemyAnim {
     /// Until the next puff of dust over a burrower.
     pub dust: f32,
     /// Its motion-captured body (rig.rs), and the hurt_t it last saw.
-    pub body: crate::rig::Body,
+    pub body: body::Gait,
     pub hurt_seen: f64,
 }
 
