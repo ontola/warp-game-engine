@@ -1,3 +1,27 @@
+## 2026-11-04 Cook evidence explains missing intermediate vegetation cuts
+
+Added CookedPlant::selection_evidence(policy), sharing the actual optical
+admission predicate with shared_selection_recipe. terrain_fly --validate-world
+prints per-species candidate/admission counts and root [spatial metres, opacity
+RMSE, premultiplied color RMSE]. Diagnostic only, no renderer-policy change.
+Release terrain build and normal CPU-world validation pass.
+
+Authoritative lowland+grass evidence: build/playtest-unified/cook-evidence.log.
+Each grass species has 37 branches / 111 voxel candidates and ZERO admitted
+voxel candidates at existing 0.08 coverage/color policy. Root coverage RMSE is
+0.206..0.287; root spatial errors 1.014/1.845/3.508 metres. Thus the normal grass
+selection has no valid voxel transition, only source branches or emergency proxy.
+Six tree species have admitted root counts [1,0,0,1,0,0] out of three each;
+finest rejected root coverage errors approximately 0.0835,0.0912,0.0872,0.0885.
+This is not an asset-upload or GPU-culling miss. Shared infrastructure alone
+is insufficient while cooked representations fail the optical contract.
+
+Do not describe unified grass voxel LOD as visually validated or complete.
+Next work: improve representation/cook and scale-aware optical evidence before
+budget-aware complete-cut selection. Simply loosening the 8% policy hides the
+problem. Consumer-aware two-phase publication and far spatial hierarchy remain
+open. No new interactive playtest; no performance improvement claimed here.
+
 ## 2026-11-04 Measure shared consumer demand and budget fallback
 
 GPU root demand now retains camera/shadow ownership bits alongside its priority

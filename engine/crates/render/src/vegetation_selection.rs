@@ -28,7 +28,27 @@ fn enclosing(spheres:&[[f32;4]])->[f32;4] {
     centre.extend(radius*1.00001+0.00001).to_array()
 }
 
+/// Offline cook evidence, before spatial error or residency budgets apply.
+#[derive(Clone,Debug,serde::Serialize)]
+pub struct SelectionEvidence {
+    pub branches:usize,pub root_voxel_candidates:usize,pub admitted_root_candidates:usize,
+    pub voxel_candidates:usize,pub admitted_voxel_candidates:usize,
+    pub root_errors:Vec<[f32;3]>,
+}
+fn admitted(c:&crate::aggregate_lod::Candidate,p:crate::aggregate_lod::Policy)->bool {
+    p.allow_sampled_optics && !c.source_only && c.voxel_coverage_error<=p.max_coverage_error && c.voxel_color_error<=p.max_color_error
+}
 impl CookedPlant {
+    pub fn selection_evidence(&self,policy:crate::aggregate_lod::Policy)->SelectionEvidence {
+        let root=self.branches.first().map(|b|b.aggregate.as_slice()).unwrap_or(&[]);
+        SelectionEvidence {
+            branches:self.branches.len(),root_voxel_candidates:root.iter().filter(|c|!c.source_only).count(),
+            admitted_root_candidates:root.iter().filter(|c|admitted(c,policy)).count(),
+            voxel_candidates:self.branches.iter().flat_map(|b|&b.aggregate).filter(|c|!c.source_only).count(),
+            admitted_voxel_candidates:self.branches.iter().flat_map(|b|&b.aggregate).filter(|c|admitted(c,policy)).count(),
+            root_errors:root.iter().filter(|c|!c.source_only).map(|c|[c.spatial_error,c.voxel_coverage_error,c.voxel_color_error]).collect(),
+        }
+    }
     /// Build once per species/recipe. No world placements, camera or near-tree
     /// count participate. Fine branches retain exact source membership IDs.
     /// This adapter currently admits measured VOXEL candidates and exact-source
@@ -74,8 +94,7 @@ impl CookedPlant {
         recipe.nodes.push(Node {sphere,error:[0.;4],links:[1,0,0,1]});
         let candidates=|branch:usize| {
             let b=&self.branches[branch];
-            let mut result=b.aggregate.iter().filter(|c|policy.allow_sampled_optics&&!c.source_only
-                && c.voxel_coverage_error<=policy.max_coverage_error && c.voxel_color_error<=policy.max_color_error)
+            let mut result=b.aggregate.iter().filter(|c|admitted(c,policy))
                 .copied().collect::<Vec<_>>();
             result.sort_by(|a,b|b.spatial_error.total_cmp(&a.spatial_error).then(b.level.cmp(&a.level)));
             result

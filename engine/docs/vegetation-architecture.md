@@ -107,3 +107,14 @@ RootPlacement type; the GPU runtime no longer depends on recipe_forest::Tree.
 Visual tuning is deferred, but missing geometry and invalid lighting remain
 correctness failures. See foliage-runtime-2026-11-04.md for prior measurements;
 its opt-in status describes the historical experiment, not the current default.
+
+## Current production cook gate (4 November)
+
+Normal lowland grass has zero optically admitted voxel candidates at the current
+8% coverage/color policy; four of six tree species have no admitted whole-root
+candidate. Selection therefore refines into expensive branches and budget failure
+uses the coarse emergency proxy. Cooked voxel data and a shared renderer are not
+proof that an effective intermediate LOD exists. `terrain_fly --validate-world`
+reports the actual per-species admission evidence. Improving the representation
+and optical evidence is a prerequisite for accepting unified vegetation, not
+visual polish to postpone after a performance claim.
