@@ -38,9 +38,11 @@ compaction remains open.
 
 Release compilation and Naga validation of both materialization and dispatch
 shaders pass. The numeric GPU oracle now checks every dispatch triple against queue counts and
-checks that an asset-fault frame clears prior nonempty dispatches. **These new GPU
-assertions and a performance repeat are pending** while other games occupy the
-GPU. The measurements below predate this follow-up and do not measure it.
+checks that an asset-fault frame clears prior nonempty dispatches. This oracle
+passes on Windows DX12 software rendering (`KERN_ADAPTER=software`,
+`WGPU_BACKEND=dx12`), including the forced hash overflow. Physical-GPU validation
+and performance repeats remain pending while other games occupy the GPU. The
+measurements below predate this follow-up and do not measure it.
 
 ## Validation
 

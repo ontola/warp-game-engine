@@ -101,6 +101,23 @@ fn error_pixels(s:vec4<f32>,error:f32)->f32 {
  }
  return result;
 }
+// Refinement is a complete replacement: do not enter a child cut until all
+// visible immediate children have a resident representation. Each child can
+// then stop at its own loaded ancestor if deeper detail is missing. This gate
+// runs identically in count and publication; no partial sibling cut is emitted.
+// Requests remain shared logical asset requests, never a CPU tree shortlist.
+fn children_ready(tree:u32,node:u32)->bool {
+ let t=trees[tree];let start=child_list[node*2u];let count=child_list[node*2u+1u];
+ var ready=true;
+ for(var i=0u;i<count;i++) {
+  let child=nodes[child_list[start+i]];
+  if visible(sphere(t,child)) {
+   // Do not short circuit: request every missing sibling in the same frame.
+   let resident=asset_ready(child.links.z);ready=ready && resident;
+  }
+ }
+ return ready;
+}
 fn emit(tree:u32,node:u32) {
  if !asset_ready(nodes[node].links.z) {atomicStore(&fallback[tree],4u);return;}
  if (nodes[node].links.w&2u)!=0u {direct_roots[tree]=nodes[node].links.z+1u;atomicAdd(&counters[7],1u);return;}
@@ -125,7 +142,7 @@ fn walk(tree:u32,start:u32,phase:u32) {
    // rejection; if output fills, the resident root is an explicit fallback.
    atomicAdd(&counters[2],1u);
   }
-  if node.links.x==NONE || ((node.links.w&1u)==0u && error_pixels(s,node.error.x*t.scale.x)<=view.pixels.z) {
+  if node.links.x==NONE || ((node.links.w&1u)==0u && error_pixels(s,node.error.x*t.scale.x)<=view.pixels.z) || !children_ready(tree,n) {
    emit(tree,n);n=node.links.y;
   }else{n=node.links.x;}
  }
@@ -197,7 +214,7 @@ fn visit(tree:u32,n:u32,write_records:bool)->bool {
  let node=nodes[n];let t=trees[tree];let s=sphere(t,node);
  if write_records {atomicAdd(&counters[4],1u);}
  if !visible(s){if write_records {atomicAdd(&counters[5],1u);}return false;}
- if node.links.x==NONE || ((node.links.w&1u)==0u && error_pixels(s,node.error.x*t.scale.x)<=view.pixels.z) {
+ if node.links.x==NONE || ((node.links.w&1u)==0u && error_pixels(s,node.error.x*t.scale.x)<=view.pixels.z) || !children_ready(tree,n) {
   if !asset_ready(node.links.z) {atomicStore(&fallback[tree],4u);atomicStore(&demand[tree].failed,1u);return false;}
   if write_records {emit(tree,n);}else if (node.links.w&2u)==0u {atomicAdd(&demand[tree].count,1u);}
   return false;

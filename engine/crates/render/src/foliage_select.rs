@@ -307,6 +307,31 @@ mod tests {
   tex.create_view(&Default::default())
  }
  #[test]
+ #[ignore="exclusive GPU resident ancestor publication fixture"]
+ fn gpu_missing_detail_keeps_nearest_complete_ancestor() {
+  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].info[0]=0;
+  let n=|radius,error,first,end,rep,flags|Node {sphere:[0.,0.,0.5,radius],error:[error,0.,0.,0.],links:[first,end,rep,flags]};
+  let nodes=vec![n(0.3,1.,1,7,0,2),n(0.2,1.,2,4,1,0),n(0.1,0.,NONE,3,2,0),n(0.1,0.,NONE,4,3,0),
+   n(0.2,1.,5,7,4,0),n(0.1,0.,NONE,6,5,0),n(0.1,0.,NONE,7,6,0)];
+  let selector=Selector::new(&gpu,&nodes,&trees,16,16).unwrap();let empty=depth(&gpu,0.);
+  let views=[crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]};4];
+  let draw=|budget| {
+   let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union(&gpu,&mut enc,&views,0.01,budget,&empty).unwrap();gpu.queue.submit([enc.finish()]);
+   let count=read(&gpu,&selector.counters)[0]as usize;
+   let mut cut=read(&gpu,&selector.records).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();cut
+  };
+  selector.publish_asset_pages(&gpu,&[(2,false,1)]).unwrap();
+  assert_eq!(draw(16),[1,5,6],"only the missing subtree coarsens; its sibling keeps detail");
+  assert_eq!(read(&gpu,&selector.fallback),[0]);assert_eq!(read(&gpu,&selector.direct),[0]);
+  let requests=read(&gpu,&selector.asset_requests);assert!(requests[4..4+requests[0]as usize*4].chunks_exact(4).any(|r|r[0]==2 && r[1]==0));
+  selector.publish_asset_pages(&gpu,&[(2,true,2)]).unwrap();assert_eq!(draw(16),[2,3,5,6]);
+  selector.publish_asset_pages(&gpu,&[(1,false,1)]).unwrap();assert!(draw(16).is_empty());
+  assert_eq!(read(&gpu,&selector.direct),[1],"missing immediate child retains whole resident root");
+  selector.publish_asset_pages(&gpu,&[(1,true,2),(3,false,1)]).unwrap();assert_eq!(draw(16),[1,5,6]);
+  assert!(draw(2).is_empty());assert_eq!(read(&gpu,&selector.fallback),[2],"budget cannot publish a partial ancestor cut");
+  selector.publish_asset_pages(&gpu,&[(3,true,2)]).unwrap();assert_eq!(draw(16),[2,3,5,6]);
+ }
+ #[test]
  #[ignore="exclusive GPU two-dimensional frontier fixture"]
  fn gpu_wavefront_dispatches_second_row() {
   let gpu=Gpu::new().unwrap();let (nodes,trees)=fixture(32769);let empty=depth(&gpu,0.);
