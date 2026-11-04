@@ -1315,7 +1315,7 @@ impl Fx {
     /// A cataclysm while it plays (OverloadFx): the meteor falling, the
     /// tidal wave rolling, the black hole pulling, the storm's cloud. The
     /// looks of the wave and the hole are fx.wgsl `wave` and `black_hole`.
-    fn overload(&mut self, o: &spellstorm::spells::Overload, key: u64, dt: f32) {
+    fn overload(&mut self, o: &spellstorm::spells::Overload, field: Option<Vec3>, key: u64, dt: f32) {
         use spellstorm::spells::{WAVE_TIME, WAVE_WIDTH};
         let t = self.time;
         let ot = o.t as f32;
@@ -1424,14 +1424,93 @@ impl Fx {
             }
             Some(El::Lightning) => {
                 let Some(cloud) = o.cloud else { return };
-                // A dark cloud gathering over the fight, see-through.
-                for j in 0..9 {
-                    let a = j as f32 * 2.399 + key as f32;
-                    let r = if j == 0 { 0.0 } else { 1.6 + (j % 3) as f32 * 0.9 };
-                    let at = cloud + Vec3::new(a.cos() * r, 6.0 + (j % 2) as f32 * 0.5, a.sin() * r);
-                    let mut s = glow_sprite(at, 4.2, Cell::Puff, Vec3::splat(0.04)).solid();
-                    s.opacity = 0.45 * smooth(0.0, 0.4, ot);
-                    self.live.push(s);
+                // A black cloud low over the fight, flickering from inside, and
+                // rain driving down out of it. (At its own height it hung out of
+                // the top of the frame, so it is drawn just over their heads.)
+                let low = Vec3::new(cloud.x, 3.4, cloud.z);
+                if (ot * 6.0).fract() < dt * 6.0 {
+                    let a = ot * 14.4 + key as f32;
+                    let r = 1.0 + (ot * 7.3).fract() * 4.0;
+                    self.smoke(low + Vec3::new(a.cos() * r, 0.0, a.sin() * r), 3.4, [0.08, 0.08, 0.12], 1.8);
+                }
+                if (t * 9.0 + key as f32).sin() > 0.9 {
+                    self.light(low, [0.6, 0.65, 1.0, 1.0], 6.0, 14.0);
+                }
+                let mut rain = particles(rgba(0.75, 0.82, 1.0, 1.0), 140, 0.25, 0.12);
+                let _ = style(&mut rain, El::Water, false);
+                rain.size = 0.08;
+                rain.glow = 0.5;
+                rain.sphere = 4.5;
+                rain.dir = Vec3::NEG_Y;
+                rain.spread = 4.0;
+                rain.v = (13.0, 17.0);
+                rain.gravity = Vec3::ZERO;
+                self.stream((key, 40), rain, low, dt);
+            }
+            // A tornado: rings of dust turning up a funnel, wider as it rises,
+            // with grit flung round it.
+            Some(El::Air) => {
+                let Some(at) = field else { return };
+                let grow = smooth(0.0, 0.5, ot);
+                let dust = self.lit_at(at + Vec3::Y) * 0.2 + Vec3::new(0.012, 0.012, 0.01);
+                for layer in 0..16 {
+                    let k = layer as f32 / 15.0;
+                    let r = 0.35 + 2.4 * k * k;
+                    for j in 0..3 {
+                        let a = t * (7.0 - 3.5 * k) + layer as f32 * 0.9 + j as f32 * 2.094;
+                        let p = at + Vec3::new(a.cos() * r, 0.2 + k * 6.0 * grow, a.sin() * r);
+                        let mut s = glow_sprite(p, 0.9 + 1.6 * k, Cell::Puff, dust).solid();
+                        s.opacity = 0.4 * grow;
+                        self.live.push(s);
+                    }
+                }
+                let mut grit = particles(rgba(0.42, 0.36, 0.3, 1.0), 40, 0.8, 0.3);
+                let _ = style(&mut grit, El::Earth, false);
+                grit.dir = Vec3::Y;
+                grit.spread = 30.0;
+                grit.sphere = 1.3;
+                grit.v = (3.0, 7.0);
+                grit.gravity = Vec3::NEG_Y * 5.0;
+                self.stream((key, 40), grit, at + Vec3::Y * 0.3, dt);
+            }
+            // A blizzard: snow driven slantwise over the whole field, cold mist
+            // along the floor.
+            Some(El::Frost) => {
+                let Some(at) = field else { return };
+                let mut snow = particles(WHITE, 500, 1.0, 0.3);
+                let _ = style(&mut snow, El::Frost, false);
+                snow.amount = 500;
+                snow.size = 0.26;
+                snow.sphere = 5.0;
+                snow.dir = (Vec3::NEG_Y + Vec3::X * 0.45).normalize();
+                snow.spread = 8.0;
+                snow.v = (6.0, 9.0);
+                snow.gravity = Vec3::ZERO;
+                self.stream((key, 40), snow, at + Vec3::Y * 6.5, dt);
+                let mut mist = particles(WHITE, 60, 1.6, 2.2);
+                mist.cell = Cell::Puff;
+                mist.glow = 0.12;
+                mist.ramp = Ramp::new(&[rgba(0.9, 0.96, 1.0, 0.0), rgba(0.9, 0.96, 1.0, 0.32), rgba(0.9, 0.96, 1.0, 0.0)], &[0.0, 0.4, 1.0]);
+                mist.sphere = 4.5;
+                mist.dir = Vec3::X;
+                mist.v = (0.3, 1.0);
+                mist.gravity = Vec3::ZERO;
+                self.stream((key, 41), mist, at + Vec3::Y * 0.5, dt);
+                self.light(at + Vec3::Y * 3.0, [0.6, 0.8, 1.0, 1.0], 1.6, 10.0);
+            }
+            // A plague: spores rising off the pool, sick clouds now and then.
+            Some(El::Poison) => {
+                let Some(at) = field else { return };
+                let mut spores = particles(c, 90, 1.5, 0.2);
+                spores.sphere = 4.5;
+                spores.dir = Vec3::Y;
+                spores.spread = 25.0;
+                spores.v = (0.6, 1.8);
+                spores.gravity = Vec3::Y * 0.4;
+                self.stream((key, 40), spores, at + Vec3::Y * 0.3, dt);
+                if (ot * 1.5).fract() < dt * 1.5 {
+                    let a = ot * 2.399;
+                    self.smoke(at + Vec3::new(a.cos() * 2.5, 0.8, a.sin() * 2.5), 2.2, [0.3, 0.55, 0.12], 0.7);
                 }
             }
             _ => {}
@@ -1469,7 +1548,8 @@ impl Fx {
         for &id in &w.fx {
             let key = id.to_bits().get();
             if let Ok(o) = w.ecs.get::<&spellstorm::spells::Overload>(id) {
-                self.overload(&o, key, dt);
+                let field = o.field.and_then(|f| w.ecs.get::<&Field>(f).ok().map(|x| x.pos));
+                self.overload(&o, field, key, dt);
                 continue;
             }
             if let Ok(b) = w.ecs.get::<&SBolt>(id) {
@@ -1544,7 +1624,24 @@ impl Fx {
                     self.halo(p.pos, c, r * 4.0, 0.6);
                     self.live.push(glow_sprite(p.pos, r * 2.0, Cell::Spark, linear3([c[0], c[1], c[2]]) * 2.0));
                 } else {
-                    self.live.push(glow_sprite(p.pos, r * 2.2, Cell::Drop, linear3([c[0], c[1], c[2]]) * 0.35).solid());
+                    let rock = linear3([c[0], c[1], c[2]]) * 0.09;
+                    self.live.push(glow_sprite(p.pos, r * 2.8, Cell::Drop, rock).solid());
+                    for j in 0..5 {
+                        let a = j as f32 * 1.257 + self.time * 5.0;
+                        let at = p.pos + Vec3::new(a.cos(), 0.3 * (j as f32 - 2.0), a.sin()) * r * 0.75;
+                        let shade = 0.7 + 0.35 * (j % 3) as f32;
+                        self.live.push(glow_sprite(at, r * 1.5, Cell::Drop, rock * shade).solid());
+                    }
+                    if matches!(e, El::Earth | El::Mud) {
+                        let mut dust = particles(rgba(0.5, 0.44, 0.36, 1.0), 16, 0.7, 0.6);
+                        dust.cell = Cell::Puff;
+                        dust.glow = 0.0;
+                        dust.ramp = Ramp::new(&[rgba(0.5, 0.44, 0.36, 0.0), rgba(0.5, 0.44, 0.36, 0.35), rgba(0.5, 0.44, 0.36, 0.0)], &[0.0, 0.2, 1.0]);
+                        dust.dir = Vec3::Y;
+                        dust.v = (0.2, 0.6);
+                        dust.gravity = Vec3::ZERO;
+                        self.stream((key, 1), dust, p.pos, dt);
+                    }
                 }
                 let mut tr = particles(c, 8, 0.5, 0.3);
                 tr.sphere = r * 0.6;
@@ -1621,6 +1718,30 @@ impl Fx {
                     p.curve = [0.35, 1.1, 1.7];
                     p.gravity = Vec3::Y * 1.5;
                 }
+                if matches!(e, El::Frost | El::Air) {
+                    // Breath and gust: dense and as long as they reach, a cold
+                    // or pale cloud rolling round them (a few sparkles were lame).
+                    let reach = s.spell.n.range as f32 - 0.3;
+                    let (d, life) = (3.0, 0.9 * p.life);
+                    let v = (reach + d * life * life * 0.5) / life;
+                    p.damp = (d, d);
+                    p.v = (v * 0.9, v * 1.05);
+                    p.amount = 140;
+                    p.spread = 11.0;
+                    if e == El::Frost {
+                        p.size = 0.2;
+                    }
+                    let mut puff = p;
+                    puff.amount = 30;
+                    puff.cell = Cell::Puff;
+                    puff.size = 0.8;
+                    puff.glow = 0.16;
+                    puff.spread = 15.0;
+                    puff.curve = [0.5, 1.1, 1.8];
+                    let k = lerp_c(el_c(e), WHITE, 0.6);
+                    puff.ramp = Ramp::new(&[rgba(k[0], k[1], k[2], 0.0), rgba(k[0], k[1], k[2], 0.3), rgba(k[0], k[1], k[2], 0.0)], &[0.0, 0.3, 1.0]);
+                    self.stream((key, 2), puff, s.at, dt);
+                }
                 if e == El::Water {
                     // A hose: a dense white jet of water that sags a little
                     // and breaks into spray at its end, not a blue haze (Joep).
@@ -1694,6 +1815,20 @@ impl Fx {
                 let c3 = linear3([c[0], c[1], c[2]]);
                 let d = b.to - b.from;
                 let len = d.length();
+                if len > 0.05 {
+                    // Its element crawling along it, not only a thin line.
+                    let mut q = particles(c, 24, 0.35, 0.55);
+                    let _ = style(&mut q, e, false);
+                    q.dir = Vec3::Y;
+                    q.spread = 180.0;
+                    q.v = (0.3, 1.2);
+                    q.sphere = 0.22;
+                    q.gravity = Vec3::ZERO;
+                    for i in 0..6u8 {
+                        let k = (i as f32 + 0.5) / 6.0;
+                        self.stream((key, 30 + i), q, b.from.lerp(b.to, k), dt);
+                    }
+                }
                 let h = heft(&b.spell);
                 if len > 0.05 {
                     let mid = (b.from + b.to) * 0.5;
