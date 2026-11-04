@@ -11,6 +11,8 @@ pub enum SelectedRepresentation {
     /// Branch zero's aggregate covers the whole plant; others cover their
     /// own members. Keep the original cooked volume/material/normal data.
     Voxel { branch:u32, branch_id:u64, level:u32 },
+    /// A spatial group volume transformed by an existing articulated frame.
+    GroupVoxel { group:u32, frame_branch:u32, level:u32 },
 }
 #[derive(Clone,Debug)]
 pub struct SharedSelectionRecipe {
@@ -80,7 +82,7 @@ impl CookedPlant {
                 let scale=(row*col).sqrt();
                 local.push(c.extend(sphere[3]*scale).to_array());
             }
-            if let Some(asset)=&b.volume {
+            if let Some(asset)=b.volume.as_ref().filter(|_|i!=0) {
                 let (lo,hi)=support(asset);local.push(((lo+hi)*0.5).extend((hi-lo).length()*0.5).to_array());
             }
             if local.is_empty(){bounds.push(None);continue;}
@@ -92,7 +94,10 @@ impl CookedPlant {
             }
             bounds.push(Some(c.extend(s[3]+wind).to_array()));
         }
-        let sphere=enclosing(&bounds.iter().flatten().copied().collect::<Vec<_>>());
+        let mut root_bounds=bounds.iter().flatten().copied().collect::<Vec<_>>();
+        let (lo,hi)=support(volume);let center=root.assembly_rest.transform_point3((lo+hi)*0.5);
+        root_bounds.push(center.extend((hi-lo).length()*0.5+root.aggregate_motion_error).to_array());
+        let sphere=enclosing(&root_bounds);
         let mut recipe=SharedSelectionRecipe {nodes:Vec::new(),representations:Vec::new(),sphere};
         // Resident fallback exists even if no root voxel meets the optical
         // policy. flags bit 0 prohibits normal selection of that fallback.
@@ -119,22 +124,58 @@ impl CookedPlant {
         };
         push_chain(&mut recipe,0,sphere)?;
         let root_chain=recipe.nodes.len();
-        for (branch,b) in self.branches.iter().enumerate() {
-            if !self.placements.iter().any(|p|p.branch==branch){continue;}
+        fn emit_group(plant:&CookedPlant,group:usize,recipe:&mut SharedSelectionRecipe,bounds:&[Option<[f32;4]>],policy:crate::aggregate_lod::Policy,
+            push_chain:&impl Fn(&mut SharedSelectionRecipe,usize,[f32;4])->Result<(),String>)->Result<(),String> {
+            let g=&plant.geometry[group];
+            if let Some(branch)=g.source_branch {
+            let branch=branch as usize;let b=&plant.branches[branch];
             let bound=bounds[branch].ok_or("source branch has no bounds")?;
             let start=recipe.nodes.len();
             // Root volume represents ALL branches, so never reuse it as the
             // voxel alternative of the root's own trunk members.
-            if branch!=0 {push_chain(&mut recipe,branch,bound)?;}
+            if branch!=0 {push_chain(recipe,branch,bound)?;}
             let rep=recipe.representations.len()as u32;
             recipe.representations.push(SelectedRepresentation::SourceBranch {branch:branch as u32,branch_id:b.id});
             let end=recipe.nodes.len()as u32+1;
             recipe.nodes.push(Node {sphere:bound,error:[0.;4],links:[NONE,end,rep,0]});
             for node in &mut recipe.nodes[start..] {node.links[1]=end;}
+            }else {
+                let start=recipe.nodes.len();
+                if let Some(volume)=&g.volume {
+                    let mut components=g.members.iter().map(|&m|bounds[plant.placements[m as usize].branch].unwrap()).collect::<Vec<_>>();
+                    let (lo,hi)=support(volume);let frame=&plant.branches[g.frame_branch as usize];
+                    let center=frame.assembly_rest.transform_point3((lo+hi)*0.5);
+                    components.push(center.extend((hi-lo).length()*0.5+wind_margin(plant,g.frame_branch as usize,volume,1.0)+g.motion_error).to_array());
+                    let bound=enclosing(&components);
+                    let mut candidates=g.aggregate.iter().filter(|c|admitted(c,policy)).collect::<Vec<_>>();
+                    candidates.sort_by(|a,b|b.spatial_error.total_cmp(&a.spatial_error).then(b.level.cmp(&a.level)));
+                    for c in candidates {
+                        let rep=recipe.representations.len()as u32;let next=recipe.nodes.len()as u32+1;
+                        recipe.representations.push(SelectedRepresentation::GroupVoxel {group:group as u32,frame_branch:g.frame_branch,level:c.level});
+                        recipe.nodes.push(Node {sphere:bound,error:[c.spatial_error,admission_footprint(c,policy).unwrap(),0.,0.],links:[next,0,rep,0]});
+                    }
+                }
+                let chain_end=recipe.nodes.len();
+                for child in g.children.ok_or("geometry group has neither children nor source")? {
+                    emit_group(plant,child as usize,recipe,bounds,policy,push_chain)?;
+                }
+                let end=recipe.nodes.len()as u32;
+                if start<chain_end {
+                    let mut bound=recipe.nodes[start].sphere;let center=Vec3::from_slice(&bound);
+                    for node in &recipe.nodes[chain_end..] {bound[3]=bound[3].max(center.distance(Vec3::from_slice(&node.sphere))+node.sphere[3]);}
+                    for node in &mut recipe.nodes[start..chain_end] {node.links[1]=end;node.sphere=bound;}
+                }
+            }
+            Ok(())
         }
+        if self.geometry.is_empty(){return Err("shared selection requires cooked geometry groups".into());}
+        emit_group(self,0,&mut recipe,&bounds,policy,&push_chain)?;
         let end=recipe.nodes.len()as u32;
         if end as usize==root_chain {return Err("shared plant has no source leaves".into());}
-        for node in &mut recipe.nodes[..root_chain] {node.links[1]=end;}
+        let mut sphere=sphere;let center=Vec3::from_slice(&sphere);
+        for node in &recipe.nodes[root_chain..] {sphere[3]=sphere[3].max(center.distance(Vec3::from_slice(&node.sphere))+node.sphere[3]);}
+        recipe.sphere=sphere;
+        for node in &mut recipe.nodes[..root_chain] {node.links[1]=end;node.sphere=sphere;}
         Ok(recipe)
     }
 }

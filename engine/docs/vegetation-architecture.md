@@ -7,22 +7,62 @@ plans. Architecture first; no interactive playtest until requested.
 ## Where we are
 
 **Overall status: incomplete.** The normal renderer uses GPU vegetation, but it
-still lacks the integrated geometry hierarchy, budget refinement and visibility
-pipeline needed to scale. The current image and performance are not accepted.
+now has an integrated nested geometry hierarchy, but still lacks budget-aware
+refinement and upstream visibility needed to scale. The current image and performance are not accepted.
 
 **Current item: G1.3 — integrate cooked groups into GPU selection and paging.**
 Next: G1.4 (integrated correctness/performance), then G2 (budget refinement). Do not add another
 rendering backend or spend this phase tuning colors to disguise missing detail.
 
 Latest measured route: lowland + grass, 1280x720, one view, 240 frames at 1 m/s,
-120 warm GPU samples per run. Three runs: covered GPU medians
-15.57 / 15.93 / 15.77 ms; selection 5.22 / 5.15 / 5.02 ms.
-The preceding pre-filtered baseline was approximately 11.87 ms covered GPU.
-This is a regression, not progress toward the performance target.
-Final diagnostics: 151,058 active plant roots (including grass cells), 4,096
-branch slots, 82,097 emergency fallbacks. Evidence:
-`build/playtest-unified/projection-cache*.json.gpu.json` and corresponding logs.
-These local artifacts are ignored by Git; measurements are recorded here.
+120 warm GPU samples per run. Same executable, three serial runs: covered GPU
+medians **14.79 / 14.70 / 15.11 ms**; selection **3.42 / 3.48 / 3.51 ms**.
+Previous three runs: 15.57 / 15.93 / 15.77 ms; selection 5.22 / 5.15 / 5.02 ms.
+These were not alternating before/after runs, so no accepted comparative speedup.
+The older pre-filtered baseline was ~11.87 ms: the current path is still slower.
+Final first-run diagnostics: 151,058 active roots, 4,096 branch slots, 46,270
+emergency fallbacks (previous 82,097). Image still has rounded coarse crowns and
+heavy black shadows; quality is not accepted. Evidence:
+`build/playtest-unified/nested-groups-times.json.gpu.json`, `nested-groups-repeat{2,3}.json.gpu.json`,
+matching logs and images. These artifacts are ignored; results are recorded here.
+Executable SHA256: `60ad922af9c3ef247e574cf2b7c676731aebfa084ac1b0ec5fa697804c17d71a`.
+
+Per-pass upper-middle medians (ms; medians need not sum to the covered median):
+
+| Pass | Run 1 | Run 2 | Run 3 |
+| --- | ---: | ---: | ---: |
+| GPU forest selection residency | 3.422 | 3.482 | 3.512 |
+| GPU forest shared poses | 0.102 | 0.103 | 0.106 |
+| GPU forest materialize | 0.140 | 0.141 | 0.141 |
+| shadow tile damage and clear | 0.302 | 0.304 | 0.306 |
+| shadow cull | 0.527 | 0.530 | 0.530 |
+| shadow raster | 0.134 | 0.134 | 0.134 |
+| voxel sun splats | 0.737 | 0.745 | 0.747 |
+| voxel sun splat raster | 0.540 | 0.543 | 0.543 |
+| near shadow cull | 0.321 | 0.323 | 0.323 |
+| near shadow raster | 0.032 | 0.033 | 0.033 |
+| voxel near sun splats | 0.220 | 0.222 | 0.222 |
+| voxel near sun splat raster | 0.070 | 0.070 | 0.070 |
+| tree occluder cull | 0.530 | 0.508 | 0.518 |
+| tree occluder raster | 0.213 | 0.213 | 0.214 |
+| tree occlusion pyramid | 0.087 | 0.087 | 0.089 |
+| tree recovery dispatch | 0.002 | 0.003 | 0.003 |
+| tree remaining cull | 0.010 | 0.010 | 0.010 |
+| tree remaining raster | 0.001 | 0.001 | 0.001 |
+| tree visibility history | 0.030 | 0.030 | 0.030 |
+| voxel splats | 2.903 | 2.722 | 3.035 |
+| voxel splat raster | 2.735 | 2.799 | 2.821 |
+| voxel splat resolve | 0.103 | 0.105 | 0.105 |
+| terrain coarse | 0.100 | 0.100 | 0.100 |
+| shade terrain | 0.424 | 0.426 | 0.427 |
+| shade voxels | 0.073 | 0.073 | 0.073 |
+| shade | 0.079 | 0.080 | 0.080 |
+| motion vectors | 0.034 | 0.034 | 0.034 |
+| taa | 0.045 | 0.045 | 0.045 |
+| exhaust | 0.001 | 0.001 | 0.001 |
+| wheel particles | 0.000 | 0.000 | 0.000 |
+| bloom | 0.030 | 0.031 | 0.032 |
+| tonemap | 0.039 | 0.039 | 0.039 |
 
 ## Rules for checking boxes
 
@@ -181,3 +221,17 @@ resident ancestor. Growth variants share primitive assets. Physics remains
   Cold scene cook 88.48 s; cached scene load 2.73 s. Logs:
   `build/playtest-unified/geometry-groups-cook.log` and `geometry-groups-cached.log`.
   G1.3 remains unchecked: the current selector still uses the old flat branch cut.
+- 4 Nov, G1.3 integration: normal selector exports recursive geometry groups; paging
+  and materialization address their own volume assets while reusing existing poses.
+  Fixed source-pick diagnostics incorrectly decoding voxel visibility IDs as triangle
+  IDs. Cold-page fixtures wait for residency without advancing wind time; original
+  image/source assertions retained. All 23 asset and 15 runtime tests pass.
+  First route sample: 14.79 ms covered GPU, selection 3.42 ms, 46,270 emergency
+  fallbacks. This is preliminary, not accepted performance or visual quality.
+  Test evidence: build/playtest-unified/nested-groups-asset-final.log; normal-route
+  evidence: nested-groups-times.json.gpu.json and nested-groups-gpu.log in that folder.
+
+- 4 Nov, G1.4 evidence started: 11 selector tests pass; two additional serial
+  normal-route runs produce 14.70 / 15.11 ms covered GPU. Final JPEG inspected:
+  coarse rounded crowns and harsh black shadows persist. Mixed-cut motion/depth
+  acceptance and alternating comparisons remain outstanding; G1.4 is NOT checked.

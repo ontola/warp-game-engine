@@ -130,7 +130,8 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
  if i<state.counts.x {
   let slot=slots[i];let owner=state.counts.y+i;
   if slot.history.z==0u {sources[owner].sphere.w=-1.;sources[owner].first=0u;choices[i]=0u;choices[i+16384u]=0u;return;}
-  let root=roots[slot.key.x];let rep=representations[slot.key.z];let branch=branches[rep.x];let m=cached_pose(slot.key.x,rep.x);
+  let root=roots[slot.key.x];let rep=representations[slot.key.z];
+  let branch=branches[select(rep.x,rep.w-1u,rep.w!=0u)];let m=cached_pose(slot.key.x,rep.x);
   var source=branch.source;source.rows=m;let bound=nodes[slot.key.y].sphere;
   source.sphere=vec4<f32>(point(root.rows,bound.xyz),bound.w*root.scale.x);
   source.scale=length(root.rows[0].xyz);
