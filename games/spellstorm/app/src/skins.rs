@@ -15,8 +15,11 @@ use spellstorm::world::Id;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// The bodies there are, and how many of each a level reserves.
-const BODIES: [(&str, usize); 4] = [("skeleton", 16), ("bone_archer", 8), ("necromancer", 4), ("gravekeeper", 1)];
+/// The bodies in use, and how many of each a level reserves, for example
+/// ("skeleton", 16). None for now: KayKit's skeletons are too cartoony for this
+/// game (Joep: Diablo and Dark Souls, not big heads), so those monsters keep
+/// their own models on the motion-captured rig until darker bodies are found.
+const BODIES: [(&str, usize); 0] = [];
 /// Every body's clips; a `ClipSet` id is the place here.
 const CLIPS: [&str; 5] = ["idle", "walk", "hit", "die", "attack"];
 /// How far into the attack clip the blow lands: its wind-up runs to here.
