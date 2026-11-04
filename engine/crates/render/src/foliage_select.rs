@@ -85,6 +85,7 @@ pub struct Selector {
     pub(crate) _nodes:wgpu::Buffer,pub(crate) _instances:wgpu::Buffer,uniform:wgpu::Buffer,
     /// vec4(instance ID, node ID, representation ID, generation).
     pub records:wgpu::Buffer,
+    pub asset_requests:wgpu::Buffer,pub(crate) asset_pages:wgpu::Buffer,asset_state:std::sync::Mutex<Vec<[u32;4]>>,pinned_pages:Vec<bool>,compact_assets:wgpu::ComputePipeline,
     deferred:wgpu::Buffer,
     /// count, deferred count, deferred overflow, output overflow, tested,
     /// frustum rejected, current-depth rejected, direct roots; indirect args at 32/48.
@@ -115,7 +116,12 @@ impl Selector {
         validate(nodes,instances,capacity)?;
         let limit=gpu.device.limits();
         if work_capacity<(instances.len()as u32) || work_capacity.div_ceil(64)>limit.max_compute_workgroups_per_dimension
-            || limit.max_storage_buffers_per_shader_stage<12 || limit.max_compute_workgroups_per_dimension<32768 {return Err("foliage work queue exceeds device limits".into());}
+            || limit.max_storage_buffers_per_shader_stage<14 || limit.max_compute_workgroups_per_dimension<32768 {return Err("foliage work queue exceeds device limits".into());}
+        let page_count=nodes.iter().map(|n|n.links[2]).max().unwrap_or(0).checked_add(1).ok_or("asset page ID overflow")?;
+        if page_count>1<<20 {return Err("asset page catalog exceeds bounded request capacity".into());}
+        let mut pinned_pages=vec![false;page_count as usize];
+        for n in nodes {if n.links[3]&2!=0 {pinned_pages[n.links[2]as usize]=true;}}
+        let mut asset_state=vec![[1u32,0,1,0];page_count as usize];asset_state[0][3]=1;
         let mut ends=Vec::new();let mut levels=0;
         for (i,node) in nodes.iter().enumerate() {
             while ends.last()==Some(&i){ends.pop();}
@@ -145,20 +151,37 @@ impl Selector {
                 usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::INDIRECT,mapped_at_creation:false});
             let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage selector view"),size:std::mem::size_of::<Uniform>()as u64,
                 usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
-            let entries=(0..14).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
+            let entries=(0..16).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
                 ty:if binding==7 {wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}}
                 else {wgpu::BindingType::Buffer {ty:if binding==0 {wgpu::BufferBindingType::Uniform} else {wgpu::BufferBindingType::Storage {read_only:binding<3 || binding==13}},has_dynamic_offset:false,min_binding_size:None}}}).collect::<Vec<_>>();
             let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("foliage GPU selection"),entries:&entries});
             let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("foliage GPU selection"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage GPU selection"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_select.wgsl").into())});
             let make=|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
-            Self {children:upload("shared foliage child spans",bytemuck::cast_slice(&children)),work:[storage("foliage frontier A",16+work_capacity as u64*8),storage("foliage frontier B",16+work_capacity as u64*8)],levels,
+            Self {asset_pages:upload("foliage asset publication",bytemuck::cast_slice(&asset_state)),asset_requests:storage("foliage compact asset demand",16+page_count as u64*16),asset_state:std::sync::Mutex::new(asset_state),pinned_pages,compact_assets:make("compact_asset_requests"),children:upload("shared foliage child spans",bytemuck::cast_slice(&children)),work:[storage("foliage frontier A",16+work_capacity as u64*8),storage("foliage frontier B",16+work_capacity as u64*8)],levels,
                 seed_demand:make("seed_demand"),seed_emit:make("seed_emit"),prepare_wave:make("prepare_wave"),count_wave:make("count_wave"),emit_wave:make("emit_wave"),_nodes:upload("shared foliage hierarchy",bytemuck::cast_slice(nodes)),_instances:upload("persistent foliage instances",bytemuck::cast_slice(instances)),uniform,
                 records:storage("selected foliage records",capacity as u64*16),deferred:storage("deferred foliage subtrees",deferred_capacity as u64*8),
                 counters:storage("foliage selection counters",64),arguments:storage("foliage indirect arguments",24),fallback:storage("foliage root fallbacks",instances.len()as u64*4),
                 direct:storage("direct resident forest roots",instances.len()as u64*4),
                 demand:storage("forest root demand",instances.len()as u64*16),bucket_cost:storage("forest priority costs",(instances.len().div_ceil(256)as u64+1)*128),prefix_demand:make("prefix_demand"),prefix_buckets:make("prefix_buckets"),first:make("first"),second:make("second"),finish:make("finish"),layout,count:instances.len()as u32,capacity,deferred_capacity,binds:Default::default()}
         })
+    }
+    /// Publish at a frame boundary, after the associated data upload is ordered
+    /// on this queue and before encoding consumers of the new publication.
+    /// Invalid batches have no GPU effects. Resident roots cannot be evicted.
+    /// This controls visibility safety; it does not itself allocate asset memory.
+    pub fn publish_asset_pages(&self,gpu:&Gpu,updates:&[(u32,bool,u32)])->Result<(),String> {
+        let mut state=self.asset_state.lock().unwrap();let mut seen=std::collections::HashSet::new();
+        for &(id,resident,generation) in updates {
+            let old=state.get(id as usize).ok_or("asset page outside catalog")?;
+            if !seen.insert(id) || generation==0 || generation<old[2] {return Err("duplicate or stale asset page publication".into());}
+            if !resident && self.pinned_pages[id as usize] {return Err("resident root pages are pinned".into());}
+        }
+        if updates.is_empty(){return Ok(());}
+        let epoch=state[0][3].checked_add(1).ok_or("asset publication epoch exhausted")?;
+        for &(id,resident,generation) in updates {state[id as usize]=[u32::from(resident),0,generation,if id==0 {epoch}else{0}];gpu.queue.write_buffer(&self.asset_pages,id as u64*16,bytemuck::cast_slice(&state[id as usize]));}
+        state[0][3]=epoch;gpu.queue.write_buffer(&self.asset_pages,12,bytemuck::bytes_of(&epoch));
+        Ok(())
     }
     fn bind(&self,gpu:&Gpu,hzb:&wgpu::TextureView)->wgpu::BindGroup {self.bind_work(gpu,hzb,0)}
     fn bind_work(&self,gpu:&Gpu,hzb:&wgpu::TextureView,front:usize)->wgpu::BindGroup {
@@ -171,6 +194,8 @@ impl Selector {
         entries.push(wgpu::BindGroupEntry {binding:11,resource:self.work[front].as_entire_binding()});
         entries.push(wgpu::BindGroupEntry {binding:12,resource:self.work[1-front].as_entire_binding()});
         entries.push(wgpu::BindGroupEntry {binding:13,resource:self.children.as_entire_binding()});
+        entries.push(wgpu::BindGroupEntry {binding:14,resource:self.asset_pages.as_entire_binding()});
+        entries.push(wgpu::BindGroupEntry {binding:15,resource:self.asset_requests.as_entire_binding()});
         self.binds.lock().unwrap().entries(gpu,&self.layout,"foliage selector depth",&entries)
     }
     /// Call once per view/frame; current depth MUST be rebuilt after consuming
@@ -212,6 +237,8 @@ impl Selector {
         {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);
          pass.set_pipeline(&self.seed_emit);pass.dispatch_workgroups(self.count.div_ceil(64),1,1);}
         self.waves(enc,&binds,&self.emit_wave);
+        enc.clear_buffer(&self.asset_requests,0,Some(16));
+        {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);pass.set_pipeline(&self.compact_assets);pass.dispatch_workgroups((self.pinned_pages.len()as u32).div_ceil(64),1,1);}
         {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);
          pass.set_pipeline(&self.finish);pass.dispatch_workgroups(1,1,1);}
         enc.copy_buffer_to_buffer(&self.counters,48,&self.arguments,12,12);Ok(())
@@ -236,6 +263,8 @@ impl Selector {
         pass.set_bind_group(0,&bind,&[]);pass.set_pipeline(&self.second);pass.dispatch_workgroups_indirect(&self.arguments,0);
         pass.set_pipeline(&self.finish);pass.dispatch_workgroups(1,1,1);drop(pass);
         enc.copy_buffer_to_buffer(&self.counters,48,&self.arguments,12,12);
+        enc.clear_buffer(&self.asset_requests,0,Some(16));
+        let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&bind,&[]);pass.set_pipeline(&self.compact_assets);pass.dispatch_workgroups((self.pinned_pages.len()as u32).div_ceil(64),1,1);
     }
 }
 

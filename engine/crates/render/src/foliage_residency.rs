@@ -14,7 +14,7 @@ use wgpu::util::DeviceExt;
 pub struct ResidentSlot {
     /// Stable tree, node, representation payload, generation.
     pub key: [u32; 4],
-    /// Occupied, previous-frame-valid, published-this-frame, epoch bit (128).
+    /// Resident asset generation (zero = free), previous-frame-valid, published-this-frame, epoch bit (128).
     /// A newly assigned or previously unpublished slot has no motion history.
     pub history: [u32; 4],
 }
@@ -46,7 +46,7 @@ impl Residency {
         let limit = gpu.device.limits();
         if capacity == 0 || capacity.div_ceil(64) > limit.max_compute_workgroups_per_dimension
             || records.div_ceil(64) > limit.max_compute_workgroups_per_dimension
-            || limit.max_storage_buffers_per_shader_stage < 8 {
+            || limit.max_storage_buffers_per_shader_stage < 9 {
             return Err("foliage residency exceeds device dispatch/binding limits".into());
         }
         for bytes in [capacity as u64 * 32, capacity as u64 * 4, records as u64 * 4, table_size as u64 * 4] {
@@ -70,11 +70,11 @@ impl Residency {
                 contents: bytemuck::cast_slice(&[records, capacity, table_size, trees, 64u32.min(table_size), 0, 0, 0]),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
-            let entries = (0..9).map(|binding| wgpu::BindGroupLayoutEntry {
+            let entries = (0..10).map(|binding| wgpu::BindGroupLayoutEntry {
                 binding, visibility: wgpu::ShaderStages::COMPUTE, count: None,
                 ty: wgpu::BindingType::Buffer {
                     ty: if binding == 0 { wgpu::BufferBindingType::Uniform }
-                        else { wgpu::BufferBindingType::Storage { read_only: binding <= 2 } },
+                        else { wgpu::BufferBindingType::Storage { read_only: binding <= 2 || binding == 9 } },
                     has_dynamic_offset: false, min_binding_size: None,
                 },
             }).collect::<Vec<_>>();
@@ -82,7 +82,7 @@ impl Residency {
                 label: Some("GPU branch residency"), entries: &entries,
             });
             let buffers = [&uniform, &selector.records, &selector.counters, &selector.fallback,
-                &slots, &table, &request_slots, &free, &counters];
+                &slots, &table, &request_slots, &free, &counters, &selector.asset_pages];
             let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("GPU branch residency"), layout: &layout,
                 entries: &buffers.iter().enumerate().map(|(i, b)| wgpu::BindGroupEntry {
@@ -138,9 +138,11 @@ mod tests {
         bytes.chunks_exact(4).map(bytemuck::pod_read_unaligned).collect()
     }
     fn selector(gpu:&Gpu)->Selector {
-        let node=Node {sphere:[0.,0.,0.5,0.1],error:[0.;4],links:[NONE,1,0,0]};
+        // The synthetic request stream below uses representations 10..=12.
+        // Give it a real published asset catalog, as production selection does.
+        let nodes=(0..13).map(|rep| Node {sphere:[0.,0.,0.5,0.1],error:[0.;4],links:[NONE,rep+1,rep,0]}).collect::<Vec<_>>();
         let instance=Instance {rows:[[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.]],scale:[1.,0.,0.,0.],info:[0,0,0,0]};
-        Selector::new(gpu,&[node],&vec![instance;2400],8192,8192).unwrap()
+        Selector::new(gpu,&nodes,&vec![instance;2400],8192,8192).unwrap()
     }
     fn run(gpu:&Gpu, select:&Selector, resident:&Residency, requests:&[[u32;4]])->(Vec<u32>,Vec<u32>,Vec<u32>) {
         // Fixture only: stand in for the selector's completed record stream.

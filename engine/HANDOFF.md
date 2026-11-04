@@ -1,3 +1,23 @@
+## 2026-11-04 GPU logical asset demand and generation-safe publication
+
+Normal forest selection now records/compacts unique logical representation-page
+requests and rejects incomplete cuts when a page is missing. Root pages are pinned.
+Asset generation changes retire affected branch slots; direct-root history uses
+a publication epoch. Batch validation has no partial GPU effects. All 111 foliage
+checks pass, including explicit missing-page/fallback/republish/invalid-batch tests.
+
+Physical source/voxel catalogs are STILL fully resident. This is a prerequisite,
+not a bounded physical page cache or memory saving. Next: relocate source geometry
+and voxel grids/cells/splat lists with shared dependency tracking, bounded upload
+service and generation-safe eviction. Keep architecture gate open.
+
+Three alternating native 1713x964 one-view routes: preparation 0.573 -> 0.674 ms;
+covered frame 16.885 -> 16.861 ms (no speedup claim). Unique request atomic-load
+guard reduces initial overhead. Same cut counts; image RGB MAE 0.290-0.293/255.
+See docs/foliage-asset-publication-2026-11-04.md + evidence; build/foliage-pages.
+No playtest opened. Other remaining gates: upstream shared history/publication,
+animated shadow cache, meadow migration, far cell aggregates. Goal active.
+
 ## 2026-11-04 Shared GPU ancestor poses on the normal forest route
 
 GPU demand hash + per-depth queues now deduplicate selected branch ancestry.
