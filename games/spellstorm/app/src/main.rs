@@ -22,6 +22,7 @@ mod play;
 mod ragdoll;
 mod rig;
 mod shrines;
+mod skins;
 mod view;
 
 use render::Gpu;

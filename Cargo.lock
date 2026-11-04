@@ -5421,6 +5421,7 @@ name = "spellstorm-app"
 version = "0.1.0"
 dependencies = [
  "app",
+ "assets",
  "flate2",
  "gamenight",
  "glam 0.31.1",
