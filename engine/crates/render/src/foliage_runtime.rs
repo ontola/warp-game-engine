@@ -6,6 +6,10 @@ use glam::{Mat4,Vec3,Vec4};
 use bytemuck::{Pod,Zeroable};
 use wgpu::util::DeviceExt;
 
+/// World placement independent of any camera, renderer tier or CPU near pool.
+#[derive(Clone, Copy, Debug)]
+pub struct RootPlacement {pub pos:Vec3,pub yaw:f32,pub scale:f32,pub variant:usize}
+
 #[repr(C)]
 #[derive(Clone,Copy,Debug,Pod,Zeroable)]
 pub struct Branch {
@@ -31,7 +35,7 @@ fn local_bounds(v:GpuTree)->([f32;4],[f32;4]) {
 
 /// Attach shared recipe geometry once, plus one lightweight root per tree and
 /// a bounded number of branch OUTPUT slots. Never constructs recipe_forest::Pool.
-pub fn plant(scene:&mut Scene,plants:&[crate::vegetation_asset::CookedPlant],trees:&[crate::recipe_forest::Tree],slots:u32,policy:crate::aggregate_lod::Policy)->Result<(),String> {
+pub fn plant(scene:&mut Scene,plants:&[crate::vegetation_asset::CookedPlant],trees:&[RootPlacement],slots:u32,policy:crate::aggregate_lod::Policy)->Result<(),String> {
     use crate::vegetation_asset::{SceneVegetation,AttachLimits,PlantInstance,SelectedRepresentation};
     if slots==0 || slots as usize>crate::voxel_forest::MAX_VIEW_GROUPS || trees.is_empty() || plants.is_empty()
         || trees.iter().any(|t|t.variant>=plants.len()||!t.scale.is_finite()||t.scale<=0.) {return Err("invalid GPU forest population/budget".into());}
@@ -191,7 +195,7 @@ impl Runtime {
         let config=crate::vegetation_asset::tests::aggregate_config();
         let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();
         cooked.cook_proxy(&source,config,3).unwrap();
-        let trees=vec![crate::recipe_forest::Tree {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0};20000];
+        let trees=vec![RootPlacement {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0};20000];
         let mut scene=Scene::default();
         plant(&mut scene,&[cooked],&trees,8,crate::aggregate_lod::Policy::default()).unwrap();
         let spec=scene.gpu_forest.as_ref().unwrap();
@@ -216,7 +220,7 @@ impl Runtime {
         let reference=Renderer::new(&gpu,&reference,&light);
         let view=[ViewRect {cam:cam(0.),x:0,y:0,w:128,h:128}];
         let (expected,_)=reference.try_render_views(&gpu,&view,&light,128,128,&[]).unwrap();
-        let tree=crate::recipe_forest::Tree {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0};
+        let tree=RootPlacement {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0};
         let mut scene=Scene::default();plant(&mut scene,std::slice::from_ref(&cooked),&[tree],1,policy).unwrap();
         let renderer=Renderer::new(&gpu,&scene,&light);
         let (actual,_)=renderer.try_render_views(&gpu,&view,&light,128,128,&[]).unwrap();
@@ -231,7 +235,7 @@ impl Runtime {
         let d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();assert_eq!(d.direct_roots,1);assert_eq!(d.voxel_slots,0);assert_eq!(d.source_slots,0);assert_eq!(d.fallback_trees,0);
         // Move between disjoint tree populations, then use four simultaneous
         // cameras. No host assignment, renderer rebuild or root upload occurs.
-        let trees=(0..4).map(|i|crate::recipe_forest::Tree {pos:Vec3::X*(i as f32*8.),..tree}).collect::<Vec<_>>();
+        let trees=(0..4).map(|i|RootPlacement {pos:Vec3::X*(i as f32*8.),..tree}).collect::<Vec<_>>();
         let mut scene=Scene::default();plant(&mut scene,&[cooked],&trees,16,policy).unwrap();let renderer=Renderer::new(&gpu,&scene,&light);
         let night=Lighting {sun_lux:0.,..light.clone()};
         for index in [0,3,1,2,0] {

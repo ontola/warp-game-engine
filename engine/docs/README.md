@@ -19,6 +19,10 @@ Start with the overview, then build and run something.
 
 ## Vegetation development hand-off
 
+[Current production architecture and implementation gates](vegetation-architecture.md):
+one GPU route, shared assemblies, residency, wind and shadow consumers. Architecture
+integration takes precedence over visual tuning; old opt-in plans are historical.
+
 [Continue the shared-assembly and brick-visibility work](vegetation-next-agent.md):
 reproduction commands, current performance, source reference and next steps.
 
