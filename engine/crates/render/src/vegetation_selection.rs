@@ -32,6 +32,7 @@ fn enclosing(spheres:&[[f32;4]])->[f32;4] {
 #[derive(Clone,Debug,serde::Serialize)]
 pub struct SelectionEvidence {
     pub branches:usize,pub root_voxel_candidates:usize,pub admitted_root_candidates:usize,
+    pub geometry_groups:usize,pub geometry_volume_assets:usize,
     pub voxel_candidates:usize,pub admitted_voxel_candidates:usize,
     pub root_errors:Vec<[f32;3]>,
 }
@@ -46,6 +47,7 @@ impl CookedPlant {
     pub fn selection_evidence(&self,policy:crate::aggregate_lod::Policy)->SelectionEvidence {
         let root=self.branches.first().map(|b|b.aggregate.as_slice()).unwrap_or(&[]);
         SelectionEvidence {
+            geometry_groups:self.geometry.len(),geometry_volume_assets:self.stats.geometry_volume_assets,
             branches:self.branches.len(),root_voxel_candidates:root.iter().filter(|c|!c.source_only).count(),
             admitted_root_candidates:root.iter().filter(|c|admitted(c,policy)).count(),
             voxel_candidates:self.branches.iter().flat_map(|b|&b.aggregate).filter(|c|!c.source_only).count(),

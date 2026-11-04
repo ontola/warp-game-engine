@@ -24,6 +24,8 @@ use std::{
 
 #[path = "vegetation_selection.rs"]
 mod selection;
+#[path = "vegetation_geometry.rs"]
+mod geometry;
 pub use selection::{SharedSelectionRecipe, SelectedRepresentation};
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -67,6 +69,7 @@ pub struct CookedPlant {
     primitives: Vec<Primitive>,
     placements: Vec<Placement>,
     branches: Vec<Branch>,
+    geometry: Vec<geometry::GeometryGroup>,
     stats: CookStats,
     /// The whole plant as one voxel pyramid in the root branch frame.
     proxy: Option<VoxelAsset>,
@@ -87,6 +90,8 @@ pub struct CookStats {
     pub primitive_bytes: usize,
     pub placements: usize,
     pub branches: usize,
+    pub geometry_groups: usize,
+    pub geometry_volume_assets: usize,
     pub volume_assets: usize,
     pub expanded_source_vertices: usize,
     pub expanded_source_triangles: usize,
@@ -250,6 +255,7 @@ impl CookedPlant {
             primitives,
             placements,
             branches,
+            geometry: Vec::new(),
             stats,
             proxy: None,
             proxy_id: 0,
@@ -263,6 +269,8 @@ impl CookedPlant {
         let mut plant = Self::cook_source(source)?;
         let roots: Vec<_> = plant.branches.iter().enumerate().filter(|(_,b)|b.parent.is_none()).map(|(i,_)|i).collect();
         if roots.len()!=1 || roots[0]!=0 { return Err("aggregate plants require one leading root".into()); }
+        plant.geometry = geometry::build(&plant)?;
+        plant.stats.geometry_groups = plant.geometry.len();
         // A root may be a pure articulation anchor (grass, shrubs, cell
         // assemblies). Its aggregate still covers every descendant; exact
         // source leaves are emitted only for branches with actual members.
@@ -293,6 +301,8 @@ impl CookedPlant {
         plant.branches[0].aggregate = aggregate_candidates(&root,motion);
         plant.branches[0].aggregate_motion_error = motion;
         plant.branches[0].volume = Some(root.volume);
+        geometry::cook(&mut plant,source,root_config)?;
+        plant.stats.geometry_volume_assets=plant.geometry.iter().filter(|g|g.volume.is_some()).count();
         plant.stats.volume_assets = plant.branches.iter().filter(|b|b.volume.is_some()).count();
         Ok(plant)
     }
@@ -1095,8 +1105,8 @@ fn next_proxy_id() -> u64 {
 // changes never loads an old file; bump the version when only the file
 // layout changes.
 const COOK_MAGIC: &[u8; 8] = b"WARPCOOK";
-const COOK_FILE_VERSION: u32 = 1;
-const COOK_SOURCES: [&str; 10] = [include_str!("vegetation_asset.rs"), include_str!("vegetation_aggregate.rs"),
+const COOK_FILE_VERSION: u32 = 2;
+const COOK_SOURCES: [&str; 11] = [include_str!("vegetation_asset.rs"), include_str!("vegetation_aggregate.rs"), include_str!("vegetation_geometry.rs"),
     include_str!("vegetation_clod.rs"), include_str!("foliage_voxel.rs"), include_str!("foliage_assembly.rs"),
     include_str!("plant_recipe.rs"), include_str!("cluster.rs"), include_str!("aggregate_lod.rs"), include_str!("vegetation_cell.rs"), include_str!("recipe_forest.rs")];
 
@@ -1800,6 +1810,77 @@ pub(crate) mod tests {
         for (a,b) in sequences[0].iter().zip(&sequences[1]) {
             let mae=a.iter().zip(b).map(|(&a,&b)|a.abs_diff(b)as u64).sum::<u64>()as f64/a.len()as f64;
             eprintln!("GPU forest vs legacy source wind: RGBA MAE={mae}");assert!(mae<0.5);
+        }
+    }
+
+    #[test]
+    fn geometry_groups_cover_source_once_and_preserve_articulation() {
+        let source=aggregate_fixture();
+        let cooked=CookedPlant::cook_aggregate(&source,aggregate_config()).unwrap();
+        assert_eq!(cooked.branches.len(),source.branches.len(),"geometry groups are not new wind joints");
+        assert_eq!(cooked.geometry[0].members,(0..source.instances.len() as u32).collect::<Vec<_>>());
+        assert_eq!(cooked.geometry.len(),5);
+        assert_eq!(cooked.stats.geometry_volume_assets,1);
+        let again=geometry::build(&cooked).unwrap();
+        for (i,g) in cooked.geometry.iter().enumerate() {
+            assert_eq!((g.children,g.source_branch,g.frame_branch,&g.members),
+                (again[i].children,again[i].source_branch,again[i].frame_branch,&again[i].members));
+            assert!(g.members.windows(2).all(|p|p[0]<p[1]));
+            if let Some([a,b])=g.children {
+                let mut union=cooked.geometry[a as usize].members.clone();
+                union.extend_from_slice(&cooked.geometry[b as usize].members);union.sort_unstable();
+                assert_eq!(union,g.members,"each cut covers exactly the same source, without duplicates");
+                if i!=0 {
+                    assert!(g.volume.is_some());assert!(!g.aggregate.is_empty());
+                    assert!(g.motion_error.is_finite()&&g.motion_error>=0.0);
+                }
+            }else {
+                let branch=g.source_branch.unwrap() as usize;
+                assert!(g.members.iter().all(|&m|cooked.placements[m as usize].branch==branch));
+                assert_eq!(g.frame_branch,branch as u32);
+            }
+            for &m in &g.members {
+                let mut at=cooked.placements[m as usize].branch;
+                while at!=g.frame_branch as usize {at=cooked.branches[at].parent.unwrap() as usize;}
+            }
+        }
+        // Every refinement of an internal node preserves this invariant; the
+        // final leaf cut recovers every exact source placement once.
+        let mut cut=vec![0usize];
+        while let Some(at)=cut.iter().position(|&i|cooked.geometry[i].children.is_some()) {
+            let group=cut.remove(at);let [a,b]=cooked.geometry[group].children.unwrap();
+            cut.extend([a as usize,b as usize]);
+            let mut members=cut.iter().flat_map(|&i|cooked.geometry[i].members.iter().copied()).collect::<Vec<_>>();
+            members.sort_unstable();assert_eq!(members,cooked.geometry[0].members);
+        }
+        for phase in [-1.0f32,-0.5,0.0,0.5,1.0] {
+            let mut poses=Vec::<Mat4>::new();
+            for (i,b) in cooked.branches.iter().enumerate() {
+                let axis=Vec3::new(0.3+i as f32*0.1,1.0,0.4).normalize();
+                let local=b.rest*Mat4::from_quat(Quat::from_axis_angle(axis,phase*b.max_angle));
+                poses.push(b.parent.map_or(local,|p|poses[p as usize]*local));
+            }
+            for g in cooked.geometry.iter().skip(1).filter(|g|g.children.is_some()) {
+                let rest_inverse=cooked.branches[g.frame_branch as usize].assembly_rest.inverse();
+                let moving_inverse=poses[g.frame_branch as usize].inverse();
+                for &member in &g.members {
+                    let p=&cooked.placements[member as usize];
+                    for v in &cooked.primitives[p.primitive].mesh.vertices {
+                        let vertex=Vec3::from(v.pos);
+                        let rest=(rest_inverse*cooked.branches[p.branch].assembly_rest*p.rest).transform_point3(vertex);
+                        let moving=(moving_inverse*poses[p.branch]*p.rest).transform_point3(vertex);
+                        assert!(rest.distance(moving)<=g.motion_error+1e-4,"group loses animated source support");
+                    }
+                }
+            }
+        }
+        let bytes=postcard::to_allocvec(&cooked).unwrap();
+        let loaded:CookedPlant=postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(loaded.geometry.len(),cooked.geometry.len());
+        for (a,b) in loaded.geometry.iter().zip(&cooked.geometry) {
+            assert_eq!(a.members,b.members);assert_eq!(a.volume,b.volume);
+            assert_eq!(postcard::to_allocvec(&a.aggregate).unwrap(),postcard::to_allocvec(&b.aggregate).unwrap());
+            assert_eq!(a.motion_error,b.motion_error);
         }
     }
 
