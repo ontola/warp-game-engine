@@ -730,6 +730,7 @@ fn main() -> Result<(), String> {
     if let Some(n) = arg("--fly") {
         let [w, h] = arg("--size").and_then(|s| s.split_once('x').and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?]))).unwrap_or([1280, 720]);
         game.speed = arg("--speed").and_then(|s| s.parse().ok()).unwrap_or(80.0);
+        let upscale=arg("--upscale").unwrap_or_else(||"native".into()).parse::<render::upscale::UpscaleMode>()?;
         let gpu = render::Gpu::new()?;
         let mut headless = app::Headless::new(&gpu, [w, h], TICK_HZ)?;
         let mut times = Vec::new();
@@ -749,13 +750,16 @@ fn main() -> Result<(), String> {
                     "renderer_spans":headless.renderer().and_then(|r|r.cpu_spans())}));
             }
             if let Some(renderer)=headless.renderer() {
+                renderer.set_upscale(&gpu,upscale)?;
                 // Rebuilds may replace a Renderer at the same address. Enable
                 // profiling on the actual instance, not just pointer changes.
                 if let Some(stats)=renderer.foliage_page_stats(){page_samples.push(serde_json::json!({"frame":i,"cache":stats}));}
                 renderer.set_async_gpu_profiling(&gpu,true)?;
                 for sample in renderer.drain_gpu_profiles(&gpu).samples {
                     gpu_samples.push(serde_json::json!({"frame":sample.render_sequence,"output":sample.output_size,"views":sample.views,
-                        "covered_ms":sample.covered_interval_ms,"passes":sample.gpu_ms}));
+                        "covered_ms":sample.covered_interval_ms,"passes":sample.gpu_ms,
+                        "upscale":renderer.upscale_status().mode.as_str(),
+                        "reconstruction_views":renderer.upscale_status().views.iter().map(|v|serde_json::json!({"input":v.input,"output":v.output})).collect::<Vec<_>>()}));
                 }
             }
             if i+1 == frames { if let Some(path) = arg("--fly-shot") { render::write_png(std::path::Path::new(&path), w, h, &rgba)?; } }

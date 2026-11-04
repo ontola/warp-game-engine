@@ -1983,6 +1983,56 @@ pub(crate) mod tests {
         }
     }
 
+    #[test]
+    #[ignore="exclusive GPU mixed-cut coverage oracle"]
+    fn shared_selection_nested_cut_preserves_source_coverage() {
+        use crate::foliage_select::{Selector,Instance};
+        let cooked=CookedPlant::cook_aggregate(&aggregate_fixture(),aggregate_config()).unwrap();
+        let recipe=cooked.shared_selection_recipe(crate::aggregate_lod::Policy {
+            allow_sampled_optics:true,max_coverage_error:1.,max_color_error:1.,..Default::default()}).unwrap();
+        let gpu=crate::Gpu::new().unwrap();
+        let depth=gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("cut oracle empty depth"),
+            size:wgpu::Extent3d {width:1,height:1,depth_or_array_layers:1},mip_level_count:1,sample_count:1,
+            dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::R32Float,
+            usage:wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]}).create_view(&Default::default());
+        let root=Instance {rows:[[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.]],scale:[1.,0.,0.,0.],info:[0,17,0,0]};
+        let selector=Selector::new(&gpu,&recipe.nodes,&[root],64,64).unwrap();
+        let read=|buffer:&wgpu::Buffer|->Vec<u32> {
+            let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("cut oracle read"),size:buffer.size(),
+                usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+            let mut enc=gpu.device.create_command_encoder(&Default::default());enc.copy_buffer_to_buffer(buffer,0,&out,0,buffer.size());
+            gpu.queue.submit([enc.finish()]);out.slice(..).map_async(wgpu::MapMode::Read,|r|r.unwrap());gpu.wait();
+            let bytes=out.slice(..).get_mapped_range().unwrap();bytes.chunks_exact(4).map(bytemuck::pod_read_unaligned).collect()
+        };
+        let vp=Mat4::from_translation(Vec3::new(0.,0.,0.5))*Mat4::from_scale(Vec3::splat(0.05));
+        let mut observed=[false;3];let mut mixed=false;
+        // Sweep the actual unmodified error hierarchy in both directions. No
+        // forced group flags: a natural transition must reach intermediate cuts.
+        let errors=(0..65).map(|i|0.01*2.0f32.powf(i as f32/4.)).collect::<Vec<_>>();
+        for &error in errors.iter().chain(errors.iter().rev()) {
+            let mut enc=gpu.device.create_command_encoder(&Default::default());
+            selector.first(&gpu,&mut enc,vp,vp,[128;2],error,false,&depth).unwrap();
+            selector.second(&gpu,&mut enc,&depth);gpu.queue.submit([enc.finish()]);
+            let counters=read(&selector.counters);let records=read(&selector.records);
+            assert_eq!(read(&selector.fallback)[0],0,"unconstrained cut must not overflow");
+            let mut coverage=vec![0u32;cooked.placements.len()];let mut kinds=[false;3];
+            for r in records.chunks_exact(4).take(counters[0]as usize) {
+                assert_eq!(r[0],0);assert_eq!(r[3],17);
+                let members:Vec<usize>=match recipe.representations[r[2]as usize] {
+                    SelectedRepresentation::SourceBranch {branch,..}=>{kinds[0]=true;cooked.placements.iter().enumerate().filter(|(_,p)|p.branch==branch as usize).map(|(i,_)|i).collect()},
+                    SelectedRepresentation::Voxel {branch:0,..}=>{kinds[2]=true;(0..coverage.len()).collect()},
+                    SelectedRepresentation::Voxel {branch,..}=>{kinds[1]=true;cooked.placements.iter().enumerate().filter(|(_,p)|p.branch==branch as usize).map(|(i,_)|i).collect()},
+                    SelectedRepresentation::GroupVoxel {group,..}=>{observed[1]=true;kinds[1]=true;cooked.geometry[group as usize].members.iter().map(|&i|i as usize).collect()},
+                };
+                for member in members {coverage[member]+=1;}
+            }
+            assert!(coverage.iter().all(|&n|n==1),"hole/duplicate at error {error}: {coverage:?}");
+            observed[0]|=kinds[0];observed[2]|=kinds[2];mixed|=kinds[0]&&kinds[1];
+        }
+        assert!(observed.iter().all(|v|*v),"must exercise source, intermediate groups and whole-root cuts: {observed:?}");
+        assert!(mixed,"must exercise a mixed source/voxel cut");
+    }
+
     pub(crate) fn aggregate_config() -> crate::vegetation_aggregate::Config {
         crate::vegetation_aggregate::Config {reference_cell_size:0.05,triangle_refinements:true,levels:2,diagnostic_resolution:4,
             max_placements:4,max_source_triangles:16,max_samples:100_000,max_reference_voxels:4096,
