@@ -85,7 +85,7 @@ impl Snapshot {
             grass: format!("{shade}\n{grass_common}\n{}", self.source("grass_transition.wgsl")),
             grass_selection: format!("{shade}\n{grass_common}\n{}\n{}", crate::foliage_compact::selection_source(), include_str!("shaders/grass_compact.wgsl")),
             far_grass: format!("{shade}\n{}", self.source("far_grass.wgsl")),
-            voxel: format!("{shade}\n{}", self.source("voxel_forest.wgsl")),
+            voxel: format!("{shade}\n{}\n{}", self.source("voxel_forest.wgsl"),include_str!("shaders/shadow_damage_query.wgsl")),
             shade,
         }
     }

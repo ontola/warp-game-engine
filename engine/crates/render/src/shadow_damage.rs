@@ -5,7 +5,7 @@ use crate::Gpu;
 use glam::Mat4;
 
 pub(crate) fn mask_layout(gpu:&Gpu)->wgpu::BindGroupLayout {
-    gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("shadow tile raster mask"),entries:&[wgpu::BindGroupLayoutEntry {binding:0,visibility:wgpu::ShaderStages::VERTEX|wgpu::ShaderStages::FRAGMENT,count:None,ty:wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None}}]})
+    gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("shadow tile raster mask"),entries:&[wgpu::BindGroupLayoutEntry {binding:0,visibility:wgpu::ShaderStages::VERTEX|wgpu::ShaderStages::FRAGMENT|wgpu::ShaderStages::COMPUTE,count:None,ty:wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None}}]})
 }
 pub(crate) const MASK_BYTES:u64=512;
 #[repr(C)]
@@ -92,7 +92,8 @@ impl Damage {
     use super::*;
     #[test] fn shader_validates() {
         let raster=crate::grass::raster_source();
-        for src in [include_str!("shaders/shadow_damage.wgsl"),include_str!("shaders/shadow_damage_clear.wgsl"),include_str!("shaders/voxel_splat_raster.wgsl"),raster.as_str()] {
+        let cull=crate::frame::cull_source();let voxel=crate::voxel_forest::shader_source();
+        for src in [include_str!("shaders/shadow_damage.wgsl"),include_str!("shaders/shadow_damage_clear.wgsl"),include_str!("shaders/voxel_splat_raster.wgsl"),raster.as_str(),cull.as_str(),voxel.as_str()] {
         let module=naga::front::wgsl::parse_str(src).unwrap_or_else(|e|panic!("{}",e.emit_to_string(src)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();}
     }
@@ -133,6 +134,53 @@ impl Damage {
         source.sphere[3]=-1.;gpu.queue.write_buffer(&sources,0,bytemuck::bytes_of(&source));assert!(dirty(&run(Mat4::IDENTITY,1),32,32));
         assert!(run(Mat4::IDENTITY,2).iter().all(|&w|w==u32::MAX));
         assert!(run(Mat4::from_translation(glam::Vec3::X*0.1),2).iter().all(|&w|w==u32::MAX));
+    }
+    #[test]
+    #[ignore="small GPU dirty-bound oracle; software DX12 supported"]
+    fn dirty_bounds_match_brute_force_tiles() {
+        use wgpu::util::DeviceExt;
+        let gpu=Gpu::new().unwrap();
+        let mut rects=Vec::<[u32;4]>::new();
+        for y in 0..64 {for x in 0..64 {rects.push([x,y,x,y]);}}
+        let mut seed=42u32;
+        for _ in 0..4096 {
+            let mut next=||{seed=seed.wrapping_mul(1664525).wrapping_add(1013904223);(seed>>16)&63};
+            let (x,y,z,w)=(next(),next(),next(),next());rects.push([x.min(z),y.min(w),x.max(z),y.max(w)]);
+        }
+        let src=format!("{}\n{}",include_str!("shaders/shadow_damage_query.wgsl"),r#"
+@group(0) @binding(0) var<uniform> shadow_damage_words:array<vec4<u32>,32>;
+@group(0) @binding(1) var<storage,read> rects:array<vec4<u32>>;
+@group(0) @binding(2) var<storage,read_write> result:array<vec2<u32>>;
+@compute @workgroup_size(64) fn check(@builtin(global_invocation_id) id:vec3<u32>) {
+    if id.x>=arrayLength(&rects) {return;}
+    let r=rects[id.x];
+    let low=vec3<f32>((f32(r.x)+.5)/32.-1.,1.-(f32(r.w)+.5)/32.,.25);
+    let high=vec3<f32>((f32(r.z)+.5)/32.-1.,1.-(f32(r.y)+.5)/32.,.75);
+    let identity=mat4x4<f32>(vec4<f32>(1.,0.,0.,0.),vec4<f32>(0.,1.,0.,0.),vec4<f32>(0.,0.,1.,0.),vec4<f32>(0.,0.,0.,1.));
+    result[id.x]=vec2<u32>(u32(shadow_damage_rect(r.xy,r.zw)),u32(shadow_damage_bounds(identity,4096.,low,high)));
+}
+"#);
+        let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("dirty bounds oracle"),source:wgpu::ShaderSource::Wgsl(src.into())});
+        let pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("dirty bounds oracle"),layout:None,module:&module,entry_point:Some("check"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
+        let buffer=|label,size,usage|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some(label),size,usage,mapped_at_creation:false});
+        let mask=buffer("query mask",512,wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST);
+        let input=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("query rectangles"),contents:bytemuck::cast_slice(&rects),usage:wgpu::BufferUsages::STORAGE});
+        let output=buffer("query output",rects.len()as u64*8,wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC);
+        let read=buffer("query read",output.size(),wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST);
+        let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("query oracle"),layout:&pipeline.get_bind_group_layout(0),entries:&[&mask,&input,&output].iter().enumerate().map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:b.as_entire_binding()}).collect::<Vec<_>>()});
+        for pattern in 0..4 {
+            let words:Vec<u32>=(0..128).map(|i|match pattern {0=>0,1=>u32::MAX,2=>if i%13==0 {1u32<<(i%32)}else{0},_=>if i%2==0 {0x80000001}else{0}}).collect();
+            gpu.queue.write_buffer(&mask,0,bytemuck::cast_slice(&words));
+            let mut enc=gpu.device.create_command_encoder(&Default::default());
+            {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_pipeline(&pipeline);pass.set_bind_group(0,&bind,&[]);pass.dispatch_workgroups((rects.len()as u32).div_ceil(64),1,1);}
+            enc.copy_buffer_to_buffer(&output,0,&read,0,read.size());gpu.queue.submit([enc.finish()]);
+            let(tx,rx)=std::sync::mpsc::channel();read.slice(..).map_async(wgpu::MapMode::Read,move|v|{tx.send(v).unwrap();});gpu.wait();rx.recv().unwrap().unwrap();
+            {let data=read.slice(..).get_mapped_range().unwrap();let actual:&[[u32;2]]=bytemuck::cast_slice(&data);
+            for (i,r) in rects.iter().enumerate() {
+                let expected=(r[1]..=r[3]).any(|y|(r[0]..=r[2]).any(|x|words[(y*2+x/32)as usize]&(1u32<<(x%32))!=0))as u32;
+                assert_eq!(actual[i],[expected;2],"pattern {pattern}, rectangle {r:?}");
+            }}read.unmap();
+        }
     }
     use bytemuck::Zeroable;
 }

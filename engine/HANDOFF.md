@@ -1,3 +1,32 @@
+## 2026-11-04 Early dirty-bound source and voxel sun work rejection
+
+Normal GPU-forest shared sun now rejects clean owners before source cluster /
+virtual-member traversal, and clean voxel bounds before cell iteration and splat
+allocation. Both use shaders/shadow_damage_query.wgsl: project eight world AABB
+corners, two-texel conservative margin, test at most two mask words per tile row.
+Source sphere includes existing wind bound. Spatial overflow retains full-scan
+fallback through the same predicate. Source decision is lane-zero/shared;
+voxel draw reset still executes when all owners are clean. Fragment masks remain
+for partial overlap. Regular sun/near/headlamp entry points keep their bindings.
+Voxel hot reload includes the query and transactionally replaces both pipelines.
+
+CHECKS: cargo check --locked -p render --tests PASS. Release software DX12
+shadow_damage::tests: 3 PASS, 11.30 s (compile 4m56s with another build active).
+New oracle: all 4096 single tiles + 4096 deterministic rectangles, four masks,
+rectangle and projected-bound results versus CPU enumeration = 65,536 matches.
+Existing exact raw-depth preservation test and full shader validation PASS.
+Release cull specialization matrix 1 PASS; lighting_snapshot_ 3 PASS; voxel
+empty-ceiling shader variants 1 PASS. These are functional, not timing evidence.
+
+Physical GPU remains occupied by Sideways PID51952, creation 17:37:11.739408;
+untouched. Full normal-renderer shadow depth oracle still NOT RUN, no hardware
+speedup claim. Don't run full renderer on software (historical >17GB growth).
+Remaining: actual full-renderer depth/per-pass hardware validation, world-stable
+coverage (moving projection still dirties whole map), tighter per-cluster rejection
+or compact dirty dispatch if measured beneficial. Candidate workgroups still
+launch and large bounds scan more tile words. Upstream shared two-phase assembly
+publication, unified meadow and far cell aggregates remain open. Goal NOT done.
+
 ## 2026-11-04 Normal GPU forest shared sun tile cache connected
 
 frame.rs now runs shadow_damage after common forest materialization, clears only

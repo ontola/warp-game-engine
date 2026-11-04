@@ -41,9 +41,11 @@ full damage. Receiver-demand mode and non-instance skinning/crowd deformation
 conservatively invalidate all tiles. The legacy static/dynamic split path retains
 its previous full dynamic redraw behavior.
 
-The profiler adds `shadow tile damage and clear`. Source culling, vertex work and
-voxel splat generation still run for all candidates; dirty-bound rejection is not
-yet connected. The map projection still follows the existing anchor policy, so
+The profiler adds `shadow tile damage and clear`. Source culling now rejects owners whose projected world bounds miss every dirty
+tile before cluster traversal or virtual-member expansion. Voxel sun generation
+uses the same predicate before level/cell iteration and splat allocation. Flat
+and spatial source paths preserve their normal overflow fallback. Fragment
+masks remain necessary for partially overlapping bounds. The map projection still follows the existing anchor policy, so
 camera translation can invalidate every tile. These are material remaining costs.
 
 `gpu_cached_sun_depth_matches_full_redraw` is an ignored hardware fixture. It
@@ -56,8 +58,8 @@ It compiles but has not run while other games occupy the GPU.
 
 1. Execute the complete renderer oracle on the physical GPU; the small software
    fixture does not prove all renderer bindings and invalidation cases.
-2. Add early source-caster/splat rejection when projected bounds miss every dirty
-   tile, then measure saved work rather than counting discarded fragments.
+2. Measure the integrated early source-caster/splat rejection, including its
+   bounds-query overhead, rather than counting discarded fragments.
 3. Extend full-renderer coverage to asset publication/eviction and procedural
    terrain changes; preserve near/headlamp/legacy behavior.
 4. Stabilize world-space page coverage during camera travel. A moving projection
@@ -83,3 +85,34 @@ The release software test filter `shadow_damage::tests` passes both tests; shade
 validation now includes the full source raster and voxel splat raster modules.
 The raw depth oracle uses the actual map-size input. Full renderer hardware
 validation remains pending; no performance acceptance is inferred from this.
+
+
+## Early dirty-bound work rejection
+
+The production cached sun compute paths consume the same GPU mask as raster.
+`shadow_damage_query.wgsl` projects all eight corners, expands by two texels,
+and tests the resulting tile rectangle with at most two bitmask words per row.
+The query is conservative, including unsupported projection fallback. A source
+workgroup tests once in lane zero and shares the decision before expanding
+members or visiting clusters. The spatial owner overflow fallback still scans
+all owners through this predicate. Voxel generation tests its materialized world
+AABB in lane zero before walking cells; its draw reset runs even if all owners
+are clean. Regular/near/headlamp entry points do not reference the mask.
+Voxel shader reload prepares and commits both regular and cached pipelines.
+
+This is owner-level rejection, not per-cluster dirty testing or a compacted dirty
+owner dispatch. Workgroups still launch for candidates; giant bounds can overlap
+many clean tiles and wind may invalidate much of the map. Projection movement
+still invalidates all tiles. No hardware speedup has been established.
+
+The small `dirty_bounds_match_brute_force_tiles` fixture evaluates every tile as
+a point plus 4096 deterministic rectangles, on four masks (empty, full, sparse,
+and word-boundary stripes). It checks both direct rectangle queries and projected
+world bounds against CPU tile enumeration: 65,536 result comparisons. This tests
+the shared predicate, not the complete renderer's final depth or performance.
+
+Early-bound validation: `cargo check --locked -p render --tests` PASS. Release
+software DX12 `shadow_damage::tests --include-ignored --test-threads=1`: 3 PASS
+in 11.30 s. Culling specialization matrix, three lighting snapshot/reload tests
+and voxel empty-ceiling shader variants also PASS. Hardware complete-renderer
+oracle and timing remain pending while Sideways uses the GPU.

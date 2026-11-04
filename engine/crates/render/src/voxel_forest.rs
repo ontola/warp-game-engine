@@ -230,6 +230,8 @@ struct SplatRaster {
     sun_layout: wgpu::PipelineLayout,
     sun_empty: wgpu::BindGroup,
     sun_splats: wgpu::ComputePipeline,
+    sun_cached_layout: wgpu::PipelineLayout,
+    sun_cached_splats: wgpu::ComputePipeline,
     sun_raster: wgpu::RenderPipeline,
     sun_cached_raster: wgpu::RenderPipeline,
     /// The sun target's selection buffer and its splat targets.
@@ -385,7 +387,7 @@ pub(crate) struct VoxelRenderer {
     owner_index: Vec<usize>,
     targets: Mutex<Vec<Option<Targets>>>,
 }
-pub(crate) struct Reload { pipelines: [wgpu::ComputePipeline; 8], surface: wgpu::ComputePipeline, selection: Option<[wgpu::ComputePipeline;2]>, second: Option<wgpu::ComputePipeline>, temporal: Option<([wgpu::ComputePipeline;8], wgpu::ComputePipeline, Option<wgpu::ComputePipeline>, Option<[wgpu::ComputePipeline;2]>)>, sun: Option<wgpu::ComputePipeline>, source: String }
+pub(crate) struct Reload { pipelines: [wgpu::ComputePipeline; 8], surface: wgpu::ComputePipeline, selection: Option<[wgpu::ComputePipeline;2]>, second: Option<wgpu::ComputePipeline>, temporal: Option<([wgpu::ComputePipeline;8], wgpu::ComputePipeline, Option<wgpu::ComputePipeline>, Option<[wgpu::ComputePipeline;2]>)>, sun: Option<(wgpu::ComputePipeline,wgpu::ComputePipeline)>, source: String }
 /// Native generation contains neither temporal resources nor per-sample work.
 /// Explicit blocks keep shader reload transactional for both pipeline sets.
 fn temporal_source(source:&str,enabled:bool)->Result<String,String> {
@@ -447,11 +449,11 @@ fn surface_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> w
         entry_point: Some("voxel_splat_gbuffer"), compilation_options: wgpu::PipelineCompilationOptions {
             constants: &coarser, ..Default::default() }, cache: gpu.pipeline_cache() })
 }
-fn sun_splat_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> wgpu::ComputePipeline {
+fn sun_splat_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, cached:bool) -> wgpu::ComputePipeline {
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("voxel sun splats"), source: wgpu::ShaderSource::Wgsl(source.into()) });
     gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("voxel_sun_splats"), layout: Some(layout),
-        module: &module, entry_point: Some("voxel_sun_splats"), compilation_options: Default::default(), cache: gpu.pipeline_cache() })
+        module: &module, entry_point: Some(if cached {"voxel_cached_sun_splats"}else{"voxel_sun_splats"}), compilation_options: wgpu::PipelineCompilationOptions {constants:if cached {&[("SHADOW_DAMAGE_MAP_SIZE",crate::frame::SHADOW_SIZE as f64)]}else{&[]},..Default::default()}, cache: gpu.pipeline_cache() })
 }
 fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgpu::BindGroupLayout, data_layout: &wgpu::BindGroupLayout, source: &str, cells_override:Option<&wgpu::Buffer>) -> SplatRaster {
     let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxel splat raster"),
@@ -515,10 +517,12 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
     let sun_empty = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("voxel sun splats"), layout: &empty_layout, entries: &[] });
     let sun_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("voxel sun splats"),
         bind_group_layouts: &[Some(scene_layout), Some(&empty_layout), Some(data_layout)], immediate_size: 0 });
-    let sun_splats = sun_splat_pipeline(gpu, &sun_layout, source);
+    let sun_splats = sun_splat_pipeline(gpu, &sun_layout, source,false);
+    let sun_cached_layout=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("cached voxel sun splats"),bind_group_layouts:&[Some(scene_layout),Some(&empty_layout),Some(data_layout),Some(&crate::shadow_damage::mask_layout(gpu))],immediate_size:0});
+    let sun_cached_splats=sun_splat_pipeline(gpu,&sun_cached_layout,source,true);
     let cells_buffer = cells_override.cloned().unwrap_or_else(||gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("voxel splat cells"), contents: bytemuck::cast_slice(cells), usage: wgpu::BufferUsages::STORAGE }));
-    SplatRaster { main_pipeline, cells: cells_buffer, capacity, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_raster, sun_cached_raster,
+    SplatRaster { main_pipeline, cells: cells_buffer, capacity, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_cached_layout, sun_cached_splats, sun_raster, sun_cached_raster,
         sun_target: Mutex::new(Vec::new()) }
 }
 fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool,global_intervals:bool) -> [wgpu::ComputePipeline; 8] {
@@ -538,9 +542,10 @@ fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tile
 }
 pub(crate) fn shader_source() -> String {
     format!(
-        "{}\n{}",
+        "{}\n{}\n{}",
         crate::wind::shade_source(),
-        crate::shaders::source("voxel_forest.wgsl")
+        crate::shaders::source("voxel_forest.wgsl"),
+        include_str!("shaders/shadow_damage_query.wgsl")
     )
 }
 
@@ -999,7 +1004,7 @@ impl VoxelRenderer {
                 self.brick_hzb.as_ref().map(|_|second_splat_pipeline(gpu,&temporal.layout,&specialized)),
                 splat_selection_pipelines(gpu,&temporal.layout,&specialized)))?)
         } else {None};
-        let sun=self.raster.as_ref().map(|r|crate::shaders::checked(gpu,||sun_splat_pipeline(gpu,&r.sun_layout,&specialized_source))).transpose()?;
+        let sun=self.raster.as_ref().map(|r|crate::shaders::checked(gpu,||(sun_splat_pipeline(gpu,&r.sun_layout,&specialized_source,false),sun_splat_pipeline(gpu,&r.sun_cached_layout,&specialized_source,true)))).transpose()?;
         let surface=crate::shaders::checked(gpu,||surface_pipeline(gpu,&self.pipeline_layout,&specialized_source))?;
         let second=self.brick_hzb.as_ref().map(|_|crate::shaders::checked(gpu,||second_splat_pipeline(gpu,&self.pipeline_layout,&specialized_source))).transpose()?;
         let selection=crate::shaders::checked(gpu,||splat_selection_pipelines(gpu,&self.pipeline_layout,&specialized_source))?;
@@ -1011,7 +1016,7 @@ impl VoxelRenderer {
         if let Some((pipelines,gbuffer,second,selection))=reload.temporal {
             let mut guard=self.temporal.lock().unwrap();let p=guard.as_mut().unwrap();p.pipelines=pipelines;p.gbuffer=gbuffer;p.second=second;p.selection=selection;
         }
-        if let (Some(raster),Some(sun))=(self.raster.as_mut(),reload.sun) {raster.sun_splats=sun;}
+        if let (Some(raster),Some(sun))=(self.raster.as_mut(),reload.sun) {raster.sun_splats=sun.0;raster.sun_cached_splats=sun.1;}
         self.source = reload.source;
     }
     pub(crate) fn set_view_count(&self, count: usize) {
@@ -1471,7 +1476,8 @@ impl VoxelRenderer {
                 timestamp_writes: times[0].map(|(query_set, i)| wgpu::ComputePassTimestampWrites {
                     query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
             pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, &raster.sun_empty, &[]); pass.set_bind_group(2, &target.bind, &[]);
-            pass.set_pipeline(&raster.sun_splats);
+            pass.set_pipeline(if sun.damage.is_some(){&raster.sun_cached_splats}else{&raster.sun_splats});
+            if let Some(mask)=sun.damage {pass.set_bind_group(3,mask,&[]);}
             pass.dispatch_workgroups(self.count.min(65535), self.count.div_ceil(65535).max(1), 1);
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

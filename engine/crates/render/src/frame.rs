@@ -79,7 +79,7 @@ const TIMESTAMP_CAPACITY: u32 = 512; // includes per-view aggregate depth/materi
 
 /// Keep the grass rejection in culling identical to its opaque raster path.
 pub(crate) fn cull_source() -> String {
-    format!("{}\n{}\n{}\n{}\n{}", concat!(include_str!("shaders/virtual_member.wgsl"), "\n", include_str!("shaders/tree_history_key.wgsl"), "\n", include_str!("shaders/grass_common.wgsl")), include_str!("shaders/cull.wgsl"), include_str!("shaders/cluster_traversal.wgsl"), crate::receiver_shadow_demand::cull_source(),crate::source_replacement::query_source())
+    format!("{}\n{}\n{}\n{}\n{}", concat!(include_str!("shaders/virtual_member.wgsl"), "\n", include_str!("shaders/tree_history_key.wgsl"), "\n", include_str!("shaders/grass_common.wgsl")), concat!(include_str!("shaders/cull.wgsl"), "\n", include_str!("shaders/shadow_damage_query.wgsl")), include_str!("shaders/cluster_traversal.wgsl"), crate::receiver_shadow_demand::cull_source(),crate::source_replacement::query_source())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -775,6 +775,7 @@ pub struct Renderer {
     split_sun_cull: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline)>,
     compact_cull: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline, wgpu::ComputePipeline)>,
     spatial_cull: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline, wgpu::ComputePipeline)>,
+    cached_sun_cull: Option<(wgpu::ComputePipeline,wgpu::ComputePipeline)>,
     sun_spatial_cull: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline, wgpu::ComputePipeline)>,
     headlight_spatial_cull: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline, wgpu::ComputePipeline)>,
     instance_groups: crate::cull_groups::Resources,
@@ -1746,6 +1747,15 @@ impl Renderer {
             cache: gpu.pipeline_cache(),
         });
         let cull = cull_compute(if simple_cull {"cull_simple"} else {"cull"});
+        let cached_sun_cull=scene.gpu_forest.as_ref().map(|_| {
+            assert!(!simple_cull,"GPU forest requires cooperative cluster culling");
+            let layout=pl(&[&cull_scene_layout,&view_cull_layout,&crate::shadow_damage::mask_layout(gpu)]);
+            let make=|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label:Some(entry),layout:Some(&layout),module:&cull_mod,entry_point:Some(entry),
+                compilation_options:wgpu::PipelineCompilationOptions {constants:&cull_constants,..Default::default()},cache:gpu.pipeline_cache(),
+            });
+            (make("cull_cached_sun"),make("cull_spatial_cached_sun"))
+        });
         let static_sun = if std::env::var("KERN_STATIC_SUN_CACHE").as_deref() == Ok("1") {
             Some(crate::static_sun::StaticSun::new(gpu, scene, SHADOW_SIZE)
                 .expect("static sun cache exceeds device/source limits"))
@@ -2036,6 +2046,7 @@ impl Renderer {
             split_sun_cull,
             compact_cull,
             spatial_cull,
+            cached_sun_cull,
             sun_spatial_cull,
             headlight_spatial_cull,
             instance_groups,
@@ -2421,12 +2432,16 @@ impl Renderer {
                 label: Some("cull"),
                 timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
             });
-            let cull_pipeline = match kind {
+            let cull_pipeline = if damage.is_some() {
+                let cached=self.cached_sun_cull.as_ref().expect("GPU forest shadow damage culling");
+                if compact.is_some() {&cached.1}else{&cached.0}
+            }else{match kind {
                 RasterPass::SunStatic(_) => &self.split_sun_cull.as_ref().expect("enabled static sun cull").0,
                 RasterPass::SunDynamic(_) => &self.split_sun_cull.as_ref().expect("enabled dynamic sun cull").1,
                 _ => if recover {self.recover_tree_clusters.as_ref().unwrap()}else{compact.map_or(&self.cull, |(_, _, cull)| cull)},
-            };
+            }};
             pass.set_pipeline(cull_pipeline);
+            if let Some(mask)=damage {pass.set_bind_group(2,mask,&[]);}
             pass.set_bind_group(0, cull_scene_bind, &[]);
             pass.set_bind_group(1, cull_bind, &[]);
             if append && compact.is_none() && !recover {
@@ -5396,6 +5411,7 @@ mod layout_tests {
             (naga::ShaderStage::Compute, "spatial_select"), (naga::ShaderStage::Compute, "spatial_dispatch"),
             (naga::ShaderStage::Compute, "sun_spatial_select"), (naga::ShaderStage::Compute, "headlight_spatial_select"),
             (naga::ShaderStage::Compute, "cull_spatial"),
+            (naga::ShaderStage::Compute, "cull_cached_sun"), (naga::ShaderStage::Compute, "cull_spatial_cached_sun"),
             (naga::ShaderStage::Compute, "prepare_tree_phase"),
             (naga::ShaderStage::Compute, "finalize"), (naga::ShaderStage::Compute, "scatter")]),
             (&raster, vec![(naga::ShaderStage::Vertex, "vs")])] {
