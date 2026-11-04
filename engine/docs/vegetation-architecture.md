@@ -410,3 +410,45 @@ constraints must survive any changed rule; simply relaxing the error is not proo
 Next: isolate camera vs shadow demand, then implement per-consumer resident cuts
 and bounded raster admission within existing G2/G3 requirements.
 Evidence: build/playtest-unified/raster-profile-route.log.
+
+### Consumer isolation — shadow demand is not the primary raster cause
+
+Same executable, three alternating normal/camera-only240-frame runs at720p,120
+warm GPU samples. Camera-only sets sun_lux=0 and shadow_strength=0, confirmed
+shadow_only_roots=0. It changes lighting, so total-frame time/image is NOT a
+like-for-like visual comparison. Compare selection and camera raster workload only.
+
+| Mode | Final requested splats | Selection medians ms | Raster medians ms |
+| --- | ---: | --- | --- |
+| Combined | 4,495,774–4,495,775 | 2.516 / 2.658 / 2.508 | 2.252 / 2.505 / 2.251 |
+| Camera only | 4,651,051 | 1.704 / 1.699 / 1.680 | 2.575 / 2.439 / 2.331 |
+
+Removing shadow consumers does not solve excess camera raster work; it increases
+splat demand. G3 remains necessary but must not be claimed as the primary cure.
+Code inspection: ordinary root aggregate cook inherits just3 branch-local levels,
+although the packed representation ABI supports16 and reduction stops at1cell.
+Far roots can exhaust their coarse choices while still emitting subpixel records.
+A full root pyramid is under test; unchanged optical admission, cook output caps,
+branch/internal-group mip counts. Do not claim overflow fixed until normal runs.
+Evidence: build/playtest-unified/consumer-{combined,camera}-{1,2,3}.log/json.gpu.json.
+
+### Rejected root-pyramid experiment
+
+Extended only whole-root aggregate cooking from inherited3 levels to the existing
+validated8-level limit, stopping at1cell. Optical error policy and all cook caps
+unchanged.25 asset tests and15 runtime tests pass. Normal route nonetheless still
+requests4,380,565 splats (186,261 missing), versus4,495,774 previously: only2.6%
+fewer requests. Three covered GPU medians11.663/11.932/11.941ms; selection
+2.600/2.775/2.704ms, splat generation2.366/2.395/2.503ms, raster2.346/2.440/2.451ms.
+Timing comparisons are not alternating builds and must not be claimed as a gain.
+
+Visual check rejects the change: fewer detailed near crowns. Coarser support
+expands the shared root/chain bounds, changes visible demand and budget allocation:
+source slots802 vs880, camera roots41,196 vs40,697, emergency fallbacks46,310
+vs46,270. Asset correctness is insufficient for normal-renderer acceptance.
+**Production source restored to the pre-experiment default.** Reproducible code
+retained in `root-pyramid-experiment.patch`; it is NOT an active backend or option.
+Do not reapply as a fix without separating LOD/error support from allocation priority
+and implementing bounded incremental refinement. Existing G2/G3 remain the work.
+Evidence: build/playtest-unified/root-pyramid-{1,2,3}.log/json.gpu.json/png;
+root-pyramid-tests.log, root-pyramid-runtime.log.

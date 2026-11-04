@@ -1,3 +1,19 @@
+## 2026-11-04 Consumer isolation and REJECTED root-pyramid experiment
+
+Three combined/camera-only runs:4.496M vs4.651M camera splats. Shadow consumers
+are NOT primary cause. Reduced selection cost but more raster when removed.
+Tried root8-level full pyramid, kept branches/groups original and optical admission.
+25 asset+15 runtime tests pass. Normal3runs11.663/11.932/11.941ms covered720p1view,
+still4.381M splats/186261 missing. Near crowns worse; enlarged shared coarse bounds
+change root priority/demand and discard near detail. REJECTED, production source
+restored from committed HEAD, patch retained engine/docs/root-pyramid-experiment.patch.
+Current terrain_fly executable is EXPERIMENTAL, not restored! Do not launch it as
+accepted/playtest. Rebuild current source before next normal measurements.
+No GPU/build job running. Next substantive G2: complete resident cuts + incremental
+work budgets, separate allocation priority from conservative coarse-support bounds;
+G3 consumer details still needed but will not alone solve raster excess.
+Single authoritative checklist updated with rejection and all evidence.
+
 ## 2026-11-04 Offline splat footprint diagnostic
 
 Normal route --voxel-raster-profile now reports stored-record diameter bins and
