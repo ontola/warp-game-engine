@@ -144,13 +144,14 @@ fn by_chip()->Graphics {
 }
 #[cfg(target_os="macos")]
 fn chip_name()->Option<String> {
+    if let Some(chip)=app::emulate::chip_name() {return Some(chip);}
     let out=std::process::Command::new("/usr/sbin/sysctl").args(["-n","machdep.cpu.brand_string"]).output().ok()?;
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s|!s.is_empty())
 }
 #[cfg(not(target_os="macos"))]
-fn chip_name()->Option<String> {None}
+fn chip_name()->Option<String> {app::emulate::chip_name()}
 fn base_apple_chip(name:&str)->bool {
-    let Some(rest)=name.strip_prefix("Apple M") else {return false};
+    let Some(rest)=name.strip_suffix(" (emulated)").unwrap_or(name).strip_prefix("Apple M") else {return false};
     rest.trim_start_matches(|c:char|c.is_ascii_digit()).trim().is_empty()
 }
 #[cfg(test)] mod tests {
