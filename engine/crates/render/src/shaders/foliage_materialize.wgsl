@@ -102,6 +102,12 @@ fn evaluate_poses(@builtin(global_invocation_id) id:vec3<u32>) {
  m=rotate(m,axis,part.animation.x*state.wind.z*sin(state.wind.w*part.animation.y+part.animation.z));
  pose_cache[at].rows=m;atomicAdd(&pose_work[66],1u);
 }
+// Appearance identity must survive transient branch allocation and page IO.
+// A finite exactly representable float carries 24 hash bits in unused high.w.
+fn appearance_seed(root:u32,branch:u32)->f32 {
+ var h=root*0x9e3779b9u ^ roots[root].info.y*0x85ebca6bu ^ branch*0xc2b2ae35u;
+ h=(h^(h>>16u))*0x7feb352du;return f32((h^(h>>15u))&0xffffffu)+1.;
+}
 fn bounds(v:Volume,m:array<vec4<f32>,3>,lo:vec3<f32>,hi:vec3<f32>)->Volume {
  var result=v;var low=vec3<f32>(1e30);var high=-low;
  for(var i=0u;i<8u;i++){let p=point(m,vec3<f32>(select(lo.x,hi.x,(i&1u)!=0u),select(lo.y,hi.y,(i&2u)!=0u),select(lo.z,hi.z,(i&4u)!=0u)));low=min(low,p);high=max(high,p);}
@@ -121,6 +127,7 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
   if rep.y==1u {source.first=0u;}
   sources[owner]=source;
   var volume=bounds(branch.volume,m,branch.low.xyz,branch.high.xyz);volume.inverse=inverse(m);volume.identity.x=owner;
+  volume.high.w=appearance_seed(slot.key.x,rep.x);
   volumes[i]=volume;choices[i]=select(0u,1u|(rep.z<<2u)|512u,rep.y==1u);
   // Shadow consumers use the existing adaptive voxel-caster policy, even
   // when camera detail requires source needles. The trunk stays source:
@@ -146,6 +153,7 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
    volume.low.w=select(1.,0.,fallback[tree]!=0u);
    if fallback[tree]!=0u {history=0xffffffffu;}
   }
+  volume.high.w=appearance_seed(tree,root.info.z);
   volumes[i]=volume;
   let owner=original.identity.x;var source=sources[owner];source.rows=m;
   let previous=root_history[tree];var epoch=previous.z;

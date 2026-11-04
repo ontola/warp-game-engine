@@ -23,9 +23,12 @@ Start with the overview, then build and run something.
 one GPU route, shared assemblies, residency, wind and shadow consumers. Architecture
 integration takes precedence over visual tuning; old opt-in plans are historical.
 
+[Bounded voxel asset streaming](foliage-cache-2026-11-04.md): normal-frame demand
+service, pinned fallback, chunked uploads and eviction. Source paging still open.
+
 [Relocatable voxel page payloads](foliage-page-layout-2026-11-04.md): shared grid,
 cell and splat relocation; bounded allocation and address-independent appearance.
-Normal upload still keeps all pages resident; streaming service remains open.
+This report precedes the connected streaming service described above.
 
 [Asset demand and safe publication](foliage-asset-publication-2026-11-04.md): compact
 GPU requests, pinned fallback and generation validation; physical paging still open.

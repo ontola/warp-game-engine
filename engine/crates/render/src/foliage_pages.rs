@@ -1,9 +1,11 @@
 //! Relocatable voxel pages. Logical level IDs never encode physical addresses.
 //! Each page owns its grid/brick directory, sparse cells and splat references.
-//! The current renderer uploads all pages; bounded streaming is the next owner.
+//! The normal GPU forest uses cache::Cache for bounded demand-driven uploads.
 use crate::foliage_volume_data::{GpuForest,GpuLevel,GpuCell,BRICK_INDIRECTION,cell_index};
 use std::collections::BTreeMap;
 use std::ops::Range;
+#[path="foliage_page_cache.rs"]
+pub mod cache;
 
 #[derive(Clone,Debug)]
 pub struct VoxelPage {
@@ -89,7 +91,7 @@ impl Arena {
     }
 }
 
-/// Normal renderer upload: logical level order is stable, physical pages are
+/// Full-catalog packing oracle: logical level order is stable, physical pages are
 /// independently allocated (coarse/small pages first). All levels remain resident
 /// here; this is address translation, not yet a demand-driven streaming policy.
 pub fn pack(forest:&GpuForest)->Result<(GpuForest,Vec<[u32;2]>),String> {

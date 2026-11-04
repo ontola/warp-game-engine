@@ -364,6 +364,7 @@ pub(crate) struct VoxelRenderer {
     data_layout: wgpu::BindGroupLayout,
     composite_layout: wgpu::BindGroupLayout,
     data: [wgpu::Buffer; 4],
+    page_cache:Option<Mutex<crate::foliage_pages::cache::Cache>>,
     brick_catalog: wgpu::Buffer,
     bin_count: u32,
     count: u32,
@@ -450,7 +451,7 @@ fn sun_splat_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) ->
     gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("voxel_sun_splats"), layout: Some(layout),
         module: &module, entry_point: Some("voxel_sun_splats"), compilation_options: Default::default(), cache: gpu.pipeline_cache() })
 }
-fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgpu::BindGroupLayout, data_layout: &wgpu::BindGroupLayout, source: &str) -> SplatRaster {
+fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgpu::BindGroupLayout, data_layout: &wgpu::BindGroupLayout, source: &str, cells_override:Option<&wgpu::Buffer>) -> SplatRaster {
     let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxel splat raster"),
         entries: &[0].map(|binding| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
@@ -500,8 +501,8 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
     let sun_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("voxel sun splats"),
         bind_group_layouts: &[Some(scene_layout), Some(&empty_layout), Some(data_layout)], immediate_size: 0 });
     let sun_splats = sun_splat_pipeline(gpu, &sun_layout, source);
-    let cells_buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("voxel splat cells"), contents: bytemuck::cast_slice(cells), usage: wgpu::BufferUsages::STORAGE });
+    let cells_buffer = cells_override.cloned().unwrap_or_else(||gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("voxel splat cells"), contents: bytemuck::cast_slice(cells), usage: wgpu::BufferUsages::STORAGE }));
     SplatRaster { main_pipeline, cells: cells_buffer, capacity, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_raster,
         sun_target: Mutex::new(Vec::new()) }
 }
@@ -667,11 +668,10 @@ impl VoxelRenderer {
         if forest.instances.is_empty() {
             return None;
         }
-        // Stable logical levels, independently allocated physical voxel pages.
-        // Camera splats, sun splats and ray integration all use this same upload.
-        let paged = scene.gpu_forest.as_ref().map(|_| crate::foliage_pages::pack(forest)
-            .expect("invalid GPU forest voxel pages"));
-        let forest = paged.as_ref().map(|p|&p.0).unwrap_or(forest);
+        let page_cache=scene.gpu_forest.as_ref().map(|spec| {
+            let(deps,pinned)=spec.voxel_page_dependencies(forest.levels.len())?;
+            crate::foliage_pages::cache::Cache::new(gpu,forest,deps,pinned,spec.page_budget)
+        }).transpose().expect("invalid bounded GPU forest voxel cache");
         let far = scene.voxel_far_distance_m;
         assert!(far.is_finite() && far >= 0.0, "invalid far tree distance");
         let proxies = scene.voxel_proxies.min(forest.instances.len() as u32);
@@ -689,9 +689,9 @@ impl VoxelRenderer {
                 })
         };
         let data = [
-            upload("voxel levels", bytemuck::cast_slice(&forest.levels)),
-            upload("voxel indices", bytemuck::cast_slice(&forest.indices)),
-            upload("voxel cells", bytemuck::cast_slice(&forest.cells)),
+            page_cache.as_ref().map(|c|c.buffers[0].clone()).unwrap_or_else(||upload("voxel levels", bytemuck::cast_slice(&forest.levels))),
+            page_cache.as_ref().map(|c|c.buffers[1].clone()).unwrap_or_else(||upload("voxel indices", bytemuck::cast_slice(&forest.indices))),
+            page_cache.as_ref().map(|c|c.buffers[2].clone()).unwrap_or_else(||upload("voxel cells", bytemuck::cast_slice(&forest.cells))),
             gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("voxel trees"),
                 contents: bytemuck::cast_slice(&forest.instances),
@@ -782,6 +782,7 @@ impl VoxelRenderer {
             });
         let source = shader_source();
         let mut integrator_options = IntegratorOptions::from_environment();
+        if page_cache.is_some(){integrator_options.brick_visibility=false;}
         // Far trees exist only as rasterized voxels; aggregate plants use them
         // too unless KERN_VOXEL_RASTER=0 asks for the ray integrator.
         integrator_options.raster |= far > 0.0 || proxies > 0
@@ -808,7 +809,7 @@ impl VoxelRenderer {
             .expect("invalid voxel integrator option shader");
         let [bins, tiles, clear, integrate,intervals,scatter,splats,resolve] = pipelines(gpu, &pipeline_layout, &specialized_source, scene.voxel_active_tiles,integrator_options.global_intervals);
         let gbuffer = surface_pipeline(gpu, &pipeline_layout, &specialized_source);
-        let brick_hzb = brick_hzb_enabled().then(|| crate::depth_pyramid::DepthPyramid::new(gpu));
+        let brick_hzb = (page_cache.is_none() && brick_hzb_enabled()).then(|| crate::depth_pyramid::DepthPyramid::new(gpu));
         let selection = splat_selection_pipelines(gpu, &pipeline_layout, &specialized_source);
         let second = brick_hzb.as_ref().map(|_| second_splat_pipeline(gpu, &pipeline_layout, &specialized_source));
         eprintln!("voxel integrator: interval_capacity=64 active_capacity=16 empty_ceiling={} (accepted skip fix; bounded prototype, complete scan on cache overflow)",
@@ -817,11 +818,11 @@ impl VoxelRenderer {
             integrator_options.antipodal_normals,if integrator_options.antipodal_normals {3}else{6});
         eprintln!("voxel global intervals: enabled={} stream_bytes_per_view={} maximum_pixel_slots={} (experimental; complete scan on overflow)",
             integrator_options.global_intervals,INTERVAL_STREAM_BYTES,INTERVAL_STREAM_PIXEL_SLOTS);
-        let raster = if integrator_options.raster { match if brick_hzb.is_some() { splat_cells_bricked(forest) } else if let Some(paged)=&paged { Ok(paged.1.clone()) } else { splat_cells(forest) } {
+        let raster = if integrator_options.raster { match if brick_hzb.is_some() { splat_cells_bricked(forest) } else { splat_cells(forest) } {
             Ok(cells) if cells.len() > forest.levels.len() => {
                 let capacity = splat_capacity(forest, &cells);
                 eprintln!("voxel raster: enabled cells={} splats_per_view={capacity} (stochastic opaque voxels; integrator off)", cells.len() - forest.levels.len());
-                Some(splat_raster(gpu, &cells, capacity, scene_layout, &data_layout, &specialized_source))
+                Some(splat_raster(gpu, &cells, capacity, scene_layout, &data_layout, &specialized_source,page_cache.as_ref().map(|c|&c.buffers[3])))
             }
             Ok(_) => { eprintln!("voxel raster fallback: no occupied cells"); None }
             Err(error) => { eprintln!("voxel raster fallback: {error}"); None }
@@ -898,6 +899,7 @@ impl VoxelRenderer {
             data_layout,
             composite_layout,
             data,
+            page_cache:page_cache.map(Mutex::new),
             brick_catalog,
             bin_count,
             count: forest.instances.len() as u32,
@@ -915,6 +917,11 @@ impl VoxelRenderer {
             targets: Mutex::new(Vec::new()),
         })
     }
+    pub(crate) fn initialize_pages(&self,gpu:&Gpu,runtime:&crate::foliage_runtime::Runtime)->Result<(),String>{if let Some(cache)=&self.page_cache {cache.lock().unwrap().initialize(gpu,runtime.asset_selector())?;}Ok(())}
+    pub(crate) fn service_pages(&self,gpu:&Gpu,runtime:&crate::foliage_runtime::Runtime)->Result<(),String>{if let Some(cache)=&self.page_cache {cache.lock().unwrap().service(gpu,runtime.asset_selector())?;}Ok(())}
+    #[cfg(test)]
+    pub(crate) fn warm_page_fixture(&self,gpu:&Gpu,runtime:&crate::foliage_runtime::Runtime){if let Some(cache)=&self.page_cache{cache.lock().unwrap().warm_fixture(gpu,runtime.asset_selector()).unwrap();}}
+    pub(crate) fn page_stats(&self)->Option<crate::foliage_pages::cache::Stats>{self.page_cache.as_ref().map(|c|c.lock().unwrap().stats())}
     /// Shared rigid-part compute writes poses before volume tile/bin passes.
     /// Asset grids and cells remain immutable; the 96-byte tree layout is unchanged.
     pub(crate) fn has_visibility_stream(&self)->bool {self.integrator_options.global_intervals}

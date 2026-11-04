@@ -48,7 +48,8 @@ fn hash(x: u32) -> u32 {
     let up = normalize(vec3<f32>(view_proj[0].y, view_proj[1].y, view_proj[2].y));
     // Local cell coordinate is stable when physical asset pages relocate.
     // record.y is a physical cell address and must never seed appearance.
-    out.key = hash(record.x) ^ record.z;
+    // Packed appearance seed comes from stable root/branch identity when available.
+    out.key = hash(record.w >> 19u) ^ record.z;
     // A stable offset of up to a quarter cell: discs do not line up in rows.
     let jitter = vec2<f32>(f32(hash(out.key) & 0xffffu), f32(hash(out.key ^ 0x9e3779b9u) & 0xffffu)) / 65535.0 - 0.5;
     let shift = (right * jitter.x + up * jitter.y) * 0.5 * grid.w * scale;

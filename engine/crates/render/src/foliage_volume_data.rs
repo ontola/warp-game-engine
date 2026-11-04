@@ -135,6 +135,7 @@ pub struct GpuTree {
     /// Rows of world-to-local affine transform, including translation.
     pub inverse: [[f32; 4]; 3],
     pub bounds_min: [f32; 4],
+    /// xyz bounds; w=0 for legacy, positive exact-float appearance seed for GPU forest.
     pub bounds_max: [f32; 4],
     /// Source owner, first packed level, level count, crown material.
     pub meta: [u32; 4],

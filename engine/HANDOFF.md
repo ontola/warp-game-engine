@@ -1,3 +1,34 @@
+## 2026-11-04 Bounded normal-path voxel cache and stable surface identity
+
+Normal GPU forest now owns bounded index/cell/splat arenas, async GPU demand
+feedback, whole-dependency-bundle admission, chunked uploads, LRU eviction and
+generation-safe publication. Root fallback stays pinned. CPU services asset IO;
+GPU still selects roots/branches. Source geometry and CPU catalogs remain fully
+resident. All 116 foliage-filter checks PASS, including real two-page eviction,
+44-byte frame upload budget/raw payload checks and normal-renderer cold start.
+
+Fixed another address-dependent appearance defect: splat raster and rounded
+surface normals now share root-generation/branch/local-cell identity. Across
+three alternating same-shader control/cache pairs RGB MAE 0.02365-0.02371/255,
+p99 1. Native 1713x964 one-view covered medians 10.583 -> 10.625 ms; no speedup
+claim. 4K/four-player 8.33 ms remains unproven. Separate feedback/upload queue
+cost is outside main-frame timestamps. Default loads 27 -> 507 pages by frame
+61, 65,908,804 allocated cache bytes. 48-MiB cell pressure: 327 resident pages,
+62,257,508 bytes total, zero churn over 180 frames, reduced-detail fallback.
+
+Evidence: docs/foliage-cache-2026-11-04.md and matching evidence JSON; local
+build/foliage-cache. Temporary unstreamed control edit restored. A stale mtime
+initially reused the control binary; excluded those results, rebuilt with fresh
+mtime and guards on executable hashes/nonempty cache telemetry.
+
+NEXT: source paging needs ONE publication owner combining source + voxel
+availability. Independent writers to selector resident bits would be unsafe.
+Keep logical cluster metadata stable, relocate vertex/index payloads, explicitly
+pin non-vegetation/skinned ownership. Also open: tighter ancestor pins and
+intermediate fallback, upstream shared history/publication, animated dirty-page
+shadows, unified meadow/trees, far cell aggregates, growth/content lifecycle.
+Goal remains active; architecture is not complete. No interactive playtest opened.
+
 ## 2026-11-04 Relocatable voxel pages on the normal renderer upload
 
 New foliage_pages cooks self-contained dense/brick levels, local cell payloads
