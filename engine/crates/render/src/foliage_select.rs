@@ -66,6 +66,7 @@ fn validate(nodes:&[Node],instances:&[Instance],capacity:u32)->Result<(),String>
     for (i,n) in nodes.iter().enumerate() {
         while ends.last()==Some(&i) {ends.pop();}
         if !n.sphere.iter().chain(n.error.iter()).all(|x|x.is_finite()) || n.sphere[3]<0. || n.error[0]<0. || n.error[1]<0.
+            || n.error[2..].iter().any(|v|*v<0. || *v>16777216. || v.fract()!=0.)
             || n.links[1]as usize<=i || n.links[1]as usize>nodes.len()
             || ends.last().is_some_and(|&end|n.links[1]as usize>end) {
             return Err("invalid foliage subtree bounds/escape".into());
@@ -89,6 +90,7 @@ fn validate(nodes:&[Node],instances:&[Instance],capacity:u32)->Result<(),String>
     }
     for t in instances {
         if t.info[0]as usize>=nodes.len() || !t.rows.iter().flatten().chain(t.scale.iter()).all(|v|v.is_finite())
+            || t.scale[2..].iter().any(|v|*v<0. || *v>16777216. || v.fract()!=0.)
             || t.scale[0]<=0. || t.scale[1]<0. {return Err("invalid foliage instance".into());}
         // ||A||2 <= sqrt(||A||1 * ||A||infinity); permits nonuniform scales and
         // shear without unsafe culling. A supplied larger bound is fine.
@@ -100,7 +102,7 @@ fn validate(nodes:&[Node],instances:&[Instance],capacity:u32)->Result<(),String>
 }
 
 pub struct Selector {
-    pub(crate) _nodes:wgpu::Buffer,pub(crate) _instances:wgpu::Buffer,uniform:wgpu::Buffer,
+    pub(crate) _nodes:wgpu::Buffer,pub(crate) _instances:wgpu::Buffer,pub(crate) uniform:wgpu::Buffer,
     /// vec4(instance ID, node ID, representation ID, generation).
     pub records:wgpu::Buffer,
     pub asset_requests:wgpu::Buffer,pub(crate) asset_pages:wgpu::Buffer,asset_state:std::sync::Mutex<Vec<[u32;4]>>,pinned_pages:Vec<bool>,compact_assets:wgpu::ComputePipeline,
@@ -116,10 +118,11 @@ pub struct Selector {
     pub fallback:wgpu::Buffer,
     /// Whole-tree representation + 1; zero means branches or culled. No branch slot needed.
     pub direct:wgpu::Buffer,
-    children:wgpu::Buffer,work:[wgpu::Buffer;2],levels:u32,seed_demand:wgpu::ComputePipeline,seed_emit:wgpu::ComputePipeline,prepare_wave:wgpu::ComputePipeline,count_wave:wgpu::ComputePipeline,emit_wave:wgpu::ComputePipeline,
-    pub(crate) demand:wgpu::Buffer,bucket_cost:wgpu::Buffer,prefix_demand:wgpu::ComputePipeline,prefix_buckets:wgpu::ComputePipeline,
+    children:wgpu::Buffer,work:[wgpu::Buffer;2],pub(crate) levels:u32,
+    pub(crate) demand:wgpu::Buffer,bucket_cost:wgpu::Buffer,
     layout:wgpu::BindGroupLayout,first:wgpu::ComputePipeline,second:wgpu::ComputePipeline,finish:wgpu::ComputePipeline,
-    count:u32,capacity:u32,deferred_capacity:u32,
+    pub(crate) count:u32,capacity:u32,deferred_capacity:u32,
+    pub(crate) refiner:crate::foliage_refine::Refiner,
     binds:std::sync::Mutex<crate::frame::resource_cache::BindGroups<4>>,
 }
 impl Selector {
@@ -162,7 +165,7 @@ impl Selector {
             || deferred_capacity.div_ceil(64)>gpu.device.limits().max_compute_workgroups_per_dimension {
             return Err("foliage dispatch capacity exceeds device".into());
         }
-        for bytes in [children.len()as u64*4,16+work_capacity as u64*8,instances.len()as u64*16,(instances.len().div_ceil(256)as u64+1)*128,std::mem::size_of_val(nodes)as u64,std::mem::size_of_val(instances)as u64,capacity as u64*16,deferred_capacity as u64*8,instances.len()as u64*4] {
+        for bytes in [work_capacity as u64*80,children.len()as u64*4,16+work_capacity as u64*8,instances.len()as u64*16,(instances.len().div_ceil(256)as u64+1)*128,std::mem::size_of_val(nodes)as u64,std::mem::size_of_val(instances)as u64,capacity as u64*16,deferred_capacity as u64*8,instances.len()as u64*4] {
             if bytes>gpu.device.limits().max_storage_buffer_binding_size as u64 {return Err("foliage buffer exceeds device binding limit".into());}
         }
         crate::shaders::checked(gpu,|| {
@@ -179,12 +182,12 @@ impl Selector {
             let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("foliage GPU selection"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage GPU selection"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_select.wgsl").into())});
             let make=|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
-            Self {asset_pages:upload("foliage asset publication",bytemuck::cast_slice(&asset_state)),asset_requests:storage("foliage compact asset demand",16+page_count as u64*16),asset_state:std::sync::Mutex::new(asset_state),pinned_pages,compact_assets:make("compact_asset_requests"),children:upload("shared foliage child spans",bytemuck::cast_slice(&children)),work:[storage("foliage frontier A",16+work_capacity as u64*8),storage("foliage frontier B",16+work_capacity as u64*8)],levels,
-                seed_demand:make("seed_demand"),seed_emit:make("seed_emit"),prepare_wave:make("prepare_wave"),count_wave:make("count_wave"),emit_wave:make("emit_wave"),_nodes:upload("shared foliage hierarchy",bytemuck::cast_slice(nodes)),_instances:upload("persistent foliage instances",bytemuck::cast_slice(instances)),uniform,
+            Self {refiner:crate::foliage_refine::Refiner::new(gpu,work_capacity),asset_pages:upload("foliage asset publication",bytemuck::cast_slice(&asset_state)),asset_requests:storage("foliage compact asset demand",16+page_count as u64*16),asset_state:std::sync::Mutex::new(asset_state),pinned_pages,compact_assets:make("compact_asset_requests"),children:upload("shared foliage child spans",bytemuck::cast_slice(&children)),work:[storage("unused legacy frontier A",24),storage("unused legacy frontier B",24)],levels,
+                _nodes:upload("shared foliage hierarchy",bytemuck::cast_slice(nodes)),_instances:upload("persistent foliage instances",bytemuck::cast_slice(instances)),uniform,
                 records:storage("selected foliage records",capacity as u64*16),deferred:storage("deferred foliage subtrees",deferred_capacity as u64*8),
                 counters:storage("foliage selection counters",64),arguments:storage("foliage indirect arguments",24),fallback:storage("foliage root fallbacks",instances.len()as u64*4),
                 direct:storage("direct resident forest roots",instances.len()as u64*4),
-                demand:storage("forest root demand",instances.len()as u64*16),bucket_cost:storage("forest priority costs",(instances.len().div_ceil(256)as u64+1)*128),prefix_demand:make("prefix_demand"),prefix_buckets:make("prefix_buckets"),first:make("first"),second:make("second"),finish:make("finish"),layout,count:instances.len()as u32,capacity,deferred_capacity,binds:Default::default()}
+                demand:storage("forest root demand",instances.len()as u64*16),bucket_cost:storage("forest priority costs",(instances.len().div_ceil(256)as u64+1)*128),first:make("first"),second:make("second"),finish:make("finish"),layout,count:instances.len()as u32,capacity,deferred_capacity,binds:Default::default()}
         })
     }
     /// Publish at a frame boundary, after the associated data upload is ordered
@@ -243,43 +246,26 @@ impl Selector {
     /// Frame-wide camera/shadow union. Shadow consumers retain demand even
     /// when cameras cannot see their casters; only cameras get budget priority.
     pub fn union_consumers(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[ConsumerView],error:f32,branch_budget:u32,empty_depth:&wgpu::TextureView)->Result<(),String> {
+        self.union_consumers_budget(gpu,enc,views,error,branch_budget,[4<<20;2],empty_depth)
+    }
+    /// Physical per-view record capacities, not a visual-quality switch. The
+    /// union reservation is conservative across all camera/shadow consumers.
+    pub fn union_consumers_budget(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[ConsumerView],error:f32,branch_budget:u32,raster_budget:[u32;2],empty_depth:&wgpu::TextureView)->Result<(),String> {
         if branch_budget==0 || branch_budget>self.capacity || views.is_empty() || views.len()>32 || !error.is_finite() || error<=0. {return Err("invalid foliage consumer union".into());}
         let mut consumers=[Consumer::zeroed();32];
         for (dst,v) in consumers.iter_mut().zip(views) {
             *dst=v.packed()?;
         }
-        gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers,consumer_count:[views.len()as u32,branch_budget,0,0],
+        gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers,consumer_count:[views.len()as u32,branch_budget,raster_budget[0],raster_budget[1]],
             vp:views[0].projection.view_projection.to_cols_array(),previous_vp:views[0].projection.view_projection.to_cols_array(),pixels:[0.,0.,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,0]}));
         enc.clear_buffer(&self.counters,0,None);enc.clear_buffer(&self.fallback,0,None);enc.clear_buffer(&self.direct,0,None);
         let binds=[self.bind_work(gpu,empty_depth,0),self.bind_work(gpu,empty_depth,1)];
-        enc.clear_buffer(&self.work[0],0,Some(16));
-        {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);
-         pass.set_pipeline(&self.seed_demand);pass.dispatch_workgroups(self.count.div_ceil(64),1,1);}
-        self.waves(enc,&binds,&self.count_wave);
-        {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);
-         pass.set_pipeline(&self.prefix_demand);pass.dispatch_workgroups(self.count.div_ceil(256),1,1);
-         pass.set_pipeline(&self.prefix_buckets);pass.dispatch_workgroups(1,1,1);}
-        enc.clear_buffer(&self.work[0],0,Some(16));
-        {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);
-         pass.set_pipeline(&self.seed_emit);pass.dispatch_workgroups(self.count.div_ceil(64),1,1);}
-        self.waves(enc,&binds,&self.emit_wave);
+        self.refiner.encode(gpu,enc,self);
         enc.clear_buffer(&self.asset_requests,0,Some(16));
         {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);pass.set_pipeline(&self.compact_assets);pass.dispatch_workgroups((self.pinned_pages.len()as u32).div_ceil(64),1,1);}
         {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);
          pass.set_pipeline(&self.finish);pass.dispatch_workgroups(1,1,1);}
         enc.copy_buffer_to_buffer(&self.counters,48,&self.arguments,12,12);Ok(())
-    }
-    fn waves(&self,enc:&mut wgpu::CommandEncoder,binds:&[wgpu::BindGroup;2],pipeline:&wgpu::ComputePipeline) {
-        // The immutable recipe depth bounds submission, not CPU visibility.
-        // Empty frontiers dispatch zero workgroups, without a GPU readback.
-        for level in 0..self.levels {
-            let bind=&binds[level as usize%2];
-            {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,bind,&[]);
-             pass.set_pipeline(&self.prepare_wave);pass.dispatch_workgroups(1,1,1);}
-            enc.copy_buffer_to_buffer(&self.counters,32,&self.arguments,0,12);
-            let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,bind,&[]);
-            pass.set_pipeline(pipeline);pass.dispatch_workgroups_indirect(&self.arguments,0);
-        }
     }
     /// Appends recovered records. This prototype requires final consumption after
     /// both phases: phase-one depth may seed HZB, but final color selection must
@@ -344,6 +330,53 @@ mod tests {
    wgpu::TexelCopyBufferLayout {offset:0,bytes_per_row:Some(32),rows_per_image:Some(8)},wgpu::Extent3d {width:8,height:8,depth_or_array_layers:1});
   tex.create_view(&Default::default())
  }
+
+
+ #[test]
+ #[ignore="exclusive GPU forced-root priority fixture"]
+ fn gpu_zero_error_fallback_refinement_prioritizes_near_root() {
+  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(2);
+  trees[0].rows[2][3]=-50.;trees[1].rows[2][3]=-2.;
+  for t in &mut trees {t.scale[2]=1.;t.scale[3]=1.;}
+  let nodes=[Node {sphere:[0.,0.,0.5,0.3],error:[0.,0.,1.,1.],links:[1,2,0,3]},
+   Node {sphere:[0.,0.,0.5,0.2],error:[0.,0.,200.,200.],links:[NONE,2,1,2]}];
+  let selector=Selector::new(&gpu,&nodes,&trees,2,2).unwrap();let empty=depth(&gpu,0.);
+  let views=[ConsumerView::camera(crate::part_wind::AnimationView {view_projection:Mat4::perspective_infinite_reverse_rh(1.,1.,0.05),viewport:[128;2]})];
+  for _ in 0..3 {
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union_consumers_budget(&gpu,&mut enc,&views,0.01,2,[201;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
+   assert_eq!(read(&gpu,&selector.direct),[1,2]);assert_eq!(read(&gpu,&selector.fallback),[0,0]);
+   assert_eq!(read(&gpu,&selector.refiner.state)[1],201);
+  }
+ }
+ #[test]
+ #[ignore="exclusive GPU incremental raster and branch reservation fixture"]
+ fn gpu_incremental_refinement_retains_mixed_complete_cuts() {
+  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].scale[2]=1.;trees[0].scale[3]=1.;
+  let n=|radius,error,first,end,rep,flags,cost|Node {sphere:[0.,0.,0.5,radius],error:[error,0.,cost,cost],links:[first,end,rep,flags]};
+  let nodes=vec![n(0.3,1.,1,7,0,2,5.),n(0.2,1.,2,4,1,0,10.),n(0.1,0.,NONE,3,2,0,15.),n(0.1,0.,NONE,4,3,0,15.),
+   n(0.2,1.,5,7,4,0,10.),n(0.1,0.,NONE,6,5,0,15.),n(0.1,0.,NONE,7,6,0,15.)];
+  let selector=Selector::new(&gpu,&nodes,&trees,16,16).unwrap();let empty=depth(&gpu,0.);
+  let projection=crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]};
+  let consumers=[ConsumerView::camera(projection),ConsumerView::shadow(projection)];
+  let draw=|slots,cap| {
+   let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers_budget(&gpu,&mut enc,&consumers,0.01,slots,[cap;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
+   let counters=read(&gpu,&selector.counters);let count=counters[0]as usize;
+   let mut cut=read(&gpu,&selector.records).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();
+   let state=read(&gpu,&selector.refiner.state);
+   assert!(state[0]<=slots && state[1]<=cap && state[2]<=cap,"reservation {state:?}");assert_eq!(state[15],0);
+   assert_eq!(counters[3],0);assert_eq!(read(&gpu,&selector.fallback),[0]);
+   cut
+  };
+  for _ in 0..4 {
+   assert_eq!(draw(4,60),[2,3,5,6]);
+   assert_eq!(draw(3,40),[2,3,4]);
+   assert_eq!(draw(2,60),[1,4]);
+   assert!(draw(4,10).is_empty());assert_eq!(read(&gpu,&selector.direct),[1]);
+  }
+  selector.publish_asset_pages(&gpu,&[(2,false,2)]).unwrap();
+  assert_eq!(draw(4,60),[1,5,6]);
+ }
  #[test]
  #[ignore="exclusive GPU resident ancestor publication fixture"]
  fn gpu_missing_detail_keeps_nearest_complete_ancestor() {
@@ -366,7 +399,7 @@ mod tests {
   selector.publish_asset_pages(&gpu,&[(1,false,1)]).unwrap();assert!(draw(16).is_empty());
   assert_eq!(read(&gpu,&selector.direct),[1],"missing immediate child retains whole resident root");
   selector.publish_asset_pages(&gpu,&[(1,true,2),(3,false,1)]).unwrap();assert_eq!(draw(16),[1,5,6]);
-  assert!(draw(2).is_empty());assert_eq!(read(&gpu,&selector.fallback),[2],"budget cannot publish a partial ancestor cut");
+  assert_eq!(draw(2),[1,4]);assert_eq!(read(&gpu,&selector.fallback),[0],"budget retains both complete intermediate parents");
   selector.publish_asset_pages(&gpu,&[(3,true,2)]).unwrap();assert_eq!(draw(16),[2,3,5,6]);
  }
  #[test]
@@ -408,7 +441,7 @@ mod tests {
  #[ignore="exclusive GPU consumer ownership and budget fixture"]
  fn gpu_consumer_demand_distinguishes_camera_and_shadow_only_roots() {
   use crate::part_wind::AnimationView;
-  let gpu=Gpu::new().unwrap();let (nodes,mut trees)=fixture(3);
+  let gpu=Gpu::new().unwrap();let (mut nodes,mut trees)=fixture(3);nodes[0].links[3]=2;
   trees[1].rows[0][3]=4.;trees[2].rows[0][3]=8.;
   let selector=Selector::new(&gpu,&nodes,&trees,6,6).unwrap();let empty=depth(&gpu,0.);
   let at=|x:f32|AnimationView {view_projection:Mat4::from_translation(glam::Vec3::new(-x,0.,0.)),viewport:[128;2]};
@@ -417,8 +450,9 @@ mod tests {
    let mut enc=gpu.device.create_command_encoder(&Default::default());
    selector.union_consumers(&gpu,&mut enc,&consumers,0.01,2,&empty).unwrap();gpu.queue.submit([enc.finish()]);
    let demand=read(&gpu,&selector.demand);assert_eq!(demand[1]&768,768);assert_eq!(demand[5]&768,512);assert_eq!(demand[9]&768,0);
-   assert_eq!(demand[0],2);assert_eq!(demand[4],2);assert_eq!(demand[8],0);
-   assert_eq!(read(&gpu,&selector.fallback),[0,2,0],"orthographic camera retains budget priority over shadow-only root");
+   assert_eq!(demand[0],2);assert_eq!(demand[4],0);assert_eq!(demand[8],0);
+   assert_eq!(read(&gpu,&selector.fallback),[0,0,0]);
+   assert_eq!(read(&gpu,&selector.direct),[0,91,0],"shadow-only root retains its complete coarse representation");
    assert_eq!(read(&gpu,&selector.counters)[0],2);
    consumers.reverse();
   }
@@ -468,10 +502,9 @@ mod tests {
      assert_eq!(counts[0],0);assert_eq!(counts[7],193);assert_eq!(counts[11],0);
      assert!(fallback.iter().all(|&f|f==0));assert!(direct.iter().all(|&d|d==1));
     } else {
-     let valid=reference.iter().filter(|r|fallback[r[0]as usize]==0).cloned().collect::<Vec<_>>();
-     assert_eq!(actual,valid);assert!(direct.iter().all(|&d|d==0));
-     if work_capacity==4096 {assert_eq!(actual,reference);assert_eq!(counts[11],0);assert_eq!(counts[15],772);}
-     else {assert!(counts[11]>0);assert!(fallback.contains(&3));}
+     assert!(fallback.iter().all(|&f|f==0));
+     if work_capacity==4096 {assert_eq!(actual,reference);assert!(direct.iter().all(|&d|d==0));assert_eq!(counts[11],0);assert_eq!(counts[15],772);}
+     else {assert!(counts[11]>0);assert!(actual.is_empty());assert!(direct.iter().all(|&d|d==1),"frontier exhaustion retains the complete parent for every root");}
     }
    }
   }
@@ -479,7 +512,7 @@ mod tests {
  #[test]
  #[ignore="exclusive GPU budget fixture"]
  fn gpu_union_budget_prioritizes_complete_near_cuts() {
-  let gpu=Gpu::new().unwrap();let (nodes,mut trees)=fixture(1025);
+  let gpu=Gpu::new().unwrap();let (mut nodes,mut trees)=fixture(1025);nodes[0].links[3]=2;
   // Put far trees first in storage. A queue racing to fill would favor them.
   for t in &mut trees {t.rows[2][3]=-50.;}
   trees[1024].rows[2][3]=-2.;
@@ -492,7 +525,8 @@ mod tests {
    selector.union(&gpu,&mut enc,&views,0.0001,2,&hzb).unwrap();
    residency.encode(&mut enc);gpu.queue.submit([enc.finish()]);
    let counts=read(&gpu,&selector.counters);let f=read(&gpu,&selector.fallback);
-   assert_eq!(counts[0],2);assert!(f[..1024].iter().all(|&v|v==2));assert_eq!(f[1024],0);
+   assert_eq!(counts[0],2);assert!(f.iter().all(|&v|v==0));
+   let direct=read(&gpu,&selector.direct);assert!(direct[..1024].iter().all(|&v|v==91));assert_eq!(direct[1024],0);
    let records=read(&gpu,&selector.records);assert_eq!(records[0],1024);assert_eq!(records[4],1024);
    let stats=read(&gpu,&residency.counters);assert_eq!(stats[4],0);assert_eq!(stats[6],2);
   }
