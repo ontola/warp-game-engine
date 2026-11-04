@@ -136,7 +136,10 @@ impl Selector {
         let page_count=nodes.iter().map(|n|n.links[2]).max().unwrap_or(0).checked_add(1).ok_or("asset page ID overflow")?;
         if page_count>1<<20 {return Err("asset page catalog exceeds bounded request capacity".into());}
         let mut pinned_pages=vec![false;page_count as usize];
-        for n in nodes {if n.links[3]&2!=0 {pinned_pages[n.links[2]as usize]=true;}}
+        // Only the complete root fallback is mandatory. Whole-root detail
+        // candidates also use bit 1, but must remain evictable.
+        let mut root=0usize;
+        while root<nodes.len() {let n=&nodes[root];if n.links[3]&2!=0 {pinned_pages[n.links[2]as usize]=true;}root=n.links[1]as usize;}
         let mut asset_state=vec![[1u32,0,1,0];page_count as usize];asset_state[0][3]=1;
         let mut ends=Vec::new();let mut levels=0;
         for (i,node) in nodes.iter().enumerate() {

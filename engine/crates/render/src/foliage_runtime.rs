@@ -37,11 +37,20 @@ impl Spec {
         let range=|v:GpuTree|->Result<Vec<usize>,String>{let start=v.meta[1]as usize;let end=start.checked_add(v.meta[2]as usize).ok_or("voxel dependency overflow")?;if end>levels{return Err("voxel dependency outside catalog".into());}Ok((start..end).collect())};
         for proxy in &self.proxies {for id in range(*proxy)?{pinned[id]=true;}}
         let deps=self.representations.iter().map(|rep|{let branch=&self.branches[rep[0]as usize];
-            // Source trunk casts source shadows; all other branches may select
-            // adaptive voxel shadow mips independently of the camera mip.
-            if rep[1]==0 && branch.info[1]==0 {Ok(Vec::new())}else{range(branch.volume)}
+            if rep[1]==1 && branch.info[0]==NONE {
+                // Direct whole-root rendering publishes exactly the chosen mip
+                // (materialize identity.z=1), including its shadow consumer.
+                let levels=range(branch.volume)?;
+                Ok(vec![*levels.get(rep[2]as usize).ok_or("root voxel mip outside catalog")?])
+            } else if rep[1]==0 && branch.info[1]==0 {Ok(Vec::new())}
+            // Articulated slots still let shadow consumers choose an adaptive
+            // mip independently: keep their complete mip bundle resident.
+            else{range(branch.volume)}
         }).collect::<Result<Vec<_>,String>>()?;
-        for node in &self.nodes {if node.links[3]&2!=0 {for &id in &deps[node.links[2]as usize]{pinned[id]=true;}}}
+        for template in &self.templates {
+            let node=&self.nodes[template.node as usize];
+            for &id in &deps[node.links[2]as usize]{pinned[id]=true;}
+        }
         Ok((deps,pinned))
     }
 }
@@ -52,6 +61,12 @@ fn rows(m:Mat4)->[[f32;4];3] {[m.row(0).to_array(),m.row(1).to_array(),m.row(2).
 fn matrix(r:[[f32;4];3])->Mat4 {Mat4::from_cols(
     Vec4::new(r[0][0],r[1][0],r[2][0],0.),Vec4::new(r[0][1],r[1][1],r[2][1],0.),
     Vec4::new(r[0][2],r[1][2],r[2][2],0.),Vec4::new(r[0][3],r[1][3],r[2][3],1.))}
+/// The emergency stand-in must not pin its entire high-resolution mip chain.
+/// Ordinary root detail is requested separately through the selection hierarchy.
+fn coarse_proxy(mut v:GpuTree)->Result<GpuTree,String> {
+    v.meta[1]=v.meta[1].checked_add(v.meta[2].checked_sub(1).ok_or("empty root proxy")?).ok_or("root proxy mip overflow")?;
+    v.meta[2]=1;Ok(v)
+}
 fn local_bounds(v:GpuTree)->([f32;4],[f32;4]) {
     let inverse=matrix(v.inverse);let mut low=Vec3::splat(f32::INFINITY);let mut high=-low;
     for i in 0..8 {let p=Vec3::new(if i&1==0{v.bounds_min[0]}else{v.bounds_max[0]},
@@ -127,8 +142,8 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
     builder.finish_aggregate(policy)?;
     let mut forest=scene.voxel_forest.take().ok_or("GPU forest has no volumes")?;
     let proxy_start=forest.instances.len()-trees.len();
-    let proxies=forest.instances[proxy_start..].to_vec();
-    let template_volumes=forest.instances[proxy_start-plants.len()..proxy_start].to_vec();
+    let proxies=forest.instances[proxy_start..].iter().copied().map(coarse_proxy).collect::<Result<Vec<_>,_>>()?;
+    let template_volumes=forest.instances[proxy_start-plants.len()..proxy_start].iter().copied().map(coarse_proxy).collect::<Result<Vec<_>,_>>()?;
     let templates=template_volumes.iter().map(|v|RootTemplate {proxy:*v,source:scene.instances[v.meta[0]as usize],node:0,branch:0,shadow_sphere:[0.;4]}).collect::<Vec<_>>();
     for v in &template_volumes {let owner=&mut scene.instances[v.meta[0]as usize];owner.sphere[3]=-1.;owner.flags=0;}
 
@@ -441,6 +456,30 @@ impl Runtime {
         assert!(err.contains("direct child"));assert!(scene.instances.is_empty());assert!(scene.gpu_forest.is_none());assert!(scene.voxel_forest.is_none());
     }
 
+    #[test]
+    fn root_detail_pages_are_evictable_and_fallback_pins_are_bounded() {
+        use super::*;
+        let source=crate::vegetation_asset::tests::aggregate_fixture();
+        let config=crate::vegetation_asset::tests::aggregate_config();
+        let mut plant=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();plant.cook_proxy(&source,config,3).unwrap();
+        let world=[crate::foliage_population::WorldRoot {id:1,placement:RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}}];
+        let mut scene=Scene::default();plant_population(&mut scene,&[plant],&world,4,8,crate::aggregate_lod::Policy {allow_sampled_optics:true,max_coverage_error:1.,max_color_error:1.,..Default::default()}).unwrap();
+        let spec=scene.gpu_forest.as_ref().unwrap();let forest=scene.voxel_forest.as_ref().unwrap();
+        let (deps,pins)=spec.voxel_page_dependencies(forest.levels.len()).unwrap();
+        assert!(pins.iter().filter(|&&v|v).count()<=2,"one root fallback and one proxy fallback per species");
+        for proxy in &spec.proxies {assert_eq!(proxy.meta[2],1);assert!(pins[proxy.meta[1]as usize]);}
+        let root_rep=spec.nodes[spec.templates[0].node as usize].links[2]as usize;
+        assert_eq!(deps[root_rep].len(),1);assert!(pins[deps[root_rep][0]]);
+        let mut fine=0;
+        for (i,rep) in spec.representations.iter().enumerate() {
+            let branch=&spec.branches[rep[0]as usize];
+            if rep[1]==1 && branch.info[0]==NONE {
+                assert_eq!(deps[i],vec![(branch.volume.meta[1]+rep[2])as usize]);
+                if !pins[deps[i][0]] {fine+=1;}
+            }else if branch.info[1]!=0 {assert_eq!(deps[i].len(),branch.volume.meta[2]as usize,"adaptive articulated shadows retain their mip bundle");}
+        }
+        assert!(fine>0,"detail must not all be pinned");
+    }
     #[test]
     fn tilted_cell_initial_and_streamed_placements_match() {
         use super::*;
