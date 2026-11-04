@@ -335,7 +335,7 @@ impl Shrines {
         let step = GRAVE_BEAM / n as f32;
         for i in 0..=n {
             let h = i as f32 / n as f32;
-            let fade = (1.0 - smooth(0.0, 0.85, h)) * smooth(0.0, 0.03, h + 0.02);
+            let fade = (1.0 - smooth(0.0, 0.85, h)) * smooth(0.0, 0.12, h);
             let width = 2.0 * (0.7 + 0.3 * h);
             let at = base + Vec3::Y * (step * i as f32);
             let mut s = Sprite::shaft(at, [width, step * 2.0], Vec3::Y, IMAGE, uv(Cell::Pillar), lin * fade * breathe * strength * 0.8 * 0.6);
