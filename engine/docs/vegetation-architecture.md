@@ -6,6 +6,12 @@ plans. Architecture first; no interactive playtest until requested.
 
 ## Where we are
 
+Latest deferred-cache measurement: ~12.03-12.16 ms covered GPU and
+5.72-5.77 ms selection at native 720p, one view. Fresh proposal evaluations
+fall 586,510 -> 261,552, with 324,958 cache reuses. Selection/error counts
+are unchanged; most cost remains in scan/queue/scheduling work. Extra proposal
+scratch is 80 MiB at the current cap. This is not target acceptance.
+
 Latest execution optimization: shared-memory priority staging reduces covered
 GPU to 12.09-12.12 ms, selection to 5.90-5.97 ms (native 720p, one view).
 Three alternating comparisons preserve selection/error counts and appearance.
@@ -759,3 +765,36 @@ Next scheduling design must cache/dequeue deferred proposals instead of
 reprojecting them each wave, and guarantee camera/shadow service independently
 within bounded work. Increasing the wave limit alone would worsen the problem.
 Retain complete ancestors and error diagnostics; do not hide starvation.
+
+## Deferred proposal cache (5 November 2026, integrated)
+
+Ping-pong proposal storage alongside frontier queues preserves an eligible
+proposal when its task is deferred. Reuse only within the same selection encode:
+consumer transforms, recipe nodes and page residency are immutable then. Every
+reuse rechecks current remaining budgets; per-wave prefix/output fields reset.
+Seeded tasks and newly generated children have no cache flag, preventing stale
+reuse across frames or changed consumers/pages. No CPU readback schedules work.
+
+Additional persistent scratch is 80 bytes per frontier slot (80 MiB at the
+current one-million-slot cap). Buffers stay individually within the original
+proposal buffer size bound; the kernel now uses 14 storage bindings plus its
+uniform. A diagnostic counter reports reused proposals; explicit error-audit
+clearing preserves this counter. Require measured savings and output parity.
+
+Validation: WGSL direct validator PASS; all 141 foliage tests PASS
+(proposal-cache-tests-final.log), including strengthened consumer-order fixture
+asserting actual proposal reuse. Original replacement-child count is preserved
+separately from the one-entry deferred queue count.
+Three alternating native 1280x720 one-view lowland+grass route repeats
+(240 frames, frames 120-239 measured) gave covered before
+12.235/12.278/12.328 ms, after 12.089/12.159/12.031 ms. Selection before
+5.911/5.945/5.938 ms, after 5.719/5.765/5.715 ms. A modest 0.12-0.30 ms
+covered saving, not a large optimization or four-view performance claim.
+
+Fresh node evaluations 586,510 -> 261,552; reused proposals 324,958.
+Published counts, reservations, error counts and fallback counts unchanged.
+Matched images inspected; scene RGB MAE below 0.000022/255. No raw-buffer
+identity or visual acceptance claim. This cache is infrastructure for deferred
+scheduling; compact queue consumption and memory reduction remain needed.
+Evidence: build/playtest-unified/proposal-cache-{before,after}-{1,2,3}.*,
+proposal-cache-summary.json, proposal-cache-comparison.jpg.

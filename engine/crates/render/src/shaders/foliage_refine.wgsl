@@ -28,6 +28,7 @@ struct Demand {count:atomic<u32>,bucket:u32,prefix:u32,failed:atomic<u32>};
 // used xyz, task count; snapshot xyz, next count; task and scan indirect args;
 // fault at15, peak16, retained-for-budget17. Never read back to schedule work.
 @group(0) @binding(13) var<storage,read_write> state:array<atomic<u32>>;
+@group(0) @binding(14) var<storage,read_write> next_proposals:array<Proposal>;
 const NONE:u32=0xffffffffu;
 fn ready(rep:u32)->bool {
  if atomicLoad(&pages[rep].requested)==0u {atomicOr(&pages[rep].requested,1u);}
@@ -106,6 +107,17 @@ fn candidate(tree:u32,start:u32)->u32 {
 @compute @workgroup_size(64) fn propose(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
  let task=current[at];var p:Proposal;
+ // Cache lives only within this encode: camera, pages and nodes are immutable.
+ // Available budget changes, so admission is always rechecked.
+ if task.w==1u {
+  let cached=proposals[at];p.old=cached.old;p.replacement=cached.replacement;
+  p.control=vec4<u32>(cached.control.xy,cached.output.y,0u);p.output.y=cached.output.y;
+  let used=vec3<u32>(atomicLoad(&state[4]),atomicLoad(&state[5]),atomicLoad(&state[6]));
+  let capacity=view.consumer_count.yzw;let delta=p.replacement-min(p.replacement,p.old);
+  if any(delta.xyz>capacity-min(used,capacity)) {p.control.y=0u;atomicAdd(&state[17],1u);}
+  else if (task.z&256u)!=0u {atomicOr(&state[18],1u);}
+  atomicAdd(&state[28],1u);proposals[at]=p;return;
+ }
  if task.z==0u {proposals[at]=p;return;}
  let t=trees[task.x];let node_id=select(task.y,t.info.x,task.y==NONE);let n=nodes[node_id];
  p.old=work(task.x,task.y,task.z);atomicAdd(&counters[4],1u);
@@ -146,6 +158,7 @@ fn candidate(tree:u32,start:u32)->u32 {
   let benefit=max(0.001,priority_scale*max(parent_error-child_error,parent_error*0.01));
   let bucket=u32(clamp(floor(log2(max(benefit/price,1e-20)))+12.0,0.0,15.0));
   p.control=vec4<u32>(bucket+select(0u,16u,(task.z&256u)!=0u),1u,children,0u);
+  p.output.y=children; // Deferred queue count is one; preserve replacement arity.
  }
  proposals[at]=p;
 }
@@ -224,7 +237,8 @@ fn publish(task:vec4<u32>) {
  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
  let p=proposals[at];let task=current[at];
  if p.control.w==2u && (atomicLoad(&state[15])&2u)==0u {
-  next[p.output.x+blocks[32u+(at/256u)*32u].y]=task;return;
+  let destination=p.output.x+blocks[32u+(at/256u)*32u].y;
+  next[destination]=vec4<u32>(task.xyz,1u);next_proposals[destination]=p;return;
  }
  if p.control.w==0u || (atomicLoad(&state[15])&2u)!=0u {publish(task);return;}
  // No writes to children until every candidate's output range is reserved.

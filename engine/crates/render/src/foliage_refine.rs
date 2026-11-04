@@ -3,7 +3,7 @@
 use crate::{Gpu,foliage_select::Selector};
 
 pub(crate) struct Refiner {
-    proposals:wgpu::Buffer,queues:[wgpu::Buffer;2],blocks:wgpu::Buffer,
+    proposals:[wgpu::Buffer;2],queues:[wgpu::Buffer;2],blocks:wgpu::Buffer,
     pub state:wgpu::Buffer,args:wgpu::Buffer,layout:wgpu::BindGroupLayout,
     pipelines:Vec<wgpu::ComputePipeline>,
     binds:std::sync::Mutex<crate::frame::resource_cache::BindGroups<2>>,
@@ -13,14 +13,14 @@ impl Refiner {
         let storage=|label,size|gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label:Some(label),size,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,
             mapped_at_creation:false});
-        let entries=(0..14).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
+        let entries=(0..15).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
             ty:wgpu::BindingType::Buffer {ty:if binding==0 {wgpu::BufferBindingType::Uniform} else {wgpu::BufferBindingType::Storage {read_only:binding==1||binding==2}},has_dynamic_offset:false,min_binding_size:None}}).collect::<Vec<_>>();
         let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("foliage complete-cut refinement"),entries:&entries});
         let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage incremental admission"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_refine.wgsl").into())});
         let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit"].into_iter().map(|entry|
             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()})).collect();
-        Self {proposals:storage("foliage refinement proposals",capacity as u64*80),
+        Self {proposals:[storage("foliage refinement proposals A",capacity as u64*80),storage("foliage refinement proposals B",capacity as u64*80)],
             queues:[storage("foliage complete cut A",capacity as u64*16),storage("foliage complete cut B",capacity as u64*16)],
             blocks:storage("foliage refinement prefixes",(capacity.div_ceil(256)as u64+1)*32*16),
             state:storage("foliage refinement allocation",128),
@@ -28,7 +28,7 @@ impl Refiner {
             pipelines,layout,binds:Default::default()}
     }
     fn bind(&self,gpu:&Gpu,s:&Selector,front:usize)->wgpu::BindGroup {
-        let buffers=[&s.uniform,&s._nodes,&s._instances,&s.asset_pages,&self.proposals,&self.queues[front],&self.queues[1-front],&self.blocks,&s.records,&s.counters,&s.fallback,&s.direct,&s.demand,&self.state];
+        let buffers=[&s.uniform,&s._nodes,&s._instances,&s.asset_pages,&self.proposals[front],&self.queues[front],&self.queues[1-front],&self.blocks,&s.records,&s.counters,&s.fallback,&s.direct,&s.demand,&self.state,&self.proposals[1-front]];
         let entries=buffers.iter().enumerate().map(|(binding,b)|wgpu::BindGroupEntry {binding:binding as u32,resource:b.as_entire_binding()}).collect::<Vec<_>>();
         self.binds.lock().unwrap().entries(gpu,&self.layout,"foliage refinement buffers",&entries)
     }
@@ -42,7 +42,7 @@ impl Refiner {
         enc.copy_buffer_to_buffer(&self.state,48,&self.args,12,12);
     }
     pub fn audit(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,s:&Selector) {
-        enc.clear_buffer(&self.state,19*4,Some(13*4));
+        enc.clear_buffer(&self.state,19*4,Some(9*4));
         self.dispatch(enc,&self.bind(gpu,s,0),12,Some(s.count.max(s.dimensions().0).div_ceil(64)),0);
     }
     pub fn encode(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,s:&Selector) {

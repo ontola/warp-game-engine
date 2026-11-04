@@ -1,3 +1,16 @@
+## 5 November 2026 - cache deferred proposals within selection encode
+
+Ping-pong proposals preserve deferred work; recheck budgets on reuse, clear
+cache identity for new frame/children. Original child count preserved separately
+from deferred queue count. New diagnostic reused_refinement_proposals.
+141 tests PASS, including actual cache reuse under reversed consumer order.
+Three alternating 720p one-view routes: ~12.28 -> ~12.09 ms; selected/error
+counts unchanged, fresh evaluations 586,510 -> 261,552; 324,958 reuses.
+Extra 80 MiB scratch at current cap. Modest saving, infrastructure rather than
+major performance success. Next compact/dequeue pending work and bound service
+for camera/shadow consumers; don't resume the rejected rescanning scheduler.
+Release terrain_fly contains cache and production scheduler. No live GPU run.
+
 ## 5 November 2026 - cross-depth frontier experiment rejected
 
 Highest-priority-only waves pass 142 tests, but normal route regresses ~12.2
