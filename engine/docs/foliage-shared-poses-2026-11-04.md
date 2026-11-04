@@ -21,10 +21,26 @@ is cleared in command order each frame, so streaming generation changes cannot
 reuse stale poses. The deliberately undersized-cache GPU test exercises this
 fallback. Cache overflow is exceptional repeated work, not a CPU fallback.
 
-Depth dispatches are currently fixed at the slot budget with GPU queue counts
-masking inactive lanes. Roots are processed across reserved capacity, skipping
-inactive roots. These are bounded dispatches, not fully indirect compaction;
-that distinction matters when describing what is and is not implemented.
+## Indirect depth scheduling follow-up
+
+The normal runtime now writes 64 indirect dispatch triples from the completed GPU
+pose request counters. Each depth dispatch evaluates `ceil(min(count, slots)/64)`
+workgroups instead of dispatching the full slot budget. Zero-demand depths launch
+zero groups. All arguments are rewritten every frame, including frames that fall
+back to root voxels after an asset fault. No CPU readback controls this work.
+
+A separate preparation pass binds the argument buffer as writable storage; the
+following pose pass only consumes it as INDIRECT. This avoids simultaneous
+writable-storage/indirect usage of the same buffer. Storage overhead is 768 bytes.
+Parent-depth dispatch order, hash-overflow serial fallback and shared transforms
+are unchanged. Root preparation still scans reserved capacity; active-root
+compaction remains open.
+
+Release compilation and Naga validation of both materialization and dispatch
+shaders pass. The numeric GPU oracle now checks every dispatch triple against queue counts and
+checks that an asset-fault frame clears prior nonempty dispatches. **These new GPU
+assertions and a performance repeat are pending** while other games occupy the
+GPU. The measurements below predate this follow-up and do not measure it.
 
 ## Validation
 
