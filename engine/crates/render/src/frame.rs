@@ -3941,7 +3941,13 @@ impl Renderer {
         if let Some((forest,first_owner))=&self.gpu_forest {
             let time=self.query.as_ref().map(|(qs,_,_)| {let first=timestamp_pair(&mut ts);timestamp_pair(&mut ts);timestamp_pair(&mut ts);(qs,first)});
             if time.is_some(){names.extend(["GPU forest selection residency","GPU forest shared poses","GPU forest materialize"]);}
-            forest.encode_timed(gpu,&mut enc,&part_animation_views,*first_owner,time)?;
+            // Cameras were appended first; all following consumers are shadow
+            // maps (including perspective headlights). Do not infer roles from VP.
+            let consumers=part_animation_views.iter().copied().enumerate().map(|(i,v)| {
+                if i<views.len(){crate::foliage_select::ConsumerView::camera(v)}
+                else{crate::foliage_select::ConsumerView::shadow(v)}
+            }).collect::<Vec<_>>();
+            forest.encode_timed(gpu,&mut enc,&consumers,*first_owner,time)?;
             enc.copy_buffer_to_buffer(&forest.choices,65536,&shadow_t.foliage_selection,0,65536);
         }
         // Actual updated instance/branch spheres and wind bounds, once shared

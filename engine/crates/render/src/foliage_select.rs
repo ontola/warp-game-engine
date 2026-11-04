@@ -34,6 +34,22 @@ pub struct Instance {
     /// Root node, stable generation, reserved. Array position is the stable ID.
     pub info:[u32;4],
 }
+/// Visibility ownership is explicit: projection shape cannot distinguish a
+/// perspective lamp from a camera, or an orthographic camera from the sun.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+#[repr(u32)]
+pub enum ConsumerKind { Camera=0, Shadow=1 }
+#[derive(Clone,Copy)]
+pub struct ConsumerView {pub projection:crate::part_wind::AnimationView,pub kind:ConsumerKind}
+impl ConsumerView {
+    pub fn camera(projection:crate::part_wind::AnimationView)->Self {Self {projection,kind:ConsumerKind::Camera}}
+    pub fn shadow(projection:crate::part_wind::AnimationView)->Self {Self {projection,kind:ConsumerKind::Shadow}}
+    fn packed(self)->Result<Consumer,String> {
+        let v=self.projection;
+        if !v.view_projection.is_finite() || v.viewport.contains(&0) {return Err("invalid foliage consumer projection".into());}
+        Ok(Consumer {vp:v.view_projection.to_cols_array(),pixels:[v.viewport[0]as f32,v.viewport[1]as f32,self.kind as u32 as f32,0.]})
+    }
+}
 #[repr(C)]
 #[derive(Clone,Copy,Pod,Zeroable)]
 struct Consumer {vp:[f32;16],pixels:[f32;4]}
@@ -216,14 +232,19 @@ impl Selector {
     /// one shared resident cut for the frame. Per-view source/cluster HZB still
     /// runs downstream; no camera depth can reject an off-camera caster here.
     pub fn union(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::part_wind::AnimationView],error:f32,branch_budget:u32,empty_depth:&wgpu::TextureView)->Result<(),String> {
+        let consumers=views.iter().copied().map(ConsumerView::camera).collect::<Vec<_>>();
+        self.union_consumers(gpu,enc,&consumers,error,branch_budget,empty_depth)
+    }
+    /// Frame-wide camera/shadow union. Shadow consumers retain demand even
+    /// when cameras cannot see their casters; only cameras get budget priority.
+    pub fn union_consumers(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[ConsumerView],error:f32,branch_budget:u32,empty_depth:&wgpu::TextureView)->Result<(),String> {
         if branch_budget==0 || branch_budget>self.capacity || views.is_empty() || views.len()>32 || !error.is_finite() || error<=0. {return Err("invalid foliage consumer union".into());}
         let mut consumers=[Consumer::zeroed();32];
         for (dst,v) in consumers.iter_mut().zip(views) {
-            if !v.view_projection.is_finite() || v.viewport.contains(&0) {return Err("invalid foliage consumer projection".into());}
-            *dst=Consumer {vp:v.view_projection.to_cols_array(),pixels:[v.viewport[0]as f32,v.viewport[1]as f32,0.,0.]};
+            *dst=v.packed()?;
         }
         gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers,consumer_count:[views.len()as u32,branch_budget,0,0],
-            vp:views[0].view_projection.to_cols_array(),previous_vp:views[0].view_projection.to_cols_array(),pixels:[0.,0.,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,0]}));
+            vp:views[0].projection.view_projection.to_cols_array(),previous_vp:views[0].projection.view_projection.to_cols_array(),pixels:[0.,0.,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,0]}));
         enc.clear_buffer(&self.counters,0,None);enc.clear_buffer(&self.fallback,0,None);enc.clear_buffer(&self.direct,0,None);
         let binds=[self.bind_work(gpu,empty_depth,0),self.bind_work(gpu,empty_depth,1)];
         enc.clear_buffer(&self.work[0],0,Some(16));
@@ -286,6 +307,18 @@ mod tests {
   let mut bad=nodes.clone();bad[2].links[1]=2;assert!(validate(&bad,&trees,1).is_err());
   let mut bad=trees.clone();bad[0].rows[0][0]=2.;assert!(validate(&nodes,&bad,1).is_err());
   assert_eq!(std::mem::size_of::<Node>(),48);assert_eq!(std::mem::size_of::<Instance>(),80);
+ }
+ #[test] fn consumer_roles_are_independent_of_projection_shape() {
+  use crate::part_wind::AnimationView;
+  for matrix in [Mat4::IDENTITY,Mat4::perspective_infinite_reverse_rh(1.,1.,0.1)] {
+   let view=AnimationView {view_projection:matrix,viewport:[1920,1080]};
+   let camera=ConsumerView::camera(view).packed().unwrap();
+   let shadow=ConsumerView::shadow(view).packed().unwrap();
+   assert_eq!(camera.vp,shadow.vp);assert_eq!(camera.pixels[..2],shadow.pixels[..2]);
+   assert_eq!(camera.pixels[2],0.);assert_eq!(shadow.pixels[2],1.);
+  }
+  assert!(ConsumerView::camera(AnimationView {view_projection:Mat4::IDENTITY,viewport:[0,1080]}).packed().is_err());
+  assert_eq!(std::mem::size_of::<Consumer>(),80,"keep uniform ABI stable");
  }
  #[test] fn shader_validates() {
   let module=naga::front::wgsl::parse_str(include_str!("shaders/foliage_select.wgsl")).unwrap();
