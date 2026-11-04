@@ -178,3 +178,7 @@ Tools:
 
 - [Live render debug panel](debug-ui.md)
 - [Processed texture cache](processed-texture-cache.md)
+
+[Mixed species and open grass aggregates](foliage-mixed-species-2026-11-04.md):
+common population categories, empty articulation roots and sheet optical mass;
+terrain meadow migration and GPU validation remain outstanding.

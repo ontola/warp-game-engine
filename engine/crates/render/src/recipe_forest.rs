@@ -69,6 +69,30 @@ pub fn cook_variants(variants: &[(WoodyRecipe, u64)], cache: Option<&Path>) -> R
     })
 }
 
+/// Cook grass into the same shared source/voxel/articulated asset contract as
+/// woody species. No runtime meadow buffers or grass-only residency are created.
+/// Geometry is explicit ribbon blades; voxel optics derive from those surfaces.
+pub fn cook_meadow_variants(variants:&[(u64,f32)],cache:Option<&Path>)->Result<Vec<Cooked>,String> {
+    use crate::foliage_assembly::{self,Parameters,Limits,MeadowBladeBudget};
+    let config=Config {reference_cell_size:0.025,triangle_refinements:true,..Config::default()};
+    let proxy=Config {reference_cell_size:0.025,..config};
+    let budget=MeadowBladeBudget::Blades120;
+    variants.iter().map(|&(seed,season)| {
+        let started=std::time::Instant::now();
+        let mut parameters=Parameters::meadow_patch(seed);parameters.season=season;
+        let cook=|| {
+            let assembly=foliage_assembly::generate_meadow_patch_budget(parameters,budget,Limits::meadow_patch())?;
+            let mut plant=CookedPlant::cook_aggregate(&assembly,config)?;
+            plant.cook_proxy(&assembly,proxy,5)?;Ok(plant)
+        };
+        let (plant,loaded)=match cache {
+            Some(path)=>CookedPlant::cached(path,&format!("unified meadow {parameters:?} {budget:?} {config:?} {proxy:?} levels5"),cook)?,
+            None=>(cook()?,false),
+        };
+        Ok(Cooked {plant,loaded,millis:started.elapsed().as_secs_f64()*1000.})
+    }).collect()
+}
+
 /// Wood of the card tier is cut at this error (metres); its foliage is cards.
 pub const CARD_WOOD_ERROR_M: f32 = 0.03;
 

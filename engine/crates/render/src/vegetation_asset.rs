@@ -263,9 +263,9 @@ impl CookedPlant {
         let mut plant = Self::cook_source(source)?;
         let roots: Vec<_> = plant.branches.iter().enumerate().filter(|(_,b)|b.parent.is_none()).map(|(i,_)|i).collect();
         if roots.len()!=1 || roots[0]!=0 { return Err("aggregate plants require one leading root".into()); }
-        if !plant.placements.iter().any(|p|p.branch==0) {
-            return Err("aggregate hierarchy currently requires source members on its root".into());
-        }
+        // A root may be a pure articulation anchor (grass, shrubs, cell
+        // assemblies). Its aggregate still covers every descendant; exact
+        // source leaves are emitted only for branches with actual members.
         let cooker = crate::vegetation_aggregate::Cooker::new(source,config)?;
         for branch in 0..plant.branches.len() {
             let members: Vec<u32> = plant.placements.iter().enumerate().filter(|(_,p)|p.branch==branch).map(|(i,_)|i as u32).collect();
@@ -484,7 +484,7 @@ pub struct SceneVegetation<'a> {
     proxy_lookup: std::collections::HashMap<u64, (usize, Vec3, Vec3)>,
     /// Per plant (by address): each branch's template range in the scene's
     /// instances, for virtual members.
-    templates: std::collections::HashMap<usize, Vec<(u32, u32)>>,
+    templates: std::collections::HashMap<(usize,u32), Vec<(u32, u32)>>,
 }
 
 fn max_axis(m: Mat4) -> f32 {
@@ -745,7 +745,10 @@ impl<'a> SceneVegetation<'a> {
         // frame. Their sphere radius is negated so cull never draws a
         // template itself; VIRTUAL_MEMBER ids compose them with a branch.
         let templates = if self.limits.virtual_members {
-            let key = plant as *const CookedPlant as usize;
+            // Category is carried by composed member flags, so different
+            // classifications need distinct compact transform templates. Mesh
+            // vertices, clusters and voxel assets remain shared.
+            let key = (plant as *const CookedPlant as usize,instance.category as u32);
             if !self.templates.contains_key(&key) {
                 let mut ranges = Vec::with_capacity(plant.branches.len());
                 for b in 0..plant.branches.len() {
@@ -2102,7 +2105,10 @@ pub(crate) mod tests {
             assert!(error.contains("aggregate subtree root"),"{error}");
         }
         let mut empty_root=source;empty_root.instances[0].branch=1;
-        let error=CookedPlant::cook_aggregate(&empty_root,aggregate_config()).err().expect("empty root must fail at cook");
-        assert!(error.contains("source members on its root"),"{error}");
+        let cooked=CookedPlant::cook_aggregate(&empty_root,aggregate_config()).unwrap();
+        let recipe=cooked.shared_selection_recipe(crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
+        assert!(!recipe.representations.iter().any(|r|matches!(r,SelectedRepresentation::SourceBranch {branch:0,..})),"an empty root must never publish phantom source geometry");
+        assert!(recipe.representations.iter().any(|r|matches!(r,SelectedRepresentation::Voxel {branch:0,..})),"complete root aggregate remains available");
+        assert_eq!(cooked.stats.placements,empty_root.instances.len());
     }
 }

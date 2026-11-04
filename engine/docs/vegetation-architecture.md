@@ -60,7 +60,7 @@ provisional depth from an incomplete cut cannot survive publication failure.
 | Wind | GPU demand-deduplicated ancestor poses, GPU-sized indirect parent-depth dispatches and shared root poses; source/voxel/shadow transforms agree | Hardware validation/timing of indirect dispatch change (software oracle passes), active-root compaction, recipe growth/season lifecycle |
 | Shadows | Independent source/voxel choices; normal shared sun uses GPU tile damage, sparse clear and source/voxel fragment masks plus early source-owner/voxel bounds rejection; exact integer XY scrolling with root-aware absolute depth | Full renderer depth validation and timing; virtual page coverage; sun/scale/depth changes invalidate the map |
 | Far population | One resident voxel record per tree, painted terrain beyond population | Spatial-cell aggregates without per-tree records at extreme distance |
-| Grass | Separate meadow path | Cook meadow patches into the same assembly/selection/residency contract |
+| Grass | Meadow ribbon assets now cook/attach to the common assembly contract; mixed species retain category and generation identity; empty articulation roots supported | Migrate terrain/game meadow placement and ground conformance to this path, group patches into spatial cells, verify GPU rendering and performance |
 
 The common cut currently satisfies the most demanding consumer. This is correct
 but can over-refine other views. The branch output budget is bounded separately
