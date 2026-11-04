@@ -14,7 +14,7 @@ use glam::{Mat4, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
 // Eight playable seats plus their burning corpse counterparts.
-pub const MAX_ACTORS: usize = 16;
+pub const MAX_ACTORS: usize = 64;
 pub const MAX_JOINTS: usize = 256;
 pub const MAX_VERTICES: usize = 1_600_000;
 
