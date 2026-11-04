@@ -60,12 +60,24 @@ fn local_bounds(v:GpuTree)->([f32;4],[f32;4]) {
     (low.extend(0.).to_array(),high.extend(0.).to_array())
 }
 
+/// Shared articulated deformation, independent of material/debug category.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+#[repr(u32)]
+pub enum Deformation {
+    #[default]
+    Rigid=0,
+    /// Shear along each branch's local height, preserving its basal plane.
+    /// Currently requires a fixed root with direct child groups.
+    BasalShear=1,
+}
+
 /// One species in the shared population catalog. Roots select its index via
 /// RootPlacement::variant; category never selects a separate renderer/cache.
 #[derive(Clone,Copy)]
 pub struct Species<'a> {
     pub plant:&'a crate::vegetation_asset::CookedPlant,
     pub category:crate::scene::GeometryCategory,
+    pub deformation:Deformation,
 }
 
 /// Attach shared recipe geometry once, plus one lightweight root per tree and
@@ -77,7 +89,7 @@ pub fn plant(scene:&mut Scene,plants:&[crate::vegetation_asset::CookedPlant],tre
 /// Reserve world-root capacity separately from transient branch residency.
 /// Loaded roots carry stable world IDs; unused capacity is explicitly inactive.
 pub fn plant_population(scene:&mut Scene,plants:&[crate::vegetation_asset::CookedPlant],world:&[crate::foliage_population::WorldRoot],capacity:usize,slots:u32,policy:crate::aggregate_lod::Policy)->Result<(),String> {
-    let species=plants.iter().map(|plant|Species {plant,category:crate::scene::GeometryCategory::Trees}).collect::<Vec<_>>();
+    let species=plants.iter().map(|plant|Species {plant,category:crate::scene::GeometryCategory::Trees,deformation:crate::foliage_runtime::Deformation::Rigid}).collect::<Vec<_>>();
     plant_species_population(scene,&species,world,capacity,slots,policy)
 }
 /// Mixed grass, shrub and tree species share one selection, page cache, pose
@@ -87,6 +99,9 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
     use crate::vegetation_asset::{SceneVegetation,AttachLimits,PlantInstance,SelectedRepresentation};
     if scene.gpu_forest.is_some() || !scene.part_wind.is_empty() || scene.voxel_forest.is_some() {
         return Err("attach all GPU forest species together before other articulated vegetation".into());
+    }
+    if species.iter().any(|s|s.deformation==Deformation::BasalShear && !s.plant.supports_basal_shear()) {
+        return Err("basal shear requires direct child groups under a fixed root".into());
     }
     let population=crate::foliage_population::Population::new(world,capacity)?;
     let parked=RootPlacement {up:Vec3::Y,pos:Vec3::new(0.,-100000.,0.),yaw:0.,scale:1.,variant:0};
@@ -134,6 +149,13 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
         let (low,high)=local_bounds(volume);
         branches.push(Branch {rest:rows(p.rest),source,volume,low,high,
             animation:[p.max_angle,p.harmonic as f32,p.phase,0.],info:[p.parent.unwrap_or(NONE),u32::from(p.volume.is_some() && p.parent.is_some()),0,0]});
+    }
+    for (index,handle) in handles.iter().enumerate() {
+        let mode=species[index].deformation;
+        for at in handle.pose_range.clone() {
+            let branch=&mut branches[at];
+            branch.info[3]=mode as u32;
+        }
     }
     // Reference recipe carriers are not world instances. Keep the shared
     // negative-radius primitive templates; retire only their reference owners.
@@ -377,6 +399,47 @@ impl Runtime {
 }
 
 #[cfg(test)] mod tests {
+    fn basal_reference(mut m:glam::Mat4,direction:glam::Vec2,angle:f32)->glam::Mat4 {
+        let height=m.y_axis.truncate();let n=height.normalize();
+        let wind=glam::Vec3::new(direction.x,0.,direction.y);
+        m.y_axis+=(wind-n*wind.dot(n)).extend(0.)*(angle.sin()*height.length());m
+    }
+    #[test]
+    fn basal_deformation_preserves_feet_optical_volume_and_motion_bounds() {
+        use glam::{Vec2,Vec3,Mat4,Quat};
+        for up in [Vec3::Y,Vec3::new(0.4,1.,-0.3).normalize()] {
+            let rest=Mat4::from_scale_rotation_translation(Vec3::splat(1.3),Quat::from_rotation_arc(Vec3::Y,up)*Quat::from_rotation_y(0.7),Vec3::new(3.,2.,-1.));
+            for direction in [Vec2::X,Vec2::Y,Vec2::new(1.,1.).normalize()] {
+                for angle in [-0.22f32,-0.1,0.,0.1,0.22] {
+                    let moved=basal_reference(rest,direction,angle);
+                    assert!((moved.determinant()-rest.determinant()).abs()<1e-5,"shear must not change optical volume");
+                    for p in [Vec3::ZERO,Vec3::X*0.7,Vec3::new(-0.3,0.,0.8)] {
+                        assert!(moved.transform_point3(p).abs_diff_eq(rest.transform_point3(p),1e-6));
+                    }
+                    for p in [Vec3::Y,Vec3::new(0.3,0.7,-0.4)] {
+                        let displacement=moved.transform_point3(p).distance(rest.transform_point3(p));
+                        assert!(displacement<=2.*(0.22f32/2.).sin()*p.length()*1.3+1e-5,"existing rotational envelope must contain shear");
+                        assert!(moved.inverse().transform_point3(moved.transform_point3(p)).abs_diff_eq(p,1e-5));
+                        assert!(moved.transform_vector3(p).length()<=1.3*(1.+0.22f32.sin())*p.length()+1e-5);
+                    }
+                    let n=moved.inverse().transpose().transform_vector3(Vec3::Z).normalize();
+                    assert!(n.dot(moved.transform_vector3(Vec3::X)).abs()<1e-5);
+                    assert!(n.dot(moved.transform_vector3(Vec3::Y)).abs()<1e-5);
+                }
+            }
+        }
+    }
+    #[test]
+    fn nested_basal_deformation_is_rejected_before_scene_mutation() {
+        use super::*;
+        let mut source=crate::vegetation_asset::tests::aggregate_fixture();source.branches[2].parent=Some(1);
+        let config=crate::vegetation_asset::tests::aggregate_config();
+        let mut plant=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();plant.cook_proxy(&source,config,3).unwrap();
+        let mut scene=Scene::default();let world=[crate::foliage_population::WorldRoot {id:1,placement:RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}}];
+        let err=plant_species_population(&mut scene,&[Species {plant:&plant,category:crate::scene::GeometryCategory::Grass,deformation:Deformation::BasalShear}],&world,2,8,Default::default()).unwrap_err();
+        assert!(err.contains("direct child"));assert!(scene.instances.is_empty());assert!(scene.gpu_forest.is_none());assert!(scene.voxel_forest.is_none());
+    }
+
     #[test]
     fn tilted_cell_initial_and_streamed_placements_match() {
         use super::*;
@@ -385,7 +448,7 @@ impl Runtime {
         assert_eq!(cooked[0].plant.stats().branches,37);
         let p=RootPlacement {pos:Vec3::new(3.,2.,-4.),yaw:0.8,scale:1.1,variant:0,up:Vec3::new(-0.3,1.,0.2).normalize()};
         let world=[crate::foliage_population::WorldRoot {id:1,placement:p}];
-        let species=[Species {plant:&cooked[0].plant,category:crate::scene::GeometryCategory::Grass}];
+        let species=[Species {plant:&cooked[0].plant,category:crate::scene::GeometryCategory::Grass,deformation:crate::foliage_runtime::Deformation::BasalShear}];
         let mut scene=Scene::default();plant_species_population(&mut scene,&species,&world,2,64,crate::aggregate_lod::Policy {allow_sampled_optics:true,..Default::default()}).unwrap();
         let spec=scene.gpu_forest.as_ref().unwrap();
         let m=matrix(spec.roots[0].rows);
@@ -407,7 +470,7 @@ impl Runtime {
         let mut world=vec![crate::foliage_population::WorldRoot {id:10,placement},crate::foliage_population::WorldRoot {id:20,placement:RootPlacement {up:Vec3::Y,pos:Vec3::X,variant:1,..placement}}];
         let mut reference=Scene::default();plant_population(&mut reference,std::slice::from_ref(&plant),&world[..1],4,8,Default::default()).unwrap();
         let mut scene=Scene::default();
-        plant_species_population(&mut scene,&[Species {plant:&plant,category:Trees},Species {plant:&plant,category:Grass}],&world,4,8,Default::default()).unwrap();
+        plant_species_population(&mut scene,&[Species {plant:&plant,category:Trees,deformation:Deformation::Rigid},Species {plant:&plant,category:Grass,deformation:Deformation::Rigid}],&world,4,8,Default::default()).unwrap();
         assert_eq!(scene.meshes.len(),reference.meshes.len(),"categories must not duplicate mesh assets");
         let spec=scene.gpu_forest.as_ref().unwrap();assert_eq!(spec.roots.len(),4);assert_eq!(spec.slots,8);
         for (species,category) in [Trees,Grass].into_iter().enumerate() {
@@ -434,7 +497,7 @@ impl Runtime {
         // Three ribbon shapes with three shared palette bindings, not one mesh per blade.
         assert_eq!(plant.stats().primitive_meshes,9);assert_eq!(plant.stats().placements,120);
         let world=[crate::foliage_population::WorldRoot {id:1,placement:RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.4,scale:1.,variant:0}}];
-        let mut scene=Scene::default();plant_species_population(&mut scene,&[Species {plant,category:crate::scene::GeometryCategory::Grass}],&world,4,16,crate::aggregate_lod::Policy {allow_sampled_optics:true,..Default::default()}).unwrap();
+        let mut scene=Scene::default();plant_species_population(&mut scene,&[Species {plant,category:crate::scene::GeometryCategory::Grass,deformation:crate::foliage_runtime::Deformation::BasalShear}],&world,4,16,crate::aggregate_lod::Policy {allow_sampled_optics:true,..Default::default()}).unwrap();
         let spec=scene.gpu_forest.as_ref().unwrap();
         assert!(scene.meadow.is_none());assert!(scene.part_wind.is_empty());
         assert!(spec.branches.iter().any(|b|b.animation[0]>0.));
@@ -466,6 +529,9 @@ impl Runtime {
             let mut enc=gpu.device.create_command_encoder(&Default::default());enc.copy_buffer_to_buffer(buffer,0,&target,0,size);gpu.queue.submit(Some(enc.finish()));target.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
             let result=target.slice(..).get_mapped_range().unwrap().to_vec();target.unmap();result
         };
+        for mode in [Deformation::Rigid,Deformation::BasalShear] {
+        spec.branches[2].info[0]=if mode==Deformation::Rigid {1} else {0};
+        for (i,b) in spec.branches.iter_mut().enumerate(){b.info[3]=mode as u32;b.animation[0]=if i==0 && mode==Deformation::BasalShear {0.} else {0.08};}
         for capacity in [None,Some(1)] {
             let instances=upload(bytemuck::cast_slice(&scene.instances));let volumes=upload(bytemuck::cast_slice(&scene.voxel_forest.as_ref().unwrap().instances));
             let runtime=Runtime::with_pose_capacity(&gpu,&spec,&instances,&volumes,capacity).unwrap();
@@ -482,7 +548,7 @@ impl Runtime {
                     while spec.branches[*chain.last().unwrap()].info[0]!=NONE {chain.push(spec.branches[*chain.last().unwrap()].info[0]as usize);}
                     let mut m=matrix(spec.roots[slot.key[0]as usize].rows);
                     let axis=Vec3::new(-wind.direction.y,0.,wind.direction.x).normalize();let phase=(time/120.*std::f64::consts::TAU)as f32;
-                    for &b in chain.iter().rev(){let p=spec.branches[b];m*=matrix(p.rest);let translation=m.w_axis;let angle=p.animation[0]*wind.strength*(phase*p.animation[1]+p.animation[2]).sin();m=Mat4::from_axis_angle(axis,angle)*m;m.w_axis=translation;}
+                    for &b in chain.iter().rev(){let p=spec.branches[b];m*=matrix(p.rest);let translation=m.w_axis;let angle=p.animation[0]*wind.strength*(phase*p.animation[1]+p.animation[2]).sin();if p.info[3]==1 {m=basal_reference(m,wind.direction,angle);} else {m=Mat4::from_axis_angle(axis,angle)*m;m.w_axis=translation;}}
                     let expected=rows(m);let got=actual[spec.first_owner as usize+i].rows;
                     for (a,b) in got.iter().flatten().zip(expected.iter().flatten()){assert!((a-b).abs()<2e-5,"pose differs {a} vs {b}");}compared+=1;
                 }
@@ -511,6 +577,7 @@ impl Runtime {
             let pinned=spec.nodes.iter().find(|n|n.links[3]&2!=0).unwrap().links[2];
             assert!(runtime.selector.publish_asset_pages(&gpu,&[(page,false,2),(pinned,false,1)]).is_err());assert_eq!(draw().retained,6,"invalid batch must be atomic");
             runtime.selector.publish_asset_pages(&gpu,&[(page,true,3)]).unwrap();let d=draw();assert_eq!(d.assigned,2);assert_eq!(d.retained,4,"asset generations must retire both affected roots' old slots");
+        }
         }
     }
     #[test]

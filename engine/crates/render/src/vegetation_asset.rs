@@ -316,6 +316,13 @@ impl CookedPlant {
         self.proxy.as_ref()
     }
 
+    /// Basal affine shear has one moving level; nested shears need separate
+    /// deformation bounds and are rejected before touching the scene.
+    pub(crate) fn supports_basal_shear(&self)->bool {
+        self.branches.first().is_some_and(|b|b.parent.is_none() && b.max_angle==0.)
+            && self.branches.iter().skip(1).all(|b|b.parent==Some(0))
+    }
+
     pub fn stats(&self) -> CookStats {
         self.stats
     }

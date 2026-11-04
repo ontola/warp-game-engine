@@ -48,6 +48,17 @@ fn rotate(m:array<vec4<f32>,3>,axis:vec3<f32>,angle:f32)->array<vec4<f32>,3> {
  let r=array<vec3<f32>,3>(vec3<f32>(c+x*x*k,x*y*k-z*s,x*z*k+y*s),vec3<f32>(y*x*k+z*s,c+y*y*k,y*z*k-x*s),vec3<f32>(z*x*k-y*s,z*y*k+x*s,c+z*z*k));
  var out:array<vec4<f32>,3>;for(var i=0u;i<3u;i++){out[i]=vec4<f32>(r[i].x*m[0].xyz+r[i].y*m[1].xyz+r[i].z*m[2].xyz,m[i].w);}return out;
 }
+// One affine pose is shared by source, volume, shadow and motion history.
+// Local y=0 is invariant: whole patches no longer rotate their basal anchors.
+fn deform(m:array<vec4<f32>,3>,axis:vec3<f32>,angle:f32,mode:u32)->array<vec4<f32>,3> {
+ if mode==0u {return rotate(m,axis,angle);}
+ let height=vec3<f32>(m[0].y,m[1].y,m[2].y);
+ let n=normalize(height);let wind=vec3<f32>(state.wind.x,0.,state.wind.y);
+ let tangent=wind-n*dot(wind,n);
+ // Do not normalize a near-zero projected wind: that would amplify it.
+ let shear=tangent*(sin(angle)*length(height));
+ var out=m;for(var k=0u;k<3u;k++){out[k].y+=shear[k];}return out;
+}
 fn pose(root:Root,branch:u32)->array<vec4<f32>,3> {
  // Cook validation bounds ancestry at 64; branch data is shared, not copied
  // for every tree. Evaluate only selected branch chains, including ancestors.
@@ -55,7 +66,7 @@ fn pose(root:Root,branch:u32)->array<vec4<f32>,3> {
  loop {stack[n]=b;n++;b=branches[b].info.x;if b==0xffffffffu || n==64u {break;}}
  var m=root.rows;let axis=normalize(vec3<f32>(-state.wind.y,0.,state.wind.x));
  loop {if n==0u {break;}n--;let part=branches[stack[n]];m=multiply(m,part.rest);
-  m=rotate(m,axis,part.animation.x*state.wind.z*sin(state.wind.w*part.animation.y+part.animation.z));}
+  m=deform(m,axis,part.animation.x*state.wind.z*sin(state.wind.w*part.animation.y+part.animation.z),part.info.w);}
  return m;
 }
 fn cached_pose(root:u32,branch:u32)->array<vec4<f32>,3> {
@@ -99,7 +110,7 @@ fn evaluate_poses(@builtin(global_invocation_id) id:vec3<u32>) {
  let root=key/state.counts.w;let branch=key%state.counts.w;let part=branches[branch];
  var m=multiply(cached_pose(root,part.info.x),part.rest);
  let axis=normalize(vec3<f32>(-state.wind.y,0.,state.wind.x));
- m=rotate(m,axis,part.animation.x*state.wind.z*sin(state.wind.w*part.animation.y+part.animation.z));
+ m=deform(m,axis,part.animation.x*state.wind.z*sin(state.wind.w*part.animation.y+part.animation.z),part.info.w);
  pose_cache[at].rows=m;atomicAdd(&pose_work[66],1u);
 }
 // Appearance identity must survive transient branch allocation and page IO.
@@ -122,7 +133,10 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
   let root=roots[slot.key.x];let rep=representations[slot.key.z];let branch=branches[rep.x];let m=cached_pose(slot.key.x,rep.x);
   var source=branch.source;source.rows=m;let bound=nodes[slot.key.y].sphere;
   source.sphere=vec4<f32>(point(root.rows,bound.xyz),bound.w*root.scale.x);
-  source.scale=length(root.rows[0].xyz);source.flags=(source.flags&~128u)|slot.history.w;
+  source.scale=length(root.rows[0].xyz);
+  // ||I + uv^T|| <= 1 + |u| |v|. Basal mode has only one moving
+  // child level, so this conservatively bounds every virtual source sphere.
+  if branch.info.w==1u {source.scale*=1.+abs(sin(branch.animation.x));}source.flags=(source.flags&~128u)|slot.history.w;
   // A voxel choice emits no source members, including shadow passes.
   if rep.y==1u {source.first=0u;}
   sources[owner]=source;
