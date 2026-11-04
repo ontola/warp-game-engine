@@ -366,12 +366,13 @@ impl Runtime {
             fallback_trees:fallback.iter().filter(|f|**f!=0).count()as u32,retained:r[2],assigned:r[3],slot_failures:r[4],hash_failures:r[5],frontier_overflow_requests:c[11],peak_frontier_requests:c[15],pose_hash_failures:poses[64],pose_requests:poses[65],evaluated_shared_poses:poses[66]})
     }
     pub fn encode(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::part_wind::AnimationView],first_owner:u32)->Result<(),String> {
-        self.encode_timed(gpu,enc,views,first_owner,None)
+        let consumers=views.iter().copied().map(crate::foliage_select::ConsumerView::camera).collect::<Vec<_>>();
+        self.encode_timed(gpu,enc,&consumers,first_owner,None)
     }
-    pub(crate) fn encode_timed(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::part_wind::AnimationView],first_owner:u32,time:Option<(&wgpu::QuerySet,u32)>)->Result<(),String> {
+    pub(crate) fn encode_timed(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::foliage_select::ConsumerView],first_owner:u32,time:Option<(&wgpu::QuerySet,u32)>)->Result<(),String> {
         if let Some((q,i))=time {enc.write_timestamp(q,i);}
 
-        self.selector.union(gpu,enc,views,self.error,self.slots,&self.empty_depth)?;
+        self.selector.union_consumers(gpu,enc,views,self.error,self.slots,&self.empty_depth)?;
         self.residency.encode(enc);
         if let Some((q,i))=time {enc.write_timestamp(q,i+1);enc.write_timestamp(q,i+2);}
         let wind=*self.wind.lock().unwrap();

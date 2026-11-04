@@ -185,9 +185,9 @@ fn walk(tree:u32,start:u32,phase:u32) {
  let s=sphere(t,root);var priority=0.0;
  for(var i=0u;i<view.consumer_count.x;i++) {
   let c=view.consumers[i];
-  // Perspective receivers get first claim; orthographic sun-only casters
+  // Camera receivers get first claim; shadow-only casters
   // retain their resident root when the shared branch budget is exhausted.
-  if length(transpose(c.vp)[3].xyz)>0.00001 && visible_in(s,c.vp) {
+  if c.pixels.z==0.0 && visible_in(s,c.vp) {
    priority=max(priority,error_in(s,s.w,c.vp,c.pixels.xy));
   }
  }

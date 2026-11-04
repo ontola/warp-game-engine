@@ -1,3 +1,19 @@
+## 2026-11-04 Explicit vegetation consumer ownership
+
+Normal renderer now labels camera and shadow consumers explicitly. Shared
+selection previously inferred priority from perspective projection, which treated
+headlights as cameras and orthographic cameras as shadow-only demand. ConsumerView
+carries Camera/Shadow through the normal frame/runtime/selector path; the shader
+uses that role only for budget priority. Frustum/error union still includes all
+shadow consumers, so off-camera casters remain requested. Existing camera-only
+encode/union helpers label their inputs as cameras. GPU uniform layout unchanged.
+
+Validation: selector CPU role/bounds tests and WGSL validation pass (3 tests);
+5 exclusive GPU fixtures were skipped.
+
+This is a prerequisite/correctness fix, NOT integrated consumer-aware two-phase
+publication. The normal union still performs no assembly-level history occlusion.
+
 ## 2026-11-04 Shared basal deformation for terrain grass
 
 Species now explicitly selects Rigid or BasalShear, independent of its diagnostic
