@@ -693,12 +693,32 @@ impl World {
     /// through: in a walled level nobody ends up outside the band. A wizard
     /// also waits at a shut wall of mist (Ward::holds).
     fn keep_inside(&self, id: Id, mut p: Vec3) -> Vec3 {
-        if self.a(id).wizard {
-            for wd in self.run.wards.iter().filter(|w| w.holds) {
-                let (d, within) = wd.past(Vec2::new(p.x, p.z));
-                if within && d > -0.5 && d < 3.0 {
+        // A wizard waits at a shut wall of mist (Ward::holds), and monsters
+        // never get past one that is still up (Joep): whatever is ahead of
+        // the wizards stays ahead. Round a wall's end too, in open levels
+        // where nothing walls the band in: there the path tells.
+        let (wizard, monster) = {
+            let a = self.a(id);
+            (a.wizard, a.team != WIZARDS)
+        };
+        if wizard || monster {
+            for wd in self.run.wards.iter().filter(|w| if wizard { w.holds } else { !w.opening }) {
+                let q = Vec2::new(p.x, p.z);
+                let (d, within) = wd.past(q);
+                // (Where the path loops back near the wall, its earlier
+                // stretch is no part of it: the path tells which side.)
+                let prog = self.level.progress_of(q);
+                if within && d > -0.5 && d < 4.0 && (prog - wd.at).abs() < 12.0 {
                     p.x -= wd.n.x * (d + 0.5);
                     p.z -= wd.n.y * (d + 0.5);
+                    continue;
+                }
+                // Past it along the path without going through it: back
+                // along the path to this side.
+                if prog > wd.at - 0.5 && prog < wd.at + 25.0 {
+                    let back = self.level.point_at(wd.at - 0.5) - self.level.point_at(prog);
+                    p.x += back.x;
+                    p.z += back.y;
                 }
             }
         }
