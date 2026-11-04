@@ -1,3 +1,15 @@
+## 5 November 2026 - cross-depth frontier experiment rejected
+
+Highest-priority-only waves pass 142 tests, but normal route regresses ~12.2
+to ~23.8 ms. Deferred rescanning grows traversal to 4.09M nodes and all
+53,990 shadow-only roots drain as fallbacks. Removed production changes;
+preserved patch/test and full evidence in authoritative checklist.
+Next requires cached/dequeued proposals and bounded camera/shadow service,
+not a larger wave limit. Production remains cd1e940 shared-prefix allocator.
+Cargo target executable contains rejected experiment: rebuild before playtest;
+production backup build/playtest-unified/terrain-before-priority-frontier.exe.
+No GPU run or interactive playtest remains active.
+
 ## 5 November 2026 - shared-memory priority scan
 
 Priority scan now stages proposals once in 4 KiB workgroup memory; stable

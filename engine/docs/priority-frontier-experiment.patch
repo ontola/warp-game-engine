@@ -1,0 +1,59 @@
+diff --git a/engine/crates/render/src/foliage_select.rs b/engine/crates/render/src/foliage_select.rs
+index 8ce3075..866188f 100644
+--- a/engine/crates/render/src/foliage_select.rs
++++ b/engine/crates/render/src/foliage_select.rs
+@@ -366,6 +366,21 @@ mod tests {
+   }
+  }
+  #[test]
++ #[ignore="exclusive GPU cross-depth priority fixture"]
++ fn gpu_priority_frontier_refines_important_subtree_before_cheaper_root_upgrade() {
++  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(2);trees[1].info[0]=4;
++  for t in &mut trees {t.rows[0][3]=0.;t.scale[2]=1.;t.scale[3]=1.;}
++  let n=|child,end,rep,flags,cost,error|Node {sphere:[0.,0.,0.5,0.2],error:[error,0.,cost,cost],links:[child,end,rep,flags]};
++  let nodes=[n(1,4,0,2,1.,1000.),n(2,4,1,0,10.,500.),n(NONE,3,2,0,10.,0.),n(NONE,4,3,0,10.,0.),n(5,6,4,2,1.,0.01),n(NONE,6,5,2,10.,0.)];
++  let selector=Selector::new(&gpu,&nodes,&trees,4,4).unwrap();let empty=depth(&gpu,0.);
++  let views=[ConsumerView::camera(crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]})];
++  let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers_budget(&gpu,&mut enc,&views,0.001,4,[25;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
++  let count=read(&gpu,&selector.counters)[0]as usize;
++  let mut cut=read(&gpu,&selector.records).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();
++  assert_eq!(cut,[2,3]);assert_eq!(read(&gpu,&selector.direct),[0,5]);assert_eq!(read(&gpu,&selector.fallback),[0,0]);
++  assert_eq!(read(&gpu,&selector.refiner.state)[1],21);
++ }
++ #[test]
+  #[ignore="exclusive GPU incremental raster and branch reservation fixture"]
+  fn gpu_incremental_refinement_retains_mixed_complete_cuts() {
+   let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].scale[2]=1.;trees[0].scale[3]=1.;
+diff --git a/engine/crates/render/src/shaders/foliage_refine.wgsl b/engine/crates/render/src/shaders/foliage_refine.wgsl
+index 211652b..a325bb9 100644
+--- a/engine/crates/render/src/shaders/foliage_refine.wgsl
++++ b/engine/crates/render/src/shaders/foliage_refine.wgsl
+@@ -137,7 +137,6 @@ fn candidate(tree:u32,start:u32)->u32 {
+   if any(delta.xyz>capacity-min(used,capacity)) {
+    atomicAdd(&state[17],1u);proposals[at]=p;return;
+   }
+-  if (task.z&256u)!=0u {atomicOr(&state[18],1u);}
+   let price=max(1.0,f32(delta.x)*256.0+f32(delta.y)+f32(delta.z));
+   // Mandatory root fallbacks carry zero authored error. Their projected size
+   // still determines benefit; otherwise all roots tie regardless of distance.
+@@ -146,6 +145,7 @@ fn candidate(tree:u32,start:u32)->u32 {
+   let benefit=max(0.001,priority_scale*max(parent_error-child_error,parent_error*0.01));
+   let bucket=u32(clamp(floor(log2(max(benefit/price,1e-20)))+12.0,0.0,15.0));
+   p.control=vec4<u32>(bucket+select(0u,16u,(task.z&256u)!=0u),1u,children,0u);
++  atomicMax(&state[18],p.control.x+1u);
+  }
+  proposals[at]=p;
+ }
+@@ -179,9 +179,9 @@ var<workgroup> priority_items:array<vec4<u32>,256>;
+ @compute @workgroup_size(64) fn decide(@builtin(global_invocation_id) id:vec3<u32>) {
+  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
+  let p=proposals[at];if p.control.y==0u {return;}
+- // Keep shadow-only work pending while any camera refinement remains. A coarse
+- // shadow upgrade cannot consume slots needed by a later camera hierarchy level.
+- if (current[at].z&256u)==0u && atomicLoad(&state[18])!=0u {
++ // Let the highest-priority frontier continue across depths before spending
++ // on lower-value work. Deferred tasks keep their complete resident parent.
++ if p.control.x+1u<atomicLoad(&state[18]) {
+   proposals[at].control.w=2u;proposals[at].control.z=1u;return;
+  }
+  var before=plus(p.prefix,blocks[32u+(at/256u)*32u+p.control.x]);

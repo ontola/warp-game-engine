@@ -727,3 +727,35 @@ HUD below 0.000011/255. This is not a raw visibility/depth identity claim or
 visual acceptance. Retains the prior allocator correctness fix.
 Evidence: build/playtest-unified/shared-prefix-{before,after}-{1,2,3}.*,
 shared-prefix-summary.json, shared-prefix-comparison.jpg.
+
+## Priority frontier across depths (5 November 2026, rejected)
+
+Only the highest eligible priority bucket advances per refinement wave. Lower
+priority tasks remain on the frontier, retaining complete resident parents, so
+high-value descendants can compete before lower-value unrelated upgrades.
+The existing bounded wave count and final drain remain; therefore this is not
+a proof of globally complete scheduling. Test deferred-task starvation as well
+as admission, error, fallback and performance before accepting.
+
+All 142 tests passed, including the new cross-depth budget oracle. Normal route
+REJECTS this implementation: three alternating native 1280x720 one-view
+lowland+grass repeats (240 frames, frames 120-239 measured) gave covered
+before 12.242/12.117/12.165 ms, after 24.164/23.560/23.599 ms. Selection
+before 5.896/6.003/5.977 ms, after 18.338/17.816/18.014 ms.
+
+Repeatedly rescanning deferred tasks increases tested nodes 586,510 ->
+4,089,943. Every shadow-only root (53,990) reaches final drain as emergency
+fallback. Camera maximum spatial bound improves 95,418.82 -> 1,115.76 pixels,
+but camera-over-target count worsens 40,529 -> 40,740. Selected source slots
+fall 15 -> 2. Matched images inspected; scene RGB MAE 2.685/2.693/1.889
+on the 0-255 scale. No quality/performance acceptance.
+
+Production changes removed, preserved with test in priority-frontier-experiment.patch.
+Evidence: build/playtest-unified/priority-frontier-{before,after}-{1,2,3}.*,
+priority-frontier-summary.json, priority-frontier-comparison.jpg,
+priority-frontier-tests.log.
+
+Next scheduling design must cache/dequeue deferred proposals instead of
+reprojecting them each wave, and guarantee camera/shadow service independently
+within bounded work. Increasing the wave limit alone would worsen the problem.
+Retain complete ancestors and error diagnostics; do not hide starvation.
