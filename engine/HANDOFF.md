@@ -1,3 +1,15 @@
+## 4 November 2026 — root-stage compaction rejected
+
+Authoritative vegetation checklist updated with the four-view 8.30 ms allocation
+and current G2 status. Three alternating native 720p single-view comparisons
+showed root-stage compaction regressed covered GPU from ~11.4 to ~11.9 ms.
+All 139 foliage tests passed and images were essentially unchanged; production
+changes were removed. Preserved patch and measurements are linked in
+`docs/vegetation-architecture.md`. No interactive playtest started.
+The executable in the Cargo target currently contains the rejected experiment;
+`build/playtest-unified/terrain-before-seed-compaction.exe` is the production
+c619265 build. Rebuild before any new production playtest.
+
 ## 2026-11-04 Integrated G2 complete-cut allocator; performance still NOT accepted
 
 New normal path: foliage_refine.rs / shaders/foliage_refine.wgsl. Replaces whole-

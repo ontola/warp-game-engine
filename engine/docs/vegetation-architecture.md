@@ -6,63 +6,21 @@ plans. Architecture first; no interactive playtest until requested.
 
 ## Where we are
 
-**Overall status: incomplete.** The normal renderer uses GPU vegetation, but it
-now has an integrated nested geometry hierarchy, but still lacks budget-aware
-refinement and upstream visibility needed to scale. The current image and performance are not accepted.
+**Overall status: incomplete.** Nested geometry groups, GPU incremental complete-cut
+admission, paging, shared poses and shadow caching are integrated. G2.1 is done;
+fine-detail admission, upstream two-phase visibility and scaling/performance
+acceptance are not. The current crowns and performance are not accepted.
 
-**Current item: G1.3 â€” integrate cooked groups into GPU selection and paging.**
-Next: G1.4 (integrated correctness/performance), then G2 (budget refinement). Do not add another
-rendering backend or spend this phase tuning colors to disguise missing detail.
+**Current work: G2 selection cost and non-monotonic refinement costs**, followed
+by G2.2/G2.3 validation and G3 consumer visibility/detail. No new backend or
+appearance tuning to hide missing architecture.
 
-Latest measured route: lowland + grass, 1280x720, one view, 240 frames at 1 m/s,
-120 warm GPU samples per run. Same executable, three serial runs: covered GPU
-medians **14.79 / 14.70 / 15.11 ms**; selection **3.42 / 3.48 / 3.51 ms**.
-Previous three runs: 15.57 / 15.93 / 15.77 ms; selection 5.22 / 5.15 / 5.02 ms.
-These were not alternating before/after runs, so no accepted comparative speedup.
-The older pre-filtered baseline was ~11.87 ms: the current path is still slower.
-Final first-run diagnostics: 151,058 active roots, 4,096 branch slots, 46,270
-emergency fallbacks (previous 82,097). Image still has rounded coarse crowns and
-heavy black shadows; quality is not accepted. Evidence:
-`build/playtest-unified/nested-groups-times.json.gpu.json`, `nested-groups-repeat{2,3}.json.gpu.json`,
-matching logs and images. These artifacts are ignored; results are recorded here.
-Executable SHA256: `60ad922af9c3ef247e574cf2b7c676731aebfa084ac1b0ec5fa697804c17d71a`.
-
-Per-pass upper-middle medians (ms; medians need not sum to the covered median):
-
-| Pass | Run 1 | Run 2 | Run 3 |
-| --- | ---: | ---: | ---: |
-| GPU forest selection residency | 3.422 | 3.482 | 3.512 |
-| GPU forest shared poses | 0.102 | 0.103 | 0.106 |
-| GPU forest materialize | 0.140 | 0.141 | 0.141 |
-| shadow tile damage and clear | 0.302 | 0.304 | 0.306 |
-| shadow cull | 0.527 | 0.530 | 0.530 |
-| shadow raster | 0.134 | 0.134 | 0.134 |
-| voxel sun splats | 0.737 | 0.745 | 0.747 |
-| voxel sun splat raster | 0.540 | 0.543 | 0.543 |
-| near shadow cull | 0.321 | 0.323 | 0.323 |
-| near shadow raster | 0.032 | 0.033 | 0.033 |
-| voxel near sun splats | 0.220 | 0.222 | 0.222 |
-| voxel near sun splat raster | 0.070 | 0.070 | 0.070 |
-| tree occluder cull | 0.530 | 0.508 | 0.518 |
-| tree occluder raster | 0.213 | 0.213 | 0.214 |
-| tree occlusion pyramid | 0.087 | 0.087 | 0.089 |
-| tree recovery dispatch | 0.002 | 0.003 | 0.003 |
-| tree remaining cull | 0.010 | 0.010 | 0.010 |
-| tree remaining raster | 0.001 | 0.001 | 0.001 |
-| tree visibility history | 0.030 | 0.030 | 0.030 |
-| voxel splats | 2.903 | 2.722 | 3.035 |
-| voxel splat raster | 2.735 | 2.799 | 2.821 |
-| voxel splat resolve | 0.103 | 0.105 | 0.105 |
-| terrain coarse | 0.100 | 0.100 | 0.100 |
-| shade terrain | 0.424 | 0.426 | 0.427 |
-| shade voxels | 0.073 | 0.073 | 0.073 |
-| shade | 0.079 | 0.080 | 0.080 |
-| motion vectors | 0.034 | 0.034 | 0.034 |
-| taa | 0.045 | 0.045 | 0.045 |
-| exhaust | 0.001 | 0.001 | 0.001 |
-| wheel particles | 0.000 | 0.000 | 0.000 |
-| bloom | 0.030 | 0.031 | 0.032 |
-| tonemap | 0.039 | 0.039 | 0.039 |
+Latest committed route result (c619265): native1280x720, one view, lowland+grass,
+240frames at1m/s,120warm GPU samples. Three alternating old/new repeats measured
+new11.382/11.574/11.511ms covered GPU, versus11.909/11.917/12.072ms. Selection
+still costs~5.24ms. Camera splats1,361,047,0 missing records,0 emergency fallbacks;
+near crowns remain too coarse and source slots are0. This is NOT4K/four-view
+acceptance. Root-stage compaction was measured and rejected; see the experiment below. Older measurements are historical, not the current build's performance.
 
 ## Immediate performance decision (existing G1.4/G8 evidence, not new gates)
 
@@ -540,3 +498,82 @@ reporting and motion checks before accepting G2.2/G2.3. No new gate or backend.
 Evidence: build/playtest-unified/incremental-final-{old,batched}-{1,2,3}.*,
 incremental-final-summary.json, incremental-final-comparison.jpg,
 incremental-batched-tests.log and incremental-batched-build.log.
+
+## Historical G1.3 integration measurement (superseded)
+
+Historical G1.3 measured route: lowland + grass, 1280x720, one view, 240 frames at 1 m/s,
+120 warm GPU samples per run. Same executable, three serial runs: covered GPU
+medians **14.79 / 14.70 / 15.11 ms**; selection **3.42 / 3.48 / 3.51 ms**.
+Previous three runs: 15.57 / 15.93 / 15.77 ms; selection 5.22 / 5.15 / 5.02 ms.
+These were not alternating before/after runs, so no accepted comparative speedup.
+The older pre-filtered baseline was ~11.87 ms: the current path is still slower.
+Final first-run diagnostics: 151,058 active roots, 4,096 branch slots, 46,270
+emergency fallbacks (previous 82,097). Image still has rounded coarse crowns and
+heavy black shadows; quality is not accepted. Evidence:
+`build/playtest-unified/nested-groups-times.json.gpu.json`, `nested-groups-repeat{2,3}.json.gpu.json`,
+matching logs and images. These artifacts are ignored; results are recorded here.
+Executable SHA256: `60ad922af9c3ef247e574cf2b7c676731aebfa084ac1b0ec5fa697804c17d71a`.
+
+Per-pass upper-middle medians (ms; medians need not sum to the covered median):
+
+| Pass | Run 1 | Run 2 | Run 3 |
+| --- | ---: | ---: | ---: |
+| GPU forest selection residency | 3.422 | 3.482 | 3.512 |
+| GPU forest shared poses | 0.102 | 0.103 | 0.106 |
+| GPU forest materialize | 0.140 | 0.141 | 0.141 |
+| shadow tile damage and clear | 0.302 | 0.304 | 0.306 |
+| shadow cull | 0.527 | 0.530 | 0.530 |
+| shadow raster | 0.134 | 0.134 | 0.134 |
+| voxel sun splats | 0.737 | 0.745 | 0.747 |
+| voxel sun splat raster | 0.540 | 0.543 | 0.543 |
+| near shadow cull | 0.321 | 0.323 | 0.323 |
+| near shadow raster | 0.032 | 0.033 | 0.033 |
+| voxel near sun splats | 0.220 | 0.222 | 0.222 |
+| voxel near sun splat raster | 0.070 | 0.070 | 0.070 |
+| tree occluder cull | 0.530 | 0.508 | 0.518 |
+| tree occluder raster | 0.213 | 0.213 | 0.214 |
+| tree occlusion pyramid | 0.087 | 0.087 | 0.089 |
+| tree recovery dispatch | 0.002 | 0.003 | 0.003 |
+| tree remaining cull | 0.010 | 0.010 | 0.010 |
+| tree remaining raster | 0.001 | 0.001 | 0.001 |
+| tree visibility history | 0.030 | 0.030 | 0.030 |
+| voxel splats | 2.903 | 2.722 | 3.035 |
+| voxel splat raster | 2.735 | 2.799 | 2.821 |
+| voxel splat resolve | 0.103 | 0.105 | 0.105 |
+| terrain coarse | 0.100 | 0.100 | 0.100 |
+| shade terrain | 0.424 | 0.426 | 0.427 |
+| shade voxels | 0.073 | 0.073 | 0.073 |
+| shade | 0.079 | 0.080 | 0.080 |
+| motion vectors | 0.034 | 0.034 | 0.034 |
+| taa | 0.045 | 0.045 | 0.045 |
+| exhaust | 0.001 | 0.001 | 0.001 |
+| wheel particles | 0.000 | 0.000 | 0.000 |
+| bloom | 0.030 | 0.031 | 0.032 |
+| tonemap | 0.039 | 0.039 | 0.039 |
+
+
+## Rejected root-stage queue compaction (4 November 2026)
+
+Compacting camera-owning roots and shadow-only roots into separate refinement
+stages reduced visited nodes and peak frontier, but increased GPU selection cost.
+Three alternating before/after repeats used the same native 1280x720 one-view
+lowland+grass route, 240 frames, with frames 120–239 measured.
+
+| Repeat | Before covered ms | After covered ms | Before selection ms | After selection ms |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 11.526 | 11.967 | 5.224 | 5.666 |
+| 2 | 11.388 | 11.755 | 5.250 | 5.558 |
+| 3 | 11.386 | 11.880 | 5.240 | 5.504 |
+
+All 139 foliage tests passed, including exclusive GPU fixtures. Camera splats
+remained 1,361,047. The matched scene image outside the HUD was virtually
+unchanged (each channel MAE below 0.000005 on the 0–255 scale); this is not
+a raw visibility/depth equivalence claim or visual acceptance. Extra compaction
+and changed publication work did not produce a net gain. Production changes
+were removed; `root-stage-compaction-experiment.patch` preserves the experiment.
+
+Evidence: `build/playtest-unified/root-stages-{before,after}-{1,2,3}.*`,
+`root-stages-summary.json`, `root-stages-comparison.jpg`, and
+`root-stages-tests.log`. Current production remains c619265's allocator.
+Next: investigate conservative adaptive-mip reservation and expensive intermediate
+representations that block finer detail; do not hide this by increasing budgets.
