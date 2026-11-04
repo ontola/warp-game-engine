@@ -1834,6 +1834,11 @@ impl Fx {
                     let mid = (b.from + b.to) * 0.5;
                     let dir = d / len;
                     let wob = 1.0 + 0.15 * (t * 30.0).sin();
+                    // Joep: a beam's strength trembles, never one steady
+                    // glow: a few unrelated waves and a quick flutter.
+                    let ph = (key % 97) as f32;
+                    let flick = (0.82 + 0.1 * (t * 7.3 + ph).sin() + 0.06 * (t * 17.9 + ph * 2.3).sin() + 0.08 * (t * 41.0 + ph * 0.7).sin().abs()).clamp(0.6, 1.1);
+                    let wob = wob * (0.92 + 0.08 * flick);
                     // Mixed, its colour runs between them (poison fire: a
                     // sickly green-orange, not plain green).
                     let total: f32 = b.spell.counts.iter().map(|c| c.1 as f32).sum::<f32>().max(1.0);
@@ -1843,15 +1848,15 @@ impl Fx {
                         mixed += linear3([c2[0], c2[1], c2[2]]) * n2 as f32;
                     }
                     let c3 = c3.lerp(mixed / total, 0.6);
-                    self.live.push(Sprite::shaft(mid, [0.35 * wob * h, len], dir, IMAGE, uv(Cell::Line), c3 * 2.0));
-                    self.live.push(Sprite::shaft(mid, [0.1 * h, len], dir, IMAGE, uv(Cell::Line), Vec3::ONE * 3.0));
+                    self.live.push(Sprite::shaft(mid, [0.35 * wob * h, len], dir, IMAGE, uv(Cell::Line), c3 * 2.0 * flick));
+                    self.live.push(Sprite::shaft(mid, [0.1 * h * (0.9 + 0.1 * flick), len], dir, IMAGE, uv(Cell::Line), Vec3::ONE * 3.0 * flick));
                     // Its other elements twist round it and fly off it all
                     // along: a poison beam with fire in it burns green and
                     // orange, flames licking up off it.
                     for (i, (e2, n2)) in others(&b.spell).into_iter().enumerate() {
                         let c2 = el_c(e2);
                         let w2 = (0.55 + 0.15 * n2 as f32) * h * (1.0 + 0.3 * (t * 23.0 + i as f32 * 2.1).sin());
-                        self.live.push(Sprite::shaft(mid, [w2, len], dir, IMAGE, uv(Cell::Line), linear3([c2[0], c2[1], c2[2]]) * 1.4));
+                        self.live.push(Sprite::shaft(mid, [w2, len], dir, IMAGE, uv(Cell::Line), linear3([c2[0], c2[1], c2[2]]) * 1.4 * flick));
                         let mut q = particles(c2, (16.0 * n2 as f32 * h) as u32 + 10, 0.5, 0.45 * h);
                         let _ = style(&mut q, e2, false);
                         q.dir = Vec3::Y;
@@ -1865,8 +1870,10 @@ impl Fx {
                         }
                     }
                 }
-                self.halo(b.to, c, 1.4 * h, 0.8);
-                self.light(b.to + Vec3::Y * 0.3, c, 1.5 * h, 5.0);
+                let ph = (key % 97) as f32;
+                let tremble = (0.85 + 0.1 * (t * 7.3 + ph).sin() + 0.08 * (t * 23.0 + ph).sin()).clamp(0.65, 1.05);
+                self.halo(b.to, c, 1.4 * h, 0.8 * tremble);
+                self.light(b.to + Vec3::Y * 0.3, c, 1.5 * h * tremble, 5.0);
                 // Where it burns in: its element spits off the spot.
                 let mut q = particles(c, (30.0 * h) as u32 + 10, 0.35, 0.35 * h);
                 let _ = style(&mut q, e, false);
