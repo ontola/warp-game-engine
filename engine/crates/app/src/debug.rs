@@ -25,6 +25,8 @@ const RESOLUTION: u32 = 17;
 const TAA: u32 = 18;
 const ADAPTIVE_QUALITY: u32 = 19;
 const FPS_TARGET: u32 = 26;
+const EMULATE: u32 = 27;
+const EMULATE_GPU: u32 = 28;
 const SUN: u32 = 20;
 const SHADOWS: u32 = 21;
 const NEAR_SHADOWS: u32 = 22;
@@ -84,6 +86,8 @@ pub struct EngineDebug {
     passes: Vec<(&'static str, f64)>,
     /// Each profiled frame's GPU time (covered union), for a start probe.
     pub covered: Vec<f64>,
+    /// The newest one, for hardware emulation.
+    pub last_gpu_ms: Option<f64>,
     /// When a setting last changed, so the shell can re-render the scene
     /// soon after instead of every frame while the menu is used.
     pub changed: Option<std::time::Instant>,
@@ -120,6 +124,12 @@ impl EngineDebug {
         number(GRASS_LOD, GRASS_MENU, "Grass LOD error", f64::from(s.options.meadow_lod_pixels), (0.5, 4.0, 0.25, 2), "px", "Higher picks simpler blades sooner.");
         let height = s.render_height.or(base_height).unwrap_or(0);
         let index = HEIGHTS.iter().position(|&h| h == height).unwrap_or(0);
+        controls.push(DebugControl { id: EMULATE, label: "Emulate hardware".into(), enabled: true, menu: Some(RENDER_MENU), advanced: false,
+            help: "Feel this machine here: its GPU and CPU speed, refresh rate and screen height. A good guess, not a measurement.".into(),
+            value: DebugValue::Choice { index: crate::emulate::choice(), labels: crate::emulate::choices() } });
+        controls.push(DebugControl { id: EMULATE_GPU, label: "Emulated GPU slowdown".into(), enabled: true, menu: Some(RENDER_MENU), advanced: false,
+            help: "Any GPU slowdown: 1 is the real speed.".into(),
+            value: DebugValue::Number { value: f64::from(crate::emulate::gpu_factor()), min: 1.0, max: 8.0, step: 0.1, decimals: 1, unit: "x".into() } });
         controls.push(DebugControl { id: RESOLUTION, label: "Render height".into(), enabled: true, menu: Some(RENDER_MENU), advanced: false,
             value: DebugValue::Choice { index, labels: HEIGHTS.iter().map(|&h| if h == 0 { "native".into() } else { format!("{h}p") }).collect() },
             help: "3D views render at most this tall and are scaled up; the HUD stays sharp. Shading cost follows the pixel count.".into() });
@@ -203,10 +213,12 @@ impl EngineDebug {
                 GRASS_SIZE => s.options.meadow_size_scale = pct(value, 0.5, 2.0),
                 GRASS_COUNT => s.options.meadow_density = pct(value, 0.0, 1.0),
                 GRASS_LOD => s.options.meadow_lod_pixels = value.clamp(0.5, 4.0) as f32,
+                EMULATE_GPU => crate::emulate::set_gpu_factor(value.clamp(1.0, 8.0) as f32),
                 _ => {}
             },
             DebugAction::SetChoice { id: RESOLUTION, index } => s.render_height = HEIGHTS.get(index).copied(),
             DebugAction::SetChoice { id: FPS_TARGET, index } => s.fps_target = FPS_TARGETS.get(index).copied(),
+            DebugAction::SetChoice { id: EMULATE, index } => crate::emulate::choose(index),
             DebugAction::SetToggle { .. } | DebugAction::SetNumber { .. } | DebugAction::SetChoice { .. } | DebugAction::Activate { .. } => {
                 return (action_id(action) >= GAME_IDS).then_some(action);
             }
@@ -279,6 +291,7 @@ impl EngineDebug {
         for sample in renderer.drain_gpu_profiles(gpu).samples {
             crate::frame_log::gpu(sample.frame_id,sample.covered_union_ms,&sample.gpu_ms);
             if self.covered.len() < 4096 { self.covered.push(sample.covered_union_ms); }
+            self.last_gpu_ms = Some(sample.covered_union_ms);
             for (name, ms) in sample.gpu_ms {
                 match self.passes.iter_mut().find(|p| p.0 == name) {
                     Some(p) => p.1 += (ms - p.1) * 0.1,

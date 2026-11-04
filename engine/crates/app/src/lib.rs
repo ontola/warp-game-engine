@@ -28,6 +28,7 @@ pub mod manners;
 pub mod startup;
 pub mod screenshot;
 pub mod quality;
+pub mod emulate;
 mod frame_log;
 pub mod profile;
 pub mod frame_rate;
@@ -414,12 +415,14 @@ pub struct Headless<'g> {
     out: Output,
     target: wgpu::Texture,
     last_draw_timings: profile::DrawTimings,
+    emulator: emulate::Emulator,
+    profiling: bool,
 }
 
 impl<'g> Headless<'g> {
     pub fn new(gpu: &'g Gpu, size: [u32; 2], tick_hz: f32) -> Result<Self, String> {
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        Ok(Self { gpu, size, tick_hz, audio: None, recorded: Vec::new(), max_height: None, renderer: None, out: Output::new(gpu, format)?, target: offscreen(gpu, size, format), last_draw_timings: Default::default() })
+        Ok(Self { gpu, size, tick_hz, audio: None, recorded: Vec::new(), max_height: None, renderer: None, out: Output::new(gpu, format)?, target: offscreen(gpu, size, format), last_draw_timings: Default::default(), emulator: Default::default(), profiling: false })
     }
     /// Draw one frame and read it back as RGBA8.
     pub fn frame(&mut self, game: &mut dyn Game) -> Result<Vec<u8>, String> {
@@ -441,6 +444,12 @@ impl<'g> Headless<'g> {
         let game_ms = started.elapsed().as_secs_f64() * 1000.;
         let renderer = self.renderer.as_ref().ok_or("the game drew without a scene")?;
         self.out.draw(self.gpu, renderer, &draw, self.size, split, &self.target.create_view(&Default::default()), self.max_height)?;
+        if emulate::active() {
+            emulate::set_host(&self.gpu.info.name);
+            if !self.profiling { self.profiling = renderer.set_async_gpu_profiling(self.gpu, true).is_ok(); }
+            let ms = renderer.drain_gpu_profiles(self.gpu).samples.last().map(|s| s.covered_union_ms);
+            self.emulator.scene(self.gpu, ms);
+        }
         self.last_draw_timings = profile::DrawTimings { game_ms, ..self.out.timings };
         Ok(self.last_draw_timings)
     }
@@ -605,6 +614,7 @@ struct Shell<'g> {
     probe: Option<Probe>,
     /// The last probe key measured (or abandoned).
     probed: Option<u64>,
+    emulator: emulate::Emulator,
     /// Scene frames and loop iterations since `stats_at`, logged every 2 s.
     scene_frames: u32,
     loop_frames: u32,
@@ -638,7 +648,7 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
         println!("{}: adaptive quality enabled, {}", cfg.title, q.label());
     }
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), probe: None, probed: None, scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), probe: None, probed: None, emulator: Default::default(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -681,7 +691,7 @@ impl Shell<'_> {
                 Some(user) => user,
                 None => self.game.target_fps().or(self.cfg.target_fps),
             };
-            q.set_target_fps(target, self.screen_refresh_hz);
+            q.set_target_fps(target, emulate::refresh_hz().or(self.screen_refresh_hz));
             // A hidden or parked window (a warm game behind the lobby) idles
             // at a few frames a second: that says nothing about the GPU, and
             // must not cut its resolution or content before it is shown.
@@ -769,7 +779,7 @@ impl Shell<'_> {
         };
         self.debug.sync_options(renderer, debug_options);
         let profile_started = Instant::now();
-        self.debug.profile(&live.gpu, renderer, self.debug.open() || self.cfg.frames > 0 || frame_log::enabled() || self.probe.is_some());
+        self.debug.profile(&live.gpu, renderer, self.debug.open() || self.cfg.frames > 0 || frame_log::enabled() || self.probe.is_some() || emulate::active());
         let profile_ms = profile_started.elapsed().as_secs_f64() * 1000.0;
         if self.debug.open() {
             let quality_label = self.quality.as_ref().map(|q| q.label());
@@ -796,7 +806,9 @@ impl Shell<'_> {
             }
             (None, h) => h,
         };
+        let render_height = match emulate::display_height() { Some(cap) if render_height.unwrap_or(size[1]) > cap => Some(cap), _ => render_height };
         let adapter = live.gpu.info.name.clone();
+        emulate::set_host(&adapter);
         let seconds = self.stats_at.elapsed().as_secs_f32();
         if seconds >= 2.0 {
             println!("{} frames: scene {:.1}/s, loop {:.1}/s, render {}x{} of {}x{}, debug menu {}", manners::stamp(),
@@ -854,6 +866,12 @@ impl Shell<'_> {
         if self.toast.as_ref().is_some_and(|(_, until)| Instant::now() > *until) { self.toast = None; }
         if let Some(crop) = &self.crop { draw.hud.begin_overlay(); crop.draw(&mut draw.hud); }
         if let Some((line, _)) = &self.toast { toast(&mut draw.hud, line); }
+        if let Some(badge) = emulate::badge() {
+            let s = (size[1] as f32 / 1080.0).max(0.5);
+            draw.hud.text.push(render::hud::TextRun { id: u64::MAX - 7, text: badge, position: [16.0 * s, 12.0 * s],
+                bounds: [0.0, 0.0, size[0] as f32, size[1] as f32], font_size: 18.0 * s, color: [255, 190, 90, 230], font: render::hud::FontFace::Body,
+                align: render::hud::TextAlign::Left, width: size[0] as f32 * 0.6 });
+        }
         if self.debug.open() { self.debug.draw(&mut draw.hud); }
         // Nothing to show on a window without pixels; the game keeps ticking.
         if self.zero_size || live.is_lost() { return Ok(()); }
@@ -874,6 +892,7 @@ impl Shell<'_> {
                 }
                 if let Some(w) = &self.window { w.pre_present_notify(); }
                 live.gpu.queue.present(tex);
+                if scene { self.emulator.scene(&live.gpu, self.debug.last_gpu_ms.take()); }
                 if let Some(w) = &self.window { self.manners.presented(w, size); }
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => live.surface.configure(&live.gpu.device, &live.config),
@@ -892,6 +911,7 @@ impl Shell<'_> {
         self.mouse_delta = [0.0; 2];
         self.mouse_peak = 0.0;
         self.cursor_events = 0;
+        self.emulator.cpu(frame_started);
         self.last_frame_end = Instant::now();
         self.step_probe(size, render_height, &adapter);
         Ok(())
@@ -931,11 +951,14 @@ impl Shell<'_> {
             return;
         }
         ms.sort_by(f64::total_cmp);
+        let factor = f64::from(emulate::gpu_factor());
+        for v in &mut ms { *v *= factor; }
         let target_fps = self.quality.as_ref().map_or(60.0, |q| f64::from(q.target_fps()));
         let result = ProbeResult { key: p.key, frames: ms.len(), gpu_ms_median: ms[ms.len() / 2], gpu_ms_p90: ms[((ms.len() - 1) as f64 * 0.9) as usize],
             render_size: p.render_size, output_size: size, target_fps, adapter: adapter.to_string() };
-        let line = format!("probe {:x}: {} frames in {:.1} s, GPU median {:.2} ms, p90 {:.2} ms at {}x{} of {}x{} ({}, target {:.0} fps)",
-            p.key, result.frames, elapsed.as_secs_f32(), result.gpu_ms_median, result.gpu_ms_p90, p.render_size[0], p.render_size[1], size[0], size[1], adapter, target_fps);
+        let line = format!("probe {:x}: {} frames in {:.1} s, GPU median {:.2} ms, p90 {:.2} ms at {}x{} of {}x{} ({}{}, target {:.0} fps)",
+            p.key, result.frames, elapsed.as_secs_f32(), result.gpu_ms_median, result.gpu_ms_p90, p.render_size[0], p.render_size[1], size[0], size[1], adapter,
+            emulate::badge().map_or_else(String::new, |b| format!(", {b}, memory {:?} MB", emulate::memory_mb())), target_fps);
         println!("{} {line}", manners::stamp());
         self.game.quality_event(&line);
         self.game.probed(result);

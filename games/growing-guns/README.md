@@ -106,6 +106,8 @@ the shell measures about 60 scene frames of GPU time (drawing the scene every ot
 smooth) and keeps FULL unless it cannot hold 60 fps at the lowest resolution; then LOW. The decision is
 cached per chip, build and screen size (`graphics-probe.json`); probe numbers and adaptive decisions go to
 `quality.log` (Application Support on macOS).
+To feel a slower machine: `--emulate m1pro` or `WARP_EMULATE=m1pro` (also m1, m1max, m2, m3, m4, steamdeck, or `x2.5`
+for a free GPU factor), or F10, Render, Emulate hardware (`engine/crates/app/src/emulate.rs`; a guess, not a measurement).
 In a macOS app bundle the game reads its files from Contents/Resources and writes screenshots, replays and
 its pipeline cache to `~/Library/Application Support/Growing Guns`; `tools/package-mac.sh` builds the app and DMG.
 Both profiles automatically select low-poly guns: plain full-size boxes, a 16-sided drum,
