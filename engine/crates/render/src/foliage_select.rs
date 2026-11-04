@@ -363,7 +363,15 @@ mod tests {
    let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers_budget(&gpu,&mut enc,&consumers,0.01,slots,[cap;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
    let counters=read(&gpu,&selector.counters);let count=counters[0]as usize;
    let mut cut=read(&gpu,&selector.records).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();
+   let mut audit=gpu.device.create_command_encoder(&Default::default());selector.refiner.audit(&gpu,&mut audit,&selector);gpu.queue.submit([audit.finish()]);
    let state=read(&gpu,&selector.refiner.state);
+   let parents=cut.iter().filter(|&&node|nodes[node as usize].error[0]>0.).count()as u32
+       +u32::from(read(&gpu,&selector.direct)[0]!=0);
+   assert_eq!(state[23],parents);assert_eq!(state[24],parents);
+   assert_eq!(&state[25..28],&[0,0,0]);
+   if parents==0 {assert_eq!(&state[19..23],&[0,0,0,0]);}
+   else {assert!(f32::from_bits(state[19])>1.);assert!(f32::from_bits(state[21])>100.);}
+
    assert!(state[0]<=slots && state[1]<=cap && state[2]<=cap,"reservation {state:?}");assert_eq!(state[15],0);
    assert_eq!(counters[3],0);assert_eq!(read(&gpu,&selector.fallback),[0]);
    cut
