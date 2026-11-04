@@ -369,6 +369,7 @@ impl Hud {
             let y = if top { MARGIN } else { 1080.0 - MARGIN - PANEL.y };
             panel(&mut p, w, id, Vec2::new(x, y), right);
         }
+        grave_arrows(&mut p, w, &vp, sw);
         // Toasts at the top in the middle.
         for (k, (text, c, t)) in self.toasts.iter().enumerate() {
             let a = if *t < 4.0 { 1.0 } else { 1.0 - (t - 4.0) };
@@ -445,6 +446,43 @@ fn on_screen(vp: &Mat4, at: Vec3, size: [u32; 2], s: f32) -> Option<Vec2> {
         return None;
     }
     Some(Vec2::new((c.x / c.w * 0.5 + 0.5) * size[0] as f32 / s, (0.5 - c.y / c.w * 0.5) * size[1] as f32 / s))
+}
+
+/// Joep: a fallen wizard off the screen gets an arrow at the screen's
+/// edge, in their robe's colour, pointing to their grave, so a friend
+/// knows where to go to raise them.
+fn grave_arrows(p: &mut Painter, w: &World, vp: &Mat4, sw: f32) {
+    let time = w.tick as f32 / 60.0;
+    let (inset, mid) = (70.0, Vec2::new(sw * 0.5, 540.0));
+    for &id in &w.wizards {
+        let Some(a) = w.actor(id) else { continue };
+        let wz = w.wiz(id);
+        let (false, Some(at)) = (a.alive, wz.tomb) else { continue };
+        let c = *vp * Vec4::new(at.x, at.y + 1.0, at.z, 1.0);
+        // Behind the camera the projection flips: point the other way.
+        let ndc = Vec2::new(c.x, -c.y) / c.w.abs().max(1e-4);
+        let q = mid + ndc * Vec2::new(sw * 0.5, 540.0) * c.w.signum();
+        let seen = c.w > 0.0 && q.x > inset * 0.5 && q.x < sw - inset * 0.5 && q.y > inset * 0.5 && q.y < 1080.0 - inset * 0.5;
+        if seen {
+            continue;
+        }
+        let dir = if c.w > 0.0 { q - mid } else { mid - q }.normalize_or(Vec2::Y);
+        // Where the line from the middle meets the inset frame.
+        let half = Vec2::new(sw * 0.5 - inset, 540.0 - inset);
+        let t = (half.x / dir.x.abs().max(1e-4)).min(half.y / dir.y.abs().max(1e-4));
+        let tip = mid + dir * t;
+        let pulse = 1.0 + 0.12 * (time * 5.0).sin();
+        let side = Vec2::new(-dir.y, dir.x);
+        let (len, wide) = (46.0 * pulse, 26.0 * pulse);
+        let base = tip - dir * len;
+        let rim = [0.0, 0.0, 0.0, 0.75];
+        p.poly(&[tip + dir * 5.0, base + side * (wide + 5.0) - dir * 3.0, base - side * (wide + 5.0) - dir * 3.0], rim);
+        p.poly(&[tip, base + side * wide, base - side * wide], lighten(wz.robe, 0.25));
+        p.circle(base - dir * 26.0, 22.0, rim);
+        p.circle(base - dir * 26.0, 18.0, lighten(wz.robe, 0.1));
+        let first = wz.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+        p.text(&first, base.x - dir.x * 26.0, base.y - dir.y * 26.0, title(), 24.0, [1.0, 1.0, 1.0, 1.0], TextAlign::Center, 6.0);
+    }
 }
 
 /// A thin health bar over every hurt monster, wider for bigger ones.
