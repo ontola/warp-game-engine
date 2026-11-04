@@ -88,6 +88,7 @@ pub struct DirectionError {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SampledError {
+    pub filtered:[crate::aggregate_lod::FilteredOptics;4],
     pub directions: Vec<DirectionError>,
     pub mean_abs_opacity: f64,
     pub rms_opacity: f64,
@@ -388,6 +389,32 @@ fn ray(grid: &Grid<'_>, start: DVec3, direction: DVec3, direction_index: usize,
     Err("aggregate diagnostic DDA exhausted its geometric step bound".into())
 }
 
+fn filtered_squared(differences:&[[f64;4]],n:u32,factor:u32)->[f64;2] {
+    let mut squared=[0f64;2];let side=n/factor;
+    for by in 0..side {for bx in 0..side {
+        let mut mean=[0f64;4];
+        for dy in 0..factor {for dx in 0..factor {
+            let d=differences[((by*factor+dy)*n+bx*factor+dx)as usize];
+            for k in 0..4 {mean[k]+=d[k]/f64::from(factor*factor);}
+        }}
+        squared[0]+=mean[0]*mean[0];
+        squared[1]+=(mean[1]*mean[1]+mean[2]*mean[2]+mean[3]*mean[3])/3.;
+    }}
+    squared
+}
+
+#[test]
+fn optical_filter_cancels_subpixel_rearrangement_but_retains_bias() {
+    let shifted=(0..64).map(|i|[if i%2==0 {1.}else{-1.};4]).collect::<Vec<_>>();
+    assert_eq!(filtered_squared(&shifted,8,1),[64.;2]);
+    for factor in [2,4,8] {assert_eq!(filtered_squared(&shifted,8,factor),[0.;2]);}
+    let bias=vec![[0.25;4];64];
+    for factor in [1,2,4,8] {
+        let x=filtered_squared(&bias,8,factor);
+        assert_eq!(x,[0.0625*f64::from((8/factor)*(8/factor));2]);
+    }
+}
+
 fn compare(reference: &Grid<'_>, candidate: &Grid<'_>, comparison_hi: DVec3,
     config: Config, stats: &mut Stats) -> Result<SampledError,String>
 {
@@ -405,17 +432,30 @@ fn compare(reference: &Grid<'_>, candidate: &Grid<'_>, comparison_hi: DVec3,
         let n=config.diagnostic_resolution;
         let spacing=(maximum-minimum)/f64::from(n);
         let mut error=DirectionError {direction,rays:n*n,sample_spacing_m:[spacing.x,spacing.y],..Default::default()};
+        let bytes=n as usize*n as usize*std::mem::size_of::<[f64;4]>();
+        if bytes>config.max_scratch_bytes {return Err("aggregate optical filter scratch budget exceeded".into());}
+        let mut differences=vec![[0f64;4];(n*n)as usize];
         for y in 0..n {for x in 0..n {
             let start=u*(minimum.x+(f64::from(x)+0.5)*spacing.x)
                 +v*(minimum.y+(f64::from(y)+0.5)*spacing.y)+d*(minimum.z-f64::from(config.reference_cell_size));
             let a=ray(reference,start,d,direction_index,config,stats)?;
             let b=ray(candidate,start,d,direction_index,config,stats)?;
             let delta=b.alpha-a.alpha;
+            differences[(y*n+x)as usize]=[delta,b.color[0]-a.color[0],b.color[1]-a.color[1],b.color[2]-a.color[2]];
             error.mean_abs_opacity+=delta.abs();error.rms_opacity+=delta*delta;
             error.max_abs_opacity=error.max_abs_opacity.max(delta.abs());error.opacity_bias+=delta;
             for k in 0..3 {error.premultiplied_albedo_rmse+=(b.color[k]-a.color[k]).powi(2)/3.0;}
             for k in 0..24 {error.normal_moment_mean_abs+=(b.normal[k]-a.normal[k]).abs()/24.0;}
         }}
+        for (index,factor) in [2u32,4,8,16].into_iter().enumerate() {
+            if factor>n || n%factor!=0 {continue;}
+            let squared=filtered_squared(&differences,n,factor);let side=n/factor;
+            let f=&mut result.filtered[index];
+            if direction_index==0 {f.coverage_error=0.;f.color_error=0.;}
+            f.footprint_m=f.footprint_m.max((spacing.x.max(spacing.y)*f64::from(factor))as f32);
+            f.coverage_error+=(squared[0]/f64::from(side*side)/13.)as f32;
+            f.color_error+=(squared[1]/f64::from(side*side)/13.)as f32;
+        }
         let rays=f64::from(error.rays);
         error.mean_abs_opacity/=rays; error.rms_opacity=(error.rms_opacity/rays).sqrt();
         error.opacity_bias/=rays;error.premultiplied_albedo_rmse=(error.premultiplied_albedo_rmse/rays).sqrt();
@@ -428,6 +468,7 @@ fn compare(reference: &Grid<'_>, candidate: &Grid<'_>, comparison_hi: DVec3,
         result.normal_moment_mean_abs+=error.normal_moment_mean_abs/13.0;
         result.directions.push(error);
     }
+    for f in &mut result.filtered {f.coverage_error=f.coverage_error.sqrt();f.color_error=f.color_error.sqrt();}
     result.rms_opacity=result.rms_opacity.sqrt();
     result.premultiplied_albedo_rmse=result.premultiplied_albedo_rmse.sqrt();
     Ok(result)

@@ -110,7 +110,7 @@ its opt-in status describes the historical experiment, not the current default.
 
 ## Current production cook gate (4 November)
 
-Normal lowland grass has zero optically admitted voxel candidates at the current
+Before scale-aware filtering, normal lowland grass had zero optically admitted voxel candidates at the current
 8% coverage/color policy; four of six tree species have no admitted whole-root
 candidate. Selection therefore refines into expensive branches and budget failure
 uses the coarse emergency proxy. Cooked voxel data and a shared renderer are not
@@ -118,3 +118,9 @@ proof that an effective intermediate LOD exists. `terrain_fly --validate-world`
 reports the actual per-species admission evidence. Improving the representation
 and optical evidence is a prerequisite for accepting unified vegetation, not
 visual polish to postpone after a performance claim.
+
+Scale-aware filtered evidence now admits conditional intermediates only below
+a one-pixel footprint in every consumer. Unary chains stay local to GPU tasks.
+This removes a frontier-overflow regression, but measured selection remains
+slower than the prior baseline and emergency fallback remains widespread.
+See the newest engine/HANDOFF.md entry; this gate is NOT complete.

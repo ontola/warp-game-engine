@@ -30,8 +30,14 @@ impl Default for Policy {
             max_color_error: 0.08, allow_sampled_optics: false, measured_source_cuts: true, proxy_pixels: 4.0, proxy_pixels_from: 50.0 }
     }
 }
+/// Sampled optical error after box filtering signed premultiplied differences.
+/// Valid only when the filter footprint projects to at most one output pixel.
+#[derive(Clone,Copy,Debug,PartialEq,serde::Serialize,serde::Deserialize)]
+pub struct FilteredOptics {pub footprint_m:f32,pub coverage_error:f32,pub color_error:f32}
+impl Default for FilteredOptics {fn default()->Self {Self {footprint_m:0.,coverage_error:1.,color_error:1.}}}
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Candidate {
+    pub filtered:[FilteredOptics;4],
     pub source_only: bool,
     pub level: u32,
     pub spatial_error: f32,
@@ -186,7 +192,7 @@ mod tests {
     use super::*;
     fn fixture()->Selection {
         Selection {groups:vec![Group {volume:0,center:Vec3::ZERO,radius:1.,scale:1.,parent:None,
-            candidates:vec![Candidate {source_only:false,level:0,spatial_error:0.1,voxel_coverage_error:0.01,
+            candidates:vec![Candidate {filtered:[FilteredOptics::default();4],source_only:false,level:0,spatial_error:0.1,voxel_coverage_error:0.01,
                 voxel_color_error:0.01,triangle_coverage_error:0.5,triangle_color_error:0.5,triangle_error:0.1}]}],
             policy:Policy::default()}
     }
@@ -258,7 +264,7 @@ mod tests {
                 if w==99 {[99;4]} else {crate::voxel_forest::selection_unpack(w)}}).collect()
         }
         let gpu=Gpu::new().unwrap();
-        let voxel=Candidate {source_only:false,level:3,spatial_error:0.1,voxel_coverage_error:0.01,
+        let voxel=Candidate {filtered:[FilteredOptics::default();4],source_only:false,level:3,spatial_error:0.1,voxel_coverage_error:0.01,
             voxel_color_error:0.01,triangle_coverage_error:0.5,triangle_color_error:0.5,triangle_error:0.075};
         let mut selection=Selection {
             groups:vec![
@@ -322,7 +328,7 @@ mod tests {
         // unused voxel diagnostics are lower and the optical budget is broad.
         // The later voxel level is too large on screen; it must not erase the
         // already accepted finer triangle cut.
-        let refinement=Candidate {source_only:true,level:0,spatial_error:0.01,triangle_error:0.005,
+        let refinement=Candidate {filtered:[FilteredOptics::default();4],source_only:true,level:0,spatial_error:0.01,triangle_error:0.005,
             voxel_coverage_error:0.0,voxel_color_error:0.0,
             triangle_coverage_error:0.02,triangle_color_error:0.02,..voxel};
         for group in &mut cuts.groups {

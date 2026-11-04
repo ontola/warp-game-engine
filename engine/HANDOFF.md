@@ -1,3 +1,38 @@
+## 2026-11-04 Scale-aware optics and bounded unary traversal (unfinished performance work)
+
+Cook now measures filtered opacity/premultiplied-color RMSE at 2/4/8/16 sample
+footprints. Selection retains the 8% limits and admits filtered candidates only
+when their measured footprint projects to <=1 pixel in EVERY visible consumer.
+This is sampled-medium evidence, not proof of triangle/lighting equivalence.
+Normal cooked root admission becomes [3,3,2,3,3,3] for six trees and 1/3 for
+both grass recipes; each grass admits 109/111 candidates conditionally.
+
+Extra candidate chains initially overflowed the global frontier (1,780,899
+requests in the measured frame). GPU visit now follows unary chains locally,
+enqueueing true fanout only. All 11 selector tests pass on NVIDIA/Vulkan,
+including exact serial-cut equality with a deliberately small work queue.
+Normal renderer run reports zero frontier overflow, zero hash/slot failures.
+
+IMPORTANT: NOT a performance or visual acceptance. Same 1280x720 one-camera
+lowland+grass 240-frame / 1m/s route; frames >=120, 120 GPU samples; upper-middle
+medians (single runs, no repeated statistical claim):
+- prior residency baseline: covered 11.874 ms; selection 2.816 ms.
+- filtered candidates before unary fix: covered 44.347; selection 34.069 ms.
+- filtered + unary: covered 16.106; selection 5.587 ms.
+Latest voxel splats 2.908 ms; raster 2.510 ms. Frame-wall p50 22.2 ms includes
+readback and must not be represented as steady gameplay GPU performance.
+
+Evidence: build/playtest-unified/filtered-unary-times.json.gpu.json,
+filtered-unary-warm.log/png; filtered-times.json.gpu.json is the failed interim.
+Final frame still has 82,097 fallback roots (camera 28,500, shadow-only 53,597),
+4044 selected branch records, 11,325 direct roots. Requested branches:
+camera 1,218,842; shadow-only 1,939,259. Image inspected: coarse ball-like
+crowns and excessive shadows remain unacceptable. No interactive playtest.
+
+Next: avoid evaluating all rejected candidate chains per root and replace
+all-or-nothing budget admission with a budget-aware complete ancestor cut;
+then integrate shared consumer visibility/publication. Do not increase the
+branch pool or relax optical thresholds to hide the structural shortfall.
 ## 2026-11-04 Cook evidence explains missing intermediate vegetation cuts
 
 Added CookedPlant::selection_evidence(policy), sharing the actual optical
