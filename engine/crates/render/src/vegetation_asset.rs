@@ -132,6 +132,9 @@ fn primitive_key(
 }
 
 impl CookedPlant {
+    pub(crate) fn geometry_volumes(&self) -> impl Iterator<Item=(u32,u32,&VoxelAsset)> {
+        self.geometry.iter().enumerate().filter_map(|(i,g)|g.volume.as_ref().map(|v|(i as u32,g.frame_branch,v)))
+    }
     /// Cook reusable source primitives and branch placements without expanding
     /// whole plants or baking volumes. Runtime still uses the bounded shared
     /// GPU part-pose/attachment path, not a forest-scale assembly hierarchy.
@@ -1799,6 +1802,19 @@ pub(crate) mod tests {
             if !gpu_owned {renderer.set_plant_proxies(&gpu,&[(3,ProxyShow::Hidden)]).unwrap();}
             let picks=(0..16).flat_map(|y|(0..16).map(move|x|(4+x*8,4+y*8))).collect::<Vec<_>>();
             let mut frames=Vec::new();
+            // Cold GPU residency keeps an ancestor until source pages arrive.
+            // Hold wind time fixed while establishing the source cut for parity.
+            if gpu_owned {
+                renderer.set_wind(&gpu,&crate::wind::WindState {time_seconds:0.,strength:0.8,..Default::default()}).unwrap();
+                let warm=[ViewRect {cam:Camera {pos:Vec3::new(0.3,0.4,1.6),target:Vec3::new(0.3,0.4,0.),fov_y:1.,near:0.05},x:0,y:0,w:128,h:128}];
+                let mut ready=false;
+                for _ in 0..64 {
+                    renderer.try_render_views(&gpu,&warm,&light,128,128,&[]).unwrap();
+                    let d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();
+                    if d.source_slots==cooked.branches.len() as u32 {ready=true;break;}
+                }
+                assert!(ready,"source pages must become resident before wind parity comparison");
+            }
             for (time,x) in [(0.,0.3),(1.,0.4),(1.4,0.5),(2.,0.3)] {
                 renderer.set_wind(&gpu,&crate::wind::WindState {time_seconds:time,strength:0.8,..Default::default()}).unwrap();
                 let views=[ViewRect {cam:Camera {pos:Vec3::new(x,0.4,1.6),target:Vec3::new(0.3,0.4,0.),fov_y:1.,near:0.05},x:0,y:0,w:128,h:128}];

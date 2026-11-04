@@ -1,3 +1,24 @@
+## 2026-11-04 Checklist G1.3 GPU geometry-group integration
+
+Authoritative checklist: engine/docs/vegetation-architecture.md. G1.3 complete;
+G1.4 current, then G2. Three route runs14.79/14.70/15.11ms; selection3.42/3.48/3.51ms.
+11 selector tests also pass. Final JPEG reviewed: coarse crowns/heavy shadows persist.
+G1.4 still requires mixed-cut motion/depth and alternating performance comparisons.
+No interactive playtest; English updates with gate IDs.
+Nested group volume metadata now has a separate descriptor index (rep.w, index+1)
+from rep.x articulated pose. Existing branch joints remain unchanged. Recursive
+selection, support bounds, page dependencies and materialization connected in the
+normal path. Group shadow representations use existing volume policy. New mixed
+source/group raw-buffer fixture verifies distinct volumes and shared poses at
+three wind times. 15 runtime and 23 asset tests pass including source/wind image
+parity. Fixed voxel IDs entering source-triangle diagnostic picks. Cold-page tests
+wait for residency at fixed wind time; no weakened source/image assertions.
+Production normal route has 2,686 hierarchy nodes (previous 1,583), 151,058 roots,
+4,096 slots. First headless single-view 720p run covered14.79ms/selection3.42ms,
+fallback46,270. Earlier three runs ~15.6-15.9ms; no accepted comparative speedup.
+Still exceeds older11.87ms baseline; images remain poor. G1.4 and all later gates
+remain open. Root all-or-nothing budget fallback is not solved by this change.
+
 ## 2026-11-04 Checklist G1.1/G1.2 cooked geometry groups (97cf333)
 
 Single authoritative status: engine/docs/vegetation-architecture.md. English updates,

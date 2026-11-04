@@ -4955,7 +4955,9 @@ impl Renderer {
                     for (i,x,y) in requested {
                         let k = ((y * vis.width() + x) * 4) as usize;
                         let id = u32::from_le_bytes(ids[k..k + 4].try_into().unwrap());
-                        if id != u32::MAX {
+                        // Picks here identify source triangles only. Voxel
+                        // visibility carries bit 31 and is not a list index.
+                        if id != u32::MAX && id & 0x80000000 == 0 {
                             stats.picks[i] = Some((list[(id >> 7) as usize * 2], list[(id >> 7) as usize * 2 + 1], id & 127));
                         }
                     }

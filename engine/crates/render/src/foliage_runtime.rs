@@ -36,8 +36,8 @@ impl Spec {
         let mut pinned=vec![false;levels];
         let range=|v:GpuTree|->Result<Vec<usize>,String>{let start=v.meta[1]as usize;let end=start.checked_add(v.meta[2]as usize).ok_or("voxel dependency overflow")?;if end>levels{return Err("voxel dependency outside catalog".into());}Ok((start..end).collect())};
         for proxy in &self.proxies {for id in range(*proxy)?{pinned[id]=true;}}
-        let deps=self.representations.iter().map(|rep|{let branch=&self.branches[rep[0]as usize];
-            if rep[1]==1 && branch.info[0]==NONE {
+        let deps=self.representations.iter().map(|rep|{let branch=&self.branches[if rep[3]==0 {rep[0]}else{rep[3]-1}as usize];
+            if rep[1]==1 && rep[3]==0 && branch.info[0]==NONE {
                 // Direct whole-root rendering publishes exactly the chosen mip
                 // (materialize identity.z=1), including its shadow consumer.
                 let levels=range(branch.volume)?;
@@ -147,14 +147,18 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
     let templates=template_volumes.iter().map(|v|RootTemplate {proxy:*v,source:scene.instances[v.meta[0]as usize],node:0,branch:0,shadow_sphere:[0.;4]}).collect::<Vec<_>>();
     for v in &template_volumes {let owner=&mut scene.instances[v.meta[0]as usize];owner.sphere[3]=-1.;owner.flags=0;}
 
-    let mut nodes=Vec::new();let mut representations=Vec::new();let mut root_nodes=Vec::new();
+    let mut nodes=Vec::new();let mut representations=Vec::new();let mut root_nodes=Vec::new();let mut group_fixups=Vec::new();
     for (variant,p) in plants.iter().enumerate() {
         let recipe=p.shared_selection_recipe(policy)?;let node_base=nodes.len()as u32;let rep_base=representations.len()as u32;
         root_nodes.push(node_base);
         for mut n in recipe.nodes {if matches!(recipe.representations[n.links[2]as usize],SelectedRepresentation::Voxel {branch:0,..}) {n.links[3]|=2;}if n.links[0]!=NONE {n.links[0]+=node_base;}n.links[1]+=node_base;n.links[2]+=rep_base;nodes.push(n);}
-        for r in recipe.representations {representations.push(match r {
+        for r in recipe.representations {let rep_index=representations.len();representations.push(match r {
             SelectedRepresentation::SourceBranch {branch,..}=>[handles[variant].pose_range.start as u32+branch,0,0,0],
             SelectedRepresentation::Voxel {branch,level,..}=>[handles[variant].pose_range.start as u32+branch,1,level,0],
+            SelectedRepresentation::GroupVoxel {group,frame_branch,level}=>{
+                group_fixups.push((rep_index,variant,group));
+                [handles[variant].pose_range.start as u32+frame_branch,1,level,0]
+            },
         });}
     }
     let mut branches=Vec::new();
@@ -172,6 +176,31 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
             branch.info[3]=mode as u32;
         }
     }
+    // Geometry descriptors share this buffer, but are NOT articulated joints.
+    // Representation.x remains the original pose; .w selects volume data only.
+    let mut group_records=std::collections::BTreeMap::new();
+    for (variant,plant) in plants.iter().enumerate() {
+        let groups=plant.geometry_volumes().filter(|g|group_fixups.iter().any(|(_,v,id)|*v==variant && *id==g.0)).collect::<Vec<_>>();
+        if groups.is_empty(){continue;}
+        let assets=groups.iter().map(|g|g.2.clone()).collect::<Vec<_>>();
+        let cells=assets.iter().flat_map(|a|&a.levels).map(|l|l.voxels.len()).sum();
+        let packed=crate::foliage_volume_data::pack_assets(&assets,crate::foliage_volume_data::AssetPackLimits {
+            max_assets:assets.len(),levels_per_asset:crate::foliage_representation::MAX_LEVELS,
+            first_level_bounds:false,max_dense_indices:1<<28,max_sparse_cells:cells})?;
+        let base=forest.levels.len()as u32;
+        for (asset,(group,frame,_)) in groups.iter().enumerate() {
+            let pose=handles[variant].pose_range.start+*frame as usize;
+            let mut source=branches[pose].source;
+            source.rows=rows(Mat4::IDENTITY);source.first_cluster=0;source.cluster_count=0;
+            let mut volume=packed.instance(crate::foliage_volume_data::VolumeBinding {owner:0,asset:asset as u32,crown_material:crate::foliage_volume_data::ALL_MATERIALS},&source)?;
+            volume.meta[1]+=base;
+            let (low,high)=local_bounds(volume);
+            group_records.insert((variant,*group),branches.len()as u32);
+            branches.push(Branch {rest:rows(Mat4::IDENTITY),source,volume,low,high,animation:[0.;4],info:[NONE,1,0,0]});
+        }
+        forest.append(packed.forest)?;
+    }
+    for (rep,variant,group) in group_fixups {representations[rep][3]=group_records[&(variant,group)]+1;}
     // Reference recipe carriers are not world instances. Keep the shared
     // negative-radius primitive templates; retire only their reference owners.
     for p in &scene.part_wind {if let Some(o)=p.owner {scene.instances[o as usize].sphere[3]=-1.;scene.instances[o as usize].first_cluster=0;}}
@@ -481,8 +510,8 @@ impl Runtime {
         assert_eq!(deps[root_rep].len(),1);assert!(pins[deps[root_rep][0]]);
         let mut fine=0;
         for (i,rep) in spec.representations.iter().enumerate() {
-            let branch=&spec.branches[rep[0]as usize];
-            if rep[1]==1 && branch.info[0]==NONE {
+            let branch=&spec.branches[if rep[3]==0 {rep[0]}else{rep[3]-1}as usize];
+            if rep[1]==1 && rep[3]==0 && branch.info[0]==NONE {
                 assert_eq!(deps[i],vec![(branch.volume.meta[1]+rep[2])as usize]);
                 if !pins[deps[i][0]] {fine+=1;}
             }else if branch.info[1]!=0 {assert_eq!(deps[i].len(),branch.volume.meta[2]as usize,"adaptive articulated shadows retain their mip bundle");}
@@ -560,6 +589,51 @@ impl Runtime {
         let module=naga::front::wgsl::parse_str(src).unwrap_or_else(|e|panic!("{}",e.emit_to_string(src)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|e|panic!("{}",e.emit_to_string(src)));}}
 
+    #[test]
+    #[ignore="exclusive GPU shared ancestry oracle"]
+    fn gpu_geometry_groups_use_existing_pose_and_distinct_volume_pages() {
+        use super::*;
+        let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
+        let mut plant=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();plant.cook_proxy(&source,config,3).unwrap();
+        let mut scene=Scene::default();
+        plant_population(&mut scene,&[plant],&[crate::foliage_population::WorldRoot {id:1,placement:RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.3,scale:1.,variant:0}}],1,16,
+            crate::aggregate_lod::Policy {allow_sampled_optics:true,max_coverage_error:1.,max_color_error:1.,..Default::default()}).unwrap();
+        let mut spec=scene.gpu_forest.clone().unwrap();
+        assert!(spec.representations.iter().any(|r|r[3]!=0));
+        assert!(spec.representations.iter().all(|r|r[0]<3),"groups reuse the original three pose indices");
+        for n in &mut spec.nodes {
+            if n.links[0]==NONE {continue;}
+            if spec.representations[n.links[2]as usize][3]!=0 {n.links[3]&=!1;n.error=[0.;4];}
+            else {n.links[3]|=1;}
+        }
+        let gpu=Gpu::new().unwrap();
+        let upload=|bytes:&[u8]|gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("group oracle"),contents:bytes,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC});
+        let read=|buffer:&wgpu::Buffer| {
+            let target=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("group oracle read"),size:buffer.size(),usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+            let mut e=gpu.device.create_command_encoder(&Default::default());e.copy_buffer_to_buffer(buffer,0,&target,0,buffer.size());gpu.queue.submit([e.finish()]);target.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
+            let bytes=target.slice(..).get_mapped_range().unwrap().to_vec();target.unmap();bytes
+        };
+        let instances=upload(bytemuck::cast_slice(&scene.instances));let volumes=upload(bytemuck::cast_slice(&scene.voxel_forest.as_ref().unwrap().instances));
+        let runtime=Runtime::new(&gpu,&spec,&instances,&volumes).unwrap();
+        let view=crate::part_wind::AnimationView {view_projection:Mat4::perspective_infinite_reverse_rh(1.,1.,0.05)*Mat4::look_at_rh(Vec3::new(0.3,0.4,20.),Vec3::new(0.3,0.4,0.),Vec3::Y),viewport:[512;2]};
+        for time in [0.,17.,119.] {
+            runtime.set_wind(&crate::wind::WindState {strength:0.7,time_seconds:time,..Default::default()}.validated().unwrap()).unwrap();
+            let mut enc=gpu.device.create_command_encoder(&Default::default());runtime.encode(&gpu,&mut enc,&[view],spec.first_owner).unwrap();gpu.queue.submit([enc.finish()]);
+            let slot_bytes=read(&runtime.residency.slots);let slots:&[crate::foliage_residency::ResidentSlot]=bytemuck::cast_slice(&slot_bytes);
+            let volume_bytes=read(&volumes);let rendered:&[GpuTree]=bytemuck::cast_slice(&volume_bytes);
+            let source_bytes=read(&instances);let sources:&[GpuInstance]=bytemuck::cast_slice(&source_bytes);
+            let mut found=0;
+            for (i,slot) in slots.iter().enumerate().filter(|(_,s)|s.history[2]!=0) {
+                let rep=spec.representations[slot.key[2]as usize];if rep[3]==0 {continue;}
+                let volume=spec.branches[(rep[3]-1)as usize].volume;
+                assert_eq!(rendered[i].meta[1],volume.meta[1]);assert_ne!(volume.meta[1],spec.branches[rep[0]as usize].volume.meta[1]);
+                let pose=matrix(sources[spec.first_owner as usize+i].rows);
+                assert!(matrix(rendered[i].inverse).abs_diff_eq(pose.inverse(),2e-5));found+=1;
+            }
+            assert_eq!(found,1,"a mixed source/group cut must actually materialize");
+            assert_eq!(runtime.diagnostics(&gpu).unwrap().fallback_trees,0);
+        }
+    }
     #[test]
     #[ignore="exclusive GPU shared ancestry oracle"]
     fn gpu_shared_poses_match_serial_wind_and_hash_overflow() {
@@ -761,8 +835,15 @@ impl Runtime {
         let tree=RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0};
         let mut scene=Scene::default();plant(&mut scene,std::slice::from_ref(&cooked),&[tree],1,policy).unwrap();
         let renderer=Renderer::new(&gpu,&scene,&light);
-        let (actual,_)=renderer.try_render_views(&gpu,&view,&light,128,128,&[]).unwrap();
-        let d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();
+        let (mut actual,_)=renderer.try_render_views(&gpu,&view,&light,128,128,&[]).unwrap();
+        let mut d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();
+        // Cold pages can retain a direct ancestor before full source demand
+        // exists. This test exercises slot overflow, not asynchronous I/O timing.
+        for _ in 0..64 {
+            if d.fallback_trees==1 {break;}
+            actual=renderer.try_render_views(&gpu,&view,&light,128,128,&[]).unwrap().0;
+            d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();
+        }
         assert_eq!(d.fallback_trees,1);assert_eq!(d.source_slots+d.voxel_slots,0);
         let mae=expected.iter().zip(&actual).map(|(&a,&b)|a.abs_diff(b)as u64).sum::<u64>()as f64/expected.len()as f64;
         eprintln!("resident fallback vs proxy reference MAE={mae}");assert!(mae<2.);
