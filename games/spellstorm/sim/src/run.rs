@@ -851,7 +851,8 @@ impl World {
         let n = self.wizards.len() + 1;
         let mut taken: Vec<usize> = Vec::new();
         for &w in &self.wizards {
-            taken.extend(self.wiz(w).relics.iter().copied());
+            // Tomes stack (Joep): only a one-off already carried is left out.
+            taken.extend(self.wiz(w).relics.iter().copied().filter(|&r| !relics::stacks(r)));
         }
         taken.extend(self.run.altars.iter().map(|a| a.relic));
         // Only tomes someone here can use: their elements, their forms.

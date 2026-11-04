@@ -331,9 +331,16 @@ impl Menu {
             if wz.relics.is_empty() {
                 lines.push(Line::Plain("No tomes yet"));
             }
+            // Tomes stack: one line each, with how many.
+            let mut seen: Vec<usize> = vec![];
             for &t in &wz.relics {
+                if seen.contains(&t) {
+                    continue;
+                }
+                seen.push(t);
+                let n = wz.relics.iter().filter(|&&r| r == t).count();
                 if let Some(rel) = spellstorm::relics::all().get(t) {
-                    lines.push(Line::Tome(rel.name.clone()));
+                    lines.push(Line::Tome(if n > 1 { format!("{} x{n}", rel.name) } else { rel.name.clone() }));
                     lines.push(Line::Text(rel.text.clone()));
                 }
             }
