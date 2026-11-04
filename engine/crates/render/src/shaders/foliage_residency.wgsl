@@ -13,6 +13,7 @@ struct Slot { key:vec4<u32>, history:vec4<u32> };
 // free count, allocation attempts, retained, newly assigned, capacity failures,
 // hash failures, occupied after allocation, reserved.
 @group(0) @binding(8) var<storage,read_write> stats:array<atomic<u32>>;
+@group(0) @binding(9) var<storage,read> asset_pages:array<vec4<u32>>;
 const NONE:u32=0xffffffffu;
 fn count()->u32 {return min(selection_counts[0],config.counts.x);}
 fn same(a:vec4<u32>,b:vec4<u32>)->bool {
@@ -60,7 +61,7 @@ fn index_requests(@builtin(global_invocation_id) id:vec3<u32>) {
 fn retain_slots(@builtin(global_invocation_id) id:vec3<u32>) {
     let i=id.x;if i>=config.counts.y {return;}
     var slot=slots[i];var request=NONE;
-    if slot.history.x!=0u && slot.key.x<config.counts.w {
+    if slot.history.x!=0u && slot.key.x<config.counts.w && slot.history.x==asset_pages[slot.key.z].z {
         if atomicLoad(&fallback[slot.key.x])==0u {request=lookup(slot.key);}
     }
     if request!=NONE {
@@ -87,7 +88,7 @@ fn allocate_slots(@builtin(global_invocation_id) id:vec3<u32>) {
         atomicStore(&fallback[key.x],1u);atomicAdd(&stats[4],1u);return;
     }
     let index=free_slots[offset];let old_epoch=slots[index].history.w;
-    slots[index]=Slot(key,vec4<u32>(1u,0u,0u,old_epoch^128u));
+    slots[index]=Slot(key,vec4<u32>(asset_pages[key.z].z,0u,0u,old_epoch^128u));
     request_slot[i]=index;atomicAdd(&stats[3],1u);
 }
 // Only this final pass publishes slot validity. A failed request elsewhere in

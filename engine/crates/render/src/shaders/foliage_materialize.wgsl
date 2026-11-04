@@ -24,6 +24,7 @@ struct PoseEntry {key:atomic<u32>,pad0:u32,pad1:u32,pad2:u32,rows:array<vec4<f32
 @group(0) @binding(14) var<storage,read_write> pose_work:array<atomic<u32>>;
 @group(0) @binding(15) var<storage,read_write> root_poses:array<array<vec4<f32>,3>>;
 @group(0) @binding(16) var<uniform> pose_level:vec4<u32>;
+@group(0) @binding(17) var<storage,read> asset_pages:array<vec4<u32>>;
 fn pose_hash(key:u32)->u32 {var h=key;h=(h^(h>>16u))*0x7feb352du;h=(h^(h>>15u))*0x846ca68bu;return (h^(h>>16u))&(arrayLength(&pose_cache)-1u);}
 fn pose_key(root:u32,branch:u32)->u32 {return root*state.counts.w+branch+1u;}
 fn pose_find(key:u32)->u32 {
@@ -148,9 +149,9 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
   volumes[i]=volume;
   let owner=original.identity.x;var source=sources[owner];source.rows=m;
   let previous=root_history[tree];var epoch=previous.z;
-  if previous.w==0u || previous.x!=history || previous.y!=root.info.y {epoch=epoch^128u;}
+  if previous.w!=asset_pages[0].w || previous.x!=history || previous.y!=root.info.y {epoch=epoch^128u;}
   source.flags=(source.flags&~128u)|epoch;
-  root_history[tree]=vec4<u32>(history,root.info.y,epoch,1u);
+  root_history[tree]=vec4<u32>(history,root.info.y,epoch,asset_pages[0].w);
   // Preserve the authored crown sphere for canopy density. Selection bounds
   // include conservative support/wind margins and would darken the forest.
   // Voxel visibility uses the independently animated volume bounds above.

@@ -56,7 +56,7 @@ provisional depth from an incomplete cut cannot survive publication failure.
 | Permanent population | Stable WorldRoot IDs, reserved slots and generations; worker-prepared deltas publish without renderer rebuild | Automatic capacity growth and asset paging; current root capacity is fixed and excess is rejected |
 | GPU selection | Consumer union, deterministic complete-tree budget; GPU work queues distribute refining subtrees across workgroups | Integrate history-first traversal with safe publication across consumers |
 | Occlusion | Normal per-view source route uses pixel-history scheduling, bounded deferred-cluster recovery and current depth; queue overflow re-scans the complementary cut | Feed safe visibility into shared assembly traversal/publication; current camera recovery is downstream of residency |
-| Residency | Persistent GPU branch hash/slots, generation history, root fallback | Asset page requests/uploads/eviction; current catalogs are fully resident |
+| Residency | Persistent GPU branch hash/slots; compact logical asset requests; pinned root fallback and generation-checked publication | Physical page pools/address translation, bounded uploads and eviction; current catalogs are fully resident |
 | Wind | GPU demand-deduplicated ancestor poses, parent-depth queues and shared root poses; source/voxel/shadow transforms agree | Indirect depth-queue dispatch, active-root compaction, recipe growth/season lifecycle |
 | Shadows | Independent source/voxel choices from common residency | Animated dirty-page cache; current dynamic sun is invalidated every frame |
 | Far population | One resident voxel record per tree, painted terrain beyond population | Spatial-cell aggregates without per-tree records at extreme distance |

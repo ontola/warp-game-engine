@@ -184,7 +184,7 @@ impl Runtime {
         Self::with_pose_capacity(gpu,spec,instances,volumes,None)
     }
     fn with_pose_capacity(gpu:&Gpu,spec:&Spec,instances:&wgpu::Buffer,volumes:&wgpu::Buffer,capacity_override:Option<u32>)->Result<Self,String> {
-        if gpu.device.limits().max_storage_buffers_per_shader_stage<15 {return Err("GPU forest materialization requires 15 storage bindings".into());}
+        if gpu.device.limits().max_storage_buffers_per_shader_stage<16 {return Err("GPU forest materialization requires 16 storage bindings".into());}
         let mut cooked_branches=spec.branches.clone();let mut max_depth=0u32;
         for i in 0..spec.branches.len() {
             let mut n=i;let mut depth=1;
@@ -221,10 +221,10 @@ impl Runtime {
             let root_poses=scratch("shared root poses",spec.roots.len()as u64*48);
             let mut levels=vec![0u32;(max_depth as usize+1)*64];for d in 0..=max_depth {levels[d as usize*64]=d;}
             let levels=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("immutable pose depth dispatch"),contents:bytemuck::cast_slice(&levels),usage:wgpu::BufferUsages::UNIFORM});
-            let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("GPU forest materialization"),entries:&(0..17).map(|binding|wgpu::BindGroupLayoutEntry {
-                binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,ty:wgpu::BindingType::Buffer {ty:if binding==0 || binding==16 {wgpu::BufferBindingType::Uniform}else{wgpu::BufferBindingType::Storage {read_only:binding<8 || binding==11}},has_dynamic_offset:binding==16,min_binding_size:None},
+            let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("GPU forest materialization"),entries:&(0..18).map(|binding|wgpu::BindGroupLayoutEntry {
+                binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,ty:wgpu::BindingType::Buffer {ty:if binding==0 || binding==16 {wgpu::BufferBindingType::Uniform}else{wgpu::BufferBindingType::Storage {read_only:binding<8 || binding==11 || binding==17}},has_dynamic_offset:binding==16,min_binding_size:None},
             }).collect::<Vec<_>>()});
-            let buffers=[&uniform,&selector._instances,&selector._nodes,&branches,&reps,&residency.slots,&selector.fallback,&proxies,instances,volumes,&choices,&selector.direct,&root_history,&pose_cache,&pose_work,&root_poses,&levels];
+            let buffers=[&uniform,&selector._instances,&selector._nodes,&branches,&reps,&residency.slots,&selector.fallback,&proxies,instances,volumes,&choices,&selector.direct,&root_history,&pose_cache,&pose_work,&root_poses,&levels,&selector.asset_pages];
             let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("GPU forest materialization"),layout:&layout,entries:&buffers.iter().enumerate().map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==16 {wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:b,offset:0,size:std::num::NonZeroU64::new(16)})}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
             let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("GPU forest materialization"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("GPU forest materialization"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_materialize.wgsl").into())});
@@ -360,6 +360,21 @@ impl Runtime {
                 let d=runtime.diagnostics(&gpu).unwrap();assert_eq!(d.pose_requests,d.evaluated_shared_poses);
                 if capacity.is_none(){assert_eq!(d.pose_hash_failures,0);assert_eq!(d.evaluated_shared_poses,4);}else{assert!(d.pose_hash_failures>0);}
             }
+            let page=spec.representations.iter().position(|r|r[0]==1 && r[1]==0).unwrap()as u32;
+            let draw=|| {let mut enc=gpu.device.create_command_encoder(&Default::default());runtime.encode(&gpu,&mut enc,&[view],spec.first_owner).unwrap();gpu.queue.submit(Some(enc.finish()));runtime.diagnostics(&gpu).unwrap()};
+            runtime.selector.publish_asset_pages(&gpu,&[(page,false,1)]).unwrap();
+            let d=draw();assert_eq!(d.fallback_trees,2);assert_eq!(d.source_slots+d.voxel_slots,0,"never publish a partial tree after an asset fault");
+            let bytes=read(&runtime.selector.asset_requests,runtime.selector.asset_requests.size());let requests:&[u32]=bytemuck::cast_slice(&bytes);
+            let entries=requests[4..4+requests[0]as usize*4].chunks_exact(4).collect::<Vec<_>>();
+            assert!(entries.iter().any(|r|r[0]==page && r[1]==0));
+            assert_eq!(entries.iter().map(|r|r[0]).collect::<std::collections::HashSet<_>>().len(),entries.len());
+            let bytes=read(&volumes,scene.voxel_forest.as_ref().unwrap().instances.len()as u64*96);let visible:&[GpuTree]=bytemuck::cast_slice(&bytes);
+            assert!(visible[spec.slots as usize..].iter().all(|v|v.bounds_min[3]==0.),"root fallback remains visible");
+            runtime.selector.publish_asset_pages(&gpu,&[(page,true,2)]).unwrap();let d=draw();assert_eq!(d.fallback_trees,0);assert_eq!(d.assigned,6);
+            assert!(runtime.selector.publish_asset_pages(&gpu,&[(page,true,1)]).is_err());
+            let pinned=spec.nodes.iter().find(|n|n.links[3]&2!=0).unwrap().links[2];
+            assert!(runtime.selector.publish_asset_pages(&gpu,&[(page,false,2),(pinned,false,1)]).is_err());assert_eq!(draw().retained,6,"invalid batch must be atomic");
+            runtime.selector.publish_asset_pages(&gpu,&[(page,true,3)]).unwrap();let d=draw();assert_eq!(d.assigned,2);assert_eq!(d.retained,4,"asset generations must retire both affected roots' old slots");
         }
     }
     #[test]

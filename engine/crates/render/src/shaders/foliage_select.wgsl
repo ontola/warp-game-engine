@@ -22,6 +22,27 @@ struct WorkQueue { count:atomic<u32>, padding:array<u32,3>, tasks:array<vec2<u32
 @group(0) @binding(11) var<storage,read_write> input_work:WorkQueue;
 @group(0) @binding(12) var<storage,read_write> output_work:WorkQueue;
 @group(0) @binding(13) var<storage,read> child_list:array<u32>;
+// Logical representation pages. Physical allocation/upload is a separate owner.
+struct AssetPage {resident:u32,requested:atomic<u32>,generation:u32,padding:u32};
+@group(0) @binding(14) var<storage,read_write> asset_pages:array<AssetPage>;
+@group(0) @binding(15) var<storage,read_write> asset_requests:array<atomic<u32>>;
+fn asset_ready(representation:u32)->bool {
+ // Thousands of roots share each page. Once requested, avoid contending
+ // read-modify-writes; duplicate first writers remain harmless atomics.
+ // Compaction resets these bits only after all selection dispatches finish.
+ if atomicLoad(&asset_pages[representation].requested)==0u {
+  atomicOr(&asset_pages[representation].requested,1u);
+ }
+ return asset_pages[representation].resident!=0u;
+}
+@compute @workgroup_size(64) fn compact_asset_requests(@builtin(global_invocation_id) id:vec3<u32>) {
+ let page=id.x;if page>=arrayLength(&asset_pages) {return;}
+ if atomicExchange(&asset_pages[page].requested,0u)==0u {return;}
+ let i=atomicAdd(&asset_requests[0],1u);let at=4u+i*4u;
+ // Exactly one invocation per page: capacity equals logical page count.
+ atomicStore(&asset_requests[at],page);atomicStore(&asset_requests[at+1u],asset_pages[page].resident);
+ atomicStore(&asset_requests[at+2u],asset_pages[page].generation);atomicStore(&asset_requests[at+3u],0u);
+}
 const NONE:u32=0xffffffffu;
 fn sphere(t:Tree,n:Node)->vec4<f32> {
  let p=vec4<f32>(n.sphere.xyz,1.0);
@@ -81,6 +102,7 @@ fn error_pixels(s:vec4<f32>,error:f32)->f32 {
  return result;
 }
 fn emit(tree:u32,node:u32) {
+ if !asset_ready(nodes[node].links.z) {atomicStore(&fallback[tree],4u);return;}
  if (nodes[node].links.w&2u)!=0u {direct_roots[tree]=nodes[node].links.z+1u;atomicAdd(&counters[7],1u);return;}
  let at=atomicAdd(&counters[0],1u);
  if at<view.counts.y {records[at]=vec4<u32>(tree,node,nodes[node].links.z,trees[tree].info.y);}
@@ -176,6 +198,7 @@ fn visit(tree:u32,n:u32,write_records:bool)->bool {
  if write_records {atomicAdd(&counters[4],1u);}
  if !visible(s){if write_records {atomicAdd(&counters[5],1u);}return false;}
  if node.links.x==NONE || ((node.links.w&1u)==0u && error_pixels(s,node.error.x*t.scale.x)<=view.pixels.z) {
+  if !asset_ready(node.links.z) {atomicStore(&fallback[tree],4u);atomicStore(&demand[tree].failed,1u);return false;}
   if write_records {emit(tree,n);}else if (node.links.w&2u)==0u {atomicAdd(&demand[tree].count,1u);}
   return false;
  }
