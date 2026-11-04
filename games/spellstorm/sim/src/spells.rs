@@ -1037,12 +1037,14 @@ impl World {
         &mut self,
         caster: Id,
         s: &Spell,
-        n: NovaN,
+        mut n: NovaN,
         at: Vec3,
         spare_caster: bool,
         only_team: Option<u8>,
         power: f64,
     ) {
+        // Wide Sigil.
+        n.radius *= self.a(caster).mods.nova;
         let mix = mix_of(&s.counts);
         self.nova_mix(
             caster,
@@ -1838,7 +1840,7 @@ impl World {
         }
         let Some(first) = first else { return };
         let mut chain = vec![first];
-        while chain.len() < 1 + HOPS {
+        while chain.len() < 1 + HOPS + self.a(caster).mods.chain as usize {
             let last = *chain.last().unwrap();
             let (lp, lw) = {
                 let l = self.a(last);

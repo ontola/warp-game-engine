@@ -39,6 +39,18 @@ pub enum Mod {
     Bolt(f64),
     /// The staff swing's recovery, times.
     Swing(f64),
+    /// Share of the damage you deal that heals you, added.
+    Leech(f64),
+    /// Share of a melee blow that hits its striker back, added.
+    Thorns(f64),
+    /// Killing blows survived each level, added.
+    Wind(f64),
+    /// More monsters your lightning jumps to, added.
+    Chain(f64),
+    /// How far bursts around you reach, times.
+    Nova(f64),
+    /// How fast you raise a fallen friend, times.
+    Raise(f64),
 }
 
 /// What a tome needs before it is any use to a wizard.
@@ -56,6 +68,8 @@ impl Mod {
         match self {
             M::El(e, _) => Need::El(e),
             M::Echo => Need::Form(Form::Nova),
+            M::Nova(_) => Need::Form(Form::Nova),
+            M::Chain(_) => Need::El(Lightning),
             M::Planter => Need::Form(Form::Plant),
             M::EnchantTime(_) => Need::Form(Form::Enchant),
             _ => Need::Nothing,
@@ -77,7 +91,7 @@ const fn r(name: &'static str, text: &'static str, mods: &'static [Mod]) -> Reli
     Relic { name, text, mods }
 }
 
-pub const ALL: [Relic; 32] = [
+pub const ALL: [Relic; 38] = [
     r("Black Grimoire", "Poison and Void +40%", &[M::El(Poison, 1.4), M::El(Void, 1.4)]),
     r("Ember and Rime Codex", "Fire, Frost, Steam and Ice +40%", &[M::El(Fire, 1.4), M::El(Frost, 1.4), M::El(Steam, 1.4), M::El(Ice, 1.4)]),
     r(
@@ -139,6 +153,12 @@ pub const ALL: [Relic; 32] = [
     r("Quicksilver Grip", "Swing recovers twice as fast, hits 30% harder", &[M::Swing(0.5), M::Sword(1.3)]),
     r("Blood Pact", "+40% to all your damage, but you take 20% more", &[M::Dmg(1.4), M::Guard(1.2)]),
     r("Wayfarer's Charm", "+20 max health and you move 15% faster", &[M::Hp(20.0), M::Speed(1.15)]),
+    r("Vampire Fang", "Heal 3% of the damage you deal", &[M::Leech(0.03)]),
+    r("Bramble Mail", "Monsters that strike you take half of it back", &[M::Thorns(0.5)]),
+    r("Phoenix Feather", "Once a level a killing blow leaves you at 1 health", &[M::Wind(1.0)]),
+    r("Forked Rod", "Your chain lightning jumps to one more monster", &[M::Chain(1.0)]),
+    r("Wide Sigil", "Bursts around you reach 30% further", &[M::Nova(1.3)]),
+    r("Shepherd's Crook", "You raise fallen friends twice as fast", &[M::Raise(2.0)]),
 ];
 
 /// A tome as the game uses it: the built-in ones, or the Luau rules'
@@ -193,6 +213,12 @@ pub struct Mods {
     pub push: f64,
     pub bolt: f64,
     pub swing: f64,
+    pub leech: f64,
+    pub thorns: f64,
+    pub wind: f64,
+    pub chain: f64,
+    pub nova: f64,
+    pub raise: f64,
 }
 
 impl Default for Mods {
@@ -221,6 +247,12 @@ impl Default for Mods {
             push: 1.0,
             bolt: 1.0,
             swing: 1.0,
+            leech: 0.0,
+            thorns: 0.0,
+            wind: 0.0,
+            chain: 0.0,
+            nova: 1.0,
+            raise: 1.0,
         }
     }
 }
@@ -256,6 +288,12 @@ impl Mods {
                     M::Push(f) => m.push *= f,
                     M::Bolt(f) => m.bolt *= f,
                     M::Swing(f) => m.swing *= f,
+                    M::Leech(f) => m.leech += f,
+                    M::Thorns(f) => m.thorns += f,
+                    M::Wind(f) => m.wind += f,
+                    M::Chain(f) => m.chain += f,
+                    M::Nova(f) => m.nova *= f,
+                    M::Raise(f) => m.raise *= f,
                 }
             }
         }
@@ -268,6 +306,11 @@ impl Mods {
         m.swing = m.swing.max(0.25);
         m.speed = m.speed.min(2.0);
         m.reach = m.reach.min(2.5);
+        m.leech = m.leech.min(0.25);
+        m.wind = m.wind.min(3.0);
+        m.chain = m.chain.min(5.0);
+        m.nova = m.nova.min(2.0);
+        m.raise = m.raise.min(5.0);
         m
     }
 }

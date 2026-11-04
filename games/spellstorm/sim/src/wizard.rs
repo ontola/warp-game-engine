@@ -1315,16 +1315,16 @@ impl World {
     /// three seconds with one, faster with more.
     fn raise(&mut self, id: Id, w: &mut Wizard, dt: f64) {
         w.tomb_t += dt;
-        let mut n = 0;
+        let mut n = 0.0;
         for &o in &self.wizards {
             if o != id && self.alive(o) && self.grave_dist(id, w, self.pos(o)) < REVIVE_REACH {
-                n += 1;
+                n += self.a(o).mods.raise;
             }
         }
-        if n == 0 {
+        if n == 0.0 {
             w.revive = (w.revive - crate::knobs::revive_rate() * 0.5 * dt).max(0.0);
         } else {
-            w.revive += crate::knobs::revive_rate() * n as f64 * dt;
+            w.revive += crate::knobs::revive_rate() * n * dt;
             if w.revive >= crate::knobs::revive_need() {
                 self.revive(id, w, 0.4);
             }
@@ -1386,6 +1386,7 @@ impl World {
         a.speed = crate::knobs::wizard_speed() * mods.speed;
         let old = a.max_hp;
         a.max_hp = 100.0 + mods.hp;
+        a.winds = mods.wind as i32;
         a.hp += a.max_hp - old;
         drop(a);
         self.unlocks_changed();

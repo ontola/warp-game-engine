@@ -9,7 +9,9 @@
 -- `regen` (mana regen), `cost` (loading and casting), `souls` (mana from
 -- souls), `magnet` (how far souls fly to you), `guard` (damage you take),
 -- `status` (how deep your burns, poisons and chills go), `push` (knockback),
--- `bolt` (bolt damage) and `swing` (staff swing recovery) all multiply;
+-- `bolt` (bolt damage), `swing` (staff swing recovery), `nova` (burst reach)
+-- and `raise` (raising a friend) all multiply; `leech`, `thorns`, `wind`
+-- (killing blows survived a level) and `chain` (lightning jumps) add;
 -- `hp` and `mana` add max health and max mana; `echo` (novas go off twice),
 -- `planter` (2 sentries and 5 traps) and `firewalker` (the ground never
 -- hurts) are true or absent.
@@ -52,6 +54,12 @@ local tomes = {
 	{ name = "Quicksilver Grip", text = "Swing recovers twice as fast, hits 30% harder", mods = { swing = 0.5, sword = 1.3 } },
 	{ name = "Blood Pact", text = "+40% to all your damage, but you take 20% more", mods = { dmg = 1.4, guard = 1.2 } },
 	{ name = "Wayfarer's Charm", text = "+20 max health and you move 15% faster", mods = { hp = 20, speed = 1.15 } },
+	{ name = "Vampire Fang", text = "Heal 3% of the damage you deal", mods = { leech = 0.03 } },
+	{ name = "Bramble Mail", text = "Monsters that strike you take half of it back", mods = { thorns = 0.5 } },
+	{ name = "Phoenix Feather", text = "Once a level a killing blow leaves you at 1 health", mods = { wind = 1 } },
+	{ name = "Forked Rod", text = "Your chain lightning jumps to one more monster", mods = { chain = 1 } },
+	{ name = "Wide Sigil", text = "Bursts around you reach 30% further", mods = { nova = 1.3 } },
+	{ name = "Shepherd's Crook", text = "You raise fallen friends twice as fast", mods = { raise = 2 } },
 }
 
 return { tomes = tomes }

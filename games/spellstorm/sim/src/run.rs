@@ -268,6 +268,10 @@ impl World {
         );
         // Each level teaches once at its first shrine and once at its boss.
         self.run.taught = false;
+        for id in self.wizards.clone() {
+            let wind = self.a(id).mods.wind as i32;
+            self.am(id).winds = wind;
+        }
         let sz = self.level.start;
         let starts = [
             Vec2::new(-1.5, -1.0),
