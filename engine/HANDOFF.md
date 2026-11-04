@@ -1,3 +1,13 @@
+## 5 November 2026 - shared-memory priority scan
+
+Priority scan now stages proposals once in 4 KiB workgroup memory; stable
+ordering and admission policy unchanged. 141 tests PASS. Three alternating
+720p one-view routes: covered 12.82-12.91 -> 12.09-12.12 ms, selection
+6.69 -> 5.90-5.97 ms. Counts/errors unchanged, images effectively unchanged.
+Partially recovers prior correctness regression; detail and target still fail.
+Evidence in authoritative vegetation checklist. Next cross-depth scheduling.
+Release executable contains this change; no GPU process/playtest active.
+
 ## 5 November 2026 - impossible proposals no longer starve affordable work
 
 Integrated pre-prefix affordability check; complete parent retained on rejection.

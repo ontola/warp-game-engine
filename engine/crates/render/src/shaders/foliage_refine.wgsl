@@ -149,14 +149,25 @@ fn candidate(tree:u32,start:u32)->u32 {
  }
  proposals[at]=p;
 }
-@compute @workgroup_size(32) fn priority_scan(@builtin(workgroup_id) block:vec3<u32>,@builtin(local_invocation_index) bucket:u32) {
- var sum=vec4<u32>(0u);let end=min((block.x+1u)*256u,atomicLoad(&state[3]));
- for(var at=block.x*256u;at<end;at++) {
-  let p=proposals[at];if p.control.y!=0u && p.control.x==bucket {
-   proposals[at].prefix=sum;sum=plus(sum,p.replacement-min(p.replacement,p.old));
+// Read each proposal once with coalesced lanes; the stable per-bucket scan
+// then operates on 4 KiB of shared data instead of rereading global proposals.
+var<workgroup> priority_items:array<vec4<u32>,256>;
+@compute @workgroup_size(256) fn priority_scan(@builtin(workgroup_id) block:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+ let start=block.x*256u;let end=min(start+256u,atomicLoad(&state[3]));
+ var item=vec4<u32>(0u);
+ if start+lane<end {
+  let p=proposals[start+lane];
+  item=vec4<u32>((p.replacement-min(p.replacement,p.old)).xyz,select(0u,p.control.x+1u,p.control.y!=0u));
+ }
+ priority_items[lane]=item;workgroupBarrier();
+ if lane>=32u {return;}
+ var sum=vec4<u32>(0u);
+ for(var offset=0u;offset<end-start;offset++) {
+  let value=priority_items[offset];if value.w==lane+1u {
+   proposals[start+offset].prefix=sum;sum=plus(sum,vec4<u32>(value.xyz,0u));
   }
  }
- blocks[32u+block.x*32u+bucket]=sum;
+ blocks[32u+block.x*32u+lane]=sum;
 }
 @compute @workgroup_size(32) fn priority_totals(@builtin(local_invocation_index) bucket:u32) {
  var sum=vec4<u32>(0u);

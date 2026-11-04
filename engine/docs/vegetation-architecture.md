@@ -6,6 +6,12 @@ plans. Architecture first; no interactive playtest until requested.
 
 ## Where we are
 
+Latest execution optimization: shared-memory priority staging reduces covered
+GPU to 12.09-12.12 ms, selection to 5.90-5.97 ms (native 720p, one view).
+Three alternating comparisons preserve selection/error counts and appearance.
+The correctness regression below is partially recovered, not fully resolved;
+cross-depth scheduling and requested detail remain open.
+
 Current route update (5 November): individually unaffordable-proposal filtering
 is integrated as a correctness fix but REGRESSES covered GPU to ~13.05 ms
 (native 720p, one view). Prior ~11.5 ms figures below are historical. It admits
@@ -700,3 +706,24 @@ Evidence: build/playtest-unified/affordable-{before,after}-{1,2,3}.*,
 affordable-summary.json, affordable-comparison.jpg, affordable-tests.log.
 Next: global cross-depth priorities and bounding scan overhead, rather than
 more isolated changes to cost estimates. G2/G3/G8 remain incomplete.
+
+## Shared-memory priority scan (5 November 2026, integrated)
+
+Stage each 256-proposal block once with coalesced lanes, then perform the
+existing stable 32-bucket prefix scan in 4 KiB of workgroup memory. Preserve
+saturating sums, stable order, priority, reservations and publication. This is
+an execution optimization, not a change in detail policy or a cross-depth
+scheduler. Measure before accepting; no quality/performance claim yet.
+
+Validation: all 141 foliage tests PASS (shared-prefix-tests.log). Three
+alternating native 1280x720 one-view lowland+grass repeats (240 frames, frames
+120-239 measured) gave before covered 12.824/12.884/12.907 ms and after
+12.117/12.114/12.090 ms. Selection before 6.693/6.687/6.697 ms, after
+5.972/5.968/5.904 ms. Saving is 0.71-0.82 ms covered GPU; no 4K/four-view claim.
+
+Selected counts, tested nodes (586,510), error counts, reservations and fallback
+counts are unchanged. Matched images inspected; per-channel scene MAE outside
+HUD below 0.000011/255. This is not a raw visibility/depth identity claim or
+visual acceptance. Retains the prior allocator correctness fix.
+Evidence: build/playtest-unified/shared-prefix-{before,after}-{1,2,3}.*,
+shared-prefix-summary.json, shared-prefix-comparison.jpg.
