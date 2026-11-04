@@ -190,6 +190,9 @@ pub struct Run {
     calm_t: f64,
     /// This level's first shrine has taught.
     taught: bool,
+    /// Shrines that have risen this level ("{biome}_{k}"), with or without
+    /// tomes: one with none left to offer must still open its wall.
+    risen: Vec<String>,
 }
 
 impl Default for Run {
@@ -209,6 +212,7 @@ impl Default for Run {
             seed: 1,
             kills: 0,
             altars: Vec::new(),
+            risen: Vec::new(),
             portal: None,
             portal_t: 0.0,
             end_t: 0.0,
@@ -383,6 +387,7 @@ impl World {
         self.later.clear();
         let r = &mut self.run;
         r.altars.clear();
+        r.risen.clear();
         r.portal = None;
         r.spawn_queue.clear();
         r.incoming.clear();
@@ -603,7 +608,7 @@ impl World {
                 false
             } else {
                 let key = format!("{}_{}", self.run.biome_index, wd.k);
-                let risen = self.run.altars.iter().any(|a| a.shrine == key);
+                let risen = self.run.risen.contains(&key) || self.run.altars.iter().any(|a| a.shrine == key);
                 let left = self.run.altars.iter().any(|a| a.shrine == key && !a.taken);
                 let mut done = risen;
                 if risen && left && crate::knobs::ward_needs_tomes() > 0.5 {
@@ -837,11 +842,6 @@ impl World {
                 KINDS[enemy::kind(self.level.biome().boss)].name
             )
         };
-        self.ev(Ev::Banner {
-            title,
-            sub: "Each wizard may take one tome".into(),
-            c: fx::rgb(0.9, 0.75, 0.4),
-        });
         for id in self.wizards.clone() {
             if !self.alive(id) {
                 self.revive_id(id, 0.3);
@@ -873,6 +873,18 @@ impl World {
             })
         };
         let picks = relics::pick(n, &mut self.run.rng, &taken, &has);
+        // Joep, level 4: two wizards carrying all 32 tomes got the banner,
+        // no tome and a wall that never opened. With none left, say so; the
+        // shrine still counts as risen, so its wall opens.
+        self.ev(Ev::Banner {
+            title,
+            sub: if picks.is_empty() { "You carry every tome there is".into() } else { "Each wizard may take one tome".into() },
+            c: fx::rgb(0.9, 0.75, 0.4),
+        });
+        let shrine = format!("{}_{}", self.run.biome_index, k);
+        if !self.run.risen.contains(&shrine) {
+            self.run.risen.push(shrine.clone());
+        }
         // Across the path, facing the way on. Wizards who ran on past the
         // clearing find it ahead of them, never behind (Joep).
         let mut along = self.level.clearing_at[k];
@@ -909,7 +921,6 @@ impl World {
             mid = wd.mid() - wd.n * 2.0;
             across = wd.across();
         }
-        let shrine = format!("{}_{}", self.run.biome_index, k);
         for (i, &relic) in picks.iter().enumerate() {
             let p = mid + across * (i as f32 - (picks.len() - 1) as f32 * 0.5) * spacing;
             let pos = Vec3::new(p.x, 0.0, p.y);
