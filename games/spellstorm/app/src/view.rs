@@ -137,6 +137,8 @@ pub struct View {
     /// The monsters' motion-captured clips, and each kit's rig.
     rig: Option<(crate::rig::Library, crate::rig::Clips)>,
     bounds: HashMap<String, Option<crate::rig::Bound>>,
+    /// Monsters with real skeletons.
+    skins: crate::skins::Skins,
     /// Pieces of dead monsters lying about.
     debris: Vec<Debris>,
     cam_center: Vec3,
@@ -207,6 +209,7 @@ impl View {
                 }
             },
             bounds: HashMap::new(),
+            skins: crate::skins::Skins::load(),
             debris: Vec::new(),
             cam_center: Vec3::ZERO,
             cam_height: 18.5,
@@ -383,7 +386,17 @@ impl View {
             self.wizard_pieces.insert(i, pieces);
         }
         for k in spellstorm::enemy::KINDS.iter() {
-            look.pieces(&self.kits, &mut scene, &format!("enemy/{}", k.key));
+            let name = format!("enemy/{}", k.key);
+            look.pieces(&self.kits, &mut scene, &name);
+            // What it shatters into, cut now: meshes added during play never
+            // reach the renderer.
+            if let Some(kit) = self.kits.kit(&name) {
+                for (i, n) in kit.nodes.iter().enumerate() {
+                    if let (Some(mesh), true) = (n.mesh, kit.shown(i)) {
+                        look.chunks(&self.kits, &mut scene, mesh, n.material);
+                    }
+                }
+            }
         }
         self.pool_first = scene.instances.len();
         let any = scene.meshes.len() - 1;
@@ -405,6 +418,7 @@ impl View {
         self.probes = vec![Probe { axes: [amb; 6] }; grid.count()];
 
         self.light = lighting(w, amb);
+        self.skins.reserve(&mut scene);
         self.scene = scene;
         self.look = look;
         self.level_key = level_key(l);
@@ -598,12 +612,15 @@ impl View {
                 };
                 let how = match anim::fall(c.model.unwrap_or(c.key), big) {
                     _ if matches!(e.how, Some(Death::Freeze | Death::Gore | Death::Shock | Death::Void | Death::Blown)) => None,
+                    // A real skeleton plays its own death.
+                    _ if self.skins.has(c) => None,
                     f @ anim::Fall::Scatter { .. } => Some(f),
                     anim::Fall::BlowUp if t >= e.fuse as f32 => Some(anim::BLOWN),
                     _ => None,
                 };
                 if let Some((power, up, life)) = shatter {
                     ea.scattered = true;
+                    self.skins.shed(&mut self.scene, id);
                     let mut parts = Vec::new();
                     for p in &pieces {
                         let n = &kit.nodes[p.node];
@@ -627,6 +644,10 @@ impl View {
                 let eyes = if e.wind > 0.0 { 1.0 + 1.5 * (1.0 - e.wind / e.wind_time()) as f32 } else { 1.0 };
                 // Frozen to death it stands white as ice until it shatters.
                 let flash = if e.how == Some(Death::Freeze) { 0.6 } else { hit_flash(&a) };
+                let kind = e.cfg();
+                if self.skins.pose(&mut self.scene, id, kind, &a, &e, ea.dead_t, at, flash, dt) {
+                    continue;
+                }
                 marked.push((out.len()..out.len() + pieces.len(), flash, 0.0));
                 for p in &pieces {
                     let mut xf = at * part(p.node);
@@ -638,6 +659,7 @@ impl View {
             }
         }
         self.enemy_anims.retain(|id, _| seen.contains(id));
+        self.skins.release(&mut self.scene, &seen);
         self.debris.retain_mut(|d| d.step(dt));
         for d in &self.debris {
             d.push(&mut out);
@@ -683,6 +705,11 @@ impl View {
             }
         }
         renderer.update_instances(gpu, first, &self.scene.instances[first..first + POOL])?;
+        if !self.skins.instances.is_empty() {
+            let r = self.skins.instances.clone();
+            renderer.update_instances(gpu, r.start, &self.scene.instances[r])?;
+            self.skins.flush(gpu, renderer)?;
+        }
         self.follow(w, dt);
         self.fx.update(w, dt);
         self.marks.update(w, self.fx.time, dt);
