@@ -12,7 +12,16 @@ struct Snapshot {words:array<vec4<u32>,8>};
 @group(0) @binding(5) var<storage,read_write> damage:array<atomic<u32>,128>;
 
 @compute @workgroup_size(64) fn reset(@builtin(global_invocation_id) id:vec3<u32>) {
- if id.x<128u {atomicStore(&damage[id.x],select(0u,0xffffffffu,state.control.x!=0u));}
+ if id.x<128u {
+  var bits=0u;
+  let shift=bitcast<vec2<i32>>(state.control.zw);let tile_size=i32(state.control.y/64u);
+  for(var k=0u;k<32u;k++) {
+   let tile=id.x*32u+k;let low=vec2<i32>(i32(tile%64u),i32(tile/64u))*tile_size-shift;
+   let high=low+vec2<i32>(tile_size-1);
+   if state.control.x!=0u || any(low<vec2<i32>(0)) || any(high>=vec2<i32>(i32(state.control.y))) {bits|=1u<<k;}
+  }
+  atomicStore(&damage[id.x],bits);
+ }
 }
 fn all_dirty() {for(var i=0u;i<128u;i++){atomicStore(&damage[i],0xffffffffu);}}
 fn mark(low:vec3<f32>,high:vec3<f32>) {

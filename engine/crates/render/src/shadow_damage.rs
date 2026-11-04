@@ -8,6 +8,18 @@ pub(crate) fn mask_layout(gpu:&Gpu)->wgpu::BindGroupLayout {
     gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("shadow tile raster mask"),entries:&[wgpu::BindGroupLayoutEntry {binding:0,visibility:wgpu::ShaderStages::VERTEX|wgpu::ShaderStages::FRAGMENT|wgpu::ShaderStages::COMPUTE,count:None,ty:wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None}}]})
 }
 pub(crate) const MASK_BYTES:u64=512;
+/// An exact texel permutation only: changed basis, scale or Z must redraw.
+fn scroll_offset(old:[u32;16],new:[u32;16],size:u32)->Option<[i32;2]> {
+    if size==0 || (0..16).any(|i|i!=12 && i!=13 && old[i]!=new[i]) {return None;}
+    let mut shift=[0;2];
+    for axis in 0..2 {
+        let delta=(f64::from(f32::from_bits(new[12+axis]))-f64::from(f32::from_bits(old[12+axis])))
+            *f64::from(size)*if axis==0 {0.5}else{-0.5};
+        if !delta.is_finite() || delta!=delta.round() || delta.abs()>=f64::from(size) {return None;}
+        shift[axis]=delta as i32;
+    }
+    Some(shift)
+}
 #[repr(C)]
 #[derive(Clone,Copy,bytemuck::Pod,bytemuck::Zeroable)]
 struct State {vp:[f32;16],counts:[u32;4],control:[u32;4]}
@@ -21,6 +33,9 @@ pub(crate) struct Damage {
     track:wgpu::ComputePipeline,
     clear:wgpu::RenderPipeline,
     clear_bind:wgpu::BindGroup,
+    scroll:wgpu::RenderPipeline,
+    scroll_layout:wgpu::BindGroupLayout,
+    scroll_scratch:Option<(wgpu::Texture,wgpu::BindGroup)>,
     counts:[u32;4],
     key:Option<([u32;16],u64,u32)>,
 }
@@ -59,7 +74,18 @@ impl Damage {
                 multisample:Default::default(),fragment:None,multiview_mask:None,cache:gpu.pipeline_cache(),
             });
             let raster_bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("shadow tile raster mask"),layout:&mask_layout(gpu),entries:&[wgpu::BindGroupEntry {binding:0,resource:mask.as_entire_binding()}]});
-            Self {raster_bind,clear,clear_bind,mask,uniform,bind,reset:pipeline("reset"),track:pipeline("track"),counts,key:None}
+            let scroll_layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("shadow scroll"),entries:&[
+                wgpu::BindGroupLayoutEntry {binding:0,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None},count:None},
+                wgpu::BindGroupLayoutEntry {binding:1,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Depth,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None},
+            ]});
+            let scroll_pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("shadow scroll"),bind_group_layouts:&[Some(&scroll_layout)],immediate_size:0});
+            let scroll_module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("shadow scroll"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/shadow_damage_scroll.wgsl").into())});
+            let scroll=gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label:Some("shadow scroll"),layout:Some(&scroll_pl),vertex:wgpu::VertexState {module:&scroll_module,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[]},primitive:Default::default(),
+                depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(true),depth_compare:Some(wgpu::CompareFunction::Always),stencil:Default::default(),bias:Default::default()}),
+                multisample:Default::default(),fragment:Some(wgpu::FragmentState {module:&scroll_module,entry_point:Some("fs"),compilation_options:Default::default(),targets:&[]}),multiview_mask:None,cache:gpu.pipeline_cache(),
+            });
+            Self {scroll,scroll_layout,scroll_scratch:None,raster_bind,clear,clear_bind,mask,uniform,bind,reset:pipeline("reset"),track:pipeline("track"),counts,key:None}
         })
     }
     /// Run after source/voxel materialization. `epoch` covers asset/material,
@@ -67,13 +93,37 @@ impl Damage {
     /// poses themselves are detected on GPU, not via this coarse invalidation.
     /// The owner must invalidate after an abandoned submission / failed redraw.
     pub fn encode(&mut self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,vp:Mat4,epoch:u64,size:u32)->Result<(),String> {
+        self.encode_target(gpu,enc,vp,epoch,size,None)
+    }
+    pub fn encode_scrolled(&mut self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,vp:Mat4,epoch:u64,size:u32,depth:&wgpu::Texture)->Result<(),String> {
+        self.encode_target(gpu,enc,vp,epoch,size,Some(depth))
+    }
+    fn encode_target(&mut self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,vp:Mat4,epoch:u64,size:u32,depth:Option<&wgpu::Texture>)->Result<(),String> {
         if size<64 || size%64!=0 || !vp.is_finite() || vp.determinant().abs()<1e-20 {return Err("invalid shadow damage projection".into());}
         let key=(vp.to_cols_array().map(f32::to_bits),epoch,size);
-        let force=self.key!=Some(key);
-        gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&State {vp:vp.to_cols_array(),counts:self.counts,control:[u32::from(force),size,0,0]}));
+        let offset=self.key.and_then(|old|if old.1==epoch && old.2==size {scroll_offset(old.0,key.0,size)}else{None});
+        let offset=offset.filter(|s|*s==[0,0] || depth.is_some());
+        let force=offset.is_none();let shift=offset.unwrap_or([0,0]);
+        gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&State {vp:vp.to_cols_array(),counts:self.counts,control:[u32::from(force),size,shift[0]as u32,shift[1]as u32]}));
         let mut pass=enc.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("shadow damage"),..Default::default()});
         pass.set_bind_group(0,&self.bind,&[]);pass.set_pipeline(&self.reset);pass.dispatch_workgroups(2,1,1);
         pass.set_pipeline(&self.track);pass.dispatch_workgroups((self.counts[0]+self.counts[1]).div_ceil(64),1,1);
+        drop(pass);
+        if shift!=[0,0] {
+            let depth=depth.expect("scroll target");
+            if depth.width()!=size || depth.height()!=size || depth.format()!=wgpu::TextureFormat::Depth32Float {return Err("invalid shadow scroll target".into());}
+            if self.scroll_scratch.as_ref().is_none_or(|(t,_)|t.width()!=size) {
+                let texture=gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("shadow scroll scratch"),size:wgpu::Extent3d {width:size,height:size,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Depth32Float,usage:wgpu::TextureUsages::COPY_DST|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]});
+                let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("shadow scroll"),layout:&self.scroll_layout,entries:&[
+                    wgpu::BindGroupEntry {binding:0,resource:self.uniform.as_entire_binding()},wgpu::BindGroupEntry {binding:1,resource:wgpu::BindingResource::TextureView(&texture.create_view(&Default::default()))},
+                ]});self.scroll_scratch=Some((texture,bind));
+            }
+            let (scratch,bind)=self.scroll_scratch.as_ref().unwrap();
+            enc.copy_texture_to_texture(depth.as_image_copy(),scratch.as_image_copy(),depth.size());
+            let target=depth.create_view(&Default::default());
+            let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor {label:Some("shadow depth scroll"),color_attachments:&[],depth_stencil_attachment:Some(wgpu::RenderPassDepthStencilAttachment {view:&target,depth_ops:Some(wgpu::Operations {load:wgpu::LoadOp::Load,store:wgpu::StoreOp::Store}),stencil_ops:None}),timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});
+            pass.set_pipeline(&self.scroll);pass.set_bind_group(0,bind,&[]);pass.draw(0..3,0..1);
+        }
         self.key=Some(key);Ok(())
     }
     /// Clear only damaged tiles before re-rasterizing them. The caller must
@@ -93,7 +143,7 @@ impl Damage {
     #[test] fn shader_validates() {
         let raster=crate::grass::raster_source();
         let cull=crate::frame::cull_source();let voxel=crate::voxel_forest::shader_source();
-        for src in [include_str!("shaders/shadow_damage.wgsl"),include_str!("shaders/shadow_damage_clear.wgsl"),include_str!("shaders/voxel_splat_raster.wgsl"),raster.as_str(),cull.as_str(),voxel.as_str()] {
+        for src in [include_str!("shaders/shadow_damage.wgsl"),include_str!("shaders/shadow_damage_clear.wgsl"),include_str!("shaders/shadow_damage_scroll.wgsl"),include_str!("shaders/voxel_splat_raster.wgsl"),raster.as_str(),cull.as_str(),voxel.as_str()] {
         let module=naga::front::wgsl::parse_str(src).unwrap_or_else(|e|panic!("{}",e.emit_to_string(src)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();}
     }
@@ -180,6 +230,67 @@ impl Damage {
                 let expected=(r[1]..=r[3]).any(|y|(r[0]..=r[2]).any(|x|words[(y*2+x/32)as usize]&(1u32<<(x%32))!=0))as u32;
                 assert_eq!(actual[i],[expected;2],"pattern {pattern}, rectangle {r:?}");
             }}read.unmap();
+        }
+    }
+    #[test]
+    fn scroll_requires_exact_xy_and_unchanged_depth() {
+        let bits=|m:Mat4|m.to_cols_array().map(f32::to_bits);
+        let old=bits(Mat4::IDENTITY);
+        assert_eq!(scroll_offset(old,old,4096),Some([0,0]));
+        assert_eq!(scroll_offset(old,bits(Mat4::from_translation(glam::Vec3::new(2./4096.,-4./4096.,0.))),4096),Some([1,2]));
+        for delta in [glam::Vec3::new(1./4096.,0.,0.),glam::Vec3::new(0.,0.,0.01),glam::Vec3::new(2.,0.,0.)] {
+            assert_eq!(scroll_offset(old,bits(Mat4::from_translation(delta)),4096),None);
+        }
+        assert_eq!(scroll_offset(old,bits(Mat4::from_rotation_y(0.01)),4096),None);
+        let sun=glam::Vec3::new(0.3,0.7,0.2).normalize();
+        let a=crate::stability::stable_shadow_depth(glam::Vec3::ZERO,sun,192.,4096,[-512.,512.]);
+        for x in [0.1,1.,8.,30.] {
+            let b=crate::stability::stable_shadow_depth(glam::Vec3::X*x,sun,192.,4096,[-512.,512.]);
+            assert!(scroll_offset(bits(a),bits(b),4096).is_some(),"canonical moving projection");
+        }
+    }
+    #[test]
+    fn animated_root_envelope_is_world_space_and_inactive_roots_are_ignored() {
+        let root=crate::foliage_select::Instance {rows:[[0.,0.,-2.,10.],[0.,2.,0.,20.],[2.,0.,0.,30.]],scale:[2.,3.,0.,0.],info:[0;4]};
+        assert_eq!(crate::foliage_runtime::root_shadow_sphere(root,[1.,2.,3.,4.]),Some([4.,24.,32.,11.]));
+        let mut inactive=root;inactive.info[3]=1;
+        assert_eq!(crate::foliage_runtime::root_shadow_sphere(inactive,[1.,2.,3.,4.]),None);
+    }
+    #[test]
+    #[ignore="small exact depth scroll GPU oracle; software DX12 supported"]
+    fn scrolled_depth_preserves_exact_samples_and_clears_exposed_edges() {
+        use wgpu::util::DeviceExt;
+        let gpu=Gpu::new().unwrap();
+        let upload=|bytes:&[u8]|gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("scroll fixture"),contents:bytes,usage:wgpu::BufferUsages::STORAGE});
+        let sources=upload(&[0;80]);let volumes=upload(&[0;96]);let choices=upload(&[0;4]);
+        let mut damage=Damage::new(&gpu,&sources,&volumes,&choices,[1,1,0,0]).unwrap();
+        let depth=gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("scroll oracle"),size:wgpu::Extent3d {width:64,height:64,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Depth32Float,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[]});
+        let target=depth.create_view(&Default::default());
+        let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("scroll read"),size:64*64*4,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+        let src=r#"
+@vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32> {
+ let p=array<vec2<f32>,3>(vec2<f32>(-1.,-1.),vec2<f32>(3.,-1.),vec2<f32>(-1.,3.));return vec4<f32>(p[i],0.,1.);
+}
+@fragment fn fs(@builtin(position) p:vec4<f32>)->@builtin(frag_depth) f32 {return f32(u32(p.y)*64u+u32(p.x)+1u)/8192.;}
+"#;
+        let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("distinct depth samples"),source:wgpu::ShaderSource::Wgsl(src.into())});
+        let pipeline=gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {label:Some("distinct depth samples"),layout:None,vertex:wgpu::VertexState {module:&module,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[]},primitive:Default::default(),depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(true),depth_compare:Some(wgpu::CompareFunction::Always),stencil:Default::default(),bias:Default::default()}),multisample:Default::default(),fragment:Some(wgpu::FragmentState {module:&module,entry_point:Some("fs"),compilation_options:Default::default(),targets:&[]}),multiview_mask:None,cache:gpu.pipeline_cache()});
+        for [dx,dy] in [[0,0],[1,0],[-1,0],[0,1],[0,-1],[3,-5],[-7,13],[32,32],[-63,-63]] {
+            damage.invalidate();
+            let mut enc=gpu.device.create_command_encoder(&Default::default());
+            damage.encode_scrolled(&gpu,&mut enc,Mat4::IDENTITY,1,64,&depth).unwrap();
+            {let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor {label:Some("seed depth pattern"),color_attachments:&[],depth_stencil_attachment:Some(wgpu::RenderPassDepthStencilAttachment {view:&target,depth_ops:Some(wgpu::Operations {load:wgpu::LoadOp::Clear(1.),store:wgpu::StoreOp::Store}),stencil_ops:None}),timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});pass.set_pipeline(&pipeline);pass.draw(0..3,0..1);}
+            gpu.queue.submit([enc.finish()]);gpu.wait();
+            let mut enc=gpu.device.create_command_encoder(&Default::default());
+            let vp=Mat4::from_translation(glam::Vec3::new(dx as f32/32.,-dy as f32/32.,0.));
+            damage.encode_scrolled(&gpu,&mut enc,vp,1,64,&depth).unwrap();damage.clear_tiles(&mut enc,&target);
+            enc.copy_texture_to_buffer(wgpu::TexelCopyTextureInfo {texture:&depth,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::DepthOnly},wgpu::TexelCopyBufferInfo {buffer:&read,layout:wgpu::TexelCopyBufferLayout {offset:0,bytes_per_row:Some(256),rows_per_image:Some(64)}},depth.size());
+            gpu.queue.submit([enc.finish()]);let(tx,rx)=std::sync::mpsc::channel();read.slice(..).map_async(wgpu::MapMode::Read,move|r|{tx.send(r).unwrap();});gpu.wait();rx.recv().unwrap().unwrap();
+            {let data=read.slice(..).get_mapped_range().unwrap();let values:&[f32]=bytemuck::cast_slice(&data);
+            for y in 0..64i32 {for x in 0..64i32 {
+                let (ox,oy)=(x-dx,y-dy);let expected=if (0..64).contains(&ox)&&(0..64).contains(&oy){(oy*64+ox+1)as f32/8192.}else{1.};
+                assert_eq!(values[(y*64+x)as usize],expected,"shift {dx},{dy}, pixel {x},{y}");
+            }}}read.unmap();
         }
     }
     use bytemuck::Zeroable;

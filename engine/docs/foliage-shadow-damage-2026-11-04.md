@@ -16,7 +16,7 @@ size use the actual sun-map size (4096 desktop, 2048 Android).
 The snapshot includes source attributes/flags, voxel page identity and shadow
 representation selection. Geometry/material changes not expressed in those
 records, including non-instance deformations and changed asset payloads, require
-the owner's invalidation epoch. Projection or epoch changes invalidate all tiles.
+the owner's invalidation epoch. Epoch or non-scrollable projection changes invalidate all tiles.
 First use also invalidates the full map. There is no approximate hash, pose
 quantization or animation freeze. Any transform change dirties its conservative
 footprint; dense wind may therefore dirty many tiles. This prioritizes correctness
@@ -35,7 +35,7 @@ The cache runs after forest materialization and before shared sun raster. Source
 raster loads the retained depth instead of clearing it; voxel raster also loads
 it. Both cached fragment entry points reject clean tiles before alpha sampling.
 Moving GPU forest poses no longer invalidate the whole map through set_wind;
-legacy wind casters still do. First use, target recreation, sun/projection changes,
+legacy wind casters still do. First use, target recreation, non-scrollable sun/projection changes,
 alpha/LOD policy, explicit content invalidation and failed/unsubmitted frames force
 full damage. Receiver-demand mode and non-instance skinning/crowd deformation
 conservatively invalidate all tiles. The legacy static/dynamic split path retains
@@ -45,8 +45,8 @@ The profiler adds `shadow tile damage and clear`. Source culling now rejects own
 tile before cluster traversal or virtual-member expansion. Voxel sun generation
 uses the same predicate before level/cell iteration and splat allocation. Flat
 and spatial source paths preserve their normal overflow fallback. Fragment
-masks remain necessary for partially overlapping bounds. The map projection still follows the existing anchor policy, so
-camera translation can invalidate every tile. These are material remaining costs.
+masks remain necessary for partially overlapping bounds. Exact integer XY motion now scrolls retained depth, as described below. Basis,
+scale and depth changes still invalidate every tile. These remain material costs.
 
 `gpu_cached_sun_depth_matches_full_redraw` is an ignored hardware fixture. It
 warms assets, renders four views, compares raw shared Depth32Float values against
@@ -62,8 +62,8 @@ It compiles but has not run while other games occupy the GPU.
    bounds-query overhead, rather than counting discarded fragments.
 3. Extend full-renderer coverage to asset publication/eviction and procedural
    terrain changes; preserve near/headlamp/legacy behavior.
-4. Stabilize world-space page coverage during camera travel. A moving projection
-   currently invalidates this whole map; this block alone is not virtual shadows.
+4. Extend the bounded scrolling map to virtual world-space page coverage if
+   measurements justify it; scrolling alone is not a virtual shadow page system.
 5. Verify wind, removal/replacement, asset publication, sun changes, four cameras,
    overflow and source/voxel transitions against a full-redraw depth oracle.
 6. Record per-pass GPU timings, mask population and updated texels on the normal
@@ -116,3 +116,41 @@ software DX12 `shadow_damage::tests --include-ignored --test-threads=1`: 3 PASS
 in 11.30 s. Culling specialization matrix, three lighting snapshot/reload tests
 and voxel empty-ceiling shader variants also PASS. Hardware complete-renderer
 oracle and timing remain pending while Sideways uses the GPU.
+
+
+## Integer shadow-map scrolling
+
+Normal GPU-forest scenes now use scene-wide absolute sun depth bounds, including
+GPU hierarchy root envelopes (all articulated poses, independent of resident
+branches). Root replacement extends these bounds during world transactions;
+inactive roots do not enlarge them. Bounds never shrink during a scene. This is
+population bookkeeping, not CPU camera selection. Receiver points can still
+expand the range, causing a safe redraw.
+
+The absolute-depth projection canonicalizes XY translation to whole texels.
+When the basis, scale, depth mapping, epoch and map size remain identical, the
+cache accepts only an *exact integer* translation smaller than the map. It copies
+previous depth into a scratch texture and remaps exact texels into the target.
+Exposed edge tiles are dirty; ordinary old/new caster damage is added in current
+coordinates. Depth/scale/sun changes and teleports beyond overlap still invalidate
+all tiles. Near/headlamp and legacy split caches retain their existing routes.
+
+This is a bounded scrolling map, not a virtual page table. A lazy Depth32 scratch
+costs 64 MiB at 4096 square (16 MiB at 2048), plus full-map copy/read/write bandwidth
+on scroll frames. No scratch or scrolling raster is needed on stationary frames.
+The existing `shadow tile damage and clear` timing includes scrolling. Actual
+savings versus full redraw and precision of the expanded depth range require
+hardware measurement and full renderer comparison before claiming acceptance.
+
+A small raw-depth oracle seeds a unique exact binary fraction into every texel,
+then checks retained values and exposed edges for nine positive/negative/diagonal
+shifts (including zero and nearly the full map). Separate CPU checks reject
+fractional shifts, changed depth, changed basis and no-overlap translations, and
+verify animated root bounds and canonical moving-camera projection offsets.
+
+Scroll validation: release software DX12 `shadow_damage::tests`: 6 PASS, 11.96 s,
+including 36,864 raw depth comparisons for scrolling. `stability::tests`: 13 PASS;
+`static_sun::tests`: 8 PASS. Rust render/tests check passes. The physical GPU was
+still occupied by Sideways PID51952; full-renderer and performance gates remain
+open. These tests prove the local permutation/invalidation mechanism, not a
+hardware performance improvement or complete rendering correctness.

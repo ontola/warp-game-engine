@@ -1809,7 +1809,7 @@ impl Renderer {
         let raster_far_sun_depth=(far_sun.enabled || foliage_sun_pages.enabled).then(||raster_pipe(false,true,false));
         let raster_cached_sun=gpu_forest.as_ref().map(|_|raster_pipe(false,raster_sun_depth.is_some(),true));
         startup.mark("raster_shadow_pipelines");
-        let sun_scene_bounds = (std::env::var("KERN_SUN_SCENE_DEPTH").as_deref() == Ok("1"))
+        let sun_scene_bounds = (scene.gpu_forest.is_some() || std::env::var("KERN_SUN_SCENE_DEPTH").as_deref() == Ok("1"))
             .then(|| std::sync::Mutex::new(crate::stability::SunSceneBounds::from_scene(scene)));
         let sun_cache_guard_m=crate::static_sun::configured_guard(std::env::var("KERN_SUN_CACHE_GUARD_METRES").ok().as_deref());
         let sun_guard_bounds=(sun_cache_guard_m>0.0)
@@ -2762,6 +2762,15 @@ impl Renderer {
                 first=end;
             }
             for canopy in self.canopies.lock().unwrap().iter_mut(){canopy.commit_proxy_update(&budget);}
+            // Root proxies have zero source clusters, so ordinary instance
+            // bounds deliberately skip them. Include the animated hierarchy
+            // envelope on population transactions, independently of residency.
+            for bounds in [&self.sun_scene_bounds,&self.sun_guard_bounds].into_iter().flatten() {
+                let mut bounds=bounds.lock().unwrap();
+                for change in changes {if let Some(s)=runtime.root_shadow_bound(change.root) {
+                    bounds.sphere(Vec3::from_slice(&s),s[3]);
+                }}
+            }
             // Root generation and GPU-owned epoch invalidate changed roots only.
             // Do not reset_history(): retained roots/cameras keep their history.
             Ok(())
@@ -4012,7 +4021,7 @@ impl Renderer {
             if damage_force {damage.invalidate();}
             let time=self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(q,_,_)|(q,timestamp_pair(&mut ts)));
             if let Some((q,i))=time {names.push("shadow tile damage and clear");enc.write_timestamp(q,i);}
-            damage.encode(gpu,&mut enc,svp,self.shader_generation,SHADOW_SIZE)?;
+            damage.encode_scrolled(gpu,&mut enc,svp,self.shader_generation,SHADOW_SIZE,&cache.as_ref().unwrap().tex)?;
             damage.clear_tiles(&mut enc,&shadow_v);
             if let Some((q,i))=time {enc.write_timestamp(q,i+1);}
             Some(damage.raster_bind.clone())
