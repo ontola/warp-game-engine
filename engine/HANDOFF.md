@@ -1,3 +1,15 @@
+## 4 November 2026 — exact camera mip experiment rejected
+
+Reduced camera reservations by rendering precisely the selector-admitted mip.
+139 tests passed, but three alternating route repeats regressed ~11.55 to
+~12.4 ms: selection explored ~700k nodes instead of ~532k, published more
+intermediate voxel groups and still no source slots. Removed production change,
+preserved `docs/exact-camera-mip-experiment.patch`; detailed evidence in the
+authoritative vegetation checklist. Next: intermediate traversal and achieved error.
+Cargo target terrain_fly currently contains this rejected experiment; rebuild
+before playtest. Production c619265 executable remains
+`build/playtest-unified/terrain-before-seed-compaction.exe`. No live GPU process.
+
 ## 4 November 2026 — root-stage compaction rejected
 
 Authoritative vegetation checklist updated with the four-view 8.30 ms allocation
