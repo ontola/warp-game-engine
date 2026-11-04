@@ -497,6 +497,7 @@ mod tests {
    assert_eq!(read(&gpu,&selector.fallback),[0,0,0]);
    assert_eq!(read(&gpu,&selector.direct),[0,91,0],"shadow-only root retains its complete coarse representation");
    assert_eq!(read(&gpu,&selector.counters)[0],2);
+   assert!(read(&gpu,&selector.refiner.state)[28]>0,"shadow proposal is actually reused within the selection sequence");
    consumers.reverse();
   }
  }
