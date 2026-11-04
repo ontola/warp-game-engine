@@ -639,3 +639,28 @@ exact over-target parent counts under slot/raster limits and missing pages, and
 direct-root error lookup (`cut-error-oracle.log`, PASS). Normal frame dispatches
 are unchanged: the new audit runs only on explicit diagnostic readback. No
 performance improvement is claimed.
+
+## Non-monotonic unary refinement (5 November 2026, integrated)
+
+GPU candidate traversal inspects through expensive or unavailable intermediate
+unary LODs and selects a resident deeper endpoint within the original candidate's
+slot/camera/shadow bound. It stops before a sibling split. Missing final detail
+retains the complete ancestor. No raster budget or error threshold was changed.
+
+All 140 foliage tests pass (unary-lookahead-tests.log), including a new GPU
+fixture with costs 10 -> 100 -> 2 and cap 5: cheap endpoint admission, missing
+intermediate page, missing endpoint fallback and endpoint recovery.
+
+Three alternating native 1280x720 one-view lowland+grass route repeats
+(240 frames; frames 120-239 measured): covered GPU before
+11.544/11.503/11.568 ms, after 11.519/11.532/11.465 ms. Selection before
+5.230/5.231/5.229 ms, after 5.216/5.232/5.273 ms. No performance win claimed.
+Tested nodes (532,044), camera-over-target count (40,530), and selected cut
+counts are unchanged. Matched images inspected; per-channel MAE outside HUD
+below 0.00004/255. Not a raw-buffer identity or visual acceptance claim.
+Source-page uploads increased from 3 to 6 due to deeper demand discovery; no
+source slots became selected. Preserve the admission fix, but do not claim it
+resolves the normal route's refinement bottleneck. Next investigate global
+priority reservation and its distribution across hierarchy levels.
+Artifacts: build/playtest-unified/unary-{before,after}-{1,2,3}.*,
+unary-summary.json, unary-comparison.jpg, unary-lookahead-tests.log.
