@@ -1,3 +1,23 @@
+## 2026-11-04 GPU-sized shared pose depth dispatch
+
+Normal forest pose evaluation now consumes GPU-written indirect dispatch counts
+per ancestry depth instead of launching the full slot budget at every depth.
+The 768-byte argument buffer is written in a separate preparation pass and is
+not bound as storage during indirect evaluation. Zero-demand arguments are
+rewritten each frame; parent order and serial hash-overflow fallback remain.
+Root preparation still scans reserved capacity. Animated shadow caching is open.
+
+Release test build + Naga validation of materialization and the new dispatch
+shader PASS (`cargo test --locked --release -p render --lib
+foliage_runtime::tests::materialize_shader_validates -- --exact`). Extended the
+existing ignored GPU matrix oracle to check all 64 dispatch triples and stale
+arguments after asset-fault fallback. GPU test and before/after measurements
+NOT RUN: other games still live (Growing Guns 22888, Spellstorm 32908), untouched.
+Run `cargo test --locked --release -p render --lib
+foliage_runtime::tests::gpu_shared_poses_match_serial_wind_and_hash_overflow
+-- --exact --ignored --test-threads=1` once GPU free, then normal renderer tests
+and alternating measurements. No speedup claimed, no playtest opened.
+
 ## 2026-11-04 Source paging integrated with common forest publication
 
 Normal GPU forest now creates bounded source vertex/index/triangle arenas before

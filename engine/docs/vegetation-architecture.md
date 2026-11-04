@@ -57,7 +57,7 @@ provisional depth from an incomplete cut cannot survive publication failure.
 | GPU selection | Consumer union, deterministic complete-tree budget; GPU work queues distribute refining subtrees across workgroups | Integrate history-first traversal with safe publication across consumers |
 | Occlusion | Normal per-view source route uses pixel-history scheduling, bounded deferred-cluster recovery and current depth; queue overflow re-scans the complementary cut | Feed safe visibility into shared assembly traversal/publication; current camera recovery is downstream of residency |
 | Residency | GPU branch slots and logical requests; bounded physical source/voxel arenas, asynchronous shared bundle demand, chunked uploads and generation-safe eviction; pinned root fallback | Tighter ancestor pins and intermediate ancestor fallback; defragmentation and asset-content lifecycle |
-| Wind | GPU demand-deduplicated ancestor poses, parent-depth queues and shared root poses; source/voxel/shadow transforms agree | Indirect depth-queue dispatch, active-root compaction, recipe growth/season lifecycle |
+| Wind | GPU demand-deduplicated ancestor poses, GPU-sized indirect parent-depth dispatches and shared root poses; source/voxel/shadow transforms agree | GPU verification of indirect dispatch change, active-root compaction, recipe growth/season lifecycle |
 | Shadows | Independent source/voxel choices from common residency | Animated dirty-page cache; current dynamic sun is invalidated every frame |
 | Far population | One resident voxel record per tree, painted terrain beyond population | Spatial-cell aggregates without per-tree records at extreme distance |
 | Grass | Separate meadow path | Cook meadow patches into the same assembly/selection/residency contract |
