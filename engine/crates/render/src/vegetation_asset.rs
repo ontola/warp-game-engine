@@ -337,14 +337,14 @@ impl CookedPlant {
 
 fn aggregate_candidates(asset: &crate::vegetation_aggregate::ClusterAsset, motion:f32) -> Vec<crate::aggregate_lod::Candidate> {
     let mut candidates:Vec<_>=asset.triangle_refinements.iter().map(|m|crate::aggregate_lod::Candidate {
-        source_only:true,level:0,spatial_error:m.cut_error_m+motion,
+        filtered:[crate::aggregate_lod::FilteredOptics::default();4],source_only:true,level:0,spatial_error:m.cut_error_m+motion,
         voxel_coverage_error:1.0,voxel_color_error:1.0,
         triangle_coverage_error:m.sampled_error.rms_opacity as f32,
         triangle_color_error:m.sampled_error.premultiplied_albedo_rmse as f32,
         triangle_error:m.cut_error_m,
     }).collect();
     candidates.extend(asset.levels.iter().enumerate().map(|(i,m)|crate::aggregate_lod::Candidate {
-        source_only:false,level:i as u32,
+        filtered:m.sampled_error.filtered,source_only:false,level:i as u32,
         spatial_error:1.5*3.0f32.sqrt()*asset.volume.levels[i].cell_size+motion,
         voxel_coverage_error:m.sampled_error.rms_opacity as f32,
         voxel_color_error:m.sampled_error.premultiplied_albedo_rmse as f32,
@@ -1819,7 +1819,7 @@ pub(crate) mod tests {
                 if let SelectedRepresentation::Voxel {branch,branch_id,level}=recipe.representations[node.links[2]as usize] {
                     let b=&cooked.branches[branch as usize];assert_eq!(b.id,branch_id);
                     assert!(b.aggregate.iter().any(|c|!c.source_only&&c.level==level&&c.spatial_error==node.error[0]
-                        &&c.voxel_coverage_error<=maximum&&c.voxel_color_error<=maximum));
+                        && selection::admission_footprint(c,Policy {allow_sampled_optics:true,max_coverage_error:maximum,max_color_error:maximum,..Policy::default()})==Some(node.error[1])));
                 }
             }
         }

@@ -143,7 +143,7 @@ fn walk(tree:u32,start:u32,phase:u32) {
    // rejection; if output fills, the resident root is an explicit fallback.
    atomicAdd(&counters[2],1u);
   }
-  if node.links.x==NONE || ((node.links.w&1u)==0u && error_pixels(s,node.error.x*t.scale.x)<=view.pixels.z) || !children_ready(tree,n) {
+  if node.links.x==NONE || ((node.links.w&1u)==0u && error_pixels(s,node.error.x*t.scale.x)<=view.pixels.z && (node.error.y==0.0 || error_pixels(s,node.error.y*t.scale.x)<=1.0)) || !children_ready(tree,n) {
    emit(tree,n);n=node.links.y;
   }else{n=node.links.x;}
  }
@@ -196,9 +196,10 @@ fn walk(tree:u32,start:u32,phase:u32) {
  let bucket=u32(clamp(floor(log2(max(priority,1.0))),0.0,31.0));
  atomicStore(&demand[tree].count,0u);demand[tree].bucket=bucket|consumers;demand[tree].prefix=0u;
  atomicStore(&demand[tree].failed,0u);
- if visit(tree,t.info.x,false) {
+ let refine=visit(tree,t.info.x,false);
+ if refine!=NONE {
   let slot=atomicAdd(&input_work.count,1u);
-  input_work.tasks[slot]=vec2<u32>(tree,t.info.x);
+  input_work.tasks[slot]=vec2<u32>(tree,refine);
  }
 }
 // GPU-produced breadth frontiers. Dispatch boundaries publish all task writes;
@@ -212,16 +213,23 @@ fn walk(tree:u32,start:u32,phase:u32) {
 // A frontier item is a subtree to expand, not a leaf. Lanes process its
 // immediate child span together; only refined internal children re-enter the
 // queue. This bounds storage by active branches rather than emitted needles.
-fn visit(tree:u32,n:u32,write_records:bool)->bool {
- let node=nodes[n];let t=trees[tree];let s=sphere(t,node);
- if write_records {atomicAdd(&counters[4],1u);}
- if !visible(s){if write_records {atomicAdd(&counters[5],1u);}return false;}
- if node.links.x==NONE || ((node.links.w&1u)==0u && error_pixels(s,node.error.x*t.scale.x)<=view.pixels.z) || !children_ready(tree,n) {
-  if !asset_ready(node.links.z) {atomicStore(&fallback[tree],4u);atomicStore(&demand[tree].failed,1u);return false;}
-  if write_records {emit(tree,n);}else if (node.links.w&2u)==0u {atomicAdd(&demand[tree].count,1u);}
-  return false;
+fn visit(tree:u32,start:u32,write_records:bool)->u32 {
+ var n=start;
+ // LOD chains have only one child. Traverse these locally rather than
+ // multiplying the bounded global frontier by every admitted mip level.
+ loop {
+  let node=nodes[n];let t=trees[tree];let s=sphere(t,node);
+  if write_records {atomicAdd(&counters[4],1u);}
+  if !visible(s){if write_records {atomicAdd(&counters[5],1u);}return NONE;}
+  if node.links.x==NONE || ((node.links.w&1u)==0u && error_pixels(s,node.error.x*t.scale.x)<=view.pixels.z && (node.error.y==0.0 || error_pixels(s,node.error.y*t.scale.x)<=1.0)) || !children_ready(tree,n) {
+   if !asset_ready(node.links.z) {atomicStore(&fallback[tree],4u);atomicStore(&demand[tree].failed,1u);return NONE;}
+   if write_records {emit(tree,n);}else if (node.links.w&2u)==0u {atomicAdd(&demand[tree].count,1u);}
+   return NONE;
+  }
+  if child_list[n*2u+1u]!=1u {return n;}
+  n=child_list[child_list[n*2u]];
  }
- return true;
+ return NONE;
 }
 var<workgroup> expand:u32;
 var<workgroup> task_shared:vec2<u32>;
@@ -230,7 +238,10 @@ fn wave(at:u32,lane:u32,write_records:bool) {
   expand=0u;task_shared=vec2<u32>(0u);
   if at<min(atomicLoad(&input_work.count),arrayLength(&input_work.tasks)) {
    let task=input_work.tasks[at];task_shared=task;
-   if atomicLoad(&fallback[task.x])==0u {expand=u32(visit(task.x,task.y,write_records));}
+   if atomicLoad(&fallback[task.x])==0u {
+    let refine=visit(task.x,task.y,write_records);
+    if refine!=NONE {expand=1u;task_shared=vec2<u32>(task.x,refine);}
+   }
   }
  }
  let needs_expansion=workgroupUniformLoad(&expand);
@@ -239,10 +250,11 @@ fn wave(at:u32,lane:u32,write_records:bool) {
  let start=child_list[task.y*2u];let count=child_list[task.y*2u+1u];
  for(var i=lane;i<count;i+=64u) {
   let child=child_list[start+i];
-  if visit(task.x,child,write_records) {
+  let refine=visit(task.x,child,write_records);
+  if refine!=NONE {
    let slot=atomicAdd(&output_work.count,1u);
    atomicMax(&counters[15],slot+1u);
-   if slot<arrayLength(&output_work.tasks) {output_work.tasks[slot]=vec2<u32>(task.x,child);}
+   if slot<arrayLength(&output_work.tasks) {output_work.tasks[slot]=vec2<u32>(task.x,refine);}
    else {atomicStore(&fallback[task.x],3u);atomicStore(&demand[task.x].failed,1u);atomicAdd(&counters[11],1u);}
   }
  }
@@ -259,10 +271,11 @@ fn wave(at:u32,lane:u32,write_records:bool) {
  if atomicLoad(&demand[tree].failed)!=0u || (count!=0u && before+count>view.consumer_count.y) {
   atomicStore(&fallback[tree],2u);return;
  }
- if visit(tree,trees[tree].info.x,true) {
+ let refine=visit(tree,trees[tree].info.x,true);
+ if refine!=NONE {
   let slot=atomicAdd(&input_work.count,1u);
   // At most one seed per root; construction guarantees queue >= root count.
-  input_work.tasks[slot]=vec2<u32>(tree,trees[tree].info.x);
+  input_work.tasks[slot]=vec2<u32>(tree,refine);
  }
 }
 @compute @workgroup_size(32) fn prefix_demand(@builtin(local_invocation_index) bucket:u32,@builtin(workgroup_id) block:vec3<u32>) {

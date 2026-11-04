@@ -35,9 +35,13 @@ pub struct SelectionEvidence {
     pub voxel_candidates:usize,pub admitted_voxel_candidates:usize,
     pub root_errors:Vec<[f32;3]>,
 }
-fn admitted(c:&crate::aggregate_lod::Candidate,p:crate::aggregate_lod::Policy)->bool {
-    p.allow_sampled_optics && !c.source_only && c.voxel_coverage_error<=p.max_coverage_error && c.voxel_color_error<=p.max_color_error
+pub(super) fn admission_footprint(c:&crate::aggregate_lod::Candidate,p:crate::aggregate_lod::Policy)->Option<f32> {
+    if !p.allow_sampled_optics || c.source_only {return None;}
+    if c.voxel_coverage_error<=p.max_coverage_error && c.voxel_color_error<=p.max_color_error {return Some(0.);}
+    c.filtered.iter().filter(|f|f.footprint_m.is_finite() && f.footprint_m>0. && f.coverage_error<=p.max_coverage_error && f.color_error<=p.max_color_error)
+        .map(|f|f.footprint_m).min_by(f32::total_cmp)
 }
+fn admitted(c:&crate::aggregate_lod::Candidate,p:crate::aggregate_lod::Policy)->bool {admission_footprint(c,p).is_some()}
 impl CookedPlant {
     pub fn selection_evidence(&self,policy:crate::aggregate_lod::Policy)->SelectionEvidence {
         let root=self.branches.first().map(|b|b.aggregate.as_slice()).unwrap_or(&[]);
@@ -107,7 +111,7 @@ impl CookedPlant {
                 let rep=recipe.representations.len()as u32;
                 recipe.representations.push(SelectedRepresentation::Voxel {branch:branch as u32,branch_id:self.branches[branch].id,level:c.level});
                 let next=recipe.nodes.len()as u32+1;
-                recipe.nodes.push(Node {sphere:bound,error:[c.spatial_error,0.,0.,0.],links:[next,0,rep,0]});
+                recipe.nodes.push(Node {sphere:bound,error:[c.spatial_error,admission_footprint(&c,policy).unwrap(),0.,0.],links:[next,0,rep,0]});
             }
             Ok(())
         };

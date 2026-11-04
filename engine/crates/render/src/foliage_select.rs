@@ -18,7 +18,7 @@ pub const NONE:u32=u32::MAX;
 pub struct Node {
     /// Local-space conservative animated subtree sphere.
     pub sphere:[f32;4],
-    /// Geometric/aggregate error in metres. Remaining components reserved.
+    /// Geometric error metres; optical filter footprint metres (zero = unfiltered); reserved.
     pub error:[f32;4],
     /// First child (NONE for leaf), exclusive subtree end, representation ID, flags.
     /// Flag bit 0: resident overflow fallback only; always refine normally.
@@ -63,7 +63,7 @@ fn validate(nodes:&[Node],instances:&[Instance],capacity:u32)->Result<(),String>
     let mut ends=Vec::<usize>::new();
     for (i,n) in nodes.iter().enumerate() {
         while ends.last()==Some(&i) {ends.pop();}
-        if !n.sphere.iter().chain(n.error.iter()).all(|x|x.is_finite()) || n.sphere[3]<0. || n.error[0]<0.
+        if !n.sphere.iter().chain(n.error.iter()).all(|x|x.is_finite()) || n.sphere[3]<0. || n.error[0]<0. || n.error[1]<0.
             || n.links[1]as usize<=i || n.links[1]as usize>nodes.len()
             || ends.last().is_some_and(|&end|n.links[1]as usize>end) {
             return Err("invalid foliage subtree bounds/escape".into());
@@ -366,6 +366,41 @@ mod tests {
   selector.publish_asset_pages(&gpu,&[(1,true,2),(3,false,1)]).unwrap();assert_eq!(draw(16),[1,5,6]);
   assert!(draw(2).is_empty());assert_eq!(read(&gpu,&selector.fallback),[2],"budget cannot publish a partial ancestor cut");
   selector.publish_asset_pages(&gpu,&[(3,true,2)]).unwrap();assert_eq!(draw(16),[2,3,5,6]);
+ }
+ #[test]
+ #[ignore="exclusive GPU unary LOD chain fixture"]
+ fn gpu_unary_lod_chains_do_not_fill_global_frontier() {
+  let gpu=Gpu::new().unwrap();let (_,trees)=fixture(193);let empty=depth(&gpu,0.);
+  let mut nodes=vec![Node {sphere:[0.,0.,0.5,0.3],error:[0.3,0.,0.,0.],links:[1,17,0,2]}];
+  for _ in 0..4 {let start=nodes.len()as u32;let end=start+4;
+   for i in start..end {nodes.push(Node {sphere:[0.,0.,0.5,0.2],error:[0.1,0.,0.,0.],links:[if i+1==end {NONE}else{i+1},end,i,0]});}
+  }
+  let serial=Selector::new(&gpu,&nodes,&trees,1024,1024).unwrap();
+  let queued=Selector::with_work_capacity(&gpu,&nodes,&trees,1024,1,193).unwrap();
+  let mut enc=gpu.device.create_command_encoder(&Default::default());
+  serial.first(&gpu,&mut enc,Mat4::IDENTITY,Mat4::IDENTITY,[128;2],0.01,false,&empty).unwrap();gpu.queue.submit([enc.finish()]);
+  let views=[crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]}];
+  let mut enc=gpu.device.create_command_encoder(&Default::default());queued.union(&gpu,&mut enc,&views,0.01,1024,&empty).unwrap();gpu.queue.submit([enc.finish()]);
+  let counts=read(&gpu,&queued.counters);assert_eq!(counts[0],193*4);assert_eq!(counts[11],0);
+  assert!(read(&gpu,&queued.fallback).iter().all(|&f|f==0));
+  let cut=|s:&Selector|{let mut r=read(&gpu,&s.records).chunks_exact(4).take(772).map(|r|r.to_vec()).collect::<Vec<_>>();r.sort();r};
+  assert_eq!(cut(&serial),cut(&queued));
+ }
+ #[test]
+ #[ignore="exclusive GPU optical footprint gate fixture"]
+ fn gpu_filtered_optics_require_subpixel_footprint_in_every_consumer() {
+  use crate::part_wind::AnimationView;
+  let gpu=Gpu::new().unwrap();let (mut nodes,trees)=fixture(1);nodes[0].error[1]=0.1;
+  let selector=Selector::new(&gpu,&nodes,&trees,4,4).unwrap();let empty=depth(&gpu,0.);
+  let view=|size|AnimationView {view_projection:Mat4::IDENTITY,viewport:[size;2]};
+  for (views,expected) in [(vec![ConsumerView::camera(view(1))],1),
+      (vec![ConsumerView::camera(view(128))],2),
+      (vec![ConsumerView::camera(view(1)),ConsumerView::shadow(view(128))],2)] {
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union_consumers(&gpu,&mut enc,&views,100.,4,&empty).unwrap();gpu.queue.submit([enc.finish()]);
+   assert_eq!(read(&gpu,&selector.counters)[0],expected);
+   assert_eq!(read(&gpu,&selector.fallback),[0]);
+  }
  }
  #[test]
  #[ignore="exclusive GPU consumer ownership and budget fixture"]
