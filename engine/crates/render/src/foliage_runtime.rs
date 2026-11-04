@@ -56,6 +56,14 @@ fn local_bounds(v:GpuTree)->([f32;4],[f32;4]) {
     (low.extend(0.).to_array(),high.extend(0.).to_array())
 }
 
+/// One species in the shared population catalog. Roots select its index via
+/// RootPlacement::variant; category never selects a separate renderer/cache.
+#[derive(Clone,Copy)]
+pub struct Species<'a> {
+    pub plant:&'a crate::vegetation_asset::CookedPlant,
+    pub category:crate::scene::GeometryCategory,
+}
+
 /// Attach shared recipe geometry once, plus one lightweight root per tree and
 /// a bounded number of branch OUTPUT slots. Never constructs recipe_forest::Pool.
 pub fn plant(scene:&mut Scene,plants:&[crate::vegetation_asset::CookedPlant],trees:&[RootPlacement],slots:u32,policy:crate::aggregate_lod::Policy)->Result<(),String> {
@@ -65,6 +73,13 @@ pub fn plant(scene:&mut Scene,plants:&[crate::vegetation_asset::CookedPlant],tre
 /// Reserve world-root capacity separately from transient branch residency.
 /// Loaded roots carry stable world IDs; unused capacity is explicitly inactive.
 pub fn plant_population(scene:&mut Scene,plants:&[crate::vegetation_asset::CookedPlant],world:&[crate::foliage_population::WorldRoot],capacity:usize,slots:u32,policy:crate::aggregate_lod::Policy)->Result<(),String> {
+    let species=plants.iter().map(|plant|Species {plant,category:crate::scene::GeometryCategory::Trees}).collect::<Vec<_>>();
+    plant_species_population(scene,&species,world,capacity,slots,policy)
+}
+/// Mixed grass, shrub and tree species share one selection, page cache, pose
+/// schedule and shadow path. Category controls diagnostics/material consumers.
+pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[crate::foliage_population::WorldRoot],capacity:usize,slots:u32,policy:crate::aggregate_lod::Policy)->Result<(),String> {
+    let plants=species.iter().map(|s|s.plant).collect::<Vec<_>>();
     use crate::vegetation_asset::{SceneVegetation,AttachLimits,PlantInstance,SelectedRepresentation};
     if scene.gpu_forest.is_some() || !scene.part_wind.is_empty() || scene.voxel_forest.is_some() {
         return Err("attach all GPU forest species together before other articulated vegetation".into());
@@ -81,14 +96,14 @@ pub fn plant_population(scene:&mut Scene,plants:&[crate::vegetation_asset::Cooke
     limits.pack.max_instances=poses;
     let mut builder=SceneVegetation::new(scene,limits)?;
     let mut handles=Vec::new();
-    for (i,p) in plants.iter().enumerate() {handles.push(builder.append(p,PlantInstance {id:i as u64+1,generation:0,root:Mat4::IDENTITY,category:crate::scene::GeometryCategory::Trees})?);}
+    for (i,p) in plants.iter().enumerate() {handles.push(builder.append(p,PlantInstance {id:i as u64+1,generation:0,root:Mat4::IDENTITY,category:species[i].category})?);}
     for (i,p) in plants.iter().enumerate() {
-        builder.append_proxy(p,PlantInstance {id:(plants.len()+capacity+i+1)as u64,generation:0,root:Mat4::IDENTITY,category:crate::scene::GeometryCategory::Trees})?;
+        builder.append_proxy(p,PlantInstance {id:(plants.len()+capacity+i+1)as u64,generation:0,root:Mat4::IDENTITY,category:species[i].category})?;
 
     }
     for (i,t) in trees.iter().enumerate() {
         let root=Mat4::from_scale_rotation_translation(Vec3::splat(t.scale),glam::Quat::from_rotation_y(t.yaw),t.pos);
-        builder.append_proxy(&plants[t.variant],PlantInstance {id:(plants.len()+i+1)as u64,generation:0,root,category:crate::scene::GeometryCategory::Trees})?;
+        builder.append_proxy(&plants[t.variant],PlantInstance {id:(plants.len()+i+1)as u64,generation:0,root,category:species[t.variant].category})?;
     }
     builder.finish_aggregate(policy)?;
     let mut forest=scene.voxel_forest.take().ok_or("GPU forest has no volumes")?;
@@ -358,6 +373,53 @@ impl Runtime {
 }
 
 #[cfg(test)] mod tests {
+    #[test]
+    fn mixed_species_share_catalog_and_preserve_categories_on_replacement() {
+        use super::*;
+        use crate::scene::GeometryCategory::{Trees,Grass};
+        let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
+        let mut plant=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();plant.cook_proxy(&source,config,3).unwrap();
+        let placement=RootPlacement {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0};
+        let mut world=vec![crate::foliage_population::WorldRoot {id:10,placement},crate::foliage_population::WorldRoot {id:20,placement:RootPlacement {pos:Vec3::X,variant:1,..placement}}];
+        let mut reference=Scene::default();plant_population(&mut reference,std::slice::from_ref(&plant),&world[..1],4,8,Default::default()).unwrap();
+        let mut scene=Scene::default();
+        plant_species_population(&mut scene,&[Species {plant:&plant,category:Trees},Species {plant:&plant,category:Grass}],&world,4,8,Default::default()).unwrap();
+        assert_eq!(scene.meshes.len(),reference.meshes.len(),"categories must not duplicate mesh assets");
+        let spec=scene.gpu_forest.as_ref().unwrap();assert_eq!(spec.roots.len(),4);assert_eq!(spec.slots,8);
+        for (species,category) in [Trees,Grass].into_iter().enumerate() {
+            let t=spec.templates[species];assert_eq!(t.source.category(),category);
+            for branch in spec.branches.iter().skip(t.branch as usize).take(3) {
+                if branch.source.first_cluster==0 {continue;}
+                assert_eq!(branch.source.category(),category);
+                let first=(branch.source.first_cluster>>12)as usize;let count=(branch.source.first_cluster&4095)as usize;
+                for member in &scene.instances[first..first+count] {assert_eq!(member.category(),category,"shared member templates must not inherit another category");}
+            }
+        }
+        let seed=PopulationSeed {base:std::sync::Arc::new(spec.population.clone()),templates:std::sync::Arc::new(spec.templates.clone()),owners:std::sync::Arc::new(spec.proxies.iter().map(|p|p.meta[0]).collect())};
+        world[0].placement.variant=1;
+        let prepared=seed.prepare(&world).unwrap();assert_eq!(prepared.changes.len(),1);
+        let change=prepared.changes[0];assert_eq!(change.source.category(),Grass);
+        assert_eq!(change.root.info[0],spec.templates[1].node);
+        assert_ne!(change.root.info[1],spec.roots[change.slot as usize].info[1],"species replacement invalidates residency generation");
+    }
+    #[test]
+    fn meadow_ribbons_attach_to_common_gpu_population_contract() {
+        use super::*;
+        let cooked=crate::recipe_forest::cook_meadow_variants(&[(47,0.2)],None).unwrap();
+        let plant=&cooked[0].plant;
+        // Three ribbon shapes with three shared palette bindings, not one mesh per blade.
+        assert_eq!(plant.stats().primitive_meshes,9);assert_eq!(plant.stats().placements,120);
+        let world=[crate::foliage_population::WorldRoot {id:1,placement:RootPlacement {pos:Vec3::ZERO,yaw:0.4,scale:1.,variant:0}}];
+        let mut scene=Scene::default();plant_species_population(&mut scene,&[Species {plant,category:crate::scene::GeometryCategory::Grass}],&world,4,16,crate::aggregate_lod::Policy {allow_sampled_optics:true,..Default::default()}).unwrap();
+        let spec=scene.gpu_forest.as_ref().unwrap();
+        assert!(scene.meadow.is_none());assert!(scene.part_wind.is_empty());
+        assert!(spec.branches.iter().any(|b|b.animation[0]>0.));
+        assert!(spec.nodes.iter().any(|n|n.links[3]&2!=0),"grass needs the same pinned root fallback");
+        assert!(spec.source_page_instances().iter().any(Option::is_some));
+        assert!(spec.representations.iter().any(|r|r[1]==1));
+        assert_eq!(scene.instances[spec.proxies[0].meta[0]as usize].category(),crate::scene::GeometryCategory::Grass);
+    }
+
     #[test] fn materialize_shader_validates(){for src in [include_str!("shaders/foliage_materialize.wgsl"),include_str!("shaders/foliage_pose_dispatch.wgsl")] {
         let module=naga::front::wgsl::parse_str(src).unwrap_or_else(|e|panic!("{}",e.emit_to_string(src)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|e|panic!("{}",e.emit_to_string(src)));}}

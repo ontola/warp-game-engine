@@ -230,7 +230,16 @@ pub fn validate_bindings(scene:&crate::scene::Scene)->Result<(),String> {
         // templates itself: first_cluster packs them.
         let virtual_owner=source.cluster_count==0&&source.first_cluster!=0&&source.flags&crate::scene::PART_WIND!=0;
         let shared=virtual_owner||scene.foliage_source_groups.iter().any(|group|group.owner==binding.owner);
-        if (source.cluster_count==0&&!shared)||volume.meta[0]!=binding.owner {
+        // An aggregate-only articulation root replaces its descendant groups,
+        // not nonexistent root triangles. Exact mode expands those children.
+        // Ordinary orphan/empty branch bindings remain invalid.
+        let subtree_root=scene.aggregate_lod.as_ref().is_some_and(|selection|
+            selection.groups.iter().enumerate().any(|(index,g)|
+                g.volume==binding.volume && g.parent.is_none()
+                && selection.groups.iter().any(|child|child.parent==Some(index as u32))))
+            && scene.part_wind.iter().any(|pose|pose.owner==Some(binding.owner)
+                && pose.volume==Some(binding.volume) && pose.parent.is_none());
+        if (source.cluster_count==0&&!shared&&!subtree_root)||volume.meta[0]!=binding.owner {
             return Err("foliage representation source/volume owner mismatch or empty source".into());
         }
         if volume.meta[3]!=crate::foliage_volume_data::ALL_MATERIALS {

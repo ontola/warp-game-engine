@@ -1,3 +1,34 @@
+## 2026-11-04 Mixed species and open grass aggregates
+
+Added foliage_runtime::Species and plant_species_population; existing tree APIs
+forward to the same core. Category-specific virtual member templates preserve
+Grass/Trees flags while sharing mesh/voxel payload. Species replacement retains
+stable world IDs and changes generation. recipe_forest::cook_meadow_variants cooks
+120 ribbon placements, nine shape/palette mesh bindings, four articulated groups,
+branch aggregates and five-level whole-patch fallback through CookedPlant/cache.
+
+Removed two tree-only assumptions: a root can be an empty articulation anchor;
+its aggregate binding is valid only with child aggregate groups and a matching
+root pose/volume owner. The compiler now supports explicit SheetCrossings with
+full projected area, while ClosedSurfaceEntries retains half-area and closed
+component validation. Reference/candidate quadrature and both output asset kinds
+preserve the measure. A known open triangle checks 13 directional masses at all
+levels and rejection under closed mode.
+
+Validation: render tests compile; release CPU vegetation_aggregate 8 PASS,
+foliage_representation 10 PASS, vegetation_asset 18 PASS (4 GPU fixtures ignored),
+mixed species/category replacement 1 PASS, actual meadow cook/attachment 1 PASS.
+The latter took 0.22 s in this test, not a renderer timing. Test-binary rebuilds
+were 2m05–3m16. No hardware rendering/performance claim: existing Sideways PID51952
+was still running and left untouched. No playtest opened.
+
+This is NOT the completed meadow migration. Terrain/game grass still uses the
+old route. Next: common GPU mixed-species oracle, blade basal-anchor wind,
+terrain conformance and spatial cells/far cell aggregates without per-tuft world
+records. Full consumer-aware publication, lifecycle and hardware frame-budget
+gates remain in vegetation-architecture.md. See
+[implementation details](docs/foliage-mixed-species-2026-11-04.md).
+
 ## 2026-11-04 World-depth GPU forest sun and exact integer shadow scrolling
 
 Normal GPU-forest scenes now always build SunSceneBounds. Initial population uses

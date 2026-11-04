@@ -171,10 +171,10 @@ impl Mass {
         for i in 0..6 { self.normal[i] += b.normal[i];
             for j in 0..3 { self.vectors[i][j] += b.vectors[i][j]; } }
     }
-    fn sample(&mut self, area: f64, directional: [f64; 13], normal: DVec3, material: &Material) {
+    fn sample(&mut self, area: f64, directional: [f64; 13], normal: DVec3, material: &Material, projection_scale: f64) {
         self.area += area; self.roughness += area * f64::from(material.roughness);
         if material.flags & THIN_FOLIAGE != 0 { self.leaf += area; }
-        for i in 0..13 { self.directional[i] += area * directional[i] * 0.5; }
+        for i in 0..13 { self.directional[i] += area * directional[i] * projection_scale; }
         for i in 0..3 { self.color[i] += area * f64::from(material.tint[i]); }
         for k in 0..3 {
             let weight = area * normal[k] * normal[k];
@@ -253,7 +253,7 @@ fn transformed(vertices: &[Vertex], matrix: Mat4, scratch: &mut Vec<Vertex>, c: 
 }
 
 fn triangle(cells: &mut Cells, vertices: [Vertex; 3], material: &Material, origin: DVec3,
-    dimensions: [u32; 3], c: Config, stats: &mut Stats) -> Result<(), String>
+    dimensions: [u32; 3], c: Config, measure: ProjectionMeasure, stats: &mut Stats) -> Result<(), String>
 {
     let p = vertices.map(|v| Vec3::from(v.pos).as_dvec3());
     let normals = vertices.map(|v| Vec3::from(v.normal).as_dvec3());
@@ -286,7 +286,8 @@ fn triangle(cells: &mut Cells, vertices: [Vertex; 3], material: &Material, origi
             check_memory(c, cells.len()+1, stats)?;
         }
         let normal = (normals[0]*w+normals[1]*u+normals[2]*v).try_normalize().unwrap_or(geometric);
-        cells.entry(coord).or_default().sample(sample_area, directions, normal, material);
+        cells.entry(coord).or_default().sample(sample_area, directions, normal, material, match measure {
+            ProjectionMeasure::ClosedSurfaceEntries => 0.5, ProjectionMeasure::SheetCrossings => 1.0 });
         Ok(())
     };
     for row in 0..n { for column in 0..n-row {
@@ -453,9 +454,6 @@ pub struct Cooker<'a> {
 impl<'a> Cooker<'a> {
     pub fn new(source: &'a Assembly, config: Config) -> Result<Self,String> {
         validate_config(config)?;source.validate()?;
-        if source.projection_measure()!=ProjectionMeasure::ClosedSurfaceEntries {
-            return Err("aggregate cooker currently requires closed opaque source components".into());
-        }
         let poses=source.branch_transforms()?;
         let mut meshes=BTreeMap::new();let mut components=BTreeMap::new();let mut clod_bytes=0usize;
         let keys=source.instances.iter().map(|p|(p.part as usize,
@@ -472,7 +470,10 @@ impl<'a> Cooker<'a> {
             }
             let part=Part {vertices:&geometry.vertices,indices:&geometry.indices,material:0};
             if let std::collections::btree_map::Entry::Vacant(entry)=components.entry(part_index) {
-                entry.insert(foliage_voxel::validate_closed_part(&part)?);
+                entry.insert(match source.projection_measure() {
+                    ProjectionMeasure::ClosedSurfaceEntries => foliage_voxel::validate_closed_part(&part)?,
+                    ProjectionMeasure::SheetCrossings => 0,
+                });
             }
             // Match CookedPlant::cook_source's actual primitive builder: tiny
             // closed sweeps first, then the appropriate generic policy.
@@ -577,7 +578,7 @@ fn reference_cells(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_as
         transformed(&part.vertices,matrix,&mut scratch,config,&mut stats)?;
         for tri in part.indices.chunks_exact(3) {
             triangle(&mut fine,[scratch[tri[0]as usize],scratch[tri[1]as usize],scratch[tri[2]as usize]],
-                &source.materials[instance.material as usize],origin64,dimensions,config,&mut stats)?;
+                &source.materials[instance.material as usize],origin64,dimensions,config,source.projection_measure(),&mut stats)?;
         }
     }
     if fine.is_empty() {return Err("aggregate has no covered source cells".into());}
@@ -601,9 +602,9 @@ pub(crate) fn cook_whole(cooker: &Cooker<'_>, levels: u32) -> Result<VoxelAsset,
         current=reduce(current);dimensions=dimensions.map(|v|v.div_ceil(2));cell*=2.0;
     }
     let stats=BakeStats {triangles:reference.stats.source_triangles,samples:reference.stats.quadrature_samples,
-        closed_parts_checked:reference.stats.unique_parts_validated as u64,
+        closed_parts_checked:if cooker.source.projection_measure()==ProjectionMeasure::ClosedSurfaceEntries { reference.stats.unique_parts_validated as u64 } else { 0 },
         closed_components_checked:reference.stats.closed_components_validated as u64,..Default::default()};
-    Ok(VoxelAsset {projection_measure:ProjectionMeasure::ClosedSurfaceEntries,origin:reference.origin.to_array(),
+    Ok(VoxelAsset {projection_measure:cooker.source.projection_measure(),origin:reference.origin.to_array(),
         source_bounds:[reference.lo.to_array(),reference.hi.to_array()],levels:out,stats})
 }
 
@@ -639,7 +640,7 @@ fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_asse
                     let vertices=[packed&255,(packed>>8)&255,(packed>>16)&255].map(|i|
                         scratch[mesh.cluster_verts[(cluster.first_vert+i)as usize]as usize]);
                     triangle(&mut alternate,vertices,&source.materials[instance.material as usize],
-                        origin64,dimensions,config,stats)?;
+                        origin64,dimensions,config,source.projection_measure(),stats)?;
                     triangle_count+=1;
                 }
             }
@@ -682,9 +683,9 @@ fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_asse
         }
     }
     let bake_stats=BakeStats {triangles:stats.source_triangles,samples:source_samples,
-        closed_parts_checked:stats.unique_parts_validated as u64,
+        closed_parts_checked:if source.projection_measure()==ProjectionMeasure::ClosedSurfaceEntries { stats.unique_parts_validated as u64 } else { 0 },
         closed_components_checked:stats.closed_components_validated as u64,..Default::default()};
-    let volume=VoxelAsset {projection_measure:ProjectionMeasure::ClosedSurfaceEntries,origin:origin.to_array(),
+    let volume=VoxelAsset {projection_measure:cooker.source.projection_measure(),origin:origin.to_array(),
         source_bounds:[lo.to_array(),hi.to_array()],levels,stats:bake_stats};
     Ok(ClusterAsset {volume,levels:metadata,triangle_refinements,source_ids:memberships.iter().map(|&i|source.instances[i as usize].id).collect(),
         placement_indices:memberships,branch,cluster_to_assembly,
@@ -721,6 +722,34 @@ mod tests {
     }
     fn directional(level: &VoxelLevel) -> [f64;13] {
         std::array::from_fn(|i|level.voxels.iter().map(|v|f64::from(v.directional_area[i])).sum())
+    }
+
+    #[test]
+    fn open_sheet_aggregates_preserve_full_projected_area() {
+        // One open triangle, not a closed proxy: its face-on optical area is
+        // its full geometric area. Closing it artificially would double it.
+        let mut source=fixture(1,Mat4::IDENTITY);
+        source.parameters.archetype=Archetype::MeadowPatch;
+        source.parts[0].indices.truncate(3);
+        source.parts[0].vertices.truncate(3);
+        let cooker=Cooker::new(&source,config()).unwrap();
+        let cluster=cooker.cook(&[0],Mat4::IDENTITY).unwrap();
+        let whole=cook_whole(&cooker,4).unwrap();
+        let expected=0.24f64*0.38*0.5;
+        for volume in [&cluster.volume,&whole] {
+            assert_eq!(volume.projection_measure,ProjectionMeasure::SheetCrossings);
+            assert_eq!(volume.stats.closed_parts_checked,0);
+            assert_eq!(volume.stats.closed_components_checked,0);
+            for level in &volume.levels {
+                let mass=directional(level);
+                for (i,d) in PROJECTION_DIRECTIONS.iter().enumerate() {
+                    assert!((mass[i]-expected*f64::from(d[2]).abs()).abs()<1e-7);
+                }
+            }
+        }
+        // Closed-volume mode must still reject this same open geometry.
+        source.parameters.archetype=Archetype::ConiferTwig;
+        assert!(Cooker::new(&source,config()).is_err());
     }
 
     #[test]
