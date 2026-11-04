@@ -108,3 +108,42 @@ fn shrines_rise_ahead_and_before_their_ward() {
         assert!(seen > 0, "seed {seed}: no shrine rose");
     }
 }
+
+#[test]
+fn nobody_gets_past_a_shut_wall_and_unlocks_wait_for_it() {
+    // Joep: monsters must never be behind a wall of mist, wizards wait at it
+    // until it opens, and a shrine's new element comes as you walk through.
+    for seed in [7, 11, 23] {
+        let mut w = bots(3, seed);
+        let mut known: Vec<i32> = w.wizards.iter().map(|&id| w.wiz(id).unlocks).collect();
+        for _ in 0..60 * 150 {
+            w.step();
+            for wd in w.run.wards.iter().filter(|wd| !wd.opening) {
+                for &id in w.wizards.iter().chain(&w.enemies) {
+                    if !w.alive(id) {
+                        continue;
+                    }
+                    let p = w.pos(id);
+                    let q = glam::Vec2::new(p.x, p.z);
+                    let (d, within) = wd.past(q);
+                    let ahead = w.level.progress_of(q) - wd.at;
+                    let behind = d > 0.3 && ((within && d < 4.0 && ahead.abs() < 12.0) || (ahead > 0.3 && ahead < 25.0));
+                    assert!(!behind, "seed {seed} tick {}: {} {d} m past a shut wall (k {})", w.tick, if w.a(id).wizard { "a wizard" } else { "a monster" }, wd.k);
+                }
+            }
+            for (i, &id) in w.wizards.iter().enumerate() {
+                let u = w.wiz(id).unlocks;
+                if u > known[i] {
+                    known[i] = u;
+                    for wd in w.run.wards.iter().filter(|wd| wd.k >= 0 && !wd.opening) {
+                        let p = w.pos(id);
+                        let q = glam::Vec2::new(p.x, p.z);
+                        let (d, within) = wd.past(q);
+                        let near = (w.level.progress_of(q) - wd.at).abs() < 8.0;
+                        assert!(!(within && near && d > -6.0 && d < 0.0), "seed {seed} tick {}: unlocked to {u} while {d} m before shut wall {}", w.tick, wd.k);
+                    }
+                }
+            }
+        }
+    }
+}

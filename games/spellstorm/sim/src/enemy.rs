@@ -945,7 +945,9 @@ impl World {
         champion: bool,
         guard: i32,
     ) -> Id {
-        let at = flat(self.level.clamp_inside(at));
+        // Waves, packs, summons and the raised dead alike: never behind a
+        // wall of mist still up (Joep).
+        let at = flat(self.level.clamp_inside(self.before_walls(at)));
         let (a, mut e) = Enemy::setup(k, hp_scale, champion, at, &mut self.rng);
         e.guard = guard;
         let id = self.ecs.spawn((a, e));

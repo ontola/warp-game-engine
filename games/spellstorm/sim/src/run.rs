@@ -181,9 +181,12 @@ pub struct Run {
     pub practice: Option<Practice>,
     lead: f32,
     lead_t: f64,
-    /// Unlocks earned but not yet given (wizard, up to): they wait for a
-    /// calm moment (Joep: never mid-fight), `calm_t` seconds so far.
-    learn: Vec<(Id, i32)>,
+    /// Unlocks earned but not yet given (wizard, up to, gate). A shrine's
+    /// unlock waits for its wizard to walk through where its wall of mist
+    /// stood (the gate: that wall, kept after it is gone); one with no
+    /// wall waits for a calm moment (Joep: never mid-fight), `calm_t`
+    /// seconds so far.
+    learn: Vec<(Id, i32, Option<Ward>)>,
     calm_t: f64,
     /// This level's first shrine has taught.
     taught: bool,
@@ -777,6 +780,29 @@ impl World {
         }
     }
 
+    /// `p` moved back to this side of every wall of mist still up: nothing
+    /// comes in behind one (Joep).
+    pub(crate) fn before_walls(&self, mut p: Vec3) -> Vec3 {
+        for wd in self.run.wards.iter().filter(|w| !w.opening) {
+            let q = Vec2::new(p.x, p.z);
+            let prog = self.level.progress_of(q);
+            let (d, within) = wd.past(q);
+            let behind = (within && d > -2.0 && d < 25.0 && (prog - wd.at).abs() < 30.0) || (prog > wd.at - 2.0 && prog < wd.at + 40.0);
+            if behind {
+                // As far to the side of the path, a few metres short of it.
+                let side = q - self.level.point_at(prog);
+                let mut back = self.level.point_at(wd.at - 3.5) + side;
+                // Where the path bends, the side can still reach past it.
+                let (d, within) = wd.past(back);
+                if within && d > -2.0 {
+                    back -= wd.n * (d + 2.5);
+                }
+                p = self.level.clamp_inside(Vec3::new(back.x, p.y, back.y));
+            }
+        }
+        p
+    }
+
     /// Where a wizard with nothing to fight walks to (bots use it).
     pub fn walk_goal(&self, pos: Vec3) -> Vec3 {
         let mine = self.level.progress_of(xz(pos));
@@ -912,9 +938,12 @@ impl World {
             }
             self.run.taught = true;
         }
+        // After the tomes, as the wizard walks on through the wall (Joep:
+        // not at the same time as the tomes).
+        let gate = self.run.wards.iter().find(|w| w.k == k as i32).cloned();
         for id in self.wizards.clone() {
             let u = self.learned_by(id).max(0);
-            self.learn_later(id, (u + 1).min(crate::wizard::STAGES as i32 - 1));
+            self.run.learn.push((id, (u + 1).min(crate::wizard::STAGES as i32 - 1), gate.clone()));
         }
     }
 
@@ -926,7 +955,7 @@ impl World {
 
     /// Unlocks up to `n` for `id`, at the next calm moment.
     pub(crate) fn learn_later(&mut self, id: Id, n: i32) {
-        self.run.learn.push((id, n));
+        self.run.learn.push((id, n, None));
     }
 
     /// Waiting unlocks are given once it has been calm for 2 s: no monster
@@ -940,12 +969,24 @@ impl World {
         let hurt = self.wizards.iter().any(|&w| self.a(w).hurt_t > 0.0);
         let calm = self.near_count() == 0 && self.run.spawn_queue.is_empty() && !hurt;
         self.run.calm_t = if calm { self.run.calm_t + dt } else { 0.0 };
-        if self.run.calm_t < 2.0 {
-            return;
-        }
-        for (id, n) in std::mem::take(&mut self.run.learn) {
-            if self.ecs.contains(id) {
+        let calm = self.run.calm_t >= 2.0;
+        for (id, n, gate) in std::mem::take(&mut self.run.learn) {
+            if !self.ecs.contains(id) {
+                continue;
+            }
+            let ready = match &gate {
+                // Through it: on along the path, and past the wall itself.
+                Some(wd) => {
+                    let q = xz(self.pos(id));
+                    let (d, within) = wd.past(q);
+                    self.alive(id) && self.level.progress_of(q) > wd.at + 0.5 && (!within || d > 0.5)
+                }
+                None => calm,
+            };
+            if ready {
                 self.unlock_to(id, n);
+            } else {
+                self.run.learn.push((id, n, gate));
             }
         }
     }
