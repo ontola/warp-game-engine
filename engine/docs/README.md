@@ -23,6 +23,9 @@ Start with the overview, then build and run something.
 one GPU route, shared assemblies, residency, wind and shadow consumers. Architecture
 integration takes precedence over visual tuning; old opt-in plans are historical.
 
+[Shared articulated forest poses](foliage-shared-poses-2026-11-04.md): GPU ancestry
+deduplication, bounded cache fallback and independent matrix validation.
+
 [History-first source recovery](foliage-history-2026-11-04.md): bounded deferred
 clusters, current-depth proofs, sparse-coverage scheduling and measured limits.
 

@@ -18,6 +18,19 @@ struct State {wind:vec4<f32>,counts:vec4<u32>};
 @group(0) @binding(10) var<storage,read_write> choices:array<u32>;
 @group(0) @binding(11) var<storage,read> direct_roots:array<u32>;
 @group(0) @binding(12) var<storage,read_write> root_history:array<vec4<u32>>;
+// Frame-local shared ancestry, bounded by selected slots and cooked depth.
+struct PoseEntry {key:atomic<u32>,pad0:u32,pad1:u32,pad2:u32,rows:array<vec4<f32>,3>};
+@group(0) @binding(13) var<storage,read_write> pose_cache:array<PoseEntry>;
+@group(0) @binding(14) var<storage,read_write> pose_work:array<atomic<u32>>;
+@group(0) @binding(15) var<storage,read_write> root_poses:array<array<vec4<f32>,3>>;
+@group(0) @binding(16) var<uniform> pose_level:vec4<u32>;
+fn pose_hash(key:u32)->u32 {var h=key;h=(h^(h>>16u))*0x7feb352du;h=(h^(h>>15u))*0x846ca68bu;return (h^(h>>16u))&(arrayLength(&pose_cache)-1u);}
+fn pose_key(root:u32,branch:u32)->u32 {return root*state.counts.w+branch+1u;}
+fn pose_find(key:u32)->u32 {
+ let start=pose_hash(key);let mask=arrayLength(&pose_cache)-1u;
+ for(var probe=0u;probe<128u;probe++) {let at=(start+probe)&mask;let found=atomicLoad(&pose_cache[at].key);if found==key {return at;}if found==0u {break;}}
+ return 0xffffffffu;
+}
 fn multiply(a:array<vec4<f32>,3>,b:array<vec4<f32>,3>)->array<vec4<f32>,3> {
  var out:array<vec4<f32>,3>;
  for(var i=0u;i<3u;i++){out[i]=a[i].x*b[0]+a[i].y*b[1]+a[i].z*b[2]+vec4<f32>(0.,0.,0.,a[i].w);}return out;
@@ -44,6 +57,50 @@ fn pose(root:Root,branch:u32)->array<vec4<f32>,3> {
   m=rotate(m,axis,part.animation.x*state.wind.z*sin(state.wind.w*part.animation.y+part.animation.z));}
  return m;
 }
+fn cached_pose(root:u32,branch:u32)->array<vec4<f32>,3> {
+ if branches[branch].info.x==0xffffffffu {return root_poses[root];}
+ let at=pose_find(pose_key(root,branch));
+ if at!=0xffffffffu {return pose_cache[at].rows;}
+ // Bounded hash overflow cannot lose a pose or substitute an old generation.
+ return pose(roots[root],branch);
+}
+@compute @workgroup_size(64)
+fn prepare_root_poses(@builtin(global_invocation_id) id:vec3<u32>) {
+ let i=id.x;if i>=state.counts.z || roots[i].info.w!=0u {return;}
+ root_poses[i]=pose(roots[i],roots[i].info.z);
+}
+@compute @workgroup_size(64)
+fn request_poses(@builtin(global_invocation_id) id:vec3<u32>) {
+ let i=id.x;if i>=state.counts.x || slots[i].history.z==0u {return;}
+ let root=slots[i].key.x;var branch=representations[slots[i].key.z].x;
+ loop {
+  let part=branches[branch];if part.info.x==0xffffffffu {break;}
+  let key=pose_key(root,branch);let start=pose_hash(key);let mask=arrayLength(&pose_cache)-1u;var found=false;var probe=0u;
+  for(var attempt=0u;attempt<128u;attempt++) {
+   let at=(start+probe)&mask;let claim=atomicCompareExchangeWeak(&pose_cache[at].key,0u,key);
+   if claim.exchanged {
+    let index=atomicAdd(&pose_work[part.info.z],1u);
+    if index<state.counts.x {atomicStore(&pose_work[128u+part.info.z*state.counts.x+index],at);}
+    atomicAdd(&pose_work[65],1u);found=true;break;
+   }
+   if claim.old_value==key {found=true;break;}
+   // A spurious weak failure at an empty cell must retry that SAME cell.
+   if claim.old_value!=0u {probe++;}
+  }
+  if !found {atomicAdd(&pose_work[64],1u);}
+  branch=part.info.x;
+ }
+}
+@compute @workgroup_size(64)
+fn evaluate_poses(@builtin(global_invocation_id) id:vec3<u32>) {
+ let depth=pose_level.x;let i=id.x;if i>=min(atomicLoad(&pose_work[depth]),state.counts.x) {return;}
+ let at=atomicLoad(&pose_work[128u+depth*state.counts.x+i]);let key=atomicLoad(&pose_cache[at].key)-1u;
+ let root=key/state.counts.w;let branch=key%state.counts.w;let part=branches[branch];
+ var m=multiply(cached_pose(root,part.info.x),part.rest);
+ let axis=normalize(vec3<f32>(-state.wind.y,0.,state.wind.x));
+ m=rotate(m,axis,part.animation.x*state.wind.z*sin(state.wind.w*part.animation.y+part.animation.z));
+ pose_cache[at].rows=m;atomicAdd(&pose_work[66],1u);
+}
 fn bounds(v:Volume,m:array<vec4<f32>,3>,lo:vec3<f32>,hi:vec3<f32>)->Volume {
  var result=v;var low=vec3<f32>(1e30);var high=-low;
  for(var i=0u;i<8u;i++){let p=point(m,vec3<f32>(select(lo.x,hi.x,(i&1u)!=0u),select(lo.y,hi.y,(i&2u)!=0u),select(lo.z,hi.z,(i&4u)!=0u)));low=min(low,p);high=max(high,p);}
@@ -55,7 +112,7 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
  if i<state.counts.x {
   let slot=slots[i];let owner=state.counts.y+i;
   if slot.history.z==0u {sources[owner].sphere.w=-1.;sources[owner].first=0u;choices[i]=0u;choices[i+16384u]=0u;return;}
-  let root=roots[slot.key.x];let rep=representations[slot.key.z];let branch=branches[rep.x];let m=pose(root,rep.x);
+  let root=roots[slot.key.x];let rep=representations[slot.key.z];let branch=branches[rep.x];let m=cached_pose(slot.key.x,rep.x);
   var source=branch.source;source.rows=m;let bound=nodes[slot.key.y].sphere;
   source.sphere=vec4<f32>(point(root.rows,bound.xyz),bound.w*root.scale.x);
   source.scale=length(root.rows[0].xyz);source.flags=(source.flags&~128u)|slot.history.w;
@@ -75,7 +132,7 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
    var hidden=original;hidden.low.w=1.;volumes[i]=hidden;
    sources[original.identity.x].sphere.w=-1.;return;
   }
-  let m=pose(root,root.info.z);
+  let m=root_poses[tree];
   let delta=multiply(m,original.inverse);
   var volume=bounds(original,delta,original.low.xyz,original.high.xyz);volume.inverse=inverse(m);
   let direct=direct_roots[tree];var history=0u;

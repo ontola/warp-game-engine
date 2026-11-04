@@ -3894,10 +3894,9 @@ impl Renderer {
             }
         }
         if let Some((forest,first_owner))=&self.gpu_forest {
-            let time=self.query.as_ref().map(|(qs,_,_)|(qs,timestamp_pair(&mut ts)));
-            if let Some((qs,index))=time {enc.write_timestamp(qs,index);names.push("GPU forest selection residency poses");}
-            forest.encode(gpu,&mut enc,&part_animation_views,*first_owner)?;
-            if let Some((qs,index))=time {enc.write_timestamp(qs,index+1);}
+            let time=self.query.as_ref().map(|(qs,_,_)| {let first=timestamp_pair(&mut ts);timestamp_pair(&mut ts);timestamp_pair(&mut ts);(qs,first)});
+            if time.is_some(){names.extend(["GPU forest selection residency","GPU forest shared poses","GPU forest materialize"]);}
+            forest.encode_timed(gpu,&mut enc,&part_animation_views,*first_owner,time)?;
             enc.copy_buffer_to_buffer(&forest.choices,65536,&shadow_t.foliage_selection,0,65536);
         }
         // Actual updated instance/branch spheres and wind bounds, once shared
