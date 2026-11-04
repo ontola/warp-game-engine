@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 
 fn main() {
-    app::startup::init("GameNight", None); if let Err(e) = run() { eprintln!("game-room: {e}"); std::process::exit(1); } }
+    app::startup::init("GameNight", Some(include_bytes!("../assets/gamenight-icon.png"))); if let Err(e) = run() { eprintln!("game-room: {e}"); std::process::exit(1); } }
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();

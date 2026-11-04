@@ -41,6 +41,7 @@ pub fn init(title: &str, png: Option<&[u8]>) {
         prev(info);
     }));
     #[cfg(windows)] windows::console(title);
+    #[cfg(windows)] windows::app_id();
     let rgba=png.and_then(|p|image::load_from_memory(p).ok()).map(|p|p.thumbnail(64,64).to_rgba8())
         .unwrap_or_else(||image::RgbaImage::from_fn(32,32,|x,y| {
             let mark=y>7 && y<25 && ((x>5 && x<10)||(x>22 && x<27)||(y>17 && x>12 && x<20));
@@ -88,6 +89,16 @@ mod windows {
         fn SetStdHandle(kind:u32,handle:Handle)->i32;
     }
     fn wide(s:&str)->Vec<u16> {s.encode_utf16().chain([0]).collect()}
+    /// Join the host's taskbar entry: GameNight passes its AppUserModelID,
+    /// so the lobby groups under a pinned GameNight instead of opening as a
+    /// separate app with its own icon.
+    pub fn app_id() {
+        #[link(name="shell32")] unsafe extern "system" {fn SetCurrentProcessExplicitAppUserModelID(id:*const u16)->i32;}
+        let Ok(id)=std::env::var("GAMENIGHT_APP_ID") else {return};
+        if id.is_empty() || id.len()>128 {return;}
+        let id=wide(&id);
+        unsafe { SetCurrentProcessExplicitAppUserModelID(id.as_ptr()); }
+    }
     pub fn console(title:&str) {
         // Keep CLI tools/pipes usable without creating a console on double click.
         // Existing redirected handles must not be replaced by parent attachment.
