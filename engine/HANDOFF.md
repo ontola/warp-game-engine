@@ -1,3 +1,22 @@
+## 2026-11-04 Shared GPU ancestor poses on the normal forest route
+
+GPU demand hash + per-depth queues now deduplicate selected branch ancestry.
+Root poses are shared; source, voxel and shadow transforms consume identical
+poses. Fixed bounded per-depth dispatches use GPU queue counts; no CPU shortlist.
+Hash overflow recomputes the current chain, never reads stale poses. A forced
+one-slot cache and three nonzero-wind phases pass the independent matrix oracle.
+All 111 foliage-filter tests pass. No interactive playtest opened.
+
+Three alternating native 1713x964 one-view flights: forest preparation 0.533 ->
+0.579 ms, shared poses alone 0.038 ms; covered frame 17.313 -> 16.938 ms. This is
+not a proven speedup (other passes vary). Final 4,020 unique/evaluated poses, zero
+hash failures, same selection cut. See docs/foliage-shared-poses-2026-11-04.md and
+its evidence JSON. Baseline/current binaries and captures: build/foliage-poses.
+
+Remaining: upstream consumer-aware history/publication; asset paging with real
+memory budgets; animated shadow cache; grass migration; far cell aggregates.
+Pose depth dispatch/root processing could be compacted further. Goal active.
+
 ## 2026-11-04 History-first source recovery and sparse-coverage policy
 
 Normal GPU forest cameras now use pixel-history scheduling and a bounded GPU
