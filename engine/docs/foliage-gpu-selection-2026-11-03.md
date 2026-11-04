@@ -1,6 +1,8 @@
 # GPU foliage selection core, 3 November 2026
 
-Experimental, callable only: no gameplay defaults changed. Files:
+Historical checkpoint. As of 4 November the opt-in terrain runtime consumes
+this selector and GPU residency: [integration](foliage-runtime-2026-11-04.md).
+No gameplay defaults changed. Original files:
 `render/src/foliage_select.rs` and `render/src/shaders/foliage_select.wgsl`.
 
 ## What this implements

@@ -3,10 +3,11 @@
 //! Immutable preorder recipe trees are shared by any number of instances.
 //! Phase one uses historical depth only to defer work. Phase two retests that
 //! work against CURRENT depth. No readback or CPU tree shortlist is required.
-//! This is a selection fixture/API, not yet connected to source/voxel raster.
+//! foliage_runtime connects a budgeted consumer union to actual source/voxel draws.
 //! Consumers must discard records whose instance fallback flag is nonzero and
 //! render that instance's resident root instead. This avoids holes AND duplicate
-//! partial subtrees on overflow. Each view needs its own Selector/scratch.
+//! partial subtrees on overflow. Independent cuts need separate scratch; the
+//! runtime instead shares one frame-wide camera/shadow union and residency.
 use crate::Gpu;
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
@@ -21,6 +22,7 @@ pub struct Node {
     pub error:[f32;4],
     /// First child (NONE for leaf), exclusive subtree end, representation ID, flags.
     /// Flag bit 0: resident overflow fallback only; always refine normally.
+    /// Flag bit 1: whole-root voxel choice, emitted without a transient slot.
     pub links:[u32;4],
 }
 #[repr(C)]
@@ -34,7 +36,10 @@ pub struct Instance {
 }
 #[repr(C)]
 #[derive(Clone,Copy,Pod,Zeroable)]
-struct Uniform {vp:[f32;16],previous_vp:[f32;16],pixels:[f32;4],counts:[u32;4]}
+struct Consumer {vp:[f32;16],pixels:[f32;4]}
+#[repr(C)]
+#[derive(Clone,Copy,Pod,Zeroable)]
+struct Uniform {consumers:[Consumer;32],consumer_count:[u32;4],vp:[f32;16],previous_vp:[f32;16],pixels:[f32;4],counts:[u32;4]}
 
 fn validate(nodes:&[Node],instances:&[Instance],capacity:u32)->Result<(),String> {
     if nodes.is_empty() || instances.is_empty() || capacity==0 {return Err("empty foliage selection input/capacity".into());}
@@ -77,17 +82,21 @@ fn validate(nodes:&[Node],instances:&[Instance],capacity:u32)->Result<(),String>
 }
 
 pub struct Selector {
-    _nodes:wgpu::Buffer,_instances:wgpu::Buffer,uniform:wgpu::Buffer,
+    pub(crate) _nodes:wgpu::Buffer,pub(crate) _instances:wgpu::Buffer,uniform:wgpu::Buffer,
     /// vec4(instance ID, node ID, representation ID, generation).
     pub records:wgpu::Buffer,
     deferred:wgpu::Buffer,
     /// count, deferred count, deferred overflow, output overflow, tested,
-    /// frustum rejected, current-depth rejected, reserved; indirect args at 32/48.
+    /// frustum rejected, current-depth rejected, direct roots; indirect args at 32/48.
+    /// Tested nodes counts the emitting walk, not the budget-count prepass.
     pub counters:wgpu::Buffer,
     /// Separate indirect arguments: deferred dispatch at 0, consumer dispatch at 12.
     pub arguments:wgpu::Buffer,
     /// One u32 per instance, reset each frame. See module consumer contract.
     pub fallback:wgpu::Buffer,
+    /// Whole-tree representation + 1; zero means branches or culled. No branch slot needed.
+    pub direct:wgpu::Buffer,
+    demand:wgpu::Buffer,bucket_cost:wgpu::Buffer,count_demand:wgpu::ComputePipeline,prefix_demand:wgpu::ComputePipeline,prefix_buckets:wgpu::ComputePipeline,
     layout:wgpu::BindGroupLayout,first:wgpu::ComputePipeline,second:wgpu::ComputePipeline,finish:wgpu::ComputePipeline,
     count:u32,capacity:u32,deferred_capacity:u32,
     binds:std::sync::Mutex<crate::frame::resource_cache::BindGroups<2>>,
@@ -110,7 +119,7 @@ impl Selector {
                 usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::INDIRECT,mapped_at_creation:false});
             let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage selector view"),size:std::mem::size_of::<Uniform>()as u64,
                 usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
-            let entries=(0..8).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
+            let entries=(0..11).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
                 ty:if binding==7 {wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}}
                 else {wgpu::BindingType::Buffer {ty:if binding==0 {wgpu::BufferBindingType::Uniform} else {wgpu::BufferBindingType::Storage {read_only:binding<3}},has_dynamic_offset:false,min_binding_size:None}}}).collect::<Vec<_>>();
             let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("foliage GPU selection"),entries:&entries});
@@ -120,13 +129,17 @@ impl Selector {
             Self {_nodes:upload("shared foliage hierarchy",bytemuck::cast_slice(nodes)),_instances:upload("persistent foliage instances",bytemuck::cast_slice(instances)),uniform,
                 records:storage("selected foliage records",capacity as u64*16),deferred:storage("deferred foliage subtrees",deferred_capacity as u64*8),
                 counters:storage("foliage selection counters",64),arguments:storage("foliage indirect arguments",24),fallback:storage("foliage root fallbacks",instances.len()as u64*4),
-                first:make("first"),second:make("second"),finish:make("finish"),layout,count:instances.len()as u32,capacity,deferred_capacity,binds:Default::default()}
+                direct:storage("direct resident forest roots",instances.len()as u64*4),
+                demand:storage("forest root demand",instances.len()as u64*16),bucket_cost:storage("forest priority costs",(instances.len().div_ceil(256)as u64+1)*128),count_demand:make("count_demand"),prefix_demand:make("prefix_demand"),prefix_buckets:make("prefix_buckets"),first:make("first"),second:make("second"),finish:make("finish"),layout,count:instances.len()as u32,capacity,deferred_capacity,binds:Default::default()}
         })
     }
     fn bind(&self,gpu:&Gpu,hzb:&wgpu::TextureView)->wgpu::BindGroup {
         let buffers=[&self.uniform,&self._nodes,&self._instances,&self.records,&self.deferred,&self.counters,&self.fallback];
         let mut entries=buffers.iter().enumerate().map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:b.as_entire_binding()}).collect::<Vec<_>>();
         entries.push(wgpu::BindGroupEntry {binding:7,resource:wgpu::BindingResource::TextureView(hzb)});
+        entries.push(wgpu::BindGroupEntry {binding:8,resource:self.direct.as_entire_binding()});
+        entries.push(wgpu::BindGroupEntry {binding:9,resource:self.demand.as_entire_binding()});
+        entries.push(wgpu::BindGroupEntry {binding:10,resource:self.bucket_cost.as_entire_binding()});
         self.binds.lock().unwrap().entries(gpu,&self.layout,"foliage selector depth",&entries)
     }
     /// Call once per view/frame; current depth MUST be rebuilt after consuming
@@ -134,13 +147,35 @@ impl Selector {
     /// supplied previous matrix; invalidate it on camera cuts or moved occluders.
     pub fn first(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,vp:Mat4,previous_vp:Mat4,size:[u32;2],error:f32,history_valid:bool,hzb:&wgpu::TextureView)->Result<(),String> {
         if !vp.is_finite() || !previous_vp.is_finite() || size.contains(&0) || !error.is_finite() || error<0. {return Err("invalid foliage selection view".into());}
-        gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {vp:vp.to_cols_array(),previous_vp:previous_vp.to_cols_array(),
+        gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers:[Consumer::zeroed();32],consumer_count:[0;4],vp:vp.to_cols_array(),previous_vp:previous_vp.to_cols_array(),
             pixels:[size[0]as f32,size[1]as f32,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(history_valid)]}));
-        enc.clear_buffer(&self.counters,0,None);enc.clear_buffer(&self.fallback,0,None);
+        enc.clear_buffer(&self.counters,0,None);enc.clear_buffer(&self.fallback,0,None);enc.clear_buffer(&self.direct,0,None);
         let bind=self.bind(gpu,hzb);let mut pass=enc.begin_compute_pass(&Default::default());
         pass.set_bind_group(0,&bind,&[]);pass.set_pipeline(&self.first);pass.dispatch_workgroups(self.count.div_ceil(64),1,1);
         pass.set_pipeline(&self.finish);pass.dispatch_workgroups(1,1,1);drop(pass);
         enc.copy_buffer_to_buffer(&self.counters,32,&self.arguments,0,12);
+        enc.copy_buffer_to_buffer(&self.counters,48,&self.arguments,12,12);Ok(())
+    }
+    /// Conservative union across camera AND shadow consumers. This produces
+    /// one shared resident cut for the frame. Per-view source/cluster HZB still
+    /// runs downstream; no camera depth can reject an off-camera caster here.
+    pub fn union(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::part_wind::AnimationView],error:f32,branch_budget:u32,empty_depth:&wgpu::TextureView)->Result<(),String> {
+        if branch_budget==0 || branch_budget>self.capacity || views.is_empty() || views.len()>32 || !error.is_finite() || error<=0. {return Err("invalid foliage consumer union".into());}
+        let mut consumers=[Consumer::zeroed();32];
+        for (dst,v) in consumers.iter_mut().zip(views) {
+            if !v.view_projection.is_finite() || v.viewport.contains(&0) {return Err("invalid foliage consumer projection".into());}
+            *dst=Consumer {vp:v.view_projection.to_cols_array(),pixels:[v.viewport[0]as f32,v.viewport[1]as f32,0.,0.]};
+        }
+        gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers,consumer_count:[views.len()as u32,branch_budget,0,0],
+            vp:views[0].view_projection.to_cols_array(),previous_vp:views[0].view_projection.to_cols_array(),pixels:[0.,0.,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,0]}));
+        enc.clear_buffer(&self.counters,0,None);enc.clear_buffer(&self.fallback,0,None);enc.clear_buffer(&self.direct,0,None);
+        let bind=self.bind(gpu,empty_depth);let mut pass=enc.begin_compute_pass(&Default::default());
+        pass.set_bind_group(0,&bind,&[]);
+        pass.set_pipeline(&self.count_demand);pass.dispatch_workgroups(self.count.div_ceil(64),1,1);
+        pass.set_pipeline(&self.prefix_demand);pass.dispatch_workgroups(self.count.div_ceil(256),1,1);
+        pass.set_pipeline(&self.prefix_buckets);pass.dispatch_workgroups(1,1,1);
+        pass.set_pipeline(&self.first);pass.dispatch_workgroups(self.count.div_ceil(64),1,1);
+        pass.set_pipeline(&self.finish);pass.dispatch_workgroups(1,1,1);drop(pass);
         enc.copy_buffer_to_buffer(&self.counters,48,&self.arguments,12,12);Ok(())
     }
     /// Appends recovered records. This prototype requires final consumption after
@@ -191,6 +226,27 @@ mod tests {
   gpu.queue.write_texture(wgpu::TexelCopyTextureInfo {texture:&tex,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},bytemuck::cast_slice(&[value;64]),
    wgpu::TexelCopyBufferLayout {offset:0,bytes_per_row:Some(32),rows_per_image:Some(8)},wgpu::Extent3d {width:8,height:8,depth_or_array_layers:1});
   tex.create_view(&Default::default())
+ }
+ #[test]
+ #[ignore="exclusive GPU budget fixture"]
+ fn gpu_union_budget_prioritizes_complete_near_cuts() {
+  let gpu=Gpu::new().unwrap();let (nodes,mut trees)=fixture(1025);
+  // Put far trees first in storage. A queue racing to fill would favor them.
+  for t in &mut trees {t.rows[2][3]=-50.;}
+  trees[1024].rows[2][3]=-2.;
+  let vp=Mat4::perspective_infinite_reverse_rh(1.,1.,0.05);
+  let views=[crate::part_wind::AnimationView {view_projection:vp,viewport:[128;2]}];
+  let selector=Selector::new(&gpu,&nodes,&trees,512,512).unwrap();let hzb=depth(&gpu,0.);
+  let residency=crate::foliage_residency::Residency::new(&gpu,&selector,2).unwrap();
+  for _ in 0..3 {
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union(&gpu,&mut enc,&views,0.0001,2,&hzb).unwrap();
+   residency.encode(&mut enc);gpu.queue.submit([enc.finish()]);
+   let counts=read(&gpu,&selector.counters);let f=read(&gpu,&selector.fallback);
+   assert_eq!(counts[0],2);assert!(f[..1024].iter().all(|&v|v==2));assert_eq!(f[1024],0);
+   let records=read(&gpu,&selector.records);assert_eq!(records[0],1024);assert_eq!(records[4],1024);
+   let stats=read(&gpu,&residency.counters);assert_eq!(stats[4],0);assert_eq!(stats[6],2);
+  }
  }
  #[test]
  #[ignore="exclusive GPU fixture"]

@@ -1,5 +1,7 @@
 # Bosrendering in Warp
 
+Actueel, **4 november 2026**: [GPU-runtime zonder CPU-boompool](foliage-runtime-2026-11-04.md) is opt-in gekoppeld aan echte source/voxel-draws, wind en afzonderlijke schaduwkeuzes. De passages hieronder zijn historische meetstappen, geen volledige beschrijving van de huidige rasterroute. Volledige Nanite-pariteit en 8,33 ms zijn niet bereikt.
+
 Nieuwe opt-in stap, **29 oktober 2026 - parallelle brickzichtbaarheid**:
 `KERN_VOXEL_BRICK_VISIBILITY=1` projecteert gedeelde, niet-overlappende
 reconstructieregio's met bestaande GPU-poses en bouwt parallel een gesorteerde

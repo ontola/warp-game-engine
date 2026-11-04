@@ -732,6 +732,7 @@ pub struct Renderer {
     instance_buffer: wgpu::Buffer,
     wind: crate::wind::WindRenderer,
     part_wind: Option<crate::part_wind::PartWindRenderer>,
+    gpu_forest: Option<(crate::foliage_runtime::Runtime,u32)>,
     part_wind_lod: bool,
     aggregate_lod: Option<crate::aggregate_lod::Selector>,
     aggregate_lod_enabled: std::sync::atomic::AtomicBool,
@@ -1324,12 +1325,12 @@ impl Renderer {
         let mut startup=crate::startup_profile::Trace::new();
         let geometry_diagnostics=crate::geometry_diagnostics::State::new(scene);
         let u = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
-        let vertices = buffer(gpu, "vertices", bytemuck::cast_slice(&scene.vertices), u | wgpu::BufferUsages::COPY_SRC);
+        let vertices = buffer(gpu, "vertices", if scene.vertices.is_empty() {&[0u8;std::mem::size_of::<crate::cluster::Vertex>()]} else {bytemuck::cast_slice(&scene.vertices)}, u | wgpu::BufferUsages::COPY_SRC);
         let cverts = buffer(gpu, "cluster verts", bytemuck::cast_slice(&scene.cluster_verts), u);
         let tris = buffer(gpu, "tris", bytemuck::cast_slice(&scene.tris), u);
-        let clusters = buffer(gpu, "clusters", bytemuck::cast_slice(&scene.clusters), u | wgpu::BufferUsages::COPY_SRC);
-        let instances = buffer(gpu, "instances", bytemuck::cast_slice(&scene.instances), u | wgpu::BufferUsages::COPY_SRC);
-        let materials = buffer(gpu, "materials", bytemuck::cast_slice(&scene.materials), u);
+        let clusters = buffer(gpu, "clusters", if scene.clusters.is_empty() {&[0u8;std::mem::size_of::<crate::cluster::GpuCluster>()]} else {bytemuck::cast_slice(&scene.clusters)}, u | wgpu::BufferUsages::COPY_SRC);
+        let instances = buffer(gpu, "instances", if scene.instances.is_empty() {&[0u8;std::mem::size_of::<crate::scene::GpuInstance>()]} else {bytemuck::cast_slice(&scene.instances)}, u | wgpu::BufferUsages::COPY_SRC);
+        let materials = buffer(gpu, "materials", if scene.materials.is_empty() {&[0u8;std::mem::size_of::<crate::scene::Material>()]} else {bytemuck::cast_slice(&scene.materials)}, u);
         let aux = buffer(gpu, "aux", bytemuck::cast_slice(&scene.aux), u);
         // Never empty: a binding needs at least one element.
         let car_list = if scene.car_materials.is_empty() { vec![crate::scene::GpuCarMaterial::default()] } else { scene.car_materials.clone() };
@@ -1443,6 +1444,9 @@ impl Renderer {
         let aggregate_lod=scene.aggregate_lod.as_ref().map(|s|crate::aggregate_lod::Selector::new(gpu,s))
             .transpose().expect("invalid aggregate error selection");
         let voxel_forest = crate::voxel_forest::VoxelRenderer::new(gpu, scene, &voxel_scene_layout, &volume_view_layout);
+        let gpu_forest=scene.gpu_forest.as_ref().map(|spec| crate::foliage_runtime::Runtime::new(gpu,spec,&instances,
+            voxel_forest.as_ref().expect("GPU forest volumes").tree_buffer()).map(|runtime|(runtime,spec.first_owner)))
+            .transpose().expect("invalid GPU forest runtime");
         let foliage_world=scene.foliage_world.as_ref().map(|field|
             crate::foliage_world_render::WorldRenderer::new(gpu,field,scene.instances.len()as u32,
                 &voxel_scene_layout,&volume_view_layout,scene.foliage_world_error_pixels))
@@ -1980,6 +1984,7 @@ impl Renderer {
             instance_buffer: instances,
             wind,
             part_wind,
+            gpu_forest,
             part_wind_lod: scene.part_wind_lod,
             aggregate_lod,
             aggregate_lod_enabled: std::sync::atomic::AtomicBool::new(true),
@@ -2667,6 +2672,7 @@ impl Renderer {
         if self.foliage_world.as_ref().is_some_and(|f|state_valid.strength*state_valid.tree_shear>f.max_wind_shear) {
             self.foliage_world_valid.store(false,std::sync::atomic::Ordering::Relaxed);
         }
+        if let Some((forest,_))=&self.gpu_forest {forest.set_wind(state)?;self.invalidate_dynamic_shadow();}
         if self.wind.update(gpu, state)? { self.invalidate_dynamic_shadow(); }
         if let Some(parts) = &self.part_wind {
             // Branch wind moves the shared sun map's casters only when they
@@ -2682,6 +2688,10 @@ impl Renderer {
             if meadow.set_wind(state)? { self.reset_history(); }
         }
         Ok(())
+    }
+
+    pub fn gpu_forest_diagnostics(&self,gpu:&Gpu)->Result<Option<crate::foliage_runtime::Diagnostics>,String> {
+        self.gpu_forest.as_ref().map(|(forest,_)|forest.diagnostics(gpu)).transpose()
     }
 
     /// Shared presentation clock for all rigid actors, shadows and cameras.
@@ -3580,7 +3590,7 @@ impl Renderer {
         let camera_up_axes=self.camera_up_axes.lock().unwrap().clone();
         let camera_projections=self.camera_projections.lock().unwrap().clone();
         let mut part_animation_views=Vec::new();
-        if self.part_wind_lod && self.part_wind.is_some() {
+        if (self.part_wind_lod && self.part_wind.is_some()) || self.gpu_forest.is_some() {
             use crate::part_wind::AnimationView;
             for (vi,view) in views.iter().enumerate() {
                 let (w,h)=if let Some(backend)=&mut up.backend {backend.optimal_size(mode,(view.w,view.h))?}
@@ -3612,7 +3622,7 @@ impl Renderer {
             // buffers and do not consume the animated PartWind transforms.
             // Nor does the shared map with voxel casting (see set_wind): the
             // views change every frame (TAA jitter), which redrew it each frame.
-            if self.part_wind.as_ref().unwrap().animation_views_changed(&part_animation_views)?
+            if self.part_wind.as_ref().map(|p|p.animation_views_changed(&part_animation_views)).transpose()?.unwrap_or(false)
                 && !self.voxel_forest.as_ref().is_some_and(|f|f.casts_sun()) {
                 self.invalidate_dynamic_shadow();
             }
@@ -3659,6 +3669,7 @@ impl Renderer {
         }
         // Content invalidation still redraws every moving caster. The 64 MiB
         // depth allocation survives wind, car motion and sun-box changes.
+        if self.gpu_forest.is_some() {self.invalidate_dynamic_shadow();}
         let mut static_sun = self.static_sun.as_ref().map(|s| s.lock().unwrap());
         // Wind freeze: one view-independent radius for every pass (wind.wgsl).
         // More than four views would exceed the freeze uniform: keep wind.
@@ -3831,6 +3842,13 @@ impl Renderer {
                 timestamp_pair(&mut ts);
                 names.push("debris");
             }
+        }
+        if let Some((forest,first_owner))=&self.gpu_forest {
+            let time=self.query.as_ref().map(|(qs,_,_)|(qs,timestamp_pair(&mut ts)));
+            if let Some((qs,index))=time {enc.write_timestamp(qs,index);names.push("GPU forest selection residency poses");}
+            forest.encode(gpu,&mut enc,&part_animation_views,*first_owner)?;
+            if let Some((qs,index))=time {enc.write_timestamp(qs,index+1);}
+            enc.copy_buffer_to_buffer(&forest.choices,65536,&shadow_t.foliage_selection,0,65536);
         }
         // Actual updated instance/branch spheres and wind bounds, once shared
         // across cameras and solar views. They each select independent owners.
@@ -4055,6 +4073,7 @@ impl Renderer {
                 if voxel_casters {
                     gpu.queue.write_buffer(&near.targets.foliage_selection,0,bytemuck::cast_slice(&crate::voxel_forest::VoxelRenderer::sun_selection()));
                 }
+                if let Some((forest,_))=&self.gpu_forest {enc.copy_buffer_to_buffer(&forest.choices,65536,&near.targets.foliage_selection,0,65536);}
                 self.cull_and_raster(&mut enc, gpu, &near.targets, None, &texture_view, &mut ts, &mut names, "near shadow cull",RasterPass::Sun);
                 // Whole-plant proxies have no source to cast here.
                 if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.has_proxies()||voxel_casters) {
@@ -4098,6 +4117,7 @@ impl Renderer {
             jittered.z_axis.x += jx * 2.0 / w as f32;
             jittered.z_axis.y += jy * 2.0 / h as f32;
             let main = self.view_targets(gpu, "view", vi + 1);
+            if let Some((forest,_))=&self.gpu_forest {enc.copy_buffer_to_buffer(&forest.choices,0,&main.foliage_selection,0,65536);}
             let mut foliage_changed=false;
             if let Some(selector)=&self.aggregate_lod {
                 let time=self.query.as_ref().map(|(q,_,_)|(q,timestamp_pair(&mut ts)));
@@ -4243,7 +4263,7 @@ impl Renderer {
             // Rasterized voxel trees go down before the opaque shade, which
             // then skips the ground and trees they hide (shade.wgsl
             // VOXEL_OCCLUSION); they are resolved and composited after it.
-            let voxel_times = self.voxel_forest.as_ref().map(|forest| forest.timing_names().map(|name|{
+            let voxel_times = self.voxel_forest.as_ref().map(|forest| forest.timing_names(self.voxel_surface).map(|name|{
                 let name=name?;
                 self.query.as_ref().map(|(qs,_,_)|{let i=timestamp_pair(&mut ts); names.push(name); (qs,i)})
             }));
