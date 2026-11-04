@@ -215,13 +215,38 @@ fn walk(tree:u32,start:u32,phase:u32) {
 // queue. This bounds storage by active branches rather than emitted needles.
 fn visit(tree:u32,start:u32,write_records:bool)->u32 {
  var n=start;
+ var previous_sphere=vec4<f32>(0.0);var projected_scale=-1.0;var have_projection=false;
  // LOD chains have only one child. Traverse these locally rather than
  // multiplying the bounded global frontier by every admitted mip level.
  loop {
   let node=nodes[n];let t=trees[tree];let s=sphere(t,node);
   if write_records {atomicAdd(&counters[4],1u);}
-  if !visible(s){if write_records {atomicAdd(&counters[5],1u);}return NONE;}
-  if node.links.x==NONE || ((node.links.w&1u)==0u && error_pixels(s,node.error.x*t.scale.x)<=view.pixels.z && (node.error.y==0.0 || error_pixels(s,node.error.y*t.scale.x)<=1.0)) || !children_ready(tree,n) {
+  // Every representation in a unary LOD chain commonly has the same bound.
+  // Project it once, for all error channels and all levels, not three times
+  // per candidate per consumer. A changed bound invalidates the local cache.
+  if !have_projection || any(s!=previous_sphere) {
+   projected_scale=-1.0;
+   if view.consumer_count.x==0u {
+    if visible_in(s,view.vp) {projected_scale=error_in(s,1.0,view.vp,view.pixels.xy);}
+   }else {
+    for(var i=0u;i<view.consumer_count.x;i++) {
+     let c=view.consumers[i];
+     if visible_in(s,c.vp) {projected_scale=max(projected_scale,error_in(s,1.0,c.vp,c.pixels.xy));}
+    }
+   }
+   previous_sphere=s;have_projection=true;
+  }
+  if projected_scale<0.0 {if write_records {atomicAdd(&counters[5],1u);}return NONE;}
+  // error_in deliberately returns unbounded error for a near-plane crossing,
+  // even for a zero-error candidate; retain that conservative behavior.
+  var stop=node.links.x==NONE || ((node.links.w&1u)==0u && projected_scale<1e29 && projected_scale*(node.error.x*t.scale.x)<=view.pixels.z && (node.error.y==0.0 || projected_scale*(node.error.y*t.scale.x)<=1.0));
+  if !stop {
+   let child=child_list[child_list[n*2u]];
+   if child_list[n*2u+1u]==1u && all(nodes[child].sphere==node.sphere) {
+    stop=!asset_ready(nodes[child].links.z);
+   }else {stop=!children_ready(tree,n);}
+  }
+  if stop {
    if !asset_ready(node.links.z) {atomicStore(&fallback[tree],4u);atomicStore(&demand[tree].failed,1u);return NONE;}
    if write_records {emit(tree,n);}else if (node.links.w&2u)==0u {atomicAdd(&demand[tree].count,1u);}
    return NONE;
