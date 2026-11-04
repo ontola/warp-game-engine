@@ -454,6 +454,37 @@ impl Runtime {
         assert!(recovered,"normal async cache must publish loaded geometry without a CPU tree shortlist");
     }
     #[test]
+    #[ignore="exclusive hardware GPU full renderer shadow cache oracle"]
+    fn gpu_cached_sun_depth_matches_full_redraw() {
+        use super::*;use crate::{Camera,Lighting,Renderer,ViewRect,foliage_population::WorldRoot};
+        let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
+        let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
+        let original=[WorldRoot {id:42,placement:RootPlacement {pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}}];
+        let mut scene=Scene::default();plant_population(&mut scene,&[cooked],&original,2,8,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
+        for b in &mut scene.gpu_forest.as_mut().unwrap().branches {b.animation=[0.12,2.,0.3,0.];}
+        let gpu=Gpu::new().unwrap();let mut light=Lighting {gi:1.,near_shadows:0.,sun_dir:Vec3::new(0.3,1.,0.4).normalize(),..Default::default()};
+        let renderer=Renderer::new(&gpu,&scene,&light);renderer.test_warm_foliage_assets(&gpu);
+        let mut views=(0..4).map(|i|ViewRect {cam:Camera {pos:Vec3::new(0.3+i as f32*0.1,0.4,1.6),target:Vec3::new(0.3,0.4,0.),fov_y:1.,near:0.05},x:i*64,y:0,w:64,h:64}).collect::<Vec<_>>();
+        let depth=|| {
+            let texture=renderer.debug_sun_depth_textures(None).unwrap().remove(0);let size=texture.size();
+            let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("cached sun raw depth oracle"),size:size.width as u64*size.height as u64*4,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+            let mut enc=gpu.device.create_command_encoder(&Default::default());
+            enc.copy_texture_to_buffer(wgpu::TexelCopyTextureInfo {texture:&texture,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::DepthOnly},wgpu::TexelCopyBufferInfo {buffer:&read,layout:wgpu::TexelCopyBufferLayout {offset:0,bytes_per_row:Some(size.width*4),rows_per_image:Some(size.height)}},size);
+            gpu.queue.submit([enc.finish()]);let(tx,rx)=std::sync::mpsc::channel();read.slice(..).map_async(wgpu::MapMode::Read,move|r|{tx.send(r).unwrap();});gpu.wait();rx.recv().unwrap().unwrap();
+            let words=bytemuck::cast_slice::<u8,u32>(&read.slice(..).get_mapped_range().unwrap()).to_vec();read.unmap();words
+        };
+        for step in 0..6 {
+            renderer.set_wind(&gpu,&crate::wind::WindState {strength:0.7,time_seconds:if step==0{0.}else{17.},..Default::default()}).unwrap();
+            if step==3 {renderer.replace_gpu_forest_roots(&gpu,&[]).unwrap();}
+            if step==4 {renderer.replace_gpu_forest_roots(&gpu,&original).unwrap();light.sun_dir=Vec3::new(-0.3,1.,0.4).normalize();}
+            if step==5 {views[0].cam.pos.x+=0.4;}
+            renderer.try_render_views(&gpu,&views,&light,256,64,&[]).unwrap();let cached=depth();
+            if step==0 {assert!(cached.iter().any(|&v|v!=1f32.to_bits()),"oracle requires real caster depth");}
+            renderer.invalidate_shadow();renderer.try_render_views(&gpu,&views,&light,256,64,&[]).unwrap();let reference=depth();
+            assert_eq!(cached.iter().zip(&reference).filter(|(a,b)|a!=b).count(),0,"cached/full depth differs at step {step}");
+        }
+    }
+    #[test]
     #[ignore="exclusive GPU streamed population fixture"]
     fn gpu_population_updates_retain_slots_and_recover_from_empty() {
         use super::*;use crate::{Camera,Lighting,Renderer,ViewRect,foliage_population::WorldRoot};

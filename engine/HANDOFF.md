@@ -1,3 +1,42 @@
+## 2026-11-04 Normal GPU forest shared sun tile cache connected
+
+frame.rs now runs shadow_damage after common forest materialization, clears only
+marked tiles, loads retained source depth and supplies the same mask to source
+and voxel cached-depth fragment entry points. No opt-in. Near/headlamp/ordinary
+entry points remain independent. Legacy static/dynamic split still redraws its
+dynamic map. Cached source pipeline only constructed for GPU forest scenes.
+
+GPU forest wind no longer unconditionally invalidates the full normal map. Actual
+source/voxel pose/choice changes feed damage; legacy vertex-wind casters still
+invalidate globally. Cache force conditions include invalid/unsubmitted content,
+recreated targets, alpha/LOD changes, receiver-demand mode and skinning/crowd.
+Projection and shader generation are damage keys. Content remains pending until
+submission, so an abandoned frame forces the next update. Real map size is part
+of the key/uniform and raster specialization (4096 desktop, 2048 Android), with
+fixed 64x64 tile grid. Profiler label: shadow tile damage and clear.
+
+CHECKS: cargo check --locked -p render --tests; final release shadow_damage::tests
+with software DX12: 2 PASS (5.72 s). Naga covers damage, clear, complete source
+raster and voxel splat raster. Raw depth oracle checks preserved texels with the
+new map-size contract. Last small Rust specialization edit only supplies the
+new tile-size override to cached source fragments; final cargo check verifies it.
+Normal renderer hardware oracle was added and compiles but NOT RUN:
+foliage_runtime::tests::gpu_cached_sun_depth_matches_full_redraw. Four views,
+prewarmed assets, wind, unchanged poses, root removal/restore, sun/camera change;
+raw shared depth versus invalidate_shadow/full redraw, with nonempty depth guard.
+
+GPU occupied: former Growing Guns/Spellstorm sessions ended, but Sideways PID
+51952 started 2026-11-04 17:37:11.739408 and was left alone. No hardware benchmark,
+full-renderer acceptance or speedup claimed. Do not run the full renderer on WARP
+again: previous attempt grew beyond 17 GB. Small shader fixtures are fine.
+
+Still open: early dirty-bound rejection (current cull/vertex/splat generation runs
+all candidates), world-stable/scrolling shadow coverage (projection changes force
+all tiles), full normal-renderer raw depth + hardware timing validation, further
+asset/terrain mutation coverage. Then remaining upstream two-phase publication,
+unified meadow and far cells. This is integrated code, NOT a completed shadow
+architecture gate. See docs/foliage-shadow-damage-2026-11-04.md.
+
 ## 2026-11-04 Shadow tile damage and sparse clear building block
 
 Added shadow_damage.rs + shaders/shadow_damage{,_clear}.wgsl. NOT CONNECTED to

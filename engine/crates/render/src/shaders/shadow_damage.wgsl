@@ -27,7 +27,7 @@ fn mark(low:vec3<f32>,high:vec3<f32>) {
  }
  // Two texels cover raster footprint/rounding at tile boundaries. Receiver
  // filtering reads neighboring texels; those stay valid independently.
- let margin=vec2<f32>(2./4096.);lo-=margin;hi+=margin;
+ let margin=vec2<f32>(2./f32(state.control.y));lo-=margin;hi+=margin;
  if any(hi<vec2<f32>(0.)) || any(lo>vec2<f32>(1.)) || zhi<0. || zlo>1. {return;}
  let a=vec2<u32>(clamp(floor(lo*64.),vec2<f32>(0.),vec2<f32>(63.)));
  let b=vec2<u32>(clamp(floor(hi*64.),vec2<f32>(0.),vec2<f32>(63.)));

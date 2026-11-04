@@ -36,8 +36,9 @@ This report precedes the connected streaming service described above.
 GPU requests, pinned fallback and generation validation; physical paging still open.
 
 [Shadow tile damage and sparse clear](foliage-shadow-damage-2026-11-04.md):
-GPU old/new caster damage and exact retained-depth oracle; normal raster integration
-is still pending, so this does not yet reduce shadow cost.
+GPU old/new caster damage, sparse clear and common source/voxel masks now wired
+into normal shared sun rendering. Full renderer verification and timings remain
+pending; world-stable page coverage and early dirty-bound culling remain open.
 
 [Shared articulated forest poses](foliage-shared-poses-2026-11-04.md): GPU ancestry
 deduplication, bounded cache fallback and independent matrix validation.
