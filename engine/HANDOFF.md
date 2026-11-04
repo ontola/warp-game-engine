@@ -26,9 +26,9 @@ invalid roots and capacity excess are rejected. CPU does world generation, not
 per-frame selection. Forest/ground/sun recenter independently of renderer lifetime.
 
 109 foliage-filter tests pass including exclusive GPU fixtures. 300-frame native
-1713x964 one-view route crosses three forest updates: 53xxâ€“69xx roots changed,
-48kâ€“57k retained. Final CPU publication 5.20/4.19/4.36 ms versus the first synchronous
-36â€“61 ms implementation (engineering observations, not paired frame benchmarks).
+1713x964 one-view route crosses three forest updates: 53xx–69xx roots changed,
+48k–57k retained. Final CPU publication 5.20/4.19/4.36 ms versus the first synchronous
+36–61 ms implementation (engineering observations, not paired frame benchmarks).
 GPU covered median 10.113 ms on this moving route excludes the separate scatter
 submission. No 8.33 ms/four-player claim; terrain/readback hitches remain.
 
@@ -285,7 +285,7 @@ See `games/spaceracer/visual-review.md` for captures, tests and 1/4-view timings
 `engine/docs/motion-blur.md` for the optional renderer API and limitations.
 Portable Windows build refreshed. No interactive, Android or hardware test.
 
-## SpaceRacer visual corrections â€” 31 October 2026
+## SpaceRacer visual corrections — 31 October 2026
 
 Native visual revision: see `games/spaceracer/visual-review.md`. Game-owned
 `app/shaders/surfaces.wgsl` restores opaque ship livery, road detail, varied
@@ -296,7 +296,7 @@ physical daytime sky, facade/track structure. Gameplay/asset bytes preserved.
 20 focused tests and portable scripted controller flow pass; all five biomes
 rendered. Full visual fidelity and scene reflections are still incomplete.
 
-## SpaceRacer native/Luau development build â€” 31 October 2026
+## SpaceRacer native/Luau development build — 31 October 2026
 
 SpaceRacer now has `games/spaceracer/app` (`spaceracer-app`, binary `spaceracer`).
 Pulled main through ae0b1c8 before this work. Read its README and port-status.json:
@@ -312,7 +312,7 @@ the right stick. Shared GameNight adapters carry trigger pressures too.
 
 Validation: workspace all-target check; 18 sim + 2 native app + 21 app tests;
 1207-tick native two-controller flow with captures; five biome renders; a
-1920Ã—1080 four-view capture. Mock-host lifecycle uses a real loopback WebSocket,
+1920×1080 four-view capture. Mock-host lifecycle uses a real loopback WebSocket,
 sparse seat IDs and opaque controller tokens. No real controller/host, mobile
 or full-content performance acceptance yet. All assets/provenance retained.
 
@@ -367,7 +367,7 @@ is not full Nanite voxel raster/GBuffer shading or voxel shadow casting.
 Keep the existing 4,096 selection limit and bounded complete fallbacks explicit.
 The original common Git directory is still missing; no commit/merge to main.
 
-## Sideways r4 source and opt-in aggregate LOD â€” 29 October 2026
+## Sideways r4 source and opt-in aggregate LOD — 29 October 2026
 
 The user rejected the coarse v1 species gallery. The denser r4 source is now
 the approved baseline to preserve, particularly the spruce; this does not
@@ -381,14 +381,14 @@ depth buckets and samples a normal distribution into the GBuffer before
 shading. Warp's tile bins and `KERN_VOXEL_GLOBAL_INTERVALS=1` worklist remain
 integrator optimizations. For each new issue or fix, compare the actual Warp
 mechanism with [Epic Nanite Foliage](https://dev.epicgames.com/documentation/en-us/unreal-engine/nanite-foliage)
-and state the gap; matching 128Ã—4Â³ storage is not renderer equivalence.
+and state the gap; matching 128×4³ storage is not renderer equivalence.
 
 `cook_source`/`finish_source` retain unique geometry and compact placements;
 `tree_species_compare` pairs that source with the textured reference at common
 scale, and `plant_spray_gallery` exposes its components.
 
 `cook_aggregate`/`finish_aggregate` now add branch/subtree candidates with at most
-128 bricks of 4Â³ cells per level and GPU per-view selection. Directional opacity
+128 bricks of 4³ cells per level and GPU per-view selection. Directional opacity
 and material errors compare against a finer source-derived medium: sampled
 optical-model evidence, not exact raster visibility. Per-volume tile bins retain
 deterministic candidate order, exact ray interval sorting and complete overflow
@@ -416,7 +416,7 @@ render/CLI tests passed 649/189 before r4; focused r4 recipe/catalogue tests and
 workspace check passed. Those historical tests do not certify aggregate edits.
 
 `C:/dev/perf/warp-sideways-20261028/aggregate-lod/smoke-2/report.json` records the
-completed single-tree source/auto fixture: native 1920Ã—1080, one view, TAA off,
+completed single-tree source/auto fixture: native 1920×1080, one view, TAA off,
 two warmups/two measured frames per case, RTX 5070 Ti/Vulkan. At 50/150/400 m all
 61 groups remain full source and RGB/native opacity match exactly. At 1,000 m
 auto selects 60 mip-0 branch volumes and submits 458 colour triangles including
@@ -453,8 +453,8 @@ shows the corrected reference comparison. Subsequent diagnostic evidence:
 - `global-cheap-brdf-1` / `global-density-1`: 13.44/15.25 ms integration versus
   14.56 ms full shading; eight contended samples each. Opacity PNG SHA-256 and
   all traversal counters are identical. No material/lighting win demonstrated.
-- `four-tree-four-view-1`: four trees, four 960Ã—540 views in one 1920Ã—1080 output,
-  TAA off, four samples. Camera triangles fall 513,596,744â†’7,304; shadow triangles
+- `four-tree-four-view-1`: four trees, four 960×540 views in one 1920×1080 output,
+  TAA off, four samples. Camera triangles fall 513,596,744→7,304; shadow triangles
   remain 226,596,066. Covered interval source 138.40 ms, auto 145.15 ms; auto
   integration 101.30 ms. No ready four-player result follows.
 - `forest-64-guard-1`: 64 trees, one native 1080p view, TAA off, two samples;
@@ -468,7 +468,7 @@ pins both near and main shadow maps to the forest, unlike camera-relative
 gameplay: report source-shadow stress counts, not game FPS. The current feature
 is far from ready. `taa-null-2` uses `--error 0.01` to force finest source in
 both modes: native opacity matches exactly (IoU 1, L1 0, coverage 31,649).
-RGB differs in 24/2,073,600 pixels, MAE 0.00000916 on the 0â€“255 scale. The
+RGB differs in 24/2,073,600 pixels, MAE 0.00000916 on the 0–255 scale. The
 capture-phase fix has opacity parity, not bit-exact RGB or temporal-motion proof.
 
 Latest checks: `render-tests-5.log` has 672 pass/15 ignored;
@@ -514,7 +514,7 @@ overwrite older snapshots or fabricate a revision. Append the actual snapshot
 destination and verification result only after completion; recovery/merge is
 separate work.
 
-## Growing Guns feedback fixes â€” 28 October 2026
+## Growing Guns feedback fixes — 28 October 2026
 
 See [the feedback checklist](../games/growing-guns/docs/playtest-20261028.md).
 Quarried stone prototype, stable card hover, spawn cages, live stadium screens,
@@ -529,7 +529,7 @@ current main (`cargo build --locked -p growing-guns-app`); the old local
 because cage state was added to the positional snapshot format; update both
 peers. The reusable GPU screen feed appears in profiler output as `live screens`.
 
-## Integration into current main â€” 28 October 2026
+## Integration into current main — 28 October 2026
 
 The grass agent's source is preserved in `ac29b0f` and integrated with current
 renderer features and Growing Guns CPU work. Read
@@ -538,20 +538,20 @@ repairs, checks and limits. The r64 playtest below is historical and stopped.
 Optional contact/filter controls remain off; distant source geometry is still
 expensive and the proposed far representation remains unfinished.
 
-## Previous grass status â€” r64 opt-in distant shading and edge contact
+## Previous grass status — r64 opt-in distant shading and edge contact
 
 28 October 2026. Read [r64 evidence and remaining checks](docs/meadow-edge-grain-r64.md).
-`KERN_MEADOW_SPATIAL_FILTER=1` adds a native-only depth-aware 3Ã—3 RGB filter
+`KERN_MEADOW_SPATIAL_FILTER=1` adds a native-only depth-aware 3×3 RGB filter
 at source composite. Alpha is exact; near pixels and empty coverage stay
 unchanged. Onset uses the coarse triangle's mean width W/2 times live growth;
 TAA/DLSS, motion and aggregate disable the filter. Current source wind and
 lighting remain live. This does not fix silhouette aliasing or reduce the
 250 m source geometry cost, and is not the proposed distant terrain layer.
 
-`KERN_MEADOW_EDGE_SHADOW=1` builds a source-accepted 151Â² root grid per view,
+`KERN_MEADOW_EDGE_SHADOW=1` builds a source-accepted 151² root grid per view,
 1,459,520 bytes shared across four views. The final receiver shares 25 records
 between sky/sun queries, radius 0.4941 m for this source (bounded to 0.55 m),
-sun reach 0.35 m and fade 24â€“32 m. It approximates basal contact on terrain/road,
+sun reach 0.35 m and fade 24–32 m. It approximates basal contact on terrain/road,
 not wind-animated blade silhouettes. Both flags remain opt-in.
 
 First-probe OFF is pixel-exact with r63e in three native 4K captures. The W/2
@@ -579,19 +579,19 @@ Manifest: `../games/sideways/build/dev-runs/20261028T165617934Z-5eab5a82/iterati
 before later work; earlier handoff statements below are historical. Evidence:
 `C:/dev/perf/warp-sideways-20261028/r64-grass-edge-grain/`.
 
-## Previous status â€” r63d validation and interim r63e source range
+## Previous status — r63d validation and interim r63e source range
 
 28 October 2026. Read [the r63 report](docs/meadow-windswept-r63.md).
 The GPU meadow now defaults to `SIDEWAYS_MEADOW_PROFILE=windswept`; choose
 `classic` explicitly for the previous recipe and r62 shading experiment.
 Pinned Quick_Grass equations supply curved blades, fourth-power tip colour
 and travelling noise wind. r63d evaluates pigment/AO per fragment and morphs
-six segments onto the actual one-triangle cut over growth-scaled 3â€“6 m. The
+six segments onto the actual one-triangle cut over growth-scaled 3–6 m. The
 cooked three-segment cut is not selected. Aggregate remains forced off for
 windswept; group cache is invalid. The first aggregate-based live attempt was
 prohibitively expensive and remains diagnostic evidence.
 
-Validated r63d, one-view native 3840Ã—2160 on RTX 5070 Ti: normal/close/overview
+Validated r63d, one-view native 3840×2160 on RTX 5070 Ti: normal/close/overview
 fixed cameras measure median covered GPU 23.310/14.321/20.514 ms, with meadow
 6.511/2.620/3.527 ms; 72/72/69 samples after warmup. The interval excludes CPU
 and work outside the instrumented endpoints, including HUD/presentation.
@@ -600,8 +600,8 @@ and work outside the instrumented endpoints, including HUD/presentation.
 **no game is active at this handoff**. Earlier PID 48036 is historical.
 
 The user rejected the 100 m disappearance. Current r63e code defaults to a
-250 m source radius with a 200â€“250 m fade; the explicit
-`SIDEWAYS_MEADOW_WINDSWEPT_RADIUS` control accepts 60â€“256 m and ignores the
+250 m source radius with a 200–250 m fade; the explicit
+`SIDEWAYS_MEADOW_WINDSWEPT_RADIUS` control accepts 60–256 m and ignores the
 classic radius/band flags. This is an interim source comparison,
 not the accepted distant representation. The completed 100/250 m hillside
 comparison fills the bare hill but costs more; its timings precede compaction.
@@ -621,7 +621,7 @@ not implemented; do not re-enable the old photo field or per-patch atlas as a
 substitute. No four-player/120 FPS, final visual or temporal-quality claim. Evidence:
 `C:/dev/perf/warp-sideways-20261028/r63-windswept-grass/`.
 
-## Previous status â€” r62 rounded grass shading, opt-in source experiment
+## Previous status — r62 rounded grass shading, opt-in source experiment
 
 28 October 2026, branch `codex/grass-rounded-shading-20261028`. Read
 [the r62 report](docs/meadow-rounded-shading-r62.md). The supplied grass
@@ -632,9 +632,9 @@ Geometry, placement, material, wind, saved baseline and registration are unchang
 The launcher records the mode; F12 replay treats missing historical mode as flat.
 
 Workspace check, 535 renderer tests (one ignored), CLI/replay tests and launcher
-contracts passed. Eight paired native1280Ã—720 GPU cases retain exact source
+contracts passed. Eight paired native1280×720 GPU cases retain exact source
 alpha and selected draw counts, exercising all source cuts and the aggregate.
-Two native1920Ã—1080 Sideways camera views also completed A/B capture. Close
+Two native1920×1080 Sideways camera views also completed A/B capture. Close
 blade shading is softer but the improvement is subtle and geometric silhouettes
 remain angular. Motion/DLSS/all-weather quality and performance are unverified;
 aggregate geometric shadow bias still uses its approximate shading normal.
@@ -644,7 +644,7 @@ Evidence and frozen native executables:
 Both bounded scene runs exited. No interactive playtest was started or left
 running. GameNight still uses its earlier registered package and profile.
 
-## Previous status â€” r61 frame hitch fix, opt-in GameNight preview
+## Previous status — r61 frame hitch fix, opt-in GameNight preview
 
 Current branch: `codex/fourview-budget-20261026`. Read
 [the r61 report](docs/frame-hitches-r61.md). Foliage shadow page updates were
@@ -675,7 +675,7 @@ explained or claimed fixed.
 Package `games/sideways/build/gamenight-r61/` and frozen test binary SHA256:
 `3ae3e74087829185873f13862a1d526aa3ec90d24ab0cecf52061bacb31f8a3c`.
 Local registration enables the async preview while retaining GPU meadow,
-120 blades, 25â€“35 m band, tree fullness 1.25, AO off and the r60 grip change.
+120 blades, 25–35 m band, tree fullness 1.25, AO off and the r60 grip change.
 At 2026-10-27 13:40 UTC GameNight session
 `c49511ad-d234-416d-8ada-015df3d2ec40` was running this exact executable;
 PID 201308, seat 0 occupied, controller `ordinal:1`. The game logged a visible
@@ -690,7 +690,7 @@ check live executable paths after any later host restart. Do not change or
 delete old cached packages as a workaround. The host priority issue is not
 fixed here. Use `active_session`/`warm_session` in live party state.
 
-## Previous status â€” r60 handling trial in GameNight
+## Previous status — r60 handling trial in GameNight
 
 The user requested more grip after feedback that the car feels like a boat.
 Read [the r60 report](../games/sideways/docs/handling-grip-r60.md). Game-owned
@@ -714,7 +714,7 @@ display-scanout verification. Do not run GPU benchmarks during the playtest.
 Live host state uses `active_session`/`warm_session`, NOT `active`/`warm`.
 Registration is loaded on host launch; avoid redundant next/relaunch commands.
 
-## Previous status â€” managed GameNight preview profile repaired
+## Previous status — managed GameNight preview profile repaired
 
 The user requested a GameNight session. The first r59 registration pointed to
 the correct new executable but omitted the developer graphics environment.
@@ -725,8 +725,8 @@ The registration now copies the complete visible r58 playtest profile from
 packaged game/IR/DLSS paths. r59 executable hash remains unchanged.
 
 Managed runtime now confirms GPU meadow with 120 opaque ribbon blades/patch,
-25â€“35 m transition, no photographed grass/CPU tuft pool, tree fullness 1.25,
-and a visible 3840Ã—2160 scene frame. New registration helper and isolated
+25–35 m transition, no photographed grass/CPU tuft pool, tree fullness 1.25,
+and a visible 3840×2160 scene frame. New registration helper and isolated
 tests preserve the profile, unrelated games, backups and disabled experiments.
 Tests pass on PowerShell 7 and Windows PowerShell 5.1. GameNight's controller
 seats and settings remain host-owned; check live party state before transitions.
@@ -735,7 +735,7 @@ Local package: `games/sideways/build/gamenight-r59/`; registration proof is
 `registration-proof.json` beside it. The user has resumed playtesting. Do not
 run GPU benchmarks concurrently or restart merely to gather proof.
 
-## Previous status â€” r59 grass contact AO, opt-in only
+## Previous status — r59 grass contact AO, opt-in only
 
 Read [r59](docs/meadow-contact-ao-r59.md). Runtime `e8634da` adds default-off
 `KERN_MEADOW_CONTACT_AO=1`: four bounded canonical-root footprints attenuate
@@ -757,13 +757,13 @@ The user stopped the interactive playtest before leaving. It is closed and
 both QA runs have ended. Do not restart an interactive session unless asked.
 Evidence: `C:/dev/perf/warp-sideways-20261027/r59-meadow-contact-ao/`.
 
-## Previous status â€” r58 full-resolution sample pruning measured, opt-in only
+## Previous status — r58 full-resolution sample pruning measured, opt-in only
 
 Read [the r58 report](docs/meadow-sampling-r58.md). Runtime `d5fea46` adds
 default-off `KERN_MEADOW_AGGREGATE_SAMPLE_PRUNE=1` and explicit raw aggregate
-captures. Six OFF/ON runs: aggregate 4.169â†’3.307 / 6.729â†’5.694 ms; all grass
-7.284â†’6.502 / 9.398â†’8.452 ms; total 27.645â†’27.005 / 33.734â†’32.976 ms. Same
-binary, four-view 4K-output/DLSS Performance, 25â€“35 m band, full-resolution
+captures. Six OFF/ON runs: aggregate 4.169→3.307 / 6.729→5.694 ms; all grass
+7.284→6.502 / 9.398→8.452 ms; total 27.645→27.005 / 33.734→32.976 ms. Same
+binary, four-view 4K-output/DLSS Performance, 25–35 m band, full-resolution
 aggregate, 179 clean frames/section/run. No default or target change.
 
 Raw A/A/B checks cover 12 view/frame cases: all depth/motion bits match, zero
@@ -782,13 +782,13 @@ pruning ON; visible presentation was confirmed. It was closed at the user's
 request (owned PID 192560). No interactive game should be restarted unless
 requested. The subsequent grass-ground AO experiment is recorded above.
 
-## Previous status â€” r57 earlier/cheaper grass measured, opt-in only
+## Previous status — r57 earlier/cheaper grass measured, opt-in only
 
 The user chose an earlier cheap-grass follow-up after the r56 decision gate.
 Read [r57 implementation, measurements and image review](docs/meadow-half-resolution-r57.md).
 Runtime source `72db92f` adds `KERN_MEADOW_AGGREGATE_HALF_RES=1`: half-linear
 aggregate depth/material/illumination, full source/merge and conservative
-depth reconstruction. Source band 25â€“35 m, unchanged 160â€“180 m outer range.
+depth reconstruction. Source band 25–35 m, unchanged 160–180 m outer range.
 No density/placement/physics changes; no default promotion.
 
 Nine serial A/B/C/B/C/A/C/A/B runs, same exe and four-player 4K-output/DLSS
@@ -813,7 +813,7 @@ SHA256 `faac17848bf3fec16707b50c0a1808dcb3f91cfbd640be0900cd6afa43af1a83`.
 Evidence root is its containing folder. No game/benchmark remains active.
 The later metadata-only prose correction does not replace this frozen exe.
 
-## Previous status â€” r55/r56 four-view budget decision gate
+## Previous status — r55/r56 four-view budget decision gate
 
 27 October follow-up: the user requests DLSS rather than native 1080p per panel.
 The measurements below already used DLSS. Developer launcher `-Views 4` now
@@ -856,26 +856,26 @@ Evidence: `C:/dev/perf/warp-sideways-20261026/r55-resolution-grass/` and
 no game/benchmark session is intentionally left running. Execution/playtest
 instructions in older sections below are historical, superseded by this status.
 
-## Previous status â€” r53 false roadside sun shadow
+## Previous status — r53 false roadside sun shadow
 
 See [r53 diagnosis and validation](docs/roadside-shadow-r53.md). The disappearing
 black wedge is a separate road-caster CLOD mismatch: a coarse triangle bridged
 45 m above the exact shoulder. Warp now offers generic cooking-time vertex
 constraints; Sideways preserves the full joining shoulder in every cut.
 Source/collision geometry and sun bias/filter/strength are unchanged.
-CPU false-hit counts drop 69â†’0 and 106â†’0 in the two captures. Matched GPU
+CPU false-hit counts drop 69→0 and 106→0 in the two captures. Matched GPU
 views at 0/8/16 m, grass-off, and the exact second camera remove the wedge.
 6 engine cluster, 183 CLI and 22 replay tests pass; one CLI diagnostic ignored.
 F12 replay now accepts explicit bounded --pick x,y and reports shadow counts.
 The single-view 4K-output/DLSS Quality hidden ABBA measures shadow cull+raster
-0.913â†’0.919 ms and total covered interval 21.794â†’22.419 ms; no FPS improvement
+0.913→0.919 ms and total covered interval 21.794→22.419 ms; no FPS improvement
 or four-player result is claimed. See the doc for sample counts and limits.
 Evidence: `C:/dev/perf/warp-sideways-20261026/r53-roadside-shadow/`.
 Game SHA256: `ccfbb7c9376db5800e4470edbbada3c984095617a5545cd37eb23f37c0a7bcb6`.
 Interactive launch: `games/sideways/build/dev-runs/20261026T192639759Z-155c7fd7/iteration.json`.
 Do not compete with that playtest for the GPU. Prior r52 process has exited.
 
-## Previous status â€” r52 roadside terrain wedges
+## Previous status — r52 roadside terrain wedges
 
 See [r52 diagnosis and validation](docs/roadside-verge-r52.md). A 55 cm ditch
 was too narrow for the 2 m terrain grid, causing the repeated roadside pits
@@ -895,7 +895,7 @@ Latest interactive playtest: PID 32728, first visible frame confirmed;
 `games/sideways/build/dev-runs/20261026T185740242Z-424ec09c/iteration.json`.
 Keep the interactive GPU free from competing fixtures.
 
-## Previous status â€” r51 saved baseline, vehicle lights and bloom
+## Previous status — r51 saved baseline, vehicle lights and bloom
 
 See [r51 implementation and open checks](docs/local-lights-and-vegetation-r51.md).
 The user's tree/grass settings are saved in the Sideways data preset, applied
@@ -918,7 +918,7 @@ remain open with evidence and a concrete reproduction procedure in that doc.
 The first r51 playtest ran and was closed by the user. It has been superseded
 by the corrected executable in dev-runs/20261026T173428410Z-fe6ffcbd.
 
-## Previous status â€” r50 and requested playtest
+## Previous status — r50 and requested playtest
 
 Main was pushed in 79cb339 (engine/game split, Godot removal, docs and accumulated
 engine work). See [r50 results](docs/world-foliage-r50.md). The tiny world-volume
@@ -931,7 +931,7 @@ Quality; world volumes remain off. Launch manifest:
 `games/sideways/build/dev-runs/20261026T161351534Z-c9f58110/iteration.json`.
 Leave this playtest running and do not compete for its GPU.
 
-## Publication and in-progress world foliage â€” 26 October 2026
+## Publication and in-progress world foliage — 26 October 2026
 
 The local engine/game separation, retired Godot files, diagnostics and r49
 work are included in this snapshot after an extended local-only backlog.
@@ -956,7 +956,7 @@ the new world backend remains pending.
 
 ## Current goals
 
-### Current work â€” r49, LOD optics and receiver-driven shadows
+### Current work — r49, LOD optics and receiver-driven shadows
 
 Interactive playtests remain stopped. Only serial controlled GPU fixtures and
 bounded replay benchmarks are authorized. See
@@ -967,12 +967,12 @@ The default-off receiver-demand prototype has exact requested-depth and
 final-image parity in `receiver-d/report.json` (five cases: first/wind/cut/four
 views/full-map fastpath). **Do not promote it from the sparse fixture result.**
 Live B requested every tile and ran about 1 ms slower. Terrain cluster-bound
-refinement in D still requested every tile and introduced a severe 89â€“92 ms
+refinement in D still requested every tile and introduced a severe 89–92 ms
 builder cost (full intervals 133/130 ms). All rejected evidence remains saved.
 Candidate E stops gathering when unique tile counts prove full demand and
 passes all five native GPU fixtures. Fresh live ABBA removes the pathological
-cost, but still saves no casters: sunrise 44.465â†’47.175 ms and noon
-37.972â†’40.837 ms; the builder alone costs 2.818/2.838 ms. All maps stay full.
+cost, but still saves no casters: sunrise 44.465→47.175 ms and noon
+37.972→40.837 ms; the builder alone costs 2.818/2.838 ms. All maps stay full.
 Strict previews fail even within same-mode repeats. Default remains off;
 do not iterate this conservative all-LOD gather further without addressing
 actual visible receiver support. Candidate E source manifest has 278 matching
@@ -989,20 +989,20 @@ and low-sun comparisons used stale day-calibrated sky SH/texture; the corrected
 fixture uploads actual sky data for every case. Do not use the old night
 images as valid nighttime evidence. Corrected `optical-c` has 144 measurements;
 `sweep-d` covers the complete first mip transition at 16 positions/four angles/
-two lights. Median coverage error improves 7.92%â†’5.73%, but low-sun maximum
-brightness error remains 39.24% and the blend costs up to 2.758Ã— integration
+two lights. Median coverage error improves 7.92%→5.73%, but low-sun maximum
+brightness error remains 39.24% and the blend costs up to 2.758× integration
 cell reads. Raw layers are identical outside blending. No optical replacement
 accepted and no defaults promoted. See `sweep-analysis-d/summary.md` and zooms.
 
 Important code/evidence audit: live benchmarks have voxel trees OFF. They use
-319,179 owners of three alpha-card CLOD assets, with a terminal 137â€“177 triangles
+319,179 owners of three alpha-card CLOD assets, with a terminal 137–177 triangles
 per tree. Noon selects 55.05M tree triangles across four views (31.83M in the
 elevated view). There is no automatic whole-forest group-volume replacement;
-the fixed 1â€“256-tree voxel experiment is not that implementation. Actual grouped
+the fixed 1–256-tree voxel experiment is not that implementation. Actual grouped
 source suppression before traversal/raster is the major next structural step,
 shared with grass, with matched optics/current wind/source fallback.
 
-### Previous work â€” r48, real traversal and headlight work reduction
+### Previous work — r48, real traversal and headlight work reduction
 
 **Interactive playtests are stopped at the user's request.** Only controlled,
 serial GPU runs are authorized until the user asks for another playtest.
@@ -1011,15 +1011,15 @@ to keep a playtest alive below no longer apply.
 
 See [r48 implementation and evidence](docs/render-traversal-r48.md). True empty
 ancestor jumps remove 85.32% of fine voxel traversal iterations; four-pose
-immutable-field GPU ABBA/BAAB measures 13.34â€“14.41% less consumer integration
+immutable-field GPU ABBA/BAAB measures 13.34–14.41% less consumer integration
 time, with exact raw RGBA16 and RGBA8. This tiny fixture still has unaccepted
 source-to-voxel blur and is not the live meadow. `KERN_BRICK_EMPTY_JUMP` defaults
 off. Previous read skipping alone was not equivalent work elimination.
 
 `KERN_HEADLIGHT_INSTANCE_GROUPS=1` reuses refitted spatial bounds with separate
 per-lamp frusta, lists and counters. Four-player ABBA, one 4K output/DLSS Quality,
-127 clean samples per section/run: night 34.3526â†’31.9929 ms, sunrise
-46.9173â†’44.4260 ms. Exact caster selection and shadow-depth hashes pass; strict
+127 clean samples per section/run: night 34.3526→31.9929 ms, sunrise
+46.9173→44.4260 ms. Exact caster selection and shadow-depth hashes pass; strict
 full-preview equality fails, including same-mode repeats. It remains default
 off. These are render intervals, not 120 FPS or native-4K results. Source
 density/LOD/shadow resolution are unchanged between variants.
@@ -1039,7 +1039,7 @@ current-pose receiver demand across all views, including grass/transparency/
 non-surface lighting consumers; unknown demand must fall back conservatively.
 Do not equate the existing rest-pose distant page cache with dynamic VSM.
 
-### Previous work â€” r47, measured structural rendering improvements
+### Previous work — r47, measured structural rendering improvements
 
 The user has stopped interactive playtests: **do not launch a playtest** until
 asked again. Use controlled GPU runs, serially, with saved images and actual
@@ -1050,15 +1050,15 @@ brick fixture process running.
 See [r47 results](docs/meadow-work-r47.md) and
 [r46 work analysis](docs/render-work-avoidance-r46.md). The same-source meadow
 visibility experiment removes a second geometry submission. Four-view ABBA:
-43.559â†’38.696 ms noon, 49.628â†’46.778 ms sunrise; 4K output with DLSS Quality,
-1277Ã—717 per 1916Ã—1076 panel. It remains opt-in, strict image parity fails,
+43.559→38.696 ms noon, 49.628→46.778 ms sunrise; 4K output with DLSS Quality,
+1277×717 per 1916×1076 panel. It remains opt-in, strict image parity fails,
 and 8.33 ms has not been reached. Native wind/cut/night checks preserve source
 and selection identity. The real GPU grass brick fixture passes mechanical
 checks but has unaccepted blur and excessive empty traversal; it is not the
 live field. Separate candidate-C hidden-ground-shading ABBA measures another
-38.607â†’38.055 ms noon and 46.776â†’46.421 ms sunrise with visibility enabled in
+38.607→38.055 ms noon and 46.776→46.421 ms sunrise with visibility enabled in
 both cases. It stays opt-in. Empty-cell read skipping bypasses98.47% of reads
-but improves its small fixture by only0.09â€“1.32%; keep it off. It does not yet
+but improves its small fixture by only0.09–1.32%; keep it off. It does not yet
 skip fine DDA arithmetic. CandidateC:459 render+2 fixture+164 game testsPASS,
 two existing ignored. Strict image gates remain failed and preserved; these
 are not identical combined-binary before/after measurements or120FPS.
@@ -1066,7 +1066,7 @@ are not identical combined-binary before/after measurements or120FPS.
 Evidence: `C:/dev/perf/warp-sideways-20261026/r47-meadow-work/`. Preserve frozen
 binaries and failed evidence. Source defaults are not performance acceptance.
 
-### Historical playtest â€” r40, rounded grass and night sky
+### Historical playtest — r40, rounded grass and night sky
 
 User asked to start immediately; tested candidate A is running and independently
 verified responsive with first visible frame. PID118076, startUTCticks
@@ -1091,41 +1091,41 @@ means48.410ms noon,57.686ms sunrise,52.767ms night (71samples each); nowhere nea
 `C:/dev/perf/warp-sideways-20261025/r40-grass-night/`; grass review is
 `grass-visual-review.json`. See `docs/meadow-night-r40.md`.
 
-### Historical playtest â€” r39, distance continuity with visible tradeoffs
+### Historical playtest — r39, distance continuity with visible tradeoffs
 
 The new one-player playtest is running, verified responsive with first visible
 scene frame. PID242232, startUTCticks639285500936486110; executable and manifest:
 `../games/sideways/build/dev-runs/20261025T183451763Z-519c1346/`.
 SHA256 `46c964ebaf9bb260a47364cb81d637c4bb1de7c0d9a276e30abbd956a09ff9f2`.
-One3840Ã—2160 output with DLSSQuality, live wind0.6, source radius80m and aggregate
+One3840×2160 output with DLSSQuality, live wind0.6, source radius80m and aggregate
 enabled. First visible scene at9.154s from play entry. Runtime logs verify the
-constructed60â€“80m transition and60â€“180m aggregate. Keep this playtest running
+constructed60–80m transition and60–180m aggregate. Keep this playtest running
 during ordinary CPU work; verify its PID/path/start time before stopping it.
 
 The source-derived directional surface atlas uses hardware filtering and one
 lighting resolve per pixel. It is NOT voxel transport. Near source roots,
 density and blade geometry remain unchanged; expensive source geometry blends
-to the aggregate earlier over60â€“80m. The aggregate fades to matching substrate
-colour over160â€“180m. Launcher default is now enabled; explicit switch or env
+to the aggregate earlier over60–80m. The aggregate fades to matching substrate
+colour over160–180m. Launcher default is now enabled; explicit switch or env
 can select the reference. `SIDEWAYS_MEADOW_SOURCE_RADIUS=100` retains the old
 range. `KERN_MEADOW_SUBSTRATE=1` works independently for diagnosis.
 
 341 renderer tests and3 grass-field tests passed. Native11-scene, DLSS motion,
 and four-player GPU suites completed serially. Two F12 native views cost
-19.041â†’20.240 and18.451â†’19.110ms. Four-player4K/DLSSQuality has71 samples/section:
-50.566â†’50.557ms noon,60.580â†’60.377ms sunriseâ€”essentially unchanged, nowhere near
-120FPS. Inputs are1277Ã—717 per1916Ã—1076 output pane. CPU CI remains active.
+19.041→20.240 and18.451→19.110ms. Four-player4K/DLSSQuality has71 samples/section:
+50.566→50.557ms noon,60.580→60.377ms sunrise—essentially unchanged, nowhere near
+120FPS. Inputs are1277×717 per1916×1076 output pane. CPU CI remains active.
 
 Limited visual acceptance: all22 native stills and48 motion-sampled JPEGs were
 reviewed; coverage improves but open distant slopes can show a faint grid.
 Stepped near-road grass edges remain. JPEG samples are not continuous temporal
 proof, and wall-clock wind poses differ between runs. Night fixed-camera images
 were black and do not validate headlights. The old one-pixel r38 tree-occlusion
-failure is still open. Candidate A was rejected for9.6â€“42.5ms aggregate cost;
+failure is still open. Candidate A was rejected for9.6–42.5ms aggregate cost;
 its evidence is retained. Full details: `docs/meadow-distance-r39.md` and
 `C:/dev/perf/warp-sideways-20261025/r39-grass-distance/`.
 
-### Historical playtest â€” 25 October, r38, limited acceptance
+### Historical playtest — 25 October, r38, limited acceptance
 
 User requested the playtest; the root verified a responsive process and first
 visible scene frame from the existing tested pre-diagnostic release. Active at
@@ -1147,15 +1147,15 @@ does not deploy the full procedural assembly/voxel prototype.
 
 Limited acceptance:326render tests and8crown tests passed; static native6/6
 and four-view2/2 image pairs are exactly equal. `performance-b` has39 clean
-GPU samples/camera, one4Koutput/DLSSQuality: same-source culling offâ†’on means
-24.784â†’23.974ms forest,17.165â†’10.756ms cliff,34.821â†’27.858ms road vista.
+GPU samples/camera, one4Koutput/DLSSQuality: same-source culling off→on means
+24.784→23.974ms forest,17.165→10.756ms cliff,34.821→27.858ms road vista.
 These are provisional real measurements without a confidence interval or
 four-player120FPS claim. Fuller source changes CLOD-selected geometry despite
 unchanged finest-source triangle counts. Release build65.914s.
 
 **Open temporal failure:** `temporal-parity-b` and `-c` each match all96 inputs
 but fail1of32 PNG pairs at frame22: one pixel(217,232), maxchannelerror62,
-treeâ†’terrain winner. Off/off is exact; nondeterminism is not established.
+tree→terrain winner. Off/off is exact; nondeterminism is not established.
 Depth-tie/draw-order behavior is plausible, not proven. Exact gate stays failed.
 New `KERN_TREE_OCCLUSION_REJECT=0` and capture `rejection_enabled` metadata are
 source-only, unbuilt/unvalidated and **not in this executable**. The diagnostic
@@ -1167,7 +1167,7 @@ aggregation, own grass shadows and visible edge/pop issues remain open; r38
 does not solve them. Details: `docs/forest-occlusion-r38.md`; evidence:
 `C:/dev/perf/warp-sideways-20261025/r38-forest-occlusion`.
 
-### Meadow budget playtest â€” 25 October, r37
+### Meadow budget playtest — 25 October, r37
 
 Historical playtest; superseded by the running r38 build above.
 
@@ -1182,8 +1182,8 @@ across all variants, with KERN_MEADOW_INDEXED=0 as reference fallback.
 exercise all threeLOD levels and preserve everyRGBAbyte in eight captures,
 including first/settled/camera-cut frames. Frozen wind, not temporal acceptance.
 Matched4Koutput/DLSSQuality r36/r37 has39cleanGPU samples/camera underCI:
-chase source triangles14,629,800â†’9,855,960(-32.63%), same16,365patches;
-meadow15.368â†’12.619ms(-17.89%), coveredGPU36.506â†’33.852ms. Two-camera
+chase source triangles14,629,800→9,855,960(-32.63%), same16,365patches;
+meadow15.368→12.619ms(-17.89%), coveredGPU36.506→33.852ms. Two-camera
 JPEG review retains dense cover; square verge edges and missing own grass
 shadows remain. This is oneA/B, not sustainedFPS or four-player120FPS proof.
 No far voxel aggregate yet: nearly all chase patches already select600triangles,
@@ -1199,13 +1199,13 @@ before stopping. Previous r36PID3128 was identity-checked and stopped before
 serialGPU tests. No commit/push; preserve existing repository reorganization.
 Evidence: `C:/dev/perf/warp-sideways-20261025/r37-meadow-budget`.
 
-### Dense meadow playtest â€” 25 October, r36
+### Dense meadow playtest — 25 October, r36
 
 Historical playtest; stopped and superseded by r37 above.
 
 User rejected r35 coverage and asked for roughly10x density. New MeadowPatch
 has360 narrow ribbon blades across each fixed0.45m square versus36; nominal
-1778 vs178 blades/mÂ² before habitat/road/visibility filters. Individual root
+1778 vs178 blades/m² before habitat/road/visibility filters. Individual root
 anchors stay fixed under growth and GPU wind. Three shared shapes, four wind
 groups, source-derived ribbonLOD1800/1080/600 triangles; no CPU blade stream.
 Candidate capacity205,209 and root/owner pool25,445,916bytes/view unchanged.
@@ -1217,7 +1217,7 @@ whole-patch fallback elsewhere; some visible square boundary steps remain.
 pass. Final release55.23s. Exact serial r35/r36 comparison-b has matching seed,
 two cameras/tick6000/light/fixed wind and actual4K-output/DLSSQuality. Both
 images reviewed: much denser cover, still imperfect boundaries.11 clean GPU
-samples/camera underCI: chase grass11.776â†’15.261ms, coveredGPU32.382â†’35.498ms;
+samples/camera underCI: chase grass11.776→15.261ms, coveredGPU32.382→35.498ms;
 r36 selects14,629,800 source triangles (before per-blade rejection, depth and
 colour submit twice). No120FPS/4view claim; own grass shadows/far voxel field
 still absent. A single terrain plane per patch can bury/float distributed
@@ -1234,7 +1234,7 @@ PID/path/start ticks before stopping. Old r35 was stopped after successful
 compilation and before serial GPU comparison. No commit/push; preserve all
 staged/dirty/untracked repository reorganization and unrelated work.
 
-### Meadow appearance playtest â€” 25 October, r35
+### Meadow appearance playtest — 25 October, r35
 
 Historical: user subsequently rejected this density. Superseded by r36 above.
 
@@ -1264,7 +1264,7 @@ One player/3840x2160 output/DLSSQuality/live wind0.6. Verify manifest path/start
 ticks before stopping. Previous r34 playtest below was stopped for this update.
 No commit/push; preserve existing staged/dirty reorganization and other work.
 
-### Full-terrain GPU meadow playtest â€” 25 October, r34
+### Full-terrain GPU meadow playtest — 25 October, r34
 
 Latest user request: replace the old grass with covering procedural grass,
 designed for variation and wind with GPU placement/rendering instead of CPU
@@ -1297,7 +1297,7 @@ motion157cases pass. Renderer304tests pass/oneignored; game144pass/oneignored.
 
 Real4K DLSS Quality one-view and four independent-view/camera-cut scenarios
 each rendered/presented120frames, no errors/fallback. Four-view measured GPU
-coveredp95 about34.0â€“34.2ms (38steady samples/section), CPU36.9â€“38.9ms under
+coveredp95 about34.0–34.2ms (38steady samples/section), CPU36.9–38.9ms under
 concurrentCI. Target8.33ms remains unmet. Evidence:
 `C:/dev/perf/warp-sideways-20261025/r34-meadow-field`;
 read `docs/meadow-field-r34.md`, parity-report and validation.json.
@@ -1310,7 +1310,7 @@ One player,3840x2160 output/DLSS Quality, field mode, live wind0.6. Antipodal
 voxel-normal candidate remains disabled. No commit/push this iteration; preserve
 the large existing repo reorganization and unrelated dirty work.
 
-### Vegetation source LOD and empty-space traversal â€” 25 October, r32
+### Vegetation source LOD and empty-space traversal — 25 October, r32
 
 Latest request: fix the excessive source triangles and far-volume cost found
 in r31. Added `vegetation_clod`: source-derived closed blade/needle reductions
@@ -1353,13 +1353,13 @@ stopping; never benchmark the GPU alongside the playtest. The shared-primitive
 path remains a bounded native-only patch; optical voxel parity, DLSS motion,
 spatial binning, larger plant aggregation and full-forest integration are open.
 
-### Vegetation distance/work accounting â€” 24 October, r31
+### Vegetation distance/work accounting — 24 October, r31
 
 Latest request: prevent excessive triangles/boxes and count by draw distance.
 Added `vegetation_accounting::Accounting`, actual GPU foliage-selection readback
 on colour captures, and exact 64-bit voxel steps/samples/cell-read/AABB totals.
 The standalone `vegetation_distance_budget` example writes JSON/CSV for 23
-configurations at native 4K, one full view or four 1920x1080 views, 5â€“2000 m.
+configurations at native 4K, one full view or four 1920x1080 views, 5–2000 m.
 No image readbacks in the timed sweep. See `docs/vegetation-distance-budget.md`.
 Evidence: `C:/dev/perf/warp-sideways-20261024/r31-vegetation-budget`.
 
@@ -1385,7 +1385,7 @@ One player, 3840x2160 output, DLSS Quality, wind 0.6; prototype remains off.
 Build 59.46 s, launcher startup proof 11.11 s. Check identity before stopping;
 no GPU benchmarks alongside this playtest.
 
-### Unified vegetation source/pose integration â€” 24 October, r30
+### Unified vegetation source/pose integration — 24 October, r30
 
 Latest request: work on unified vegetation. Implemented `vegetation_asset` in
 the engine: `CookedPlant` stores unique primitive meshes; `SceneVegetation`
@@ -1416,7 +1416,7 @@ Final validation: renderer 267 tests pass (one ignored), Sideways app 142 pass
 all four images exactly match expanded geometry, with zero stale volume pixels.
 
 The critical remaining cost is the bounded multi-volume integrator: about
-3.0â€“3.4 ms in the small four-view fixture for only 71 traced rays. A candidate
+3.0–3.4 ms in the small four-view fixture for only 71 traced rays. A candidate
 pixel-compaction path reduced heavy invocations from 2,048 to 71 but was about
 24% slower in serial ABBA, with identical decoded images. Rejected code and
 hashes are in `rejected-pixel-compaction/`; `compaction-decision.json` records
@@ -1441,7 +1441,7 @@ is available in the native fixture/scenario, not enabled in this DLSS playtest.
 `restored-playtest.json` records the checked identity. Recheck identity before
 any later stop. Do not run more GPU benchmarks alongside this playtest.
 
-### Repository split and measured category costs â€” 24 October, r28/r29
+### Repository split and measured category costs — 24 October, r28/r29
 
 Two equal goals remain: develop Warp and apply it in Sideways. Reusable crates
 are engine/crates/{kern,render,audio}; game app/sim/determinism/assets/data/tools
@@ -1485,7 +1485,7 @@ No more GPU benchmarks while it runs. The packaged verification executable is
 separate from this final source launch; the intervening code change only fixed
 the licensed renderer-test fixture path.
 
-### Historical accepted runtime optimization and pipeline cache â€” r27
+### Historical accepted runtime optimization and pipeline cache — r27
 
 Historical accepted playtest: `build/dev-runs/20261024T194651269Z-cd17a581/iteration.json`,
 PID162080 at verification, SHA256
@@ -1512,7 +1512,7 @@ snapshot diagnostic API passed the final build's v3 GPU fixture, including
 stale submission and four-to-one active-view rejection.
 
 Evidence: `C:/dev/perf/warp-sideways-20261024/r27-runtime/`.
-Measured ~22s renderer preparation is mostly pipeline creation (~18â€“19s),
+Measured ~22s renderer preparation is mostly pipeline creation (~18–19s),
 with warm texture arrays <1s. Persistent Vulkan pipeline cache is now default
 ON when supported, with driver/adapter/ABI checks and nonfatal cache fallback.
 Same-executable four-view off/cold/warm renderer:23.55/23.36/1.36s;
@@ -1527,7 +1527,7 @@ See `docs/iteration-speed-2026-10-24.md` for accepted/rejected experiments.
 Scenario runs now hash supported shader overrides before/after execution;
 iteration reports distinguish same-executable shader-content changes.
 
-### Historical iteration tooling result â€” 24 October, 18:55 UTC
+### Historical iteration tooling result — 24 October, 18:55 UTC
 
 Previously accepted executable SHA256:
 `166389215d08592336ba42727fb0031fb847fb07458b2bf880d420d5d7607f18`.
@@ -1558,10 +1558,10 @@ whole-startup or FPS improvement. CPU mip parity/corruption/concurrency tests
 pass; independent DLSS final PNGs have tiny differences and are not byte-identical.
 
 Four-player route GPU-covered median44.53/45.47ms by section, p95~47ms.
-Target8.33ms remains unmet. Largest GPU passes: raster14.5â€“16.3ms,
-grass copy/nearest8.6â€“9.9ms, shade7.4â€“7.6ms. These are controlled route data.
+Target8.33ms remains unmet. Largest GPU passes: raster14.5–16.3ms,
+grass copy/nearest8.6–9.9ms, shade7.4–7.6ms. These are controlled route data.
 No renderer-quality tradeoff was introduced by texture caching or preview encoding.
-Next-stage actual GPU smoke PASS: round1â†’2,567 loader frames, ready; initial
+Next-stage actual GPU smoke PASS: round1→2,567 loader frames, ready; initial
 loader62 frames, physics tick0 at install. PR#3 audio remains merged below.
 
 Every dev launch now records startup phase JSON in its manifest and logs.
@@ -1598,7 +1598,7 @@ scenarios (seed/camera/ticks/sections/lighting/captures). Active source work:
 examples. Async GPU 4-slot fixture PASS, startup CPU5 PASS, foliage CPU8 PASS.
 Integrated scenario/profile validation is complete as recorded above.
 
-### Current lighting demo â€” 24 October, 17:52 UTC
+### Current lighting demo — 24 October, 17:52 UTC
 
 **Historical demo PID189948, now closed.** First visible frame was confirmed.
 Manifest `build/dev-runs/20261024T175235340Z-a3048d19/iteration.json`.
@@ -1635,7 +1635,7 @@ remaining indirect-canopy darkness and missing live GI remain open. Source
 page requests use conservative CPU bounds; future hierarchy/priority and
 per-page owner compaction are in the roadmap. Preserve all dirty work.
 
-### Earlier r24 replay and forest plan â€” 24 October, 17:36 UTC
+### Earlier r24 replay and forest plan — 24 October, 17:36 UTC
 
 User requested an immediate playtest while the new lighting was still under
 validation. The previously accepted r24 executable ran as PID235264;
@@ -1674,7 +1674,7 @@ opt-in (`KERN_WORLD_TERRAIN_VISIBILITY=1`); radiance-cache CPU/GPU sampling
 fixtures PASS but live GI remains heuristic. See the roadmap evidence and
 `docs/live-terrain-bounce-plan.md`. All work remains local, dirty; preserve it.
 
-### In progress â€” world visibility and Lumen-inspired lighting, 24 October
+### In progress — world visibility and Lumen-inspired lighting, 24 October
 
 The user explicitly chose virtual shadows / distance-field techniques and then
 asked to study and emulate Lumen, accepting a longer architectural iteration.
@@ -1702,7 +1702,7 @@ unknown semantics, then real material/light transport in a shared world cache.
 Terrain heightfields are the first backend, not a claim of completed mesh SDFs,
 virtual shadow maps or Lumen. See docs/world-lighting.md for scope and acceptance.
 
-### Previous playtest â€” 24 October, r24 camera sun visibility and rolling mountains
+### Previous playtest — 24 October, r24 camera sun visibility and rolling mountains
 
 **Historical PID 192948, stopped**, first visible frame was confirmed.
 Manifest `build/dev-runs/20261024T152921929Z-05fc671e/iteration.json`.
@@ -1752,7 +1752,7 @@ holes or one global density multiplier. Existing foliage_shadow.rs remains a
 CPU prototype; actual voxel visibility/streaming/wind integration is unfinished.
 That earlier delegation completed; newer active tasks are listed above.
 
-### Previous playtest â€” 24 October, r23 material variation and caster depth
+### Previous playtest — 24 October, r23 material variation and caster depth
 
 **Historical PID 99004, now exited**, first visible frame was confirmed. Manifest:
 `build/dev-runs/20261024T145259334Z-5ee7d383/iteration.json`.
@@ -1804,7 +1804,7 @@ bounded, coherent buttresses/recesses outside the protected road/shoulder,
 so render basis, heightfield and collision agree. Raising only visual Y-offset
 is insufficient on nearly vertical walls and breaks the lighting bounds.
 
-### Local PR #3 merge â€” 24 October
+### Local PR #3 merge — 24 October
 
 User requested a local merge only. `main` fast-forwarded from `09500d2` to
 `b761c05` (idle ringing, quieter idle, granular tyre sound). No remote push
@@ -1825,7 +1825,7 @@ Build40.83s/startup12.38s. One player, 4K output, DLSS Quality, wind0.6,
 wheel effects ON. Audio started at48kHz; XInput reports one connected
 controller. This replaces the r22 PID below. No new GPU tests were run.
 
-### Current iteration â€” 24 October, r22 wheel tracks and ejecta
+### Current iteration — 24 October, r22 wheel tracks and ejecta
 
 User requested persistent tyre paths plus surface/slip-driven dust, gravel,
 soil and grass pieces. Implemented the existing fixed-tick wheel emitter in
@@ -1868,7 +1868,7 @@ Procedural grass experiment remains OFF; normal grass/far grass ON, crowds
 OFF. Nanite-style shared foliage work remains in the queue after this user
 request; do not silently replace it with the new wheel effects work.
 
-### Current iteration â€” 24 October, r21 rock-wall black triangles
+### Current iteration — 24 October, r21 rock-wall black triangles
 
 **Historical r21 (closed):** PID **89152**, first visible frame was confirmed.
 Manifest `build/dev-runs/20261024T121150316Z-bd7376ab/iteration.json`;
@@ -1902,7 +1902,7 @@ Foliage and exhaust work from r20 remains unchanged. Procedural grass experiment
 OFF; regular extended and far grass ON; crowds OFF. Continue shared voxel
 foliage optimization from the r20 notes below after this focused defect repair.
 
-### Current iteration â€” 24 October, r20 foliage and exhaust
+### Current iteration — 24 October, r20 foliage and exhaust
 
 The user has resumed the shared procedural/voxel foliage work and explicitly
 requested a subagent for exhaust gas, smoke, brief backfire and hot-air image
@@ -1993,7 +1993,7 @@ TAA history. Two actual DLSS car shots render successfully; held-frame images
 do not establish moving appearance or cost. See `docs/exhaust-effects.md`.
 No volumetric smoke shadows or projected flame light are claimed.
 
-### Delivery queue â€” 24 October, after live sky/menu request
+### Delivery queue — 24 October, after live sky/menu request
 
 **A CPU prototype is not a delivered feature.** Close an item only after it is
 present in an identified playable build and its real rendered result is checked.
@@ -2019,7 +2019,7 @@ The immediate build contains only features that pass their actual render checks.
 No further Godot comparison is requested. The 4K-output / four-player / 120 FPS
 target remains unmet/unproven by this work; prototype counts are not FPS evidence.
 
-### Current playable build â€” 24 October, 11:54 Amsterdam
+### Current playable build — 24 October, 11:54 Amsterdam
 
 Owned live process **231924**, visible first frame confirmed and process responding.
 Controller operation in this specific restart has not been independently tested.
@@ -2128,7 +2128,7 @@ stage noise/detail `1049722424 / -85257117`. The CPU-only
 `wall_lighting_audit` reproduced that stage and found all 1,150 source wall
 triangles selected at its camera; Geometry and TexturedGeometry cuts match.
 Across 148 sampled black pixels, source normals are finite (length >=0.9989)
-and point toward the sun (dot approximately 0.89â€“0.92). A wall LOD/normal
+and point toward the sun (dot approximately 0.89–0.92). A wall LOD/normal
 patch is therefore not justified by this evidence. The scene wall has no
 SOLID contact proxy. Evidence: `C:/dev/perf/warp-sideways-20261024/r16/wall-lighting-audit.json`.
 `capture_replay` now includes exact black/control pixel picks and lit, albedo,
@@ -2136,7 +2136,7 @@ direct and indirect views to distinguish the actual frontmost surface and
 light attenuation from composition. The black-wall bug remains open; do not
 hold the requested playtest for speculative material changes.
 
-#### Road surface depth â€” audited, next playable iteration still pending
+#### Road surface depth — audited, next playable iteration still pending
 
 This is a source audit, not a new rendered feature or a performance result.
 `sideways::builder::road` already supplies the driving mesh and collider from
@@ -2166,11 +2166,11 @@ important groove shape before changing tessellation or shader complexity.
 Then add a seeded road-aggregate builder using a small shared library of
 closed, irregular stone templates, baked into short CLOD tiles on the exact
 existing road triangles. First candidate budget: 8 m tiles,
-up to 48 stones/tile, 12â€“20 triangles/stone; approximately 72â€“120k source
+up to 48 stones/tile, 12–20 triangles/stone; approximately 72–120k source
 triangles/km before the existing CLOD selection, and 125 tile instances/km.
 Those are proposed limits, not measured GPU costs. Template topology is
 reused during generation; transformed tile vertices consume unique storage.
-Use 3â€“10 cm diameters, mostly embedded with <=2 cm protrusion, seeded visual
+Use 3–10 cm diameters, mostly embedded with <=2 cm protrusion, seeded visual
 RNG, and fewer stones in the worn grooves/more in the windrows. This preserves
 the existing driving mesh/collider and avoids stones floating on the analytic
 height field. Do not silently enlarge physical obstacles or add large
@@ -2960,7 +2960,7 @@ What Godot does:
 - **Placement per cell id.**
   - jitter: `(hash(id), hash(id+17)) - 0.5) * 1.6` cells;
   - size: `grow * mix(0.7, 1.3, hash(id+9))`;
-  - angle: `hash(id+3) * 2Ï€`;
+  - angle: `hash(id+3) * 2π`;
   - hash: `fract(sin(dot(p, (127.1, 311.7))) * 43758.5453)`.
 - **Density, from the ground map** (height, metres from road edge, normal Y):
   - grass = `max(verge, wood) * (1 - shade * 0.45) * level`, where:
@@ -2980,8 +2980,8 @@ What Godot does:
   v flipped.
   - albedo: `tex * mix(0.8, 1, h) * 1.25`, normal straight up;
   - AO: `mix(0.45, 1, h) * (1 - canopy * 0.5)`;
-  - translucency: `(0.12, 0.16, 0.05) * max(-nÂ·l, 0)`.
-- **Shrub mesh.** Procedural, `_shrub()`: 4 twigs Ã— 6 leaves, RNG seed 11.
+  - translucency: `(0.12, 0.16, 0.05) * max(-n·l, 0)`.
+- **Shrub mesh.** Procedural, `_shrub()`: 4 twigs × 6 leaves, RNG seed 11.
   - colour: `mix(green, dry, smoothstep(0.5, 0.75, tone))`, with green
     (0.2, 0.32, 0.1), dry (0.52, 0.15, 0.07) and
     `tone = noise(xz/5)*0.6 + hash(id+2)*0.4`;
@@ -3020,8 +3020,8 @@ Original design, first step now implemented in `cli/src/ground_cover.rs`:
 - **Also from the game:** car lights, dust and gravel particles, wet roads,
   tyre marks (`track_map.gd`).
 - **Performance on the real GPU:** measure with `gpu-run`. Shadow raster
-  was the heaviest pass on lavapipe. Sim cost: Rapier step 175 Âµs and car
-  forces 120 Âµs per tick.
+  was the heaviest pass on lavapipe. Sim cost: Rapier step 175 µs and car
+  forces 120 µs per tick.
 
 ## Handy
 
