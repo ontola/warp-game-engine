@@ -1172,7 +1172,7 @@ impl VoxelRenderer {
             .min((u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size) / 16).saturating_sub(12 + 4 * u64::from(self.count))));
         let splat_records = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel splats"), size: (12 + 4 * u64::from(self.count) + splat_capacity) * 16,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let splat_draw = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel splat draw"), size: 16,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
@@ -1504,6 +1504,44 @@ impl VoxelRenderer {
         Some((target.layer.create_view(&Default::default()),target.motion.as_ref()?.create_view(&Default::default())))
     }
     /// Explicit offline readback only. Normal frames never map or wait here.
+    /// Explicit offline readback, never called by frame selection or rendering.
+    /// Reports only stored records; overflowing requests have no readable payload.
+    pub(crate) fn raster_profile(&self,gpu:&Gpu)->Result<Vec<serde_json::Value>,String> {
+        let diagnostics=self.diagnostics(gpu)?;
+        let targets=self.targets.lock().unwrap();let mut output=Vec::new();
+        for (target,d) in targets.iter().filter_map(Option::as_ref).zip(diagnostics) {
+            let Some(splat)=&target.splat else {continue;};
+            let count=u64::from(d.raster_splats).min(d.raster_capacity);
+            let words=12+4*u64::from(self.count)+count;let size=words*16;
+            let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("offline splat profile"),size,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+            let mut enc=gpu.device.create_command_encoder(&Default::default());enc.copy_buffer_to_buffer(&splat.records,0,&read,0,size);gpu.queue.submit([enc.finish()]);
+            read.slice(..).map_async(wgpu::MapMode::Read,|r|r.unwrap());gpu.wait();
+            let bytes=read.slice(..).get_mapped_range().map_err(|e|e.to_string())?;
+            let data:&[[u32;4]]=bytemuck::cast_slice(&bytes);
+            let vp=glam::Mat4::from_cols_array_2d(&[data[0].map(f32::from_bits),data[1].map(f32::from_bits),data[2].map(f32::from_bits),data[3].map(f32::from_bits)]);
+            let right=vp.row(0).truncate().normalize();let up=vp.row(1).truncate().normalize();
+            let mut bins=[[0u64;6];2];let mut behind=0u64;let mut unique=std::collections::HashSet::new();
+            let first=12+4*self.count as usize;
+            for record in &data[first..first+count as usize] {
+                let index=record[0]as usize;if index>=self.count as usize{return Err("splat profile invalid tree index".into());}
+                unique.insert(index);let start=12+index*4;
+                let rows=[glam::Vec4::from_array(data[start].map(f32::from_bits)),glam::Vec4::from_array(data[start+1].map(f32::from_bits)),glam::Vec4::from_array(data[start+2].map(f32::from_bits))];
+                let grid=glam::Vec4::from_array(data[start+3].map(f32::from_bits));
+                let coord=glam::Vec3::new((record[2]&1023)as f32,((record[2]>>10)&1023)as f32,(record[2]>>20)as f32);
+                let local=(grid.truncate()+(coord+glam::Vec3::splat(0.5))*grid.w).extend(1.);
+                let centre=glam::Vec3::new(rows[0].dot(local),rows[1].dot(local),rows[2].dot(local));
+                let scale=glam::Vec3::new(rows[0].x,rows[1].x,rows[2].x).length();
+                let alpha=(record[3]&65535)as f32/65535.;let half=0.688*grid.w*scale*alpha.max(0.25).sqrt();
+                let a=vp*(centre-right*half-up*half).extend(1.);let b=vp*(centre+right*half+up*half).extend(1.);
+                let diameter=if a.w<=0. || b.w<=0. {behind+=1;f32::INFINITY}else{let delta=(a.truncate()/a.w-b.truncate()/b.w).abs();(delta.x*target.size.0 as f32*0.5).max(delta.y*target.size.1 as f32*0.5)};
+                let bin=[0.5,1.,2.,4.,8.].iter().position(|&edge|diameter<=edge).unwrap_or(5);
+                let kind=usize::from(index>=self.count.saturating_sub(self.proxies)as usize);bins[kind][bin]+=1;
+            }
+            output.push(serde_json::json!({"viewport":target.size,"requested_splats":d.raster_splats,"stored_splats":count,"capacity":d.raster_capacity,"missing_records":u64::from(d.raster_splats).saturating_sub(count),"unique_stored_volumes":unique.len(),"diameter_bin_upper_px":[0.5,1.,2.,4.,8.,null],"articulated_group_bins":bins[0],"whole_root_bins":bins[1],"near_plane_crossings":behind,"scope":"stored records only; screen-aligned diameter excludes sub-cell jitter; explicit offline readback"}));
+        }
+        Ok(output)
+    }
+
     pub(crate) fn diagnostics(&self, gpu: &Gpu) -> Result<Vec<VoxelViewDiagnostics>, String> {
         let targets = self.targets.lock().unwrap();
         let targets: Vec<_> = targets.iter().filter_map(Option::as_ref).collect();
