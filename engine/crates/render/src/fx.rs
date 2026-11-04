@@ -445,6 +445,39 @@ impl Effects {
         });
     }
 
+    /// A cloud of smoke or vapour welling up from `pos` (its bottom centre)
+    /// and drifting apart over a few seconds, about `radius` metres across
+    /// at its widest: the baked volumetric plume when that is on, else soft
+    /// billows. `tint` is its linear albedo (0.15 soot .. 1.0 white steam),
+    /// `density` 0.3 a thin wisp .. 1.5 thick.
+    pub fn smoke_cloud(&mut self, time: f32, pos: Vec3, radius: f32, tint: Vec3, density: f32) {
+        if !time.is_finite() || !pos.is_finite() || !radius.is_finite() || !tint.is_finite() || !density.is_finite() {
+            return;
+        }
+        let r = radius.max(0.2);
+        let density = density.clamp(0.05, 3.0);
+        if self.baked_smoke {
+            self.make_smoke_room(time);
+            let yaw = self.f() * std::f32::consts::TAU;
+            let (sin, cos) = yaw.sin_cos();
+            let side = r * 2.0;
+            self.puffs.push(Puff {
+                center_kind: pos.extend(BAKED_SMOKE).to_array(),
+                ax: [cos * side, 0.0, -sin * side, 0.0],
+                ay: [0.0, side, 0.0, 0.0],
+                az: [sin * side, 0.0, cos * side, 0.0],
+                body: tint.clamp(Vec3::ZERO, Vec3::ONE).extend(14.0 * density).to_array(),
+                timing: [time, SMOKE_LIFETIME, 0.0, 0.0],
+                ..Default::default()
+            });
+        } else {
+            let n = ((r * 2.5) as usize).clamp(4, 14);
+            // The billows' own greys average about 0.17.
+            self.billows(time, pos, r * 0.8, n, false, 1.0 + r * 0.15, 0.45, 1.05, r * 0.5, 1.0, 0.0, tint / 0.17, (0.55 * density).min(1.0));
+        }
+        self.changed = true;
+    }
+
     /// A hanging red haze where spectators died (Godot's blood mist: the
     /// smoke billow with a red tint, translucent, slower to rise).
     pub fn blood_mist(&mut self, time: f32, pos: Vec3, radius: f32, kills: usize) {

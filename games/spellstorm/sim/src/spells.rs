@@ -790,6 +790,12 @@ impl World {
         });
         let splash = p.spell.n.splash;
         let ground = flat(at);
+        self.ev(Ev::Land {
+            at: ground,
+            r: (splash * (0.8 + 0.3 * p.power)).max(0.8) as f32,
+            el: p.spell.primary,
+            payload: p.spell.payload.clone(),
+        });
         if splash > 0.0 {
             let r = splash * (0.8 + 0.3 * p.power);
             self.ev(Ev::Ring {
@@ -1084,6 +1090,7 @@ impl World {
             r: radius as f32,
             cs,
             el: primary,
+            payload: payload.to_vec(),
         });
         let ff = self.ff();
         for a in self.living() {
