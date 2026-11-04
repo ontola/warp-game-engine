@@ -129,8 +129,15 @@ fn candidate(tree:u32,start:u32)->u32 {
  }
  // All visible siblings must fit together. Missing pages keep the current parent.
  if refine {
-  if (task.z&256u)!=0u {atomicOr(&state[18],1u);}
   let delta=p.replacement-min(p.replacement,p.old);
+  let used=vec3<u32>(atomicLoad(&state[4]),atomicLoad(&state[5]),atomicLoad(&state[6]));
+  let capacity=view.consumer_count.yzw;
+  // An individually impossible proposal must not reserve prefix space and
+  // starve cheaper candidates. Retain its parent without entering the scan.
+  if any(delta.xyz>capacity-min(used,capacity)) {
+   atomicAdd(&state[17],1u);proposals[at]=p;return;
+  }
+  if (task.z&256u)!=0u {atomicOr(&state[18],1u);}
   let price=max(1.0,f32(delta.x)*256.0+f32(delta.y)+f32(delta.z));
   // Mandatory root fallbacks carry zero authored error. Their projected size
   // still determines benefit; otherwise all roots tie regardless of distance.
