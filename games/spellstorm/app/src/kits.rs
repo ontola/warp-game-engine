@@ -191,6 +191,18 @@ impl Kits {
         self.bin[at..at + n * 4].chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
     }
 
+    /// The middle of a mesh's bounds, in its own space.
+    pub fn mesh_centre(&self, mesh: usize) -> Option<Vec3> {
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for s in &self.file.meshes.get(mesh)?.surfaces {
+            for p in self.f32s(s.positions).chunks_exact(3) {
+                lo = lo.min(Vec3::from_slice(p));
+                hi = hi.max(Vec3::from_slice(p));
+            }
+        }
+        (lo.x <= hi.x).then(|| (lo + hi) * 0.5)
+    }
+
     pub fn material(&self, i: usize) -> &Value {
         &self.file.materials[i]
     }

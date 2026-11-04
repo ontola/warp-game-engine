@@ -134,6 +134,9 @@ pub struct View {
     wizard_pieces: HashMap<usize, Vec<Piece>>,
     wizard_anims: Vec<anim::WizardAnim>,
     enemy_anims: HashMap<hecs::Entity, anim::EnemyAnim>,
+    /// The monsters' motion-captured clips, and each kit's rig.
+    rig: Option<(crate::rig::Library, crate::rig::Clips)>,
+    bounds: HashMap<String, Option<crate::rig::Bound>>,
     /// Pieces of dead monsters lying about.
     debris: Vec<Debris>,
     cam_center: Vec3,
@@ -196,6 +199,14 @@ impl View {
             blade_len: vec![],
             blade_sparks: 0.0,
             enemy_anims: HashMap::new(),
+            rig: match crate::rig::Library::load() {
+                Ok(lib) => crate::rig::Clips::new(&lib).map(|c| (lib, c)),
+                Err(e) => {
+                    eprintln!("spellstorm: no monster animations: {e}");
+                    None
+                }
+            },
+            bounds: HashMap::new(),
             debris: Vec::new(),
             cam_center: Vec3::ZERO,
             cam_height: 18.5,
@@ -532,9 +543,38 @@ impl View {
             let name = format!("enemy/{}", e.cfg().key);
             let pieces = self.look.pieces(&self.kits, &mut self.scene, &name);
             let Some(kit) = self.kits.kit(&name) else { continue };
+            if !self.bounds.contains_key(&name) {
+                let b = self.rig.as_ref().and(crate::rig::rig(e.cfg().key)).map(|d| crate::rig::Bound::new(d, kit, &self.kits));
+                self.bounds.insert(name.clone(), b);
+            }
+            let bound = self.bounds.get(&name).and_then(|b| b.as_ref()).zip(self.rig.as_ref());
             let seed = id.id();
             let ea = self.enemy_anims.entry(id).or_default();
-            let model = ea.model(kit.base_scale, &a, &e, time, seed, dt);
+            let model = ea.model(kit.base_scale, &a, &e, time, seed, dt, bound.is_some());
+            // Its bones under the motion-captured clips (rig.rs).
+            let bones = bound.map(|(b, (lib, clips))| {
+                let wind = if e.wind > 0.0 {
+                    Some((e.cfg().attack, 1.0 - (e.wind / e.wind_time()) as f32))
+                } else if e.boss_wind > 0.0 {
+                    Some((spellstorm::enemy::Attack::Slam, 1.0 - (e.boss_wind / e.boss_wind_time.max(1e-3)) as f32))
+                } else {
+                    None
+                };
+                let doing = crate::rig::Doing {
+                    speed: a.vel.with_y(0.0).length(),
+                    wind,
+                    hit: a.hurt_t > ea.hurt_seen + 1e-6,
+                    dead: !a.alive,
+                    held: a.frozen > 0.0 || a.stun > 0.0,
+                };
+                ea.hurt_seen = a.hurt_t;
+                let layers = ea.body.step(lib, clips, b.hip() * kit.base_scale, &doing, dt);
+                (b.pose(lib, &layers), b)
+            });
+            let part = |node: usize| match &bones {
+                Some((m, b)) => m[b.bone_of[node] as usize] * kit.model_xf(node),
+                None => kit.model_xf(node),
+            };
             seen.push(id);
             // Dust kicked up over a burrower tunnelling (the mound's dust).
             if e.under && a.alive {
@@ -568,7 +608,7 @@ impl View {
                     for p in &pieces {
                         let n = &kit.nodes[p.node];
                         let Some(mesh) = n.mesh else { continue };
-                        let xf = at * kit.model_xf(p.node);
+                        let xf = at * part(p.node);
                         for (m, mid) in self.look.chunks(&self.kits, &mut self.scene, mesh, n.material) {
                             parts.push((m, xf * Mat4::from_translation(mid), p.shadow));
                         }
@@ -578,7 +618,7 @@ impl View {
                     }
                 } else if let Some(anim::Fall::Scatter { power, up, life }) = how {
                     ea.scattered = true;
-                    let parts = pieces.iter().map(|p| (p.mesh, at * kit.model_xf(p.node), p.shadow)).collect();
+                    let parts = pieces.iter().map(|p| (p.mesh, at * part(p.node), p.shadow)).collect();
                     self.debris.push(Debris::new(&self.scene, parts, a.pos, power, up, life, seed));
                 }
             }
@@ -589,7 +629,7 @@ impl View {
                 let flash = if e.how == Some(Death::Freeze) { 0.6 } else { hit_flash(&a) };
                 marked.push((out.len()..out.len() + pieces.len(), flash, 0.0));
                 for p in &pieces {
-                    let mut xf = at * kit.model_xf(p.node);
+                    let mut xf = at * part(p.node);
                     if eyes != 1.0 && kit.eyes.contains(&p.node) {
                         xf *= Mat4::from_scale(Vec3::splat(eyes));
                     }
