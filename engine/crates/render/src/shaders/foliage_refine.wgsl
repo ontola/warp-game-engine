@@ -253,3 +253,27 @@ fn error_in(s:vec4<f32>,error:f32,vp:mat4x4<f32>,pixels:vec2<f32>)->f32 {
  let dy=(ly/wmin+(abs(dot(r[1],p))+s.w*ly)*wlen/(wmin*wmin))*pixels.y*0.5;
  return error*length(vec2<f32>(dx,dy));
 }
+
+// Explicit diagnostic dispatch only: never part of normal frame scheduling.
+// Positive finite float bits preserve ordering under atomicMax.
+fn audit_node(tree:u32,node:u32) {
+ let n=nodes[node];let scale=projected(trees[tree],n);
+ let spatial=min(scale*n.error.x,vec2<f32>(1e30));
+ let ratio=min(max(spatial/max(view.pixels.z,1e-8),scale*n.error.y),vec2<f32>(1e30));
+ atomicMax(&state[19],bitcast<u32>(spatial.x));atomicMax(&state[20],bitcast<u32>(spatial.y));
+ atomicMax(&state[21],bitcast<u32>(ratio.x));atomicMax(&state[22],bitcast<u32>(ratio.y));
+ if ratio.x>1.0 {atomicAdd(&state[23],1u);}if ratio.y>1.0 {atomicAdd(&state[24],1u);}
+ if (n.links.w&1u)!=0u {atomicAdd(&state[27],1u);}
+}
+@compute @workgroup_size(64) fn audit(@builtin(global_invocation_id) id:vec3<u32>) {
+ let at=id.x;
+ if at<min(atomicLoad(&counters[0]),view.counts.y) {let r=records[at];audit_node(r.x,r.y);}
+ if at>=view.counts.x {return;}
+ if atomicLoad(&fallback[at])!=0u {atomicAdd(&state[25],1u);return;}
+ let rep=direct[at];if rep==0u {return;}
+ let first=trees[at].info.x;let end=nodes[first].links.y;
+ for(var n=first;n<end;n++) {
+  if nodes[n].links.z+1u==rep && (nodes[n].links.w&2u)!=0u {audit_node(at,n);return;}
+ }
+ atomicAdd(&state[26],1u);
+}

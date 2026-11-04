@@ -607,3 +607,35 @@ Evidence: `build/playtest-unified/exact-mip-{before,after}-{1,2,3}.*`,
 `exact-mip-summary.json`, `exact-mip-comparison.jpg`, and
 `exact-camera-mip-tests.log`. Next architectural work must address intermediate
 refinement traversal and achieved-error reporting, not merely reduce reservations.
+
+## Selected-cut error audit (5 November 2026, integrated diagnostics)
+
+An explicit diagnostic GPU dispatch evaluates the retained cut against the same
+consumer projections and spatial/optical thresholds used by selection. It runs
+only when `Runtime::diagnostics` is requested, not during normal frame scheduling.
+Reports separate maxima for all consumers and camera consumers, plus counts
+over target. The normalized target ratio is max(spatial error / requested pixel
+error, optical support / one pixel). Emergency proxies, unmatched direct
+representations and forced-refinement nodes are counted separately; their missing
+error guarantees must not be interpreted as zero-error acceptance.
+
+These are selected-cut estimates from authored bounds, not measured image error
+or proof that downstream residency/materialization rendered every record. Thus
+G2.2 remains open until output publication and error evidence are reconciled.
+
+Normal lowland+grass route (native 1280x720, one view, 240 frames) reported
+40,530 camera-over-target and 80,061 all-consumer-over-target representations,
+plus 15,063 forced nodes. Emergency proxies and unmatched direct representations
+were both zero. Selected spatial bound maximum was 95,418.82 pixels; target
+ratio maximum 132,132.28. These are conservative projection bounds (including
+near-plane amplification), not measured image displacement. They establish that
+zero emergency fallbacks alone is not evidence of adequate detail.
+Artifact: `build/playtest-unified/cut-error-route.log`; normal selected counts
+remain 758 voxel slots / 94,366 direct roots / zero source slots.
+
+Validation: all 139 foliage tests pass (`cut-error-tests.log`). The strengthened
+GPU mixed-cut oracle additionally checks zero error for fully refined leaves,
+exact over-target parent counts under slot/raster limits and missing pages, and
+direct-root error lookup (`cut-error-oracle.log`, PASS). Normal frame dispatches
+are unchanged: the new audit runs only on explicit diagnostic readback. No
+performance improvement is claimed.

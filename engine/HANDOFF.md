@@ -1,3 +1,15 @@
+## 5 November 2026 — selected-cut error diagnostics
+
+Explicit Runtime::diagnostics now dispatches an error audit, outside frame
+scheduling. Reports all/camera projected-error maxima, normalized target ratios,
+over-target counts and unknown proxy/unmatched/forced-node counts. Full 139-test
+foliage suite plus strengthened mixed-cut GPU oracle PASS. Normal 720p one-view
+route: 40,530 camera-over-target representations, 15,063 forced nodes, despite
+zero emergency proxies. Bounds are conservative, not measured pixel differences.
+Details and artifacts in docs/vegetation-architecture.md. G2.2 remains open.
+Current release terrain_fly contains production allocator plus diagnostic audit;
+no rejected optimization and no interactive playtest. No GPU run remains active.
+
 ## 4 November 2026 — exact camera mip experiment rejected
 
 Reduced camera reservations by rendering precisely the selector-admitted mip.
