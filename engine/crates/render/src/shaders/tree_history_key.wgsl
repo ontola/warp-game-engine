@@ -1,4 +1,4 @@
-// Shared 64 KiB, two-hash visibility Bloom filter. False positives merely
+// Shared 32 KiB payload, two-hash visibility Bloom filter. False positives merely
 // render extra current geometry first; no false negative can remove geometry
 // because phase two always handles the complementary set.
 fn tree_history_hash(value:u32)->u32 {
