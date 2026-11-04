@@ -86,21 +86,22 @@ fn projected(t:Tree,n:Node)->vec2<f32> {
  }
  return vec2<f32>(all_scale,camera_scale)*t.scale.x;
 }
-// Free unary transitions do not need global reservations or frontier storage.
-// Stop before a missing page, any increased work, or an admitted error target.
+// A unary chain represents the same complete support at several LODs.
+// Intermediate occupancy need not be monotonic: inspect through expensive or
+// nonresident intermediate levels, but publish only a resident affordable end.
 fn candidate(tree:u32,start:u32)->u32 {
- let t=trees[tree];var at=start;
+ let t=trees[tree];var at=start;var best=start;
+ let budget=work(tree,start,mask(sphere(t,nodes[start])));
  loop {
   let n=nodes[at];if n.links.x==NONE {break;}
-  let child=n.links.x;let c=nodes[child];if c.links.y!=n.links.y {break;}
   let scale=projected(t,n);
-  if (n.links.w&1u)==0u && scale.x<1e29 && scale.x*n.error.x<=view.pixels.z && (n.error.y==0.0 || scale.x*n.error.y<=1.0) {break;}
-  let consumers=mask(sphere(t,n));let next_mask=mask(sphere(t,c));
-  if any(work(tree,child,next_mask)>work(tree,at,consumers)) {break;}
-  if !ready(c.links.z) {break;}
+  if at==best && (n.links.w&1u)==0u && scale.x<1e29 && scale.x*n.error.x<=view.pixels.z && (n.error.y==0.0 || scale.x*n.error.y<=1.0) {break;}
+  let child=n.links.x;let c=nodes[child];if c.links.y!=n.links.y {break;}
+  let cost=work(tree,child,mask(sphere(t,c)));
+  if all(cost<=budget) && ready(c.links.z) {best=child;}
   at=child;
  }
- return at;
+ return best;
 }
 @compute @workgroup_size(64) fn propose(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;if at>=atomicLoad(&state[3]) {return;}

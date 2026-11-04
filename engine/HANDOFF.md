@@ -1,3 +1,14 @@
+## 5 November 2026 - non-monotonic unary admission
+
+GPU refinement can skip expensive or missing intermediate unary LODs to an
+affordable resident endpoint, retaining the complete ancestor otherwise.
+All 140 foliage tests PASS, including missing-page/recovery oracle. Three
+alternating normal-route comparisons show unchanged ~11.5 ms and identical
+selection counts; no performance/visual acceptance claim. Deeper requests
+increase source uploads 3 to 6 without selecting source slots. Next: global
+priority reservation. Details in the authoritative vegetation checklist.
+Release terrain_fly contains this change. No GPU run/playtest remains active.
+
 ## 5 November 2026 — selected-cut error diagnostics
 
 Explicit Runtime::diagnostics now dispatches an error audit, outside frame

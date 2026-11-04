@@ -411,6 +411,25 @@ mod tests {
   selector.publish_asset_pages(&gpu,&[(3,true,2)]).unwrap();assert_eq!(draw(16),[2,3,5,6]);
  }
  #[test]
+ #[ignore="exclusive GPU non-monotonic unary admission fixture"]
+ fn gpu_unary_refinement_skips_expensive_intermediate_mips() {
+  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].scale[2]=1.;trees[0].scale[3]=1.;
+  let n=|child,rep,flags,cost,error|Node {sphere:[0.,0.,0.5,0.2],error:[error,0.,cost,cost],links:[child,4,rep,flags]};
+  let nodes=[n(1,0,2,1.,1.),n(2,1,0,10.,1.),n(3,2,0,100.,1.),n(NONE,3,0,2.,0.)];
+  let selector=Selector::new(&gpu,&nodes,&trees,4,4).unwrap();let empty=depth(&gpu,0.);
+  let consumers=[ConsumerView::camera(crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]})];
+  let draw=|| {
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union_consumers_budget(&gpu,&mut enc,&consumers,0.01,4,[5;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
+   let count=read(&gpu,&selector.counters)[0]as usize;
+   read(&gpu,&selector.records).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>()
+  };
+  assert_eq!(draw(),[3]);
+  selector.publish_asset_pages(&gpu,&[(2,false,2)]).unwrap();assert_eq!(draw(),[3],"unused intermediate page need not be resident");
+  selector.publish_asset_pages(&gpu,&[(3,false,2)]).unwrap();assert!(draw().is_empty());assert_eq!(read(&gpu,&selector.direct),[1],"missing endpoint retains affordable complete ancestor");
+  selector.publish_asset_pages(&gpu,&[(3,true,3)]).unwrap();assert_eq!(draw(),[3]);
+ }
+ #[test]
  #[ignore="exclusive GPU unary LOD chain fixture"]
  fn gpu_unary_lod_chains_do_not_fill_global_frontier() {
   let gpu=Gpu::new().unwrap();let (_,trees)=fixture(193);let empty=depth(&gpu,0.);
