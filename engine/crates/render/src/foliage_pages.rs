@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 #[path="foliage_page_cache.rs"]
 pub mod cache;
+#[path="foliage_source_pages.rs"]
+pub mod source;
 
 #[derive(Clone,Debug)]
 pub struct VoxelPage {

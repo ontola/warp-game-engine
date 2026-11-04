@@ -663,15 +663,12 @@ impl VoxelRenderer {
         scene: &Scene,
         scene_layout: &wgpu::BindGroupLayout,
         volume_view_layout: &wgpu::BindGroupLayout,
+        page_cache:Option<crate::foliage_pages::cache::Cache>,
     ) -> Option<Self> {
         let forest = scene.voxel_forest.as_ref()?;
         if forest.instances.is_empty() {
             return None;
         }
-        let page_cache=scene.gpu_forest.as_ref().map(|spec| {
-            let(deps,pinned)=spec.voxel_page_dependencies(forest.levels.len())?;
-            crate::foliage_pages::cache::Cache::new(gpu,forest,deps,pinned,spec.page_budget)
-        }).transpose().expect("invalid bounded GPU forest voxel cache");
         let far = scene.voxel_far_distance_m;
         assert!(far.is_finite() && far >= 0.0, "invalid far tree distance");
         let proxies = scene.voxel_proxies.min(forest.instances.len() as u32);
