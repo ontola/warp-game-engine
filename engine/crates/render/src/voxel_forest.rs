@@ -667,6 +667,11 @@ impl VoxelRenderer {
         if forest.instances.is_empty() {
             return None;
         }
+        // Stable logical levels, independently allocated physical voxel pages.
+        // Camera splats, sun splats and ray integration all use this same upload.
+        let paged = scene.gpu_forest.as_ref().map(|_| crate::foliage_pages::pack(forest)
+            .expect("invalid GPU forest voxel pages"));
+        let forest = paged.as_ref().map(|p|&p.0).unwrap_or(forest);
         let far = scene.voxel_far_distance_m;
         assert!(far.is_finite() && far >= 0.0, "invalid far tree distance");
         let proxies = scene.voxel_proxies.min(forest.instances.len() as u32);
@@ -812,7 +817,7 @@ impl VoxelRenderer {
             integrator_options.antipodal_normals,if integrator_options.antipodal_normals {3}else{6});
         eprintln!("voxel global intervals: enabled={} stream_bytes_per_view={} maximum_pixel_slots={} (experimental; complete scan on overflow)",
             integrator_options.global_intervals,INTERVAL_STREAM_BYTES,INTERVAL_STREAM_PIXEL_SLOTS);
-        let raster = if integrator_options.raster { match if brick_hzb.is_some() { splat_cells_bricked(forest) } else { splat_cells(forest) } {
+        let raster = if integrator_options.raster { match if brick_hzb.is_some() { splat_cells_bricked(forest) } else if let Some(paged)=&paged { Ok(paged.1.clone()) } else { splat_cells(forest) } {
             Ok(cells) if cells.len() > forest.levels.len() => {
                 let capacity = splat_capacity(forest, &cells);
                 eprintln!("voxel raster: enabled cells={} splats_per_view={capacity} (stochastic opaque voxels; integrator off)", cells.len() - forest.levels.len());

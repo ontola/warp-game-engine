@@ -1,3 +1,28 @@
+## 2026-11-04 Relocatable voxel pages on the normal renderer upload
+
+New foliage_pages cooks self-contained dense/brick levels, local cell payloads
+and splats. Stable logical level IDs address independently allocated physical
+ranges. Normal GPU forest upload uses these pages for camera/sun/ray consumers.
+Generation-checked bounded arena rejects stale frees, coalesces fragmentation.
+All 114 foliage-filter checks pass, including exact cell/normal/splat relocation.
+
+Image comparison found physical cell IDs seeded voxel jitter and faint thinning.
+Both now use local coordinates. Same-shader unrelocated control vs relocated
+images: RGB MAE 0.288-0.292/255, channel p99 7; no obvious missing trees/shadows.
+Three alternating native 1713x964 one-view runs: covered 17.018 -> 16.998 ms,
+forest prep 0.682 -> 0.676 ms (no performance claim). Docs and evidence:
+docs/foliage-page-layout-2026-11-04.md; artifacts build/foliage-page-layout.
+Temporary control-build edit was restored. No shipped alternative/opt-in route.
+
+STILL OPEN: initial upload keeps all pages resident (no memory saving). Retain
+page ownership, map representation dependencies, async requests, bounded uploads
+and eviction; source geometry paging also missing. Adaptive shadow choices use
+voxels even for camera-source branches: keep all applicable mip dependencies.
+Root fallback ranges pinned. Instance seed still uses the existing transient
+volume index; stable world identity on slot replacement needs follow-up.
+Other gates remain: upstream consumer-aware history/publication, animated shadow
+cache, unified grass and far cell aggregates. Goal active, not complete.
+
 ## 2026-11-04 GPU logical asset demand and generation-safe publication
 
 Normal forest selection now records/compacts unique logical representation-page
