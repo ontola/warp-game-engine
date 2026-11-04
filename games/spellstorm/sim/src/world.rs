@@ -555,6 +555,20 @@ impl World {
                 a.open_t = 1.8;
             }
         }
+        // Vampire Fang heals the striker, Bramble Mail strikes back.
+        let back = if a.melee_hit { a.mods.thorns * dmg } else { 0.0 };
+        drop(a);
+        if let (Some(s), false, true) = (src, ally, dmg > 0.0) {
+            if mods.leech > 0.0 {
+                if let Ok(mut c) = self.ecs.get::<&mut Actor>(s) {
+                    c.healed(dmg * mods.leech);
+                }
+            }
+            if back > 0.0 {
+                let per = El::Earth.effect().dmg.max(0.1);
+                self.hit(s, &[(El::Earth, 1.0)], back / per, Some(target), Vec3::ZERO, 1.0);
+            }
+        }
         dmg
     }
 

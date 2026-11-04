@@ -171,3 +171,31 @@ fn a_shrine_still_offers_tomes_when_every_tome_is_carried() {
     assert!(!w.run.altars.is_empty(), "a shrine offers repeats once every tome is carried");
     assert!(opened, "the first wall must open");
 }
+
+fn tome(name: &str) -> usize {
+    spellstorm::relics::all().iter().position(|t| t.name == name).unwrap()
+}
+
+#[test]
+fn phoenix_feather_survives_one_blow_a_level() {
+    let mut w = World::new(&[Seat::player(0, "Joep")], 7, Settings::default());
+    let id = w.wizards[0];
+    w.give_relic(id, tome("Phoenix Feather"));
+    let big = [(spellstorm::el::El::Fire, 1.0)];
+    w.hit(id, &big, 1e6, None, glam::Vec3::X, 1.0);
+    assert!(w.a(id).alive && w.a(id).hp == 1.0);
+    w.am(id).invuln = 0.0;
+    w.hit(id, &big, 1e6, None, glam::Vec3::X, 1.0);
+    assert!(!w.a(id).alive);
+}
+
+#[test]
+fn vampire_fang_heals_the_striker() {
+    let mut w = World::new(&[Seat::player(0, "Joep"), Seat::bot(1)], 7, Settings::default());
+    let (a, b) = (w.wizards[0], w.wizards[1]);
+    w.give_relic(a, tome("Vampire Fang"));
+    w.am(a).hp = 50.0;
+    w.am(b).team = 9;
+    let dealt = w.hit(b, &[(spellstorm::el::El::Fire, 1.0)], 5.0, Some(a), glam::Vec3::X, 1.0);
+    assert!(dealt > 0.0 && w.a(a).hp > 50.0, "{dealt} {}", w.a(a).hp);
+}

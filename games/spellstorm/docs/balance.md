@@ -311,6 +311,14 @@ dealt is capped by the monsters there are: use it to catch a tome that
 breaks the game (one that makes bots die far more or far less), not to
 rank them.
 
+### Tomes that do something new
+
+Stacking, each with a cap (`Mods::of`): Vampire Fang (heal 3% of damage dealt, up to
+25%), Bramble Mail (melee strikers take half back), Phoenix Feather (survive a
+killing blow once a level, up to 3), Forked Rod (chain lightning jumps once
+more, up to 5), Wide Sigil (bursts 30% wider, up to double), Shepherd's Crook
+(raising twice as fast, up to 5 times). Not on the yardstick yet: tune by play.
+
 ### Ideas not built yet
 
 Kept here so the list can grow without losing the thread:
@@ -319,9 +327,5 @@ Kept here so the list can grow without losing the thread:
   larger (needs `Mods` hooks in the overload code).
 - **Sentry** tomes: sentries last longer, shoot faster, or carry 2 elements
   of the queue's power (needs hooks in the sentry code).
-- **Chain** tome: lightning jumps to one more monster.
-- **Nova** tome: bursts around you reach 30% further.
-- **Second wind**: the first time you would fall in a level, you keep 1 hp.
-- **Faster raising**: you raise a fallen friend twice as fast.
 - **Pack tomes** that help everyone at the shrine a little (+10% each),
   for co-op choices.

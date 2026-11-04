@@ -72,6 +72,8 @@ pub struct Actor {
     pub hurt_acc: f64,
     pub haste: f64,
     pub invuln: f64,
+    /// Killing blows it may still survive this level (Phoenix Feather).
+    pub winds: i32,
     pub wading: bool,
     pub ripple_t: f64,
     /// How long a freeze holds and how long frost cannot freeze again after.
@@ -133,6 +135,7 @@ impl Actor {
             hurt_acc: 0.0,
             haste: 1.0,
             invuln: 0.0,
+            winds: 0,
             wading: false,
             ripple_t: 0.0,
             freeze_time: b::FREEZE_TIME,
@@ -252,6 +255,13 @@ impl Actor {
         self.hp -= dmg;
         if dmg > 2.5 {
             self.flash = self.flash.max(0.08);
+        }
+        // Phoenix Feather: a blow that would kill leaves 1 health instead.
+        if self.hp <= 0.0 && self.winds > 0 {
+            self.winds -= 1;
+            self.hp = 1.0;
+            self.invuln = self.invuln.max(1.5);
+            return false;
         }
         if self.hp <= 0.0 {
             self.overkill = -self.hp;

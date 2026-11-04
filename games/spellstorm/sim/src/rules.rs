@@ -403,7 +403,7 @@ fn mods_table(lua: &Lua, m: &Mods) -> mlua::Result<Table> {
         els.raw_set(key(e), m.el[e.idx()])?;
     }
     t.raw_set("el", els)?;
-    for (k, v) in [("dmg", m.dmg), ("heal", m.heal), ("reach", m.reach), ("charge", m.charge), ("enchant_time", m.enchant_time), ("sword", m.sword), ("afflicted", m.afflicted), ("speed", m.speed), ("hp", m.hp), ("mana", m.mana), ("regen", m.regen), ("cost", m.cost), ("souls", m.souls), ("magnet", m.magnet), ("guard", m.guard), ("status", m.status), ("push", m.push), ("bolt", m.bolt), ("swing", m.swing)] {
+    for (k, v) in [("dmg", m.dmg), ("heal", m.heal), ("reach", m.reach), ("charge", m.charge), ("enchant_time", m.enchant_time), ("sword", m.sword), ("afflicted", m.afflicted), ("speed", m.speed), ("hp", m.hp), ("mana", m.mana), ("regen", m.regen), ("cost", m.cost), ("souls", m.souls), ("magnet", m.magnet), ("guard", m.guard), ("status", m.status), ("push", m.push), ("bolt", m.bolt), ("swing", m.swing), ("leech", m.leech), ("thorns", m.thorns), ("wind", m.wind), ("chain", m.chain), ("nova", m.nova), ("raise", m.raise)] {
         t.raw_set(k, v)?;
     }
     for (k, v) in [("echo", m.echo), ("planter", m.planter), ("firewalker", m.firewalker)] {
@@ -546,6 +546,12 @@ fn read_tomes(t: &Table) -> mlua::Result<Vec<Tome>> {
                     "push" => Mod::Push(f()?),
                     "bolt" => Mod::Bolt(f()?),
                     "swing" => Mod::Swing(f()?),
+                    "leech" => Mod::Leech(f()?),
+                    "thorns" => Mod::Thorns(f()?),
+                    "wind" => Mod::Wind(f()?),
+                    "chain" => Mod::Chain(f()?),
+                    "nova" => Mod::Nova(f()?),
+                    "raise" => Mod::Raise(f()?),
                     "echo" if val.as_boolean() == Some(true) => Mod::Echo,
                     "planter" if val.as_boolean() == Some(true) => Mod::Planter,
                     "firewalker" if val.as_boolean() == Some(true) => Mod::Firewalker,
