@@ -147,3 +147,26 @@ fn nobody_gets_past_a_shut_wall_and_unlocks_wait_for_it() {
         }
     }
 }
+
+#[test]
+fn a_shrine_with_no_tome_left_still_opens_its_wall() {
+    // Joep, level 4: both wizards carried all 32 tomes, so the shrine raised
+    // none, said "take your tome" and its wall never opened.
+    let mut w = bots(2, 7);
+    let n = spellstorm::relics::all().len();
+    for id in w.wizards.clone() {
+        for r in 0..n {
+            w.give_relic(id, r);
+        }
+    }
+    let mut opened = false;
+    for _ in 0..60 * 150 {
+        w.step();
+        if w.run.wards.iter().any(|wd| wd.k == 0 && wd.opening) {
+            opened = true;
+            break;
+        }
+    }
+    assert!(w.run.altars.is_empty(), "no tome is left to raise");
+    assert!(opened, "the first wall must open with no tome to take");
+}
