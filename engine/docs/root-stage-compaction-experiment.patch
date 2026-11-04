@@ -1,0 +1,143 @@
+diff --git a/engine/crates/render/src/foliage_refine.rs b/engine/crates/render/src/foliage_refine.rs
+index 5eaab51..afa0294 100644
+--- a/engine/crates/render/src/foliage_refine.rs
++++ b/engine/crates/render/src/foliage_refine.rs
+@@ -18,7 +18,7 @@ impl Refiner {
+         let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("foliage complete-cut refinement"),entries:&entries});
+         let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
+         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage incremental admission"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_refine.wgsl").into())});
+-        let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain"].into_iter().map(|entry|
++        let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","seed_shadow","start_shadow","compact_seed"].into_iter().map(|entry|
+             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()})).collect();
+         Self {proposals:storage("foliage refinement proposals",capacity as u64*80),
+             queues:[storage("foliage complete cut A",capacity as u64*16),storage("foliage complete cut B",capacity as u64*16)],
+@@ -43,24 +43,33 @@ impl Refiner {
+     }
+     pub fn encode(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,s:&Selector) {
+         let binds=[self.bind(gpu,s,0),self.bind(gpu,s,1)];enc.clear_buffer(&self.state,0,None);
+-        self.dispatch(enc,&binds[0],0,Some(s.count.div_ceil(64)),0);
+-        self.dispatch(enc,&binds[0],1,Some(1),0);
+-        // One extra transition admits the initial emergency proxy into the
+-        // recipe root. A final drain makes depth bounds conservative.
+-        let rounds=2*(s.levels+1);
+-        for round in 0..rounds {
+-            let bind=&binds[round as usize%2];self.prepare(enc,bind);
+-            // Compute dispatches are ordered storage-usage scopes. Keep the
+-            // dependent dispatches in one pass; only indirect argument copies
+-            // require leaving it. Avoid eight pass/descriptor setups per wave.
+-            let mut pass=enc.begin_compute_pass(&Default::default());
+-            pass.set_bind_group(0,bind,&[]);
+-            for (pipeline,groups,offset) in [(3,None,0),(4,None,12),(5,Some(1),0),(6,None,0),(7,None,12),(8,Some(1),0),(9,None,0),(10,Some(1),0)] {
+-                pass.set_pipeline(&self.pipelines[pipeline]);
+-                if let Some(n)=groups {pass.dispatch_workgroups(n,1,1);}else{pass.dispatch_workgroups_indirect(&self.args,offset);}
++        // Camera-owning roots complete their cuts first. Shadow-only roots
++        // keep their reserved proxy until their own stage; they are not copied
++        // and reprojected through every camera refinement wave.
++        for stage in 0..2 {
++            self.dispatch(enc,&binds[0],if stage==0 {0}else{12},Some(s.count.div_ceil(64)),0);
++            self.dispatch(enc,&binds[0],if stage==0 {1}else{13},Some(1),0);
++            self.prepare(enc,&binds[0]);
++            {
++                let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);
++                for (pipeline,groups,offset) in [(7,None,12),(8,Some(1),0),(14,None,0),(10,Some(1),0)] {
++                    pass.set_pipeline(&self.pipelines[pipeline]);
++                    if let Some(n)=groups {pass.dispatch_workgroups(n,1,1);}else{pass.dispatch_workgroups_indirect(&self.args,offset);}
++                }
+             }
++            // Compaction writes queue B. Cooked depth plus the proxy-to-root
++            // transition bounds each stage; final drain always retains a cut.
++            let rounds=s.levels+1;
++            for round in 0..rounds {
++                let bind=&binds[(round as usize+1)%2];self.prepare(enc,bind);
++                let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,bind,&[]);
++                for (pipeline,groups,offset) in [(3,None,0),(4,None,12),(5,Some(1),0),(6,None,0),(7,None,12),(8,Some(1),0),(9,None,0),(10,Some(1),0)] {
++                    pass.set_pipeline(&self.pipelines[pipeline]);
++                    if let Some(n)=groups {pass.dispatch_workgroups(n,1,1);}else{pass.dispatch_workgroups_indirect(&self.args,offset);}
++                }
++            }
++            let bind=&binds[(rounds as usize+1)%2];self.prepare(enc,bind);self.dispatch(enc,bind,11,None,0);
+         }
+-        let bind=&binds[rounds as usize%2];self.prepare(enc,bind);self.dispatch(enc,bind,11,None,0);
+     }
+ }
+ #[cfg(test)] mod tests {
+diff --git a/engine/crates/render/src/shaders/foliage_refine.wgsl b/engine/crates/render/src/shaders/foliage_refine.wgsl
+index d4e434c..474bebc 100644
+--- a/engine/crates/render/src/shaders/foliage_refine.wgsl
++++ b/engine/crates/render/src/shaders/foliage_refine.wgsl
+@@ -60,22 +60,42 @@ fn add_used(cost:vec4<u32>) {
+  let tree=id.x;if tree>=view.counts.x {return;}
+  let root=trees[tree];var consumers=0u;
+  if root.info.w==0u {consumers=mask(sphere(root,nodes[root.info.x]));}
+- current[tree]=vec4<u32>(tree,NONE,consumers,0u);
++ // Reserve the complete visible baseline for BOTH stages, but only enqueue
++ // camera-owning roots now. Shadow-only roots are seeded once afterwards.
++ let camera=(consumers&256u)!=0u;
++ current[tree]=vec4<u32>(tree,NONE,select(0u,consumers,camera),0u);
++ var p:Proposal;p.control=vec4<u32>(0u,0u,u32(camera),u32(camera));proposals[tree]=p;
+  demand[tree].bucket=consumers;demand[tree].prefix=0u;
+  atomicStore(&demand[tree].count,0u);atomicStore(&demand[tree].failed,0u);
+  if consumers!=0u {add_used(work(tree,NONE,consumers));}
+ }
+ @compute @workgroup_size(1) fn start() {
+- atomicStore(&state[3],view.counts.x);atomicStore(&state[16],view.counts.x);
++ atomicStore(&state[3],view.counts.x);atomicStore(&state[16],0u);
+  if atomicLoad(&state[1])>view.consumer_count.z || atomicLoad(&state[2])>view.consumer_count.w {atomicOr(&state[15],4u);}
+ }
+ @compute @workgroup_size(1) fn prepare() {
+  let count=atomicLoad(&state[3]);
+  for(var k=0u;k<3u;k++) {atomicStore(&state[4u+k],atomicLoad(&state[k]));}
+- atomicStore(&state[7],0u);atomicStore(&state[18],0u);
++ atomicStore(&state[7],0u);
+  atomicStore(&state[8],(count+63u)/64u);atomicStore(&state[9],1u);atomicStore(&state[10],1u);
+  atomicStore(&state[12],(count+255u)/256u);atomicStore(&state[13],1u);atomicStore(&state[14],1u);
+ }
++// Use the already computed consumer mask. Do not add baseline work twice or
++// overwrite camera-stage demand/publications. Only camera-free roots enter here.
++@compute @workgroup_size(64) fn seed_shadow(@builtin(global_invocation_id) id:vec3<u32>) {
++ let tree=id.x;if tree>=view.counts.x {return;}
++ let consumers=demand[tree].bucket&768u;let shadow=consumers==512u;
++ current[tree]=vec4<u32>(tree,NONE,select(0u,consumers,shadow),0u);
++ var p:Proposal;p.control=vec4<u32>(0u,0u,u32(shadow),u32(shadow));proposals[tree]=p;
++}
++@compute @workgroup_size(1) fn start_shadow() {atomicStore(&state[3],view.counts.x);}
++// Stable prefix compaction preserves root order and removes inactive/offscreen
++// capacity slots before priority scans, rather than making every wave visit them.
++@compute @workgroup_size(64) fn compact_seed(@builtin(global_invocation_id) id:vec3<u32>) {
++ let at=id.x;if at>=atomicLoad(&state[3]) || proposals[at].control.w==0u {return;}
++ let offset=proposals[at].output.x+blocks[32u+(at/256u)*32u].y;
++ next[offset]=current[at];
++}
+ fn projected(t:Tree,n:Node)->vec2<f32> {
+  let s=sphere(t,n);var all_scale=0.0;var camera_scale=0.0;
+  for(var i=0u;i<view.consumer_count.x;i++) {
+@@ -128,7 +148,6 @@ fn candidate(tree:u32,start:u32)->u32 {
+  }
+  // All visible siblings must fit together. Missing pages keep the current parent.
+  if refine {
+-  if (task.z&256u)!=0u {atomicOr(&state[18],1u);}
+   let delta=p.replacement-min(p.replacement,p.old);
+   let price=max(1.0,f32(delta.x)*256.0+f32(delta.y)+f32(delta.z));
+   // Mandatory root fallbacks carry zero authored error. Their projected size
+@@ -160,11 +179,6 @@ fn candidate(tree:u32,start:u32)->u32 {
+ @compute @workgroup_size(64) fn decide(@builtin(global_invocation_id) id:vec3<u32>) {
+  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
+  let p=proposals[at];if p.control.y==0u {return;}
+- // Keep shadow-only work pending while any camera refinement remains. A coarse
+- // shadow upgrade cannot consume slots needed by a later camera hierarchy level.
+- if (current[at].z&256u)==0u && atomicLoad(&state[18])!=0u {
+-  proposals[at].control.w=2u;proposals[at].control.z=1u;return;
+- }
+  var before=plus(p.prefix,blocks[32u+(at/256u)*32u+p.control.x]);
+  for(var b=p.control.x+1u;b<32u;b++) {before=plus(before,blocks[b]);}
+  let delta=p.replacement-min(p.replacement,p.old);
+@@ -204,9 +218,6 @@ fn publish(task:vec4<u32>) {
+ @compute @workgroup_size(64) fn apply(@builtin(global_invocation_id) id:vec3<u32>) {
+  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
+  let p=proposals[at];let task=current[at];
+- if p.control.w==2u && (atomicLoad(&state[15])&2u)==0u {
+-  next[p.output.x+blocks[32u+(at/256u)*32u].y]=task;return;
+- }
+  if p.control.w==0u || (atomicLoad(&state[15])&2u)!=0u {publish(task);return;}
+  // No writes to children until every candidate's output range is reserved.
+  for(var k=0u;k<3u;k++) {
