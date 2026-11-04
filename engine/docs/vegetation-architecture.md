@@ -64,6 +64,38 @@ Per-pass upper-middle medians (ms; medians need not sum to the covered median):
 | bloom | 0.030 | 0.031 | 0.032 |
 | tonemap | 0.039 | 0.039 | 0.039 |
 
+## Immediate performance decision (existing G1.4/G8 evidence, not new gates)
+
+- [ ] Measure voxel rasterization at ~1 pixel projected support, including splat
+  generation, overdraw, visibility/resolve, and shadow work. Report submitted and
+  surviving counts; compare the identical view with a detailed reference.
+- [ ] Same executable, alternating native/DLSS Quality/Balanced/Performance route
+  runs, at least three per mode. Record actual input/output sizes, per-pass medians,
+  reconstruction cost and comparable images. No silent fallback.
+- [ ] Apply the following provisional TOTAL frame allocation to these measurements,
+  then proceed to G2. These are engineering targets, not achieved measurements.
+
+| Category (all four views combined at 4K output) | Budget ms |
+| --- | ---: |
+| Vegetation selection, paging, poses and materialization | 0.50 |
+| Vegetation raster, visibility and resolve | 1.50 |
+| Vegetation shadows | 1.50 |
+| **Vegetation subtotal** | **3.50** |
+| Terrain | 1.50 |
+| Lighting / indirect illumination | 2.00 |
+| TAA / upscale / post | 1.30 |
+| **Allocated frame total** | **8.30** |
+| Remaining margin to 8.33 ms | 0.03 |
+
+User-proposed allocation adopted. Non-vegetation geometry, shadows, effects and UI
+must be explicitly accounted for within the total; they are not free or omitted.
+The margin is effectively zero, so these are ceilings rather than comfortable
+steady-state targets. Per-category instrumentation must avoid double-counting.
+
+A pass missing its allocation is a recorded gap, not a reason to hide or discard
+its measurements. 720p single-view runs are diagnostic only. Share matched images
+with measurements; continue to label the current appearance as unaccepted.
+
 ## Rules for checking boxes
 
 - `[x]` means the stated, narrow item has evidence. It does not complete its parent gate.
@@ -235,3 +267,68 @@ resident ancestor. Growth variants share primitive assets. Physics remains
   normal-route runs produce 14.70 / 15.11 ms covered GPU. Final JPEG inspected:
   coarse rounded crowns and harsh black shadows persist. Mixed-cut motion/depth
   acceptance and alternating comparisons remain outstanding; G1.4 is NOT checked.
+
+- G1.4: GPU threshold sweep (130 cuts, forward/back) preserves every original
+  source member exactly once and naturally reaches source, internal group, mixed
+  and whole-root cuts. `shared_selection_nested_cut_preserves_source_coverage` PASS.
+
+## DLSS diagnostic sweep — 4 November
+
+Same DLSS-enabled executable, 12 serial runs in native/Quality/Balanced/Performance
+order repeated three times. Lowland+grass, one view, 1280x720 output, 240 frames
+at1m/s; 120 warm GPU samples per run. No frame generation. NOT a 4K/four-view
+acceptance test. Actual reconstructed sizes reported by successful evaluations.
+
+| Mode | Internal size | Covered GPU medians ms (three runs) |
+| --- | --- | --- |
+| native | 1280x720 | 15.435 / 15.916 / 16.505 |
+| dlss-quality | 853x480 | 17.106 / 13.347 / 15.362 |
+| dlss-balanced | 742x418 | 16.306 / 12.618 / 15.208 |
+| dlss-performance | 640x360 | 16.240 / 15.703 / 14.940 |
+
+Per-pass median of the three run medians (ms; do not sum medians as a frame time):
+
+| Pass | Native | Quality | Balanced | Performance |
+| --- | ---: | ---: | ---: | ---: |
+| GPU forest selection residency | 3.603 | 3.531 | 3.543 | 3.524 |
+| GPU forest shared poses | 0.105 | 0.104 | 0.104 | 0.104 |
+| GPU forest materialize | 0.142 | 0.142 | 0.141 | 0.141 |
+| shadow tile damage and clear | 0.306 | 0.307 | 0.306 | 0.306 |
+| shadow cull | 0.529 | 0.530 | 0.528 | 0.529 |
+| shadow raster | 0.134 | 0.134 | 0.134 | 0.134 |
+| voxel sun splats | 0.746 | 0.750 | 0.742 | 0.746 |
+| voxel sun splat raster | 0.543 | 0.543 | 0.543 | 0.544 |
+| near shadow cull | 0.323 | 0.323 | 0.323 | 0.323 |
+| near shadow raster | 0.033 | 0.032 | 0.033 | 0.033 |
+| voxel near sun splats | 0.221 | 0.221 | 0.220 | 0.220 |
+| voxel near sun splat raster | 0.070 | 0.070 | 0.070 | 0.070 |
+| tree occluder cull | 0.521 | 0.526 | 0.528 | 0.536 |
+| tree occluder raster | 0.214 | 0.206 | 0.204 | 0.202 |
+| tree occlusion pyramid | 0.089 | 0.075 | 0.074 | 0.073 |
+| tree recovery dispatch | 0.003 | 0.002 | 0.002 | 0.002 |
+| tree remaining cull | 0.010 | 0.010 | 0.010 | 0.010 |
+| tree remaining raster | 0.001 | 0.001 | 0.001 | 0.001 |
+| tree visibility history | 0.030 | 0.015 | 0.012 | 0.010 |
+| voxel splats | 3.124 | 3.027 | 3.018 | 3.153 |
+| voxel splat raster | 2.877 | 2.826 | 2.835 | 2.924 |
+| voxel splat resolve | 0.104 | 0.056 | 0.046 | 0.037 |
+| terrain coarse | 0.100 | 0.060 | 0.050 | 0.043 |
+| shade terrain | 0.425 | 0.304 | 0.247 | 0.194 |
+| shade voxels | 0.073 | 0.063 | 0.053 | 0.046 |
+| shade | 0.079 | 0.061 | 0.044 | 0.038 |
+| motion vectors | 0.034 | 0.019 | 0.016 | 0.014 |
+| taa | 0.045 | 0.000 | 0.000 | 0.000 |
+| exhaust | 0.001 | 0.000 | 0.000 | 0.000 |
+| wheel particles | 0.000 | 0.000 | 0.000 | 0.000 |
+| bloom | 0.031 | 0.031 | 0.031 | 0.031 |
+| tonemap | 0.039 | 0.021 | 0.022 | 0.021 |
+| dlss | 0.000 | 0.478 | 0.477 | 0.440 |
+
+Image review: matched final views retain rounded coarse crowns and heavy black
+shadows in every mode. Lower internal resolution reduces shade/resolve work but
+not the dominant vegetation selection/splat/raster costs enough to help this
+720p scene. DLSS has its own cost; this does not prove it cannot help at4K.
+Next: near-one-pixel raster feasibility, then target-resolution/split validation.
+Evidence: build/playtest-unified/upscale-*.json.gpu.json, logs and PNG pixel
+references; JPEG contact sheet upscale-comparison.jpg. No gameplay-FPS claim.
+Executable SHA256: `d0ecd969686f5e48216a6d624a963b20b6e84815780be3dbf7d3ede3210c8b2e`.

@@ -1,3 +1,20 @@
+## 2026-11-04 User reprioritized raster feasibility + DLSS before G2
+
+Continue English, no interactive playtest. Existing checklist remains sole plan.
+User budgets adopted: vegetation3.5ms(selection0.5/raster1.5/shadows1.5), terrain1.5,
+lighting2, TAA/upscale/post1.3 =8.30ms TOTAL FOUR-VIEW frame, not per view.
+Next immediate work: ~one-pixel voxel raster feasibility with counts/overdraw and
+full source comparison. Do not proceed to new architecture gates before these
+measurements. G1.4 GPU unmodified LOD sweep now passes 130 forward/back cuts,
+source/group/whole-root + mixed representations and exact source membership.
+terrain_fly --fly accepts --upscale native|dlss-quality|dlss-balanced|dlss-performance,
+uses existing Renderer::set_upscale, records actual reconstruction resolutions.
+DLSS build needs NVIDIA_DLSS_SDK=C:/dev/tools/nvidia-dlss-sdk,
+VULKAN_HEADERS=C:/dev/tools/vulkan-headers-dlss, feature render/dlss, runtime dir
+C:/dev/tools/nvidia-dlss-sdk/lib/Windows_x86_64/rel. Output sweep still720p/oneview;
+4K/four-view target NOT established. Image sheet upscale-comparison.jpg inspected:
+coarse crowns/heavy black shadows persist across all modes.
+
 ## 2026-11-04 Checklist G1.3 GPU geometry-group integration
 
 Authoritative checklist: engine/docs/vegetation-architecture.md. G1.3 complete;
