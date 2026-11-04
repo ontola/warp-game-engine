@@ -735,3 +735,31 @@ fn cull_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
         }
     }
 }
+
+// Only cached sun entry points reference group 2. Normal camera, near sun and
+// compatibility paths keep their existing layouts and visibility semantics.
+@group(2) @binding(0) var<uniform> shadow_damage_words:array<vec4<u32>,32>;
+var<workgroup> damaged_owner:bool;
+fn cull_damaged_instance(id:u32,li:u32) {
+    if id>=INSTANCE_COUNT {return;}
+    if li==0u {
+        let inst=instances[id];
+        let radius=max(inst.sphere.w,0.)+max(cull_wind[id].z,0.);
+        damaged_owner=shadow_damage_bounds(view.view_proj,view.size.x,
+            inst.sphere.xyz-vec3<f32>(radius),inst.sphere.xyz+vec3<f32>(radius));
+    }
+    if !workgroupUniformLoad(&damaged_owner) {return;}
+    cull_instance(id,li);
+}
+@compute @workgroup_size(64)
+fn cull_cached_sun(@builtin(workgroup_id) wg:vec3<u32>,@builtin(local_invocation_index) li:u32) {
+    cull_damaged_instance(wg.x+wg.y*65535u,li);
+}
+@compute @workgroup_size(64)
+fn cull_spatial_cached_sun(@builtin(workgroup_id) wg:vec3<u32>,@builtin(local_invocation_index) li:u32) {
+    let slot=wg.x+wg.y*65535u;let count=atomicLoad(&counter[11]);
+    let overflow=count>spatial.header.z;
+    if slot>=select(count,INSTANCE_COUNT,overflow){return;}
+    var id=slot;if !overflow {id=spatial_owners[slot];}
+    cull_damaged_instance(id,li);
+}

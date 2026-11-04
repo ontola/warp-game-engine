@@ -1319,9 +1319,7 @@ fn volume_splat_header(index:u32)->vec4<f32> {return bitcast<vec4<f32>>(volume_s
 // The same cells into the sun map. The host writes the header: the sun's
 // view-projection, frustum planes, direction towards the sun and texel size.
 // Levels follow the texel: the finest whose cell is at least one texel.
-@compute @workgroup_size(64)
-fn voxel_sun_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
-    let index=group.x+group.y*65535u;
+fn volume_sun_splats_impl(index:u32,lane:u32,damaged:bool) {
     let sun=volume_splat_header(10u);
     if lane==0u {
         if index==0u {
@@ -1329,7 +1327,7 @@ fn voxel_sun_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invoca
             atomicStore(&volume_splat_draw[0],VOLUME_SPLAT_VERTICES);
         }
         var level=VOLUME_SPLAT_NONE;
-        if index<volume_config.size_count.w {
+        if index<volume_config.size_count.w && damaged {
             // Far trees all cast; the sun selection marks only index 0.
             // Proxies always cast, also into maps whose source groups do not.
             var selected=volume_selection_at(0);
@@ -1509,4 +1507,24 @@ fn voxel_splat_resolve(@builtin(global_invocation_id) id:vec3<u32>) {
     let cell_m=grid.w/max(length(vec3<f32>(tree.inverse[0].x,tree.inverse[1].x,tree.inverse[2].x)),1e-6);
     let rad=volume_radiance(sample,tree,p,-direction,shadow,sky_visibility(p+up*cell_m,up));
     textureStore(volume_output,px,vec4<f32>(rad,1.0));
+}
+
+@compute @workgroup_size(64)
+fn voxel_sun_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+    volume_sun_splats_impl(group.x+group.y*65535u,lane,true);
+}
+@group(3) @binding(0) var<uniform> shadow_damage_words:array<vec4<u32>,32>;
+override SHADOW_DAMAGE_MAP_SIZE:f32=4096.;
+@compute @workgroup_size(64)
+fn voxel_cached_sun_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+    let index=group.x+group.y*65535u;
+    var damaged=false;
+    if lane==0u && index<volume_config.size_count.w {
+        let tree=volume_trees[index];
+        let vp=mat4x4<f32>(volume_splat_header(0u),volume_splat_header(1u),volume_splat_header(2u),volume_splat_header(3u));
+        damaged=shadow_damage_bounds(vp,SHADOW_DAMAGE_MAP_SIZE,tree.bounds_min.xyz,tree.bounds_max.xyz);
+    }
+    // Only lane zero consumes this predicate; all lanes still participate in
+    // the shared level load, including clean owners and the indirect reset.
+    volume_sun_splats_impl(index,lane,damaged);
 }
