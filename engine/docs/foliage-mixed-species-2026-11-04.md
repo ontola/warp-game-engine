@@ -44,6 +44,23 @@ A known-area open-triangle regression checks all 13 directional masses across
 branch and whole-plant levels, and verifies that closed mode rejects the same
 open geometry. This tests optical mass, not final image equivalence.
 
+## Spatial cell authoring
+
+`vegetation_cell::compose` combines repeated source assemblies under one cell
+root, sharing the source geometry and material palette. It copies compact branch
+and placement records, not expanded vertices. Input member IDs determine stable
+ordering; their rigid transforms carry local height/orientation. Motionless source
+roots merge into the cell root, without introducing extra moving ancestors.
+Output uses the same CookedPlant source/aggregate/proxy compiler and population.
+
+The CPU oracle compares every transformed source vertex/normal, checks bounded
+rejection and order-independent identities, then cooks and attaches a two-patch
+cell (240 blades, nine shape/palette meshes, nine branches) as one world root and
+one proxy. This is authoring infrastructure, NOT running world-cell streaming.
+Rigid patch placement does not conform individual blades to curved ground; the
+existing basal-wind and terrain-attachment requirements still apply. Extreme
+range cell hierarchies and mixed-species optical measures remain future work.
+
 ## Remaining migration requirements
 
 - Prove the mixed grass/tree materialization and draw path on GPU, including wind,

@@ -1,3 +1,27 @@
+## 2026-11-04 Bounded common-assembly spatial cell composer
+
+vegetation_cell::compose combines repeated source assemblies into one cell root.
+It shares geometry/materials and copies only branch/placement records, checks
+structure/expanded source memory before allocation, rejects duplicate IDs and
+nonrigid transforms, and sorts stable member IDs independently of input order.
+Fixed source roots merge into the cell root without new animated ancestors.
+Rigid cell-local member placement includes height and slope orientation.
+Cook cache source fingerprint includes vegetation_cell.rs.
+
+Release CPU tests: 2 cell tests PASS, including every transformed vertex/normal
+against the expanded-source oracle, invalid/budget cases and actual common-runtime
+attachment. Fixture: two 120-blade patches, 3 source shapes / 9 palette bindings,
+9 branches, 1 world root and 1 proxy. Cache round-trip PASS. The final two tests
+took 0.13 s; this is CPU validation, not frame time. No GPU test or playtest:
+Sideways PID51952 remained live and untouched.
+
+Not world integration yet: terrain_fly still constructs Scene.meadow and streams
+its ground samples separately. Next must replace that with shared world-cell
+streaming, reusable cell assets, GPU ground attachment/basal wind and far-cell
+selection. Do not cook a unique expanded asset per world patch as a shortcut.
+See docs/foliage-mixed-species-2026-11-04.md and vegetation-architecture.md for all
+remaining gates; full architecture and 8.33 ms target are unproven.
+
 ## 2026-11-04 Mixed species and open grass aggregates
 
 Added foliage_runtime::Species and plant_species_population; existing tree APIs

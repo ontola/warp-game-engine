@@ -88,6 +88,7 @@ pub mod foliage_voxel;
 pub mod far_trees;
 pub mod foliage_shadow;
 pub mod foliage_assembly;
+pub mod vegetation_cell;
 pub mod foliage_select;
 pub mod foliage_residency;
 pub mod foliage_runtime;
