@@ -152,6 +152,10 @@ pub struct EnemyAnim {
     pub dead_t: Option<f32>,
     /// Thrown apart into pieces (the view's debris has them now).
     pub scattered: bool,
+    /// Gone limp: its slot among the view's fallen monsters (ragdoll.rs).
+    pub doll: Option<usize>,
+    /// Its fall was decided (a ragdoll, or its own way when none was free).
+    pub fell: bool,
     /// How far a burrower's body is sunk into the floor (0 up, 1 under).
     sunk: f32,
     /// Until the next puff of dust over a burrower.

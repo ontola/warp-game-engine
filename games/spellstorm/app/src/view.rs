@@ -151,6 +151,8 @@ pub struct View {
     /// How long each wizard has lain fallen.
     /// The fallen wizards as ragdolls.
     dolls: crate::ragdoll::Dolls,
+    /// Fallen monsters as ragdolls (Joep: they collapse, not stand and sink).
+    enemy_dolls: crate::ragdoll::Dolls,
     /// The level's even ambient light (lux), for what is lit game-side.
     ambient: Vec3,
     /// Each wizard's hurt_t last frame: a new hit spurts blood.
@@ -196,6 +198,7 @@ impl View {
             wizard_pieces: HashMap::new(),
             wizard_anims: vec![],
             dolls: Default::default(),
+            enemy_dolls: Default::default(),
             ambient: Vec3::ZERO,
             wizard_hurt: vec![],
             blade_len: vec![],
@@ -241,6 +244,8 @@ impl View {
         self.debris.clear();
         self.wizard_pieces.clear();
         self.dolls = Default::default();
+        self.enemy_dolls = Default::default();
+        self.enemy_anims.clear();
 
         // The floor, in 10 m chunks, each with only the bits of path,
         // islands and plazas that reach it (Arena._floor).
@@ -551,6 +556,7 @@ impl View {
         self.marks.gems = gems.clone();
         self.shrines.gems = gems;
         let mut seen = Vec::new();
+        let enemy_alpha = self.enemy_dolls.step(dt);
         for &id in w.enemies.iter().chain(&w.corpses) {
             let Some(a) = w.actor(id) else { continue };
             let Ok(e) = w.ecs.get::<&spellstorm::enemy::Enemy>(id) else { continue };
@@ -639,6 +645,40 @@ impl View {
                     self.debris.push(Debris::new(&self.scene, parts, a.pos, power, up, life, seed));
                 }
             }
+            // The rest go limp where they stood and fall the way the blow
+            // threw them (Joep), with a flash where it struck.
+            if let Some(t) = ea.dead_t.filter(|_| !ea.scattered && !ea.fell) {
+                ea.fell = true;
+                let c = e.cfg();
+                let big = if c.model.is_some() { c.size as f32 } else { 1.0 };
+                let limp = matches!(anim::fall(c.model.unwrap_or(c.key), big), anim::Fall::Topple | anim::Fall::Slump { .. })
+                    && !matches!(e.how, Some(Death::Freeze | Death::Gore | Death::Void))
+                    && !self.skins.has(c)
+                    && t < 0.5;
+                let slot = if limp { self.enemy_dolls.free(ENEMY_DOLLS) } else { None };
+                if let Some(slot) = slot {
+                    let xfs: Vec<Mat4> = pieces.iter().map(|p| at * part(p.node)).collect();
+                    let joint = |bone: usize| bones.as_ref().and_then(|(m, b)| b.rest[bone].map(|r| (at * m[bone]).transform_point3(r)));
+                    let (segs, parts) = limp_body(&xfs, &pieces, &self.scene.meshes, a.pos, &joint, bones.as_ref().map(|(_, b)| &b.bone_of[..]));
+                    let blow = if a.last_dir.length_squared() > 1e-4 { a.last_dir } else { a.hurt_dir };
+                    let force = death_force(&a, e.how) / big.max(0.6).sqrt();
+                    if self.enemy_dolls.throw(slot, &segs, parts, &xfs, a.vel, blow, force) {
+                        ea.doll = Some(slot);
+                    }
+                }
+                death_hit(&mut self.fx, &a, big);
+            }
+            if let Some(slot) = ea.doll.filter(|_| !ea.scattered) {
+                // Lies, then sinks away before it is gone.
+                let sink = Mat4::from_translation(Vec3::NEG_Y * (1.0 - e.gone as f32).clamp(0.0, 1.0) * 1.6);
+                let flash = hit_flash(&a);
+                marked.push((out.len()..out.len() + pieces.len(), flash, 0.0));
+                for (j, p) in pieces.iter().enumerate() {
+                    let xf = self.enemy_dolls.piece(slot, j, enemy_alpha).unwrap_or_else(|| at * part(p.node));
+                    out.push((p.mesh, look::affine(sink * xf), p.shadow));
+                }
+                continue;
+            }
             if !ea.scattered {
                 // Its eyes swell while it winds up a blow (Enemy._tell).
                 let eyes = if e.wind > 0.0 { 1.0 + 1.5 * (1.0 - e.wind / e.wind_time()) as f32 } else { 1.0 };
@@ -656,6 +696,11 @@ impl View {
                     }
                     out.push((p.mesh, look::affine(xf), p.shadow));
                 }
+            }
+        }
+        for (id, ea) in &self.enemy_anims {
+            if let Some(slot) = ea.doll.filter(|_| !seen.contains(id)) {
+                self.enemy_dolls.clear(slot);
             }
         }
         self.enemy_anims.retain(|id, _| seen.contains(id));
@@ -1009,6 +1054,97 @@ impl Debris {
     fn push(&self, out: &mut Vec<(usize, Affine3A, bool)>) {
         for b in &self.parts {
             out.push((b.mesh, Affine3A::from_scale_rotation_translation(b.scale, b.rot, b.pos), b.shadow));
+        }
+    }
+}
+
+/// How many fallen monsters lie as ragdolls at once; the rest fall their
+/// own way.
+const ENEMY_DOLLS: usize = 24;
+
+/// A fallen monster's capsules and which one each piece rides. With bones:
+/// body, head, the arms and the legs, from where its joints are now;
+/// without: one capsule round the whole of it.
+fn limp_body(xfs: &[Mat4], pieces: &[Piece], meshes: &[render::scene::MeshRef], base: Vec3, joint: &dyn Fn(usize) -> Option<Vec3>, bone_of: Option<&[u8]>) -> (Vec<crate::ragdoll::Segment>, Vec<usize>) {
+    use crate::ragdoll::Segment;
+    let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+    for (p, x) in pieces.iter().zip(xfs) {
+        let Some(m) = meshes.get(p.mesh) else { continue };
+        let c = x.transform_point3(Vec3::new(m.sphere[0], m.sphere[1], m.sphere[2]));
+        lo = lo.min(c);
+        hi = hi.max(c);
+    }
+    if !lo.is_finite() {
+        lo = base;
+        hi = base + Vec3::Y * 1.6;
+    }
+    let tall = (hi.y - base.y).max(0.5);
+    let wide = (hi.x - lo.x).max(hi.z - lo.z).max(0.3);
+    let whole = || {
+        let r = (wide * 0.35).clamp(0.12, 0.9).min(tall * 0.45);
+        let mid = Vec3::new((lo.x + hi.x) * 0.5, 0.0, (lo.z + hi.z) * 0.5);
+        let seg = Segment { start: mid.with_y(base.y + 0.05), end: mid.with_y(base.y + tall), radius: r, parent: None, anchor: base };
+        (vec![seg], vec![0; pieces.len()])
+    };
+    let Some(bone_of) = bone_of else { return whole() };
+    // body::Bone order: pelvis, spine x3, neck, head, then each arm (clavicle,
+    // upper, lower, hand) left and right, then each leg (thigh, calf, foot,
+    // ball) left and right.
+    let group = |b: usize| match b {
+        4 | 5 => 1,
+        7..=9 => 2,
+        11..=13 => 3,
+        14..=17 => 4,
+        18..=21 => 5,
+        _ => 0,
+    };
+    let (Some(pelvis), Some(chest)) = (joint(0), joint(3).or(joint(2)).or(joint(1))) else { return whole() };
+    let s = (chest.distance(pelvis) / 0.45).clamp(0.4, 3.0);
+    let mut segs = vec![Segment { start: pelvis - (chest - pelvis).normalize_or(Vec3::Y) * 0.08 * s, end: chest + (chest - pelvis).normalize_or(Vec3::Y) * 0.1 * s, radius: 0.16 * s, parent: None, anchor: pelvis }];
+    let mut seg_of = [0usize; 6];
+    let limbs: [(usize, usize, usize, f32); 5] = [(1, 4, 5, 0.12), (2, 7, 9, 0.06), (3, 11, 13, 0.06), (4, 14, 16, 0.08), (5, 18, 20, 0.08)];
+    for (g, from, to, r) in limbs {
+        let (Some(a), Some(b)) = (joint(from), joint(to)) else { continue };
+        let end = if g == 1 { b + (b - a).normalize_or(Vec3::Y) * 0.15 * s } else { b };
+        if end.distance(a) < 0.05 {
+            continue;
+        }
+        seg_of[g] = segs.len();
+        segs.push(Segment { start: a, end, radius: r * s, parent: Some(0), anchor: a });
+    }
+    let parts = pieces.iter().map(|p| seg_of[group(bone_of.get(p.node).copied().unwrap_or(0) as usize)]).collect();
+    (segs, parts)
+}
+
+/// How hard the killing blow throws a monster: harder the more it overkilled,
+/// hardest by wind or earth, softly by fire.
+fn death_force(a: &spellstorm::actor::Actor, how: Option<Death>) -> f32 {
+    use spellstorm::El;
+    let base = 2.5 + (a.overkill as f32 * 0.06).min(5.0);
+    let by = match a.last_el {
+        Some(El::Air | El::Storm) => 1.8,
+        Some(El::Earth | El::Mud | El::Magma) => 1.5,
+        Some(El::Fire | El::Steam) => 0.7,
+        Some(El::Water) => 1.2,
+        None => 1.1,
+        _ => 1.0,
+    };
+    base * by * if how == Some(Death::Blown) { 1.8 } else { 1.0 }
+}
+
+/// Where the killing blow struck: a flash and a spray in its element's
+/// colour, blood for a plain blow.
+fn death_hit(fx: &mut crate::fx::Fx, a: &spellstorm::actor::Actor, big: f32) {
+    let at = a.pos + Vec3::Y * (0.9 * big.sqrt()) - a.last_dir.with_y(0.0).normalize_or_zero() * 0.3;
+    match a.last_el {
+        Some(el) => {
+            let c = el.color();
+            fx.flash(at, [c[0], c[1], c[2], 1.0], 1.4 * big.sqrt(), 0.25);
+            fx.burst(at, [c[0], c[1], c[2], 0.95], 14, 4.5, 0.12, Some(el));
+        }
+        None => {
+            fx.flash(at, [1.0, 0.9, 0.8, 1.0], 1.0 * big.sqrt(), 0.18);
+            fx.spurt(at, a.last_dir);
         }
     }
 }
