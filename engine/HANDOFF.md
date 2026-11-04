@@ -1,3 +1,32 @@
+## 2026-11-04 Complete resident intermediate cuts
+
+Normal shared selector gates refinement on all visible immediate children being
+resident. Missing detail requests all siblings, keeps the nearest loaded parent,
+and leaves independent sibling subtrees detailed. Count and publication use the
+same rule. Whole-root overflow fallback remains. No CPU visibility shortlist.
+Updated raw-buffer regression covers four consumer views, eviction/reload,
+intermediate parent loss and whole-cut budget rejection. Cold-renderer test now
+expects direct resident ancestor selection rather than an error flag.
+
+Release build and Naga selector validation PASS. Windows software DX12
+(KERN_ADAPTER=software, WGPU_BACKEND=dx12) passes new resident-ancestor fixture,
+shared-pose matrix/hash-overflow oracle (including indirect args introduced last
+commit), wavefront vs serial cut / queue overflow, and union budget priorities.
+The larger historical disocclusion/overflow software test timed out at the
+30-second GPU poll limit (not a validated pass; physical rerun required).
+No physical-GPU performance claims. Full renderer cold-start software test was
+stopped deliberately after working set exceeded 17 GB; it did NOT finish or pass.
+Owned PID 48336 creation 16:52:56.9713010 confirmed before Stop-Process; parent
+session 15514 exited 1. Growing Guns 22888 and Spellstorm 32908 remain untouched.
+Use CIM + Format-List or JSON for mixed process output: PowerShell table column
+selection briefly hid live game rows; subsequent CIM confirms they remain live.
+
+Still pending: hardware cold-start render/regression and alternating performance
+runs for source paging + indirect poses + resident cuts. Software tests are a
+useful functional check, not image/timing acceptance. Full architecture remains
+open: animated shadow pages, upstream history publication, tighter ancestor pins,
+unified grass and far spatial cells. See docs/foliage-resident-cuts-2026-11-04.md.
+
 ## 2026-11-04 GPU-sized shared pose depth dispatch
 
 Normal forest pose evaluation now consumes GPU-written indirect dispatch counts

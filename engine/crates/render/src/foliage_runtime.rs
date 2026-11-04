@@ -403,7 +403,7 @@ impl Runtime {
             let d=draw();
             let bytes=read(&runtime.pose_args,64*12);let args:&[u32]=bytemuck::cast_slice(&bytes);
             assert!(args.chunks_exact(3).all(|a|a==[0,1,1]),"asset fallback must clear prior pose dispatches");
-            assert_eq!(d.fallback_trees,2);assert_eq!(d.source_slots+d.voxel_slots,0,"never publish a partial tree after an asset fault");
+            assert_eq!(d.fallback_trees,0);assert_eq!(d.direct_roots,2);assert_eq!(d.source_slots+d.voxel_slots,0,"missing child retains a complete resident ancestor");
             let bytes=read(&runtime.selector.asset_requests,runtime.selector.asset_requests.size());let requests:&[u32]=bytemuck::cast_slice(&bytes);
             let entries=requests[4..4+requests[0]as usize*4].chunks_exact(4).collect::<Vec<_>>();
             assert!(entries.iter().any(|r|r[0]==page && r[1]==0));
@@ -446,8 +446,9 @@ impl Runtime {
         for frame in 0..32 {
             renderer.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();let d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();
             let cache=renderer.foliage_page_stats().unwrap();assert!(cache.frame_upload_bytes<=8*1024*1024);
-            if frame==0 {assert_eq!(d.source_slots,0);assert_eq!(d.fallback_trees,1);let source=cache.source.unwrap();assert!(source.resident_pages<source.total_pages,"source details must really cold-start unloaded");}
-            if d.fallback_trees==1 {assert_eq!(d.source_slots+d.voxel_slots,0,"fallback must suppress every partial branch");}else{assert_eq!(d.source_slots,3,"loaded cut must be complete");}
+            if frame==0 {assert_eq!(d.source_slots,0);assert_eq!(d.direct_roots,1);let source=cache.source.unwrap();assert!(source.resident_pages<source.total_pages,"source details must really cold-start unloaded");}
+            assert_eq!(d.fallback_trees,0);
+            if d.direct_roots==1 {assert_eq!(d.source_slots+d.voxel_slots,0,"ancestor must suppress every partial branch");}else{assert_eq!(d.source_slots,3,"loaded cut must be complete");}
             if d.source_slots==3 {assert_eq!(d.fallback_trees,0);recovered=true;break;}
         }
         assert!(recovered,"normal async cache must publish loaded geometry without a CPU tree shortlist");
