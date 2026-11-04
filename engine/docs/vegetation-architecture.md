@@ -382,3 +382,31 @@ never silently truncate, merely clamp statistics, or claim that larger buffers
 solve bounded scaling. Also establish which projected-size bins consume the
 records before choosing a small-splat compute path. No new gate is needed.
 Evidence: build/playtest-unified/raster-count-route.log.
+
+### Stored-splat footprint profile
+
+Normal240-frame720p route, explicit `--voxel-raster-profile` offline readback:
+4,495,775 requested,4,194,304 stored,301,471 missing.20,147 distinct stored volumes.
+Bins are screen-aligned diameter; omit the production sub-cell jitter displacement.
+Overflow records have no payload and are excluded, so this is NOT a histogram of
+all demand. This diagnostic adds no per-frame CPU selection/readback dependency.
+
+| Diameter px | Articulated groups | Whole roots (direct + fallback) |
+| --- | ---: | ---: |
+| <=0.5 | 11,459 | 3,766,133 |
+| 0.5–1 | 89,424 | 217,864 |
+| 1–2 | 18,359 | 73,124 |
+| 2–4 | 1,091 | 12,082 |
+| 4–8 | 0 | 3,643 |
+| >8 | 0 | 1,125 |
+
+97.4% of stored splats are <=1px. Whole-root records dominate, not articulated
+groups. Root materialization publishes exactly one shared-selected mip, so camera
+raster cannot adapt that choice to its own resolution. G3 consumer-detail remains
+a candidate cause, NOT yet isolated: geometric error also uses2.598*cell+motion,
+which can demand sub-half-pixel cells even with one consumer. Do not attribute all
+excess detail to shadows without a camera-only comparison. Optical/support error
+constraints must survive any changed rule; simply relaxing the error is not proof.
+Next: isolate camera vs shadow demand, then implement per-consumer resident cuts
+and bounded raster admission within existing G2/G3 requirements.
+Evidence: build/playtest-unified/raster-profile-route.log.

@@ -1,3 +1,16 @@
+## 2026-11-04 Offline splat footprint diagnostic
+
+Normal route --voxel-raster-profile now reports stored-record diameter bins and
+root-vs-articulated counts, explicit final readback only (no frame CPU selection).
+97.4% stored splats<=1px;3,766,133 whole-root splats<=0.5px.20,147 stored volumes.
+Requested4,495,775/stored4,194,304/missing301,471. Overflow still UNFIXED.
+Root direct publication fixes one union-selected mip; G3 per-consumer detail is
+candidate cause. BUT spatial error=2.598*cell+motion also implies subhalfpx cells;
+do not claim shadows caused all overdetail without isolated camera-only evidence.
+Next isolate consumers, preserve optical admission then bounded G2 raster work.
+Build render/dlss and normal240frame headless pass, log raster-profile-route.log.
+All jobs terminal, no playtest. Checklist has full histogram and limitations.
+
 ## 2026-11-04 Raster probe + CONFIRMED normal-route splat overflow
 
 Latest progress: production raster shader microprobe in examples/voxel_raster_budget.rs.
