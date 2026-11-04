@@ -156,6 +156,9 @@ pub struct EnemyAnim {
     sunk: f32,
     /// Until the next puff of dust over a burrower.
     pub dust: f32,
+    /// Its motion-captured body (rig.rs), and the hurt_t it last saw.
+    pub body: crate::rig::Body,
+    pub hurt_seen: f64,
 }
 
 /// How a monster's body goes (Enemy._death), by its model.
@@ -205,7 +208,9 @@ fn ease_in(k: f32) -> f32 {
 
 impl EnemyAnim {
     /// The model's transform under the monster's root (Enemy._animate).
-    pub fn model(&mut self, base: f32, a: &Actor, e: &Enemy, time: f32, seed: u32, dt: f32) -> Mat4 {
+    /// `rigged`: its clips move the body, so the whole-body bob, wind-up lean
+    /// and toppling are left to them.
+    pub fn model(&mut self, base: f32, a: &Actor, e: &Enemy, time: f32, seed: u32, dt: f32, rigged: bool) -> Mat4 {
         let cfg = e.cfg();
         if self.scale == 0.0 {
             self.scale = base;
@@ -215,10 +220,11 @@ impl EnemyAnim {
         if !a.alive {
             *self.dead_t.get_or_insert(0.0) += dt;
         }
-        let mut pos = Vec3::new(0.0, (self.walk.sin()).abs() * 0.06, 0.0);
-        let mut rot = Vec3::new(self.rot_x, 0.0, self.walk.sin() * 0.06);
+        let bob = if rigged { 0.0 } else { 1.0 };
+        let mut pos = Vec3::new(0.0, (self.walk.sin()).abs() * 0.06 * bob, 0.0);
+        let mut rot = Vec3::new(self.rot_x, 0.0, self.walk.sin() * 0.06 * bob);
         let mut scale = Vec3::splat(self.scale);
-        let winding = e.wind > 0.0 || e.boss_wind > 0.0;
+        let winding = (e.wind > 0.0 || e.boss_wind > 0.0) && !rigged;
         if winding {
             let k = if e.wind > 0.0 { 1.0 - (e.wind / e.wind_time()) as f32 } else { 1.0 - (e.boss_wind / e.boss_wind_time.max(1e-3)) as f32 };
             let ee = k * k * (3.0 - 2.0 * k);
@@ -327,6 +333,7 @@ impl EnemyAnim {
             match fall(model, big) {
                 Fall::Scatter { .. } => {}
                 Fall::BlowUp => scale = b * (1.0 + 0.45 * ease_in(t / e.fuse.max(0.05) as f32)),
+                Fall::Slump { .. } if rigged => pos.y = -0.4 * ((t - 3.0) / 1.0).clamp(0.0, 1.0),
                 Fall::Slump { time } => {
                     scale = b.lerp(b * Vec3::new(1.25, 0.08, 1.25), ease_in(t / time));
                     pos.y = -0.4 * ((t - time - 1.5) / 1.0).clamp(0.0, 1.0);
@@ -338,6 +345,10 @@ impl EnemyAnim {
                     if t >= 0.6 {
                         scale = Vec3::ZERO;
                     }
+                }
+                Fall::Topple if rigged => {
+                    pos.y = -1.95 * ((t - 2.6) / 1.4).clamp(0.0, 1.0);
+                    scale = b;
                 }
                 Fall::Topple => {
                     let k = ease_in(t / 0.5);

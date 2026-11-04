@@ -20,6 +20,7 @@ mod menu;
 mod party;
 mod play;
 mod ragdoll;
+mod rig;
 mod shrines;
 mod view;
 
