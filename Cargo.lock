@@ -436,6 +436,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "body"
+version = "0.1.0"
+dependencies = [
+ "glam 0.31.1",
+ "serde_json",
+]
+
+[[package]]
 name = "bstr"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5422,6 +5430,7 @@ version = "0.1.0"
 dependencies = [
  "app",
  "assets",
+ "body",
  "flate2",
  "gamenight",
  "glam 0.31.1",

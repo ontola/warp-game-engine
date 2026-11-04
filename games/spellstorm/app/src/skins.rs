@@ -2,14 +2,14 @@
 //! from `app/assets/characters` (see its README for where they come from).
 //! A level reserves a pool of actors per body; a monster takes one while it
 //! is around, and one that finds the pool empty keeps its old rigid body.
-//! The clips cross-fade: idle, walk, attack (held on its wind-up, then
-//! followed through), hit and die. The view's model transform stays on top,
-//! so swelling tells and the element deaths work on these bodies too.
+//! The engine's `body::Gait` blends the clips, as it does for rigged pieces:
+//! the pace follows the length of the legs. The view's model transform stays
+//! on top, so swelling tells and the element deaths work on these bodies too.
 use assets::skinned::{ActorHandle, Character};
+use body::{Action, ClipSet, Doing, Gait};
 use glam::{Affine3A, Mat4, Vec3};
-use render::skinning::blend_palette_into;
 use render::{Gpu, Renderer, Scene};
-use spellstorm::actor::{Actor, HURT_TIME};
+use spellstorm::actor::Actor;
 use spellstorm::enemy::{Enemy, Kind};
 use spellstorm::world::Id;
 use std::collections::HashMap;
@@ -17,34 +17,36 @@ use std::path::PathBuf;
 
 /// The bodies there are, and how many of each a level reserves.
 const BODIES: [(&str, usize); 4] = [("skeleton", 16), ("bone_archer", 8), ("necromancer", 4), ("gravekeeper", 1)];
-/// Seconds a change of clip fades over.
-const FADE: f32 = 0.14;
+/// Every body's clips; a `ClipSet` id is the place here.
+const CLIPS: [&str; 5] = ["idle", "walk", "hit", "die", "attack"];
 /// How far into the attack clip the blow lands: its wind-up runs to here.
 const STRIKE: f32 = 0.45;
 /// Where an actor waits when nobody wears it.
 const AWAY: Vec3 = Vec3::new(0.0, -500.0, 0.0);
 
-#[derive(Clone, Copy, PartialEq)]
-enum Clip {
-    Idle,
-    Walk,
-    Attack,
-    Hit,
-    Die,
+struct Body {
+    name: &'static str,
+    character: Character,
+    set: ClipSet,
+    attack: Action,
+    /// How high its hips stand, at its own scale (metres).
+    hip: f32,
 }
 
-impl Clip {
-    fn name(self) -> &'static str {
-        match self {
-            Clip::Idle => "idle",
-            Clip::Walk => "walk",
-            Clip::Attack => "attack",
-            Clip::Hit => "hit",
-            Clip::Die => "die",
-        }
-    }
-    fn looping(self) -> bool {
-        matches!(self, Clip::Idle | Clip::Walk)
+impl Body {
+    fn new(name: &'static str, character: Character) -> Result<Body, String> {
+        let length = |clip: &str| character.clips.iter().find(|c| c.name == clip).map(|c| c.duration).ok_or(format!("{name}: no clip {clip}"));
+        let lengths = CLIPS.iter().map(|c| length(c)).collect::<Result<Vec<_>, _>>()?;
+        let strike = STRIKE * lengths[4];
+        let idle = character.sample("idle", 0.0, true)?;
+        let hip = character.joint_position("hips", &idle).map_or(0.9, |p| p.y);
+        Ok(Body {
+            name,
+            set: ClipSet { idle: 0, walk: 1, jog: 1, hit: 2, death: 3, lengths },
+            attack: Action { wind: 4, wind_to: strike, release: 4, release_from: strike },
+            hip,
+            character,
+        })
     }
 }
 
@@ -53,18 +55,13 @@ struct Slot {
     handle: ActorHandle,
     owner: Option<Id>,
     palette: Vec<Mat4>,
-    now: Vec<Mat4>,
-    from: Vec<Mat4>,
-    fade: f32,
-    clip: Clip,
-    t: f32,
-    /// Following through after the wind-up ended.
-    strike: Option<f32>,
-    was_winding: bool,
+    layer: Vec<Mat4>,
+    gait: Gait,
+    hurt_seen: f64,
 }
 
 pub struct Skins {
-    bodies: Vec<(&'static str, Character)>,
+    bodies: Vec<Body>,
     slots: Vec<Slot>,
     worn: HashMap<Id, usize>,
     /// The instances the slots hold, first and how many (they are in a row).
@@ -79,8 +76,8 @@ impl Skins {
     pub fn load() -> Skins {
         let mut bodies = Vec::new();
         for (name, _) in BODIES {
-            match Character::load(&dir().join(format!("{name}.json"))) {
-                Ok(c) => bodies.push((name, c)),
+            match Character::load(&dir().join(format!("{name}.json"))).and_then(|c| Body::new(name, c)) {
+                Ok(b) => bodies.push(b),
                 Err(e) => eprintln!("skins: {name}: {e}"),
             }
         }
@@ -92,20 +89,21 @@ impl Skins {
         self.slots.clear();
         self.worn.clear();
         let first = scene.instances.len();
-        for (body, (name, c)) in self.bodies.iter().enumerate() {
-            let n = BODIES.iter().find(|b| b.0 == *name).map_or(0, |b| b.1);
+        for (i, b) in self.bodies.iter().enumerate() {
+            let c = &b.character;
+            let n = BODIES.iter().find(|x| x.0 == b.name).map_or(0, |x| x.1);
             for _ in 0..n {
                 // Room for the view's swelling and tumbling on top.
                 let handle = match c.add_actor_with_bounds(scene, Affine3A::from_translation(AWAY), c.min.min(Vec3::splat(-4.0)), c.max.max(Vec3::splat(4.0))) {
                     Ok(h) => h,
                     Err(e) => {
-                        eprintln!("skins: {name}: {e}");
+                        eprintln!("skins: {}: {e}", b.name);
                         break;
                     }
                 };
                 scene.instances[handle.instance].cluster_count = 0;
                 let palette = c.sample("idle", 0.0, true).unwrap_or_else(|_| vec![Mat4::IDENTITY; c.joint_count]);
-                self.slots.push(Slot { body, handle, owner: None, now: palette.clone(), from: palette.clone(), palette, fade: 1.0, clip: Clip::Idle, t: 0.0, strike: None, was_winding: false });
+                self.slots.push(Slot { body: i, handle, owner: None, layer: palette.clone(), palette, gait: Gait::default(), hurt_seen: 0.0 });
             }
         }
         self.instances = first..scene.instances.len();
@@ -119,14 +117,14 @@ impl Skins {
     /// The body a kind wears: its own, else the one it borrows.
     fn body_of(&self, kind: &Kind) -> Option<usize> {
         let model = kind.model.unwrap_or(kind.key);
-        let of = |name: &str| self.bodies.iter().position(|b| b.0 == name);
+        let of = |name: &str| self.bodies.iter().position(|b| b.name == name);
         of(kind.key).or_else(|| of(model))
     }
 
-    /// Pose monster `id` (at `xf`) in its skin. False: it has none, draw it
-    /// the old way.
+    /// Pose monster `id` (at `xf`, `scale` times its body's size) in its
+    /// skin. False: it has none, draw it the old way.
     #[allow(clippy::too_many_arguments)]
-    pub fn pose(&mut self, scene: &mut Scene, id: Id, kind: &Kind, a: &Actor, e: &Enemy, dead_t: Option<f32>, xf: Mat4, flash: f32, dt: f32) -> bool {
+    pub fn pose(&mut self, scene: &mut Scene, id: Id, kind: &Kind, a: &Actor, e: &Enemy, dead_t: Option<f32>, xf: Mat4, scale: f32, flash: f32, dt: f32) -> bool {
         let Some(body) = self.body_of(kind) else { return false };
         let i = match self.worn.get(&id) {
             Some(&i) => i,
@@ -134,58 +132,34 @@ impl Skins {
                 let Some(i) = self.slots.iter().position(|s| s.body == body && s.owner.is_none()) else { return false };
                 let s = &mut self.slots[i];
                 s.owner = Some(id);
-                s.clip = Clip::Idle;
-                s.t = id.id() as f32 * 0.37;
-                s.fade = 1.0;
-                s.strike = None;
-                s.was_winding = false;
+                s.gait = Gait::default();
+                s.hurt_seen = 0.0;
                 self.worn.insert(id, i);
                 i
             }
         };
-        let c = &self.bodies[body].1;
+        let b = &self.bodies[body];
         let s = &mut self.slots[i];
-        let winding = e.wind > 0.0;
-        if s.was_winding && !winding && a.alive {
-            s.strike = Some(STRIKE);
-        }
-        s.was_winding = winding;
-        let duration = |clip: Clip| c.clips.iter().find(|x| x.name == clip.name()).map_or(1.0, |x| x.duration);
-        // What it should be doing, and how far in.
-        let (clip, time) = if let Some(t) = dead_t {
-            (Clip::Die, t)
-        } else if winding {
-            (Clip::Attack, (1.0 - (e.wind / e.wind_time().max(1e-3)) as f32) * STRIKE * duration(Clip::Attack))
-        } else if let Some(k) = s.strike.filter(|k| *k < 1.0) {
-            s.strike = Some(k + dt / duration(Clip::Attack));
-            (Clip::Attack, k * duration(Clip::Attack))
-        } else if a.hurt_t > 0.0 {
-            s.strike = None;
-            (Clip::Hit, (1.0 - (a.hurt_t / HURT_TIME) as f32) * 0.35 * duration(Clip::Hit))
-        } else {
-            s.strike = None;
-            let speed = Vec3::new(a.vel.x, 0.0, a.vel.z).length();
-            if speed > 0.4 {
-                s.t += dt * (speed / 2.2).clamp(0.6, 1.8);
-                (Clip::Walk, s.t)
-            } else {
-                s.t += dt;
-                (Clip::Idle, s.t)
-            }
+        let doing = Doing {
+            speed: a.vel.with_y(0.0).length(),
+            wind: (e.wind > 0.0 || e.boss_wind > 0.0).then(|| (b.attack, e.wind_k() as f32)),
+            hit: a.hurt_t > s.hurt_seen + 1e-6,
+            dead: dead_t.is_some(),
+            held: a.frozen > 0.0 || a.stun > 0.0,
         };
-        if clip != s.clip {
-            s.from.copy_from_slice(&s.palette);
-            s.fade = 0.0;
-            s.clip = clip;
-        }
-        if c.sample_into(clip.name(), time, clip.looping(), &mut s.now).is_err() {
-            return false;
-        }
-        s.fade = (s.fade + dt / FADE).min(1.0);
-        if s.fade < 1.0 {
-            let _ = blend_palette_into(&s.from, &s.now, s.fade, &mut s.palette);
-        } else {
-            s.palette.copy_from_slice(&s.now);
+        s.hurt_seen = a.hurt_t;
+        let layers = s.gait.step(&b.set, b.hip * scale, &doing, dt);
+        let total: f32 = layers.iter().map(|l| l.w.max(0.0)).sum();
+        if total > 1e-4 {
+            s.palette.fill(Mat4::ZERO);
+            for l in layers.iter().filter(|l| l.w > 0.0) {
+                if b.character.sample_into(CLIPS[l.clip], l.t, l.looped, &mut s.layer).is_err() {
+                    return false;
+                }
+                for (out, m) in s.palette.iter_mut().zip(&s.layer) {
+                    *out += *m * (l.w / total);
+                }
+            }
         }
         // The dead sink away at the end instead of vanishing.
         let sink = dead_t.map_or(0.0, |t| ((t - 4.4) * 1.1).max(0.0));
@@ -197,7 +171,7 @@ impl Skins {
         true
     }
 
-    /// Whoever is gone (`alive` says who is still around) gives its body back.
+    /// Whoever is gone (not in `seen`) gives its body back.
     pub fn release(&mut self, scene: &mut Scene, seen: &[Id]) {
         let slots = &mut self.slots;
         self.worn.retain(|id, i| {

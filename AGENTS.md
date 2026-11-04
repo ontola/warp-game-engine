@@ -18,6 +18,7 @@ One Rust workspace, with Cargo.toml and Cargo.lock at the repository root.
 | `engine/crates/app` | The game shell: window, fixed tick, input, split screen, HUD, headless capture and `bench`. Built-in keys: F10 debug menu (`debug.rs`), F11 fullscreen, F12 feedback screenshot (`screenshot.rs`). Example games in `examples/` (`terrain_fly`, `hello`). |
 | `engine/crates/audio` | Synthesised engine and effect sound. |
 | `engine/crates/physics` | Rapier rigid bodies with enhanced determinism. |
+| `engine/crates/body` | Bodies that move without hand animation: a standard skeleton, built-in motion-captured clips (CC0), `Gait` (what to blend from what a body does, pace from leg length), rigs of rigid pieces. |
 | `engine/crates/assets` | Asset import for scenes. |
 | `engine/crates/net` | Online play over iroh (QUIC). |
 | `engine/crates/gamenight` | Native GameNight client (party host, seats, wire contract). |

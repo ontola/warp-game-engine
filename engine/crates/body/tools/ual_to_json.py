@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Quaternius' Universal Animation Library (CC0) to app/assets/anim/ual.json.
+"""Quaternius' Universal Animation Library (CC0) to assets/ual.json.
 
-    python3 -I tools/ual_to_json.py UAL1_Standard.glb app/assets/anim/ual.json
+    python3 -I tools/ual_to_json.py UAL1_Standard.glb assets/ual.json
 
 Get UAL1_Standard.glb from https://quaternius.itch.io/universal-animation-library
 (the free Standard pack, folder Unreal-Godot). Only the body bones are kept

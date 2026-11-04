@@ -135,8 +135,8 @@ pub struct View {
     wizard_anims: Vec<anim::WizardAnim>,
     enemy_anims: HashMap<hecs::Entity, anim::EnemyAnim>,
     /// The monsters' motion-captured clips, and each kit's rig.
-    rig: Option<(crate::rig::Library, crate::rig::Clips)>,
-    bounds: HashMap<String, Option<crate::rig::Bound>>,
+    rig: Option<(body::Library, crate::rig::Clips)>,
+    bounds: HashMap<String, Option<body::Bound>>,
     /// Monsters with real skeletons.
     skins: crate::skins::Skins,
     /// Pieces of dead monsters lying about.
@@ -201,7 +201,7 @@ impl View {
             blade_len: vec![],
             blade_sparks: 0.0,
             enemy_anims: HashMap::new(),
-            rig: match crate::rig::Library::load() {
+            rig: match body::Library::builtin() {
                 Ok(lib) => crate::rig::Clips::new(&lib).map(|c| (lib, c)),
                 Err(e) => {
                     eprintln!("spellstorm: no monster animations: {e}");
@@ -558,7 +558,7 @@ impl View {
             let pieces = self.look.pieces(&self.kits, &mut self.scene, &name);
             let Some(kit) = self.kits.kit(&name) else { continue };
             if !self.bounds.contains_key(&name) {
-                let b = self.rig.as_ref().and(crate::rig::rig(e.cfg().key)).map(|d| crate::rig::Bound::new(d, kit, &self.kits));
+                let b = self.rig.as_ref().and(crate::rig::rig(e.cfg().key)).map(|d| crate::rig::bind(d, kit, &self.kits));
                 self.bounds.insert(name.clone(), b);
             }
             let bound = self.bounds.get(&name).and_then(|b| b.as_ref()).zip(self.rig.as_ref());
@@ -568,13 +568,13 @@ impl View {
             // Its bones under the motion-captured clips (rig.rs).
             let bones = bound.map(|(b, (lib, clips))| {
                 let wind = if e.wind > 0.0 {
-                    Some((e.cfg().attack, 1.0 - (e.wind / e.wind_time()) as f32))
+                    Some((clips.action(lib, e.cfg().attack), 1.0 - (e.wind / e.wind_time()) as f32))
                 } else if e.boss_wind > 0.0 {
-                    Some((spellstorm::enemy::Attack::Slam, 1.0 - (e.boss_wind / e.boss_wind_time.max(1e-3)) as f32))
+                    Some((clips.action(lib, spellstorm::enemy::Attack::Slam), 1.0 - (e.boss_wind / e.boss_wind_time.max(1e-3)) as f32))
                 } else {
                     None
                 };
-                let doing = crate::rig::Doing {
+                let doing = body::Doing {
                     speed: a.vel.with_y(0.0).length(),
                     wind,
                     hit: a.hurt_t > ea.hurt_seen + 1e-6,
@@ -582,7 +582,7 @@ impl View {
                     held: a.frozen > 0.0 || a.stun > 0.0,
                 };
                 ea.hurt_seen = a.hurt_t;
-                let layers = ea.body.step(lib, clips, b.hip() * kit.base_scale, &doing, dt);
+                let layers = ea.body.step(&clips.set, b.hip() * kit.base_scale, &doing, dt);
                 (b.pose(lib, &layers), b)
             });
             let part = |node: usize| match &bones {
@@ -645,7 +645,7 @@ impl View {
                 // Frozen to death it stands white as ice until it shatters.
                 let flash = if e.how == Some(Death::Freeze) { 0.6 } else { hit_flash(&a) };
                 let kind = e.cfg();
-                if self.skins.pose(&mut self.scene, id, kind, &a, &e, ea.dead_t, at, flash, dt) {
+                if self.skins.pose(&mut self.scene, id, kind, &a, &e, ea.dead_t, at, kit.base_scale, flash, dt) {
                     continue;
                 }
                 marked.push((out.len()..out.len() + pieces.len(), flash, 0.0));
