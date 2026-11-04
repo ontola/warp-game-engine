@@ -128,7 +128,7 @@ independently. Streaming preserves proxy costs. These are voxel-record bounds,
 NOT source triangle costs or GPU-time estimates. If even the resident baseline
 exceeds capacity, the allocator reports that fault; far aggregation is still needed.
 
-G2.1-G2.3 remain open pending normal-route performance, images, achieved-error
+G2.1 is implemented; G2.2/G2.3 remain open pending performance, images, achieved-error
 reporting and broader pressure validation. A complete retained ancestor is not
 claimed visually equivalent to the old separate emergency proxy. The 720p
 normal-route overflow must be checked again against actual indirect draw counts.
@@ -577,3 +577,33 @@ Evidence: `build/playtest-unified/root-stages-{before,after}-{1,2,3}.*`,
 `root-stages-tests.log`. Current production remains c619265's allocator.
 Next: investigate conservative adaptive-mip reservation and expensive intermediate
 representations that block finer detail; do not hide this by increasing budgets.
+
+## Exact camera-mip admission experiment (4 November 2026, rejected)
+
+Camera materialization was changed to render the selector-admitted mip exactly,
+rather than choosing a finer mip again. Camera reservations therefore used that
+mip's occupied-cell count; shadow reservations remained adaptive. This tested
+whether conservative camera reservations were the main fine-detail blocker.
+
+All 139 foliage tests passed. Three alternating native 1280x720 one-view
+lowland+grass route repeats (240 frames, frames 120–239 measured) gave:
+
+| Repeat | Before covered ms | After covered ms | Before selection ms | After selection ms |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 11.559 | 12.360 | 5.212 | 6.067 |
+| 2 | 11.559 | 12.521 | 5.235 | 6.236 |
+| 3 | 11.532 | 12.352 | 5.179 | 6.111 |
+
+The first after-run published 4,096 voxel slots instead of 758, but source slots
+remained zero. Tested nodes increased from ~532k to 700,391. Actual camera
+splats were 1,356,414, versus 1,361,047 before; raster faults/fallbacks remained
+zero. Thus lowering camera reservation alone exposes more intermediate traversal,
+not useful source detail or a speedup. Matched images were inspected: crowns
+remain coarse; RGB MAE outside HUD was 1.014/1.075/0.659 on a 0–255 scale.
+This is not visual acceptance or raw-buffer equivalence.
+
+Production changes removed; preserved in `exact-camera-mip-experiment.patch`.
+Evidence: `build/playtest-unified/exact-mip-{before,after}-{1,2,3}.*`,
+`exact-mip-summary.json`, `exact-mip-comparison.jpg`, and
+`exact-camera-mip-tests.log`. Next architectural work must address intermediate
+refinement traversal and achieved-error reporting, not merely reduce reservations.
