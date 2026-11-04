@@ -1,3 +1,22 @@
+## 2026-11-04 Raster probe + CONFIRMED normal-route splat overflow
+
+Latest progress: production raster shader microprobe in examples/voxel_raster_budget.rs.
+3 repeats x16 cases x12 warm GPU samples,1920x1080 synthetic packed cell grid.
+1.05M one-pixel splats~0.524ms,4.19M~2.09ms; diameter0.5..4 barely affects cost.
+Raw visibility IDs/depth verified; JPEG ID previews inspected. NOT forest rendering
+quality, generation cost or four-view acceptance. results.json under
+build/playtest-unified/voxel-raster-probe. Runtime diagnostics now read splat
+indirect args and capacity; no per-frame CPU reads added (explicit diagnostic only).
+CRITICAL: normal route final splats4,495,774 > capacity4,194,304;301,470 records
+missing,26,974,644 submitted vertices. Generator increments before storage guard;
+VS guards invalid access but cannot restore missing geometry. Frontier/slot counters
+were zero and missed this separate overflow. Do NOT hide with count clamp or just
+increase capacity. G1.4 remains unaccepted; G2 must budget raster work as well as
+branch slots and retain complete coarser resident cuts. Need projected-size/count
+bins + safe bounded cut admission next, user raster/DLSS priority remains.
+All jobs terminal; headless only. Diagnostic terrain build with render/dlss succeeds.
+Normal evidence raster-count-route.log/json, no gameplay FPS claims.
+
 ## 2026-11-04 User reprioritized raster feasibility + DLSS before G2
 
 Continue English, no interactive playtest. Existing checklist remains sole plan.

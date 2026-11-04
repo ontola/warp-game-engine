@@ -332,3 +332,53 @@ Next: near-one-pixel raster feasibility, then target-resolution/split validation
 Evidence: build/playtest-unified/upscale-*.json.gpu.json, logs and PNG pixel
 references; JPEG contact sheet upscale-comparison.jpg. No gameplay-FPS claim.
 Executable SHA256: `d0ecd969686f5e48216a6d624a963b20b6e84815780be3dbf7d3ede3210c8b2e`.
+
+## One-pixel raster feasibility — 4 November
+
+`render/examples/voxel_raster_budget.rs` uses the unchanged production voxel
+vertex/fragment shader and main-pass depth/visibility formats. RTX5070Ti, Vulkan,
+1920x1080 target (one native quadrant of4K); three serial repeats,12 GPU timestamp
+samples after3 warmups per case. Includes target clears. Excludes selection, splat
+generation, materials, lighting, shadows and reconstruction: NOT whole-game FPS.
+Packed cells form a synthetic grid; four-million case repeats four coplanar layers.
+Larger supports can clip against the viewport; footprint changes also alter the
+covered region. No real-forest quality equivalence is implied. Raw checks verify
+every written visibility ID agrees with the splat ID and expected depth. JPEG
+previews are ID colors, not shaded vegetation.
+
+| Submitted splats | Triangles | 0.5px ms | 1px ms | 2px ms | 4px ms |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 65,536 | 131,072 | 0.0338 | 0.0344 | 0.0350 | 0.0348 |
+| 262,144 | 524,288 | 0.1316 | 0.1323 | 0.1329 | 0.1327 |
+| 1,048,576 | 2,097,152 | 0.5227 | 0.5235 | 0.5233 | 0.5227 |
+| 4,194,304 | 8,388,608 | 2.0878 | 2.0895 | 2.0912 | 2.0891 |
+
+Cost scales almost linearly with submitted splats and barely with pixel diameter
+in this fixture. This is consistent with vertex/submission-side work dominating;
+not proof from hardware counters. Four views each submitting1M splats would
+exceed the1.5ms vegetation raster allocation on a linear extrapolation, BEFORE
+generation/resolve. Actual four-view behavior still requires a measurement.
+Next: correlate real submitted counts and projected footprints; investigate a
+small-splat compute path and/or reducing redundant submissions, preserving raw
+depth/visibility correctness. This does not complete the broader raster decision:
+full generation/shadow cost and source/voxel image comparisons remain open.
+Evidence: build/playtest-unified/voxel-raster-probe/results.json and support-*.jpg.
+
+### Normal-route correlation: confirmed raster buffer overflow
+
+Final-frame diagnostic of the normal240-frame lowland+grass route (720p,oneview):
+4,495,774 requested/indirect-drawn splats, buffer capacity4,194,304,
+26,974,644 submitted vertices. **301,470 missing records (6.7% of demand)**.
+The production generator increments the draw count before checking storage bounds;
+the vertex shader guards invalid accesses but cannot draw records never stored.
+This is a correctness failure, not merely a slow draw. Earlier zero frontier/slot
+overflow counters did NOT cover this independent raster buffer. Do not accept
+normal-route fidelity until fixed. Synthetic probe fits its buffer and therefore
+cannot establish whole-renderer overflow correctness.
+
+G2 admission must budget raster records/work as well as transient branch slots.
+Keep a complete cheaper resident cut when a refinement exceeds the raster budget;
+never silently truncate, merely clamp statistics, or claim that larger buffers
+solve bounded scaling. Also establish which projected-size bins consume the
+records before choosing a small-splat compute path. No new gate is needed.
+Evidence: build/playtest-unified/raster-count-route.log.

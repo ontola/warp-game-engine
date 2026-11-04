@@ -765,6 +765,7 @@ fn main() -> Result<(), String> {
             if i+1 == frames { if let Some(path) = arg("--fly-shot") { render::write_png(std::path::Path::new(&path), w, h, &rgba)?; } }
         }
         if let Some(renderer)=headless.renderer() {
+            if let Some(stats)=renderer.voxel_diagnostics(&gpu)? {for (view,s) in stats.iter().enumerate(){println!("Voxel raster final: {}",serde_json::json!({"view":view,"splats":s.raster_splats,"vertices":s.raster_vertices,"capacity":s.raster_capacity}));}}
             if let Some(stats)=renderer.foliage_page_stats(){println!("GPU voxel page cache: {}",serde_json::to_string(&stats).map_err(|e|e.to_string())?);}
             if let Some(stats)=renderer.gpu_forest_diagnostics(&gpu)? {println!("GPU forest final: {}",serde_json::to_string(&stats).map_err(|e|e.to_string())?);
             let d=renderer.debug_tree_occlusion(&gpu,0,None)?;

@@ -205,6 +205,11 @@ pub struct VoxelViewDiagnostics {
     /// Final contiguous 16-byte visibility records, not capacity. Parallel
     /// brick construction also uses one temporary linked record per intersection.
     pub interval_stream_records:u32,
+    /// Actual indirect splat draw arguments, including rejected/overlapping cells.
+    pub raster_splats:u32,
+    pub raster_vertices:u64,
+    pub raster_capacity:u64,
+
 }
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -1170,7 +1175,7 @@ impl VoxelRenderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let splat_draw = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel splat draw"), size: 16,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let stand_in;
         let splat_cells = match &self.raster {
             Some(raster) => &raster.cells,
@@ -1505,7 +1510,7 @@ impl VoxelRenderer {
         if targets.is_empty() {
             return Ok(Vec::new());
         }
-        let stride=COUNTER_BYTES+8;
+        let stride=COUNTER_BYTES+24;
         let size = stride * targets.len() as u64;
         let read = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel diagnostics readback"),
@@ -1522,6 +1527,9 @@ impl VoxelRenderer {
                 i as u64 * stride,
                 COUNTER_BYTES,
             );
+            if let Some(splat)=&target.splat {
+                encoder.copy_buffer_to_buffer(&splat.draw,0,&read,i as u64*stride+COUNTER_BYTES+8,16);
+            }
             if let Some(stream)=target.interval_stream {
                 encoder.copy_buffer_to_buffer(&target.jobs,(u64::from(stream.header_word)+1)*4,
                     &read,i as u64*stride+COUNTER_BYTES,8);
@@ -1549,8 +1557,8 @@ impl VoxelRenderer {
                 .get_mapped_range()
                 .map_err(|e| format!("voxel diagnostics range failed: {e:?}"))?;
             bytes
-                .chunks_exact(stride as usize)
-                .map(|bytes| {
+                .chunks_exact(stride as usize).enumerate()
+                .map(|(target_index,bytes)| {
                     let value =
                         |i: usize| u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
                     VoxelViewDiagnostics {
@@ -1574,6 +1582,9 @@ impl VoxelRenderer {
                         aabb_interval_tests: diagnostic_u64(bytes, 20),
                         interval_stream_overflow_rays:value(22),
                         interval_stream_records:value(23),
+                        raster_splats:value((COUNTER_BYTES/4+3)as usize),
+                        raster_vertices:u64::from(value((COUNTER_BYTES/4+2)as usize))*u64::from(value((COUNTER_BYTES/4+3)as usize)),
+                        raster_capacity:targets[target_index].splat.as_ref().map_or(0,|s|s.records.size()/16-12-4*u64::from(self.count)),
                     }
                 })
                 .collect()
