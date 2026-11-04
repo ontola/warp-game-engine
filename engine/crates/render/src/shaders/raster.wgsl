@@ -188,3 +188,13 @@ fn fs_depth(in: VOut) {
         discard;
     }
 }
+
+override SHADOW_TILE_PIXELS:u32=64u;
+// Shared sun tile cache only; ordinary/near/headlamp entry points stay independent.
+@group(2) @binding(0) var<uniform> shadow_damage_mask:array<vec4<u32>,32>;
+@fragment fn fs_cached_depth(in:VOut) {
+ let xy=vec2<u32>(in.pos.xy)/SHADOW_TILE_PIXELS;let tile=xy.y*64u+xy.x;
+ let word=shadow_damage_mask[tile>>7u][(tile>>5u)&3u];
+ if (word&(1u<<(tile&31u)))==0u {discard;}
+ if alpha_cut(in) {discard;}
+}

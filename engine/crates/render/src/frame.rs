@@ -46,7 +46,7 @@ pub const MAX_VISIBLE: u32 = 4 << 20;
 pub const TEXTURE_SIZE: u32 = if cfg!(target_os = "android") { 512 } else { 2048 };
 /// Normal map array resolution.
 const NORMAL_SIZE: u32 = if cfg!(target_os = "android") { 512 } else { 1024 };
-const SHADOW_SIZE: u32 = if cfg!(target_os = "android") { 2048 } else { 4096 };
+pub(crate) const SHADOW_SIZE: u32 = if cfg!(target_os = "android") { 2048 } else { 4096 };
 const NEAR_SHADOW_SIZE: u32 = if cfg!(target_os = "android") { 1024 } else { 2048 };
 const NEAR_SHADOW_EXTENT: f32 = 16.0;
 /// The near shadow's cluster LOD error, in multiples of the camera's
@@ -799,6 +799,9 @@ pub struct Renderer {
     raster_depth: wgpu::RenderPipeline,
     /// Opt-in sun receiver-plane experiment; headlights retain their old bias.
     raster_sun_depth: Option<wgpu::RenderPipeline>,
+    raster_cached_sun:Option<wgpu::RenderPipeline>,
+    shadow_damage:std::sync::Mutex<Option<crate::shadow_damage::Damage>>,
+    legacy_shadow_wind:bool,
     /// Coarse cached source maps must not shift steep leaf casters by metres.
     raster_far_sun_depth: Option<wgpu::RenderPipeline>,
     sun_scene_bounds: Option<std::sync::Mutex<crate::stability::SunSceneBounds>>,
@@ -1450,6 +1453,9 @@ impl Renderer {
         let gpu_forest=scene.gpu_forest.as_ref().map(|spec| crate::foliage_runtime::Runtime::new(gpu,spec,&instances,
             voxel_forest.as_ref().expect("GPU forest volumes").tree_buffer()).map(|runtime|(runtime,spec.first_owner)))
             .transpose().expect("invalid GPU forest runtime");
+        let shadow_damage=scene.gpu_forest.as_ref().map(|spec|crate::shadow_damage::Damage::new(gpu,&instances,voxel_forest.as_ref().unwrap().tree_buffer(),&gpu_forest.as_ref().unwrap().0.choices,
+            [scene.instances.len()as u32,(voxel_forest.as_ref().unwrap().tree_buffer().size()/96)as u32,spec.slots,spec.first_owner])).transpose().expect("invalid forest shadow damage cache");
+        let legacy_shadow_wind=scene.instances.iter().any(|i|i.sphere[3]>=0. && (i.first_cluster!=0 || i.cluster_count!=0) && i.flags&crate::scene::PART_WIND==0 && i.flags&(crate::scene::FOLIAGE|crate::scene::WIND_GRASS)!=0);
         if let (Some(voxels),Some((forest,_)))=(&voxel_forest,&gpu_forest){voxels.initialize_pages(gpu,forest).expect("invalid voxel cache publication");}
         let foliage_world=scene.foliage_world.as_ref().map(|field|
             crate::foliage_world_render::WorldRenderer::new(gpu,field,scene.instances.len()as u32,
@@ -1758,11 +1764,13 @@ impl Renderer {
         let recover_tree_clusters=tree_occlusion.history_first.then(||cull_compute("recover_tree_clusters"));
         startup.mark("cull_finalize_scatter_pipelines");
         let raster_pl = pl(&[&scene_layout, &view_raster_layout]);
-        let raster_pipe = |color: bool, sun_receiver_plane: bool| {
+        let shadow_mask_layout=crate::shadow_damage::mask_layout(gpu);
+        let cached_raster_pl=pl(&[&scene_layout,&view_raster_layout,&shadow_mask_layout]);
+        let raster_pipe = |color: bool, sun_receiver_plane: bool, cached:bool| {
             let targets = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Uint, blend: None, write_mask: wgpu::ColorWrites::ALL })];
             gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(if color { "raster" } else { "raster depth" }),
-                layout: Some(&raster_pl),
+                layout: Some(if cached {&cached_raster_pl}else{&raster_pl}),
                 vertex: wgpu::VertexState { module: &raster_mod, entry_point: Some("vs"), compilation_options: wgpu::PipelineCompilationOptions { constants: &raster_constants, ..Default::default() }, buffers: &[] },
                 primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
                 depth_stencil: Some(wgpu::DepthStencilState {
@@ -1776,19 +1784,20 @@ impl Renderer {
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &raster_mod,
-                    entry_point: Some(if color { "fs" } else { "fs_depth" }),
-                    compilation_options: Default::default(),
+                    entry_point: Some(if color { "fs" } else if cached {"fs_cached_depth"} else { "fs_depth" }),
+                    compilation_options: wgpu::PipelineCompilationOptions {constants:if cached {&[("SHADOW_TILE_PIXELS",(SHADOW_SIZE/64)as f64)]}else{&[]},..Default::default()},
                     targets: if color { &targets } else { &[] },
                 }),
                 multiview_mask: None,
                 cache: gpu.pipeline_cache(),
             })
         };
-        let raster = raster_pipe(true, false);
-        let raster_depth = raster_pipe(false, false);
+        let raster = raster_pipe(true, false,false);
+        let raster_depth = raster_pipe(false, false,false);
         let raster_sun_depth = (std::env::var("KERN_SUN_RECEIVER_PLANE").as_deref() == Ok("1"))
-            .then(|| raster_pipe(false, true));
-        let raster_far_sun_depth=(far_sun.enabled || foliage_sun_pages.enabled).then(||raster_pipe(false,true));
+            .then(|| raster_pipe(false, true,false));
+        let raster_far_sun_depth=(far_sun.enabled || foliage_sun_pages.enabled).then(||raster_pipe(false,true,false));
+        let raster_cached_sun=gpu_forest.as_ref().map(|_|raster_pipe(false,raster_sun_depth.is_some(),true));
         startup.mark("raster_shadow_pipelines");
         let sun_scene_bounds = (std::env::var("KERN_SUN_SCENE_DEPTH").as_deref() == Ok("1"))
             .then(|| std::sync::Mutex::new(crate::stability::SunSceneBounds::from_scene(scene)));
@@ -2051,6 +2060,7 @@ impl Renderer {
             raster,
             raster_depth,
             raster_sun_depth,
+            raster_cached_sun,shadow_damage:std::sync::Mutex::new(shadow_damage),legacy_shadow_wind,
             raster_far_sun_depth,
             sun_scene_bounds,
             sun_guard_bounds,
@@ -2347,10 +2357,10 @@ impl Renderer {
     }
 
     fn cull_and_raster(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass) {
-        self.cull_and_raster_pass(enc,gpu,v,color,depth,ts,names,name,kind,None,false);
+        self.cull_and_raster_pass(enc,gpu,v,color,depth,ts,names,name,kind,None,false,None);
     }
 
-    fn cull_and_raster_pass(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass, phase_bind:Option<&wgpu::BindGroup>, append:bool) {
+    fn cull_and_raster_pass(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass, phase_bind:Option<&wgpu::BindGroup>, append:bool,damage:Option<&wgpu::BindGroup>) {
         if !append && matches!(kind,RasterPass::Color) {enc.clear_buffer(&v.traversal_counter,0,None);}
         let scene_bind=match kind {RasterPass::Color=>&self.scene_bind,RasterPass::FarSun=>&self.far_sun_scene_bind,RasterPass::FoliagePage=>&self.foliage_sun_scene_bind,_=>&self.shadow_scene_bind};
         let cull_scene_bind=match kind {RasterPass::FarSun=>&self.far_cull_scene_bind,RasterPass::FoliagePage=>&self.foliage_cull_scene_bind,_=>&self.cull_scene_bind};
@@ -2471,20 +2481,21 @@ impl Renderer {
             color_attachments: if color.is_some() { &attachments } else { &[] },
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth,
-                depth_ops: Some(wgpu::Operations { load: if append || matches!(kind,RasterPass::SunDynamic(_)) {wgpu::LoadOp::Load} else {wgpu::LoadOp::Clear(if color.is_some() { 0.0 } else { 1.0 })}, store: wgpu::StoreOp::Store }),
+                depth_ops: Some(wgpu::Operations { load: if damage.is_some() || append || matches!(kind,RasterPass::SunDynamic(_)) {wgpu::LoadOp::Load} else {wgpu::LoadOp::Clear(if color.is_some() { 0.0 } else { 1.0 })}, store: wgpu::StoreOp::Store }),
                 stencil_ops: None,
             }),
             timestamp_writes: t.map(|(qs, i)| wgpu::RenderPassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(match kind {
+        pass.set_pipeline(if damage.is_some(){self.raster_cached_sun.as_ref().expect("GPU forest cached sun pipeline")}else{match kind {
             RasterPass::Color => &self.raster,
             RasterPass::Sun | RasterPass::SunStatic(_) | RasterPass::SunDynamic(_) => self.raster_sun_depth.as_ref().unwrap_or(&self.raster_depth),
             RasterPass::FarSun => self.raster_far_sun_depth.as_ref().expect("enabled far sun pipeline"),
             RasterPass::FoliagePage => self.raster_far_sun_depth.as_ref().expect("enabled foliage page pipeline"),
             RasterPass::Headlight => &self.raster_depth,
-        });
+        }});
+        if let Some(mask)=damage {pass.set_bind_group(2,mask,&[]);}
         pass.set_bind_group(0, scene_bind, &[]);
         pass.set_bind_group(1, &v.raster_bind, &[]);
         for &bucket in raster_bucket_order(self.cluster_buckets,self.raster_large_first,kind) {
@@ -2685,8 +2696,8 @@ impl Renderer {
         if self.foliage_world.as_ref().is_some_and(|f|state_valid.strength*state_valid.tree_shear>f.max_wind_shear) {
             self.foliage_world_valid.store(false,std::sync::atomic::Ordering::Relaxed);
         }
-        if let Some((forest,_))=&self.gpu_forest {forest.set_wind(state)?;self.invalidate_dynamic_shadow();}
-        if self.wind.update(gpu, state)? { self.invalidate_dynamic_shadow(); }
+        if let Some((forest,_))=&self.gpu_forest {forest.set_wind(state)?;}
+        if self.wind.update(gpu, state)? && (self.gpu_forest.is_none() || self.legacy_shadow_wind) { self.invalidate_dynamic_shadow(); }
         if let Some(parts) = &self.part_wind {
             // Branch wind moves the shared sun map's casters only when they
             // cast as source: with voxel casting their groups splat 1 m cells
@@ -3200,11 +3211,11 @@ impl Renderer {
             (11,self.sun_owner_buffer.as_entire_binding()),
             (12,self.cluster_traversal.buffer.as_entire_binding()),(13,v.traversal_counter.as_entire_binding()),
             (14,self.receiver_demand.buffer().as_entire_binding()),(15,history.as_entire_binding())]));
-        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"tree occluder cull",RasterPass::Color,Some(&phases[0]),false);
+        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"tree occluder cull",RasterPass::Color,Some(&phases[0]),false,None);
         let time=self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs,_,_)|{names.push("tree occlusion pyramid");(qs,timestamp_pair(ts))});
         pyramid.encode(gpu,enc,depth,target,time);
         if let Some((qs,i))=time {enc.write_timestamp(qs,i+1);}
-        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"tree remaining cull",RasterPass::Color,Some(&phases[1]),true);
+        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"tree remaining cull",RasterPass::Color,Some(&phases[1]),true,None);
         let time=self.query.as_ref().filter(|_|self.tree_occlusion.history_first).map(|(qs,_,_)|{names.push("tree visibility history");(qs,timestamp_pair(ts))});
         self.tree_occlusion.capture_history(gpu,enc,&history,color,&v.visible,size,time);
         if self.tree_occlusion.history_first {enc.copy_buffer_to_buffer(&v.counter,18*4,&history,32772,4);}
@@ -3724,9 +3735,9 @@ impl Renderer {
             vu.fog_cull[3]=if self.sun_surface_source{1.}else{0.};
             gpu.queue.write_buffer(&target.uniform,0,bytemuck::bytes_of(&vu));
         }
-        // Content invalidation still redraws every moving caster. The 64 MiB
-        // depth allocation survives wind, car motion and sun-box changes.
-        if self.gpu_forest.is_some() {self.invalidate_dynamic_shadow();}
+        // Legacy split maps still redraw moving casters. The normal GPU forest
+        // tracks per-tile source/voxel changes after shared materialization.
+        if self.gpu_forest.is_some() && self.static_sun.is_some() {self.invalidate_dynamic_shadow();}
         let mut static_sun = self.static_sun.as_ref().map(|s| s.lock().unwrap());
         // Wind freeze: one view-independent radius for every pass (wind.wgsl).
         // More than four views would exceed the freeze uniform: keep wind.
@@ -3770,7 +3781,10 @@ impl Renderer {
         // fixed. Old partial depth never certifies newly requested tiles.
         let reuse = sun_needed && !self.receiver_demand.enabled()
             && cache.as_ref().is_some_and(|c| c.content.reusable(svp, light.alpha_cut, shadow_lod));
-        let draw_main_sun = sun_needed && (!reuse || static_plan.is_some_and(|p|p.redraw_static));
+        let tile_cache_enabled=self.gpu_forest.is_some() && static_sun.is_none();
+        let damage_force=cache.as_ref().is_none_or(|c|!c.content.valid || c.content.alpha_cut.to_bits()!=light.alpha_cut.to_bits() || c.content.lod_pixels.to_bits()!=shadow_lod.to_bits()) || !self.reuse_sun_texture
+            || self.receiver_demand.enabled() || self.skinning.is_some() || self.crowd.is_some();
+        let draw_main_sun = sun_needed && (tile_cache_enabled || !reuse || static_plan.is_some_and(|p|p.redraw_static));
         let draw_static_sun = draw_main_sun && static_plan.is_some_and(|p|p.redraw_static);
         let static_counts = static_sun.as_ref().map_or(Default::default(),|s|s.counts());
         let mut split_stats = FrameStats {
@@ -3977,6 +3991,17 @@ impl Renderer {
         let mut canopy_updated_levels = Vec::with_capacity(views.len());
         let mut canopy_pitch_m = Vec::with_capacity(views.len());
         let mut camera_sun_visibility = Vec::with_capacity(views.len());
+        let mut shadow_damage=self.shadow_damage.lock().unwrap();
+        let damage_bind=if tile_cache_enabled && draw_main_sun {
+            let damage=shadow_damage.as_mut().expect("GPU forest damage cache");
+            if damage_force {damage.invalidate();}
+            let time=self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(q,_,_)|(q,timestamp_pair(&mut ts)));
+            if let Some((q,i))=time {names.push("shadow tile damage and clear");enc.write_timestamp(q,i);}
+            damage.encode(gpu,&mut enc,svp,self.shader_generation,SHADOW_SIZE)?;
+            damage.clear_tiles(&mut enc,&shadow_v);
+            if let Some((q,i))=time {enc.write_timestamp(q,i+1);}
+            Some(damage.raster_bind.clone())
+        }else{None};
         if draw_main_sun {
             if let (Some(split),Some(plan)) = (static_sun.as_ref(),static_plan.as_ref()) {
                 if plan.redraw_static {
@@ -3992,12 +4017,12 @@ impl Renderer {
                 self.cull_and_raster(&mut enc,gpu,&shadow_t,None,&shadow_v,
                     &mut ts,&mut names,"dynamic sun cull",RasterPass::SunDynamic(static_counts.dynamic_casters));
             } else {
-                self.cull_and_raster(&mut enc, gpu, &shadow_t, None, &shadow_v, &mut ts, &mut names, "shadow cull",RasterPass::Sun);
+                self.cull_and_raster_pass(&mut enc, gpu, &shadow_t, None, &shadow_v, &mut ts, &mut names, "shadow cull",RasterPass::Sun,None,false,damage_bind.as_ref());
                 if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.casts_sun()) {
                     let times=["voxel sun splats","voxel sun splat raster"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
                         let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
                     forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&shadow_t.foliage_selection,crate::voxel_forest::SunSplatView {
-                        depth:&shadow_v,view_proj:svp,planes:shadow_uniform.planes,direction:light.sun_dir,texel_m:sun_voxel_m(texel,SHARED_SUN_VOXEL_M)},times)?;
+                        damage:damage_bind.as_ref(),depth:&shadow_v,view_proj:svp,planes:shadow_uniform.planes,direction:light.sun_dir,texel_m:sun_voxel_m(texel,SHARED_SUN_VOXEL_M)},times)?;
                 }
             }
         }
@@ -4136,7 +4161,7 @@ impl Renderer {
                     let times=["voxel near sun splats","voxel near sun splat raster"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
                         let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
                     forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&near.targets.foliage_selection,crate::voxel_forest::SunSplatView {
-                        depth:&texture_view,view_proj:near_vp,planes:near_uniform.planes,direction:light.sun_dir,
+                        damage:None,depth:&texture_view,view_proj:near_vp,planes:near_uniform.planes,direction:light.sun_dir,
                         texel_m:sun_voxel_m(2.0*NEAR_SHADOW_EXTENT/NEAR_SHADOW_SIZE as f32,NEAR_SUN_VOXEL_M)},times)?;
                 }
                 view_light.near_shadow_view_proj = near_vp.to_cols_array_2d();

@@ -231,12 +231,14 @@ struct SplatRaster {
     sun_empty: wgpu::BindGroup,
     sun_splats: wgpu::ComputePipeline,
     sun_raster: wgpu::RenderPipeline,
+    sun_cached_raster: wgpu::RenderPipeline,
     /// The sun target's selection buffer and its splat targets.
     /// One target per sun map, keyed by its selection buffer.
     sun_target: Mutex<Vec<(wgpu::Buffer, Targets)>>,
 }
 /// Where render_sun draws: the sun map's depth, view and texel size.
 pub(crate) struct SunSplatView<'a> {
+    pub damage:Option<&'a wgpu::BindGroup>,
     pub depth: &'a wgpu::TextureView,
     pub view_proj: glam::Mat4,
     pub planes: [[f32; 4]; 6],
@@ -496,6 +498,19 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
         fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs_depth"), compilation_options: Default::default(), targets: &[] }),
         multiview_mask: None, cache: gpu.pipeline_cache(),
     });
+    let cached_mask_layout=crate::shadow_damage::mask_layout(gpu);
+    let cached_layout=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("cached voxel sun raster"),bind_group_layouts:&[Some(&layout),Some(&cached_mask_layout)],immediate_size:0});
+    let sun_cached_raster = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("voxel sun splat raster"), layout: Some(&cached_layout),
+        vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+        primitive: Default::default(),
+        depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(),
+            bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 } }),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs_cached_depth"), compilation_options: wgpu::PipelineCompilationOptions {constants:&[("SHADOW_TILE_PIXELS",(crate::frame::SHADOW_SIZE/64)as f64)],..Default::default()}, targets: &[] }),
+        multiview_mask: None, cache: gpu.pipeline_cache(),
+    });
     let empty_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxel sun splats"), entries: &[] });
     let sun_empty = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("voxel sun splats"), layout: &empty_layout, entries: &[] });
     let sun_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("voxel sun splats"),
@@ -503,7 +518,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
     let sun_splats = sun_splat_pipeline(gpu, &sun_layout, source);
     let cells_buffer = cells_override.cloned().unwrap_or_else(||gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("voxel splat cells"), contents: bytemuck::cast_slice(cells), usage: wgpu::BufferUsages::STORAGE }));
-    SplatRaster { main_pipeline, cells: cells_buffer, capacity, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_raster,
+    SplatRaster { main_pipeline, cells: cells_buffer, capacity, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_raster, sun_cached_raster,
         sun_target: Mutex::new(Vec::new()) }
 }
 fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool,global_intervals:bool) -> [wgpu::ComputePipeline; 8] {
@@ -1467,7 +1482,8 @@ impl VoxelRenderer {
                 query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
             occlusion_query_set: None, multiview_mask: None,
         });
-        pass.set_pipeline(&raster.sun_raster);
+        pass.set_pipeline(if sun.damage.is_some(){&raster.sun_cached_raster}else{&raster.sun_raster});
+        if let Some(mask)=sun.damage {pass.set_bind_group(1,mask,&[]);}
         pass.set_bind_group(0, &splat.bind, &[]);
         pass.draw_indirect(&splat.draw, 0);
         Ok(())
