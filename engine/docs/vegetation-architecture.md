@@ -6,6 +6,11 @@ plans. Architecture first; no interactive playtest until requested.
 
 ## Where we are
 
+Next: G3.3 branch-level consumer demand and independent representation detail.
+Two root-cohort queue experiments were rejected; do not repeat root-level
+partition tuning. A root can own camera and off-camera shadow-only branches.
+Root-tagged publication counts do not establish branch-level camera relevance.
+
 Latest deferred-cache measurement: ~12.03-12.16 ms covered GPU and
 5.72-5.77 ms selection at native 720p, one view. Fresh proposal evaluations
 fall 586,510 -> 261,552, with 324,958 cache reuses. Selection/error counts
@@ -798,3 +803,39 @@ identity or visual acceptance claim. This cache is infrastructure for deferred
 scheduling; compact queue consumption and memory reduction remain needed.
 Evidence: build/playtest-unified/proposal-cache-{before,after}-{1,2,3}.*,
 proposal-cache-summary.json, proposal-cache-comparison.jpg.
+
+## Camera/shadow root cohorts with cached proposals (5 November 2026, rejected)
+
+Stable compact camera-owning roots, refine with the prior two-depth bound, then
+compact shadow-only roots and give them a dedicated one-depth stage. Shared
+baseline reservations are retained. This guarantees service to shadow roots
+without repeatedly carrying them through camera waves, but is too coarse a
+consumer partition for mixed-visibility branches.
+
+All 141 foliage tests PASS; extended shadow-only optical cases PASS with an
+empty camera stage. The mixed-consumer fixture confirms zero deferred cache
+uses for its separated shadow root. Initial benchmarks overlapped test
+compilation; discard them for performance conclusions. Clean serial repeats
+after build/tests ended (native 1280x720, one view, lowland+grass, 240 frames,
+frames 120-239 measured) report:
+
+| Repeat | Before covered ms | After covered ms | Before selection ms | After selection ms |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 12.015 | 12.647 | 5.716 | 6.364 |
+| 2 | 12.058 | 12.605 | 5.761 | 6.266 |
+| 3 | 11.814 | 12.587 | 5.785 | 6.364 |
+
+Fresh evaluations 261,552 -> 262,361, reused proposals 324,958 -> 1,018,
+peak frontier 302,116 -> 53,990. Source slots 15 -> 2,948; selected records
+821 -> 4,096. Camera-over-target remains 40,529; no emergency fallbacks.
+Matched images inspected: per-channel scene MAE below 0.000014/255, effectively
+unchanged. More allocated detail is not established camera quality improvement.
+
+Removed production changes; preserved consumer-root-queues-experiment.patch.
+Evidence: build/playtest-unified/consumer-queues-clean-{before,after}-{1,2,3}.*,
+consumer-queues-clean-summary.json, consumer-queues-clean-comparison.jpg,
+consumer-queues-tests.log, consumer-queues-shadow-only.log.
+
+Next must inspect per-branch consumer masks and separate camera/source detail
+from shadow representation demand (G3.3), rather than more root-cohort scheduling.
+Production remains the cached-proposal allocator from 7ca3df6.

@@ -1,0 +1,122 @@
+diff --git a/engine/crates/render/src/foliage_refine.rs b/engine/crates/render/src/foliage_refine.rs
+index 5c42004..ced0163 100644
+--- a/engine/crates/render/src/foliage_refine.rs
++++ b/engine/crates/render/src/foliage_refine.rs
+@@ -18,7 +18,7 @@ impl Refiner {
+         let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("foliage complete-cut refinement"),entries:&entries});
+         let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
+         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage incremental admission"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_refine.wgsl").into())});
+-        let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit"].into_iter().map(|entry|
++        let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit","seed_shadow","start_shadow","compact_seed"].into_iter().map(|entry|
+             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()})).collect();
+         Self {proposals:[storage("foliage refinement proposals A",capacity as u64*80),storage("foliage refinement proposals B",capacity as u64*80)],
+             queues:[storage("foliage complete cut A",capacity as u64*16),storage("foliage complete cut B",capacity as u64*16)],
+@@ -49,22 +49,33 @@ impl Refiner {
+         let binds=[self.bind(gpu,s,0),self.bind(gpu,s,1)];enc.clear_buffer(&self.state,0,None);
+         self.dispatch(enc,&binds[0],0,Some(s.count.div_ceil(64)),0);
+         self.dispatch(enc,&binds[0],1,Some(1),0);
+-        // One extra transition admits the initial emergency proxy into the
+-        // recipe root. A final drain makes depth bounds conservative.
+-        let rounds=2*(s.levels+1);
+-        for round in 0..rounds {
+-            let bind=&binds[round as usize%2];self.prepare(enc,bind);
+-            // Compute dispatches are ordered storage-usage scopes. Keep the
+-            // dependent dispatches in one pass; only indirect argument copies
+-            // require leaving it. Avoid eight pass/descriptor setups per wave.
+-            let mut pass=enc.begin_compute_pass(&Default::default());
+-            pass.set_bind_group(0,bind,&[]);
+-            for (pipeline,groups,offset) in [(3,None,0),(4,None,12),(5,Some(1),0),(6,None,0),(7,None,12),(8,Some(1),0),(9,None,0),(10,Some(1),0)] {
+-                pass.set_pipeline(&self.pipelines[pipeline]);
+-                if let Some(n)=groups {pass.dispatch_workgroups(n,1,1);}else{pass.dispatch_workgroups_indirect(&self.args,offset);}
++        // Stable GPU compaction keeps root order without a CPU consumer list.
++        for stage in 0..2 {
++            if stage==1 {
++                self.dispatch(enc,&binds[0],13,Some(s.count.div_ceil(64)),0);
++                self.dispatch(enc,&binds[0],14,Some(1),0);
+             }
++            self.prepare(enc,&binds[0]);
++            {
++                let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);
++                for (pipeline,groups,offset) in [(7,None,12),(8,Some(1),0),(15,None,0),(10,Some(1),0)] {
++                    pass.set_pipeline(&self.pipelines[pipeline]);
++                    if let Some(n)=groups {pass.dispatch_workgroups(n,1,1);}else{pass.dispatch_workgroups_indirect(&self.args,offset);}
++                }
++            }
++            // Camera-owning roots can contain shadow-only descendants; retain
++            // their existing two-depth service bound. Pure shadows need one.
++            let rounds=(if stage==0 {2}else{1})*(s.levels+1);
++            for round in 0..rounds {
++                let bind=&binds[(round as usize+1)%2];self.prepare(enc,bind);
++                let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,bind,&[]);
++                for (pipeline,groups,offset) in [(3,None,0),(4,None,12),(5,Some(1),0),(6,None,0),(7,None,12),(8,Some(1),0),(9,None,0),(10,Some(1),0)] {
++                    pass.set_pipeline(&self.pipelines[pipeline]);
++                    if let Some(n)=groups {pass.dispatch_workgroups(n,1,1);}else{pass.dispatch_workgroups_indirect(&self.args,offset);}
++                }
++            }
++            let bind=&binds[(rounds as usize+1)%2];self.prepare(enc,bind);self.dispatch(enc,bind,11,None,0);
+         }
+-        let bind=&binds[rounds as usize%2];self.prepare(enc,bind);self.dispatch(enc,bind,11,None,0);
+     }
+ }
+ #[cfg(test)] mod tests {
+diff --git a/engine/crates/render/src/foliage_select.rs b/engine/crates/render/src/foliage_select.rs
+index 4da1bdf..b04e26b 100644
+--- a/engine/crates/render/src/foliage_select.rs
++++ b/engine/crates/render/src/foliage_select.rs
+@@ -473,6 +473,8 @@ mod tests {
+   let view=|size|AnimationView {view_projection:Mat4::IDENTITY,viewport:[size;2]};
+   for (views,expected) in [(vec![ConsumerView::camera(view(1))],1),
+       (vec![ConsumerView::camera(view(128))],2),
++      (vec![ConsumerView::shadow(view(1))],1),
++      (vec![ConsumerView::shadow(view(128))],2),
+       (vec![ConsumerView::camera(view(1)),ConsumerView::shadow(view(128))],2)] {
+    let mut enc=gpu.device.create_command_encoder(&Default::default());
+    selector.union_consumers(&gpu,&mut enc,&views,100.,4,&empty).unwrap();gpu.queue.submit([enc.finish()]);
+@@ -497,7 +499,7 @@ mod tests {
+    assert_eq!(read(&gpu,&selector.fallback),[0,0,0]);
+    assert_eq!(read(&gpu,&selector.direct),[0,91,0],"shadow-only root retains its complete coarse representation");
+    assert_eq!(read(&gpu,&selector.counters)[0],2);
+-   assert!(read(&gpu,&selector.refiner.state)[28]>0,"shadow proposal is actually reused within the selection sequence");
++   assert_eq!(read(&gpu,&selector.refiner.state)[28],0,"separate shadow root queue avoids deferral entirely in this fixture");
+    consumers.reverse();
+   }
+  }
+diff --git a/engine/crates/render/src/shaders/foliage_refine.wgsl b/engine/crates/render/src/shaders/foliage_refine.wgsl
+index da80513..aa46d3e 100644
+--- a/engine/crates/render/src/shaders/foliage_refine.wgsl
++++ b/engine/crates/render/src/shaders/foliage_refine.wgsl
+@@ -61,15 +61,32 @@ fn add_used(cost:vec4<u32>) {
+  let tree=id.x;if tree>=view.counts.x {return;}
+  let root=trees[tree];var consumers=0u;
+  if root.info.w==0u {consumers=mask(sphere(root,nodes[root.info.x]));}
+- current[tree]=vec4<u32>(tree,NONE,consumers,0u);
++ let camera=(consumers&256u)!=0u;
++ current[tree]=vec4<u32>(tree,NONE,select(0u,consumers,camera),0u);
++ var p:Proposal;p.control=vec4<u32>(0u,0u,select(0u,1u,camera),select(0u,1u,camera));proposals[tree]=p;
+  demand[tree].bucket=consumers;demand[tree].prefix=0u;
+  atomicStore(&demand[tree].count,0u);atomicStore(&demand[tree].failed,0u);
+  if consumers!=0u {add_used(work(tree,NONE,consumers));}
+ }
+ @compute @workgroup_size(1) fn start() {
+- atomicStore(&state[3],view.counts.x);atomicStore(&state[16],view.counts.x);
++ atomicStore(&state[3],view.counts.x);atomicStore(&state[16],0u);
+  if atomicLoad(&state[1])>view.consumer_count.z || atomicLoad(&state[2])>view.consumer_count.w {atomicOr(&state[15],4u);}
+ }
++// Shadow-only roots stay outside the camera frontier. Their baseline work was
++// already reserved by seed; do not reserve it twice or clear camera outputs.
++@compute @workgroup_size(64) fn seed_shadow(@builtin(global_invocation_id) id:vec3<u32>) {
++ let tree=id.x;if tree>=view.counts.x {return;}
++ let consumers=demand[tree].bucket;let shadow=consumers==512u;
++ current[tree]=vec4<u32>(tree,NONE,select(0u,consumers,shadow),0u);
++ var p:Proposal;p.control=vec4<u32>(0u,0u,select(0u,1u,shadow),select(0u,1u,shadow));proposals[tree]=p;
++}
++@compute @workgroup_size(1) fn start_shadow() {atomicStore(&state[3],view.counts.x);}
++@compute @workgroup_size(64) fn compact_seed(@builtin(global_invocation_id) id:vec3<u32>) {
++ let at=id.x;if at>=atomicLoad(&state[3]) {return;}
++ if proposals[at].control.w!=0u && (atomicLoad(&state[15])&2u)==0u {
++  next[proposals[at].output.x+blocks[32u+(at/256u)*32u].y]=current[at];
++ }
++}
+ @compute @workgroup_size(1) fn prepare() {
+  let count=atomicLoad(&state[3]);
+  for(var k=0u;k<3u;k++) {atomicStore(&state[4u+k],atomicLoad(&state[k]));}
