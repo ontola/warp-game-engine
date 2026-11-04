@@ -1,3 +1,32 @@
+## 2026-11-04 Measure shared consumer demand and budget fallback
+
+GPU root demand now retains camera/shadow ownership bits alongside its priority
+bucket. All budget indexing masks the low five priority bits; no extra traversal,
+GPU dispatch or render-time readback. Explicit forest diagnostics read the demand
+buffer to report visible roots, requested branches and fallbacks split between
+camera-visible and shadow-only roots. This is frustum demand, NOT occlusion proof.
+The camera total includes roots also requested by shadows; it does not isolate
+the extra refinement caused by shadows on those same roots.
+
+Tests: 3 selector CPU/shader tests; all 6 selector GPU tests pass on NVIDIA/Vulkan,
+including new mixed-consumer ordering/orthographic-camera priority fixture,
+disocclusion, undersized output/frontier and resident ancestor publication.
+Normal renderer cold-cache recovery test also passes. Release terrain build passes.
+
+Normal lowland+grass 240-frame headless run, 1280x720/one camera/1 m/s, default
+64 MiB cells, same scene as previous run: 39905 camera-visible roots and 53936
+shadow-only roots. Requested cut: 1221831 camera-visible branch records and
+1939259 shadow-only branch records, against 4096 slots. Fallback: 28549 camera
+roots and 53597 shadow-only roots. Final 4044 slots/773 source/3271 voxel matches
+previous run: instrumentation does not repair the visual defect. No upload
+misses, no slot/hash/frontier failure. This confirms excessive demand with coarse
+whole-root fallback even after warm loading, rather than missing asset uploads.
+
+Artifacts: build/playtest-unified/consumer-{tests.log,normal-test.log,warm.log,
+times.json*}. No interactive playtest opened. Next work must address feasible
+complete intermediate cuts / hierarchical aggregate demand and consumer-aware
+visibility, not merely increase the slot count. Full architecture remains open.
+
 ## 2026-11-04 Bound root fallback pins; failed playtest remains unaccepted
 
 User rejected the playtest: coarse ball-like trees, flicker/pop-in and very low

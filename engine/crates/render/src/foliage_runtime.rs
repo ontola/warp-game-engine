@@ -217,6 +217,8 @@ pub struct Diagnostics {
     pub slot_failures:u32,pub hash_failures:u32,
     pub frontier_overflow_requests:u32,pub peak_frontier_requests:u32,
     pub pose_requests:u32,pub evaluated_shared_poses:u32,pub pose_hash_failures:u32,
+    pub camera_roots:u32,pub shadow_only_roots:u32,pub camera_fallback_roots:u32,pub shadow_only_fallback_roots:u32,
+    pub camera_requested_branches:u64,pub shadow_only_requested_branches:u64,
 }
 #[derive(Debug,serde::Serialize)]
 pub struct PopulationStats {pub active:usize,pub capacity:usize,pub changed:usize,pub retained:usize,pub upload_bytes:usize,pub prepare_cpu_ms:f64,pub proxy_cpu_ms:f64,pub root_upload_cpu_ms:f64}
@@ -361,7 +363,7 @@ impl Runtime {
     }
     /// Explicit synchronous diagnostic only; never called to select or draw.
     pub fn diagnostics(&self,gpu:&Gpu)->Result<Diagnostics,String> {
-        let inputs=[(&self.selector.counters,64u64),(&self.residency.counters,32),(&self.selector.fallback,self.trees as u64*4),(&self.choices,131072),(&self.pose_work,268)];
+        let inputs=[(&self.selector.counters,64u64),(&self.residency.counters,32),(&self.selector.fallback,self.trees as u64*4),(&self.choices,131072),(&self.pose_work,268),(&self.selector.demand,self.trees as u64*16)];
         let size=inputs.iter().map(|(_,n)|n).sum();
         let output=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("forest diagnostic snapshot"),size,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
         let mut enc=gpu.device.create_command_encoder(&Default::default());let mut offset=0;
@@ -374,10 +376,17 @@ impl Runtime {
         let words:Vec<u32>=bytes.chunks_exact(4).map(bytemuck::pod_read_unaligned).collect();
         let c=&words[..16];let r=&words[16..24];let fallback=&words[24..24+self.trees as usize];
         let choices=&words[24+self.trees as usize..24+self.trees as usize+32768];
-        let poses=&words[24+self.trees as usize+32768..];
+        let pose_start=24+self.trees as usize+32768;let poses=&words[pose_start..pose_start+67];
+        let demand=&words[pose_start+67..];
+        let (mut camera_roots,mut shadow_only_roots,mut camera_fallback_roots,mut shadow_only_fallback_roots)=(0,0,0,0);
+        let (mut camera_requested_branches,mut shadow_only_requested_branches)=(0u64,0u64);
+        for (d,&fallback) in demand.chunks_exact(4).zip(fallback) {
+            if d[1]&256!=0 {camera_roots+=1;camera_requested_branches+=d[0]as u64;camera_fallback_roots+=u32::from(fallback!=0);}
+            else if d[1]&512!=0 {shadow_only_roots+=1;shadow_only_requested_branches+=d[0]as u64;shadow_only_fallback_roots+=u32::from(fallback!=0);}
+        }
         let voxels=choices[..self.slots as usize].iter().filter(|w|**w&3==1).count()as u32;
         let shadow_voxel_slots=choices[16384..16384+self.slots as usize].iter().filter(|w|**w&3==1).count()as u32;
-        Ok(Diagnostics {trees:self.trees,active_roots:self.population.lock().unwrap().active(),branch_capacity:self.slots,selected_records:c[0],tested_nodes:c[4],source_slots:r[6].saturating_sub(voxels),voxel_slots:voxels,shadow_voxel_slots,direct_roots:c[7],
+        Ok(Diagnostics {camera_roots,shadow_only_roots,camera_fallback_roots,shadow_only_fallback_roots,camera_requested_branches,shadow_only_requested_branches,trees:self.trees,active_roots:self.population.lock().unwrap().active(),branch_capacity:self.slots,selected_records:c[0],tested_nodes:c[4],source_slots:r[6].saturating_sub(voxels),voxel_slots:voxels,shadow_voxel_slots,direct_roots:c[7],
             fallback_trees:fallback.iter().filter(|f|**f!=0).count()as u32,retained:r[2],assigned:r[3],slot_failures:r[4],hash_failures:r[5],frontier_overflow_requests:c[11],peak_frontier_requests:c[15],pose_hash_failures:poses[64],pose_requests:poses[65],evaluated_shared_poses:poses[66]})
     }
     pub fn encode(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::part_wind::AnimationView],first_owner:u32)->Result<(),String> {
