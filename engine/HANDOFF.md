@@ -1,3 +1,14 @@
+## 5 November 2026 - impossible proposals no longer starve affordable work
+
+Integrated pre-prefix affordability check; complete parent retained on rejection.
+141 tests PASS including exact GPU starvation oracle. Explicit regression:
+three alternating 720p single-view route pairs ~11.57 -> ~13.05 ms, selection
+~5.25 -> ~6.66 ms. Admits 15 source slots but almost no visual improvement.
+Kept as allocator correctness fix; performance remains unaccepted.
+Next: global priority across hierarchy depths, not breadth-first budget spending.
+Checklist has current regression at top and full evidence. Release executable
+contains this change. No interactive playtest or live GPU run.
+
 ## 5 November 2026 - non-monotonic unary admission
 
 GPU refinement can skip expensive or missing intermediate unary LODs to an

@@ -6,6 +6,13 @@ plans. Architecture first; no interactive playtest until requested.
 
 ## Where we are
 
+Current route update (5 November): individually unaffordable-proposal filtering
+is integrated as a correctness fix but REGRESSES covered GPU to ~13.05 ms
+(native 720p, one view). Prior ~11.5 ms figures below are historical. It admits
+15 source slots but barely changes visible detail. Performance is unaccepted.
+The next architectural issue is globally prioritizing refinement across depths,
+rather than spending budget breadth-first at each hierarchy wave.
+
 **Overall status: incomplete.** Nested geometry groups, GPU incremental complete-cut
 admission, paging, shared poses and shadow caching are integrated. G2.1 is done;
 fine-detail admission, upstream two-phase visibility and scaling/performance
@@ -664,3 +671,32 @@ resolves the normal route's refinement bottleneck. Next investigate global
 priority reservation and its distribution across hierarchy levels.
 Artifacts: build/playtest-unified/unary-{before,after}-{1,2,3}.*,
 unary-summary.json, unary-comparison.jpg, unary-lookahead-tests.log.
+
+## Individually unaffordable proposal filtering (5 November 2026, correctness integrated; performance regressed)
+
+Before priority-prefix reservation, reject upgrades whose positive incremental
+slot/camera/shadow work cannot fit the current remaining budget even alone.
+Otherwise impossible requests consume prefix space and starve cheaper proposals
+that follow them. Rejected upgrades retain their resident parent. Zero-cost and
+work-reducing replacements remain eligible, including an over-budget baseline.
+This does not implement fully optimal packing: several individually affordable
+proposals can still collectively exhaust a prefix and exclude smaller later ones.
+
+Validation: 141 foliage tests PASS, including repeated impossible-expensive /
+affordable-cheap root admission and exact reservation checks. Three alternating
+native 1280x720, one-view lowland+grass route repeats (240 frames, frames
+120-239 measured) gave before covered 11.524/11.571/11.614 ms and after
+13.078/13.046/13.023 ms. Selection before 5.219/5.282/5.253 ms and after
+6.678/6.653/6.645 ms. This regression is retained as an explicit correctness
+tradeoff, NOT accepted performance or visual progress.
+
+Final route counts: tested nodes 532,044 -> 586,510; source slots 0 -> 15;
+voxel slots 758 -> 806; camera over-target 40,530 -> 40,529. Faults, fallback
+and missing direct-error matches remain zero. Matched images inspected;
+RGB MAE outside HUD 0.00712/0.00744/0.00399 on a 0-255 scale. No material
+visual improvement. Source residency grows from 6 to 20 pages.
+
+Evidence: build/playtest-unified/affordable-{before,after}-{1,2,3}.*,
+affordable-summary.json, affordable-comparison.jpg, affordable-tests.log.
+Next: global cross-depth priorities and bounding scan overhead, rather than
+more isolated changes to cost estimates. G2/G3/G8 remain incomplete.

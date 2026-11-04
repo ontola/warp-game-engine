@@ -350,6 +350,22 @@ mod tests {
   }
  }
  #[test]
+ #[ignore="exclusive GPU unaffordable priority starvation fixture"]
+ fn gpu_impossible_proposal_does_not_block_cheaper_root() {
+  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(2);
+  trees[0].info[0]=0;trees[1].info[0]=2;
+  for t in &mut trees {t.rows[0][3]=0.;t.scale[2]=1.;t.scale[3]=1.;}
+  let n=|child,end,rep,cost,error|Node {sphere:[0.,0.,0.5,0.2],error:[error,0.,cost,cost],links:[child,end,rep,2]};
+  let nodes=[n(1,2,0,1.,1000.),n(NONE,2,1,1000.,0.),n(3,4,2,1.,1.),n(NONE,4,3,5.,0.)];
+  let selector=Selector::new(&gpu,&nodes,&trees,4,4).unwrap();let empty=depth(&gpu,0.);
+  let views=[ConsumerView::camera(crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]})];
+  for _ in 0..3 {
+   let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers_budget(&gpu,&mut enc,&views,0.01,4,[6;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
+   assert_eq!(read(&gpu,&selector.direct),[1,4]);assert_eq!(read(&gpu,&selector.fallback),[0,0]);
+   let state=read(&gpu,&selector.refiner.state);assert_eq!(state[1],6);assert_eq!(state[15],0);
+  }
+ }
+ #[test]
  #[ignore="exclusive GPU incremental raster and branch reservation fixture"]
  fn gpu_incremental_refinement_retains_mixed_complete_cuts() {
   let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].scale[2]=1.;trees[0].scale[3]=1.;
