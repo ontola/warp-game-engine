@@ -1,0 +1,218 @@
+{
+  "route": {
+    "updates": [],
+    "frame_samples": 294,
+    "gpu_covered_median_ms": 10.10272,
+    "per_pass_medians_ms": {
+      "GPU forest selection residency poses": 0.57,
+      "shadow cull": 0.139216,
+      "shadow raster": 0.174352,
+      "voxel sun splats": 0.22955199999999998,
+      "voxel sun splat raster": 0.25316799999999995,
+      "near shadow cull": 0.15583999999999998,
+      "near shadow raster": 0.043232,
+      "voxel near sun splats": 0.187504,
+      "voxel near sun splat raster": 0.035648,
+      "tree occluder cull": 0.32288,
+      "tree occluder raster": 0.200288,
+      "tree occlusion pyramid": 0.090016,
+      "tree remaining cull": 0.88968,
+      "tree remaining raster": 0.169456,
+      "voxel splats": 2.3580319999999997,
+      "voxel splat raster": 0.821024,
+      "voxel splat resolve": 0.528048,
+      "terrain coarse": 0.239248,
+      "shade terrain": 1.058784,
+      "shade voxels": 0.110496,
+      "shade": 0.104848,
+      "motion vectors": 0.048624,
+      "taa": 0.07441600000000001,
+      "exhaust": 0.00031999999999999997,
+      "wheel particles": 0.00031999999999999997,
+      "bloom": 0.047472,
+      "tonemap": 0.043904,
+      "canopy volume": 0.22652799999999998,
+      "filter canopy": 0.010367999999999999,
+      "canopy sky transmittance": 0.100704
+    },
+    "note": "GPU covered excludes population publication; headless fast traversal, not steady gameplay"
+  },
+  "worker": {
+    "updates": [
+      {
+        "active": 58798,
+        "capacity": 124548,
+        "changed": 5354,
+        "retained": 56920,
+        "upload_bytes": 1370624,
+        "prepare_cpu_ms": 32.5032,
+        "proxy_cpu_ms": 7.9925,
+        "root_upload_cpu_ms": 9.168600000000001,
+        "enqueue_cpu_ms": 17.96
+      },
+      {
+        "active": 55166,
+        "capacity": 124548,
+        "changed": 5529,
+        "retained": 53269,
+        "upload_bytes": 1415424,
+        "prepare_cpu_ms": 27.4331,
+        "proxy_cpu_ms": 11.0403,
+        "root_upload_cpu_ms": 15.0567,
+        "enqueue_cpu_ms": 26.69
+      },
+      {
+        "active": 51151,
+        "capacity": 124548,
+        "changed": 6953,
+        "retained": 48213,
+        "upload_bytes": 1779968,
+        "prepare_cpu_ms": 33.6642,
+        "proxy_cpu_ms": 15.5891,
+        "root_upload_cpu_ms": 24.191399999999998,
+        "enqueue_cpu_ms": 40.34
+      }
+    ],
+    "frame_samples": 294,
+    "gpu_covered_median_ms": 10.228672,
+    "per_pass_medians_ms": {
+      "GPU forest selection residency poses": 0.577584,
+      "shadow cull": 0.13696,
+      "shadow raster": 0.17593599999999998,
+      "voxel sun splats": 0.232848,
+      "voxel sun splat raster": 0.26435200000000003,
+      "near shadow cull": 0.147808,
+      "near shadow raster": 0.043648,
+      "voxel near sun splats": 0.186288,
+      "voxel near sun splat raster": 0.035712,
+      "tree occluder cull": 0.31184,
+      "tree occluder raster": 0.20628799999999997,
+      "tree occlusion pyramid": 0.09942399999999998,
+      "tree remaining cull": 0.900272,
+      "tree remaining raster": 0.16833599999999999,
+      "voxel splats": 2.314176,
+      "voxel splat raster": 0.824576,
+      "voxel splat resolve": 0.5165919999999999,
+      "terrain coarse": 0.23887999999999998,
+      "shade terrain": 1.050112,
+      "shade voxels": 0.107712,
+      "shade": 0.10536,
+      "motion vectors": 0.048512,
+      "taa": 0.07323199999999999,
+      "exhaust": 0.00031999999999999997,
+      "wheel particles": 0.00031999999999999997,
+      "bloom": 0.048848,
+      "tonemap": 0.044064,
+      "canopy volume": 0.226592,
+      "filter canopy": 0.010591999999999999,
+      "canopy sky transmittance": 0.10124799999999999
+    },
+    "note": "GPU covered excludes population publication; headless fast traversal, not steady gameplay"
+  },
+  "scatter": {
+    "updates": [
+      {
+        "active": 58798,
+        "capacity": 124548,
+        "changed": 5354,
+        "retained": 56920,
+        "upload_bytes": 1456288,
+        "prepare_cpu_ms": 19.9545,
+        "proxy_cpu_ms": 3.5899,
+        "root_upload_cpu_ms": 0.861,
+        "enqueue_cpu_ms": 5.2
+      },
+      {
+        "active": 55166,
+        "capacity": 124548,
+        "changed": 5529,
+        "retained": 53269,
+        "upload_bytes": 1503888,
+        "prepare_cpu_ms": 14.7186,
+        "proxy_cpu_ms": 2.8133,
+        "root_upload_cpu_ms": 0.5265,
+        "enqueue_cpu_ms": 4.19
+      },
+      {
+        "active": 51151,
+        "capacity": 124548,
+        "changed": 6953,
+        "retained": 48213,
+        "upload_bytes": 1891216,
+        "prepare_cpu_ms": 14.767000000000001,
+        "proxy_cpu_ms": 3.0132000000000003,
+        "root_upload_cpu_ms": 0.6208,
+        "enqueue_cpu_ms": 4.36
+      }
+    ],
+    "frame_samples": 294,
+    "gpu_covered_median_ms": 10.11336,
+    "per_pass_medians_ms": {
+      "GPU forest selection residency poses": 0.5697920000000001,
+      "shadow cull": 0.137344,
+      "shadow raster": 0.17598399999999997,
+      "voxel sun splats": 0.23252799999999998,
+      "voxel sun splat raster": 0.253648,
+      "near shadow cull": 0.150784,
+      "near shadow raster": 0.04368,
+      "voxel near sun splats": 0.187392,
+      "voxel near sun splat raster": 0.035919999999999994,
+      "tree occluder cull": 0.33355199999999996,
+      "tree occluder raster": 0.20649599999999999,
+      "tree occlusion pyramid": 0.08985599999999999,
+      "tree remaining cull": 0.884608,
+      "tree remaining raster": 0.166352,
+      "voxel splats": 2.2625919999999997,
+      "voxel splat raster": 0.8260639999999999,
+      "voxel splat resolve": 0.522192,
+      "terrain coarse": 0.236176,
+      "shade terrain": 1.053264,
+      "shade voxels": 0.114992,
+      "shade": 0.105296,
+      "motion vectors": 0.048575999999999994,
+      "taa": 0.073488,
+      "exhaust": 0.00031999999999999997,
+      "wheel particles": 0.00031999999999999997,
+      "bloom": 0.047712,
+      "tonemap": 0.04416,
+      "canopy volume": 0.2268,
+      "filter canopy": 0.01056,
+      "canopy sky transmittance": 0.10103999999999999
+    },
+    "note": "GPU covered excludes population publication; headless fast traversal, not steady gameplay"
+  },
+  "final_image_rgb_mae": 2.439336244922281,
+  "exe_sha256": "eab448c456cde3cdea7a9e3bef7c00dd467612b2ee7bb076bf675a736f61657c",
+  "scene": {
+    "output": [
+      1713,
+      964
+    ],
+    "views": 1,
+    "reconstruction": "native",
+    "frames": 300,
+    "speed_mps": 240,
+    "initial_roots": 62274,
+    "reserved_roots": 124548,
+    "branch_slots": 4096
+  },
+  "tests": {
+    "foliage_filter": {
+      "passed": 109,
+      "failed": 0,
+      "ignored": 0
+    },
+    "terrain_recenter_smoke": {
+      "frames": 300,
+      "speed_mps": 2000,
+      "output": [
+        640,
+        360
+      ],
+      "trees": false,
+      "completed": true,
+      "renderer_builds": 1,
+      "note": "No per-recenter event counter; run crossed 4 km boundaries without error or renderer reconstruction"
+    }
+  }
+}

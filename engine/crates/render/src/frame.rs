@@ -2693,6 +2693,34 @@ impl Renderer {
     pub fn gpu_forest_diagnostics(&self,gpu:&Gpu)->Result<Option<crate::foliage_runtime::Diagnostics>,String> {
         self.gpu_forest.as_ref().map(|(forest,_)|forest.diagnostics(gpu)).transpose()
     }
+    /// Replace the loaded world population without replacing the renderer.
+    /// Stable IDs preserve unchanged GPU residency and motion history.
+    pub fn replace_gpu_forest_roots(&self,gpu:&Gpu,roots:&[crate::foliage_population::WorldRoot])->Result<crate::foliage_runtime::PopulationStats,String> {
+        let prepared=self.gpu_forest_population_seed()?.prepare(roots)?;
+        self.commit_gpu_forest_roots(gpu,prepared)
+    }
+    pub fn gpu_forest_population_seed(&self)->Result<crate::foliage_runtime::PopulationSeed,String> {
+        Ok(self.gpu_forest.as_ref().ok_or("scene has no GPU forest")?.0.population_seed())
+    }
+    pub fn commit_gpu_forest_roots(&self,gpu:&Gpu,prepared:crate::foliage_runtime::PreparedPopulation)->Result<crate::foliage_runtime::PopulationStats,String> {
+        let (runtime,_)=self.gpu_forest.as_ref().ok_or("scene has no GPU forest")?;
+        runtime.commit_population(gpu,prepared,|changes| {
+            if changes.is_empty(){return Ok(());}
+            let budget=self.canopies.lock().unwrap()[0].prepare_proxy_edits(changes.iter().map(|c|(c.proxy.meta[0]as usize,&c.source)))?;
+            if changes.iter().any(|c|c.proxy.meta[0]>=self.instances || c.source.cluster_count!=0) {return Err("invalid GPU forest root owner".into());}
+            let mut first=0;
+            while first<changes.len() {
+                let mut end=first+1;while end<changes.len() && changes[end].proxy.meta[0]==changes[end-1].proxy.meta[0]+1 {end+=1;}
+                let sources=changes[first..end].iter().map(|c|c.source).collect::<Vec<_>>();
+                self.write_instances_metadata(gpu,changes[first].proxy.meta[0]as usize,&sources,true,false)?;
+                first=end;
+            }
+            for canopy in self.canopies.lock().unwrap().iter_mut(){canopy.commit_proxy_update(&budget);}
+            // Root generation and GPU-owned epoch invalidate changed roots only.
+            // Do not reset_history(): retained roots/cameras keep their history.
+            Ok(())
+        })
+    }
 
     /// Shared presentation clock for all rigid actors, shadows and cameras.
     /// Independent of wind strength and simulation input/focus.
@@ -3357,6 +3385,9 @@ impl Renderer {
     }
 
     fn write_instances_inner(&self, gpu: &Gpu, first: usize, instances: &[crate::scene::GpuInstance], proxies: bool) -> Result<(), String> {
+        self.write_instances_metadata(gpu,first,instances,proxies,true)
+    }
+    fn write_instances_metadata(&self,gpu:&Gpu,first:usize,instances:&[crate::scene::GpuInstance],proxies:bool,upload:bool)->Result<(),String> {
         if self.part_wind.as_ref().is_some_and(|parts|parts.contains_owner_range(first,instances.len())) {
             return Err("procedural part owners are driven by shared GPU poses, not CPU instance updates".into());
         }
@@ -3391,7 +3422,7 @@ impl Renderer {
             if let Some(bounds) = &self.sun_guard_bounds {
                 bounds.lock().unwrap().extend_instances(instances);
             }
-            gpu.queue.write_buffer(&self.instance_buffer, (first * std::mem::size_of::<crate::scene::GpuInstance>()) as u64, bytemuck::cast_slice(instances));
+            if upload {gpu.queue.write_buffer(&self.instance_buffer, (first * std::mem::size_of::<crate::scene::GpuInstance>()) as u64, bytemuck::cast_slice(instances));}
             self.far_sun.update(gpu,first,instances);
             self.foliage_sun_pages.update(gpu,first,instances);
             if let Some(transparency) = &self.transparency { transparency.update_instances(first, instances); }
