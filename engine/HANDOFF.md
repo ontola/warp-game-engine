@@ -1,3 +1,15 @@
+## 5 November 2026 - root cohort queue experiment rejected
+
+Compacted camera-owning roots then shadow-only roots. 141 tests and additional
+shadow-only optical cases PASS, no starvation, but clean three-pair route
+comparison regresses ~12.0 -> ~12.6 ms; source slots 15 -> 2,948 without
+image/camera-error improvement. Preserved patch/evidence in checklist, removed
+production changes. Next G3.3: branch consumer masks and independent detail;
+root cohorts are insufficient. Don't repeat this queue experiment.
+Cargo target exe contains rejected experiment; rebuild before any playtest.
+Production backup: build/playtest-unified/terrain-before-consumer-queues.exe.
+No live GPU run/playtest.
+
 ## 5 November 2026 - cache deferred proposals within selection encode
 
 Ping-pong proposals preserve deferred work; recheck budgets on reuse, clear
