@@ -1,3 +1,28 @@
+## 2026-11-04 Checklist G1.1/G1.2 cooked geometry groups (97cf333)
+
+Single authoritative status: engine/docs/vegetation-architecture.md. English updates,
+reference checklist IDs. G1.1/G1.2 now pass their cook-only criteria; G1.3 NEXT.
+New vegetation_geometry.rs builds balanced spatial groups over branch-own source
+sets, stores sorted exact placement IDs, common articulated ancestor, internal
+volume, aggregate candidates and discarded-motion bound. No new wind joints.
+CookedPlant geometry field serialized, file version2, module in cook hash; stats
+and selection_evidence expose group/asset counts. Ordinary source-only cooks
+keep geometry empty; normal aggregate cooks build it without an opt-in.
+19 CPU asset tests pass (4 GPU ignored), including source partition at successive
+cuts, unchanged joints, frame ancestry, 5 animated phases, serialization. Production
+validate-world passes: six trees 113/121/121/121/81/81 groups, grass71/71; cold
+88.48s, cached2.73s. Logs build/playtest-unified/geometry-groups-{cook,cached}.log.
+No interactive playtest. NO new GPU groups selected yet; do not claim a rendered
+improvement. All processes complete. Last build terrain_fly succeeds.
+
+G1.3 integration considerations: geometry frames must reference existing poses,
+not add synthetic joints (legacy max64). Runtime representations currently pack
+[branch,kind,level,0]; materialize and Spec::voxel_page_dependencies assume the
+volume belongs to the pose branch. Decouple volume record from pose index, update
+both paging and materialization together, and export nested groups in selection.
+Group volumes can be packed via foliage_volume_data::pack_assets; append dense
+catalog before brick conversion as required by GpuForest::append. Keep bounds,
+asset generation and shadow representation consistent; no expanded pin set.
 ## 2026-11-04 Reuse unary-chain consumer projection; identify missing group hierarchy
 
 Normal queued selector caches the projected error scale for equal bounds across
