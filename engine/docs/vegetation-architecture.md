@@ -153,6 +153,18 @@ with measurements; continue to label the current appearance as unaccepted.
   demand. Show fallback counts and representation distributions during motion;
   emergency proxies must not remain the normal appearance of the forest.
 
+G2 implementation in progress: shared cooked nodes now carry conservative
+camera/shadow splat bounds in their existing GPU metadata. Whole-root fixed-mip
+choices, articulated adaptive mip ranges, source branches with voxel shadow
+casters, and separate emergency proxies are accounted independently. Root
+replacement preserves proxy costs; no CPU per-frame selection is introduced.
+This is voxel-record work, NOT source triangle work or a GPU-time estimate.
+The GPU admission algorithm does not enforce these bounds yet: G2.1-G2.3 remain
+open and the normal-route overflow is NOT fixed by this metadata change.
+Validation: 16 runtime tests (including seven exclusive headless GPU fixtures)
+and 13 voxel-catalog tests pass. Includes non-monotonic mip occupancy, aliased
+cell payloads, malformed addresses, and initial/streamed proxy cost parity.
+
 ## G3 — Consumer-aware two-phase visibility (NOT COMPLETE)
 
 - [x] G3.1 — Downstream per-view source history/recovery exists.

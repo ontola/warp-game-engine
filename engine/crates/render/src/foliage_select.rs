@@ -18,7 +18,8 @@ pub const NONE:u32=u32::MAX;
 pub struct Node {
     /// Local-space conservative animated subtree sphere.
     pub sphere:[f32;4],
-    /// Geometric error metres; optical filter footprint metres (zero = unfiltered); reserved.
+    /// Geometric error metres; optical filter footprint metres (zero = unfiltered);
+    /// camera and shadow splat upper bounds (exact integer floats).
     pub error:[f32;4],
     /// First child (NONE for leaf), exclusive subtree end, representation ID, flags.
     /// Flag bit 0: resident overflow fallback only; always refine normally.
@@ -29,7 +30,8 @@ pub struct Node {
 #[derive(Clone,Copy,Debug,Pod,Zeroable)]
 pub struct Instance {
     pub rows:[[f32;4];3],
-    /// Conservative linear transform scale bound, world wind padding, reserved.
+    /// Conservative linear transform scale bound, world wind padding,
+    /// resident proxy camera/shadow splat upper bounds (exact integer floats).
     pub scale:[f32;4],
     /// Root node, stable generation, reserved. Array position is the stable ID.
     pub info:[u32;4],

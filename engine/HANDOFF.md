@@ -1,3 +1,20 @@
+## 2026-11-04 G2 raster-work metadata foundation
+
+Normal scene attachment now counts occupied voxel grid entries once per shared
+catalog. Node.error.zw carries conservative camera/shadow splat upper bounds;
+root.scale.zw carries separate emergency-proxy bounds, preserved on streaming.
+No new buffers, per-frame CPU selection, or renderer toggle. Fixed-mip direct
+roots and adaptive group/source-shadow mip ranges have different costs.
+These bounds are NOT yet enforced by GPU admission. Source triangles/time are
+not included. G2 remains open; normal-route raster overflow remains unfixed.
+Next: replace whole-root all-or-nothing admission with complete-cut incremental
+refinement, reserving slots AND raster work before publishing all children.
+
+Validation: 16 runtime tests including all seven ignored exclusive GPU tests,
+13 voxel-catalog tests PASS. Release terrain_fly with render/dlss rebuilt from
+current source (2m07s); executable no longer contains rejected root pyramid.
+No interactive playtest, no new performance claim, all jobs terminal.
+
 ## 2026-11-04 Consumer isolation and REJECTED root-pyramid experiment
 
 Three combined/camera-only runs:4.496M vs4.651M camera splats. Shadow consumers
