@@ -149,6 +149,16 @@ pub enum Ev {
         r: f32,
         cs: Vec<C>,
         el: Option<El>,
+        /// Its other elements, most first: each shows its own way too.
+        payload: Vec<El>,
+    },
+    /// A thrown spell (a boulder, a lava bomb, a mud ball) landing, its
+    /// splash `r` across: the view's crash of its elements.
+    Land {
+        at: Vec3,
+        r: f32,
+        el: Option<El>,
+        payload: Vec<El>,
     },
     /// BlastFx.boom: fire, smoke and a scorch mark.
     Boom {

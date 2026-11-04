@@ -614,7 +614,11 @@ fn em_key(e: &Em) -> u64 {
 
 impl Default for Fx {
     fn default() -> Self {
-        let mut blasts = render::fx::Effects::default();
+        // Growing Guns' blasts and baked volumetric smoke (render::fx), for
+        // eruptions, bombs and clouds; SPELLSTORM_BAKED_SMOKE=0 for the
+        // cheap billows instead.
+        let mut blasts = render::fx::Effects::with_explosion_budget(render::fx::ExplosionBudget::FULL);
+        blasts.set_baked_smoke(std::env::var("SPELLSTORM_BAKED_SMOKE").as_deref() != Ok("0"));
         blasts.light_scale = LIGHT;
         Fx {
             ems: vec![],
@@ -826,6 +830,183 @@ impl Fx {
         self.pops.push(Pop { at: at + Vec3::Y, c: [1.0, 0.62, 0.22], energy: 4.0 + r, range: 4.0 + r * 2.5, age: 0.0, time: 0.45 });
     }
 
+    /// Growing Guns' volumetric smoke (render::fx::smoke_cloud): `tint` its
+    /// linear albedo, `density` 0.3 a wisp .. 1.5 thick.
+    fn smoke(&mut self, at: Vec3, r: f32, tint: [f32; 3], density: f32) {
+        self.blasts.smoke_cloud(self.time, at, r, Vec3::from(tint), density);
+    }
+
+    /// Chunks of `e` flung up and out from `at` that fall back: rock, mud,
+    /// gobs of lava, ice.
+    fn chunks(&mut self, at: Vec3, r: f32, e: El, n: u32, size: f32) {
+        let mut p = particles(el_c(e), n, 1.1, size);
+        style(&mut p, e, false);
+        p.size = size;
+        p.dir = Vec3::Y;
+        p.spread = 55.0;
+        p.sphere = r * 0.25;
+        p.v = (3.0 + r * 1.2, 5.5 + r * 2.0);
+        p.gravity = Vec3::NEG_Y * 14.0;
+        p.damp = (0.0, 0.5);
+        p.angle = (-180.0, 180.0);
+        p.spin = (-540.0, 540.0);
+        p.curve = [1.0, 1.0, 0.6];
+        if matches!(e, El::Earth | El::Mud) {
+            p.solid = true;
+            p.glow = 0.0;
+        }
+        self.emit(p, at + Vec3::Y * 0.2, n);
+    }
+
+    /// `e`'s own particles welling up at `n` points round a ring `r` out.
+    fn ring_of(&mut self, at: Vec3, r: f32, e: El, n: u32, each: u32, up: (f32, f32), size: f32) {
+        let mut p = particles(el_c(e), each, 0.7, size);
+        let smoke = style(&mut p, e, false);
+        let _ = smoke;
+        p.dir = Vec3::Y;
+        p.spread = 25.0;
+        p.sphere = 0.25;
+        p.v = up;
+        let off = self.f() * std::f32::consts::TAU;
+        for i in 0..n {
+            let a = off + i as f32 / n as f32 * std::f32::consts::TAU;
+            let q = at + Vec3::new(a.cos() * r, 0.15, a.sin() * r);
+            self.emit(p, q, each);
+        }
+    }
+
+    /// How element `e` crashes out at `at`, `r` across, at `k` of its full
+    /// size (a nova's element, or one riding in it at half): every element
+    /// its own way (Joep: a lame Crushing Eruption). `thrown`: a bomb or a
+    /// boulder landing rather than a nova from the caster's feet.
+    pub fn crash(&mut self, at: Vec3, r: f32, e: El, k: f32, thrown: bool) {
+        let at = Vec3::new(at.x, at.y.min(0.3).max(0.0), at.z);
+        let n = |x: f32| ((x * k) as u32).max(3);
+        match e {
+            El::Magma => {
+                // An eruption: a blast out of the ground, burning gobs flung
+                // high, black smoke over it.
+                self.blasts.explosion(self.time, at + Vec3::Y * 0.2, (r * 0.75 * k).max(0.8), Vec3::new(1.0, 0.45, 0.1));
+                self.chunks(at, r * k, El::Magma, n(26.0 + r * 4.0), 0.22);
+                self.fire_burst(at, r * 0.4 * k);
+                self.smoke(at, r * 0.6 * k + 0.6, [0.1, 0.09, 0.08], 0.8);
+                self.shake = self.shake.max(0.25 * k);
+            }
+            El::Fire => {
+                // A ring of flame that leaps up where the wave goes.
+                if thrown {
+                    self.fire_burst(at, r * 0.6 * k);
+                } else {
+                    self.ring_of(at, r * 0.85, El::Fire, n(10.0 + r * 2.0), 6, (1.5, 3.5), 0.55);
+                    self.fire_burst(at, 0.6 * k);
+                }
+                self.smoke(at, r * 0.45 * k + 0.4, [0.16, 0.15, 0.14], 0.45);
+            }
+            El::Earth => {
+                // Rock thrown up and a ring of dust rolling out.
+                self.chunks(at, r * k, El::Earth, n(18.0 + r * 3.0), 0.24);
+                let m = n(5.0 + r).min(8);
+                let off = self.f() * std::f32::consts::TAU;
+                for i in 0..m {
+                    let a = off + i as f32 / m as f32 * std::f32::consts::TAU;
+                    let q = at + Vec3::new(a.cos(), 0.0, a.sin()) * r * if thrown { 0.4 } else { 0.75 };
+                    self.smoke(q, 0.5 + r * 0.18 * k, [0.42, 0.36, 0.28], 0.35);
+                }
+                self.sand(at, r * k);
+                self.shake = self.shake.max(0.2 * k);
+            }
+            El::Mud => {
+                self.chunks(at, r * k, El::Mud, n(22.0 + r * 3.0), 0.2);
+                self.smoke(at, 0.4 + r * 0.3 * k, [0.3, 0.24, 0.16], 0.25);
+            }
+            El::Steam => {
+                // A scalding cloud billowing out.
+                self.smoke(at, r * 0.9 * k + 0.5, [0.92, 0.94, 0.96], 0.9);
+                let m = n(4.0);
+                for i in 0..m {
+                    let a = i as f32 / m as f32 * std::f32::consts::TAU;
+                    self.smoke(at + Vec3::new(a.cos(), 0.0, a.sin()) * r * 0.6, 0.5 + r * 0.3 * k, [0.9, 0.92, 0.95], 0.6);
+                }
+            }
+            El::Poison => {
+                // A sickly green cloud that hangs where it burst.
+                self.smoke(at, r * 0.8 * k + 0.5, [0.38, 0.62, 0.18], 0.7);
+                self.ring_of(at, r * 0.6, El::Poison, n(8.0), 4, (2.0, 4.0), 0.5);
+            }
+            El::Void => {
+                // Everything pulled in to a point, then a dark bloom.
+                let mut p = particles(el_c(El::Void), n(60.0), 0.45, 0.4);
+                style(&mut p, El::Void, false);
+                p.sphere = r * 0.9;
+                p.dir = Vec3::Y;
+                p.spread = 180.0;
+                p.v = (0.0, 0.3);
+                p.radial = (-r * 9.0, -r * 6.0);
+                self.emit(p, at + Vec3::Y * 0.8, p.amount);
+                self.smoke(at, r * 0.4 * k + 0.4, [0.12, 0.05, 0.16], 0.6);
+            }
+            El::Frost | El::Ice => {
+                // Shards and frost thrown out low, a cold mist after.
+                let mut p = particles(el_c(e), n(40.0 + r * 6.0), 0.6, if e == El::Ice { 0.9 } else { 0.6 });
+                style(&mut p, e, false);
+                p.dir = Vec3::X;
+                p.spread = 180.0;
+                p.flat = 0.8;
+                p.v = (r * 2.0, r * 3.2);
+                p.damp = (r * 2.5, r * 3.5);
+                self.emit(p, at + Vec3::Y * 0.4, p.amount);
+                if e == El::Ice {
+                    self.chunks(at, r * 0.6 * k, El::Ice, n(14.0), 0.3);
+                }
+                self.smoke(at, r * 0.7 * k + 0.4, [0.82, 0.9, 0.98], 0.3);
+            }
+            El::Water => {
+                // A splash: a crown of water thrown up that rains back.
+                let mut p = particles(el_c(El::Water), n(60.0 + r * 8.0), 0.9, 0.5);
+                style(&mut p, El::Water, false);
+                p.dir = Vec3::Y;
+                p.spread = 50.0;
+                p.sphere = r * 0.3;
+                p.v = (3.0 + r, 6.0 + r * 1.5);
+                self.emit(p, at + Vec3::Y * 0.2, p.amount);
+                self.waves.push(Wave { at, c: rgba(0.75, 0.85, 1.0, 0.5), r: r * 1.1, age: 0.0, time: 0.7, cell: Cell::Ring, glow: 0.0 });
+            }
+            El::Lightning | El::Storm => {
+                // Bolts forking out to the edge of it.
+                let c = el_c(e);
+                let m = n(7.0 + r);
+                let off = self.f() * std::f32::consts::TAU;
+                for i in 0..m {
+                    let a = off + (i as f32 + self.range(-0.3, 0.3)) / m as f32 * std::f32::consts::TAU;
+                    let end = at + Vec3::new(a.cos() * r, self.range(0.1, 0.6), a.sin() * r);
+                    self.zap(at + Vec3::Y * 0.8, end, c, 0.06 * k + 0.03, 0.35, 0.35, 0.18);
+                }
+                if e == El::Storm {
+                    // A thundercloud overhead, bolts down from it.
+                    self.smoke(at + Vec3::Y * 2.5, r * 0.6 * k + 0.6, [0.2, 0.22, 0.28], 0.7);
+                    for _ in 0..n(3.0) {
+                        let q = at + Vec3::new(self.range(-1.0, 1.0), 0.0, self.range(-1.0, 1.0)) * r * 0.7;
+                        self.zap(q + Vec3::Y * 4.0, q, rgba(0.85, 0.9, 1.0, 1.0), 0.09, 0.5, 0.5, 0.2);
+                    }
+                }
+                self.light_pop(at, c, 4.0 * k, r * 2.0, 0.25);
+            }
+            El::Air => {
+                // A gust: streaks swirling out and dust lifted off the floor.
+                let mut p = particles(el_c(El::Air), n(40.0), 0.5, 0.9);
+                style(&mut p, El::Air, false);
+                p.dir = Vec3::X;
+                p.spread = 180.0;
+                p.flat = 0.9;
+                p.v = (r * 2.5, r * 3.5);
+                p.damp = (r * 3.0, r * 4.0);
+                self.emit(p, at + Vec3::Y * 0.5, p.amount);
+                self.sand(at, r * 0.8 * k);
+                self.smoke(at, r * 0.5 * k + 0.4, [0.75, 0.75, 0.72], 0.2);
+            }
+        }
+    }
+
     pub fn flash(&mut self, at: Vec3, c: C, size: f32, time: f32) {
         self.glows.push(Glow { at, c, size, age: 0.0, time });
     }
@@ -897,7 +1078,21 @@ impl Fx {
                 self.burst(at, c, 8, 6.0, 0.35, Some(El::Lightning));
                 self.sand(at, radius);
             }
-            Ev::Nova { at, r, ref cs, el } => {
+            Ev::Land { at, r, el, ref payload } => {
+                if let Some(e) = el {
+                    self.crash(at, r, e, 1.0, true);
+                }
+                for &e in payload.iter().take(2) {
+                    self.crash(at, r * 0.7, e, 0.5, true);
+                }
+            }
+            Ev::Nova { at, r, ref cs, el, ref payload } => {
+                if let Some(e) = el {
+                    self.crash(at, r, e, 1.0, false);
+                }
+                for &e in payload.iter().take(2) {
+                    self.crash(at, r * 0.8, e, 0.5, false);
+                }
                 let c0 = cs.first().copied().unwrap_or(WHITE);
                 self.waves.push(Wave { at, c: c0, r: r + 0.4, age: 0.0, time: 0.55, cell: Cell::Shock, glow: 1.8 });
                 for (i, &c) in cs.iter().enumerate().skip(1) {
@@ -913,7 +1108,15 @@ impl Fx {
                 self.shot(p, at + Vec3::Y * 0.5, el, true);
                 self.light_pop(at, c0, 3.5, r * 2.5, 0.4);
             }
-            Ev::Boom { at, r, .. } => self.fire_burst(Vec3::new(at.x, 0.0, at.z), r),
+            Ev::Boom { at, r, .. } => {
+                let at = Vec3::new(at.x, 0.0, at.z);
+                self.fire_burst(at, r);
+                if r >= 1.0 {
+                    self.blasts.explosion(self.time, at + Vec3::Y * 0.3, r * 1.2, Vec3::new(1.0, 0.6, 0.2));
+                } else {
+                    self.smoke(at + Vec3::Y * 0.2, 0.6 + r, [0.16, 0.15, 0.14], 0.5);
+                }
+            }
             Ev::Shake(a) => self.shake = self.shake.max(a),
             Ev::Summon { at } => {
                 let c = el_c(El::Void);
@@ -983,10 +1186,15 @@ impl Fx {
     fn death(&mut self, at: Vec3, how: Death, s: f32) {
         let at = at + Vec3::Y * 0.6;
         match how {
-            Death::Freeze => self.burst(at, el_c(El::Ice), (16.0 * s) as u32, 4.0, 0.5, Some(El::Ice)),
+            Death::Freeze => {
+                self.burst(at, el_c(El::Ice), (16.0 * s) as u32, 4.0, 0.5, Some(El::Ice));
+                self.smoke(at - Vec3::Y * 0.5, 0.8 * s, [0.8, 0.88, 0.95], 0.25);
+            }
             Death::Burn => {
                 self.burst(at, el_c(El::Fire), (14.0 * s) as u32, 3.0, 0.6, Some(El::Fire));
                 self.puff(at, rgba(0.2, 0.18, 0.17, 1.0), 1.2 * s);
+                // Burnt to death it smokes as it falls.
+                self.smoke(at - Vec3::Y * 0.5, 0.9 * s, [0.13, 0.12, 0.11], 0.6);
             }
             Death::Shock => self.burst(at, el_c(El::Lightning), (14.0 * s) as u32, 5.0, 0.4, Some(El::Lightning)),
             Death::Void => self.burst(at, el_c(El::Void), (18.0 * s) as u32, 3.0, 0.5, Some(El::Void)),
@@ -1559,6 +1767,11 @@ impl Fx {
                     p.v = (0.2, 0.8);
                     p.gravity = Vec3::Y * 0.3;
                     self.stream((key, 0), p, at + Vec3::Y * 0.3, dt);
+                    // A steam cloud keeps rolling up off it (render::fx smoke).
+                    if f.kind == El::Steam && self.f() < dt / 1.3 {
+                        let q = at + Vec3::new(self.range(-0.5, 0.5), 0.0, self.range(-0.5, 0.5)) * r;
+                        self.smoke(q, 0.5 + r * 0.45, [0.9, 0.92, 0.95], 0.45 * fade);
+                    }
                 }
                 _ => {
                     // Puddles, slicks, mud, poison and void: a see-through
@@ -1584,6 +1797,11 @@ impl Fx {
                     let _ = a;
                     if glow > 0.0 && !own {
                         self.live.push(flat_sprite(at + Vec3::Y * 0.01, r, Cell::Patch, c3 * glow * fade));
+                    }
+                    // A poison pool breathes out a low green cloud.
+                    if f.kind == El::Poison && self.f() < dt / 1.6 {
+                        let q = at + Vec3::new(self.range(-0.5, 0.5), 0.0, self.range(-0.5, 0.5)) * r;
+                        self.smoke(q, 0.4 + r * 0.4, [0.36, 0.58, 0.16], 0.35 * fade);
                     }
                     if f.kind == El::Poison || f.kind == El::Void {
                         let mut p = particles(c, (r * r) as u32 + 2, 1.2, 0.3);
