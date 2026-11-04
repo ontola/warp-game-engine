@@ -844,7 +844,10 @@ impl View {
             center /= pts.len() as f32;
         }
         let spread = if pts.is_empty() { 0.0 } else { ((hi.x - lo.x) * 0.56).max(hi.y - lo.y) };
-        let want_h = (13.5 + spread * 0.85).clamp(16.5, 30.0);
+        // Shut in the boss's arena the party may spread over all of it: the
+        // camera rises to keep everyone in view.
+        let top = if w.run.sealed { 44.0 } else { 30.0 };
+        let want_h = (13.5 + spread * 0.85).clamp(16.5, top);
         if self.fresh {
             self.cam_center = center;
             self.cam_height = 18.5;

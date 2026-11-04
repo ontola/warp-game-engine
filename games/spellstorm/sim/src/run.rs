@@ -99,6 +99,9 @@ pub struct Ward {
     /// Opening: 1 shut, fading to 0, then gone.
     pub open: f32,
     pub opening: bool,
+    /// The boss arena's door behind you (Joep): it faces back the way you
+    /// came, closes once everyone is in and holds you in, not out.
+    pub back: bool,
 }
 
 impl Ward {
@@ -178,6 +181,9 @@ pub struct Run {
     pub boss_fell: bool,
     pub boss: Option<Id>,
     pub wards: Vec<Ward>,
+    /// The boss arena has shut behind the party: the whole of it is theirs
+    /// to spread out in (wizard::leash).
+    pub sealed: bool,
     pub practice: Option<Practice>,
     lead: f32,
     lead_t: f64,
@@ -220,6 +226,7 @@ impl Default for Run {
             boss_fell: false,
             boss: None,
             wards: Vec::new(),
+            sealed: false,
             practice: None,
             lead: 0.0,
             lead_t: 0.0,
@@ -399,6 +406,7 @@ impl World {
         r.pending.clear();
         r.guard_quiet.clear();
         r.wards.clear();
+        r.sealed = false;
         r.practice = None;
         r.wave_at = -1.0;
         // How far the front wizard got belongs to the level just left.
@@ -488,6 +496,7 @@ impl World {
                 self.shrines(dt);
                 self.practice_step(dt);
                 self.ward_step();
+                self.door_step();
             }
             State::Cleared => {
                 self.shrines(dt);
@@ -512,6 +521,9 @@ impl World {
         for w in &mut self.run.wards {
             if w.opening {
                 w.open = (w.open - dt as f32 / 1.6).max(0.0);
+            } else if w.back {
+                // The arena's door rises out of nothing.
+                w.open = (w.open + dt as f32 / 1.2).min(1.0);
             }
         }
         self.run.wards.retain(|w| !w.opening || w.open > 0.0);
@@ -581,6 +593,7 @@ impl World {
             check: None,
             open: 1.0,
             opening: false,
+            back: false,
         }
     }
 
@@ -591,6 +604,10 @@ impl World {
             self.run.wards[i].holds = false;
             let wd = self.run.wards[i].clone();
             if wd.opening {
+                continue;
+            }
+            if wd.back {
+                self.run.wards[i].holds = true;
                 continue;
             }
             // Knob `wards` 0: no walls hold the way (the practice strip's
@@ -630,6 +647,36 @@ impl World {
                 self.run.wards[i].holds = true;
             }
         }
+    }
+
+    /// Once every wizard is in the boss's arena, its way back shuts behind
+    /// them with a wall of mist like the others (Joep: no walking back), and
+    /// the arena is theirs to spread out in.
+    fn door_step(&mut self) {
+        if self.run.sealed || self.run.practice.is_some() || crate::knobs::wards() < 0.5 || self.level.clearings.len() < 3 {
+            return;
+        }
+        let r = self.level.clearings[2].z;
+        let at = self.level.clearing_at[2] - r - 0.5;
+        let inside = self.wizards.iter().all(|&w| {
+            let p = self.pos(w);
+            self.level.progress_of(Vec2::new(p.x, p.z)) > at + 2.5
+        });
+        if !inside || self.wizards.is_empty() {
+            return;
+        }
+        let mut wd = self.ward_wall(at);
+        wd.n = -wd.n;
+        (wd.lo, wd.hi) = (-wd.hi, -wd.lo);
+        wd.k = -2;
+        wd.back = true;
+        wd.open = 0.0;
+        wd.holds = true;
+        self.run.wards.push(wd);
+        self.run.sealed = true;
+        let m = self.run.wards.last().map(|w| w.mid()).unwrap_or_default();
+        self.burst(Vec3::new(m.x, 1.2, m.y), fx::rgb(0.9, 0.85, 0.7), 30, 3.5, 0.2, None);
+        self.ev(Ev::Shake(0.25));
     }
 
     fn open_ward(&mut self, i: usize) {
@@ -792,7 +839,7 @@ impl World {
     /// `p` moved back to this side of every wall of mist still up: nothing
     /// comes in behind one (Joep).
     pub(crate) fn before_walls(&self, mut p: Vec3) -> Vec3 {
-        for wd in self.run.wards.iter().filter(|w| !w.opening) {
+        for wd in self.run.wards.iter().filter(|w| !w.opening && !w.back) {
             let q = Vec2::new(p.x, p.z);
             let prog = self.level.progress_of(q);
             let (d, within) = wd.past(q);

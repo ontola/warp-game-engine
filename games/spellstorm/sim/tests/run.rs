@@ -199,3 +199,31 @@ fn vampire_fang_heals_the_striker() {
     let dealt = w.hit(b, &[(spellstorm::el::El::Fire, 1.0)], 5.0, Some(a), glam::Vec3::X, 1.0);
     assert!(dealt > 0.0 && w.a(a).hp > 50.0, "{dealt} {}", w.a(a).hp);
 }
+
+#[test]
+fn the_boss_arena_shuts_behind_the_party() {
+    // Joep: in the boss's arena the whole of it is yours, and a wall of
+    // mist shuts the way back once everyone is in.
+    for seed in [7u64, 11] {
+        let mut w = bots(2, seed);
+        w.step();
+        let at = w.level.clearing_at[2] - w.level.clearings[2].z;
+        w.skip_to(at - 8.0);
+        let mut shut = None;
+        for _ in 0..60 * 60 {
+            w.step();
+            if w.run.biome_index != 0 {
+                break;
+            }
+            if let Some(door) = w.run.wards.iter().find(|wd| wd.back && !wd.opening) {
+                shut.get_or_insert(w.tick);
+                for &id in &w.wizards {
+                    let p = w.pos(id);
+                    let prog = w.level.progress_of(glam::Vec2::new(p.x, p.z));
+                    assert!(prog > door.at - 0.6, "seed {seed} tick {}: a wizard got back out of the arena ({prog} < {})", w.tick, door.at);
+                }
+            }
+        }
+        assert!(shut.is_some(), "seed {seed}: the arena never shut behind the party");
+    }
+}

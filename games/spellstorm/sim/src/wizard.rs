@@ -549,12 +549,14 @@ impl World {
     /// another wizard.
     fn leash(&self, id: Id, mut mv: Vec3) -> Vec3 {
         let p = self.pos(id);
+        // Shut in the boss's arena, all of it is yours (Joep).
+        let leash = if self.run.sealed { LEASH.max(self.level.clearings.get(2).map_or(0.0, |c| c.z * 2.0 + 2.0)) } else { LEASH };
         for &o in &self.wizards {
             if o == id || !self.alive(o) {
                 continue;
             }
             let away = flat(p - self.pos(o));
-            if away.length() > LEASH && mv.dot(away) > 0.0 {
+            if away.length() > leash && mv.dot(away) > 0.0 {
                 let n = away.normalize();
                 mv -= n * mv.dot(n);
             }

@@ -716,7 +716,7 @@ impl World {
             (a.wizard, a.team != WIZARDS)
         };
         if wizard || monster {
-            for wd in self.run.wards.iter().filter(|w| if wizard { w.holds } else { !w.opening }) {
+            for wd in self.run.wards.iter().filter(|w| if wizard { w.holds } else { !w.opening && !w.back }) {
                 let q = Vec2::new(p.x, p.z);
                 let (d, within) = wd.past(q);
                 // (Where the path loops back near the wall, its earlier
@@ -728,9 +728,12 @@ impl World {
                     continue;
                 }
                 // Past it along the path without going through it: back
-                // along the path to this side.
-                if prog > wd.at - 0.5 && prog < wd.at + 25.0 {
-                    let back = self.level.point_at(wd.at - 0.5) - self.level.point_at(prog);
+                // along the path to this side (the arena's door faces back:
+                // its far side is the way you came).
+                let s = if wd.back { -1.0 } else { 1.0 };
+                let ahead = (prog - wd.at) * s;
+                if ahead > -0.5 && ahead < 25.0 {
+                    let back = self.level.point_at(wd.at - 0.5 * s) - self.level.point_at(prog);
                     p.x += back.x;
                     p.z += back.y;
                 }
