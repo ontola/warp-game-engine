@@ -1,3 +1,39 @@
+## 2026-11-04 Integrated G2 complete-cut allocator; performance still NOT accepted
+
+New normal path: foliage_refine.rs / shaders/foliage_refine.wgsl. Replaces whole-
+plant all-or-nothing count/emit waves. GPU stable priority prefixes reserve slots
+AND camera/shadow splats, transactional sibling publication, parent retention on
+budget/page/queue exhaustion, free unary collapse, direct leaf publication,
+camera-before-shadow-only refinement. Zero-error forced roots use projected size
+for priority. Spec.raster_budget matches existing physical raster capacity.
+Existing first/second depth-selection fixture path remains; upstream G3 is open.
+G2.1 checkbox checked; G2.2/G2.3 and whole objective remain open.
+
+139 foliage tests pass including21 exclusive GPU tests. Full DLSS-capable release
+terrain_fly rebuilt. All processes terminal; no interactive playtest. New default
+executable is current source, NOT the old rejected pyramid. Prior executable saved
+build/playtest-unified/terrain-pre-incremental.exe for controlled repeats only.
+
+Final3 alternating old/batched runs native720p1view lowland+grass240frames speed1,
+120warm samples: old covered11.909/11.917/12.072ms; new11.382/11.574/11.511ms.
+Selection remains5.216/5.257/5.237ms vs old~2.51; splatgen~0.68 andraster~0.68ms
+vs old~2.48+2.35. CPU render~6-7ms vs~5ms. Unbatched attempt was~12.7ms GPU and
+~13ms CPU; batching compute dispatches recovered that regression without a policy
+change. Full per-pass data in incremental-final-summary.json and authoritative doc.
+Actual splats1,361,047, missing0, no emergency proxies. Reservations~4.18M each,
+no faults. BUT source slots0, voxel slots758, whole roots94,366: crowns still
+coarse/round. Costly intermediate adaptive voxel bundles block finer source cuts.
+Do not claim visual acceptance or4K4view120FPS. Screenshot comparison inspected;
+less black shadow coverage, still coarse. No full motion acceptance.
+
+NEXT: reduce repeated shadow-only/inactive frontier work and fixed dispatch costs;
+resolve non-monotonic intermediate costs/consumer mip selection so budget can reach
+near detail. Keep complete cut/page safety. Need achieved-error reporting and
+remaining G3-G8 architecture/integration gates. No CPU near-pool fallback.
+Fast local shader validator is build/check-wgsl.exe (reads arbitrary WGSL files;
+compiled from cached naga with rustc -C lto=thin). Avoid3min test relinks just to
+find WGSL syntax errors. Evidence logs incremental-final-* and batched-tests.log.
+
 ## 2026-11-04 G2 raster-work metadata foundation
 
 Normal scene attachment now counts occupied voxel grid entries once per shared

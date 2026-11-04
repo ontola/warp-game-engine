@@ -143,7 +143,7 @@ with measurements; continue to label the current appearance as unaccepted.
 
 ## G2 — Budget-aware refinement (NOT COMPLETE)
 
-- [ ] G2.1 — Start from a complete resident cut; refine by projected benefit and
+- [x] G2.1 — Start from a complete resident cut; refine by projected benefit and
   incremental cost. Retain intermediate parents when refinement cannot fit.
   Replace the current whole-plant all-or-nothing admission.
 - [ ] G2.2 — Publish a replacement only when ALL required children are resident
@@ -153,17 +153,27 @@ with measurements; continue to label the current appearance as unaccepted.
   demand. Show fallback counts and representation distributions during motion;
   emergency proxies must not remain the normal appearance of the forest.
 
-G2 implementation in progress: shared cooked nodes now carry conservative
-camera/shadow splat bounds in their existing GPU metadata. Whole-root fixed-mip
-choices, articulated adaptive mip ranges, source branches with voxel shadow
-casters, and separate emergency proxies are accounted independently. Root
-replacement preserves proxy costs; no CPU per-frame selection is introduced.
-This is voxel-record work, NOT source triangle work or a GPU-time estimate.
-The GPU admission algorithm does not enforce these bounds yet: G2.1-G2.3 remain
-open and the normal-route overflow is NOT fixed by this metadata change.
-Validation: 16 runtime tests (including seven exclusive headless GPU fixtures)
-and 13 voxel-catalog tests pass. Includes non-monotonic mip occupancy, aliased
-cell payloads, malformed addresses, and initial/streamed proxy cost parity.
+G2 implementation in progress: normal consumer-union selection now starts from
+resident proxies and replaces complete parents incrementally. Stable priority
+prefixes reserve added branch slots and conservative camera/shadow splat counts;
+all visible child pages and output ranges must be available before publication.
+Missing pages or exhausted budgets retain the current intermediate parent.
+Terminal leaves publish directly; non-increasing unary chains collapse locally.
+Camera refinement precedes shadow-only upgrades. No CPU tree shortlist or mode
+switch is introduced. Diagnostics report reserved raster work, budget stops and
+allocation faults; branch-demand counters now explicitly mean published branches.
+
+Shared cooked nodes carry camera/shadow splat bounds in their existing GPU
+metadata. Whole-root fixed-mip choices, articulated adaptive mip ranges, source
+branches with voxel shadow casters, and separate emergency proxies are accounted
+independently. Streaming preserves proxy costs. These are voxel-record bounds,
+NOT source triangle costs or GPU-time estimates. If even the resident baseline
+exceeds capacity, the allocator reports that fault; far aggregation is still needed.
+
+G2.1-G2.3 remain open pending normal-route performance, images, achieved-error
+reporting and broader pressure validation. A complete retained ancestor is not
+claimed visually equivalent to the old separate emergency proxy. The 720p
+normal-route overflow must be checked again against actual indirect draw counts.
 
 ## G3 — Consumer-aware two-phase visibility (NOT COMPLETE)
 
@@ -464,3 +474,69 @@ Do not reapply as a fix without separating LOD/error support from allocation pri
 and implementing bounded incremental refinement. Existing G2/G3 remain the work.
 Evidence: build/playtest-unified/root-pyramid-{1,2,3}.log/json.gpu.json/png;
 root-pyramid-tests.log, root-pyramid-runtime.log.
+
+### G2 incremental publication: first normal-route measurement (4 Nov)
+
+Normal consumer union now uses GPU complete-cut refinement, not whole-plant
+all-or-nothing admission. 139 foliage tests pass, including all exclusive GPU
+fixtures. Tests cover deterministic mixed cuts, missing sibling pages, tiny slot
+and splat budgets, camera priority, zero-error forced-root priority, unary chains,
+frontier exhaustion, teleport, four views, paging and cached-shadow depth.
+G2.1 is implemented; G2.2/G2.3 and visual/performance acceptance remain open.
+The old proxy-image equivalence assertion no longer applies when a different,
+complete ancestor is intentionally retained; the renderer test now requires
+complete source-equivalent caster coverage and bounded nonempty raster work.
+
+Before submission batching, three alternating old/new executable route repeats,
+identical native1280x720 one-view lowland+grass, seed1,240frames,120 warm samples:
+
+| Pass ms (medians per repeat) | Previous allocator | Incremental allocator |
+| --- | --- | --- |
+| Covered GPU interval | 11.961 / 12.009 / 12.025 | 12.665 / 12.798 / 12.714 |
+| Selection + residency | 2.525 / 2.536 / 2.500 | 6.468 / 6.592 / 6.534 |
+| Camera splat generation | 2.494 / 2.541 / 2.404 | 0.681 / 0.672 / 0.682 |
+| Camera splat raster | 2.326 / 2.252 / 2.251 | 0.680 / 0.680 / 0.680 |
+
+First diagnostic run:1,361,047 actual camera splats,0 missing (previous4,495,775
+and301,471 missing). Reserved camera/shadow bounds4,183,045/4,183,917, both within
+4,194,304. No allocation faults, no emergency proxy fallbacks. However, all visible
+crowns remain coarse;0 source slots and758 voxel slots, while94,366 whole roots
+remain. Costly intermediate adaptive voxel bundles can block the path to source
+detail: removing overflow is NOT proof of visual quality. The comparison shows
+less excessive black shadow coverage, but round coarse crowns remain unacceptable.
+CPU render encoding also regresses (example final sample5.53 to13.73ms), motivating
+batching dependent compute dispatches within a pass. No120FPS/4K/four-view claim.
+Evidence: build/playtest-unified/incremental-{old,new}-repeat-{1,2,3}.*,
+incremental-summary.json, incremental-comparison.jpg, incremental-final-tests.log.
+
+#### Submission batching follow-up (same allocation and quality rules)
+
+Dependent compute dispatches now share a compute pass; indirect-argument copies
+remain explicit boundaries. No policy, cap or geometry change. All139 foliage
+tests pass again (including21 exclusive GPU tests). Three fresh alternating
+old/batched runs with the same route and120 warm samples each:
+
+| Pass ms | Previous allocator | Batched incremental allocator |
+| --- | --- | --- |
+| Covered GPU interval | 11.909 / 11.917 / 12.072 | 11.382 / 11.574 / 11.511 |
+| Selection + residency | 2.512 / 2.506 / 2.525 | 5.216 / 5.257 / 5.237 |
+| Camera splat generation | 2.349 / 2.494 / 2.596 | 0.689 / 0.685 / 0.672 |
+| Camera splat raster | 2.251 / 2.306 / 2.500 | 0.680 / 0.680 / 0.680 |
+| CPU render encoding | 4.878 / 5.149 / 5.101 | 5.991 / 6.750 / 6.920 |
+
+Actual camera records1,361,047 in every new run, within4,194,304; previous4,495,774
+overflowed. Batched/unbatched final scene PNG difference excluding HUD has mean
+absolute channel error0.0000215/255: observational image check, not raw-buffer
+identity or full motion acceptance. Both still show coarse round crowns.
+The final allocator is modestly faster in covered GPU time than the prior one,
+but selection and CPU encoding remain too expensive and fine source detail is
+blocked. Do not extrapolate this720p one-view result to4K/four-view120FPS.
+
+Next substantive work: avoid repeatedly processing shadow-only pending roots and
+inactive queue entries; reduce fixed dispatch/scan work; remove non-monotonic
+intermediate raster-cost barriers (adaptive mip bounds vs the actually selected
+consumer mip). Preserve complete parents and page safety. Add achieved-error
+reporting and motion checks before accepting G2.2/G2.3. No new gate or backend.
+Evidence: build/playtest-unified/incremental-final-{old,batched}-{1,2,3}.*,
+incremental-final-summary.json, incremental-final-comparison.jpg,
+incremental-batched-tests.log and incremental-batched-build.log.
