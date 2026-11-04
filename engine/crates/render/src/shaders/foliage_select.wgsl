@@ -15,6 +15,7 @@ struct View { consumers:array<Consumer,32>, consumer_count:vec4<u32>, vp:mat4x4<
 @group(0) @binding(7) var hzb:texture_2d<f32>;
 @group(0) @binding(8) var<storage,read_write> direct_roots:array<u32>;
 // Per-root demand and stable prefix within a projected-size priority bucket.
+// bucket low 5 bits: priority; bit 8: camera demand; bit 9: shadow demand.
 struct Demand { count:atomic<u32>, bucket:u32, prefix:u32, failed:atomic<u32> };
 @group(0) @binding(9) var<storage,read_write> demand:array<Demand>;
 @group(0) @binding(10) var<storage,read_write> bucket_cost:array<u32>;
@@ -150,7 +151,7 @@ fn walk(tree:u32,start:u32,phase:u32) {
 @compute @workgroup_size(64) fn first(@builtin(global_invocation_id) id:vec3<u32>) {
  if id.x<view.counts.x && trees[id.x].info.w==0u {
   if view.consumer_count.y!=0u {
-   let bucket=demand[id.x].bucket;let count=atomicLoad(&demand[id.x].count);
+   let bucket=demand[id.x].bucket&31u;let count=atomicLoad(&demand[id.x].count);
    var before=demand[id.x].prefix+bucket_cost[32u+(id.x/256u)*32u+bucket];
    for(var b=bucket+1u;b<32u;b++){before+=bucket_cost[b];}
    if atomicLoad(&demand[id.x].failed)!=0u || (count!=0u && before+count>view.consumer_count.y) {
@@ -182,17 +183,18 @@ fn walk(tree:u32,start:u32,phase:u32) {
  atomicStore(&demand[tree].failed,0u);
  if trees[tree].info.w!=0u {return;}
  let t=trees[tree];let root=nodes[t.info.x];
- let s=sphere(t,root);var priority=0.0;
+ let s=sphere(t,root);var priority=0.0;var consumers=0u;
  for(var i=0u;i<view.consumer_count.x;i++) {
   let c=view.consumers[i];
   // Camera receivers get first claim; shadow-only casters
   // retain their resident root when the shared branch budget is exhausted.
-  if c.pixels.z==0.0 && visible_in(s,c.vp) {
-   priority=max(priority,error_in(s,s.w,c.vp,c.pixels.xy));
+  if visible_in(s,c.vp) {
+   if c.pixels.z==0.0 {consumers|=256u;priority=max(priority,error_in(s,s.w,c.vp,c.pixels.xy));}
+   else {consumers|=512u;}
   }
  }
  let bucket=u32(clamp(floor(log2(max(priority,1.0))),0.0,31.0));
- atomicStore(&demand[tree].count,0u);demand[tree].bucket=bucket;demand[tree].prefix=0u;
+ atomicStore(&demand[tree].count,0u);demand[tree].bucket=bucket|consumers;demand[tree].prefix=0u;
  atomicStore(&demand[tree].failed,0u);
  if visit(tree,t.info.x,false) {
   let slot=atomicAdd(&input_work.count,1u);
@@ -250,7 +252,7 @@ fn wave(at:u32,lane:u32,write_records:bool) {
 @compute @workgroup_size(64) fn seed_emit(@builtin(global_invocation_id) id:vec3<u32>) {
  let tree=id.x;if tree>=view.counts.x{return;}
  if trees[tree].info.w!=0u {return;}
- let bucket=demand[tree].bucket;let count=atomicLoad(&demand[tree].count);
+ let bucket=demand[tree].bucket&31u;let count=atomicLoad(&demand[tree].count);
  var before=demand[tree].prefix+bucket_cost[32u+(tree/256u)*32u+bucket];
  for(var b=bucket+1u;b<32u;b++){before+=bucket_cost[b];}
  if atomicLoad(&fallback[tree])!=0u {return;}
@@ -266,7 +268,7 @@ fn wave(at:u32,lane:u32,write_records:bool) {
 @compute @workgroup_size(32) fn prefix_demand(@builtin(local_invocation_index) bucket:u32,@builtin(workgroup_id) block:vec3<u32>) {
  var sum=0u;let end=min((block.x+1u)*256u,view.counts.x);
  for(var tree=block.x*256u;tree<end;tree++) {
-  if demand[tree].bucket==bucket {
+  if (demand[tree].bucket&31u)==bucket {
    let count=atomicLoad(&demand[tree].count);
    if count>view.consumer_count.y {atomicStore(&demand[tree].failed,1u);}
    demand[tree].prefix=sum;

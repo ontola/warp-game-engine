@@ -115,7 +115,7 @@ pub struct Selector {
     /// Whole-tree representation + 1; zero means branches or culled. No branch slot needed.
     pub direct:wgpu::Buffer,
     children:wgpu::Buffer,work:[wgpu::Buffer;2],levels:u32,seed_demand:wgpu::ComputePipeline,seed_emit:wgpu::ComputePipeline,prepare_wave:wgpu::ComputePipeline,count_wave:wgpu::ComputePipeline,emit_wave:wgpu::ComputePipeline,
-    demand:wgpu::Buffer,bucket_cost:wgpu::Buffer,prefix_demand:wgpu::ComputePipeline,prefix_buckets:wgpu::ComputePipeline,
+    pub(crate) demand:wgpu::Buffer,bucket_cost:wgpu::Buffer,prefix_demand:wgpu::ComputePipeline,prefix_buckets:wgpu::ComputePipeline,
     layout:wgpu::BindGroupLayout,first:wgpu::ComputePipeline,second:wgpu::ComputePipeline,finish:wgpu::ComputePipeline,
     count:u32,capacity:u32,deferred_capacity:u32,
     binds:std::sync::Mutex<crate::frame::resource_cache::BindGroups<4>>,
@@ -366,6 +366,25 @@ mod tests {
   selector.publish_asset_pages(&gpu,&[(1,true,2),(3,false,1)]).unwrap();assert_eq!(draw(16),[1,5,6]);
   assert!(draw(2).is_empty());assert_eq!(read(&gpu,&selector.fallback),[2],"budget cannot publish a partial ancestor cut");
   selector.publish_asset_pages(&gpu,&[(3,true,2)]).unwrap();assert_eq!(draw(16),[2,3,5,6]);
+ }
+ #[test]
+ #[ignore="exclusive GPU consumer ownership and budget fixture"]
+ fn gpu_consumer_demand_distinguishes_camera_and_shadow_only_roots() {
+  use crate::part_wind::AnimationView;
+  let gpu=Gpu::new().unwrap();let (nodes,mut trees)=fixture(3);
+  trees[1].rows[0][3]=4.;trees[2].rows[0][3]=8.;
+  let selector=Selector::new(&gpu,&nodes,&trees,6,6).unwrap();let empty=depth(&gpu,0.);
+  let at=|x:f32|AnimationView {view_projection:Mat4::from_translation(glam::Vec3::new(-x,0.,0.)),viewport:[128;2]};
+  let mut consumers=[ConsumerView::camera(at(0.)),ConsumerView::shadow(at(0.)),ConsumerView::shadow(at(4.))];
+  for _ in 0..2 {
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union_consumers(&gpu,&mut enc,&consumers,0.01,2,&empty).unwrap();gpu.queue.submit([enc.finish()]);
+   let demand=read(&gpu,&selector.demand);assert_eq!(demand[1]&768,768);assert_eq!(demand[5]&768,512);assert_eq!(demand[9]&768,0);
+   assert_eq!(demand[0],2);assert_eq!(demand[4],2);assert_eq!(demand[8],0);
+   assert_eq!(read(&gpu,&selector.fallback),[0,2,0],"orthographic camera retains budget priority over shadow-only root");
+   assert_eq!(read(&gpu,&selector.counters)[0],2);
+   consumers.reverse();
+  }
  }
  #[test]
  #[ignore="exclusive GPU two-dimensional frontier fixture"]
