@@ -1326,10 +1326,12 @@ impl Renderer {
         let mut startup=crate::startup_profile::Trace::new();
         let geometry_diagnostics=crate::geometry_diagnostics::State::new(scene);
         let u = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
-        let vertices = buffer(gpu, "vertices", if scene.vertices.is_empty() {&[0u8;std::mem::size_of::<crate::cluster::Vertex>()]} else {bytemuck::cast_slice(&scene.vertices)}, u | wgpu::BufferUsages::COPY_SRC);
-        let cverts = buffer(gpu, "cluster verts", bytemuck::cast_slice(&scene.cluster_verts), u);
-        let tris = buffer(gpu, "tris", bytemuck::cast_slice(&scene.tris), u);
-        let clusters = buffer(gpu, "clusters", if scene.clusters.is_empty() {&[0u8;std::mem::size_of::<crate::cluster::GpuCluster>()]} else {bytemuck::cast_slice(&scene.clusters)}, u | wgpu::BufferUsages::COPY_SRC);
+        let forest_assets=crate::foliage_pages::cache::Cache::for_scene(gpu,scene).expect("invalid forest asset cache");
+        let source_buffers=forest_assets.as_ref().and_then(|c|c.source.as_ref()).map(|s|s.buffers.clone());
+        let vertices = source_buffers.as_ref().map(|s|s[0].clone()).unwrap_or_else(||buffer(gpu, "vertices", if scene.vertices.is_empty() {&[0u8;std::mem::size_of::<crate::cluster::Vertex>()]} else {bytemuck::cast_slice(&scene.vertices)}, u | wgpu::BufferUsages::COPY_SRC));
+        let cverts = source_buffers.as_ref().map(|s|s[1].clone()).unwrap_or_else(||buffer(gpu, "cluster verts", bytemuck::cast_slice(&scene.cluster_verts), u));
+        let tris = source_buffers.as_ref().map(|s|s[2].clone()).unwrap_or_else(||buffer(gpu, "tris", bytemuck::cast_slice(&scene.tris), u));
+        let clusters = source_buffers.as_ref().map(|s|s[3].clone()).unwrap_or_else(||buffer(gpu, "clusters", if scene.clusters.is_empty() {&[0u8;std::mem::size_of::<crate::cluster::GpuCluster>()]} else {bytemuck::cast_slice(&scene.clusters)}, u | wgpu::BufferUsages::COPY_SRC));
         let instances = buffer(gpu, "instances", if scene.instances.is_empty() {&[0u8;std::mem::size_of::<crate::scene::GpuInstance>()]} else {bytemuck::cast_slice(&scene.instances)}, u | wgpu::BufferUsages::COPY_SRC);
         let materials = buffer(gpu, "materials", if scene.materials.is_empty() {&[0u8;std::mem::size_of::<crate::scene::Material>()]} else {bytemuck::cast_slice(&scene.materials)}, u);
         let aux = buffer(gpu, "aux", bytemuck::cast_slice(&scene.aux), u);
@@ -1444,7 +1446,7 @@ impl Renderer {
         crate::aggregate_lod::validate_scene(scene).expect("valid aggregate scene");
         let aggregate_lod=scene.aggregate_lod.as_ref().map(|s|crate::aggregate_lod::Selector::new(gpu,s))
             .transpose().expect("invalid aggregate error selection");
-        let voxel_forest = crate::voxel_forest::VoxelRenderer::new(gpu, scene, &voxel_scene_layout, &volume_view_layout);
+        let voxel_forest = crate::voxel_forest::VoxelRenderer::new(gpu, scene, &voxel_scene_layout, &volume_view_layout,forest_assets);
         let gpu_forest=scene.gpu_forest.as_ref().map(|spec| crate::foliage_runtime::Runtime::new(gpu,spec,&instances,
             voxel_forest.as_ref().expect("GPU forest volumes").tree_buffer()).map(|runtime|(runtime,spec.first_owner)))
             .transpose().expect("invalid GPU forest runtime");

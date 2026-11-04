@@ -631,6 +631,11 @@ fn recipe_spruces(scene:&mut Scene,biome:&render::biome::Biome,roots:&[WorldRoot
         let bytes=mib.checked_mul(1024*1024).filter(|n|*n>0).ok_or("voxel cache budget overflow/zero")?;
         scene.gpu_forest.as_mut().unwrap().page_budget.cells=bytes/176;
     }
+    if let Some(value)=args.windows(2).find(|a|a[0]=="--source-cache-mib") {
+        let mib=value[1].parse::<u32>().map_err(|_|"--source-cache-mib needs a positive integer")?;
+        let bytes=mib.checked_mul(1024*1024).filter(|n|*n>0).ok_or("source cache budget overflow/zero")?;
+        scene.gpu_forest.as_mut().unwrap().source_budget.vertices=bytes/32;
+    }
     println!("GPU vegetation: {} world roots, {capacity} reserved roots, {branch_slots} shared branch slots",roots.len());Ok(())
 }
 
