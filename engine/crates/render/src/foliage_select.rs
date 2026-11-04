@@ -1,4 +1,4 @@
-//! Experimental GPU forest selection, independent of the CPU near-tree pool.
+//! GPU forest selection, independent of the CPU near-tree pool.
 //!
 //! Immutable preorder recipe trees are shared by any number of instances.
 //! Phase one uses historical depth only to defer work. Phase two retests that
@@ -89,6 +89,7 @@ pub struct Selector {
     /// count, deferred count, deferred overflow, output overflow, tested,
     /// frustum rejected, current-depth rejected, direct roots; indirect args at 32/48.
     /// Tested nodes counts the emitting walk, not the budget-count prepass.
+    /// Word 11: frontier overflow requests; word 15: peak requested frontier.
     pub counters:wgpu::Buffer,
     /// Separate indirect arguments: deferred dispatch at 0, consumer dispatch at 12.
     pub arguments:wgpu::Buffer,
@@ -96,20 +97,45 @@ pub struct Selector {
     pub fallback:wgpu::Buffer,
     /// Whole-tree representation + 1; zero means branches or culled. No branch slot needed.
     pub direct:wgpu::Buffer,
-    demand:wgpu::Buffer,bucket_cost:wgpu::Buffer,count_demand:wgpu::ComputePipeline,prefix_demand:wgpu::ComputePipeline,prefix_buckets:wgpu::ComputePipeline,
+    children:wgpu::Buffer,work:[wgpu::Buffer;2],levels:u32,seed_demand:wgpu::ComputePipeline,seed_emit:wgpu::ComputePipeline,prepare_wave:wgpu::ComputePipeline,count_wave:wgpu::ComputePipeline,emit_wave:wgpu::ComputePipeline,
+    demand:wgpu::Buffer,bucket_cost:wgpu::Buffer,prefix_demand:wgpu::ComputePipeline,prefix_buckets:wgpu::ComputePipeline,
     layout:wgpu::BindGroupLayout,first:wgpu::ComputePipeline,second:wgpu::ComputePipeline,finish:wgpu::ComputePipeline,
     count:u32,capacity:u32,deferred_capacity:u32,
-    binds:std::sync::Mutex<crate::frame::resource_cache::BindGroups<2>>,
+    binds:std::sync::Mutex<crate::frame::resource_cache::BindGroups<4>>,
 }
 impl Selector {
     pub(crate) fn dimensions(&self)->(u32,u32) {(self.capacity,self.count)}
     pub fn new(gpu:&Gpu,nodes:&[Node],instances:&[Instance],capacity:u32,deferred_capacity:u32)->Result<Self,String> {
+        let work_capacity=(instances.len()as u32).saturating_mul(8).max(capacity.saturating_mul(4)).max(4096).min(1<<20).max(instances.len()as u32);
+        Self::with_work_capacity(gpu,nodes,instances,capacity,deferred_capacity,work_capacity)
+    }
+    /// Bounded frontier storage. Overflow publishes a complete resident root,
+    /// never a partial cut. This is a memory budget, not a backend switch.
+    pub fn with_work_capacity(gpu:&Gpu,nodes:&[Node],instances:&[Instance],capacity:u32,deferred_capacity:u32,work_capacity:u32)->Result<Self,String> {
         validate(nodes,instances,capacity)?;
+        let limit=gpu.device.limits();
+        if work_capacity<(instances.len()as u32) || work_capacity.div_ceil(64)>limit.max_compute_workgroups_per_dimension
+            || limit.max_storage_buffers_per_shader_stage<12 || limit.max_compute_workgroups_per_dimension<32768 {return Err("foliage work queue exceeds device limits".into());}
+        let mut ends=Vec::new();let mut levels=0;
+        for (i,node) in nodes.iter().enumerate() {
+            while ends.last()==Some(&i){ends.pop();}
+            levels=levels.max(ends.len()as u32+1);
+            if node.links[0]!=NONE {ends.push(node.links[1]as usize);}
+        }
+
+        let mut children=vec![0u32;nodes.len()*2];
+        for (i,node) in nodes.iter().enumerate() {
+            children[i*2]=children.len()as u32;
+            if node.links[0]!=NONE {
+                let mut child=node.links[0];
+                while child<node.links[1] {children.push(child);children[i*2+1]+=1;child=nodes[child as usize].links[1];}
+            }
+        }
         if deferred_capacity==0 || instances.len().div_ceil(64)>gpu.device.limits().max_compute_workgroups_per_dimension as usize
             || deferred_capacity.div_ceil(64)>gpu.device.limits().max_compute_workgroups_per_dimension {
             return Err("foliage dispatch capacity exceeds device".into());
         }
-        for bytes in [std::mem::size_of_val(nodes)as u64,std::mem::size_of_val(instances)as u64,capacity as u64*16,deferred_capacity as u64*8,instances.len()as u64*4] {
+        for bytes in [children.len()as u64*4,16+work_capacity as u64*8,instances.len()as u64*16,(instances.len().div_ceil(256)as u64+1)*128,std::mem::size_of_val(nodes)as u64,std::mem::size_of_val(instances)as u64,capacity as u64*16,deferred_capacity as u64*8,instances.len()as u64*4] {
             if bytes>gpu.device.limits().max_storage_buffer_binding_size as u64 {return Err("foliage buffer exceeds device binding limit".into());}
         }
         crate::shaders::checked(gpu,|| {
@@ -119,27 +145,32 @@ impl Selector {
                 usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::INDIRECT,mapped_at_creation:false});
             let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage selector view"),size:std::mem::size_of::<Uniform>()as u64,
                 usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
-            let entries=(0..11).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
+            let entries=(0..14).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
                 ty:if binding==7 {wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}}
-                else {wgpu::BindingType::Buffer {ty:if binding==0 {wgpu::BufferBindingType::Uniform} else {wgpu::BufferBindingType::Storage {read_only:binding<3}},has_dynamic_offset:false,min_binding_size:None}}}).collect::<Vec<_>>();
+                else {wgpu::BindingType::Buffer {ty:if binding==0 {wgpu::BufferBindingType::Uniform} else {wgpu::BufferBindingType::Storage {read_only:binding<3 || binding==13}},has_dynamic_offset:false,min_binding_size:None}}}).collect::<Vec<_>>();
             let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("foliage GPU selection"),entries:&entries});
             let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("foliage GPU selection"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage GPU selection"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_select.wgsl").into())});
             let make=|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
-            Self {_nodes:upload("shared foliage hierarchy",bytemuck::cast_slice(nodes)),_instances:upload("persistent foliage instances",bytemuck::cast_slice(instances)),uniform,
+            Self {children:upload("shared foliage child spans",bytemuck::cast_slice(&children)),work:[storage("foliage frontier A",16+work_capacity as u64*8),storage("foliage frontier B",16+work_capacity as u64*8)],levels,
+                seed_demand:make("seed_demand"),seed_emit:make("seed_emit"),prepare_wave:make("prepare_wave"),count_wave:make("count_wave"),emit_wave:make("emit_wave"),_nodes:upload("shared foliage hierarchy",bytemuck::cast_slice(nodes)),_instances:upload("persistent foliage instances",bytemuck::cast_slice(instances)),uniform,
                 records:storage("selected foliage records",capacity as u64*16),deferred:storage("deferred foliage subtrees",deferred_capacity as u64*8),
                 counters:storage("foliage selection counters",64),arguments:storage("foliage indirect arguments",24),fallback:storage("foliage root fallbacks",instances.len()as u64*4),
                 direct:storage("direct resident forest roots",instances.len()as u64*4),
-                demand:storage("forest root demand",instances.len()as u64*16),bucket_cost:storage("forest priority costs",(instances.len().div_ceil(256)as u64+1)*128),count_demand:make("count_demand"),prefix_demand:make("prefix_demand"),prefix_buckets:make("prefix_buckets"),first:make("first"),second:make("second"),finish:make("finish"),layout,count:instances.len()as u32,capacity,deferred_capacity,binds:Default::default()}
+                demand:storage("forest root demand",instances.len()as u64*16),bucket_cost:storage("forest priority costs",(instances.len().div_ceil(256)as u64+1)*128),prefix_demand:make("prefix_demand"),prefix_buckets:make("prefix_buckets"),first:make("first"),second:make("second"),finish:make("finish"),layout,count:instances.len()as u32,capacity,deferred_capacity,binds:Default::default()}
         })
     }
-    fn bind(&self,gpu:&Gpu,hzb:&wgpu::TextureView)->wgpu::BindGroup {
+    fn bind(&self,gpu:&Gpu,hzb:&wgpu::TextureView)->wgpu::BindGroup {self.bind_work(gpu,hzb,0)}
+    fn bind_work(&self,gpu:&Gpu,hzb:&wgpu::TextureView,front:usize)->wgpu::BindGroup {
         let buffers=[&self.uniform,&self._nodes,&self._instances,&self.records,&self.deferred,&self.counters,&self.fallback];
         let mut entries=buffers.iter().enumerate().map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:b.as_entire_binding()}).collect::<Vec<_>>();
         entries.push(wgpu::BindGroupEntry {binding:7,resource:wgpu::BindingResource::TextureView(hzb)});
         entries.push(wgpu::BindGroupEntry {binding:8,resource:self.direct.as_entire_binding()});
         entries.push(wgpu::BindGroupEntry {binding:9,resource:self.demand.as_entire_binding()});
         entries.push(wgpu::BindGroupEntry {binding:10,resource:self.bucket_cost.as_entire_binding()});
+        entries.push(wgpu::BindGroupEntry {binding:11,resource:self.work[front].as_entire_binding()});
+        entries.push(wgpu::BindGroupEntry {binding:12,resource:self.work[1-front].as_entire_binding()});
+        entries.push(wgpu::BindGroupEntry {binding:13,resource:self.children.as_entire_binding()});
         self.binds.lock().unwrap().entries(gpu,&self.layout,"foliage selector depth",&entries)
     }
     /// Call once per view/frame; current depth MUST be rebuilt after consuming
@@ -169,14 +200,33 @@ impl Selector {
         gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers,consumer_count:[views.len()as u32,branch_budget,0,0],
             vp:views[0].view_projection.to_cols_array(),previous_vp:views[0].view_projection.to_cols_array(),pixels:[0.,0.,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,0]}));
         enc.clear_buffer(&self.counters,0,None);enc.clear_buffer(&self.fallback,0,None);enc.clear_buffer(&self.direct,0,None);
-        let bind=self.bind(gpu,empty_depth);let mut pass=enc.begin_compute_pass(&Default::default());
-        pass.set_bind_group(0,&bind,&[]);
-        pass.set_pipeline(&self.count_demand);pass.dispatch_workgroups(self.count.div_ceil(64),1,1);
-        pass.set_pipeline(&self.prefix_demand);pass.dispatch_workgroups(self.count.div_ceil(256),1,1);
-        pass.set_pipeline(&self.prefix_buckets);pass.dispatch_workgroups(1,1,1);
-        pass.set_pipeline(&self.first);pass.dispatch_workgroups(self.count.div_ceil(64),1,1);
-        pass.set_pipeline(&self.finish);pass.dispatch_workgroups(1,1,1);drop(pass);
+        let binds=[self.bind_work(gpu,empty_depth,0),self.bind_work(gpu,empty_depth,1)];
+        enc.clear_buffer(&self.work[0],0,Some(16));
+        {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);
+         pass.set_pipeline(&self.seed_demand);pass.dispatch_workgroups(self.count.div_ceil(64),1,1);}
+        self.waves(enc,&binds,&self.count_wave);
+        {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);
+         pass.set_pipeline(&self.prefix_demand);pass.dispatch_workgroups(self.count.div_ceil(256),1,1);
+         pass.set_pipeline(&self.prefix_buckets);pass.dispatch_workgroups(1,1,1);}
+        enc.clear_buffer(&self.work[0],0,Some(16));
+        {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);
+         pass.set_pipeline(&self.seed_emit);pass.dispatch_workgroups(self.count.div_ceil(64),1,1);}
+        self.waves(enc,&binds,&self.emit_wave);
+        {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);
+         pass.set_pipeline(&self.finish);pass.dispatch_workgroups(1,1,1);}
         enc.copy_buffer_to_buffer(&self.counters,48,&self.arguments,12,12);Ok(())
+    }
+    fn waves(&self,enc:&mut wgpu::CommandEncoder,binds:&[wgpu::BindGroup;2],pipeline:&wgpu::ComputePipeline) {
+        // The immutable recipe depth bounds submission, not CPU visibility.
+        // Empty frontiers dispatch zero workgroups, without a GPU readback.
+        for level in 0..self.levels {
+            let bind=&binds[level as usize%2];
+            {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,bind,&[]);
+             pass.set_pipeline(&self.prepare_wave);pass.dispatch_workgroups(1,1,1);}
+            enc.copy_buffer_to_buffer(&self.counters,32,&self.arguments,0,12);
+            let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,bind,&[]);
+            pass.set_pipeline(pipeline);pass.dispatch_workgroups_indirect(&self.arguments,0);
+        }
     }
     /// Appends recovered records. This prototype requires final consumption after
     /// both phases: phase-one depth may seed HZB, but final color selection must
@@ -226,6 +276,59 @@ mod tests {
   gpu.queue.write_texture(wgpu::TexelCopyTextureInfo {texture:&tex,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},bytemuck::cast_slice(&[value;64]),
    wgpu::TexelCopyBufferLayout {offset:0,bytes_per_row:Some(32),rows_per_image:Some(8)},wgpu::Extent3d {width:8,height:8,depth_or_array_layers:1});
   tex.create_view(&Default::default())
+ }
+ #[test]
+ #[ignore="exclusive GPU two-dimensional frontier fixture"]
+ fn gpu_wavefront_dispatches_second_row() {
+  let gpu=Gpu::new().unwrap();let (nodes,trees)=fixture(32769);let empty=depth(&gpu,0.);
+  let selector=Selector::with_work_capacity(&gpu,&nodes,&trees,65538,1,32769).unwrap();
+  let views=[crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]}];
+  let mut enc=gpu.device.create_command_encoder(&Default::default());
+  selector.union(&gpu,&mut enc,&views,0.01,65538,&empty).unwrap();gpu.queue.submit([enc.finish()]);
+  let counts=read(&gpu,&selector.counters);assert_eq!(counts[0],65538);assert_eq!(counts[11],0);
+  assert!(read(&gpu,&selector.fallback).iter().all(|&f|f==0));
+  let mut hits=vec![0;32769];
+  for r in read(&gpu,&selector.records).chunks_exact(4) {hits[r[0]as usize]+=1;}
+  assert!(hits.iter().all(|&n|n==2));
+ }
+ #[test]
+ #[ignore="exclusive GPU wavefront fixture"]
+ fn gpu_wavefront_matches_serial_cut_and_recovers_queue_overflow() {
+  let gpu=Gpu::new().unwrap();let (_,trees)=fixture(193);let empty=depth(&gpu,0.);
+  let mut nodes=vec![Node {sphere:[0.,0.,0.5,0.3],error:[0.3,0.,0.,0.],links:[1,21,0,2]}];
+  for _ in 0..4 {
+   let i=nodes.len()as u32;
+   nodes.push(Node {sphere:[0.,0.,0.5,0.2],error:[0.1,0.,0.,0.],links:[i+1,i+5,i,0]});
+   for j in i+1..i+5 {nodes.push(Node {sphere:[0.,0.,0.5,0.1],error:[0.;4],links:[NONE,j+1,j,0]});}
+  }
+  let views=[crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]}];
+  let serial=Selector::new(&gpu,&nodes,&trees,4096,4096).unwrap();
+  let mut enc=gpu.device.create_command_encoder(&Default::default());
+  serial.first(&gpu,&mut enc,Mat4::IDENTITY,Mat4::IDENTITY,[128;2],0.01,false,&empty).unwrap();
+  gpu.queue.submit([enc.finish()]);
+  let expected=read(&gpu,&serial.counters)[0]as usize;assert_eq!(expected,193*16);
+  let mut reference=read(&gpu,&serial.records).chunks_exact(4).take(expected).map(|r|r.to_vec()).collect::<Vec<_>>();reference.sort();
+  for work_capacity in [4096,193] {
+   let selector=Selector::with_work_capacity(&gpu,&nodes,&trees,4096,4096,work_capacity).unwrap();
+   assert_eq!(selector.levels,3);
+   for iteration in 0..3 {
+    let coarse=iteration==1;
+    let mut enc=gpu.device.create_command_encoder(&Default::default());
+    selector.union(&gpu,&mut enc,&views,if coarse{10000.}else{0.01},4096,&empty).unwrap();
+    gpu.queue.submit([enc.finish()]);
+    let counts=read(&gpu,&selector.counters);let fallback=read(&gpu,&selector.fallback);let direct=read(&gpu,&selector.direct);
+    let mut actual=read(&gpu,&selector.records).chunks_exact(4).take(counts[0]as usize).filter(|r|fallback[r[0]as usize]==0).map(|r|r.to_vec()).collect::<Vec<_>>();actual.sort();
+    if coarse {
+     assert_eq!(counts[0],0);assert_eq!(counts[7],193);assert_eq!(counts[11],0);
+     assert!(fallback.iter().all(|&f|f==0));assert!(direct.iter().all(|&d|d==1));
+    } else {
+     let valid=reference.iter().filter(|r|fallback[r[0]as usize]==0).cloned().collect::<Vec<_>>();
+     assert_eq!(actual,valid);assert!(direct.iter().all(|&d|d==0));
+     if work_capacity==4096 {assert_eq!(actual,reference);assert_eq!(counts[11],0);assert_eq!(counts[15],772);}
+     else {assert!(counts[11]>0);assert!(fallback.contains(&3));}
+    }
+   }
+  }
  }
  #[test]
  #[ignore="exclusive GPU budget fixture"]

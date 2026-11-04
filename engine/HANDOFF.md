@@ -1,3 +1,20 @@
+## 2026-11-04 GPU subtree work queues on the normal route
+
+Selector::union uses GPU-generated bounded frontiers for both demand and emission.
+One workgroup processes a shared child span; only refining subtrees re-enter the
+queue. No serial per-root subtree walk or CPU work-count readback on this route.
+The historical-HZB fixture remains separate; do not claim history-first production
+selection, cell streaming, page streaming or cached animated shadows are complete.
+
+Six selector + three runtime tests pass, including exact cut parity, forced queue
+overflow/recovery, teleport, four views and off-camera casters. 62,274-root scene,
+three repeated 80-frame native1713x964 one-view runs: selection/residency/poses
+0.474 ms, GPU covered17.015 ms. Zero queue/slot/hash failures, peak child frontier
+3,048. The first per-node-queue attempt overflowed and is rejected, not a speedup.
+See docs/foliage-wavefront-2026-11-04.md and its evidence JSON. Images inspected;
+no interactive playtest opened. Next architecture work: stable cell/root updates
+without renderer rebuild, and safe history-first publication across consumers.
+
 ## 2026-11-04 Architecture first: normal GPU forest route
 
 User explicitly requires coherent production architecture before visual polish,

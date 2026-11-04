@@ -6,6 +6,8 @@ terrain route; the CPU pool and alternate forest modes have been removed from
 that demo.** No `WARP_TERRAIN_GPU_FOREST` opt-in is required.
 The [production architecture contract](vegetation-architecture.md) defines the
 remaining work and supersedes the opt-in rollout requirements below.
+Update: [GPU subtree work queues](foliage-wavefront-2026-11-04.md) now replace
+the serial runtime union walks; history-first consumer integration remains open.
 See [runtime evidence and remaining limits](foliage-runtime-2026-11-04.md).
 
 ## Available building blocks

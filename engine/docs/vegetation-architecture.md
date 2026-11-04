@@ -54,7 +54,7 @@ provisional depth from an incomplete cut cannot survive publication failure.
 | --- | --- | --- |
 | Shared species assemblies | CookedPlant, shared_selection_recipe, shared source/voxel catalogs | Page-addressed catalogs and growth variant reuse |
 | Permanent population | RootPlacement; all terrain roots passed to foliage_runtime | Stable cell update API; currently terrain still rebuilds scenes when recentered |
-| GPU selection | Consumer union, deterministic complete-tree budget; no CPU near pool | Replace serial per-root walks with load-balanced GPU work queues |
+| GPU selection | Consumer union, deterministic complete-tree budget; GPU work queues distribute refining subtrees across workgroups | Integrate history-first traversal with safe publication across consumers |
 | Occlusion | Per-view two-pass source cluster culling; standalone selector fixture | Integrate history-first selection and publication safely across consumers |
 | Residency | Persistent GPU branch hash/slots, generation history, root fallback | Asset page requests/uploads/eviction; current catalogs are fully resident |
 | Wind | GPU articulated branch ancestry; same source and voxel pose | Shared ancestor pose scheduling; recipe growth/season lifecycle |
@@ -92,7 +92,9 @@ source/voxel raster, shadows and shading independently. Historical one-view
 
 ## Present limitations
 
-Only the first gate is being promoted here. Existing games using legacy forest
+The normal route and bounded GPU traversal are connected. The rest of the
+second gate (stable cell updates and history-first publication) remains open.
+Existing games using legacy forest
 APIs are not silently migrated. The compatibility Tree alias points to the new
 RootPlacement type; the GPU runtime no longer depends on recipe_forest::Tree.
 Visual tuning is deferred, but missing geometry and invalid lighting remain
