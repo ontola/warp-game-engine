@@ -17983,6 +17983,2299 @@
         "tonemap": 0.025696
       },
       "strict_result": "Error: \"PIXEL VEGETATION QUALITY FAILED: view 0: largest submitted cell 5.482px, missing 0, near-plane crossings 0; camera over-target 40687, refinement faults 0, camera fallbacks 0\""
+    },
+    "packed-cells-1200": {
+      "forest": {
+        "trees": 302116,
+        "active_roots": 151058,
+        "branch_capacity": 32768,
+        "selected_records": 32768,
+        "tested_nodes": 529547,
+        "source_slots": 32735,
+        "voxel_slots": 33,
+        "shadow_voxel_slots": 0,
+        "direct_roots": 159513,
+        "fallback_trees": 0,
+        "retained": 32354,
+        "assigned": 414,
+        "slot_failures": 0,
+        "hash_failures": 0,
+        "frontier_overflow_requests": 0,
+        "peak_frontier_requests": 160911,
+        "reserved_source_clusters": 25695150,
+        "source_cluster_budget_stops": 0,
+        "reserved_raster_splats": [
+          16776607,
+          16777164
+        ],
+        "refinement_budget_stops": 167066,
+        "refinement_faults": 0,
+        "reused_refinement_proposals": 21060,
+        "dormant_records": 146569,
+        "dormant_wakes": 21060,
+        "dormant_wake_passes": 3,
+        "dormant_park_events": 167066,
+        "dormant_overflows": 0,
+        "selected_spatial_error_pixels": [
+          1e+30,
+          1e+30
+        ],
+        "selected_error_target_ratio": [
+          1e+30,
+          1e+30
+        ],
+        "selected_over_target": [
+          159466,
+          40679
+        ],
+        "error_unknown_proxies": 0,
+        "error_unmatched_direct": 0,
+        "error_forced_nodes": 0,
+        "pose_requests": 32662,
+        "evaluated_shared_poses": 32662,
+        "pose_hash_failures": 0,
+        "camera_roots": 42124,
+        "shadow_only_roots": 81695,
+        "camera_fallback_roots": 0,
+        "shadow_only_fallback_roots": 0,
+        "camera_refinement_limits": {
+          "over_target": 40679,
+          "branch_slots": 31032,
+          "camera_splats": 36613,
+          "shadow_splats": 0,
+          "missing_pages": 25242,
+          "no_children": 0,
+          "affordable_resident": 888
+        },
+        "selected_source_consumers": {
+          "outside": 0,
+          "camera_only": 32735,
+          "shadow_only": 0,
+          "both": 0
+        },
+        "selected_voxel_consumers": {
+          "outside": 0,
+          "camera_only": 33,
+          "shadow_only": 0,
+          "both": 0
+        },
+        "selected_direct_consumers": {
+          "outside": 0,
+          "camera_only": 40726,
+          "shadow_only": 118787,
+          "both": 0
+        },
+        "camera_published_branches": 32768,
+        "shadow_only_published_branches": 0
+      },
+      "pages": {
+        "allocated_bytes": 88190496,
+        "resident_pages": 935,
+        "pending_pages": 0,
+        "uploads": 935,
+        "evictions": 0,
+        "uploaded_bytes": 81365220,
+        "frame_upload_bytes": 0,
+        "misses": 703913,
+        "feedback_skipped": 0,
+        "source": {
+          "allocated_bytes": 77144872,
+          "resident_pages": 20,
+          "total_pages": 20,
+          "uploads": 20,
+          "evictions": 0,
+          "uploaded_bytes": 77144872,
+          "pinned_bytes": 74620864
+        }
+      },
+      "raster": [
+        {
+          "articulated_group_bins": [
+            0,
+            5595,
+            71,
+            199,
+            105,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "capacity": 16777216,
+          "diameter_bin_upper_px": [
+            0.5,
+            1.0,
+            2.0,
+            4.0,
+            8.0,
+            16.0,
+            32.0,
+            64.0,
+            128.0,
+            null
+          ],
+          "largest_submitted_cells": [
+            {
+              "alpha": 0.7602960467338562,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33157,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.482461452484131,
+              "packed_cell": 12595208,
+              "volume": 65925,
+              "world_cell_size": 0.5780834555625916,
+              "world_centre": [
+                -43.808319091796875,
+                5.75739049911499,
+                -56.65071487426758
+              ]
+            },
+            {
+              "alpha": 0.7466086745262146,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33157,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.43043851852417,
+              "packed_cell": 11545608,
+              "volume": 65925,
+              "world_cell_size": 0.5780834555625916,
+              "world_centre": [
+                -44.30298614501953,
+                5.179306983947754,
+                -56.3515739440918
+              ]
+            },
+            {
+              "alpha": 0.7560082674026489,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33157,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.423216819763184,
+              "packed_cell": 12595209,
+              "volume": 65925,
+              "world_cell_size": 0.5780834555625916,
+              "world_centre": [
+                -44.107460021972656,
+                5.75739049911499,
+                -57.145381927490234
+              ]
+            },
+            {
+              "alpha": 0.661966860294342,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33303,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.422019958496094,
+              "packed_cell": 12595209,
+              "volume": 66071,
+              "world_cell_size": 0.7726717591285706,
+              "world_centre": [
+                -90.31331634521484,
+                8.591399192810059,
+                -47.48451232910156
+              ]
+            },
+            {
+              "alpha": 0.6488898992538452,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33303,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.414581298828125,
+              "packed_cell": 12595208,
+              "volume": 66071,
+              "world_cell_size": 0.7726717591285706,
+              "world_centre": [
+                -89.91368103027344,
+                8.591399192810059,
+                -46.82321548461914
+              ]
+            },
+            {
+              "alpha": 0.6465400457382202,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33303,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.402126312255859,
+              "packed_cell": 11545608,
+              "volume": 66071,
+              "world_cell_size": 0.7726717591285706,
+              "world_centre": [
+                -90.5749740600586,
+                7.818727493286133,
+                -46.423580169677734
+              ]
+            },
+            {
+              "alpha": 0.7129015326499939,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33157,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.349643230438232,
+              "packed_cell": 11547655,
+              "volume": 65925,
+              "world_cell_size": 0.5780834555625916,
+              "world_centre": [
+                -44.003849029541016,
+                6.335474014282227,
+                -55.85690689086914
+              ]
+            },
+            {
+              "alpha": 0.7314717173576355,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33157,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.336828231811523,
+              "packed_cell": 13643785,
+              "volume": 65925,
+              "world_cell_size": 0.5780834555625916,
+              "world_centre": [
+                -43.61279296875,
+                5.75739049911499,
+                -57.444522857666016
+              ]
+            },
+            {
+              "alpha": 0.6780194044113159,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33572,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.311546325683594,
+              "packed_cell": 6302730,
+              "volume": 66340,
+              "world_cell_size": 0.8275042176246643,
+              "world_centre": [
+                -135.9739532470703,
+                10.816190719604492,
+                -27.90985679626465
+              ]
+            },
+            {
+              "alpha": 0.6188143491744995,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33303,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.2448272705078125,
+              "packed_cell": 13643785,
+              "volume": 66071,
+              "world_cell_size": 0.7726717591285706,
+              "world_centre": [
+                -89.65201568603516,
+                8.591399192810059,
+                -47.88414764404297
+              ]
+            },
+            {
+              "alpha": 0.6841992735862732,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33157,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.198533535003662,
+              "packed_cell": 11546632,
+              "volume": 65925,
+              "world_cell_size": 0.5780834555625916,
+              "world_centre": [
+                -44.30298614501953,
+                5.75739049911499,
+                -56.3515739440918
+              ]
+            },
+            {
+              "alpha": 0.5850766897201538,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33303,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.183696746826172,
+              "packed_cell": 11547655,
+              "volume": 66071,
+              "world_cell_size": 0.7726717591285706,
+              "world_centre": [
+                -90.17533874511719,
+                9.364070892333984,
+                -45.76228332519531
+              ]
+            },
+            {
+              "alpha": 0.5838101506233215,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33303,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.133399963378906,
+              "packed_cell": 11546632,
+              "volume": 66071,
+              "world_cell_size": 0.7726717591285706,
+              "world_centre": [
+                -90.5749740600586,
+                8.591399192810059,
+                -46.423580169677734
+              ]
+            },
+            {
+              "alpha": 0.6555428504943848,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33157,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.093097686767578,
+              "packed_cell": 13643784,
+              "volume": 65925,
+              "world_cell_size": 0.5780834555625916,
+              "world_centre": [
+                -43.31365203857422,
+                5.75739049911499,
+                -56.949851989746094
+              ]
+            },
+            {
+              "alpha": 0.6689249873161316,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33572,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.0787353515625,
+              "packed_cell": 8398853,
+              "volume": 66340,
+              "world_cell_size": 0.8275042176246643,
+              "world_centre": [
+                -136.33554077148438,
+                9.988687515258789,
+                -32.351409912109375
+              ]
+            },
+            {
+              "alpha": 0.651728093624115,
+              "cut_owner": {
+                "consumer": 256,
+                "fallback_flags": 0,
+                "final_budget_proposal_replay": {
+                  "control": [
+                    21,
+                    2,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    0,
+                    1290,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    1364,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": null,
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      7.020406246185303,
+                      9.797959327697754,
+                      666.0,
+                      666.0
+                    ],
+                    "links": [
+                      5,
+                      194,
+                      4,
+                      0
+                    ],
+                    "node": 4,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      6.600000381469727,
+                      0.8999996185302734,
+                      14.51156997680664
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      7.1262288093566895,
+                      7.636753559112549,
+                      698.0,
+                      698.0
+                    ],
+                    "links": [
+                      195,
+                      394,
+                      194,
+                      0
+                    ],
+                    "node": 194,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      1.5749998092651367,
+                      10.950000762939453,
+                      -0.5249996185302734,
+                      11.633720397949219
+                    ]
+                  }
+                ],
+                "kind": "whole_root",
+                "publication": [
+                  0,
+                  768,
+                  4,
+                  0
+                ],
+                "root": 33157,
+                "root_recipe": 0,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.642103433609009,
+                    0.0,
+                    1290.0,
+                    1290.0
+                  ],
+                  "links": [
+                    4,
+                    394,
+                    3,
+                    2
+                  ],
+                  "node": 3,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    1.1999998092651367,
+                    6.3000006675720215,
+                    0.2999992370605469,
+                    16.371204376220703
+                  ]
+                }
+              },
+              "diameter_px": 5.075974464416504,
+              "packed_cell": 12594184,
+              "volume": 65925,
+              "world_cell_size": 0.5780834555625916,
+              "world_centre": [
+                -43.808319091796875,
+                5.179306983947754,
+                -56.65071487426758
+              ]
+            }
+          ],
+          "missing_records": 0,
+          "near_plane_crossings": 0,
+          "requested_splats": 5866328,
+          "scope": "stored records only; screen-aligned diameter excludes sub-cell jitter; explicit offline readback",
+          "stored_splats": 5866328,
+          "unique_stored_volumes": 40482,
+          "viewport": [
+            1280,
+            720
+          ],
+          "whole_root_bins": [
+            3715276,
+            1709956,
+            375479,
+            58244,
+            1403,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "gpu_covered_median_ms": 33.286624,
+      "pass_medians_ms": {
+        "foliage seed terrain cull": 0.22296,
+        "foliage seed terrain raster": 0.014848,
+        "foliage seed pyramid": 0.0736,
+        "GPU forest selection residency": 10.916864,
+        "GPU forest shared poses": 0.12972799999999998,
+        "GPU forest materialize": 0.26239999999999997,
+        "shadow tile damage and clear": 0.2904,
+        "shadow cull": 0.3944,
+        "shadow raster": 0.063648,
+        "voxel sun splats": 0.49630399999999997,
+        "voxel sun splat raster": 0.19414399999999998,
+        "near shadow cull": 0.287008,
+        "near shadow raster": 0.030272,
+        "voxel near sun splats": 0.224608,
+        "voxel near sun splat raster": 0.08179199999999999,
+        "occluder cull": 4.031712,
+        "occluder raster": 1.295696,
+        "occlusion pyramid": 0.073296,
+        "tree recovery dispatch": 0.002048,
+        "remaining cull": 6.474448,
+        "remaining raster": 0.940272,
+        "visibility history": 0.028863999999999997,
+        "voxel splats": 2.489216,
+        "voxel splat raster": 2.8727359999999997,
+        "voxel splat resolve": 0.102048,
+        "terrain coarse": 0.052239999999999995,
+        "shade terrain": 0.240192,
+        "shade voxels": 0.029727999999999997,
+        "shade": 0.15048,
+        "motion vectors": 0.04192,
+        "taa": 0.029376,
+        "exhaust": 0.000736,
+        "wheel particles": 0.00031999999999999997,
+        "bloom": 0.026208,
+        "tonemap": 0.025727999999999997
+      },
+      "strict_result": "Error: \"PIXEL VEGETATION QUALITY FAILED: view 0: largest submitted cell 5.482px, missing 0, near-plane crossings 0; camera over-target 40679, refinement faults 0, camera fallbacks 0\""
     }
   }
 }

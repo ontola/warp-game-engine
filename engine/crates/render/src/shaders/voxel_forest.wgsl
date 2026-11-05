@@ -11,7 +11,7 @@ struct VolumeTree {
 struct VolumeConfig { size_count: vec4<u32>, march: vec4<f32>, dispatch: vec4<u32>, proxy: vec4<f32> };
 @group(2) @binding(0) var<storage,read> volume_levels: array<VolumeLevel>;
 @group(2) @binding(1) var<storage,read> volume_indices: array<u32>;
-@group(2) @binding(2) var<storage,read> volume_cells: array<VolumeCell>;
+@group(2) @binding(2) var<storage,read> volume_cells: array<PackedVolumeCell>;
 @group(2) @binding(3) var<storage,read> volume_trees: array<VolumeTree>;
 @group(2) @binding(4) var<storage,read_write> volume_tiles: array<atomic<u32>>;
 @group(2) @binding(5) var<storage,read_write> volume_stats: array<atomic<u32>>;
@@ -213,7 +213,7 @@ fn volume_sample_level(level:VolumeLevel,local:vec3<f32>,direction:VolumeDirecti
         let c=vec3<u32>(coord);
         let index=volume_cell_address(level,c);
         if index==0u {continue;}
-        let cell=volume_cells[index-1u];
+        let cell=unpack_volume_cell(volume_cells[index-1u]);
         let sigma=volume_sigma(cell,direction)*weight;
         result=volume_accumulate_cell(result,cell,sigma);
     }
@@ -1175,7 +1175,7 @@ fn volume_splat_outside(cell:VolumeSplatCell,plane:vec4<f32>)->bool {
 // extinction directions are antipodal, so its sign does not change sigma.
 fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:vec3<f32>) {
     // Optical depth of the mean chord through this cell along the view.
-    let sigma=volume_sigma(volume_cells[cell_ref.x],volume_direction(toward));
+    let sigma=volume_sigma(unpack_volume_cell(volume_cells[cell_ref.x]),volume_direction(toward));
     let alpha=1.0-exp(-sigma*cell.size/max(dot(abs(toward),vec3<f32>(1.0)),1.0));
     if alpha<1.0/255.0 {return;}
     // Faint cells are thinned to VOLUME_SPLAT_MIN_ALPHA: kept with
@@ -1394,7 +1394,7 @@ fn volume_self_transmittance(tree:VolumeTree,grid:vec4<f32>,p:vec3<f32>,sun:vec3
         let c=floor((local+d*(f32(i)*cell)-level.origin_cell.xyz)/cell);
         if any(c<vec3<f32>(0.0)) || any(c>=vec3<f32>(level.dims_offset.xyz)) {break;}
         let address=volume_cell_address(level,vec3<u32>(c));
-        if address!=0u {tau+=volume_sigma(volume_cells[address-1u],direction)*cell;}
+        if address!=0u {tau+=volume_sigma(unpack_volume_cell(volume_cells[address-1u]),direction)*cell;}
     }
     return exp(-tau);
 }
@@ -1412,7 +1412,7 @@ fn voxel_splat_gbuffer(@builtin(global_invocation_id) id:vec3<u32>) {
     let direction=normalize(p-view.cam.xyz);
     let record=volume_splats[volume_splat_first()+splat-1u];
     let tree=volume_trees[record.x];
-    let cell=volume_cells[record.y];
+    let cell=unpack_volume_cell(volume_cells[record.y]);
     let d=vec4<f32>(direction,0.0);
     let local_d=vec3<f32>(dot(tree.inverse[0],d),dot(tree.inverse[1],d),dot(tree.inverse[2],d));
     let sigma=max(volume_sigma(cell,volume_direction(normalize(local_d))),1e-6);
@@ -1496,7 +1496,7 @@ fn voxel_splat_resolve(@builtin(global_invocation_id) id:vec3<u32>) {
     let direction=normalize(p-view.cam.xyz);
     let record=volume_splats[volume_splat_first()+splat-1u];
     let tree=volume_trees[record.x];
-    let cell=volume_cells[record.y];
+    let cell=unpack_volume_cell(volume_cells[record.y]);
     let d=vec4<f32>(direction,0.0);
     let local_d=vec3<f32>(dot(tree.inverse[0],d),dot(tree.inverse[1],d),dot(tree.inverse[2],d));
     let sigma=max(volume_sigma(cell,volume_direction(normalize(local_d))),1e-6);

@@ -11,6 +11,21 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+## 5 November: compact voxel storage
+
+- [x] Pack six normal-moment/weight records as signed normalized16; retain
+  full f32 colour and extinction. GPU cells128 bytes versus176 (27.27% smaller).
+  No voxel coarsening or occupancy changes. CPU cooked assets stay unquantized.
+- [x] Bounded cache offsets, partial uploads, eviction and uncached/world uploads
+  use the packed format. Same64MiB cell pool holds524288 rather than381300 cells.
+- [x]166 foliage tests and29 voxel renderer tests PASS, including direct GPU
+  decode versus CPU and signed-normal/weight error<=1/65534+float rounding.
+- [x] Normal1200-frame native720p ONE-view capture inspected: largest5.482px,
+  no missing raster records/refinement faults; one-pixel requirement still FAILS.
+ 935 resident pages,88.19MB cache; previous capture712 pages. Covered GPU
+  median33.287ms (last120 frames). No isolated speedup claim: upstream bbc3095
+  also changes opaque raster/fog. Compact storage does not solve splat demand.
+
 ## 5 November: PR8 integration and rejected selected-mip experiment
 
 - [x] Integrate PR8 through6a4002f, preserving the other agent's occlusion,

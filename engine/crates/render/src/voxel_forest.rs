@@ -43,7 +43,7 @@ fn interval_stream_layout(size:(u32,u32),binding_limit:u64)->Result<IntervalStre
 struct IntegratorOptions {
     empty_ceiling: bool,
     // Experimental register/BRDF specialization; immutable packed cells must
-    // first prove exact antipodal symmetry. The 176-byte upload ABI is unchanged.
+    // first prove exact antipodal symmetry. The128-byte packed upload ABI is unchanged.
     antipodal_normals: bool,
     global_intervals: bool,
     brick_visibility: bool,
@@ -722,7 +722,7 @@ impl VoxelRenderer {
         let data = [
             page_cache.as_ref().map(|c|c.buffers[0].clone()).unwrap_or_else(||upload("voxel levels", bytemuck::cast_slice(&forest.levels))),
             page_cache.as_ref().map(|c|c.buffers[1].clone()).unwrap_or_else(||upload("voxel indices", bytemuck::cast_slice(&forest.indices))),
-            page_cache.as_ref().map(|c|c.buffers[2].clone()).unwrap_or_else(||upload("voxel cells", bytemuck::cast_slice(&forest.cells))),
+            page_cache.as_ref().map(|c|c.buffers[2].clone()).unwrap_or_else(||upload("voxel cells", bytemuck::cast_slice(&crate::foliage_volume_data::packed_cells(&forest.cells)))),
             gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("voxel trees"),
                 contents: bytemuck::cast_slice(&forest.instances),
@@ -845,7 +845,7 @@ impl VoxelRenderer {
         let second = brick_hzb.as_ref().map(|_| second_splat_pipeline(gpu, &pipeline_layout, &specialized_source));
         eprintln!("voxel integrator: interval_capacity=64 active_capacity=16 empty_ceiling={} (accepted skip fix; bounded prototype, complete scan on cache overflow)",
             integrator_options.empty_ceiling);
-        eprintln!("voxel normals: antipodal_requested={antipodal_requested} antipodal_eligible={antipodal_eligible} antipodal_enabled={} normal_lobes={} cell_bytes=176 (experimental; exact pairs, generic fallback)",
+        eprintln!("voxel normals: antipodal_requested={antipodal_requested} antipodal_eligible={antipodal_eligible} antipodal_enabled={} normal_lobes={} cell_bytes=128 (experimental; exact pairs, generic fallback)",
             integrator_options.antipodal_normals,if integrator_options.antipodal_normals {3}else{6});
         eprintln!("voxel global intervals: enabled={} stream_bytes_per_view={} maximum_pixel_slots={} (experimental; complete scan on overflow)",
             integrator_options.global_intervals,INTERVAL_STREAM_BYTES,INTERVAL_STREAM_PIXEL_SLOTS);
@@ -2123,7 +2123,8 @@ mod tests {
             if ty.name.as_deref()!=Some(name) {return None;}
             if let naga::TypeInner::Struct {span,..}=&ty.inner {Some(*span)}else{None}
         }).unwrap();
-        assert_eq!(span("VolumeCell"),176,"specialization must not alter GPU storage ABI");
+        assert_eq!(span("VolumeCell"),176,"logical optics cell");
+        assert_eq!(span("PackedVolumeCell"),128,"packed storage ABI");
         assert_eq!(span("VolumeSample"),if antipodal_normals {112}else{160},"private reconstruction result actually shrinks");
         if antipodal_normals {
             assert!(source.contains("cell.normals[k*2u]"));

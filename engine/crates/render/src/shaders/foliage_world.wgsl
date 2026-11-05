@@ -13,7 +13,7 @@ struct VolumeConfig {
 };
 @group(2) @binding(0) var<storage,read> volume_levels: array<VolumeLevel>;
 @group(2) @binding(1) var<storage,read> volume_indices: array<u32>;
-@group(2) @binding(2) var<storage,read> volume_cells: array<VolumeCell>;
+@group(2) @binding(2) var<storage,read> volume_cells: array<PackedVolumeCell>;
 @group(2) @binding(3) var<storage,read> volume_trees: array<VolumeTree>;
 @group(2) @binding(4) var<storage,read> world_grid: array<u32>;
 @group(2) @binding(5) var<storage,read_write> world_stats: array<atomic<u32>>;
