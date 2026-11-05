@@ -13,6 +13,8 @@ use warp_xr::{Eye, PlaySpace, Pose, Tracking, HUD_SIZE, rig::level_seat};
 const DT: f32 = 1.0 / 120.0;
 /// Where the pilot's head sits on the ship: +Z ahead, +Y up, metres.
 pub const SEAT: Vec3 = Vec3::new(0.0, 2.0, 0.5);
+/// The chase view: behind and above the ship, always level (comfort).
+pub const CHASE: Vec3 = Vec3::new(0.0, 3.2, -12.0);
 
 pub struct NativeGame {
     game: crate::Racer,
@@ -25,6 +27,9 @@ pub struct NativeGame {
     pub level: bool,
     /// `SEAT`, or `SPACERACER_SEAT=x,y,z` to try another on the headset.
     pub seat_offset: Vec3,
+    /// Chase view instead of the cockpit: right stick press toggles,
+    /// `SPACERACER_VIEW=chase` starts there.
+    pub chase: bool,
 }
 
 fn seat_offset() -> Vec3 {
@@ -42,7 +47,7 @@ impl NativeGame {
         game.blur_enabled = false;
         // Touch controllers read like a gamepad: triggers are throttle and brake.
         game.devices = vec![app::Device::Pad(0)];
-        Ok(Self { game, renderer: None, output: None, space: PlaySpace::new(0.0), accumulator: 0.0, pending: 0, level: false, seat_offset: seat_offset() })
+        Ok(Self { game, renderer: None, output: None, space: PlaySpace::new(0.0), accumulator: 0.0, pending: 0, level: false, seat_offset: seat_offset(), chase: std::env::var("SPACERACER_VIEW").is_ok_and(|v| v == "chase") })
     }
 
     /// The seat on the local pilot's ship, interpolated between ticks.
@@ -52,8 +57,9 @@ impl NativeGame {
         let rotation = Quat::from_mat3(&previous.basis).slerp(Quat::from_mat3(&current.basis), alpha);
         let ship = Affine3A::from_rotation_translation(rotation, previous.origin.lerp(current.origin, alpha));
         // The headset looks along -Z; the ship flies along +Z.
-        let seat = ship * Affine3A::from_rotation_translation(Quat::from_rotation_y(std::f32::consts::PI), self.seat_offset);
-        if self.level { level_seat(seat) } else { seat }
+        let offset = if self.chase { CHASE } else { self.seat_offset };
+        let seat = ship * Affine3A::from_rotation_translation(Quat::from_rotation_y(std::f32::consts::PI), offset);
+        if self.level || self.chase { level_seat(seat) } else { seat }
     }
 }
 
@@ -62,6 +68,7 @@ impl warp_xr::Game for NativeGame {
     fn quit(&self) -> bool { self.game.quit() }
     fn frame(&mut self, gpu: &render::Gpu, t: &Tracking, size: [u32; 2], dt: f32, targets: Option<&[&wgpu::Texture]>) -> Result<warp_xr::FrameOutput, String> {
         self.space.update(t);
+        if t.focused && t.controls.pressed.has(app::Buttons::RIGHT_STICK) { self.chase = !self.chase; }
         self.pending |= t.controls.pressed.0;
         if t.focused { self.accumulator = (self.accumulator + dt).min(DT * 4.0); } else { self.accumulator = 0.0; self.pending = 0; }
         while self.accumulator >= DT {
@@ -105,6 +112,7 @@ pub fn shot(args: &[String]) -> Result<(), String> {
     let gpu = render::Gpu::new()?;
     let mut game = NativeGame::new(crate::game_root(arg("--game-dir")))?;
     game.level = args.iter().any(|a| a == "--level");
+    game.chase = game.chase || args.iter().any(|a| a == "--chase");
     // Close the start menu and fly: full throttle on the right trigger.
     game.game.menu = None;
     game.game.race_started = true;
