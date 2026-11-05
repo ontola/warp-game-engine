@@ -16,7 +16,7 @@ struct State {wind:vec4<f32>,counts:vec4<u32>};
 @group(0) @binding(8) var<storage,read_write> sources:array<Source>;
 @group(0) @binding(9) var<storage,read_write> volumes:array<Volume>;
 @group(0) @binding(10) var<storage,read_write> choices:array<u32>;
-@group(0) @binding(11) var<storage,read> direct_roots:array<u32>;
+@group(0) @binding(11) var<storage,read> root_publication:array<vec4<u32>>; // branch count, consumer roles, direct representation+1, fault
 @group(0) @binding(12) var<storage,read_write> root_history:array<vec4<u32>>;
 // Frame-local shared ancestry, bounded by selected slots and cooked depth.
 struct PoseEntry {key:atomic<u32>,pad0:u32,pad1:u32,pad2:u32,rows:array<vec4<f32>,3>};
@@ -160,7 +160,7 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
   let m=root_poses[tree];
   let delta=multiply(m,original.inverse);
   var volume=bounds(original,delta,original.low.xyz,original.high.xyz);volume.inverse=inverse(m);
-  let direct=direct_roots[tree];var history=0u;
+  let publication=root_publication[tree];let direct=publication.z;let roles=publication.y&768u;var history=0u;
   if direct!=0u {
    let rep=representations[direct-1u];let branch=branches[rep.x];
    volume=bounds(branch.volume,m,branch.low.xyz,branch.high.xyz);volume.inverse=inverse(m);
@@ -170,13 +170,19 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
    volume.low.w=select(1.,0.,fallback[tree]!=0u);
    if fallback[tree]!=0u {history=0xffffffffu;}
   }
+  // 0 both, 1 hidden, 2 shadow-only, 3 camera-only. Root fallback and
+  // resident ancestors use the same consumer contract as branch records.
+  if volume.low.w!=1. {
+   volume.low.w=1.;
+   if roles==768u {volume.low.w=0.;}else if roles==512u {volume.low.w=2.;}else if roles==256u {volume.low.w=3.;}
+  }
   volume.high.w=appearance_seed(tree,root.info.z);
   volumes[i]=volume;
   let owner=original.identity.x;var source=sources[owner];source.rows=m;
-  let previous=root_history[tree];var epoch=previous.z;
-  if previous.w!=asset_pages[0].w || previous.x!=history || previous.y!=root.info.y {epoch=epoch^128u;}
+  let previous=root_history[tree];var epoch=previous.z&128u;
+  if previous.w!=asset_pages[0].w || previous.x!=history || previous.y!=root.info.y || (roles&~previous.z)!=0u {epoch=epoch^128u;}
   source.flags=(source.flags&~128u)|epoch;
-  root_history[tree]=vec4<u32>(history,root.info.y,epoch,asset_pages[0].w);
+  root_history[tree]=vec4<u32>(history,root.info.y,epoch|roles,asset_pages[0].w);
   // Preserve the authored crown sphere for canopy density. Selection bounds
   // include conservative support/wind margins and would darken the forest.
   // Voxel visibility uses the independently animated volume bounds above.

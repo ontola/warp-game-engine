@@ -249,7 +249,7 @@ fn publish(task:vec4<u32>) {
  if task.y==NONE {atomicStore(&fallback[task.x],2u);return;}
  let n=nodes[task.y];let resident=ready(n.links.z);
  if !resident {atomicStore(&fallback[task.x],4u);return;}
- if (n.links.w&2u)!=0u {direct[task.x]=n.links.z+1u;atomicAdd(&counters[7],1u);return;}
+ if (n.links.w&2u)!=0u {direct[task.x]=n.links.z+1u;demand[task.x].prefix=n.links.z+1u;demand[task.x].bucket=task.z;atomicAdd(&counters[7],1u);return;}
  let at=atomicAdd(&counters[0],1u);atomicAdd(&demand[task.x].count,1u);
  if at<view.counts.y {records[at]=vec4<u32>(task.x,task.y,n.links.z,trees[task.x].info.y);record_consumers[at]=task.z;}
  else {atomicStore(&fallback[task.x],1u);atomicAdd(&counters[3],1u);}

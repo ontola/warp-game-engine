@@ -1,3 +1,47 @@
+## 5 November: whole-root consumer publication and shadow-cache correctness
+
+Direct resident ancestors and emergency root fallbacks now carry camera/shadow
+roles through the existing GPU demand record into materialization. No new buffer,
+CPU selection, per-instance asset copy or opt-in mode. Camera-only roots do not
+cast shadows; shadow-only roots do not render into camera visibility. Adding a
+consumer invalidates root motion history without leaking role bits into source
+visibility flags. Shadow damage now includes shadow-only root volumes and clears
+old caster tiles when they become camera-only or hidden.
+
+Validation: 147 foliage tests (including ignored serial GPU oracles), six shadow
+cache tests, composed shader validation and DLSS-enabled release example build
+PASS. The new raw GPU test covers direct ancestors, explicitly forced fallback,
+consumer transitions and motion epochs. Existing missing-page ancestry test now
+requires camera-only publication. Shadow damage tests read actual cleared depth
+as well as dirty bits for shadow-only/camera-only/hidden transitions. Existing
+cached sun versus full redraw depth test also passes.
+
+Normal integration: two batches of three alternating before/after runs for each
+of high and low camera routes. RTX5070Ti/Vulkan, native1280x720 ONE VIEW, lowland
+with grass, 240 frames, medians of120 warm GPU samples per run. Covered GPU ms:
+
+| Camera/batch | Before | After |
+| --- | --- | --- |
+| High1 | 14.068 / 13.612 / 13.655 | 13.716 / 13.623 / 17.132 |
+| Low1 | 16.201 / 15.340 / 15.160 | 17.778 / 15.128 / 16.934 |
+| High2 | 13.760 / 13.794 / 15.692 | 13.860 / 13.807 / 14.785 |
+| Low2 | 15.754 / 15.285 / 16.124 | 15.747 / 16.877 / 15.747 |
+
+Selection timing varies substantially; the second batch does not reproduce a
+consistent slowdown. Keep both batches: this is NOT proof of a speedup or firm
+performance neutrality. Raster, terrain shading and materialization are broadly
+stable. Selection counts/error pressure are unchanged. Matched final images have
+non-HUD mean absolute error below0.000057/255 per channel; visual review still
+shows coarse rounded crowns, hard dark shadows and repetitive coarse grass.
+No visual-quality acceptance and no 4K/four-view/120FPS claim.
+
+Full per-pass run medians and counters: root-consumer-measurements.json.
+Local evidence: build/playtest-unified/root-consumers-{high,low}-{before,after}-*
+and root-consumers-repeat-* (logs, GPU/CPU JSON, PNG and JPEG comparisons).
+Tests: root-consumers-{tests,shadow-tests,shaders}.log. G3.2 upstream recovery
+and G3.3 independent consumer cuts remain OPEN; this closes their root publication
+prerequisite, not traversal or detail selection. No interactive playtest opened.
+
 ## 5 November: bounded paged voxel group data integrated
 
 Voxel pages publish deterministic 4x4x4 cell-group descriptors inside their

@@ -181,6 +181,10 @@ impl Damage {
         volume.bounds_min[3]=1.;gpu.queue.write_buffer(&volumes,0,bytemuck::bytes_of(&volume));
         let mask=run(Mat4::IDENTITY,1);assert!(dirty(&mask,48,32));assert!(!dirty(&mask,16,32));
         assert!(run(Mat4::IDENTITY,1).iter().all(|&w|w==0));
+        for (mode,changed) in [(2.,true),(3.,true),(3.,false),(2.,true),(1.,true)] {
+            volume.bounds_min[3]=mode;gpu.queue.write_buffer(&volumes,0,bytemuck::bytes_of(&volume));
+            assert_eq!(dirty(&run(Mat4::IDENTITY,1),48,32),changed,"shadow-only roots must invalidate old/new cached tiles; camera-only roots are not casters");
+        }
         source.sphere[3]=-1.;gpu.queue.write_buffer(&sources,0,bytemuck::bytes_of(&source));assert!(dirty(&run(Mat4::IDENTITY,1),32,32));
         assert!(run(Mat4::IDENTITY,2).iter().all(|&w|w==u32::MAX));
         assert!(run(Mat4::from_translation(glam::Vec3::X*0.1),2).iter().all(|&w|w==u32::MAX));

@@ -11,7 +11,13 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
-Latest integrated change (5 November): bounded voxel pages now publish shared
+Latest integrated change (5 November): whole-root resident ancestors and emergency
+fallbacks now preserve camera/shadow roles, root motion history and cached-shadow
+damage. 147 foliage tests plus six shadow-cache tests pass. Normal route images
+match; variable timing results are recorded below without a speedup claim.
+Independent camera/shadow cuts and upstream recovery remain open.
+
+Earlier integrated change (5 November): bounded voxel pages now publish shared
 4x4x4 occupied-cell group ranges with their resident payloads. Metadata shares
 page allocation, upload readiness and eviction; no per-instance cell copies.
 146 foliage tests pass, including raw GPU descriptor checks after reload.
@@ -170,9 +176,11 @@ Consumer-publication prerequisite (5 November): camera/shadow role bits now
 survive request deduplication, residency and materialization. Both consumers
 share one payload slot and pose; source/voxel draws exclude records belonging
 only to the other consumer. Newly added consumers invalidate motion history.
-145 foliage tests and the composed cull shader validation pass. G3.3 remains
-open: the hierarchy still chooses one shared finest cut, and direct whole-root
-fallbacks are not independently scoped. G3.2 upstream visibility is unchanged.
+147 foliage tests, six shadow-cache tests and composed shader validation pass.
+Direct whole-root ancestors and emergency fallbacks now preserve consumer roles
+as well. Shadow-only roots invalidate cached shadow tiles; newly added consumers
+reset root motion history. G3.3 remains open: the hierarchy still chooses one
+shared finest cut. G3.2 upstream visibility is unchanged.
 
 ## G4 — Bounded paging and lifecycle (NOT COMPLETE)
 
@@ -1106,3 +1114,47 @@ across hierarchy levels; upstream visibility must also prevent paying selection
 cost for hidden detail. G3.2/G3.3 and full G4 acceptance remain OPEN. No 4K/four-view
 or 8.33ms acceptance. Continue the full architecture, not more standalone culling
 threshold experiments.
+
+## 5 November: whole-root consumer publication and shadow-cache correctness
+
+Direct resident ancestors and emergency root fallbacks now carry camera/shadow
+roles through the existing GPU demand record into materialization. No new buffer,
+CPU selection, per-instance asset copy or opt-in mode. Camera-only roots do not
+cast shadows; shadow-only roots do not render into camera visibility. Adding a
+consumer invalidates root motion history without leaking role bits into source
+visibility flags. Shadow damage now includes shadow-only root volumes and clears
+old caster tiles when they become camera-only or hidden.
+
+Validation: 147 foliage tests (including ignored serial GPU oracles), six shadow
+cache tests, composed shader validation and DLSS-enabled release example build
+PASS. The new raw GPU test covers direct ancestors, explicitly forced fallback,
+consumer transitions and motion epochs. Existing missing-page ancestry test now
+requires camera-only publication. Shadow damage tests read actual cleared depth
+as well as dirty bits for shadow-only/camera-only/hidden transitions. Existing
+cached sun versus full redraw depth test also passes.
+
+Normal integration: two batches of three alternating before/after runs for each
+of high and low camera routes. RTX5070Ti/Vulkan, native1280x720 ONE VIEW, lowland
+with grass, 240 frames, medians of120 warm GPU samples per run. Covered GPU ms:
+
+| Camera/batch | Before | After |
+| --- | --- | --- |
+| High1 | 14.068 / 13.612 / 13.655 | 13.716 / 13.623 / 17.132 |
+| Low1 | 16.201 / 15.340 / 15.160 | 17.778 / 15.128 / 16.934 |
+| High2 | 13.760 / 13.794 / 15.692 | 13.860 / 13.807 / 14.785 |
+| Low2 | 15.754 / 15.285 / 16.124 | 15.747 / 16.877 / 15.747 |
+
+Selection timing varies substantially; the second batch does not reproduce a
+consistent slowdown. Keep both batches: this is NOT proof of a speedup or firm
+performance neutrality. Raster, terrain shading and materialization are broadly
+stable. Selection counts/error pressure are unchanged. Matched final images have
+non-HUD mean absolute error below0.000057/255 per channel; visual review still
+shows coarse rounded crowns, hard dark shadows and repetitive coarse grass.
+No visual-quality acceptance and no 4K/four-view/120FPS claim.
+
+Full per-pass run medians and counters: root-consumer-measurements.json.
+Local evidence: build/playtest-unified/root-consumers-{high,low}-{before,after}-*
+and root-consumers-repeat-* (logs, GPU/CPU JSON, PNG and JPEG comparisons).
+Tests: root-consumers-{tests,shadow-tests,shaders}.log. G3.2 upstream recovery
+and G3.3 independent consumer cuts remain OPEN; this closes their root publication
+prerequisite, not traversal or detail selection. No interactive playtest opened.
