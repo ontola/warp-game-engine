@@ -6,7 +6,9 @@
 //!   cargo run --release -p app --example terrain_fly -- --track   (a gravel road the land bends to)
 //!   cargo run --release -p app --example terrain_fly -- --style alpine --regions polder   (alpine west of x = 0, polder east)
 //!   cargo run --release -p app --example terrain_fly -- --profile low   (Quest-class settings)
-//!   cargo run --release -p app --example terrain_fly -- --town   (a zone with levelled building plots)
+//!   cargo run --release -p app --example terrain_fly -- --town   (a zone with buildings of 1 to 16 storeys on levelled plots)
+//!   cargo run --release -p app --example terrain_fly -- --town --no-buildings   (the bare plots)
+//!   cargo run --release -p app --example terrain_fly -- --town --at 40,120,1.7,0.6,0   (start at x,z, metres above ground, yaw, pitch)
 //!   cargo run --release -p app --example terrain_fly -- --shot fly.png
 //!   cargo run --release -p app --example terrain_fly -- --fullscreen --frames 600   # fps benchmark
 //!   ... --validate-world --grass   (normal CPU scene build, no GPU/window)
@@ -35,7 +37,7 @@ use render::foliage_runtime::RootPlacement;
 use render::atmosphere::{Atmosphere, AtmosphereCache, BakeQuality, SolarState};
 use render::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 use render::procedural_terrain::{self, ProceduralTerrain, Settings, Stats, TerrainView};
-use render::scene::{Material, SURFACE, TERRAIN};
+use render::scene::{GeometryCategory, Material, SURFACE, TERRAIN};
 use render::terrain_field::{self, Style};
 use render::world_constraints::{Constraints as WorldConstraints, Track, World as Constraints};
 use std::sync::Arc;
@@ -156,7 +158,7 @@ struct Fly {
     /// (render::regions), over about 1.5 km along a wandering border.
     regions: Option<usize>,
     /// --town: a "town" zone round the origin (render::zones) with a block
-    /// of building plots the land is levelled to, and no forest in it.
+    /// of buildings on plots the land is levelled to, and no forest in it.
     town: bool,
     constraints: Option<(u32, usize, Arc<Constraints>)>,
 }
@@ -536,6 +538,53 @@ impl Default for World {
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
 /// `centre` as `world` asks, and the shadow heightfield around it. Returns the centre.
+/// Metres from floor to floor.
+const STOREY: f32 = 3.2;
+
+/// How many storeys the building on plot `k` has: mostly low, some mid-rise,
+/// a few towers, so that they hide different amounts of what stands behind.
+fn storeys(k: usize, seed: u32) -> u32 {
+    let cell = render::placement::Cell::new(k as i32, 0, seed);
+    let (kind, pick) = (cell.hash(91), cell.hash(92));
+    let (low, high) = if kind < 0.45 { (1, 3) } else if kind < 0.8 { (4, 8) } else { (10, 16) };
+    low + (pick * (high - low + 1) as f32) as u32
+}
+
+/// A plain block with a floor slab and a ribbon of windows on each storey on
+/// every --town plot. The solid body is one box, so it hides what is behind it.
+fn buildings(scene: &mut Scene, world: &Constraints, seed: u32, style: &Style) {
+    let mut paint = |tint: [f32; 3], roughness: f32| {
+        let material = scene.add_material(Material { tint, layer: -1, roughness, flags: 0, scale: 1.0, metal: 0.0 });
+        scene.add_mesh(&render::primitives::cube(material).mesh())
+    };
+    let walls = [paint([0.55, 0.33, 0.24], 0.9), paint([0.62, 0.58, 0.5], 0.9), paint([0.34, 0.36, 0.4], 0.8)];
+    let (slab, glass, roof) = (paint([0.7, 0.7, 0.68], 0.8), paint([0.06, 0.09, 0.12], 0.15), paint([0.2, 0.2, 0.21], 0.95));
+    // Only the terrain category hides forest before it is selected (frame.rs,
+    // "foliage seed"), and these blocks are opaque and static like the land.
+    // --no-building-occlusion: the forest is selected as if they were not there.
+    let category = if std::env::args().any(|a| a == "--no-building-occlusion") { GeometryCategory::Other } else { GeometryCategory::Terrain };
+    let mut block = |mesh: usize, at: Vec2, yaw: f32, bottom: f32, size: Vec3| {
+        let centre = Vec3::new(at.x, bottom + size.y * 0.5, at.y);
+        scene.add_classified_instance(mesh, glam::Affine3A::from_scale_rotation_translation(size, glam::Quat::from_rotation_y(-yaw), centre), category);
+    };
+    for (k, plot) in world.shapes.chunks_exact(4).enumerate() {
+        let at = plot.iter().sum::<Vec2>() / 4.0;
+        let (along, across) = (plot[1] - plot[0], plot[3] - plot[0]);
+        let yaw = along.y.atan2(along.x);
+        let (wide, deep) = (along.length() - 6.0, across.length() - 5.0);
+        let floors = storeys(k, seed);
+        let ground = world.height(at.x, at.y, seed, style);
+        let top = ground + floors as f32 * STOREY;
+        block(walls[k % walls.len()], at, yaw, ground - 1.0, Vec3::new(wide, top - ground + 1.0, deep));
+        for floor in 0..floors {
+            let level = ground + floor as f32 * STOREY;
+            block(glass, at, yaw, level + 1.0, Vec3::new(wide + 0.1, 1.4, deep + 0.1));
+            block(slab, at, yaw, level + 2.9, Vec3::new(wide + 0.5, 0.3, deep + 0.5));
+        }
+        block(roof, at, yaw, top, Vec3::new(wide + 0.5, 0.5, deep + 0.5));
+    }
+}
+
 fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &render::biome::Environment, palette: &VegetationStyle, sun: (f32, f32), centre: Vec3, world: World, track: Option<Arc<Constraints>>) -> Built {
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/sideways/assets");
     let root = assets.join("textures");
@@ -570,6 +619,7 @@ fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &rend
     }
     // The --track road: the land bends to it, and its pixels draw gravel.
     if let Some(w) = track.clone() {
+        if !std::env::args().any(|a| a == "--no-buildings") { buildings(&mut scene, &w, seed, &style); }
         procedural_terrain::road_surface(&mut scene, material, &w);
         pool = procedural_terrain::constrain(&mut scene, w);
     }
@@ -753,6 +803,13 @@ fn main() -> Result<(), String> {
         tree_radius: arg("--tree-radius").map(|n| n.parse().map_err(|_| "--tree-radius M")).transpose()?.unwrap_or(World::default().tree_radius),
         branch_slots: arg("--branch-slots").map(|n|n.parse().map_err(|_|"--branch-slots N")).transpose()?.unwrap_or(if low {512}else{4096}), ..World::default() };
     let mut game = Fly::new(seed, style, world)?;
+    if let Some(at) = arg("--at") {
+        let at = at.split(',').map(|n| n.parse::<f32>().map_err(|_| "--at X,Z,ABOVE,YAW,PITCH")).collect::<Result<Vec<_>, _>>()?;
+        let &[x, z, above, yaw, pitch] = at.as_slice() else { return Err("--at X,Z,ABOVE,YAW,PITCH".into()); };
+        game.pos = Vec3::new(x, game.ground(x, z) + above, z);
+        game.prev = game.pos;
+        (game.yaw, game.pitch) = (yaw, pitch);
+    }
     // Build the exact normal world/catalog without acquiring an adapter or
     // opening a window. Useful while another game owns the GPU.
     if args.iter().any(|a|a=="--validate-world") {
@@ -822,7 +879,7 @@ fn main() -> Result<(), String> {
             if let Some(stats)=renderer.foliage_page_stats(){println!("GPU voxel page cache: {}",serde_json::to_string(&stats).map_err(|e|e.to_string())?);}
             if let Some(stats)=renderer.gpu_forest_diagnostics(&gpu)? {println!("GPU forest final: {}",serde_json::to_string(&stats).map_err(|e|e.to_string())?);
             let d=renderer.debug_tree_occlusion(&gpu,0,None)?;
-            println!("GPU tree recovery final: {}",serde_json::json!({"history_first":d.history_first,"phase1_clusters":d.phase1_clusters,"phase2_clusters":d.phase2_clusters,"deferred_clusters":d.deferred_clusters,"deferred_capacity":d.deferred_capacity,"deferred_overflow":d.deferred_overflow,"clusters_tested":d.clusters_tested,"clusters_rejected":d.clusters_rejected}));
+            println!("GPU tree recovery final: {}",serde_json::json!({"history_first":d.history_first,"phase1_clusters":d.phase1_clusters,"phase2_clusters":d.phase2_clusters,"deferred_clusters":d.deferred_clusters,"deferred_capacity":d.deferred_capacity,"deferred_overflow":d.deferred_overflow,"instances_tested":d.instances_tested,"instances_rejected":d.instances_rejected,"clusters_tested":d.clusters_tested,"clusters_rejected":d.clusters_rejected}));
             }
         }
         if let Some(path) = arg("--fly-times") {
