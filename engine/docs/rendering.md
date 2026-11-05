@@ -78,6 +78,15 @@ and the measurements and dead ends are in the [development log](log/README.md).
 
 ### Sun shadows
 
+The optional static/dynamic split (`KERN_STATIC_SUN_CACHE=1`) includes both
+GPU-published source branches and voxel casters. Reserved branch slots stay
+in the dynamic candidate list even while their CPU placeholders are empty;
+GPU culling evaluates their current contents. Voxel depth is drawn after the
+static-depth seed and dynamic source pass. The split is not a world-page
+cache: forest culling and voxel-splat generation still run on redraws. Raw
+split/full depth is tested for still frames, wind and population changes.
+
+
 Games can set `Scene::stage_sun = true` for a camera-independent sun-shadow
 cache of the generated level. It renders source geometry/alpha once before the
 first view, fitting the complete static scene (not only vegetation), and shares

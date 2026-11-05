@@ -73,6 +73,9 @@ Owned by the foliage work; its working checklist is
 - Physical units (lux, EV100, nits), procedural atmosphere, height fog with a
   finite-distance aerosol layer, irradiance volumes for interiors, opt-in
   [volumetric light](volumetric-light.md).
+- **Opt-in static/dynamic sun split:** retains GPU source and voxel tree
+  casters; exact split/full depth oracle covers still, wind, removal and
+  restoration. Does not yet skip forest cull/splat work on unchanged pages.
 - Sun shadows: dynamic near maps (180 m reach), a camera-independent cached
   sun map for stage scenes (`Scene::stage_sun`) and a camera-anchored far map
   for streamed GPU-forest worlds, plus the forest's shadow tile cache.
