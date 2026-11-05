@@ -94,3 +94,22 @@ amplified difference between the shot with and without bare plots shows all
   and 7).
 - Zones are not regions: a zone can't change the terrain style. Paint a
   region for that.
+
+## Buildings and culling
+
+`terrain_fly --town` puts a building of 1 to 16 storeys on every plot
+(`--no-buildings` for bare plots). They use the `Structures` geometry
+category: static opaque structures that, like terrain, hide the GPU forest
+behind them before it is selected and drawn (frame.rs, "foliage seed").
+Before this category only terrain could do that, so forest behind a building
+was hidden by depth but still drawn. `--no-building-occlusion` puts them back
+in the `Other` category to compare.
+
+On an Apple M5 Pro at 1280x720 (headless), with the workaround that this
+category replaces, voxel splats dropped by 73 to 82 % where a building fills
+the view, about 2 % where it blocks part of it, and not at all looking over
+the skyline. Images differ only by speckle along the visible tree line.
+
+Not yet verified: the separate Hi-Z test for mesh trees behind buildings
+(these views draw almost only voxel trees), and what the roughly 240k splats
+still drawn behind a full wall are.

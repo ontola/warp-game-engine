@@ -650,7 +650,7 @@ pub struct VisibleClusterDiagnostic {
     pub output_size: [u32; 2],
     pub camera: Camera,
     pub pairs: Vec<[u32; 2]>,
-    pub categories: Option<[crate::geometry_diagnostics::Counts;5]>,
+    pub categories: Option<[crate::geometry_diagnostics::Counts;6]>,
     /// Actual submitted per-volume [enabled, maximum mip, reserved, reserved]
     /// selection, read from this view's GPU buffer. Empty without foliage bindings.
     pub foliage_selection: Vec<[u32; 4]>,
@@ -4048,9 +4048,11 @@ impl Renderer {
                 let t=&seed_targets[vi];
                 let projection=camera_projections.get(vi).copied().unwrap_or_else(||Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near));
                 let mut uniform=view_uniform(part_animation_views[vi].view_projection,v.cam.pos,projection.y_axis.y*0.5*v.h as f32,[light.lod_pixels,v.cam.near,0.,8192.],[size.0 as f32,size.1 as f32,1./size.0 as f32,1./size.1 as f32],cut);
-                // Only the terrain category may occlude upstream. Missing seed
-                // clusters at the bounded capacity fail open (less occlusion).
-                uniform.fog_cull[3]=((31u32 & !(1u32<<1))|geometry_diagnostic.excluded_mask) as f32;
+                // Only terrain and static structures may occlude upstream.
+                // Missing seed clusters at the bounded capacity fail open
+                // (less occlusion).
+                let occluders=crate::scene::GeometryCategory::Terrain.exclusion_bit()|crate::scene::GeometryCategory::Structures.exclusion_bit();
+                uniform.fog_cull[3]=((63u32 & !occluders)|geometry_diagnostic.excluded_mask) as f32;
                 gpu.queue.write_buffer(&t.targets.uniform,0,bytemuck::bytes_of(&uniform));
                 let start=names.len();
                 self.cull_and_raster(&mut enc,gpu,&t.targets,Some(&t.color),&t.depth,&mut ts,&mut names,"foliage seed terrain cull",RasterPass::Color);

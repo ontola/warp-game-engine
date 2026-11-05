@@ -1,3 +1,14 @@
+## 5 November: buildings in terrain_fly and the Structures category
+
+`GeometryCategory::Structures` (5): static opaque buildings and walls that may
+hide the GPU forest before selection, like terrain (frame.rs foliage seed mask,
+cull.wgsl category decode). Before, forest behind buildings was depth-hidden but
+still drawn. `terrain_fly --town` builds 1-16 storey blocks on the plots
+(`--no-buildings`, `--no-building-occlusion`, `--at`). M5 Pro: -73..82 % voxel
+splats behind a building filling the view. Open: mesh-tree Hi-Z behind
+buildings untested; ~240k splats remain behind a full wall. Doc:
+docs/terrain-zones.md.
+
 ## 5 November: zones and footprints (roadmap step 2)
 
 `world_constraints::Footprint`: flat plots of any outline (pads generalised;

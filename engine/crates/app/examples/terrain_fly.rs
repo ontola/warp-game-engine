@@ -559,10 +559,10 @@ fn buildings(scene: &mut Scene, world: &Constraints, seed: u32, style: &Style) {
     };
     let walls = [paint([0.55, 0.33, 0.24], 0.9), paint([0.62, 0.58, 0.5], 0.9), paint([0.34, 0.36, 0.4], 0.8)];
     let (slab, glass, roof) = (paint([0.7, 0.7, 0.68], 0.8), paint([0.06, 0.09, 0.12], 0.15), paint([0.2, 0.2, 0.21], 0.95));
-    // Only the terrain category hides forest before it is selected (frame.rs,
-    // "foliage seed"), and these blocks are opaque and static like the land.
+    // Static opaque structures hide forest before it is selected, like the
+    // land (frame.rs, "foliage seed").
     // --no-building-occlusion: the forest is selected as if they were not there.
-    let category = if std::env::args().any(|a| a == "--no-building-occlusion") { GeometryCategory::Other } else { GeometryCategory::Terrain };
+    let category = if std::env::args().any(|a| a == "--no-building-occlusion") { GeometryCategory::Other } else { GeometryCategory::Structures };
     let mut block = |mesh: usize, at: Vec2, yaw: f32, bottom: f32, size: Vec3| {
         let centre = Vec3::new(at.x, bottom + size.y * 0.5, at.y);
         scene.add_classified_instance(mesh, glam::Affine3A::from_scale_rotation_translation(size, glam::Quat::from_rotation_y(-yaw), centre), category);
@@ -739,7 +739,7 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
     let offset=if world.trees {lands.species().len()} else {0};
     let mut roots=woody;
     let started=std::time::Instant::now();
-    let cells=grass_cells(seed,&land,c,offset,GRASS_RADIUS);
+    let cells=grass_cells(seed,&land,|x,z|land.style_at(x,z).grass,c,offset,GRASS_RADIUS);
     eprintln!("grass world cells: count={} generation_cpu_ms={:.2} radius_m={GRASS_RADIUS}",cells.len(),started.elapsed().as_secs_f64()*1000.);
     roots.extend(cells);roots
 }
@@ -754,7 +754,7 @@ fn handover_band(world: World) -> (f32, f32) {
 
 /// Stable world cells share two cooked assemblies. Terrain sampling happens
 /// only on world streaming; no CPU visibility or near-source shortlist.
-fn grass_cells(seed:u32,land:&render::placement::TerrainWorld,centre:Vec2,variant_offset:usize,radius:f32)->Vec<WorldRoot> {
+fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f32)->f32,centre:Vec2,variant_offset:usize,radius:f32)->Vec<WorldRoot> {
     use render::placement::World as _;
     let cell=recipe_forest::MEADOW_CELL_SIZE;
     let lo=((centre-Vec2::splat(radius))/cell).floor().as_ivec2();
@@ -764,7 +764,7 @@ fn grass_cells(seed:u32,land:&render::placement::TerrainWorld,centre:Vec2,varian
         let x=(i as f32+0.5)*cell;let z=(j as f32+0.5)*cell;
         if Vec2::new(x,z).distance_squared(centre)>radius*radius {continue;}
         let s=land.ground(x,z);
-        let sparse=0.5+0.8*terrain_field::noised(Vec2::new(x,z)/40.,seed.wrapping_add(31)).x>land.style_at(x,z).grass;
+        let sparse=0.5+0.8*terrain_field::noised(Vec2::new(x,z)/40.,seed.wrapping_add(31)).x>grass(x,z);
         if sparse || s.rock>0.5 || s.scree>0.8 || s.water>0.02 || s.snow>0.3 || land.clearance(x,z)<cell {continue;}
         let dx=land.ground(x+0.5,z).pos.y-land.ground(x-0.5,z).pos.y;
         let dz=land.ground(x,z+0.5).pos.y-land.ground(x,z-0.5).pos.y;
@@ -937,8 +937,8 @@ mod vegetation_tests {
     #[test]
     fn streamed_grass_cells_keep_ids_terrain_orientation_and_catalog_offset() {
         let style=Style {grass:1.,..Style::default()};
-        let a=grass_cells(1,&style,&Slope,Vec2::ZERO,7,12.);
-        let b=grass_cells(1,&style,&Slope,Vec2::new(4.,0.),7,12.);
+        let a=grass_cells(1,&Slope,|_,_|style.grass,Vec2::ZERO,7,12.);
+        let b=grass_cells(1,&Slope,|_,_|style.grass,Vec2::new(4.,0.),7,12.);
         assert!(!a.is_empty());let mut overlap=0;
         for root in &a {
             let p=root.placement;
