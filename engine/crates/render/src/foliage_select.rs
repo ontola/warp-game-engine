@@ -597,19 +597,20 @@ mod tests {
    n(6,8,5,0,1.,0.005),n(NONE,7,6,4,0.,0.),n(NONE,8,7,4,0.,0.)];
   let selector=Selector::new(&gpu,&nodes,&trees,4,4).unwrap();let empty=depth(&gpu,0.);
   let projection=crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]};
-  let draw=|pixel_error,slots| {
+  let draw=|pixel_error,slots,budget| {
    let mut enc=gpu.device.create_command_encoder(&Default::default());
-   selector.union_consumers_budget(&gpu,&mut enc,&[ConsumerView::camera(projection)],pixel_error,slots,[5;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
+   selector.union_consumers_budget(&gpu,&mut enc,&[ConsumerView::camera(projection)],pixel_error,slots,[budget;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
    let count=read(&gpu,&selector.counters)[0]as usize;let state=read(&gpu,&selector.refiner.state);assert_eq!(state[15],0);assert!(state[0]<=slots && state[1]<=5);
    let mut cut=read(&gpu,&selector.records).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();cut
   };
-  assert_eq!(draw(1.,2),[2,5],"two pixel-acceptable voxel groups fit; four source leaves do not");
-  assert_eq!(draw(0.01,4),[3,4,6,7],"closer/error-stricter consumers still require exact sources");
+  assert_eq!(draw(1.,2,5),[2,5],"two pixel-acceptable voxel groups fit; four source leaves do not");
+  assert_eq!(draw(0.01,4,5),[3,4,6,7],"closer/error-stricter consumers still require exact sources");
+  assert!(draw(1.,4,1).is_empty(),"splat shortage must not replace acceptable far voxel groups with full source meshes");
   selector.publish_asset_pages(&gpu,&[(2,false,2)]).unwrap();
-  assert!(draw(1.,2).is_empty(),"missing mixed endpoint must retain complete ancestor");
+  assert!(draw(1.,2,5).is_empty(),"missing mixed endpoint must retain complete ancestor");
   assert_eq!(read(&gpu,&selector.direct),[1]);
   selector.publish_asset_pages(&gpu,&[(2,true,3),(1,false,2)]).unwrap();
-  assert_eq!(draw(1.,2),[2,5],"unused expensive intermediate page is unnecessary");
+  assert_eq!(draw(1.,2,5),[2,5],"unused expensive intermediate page is unnecessary");
  }
  #[test]
  #[ignore="exclusive GPU collective admission retries source frontier"]

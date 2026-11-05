@@ -179,10 +179,24 @@ fn endpoint_frontier(tree:u32,node:u32,old:vec4<u32>,used:vec3<u32>,request_page
  if !resident {return vec4<u32>(0u);}
  cost.w=select(2u,1u,source_only);return cost;
 }
+// A splat shortage alone must not turn distant, pixel-acceptable voxel
+// detail into full source meshes. Apply this to initial AND parked proposals.
+fn endpoint_needs_source(tree:u32,node:u32)->bool {
+ let t=trees[tree];let end=nodes[node].links.y;var at=nodes[node].links.x;
+ loop {
+  if at==NONE || at>=end {break;}
+  let n=nodes[at];
+  if (mask(sphere(t,n))&256u)==0u {at=n.links.y;continue;}
+  if (n.links.w&4u)!=0u && n.links.x==NONE {return true;}
+  if endpoint_acceptable(tree,at) {at=n.links.y;} else {at=n.links.x;}
+ }
+ return false;
+}
 fn complete_endpoint(tree:u32,node:u32,old:vec4<u32>,used:vec3<u32>,request_pages:bool)->vec4<u32> {
  let mixed=endpoint_frontier(tree,node,old,used,request_pages,false);
  if mixed.w!=0u {return mixed;}
- return endpoint_frontier(tree,node,old,used,request_pages,true);
+ if endpoint_needs_source(tree,node) {return endpoint_frontier(tree,node,old,used,request_pages,true);}
+ return vec4<u32>(0u);
 }
 @compute @workgroup_size(64) fn propose(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
