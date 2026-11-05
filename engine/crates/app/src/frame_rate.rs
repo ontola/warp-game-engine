@@ -4,7 +4,9 @@
 //! 252 "fps" while the eye sees 10. This averages the frame *time* and keeps
 //! the worst frame of the last second, so a hitch shows as a hitch.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct FrameRate {

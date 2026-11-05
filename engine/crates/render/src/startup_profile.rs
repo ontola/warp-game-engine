@@ -1,6 +1,6 @@
 //! Opt-in CPU wall-time attribution for renderer construction. No device poll
 //! or GPU wait is added: uploads measure the host call, not GPU completion.
-use std::time::Instant;
+use web_time::Instant;
 use std::fmt::Write;
 pub use crate::pipeline_cache::Profile as PipelineCacheProfile;
 

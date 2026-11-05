@@ -87,8 +87,10 @@ fn cluster_traverse(id:u32,inst:Instance,li:u32,threshold:f32,wind:f32)->bool {
     }
     workgroupBarrier();
     loop {
-        if cluster_cursor>=cluster_end {break;}
-        let node=cluster_cursor;
+        // Uniform loads: WGSL's uniformity rules (enforced by browsers) do not
+        // accept a barrier under a branch on a plain workgroup read.
+        let node=workgroupUniformLoad(&cluster_cursor);
+        if node>=workgroupUniformLoad(&cluster_end) {break;}
         let count=cluster_tree[node+18u];
         if li==0u {
             atomicAdd(&counter[33],1u);

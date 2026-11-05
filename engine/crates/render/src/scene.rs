@@ -721,13 +721,13 @@ impl Scene {
             let stem = f.split("_albedo.").next().unwrap_or(f);
             ["jpg", "png"].iter().map(|e| path.with_file_name(format!("{stem}_normal.{e}"))).find(|p| p.exists())
         });
-        let (img, normal) = std::thread::scope(|s| {
-            let n = s.spawn(|| normal_path.and_then(|p| image::open(p).ok()).map(|i| {
+        let (img, normal) = crate::par::scope(|s| {
+            let n = s.spawn(|| normal_path.and_then(|p| crate::files::open_image(p).ok()).map(|i| {
                 let mut normal = i.to_rgba8();
                 encoding.decode(&mut normal);
                 normal
             }));
-            (image::open(path), n.join().unwrap())
+            (crate::files::open_image(path), n.join().unwrap())
         });
         let img = img.map_err(|e| format!("{}: {e}", path.display()))?.to_rgba8();
         self.textures.push(TextureSource { name: path.display().to_string(), rgba: img, normal });
@@ -796,7 +796,7 @@ impl Scene {
     }
 
     pub fn load_sky(&mut self, path: &std::path::Path) -> Result<(), String> {
-        let img = image::open(path).map_err(|e| format!("{}: {e}", path.display()))?.to_rgba32f();
+        let img = crate::files::open_image(path).map_err(|e| format!("{}: {e}", path.display()))?.to_rgba32f();
         let (w, h) = img.dimensions();
         let px = img.pixels().map(|p| [p[0], p[1], p[2], 1.0]).collect();
         self.sky = Some((w, h, px));

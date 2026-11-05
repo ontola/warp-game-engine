@@ -4,7 +4,8 @@
 use crate::{Controls, Game, Headless};
 use render::Gpu;
 use serde::Serialize;
-use std::{collections::BTreeMap, time::Instant};
+use std::collections::BTreeMap;
+use web_time::Instant;
 
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct DrawTimings {

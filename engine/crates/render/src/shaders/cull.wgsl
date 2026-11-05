@@ -366,8 +366,9 @@ fn cull_member(id: u32, inst: Instance, li: u32) {
             if tree_occluded(inst.sphere.xyz,radius) {keep=false;atomicAdd(&counter[16],1u);}
         }
     }
-    workgroupBarrier();
-    if !keep {
+    // A uniform load (a barrier as well): browsers reject barriers further
+    // down under a branch on a plain workgroup read.
+    if !workgroupUniformLoad(&keep) {
         return;
     }
     let camera_groups=(spatial.header.w&1u)!=0u && view.params.z<0.5 && view.extra.y<1.5;
@@ -588,8 +589,7 @@ fn select_spatial_parent(parent_id:u32,li:u32,sun:bool) {
         else {spatial_parent_keep=spatial_group_visible(parent.sphere);}
         if !spatial_parent_keep {atomicAdd(&counter[21],1u);}
     }
-    workgroupBarrier();
-    if !spatial_parent_keep {return;}
+    if !workgroupUniformLoad(&spatial_parent_keep) {return;}
     for(var leaf_id=0u;leaf_id<parent.span.y;leaf_id++) {
         let leaf=spatial.groups[parent.span.x+leaf_id];
         if li==0u {

@@ -45,10 +45,10 @@ pub struct Cooked {
 /// configs and engine cook code loads from disk instead.
 pub fn cook_variants(variants: &[(WoodyRecipe, u64)], cache: Option<&Path>) -> Result<Vec<Cooked>, String> {
     let (config, proxy) = (aggregate_config(), proxy_config());
-    std::thread::scope(|scope| {
+    crate::par::scope(|scope| {
         let jobs: Vec<_> = variants.iter().map(|(recipe, seed)| scope.spawn(move || -> Result<Cooked, String> {
             let seed = *seed;
-            let started = std::time::Instant::now();
+            let started = web_time::Instant::now();
             let cook = || {
                 let assembly = plant_recipe::build(recipe, BuildOptions::new(seed), plant_recipe::recipe_limits())?;
                 let mut plant = CookedPlant::cook_aggregate(&assembly, config)?;
@@ -78,7 +78,7 @@ pub fn cook_meadow_variants(variants:&[(u64,f32)],cache:Option<&Path>)->Result<V
     let proxy=Config {reference_cell_size:0.025,..config};
     let budget=MeadowBladeBudget::Blades120;
     variants.iter().map(|&(seed,season)| {
-        let started=std::time::Instant::now();
+        let started=web_time::Instant::now();
         let mut parameters=Parameters::meadow_patch(seed);parameters.season=season;
         let cook=|| {
             let assembly=foliage_assembly::generate_meadow_patch_budget(parameters,budget,Limits::meadow_patch())?;
@@ -99,7 +99,7 @@ pub fn cook_meadow_cells(variants:&[(u64,f32)],cache:Option<&Path>)->Result<Vec<
     use crate::foliage_assembly::{self,Parameters,Limits,MeadowBladeBudget};
     let config=Config {reference_cell_size:0.04,triangle_refinements:true,..Config::default()};
     variants.iter().map(|&(seed,season)| {
-        let started=std::time::Instant::now();
+        let started=web_time::Instant::now();
         let mut parameters=Parameters::meadow_patch(seed);parameters.season=season;
         let cook=|| {
             let source=foliage_assembly::generate_meadow_patch_budget(parameters,MeadowBladeBudget::Blades120,Limits::meadow_patch())?;
@@ -125,7 +125,7 @@ pub const CARD_WOOD_ERROR_M: f32 = 0.03;
 /// distance's mesh, between the full trees and the proxies. With `cache`,
 /// loaded like the plants.
 pub fn cook_cards(variants: &[(WoodyRecipe, u64)], cache: Option<&Path>) -> Result<Vec<PlantCards>, String> {
-    std::thread::scope(|scope| {
+    crate::par::scope(|scope| {
         let jobs: Vec<_> = variants.iter().map(|(recipe, seed)| scope.spawn(move || -> Result<PlantCards, String> {
             let cook = || {
                 let assembly = plant_recipe::build(recipe, BuildOptions::new(*seed), plant_recipe::recipe_limits())?;

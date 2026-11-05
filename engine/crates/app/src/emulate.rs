@@ -14,7 +14,7 @@
 //! [`chip_name`] lets a game keep its caches apart.
 use render::Gpu;
 use std::sync::Mutex;
-use std::time::Instant;
+use web_time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Preset {

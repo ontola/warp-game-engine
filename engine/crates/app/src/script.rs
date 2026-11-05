@@ -268,9 +268,9 @@ fn run_steps(game: &mut dyn Game, mut headless: Option<&mut Headless>, script: &
             let mut cols: [Vec<f64>; 6] = Default::default();
             let mut vertices = (0, 0);
             for _ in 0..n {
-                let started = std::time::Instant::now();
+                let started = web_time::Instant::now();
                 let t = headless.render_at(game, 1.0)?;
-                let waiting = std::time::Instant::now();
+                let waiting = web_time::Instant::now();
                 headless.gpu.wait();
                 let wait = waiting.elapsed().as_secs_f64() * 1000.0;
                 let wall = started.elapsed().as_secs_f64() * 1000.0;

@@ -8,7 +8,8 @@
 //! Because vsync masks headroom, the controller steps down when frame time
 //! exceeds the budget (with hysteresis and median filtering across a window),
 //! and cautiously probes steps back up after extended calm periods.
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 use render::debug_settings::DebugRenderOptions;
 use render::Lighting;
 

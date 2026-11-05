@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn a_spruce_becomes_a_few_thousand_cards() {
         let assembly = plant_recipe::build(&SPRUCE, BuildOptions::new(1), plant_recipe::recipe_limits()).unwrap();
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         let cards = PlantCards::cook(&assembly, 0.03).unwrap();
         let roots: usize = cards.mesh.clusters.iter().filter(|c| !c.parent_error.is_finite()).map(|c| c.tri_count as usize).sum();
         eprintln!("PLANTCARDS {} quads, {} wood tris -> {} leaf tris, {} levels, coarsest {} tris, {:.1} s",

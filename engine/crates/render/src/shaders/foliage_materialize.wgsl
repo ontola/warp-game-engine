@@ -116,7 +116,7 @@ fn evaluate_poses(@builtin(global_invocation_id) id:vec3<u32>) {
 // Appearance identity must survive transient branch allocation and page IO.
 // A finite exactly representable float carries 24 hash bits in unused high.w.
 fn appearance_seed(root:u32,branch:u32)->f32 {
- var h=root*0x9e3779b9u ^ roots[root].info.y*0x85ebca6bu ^ branch*0xc2b2ae35u;
+ var h=(root*0x9e3779b9u) ^ (roots[root].info.y*0x85ebca6bu) ^ (branch*0xc2b2ae35u);
  h=(h^(h>>16u))*0x7feb352du;return f32((h^(h>>15u))&0xffffffu)+1.;
 }
 fn bounds(v:Volume,m:array<vec4<f32>,3>,lo:vec3<f32>,hi:vec3<f32>)->Volume {

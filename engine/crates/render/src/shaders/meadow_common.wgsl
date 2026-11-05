@@ -148,7 +148,7 @@ fn meadow_value_noise(p:vec2<f32>)->f32 {
 }
 fn meadow_anchor_hash(anchor:vec3<f32>,salt:u32)->u32 {
     let q=bitcast<vec2<u32>>(vec2<i32>(round(anchor.xz*1024.0)));
-    var x=q.x*0x9e3779b1u^q.y*0x85ebca77u^salt;
+    var x=(q.x*0x9e3779b1u)^(q.y*0x85ebca77u)^salt;
     x^=x>>16u;x*=0x7feb352du;x^=x>>15u;x*=0x846ca68bu;x^=x>>16u;
     return x;
 }

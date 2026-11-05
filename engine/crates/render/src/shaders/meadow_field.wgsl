@@ -2,7 +2,7 @@
 // Pure world-space functions: no camera, time, illumination or texture resources.
 
 fn meadow_hash(cell:vec2<i32>,salt:u32,seed:u32)->u32 {
-    var x=bitcast<u32>(cell.x)*0x9e3779b1u ^ bitcast<u32>(cell.y)*0x85ebca77u ^ salt*0xc2b2ae3du ^ seed;
+    var x=(bitcast<u32>(cell.x)*0x9e3779b1u) ^ (bitcast<u32>(cell.y)*0x85ebca77u) ^ (salt*0xc2b2ae3du) ^ seed;
     x^=x>>16u;x*=0x7feb352du;x^=x>>15u;x*=0x846ca68bu;return x^(x>>16u);
 }
 fn meadow_random(cell:vec2<i32>,salt:u32,seed:u32)->f32 {

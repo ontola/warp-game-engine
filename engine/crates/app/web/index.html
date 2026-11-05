@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Terrain fly</title>
+<style>html,body{margin:0;height:100%;background:#000;color:#ddd;font:12px monospace}canvas#warp{width:100vw;height:100vh;display:block}#warp-log{position:fixed;left:8px;bottom:8px;white-space:pre-wrap;max-width:90vw;pointer-events:none;text-shadow:0 0 3px #000}</style>
+</head><body><canvas id="warp"></canvas><div id="warp-log"></div>
+<script type="module">
+import init from './pkg/terrain_fly.js';
+const log = document.getElementById('warp-log');
+if (!navigator.gpu) log.textContent = 'This browser has no WebGPU.\n';
+init().catch(e => { log.textContent += 'start failed: ' + e + '\n'; console.error(e); });
+</script></body></html>

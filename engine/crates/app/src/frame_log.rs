@@ -1,5 +1,6 @@
 //! Opt-in buffered frame diagnostics (`WARP_FRAME_LOG=path`).
-use std::{io::Write,sync::{LazyLock,Mutex},time::Instant};
+use std::{io::Write,sync::{LazyLock,Mutex}};
+use web_time::Instant;
 struct Log { out:std::io::BufWriter<std::fs::File>, start:Instant, flushed:Instant }
 static LOG:LazyLock<Option<Mutex<Log>>>=LazyLock::new(||{
     let path=std::env::var_os("WARP_FRAME_LOG")?;

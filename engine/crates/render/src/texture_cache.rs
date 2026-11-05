@@ -4,7 +4,9 @@ use crate::startup_profile::{TextureCacheProfile, elapsed};
 use image::RgbaImage;
 use sha2::{Digest, Sha256};
 use std::{fs::{self, File, OpenOptions}, io::{self, Read, Write, BufReader, BufWriter},
-    path::{Path, PathBuf}, sync::{OnceLock, atomic::{AtomicU64,Ordering}}, time::{Instant,SystemTime,UNIX_EPOCH}};
+    path::{Path, PathBuf}, sync::{OnceLock, atomic::{AtomicU64,Ordering}}};
+use web_time::{SystemTime, UNIX_EPOCH};
+use web_time::Instant;
 
 const MAGIC: &[u8;8]=b"WRPMIP01";
 const HEADER_BYTES:u64=80;

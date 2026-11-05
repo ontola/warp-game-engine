@@ -32,6 +32,8 @@ pub mod emulate;
 mod frame_log;
 pub mod profile;
 pub mod frame_rate;
+#[cfg(target_arch = "wasm32")]
+pub mod web;
 pub use frame_rate::FrameRate;
 
 pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning};
@@ -40,7 +42,7 @@ use render::hud::{HudDrawList, HudRenderer};
 use render::present::Presenter;
 use render::{Camera, Gpu, Lighting, Renderer, Scene, ViewRect};
 use std::sync::Arc;
-use std::time::Instant;
+use web_time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, DeviceId, ElementState, Ime, MouseButton, WindowEvent};
@@ -83,7 +85,7 @@ impl<'a> Frame<'a> {
 
     /// Upload a scene: creates the renderer, or replaces it.
     pub fn set_scene(&mut self, scene: &Scene, light: &Lighting) {
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         *self.renderer = Some(Renderer::new(self.gpu, scene, light));
         let ms = t.elapsed().as_millis();
         if ms >= 100 { println!("{} renderer: scene built in {ms} ms", manners::stamp()); }

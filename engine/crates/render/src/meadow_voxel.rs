@@ -18,7 +18,7 @@ use crate::{
     scene::{Material, THIN_FOLIAGE, TWO_SIDED},
 };
 use glam::Vec3;
-use std::time::Instant;
+use web_time::Instant;
 
 #[derive(Clone, Copy, Debug)]
 pub struct MeadowVoxelConfig {

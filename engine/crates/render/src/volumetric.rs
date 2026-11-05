@@ -581,7 +581,7 @@ mod tests {
                 gpu.queue.submit([enc.finish()]); gpu.wait(); };
             run();
             let n = 3;
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             for _ in 0..n { run(); }
             println!("{w}x{h} internal, {count} lights: {:.2} ms per view (mean of {n})", t.elapsed().as_secs_f64() * 1000.0 / n as f64);
         }}

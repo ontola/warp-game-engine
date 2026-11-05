@@ -2,7 +2,7 @@
 //! textures and is read back, so the same code runs on a desktop GPU, in CI
 //! and on a software rasteriser (lavapipe) in a container.
 
-use std::time::Instant;
+use web_time::Instant;
 
 #[derive(Clone)]
 pub struct Gpu {
@@ -88,8 +88,23 @@ impl Gpu {
     }
 
     fn request(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) -> Result<(Gpu, wgpu::Adapter), String> {
+        pollster::block_on(Self::request_async(instance, surface))
+    }
+
+    /// [`Self::for_surface_with_adapter`] without blocking: a browser
+    /// answers adapter and device requests on its own event loop.
+    pub async fn for_surface_async(instance: &wgpu::Instance, surface: &wgpu::Surface<'_>, w: u32, h: u32) -> Result<(Gpu, wgpu::SurfaceConfiguration, wgpu::Adapter), String> {
+        let (gpu, adapter) = Self::request_async(instance, Some(surface)).await?;
+        let mut config = surface.get_default_config(&adapter, w.max(1), h.max(1)).ok_or("adapter cannot present to this canvas")?;
+        // A WebGPU canvas has no sRGB format, only an sRGB view of one.
+        config.view_formats = vec![config.format.add_srgb_suffix()];
+        config.desired_maximum_frame_latency = 2;
+        Ok((gpu, config, adapter))
+    }
+
+    async fn request_async(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) -> Result<(Gpu, wgpu::Adapter), String> {
         let wanted = std::env::var("KERN_ADAPTER").ok();
-        let adapter = pollster::block_on(async {
+        let adapter = (async {
             if let Some(w) = wanted.as_deref().filter(|w| *w != "software") {
                 for a in instance.enumerate_adapters(wgpu::Backends::all()).await {
                     if a.get_info().name.to_lowercase().contains(&w.to_lowercase()) && surface.is_none_or(|s| a.is_surface_supported(s)) {
@@ -106,6 +121,7 @@ impl Gpu {
                 })
                 .await
         })
+        .await
         .map_err(|e| format!("no GPU adapter: {e}"))?;
         let info = adapter.get_info();
         let optional = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS | wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::PIPELINE_CACHE | wgpu::Features::PRIMITIVE_INDEX;
@@ -162,9 +178,9 @@ impl Gpu {
                 // on an older driver. Explicit DLSS selection still fails in its
                 // context's extension/capability validation; it never falls back.
                 eprintln!("DLSS capability setup unavailable: {reason}; creating native device");
-                pollster::block_on(adapter.request_device(&descriptor)).map_err(|e| format!("device: {e}"))?
+                adapter.request_device(&descriptor).await.map_err(|e| format!("device: {e}"))?
             }
-            None => pollster::block_on(adapter.request_device(&descriptor)).map_err(|e| format!("device: {e}"))?,
+            None => adapter.request_device(&descriptor).await.map_err(|e| format!("device: {e}"))?,
         };
         let pipeline_cache = std::sync::Arc::new(crate::pipeline_cache::Cache::new(&device, &info));
         Ok((Gpu { device, queue, info, features, limits, pipeline_cache }, adapter))

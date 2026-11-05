@@ -243,7 +243,7 @@ mod tests {
             Vec3::new(700.0,2.0,1000.0),Vec3::new(2040.0,2.0,2040.0)];
         let directions=[Vec3::new(1.0,0.1,0.03),Vec3::new(1.0,0.1,0.7),
             Vec3::new(-1.0,0.1,-0.3),Vec3::new(-1.0,0.1,-1.0)];
-        let begin=std::time::Instant::now();let mut sum=0.0;
+        let begin=web_time::Instant::now();let mut sum=0.0;
         for _ in 0..128 {for i in 0..4 {
             sum+=std::hint::black_box(camera_sun_visibility(std::hint::black_box(&hf),cameras[i],directions[i]));
         }}

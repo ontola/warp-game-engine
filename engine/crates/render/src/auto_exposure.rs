@@ -161,7 +161,7 @@ pub(crate) struct AutoExposureGpu {
     /// The newest exposure (EV100) and meter reading that reached the CPU, per view.
     mirrored: std::sync::Mutex<Vec<Option<[f32; 2]>>>,
     /// Wall-clock time of the last metered frame (adaptation follows real time).
-    clock: std::sync::Mutex<Option<std::time::Instant>>,
+    clock: std::sync::Mutex<Option<web_time::Instant>>,
     reset: std::sync::atomic::AtomicBool,
 }
 
@@ -193,7 +193,7 @@ impl AutoExposureGpu {
     /// Seconds since the previous metered frame, at most a tenth of a second
     /// (a hitch must not jump the exposure). Called once per frame.
     pub fn frame_dt(&self) -> f32 {
-        let now = std::time::Instant::now();
+        let now = web_time::Instant::now();
         let mut clock = self.clock.lock().unwrap();
         let dt = clock.map_or(0.0, |t| (now - t).as_secs_f32().min(0.1));
         *clock = Some(now);

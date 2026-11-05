@@ -5,7 +5,7 @@ pub(crate) fn build(src:Option<&image::RgbaImage>, settings:Settings, enabled:bo
     -> (Vec<image::RgbaImage>,crate::startup_profile::TextureLayerProfile) {
     let Settings{size,format,fill,preserve_alpha,linear_cutout_rgb}=settings;
     let mips=size.ilog2()+1;
-        let start=enabled.then(std::time::Instant::now);
+        let start=enabled.then(web_time::Instant::now);
         let mut timing=crate::startup_profile::TextureLayerProfile{layer,source_size:src.map_or([0,0],|s|[s.width(),s.height()]),..Default::default()};
         let Some(src) = src else {
             let out:Vec<_>=(0..mips).map(|m| image::RgbaImage::from_pixel((size >> m).max(1), (size >> m).max(1), image::Rgba(fill))).collect();
@@ -14,28 +14,28 @@ pub(crate) fn build(src:Option<&image::RgbaImage>, settings:Settings, enabled:bo
         };
         let mut img = if src.dimensions() == (size, size) { src.clone() } else { image::imageops::resize(src, size, size, image::imageops::FilterType::Triangle) };
         timing.base_resize_ms=crate::startup_profile::elapsed(start);
-        let alpha_start=enabled.then(std::time::Instant::now);
+        let alpha_start=enabled.then(web_time::Instant::now);
         let cutout = preserve_alpha && img.pixels().any(|p| p[3] < 250);
         let target = coverage(&img, 1.0);
         timing.alpha_analysis_ms=crate::startup_profile::elapsed(alpha_start);
-        let copy_start=enabled.then(std::time::Instant::now);
+        let copy_start=enabled.then(web_time::Instant::now);
         let mut out = vec![img.clone()];
         timing.chain_copy_ms=crate::startup_profile::elapsed(copy_start);
         for mip in 1..mips {
-            let resize_start=enabled.then(std::time::Instant::now);
+            let resize_start=enabled.then(web_time::Instant::now);
             let s = (size >> mip).max(1);
             img = image::imageops::resize(&img, s, s, image::imageops::FilterType::Triangle);
             timing.mip_resize_ms+=crate::startup_profile::elapsed(resize_start);
-            let coverage_start=enabled.then(std::time::Instant::now);
+            let coverage_start=enabled.then(web_time::Instant::now);
             if cutout {
                 preserve_coverage(&mut img, target);
             }
             timing.coverage_ms+=crate::startup_profile::elapsed(coverage_start);
-            let copy_start=enabled.then(std::time::Instant::now);
+            let copy_start=enabled.then(web_time::Instant::now);
             out.push(img.clone());
             timing.chain_copy_ms+=crate::startup_profile::elapsed(copy_start);
         }
-        let rgb_start=enabled.then(std::time::Instant::now);
+        let rgb_start=enabled.then(web_time::Instant::now);
         if linear_cutout_rgb && cutout && format == wgpu::TextureFormat::Rgba8UnormSrgb {
             // Keep the alpha chain byte-identical. RGB must start at the source,
             // before even the base resize can mix transparent black into leaves.

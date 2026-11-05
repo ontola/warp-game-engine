@@ -286,11 +286,11 @@ impl Fly {
         self.forest_building=None;self.sun_building=None;
         let (tx, rx) = channel();
         let (gpu, settings) = (self.gpu.clone(), self.terrain_settings);
-        std::thread::spawn(move || {
-            let started = std::time::Instant::now();
+        background(move || {
+            let started = web_time::Instant::now();
             let ready = build_scene(seed, style, &lands, &env, &palette, sun_degrees(&env), pos, world, track).map(|(scene, light, pool, at)| {
                 let scene_ms = started.elapsed().as_secs_f64() * 1000.0;
-                let renderer_started = std::time::Instant::now();
+                let renderer_started = web_time::Instant::now();
                 let built = gpu.map(|gpu| renderer_for(&gpu, &scene, &light, pool.clone(), settings));
                 eprintln!("terrain stream: scene_cpu_ms={scene_ms:.2} renderer_build_wall_ms={:.2}", renderer_started.elapsed().as_secs_f64()*1000.0);
                 (built, scene, light, pool, at)
@@ -324,6 +324,13 @@ impl Fly {
 
     fn forward(&self) -> Vec3 { look(self.yaw, self.pitch) }
 }
+
+/// Work off the frame: on its own thread natively. A browser build has no
+/// threads (and GPU objects cannot cross them there), so it runs at once.
+#[cfg(not(target_arch = "wasm32"))]
+fn background(work: impl FnOnce() + Send + 'static) { std::thread::spawn(work); }
+#[cfg(target_arch = "wasm32")]
+fn background(work: impl FnOnce() + 'static) { work() }
 
 fn look(yaw: f32, pitch: f32) -> Vec3 {
     Vec3::new(-yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos())
@@ -413,7 +420,7 @@ impl Game for Fly {
         if self.building.is_none() && (self.built_world.trees || self.built_world.grass) {
             if let Some((centre,roots))=self.forest_building.as_ref().and_then(|rx|rx.try_recv().ok()) {
                 if let Some(renderer)=frame.renderer() {
-                    let started=std::time::Instant::now();
+                    let started=web_time::Instant::now();
                     let stats=renderer.commit_gpu_forest_roots(frame.gpu,roots?)?;
                     if let Some((index,mut material))=self.forest_material {material.tint[2]=centre.x;material.roughness=centre.z;renderer.update_materials(frame.gpu,index,&[material])?;self.forest_material=Some((index,material));}
                     eprintln!("forest stream: {} enqueue_cpu_ms={:.2}",serde_json::to_string(&stats).unwrap(),started.elapsed().as_secs_f64()*1000.);
@@ -425,7 +432,7 @@ impl Game for Fly {
                 let preparation=renderer.gpu_forest_population_seed()?;
                 let (tx,rx)=channel();let (seed,style,centre)=(self.seed,self.style(),self.pos);
                 let biome=environment(self.style).biome;let world=World {tree_density:self.world.tree_density/0.6*biome.tree_density,..self.world};let track=self.current_track().cloned();let lands=self.lands();
-                std::thread::spawn(move||{let roots=forest(seed,&style,&lands,centre,world,track.as_deref());let _=tx.send((centre,preparation.prepare(&roots)));});
+                background(move||{let roots=forest(seed,&style,&lands,centre,world,track.as_deref());let _=tx.send((centre,preparation.prepare(&roots)));});
                 self.forest_building=Some(rx);
             }
         }
@@ -437,7 +444,7 @@ impl Game for Fly {
             }
             if self.sun_building.is_none() && self.world_at.is_none_or(|p|(p-self.pos).with_y(0.).length()>SHADOW_RECENTRE) {
                 let (tx,rx)=channel();let (seed,style,centre,sun)=(self.seed,self.style(),self.pos,self.light.sun_dir);let track=self.current_track().cloned();
-                std::thread::spawn(move||{let (field,visibility)=procedural_terrain::sun_heightfield(seed,&style,track.as_deref(),[centre.x,centre.z],SHADOW_SIZE,SHADOW_CELL,sun);let _=tx.send((centre,field,visibility));});
+                background(move||{let (field,visibility)=procedural_terrain::sun_heightfield(seed,&style,track.as_deref(),[centre.x,centre.z],SHADOW_SIZE,SHADOW_CELL,sun);let _=tx.send((centre,field,visibility));});
                 self.sun_building=Some(rx);
             }
         }
@@ -445,7 +452,7 @@ impl Game for Fly {
         let cam = self.camera(pos, frame.alpha);
         let [w, h] = frame.size;
         if let (Some(terrain), Some(renderer)) = (self.terrain.as_mut(), frame.renderer()) {
-            let started=std::time::Instant::now();
+            let started=web_time::Instant::now();
             self.stats = terrain.update(frame.gpu, renderer, &[TerrainView::new(&cam, w, h)])?;
             self.last_updates=[started.elapsed().as_secs_f64()*1000.0,0.0];
         }
@@ -786,7 +793,7 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
     if !world.grass {return woody;}
     let offset=if world.trees {lands.species().len()} else {0};
     let mut roots=woody;
-    let started=std::time::Instant::now();
+    let started=web_time::Instant::now();
     let cells=grass_cells(seed,&land,|x,z|land.style_at(x,z).grass,c,offset,GRASS_RADIUS);
     eprintln!("grass world cells: count={} generation_cpu_ms={:.2} radius_m={GRASS_RADIUS}",cells.len(),started.elapsed().as_secs_f64()*1000.);
     roots.extend(cells);roots
@@ -863,6 +870,37 @@ fn diff_images(a:&str,b:&str,heat:&str)->Result<(),String> {
     Ok(())
 }
 
+/// Ground textures `build_scene` reads (albedo and normal maps): a browser
+/// build fetches them from `assets/` next to the page before it starts.
+#[cfg(target_arch = "wasm32")]
+const WEB_TEXTURES: [&str; 6] = ["grass_ground", "forest_leaves_02", "forest_ground_04", "rock_face_03", "gravel_ground_01", "mossy_rock"];
+
+/// In a browser: `?style=alpine&seed=2` picks the world, `?trees=0` leaves
+/// the trees out; the low profile.
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    app::web::install_panic_hook();
+    wasm_bindgen_futures::spawn_local(async {
+        for name in WEB_TEXTURES.iter().flat_map(|t| [format!("{t}_albedo.jpg"), format!("{t}_normal.jpg")]) {
+            match app::web::fetch(&format!("assets/{name}")).await {
+                Ok(bytes) => render::files::preload(&name, bytes),
+                Err(e) => app::web::log(&format!("asset {e}")),
+            }
+        }
+        let query = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
+        let param = |k: &str| query.trim_start_matches('?').split('&').find_map(|kv| kv.split_once('=').filter(|(key, _)| *key == k).map(|(_, v)| v.to_owned()));
+        let seed = param("seed").and_then(|s| s.parse().ok()).unwrap_or(1);
+        let style = param("style").and_then(|s| STYLES.iter().position(|n| *n == s)).unwrap_or(0);
+        let world = World { trees: param("trees").as_deref() != Some("0"), branch_slots: 512, ..World::default() };
+        app::web::log(&format!("terrain fly: seed {seed}, style {}, building the world", STYLES[style]));
+        match Fly::new(seed, style, world) {
+            Ok(game) => app::web::run(app::Config { title: "Terrain fly".into(), tick_hz: TICK_HZ, max_render_height: Some(720), ..Default::default() }, Box::new(game)),
+            Err(e) => app::web::log(&format!("terrain fly: {e}")),
+        }
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<(), String> {
     // Normal vegetation renderer. These diagnostic overrides can disable a
     // culling stage, but never select a different CPU population backend.
@@ -955,7 +993,7 @@ fn main() -> Result<(), String> {
         let frames = n.parse::<u32>().map_err(|_| "--fly N")?;
         if frames <= 5 { return Err("--fly needs at least six frames".into()); }
         for i in 0..frames {
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             game.tick(&[forward]);
             let rgba = headless.frame(&mut game)?;
             if i >= 5 {

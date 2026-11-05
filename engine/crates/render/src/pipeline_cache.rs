@@ -4,8 +4,8 @@
 //! A loaded blob is NOT evidence of a per-pipeline hit (wgpu exposes no hit count).
 use sha2::{Digest, Sha256};
 use std::{fs::{self, File, OpenOptions}, io::{self, Read, Write, BufReader, BufWriter},
-    path::{Path, PathBuf}, sync::{Mutex, OnceLock, atomic::{AtomicU64, Ordering}},
-    time::{Instant, SystemTime, UNIX_EPOCH}};
+    path::{Path, PathBuf}, sync::{Mutex, OnceLock, atomic::{AtomicU64, Ordering}}};
+use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 const MAGIC: &[u8; 8] = b"WRPPIP01";
 const HEADER_BYTES: u64 = 80;

@@ -176,9 +176,14 @@ dependencies = [
  "gilrs",
  "glam 0.31.1",
  "image",
+ "js-sys",
  "render",
  "serde",
  "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
  "wgpu",
  "winit",
 ]
@@ -4684,6 +4689,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "swash",
+ "web-time",
  "wgpu",
 ]
 

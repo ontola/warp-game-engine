@@ -991,7 +991,7 @@ impl GpuGroups {
         settings: Settings,
         ranges: [f32; 4],
     ) -> Result<(), String> {
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         let mut state = self.state.lock().unwrap();
         let frame = state.requested_frame;
         if state.prepared.as_ref().is_some_and(|p| p.frame == frame) || state.views.is_empty() {

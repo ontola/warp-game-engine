@@ -5,7 +5,8 @@ use crate::Gpu;
 use bytemuck::{Pod, Zeroable};
 use glyphon::{Attrs, Buffer, Cache, Color, ColorMode, ContentType, CustomGlyph, CustomGlyphId, RasterizedCustomGlyph, Family, FontSystem, Metrics, Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight, Wrap};
 use glyphon::cosmic_text::Align;
-use std::{collections::{HashMap, HashSet}, ops::Range, time::Instant};
+use std::{collections::{HashMap, HashSet}, ops::Range};
+use web_time::Instant;
 use wgpu::util::DeviceExt;
 
 pub use crate::hud_optics::Optics;
