@@ -1,10 +1,18 @@
 # Warp vegetation: implementation checklist
 
-Updated 4 November 2026. **This is the single authoritative checklist.**
+Updated 5 November 2026. **This is the single authoritative checklist.**
 Older reports and `engine/HANDOFF.md` contain supporting history, not separate
 plans. Architecture first; no interactive playtest until requested.
 
 ## Where we are
+
+Latest scheduler experiment (5 November): capacity-refund retries prove an
+admission gap, but are REJECTED as a normal path. On three alternating native
+720p single-view routes, baseline covered GPU is 12.02-12.15 ms. Retrying the
+full pending frontier raises it to 21.78-22.05 ms; compacting eligible indices
+before priority scans raises it further to 29.52-29.96 ms. Both preserve full
+cuts but keep millions of proposals circulating. Neither is a performance fix.
+The normal renderer remains unchanged. See the experiment record below.
 
 Latest refinement-limit audit (5 November): all 40,529 over-target camera
 representations have a resident next complete replacement that fits the FINAL
@@ -888,3 +896,53 @@ validation PASS. Normal route source/voxel/direct histogram totals match
 15/806/94,364 published representation counts, with no unknown proxies or
 unmatched direct nodes. Evidence: build/playtest-unified/branch-consumers-route.log
 and corresponding route capture/JSON files. No performance improvement claimed.
+
+## Capacity-refund scheduler experiment (5 November 2026)
+
+- [x] Reproduce premature finalization: a camera refinement costs four extra
+  splats, but is finalized before another complete cut refunds seven. A GPU
+  fixture proves a retry admits the correct full cut without exceeding caps.
+- [x] Measure bounded retries with cached proposals and unchanged complete-cut
+  rules; all 142 foliage tests pass in the experimental version.
+- [x] Measure stable GPU eligibility compaction; all 142 tests pass, but it
+  regresses time further. Preserve both findings; neither path is integrated.
+- [ ] Replace full-frontier retry scanning with bounded dormant-work scheduling
+  that wakes eligible work after relevant capacity changes. Keep stable priority,
+  complete sibling admission, consumer roles, overflow and no-progress draining.
+  This is part of G2.2/G3, not an additional completion gate.
+
+| Native720p / one view | Covered GPU medians ms | Selection medians ms |
+| --- | --- | --- |
+| Baseline, first alternation | 12.020 / 12.029 / 12.073 | 5.753 / 5.797 / 5.755 |
+| Cached full-frontier retries | 21.780 / 21.803 / 22.047 | 15.437 / 15.471 / 15.701 |
+| Baseline, second alternation | 12.148 / 12.141 / 12.027 | 5.812 / 5.763 / 5.810 |
+| Retry plus eligible-index compaction | 29.957 / 29.518 / 29.599 | 23.354 / 23.178 / 23.196 |
+
+Each row uses 120 warm timestamp samples per run, same route and settings.
+These are covered GPU timestamps, not 4K/four-view acceptance or gameplay FPS.
+Retries change camera-over-target 40,529 -> 40,431 and affordable-resident
+40,529 -> 0. Remaining nodes are blocked by camera splat capacity (all 40,431),
+with 21,615 also shadow-capacity blocked. Thirteen voxel branch records become
+camera-visible; source camera records remain zero. Conservative maximum camera
+spatial error falls 95,418.82 -> 1,758.83 pixels, not measured image error.
+Cached proposal reuses rise 324,958 -> 3,066,339. No missing pages, emergency
+fallbacks, allocation faults or slot overflow. Small visual improvement only:
+matched non-HUD RGB mean absolute differences ~0.86/0.86/0.62 on 0-255 channels.
+The near crowns remain coarse. Compaction adds 4 MiB at current queue capacity.
+An empty-block priority shortcut was also tried (single diagnostic run 22.28ms)
+and did not rescue retries; eligible work is scattered across frontier blocks.
+
+Code and refund regression fixture are preserved in
+`refinement-retry-compaction-experiment.patch`, based on b4581d4; do not apply as
+a default optimization. It includes the retry path and subsequent compaction.
+Local evidence: `build/playtest-unified/refinement-retry-summary.json`,
+`refinement-compact-summary.json`, paired comparison JPEGs and individual route
+PNG/GPU/CPU/log files. Tests: `refinement-retry-tests.log` and
+`refinement-compact-tests.log`. No extra scratch or retries remain in production.
+
+Tracked per-pass medians and final counters: `refinement-retry-measurements.json`.
+
+Restored normal executable rebuilt and route-verified: 12.093 ms covered GPU,
+821 branch records, 324,958 cached proposal reuses, zero faults/fallbacks,
+40,529 affordable-resident camera refinements. Evidence: refinement-restored.log
+and its GPU sidecar. Production limitation is deliberately reported, not hidden.

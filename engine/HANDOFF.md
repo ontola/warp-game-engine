@@ -1,3 +1,16 @@
+## 5 November: rejected refund retries and eligible-index compaction
+
+Found a real scheduling gap: rejected camera refinements are finalized before
+other complete cuts release capacity. New GPU fixture reproduces this. Cached
+retries fix that case (142 tests PASS), but cost ~21.8-22.0ms covered GPU versus
+~12.0ms baseline. Stable GPU eligible-index compaction adds three passes and
+makes it worse (~29.5-30.0ms); also 142 tests PASS. Both are rejected and source
+restored to b4581d4. Full patch including fixture and exact measurements live in
+engine/docs/refinement-retry-compaction-experiment.patch and the authoritative
+vegetation-architecture.md. Do not repeat full-frontier rescanning/compaction.
+Next: bounded dormant-work scheduling plus upstream consumer-aware visibility
+and independent shadow detail. No completion or performance improvement claim.
+
 ## 5 November: camera refinement limit audit
 
 Explicit diagnostics now report the next complete replacement against final

@@ -1,0 +1,1375 @@
+{
+  "scope": "native 1280x720, one view, 120 warm GPU samples per run; not target acceptance",
+  "base_commit": "b4581d4",
+  "decision": "reject retry and eligible-compaction implementations",
+  "experiments": {
+    "refinement-retry": {
+      "before": [
+        {
+          "covered": 12.02024,
+          "passes": {
+            "GPU forest selection residency": 5.75336,
+            "GPU forest shared poses": 0.108096,
+            "GPU forest materialize": 0.139824,
+            "shadow tile damage and clear": 0.285856,
+            "shadow cull": 0.414688,
+            "shadow raster": 0.090432,
+            "voxel sun splats": 0.809344,
+            "voxel sun splat raster": 0.6626879999999999,
+            "near shadow cull": 0.261664,
+            "near shadow raster": 0.022463999999999998,
+            "voxel near sun splats": 0.169632,
+            "voxel near sun splat raster": 0.053376,
+            "tree occluder cull": 0.261216,
+            "tree occluder raster": 0.01616,
+            "tree occlusion pyramid": 0.07667199999999999,
+            "tree recovery dispatch": 0.002048,
+            "tree remaining cull": 0.008608,
+            "tree remaining raster": 0.000896,
+            "tree visibility history": 0.021344,
+            "voxel splats": 0.6577919999999999,
+            "voxel splat raster": 0.680272,
+            "voxel splat resolve": 0.213264,
+            "terrain coarse": 0.07385599999999999,
+            "shade terrain": 0.356416,
+            "shade voxels": 0.088768,
+            "shade": 0.049007999999999996,
+            "motion vectors": 0.022015999999999997,
+            "taa": 0.029759999999999998,
+            "exhaust": 0.000704,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026303999999999998,
+            "tonemap": 0.025568
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 821,
+            "tested_nodes": 261552,
+            "source_slots": 15,
+            "voxel_slots": 806,
+            "shadow_voxel_slots": 820,
+            "direct_roots": 94364,
+            "fallback_trees": 0,
+            "retained": 676,
+            "assigned": 145,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 302116,
+            "reserved_raster_splats": [
+              4182976,
+              4186580
+            ],
+            "refinement_budget_stops": 95130,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 324958,
+            "selected_spatial_error_pixels": [
+              95418.82,
+              95418.82
+            ],
+            "selected_error_target_ratio": [
+              132132.28,
+              132132.28
+            ],
+            "selected_over_target": [
+              80052,
+              40529
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 15078,
+            "pose_requests": 54,
+            "evaluated_shared_poses": 54,
+            "pose_hash_failures": 0,
+            "camera_roots": 40697,
+            "shadow_only_roots": 53990,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 40529,
+              "branch_slots": 0,
+              "camera_splats": 0,
+              "shadow_splats": 0,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 40529
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 15,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 806,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 18806,
+              "shadow_only": 53835,
+              "both": 21723
+            },
+            "camera_published_branches": 780,
+            "shadow_only_published_branches": 41
+          }
+        },
+        {
+          "covered": 12.02928,
+          "passes": {
+            "GPU forest selection residency": 5.79712,
+            "GPU forest shared poses": 0.10655999999999999,
+            "GPU forest materialize": 0.140064,
+            "shadow tile damage and clear": 0.28627199999999997,
+            "shadow cull": 0.41456,
+            "shadow raster": 0.091312,
+            "voxel sun splats": 0.8156319999999999,
+            "voxel sun splat raster": 0.66592,
+            "near shadow cull": 0.261152,
+            "near shadow raster": 0.022463999999999998,
+            "voxel near sun splats": 0.16985599999999998,
+            "voxel near sun splat raster": 0.053312,
+            "tree occluder cull": 0.260704,
+            "tree occluder raster": 0.016288,
+            "tree occlusion pyramid": 0.0776,
+            "tree recovery dispatch": 0.002016,
+            "tree remaining cull": 0.008383999999999999,
+            "tree remaining raster": 0.000896,
+            "tree visibility history": 0.021376,
+            "voxel splats": 0.68656,
+            "voxel splat raster": 0.681824,
+            "voxel splat resolve": 0.219712,
+            "terrain coarse": 0.07364799999999999,
+            "shade terrain": 0.355968,
+            "shade voxels": 0.088672,
+            "shade": 0.04904,
+            "motion vectors": 0.022144,
+            "taa": 0.029824,
+            "exhaust": 0.00031999999999999997,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026256,
+            "tonemap": 0.025632
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 821,
+            "tested_nodes": 261552,
+            "source_slots": 15,
+            "voxel_slots": 806,
+            "shadow_voxel_slots": 820,
+            "direct_roots": 94364,
+            "fallback_trees": 0,
+            "retained": 676,
+            "assigned": 145,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 302116,
+            "reserved_raster_splats": [
+              4182976,
+              4186580
+            ],
+            "refinement_budget_stops": 95130,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 324958,
+            "selected_spatial_error_pixels": [
+              95418.82,
+              95418.82
+            ],
+            "selected_error_target_ratio": [
+              132132.28,
+              132132.28
+            ],
+            "selected_over_target": [
+              80052,
+              40529
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 15078,
+            "pose_requests": 54,
+            "evaluated_shared_poses": 54,
+            "pose_hash_failures": 0,
+            "camera_roots": 40697,
+            "shadow_only_roots": 53990,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 40529,
+              "branch_slots": 0,
+              "camera_splats": 0,
+              "shadow_splats": 0,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 40529
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 15,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 806,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 18806,
+              "shadow_only": 53835,
+              "both": 21723
+            },
+            "camera_published_branches": 780,
+            "shadow_only_published_branches": 41
+          }
+        },
+        {
+          "covered": 12.072864,
+          "passes": {
+            "GPU forest selection residency": 5.755024,
+            "GPU forest shared poses": 0.108224,
+            "GPU forest materialize": 0.139808,
+            "shadow tile damage and clear": 0.285328,
+            "shadow cull": 0.41497599999999996,
+            "shadow raster": 0.0904,
+            "voxel sun splats": 0.8054239999999999,
+            "voxel sun splat raster": 0.66272,
+            "near shadow cull": 0.261472,
+            "near shadow raster": 0.022432,
+            "voxel near sun splats": 0.170048,
+            "voxel near sun splat raster": 0.05328,
+            "tree occluder cull": 0.2608,
+            "tree occluder raster": 0.016319999999999998,
+            "tree occlusion pyramid": 0.076704,
+            "tree recovery dispatch": 0.002048,
+            "tree remaining cull": 0.008416,
+            "tree remaining raster": 0.000896,
+            "tree visibility history": 0.021376,
+            "voxel splats": 0.6677599999999999,
+            "voxel splat raster": 0.680288,
+            "voxel splat resolve": 0.209344,
+            "terrain coarse": 0.073872,
+            "shade terrain": 0.35624,
+            "shade voxels": 0.088784,
+            "shade": 0.048928,
+            "motion vectors": 0.02208,
+            "taa": 0.029824,
+            "exhaust": 0.000736,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026272,
+            "tonemap": 0.025568
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 821,
+            "tested_nodes": 261552,
+            "source_slots": 15,
+            "voxel_slots": 806,
+            "shadow_voxel_slots": 820,
+            "direct_roots": 94364,
+            "fallback_trees": 0,
+            "retained": 676,
+            "assigned": 145,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 302116,
+            "reserved_raster_splats": [
+              4182976,
+              4186580
+            ],
+            "refinement_budget_stops": 95130,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 324958,
+            "selected_spatial_error_pixels": [
+              95418.82,
+              95418.82
+            ],
+            "selected_error_target_ratio": [
+              132132.28,
+              132132.28
+            ],
+            "selected_over_target": [
+              80052,
+              40529
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 15078,
+            "pose_requests": 54,
+            "evaluated_shared_poses": 54,
+            "pose_hash_failures": 0,
+            "camera_roots": 40697,
+            "shadow_only_roots": 53990,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 40529,
+              "branch_slots": 0,
+              "camera_splats": 0,
+              "shadow_splats": 0,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 40529
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 15,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 806,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 18806,
+              "shadow_only": 53835,
+              "both": 21723
+            },
+            "camera_published_branches": 780,
+            "shadow_only_published_branches": 41
+          }
+        }
+      ],
+      "after": [
+        {
+          "covered": 21.779744,
+          "passes": {
+            "GPU forest selection residency": 15.436767999999999,
+            "GPU forest shared poses": 0.11180799999999999,
+            "GPU forest materialize": 0.139776,
+            "shadow tile damage and clear": 0.286784,
+            "shadow cull": 0.41612799999999994,
+            "shadow raster": 0.090528,
+            "voxel sun splats": 0.8136319999999999,
+            "voxel sun splat raster": 0.66192,
+            "near shadow cull": 0.26228799999999997,
+            "near shadow raster": 0.022463999999999998,
+            "voxel near sun splats": 0.169952,
+            "voxel near sun splat raster": 0.053536,
+            "tree occluder cull": 0.26136,
+            "tree occluder raster": 0.015808,
+            "tree occlusion pyramid": 0.07664,
+            "tree recovery dispatch": 0.002048,
+            "tree remaining cull": 0.00864,
+            "tree remaining raster": 0.000896,
+            "tree visibility history": 0.021376,
+            "voxel splats": 0.6915359999999999,
+            "voxel splat raster": 0.681872,
+            "voxel splat resolve": 0.224304,
+            "terrain coarse": 0.073664,
+            "shade terrain": 0.356656,
+            "shade voxels": 0.08864,
+            "shade": 0.031967999999999996,
+            "motion vectors": 0.02192,
+            "taa": 0.029727999999999997,
+            "exhaust": 0.000736,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026208,
+            "tonemap": 0.025599999999999998
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 1319,
+            "tested_nodes": 262358,
+            "source_slots": 8,
+            "voxel_slots": 1311,
+            "shadow_voxel_slots": 1315,
+            "direct_roots": 94256,
+            "fallback_trees": 0,
+            "retained": 1143,
+            "assigned": 176,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 302116,
+            "reserved_raster_splats": [
+              4194301,
+              4194304
+            ],
+            "refinement_budget_stops": 1746286,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 3066339,
+            "selected_spatial_error_pixels": [
+              1758.8345,
+              1758.8345
+            ],
+            "selected_error_target_ratio": [
+              1362.4935,
+              1362.4935
+            ],
+            "selected_over_target": [
+              80107,
+              40431
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 15453,
+            "pose_requests": 15,
+            "evaluated_shared_poses": 15,
+            "pose_hash_failures": 0,
+            "camera_roots": 40697,
+            "shadow_only_roots": 53990,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 40431,
+              "branch_slots": 0,
+              "camera_splats": 40431,
+              "shadow_splats": 21615,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 0
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 8,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 1298,
+              "both": 13
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 18805,
+              "shadow_only": 53838,
+              "both": 21613
+            },
+            "camera_published_branches": 1319,
+            "shadow_only_published_branches": 0
+          }
+        },
+        {
+          "covered": 21.802832,
+          "passes": {
+            "GPU forest selection residency": 15.470592,
+            "GPU forest shared poses": 0.114272,
+            "GPU forest materialize": 0.140048,
+            "shadow tile damage and clear": 0.290608,
+            "shadow cull": 0.415776,
+            "shadow raster": 0.091568,
+            "voxel sun splats": 0.813584,
+            "voxel sun splat raster": 0.665088,
+            "near shadow cull": 0.262224,
+            "near shadow raster": 0.022463999999999998,
+            "voxel near sun splats": 0.16976,
+            "voxel near sun splat raster": 0.053568,
+            "tree occluder cull": 0.2616,
+            "tree occluder raster": 0.015903999999999998,
+            "tree occlusion pyramid": 0.085744,
+            "tree recovery dispatch": 0.002016,
+            "tree remaining cull": 0.008032,
+            "tree remaining raster": 0.000896,
+            "tree visibility history": 0.021344,
+            "voxel splats": 0.6873119999999999,
+            "voxel splat raster": 0.6819999999999999,
+            "voxel splat resolve": 0.223856,
+            "terrain coarse": 0.073824,
+            "shade terrain": 0.35607999999999995,
+            "shade voxels": 0.088512,
+            "shade": 0.031951999999999994,
+            "motion vectors": 0.02192,
+            "taa": 0.029759999999999998,
+            "exhaust": 0.00031999999999999997,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.027455999999999998,
+            "tonemap": 0.025599999999999998
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 1319,
+            "tested_nodes": 262358,
+            "source_slots": 8,
+            "voxel_slots": 1311,
+            "shadow_voxel_slots": 1315,
+            "direct_roots": 94256,
+            "fallback_trees": 0,
+            "retained": 1143,
+            "assigned": 176,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 302116,
+            "reserved_raster_splats": [
+              4194301,
+              4194304
+            ],
+            "refinement_budget_stops": 1746286,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 3066339,
+            "selected_spatial_error_pixels": [
+              1758.8345,
+              1758.8345
+            ],
+            "selected_error_target_ratio": [
+              1362.4935,
+              1362.4935
+            ],
+            "selected_over_target": [
+              80107,
+              40431
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 15453,
+            "pose_requests": 15,
+            "evaluated_shared_poses": 15,
+            "pose_hash_failures": 0,
+            "camera_roots": 40697,
+            "shadow_only_roots": 53990,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 40431,
+              "branch_slots": 0,
+              "camera_splats": 40431,
+              "shadow_splats": 21615,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 0
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 8,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 1298,
+              "both": 13
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 18805,
+              "shadow_only": 53838,
+              "both": 21613
+            },
+            "camera_published_branches": 1319,
+            "shadow_only_published_branches": 0
+          }
+        },
+        {
+          "covered": 22.047088,
+          "passes": {
+            "GPU forest selection residency": 15.701055999999998,
+            "GPU forest shared poses": 0.112848,
+            "GPU forest materialize": 0.13968,
+            "shadow tile damage and clear": 0.285744,
+            "shadow cull": 0.415136,
+            "shadow raster": 0.090448,
+            "voxel sun splats": 0.8140959999999999,
+            "voxel sun splat raster": 0.661872,
+            "near shadow cull": 0.26195199999999996,
+            "near shadow raster": 0.022463999999999998,
+            "voxel near sun splats": 0.169904,
+            "voxel near sun splat raster": 0.053552,
+            "tree occluder cull": 0.261152,
+            "tree occluder raster": 0.015872,
+            "tree occlusion pyramid": 0.076416,
+            "tree recovery dispatch": 0.002048,
+            "tree remaining cull": 0.008591999999999999,
+            "tree remaining raster": 0.000864,
+            "tree visibility history": 0.021344,
+            "voxel splats": 0.6906079999999999,
+            "voxel splat raster": 0.68184,
+            "voxel splat resolve": 0.223904,
+            "terrain coarse": 0.073728,
+            "shade terrain": 0.35695999999999994,
+            "shade voxels": 0.088544,
+            "shade": 0.031967999999999996,
+            "motion vectors": 0.021952,
+            "taa": 0.029696,
+            "exhaust": 0.000736,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026208,
+            "tonemap": 0.025568
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 1319,
+            "tested_nodes": 262358,
+            "source_slots": 8,
+            "voxel_slots": 1311,
+            "shadow_voxel_slots": 1315,
+            "direct_roots": 94256,
+            "fallback_trees": 0,
+            "retained": 1143,
+            "assigned": 176,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 302116,
+            "reserved_raster_splats": [
+              4194301,
+              4194304
+            ],
+            "refinement_budget_stops": 1746286,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 3066339,
+            "selected_spatial_error_pixels": [
+              1758.8345,
+              1758.8345
+            ],
+            "selected_error_target_ratio": [
+              1362.4935,
+              1362.4935
+            ],
+            "selected_over_target": [
+              80107,
+              40431
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 15453,
+            "pose_requests": 15,
+            "evaluated_shared_poses": 15,
+            "pose_hash_failures": 0,
+            "camera_roots": 40697,
+            "shadow_only_roots": 53990,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 40431,
+              "branch_slots": 0,
+              "camera_splats": 40431,
+              "shadow_splats": 21615,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 0
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 8,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 1298,
+              "both": 13
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 18805,
+              "shadow_only": 53838,
+              "both": 21613
+            },
+            "camera_published_branches": 1319,
+            "shadow_only_published_branches": 0
+          }
+        }
+      ]
+    },
+    "refinement-compact": {
+      "before": [
+        {
+          "covered": 12.147648,
+          "passes": {
+            "GPU forest selection residency": 5.811871999999999,
+            "GPU forest shared poses": 0.111232,
+            "GPU forest materialize": 0.140784,
+            "shadow tile damage and clear": 0.287168,
+            "shadow cull": 0.41398399999999996,
+            "shadow raster": 0.090304,
+            "voxel sun splats": 0.815936,
+            "voxel sun splat raster": 0.6624159999999999,
+            "near shadow cull": 0.260928,
+            "near shadow raster": 0.0224,
+            "voxel near sun splats": 0.1696,
+            "voxel near sun splat raster": 0.053152,
+            "tree occluder cull": 0.26048,
+            "tree occluder raster": 0.016256,
+            "tree occlusion pyramid": 0.078128,
+            "tree recovery dispatch": 0.002016,
+            "tree remaining cull": 0.008256,
+            "tree remaining raster": 0.000896,
+            "tree visibility history": 0.02128,
+            "voxel splats": 0.683472,
+            "voxel splat raster": 0.680064,
+            "voxel splat resolve": 0.216608,
+            "terrain coarse": 0.073392,
+            "shade terrain": 0.354912,
+            "shade voxels": 0.088512,
+            "shade": 0.048624,
+            "motion vectors": 0.02208,
+            "taa": 0.029727999999999997,
+            "exhaust": 0.00031999999999999997,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026496,
+            "tonemap": 0.025568
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 821,
+            "tested_nodes": 261552,
+            "source_slots": 15,
+            "voxel_slots": 806,
+            "shadow_voxel_slots": 820,
+            "direct_roots": 94364,
+            "fallback_trees": 0,
+            "retained": 676,
+            "assigned": 145,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 302116,
+            "reserved_raster_splats": [
+              4182976,
+              4186580
+            ],
+            "refinement_budget_stops": 95130,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 324958,
+            "selected_spatial_error_pixels": [
+              95418.82,
+              95418.82
+            ],
+            "selected_error_target_ratio": [
+              132132.28,
+              132132.28
+            ],
+            "selected_over_target": [
+              80052,
+              40529
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 15078,
+            "pose_requests": 54,
+            "evaluated_shared_poses": 54,
+            "pose_hash_failures": 0,
+            "camera_roots": 40697,
+            "shadow_only_roots": 53990,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 40529,
+              "branch_slots": 0,
+              "camera_splats": 0,
+              "shadow_splats": 0,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 40529
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 15,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 806,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 18806,
+              "shadow_only": 53835,
+              "both": 21723
+            },
+            "camera_published_branches": 780,
+            "shadow_only_published_branches": 41
+          }
+        },
+        {
+          "covered": 12.14144,
+          "passes": {
+            "GPU forest selection residency": 5.763296,
+            "GPU forest shared poses": 0.10824,
+            "GPU forest materialize": 0.14007999999999998,
+            "shadow tile damage and clear": 0.286992,
+            "shadow cull": 0.41536,
+            "shadow raster": 0.090528,
+            "voxel sun splats": 0.816816,
+            "voxel sun splat raster": 0.663184,
+            "near shadow cull": 0.261904,
+            "near shadow raster": 0.022463999999999998,
+            "voxel near sun splats": 0.16992,
+            "voxel near sun splat raster": 0.053312,
+            "tree occluder cull": 0.261104,
+            "tree occluder raster": 0.016224,
+            "tree occlusion pyramid": 0.077264,
+            "tree recovery dispatch": 0.002016,
+            "tree remaining cull": 0.008192,
+            "tree remaining raster": 0.000896,
+            "tree visibility history": 0.021344,
+            "voxel splats": 0.684512,
+            "voxel splat raster": 0.68048,
+            "voxel splat resolve": 0.216448,
+            "terrain coarse": 0.073712,
+            "shade terrain": 0.356288,
+            "shade voxels": 0.08856,
+            "shade": 0.048864,
+            "motion vectors": 0.022175999999999998,
+            "taa": 0.029727999999999997,
+            "exhaust": 0.00031999999999999997,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026192,
+            "tonemap": 0.025568
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 821,
+            "tested_nodes": 261552,
+            "source_slots": 15,
+            "voxel_slots": 806,
+            "shadow_voxel_slots": 820,
+            "direct_roots": 94364,
+            "fallback_trees": 0,
+            "retained": 676,
+            "assigned": 145,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 302116,
+            "reserved_raster_splats": [
+              4182976,
+              4186580
+            ],
+            "refinement_budget_stops": 95130,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 324958,
+            "selected_spatial_error_pixels": [
+              95418.82,
+              95418.82
+            ],
+            "selected_error_target_ratio": [
+              132132.28,
+              132132.28
+            ],
+            "selected_over_target": [
+              80052,
+              40529
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 15078,
+            "pose_requests": 54,
+            "evaluated_shared_poses": 54,
+            "pose_hash_failures": 0,
+            "camera_roots": 40697,
+            "shadow_only_roots": 53990,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 40529,
+              "branch_slots": 0,
+              "camera_splats": 0,
+              "shadow_splats": 0,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 40529
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 15,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 806,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 18806,
+              "shadow_only": 53835,
+              "both": 21723
+            },
+            "camera_published_branches": 780,
+            "shadow_only_published_branches": 41
+          }
+        },
+        {
+          "covered": 12.02736,
+          "passes": {
+            "GPU forest selection residency": 5.810207999999999,
+            "GPU forest shared poses": 0.10742399999999999,
+            "GPU forest materialize": 0.140864,
+            "shadow tile damage and clear": 0.28728,
+            "shadow cull": 0.415168,
+            "shadow raster": 0.09132799999999999,
+            "voxel sun splats": 0.79536,
+            "voxel sun splat raster": 0.6661279999999999,
+            "near shadow cull": 0.26128,
+            "near shadow raster": 0.022463999999999998,
+            "voxel near sun splats": 0.170048,
+            "voxel near sun splat raster": 0.053424,
+            "tree occluder cull": 0.261024,
+            "tree occluder raster": 0.016319999999999998,
+            "tree occlusion pyramid": 0.077872,
+            "tree recovery dispatch": 0.002048,
+            "tree remaining cull": 0.008447999999999999,
+            "tree remaining raster": 0.000896,
+            "tree visibility history": 0.021344,
+            "voxel splats": 0.663632,
+            "voxel splat raster": 0.6818879999999999,
+            "voxel splat resolve": 0.212368,
+            "terrain coarse": 0.073664,
+            "shade terrain": 0.355888,
+            "shade voxels": 0.088736,
+            "shade": 0.048768,
+            "motion vectors": 0.021984,
+            "taa": 0.029824,
+            "exhaust": 0.00031999999999999997,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.02656,
+            "tonemap": 0.025599999999999998
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 821,
+            "tested_nodes": 261552,
+            "source_slots": 15,
+            "voxel_slots": 806,
+            "shadow_voxel_slots": 820,
+            "direct_roots": 94364,
+            "fallback_trees": 0,
+            "retained": 676,
+            "assigned": 145,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 302116,
+            "reserved_raster_splats": [
+              4182976,
+              4186580
+            ],
+            "refinement_budget_stops": 95130,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 324958,
+            "selected_spatial_error_pixels": [
+              95418.82,
+              95418.82
+            ],
+            "selected_error_target_ratio": [
+              132132.28,
+              132132.28
+            ],
+            "selected_over_target": [
+              80052,
+              40529
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 15078,
+            "pose_requests": 54,
+            "evaluated_shared_poses": 54,
+            "pose_hash_failures": 0,
+            "camera_roots": 40697,
+            "shadow_only_roots": 53990,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 40529,
+              "branch_slots": 0,
+              "camera_splats": 0,
+              "shadow_splats": 0,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 40529
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 15,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 806,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 18806,
+              "shadow_only": 53835,
+              "both": 21723
+            },
+            "camera_published_branches": 780,
+            "shadow_only_published_branches": 41
+          }
+        }
+      ],
+      "after": [
+        {
+          "covered": 29.95736,
+          "passes": {
+            "GPU forest selection residency": 23.353839999999998,
+            "GPU forest shared poses": 0.11304,
+            "GPU forest materialize": 0.139824,
+            "shadow tile damage and clear": 0.28825599999999996,
+            "shadow cull": 0.4144,
+            "shadow raster": 0.09024,
+            "voxel sun splats": 0.8065279999999999,
+            "voxel sun splat raster": 0.661184,
+            "near shadow cull": 0.261104,
+            "near shadow raster": 0.022368,
+            "voxel near sun splats": 0.169728,
+            "voxel near sun splat raster": 0.053376,
+            "tree occluder cull": 0.260608,
+            "tree occluder raster": 0.015872,
+            "tree occlusion pyramid": 0.078704,
+            "tree recovery dispatch": 0.002048,
+            "tree remaining cull": 0.008352,
+            "tree remaining raster": 0.000896,
+            "tree visibility history": 0.02128,
+            "voxel splats": 0.679024,
+            "voxel splat raster": 0.683392,
+            "voxel splat resolve": 0.21595199999999998,
+            "terrain coarse": 0.073488,
+            "shade terrain": 0.355632,
+            "shade voxels": 0.08864,
+            "shade": 0.03184,
+            "motion vectors": 0.021759999999999998,
+            "taa": 0.029824,
+            "exhaust": 0.00031999999999999997,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.02672,
+            "tonemap": 0.025536
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 1319,
+            "tested_nodes": 262358,
+            "source_slots": 8,
+            "voxel_slots": 1311,
+            "shadow_voxel_slots": 1315,
+            "direct_roots": 94256,
+            "fallback_trees": 0,
+            "retained": 1143,
+            "assigned": 176,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 302116,
+            "reserved_raster_splats": [
+              4194301,
+              4194304
+            ],
+            "refinement_budget_stops": 1746286,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 3066339,
+            "selected_spatial_error_pixels": [
+              1758.8345,
+              1758.8345
+            ],
+            "selected_error_target_ratio": [
+              1362.4935,
+              1362.4935
+            ],
+            "selected_over_target": [
+              80107,
+              40431
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 15453,
+            "pose_requests": 15,
+            "evaluated_shared_poses": 15,
+            "pose_hash_failures": 0,
+            "camera_roots": 40697,
+            "shadow_only_roots": 53990,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 40431,
+              "branch_slots": 0,
+              "camera_splats": 40431,
+              "shadow_splats": 21615,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 0
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 8,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 1298,
+              "both": 13
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 18805,
+              "shadow_only": 53838,
+              "both": 21613
+            },
+            "camera_published_branches": 1319,
+            "shadow_only_published_branches": 0
+          }
+        },
+        {
+          "covered": 29.518304,
+          "passes": {
+            "GPU forest selection residency": 23.177536,
+            "GPU forest shared poses": 0.11432,
+            "GPU forest materialize": 0.13999999999999999,
+            "shadow tile damage and clear": 0.286896,
+            "shadow cull": 0.414608,
+            "shadow raster": 0.09059199999999999,
+            "voxel sun splats": 0.8162079999999999,
+            "voxel sun splat raster": 0.6617759999999999,
+            "near shadow cull": 0.261152,
+            "near shadow raster": 0.022463999999999998,
+            "voxel near sun splats": 0.16993599999999998,
+            "voxel near sun splat raster": 0.053536,
+            "tree occluder cull": 0.260576,
+            "tree occluder raster": 0.015903999999999998,
+            "tree occlusion pyramid": 0.078848,
+            "tree recovery dispatch": 0.002016,
+            "tree remaining cull": 0.008288,
+            "tree remaining raster": 0.000896,
+            "tree visibility history": 0.021359999999999997,
+            "voxel splats": 0.684496,
+            "voxel splat raster": 0.6834399999999999,
+            "voxel splat resolve": 0.22092799999999999,
+            "terrain coarse": 0.073728,
+            "shade terrain": 0.35654399999999997,
+            "shade voxels": 0.08864,
+            "shade": 0.031936,
+            "motion vectors": 0.02192,
+            "taa": 0.029792,
+            "exhaust": 0.00031999999999999997,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026944,
+            "tonemap": 0.025632
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 1319,
+            "tested_nodes": 262358,
+            "source_slots": 8,
+            "voxel_slots": 1311,
+            "shadow_voxel_slots": 1315,
+            "direct_roots": 94256,
+            "fallback_trees": 0,
+            "retained": 1143,
+            "assigned": 176,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 302116,
+            "reserved_raster_splats": [
+              4194301,
+              4194304
+            ],
+            "refinement_budget_stops": 1746286,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 3066339,
+            "selected_spatial_error_pixels": [
+              1758.8345,
+              1758.8345
+            ],
+            "selected_error_target_ratio": [
+              1362.4935,
+              1362.4935
+            ],
+            "selected_over_target": [
+              80107,
+              40431
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 15453,
+            "pose_requests": 15,
+            "evaluated_shared_poses": 15,
+            "pose_hash_failures": 0,
+            "camera_roots": 40697,
+            "shadow_only_roots": 53990,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 40431,
+              "branch_slots": 0,
+              "camera_splats": 40431,
+              "shadow_splats": 21615,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 0
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 8,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 1298,
+              "both": 13
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 18805,
+              "shadow_only": 53838,
+              "both": 21613
+            },
+            "camera_published_branches": 1319,
+            "shadow_only_published_branches": 0
+          }
+        },
+        {
+          "covered": 29.598959999999998,
+          "passes": {
+            "GPU forest selection residency": 23.195712,
+            "GPU forest shared poses": 0.11182399999999999,
+            "GPU forest materialize": 0.138704,
+            "shadow tile damage and clear": 0.28703999999999996,
+            "shadow cull": 0.41609599999999997,
+            "shadow raster": 0.09056,
+            "voxel sun splats": 0.816,
+            "voxel sun splat raster": 0.6616,
+            "near shadow cull": 0.262464,
+            "near shadow raster": 0.022463999999999998,
+            "voxel near sun splats": 0.169952,
+            "voxel near sun splat raster": 0.053536,
+            "tree occluder cull": 0.261824,
+            "tree occluder raster": 0.015743999999999998,
+            "tree occlusion pyramid": 0.07655999999999999,
+            "tree recovery dispatch": 0.002048,
+            "tree remaining cull": 0.008608,
+            "tree remaining raster": 0.000896,
+            "tree visibility history": 0.021311999999999998,
+            "voxel splats": 0.6868799999999999,
+            "voxel splat raster": 0.681696,
+            "voxel splat resolve": 0.222992,
+            "terrain coarse": 0.073888,
+            "shade terrain": 0.35563199999999995,
+            "shade voxels": 0.088896,
+            "shade": 0.031967999999999996,
+            "motion vectors": 0.021887999999999998,
+            "taa": 0.029727999999999997,
+            "exhaust": 0.000336,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026175999999999998,
+            "tonemap": 0.025568
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 1319,
+            "tested_nodes": 262358,
+            "source_slots": 8,
+            "voxel_slots": 1311,
+            "shadow_voxel_slots": 1315,
+            "direct_roots": 94256,
+            "fallback_trees": 0,
+            "retained": 1143,
+            "assigned": 176,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 302116,
+            "reserved_raster_splats": [
+              4194301,
+              4194304
+            ],
+            "refinement_budget_stops": 1746286,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 3066339,
+            "selected_spatial_error_pixels": [
+              1758.8345,
+              1758.8345
+            ],
+            "selected_error_target_ratio": [
+              1362.4935,
+              1362.4935
+            ],
+            "selected_over_target": [
+              80107,
+              40431
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 15453,
+            "pose_requests": 15,
+            "evaluated_shared_poses": 15,
+            "pose_hash_failures": 0,
+            "camera_roots": 40697,
+            "shadow_only_roots": 53990,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 40431,
+              "branch_slots": 0,
+              "camera_splats": 40431,
+              "shadow_splats": 21615,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 0
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 8,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 0,
+              "shadow_only": 1298,
+              "both": 13
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 18805,
+              "shadow_only": 53838,
+              "both": 21613
+            },
+            "camera_published_branches": 1319,
+            "shadow_only_published_branches": 0
+          }
+        }
+      ]
+    }
+  }
+}
