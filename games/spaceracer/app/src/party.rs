@@ -4,7 +4,7 @@ use spaceracer::{handling::Input, race::Controls};
 pub enum Event {
     Prepare,
     Roster,
-    Random,
+    NewRace,
     Setting(String, Value),
 }
 pub struct Party {
@@ -53,7 +53,7 @@ impl Party {
                     Command::Connected => {
                         let _ = self.client.declare_settings(self.declarations.clone());
                         let _ = self.client.declare_actions(
-                            json!([{"key":"new_race","label":"New random race","confirm":true}]),
+                            json!([{"key":"new_race","label":"New race","confirm":true}]),
                         );
                     }
                     Command::Prepare { session, mut seats } => {
@@ -76,7 +76,7 @@ impl Party {
                         self.session.clear();
                     }
                     Command::Disconnected(_) => self.running = false,
-                    Command::Action { key, .. } if key == "new_race" => events.push(Event::Random),
+                    Command::Action { key, .. } if key == "new_race" => events.push(Event::NewRace),
                     Command::Setting { key, value } => events.push(Event::Setting(key, value)),
                     Command::PlayersUpdated { mut seats } | Command::Roster { mut seats } => {
                         seats.sort_by_key(|s| (s.ai, s.index));
