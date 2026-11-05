@@ -72,6 +72,20 @@ impl Manners {
         self.asked = None;
     }
 
+    /// The surface gave no frame because the window is occluded. A window
+    /// that was never shown is occluded by being invisible (Metal reports
+    /// it so), so it would wait forever for its first frame: show it now.
+    pub fn occluded(&mut self, w: &Window) {
+        if self.shown || self.screen == Screen::Hidden { return; }
+        w.set_visible(true);
+        crate::startup::ready();
+        println!("{} window ({}): shown before its first frame (surface occluded while invisible)", stamp(), process());
+        if self.screen == Screen::Fullscreen { w.focus_window(); }
+        self.shown = true;
+        self.settled = false;
+        self.asked = None;
+    }
+
     /// A new wish from the game. Returns true when it changed.
     pub fn wish(&mut self, wish: Screen, focused: bool) -> bool {
         if wish == self.screen { return false; }

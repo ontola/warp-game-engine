@@ -522,6 +522,9 @@ impl Runtime {
         self.encode_timed_depth(gpu,enc,views,first_owner,time,None)
     }
     pub(crate) fn encode_timed_depth(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::foliage_select::ConsumerView],first_owner:u32,time:Option<(&wgpu::QuerySet,u32)>,depth:Option<&[crate::foliage_seed_visibility::CameraDepth<'_>]>)->Result<(),String> {
+        // All of these are encoder writes: untimed where the GPU lacks them
+        // (Apple), or Metal rejects the submit.
+        let time=time.filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS));
         if let Some((q,i))=time {enc.write_timestamp(q,i);}
         self.selector.union_consumers_budget_depth(gpu,enc,views,self.error,self.slots,[self.raster_budget;2],&self.empty_depth,depth)?;
         self.residency.encode(enc);
