@@ -166,7 +166,7 @@ impl Selector {
             || deferred_capacity.div_ceil(64)>gpu.device.limits().max_compute_workgroups_per_dimension {
             return Err("foliage dispatch capacity exceeds device".into());
         }
-        for bytes in [work_capacity as u64*80,children.len()as u64*4,16+work_capacity as u64*8,instances.len()as u64*16,(instances.len().div_ceil(256)as u64+1)*128,std::mem::size_of_val(nodes)as u64,std::mem::size_of_val(instances)as u64,capacity as u64*16,deferred_capacity as u64*8,instances.len()as u64*4] {
+        for bytes in [work_capacity as u64*96,children.len()as u64*4,16+work_capacity as u64*8,instances.len()as u64*16,(instances.len().div_ceil(256)as u64+1)*128,std::mem::size_of_val(nodes)as u64,std::mem::size_of_val(instances)as u64,capacity as u64*16,deferred_capacity as u64*8,instances.len()as u64*4] {
             if bytes>gpu.device.limits().max_storage_buffer_binding_size as u64 {return Err("foliage buffer exceeds device binding limit".into());}
         }
         crate::shaders::checked(gpu,|| {
@@ -364,6 +364,57 @@ mod tests {
    let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers_budget(&gpu,&mut enc,&views,0.01,4,[6;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
    assert_eq!(read(&gpu,&selector.direct),[1,4]);assert_eq!(read(&gpu,&selector.fallback),[0,0]);
    let state=read(&gpu,&selector.refiner.state);assert_eq!(state[1],6);assert_eq!(state[15],0);
+  }
+ }
+ #[test]
+ #[ignore="exclusive GPU capacity refund retry fixture"]
+ fn gpu_refinement_retries_after_other_cut_refunds_capacity() {
+  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(2);
+  trees[0].info[0]=0;trees[1].info[0]=2;
+  for t in &mut trees {t.rows[0][3]=0.;}
+  trees[0].scale[2]=1.;trees[0].scale[3]=1.;
+  trees[1].scale[2]=9.;trees[1].scale[3]=9.;
+  let n=|child,end,rep,flags,cost,error|Node {sphere:[0.,0.,0.5,0.2],error:[error,0.,cost,cost],links:[child,end,rep,flags]};
+  let nodes=[n(1,2,0,2,1.,1.),n(NONE,2,1,2,5.,0.),
+   n(3,5,2,2,9.,1.),n(NONE,4,3,0,1.,0.),n(NONE,5,4,0,1.,0.)];
+  let selector=Selector::new(&gpu,&nodes,&trees,4,4).unwrap();let empty=depth(&gpu,0.);
+  let projection=crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]};
+  let views=[ConsumerView::camera(projection),ConsumerView::shadow(projection)];
+  for _ in 0..3 {
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union_consumers_budget(&gpu,&mut enc,&views,0.01,4,[10;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
+   assert_eq!(read(&gpu,&selector.direct),[2,0],"camera refinement must retry after sibling cut refunds seven splats");
+   assert_eq!(read(&gpu,&selector.fallback),[0,0]);
+   let state=read(&gpu,&selector.refiner.state);assert_eq!(&state[..3],&[2,7,7]);assert_eq!(state[15],0);
+   assert!(state[28]>0,"retry must reuse immutable proposal work");
+   let count=read(&gpu,&selector.counters)[0]as usize;
+   let mut cut=read(&gpu,&selector.records).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();
+   assert_eq!(cut,[3,4],"complete nonoverlapping sibling cut");
+  }
+ }
+ #[test]
+ #[ignore="exclusive GPU bounded dormant queue fixture"]
+ fn gpu_dormant_overflow_retains_complete_cut_and_resets() {
+  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].scale[2]=1.;trees[0].scale[3]=1.;
+  let camera=|child,end,rep,flags|Node {sphere:[0.,0.,0.5,3.],error:[1.,0.,1.,1.],links:[child,end,rep,flags]};
+  let shadow=|child,end,rep,cost,error|Node {sphere:[2.,0.,0.5,0.2],error:[error,0.,cost,cost],links:[child,end,rep,0]};
+  let mut nodes=Vec::new();
+  for level in 0..4u32 {
+   let base=level*3;nodes.push(camera(base+1,13,base,if level==0 {2}else{0}));
+   nodes.push(shadow(base+2,base+3,base+1,1.,1.));nodes.push(shadow(NONE,base+3,base+2,2.,0.));
+  }
+  nodes.push(Node {sphere:[0.,0.,0.5,0.1],error:[0.,0.,1.,1.],links:[NONE,13,12,0]});
+  let selector=Selector::with_work_capacity(&gpu,&nodes,&trees,16,16,2).unwrap();let empty=depth(&gpu,0.);
+  let camera=crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]};
+  let shadow=crate::part_wind::AnimationView {view_projection:Mat4::from_scale(glam::Vec3::new(0.1,1.,1.)),viewport:[128;2]};
+  for _ in 0..3 {
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union_consumers_budget(&gpu,&mut enc,&[ConsumerView::camera(camera),ConsumerView::shadow(shadow)],0.01,16,[100;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
+   let state=read(&gpu,&selector.refiner.state);assert_eq!(state[15],0,"active queue must fit");assert!(state[63]>0,"fixture must exhaust dormant storage");assert_eq!(state[29],2);
+   let count=read(&gpu,&selector.counters)[0]as usize;
+   let mut cut=read(&gpu,&selector.records).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();
+   assert_eq!(cut,[2,5,7,11,12],"overflow retains precisely one complete parent; other cuts still refine");
+   assert_eq!(read(&gpu,&selector.fallback),[0]);assert_eq!(read(&gpu,&selector.direct),[0]);
   }
  }
  #[test]

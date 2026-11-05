@@ -6,69 +6,33 @@ plans. Architecture first; no interactive playtest until requested.
 
 ## Where we are
 
-Latest scheduler experiment (5 November): capacity-refund retries prove an
-admission gap, but are REJECTED as a normal path. On three alternating native
-720p single-view routes, baseline covered GPU is 12.02-12.15 ms. Retrying the
-full pending frontier raises it to 21.78-22.05 ms; compacting eligible indices
-before priority scans raises it further to 29.52-29.96 ms. Both preserve full
-cuts but keep millions of proposals circulating. Neither is a performance fix.
-The normal renderer remains unchanged. See the experiment record below.
+**Overall status: incomplete.** GPU incremental complete-cut selection, bounded
+paging, shared poses and shadow caching are integrated. Requested detail,
+upstream two-phase visibility, independent consumer detail and target performance
+are still unaccepted. There is no CPU near-tree pool.
 
-Latest refinement-limit audit (5 November): all 40,529 over-target camera
-representations have a resident next complete replacement that fits the FINAL
-remaining slot/camera-splat/shadow-splat budgets. Zero are blocked by those
-limits, missing pages or absent children. This is not a historical rejection
-trace: investigate earlier admission/scheduling rather than claiming capacity
-alone explains the coarse camera cut. No renderer-quality or performance fix
-is claimed by this diagnostic change. G2.2/G3 remain open.
+Latest integrated change (5 November): a separate GPU dormant queue retains
+budget-rejected refinements until active work drains and capacity/new pending
+work changes. Stable parallel wake compaction gives cameras priority while
+keeping eligible shadow work pending, including zero-cost camera batches.
+Dormant overflow publishes a complete resident parent. No CPU scheduling/readback.
 
-Latest branch-consumer audit: the normal route's 821 selected branch records
-are ALL shadow-only (15 source, 806 voxel). Camera detail consists entirely of
-40,529 whole-root voxel representations. The old camera_published_branches
-field counts ownership by a camera-visible root, not branch camera visibility.
-Do not cite rising branch/source slot counts as camera-quality progress.
-Next G3 work must unblock camera refinement with correct consumer visibility
-and independent shadow demands; scheduling more shadow branches is insufficient.
+This is a correctness checkpoint with a measured regression: three alternating
+native720p SINGLE-VIEW runs measure 14.927-15.047 ms covered GPU, selection
+8.575-8.701 ms, against 12.038-12.091 / 5.746-5.838 ms before. Do not call this a
+performance optimization or 4K/four-view acceptance. 144 foliage tests pass.
 
-Next: G3.3 branch-level consumer demand and independent representation detail.
-Two root-cohort queue experiments were rejected; do not repeat root-level
-partition tuning. A root can own camera and off-camera shadow-only branches.
-Root-tagged publication counts do not establish branch-level camera relevance.
+The final normal-route camera cut now has 124 source branches and 66 voxel
+branches (previously zero of both). 40,424 camera nodes still exceed requested
+error; 40,418 are camera-splat constrained and 21,608 also shadow-splat constrained
+(reasons overlap). Seven have a missing next-detail page. No affordable/resident
+next refinement remains in this audit. Nearby crowns remain visibly coarse.
 
-Latest deferred-cache measurement: ~12.03-12.16 ms covered GPU and
-5.72-5.77 ms selection at native 720p, one view. Fresh proposal evaluations
-fall 586,510 -> 261,552, with 324,958 cache reuses. Selection/error counts
-are unchanged; most cost remains in scan/queue/scheduling work. Extra proposal
-scratch is 80 MiB at the current cap. This is not target acceptance.
-
-Latest execution optimization: shared-memory priority staging reduces covered
-GPU to 12.09-12.12 ms, selection to 5.90-5.97 ms (native 720p, one view).
-Three alternating comparisons preserve selection/error counts and appearance.
-The correctness regression below is partially recovered, not fully resolved;
-cross-depth scheduling and requested detail remain open.
-
-Current route update (5 November): individually unaffordable-proposal filtering
-is integrated as a correctness fix but REGRESSES covered GPU to ~13.05 ms
-(native 720p, one view). Prior ~11.5 ms figures below are historical. It admits
-15 source slots but barely changes visible detail. Performance is unaccepted.
-The next architectural issue is globally prioritizing refinement across depths,
-rather than spending budget breadth-first at each hierarchy wave.
-
-**Overall status: incomplete.** Nested geometry groups, GPU incremental complete-cut
-admission, paging, shared poses and shadow caching are integrated. G2.1 is done;
-fine-detail admission, upstream two-phase visibility and scaling/performance
-acceptance are not. The current crowns and performance are not accepted.
-
-**Current work: G2 selection cost and non-monotonic refinement costs**, followed
-by G2.2/G2.3 validation and G3 consumer visibility/detail. No new backend or
-appearance tuning to hide missing architecture.
-
-Latest committed route result (c619265): native1280x720, one view, lowland+grass,
-240frames at1m/s,120warm GPU samples. Three alternating old/new repeats measured
-new11.382/11.574/11.511ms covered GPU, versus11.909/11.917/12.072ms. Selection
-still costs~5.24ms. Camera splats1,361,047,0 missing records,0 emergency fallbacks;
-near crowns remain too coarse and source slots are0. This is NOT4K/four-view
-acceptance. Root-stage compaction was measured and rejected; see the experiment below. Older measurements are historical, not the current build's performance.
+Next: G3 upstream two-phase visibility and independently budgeted camera/shadow
+representation demand. The remaining broad frustum-only shared cut spends its
+physical budget on hidden trees and shared shadow demands. Avoid another round
+of full-frontier retry/queue tuning. The pixel-scale raster and upscaler probes
+below remain required; none of this closes G1.4, G2.2/G2.3, G3 or G8.
 
 ## Immediate performance decision (existing G1.4/G8 evidence, not new gates)
 
@@ -906,9 +870,10 @@ and corresponding route capture/JSON files. No performance improvement claimed.
   rules; all 142 foliage tests pass in the experimental version.
 - [x] Measure stable GPU eligibility compaction; all 142 tests pass, but it
   regresses time further. Preserve both findings; neither path is integrated.
-- [ ] Replace full-frontier retry scanning with bounded dormant-work scheduling
+- [x] Replace full-frontier retry scanning with bounded dormant-work scheduling
   that wakes eligible work after relevant capacity changes. Keep stable priority,
   complete sibling admission, consumer roles, overflow and no-progress draining.
+  Integrated below with 144 passing tests; performance acceptance remains open.
   This is part of G2.2/G3, not an additional completion gate.
 
 | Native720p / one view | Covered GPU medians ms | Selection medians ms |
@@ -946,3 +911,57 @@ Restored normal executable rebuilt and route-verified: 12.093 ms covered GPU,
 821 branch records, 324,958 cached proposal reuses, zero faults/fallbacks,
 40,529 affordable-resident camera refinements. Evidence: refinement-restored.log
 and its GPU sidecar. Production limitation is deliberately reported, not hidden.
+
+## Integrated dormant refinement queue (5 November 2026)
+
+- [x] Retain rejected complete proposals outside active hierarchy queues. Wake
+  only after active work drains and allocation/pending demand changes. Cached
+  camera/projection/page costs remain immutable within one frame encoding.
+- [x] Stable parallel wake compaction, with separate camera and shadow prefixes.
+  Do not wake shadows merely to repark them while camera work has priority.
+  Remember shadow backlog even if the camera batch consumes zero extra capacity.
+- [x] Bounded dormant storage, complete-parent fallback on overflow, reuse of a
+  parked slot on another rejection, and reset between frame encodings.
+- [x] GPU regression fixtures: capacity refund, two-record dormant overflow,
+  repeated-frame reset, and zero-cost camera/shadow wake/no-progress behavior.
+  Existing complete-cut, paging, generation, pose, shadow and lifecycle fixtures
+  still pass: 144 total, including ignored GPU cases, serial execution.
+- [ ] Performance acceptance. Integrated result is slower than baseline and
+  far outside the 0.5 ms four-view selection allocation. No gate is completed.
+
+This replaces one 80-byte-per-entry proposal scratch buffer with a 96-byte
+parked task+proposal buffer: net +16 MiB at the current 1,048,576-entry capacity.
+Active proposals use one buffer. Dormant indices are stable within the frame;
+consumed records are inactive, and a rejected woken task reuses its record.
+`dormant_records` counts records allocated this frame, not currently sleeping
+entries. `dormant_wakes`, `dormant_park_events`, `dormant_wake_passes` and
+`dormant_overflows` expose the actual scheduler activity. Explicit diagnostics
+preserve these counters; normal scheduling never reads them back to the CPU.
+
+| Native720p / one view | Covered GPU medians ms | Selection medians ms |
+| --- | --- | --- |
+| Baseline (alternating) | 12.081 / 12.091 / 12.038 | 5.814 / 5.746 / 5.838 |
+| Integrated dormant queue | 15.026 / 15.047 / 14.927 | 8.627 / 8.701 / 8.575 |
+
+120 warm timestamp samples per route; three repetitions each, identical route
+and settings. This is covered GPU time, not wall-frame time or target acceptance.
+Earlier dormant implementations took 18.25-18.43 ms with serial wake scans and
+15.87-16.04 ms with parallel scans that woke/reparked shadows unnecessarily.
+Both optimizations preserve the final selected representations in this route.
+
+Final counters: 149,699 allocated dormant records, 259,096 wakes across eight
+wake passes, 353,953 park events, zero dormant overflow. 1,701 branch records,
+382 source slots (124 camera-visible), 1,319 voxel slots (66 camera-visible).
+No emergency fallback, slot failure, allocation fault or active-frontier overflow.
+Camera splats reserved 4,194,303; shadow splats 4,194,304. Conservative maximum
+camera spatial error 654.98 px (not actual image error); 40,424 over-target nodes.
+Camera coverage and error remain unaccepted. Matched non-HUD RGB image MAE is
+~0.690/0.698/0.504 on 0-255 channels; visual comparison confirms only a small gain.
+
+Source: `foliage_refine.rs`, `shaders/foliage_refine.wgsl`, diagnostics in
+`foliage_runtime.rs`, fixtures in `foliage_select.rs` and `foliage_refine.rs`.
+Evidence: tracked `dormant-refinement-measurements.json`; local
+`build/playtest-unified/dormant-consumers-{before,after}-{1,2,3}` route logs,
+PNG/GPU/CPU sidecars, `dormant-consumers-comparison.jpg` and
+`dormant-consumers-tests.log`. Final test runtime 22.69 s; release example build
+1m58s. Release compilation remains a substantial iteration cost.

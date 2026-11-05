@@ -1,3 +1,26 @@
+## 5 November: integrated GPU dormant refinement queue (performance unaccepted)
+
+Retain rejected complete proposals outside active traversal; stable parallel
+wake compaction prioritizes cameras and remembers shadow backlog after free
+camera batches. One active proposal buffer plus parked task/proposal storage,
+net +16 MiB at current cap. No CPU schedule/readback. Overflow retains complete
+parents; repeated rejected wakes reuse their parked record. 144 tests PASS.
+
+Three alternating native720p ONE-VIEW routes: baseline 12.038-12.091 ms covered
+GPU / 5.746-5.838 ms selection; new 14.927-15.047 / 8.575-8.701 ms. Retained as
+correctness/architecture fix, explicitly NOT a performance win. Do not describe
+G2 or the full architecture as complete. Camera source branches now 124 versus
+0; 66 camera voxel branches; 40,424 nodes still over target, predominantly splat
+capacity constrained, zero affordable/resident next steps. No faults/overflow
+on the normal route. Eight dormant wake passes / 259,096 wakes versus ~3.1M for
+the previously rejected full-frontier retries. Current executable rebuilt.
+
+Full evidence/checklist: engine/docs/vegetation-architecture.md and tracked
+engine/docs/dormant-refinement-measurements.json. Next G3: upstream two-phase
+visibility and independent camera/shadow representation demand; avoid further
+full-frontier queue tuning. Pixel-scale raster/upscaler and 4K/four-view budgets
+remain unverified. No interactive playtest was started.
+
 ## 5 November: rejected refund retries and eligible-index compaction
 
 Found a real scheduling gap: rejected camera refinements are finalized before

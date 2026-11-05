@@ -14,7 +14,7 @@ struct AssetPage {resident:u32,requested:atomic<u32>,generation:u32,padding:u32}
 @group(0) @binding(3) var<storage,read_write> pages:array<AssetPage>;
 struct Proposal {old:vec4<u32>,replacement:vec4<u32>,prefix:vec4<u32>,control:vec4<u32>,output:vec4<u32>};
 @group(0) @binding(4) var<storage,read_write> proposals:array<Proposal>;
-// task: root, node (NONE means emergency proxy), consumer mask, padding.
+// task: root, node (NONE means emergency proxy), consumer mask, dormant index+2 (0=new).
 @group(0) @binding(5) var<storage,read_write> current:array<vec4<u32>>;
 @group(0) @binding(6) var<storage,read_write> next:array<vec4<u32>>;
 // 32 global priority totals, followed by 32 buckets per 256-task block.
@@ -28,7 +28,8 @@ struct Demand {count:atomic<u32>,bucket:u32,prefix:u32,failed:atomic<u32>};
 // used xyz, task count; snapshot xyz, next count; task and scan indirect args;
 // fault at15, peak16, retained-for-budget17. Never read back to schedule work.
 @group(0) @binding(13) var<storage,read_write> state:array<atomic<u32>>;
-@group(0) @binding(14) var<storage,read_write> next_proposals:array<Proposal>;
+struct Parked { task:vec4<u32>, proposal:Proposal };
+@group(0) @binding(14) var<storage,read_write> parked:array<Parked>;
 const NONE:u32=0xffffffffu;
 fn ready(rep:u32)->bool {
  if atomicLoad(&pages[rep].requested)==0u {atomicOr(&pages[rep].requested,1u);}
@@ -76,6 +77,16 @@ fn add_used(cost:vec4<u32>) {
  atomicStore(&state[7],0u);atomicStore(&state[18],0u);
  atomicStore(&state[8],(count+63u)/64u);atomicStore(&state[9],1u);atomicStore(&state[10],1u);
  atomicStore(&state[12],(count+255u)/256u);atomicStore(&state[13],1u);atomicStore(&state[14],1u);
+ // A dormant queue is revisited only after the active frontier drains and
+ // capacity or new pending work changed since its last wake attempt.
+ let used=vec3<u32>(atomicLoad(&state[0]),atomicLoad(&state[1]),atomicLoad(&state[2]));
+ let previous=vec3<u32>(atomicLoad(&state[56]),atomicLoad(&state[57]),atomicLoad(&state[58]));
+ let parked_count=atomicLoad(&state[29]);
+ let wake=count==0u && (atomicLoad(&state[15])&3u)==0u && (parked_count!=atomicLoad(&state[59]) || any(used!=previous) || atomicLoad(&state[30])!=0u);
+ atomicStore(&state[55],select(0u,1u,wake));
+ atomicStore(&state[64],select(0u,(parked_count+255u)/256u,wake));atomicStore(&state[65],1u);atomicStore(&state[66],1u);
+ if wake {for(var k=0u;k<3u;k++) {atomicStore(&state[56u+k],used[k]);}atomicStore(&state[59],parked_count);atomicAdd(&state[62],1u);}
+
 }
 fn projected(t:Tree,n:Node)->vec2<f32> {
  let s=sphere(t,n);var all_scale=0.0;var camera_scale=0.0;
@@ -113,12 +124,12 @@ fn candidate(tree:u32,start:u32,request_pages:bool)->u32 {
  let task=current[at];var p:Proposal;
  // Cache lives only within this encode: camera, pages and nodes are immutable.
  // Available budget changes, so admission is always rechecked.
- if task.w==1u {
-  let cached=proposals[at];p.old=cached.old;p.replacement=cached.replacement;
-  p.control=vec4<u32>(cached.control.xy,cached.output.y,0u);p.output.y=cached.output.y;
+ if task.w>=2u {
+  let cached=parked[task.w-2u].proposal;p.old=cached.old;p.replacement=cached.replacement;
+  p.control=vec4<u32>(cached.control.x,1u,cached.output.y,0u);p.output.y=cached.output.y;
   let used=vec3<u32>(atomicLoad(&state[4]),atomicLoad(&state[5]),atomicLoad(&state[6]));
   let capacity=view.consumer_count.yzw;let delta=p.replacement-min(p.replacement,p.old);
-  if any(delta.xyz>capacity-min(used,capacity)) {p.control.y=0u;atomicAdd(&state[17],1u);}
+  if any(delta.xyz>capacity-min(used,capacity)) {p.control.y=2u;atomicAdd(&state[17],1u);}
   else if (task.z&256u)!=0u {atomicOr(&state[18],1u);}
   atomicAdd(&state[28],1u);proposals[at]=p;return;
  }
@@ -150,10 +161,9 @@ fn candidate(tree:u32,start:u32,request_pages:bool)->u32 {
   let capacity=view.consumer_count.yzw;
   // An individually impossible proposal must not reserve prefix space and
   // starve cheaper candidates. Retain its parent without entering the scan.
-  if any(delta.xyz>capacity-min(used,capacity)) {
-   atomicAdd(&state[17],1u);proposals[at]=p;return;
-  }
-  if (task.z&256u)!=0u {atomicOr(&state[18],1u);}
+  let individually_fits=all(delta.xyz<=capacity-min(used,capacity));
+  if !individually_fits {atomicAdd(&state[17],1u);}
+  if individually_fits && (task.z&256u)!=0u {atomicOr(&state[18],1u);}
   let price=max(1.0,f32(delta.x)*256.0+f32(delta.y)+f32(delta.z));
   // Mandatory root fallbacks carry zero authored error. Their projected size
   // still determines benefit; otherwise all roots tie regardless of distance.
@@ -161,7 +171,7 @@ fn candidate(tree:u32,start:u32,request_pages:bool)->u32 {
   let priority_scale=select(scale.x,scale.y,(task.z&256u)!=0u);
   let benefit=max(0.001,priority_scale*max(parent_error-child_error,parent_error*0.01));
   let bucket=u32(clamp(floor(log2(max(benefit/price,1e-20)))+12.0,0.0,15.0));
-  p.control=vec4<u32>(bucket+select(0u,16u,(task.z&256u)!=0u),1u,children,0u);
+  p.control=vec4<u32>(bucket+select(0u,16u,(task.z&256u)!=0u),select(2u,1u,individually_fits),children,0u);
   p.output.y=children; // Deferred queue count is one; preserve replacement arity.
  }
  proposals[at]=p;
@@ -174,7 +184,7 @@ var<workgroup> priority_items:array<vec4<u32>,256>;
  var item=vec4<u32>(0u);
  if start+lane<end {
   let p=proposals[start+lane];
-  item=vec4<u32>((p.replacement-min(p.replacement,p.old)).xyz,select(0u,p.control.x+1u,p.control.y!=0u));
+  item=vec4<u32>((p.replacement-min(p.replacement,p.old)).xyz,select(0u,p.control.x+1u,p.control.y==1u));
  }
  priority_items[lane]=item;workgroupBarrier();
  if lane>=32u {return;}
@@ -196,10 +206,11 @@ var<workgroup> priority_items:array<vec4<u32>,256>;
 @compute @workgroup_size(64) fn decide(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
  let p=proposals[at];if p.control.y==0u {return;}
+ if p.control.y==2u {proposals[at].control.w=2u;return;}
  // Keep shadow-only work pending while any camera refinement remains. A coarse
  // shadow upgrade cannot consume slots needed by a later camera hierarchy level.
  if (current[at].z&256u)==0u && atomicLoad(&state[18])!=0u {
-  proposals[at].control.w=2u;proposals[at].control.z=1u;return;
+  proposals[at].control.w=2u;return;
  }
  var before=plus(p.prefix,blocks[32u+(at/256u)*32u+p.control.x]);
  for(var b=p.control.x+1u;b<32u;b++) {before=plus(before,blocks[b]);}
@@ -209,21 +220,26 @@ var<workgroup> priority_items:array<vec4<u32>,256>;
  // Zero/negative-cost replacements remain allowed when a baseline exceeds a cap.
  let cost=plus(before,delta);let fits=all(select(cost.xyz<=available.xyz-min(used.xyz,available.xyz),vec3<bool>(true),delta.xyz==vec3<u32>(0u)));
  if fits && (atomicLoad(&state[15])&3u)==0u {proposals[at].control.w=1u;}
- else {atomicAdd(&state[17],1u);}
+ else {proposals[at].control.w=2u;atomicAdd(&state[17],1u);}
 }
 @compute @workgroup_size(1) fn output_scan(@builtin(workgroup_id) block:vec3<u32>) {
- var sum=0u;let end=min((block.x+1u)*256u,atomicLoad(&state[3]));
+ var sum=0u;var asleep=0u;let end=min((block.x+1u)*256u,atomicLoad(&state[3]));
  for(var at=block.x*256u;at<end;at++) {
-  proposals[at].output.x=sum;
-  if proposals[at].control.w!=0u {sum+=proposals[at].control.z;}
+  proposals[at].output.x=sum;proposals[at].output.z=asleep;
+  if proposals[at].control.w==1u {sum+=proposals[at].control.z;}
+  if proposals[at].control.w==2u && current[at].w<2u {asleep++;}
  }
- blocks[32u+block.x*32u]=vec4<u32>(sum,0u,0u,0u);
+ blocks[32u+block.x*32u]=vec4<u32>(sum,0u,asleep,0u);
 }
 @compute @workgroup_size(1) fn output_totals() {
- var sum=0u;
+ var sum=0u;var asleep=0u;
  for(var b=0u;b<(atomicLoad(&state[3])+255u)/256u;b++) {
-  let at=32u+b*32u;let count=blocks[at].x;blocks[at].y=sum;sum+=count;
+  let at=32u+b*32u;let count=blocks[at];blocks[at].y=sum;blocks[at].w=asleep;
+  sum+=count.x;asleep+=count.z;
  }
+ let base=atomicLoad(&state[29]);atomicStore(&state[31],base);
+ atomicStore(&state[29],min(base+asleep,arrayLength(&parked)));
+ if asleep>arrayLength(&parked)-base {atomicAdd(&state[63],asleep-(arrayLength(&parked)-base));}
  atomicStore(&state[7],sum);atomicMax(&state[16],sum);
  if sum>arrayLength(&next) {atomicOr(&state[15],2u);}
 }
@@ -237,12 +253,20 @@ fn publish(task:vec4<u32>) {
  if at<view.counts.y {records[at]=vec4<u32>(task.x,task.y,n.links.z,trees[task.x].info.y);}
  else {atomicStore(&fallback[task.x],1u);atomicAdd(&counters[3],1u);}
 }
+fn state_park_index(at:u32,p:Proposal)->u32 {
+ if current[at].w>=2u {return current[at].w-2u;}
+ return atomicLoad(&state[31])+blocks[32u+(at/256u)*32u].w+p.output.z;
+}
 @compute @workgroup_size(64) fn apply(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
  let p=proposals[at];let task=current[at];
  if p.control.w==2u && (atomicLoad(&state[15])&2u)==0u {
-  let destination=p.output.x+blocks[32u+(at/256u)*32u].y;
-  next[destination]=vec4<u32>(task.xyz,1u);next_proposals[destination]=p;return;
+  var destination=state_park_index(at,p);
+  if destination<arrayLength(&parked) {
+   parked[destination].task=vec4<u32>(task.xyz,1u);parked[destination].proposal=p;
+   atomicAdd(&state[61],1u);
+  }else {publish(task);}
+  return;
  }
  if p.control.w==0u || (atomicLoad(&state[15])&2u)!=0u {publish(task);return;}
  // No writes to children until every candidate's output range is reserved.
@@ -270,6 +294,53 @@ fn publish(task:vec4<u32>) {
 // A depth-bounded final drain retains the current cut rather than dropping work.
 @compute @workgroup_size(64) fn drain(@builtin(global_invocation_id) id:vec3<u32>) {
  if id.x<atomicLoad(&state[3]) {publish(current[id.x]);}
+ if id.x<atomicLoad(&state[29]) && parked[id.x].task.w==1u {publish(parked[id.x].task);}
+}
+// Stable wake compaction is skipped entirely while active traversal continues.
+fn wakeable(at:u32)->bool {
+ if parked[at].task.w!=1u {return false;}
+ let p=parked[at].proposal;let delta=p.replacement-min(p.replacement,p.old);
+ let used=vec3<u32>(atomicLoad(&state[0]),atomicLoad(&state[1]),atomicLoad(&state[2]));
+ return all(delta.xyz<=view.consumer_count.yzw-min(used,view.consumer_count.yzw));
+}
+var<workgroup> wake_scan:array<vec2<u32>,256>;
+@compute @workgroup_size(256) fn wake_count(@builtin(workgroup_id) block:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+ let at=block.x*256u+lane;let valid=at<atomicLoad(&state[29]);var selected=vec2<u32>(0u);
+ if valid && wakeable(at) {selected=select(vec2<u32>(0u,1u),vec2<u32>(1u,0u),(parked[at].task.z&256u)!=0u);}
+ wake_scan[lane]=selected;workgroupBarrier();
+ for(var step=1u;step<256u;step*=2u) {
+  var prior=vec2<u32>(0u);if lane>=step {prior=wake_scan[lane-step];}
+  workgroupBarrier();wake_scan[lane]+=prior;workgroupBarrier();
+ }
+ if valid {
+  let prefix=wake_scan[lane]-selected;
+  parked[at].proposal.output.w=select(prefix.y,prefix.x,selected.x!=0u);
+  parked[at].proposal.prefix.w=selected.x+2u*selected.y;
+ }
+ if lane==255u {blocks[32u+block.x*32u]=vec4<u32>(wake_scan[lane],0u,0u);}
+}
+@compute @workgroup_size(1) fn wake_prefix() {
+ if atomicLoad(&state[55])==0u {return;}
+ var sum=vec2<u32>(0u);
+ for(var b=0u;b<(atomicLoad(&state[29])+255u)/256u;b++) {
+  let at=32u+b*32u;let count=blocks[at].xy;blocks[at].z=sum.x;blocks[at].w=sum.y;sum+=count;
+ }
+ // Match camera-priority admission without repeatedly waking shadow work that
+ // decide would immediately park again. Remember it even if camera work is free.
+ let camera=sum.x!=0u;let count=select(sum.y,sum.x,camera);
+ atomicStore(&state[30],select(0u,1u,camera && sum.y!=0u));
+ atomicStore(&state[67],select(2u,1u,camera));
+ atomicStore(&state[3],count);atomicAdd(&state[60],count);
+ atomicStore(&state[8],(count+63u)/64u);atomicStore(&state[12],(count+255u)/256u);
+}
+@compute @workgroup_size(256) fn wake_scatter(@builtin(workgroup_id) block:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+ let at=block.x*256u+lane;if at>=atomicLoad(&state[29]) {return;}
+ let role=atomicLoad(&state[67]);
+ if parked[at].proposal.prefix.w==role {
+  let base=select(blocks[32u+block.x*32u].w,blocks[32u+block.x*32u].z,role==1u);
+  let offset=base+parked[at].proposal.output.w;
+  current[offset]=vec4<u32>(parked[at].task.xyz,at+2u);parked[at].task.w=0u;
+ }
 }
 fn sphere(t:Tree,n:Node)->vec4<f32> {
  let p=vec4<f32>(n.sphere.xyz,1.0);
