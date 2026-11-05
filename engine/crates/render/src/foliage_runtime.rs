@@ -455,6 +455,15 @@ impl Runtime {
         let slots:Vec<crate::foliage_residency::ResidentSlot>=slot_bytes.chunks_exact(32).map(bytemuck::pod_read_unaligned).collect();
         let nodes:Vec<crate::foliage_select::Node>=node_bytes.chunks_exact(48).map(bytemuck::pod_read_unaligned).collect();
         let pages:Vec<[u32;4]>=page_bytes.chunks_exact(16).map(bytemuck::pod_read_unaligned).collect();
+        let mut tasks=Vec::new();let mut task_indices=std::collections::BTreeMap::new();
+        for profile in profiles.iter() {if let Some(cells)=profile["largest_submitted_cells"].as_array(){for cell in cells {
+            let volume=cell["volume"].as_u64().ok_or("missing profile volume")? as usize;
+            if volume<self.slots as usize {
+                let slot=slots.get(volume).ok_or("offline cut slot out of range")?;let key=(slot.key[0],slot.key[1]);
+                if let std::collections::btree_map::Entry::Vacant(entry)=task_indices.entry(key){entry.insert(tasks.len());tasks.push([key.0,key.1,256,0]);}
+            }
+        }}}
+        let traced=self.selector.refiner.trace_proposals(gpu,&self.selector,&tasks)?;
         let describe=|id:usize|->Result<serde_json::Value,String>{
             let n=nodes.get(id).ok_or("offline cut node out of range")?;
             let page=pages.get(n.links[2]as usize).ok_or("offline cut page out of range")?;
@@ -469,7 +478,7 @@ impl Runtime {
             while child!=crate::foliage_select::NONE && child<node.links[1] {
                 children.push(describe(child as usize)?);let next=nodes[child as usize].links[1];if next<=child{return Err("offline cut invalid child span".into());}child=next;
             }
-            cell["cut_owner"]=serde_json::json!({"kind":"articulated_slot","root":slot.key[0],"generation":slot.key[3],"history":slot.history,"selected":describe(slot.key[1]as usize)?,"immediate_children":children});
+            cell["cut_owner"]=serde_json::json!({"kind":"articulated_slot","root":slot.key[0],"generation":slot.key[3],"history":slot.history,"selected":describe(slot.key[1]as usize)?,"immediate_children":children,"final_budget_proposal_replay":{"scope":"actual GPU propose kernel after unary skipping, final-frame budget; not historical admission","old":traced[task_indices[&(slot.key[0],slot.key[1])]][0],"replacement":traced[task_indices[&(slot.key[0],slot.key[1])]][1],"control":traced[task_indices[&(slot.key[0],slot.key[1])]][3]}});
         }}}
         Ok(())
     }

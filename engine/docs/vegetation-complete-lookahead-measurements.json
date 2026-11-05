@@ -1,0 +1,3224 @@
+{
+  "status": "rejected, production traversal restored",
+  "base_commit": "7974a881eb9de103639c335a2c587c5097bfddba",
+  "scope": "native1280x720 ONE view, 240-frame routes, GPU frames>=120, three alternating pairs per route; not target acceptance",
+  "tests": "155 foliage tests passed before rejection, including complete-cut missing-page/budget fixture",
+  "proposal_replay": [
+    {
+      "articulated_group_bins": [
+        0,
+        0,
+        0,
+        212,
+        437,
+        363,
+        235,
+        0,
+        0,
+        0
+      ],
+      "capacity": 4194304,
+      "diameter_bin_upper_px": [
+        0.5,
+        1.0,
+        2.0,
+        4.0,
+        8.0,
+        16.0,
+        32.0,
+        64.0,
+        128.0,
+        null
+      ],
+      "largest_submitted_cells": [
+        {
+          "alpha": 0.7074540257453918,
+          "cut_owner": {
+            "final_budget_proposal_replay": {
+              "control": [
+                23,
+                1,
+                2,
+                0
+              ],
+              "old": [
+                1,
+                171,
+                0,
+                0
+              ],
+              "replacement": [
+                2,
+                199,
+                0,
+                0
+              ],
+              "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+            },
+            "generation": 1,
+            "history": [
+              3,
+              1,
+              1,
+              256
+            ],
+            "immediate_children": [
+              {
+                "error_and_splat_cost": [
+                  3.3463592529296875,
+                  3.429285764694214,
+                  112.0,
+                  112.0
+                ],
+                "links": [
+                  1118,
+                  1169,
+                  1117,
+                  0
+                ],
+                "node": 1117,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  0.0,
+                  13.80000114440918,
+                  0.0,
+                  9.18033504486084
+                ]
+              },
+              {
+                "error_and_splat_cost": [
+                  1.7538098096847534,
+                  0.7654655575752258,
+                  87.0,
+                  87.0
+                ],
+                "links": [
+                  1170,
+                  1214,
+                  1169,
+                  0
+                ],
+                "node": 1169,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  0.3000001907348633,
+                  14.700000762939453,
+                  0.3000001907348633,
+                  9.203478813171387
+                ]
+              }
+            ],
+            "kind": "articulated_slot",
+            "root": 33573,
+            "selected": {
+              "error_and_splat_cost": [
+                1.7875136137008667,
+                0.9491773247718811,
+                171.0,
+                171.0
+              ],
+              "links": [
+                1117,
+                1214,
+                1116,
+                0
+              ],
+              "node": 1116,
+              "page": [
+                1,
+                0,
+                3,
+                0
+              ],
+              "sphere": [
+                0.0,
+                13.80000114440918,
+                0.0,
+                10.198466300964355
+              ]
+            }
+          },
+          "diameter_px": 21.308317184448242,
+          "packed_cell": 4196357,
+          "volume": 435,
+          "world_cell_size": 0.7840943336486816,
+          "world_centre": [
+            -13.563965797424316,
+            16.220287322998047,
+            -24.723554611206055
+          ]
+        },
+        {
+          "alpha": 0.7412832975387573,
+          "cut_owner": {
+            "final_budget_proposal_replay": {
+              "control": [
+                23,
+                1,
+                2,
+                0
+              ],
+              "old": [
+                1,
+                171,
+                0,
+                0
+              ],
+              "replacement": [
+                2,
+                199,
+                0,
+                0
+              ],
+              "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+            },
+            "generation": 1,
+            "history": [
+              3,
+              1,
+              1,
+              256
+            ],
+            "immediate_children": [
+              {
+                "error_and_splat_cost": [
+                  3.3463592529296875,
+                  3.429285764694214,
+                  112.0,
+                  112.0
+                ],
+                "links": [
+                  1118,
+                  1169,
+                  1117,
+                  0
+                ],
+                "node": 1117,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  0.0,
+                  13.80000114440918,
+                  0.0,
+                  9.18033504486084
+                ]
+              },
+              {
+                "error_and_splat_cost": [
+                  1.7538098096847534,
+                  0.7654655575752258,
+                  87.0,
+                  87.0
+                ],
+                "links": [
+                  1170,
+                  1214,
+                  1169,
+                  0
+                ],
+                "node": 1169,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  0.3000001907348633,
+                  14.700000762939453,
+                  0.3000001907348633,
+                  9.203478813171387
+                ]
+              }
+            ],
+            "kind": "articulated_slot",
+            "root": 33573,
+            "selected": {
+              "error_and_splat_cost": [
+                1.7875136137008667,
+                0.9491773247718811,
+                171.0,
+                171.0
+              ],
+              "links": [
+                1117,
+                1214,
+                1116,
+                0
+              ],
+              "node": 1116,
+              "page": [
+                1,
+                0,
+                3,
+                0
+              ],
+              "sphere": [
+                0.0,
+                13.80000114440918,
+                0.0,
+                10.198466300964355
+              ]
+            }
+          },
+          "diameter_px": 21.246509552001953,
+          "packed_cell": 4197380,
+          "volume": 435,
+          "world_cell_size": 0.7840943336486816,
+          "world_centre": [
+            -14.298826217651367,
+            17.00438117980957,
+            -24.997024536132812
+          ]
+        },
+        {
+          "alpha": 0.7675135135650635,
+          "cut_owner": {
+            "final_budget_proposal_replay": {
+              "control": [
+                23,
+                1,
+                2,
+                0
+              ],
+              "old": [
+                1,
+                171,
+                0,
+                0
+              ],
+              "replacement": [
+                2,
+                199,
+                0,
+                0
+              ],
+              "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+            },
+            "generation": 1,
+            "history": [
+              3,
+              1,
+              1,
+              256
+            ],
+            "immediate_children": [
+              {
+                "error_and_splat_cost": [
+                  3.3463592529296875,
+                  3.429285764694214,
+                  112.0,
+                  112.0
+                ],
+                "links": [
+                  1118,
+                  1169,
+                  1117,
+                  0
+                ],
+                "node": 1117,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  0.0,
+                  13.80000114440918,
+                  0.0,
+                  9.18033504486084
+                ]
+              },
+              {
+                "error_and_splat_cost": [
+                  1.7538098096847534,
+                  0.7654655575752258,
+                  87.0,
+                  87.0
+                ],
+                "links": [
+                  1170,
+                  1214,
+                  1169,
+                  0
+                ],
+                "node": 1169,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  0.3000001907348633,
+                  14.700000762939453,
+                  0.3000001907348633,
+                  9.203478813171387
+                ]
+              }
+            ],
+            "kind": "articulated_slot",
+            "root": 33573,
+            "selected": {
+              "error_and_splat_cost": [
+                1.7875136137008667,
+                0.9491773247718811,
+                171.0,
+                171.0
+              ],
+              "links": [
+                1117,
+                1214,
+                1116,
+                0
+              ],
+              "node": 1116,
+              "page": [
+                1,
+                0,
+                3,
+                0
+              ],
+              "sphere": [
+                0.0,
+                13.80000114440918,
+                0.0,
+                10.198466300964355
+              ]
+            }
+          },
+          "diameter_px": 21.072999954223633,
+          "packed_cell": 4199427,
+          "volume": 435,
+          "world_cell_size": 0.7840943336486816,
+          "world_centre": [
+            -15.033685684204102,
+            18.57257080078125,
+            -25.270492553710938
+          ]
+        },
+        {
+          "alpha": 0.8632944226264954,
+          "cut_owner": {
+            "attribution": "not yet decoded",
+            "kind": "whole_root"
+          },
+          "diameter_px": 20.943613052368164,
+          "packed_cell": 3156995,
+          "volume": 37400,
+          "world_cell_size": 1.3645734786987305,
+          "world_centre": [
+            -32.024810791015625,
+            13.784701347351074,
+            -39.973411560058594
+          ]
+        },
+        {
+          "alpha": 0.6991073489189148,
+          "cut_owner": {
+            "final_budget_proposal_replay": {
+              "control": [
+                23,
+                1,
+                2,
+                0
+              ],
+              "old": [
+                1,
+                171,
+                0,
+                0
+              ],
+              "replacement": [
+                2,
+                199,
+                0,
+                0
+              ],
+              "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+            },
+            "generation": 1,
+            "history": [
+              3,
+              1,
+              1,
+              256
+            ],
+            "immediate_children": [
+              {
+                "error_and_splat_cost": [
+                  3.3463592529296875,
+                  3.429285764694214,
+                  112.0,
+                  112.0
+                ],
+                "links": [
+                  1118,
+                  1169,
+                  1117,
+                  0
+                ],
+                "node": 1117,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  0.0,
+                  13.80000114440918,
+                  0.0,
+                  9.18033504486084
+                ]
+              },
+              {
+                "error_and_splat_cost": [
+                  1.7538098096847534,
+                  0.7654655575752258,
+                  87.0,
+                  87.0
+                ],
+                "links": [
+                  1170,
+                  1214,
+                  1169,
+                  0
+                ],
+                "node": 1169,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  0.3000001907348633,
+                  14.700000762939453,
+                  0.3000001907348633,
+                  9.203478813171387
+                ]
+              }
+            ],
+            "kind": "articulated_slot",
+            "root": 33573,
+            "selected": {
+              "error_and_splat_cost": [
+                1.7875136137008667,
+                0.9491773247718811,
+                171.0,
+                171.0
+              ],
+              "links": [
+                1117,
+                1214,
+                1116,
+                0
+              ],
+              "node": 1116,
+              "page": [
+                1,
+                0,
+                3,
+                0
+              ],
+              "sphere": [
+                0.0,
+                13.80000114440918,
+                0.0,
+                10.198466300964355
+              ]
+            }
+          },
+          "diameter_px": 20.633268356323242,
+          "packed_cell": 4199428,
+          "volume": 435,
+          "world_cell_size": 0.7840943336486816,
+          "world_centre": [
+            -14.298826217651367,
+            18.57257080078125,
+            -24.997024536132812
+          ]
+        },
+        {
+          "alpha": 0.5000076293945312,
+          "cut_owner": {
+            "final_budget_proposal_replay": {
+              "control": [
+                23,
+                1,
+                2,
+                0
+              ],
+              "old": [
+                1,
+                37,
+                0,
+                0
+              ],
+              "replacement": [
+                2,
+                50,
+                0,
+                0
+              ],
+              "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+            },
+            "generation": 1,
+            "history": [
+              3,
+              1,
+              1,
+              384
+            ],
+            "immediate_children": [
+              {
+                "error_and_splat_cost": [
+                  6.557891845703125,
+                  2.939387798309326,
+                  26.0,
+                  26.0
+                ],
+                "links": [
+                  1776,
+                  1842,
+                  1775,
+                  0
+                ],
+                "node": 1775,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  -0.3000001907348633,
+                  1.8000001907348633,
+                  0.5999999046325684,
+                  6.878459930419922
+                ]
+              },
+              {
+                "error_and_splat_cost": [
+                  6.55078649520874,
+                  2.939387798309326,
+                  24.0,
+                  24.0
+                ],
+                "links": [
+                  1843,
+                  1913,
+                  1842,
+                  0
+                ],
+                "node": 1842,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  0.2999997138977051,
+                  1.8000001907348633,
+                  0.5999999046325684,
+                  6.259670257568359
+                ]
+              }
+            ],
+            "kind": "articulated_slot",
+            "root": 70245,
+            "selected": {
+              "error_and_splat_cost": [
+                1.881354570388794,
+                0.5817538499832153,
+                37.0,
+                37.0
+              ],
+              "links": [
+                1775,
+                1913,
+                1774,
+                0
+              ],
+              "node": 1774,
+              "page": [
+                1,
+                0,
+                3,
+                0
+              ],
+              "sphere": [
+                0.9000000953674316,
+                1.8000001907348633,
+                0.5999999046325684,
+                8.078460693359375
+              ]
+            }
+          },
+          "diameter_px": 20.261964797973633,
+          "packed_cell": 2098178,
+          "volume": 2148,
+          "world_cell_size": 0.6637064814567566,
+          "world_centre": [
+            -2.140948534011841,
+            -0.07421901822090149,
+            -25.209861755371094
+          ]
+        },
+        {
+          "alpha": 0.5000076293945312,
+          "cut_owner": {
+            "final_budget_proposal_replay": {
+              "control": [
+                23,
+                1,
+                2,
+                0
+              ],
+              "old": [
+                1,
+                37,
+                0,
+                0
+              ],
+              "replacement": [
+                2,
+                50,
+                0,
+                0
+              ],
+              "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+            },
+            "generation": 1,
+            "history": [
+              3,
+              1,
+              1,
+              384
+            ],
+            "immediate_children": [
+              {
+                "error_and_splat_cost": [
+                  6.557891845703125,
+                  2.939387798309326,
+                  26.0,
+                  26.0
+                ],
+                "links": [
+                  1776,
+                  1842,
+                  1775,
+                  0
+                ],
+                "node": 1775,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  -0.3000001907348633,
+                  1.8000001907348633,
+                  0.5999999046325684,
+                  6.878459930419922
+                ]
+              },
+              {
+                "error_and_splat_cost": [
+                  6.55078649520874,
+                  2.939387798309326,
+                  24.0,
+                  24.0
+                ],
+                "links": [
+                  1843,
+                  1913,
+                  1842,
+                  0
+                ],
+                "node": 1842,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  0.2999997138977051,
+                  1.8000001907348633,
+                  0.5999999046325684,
+                  6.259670257568359
+                ]
+              }
+            ],
+            "kind": "articulated_slot",
+            "root": 70245,
+            "selected": {
+              "error_and_splat_cost": [
+                1.881354570388794,
+                0.5817538499832153,
+                37.0,
+                37.0
+              ],
+              "links": [
+                1775,
+                1913,
+                1774,
+                0
+              ],
+              "node": 1774,
+              "page": [
+                1,
+                0,
+                3,
+                0
+              ],
+              "sphere": [
+                0.9000000953674316,
+                1.8000001907348633,
+                0.5999999046325684,
+                8.078460693359375
+              ]
+            }
+          },
+          "diameter_px": 20.261449813842773,
+          "packed_cell": 2099202,
+          "volume": 2148,
+          "world_cell_size": 0.6637064814567566,
+          "world_centre": [
+            -2.140948534011841,
+            0.5894874334335327,
+            -25.209861755371094
+          ]
+        },
+        {
+          "alpha": 0.7905851602554321,
+          "cut_owner": {
+            "attribution": "not yet decoded",
+            "kind": "whole_root"
+          },
+          "diameter_px": 20.201690673828125,
+          "packed_cell": 2108419,
+          "volume": 37400,
+          "world_cell_size": 1.3645734786987305,
+          "world_centre": [
+            -30.73102378845215,
+            13.784701347351074,
+            -40.40720748901367
+          ]
+        },
+        {
+          "alpha": 0.653620183467865,
+          "cut_owner": {
+            "final_budget_proposal_replay": {
+              "control": [
+                23,
+                1,
+                2,
+                0
+              ],
+              "old": [
+                1,
+                139,
+                0,
+                0
+              ],
+              "replacement": [
+                2,
+                162,
+                0,
+                0
+              ],
+              "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+            },
+            "generation": 1,
+            "history": [
+              4,
+              0,
+              1,
+              384
+            ],
+            "immediate_children": [
+              {
+                "error_and_splat_cost": [
+                  6.497558116912842,
+                  7.838367462158203,
+                  78.0,
+                  78.0
+                ],
+                "links": [
+                  1066,
+                  1090,
+                  1065,
+                  0
+                ],
+                "node": 1065,
+                "page": [
+                  1,
+                  0,
+                  4,
+                  0
+                ],
+                "sphere": [
+                  0.0,
+                  11.700000762939453,
+                  -0.2999997138977051,
+                  8.628870010375977
+                ]
+              },
+              {
+                "error_and_splat_cost": [
+                  6.501307010650635,
+                  3.9191837310791016,
+                  84.0,
+                  84.0
+                ],
+                "links": [
+                  1091,
+                  1115,
+                  1090,
+                  0
+                ],
+                "node": 1090,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  0.3000001907348633,
+                  12.30000114440918,
+                  0.9000000953674316,
+                  8.458029747009277
+                ]
+              }
+            ],
+            "kind": "articulated_slot",
+            "root": 33573,
+            "selected": {
+              "error_and_splat_cost": [
+                1.8247698545455933,
+                1.0104146003723145,
+                139.0,
+                139.0
+              ],
+              "links": [
+                1065,
+                1115,
+                1064,
+                0
+              ],
+              "node": 1064,
+              "page": [
+                1,
+                0,
+                4,
+                0
+              ],
+              "sphere": [
+                0.0,
+                11.700000762939453,
+                0.8999996185302734,
+                9.828868865966797
+              ]
+            }
+          },
+          "diameter_px": 19.919700622558594,
+          "packed_cell": 3147781,
+          "volume": 1924,
+          "world_cell_size": 0.7840943336486816,
+          "world_centre": [
+            -13.153762817382812,
+            13.475955963134766,
+            -25.825843811035156
+          ]
+        },
+        {
+          "alpha": 0.5000076293945312,
+          "cut_owner": {
+            "final_budget_proposal_replay": {
+              "control": [
+                23,
+                1,
+                2,
+                0
+              ],
+              "old": [
+                1,
+                128,
+                0,
+                0
+              ],
+              "replacement": [
+                2,
+                139,
+                0,
+                0
+              ],
+              "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+            },
+            "generation": 1,
+            "history": [
+              4,
+              0,
+              1,
+              256
+            ],
+            "immediate_children": [
+              {
+                "error_and_splat_cost": [
+                  6.880267143249512,
+                  3.9191837310791016,
+                  57.0,
+                  57.0
+                ],
+                "links": [
+                  609,
+                  626,
+                  608,
+                  0
+                ],
+                "node": 608,
+                "page": [
+                  1,
+                  0,
+                  4,
+                  0
+                ],
+                "sphere": [
+                  -0.5999999046325684,
+                  13.200000762939453,
+                  0.5999999046325684,
+                  6.880345821380615
+                ]
+              },
+              {
+                "error_and_splat_cost": [
+                  6.918023109436035,
+                  3.9191837310791016,
+                  82.0,
+                  82.0
+                ],
+                "links": [
+                  627,
+                  651,
+                  626,
+                  0
+                ],
+                "node": 626,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  1.200000286102295,
+                  12.0,
+                  -0.5999999046325684,
+                  7.522513389587402
+                ]
+              }
+            ],
+            "kind": "articulated_slot",
+            "root": 33574,
+            "selected": {
+              "error_and_splat_cost": [
+                2.241485595703125,
+                1.0104146003723145,
+                128.0,
+                128.0
+              ],
+              "links": [
+                608,
+                651,
+                607,
+                0
+              ],
+              "node": 607,
+              "page": [
+                1,
+                0,
+                4,
+                0
+              ],
+              "sphere": [
+                0.6000006198883057,
+                12.0,
+                -0.5999999046325684,
+                8.958806991577148
+              ]
+            }
+          },
+          "diameter_px": 19.872743606567383,
+          "packed_cell": 3149825,
+          "volume": 1925,
+          "world_cell_size": 0.5855696797370911,
+          "world_centre": [
+            0.4292643666267395,
+            11.489611625671387,
+            -24.767051696777344
+          ]
+        },
+        {
+          "alpha": 0.5000076293945312,
+          "cut_owner": {
+            "final_budget_proposal_replay": {
+              "control": [
+                23,
+                1,
+                2,
+                0
+              ],
+              "old": [
+                1,
+                37,
+                0,
+                0
+              ],
+              "replacement": [
+                2,
+                50,
+                0,
+                0
+              ],
+              "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+            },
+            "generation": 1,
+            "history": [
+              3,
+              1,
+              1,
+              384
+            ],
+            "immediate_children": [
+              {
+                "error_and_splat_cost": [
+                  6.557891845703125,
+                  2.939387798309326,
+                  26.0,
+                  26.0
+                ],
+                "links": [
+                  1776,
+                  1842,
+                  1775,
+                  0
+                ],
+                "node": 1775,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  -0.3000001907348633,
+                  1.8000001907348633,
+                  0.5999999046325684,
+                  6.878459930419922
+                ]
+              },
+              {
+                "error_and_splat_cost": [
+                  6.55078649520874,
+                  2.939387798309326,
+                  24.0,
+                  24.0
+                ],
+                "links": [
+                  1843,
+                  1913,
+                  1842,
+                  0
+                ],
+                "node": 1842,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  0.2999997138977051,
+                  1.8000001907348633,
+                  0.5999999046325684,
+                  6.259670257568359
+                ]
+              }
+            ],
+            "kind": "articulated_slot",
+            "root": 70245,
+            "selected": {
+              "error_and_splat_cost": [
+                1.881354570388794,
+                0.5817538499832153,
+                37.0,
+                37.0
+              ],
+              "links": [
+                1775,
+                1913,
+                1774,
+                0
+              ],
+              "node": 1774,
+              "page": [
+                1,
+                0,
+                3,
+                0
+              ],
+              "sphere": [
+                0.9000000953674316,
+                1.8000001907348633,
+                0.5999999046325684,
+                8.078460693359375
+              ]
+            }
+          },
+          "diameter_px": 19.861543655395508,
+          "packed_cell": 1050625,
+          "volume": 2148,
+          "world_cell_size": 0.6637064814567566,
+          "world_centre": [
+            -3.0602450370788574,
+            0.5894874334335327,
+            -25.02037239074707
+          ]
+        },
+        {
+          "alpha": 0.5000076293945312,
+          "cut_owner": {
+            "final_budget_proposal_replay": {
+              "control": [
+                23,
+                1,
+                2,
+                0
+              ],
+              "old": [
+                1,
+                128,
+                0,
+                0
+              ],
+              "replacement": [
+                2,
+                139,
+                0,
+                0
+              ],
+              "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+            },
+            "generation": 1,
+            "history": [
+              4,
+              0,
+              1,
+              256
+            ],
+            "immediate_children": [
+              {
+                "error_and_splat_cost": [
+                  6.880267143249512,
+                  3.9191837310791016,
+                  57.0,
+                  57.0
+                ],
+                "links": [
+                  609,
+                  626,
+                  608,
+                  0
+                ],
+                "node": 608,
+                "page": [
+                  1,
+                  0,
+                  4,
+                  0
+                ],
+                "sphere": [
+                  -0.5999999046325684,
+                  13.200000762939453,
+                  0.5999999046325684,
+                  6.880345821380615
+                ]
+              },
+              {
+                "error_and_splat_cost": [
+                  6.918023109436035,
+                  3.9191837310791016,
+                  82.0,
+                  82.0
+                ],
+                "links": [
+                  627,
+                  651,
+                  626,
+                  0
+                ],
+                "node": 626,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  1.200000286102295,
+                  12.0,
+                  -0.5999999046325684,
+                  7.522513389587402
+                ]
+              }
+            ],
+            "kind": "articulated_slot",
+            "root": 33574,
+            "selected": {
+              "error_and_splat_cost": [
+                2.241485595703125,
+                1.0104146003723145,
+                128.0,
+                128.0
+              ],
+              "links": [
+                608,
+                651,
+                607,
+                0
+              ],
+              "node": 607,
+              "page": [
+                1,
+                0,
+                4,
+                0
+              ],
+              "sphere": [
+                0.6000006198883057,
+                12.0,
+                -0.5999999046325684,
+                8.958806991577148
+              ]
+            }
+          },
+          "diameter_px": 19.730693817138672,
+          "packed_cell": 4197377,
+          "volume": 1925,
+          "world_cell_size": 0.5855696797370911,
+          "world_centre": [
+            0.8367488384246826,
+            10.90404224395752,
+            -25.187583923339844
+          ]
+        },
+        {
+          "alpha": 0.5000076293945312,
+          "cut_owner": {
+            "final_budget_proposal_replay": {
+              "control": [
+                23,
+                1,
+                2,
+                0
+              ],
+              "old": [
+                1,
+                37,
+                0,
+                0
+              ],
+              "replacement": [
+                2,
+                50,
+                0,
+                0
+              ],
+              "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+            },
+            "generation": 1,
+            "history": [
+              3,
+              1,
+              1,
+              384
+            ],
+            "immediate_children": [
+              {
+                "error_and_splat_cost": [
+                  6.557891845703125,
+                  2.939387798309326,
+                  26.0,
+                  26.0
+                ],
+                "links": [
+                  1776,
+                  1842,
+                  1775,
+                  0
+                ],
+                "node": 1775,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  -0.3000001907348633,
+                  1.8000001907348633,
+                  0.5999999046325684,
+                  6.878459930419922
+                ]
+              },
+              {
+                "error_and_splat_cost": [
+                  6.55078649520874,
+                  2.939387798309326,
+                  24.0,
+                  24.0
+                ],
+                "links": [
+                  1843,
+                  1913,
+                  1842,
+                  0
+                ],
+                "node": 1842,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  0.2999997138977051,
+                  1.8000001907348633,
+                  0.5999999046325684,
+                  6.259670257568359
+                ]
+              }
+            ],
+            "kind": "articulated_slot",
+            "root": 70245,
+            "selected": {
+              "error_and_splat_cost": [
+                1.881354570388794,
+                0.5817538499832153,
+                37.0,
+                37.0
+              ],
+              "links": [
+                1775,
+                1913,
+                1774,
+                0
+              ],
+              "node": 1774,
+              "page": [
+                1,
+                0,
+                3,
+                0
+              ],
+              "sphere": [
+                0.9000000953674316,
+                1.8000001907348633,
+                0.5999999046325684,
+                8.078460693359375
+              ]
+            }
+          },
+          "diameter_px": 19.593730926513672,
+          "packed_cell": 1049602,
+          "volume": 2148,
+          "world_cell_size": 0.6637064814567566,
+          "world_centre": [
+            -2.6953415870666504,
+            -0.07421901822090149,
+            -25.574766159057617
+          ]
+        },
+        {
+          "alpha": 0.5000076293945312,
+          "cut_owner": {
+            "final_budget_proposal_replay": {
+              "control": [
+                23,
+                1,
+                2,
+                0
+              ],
+              "old": [
+                1,
+                37,
+                0,
+                0
+              ],
+              "replacement": [
+                2,
+                50,
+                0,
+                0
+              ],
+              "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+            },
+            "generation": 1,
+            "history": [
+              3,
+              1,
+              1,
+              384
+            ],
+            "immediate_children": [
+              {
+                "error_and_splat_cost": [
+                  6.557891845703125,
+                  2.939387798309326,
+                  26.0,
+                  26.0
+                ],
+                "links": [
+                  1776,
+                  1842,
+                  1775,
+                  0
+                ],
+                "node": 1775,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  -0.3000001907348633,
+                  1.8000001907348633,
+                  0.5999999046325684,
+                  6.878459930419922
+                ]
+              },
+              {
+                "error_and_splat_cost": [
+                  6.55078649520874,
+                  2.939387798309326,
+                  24.0,
+                  24.0
+                ],
+                "links": [
+                  1843,
+                  1913,
+                  1842,
+                  0
+                ],
+                "node": 1842,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  0.2999997138977051,
+                  1.8000001907348633,
+                  0.5999999046325684,
+                  6.259670257568359
+                ]
+              }
+            ],
+            "kind": "articulated_slot",
+            "root": 70245,
+            "selected": {
+              "error_and_splat_cost": [
+                1.881354570388794,
+                0.5817538499832153,
+                37.0,
+                37.0
+              ],
+              "links": [
+                1775,
+                1913,
+                1774,
+                0
+              ],
+              "node": 1774,
+              "page": [
+                1,
+                0,
+                3,
+                0
+              ],
+              "sphere": [
+                0.9000000953674316,
+                1.8000001907348633,
+                0.5999999046325684,
+                8.078460693359375
+              ]
+            }
+          },
+          "diameter_px": 19.593278884887695,
+          "packed_cell": 1050626,
+          "volume": 2148,
+          "world_cell_size": 0.6637064814567566,
+          "world_centre": [
+            -2.6953415870666504,
+            0.5894874334335327,
+            -25.574766159057617
+          ]
+        },
+        {
+          "alpha": 0.5000076293945312,
+          "cut_owner": {
+            "final_budget_proposal_replay": {
+              "control": [
+                23,
+                1,
+                2,
+                0
+              ],
+              "old": [
+                1,
+                37,
+                0,
+                0
+              ],
+              "replacement": [
+                2,
+                50,
+                0,
+                0
+              ],
+              "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+            },
+            "generation": 1,
+            "history": [
+              3,
+              1,
+              1,
+              384
+            ],
+            "immediate_children": [
+              {
+                "error_and_splat_cost": [
+                  6.557891845703125,
+                  2.939387798309326,
+                  26.0,
+                  26.0
+                ],
+                "links": [
+                  1776,
+                  1842,
+                  1775,
+                  0
+                ],
+                "node": 1775,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  -0.3000001907348633,
+                  1.8000001907348633,
+                  0.5999999046325684,
+                  6.878459930419922
+                ]
+              },
+              {
+                "error_and_splat_cost": [
+                  6.55078649520874,
+                  2.939387798309326,
+                  24.0,
+                  24.0
+                ],
+                "links": [
+                  1843,
+                  1913,
+                  1842,
+                  0
+                ],
+                "node": 1842,
+                "page": [
+                  1,
+                  0,
+                  3,
+                  0
+                ],
+                "sphere": [
+                  0.2999997138977051,
+                  1.8000001907348633,
+                  0.5999999046325684,
+                  6.259670257568359
+                ]
+              }
+            ],
+            "kind": "articulated_slot",
+            "root": 70245,
+            "selected": {
+              "error_and_splat_cost": [
+                1.881354570388794,
+                0.5817538499832153,
+                37.0,
+                37.0
+              ],
+              "links": [
+                1775,
+                1913,
+                1774,
+                0
+              ],
+              "node": 1774,
+              "page": [
+                1,
+                0,
+                3,
+                0
+              ],
+              "sphere": [
+                0.9000000953674316,
+                1.8000001907348633,
+                0.5999999046325684,
+                8.078460693359375
+              ]
+            }
+          },
+          "diameter_px": 19.59280776977539,
+          "packed_cell": 1051650,
+          "volume": 2148,
+          "world_cell_size": 0.6637064814567566,
+          "world_centre": [
+            -2.6953415870666504,
+            1.2531940937042236,
+            -25.574766159057617
+          ]
+        },
+        {
+          "alpha": 0.7851682305335999,
+          "cut_owner": {
+            "attribution": "not yet decoded",
+            "kind": "whole_root"
+          },
+          "diameter_px": 19.58186912536621,
+          "packed_cell": 2108418,
+          "volume": 37400,
+          "world_cell_size": 1.3645734786987305,
+          "world_centre": [
+            -31.164819717407227,
+            13.784701347351074,
+            -41.70099639892578
+          ]
+        }
+      ],
+      "missing_records": 0,
+      "near_plane_crossings": 0,
+      "requested_splats": 1453600,
+      "scope": "stored records only; screen-aligned diameter excludes sub-cell jitter; explicit offline readback",
+      "stored_splats": 1453600,
+      "unique_stored_volumes": 40624,
+      "viewport": [
+        1280,
+        720
+      ],
+      "whole_root_bins": [
+        271452,
+        618888,
+        433832,
+        100666,
+        23051,
+        4415,
+        49,
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "routes": {
+    "low": {
+      "before": [
+        {
+          "covered": 15.988655999999999,
+          "passes": {
+            "foliage seed terrain cull": 0.259392,
+            "foliage seed terrain raster": 0.017536,
+            "foliage seed pyramid": 0.07747199999999999,
+            "GPU forest selection residency": 8.124431999999999,
+            "GPU forest shared poses": 0.112704,
+            "GPU forest materialize": 0.233856,
+            "shadow tile damage and clear": 0.41321599999999997,
+            "shadow cull": 0.41713599999999995,
+            "shadow raster": 0.09644799999999999,
+            "voxel sun splats": 0.8138399999999999,
+            "voxel sun splat raster": 0.666992,
+            "near shadow cull": 0.263536,
+            "near shadow raster": 0.03992,
+            "voxel near sun splats": 0.168064,
+            "voxel near sun splat raster": 0.059359999999999996,
+            "tree occluder cull": 0.824352,
+            "tree occluder raster": 0.520096,
+            "tree occlusion pyramid": 0.07763199999999999,
+            "tree recovery dispatch": 0.002016,
+            "tree remaining cull": 0.008,
+            "tree remaining raster": 0.000864,
+            "tree visibility history": 0.019104,
+            "voxel splats": 0.66784,
+            "voxel splat raster": 0.72736,
+            "voxel splat resolve": 0.151248,
+            "terrain coarse": 0.04568,
+            "shade terrain": 0.259264,
+            "shade voxels": 0.06454399999999999,
+            "shade": 0.09926399999999999,
+            "motion vectors": 0.026591999999999998,
+            "taa": 0.029775999999999997,
+            "exhaust": 0.00031999999999999997,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026656,
+            "tonemap": 0.025759999999999998
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 374,
+            "tested_nodes": 332075,
+            "source_slots": 261,
+            "voxel_slots": 113,
+            "shadow_voxel_slots": 0,
+            "direct_roots": 117761,
+            "fallback_trees": 0,
+            "retained": 306,
+            "assigned": 68,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 118235,
+            "reserved_raster_splats": [
+              4192997,
+              4187234
+            ],
+            "refinement_budget_stops": 392634,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 333566,
+            "dormant_records": 118481,
+            "dormant_wakes": 333566,
+            "dormant_wake_passes": 10,
+            "dormant_park_events": 451412,
+            "dormant_overflows": 0,
+            "selected_spatial_error_pixels": [
+              12467.913,
+              12467.913
+            ],
+            "selected_error_target_ratio": [
+              30493.627,
+              30493.627
+            ],
+            "selected_over_target": [
+              103383,
+              41924
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 14485,
+            "pose_requests": 271,
+            "evaluated_shared_poses": 271,
+            "pose_hash_failures": 0,
+            "camera_roots": 42186,
+            "shadow_only_roots": 52726,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 41924,
+              "branch_slots": 0,
+              "camera_splats": 2,
+              "shadow_splats": 0,
+              "missing_pages": 5,
+              "no_children": 0,
+              "affordable_resident": 41917
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 261,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 113,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 41817,
+              "shadow_only": 75944,
+              "both": 0
+            },
+            "camera_published_branches": 374,
+            "shadow_only_published_branches": 0
+          }
+        },
+        {
+          "covered": 16.005232,
+          "passes": {
+            "foliage seed terrain cull": 0.25984,
+            "foliage seed terrain raster": 0.019039999999999998,
+            "foliage seed pyramid": 0.077376,
+            "GPU forest selection residency": 8.116816,
+            "GPU forest shared poses": 0.114368,
+            "GPU forest materialize": 0.233984,
+            "shadow tile damage and clear": 0.412192,
+            "shadow cull": 0.417664,
+            "shadow raster": 0.095872,
+            "voxel sun splats": 0.814576,
+            "voxel sun splat raster": 0.66472,
+            "near shadow cull": 0.26376,
+            "near shadow raster": 0.039552000000000004,
+            "voxel near sun splats": 0.168464,
+            "voxel near sun splat raster": 0.059424,
+            "tree occluder cull": 0.823952,
+            "tree occluder raster": 0.503072,
+            "tree occlusion pyramid": 0.077344,
+            "tree recovery dispatch": 0.002016,
+            "tree remaining cull": 0.008192,
+            "tree remaining raster": 0.000864,
+            "tree visibility history": 0.019072,
+            "voxel splats": 0.66872,
+            "voxel splat raster": 0.726192,
+            "voxel splat resolve": 0.15134399999999998,
+            "terrain coarse": 0.045632,
+            "shade terrain": 0.259488,
+            "shade voxels": 0.064576,
+            "shade": 0.09884799999999999,
+            "motion vectors": 0.026543999999999998,
+            "taa": 0.029759999999999998,
+            "exhaust": 0.00031999999999999997,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026303999999999998,
+            "tonemap": 0.025727999999999997
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 374,
+            "tested_nodes": 332075,
+            "source_slots": 261,
+            "voxel_slots": 113,
+            "shadow_voxel_slots": 0,
+            "direct_roots": 117761,
+            "fallback_trees": 0,
+            "retained": 306,
+            "assigned": 68,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 118235,
+            "reserved_raster_splats": [
+              4192997,
+              4187234
+            ],
+            "refinement_budget_stops": 392634,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 333566,
+            "dormant_records": 118481,
+            "dormant_wakes": 333566,
+            "dormant_wake_passes": 10,
+            "dormant_park_events": 451412,
+            "dormant_overflows": 0,
+            "selected_spatial_error_pixels": [
+              12467.913,
+              12467.913
+            ],
+            "selected_error_target_ratio": [
+              30493.627,
+              30493.627
+            ],
+            "selected_over_target": [
+              103383,
+              41924
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 14485,
+            "pose_requests": 271,
+            "evaluated_shared_poses": 271,
+            "pose_hash_failures": 0,
+            "camera_roots": 42186,
+            "shadow_only_roots": 52726,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 41924,
+              "branch_slots": 0,
+              "camera_splats": 2,
+              "shadow_splats": 0,
+              "missing_pages": 5,
+              "no_children": 0,
+              "affordable_resident": 41917
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 261,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 113,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 41817,
+              "shadow_only": 75944,
+              "both": 0
+            },
+            "camera_published_branches": 374,
+            "shadow_only_published_branches": 0
+          }
+        },
+        {
+          "covered": 16.079231999999998,
+          "passes": {
+            "foliage seed terrain cull": 0.259536,
+            "foliage seed terrain raster": 0.018944,
+            "foliage seed pyramid": 0.077584,
+            "GPU forest selection residency": 8.177375999999999,
+            "GPU forest shared poses": 0.11441599999999999,
+            "GPU forest materialize": 0.23427199999999998,
+            "shadow tile damage and clear": 0.41096,
+            "shadow cull": 0.41735999999999995,
+            "shadow raster": 0.095776,
+            "voxel sun splats": 0.814784,
+            "voxel sun splat raster": 0.664528,
+            "near shadow cull": 0.263568,
+            "near shadow raster": 0.03984,
+            "voxel near sun splats": 0.16833599999999999,
+            "voxel near sun splat raster": 0.059376,
+            "tree occluder cull": 0.824816,
+            "tree occluder raster": 0.501968,
+            "tree occlusion pyramid": 0.077632,
+            "tree recovery dispatch": 0.002016,
+            "tree remaining cull": 0.00832,
+            "tree remaining raster": 0.000864,
+            "tree visibility history": 0.019039999999999998,
+            "voxel splats": 0.6675519999999999,
+            "voxel splat raster": 0.727376,
+            "voxel splat resolve": 0.151408,
+            "terrain coarse": 0.04574399999999999,
+            "shade terrain": 0.25968,
+            "shade voxels": 0.064688,
+            "shade": 0.09888,
+            "motion vectors": 0.026543999999999998,
+            "taa": 0.029792,
+            "exhaust": 0.00031999999999999997,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.02656,
+            "tonemap": 0.025743999999999996
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 374,
+            "tested_nodes": 332075,
+            "source_slots": 261,
+            "voxel_slots": 113,
+            "shadow_voxel_slots": 0,
+            "direct_roots": 117761,
+            "fallback_trees": 0,
+            "retained": 306,
+            "assigned": 68,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 118235,
+            "reserved_raster_splats": [
+              4192997,
+              4187234
+            ],
+            "refinement_budget_stops": 392634,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 333566,
+            "dormant_records": 118481,
+            "dormant_wakes": 333566,
+            "dormant_wake_passes": 10,
+            "dormant_park_events": 451412,
+            "dormant_overflows": 0,
+            "selected_spatial_error_pixels": [
+              12467.913,
+              12467.913
+            ],
+            "selected_error_target_ratio": [
+              30493.627,
+              30493.627
+            ],
+            "selected_over_target": [
+              103383,
+              41924
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 14485,
+            "pose_requests": 271,
+            "evaluated_shared_poses": 271,
+            "pose_hash_failures": 0,
+            "camera_roots": 42186,
+            "shadow_only_roots": 52726,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 41924,
+              "branch_slots": 0,
+              "camera_splats": 2,
+              "shadow_splats": 0,
+              "missing_pages": 5,
+              "no_children": 0,
+              "affordable_resident": 41917
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 261,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 113,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 41817,
+              "shadow_only": 75944,
+              "both": 0
+            },
+            "camera_published_branches": 374,
+            "shadow_only_published_branches": 0
+          }
+        }
+      ],
+      "after": [
+        {
+          "covered": 18.633823999999997,
+          "passes": {
+            "foliage seed terrain cull": 0.2608,
+            "foliage seed terrain raster": 0.017568,
+            "foliage seed pyramid": 0.076512,
+            "GPU forest selection residency": 11.428031999999998,
+            "GPU forest shared poses": 0.114336,
+            "GPU forest materialize": 0.236064,
+            "shadow tile damage and clear": 0.410192,
+            "shadow cull": 0.420512,
+            "shadow raster": 0.096336,
+            "voxel sun splats": 0.812576,
+            "voxel sun splat raster": 0.6686719999999999,
+            "near shadow cull": 0.26651199999999997,
+            "near shadow raster": 0.04128,
+            "voxel near sun splats": 0.16799999999999998,
+            "voxel near sun splat raster": 0.059199999999999996,
+            "tree occluder cull": 0.51984,
+            "tree occluder raster": 0.105808,
+            "tree occlusion pyramid": 0.076736,
+            "tree recovery dispatch": 0.002048,
+            "tree remaining cull": 0.008672,
+            "tree remaining raster": 0.000864,
+            "tree visibility history": 0.01984,
+            "voxel splats": 0.670288,
+            "voxel splat raster": 0.7292799999999999,
+            "voxel splat resolve": 0.243776,
+            "terrain coarse": 0.045792,
+            "shade terrain": 0.253648,
+            "shade voxels": 0.06372799999999999,
+            "shade": 0.071472,
+            "motion vectors": 0.023952,
+            "taa": 0.029679999999999998,
+            "exhaust": 0.000736,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026256,
+            "tonemap": 0.025696
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 4096,
+            "tested_nodes": 331851,
+            "source_slots": 4074,
+            "voxel_slots": 22,
+            "shadow_voxel_slots": 0,
+            "direct_roots": 116679,
+            "fallback_trees": 0,
+            "retained": 3988,
+            "assigned": 108,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 118235,
+            "reserved_raster_splats": [
+              4194240,
+              4194288
+            ],
+            "refinement_budget_stops": 298862,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 182288,
+            "dormant_records": 117988,
+            "dormant_wakes": 182288,
+            "dormant_wake_passes": 12,
+            "dormant_park_events": 298989,
+            "dormant_overflows": 0,
+            "selected_spatial_error_pixels": [
+              1e+30,
+              1e+30
+            ],
+            "selected_error_target_ratio": [
+              1e+30,
+              1e+30
+            ],
+            "selected_over_target": [
+              102804,
+              41225
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 13897,
+            "pose_requests": 4074,
+            "evaluated_shared_poses": 4074,
+            "pose_hash_failures": 0,
+            "camera_roots": 42186,
+            "shadow_only_roots": 52726,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 41225,
+              "branch_slots": 22106,
+              "camera_splats": 30192,
+              "shadow_splats": 0,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 0
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 4074,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 22,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 41203,
+              "shadow_only": 75476,
+              "both": 0
+            },
+            "camera_published_branches": 4096,
+            "shadow_only_published_branches": 0
+          }
+        },
+        {
+          "covered": 18.724528,
+          "passes": {
+            "foliage seed terrain cull": 0.26071999999999995,
+            "foliage seed terrain raster": 0.017536,
+            "foliage seed pyramid": 0.07627199999999999,
+            "GPU forest selection residency": 11.543856,
+            "GPU forest shared poses": 0.11424,
+            "GPU forest materialize": 0.23676799999999998,
+            "shadow tile damage and clear": 0.412496,
+            "shadow cull": 0.420736,
+            "shadow raster": 0.096304,
+            "voxel sun splats": 0.8116319999999999,
+            "voxel sun splat raster": 0.668576,
+            "near shadow cull": 0.266896,
+            "near shadow raster": 0.041184,
+            "voxel near sun splats": 0.16822399999999998,
+            "voxel near sun splat raster": 0.059232,
+            "tree occluder cull": 0.519984,
+            "tree occluder raster": 0.10595199999999999,
+            "tree occlusion pyramid": 0.076384,
+            "tree recovery dispatch": 0.002048,
+            "tree remaining cull": 0.008512,
+            "tree remaining raster": 0.000864,
+            "tree visibility history": 0.019424,
+            "voxel splats": 0.670112,
+            "voxel splat raster": 0.729248,
+            "voxel splat resolve": 0.243504,
+            "terrain coarse": 0.045808,
+            "shade terrain": 0.253808,
+            "shade voxels": 0.063744,
+            "shade": 0.07153599999999999,
+            "motion vectors": 0.023936,
+            "taa": 0.029696,
+            "exhaust": 0.000736,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026223999999999997,
+            "tonemap": 0.025727999999999997
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 4096,
+            "tested_nodes": 331851,
+            "source_slots": 4074,
+            "voxel_slots": 22,
+            "shadow_voxel_slots": 0,
+            "direct_roots": 116679,
+            "fallback_trees": 0,
+            "retained": 3988,
+            "assigned": 108,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 118235,
+            "reserved_raster_splats": [
+              4194240,
+              4194288
+            ],
+            "refinement_budget_stops": 298862,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 182288,
+            "dormant_records": 117988,
+            "dormant_wakes": 182288,
+            "dormant_wake_passes": 12,
+            "dormant_park_events": 298989,
+            "dormant_overflows": 0,
+            "selected_spatial_error_pixels": [
+              1e+30,
+              1e+30
+            ],
+            "selected_error_target_ratio": [
+              1e+30,
+              1e+30
+            ],
+            "selected_over_target": [
+              102804,
+              41225
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 13897,
+            "pose_requests": 4074,
+            "evaluated_shared_poses": 4074,
+            "pose_hash_failures": 0,
+            "camera_roots": 42186,
+            "shadow_only_roots": 52726,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 41225,
+              "branch_slots": 22106,
+              "camera_splats": 30192,
+              "shadow_splats": 0,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 0
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 4074,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 22,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 41203,
+              "shadow_only": 75476,
+              "both": 0
+            },
+            "camera_published_branches": 4096,
+            "shadow_only_published_branches": 0
+          }
+        },
+        {
+          "covered": 18.713984,
+          "passes": {
+            "foliage seed terrain cull": 0.260928,
+            "foliage seed terrain raster": 0.017647999999999997,
+            "foliage seed pyramid": 0.07614399999999999,
+            "GPU forest selection residency": 11.559104,
+            "GPU forest shared poses": 0.113936,
+            "GPU forest materialize": 0.236288,
+            "shadow tile damage and clear": 0.412832,
+            "shadow cull": 0.42128,
+            "shadow raster": 0.09612799999999999,
+            "voxel sun splats": 0.8136479999999999,
+            "voxel sun splat raster": 0.668608,
+            "near shadow cull": 0.26632,
+            "near shadow raster": 0.041024,
+            "voxel near sun splats": 0.168064,
+            "voxel near sun splat raster": 0.059232,
+            "tree occluder cull": 0.5207999999999999,
+            "tree occluder raster": 0.10575999999999999,
+            "tree occlusion pyramid": 0.076416,
+            "tree recovery dispatch": 0.002048,
+            "tree remaining cull": 0.00856,
+            "tree remaining raster": 0.000864,
+            "tree visibility history": 0.019584,
+            "voxel splats": 0.6687679999999999,
+            "voxel splat raster": 0.7291839999999999,
+            "voxel splat resolve": 0.24286399999999997,
+            "terrain coarse": 0.045616,
+            "shade terrain": 0.253552,
+            "shade voxels": 0.063696,
+            "shade": 0.071488,
+            "motion vectors": 0.023968,
+            "taa": 0.029696,
+            "exhaust": 0.000736,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.02624,
+            "tonemap": 0.025696
+          },
+          "forest": {
+            "trees": 302116,
+            "active_roots": 151058,
+            "branch_capacity": 4096,
+            "selected_records": 4096,
+            "tested_nodes": 331851,
+            "source_slots": 4074,
+            "voxel_slots": 22,
+            "shadow_voxel_slots": 0,
+            "direct_roots": 116679,
+            "fallback_trees": 0,
+            "retained": 3988,
+            "assigned": 108,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 118235,
+            "reserved_raster_splats": [
+              4194240,
+              4194288
+            ],
+            "refinement_budget_stops": 298862,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 182288,
+            "dormant_records": 117988,
+            "dormant_wakes": 182288,
+            "dormant_wake_passes": 12,
+            "dormant_park_events": 298989,
+            "dormant_overflows": 0,
+            "selected_spatial_error_pixels": [
+              1e+30,
+              1e+30
+            ],
+            "selected_error_target_ratio": [
+              1e+30,
+              1e+30
+            ],
+            "selected_over_target": [
+              102804,
+              41225
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 13897,
+            "pose_requests": 4074,
+            "evaluated_shared_poses": 4074,
+            "pose_hash_failures": 0,
+            "camera_roots": 42186,
+            "shadow_only_roots": 52726,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 41225,
+              "branch_slots": 22106,
+              "camera_splats": 30192,
+              "shadow_splats": 0,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 0
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 4074,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 22,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 41203,
+              "shadow_only": 75476,
+              "both": 0
+            },
+            "camera_published_branches": 4096,
+            "shadow_only_published_branches": 0
+          }
+        }
+      ]
+    },
+    "alpine": {
+      "before": [
+        {
+          "covered": 14.982047999999999,
+          "passes": {
+            "foliage seed terrain cull": 0.223376,
+            "foliage seed terrain raster": 0.053391999999999995,
+            "foliage seed pyramid": 0.076176,
+            "GPU forest selection residency": 8.013872,
+            "GPU forest shared poses": 0.105184,
+            "GPU forest materialize": 0.19088,
+            "shadow tile damage and clear": 0.34343999999999997,
+            "shadow cull": 0.344128,
+            "shadow raster": 0.17654399999999998,
+            "voxel sun splats": 0.71936,
+            "voxel sun splat raster": 0.797904,
+            "near shadow cull": 0.223456,
+            "near shadow raster": 0.032016,
+            "voxel near sun splats": 0.13579199999999997,
+            "voxel near sun splat raster": 0.043392,
+            "tree occluder cull": 0.24636799999999998,
+            "tree occluder raster": 0.054431999999999994,
+            "tree occlusion pyramid": 0.076432,
+            "tree recovery dispatch": 0.0021119999999999997,
+            "tree remaining cull": 0.008768,
+            "tree remaining raster": 0.0008799999999999999,
+            "tree visibility history": 0.027999999999999997,
+            "voxel splats": 0.620848,
+            "voxel splat raster": 0.659392,
+            "voxel splat resolve": 0.242176,
+            "terrain coarse": 0.1396,
+            "shade terrain": 0.57448,
+            "shade voxels": 0.107888,
+            "shade": 0.04464,
+            "motion vectors": 0.026383999999999998,
+            "taa": 0.03016,
+            "exhaust": 0.000736,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.02624,
+            "tonemap": 0.025696
+          },
+          "forest": {
+            "trees": 254890,
+            "active_roots": 127445,
+            "branch_capacity": 4096,
+            "selected_records": 2183,
+            "tested_nodes": 274763,
+            "source_slots": 73,
+            "voxel_slots": 2094,
+            "shadow_voxel_slots": 16,
+            "direct_roots": 91394,
+            "fallback_trees": 0,
+            "retained": 1859,
+            "assigned": 323,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 92218,
+            "reserved_raster_splats": [
+              4194303,
+              4194302
+            ],
+            "refinement_budget_stops": 359909,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 319832,
+            "dormant_records": 93454,
+            "dormant_wakes": 319832,
+            "dormant_wake_passes": 14,
+            "dormant_park_events": 412889,
+            "dormant_overflows": 0,
+            "selected_spatial_error_pixels": [
+              684.571,
+              163.34373
+            ],
+            "selected_error_target_ratio": [
+              947.9673,
+              314.2887
+            ],
+            "selected_over_target": [
+              86390,
+              29766
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 6667,
+            "pose_requests": 685,
+            "evaluated_shared_poses": 685,
+            "pose_hash_failures": 0,
+            "camera_roots": 28764,
+            "shadow_only_roots": 46714,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 29766,
+              "branch_slots": 0,
+              "camera_splats": 29766,
+              "shadow_splats": 0,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 0
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 73,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 2094,
+              "shadow_only": 16,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 28119,
+              "shadow_only": 63275,
+              "both": 0
+            },
+            "camera_published_branches": 2167,
+            "shadow_only_published_branches": 8
+          }
+        },
+        {
+          "covered": 15.100048000000001,
+          "passes": {
+            "foliage seed terrain cull": 0.22622399999999998,
+            "foliage seed terrain raster": 0.054048,
+            "foliage seed pyramid": 0.076192,
+            "GPU forest selection residency": 8.052944,
+            "GPU forest shared poses": 0.106208,
+            "GPU forest materialize": 0.19086399999999998,
+            "shadow tile damage and clear": 0.34355199999999997,
+            "shadow cull": 0.344192,
+            "shadow raster": 0.17631999999999998,
+            "voxel sun splats": 0.719664,
+            "voxel sun splat raster": 0.7938399999999999,
+            "near shadow cull": 0.225152,
+            "near shadow raster": 0.033248,
+            "voxel near sun splats": 0.135888,
+            "voxel near sun splat raster": 0.043296,
+            "tree occluder cull": 0.247056,
+            "tree occluder raster": 0.055023999999999997,
+            "tree occlusion pyramid": 0.076656,
+            "tree recovery dispatch": 0.00208,
+            "tree remaining cull": 0.00864,
+            "tree remaining raster": 0.000864,
+            "tree visibility history": 0.027999999999999997,
+            "voxel splats": 0.610656,
+            "voxel splat raster": 0.6597759999999999,
+            "voxel splat resolve": 0.244192,
+            "terrain coarse": 0.140032,
+            "shade terrain": 0.5754079999999999,
+            "shade voxels": 0.108064,
+            "shade": 0.044927999999999996,
+            "motion vectors": 0.026463999999999998,
+            "taa": 0.030175999999999998,
+            "exhaust": 0.000736,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.02624,
+            "tonemap": 0.025696
+          },
+          "forest": {
+            "trees": 254890,
+            "active_roots": 127445,
+            "branch_capacity": 4096,
+            "selected_records": 2183,
+            "tested_nodes": 274763,
+            "source_slots": 73,
+            "voxel_slots": 2094,
+            "shadow_voxel_slots": 16,
+            "direct_roots": 91394,
+            "fallback_trees": 0,
+            "retained": 1859,
+            "assigned": 323,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 92218,
+            "reserved_raster_splats": [
+              4194303,
+              4194302
+            ],
+            "refinement_budget_stops": 359909,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 319832,
+            "dormant_records": 93454,
+            "dormant_wakes": 319832,
+            "dormant_wake_passes": 14,
+            "dormant_park_events": 412889,
+            "dormant_overflows": 0,
+            "selected_spatial_error_pixels": [
+              684.571,
+              163.34373
+            ],
+            "selected_error_target_ratio": [
+              947.9673,
+              314.2887
+            ],
+            "selected_over_target": [
+              86390,
+              29766
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 6667,
+            "pose_requests": 685,
+            "evaluated_shared_poses": 685,
+            "pose_hash_failures": 0,
+            "camera_roots": 28764,
+            "shadow_only_roots": 46714,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 29766,
+              "branch_slots": 0,
+              "camera_splats": 29766,
+              "shadow_splats": 0,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 0
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 73,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 2094,
+              "shadow_only": 16,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 28119,
+              "shadow_only": 63275,
+              "both": 0
+            },
+            "camera_published_branches": 2167,
+            "shadow_only_published_branches": 8
+          }
+        },
+        {
+          "covered": 15.128896,
+          "passes": {
+            "foliage seed terrain cull": 0.22599999999999998,
+            "foliage seed terrain raster": 0.053919999999999996,
+            "foliage seed pyramid": 0.076432,
+            "GPU forest selection residency": 8.11128,
+            "GPU forest shared poses": 0.106208,
+            "GPU forest materialize": 0.190688,
+            "shadow tile damage and clear": 0.34331199999999995,
+            "shadow cull": 0.344128,
+            "shadow raster": 0.176688,
+            "voxel sun splats": 0.72368,
+            "voxel sun splat raster": 0.7954559999999999,
+            "near shadow cull": 0.224816,
+            "near shadow raster": 0.035472000000000004,
+            "voxel near sun splats": 0.13577599999999998,
+            "voxel near sun splat raster": 0.043359999999999996,
+            "tree occluder cull": 0.24723199999999998,
+            "tree occluder raster": 0.055104,
+            "tree occlusion pyramid": 0.076704,
+            "tree recovery dispatch": 0.00208,
+            "tree remaining cull": 0.008864,
+            "tree remaining raster": 0.000864,
+            "tree visibility history": 0.028031999999999998,
+            "voxel splats": 0.608304,
+            "voxel splat raster": 0.65952,
+            "voxel splat resolve": 0.244048,
+            "terrain coarse": 0.139952,
+            "shade terrain": 0.5751040000000001,
+            "shade voxels": 0.108128,
+            "shade": 0.04504,
+            "motion vectors": 0.026496,
+            "taa": 0.030143999999999997,
+            "exhaust": 0.000736,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026272,
+            "tonemap": 0.025727999999999997
+          },
+          "forest": {
+            "trees": 254890,
+            "active_roots": 127445,
+            "branch_capacity": 4096,
+            "selected_records": 2183,
+            "tested_nodes": 274763,
+            "source_slots": 73,
+            "voxel_slots": 2094,
+            "shadow_voxel_slots": 16,
+            "direct_roots": 91394,
+            "fallback_trees": 0,
+            "retained": 1859,
+            "assigned": 323,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 92218,
+            "reserved_raster_splats": [
+              4194303,
+              4194302
+            ],
+            "refinement_budget_stops": 359909,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 319832,
+            "dormant_records": 93454,
+            "dormant_wakes": 319832,
+            "dormant_wake_passes": 14,
+            "dormant_park_events": 412889,
+            "dormant_overflows": 0,
+            "selected_spatial_error_pixels": [
+              684.571,
+              163.34373
+            ],
+            "selected_error_target_ratio": [
+              947.9673,
+              314.2887
+            ],
+            "selected_over_target": [
+              86390,
+              29766
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 6667,
+            "pose_requests": 685,
+            "evaluated_shared_poses": 685,
+            "pose_hash_failures": 0,
+            "camera_roots": 28764,
+            "shadow_only_roots": 46714,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 29766,
+              "branch_slots": 0,
+              "camera_splats": 29766,
+              "shadow_splats": 0,
+              "missing_pages": 0,
+              "no_children": 0,
+              "affordable_resident": 0
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 73,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 2094,
+              "shadow_only": 16,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 28119,
+              "shadow_only": 63275,
+              "both": 0
+            },
+            "camera_published_branches": 2167,
+            "shadow_only_published_branches": 8
+          }
+        }
+      ],
+      "after": [
+        {
+          "covered": 17.182927999999997,
+          "passes": {
+            "foliage seed terrain cull": 0.22712,
+            "foliage seed terrain raster": 0.053824,
+            "foliage seed pyramid": 0.07614399999999999,
+            "GPU forest selection residency": 9.776319999999998,
+            "GPU forest shared poses": 0.10406399999999999,
+            "GPU forest materialize": 0.18931199999999998,
+            "shadow tile damage and clear": 0.343232,
+            "shadow cull": 0.347008,
+            "shadow raster": 0.174864,
+            "voxel sun splats": 0.728032,
+            "voxel sun splat raster": 0.794432,
+            "near shadow cull": 0.22820799999999997,
+            "near shadow raster": 0.035344,
+            "voxel near sun splats": 0.135504,
+            "voxel near sun splat raster": 0.043216,
+            "tree occluder cull": 0.483392,
+            "tree occluder raster": 0.142368,
+            "tree occlusion pyramid": 0.07657599999999999,
+            "tree recovery dispatch": 0.002048,
+            "tree remaining cull": 0.00856,
+            "tree remaining raster": 0.000896,
+            "tree visibility history": 0.027999999999999997,
+            "voxel splats": 0.59736,
+            "voxel splat raster": 0.66864,
+            "voxel splat resolve": 0.325952,
+            "terrain coarse": 0.14030399999999998,
+            "shade terrain": 0.576592,
+            "shade voxels": 0.10753599999999999,
+            "shade": 0.044656,
+            "motion vectors": 0.027024,
+            "taa": 0.030112,
+            "exhaust": 0.000736,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026272,
+            "tonemap": 0.025696
+          },
+          "forest": {
+            "trees": 254890,
+            "active_roots": 127445,
+            "branch_capacity": 4096,
+            "selected_records": 4096,
+            "tested_nodes": 270551,
+            "source_slots": 4068,
+            "voxel_slots": 28,
+            "shadow_voxel_slots": 0,
+            "direct_roots": 90547,
+            "fallback_trees": 0,
+            "retained": 4002,
+            "assigned": 94,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 92218,
+            "reserved_raster_splats": [
+              4193947,
+              4194276
+            ],
+            "refinement_budget_stops": 196370,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 106032,
+            "dormant_records": 91294,
+            "dormant_wakes": 106032,
+            "dormant_wake_passes": 10,
+            "dormant_park_events": 196496,
+            "dormant_overflows": 0,
+            "selected_spatial_error_pixels": [
+              731.4614,
+              731.4614
+            ],
+            "selected_error_target_ratio": [
+              947.9673,
+              550.6057
+            ],
+            "selected_over_target": [
+              84312,
+              27665
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 6156,
+            "pose_requests": 4069,
+            "evaluated_shared_poses": 4069,
+            "pose_hash_failures": 0,
+            "camera_roots": 28764,
+            "shadow_only_roots": 46714,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 27665,
+              "branch_slots": 15224,
+              "camera_splats": 19514,
+              "shadow_splats": 0,
+              "missing_pages": 4,
+              "no_children": 0,
+              "affordable_resident": 0
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 4068,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 28,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 27744,
+              "shadow_only": 62803,
+              "both": 0
+            },
+            "camera_published_branches": 4096,
+            "shadow_only_published_branches": 0
+          }
+        },
+        {
+          "covered": 17.14144,
+          "passes": {
+            "foliage seed terrain cull": 0.227712,
+            "foliage seed terrain raster": 0.054015999999999995,
+            "foliage seed pyramid": 0.07616,
+            "GPU forest selection residency": 9.867504,
+            "GPU forest shared poses": 0.103184,
+            "GPU forest materialize": 0.191232,
+            "shadow tile damage and clear": 0.34296,
+            "shadow cull": 0.34743999999999997,
+            "shadow raster": 0.176912,
+            "voxel sun splats": 0.72632,
+            "voxel sun splat raster": 0.800224,
+            "near shadow cull": 0.228672,
+            "near shadow raster": 0.034496,
+            "voxel near sun splats": 0.13558399999999998,
+            "voxel near sun splat raster": 0.043184,
+            "tree occluder cull": 0.48729599999999995,
+            "tree occluder raster": 0.142608,
+            "tree occlusion pyramid": 0.076336,
+            "tree recovery dispatch": 0.002048,
+            "tree remaining cull": 0.008608,
+            "tree remaining raster": 0.000896,
+            "tree visibility history": 0.027999999999999997,
+            "voxel splats": 0.5970719999999999,
+            "voxel splat raster": 0.6685599999999999,
+            "voxel splat resolve": 0.32579199999999997,
+            "terrain coarse": 0.140096,
+            "shade terrain": 0.577328,
+            "shade voxels": 0.107552,
+            "shade": 0.044544,
+            "motion vectors": 0.027039999999999998,
+            "taa": 0.03008,
+            "exhaust": 0.000736,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026256,
+            "tonemap": 0.025696
+          },
+          "forest": {
+            "trees": 254890,
+            "active_roots": 127445,
+            "branch_capacity": 4096,
+            "selected_records": 4096,
+            "tested_nodes": 270551,
+            "source_slots": 4068,
+            "voxel_slots": 28,
+            "shadow_voxel_slots": 0,
+            "direct_roots": 90547,
+            "fallback_trees": 0,
+            "retained": 4002,
+            "assigned": 94,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 92218,
+            "reserved_raster_splats": [
+              4193947,
+              4194276
+            ],
+            "refinement_budget_stops": 196370,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 106032,
+            "dormant_records": 91294,
+            "dormant_wakes": 106032,
+            "dormant_wake_passes": 10,
+            "dormant_park_events": 196496,
+            "dormant_overflows": 0,
+            "selected_spatial_error_pixels": [
+              731.4614,
+              731.4614
+            ],
+            "selected_error_target_ratio": [
+              947.9673,
+              550.6057
+            ],
+            "selected_over_target": [
+              84312,
+              27665
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 6156,
+            "pose_requests": 4069,
+            "evaluated_shared_poses": 4069,
+            "pose_hash_failures": 0,
+            "camera_roots": 28764,
+            "shadow_only_roots": 46714,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 27665,
+              "branch_slots": 15224,
+              "camera_splats": 19514,
+              "shadow_splats": 0,
+              "missing_pages": 4,
+              "no_children": 0,
+              "affordable_resident": 0
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 4068,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 28,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 27744,
+              "shadow_only": 62803,
+              "both": 0
+            },
+            "camera_published_branches": 4096,
+            "shadow_only_published_branches": 0
+          }
+        },
+        {
+          "covered": 17.255968,
+          "passes": {
+            "foliage seed terrain cull": 0.22713599999999998,
+            "foliage seed terrain raster": 0.054048,
+            "foliage seed pyramid": 0.07625599999999999,
+            "GPU forest selection residency": 9.853904,
+            "GPU forest shared poses": 0.104032,
+            "GPU forest materialize": 0.19007999999999997,
+            "shadow tile damage and clear": 0.34332799999999997,
+            "shadow cull": 0.346704,
+            "shadow raster": 0.17659199999999997,
+            "voxel sun splats": 0.72624,
+            "voxel sun splat raster": 0.79728,
+            "near shadow cull": 0.22782399999999997,
+            "near shadow raster": 0.038176,
+            "voxel near sun splats": 0.13552,
+            "voxel near sun splat raster": 0.043232,
+            "tree occluder cull": 0.48361599999999993,
+            "tree occluder raster": 0.14207999999999998,
+            "tree occlusion pyramid": 0.07632,
+            "tree recovery dispatch": 0.002048,
+            "tree remaining cull": 0.008656,
+            "tree remaining raster": 0.000864,
+            "tree visibility history": 0.027968,
+            "voxel splats": 0.5987039999999999,
+            "voxel splat raster": 0.6688799999999999,
+            "voxel splat resolve": 0.326272,
+            "terrain coarse": 0.14048,
+            "shade terrain": 0.576176,
+            "shade voxels": 0.10732799999999999,
+            "shade": 0.044576,
+            "motion vectors": 0.027007999999999997,
+            "taa": 0.030143999999999997,
+            "exhaust": 0.000736,
+            "wheel particles": 0.00031999999999999997,
+            "bloom": 0.026288,
+            "tonemap": 0.025696
+          },
+          "forest": {
+            "trees": 254890,
+            "active_roots": 127445,
+            "branch_capacity": 4096,
+            "selected_records": 4096,
+            "tested_nodes": 270551,
+            "source_slots": 4068,
+            "voxel_slots": 28,
+            "shadow_voxel_slots": 0,
+            "direct_roots": 90547,
+            "fallback_trees": 0,
+            "retained": 4002,
+            "assigned": 94,
+            "slot_failures": 0,
+            "hash_failures": 0,
+            "frontier_overflow_requests": 0,
+            "peak_frontier_requests": 92218,
+            "reserved_raster_splats": [
+              4193947,
+              4194276
+            ],
+            "refinement_budget_stops": 196370,
+            "refinement_faults": 0,
+            "reused_refinement_proposals": 106032,
+            "dormant_records": 91294,
+            "dormant_wakes": 106032,
+            "dormant_wake_passes": 10,
+            "dormant_park_events": 196496,
+            "dormant_overflows": 0,
+            "selected_spatial_error_pixels": [
+              731.4614,
+              731.4614
+            ],
+            "selected_error_target_ratio": [
+              947.9673,
+              550.6057
+            ],
+            "selected_over_target": [
+              84312,
+              27665
+            ],
+            "error_unknown_proxies": 0,
+            "error_unmatched_direct": 0,
+            "error_forced_nodes": 6156,
+            "pose_requests": 4069,
+            "evaluated_shared_poses": 4069,
+            "pose_hash_failures": 0,
+            "camera_roots": 28764,
+            "shadow_only_roots": 46714,
+            "camera_fallback_roots": 0,
+            "shadow_only_fallback_roots": 0,
+            "camera_refinement_limits": {
+              "over_target": 27665,
+              "branch_slots": 15224,
+              "camera_splats": 19514,
+              "shadow_splats": 0,
+              "missing_pages": 4,
+              "no_children": 0,
+              "affordable_resident": 0
+            },
+            "selected_source_consumers": {
+              "outside": 0,
+              "camera_only": 4068,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_voxel_consumers": {
+              "outside": 0,
+              "camera_only": 28,
+              "shadow_only": 0,
+              "both": 0
+            },
+            "selected_direct_consumers": {
+              "outside": 0,
+              "camera_only": 27744,
+              "shadow_only": 62803,
+              "both": 0
+            },
+            "camera_published_branches": 4096,
+            "shadow_only_published_branches": 0
+          }
+        }
+      ]
+    }
+  }
+}
