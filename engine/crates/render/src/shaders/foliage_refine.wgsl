@@ -214,7 +214,11 @@ fn source_frontier(tree:u32,node:u32,old:vec4<u32>,used:vec3<u32>,request_pages:
  // Relieve a temporary camera-splat barrier without publishing intermediate
  // voxel levels. A missing intermediate page is harmless if every source leaf
  // is resident; missing source pages still retain the current complete parent.
- if wanted_refine && task.y!=NONE && task.z==256u {
+ // Only where the voxel children would still be too coarse on screen:
+ // source leaves cost slots but no splats, so a far tree that needs just one
+ // more level would otherwise jump to its full source mesh (millions of
+ // triangles from the air) whenever the splat budget is spent.
+ if wanted_refine && task.y!=NONE && task.z==256u && scale.x*child_error>view.pixels.z {
   let used=vec3<u32>(atomicLoad(&state[4]),atomicLoad(&state[5]),atomicLoad(&state[6]));
   let delta=p.replacement-min(p.replacement,p.old);
   if delta.y>view.consumer_count.z-min(used.y,view.consumer_count.z) {
