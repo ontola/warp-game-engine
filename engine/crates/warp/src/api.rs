@@ -88,6 +88,8 @@ pub struct LightOverride {
     pub sun_lux: Option<f32>,
     pub sky_lux: Option<f32>,
     pub ev100: Option<f32>,
+    /// `exposure = "auto"` and its tuning: the camera adapts like an eye.
+    pub auto: Option<render::AutoExposure>,
     pub fog: [Option<f32>; 3],
 }
 
@@ -677,13 +679,28 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     table("light", vec![
         ("set", f!(core, move |_, opts: Table| {
             let mut c = lock(&core);
-            for (k, v) in options(&opts, &["sun", "sun_lux", "sky_lux", "exposure", "fog_start", "fog_end", "fog_density"], "light.set")? {
+            for (k, v) in options(&opts, &["sun", "sun_lux", "sky_lux", "exposure", "exposure_min", "exposure_max", "exposure_bias", "adapt_speed", "fog_start", "fog_end", "fog_density"], "light.set")? {
                 let l = &mut c.light;
                 match k.as_str() {
                     "sun" => l.sun = Some(vec3(&v, "sun")?.try_normalize().ok_or_else(|| rt("sun: a direction towards the sun, not zero"))?),
                     "sun_lux" => l.sun_lux = Some(number(&v, &k)?.max(0.0)),
                     "sky_lux" => l.sky_lux = Some(number(&v, &k)?.max(0.0)),
-                    "exposure" => l.ev100 = Some(number(&v, &k)?),
+                    // A number fixes the exposure (EV100); "auto" meters it.
+                    "exposure" => match &v {
+                        Value::String(s) if s.to_string_lossy() == "auto" => { l.auto.get_or_insert_with(Default::default); }
+                        _ => { l.ev100 = Some(number(&v, "exposure: a number (EV100) or \"auto\"")?); l.auto = None; }
+                    },
+                    "exposure_min" | "exposure_max" | "exposure_bias" | "adapt_speed" => {
+                        let x = number(&v, &k)?;
+                        let a = l.auto.get_or_insert_with(Default::default);
+                        match k.as_str() {
+                            "exposure_min" => a.min_ev100 = x,
+                            "exposure_max" => a.max_ev100 = x,
+                            "exposure_bias" => a.compensation = x.clamp(-8.0, 8.0),
+                            // Eyes adapt to the dark about three times slower.
+                            _ => { let x = x.max(0.0); a.speed_light = x; a.speed_dark = x / 3.0; }
+                        }
+                    }
                     "fog_start" => l.fog[0] = Some(number(&v, &k)?),
                     "fog_end" => l.fog[1] = Some(number(&v, &k)?),
                     "fog_density" => l.fog[2] = Some(number(&v, &k)?.max(0.0)),

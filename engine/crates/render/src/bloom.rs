@@ -58,8 +58,11 @@ impl Bloom {
     pub fn disabled_view(&self)->wgpu::TextureView {self.fallback.clone()}
     pub fn set_view_count(&self,count:usize) {self.views.lock().unwrap().truncate(count);}
 
+    /// `exposure_from`: a GPU buffer whose first float replaces `exposure`
+    /// (automatic exposure, adapted earlier in the same frame).
+    #[allow(clippy::too_many_arguments)]
     pub fn render(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,view:usize,input:&wgpu::Texture,
-        exposure:f32,threshold:f32,rounds:u32,screen:bool,timestamps:Option<(&wgpu::QuerySet,u32)>)->wgpu::TextureView {
+        exposure:f32,exposure_from:Option<&wgpu::Buffer>,threshold:f32,rounds:u32,screen:bool,timestamps:Option<(&wgpu::QuerySet,u32)>)->wgpu::TextureView {
         let size=dimensions(input.width(),input.height());
         let mut views=self.views.lock().unwrap();
         let make=|size:[u32;2]| {
@@ -80,6 +83,7 @@ impl Bloom {
         let exposure=if exposure.is_finite(){exposure.clamp(0.0,65504.0)}else{0.0};
         let (knee,cap)=if screen {(-SCREEN_STOPS,SCREEN_CAP)}else{(KNEE.min(threshold.max(0.01)),MAX_EXPOSED)};
         gpu.queue.write_buffer(&target.uniform,0,bytemuck::cast_slice(&[exposure,threshold.max(0.0),knee,cap]));
+        if let Some(source)=exposure_from {enc.copy_buffer_to_buffer(source,0,&target.uniform,0,4);}
         // Screen glow sums the rounds from spacing 4 on (Godot's levels 3-6);
         // later rounds sample further apart (dilated Gaussian).
         for (i,b) in target.steps.iter().enumerate() {let r=i+1;

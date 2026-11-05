@@ -526,3 +526,28 @@ fn neon_siege_bots_clear_waves_and_replay_exactly() {
     assert_eq!(siege["players"].as_array().unwrap().len(), 4);
     assert_eq!(run()["state"], s["state"], "the same seed plays the same siege");
 }
+
+const EXPOSURE_GAME: &str = r##"
+local function init()
+    light.set({ exposure = "auto", exposure_min = 4, exposure_max = 14, exposure_bias = 0.5, adapt_speed = 6 })
+    state.bad = tostring(select(2, pcall(light.set, { exposure = "bright" })))
+end
+local function tick(dt, input)
+    if game.tick() == 3 then light.set({ exposure = 11 }) end
+end
+return { init = init, tick = tick }
+"##;
+
+#[test]
+fn exposure_can_be_automatic_and_tuned_or_fixed_again() {
+    let dir = folder("exposure");
+    std::fs::write(dir.join("main.luau"), EXPOSURE_GAME).unwrap();
+    let mut g = game(&dir);
+    let s = state(&g);
+    assert!(s["state"]["bad"].as_str().unwrap().contains("\"auto\""), "{s}");
+    let auto = g.core().light.auto.expect("exposure = \"auto\" turns it on");
+    assert_eq!((auto.min_ev100, auto.max_ev100, auto.compensation, auto.speed_light, auto.speed_dark), (4.0, 14.0, 0.5, 6.0, 2.0));
+    ticks(&mut g, 5, Controls::default());
+    let light = g.core().light;
+    assert_eq!((light.auto, light.ev100), (None, Some(11.0)), "a number fixes the exposure again");
+}

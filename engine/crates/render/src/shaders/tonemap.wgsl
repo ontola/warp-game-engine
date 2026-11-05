@@ -1,5 +1,6 @@
 // Physical exposure, then AgX (Troy Sobotka's view transform, polynomial
-// fit), then sRGB encoding into an 8-bit image.
+// fit), then sRGB encoding into an 8-bit image. For an HDR screen the same
+// picture is also written linear with its highlights stretched (`hdr_out`).
 
 struct Tone {
     exposure: f32,  // 1 / (1.2 * 2^EV100)
@@ -15,6 +16,7 @@ struct Tone {
     time: f32,      // seconds, moves the grain
     sun: vec4<f32>, // UV, radius in vertical UV, exposed optical strength
     sun_tint: vec4<f32>,
+    hdr: vec4<f32>, // display headroom over SDR white (1 or less: no HDR copy), knee, unused, unused
 };
 
 @group(0) @binding(0) var hdr: texture_2d<f32>;
@@ -23,6 +25,8 @@ struct Tone {
 @group(0) @binding(3) var bloom: texture_2d<f32>;
 @group(0) @binding(4) var bloom_sampler: sampler;
 @group(0) @binding(5) var scene_depth: texture_depth_2d;
+// Linear, 1.0 = SDR white: the same picture for an HDR screen.
+@group(0) @binding(6) var hdr_out: texture_storage_2d<rgba16float, write>;
 var<workgroup> sun_visibility: f32;
 
 // One sixteen-tap solar-disc test per tile, on the GPU. The depth image and
@@ -175,6 +179,23 @@ fn encode_ldr(linear: vec3<f32>, pixel: vec2<i32>) -> vec3<f32> {
     return clamp(srgb(linear) + noise / 255.0, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+// HDR: the SDR picture up to the knee, then the AgX shoulder stretched to
+// the display's headroom. Brightest channel decides; hue stays AgX's:
+// f(m) = m + (headroom - 1) * ((m - knee) / (1 - knee))^2 above the knee.
+fn expand_hdr(linear: vec3<f32>) -> vec3<f32> {
+    let headroom = tone.hdr.x;
+    let knee = clamp(tone.hdr.y, 0.0, 0.95);
+    let m = max(linear.r, max(linear.g, linear.b));
+    if m <= knee { return linear; }
+    let t = (min(m, 1.0) - knee) / (1.0 - knee);
+    return linear * ((m + (headroom - 1.0) * t * t) / m);
+}
+
+fn store(pixel: vec2<i32>, linear: vec3<f32>) {
+    textureStore(ldr, pixel, vec4<f32>(encode_ldr(linear, pixel), 1.0));
+    if tone.hdr.x > 1.0 { textureStore(hdr_out, pixel, vec4<f32>(expand_hdr(linear), 1.0)); }
+}
+
 var<workgroup> tile: array<vec3<f32>, 100>;
 
 fn tile_at(l: vec2<i32>) -> vec3<f32> { return tile[u32(l.y * 10 + l.x)]; }
@@ -187,7 +208,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     let inside = gid.x < size.x && gid.y < size.y;
     let p = vec2<i32>(gid.xy);
     if tone.sharpen <= 0.0 {
-        if inside { textureStore(ldr, vec2<i32>(gid.xy + tone.offset), vec4<f32>(encode_ldr(display(p), p + vec2<i32>(tone.offset)), 1.0)); }
+        if inside { store(p + vec2<i32>(tone.offset), display(p)); }
         return;
     }
     // Uniform branch: every invocation reaches both barriers.
@@ -210,7 +231,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     let room = min(lo, 1.0 - hi) / max(hi, vec3<f32>(1e-4));
     let amp = sqrt(clamp(room, vec3<f32>(0.0), vec3<f32>(1.0))) * tone.sharpen;
     out = clamp(out + (out * 4.0 - (n + s + w + e)) * amp * 0.25, lo, hi);
-    textureStore(ldr, vec2<i32>(gid.xy + tone.offset), vec4<f32>(encode_ldr(out, p + vec2<i32>(tone.offset)), 1.0));
+    store(p + vec2<i32>(tone.offset), out);
 }
 
 // The same pass evaluating every neighbour itself (KERN_TILED_POST=0),
@@ -238,5 +259,5 @@ fn main_direct(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_inv
         let amp = sqrt(clamp(room, vec3<f32>(0.0), vec3<f32>(1.0))) * tone.sharpen;
         out = clamp(out + (out * 4.0 - (n + s + w + e)) * amp * 0.25, lo, hi);
     }
-    textureStore(ldr, vec2<i32>(gid.xy + tone.offset), vec4<f32>(encode_ldr(out, p + vec2<i32>(tone.offset)), 1.0));
+    store(p + vec2<i32>(tone.offset), out);
 }
