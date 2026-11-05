@@ -25,7 +25,12 @@ form a prefix), and `Refiner::rounds` reads that back asynchronously (two-slot
 ring, never waits) and encodes the need plus 4, shrinking 2 per observation,
 even. A frame that used every encoded round may have been cut short; its drain
 publishes the current complete cut (coarser, never missing) and the next
-frames return to the full bound. Tests: `rounds_follow_need_and_recover_from_a_short_frame`
+frames return to the full bound. A camera cut (over 0.5 m, about 3 degrees
+or 5% zoom in one frame, see `Rounds::cut`) also goes straight to the full
+bound and ignores readbacks from before it; without that a teleport on the
+Mac left ~8% of pixels coarser for 2-3 frames. Mac (59de6db, before the cut
+rule): wall views 13.4 to 10.9 ms GPU frame, forest-heavy views only 0.4-0.8 ms
+better because their need moves between ~11 and 42 rounds. Tests: `rounds_follow_need_and_recover_from_a_short_frame`
 (CPU) and `gpu_selection_rounds_follow_reported_need` (ignored; the fixture is
 only 2 levels deep, so it checks the readback, identical images and recovery
 from a forced short hint, not the size of the saving). Mac timing still to

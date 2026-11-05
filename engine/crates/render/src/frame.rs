@@ -2754,10 +2754,10 @@ impl Renderer {
         Ok(())
     }
 
-    #[cfg(test)]
     /// (rounds encoded last frame, working rounds last reported, depth bound) of GPU forest selection.
     #[cfg(test)]
     pub(crate) fn test_forest_rounds(&self,full:bool,hint:Option<u32>)->(u32,Option<u32>,u32) {let (r,_)=self.gpu_forest.as_ref().unwrap();r.test_rounds(full,hint)}
+    #[cfg(test)]
     pub(crate) fn test_warm_foliage_assets(&self,gpu:&Gpu){if let(Some(v),Some((r,_)))=(&self.voxel_forest,&self.gpu_forest){v.warm_page_fixture(gpu,r);}}
     #[cfg(test)]
     pub(crate) fn test_tree_deferred_capacity(&mut self,gpu:&Gpu,capacity:u32) {
@@ -4073,6 +4073,9 @@ impl Renderer {
                 if i<views.len(){crate::foliage_select::ConsumerView::camera(v)}
                 else{crate::foliage_select::ConsumerView::shadow(v)}
             }).collect::<Vec<_>>();
+            // A camera cut needs deeper refinement than last frame's readback
+            // says; encode the full round bound until the GPU reports again.
+            forest.note_cameras(&views.iter().map(|v|(v.cam.pos,(v.cam.target-v.cam.pos).normalize_or_zero(),v.cam.fov_y)).collect::<Vec<_>>());
             forest.encode_timed_depth(gpu,&mut enc,&consumers,*first_owner,time,Some(&current))?;
             enc.copy_buffer_to_buffer(&forest.choices,forest.choice_table_bytes(),&shadow_t.foliage_selection,0,forest.choice_table_bytes());
         }
