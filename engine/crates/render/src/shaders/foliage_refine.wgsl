@@ -300,13 +300,17 @@ fn audit_node(tree:u32,node:u32) {
 }
 @compute @workgroup_size(64) fn audit(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;
- if at<min(atomicLoad(&counters[0]),view.counts.y) {let r=records[at];audit_node(r.x,r.y);}
+ if at<min(atomicLoad(&counters[0]),view.counts.y) {
+  let r=records[at];let n=nodes[r.y];audit_node(r.x,r.y);
+  let base=select(36u,32u,(n.links.w&4u)!=0u);
+  atomicAdd(&state[base+(mask(sphere(trees[r.x],n))>>8u)],1u);
+ }
  if at>=view.counts.x {return;}
  if atomicLoad(&fallback[at])!=0u {atomicAdd(&state[25],1u);return;}
  let rep=direct[at];if rep==0u {return;}
  let first=trees[at].info.x;let end=nodes[first].links.y;
  for(var n=first;n<end;n++) {
-  if nodes[n].links.z+1u==rep && (nodes[n].links.w&2u)!=0u {audit_node(at,n);return;}
+  if nodes[n].links.z+1u==rep && (nodes[n].links.w&2u)!=0u {audit_node(at,n);atomicAdd(&state[40u+(mask(sphere(trees[at],nodes[n]))>>8u)],1u);return;}
  }
  atomicAdd(&state[26],1u);
 }

@@ -1,3 +1,16 @@
+## 5 November 2026 - actual branch-level consumer counts
+
+Added explicit audit histograms for source/voxel branches and direct root
+voxels, based on each selected node's frustum mask. Normal route: all 821
+branches shadow-only (15 source, 806 voxel); camera uses only 40,529 whole-root
+voxels. Old camera_published_branches=780 is ROOT OWNERSHIP, not actual branch
+visibility. This explains prior no-image-change despite more source slots.
+141 tests PASS, strengthened histogram oracle; production route captured.
+No normal-frame dispatch or quality change. Next G3 consumer visibility/detail
+must unlock camera branch refinement, not merely more shadow-only work.
+Release executable contains diagnostics; no rejected queue experiment.
+No live GPU process or interactive playtest. Full evidence in checklist.
+
 ## 5 November 2026 - root cohort queue experiment rejected
 
 Compacted camera-owning roots then shadow-only roots. 141 tests and additional

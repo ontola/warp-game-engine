@@ -226,6 +226,7 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
     for node in &mut nodes {
         let rep=representations[node.links[2]as usize];
         let branch=&branches[if rep[3]==0 {rep[0]} else {rep[3]-1}as usize];
+        node.links[3]=(node.links[3]&!4)|if rep[1]==0 {4}else{0};
         let bound=representation_raster_work(rep,branch,&work)?;
         node.error[2]=exact_work(bound[0])?;
         node.error[3]=exact_work(bound[1])?;
@@ -270,6 +271,11 @@ pub struct Runtime {
     population:std::sync::Mutex<std::sync::Arc<crate::foliage_population::Population>>,templates:std::sync::Arc<Vec<RootTemplate>>,publish_pipeline:wgpu::ComputePipeline,publish_layout:wgpu::BindGroupLayout,source_buffer:wgpu::Buffer,proxy_buffer:wgpu::Buffer,proxy_owners:std::sync::Arc<Vec<u32>>,
 }
 #[derive(Debug,serde::Serialize)]
+pub struct ConsumerCounts {pub outside:u32,pub camera_only:u32,pub shadow_only:u32,pub both:u32}
+impl ConsumerCounts {
+    fn from_words(v:&[u32])->Self {Self {outside:v[0],camera_only:v[1],shadow_only:v[2],both:v[3]}}
+}
+#[derive(Debug,serde::Serialize)]
 pub struct Diagnostics {
     pub trees:u32,pub active_roots:usize,pub branch_capacity:u32,pub selected_records:u32,pub tested_nodes:u32,
     pub source_slots:u32,pub voxel_slots:u32,pub shadow_voxel_slots:u32,pub direct_roots:u32,pub fallback_trees:u32,pub retained:u32,pub assigned:u32,
@@ -281,6 +287,9 @@ pub struct Diagnostics {
     pub selected_over_target:[u32;2],pub error_unknown_proxies:u32,pub error_unmatched_direct:u32,pub error_forced_nodes:u32,
     pub pose_requests:u32,pub evaluated_shared_poses:u32,pub pose_hash_failures:u32,
     pub camera_roots:u32,pub shadow_only_roots:u32,pub camera_fallback_roots:u32,pub shadow_only_fallback_roots:u32,
+    /// Selected-node frustum demand, before downstream occlusion/materialization.
+    pub selected_source_consumers:ConsumerCounts,pub selected_voxel_consumers:ConsumerCounts,pub selected_direct_consumers:ConsumerCounts,
+    /// Root ownership counts, not branch-level consumer visibility.
     pub camera_published_branches:u64,pub shadow_only_published_branches:u64,
 }
 #[derive(Debug,serde::Serialize)]
@@ -426,7 +435,7 @@ impl Runtime {
     }
     /// Explicit synchronous diagnostic only; never called to select or draw.
     pub fn diagnostics(&self,gpu:&Gpu)->Result<Diagnostics,String> {
-        let inputs=[(&self.selector.counters,64u64),(&self.residency.counters,32),(&self.selector.fallback,self.trees as u64*4),(&self.choices,131072),(&self.pose_work,268),(&self.selector.demand,self.trees as u64*16),(&self.selector.refiner.state,128)];
+        let inputs=[(&self.selector.counters,64u64),(&self.residency.counters,32),(&self.selector.fallback,self.trees as u64*4),(&self.choices,131072),(&self.pose_work,268),(&self.selector.demand,self.trees as u64*16),(&self.selector.refiner.state,192)];
         let size=inputs.iter().map(|(_,n)|n).sum();
         let output=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("forest diagnostic snapshot"),size,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
         let mut enc=gpu.device.create_command_encoder(&Default::default());let mut offset=0;
@@ -451,7 +460,7 @@ impl Runtime {
         }
         let voxels=choices[..self.slots as usize].iter().filter(|w|**w&3==1).count()as u32;
         let shadow_voxel_slots=choices[16384..16384+self.slots as usize].iter().filter(|w|**w&3==1).count()as u32;
-        Ok(Diagnostics {selected_spatial_error_pixels:[f32::from_bits(refinement[19]),f32::from_bits(refinement[20])],selected_error_target_ratio:[f32::from_bits(refinement[21]),f32::from_bits(refinement[22])],selected_over_target:[refinement[23],refinement[24]],error_unknown_proxies:refinement[25],error_unmatched_direct:refinement[26],error_forced_nodes:refinement[27],reserved_raster_splats:[refinement[1],refinement[2]],refinement_budget_stops:refinement[17],refinement_faults:refinement[15],reused_refinement_proposals:refinement[28],camera_roots,shadow_only_roots,camera_fallback_roots,shadow_only_fallback_roots,camera_published_branches,shadow_only_published_branches,trees:self.trees,active_roots:self.population.lock().unwrap().active(),branch_capacity:self.slots,selected_records:c[0],tested_nodes:c[4],source_slots:r[6].saturating_sub(voxels),voxel_slots:voxels,shadow_voxel_slots,direct_roots:c[7],
+        Ok(Diagnostics {selected_source_consumers:ConsumerCounts::from_words(&refinement[32..36]),selected_voxel_consumers:ConsumerCounts::from_words(&refinement[36..40]),selected_direct_consumers:ConsumerCounts::from_words(&refinement[40..44]),selected_spatial_error_pixels:[f32::from_bits(refinement[19]),f32::from_bits(refinement[20])],selected_error_target_ratio:[f32::from_bits(refinement[21]),f32::from_bits(refinement[22])],selected_over_target:[refinement[23],refinement[24]],error_unknown_proxies:refinement[25],error_unmatched_direct:refinement[26],error_forced_nodes:refinement[27],reserved_raster_splats:[refinement[1],refinement[2]],refinement_budget_stops:refinement[17],refinement_faults:refinement[15],reused_refinement_proposals:refinement[28],camera_roots,shadow_only_roots,camera_fallback_roots,shadow_only_fallback_roots,camera_published_branches,shadow_only_published_branches,trees:self.trees,active_roots:self.population.lock().unwrap().active(),branch_capacity:self.slots,selected_records:c[0],tested_nodes:c[4],source_slots:r[6].saturating_sub(voxels),voxel_slots:voxels,shadow_voxel_slots,direct_roots:c[7],
             fallback_trees:fallback.iter().filter(|f|**f!=0).count()as u32,retained:r[2],assigned:r[3],slot_failures:r[4],hash_failures:r[5],frontier_overflow_requests:c[11],peak_frontier_requests:c[15],pose_hash_failures:poses[64],pose_requests:poses[65],evaluated_shared_poses:poses[66]})
     }
     pub fn encode(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::part_wind::AnimationView],first_owner:u32)->Result<(),String> {
