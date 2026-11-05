@@ -465,6 +465,8 @@ impl Game for Fly {
             "F1 default  F2 lowland  F4 alpine  F8 next biome  F5 seed  F6 jump  F7 hug  wheel speed  F12 screenshot".to_string(),
         ];
         let mut hud = HudDrawList::new(frame.size);
+        // --no-hud: captures that are compared pixel by pixel.
+        let lines = if std::env::args().any(|a| a == "--no-hud") { Vec::new() } else { lines.to_vec() };
         for (i, text) in lines.into_iter().enumerate() {
             hud.text.push(TextRun { id: i as u64 + 1, text, position: [20.0, 16.0 + 26.0 * i as f32], bounds: [0.0, 0.0, w as f32, h as f32],
                 font_size: 20.0, color: [255, 255, 255, 230], font: FontFace::Body, align: TextAlign::Left, width: w as f32 });
@@ -825,6 +827,42 @@ fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f3
     roots
 }
 
+/// --diff-images A B HEAT: how far two captures differ, as JSON on stdout,
+/// and a heat map of the difference (black is equal, 32 levels is full red).
+/// Used by engine/tools/render-suite.py; needs no GPU or world.
+fn diff_images(a:&str,b:&str,heat:&str)->Result<(),String> {
+    let load=|path:&str|image::open(path).map(|i|i.to_rgb8()).map_err(|e|format!("{path}: {e}"));
+    let (a,b)=(load(a)?,load(b)?);
+    if a.dimensions()!=b.dimensions() {return Err(format!("sizes differ: {:?} and {:?}",a.dimensions(),b.dimensions()));}
+    let (w,h)=a.dimensions();
+    let (mut over4,mut over16,mut max,mut sum,mut square)=(0u64,0u64,0u8,0u64,0u64);
+    let mut map=image::RgbImage::new(w,h);
+    for ((pa,pb),out) in a.pixels().zip(b.pixels()).zip(map.pixels_mut()) {
+        let d=(0..3).map(|c|pa[c].abs_diff(pb[c])).max().unwrap_or(0);
+        over4+=u64::from(d>4);over16+=u64::from(d>16);max=max.max(d);sum+=u64::from(d);square+=u64::from(d)*u64::from(d);
+        let v=(u32::from(d)*8).min(255) as u8;
+        *out=image::Rgb([v,v/4,0]);
+    }
+    map.save(heat).map_err(|e|format!("{heat}: {e}"))?;
+    // Mean SSIM on luma over 8x8 blocks.
+    let luma=|p:&image::Rgb<u8>|0.2126*f64::from(p[0])+0.7152*f64::from(p[1])+0.0722*f64::from(p[2]);
+    let (mut ssim,mut blocks)=(0.0,0u32);
+    for y in (0..h.saturating_sub(7)).step_by(8) {for x in (0..w.saturating_sub(7)).step_by(8) {
+        let (mut ma,mut mb,mut aa,mut bb,mut ab)=(0.0,0.0,0.0,0.0,0.0);
+        for j in 0..8 {for i in 0..8 {
+            let (u,v)=(luma(a.get_pixel(x+i,y+j)),luma(b.get_pixel(x+i,y+j)));
+            ma+=u;mb+=v;aa+=u*u;bb+=v*v;ab+=u*v;
+        }}
+        let n=64.0;(ma,mb)=(ma/n,mb/n);
+        let (va,vb,cov)=(aa/n-ma*ma,bb/n-mb*mb,ab/n-ma*mb);
+        ssim+=((2.0*ma*mb+6.5025)*(2.0*cov+58.5225))/((ma*ma+mb*mb+6.5025)*(va+vb+58.5225));blocks+=1;
+    }}
+    let pixels=f64::from(w)*f64::from(h);
+    println!("{}",serde_json::json!({"over4_pct":over4 as f64/pixels*100.,"over16_pct":over16 as f64/pixels*100.,"max":max,"mean":sum as f64/pixels,
+        "rmse":(square as f64/pixels).sqrt(),"ssim":ssim/f64::from(blocks.max(1))}));
+    Ok(())
+}
+
 fn main() -> Result<(), String> {
     // Normal vegetation renderer. These diagnostic overrides can disable a
     // culling stage, but never select a different CPU population backend.
@@ -840,6 +878,7 @@ fn main() -> Result<(), String> {
     // A/B: only the land hides forest, as if no other geometry were there.
     if std::env::args().any(|a| a == "--no-building-occlusion") { unsafe { std::env::set_var("KERN_FOLIAGE_OCCLUDERS", "terrain"); } }
     let args: Vec<String> = std::env::args().collect();
+    if let Some(w) = args.windows(4).find(|w| w[0] == "--diff-images") { return diff_images(&w[1],&w[2],&w[3]); }
     let arg = |k: &str| args.windows(2).find(|w| w[0] == k).map(|w| w[1].clone());
     for retired in ["--recipe", "--firs", "--cards", "--forest-layer-only"] {
         if args.iter().any(|a| a == retired) {
@@ -938,6 +977,30 @@ fn main() -> Result<(), String> {
                 }
             }
             if i+1 == frames { if let Some(path) = arg("--fly-shot") { render::write_png(std::path::Path::new(&path), w, h, &rgba)?; } }
+        }
+        // --fly-stats PATH: counters and memory of the settled view, for
+        // engine/tools/render-suite.py. Measured after the timed frames.
+        if let Some(path) = arg("--fly-stats") {
+            let stats=headless.measure(&mut game)?;
+            let renderer=headless.renderer().ok_or("no renderer to measure")?;
+            let voxels=renderer.voxel_diagnostics(&gpu)?.unwrap_or_default().iter().map(|s|serde_json::json!({"splats":s.raster_splats,"vertices":s.raster_vertices,"capacity":s.raster_capacity})).collect::<Vec<_>>();
+            let cache=renderer.resource_cache_stats();
+            let memory=gpu.device.generate_allocator_report().map(|report| {
+                let mut named=std::collections::BTreeMap::<String,(u64,u32)>::new();
+                for a in &report.allocations {let e=named.entry(a.name.clone()).or_default();e.0+=a.size;e.1+=1;}
+                let mut top=named.into_iter().collect::<Vec<_>>();
+                top.sort_by_key(|(_,(bytes,_))|std::cmp::Reverse(*bytes));
+                serde_json::json!({"allocated_bytes":report.total_allocated_bytes,"reserved_bytes":report.total_reserved_bytes,"allocations":report.allocations.len(),
+                    "top":top.iter().take(40).map(|(name,(bytes,count))|serde_json::json!({"name":name,"bytes":bytes,"count":count})).collect::<Vec<_>>()})
+            });
+            let report=serde_json::json!({"adapter":gpu.info.name,"backend":format!("{:?}",gpu.info.backend),"driver":gpu.info.driver_info,"size":[w,h],"frames":frames,
+                "camera":{"clusters":stats.clusters,"triangles":stats.triangles,"submitted_vertices":stats.submitted_vertices},
+                "shadow":{"clusters":stats.shadow_clusters,"triangles":stats.shadow_triangles,"submitted_vertices":stats.shadow_submitted_vertices,
+                    "near_clusters":stats.near_shadow_clusters,"near_triangles":stats.near_shadow_triangles,
+                    "far_clusters":stats.far_sun_clusters,"far_triangles":stats.far_sun_triangles,"far_updated":stats.far_sun_cache_updated},
+                "voxel_views":voxels,"forest":renderer.gpu_forest_diagnostics(&gpu)?,"pages":renderer.foliage_page_stats(),
+                "resource_cache":{"hits":cache.hits,"misses":cache.misses,"entries":cache.entries},"memory":memory});
+            std::fs::write(&path,serde_json::to_vec_pretty(&report).map_err(|e|e.to_string())?).map_err(|e|format!("{path}: {e}"))?;
         }
         if let Some(renderer)=headless.renderer() {
             if args.iter().any(|a|a=="--voxel-raster-profile") {println!("Voxel raster profile: {}",serde_json::to_string(&renderer.voxel_raster_profile(&gpu)?).map_err(|e|e.to_string())?);}

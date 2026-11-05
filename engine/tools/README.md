@@ -3,6 +3,9 @@
 Run from the repository root. Python tools require Python 3.11+.
 Use a fresh output directory for each run and run GPU workloads serially.
 
+- `render-suite.py`: one fixed world from fixed cameras: per-pass GPU times, counters,
+  memory and pictures, with diffs between runs. See
+  [render suite](../docs/render-suite.md).
 - `run-frame-scenario.py`: runs an already built game with a declarative scene.
 - `frame-budget.py`: GPU passes, CPU phases, cadence and diagnostic-frame filtering.
 - `frame-hitches.py`: visible gameplay cadence tails, preceding CPU work and

@@ -49,6 +49,7 @@ and session notes are in the [development log](log/README.md).
 | [Motion blur](motion-blur.md) | Opt-in per-view motion vectors, fixed shutter, split-screen isolation and limitations. |
 | [Volumetric light](volumetric-light.md) | Opt-in in-scattering from local lights. |
 | [Live render debug panel](debug-ui.md) | F10: render and light switches, LOD, GPU pass times. |
+| [Render suite](render-suite.md) | One fixed world from fixed cameras: per-pass GPU times, counters, memory and pictures, with diffs between runs. |
 | [Native profiling](native-profiling.md) | No-readback headless CPU/GPU samples and per-frame reports. |
 | [Native Quest VR](quest-native.md) | Android/OpenXR with the Warp renderer and the full Growing Guns app; build, controls and validation limits. |
 | [Standalone Quest VR demo](quest-vr.md) | WebXR shell, local Rust/Wasm Growing Guns demo, Touch controls. |

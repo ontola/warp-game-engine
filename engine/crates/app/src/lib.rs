@@ -478,6 +478,18 @@ impl<'g> Headless<'g> {
         self.last_draw_timings = profile::DrawTimings { game_ms, ..self.out.timings };
         Ok(self.last_draw_timings)
     }
+    /// Draw one more frame through the measuring path, which waits for the GPU
+    /// and returns its counters (clusters, triangles, shadow work, pass times).
+    /// For developer captures: never count this frame in steady-frame timing.
+    pub fn measure(&mut self, game: &mut dyn Game) -> Result<render::FrameStats, String> {
+        let split = game.split();
+        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha: 1.0, split, scene_fps: self.tick_hz, scene_worst_ms: 1000.0 / self.tick_hz, renderer: &mut self.renderer };
+        let draw = game.draw(&mut frame)?;
+        let renderer = self.renderer.as_ref().ok_or("the game drew without a scene")?;
+        let rects = render::split_rects_with(draw.cameras.len(), self.size[0], self.size[1], split);
+        let views: Vec<ViewRect> = draw.cameras.iter().zip(&rects).map(|(&cam, &(x, y, w, h))| ViewRect { cam, x, y, w, h }).collect();
+        renderer.try_render_texture_profiled(self.gpu, &views, &draw.light, self.size[0], self.size[1]).map(|(_, stats)| stats)
+    }
     /// CPU submission stages of the last rendered frame, excluding pixel
     /// readback. These can include driver waits; GPU timestamps are separate.
     pub fn last_draw_timings(&self) -> profile::DrawTimings { self.last_draw_timings }
