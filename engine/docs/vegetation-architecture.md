@@ -11,6 +11,23 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+## 5 November: attribute oversized cells to the published GPU cut
+
+The explicit --voxel-raster-profile report now attaches articulated-slot owner,
+root/node/generation, selected error/cost, immediate children and GPU page state.
+Only explicit offline capture reads back; no CPU selection or normal-frame waits.
+Whole-root volume attribution is explicitly marked not yet decoded.
+154 foliage tests (including GPU fixtures), release build and normal native720p
+ONE-view route succeeded. Image RGB MAE
+excluding HUD <0.000074 against retained baseline (diagnostic-only change).
+Largest submitted cell was21.308px, root33573/node1116. Selected authored error
+1.7875/optical footprint0.9492; immediate child1117 is worse at3.3464/3.4293.
+Both children are resident. This exposes nonmonotonic intermediate quality, but
+unary candidate skipping must be traced before claiming the exact admission cause.
+Next: capture the actual replacement proposal for this owner and fix complete-cut
+lookahead/cooking as justified; do not merely raise rounds or shrink splats.
+Evidence: vegetation-cut-ownership.json. Spheres remain unresolved; no gate closed.
+
 ## 5 November: reject node-depth candidate; oversized voxel cells remain
 
 Current-terrain visibility was extended from roots to hierarchy nodes before

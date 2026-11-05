@@ -3225,7 +3225,9 @@ impl Renderer {
     /// Explicit offline validation readback; normal frame rendering never waits.
     /// Expensive explicit offline diagnostic; never part of the frame loop.
     pub fn voxel_raster_profile(&self,gpu:&Gpu)->Result<Vec<serde_json::Value>,String> {
-        self.voxel_forest.as_ref().map_or(Ok(Vec::new()),|f|f.raster_profile(gpu))
+        let mut profiles=self.voxel_forest.as_ref().map_or(Ok(Vec::new()),|f|f.raster_profile(gpu))?;
+        if let Some(forest)=&self.gpu_forest {forest.0.annotate_raster_profile(gpu,&mut profiles)?;}
+        Ok(profiles)
     }
     pub fn voxel_diagnostics(&self, gpu: &Gpu) -> Result<Option<Vec<crate::voxel_forest::VoxelViewDiagnostics>>,String> {
         self.voxel_forest.as_ref().map(|forest|forest.diagnostics(gpu)).transpose()
