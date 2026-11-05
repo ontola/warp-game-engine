@@ -1,0 +1,7 @@
+{
+  "crate": "spaceracer-app",
+  "library": "spaceracer_app",
+  "name": "spaceracer",
+  "assets": ["assets", "rules"],
+  "audio": "audio"
+}
