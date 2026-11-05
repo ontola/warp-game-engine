@@ -1,3 +1,23 @@
+Final validation:164/164 tests PASS; release build PASS. Normal1200-frame
+capture restores5.482px maximum, zero refinement faults. Safety ceiling does
+not bind (25699650 conservative source visits). Covered GPU33.287ms median
+last120 at native720p/one view. Strict pixel test still FAILS; not a repeated
+performance win. Original priority retained. No interactive playtest started.
+
+# 5 November: source budget enforced, tight default REJECTED
+
+Fourth admission dimension counts source cluster visits across visible consumers.
+Reservation, prefix admission, refunds and retries account for it; diagnostics
+expose reserved_source_clusters and source_cluster_budget_stops.164 foliage
+GPU/CPU tests PASS. No occlusion/terrain-owned files changed.
+
+Normal native720p ONE-view1200-frame probe with262144 cap:2010 source slots,
+reserved262119 visits;20.636ms covered GPU median, but18.993px cells versus
+5.482px retained. Large spheres visible: NOT an accepted speedup. Selection
+10.735ms, splat budgets saturated and635670 page misses. Tight default rejected;
+retain1073741824 safety ceiling until fine voxel capacity/quality is solved.
+See authoritative checklist and vegetation-fine-endpoint-measurements.json.
+
 # 5 November: source work accounting prerequisite
 
 PR8 retained build/capture: strict pixel quality FAIL at5.482px, no page

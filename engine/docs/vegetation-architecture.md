@@ -26,10 +26,8 @@ are still unaccepted. There is no CPU near-tree pool.
   GPU covered median22.629ms is not a speedup claim: detail is worse and the
   newly integrated far sun consumer changes the workload. Revert90d51dd's
   selected-mip and endpoint-source restriction; retain PR8 and prior fine cook.
-- [ ] Source work budget: source leaves reserve no voxel splats but their real
-  cluster/triangle costs are absent. Mac handoff reports6.8M rather than0.3M
-  triangles on the hill. Implement actual source work accounting alongside
-  voxel work before further bypass tuning. Do not substitute a screen-size gate.
+- [x] Source work accounting/admission implemented (details below). A tight
+  default is NOT accepted: the normal-scene image regresses to larger spheres.
 - [x] Retained integration after reverting the experiment:161/161 foliage
   tests PASS (pr8-retained-tests.log).
 - [x] Retained release build and normal1200-frame capture inspected. Largest
@@ -43,9 +41,32 @@ are still unaccepted. There is no CPU near-tree pool.
   potential costs, not actual drawn triangles. New regression: three repeated
   templates share one resident mesh but cost three instances of work.
   All162 foliage tests PASS (source-work-foliage-tests.log).
-- [ ] Source work admission: feed those counts into reservation, prefix
-  admission, refunds, retries and diagnostics. Metadata alone does not fix the
-  bypass or enforce a GPU frame budget. Source work is still unbudgeted.
+- [x] Source work admission now participates in reservation, priority-prefix
+  admission, refunds, retries and diagnostics, counting each visible consumer.
+  Proposal publication mode is separate from its fourth (source) cost dimension.
+  164 foliage tests PASS, including collective budgets, view multiplicity and
+  refund-driven complete-endpoint retry. No new CPU selection or storage binding.
+- [x] Test a262144 source-cluster-visit cap in the normal1200-frame capture.
+  Reserved262119,2010 source slots,317 voxel slots; no refinement faults.
+  Largest cell18.993px versus retained5.482px: visual regression, REJECTED.
+  Final120 covered GPU median20.636ms versus36.504ms; NOT an accepted speedup.
+  Selection alone10.735ms; camera voxel raster2.909ms, splat setup2.470ms.
+  Both16M splat budgets saturate;635670 page misses and25832 page-blocked
+  camera refinements. A source cap exposes unresolved fine voxel capacity; it
+  does not solve it. Screenshot source-budget-1200.png confirms large spheres.
+- [x] Also reject16777216 cap with source-cost priority: saturated16777159
+  visits and largest cell14.448px. Preserve previous refinement priority; source
+  accounting is an independent admission constraint, not a new quality heuristic.
+- [ ] Calibrate a lower source work default only after compact fine voxel
+  publication/paging passes the image requirement. Retain accounting with a
+  conservative1073741824 safety ceiling, not the rejected262144 default.
+  Cluster visits are a work upper bound, not measured triangles or milliseconds.
+- [x] Final accounting build:164 tests PASS and normal1200-frame capture
+  inspected. Original priority restored,1073741824 safety cap nonbinding;
+  reserved25699650 conservative source visits,32736 source/32 voxel slots,
+  zero refinement faults. Largest cell5.482px restores prior maximum; still
+  FAILS one-pixel acceptance. Covered GPU final120 median33.287ms; single run,
+  not a repeated speedup claim. Source-budget-final-1200 artifacts.
 - [ ] One-pixel camera/shadow, bounded work, repeated timing and4K/four-view
   acceptance remain incomplete. Do not launch this rejected capture as playtest.
 
