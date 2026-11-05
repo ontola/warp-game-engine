@@ -474,6 +474,19 @@ fn road_at(xz: vec2<f32>, scale: f32) -> RoadPixel {
     return r;
 }
 
+// A ground layer mapped from above smears down a steep face, such as the cut
+// round a levelled plot: there it blends to triplanar. Gentle ground pays nothing.
+fn steep_layer(l: i32, p: vec3<f32>, n: vec3<f32>, scale: f32, mapping: TerrainMapping) -> vec3<f32> {
+    let flat_map = terrain_layer(l, p.xz, scale, mapping);
+    let steep = smoothstep(0.7, 0.45, n.y);
+    if steep <= 0.0 { return flat_map; }
+    var tw = abs(n);
+    tw = tw * tw * tw * tw;
+    tw /= tw.x + tw.y + tw.z;
+    let rot = mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
+    return mix(flat_map, triplanar(l, p, tw, scale, rot, 0.0), steep);
+}
+
 fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     let f = field_attr(s);
     let g = field_ground(s);
@@ -492,7 +505,7 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     let lush = clamp(0.5 + (broad - 0.5) * 1.2 + 0.4 * f.wet, 0.0, 1.0);
     // Darker than a lawn: seen from afar a meadow is mostly blade shadow,
     // so the ground matches the grass where the blades fade out.
-    let grass = terrain_layer(layer, wuv, 2.6, mapping) * mix(g.grass_dry.rgb, g.grass_lush.rgb, lush);
+    let grass = steep_layer(layer, p, n, 2.6, mapping) * mix(g.grass_dry.rgb, g.grass_lush.rgb, lush);
     // Layers a pixel holds none of are not sampled (moor, soil, gravel):
     // their weights come first.
     let m_moor = smoothstep(0.25, 0.8, clamp(f.moor + (broad - 0.5) * 0.7 + (mottle - 0.5) * 0.3, 0.0, 1.0));
@@ -509,11 +522,12 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         nt = mix(nt, terrain_layer_normal(layer + 1, wuv, 3.2, mapping), m_moor);
     }
     var soil = vec3<f32>(0.0);
-    if m_soil > 0.0 || on_road { soil = terrain_layer(layer + 2, wuv, 3.0, mapping) * g.soil.rgb; }
+    if m_soil > 0.0 || on_road { soil = steep_layer(layer + 2, p, n, 3.0, mapping) * g.soil.rgb; }
     var c = mix(grass, moor, m_moor);
     c = mix(c, soil, m_soil);
     if m_soil > 0.0 { nt = mix(nt, terrain_layer_normal(layer + 2, wuv, 3.0, mapping), m_soil); }
-    var nn = perturb_xz(n, nt);
+    // The bump map is mapped from above too: it streaks a steep face the same way.
+    var nn = perturb_xz(n, nt * smoothstep(0.45, 0.7, n.y));
     c *= 0.82 + 0.3 * broad;
 
     // Past the meadow's blades the ground reads as a grass canopy.
@@ -534,7 +548,7 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     // Mountain stone is grey limestone and gneiss: the textures are warm, so
     // most of their colour goes.
     if m_scree > 0.0 {
-        let gravel0 = terrain_layer(layer + 4, wuv, 1.8, mapping);
+        let gravel0 = steep_layer(layer + 4, p, n, 1.8, mapping);
         let gravel = mix(vec3<f32>(dot(gravel0, vec3<f32>(0.3, 0.59, 0.11))), gravel0, g.gravel.w) * g.gravel.rgb;
         c = mix(c, gravel, m_scree);
         nn = normalize(mix(nn, perturb_xz(n, terrain_layer_normal(layer + 4, wuv, 1.8, mapping)), m_scree));
