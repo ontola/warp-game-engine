@@ -1,3 +1,19 @@
+## 5 November: consumer-scoped branch publication prerequisite
+
+Camera/shadow ownership now survives shared residency and materialization;
+requests for the same payload merge consumer bits, and new consumers reject
+stale motion history. Shadow-only records no longer publish camera draws.
+145 serial foliage tests and composed shader validation PASS. Three alternating
+720p ONE-VIEW runs: before14.775-15.100ms, after15.005-15.030ms covered GPU;
+no meaningful speedup. Matched final images effectively unchanged.
+
+G3.2 upstream recovery and G3.3 independent cuts remain OPEN. Current cut is
+still shared; whole-root fallback/direct consumers remain shared. No opt-in
+mode, CPU pool or interactive playtest added. Budgets in authoritative checklist
+are TOTAL FOUR-VIEW / 4K-output allocations (8.30ms total), not per-view.
+Evidence: engine/docs/consumer-publication-measurements.json and
+engine/docs/vegetation-architecture.md.
+
 ## 5 November: integrated GPU dormant refinement queue (performance unaccepted)
 
 Retain rejected complete proposals outside active traversal; stable parallel

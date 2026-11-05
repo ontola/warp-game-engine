@@ -14,6 +14,9 @@ struct Slot { key:vec4<u32>, history:vec4<u32> };
 // hash failures, occupied after allocation, reserved.
 @group(0) @binding(8) var<storage,read_write> stats:array<atomic<u32>>;
 @group(0) @binding(9) var<storage,read> asset_pages:array<vec4<u32>>;
+@group(0) @binding(10) var<storage,read> request_consumers:array<u32>;
+@group(0) @binding(11) var<storage,read_write> consumer_union:array<atomic<u32>>;
+fn consumers(i:u32)->u32 {let roles=request_consumers[i]&768u;return select(roles,768u,roles==0u);}
 const NONE:u32=0xffffffffu;
 fn count()->u32 {return min(selection_counts[0],config.counts.x);}
 fn same(a:vec4<u32>,b:vec4<u32>)->bool {
@@ -50,10 +53,10 @@ fn index_requests(@builtin(global_invocation_id) id:vec3<u32>) {
         loop {
             if entry!=0u {break;}
             let claim=atomicCompareExchangeWeak(&table[cell],0u,i+1u);
-            if claim.exchanged {return;}
+            if claim.exchanged {atomicOr(&consumer_union[i],consumers(i));return;}
             entry=claim.old_value;
         }
-        if same(requests[entry-1u],key) {return;}
+        if same(requests[entry-1u],key) {atomicOr(&consumer_union[entry-1u],consumers(i));return;}
     }
     atomicStore(&fallback[key.x],1u);atomicAdd(&stats[5],1u);
 }
@@ -68,6 +71,8 @@ fn retain_slots(@builtin(global_invocation_id) id:vec3<u32>) {
         request_slot[request]=i;slot.key=requests[request];
         // history.y is valid only if this slot was published last frame.
         slot.history.y=slot.history.z;
+        let added=atomicLoad(&consumer_union[request])&~slot.history.w&768u;
+        if added!=0u && slot.history.z!=0u {slot.history.y=0u;slot.history.w=slot.history.w^128u;}
         // Packed virtual-member motion also carries this epoch in flags.
         // Waking a retained but unpublished record must reject that history.
         if slot.history.z==0u {slot.history.w=slot.history.w^128u;}
@@ -87,7 +92,7 @@ fn allocate_slots(@builtin(global_invocation_id) id:vec3<u32>) {
     if offset>=atomicLoad(&stats[0]) {
         atomicStore(&fallback[key.x],1u);atomicAdd(&stats[4],1u);return;
     }
-    let index=free_slots[offset];let old_epoch=slots[index].history.w;
+    let index=free_slots[offset];let old_epoch=slots[index].history.w&128u;
     slots[index]=Slot(key,vec4<u32>(asset_pages[key.z].z,0u,0u,old_epoch^128u));
     request_slot[i]=index;atomicAdd(&stats[3],1u);
 }
@@ -99,7 +104,10 @@ fn publish_slots(@builtin(global_invocation_id) id:vec3<u32>) {
     var slot=slots[i];
     let published=slot.history.x!=0u && slot.key.x<config.counts.w;
     if published {
-        slot.history.z=u32(atomicLoad(&fallback[slot.key.x])==0u);
+        let request=lookup(slot.key);
+        slot.history.z=u32(atomicLoad(&fallback[slot.key.x])==0u && request!=NONE);
+        var roles=0u;if slot.history.z!=0u {roles=atomicLoad(&consumer_union[request]);}
+        slot.history.w=(slot.history.w&128u)|roles;
         if slot.history.z==0u {slot.history.y=0u;}
         atomicAdd(&stats[6],slot.history.z);
     }

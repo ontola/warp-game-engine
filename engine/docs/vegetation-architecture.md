@@ -158,6 +158,14 @@ normal-route overflow must be checked again against actual indirect draw counts.
   queue overflow and rejected publication. No depth from a failed partial cut
   may survive. Compare raw visibility/depth, not only screenshots.
 
+Consumer-publication prerequisite (5 November): camera/shadow role bits now
+survive request deduplication, residency and materialization. Both consumers
+share one payload slot and pose; source/voxel draws exclude records belonging
+only to the other consumer. Newly added consumers invalidate motion history.
+145 foliage tests and the composed cull shader validation pass. G3.3 remains
+open: the hierarchy still chooses one shared finest cut, and direct whole-root
+fallbacks are not independently scoped. G3.2 upstream visibility is unchanged.
+
 ## G4 — Bounded paging and lifecycle (NOT COMPLETE)
 
 - [x] G4.1 — Bounded physical source/voxel caches, async demand, incremental uploads,
@@ -965,3 +973,39 @@ Evidence: tracked `dormant-refinement-measurements.json`; local
 PNG/GPU/CPU sidecars, `dormant-consumers-comparison.jpg` and
 `dormant-consumers-tests.log`. Final test runtime 22.69 s; release example build
 1m58s. Release compilation remains a substantial iteration cost.
+
+## 5 November: consumer-scoped publication prerequisite
+
+Camera/shadow roles survive selection, duplicate request merging, shared
+residency and materialization. A newly added consumer rejects old motion
+history. Cull and voxel choices suppress records used only by the other
+consumer, including perspective light views. Shared payload ownership and
+poses are retained. GPU buffer-limit validation now requires 15 storage bindings.
+
+145 serial foliage tests and composed cull shader validation PASS; the normal
+route also ran after the device-limit guard correction. Three alternating
+baseline/new runs, native1280x720 ONE VIEW, 240 route frames, warm samples
+frame>=120 (120 samples/run):
+
+| Run | Before covered GPU ms | After covered GPU ms | Before selection ms | After selection ms |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 15.022 | 15.030 | 8.596 | 8.611 |
+| 2 | 15.100 | 15.005 | 8.651 | 8.536 |
+| 3 | 14.775 | 15.019 | 8.504 | 8.600 |
+
+No meaningful speedup claimed. The final cut remains 1701 branch records;
+camera publication reports124 source and66 voxel records, excluding258 source
+and1253 voxel shadow-only records. Previous source_slots counted all consumers;
+use selected_source_consumers for like-for-like comparisons across this change.
+No fallback, slot/hash failure, refinement fault or dormant overflow.
+Non-HUD RGB mean absolute difference for matched first-run final images is
+[0.0000244,0.0000159,0.0000342] on a 0-255 scale; visual inspection found no
+new difference. Existing coarse crowns and unaccepted appearance remain.
+
+Full per-pass medians and final diagnostics: consumer-publication-measurements.json.
+Local images/logs: build/playtest-unified/consumer-publication-{before,after}-{1,2,3}.*;
+comparison: consumer-publication-comparison.jpg. No interactive playtest started.
+
+G3.2 and G3.3 remain OPEN. This preserves consumer ownership; it does not provide
+independent hierarchy cuts or upstream history-first/current-depth recovery.
+Whole-root direct/fallback paths remain shared. No 4K/four-view acceptance.

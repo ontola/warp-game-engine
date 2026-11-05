@@ -83,7 +83,8 @@ fn instance_at(id: u32) -> Instance {
 @group(1) @binding(3) var<storage, read_write> args: array<u32, 20>;
 @group(1) @binding(4) var<storage, read_write> draw_map: array<u32>;
 @group(1) @binding(5) var<uniform> foliage_selection_words: array<vec4<u32>,4096>;
-fn foliage_selection_at(i:u32)->vec4<u32> { let v=foliage_selection_words[i>>2u]; return selection_unpack(v[i&3u]); }
+fn foliage_selection_word(i:u32)->u32 {return foliage_selection_words[i>>2u][i&3u];}
+fn foliage_selection_at(i:u32)->vec4<u32> {return selection_unpack(foliage_selection_word(i));}
 // Packed group selection (aggregate_lod.wgsl writes it): one u32 per group,
 // four per vec4 of the 64 KiB uniform, 16384 groups. Bits 0-1 choice, 2-7
 // voxel level (63: none), 8-9 sun mode, 16-31 the triangle error as f16.
@@ -237,6 +238,11 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
     // Do not spend cluster/raster work on the hidden source. Both sun and
     // perspective lamp shadows retain the same animated source geometry.
     let replacement=cull_voxel_replacement[member_slot(id)];
+    if replacement!=0xffffffffu && (replacement&0x80000000u)!=0u {
+        let word=foliage_selection_word(replacement&0x7fffffffu);
+        let shadow=view.params.z>0.5 || view.extra.y>1.5;
+        if (word&select(1024u,2048u,shadow))!=0u {return 0u;}
+    }
     if view.params.z<0.5 && view.extra.y<1.5 && replacement!=0xffffffffu
         && (replacement&0x80000000u)!=0u {
         if foliage_selection_at(replacement&0x7fffffffu).x!=0u {return 0u;}

@@ -14,7 +14,7 @@ use wgpu::util::DeviceExt;
 pub struct ResidentSlot {
     /// Stable tree, node, representation payload, generation.
     pub key: [u32; 4],
-    /// Resident asset generation (zero = free), previous-frame-valid, published-this-frame, epoch bit (128).
+    /// Resident asset generation (zero = free), previous-frame-valid, published-this-frame, epoch bit (128) plus published consumer bits (camera256/shadow512).
     /// A newly assigned or previously unpublished slot has no motion history.
     pub history: [u32; 4],
 }
@@ -26,7 +26,7 @@ pub struct Residency {
     /// Free slots, attempts, retained, assigned, capacity failures, hash
     /// failures, published, reserved. Diagnostic readback only.
     pub counters: wgpu::Buffer,
-    table: wgpu::Buffer,
+    consumer_union: wgpu::Buffer,table: wgpu::Buffer,
     _free: wgpu::Buffer,
     _uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
@@ -46,7 +46,7 @@ impl Residency {
         let limit = gpu.device.limits();
         if capacity == 0 || capacity.div_ceil(64) > limit.max_compute_workgroups_per_dimension
             || records.div_ceil(64) > limit.max_compute_workgroups_per_dimension
-            || limit.max_storage_buffers_per_shader_stage < 9 {
+            || limit.max_storage_buffers_per_shader_stage < 11 {
             return Err("foliage residency exceeds device dispatch/binding limits".into());
         }
         for bytes in [capacity as u64 * 32, capacity as u64 * 4, records as u64 * 4, table_size as u64 * 4] {
@@ -63,6 +63,7 @@ impl Residency {
             let slots = buffer("GPU resident branch slots", capacity as u64 * 32);
             let request_slots = buffer("GPU selected branch slots", records as u64 * 4);
             let counters = buffer("GPU branch residency counters", 32);
+            let consumer_union=buffer("GPU branch consumer union",records as u64*4);
             let table = buffer("GPU branch request hash", table_size as u64 * 4);
             let free = buffer("GPU branch free slots", capacity as u64 * 4);
             let uniform = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -70,11 +71,11 @@ impl Residency {
                 contents: bytemuck::cast_slice(&[records, capacity, table_size, trees, 64u32.min(table_size), 0, 0, 0]),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
-            let entries = (0..10).map(|binding| wgpu::BindGroupLayoutEntry {
+            let entries = (0..12).map(|binding| wgpu::BindGroupLayoutEntry {
                 binding, visibility: wgpu::ShaderStages::COMPUTE, count: None,
                 ty: wgpu::BindingType::Buffer {
                     ty: if binding == 0 { wgpu::BufferBindingType::Uniform }
-                        else { wgpu::BufferBindingType::Storage { read_only: binding <= 2 || binding == 9 } },
+                        else { wgpu::BufferBindingType::Storage { read_only: binding <= 2 || binding == 9 || binding == 10 } },
                     has_dynamic_offset: false, min_binding_size: None,
                 },
             }).collect::<Vec<_>>();
@@ -82,7 +83,7 @@ impl Residency {
                 label: Some("GPU branch residency"), entries: &entries,
             });
             let buffers = [&uniform, &selector.records, &selector.counters, &selector.fallback,
-                &slots, &table, &request_slots, &free, &counters, &selector.asset_pages];
+                &slots, &table, &request_slots, &free, &counters, &selector.asset_pages,&selector.record_consumers,&consumer_union];
             let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("GPU branch residency"), layout: &layout,
                 entries: &buffers.iter().enumerate().map(|(i, b)| wgpu::BindGroupEntry {
@@ -101,7 +102,7 @@ impl Residency {
                     label: Some(entry), layout: Some(&layout), module: &module, entry_point: Some(entry),
                     compilation_options: Default::default(), cache: gpu.pipeline_cache(),
                 }));
-            Self { slots, request_slots, counters, table, _free: free, _uniform: uniform, bind,
+            Self { slots, request_slots, counters, consumer_union, table, _free: free, _uniform: uniform, bind,
                 pipelines, indirect: selector.arguments.clone(), capacity }
         })
     }
@@ -111,6 +112,7 @@ impl Residency {
     /// failure flags. Previous slot history is retained solely on the GPU.
     pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
         encoder.clear_buffer(&self.table, 0, None);
+        encoder.clear_buffer(&self.consumer_union,0,None);
         encoder.clear_buffer(&self.counters, 0, None);
         for (index, pipeline) in self.pipelines.iter().enumerate() {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -207,6 +209,30 @@ mod tests {
         let (slots,_,_)=run(&gpu,&select,&small,&[]);
         assert!(slots.chunks_exact(8).all(|s|s[4]==0 && s[5]==0 && s[6]==0));
         println!("GPU branch residency: 3600 branches / 1200 trees; reorder, reuse, generation, overflow and duplicate requests PASS");
+    }
+    #[test]
+    #[ignore="exclusive GPU shared consumer publication fixture"]
+    fn gpu_consumer_union_and_new_consumer_history() {
+        let gpu=Gpu::new().unwrap();let select=selector(&gpu);let resident=Residency::new(&gpu,&select,8).unwrap();
+        let key=[1,2,12,4];
+        gpu.queue.write_buffer(&select.record_consumers,0,bytemuck::cast_slice(&[256u32,512,256]));
+        let (slots,map,_)=run(&gpu,&select,&resident,&[key,key,key]);
+        let index=*map[..3].iter().find(|v|**v!=NONE).unwrap()as usize;
+        assert_eq!(map[..3].iter().filter(|v|**v!=NONE).count(),1);
+        assert_eq!(slots[index*8+7]&768,768,"duplicate camera/shadow demands share one slot");
+        let epoch=slots[index*8+7]&128;
+        gpu.queue.write_buffer(&select.record_consumers,0,bytemuck::cast_slice(&[512u32]));
+        let (slots,map,_)=run(&gpu,&select,&resident,&[key]);assert_eq!(map[0]as usize,index);
+        assert_eq!(slots[index*8+7]&768,512);assert_eq!(slots[index*8+5],1);assert_eq!(slots[index*8+7]&128,epoch);
+        gpu.queue.write_buffer(&select.record_consumers,0,bytemuck::cast_slice(&[256u32]));
+        let (slots,map,_)=run(&gpu,&select,&resident,&[key]);assert_eq!(map[0]as usize,index);
+        assert_eq!(slots[index*8+7]&768,256);assert_eq!(slots[index*8+5],0,"newly visible camera cannot reuse shadow-only motion history");
+        assert_ne!(slots[index*8+7]&128,epoch);
+        let (slots,_,_)=run(&gpu,&select,&resident,&[key]);assert_eq!(slots[index*8+5],1);
+        gpu.queue.write_buffer(&select.record_consumers,0,bytemuck::cast_slice(&[512u32,256]));
+        let (slots,map,_)=run(&gpu,&select,&resident,&[key,key]);
+        let index=*map[..2].iter().find(|v|**v!=NONE).unwrap()as usize;
+        assert_eq!(slots[index*8+7]&768,768);assert_eq!(slots[index*8+5],0);
     }
     #[test]
     fn residency_shader_validates() {

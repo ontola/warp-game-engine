@@ -137,17 +137,19 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
   source.scale=length(root.rows[0].xyz);
   // ||I + uv^T|| <= 1 + |u| |v|. Basal mode has only one moving
   // child level, so this conservatively bounds every virtual source sphere.
-  if branch.info.w==1u {source.scale*=1.+abs(sin(branch.animation.x));}source.flags=(source.flags&~128u)|slot.history.w;
+  if branch.info.w==1u {source.scale*=1.+abs(sin(branch.animation.x));}source.flags=(source.flags&~128u)|(slot.history.w&128u);
   // A voxel choice emits no source members, including shadow passes.
   if rep.y==1u {source.first=0u;}
   sources[owner]=source;
   var volume=bounds(branch.volume,m,branch.low.xyz,branch.high.xyz);volume.inverse=inverse(m);volume.identity.x=owner;
   volume.high.w=appearance_seed(slot.key.x,rep.x);
-  volumes[i]=volume;choices[i]=select(0u,1u|(rep.z<<2u)|512u,rep.y==1u);
+  let roles=slot.history.w&768u;
+  let visibility=select(1024u,0u,(roles&256u)!=0u)|select(2048u,0u,(roles&512u)!=0u);
+  volumes[i]=volume;choices[i]=select(3u,select(0u,1u|(rep.z<<2u)|512u,rep.y==1u),(roles&256u)!=0u)|visibility;
   // Shadow consumers use the existing adaptive voxel-caster policy, even
   // when camera detail requires source needles. The trunk stays source:
   // branch zero's aggregate covers the WHOLE tree, not just its own members.
-  choices[i+16384u]=select(0u,765u,rep.y==1u || branch.info.y!=0u);
+  choices[i+16384u]=select(3u,select(0u,765u,rep.y==1u || branch.info.y!=0u),(roles&512u)!=0u)|visibility;
  }else {
   let tree=i-state.counts.x;if tree>=state.counts.z {return;}
   let root=roots[tree];let original=proxies[tree];
