@@ -1,3 +1,14 @@
+## 5 November: any rigid opaque geometry hides forest
+
+Decided with Joep: occluders for the foliage seed come from material and
+motion, not a tag. frame.rs sets `OCCLUDERS_ONLY` (128) in the seed view's
+fog_cull.w and excludes only Trees and Grass categories; cull.wgsl then drops
+DEFORMING instances (FOLIAGE, LIVE_GRASS, WIND_GRASS, PART_WIND, SKINNED,
+MOLTEN_DEBRIS), any HIDE_IN_VIEW bit, and SEE_THROUGH materials (ALPHA_TEST,
+GRASS, BLEND, THIN_FOLIAGE). `KERN_FOLIAGE_OCCLUDERS=terrain` restores
+land-only occlusion (terrain_fly `--no-building-occlusion`). Extra seed
+raster cost of the added geometry not yet measured on the Mac.
+
 ## 5 November: forest culling behind structures, screen edge and selection cost
 
 `foliage_seed_visibility.wgsl` used to refuse to hide a tree whose bounds
