@@ -1,0 +1,284 @@
+diff --git a/engine/crates/render/src/depth_pyramid.rs b/engine/crates/render/src/depth_pyramid.rs
+index fe6fd64..f75f528 100644
+--- a/engine/crates/render/src/depth_pyramid.rs
++++ b/engine/crates/render/src/depth_pyramid.rs
+@@ -21,6 +21,7 @@ pub(crate) const SOURCE: &str = r#"
+ }
+ "#;
+ pub(crate) struct DepthPyramid {
++    format:wgpu::TextureFormat,
+     copy: wgpu::ComputePipeline,
+     copy_layout: wgpu::BindGroupLayout,
+     reduce: wgpu::ComputePipeline,
+@@ -38,12 +39,19 @@ impl PyramidTarget {
+     }
+ }
+ impl DepthPyramid {
+-    pub fn new(gpu: &Gpu) -> Self {
++    pub fn new(gpu: &Gpu) -> Self {Self::with_range(gpu,false)}
++    pub fn new_range(gpu:&Gpu)->Self {Self::with_range(gpu,true)}
++    fn with_range(gpu:&Gpu,range:bool)->Self {
++        let source=if range {SOURCE.replace("texture_storage_2d<r32float", "texture_storage_2d<rg32float")
++            .replace("var depth=1.0;", "var depth=1.0;var nearest=0.0;")
++            .replace("depth=min(depth,textureLoad(previous_mip,vec2<i32>(i32(x),i32(y)),0).x);", "let sample=textureLoad(previous_mip,vec2<i32>(i32(x),i32(y)),0);depth=min(depth,sample.x);nearest=max(nearest,sample.y);")
++            .replace("vec4<f32>(depth)", "vec4<f32>(depth,nearest,0.0,0.0)")
++        }else{SOURCE.to_owned()};
+         let module = gpu
+             .device
+             .create_shader_module(wgpu::ShaderModuleDescriptor {
+                 label: Some("conservative depth pyramid"),
+-                source: wgpu::ShaderSource::Wgsl(SOURCE.into()),
++                source: wgpu::ShaderSource::Wgsl(source.into()),
+             });
+         let make = |entry| {
+             gpu.device
+@@ -58,6 +66,7 @@ impl DepthPyramid {
+         };
+         let copy = make("copy_depth");
+         Self {
++            format:if range {wgpu::TextureFormat::Rg32Float}else{wgpu::TextureFormat::R32Float},
+             copy_layout: copy.get_bind_group_layout(0),
+             copy,
+             reduce: make("reduce_depth"),
+@@ -75,7 +84,7 @@ impl DepthPyramid {
+             mip_level_count: count,
+             sample_count: 1,
+             dimension: wgpu::TextureDimension::D2,
+-            format: wgpu::TextureFormat::R32Float,
++            format: self.format,
+             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+             view_formats: &[],
+         });
+diff --git a/engine/crates/render/src/shaders/voxel_forest.wgsl b/engine/crates/render/src/shaders/voxel_forest.wgsl
+index 8ba60f0..6e7b4e9 100644
+--- a/engine/crates/render/src/shaders/voxel_forest.wgsl
++++ b/engine/crates/render/src/shaders/voxel_forest.wgsl
+@@ -1190,6 +1190,7 @@ fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:
+ // Experimental current-frame, two-phase brick culling. Seed trees are drawn
+ // first; the opaque scene plus their depth occludes the remaining bricks.
+ // No previous-frame depth is trusted, so disocclusion needs no history delay.
++const VOLUME_PAGED_CULL: bool = false;
+ override VOXEL_CULL_PHASE: u32 = 0u;
+ override VOXEL_COMPACT: bool = false;
+ @group(2) @binding(20) var volume_brick_hzb: texture_2d<f32>;
+@@ -1207,16 +1208,20 @@ fn volume_brick_hidden(index:u32, level:u32, packed:u32)->bool {
+     // sqrt(2)*(.688+.25) < 1.5, using the raster's first-column scale.
+     let padding=1.5*grid.w*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x));
+     let half=1.5*grid.w*vec3<f32>(dot(abs(owner.r0.xyz),vec3<f32>(1.0)),dot(abs(owner.r1.xyz),vec3<f32>(1.0)),dot(abs(owner.r2.xyz),vec3<f32>(1.0)))+padding;
+-    var ndc_min=vec2<f32>(1e30);var ndc_max=vec2<f32>(-1e30);var nearest=0.0;
++    return volume_box_hidden(world_centre,half);
++}
++fn volume_box_hidden(world_centre:vec3<f32>,half:vec3<f32>)->bool {return volume_box_class(world_centre,half)==2u;}
++fn volume_box_class(world_centre:vec3<f32>,half:vec3<f32>)->u32 {
++    var ndc_min=vec2<f32>(1e30);var ndc_max=vec2<f32>(-1e30);var nearest=0.0;var furthest=1.0;
+     for(var i=0u;i<8u;i++) {
+         let world=vec4<f32>(world_centre+select(-half,half,vec3<bool>((i&1u)!=0u,(i&2u)!=0u,(i&4u)!=0u)),1.0);
+         let clip=view.view_proj*world;
+         // Near-plane crossings and degenerate projections are always visible.
+-        if clip.w<=0.0001 || clip.z>=clip.w {return false;}
++        if clip.w<=0.0001 || clip.z<0.0 || clip.z>=clip.w {return 1u;}
+         let ndc=clip.xyz/clip.w;
+-        ndc_min=min(ndc_min,ndc.xy);ndc_max=max(ndc_max,ndc.xy);nearest=max(nearest,ndc.z);
++        ndc_min=min(ndc_min,ndc.xy);ndc_max=max(ndc_max,ndc.xy);nearest=max(nearest,ndc.z);furthest=min(furthest,ndc.z);
+     }
+-    if any(ndc_min>vec2<f32>(1.0)) || any(ndc_max<vec2<f32>(-1.0)) {return true;}
++    if any(ndc_min>vec2<f32>(1.0)) || any(ndc_max<vec2<f32>(-1.0)) {return 2u;}
+     let size=textureDimensions(volume_brick_hzb,0);
+     let low=clamp(vec2<f32>(ndc_min.x*0.5+0.5,0.5-ndc_max.y*0.5)*vec2<f32>(size)-2.0,vec2<f32>(0.0),vec2<f32>(size-1u));
+     let high=clamp(vec2<f32>(ndc_max.x*0.5+0.5,0.5-ndc_min.y*0.5)*vec2<f32>(size)+2.0,vec2<f32>(0.0),vec2<f32>(size-1u));
+@@ -1226,12 +1231,14 @@ fn volume_brick_hidden(index:u32, level:u32, packed:u32)->bool {
+     // Shift-and-clamp matches odd-size mip folding, unlike proportional UV.
+     let first=min(vec2<u32>(floor(low))>>vec2<u32>(mip),dims-1u);
+     let last=min(vec2<u32>(ceil(high))>>vec2<u32>(mip),dims-1u);
+-    var farthest=1.0;
++    var farthest=1.0;var closest=0.0;
+     for(var y=first.y;y<=last.y;y++) {for(var x=first.x;x<=last.x;x++) {
+-        farthest=min(farthest,textureLoad(volume_brick_hzb,vec2<i32>(i32(x),i32(y)),i32(mip)).x);
++        let depth=textureLoad(volume_brick_hzb,vec2<i32>(i32(x),i32(y)),i32(mip));farthest=min(farthest,depth.x);closest=max(closest,depth.y);
+     }}
+     // Reversed minimum depth: any sky hole (0) prevents rejection.
+-    return nearest+0.00001<farthest;
++    if nearest+0.00001<farthest {return 2u;}
++    if furthest>closest+0.00001 {return 0u;}
++    return 1u;
+ }
+ 
+ fn volume_splat_wanted(index:u32)->bool {
+@@ -1260,6 +1267,7 @@ fn voxel_splat_tree_list(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_i
+     atomicMax(&volume_tiles[2],1u);
+ }
+ 
++var<workgroup> volume_splat_visibility_shared:u32;
+ @compute @workgroup_size(64)
+ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+     let work=group.x+group.y*65535u;
+@@ -1282,6 +1290,15 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
+             let wanted=volume_splat_wanted(index);
+             if wanted {level=volume_splat_level(index);volume_splat_tree(index,level);}
+         }
++        var visibility=1u;
++        if level!=VOLUME_SPLAT_NONE && VOLUME_PAGED_CULL && VOXEL_CULL_PHASE==2u {
++            let tree=volume_trees[index];let owner=instances[tree.identity.x];
++            let grid=volume_levels[tree.identity.y+level].origin_cell;
++            let padding=1.5*grid.w*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x));
++            visibility=volume_box_class(0.5*(tree.bounds_min.xyz+tree.bounds_max.xyz),0.5*(tree.bounds_max.xyz-tree.bounds_min.xyz)+vec3<f32>(padding));
++            if visibility==2u {level=VOLUME_SPLAT_NONE;}
++        }
++        volume_splat_visibility_shared=visibility;
+         volume_splat_level_shared=level;
+     }
+     let level=workgroupUniformLoad(&volume_splat_level_shared);
+@@ -1289,11 +1306,13 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
+     let tree=volume_trees[index];
+     let eye=vec4<f32>(view.cam.xyz,1.0);
+     let eye_local=vec3<f32>(dot(tree.inverse[0],eye),dot(tree.inverse[1],eye),dot(tree.inverse[2],eye));
+-    if VOXEL_CULL_PHASE==2u {
++    if VOXEL_CULL_PHASE==2u && workgroupUniformLoad(&volume_splat_visibility_shared)!=0u {
+         let bricks=volume_splat_cells[arrayLength(&volume_levels)+tree.identity.y+level];
+         for(var b=lane;b<bricks.y;b+=64u) {
+-            let range=volume_splat_cells[bricks.x+b*2u];
+-            let packed=volume_splat_cells[bricks.x+b*2u+1u].x;
++            var range:vec2<u32>;var packed:u32;
++            if VOLUME_PAGED_CULL {
++                let at=bricks.x+b*4u;range=vec2<u32>(volume_indices[at],volume_indices[at+1u]);packed=volume_indices[at+2u];
++            }else {range=volume_splat_cells[bricks.x+b*2u];packed=volume_splat_cells[bricks.x+b*2u+1u].x;}
+             if volume_brick_hidden(index,level,packed) {continue;}
+             for(var c=0u;c<range.y;c++) {
+                 let cell_ref=volume_splat_cells[range.x+c];
+diff --git a/engine/crates/render/src/voxel_forest.rs b/engine/crates/render/src/voxel_forest.rs
+index 8abd215..55792b8 100644
+--- a/engine/crates/render/src/voxel_forest.rs
++++ b/engine/crates/render/src/voxel_forest.rs
+@@ -46,15 +46,17 @@ struct IntegratorOptions {
+     antipodal_normals: bool,
+     global_intervals: bool,
+     brick_visibility: bool,
++    paged_cull: bool,
+     /// Opaque stochastic voxel rasterization instead of ray integration.
+     raster: bool,
+ }
+ impl Default for IntegratorOptions {
+-    fn default() -> Self { Self { empty_ceiling: true, antipodal_normals: false,global_intervals:false,brick_visibility:false,raster:false } }
++    fn default() -> Self { Self { empty_ceiling: true, antipodal_normals: false,global_intervals:false,brick_visibility:false,paged_cull:false,raster:false } }
+ }
+ impl IntegratorOptions {
+     fn from_environment() -> Self {
+         Self {
++            paged_cull: false,
+             empty_ceiling: std::env::var("KERN_VOXEL_EMPTY_CEILING").map_or(true, |value| value != "0"),
+             antipodal_normals: std::env::var("KERN_VOXEL_ANTIPODAL_NORMALS").is_ok_and(|value| value == "1"),
+             brick_visibility: std::env::var("KERN_VOXEL_BRICK_VISIBILITY").is_ok_and(|v|v=="1"),
+@@ -65,6 +67,7 @@ impl IntegratorOptions {
+     fn specialize(self, source: &str) -> Result<String, String> {
+         let mut result = source.to_owned();
+         let changes = [
++            (self.paged_cull, "const VOLUME_PAGED_CULL: bool = false;", "const VOLUME_PAGED_CULL: bool = true;"),
+             (self.brick_visibility, "const VOLUME_BRICK_VISIBILITY: bool = false;", "const VOLUME_BRICK_VISIBILITY: bool = true;"),
+             (self.empty_ceiling, "const VOLUME_EMPTY_CEILING: bool = false;", "const VOLUME_EMPTY_CEILING: bool = true;"),
+         ];
+@@ -427,8 +430,9 @@ fn create_data_layout(gpu:&Gpu,temporal:bool)->wgpu::BindGroupLayout {
+     gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("voxel data"),
+         entries:&entries.into_iter().map(|(binding,ty)|wgpu::BindGroupLayoutEntry {binding,ty,visibility:wgpu::ShaderStages::COMPUTE,count:None}).collect::<Vec<_>>()})
+ }
++fn splat_cull_enabled(source:&str)->bool {brick_hzb_enabled() || source.contains("const VOLUME_PAGED_CULL: bool = true;")}
+ fn splat_selection_pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> Option<[wgpu::ComputePipeline;2]> {
+-    if !brick_hzb_enabled() {return None;}
++    if !splat_cull_enabled(source) {return None;}
+     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+         label:Some("voxel visible tree list"),source:wgpu::ShaderSource::Wgsl(source.into()) });
+     Some([1.0,2.0].map(|phase|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+@@ -541,7 +545,7 @@ fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tile
+         .map(|entry| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+             label: Some(entry), layout: Some(layout), module: &module, entry_point: Some(entry),
+             compilation_options: wgpu::PipelineCompilationOptions {
+-                constants: if entry == "voxel_splats" && brick_hzb_enabled() { &[("VOXEL_CULL_PHASE", 1.0),("VOXEL_COMPACT",1.0)] } else { &[] },
++                constants: if entry == "voxel_splats" && splat_cull_enabled(source) { &[("VOXEL_CULL_PHASE", 1.0),("VOXEL_COMPACT",1.0)] } else { &[] },
+                 ..Default::default() }, cache: gpu.pipeline_cache(),
+         }))
+ }
+@@ -804,7 +808,7 @@ impl VoxelRenderer {
+             });
+         let source = shader_source();
+         let mut integrator_options = IntegratorOptions::from_environment();
+-        if page_cache.is_some(){integrator_options.brick_visibility=false;}
++        if page_cache.is_some(){integrator_options.brick_visibility=false;integrator_options.paged_cull=true;}
+         // Far trees exist only as rasterized voxels; aggregate plants use them
+         // too unless KERN_VOXEL_RASTER=0 asks for the ray integrator.
+         integrator_options.raster |= far > 0.0 || proxies > 0
+@@ -831,7 +835,7 @@ impl VoxelRenderer {
+             .expect("invalid voxel integrator option shader");
+         let [bins, tiles, clear, integrate,intervals,scatter,splats,resolve] = pipelines(gpu, &pipeline_layout, &specialized_source, scene.voxel_active_tiles,integrator_options.global_intervals);
+         let gbuffer = surface_pipeline(gpu, &pipeline_layout, &specialized_source);
+-        let brick_hzb = (page_cache.is_none() && brick_hzb_enabled()).then(|| crate::depth_pyramid::DepthPyramid::new(gpu));
++        let brick_hzb = (integrator_options.paged_cull || brick_hzb_enabled()).then(|| if integrator_options.paged_cull {crate::depth_pyramid::DepthPyramid::new_range(gpu)}else{crate::depth_pyramid::DepthPyramid::new(gpu)});
+         let selection = splat_selection_pipelines(gpu, &pipeline_layout, &specialized_source);
+         let second = brick_hzb.as_ref().map(|_| second_splat_pipeline(gpu, &pipeline_layout, &specialized_source));
+         eprintln!("voxel integrator: interval_capacity=64 active_capacity=16 empty_ceiling={} (accepted skip fix; bounded prototype, complete scan on cache overflow)",
+@@ -840,7 +844,7 @@ impl VoxelRenderer {
+             integrator_options.antipodal_normals,if integrator_options.antipodal_normals {3}else{6});
+         eprintln!("voxel global intervals: enabled={} stream_bytes_per_view={} maximum_pixel_slots={} (experimental; complete scan on overflow)",
+             integrator_options.global_intervals,INTERVAL_STREAM_BYTES,INTERVAL_STREAM_PIXEL_SLOTS);
+-        let raster = if integrator_options.raster { match if brick_hzb.is_some() { splat_cells_bricked(forest) } else { splat_cells(forest) } {
++        let raster = if integrator_options.raster { match if brick_hzb.is_some() && page_cache.is_none() { splat_cells_bricked(forest) } else { splat_cells(forest) } {
+             Ok(cells) if cells.len() > forest.levels.len() => {
+                 let capacity = splat_capacity(forest, &cells);
+                 eprintln!("voxel raster: enabled cells={} splats_per_view={capacity} (stochastic opaque voxels; integrator off)", cells.len() - forest.levels.len());
+@@ -2452,3 +2456,7 @@ mod tests {
+     }
+ 
+ }
++
++#[cfg(test)]
++#[path = "voxel_occlusion_tests.rs"]
++mod occlusion_tests;
+diff --git a/engine/crates/render/src/voxel_occlusion_tests.rs b/engine/crates/render/src/voxel_occlusion_tests.rs
+new file mode 100644
+--- /dev/null
++++ b/engine/crates/render/src/voxel_occlusion_tests.rs
+@@ -0,0 +1,46 @@
++//! GPU oracle for conservative current-frame voxel rejection.
++#[test]
++#[ignore = "exclusive GPU depth rejection oracle"]
++fn paged_voxel_occlusion_preserves_holes_and_recovers() {
++    use wgpu::util::DeviceExt;
++    let gpu = crate::Gpu::new().unwrap();
++    let production = include_str!("shaders/voxel_forest.wgsl");
++    let function = production.split("fn volume_box_hidden(").nth(1).unwrap()
++        .split("fn volume_splat_wanted").next().unwrap();
++    let source = format!(r#"
++struct View {{view_proj:mat4x4<f32>}};
++@group(0) @binding(0) var<uniform> view:View;
++@group(0) @binding(1) var volume_brick_hzb:texture_2d<f32>;
++@group(0) @binding(2) var<storage,read_write> result:array<u32>;
++fn volume_box_hidden({function}
++@compute @workgroup_size(1) fn main() {{
++ result[0]=u32(volume_box_hidden(vec3<f32>(0.,0.,0.25),vec3<f32>(0.1)));
++ result[1]=u32(volume_box_hidden(vec3<f32>(0.,0.,0.9),vec3<f32>(0.05)));
++ result[2]=u32(volume_box_hidden(vec3<f32>(0.,0.,0.99),vec3<f32>(0.05)));
++ result[3]=u32(volume_box_hidden(vec3<f32>(0.,0.,-0.01),vec3<f32>(0.05)));
++}}
++"#);
++    let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:None,source:wgpu::ShaderSource::Wgsl(source.into())});
++    let pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:None,layout:None,module:&module,entry_point:Some("main"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
++    let view=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:None,contents:bytemuck::cast_slice(&glam::Mat4::IDENTITY.to_cols_array()),usage:wgpu::BufferUsages::UNIFORM});
++    let depth=gpu.device.create_texture(&wgpu::TextureDescriptor {label:None,size:wgpu::Extent3d {width:8,height:8,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::R32Float,usage:wgpu::TextureUsages::COPY_DST|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]});
++    let result=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:16,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
++    let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:16,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
++    let depth_view=depth.create_view(&Default::default());
++    let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:None,layout:&pipeline.get_bind_group_layout(0),entries:&[
++        wgpu::BindGroupEntry {binding:0,resource:view.as_entire_binding()},
++        wgpu::BindGroupEntry {binding:1,resource:wgpu::BindingResource::TextureView(&depth_view)},
++        wgpu::BindGroupEntry {binding:2,resource:result.as_entire_binding()}]});
++    // Current depth changes immediately: occluded -> a sky hole -> occluded.
++    // The box in front, near-plane crossing and invalid far crossing never reject.
++    for hole in [false,true,false] {
++        let mut pixels=[0.8f32;64];if hole {pixels[4*8+4]=0.;}
++        gpu.queue.write_texture(wgpu::TexelCopyTextureInfo {texture:&depth,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},bytemuck::cast_slice(&pixels),wgpu::TexelCopyBufferLayout {offset:0,bytes_per_row:Some(32),rows_per_image:Some(8)},wgpu::Extent3d {width:8,height:8,depth_or_array_layers:1});
++        let mut enc=gpu.device.create_command_encoder(&Default::default());
++        {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_pipeline(&pipeline);pass.set_bind_group(0,&bind,&[]);pass.dispatch_workgroups(1,1,1);}
++        enc.copy_buffer_to_buffer(&result,0,&read,0,16);gpu.queue.submit([enc.finish()]);
++        read.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
++        let bytes=read.slice(..).get_mapped_range().unwrap();let actual:&[u32]=bytemuck::cast_slice(&bytes);
++        assert_eq!(actual,&[u32::from(!hole),0,0,0]);drop(bytes);read.unmap();
++    }
++}

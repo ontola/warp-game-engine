@@ -19,7 +19,7 @@ pub struct Cache {
     pub source:Option<super::source::Cache>,source_wanted:BTreeSet<usize>,
     pages:Vec<VoxelPage>,deps:Vec<Vec<usize>>,pinned:Vec<bool>,resident:Vec<Option<Resident>>,
     capacities:[u32;3],last_requested:Vec<u64>,index:Arena,cell:Arena,splat:Arena,pending:Option<Pending>,budget:Budget,
-    pub buffers:[wgpu::Buffer;4], // levels, indices, cells, splats (logical headers + pool)
+    pub buffers:[wgpu::Buffer;4], // levels, indices + brick descriptors, cells, splats (two logical headers + pool)
     publication:Vec<(bool,u32)>,dirty:BTreeSet<usize>,wanted:BTreeSet<usize>,frame:u64,
     feedback:Vec<Feedback>,last_feedback:u64,stats:Stats,
 }
@@ -33,17 +33,17 @@ impl Cache {
     }
 
     pub fn new(gpu:&Gpu,forest:&GpuForest,deps:Vec<Vec<usize>>,pinned:Vec<bool>,budget:Budget)->Result<Self,String> {
-        if budget.upload_bytes<44 || budget.uploads==0 || pinned.len()!=forest.levels.len()
+        if budget.upload_bytes<52 || budget.uploads==0 || pinned.len()!=forest.levels.len()
             || deps.iter().flatten().any(|&i|i>=forest.levels.len()) {return Err("invalid voxel cache contract/budget".into());}
-        let pages=(0..forest.levels.len()).map(|i|VoxelPage::cook(forest,i)).collect::<Result<Vec<_>,_>>()?;
+        let pages=(0..forest.levels.len()).map(|i|VoxelPage::cook(forest,i).map(|mut p|{p.group_splats();p})).collect::<Result<Vec<_>,_>>()?;
         let total=|f:fn(&VoxelPage)->usize| pages.iter().map(|p|f(p)as u64).sum::<u64>();
-        let capacities=[(budget.index_words as u64).min(total(|p|p.indices.len()))as u32,
+        let capacities=[(budget.index_words as u64).min(total(|p|p.index_words()))as u32,
             (budget.cells as u64).min(total(|p|p.cells.len()))as u32,(budget.splats as u64).min(total(|p|p.splats.len()))as u32];
-        let pinned_sizes=[pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.indices.len()as u64).sum::<u64>(),
+        let pinned_sizes=[pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.index_words()as u64).sum::<u64>(),
             pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.cells.len()as u64).sum::<u64>(),
             pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.splats.len()as u64).sum::<u64>()];
         if (0..3).any(|i|pinned_sizes[i]>capacities[i]as u64) {return Err("pinned voxel ancestors exceed physical cache budget".into());}
-        let sizes=[pages.len()as u64*32,capacities[0]as u64*4,capacities[1]as u64*176,(pages.len()as u64+capacities[2]as u64)*8];
+        let sizes=[pages.len()as u64*32,capacities[0]as u64*4,capacities[1]as u64*176,(2*pages.len()as u64+capacities[2]as u64)*8];
         if sizes.iter().any(|&s|s>gpu.device.limits().max_storage_buffer_binding_size as u64) {return Err("voxel cache exceeds device buffer limit".into());}
         let buffers=std::array::from_fn(|i|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("bounded voxel asset arena"),size:sizes[i].max(176),usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false}));
         let last_requested=vec![0;deps.len()];
@@ -62,16 +62,18 @@ impl Cache {
     fn begin(&mut self,id:usize)->Result<(),String> {
         if self.pending.is_some() || self.resident[id].is_some(){return Ok(());}
         let page=&self.pages[id];
-        let Some(index)=self.index.allocate(page.indices.len()as u32) else{return Ok(());};
+        let Some(index)=self.index.allocate(page.index_words()as u32) else{return Ok(());};
         let Some(cell)=self.cell.allocate(page.cells.len()as u32) else{self.index.release(index)?;return Ok(());};
         let Some(splat)=self.splat.allocate(page.splats.len()as u32) else{self.index.release(index)?;self.cell.release(cell)?;return Ok(());};
-        let (level,indices,splats)=page.relocate(index.range.start,cell.range.start)?;
+        let (level,mut indices,splats)=page.relocate(index.range.start,cell.range.start)?;
+        let first=2*self.pages.len()as u32+splat.range.start;
+        for brick in &page.splat_bricks {indices.extend_from_slice(&[first+brick[0],brick[1],brick[2],0]);}
         self.pending=Some(Pending {id,resident:Resident {index,cell,splat,last_used:self.frame},level,indices,splats,cursor:0});Ok(())
     }
     fn advance(&mut self,gpu:&Gpu,budget:u64)->Result<u64,String> {
         let Some(p)=self.pending.as_mut()else{return Ok(0);};let mut remaining=budget&!3;let initial=remaining;
         let bytes:[&[u8];3]=[bytemuck::cast_slice(&p.indices),bytemuck::cast_slice(&self.pages[p.id].cells),bytemuck::cast_slice(&p.splats)];
-        let bases=[p.resident.index.range.start as u64*4,p.resident.cell.range.start as u64*176,(self.pages.len()as u64+p.resident.splat.range.start as u64)*8];
+        let bases=[p.resident.index.range.start as u64*4,p.resident.cell.range.start as u64*176,(2*self.pages.len()as u64+p.resident.splat.range.start as u64)*8];
         let mut begin=0u64;
         for i in 0..3 {
             let end=begin+bytes[i].len()as u64;
@@ -84,10 +86,12 @@ impl Cache {
         }
         // Data first, logical headers last. A partially uploaded page is never
         // marked resident and cannot be selected by any camera/shadow consumer.
-        if p.cursor==begin && remaining>=40 {
+        if p.cursor==begin && remaining>=48 {
             gpu.queue.write_buffer(&self.buffers[0],p.id as u64*32,bytemuck::bytes_of(&p.level));
-            gpu.queue.write_buffer(&self.buffers[3],p.id as u64*8,bytemuck::cast_slice(&[self.pages.len()as u32+p.resident.splat.range.start,p.splats.len()as u32]));
-            remaining-=40;let p=self.pending.take().unwrap();self.dirty.insert(p.id);self.resident[p.id]=Some(p.resident);self.stats.uploads+=1;
+            gpu.queue.write_buffer(&self.buffers[3],p.id as u64*8,bytemuck::cast_slice(&[2*self.pages.len()as u32+p.resident.splat.range.start,p.splats.len()as u32]));
+            let page=&self.pages[p.id];
+            gpu.queue.write_buffer(&self.buffers[3],(self.pages.len()+p.id)as u64*8,bytemuck::cast_slice(&[p.resident.index.range.start+page.indices.len()as u32,page.splat_bricks.len()as u32]));
+            remaining-=48;let p=self.pending.take().unwrap();self.dirty.insert(p.id);self.resident[p.id]=Some(p.resident);self.stats.uploads+=1;
         }
         let written=initial-remaining;self.stats.uploaded_bytes+=written;Ok(written)
     }
@@ -146,7 +150,7 @@ impl Cache {
             // first. Short leases bridge async feedback and failed-cut frames.
             let mut requests=(0..self.deps.len()).filter(|&id|self.last_requested[id]!=0 && self.frame-self.last_requested[id]<=8).collect::<Vec<_>>();
             requests.sort_by_key(|&id|(!(self.deps[id].iter().all(|&p|self.resident[p].is_some()) && self.source.as_ref().is_none_or(|s|s.ready(id))),id));
-            let cost=|id:usize|[self.pages[id].indices.len()as u64,self.pages[id].cells.len()as u64,self.pages[id].splats.len()as u64];
+            let cost=|id:usize|[self.pages[id].index_words()as u64,self.pages[id].cells.len()as u64,self.pages[id].splats.len()as u64];
             let mut wanted=self.pinned.iter().enumerate().filter_map(|(id,&pin)|pin.then_some(id)).collect::<BTreeSet<_>>();
             let mut used=[0u64;3];for &id in &wanted {let c=cost(id);for i in 0..3 {used[i]+=c[i];}}
             for id in requests {
@@ -165,7 +169,7 @@ impl Cache {
         if self.pending.is_some(){remaining-=self.advance(gpu,remaining)?;if self.pending.is_none(){completed+=1;}}
         let candidates=self.wanted.iter().copied().filter(|&id|self.resident[id].is_none()).collect::<Vec<_>>();
         for id in candidates {
-            if self.pending.is_some() || remaining<44 || completed>=self.budget.uploads {break;}
+            if self.pending.is_some() || remaining<52 || completed>=self.budget.uploads {break;}
             self.begin(id)?;
             while self.pending.is_none() {
                 let victim=self.resident.iter().enumerate().filter(|(i,r)|r.is_some()&&!self.pinned[*i]&&!self.wanted.contains(i))
@@ -207,7 +211,7 @@ mod tests {
         let nodes=(0..3).map(|i|Node {sphere:[0.,0.,0.,1.],error:[0.;4],links:[NONE,i+1,i,if i==0{2}else{0}]}).collect::<Vec<_>>();
         let roots=[Instance {rows:[[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.]],scale:[1.,0.,0.,0.],info:[0;4]}];
         let selector=Selector::new(&gpu,&nodes,&roots,8,8).unwrap();
-        let budget=Budget {index_words:2,cells:2,splats:2,upload_bytes:44,uploads:1};
+        let budget=Budget {index_words:10,cells:2,splats:2,upload_bytes:52,uploads:1};
         let mut cache=Cache::new(&gpu,&forest,vec![vec![0],vec![1],vec![2]],vec![true,false,false],budget).unwrap();
         cache.initialize(&gpu,&selector).unwrap();assert_eq!(cache.stats().resident_pages,1);assert!(cache.evict(0).is_err());
         let bytes=cache.stats().allocated_bytes;
@@ -219,7 +223,7 @@ mod tests {
             for frame in 0..40 {
                 gpu.queue.write_buffer(&selector.asset_requests,0,bytemuck::cast_slice(&[1u32,0,0,0,target as u32,0,cache.publication[target].1,0]));
                 cache.service(&gpu,&selector).unwrap();gpu.wait();
-                assert!(cache.stats().frame_upload_bytes<=44);assert_eq!(cache.stats().allocated_bytes,bytes);
+                assert!(cache.stats().frame_upload_bytes<=52);assert_eq!(cache.stats().allocated_bytes,bytes);
                 assert!(cache.resident[0].is_some());assert!(cache.stats().resident_pages<=2);
                 if frame<2 {assert!(!cache.publication[target].0,"partial bytes cannot publish a page");}
                 if cache.pending.as_ref().is_some_and(|p|p.id==target){assert!(!cache.publication[target].0);}
@@ -232,12 +236,15 @@ mod tests {
             assert_eq!(bytemuck::bytes_of(&cell),bytemuck::bytes_of(&forest.cells[target]));
             let raw=read(&cache.buffers[3]);let header:[u32;2]=bytemuck::pod_read_unaligned(&raw[target*8..][..8]);assert_eq!(header[1],1);
             let splat:[u32;2]=bytemuck::pod_read_unaligned(&raw[header[0]as usize*8..][..8]);assert_eq!(splat,[index-1,0]);
+            let group:[u32;2]=bytemuck::pod_read_unaligned(&raw[(forest.levels.len()+target)*8..][..8]);assert_eq!(group[1],1);
+            let raw=read(&cache.buffers[1]);let descriptor:[u32;4]=bytemuck::pod_read_unaligned(&raw[group[0]as usize*4..][..16]);
+            assert_eq!(descriptor,[header[0],1,0,0],"reloaded brick range must address this page's current splat allocation");
         }
         assert!(cache.stats().evictions>=2);assert!(cache.publication[1].1>2);
         assert!(Cache::new(&gpu,&forest,vec![vec![0]],vec![true,true,true],budget).is_err());
         // Voxel readiness alone may not publish a source representation.
         let selector=Selector::new(&gpu,&nodes,&roots,8,8).unwrap();
-        let mut combined=Cache::new(&gpu,&forest,vec![vec![0],vec![1],vec![2]],vec![true,true,true],Budget{index_words:3,cells:3,splats:3,upload_bytes:512,uploads:2}).unwrap();
+        let mut combined=Cache::new(&gpu,&forest,vec![vec![0],vec![1],vec![2]],vec![true,true,true],Budget{index_words:15,cells:3,splats:3,upload_bytes:512,uploads:2}).unwrap();
         let(scene,reps)=super::super::source::tests::scene();
         combined.source=Some(super::super::source::Cache::new(&gpu,&scene,&reps,super::super::source::Budget{vertices:195,cluster_vertices:195,triangles:65}).unwrap());
         combined.initialize(&gpu,&selector).unwrap();assert!(combined.publication[0].0);assert!(!combined.publication[1].0);assert!(!combined.publication[2].0);

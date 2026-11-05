@@ -16,6 +16,7 @@ pub struct VoxelPage {
     cells:Vec<GpuCell>,
     splats:Vec<[u32;2]>,
     directory:usize,
+    splat_bricks:Vec<[u32;4]>,
 }
 impl VoxelPage {
     pub fn cook(forest:&GpuForest,id:usize)->Result<Self,String> {
@@ -27,7 +28,7 @@ impl VoxelPage {
             else {dx as usize*dy as usize*dz as usize};
         let base=(offset&!BRICK_INDIRECTION)as usize;
         if base.checked_add(count).is_none_or(|end|end>forest.indices.len()) {return Err("invalid voxel page directory".into());}
-        let mut page=Self {level,indices:vec![0;count],cells:Vec::new(),splats:Vec::new(),directory:if bricked{count}else{0}};
+        let mut page=Self {level,indices:vec![0;count],cells:Vec::new(),splats:Vec::new(),directory:if bricked{count}else{0},splat_bricks:Vec::new()};
         let mut remap=BTreeMap::new();
         // Retain the source encoding. Bricked pages do not expand into dense grids.
         if bricked {
@@ -47,6 +48,21 @@ impl VoxelPage {
         page.level.dims_offset[3]=if bricked{BRICK_INDIRECTION}else{0};
         Ok(page)
     }
+    /// Group occupied cells once per asset page, not per world instance.
+    /// Entries are local cell-range start/count and packed 4x4x4 origin.
+    fn group_splats(&mut self) {
+        let mut groups=BTreeMap::<u32,Vec<[u32;2]>>::new();
+        for &cell in &self.splats {
+            let c=cell[1];let key=(c&1023&!3)|(((c>>10)&1023&!3)<<10)|(((c>>20)&1023&!3)<<20);
+            groups.entry(key).or_default().push(cell);
+        }
+        self.splats.clear();self.splat_bricks.clear();
+        for (origin,cells) in groups {
+            self.splat_bricks.push([self.splats.len()as u32,cells.len()as u32,origin,0]);
+            self.splats.extend(cells);
+        }
+    }
+    fn index_words(&self)->usize {self.indices.len()+self.splat_bricks.len()*4}
     fn local_cell(&mut self,forest:&GpuForest,cell:u32,remap:&mut BTreeMap<u32,u32>)->Result<u32,String> {
         if cell==0{return Ok(0);}
         if let Some(&local)=remap.get(&cell){return Ok(local);}
@@ -125,6 +141,26 @@ mod tests {
     fn fixture()->GpuForest {
         let mut cell=GpuCell::zeroed();cell.albedo_rough=[0.2,0.4,0.7,0.9];
         GpuForest {levels:vec![GpuLevel {origin_cell:[0.,0.,0.,0.5],dims_offset:[5,2,1,0]},GpuLevel {origin_cell:[0.,0.,0.,1.],dims_offset:[1,1,1,10]}],indices:vec![1,0,2,0,1,0,2,0,0,0,2],cells:vec![cell,{let mut other=cell;other.albedo_rough=[0.8,0.1,0.3,0.5];other.normals[0]=[1.,0.,0.,1.];other}],instances:vec![]}
+    }
+    #[test] fn foliage_pages_groups_cover_sparse_cells_once() {
+        use bytemuck::Zeroable;
+        let dims=[9u32,7,6];
+        let indices=(0..dims.iter().product()).map(|i|u32::from(i%3!=0)).collect();
+        let forest=GpuForest {levels:vec![GpuLevel {origin_cell:[0.,0.,0.,0.5],dims_offset:[9,7,6,0]}],indices,cells:vec![GpuCell::zeroed()],instances:vec![]};
+        let mut page=VoxelPage::cook(&forest,0).unwrap();let mut expected=page.splats.clone();expected.sort();
+        page.group_splats();let mut actual=page.splats.clone();actual.sort();assert_eq!(actual,expected);
+        let mut visited=vec![0u32;page.splats.len()];
+        for &[first,count,origin,_] in &page.splat_bricks {
+            assert!(count>0 && count<=64);
+            let base=[origin&1023,(origin>>10)&1023,origin>>20];
+            for at in first..first+count {
+                visited[at as usize]+=1;let packed=page.splats[at as usize][1];let c=[packed&1023,(packed>>10)&1023,packed>>20];
+                assert!((0..3).all(|i|c[i]>=base[i] && c[i]<base[i]+4));
+            }
+        }
+        assert!(visited.iter().all(|&n|n==1));
+        assert_eq!(page.index_words(),page.indices.len()+4*page.splat_bricks.len());
+        let prior=page.splat_bricks.clone();page.group_splats();assert_eq!(prior,page.splat_bricks);
     }
     #[test] fn foliage_pages_roundtrip_dense_bricked_and_splats() {
         for bricked in [false,true] {

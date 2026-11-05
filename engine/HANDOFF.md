@@ -1,3 +1,25 @@
+## 5 November: bounded paged voxel group data integrated
+
+Voxel pages publish deterministic 4x4x4 cell-group descriptors inside their
+bounded index allocation, with secondary logical headers in the splat buffer.
+Allocation budgets include metadata; partial uploads remain unpublished; group
+ranges relocate with the same page owner. Camera/sun keep the existing flat
+cell-range ABI. 146 foliage tests PASS, including raw GPU descriptor readback
+after eviction/reload and independent sparse-cell coverage.
+
+Final default renderer: data integration only, no extra culling pass. Three
+alternating native720p ONE-VIEW high/low routes remain effectively unchanged:
+high ~14.7ms, low ~15.5-15.8ms; images match. Not a performance win.
+Attempted paged brick culling saved ~30% low-view splats but was slower; adding
+min/max classification was still slower. Code/oracle preserved in
+engine/docs/paged-brick-culling-experiment.patch; all per-pass results in
+engine/docs/paged-brick-measurements.json. Patch applies after this integration.
+
+G3 upstream history/current-depth recovery and independent camera/shadow cuts
+remain OPEN. Unconditional brick testing is too costly for these tiny far groups;
+amortize tests through hierarchy/work scheduling. No new opt-in mode, CPU tree
+pool or playtest. Full checklist remains engine/docs/vegetation-architecture.md.
+
 ## 5 November: rejected paged whole-volume occlusion
 
 Measured a real paged-path integration of current-frame two-phase voxel culling.
