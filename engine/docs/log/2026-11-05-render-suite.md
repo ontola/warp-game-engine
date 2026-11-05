@@ -31,6 +31,7 @@ where the M5 Pro spends 1.28 and 1.04 ms.
 | Terrain patches upload as one range; far sun sources as one write, not one per instance | Flight terrain update 31 to 4.8 ms |
 | Quadtree keys use a cheap hasher; a settled selection plans nothing | Flight terrain update 64 to 31 ms; still views 2 to 0.003 ms |
 | Phase-two queue 262,144 to 1,048,576 clusters (+36 MiB) | `remaining cull` -2.0 town, -3.3 hill, -2.4 far, -2.7 flight; no overflow in any view |
+| Grass, soil and gravel blend to triplanar on faces steeper than about 45 degrees, and their bump map fades out | No GPU cost; `wall` changes 0.62% of pixels as intended, other still views within noise |
 
 Together the flight's wall time fell from 112 to 40 ms and its GPU time from
 23.2 to 20.7 ms. Still views stayed within the noise floor of their pictures
@@ -62,8 +63,10 @@ Foliage, not changed here:
 
 Terrain and shading, still to do:
 
-- Grass stretches down steep plot cuts, since it is sampled on x and z only
-  (`wall` view).
+- Faint vertical bands remain on steep plot cuts after the fix below: the colour
+  breakup noise is still mapped from above.
 - Faint rings in the sky on `forest`.
 - The building slab shadow is stepped on `wall`.
-- `render_cpu_ms` is 8 to 16 ms, now the largest CPU cost measured.
+- `render_cpu_ms` is 8 to 16 ms, now the largest CPU cost measured. With
+  `KERN_CPU_SPANS=1` on `town`, one sampled frame spent 6.9 ms in `submit` and
+  under 1.5 ms in everything else, so encoding is not the problem.
