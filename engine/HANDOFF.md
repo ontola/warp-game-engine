@@ -1,3 +1,20 @@
+## 5 November: reject node-depth candidate; oversized voxel cells remain
+
+Current-terrain visibility was extended from roots to hierarchy nodes before
+reservation, with an array of current per-camera depth pyramids and independent
+shadow demand. All 155 foliage tests passed (including GPU tests), and the release
+example built. Three alternating baseline/candidate runs per route, native720p
+ONE VIEW, showed no selection improvement and nearly identical final images:
+lowland median covered GPU 15.092 -> 15.683 ms; alpine 14.158 -> 14.583 ms.
+The candidate is NOT integrated. Its source/tests are retained in
+vegetation-node-depth-experiment.patch and per-pass results in
+vegetation-node-depth-measurements.json. Normal renderer source is restored to
+2f38bf1. This does not fix the user's visible spheres: measured cells up to24px
+remain, whereas pixel-scale distant representation is the intended goal.
+Next work must demonstrate actual final cell footprint reduction and near-source
+coverage, not count visibility infrastructure as a visual fix. G1.4/G2/G3/G8
+remain incomplete. No interactive playtest launched.
+
 ## 5 November: upstream current-terrain root visibility checkpoint
 
 Normal renderer now draws current terrain-only depth before shared GPU foliage
