@@ -85,6 +85,8 @@ tree size/count edits do update the native trunks.
 | Grass draw distance | Scales the existing source/distant transitions and outer fade from 25–100%. **Density and allocation do not change.** At the current 80/180 m configuration, 50% gives 40/90 m endpoints. |
 | Geometry LOD error | Changes the cluster-mesh error threshold from 0.5–4 pixels; larger values permit simpler trees, rocks and other meshes. Meadow source LOD is separate. |
 | Exposure offset | Adjusts the current time-of-day exposure by −3 to +3 EV. Positive EV darkens, negative EV brightens. |
+| Auto exposure | Engine F10 menu: meters each view and adapts like an eye, overriding the game's choice; its help line shows the current and metered EV. The exposure offset still applies. |
+| HDR output, HDR peak | Engine F10 menu: HDR output on an HDR screen (switches the surface live) and the highlight headroom; greyed out when the screen offers no HDR surface. |
 | Distance fog | Toggles distance extinction and its visibility culling; keeps the procedural sky. |
 
 Enabling a renderer feature does not create assets or buffers absent from the
