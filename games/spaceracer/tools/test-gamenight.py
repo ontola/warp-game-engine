@@ -124,9 +124,9 @@ try:
     check("host re-prepares swapped seats on overlay close with saved track settings")
     seed=state()["seed"]
     request({"type":"trigger_action","game":"spaceracer","key":"new_race","player_id":ids[0]})
-    wait(lambda:state()["seed"]!=seed and state()["active_laps"]==2 and state()["pickup_count"]==0,"next race settings")
+    wait(lambda:state()["seed"]==seed and state()["active_laps"]==2 and state()["pickup_count"]==0,"next race settings")
     assert state()["biome"]=="forest" and state()["difficulty"]=="hard"
-    check("real host new-race action changes seed and applies deferred settings")
+    check("real host new-race action keeps a fixed seed and applies deferred settings")
     request({"type":"open_overlay"})
     for name in ["Gold Pilot","Violet Pilot"]: request({"type":"join_party","name":name})
     request({"type":"close_overlay"})
