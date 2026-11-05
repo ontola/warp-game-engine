@@ -385,6 +385,13 @@ mod tests {
    let parents=cut.iter().filter(|&&node|nodes[node as usize].error[0]>0.).count()as u32
        +u32::from(read(&gpu,&selector.direct)[0]!=0);
    assert_eq!(state[23],parents);assert_eq!(state[24],parents);
+   assert_eq!(state[48],parents);assert_eq!(state[53],0);
+   let expected=match cut.as_slice() {
+    [2,3,5,6]=>[0,0,0,0,0,0], [2,3,4]=>[1,1,1,0,0,0],
+    [1,4]=>[2,0,0,0,0,0], []=>[0,1,1,0,0,0],
+    [1,5,6]=>[0,0,0,1,0,0], _=>panic!("unexpected cut {cut:?}"),
+   };
+   assert_eq!(&state[49..55],&expected,"slot/camera/shadow/page/leaf/eligible reasons for {cut:?}");
    assert_eq!(&state[25..28],&[0,0,0]);
    assert_eq!(&state[32..36],&[0,0,0,0]);
    assert_eq!(&state[36..40],&[0,0,0,cut.len()as u32]);

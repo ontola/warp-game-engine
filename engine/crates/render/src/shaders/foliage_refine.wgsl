@@ -90,7 +90,7 @@ fn projected(t:Tree,n:Node)->vec2<f32> {
 // A unary chain represents the same complete support at several LODs.
 // Intermediate occupancy need not be monotonic: inspect through expensive or
 // nonresident intermediate levels, but publish only a resident affordable end.
-fn candidate(tree:u32,start:u32)->u32 {
+fn candidate(tree:u32,start:u32,request_pages:bool)->u32 {
  let t=trees[tree];var at=start;var best=start;
  let budget=work(tree,start,mask(sphere(t,nodes[start])));
  loop {
@@ -99,7 +99,11 @@ fn candidate(tree:u32,start:u32)->u32 {
   if at==best && (n.links.w&1u)==0u && scale.x<1e29 && scale.x*n.error.x<=view.pixels.z && (n.error.y==0.0 || scale.x*n.error.y<=1.0) {break;}
   let child=n.links.x;let c=nodes[child];if c.links.y!=n.links.y {break;}
   let cost=work(tree,child,mask(sphere(t,c)));
-  if all(cost<=budget) && ready(c.links.z) {best=child;}
+  if all(cost<=budget) {
+   var resident=pages[c.links.z].resident!=0u;
+   if request_pages {resident=ready(c.links.z);}
+   if resident {best=child;}
+  }
   at=child;
  }
  return best;
@@ -129,7 +133,7 @@ fn candidate(tree:u32,start:u32)->u32 {
  if refine {
   loop {
    if child==NONE || child>=end {break;}
-   let selected=candidate(task.x,child);let c=nodes[selected];let consumers=mask(sphere(t,c));
+   let selected=candidate(task.x,child,true);let c=nodes[selected];let consumers=mask(sphere(t,c));
    if consumers!=0u {
     let resident=ready(c.links.z);refine=refine&&resident;
     p.replacement=plus(p.replacement,work(task.x,selected,consumers));
@@ -251,7 +255,7 @@ fn publish(task:vec4<u32>) {
  if task.y!=NONE {child=nodes[task.y].links.x;end=nodes[task.y].links.y;}
  loop {
   if child==NONE || child>=end {break;}
-  let selected=candidate(task.x,child);let c=nodes[selected];let consumers=mask(sphere(t,c));
+  let selected=candidate(task.x,child,true);let c=nodes[selected];let consumers=mask(sphere(t,c));
   if consumers!=0u {
    let replacement=vec4<u32>(task.x,selected,consumers,0u);
    if c.links.x==NONE {publish(replacement);}else{next[offset]=replacement;offset++;}
@@ -289,8 +293,29 @@ fn error_in(s:vec4<f32>,error:f32,vp:mat4x4<f32>,pixels:vec2<f32>)->f32 {
 
 // Explicit diagnostic dispatch only: never part of normal frame scheduling.
 // Positive finite float bits preserve ordering under atomicMax.
+// Diagnose the next complete replacement against final remaining work. Read
+// residency only: explicit diagnostics must not generate new asset requests.
+fn audit_camera_limit(tree:u32,node:u32,camera_scale:f32) {
+ let n=nodes[node];if camera_scale==0.0 {return;}
+ if (n.links.w&1u)==0u && camera_scale*n.error.x<=view.pixels.z && camera_scale*n.error.y<=1.0 {return;}
+ atomicAdd(&state[48],1u);
+ if n.links.x==NONE {atomicAdd(&state[53],1u);return;}
+ let t=trees[tree];var replacement=vec4<u32>(0u);var missing=false;var child=n.links.x;
+ loop {
+  if child==NONE || child>=n.links.y {break;}
+  let selected=candidate(tree,child,false);let c=nodes[selected];let consumers=mask(sphere(t,c));
+  if consumers!=0u {replacement=plus(replacement,work(tree,selected,consumers));missing=missing||pages[c.links.z].resident==0u;}
+  child=nodes[child].links.y;
+ }
+ let old=work(tree,node,mask(sphere(t,n)));let delta=replacement-min(replacement,old);
+ let used=vec3<u32>(atomicLoad(&state[0]),atomicLoad(&state[1]),atomicLoad(&state[2]));
+ let capacity=view.consumer_count.yzw;let blocked=delta.xyz>capacity-min(used,capacity);
+ if blocked.x {atomicAdd(&state[49],1u);}if blocked.y {atomicAdd(&state[50],1u);}if blocked.z {atomicAdd(&state[51],1u);}
+ if missing {atomicAdd(&state[52],1u);}if !any(blocked) && !missing {atomicAdd(&state[54],1u);}
+}
 fn audit_node(tree:u32,node:u32) {
  let n=nodes[node];let scale=projected(trees[tree],n);
+ audit_camera_limit(tree,node,scale.y);
  let spatial=min(scale*n.error.x,vec2<f32>(1e30));
  let ratio=min(max(spatial/max(view.pixels.z,1e-8),scale*n.error.y),vec2<f32>(1e30));
  atomicMax(&state[19],bitcast<u32>(spatial.x));atomicMax(&state[20],bitcast<u32>(spatial.y));

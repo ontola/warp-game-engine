@@ -6,6 +6,14 @@ plans. Architecture first; no interactive playtest until requested.
 
 ## Where we are
 
+Latest refinement-limit audit (5 November): all 40,529 over-target camera
+representations have a resident next complete replacement that fits the FINAL
+remaining slot/camera-splat/shadow-splat budgets. Zero are blocked by those
+limits, missing pages or absent children. This is not a historical rejection
+trace: investigate earlier admission/scheduling rather than claiming capacity
+alone explains the coarse camera cut. No renderer-quality or performance fix
+is claimed by this diagnostic change. G2.2/G3 remain open.
+
 Latest branch-consumer audit: the normal route's 821 selected branch records
 are ALL shadow-only (15 source, 806 voxel). Camera detail consists entirely of
 40,529 whole-root voxel representations. The old camera_published_branches
