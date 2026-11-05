@@ -442,6 +442,37 @@ impl Runtime {
         *population=std::sync::Arc::new(update.next);Ok(stats)
     }
     /// Explicit synchronous diagnostic only; never called to select or draw.
+    /// Explicit offline attribution of submitted cells to the published GPU cut.
+    /// Never used to schedule rendering or choose instances on the CPU.
+    pub(crate) fn annotate_raster_profile(&self,gpu:&Gpu,profiles:&mut [serde_json::Value])->Result<(),String> {
+        fn read(gpu:&Gpu,source:&wgpu::Buffer)->Result<Vec<u8>,String> {
+            let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("offline foliage ownership"),size:source.size(),usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+            let mut enc=gpu.device.create_command_encoder(&Default::default());enc.copy_buffer_to_buffer(source,0,&out,0,source.size());gpu.queue.submit([enc.finish()]);
+            let(tx,rx)=std::sync::mpsc::sync_channel(1);out.slice(..).map_async(wgpu::MapMode::Read,move|r|{let _=tx.send(r);});gpu.wait();rx.recv().map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
+            let data=out.slice(..).get_mapped_range().map_err(|e|e.to_string())?;Ok(data.to_vec())
+        }
+        let slot_bytes=read(gpu,&self.residency.slots)?;let node_bytes=read(gpu,&self.selector._nodes)?;let page_bytes=read(gpu,&self.selector.asset_pages)?;
+        let slots:Vec<crate::foliage_residency::ResidentSlot>=slot_bytes.chunks_exact(32).map(bytemuck::pod_read_unaligned).collect();
+        let nodes:Vec<crate::foliage_select::Node>=node_bytes.chunks_exact(48).map(bytemuck::pod_read_unaligned).collect();
+        let pages:Vec<[u32;4]>=page_bytes.chunks_exact(16).map(bytemuck::pod_read_unaligned).collect();
+        let describe=|id:usize|->Result<serde_json::Value,String>{
+            let n=nodes.get(id).ok_or("offline cut node out of range")?;
+            let page=pages.get(n.links[2]as usize).ok_or("offline cut page out of range")?;
+            Ok(serde_json::json!({"node":id,"sphere":n.sphere,"error_and_splat_cost":n.error,"links":n.links,"page":page}))
+        };
+        for profile in profiles {if let Some(cells)=profile["largest_submitted_cells"].as_array_mut(){for cell in cells {
+            let volume=cell["volume"].as_u64().ok_or("missing profile volume")? as usize;
+            if volume>=self.slots as usize {cell["cut_owner"]=serde_json::json!({"kind":"whole_root","attribution":"not yet decoded"});continue;}
+            let slot=slots.get(volume).ok_or("offline cut slot out of range")?;
+            let node=nodes.get(slot.key[1]as usize).ok_or("offline cut owner node out of range")?;
+            let mut children=Vec::new();let mut child=node.links[0];
+            while child!=crate::foliage_select::NONE && child<node.links[1] {
+                children.push(describe(child as usize)?);let next=nodes[child as usize].links[1];if next<=child{return Err("offline cut invalid child span".into());}child=next;
+            }
+            cell["cut_owner"]=serde_json::json!({"kind":"articulated_slot","root":slot.key[0],"generation":slot.key[3],"history":slot.history,"selected":describe(slot.key[1]as usize)?,"immediate_children":children});
+        }}}
+        Ok(())
+    }
     pub fn diagnostics(&self,gpu:&Gpu)->Result<Diagnostics,String> {
         let inputs=[(&self.selector.counters,64u64),(&self.residency.counters,32),(&self.selector.fallback,self.trees as u64*4),(&self.choices,131072),(&self.pose_work,268),(&self.selector.demand,self.trees as u64*32),(&self.selector.refiner.state,256)];
         let size=inputs.iter().map(|(_,n)|n).sum();
