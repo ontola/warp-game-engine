@@ -664,16 +664,24 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     // ditch's own line, sharp and antialiased at any distance. The band is
     // as wide as the film can spread on the coarsest cell for this pixel
     // size (procedural_terrain::Settings::cell_pixels).
+    // Its colour must not depend on the mesh either: a film is water spread
+    // thin over the cell, not shallow water, so it takes the depth of the
+    // bed it stands for (half the darkening, as a stream's or a ditch's
+    // average). Carved beds darken further with their real depth.
     var w = min(f.water / WATER_FILM, 1.0);
+    var depth = max(clamp(f.water / 0.8, 0.0, 1.0), 0.5 * w);
     let ditch = field_ditch(p.xz, s, f.up);
     if ditch.x > 0.0 {
         let cell = 24.0 * footprint;
         let band = max(1.2, cell) + 0.5 * cell + 0.5;
         let near = ditch.x * (1.0 - smoothstep(band, band + 1.0, ditch.y));
         w = mix(w, ditch.x * field_strip(ditch.y, 1.2, footprint), near);
+        // The ditch's full-detail depth (terrain_field's profile, 0.8 m in
+        // the middle), its mean across the strip once a pixel spans it.
+        let full = max(1.3 * (1.0 - smoothstep(0.6, 1.8, ditch.y)) - 0.5, 0.0) / 0.8;
+        depth = mix(depth, mix(full, 0.6, clamp(footprint / 2.4, 0.0, 1.0)), near);
     }
     if w > 0.0 {
-        let depth = clamp(f.water / 0.8, 0.0, 1.0);
         let ripple = vec2<f32>(field_fbm(wuv * 1.7 + vec2<f32>(s.time * 0.31, 0.0), footprint * 1.7), field_fbm(wuv * 1.7 + vec2<f32>(5.0, s.time * 0.27), footprint * 1.7)) - 0.5;
         let wn = normalize(vec3<f32>(ripple.x * 0.12, 1.0, ripple.y * 0.12));
         c = mix(c, mix(c * 0.45, vec3<f32>(0.018, 0.03, 0.028), depth), w);
