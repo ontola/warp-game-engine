@@ -48,6 +48,51 @@ with and without regions, `terrain_field::biome_shapes_match_on_gpu`) PASS on Me
 lavapipe in the cloud container, not yet on real hardware; naga validation of the
 composed shaders; workspace check clean. No interactive playtest.
 
+## 5 November: ditches, streams and rivers no longer pop in
+
+Water in ditches, stream beds and river channels existed only where the
+terrain mesh was fine enough to carve the bed (cut below ~1.5 m, the nearest
+~50 m): coarser patches had no water at all, so the polder's ditches popped
+in round the camera. `terrain_field` (CPU and WGSL, line for line) now also
+returns `film`, the share of the cell under water at full detail: a strip
+thinner than the cell widens to it and thins in proportion (`seen`), so the
+share of water is the same at every cut (test `water_keeps_its_share_at_every_cut`:
+5.6 % of polder ground at cut 0.25, 4.5 % at cut 16; before, 0 from cut 2).
+Wet banks of ditches, streams and rivers blend the same way instead of
+dropping or aliasing. `procedural_terrain.wgsl` packs max(water, 0.04 * film)
+with a square-root water code (fine steps for thin films); `terrain_surface`
+covers ground linearly up to WATER_FILM (0.04 m). Physics, forest and
+placement read `water` and are unchanged. Far ditches read as soft dark
+lines; a per-pixel ditch line (sharper far away) is a possible next step.
+Before/after: docs/images/terrain-water-film-polder.jpg (lavapipe).
+
+## 5 November: allocation-sized producer choice tables
+
+GPU materialization, camera/shadow transfers, offline diagnostics and animated
+shadow damage now derive their consumer-class stride from the actual slot count.
+Removed fixed16384/32768/131072 producer addressing; choices allocate8*slots bytes.
+The shadow damage bounds check likewise validates the actual two-table size.
+A one-slot GPU oracle verifies camera changes leave shadow tiles alone and shadow
+changes dirty the right tiles; runtime fixtures check exact two-table extent.
+154 foliage and6 shadow_damage tests pass; release build and normal captures pass.
+Trees-only normal image is pixel-identical outside HUD to the previous baseline.
+Its pixel-quality check still FAILS at153.62px. Trees+grass separately FAIL at21.31px.
+A two-root close fixture with128slots passes camera pixel quality; it uses a different
+budget than the earlier16384-slot fixture and is not an image equivalence claim.
+
+Correction: the earlier pixel-policy-full capture omitted grass; it has71112roots.
+The new trees+grass capture has151058roots. Keep these populations distinct.
+Evidence: vegetation-choice-stride-measurements.json; original report annotated.
+
+This removes a producer assumption, NOT the publication limit itself. Per-view
+cull/raster/voxel consumers still use64KiB uniform choice tables and retain the
+16384 checked limit. Next: migrate those consumers to dynamically sized storage.
+Cull already uses16 storage bindings: consolidate traversal counters with its
+existing counter buffer before adding the choice storage binding. Preserve current
+indirect arguments, raw diagnostics and shadow-demand ownership. Then test tables
+beyond16384 and revisit full-scene correctness, without relaxing1px policy.
+No architecture gate closed, no frame-time gain claimed, no playtest opened.
+
 ## 5 November: correctness-first pixel policy and explicit failure
 
 User priority: establish pixel-scale voxel correctness before optimizing speed.

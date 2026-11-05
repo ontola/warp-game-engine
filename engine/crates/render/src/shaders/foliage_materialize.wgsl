@@ -129,7 +129,7 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
  let i=id.x;
  if i<state.counts.x {
   let slot=slots[i];let owner=state.counts.y+i;
-  if slot.history.z==0u {sources[owner].sphere.w=-1.;sources[owner].first=0u;choices[i]=0u;choices[i+16384u]=0u;return;}
+  if slot.history.z==0u {sources[owner].sphere.w=-1.;sources[owner].first=0u;choices[i]=0u;choices[i+state.counts.x]=0u;return;}
   let root=roots[slot.key.x];let rep=representations[slot.key.z];
   let branch=branches[select(rep.x,rep.w-1u,rep.w!=0u)];let m=cached_pose(slot.key.x,rep.x);
   var source=branch.source;source.rows=m;let bound=nodes[slot.key.y].sphere;
@@ -149,7 +149,7 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
   // Shadow consumers use the existing adaptive voxel-caster policy, even
   // when camera detail requires source needles. The trunk stays source:
   // branch zero's aggregate covers the WHOLE tree, not just its own members.
-  choices[i+16384u]=select(3u,select(0u,765u,rep.y==1u || branch.info.y!=0u),(roles&512u)!=0u)|visibility;
+  choices[i+state.counts.x]=select(3u,select(0u,765u,rep.y==1u || branch.info.y!=0u),(roles&512u)!=0u)|visibility;
  }else {
   let tree=i-state.counts.x;if tree>=state.counts.z {return;}
   let root=roots[tree];let original=proxies[tree];

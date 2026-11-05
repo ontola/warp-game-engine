@@ -578,6 +578,7 @@ impl World {
         // not flood), and the road itself is dry.
         let level = s.pos.y;
         s.water = (level - y).clamp(0.0, s.water) * (1.0 - core);
+        s.film *= 1.0 - core;
         s.pos.y = y + s.water;
         let slope = if y > land + 1e-3 { lo_slope } else if y < land - 1e-3 { hi_slope } else { 0.0 };
         let bank_up = 1.0 / (1.0 + slope * slope).sqrt();

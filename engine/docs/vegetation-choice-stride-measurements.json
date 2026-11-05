@@ -1,0 +1,2710 @@
+{
+  "scope": "Choice-table migration only. Native1280x720 one view, final frame240. No performance or full-forest quality acceptance.",
+  "tests": "154 foliage tests and6 shadow_damage tests including exclusive GPU fixtures; release terrain_fly build",
+  "trees_only_baseline_image_mae_rgb_excluding_hud": [
+    0,
+    0,
+    0
+  ],
+  "close_fixture_note": "128 slots instead of baseline16384; visual difference not attributed to table migration; camera quality check passes.",
+  "runs": {
+    "full": {
+      "raster": [
+        {
+          "articulated_group_bins": [
+            0,
+            0,
+            0,
+            0,
+            558,
+            499,
+            241,
+            0,
+            0,
+            0
+          ],
+          "capacity": 4194304,
+          "diameter_bin_upper_px": [
+            0.5,
+            1.0,
+            2.0,
+            4.0,
+            8.0,
+            16.0,
+            32.0,
+            64.0,
+            128.0,
+            null
+          ],
+          "largest_submitted_cells": [
+            {
+              "alpha": 0.7074540257453918,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    23,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    171,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    199,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  3,
+                  1,
+                  1,
+                  256
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      3.3463592529296875,
+                      3.429285764694214,
+                      112.0,
+                      112.0
+                    ],
+                    "links": [
+                      1118,
+                      1169,
+                      1117,
+                      0
+                    ],
+                    "node": 1117,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.0,
+                      13.80000114440918,
+                      0.0,
+                      9.18033504486084
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      1.7538098096847534,
+                      0.7654655575752258,
+                      87.0,
+                      87.0
+                    ],
+                    "links": [
+                      1170,
+                      1214,
+                      1169,
+                      0
+                    ],
+                    "node": 1169,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      14.700000762939453,
+                      0.3000001907348633,
+                      9.203478813171387
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 33573,
+                "selected": {
+                  "error_and_splat_cost": [
+                    1.7875136137008667,
+                    0.9491773247718811,
+                    171.0,
+                    171.0
+                  ],
+                  "links": [
+                    1117,
+                    1214,
+                    1116,
+                    0
+                  ],
+                  "node": 1116,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    0.0,
+                    13.80000114440918,
+                    0.0,
+                    10.198466300964355
+                  ]
+                }
+              },
+              "diameter_px": 21.308317184448242,
+              "packed_cell": 4196357,
+              "volume": 1175,
+              "world_cell_size": 0.7840943336486816,
+              "world_centre": [
+                -13.563965797424316,
+                16.220287322998047,
+                -24.723554611206055
+              ]
+            },
+            {
+              "alpha": 0.7412832975387573,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    23,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    171,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    199,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  3,
+                  1,
+                  1,
+                  256
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      3.3463592529296875,
+                      3.429285764694214,
+                      112.0,
+                      112.0
+                    ],
+                    "links": [
+                      1118,
+                      1169,
+                      1117,
+                      0
+                    ],
+                    "node": 1117,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.0,
+                      13.80000114440918,
+                      0.0,
+                      9.18033504486084
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      1.7538098096847534,
+                      0.7654655575752258,
+                      87.0,
+                      87.0
+                    ],
+                    "links": [
+                      1170,
+                      1214,
+                      1169,
+                      0
+                    ],
+                    "node": 1169,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      14.700000762939453,
+                      0.3000001907348633,
+                      9.203478813171387
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 33573,
+                "selected": {
+                  "error_and_splat_cost": [
+                    1.7875136137008667,
+                    0.9491773247718811,
+                    171.0,
+                    171.0
+                  ],
+                  "links": [
+                    1117,
+                    1214,
+                    1116,
+                    0
+                  ],
+                  "node": 1116,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    0.0,
+                    13.80000114440918,
+                    0.0,
+                    10.198466300964355
+                  ]
+                }
+              },
+              "diameter_px": 21.246509552001953,
+              "packed_cell": 4197380,
+              "volume": 1175,
+              "world_cell_size": 0.7840943336486816,
+              "world_centre": [
+                -14.298826217651367,
+                17.00438117980957,
+                -24.997024536132812
+              ]
+            },
+            {
+              "alpha": 0.7675135135650635,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    23,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    171,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    199,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  3,
+                  1,
+                  1,
+                  256
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      3.3463592529296875,
+                      3.429285764694214,
+                      112.0,
+                      112.0
+                    ],
+                    "links": [
+                      1118,
+                      1169,
+                      1117,
+                      0
+                    ],
+                    "node": 1117,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.0,
+                      13.80000114440918,
+                      0.0,
+                      9.18033504486084
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      1.7538098096847534,
+                      0.7654655575752258,
+                      87.0,
+                      87.0
+                    ],
+                    "links": [
+                      1170,
+                      1214,
+                      1169,
+                      0
+                    ],
+                    "node": 1169,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      14.700000762939453,
+                      0.3000001907348633,
+                      9.203478813171387
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 33573,
+                "selected": {
+                  "error_and_splat_cost": [
+                    1.7875136137008667,
+                    0.9491773247718811,
+                    171.0,
+                    171.0
+                  ],
+                  "links": [
+                    1117,
+                    1214,
+                    1116,
+                    0
+                  ],
+                  "node": 1116,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    0.0,
+                    13.80000114440918,
+                    0.0,
+                    10.198466300964355
+                  ]
+                }
+              },
+              "diameter_px": 21.072999954223633,
+              "packed_cell": 4199427,
+              "volume": 1175,
+              "world_cell_size": 0.7840943336486816,
+              "world_centre": [
+                -15.033685684204102,
+                18.57257080078125,
+                -25.270492553710938
+              ]
+            },
+            {
+              "alpha": 0.6991073489189148,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    23,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    171,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    199,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  3,
+                  1,
+                  1,
+                  256
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      3.3463592529296875,
+                      3.429285764694214,
+                      112.0,
+                      112.0
+                    ],
+                    "links": [
+                      1118,
+                      1169,
+                      1117,
+                      0
+                    ],
+                    "node": 1117,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.0,
+                      13.80000114440918,
+                      0.0,
+                      9.18033504486084
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      1.7538098096847534,
+                      0.7654655575752258,
+                      87.0,
+                      87.0
+                    ],
+                    "links": [
+                      1170,
+                      1214,
+                      1169,
+                      0
+                    ],
+                    "node": 1169,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.3000001907348633,
+                      14.700000762939453,
+                      0.3000001907348633,
+                      9.203478813171387
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 33573,
+                "selected": {
+                  "error_and_splat_cost": [
+                    1.7875136137008667,
+                    0.9491773247718811,
+                    171.0,
+                    171.0
+                  ],
+                  "links": [
+                    1117,
+                    1214,
+                    1116,
+                    0
+                  ],
+                  "node": 1116,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    0.0,
+                    13.80000114440918,
+                    0.0,
+                    10.198466300964355
+                  ]
+                }
+              },
+              "diameter_px": 20.633268356323242,
+              "packed_cell": 4199428,
+              "volume": 1175,
+              "world_cell_size": 0.7840943336486816,
+              "world_centre": [
+                -14.298826217651367,
+                18.57257080078125,
+                -24.997024536132812
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    23,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    37,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    50,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  3,
+                  1,
+                  1,
+                  256
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      6.557891845703125,
+                      2.939387798309326,
+                      26.0,
+                      26.0
+                    ],
+                    "links": [
+                      1776,
+                      1842,
+                      1775,
+                      0
+                    ],
+                    "node": 1775,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      -0.3000001907348633,
+                      1.8000001907348633,
+                      0.5999999046325684,
+                      6.878459930419922
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      6.55078649520874,
+                      2.939387798309326,
+                      24.0,
+                      24.0
+                    ],
+                    "links": [
+                      1843,
+                      1913,
+                      1842,
+                      0
+                    ],
+                    "node": 1842,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.2999997138977051,
+                      1.8000001907348633,
+                      0.5999999046325684,
+                      6.259670257568359
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 70245,
+                "selected": {
+                  "error_and_splat_cost": [
+                    1.881354570388794,
+                    0.5817538499832153,
+                    37.0,
+                    37.0
+                  ],
+                  "links": [
+                    1775,
+                    1913,
+                    1774,
+                    0
+                  ],
+                  "node": 1774,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    0.9000000953674316,
+                    1.8000001907348633,
+                    0.5999999046325684,
+                    8.078460693359375
+                  ]
+                }
+              },
+              "diameter_px": 20.261964797973633,
+              "packed_cell": 2098178,
+              "volume": 3177,
+              "world_cell_size": 0.6637064814567566,
+              "world_centre": [
+                -2.140948534011841,
+                -0.07421901822090149,
+                -25.209861755371094
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    23,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    37,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    50,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  3,
+                  1,
+                  1,
+                  256
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      6.557891845703125,
+                      2.939387798309326,
+                      26.0,
+                      26.0
+                    ],
+                    "links": [
+                      1776,
+                      1842,
+                      1775,
+                      0
+                    ],
+                    "node": 1775,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      -0.3000001907348633,
+                      1.8000001907348633,
+                      0.5999999046325684,
+                      6.878459930419922
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      6.55078649520874,
+                      2.939387798309326,
+                      24.0,
+                      24.0
+                    ],
+                    "links": [
+                      1843,
+                      1913,
+                      1842,
+                      0
+                    ],
+                    "node": 1842,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.2999997138977051,
+                      1.8000001907348633,
+                      0.5999999046325684,
+                      6.259670257568359
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 70245,
+                "selected": {
+                  "error_and_splat_cost": [
+                    1.881354570388794,
+                    0.5817538499832153,
+                    37.0,
+                    37.0
+                  ],
+                  "links": [
+                    1775,
+                    1913,
+                    1774,
+                    0
+                  ],
+                  "node": 1774,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    0.9000000953674316,
+                    1.8000001907348633,
+                    0.5999999046325684,
+                    8.078460693359375
+                  ]
+                }
+              },
+              "diameter_px": 20.261449813842773,
+              "packed_cell": 2099202,
+              "volume": 3177,
+              "world_cell_size": 0.6637064814567566,
+              "world_centre": [
+                -2.140948534011841,
+                0.5894874334335327,
+                -25.209861755371094
+              ]
+            },
+            {
+              "alpha": 0.6196383833885193,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    25,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    187,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    199,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  3,
+                  0,
+                  1,
+                  384
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      3.7569713592529297,
+                      3.6742348670959473,
+                      97.0,
+                      97.0
+                    ],
+                    "links": [
+                      707,
+                      758,
+                      706,
+                      0
+                    ],
+                    "node": 706,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.2999997138977051,
+                      14.399999618530273,
+                      -0.2999997138977051,
+                      9.148465156555176
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      6.870203018188477,
+                      7.838367462158203,
+                      102.0,
+                      102.0
+                    ],
+                    "links": [
+                      759,
+                      811,
+                      758,
+                      0
+                    ],
+                    "node": 758,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      0.2999997138977051,
+                      14.399999618530273,
+                      1.8000004291534424,
+                      8.618812561035156
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 33574,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.1981253623962402,
+                    0.9797959327697754,
+                    187.0,
+                    187.0
+                  ],
+                  "links": [
+                    706,
+                    811,
+                    705,
+                    0
+                  ],
+                  "node": 705,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    0.3000001907348633,
+                    14.399999618530273,
+                    0.8999996185302734,
+                    10.348464965820312
+                  ]
+                }
+              },
+              "diameter_px": 19.99041748046875,
+              "packed_cell": 5245954,
+              "volume": 1022,
+              "world_cell_size": 0.5855696797370911,
+              "world_centre": [
+                0.39664244651794434,
+                13.246320724487305,
+                -26.837095260620117
+              ]
+            },
+            {
+              "alpha": 0.6360113024711609,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    25,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    187,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    199,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  3,
+                  0,
+                  1,
+                  384
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      3.7569713592529297,
+                      3.6742348670959473,
+                      97.0,
+                      97.0
+                    ],
+                    "links": [
+                      707,
+                      758,
+                      706,
+                      0
+                    ],
+                    "node": 706,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.2999997138977051,
+                      14.399999618530273,
+                      -0.2999997138977051,
+                      9.148465156555176
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      6.870203018188477,
+                      7.838367462158203,
+                      102.0,
+                      102.0
+                    ],
+                    "links": [
+                      759,
+                      811,
+                      758,
+                      0
+                    ],
+                    "node": 758,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      0.2999997138977051,
+                      14.399999618530273,
+                      1.8000004291534424,
+                      8.618812561035156
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 33574,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.1981253623962402,
+                    0.9797959327697754,
+                    187.0,
+                    187.0
+                  ],
+                  "links": [
+                    706,
+                    811,
+                    705,
+                    0
+                  ],
+                  "node": 705,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    0.3000001907348633,
+                    14.399999618530273,
+                    0.8999996185302734,
+                    10.348464965820312
+                  ]
+                }
+              },
+              "diameter_px": 19.875673294067383,
+              "packed_cell": 3149827,
+              "volume": 1022,
+              "world_cell_size": 0.5855696797370911,
+              "world_centre": [
+                -0.8388599157333374,
+                13.831890106201172,
+                -26.403512954711914
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    24,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    238,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    271,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  4,
+                  1,
+                  1,
+                  256
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      6.918023109436035,
+                      4.409081935882568,
+                      128.0,
+                      128.0
+                    ],
+                    "links": [
+                      606,
+                      651,
+                      605,
+                      0
+                    ],
+                    "node": 605,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.6000006198883057,
+                      12.0,
+                      -0.5999999046325684,
+                      8.958806991577148
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      6.964247703552246,
+                      4.409081935882568,
+                      143.0,
+                      143.0
+                    ],
+                    "links": [
+                      652,
+                      704,
+                      651,
+                      0
+                    ],
+                    "node": 651,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.6000006198883057,
+                      12.0,
+                      0.9000000953674316,
+                      8.74455451965332
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 33574,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.287710666656494,
+                    1.102270483970642,
+                    238.0,
+                    238.0
+                  ],
+                  "links": [
+                    605,
+                    704,
+                    604,
+                    0
+                  ],
+                  "node": 604,
+                  "page": [
+                    1,
+                    0,
+                    4,
+                    0
+                  ],
+                  "sphere": [
+                    0.6000003814697266,
+                    12.0,
+                    0.6000003814697266,
+                    10.158807754516602
+                  ]
+                }
+              },
+              "diameter_px": 19.872743606567383,
+              "packed_cell": 3149825,
+              "volume": 329,
+              "world_cell_size": 0.5855696797370911,
+              "world_centre": [
+                0.4292643666267395,
+                11.489611625671387,
+                -24.767051696777344
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    23,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    37,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    50,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  3,
+                  1,
+                  1,
+                  256
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      6.557891845703125,
+                      2.939387798309326,
+                      26.0,
+                      26.0
+                    ],
+                    "links": [
+                      1776,
+                      1842,
+                      1775,
+                      0
+                    ],
+                    "node": 1775,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      -0.3000001907348633,
+                      1.8000001907348633,
+                      0.5999999046325684,
+                      6.878459930419922
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      6.55078649520874,
+                      2.939387798309326,
+                      24.0,
+                      24.0
+                    ],
+                    "links": [
+                      1843,
+                      1913,
+                      1842,
+                      0
+                    ],
+                    "node": 1842,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.2999997138977051,
+                      1.8000001907348633,
+                      0.5999999046325684,
+                      6.259670257568359
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 70245,
+                "selected": {
+                  "error_and_splat_cost": [
+                    1.881354570388794,
+                    0.5817538499832153,
+                    37.0,
+                    37.0
+                  ],
+                  "links": [
+                    1775,
+                    1913,
+                    1774,
+                    0
+                  ],
+                  "node": 1774,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    0.9000000953674316,
+                    1.8000001907348633,
+                    0.5999999046325684,
+                    8.078460693359375
+                  ]
+                }
+              },
+              "diameter_px": 19.861543655395508,
+              "packed_cell": 1050625,
+              "volume": 3177,
+              "world_cell_size": 0.6637064814567566,
+              "world_centre": [
+                -3.0602450370788574,
+                0.5894874334335327,
+                -25.02037239074707
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    24,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    238,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    271,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  4,
+                  1,
+                  1,
+                  256
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      6.918023109436035,
+                      4.409081935882568,
+                      128.0,
+                      128.0
+                    ],
+                    "links": [
+                      606,
+                      651,
+                      605,
+                      0
+                    ],
+                    "node": 605,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.6000006198883057,
+                      12.0,
+                      -0.5999999046325684,
+                      8.958806991577148
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      6.964247703552246,
+                      4.409081935882568,
+                      143.0,
+                      143.0
+                    ],
+                    "links": [
+                      652,
+                      704,
+                      651,
+                      0
+                    ],
+                    "node": 651,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.6000006198883057,
+                      12.0,
+                      0.9000000953674316,
+                      8.74455451965332
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 33574,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.287710666656494,
+                    1.102270483970642,
+                    238.0,
+                    238.0
+                  ],
+                  "links": [
+                    605,
+                    704,
+                    604,
+                    0
+                  ],
+                  "node": 604,
+                  "page": [
+                    1,
+                    0,
+                    4,
+                    0
+                  ],
+                  "sphere": [
+                    0.6000003814697266,
+                    12.0,
+                    0.6000003814697266,
+                    10.158807754516602
+                  ]
+                }
+              },
+              "diameter_px": 19.730693817138672,
+              "packed_cell": 4197377,
+              "volume": 329,
+              "world_cell_size": 0.5855696797370911,
+              "world_centre": [
+                0.8367488384246826,
+                10.90404224395752,
+                -25.187583923339844
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    23,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    37,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    50,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  3,
+                  1,
+                  1,
+                  256
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      6.557891845703125,
+                      2.939387798309326,
+                      26.0,
+                      26.0
+                    ],
+                    "links": [
+                      1776,
+                      1842,
+                      1775,
+                      0
+                    ],
+                    "node": 1775,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      -0.3000001907348633,
+                      1.8000001907348633,
+                      0.5999999046325684,
+                      6.878459930419922
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      6.55078649520874,
+                      2.939387798309326,
+                      24.0,
+                      24.0
+                    ],
+                    "links": [
+                      1843,
+                      1913,
+                      1842,
+                      0
+                    ],
+                    "node": 1842,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.2999997138977051,
+                      1.8000001907348633,
+                      0.5999999046325684,
+                      6.259670257568359
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 70245,
+                "selected": {
+                  "error_and_splat_cost": [
+                    1.881354570388794,
+                    0.5817538499832153,
+                    37.0,
+                    37.0
+                  ],
+                  "links": [
+                    1775,
+                    1913,
+                    1774,
+                    0
+                  ],
+                  "node": 1774,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    0.9000000953674316,
+                    1.8000001907348633,
+                    0.5999999046325684,
+                    8.078460693359375
+                  ]
+                }
+              },
+              "diameter_px": 19.593730926513672,
+              "packed_cell": 1049602,
+              "volume": 3177,
+              "world_cell_size": 0.6637064814567566,
+              "world_centre": [
+                -2.6953415870666504,
+                -0.07421901822090149,
+                -25.574766159057617
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    23,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    37,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    50,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  3,
+                  1,
+                  1,
+                  256
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      6.557891845703125,
+                      2.939387798309326,
+                      26.0,
+                      26.0
+                    ],
+                    "links": [
+                      1776,
+                      1842,
+                      1775,
+                      0
+                    ],
+                    "node": 1775,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      -0.3000001907348633,
+                      1.8000001907348633,
+                      0.5999999046325684,
+                      6.878459930419922
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      6.55078649520874,
+                      2.939387798309326,
+                      24.0,
+                      24.0
+                    ],
+                    "links": [
+                      1843,
+                      1913,
+                      1842,
+                      0
+                    ],
+                    "node": 1842,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.2999997138977051,
+                      1.8000001907348633,
+                      0.5999999046325684,
+                      6.259670257568359
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 70245,
+                "selected": {
+                  "error_and_splat_cost": [
+                    1.881354570388794,
+                    0.5817538499832153,
+                    37.0,
+                    37.0
+                  ],
+                  "links": [
+                    1775,
+                    1913,
+                    1774,
+                    0
+                  ],
+                  "node": 1774,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    0.9000000953674316,
+                    1.8000001907348633,
+                    0.5999999046325684,
+                    8.078460693359375
+                  ]
+                }
+              },
+              "diameter_px": 19.593278884887695,
+              "packed_cell": 1050626,
+              "volume": 3177,
+              "world_cell_size": 0.6637064814567566,
+              "world_centre": [
+                -2.6953415870666504,
+                0.5894874334335327,
+                -25.574766159057617
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    23,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    37,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    50,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  3,
+                  1,
+                  1,
+                  256
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      6.557891845703125,
+                      2.939387798309326,
+                      26.0,
+                      26.0
+                    ],
+                    "links": [
+                      1776,
+                      1842,
+                      1775,
+                      0
+                    ],
+                    "node": 1775,
+                    "page": [
+                      1,
+                      0,
+                      4,
+                      0
+                    ],
+                    "sphere": [
+                      -0.3000001907348633,
+                      1.8000001907348633,
+                      0.5999999046325684,
+                      6.878459930419922
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      6.55078649520874,
+                      2.939387798309326,
+                      24.0,
+                      24.0
+                    ],
+                    "links": [
+                      1843,
+                      1913,
+                      1842,
+                      0
+                    ],
+                    "node": 1842,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.2999997138977051,
+                      1.8000001907348633,
+                      0.5999999046325684,
+                      6.259670257568359
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 70245,
+                "selected": {
+                  "error_and_splat_cost": [
+                    1.881354570388794,
+                    0.5817538499832153,
+                    37.0,
+                    37.0
+                  ],
+                  "links": [
+                    1775,
+                    1913,
+                    1774,
+                    0
+                  ],
+                  "node": 1774,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    0.9000000953674316,
+                    1.8000001907348633,
+                    0.5999999046325684,
+                    8.078460693359375
+                  ]
+                }
+              },
+              "diameter_px": 19.59280776977539,
+              "packed_cell": 1051650,
+              "volume": 3177,
+              "world_cell_size": 0.6637064814567566,
+              "world_centre": [
+                -2.6953415870666504,
+                1.2531940937042236,
+                -25.574766159057617
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    23,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    40,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    55,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  3,
+                  1,
+                  1,
+                  384
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      6.571015357971191,
+                      0.9797959327697754,
+                      30.0,
+                      30.0
+                    ],
+                    "links": [
+                      1639,
+                      1705,
+                      1638,
+                      0
+                    ],
+                    "node": 1638,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.5999999046325684,
+                      1.8000001907348633,
+                      0.5999999046325684,
+                      7.802012920379639
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      6.561483383178711,
+                      2.5455844402313232,
+                      25.0,
+                      25.0
+                    ],
+                    "links": [
+                      1706,
+                      1772,
+                      1705,
+                      0
+                    ],
+                    "node": 1705,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      1.5,
+                      0.9000000953674316,
+                      -0.3000001907348633,
+                      5.912016868591309
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 70245,
+                "selected": {
+                  "error_and_splat_cost": [
+                    1.8944780826568604,
+                    0.6429910659790039,
+                    40.0,
+                    40.0
+                  ],
+                  "links": [
+                    1638,
+                    1772,
+                    1637,
+                    0
+                  ],
+                  "node": 1637,
+                  "page": [
+                    1,
+                    0,
+                    3,
+                    0
+                  ],
+                  "sphere": [
+                    0.5999999046325684,
+                    1.8000001907348633,
+                    0.5999999046325684,
+                    7.802012920379639
+                  ]
+                }
+              },
+              "diameter_px": 19.46230125427246,
+              "packed_cell": 3146755,
+              "volume": 3176,
+              "world_cell_size": 0.6637064814567566,
+              "world_centre": [
+                -2.512889862060547,
+                -0.07421901822090149,
+                -25.85196304321289
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "final_budget_proposal_replay": {
+                  "control": [
+                    24,
+                    1,
+                    2,
+                    0
+                  ],
+                  "old": [
+                    1,
+                    238,
+                    0,
+                    0
+                  ],
+                  "replacement": [
+                    2,
+                    271,
+                    0,
+                    0
+                  ],
+                  "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+                },
+                "generation": 1,
+                "history": [
+                  4,
+                  1,
+                  1,
+                  256
+                ],
+                "immediate_children": [
+                  {
+                    "error_and_splat_cost": [
+                      6.918023109436035,
+                      4.409081935882568,
+                      128.0,
+                      128.0
+                    ],
+                    "links": [
+                      606,
+                      651,
+                      605,
+                      0
+                    ],
+                    "node": 605,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.6000006198883057,
+                      12.0,
+                      -0.5999999046325684,
+                      8.958806991577148
+                    ]
+                  },
+                  {
+                    "error_and_splat_cost": [
+                      6.964247703552246,
+                      4.409081935882568,
+                      143.0,
+                      143.0
+                    ],
+                    "links": [
+                      652,
+                      704,
+                      651,
+                      0
+                    ],
+                    "node": 651,
+                    "page": [
+                      1,
+                      0,
+                      3,
+                      0
+                    ],
+                    "sphere": [
+                      0.6000006198883057,
+                      12.0,
+                      0.9000000953674316,
+                      8.74455451965332
+                    ]
+                  }
+                ],
+                "kind": "articulated_slot",
+                "root": 33574,
+                "selected": {
+                  "error_and_splat_cost": [
+                    2.287710666656494,
+                    1.102270483970642,
+                    238.0,
+                    238.0
+                  ],
+                  "links": [
+                    605,
+                    704,
+                    604,
+                    0
+                  ],
+                  "node": 604,
+                  "page": [
+                    1,
+                    0,
+                    4,
+                    0
+                  ],
+                  "sphere": [
+                    0.6000003814697266,
+                    12.0,
+                    0.6000003814697266,
+                    10.158807754516602
+                  ]
+                }
+              },
+              "diameter_px": 19.452232360839844,
+              "packed_cell": 6293505,
+              "volume": 329,
+              "world_cell_size": 0.5855696797370911,
+              "world_centre": [
+                1.6517176628112793,
+                10.318472862243652,
+                -26.02865219116211
+              ]
+            }
+          ],
+          "missing_records": 0,
+          "near_plane_crossings": 0,
+          "requested_splats": 1453787,
+          "scope": "stored records only; screen-aligned diameter excludes sub-cell jitter; explicit offline readback",
+          "stored_splats": 1453787,
+          "unique_stored_volumes": 40612,
+          "viewport": [
+            1280,
+            720
+          ],
+          "whole_root_bins": [
+            271452,
+            618966,
+            434131,
+            100591,
+            23050,
+            4299,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "forest": {
+        "trees": 302116,
+        "active_roots": 151058,
+        "branch_capacity": 4096,
+        "selected_records": 393,
+        "tested_nodes": 331870,
+        "source_slots": 260,
+        "voxel_slots": 133,
+        "shadow_voxel_slots": 0,
+        "direct_roots": 117755,
+        "fallback_trees": 0,
+        "retained": 292,
+        "assigned": 101,
+        "slot_failures": 0,
+        "hash_failures": 0,
+        "frontier_overflow_requests": 0,
+        "peak_frontier_requests": 118235,
+        "reserved_raster_splats": [
+          4193670,
+          4187234
+        ],
+        "refinement_budget_stops": 352957,
+        "refinement_faults": 0,
+        "reused_refinement_proposals": 293850,
+        "dormant_records": 118545,
+        "dormant_wakes": 293850,
+        "dormant_wake_passes": 8,
+        "dormant_park_events": 411735,
+        "dormant_overflows": 0,
+        "selected_spatial_error_pixels": [
+          12467.913,
+          12467.913
+        ],
+        "selected_error_target_ratio": [
+          30493.627,
+          30493.627
+        ],
+        "selected_over_target": [
+          103403,
+          41944
+        ],
+        "error_unknown_proxies": 0,
+        "error_unmatched_direct": 0,
+        "error_forced_nodes": 14485,
+        "pose_requests": 253,
+        "evaluated_shared_poses": 253,
+        "pose_hash_failures": 0,
+        "camera_roots": 42186,
+        "shadow_only_roots": 52726,
+        "camera_fallback_roots": 0,
+        "shadow_only_fallback_roots": 0,
+        "camera_refinement_limits": {
+          "over_target": 41944,
+          "branch_slots": 0,
+          "camera_splats": 7707,
+          "shadow_splats": 0,
+          "missing_pages": 2,
+          "no_children": 0,
+          "affordable_resident": 34235
+        },
+        "selected_source_consumers": {
+          "outside": 0,
+          "camera_only": 260,
+          "shadow_only": 0,
+          "both": 0
+        },
+        "selected_voxel_consumers": {
+          "outside": 0,
+          "camera_only": 133,
+          "shadow_only": 0,
+          "both": 0
+        },
+        "selected_direct_consumers": {
+          "outside": 0,
+          "camera_only": 41811,
+          "shadow_only": 75944,
+          "both": 0
+        },
+        "camera_published_branches": 393,
+        "shadow_only_published_branches": 0
+      },
+      "quality_result": "Error: \"PIXEL VEGETATION QUALITY FAILED: view 0: largest submitted cell 21.308px, missing 0, near-plane crossings 0; camera over-target 41944, refinement faults 0, camera fallbacks 0\""
+    },
+    "trees": {
+      "raster": [
+        {
+          "articulated_group_bins": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            2,
+            0,
+            0,
+            0,
+            0
+          ],
+          "capacity": 4194304,
+          "diameter_bin_upper_px": [
+            0.5,
+            1.0,
+            2.0,
+            4.0,
+            8.0,
+            16.0,
+            32.0,
+            64.0,
+            128.0,
+            null
+          ],
+          "largest_submitted_cells": [
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 153.62149047851562,
+              "packed_cell": 6297605,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                0.9794336557388306,
+                6.707315444946289,
+                -10.919561386108398
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 153.53594970703125,
+              "packed_cell": 6300677,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                0.9794336557388306,
+                10.4443941116333,
+                -10.919561386108398
+              ]
+            },
+            {
+              "alpha": 0.6113985180854797,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 135.16676330566406,
+              "packed_cell": 6297604,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                0.738372802734375,
+                6.707315444946289,
+                -12.141707420349121
+              ]
+            },
+            {
+              "alpha": 0.5135270953178406,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 123.89485931396484,
+              "packed_cell": 6296580,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                0.738372802734375,
+                5.461622714996338,
+                -12.141707420349121
+              ]
+            },
+            {
+              "alpha": 0.6396276950836182,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 123.80838775634766,
+              "packed_cell": 5249027,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                1.7194573879241943,
+                6.707315444946289,
+                -13.604913711547852
+              ]
+            },
+            {
+              "alpha": 0.6796826124191284,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 118.33746337890625,
+              "packed_cell": 6297603,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                0.497312068939209,
+                6.707315444946289,
+                -13.363853454589844
+              ]
+            },
+            {
+              "alpha": 0.5530022382736206,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 115.13497924804688,
+              "packed_cell": 5248003,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                1.7194573879241943,
+                5.461622714996338,
+                -13.604913711547852
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 112.38459777832031,
+              "packed_cell": 7346180,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                -0.48377275466918945,
+                6.707315444946289,
+                -11.900647163391113
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 112.36927795410156,
+              "packed_cell": 7347204,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                -0.48377275466918945,
+                7.953008651733398,
+                -11.900647163391113
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 112.3387451171875,
+              "packed_cell": 7349252,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                -0.48377275466918945,
+                10.4443941116333,
+                -11.900647163391113
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 109.45025634765625,
+              "packed_cell": 5250051,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                1.7194573879241943,
+                7.953008651733398,
+                -13.604913711547852
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 109.43574523925781,
+              "packed_cell": 5251075,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                1.7194573879241943,
+                9.198701858520508,
+                -13.604913711547852
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 109.4213638305664,
+              "packed_cell": 5252099,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                1.7194573879241943,
+                10.4443941116333,
+                -13.604913711547852
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 109.40687561035156,
+              "packed_cell": 5253123,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                1.7194573879241943,
+                11.690086364746094,
+                -13.604913711547852
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 101.48543548583984,
+              "packed_cell": 6298627,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                0.497312068939209,
+                7.953008651733398,
+                -13.363853454589844
+              ]
+            },
+            {
+              "alpha": 0.5000076293945312,
+              "cut_owner": {
+                "attribution": "not yet decoded",
+                "kind": "whole_root"
+              },
+              "diameter_px": 101.47296905517578,
+              "packed_cell": 6299651,
+              "volume": 37979,
+              "world_cell_size": 1.2456927299499512,
+              "world_centre": [
+                0.497312068939209,
+                9.198701858520508,
+                -13.363853454589844
+              ]
+            }
+          ],
+          "missing_records": 0,
+          "near_plane_crossings": 0,
+          "requested_splats": 1452925,
+          "scope": "stored records only; screen-aligned diameter excludes sub-cell jitter; explicit offline readback",
+          "stored_splats": 1452925,
+          "unique_stored_volumes": 19441,
+          "viewport": [
+            1280,
+            720
+          ],
+          "whole_root_bins": [
+            697179,
+            619930,
+            101197,
+            26988,
+            6189,
+            940,
+            187,
+            282,
+            28,
+            3
+          ]
+        }
+      ],
+      "forest": {
+        "trees": 142224,
+        "active_roots": 71112,
+        "branch_capacity": 4096,
+        "selected_records": 4096,
+        "tested_nodes": 73855,
+        "source_slots": 0,
+        "voxel_slots": 3,
+        "shadow_voxel_slots": 4089,
+        "direct_roots": 20327,
+        "fallback_trees": 0,
+        "retained": 4065,
+        "assigned": 28,
+        "slot_failures": 0,
+        "hash_failures": 0,
+        "frontier_overflow_requests": 0,
+        "peak_frontier_requests": 22466,
+        "reserved_raster_splats": [
+          4194297,
+          1730889
+        ],
+        "refinement_budget_stops": 29317,
+        "refinement_faults": 0,
+        "reused_refinement_proposals": 7529,
+        "dormant_records": 26606,
+        "dormant_wakes": 7529,
+        "dormant_wake_passes": 4,
+        "dormant_park_events": 31948,
+        "dormant_overflows": 0,
+        "selected_spatial_error_pixels": [
+          1e+30,
+          1e+30
+        ],
+        "selected_error_target_ratio": [
+          1e+30,
+          1e+30
+        ],
+        "selected_over_target": [
+          24419,
+          19782
+        ],
+        "error_unknown_proxies": 0,
+        "error_unmatched_direct": 0,
+        "error_forced_nodes": 0,
+        "pose_requests": 0,
+        "evaluated_shared_poses": 0,
+        "pose_hash_failures": 0,
+        "camera_roots": 19781,
+        "shadow_only_roots": 1729,
+        "camera_fallback_roots": 0,
+        "shadow_only_fallback_roots": 0,
+        "camera_refinement_limits": {
+          "over_target": 19782,
+          "branch_slots": 4,
+          "camera_splats": 19782,
+          "shadow_splats": 0,
+          "missing_pages": 0,
+          "no_children": 0,
+          "affordable_resident": 0
+        },
+        "selected_source_consumers": {
+          "outside": 0,
+          "camera_only": 0,
+          "shadow_only": 4,
+          "both": 0
+        },
+        "selected_voxel_consumers": {
+          "outside": 0,
+          "camera_only": 3,
+          "shadow_only": 4089,
+          "both": 0
+        },
+        "selected_direct_consumers": {
+          "outside": 0,
+          "camera_only": 19779,
+          "shadow_only": 548,
+          "both": 0
+        },
+        "camera_published_branches": 3,
+        "shadow_only_published_branches": 2347
+      },
+      "quality_result": "Error: \"PIXEL VEGETATION QUALITY FAILED: view 0: largest submitted cell 153.621px, missing 0, near-plane crossings 0; camera over-target 19782, refinement faults 0, camera fallbacks 0\""
+    },
+    "near": {
+      "raster": [
+        {
+          "articulated_group_bins": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "capacity": 1180856,
+          "diameter_bin_upper_px": [
+            0.5,
+            1.0,
+            2.0,
+            4.0,
+            8.0,
+            16.0,
+            32.0,
+            64.0,
+            128.0,
+            null
+          ],
+          "largest_submitted_cells": [],
+          "missing_records": 0,
+          "near_plane_crossings": 0,
+          "requested_splats": 0,
+          "scope": "stored records only; screen-aligned diameter excludes sub-cell jitter; explicit offline readback",
+          "stored_splats": 0,
+          "unique_stored_volumes": 0,
+          "viewport": [
+            1280,
+            720
+          ],
+          "whole_root_bins": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "forest": {
+        "trees": 16384,
+        "active_roots": 2,
+        "branch_capacity": 128,
+        "selected_records": 128,
+        "tested_nodes": 174,
+        "source_slots": 58,
+        "voxel_slots": 0,
+        "shadow_voxel_slots": 69,
+        "direct_roots": 0,
+        "fallback_trees": 0,
+        "retained": 123,
+        "assigned": 2,
+        "slot_failures": 0,
+        "hash_failures": 0,
+        "frontier_overflow_requests": 0,
+        "peak_frontier_requests": 38,
+        "reserved_raster_splats": [
+          0,
+          7100
+        ],
+        "refinement_budget_stops": 32,
+        "refinement_faults": 0,
+        "reused_refinement_proposals": 2,
+        "dormant_records": 34,
+        "dormant_wakes": 2,
+        "dormant_wake_passes": 2,
+        "dormant_park_events": 34,
+        "dormant_overflows": 0,
+        "selected_spatial_error_pixels": [
+          243.66481,
+          0.0
+        ],
+        "selected_error_target_ratio": [
+          259.47314,
+          0.0
+        ],
+        "selected_over_target": [
+          32,
+          0
+        ],
+        "error_unknown_proxies": 0,
+        "error_unmatched_direct": 0,
+        "error_forced_nodes": 0,
+        "pose_requests": 94,
+        "evaluated_shared_poses": 94,
+        "pose_hash_failures": 0,
+        "camera_roots": 2,
+        "shadow_only_roots": 0,
+        "camera_fallback_roots": 0,
+        "shadow_only_fallback_roots": 0,
+        "camera_refinement_limits": {
+          "over_target": 0,
+          "branch_slots": 0,
+          "camera_splats": 0,
+          "shadow_splats": 0,
+          "missing_pages": 0,
+          "no_children": 0,
+          "affordable_resident": 0
+        },
+        "selected_source_consumers": {
+          "outside": 0,
+          "camera_only": 58,
+          "shadow_only": 38,
+          "both": 0
+        },
+        "selected_voxel_consumers": {
+          "outside": 0,
+          "camera_only": 0,
+          "shadow_only": 32,
+          "both": 0
+        },
+        "selected_direct_consumers": {
+          "outside": 0,
+          "camera_only": 0,
+          "shadow_only": 0,
+          "both": 0
+        },
+        "camera_published_branches": 58,
+        "shadow_only_published_branches": 0
+      },
+      "quality_result": "PIXEL VEGETATION QUALITY PASS (final-frame submitted-cell check only)"
+    }
+  }
+}

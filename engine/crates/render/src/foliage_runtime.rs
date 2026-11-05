@@ -378,7 +378,7 @@ impl Runtime {
         crate::shaders::checked(gpu,|| {
             let upload=|label,data:&[u8]|gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some(label),contents:data,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST});
             let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest pose state"),size:32,usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
-            let choices=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest shared representation choices"),size:131072,
+            let choices=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest shared representation choices"),size:u64::from(spec.slots)*8,
                 usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
             let root_history=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest root representation history"),size:spec.roots.len()as u64*32,usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false});
             let branches=upload("shared forest branch rigs",bytemuck::cast_slice(&cooked_branches));
@@ -482,8 +482,10 @@ impl Runtime {
         }}}
         Ok(())
     }
+    /// Bytes in one consumer-class choice table; camera then shadow.
+    pub(crate) fn choice_table_bytes(&self)->u64 {u64::from(self.slots)*4}
     pub fn diagnostics(&self,gpu:&Gpu)->Result<Diagnostics,String> {
-        let inputs=[(&self.selector.counters,64u64),(&self.residency.counters,32),(&self.selector.fallback,self.trees as u64*4),(&self.choices,131072),(&self.pose_work,268),(&self.selector.demand,self.trees as u64*32),(&self.selector.refiner.state,256)];
+        let inputs=[(&self.selector.counters,64u64),(&self.residency.counters,32),(&self.selector.fallback,self.trees as u64*4),(&self.choices,self.choices.size()),(&self.pose_work,268),(&self.selector.demand,self.trees as u64*32),(&self.selector.refiner.state,256)];
         let size=inputs.iter().map(|(_,n)|n).sum();
         let output=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("forest diagnostic snapshot"),size,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
         let mut enc=gpu.device.create_command_encoder(&Default::default());let mut offset=0;
@@ -496,8 +498,8 @@ impl Runtime {
         let bytes=output.slice(..).get_mapped_range().map_err(|e|e.to_string())?;
         let words:Vec<u32>=bytes.chunks_exact(4).map(bytemuck::pod_read_unaligned).collect();
         let c=&words[..16];let r=&words[16..24];let fallback=&words[24..24+self.trees as usize];
-        let choices=&words[24+self.trees as usize..24+self.trees as usize+32768];
-        let pose_start=24+self.trees as usize+32768;let poses=&words[pose_start..pose_start+67];
+        let choices=&words[24+self.trees as usize..24+self.trees as usize+2*self.slots as usize];
+        let pose_start=24+self.trees as usize+2*self.slots as usize;let poses=&words[pose_start..pose_start+67];
         let demand=&words[pose_start+67..pose_start+67+self.trees as usize*8];
         let refinement=&words[pose_start+67+self.trees as usize*8..];
         let (mut camera_roots,mut shadow_only_roots,mut camera_fallback_roots,mut shadow_only_fallback_roots)=(0,0,0,0);
@@ -507,7 +509,7 @@ impl Runtime {
             else if d[1]&512!=0 {shadow_only_roots+=1;shadow_only_published_branches+=demand[(self.trees as usize+i)*4]as u64;shadow_only_fallback_roots+=u32::from(fallback&(512|7)!=0);}
         }
         let voxels=choices[..self.slots as usize].iter().filter(|w|**w&3==1).count()as u32;
-        let shadow_voxel_slots=choices[16384..16384+self.slots as usize].iter().filter(|w|**w&3==1).count()as u32;
+        let shadow_voxel_slots=choices[self.slots as usize..2*self.slots as usize].iter().filter(|w|**w&3==1).count()as u32;
         let camera_disabled=choices[..self.slots as usize].iter().filter(|w|**w&3==3).count()as u32;
         Ok(Diagnostics {camera_refinement_limits:CameraRefinementLimits {over_target:refinement[48],branch_slots:refinement[49],camera_splats:refinement[50],shadow_splats:refinement[51],missing_pages:refinement[52],no_children:refinement[53],affordable_resident:refinement[54]},selected_source_consumers:ConsumerCounts::from_words(&refinement[32..36]),selected_voxel_consumers:ConsumerCounts::from_words(&refinement[36..40]),selected_direct_consumers:ConsumerCounts::from_words(&refinement[40..44]),selected_spatial_error_pixels:[f32::from_bits(refinement[19]),f32::from_bits(refinement[20])],selected_error_target_ratio:[f32::from_bits(refinement[21]),f32::from_bits(refinement[22])],selected_over_target:[refinement[23],refinement[24]],error_unknown_proxies:refinement[25],error_unmatched_direct:refinement[26],error_forced_nodes:refinement[27],reserved_raster_splats:[refinement[1],refinement[2]],refinement_budget_stops:refinement[17],refinement_faults:refinement[15],reused_refinement_proposals:refinement[28],dormant_records:refinement[29],dormant_wakes:refinement[60],dormant_wake_passes:refinement[62],dormant_park_events:refinement[61],dormant_overflows:refinement[63],camera_roots,shadow_only_roots,camera_fallback_roots,shadow_only_fallback_roots,camera_published_branches,shadow_only_published_branches,trees:self.trees,active_roots:self.population.lock().unwrap().active(),branch_capacity:self.slots,selected_records:c[0],tested_nodes:c[4],source_slots:r[6].saturating_sub(voxels+camera_disabled),voxel_slots:voxels,shadow_voxel_slots,direct_roots:c[7],
             fallback_trees:fallback.iter().filter(|f|**f!=0).count()as u32,retained:r[2],assigned:r[3],slot_failures:r[4],hash_failures:r[5],frontier_overflow_requests:c[11],peak_frontier_requests:c[15],pose_hash_failures:poses[64],pose_requests:poses[65],evaluated_shared_poses:poses[66]})
@@ -804,11 +806,11 @@ impl Runtime {
             let slot_bytes=read(&runtime.residency.slots);let slots:&[crate::foliage_residency::ResidentSlot]=bytemuck::cast_slice(&slot_bytes);
             let volume_bytes=read(&volumes);let rendered:&[GpuTree]=bytemuck::cast_slice(&volume_bytes);
             let source_bytes=read(&instances);let sources:&[GpuInstance]=bytemuck::cast_slice(&source_bytes);
-            let choice_bytes=read(&runtime.choices);let choices:&[u32]=bytemuck::cast_slice(&choice_bytes);
+            let choice_bytes=read(&runtime.choices);let choices:&[u32]=bytemuck::cast_slice(&choice_bytes);assert_eq!(choices.len(),2*spec.slots as usize);
             let mut found=0;
             for (i,slot) in slots.iter().enumerate().filter(|(_,s)|s.history[2]!=0) {
                 assert_eq!(slot.history[3]&768,roles);
-                assert_eq!(choices[i]&3==3,roles&256==0);assert_eq!(choices[i+16384]&3==3,roles&512==0);
+                assert_eq!(choices[i]&3==3,roles&256==0);assert_eq!(choices[i+spec.slots as usize]&3==3,roles&512==0);
                 assert_eq!(choices[i]&1024!=0,roles&256==0);assert_eq!(choices[i]&2048!=0,roles&512==0);
                 assert_eq!(sources[spec.first_owner as usize+i].flags&768,0,"consumer roles must not leak into source flags");
                 let rep=spec.representations[slot.key[2]as usize];if rep[3]==0 {continue;}

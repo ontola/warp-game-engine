@@ -47,9 +47,9 @@ impl Damage {
         if total==0 || total.div_ceil(64)>u64::from(gpu.limits.max_compute_workgroups_per_dimension)
             || total*128>u64::from(gpu.limits.max_storage_buffer_binding_size)
             || u64::from(counts[0])*80>sources.size() || u64::from(counts[1])*96>volumes.size()
-            || counts[2]>16384 || counts[2]>counts[1]
+            || counts[2]>counts[1]
             || counts[3].checked_add(counts[2]).is_none_or(|end|end>counts[0])
-            || (counts[2]>0 && (16384+u64::from(counts[2]))*4>choices.size()) {
+            || (counts[2]>0 && u64::from(counts[2])*8>choices.size()) {
             return Err("shadow damage capacity or caster bindings invalid".into());
         }
         crate::shaders::checked(gpu,|| {
@@ -155,8 +155,8 @@ impl Damage {
         let upload=|data:&[u8]|gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("damage fixture"),contents:data,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST});
         let mut source=crate::scene::GpuInstance::zeroed();source.sphere=[-0.5,0.,0.5,0.04];source.cluster_count=1;
         let mut volume=crate::foliage_volume_data::GpuTree::zeroed();volume.bounds_min=[0.45,-0.04,0.45,0.];volume.bounds_max=[0.55,0.04,0.55,0.];volume.meta[2]=1;
-        let sources=upload(bytemuck::bytes_of(&source));let volumes=upload(bytemuck::bytes_of(&volume));let choices=upload(&[0;4]);
-        let mut damage=Damage::new(&gpu,&sources,&volumes,&choices,[1,1,0,0]).unwrap();
+        let sources=upload(bytemuck::bytes_of(&source));let volumes=upload(bytemuck::bytes_of(&volume));let choices=upload(&[0;8]);
+        let mut damage=Damage::new(&gpu,&sources,&volumes,&choices,[1,1,1,0]).unwrap();
         let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("damage read"),size:MASK_BYTES,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
         let depth=gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("damage depth oracle"),size:wgpu::Extent3d {width:64,height:64,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Depth32Float,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[]});
         let depth_view=depth.create_view(&Default::default());
@@ -175,6 +175,11 @@ impl Damage {
         };
         let dirty=|mask:&[u32],x:u32,y:u32|mask[((y*64+x)>>5)as usize]&(1<<((y*64+x)&31))!=0;
         assert!(run(Mat4::IDENTITY,1).iter().all(|&w|w==u32::MAX));
+        assert!(run(Mat4::IDENTITY,1).iter().all(|&w|w==0));
+        gpu.queue.write_buffer(&choices,0,bytemuck::bytes_of(&1u32));
+        assert!(run(Mat4::IDENTITY,1).iter().all(|&w|w==0),"camera choice must not damage shadow tiles");
+        gpu.queue.write_buffer(&choices,4,bytemuck::bytes_of(&1u32));
+        let mask=run(Mat4::IDENTITY,1);assert!(dirty(&mask,16,32)&&dirty(&mask,48,32),"shadow choice uses actual one-slot stride");
         assert!(run(Mat4::IDENTITY,1).iter().all(|&w|w==0));
         source.sphere[0]=0.;gpu.queue.write_buffer(&sources,0,bytemuck::bytes_of(&source));
         let mask=run(Mat4::IDENTITY,1);assert!(dirty(&mask,16,32)&&dirty(&mask,32,32));assert!(!dirty(&mask,48,32));

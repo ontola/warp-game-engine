@@ -11,6 +11,33 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+## 5 November: allocation-sized producer choice tables
+
+GPU materialization, camera/shadow transfers, offline diagnostics and animated
+shadow damage now derive their consumer-class stride from the actual slot count.
+Removed fixed16384/32768/131072 producer addressing; choices allocate8*slots bytes.
+The shadow damage bounds check likewise validates the actual two-table size.
+A one-slot GPU oracle verifies camera changes leave shadow tiles alone and shadow
+changes dirty the right tiles; runtime fixtures check exact two-table extent.
+154 foliage and6 shadow_damage tests pass; release build and normal captures pass.
+Trees-only normal image is pixel-identical outside HUD to the previous baseline.
+Its pixel-quality check still FAILS at153.62px. Trees+grass separately FAIL at21.31px.
+A two-root close fixture with128slots passes camera pixel quality; it uses a different
+budget than the earlier16384-slot fixture and is not an image equivalence claim.
+
+Correction: the earlier pixel-policy-full capture omitted grass; it has71112roots.
+The new trees+grass capture has151058roots. Keep these populations distinct.
+Evidence: vegetation-choice-stride-measurements.json; original report annotated.
+
+This removes a producer assumption, NOT the publication limit itself. Per-view
+cull/raster/voxel consumers still use64KiB uniform choice tables and retain the
+16384 checked limit. Next: migrate those consumers to dynamically sized storage.
+Cull already uses16 storage bindings: consolidate traversal counters with its
+existing counter buffer before adding the choice storage binding. Preserve current
+indirect arguments, raw diagnostics and shadow-demand ownership. Then test tables
+beyond16384 and revisit full-scene correctness, without relaxing1px policy.
+No architecture gate closed, no frame-time gain claimed, no playtest opened.
+
 ## 5 November: correctness-first pixel policy and explicit failure
 
 User priority: establish pixel-scale voxel correctness before optimizing speed.
