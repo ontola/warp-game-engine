@@ -102,7 +102,7 @@ amplified difference between the shot with and without bare plots shows all
 forest behind it before it is selected and drawn (frame.rs, "foliage seed";
 cull.wgsl `OCCLUDERS_ONLY`), whatever its category. Excluded are the Trees
 and Grass categories, cutout, blended, grass and thin foliage materials, and
-instances that deform (wind, skinning, debris) or are hidden from some
+instances that deform (wind, skinning) or are hidden from some
 camera. The buildings are tagged `Structures`, but only as a label.
 `--no-building-occlusion` (`KERN_FOLIAGE_OCCLUDERS=terrain`) lets only the
 land occlude, to compare.
