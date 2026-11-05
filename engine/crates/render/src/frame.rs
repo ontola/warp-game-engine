@@ -820,6 +820,10 @@ pub struct Renderer {
     early_grass_cull: bool,
     raster: wgpu::RenderPipeline,
     raster_depth: wgpu::RenderPipeline,
+    /// Opaque twins of the pipelines above (no `discard`), when cull splits
+    /// opaque from masked clusters (`RASTER_SPLIT`). Order: colour, depth,
+    /// sun receiver plane depth, far sun depth.
+    raster_opaque: Option<[Option<wgpu::RenderPipeline>;4]>,
     /// Opt-in sun receiver-plane experiment; headlights retain their old bias.
     raster_sun_depth: Option<wgpu::RenderPipeline>,
     raster_cached_sun:Option<wgpu::RenderPipeline>,
@@ -945,6 +949,10 @@ pub struct Renderer {
 
 #[derive(Clone, Copy)]
 enum RasterPass { Color, Sun, SunStatic(u32), SunDynamic(u32), FarSun, FoliagePage, Headlight }
+
+/// Cull draw records: four opaque (or all) draws and their starts, then
+/// four masked draws and their starts (cull.wgsl `args`).
+const ARGS_BYTES: u64 = 40 * 4;
 
 fn raster_bucket_order(bucketed:bool,large_first:bool,kind:RasterPass)->&'static [u64] {
     if !bucketed {return &[0];}
@@ -1757,8 +1765,6 @@ impl Renderer {
         let early_grass_cull = std::env::var("KERN_EARLY_GRASS_CULL").as_deref() != Ok("0");
         let far_trees = if scene.voxel_forest.is_some() { f64::from(scene.voxel_far_distance_m) } else { 0.0 };
         let small_cluster_triangles=if simple_cull {12}else{8};
-        let cull_constants = [("SMALL_CLUSTER_TRIANGLES",small_cluster_triangles as f64),("INSTANCE_COUNT",scene.instances.len() as f64),("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64),
-                              ("EARLY_GRASS_CULL", u8::from(early_grass_cull) as f64), ("VOXEL_FAR_M", far_trees)];
         // Quest Adreno drivers silently drop indirect draws. Plain mesh scenes
         // can use a conservative direct draw with GPU-side count rejection.
         let adreno=cfg!(target_os="android") && gpu.info.backend==wgpu::Backend::Vulkan && gpu.info.vendor==0x5143;
@@ -1766,6 +1772,12 @@ impl Renderer {
         let minimal_forward=(scene.graphics.minimal_forward && plain_meshes && scene.skinning.actors.is_empty()
             && scene.debris.is_none_or(|d|d.capacity==0)).then(||std::sync::Mutex::new(crate::forward::Forward::new(gpu,scene,&materials)));
         let direct_bounds=bounded_draws.then(||std::sync::Mutex::new(crate::direct_draw::Bounds::new(scene,small_cluster_triangles)));
+        // Opaque clusters skip the `discard` pipeline (early depth). Off with
+        // a game mask, which may cut any material, and for bounded draws.
+        let raster_split=cluster_buckets && !bounded_draws && !crate::shaders::has_game_mask()
+            && std::env::var("KERN_RASTER_SPLIT").as_deref()!=Ok("0");
+        let cull_constants = [("SMALL_CLUSTER_TRIANGLES",small_cluster_triangles as f64),("INSTANCE_COUNT",scene.instances.len() as f64),("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64),
+                              ("EARLY_GRASS_CULL", u8::from(early_grass_cull) as f64), ("VOXEL_FAR_M", far_trees), ("RASTER_SPLIT", u8::from(raster_split) as f64)];
         let raster_constants = [("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64), ("VOXEL_FAR_M", far_trees), ("DIRECT_BOUNDED",u8::from(bounded_draws)as f64)];
         let cull_compute = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some(entry), layout: Some(&cull_pl), module: &cull_mod, entry_point: Some(entry),
@@ -1802,10 +1814,10 @@ impl Renderer {
         let raster_pl = pl(&[&scene_layout, &view_raster_layout]);
         let shadow_mask_layout=crate::shadow_damage::mask_layout(gpu);
         let cached_raster_pl=pl(&[&scene_layout,&view_raster_layout,&shadow_mask_layout]);
-        let raster_pipe = |color: bool, sun_receiver_plane: bool, cached:bool| {
+        let raster_pipe_with = |color: bool, sun_receiver_plane: bool, cached:bool, opaque:bool| {
             let targets = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Uint, blend: None, write_mask: wgpu::ColorWrites::ALL })];
             gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(if color { "raster" } else { "raster depth" }),
+                label: Some(match (color,opaque) {(true,false)=>"raster",(true,true)=>"raster opaque",(false,false)=>"raster depth",(false,true)=>"raster depth opaque"}),
                 layout: Some(if cached {&cached_raster_pl}else{&raster_pl}),
                 vertex: wgpu::VertexState { module: &raster_mod, entry_point: Some("vs"), compilation_options: wgpu::PipelineCompilationOptions { constants: &raster_constants, ..Default::default() }, buffers: &[] },
                 primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
@@ -1818,9 +1830,10 @@ impl Renderer {
                     bias: if color { Default::default() } else { wgpu::DepthBiasState { constant: 2, slope_scale: if sun_receiver_plane { 0.0 } else { 2.0 }, clamp: 0.0 } },
                 }),
                 multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
+                // Opaque depth needs no fragment stage at all.
+                fragment: (color || !opaque).then(|| wgpu::FragmentState {
                     module: &raster_mod,
-                    entry_point: Some(if color { "fs" } else if cached {"fs_cached_depth"} else { "fs_depth" }),
+                    entry_point: Some(if color && opaque {"fs_opaque"} else if color { "fs" } else if cached {"fs_cached_depth"} else { "fs_depth" }),
                     compilation_options: wgpu::PipelineCompilationOptions {constants:if cached {&[("SHADOW_TILE_PIXELS",(SHADOW_SIZE/64)as f64)]}else{&[]},..Default::default()},
                     targets: if color { &targets } else { &[] },
                 }),
@@ -1828,12 +1841,16 @@ impl Renderer {
                 cache: gpu.pipeline_cache(),
             })
         };
+        let raster_pipe = |color: bool, sun_receiver_plane: bool, cached:bool| raster_pipe_with(color,sun_receiver_plane,cached,false);
         let raster = raster_pipe(true, false,false);
         let raster_depth = raster_pipe(false, false,false);
         let raster_sun_depth = (std::env::var("KERN_SUN_RECEIVER_PLANE").as_deref() == Ok("1"))
             .then(|| raster_pipe(false, true,false));
         let raster_far_sun_depth=(far_sun.enabled || foliage_sun_pages.enabled).then(||raster_pipe(false,true,false));
         let raster_cached_sun=gpu_forest.as_ref().map(|_|raster_pipe(false,raster_sun_depth.is_some(),true));
+        // The cached sun keeps one pipeline: its tile mask discards either way.
+        let raster_opaque=raster_split.then(||[Some(raster_pipe_with(true,false,false,true)),Some(raster_pipe_with(false,false,false,true)),
+            raster_sun_depth.as_ref().map(|_|raster_pipe_with(false,true,false,true)),raster_far_sun_depth.as_ref().map(|_|raster_pipe_with(false,true,false,true))]);
         startup.mark("raster_shadow_pipelines");
         let sun_scene_bounds = (scene.gpu_forest.is_some() || std::env::var("KERN_SUN_SCENE_DEPTH").as_deref() == Ok("1"))
             .then(|| std::sync::Mutex::new(crate::stability::SunSceneBounds::from_scene(scene)));
@@ -2097,6 +2114,7 @@ impl Renderer {
             early_grass_cull,
             raster,
             raster_depth,
+            raster_opaque,
             raster_sun_depth,
             raster_cached_sun,shadow_damage:std::sync::Mutex::new(shadow_damage),legacy_shadow_wind,
             raster_far_sun_depth,
@@ -2381,7 +2399,7 @@ impl Renderer {
         let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: std::mem::size_of::<ViewUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let visible = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("visible"), size: (capacity as u64 + if camera && self.occlusion.history_first {self.occlusion.deferred_capacity as u64*3}else{0})*8, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let counter = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("counter"), size: crate::occlusion::COUNTER_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
-        let args = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("args"), size: 80, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let args = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("args"), size: ARGS_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         // Separate from writable storage args: indirect dispatch cannot alias a
         // storage-write binding in the same compute pass. No CPU readback.
         let instance_dispatch = ((camera && (self.compact_cull.is_some() || self.spatial_cull.is_some() || self.occlusion.history_first))
@@ -2411,7 +2429,10 @@ impl Renderer {
         let cull_scene_bind=match kind {RasterPass::FarSun=>&self.far_cull_scene_bind,RasterPass::FoliagePage=>&self.foliage_cull_scene_bind,_=>&self.cull_scene_bind};
         // Reset in command order without allocating upload staging. A tree's
         // appended phase must retain the preceding visible prefix and counters.
-        if phase_bind.is_none() || !append { enc.clear_buffer(&v.counter, 0, Some(crate::occlusion::PHASE_COUNTER_BYTES)); }
+        if phase_bind.is_none() || !append {
+            enc.clear_buffer(&v.counter, 0, Some(crate::occlusion::PHASE_COUNTER_BYTES));
+            enc.clear_buffer(&v.counter, crate::occlusion::SPLIT_COUNTER_OFFSET, Some(crate::occlusion::SPLIT_COUNTER_BYTES));
+        }
         let cull_bind=phase_bind.unwrap_or(&v.cull_bind);
         let tw = |ts: &mut u32| {
             self.query.as_ref().map(|(qs, _, _)| {
@@ -2509,9 +2530,9 @@ impl Renderer {
         }
         let bounds=self.direct_bounds.as_ref().map(|b|b.lock().unwrap().counts(self.cluster_buckets));
         let direct = if bounds.is_none() && std::env::var("KERN_DIRECT_DRAWS").as_deref() == Ok("1") {
-            let read = gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("direct draw arguments"),size:80,
+            let read = gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("direct draw arguments"),size:ARGS_BYTES,
                 usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
-            enc.copy_buffer_to_buffer(&v.args,0,&read,0,80);
+            enc.copy_buffer_to_buffer(&v.args,0,&read,0,ARGS_BYTES);
             let pending=std::mem::replace(enc,gpu.device.create_command_encoder(&Default::default()));
             gpu.queue.submit([pending.finish()]);
             read.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
@@ -2537,26 +2558,38 @@ impl Renderer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(if damage.is_some(){self.raster_cached_sun.as_ref().expect("GPU forest cached sun pipeline")}else{match kind {
+        let masked:&wgpu::RenderPipeline=if damage.is_some(){self.raster_cached_sun.as_ref().expect("GPU forest cached sun pipeline")}else{match kind {
             RasterPass::Color => &self.raster,
             RasterPass::Sun | RasterPass::SunStatic(_) | RasterPass::SunDynamic(_) => self.raster_sun_depth.as_ref().unwrap_or(&self.raster_depth),
             RasterPass::FarSun => self.raster_far_sun_depth.as_ref().expect("enabled far sun pipeline"),
             RasterPass::FoliagePage => self.raster_far_sun_depth.as_ref().expect("enabled foliage page pipeline"),
             RasterPass::Headlight => &self.raster_depth,
-        }});
+        }};
+        // With RASTER_SPLIT the opaque records (args words 0..19) draw first
+        // without `discard`, then the masked ones (words 20..39).
+        let opaque=self.raster_opaque.as_ref().map(|p|if damage.is_some() {None} else {match kind {
+            RasterPass::Color => p[0].as_ref(),
+            RasterPass::Sun | RasterPass::SunStatic(_) | RasterPass::SunDynamic(_) => if self.raster_sun_depth.is_some() {p[2].as_ref()} else {p[1].as_ref()},
+            RasterPass::FarSun | RasterPass::FoliagePage => p[3].as_ref(),
+            RasterPass::Headlight => p[1].as_ref(),
+        }}.unwrap_or(masked));
+        let halves:&[(u64,&wgpu::RenderPipeline)]=&match opaque {Some(o)=>vec![(0,o),(1,masked)],None=>vec![(0,masked)]};
         if let Some(mask)=damage {pass.set_bind_group(2,mask,&[]);}
         pass.set_bind_group(0, scene_bind, &[]);
         pass.set_bind_group(1, &v.raster_bind, &[]);
+        for &(half,pipeline) in halves {
+        pass.set_pipeline(pipeline);
         for &bucket in raster_bucket_order(self.cluster_buckets,self.raster_large_first,kind) {
             if let Some(bounds)=bounds {
                 let vertices=if self.cluster_buckets {[self.small_cluster_vertices,96,192,384][bucket as usize]}else{384};
                 let start=if self.cluster_buckets {bucket as u32*384}else{0};
                 pass.draw(start..start+vertices,0..bounds[bucket as usize]);
             } else if let Some(words)=&direct {
-                let at=bucket as usize*4;
+                let at=half as usize*20+bucket as usize*4;
                 pass.draw(words[at+2]..words[at+2]+words[at],words[at+3]..words[at+3]+words[at+1]);
-            }else{pass.draw_indirect(&v.args, bucket * 16);}
+            }else{pass.draw_indirect(&v.args, half*80+bucket * 16);}
 
+        }
         }
     }
 
@@ -2593,6 +2626,10 @@ impl Renderer {
         }
         Ok(())
     }
+
+    /// Whether opaque clusters draw through their own pipeline without
+    /// `discard` (on by default; KERN_RASTER_SPLIT=0 turns it off).
+    pub fn debug_raster_split(&self) -> bool { self.raster_opaque.is_some() }
 
     pub fn debug_options(&self) -> crate::debug_settings::DebugRenderOptions {
         *self.debug_options.lock().unwrap()
@@ -5624,7 +5661,7 @@ mod layout_tests {
                 for early in [0.0, 1.0] {
                     let mut constants = naga::back::PipelineConstants::default();
                     constants.insert("CLUSTER_BUCKETS".into(), buckets);
-                    if entries.len() > 1 { constants.insert("EARLY_GRASS_CULL".into(), early); }
+                    if entries.len() > 1 { constants.insert("EARLY_GRASS_CULL".into(), early); constants.insert("RASTER_SPLIT".into(), buckets*early); }
                     for &entry in &entries {
                         naga::back::pipeline_constants::process_overrides(&module, &info, Some(entry), &constants)
                             .unwrap_or_else(|e| panic!("{entry:?}, buckets={buckets}, early={early}: {e}"));
@@ -5902,4 +5939,53 @@ mod solar_effect_tests {
 
 fn max_column(m: Mat4) -> f32 {
     m.x_axis.truncate().length().max(m.y_axis.truncate().length()).max(m.z_axis.truncate().length())
+}
+
+#[cfg(test)]
+mod raster_split_tests {
+    use crate::{Camera,Lighting,Renderer,ViewRect,scene::{Material,Scene,ALPHA_TEST}};
+    use glam::{Affine3A,Quat,Vec3};
+    // Opaque and alpha-tested clusters draw through different pipelines. The
+    // cutout must still cut (the wall shows through its holes), and each
+    // pixel must have the same owner as with the single discard pipeline.
+    #[test]
+    #[ignore="exclusive GPU test: sets KERN_RASTER_SPLIT and KERN_DIAGNOSTIC_HIDE"]
+    fn gpu_opaque_and_masked_pipelines_draw_the_same_pixels() {
+        let gpu=crate::Gpu::new().unwrap();
+        let light=Lighting {gi:0.,sun_lux:0.,shadow_strength:0.,..Default::default()};
+        let cam=Camera {pos:Vec3::new(0.,0.,6.),target:Vec3::ZERO,fov_y:1.,near:0.05};
+        let render=|split:&str| {
+            unsafe {std::env::set_var("KERN_DIAGNOSTIC_HIDE","none");std::env::set_var("KERN_RASTER_SPLIT",split);}
+            let mut scene=Scene::default();
+            // Left half see-through, right half solid.
+            let holes=image::RgbaImage::from_fn(64,64,|x,_|image::Rgba([200,40,40,if x<32 {0} else {255}]));
+            let layer=scene.add_image("raster split cutout",holes);
+            let cutout=scene.add_material(Material {tint:[1.;3],layer,roughness:0.9,flags:ALPHA_TEST,scale:1.,metal:0.});
+            let paint=scene.add_material(Material {tint:[0.5;3],layer:-1,roughness:0.9,flags:0,scale:1.,metal:0.});
+            let cube=scene.add_mesh(&crate::primitives::cube(paint).mesh());
+            let card=scene.add_mesh(&crate::primitives::quad(cutout).mesh());
+            let wall=scene.instances.len() as u32;
+            scene.add_instance(cube,Affine3A::from_scale_rotation_translation(Vec3::new(8.,8.,0.1),Quat::IDENTITY,Vec3::new(0.,0.,-2.)));
+            let leaf=scene.instances.len() as u32;
+            scene.add_instance(card,Affine3A::from_scale_rotation_translation(Vec3::splat(3.),Quat::IDENTITY,Vec3::ZERO));
+            let front=scene.instances.len() as u32;
+            scene.add_instance(cube,Affine3A::from_scale_rotation_translation(Vec3::splat(0.5),Quat::IDENTITY,Vec3::new(0.8,-0.8,1.)));
+            let renderer=Renderer::new(&gpu,&scene,&light);
+            assert_eq!(renderer.debug_raster_split(),split=="1");
+            let views=[ViewRect {cam,x:0,y:0,w:96,h:96}];
+            for _ in 0..6 {renderer.try_render_views(&gpu,&views,&light,96,96,&[]).unwrap();}
+            let owners=renderer.debug_geometry_owner_pixels(&gpu,0,None).unwrap().owners;
+            unsafe {std::env::remove_var("KERN_DIAGNOSTIC_HIDE");std::env::remove_var("KERN_RASTER_SPLIT");}
+            (owners,[wall,leaf,front])
+        };
+        let (split,[wall,leaf,front])=render("1");
+        let (single,_)=render("0");
+        let at=|x:usize,y:usize|split[y*96+x];
+        // The card spans about x 22..74 at this distance; its left half is holes.
+        assert_eq!(at(34,40),wall,"the wall shows through the cutout's holes");
+        assert_eq!(at(62,40),leaf,"the cutout's solid half is drawn");
+        assert!(split.contains(&front),"the opaque cube in front is drawn");
+        let differ=split.iter().zip(&single).filter(|(a,b)|a!=b).count();
+        assert_eq!(differ,0,"split and single pipelines must give the same owners");
+    }
 }

@@ -1,3 +1,22 @@
+## 5 November: opaque clusters raster without `discard`
+
+Every cluster used to draw through one pipeline whose fragment shader has
+`discard` (raster.wgsl `alpha_cut`), so opaque terrain, cars and buildings
+lost early depth testing too (on Apple GPUs also hidden-surface removal).
+Cull now counts masked clusters per size bucket (cull.wgsl `masked_cluster`:
+ALPHA_TEST material with a texture layer, or a fading grass card) and
+scatter puts them at the end of each bucket. Draw records 0..19 are the
+opaque draws, 20..39 the masked ones (first_vertex (4+bucket)*384). Raster
+draws all opaque buckets first through `fs_opaque` (colour) or no fragment
+stage (depth), then the masked buckets through the old pipeline. Counter
+words 40..47 hold the masked counts and cursors (`occlusion::SPLIT_COUNTER_*`).
+Off with a game mask (`set_game_mask` may cut any material), with bounded
+draws (Quest) and with `KERN_RASTER_SPLIT=0`. The cached sun pass keeps one
+pipeline for both halves (its tile mask discards anyway). Test:
+`gpu_opaque_and_masked_pipelines_draw_the_same_pixels` (lavapipe: same owner
+for every pixel as the single pipeline, holes still cut). Not timed on a real
+GPU yet: A/B with `KERN_RASTER_SPLIT=0` on the Mac and the 5070 Ti.
+
 Final validation:164/164 tests PASS; release build PASS. Normal1200-frame
 capture restores5.482px maximum, zero refinement faults. Safety ceiling does
 not bind (25699650 conservative source visits). Covered GPU33.287ms median

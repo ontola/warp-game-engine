@@ -75,7 +75,9 @@ fn instance_at(id: u32) -> Instance {
 @group(1) @binding(0) var<uniform> view: View;
 @group(1) @binding(1) var<storage, read> visible: array<vec2<u32>>;
 @group(1) @binding(2) var<storage, read> draw_map: array<u32>;
-@group(1) @binding(3) var<storage, read> draw_args: array<u32, 20>;
+// cull.wgsl finalize: opaque records 0..15 and starts 16..19, masked
+// records 20..35 (first_vertex (4+bucket)*384) and starts 36..39.
+@group(1) @binding(3) var<storage, read> draw_args: array<u32, 40>;
 @group(1) @binding(4) var<storage,read> foliage_selection_words: array<u32>;
 fn foliage_selection_at(i:u32)->vec4<u32> { return selection_unpack(foliage_selection_words[i]); }
 // Packed group selection (aggregate_lod.wgsl writes it): one u32 per group,
@@ -104,7 +106,10 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
         o.pos=vec4<f32>(2.0,2.0,2.0,1.0);return o;
     }
     var slot = ii;
-    if CLUSTER_BUCKETS { slot = draw_map[draw_args[16u + vi / 384u] + ii]; }
+    if CLUSTER_BUCKETS {
+        let record = vi / 384u;
+        slot = draw_map[draw_args[select(36u + record - 4u, 16u + record, record < 4u)] + ii];
+    }
     let vis = visible[slot];
     let cl = clusters[vis.y];
     let tri = (vi % 384u) / 3u;
@@ -179,6 +184,13 @@ fn fs(in: VOut) -> @location(0) u32 {
     if alpha_cut(in) {
         discard;
     }
+    return in.id;
+}
+
+// Opaque clusters (cull.wgsl masked_cluster false): no discard, so the
+// hardware can test and write depth before the fragment runs.
+@fragment
+fn fs_opaque(in: VOut) -> @location(0) u32 {
     return in.id;
 }
 
