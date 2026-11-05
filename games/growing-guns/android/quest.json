@@ -1,0 +1,7 @@
+{
+  "crate": "growing-guns-app",
+  "library": "growing_guns_app",
+  "name": "growing-guns",
+  "assets": ["assets", "mods", "sounds"],
+  "audio": "audio"
+}
