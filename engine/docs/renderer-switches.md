@@ -23,6 +23,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_RASTER_SPLIT` | Draws opaque clusters through the alpha-tested pipeline again (`discard` everywhere, no early depth). Also off with a game mask and with bounded draws. |
 | `KERN_EARLY_GRASS_CULL` | Skips the early grass cull. |
 | `KERN_SHADE_CLASSES` | One shade pipeline for terrain and everything else. |
+| `KERN_SHADE_UNLIT` | Frames without spot or local lights keep the full shade pipelines instead of the ones built without the local light loop. |
 | `KERN_TERRAIN_COARSE` | Turns off the coarse terrain footprint in shading. `KERN_COARSE_FOOTPRINT_M=<m>` sets its size. |
 | `KERN_TILED_POST` | Untiled tone mapping and post (same image). |
 | `KERN_SKY_VIS_CACHE` | No cached sky transmittance through the canopy. |
