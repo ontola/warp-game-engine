@@ -254,7 +254,7 @@ projected onto the nacelle paint; there are no floating face meshes. Names and
 profiles are matched by player ID. Fixed race rosters decline instant joining;
 changing seats/players in the overlay takes effect through the host's next Prepare.
 
-All ten host settings are declared and validated by `rules/party.luau`. Laps,
+All eleven host settings are declared and validated by `rules/party.luau`. Laps,
 difficulty, world, seed and pickup placement wait for the next race. Boost cost,
 energy regeneration and crash recovery apply live; duration affects the next
 boost. Graphics presets change LOD error, motion blur and nearby shadows, not
