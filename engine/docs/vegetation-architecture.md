@@ -1009,3 +1009,40 @@ comparison: consumer-publication-comparison.jpg. No interactive playtest started
 G3.2 and G3.3 remain OPEN. This preserves consumer ownership; it does not provide
 independent hierarchy cuts or upstream history-first/current-depth recovery.
 Whole-root direct/fallback paths remain shared. No 4K/four-view acceptance.
+
+## 5 November: rejected paged whole-volume occlusion experiment
+
+Found an integration gap: the existing spatial two-phase brick-HZB path is
+disabled for paged forests. Connected current-frame whole-volume rejection
+without assuming the legacy static brick catalog exists in paged storage.
+Near volumes (<150m, inherited spatial seed policy) raster first; current depth
+then rejects fully hidden far-volume bounds before cell emission. Bounds include
+billboard/jitter support. Added an actual GPU oracle for blocked/visible boxes,
+near/far-plane crossings and a sky hole that opens/closes immediately.
+
+Validation: 145 serial foliage tests, composed shader validation and new GPU
+occlusion oracle PASS. Three alternating native720p ONE-VIEW normal routes,
+240 frames and 120 warm GPU samples per run:
+
+| Run | Before covered GPU ms | Candidate covered GPU ms |
+| --- | ---: | ---: |
+| 1 | 14.839 | 15.178 |
+| 2 | 14.971 | 15.100 |
+| 3 | 15.072 | 15.151 |
+
+Final submitted splats stay 1,364,203 in every run. First-run camera generation
+plus raster changes from0.689+0.683ms to0.093+0.051+0.081(HZB)+0.592(cull/generate)
++0.681(second raster)ms: no saving. Matched final images have RGB MAE
+[0.0000256,0.0000208,0.0000317]/255 and visually match, retaining coarse crowns.
+This is one route, not proof that whole-volume rejection never helps.
+
+REJECTED as the normal implementation: restore production0741ccb, keep tested
+patch paged-volume-occlusion-experiment.patch and complete per-pass measurements
+in paged-volume-occlusion-measurements.json. No new opt-in mode or gate.
+Local captures: build/playtest-unified/paged-occlusion-{before,after}-{1,2,3}.*.
+
+Next implementation needs paged sub-volume/brick bounds and compact work ranges,
+so coarse tree bounds do not force all cells to run. Reuse the same page ownership,
+pose and conservative world-space support. This experiment is downstream of
+selection and cannot solve the ~8.6ms hierarchy bottleneck; G3.2 upstream
+history/current-depth recovery and G3.3 independent consumer cuts remain OPEN.
