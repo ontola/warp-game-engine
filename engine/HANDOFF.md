@@ -3,11 +3,24 @@
 Decided with Joep: occluders for the foliage seed come from material and
 motion, not a tag. frame.rs sets `OCCLUDERS_ONLY` (128) in the seed view's
 fog_cull.w and excludes only Trees and Grass categories; cull.wgsl then drops
-DEFORMING instances (FOLIAGE, LIVE_GRASS, WIND_GRASS, PART_WIND, SKINNED,
-MOLTEN_DEBRIS), any HIDE_IN_VIEW bit, and SEE_THROUGH materials (ALPHA_TEST,
+DEFORMING instances (FOLIAGE, LIVE_GRASS, WIND_GRASS, PART_WIND, SKINNED;
+not 128, which procedural terrain's PROCEDURAL shares with MOLTEN_DEBRIS: 654ca74
+dropped every terrain patch from the seed and broke close trees, see the
+`occluder_filter_never_drops_procedural_terrain` test), any HIDE_IN_VIEW bit, and SEE_THROUGH materials (ALPHA_TEST,
 GRASS, BLEND, THIN_FOLIAGE). `KERN_FOLIAGE_OCCLUDERS=terrain` restores
 land-only occlusion (terrain_fly `--no-building-occlusion`). Extra seed
-raster cost of the added geometry not yet measured on the Mac.
+seed cost on the Mac (M5 Pro, fixed build): 0.4-0.6 ms, no more than before;
+wall views 3-4 ms faster than land-only, images identical to cb7cd19.
+
+## 5 November: occlusion culling for every category
+
+Joep: rigid opaque geometry should hide anything, not just forest. The
+history-first two-phase Hi-Z (tree_occlusion.rs, cull.wgsl `tree_phase`) was
+trees only; now every category defers clusters that were not visible last
+frame and tests them against phase one's depth. On by default for every
+scene (`KERN_TREE_OCCLUSION=0` turns it off); the no-proof probe runs every 4
+frames instead of 32. Test: `gpu_hidden_geometry_of_any_category_is_not_drawn`.
+Names still say "tree"; renaming is a follow-up.
 
 ## 5 November: forest culling behind structures, screen edge and selection cost
 

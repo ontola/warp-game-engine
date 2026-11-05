@@ -2301,6 +2301,8 @@ impl Renderer {
 
     /// Exact current-view occlusion counters. Explicit blocking capture only;
     /// ordinary gameplay uses GPU-side decisions without counter readback.
+    #[cfg(test)]
+    pub(crate) fn debug_tree_occlusion_enabled(&self)->bool {self.tree_occlusion.enabled}
     pub fn debug_tree_occlusion(&self,gpu:&Gpu,view:usize,expected_render_sequence:Option<u64>)
         ->Result<crate::tree_occlusion::Diagnostics,String> {
         let diagnostics=self.color_diagnostics.lock().unwrap();

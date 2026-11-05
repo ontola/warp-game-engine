@@ -1,9 +1,11 @@
 // Cluster culling and LOD selection, one workgroup per instance.
 // Foliage seed view marker in fog_cull.w (above the category bits), and the
-// instance (scene FOLIAGE|LIVE_GRASS|WIND_GRASS|PART_WIND|SKINNED|MOLTEN_DEBRIS)
-// and material (ALPHA_TEST|GRASS|BLEND|THIN_FOLIAGE) flags it refuses.
+// instance (scene FOLIAGE|LIVE_GRASS|WIND_GRASS|PART_WIND|SKINNED) and
+// material (ALPHA_TEST|GRASS|BLEND|THIN_FOLIAGE) flags it refuses. Not 128:
+// MOLTEN_DEBRIS (rigid, so a fine occluder) shares it with procedural terrain
+// PROCEDURAL, and the land must always occlude.
 const OCCLUDERS_ONLY:u32=128u;
-const DEFORMING:u32=1u|8u|16u|32u|64u|128u;
+const DEFORMING:u32=1u|8u|16u|32u|64u;
 const SEE_THROUGH:u32=1u|64u|256u|512u;
 // A cluster is drawn when its own error projects to at most the threshold
 // and its group's simplified replacement would project above it.
@@ -226,7 +228,6 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
     if view.params.z<0.5 && view.extra.y<1.5 && (spatial.header.w&8u)!=0u {
         if source_replacement_owner_selected(spatial.header.z,member_slot(id)) {return 0u;}
     }
-    if tree_phase.x>1.5 && tree_phase.w>0.5 && ((inst.flags>>24u)&7u)!=2u {return 0u;}
     if tree_phase.x>0.5 && tree_phase.w<0.5 {
         let tree=((inst.flags>>24u)&7u)==2u;
         var first=!tree || distance(inst.sphere.xyz,view.cam.xyz)
@@ -429,9 +430,14 @@ fn cull_cluster(id:u32,inst:Instance,ci:u32,base_thr:f32,wind_pad:f32) {
         let b=(tree_history[key.y>>7u][(key.y>>5u)&3u]&(1u<<(key.y&31u)))!=0u;
         // Empty coverage proofs cannot save work. Render the complete current cut
         // directly until the periodic GPU-only probe; this never hides geometry.
+        // Every 4th frame, so geometry that just went out of sight (turning
+        // towards a building) stops drawing within 4 frames, not 32.
         let policy=tree_history[2048];
-        let direct=policy.y==0u && (policy.x&31u)!=0u;
-        let first=direct || ((inst.flags>>24u)&7u)!=2u || (a && b);
+        let direct=policy.y==0u && (policy.x&3u)!=0u;
+        // Every category: what was visible last frame draws first and seeds
+        // the Hi-Z; everything else (buildings, rocks, terrain patches, cars,
+        // trees) is tested against it in phase two.
+        let first=direct || (a && b);
         if tree_phase.x<1.5 && !first {
             let pending=atomicAdd(&counter[19],1u);
             if pending<u32(tree_phase.y) {
