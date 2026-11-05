@@ -1,3 +1,6 @@
+Post-revert validation:161/161 foliage tests PASS. No one-pixel or performance
+acceptance; release rebuild/capture still pending. See pr8-retained-tests.log.
+
 # 5 November: selected-mip experiment REJECTED
 
 PR8 through6a4002f is integrated locally, ownership split preserved. The

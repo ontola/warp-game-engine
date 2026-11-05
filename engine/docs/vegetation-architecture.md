@@ -30,7 +30,9 @@ are still unaccepted. There is no CPU near-tree pool.
   cluster/triangle costs are absent. Mac handoff reports6.8M rather than0.3M
   triangles on the hill. Implement actual source work accounting alongside
   voxel work before further bypass tuning. Do not substitute a screen-size gate.
-- [ ] Validate the retained integration after rejecting the experiment.
+- [x] Retained integration after reverting the experiment:161/161 foliage
+  tests PASS (pr8-retained-tests.log).
+- [ ] Release build and normal capture of the retained integration.
 - [ ] One-pixel camera/shadow, bounded work, repeated timing and4K/four-view
   acceptance remain incomplete. Do not launch this rejected capture as playtest.
 
