@@ -559,10 +559,10 @@ fn buildings(scene: &mut Scene, world: &Constraints, seed: u32, style: &Style) {
     };
     let walls = [paint([0.55, 0.33, 0.24], 0.9), paint([0.62, 0.58, 0.5], 0.9), paint([0.34, 0.36, 0.4], 0.8)];
     let (slab, glass, roof) = (paint([0.7, 0.7, 0.68], 0.8), paint([0.06, 0.09, 0.12], 0.15), paint([0.2, 0.2, 0.21], 0.95));
-    // Static opaque structures hide forest before it is selected, like the
-    // land (frame.rs, "foliage seed").
-    // --no-building-occlusion: the forest is selected as if they were not there.
-    let category = if std::env::args().any(|a| a == "--no-building-occlusion") { GeometryCategory::Other } else { GeometryCategory::Structures };
+    // Opaque buildings hide forest before it is selected, like the land and
+    // any other rigid opaque geometry (frame.rs, "foliage seed"). The category
+    // is only a label; --no-building-occlusion (in main) is the A/B switch.
+    let category = GeometryCategory::Structures;
     let mut block = |mesh: usize, at: Vec2, yaw: f32, bottom: f32, size: Vec3| {
         let centre = Vec3::new(at.x, bottom + size.y * 0.5, at.y);
         scene.add_classified_instance(mesh, glam::Affine3A::from_scale_rotation_translation(size, glam::Quat::from_rotation_y(-yaw), centre), category);
@@ -788,6 +788,8 @@ fn main() -> Result<(), String> {
     for name in ["KERN_TREE_OCCLUSION", "KERN_CLUSTER_TRAVERSAL"] {
         if std::env::var_os(name).is_none() {unsafe {std::env::set_var(name,"1");}}
     }
+    // A/B: only the land hides forest, as if no other geometry were there.
+    if std::env::args().any(|a| a == "--no-building-occlusion") { unsafe { std::env::set_var("KERN_FOLIAGE_OCCLUDERS", "terrain"); } }
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.windows(2).find(|w| w[0] == k).map(|w| w[1].clone());
     for retired in ["--recipe", "--firs", "--cards", "--forest-layer-only"] {

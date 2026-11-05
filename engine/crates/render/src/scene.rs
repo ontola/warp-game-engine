@@ -184,8 +184,9 @@ pub enum GeometryCategory {
     Trees = 2,
     Grass = 3,
     Cars = 4,
-    /// Static opaque structures (buildings, walls): like terrain, they may
-    /// hide foliage behind them before it is selected and drawn.
+    /// Buildings, walls and other built things. A label for diagnostics and
+    /// games: any rigid opaque geometry outside Trees and Grass hides foliage
+    /// behind it before selection, whatever its category.
     Structures = 5,
 }
 

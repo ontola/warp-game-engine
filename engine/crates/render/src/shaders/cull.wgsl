@@ -1,4 +1,10 @@
 // Cluster culling and LOD selection, one workgroup per instance.
+// Foliage seed view marker in fog_cull.w (above the category bits), and the
+// instance (scene FOLIAGE|LIVE_GRASS|WIND_GRASS|PART_WIND|SKINNED|MOLTEN_DEBRIS)
+// and material (ALPHA_TEST|GRASS|BLEND|THIN_FOLIAGE) flags it refuses.
+const OCCLUDERS_ONLY:u32=128u;
+const DEFORMING:u32=1u|8u|16u|32u|64u|128u;
+const SEE_THROUGH:u32=1u|64u|256u|512u;
 // A cluster is drawn when its own error projects to at most the threshold
 // and its group's simplified replacement would project above it.
 // Adreno 650 misreports OpArrayLength for struct arrays (four 80-byte
@@ -233,6 +239,10 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
         let code=(inst.flags>>24u)&7u;
         let category=select(code,0u,code>5u);
         if (u32(view.fog_cull.w)&(1u<<category))!=0u {return 0u;}
+        // Foliage seed (OCCLUDERS_ONLY): only rigid geometry may hide forest.
+        // Wind, skinning and debris deform away from these bounds, and a body
+        // hidden from some camera must not hide what that camera sees.
+        if (u32(view.fog_cull.w)&OCCLUDERS_ONLY)!=0u && (inst.flags&(DEFORMING|0xff00u))!=0u {return 0u;}
     }
     // Runtime groups replace this entire branch in the colour view only.
     // Do not spend cluster/raster work on the hidden source. Both sun and
@@ -368,6 +378,9 @@ fn cull_cluster(id:u32,inst:Instance,ci:u32,base_thr:f32,wind_pad:f32) {
     // Continuous-alpha surfaces are drawn separately after opaque HDR.
     // Excluding them here also prevents opaque glass sun shadows.
     if (cull_materials[cl.material].flags & 256u) != 0u { return; }
+    // Foliage seed: cutout, grass and thin foliage cards are not solid.
+    if view.params.z<0.5 && view.extra.y<1.5 && (u32(view.fog_cull.w)&OCCLUDERS_ONLY)!=0u
+        && (cull_materials[cl.material].flags&SEE_THROUGH)!=0u {return;}
     var thr=base_thr;
     // Diagnostic fixed WORLD error for opaque terrain sun casters only.
     // Parent and child use the same threshold, preserving the DAG cut.

@@ -613,6 +613,12 @@ pub struct FrameStats {
     pub picks: Vec<Option<(u32, u32, u32)>>,
 }
 
+/// cull.wgsl OCCLUDERS_ONLY: the foliage seed view draws only rigid opaque geometry.
+const OCCLUDERS_ONLY:u32=128;
+fn terrain_only_occluders()->bool {
+    static ONLY:std::sync::OnceLock<bool>=std::sync::OnceLock::new();
+    *ONLY.get_or_init(||std::env::var("KERN_FOLIAGE_OCCLUDERS").as_deref()==Ok("terrain"))
+}
 struct FoliageSeedTarget {
     targets:ViewTargets, depth:wgpu::TextureView, color:wgpu::TextureView,
     pyramid:crate::depth_pyramid::PyramidTarget,
@@ -4051,11 +4057,16 @@ impl Renderer {
                 let t=&seed_targets[vi];
                 let projection=camera_projections.get(vi).copied().unwrap_or_else(||Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near));
                 let mut uniform=view_uniform(part_animation_views[vi].view_projection,v.cam.pos,projection.y_axis.y*0.5*v.h as f32,[light.lod_pixels,v.cam.near,0.,8192.],[size.0 as f32,size.1 as f32,1./size.0 as f32,1./size.1 as f32],cut);
-                // Only terrain and static structures may occlude upstream.
+                // Any rigid opaque geometry may occlude upstream: everything but
+                // trees and grass, minus see-through materials and deforming or
+                // per-view hidden instances (cull.wgsl OCCLUDERS_ONLY). This is
+                // current-frame depth, so moving rigid bodies are fine.
                 // Missing seed clusters at the bounded capacity fail open
                 // (less occlusion).
-                let occluders=crate::scene::GeometryCategory::Terrain.exclusion_bit()|crate::scene::GeometryCategory::Structures.exclusion_bit();
-                uniform.fog_cull[3]=((63u32 & !occluders)|geometry_diagnostic.excluded_mask) as f32;
+                let foliage=crate::scene::GeometryCategory::Trees.exclusion_bit()|crate::scene::GeometryCategory::Grass.exclusion_bit();
+                // KERN_FOLIAGE_OCCLUDERS=terrain: A/B diagnostic, only the land occludes.
+                let not_occluding=if terrain_only_occluders() {63&!crate::scene::GeometryCategory::Terrain.exclusion_bit()} else {foliage};
+                uniform.fog_cull[3]=(not_occluding|geometry_diagnostic.excluded_mask|OCCLUDERS_ONLY) as f32;
                 gpu.queue.write_buffer(&t.targets.uniform,0,bytemuck::bytes_of(&uniform));
                 let start=names.len();
                 self.cull_and_raster(&mut enc,gpu,&t.targets,Some(&t.color),&t.depth,&mut ts,&mut names,"foliage seed terrain cull",RasterPass::Color);

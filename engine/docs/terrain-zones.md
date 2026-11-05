@@ -98,18 +98,25 @@ amplified difference between the shot with and without bare plots shows all
 ## Buildings and culling
 
 `terrain_fly --town` puts a building of 1 to 16 storeys on every plot
-(`--no-buildings` for bare plots). They use the `Structures` geometry
-category: static opaque structures that, like terrain, hide the GPU forest
-behind them before it is selected and drawn (frame.rs, "foliage seed").
-Before this category only terrain could do that, so forest behind a building
-was hidden by depth but still drawn. `--no-building-occlusion` puts them back
-in the `Other` category to compare.
+(`--no-buildings` for bare plots). Any rigid opaque geometry hides the GPU
+forest behind it before it is selected and drawn (frame.rs, "foliage seed";
+cull.wgsl `OCCLUDERS_ONLY`), whatever its category. Excluded are the Trees
+and Grass categories, cutout, blended, grass and thin foliage materials, and
+instances that deform (wind, skinning, debris) or are hidden from some
+camera. The buildings are tagged `Structures`, but only as a label.
+`--no-building-occlusion` (`KERN_FOLIAGE_OCCLUDERS=terrain`) lets only the
+land occlude, to compare.
 
-On an Apple M5 Pro at 1280x720 (headless), with the workaround that this
-category replaces, voxel splats dropped by 73 to 82 % where a building fills
-the view, about 2 % where it blocks part of it, and not at all looking over
-the skyline. Images differ only by speckle along the visible tree line.
+The test `gpu_opaque_geometry_hides_forest_from_camera` (render, ignored,
+needs a GPU) checks this end to end: walls of several categories hide a tree
+fully behind them, also when its bounds cross the screen edge, with an
+unchanged image; a cutout wall or one tagged Trees hides nothing; a wall
+behind, a low block, a half cover and a tree beside the wall keep their trees.
 
-Not yet verified: the separate Hi-Z test for mesh trees behind buildings
-(these views draw almost only voxel trees), and what the roughly 240k splats
-still drawn behind a full wall are.
+Why GPU time barely dropped behind a wall on an Apple M5 Pro: most of the
+forest cost did not depend on visibility. Selection always ran 48
+refinement rounds (~5.6 ms); it now encodes the rounds the GPU last needed
+(full bound on camera cuts). Forest shadows (~3.3 ms) stay, since hidden
+trees still cast shadows. With both fixes the wall views went from about
+16 ms to 11 ms per GPU frame.
+
