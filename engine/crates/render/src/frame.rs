@@ -4001,7 +4001,7 @@ impl Renderer {
         if draw_main_sun { gpu.queue.write_buffer(&shadow_t.uniform, 0, bytemuck::bytes_of(&shadow_uniform)); }
         // Rasterized voxels cast the replaced branch groups in the shared sun
         // map; their source stops casting there (cull.wgsl, selection w 2).
-        if draw_main_sun && static_sun.is_none() && self.voxel_forest.as_ref().is_some_and(|f|f.casts_sun()) {
+        if draw_main_sun && self.voxel_forest.as_ref().is_some_and(|f|f.casts_sun()) {
             gpu.queue.write_buffer(&shadow_t.foliage_selection,0,bytemuck::cast_slice(&crate::voxel_forest::VoxelRenderer::sun_selection()));
         }
         if draw_static_sun {
@@ -4241,12 +4241,12 @@ impl Renderer {
                     &mut ts,&mut names,"dynamic sun cull",RasterPass::SunDynamic(static_counts.dynamic_casters));
             } else {
                 self.cull_and_raster_pass(&mut enc, gpu, &shadow_t, None, &shadow_v, &mut ts, &mut names, "shadow cull",RasterPass::Sun,None,false,damage_bind.as_ref());
-                if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.casts_sun()) {
-                    let times=["voxel sun splats","voxel sun splat raster"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
-                        let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
-                    forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&shadow_t.foliage_selection,crate::voxel_forest::SunSplatView {
-                        damage:damage_bind.as_ref(),depth:&shadow_v,view_proj:svp,planes:shadow_uniform.planes,direction:light.sun_dir,texel_m:sun_voxel_m(texel,SHARED_SUN_VOXEL_M)},times)?;
-                }
+            }
+            if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.casts_sun()) {
+                let times=["voxel sun splats","voxel sun splat raster"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
+                    let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
+                forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&shadow_t.foliage_selection,crate::voxel_forest::SunSplatView {
+                    damage:damage_bind.as_ref(),depth:&shadow_v,view_proj:svp,planes:shadow_uniform.planes,direction:light.sun_dir,texel_m:sun_voxel_m(texel,SHARED_SUN_VOXEL_M)},times)?;
             }
         }
         if far_updated {

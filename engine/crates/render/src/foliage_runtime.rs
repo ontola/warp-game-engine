@@ -982,6 +982,45 @@ impl Runtime {
         assert!(recovered,"normal async cache must publish loaded geometry without a CPU tree shortlist");
     }
     #[test]
+    #[ignore="exclusive GPU and process environment static split oracle"]
+    fn gpu_static_split_preserves_forest_sun_depth() {
+        use super::*;use crate::{Camera,Lighting,Renderer,ViewRect,foliage_population::WorldRoot};
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {fn drop(&mut self){unsafe {match &self.0 {Some(v)=>std::env::set_var("KERN_STATIC_SUN_CACHE",v),None=>std::env::remove_var("KERN_STATIC_SUN_CACHE")}}}}
+        let _restore=Restore(std::env::var_os("KERN_STATIC_SUN_CACHE"));
+        let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
+        let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
+        let roots=[WorldRoot {id:42,placement:RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}}];
+        let mut scene=Scene::default();plant_population(&mut scene,&[cooked],&roots,2,8,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
+        for b in &mut scene.gpu_forest.as_mut().unwrap().branches {b.animation=[0.12,2.,0.3,0.];}
+        let gpu=Gpu::new().unwrap();let light=Lighting {gi:1.,near_shadows:0.,sun_dir:Vec3::new(0.3,1.,0.4).normalize(),..Default::default()};
+        unsafe {std::env::remove_var("KERN_STATIC_SUN_CACHE");}
+        let full=Renderer::new(&gpu,&scene,&light);
+        unsafe {std::env::set_var("KERN_STATIC_SUN_CACHE","1");}
+        let split=Renderer::new(&gpu,&scene,&light);
+        full.test_warm_foliage_assets(&gpu);split.test_warm_foliage_assets(&gpu);
+        let views=[ViewRect {cam:Camera {pos:Vec3::new(0.3,0.4,1.6),target:Vec3::new(0.3,0.4,0.),fov_y:1.,near:0.05},x:0,y:0,w:64,h:64}];
+        let depth=|renderer:&Renderer| {
+            let texture=renderer.debug_sun_depth_textures(None).unwrap().remove(0);let size=texture.size();
+            let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("static split raw depth oracle"),size:size.width as u64*size.height as u64*4,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+            let mut enc=gpu.device.create_command_encoder(&Default::default());
+            enc.copy_texture_to_buffer(wgpu::TexelCopyTextureInfo {texture:&texture,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::DepthOnly},wgpu::TexelCopyBufferInfo {buffer:&read,layout:wgpu::TexelCopyBufferLayout {offset:0,bytes_per_row:Some(size.width*4),rows_per_image:Some(size.height)}},size);
+            gpu.queue.submit([enc.finish()]);read.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
+            let result=bytemuck::cast_slice::<u8,u32>(&read.slice(..).get_mapped_range().unwrap()).to_vec();read.unmap();result
+        };
+        for step in 0..4 {
+            for r in [&full,&split] {
+                r.set_wind(&gpu,&crate::wind::WindState {strength:if step==0{0.}else{0.7},time_seconds:17.,..Default::default()}).unwrap();
+                if step==2 {r.replace_gpu_forest_roots(&gpu,&[]).unwrap();}
+                if step==3 {r.replace_gpu_forest_roots(&gpu,&roots).unwrap();}
+                r.try_render_views(&gpu,&views,&light,64,64,&[]).unwrap();
+            }
+            let reference=depth(&full);let cached=depth(&split);
+            if step==0 {assert!(reference.iter().any(|&v|v!=1f32.to_bits()),"nonempty caster oracle");}
+            assert_eq!(cached.iter().zip(reference).filter(|(a,b)|**a!=*b).count(),0,"static split loses/changes forest depth step{step}");
+        }
+    }
+    #[test]
     #[ignore="exclusive hardware GPU full renderer shadow cache oracle"]
     fn gpu_cached_sun_depth_matches_full_redraw() {
         use super::*;use crate::{Camera,Lighting,Renderer,ViewRect,foliage_population::WorldRoot};
