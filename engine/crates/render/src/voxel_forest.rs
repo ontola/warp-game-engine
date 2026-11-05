@@ -3,7 +3,7 @@
 //! Integrates all overlapping crown densities together, clipped by opaque
 //! scene depth. Crowns write C/T, never a false opaque first-hit depth. The
 //! integrator's 4096-volume limit is deliberate, not full-forest streaming
-//! support; rasterized voxels select up to 16384 groups per view. Optional
+//! support; GPU-driven rasterized choices use allocation-sized storage. Optional
 //! per-view projected mip selection shares the same immutable asset pyramid.
 use crate::{Gpu, Scene};
 use bytemuck::{Pod, Zeroable};
@@ -14,7 +14,8 @@ const TILE: u32 = 16;
 const CANDIDATES: u32 = 64;
 // Four exact 64-bit aggregate counters follow the fourteen original u32s.
 // WGSL uses atomic low words plus carry; no optional GPU u64 feature is needed.
-const COUNTER_BYTES: u64 = 88;
+const DRAW_OFFSET: u64 = 88;
+const COUNTER_BYTES: u64 = DRAW_OFFSET + 16;
 // Additional opt-in scratch, per view, beyond the existing tile worklist.
 const INTERVAL_STREAM_BYTES:u64=32*1024*1024;
 const INTERVAL_STREAM_PIXEL_SLOTS:u32=262_144;
@@ -120,8 +121,7 @@ fn diagnostic_u64(bytes: &[u8], word: usize) -> u64 {
 // against WebGPU's per-stage limit (10 scene + 7 volume = 17). Keep this
 // interface small instead of increasing the requested hardware limit.
 pub(crate) const SCENE_BINDINGS: &[u32] = &[4, 12, 13, 14, 15, 16, 17, 18, 22, 23, 24, 25, 26];
-/// Groups one view's selection holds: a packed u32 each (selection_pack),
-/// four per vec4 of the shaders' 64 KiB uniform.
+/// Legacy authored selection capacity; GPU-driven tables use the runtime slot count.
 pub(crate) const MAX_VIEW_GROUPS: usize = 16384;
 /// Volumes the integrator path (no rasterized voxels) may march: its per-ray
 /// u32 sums are bounded for this many.
@@ -320,6 +320,11 @@ fn splat_capacity(forest: &crate::foliage_volume_data::GpuForest, cells: &[[u32;
     const MAX_SPLATS: u64 = 4 << 20;
     forest.instances.iter().map(|tree| u64::from(cells[tree.meta[1] as usize][1])).sum::<u64>().clamp(1, MAX_SPLATS)
 }
+/// Shared selector/raster capacity after per-tree record headers. The selector
+/// must never reserve more records than a target can actually store.
+pub(crate) fn bounded_splat_capacity(requested:u64,trees:u64,byte_limit:u64)->u64 {
+    requested.min((byte_limit/16).saturating_sub(12u64.saturating_add(trees.saturating_mul(4))))
+}
 struct Targets {
     hzb: Option<crate::depth_pyramid::PyramidTarget>,
     splat: Option<SplatTargets>,
@@ -415,8 +420,8 @@ fn data_bindings(temporal: bool) -> Vec<(u32, wgpu::BindingType)> {
     let output=|format|wgpu::BindingType::StorageTexture {access:wgpu::StorageTextureAccess::WriteOnly,format,view_dimension:wgpu::TextureViewDimension::D2};
     let mut entries=vec![(0,storage(true)),(1,storage(true)),(2,storage(true)),(3,storage(true)),
         (4,storage(false)),(5,storage(false)),(6,output(wgpu::TextureFormat::Rgba16Float)),
-        (7,uniform),(8,storage(false)),(9,uniform),(12,storage(true)),
-        (14,storage(true)),(15,storage(false)),(16,storage(false)),
+        (7,uniform),(8,storage(false)),(9,storage(true)),(12,storage(true)),
+        (14,storage(true)),(15,storage(false)),
         (17,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Uint,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
         (18,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Depth,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
         (19,output(wgpu::TextureFormat::Rgba32Uint)),
@@ -701,7 +706,7 @@ impl VoxelRenderer {
         let proxies = scene.voxel_proxies.min(forest.instances.len() as u32);
         assert!(proxies == 0 || scene.voxel_proxy_pixels > 0.0, "whole-plant proxies need a pixel error");
         // Far trees and proxies never read the per-group selection.
-        assert!(far > 0.0 || forest.instances.len() - proxies as usize <= MAX_VIEW_GROUPS,
+        assert!(scene.gpu_forest.is_some() || far > 0.0 || forest.instances.len() - proxies as usize <= MAX_VIEW_GROUPS,
             "voxel renderer exceeds checked selection capacity");
         assert!(forest.instances.len() < FAR_TREE as usize, "too many far trees");
         let upload = |name, data: &[u8]| {
@@ -844,7 +849,9 @@ impl VoxelRenderer {
             integrator_options.global_intervals,INTERVAL_STREAM_BYTES,INTERVAL_STREAM_PIXEL_SLOTS);
         let raster = if integrator_options.raster { match if brick_hzb.is_some() { splat_cells_bricked(forest) } else { splat_cells(forest) } {
             Ok(cells) if cells.len() > forest.levels.len() => {
-                let capacity = splat_capacity(forest, &cells);
+                let requested=scene.gpu_forest.as_ref().map_or_else(||splat_capacity(forest,&cells),|spec|u64::from(spec.raster_budget));
+                let limits=gpu.device.limits();
+                let capacity=bounded_splat_capacity(requested,forest.instances.len()as u64,u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size));
                 eprintln!("voxel raster: enabled cells={} splats_per_view={capacity} (stochastic opaque voxels; integrator off)", cells.len() - forest.levels.len());
                 Some(splat_raster(gpu, &cells, capacity, scene_layout, &data_layout, &specialized_source,page_cache.as_ref().map(|c|&c.buffers[3])))
             }
@@ -1074,9 +1081,9 @@ impl VoxelRenderer {
             mapped_at_creation: false,
         });
         let counters = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("voxel diagnostics"),
+            label: Some("voxel diagnostics and indirect draw"),
             size: COUNTER_BYTES + mask_bytes,
-            usage: wgpu::BufferUsages::STORAGE
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -1171,14 +1178,11 @@ impl VoxelRenderer {
             usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
         }).create_view(&Default::default());
         let splat_depth = texture("voxel splat depth", wgpu::TextureFormat::Depth32Float);
-        let splat_capacity = self.raster.as_ref().map_or(0, |r| r.capacity
-            .min((u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size) / 16).saturating_sub(12 + 4 * u64::from(self.count))));
+        let splat_capacity = self.raster.as_ref().map_or(0, |r| bounded_splat_capacity(r.capacity,u64::from(self.count),u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size)));
         let splat_records = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel splats"), size: (12 + 4 * u64::from(self.count) + splat_capacity) * 16,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
-        let splat_draw = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("voxel splat draw"), size: 16,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let splat_draw = counters.clone();
         let stand_in;
         let splat_cells = match &self.raster {
             Some(raster) => &raster.cells,
@@ -1188,7 +1192,6 @@ impl VoxelRenderer {
         entries.extend([
             wgpu::BindGroupEntry { binding: 14, resource: splat_cells.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 15, resource: splat_records.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 16, resource: splat_draw.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 17, resource: wgpu::BindingResource::TextureView(&splat_id) },
             wgpu::BindGroupEntry { binding: 18, resource: wgpu::BindingResource::TextureView(&splat_depth) },
             wgpu::BindGroupEntry { binding: 19, resource: wgpu::BindingResource::TextureView(&gbuffer) },
@@ -1306,7 +1309,7 @@ impl VoxelRenderer {
         }
         if let (Some(raster), Some(splat)) = (&self.raster, &target.splat) {
             if !splats_done {
-            encoder.clear_buffer(&splat.draw, 0, None);
+            encoder.clear_buffer(&splat.draw, DRAW_OFFSET, Some(16));
             let selection=temporal_pipelines.and_then(|p|p.selection.as_ref()).or(self.selection.as_ref());
             if let Some(p)=selection {
                 if let Some((q,i))=times[0] {encoder.write_timestamp(q,i);}
@@ -1357,7 +1360,7 @@ impl VoxelRenderer {
                 });
                 pass.set_pipeline(if scene_targets.is_some() { &raster.main_pipeline } else { &raster.pipeline });
                 pass.set_bind_group(0, &splat.bind, &[]);
-                pass.draw_indirect(&splat.draw, 0);
+                pass.draw_indirect(&splat.draw, DRAW_OFFSET);
             }
             }
             }
@@ -1483,7 +1486,7 @@ impl VoxelRenderer {
         header[4..10].copy_from_slice(&sun.planes);
         header[10] = [sun.direction.x, sun.direction.y, sun.direction.z, sun.texel_m];
         gpu.queue.write_buffer(&splat.records, 0, bytemuck::cast_slice(&header));
-        encoder.clear_buffer(&splat.draw, 0, None);
+        encoder.clear_buffer(&splat.draw, DRAW_OFFSET, Some(16));
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel sun splats"),
                 timestamp_writes: times[0].map(|(query_set, i)| wgpu::ComputePassTimestampWrites {
@@ -1504,7 +1507,7 @@ impl VoxelRenderer {
         pass.set_pipeline(if sun.damage.is_some(){&raster.sun_cached_raster}else{&raster.sun_raster});
         if let Some(mask)=sun.damage {pass.set_bind_group(1,mask,&[]);}
         pass.set_bind_group(0, &splat.bind, &[]);
-        pass.draw_indirect(&splat.draw, 0);
+        pass.draw_indirect(&splat.draw, DRAW_OFFSET);
         Ok(())
     }
     pub(crate) fn motion_layer(&self,index:usize)->Option<(wgpu::TextureView,wgpu::TextureView)> {
@@ -1580,7 +1583,7 @@ impl VoxelRenderer {
                 COUNTER_BYTES,
             );
             if let Some(splat)=&target.splat {
-                encoder.copy_buffer_to_buffer(&splat.draw,0,&read,i as u64*stride+COUNTER_BYTES+8,16);
+                encoder.copy_buffer_to_buffer(&splat.draw,DRAW_OFFSET,&read,i as u64*stride+COUNTER_BYTES+8,16);
             }
             if let Some(stream)=target.interval_stream {
                 encoder.copy_buffer_to_buffer(&target.jobs,(u64::from(stream.header_word)+1)*4,
@@ -2044,6 +2047,52 @@ mod tests {
     }
 
     #[test]
+    #[ignore="exclusive GPU choice table boundary readback"]
+    fn gpu_consumers_read_choices_beyond_old_uniform_limit() {
+        use wgpu::util::DeviceExt;
+        fn function(source:&str,name:&str)->String {
+            let start=source.find(&format!("fn {name}(")).unwrap();
+            let brace=start+source[start..].find('{').unwrap();let mut depth=0;
+            for (i,c) in source[brace..].char_indices() {
+                if c=='{' {depth+=1;} else if c=='}' {depth-=1;if depth==0 {return source[start..brace+i+1].into();}}
+            }
+            panic!("unterminated shader function");
+        }
+        let gpu=crate::Gpu::new().unwrap();
+        let words=(0..65537u32).map(|i|super::selection_pack([i%4,i%64,((i%257)as f32*0.125).to_bits(),(i/7)%4])).collect::<Vec<_>>();
+        let indices=[0usize,16383,16384,32767,32768,65536];
+        let input=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("large choice oracle"),contents:bytemuck::cast_slice(&words),usage:wgpu::BufferUsages::STORAGE});
+        for (source,key,lookup,extra) in [
+            (include_str!("shaders/cull.wgsl"),"foliage_selection_words","foliage_selection_at",Some("foliage_selection_word")),
+            (include_str!("shaders/raster.wgsl"),"foliage_selection_words","foliage_selection_at",None),
+            (include_str!("shaders/voxel_forest.wgsl"),"volume_selection_words","volume_selection_at",None)] {
+            // Use each actual consumer declaration and lookup, not a duplicate decoder.
+            let declaration=source.lines().find(|line|line.contains(&format!(" {key}:"))).unwrap().split_once(" var").unwrap().1;
+            let shader=format!("@group(0) @binding(0) var{declaration}\n@group(0) @binding(1) var<storage,read_write> result:array<vec4<u32>>;\n{}\n{}\n{}\n@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id:vec3<u32>) {{let indices=array<u32,6>(0u,16383u,16384u,32767u,32768u,65536u);result[id.x]={lookup}(indices[id.x]);}}",
+                function(source,"selection_unpack"),function(source,lookup),extra.map(|f|function(source,f)).unwrap_or_default());
+            let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("production choice lookup oracle"),source:wgpu::ShaderSource::Wgsl(shader.into())});
+            let pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:None,layout:None,module:&module,entry_point:Some("main"),compilation_options:Default::default(),cache:None});
+            let output=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:96,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
+            let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:96,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:None,layout:&pipeline.get_bind_group_layout(0),entries:&[
+                wgpu::BindGroupEntry {binding:0,resource:input.as_entire_binding()},wgpu::BindGroupEntry {binding:1,resource:output.as_entire_binding()}]});
+            let mut enc=gpu.device.create_command_encoder(&Default::default());
+            {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_pipeline(&pipeline);pass.set_bind_group(0,&bind,&[]);pass.dispatch_workgroups(6,1,1);}
+            enc.copy_buffer_to_buffer(&output,0,&read,0,96);gpu.queue.submit([enc.finish()]);read.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
+            let mapped=read.slice(..).get_mapped_range().unwrap();let actual:&[[u32;4]]=bytemuck::cast_slice(&mapped);
+            assert_eq!(actual,indices.map(|i|super::selection_unpack(words[i])),"{lookup}");
+        }
+    }
+    #[test]
+    fn raster_budget_accounts_for_headers_and_device_capacity() {
+        let cap=super::bounded_splat_capacity;
+        assert_eq!(cap(4<<20,100,128<<20),4<<20);
+        assert_eq!(cap(16<<20,32768,128<<20),(128<<20)/16-12-4*32768);
+        assert_eq!(cap(10,100,16*(12+4*100)),0);
+        assert_eq!(cap(10,u64::MAX,u64::MAX),0);
+        assert_eq!(cap(0,0,128<<20),0);
+    }
+    #[test]
     fn temporal_layout_fits_sixteen_storage_bindings() {
         for temporal in [false, true] {
             let count = super::data_bindings(temporal).iter().filter(|(_, ty)| matches!(ty,
@@ -2051,8 +2100,8 @@ mod tests {
             // Reduced scene: instances, wind, terrain hierarchy, foliage pages.
             assert_eq!(count + 4, if temporal { 16 } else { 15 });
         }
-        assert!(super::shader_source().contains("const VOLUME_MASK_WORD: u32 = 22u;"));
-        assert_eq!(super::COUNTER_BYTES / 4, 22);
+        assert!(super::shader_source().contains("const VOLUME_MASK_WORD: u32 = 26u;"));
+        assert_eq!(super::COUNTER_BYTES / 4, 26);
     }
 
     #[test]
@@ -2404,7 +2453,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<super::Config>(), 64);
         assert_eq!(std::mem::offset_of!(super::Config, proxy), 48);
         assert_eq!(std::mem::offset_of!(super::Config, dispatch), 32);
-        assert_eq!(super::COUNTER_BYTES, (14 + 4 * 2) * 4);
+        assert_eq!(super::COUNTER_BYTES, (14 + 4 * 2 + 4) * 4);
         assert_eq!(3840u64 * 2160 * 8, 66_355_200);
         let candidates = 3840u64.div_ceil(16) * 2160u64.div_ceil(16) * 65 * 4;
         assert_eq!(candidates, 8_424_000);
@@ -2462,7 +2511,7 @@ mod tests {
         let source=include_str!("shaders/voxel_forest.wgsl");
         assert!(source.contains("const VOLUME_MAX_STEPS: u32 = 4096u;"));
         assert_eq!(super::INTEGRATOR_MAX_VOLUMES,4096);
-        assert!(source.contains("var<uniform> volume_selection_words: array<vec4<u32>,4096>"));
+
     }
 
 }

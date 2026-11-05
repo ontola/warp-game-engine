@@ -52,6 +52,8 @@ pub struct Settings {
     pub force_practice: bool,
     /// Bots always cast this recipe (screenshots).
     pub recipe: i32,
+    /// The level the host's "Level" setting last sent us to (0 the first).
+    pub level: i32,
 }
 
 impl Default for Settings {
@@ -65,6 +67,7 @@ impl Default for Settings {
             forced_unlocks: -1,
             force_practice: false,
             recipe: -1,
+            level: 0,
         }
     }
 }
@@ -306,6 +309,18 @@ impl World {
     }
 
     pub fn set_option(&mut self, key: &str, value: &str) {
+        // Joep: "Level" in the host's settings goes straight there, a fresh
+        // run in that level ("3. The Sunken Isles" or "3"). Only a change
+        // moves: the value the host sends on connecting keeps the run.
+        if key == "level" {
+            let n: i32 = value.split(|c: char| !c.is_ascii_digit()).find(|t| !t.is_empty()).and_then(|t| t.parse().ok()).unwrap_or(1);
+            let b = (n - 1).clamp(0, crate::biome::BIOMES.len() as i32 - 1);
+            if b != self.settings.level {
+                self.settings.level = b;
+                self.start_at(b);
+            }
+            return;
+        }
         self.settings.set(key, value);
         if key == "unlocks" {
             self.unlocks_changed();

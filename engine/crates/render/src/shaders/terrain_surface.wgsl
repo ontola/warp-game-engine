@@ -399,6 +399,28 @@ fn field_ground(s: SurfaceIn) -> FieldGround {
     return g;
 }
 
+// Ditches drawn into the pixels: the terrain's ditch amount (style block
+// material 7, procedural_terrain.rs reserve) on flat ground, and the
+// distance (metres) to the nearest ditch line on terrain_field's grid.
+fn field_ditch(xz: vec2<f32>, s: SurfaceIn, up: f32) -> vec2<f32> {
+    if s.scale >= 0.0 { return vec2<f32>(0.0, 1000.0); }
+    let amount = materials[u32(-s.scale - 0.5) + 7u].tint.x * smoothstep(0.97, 0.995, up);
+    if amount <= 0.0 { return vec2<f32>(0.0, 1000.0); }
+    let a = f32(u32(s.metal + 0.5) % 97u) * 0.0647;
+    let u = xz.x * cos(a) + xz.y * sin(a);
+    let v = xz.y * cos(a) - xz.x * sin(a);
+    let across = abs((u / 60.0 + 0.5) - floor(u / 60.0 + 0.5) - 0.5) * 60.0;
+    let along = abs((v / 400.0 + 0.5) - floor(v / 400.0 + 0.5) - 0.5) * 400.0;
+    return vec2<f32>(amount, min(across, along));
+}
+
+// Share of a pixel `fw` metres wide at distance `d` from a line that a
+// strip |d| < w covers.
+fn field_strip(d: f32, w: f32, fw: f32) -> f32 {
+    let h = 0.5 * max(fw, 1e-3);
+    return (clamp(d + h, -w, w) - clamp(d - h, -w, w)) / (2.0 * h);
+}
+
 // Roads drawn into the pixels (procedural_terrain.rs road_surface,
 // world_constraints.rs surface_words): data materials holding f32 words; the
 // style block's far forest params' metal points at them (first + 1).
@@ -637,9 +659,21 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     // share of the ground (terrain_field.rs Sample::film): the cover is
     // linear in depth up to there, so a far ditch keeps its share of water
     // as its strip widens to the cell.
-    if f.water > 0.0005 {
+    // Near a ditch the vertices' water (its film widened to the mesh cell,
+    // or the carved bed's edge along triangle edges) gives way to the
+    // ditch's own line, sharp and antialiased at any distance. The band is
+    // as wide as the film can spread on the coarsest cell for this pixel
+    // size (procedural_terrain::Settings::cell_pixels).
+    var w = min(f.water / WATER_FILM, 1.0);
+    let ditch = field_ditch(p.xz, s, f.up);
+    if ditch.x > 0.0 {
+        let cell = 24.0 * footprint;
+        let band = max(1.2, cell) + 0.5 * cell + 0.5;
+        let near = ditch.x * (1.0 - smoothstep(band, band + 1.0, ditch.y));
+        w = mix(w, ditch.x * field_strip(ditch.y, 1.2, footprint), near);
+    }
+    if w > 0.0 {
         let depth = clamp(f.water / 0.8, 0.0, 1.0);
-        let w = min(f.water / WATER_FILM, 1.0);
         let ripple = vec2<f32>(field_fbm(wuv * 1.7 + vec2<f32>(s.time * 0.31, 0.0), footprint * 1.7), field_fbm(wuv * 1.7 + vec2<f32>(5.0, s.time * 0.27), footprint * 1.7)) - 0.5;
         let wn = normalize(vec3<f32>(ripple.x * 0.12, 1.0, ripple.y * 0.12));
         c = mix(c, mix(c * 0.45, vec3<f32>(0.018, 0.03, 0.028), depth), w);

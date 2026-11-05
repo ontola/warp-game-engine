@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn settings_validate_and_restore_without_changing_other_values() {
         let mut s = Settings::new(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()).unwrap();
-        assert_eq!(s.specs.as_array().unwrap().len(), 10);
+        assert_eq!(s.specs.as_array().unwrap().len(), 11);
         for (k, v) in [
             ("boost_cost", json!(35)),
             ("boost_duration", json!(150)),

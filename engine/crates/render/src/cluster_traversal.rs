@@ -8,6 +8,7 @@ use glam::{DVec3, Vec3};
 use wgpu::util::DeviceExt;
 
 pub const COUNTER_BYTES: u64 = 32;
+pub const COUNTER_OFFSET: u64 = crate::tree_occlusion::PHASE_COUNTER_BYTES;
 pub const LEAF_CLUSTERS: usize = 32;
 pub const MIN_CLUSTERS: usize = 64;
 const NODE_WORDS: usize = 20;
@@ -166,10 +167,6 @@ impl Resources {
             }
         }
         Ok(Self {enabled,buffer,nodes:packed.nodes,meshes:packed.meshes})
-    }
-    pub fn counter_buffer(gpu:&Gpu)->wgpu::Buffer {
-        gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("cluster traversal diagnostics per view"),size:COUNTER_BYTES,
-            usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false})
     }
     pub fn diagnostics(&self,words:&[u32])->Result<Diagnostics,String> {
         validate_counts(words)?;
@@ -330,7 +327,9 @@ mod tests {
         let m=naga::front::wgsl::parse_str(&source).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&m).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));
         let n=m.global_variables.iter().filter(|(_,g)|matches!(g.space,naga::AddressSpace::Storage {..})).count();
-        assert!(n<=16,"portable storage limit: {n}");
+        assert!(n<=16,"allocation-sized choices must fit portable storage limit: {n}");
+        assert_eq!(COUNTER_OFFSET+COUNTER_BYTES,crate::tree_occlusion::COUNTER_BYTES);
+        assert!(!m.global_variables.iter().any(|(_,g)|g.binding.as_ref().is_some_and(|b|b.group==1&&b.binding==13)));
         assert_eq!(LEAF_CLUSTERS,32);assert_eq!(COUNTER_BYTES,32);
         assert!(source.contains("if cluster_traverse(id,inst,li,base_thr,wind_pad) {return;}"));
     }

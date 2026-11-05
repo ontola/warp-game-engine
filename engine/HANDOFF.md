@@ -129,7 +129,10 @@ dropping or aliasing. `procedural_terrain.wgsl` packs max(water, 0.04 * film)
 with a square-root water code (fine steps for thin films); `terrain_surface`
 covers ground linearly up to WATER_FILM (0.04 m). Physics, forest and
 placement read `water` and are unchanged. Far ditches read as soft dark
-lines; a per-pixel ditch line (sharper far away) is a possible next step.
+lines. Follow-up: ditches are also drawn per pixel (terrain_surface
+field_ditch, ditch amount in style block material 7, written by reserve):
+near a ditch the pixel line replaces the vertex water, so the edge no longer
+steps along triangle edges at mid range (Joep's F12, 5 Nov).
 Before/after: docs/images/terrain-water-film-polder.jpg (lavapipe).
 
 ## 5 November: allocation-sized producer choice tables

@@ -76,10 +76,10 @@ fn instance_at(id: u32) -> Instance {
 @group(1) @binding(1) var<storage, read> visible: array<vec2<u32>>;
 @group(1) @binding(2) var<storage, read> draw_map: array<u32>;
 @group(1) @binding(3) var<storage, read> draw_args: array<u32, 20>;
-@group(1) @binding(4) var<uniform> foliage_selection_words: array<vec4<u32>,4096>;
-fn foliage_selection_at(i:u32)->vec4<u32> { let v=foliage_selection_words[i>>2u]; return selection_unpack(v[i&3u]); }
+@group(1) @binding(4) var<storage,read> foliage_selection_words: array<u32>;
+fn foliage_selection_at(i:u32)->vec4<u32> { return selection_unpack(foliage_selection_words[i]); }
 // Packed group selection (aggregate_lod.wgsl writes it): one u32 per group,
-// four per vec4 of the 64 KiB uniform, 16384 groups. Bits 0-1 choice, 2-7
+// runtime-sized storage table. Bits 0-1 choice, 2-7
 // voxel level (63: none), 8-9 sun mode, 16-31 the triangle error as f16.
 fn selection_unpack(w:u32)->vec4<u32> {
     let y=(w>>2u)&63u;

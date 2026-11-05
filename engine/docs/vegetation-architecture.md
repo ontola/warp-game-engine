@@ -11,6 +11,145 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+## 5 November: branching splat barrier and playtest feedback
+
+- [x] GPU regression proves a temporary-cost barrier: four source leaves cost
+  four slots/zero camera splats, but the immediate branching voxel cut needs
+  200 splats against a five-splat budget. Before the fix it retains the root.
+- [x] Camera admission can bypass that barrier with the complete resident
+  source frontier. Reservation remains collective; missing source pages or
+  insufficient slots retain the parent. Intermediate voxel pages are not
+  required for a source-only publication. Propose/apply and diagnostic audit
+  agree; cached proposals preserve their publication mode. No CPU selection.
+- [x] All156 foliage tests pass including the new regression; release renderer
+  builds. Normal fixed-camera1200-frame strict check still FAILS at8.564px.
+- [ ] One-pixel camera and shadow acceptance: UNRESOLVED. User playtest still
+  shows many vegetation spheres and sphere-shaped grass shadows. Source-only
+  budget relief is not the requested pixel-voxel architecture's completion.
+- [ ] Full-scene scheduling convergence:42515 camera parents remain over target,
+  now individually affordable/resident according to the final-budget audit.
+  Individual affordability does not prove collective affordability or admission
+  within the finite wave schedule. Camera source slots20285 ->20678; camera
+  voxel slots1852 ->1594. No visible sphere fix or speedup is claimed.
+- [ ] Investigate biome/jump keys with playtester. Existing log shows scene
+  rebuilds but did not identify received keys. Add immediate action/building
+  status and input logging; do not label that as a proven input-route repair.
+
+Playtest was accidentally launched with the benchmark camera's1m/s speed;
+normal flight is40m/s. Explicit --speed now also overrides captured interactive
+speed. The inspection demo disables adaptive quality by default: the playtest
+had silently fallen to856x482 internal pixels, undermining visual assessment.
+Foliage defaults and physics are unchanged. These app adjustments require the
+next playtest to verify keyboard delivery; no interactive restart is automatic.
+
+Evidence: vegetation-source-frontier-measurements.json and
+build/playtest-unified/source-frontier-{tests,build,1200,playtest} logs/captures.
+
+## 5 November: fixed-camera convergence separates loading from selection
+
+Added terrain_fly --fly N --stationary: zero translation input while ticks,
+wind, rendering and asynchronous page service continue. This makes streaming
+convergence measurable without moving the camera into a different workload.
+The HUD speed is the configured movement speed; stationary input does not move.
+
+Same native1280x720 ONE-view camera at(0,8,0),151058 roots,32768 slots,16M splats:
+- Frame240:1893 pages resident, largest cell18.797px,12713 camera proposals
+ blocked by pages. Deferred queue overflows391390 requests vs262144 capacity.
+- Frame1200:2250 pages resident, last upload at frame288. No page misses,
+ evictions, pending uploads, or camera proposals blocked by pages. Largest cell
+ still8.564px;42703 camera cuts remain over target. Deferred queue no longer
+ overflows (167113 requests). The pixel-quality requirement STILL FAILS.
+- Worst settled cell is grass root107384, recipe2440, node2441. Both immediate
+ child pages are resident. GPU replay reports an eligible2-slot/85-splat
+ replacement for its0-slot/69-splat parent. Published camera budget is16776996
+ of16777216 splats;36758 resident proposals are individually affordable.
+ This does not mean all proposals fit collectively. The scene still saturates
+ its splat reservation even after asset loading is complete.
+
+Images inspected: nearby blades replace some coarse grass, but a prominent
+coarse-cell band remains. This disproves incomplete page loading as the sole
+cause of the persistent sphere problem. Do not change eviction logic on the
+basis of the earlier240-frame nonresident snapshot alone.
+
+Next correctness work: refinement scheduling and complete target-quality cuts
+under budget contention. The encoder currently reseeds roots each frame; a
+static camera does not accumulate refinement across frames. Distinguish final
+individually-affordable proposals from a collectively feasible complete cut.
+Investigate temporary-cost barriers before repeating rejected lookahead changes.
+
+Release build and both headless runs complete; strict quality exits nonzero.
+Single-run final120-frame GPU covered medians25.669/24.986ms are diagnostics,
+not repeated performance acceptance. Evidence: vegetation-stationary-convergence.json
+and build/playtest-unified/stationary-{240,1200}.*. No gate closed.
+
+## 5 November: whole-root grass ownership is now observable
+
+Offline raster profiling now decodes whole-root volumes, including separate
+camera and shadow publication ranges after an allocation-sized branch prefix.
+It reads the actual published representation, maps it back into that root's
+recipe subtree, reports child-page residency, and replays the GPU proposal.
+No CPU root/branch selection or per-frame readback was introduced.
+
+Normal16M/32768-slot capture identifies the worst15.300px cell as camera root
+109617, recipe2440, selected node2441: a0.32m grass voxel. No fallback fault.
+Its two immediate children are2442 (resident) and2564 (nonresident). Replay
+would replace69 splats/zero slots with85 splats/two slots, but returns inactive
+control because a required child is missing. This proves a page-readiness stop
+at the captured instant, NOT why the page was absent or whether the proposal
+could fit once resident. Slot/splat constraints remain independently saturated.
+
+The cache reports1893 resident pages, zero evictions/misses, no partial upload,
+and ongoing frame uploads. Its per-frame upload-count budget is8. A240-frame
+capture is therefore insufficient evidence of a permanently stuck page: test
+convergence with a fixed camera and inspect generation-qualified demand before
+changing the eviction/request algorithm. Do not label this a confirmed paging bug.
+
+Release build and155 foliage tests PASS, including GPU lifecycle/refinement
+fixtures and root-consumer range boundary test at65537 branch slots. The normal
+capture finishes and intentionally fails strict pixel quality. RGB MAE below
+HUD versus prior16M run is0.01114/0.01083/0.00792; not raw-buffer equivalence.
+Evidence: vegetation-root-attribution.json, root-attribution-16m.* and
+root-attribution-tests.log in build/playtest-unified. No quality gate closed.
+
+## 5 November: normal-renderer capacity evidence and shared splat budget
+
+Runtime-sized consumers are now verified in normal headless renders, including
+32,768 branch slots above the old uniform limit. Default TAA/native1280x720,
+ONE view, 151,058 active roots including grass; no 4K/four-view acceptance.
+The ordinary4096-slot image is effectively unchanged below the HUD (RGB MAE
+0.000261/0.000239/0.000199); this is PNG comparison, not raw visibility proof.
+
+The new diagnostic --splat-budget N controls the SAME renderer and selector
+capacity. Both subtract per-tree record headers from the actual device buffer
+limit. Previously independent4M clamps prevented an honest larger-capacity test;
+selector reservations could also exceed a hardware-clamped target. Added unit
+checks for header exhaustion, device truncation and overflow-safe arithmetic.
+Default splat/branch budgets and one-pixel policy remain unchanged.
+
+Single diagnostic runs (NOT repeated performance acceptance):
+-4096 slots /4M splats: largest cell21.308px;41,944 over-target camera cuts.
+ GPU covered median15.468ms. No missing records or refinement faults.
+-32768 slots /4M: same21.308px maximum;41,925 over-target cuts. Camera splat
+ capacity exhausted, no branch-slot stops. GPU covered median16.281ms.
+-32768 slots /16M: near trees gain source detail, but largest grass cell15.300px
+ at about(-17.70,0.14,-6.68), world cell width0.32m.42,878 cuts over target.
+ All32768 slots occupied; camera splats saturated;12,048 camera proposals
+ await pages. Deferred-cluster queue OVERFLOWS (431256 requested vs262144).
+ GPU covered median92.252ms. Selection19.325ms, recovery cull14.721ms,
+ voxel listing8.100ms and voxel raster8.099ms. The larger budget is NOT a fix.
+
+All strict pixel checks FAIL, as they should. Images inspected; detailed nearby
+tree shapes return with more capacity, but grass remains oversized and spherical.
+No FPS gain or full-forest correctness claim. Median timestamps use frames>=120,
+not wall time. Evidence: vegetation-dynamic-capacity-measurements.json and
+build/playtest-unified/{dynamic-choice-4096,dynamic-choice-32768,shared-budget-16m}.*.
+Release build,29 voxel tests and154 foliage tests PASS, including exclusive GPU
+choice-boundary, lifecycle, paging, refinement and shared-pose fixtures.
+
+Next: decode whole-root grass attribution and its pending refinement, preserve
+camera and shadow correctness under shared-slot contention, and resolve deferred
+queue capacity/recovery. Raising budgets alone does not satisfy the requirement.
+
 ## 5 November: allocation-sized producer choice tables
 
 GPU materialization, camera/shadow transfers, offline diagnostics and animated
@@ -29,8 +168,8 @@ Correction: the earlier pixel-policy-full capture omitted grass; it has71112root
 The new trees+grass capture has151058roots. Keep these populations distinct.
 Evidence: vegetation-choice-stride-measurements.json; original report annotated.
 
-This removes a producer assumption, NOT the publication limit itself. Per-view
-cull/raster/voxel consumers still use64KiB uniform choice tables and retain the
+Historical producer-only checkpoint (superseded by runtime-sized consumers above).
+At this point cull/raster/voxel used64KiB uniform choice tables and retained the
 16384 checked limit. Next: migrate those consumers to dynamically sized storage.
 Cull already uses16 storage bindings: consolidate traversal counters with its
 existing counter buffer before adding the choice storage binding. Preserve current
@@ -1497,3 +1636,34 @@ Integration check: rebased onto effa40f (HDR/exposure, VR, stone changes);
 release DLSS-enabled terrain_fly build and a 60-frame headless lowland GPU smoke
 run PASS. Smoke is not a steady-state performance sample. Logs:
 build/playtest-unified/seed-rebase-build.log and seed-rebase-smoke.log.
+
+
+## 5 November: runtime-sized consumer choices (capacity checkpoint)
+
+Correctness first: oversized coarse cells are still a failed requirement. This
+checkpoint removes the fixed 64 KiB/16,384-choice consumer table restriction;
+it does not establish pixel-scale correctness for the normal forest.
+
+- [x] Cull, source raster and voxel lookup use runtime-sized storage arrays.
+  GPU forest view allocations grow with the physical slot budget; legacy
+  authored tables retain their 16,384-entry capacity. Producer camera/shadow
+  strides remain allocation-sized. Default branch budget remains unchanged.
+- [x] Remain within sixteen storage bindings, including temporal voxels. Cull
+  traversal diagnostics share the phase-counter allocation at byte 128. Voxel
+  indirect draw arguments share diagnostics at byte 88, before the tile mask.
+  Partial clears preserve independent lifetimes and draw offsets are explicit.
+- [x] Real GPU boundary oracle uses each production consumer's declaration and
+  decoding functions at indices 0, 16383, 16384, 32767, 32768 and 65536. All
+  match CPU unpacked values. GPU partial-clear lifetime oracle passes.
+- [x] Focused release tests: voxel_forest 28, cluster_traversal 6,
+  tree_occlusion 7; includes ignored exclusive-GPU tests on NVIDIA/Vulkan.
+- [ ] Normal renderer capture above the former capacity limit, native and
+  temporal paths, with source/shadow/voxel counters and image inspection.
+- [ ] Full-forest strict one-pixel acceptance and motion/coverage validation.
+- [ ] Repeated per-pass measurements and four-view target acceptance.
+
+No visual fix or speedup is claimed. The relaxed GPU population guard still
+checks the virtual owner encoding; hardware buffer limits remain applicable.
+Tests above ran before rebasing onto concurrent main changes. The obsolete
+uniform-declaration assertion failed initially and was removed from the
+unrelated per-ray arithmetic test; the actual GPU boundary oracle replaces it.

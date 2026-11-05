@@ -99,7 +99,10 @@ impl Party {
 
     /// main.gd _declare.
     fn declare(&self) {
+        // Joep: jump straight to a level from the settings.
+        let levels: Vec<String> = spellstorm::biome::BIOMES.iter().enumerate().map(|(i, b)| format!("{}. {}", i + 1, b.name)).collect();
         let _ = self.client.declare_settings(json!([
+            {"key": "level", "label": "Level", "kind": "choice", "default": levels[0], "options": levels},
             {"key": "friendly_fire", "label": "Friendly fire", "kind": "choice", "default": "quarter", "options": ["off", "quarter", "half", "full"]},
             {"key": "difficulty", "label": "Difficulty", "kind": "choice", "default": "normal", "options": ["easy", "normal", "hard"]},
             {"key": "unlocks", "label": "Unlocks", "kind": "choice", "default": "earned", "options": ["earned", "all"]},
