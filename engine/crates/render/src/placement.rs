@@ -29,8 +29,9 @@ pub trait World: Sync {
     fn seed(&self) -> u32;
     /// The ground at (x, z).
     fn ground(&self, x: f32, z: f32) -> Sample;
-    /// A named context field at (x, z): "forest" (share of forest), later
-    /// "road_distance", "track_side", biome weights. 0 when unknown.
+    /// A named context field at (x, z): "forest" (share of forest),
+    /// "track_side", "zone:industrial" (a zone tag's share), "density"
+    /// (the zones' soft intent). 0 when unknown.
     fn field(&self, name: &str, x: f32, z: f32, ground: &Sample) -> f32 {
         let _ = (name, x, z, ground);
         0.0
@@ -76,6 +77,19 @@ pub fn regional(per_kind: Vec<Vec<Rule>>, variant: impl Fn(u32, u32) -> u32 + Se
         }
     }
     out
+}
+
+/// Rules kept out of where a field is high: each one's density scaled by
+/// 1 - `field` (a zone's share, say "zone:town": no forest in town).
+pub fn thinned(rules: Vec<Rule>, field: &'static str) -> Vec<Rule> {
+    rules.into_iter().map(|mut r| {
+        let density = r.density;
+        r.density = Box::new(move |s| {
+            let f = s.field(field);
+            if f >= 1.0 { 0.0 } else { density(s) * (1.0 - f.max(0.0)) }
+        });
+        r
+    }).collect()
 }
 
 /// Rule `rule` (below 256) of region kind `kind` (below 256): kind 0 keeps
@@ -128,7 +142,16 @@ impl World for TerrainWorld<'_> {
             "track_distance" => self.near(x, z).map_or(1e6, |n| n.distance),
             "track_side" => self.near(x, z).map_or(0.0, |n| n.side),
             "track_along" => self.near(x, z).map_or(0.0, |n| n.along),
-            _ => 0.0,
+            // Zones (crate::zones): "zone:TAG" is that tag's share, "zoned"
+            // how much is zoned at all, the rest the zones' soft intent.
+            "zoned" => self.constraints.map_or(0.0, |w| w.zoning(x, z).covered),
+            "density" => self.constraints.map_or(0.0, |w| w.zoning(x, z).density),
+            "wealth" => self.constraints.map_or(0.0, |w| w.zoning(x, z).wealth),
+            "age" => self.constraints.map_or(0.0, |w| w.zoning(x, z).age),
+            _ => match (name.strip_prefix("zone:"), self.constraints) {
+                (Some(tag), Some(w)) => w.zone(tag, x, z),
+                _ => 0.0,
+            },
         }
     }
 }

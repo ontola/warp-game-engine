@@ -3,7 +3,10 @@
 //! A race game's track is the first one: its road is exactly where and how
 //! high the game says, and the terrain bends to it with cuttings and
 //! embankments, rivers stop at it, and no tree grows on it. Pads are round
-//! flat places (a service park, a village square, a landmark's footing).
+//! flat places (a service park, a village square, a landmark's footing);
+//! footprints are flat plots of any outline (a building's footing, a yard).
+//! Zones (`crate::zones`) say what each place is for; they bend nothing but
+//! are fields generators read.
 //! Regions (`crate::regions`) say which kind of land lies where: the style
 //! the terrain takes at each point, blended between up to four.
 //!
@@ -22,6 +25,7 @@
 //! ```
 use crate::forest_field;
 use crate::regions::Regions;
+use crate::zones::{Zone, Zones, Zoning};
 use crate::terrain_field::{self, Sample, Style};
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3};
@@ -189,13 +193,47 @@ pub struct Pad {
     pub height: Option<f32>,
 }
 
+/// A flat plot of any outline (a building's footing, a yard, a square):
+/// inside the outline the ground is level at `height`, outside it meets
+/// the land again like a pad's rim. A pad is the round case.
+#[derive(Clone, Debug)]
+pub struct Footprint {
+    /// Corners in x-z, either winding; at least three, no repeats.
+    pub outline: Vec<Vec2>,
+    pub feather: f32,
+    /// None: the land's own height at the outline's centre.
+    pub height: Option<f32>,
+    /// 0: the plot keeps the land's surface (grass, sand); 1: bare gravel
+    /// like the road (a building's footing, a yard).
+    pub bare: f32,
+}
+
+impl Footprint {
+    /// The plot as bare ground (0..1).
+    pub fn bare(mut self, bare: f32) -> Self { self.bare = bare; self }
+
+    /// A rectangle `size` across, centred on `centre`, turned by `yaw`
+    /// radians.
+    pub fn rect(centre: Vec2, size: Vec2, yaw: f32, feather: f32, height: Option<f32>) -> Self {
+        let (s, c) = yaw.sin_cos();
+        let h = size * 0.5;
+        let outline = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].iter()
+            .map(|&(u, v)| { let q = Vec2::new(u * h.x, v * h.y); centre + Vec2::new(q.x * c - q.y * s, q.x * s + q.y * c) }).collect();
+        Footprint { outline, feather, height, bare: 0.0 }
+    }
+}
+
 /// Everything the world is generated around.
 #[derive(Clone, Debug, Default)]
 pub struct Constraints {
     pub tracks: Vec<Track>,
     pub pads: Vec<Pad>,
+    /// Flat plots the land is levelled to (hard intent).
+    pub footprints: Vec<Footprint>,
     /// Which land lies where; None: the one style everywhere.
     pub regions: Option<Regions>,
+    /// What each place is for (soft intent: crate::zones).
+    pub zones: Vec<Zone>,
 }
 
 /// One straight piece of a road, as the GPU reads it.
@@ -206,8 +244,11 @@ pub struct Segment {
     pub a: [f32; 4],
     /// End (x, y, z) and its distance along the track.
     pub b: [f32; 4],
-    /// Half width at a and b, track index, and 0 (1 for a pad: a.xyz its
-    /// centre and height, b.x its radius, b.y its feather).
+    /// Half width at a and b, track index, and 0. 1 for a pad: a.xyz its
+    /// centre and height, b.x its radius, b.y its feather. 2 for a
+    /// footprint: a.xyz its centre and height, b.x its first corner in the
+    /// world's outline corners, b.y how many, b.z its feather, b.w the
+    /// farthest corner's distance from the centre, w.x how bare it is.
     pub w: [f32; 4],
 }
 
@@ -229,7 +270,17 @@ pub struct Header {
     pub region_at: u32,
     pub region_size: [u32; 2],
     pub region_styles: u32,
-    pub _pad2: u32,
+    /// Where the footprints' corners start in the index buffer (x, z bits
+    /// a corner).
+    pub shape_at: u32,
+    /// The zones' grid (crate::zones): cell (0, 0), spacing, how many
+    /// zones (0: none), cells across and where their words start.
+    pub zone_origin: [f32; 2],
+    pub zone_cell: f32,
+    pub zone_count: u32,
+    pub zone_size: [u32; 2],
+    pub zone_at: u32,
+    pub _pad3: u32,
 }
 
 /// The constraints baked for lookup: a grid of cells, each with the list
@@ -243,6 +294,10 @@ pub struct World {
     pub items: Vec<u32>,
     /// Which land lies where (its words follow `items` on the GPU).
     pub regions: Option<Regions>,
+    /// The footprints' corners (after the regions' words on the GPU).
+    pub shapes: Vec<Vec2>,
+    /// What each place is for (after the corners on the GPU).
+    pub zones: Option<Zones>,
     tracks: usize,
 }
 
@@ -274,7 +329,9 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
 struct Pull { y: f32, band: f32, slope: f32, core: f32, near: Near }
 
 impl Constraints {
-    pub fn is_empty(&self) -> bool { self.tracks.is_empty() && self.pads.is_empty() && self.regions.is_none() }
+    pub fn is_empty(&self) -> bool {
+        self.tracks.is_empty() && self.pads.is_empty() && self.footprints.is_empty() && self.regions.is_none() && self.zones.is_empty()
+    }
 
     /// Bake for lookup. Pads without a height take the land's at their
     /// centre from `seed` and `style` (the regions' style there, if any).
@@ -296,7 +353,20 @@ impl Constraints {
             let h = pad.height.unwrap_or_else(|| terrain_field::height(pad.centre.x, pad.centre.y, seed, &st));
             segments.push(Segment { a: [pad.centre.x, h, pad.centre.y, 0.0], b: [pad.radius, pad.feather.max(MIN_REACH), 0.0, 0.0], w: [0.0, 0.0, 0.0, 1.0] });
         }
-        let mut world = World::from_segments(segments, self.tracks.len());
+        let mut shapes = Vec::new();
+        for f in &self.footprints {
+            let outline = clean_outline(&f.outline);
+            assert!(outline.len() >= 3, "a footprint needs three distinct corners");
+            let centre = outline.iter().copied().sum::<Vec2>() / outline.len() as f32;
+            let bound = outline.iter().map(|c| c.distance(centre)).fold(0.0, f32::max);
+            let st = self.regions.as_ref().map_or(*style, |r| r.style_at(centre.x, centre.y));
+            let h = f.height.unwrap_or_else(|| terrain_field::height(centre.x, centre.y, seed, &st));
+            segments.push(Segment { a: [centre.x, h, centre.y, 0.0], b: [shapes.len() as f32, outline.len() as f32, f.feather.max(MIN_REACH), bound], w: [f.bare.clamp(0.0, 1.0), 0.0, 0.0, 2.0] });
+            shapes.extend(outline);
+        }
+        assert!(shapes.len() < 1 << 23, "too many footprint corners");
+        let mut world = World::from_segments(segments, shapes, self.tracks.len());
+        let mut at = world.cells.len() + world.items.len();
         if let Some(r) = &self.regions {
             let h = &mut world.header;
             h.region_origin = r.origin.into();
@@ -304,7 +374,20 @@ impl Constraints {
             h.region_at = (world.cells.len() + world.items.len()) as u32;
             h.region_size = r.size;
             h.region_styles = r.styles.len() as u32;
+            at += r.words().len();
             world.regions = Some(r.clone());
+        }
+        world.header.shape_at = at as u32;
+        at += 2 * world.shapes.len();
+        if !self.zones.is_empty() {
+            let z = Zones::bake(&self.zones);
+            let h = &mut world.header;
+            h.zone_origin = z.origin.into();
+            h.zone_cell = z.cell;
+            h.zone_count = z.count();
+            h.zone_size = z.size;
+            h.zone_at = at as u32;
+            world.zones = Some(z);
         }
         world
     }
@@ -312,9 +395,14 @@ impl Constraints {
 
 impl World {
     /// No constraints: every lookup returns the land unchanged.
-    pub fn empty() -> Self { World::from_segments(Vec::new(), 0) }
+    pub fn empty() -> Self { World::from_segments(Vec::new(), Vec::new(), 0) }
 
     fn reach(s: &Segment) -> (Vec2, Vec2) {
+        if s.w[3] > 1.5 {
+            let c = Vec2::new(s.a[0], s.a[2]);
+            let r = s.b[3] + s.b[2].max(MAX_REACH);
+            return (c - r, c + r);
+        }
         if s.w[3] > 0.5 {
             let c = Vec2::new(s.a[0], s.a[2]);
             let r = s.b[0] + (s.b[1]).max(MAX_REACH);
@@ -325,9 +413,9 @@ impl World {
         (a.min(b) - r, a.max(b) + r)
     }
 
-    fn from_segments(segments: Vec<Segment>, tracks: usize) -> Self {
+    fn from_segments(segments: Vec<Segment>, shapes: Vec<Vec2>, tracks: usize) -> Self {
         if segments.is_empty() {
-            return World { header: Header { size: [1, 1], cell: CELL, ..Default::default() }, segments, cells: vec![0, 0], items: Vec::new(), regions: None, tracks };
+            return World { header: Header { size: [1, 1], cell: CELL, ..Default::default() }, segments, cells: vec![0, 0], items: Vec::new(), regions: None, shapes, zones: None, tracks };
         }
         let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
         for s in &segments {
@@ -344,7 +432,7 @@ impl World {
             let (i1, j1) = (((b.x - origin.x) / CELL).floor() as u32, ((b.y - origin.y) / CELL).floor() as u32);
             for j in j0..=j1.min(size[1] - 1) {
                 for i in i0..=i1.min(size[0] - 1) {
-                    if Self::reaches(s, origin + Vec2::new(i as f32, j as f32) * CELL) { lists[(j * size[0] + i) as usize].push(k as u32); }
+                    if reaches(s, &shapes, origin + Vec2::new(i as f32, j as f32) * CELL) { lists[(j * size[0] + i) as usize].push(k as u32); }
                 }
             }
         }
@@ -356,18 +444,7 @@ impl World {
         }
         cells.push(items.len() as u32);
         let header = Header { origin: origin.into(), cell: CELL, arms: MAX_ARMS as u32, size, segments: segments.len() as u32, ..Default::default() };
-        World { header, segments, cells, items, regions: None, tracks }
-    }
-
-    /// Whether segment `s` can pull any point of the cell at `corner`.
-    fn reaches(s: &Segment, corner: Vec2) -> bool {
-        let centre = corner + Vec2::splat(CELL * 0.5);
-        let r = CELL * std::f32::consts::FRAC_1_SQRT_2;
-        if s.w[3] > 0.5 {
-            return centre.distance(Vec2::new(s.a[0], s.a[2])) <= s.b[0] + s.b[1].max(MAX_REACH) + r;
-        }
-        let (d, ..) = closest(s, centre);
-        d <= s.w[0].max(s.w[1]) + VERGE + MAX_REACH + r
+        World { header, segments, cells, items, regions: None, shapes, zones: None, tracks }
     }
 
     pub fn is_empty(&self) -> bool { self.segments.is_empty() }
@@ -397,14 +474,14 @@ impl World {
         best
     }
 
-    /// Metres from (x, z) to the nearest constrained surface (road edge or
-    /// pad rim); negative inside; f32::MAX far from all.
+    /// Metres from (x, z) to the nearest constrained surface (road edge,
+    /// pad rim or footprint outline); negative inside; f32::MAX far from all.
     pub fn clearance(&self, x: f32, z: f32) -> f32 {
         let p = Vec2::new(x, z);
         let mut c = f32::MAX;
         for &k in self.list(x, z) {
             let s = &self.segments[k as usize];
-            c = c.min(if s.w[3] > 0.5 { p.distance(Vec2::new(s.a[0], s.a[2])) - s.b[0] } else { let n = segment_near(s, p); n.distance - n.half });
+            c = c.min(if s.w[3] > 0.5 { rim(s, &self.shapes, p) } else { let n = segment_near(s, p); n.distance - n.half });
         }
         c
     }
@@ -418,9 +495,11 @@ impl World {
         for &k in self.list(x, z) {
             let s = &self.segments[k as usize];
             let pull = if s.w[3] > 0.5 {
-                let d = p.distance(Vec2::new(s.a[0], s.a[2]));
-                let near = Near { distance: d, side: 0.0, along: 0.0, track: u32::MAX, half: s.b[0], height: s.a[1] };
-                arm_pull(s.a[1], d - s.b[0], 0.0, near)
+                let d = rim(s, &self.shapes, p);
+                let near = Near { distance: d, side: 0.0, along: 0.0, track: u32::MAX, half: 0.0, height: s.a[1] };
+                // A bare footprint is gravel inside, fading out over the verge.
+                let core = if s.w[3] > 1.5 { s.w[0] * smooth(VERGE, 0.0, d) } else { 0.0 };
+                arm_pull(s.a[1], d, core, near)
             } else {
                 let near = segment_near(s, p);
                 arm_pull(near.height, near.distance - near.half - VERGE, smooth(near.half + VERGE, near.half, near.distance), near)
@@ -438,6 +517,15 @@ impl World {
         }
         n
     }
+
+    /// The share (0..1) of zone tag `tag` at (x, z) (crate::zones); 0
+    /// where no zone of that tag lies or the world has none.
+    pub fn zone(&self, tag: &str, x: f32, z: f32) -> f32 {
+        self.zones.as_ref().and_then(|zs| zs.tag(tag).map(|t| zs.weight(t, x, z))).unwrap_or(0.0)
+    }
+
+    /// The zones' soft intent at (x, z) (crate::zones::Zoning).
+    pub fn zoning(&self, x: f32, z: f32) -> Zoning { self.zones.as_ref().map_or(Zoning::default(), |zs| zs.zoning(x, z)) }
 
     /// The terrain style at (x, z): the regions' blend there, or `style`
     /// when the world has no regions.
@@ -604,6 +692,12 @@ impl GpuWorld {
             debug_assert_eq!(index.len() as u32, world.header.region_at);
             index.extend(r.words());
         }
+        debug_assert_eq!(index.len() as u32, world.header.shape_at);
+        for c in &world.shapes { index.extend_from_slice(&[c.x.to_bits(), c.y.to_bits()]); }
+        if let Some(z) = &world.zones {
+            debug_assert_eq!(index.len() as u32, world.header.zone_at);
+            index.extend(z.words());
+        }
         index.push(0);
         GpuWorld {
             header: make("world constraints header", bytemuck::bytes_of(&world.header)),
@@ -638,6 +732,59 @@ pub fn bank(u: f32) -> (f32, f32) {
 fn arm_pull(y: f32, u: f32, core: f32, near: Near) -> Pull {
     let (band, slope) = bank(u);
     Pull { y, band, slope, core, near }
+}
+
+/// Whether segment `s` can pull any point of the cell at `corner`.
+fn reaches(s: &Segment, shapes: &[Vec2], corner: Vec2) -> bool {
+    let centre = corner + Vec2::splat(CELL * 0.5);
+    let r = CELL * std::f32::consts::FRAC_1_SQRT_2;
+    if s.w[3] > 1.5 { return rim(s, shapes, centre) <= s.b[2].max(MAX_REACH) + r; }
+    if s.w[3] > 0.5 {
+        return centre.distance(Vec2::new(s.a[0], s.a[2])) <= s.b[0] + s.b[1].max(MAX_REACH) + r;
+    }
+    let (d, ..) = closest(s, centre);
+    d <= s.w[0].max(s.w[1]) + VERGE + MAX_REACH + r
+}
+
+/// Metres from p to a pad's rim or a footprint's outline; negative inside.
+fn rim(s: &Segment, shapes: &[Vec2], p: Vec2) -> f32 {
+    if s.w[3] > 1.5 {
+        let first = s.b[0] as usize;
+        outline_distance(&shapes[first..first + s.b[1] as usize], p)
+    } else {
+        p.distance(Vec2::new(s.a[0], s.a[2])) - s.b[0]
+    }
+}
+
+/// Signed distance from p to a closed outline: negative inside, exact
+/// everywhere, either winding (wc_outline in the WGSL, line for line).
+pub fn outline_distance(corners: &[Vec2], p: Vec2) -> f32 {
+    let n = corners.len();
+    let mut d = (p - corners[0]).length_squared();
+    let mut sign = 1.0f32;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (vi, vj) = (corners[i], corners[j]);
+        let e = vj - vi;
+        let w = p - vi;
+        let b = w - e * (w.dot(e) / e.dot(e)).clamp(0.0, 1.0);
+        d = d.min(b.dot(b));
+        let (c0, c1, c2) = (p.y >= vi.y, p.y < vj.y, e.x * w.y > e.y * w.x);
+        if (c0 && c1 && c2) || (!c0 && !c1 && !c2) { sign = -sign; }
+        j = i;
+    }
+    sign * d.sqrt()
+}
+
+/// An outline without repeated corners (the distance divides by each
+/// edge's length), the closing repeat of the first corner dropped too.
+pub(crate) fn clean_outline(corners: &[Vec2]) -> Vec<Vec2> {
+    let mut out: Vec<Vec2> = Vec::with_capacity(corners.len());
+    for &c in corners {
+        if out.last().is_none_or(|l| l.distance_squared(c) > 1e-6) { out.push(c); }
+    }
+    while out.len() > 1 && out[0].distance_squared(*out.last().unwrap()) <= 1e-6 { out.pop(); }
+    out
 }
 
 fn smax(a: f32, b: f32, k: f32) -> f32 {
@@ -814,10 +961,38 @@ mod tests {
             assert_eq!(only.eval(x, z, 0.0, 4, &a), terrain_field::eval(x, z, 0.0, 4, &regions.style_at(x, z)));
         }
         let (track, _) = ring(4, &a);
-        let world = Constraints { tracks: vec![track.clone()], pads: vec![], regions: Some(regions) }.bake(4, &a);
+        let world = Constraints { tracks: vec![track.clone()], regions: Some(regions), ..Default::default() }.bake(4, &a);
         let p = track.points[5];
         assert!((world.eval(p.x, p.z, 0.0, 4, &a).pos.y - p.y).abs() < 1e-3);
         assert_eq!(world.header.region_at as usize, world.cells.len() + world.items.len());
+    }
+
+    /// A footprint is level inside its outline, whatever its shape, meets
+    /// the land beyond it, and keeps trees off; zones bend nothing.
+    #[test]
+    fn a_footprint_is_level_inside_its_outline() {
+        let style = Style::alpine();
+        let l = vec![Vec2::new(0.0, 0.0), Vec2::new(60.0, 0.0), Vec2::new(60.0, 20.0), Vec2::new(20.0, 20.0), Vec2::new(20.0, 50.0), Vec2::new(0.0, 50.0)];
+        let plot = Footprint::rect(Vec2::new(300.0, 120.0), Vec2::new(40.0, 24.0), 0.6, 8.0, Some(55.0));
+        let zone = Zone::new("residential", vec![Vec2::new(-200.0, -200.0), Vec2::new(500.0, -200.0), Vec2::new(500.0, 400.0)], 50.0);
+        let world = Constraints { footprints: vec![Footprint { outline: l, feather: 8.0, height: None, bare: 1.0 }, plot], zones: vec![zone], ..Default::default() }.bake(3, &style);
+        let h = world.eval(10.0, 25.0, 0.0, 3, &style).pos.y;
+        for (x, z) in [(1.0, 1.0), (59.0, 19.0), (19.0, 49.0), (40.0, 10.0)] {
+            let s = world.eval(x, z, 0.0, 3, &style);
+            assert!((s.pos.y - h).abs() < 1e-3, "L not level at {x} {z}");
+            assert!(s.scree > 0.99 && s.water == 0.0, "the bare L is gravel at {x} {z}");
+            assert!(world.clearance(x, z) < 0.0);
+        }
+        // The notch of the L is outside it: not forced level.
+        assert!(world.clearance(40.0, 40.0) > 0.0);
+        assert!((world.eval(300.0, 120.0, 0.0, 3, &style).pos.y - 55.0).abs() < 1e-3);
+        // Far away the land is its own.
+        assert_eq!(world.eval(900.0, 900.0, 0.0, 3, &style), terrain_field::eval(900.0, 900.0, 0.0, 3, &style));
+        assert_eq!(world.zone("residential", 250.0, 0.0), 1.0);
+        assert_eq!(world.zone("industrial", 250.0, 0.0), 0.0);
+        let zoned = Constraints { zones: world.zones.as_ref().map(|_| vec![Zone::new("park", vec![Vec2::ZERO, Vec2::new(90.0, 0.0), Vec2::new(0.0, 90.0)], 10.0)]).unwrap(), ..Default::default() }.bake(3, &style);
+        assert_eq!(zoned.eval(20.0, 20.0, 0.0, 3, &style), terrain_field::eval(20.0, 20.0, 0.0, 3, &style));
+        assert_eq!(zoned.zone("park", 20.0, 20.0), 1.0);
     }
 
     /// The constraints' WGSL (regions included) parses and validates, and
@@ -829,7 +1004,7 @@ mod tests {
 @group(0) @binding(0) var<storage, read_write> out: array<vec4<f32>>;
 @compute @workgroup_size(1) fn main() {
     let s = terrain_eval_world(1.0, 2.0, 0.5, 3u, TerrainStyle(0.5, 0.5, 1500.0, 1.0, 0.5, 0.5, 0.5, 1.0, 0.5, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
-    out[0] = vec4<f32>(s.pos, wc_clearance(1.0, 2.0));
+    out[0] = vec4<f32>(s.pos, wc_clearance(1.0, 2.0) + wc_zone(1.0, 2.0, 0u) + wc_zoning(1.0, 2.0).y);
 }"#;
         for source in [format!("{}\n{}\n{}", terrain_field::WGSL, wgsl(0, 3), entry),
             format!("{}\n{}\n{}", terrain_field::WGSL, wgsl(0, 4), include_str!("shaders/procedural_terrain.wgsl"))] {
@@ -842,7 +1017,7 @@ mod tests {
     /// CPU and GPU bend the land the same way, to float rounding.
     #[test]
     fn gpu_matches_cpu() {
-        let Ok(gpu) = crate::Gpu::new() else { return };
+        let Ok(gpu) = crate::Gpu::new() else { eprintln!("no GPU: parity skipped"); return };
         for regions in [false, true] { gpu_matches_cpu_with(&gpu, regions); }
     }
 
@@ -853,7 +1028,14 @@ mod tests {
         let (track, world) = ring(seed, &style);
         let world = if regions {
             let r = crate::regions::Regions::split([Style::alpine(), Style::lowland()], Vec2::new(150.0, -60.0), 3000.0, Vec2::new(1.0, 0.4), 500.0, 150.0, seed);
-            Constraints { tracks: vec![track], pads: vec![Pad { centre: Vec2::new(150.0, -60.0), radius: 25.0, feather: 15.0, height: None }], regions: Some(r) }.bake(seed, &style)
+            let zones = vec![
+                Zone::new("industrial", vec![Vec2::new(-500.0, -700.0), Vec2::new(200.0, -700.0), Vec2::new(100.0, 0.0), Vec2::new(-400.0, 100.0)], 120.0).density(0.9).age(0.8),
+                Zone::new("residential", vec![Vec2::new(100.0, 0.0), Vec2::new(800.0, -100.0), Vec2::new(700.0, 600.0), Vec2::new(-100.0, 590.0)], 60.0).wealth(0.7),
+                Zone::new("industrial", vec![Vec2::new(300.0, 100.0), Vec2::new(420.0, 100.0), Vec2::new(360.0, 260.0)], 30.0)];
+            let footprints = vec![
+                Footprint::rect(Vec2::new(-120.0, -200.0), Vec2::new(60.0, 30.0), 0.4, 10.0, None).bare(0.7),
+                Footprint { outline: vec![Vec2::new(250.0, 200.0), Vec2::new(330.0, 210.0), Vec2::new(320.0, 260.0), Vec2::new(290.0, 240.0), Vec2::new(260.0, 270.0)], feather: 8.0, height: Some(30.0), bare: 0.0 }];
+            Constraints { tracks: vec![track], pads: vec![Pad { centre: Vec2::new(150.0, -60.0), radius: 25.0, feather: 15.0, height: None }], regions: Some(r), footprints, zones }.bake(seed, &style)
         } else { world };
         let points: Vec<[f32; 2]> = (0..4096).map(|k| [(k as f32 * 37.31) % 1300.0 - 500.0, (k as f32 * 91.73) % 1300.0 - 710.0]).collect();
         let shader = format!("{}\n{}\n{}", terrain_field::WGSL, wgsl(0, 3), r#"
@@ -866,8 +1048,10 @@ struct Params { seed: u32, pad0: u32, pad1: u32, pad2: u32, style: TerrainStyle 
     let p = points[gid.x];
     let s = terrain_eval_world(p.x, p.y, 0.5, params.seed, params.style);
     let n = wc_near(p.x, p.y);
-    out[gid.x * 2u] = vec4<f32>(s.pos.y, s.scree, s.up, s.water);
-    out[gid.x * 2u + 1u] = vec4<f32>(n.distance, n.along, wc_clearance(p.x, p.y), f32(n.track));
+    out[gid.x * 4u] = vec4<f32>(s.pos.y, s.scree, s.up, s.water);
+    out[gid.x * 4u + 1u] = vec4<f32>(n.distance, n.along, wc_clearance(p.x, p.y), f32(n.track));
+    out[gid.x * 4u + 2u] = wc_zoning(p.x, p.y);
+    out[gid.x * 4u + 3u] = vec4<f32>(wc_zone(p.x, p.y, 0u), wc_zone(p.x, p.y, 1u), wc_zone(p.x, p.y, 7u), 0.0);
 }"#);
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("constraints parity"), source: wgpu::ShaderSource::Wgsl(shader.into()) });
         let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: None, layout: None, module: &module, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
@@ -875,7 +1059,7 @@ struct Params { seed: u32, pad0: u32, pad1: u32, pad2: u32, style: TerrainStyle 
         params.extend_from_slice(bytemuck::bytes_of(&style));
         let params = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: &params, usage: wgpu::BufferUsages::UNIFORM });
         let input = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&points), usage: wgpu::BufferUsages::STORAGE });
-        let size = (points.len() * 32) as u64;
+        let size = (points.len() * 64) as u64;
         let output = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let read = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         let gw = GpuWorld::new(gpu, &world);
@@ -897,10 +1081,10 @@ struct Params { seed: u32, pad0: u32, pad1: u32, pad2: u32, style: TerrainStyle 
         read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
         let got: Vec<[f32; 4]> = bytemuck::cast_slice(&read.slice(..).get_mapped_range().unwrap()).to_vec();
-        let (mut bent, mut agree) = (0, 0);
+        let (mut bent, mut agree, mut zoned) = (0, 0, 0usize);
         for (k, p) in points.iter().enumerate() {
             let s = world.eval(p[0], p[1], 0.5, seed, &style);
-            let (g, n) = (got[k * 2], got[k * 2 + 1]);
+            let (g, n, zg, zt) = (got[k * 4], got[k * 4 + 1], got[k * 4 + 2], got[k * 4 + 3]);
             if s != terrain_field::eval(p[0], p[1], 0.5, seed, &world.style_at(p[0], p[1], &style)) { bent += 1; }
             // terrain_eval differs from eval in the last bits.
             if (g[0] - s.pos.y).abs() < 0.02 && (g[1] - s.scree).abs() < 1e-3 && (g[2] - s.up).abs() < 1e-3 && (g[3] - s.water).abs() < 0.02 { agree += 1; }
@@ -911,7 +1095,15 @@ struct Params { seed: u32, pad0: u32, pad1: u32, pad2: u32, style: TerrainStyle 
             }
             let c = world.clearance(p[0], p[1]);
             assert!((n[2] - c).abs() < 1e-3 || (c == f32::MAX && n[2] > 1e38));
+            let z = world.zoning(p[0], p[1]);
+            assert!((zg[0] - z.covered).abs() < 1e-4 && (zg[1] - z.density).abs() < 1e-4 && (zg[2] - z.wealth).abs() < 1e-4 && (zg[3] - z.age).abs() < 1e-4, "zoning {p:?}: {zg:?} vs {z:?}");
+            if let Some(zs) = &world.zones {
+                for (t, got) in [(0u32, zt[0]), (1, zt[1])] { assert!((got - zs.weight(t, p[0], p[1])).abs() < 1e-4, "zone {t} at {p:?}"); }
+                if regions { zoned += usize::from(z.covered > 0.0 && z.covered < 1.0); }
+            }
+            assert_eq!(zt[2], 0.0);
         }
+        if regions { assert!(zoned > 50, "{zoned} samples on zone edges"); }
         assert!(bent > 300, "{bent} bent samples compared");
         assert!(agree * 1000 >= points.len() * 998, "{agree} of {} samples agree", points.len());
     }
@@ -925,6 +1117,6 @@ pub(crate) fn tests_ring(seed: u32, style: &Style) -> (Track, World) {
     }).collect();
     let mut track = Track::spline(&control, 4.0, true);
     track.fit_heights(|x, z| terrain_field::height(x, z, seed, style), 0.1, 80.0);
-    let world = Constraints { tracks: vec![track.clone()], pads: vec![Pad { centre: Vec2::new(150.0, -60.0), radius: 25.0, feather: 15.0, height: None }], regions: None }.bake(seed, style);
+    let world = Constraints { tracks: vec![track.clone()], pads: vec![Pad { centre: Vec2::new(150.0, -60.0), radius: 25.0, feather: 15.0, height: None }], ..Default::default() }.bake(seed, style);
     (track, world)
 }
