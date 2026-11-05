@@ -67,6 +67,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_CPU_SPANS=1`, `KERN_STARTUP_PROFILE=1` | CPU time per frame phase; renderer construction profile. |
 | `KERN_DIAGNOSTIC_HIDE` | Hide geometry categories in captures. |
 | `KERN_MEADOW_CAPTURE_RAW=1` | Sideways: raw meadow buffers in the capture JSON. |
+| `KERN_WEBGPU_LIMITS=spec`, `=browser` | Native device with only what a browser's WebGPU gives: the timestamp and first-instance features, and the spec's default limits (`spec`) or what about 80 % of WebGPU devices offer (`browser`: 16 storage buffers and 32 sampled textures per stage, 1 GiB buffers), never above the adapter. For checking a [browser build](log/2026-11-05-browser-feasibility.md) without a browser. |
 | `KERN_DLSS_RUNTIME_DIR` | Where to find `nvngx_dlss.dll` ([DLSS](../crates/render/native/DLSS.md)). |
 
 ## Experiments: off by default, `=1` opts in

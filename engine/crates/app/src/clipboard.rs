@@ -4,7 +4,7 @@
 //! inside the process, so a script never touches the user's clipboard.
 use std::sync::Mutex;
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 mod desktop {
 use super::*;
 struct State { memory_only: bool, memory: String, system: Option<arboard::Clipboard>, tried: bool }
@@ -54,10 +54,10 @@ pub fn get() -> String {
 }
 
 }
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub use desktop::*;
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_arch = "wasm32"))]
 mod android {
     use super::*;
     static TEXT: Mutex<String> = Mutex::new(String::new());
@@ -66,7 +66,7 @@ mod android {
     pub fn get() -> String { TEXT.lock().unwrap().clone() }
     pub fn set_image(_: u32, _: u32, _: &[u8]) -> bool { false }
 }
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_arch = "wasm32"))]
 pub use android::*;
 
 #[cfg(test)]

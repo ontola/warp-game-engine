@@ -45,6 +45,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [SpaceRacer native 4K, 1 November](spaceracer-native4k-2026-11-01.md)
 - [Quest 2 cost investigation, 31 October](quest-profile-2026-10-31.md)
 - [Quest lightweight graphics, 1 November](quest-optimization-2026-11-01.md)
+- [terrain_fly in a browser (wasm, WebGPU): feasibility, 5 November](2026-11-05-browser-feasibility.md)
 
 ## Traversal and work avoidance
 

@@ -7,6 +7,8 @@
 //! and shaded once per pixel in HDR (frame.rs).
 
 pub mod cluster;
+#[cfg(target_arch = "wasm32")]
+mod web;
 pub mod dents;
 pub mod dfao;
 pub mod frame;

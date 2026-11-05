@@ -1,0 +1,9 @@
+#pragma once
+// Warp: operator new/delete declarations and placement new for wasm32
+// builds without a C++ standard library.
+
+#include <stddef.h>
+
+void* operator new(size_t size);
+void operator delete(void* ptr) noexcept;
+inline void* operator new(size_t, void* where) noexcept { return where; }

@@ -1,0 +1,123 @@
+#pragma once
+// Warp: the part of std::vector that clusterlod.h uses, for wasm32 builds
+// without a C++ standard library. Only for trivially copyable elements
+// (clusterlod.h stores plain structs and numbers); memory comes from
+// operator new/delete, which the render crate defines on wasm32.
+
+#include <stddef.h>
+#include <new>
+#include <initializer_list>
+
+namespace std
+{
+template <typename T> class vector
+{
+	T* items = nullptr;
+	size_t count = 0;
+	size_t room = 0;
+
+	void grow(size_t want)
+	{
+		if (want <= room)
+			return;
+		size_t next = room * 2 > want ? room * 2 : want;
+		T* fresh = static_cast<T*>(::operator new(next * sizeof(T)));
+		if (count)
+			__builtin_memcpy(fresh, items, count * sizeof(T));
+		::operator delete(items);
+		items = fresh;
+		room = next;
+	}
+
+public:
+	typedef T value_type;
+	typedef T* iterator;
+	typedef const T* const_iterator;
+
+	vector() {}
+	explicit vector(size_t n) { resize(n); }
+	vector(std::initializer_list<T> list) { assign(list.begin(), list.end()); }
+	vector(const vector& other) { assign(other.begin(), other.end()); }
+	vector& operator=(const vector& other)
+	{
+		if (this != &other)
+			assign(other.begin(), other.end());
+		return *this;
+	}
+	~vector() { ::operator delete(items); }
+
+	size_t size() const { return count; }
+	bool empty() const { return count == 0; }
+	T* data() { return items; }
+	const T* data() const { return items; }
+	T* begin() { return items; }
+	T* end() { return items + count; }
+	const T* begin() const { return items; }
+	const T* end() const { return items + count; }
+	T& operator[](size_t i) { return items[i]; }
+	const T& operator[](size_t i) const { return items[i]; }
+	T& back() { return items[count - 1]; }
+
+	void clear() { count = 0; }
+	void reserve(size_t n) { grow(n); }
+	void resize(size_t n)
+	{
+		grow(n);
+		for (size_t i = count; i < n; ++i)
+			new (&items[i]) T();
+		count = n;
+	}
+	void resize(size_t n, const T& value)
+	{
+		grow(n);
+		for (size_t i = count; i < n; ++i)
+			items[i] = value;
+		count = n;
+	}
+	void push_back(const T& value)
+	{
+		if (count == room)
+		{
+			T copy = value; // value may live in this vector
+			grow(count + 1);
+			items[count++] = copy;
+		}
+		else
+			items[count++] = value;
+	}
+	void swap(vector& other)
+	{
+		T* i = items; items = other.items; other.items = i;
+		size_t c = count; count = other.count; other.count = c;
+		size_t r = room; room = other.room; other.room = r;
+	}
+	void assign(const T* first, const T* last)
+	{
+		size_t n = size_t(last - first);
+		if (n > room)
+		{
+			// first..last may point into this vector: copy before freeing.
+			T* fresh = static_cast<T*>(::operator new(n * sizeof(T)));
+			if (n)
+				__builtin_memcpy(fresh, first, n * sizeof(T));
+			::operator delete(items);
+			items = fresh;
+			room = n;
+		}
+		else if (n)
+			__builtin_memmove(items, first, n * sizeof(T));
+		count = n;
+	}
+	// Only appending at the end, from a range outside this vector.
+	T* insert(T* at, const T* first, const T* last)
+	{
+		size_t offset = size_t(at - items);
+		size_t n = size_t(last - first);
+		grow(count + n);
+		if (n)
+			__builtin_memcpy(items + count, first, n * sizeof(T));
+		count += n;
+		return items + offset;
+	}
+};
+}

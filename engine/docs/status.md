@@ -106,5 +106,10 @@ Owned by the foliage work; its working checklist is
   machine; macOS (Metal, M5 Pro) is used for interactive work. On Metal a
   fullscreen window in another Space is not presented, so use headless GPU
   pass times there.
+- Browser (wasm32, WebGPU): `render` and `app` compile for
+  wasm32-unknown-unknown, and the renderer runs natively within browser
+  limits (`KERN_WEBGPU_LIMITS=browser`). Nothing runs in a browser yet:
+  threads, `Instant`, blocking device setup and the event loop are open
+  ([feasibility log](log/2026-11-05-browser-feasibility.md)).
 - The cloud container has no GPU: Mesa lavapipe runs GPU tests in software.
   It proves correctness, not performance.
