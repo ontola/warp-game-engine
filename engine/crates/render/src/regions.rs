@@ -142,10 +142,15 @@ impl Regions {
         w
     }
 
-    /// The style at (x, z): the styles of the four surrounding nodes,
-    /// mixed by their weights and bilinear shares. Where one style is all
-    /// there is, that style exactly.
-    pub fn style_at(&self, x: f32, z: f32) -> Style {
+    /// How many kinds of land the palette holds (its `styles`). A kind's id
+    /// is its index: other systems keep their own tables by the same id
+    /// (ground colours, flora, later streets and buildings), so a region
+    /// is one id everywhere, whatever reads it.
+    pub fn kinds(&self) -> usize { self.styles.len() }
+
+    /// The four grid nodes round (x, z) and their bilinear shares, in the
+    /// order the GPU reads them.
+    fn corners(&self, x: f32, z: f32) -> [(usize, f32); 4] {
         let (w, h) = (self.size[0], self.size[1]);
         let fx = ((x - self.origin.x) / self.cell).clamp(0.0, (w - 1) as f32);
         let fz = ((z - self.origin.y) / self.cell).clamp(0.0, (h - 1) as f32);
@@ -153,12 +158,41 @@ impl Regions {
         let j0 = (fz.floor() as u32).min(h.max(2) - 2);
         let (i1, j1) = ((i0 + 1).min(w - 1), (j0 + 1).min(h - 1));
         let (tx, tz) = (fx - i0 as f32, fz - j0 as f32);
-        let corners = [(i0, j0, (1.0 - tx) * (1.0 - tz)), (i1, j0, tx * (1.0 - tz)), (i0, j1, (1.0 - tx) * tz), (i1, j1, tx * tz)];
+        let at = |i: u32, j: u32| (j * w + i) as usize;
+        [(at(i0, j0), (1.0 - tx) * (1.0 - tz)), (at(i1, j0), tx * (1.0 - tz)), (at(i0, j1), (1.0 - tx) * tz), (at(i1, j1), tx * tz)]
+    }
+
+    /// Each kind's share at (x, z) as (kind, share) pairs, at most 16,
+    /// summing to 1; a kind can appear more than once (once per node).
+    pub fn mix(&self, x: f32, z: f32) -> Vec<(u32, f32)> {
+        let mut out = Vec::with_capacity(4);
+        let mut sum = 0.0f32;
+        for (c, f) in self.corners(x, z) {
+            let n = self.nodes[c];
+            for k in 0..SLOTS as u32 {
+                let share = ((n[1] >> (8 * k)) & 255) as f32 / 255.0 * f;
+                if share > 0.0 { out.push(((n[0] >> (8 * k)) & 255, share)); sum += share; }
+            }
+        }
+        for e in &mut out { e.1 /= sum; }
+        out
+    }
+
+    /// The share of kind `kind` at (x, z), 0..1.
+    pub fn share(&self, kind: u32, x: f32, z: f32) -> f32 {
+        self.mix(x, z).iter().filter(|e| e.0 == kind).map(|e| e.1).sum::<f32>().min(1.0)
+    }
+
+    /// The style at (x, z): the styles of the four surrounding nodes,
+    /// mixed by their weights and bilinear shares. Where one style is all
+    /// there is, that style exactly.
+    pub fn style_at(&self, x: f32, z: f32) -> Style {
+        let corners = self.corners(x, z);
         // One style alone: return it untouched (no rounding from the mix).
         let mut only = u32::MAX;
         let mut mixed = false;
-        for &(i, j, f) in &corners {
-            let n = self.nodes[(j * w + i) as usize];
+        for &(c, f) in &corners {
+            let n = self.nodes[c];
             for k in 0..SLOTS as u32 {
                 if f > 0.0 && (n[1] >> (8 * k)) & 255 > 0 {
                     let id = (n[0] >> (8 * k)) & 255;
@@ -169,8 +203,8 @@ impl Regions {
         if !mixed { return self.styles[only as usize]; }
         let mut acc = [0.0f32; STYLE_WORDS];
         let mut sum = 0.0f32;
-        for &(i, j, f) in &corners {
-            let n = self.nodes[(j * w + i) as usize];
+        for &(c, f) in &corners {
+            let n = self.nodes[c];
             for k in 0..SLOTS as u32 {
                 let share = ((n[1] >> (8 * k)) & 255) as f32 / 255.0 * f;
                 if share > 0.0 {
@@ -182,6 +216,20 @@ impl Regions {
         }
         for v in &mut acc { *v /= sum; }
         bytemuck::cast(acc)
+    }
+
+    /// A per-kind table (ground colours, say) as the terrain's pixels read
+    /// it (`procedural_terrain::region_ground`): a header (origin, cell,
+    /// nodes across, kinds), each kind's `per_kind` floats, then each node's
+    /// four slots as id * 256 + weight, all exact in f32.
+    pub fn surface_words(&self, table: &[f32], per_kind: usize) -> Vec<f32> {
+        assert_eq!(table.len(), per_kind * self.kinds(), "one entry per kind");
+        let mut w = vec![self.origin.x, self.origin.y, self.cell, self.size[0] as f32, self.size[1] as f32, self.kinds() as f32, per_kind as f32, 0.0];
+        w.extend_from_slice(table);
+        for n in &self.nodes {
+            for k in 0..SLOTS as u32 { w.push((((n[0] >> (8 * k)) & 255) * 256 + ((n[1] >> (8 * k)) & 255)) as f32); }
+        }
+        w
     }
 }
 
@@ -249,6 +297,11 @@ mod tests {
         let mid = (sites[0] + sites[1]) * 0.5;
         let s = r.style_at(mid.x, mid.y).snow_line;
         assert!((499.0..=601.0).contains(&s), "{s}");
+        // Shares are whole at a site and split on a border.
+        assert_eq!(r.share(3, sites[3].x, sites[3].y), 1.0);
+        let total: f32 = r.mix(mid.x, mid.y).iter().map(|e| e.1).sum();
+        assert!((total - 1.0).abs() < 1e-5);
+        assert!(r.share(0, mid.x, mid.y) + r.share(1, mid.x, mid.y) > 0.99);
     }
 
     #[test]
