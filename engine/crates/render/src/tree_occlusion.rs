@@ -5,7 +5,8 @@ use std::sync::Mutex;
 use wgpu::util::DeviceExt;
 
 pub const SPLIT_METRES: f32 = 32.0;
-pub(crate) const COUNTER_WORDS: usize = 32;
+pub(crate) const PHASE_COUNTER_BYTES: u64 = 32 * 4;
+pub(crate) const COUNTER_WORDS: usize = 40;
 pub(crate) const COUNTER_BYTES: u64 = COUNTER_WORDS as u64 * 4;
 
 #[derive(Clone, Debug)]
@@ -200,6 +201,33 @@ mod tests {
         let submitted=|entries:&[(u32,u32,u32)]|entries.iter().map(|v|[24u32,96,192,384][bucket(v.2)]).sum::<u32>();
         assert_eq!(submitted(&visible[..prefix])+submitted(&visible[prefix..]),submitted(&visible));
         assert_eq!(visible[..prefix].len()+remaining.len(),visible.len());
+    }
+    #[test]
+    #[ignore="exclusive GPU counter lifetime readback"]
+    fn shared_counter_ranges_reset_independently() {
+        use wgpu::util::DeviceExt;
+        let gpu=crate::Gpu::new().unwrap();
+        let initial=(1..=super::COUNTER_WORDS as u32).collect::<Vec<_>>();
+        let buffer=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:Some("shared cull counters lifetime"),contents:bytemuck::cast_slice(&initial),
+            usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST});
+        let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("counter lifetime snapshots"),
+            size:super::COUNTER_BYTES*3,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+        let mut enc=gpu.device.create_command_encoder(&Default::default());
+        // An appended tree phase retains both regions. A fresh draw resets only
+        // its phase counters; traversal accounting has its own frame lifetime.
+        enc.copy_buffer_to_buffer(&buffer,0,&read,0,super::COUNTER_BYTES);
+        enc.clear_buffer(&buffer,0,Some(super::PHASE_COUNTER_BYTES));
+        enc.copy_buffer_to_buffer(&buffer,0,&read,super::COUNTER_BYTES,super::COUNTER_BYTES);
+        enc.clear_buffer(&buffer,crate::cluster_traversal::COUNTER_OFFSET,Some(crate::cluster_traversal::COUNTER_BYTES));
+        enc.copy_buffer_to_buffer(&buffer,0,&read,super::COUNTER_BYTES*2,super::COUNTER_BYTES);
+        gpu.queue.submit([enc.finish()]);read.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
+        let mapped=read.slice(..).get_mapped_range().unwrap();let words:&[u32]=bytemuck::cast_slice(&mapped);
+        let n=super::COUNTER_WORDS;let split=(super::PHASE_COUNTER_BYTES/4)as usize;
+        assert_eq!(&words[..n],initial);
+        assert!(words[n..n+split].iter().all(|v|*v==0));
+        assert_eq!(&words[n+split..2*n],&initial[split..]);
+        assert!(words[2*n..].iter().all(|v|*v==0));
     }
     #[test]
     fn cull_counter_abi_has_room_for_both_phases_without_extra_storage_binding() {
