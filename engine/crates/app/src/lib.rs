@@ -965,6 +965,7 @@ impl Shell<'_> {
                 if let Some(w) = &self.window { self.manners.presented(w, size); }
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => live.surface.configure(&live.gpu.device, &live.config),
+            wgpu::CurrentSurfaceTexture::Occluded => if let Some(w) = &self.window { self.manners.occluded(w); },
             _ => {}
         }
         if frame_log::enabled() {
