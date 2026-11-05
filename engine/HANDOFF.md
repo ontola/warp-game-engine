@@ -1,3 +1,21 @@
+## 5 November: ditches, streams and rivers no longer pop in
+
+Water in ditches, stream beds and river channels existed only where the
+terrain mesh was fine enough to carve the bed (cut below ~1.5 m, the nearest
+~50 m): coarser patches had no water at all, so the polder's ditches popped
+in round the camera. `terrain_field` (CPU and WGSL, line for line) now also
+returns `film`, the share of the cell under water at full detail: a strip
+thinner than the cell widens to it and thins in proportion (`seen`), so the
+share of water is the same at every cut (test `water_keeps_its_share_at_every_cut`:
+5.6 % of polder ground at cut 0.25, 4.5 % at cut 16; before, 0 from cut 2).
+Wet banks of ditches, streams and rivers blend the same way instead of
+dropping or aliasing. `procedural_terrain.wgsl` packs max(water, 0.04 * film)
+with a square-root water code (fine steps for thin films); `terrain_surface`
+covers ground linearly up to WATER_FILM (0.04 m). Physics, forest and
+placement read `water` and are unchanged. Far ditches read as soft dark
+lines; a per-pixel ditch line (sharper far away) is a possible next step.
+Before/after: docs/images/terrain-water-film-polder.jpg (lavapipe).
+
 ## 5 November: allocation-sized producer choice tables
 
 GPU materialization, camera/shadow transfers, offline diagnostics and animated
