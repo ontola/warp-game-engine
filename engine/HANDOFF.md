@@ -1,3 +1,17 @@
+## 5 November: packed voxel normal storage
+
+GPU voxel cell stride is128 bytes; logical GpuCell remains176. PackedCell
+and PackedVolumeCell preserve full f32 extinction/colour and pack six normal
+moments with snorm16. Cache and uncached/world providers updated together.
+166 foliage +29 voxel tests PASS; normal image maximum5.482px unchanged, still
+not one-pixel acceptance. GPU33.287ms diagnostic, not an isolated speedup.
+
+Shadow handoff received: current main damage cache still culls/emits splats
+every frame, near map uncached. Static split omits render_sun and excludes
+GPU-materialized source slots from its CPU owner lists. Fix correctness before
+world-page caching; preserve exact cached/full depth. No shadow files changed
+in the compact-storage commit.
+
 ## 5 November: opaque clusters raster without `discard`
 
 Every cluster used to draw through one pipeline whose fragment shader has

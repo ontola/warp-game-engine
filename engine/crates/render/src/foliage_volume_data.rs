@@ -127,6 +127,32 @@ pub struct GpuCell {
     pub normals: [[f32; 4]; 6],
 }
 
+/// Storage form: full-precision colour/extinction, bounded normal moments in
+/// signed normalized16. Do not normalize centroids before packing: their length
+/// carries the distribution's concentration. Logical/cooked cells remain f32.
+#[repr(C)]
+#[derive(Clone,Copy,Debug,Pod,Zeroable)]
+pub struct PackedCell {
+    pub albedo_rough:[f32;4],
+    pub extinction:[[f32;4];4],
+    pub normals:[[u32;2];6],
+}
+impl From<&GpuCell> for PackedCell {
+    fn from(cell:&GpuCell)->Self {
+        let snorm=|v:f32|->u32 { (v.clamp(-1.0,1.0)*32767.0).round() as i16 as u16 as u32 };
+        Self {albedo_rough:cell.albedo_rough,extinction:cell.extinction,
+            normals:cell.normals.map(|n|[snorm(n[0])|(snorm(n[1])<<16),snorm(n[2])|(snorm(n[3])<<16)])}
+    }
+}
+impl PackedCell {
+    pub fn decode(&self)->GpuCell {
+        let unpack=|w:u32|[(w as u16 as i16 as f32/32767.0).max(-1.0),((w>>16)as u16 as i16 as f32/32767.0).max(-1.0)];
+        GpuCell {albedo_rough:self.albedo_rough,extinction:self.extinction,
+            normals:self.normals.map(|n|{let a=unpack(n[0]);let b=unpack(n[1]);[a[0],a[1],b[0],b[1]]})}
+    }
+}
+pub fn packed_cells(cells:&[GpuCell])->Vec<PackedCell> {cells.iter().map(PackedCell::from).collect()}
+
 /// WGSL: six vec4 records, 96 bytes. Shared part-wind can update these poses;
 /// asset cells and grids stay immutable.
 #[repr(C)]
@@ -805,5 +831,56 @@ mod tests {
         let mut invalid=build(129);let before=invalid.clone();
         assert!(pack_bricks(&mut invalid,128).is_err());
         assert_same_forest(&before,&invalid);
+    }
+}
+
+#[cfg(test)]
+mod packed_cell_tests {
+    use super::*;
+    #[test]
+    #[ignore="exclusive GPU packed-cell decoding"]
+    fn foliage_packed_gpu_matches_cpu_optical_records() {
+        use wgpu::util::DeviceExt;
+        let gpu=crate::Gpu::new().unwrap();
+        let cells=(0..257).map(|i|{let v=i as f32/128.0-1.0;let mut c=GpuCell::zeroed();
+            c.albedo_rough=[0.11,0.75,0.31,0.9];c.extinction=[[1e-15,1e8,0.0,7.5];4];
+            c.normals=std::array::from_fn(|n|[v,-v,v*0.31,(n+1)as f32/21.0]);c}).collect::<Vec<_>>();
+        let packed=packed_cells(&cells);
+        let input=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("packed optics test"),contents:bytemuck::cast_slice(&packed),usage:wgpu::BufferUsages::STORAGE});
+        let size=(cells.len()*std::mem::size_of::<GpuCell>())as u64;
+        let output=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
+        let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+        let common=include_str!("shaders/foliage_volume.wgsl").split("// This specializes only").next().unwrap();
+        let source=format!("{common}\n@group(0) @binding(0) var<storage,read> src:array<PackedVolumeCell>;\n@group(0) @binding(1) var<storage,read_write> dst:array<VolumeCell>;\n@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id:vec3<u32>) {{if id.x<arrayLength(&src) {{dst[id.x]=unpack_volume_cell(src[id.x]);}}}}");
+        let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:None,source:wgpu::ShaderSource::Wgsl(source.into())});
+        let pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:None,layout:None,module:&module,entry_point:Some("main"),compilation_options:Default::default(),cache:None});
+        let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:None,layout:&pipeline.get_bind_group_layout(0),entries:&[
+            wgpu::BindGroupEntry {binding:0,resource:input.as_entire_binding()},wgpu::BindGroupEntry {binding:1,resource:output.as_entire_binding()}]});
+        let mut enc=gpu.device.create_command_encoder(&Default::default());
+        {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_pipeline(&pipeline);pass.set_bind_group(0,&bind,&[]);pass.dispatch_workgroups(5,1,1);}
+        enc.copy_buffer_to_buffer(&output,0,&read,0,size);gpu.queue.submit([enc.finish()]);read.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
+        let bytes=read.slice(..).get_mapped_range().unwrap();
+        for (raw,expected) in bytes.chunks_exact(176).zip(&packed) {
+            let got:GpuCell=bytemuck::pod_read_unaligned(raw);let expected=expected.decode();
+            assert_eq!(got.albedo_rough,expected.albedo_rough);assert_eq!(got.extinction,expected.extinction);
+            for (a,b) in got.normals.iter().flatten().zip(expected.normals.iter().flatten()){assert!((a-b).abs()<1e-7,"{a} != {b}");}
+        }
+        drop(bytes);read.unmap();
+    }
+    #[test]
+    fn foliage_packed_moments_preserve_direction_length_and_optics() {
+        assert_eq!(std::mem::size_of::<PackedCell>(),128);
+        let mut c=GpuCell::zeroed();c.albedo_rough=[0.11,0.75,0.31,0.9];
+        c.extinction=[[1e-15,1e8,0.0,7.5];4];
+        for sample in 0..4097 {
+            let v=-1.0+sample as f32/2048.0;
+            c.normals=std::array::from_fn(|i|[v,-v,v*0.31,(i as f32+1.0)/21.0]);
+            let d=PackedCell::from(&c).decode();
+            assert_eq!(d.albedo_rough,c.albedo_rough);assert_eq!(d.extinction,c.extinction);
+            for (a,b) in c.normals.iter().flatten().zip(d.normals.iter().flatten()) {
+                assert!((a-b).abs()<=1.0/65534.0+1e-7,"{a} -> {b}");
+            }
+        }
+        c.normals[0]=[0.,-1.,1.,0.];assert_eq!(PackedCell::from(&c).decode().normals[0],c.normals[0]);
     }
 }

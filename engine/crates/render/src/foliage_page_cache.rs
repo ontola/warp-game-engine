@@ -7,11 +7,11 @@ use std::{collections::BTreeSet,sync::mpsc};
 #[derive(Clone,Copy,Debug)]
 pub struct Budget {pub index_words:u32,pub cells:u32,pub splats:u32,pub upload_bytes:u64,pub uploads:u32}
 impl Default for Budget {
-    fn default()->Self {Self {index_words:4*1024*1024,cells:64*1024*1024/176,splats:512*1024,upload_bytes:8*1024*1024,uploads:8}}
+    fn default()->Self {Self {index_words:4*1024*1024,cells:64*1024*1024/128,splats:512*1024,upload_bytes:8*1024*1024,uploads:8}}
 }
 #[derive(Clone)]
 struct Resident {index:Allocation,cell:Allocation,splat:Allocation,last_used:u64}
-struct Pending {id:usize,resident:Resident,level:crate::foliage_volume_data::GpuLevel,indices:Vec<u32>,splats:Vec<[u32;2]>,cursor:u64}
+struct Pending {id:usize,resident:Resident,level:crate::foliage_volume_data::GpuLevel,indices:Vec<u32>,splats:Vec<[u32;2]>,cells:Vec<crate::foliage_volume_data::PackedCell>,cursor:u64}
 struct Feedback {buffer:wgpu::Buffer,sequence:u64,pending:Option<mpsc::Receiver<Result<(),wgpu::BufferAsyncError>>>}
 #[derive(Clone,Copy,Debug,Default,serde::Serialize)]
 pub struct Stats {pub allocated_bytes:u64,pub resident_pages:u32,pub pending_pages:u32,pub uploads:u64,pub evictions:u64,pub uploaded_bytes:u64,pub frame_upload_bytes:u64,pub misses:u64,pub feedback_skipped:u64,pub source:Option<super::source::Stats>}
@@ -43,7 +43,7 @@ impl Cache {
             pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.cells.len()as u64).sum::<u64>(),
             pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.splats.len()as u64).sum::<u64>()];
         if (0..3).any(|i|pinned_sizes[i]>capacities[i]as u64) {return Err("pinned voxel ancestors exceed physical cache budget".into());}
-        let sizes=[pages.len()as u64*32,capacities[0]as u64*4,capacities[1]as u64*176,(2*pages.len()as u64+capacities[2]as u64)*8];
+        let sizes=[pages.len()as u64*32,capacities[0]as u64*4,capacities[1]as u64*128,(2*pages.len()as u64+capacities[2]as u64)*8];
         if sizes.iter().any(|&s|s>gpu.device.limits().max_storage_buffer_binding_size as u64) {return Err("voxel cache exceeds device buffer limit".into());}
         let buffers=std::array::from_fn(|i|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("bounded voxel asset arena"),size:sizes[i].max(176),usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false}));
         let last_requested=vec![0;deps.len()];
@@ -68,12 +68,12 @@ impl Cache {
         let (level,mut indices,splats)=page.relocate(index.range.start,cell.range.start)?;
         let first=2*self.pages.len()as u32+splat.range.start;
         for brick in &page.splat_bricks {indices.extend_from_slice(&[first+brick[0],brick[1],brick[2],0]);}
-        self.pending=Some(Pending {id,resident:Resident {index,cell,splat,last_used:self.frame},level,indices,splats,cursor:0});Ok(())
+        self.pending=Some(Pending {id,resident:Resident {index,cell,splat,last_used:self.frame},level,indices,splats,cells:crate::foliage_volume_data::packed_cells(&page.cells),cursor:0});Ok(())
     }
     fn advance(&mut self,gpu:&Gpu,budget:u64)->Result<u64,String> {
         let Some(p)=self.pending.as_mut()else{return Ok(0);};let mut remaining=budget&!3;let initial=remaining;
-        let bytes:[&[u8];3]=[bytemuck::cast_slice(&p.indices),bytemuck::cast_slice(&self.pages[p.id].cells),bytemuck::cast_slice(&p.splats)];
-        let bases=[p.resident.index.range.start as u64*4,p.resident.cell.range.start as u64*176,(2*self.pages.len()as u64+p.resident.splat.range.start as u64)*8];
+        let bytes:[&[u8];3]=[bytemuck::cast_slice(&p.indices),bytemuck::cast_slice(&p.cells),bytemuck::cast_slice(&p.splats)];
+        let bases=[p.resident.index.range.start as u64*4,p.resident.cell.range.start as u64*128,(2*self.pages.len()as u64+p.resident.splat.range.start as u64)*8];
         let mut begin=0u64;
         for i in 0..3 {
             let end=begin+bytes[i].len()as u64;
@@ -232,8 +232,8 @@ mod tests {
             assert!(cache.publication[target].0,"requested page eventually becomes resident");
             let raw=read(&cache.buffers[0]);let level:GpuLevel=bytemuck::pod_read_unaligned(&raw[target*32..target*32+32]);
             let raw=read(&cache.buffers[1]);let index:u32=bytemuck::pod_read_unaligned(&raw[level.dims_offset[3]as usize*4..][..4]);
-            let raw=read(&cache.buffers[2]);let cell:GpuCell=bytemuck::pod_read_unaligned(&raw[(index as usize-1)*176..][..176]);
-            assert_eq!(bytemuck::bytes_of(&cell),bytemuck::bytes_of(&forest.cells[target]));
+            let raw=read(&cache.buffers[2]);let cell:crate::foliage_volume_data::PackedCell=bytemuck::pod_read_unaligned(&raw[(index as usize-1)*128..][..128]);
+            assert_eq!(bytemuck::bytes_of(&cell),bytemuck::bytes_of(&crate::foliage_volume_data::PackedCell::from(&forest.cells[target])));
             let raw=read(&cache.buffers[3]);let header:[u32;2]=bytemuck::pod_read_unaligned(&raw[target*8..][..8]);assert_eq!(header[1],1);
             let splat:[u32;2]=bytemuck::pod_read_unaligned(&raw[header[0]as usize*8..][..8]);assert_eq!(splat,[index-1,0]);
             let group:[u32;2]=bytemuck::pod_read_unaligned(&raw[(forest.levels.len()+target)*8..][..8]);assert_eq!(group[1],1);

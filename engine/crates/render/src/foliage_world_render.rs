@@ -166,10 +166,11 @@ impl WorldRenderer {
         words.extend(grid.spans.iter().flatten());
         words.extend(&grid.references);
         words.extend(&field.tree_groups);
+        let packed=crate::foliage_volume_data::packed_cells(&field.forest.cells);
         let bytes: [&[u8]; 5] = [
             bytemuck::cast_slice(&field.forest.levels),
             bytemuck::cast_slice(&field.forest.indices),
-            bytemuck::cast_slice(&field.forest.cells),
+            bytemuck::cast_slice(&packed),
             bytemuck::cast_slice(&field.forest.instances),
             bytemuck::cast_slice(&words),
         ];

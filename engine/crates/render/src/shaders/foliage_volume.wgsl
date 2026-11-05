@@ -9,8 +9,18 @@ struct VolumeCell {
     // Actual conditional mean normals and normalized lobe area weights.
     normals: array<vec4<f32>,6>,
 };
+// Stored normal moments retain signed direction, magnitude and lobe weight.
+// Colour and directional extinction remain full precision (including tiny tau).
+struct PackedVolumeCell {
+    albedo_rough:vec4<f32>,extinction:array<vec4<f32>,4>,normals:array<vec2<u32>,6>,
+};
+fn unpack_volume_cell(p:PackedVolumeCell)->VolumeCell {
+    var c:VolumeCell;c.albedo_rough=p.albedo_rough;c.extinction=p.extinction;
+    for(var i=0u;i<6u;i++){c.normals[i]=vec4<f32>(unpack2x16snorm(p.normals[i].x),unpack2x16snorm(p.normals[i].y));}
+    return c;
+}
 // This specializes only private interpolation state. Uploaded cells retain
-// all six records and their 176-byte ABI in every consumer.
+// all six records; packed providers use128 bytes, logical cells use176 bytes.
 const VOLUME_NORMAL_COUNT: u32 = 6u;
 struct VolumeDirection { indices:vec3<u32>,weights:vec3<f32> };
 struct VolumeSample {
