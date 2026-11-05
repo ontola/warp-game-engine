@@ -10,7 +10,7 @@ pub(crate) fn pose(p:xr::Posef)->Pose {
         orientation:glam::Quat::from_xyzw(p.orientation.x,p.orientation.y,p.orientation.z,p.orientation.w)}
 }
 const VIEW:xr::ViewConfigurationType=xr::ViewConfigurationType::PRIMARY_STEREO;
-const HUD:[u32;2]=[1280,720];
+const HUD:[u32;2]=crate::HUD_SIZE;
 fn swapchain(session:&xr::Session<xr::Vulkan>,size:[u32;2],layers:u32)->Result<xr::Swapchain<xr::Vulkan>> {
     Ok(session.create_swapchain(&xr::SwapchainCreateInfo {create_flags:xr::SwapchainCreateFlags::EMPTY,
         usage_flags:xr::SwapchainUsageFlags::COLOR_ATTACHMENT,
@@ -183,8 +183,8 @@ fn run_inner(app:AndroidApp, mut game:impl Game, stop:Arc<AtomicBool>)->Result<(
         // HUD rendering is premultiplied by normal alpha blending onto clear.
         let quad=xr::CompositionLayerQuad::new().space(&head).eye_visibility(xr::EyeVisibility::BOTH)
             .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
-            .pose(xr::Posef {orientation:xr::Quaternionf{x:0.0,y:0.0,z:0.0,w:1.0},position:xr::Vector3f{x:0.0,y:0.0,z:-2.0}})
-            .size(xr::Extent2Df{width:2.4,height:1.35})
+            .pose(xr::Posef {orientation:xr::Quaternionf{x:0.0,y:0.0,z:0.0,w:1.0},position:xr::Vector3f{x:0.0,y:0.0,z:-crate::HUD_DISTANCE}})
+            .size(xr::Extent2Df{width:crate::HUD_METRES[0],height:crate::HUD_METRES[1]})
             .sub_image(xr::SwapchainSubImage::new().swapchain(&ui).image_array_index(0).image_rect(xr::Rect2Di{offset:xr::Offset2Di{x:0,y:0},extent:xr::Extent2Di{width:HUD[0] as i32,height:HUD[1] as i32}}));
         let tint_views:Vec<_>=views.iter().map(|v|xr::CompositionLayerProjectionView::new().pose(v.pose).fov(v.fov)
             .sub_image(xr::SwapchainSubImage::new().swapchain(&vision).image_array_index(0)
