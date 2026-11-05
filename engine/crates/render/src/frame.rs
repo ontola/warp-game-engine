@@ -3495,6 +3495,11 @@ impl Renderer {
     }
 
     /// Queue patches for the GPU build at the start of the next frame.
+    /// The minimum renderer's characters this frame (`Scene::rigid_models`).
+    pub fn set_rigid_actors(&self, gpu: &Gpu, actors: &[crate::scene::RigidActor]) {
+        if let Some(forward) = &self.minimal_forward { forward.lock().unwrap().set_rigid_actors(gpu, actors); }
+    }
+
     pub fn queue_procedural_terrain(&self, jobs: Vec<crate::procedural_terrain::Job>) -> Result<(), String> {
         self.procedural_terrain.as_ref().ok_or("this scene reserved no procedural terrain")?.queue(jobs);
         Ok(())

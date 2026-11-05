@@ -43,7 +43,10 @@ fn face_centre(pos:Vec3)->f32 {(pos.x).atan2(pos.z)}
 fn yaw_pitch(d:Vec3)->[f32;2] {[(-d.x).atan2(-d.z),d.y.clamp(-1.0,1.0).asin()]}
 impl NativeGame {
     pub fn new(sound:bool)->Result<Self,String> {
-        crate::graphics::configure(crate::graphics::Graphics::MINIMUM)?;
+        // `xr-graphics` beside the data: a profile with switches, to A/B on the
+        // headset without a new build (minimum:rigid_characters=0).
+        let profile=std::fs::read_to_string("xr-graphics").ok().and_then(|t|crate::graphics::Graphics::parse(t.trim()).ok());
+        crate::graphics::configure(profile.unwrap_or(crate::graphics::Graphics::MINIMUM))?;
         let mut game=crate::play::Gg::new(World::new(3,&[false,true,true,true]),crate::session::Session::Local,vec![0]);
         if game.scripts.is_none() {return Err("Growing Guns card scripts did not load".into());}
         game.xr_stereo=true;game.no_kbm=true;game.ui.tilt=false;

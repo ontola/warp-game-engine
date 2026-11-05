@@ -25,16 +25,15 @@ struct LavaTwin { handle: ActorHandle, palette: Vec<Mat4> }
 /// Merge distance for the rigid pieces, metres.
 const RIGID_CELL: f32 = 0.035;
 
-/// A rigid piece: mesh, the joint it follows, its instance.
-struct Piece { mesh: usize, joint: usize, instance: usize }
-
 pub struct Characters {
     models: Vec<Character>,
     actors: Vec<Actor>,
-    /// Per actor, when drawn as rigid pieces instead of skinned.
-    pieces: Vec<Vec<Piece>>,
-    /// Meshes of each model's pieces, built once: (mesh, joint).
-    rigid_meshes: Vec<Option<Vec<(usize, usize)>>>,
+    /// Each actor's `Scene::rigid_models` index, when drawn as rigid pieces.
+    pieces: Vec<usize>,
+    /// Each model's index there, built once.
+    rigid_meshes: Vec<Option<usize>>,
+    /// This frame's characters for the renderer.
+    rigid_frame: Vec<render::scene::RigidActor>,
     lava: Vec<Option<LavaTwin>>,
     pub hands: Vec<Option<Vec3>>,
 }
@@ -59,7 +58,7 @@ mod tests {
     #[test]
     fn reused_enemy_and_round_reset_release_the_old_skin_rig() {
         let model = Character::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters/knight.json")).unwrap();
-        let mut c = Characters { rigid_meshes: vec![None], pieces: Vec::new(), models: vec![model], actors: Vec::new(), lava: Vec::new(), hands: Vec::new() };
+        let mut c = Characters { rigid_meshes: vec![None], pieces: Vec::new(), rigid_frame: Vec::new(), models: vec![model], actors: Vec::new(), lava: Vec::new(), hands: Vec::new() };
         let mut scene = Scene::default();
         c.reserve_actor(&mut scene, 0).unwrap();
         let mut world = World::new(3, &[false, true, true]);
@@ -114,7 +113,7 @@ impl Characters {
             }
         }
         println!("characters: original knight, paladin, ch10 with idle/run/jump ({})", dir.display());
-        Ok(Self { rigid_meshes: models.iter().map(|_| None).collect(), pieces: Vec::new(), models, actors: Vec::new(), lava: Vec::new(), hands: Vec::new() })
+        Ok(Self { rigid_meshes: models.iter().map(|_| None).collect(), pieces: Vec::new(), rigid_frame: Vec::new(), models, actors: Vec::new(), lava: Vec::new(), hands: Vec::new() })
     }
 
     pub fn models(&self) -> &[Character] { &self.models }
@@ -133,54 +132,42 @@ impl Characters {
         Ok(mesh)
     }
 
-    /// Player `player` as rigid pieces. Call after the players' own instances:
-    /// the pieces sit outside that block.
+    /// Player `player` as rigid pieces, one draw in the minimum renderer.
     pub fn reserve_rigid(&mut self, scene: &mut Scene, player: usize) -> Result<(), String> {
-        use render::{cluster::Vertex, primitives::Primitive};
+        use render::{cluster::Vertex, scene::RigidModel};
         let k = player % self.models.len();
         let model = &self.models[k];
         if self.rigid_meshes[k].is_none() {
-            let meshes = model.rigid_parts(RIGID_CELL).into_iter().map(|part| {
+            let mut whole = RigidModel::default();
+            for part in model.rigid_parts(RIGID_CELL) {
                 let material = scene.add_material(render::scene::Material { tint: part.tint, layer: -1, roughness: 0.7, flags: 0, scale: 1.0, metal: 0.0 });
-                let vertices = part.positions.iter().zip(&part.normals).map(|(p, n)| Vertex { pos: p.to_array(), normal: n.to_array(), uv: [0.0; 2] }).collect();
-                (scene.add_mesh(&Primitive { vertices, indices: part.indices, material }.mesh()), part.joint)
-            }).collect();
-            self.rigid_meshes[k] = Some(meshes);
+                let base = whole.vertices.len() as u32;
+                whole.vertices.extend(part.positions.iter().zip(&part.normals).map(|(p, n)| Vertex { pos: p.to_array(), normal: n.to_array(), uv: [part.joint as f32, material as f32] }));
+                whole.indices.extend(part.indices.iter().map(|i| i + base));
+            }
+            scene.rigid_models.push(whole);
+            self.rigid_meshes[k] = Some(scene.rigid_models.len() - 1);
         }
-        let hidden = Affine3A::from_translation(Vec3::new(0.0, -500.0, 0.0));
-        let pieces = self.rigid_meshes[k].as_ref().unwrap().iter().map(|&(mesh, joint)| {
-            let instance = scene.instances.len();
-            scene.add_instance(mesh, hidden);
-            scene.mark_no_shadow();
-            scene.instances[instance].cluster_count = 0;
-            Piece { mesh, joint, instance }
-        }).collect();
         let palette = model.sample(IDLE, 0.0, true)?;
         let run_palette = vec![Mat4::IDENTITY; palette.len()];
         let handle = ActorHandle { actor: 0, instance: 0, mesh: 0 };
         self.actors.push(Actor { handle, palette, run_palette, motion: Motion::default(), corpse: None, corpse_transform: None, velocity: Vec3::ZERO });
-        self.pieces.push(pieces);
+        self.pieces.push(self.rigid_meshes[k].unwrap());
         self.hands.push(None);
         Ok(())
     }
 
-    /// Place the rigid pieces after `pose`: `hide` holds each player's views
-    /// to hide them in (their own body).
-    pub fn pose_rigid(&self, scene: &mut Scene, world: &World, prev: &[crate::view::Pose], alpha: f32, hide: &[u8]) {
-        for (i, (pieces, actor)) in self.pieces.iter().zip(&self.actors).enumerate() {
+    /// This frame's rigid characters, after `pose`: `hide` holds each player's
+    /// views to hide them in (their own body).
+    pub fn pose_rigid(&mut self, world: &World, prev: &[crate::view::Pose], alpha: f32, hide: &[u8]) {
+        self.rigid_frame.clear();
+        for (i, (model, actor)) in self.pieces.iter().zip(&self.actors).enumerate() {
             let body = world.players.get(i).and_then(|p| if p.alive && !p.ghost {
                 let drawn = crate::view::pose(world, i, prev, alpha);
                 Some(model_transform(drawn.pos, drawn.yaw))
             } else { actor.corpse_transform });
-            for piece in pieces {
-                match body {
-                    Some(body) => {
-                        scene.update_instance(piece.instance, piece.mesh, body * Affine3A::from_mat4(actor.palette[piece.joint]));
-                        scene.instances[piece.instance].hide_in_views(hide.get(i).copied().unwrap_or(0));
-                    }
-                    None => scene.instances[piece.instance].cluster_count = 0,
-                }
-            }
+            let Some(transform) = body else { continue };
+            self.rigid_frame.push(render::scene::RigidActor { model: *model, transform, palette: actor.palette.clone(), hidden_views: hide.get(i).copied().unwrap_or(0) });
         }
     }
 
@@ -328,7 +315,7 @@ impl Characters {
     }
 
     pub fn flush(&self, gpu: &Gpu, renderer: &Renderer) -> Result<(), String> {
-        if !self.pieces.is_empty() { return Ok(()); }
+        if !self.pieces.is_empty() { renderer.set_rigid_actors(gpu, &self.rigid_frame); return Ok(()); }
         // Actors are reserved consecutively into the scene's skinning table:
         // the players', then their lava twins.
         debug_assert!(self.actors.iter().map(|a| a.handle.actor).chain(self.lava.iter().flatten().map(|t| t.handle.actor)).enumerate().all(|(i, actor)| actor == i));

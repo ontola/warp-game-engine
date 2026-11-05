@@ -467,9 +467,9 @@ impl PlayersView {
                 slot += 1;
             }
         }
-        if crate::graphics::get().rigid_characters && let Some(characters) = &self.characters {
+        if crate::graphics::get().rigid_characters && let Some(characters) = &mut self.characters {
             let hide: Vec<u8> = self.meshes.iter().map(|m| m.own_views).collect();
-            characters.pose_rigid(scene, world, prev, alpha, &hide);
+            characters.pose_rigid(world, prev, alpha, &hide);
         }
         self.pose_lava(scene, world, (world.tick as f32 - 1.0 + alpha) * growing_guns::DT);
         // Bullets, drawn where they are at this frame (between ticks), nose

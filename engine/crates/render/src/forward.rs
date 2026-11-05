@@ -12,11 +12,17 @@ struct Spot {position:[f32;4],direction:[f32;4],intensity:[f32;4]}
 #[repr(C)] #[derive(Clone,Copy,Pod,Zeroable)]
 struct Uniform {vp:[[f32;4];4],camera:[f32;4],sun:[f32;4],sun_color:[f32;4],ambient:[f32;4],fog:[f32;4],spots:[Spot;4]}
 struct Part {indices:Range<u32>,material:u32,lava:bool}
+struct RigidDraw {model:usize,rows:[[f32;4];3],base:u32,hidden_views:u8,centre:Vec3}
+/// Joint rows the palette buffer holds: 16 characters of 64 joints.
+const PALETTE_ROWS:usize=16*64*3;
 struct Mesh {parts:Vec<Part>}
 struct Target {size:[u32;2],color:wgpu::Texture,depth:wgpu::Texture,instances:wgpu::Buffer,capacity:usize,uniform:wgpu::Buffer,bind:wgpu::BindGroup}
 pub(crate) struct Forward {
     pipeline:wgpu::RenderPipeline,pipeline_srgb:wgpu::RenderPipeline,layout:wgpu::BindGroupLayout,vertices:wgpu::Buffer,indices:wgpu::Buffer,materials:wgpu::Buffer,
     lava_view:wgpu::TextureView,lava_sampler:wgpu::Sampler,stone_view:wgpu::TextureView,stone_detail:bool,
+    /// Index ranges of `Scene::rigid_models`, this frame's characters and
+    /// their joints: three rows per joint, one draw per character.
+    rigid_models:Vec<Range<u32>>,rigid_actors:Vec<RigidDraw>,palette:wgpu::Buffer,
     pub(crate) profiler:crate::gpu_profile::Profiler, pub(crate) profiling:bool, query:Option<(wgpu::QuerySet,wgpu::Buffer)>, sequence:u64, pub(crate) profile_frame_id:Option<u64>,
     meshes:Vec<Mesh>,ranges:HashMap<(u32,u32),usize>,owners:Vec<GpuInstance>,targets:Vec<Target>,
 }
@@ -36,7 +42,16 @@ impl Forward {
             for (material,list) in by_material {let start=indices.len()as u32;indices.extend(list);parts.push(Part{indices:start..indices.len()as u32,material,lava:scene.materials[material as usize].flags&crate::scene::LAVA!=0});}
             ranges.insert((mesh.first_cluster,mesh.cluster_count),meshes.len());meshes.push(Mesh{parts});
         }
-        let vertices=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("minimal vertices"),contents:bytemuck::cast_slice(&scene.vertices),usage:wgpu::BufferUsages::VERTEX});
+        // Characters go after the scene's vertices, outside the cluster data.
+        let mut all_vertices=scene.vertices.clone();let mut rigid_models=Vec::new();
+        for model in &scene.rigid_models {
+            let (base,start)=(all_vertices.len()as u32,indices.len()as u32);
+            all_vertices.extend_from_slice(&model.vertices);
+            indices.extend(model.indices.iter().map(|i|i+base));
+            rigid_models.push(start..indices.len()as u32);
+        }
+        let vertices=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("minimal vertices"),contents:bytemuck::cast_slice(&all_vertices),usage:wgpu::BufferUsages::VERTEX});
+        let palette=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("minimal joints"),size:(PALETTE_ROWS*16)as u64,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
         if indices.is_empty(){indices.push(0);}
         let indices=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("minimal indices"),contents:bytemuck::cast_slice(&indices),usage:wgpu::BufferUsages::INDEX});
         let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{label:Some("minimal lighting"),entries:&[
@@ -44,13 +59,14 @@ impl Forward {
             wgpu::BindGroupLayoutEntry{binding:1,visibility:wgpu::ShaderStages::VERTEX,ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Storage{read_only:true},has_dynamic_offset:false,min_binding_size:None},count:None},
             wgpu::BindGroupLayoutEntry{binding:2,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None},
             wgpu::BindGroupLayoutEntry{binding:3,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),count:None},
-            wgpu::BindGroupLayoutEntry{binding:4,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None}]});
+            wgpu::BindGroupLayoutEntry{binding:4,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None},
+            wgpu::BindGroupLayoutEntry{binding:5,visibility:wgpu::ShaderStages::VERTEX,ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Storage{read_only:true},has_dynamic_offset:false,min_binding_size:None},count:None}]});
         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("minimal forward"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/forward.wgsl").into())});
         let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
         let pipeline_for=|format,entry|gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some("minimal forward"),layout:Some(&pl),
             vertex:wgpu::VertexState{module:&module,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[
                 Some(wgpu::VertexBufferLayout{array_stride:32,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x2]}),
-                Some(wgpu::VertexBufferLayout{array_stride:64,step_mode:wgpu::VertexStepMode::Instance,attributes:&wgpu::vertex_attr_array![3=>Float32x4,4=>Float32x4,5=>Float32x4,6=>Uint32,7=>Uint32]})]},
+                Some(wgpu::VertexBufferLayout{array_stride:64,step_mode:wgpu::VertexStepMode::Instance,attributes:&wgpu::vertex_attr_array![3=>Float32x4,4=>Float32x4,5=>Float32x4,6=>Uint32,7=>Uint32,8=>Uint32]})]},
             primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},
             depth_stencil:Some(wgpu::DepthStencilState{format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(true),depth_compare:Some(wgpu::CompareFunction::GreaterEqual),stencil:Default::default(),bias:Default::default()}),
             multisample:Default::default(),fragment:Some(wgpu::FragmentState{module:&module,entry_point:Some(entry),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState{format,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),multiview_mask:None,cache:gpu.pipeline_cache()});
@@ -60,19 +76,31 @@ impl Forward {
         let stone_view=crate::minimum_stone::texture(gpu);
         let supported=gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY|wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
         let query=supported.then(||(gpu.device.create_query_set(&wgpu::QuerySetDescriptor{label:Some("minimum timestamps"),ty:wgpu::QueryType::Timestamp,count:48}),gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("minimum timestamps resolve"),size:48*8,usage:wgpu::BufferUsages::QUERY_RESOLVE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false})));
-        Self{profiler:crate::gpu_profile::Profiler::new(supported,48),profiling:false,query,sequence:0,profile_frame_id:None,pipeline,pipeline_srgb,layout,lava_view,lava_sampler,stone_view,stone_detail:scene.graphics.stone_detail,vertices,indices,materials:materials.clone(),meshes,ranges,owners:scene.instances.clone(),targets:Vec::new()}
+        Self{profiler:crate::gpu_profile::Profiler::new(supported,48),profiling:false,query,sequence:0,profile_frame_id:None,pipeline,pipeline_srgb,layout,lava_view,lava_sampler,stone_view,stone_detail:scene.graphics.stone_detail,rigid_models,rigid_actors:Vec::new(),palette,vertices,indices,materials:materials.clone(),meshes,ranges,owners:scene.instances.clone(),targets:Vec::new()}
     }
     pub fn update(&mut self,first:usize,instances:&[GpuInstance])->Result<(),String>{
         if first.checked_add(instances.len()).is_none_or(|n|n>self.owners.len()){return Err("minimal owner update exceeds scene".into());}
         for i in instances {if i.cluster_count>0&&!self.ranges.contains_key(&(i.first_cluster,i.cluster_count)){return Err("minimal renderer requires a registered mesh".into());}}
         self.owners[first..first+instances.len()].copy_from_slice(instances);Ok(())
     }
+    /// This frame's characters; their joints go up once for both eyes.
+    pub fn set_rigid_actors(&mut self,gpu:&Gpu,actors:&[crate::scene::RigidActor]) {
+        self.rigid_actors.clear();let mut rows:Vec<[f32;4]>=Vec::new();
+        for actor in actors {
+            if actor.model>=self.rigid_models.len()||rows.len()+actor.palette.len()*3>PALETTE_ROWS {continue;}
+            let base=rows.len()as u32;
+            for joint in &actor.palette {rows.extend([joint.row(0).to_array(),joint.row(1).to_array(),joint.row(2).to_array()]);}
+            let m=glam::Mat4::from(actor.transform);
+            self.rigid_actors.push(RigidDraw{model:actor.model,rows:[m.row(0).to_array(),m.row(1).to_array(),m.row(2).to_array()],base,hidden_views:actor.hidden_views,centre:Vec3::from(actor.transform.translation)});
+        }
+        if !rows.is_empty(){gpu.queue.write_buffer(&self.palette,0,bytemuck::cast_slice(&rows));}
+    }
     fn target(&self,gpu:&Gpu,size:[u32;2])->Target {
         let texture=|label,format,usage|gpu.device.create_texture(&wgpu::TextureDescriptor{label:Some(label),size:wgpu::Extent3d{width:size[0],height:size[1],depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format,usage,view_formats:&[]});
         let color=texture("minimal eye",wgpu::TextureFormat::Rgba8Unorm,wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC|wgpu::TextureUsages::TEXTURE_BINDING);
         let depth=texture("minimal depth",wgpu::TextureFormat::Depth32Float,wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::TEXTURE_BINDING);
         let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:None,size:std::mem::size_of::<Uniform>()as u64,usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
-        let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor{label:None,layout:&self.layout,entries:&[wgpu::BindGroupEntry{binding:0,resource:uniform.as_entire_binding()},wgpu::BindGroupEntry{binding:1,resource:self.materials.as_entire_binding()},wgpu::BindGroupEntry{binding:2,resource:wgpu::BindingResource::TextureView(&self.lava_view)},wgpu::BindGroupEntry{binding:3,resource:wgpu::BindingResource::Sampler(&self.lava_sampler)},wgpu::BindGroupEntry{binding:4,resource:wgpu::BindingResource::TextureView(&self.stone_view)}]});
+        let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor{label:None,layout:&self.layout,entries:&[wgpu::BindGroupEntry{binding:0,resource:uniform.as_entire_binding()},wgpu::BindGroupEntry{binding:1,resource:self.materials.as_entire_binding()},wgpu::BindGroupEntry{binding:2,resource:wgpu::BindingResource::TextureView(&self.lava_view)},wgpu::BindGroupEntry{binding:3,resource:wgpu::BindingResource::Sampler(&self.lava_sampler)},wgpu::BindGroupEntry{binding:4,resource:wgpu::BindingResource::TextureView(&self.stone_view)},wgpu::BindGroupEntry{binding:5,resource:self.palette.as_entire_binding()}]});
         let instances=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:None,size:64,usage:wgpu::BufferUsages::VERTEX|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
         Target{size,color,depth,instances,capacity:1,uniform,bind}
     }
@@ -104,6 +132,14 @@ impl Forward {
                     let end=packed.len()as u32;stats.triangles+=(part.indices.len()/3)as u32*(end-start);stats.submitted_vertices+=part.indices.len()as u64*(end-start)as u64;
                     draws.push((part.lava,part.indices.clone(),start..end));
                 }
+            }
+            for actor in &self.rigid_actors {
+                if (actor.hidden_views>>vi)&1!=0 || planes.iter().any(|p|p.dot(actor.centre.extend(1.0)) < -3.0*p.truncate().length()) {continue;}
+                let start=packed.len()as u32;
+                packed.push(Instance{rows:actor.rows,material:0,flags:0,pad:[actor.base+1,0]});
+                let indices=self.rigid_models[actor.model].clone();
+                stats.triangles+=(indices.len()/3)as u32;
+                draws.push((false,indices,start..start+1));
             }
             // Fill depth with solid blocks first; hidden lava needs no texture reads.
             draws.sort_by_key(|draw|draw.0);
