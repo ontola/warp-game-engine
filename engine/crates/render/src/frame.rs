@@ -3853,7 +3853,16 @@ impl Renderer {
         }
         // A generated level bake must not change as adaptive camera quality changes.
         let far_lod=if self.far_sun.stage {self.far_sun.lod_pixels}else{crate::far_sun::effective_lod(self.far_sun.lod_pixels,light.lod_pixels)};
-        let far_projection=if sun_needed {self.far_sun.prepare(gpu,light.sun_dir,light.alpha_cut,far_lod)} else {None};
+        // Anchored far map: every caster within its reach, the land included
+        // (up to 600 m above or below the focus), on the sun axis.
+        let far_range=|focus:Vec3,reach:f32| {
+            let corners=(0..8).map(|k|focus+Vec3::new(if k&1==0{-reach}else{reach},if k&2==0{-600.}else{600.},if k&4==0{-reach}else{reach})).collect::<Vec<_>>();
+            self.sun_scene_bounds.as_ref().map_or_else(||{
+                let (_,_,z)=crate::stability::sun_basis(light.sun_dir);
+                let d=corners.iter().map(|p|z.dot(*p));[d.clone().fold(f32::INFINITY,f32::min),d.fold(f32::NEG_INFINITY,f32::max)]
+            },|b|b.lock().unwrap().depth_range(light.sun_dir,&corners))
+        };
+        let far_projection=if sun_needed {self.far_sun.prepare(gpu,light.sun_dir,light.alpha_cut,far_lod,centre,far_range)} else {None};
         let far_updated=far_projection.is_some_and(|(_,updated)|updated);
         let mut far_targets=self.far_sun_targets.lock().unwrap();
         if let Some((projection,true))=far_projection {
@@ -4083,10 +4092,16 @@ impl Renderer {
             if time.is_some(){names.extend(["GPU forest selection residency","GPU forest shared poses","GPU forest materialize"]);}
             // Cameras were appended first; all following consumers are shadow
             // maps (including perspective headlights). Do not infer roles from VP.
-            let consumers=part_animation_views.iter().copied().enumerate().map(|(i,v)| {
+            let mut consumers=part_animation_views.iter().copied().enumerate().map(|(i,v)| {
                 if i<views.len(){crate::foliage_select::ConsumerView::camera(v)}
                 else{crate::foliage_select::ConsumerView::shadow(v)}
             }).collect::<Vec<_>>();
+            // The anchored far sun map is a shadow consumer every frame, not only
+            // when it is redrawn, so its presence never changes the shared cut
+            // (and with it the cached main sun map) from frame to frame.
+            if let Some((projection,_))=far_projection.filter(|_|self.far_sun.anchored) {
+                consumers.push(crate::foliage_select::ConsumerView::shadow(crate::part_wind::AnimationView {view_projection:projection.vp,viewport:[crate::far_sun::SIZE;2]}));
+            }
             // A camera cut needs deeper refinement than last frame's readback
             // says; encode the full round bound until the GPU reports again.
             forest.note_cameras(&views.iter().map(|v|(v.cam.pos,(v.cam.target-v.cam.pos).normalize_or_zero(),v.cam.fov_y)).collect::<Vec<_>>());
@@ -4202,6 +4217,14 @@ impl Renderer {
         if far_updated {
             self.cull_and_raster(&mut enc,gpu,far_targets.as_ref().unwrap(),None,&self.far_sun.target,
                 &mut ts,&mut names,"far sun cull",RasterPass::FarSun);
+            // Streamed worlds: the GPU forest casts into the anchored map once
+            // per redraw, not every frame.
+            if let (true,Some((projection,_)),Some(forest))=(self.far_sun.anchored,far_projection,self.voxel_forest.as_ref().filter(|f|f.casts_sun())) {
+                let texel=2.*projection.extent/crate::far_sun::SIZE as f32;
+                let planes=view_uniform(projection.vp,projection.eye,1.,[0.;4],[0.;4],0.).planes;
+                forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&shadow_t.foliage_selection,crate::voxel_forest::SunSplatView {
+                    damage:None,depth:&self.far_sun.target,view_proj:projection.vp,planes,direction:light.sun_dir,texel_m:sun_voxel_m(texel,SHARED_SUN_VOXEL_M)},[None,None])?;
+            }
         }
         for (index,page) in page_plan.updates.iter().enumerate() {
             let layer=self.foliage_sun_pages.layer_view(page.layer);
