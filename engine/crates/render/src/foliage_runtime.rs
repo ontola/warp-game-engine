@@ -988,6 +988,52 @@ impl Runtime {
         let stats=renderer.replace_gpu_forest_roots(&gpu,&[]).unwrap();assert_eq!(stats.changed,2);let d=draw();assert_eq!(d.active_roots,0);assert_eq!(d.source_slots+d.voxel_slots+d.direct_roots,0);
         renderer.replace_gpu_forest_roots(&gpu,&original).unwrap();let d=draw();assert_eq!(d.active_roots,2);assert_eq!(d.source_slots,6);assert_eq!(d.assigned,6);
     }
+    // Whatever is opaque and static in front of the forest hides it from the
+    // camera through the current-frame seed depth, never through a rule about
+    // walls. A non-occluding category is the control: same pixels, same
+    // geometry, but the forest is selected as if nothing were in front.
+    #[test]
+    #[ignore="exclusive GPU forest occlusion fixture"]
+    fn gpu_opaque_structures_hide_forest_from_camera() {
+        use super::*;use crate::{Camera,Lighting,Renderer,ViewRect,scene::{GeometryCategory,Material}};
+        let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
+        let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
+        let gpu=Gpu::new().unwrap();let light=Lighting {gi:0.,sun_lux:0.,shadow_strength:0.,..Default::default()};
+        // wall: (centre, size, category). None means open ground.
+        let frame=|wall:Option<(Vec3,Vec3,GeometryCategory)>,cam:Camera| {
+            let mut scene=Scene::default();
+            plant(&mut scene,std::slice::from_ref(&cooked),&[RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}],8,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
+            if let Some((at,size,category))=wall {
+                let paint=scene.add_material(Material {tint:[0.5;3],layer:-1,roughness:0.9,flags:0,scale:1.,metal:0.});
+                let mesh=scene.add_mesh(&crate::primitives::cube(paint).mesh());
+                scene.add_classified_instance(mesh,glam::Affine3A::from_scale_rotation_translation(size,glam::Quat::IDENTITY,at),category);
+            }
+            let renderer=Renderer::new(&gpu,&scene,&light);renderer.test_warm_foliage_assets(&gpu);
+            let views=[ViewRect {cam,x:0,y:0,w:128,h:128}];
+            let mut last=None;
+            for _ in 0..3 {let (image,_)=renderer.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();last=Some((image,renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap()));}
+            last.unwrap()
+        };
+        // The root's bounding sphere has radius ~2.1 around (0.6,0.6,0.2).
+        let front=Camera {pos:Vec3::new(0.6,0.6,12.),target:Vec3::new(0.6,0.6,0.),fov_y:1.,near:0.05};
+        // Close enough that the tree's bounds run past every screen edge.
+        let close=Camera {pos:Vec3::new(0.6,0.6,5.),target:Vec3::new(0.6,0.6,0.),fov_y:1.,near:0.05};
+        let full=|z:f32,category|Some((Vec3::new(0.6,0.6,z),Vec3::new(30.,30.,0.05),category));
+        let (_,open)=frame(None,front);
+        assert_eq!(open.camera_roots,1,"fixture: the tree is in view");assert!(open.source_slots+open.voxel_slots>0,"fixture: the tree draws");
+        for (name,cam,z) in [("whole tree on screen",front,5.),("tree bounds cross the screen edge",close,3.5)] {
+            let (seen,control)=frame(full(z,GeometryCategory::Other),cam);
+            let (hidden,culled)=frame(full(z,GeometryCategory::Structures),cam);
+            eprintln!("{name}: camera roots {} without occlusion, {} behind structure",control.camera_roots,culled.camera_roots);
+            assert_eq!(control.camera_roots,1,"{name}: a non-occluding category must not cull");
+            assert_eq!(culled.camera_roots,0,"{name}: a tree fully behind opaque structure must not be selected for the camera");
+            let differ=seen.chunks_exact(4).zip(hidden.chunks_exact(4)).filter(|(a,b)|a.iter().zip(b.iter()).any(|(&a,&b)|a.abs_diff(b)>2)).count();
+            assert_eq!(differ,0,"{name}: culling must not change a single visible pixel");
+        }
+        // A wall over only the left half leaves the tree's right side showing.
+        let (_,half)=frame(Some((Vec3::new(-14.4,0.6,5.),Vec3::new(30.,30.,0.05),GeometryCategory::Structures)),front);
+        assert_eq!(half.camera_roots,1,"a partly covered tree stays selected");
+    }
     #[test]
     #[ignore="exclusive GPU deferred queue overflow fixture"]
     fn gpu_history_queue_overflow_preserves_pixels() {
