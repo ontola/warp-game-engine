@@ -7,7 +7,7 @@ pub struct Actions {
     set: xr::ActionSet,
     movement: xr::Action<xr::Vector2f>, turn: xr::Action<xr::Vector2f>,
     fire: xr::Action<f32>, grenade: xr::Action<f32>, dash: xr::Action<f32>,
-    jump: xr::Action<bool>, reload: xr::Action<bool>, accept: xr::Action<bool>, back: xr::Action<bool>, menu: xr::Action<bool>,
+    jump: xr::Action<bool>, grip: xr::Action<f32>, reload: xr::Action<bool>, accept: xr::Action<bool>, back: xr::Action<bool>, menu: xr::Action<bool>,
     aim: xr::Action<xr::Posef>, space: xr::Space, previous: u32,
 }
 impl Actions {
@@ -19,6 +19,7 @@ impl Actions {
         let grenade=set.create_action("grenade", "Special", &[])?;
         let dash=set.create_action("dash", "Dash", &[])?;
         let jump=set.create_action("jump", "Jump / select", &[])?;
+        let grip=set.create_action("grip", "Jump", &[])?;
         let reload=set.create_action("reload", "Reload", &[])?;
         let accept=set.create_action("accept", "Select", &[])?;
         let back=set.create_action("back", "Back", &[])?;
@@ -31,6 +32,7 @@ impl Actions {
             xr::Binding::new(&grenade,instance.string_to_path("/user/hand/left/input/trigger/value")?),
             xr::Binding::new(&dash,instance.string_to_path("/user/hand/right/input/squeeze/value")?),
             xr::Binding::new(&jump,instance.string_to_path("/user/hand/right/input/a/click")?),
+            xr::Binding::new(&grip,instance.string_to_path("/user/hand/left/input/squeeze/value")?),
             xr::Binding::new(&reload,instance.string_to_path("/user/hand/left/input/x/click")?),
             xr::Binding::new(&accept,instance.string_to_path("/user/hand/left/input/y/click")?),
             xr::Binding::new(&back,instance.string_to_path("/user/hand/right/input/b/click")?),
@@ -39,7 +41,7 @@ impl Actions {
         ])?;
         let space=aim.create_space(session,xr::Path::NULL,xr::Posef::IDENTITY)?;
         session.attach_action_sets(&[&set])?;
-        Ok(Self {set,movement,turn,fire,grenade,dash,jump,reload,accept,back,menu,aim,space,previous:0})
+        Ok(Self {set,movement,turn,fire,grenade,dash,jump,grip,reload,accept,back,menu,aim,space,previous:0})
     }
     pub fn sample(&mut self, session: &xr::Session<xr::Vulkan>, base: &xr::Space, time: xr::Time, focused: bool) -> Result<(Controls,f32,Option<Pose>)> {
         session.sync_actions(&[(&self.set).into()])?;
@@ -51,7 +53,7 @@ impl Actions {
         let mv=vec(&self.movement)?.map(|x| if x.abs()<0.18 {0.0}else{x});
         let mut held=0;
         for (down,b) in [(analog(&self.fire)?,Buttons::RIGHT_TRIGGER),(analog(&self.grenade)?,Buttons::LEFT_TRIGGER),
-            (analog(&self.dash)?,Buttons::RIGHT_SHOULDER),(boolean(&self.jump)?,Buttons::SOUTH),(boolean(&self.reload)?,Buttons::WEST),(boolean(&self.accept)?,Buttons::SOUTH),
+            (analog(&self.dash)?,Buttons::RIGHT_SHOULDER),(analog(&self.grip)?,Buttons::LEFT_SHOULDER),(boolean(&self.jump)?,Buttons::SOUTH),(boolean(&self.reload)?,Buttons::WEST),(boolean(&self.accept)?,Buttons::SOUTH),
             (boolean(&self.back)?,Buttons::EAST),(boolean(&self.menu)?,Buttons::START)] { if down {held|=b;} }
         // Menu navigation uses the same controls as the desktop game's menus.
         let controls=Controls {mv, held:Buttons(held),pressed:Buttons(held & !self.previous),..Default::default()};

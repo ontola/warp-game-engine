@@ -99,7 +99,8 @@ unsupported GPU-deformed/generated scenes retain the general renderer.
 The game starts directly in the arena. Pause and card menus use the original
 HUD, submitted on a head-relative OpenXR quad two metres away. The fixed
 screen-centred crosshair is hidden; aim follows the gun. The pause menu has
-HOST LAN GAME and JOIN LAN GAME: the host announces itself on the local network
+HOST LAN GAME and JOIN LAN GAME (the right controller points at menus and cards
+and its trigger selects; left stick and A work too; the left grip jumps): the host announces itself on the local network
 (`net::lan`) and JOIN takes the newest host heard, so nobody types a ticket.
 Head and gun poses travel in the network input. Splitscreen stays omitted. Locomotion is smooth, not
 teleportation; jumps, falling and physical knockback remain gameplay movement.

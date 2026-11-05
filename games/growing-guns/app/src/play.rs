@@ -154,6 +154,14 @@ impl Gg {
 
     fn with_split(mut self) -> Self { self.split = self.slots.len() > 1; self }
 
+    /// A menu or a card pick is up: a headset's controller points at it.
+    pub(crate) fn wants_pointer(&self) -> bool {
+        self.ui.is_open() || self.slots.first().and_then(|&s| self.world.players.get(s)).is_some_and(|p| p.offer.is_some())
+    }
+
+    /// The headset's pointer: `Game::pointer` is off without keyboard and mouse.
+    pub(crate) fn xr_pointer(&mut self, pointer: app::Pointer, size: [u32; 2]) { self.pointer = (pointer, size); }
+
     pub(crate) fn xr_eye(&self, alpha: f32) -> Vec3 {
         view::pose(&self.world, self.slots[0], &self.prev, if self.stepped { alpha } else { 1.0 }).pos + Vec3::Y * growing_guns::EYE
     }
