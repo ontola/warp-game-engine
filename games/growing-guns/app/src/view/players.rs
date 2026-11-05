@@ -275,12 +275,15 @@ impl PlayersView {
         let push = if dir.length_squared() > 1e-4 { dir } else { (v.pos - world.players[a].pos).with_y(0.0).normalize_or(Vec3::Y) };
         // A burst (overkill, explosions) shatters skinned bodies as well: no
         // corpse, so the character stays hidden while the chunks fly.
-        if skinned && !matches!(gib, Gib::Burst { .. }) {
+        // Rigid characters have no shards of their own: the old primitive
+        // pieces would fly out of a real body, so every death is a ragdoll.
+        let rigid = crate::graphics::get().rigid_characters;
+        if skinned && (rigid || !matches!(gib, Gib::Burst { .. })) {
             // Drive the original textured skin from articulated limb bodies.
             if let Some(characters) = &mut self.characters {
                 if let Err(error) = characters.kill(phys, victim, v, push, matches!(gib, Gib::Head)) { eprintln!("ragdoll: {error}"); }
             }
-            if matches!(gib, Gib::Head) {
+            if matches!(gib, Gib::Head) && !rigid {
                 self.gore().burst(scene, phys, victim, &[gore::Part::Head, gore::Part::Eyes], v.pos, v.yaw, v.vel, push, 0.5, now);
             }
             fx.blasts.gib_mist(now, v.pos + Vec3::Y * 0.3, 0.8);
@@ -443,7 +446,8 @@ impl PlayersView {
         let mut slot = self.first;
         for (i, m) in self.meshes.iter().enumerate() {
             let Some(_p) = world.players.get(i).filter(|p| p.alive) else {
-                let corpse = world.players.get(i).and_then(|_| self.characters.as_ref().and_then(|c| c.corpse_transform(i)));
+                // Rigid characters draw their corpse themselves.
+                let corpse = world.players.get(i).filter(|_| !crate::graphics::get().rigid_characters).and_then(|_| self.characters.as_ref().and_then(|c| c.corpse_transform(i)));
                 for (part, mesh) in [m.body, m.head, m.eyes].into_iter().enumerate() {
                     let xf = if part == 0 { corpse.unwrap_or(Affine3A::from_translation(HIDDEN)) } else { Affine3A::from_translation(HIDDEN) };
                     pose_instance(scene, slot, mesh, xf);
@@ -467,9 +471,9 @@ impl PlayersView {
                 slot += 1;
             }
         }
-        if crate::graphics::get().rigid_characters && let Some(characters) = &self.characters {
+        if crate::graphics::get().rigid_characters && let Some(characters) = &mut self.characters {
             let hide: Vec<u8> = self.meshes.iter().map(|m| m.own_views).collect();
-            characters.pose_rigid(scene, world, prev, alpha, &hide);
+            characters.pose_rigid(world, prev, alpha, &hide);
         }
         self.pose_lava(scene, world, (world.tick as f32 - 1.0 + alpha) * growing_guns::DT);
         // Bullets, drawn where they are at this frame (between ticks), nose

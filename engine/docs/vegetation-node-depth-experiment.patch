@@ -1,0 +1,353 @@
+diff --git a/engine/crates/render/src/depth_pyramid.rs b/engine/crates/render/src/depth_pyramid.rs
+index fe6fd64..a3fba4b 100644
+--- a/engine/crates/render/src/depth_pyramid.rs
++++ b/engine/crates/render/src/depth_pyramid.rs
+@@ -76,7 +76,7 @@ impl DepthPyramid {
+             sample_count: 1,
+             dimension: wgpu::TextureDimension::D2,
+             format: wgpu::TextureFormat::R32Float,
+-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
++            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+             view_formats: &[],
+         });
+         let view = texture.create_view(&Default::default());
+diff --git a/engine/crates/render/src/foliage_refine.rs b/engine/crates/render/src/foliage_refine.rs
+index 07a5428..726b4fc 100644
+--- a/engine/crates/render/src/foliage_refine.rs
++++ b/engine/crates/render/src/foliage_refine.rs
+@@ -13,8 +13,8 @@ impl Refiner {
+         let storage=|label,size|gpu.device.create_buffer(&wgpu::BufferDescriptor {
+             label:Some(label),size,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,
+             mapped_at_creation:false});
+-        let entries=(0..17).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
+-            ty:wgpu::BindingType::Buffer {ty:if binding==0 {wgpu::BufferBindingType::Uniform} else {wgpu::BufferBindingType::Storage {read_only:binding==1||binding==2||binding==16}},has_dynamic_offset:false,min_binding_size:None}}).collect::<Vec<_>>();
++        let entries=(0..18).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
++            ty:if binding==17 {wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2Array,multisampled:false}}else{wgpu::BindingType::Buffer {ty:if binding==0 {wgpu::BufferBindingType::Uniform} else {wgpu::BufferBindingType::Storage {read_only:binding==1||binding==2}},has_dynamic_offset:false,min_binding_size:None}}}).collect::<Vec<_>>();
+         let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("foliage complete-cut refinement"),entries:&entries});
+         let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
+         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage incremental admission"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_refine.wgsl").into())});
+@@ -29,7 +29,8 @@ impl Refiner {
+     }
+     fn bind(&self,gpu:&Gpu,s:&Selector,front:usize)->wgpu::BindGroup {
+         let buffers=[&s.uniform,&s._nodes,&s._instances,&s.asset_pages,&self.proposals,&self.queues[front],&self.queues[1-front],&self.blocks,&s.records,&s.counters,&s.fallback,&s.direct,&s.demand,&self.state,&self.parked,&s.record_consumers,&s.seed_visibility];
+-        let entries=buffers.iter().enumerate().map(|(binding,b)|wgpu::BindGroupEntry {binding:binding as u32,resource:b.as_entire_binding()}).collect::<Vec<_>>();
++        let mut entries=buffers.iter().enumerate().map(|(binding,b)|wgpu::BindGroupEntry {binding:binding as u32,resource:b.as_entire_binding()}).collect::<Vec<_>>();
++        let depth=s.seed_classifier.view();entries.push(wgpu::BindGroupEntry {binding:17,resource:wgpu::BindingResource::TextureView(&depth)});
+         self.binds.lock().unwrap().entries(gpu,&self.layout,"foliage refinement buffers",&entries)
+     }
+     fn dispatch(&self,enc:&mut wgpu::CommandEncoder,bind:&wgpu::BindGroup,pipeline:usize,groups:Option<u32>,offset:u64) {
+diff --git a/engine/crates/render/src/foliage_seed_visibility.rs b/engine/crates/render/src/foliage_seed_visibility.rs
+index fb21d10..248e72b 100644
+--- a/engine/crates/render/src/foliage_seed_visibility.rs
++++ b/engine/crates/render/src/foliage_seed_visibility.rs
+@@ -1,32 +1,29 @@
+-//! Conservative root visibility from CURRENT-frame seed depth, before refinement.
+-//! No historical depth, CPU selection, or shadow rejection. Every camera contributes.
+-use crate::{Gpu,foliage_select::Selector};
++//! Current seed-depth array shared by root and hierarchy-node visibility.
++//! GPU copies only; no CPU visibility list, historical depth, or shadow rejection.
++use crate::Gpu;
+ use glam::Mat4;
+-
+ pub(crate) struct CameraDepth<'a> {pub projection:Mat4,pub pyramid:&'a wgpu::TextureView}
+-pub(crate) struct Visibility {pipeline:wgpu::ComputePipeline,layout:wgpu::BindGroupLayout,uniform:wgpu::Buffer,stride:u64,binds:std::sync::Mutex<crate::frame::resource_cache::BindGroups<32>>}
+-impl Visibility {
+- pub fn new(gpu:&Gpu)->Self {
+-  let shader=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage seed visibility"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_seed_visibility.wgsl").into())});
+-  let pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("foliage seed visibility"),layout:None,module:&shader,entry_point:Some("classify"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
+-  let layout=pipeline.get_bind_group_layout(0);
+-  let stride=u64::from(gpu.device.limits().min_uniform_buffer_offset_alignment.max(256));
+-  let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage seed cameras"),size:32*stride,usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+-  Self {pipeline,layout,uniform,stride,binds:Default::default()}
++struct Atlas {texture:wgpu::Texture,view:wgpu::TextureView,size:[u32;3],mips:u32}
++impl Atlas {
++ fn new(gpu:&Gpu,size:[u32;3],mips:u32)->Self {
++  let texture=gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("foliage current depth array"),size:wgpu::Extent3d {width:size[0],height:size[1],depth_or_array_layers:size[2]},mip_level_count:mips,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::R32Float,usage:wgpu::TextureUsages::COPY_DST|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]});
++  let view=texture.create_view(&wgpu::TextureViewDescriptor {dimension:Some(wgpu::TextureViewDimension::D2Array),..Default::default()});Self {texture,view,size,mips}
+  }
+- pub fn encode(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,s:&Selector,cameras:&[CameraDepth<'_>])->Result<(),String> {
+-  if cameras.is_empty() || cameras.len()>32 || cameras.iter().any(|c|!c.projection.is_finite()) {return Err("invalid foliage current-depth cameras".into());}
+-  enc.clear_buffer(&s.seed_visibility,0,None);
+-  for (index,camera) in cameras.iter().enumerate() {
+-   // Separate aligned camera ranges prevent later views replacing an earlier
+-   // view's matrix. Reuse buffers/bind groups across frames and target resizes.
+-   let mut words=[0u32;20];words[..16].copy_from_slice(&camera.projection.to_cols_array().map(f32::to_bits));words[16]=s.count;
+-   let offset=index as u64*self.stride;gpu.queue.write_buffer(&self.uniform,offset,bytemuck::cast_slice(&words));
+-   let entries=[wgpu::BindGroupEntry {binding:0,resource:wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:&self.uniform,offset,size:std::num::NonZeroU64::new(80)})},wgpu::BindGroupEntry {binding:1,resource:s._nodes.as_entire_binding()},
+-    wgpu::BindGroupEntry {binding:2,resource:s._instances.as_entire_binding()},wgpu::BindGroupEntry {binding:3,resource:wgpu::BindingResource::TextureView(camera.pyramid)},
+-    wgpu::BindGroupEntry {binding:4,resource:s.seed_visibility.as_entire_binding()}];
+-   let bind=self.binds.lock().unwrap().entries(gpu,&self.layout,"foliage seed camera",&entries);
+-   let mut pass=enc.begin_compute_pass(&Default::default());pass.set_pipeline(&self.pipeline);pass.set_bind_group(0,&bind,&[]);pass.dispatch_workgroups(s.count.div_ceil(64),1,1);
++}
++pub(crate) struct Visibility {atlas:std::sync::Mutex<Atlas>}
++impl Visibility {
++ pub fn new(gpu:&Gpu)->Self {Self {atlas:std::sync::Mutex::new(Atlas::new(gpu,[1;3],1))}}
++ pub fn view(&self)->wgpu::TextureView {self.atlas.lock().unwrap().view.clone()}
++ pub fn encode(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,cameras:&[CameraDepth<'_>])->Result<(),String> {
++  if cameras.is_empty() || cameras.len()>32 || cameras.iter().any(|c|!c.projection.is_finite() || !c.pyramid.texture().usage().contains(wgpu::TextureUsages::COPY_SRC) || c.pyramid.texture().format()!=wgpu::TextureFormat::R32Float || c.pyramid.texture().sample_count()!=1 || c.pyramid.texture().depth_or_array_layers()!=1) {return Err("invalid foliage current-depth cameras/copy usage".into());}
++  let size=[cameras.iter().map(|c|c.pyramid.texture().width()).max().unwrap(),cameras.iter().map(|c|c.pyramid.texture().height()).max().unwrap(),cameras.len()as u32];
++  let mips=cameras.iter().map(|c|c.pyramid.texture().mip_level_count()).max().unwrap();
++  let mut atlas=self.atlas.lock().unwrap();if atlas.size!=size || atlas.mips!=mips {*atlas=Atlas::new(gpu,size,mips);}
++  for (layer,camera) in cameras.iter().enumerate() {
++   let texture=camera.pyramid.texture();
++   for mip in 0..texture.mip_level_count() {
++    enc.copy_texture_to_texture(wgpu::TexelCopyTextureInfo {texture,mip_level:mip,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},wgpu::TexelCopyTextureInfo {texture:&atlas.texture,mip_level:mip,origin:wgpu::Origin3d {x:0,y:0,z:layer as u32},aspect:wgpu::TextureAspect::All},wgpu::Extent3d {width:(texture.width()>>mip).max(1),height:(texture.height()>>mip).max(1),depth_or_array_layers:1});
++   }
+   }
+   Ok(())
+  }
+diff --git a/engine/crates/render/src/foliage_select.rs b/engine/crates/render/src/foliage_select.rs
+index 5011e2d..30ac35e 100644
+--- a/engine/crates/render/src/foliage_select.rs
++++ b/engine/crates/render/src/foliage_select.rs
+@@ -59,7 +59,7 @@ impl ConsumerView {
+ struct Consumer {vp:[f32;16],pixels:[f32;4]}
+ #[repr(C)]
+ #[derive(Clone,Copy,Pod,Zeroable)]
+-struct Uniform {consumers:[Consumer;32],consumer_count:[u32;4],vp:[f32;16],previous_vp:[f32;16],pixels:[f32;4],counts:[u32;4]}
++struct Uniform {consumers:[Consumer;32],consumer_count:[u32;4],vp:[f32;16],previous_vp:[f32;16],pixels:[f32;4],counts:[u32;4],depth:[[u32;4];32]}
+ 
+ fn validate(nodes:&[Node],instances:&[Instance],capacity:u32)->Result<(),String> {
+     if nodes.is_empty() || instances.is_empty() || capacity==0 {return Err("empty foliage selection input/capacity".into());}
+@@ -128,7 +128,7 @@ pub struct Selector {
+     layout:wgpu::BindGroupLayout,first:wgpu::ComputePipeline,second:wgpu::ComputePipeline,finish:wgpu::ComputePipeline,
+     pub(crate) count:u32,capacity:u32,deferred_capacity:u32,
+     pub(crate) refiner:crate::foliage_refine::Refiner,
+-    pub(crate) seed_visibility:wgpu::Buffer,seed_classifier:crate::foliage_seed_visibility::Visibility,
++    pub(crate) seed_visibility:wgpu::Buffer,pub(crate) seed_classifier:crate::foliage_seed_visibility::Visibility,
+     binds:std::sync::Mutex<crate::frame::resource_cache::BindGroups<4>>,
+ }
+ impl Selector {
+@@ -235,7 +235,7 @@ impl Selector {
+     pub fn first(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,vp:Mat4,previous_vp:Mat4,size:[u32;2],error:f32,history_valid:bool,hzb:&wgpu::TextureView)->Result<(),String> {
+         if !vp.is_finite() || !previous_vp.is_finite() || size.contains(&0) || !error.is_finite() || error<0. {return Err("invalid foliage selection view".into());}
+         gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers:[Consumer::zeroed();32],consumer_count:[0;4],vp:vp.to_cols_array(),previous_vp:previous_vp.to_cols_array(),
+-            pixels:[size[0]as f32,size[1]as f32,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(history_valid)]}));
++            pixels:[size[0]as f32,size[1]as f32,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(history_valid)],depth:[[0;4];32]}));
+         enc.clear_buffer(&self.counters,0,None);enc.clear_buffer(&self.fallback,0,None);enc.clear_buffer(&self.direct,0,None);enc.clear_buffer(&self.record_consumers,0,None);
+         let bind=self.bind(gpu,hzb);let mut pass=enc.begin_compute_pass(&Default::default());
+         pass.set_bind_group(0,&bind,&[]);pass.set_pipeline(&self.first);pass.dispatch_workgroups(self.count.div_ceil(64),1,1);
+@@ -266,15 +266,17 @@ impl Selector {
+         if let Some(cameras)=current {
+             let expected=views.iter().filter(|v|v.kind==ConsumerKind::Camera).collect::<Vec<_>>();
+             if cameras.len()!=expected.len() || cameras.iter().zip(expected).any(|(a,b)|a.projection!=b.projection.view_projection) {return Err("foliage seed depth must match every camera consumer".into());}
+-            self.seed_classifier.encode(gpu,enc,self,cameras)?;
++            self.seed_classifier.encode(gpu,enc,cameras)?;
+         }
+         if branch_budget==0 || branch_budget>self.capacity || views.is_empty() || views.len()>32 || !error.is_finite() || error<=0. {return Err("invalid foliage consumer union".into());}
++        let mut depth=[[0u32;4];32];
++        if let Some(cameras)=current {let mut camera=0;for (i,v) in views.iter().enumerate() {if v.kind==ConsumerKind::Camera {let t=cameras[camera].pyramid.texture();depth[i]=[t.width(),t.height(),t.mip_level_count(),camera as u32];camera+=1;}}}
+         let mut consumers=[Consumer::zeroed();32];
+         for (dst,v) in consumers.iter_mut().zip(views) {
+             *dst=v.packed()?;
+         }
+         gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers,consumer_count:[views.len()as u32,branch_budget,raster_budget[0],raster_budget[1]],
+-            vp:views[0].projection.view_projection.to_cols_array(),previous_vp:views[0].projection.view_projection.to_cols_array(),pixels:[0.,0.,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(current.is_some())]}));
++            vp:views[0].projection.view_projection.to_cols_array(),previous_vp:views[0].projection.view_projection.to_cols_array(),pixels:[0.,0.,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(current.is_some())],depth}));
+         enc.clear_buffer(&self.counters,0,None);enc.clear_buffer(&self.fallback,0,None);enc.clear_buffer(&self.direct,0,None);enc.clear_buffer(&self.record_consumers,0,None);
+         let binds=[self.bind_work(gpu,empty_depth,0),self.bind_work(gpu,empty_depth,1)];
+         self.refiner.encode(gpu,enc,self);
+@@ -364,15 +366,40 @@ mod tests {
+   gpu.device.poll(wgpu::PollType::Wait {submission_index:Some(submission),timeout:Some(std::time::Duration::from_secs(30))}).unwrap();rx.recv().unwrap().unwrap();
+   let bytes=out.slice(..).get_mapped_range().unwrap();bytes.chunks_exact(4).map(bytemuck::pod_read_unaligned).collect()
+  }
+- fn depth(gpu:&Gpu,value:f32)->wgpu::TextureView {
+-  let tex=gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("selector test depth"),size:wgpu::Extent3d {width:8,height:8,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,
+-   format:wgpu::TextureFormat::R32Float,usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,view_formats:&[]});
+-  gpu.queue.write_texture(wgpu::TexelCopyTextureInfo {texture:&tex,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},bytemuck::cast_slice(&[value;64]),
+-   wgpu::TexelCopyBufferLayout {offset:0,bytes_per_row:Some(32),rows_per_image:Some(8)},wgpu::Extent3d {width:8,height:8,depth_or_array_layers:1});
++ fn depth(gpu:&Gpu,value:f32)->wgpu::TextureView {depth_size(gpu,value,8)}
++ fn depth_size(gpu:&Gpu,value:f32,size:u32)->wgpu::TextureView {
++  let tex=gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("selector test depth"),size:wgpu::Extent3d {width:size,height:size,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,
++   format:wgpu::TextureFormat::R32Float,usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST|wgpu::TextureUsages::COPY_SRC,view_formats:&[]});
++  gpu.queue.write_texture(wgpu::TexelCopyTextureInfo {texture:&tex,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},bytemuck::cast_slice(&vec![value;(size*size)as usize]),
++   wgpu::TexelCopyBufferLayout {offset:0,bytes_per_row:Some(size*4),rows_per_image:Some(size)},wgpu::Extent3d {width:size,height:size,depth_or_array_layers:1});
+   tex.create_view(&Default::default())
+  }
+ 
+ 
++ #[test]
++ #[ignore="exclusive GPU hidden child camera reservation and shadow ownership"]
++ fn gpu_current_depth_filters_hidden_children_of_visible_root() {
++  use crate::foliage_seed_visibility::CameraDepth;
++  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].rows[0][3]=0.;trees[0].scale[2]=1.;trees[0].scale[3]=1.;
++  let nodes=[Node {sphere:[0.,0.,0.5,0.4],error:[0.,0.,1.,1.],links:[1,3,0,3]},
++   Node {sphere:[0.,0.,0.8,0.05],error:[0.,0.,1.,1.],links:[NONE,2,1,0]},
++   Node {sphere:[0.,0.,0.2,0.05],error:[0.,0.,1.,1.],links:[NONE,3,2,0]}];
++  let selector=Selector::new(&gpu,&nodes,&trees,8,8).unwrap();let clear=depth(&gpu,0.);let blocked=depth(&gpu,0.5);
++  let view=crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]};
++  for hidden in [true,false,true] {
++   // A shadow may be interleaved before the camera: depth layers must follow
++   // camera identity, not the consumer-array index or projection shape.
++   let views=[ConsumerView::shadow(view),ConsumerView::camera(view)];
++   let cameras=[CameraDepth {projection:Mat4::IDENTITY,pyramid:if hidden {&blocked}else{&clear}}];
++   let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers_budget_depth(&gpu,&mut enc,&views,1.,8,[100;2],&clear,Some(&cameras)).unwrap();gpu.queue.submit([enc.finish()]);
++   assert_eq!(read(&gpu,&selector.seed_visibility),[1],"parent remains visible");
++   let count=read(&gpu,&selector.counters)[0]as usize;let records=read(&gpu,&selector.records);let roles=read(&gpu,&selector.record_consumers);
++   let for_role=|role| {let mut n=(0..count).filter(|&i|roles[i]==role).map(|i|records[i*4+1]).collect::<Vec<_>>();n.sort();n};
++   assert_eq!(for_role(256),if hidden {vec![1]}else{vec![1,2]});assert_eq!(for_role(512),vec![1,2]);
++   let state=read(&gpu,&selector.refiner.state);assert_eq!(state[1],if hidden{1}else{2});assert_eq!(state[2],2);assert_eq!(state[15],0);
++   assert_eq!(read(&gpu,&selector.fallback),[0]);
++  }
++ }
+  #[test]
+  #[ignore="exclusive GPU upstream current-depth consumer visibility"]
+  fn gpu_current_seed_visibility_preserves_shadow_and_all_cameras() {
+@@ -412,6 +439,15 @@ mod tests {
+    let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers_budget_depth(&gpu,&mut enc,&views_four,1.,4,[100;2],&clear,Some(&cameras_four)).unwrap();gpu.queue.submit([enc.finish()]);
+    assert_eq!(read(&gpu,&selector.demand)[1],512|if visible {256}else{0});
+   }
++  // Different native/upscaled viewport sizes share an atlas without sampling
++  // another layer's padding. Resize back down on the following frame as well.
++  let tiny_clear=depth_size(&gpu,0.,1);let tiny_blocked=depth_size(&gpu,0.95,1);
++  for visible in [true,false] {
++   let cameras=[CameraDepth {projection:Mat4::IDENTITY,pyramid:&blocked},CameraDepth {projection:Mat4::IDENTITY,pyramid:if visible {&tiny_clear}else{&tiny_blocked}}];
++   let mut enc=gpu.device.create_command_encoder(&Default::default());
++   selector.union_consumers_budget_depth(&gpu,&mut enc,&[ConsumerView::camera(view),ConsumerView::camera(view),ConsumerView::shadow(view)],1.,4,[100;2],&clear,Some(&cameras)).unwrap();gpu.queue.submit([enc.finish()]);
++   assert_eq!(read(&gpu,&selector.demand)[1],512|if visible {256}else{0});
++  }
+   // Wind envelope crossing the near plane must fail open, even with full depth.
+   trees[0].scale[1]=1.;gpu.queue.write_buffer(&selector._instances,0,bytemuck::cast_slice(&trees));
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+diff --git a/engine/crates/render/src/shaders/foliage_refine.wgsl b/engine/crates/render/src/shaders/foliage_refine.wgsl
+index 92f632e..f345fef 100644
+--- a/engine/crates/render/src/shaders/foliage_refine.wgsl
++++ b/engine/crates/render/src/shaders/foliage_refine.wgsl
+@@ -5,7 +5,7 @@ struct Node { sphere:vec4<f32>, error:vec4<f32>, links:vec4<u32> };
+ struct Tree { x:vec4<f32>, y:vec4<f32>, z:vec4<f32>, scale:vec4<f32>, info:vec4<u32> };
+ // info: root node, stable generation, reserved, reserved. scale.y: wind envelope.
+ struct Consumer { vp:mat4x4<f32>, pixels:vec4<f32> };
+-struct View { consumers:array<Consumer,32>, consumer_count:vec4<u32>, vp:mat4x4<f32>, previous_vp:mat4x4<f32>, pixels:vec4<f32>, counts:vec4<u32> };
++struct View { consumers:array<Consumer,32>, consumer_count:vec4<u32>, vp:mat4x4<f32>, previous_vp:mat4x4<f32>, pixels:vec4<f32>, counts:vec4<u32>,depth:array<vec4<u32>,32> };
+ 
+ @group(0) @binding(0) var<uniform> view:View;
+ @group(0) @binding(1) var<storage,read> nodes:array<Node>;
+@@ -31,7 +31,8 @@ struct Demand {count:atomic<u32>,bucket:u32,prefix:u32,failed:atomic<u32>};
+ struct Parked { task:vec4<u32>, proposal:Proposal };
+ @group(0) @binding(14) var<storage,read_write> parked:array<Parked>;
+ @group(0) @binding(15) var<storage,read_write> record_consumers:array<u32>;
+-@group(0) @binding(16) var<storage,read> seed_visibility:array<u32>;
++@group(0) @binding(16) var<storage,read_write> seed_visibility:array<u32>;
++@group(0) @binding(17) var seed_depth:texture_2d_array<f32>;
+ const NONE:u32=0xffffffffu;
+ fn ready(rep:u32)->bool {
+  if atomicLoad(&pages[rep].requested)==0u {atomicOr(&pages[rep].requested,1u);}
+@@ -41,10 +42,42 @@ fn plus(a:vec4<u32>,b:vec4<u32>)->vec4<u32> {
+  let sum=a+b;return select(sum,vec4<u32>(NONE),sum<a);
+ }
+ // z/w mask bits match the existing consumer diagnostics (camera256/shadow512).
++fn node_occluded(s:vec4<f32>,consumer:u32)->bool {
++ let vp=view.consumers[consumer].vp;let info=view.depth[consumer];
++ if info.z==0u {return false;}
++ var lo=vec2<f32>(1e30);var hi=vec2<f32>(-1e30);var nearest=0.0;
++ for(var k=0u;k<8u;k++) {
++  let sign=vec3<f32>(select(-1.0,1.0,(k&1u)!=0u),select(-1.0,1.0,(k&2u)!=0u),select(-1.0,1.0,(k&4u)!=0u));
++  let q=vp*vec4<f32>(s.xyz+sign*s.w,1.0);
++  if q.w<=0.00001 || q.z<=0.0 || q.z>=q.w-0.00001 {return false;}
++  let uv=vec2<f32>(q.x/q.w*0.5+0.5,0.5-q.y/q.w*0.5);
++  lo=min(lo,uv);hi=max(hi,uv);nearest=max(nearest,q.z/q.w);
++ }
++ // Screen-edge uncertainty cannot prove complete coverage.
++ if any(lo<vec2<f32>(0.0)) || any(hi>vec2<f32>(1.0)){return false;}
++ let size=info.xy;
++ let a=vec2<u32>(max(floor(lo*vec2<f32>(size))-1.0,vec2<f32>(0.0)));
++ let b=min(vec2<u32>(ceil(hi*vec2<f32>(size))+1.0),size-1u);
++ var mip=0u;
++ loop {if mip+1u>=info.z || all((b>>vec2<u32>(mip))-(a>>vec2<u32>(mip))<=vec2<u32>(1u)){break;} mip++;}
++ let msize=max(info.xy>>vec2<u32>(mip),vec2<u32>(1u));
++ let first=min(a>>vec2<u32>(mip),msize-1u);let last=min(b>>vec2<u32>(mip),msize-1u);
++ var minimum=1.0;
++ for(var y=first.y;y<=last.y;y++){for(var x=first.x;x<=last.x;x++){
++  minimum=min(minimum,textureLoad(seed_depth,vec2<i32>(i32(x),i32(y)),i32(info.w),i32(mip)).x);
++ }}
++ return nearest+0.00002<minimum;
++}
++
++fn consumer_visible(s:vec4<f32>,i:u32)->bool {
++ if !visible_in(s,view.consumers[i].vp) {return false;}
++ if view.counts.w!=0u && view.consumers[i].pixels.z==0.0 {return !node_occluded(s,i);}
++ return true;
++}
+ fn mask(s:vec4<f32>)->u32 {
+  var result=0u;
+  for(var i=0u;i<view.consumer_count.x;i++) {
+-  let c=view.consumers[i];if visible_in(s,c.vp) {result|=select(512u,256u,c.pixels.z==0.0);}
++  let c=view.consumers[i];if consumer_visible(s,i) {result|=select(512u,256u,c.pixels.z==0.0);}
+  }
+  return result;
+ }
+@@ -68,7 +101,7 @@ var<workgroup> seed_scan:array<vec4<u32>,256>;
+  if tree<view.counts.x {
+   let root=trees[tree];var consumers=0u;
+   if root.info.w==0u {consumers=mask(sphere(root,nodes[root.info.x]));}
+-  if view.counts.w!=0u && seed_visibility[tree]==0u {consumers&=~256u;}
++  seed_visibility[tree]=select(0u,1u,(consumers&256u)!=0u);
+   demand[tree].bucket=consumers;demand[tree].prefix=0u;
+   demand[tree+view.counts.x].bucket=consumers&512u;demand[tree+view.counts.x].prefix=0u;
+   atomicStore(&demand[tree].count,0u);atomicStore(&demand[tree].failed,0u);
+@@ -121,7 +154,7 @@ var<workgroup> seed_scan:array<vec4<u32>,256>;
+ fn projected(t:Tree,n:Node,roles:u32)->vec2<f32> {
+  let s=sphere(t,n);var all_scale=0.0;var camera_scale=0.0;
+  for(var i=0u;i<view.consumer_count.x;i++) {
+-  let c=view.consumers[i];if (roles&select(512u,256u,c.pixels.z==0.0))!=0u && visible_in(s,c.vp) {
++  let c=view.consumers[i];if (roles&select(512u,256u,c.pixels.z==0.0))!=0u && consumer_visible(s,i) {
+    let p=error_in(s,1.0,c.vp,c.pixels.xy);all_scale=max(all_scale,p);
+    if c.pixels.z==0.0 {camera_scale=max(camera_scale,p);}
+   }
+diff --git a/engine/crates/render/src/shaders/foliage_seed_visibility.wgsl b/engine/crates/render/src/shaders/foliage_seed_visibility.wgsl
+deleted file mode 100644
+index b833914..0000000
+--- a/engine/crates/render/src/shaders/foliage_seed_visibility.wgsl
++++ /dev/null
+@@ -1,51 +0,0 @@
+-// Current-frame seed depth only. Historical depth must never reject a root here.
+-struct Node { sphere:vec4<f32>, error:vec4<f32>, links:vec4<u32> };
+-struct Tree { x:vec4<f32>, y:vec4<f32>, z:vec4<f32>, scale:vec4<f32>, info:vec4<u32> };
+-struct Camera { vp:mat4x4<f32>, count:vec4<u32> };
+-@group(0) @binding(0) var<uniform> camera:Camera;
+-@group(0) @binding(1) var<storage,read> nodes:array<Node>;
+-@group(0) @binding(2) var<storage,read> trees:array<Tree>;
+-@group(0) @binding(3) var depth:texture_2d<f32>;
+-@group(0) @binding(4) var<storage,read_write> visible:array<atomic<u32>>;
+-fn visible_in(s:vec4<f32>,vp:mat4x4<f32>)->bool {
+- let r=transpose(vp);
+- let planes=array<vec4<f32>,6>(r[3]+r[0],r[3]-r[0],r[3]+r[1],r[3]-r[1],r[2],r[3]-r[2]);
+- for(var i=0u;i<6u;i++){if dot(planes[i],vec4<f32>(s.xyz,1.0)) < -s.w*length(planes[i].xyz){return false;}}
+- return true;
+-}
+-fn occluded(s:vec4<f32>,vp:mat4x4<f32>)->bool {
+- var lo=vec2<f32>(1e30);var hi=vec2<f32>(-1e30);var nearest=0.0;
+- for(var k=0u;k<8u;k++) {
+-  let sign=vec3<f32>(select(-1.0,1.0,(k&1u)!=0u),select(-1.0,1.0,(k&2u)!=0u),select(-1.0,1.0,(k&4u)!=0u));
+-  let q=vp*vec4<f32>(s.xyz+sign*s.w,1.0);
+-  if q.w<=0.00001 || q.z<=0.0 || q.z>=q.w-0.00001 {return false;}
+-  let uv=vec2<f32>(q.x/q.w*0.5+0.5,0.5-q.y/q.w*0.5);
+-  lo=min(lo,uv);hi=max(hi,uv);nearest=max(nearest,q.z/q.w);
+- }
+- // Offscreen bounds in the historical view cannot prove occlusion.
+- if any(lo<vec2<f32>(0.0)) || any(hi>vec2<f32>(1.0)){return false;}
+- let size=textureDimensions(depth,0);
+- let a=vec2<u32>(max(floor(lo*vec2<f32>(size))-1.0,vec2<f32>(0.0)));
+- let b=min(vec2<u32>(ceil(hi*vec2<f32>(size))+1.0),size-1u);
+- var mip=0u;
+- loop {if mip+1u>=textureNumLevels(depth) || all((b>>vec2<u32>(mip))-(a>>vec2<u32>(mip))<=vec2<u32>(1u)){break;} mip++;}
+- let msize=textureDimensions(depth,i32(mip));
+- let first=min(a>>vec2<u32>(mip),msize-1u);let last=min(b>>vec2<u32>(mip),msize-1u);
+- var minimum=1.0;
+- for(var y=first.y;y<=last.y;y++){for(var x=first.x;x<=last.x;x++){
+-  minimum=min(minimum,textureLoad(depth,vec2<i32>(i32(x),i32(y)),i32(mip)).x);
+- }}
+- return nearest+0.00002<minimum;
+-}
+-
+-@compute @workgroup_size(64) fn classify(@builtin(global_invocation_id) id:vec3<u32>) {
+- let i=id.x;if i>=camera.count.x {return;}
+- let t=trees[i];if t.info.w!=0u {return;}
+- let n=nodes[t.info.x];let p=vec4<f32>(n.sphere.xyz,1.0);
+- let s=vec4<f32>(dot(t.x,p),dot(t.y,p),dot(t.z,p),n.sphere.w*t.scale.x+t.scale.y);
+- // Only cameras containing the root contribute. An unrelated camera looking
+- // away must not undo another camera's proven current-depth rejection.
+- if !visible_in(s,camera.vp) {return;}
+- // Uncertain screen-edge/near-plane support remains visible.
+- if !occluded(s,camera.vp) {atomicOr(&visible[i],1u);}
+-}

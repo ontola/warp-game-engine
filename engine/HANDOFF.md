@@ -37,6 +37,55 @@ with and without regions, `terrain_field::biome_shapes_match_on_gpu`) PASS on Me
 lavapipe in the cloud container, not yet on real hardware; naga validation of the
 composed shaders; workspace check clean. No interactive playtest.
 
+## 5 November: attribute oversized cells to the published GPU cut
+
+The explicit --voxel-raster-profile report now attaches articulated-slot owner,
+root/node/generation, selected error/cost, immediate children and GPU page state.
+Only explicit offline capture reads back; no CPU selection or normal-frame waits.
+Whole-root volume attribution is explicitly marked not yet decoded.
+154 foliage tests (including GPU fixtures), release build and normal native720p
+ONE-view route succeeded. Image RGB MAE
+excluding HUD <0.000074 against retained baseline (diagnostic-only change).
+Largest submitted cell was21.308px, root33573/node1116. Selected authored error
+1.7875/optical footprint0.9492; immediate child1117 is worse at3.3464/3.4293.
+Both children are resident. This exposes nonmonotonic intermediate quality, but
+unary candidate skipping must be traced before claiming the exact admission cause.
+Next: capture the actual replacement proposal for this owner and fix complete-cut
+lookahead/cooking as justified; do not merely raise rounds or shrink splats.
+Evidence: vegetation-cut-ownership.json. Spheres remain unresolved; no gate closed.
+
+## 5 November: reject node-depth candidate; oversized voxel cells remain
+
+Current-terrain visibility was extended from roots to hierarchy nodes before
+reservation, with an array of current per-camera depth pyramids and independent
+shadow demand. All 155 foliage tests passed (including GPU tests), and the release
+example built. Three alternating baseline/candidate runs per route, native720p
+ONE VIEW, showed no selection improvement and nearly identical final images:
+lowland median covered GPU 15.092 -> 15.683 ms; alpine 14.158 -> 14.583 ms.
+The candidate is NOT integrated. Its source/tests are retained in
+vegetation-node-depth-experiment.patch and per-pass results in
+vegetation-node-depth-measurements.json. Normal renderer source is restored to
+2f38bf1. This does not fix the user's visible spheres: measured cells up to24px
+remain, whereas pixel-scale distant representation is the intended goal.
+Next work must demonstrate actual final cell footprint reduction and near-source
+coverage, not count visibility infrastructure as a visual fix. G1.4/G2/G3/G8
+remain incomplete. No interactive playtest launched.
+
+## 5 November: upstream current-terrain root visibility checkpoint
+
+Normal renderer now draws current terrain-only depth before shared GPU foliage
+refinement; root camera rejection unions every camera and preserves shadow roles.
+154 foliage tests pass, including four-camera current-depth ownership/fail-open
+cases. No CPU tree selection or new user opt-in switch. Targets/uniforms cached.
+
+NOT a performance win: three alternating native720p SINGLE-VIEW runs per route
+show about +0.23 ms lowland and +0.47 ms alpine. Camera roots rejected: 3 / 748.
+Oversized rounded cells persist. G3.2 tree/cluster seed recovery and per-view
+publication remain OPEN. Authoritative checklist and per-pass evidence:
+engine/docs/vegetation-architecture.md and vegetation-current-depth-measurements.json.
+Measurements predate incoming HDR/exposure/VR/stone changes; rebase/build integration
+is a separate check. No interactive playtest opened.
+
 ## 5 November: automatic exposure and HDR output
 
 Both opt-in; the default SDR image is unchanged. Guide:
