@@ -477,9 +477,11 @@ impl Runtime {
         self.encode_timed(gpu,enc,&consumers,first_owner,None)
     }
     pub(crate) fn encode_timed(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::foliage_select::ConsumerView],first_owner:u32,time:Option<(&wgpu::QuerySet,u32)>)->Result<(),String> {
+        self.encode_timed_depth(gpu,enc,views,first_owner,time,None)
+    }
+    pub(crate) fn encode_timed_depth(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::foliage_select::ConsumerView],first_owner:u32,time:Option<(&wgpu::QuerySet,u32)>,depth:Option<&[crate::foliage_seed_visibility::CameraDepth<'_>]>)->Result<(),String> {
         if let Some((q,i))=time {enc.write_timestamp(q,i);}
-
-        self.selector.union_consumers_budget(gpu,enc,views,self.error,self.slots,[self.raster_budget;2],&self.empty_depth)?;
+        self.selector.union_consumers_budget_depth(gpu,enc,views,self.error,self.slots,[self.raster_budget;2],&self.empty_depth,depth)?;
         self.residency.encode(enc);
         if let Some((q,i))=time {enc.write_timestamp(q,i+1);enc.write_timestamp(q,i+2);}
         let wind=*self.wind.lock().unwrap();

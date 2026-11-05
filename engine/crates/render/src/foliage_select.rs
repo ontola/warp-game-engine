@@ -128,6 +128,7 @@ pub struct Selector {
     layout:wgpu::BindGroupLayout,first:wgpu::ComputePipeline,second:wgpu::ComputePipeline,finish:wgpu::ComputePipeline,
     pub(crate) count:u32,capacity:u32,deferred_capacity:u32,
     pub(crate) refiner:crate::foliage_refine::Refiner,
+    pub(crate) seed_visibility:wgpu::Buffer,seed_classifier:crate::foliage_seed_visibility::Visibility,
     binds:std::sync::Mutex<crate::frame::resource_cache::BindGroups<4>>,
 }
 impl Selector {
@@ -143,7 +144,7 @@ impl Selector {
         let limit=gpu.device.limits();
         let work_capacity=work_capacity.max((instances.len()as u32).checked_mul(2).ok_or("foliage consumer root capacity overflow")?);
         if work_capacity<(instances.len()as u32) || work_capacity.div_ceil(64)>limit.max_compute_workgroups_per_dimension
-            || limit.max_storage_buffers_per_shader_stage<15 || limit.max_compute_workgroups_per_dimension<32768 {return Err("foliage work queue exceeds device limits".into());}
+            || limit.max_storage_buffers_per_shader_stage<16 || limit.max_compute_workgroups_per_dimension<32768 {return Err("foliage work queue exceeds device limits".into());}
         let page_count=nodes.iter().map(|n|n.links[2]).max().unwrap_or(0).checked_add(1).ok_or("asset page ID overflow")?;
         if page_count>1<<20 {return Err("asset page catalog exceeds bounded request capacity".into());}
         let mut pinned_pages=vec![false;page_count as usize];
@@ -188,7 +189,7 @@ impl Selector {
             let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("foliage GPU selection"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage GPU selection"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_select.wgsl").into())});
             let make=|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
-            Self {refiner:crate::foliage_refine::Refiner::new(gpu,work_capacity),asset_pages:upload("foliage asset publication",bytemuck::cast_slice(&asset_state)),asset_requests:storage("foliage compact asset demand",16+page_count as u64*16),asset_state:std::sync::Mutex::new(asset_state),pinned_pages,compact_assets:make("compact_asset_requests"),children:upload("shared foliage child spans",bytemuck::cast_slice(&children)),work:[storage("unused legacy frontier A",24),storage("unused legacy frontier B",24)],levels,
+            Self {seed_visibility:storage("foliage current seed visibility",instances.len()as u64*4),seed_classifier:crate::foliage_seed_visibility::Visibility::new(gpu),refiner:crate::foliage_refine::Refiner::new(gpu,work_capacity),asset_pages:upload("foliage asset publication",bytemuck::cast_slice(&asset_state)),asset_requests:storage("foliage compact asset demand",16+page_count as u64*16),asset_state:std::sync::Mutex::new(asset_state),pinned_pages,compact_assets:make("compact_asset_requests"),children:upload("shared foliage child spans",bytemuck::cast_slice(&children)),work:[storage("unused legacy frontier A",24),storage("unused legacy frontier B",24)],levels,
                 _nodes:upload("shared foliage hierarchy",bytemuck::cast_slice(nodes)),_instances:upload("persistent foliage instances",bytemuck::cast_slice(instances)),uniform,
                 records:storage("selected foliage records",capacity as u64*16),record_consumers:storage("selected foliage consumers",capacity as u64*4),deferred:storage("deferred foliage subtrees",deferred_capacity as u64*8),
                 counters:storage("foliage selection counters",64),arguments:storage("foliage indirect arguments",24),fallback:storage("foliage root fallbacks",instances.len()as u64*4),
@@ -257,13 +258,23 @@ impl Selector {
     /// Physical per-view record capacities, not a visual-quality switch. The
     /// union reservation is conservative across all camera/shadow consumers.
     pub fn union_consumers_budget(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[ConsumerView],error:f32,branch_budget:u32,raster_budget:[u32;2],empty_depth:&wgpu::TextureView)->Result<(),String> {
+        self.union_consumers_budget_depth(gpu,enc,views,error,branch_budget,raster_budget,empty_depth,None)
+    }
+    /// Current seed depth must use these camera projections and current scene geometry.
+    /// All camera consumers must contribute; omitted cameras are not safely occluded.
+    pub(crate) fn union_consumers_budget_depth(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[ConsumerView],error:f32,branch_budget:u32,raster_budget:[u32;2],empty_depth:&wgpu::TextureView,current:Option<&[crate::foliage_seed_visibility::CameraDepth<'_>]>)->Result<(),String> {
+        if let Some(cameras)=current {
+            let expected=views.iter().filter(|v|v.kind==ConsumerKind::Camera).collect::<Vec<_>>();
+            if cameras.len()!=expected.len() || cameras.iter().zip(expected).any(|(a,b)|a.projection!=b.projection.view_projection) {return Err("foliage seed depth must match every camera consumer".into());}
+            self.seed_classifier.encode(gpu,enc,self,cameras)?;
+        }
         if branch_budget==0 || branch_budget>self.capacity || views.is_empty() || views.len()>32 || !error.is_finite() || error<=0. {return Err("invalid foliage consumer union".into());}
         let mut consumers=[Consumer::zeroed();32];
         for (dst,v) in consumers.iter_mut().zip(views) {
             *dst=v.packed()?;
         }
         gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers,consumer_count:[views.len()as u32,branch_budget,raster_budget[0],raster_budget[1]],
-            vp:views[0].projection.view_projection.to_cols_array(),previous_vp:views[0].projection.view_projection.to_cols_array(),pixels:[0.,0.,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,0]}));
+            vp:views[0].projection.view_projection.to_cols_array(),previous_vp:views[0].projection.view_projection.to_cols_array(),pixels:[0.,0.,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(current.is_some())]}));
         enc.clear_buffer(&self.counters,0,None);enc.clear_buffer(&self.fallback,0,None);enc.clear_buffer(&self.direct,0,None);enc.clear_buffer(&self.record_consumers,0,None);
         let binds=[self.bind_work(gpu,empty_depth,0),self.bind_work(gpu,empty_depth,1)];
         self.refiner.encode(gpu,enc,self);
@@ -362,6 +373,52 @@ mod tests {
  }
 
 
+ #[test]
+ #[ignore="exclusive GPU upstream current-depth consumer visibility"]
+ fn gpu_current_seed_visibility_preserves_shadow_and_all_cameras() {
+  use crate::foliage_seed_visibility::CameraDepth;
+  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].rows[0][3]=0.;
+  let node=Node {sphere:[0.,0.,0.5,0.1],error:[0.,0.,1.,1.],links:[NONE,1,0,2]};
+  let selector=Selector::new(&gpu,&[node],&trees,4,4).unwrap();
+  let clear=depth(&gpu,0.);let blocked=depth(&gpu,0.95);
+  let view=crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]};
+  let views=[ConsumerView::camera(view),ConsumerView::shadow(view)];
+  for visible in [false,true,false,true] {
+   let camera=CameraDepth {projection:Mat4::IDENTITY,pyramid:if visible {&clear}else{&blocked}};
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union_consumers_budget_depth(&gpu,&mut enc,&views,1.,4,[100;2],&clear,Some(&[camera])).unwrap();gpu.queue.submit([enc.finish()]);
+   assert_eq!(read(&gpu,&selector.seed_visibility),[u32::from(visible)]);
+   let demand=read(&gpu,&selector.demand);assert_eq!(demand[1],512|if visible{256}else{0});
+   assert_eq!(read(&gpu,&selector.fallback),[0]);
+  }
+  // The second camera sees the root. The first one's depth cannot suppress it.
+  let cameras=[CameraDepth {projection:Mat4::IDENTITY,pyramid:&blocked},CameraDepth {projection:Mat4::IDENTITY,pyramid:&clear}];
+  let views=[ConsumerView::camera(view),ConsumerView::camera(view),ConsumerView::shadow(view)];
+  let mut enc=gpu.device.create_command_encoder(&Default::default());
+  selector.union_consumers_budget_depth(&gpu,&mut enc,&views,1.,4,[100;2],&clear,Some(&cameras)).unwrap();gpu.queue.submit([enc.finish()]);
+  assert_eq!(read(&gpu,&selector.demand)[1],768);
+  let mut enc=gpu.device.create_command_encoder(&Default::default());
+  assert!(selector.union_consumers_budget_depth(&gpu,&mut enc,&views,1.,4,[100;2],&clear,Some(&cameras[..1])).is_err());
+  // An unrelated camera looking away must not resurrect a hidden root.
+  let away=Mat4::from_translation(glam::Vec3::new(100.,0.,0.));
+  let views_away=[ConsumerView::camera(view),ConsumerView::camera(crate::part_wind::AnimationView {view_projection:away,viewport:[128;2]}),ConsumerView::shadow(view)];
+  let cameras_away=[CameraDepth {projection:Mat4::IDENTITY,pyramid:&blocked},CameraDepth {projection:away,pyramid:&clear}];
+  let mut enc=gpu.device.create_command_encoder(&Default::default());
+  selector.union_consumers_budget_depth(&gpu,&mut enc,&views_away,1.,4,[100;2],&clear,Some(&cameras_away)).unwrap();gpu.queue.submit([enc.finish()]);
+  assert_eq!(read(&gpu,&selector.demand)[1],512);
+  let views_four=[ConsumerView::camera(view),ConsumerView::camera(view),views_away[1],ConsumerView::camera(view),ConsumerView::shadow(view)];
+  for visible in [true,false] {
+   let cameras_four=[CameraDepth {projection:Mat4::IDENTITY,pyramid:&blocked},CameraDepth {projection:Mat4::IDENTITY,pyramid:&blocked},CameraDepth {projection:away,pyramid:&clear},CameraDepth {projection:Mat4::IDENTITY,pyramid:if visible {&clear}else{&blocked}}];
+   let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers_budget_depth(&gpu,&mut enc,&views_four,1.,4,[100;2],&clear,Some(&cameras_four)).unwrap();gpu.queue.submit([enc.finish()]);
+   assert_eq!(read(&gpu,&selector.demand)[1],512|if visible {256}else{0});
+  }
+  // Wind envelope crossing the near plane must fail open, even with full depth.
+  trees[0].scale[1]=1.;gpu.queue.write_buffer(&selector._instances,0,bytemuck::cast_slice(&trees));
+  let mut enc=gpu.device.create_command_encoder(&Default::default());
+  let views=[ConsumerView::camera(view),ConsumerView::shadow(view)];
+  selector.union_consumers_budget_depth(&gpu,&mut enc,&views,1.,4,[100;2],&clear,Some(&[CameraDepth {projection:Mat4::IDENTITY,pyramid:&blocked}])).unwrap();gpu.queue.submit([enc.finish()]);
+  assert_eq!(read(&gpu,&selector.demand)[1],768);
+ }
  #[test]
  #[ignore="exclusive GPU forced-root priority fixture"]
  fn gpu_zero_error_fallback_refinement_prioritizes_near_root() {
