@@ -139,6 +139,7 @@ index 8abd215..3de38fe 100644
 +#[path = "voxel_occlusion_tests.rs"]
 +mod occlusion_tests;
 diff --git a/engine/crates/render/src/voxel_occlusion_tests.rs b/engine/crates/render/src/voxel_occlusion_tests.rs
+new file mode 100644
 --- /dev/null
 +++ b/engine/crates/render/src/voxel_occlusion_tests.rs
 @@ -0,0 +1,46 @@
