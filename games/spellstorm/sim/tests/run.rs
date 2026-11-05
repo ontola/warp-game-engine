@@ -227,3 +227,24 @@ fn the_boss_arena_shuts_behind_the_party() {
         assert!(shut.is_some(), "seed {seed}: the arena never shut behind the party");
     }
 }
+
+#[test]
+fn the_level_setting_goes_straight_there() {
+    // Joep: pick a level in the host's settings and play it now.
+    let mut w = bots(2, 7);
+    w.step();
+    w.set_option("level", "1. The Forsaken Chapel");
+    assert_eq!(w.run.biome_index, 0);
+    w.set_option("level", "4. The Drowned Caves");
+    assert_eq!(w.run.biome_index, 3);
+    for _ in 0..120 {
+        w.step();
+    }
+    let tick = w.tick;
+    // The same value again (the host resending on a reconnect) keeps the run.
+    w.set_option("level", "4. The Drowned Caves");
+    assert_eq!(w.run.biome_index, 3);
+    assert_eq!(w.tick, tick);
+    w.set_option("level", "1");
+    assert_eq!(w.run.biome_index, 0);
+}

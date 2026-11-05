@@ -4,7 +4,7 @@ use spaceracer::{handling::Input, race::Controls};
 pub enum Event {
     Prepare,
     Roster,
-    Random,
+    NewRace,
     Setting(String, Value),
 }
 pub struct Party {
@@ -53,7 +53,7 @@ impl Party {
                     Command::Connected => {
                         let _ = self.client.declare_settings(self.declarations.clone());
                         let _ = self.client.declare_actions(
-                            json!([{"key":"new_race","label":"New random race","confirm":true}]),
+                            json!([{"key":"new_race","label":"New race","confirm":true}]),
                         );
                     }
                     Command::Prepare { session, mut seats } => {
@@ -76,7 +76,7 @@ impl Party {
                         self.session.clear();
                     }
                     Command::Disconnected(_) => self.running = false,
-                    Command::Action { key, .. } if key == "new_race" => events.push(Event::Random),
+                    Command::Action { key, .. } if key == "new_race" => events.push(Event::NewRace),
                     Command::Setting { key, value } => events.push(Event::Setting(key, value)),
                     Command::PlayersUpdated { mut seats } | Command::Roster { mut seats } => {
                         seats.sort_by_key(|s| (s.ai, s.index));
@@ -127,10 +127,15 @@ impl Party {
             self.finished = true;
         }
     }
-    pub fn controls(&mut self) -> Vec<Controls> {
+    /// Driving input per seat, plus every human seat's pad merged into one
+    /// menu pad. Start opens the in-game race menu; Back never reaches the
+    /// game (the host keeps it for the lobby).
+    pub fn controls(&mut self) -> (Vec<Controls>, app::Controls) {
         let _ = self.client.report_activity();
         let now = std::time::Instant::now();
-        self.seats
+        let mut menu = app::Controls::default();
+        let drive = self
+            .seats
             .iter()
             .map(|seat| {
                 let p = if seat.ai {
@@ -140,8 +145,8 @@ impl Party {
                 };
                 let l = p.stick(0);
                 let r = p.stick(1);
-                if p.just(button::START) {
-                    let _ = self.client.request_overlay();
+                if !seat.ai {
+                    app::input::merge_into(&mut menu, &menu_pad(&p));
                 }
                 Controls {
                     drive: Input {
@@ -159,7 +164,31 @@ impl Party {
                     rail_aim:None,
                 }
             })
-            .collect()
+            .collect();
+        (drive, menu)
+    }
+}
+
+/// A host pad as local menu input (buttons and left stick only).
+fn menu_pad(p: &gamenight::Pad) -> app::Controls {
+    const MAP: [(u16, u32); 9] = [
+        (button::A, app::Buttons::SOUTH),
+        (button::B, app::Buttons::EAST),
+        (button::X, app::Buttons::WEST),
+        (button::Y, app::Buttons::NORTH),
+        (button::START, app::Buttons::START),
+        (button::UP, app::Buttons::UP),
+        (button::DOWN, app::Buttons::DOWN),
+        (button::LEFT, app::Buttons::LEFT),
+        (button::RIGHT, app::Buttons::RIGHT),
+    ];
+    let bits = |b: u16| MAP.iter().filter(|(g, _)| b & g != 0).fold(0, |a, (_, o)| a | o);
+    let l = p.stick(0);
+    app::Controls {
+        mv: [l[0] as f32, -l[1] as f32],
+        held: app::Buttons(bits(p.buttons)),
+        pressed: app::Buttons(bits(p.pressed)),
+        ..Default::default()
     }
 }
 
@@ -172,6 +201,14 @@ mod tests {
         time::{Duration, Instant},
     };
     use tungstenite::Message;
+    #[test]
+    fn start_reaches_the_race_menu() {
+        let pad = gamenight::Pad { buttons: button::START | button::DOWN, pressed: button::START, axes: [0.; 6] };
+        let c = menu_pad(&pad);
+        assert!(c.pressed.has(app::Buttons::START));
+        assert!(c.held.has(app::Buttons::DOWN));
+        assert!(!c.pressed.has(app::Buttons::SELECT));
+    }
     #[test]
     fn host_lifecycle_and_opaque_seat_routing() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -249,7 +286,7 @@ mod tests {
             }
             match stage {
                 0 if p.running => {
-                    let c = p.controls();
+                    let (c, _) = p.controls();
                     if c.len() == 2 && c[1].drive.throttle > 0.99 {
                         assert!(
                             (c[0].drive.throttle - (8192. / 32767. - 0.06) / 0.94).abs() < 1e-6

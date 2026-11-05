@@ -637,7 +637,6 @@ struct ViewTargets {
     args: wgpu::Buffer,
     draw_map: wgpu::Buffer,
     spatial_owners: wgpu::Buffer,
-    traversal_counter: wgpu::Buffer,
     instance_dispatch: Option<wgpu::Buffer>,
     cull_bind: wgpu::BindGroup,
     raster_bind: wgpu::BindGroup,
@@ -664,7 +663,6 @@ pub struct VisibleClusterDiagnostic {
 
 struct ColorDiagnosticView {
     counter: wgpu::Buffer,
-    traversal_counter: wgpu::Buffer,
     visible: wgpu::Buffer,
     view: ViewRect,
     input_size: [u32; 2],
@@ -684,7 +682,7 @@ impl ColorDiagnostics {
         debug_assert_eq!(views.len(), rendered.len());
         self.views.clear();
         self.views.extend(views.iter().zip(rendered).map(|(&view,(target,visibility,..))| ColorDiagnosticView {
-            counter: target.counter.clone(), traversal_counter:target.traversal_counter.clone(), visible: target.visible.clone(), view,
+            counter: target.counter.clone(), visible: target.visible.clone(), view,
             input_size: [visibility.width(),visibility.height()],
             visibility: owners.is_some().then(||visibility.clone()),
             foliage_selection: target.foliage_selection.clone(),
@@ -1650,11 +1648,11 @@ impl Renderer {
             (25, world_visibility.uniform.as_entire_binding()),
             (26, foliage_sun_pages.metadata.as_entire_binding()),
         ]);
-        let view_cull_layout = layout(gpu, "view cull", &[(0, uniform()), (1, storage(false)), (2, storage(false)), (3, storage(false)), (4, storage(false)), (5, uniform()), (6, uniform()),
+        let view_cull_layout = layout(gpu, "view cull", &[(0, uniform()), (1, storage(false)), (2, storage(false)), (3, storage(false)), (4, storage(false)), (5, storage(true)), (6, uniform()),
             (7,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
             (8,storage(true)),(9,storage(true)),(10,storage(false)),(11,storage(true)),
-            (12,storage(true)),(13,storage(false)),(14,storage(false)),(15,uniform())]);
-        let view_raster_layout = layout(gpu, "view raster", &[(0, uniform()), (1, storage(true)), (2, storage(true)), (3, storage(true)), (4, uniform())]);
+            (12,storage(true)),(14,storage(false)),(15,uniform())]);
+        let view_raster_layout = layout(gpu, "view raster", &[(0, uniform()), (1, storage(true)), (2, storage(true)), (3, storage(true)), (4, storage(true))]);
         let shade_layout = layout(
             gpu,
             "shade",
@@ -2326,7 +2324,7 @@ impl Renderer {
         let traversal_read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("cluster traversal counters"),
             size:bytes,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
         let mut enc=gpu.device.create_command_encoder(&Default::default());
-        enc.copy_buffer_to_buffer(&target.traversal_counter,0,&traversal_read,0,bytes);
+        enc.copy_buffer_to_buffer(&target.counter,crate::cluster_traversal::COUNTER_OFFSET,&traversal_read,0,bytes);
         gpu.queue.submit([enc.finish()]);traversal_read.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
         let decoded={let mapped=traversal_read.slice(..).get_mapped_range().map_err(|e|e.to_string())?;
             self.cluster_traversal.diagnostics(bytemuck::cast_slice(&mapped))};
@@ -2374,8 +2372,12 @@ impl Renderer {
     }
 
     fn view_targets_capacity(&self, gpu: &Gpu, label: &str, capacity: u32,camera:bool,light_groups:bool) -> ViewTargets {
-        let foliage_selection = buffer(gpu, "per-view foliage representation", bytemuck::cast_slice(&crate::voxel_forest::default_selection()),
-            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC);
+        let mut choices=crate::voxel_forest::default_selection();
+        if let Some((forest,_))=&self.gpu_forest {
+            choices.resize(((forest.choice_table_bytes()/4) as usize).max(choices.len()),choices[0]);
+        }
+        let foliage_selection = buffer(gpu, "per-view foliage representation", bytemuck::cast_slice(&choices),
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC);
         let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: std::mem::size_of::<ViewUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let visible = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("visible"), size: (capacity as u64 + if camera && self.tree_occlusion.history_first {self.tree_occlusion.deferred_capacity as u64*3}else{0})*8, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let counter = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("counter"), size: crate::tree_occlusion::COUNTER_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
@@ -2389,15 +2391,14 @@ impl Renderer {
         let draw_map = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("bucket draw map"), size: capacity as u64 * 4, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
         let spatial_owners=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("per-view spatial owner scratch"),
             size:if camera&&(self.instance_groups.enabled||self.instance_groups.replacement_enabled){self.instance_groups.scratch_bytes()}else if light_groups{self.instance_groups.owner_scratch_bytes()}else{4},usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
-        let traversal_counter=crate::cluster_traversal::Resources::counter_buffer(gpu);
         let cull_bind = bind(gpu, &self.view_cull_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, counter.as_entire_binding()), (3, args.as_entire_binding()), (4, draw_map.as_entire_binding()), (5, foliage_selection.as_entire_binding()),
             (6,self.tree_occlusion.reference.as_entire_binding()),(7,wgpu::BindingResource::TextureView(&self.tree_occlusion.empty)),
             (8,self.instance_groups.groups.as_entire_binding()),(9,self.instance_groups.owners.as_entire_binding()),(10,spatial_owners.as_entire_binding()),
             (11,self.sun_owner_buffer.as_entire_binding()),
-            (12,self.cluster_traversal.buffer.as_entire_binding()),(13,traversal_counter.as_entire_binding()),
+            (12,self.cluster_traversal.buffer.as_entire_binding()),
             (14,self.receiver_demand.buffer().as_entire_binding()),(15,self.tree_occlusion.empty_history.as_entire_binding())]);
         let raster_bind = bind(gpu, &self.view_raster_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, draw_map.as_entire_binding()), (3, args.as_entire_binding()), (4, foliage_selection.as_entire_binding())]);
-        ViewTargets { uniform, foliage_selection, visible, counter, args, draw_map, spatial_owners,traversal_counter,instance_dispatch, cull_bind, raster_bind }
+        ViewTargets { uniform, foliage_selection, visible, counter, args, draw_map, spatial_owners,instance_dispatch, cull_bind, raster_bind }
     }
 
     fn cull_and_raster(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass) {
@@ -2405,12 +2406,12 @@ impl Renderer {
     }
 
     fn cull_and_raster_pass(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass, phase_bind:Option<&wgpu::BindGroup>, append:bool,damage:Option<&wgpu::BindGroup>) {
-        if !append && matches!(kind,RasterPass::Color) {enc.clear_buffer(&v.traversal_counter,0,None);}
+        if !append && matches!(kind,RasterPass::Color) {enc.clear_buffer(&v.counter,crate::cluster_traversal::COUNTER_OFFSET,Some(crate::cluster_traversal::COUNTER_BYTES));}
         let scene_bind=match kind {RasterPass::Color=>&self.scene_bind,RasterPass::FarSun=>&self.far_sun_scene_bind,RasterPass::FoliagePage=>&self.foliage_sun_scene_bind,_=>&self.shadow_scene_bind};
         let cull_scene_bind=match kind {RasterPass::FarSun=>&self.far_cull_scene_bind,RasterPass::FoliagePage=>&self.foliage_cull_scene_bind,_=>&self.cull_scene_bind};
         // Reset in command order without allocating upload staging. A tree's
         // appended phase must retain the preceding visible prefix and counters.
-        if phase_bind.is_none() || !append { enc.clear_buffer(&v.counter, 0, None); }
+        if phase_bind.is_none() || !append { enc.clear_buffer(&v.counter, 0, Some(crate::tree_occlusion::PHASE_COUNTER_BYTES)); }
         let cull_bind=phase_bind.unwrap_or(&v.cull_bind);
         let tw = |ts: &mut u32| {
             self.query.as_ref().map(|(qs, _, _)| {
@@ -3307,7 +3308,7 @@ impl Renderer {
             (6,self.tree_occlusion.phases[phase].as_entire_binding()),(7,wgpu::BindingResource::TextureView(&target.view)),
             (8,self.instance_groups.groups.as_entire_binding()),(9,self.instance_groups.owners.as_entire_binding()),(10,v.spatial_owners.as_entire_binding()),
             (11,self.sun_owner_buffer.as_entire_binding()),
-            (12,self.cluster_traversal.buffer.as_entire_binding()),(13,v.traversal_counter.as_entire_binding()),
+            (12,self.cluster_traversal.buffer.as_entire_binding()),
             (14,self.receiver_demand.buffer().as_entire_binding()),(15,history.as_entire_binding())]));
         self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"tree occluder cull",RasterPass::Color,Some(&phases[0]),false,None);
         let time=self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs,_,_)|{names.push("tree occlusion pyramid");(qs,timestamp_pair(ts))});

@@ -81,6 +81,7 @@ impl Racer {
             DIFFICULTIES[difficulty],
             BIOMES[biome],
             players,
+            if players > 1 { players } else { spaceracer::race::MAX_RACERS },
             3,
             rules,
         )?;
@@ -128,6 +129,17 @@ impl Racer {
             missile_view: false,
         })
     }
+    /// The grid: the people here plus the AI racers. Auto is a full grid for
+    /// someone alone and no AI with several players.
+    fn racers(&self) -> usize {
+        let seated = self.party.as_ref().map_or(self.players, |p| p.seats.len()).max(self.players);
+        let ai = self.preferences.values["ai_players"].as_str().and_then(|s| s.parse::<usize>().ok());
+        match ai {
+            Some(n) => seated + n,
+            None if self.players > 1 => seated,
+            None => spaceracer::race::MAX_RACERS,
+        }
+    }
     fn restart(&mut self) -> Result<(), String> {
         let rules = Rules::new(Some(&self.root.join("rules")))?;
         let mut race = Race::with_rules(
@@ -135,11 +147,12 @@ impl Racer {
             DIFFICULTIES[self.difficulty],
             BIOMES[self.biome],
             self.players,
+            self.racers(),
             self.preferences.values["laps"].as_u64().unwrap_or(3) as u32,
             rules,
         )?;
         if let Some(p) = &self.party {
-            for (i, seat) in p.seats.iter().enumerate().take(6) {
+            for (i, seat) in p.seats.iter().enumerate().take(race.drivers.len()) {
                 race.drivers[i].name = seat.name.clone();
                 race.drivers[i].bot = seat.ai;
             }
@@ -165,13 +178,16 @@ impl Racer {
         self.race_started = true;
         Ok(())
     }
+    /// Pick anew whatever is set to Random; the rest stays as chosen.
+    fn roll_random(&mut self) -> Result<(), String> {
+        let defaults: serde_json::Value = self.race.rules.call("menu_defaults", json!({"entropy":menu_entropy()}))?;
+        if self.random_seed { self.seed=defaults["seed"].as_i64().ok_or("random seed")?.clamp(1,99999); }
+        if self.random_biome { self.biome=defaults["biome"].as_u64().ok_or("random world")?.min(4) as usize; }
+        if self.random_difficulty { self.difficulty=defaults["difficulty"].as_u64().ok_or("random difficulty")?.min(2) as usize; }
+        Ok(())
+    }
     fn start_new_race(&mut self) -> Result<(), String> {
-        if self.party.is_none() {
-            let defaults: serde_json::Value = self.race.rules.call("menu_defaults", json!({"entropy":menu_entropy()}))?;
-            if self.random_seed { self.seed=defaults["seed"].as_i64().ok_or("random seed")?.clamp(1,99999); }
-            if self.random_biome { self.biome=defaults["biome"].as_u64().ok_or("random world")?.min(4) as usize; }
-            if self.random_difficulty { self.difficulty=defaults["difficulty"].as_u64().ok_or("random difficulty")?.min(2) as usize; }
-        }
+        self.roll_random()?;
         self.restart()
     }
     fn random_race(&mut self) -> Result<(), String> {
@@ -191,7 +207,7 @@ impl Racer {
     }
     fn sync_profiles(&mut self) {
         if let Some(p) = &self.party {
-            for (i, seat) in p.seats.iter().enumerate().take(6) {
+            for (i, seat) in p.seats.iter().enumerate().take(self.race.drivers.len()) {
                 self.race.drivers[i].name = seat.name.clone();
                 self.race.drivers[i].bot = seat.ai;
                 if let Some(profile) = p.client.state.player(&seat.player_id) {
@@ -209,6 +225,7 @@ impl Racer {
         match key {
             "seed" => {
                 let n = value.as_i64().unwrap();
+                self.random_seed = n == 0;
                 if n > 0 {
                     self.seed = n;
                 }
@@ -220,10 +237,9 @@ impl Racer {
                     .unwrap()
             }
             "biome" => {
-                self.biome = BIOMES
-                    .iter()
-                    .position(|s| Some(*s) == value.as_str())
-                    .unwrap()
+                let world = BIOMES.iter().position(|s| Some(*s) == value.as_str());
+                self.random_biome = world.is_none();
+                self.biome = world.unwrap_or(self.biome);
             }
             _ => {}
         }
@@ -400,19 +416,22 @@ impl Game for Racer {
                             .count()
                             .clamp(1, 4);
                         let seed = self.preferences.values["seed"].as_i64().unwrap_or(0);
-                        self.seed = if seed == 0 {
-                            (self.seed * 48271) % 99999 + 1
-                        } else {
-                            seed
-                        };
+                        self.random_seed = seed == 0;
+                        self.random_biome = self.preferences.values["biome"] == "random";
+                        if seed != 0 {
+                            self.seed = seed;
+                        }
+                        if let Err(e) = self.roll_random() {
+                            self.fatal = Some(e);
+                        }
                         self.ready = true;
                         prepare = true;
                     }
                     party::Event::Roster => {
                         self.sync_profiles();
                     }
-                    party::Event::Random => {
-                        if let Err(e) = self.random_race() {
+                    party::Event::NewRace => {
+                        if let Err(e) = self.start_new_race() {
                             self.fatal = Some(e);
                         }
                     }
@@ -421,7 +440,7 @@ impl Game for Racer {
                             && self.preferences.values[&key] != value
                             && matches!(
                                 key.as_str(),
-                                "seed" | "difficulty" | "biome" | "laps" | "weapon_pickups"
+                                "seed" | "difficulty" | "biome" | "laps" | "weapon_pickups" | "ai_players"
                             )
                         {
                             prepare = true;
@@ -446,7 +465,24 @@ impl Game for Racer {
                 return;
             }
         }
-        if self.party.is_none() {
+        // Start opens the race menu with the track settings; only Back
+        // (kept by the host) goes to the lobby.
+        let mut party_inputs = None;
+        if let Some(p) = &mut self.party {
+            let (drive, menu) = p.controls();
+            if self.menu.is_some() {
+                let seated = self.players;
+                self.menu_tick(menu);
+                // The roster decides the player count under the host.
+                self.players = seated;
+                return;
+            }
+            if menu.pressed.has(Buttons::START) {
+                self.menu = Some(0);
+                return;
+            }
+            party_inputs = Some(drive);
+        } else {
             let c = controls.first().copied().unwrap_or_default();
             if self.menu.is_some() {
                 self.menu_tick(c);
@@ -460,8 +496,8 @@ impl Game for Racer {
         self.previous = (0..self.race.pilots.len())
             .map(|i| self.race.pose(i))
             .collect();
-        let mut inputs = if let Some(p) = &mut self.party {
-            p.controls()
+        let mut inputs = if let Some(drive) = party_inputs {
+            drive
         } else {
             controls
                 .iter()

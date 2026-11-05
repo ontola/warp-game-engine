@@ -254,12 +254,13 @@ projected onto the nacelle paint; there are no floating face meshes. Names and
 profiles are matched by player ID. Fixed race rosters decline instant joining;
 changing seats/players in the overlay takes effect through the host's next Prepare.
 
-All ten host settings are declared and validated by `rules/party.luau`. Laps,
+All eleven host settings are declared and validated by `rules/party.luau`. Laps,
 difficulty, world, seed and pickup placement wait for the next race. Boost cost,
 energy regeneration and crash recovery apply live; duration affects the next
 boost. Graphics presets change LOD error, motion blur and nearby shadows, not
-resolution. The optional new-race action rolls a new seed; a later host Prepare
-uses the configured seed again (zero means random).
+resolution. The app's New race action races the settings again: seed 0 and the
+Random world pick anew, a fixed seed or world stays. Start opens the race menu
+in the game; only Back goes to the lobby.
 
 Register the packaged native build locally on Windows:
 

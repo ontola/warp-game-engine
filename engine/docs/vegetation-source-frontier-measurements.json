@@ -1,0 +1,92 @@
+{
+  "scope": "Native1280x720 ONE view, fixed camera,1200 frames, default TAA,32768 slots,16M splats. One diagnostic run, not repeated performance acceptance. Strict pixel requirement FAIL.",
+  "forest": {
+    "trees": 302116,
+    "active_roots": 151058,
+    "branch_capacity": 32768,
+    "selected_records": 22272,
+    "tested_nodes": 397269,
+    "source_slots": 20678,
+    "voxel_slots": 1594,
+    "shadow_voxel_slots": 0,
+    "direct_roots": 116801,
+    "fallback_trees": 0,
+    "retained": 21718,
+    "assigned": 554,
+    "slot_failures": 0,
+    "hash_failures": 0,
+    "frontier_overflow_requests": 0,
+    "peak_frontier_requests": 118962,
+    "reserved_raster_splats": [
+      16777129,
+      6657764
+    ],
+    "refinement_budget_stops": 298938,
+    "refinement_faults": 0,
+    "reused_refinement_proposals": 256423,
+    "dormant_records": 121546,
+    "dormant_wakes": 256423,
+    "dormant_wake_passes": 6,
+    "dormant_park_events": 374786,
+    "dormant_overflows": 0,
+    "selected_spatial_error_pixels": [
+      448.16812,
+      102.99813
+    ],
+    "selected_error_target_ratio": [
+      492.97284,
+      321.85867
+    ],
+    "selected_over_target": [
+      118363,
+      42515
+    ],
+    "error_unknown_proxies": 0,
+    "error_unmatched_direct": 0,
+    "error_forced_nodes": 0,
+    "pose_requests": 20595,
+    "evaluated_shared_poses": 20595,
+    "pose_hash_failures": 0,
+    "camera_roots": 42891,
+    "shadow_only_roots": 52118,
+    "camera_fallback_roots": 0,
+    "shadow_only_fallback_roots": 0,
+    "camera_refinement_limits": {
+      "over_target": 42515,
+      "branch_slots": 0,
+      "camera_splats": 0,
+      "shadow_splats": 0,
+      "missing_pages": 0,
+      "no_children": 0,
+      "affordable_resident": 42515
+    },
+    "selected_source_consumers": {
+      "outside": 0,
+      "camera_only": 20678,
+      "shadow_only": 0,
+      "both": 0
+    },
+    "selected_voxel_consumers": {
+      "outside": 0,
+      "camera_only": 1594,
+      "shadow_only": 0,
+      "both": 0
+    },
+    "selected_direct_consumers": {
+      "outside": 0,
+      "camera_only": 40953,
+      "shadow_only": 75848,
+      "both": 0
+    },
+    "camera_published_branches": 22272,
+    "shadow_only_published_branches": 0
+  },
+  "final120_gpu_covered_median_ms": 25.460368,
+  "strict_quality_error": "Error: \"PIXEL VEGETATION QUALITY FAILED: view 0: largest submitted cell 8.564px, missing 0, near-plane crossings 0; camera over-target 42515, refinement faults 0, camera fallbacks 0\"",
+  "evidence_prefix": "build\\playtest-unified\\source-frontier-1200",
+  "validation": {
+    "foliage_tests_passed": 156,
+    "regression_before_fix": "Complete four-source cut (4 slots,0 camera splats) retained whole-root parent because immediate branching cut needs200 splats against5 budget.",
+    "regression_after_fix": "Complete source cut selected; insufficient slots or missing source page retains parent; unused intermediate voxel pages not required."
+  }
+}

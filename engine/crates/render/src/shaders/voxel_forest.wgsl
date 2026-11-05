@@ -18,10 +18,10 @@ struct VolumeConfig { size_count: vec4<u32>, march: vec4<f32>, dispatch: vec4<u3
 @group(2) @binding(6) var volume_output: texture_storage_2d<rgba16float,write>;
 @group(2) @binding(7) var<uniform> volume_config: VolumeConfig;
 @group(2) @binding(8) var<storage,read_write> volume_jobs: array<atomic<u32>>;
-@group(2) @binding(9) var<uniform> volume_selection_words: array<vec4<u32>,4096>;
-fn volume_selection_at(i:u32)->vec4<u32> { let v=volume_selection_words[i>>2u]; return selection_unpack(v[i&3u]); }
+@group(2) @binding(9) var<storage,read> volume_selection_words: array<u32>;
+fn volume_selection_at(i:u32)->vec4<u32> { return selection_unpack(volume_selection_words[i]); }
 // Packed group selection (aggregate_lod.wgsl writes it): one u32 per group,
-// four per vec4 of the 64 KiB uniform, 16384 groups. Bits 0-1 choice, 2-7
+// runtime-sized storage table. Bits 0-1 choice, 2-7
 // voxel level (63: none), 8-9 sun mode, 16-31 the triangle error as f16.
 fn selection_unpack(w:u32)->vec4<u32> {
     let y=(w>>2u)&63u;
@@ -39,7 +39,8 @@ fn selection_unpack(w:u32)->vec4<u32> {
 @group(2) @binding(12) var<storage,read> volume_bricks: array<u32>;
 // Deduplication words follow the 22 diagnostic words in volume_stats.
 // Sharing this allocation keeps the temporal pipeline within 16 storage bindings.
-const VOLUME_MASK_WORD: u32 = 22u;
+const VOLUME_DRAW_WORD: u32 = 22u;
+const VOLUME_MASK_WORD: u32 = 26u;
 const VOLUME_BRICK_VISIBILITY: bool = false;
 const VOLUME_TILE: u32 = 16u;
 const VOLUME_CANDIDATES: u32 = 64u;
@@ -1062,7 +1063,7 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
 // index, packed coord, 16-bit alpha | faces << 16 | appearance seed << 19.
 @group(2) @binding(15) var<storage,read_write> volume_splats: array<vec4<u32>>;
 // Indirect draw arguments: vertex count, instance count, first vertex, first instance.
-@group(2) @binding(16) var<storage,read_write> volume_splat_draw: array<atomic<u32>>;
+// Draw arguments share volume_stats[22..26], leaving a binding for choices.
 @group(2) @binding(17) var volume_splat_id: texture_2d<u32>;
 @group(2) @binding(18) var volume_splat_depth: texture_depth_2d;
 // Splats drawn into the main visibility buffer (voxel_forest Stage::Splats
@@ -1189,7 +1190,7 @@ fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:
         kept_alpha=VOLUME_SPLAT_MIN_ALPHA;
     }
     let faces=select(0u,1u,toward.x>0.0)|select(0u,2u,toward.y>0.0)|select(0u,4u,toward.z>0.0);
-    let slot=volume_splat_first()+atomicAdd(&volume_splat_draw[1],1u);
+    let slot=volume_splat_first()+atomicAdd(&volume_stats[VOLUME_DRAW_WORD+1],1u);
     if slot>=arrayLength(&volume_splats) {return;}
     volume_splats[slot]=vec4<u32>(index,cell_ref.x,cell_ref.y,u32(kept_alpha*65535.0+0.5)|(faces<<16u)|((volume_splat_hash(appearance)&8191u)<<19u));
 }
@@ -1282,7 +1283,7 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
         if work==0u {
             for(var c=0u;c<4u;c++) {volume_splats[c]=bitcast<vec4<u32>>(view.view_proj[c]);}
             volume_splats[11]=vec4<u32>(volume_config.size_count.w,0u,0u,0u);
-            atomicStore(&volume_splat_draw[0],VOLUME_SPLAT_VERTICES);
+            atomicStore(&volume_stats[VOLUME_DRAW_WORD+0],VOLUME_SPLAT_VERTICES);
         }
         var level=VOLUME_SPLAT_NONE;
         if index<volume_config.size_count.w {
@@ -1331,7 +1332,7 @@ fn volume_sun_splats_impl(index:u32,lane:u32,damaged:bool) {
     if lane==0u {
         if index==0u {
             volume_splats[11]=vec4<u32>(volume_config.size_count.w,0u,0u,0u);
-            atomicStore(&volume_splat_draw[0],VOLUME_SPLAT_VERTICES);
+            atomicStore(&volume_stats[VOLUME_DRAW_WORD+0],VOLUME_SPLAT_VERTICES);
         }
         var level=VOLUME_SPLAT_NONE;
         if index<volume_config.size_count.w && damaged {

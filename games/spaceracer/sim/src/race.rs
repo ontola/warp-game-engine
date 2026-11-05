@@ -166,6 +166,8 @@ pub struct Race {
     pub beams: Vec<Beam>,
     pub destroyed: Option<(usize, usize, f64)>,
 }
+/// The largest grid; seats beyond the humans fill with AI up to what the race asks for.
+pub const MAX_RACERS: usize = 6;
 impl Race {
     pub fn new(seed: i64, difficulty: &str, biome: &str, players: usize, laps: u32) -> Self {
         Self::with_rules(
@@ -173,20 +175,25 @@ impl Race {
             difficulty,
             biome,
             players,
+            MAX_RACERS,
             laps,
             crate::rules::Rules::new(None).expect("bundled rules"),
         )
         .expect("bundled track")
     }
+    /// `racers` is the size of the grid: `players` humans, the rest AI.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_rules(
         seed: i64,
         difficulty: &str,
         biome: &str,
         players: usize,
+        racers: usize,
         laps: u32,
         mut rules: crate::rules::Rules,
     ) -> Result<Self, String> {
         let seed = seed.clamp(1, 99999);
+        let racers = racers.clamp(players.max(1), MAX_RACERS);
         let balance = rules.balance()?;
         let combat = crate::combat::Config::load(&mut rules)?;
         let mut environment = rules.environment(biome)?;
@@ -202,7 +209,7 @@ impl Race {
                 - 12.,
         );
         let gates = world.checkpoints();
-        let pilots: Vec<_> = (0..6)
+        let pilots: Vec<_> = (0..racers)
             .map(|i| Pilot {
                 slot: i,
                 distance: -((i / 2) as f64) * 24.,
@@ -210,8 +217,8 @@ impl Race {
                 ..Default::default()
             })
             .collect();
-        let mut drivers=Vec::with_capacity(6);
-        for i in 0..6 {
+        let mut drivers=Vec::with_capacity(racers);
+        for i in 0..racers {
             let style:AiStyle=rules.call("personality",serde_json::json!({"seed":seed,"slot":i}))?;
             if !style.valid() {return Err("invalid AI personality".into());}
             drivers.push(Driver {
@@ -1251,6 +1258,17 @@ mod tests {
             let target=r.respawn_pose(0);r.reset(0);let actual=r.pose(0);
             assert!(target.origin.distance(actual.origin)<0.001);
             assert!(target.basis.z_axis.distance(actual.basis.z_axis)<0.001);
+        }
+    }
+    #[test]
+    fn a_grid_of_only_the_players_races() {
+        let rules = crate::rules::Rules::new(None).unwrap();
+        let mut r = Race::with_rules(35, "easy", "city", 2, 2, 1, rules).unwrap();
+        assert_eq!((r.pilots.len(), r.drivers.len()), (2, 2));
+        assert!(r.drivers.iter().all(|d| !d.bot));
+        r.countdown = 0.;
+        for _ in 0..600 {
+            r.step(&[Controls::default(), Controls::default()]);
         }
     }
     #[test]

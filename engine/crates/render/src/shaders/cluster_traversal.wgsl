@@ -4,7 +4,7 @@
 // Nodes are20words: cull/parent/own spheres, max parent/min own errors,
 // two reserved words, escape/first member/member count/descendant count.
 @group(1) @binding(12) var<storage,read> cluster_tree:array<u32>;
-@group(1) @binding(13) var<storage,read_write> cluster_work:array<atomic<u32>,8>;
+// Traversal diagnostics occupy counter[32..40], sharing the cull binding.
 
 var<workgroup> cluster_cursor:u32;
 var<workgroup> cluster_end:u32;
@@ -65,11 +65,11 @@ fn cluster_node_reject(node:u32,inst:Instance,threshold:f32,wind:f32)->u32 {
 fn cluster_traverse(id:u32,inst:Instance,li:u32,threshold:f32,wind:f32)->bool {
     if cluster_tree[0]==0u {return false;}
     if inst.first_cluster>=cluster_tree[1] {
-        if li==0u {atomicAdd(&cluster_work[6],1u);}return false;
+        if li==0u {atomicAdd(&counter[38],1u);}return false;
     }
     let table=4u+inst.first_cluster*2u;
     let root=cluster_tree[table];
-    if root==0xffffffffu {if li==0u {atomicAdd(&cluster_work[5],1u);}return false;}
+    if root==0xffffffffu {if li==0u {atomicAdd(&counter[37],1u);}return false;}
     // Mesh replacement may change an owner's range. Unknown/sub-ranges do
     // not borrow a broader mesh's hierarchy, and never silently lose clusters.
     if cluster_tree[table+1u]!=inst.cluster_count || root<cluster_tree[2]
@@ -77,13 +77,13 @@ fn cluster_traverse(id:u32,inst:Instance,li:u32,threshold:f32,wind:f32)->bool {
         || !(wind>=0.0 && wind<1e12) || !(threshold>=0.0 && threshold<1e20)
         || !all(abs(inst.r0)<vec4<f32>(1e18)) || !all(abs(inst.r1)<vec4<f32>(1e18))
         || !all(abs(inst.r2)<vec4<f32>(1e18)) || !all(abs(cull_wind[id].xy)<vec2<f32>(1e12)) {
-        if li==0u {atomicAdd(&cluster_work[6],1u);}return false;
+        if li==0u {atomicAdd(&counter[38],1u);}return false;
     }
     if li==0u {
         cluster_cursor=root;cluster_end=cluster_tree[root+16u];
         cluster_linear_bound=cluster_transform_bound(inst);
         cluster_error_scale=inst.scale*(1.0+length(cull_wind[id].xy));
-        atomicAdd(&cluster_work[0],1u);atomicAdd(&cluster_work[7],inst.cluster_count);
+        atomicAdd(&counter[32],1u);atomicAdd(&counter[39],inst.cluster_count);
     }
     workgroupBarrier();
     loop {
@@ -91,12 +91,12 @@ fn cluster_traverse(id:u32,inst:Instance,li:u32,threshold:f32,wind:f32)->bool {
         let node=cluster_cursor;
         let count=cluster_tree[node+18u];
         if li==0u {
-            atomicAdd(&cluster_work[1],1u);
+            atomicAdd(&counter[33],1u);
             cluster_action=cluster_node_reject(node,inst,threshold,wind);
             if cluster_action!=0u {
-                atomicAdd(&cluster_work[2],1u);
-                atomicAdd(&cluster_work[4],cluster_tree[node+19u]);
-            }else if count!=0u {atomicAdd(&cluster_work[3],count);}
+                atomicAdd(&counter[34],1u);
+                atomicAdd(&counter[36],cluster_tree[node+19u]);
+            }else if count!=0u {atomicAdd(&counter[35],count);}
         }
         workgroupBarrier();
         if cluster_action==0u && li<count {
