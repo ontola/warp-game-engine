@@ -11,6 +11,42 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+## 5 November: retain fine voxel candidates and preserve shadow selections
+
+- [x] Preserve the reference voxel grid as candidate zero when it fits the
+  existing brick cap. Previously every asset discarded that grid immediately.
+  Spatial groups now cook at their authored resolution; coarse whole-root
+  fallback volumes remain separate. Cache keys include the changed cook source.
+- [x] Complete endpoint admission first tries a pixel-acceptable mixed
+  source/voxel frontier, then the complete source alternative. A GPU regression
+  proves two fine voxel groups can fit where their four source leaves cannot;
+  missing required pages retain the complete ancestor.
+- [x] Preserve source geometry when the shadow consumer selects source. The
+  materializer previously substituted adaptive voxels even for source choices.
+  Source representations no longer require unrelated voxel mip pages or reserve
+  voxel splats. Source triangle work is still real work, not free rendering.
+- [x] All158 foliage tests pass, including actual GPU publication across camera,
+  shadow and combined roles, wind times, night/day, teleport and four views.
+  Aggregate tests10/10 and asset tests24/24 passed for the fine cook. Release
+  terrain_fly builds; normal fixed-camera1200-frame capture inspected.
+- [ ] ONE-PIXEL acceptance: still FAIL. Fine cook alone regressed to18.993px
+  and535911 page misses. Correct source-shadow publication removes page misses
+  in this capture and reduces the largest submitted cell to5.482px. Nearby
+  source detail improves visibly; coarse grass/tree regions and shadows remain.
+- [ ] Complete fine-voxel admission and consumer fairness. All32768 slots fill:
+  32766 camera source slots,2 camera voxel slots, no detailed shadow slots.
+  Camera refinements:30428 slot-blocked,0 page-blocked,9972 individually
+  affordable but not collectively published. Increasing source capacity is not
+  the desired solution. Shadow raster reservation also nearly fills16M.
+- [ ] Performance acceptance. Single-run final120-frame covered GPU medians:
+  mixed endpoint29.114ms; fine cook41.269ms; source-shadow correction30.534ms.
+  All native1280x720 ONE view/TAA,151058 active roots,32768 slots,16M splats.
+  These are diagnostics, not alternating repeat acceptance or4K/four-view results.
+
+Evidence: vegetation-fine-endpoint-measurements.json; build/playtest-unified/
+{mixed-endpoint,fine-cook,source-shadow}* logs and captures. No interactive
+playtest started. The capture HUD's fixed simulation fps is not GPU performance.
+
 ## 5 November: deferred proposals reconsider complete endpoints
 
 - [x] Reject increasing refinement waves fourfold. Same fixed-camera1200-frame

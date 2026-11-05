@@ -29,8 +29,8 @@ pub struct Config {
     pub reference_cell_size: f32,
     /// Measure three finer triangle cuts before the first voxel candidate.
     pub triangle_refinements: bool,
-    /// Candidate zero begins at twice the reference cell width. If it exceeds
-    /// the brick cap it is reduced further; this never implies acceptable error.
+    /// Candidate zero retains the reference grid when it fits the brick cap.
+    /// Otherwise measured coarsening begins here; it never implies acceptable error.
     pub levels: u32,
     pub samples_per_cell: u32,
     pub diagnostic_resolution: u32,
@@ -661,8 +661,11 @@ fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_asse
     let reference_level=level(&fine,dimensions,cell);let reference=Grid::new(&reference_level,origin64);
     let reference_mass:[f64;13]=std::array::from_fn(|k|fine.values().map(|m|m.directional[k]).sum());
     let source_samples=stats.quadrature_samples;
-    let mut current=reduce(fine);let mut downsample=2u32;
-    let mut level_dimensions=dimensions.map(|v|v.div_ceil(2));
+    // Keep the finest authored occupancy when it fits. Unconditionally
+    // reducing here removed the only unfiltered fine-voxel candidate before
+    // GPU LOD selection could ever see it.
+    let mut current=fine;let mut downsample=1u32;
+    let mut level_dimensions=dimensions;
     while brick_count(&current)>config.max_bricks_per_level {
         if downsample>=1<<16 {return Err("aggregate cannot satisfy brick budget".into());}
         current=reduce(current);downsample*=2;level_dimensions=level_dimensions.map(|v|v.div_ceil(2));
@@ -838,17 +841,33 @@ mod tests {
             // A four-face tetrahedron fits in one unchanged CLOD cluster.
             assert_eq!(metadata.triangle_cut_triangles,4);
             assert!(metadata.triangle_sampled_error.max_abs_opacity<1e-6);
-            assert!(metadata.sampled_error.max_abs_opacity>0.01);
-            assert!(metadata.sampled_error.rms_opacity>0.001);
+            if metadata.sampled_error.max_abs_opacity!=0.0 {
+                assert!(metadata.sampled_error.max_abs_opacity>0.01);
+                assert!(metadata.sampled_error.rms_opacity>0.001);
+            }
             assert_eq!(metadata.sampled_error.directions.len(),13);
-            assert!(metadata.sampled_error.premultiplied_albedo_rmse>0.0);
-            assert!(metadata.sampled_error.normal_moment_mean_abs>0.0);
+            if metadata.sampled_error.max_abs_opacity!=0.0 {
+                assert!(metadata.sampled_error.premultiplied_albedo_rmse>0.0);
+                assert!(metadata.sampled_error.normal_moment_mean_abs>0.0);
+            }
             for (voxel,triangle) in metadata.sampled_error.directions.iter()
                 .zip(&metadata.triangle_sampled_error.directions) {
                 assert_eq!(voxel.sample_spacing_m,triangle.sample_spacing_m);
                 assert_eq!(voxel.rays,triangle.rays);
             }
         }
+    }
+
+    #[test]
+    fn fine_reference_is_a_real_candidate_when_it_fits() {
+        let source=fixture(1,Mat4::IDENTITY);
+        let asset=cook(&source,&[0],Mat4::IDENTITY,config()).unwrap();
+        assert_eq!(asset.stats.first_level_downsample,1);
+        assert_eq!(asset.volume.levels[0].cell_size,config().reference_cell_size);
+        assert_eq!(asset.levels[0].sampled_error.max_abs_opacity,0.0);
+        assert_eq!(asset.levels[0].sampled_error.premultiplied_albedo_rmse,0.0);
+        assert!(asset.volume.levels[1].cell_size>asset.volume.levels[0].cell_size);
+        assert!(asset.levels[1].sampled_error.max_abs_opacity>0.01);
     }
 
     #[test]

@@ -42,9 +42,10 @@ impl Spec {
                 // (materialize identity.z=1), including its shadow consumer.
                 let levels=range(branch.volume)?;
                 Ok(vec![*levels.get(rep[2]as usize).ok_or("root voxel mip outside catalog")?])
-            } else if rep[1]==0 && branch.info[1]==0 {Ok(Vec::new())}
-            // Articulated slots still let shadow consumers choose an adaptive
-            // mip independently: keep their complete mip bundle resident.
+            } else if rep[1]==0 {Ok(Vec::new())}
+            // Only voxel representations need voxel bytes. A source selection
+            // renders source geometry for either consumer; it must not wait
+            // for an unrelated voxel shadow bundle. Voxel slots remain adaptive.
             else{range(branch.volume)}
         }).collect::<Result<Vec<_>,String>>()?;
         for template in &self.templates {
@@ -68,7 +69,7 @@ fn exact_work(value:u32)->Result<f32,String> {
     Ok(value as f32)
 }
 fn representation_raster_work(rep:[u32;4],branch:&Branch,counts:&[u32])->Result<[u32;2],String> {
-    if rep[1]==0 && branch.info[1]==0 {return Ok([0,0]);}
+    if rep[1]==0 {return Ok([0,0]);}
     let start=branch.volume.meta[1]as usize;
     let end=start.checked_add(branch.volume.meta[2]as usize).ok_or("raster work mip overflow")?;
     let mips=counts.get(start..end).filter(|m|!m.is_empty()).ok_or("raster work missing volume mips")?;
@@ -601,7 +602,7 @@ impl Runtime {
         let counts=[999,7,13,2];
         assert_eq!(representation_raster_work([0,1,0,0],&branch,&counts).unwrap(),[7,13]);
         assert_eq!(representation_raster_work([0,1,1,0],&branch,&counts).unwrap(),[13,13]);
-        assert_eq!(representation_raster_work([0,0,0,0],&branch,&counts).unwrap(),[0,13]);
+        assert_eq!(representation_raster_work([0,0,0,0],&branch,&counts).unwrap(),[0,0]);
         branch.info[0]=NONE;
         assert_eq!(representation_raster_work([0,1,2,0],&branch,&counts).unwrap(),[2,2]);
         // A geometry group may also have parent NONE, but uses an adaptive bundle.
@@ -672,7 +673,8 @@ impl Runtime {
             if rep[1]==1 && rep[3]==0 && branch.info[0]==NONE {
                 assert_eq!(deps[i],vec![(branch.volume.meta[1]+rep[2])as usize]);
                 if !pins[deps[i][0]] {fine+=1;}
-            }else if branch.info[1]!=0 {assert_eq!(deps[i].len(),branch.volume.meta[2]as usize,"adaptive articulated shadows retain their mip bundle");}
+            }else if rep[1]==0 {assert!(deps[i].is_empty(),"source geometry must not depend on voxel pages for shadows");}
+            else {assert_eq!(deps[i].len(),branch.volume.meta[2]as usize,"adaptive voxel selections retain their mip bundle");}
         }
         let work=forest.raster_work_bounds().unwrap();
         for node in &spec.nodes {
@@ -852,7 +854,12 @@ impl Runtime {
                 assert_eq!(choices[i]&3==3,roles&256==0);assert_eq!(choices[i+spec.slots as usize]&3==3,roles&512==0);
                 assert_eq!(choices[i]&1024!=0,roles&256==0);assert_eq!(choices[i]&2048!=0,roles&512==0);
                 assert_eq!(sources[spec.first_owner as usize+i].flags&768,0,"consumer roles must not leak into source flags");
-                let rep=spec.representations[slot.key[2]as usize];if rep[3]==0 {continue;}
+                let rep=spec.representations[slot.key[2]as usize];
+                if roles&512!=0 {
+                    assert_eq!(choices[i+spec.slots as usize]&3,rep[1],"shadow publication must preserve source versus voxel selection");
+                    if rep[1]==0 {assert_eq!((choices[i+spec.slots as usize]>>8)&3,0,"source shadows must not suppress source rasterization");}
+                }
+                if rep[3]==0 {continue;}
                 let volume=spec.branches[(rep[3]-1)as usize].volume;
                 assert_eq!(rendered[i].meta[1],volume.meta[1]);assert_ne!(volume.meta[1],spec.branches[rep[0]as usize].volume.meta[1]);
                 let pose=matrix(sources[spec.first_owner as usize+i].rows);
@@ -1106,7 +1113,7 @@ impl Runtime {
         assert_eq!(d.fallback_trees,0);assert_eq!(d.voxel_slots,0);
         let source=d.selected_source_consumers;
         assert_eq!(source.shadow_only+source.both+3*(d.selected_direct_consumers.shadow_only+d.selected_direct_consumers.both),12,"all four trees remain complete casters, including any budget-retained whole root");
-        assert!(d.shadow_voxel_slots>0 || d.direct_roots>0,"daylight must restore shadow publication");
+        assert!(source.shadow_only+source.both>0 || d.shadow_voxel_slots>0 || d.direct_roots>0,"daylight must restore source or voxel shadow publication");
         assert_eq!(d.refinement_faults,0);
         assert!(d.reserved_raster_splats.iter().all(|&n|n<=scene.gpu_forest.as_ref().unwrap().raster_budget));
         eprintln!("GPU forest source/voxel draws, fallback, teleport, four cameras PASS");
