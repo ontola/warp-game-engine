@@ -1,60 +1,42 @@
-# Warp
+# Warp engine
 
-Reusable Rust systems for procedural outdoor worlds, developed through
-[Sideways](../games/sideways/README.md). Cargo runs from the repository root;
-the game owns its simulation, assets, tuning and integration.
+Reusable Rust systems for procedural outdoor worlds and couch games. Cargo
+runs from the repository root. Games depend on the engine, never the
+reverse: a game supplies its simulation, assets, tuning and integration.
 
 | Crate | Responsibility |
 | --- | --- |
-| `kern` | Simulation interfaces, deterministic digests, traces and timings |
-| `render` | Cluster LOD, GPU visibility, shading, shadows, vegetation, atmosphere, HUD and reconstruction |
-| `audio` | Synthesis, mixing and explicit caller-provided sound configuration |
-| `app` | Game shell: window, fixed tick, input, split screen, headless frames and scripted playtests |
-| `physics` | Rigid bodies on Rapier: boxes, spheres, capsules, impulses, blasts, joints, rays |
+| `kern` | Deterministic simulation: fixed ticks, state digests, divergence search, value traces |
+| `render` | Cluster LOD, GPU visibility, shading, shadows, procedural terrain, vegetation, atmosphere, HUD and reconstruction |
+| `app` | Game shell: window, fixed tick, input, split screen, headless frames, scripted playtests, F10/F11/F12 |
+| `audio` | Sound synthesis, effects playback, the procedural synth and its surround mixer |
+| `physics` | Rigid bodies on Rapier with enhanced determinism |
+| `body` | Bodies that move without hand animation: standard skeleton, motion-captured clips, gaits, rigs |
 | `assets` | glTF import with materials and textures; baked weighted characters |
-| `net` | Online play over iroh: typed host/client messages behind polled channels |
-| `webxr` (JS) | Experimental standalone WebXR shell and lightweight mobile renderer; [Quest demo and limits](docs/quest-vr.md) |
+| `net` | Online play over iroh: typed host/client messages |
+| `gamenight` | Native GameNight client: party host, seats, wire contract |
 | `script` | Luau modules: sandbox, hot reload, deterministic step budget |
+| `live` | Live control of a running game over MCP |
+| `warp` | The `warp` executable for games made only of Luau, synth patches and assets |
+| `xr` | OpenXR for the native Quest build |
+| `webxr/` (JS) | Experimental standalone WebXR shell ([Quest demo](docs/quest-vr.md)) |
 
-`assets/` contains licensed default fonts, reusable audio resources and
-explicit renderer test fixtures. Game runtime meshes belong to Sideways.
+`assets/` holds licensed default fonts, reusable audio resources and renderer
+test fixtures. `tools/` holds the Python diagnostics
+([tools](tools/README.md), [frame budget](tools/frame-budget.md)).
 
-Focus: realistic, performant procedural nature, vehicle physics APIs,
-AI-driven workflows and fast iteration. A human editor UI, complete indoor
-rendering, water, buildings, people and general animation remain missing.
-Procedural plant wind is not general character animation.
-
-The latest grass experiment adds opt-in native spatial RGB filtering and
-source-accepted basal edge contact. Grass alpha, wind and source geometry stay
-intact; distant shading variance is reduced in a static crop, with a measured
-brightness shift. Final native 4K captures and selected wind poses completed;
-user acceptance remains pending. See
-[r64 implementation, measurements and limits](docs/meadow-edge-grain-r64.md).
-
-```powershell
+```sh
 cargo check --locked --workspace
 cargo test --locked -p render --lib
-cargo test --locked -p audio --lib
-python engine/tools/frame-budget.py --help
-python engine/tools/render-category-report.py --help
+cargo run --release -p app --example hello          # the smallest game
+cargo run --release -p app --example terrain_fly    # procedural terrain flight
 ```
 
-New game? Read [making a game](docs/making-a-game.md) and run
-`cargo run -p app --example hello`. The [documentation index](docs/README.md)
-has guides for every crate (`physics`, `assets`, `net` and `script` too)
-and lists the dated engineering notes.
+Start with the [documentation index](docs/README.md). [Making a
+game](docs/making-a-game.md) walks through a Rust game, the
+[`warp` executable](docs/warp-cli.md) a Luau one, and [status](docs/status.md)
+says what works now and what is open. Dated notes and measurements are in the
+[development log](docs/log/README.md).
 
-See the [diagnostics guide](tools/frame-budget.md),
-[live render debug panel](docs/debug-ui.md),
-[forest roadmap](docs/forest-rendering-roadmap.md),
-[shared vegetation API and validation](docs/unified-vegetation.md),
-[species recipes, shared primitives and runtime limits](docs/vegetation-species.md),
-[four-view grass timing and visual tradeoffs](docs/meadow-half-resolution-r57.md),
-[full-resolution sampling and raw-buffer diagnostics](docs/meadow-sampling-r58.md),
-[analytic grass contact AO](docs/meadow-contact-ao-r59.md),
-[rounded grass blade shading](docs/meadow-rounded-shading-r62.md),
-[curved grass, travelling wind and r63 measurements](docs/meadow-windswept-r63.md),
-[distant grass filtering and edge contact](docs/meadow-edge-grain-r64.md),
-[atmosphere notes](ATMOSPHERE.md), [handoff](HANDOFF.md) and
-[category measurements](docs/render-categories-2026-10-24.md).
-Old development notes are preserved in the game's historical documentation.
+Not built yet: a human editor UI, dynamic indoor GI and general character
+animation beyond `body`'s clips and gaits.

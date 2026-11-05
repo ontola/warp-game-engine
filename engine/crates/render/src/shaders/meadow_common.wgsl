@@ -128,7 +128,7 @@ fn meadow_branch_angle(root:vec2<f32>,direction:vec2<f32>,phase:f32,detail:f32,a
 }
 
 // Shape/colour/wind technique adapted from SimonDev Quick_Grass, MIT.
-// See engine/licenses/Quick_Grass-MIT.txt and docs/meadow-windswept-r63.md.
+// See engine/licenses/Quick_Grass-MIT.txt and docs/log/meadow-windswept-r63.md.
 // Upstream noise.glsl credits https://www.shadertoy.com/view/ttc3zr for hashes.
 // The source's cubic-smoothed value noise is sampled per blade, not per
 // vertex identity or view. Periodic lattice coordinates make time rebasing

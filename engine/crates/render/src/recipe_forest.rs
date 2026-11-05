@@ -2,7 +2,7 @@
 //! variants of a recipe are shared by every tree; the trees nearest the
 //! camera are full assemblies (branch groups pick source or voxels by
 //! projected error), every other tree is the same plant as one whole-plant
-//! voxel proxy (docs/voxel-raster-plan.md); in between, card trees
+//! voxel proxy (docs/log/voxel-raster-plan.md); in between, card trees
 //! (plant_mesh_lod: foliage as quads, wood as geometry; add_cards) take the
 //! middle distance. Cooks run in parallel and are
 //! cached on disk (CookedPlant::cached), so a warm start loads in
@@ -180,7 +180,7 @@ pub fn set_virtual_members(on: bool) { VIRTUAL_MEMBERS.store(on, std::sync::atom
 fn limits(variants: &[CookedPlant], full: usize) -> AttachLimits {
     let branches = variants.iter().map(|c| c.stats().branches).max().unwrap_or(64);
     // KERN_VIRTUAL_MEMBERS=1: placements as shared templates composed with
-    // their branch pose on the GPU (docs/foliage-assemblies-plan.md).
+    // their branch pose on the GPU (docs/log/foliage-assemblies-plan.md).
     let virtual_members = virtual_members();
     let mut limits = AttachLimits { virtual_members, max_poses: branches.max(64) * full.max(4),
         max_primitive_instances: crate::part_wind::MAX_ATTACHMENTS, ..Default::default() };

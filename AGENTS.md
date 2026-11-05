@@ -4,8 +4,9 @@ Warp is a Rust game engine for couch games (up to four players on one screen)
 built for fast iteration with AI: everything is code and text, simulations
 replay bit for bit, rendering runs headless, and a running game can be
 inspected and changed over MCP. Its focus is procedural outdoor worlds.
-Start with [engine/docs/README.md](engine/docs/README.md) (the docs index) and
-[engine/docs/overview.md](engine/docs/overview.md).
+Start with [engine/docs/README.md](engine/docs/README.md) (the docs index),
+[engine/docs/overview.md](engine/docs/overview.md) and
+[engine/docs/status.md](engine/docs/status.md) (what works now, what is open).
 
 One Rust workspace, with Cargo.toml and Cargo.lock at the repository root.
 
@@ -25,9 +26,9 @@ One Rust workspace, with Cargo.toml and Cargo.lock at the repository root.
 | `engine/crates/script` | Luau scripting host with hot reload. |
 | `engine/crates/live` | Live control of a running game over MCP. |
 | `engine/crates/warp` | The `warp` executable: runs games made only of Luau scripts, synth patches and assets. |
-| `engine/docs/` | Design notes and measurement reports (`*-rNN.md` are dated iterations; read the index first). |
+| `engine/docs/` | Guides that describe how things work now, `status.md`, and `renderer-switches.md` (every `KERN_*` variable). |
+| `engine/docs/log/` | The development log: dated experiments, measurements and session notes (`*-rNN.md` are iterations). Evidence, not current docs. |
 | `engine/tools/` | Python diagnostics: frame budgets, hitches, scenario replay. |
-| `engine/HANDOFF.md` | Running log of the latest state per topic, newest first. |
 | `games/sideways/` | The rally game: `sim` (simulation), `app` (renderer integration, the `cli` package builds the `sideways` executable), `determinism` (`gdcompat`: deterministic math/RNG, not Godot), assets, scenarios, tools. |
 | `games/growing-guns/`, `games/spellstorm/` | Rust games with `sim` and `app` crates. Growing Guns is a port of the Godot game (github.com/ontola/growing-guns); its README's status tables say how far the port is: update them in the same commit as any change a player would notice (a test checks modifiers, settings, knobs and the card count). |
 | `games/hello-warp/`, `neon-siege/`, `neon-trails/` | Luau games run by `warp run games/NAME` (no Rust). |
@@ -122,4 +123,21 @@ use headless GPU pass times instead.
 Target: one 4K output, four players, 120 FPS (8.33 ms); not reached. Report actual
 resolution, reconstruction, sample count and scene. No further Godot comparison.
 
-See both READMEs, engine/HANDOFF.md and engine/docs/forest-rendering-roadmap.md.
+See both READMEs, engine/docs/status.md and, for vegetation,
+engine/docs/vegetation-architecture.md.
+
+## Documentation
+
+Docs describe how things work now; the log records how we got there.
+
+- When a change alters how something works, update the guide for that part
+  (or write one) in the same commit, and update `engine/docs/status.md` if
+  what is default, opt-in or open changed. Rewrite in place: no dated
+  "Update:" paragraphs, no "previously" history in a guide.
+- Experiments, measurements, rejected candidates and session notes go in
+  `engine/docs/log/YYYY-MM-DD-topic.md` (listed in `engine/docs/log/README.md`),
+  with the commit, machine, scene and numbers. Never edit an old log entry to
+  make it current.
+- `engine/HANDOFF.md` is retired; its history is `engine/docs/log/handoff.md`.
+  Do not recreate it.
+- A new `KERN_*` switch gets a row in `engine/docs/renderer-switches.md`.

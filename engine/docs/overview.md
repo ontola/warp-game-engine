@@ -51,8 +51,8 @@ The loop is edit, build, look, measure, and every step is kept short:
 - `render::slots::Slots` lets objects come, go and change mesh without
   rebuilding the renderer.
 
-Measured numbers are in [second-game-findings.md](second-game-findings.md)
-and [iteration-speed-2026-10-24.md](iteration-speed-2026-10-24.md).
+Measured numbers are in [second-game-findings.md](log/second-game-findings.md)
+and [iteration-speed-2026-10-24.md](log/iteration-speed-2026-10-24.md).
 
 ### Headless first
 

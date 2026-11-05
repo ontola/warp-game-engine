@@ -39,7 +39,7 @@ source-derived, terrain-following far layer is proposed but not implemented.
 Windswept forces the aggregate off and rejects group cache. Use
 `SIDEWAYS_MEADOW_PROFILE=classic` for the previous recipe, the aggregate
 experiments below and r62 rounded shading.
-See [r63 source equations, runtime choices and measurements](../../engine/docs/meadow-windswept-r63.md).
+See [r63 source equations, runtime choices and measurements](../../engine/docs/log/meadow-windswept-r63.md).
 
 Detailed woody species are now built from reusable twig/foliage assemblies.
 `tree_species_compare` renders each candidate beside the retained textured tree
@@ -49,9 +49,9 @@ The source path shares meshes and evaluates branch/tip poses on the GPU.
 whole-tree flattening path has been removed, and forest-scale assembly LOD/pose
 selection is not ready. The default live forest retains its reference assets.
 `SIDEWAYS_MEADOW_SPECIES=mixed` still selects three windswept grass forms in
-coherent world patches. See [species architecture and evidence](../../engine/docs/vegetation-species.md).
+coherent world patches. See [species architecture and evidence](../../engine/docs/log/vegetation-species.md).
 
-The current [r64 grass experiment](../../engine/docs/meadow-edge-grain-r64.md)
+The current [r64 grass experiment](../../engine/docs/log/meadow-edge-grain-r64.md)
 adds two opt-in flags: `KERN_MEADOW_SPATIAL_FILTER=1` filters distant rendered
 RGB while preserving grass alpha exactly; `KERN_MEADOW_EDGE_SHADOW=1` adds
 source-accepted basal contact on terrain/road. Filtering runs only on native
@@ -93,8 +93,8 @@ DLSS support before requesting it. The launch manifest records mode and source.
 
 This follows the user's 27 October request to use DLSS for four players. It does
 not accept other graphics experiments or reduce the output resolution. The
-[r55 sweep](../../engine/docs/resolution-sweep-r55.md) and
-[r56 grass trial](../../engine/docs/meadow-band-r56.md) already used DLSS;
+[r55 sweep](../../engine/docs/log/resolution-sweep-r55.md) and
+[r56 grass trial](../../engine/docs/log/meadow-band-r56.md) already used DLSS;
 their 27-33 ms Performance results are not native-1080p-per-player measurements.
 
 An experimental earlier-grass tier is available for controlled comparisons:
@@ -104,7 +104,7 @@ depth/material/lighting targets to half their internal width and height. Source
 grass and the final merge stay at full internal resolution; world placement,
 density, color, wind and the 160-180 m outer fade remain unchanged. The merge
 uses full-resolution opaque depth and reconstructed motion. This is an optical
-approximation and stays off by default. The [r57 measured comparison](../../engine/docs/meadow-half-resolution-r57.md)
+approximation and stays off by default. The [r57 measured comparison](../../engine/docs/log/meadow-half-resolution-r57.md)
 saves 1.89/3.87 ms total GPU interval, but visibly smears distant grass/ground.
 It is not visually equivalent or accepted for default use; temporal acceptance
 also remains open. Moving the existing aggregate closer alone did not save time.
@@ -113,7 +113,7 @@ aggregate target dimensions, ratios and allocated target bytes for every view.
 
 `KERN_MEADOW_AGGREGATE_SAMPLE_PRUNE=1` is a separate full-resolution experiment:
 skip zero-weight directional reads and fetch the selected surface payload once.
-It reduces aggregate time 15–21% in the [r58 comparison](../../engine/docs/meadow-sampling-r58.md),
+It reduces aggregate time 15–21% in the [r58 comparison](../../engine/docs/log/meadow-sampling-r58.md),
 with exact captured depth/motion and coverage masks and no newly observed blur.
 It stays off by default and is incompatible with the experimental group cache.
 `KERN_MEADOW_CAPTURE_RAW=1` saves pre-DLSS layers alongside scenario captures;
@@ -122,7 +122,7 @@ it performs synchronous readback and is for explicit diagnostics only.
 `KERN_MEADOW_CONTACT_AO=1` separately enables soft grass-root contact footprints
 in terrain diffuse skylight. It follows canonical root placement, live size and
 density, and adds no shadow pass. Direct sun and headlights remain unchanged.
-The [r59 OFF/ON comparison](../../engine/docs/meadow-contact-ao-r59.md) found no
+The [r59 OFF/ON comparison](../../engine/docs/log/meadow-contact-ao-r59.md) found no
 large cost increase above run variation; the daylight effect is subtle.
 It remains off by default, without claiming directional grass shadows.
 
@@ -131,7 +131,7 @@ smooth blade normals along the curve and round them across the width, including
 every source LOD and the rebuilt distant atlas. It requires the GPU meadow
 (`SIDEWAYS_PROCEDURAL_GRASS=field`). Unset or `flat` retains existing shading.
 Placement, geometry, colour and wind stay the same. The launcher and captures
-record the mode; replays reject a mismatch. See [r62 details and validation](../../engine/docs/meadow-rounded-shading-r62.md).
+record the mode; replays reject a mismatch. See [r62 details and validation](../../engine/docs/log/meadow-rounded-shading-r62.md).
 
 The latest measured developer optimization paths are an explicit opt-in:
 
@@ -144,11 +144,11 @@ lighting hidden by fully opaque grass, and spatial headlight-caster selection.
 The launcher records their effective settings and restores the parent process
 environment afterward. These preserve the existing source appearance rather
 than adding new visuals; exact full-image acceptance is still incomplete.
-See [r47 measurements](../../engine/docs/meadow-work-r47.md) and
-[r48 measurements](../../engine/docs/render-traversal-r48.md). Gains vary by
+See [r47 measurements](../../engine/docs/log/meadow-work-r47.md) and
+[r48 measurements](../../engine/docs/log/render-traversal-r48.md). Gains vary by
 scene and must not be added together or presented as an 8.33 ms result.
 The experimental world-volume trees remain disabled; see
-[r50 rejection and next steps](../../engine/docs/world-foliage-r50.md).
+[r50 rejection and next steps](../../engine/docs/log/world-foliage-r50.md).
 
 Developer playtests default to fuller tree crowns (`-TreeFullness 1.25`, range
 1..1.35) and tree occlusion culling. Use `-TreeFullness 1 -TreeOcclusion:$false`
@@ -186,7 +186,7 @@ than changing their source while retaining stale packed assets.
 Controls: left stick steers, RT accelerates, LT brakes/reverses, A handbrake,
 X reset, Y camera, right stick look around, Start menu.
 
-The [r60 handling trial](docs/handling-grip-r60.md) selects
+The [r60 handling trial](docs/history/handling-grip-r60.md) selects
 `tyre_grip_scale = 1.12` and `lateral_peak_scale = 0.80` in the `[base]` section
 of [`data/cars.toml`](data/cars.toml), for more grip and earlier lateral bite.
 Both accept finite values from 0.5 to 1.5; `1.0/1.0` restores the original
@@ -200,7 +200,7 @@ The engine debug Lighting submenu includes **Highlight bloom** and a draggable
 after reconstruction and before AgX; it does not increase how strongly the
 lamps illuminate the road. Rear/brake/reverse lights and exhaust flashes now
 provide short-range environmental light without additional shadow maps.
-See [r51 evidence and limits](../../engine/docs/local-lights-and-vegetation-r51.md).
+See [r51 evidence and limits](../../engine/docs/log/local-lights-and-vegetation-r51.md).
 
 For the explicit classic profile, developer playtests also enable distant grass
 (`-MeadowAggregate`). Detailed
@@ -219,7 +219,7 @@ distance control still scales both the source band and outer fade together.
 This comparison setting has no visual or performance acceptance yet.
 The current iteration improves coverage but retains a faint grid pattern on
 some distant slopes; it is not a complete pop-in or120FPS solution. See the
-[r39 results and limits](../../engine/docs/meadow-distance-r39.md).
+[r39 results and limits](../../engine/docs/log/meadow-distance-r39.md).
 
 Distributions place `assets/` and `data/` beside the executable.
 `SIDEWAYS_GAME_ROOT` explicitly selects another game root; the source checkout

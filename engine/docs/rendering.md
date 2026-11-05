@@ -1,10 +1,10 @@
 # Rendering overview
 
 The `render` crate is the largest part of Warp (about 50,000 lines, more
-than half of it vegetation). This page is a map of what exists. The
-detail, the measurements and the dead ends are in the
-[engineering notes](README.md#engineering-notes), the
-[handoff](../HANDOFF.md) and the forest roadmap.
+than half of it vegetation). This page is a map of what exists and how a
+frame is built. [Status](status.md) says what is open,
+[renderer switches](renderer-switches.md) lists the `KERN_*` A/B switches,
+and the measurements and dead ends are in the [development log](log/README.md).
 
 ## Shape of a frame
 
@@ -17,8 +17,19 @@ detail, the measurements and the dead ends are in the
   A cluster is drawn when its own error projects to at most a pixel and its
   coarser replacement would project to more (`cluster.rs`).
 - **GPU culling and selection.** Culling and LOD selection run per cluster
-  on the GPU, with a conservative current-frame depth pyramid and tree
-  occlusion from real alpha-tested depth.
+  on the GPU (`cull.wgsl`). Clusters are sorted into size buckets.
+- **Occlusion culling for every category** (`occlusion.rs`). History first,
+  in two phases: clusters visible last frame draw first and build a depth
+  pyramid; the rest are tested against it and only drawn if they show. A
+  probe re-checks hidden clusters every 4 frames. The GPU forest is also
+  tested before its selection, against the depth of rigid opaque geometry
+  only (terrain, buildings, cars; not deforming or see-through materials),
+  so a forest behind a wall is not selected at all.
+- **Opaque before masked.** Opaque clusters raster through a fragment stage
+  without `discard`, so they keep early depth testing; alpha-tested clusters
+  (masked materials, fading grass cards) draw after them through the
+  alpha-cut pipeline. A game mask or bounded draws (Quest) use the single
+  pipeline.
 - **Visibility buffer, compute shading.** Clusters raster into a visibility
   buffer; the main shade pass lights each pixel once, in compute, in HDR
   (`shaders/shade.wgsl`).
@@ -65,6 +76,8 @@ detail, the measurements and the dead ends are in the
 
 ## Light
 
+### Sun shadows
+
 Games can set `Scene::stage_sun = true` for a camera-independent sun-shadow
 cache of the generated level. It renders source geometry/alpha once before the
 first view, fitting the complete static scene (not only vegetation), and shares
@@ -82,8 +95,11 @@ it for A/B captures. `KERN_FAR_SUN_LOD` controls the bake's fixed source error.
 This is direct sun visibility, not baked indirect GI or local-lamp shadows.
 Near-map detail transitions and far-map resolution remain finite. The older
 experimental `KERN_FAR_SUN_SHADOW=1` opt-in retains its foliage-oriented fit
-unless the scene also opts in; paged foliage sun is a mutually exclusive mode.
+unless the scene also opts in; paged foliage sun is a mutually exclusive mode. Streamed GPU-forest worlds
+(`terrain_fly`) get a camera-anchored far map by default, and the forest has
+its own shadow tile cache that only redraws tiles whose casters changed.
 
+### Everything else
 
 - Physical units: sun and sky in lux, exposure in EV100, emissive
   materials in nits. `Lighting::default()` is a sunny day.
@@ -93,7 +109,7 @@ unless the scene also opts in; paged foliage sun is a mutually exclusive mode.
 - A procedural atmosphere bake: Rayleigh and aerosol Mie single scattering
   with ozone absorption on a spherical planet, supplying both the
   background and SH9 sky lighting. No clouds, moon or visible sun disc.
-  See [ATMOSPHERE.md](../ATMOSPHERE.md).
+  See [atmosphere](atmosphere.md).
 - Indoor light: `irradiance_volume` probes (an ambient cube per grid
   point) reserved with `Scene::reserve_irradiance_volume` and filled with
   `Renderer::set_irradiance_volume`. Inside the grid they replace sky light
@@ -137,12 +153,20 @@ unless the scene also opts in; paged foliage sun is a mutually exclusive mode.
   smoke, embers, heat shimmer and lights drawn after TAA (`fx`),
   GPU-simulated debris against an occupancy grid (`debris`), exhaust gas
   and backfire, wheel dust and gravel, persistent lit tyre marks.
-- **Terrain and vegetation:** clustered terrain with normals that follow
-  the rendered surface and a heightfield for tracing, a procedural meadow generated, culled, animated and drawn on the
-  GPU, trees as clustered meshes with alpha-tested crowns, distant forest
-  and mountains, and whole-plant wind evaluated once per instance on the
-  GPU. Several volume and voxel representations exist as experiments and
-  are off by default.
+- **Terrain:** procedural terrain as GPU patches of one height function,
+  with water in ditches, streams and rivers at every distance, regions,
+  zones and flat plots ([procedural terrain](terrain.md)). Sideways still
+  uses its baked terrain mesh, with normals that follow the rendered
+  surface and a heightfield for tracing.
+- **Vegetation:** in `terrain_fly`, trees and terrain grass share one GPU
+  route: assemblies of shared parts, GPU selection of a complete cut per
+  frame, bounded source and voxel paging, shared poses and wind
+  ([vegetation checklist](vegetation-architecture.md)). Sideways uses its
+  procedural meadow and clustered source trees with alpha-tested crowns,
+  plus a distant forest. Distant trees freeze to their rest pose between
+  60 and 90 m.
+- **Buildings:** static opaque structures (`GeometryCategory::Structures`)
+  occlude like terrain; `terrain_fly --town` puts them on zoned plots.
 
 ## Where it stands
 
@@ -154,23 +178,12 @@ as Growing Guns' arena is much cheaper (see its README for measured,
 dated numbers).
 
 The cost in Sideways' forest is dominated by grass source geometry, tree
-raster, dynamic sun shadows and shading. The forest roadmap orders the
-next work:
+raster, dynamic sun shadows and shading. In `terrain_fly` much of the forest
+cost is GPU selection and shadow work that does not fall when the view is
+blocked. The [vegetation checklist](vegetation-architecture.md) has the
+current gates and a per-category budget for the 8.33 ms target.
 
-1. Make work fall with screen size: coarse shared representations of
-   grass from the same source plants, selected by projected error.
-2. Skip whole invisible subtrees. An experimental GPU hierarchy of spatial
-   instance groups exists (off by default); top-down cluster traversal is
-   missing.
-3. Reduce raster and vertex work: opaque reusable parts with coarse
-   aggregation, before considering a dedicated micro-triangle rasteriser.
-4. Bound animation and shadow caching together: animation LOD on visible
-   error, poses once for the union of views, shadow pages driven by what
-   receivers need.
-5. Share residency across views instead of multiplying per-view budgets.
-
-This is not a complete Nanite or virtual shadow map implementation, and
-the notes say so wherever a result is partial.
+This is not a complete Nanite or virtual shadow map implementation.
 
 ## Known gaps
 
@@ -181,17 +194,15 @@ the notes say so wherever a result is partial.
 - The default look is pale without tuning (AgX, physical units).
 - Animated pixels reject temporal history until deformation motion vectors
   exist.
-- No water or buildings. Indoor light is a baked probe grid: no dynamic
-  GI, light leaks through walls thinner than a cell.
+- Water is a surface in the terrain only (no simulated or reflective
+  water). Buildings are plain opaque geometry. Indoor light is a baked probe
+  grid: no dynamic GI, light leaks through walls thinner than a cell.
 
 ## Further reading
 
-- [Engineering notes](README.md#engineering-notes): every iteration with
-  its measurements.
-- [Handoff](../HANDOFF.md): the running status, newest first.
-- [Forest roadmap](forest-rendering-roadmap.md) (in Dutch): the
-  architecture audit and the priorities above.
-- [Second game findings](second-game-findings.md): what Growing Guns
-  changed in the renderer.
-- [Unified vegetation](unified-vegetation.md) and the
-  [live render debug panel](debug-ui.md).
+- [Status](status.md) and [renderer switches](renderer-switches.md).
+- [Procedural terrain](terrain.md) and the
+  [vegetation checklist](vegetation-architecture.md).
+- [Live render debug panel](debug-ui.md) and
+  [native profiling](native-profiling.md).
+- [Development log](log/README.md): every iteration with its measurements.

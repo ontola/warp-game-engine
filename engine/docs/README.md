@@ -10,178 +10,86 @@ playtests and hot-reloaded Luau.
 Games on it: [Sideways](../../games/sideways/README.md), a gravel rally
 game, and [Growing Guns](../../games/growing-guns/README.md), an arena
 shooter. [SpaceRacer](../../games/spaceracer/README.md) has a playable native
-development port with Luau rules; visual/content parity is still in progress. Spellstorm, a co-op wizard roguelite, and GameNight's Game Room
-lobby are being ported. The `warp` executable runs games made only of Luau
-scripts and sound patches, such as
+development port with Luau rules. Spellstorm, a co-op wizard roguelite, and
+GameNight's Game Room lobby are being ported. The `warp` executable runs
+games made only of Luau scripts and sound patches, such as
 [Hello Warp](../../games/hello-warp/README.md), with no Rust.
 
-Start with the overview, then build and run something.
+Start with the overview, then build and run something. [Status](status.md)
+says what works now and what is still open.
 
-## Vegetation development hand-off
-
-[Current production architecture and implementation gates](vegetation-architecture.md):
-one GPU route, shared assemblies, residency, wind and shadow consumers. Architecture
-integration takes precedence over visual tuning; old opt-in plans are historical.
-
-[Bounded voxel asset streaming](foliage-cache-2026-11-04.md): normal-frame demand
-service, pinned fallback, chunked uploads and eviction.
-[Source paging](foliage-source-pages-2026-11-04.md) shares demand and publication,
-with bounded source arenas and pinned dynamic geometry.
-
-[Relocatable voxel page payloads](foliage-page-layout-2026-11-04.md): shared grid,
-cell and splat relocation; bounded allocation and address-independent appearance.
-This report precedes the connected streaming service described above.
-
-[Asset demand and safe publication](foliage-asset-publication-2026-11-04.md): compact
-GPU requests, pinned fallback and generation validation; physical paging still open.
-
-[Shadow tile damage and sparse clear](foliage-shadow-damage-2026-11-04.md):
-GPU old/new caster damage, sparse clear and common source/voxel masks now wired
-into normal shared sun rendering. Full renderer verification and timings remain
-pending; world-stable page coverage and early dirty-bound culling remain open.
-
-[Shared articulated forest poses](foliage-shared-poses-2026-11-04.md): GPU ancestry
-deduplication, bounded cache fallback and independent matrix validation.
-
-[History-first source recovery](foliage-history-2026-11-04.md): bounded deferred
-clusters, current-depth proofs, sparse-coverage scheduling and measured limits.
-
-[Stable streamed forest population](foliage-population-2026-11-04.md): worker
-preparation, incremental GPU publication and retained root identity/history.
-
-[GPU subtree work queues](foliage-wavefront-2026-11-04.md): connected traversal,
-overflow guarantees, regression tests and measured cost on 62,274 roots.
-
-[Continue the shared-assembly and brick-visibility work](vegetation-next-agent.md):
-reproduction commands, current performance, source reference and next steps.
+These pages describe how Warp works now. Dated experiments, measurements
+and session notes are in the [development log](log/README.md).
 
 ## Guides
 
 | Guide | What it covers |
 | --- | --- |
 | [What Warp is](overview.md) | Design goals: deterministic sim, fast iteration, headless runs, physical units, live tweaking by an AI as a direction. |
-| [Workspace and crates](workspace.md) | The repository layout, the eight engine crates, the game packages and the build profiles. |
+| [Status](status.md) | What is the default, what is opt-in and what is open, per area. |
+| [Workspace and crates](workspace.md) | The repository layout, the engine crates, the game packages and the build profiles. |
 | [Building and running](building-and-running.md) | Checks and tests, running the games, software rendering, scripted playtests, golden images, environment variables. |
-| [Games in Luau: the warp executable](warp-cli.md) | `warp new`, `run`, `script`, `serve`, `check`: a game of Luau scripts, sound patches and glTF assets with hot reload and live MCP control. The Luau game API. |
-| [Native Quest VR](quest-native.md) | Android/OpenXR with the existing Warp renderer and full Growing Guns app; build, controls and validation limits. |
-| [Standalone Quest VR demo](quest-vr.md) | WebXR shell, local Rust/Wasm Growing Guns demo, Touch controls, build/serve and physical-headset test limits. |
 | [Making a game](making-a-game.md) | The `app::Game` trait, the loop, building a scene, costs and gotchas. Starts from the `hello` example. |
+| [Games in Luau: the warp executable](warp-cli.md) | `warp new`, `run`, `script`, `serve`, `check`: a game of Luau scripts, sound patches and glTF assets with hot reload and live MCP control. The Luau game API. |
 | [Scripting and modding](scripting.md) | The Luau host: sandbox, hot reload, step budget. Growing Guns' mod API as the worked example. |
 | [Audio](audio.md) | Engine sound synthesis, effects playback, and the procedural synth with its surround mixer. |
 | [Live control over MCP](live-control.md) | Change a running game with Claude, ChatGPT or an in-game assistant: setup, tools, security. |
 | [Networking](networking.md) | Host and clients over iroh, and Growing Guns' host-authoritative play. |
 | [Physics](physics.md) | `kern::collide` for characters and levels, the Rapier-based `physics` crate. |
+| [Rendering overview](rendering.md) | Clusters, occlusion, visibility buffer, lighting, content systems, and where performance stands. |
+| [Renderer switches](renderer-switches.md) | Every `KERN_*` variable the renderer reads, its default, and which are experiments. |
+| [Procedural terrain](terrain.md) | The height function and its GPU copy, LOD patches, water, constraints, forest field and placement. |
+| [Terrain regions](terrain-regions.md) | Several kinds of land in one world. |
+| [Zones and footprints](terrain-zones.md) | What each place is for, flat plots, buildings in `terrain_fly --town`. |
+| [World overrides](world-overrides.md) | Artist edits on top of rule placement, keyed on stable object ids. |
+| [Vegetation checklist](vegetation-architecture.md) | The GPU forest and grass route: architecture contract, gates and current measurements (a working checklist). |
+| [Atmosphere](atmosphere.md) | The procedural sky bake: Rayleigh and Mie scattering, ozone, sky lighting. |
 | [Live sky: time of day and weather](live-sky-controls.md) | `render::sky`: presets, the background bake, Sideways' pause menu and Growing Guns' `--sky` and `sky` command. |
-| [Rendering overview](rendering.md) | Clusters, visibility buffer, lighting, content systems, and where performance stands. |
-| [Exposure and HDR output](hdr-and-exposure.md) | Automatic exposure (`exposure = "auto"`, metering, tuning) and HDR output on HDR screens: when to use them, how to turn them on, authoring for HDR. |
+| [Exposure and HDR output](hdr-and-exposure.md) | Automatic exposure and HDR output on HDR screens: when to use them, how to turn them on, authoring for HDR. |
 | [Motion blur](motion-blur.md) | Opt-in per-view motion vectors, fixed shutter, split-screen isolation and limitations. |
-| [Quarried stone surfaces](stone-surfaces.md) | Shared stone meshes, physical normal relief, footprint filtering and the Growing Guns prototype's remaining visual issues. |
-| [Stadium masonry](stadium-masonry.md) | Shared clustered brick panels, geometry LOD, fixed-camera comparisons and four-view render cost. |
+| [Volumetric light](volumetric-light.md) | Opt-in in-scattering from local lights. |
+| [Live render debug panel](debug-ui.md) | F10: render and light switches, LOD, GPU pass times. |
+| [Native profiling](native-profiling.md) | No-readback headless CPU/GPU samples and per-frame reports. |
+| [Native Quest VR](quest-native.md) | Android/OpenXR with the Warp renderer and the full Growing Guns app; build, controls and validation limits. |
+| [Standalone Quest VR demo](quest-vr.md) | WebXR shell, local Rust/Wasm Growing Guns demo, Touch controls. |
+| [GPU runner](gpu-runner.md) | Running GPU jobs with Claude Code on a Windows machine with a real GPU. |
 
-Reference that lives next to the code:
+## Reference
 
-- [Growing Guns mod API](../../games/growing-guns/mods/API.md), generated
-  from the Rust side.
-- [Frame budget and repeatable scenarios](../tools/frame-budget.md) and the
-  [diagnostics tools](../tools/README.md).
-- [Native CPU/GPU profiling](native-profiling.md): no-readback headless samples,
-  native-resolution checks, per-frame reports and the remaining tooling gaps.
-- [Engine README](../README.md) and the [repository README](../../README.md).
+Narrower notes on single features.
 
-## Engineering notes
+Lighting and terrain:
 
-Dated notes written during development, kept as they were written: what
-was tried, what was measured, and what was accepted or rejected. They are
-evidence, not tutorials. Numbers in them belong to the build and scene
-they name. Iteration numbers (r34, r52...) follow the order of work.
-
-Status and plans:
-
-- [Handoff](../HANDOFF.md): the running status, newest first.
-- [Forest rendering roadmap](forest-rendering-roadmap.md) (in Dutch).
-- [A second game on Warp: findings](second-game-findings.md).
-- [Iteration speed measurements, 24 October 2026](iteration-speed-2026-10-24.md).
-- [Engine efficiency changes, 28 October 2026](engine-efficiency-20261028.md): seven runtime fixes, CPU allocation measurements and parity evidence.
-- [Native workspace separation](repository-layout.md).
-- [GPU runner](../GPU_RUNNER.md) and [Windows validation, 2026-10-23](../WINDOWS_VALIDATION.md).
-
-Meadow and grass:
-
-- [Procedural meadow field, r34](meadow-field-r34.md)
-- [Meadow appearance, r35](meadow-look-r35.md)
-- [Dense meadow, r36](meadow-density-r36.md)
-- [Meadow geometry budget, r37](meadow-budget-r37.md)
-- [Meadow distance continuity, r39](meadow-distance-r39.md)
-- [Grass distribution and a faint night sky, r40](meadow-night-r40.md)
-- [Meadow budget, r44](meadow-budget-r44.md)
-- [Meadow world-page cache, r45](meadow-group-cache-r45.md)
-- [Meadow work elimination and optical bricks, r47](meadow-work-r47.md)
-- [World-fixed vegetation volume field](meadow-volume-field.md)
-
-Trees and vegetation:
-
-- [Unified vegetation: shared primitives and branch poses](unified-vegetation.md)
-- [Species recipes from shared primitives](vegetation-species.md)
-- [Vegetation work by distance, r31](vegetation-distance-budget.md)
-- [Vegetation source LOD and volume work, r32](vegetation-optimization-r32.md)
-- [Forest fullness and current-frame culling, r38](forest-occlusion-r38.md)
-- [World foliage replacement, r50](world-foliage-r50.md)
-- [Distance-based tree wind freeze and static sun cache, r52](wind-freeze-sun-cache-r52.md)
-- [Distant mountains and forest](distant-forest.md)
-- [Distant tree sunlight](distant-tree-lighting.md)
-
-Traversal and work avoidance:
-
-- [Instance hierarchy, r45](instance-hierarchy-r45.md)
-- [Rendering less work, r46](render-work-avoidance-r46.md)
-- [Cluster traversal, r46](cluster-traversal-r46.md)
-- [Real traversal avoidance, r48](render-traversal-r48.md)
-- [Compact colour-view instance selection](instance-broadphase.md)
-- [Controlled colour-geometry diagnostics, 24 October 2026](render-categories-2026-10-24.md)
-
-Shadows and lighting:
-
-- [Matched grass optics and receiver-driven shadow work, r49](lod-shadow-demand-r49.md)
-- [Current-pose directional shadow demand](receiver-shadow-demand-plan.md)
-- [Static/dynamic sun cache, r45](static-sun-cache-r45.md)
-- [Low-sun shadow diagnostics](sun-shadow-diagnostics.md)
-- [World visibility and cached lighting](world-lighting.md)
+- [Shared terrain visibility](terrain-world-visibility.md)
 - [Shared world-space diffuse radiance cache](radiance-cache.md)
-- [Next live diffuse-bounce step (design only)](live-terrain-bounce-plan.md)
-- [Saved vegetation, vehicle illumination and bloom, r51](local-lights-and-vegetation-r51.md)
-
-Sky, fog and terrain:
-
-- [Procedural atmosphere foundation](../ATMOSPHERE.md)
-- [Live sky controls](live-sky-controls.md)
 - [Camera terrain occlusion of solar haze](camera-sun-fog.md)
 - [Finite-distance aerosol layer](finite-distance-fog.md)
-- [Volumetric light from local lights](volumetric-light.md)
 - [Terrain normals follow the rendered surface](terrain-surface-normals.md)
-- [Shared terrain visibility foundation](terrain-world-visibility.md)
-- [Terrain regions: several kinds of land in one world](terrain-regions.md)
-- [Zones and footprints: what each place is for, and where things stand](terrain-zones.md)
-- [Repetitive roadside wedges, r52](roadside-verge-r52.md)
-- [Disappearing roadside shadow, r53](roadside-shadow-r53.md)
+- [Distant mountains and forest](distant-forest.md)
+- [Processed texture cache](processed-texture-cache.md)
 
 Vehicles and effects:
 
 - [Car headlights](car-headlights.md)
 - [Rear-lens emission](car-rear-lamps.md)
-- [Baked explosion smoke](baked-explosion-smoke.md)
-- [Baked smoke scalability baseline](baked-smoke-scaling.md)
-- [Adaptive explosion smoke](adaptive-explosion-smoke.md)
 - [Exhaust gas, backfire and heat](exhaust-effects.md)
 - [Wheel particles and tyre marks](wheel-effects.md)
 - [Wheel dust and debris](wheel-particles.md)
 - [Persistent tyre material marks](persistent-tyre-marks.md)
+- [Baked explosion smoke](baked-explosion-smoke.md)
+- [Adaptive explosion smoke](adaptive-explosion-smoke.md)
 - [Roadside crowds prototype](roadside-crowds.md)
 
-Tools:
+Materials:
 
-- [Live render debug panel](debug-ui.md)
-- [Processed texture cache](processed-texture-cache.md)
+- [Quarried stone surfaces](stone-surfaces.md)
+- [Stadium masonry](stadium-masonry.md)
 
-[Mixed species and open grass aggregates](foliage-mixed-species-2026-11-04.md):
-common population categories, empty articulation roots and sheet optical mass;
-terrain demo now streams shared grass cells; game migrations, basal wind and GPU validation remain outstanding.
+Next to the code:
+
+- [Growing Guns mod API](../../games/growing-guns/mods/API.md), generated
+  from the Rust side.
+- [Frame budget and repeatable scenarios](../tools/frame-budget.md) and the
+  [diagnostics tools](../tools/README.md).
+- [DLSS bridge](../crates/render/native/DLSS.md).
+- [Engine README](../README.md) and the [repository README](../../README.md).

@@ -299,7 +299,7 @@ headset acceptance and sustained headset FPS must still be measured separately.
 Do not run this GPU workload alongside the VR app.
 
 For the subsequent per-pass investigation, controlled lava comparison and HUD
-cache diagnosis, see [Quest cost investigation, 31 October](quest-profile-2026-10-31.md).
+cache diagnosis, see [Quest cost investigation, 31 October](log/quest-profile-2026-10-31.md).
 
 ### November 2026 optimization work
 
@@ -334,4 +334,4 @@ app tests passed (17/2 intentionally ignored). The signed Android APK builds.
 The final integrated APK was installed and launched on Quest. The updated
 512-request fixture costs 2.273 ms effects GPU time outside the blasts and
 6.660 ms inside (both eyes); an active playtest is separate from these
-synthetic results. [Optimization results and remaining limits](quest-optimization-2026-11-01.md).
+synthetic results. [Optimization results and remaining limits](log/quest-optimization-2026-11-01.md).

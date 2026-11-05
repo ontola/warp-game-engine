@@ -1,4 +1,4 @@
-# What `sideways gpu-run` does on the GPU runner (see engine/GPU_RUNNER.md). Every
+# What `sideways gpu-run` does on the GPU runner (see engine/docs/gpu-runner.md). Every
 # job renders offscreen; nothing opens a window.
 
 [[job]]

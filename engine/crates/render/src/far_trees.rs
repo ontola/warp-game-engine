@@ -1,4 +1,4 @@
-//! Distant trees as rasterized voxels (docs/voxel-raster-plan.md, M3).
+//! Distant trees as rasterized voxels (docs/log/voxel-raster-plan.md, M3).
 //!
 //! Bakes each tree mesh once into a voxel pyramid (foliage_voxel), binds every
 //! scene instance of those meshes, and sets the scene's far distance. Past it

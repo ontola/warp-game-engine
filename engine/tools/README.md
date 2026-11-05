@@ -28,5 +28,5 @@ must qualify, so the interval immediately after capture/readback is excluded.
 Use `--skip-frames N` for extra warmup per segment, `--top N` to bound outlier
 details, and repeat `--camera-transition-call CALL_ID` for known cuts absent
 from the trace metadata. Without `--out`, JSON goes to stdout; `--force` permits
-replacing a report. See [the r61 investigation](../docs/frame-hitches-r61.md) for
+replacing a report. See [the r61 investigation](../docs/log/frame-hitches-r61.md) for
 measured examples and the CPU/GPU alignment contract.
