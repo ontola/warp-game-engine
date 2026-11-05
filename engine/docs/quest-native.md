@@ -33,6 +33,22 @@ source revision, dirty state, loader version and APK SHA-256. The local debug
 signing key is in `~/.android/warp-quest-debug.keystore`, never in the repository.
 The APK is a development build for sideloading, not a store release.
 
+### Other games
+
+`--game NAME` builds `games/NAME` instead of Growing Guns. A game needs
+`android/AndroidManifest.xml` and `android/quest.json` (crate, library, package
+name, asset folders), a `cdylib` crate type and an `android_main` that calls
+`warp_xr::run`. Output goes to `build/quest-native/NAME/`. SpaceRacer:
+
+```sh
+python3 engine/tools/build-quest-native.py --game spaceracer --install
+adb shell am start -a android.intent.action.MAIN -c com.oculus.intent.category.VR -n com.ontola.warp.spaceracer/android.app.NativeActivity
+```
+
+Shared VR pieces live in `warp_xr`: `PlaySpace` (placement, recentre, snap
+turn, `place_on` a vehicle seat, `level_seat` for a level horizon) and
+`pointer` (HUD quad size, controller ray to HUD pixels, cursor dot).
+
 ## Shared graphics profiles
 
 Desktop accepts `--graphics full|low|minimum` or `GG_GRAPHICS`; `full` remains its default.

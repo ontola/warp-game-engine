@@ -4,6 +4,9 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
 [[bin]]
 name = "spaceracer"
 path = "src/main.rs"
@@ -23,6 +26,14 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 script = { path = "../../../engine/crates/script" }
 gdcompat = { path = "../../sideways/determinism" }
 fastnoise-lite = "1"
+warp-xr = { path = "../../../engine/crates/xr" }
+wgpu = "30"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["native-activity"] }
+android_logger = "0.15"
+log = "0.4"
+zip = { version = "4", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }

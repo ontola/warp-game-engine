@@ -52,7 +52,8 @@ def main():
     library = Path(metadata["target_directory"])/"aarch64-linux-android/quest"/f"lib{config['library']}.so"
     if not library.is_file():
         raise SystemExit(f"Missing native library: {library}")
-    loader = out/f"openxr-loader-{LOADER_VERSION}.aar"
+    # One download shared by every game.
+    loader = ROOT/"build/quest-native"/f"openxr-loader-{LOADER_VERSION}.aar"
     if not loader.is_file():
         urllib.request.urlretrieve(f"https://repo.maven.apache.org/maven2/org/khronos/openxr/openxr_loader_for_android/{LOADER_VERSION}/openxr_loader_for_android-{LOADER_VERSION}.aar", loader)
     if hashlib.sha256(loader.read_bytes()).hexdigest() != LOADER_SHA256:

@@ -56,7 +56,11 @@ impl Actions {
             (analog(&self.dash)?,Buttons::RIGHT_SHOULDER),(analog(&self.grip)?,Buttons::LEFT_SHOULDER),(boolean(&self.jump)?,Buttons::SOUTH),(boolean(&self.reload)?,Buttons::WEST),(boolean(&self.accept)?,Buttons::SOUTH),
             (boolean(&self.back)?,Buttons::EAST),(boolean(&self.menu)?,Buttons::START)] { if down {held|=b;} }
         // Menu navigation uses the same controls as the desktop game's menus.
-        let controls=Controls {mv, held:Buttons(held),pressed:Buttons(held & !self.previous),..Default::default()};
+        // Analog pressures for games that read them (throttle, brake); the
+        // thresholded buttons above stay for everything else.
+        let level=|a:&xr::Action<f32>| -> Result<f32> {let s=a.state(session,path)?;Ok(if s.is_active {s.current_state.clamp(0.0,1.0)} else {0.0})};
+        let triggers=[level(&self.grenade)?,level(&self.fire)?];
+        let controls=Controls {mv, triggers, held:Buttons(held),pressed:Buttons(held & !self.previous),..Default::default()};
         self.previous=held;
         let aim=if self.aim.is_active(session,path)? { let loc=self.space.locate(base,time)?;
             loc.location_flags.contains(xr::SpaceLocationFlags::POSITION_VALID|xr::SpaceLocationFlags::ORIENTATION_VALID).then(||crate::android::pose(loc.pose))

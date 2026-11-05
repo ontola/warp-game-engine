@@ -1,4 +1,4 @@
-#![cfg_attr(windows, windows_subsystem = "windows")]
+//! SpaceRacer on Warp: the desktop game (`run`) and the native VR app (`xr`).
 mod crash_fx;
 mod integration_probe;
 mod jets;
@@ -16,6 +16,7 @@ mod stage_mesh;
 mod stage_terrain;
 mod visuals;
 mod weapon_art;
+pub mod xr;
 use app::{Buttons, Controls, Device, Draw, Frame, Game};
 use glam::{Mat3, Quat};
 use render::{
@@ -804,25 +805,37 @@ fn menu_entropy() -> u32 {
     use std::hash::{BuildHasher, Hasher};
     std::collections::hash_map::RandomState::new().build_hasher().finish() as u32
 }
-fn main() -> Result<(), String> {
-    app::startup::init("SpaceRacer", Some(include_bytes!("../../assets/source/assets/gamenight/icon.png")));
+/// SpaceRacer's vehicle surface and mask shaders, before any renderer exists.
+fn install_shaders(no_reflections: bool) {
     let mut surface = include_str!("../shaders/surfaces.wgsl").to_owned();
     // Diagnostic omission only; never persisted as a player quality setting.
-    if std::env::args().any(|a| a == "--profile-no-reflections") {
+    if no_reflections {
         surface = surface.replace("if arrayLength(&aux)<8u", "if true || arrayLength(&aux)<8u");
     }
     render::set_game_surface(&format!("{}\n{}",include_str!("../shaders/vehicle_data.wgsl"),surface));
     render::set_game_mask(&format!("{}\n{}",include_str!("../shaders/vehicle_data.wgsl"),include_str!("../shaders/vehicle_mask.wgsl")));
-    let args: Vec<String> = std::env::args().collect();
-    let arg = |key: &str| args.windows(2).find(|w| w[0] == key).map(|w| w[1].clone());
-    let root = arg("--game-dir").map(PathBuf::from).unwrap_or_else(|| {
+}
+/// The game folder (rules/, assets/): `--game-dir`, else beside the exe, else the source tree.
+fn game_root(dir: Option<String>) -> PathBuf {
+    dir.map(PathBuf::from).unwrap_or_else(|| {
         let beside = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.join("spaceracer")));
         beside
             .filter(|p| p.join("rules/game.luau").is_file())
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."))
-    });
+    })
+}
+/// The desktop game and its command-line tools.
+pub fn run() -> Result<(), String> {
+    app::startup::init("SpaceRacer", Some(include_bytes!("../../assets/source/assets/gamenight/icon.png")));
+    install_shaders(std::env::args().any(|a| a == "--profile-no-reflections"));
+    let args: Vec<String> = std::env::args().collect();
+    let arg = |key: &str| args.windows(2).find(|w| w[0] == key).map(|w| w[1].clone());
+    if args.get(1).is_some_and(|a| a == "xr-shot") {
+        return xr::shot(&args);
+    }
+    let root = game_root(arg("--game-dir"));
     let players = arg("--players")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(1)
