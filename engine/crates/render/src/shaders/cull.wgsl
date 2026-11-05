@@ -13,6 +13,9 @@ const SEE_THROUGH:u32=1u|64u|256u|512u;
 // instances report two). The renderer already fixes this count at construction.
 override INSTANCE_COUNT: u32 = 0u;
 override CLUSTER_BUCKETS: bool = true;
+// Opaque clusters draw first through a pipeline without `discard` (early
+// depth); alpha-tested ones after it. Needs CLUSTER_BUCKETS.
+override RASTER_SPLIT: bool = false;
 override EARLY_GRASS_CULL: bool = true;
 // Scene::voxel_far_distance_m; zero when the scene has no far trees.
 override VOXEL_FAR_M: f32 = 0.0;
@@ -86,9 +89,12 @@ fn instance_at(id: u32) -> Instance {
 // 24/25: spatial owner tests/compacted,26 resident cluster loop visits,
 // 27 full-scan fallbacks,28 phase-local early-grass scratch,
 // 29/30 phase-local expected/visited owners,31 traversal-mismatch fallbacks.
-@group(1) @binding(2) var<storage, read_write> counter: array<atomic<u32>, 40>;
-// Four draw records followed by four bucket starts.
-@group(1) @binding(3) var<storage, read_write> args: array<u32, 20>;
+// 32..39: cluster traversal. 40..43: masked clusters per bucket (included in
+// 4..7), 44..47: masked scatter cursors.
+@group(1) @binding(2) var<storage, read_write> counter: array<atomic<u32>, 48>;
+// Four draw records followed by four bucket starts (opaque clusters when
+// RASTER_SPLIT, else all), then the same for masked clusters.
+@group(1) @binding(3) var<storage, read_write> args: array<u32, 40>;
 @group(1) @binding(4) var<storage, read_write> draw_map: array<u32>;
 @group(1) @binding(5) var<storage,read> foliage_selection_words: array<u32>;
 fn foliage_selection_word(i:u32)->u32 {return foliage_selection_words[i];}
@@ -172,6 +178,17 @@ fn cluster_bucket(triangles: u32) -> u32 {
     if triangles <= 32u { return 1u; }
     if triangles <= 64u { return 2u; }
     return 3u;
+}
+// Same test as raster.wgsl alpha_cut: an alpha-tested texture or a fading
+// grass card can discard. The game mask disables RASTER_SPLIT on the CPU.
+fn masked_cluster(flags:u32, material:u32) -> bool {
+    let m=cull_materials[material];
+    return ((m.flags&1u)!=0u && m.layer>=0) || (flags&8u)!=0u;
+}
+fn count_cluster(flags:u32, cl:Cluster) {
+    let bucket=cluster_bucket(cl.tri_count);
+    atomicAdd(&counter[4u+bucket],1u);
+    if RASTER_SPLIT && masked_cluster(flags,cl.material) {atomicAdd(&counter[40u+bucket],1u);}
 }
 fn bucket_vertices(bucket: u32) -> u32 {
     return array<u32, 4>(SMALL_CLUSTER_TRIANGLES*3u, 96u, 192u, 384u)[bucket];
@@ -458,7 +475,7 @@ fn cull_cluster(id:u32,inst:Instance,ci:u32,base_thr:f32,wind_pad:f32) {
     if slot < max_visible {
         visible[slot] = vec2<u32>(id, ci);
         atomicAdd(&counter[1], cl.tri_count);
-        if CLUSTER_BUCKETS { atomicAdd(&counter[4u + cluster_bucket(cl.tri_count)], 1u); }
+        if CLUSTER_BUCKETS { count_cluster(inst.flags, cl); }
     }
 }
 
@@ -636,7 +653,7 @@ fn cull_spatial(@builtin(workgroup_id) wg:vec3<u32>,@builtin(local_invocation_in
 fn finalize() {
     // The optional broadphase temporarily uses the final bucket cursor.
     // Its list has now been consumed, so scatter owns all four cursors again.
-    for (var cursor = 8u; cursor < 12u; cursor++) { atomicStore(&counter[cursor], 0u); }
+    for (var cursor = 8u; cursor < 12u; cursor++) { atomicStore(&counter[cursor], 0u); atomicStore(&counter[cursor+36u], 0u); }
     let n = min(atomicLoad(&counter[0]), u32(view.params.w));
     let first=atomicLoad(&counter[12]);
     if tree_phase.x>1.5 {atomicStore(&counter[14],n-first);}
@@ -653,12 +670,19 @@ fn finalize() {
     var submitted = 0u;
     for (var bucket = 0u; bucket < 4u; bucket++) {
         let count = atomicLoad(&counter[4u + bucket]);
+        let masked = select(0u, min(atomicLoad(&counter[40u + bucket]), count), RASTER_SPLIT);
         let vertices = bucket_vertices(bucket);
         args[bucket * 4u] = vertices;
-        args[bucket * 4u + 1u] = count;
+        args[bucket * 4u + 1u] = count - masked;
         args[bucket * 4u + 2u] = bucket * 384u;
         args[bucket * 4u + 3u] = 0u;
         args[16u + bucket] = start;
+        // Masked records: first_vertex (4+bucket)*384 selects their start.
+        args[20u + bucket * 4u] = vertices;
+        args[21u + bucket * 4u] = masked;
+        args[22u + bucket * 4u] = (4u + bucket) * 384u;
+        args[23u + bucket * 4u] = 0u;
+        args[36u + bucket] = start + count - masked;
         start += count;
         submitted += count * vertices;
     }
@@ -672,7 +696,7 @@ fn finalize() {
 @compute @workgroup_size(1)
 fn prepare_tree_phase() {
     atomicStore(&counter[12],min(atomicLoad(&counter[0]),u32(view.params.w)));
-    for(var i=4u;i<12u;i++){atomicStore(&counter[i],0u);}
+    for(var i=4u;i<12u;i++){atomicStore(&counter[i],0u);atomicStore(&counter[i+36u],0u);}
     if tree_phase.w>0.5 {
         let pending=atomicLoad(&counter[19]);
         let groups=select((pending+63u)/64u,INSTANCE_COUNT,pending>u32(tree_phase.y));
@@ -688,7 +712,7 @@ fn recover_tree_clusters(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_i
     workgroupBarrier();
     let work=group.x+group.y*65535u;let pending=workgroupUniformLoad(&tree_pending);
     if pending>u32(tree_phase.y) {cull_instance(work,lane);return;}
-    if lane<7u {atomicStore(&tree_group_counts[lane],0u);}
+    if lane<11u {atomicStore(&tree_group_counts[lane],0u);}
     workgroupBarrier();
     let index=work*64u+lane;var record=vec2<u32>(0u);var keep=false;
     if index<pending {
@@ -708,23 +732,39 @@ fn recover_tree_clusters(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_i
     if keep && tree_output_base+local<u32(view.params.w) {
         visible[tree_output_base+local]=record;let triangles=clusters[record.y].tri_count;
         atomicAdd(&tree_group_counts[1],triangles);
-        if CLUSTER_BUCKETS {atomicAdd(&tree_group_counts[2u+cluster_bucket(triangles)],1u);}
+        if CLUSTER_BUCKETS {
+            let bucket=cluster_bucket(triangles);
+            atomicAdd(&tree_group_counts[2u+bucket],1u);
+            if RASTER_SPLIT && masked_cluster(instance_at(record.x).flags,clusters[record.y].material) {atomicAdd(&tree_group_counts[7u+bucket],1u);}
+        }
     }
     workgroupBarrier();
     if lane==0u {atomicAdd(&counter[1],atomicLoad(&tree_group_counts[1]));}
-    if CLUSTER_BUCKETS && lane<4u {atomicAdd(&counter[4u+lane],atomicLoad(&tree_group_counts[2u+lane]));}
+    if CLUSTER_BUCKETS && lane<4u {
+        atomicAdd(&counter[4u+lane],atomicLoad(&tree_group_counts[2u+lane]));
+        atomicAdd(&counter[40u+lane],atomicLoad(&tree_group_counts[7u+lane]));
+    }
 }
 var<workgroup> tree_pending:u32;
 var<workgroup> tree_output_base:u32;
-var<workgroup> tree_group_counts:array<atomic<u32>,7>;
+var<workgroup> tree_group_counts:array<atomic<u32>,11>;
 
 @compute @workgroup_size(64)
 fn scatter(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
     let n = min(atomicLoad(&counter[0]), u32(view.params.w));
     for (var slot = atomicLoad(&counter[12])+gid.x; slot < n; slot += groups.x * 64u) {
-        let bucket = cluster_bucket(clusters[visible[slot].y].tri_count);
-        let offset = atomicAdd(&counter[8u + bucket], 1u);
-        draw_map[args[16u + bucket] + offset] = slot;
+        let vis = visible[slot];
+        let cl = clusters[vis.y];
+        let bucket = cluster_bucket(cl.tri_count);
+        if RASTER_SPLIT && masked_cluster(instance_at(vis.x).flags, cl.material) {
+            // From the bucket's end: a miscount can only change which
+            // pipeline draws a cluster, never leave a draw_map entry stale.
+            let offset = atomicAdd(&counter[44u + bucket], 1u);
+            draw_map[args[16u + bucket] + atomicLoad(&counter[4u + bucket]) - 1u - offset] = slot;
+        } else {
+            let offset = atomicAdd(&counter[8u + bucket], 1u);
+            draw_map[args[16u + bucket] + offset] = slot;
+        }
     }
 }
 
@@ -756,7 +796,7 @@ fn cull_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
         let slot=atomicAdd(&counter[0],1u);
         if slot<u32(view.params.w) {
             visible[slot]=vec2<u32>(id,ci);atomicAdd(&counter[1],cl.tri_count);
-            if CLUSTER_BUCKETS {atomicAdd(&counter[4u+cluster_bucket(cl.tri_count)],1u);}
+            if CLUSTER_BUCKETS {count_cluster(inst.flags,cl);}
         }
     }
 }

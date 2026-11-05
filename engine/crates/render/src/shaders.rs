@@ -303,6 +303,8 @@ static GAME_MASK: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None)
 /// True discards the fragment, including its shadow. May read `aux` and materials.
 /// Set before renderer construction; this hook is immutable for that renderer.
 pub fn set_game_mask(source: &str) { *GAME_MASK.lock().unwrap() = Some(source.to_owned()); }
+/// Whether a game supplied [`set_game_mask`]: it may discard any material.
+pub(crate) fn has_game_mask() -> bool { GAME_MASK.lock().unwrap().is_some() }
 pub(crate) fn game_mask() -> String {
     GAME_MASK.lock().unwrap().clone().unwrap_or_else(||
         "fn game_mask(world:vec3<f32>, instance:u32, material:u32)->bool {return false;}".into())
