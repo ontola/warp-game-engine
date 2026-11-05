@@ -407,7 +407,8 @@
         "phase1_clusters": 374,
         "phase2_clusters": 0
       },
-      "validation": "Error: \"PIXEL VEGETATION QUALITY FAILED: view 0: largest submitted cell 153.621px, missing 0, near-plane crossings 0; camera over-target 19782, refinement faults 0, camera fallbacks 0\""
+      "validation": "Error: \"PIXEL VEGETATION QUALITY FAILED: view 0: largest submitted cell 153.621px, missing 0, near-plane crossings 0; camera over-target 19782, refinement faults 0, camera fallbacks 0\"",
+      "population": "Trees and shrubs only; original label full did not imply grass. Use choice-stride measurement for trees-plus-grass."
     },
     "radius100": {
       "raster": [

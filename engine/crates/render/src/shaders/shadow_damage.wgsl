@@ -62,11 +62,11 @@ fn mark_snapshot(s:Snapshot,voxel:bool) {
   let index=i-state.counts.x;let v=volumes[index];
   for(var k=0u;k<3u;k++){now.words[k]=bitcast<vec4<u32>>(v.inverse[k]);}
   now.words[3]=bitcast<vec4<u32>>(v.low);now.words[4]=bitcast<vec4<u32>>(v.high);now.words[5]=v.identity;
-  if index<state.counts.z {now.words[6].x=choices[index+16384u];}
+  if index<state.counts.z {now.words[6].x=choices[index+state.counts.z];}
  }else {
   let s=sources[i];for(var k=0u;k<3u;k++){now.words[k]=bitcast<vec4<u32>>(s.rows[k]);}
   now.words[3]=bitcast<vec4<u32>>(s.sphere);now.words[4]=s.tail;
-  if i>=state.counts.w && i-state.counts.w<state.counts.z {now.words[6].x=choices[i-state.counts.w+16384u];}
+  if i>=state.counts.w && i-state.counts.w<state.counts.z {now.words[6].x=choices[i-state.counts.w+state.counts.z];}
  }
  let old=history[i];var changed=state.control.x!=0u;
  for(var k=0u;k<8u;k++){changed=changed || any(old.words[k]!=now.words[k]);}
