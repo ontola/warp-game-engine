@@ -1,3 +1,26 @@
+## 5 November: forest culling behind structures, screen edge and selection cost
+
+`foliage_seed_visibility.wgsl` used to refuse to hide a tree whose bounds
+crossed the screen edge, so roots next to a building that filled the view
+stayed selected (about 225k splats in terrain_fly's wall views on the Mac).
+The test is against the current camera's own depth after a frustum overlap
+check, so the bounds are now clamped to the screen. The GPU test
+`gpu_opaque_structures_hide_forest_from_camera` (ignored, run with
+`--ignored`) checks that a tree behind an opaque Structures wall is not
+selected for the camera, also when its bounds cross the screen edge, that the
+same wall as `Other` culls nothing, that a half-covered tree stays, and that
+the image is unchanged.
+
+Why GPU time still barely drops when a building blocks the view (Mac M5 Pro,
+terrain_fly 1280x720): about 6 ms of the ~12 ms forest cost is GPU forest
+selection, and 5.6 ms of that is the fixed `rounds=2*(levels+1)` loop in
+`foliage_refine.rs` (48 rounds for a 23-level hierarchy, 8 dispatches each,
+even with an empty work list). Shadow forest (~3.3 ms) is unchanged by camera
+occlusion by design. Only ~1.2 ms of camera forest work is left behind a wall.
+Forcing 12 rounds gave 16.8 to 13.1 ms per GPU frame with near-identical
+images in three far views; not proven safe for close-up forest. Next: stop
+the rounds when the frontier is empty, or size them from the real depth.
+
 ## 5 November: buildings in terrain_fly and the Structures category
 
 `GeometryCategory::Structures` (5): static opaque buildings and walls that may
