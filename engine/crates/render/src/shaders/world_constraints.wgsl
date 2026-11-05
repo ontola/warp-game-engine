@@ -12,7 +12,8 @@ struct WcHeader {
     segments: u32,
     pad0: u32,
     // The regions (regions.rs): grid node (0, 0), spacing, where their
-    // words start in wc_index, nodes across, styles (0: none).
+    // words start in wc_index (styles, then two words a node), nodes
+    // across, styles in the palette (0: none).
     region_origin: vec2<f32>,
     region_cell: f32,
     region_at: u32,
@@ -217,10 +218,10 @@ fn wc_apply(x: f32, z: f32, s_in: TerrainSample) -> TerrainSample {
     return s;
 }
 
-fn wc_byte(word: u32, k: u32) -> f32 { return f32((word >> (8u * k)) & 255u) / 255.0; }
 
-// Regions::style_at: the styles mixed by their bilinear shares at (x, z);
-// `st` where the world has no regions.
+// Regions::style_at: the styles of the four surrounding nodes mixed by
+// their weights and bilinear shares; one style alone exactly; `st` where
+// the world has no regions.
 fn wc_style(x: f32, z: f32, st: TerrainStyle) -> TerrainStyle {
     let h = wc_header;
     if h.region_styles == 0u { return st; }
@@ -235,24 +236,39 @@ fn wc_style(x: f32, z: f32, st: TerrainStyle) -> TerrainStyle {
     let tx = fx - f32(i0);
     let tz = fz - f32(j0);
     let nodes = h.region_at + h.region_styles * 16u;
-    let a = wc_index[nodes + j0 * w + i0];
-    let b = wc_index[nodes + j0 * w + i1];
-    let c = wc_index[nodes + j1 * w + i0];
-    let d = wc_index[nodes + j1 * w + i1];
-    var share: array<f32, 4>;
-    var sum = 0.0;
-    for (var k = 0u; k < 4u; k++) {
-        let top = wc_byte(a, k) * (1.0 - tx) + wc_byte(b, k) * tx;
-        let bottom = wc_byte(c, k) * (1.0 - tx) + wc_byte(d, k) * tx;
-        share[k] = top * (1.0 - tz) + bottom * tz;
-        sum += share[k];
-    }
-    for (var k = 0u; k < 4u; k++) { share[k] /= sum; }
-    var acc: array<f32, 16>;
-    for (var k = 0u; k < h.region_styles; k++) {
-        for (var f = 0u; f < 16u; f++) {
-            acc[f] += bitcast<f32>(wc_index[h.region_at + k * 16u + f]) * share[k];
+    var at = array<u32, 4>(nodes + 2u * (j0 * w + i0), nodes + 2u * (j0 * w + i1), nodes + 2u * (j1 * w + i0), nodes + 2u * (j1 * w + i1));
+    var f = array<f32, 4>((1.0 - tx) * (1.0 - tz), tx * (1.0 - tz), (1.0 - tx) * tz, tx * tz);
+    // One style alone: return it untouched (no rounding from the mix).
+    var only = 0xffffffffu;
+    var mixed = false;
+    for (var c = 0u; c < 4u; c++) {
+        let ids = wc_index[at[c]];
+        let ws = wc_index[at[c] + 1u];
+        for (var k = 0u; k < 4u; k++) {
+            if f[c] > 0.0 && ((ws >> (8u * k)) & 255u) > 0u {
+                let id = (ids >> (8u * k)) & 255u;
+                if only == 0xffffffffu { only = id; } else if id != only { mixed = true; }
+            }
         }
+    }
+    var acc: array<f32, 16>;
+    if !mixed {
+        for (var v = 0u; v < 16u; v++) { acc[v] = bitcast<f32>(wc_index[h.region_at + only * 16u + v]); }
+    } else {
+        var sum = 0.0;
+        for (var c = 0u; c < 4u; c++) {
+            let ids = wc_index[at[c]];
+            let ws = wc_index[at[c] + 1u];
+            for (var k = 0u; k < 4u; k++) {
+                let share = f32((ws >> (8u * k)) & 255u) / 255.0 * f[c];
+                if share > 0.0 {
+                    let base = h.region_at + ((ids >> (8u * k)) & 255u) * 16u;
+                    for (var v = 0u; v < 16u; v++) { acc[v] += bitcast<f32>(wc_index[base + v]) * share; }
+                    sum += share;
+                }
+            }
+        }
+        for (var v = 0u; v < 16u; v++) { acc[v] /= sum; }
     }
     return TerrainStyle(acc[0], acc[1], acc[2], acc[3], acc[4], acc[5], acc[6], acc[7],
         acc[8], acc[9], acc[10], acc[11], acc[12], acc[13], acc[14], acc[15]);

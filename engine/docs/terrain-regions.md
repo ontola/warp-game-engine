@@ -1,22 +1,29 @@
 # Terrain regions: one world, several kinds of land
 
 Until now a procedural world had one terrain `Style` everywhere. Regions
-(`render::regions`) give each point its own: up to four styles (usually
-biomes' `terrain`) and a coarse grid of weights, so a world can run from
-alpine massifs into polder with the land changing gradually in between.
+(`render::regions`) give each point its own: a palette of up to 256 styles
+(usually biomes' `terrain`) and a coarse grid saying which hold where, so a
+world can run from alpine massifs through lowland into polder with the land
+changing gradually wherever two meet.
 This is step 1 of the constrained-generation roadmap (design doc: "Constrained
 procedural worlds in Warp").
 
 ## How it works
 
-- `Regions` holds the styles and one `u32` per grid node (byte k = weight of
-  style k). Default spacing 64 m, so 16 km square is 251 x 251 nodes,
-  about 250 KB on the GPU. It is a runtime bake: what a game stores is how it
-  painted the weights (a seed and a line, polygons), not the grid.
-- `Regions::style_at(x, z)` blends the four surrounding nodes bilinearly,
-  normalises, and mixes the styles' 16 floats by those shares. One style at
-  full weight gives that style bit for bit, so a world painted with one
-  biome is exactly the world without regions.
+- `Regions` holds the palette and two `u32` per grid node: its four
+  strongest styles' ids and their weights, a byte each. What costs per sample
+  is how many styles meet at a point (at most four per node), not how many
+  the world has. Default spacing 64 m, so 16 km square is 251 x 251 nodes,
+  about 500 KB on the GPU. It is a runtime bake: what a game stores is how it
+  painted the weights (a seed and a line, a few sites, polygons), not the grid.
+- `Regions::style_at(x, z)` mixes the (id, weight) pairs of the four
+  surrounding nodes by their weights and bilinear shares. Where only one
+  style is present it returns that style bit for bit, so a world painted
+  with one biome is exactly the world without regions, and so is the middle
+  of every region.
+- `Regions::split` paints two lands along a wandering border;
+  `Regions::cells` paints any number of lands round sites (a biome map from
+  a handful of points); `Regions::paint` takes any weight function.
 - `world_constraints` carries the regions: `Constraints { regions, .. }`,
   `World::style_at`, and `World::eval` / `height` / `trees` use the style of
   each point. On the GPU the words follow the cell lists in the existing
@@ -28,8 +35,9 @@ procedural worlds in Warp").
 - `procedural_terrain::sun_heightfield` takes the constraints, so the baked
   far shadows match the regional land.
 
-Cost per terrain sample: four grid reads and 64 multiply-adds, fixed,
-whatever the map's size.
+Cost per terrain sample: eight grid words, then either one style copied
+(inside a region) or at most 16 styles mixed (on a border where four meet),
+fixed whatever the map's size or palette.
 
 ## Try it
 
@@ -53,7 +61,8 @@ it the same spot is alpine throughout:
 
 - `regions::tests`: one style is that style exactly; a split changes
   gradually and holds its edge past the grid; each side is its own land and
-  the blended ground is continuous across the border.
+  the blended ground is continuous across the border; a map of twelve lands
+  is each land exactly at its site.
 - `world_constraints::tests::regions_shape_the_land_under_the_roads`: a world
   of regions alone, and roads over regions.
 - `world_constraints::tests::gpu_matches_cpu` now runs with and without
