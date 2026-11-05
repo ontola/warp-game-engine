@@ -377,6 +377,8 @@ pub(crate) struct VoxelRenderer {
     brick_catalog: wgpu::Buffer,
     bin_count: u32,
     count: u32,
+    /// GPU-owned root pairs: one camera range, one shadow range; shared branch prefix.
+    consumer_roots: u32,
     /// Scene::voxel_far_distance_m; written as config march.y.
     far: f32,
     /// Scene::voxel_proxies and voxel_proxy_pixels: config proxy.
@@ -925,6 +927,7 @@ impl VoxelRenderer {
             brick_catalog,
             bin_count,
             count: forest.instances.len() as u32,
+            consumer_roots: scene.gpu_forest.as_ref().map_or(0,|f|f.roots.len()as u32),
             far,
             proxies,
             proxy_pixels: scene.voxel_proxy_pixels,
@@ -1104,7 +1107,7 @@ impl VoxelRenderer {
                     march: [self.step, self.far, u32::from(self.empty_skip) as f32, self.lod_pixels],
                     dispatch: [u32::from(self.active_tiles), 0, interval_stream.map_or(0,|s|s.header_word),
                         interval_stream.map_or(0,|s|s.pixel_slots)],
-                    proxy: [(self.count - self.proxies) as f32, self.proxy_pixels, self.proxy_pixels_from, 0.0],
+                    proxy: [(self.count - self.proxies) as f32, self.proxy_pixels, self.proxy_pixels_from, self.consumer_roots as f32],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -1243,7 +1246,7 @@ impl VoxelRenderer {
         {
             let mut pass=encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("voxel visible tree list"),timestamp_writes:None});
             pass.set_pipeline(pipeline);pass.set_bind_group(0,scene,&[]);pass.set_bind_group(1,view,&[]);pass.set_bind_group(2,&target.bind,&[]);
-            let groups=self.count.div_ceil(64);pass.dispatch_workgroups(groups.min(65535),groups.div_ceil(65535).max(1),1);
+            let groups=(self.count-self.consumer_roots).div_ceil(64);pass.dispatch_workgroups(groups.min(65535),groups.div_ceil(65535).max(1),1);
         }
         encoder.copy_buffer_to_buffer(&target.tiles,0,&target.indirect,0,12);
     }
@@ -1312,7 +1315,7 @@ impl VoxelRenderer {
                 pass.set_pipeline(splats);
                 // One workgroup per tree.
                 if selection.is_some() {pass.dispatch_workgroups_indirect(&target.indirect,0);}
-                else {pass.dispatch_workgroups(self.count.min(65535), self.count.div_ceil(65535).max(1), 1);}
+                else {let count=self.count-self.consumer_roots;pass.dispatch_workgroups(count.min(65535), count.div_ceil(65535).max(1), 1);}
             }
             for phase in 0..if self.brick_hzb.is_some() { 2 } else { 1 } {
                 if phase == 1 {
@@ -1483,7 +1486,7 @@ impl VoxelRenderer {
             pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, &raster.sun_empty, &[]); pass.set_bind_group(2, &target.bind, &[]);
             pass.set_pipeline(if sun.damage.is_some(){&raster.sun_cached_splats}else{&raster.sun_splats});
             if let Some(mask)=sun.damage {pass.set_bind_group(3,mask,&[]);}
-            pass.dispatch_workgroups(self.count.min(65535), self.count.div_ceil(65535).max(1), 1);
+            let count=self.count-self.consumer_roots;pass.dispatch_workgroups(count.min(65535), count.div_ceil(65535).max(1), 1);
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("voxel sun splat raster"), color_attachments: &[],

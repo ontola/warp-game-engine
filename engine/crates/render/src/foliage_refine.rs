@@ -18,7 +18,7 @@ impl Refiner {
         let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("foliage complete-cut refinement"),entries:&entries});
         let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage incremental admission"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_refine.wgsl").into())});
-        let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit","wake_count","wake_prefix","wake_scatter"].into_iter().map(|entry|
+        let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit","wake_count","wake_prefix","wake_scatter","seed_scatter"].into_iter().map(|entry|
             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()})).collect();
         Self {capacity,proposals:storage("foliage active proposals",capacity as u64*80),parked:storage("foliage dormant proposals",capacity as u64*96),
             queues:[storage("foliage complete cut A",capacity as u64*16),storage("foliage complete cut B",capacity as u64*16)],
@@ -56,8 +56,9 @@ impl Refiner {
     }
     pub fn encode(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,s:&Selector) {
         let binds=[self.bind(gpu,s,0),self.bind(gpu,s,1)];enc.clear_buffer(&self.state,0,None);
-        self.dispatch(enc,&binds[0],0,Some(s.count.div_ceil(64)),0);
+        self.dispatch(enc,&binds[0],0,Some(s.count.div_ceil(256)),0);
         self.dispatch(enc,&binds[0],1,Some(1),0);
+        self.dispatch(enc,&binds[0],16,Some(s.count.div_ceil(64)),0);
         // One extra transition admits the initial emergency proxy into the
         // recipe root. A final drain makes depth bounds conservative.
         let rounds=2*(s.levels+1);
@@ -105,6 +106,61 @@ impl Refiner {
         gpu.queue.write_buffer(&r.state,3*4,bytemuck::cast_slice(&[0u32]));
         let mut enc=gpu.device.create_command_encoder(&Default::default());r.prepare(&mut enc,&bind);gpu.queue.submit([enc.finish()]);
         let state=read(&gpu,&r.state);assert_eq!(state[3],0);assert_eq!(state[60],2,"no repeated wake without new work or capacity changes");
+    }
+    #[test]
+    #[ignore="exclusive GPU exhausted dormant queue publication oracle"]
+    fn full_dormant_queue_publishes_resident_parent() {
+        use crate::foliage_select::{Node,Instance,NONE};
+        let gpu=crate::Gpu::new().unwrap();
+        let node=Node {sphere:[0.,0.,0.5,0.1],error:[0.;4],links:[NONE,1,0,2]};
+        let root=Instance {rows:[[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.]],scale:[1.,0.,0.,0.],info:[0,1,0,0]};
+        let selector=crate::foliage_select::Selector::with_work_capacity(&gpu,&[node],&[root],2,2,2).unwrap();let r=&selector.refiner;
+        gpu.queue.write_buffer(&r.queues[0],0,bytemuck::cast_slice(&[0u32,0,256,0]));
+        let mut proposal=[0u32;20];proposal[15]=2;gpu.queue.write_buffer(&r.proposals,0,bytemuck::cast_slice(&proposal));
+        gpu.queue.write_buffer(&r.state,3*4,bytemuck::cast_slice(&[1u32]));gpu.queue.write_buffer(&r.state,31*4,bytemuck::cast_slice(&[2u32]));
+        let mut enc=gpu.device.create_command_encoder(&Default::default());r.dispatch(&mut enc,&r.bind(&gpu,&selector,0),9,Some(1),0);
+        let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:4,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+        enc.copy_buffer_to_buffer(&selector.direct,0,&out,0,4);gpu.queue.submit([enc.finish()]);out.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
+        assert_eq!(bytemuck::pod_read_unaligned::<u32>(&out.slice(..).get_mapped_range().unwrap()),1,"full parked storage must publish the complete resident ancestor");
+    }
+    #[test]
+    #[ignore="exclusive GPU sparse consumer seed compaction oracle"]
+    fn sparse_roots_seed_stable_tasks_and_exact_budgets() {
+        use crate::foliage_select::{Node,Instance,NONE,ConsumerView};
+        let gpu=crate::Gpu::new().unwrap();let node=Node {sphere:[0.,0.,0.5,0.1],error:[0.;4],links:[NONE,1,0,2]};
+        let root=Instance {rows:[[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.]],scale:[1.,0.,3.,5.],info:[0,1,0,1]};let mut roots=vec![root;513];
+        for i in [0,255,511,512] {roots[i].info[3]=0;}roots[255].rows[0][3]=2.;roots[511].rows[0][3]=20.;
+        let selector=crate::foliage_select::Selector::new(&gpu,&[node],&roots,8,8).unwrap();let r=&selector.refiner;
+        let projection=|x|crate::part_wind::AnimationView {view_projection:glam::Mat4::from_scale(glam::Vec3::new(x,1.,1.)),viewport:[128;2]};
+        let empty=gpu.device.create_texture(&wgpu::TextureDescriptor {label:None,size:wgpu::Extent3d {width:1,height:1,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::R32Float,usage:wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]}).create_view(&Default::default());
+        for empty_world in [false,true] {
+            if empty_world {for root in &mut roots {root.info[3]=1;}gpu.queue.write_buffer(&selector._instances,0,bytemuck::cast_slice(&roots));}
+            let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers(&gpu,&mut enc,&[ConsumerView::camera(projection(1.)),ConsumerView::shadow(projection(0.1))],1.,8,&empty).unwrap();
+            let bind=r.bind(&gpu,&selector,0);enc.clear_buffer(&r.state,0,None);r.dispatch(&mut enc,&bind,0,Some(3),0);r.dispatch(&mut enc,&bind,1,Some(1),0);r.dispatch(&mut enc,&bind,16,Some(9),0);
+            let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:96,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+            enc.copy_buffer_to_buffer(&r.state,0,&out,0,16);enc.copy_buffer_to_buffer(&r.queues[0],0,&out,16,80);gpu.queue.submit([enc.finish()]);out.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
+            let bytes=out.slice(..).get_mapped_range().unwrap();let words:&[u32]=bytemuck::cast_slice(&bytes);
+            if empty_world {assert_eq!(&words[..4],&[0,0,0,0]);}else {
+                assert_eq!(&words[..4],&[0,6,15,5]);
+                assert_eq!(&words[4..],&[0,NONE,256,0,0,NONE,512,0,255,NONE,512,0,512,NONE,256,0,512,NONE,512,0]);
+            }
+        }
+    }
+    #[test]
+    #[ignore="exclusive GPU free shadow admission oracle"]
+    fn free_shadow_ancestor_does_not_wait_for_camera_refinement() {
+        use crate::foliage_select::{Node,Instance,NONE};
+        let gpu=crate::Gpu::new().unwrap();let node=Node {sphere:[0.,0.,0.5,0.1],error:[0.;4],links:[NONE,1,0,2]};
+        let root=Instance {rows:[[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.]],scale:[1.,0.,0.,0.],info:[0,1,0,0]};
+        let selector=crate::foliage_select::Selector::new(&gpu,&[node],&[root],2,2).unwrap();let r=&selector.refiner;
+        gpu.queue.write_buffer(&r.queues[0],0,bytemuck::cast_slice(&[0u32,NONE,512,0]));gpu.queue.write_buffer(&r.state,3*4,bytemuck::cast_slice(&[1u32]));gpu.queue.write_buffer(&r.state,18*4,bytemuck::cast_slice(&[1u32]));
+        gpu.queue.write_buffer(&selector.uniform,32*80,bytemuck::cast_slice(&[0u32,2,0,2]));
+        for (cost,expected) in [([0u32,0,0],1u32),([1,0,0],2),([0,0,1],1)] {
+            let mut proposal=[0u32;20];proposal[4..7].copy_from_slice(&cost);proposal[13]=1;gpu.queue.write_buffer(&r.proposals,0,bytemuck::cast_slice(&proposal));
+            let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:4,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+            let mut enc=gpu.device.create_command_encoder(&Default::default());r.dispatch(&mut enc,&r.bind(&gpu,&selector,0),6,Some(1),0);enc.copy_buffer_to_buffer(&r.proposals,60,&out,0,4);gpu.queue.submit([enc.finish()]);out.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
+            assert_eq!(bytemuck::pod_read_unaligned::<u32>(&out.slice(..).get_mapped_range().unwrap()),expected);
+        }
     }
     #[test] fn refinement_shader_validates() {
         let src=include_str!("shaders/foliage_refine.wgsl");

@@ -154,38 +154,43 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
   let tree=i-state.counts.x;if tree>=state.counts.z {return;}
   let root=roots[tree];let original=proxies[tree];
   if root.info.w!=0u {
-   var hidden=original;hidden.low.w=1.;volumes[i]=hidden;
+   var hidden=original;hidden.low.w=1.;volumes[i]=hidden;volumes[i+state.counts.z]=hidden;
    sources[original.identity.x].sphere.w=-1.;return;
   }
-  let m=root_poses[tree];
-  let delta=multiply(m,original.inverse);
-  var volume=bounds(original,delta,original.low.xyz,original.high.xyz);volume.inverse=inverse(m);
-  let publication=root_publication[tree];let direct=publication.z;let roles=publication.y&768u;var history=0u;
-  if direct!=0u {
-   let rep=representations[direct-1u];let branch=branches[rep.x];
-   volume=bounds(branch.volume,m,branch.low.xyz,branch.high.xyz);volume.inverse=inverse(m);
-   volume.identity=vec4<u32>(original.identity.x,branch.volume.identity.y+rep.z,1u,branch.volume.identity.w);
-   history=direct;
-  }else {
-   volume.low.w=select(1.,0.,fallback[tree]!=0u);
-   if fallback[tree]!=0u {history=0xffffffffu;}
-  }
-  // 0 both, 1 hidden, 2 shadow-only, 3 camera-only. Root fallback and
-  // resident ancestors use the same consumer contract as branch records.
-  if volume.low.w!=1. {
-   volume.low.w=1.;
-   if roles==768u {volume.low.w=0.;}else if roles==512u {volume.low.w=2.;}else if roles==256u {volume.low.w=3.;}
-  }
-  volume.high.w=appearance_seed(tree,root.info.z);
-  volumes[i]=volume;
-  let owner=original.identity.x;var source=sources[owner];source.rows=m;
+  let m=root_poses[tree];let delta=multiply(m,original.inverse);
+  let roles=root_publication[tree].y&768u;
+  var histories:array<u32,2>;var changed=false;
   let previous=root_history[tree];var epoch=previous.z&128u;
-  if previous.w!=asset_pages[0].w || previous.x!=history || previous.y!=root.info.y || (roles&~previous.z)!=0u {epoch=epoch^128u;}
+  for(var consumer=0u;consumer<2u;consumer++) {
+   let publication=tree+consumer*state.counts.z;let role=256u<<consumer;
+   let direct=root_publication[publication].z;
+   var volume=bounds(original,delta,original.low.xyz,original.high.xyz);volume.inverse=inverse(m);
+   var history=0u;
+   // Consumer deadlines fall back only that consumer. Physical publication
+   // faults (low bits) still suppress both partial cuts atomically.
+   if (fallback[tree]&(role|7u))!=0u && (roles&role)!=0u {history=0xffffffffu;}
+   else if direct!=0u {
+    let rep=representations[direct-1u];let branch=branches[rep.x];
+    volume=bounds(branch.volume,m,branch.low.xyz,branch.high.xyz);volume.inverse=inverse(m);
+    volume.identity=vec4<u32>(original.identity.x,branch.volume.identity.y+rep.z,1u,branch.volume.identity.w);
+    history=direct;
+   }
+   volume.low.w=1.;
+   if history!=0u && (roles&role)!=0u {volume.low.w=select(3.,2.,consumer==1u);}
+   volume.high.w=appearance_seed(tree,root.info.z);volumes[i+consumer*state.counts.z]=volume;
+   histories[consumer]=history;
+   let old=root_history[publication];let live_role=select(0u,role,history!=0u && (roles&role)!=0u);
+   changed=changed || old.w!=asset_pages[0].w || old.x!=history || old.y!=root.info.y || (live_role&~old.z)!=0u;
+  }
+  if changed {epoch^=128u;}
+  for(var consumer=0u;consumer<2u;consumer++) {
+   let role=256u<<consumer;let live_role=select(0u,role,histories[consumer]!=0u && (roles&role)!=0u);
+   root_history[tree+consumer*state.counts.z]=vec4<u32>(histories[consumer],root.info.y,epoch|live_role,asset_pages[0].w);
+  }
+  let owner=original.identity.x;var source=sources[owner];source.rows=m;
   source.flags=(source.flags&~128u)|epoch;
-  root_history[tree]=vec4<u32>(history,root.info.y,epoch|roles,asset_pages[0].w);
-  // Preserve the authored crown sphere for canopy density. Selection bounds
-  // include conservative support/wind margins and would darken the forest.
-  // Voxel visibility uses the independently animated volume bounds above.
+  // One canonical source owner/pose and appearance seed for both root draws.
+  // Preserve the authored crown sphere used for canopy density.
   sources[owner]=source;
  }
 }
