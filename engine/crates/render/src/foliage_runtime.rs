@@ -37,16 +37,12 @@ impl Spec {
         let range=|v:GpuTree|->Result<Vec<usize>,String>{let start=v.meta[1]as usize;let end=start.checked_add(v.meta[2]as usize).ok_or("voxel dependency overflow")?;if end>levels{return Err("voxel dependency outside catalog".into());}Ok((start..end).collect())};
         for proxy in &self.proxies {for id in range(*proxy)?{pinned[id]=true;}}
         let deps=self.representations.iter().map(|rep|{let branch=&self.branches[if rep[3]==0 {rep[0]}else{rep[3]-1}as usize];
-            if rep[1]==1 && rep[3]==0 && branch.info[0]==NONE {
-                // Direct whole-root rendering publishes exactly the chosen mip
-                // (materialize identity.z=1), including its shadow consumer.
+            if rep[1]==0 {Ok(Vec::new())} else {
+                // Both consumers publish the mip selected by their own cut.
+                // Unselected mips are neither read nor required for residency.
                 let levels=range(branch.volume)?;
-                Ok(vec![*levels.get(rep[2]as usize).ok_or("root voxel mip outside catalog")?])
-            } else if rep[1]==0 {Ok(Vec::new())}
-            // Only voxel representations need voxel bytes. A source selection
-            // renders source geometry for either consumer; it must not wait
-            // for an unrelated voxel shadow bundle. Voxel slots remain adaptive.
-            else{range(branch.volume)}
+                Ok(vec![*levels.get(rep[2]as usize).ok_or("selected voxel mip outside catalog")?])
+            }
         }).collect::<Result<Vec<_>,String>>()?;
         for template in &self.templates {
             let node=&self.nodes[template.node as usize];
@@ -73,15 +69,8 @@ fn representation_raster_work(rep:[u32;4],branch:&Branch,counts:&[u32])->Result<
     let start=branch.volume.meta[1]as usize;
     let end=start.checked_add(branch.volume.meta[2]as usize).ok_or("raster work mip overflow")?;
     let mips=counts.get(start..end).filter(|m|!m.is_empty()).ok_or("raster work missing volume mips")?;
-    if rep[1]==1 && rep[3]==0 && branch.info[0]==NONE {
-        let work=*mips.get(rep[2]as usize).ok_or("raster work root mip outside catalog")?;
-        return Ok([work,work]);
-    }
-    let shadow=*mips.iter().max().unwrap();
-    let camera=if rep[1]==0 {0} else {
-        *mips.get(..=rep[2]as usize).ok_or("raster work selected mip outside catalog")?.iter().max().unwrap()
-    };
-    Ok([camera,shadow])
+    let work=*mips.get(rep[2]as usize).ok_or("raster work selected mip outside catalog")?;
+    Ok([work,work])
 }
 /// The emergency stand-in must not pin its entire high-resolution mip chain.
 /// Ordinary root detail is requested separately through the selection hierarchy.
@@ -600,13 +589,13 @@ impl Runtime {
         let mut branch=Branch::zeroed();branch.volume.meta=[0,1,3,0];branch.info=[0,1,0,0];
         // Non-monotonic occupancy intentionally prevents assuming mip zero is largest.
         let counts=[999,7,13,2];
-        assert_eq!(representation_raster_work([0,1,0,0],&branch,&counts).unwrap(),[7,13]);
+        assert_eq!(representation_raster_work([0,1,0,0],&branch,&counts).unwrap(),[7,7]);
         assert_eq!(representation_raster_work([0,1,1,0],&branch,&counts).unwrap(),[13,13]);
         assert_eq!(representation_raster_work([0,0,0,0],&branch,&counts).unwrap(),[0,0]);
         branch.info[0]=NONE;
         assert_eq!(representation_raster_work([0,1,2,0],&branch,&counts).unwrap(),[2,2]);
-        // A geometry group may also have parent NONE, but uses an adaptive bundle.
-        assert_eq!(representation_raster_work([0,1,2,1],&branch,&counts).unwrap(),[13,13]);
+        // A geometry group uses its selected mip, just like a whole-root volume.
+        assert_eq!(representation_raster_work([0,1,2,1],&branch,&counts).unwrap(),[2,2]);
         branch.info[1]=0;
         assert_eq!(representation_raster_work([0,0,0,0],&branch,&counts).unwrap(),[0,0]);
         assert!(representation_raster_work([0,1,3,0],&branch,&counts).is_err());
@@ -670,11 +659,11 @@ impl Runtime {
         let mut fine=0;
         for (i,rep) in spec.representations.iter().enumerate() {
             let branch=&spec.branches[if rep[3]==0 {rep[0]}else{rep[3]-1}as usize];
-            if rep[1]==1 && rep[3]==0 && branch.info[0]==NONE {
-                assert_eq!(deps[i],vec![(branch.volume.meta[1]+rep[2])as usize]);
+            if rep[1]==0 {assert!(deps[i].is_empty(),"source geometry must not depend on voxel pages");}
+            else {
+                assert_eq!(deps[i],vec![(branch.volume.meta[1]+rep[2])as usize],"only the selected voxel mip is required");
                 if !pins[deps[i][0]] {fine+=1;}
-            }else if rep[1]==0 {assert!(deps[i].is_empty(),"source geometry must not depend on voxel pages for shadows");}
-            else {assert_eq!(deps[i].len(),branch.volume.meta[2]as usize,"adaptive voxel selections retain their mip bundle");}
+            }
         }
         let work=forest.raster_work_bounds().unwrap();
         for node in &spec.nodes {
@@ -857,11 +846,12 @@ impl Runtime {
                 let rep=spec.representations[slot.key[2]as usize];
                 if roles&512!=0 {
                     assert_eq!(choices[i+spec.slots as usize]&3,rep[1],"shadow publication must preserve source versus voxel selection");
+                    if rep[1]==1 {assert_eq!((choices[i+spec.slots as usize]>>2)&63,0);assert_eq!((choices[i+spec.slots as usize]>>8)&3,2,"voxel shadows must retain the caster flag");}
                     if rep[1]==0 {assert_eq!((choices[i+spec.slots as usize]>>8)&3,0,"source shadows must not suppress source rasterization");}
                 }
                 if rep[3]==0 {continue;}
                 let volume=spec.branches[(rep[3]-1)as usize].volume;
-                assert_eq!(rendered[i].meta[1],volume.meta[1]);assert_ne!(volume.meta[1],spec.branches[rep[0]as usize].volume.meta[1]);
+                assert_eq!(rendered[i].meta[1],volume.meta[1]+rep[2]);assert_eq!(rendered[i].meta[2],1,"published voxel view must not expose unresident sibling mips");assert_ne!(volume.meta[1],spec.branches[rep[0]as usize].volume.meta[1]);
                 let pose=matrix(sources[spec.first_owner as usize+i].rows);
                 assert!(matrix(rendered[i].inverse).abs_diff_eq(pose.inverse(),2e-5));found+=1;
             }
