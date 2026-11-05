@@ -63,11 +63,11 @@ impl World for TerrainWorld<'_> {
     fn field(&self, name: &str, x: f32, z: f32, ground: &Sample) -> f32 {
         match name {
             // Share of tree spots that grow a tree here, 0 where none can.
-            "forest" => if forest_field::grows(ground, self.style) {
+            "forest" => if forest_field::grows(ground, &self.style_at(x, z)) {
                 forest_field::share(x, z, self.seed, forest_field::site(ground.up, ground.wet), 0.0)
             } else { 0.0 },
-            "grows" => f32::from(u8::from(forest_field::grows(ground, self.style))),
-            "snow_line" => self.style.snow_line,
+            "grows" => f32::from(u8::from(forest_field::grows(ground, &self.style_at(x, z)))),
+            "snow_line" => self.style_at(x, z).snow_line,
             // World::clearance, and where along and beside the road.
             "clearance" => self.clearance(x, z),
             "track_distance" => self.near(x, z).map_or(1e6, |n| n.distance),
@@ -79,6 +79,9 @@ impl World for TerrainWorld<'_> {
 }
 
 impl TerrainWorld<'_> {
+    /// The terrain style at (x, z): its region's, when the constraints
+    /// carry regions (crate::regions).
+    pub fn style_at(&self, x: f32, z: f32) -> Style { self.constraints.map_or(*self.style, |w| w.style_at(x, z, self.style)) }
     fn near(&self, x: f32, z: f32) -> Option<world_constraints::Near> { self.constraints.and_then(|w| w.near(x, z)) }
 }
 

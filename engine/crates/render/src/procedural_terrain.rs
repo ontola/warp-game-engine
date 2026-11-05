@@ -72,7 +72,8 @@ pub fn constrain(scene: &mut Scene, world: std::sync::Arc<world_constraints::Wor
 /// grid's heights are the "unknown" sentinel: the coarse samples would lie
 /// above the finer mesh in places, and the heightfield's ground tests would
 /// then black out the ground under them.
-pub fn sun_heightfield(seed: u32, style: &terrain_field::Style, centre: [f32; 2], size: f32, cell: f32, sun: Vec3)
+/// `constraints` bend the land and give it its regions, as the mesh does.
+pub fn sun_heightfield(seed: u32, style: &terrain_field::Style, constraints: Option<&world_constraints::World>, centre: [f32; 2], size: f32, cell: f32, sun: Vec3)
     -> (crate::scene::Heightfield, Vec<f32>) {
     let n = (size / cell).ceil() as usize + 1;
     let origin = [(centre[0] / cell).floor() * cell - (n / 2) as f32 * cell, (centre[1] / cell).floor() * cell - (n / 2) as f32 * cell];
@@ -84,7 +85,11 @@ pub fn sun_heightfield(seed: u32, style: &terrain_field::Style, centre: [f32; 2]
             s.spawn(move || {
                 for (i, h) in chunk.iter_mut().enumerate() {
                     let (x, z) = ((i % n) as f32, (k * rows + i / n) as f32);
-                    *h = terrain_field::eval(origin[0] + x * cell, origin[1] + z * cell, cell, seed, style).pos.y;
+                    let (u, v) = (origin[0] + x * cell, origin[1] + z * cell);
+                    *h = match constraints {
+                        Some(w) => w.eval(u, v, cell, seed, style).pos.y,
+                        None => terrain_field::eval(u, v, cell, seed, style).pos.y,
+                    };
                 }
             });
         }

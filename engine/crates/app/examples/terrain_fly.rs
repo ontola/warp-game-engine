@@ -4,6 +4,7 @@
 //!   cargo run --release -p app --example terrain_fly
 //!   cargo run --release -p app --example terrain_fly -- --style alpine --seed 3
 //!   cargo run --release -p app --example terrain_fly -- --track   (a gravel road the land bends to)
+//!   cargo run --release -p app --example terrain_fly -- --style alpine --regions polder   (alpine west of x = 0, polder east)
 //!   cargo run --release -p app --example terrain_fly -- --profile low   (Quest-class settings)
 //!   cargo run --release -p app --example terrain_fly -- --shot fly.png
 //!   cargo run --release -p app --example terrain_fly -- --fullscreen --frames 600   # fps benchmark
@@ -150,6 +151,9 @@ struct Fly {
     /// --track: a winding gravel road the land is bent to (render::world_constraints),
     /// baked for the seed and style it was made for.
     track: bool,
+    /// --regions NAME: the world turns into biome NAME east of x = 0
+    /// (render::regions), over about 1.5 km along a wandering border.
+    regions: Option<usize>,
     constraints: Option<(u32, usize, Arc<Constraints>)>,
 }
 
@@ -157,7 +161,10 @@ impl Fly {
     fn new(seed: u32, style: usize, world: World) -> Result<Self, String> {
         let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, turn: (0.0, 0.0), speed: 40.0, hug: None, wheel: 0.0,
             building: None, gpu: None, stale: false, world, built_world: world, world_at: None, sun_building:None, forest_at:None, forest_building:None, forest_material:None, terrain_settings: Settings::default(), terrain: None, light: Lighting::default(), stats: Stats::default(), last_updates: [0.0;2], jumps: 0, fps: 0.0, worst_ms: 0.0,
-            track: std::env::args().any(|a| a == "--track"), constraints: None };
+            track: std::env::args().any(|a| a == "--track"), regions: None, constraints: None };
+        if let Some(name) = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--regions").map(|w| w[1].clone()) {
+            fly.regions = Some(STYLES.iter().position(|n| *n == name).ok_or_else(|| format!("unknown biome {name}; one of {}", STYLES.join(", ")))?);
+        }
         fly.bake_track();
         if let Some((start, yaw)) = fly.track_start() { fly.pos = start; fly.yaw = yaw; fly.pitch = -0.05; }
         if fly.track_start().is_none() { fly.pos = Vec3::new(0.0, fly.ground(0.0, 0.0) + 60.0, 0.0); }
@@ -194,14 +201,22 @@ impl Fly {
         self.constraints.as_ref().filter(|c| c.0 == self.seed && c.1 == self.style).map(|c| &c.2)
     }
 
-    /// Bake the --track road for the current seed and style: a winding loop
-    /// about 700 m round the origin, laid on the land at grades up to 10 %.
+    /// Bake the --track road and --regions for the current seed and style:
+    /// a winding loop about 700 m round the origin, laid on the land at
+    /// grades up to 10 %, and the second biome east of x = 0.
     fn bake_track(&mut self) {
-        if !self.track || self.current_track().is_some() { return; }
+        if (!self.track && self.regions.is_none()) || self.current_track().is_some() { return; }
         let (seed, style) = (self.seed, self.style());
-        let mut track = Track::wander_loop(Vec2::ZERO, 700.0, 3.5, seed);
-        track.fit_heights(|x, z| terrain_field::height(x, z, seed, &style), 0.10, 120.0);
-        let world = WorldConstraints { tracks: vec![track], pads: vec![] }.bake(seed, &style);
+        let regions = self.regions.map(|other| render::regions::Regions::split([style, environment(other).biome.terrain], Vec2::ZERO, 16_000.0,
+            Vec2::X, 1_500.0, 600.0, seed));
+        let mut tracks = Vec::new();
+        if self.track {
+            let mut track = Track::wander_loop(Vec2::ZERO, 700.0, 3.5, seed);
+            let land = |x: f32, z: f32| regions.as_ref().map_or(style, |r| r.style_at(x, z));
+            track.fit_heights(|x, z| terrain_field::height(x, z, seed, &land(x, z)), 0.10, 120.0);
+            tracks.push(track);
+        }
+        let world = WorldConstraints { tracks, pads: vec![], regions }.bake(seed, &style);
         self.constraints = Some((self.seed, self.style, Arc::new(world)));
     }
 
@@ -376,8 +391,8 @@ impl Game for Fly {
                 self.world_at=Some(centre);self.sun_building=None;
             }
             if self.sun_building.is_none() && self.world_at.is_none_or(|p|(p-self.pos).with_y(0.).length()>SHADOW_RECENTRE) {
-                let (tx,rx)=channel();let (seed,style,centre,sun)=(self.seed,self.style(),self.pos,self.light.sun_dir);
-                std::thread::spawn(move||{let (field,visibility)=procedural_terrain::sun_heightfield(seed,&style,[centre.x,centre.z],SHADOW_SIZE,SHADOW_CELL,sun);let _=tx.send((centre,field,visibility));});
+                let (tx,rx)=channel();let (seed,style,centre,sun)=(self.seed,self.style(),self.pos,self.light.sun_dir);let track=self.current_track().cloned();
+                std::thread::spawn(move||{let (field,visibility)=procedural_terrain::sun_heightfield(seed,&style,track.as_deref(),[centre.x,centre.z],SHADOW_SIZE,SHADOW_CELL,sun);let _=tx.send((centre,field,visibility));});
                 self.sun_building=Some(rx);
             }
         }
@@ -520,7 +535,7 @@ fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &
         procedural_terrain::far_forest_handover(&mut scene, material, [centre.x, centre.z], start, end, world.tree_density, &palette.forest);
     }
     // The --track road: the land bends to it, and its pixels draw gravel.
-    if let Some(w) = track {
+    if let Some(w) = track.clone() {
         procedural_terrain::road_surface(&mut scene, material, &w);
         pool = procedural_terrain::constrain(&mut scene, w);
     }
@@ -532,7 +547,7 @@ fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &
     sky.apply(&mut scene, &mut light);
     // Sun visibility baked on a coarse heightfield shades the valleys behind
     // mountains past the reach of the shadow maps.
-    (scene.heightfield, scene.terrain_sun) = procedural_terrain::sun_heightfield(seed, &style, [centre.x, centre.z], SHADOW_SIZE, SHADOW_CELL, light.sun_dir);
+    (scene.heightfield, scene.terrain_sun) = procedural_terrain::sun_heightfield(seed, &style, track.as_deref(), [centre.x, centre.z], SHADOW_SIZE, SHADOW_CELL, light.sun_dir);
     scene.terrain_visibility_complete = true;
     scene.world_terrain_visibility = true;
     // A light summer haze (~60 km visibility): distant lee slopes

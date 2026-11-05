@@ -1,3 +1,19 @@
+## 5 November: terrain regions (several kinds of land in one world)
+
+`render::regions`: up to four terrain styles and a 64 m grid of weights (4 bytes
+a node); `Regions::style_at` blends them per point. Carried by
+`world_constraints` (`Constraints::regions`, `World::style_at`; GPU words after
+the cell lists in the index buffer, `wc_style` line for line). The terrain mesh,
+`World::eval/height/trees`, placement fields and `sun_heightfield` (new
+`constraints` argument) follow the regions. One style at full weight is bit for
+bit the old world. `terrain_fly --regions NAME`. Palette, flora and grass amount
+are still one per world. Doc: docs/terrain-regions.md.
+
+Validation: render lib 808 PASS; GPU parity (`world_constraints::gpu_matches_cpu`
+with and without regions, `terrain_field::biome_shapes_match_on_gpu`) PASS on Mesa
+lavapipe in the cloud container, not yet on real hardware; naga validation of the
+composed shaders; workspace check clean. No interactive playtest.
+
 ## 5 November: whole-root consumer publication and shadow-cache correctness
 
 Direct resident ancestors and emergency root fallbacks now carry camera/shadow
