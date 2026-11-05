@@ -5,7 +5,9 @@ struct Material {tint:vec3<f32>,layer:i32,roughness:f32,flags:u32,scale:f32,meta
 @group(0) @binding(1) var<storage,read> materials:array<Material>;
 @group(0) @binding(2) var lava_field:texture_2d<f32>;
 @group(0) @binding(3) var lava_sampler:sampler;
-struct Out {@builtin(position) pos:vec4<f32>,@location(0) color:vec3<f32>,@location(1) world:vec3<f32>,@location(2) @interpolate(flat) lava:vec4<f32>};
+@group(0) @binding(4) var stone_field:texture_2d<f32>;
+struct Out {@builtin(position) pos:vec4<f32>,@location(0) color:vec3<f32>,@location(1) world:vec3<f32>,@location(2) @interpolate(flat) lava:vec4<f32>,
+ @location(3) stone_uv:vec2<f32>,@location(4) @interpolate(flat) stone:vec2<f32>};
 @vertex fn vs(@location(0) position:vec3<f32>,@location(1) normal:vec3<f32>,@location(2) uv:vec2<f32>,
  @location(3) r0:vec4<f32>,@location(4) r1:vec4<f32>,@location(5) r2:vec4<f32>,@location(6) material:u32,@location(7) flags:u32)->Out {
  let p=vec4<f32>(position,1.0);let world=vec3<f32>(dot(r0,p),dot(r1,p),dot(r2,p));
@@ -22,7 +24,12 @@ struct Out {@builtin(position) pos:vec4<f32>,@location(0) color:vec3<f32>,@locat
  if u.ambient.z==11.0 {value=n*0.5+0.5;}
  let mapped=sqrt(max(value,vec3<f32>(0.0))/(1.0+max(value,vec3<f32>(0.0))));
  var out:Out;out.pos=u.vp*vec4<f32>(world,1.0);out.color=mapped;out.world=world;
- out.lava=vec4<f32>(m.tint*select(0.0,m.scale*u.camera.w*u.sun_color.w,(m.flags&4096u)!=0u && u.ambient.z==0.0),flash);return out;
+ out.lava=vec4<f32>(m.tint*select(0.0,m.scale*u.camera.w*u.sun_color.w,(m.flags&4096u)!=0u && u.ambient.z==0.0),flash);
+ // Stone: mapped along the face's main axis (blocks are boxes), with cracks
+ // opening as the material's damage (scale) grows.
+ let a=abs(n);
+ out.stone_uv=select(select(world.xy,world.xz,a.y>=a.z),world.zy,a.x>=a.y&&a.x>=a.z)*0.4;
+ out.stone=vec2<f32>(select(0.0,1.0-flash,(m.flags&2048u)!=0u && u.fog.w>0.5 && u.ambient.z==0.0),m.scale);return out;
 }
 // Palette, cellular shaping and the mip chain are baked once. One filtered
 // lookup in world space; both eyes and separate lava meshes share the flow.
@@ -31,7 +38,16 @@ fn encode_srgb(c:vec3<f32>)->vec3<f32> {return select(c*12.92,1.055*pow(c,vec3<f
 fn surface(in:Out,srgb:bool)->vec3<f32> {
  let uv=in.world.xz*0.0625+u.ambient.w*vec2<f32>(0.0018,-0.0012);
  let dx=dpdx(uv);let dy=dpdy(uv);
- if max(in.lava.r,max(in.lava.g,in.lava.b))<=0.0 {if srgb {return decode_srgb(in.color);}return in.color;}
+ let sx=dpdx(in.stone_uv);let sy=dpdy(in.stone_uv);
+ if max(in.lava.r,max(in.lava.g,in.lava.b))<=0.0 {
+  var color=in.color;
+  if in.stone.x>0.0 {
+   let s=textureSampleGrad(stone_field,lava_sampler,in.stone_uv,sx,sy).rg;
+   let detail=(0.62+0.76*s.r)*(1.0-s.g*(0.3+0.55*clamp(in.stone.y,0.0,1.0)));
+   color=mix(color,color*detail,in.stone.x);
+  }
+  if srgb {return decode_srgb(color);}return color;
+ }
  let radiance=textureSampleGrad(lava_field,lava_sampler,uv,dx,dy).rgb*4.0;
  let value=mix(radiance*in.lava.rgb,vec3<f32>(1.0),in.lava.w*0.9);
  let mapped=value/(1.0+value);

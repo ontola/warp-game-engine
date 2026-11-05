@@ -265,3 +265,4 @@ mod shader_tests {
 
 mod forward;
 mod minimum_lava;
+mod minimum_stone;
