@@ -1523,7 +1523,7 @@ impl VoxelRenderer {
             let data:&[[u32;4]]=bytemuck::cast_slice(&bytes);
             let vp=glam::Mat4::from_cols_array_2d(&[data[0].map(f32::from_bits),data[1].map(f32::from_bits),data[2].map(f32::from_bits),data[3].map(f32::from_bits)]);
             let right=vp.row(0).truncate().normalize();let up=vp.row(1).truncate().normalize();
-            let mut bins=[[0u64;6];2];let mut behind=0u64;let mut unique=std::collections::HashSet::new();
+            let mut bins=[[0u64;10];2];let mut largest:Vec<(f32,serde_json::Value)>=Vec::new();let mut behind=0u64;let mut unique=std::collections::HashSet::new();
             let first=12+4*self.count as usize;
             for record in &data[first..first+count as usize] {
                 let index=record[0]as usize;if index>=self.count as usize{return Err("splat profile invalid tree index".into());}
@@ -1537,10 +1537,16 @@ impl VoxelRenderer {
                 let alpha=(record[3]&65535)as f32/65535.;let half=0.688*grid.w*scale*alpha.max(0.25).sqrt();
                 let a=vp*(centre-right*half-up*half).extend(1.);let b=vp*(centre+right*half+up*half).extend(1.);
                 let diameter=if a.w<=0. || b.w<=0. {behind+=1;f32::INFINITY}else{let delta=(a.truncate()/a.w-b.truncate()/b.w).abs();(delta.x*target.size.0 as f32*0.5).max(delta.y*target.size.1 as f32*0.5)};
-                let bin=[0.5,1.,2.,4.,8.].iter().position(|&edge|diameter<=edge).unwrap_or(5);
+                let bin=[0.5,1.,2.,4.,8.,16.,32.,64.,128.].iter().position(|&edge|diameter<=edge).unwrap_or(9);
+                // Offline diagnosis only: retain a bounded list, not every cell.
+                // These are submitted quads, not necessarily visible/depth-winning pixels.
+                if diameter.is_finite() && (largest.len()<16 || diameter>largest.last().unwrap().0) {
+                    largest.push((diameter,serde_json::json!({"volume":index,"packed_cell":record[2],"diameter_px":diameter,"world_centre":centre.to_array(),"world_cell_size":grid.w*scale,"alpha":alpha})));
+                    largest.sort_by(|a,b|b.0.total_cmp(&a.0));largest.truncate(16);
+                }
                 let kind=usize::from(index>=self.count.saturating_sub(self.proxies)as usize);bins[kind][bin]+=1;
             }
-            output.push(serde_json::json!({"viewport":target.size,"requested_splats":d.raster_splats,"stored_splats":count,"capacity":d.raster_capacity,"missing_records":u64::from(d.raster_splats).saturating_sub(count),"unique_stored_volumes":unique.len(),"diameter_bin_upper_px":[0.5,1.,2.,4.,8.,null],"articulated_group_bins":bins[0],"whole_root_bins":bins[1],"near_plane_crossings":behind,"scope":"stored records only; screen-aligned diameter excludes sub-cell jitter; explicit offline readback"}));
+            output.push(serde_json::json!({"viewport":target.size,"requested_splats":d.raster_splats,"stored_splats":count,"capacity":d.raster_capacity,"missing_records":u64::from(d.raster_splats).saturating_sub(count),"unique_stored_volumes":unique.len(),"diameter_bin_upper_px":[0.5,1.,2.,4.,8.,16.,32.,64.,128.,null],"largest_submitted_cells":largest.into_iter().map(|(_,v)|v).collect::<Vec<_>>(),"articulated_group_bins":bins[0],"whole_root_bins":bins[1],"near_plane_crossings":behind,"scope":"stored records only; screen-aligned diameter excludes sub-cell jitter; explicit offline readback"}));
         }
         Ok(output)
     }

@@ -1237,3 +1237,32 @@ Full final and rejected-intermediate per-pass medians/counters:
 independent-consumer-cut-measurements.json. Local evidence:
 build/playtest-unified/independent-cuts-final-{high,low}-{before,after}-*;
 comparison JPEGs and test/build logs use independent-cuts-* names. No playtest.
+
+
+## Actual raster cell footprint diagnosis (5 November)
+
+User-visible oversized spheres are confirmed in the normal renderer, not only
+in a synthetic fixture. Evidence: [vegetation-cell-footprints.json](vegetation-cell-footprints.json).
+Native 1280x720 ONE view, lowland with grass, 240 frames at 1 m/s, final-frame
+offline GPU record readback. 1,453,836 stored splats, no record overflow or
+near-plane crossings. 5,563 submitted quads exceed 8 px; 836 exceed 16 px.
+Largest measured diameter is 24.04 px, from an articulated group with a
+0.730 m world cell. Thus this is not exclusively a whole-root fallback problem.
+This measures submitted quad diameter before depth testing, not visible pixel
+area, and excludes sub-cell jitter. It is not a performance comparison.
+
+The selector reserved 4,193,945 camera splats (limit 4,194,304), while the
+raster list contains 1,453,836. 41,943 camera cuts exceed the requested error;
+10,495 cannot afford the next camera raster reservation, 34 have a missing
+page, and 31,414 have a resident, affordable next step at final audit. These
+are final-cut classifications, not per-cell causal attribution. The next
+architecture work must address traversal stopping with affordable work left
+and upstream visibility before reserving complete cell payloads. Increasing
+budget alone does not resolve both problems. Do not shrink discs to hide
+this failure: preserve coverage using finer payloads/source geometry.
+
+The explicit --voxel-raster-profile diagnostic now retains the 16 largest
+submitted cells (world position, cell size, volume, opacity) and bins through
+16/32/64/128 pixels. No frame-time readback or CPU selection was introduced.
+Release build and normal-route readback pass; rendering is unchanged. G1.4,
+G2/G3 and G8 remain open; no pixel-scale visual or 8.3 ms acceptance.

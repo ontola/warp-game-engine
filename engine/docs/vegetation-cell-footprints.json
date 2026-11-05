@@ -1,0 +1,331 @@
+{
+  "scope": "Native 1280x720 ONE view, lowland grass route, final frame 240 at 1 m/s. Submitted splats only, not depth-winning pixel statistics. This is diagnosis, not a performance comparison or visual acceptance.",
+  "base_commit": "fdc783a8f8c876ac00c45d80de2e95305f9cad70",
+  "executable_sha256": "28a47915b3016322cdb24fddfcf425dac7100ffb1ef3c6930af2804c0735911b",
+  "log": "build\\playtest-unified\\cell-footprint-detailed-low.log",
+  "log_sha256": "8510bca6b241e17adee05fe95bab71dd6d596035a4feeff5ca71a9248dfc7132",
+  "raster": {
+    "articulated_group_bins": [
+      0,
+      0,
+      0,
+      448,
+      1,
+      312,
+      787,
+      0,
+      0,
+      0
+    ],
+    "capacity": 4194304,
+    "diameter_bin_upper_px": [
+      0.5,
+      1.0,
+      2.0,
+      4.0,
+      8.0,
+      16.0,
+      32.0,
+      64.0,
+      128.0,
+      null
+    ],
+    "largest_submitted_cells": [
+      {
+        "alpha": 0.5000076293945312,
+        "diameter_px": 24.035615921020508,
+        "packed_cell": 1053699,
+        "volume": 2407,
+        "world_cell_size": 0.7302402257919312,
+        "world_centre": [
+          -15.140664100646973,
+          8.091217041015625,
+          -14.731144905090332
+        ]
+      },
+      {
+        "alpha": 0.5000076293945312,
+        "diameter_px": 23.585805892944336,
+        "packed_cell": 3149826,
+        "volume": 312,
+        "world_cell_size": 0.7302402257919312,
+        "world_centre": [
+          -14.509236335754395,
+          11.012177467346191,
+          -15.548336029052734
+        ]
+      },
+      {
+        "alpha": 0.5000076293945312,
+        "diameter_px": 23.567380905151367,
+        "packed_cell": 1055748,
+        "volume": 2407,
+        "world_cell_size": 0.7302402257919312,
+        "world_centre": [
+          -15.864973068237305,
+          9.551695823669434,
+          -14.638263702392578
+        ]
+      },
+      {
+        "alpha": 0.5000076293945312,
+        "diameter_px": 23.54900360107422,
+        "packed_cell": 1054726,
+        "volume": 312,
+        "world_cell_size": 0.7302402257919312,
+        "world_centre": [
+          -17.2207088470459,
+          12.472657203674316,
+          -13.728189468383789
+        ]
+      },
+      {
+        "alpha": 0.5000076293945312,
+        "diameter_px": 23.54900360107422,
+        "packed_cell": 1053702,
+        "volume": 312,
+        "world_cell_size": 0.7302402257919312,
+        "world_centre": [
+          -17.2207088470459,
+          11.74241828918457,
+          -13.728189468383789
+        ]
+      },
+      {
+        "alpha": 0.5000076293945312,
+        "diameter_px": 23.134775161743164,
+        "packed_cell": 3148803,
+        "volume": 312,
+        "world_cell_size": 0.7302402257919312,
+        "world_centre": [
+          -15.233545303344727,
+          10.281936645507812,
+          -15.455453872680664
+        ]
+      },
+      {
+        "alpha": 0.5000076293945312,
+        "diameter_px": 23.134775161743164,
+        "packed_cell": 2103299,
+        "volume": 2407,
+        "world_cell_size": 0.7302402257919312,
+        "world_centre": [
+          -15.233545303344727,
+          8.821456909179688,
+          -15.455453872680664
+        ]
+      },
+      {
+        "alpha": 0.5000076293945312,
+        "diameter_px": 23.099365234375,
+        "packed_cell": 1054727,
+        "volume": 312,
+        "world_cell_size": 0.7302402257919312,
+        "world_centre": [
+          -17.945018768310547,
+          12.472657203674316,
+          -13.635307312011719
+        ]
+      },
+      {
+        "alpha": 0.7003280520439148,
+        "diameter_px": 22.858369827270508,
+        "packed_cell": 3150854,
+        "volume": 204,
+        "world_cell_size": 0.6462141871452332,
+        "world_centre": [
+          -7.6418352127075195,
+          7.0664544105529785,
+          -21.907909393310547
+        ]
+      },
+      {
+        "alpha": 0.5000076293945312,
+        "diameter_px": 22.8236141204834,
+        "packed_cell": 1053704,
+        "volume": 1749,
+        "world_cell_size": 0.6462141871452332,
+        "world_centre": [
+          -2.6994831562042236,
+          10.297525405883789,
+          -21.859634399414062
+        ]
+      },
+      {
+        "alpha": 0.5000076293945312,
+        "diameter_px": 22.683582305908203,
+        "packed_cell": 2101254,
+        "volume": 312,
+        "world_cell_size": 0.7302402257919312,
+        "world_centre": [
+          -17.31359100341797,
+          11.012177467346191,
+          -14.452498435974121
+        ]
+      },
+      {
+        "alpha": 0.5000076293945312,
+        "diameter_px": 22.683582305908203,
+        "packed_cell": 2102278,
+        "volume": 312,
+        "world_cell_size": 0.7302402257919312,
+        "world_centre": [
+          -17.31359100341797,
+          11.74241828918457,
+          -14.452498435974121
+        ]
+      },
+      {
+        "alpha": 0.5000076293945312,
+        "diameter_px": 22.666587829589844,
+        "packed_cell": 1051650,
+        "volume": 199,
+        "world_cell_size": 0.7302402257919312,
+        "world_centre": [
+          -18.669326782226562,
+          6.265616416931152,
+          -13.542425155639648
+        ]
+      },
+      {
+        "alpha": 0.6346379518508911,
+        "diameter_px": 22.620620727539062,
+        "packed_cell": 4197379,
+        "volume": 199,
+        "world_cell_size": 0.7302402257919312,
+        "world_centre": [
+          -19.672283172607422,
+          6.265616416931152,
+          -15.62247085571289
+        ]
+      },
+      {
+        "alpha": 0.6308995485305786,
+        "diameter_px": 22.41777229309082,
+        "packed_cell": 3149831,
+        "volume": 204,
+        "world_cell_size": 0.6462141871452332,
+        "world_centre": [
+          -7.521297454833984,
+          6.42024040222168,
+          -21.27303695678711
+        ]
+      },
+      {
+        "alpha": 0.5000076293945312,
+        "diameter_px": 22.299013137817383,
+        "packed_cell": 4198403,
+        "volume": 312,
+        "world_cell_size": 0.7302402257919312,
+        "world_centre": [
+          -15.326427459716797,
+          11.012177467346191,
+          -16.179763793945312
+        ]
+      }
+    ],
+    "missing_records": 0,
+    "near_plane_crossings": 0,
+    "requested_splats": 1453836,
+    "scope": "stored records only; screen-aligned diameter excludes sub-cell jitter; explicit offline readback",
+    "stored_splats": 1453836,
+    "unique_stored_volumes": 40624,
+    "viewport": [
+      1280,
+      720
+    ],
+    "whole_root_bins": [
+      271359,
+      618920,
+      433848,
+      100646,
+      23051,
+      4415,
+      49,
+      0,
+      0,
+      0
+    ]
+  },
+  "selection": {
+    "trees": 302116,
+    "active_roots": 151058,
+    "branch_capacity": 4096,
+    "selected_records": 310,
+    "tested_nodes": 331985,
+    "source_slots": 183,
+    "voxel_slots": 127,
+    "shadow_voxel_slots": 0,
+    "direct_roots": 117763,
+    "fallback_trees": 0,
+    "retained": 244,
+    "assigned": 66,
+    "slot_failures": 0,
+    "hash_failures": 0,
+    "frontier_overflow_requests": 0,
+    "peak_frontier_requests": 118238,
+    "reserved_raster_splats": [
+      4193945,
+      4187234
+    ],
+    "refinement_budget_stops": 382078,
+    "refinement_faults": 0,
+    "reused_refinement_proposals": 323003,
+    "dormant_records": 118488,
+    "dormant_wakes": 323003,
+    "dormant_wake_passes": 9,
+    "dormant_park_events": 440856,
+    "dormant_overflows": 0,
+    "selected_spatial_error_pixels": [
+      13233.023,
+      13233.023
+    ],
+    "selected_error_target_ratio": [
+      30493.627,
+      30493.627
+    ],
+    "selected_over_target": [
+      103402,
+      41943
+    ],
+    "error_unknown_proxies": 0,
+    "error_unmatched_direct": 0,
+    "error_forced_nodes": 14485,
+    "pose_requests": 192,
+    "evaluated_shared_poses": 192,
+    "pose_hash_failures": 0,
+    "camera_roots": 42189,
+    "shadow_only_roots": 52726,
+    "camera_fallback_roots": 0,
+    "shadow_only_fallback_roots": 0,
+    "camera_refinement_limits": {
+      "over_target": 41943,
+      "branch_slots": 0,
+      "camera_splats": 10495,
+      "shadow_splats": 0,
+      "missing_pages": 34,
+      "no_children": 0,
+      "affordable_resident": 31414
+    },
+    "selected_source_consumers": {
+      "outside": 0,
+      "camera_only": 183,
+      "shadow_only": 0,
+      "both": 0
+    },
+    "selected_voxel_consumers": {
+      "outside": 0,
+      "camera_only": 127,
+      "shadow_only": 0,
+      "both": 0
+    },
+    "selected_direct_consumers": {
+      "outside": 0,
+      "camera_only": 41819,
+      "shadow_only": 75944,
+      "both": 0
+    },
+    "camera_published_branches": 310,
+    "shadow_only_published_branches": 0
+  }
+}
