@@ -69,7 +69,9 @@ fn build(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index)
         let e = terrain_eval_world(x, z, cut_at(i, j, s, job.mask), params.seed, params.style);
         pos[t] = e.pos;
         attr[t] = vec4<f32>(e.rock, e.scree, e.wet, e.up);
-        attr2[t] = vec3<f32>(e.water, e.moor, e.snow);
+        // Water too narrow for this patch's cells to carve stays as a thin
+        // film over its share of them (terrain_surface.wgsl WATER_FILM).
+        attr2[t] = vec3<f32>(max(e.water, 0.04 * e.film), e.moor, e.snow);
     }
     workgroupBarrier();
     // Odd vertices on a coarser edge sit on that edge's straight segment.
@@ -110,12 +112,13 @@ fn build(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index)
         vertices[v + 4u] = n.y;
         vertices[v + 5u] = n.z;
         // 24 bits per uv channel, exact integers in f32: rock, scree, wet
-        // at 8 bits; up at 8, water at 6, moor and snow at 5. The surface
+        // at 8 bits; up at 8, water at 6 (square root of depth / 2.55 m,
+        // fine steps for thin films), moor and snow at 5. The surface
         // shader unpacks them per corner before blending.
         let a = clamp(attr[c], vec4<f32>(0.0), vec4<f32>(1.0));
         let w = vec3<f32>(clamp(attr2[c].x / 2.55, 0.0, 1.0), clamp(attr2[c].y, 0.0, 1.0), clamp(attr2[c].z, 0.0, 1.0));
         vertices[v + 6u] = round(a.x * 255.0) + round(a.y * 255.0) * 256.0 + round(a.z * 255.0) * 65536.0;
-        vertices[v + 7u] = round(a.w * 255.0) + round(w.x * 63.0) * 256.0 + round(w.y * 31.0) * 16384.0 + round(w.z * 31.0) * 524288.0;
+        vertices[v + 7u] = round(a.w * 255.0) + round(sqrt(w.x) * 63.0) * 256.0 + round(w.y * 31.0) * 16384.0 + round(w.z * 31.0) * 524288.0;
     }
     if t == 0u {
         var lo = pos[cell(0, 0)];

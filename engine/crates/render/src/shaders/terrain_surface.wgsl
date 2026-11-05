@@ -1,7 +1,7 @@
 // Shading for procedural terrain (procedural_terrain.rs): materials with
 // both TERRAIN and SURFACE set. Vertices pack attributes into 24 bits per
 // uv channel (procedural_terrain.wgsl): uv.x = rock, scree, wet; uv.y = up,
-// water depth (/2.55 m), moor, snow. Texture layers from Material::layer on:
+// water depth (square root of /2.55 m), moor, snow. Texture layers from Material::layer on:
 // grass, moor (moss and heather), soil, rock, gravel, mossy rock.
 
 struct FieldAttr {
@@ -14,13 +14,18 @@ struct FieldAttr {
     snow: f32,
 };
 
+// Depth (metres) at which water covers the ground; procedural_terrain.wgsl
+// writes thin water as this times its share of the cell.
+const WATER_FILM: f32 = 0.04;
+
 fn field_unpack(uv: vec2<f32>) -> array<f32, 7> {
     // Exact integers below 2^24; adding 0.5 would round odd values up and
     // carry a full byte into the next one.
     let a = u32(round(max(uv.x, 0.0)));
     let b = u32(round(max(uv.y, 0.0)));
+    let w = f32((b >> 8u) & 63u) / 63.0;
     return array<f32, 7>(f32(a & 255u) / 255.0, f32((a >> 8u) & 255u) / 255.0, f32((a >> 16u) & 255u) / 255.0,
-        f32(b & 255u) / 255.0, f32((b >> 8u) & 63u) / 63.0 * 2.55, f32((b >> 14u) & 31u) / 31.0, f32((b >> 19u) & 31u) / 31.0);
+        f32(b & 255u) / 255.0, w * w * 2.55, f32((b >> 14u) & 31u) / 31.0, f32((b >> 19u) & 31u) / 31.0);
 }
 
 fn field_attr(s: SurfaceIn) -> FieldAttr {
@@ -627,10 +632,14 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         rough = mix(rough, 0.6, m_snow);
     }
 
-    // Water: a dark, smooth, level surface, clearer where shallow.
-    if f.water > 0.01 {
+    // Water: a dark, smooth, level surface, clearer where shallow. Water
+    // thinner than the mesh comes as a film of WATER_FILM metres times its
+    // share of the ground (terrain_field.rs Sample::film): the cover is
+    // linear in depth up to there, so a far ditch keeps its share of water
+    // as its strip widens to the cell.
+    if f.water > 0.0005 {
         let depth = clamp(f.water / 0.8, 0.0, 1.0);
-        let w = smoothstep(0.0, 0.06, f.water);
+        let w = min(f.water / WATER_FILM, 1.0);
         let ripple = vec2<f32>(field_fbm(wuv * 1.7 + vec2<f32>(s.time * 0.31, 0.0), footprint * 1.7), field_fbm(wuv * 1.7 + vec2<f32>(5.0, s.time * 0.27), footprint * 1.7)) - 0.5;
         let wn = normalize(vec3<f32>(ripple.x * 0.12, 1.0, ripple.y * 0.12));
         c = mix(c, mix(c * 0.45, vec3<f32>(0.018, 0.03, 0.028), depth), w);

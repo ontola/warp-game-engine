@@ -4071,7 +4071,7 @@ impl Renderer {
                 else{crate::foliage_select::ConsumerView::shadow(v)}
             }).collect::<Vec<_>>();
             forest.encode_timed_depth(gpu,&mut enc,&consumers,*first_owner,time,Some(&current))?;
-            enc.copy_buffer_to_buffer(&forest.choices,65536,&shadow_t.foliage_selection,0,65536);
+            enc.copy_buffer_to_buffer(&forest.choices,forest.choice_table_bytes(),&shadow_t.foliage_selection,0,forest.choice_table_bytes());
         }
         // Actual updated instance/branch spheres and wind bounds, once shared
         // across cameras and solar views. They each select independent owners.
@@ -4307,7 +4307,7 @@ impl Renderer {
                 if voxel_casters {
                     gpu.queue.write_buffer(&near.targets.foliage_selection,0,bytemuck::cast_slice(&crate::voxel_forest::VoxelRenderer::sun_selection()));
                 }
-                if let Some((forest,_))=&self.gpu_forest {enc.copy_buffer_to_buffer(&forest.choices,65536,&near.targets.foliage_selection,0,65536);}
+                if let Some((forest,_))=&self.gpu_forest {enc.copy_buffer_to_buffer(&forest.choices,forest.choice_table_bytes(),&near.targets.foliage_selection,0,forest.choice_table_bytes());}
                 self.cull_and_raster(&mut enc, gpu, &near.targets, None, &texture_view, &mut ts, &mut names, "near shadow cull",RasterPass::Sun);
                 // Whole-plant proxies have no source to cast here.
                 if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.has_proxies()||voxel_casters) {
@@ -4351,7 +4351,7 @@ impl Renderer {
             jittered.z_axis.x += jx * 2.0 / w as f32;
             jittered.z_axis.y += jy * 2.0 / h as f32;
             let main = self.view_targets(gpu, "view", vi + 1);
-            if let Some((forest,_))=&self.gpu_forest {enc.copy_buffer_to_buffer(&forest.choices,0,&main.foliage_selection,0,65536);}
+            if let Some((forest,_))=&self.gpu_forest {enc.copy_buffer_to_buffer(&forest.choices,0,&main.foliage_selection,0,forest.choice_table_bytes());}
             let mut foliage_changed=false;
             if let Some(selector)=&self.aggregate_lod {
                 let time=self.query.as_ref().map(|(q,_,_)|(q,timestamp_pair(&mut ts)));
