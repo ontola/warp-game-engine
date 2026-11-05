@@ -1,3 +1,29 @@
+## 5 November: GPU proposal replay; reject complete-cut lookahead candidate
+
+Offline cell attribution now replays the actual GPU proposal kernel against final
+budget/residency, in scratch state/pages/queues/counters. A GPU fixture checks
+returned costs and byte-identical live counters, cut, pages, demand and state.
+Root33573/node1116 still proposes an affordable resident replacement at frame end:
+old [1slot,171splats], new [2slots,199splats], status1 (eligible), bucket23.
+This proves final eligibility, NOT historical rejection reason or global fit of
+all eligible replacements. The observed immediate quality regression remains real.
+
+Candidate complete-cut lookahead skips coarser spatial children, admits their
+complete finer frontier atomically, and retains parents on missing pages/budget.
+155 foliage tests pass, but normal rendering REJECTS it: branch slots fill4096,
+source slots261->4074, lowland largest submitted cell21.31->72.08px. Three
+alternating native720p ONE-view covered GPU medians are15.99/16.01/16.08 before,
+18.63/18.72/18.71 after. Alpine14.98/15.10/15.13 before,17.18/17.14/17.26 after.
+Production traversal restored; candidate/test/diagnostic diff preserved against
+7974a88 in vegetation-complete-lookahead-experiment.patch. Per-pass and proposal
+evidence: vegetation-complete-lookahead-measurements.json. No visual fix claimed.
+
+Next architecture gap: quantify which assemblies consume transient source slots
+and separate reusable/direct source instances from temporary refinement slots.
+Quality-improving traversal alone starves foreground detail under the current
+shared slot cap. Do not simply raise the cap or accept larger rendered cells.
+Upstream tree recovery, per-view cuts and far-cell aggregates remain incomplete.
+
 ## 5 November: attribute oversized cells to the published GPU cut
 
 The explicit --voxel-raster-profile report now attaches articulated-slot owner,
