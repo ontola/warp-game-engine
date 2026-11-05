@@ -17,6 +17,9 @@ pub struct Graphics {
     pub simple_lighting: bool,
     /// Stone detail on blocks in the minimum renderer.
     pub stone_detail: bool,
+    /// The character models as rigid pieces per bone: animated without the
+    /// skinning the minimum renderer lacks.
+    pub rigid_characters: bool,
     pub debris_capacity: usize,
     pub debris_divisor: u32,
     pub debris_size: f32,
@@ -24,9 +27,9 @@ pub struct Graphics {
     pub lod_pixels: f32,
 }
 impl Graphics {
-    pub const FULL: Self=Self {minimal_forward:false,characters:true,stadium:true,sky_occlusion:true,simple_blocks:false,simple_guns:false,simple_lighting:false,stone_detail:false,debris_capacity:4096,debris_divisor:1,debris_size:1.0,particles:768,lod_pixels:1.0};
-    pub const LOW: Self=Self {minimal_forward:false,characters:true,stadium:false,sky_occlusion:false,simple_blocks:true,simple_guns:true,simple_lighting:true,stone_detail:false,debris_capacity:128,debris_divisor:16,debris_size:1.6,particles:128,lod_pixels:4.0};
-    pub const MINIMUM:Self=Self {minimal_forward:true,characters:false,stone_detail:true,debris_capacity:0,particles:32,lod_pixels:16.0,..Self::LOW};
+    pub const FULL: Self=Self {minimal_forward:false,characters:true,stadium:true,sky_occlusion:true,simple_blocks:false,simple_guns:false,simple_lighting:false,stone_detail:false,rigid_characters:false,debris_capacity:4096,debris_divisor:1,debris_size:1.0,particles:768,lod_pixels:1.0};
+    pub const LOW: Self=Self {minimal_forward:false,characters:true,stadium:false,sky_occlusion:false,simple_blocks:true,simple_guns:true,simple_lighting:true,stone_detail:false,rigid_characters:false,debris_capacity:128,debris_divisor:16,debris_size:1.6,particles:128,lod_pixels:4.0};
+    pub const MINIMUM:Self=Self {minimal_forward:true,characters:false,stone_detail:true,rigid_characters:true,debris_capacity:0,particles:32,lod_pixels:16.0,..Self::LOW};
     /// A profile name, optionally with switches for measuring one part at a
     /// time: `full:sky_occlusion=0,stadium=1`.
     pub fn parse(s:&str)->Result<Self,String> {
@@ -36,7 +39,7 @@ impl Graphics {
             let (k,v)=kv.split_once('=').ok_or(format!("graphics switch {kv}: use NAME=0|1"))?;
             let on=v=="1";
             match k {"stadium"=>g.stadium=on,"characters"=>g.characters=on,"sky_occlusion"=>g.sky_occlusion=on,"simple_blocks"=>g.simple_blocks=on,
-                "simple_guns"=>g.simple_guns=on,"stone_detail"=>g.stone_detail=on,"simple_lighting"=>g.simple_lighting=on,"minimal_forward"=>g.minimal_forward=on,
+                "simple_guns"=>g.simple_guns=on,"stone_detail"=>g.stone_detail=on,"rigid_characters"=>g.rigid_characters=on,"simple_lighting"=>g.simple_lighting=on,"minimal_forward"=>g.minimal_forward=on,
                 _=>return Err(format!("unknown graphics switch {k}"))}
         }
         Ok(g)
