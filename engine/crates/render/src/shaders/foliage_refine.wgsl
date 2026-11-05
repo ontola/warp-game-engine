@@ -121,11 +121,6 @@ var<workgroup> seed_scan:array<vec4<u32>,256>;
  // round count from this (Refiner::encode).
  if count!=0u || wake {atomicAdd(&state[68],1u);}
 }
-fn camera_height()->f32 {
- var h=0.0;
- for(var i=0u;i<view.consumer_count.x;i++) {let c=view.consumers[i];if c.pixels.z==0.0 {h=max(h,c.pixels.y);}}
- return h;
-}
 fn projected(t:Tree,n:Node,roles:u32)->vec2<f32> {
  let s=sphere(t,n);var all_scale=0.0;var camera_scale=0.0;
  for(var i=0u;i<view.consumer_count.x;i++) {
@@ -203,8 +198,7 @@ fn endpoint_needs_source(tree:u32,node:u32)->bool {
 fn complete_endpoint(tree:u32,node:u32,old:vec4<u32>,used:vec3<u32>,request_pages:bool)->vec4<u32> {
  let mixed=endpoint_frontier(tree,node,old,used,request_pages,false);
  if mixed.w!=0u {return mixed;}
- let n=nodes[node];let scale=projected(trees[tree],n,256u);
- if 2.0*scale.y*n.sphere.w>=0.1*camera_height() && endpoint_needs_source(tree,node) {return endpoint_frontier(tree,node,old,used,request_pages,true);}
+ if endpoint_needs_source(tree,node) {return endpoint_frontier(tree,node,old,used,request_pages,true);}
  return vec4<u32>(0u);
 }
 @compute @workgroup_size(64) fn propose(@builtin(global_invocation_id) id:vec3<u32>) {
@@ -260,11 +254,7 @@ fn complete_endpoint(tree:u32,node:u32,old:vec4<u32>,used:vec3<u32>,request_page
  // Relieve a temporary camera-splat barrier without publishing intermediate
  // voxel levels. A missing intermediate page is harmless if every source leaf
  // is resident; missing source pages still retain the current complete parent.
- // The shared endpoint helper restricts full-source bypass to nodes
- // filling at least a tenth of the camera height, including cached retries:
- // source leaves cost slots but no splats, so without this every far tree
- // jumps to its full source mesh (6.8M triangles from 356 m up, no visible
- // gain) whenever the splat budget is spent.
+
  if wanted_refine && task.y!=NONE && task.z==256u {
   let used=vec3<u32>(atomicLoad(&state[4]),atomicLoad(&state[5]),atomicLoad(&state[6]));
   let delta=p.replacement-min(p.replacement,p.old);
