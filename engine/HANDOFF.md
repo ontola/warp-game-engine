@@ -1,3 +1,18 @@
+## 5 November: zones and footprints (roadmap step 2)
+
+`world_constraints::Footprint`: flat plots of any outline (pads generalised;
+`Footprint::rect`, `.bare()` for gravel). Same cell lists as roads and pads;
+corners after the region words in the index buffer (`Header::shape_at`).
+`render::zones`: tagged outlines with soft density/wealth/age, feathered so
+neighbours sum to one, own 64 m grid with wholly-inside cells marked.
+`World::zone/zoning`, placement fields "zone:TAG", "zoned", "density",
+"wealth", "age", `placement::thinned`. WGSL `wc_zone`, `wc_zoning`,
+`wc_outline`. `terrain_fly --town`. Doc: docs/terrain-zones.md. Far forest
+and grass ignore zones; no buildings or streets yet.
+
+Validation: render lib 827 PASS; GPU parity with footprints and zones PASS on
+Mesa lavapipe only; workspace check clean. No interactive playtest.
+
 ## 5 November: terrain regions (several kinds of land in one world)
 
 `render::regions`: a palette of up to 256 terrain styles and a 64 m grid whose

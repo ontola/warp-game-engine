@@ -6,6 +6,7 @@
 //!   cargo run --release -p app --example terrain_fly -- --track   (a gravel road the land bends to)
 //!   cargo run --release -p app --example terrain_fly -- --style alpine --regions polder   (alpine west of x = 0, polder east)
 //!   cargo run --release -p app --example terrain_fly -- --profile low   (Quest-class settings)
+//!   cargo run --release -p app --example terrain_fly -- --town   (a zone with levelled building plots)
 //!   cargo run --release -p app --example terrain_fly -- --shot fly.png
 //!   cargo run --release -p app --example terrain_fly -- --fullscreen --frames 600   # fps benchmark
 //!   ... --validate-world --grass   (normal CPU scene build, no GPU/window)
@@ -154,6 +155,9 @@ struct Fly {
     /// --regions NAME: the world turns into biome NAME east of x = 0
     /// (render::regions), over about 1.5 km along a wandering border.
     regions: Option<usize>,
+    /// --town: a "town" zone round the origin (render::zones) with a block
+    /// of building plots the land is levelled to, and no forest in it.
+    town: bool,
     constraints: Option<(u32, usize, Arc<Constraints>)>,
 }
 
@@ -161,7 +165,7 @@ impl Fly {
     fn new(seed: u32, style: usize, world: World) -> Result<Self, String> {
         let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, turn: (0.0, 0.0), speed: 40.0, hug: None, wheel: 0.0,
             building: None, gpu: None, stale: false, world, built_world: world, world_at: None, sun_building:None, forest_at:None, forest_building:None, forest_material:None, terrain_settings: Settings::default(), terrain: None, light: Lighting::default(), stats: Stats::default(), last_updates: [0.0;2], jumps: 0, fps: 0.0, worst_ms: 0.0,
-            track: std::env::args().any(|a| a == "--track"), regions: None, constraints: None };
+            track: std::env::args().any(|a| a == "--track"), regions: None, town: std::env::args().any(|a| a == "--town"), constraints: None };
         if let Some(name) = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--regions").map(|w| w[1].clone()) {
             fly.regions = Some(STYLES.iter().position(|n| *n == name).ok_or_else(|| format!("unknown biome {name}; one of {}", STYLES.join(", ")))?);
         }
@@ -215,7 +219,7 @@ impl Fly {
     /// a winding loop about 700 m round the origin, laid on the land at
     /// grades up to 10 %, and the second biome east of x = 0.
     fn bake_track(&mut self) {
-        if (!self.track && self.regions.is_none()) || self.current_track().is_some() { return; }
+        if (!self.track && self.regions.is_none() && !self.town) || self.current_track().is_some() { return; }
         let (seed, style) = (self.seed, self.style());
         let regions = self.regions.map(|other| render::regions::Regions::split([style, environment(other).biome.terrain], Vec2::ZERO, 16_000.0,
             Vec2::X, 1_500.0, 600.0, seed));
@@ -226,13 +230,29 @@ impl Fly {
             track.fit_heights(|x, z| terrain_field::height(x, z, seed, &land(x, z)), 0.10, 120.0);
             tracks.push(track);
         }
-        let world = WorldConstraints { tracks, pads: vec![], regions }.bake(seed, &style);
+        let (mut zones, mut footprints) = (Vec::new(), Vec::new());
+        if self.town {
+            let outline = (0..7).map(|k| {
+                let a = k as f32 / 7.0 * std::f32::consts::TAU;
+                Vec2::from_angle(a) * (420.0 + 90.0 * (2.0 * a + 1.0).sin())
+            }).collect();
+            zones.push(render::zones::Zone::new("town", outline, 120.0).density(0.6).age(0.4));
+            // Plots on a turned grid, each levelled at its own land height.
+            let turn = Vec2::from_angle(0.35);
+            for j in -2..=2 {
+                for i in -3..=3 {
+                    let c = turn.rotate(Vec2::new(i as f32 * 70.0, j as f32 * 55.0));
+                    footprints.push(render::world_constraints::Footprint::rect(c, Vec2::new(30.0, 18.0), 0.35, 6.0, None).bare(1.0));
+                }
+            }
+        }
+        let world = WorldConstraints { tracks, regions, footprints, zones, ..Default::default() }.bake(seed, &style);
         self.constraints = Some((self.seed, self.style, Arc::new(world)));
     }
 
     /// Above the start of the track, and the yaw looking along it.
     fn track_start(&self) -> Option<(Vec3, f32)> {
-        let w = self.current_track()?;
+        let w = self.current_track().filter(|_| self.track)?;
         let (s, ahead) = (w.segments.first()?, w.segments.get(10)?);
         let (dx, dz) = (ahead.a[0] - s.a[0], ahead.a[2] - s.a[2]);
         Some((Vec3::new(s.a[0], s.a[1] + 4.0, s.a[2]), (-dx).atan2(-dz)))
@@ -657,7 +677,8 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
     // Bent to the --track road; the rules keep off it (placement::off_road).
     let land = TerrainWorld { seed, style, constraints: track };
     // Each region grows its own biome's flora (render::biome::Lands).
-    let (trees, shrubs): (Vec<_>, Vec<_>) = lands.rules().into_iter().partition(|r| placement::base_rule(r.id) == placement::TREE);
+    // No forest in a town (--town: render::zones).
+    let (trees, shrubs): (Vec<_>, Vec<_>) = placement::thinned(lands.rules(), "zone:town").into_iter().partition(|r| placement::base_rule(r.id) == placement::TREE);
     // Trees out to the painted forest, handed over to it tree by tree;
     // shrubs only near, where a knee-high bush is more than a pixel.
     let woody=if world.trees {placement::place(&trees, &land, c, world.tree_radius).into_iter()
