@@ -227,7 +227,9 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
     for node in &mut nodes {
         let rep=representations[node.links[2]as usize];
         let branch=&branches[if rep[3]==0 {rep[0]} else {rep[3]-1}as usize];
-        node.links[3]=(node.links[3]&!4)|if rep[1]==0 {4}else{0};
+        let source_work=if rep[1]==0 {crate::foliage_pages::source::source_work(scene,branch.source)?.clusters}else{0};
+        if source_work>0x00ff_ffff {return Err("source cluster work exceeds node metadata range".into());}
+        node.links[3]=(node.links[3]&255&!4)|if rep[1]==0 {4}else{0}|(source_work<<8);
         let bound=representation_raster_work(rep,branch,&work)?;
         node.error[2]=exact_work(bound[0])?;
         node.error[3]=exact_work(bound[1])?;
