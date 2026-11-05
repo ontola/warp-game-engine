@@ -1047,7 +1047,7 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
     }
 }
 
-// Rasterized voxels (KERN_VOXEL_RASTER=1 or far trees, docs/voxel-raster-plan.md).
+// Rasterized voxels (KERN_VOXEL_RASTER=1 or far trees, docs/log/voxel-raster-plan.md).
 // Nanite-style: each occupied cell of a tree's level is an opaque cube kept
 // with probability 1-exp(-optical depth), so the nearest kept cell is the
 // stochastic first hit. voxel_splats lists the cells per view (one

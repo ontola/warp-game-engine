@@ -421,7 +421,7 @@ pub struct MovablePlant {
 pub struct AttachLimits {
     /// Placements as shared per-plant templates composed with their branch
     /// pose on the GPU (VIRTUAL_MEMBER ids), not one instance each
-    /// (docs/foliage-assemblies-plan.md, milestone 1).
+    /// (docs/log/foliage-assemblies-plan.md, milestone 1).
     pub virtual_members: bool,
     pub max_poses: usize,
     pub max_primitive_instances: usize,

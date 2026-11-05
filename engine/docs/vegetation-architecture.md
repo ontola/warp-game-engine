@@ -1,7 +1,7 @@
 # Warp vegetation: implementation checklist
 
 Updated 5 November 2026. **This is the single authoritative checklist.**
-Older reports and `engine/HANDOFF.md` contain supporting history, not separate
+Older reports and `engine/docs/log/handoff.md` contain supporting history, not separate
 plans. Architecture first; no interactive playtest until requested.
 
 ## Where we are
@@ -731,7 +731,7 @@ resident ancestor. Growth variants share primitive assets. Physics remains
   source member exactly once and naturally reaches source, internal group, mixed
   and whole-root cuts. `shared_selection_nested_cut_preserves_source_coverage` PASS.
 
-## DLSS diagnostic sweep — 4 November
+## DLSS diagnostic sweep â€” 4 November
 
 Same DLSS-enabled executable, 12 serial runs in native/Quality/Balanced/Performance
 order repeated three times. Lowland+grass, one view, 1280x720 output, 240 frames
@@ -792,7 +792,7 @@ Evidence: build/playtest-unified/upscale-*.json.gpu.json, logs and PNG pixel
 references; JPEG contact sheet upscale-comparison.jpg. No gameplay-FPS claim.
 Executable SHA256: `d0ecd969686f5e48216a6d624a963b20b6e84815780be3dbf7d3ede3210c8b2e`.
 
-## One-pixel raster feasibility — 4 November
+## One-pixel raster feasibility â€” 4 November
 
 `render/examples/voxel_raster_budget.rs` uses the unchanged production voxel
 vertex/fragment shader and main-pass depth/visibility formats. RTX5070Ti, Vulkan,
@@ -853,10 +853,10 @@ all demand. This diagnostic adds no per-frame CPU selection/readback dependency.
 | Diameter px | Articulated groups | Whole roots (direct + fallback) |
 | --- | ---: | ---: |
 | <=0.5 | 11,459 | 3,766,133 |
-| 0.5–1 | 89,424 | 217,864 |
-| 1–2 | 18,359 | 73,124 |
-| 2–4 | 1,091 | 12,082 |
-| 4–8 | 0 | 3,643 |
+| 0.5â€“1 | 89,424 | 217,864 |
+| 1â€“2 | 18,359 | 73,124 |
+| 2â€“4 | 1,091 | 12,082 |
+| 4â€“8 | 0 | 3,643 |
 | >8 | 0 | 1,125 |
 
 97.4% of stored splats are <=1px. Whole-root records dominate, not articulated
@@ -870,7 +870,7 @@ Next: isolate camera vs shadow demand, then implement per-consumer resident cuts
 and bounded raster admission within existing G2/G3 requirements.
 Evidence: build/playtest-unified/raster-profile-route.log.
 
-### Consumer isolation — shadow demand is not the primary raster cause
+### Consumer isolation â€” shadow demand is not the primary raster cause
 
 Same executable, three alternating normal/camera-only240-frame runs at720p,120
 warm GPU samples. Camera-only sets sun_lux=0 and shadow_strength=0, confirmed
@@ -879,7 +879,7 @@ like-for-like visual comparison. Compare selection and camera raster workload on
 
 | Mode | Final requested splats | Selection medians ms | Raster medians ms |
 | --- | ---: | --- | --- |
-| Combined | 4,495,774–4,495,775 | 2.516 / 2.658 / 2.508 | 2.252 / 2.505 / 2.251 |
+| Combined | 4,495,774â€“4,495,775 | 2.516 / 2.658 / 2.508 | 2.252 / 2.505 / 2.251 |
 | Camera only | 4,651,051 | 1.704 / 1.699 / 1.680 | 2.575 / 2.439 / 2.331 |
 
 Removing shadow consumers does not solve excess camera raster work; it increases
@@ -1036,7 +1036,7 @@ Per-pass upper-middle medians (ms; medians need not sum to the covered median):
 Compacting camera-owning roots and shadow-only roots into separate refinement
 stages reduced visited nodes and peak frontier, but increased GPU selection cost.
 Three alternating before/after repeats used the same native 1280x720 one-view
-lowland+grass route, 240 frames, with frames 120–239 measured.
+lowland+grass route, 240 frames, with frames 120â€“239 measured.
 
 | Repeat | Before covered ms | After covered ms | Before selection ms | After selection ms |
 | --- | ---: | ---: | ---: | ---: |
@@ -1046,7 +1046,7 @@ lowland+grass route, 240 frames, with frames 120–239 measured.
 
 All 139 foliage tests passed, including exclusive GPU fixtures. Camera splats
 remained 1,361,047. The matched scene image outside the HUD was virtually
-unchanged (each channel MAE below 0.000005 on the 0–255 scale); this is not
+unchanged (each channel MAE below 0.000005 on the 0â€“255 scale); this is not
 a raw visibility/depth equivalence claim or visual acceptance. Extra compaction
 and changed publication work did not produce a net gain. Production changes
 were removed; `root-stage-compaction-experiment.patch` preserves the experiment.
@@ -1065,7 +1065,7 @@ mip's occupied-cell count; shadow reservations remained adaptive. This tested
 whether conservative camera reservations were the main fine-detail blocker.
 
 All 139 foliage tests passed. Three alternating native 1280x720 one-view
-lowland+grass route repeats (240 frames, frames 120–239 measured) gave:
+lowland+grass route repeats (240 frames, frames 120â€“239 measured) gave:
 
 | Repeat | Before covered ms | After covered ms | Before selection ms | After selection ms |
 | --- | ---: | ---: | ---: | ---: |
@@ -1078,7 +1078,7 @@ remained zero. Tested nodes increased from ~532k to 700,391. Actual camera
 splats were 1,356,414, versus 1,361,047 before; raster faults/fallbacks remained
 zero. Thus lowering camera reservation alone exposes more intermediate traversal,
 not useful source detail or a speedup. Matched images were inspected: crowns
-remain coarse; RGB MAE outside HUD was 1.014/1.075/0.659 on a 0–255 scale.
+remain coarse; RGB MAE outside HUD was 1.014/1.075/0.659 on a 0â€“255 scale.
 This is not visual acceptance or raw-buffer equivalence.
 
 Production changes removed; preserved in `exact-camera-mip-experiment.patch`.

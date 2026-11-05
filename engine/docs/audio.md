@@ -320,5 +320,5 @@ is `audio::cli`):
 cargo run --release -p audio --features luau --example patch_launch
 ```
 
-See the [28 October efficiency report](engine-efficiency-20261028.md) for
+See the [28 October efficiency report](log/engine-efficiency-20261028.md) for
 baseline parity and allocation measurements; these are not frame-rate results.

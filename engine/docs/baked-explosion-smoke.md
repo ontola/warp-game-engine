@@ -10,7 +10,7 @@ SpaceRacer also opts into this shared path for vehicle and weapon explosions;
 its `rules/effects.luau` setting `baked_explosion_smoke` applies on a new race.
 [Adaptive rendering](adaptive-explosion-smoke.md) now reduces the soft-effects
 resolution and ray count per view as projected coverage or overlap increases.
-The [earlier scalability report](baked-smoke-scaling.md) records the full-resolution
+The [earlier scalability report](log/baked-smoke-scaling.md) records the full-resolution
 baseline that motivated this change.
 
 ## Asset and rendering

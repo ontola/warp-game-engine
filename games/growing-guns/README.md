@@ -49,7 +49,7 @@ missing.
 | Sky and light | Done | Random time of day and weather by default; fixed presets or a day cycle; persistent stadium sun shadows beyond the camera maps; visible sun and GPU lens flare with per-view occlusion; floodlights with shadows at night |
 | Gameplay replay | Added | F12 saves a screenshot plus a bounded state replay; F9 review, pause/step/seek, saved frames and headless re-render after code edits. Local/host recording; see below for visual-history limits |
 | HUD and menus | Done | Godot's layout, fonts (Anton, Barlow) and timing; mouse, keyboard and pads; see [docs/ui-parity.md](docs/ui-parity.md) |
-| Standalone Quest VR | Experimental | Native Android/OpenXR APK uses this same app and Warp renderer, all 49 cards and tracked growing gun. Shared minimum graphics profile removes stadium/crowd/TVs and GPU rubble; simple blocks, primitive characters and vertex lighting keep the full eye resolution. Draws directly into runtime eye attachments; measured near 120 fps at 1440×1584 per eye with short dips before restoring gameplay FX. Bullet tracers use a round, eye-facing glow and a short soft wake without bloom, including minimum graphics. Muzzle flashes use the current tracked barrel position. Minimum lava has animated glowing cracks and dark crust from a small baked texture field. Explosions and ion warning columns now have an in-place minimum path; full-field VR flashes use a projection layer. Wider cube joints improve separation without adding triangles; distant unfiltered edges can still alias. Cage bars retain their small authored mesh on PC and VR; a long chain no longer lets coarse LODs erase them. Audio starts after headset focus so a sleeping headset cannot abort launch. The previous lava/effects APK was installed; its active 64-sample Quest run averaged 107 fps (median 118, lowest one-second sample 46) at full eye resolution and 120 Hz, so stable 120 fps is not yet achieved. Detailed profiling identifies repeated HUD glyph warmup/atlas work and large FX as hitch sources; the earlier lava added about 2.67 ms GPU time in a controlled paired Quest probe; the new single-read colour bake reduced that isolated cost to about 0.23 ms before the latest main integration. [Cost investigation and limits](../../engine/docs/quest-profile-2026-10-31.md). The new label cache, bounded explosion coverage and round tracers build into a signed APK; the integrated version is installed and launched, with an active-headset playtest still required. [Optimization measurements](../../engine/docs/quest-optimization-2026-11-01.md). Low and full profiles remain available on PC. Local bots, stereo, snap turn and original menus; desktop replay recording excludes VR poses. [Build, controls and validation limits](../../engine/docs/quest-native.md). The earlier simplified WebXR demo remains separate. |
+| Standalone Quest VR | Experimental | Native Android/OpenXR APK uses this same app and Warp renderer, all 49 cards and tracked growing gun. Shared minimum graphics profile removes stadium/crowd/TVs and GPU rubble; simple blocks, primitive characters and vertex lighting keep the full eye resolution. Draws directly into runtime eye attachments; measured near 120 fps at 1440×1584 per eye with short dips before restoring gameplay FX. Bullet tracers use a round, eye-facing glow and a short soft wake without bloom, including minimum graphics. Muzzle flashes use the current tracked barrel position. Minimum lava has animated glowing cracks and dark crust from a small baked texture field. Explosions and ion warning columns now have an in-place minimum path; full-field VR flashes use a projection layer. Wider cube joints improve separation without adding triangles; distant unfiltered edges can still alias. Cage bars retain their small authored mesh on PC and VR; a long chain no longer lets coarse LODs erase them. Audio starts after headset focus so a sleeping headset cannot abort launch. The previous lava/effects APK was installed; its active 64-sample Quest run averaged 107 fps (median 118, lowest one-second sample 46) at full eye resolution and 120 Hz, so stable 120 fps is not yet achieved. Detailed profiling identifies repeated HUD glyph warmup/atlas work and large FX as hitch sources; the earlier lava added about 2.67 ms GPU time in a controlled paired Quest probe; the new single-read colour bake reduced that isolated cost to about 0.23 ms before the latest main integration. [Cost investigation and limits](../../engine/docs/log/quest-profile-2026-10-31.md). The new label cache, bounded explosion coverage and round tracers build into a signed APK; the integrated version is installed and launched, with an active-headset playtest still required. [Optimization measurements](../../engine/docs/log/quest-optimization-2026-11-01.md). Low and full profiles remain available on PC. Local bots, stereo, snap turn and original menus; desktop replay recording excludes VR poses. [Build, controls and validation limits](../../engine/docs/quest-native.md). The earlier simplified WebXR demo remains separate. |
 | Split screen | Done | 1 to 4 local players, hot-join with X, own audio flat on your side of the screen. Join/leave reuses visual slots and clears unused screen regions |
 | Online | Close | Host-authoritative over iroh; local movement prediction and buffered remote snapshots. The host applies each client's inputs one tick at a time (bunched packets no longer rubber-band; a backlog over four ticks folds together), and clients' RMB specials reach the host. HOST LAN GAME / JOIN LAN GAME find each other without a ticket (`net::lan`), also on Quest, where head and gun poses travel in the input. Tested over loopback (`nettest`, `lantest`) and in unit tests with bursty arrival; a first two-machine playtest showed rubber banding and missing specials before this fix, and the fix has not been retested between machines; transport currently binds IPv4 only |
 | Wave survival (coop) | Done | `--coop`: grunts, snipers, grenadiers, fraggers, bombers, revives |
@@ -258,6 +258,27 @@ updates the status tables above in the same commit (AGENTS.md says so too).
 modifier, a GameNight setting, a live knob or the card count, or stops
 linking the Godot repository.
 
+### Arena and menu details
+
+Floor courses receive an extra closing stone at the outer start of staggered
+rows, covering the half-block lava gaps without overlapping internal tile
+seams. Weathered stones use normal-aware cluster simplification so distant
+geometry preserves their shading. Stadium floodlight emitters sit in front of
+their lamp housings instead of inside the shadow-casting boxes.
+
+The lava sinking sequence keeps mouse capture until card selection appears:
+look input is slowed to 30%, with a small continuous tremor and a gradually
+rising gaze. Missed pickups are removed at lava contact, settled pickups fall
+again when their support is destroyed, and drop beams trace beneath the
+actual item. Start and pause menus keep the Godot gothic side frame and fit
+their contents to viewport height. Final SDR output uses stable one-code-value
+dithering after tone mapping to reduce near-black banding.
+
+Stadium lighting has [cached diffuse sky return](../../engine/docs/log/stadium-sky-occlusion.md),
+including invalid-probe rejection and a shadowed first bounce of sunlight.
+Sun direction changes need a synchronous cache rebuild; animated day/night
+and multiple bounces are not built.
+
 ### Baked explosion smoke trial
 
 Full desktop graphics uses a shared 32-frame density-volume animation for
@@ -284,7 +305,7 @@ the normal 4.6-second lifetime remains available below the active budget.
 
 See [the engine note](../../engine/docs/baked-explosion-smoke.md) for limits
 and validation, and [the original asset recipe](../../engine/assets/fx/README.md).
-The [earlier scalability measurements](../../engine/docs/baked-smoke-scaling.md)
+The [earlier scalability measurements](../../engine/docs/log/baked-smoke-scaling.md)
 predate adaptive resolution and this larger smoke budget; they describe the
 previous fixed-resolution implementation.
 
