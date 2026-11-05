@@ -11,7 +11,7 @@ There is no Godot runtime or Godot build/export step.
 `src/xr.rs` runs the same race in VR from the cockpit: the play space rides a
 seat on the player's ship (`SEAT`, or `SPACERACER_SEAT=x,y,z` to try another),
 the triggers are throttle and brake, the menus show on the head-locked HUD quad
-and use the stick and A. Motion blur and screen curvature are off. Build with
+and use the stick and A. Pressing the right thumbstick switches to a level chase view behind the ship (`SPACERACER_VIEW=chase` starts there; `xr-shot --chase`). Motion blur and screen curvature are off. Build with
 `python3 engine/tools/build-quest-native.py --game spaceracer --install`.
 `cargo run --release -p spaceracer-app -- xr-shot --out stereo.png` renders a
 stereo frame from the cockpit on the desktop renderer (not a headset test).
