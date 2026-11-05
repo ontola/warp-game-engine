@@ -150,6 +150,9 @@ override FEATURE_FOLIAGE_PAGES: bool = true;
 override FEATURE_MEADOW: bool = true;
 override FEATURE_TERRAIN: bool = true;
 override FEATURE_FOLIAGE: bool = true;
+// Spot and local lights (Renderer::set_headlights, set_local_lights). A frame
+// with none uses a pipeline without their loop: fewer registers per pixel.
+override FEATURE_LOCAL_LIGHTS: bool = true;
 override SKIP_HIDDEN_MEADOW:bool=false;
 var<workgroup> hidden_meadow_count:atomic<u32>;
 // Sky tiles: `classify` writes the sky of 8x8 tiles without geometry and
@@ -2527,9 +2530,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         indirect *= 1.0 - fc;
         specular = specular * (1.0 - fc) + mix(bounce / PI, environment(coat_refl, coat_rough, bounce), reflection_vis) * coat_contact * fc;
     }
-    if FEATURE_GRASS && grass {
+    if FEATURE_LOCAL_LIGHTS && FEATURE_GRASS && grass {
         direct += headlight_grass_radiance(p,v,base,rough);
-    } else {
+    } else if FEATURE_LOCAL_LIGHTS {
         direct += contact_headlight_radiance(p,n,visibility_n,v,diffuse,rough,f0,size,dist);
     }
     var rad = direct + indirect + specular;
