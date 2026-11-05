@@ -62,6 +62,7 @@ pub mod scene;
 pub mod terrain_field;
 pub mod forest_field;
 pub mod placement;
+pub mod overrides;
 pub mod world_constraints;
 pub mod regions;
 pub mod zones;
