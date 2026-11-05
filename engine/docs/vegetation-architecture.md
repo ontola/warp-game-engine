@@ -6,6 +6,14 @@ plans. Architecture first; no interactive playtest until requested.
 
 ## Where we are
 
+Latest branch-consumer audit: the normal route's 821 selected branch records
+are ALL shadow-only (15 source, 806 voxel). Camera detail consists entirely of
+40,529 whole-root voxel representations. The old camera_published_branches
+field counts ownership by a camera-visible root, not branch camera visibility.
+Do not cite rising branch/source slot counts as camera-quality progress.
+Next G3 work must unblock camera refinement with correct consumer visibility
+and independent shadow demands; scheduling more shadow branches is insufficient.
+
 Next: G3.3 branch-level consumer demand and independent representation detail.
 Two root-cohort queue experiments were rejected; do not repeat root-level
 partition tuning. A root can own camera and off-camera shadow-only branches.
@@ -839,3 +847,36 @@ consumer-queues-tests.log, consumer-queues-shadow-only.log.
 Next must inspect per-branch consumer masks and separate camera/source detail
 from shadow representation demand (G3.3), rather than more root-cohort scheduling.
 Production remains the cached-proposal allocator from 7ca3df6.
+
+## Branch-level consumer diagnostics (5 November 2026, integrated)
+
+Explicit selected-cut audit now classifies each node's actual conservative
+frustum demand, separately for source branches, voxel branches and direct
+whole-root voxels: outside, camera_only, shadow_only, both. Cooked node flag
+bit 2 identifies source representations for the audit; selection still only
+uses the original forced/root bits. No normal-frame dispatch was added.
+The audit scratch grows 128 -> 192 bytes and preserves proposal-reuse counters.
+Existing root-owned publication counters remain for compatibility and are now
+documented as ownership rather than branch visibility.
+
+Normal native 1280x720 one-view lowland+grass route, final frame of 240:
+
+| Selected representation | Camera only | Shadow only | Both | Outside |
+| --- | ---: | ---: | ---: | ---: |
+| Source branches | 0 | 15 | 0 | 0 |
+| Voxel branches | 0 | 806 | 0 | 0 |
+| Whole-root voxels | 18,806 | 53,835 | 21,723 | 0 |
+
+The old camera-root-owned branch count is 780, although no selected branch
+intersects any camera frustum. This explains why more source slots in prior
+queue experiments did not establish improved camera detail. Camera-visible
+whole-root count is 40,529; camera-over-target count is also 40,529.
+These counts precede downstream occlusion/materialization and do not measure
+actual drawn pixels or prove page publication correctness.
+
+Validation: all 141 foliage tests PASS (branch-consumers-tests.log), including
+exact audit histograms for mixed retained cuts and direct roots. Direct WGSL
+validation PASS. Normal route source/voxel/direct histogram totals match
+15/806/94,364 published representation counts, with no unknown proxies or
+unmatched direct nodes. Evidence: build/playtest-unified/branch-consumers-route.log
+and corresponding route capture/JSON files. No performance improvement claimed.

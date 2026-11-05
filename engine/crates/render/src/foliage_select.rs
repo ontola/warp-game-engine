@@ -24,6 +24,7 @@ pub struct Node {
     /// First child (NONE for leaf), exclusive subtree end, representation ID, flags.
     /// Flag bit 0: resident overflow fallback only; always refine normally.
     /// Flag bit 1: whole-root voxel choice, emitted without a transient slot.
+    /// Flag bit 2: source representation (consumer diagnostics; not an LOD override).
     pub links:[u32;4],
 }
 #[repr(C)]
@@ -385,6 +386,9 @@ mod tests {
        +u32::from(read(&gpu,&selector.direct)[0]!=0);
    assert_eq!(state[23],parents);assert_eq!(state[24],parents);
    assert_eq!(&state[25..28],&[0,0,0]);
+   assert_eq!(&state[32..36],&[0,0,0,0]);
+   assert_eq!(&state[36..40],&[0,0,0,cut.len()as u32]);
+   assert_eq!(&state[40..44],&[0,0,0,u32::from(read(&gpu,&selector.direct)[0]!=0)]);
    if parents==0 {assert_eq!(&state[19..23],&[0,0,0,0]);}
    else {assert!(f32::from_bits(state[19])>1.);assert!(f32::from_bits(state[21])>100.);}
 
