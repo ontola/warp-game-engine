@@ -10,7 +10,8 @@
 use crate::atmosphere::{Atmosphere, AtmosphereCache, BakeQuality, BakedSky, SolarState};
 use crate::{Lighting, Scene};
 use std::sync::{Arc, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 /// Provenance of the artistic night environment in a bake, for metadata.
 pub fn night_metadata(sky:&BakedSky)->serde_json::Value {

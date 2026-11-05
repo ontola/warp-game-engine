@@ -44,7 +44,7 @@ pub struct Report {
 pub fn attach(scene: &mut Scene, meshes: &[(usize, Vec<Part<'_>>)], config: FarTrees) -> Result<Report, String> {
     if scene.voxel_forest.is_some() { return Err("far trees: the scene already has a voxel forest".into()); }
     if !(config.distance_m.is_finite() && config.distance_m > 0.0) { return Err("far trees: distance must be positive".into()); }
-    let started = std::time::Instant::now();
+    let started = web_time::Instant::now();
     let mut assets = Vec::with_capacity(meshes.len());
     for (_, parts) in meshes {
         assets.push(bake(parts, &scene.materials, &scene.textures,

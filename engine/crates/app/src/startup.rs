@@ -19,7 +19,7 @@ pub fn note_exit(why: &str) {
 pub fn note(why: &str) {
     let title = TITLE.get().map(String::as_str).unwrap_or("warp");
     eprintln!("{title}: {why}");
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    let secs = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
     let line = format!("{secs:.3} {title} pid {}: {}\n", std::process::id(), why.replace('\n', " | "));
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(std::env::temp_dir().join("warp-exit.log")) {
         use std::io::Write;

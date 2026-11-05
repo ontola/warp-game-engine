@@ -99,7 +99,7 @@ pub struct EngineDebug {
     pub last_gpu_ms: Option<f64>,
     /// When a setting last changed, so the shell can re-render the scene
     /// soon after instead of every frame while the menu is used.
-    pub changed: Option<std::time::Instant>,
+    pub changed: Option<web_time::Instant>,
     /// The game's light had automatic exposure on (before this menu).
     game_auto_exposure: bool,
     /// The newest exposure and meter reading of view 0 (EV100).
@@ -215,7 +215,7 @@ impl EngineDebug {
     /// Apply an engine action; a game's action (or a reset, which the game
     /// should also see) is returned for [`crate::Game::debug_action`].
     fn apply(&mut self, action: DebugAction) -> Option<DebugAction> {
-        self.changed = Some(std::time::Instant::now());
+        self.changed = Some(web_time::Instant::now());
         let s = &mut self.s;
         let pct = |v: f64, lo: f64, hi: f64| (v / 100.0).clamp(lo, hi) as f32;
         match action {

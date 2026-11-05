@@ -3,7 +3,8 @@
 //! sees the previous broadcast. Only mip 2 (512 square) and below are written.
 //! Pair the layer with EMISSIVE | LIVE_SCREEN; larger mips stay unused/black.
 use crate::{Gpu, ViewRect};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 use wgpu::util::DeviceExt;
 
 pub const BASE_MIP: u32 = 2;

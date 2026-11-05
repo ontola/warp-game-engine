@@ -27,7 +27,7 @@ fn same(a:vec4<u32>,b:vec4<u32>)->bool {
     return a.x==b.x && a.y==b.y && a.w==b.w;
 }
 fn hash(k:vec4<u32>)->u32 {
-    var h=k.x*0x9e3779b9u ^ k.y*0x85ebca6bu ^ k.w*0xc2b2ae35u;
+    var h=(k.x*0x9e3779b9u) ^ (k.y*0x85ebca6bu) ^ (k.w*0xc2b2ae35u);
     h=(h^(h>>16u))*0x7feb352du;return (h^(h>>15u))&(config.counts.z-1u);
 }
 fn lookup(key:vec4<u32>)->u32 {

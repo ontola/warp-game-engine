@@ -1418,7 +1418,7 @@ struct Footprint {
 var<private> fp: Footprint;
 
 fn track_tile(key:vec2<i32>)->vec4<i32> {
-    var h=bitcast<u32>(key.x)*0x9e3779b9u ^ bitcast<u32>(key.y)*0x85ebca6bu;
+    var h=(bitcast<u32>(key.x)*0x9e3779b9u) ^ (bitcast<u32>(key.y)*0x85ebca6bu);
     h^=h>>16u;h*=0x7feb352du;h^=h>>15u;
     for(var probe=0u;probe<8u;probe++) {
         let index=(h+probe)&0xffffu;
@@ -1616,7 +1616,7 @@ override ROCK_VARIATION: bool = false;
 // World-cell hash: integer arithmetic keeps negative coordinates and distant
 // mountains stable, without the precision loss of sin(large_coordinate).
 fn rock_hash(cell: vec2<i32>, seed: u32) -> f32 {
-    var h = bitcast<u32>(cell.x) * 0x9e3779b9u ^ bitcast<u32>(cell.y) * 0x85ebca6bu ^ seed;
+    var h = (bitcast<u32>(cell.x) * 0x9e3779b9u) ^ (bitcast<u32>(cell.y) * 0x85ebca6bu) ^ seed;
     h ^= h >> 16u; h *= 0x7feb352du; h ^= h >> 15u;
     h *= 0x846ca68bu; h ^= h >> 16u;
     return f32(h >> 8u) / 16777216.0;

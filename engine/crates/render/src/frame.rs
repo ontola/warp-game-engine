@@ -1019,7 +1019,7 @@ fn bind(gpu: &Gpu, layout: &wgpu::BindGroupLayout, entries: &[(u32, wgpu::Bindin
 /// Mips are built on all cores.
 fn texture_array(gpu: &Gpu, label: &'static str, images: &[Option<&image::RgbaImage>], size: u32, format: wgpu::TextureFormat, fill: [u8; 4], cutout_layers: &[bool], profile: &mut crate::startup_profile::Trace) -> wgpu::Texture {
     let enabled=profile.enabled();
-    let allocation_start=enabled.then(std::time::Instant::now);
+    let allocation_start=enabled.then(web_time::Instant::now);
     let linear_cutout_rgb = std::env::var("KERN_CUTOUT_LINEAR_RGB").as_deref() != Ok("0");
     let layers = images.len().max(1) as u32;
     let mips = size.ilog2() + 1;
@@ -1038,7 +1038,7 @@ fn texture_array(gpu: &Gpu, label: &'static str, images: &[Option<&image::RgbaIm
     let cache=crate::texture_cache::Cache::from_env();
     let chain = |src: Option<&image::RgbaImage>, preserve_alpha: bool, layer:usize| {
         let settings=crate::texture_cache::Settings{size,format,fill,preserve_alpha,linear_cutout_rgb};
-        let total=enabled.then(std::time::Instant::now);
+        let total=enabled.then(web_time::Instant::now);
         let mut cache_profile=crate::startup_profile::TextureCacheProfile::default();
         let (cached,key)=cache.load(src,settings,enabled,&mut cache_profile);
         let (out,mut timing)=if let Some(out)=cached {
@@ -1057,14 +1057,14 @@ fn texture_array(gpu: &Gpu, label: &'static str, images: &[Option<&image::RgbaIm
     // Linear RGBA scratch is 16 bytes/texel, plus resize/frontier storage.
     // Bound transient CPU memory while building large cutout colour arrays.
     let threads = if format == wgpu::TextureFormat::Rgba8UnormSrgb { threads.min(4) } else { threads };
-    let build_start=enabled.then(std::time::Instant::now);
-    let chains: Vec<(Vec<image::RgbaImage>,crate::startup_profile::TextureLayerProfile)> = std::thread::scope(|sc| {
+    let build_start=enabled.then(web_time::Instant::now);
+    let chains: Vec<(Vec<image::RgbaImage>,crate::startup_profile::TextureLayerProfile)> = crate::par::scope(|sc| {
         let per = images.len().div_ceil(threads).max(1);
         let handles: Vec<_> = images.chunks(per).enumerate().map(|(chunk, part)| sc.spawn(move || part.iter().enumerate().map(|(index, i)| chain(*i, cutout_layers.get(chunk * per + index).copied().unwrap_or(false),chunk*per+index)).collect::<Vec<_>>())).collect();
         handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
     });
     let build_wall_ms=crate::startup_profile::elapsed(build_start);
-    let upload_start=enabled.then(std::time::Instant::now);
+    let upload_start=enabled.then(web_time::Instant::now);
     for (layer, (mips,_)) in chains.iter().enumerate() {
         for (mip, img) in mips.iter().enumerate() {
             let s = img.width();
@@ -1078,7 +1078,7 @@ fn texture_array(gpu: &Gpu, label: &'static str, images: &[Option<&image::RgbaIm
     }
     let upload_cpu_ms=crate::startup_profile::elapsed(upload_start);
     let layers=if enabled {chains.iter().map(|(_,p)|p.clone()).collect()}else{Vec::new()};
-    let release_start=enabled.then(std::time::Instant::now);
+    let release_start=enabled.then(web_time::Instant::now);
     drop(chains);
     profile.texture(crate::startup_profile::TextureArrayProfile {name:label,size,layers,workers:threads.min(images.len()),
         allocation_cpu_ms,build_wall_ms,upload_cpu_ms,release_cpu_ms:crate::startup_profile::elapsed(release_start)});
@@ -3868,7 +3868,7 @@ impl Renderer {
         // A saturated validation queue defers new pages. Never drop their
         // overflow checks or drain the GPU to make room during gameplay.
         let page_update_budget=if async_pages && !shadow_validation.as_ref().unwrap().available(){0}else{8};
-        let page_prepare_started=std::time::Instant::now();
+        let page_prepare_started=web_time::Instant::now();
         let page_plan=if sun_needed {
             self.foliage_sun_pages.prepare(gpu,light.sun_dir,light.alpha_cut,page_lod,&page_views,page_update_budget)?
         } else { crate::foliage_sun_pages::Plan::disabled() };

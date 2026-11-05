@@ -2,7 +2,7 @@
 //! (`KERN_CPU_SPANS=1`): named marks between phases of `frame_output`,
 //! averaged per frame until read. No cost when off beyond one branch.
 use std::sync::Mutex;
-use std::time::Instant;
+use web_time::Instant;
 
 #[derive(Default)]
 pub struct Collector { acc: Mutex<(Vec<(&'static str, f64)>, u64)> }

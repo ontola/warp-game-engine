@@ -60,3 +60,34 @@ Chrome, which wgpu does not run), which may reject shaders naga accepts.
 - CPU cost while flying: about 64 ms per frame on Mancave at first, since
   cut to about 4.8 ms by the render benchmark work; in a browser it runs on
   one thread and slower than native.
+
+## Prototype in headless Chrome
+
+Same evening, with the browser shell (`app::web`, `engine/tools/build-web.py`)
+in headless Chromium (Playwright's build) on SwiftShader, flags
+`--enable-unsafe-webgpu --use-gl=angle --use-angle=swiftshader`. (Chrome's
+headless shell with `--use-vulkan=swiftshader` loses the device at the
+first canvas present: "Could not find SharedImageBackingFactory"; a bare
+WebGPU canvas page does the same, so it is the setup, not Warp.)
+
+- `terrain_fly_bg.wasm` is 7.5 MB; the page also fetches 24 MB of ground
+  textures. Wasm memory 379 MB after the first frame.
+- `?trees=0`: world built and first frame submitted 2.1 s after load; the
+  frame loop ran 1024 frames without a crash.
+- With trees the page was still building after 4 minutes: the tree assets
+  are cooked from scratch on one thread (natively they come from
+  `build/cook-cache`, 264 MB for this forest).
+- SwiftShader offers 10 storage buffers per stage, so the `scene` (12) and
+  `view cull` (11) layouts fail and nothing is drawn here. A real GPU in
+  Chrome offers 16 or more.
+- Chrome's WGSL compiler (Tint) rejected, one error per module:
+  - `x*a ^ y*b` without parentheses (5 shaders): fixed.
+  - Barriers after branches on plain workgroup reads (`cluster_traversal`,
+    `cull`): fixed with `workgroupUniformLoad`.
+  - Still open: in `cull.wgsl`, barriers in `cluster_traverse` follow early
+    returns on per-instance values (`instance_policy`, the traversal's
+    sanity checks) that are the same for the whole workgroup but which
+    WGSL's uniformity analysis cannot prove. Naga does not run that
+    analysis, so native builds never see it. Fixing it means deciding those
+    in one lane and sharing them with `workgroupUniformLoad`. Other modules
+    may have more: Tint stops at the first error per module.

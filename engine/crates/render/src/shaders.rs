@@ -137,6 +137,11 @@ pub(crate) fn source(name: &str) -> String {
 pub fn checked<T>(gpu: &crate::Gpu, build: impl FnOnce() -> T) -> Result<T, String> {
     let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let value = build();
+    // A browser answers the scope later, on its own event loop, so waiting
+    // here would never return: its errors go to the device's handler.
+    #[cfg(target_arch = "wasm32")]
+    { drop(scope.pop()); return Ok(value); }
+    #[cfg(not(target_arch = "wasm32"))]
     match pollster::block_on(scope.pop()) {
         Some(e) => Err(e.to_string()),
         None => Ok(value),
@@ -279,7 +284,7 @@ mod tests {
     }
     #[test]
     fn lighting_snapshot_is_immutable_across_disk_edits_and_partial_directories() {
-        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let unique = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).unwrap().as_nanos();
         let path = std::env::temp_dir().join(format!("kern-shader-snapshot-{}-{unique}", std::process::id()));
         std::fs::create_dir(&path).unwrap();
         let file = path.join("shade.wgsl");

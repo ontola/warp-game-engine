@@ -13,7 +13,7 @@
 
 use crate::meadow_data::{GpuMeadowVertex, MeadowGeometry, ROOT_CELL, VARIANTS};
 use glam::DVec3;
-use std::time::Instant;
+use web_time::Instant;
 
 pub const VIEW_COUNT: u32 = 24;
 pub const SIZE: u32 = 32;

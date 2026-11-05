@@ -182,7 +182,7 @@ pub fn bake_emission(grid: &Grid, boxes: &[Affine3A], emitters: &[PlaneEmitter],
     let denom: [f32;6] = std::array::from_fn(|a| directions.iter().map(|d| axes[a].dot(*d).max(0.0)).sum());
     let mut probes = vec![Probe::default();grid.count()];
     let chunk = grid.count().div_ceil(4);
-    std::thread::scope(|scope| {
+    crate::par::scope(|scope| {
         for (group,out) in probes.chunks_mut(chunk).enumerate() {
             let (tree,directions,axes,denom) = (&tree,&directions,&axes,&denom);
             scope.spawn(move || {
@@ -278,7 +278,7 @@ pub fn bake(grid: &Grid, boxes: &[Affine3A], rays: usize) -> Result<Vec<Probe>, 
         std::array::from_fn(|a| directions.iter().map(|d| axes[a].dot(*d).max(0.0)).sum());
     let mut probes = vec![Probe::default(); grid.count()];
     let chunk = grid.count().div_ceil(4);
-    std::thread::scope(|scope| {
+    crate::par::scope(|scope| {
         for (group, out) in probes.chunks_mut(chunk).enumerate() {
             let tree = &tree;
             let directions = &directions;
@@ -353,7 +353,7 @@ pub fn bake_diffuse(
         std::array::from_fn(|a| directions.iter().map(|d| axes[a].dot(*d).max(0.)).sum());
     let mut result = sky.clone();
     let chunk = grid.count().div_ceil(4);
-    std::thread::scope(|scope| {
+    crate::par::scope(|scope| {
         for (group, out) in result.chunks_mut(chunk).enumerate() {
             let tree = &tree;
             let sky = &sky;
@@ -425,7 +425,7 @@ pub fn bake_sun(
     let denom: [f32; 6] =
         std::array::from_fn(|a| directions.iter().map(|d| axes[a].dot(*d).max(0.)).sum());
     let chunk = grid.count().div_ceil(4);
-    std::thread::scope(|scope| {
+    crate::par::scope(|scope| {
         for (group, out) in result.chunks_mut(chunk).enumerate() {
             let tree = &tree;
             let directions = &directions;

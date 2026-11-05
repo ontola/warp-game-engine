@@ -187,7 +187,7 @@ impl BoxRoom {
             let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(16);
             let per = count.div_ceil(threads).max(1);
             let prev = previous.as_deref();
-            let probes: Vec<Probe> = std::thread::scope(|scope| {
+            let probes: Vec<Probe> = crate::par::scope(|scope| {
                 let handles: Vec<_> = (0..count).step_by(per).map(|start| scope.spawn(move || {
                     (start..(start + per).min(count)).map(|i| {
                         let p = grid.position(i);

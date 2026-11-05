@@ -310,7 +310,7 @@ pub struct PopulationSeed {base:std::sync::Arc<crate::foliage_population::Popula
 pub struct PreparedPopulation {base:std::sync::Arc<crate::foliage_population::Population>,update:crate::foliage_population::Update,changes:Vec<RootChange>,prepare_cpu_ms:f64}
 impl PopulationSeed {
     pub fn prepare(self,roots:&[crate::foliage_population::WorldRoot])->Result<PreparedPopulation,String> {
-        let started=std::time::Instant::now();
+        let started=web_time::Instant::now();
         if roots.iter().any(|r|r.placement.variant>=self.templates.len()){return Err("unknown forest species".into());}
         let update=self.base.plan(roots)?;
         let parked=RootPlacement {up:Vec3::Y,pos:Vec3::new(0.,-100000.,0.),yaw:0.,scale:1.,variant:0};
@@ -436,8 +436,8 @@ impl Runtime {
         let mut population=self.population.lock().unwrap();
         if !std::sync::Arc::ptr_eq(&population,&prepared.base){return Err("stale GPU forest population transaction".into());}
         let PreparedPopulation {update,changes,prepare_cpu_ms,..}=prepared;
-        let started=std::time::Instant::now();apply(&changes)?;let proxy_cpu_ms=started.elapsed().as_secs_f64()*1000.;
-        let started=std::time::Instant::now();
+        let started=web_time::Instant::now();apply(&changes)?;let proxy_cpu_ms=started.elapsed().as_secs_f64()*1000.;
+        let started=web_time::Instant::now();
         if !changes.is_empty() {
             let mut encoder=gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {label:Some("forest population publish")});
             // Bound each upload even when every reserved root changes at once.

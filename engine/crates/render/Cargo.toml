@@ -8,6 +8,8 @@ description = "Kern's renderer: GPU-driven clusters with LOD, visibility buffer,
 dlss = ["dep:ash"]
 
 [dependencies]
+# std::time::Instant panics in a browser (wasm32); this is std's on native.
+web-time = "1.1"
 wgpu = "30"
 pollster = "1"
 bytemuck = { version = "1", features = ["derive"] }

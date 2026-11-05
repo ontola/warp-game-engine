@@ -6,7 +6,8 @@
 //! lobby after Resume.
 
 use crate::Screen;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 use winit::dpi::PhysicalPosition;
 use winit::window::{Fullscreen, Window};
 
@@ -190,7 +191,7 @@ fn fills(w: &Window) -> bool {
 /// The time of day (UTC, as the host's log) for log lines that must line up
 /// with the host's: `10:47:08.421`.
 pub fn stamp() -> String {
-    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis()) % 86_400_000;
+    let ms = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_millis()) % 86_400_000;
     format!("{:02}:{:02}:{:02}.{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000)
 }
 

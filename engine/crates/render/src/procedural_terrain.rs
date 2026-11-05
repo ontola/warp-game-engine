@@ -81,7 +81,7 @@ pub fn sun_heightfield(seed: u32, style: &terrain_field::Style, constraints: Opt
     let threads = std::thread::available_parallelism().map_or(4, |t| t.get());
     let rows = n.div_ceil(threads);
     let mut raw = vec![0.0f32; n * n];
-    std::thread::scope(|s| {
+    crate::par::scope(|s| {
         for (k, chunk) in raw.chunks_mut(rows * n).enumerate() {
             s.spawn(move || {
                 for (i, h) in chunk.iter_mut().enumerate() {
@@ -120,7 +120,7 @@ fn bake_sun(raw: &[f32], n: usize, cell: f32, sun: Vec3) -> Vec<f32> {
     let threads = std::thread::available_parallelism().map_or(4, |t| t.get());
     let rows = n.div_ceil(threads);
     let mut vis = vec![1.0f32; n * n];
-    std::thread::scope(|s| {
+    crate::par::scope(|s| {
         for (k, chunk) in vis.chunks_mut(rows * n).enumerate() {
             s.spawn(move || {
                 for (i, v) in chunk.iter_mut().enumerate() {
@@ -1020,10 +1020,10 @@ mod tests {
             // A Retina window at 5K renders at 5120x2880.
             let views = [TerrainView::new(&camera, 5120, 2880)];
             let raw = t.select(&views).len();
-            let started = std::time::Instant::now();
+            let started = web_time::Instant::now();
             let fit = t.select_within_budget(&views).len();
             let first = started.elapsed().as_secs_f64() * 1e3;
-            let started = std::time::Instant::now();
+            let started = web_time::Instant::now();
             t.select_within_budget(&views);
             eprintln!("at {pos:?}: wanted {raw}, fits {fit} at lod {:.2} in {first:.1} ms, next frame {:.1} ms", t.lod, started.elapsed().as_secs_f64() * 1e3);
             assert!(fit <= 16384 * 9 / 10, "{fit} patches");
