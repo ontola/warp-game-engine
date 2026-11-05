@@ -1497,3 +1497,34 @@ Integration check: rebased onto effa40f (HDR/exposure, VR, stone changes);
 release DLSS-enabled terrain_fly build and a 60-frame headless lowland GPU smoke
 run PASS. Smoke is not a steady-state performance sample. Logs:
 build/playtest-unified/seed-rebase-build.log and seed-rebase-smoke.log.
+
+
+## 5 November: runtime-sized consumer choices (capacity checkpoint)
+
+Correctness first: oversized coarse cells are still a failed requirement. This
+checkpoint removes the fixed 64 KiB/16,384-choice consumer table restriction;
+it does not establish pixel-scale correctness for the normal forest.
+
+- [x] Cull, source raster and voxel lookup use runtime-sized storage arrays.
+  GPU forest view allocations grow with the physical slot budget; legacy
+  authored tables retain their 16,384-entry capacity. Producer camera/shadow
+  strides remain allocation-sized. Default branch budget remains unchanged.
+- [x] Remain within sixteen storage bindings, including temporal voxels. Cull
+  traversal diagnostics share the phase-counter allocation at byte 128. Voxel
+  indirect draw arguments share diagnostics at byte 88, before the tile mask.
+  Partial clears preserve independent lifetimes and draw offsets are explicit.
+- [x] Real GPU boundary oracle uses each production consumer's declaration and
+  decoding functions at indices 0, 16383, 16384, 32767, 32768 and 65536. All
+  match CPU unpacked values. GPU partial-clear lifetime oracle passes.
+- [x] Focused release tests: voxel_forest 28, cluster_traversal 6,
+  tree_occlusion 7; includes ignored exclusive-GPU tests on NVIDIA/Vulkan.
+- [ ] Normal renderer capture above the former capacity limit, native and
+  temporal paths, with source/shadow/voxel counters and image inspection.
+- [ ] Full-forest strict one-pixel acceptance and motion/coverage validation.
+- [ ] Repeated per-pass measurements and four-view target acceptance.
+
+No visual fix or speedup is claimed. The relaxed GPU population guard still
+checks the virtual owner encoding; hardware buffer limits remain applicable.
+Tests above ran before rebasing onto concurrent main changes. The obsolete
+uniform-declaration assertion failed initially and was removed from the
+unrelated per-ray arithmetic test; the actual GPU boundary oracle replaces it.

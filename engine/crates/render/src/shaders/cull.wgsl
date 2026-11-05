@@ -78,15 +78,15 @@ fn instance_at(id: u32) -> Instance {
 // 24/25: spatial owner tests/compacted,26 resident cluster loop visits,
 // 27 full-scan fallbacks,28 phase-local early-grass scratch,
 // 29/30 phase-local expected/visited owners,31 traversal-mismatch fallbacks.
-@group(1) @binding(2) var<storage, read_write> counter: array<atomic<u32>, 32>;
+@group(1) @binding(2) var<storage, read_write> counter: array<atomic<u32>, 40>;
 // Four draw records followed by four bucket starts.
 @group(1) @binding(3) var<storage, read_write> args: array<u32, 20>;
 @group(1) @binding(4) var<storage, read_write> draw_map: array<u32>;
-@group(1) @binding(5) var<uniform> foliage_selection_words: array<vec4<u32>,4096>;
-fn foliage_selection_word(i:u32)->u32 {return foliage_selection_words[i>>2u][i&3u];}
+@group(1) @binding(5) var<storage,read> foliage_selection_words: array<u32>;
+fn foliage_selection_word(i:u32)->u32 {return foliage_selection_words[i];}
 fn foliage_selection_at(i:u32)->vec4<u32> {return selection_unpack(foliage_selection_word(i));}
 // Packed group selection (aggregate_lod.wgsl writes it): one u32 per group,
-// four per vec4 of the 64 KiB uniform, 16384 groups. Bits 0-1 choice, 2-7
+// runtime-sized storage table. Bits 0-1 choice, 2-7
 // voxel level (63: none), 8-9 sun mode, 16-31 the triangle error as f16.
 fn selection_unpack(w:u32)->vec4<u32> {
     let y=(w>>2u)&63u;

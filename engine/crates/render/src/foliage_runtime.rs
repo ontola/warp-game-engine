@@ -142,7 +142,7 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
     let population=crate::foliage_population::Population::new(world,capacity)?;
     let parked=RootPlacement {up:Vec3::Y,pos:Vec3::new(0.,-100000.,0.),yaw:0.,scale:1.,variant:0};
     let trees=population.slots.iter().map(|r|r.map(|r|r.placement).unwrap_or(parked)).collect::<Vec<_>>();
-    if slots==0 || slots as usize>crate::voxel_forest::MAX_VIEW_GROUPS || trees.is_empty() || plants.is_empty()
+    if slots==0 || slots>=1<<19 || trees.is_empty() || plants.is_empty()
         || trees.iter().any(|t|t.variant>=plants.len()||!t.scale.is_finite()||t.scale<=0.) {return Err("invalid GPU forest population/budget".into());}
     let poses=plants.iter().map(|p|p.stats().branches).sum::<usize>();
     let mut limits=AttachLimits {virtual_members:true,max_poses:poses.max(64),max_primitive_instances:1<<19,..Default::default()};
