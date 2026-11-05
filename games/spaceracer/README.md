@@ -258,8 +258,9 @@ All ten host settings are declared and validated by `rules/party.luau`. Laps,
 difficulty, world, seed and pickup placement wait for the next race. Boost cost,
 energy regeneration and crash recovery apply live; duration affects the next
 boost. Graphics presets change LOD error, motion blur and nearby shadows, not
-resolution. The optional new-race action rolls a new seed; a later host Prepare
-uses the configured seed again (zero means random).
+resolution. The app's New race action races the settings again: seed 0 and the
+Random world pick anew, a fixed seed or world stays. Start opens the race menu
+in the game; only Back goes to the lobby.
 
 Register the packaged native build locally on Windows:
 

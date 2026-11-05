@@ -165,13 +165,16 @@ impl Racer {
         self.race_started = true;
         Ok(())
     }
+    /// Pick anew whatever is set to Random; the rest stays as chosen.
+    fn roll_random(&mut self) -> Result<(), String> {
+        let defaults: serde_json::Value = self.race.rules.call("menu_defaults", json!({"entropy":menu_entropy()}))?;
+        if self.random_seed { self.seed=defaults["seed"].as_i64().ok_or("random seed")?.clamp(1,99999); }
+        if self.random_biome { self.biome=defaults["biome"].as_u64().ok_or("random world")?.min(4) as usize; }
+        if self.random_difficulty { self.difficulty=defaults["difficulty"].as_u64().ok_or("random difficulty")?.min(2) as usize; }
+        Ok(())
+    }
     fn start_new_race(&mut self) -> Result<(), String> {
-        if self.party.is_none() {
-            let defaults: serde_json::Value = self.race.rules.call("menu_defaults", json!({"entropy":menu_entropy()}))?;
-            if self.random_seed { self.seed=defaults["seed"].as_i64().ok_or("random seed")?.clamp(1,99999); }
-            if self.random_biome { self.biome=defaults["biome"].as_u64().ok_or("random world")?.min(4) as usize; }
-            if self.random_difficulty { self.difficulty=defaults["difficulty"].as_u64().ok_or("random difficulty")?.min(2) as usize; }
-        }
+        self.roll_random()?;
         self.restart()
     }
     fn random_race(&mut self) -> Result<(), String> {
@@ -209,6 +212,7 @@ impl Racer {
         match key {
             "seed" => {
                 let n = value.as_i64().unwrap();
+                self.random_seed = n == 0;
                 if n > 0 {
                     self.seed = n;
                 }
@@ -220,10 +224,9 @@ impl Racer {
                     .unwrap()
             }
             "biome" => {
-                self.biome = BIOMES
-                    .iter()
-                    .position(|s| Some(*s) == value.as_str())
-                    .unwrap()
+                let world = BIOMES.iter().position(|s| Some(*s) == value.as_str());
+                self.random_biome = world.is_none();
+                self.biome = world.unwrap_or(self.biome);
             }
             _ => {}
         }
@@ -400,19 +403,22 @@ impl Game for Racer {
                             .count()
                             .clamp(1, 4);
                         let seed = self.preferences.values["seed"].as_i64().unwrap_or(0);
-                        self.seed = if seed == 0 {
-                            (self.seed * 48271) % 99999 + 1
-                        } else {
-                            seed
-                        };
+                        self.random_seed = seed == 0;
+                        self.random_biome = self.preferences.values["biome"] == "random";
+                        if seed != 0 {
+                            self.seed = seed;
+                        }
+                        if let Err(e) = self.roll_random() {
+                            self.fatal = Some(e);
+                        }
                         self.ready = true;
                         prepare = true;
                     }
                     party::Event::Roster => {
                         self.sync_profiles();
                     }
-                    party::Event::Random => {
-                        if let Err(e) = self.random_race() {
+                    party::Event::NewRace => {
+                        if let Err(e) = self.start_new_race() {
                             self.fatal = Some(e);
                         }
                     }
