@@ -30,6 +30,7 @@ struct Demand {count:atomic<u32>,bucket:u32,prefix:u32,failed:atomic<u32>};
 @group(0) @binding(13) var<storage,read_write> state:array<atomic<u32>>;
 struct Parked { task:vec4<u32>, proposal:Proposal };
 @group(0) @binding(14) var<storage,read_write> parked:array<Parked>;
+@group(0) @binding(15) var<storage,read_write> record_consumers:array<u32>;
 const NONE:u32=0xffffffffu;
 fn ready(rep:u32)->bool {
  if atomicLoad(&pages[rep].requested)==0u {atomicOr(&pages[rep].requested,1u);}
@@ -250,7 +251,7 @@ fn publish(task:vec4<u32>) {
  if !resident {atomicStore(&fallback[task.x],4u);return;}
  if (n.links.w&2u)!=0u {direct[task.x]=n.links.z+1u;atomicAdd(&counters[7],1u);return;}
  let at=atomicAdd(&counters[0],1u);atomicAdd(&demand[task.x].count,1u);
- if at<view.counts.y {records[at]=vec4<u32>(task.x,task.y,n.links.z,trees[task.x].info.y);}
+ if at<view.counts.y {records[at]=vec4<u32>(task.x,task.y,n.links.z,trees[task.x].info.y);record_consumers[at]=task.z;}
  else {atomicStore(&fallback[task.x],1u);atomicAdd(&counters[3],1u);}
 }
 fn state_park_index(at:u32,p:Proposal)->u32 {

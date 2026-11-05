@@ -106,6 +106,8 @@ pub struct Selector {
     pub(crate) _nodes:wgpu::Buffer,pub(crate) _instances:wgpu::Buffer,pub(crate) uniform:wgpu::Buffer,
     /// vec4(instance ID, node ID, representation ID, generation).
     pub records:wgpu::Buffer,
+    /// Per-record camera256/shadow512 demand. Zero is the legacy union contract.
+    pub record_consumers:wgpu::Buffer,
     pub asset_requests:wgpu::Buffer,pub(crate) asset_pages:wgpu::Buffer,asset_state:std::sync::Mutex<Vec<[u32;4]>>,pinned_pages:Vec<bool>,compact_assets:wgpu::ComputePipeline,
     deferred:wgpu::Buffer,
     /// count, deferred count, deferred overflow, output overflow, tested,
@@ -138,7 +140,7 @@ impl Selector {
         validate(nodes,instances,capacity)?;
         let limit=gpu.device.limits();
         if work_capacity<(instances.len()as u32) || work_capacity.div_ceil(64)>limit.max_compute_workgroups_per_dimension
-            || limit.max_storage_buffers_per_shader_stage<14 || limit.max_compute_workgroups_per_dimension<32768 {return Err("foliage work queue exceeds device limits".into());}
+            || limit.max_storage_buffers_per_shader_stage<15 || limit.max_compute_workgroups_per_dimension<32768 {return Err("foliage work queue exceeds device limits".into());}
         let page_count=nodes.iter().map(|n|n.links[2]).max().unwrap_or(0).checked_add(1).ok_or("asset page ID overflow")?;
         if page_count>1<<20 {return Err("asset page catalog exceeds bounded request capacity".into());}
         let mut pinned_pages=vec![false;page_count as usize];
@@ -185,7 +187,7 @@ impl Selector {
             let make=|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
             Self {refiner:crate::foliage_refine::Refiner::new(gpu,work_capacity),asset_pages:upload("foliage asset publication",bytemuck::cast_slice(&asset_state)),asset_requests:storage("foliage compact asset demand",16+page_count as u64*16),asset_state:std::sync::Mutex::new(asset_state),pinned_pages,compact_assets:make("compact_asset_requests"),children:upload("shared foliage child spans",bytemuck::cast_slice(&children)),work:[storage("unused legacy frontier A",24),storage("unused legacy frontier B",24)],levels,
                 _nodes:upload("shared foliage hierarchy",bytemuck::cast_slice(nodes)),_instances:upload("persistent foliage instances",bytemuck::cast_slice(instances)),uniform,
-                records:storage("selected foliage records",capacity as u64*16),deferred:storage("deferred foliage subtrees",deferred_capacity as u64*8),
+                records:storage("selected foliage records",capacity as u64*16),record_consumers:storage("selected foliage consumers",capacity as u64*4),deferred:storage("deferred foliage subtrees",deferred_capacity as u64*8),
                 counters:storage("foliage selection counters",64),arguments:storage("foliage indirect arguments",24),fallback:storage("foliage root fallbacks",instances.len()as u64*4),
                 direct:storage("direct resident forest roots",instances.len()as u64*4),
                 demand:storage("forest root demand",instances.len()as u64*16),bucket_cost:storage("forest priority costs",(instances.len().div_ceil(256)as u64+1)*128),first:make("first"),second:make("second"),finish:make("finish"),layout,count:instances.len()as u32,capacity,deferred_capacity,binds:Default::default()}
@@ -230,7 +232,7 @@ impl Selector {
         if !vp.is_finite() || !previous_vp.is_finite() || size.contains(&0) || !error.is_finite() || error<0. {return Err("invalid foliage selection view".into());}
         gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers:[Consumer::zeroed();32],consumer_count:[0;4],vp:vp.to_cols_array(),previous_vp:previous_vp.to_cols_array(),
             pixels:[size[0]as f32,size[1]as f32,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(history_valid)]}));
-        enc.clear_buffer(&self.counters,0,None);enc.clear_buffer(&self.fallback,0,None);enc.clear_buffer(&self.direct,0,None);
+        enc.clear_buffer(&self.counters,0,None);enc.clear_buffer(&self.fallback,0,None);enc.clear_buffer(&self.direct,0,None);enc.clear_buffer(&self.record_consumers,0,None);
         let bind=self.bind(gpu,hzb);let mut pass=enc.begin_compute_pass(&Default::default());
         pass.set_bind_group(0,&bind,&[]);pass.set_pipeline(&self.first);pass.dispatch_workgroups(self.count.div_ceil(64),1,1);
         pass.set_pipeline(&self.finish);pass.dispatch_workgroups(1,1,1);drop(pass);
@@ -259,7 +261,7 @@ impl Selector {
         }
         gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers,consumer_count:[views.len()as u32,branch_budget,raster_budget[0],raster_budget[1]],
             vp:views[0].projection.view_projection.to_cols_array(),previous_vp:views[0].projection.view_projection.to_cols_array(),pixels:[0.,0.,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,0]}));
-        enc.clear_buffer(&self.counters,0,None);enc.clear_buffer(&self.fallback,0,None);enc.clear_buffer(&self.direct,0,None);
+        enc.clear_buffer(&self.counters,0,None);enc.clear_buffer(&self.fallback,0,None);enc.clear_buffer(&self.direct,0,None);enc.clear_buffer(&self.record_consumers,0,None);
         let binds=[self.bind_work(gpu,empty_depth,0),self.bind_work(gpu,empty_depth,1)];
         self.refiner.encode(gpu,enc,self);
         enc.clear_buffer(&self.asset_requests,0,Some(16));

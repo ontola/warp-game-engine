@@ -467,7 +467,8 @@ impl Runtime {
         }
         let voxels=choices[..self.slots as usize].iter().filter(|w|**w&3==1).count()as u32;
         let shadow_voxel_slots=choices[16384..16384+self.slots as usize].iter().filter(|w|**w&3==1).count()as u32;
-        Ok(Diagnostics {camera_refinement_limits:CameraRefinementLimits {over_target:refinement[48],branch_slots:refinement[49],camera_splats:refinement[50],shadow_splats:refinement[51],missing_pages:refinement[52],no_children:refinement[53],affordable_resident:refinement[54]},selected_source_consumers:ConsumerCounts::from_words(&refinement[32..36]),selected_voxel_consumers:ConsumerCounts::from_words(&refinement[36..40]),selected_direct_consumers:ConsumerCounts::from_words(&refinement[40..44]),selected_spatial_error_pixels:[f32::from_bits(refinement[19]),f32::from_bits(refinement[20])],selected_error_target_ratio:[f32::from_bits(refinement[21]),f32::from_bits(refinement[22])],selected_over_target:[refinement[23],refinement[24]],error_unknown_proxies:refinement[25],error_unmatched_direct:refinement[26],error_forced_nodes:refinement[27],reserved_raster_splats:[refinement[1],refinement[2]],refinement_budget_stops:refinement[17],refinement_faults:refinement[15],reused_refinement_proposals:refinement[28],dormant_records:refinement[29],dormant_wakes:refinement[60],dormant_wake_passes:refinement[62],dormant_park_events:refinement[61],dormant_overflows:refinement[63],camera_roots,shadow_only_roots,camera_fallback_roots,shadow_only_fallback_roots,camera_published_branches,shadow_only_published_branches,trees:self.trees,active_roots:self.population.lock().unwrap().active(),branch_capacity:self.slots,selected_records:c[0],tested_nodes:c[4],source_slots:r[6].saturating_sub(voxels),voxel_slots:voxels,shadow_voxel_slots,direct_roots:c[7],
+        let camera_disabled=choices[..self.slots as usize].iter().filter(|w|**w&3==3).count()as u32;
+        Ok(Diagnostics {camera_refinement_limits:CameraRefinementLimits {over_target:refinement[48],branch_slots:refinement[49],camera_splats:refinement[50],shadow_splats:refinement[51],missing_pages:refinement[52],no_children:refinement[53],affordable_resident:refinement[54]},selected_source_consumers:ConsumerCounts::from_words(&refinement[32..36]),selected_voxel_consumers:ConsumerCounts::from_words(&refinement[36..40]),selected_direct_consumers:ConsumerCounts::from_words(&refinement[40..44]),selected_spatial_error_pixels:[f32::from_bits(refinement[19]),f32::from_bits(refinement[20])],selected_error_target_ratio:[f32::from_bits(refinement[21]),f32::from_bits(refinement[22])],selected_over_target:[refinement[23],refinement[24]],error_unknown_proxies:refinement[25],error_unmatched_direct:refinement[26],error_forced_nodes:refinement[27],reserved_raster_splats:[refinement[1],refinement[2]],refinement_budget_stops:refinement[17],refinement_faults:refinement[15],reused_refinement_proposals:refinement[28],dormant_records:refinement[29],dormant_wakes:refinement[60],dormant_wake_passes:refinement[62],dormant_park_events:refinement[61],dormant_overflows:refinement[63],camera_roots,shadow_only_roots,camera_fallback_roots,shadow_only_fallback_roots,camera_published_branches,shadow_only_published_branches,trees:self.trees,active_roots:self.population.lock().unwrap().active(),branch_capacity:self.slots,selected_records:c[0],tested_nodes:c[4],source_slots:r[6].saturating_sub(voxels+camera_disabled),voxel_slots:voxels,shadow_voxel_slots,direct_roots:c[7],
             fallback_trees:fallback.iter().filter(|f|**f!=0).count()as u32,retained:r[2],assigned:r[3],slot_failures:r[4],hash_failures:r[5],frontier_overflow_requests:c[11],peak_frontier_requests:c[15],pose_hash_failures:poses[64],pose_requests:poses[65],evaluated_shared_poses:poses[66]})
     }
     pub fn encode(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::part_wind::AnimationView],first_owner:u32)->Result<(),String> {
@@ -699,14 +700,23 @@ impl Runtime {
         let instances=upload(bytemuck::cast_slice(&scene.instances));let volumes=upload(bytemuck::cast_slice(&scene.voxel_forest.as_ref().unwrap().instances));
         let runtime=Runtime::new(&gpu,&spec,&instances,&volumes).unwrap();
         let view=crate::part_wind::AnimationView {view_projection:Mat4::perspective_infinite_reverse_rh(1.,1.,0.05)*Mat4::look_at_rh(Vec3::new(0.3,0.4,20.),Vec3::new(0.3,0.4,0.),Vec3::Y),viewport:[512;2]};
+        for roles in [256u32,512,768] {
         for time in [0.,17.,119.] {
             runtime.set_wind(&crate::wind::WindState {strength:0.7,time_seconds:time,..Default::default()}.validated().unwrap()).unwrap();
-            let mut enc=gpu.device.create_command_encoder(&Default::default());runtime.encode(&gpu,&mut enc,&[view],spec.first_owner).unwrap();gpu.queue.submit([enc.finish()]);
+            let mut enc=gpu.device.create_command_encoder(&Default::default());let mut consumers=Vec::new();
+            if roles&256!=0 {consumers.push(crate::foliage_select::ConsumerView::camera(view));}
+            if roles&512!=0 {consumers.push(crate::foliage_select::ConsumerView::shadow(view));}
+            runtime.encode_timed(&gpu,&mut enc,&consumers,spec.first_owner,None).unwrap();gpu.queue.submit([enc.finish()]);
             let slot_bytes=read(&runtime.residency.slots);let slots:&[crate::foliage_residency::ResidentSlot]=bytemuck::cast_slice(&slot_bytes);
             let volume_bytes=read(&volumes);let rendered:&[GpuTree]=bytemuck::cast_slice(&volume_bytes);
             let source_bytes=read(&instances);let sources:&[GpuInstance]=bytemuck::cast_slice(&source_bytes);
+            let choice_bytes=read(&runtime.choices);let choices:&[u32]=bytemuck::cast_slice(&choice_bytes);
             let mut found=0;
             for (i,slot) in slots.iter().enumerate().filter(|(_,s)|s.history[2]!=0) {
+                assert_eq!(slot.history[3]&768,roles);
+                assert_eq!(choices[i]&3==3,roles&256==0);assert_eq!(choices[i+16384]&3==3,roles&512==0);
+                assert_eq!(choices[i]&1024!=0,roles&256==0);assert_eq!(choices[i]&2048!=0,roles&512==0);
+                assert_eq!(sources[spec.first_owner as usize+i].flags&768,0,"consumer roles must not leak into source flags");
                 let rep=spec.representations[slot.key[2]as usize];if rep[3]==0 {continue;}
                 let volume=spec.branches[(rep[3]-1)as usize].volume;
                 assert_eq!(rendered[i].meta[1],volume.meta[1]);assert_ne!(volume.meta[1],spec.branches[rep[0]as usize].volume.meta[1]);
@@ -715,6 +725,7 @@ impl Runtime {
             }
             assert_eq!(found,1,"a mixed source/group cut must actually materialize");
             assert_eq!(runtime.diagnostics(&gpu).unwrap().fallback_trees,0);
+        }
         }
     }
     #[test]
@@ -950,7 +961,7 @@ impl Runtime {
         for index in [0,3,1,2,0] {
             let v=[ViewRect {cam:cam(index as f32*8.),x:0,y:0,w:128,h:128}];
             renderer.try_render_views(&gpu,&v,&night,128,128,&[]).unwrap();let d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();
-            assert_eq!(d.fallback_trees,0);assert_eq!(d.source_slots,3);assert_eq!(d.assigned,3);assert_eq!(d.shadow_voxel_slots,2);
+            assert_eq!(d.fallback_trees,0);assert_eq!(d.source_slots,3);assert_eq!(d.assigned,3);assert_eq!(d.shadow_voxel_slots,0,"no shadow draw may publish when night has no shadow consumers");
         }
         let views=(0..4).map(|i|ViewRect {cam:cam(i as f32*8.),x:(i%2)*128,y:(i/2)*128,w:128,h:128}).collect::<Vec<_>>();
         renderer.try_render_views(&gpu,&views,&night,256,256,&[]).unwrap();let d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();
@@ -958,7 +969,9 @@ impl Runtime {
         renderer.try_render_views(&gpu,&view,&light,128,128,&[]).unwrap();
         let d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();
         assert_eq!(d.fallback_trees,0);assert_eq!(d.voxel_slots,0);
-        assert_eq!(d.source_slots+3*d.direct_roots,12,"all four trees remain complete casters, including any budget-retained whole root");
+        let source=d.selected_source_consumers;
+        assert_eq!(source.camera_only+source.shadow_only+source.both+source.outside+3*d.direct_roots,12,"all four trees remain complete casters, including any budget-retained whole root");
+        assert!(d.shadow_voxel_slots>0 || d.direct_roots>0,"daylight must restore shadow publication");
         assert_eq!(d.refinement_faults,0);
         assert!(d.reserved_raster_splats.iter().all(|&n|n<=scene.gpu_forest.as_ref().unwrap().raster_budget));
         eprintln!("GPU forest source/voxel draws, fallback, teleport, four cameras PASS");
