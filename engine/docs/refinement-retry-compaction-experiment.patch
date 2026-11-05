@@ -1,0 +1,225 @@
+diff --git a/engine/crates/render/src/foliage_refine.rs b/engine/crates/render/src/foliage_refine.rs
+index c15c8b4..4541930 100644
+--- a/engine/crates/render/src/foliage_refine.rs
++++ b/engine/crates/render/src/foliage_refine.rs
+@@ -3,7 +3,7 @@
+ use crate::{Gpu,foliage_select::Selector};
+
+ pub(crate) struct Refiner {
+-    proposals:[wgpu::Buffer;2],queues:[wgpu::Buffer;2],blocks:wgpu::Buffer,
++    eligible:wgpu::Buffer,proposals:[wgpu::Buffer;2],queues:[wgpu::Buffer;2],blocks:wgpu::Buffer,
+     pub state:wgpu::Buffer,args:wgpu::Buffer,layout:wgpu::BindGroupLayout,
+     pipelines:Vec<wgpu::ComputePipeline>,
+     binds:std::sync::Mutex<crate::frame::resource_cache::BindGroups<2>>,
+@@ -13,14 +13,14 @@ impl Refiner {
+         let storage=|label,size|gpu.device.create_buffer(&wgpu::BufferDescriptor {
+             label:Some(label),size,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,
+             mapped_at_creation:false});
+-        let entries=(0..15).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
++        let entries=(0..16).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,
+             ty:wgpu::BindingType::Buffer {ty:if binding==0 {wgpu::BufferBindingType::Uniform} else {wgpu::BufferBindingType::Storage {read_only:binding==1||binding==2}},has_dynamic_offset:false,min_binding_size:None}}).collect::<Vec<_>>();
+         let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("foliage complete-cut refinement"),entries:&entries});
+         let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
+         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage incremental admission"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_refine.wgsl").into())});
+-        let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit"].into_iter().map(|entry|
++        let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit","eligible_count","eligible_prefix","eligible_scatter"].into_iter().map(|entry|
+             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()})).collect();
+-        Self {proposals:[storage("foliage refinement proposals A",capacity as u64*80),storage("foliage refinement proposals B",capacity as u64*80)],
++        Self {eligible:storage("foliage eligible proposal indices",capacity as u64*4),proposals:[storage("foliage refinement proposals A",capacity as u64*80),storage("foliage refinement proposals B",capacity as u64*80)],
+             queues:[storage("foliage complete cut A",capacity as u64*16),storage("foliage complete cut B",capacity as u64*16)],
+             blocks:storage("foliage refinement prefixes",(capacity.div_ceil(256)as u64+1)*32*16),
+             state:storage("foliage refinement allocation",256),
+@@ -28,7 +28,7 @@ impl Refiner {
+             pipelines,layout,binds:Default::default()}
+     }
+     fn bind(&self,gpu:&Gpu,s:&Selector,front:usize)->wgpu::BindGroup {
+-        let buffers=[&s.uniform,&s._nodes,&s._instances,&s.asset_pages,&self.proposals[front],&self.queues[front],&self.queues[1-front],&self.blocks,&s.records,&s.counters,&s.fallback,&s.direct,&s.demand,&self.state,&self.proposals[1-front]];
++        let buffers=[&s.uniform,&s._nodes,&s._instances,&s.asset_pages,&self.proposals[front],&self.queues[front],&self.queues[1-front],&self.blocks,&s.records,&s.counters,&s.fallback,&s.direct,&s.demand,&self.state,&self.proposals[1-front],&self.eligible];
+         let entries=buffers.iter().enumerate().map(|(binding,b)|wgpu::BindGroupEntry {binding:binding as u32,resource:b.as_entire_binding()}).collect::<Vec<_>>();
+         self.binds.lock().unwrap().entries(gpu,&self.layout,"foliage refinement buffers",&entries)
+     }
+@@ -60,7 +60,7 @@ impl Refiner {
+             // require leaving it. Avoid eight pass/descriptor setups per wave.
+             let mut pass=enc.begin_compute_pass(&Default::default());
+             pass.set_bind_group(0,bind,&[]);
+-            for (pipeline,groups,offset) in [(3,None,0),(4,None,12),(5,Some(1),0),(6,None,0),(7,None,12),(8,Some(1),0),(9,None,0),(10,Some(1),0)] {
++            for (pipeline,groups,offset) in [(3,None,0),(13,None,12),(14,Some(1),0),(15,None,12),(4,None,12),(5,Some(1),0),(6,None,0),(7,None,12),(8,Some(1),0),(9,None,0),(10,Some(1),0)] {
+                 pass.set_pipeline(&self.pipelines[pipeline]);
+                 if let Some(n)=groups {pass.dispatch_workgroups(n,1,1);}else{pass.dispatch_workgroups_indirect(&self.args,offset);}
+             }
+diff --git a/engine/crates/render/src/foliage_select.rs b/engine/crates/render/src/foliage_select.rs
+index 8daa0b6..9daed82 100644
+--- a/engine/crates/render/src/foliage_select.rs
++++ b/engine/crates/render/src/foliage_select.rs
+@@ -367,6 +367,32 @@ mod tests {
+   }
+  }
+  #[test]
++ #[ignore="exclusive GPU capacity refund retry fixture"]
++ fn gpu_refinement_retries_after_other_cut_refunds_capacity() {
++  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(2);
++  trees[0].info[0]=0;trees[1].info[0]=2;
++  for t in &mut trees {t.rows[0][3]=0.;}
++  trees[0].scale[2]=1.;trees[0].scale[3]=1.;
++  trees[1].scale[2]=9.;trees[1].scale[3]=9.;
++  let n=|child,end,rep,flags,cost,error|Node {sphere:[0.,0.,0.5,0.2],error:[error,0.,cost,cost],links:[child,end,rep,flags]};
++  let nodes=[n(1,2,0,2,1.,1.),n(NONE,2,1,2,5.,0.),
++   n(3,5,2,2,9.,1.),n(NONE,4,3,0,1.,0.),n(NONE,5,4,0,1.,0.)];
++  let selector=Selector::new(&gpu,&nodes,&trees,4,4).unwrap();let empty=depth(&gpu,0.);
++  let projection=crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]};
++  let views=[ConsumerView::camera(projection),ConsumerView::shadow(projection)];
++  for _ in 0..3 {
++   let mut enc=gpu.device.create_command_encoder(&Default::default());
++   selector.union_consumers_budget(&gpu,&mut enc,&views,0.01,4,[10;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
++   assert_eq!(read(&gpu,&selector.direct),[2,0],"camera refinement must retry after sibling cut refunds seven splats");
++   assert_eq!(read(&gpu,&selector.fallback),[0,0]);
++   let state=read(&gpu,&selector.refiner.state);assert_eq!(&state[..3],&[2,7,7]);assert_eq!(state[15],0);
++   assert!(state[28]>0,"retry must reuse immutable proposal work");
++   let count=read(&gpu,&selector.counters)[0]as usize;
++   let mut cut=read(&gpu,&selector.records).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();
++   assert_eq!(cut,[3,4],"complete nonoverlapping sibling cut");
++  }
++ }
++ #[test]
+  #[ignore="exclusive GPU incremental raster and branch reservation fixture"]
+  fn gpu_incremental_refinement_retains_mixed_complete_cuts() {
+   let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].scale[2]=1.;trees[0].scale[3]=1.;
+diff --git a/engine/crates/render/src/shaders/foliage_refine.wgsl b/engine/crates/render/src/shaders/foliage_refine.wgsl
+index 6bb0727..b6af29c 100644
+--- a/engine/crates/render/src/shaders/foliage_refine.wgsl
++++ b/engine/crates/render/src/shaders/foliage_refine.wgsl
+@@ -29,6 +29,7 @@ struct Demand {count:atomic<u32>,bucket:u32,prefix:u32,failed:atomic<u32>};
+ // fault at15, peak16, retained-for-budget17. Never read back to schedule work.
+ @group(0) @binding(13) var<storage,read_write> state:array<atomic<u32>>;
+ @group(0) @binding(14) var<storage,read_write> next_proposals:array<Proposal>;
++@group(0) @binding(15) var<storage,read_write> eligible:array<u32>;
+ const NONE:u32=0xffffffffu;
+ fn ready(rep:u32)->bool {
+  if atomicLoad(&pages[rep].requested)==0u {atomicOr(&pages[rep].requested,1u);}
+@@ -73,7 +74,7 @@ fn add_used(cost:vec4<u32>) {
+ @compute @workgroup_size(1) fn prepare() {
+  let count=atomicLoad(&state[3]);
+  for(var k=0u;k<3u;k++) {atomicStore(&state[4u+k],atomicLoad(&state[k]));}
+- atomicStore(&state[7],0u);atomicStore(&state[18],0u);
++ atomicStore(&state[7],0u);atomicStore(&state[18],0u);atomicStore(&state[29],0u);
+  atomicStore(&state[8],(count+63u)/64u);atomicStore(&state[9],1u);atomicStore(&state[10],1u);
+  atomicStore(&state[12],(count+255u)/256u);atomicStore(&state[13],1u);atomicStore(&state[14],1u);
+ }
+@@ -115,10 +116,10 @@ fn candidate(tree:u32,start:u32,request_pages:bool)->u32 {
+  // Available budget changes, so admission is always rechecked.
+  if task.w==1u {
+   let cached=proposals[at];p.old=cached.old;p.replacement=cached.replacement;
+-  p.control=vec4<u32>(cached.control.xy,cached.output.y,0u);p.output.y=cached.output.y;
++  p.control=vec4<u32>(cached.control.x,1u,cached.output.y,0u);p.output.y=cached.output.y;
+   let used=vec3<u32>(atomicLoad(&state[4]),atomicLoad(&state[5]),atomicLoad(&state[6]));
+   let capacity=view.consumer_count.yzw;let delta=p.replacement-min(p.replacement,p.old);
+-  if any(delta.xyz>capacity-min(used,capacity)) {p.control.y=0u;atomicAdd(&state[17],1u);}
++  if any(delta.xyz>capacity-min(used,capacity)) {p.control.y=2u;atomicAdd(&state[17],1u);}
+   else if (task.z&256u)!=0u {atomicOr(&state[18],1u);}
+   atomicAdd(&state[28],1u);proposals[at]=p;return;
+  }
+@@ -150,10 +151,9 @@ fn candidate(tree:u32,start:u32,request_pages:bool)->u32 {
+   let capacity=view.consumer_count.yzw;
+   // An individually impossible proposal must not reserve prefix space and
+   // starve cheaper candidates. Retain its parent without entering the scan.
+-  if any(delta.xyz>capacity-min(used,capacity)) {
+-   atomicAdd(&state[17],1u);proposals[at]=p;return;
+-  }
+-  if (task.z&256u)!=0u {atomicOr(&state[18],1u);}
++  let individually_fits=all(delta.xyz<=capacity-min(used,capacity));
++  if !individually_fits {atomicAdd(&state[17],1u);}
++  if individually_fits && (task.z&256u)!=0u {atomicOr(&state[18],1u);}
+   let price=max(1.0,f32(delta.x)*256.0+f32(delta.y)+f32(delta.z));
+   // Mandatory root fallbacks carry zero authored error. Their projected size
+   // still determines benefit; otherwise all roots tie regardless of distance.
+@@ -161,27 +161,48 @@ fn candidate(tree:u32,start:u32,request_pages:bool)->u32 {
+   let priority_scale=select(scale.x,scale.y,(task.z&256u)!=0u);
+   let benefit=max(0.001,priority_scale*max(parent_error-child_error,parent_error*0.01));
+   let bucket=u32(clamp(floor(log2(max(benefit/price,1e-20)))+12.0,0.0,15.0));
+-  p.control=vec4<u32>(bucket+select(0u,16u,(task.z&256u)!=0u),1u,children,0u);
++  p.control=vec4<u32>(bucket+select(0u,16u,(task.z&256u)!=0u),select(2u,1u,individually_fits),children,0u);
+   p.output.y=children; // Deferred queue count is one; preserve replacement arity.
+  }
+  proposals[at]=p;
+ }
++// Compact eligible proposal indices before the 32-bucket priority scan.
++// Parked proposals remain in the complete frontier, but do not inflate this
++// expensive scan. Block/local order is stable, independent of GPU scheduling.
++@compute @workgroup_size(1) fn eligible_count(@builtin(workgroup_id) block:vec3<u32>) {
++ var count=0u;let end=min((block.x+1u)*256u,atomicLoad(&state[3]));
++ for(var at=block.x*256u;at<end;at++) {if proposals[at].control.y==1u {count++;}}
++ blocks[32u+block.x*32u]=vec4<u32>(count,0u,0u,0u);
++}
++@compute @workgroup_size(1) fn eligible_prefix() {
++ var count=0u;
++ for(var block=0u;block<(atomicLoad(&state[3])+255u)/256u;block++) {
++  let at=32u+block*32u;let n=blocks[at].x;blocks[at].y=count;count+=n;
++ }
++ atomicStore(&state[30],count);
++}
++@compute @workgroup_size(1) fn eligible_scatter(@builtin(workgroup_id) block:vec3<u32>) {
++ var rank=blocks[32u+block.x*32u].y;let end=min((block.x+1u)*256u,atomicLoad(&state[3]));
++ for(var at=block.x*256u;at<end;at++) {
++  if proposals[at].control.y==1u {eligible[rank]=at;proposals[at].output.z=rank;rank++;}
++ }
++}
+ // Read each proposal once with coalesced lanes; the stable per-bucket scan
+ // then operates on 4 KiB of shared data instead of rereading global proposals.
+ var<workgroup> priority_items:array<vec4<u32>,256>;
+ @compute @workgroup_size(256) fn priority_scan(@builtin(workgroup_id) block:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+- let start=block.x*256u;let end=min(start+256u,atomicLoad(&state[3]));
++ let start=block.x*256u;let end=max(start,min(start+256u,atomicLoad(&state[30])));
+  var item=vec4<u32>(0u);
+  if start+lane<end {
+-  let p=proposals[start+lane];
+-  item=vec4<u32>((p.replacement-min(p.replacement,p.old)).xyz,select(0u,p.control.x+1u,p.control.y!=0u));
++  let p=proposals[eligible[start+lane]];
++  item=vec4<u32>((p.replacement-min(p.replacement,p.old)).xyz,select(0u,p.control.x+1u,p.control.y==1u));
+  }
+  priority_items[lane]=item;workgroupBarrier();
+  if lane>=32u {return;}
+  var sum=vec4<u32>(0u);
+  for(var offset=0u;offset<end-start;offset++) {
+   let value=priority_items[offset];if value.w==lane+1u {
+-   proposals[start+offset].prefix=sum;sum=plus(sum,vec4<u32>(value.xyz,0u));
++   proposals[eligible[start+offset]].prefix=sum;sum=plus(sum,vec4<u32>(value.xyz,0u));
+   }
+  }
+  blocks[32u+block.x*32u+lane]=sum;
+@@ -196,24 +217,33 @@ var<workgroup> priority_items:array<vec4<u32>,256>;
+ @compute @workgroup_size(64) fn decide(@builtin(global_invocation_id) id:vec3<u32>) {
+  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
+  let p=proposals[at];if p.control.y==0u {return;}
++ if p.control.y==2u {proposals[at].control.w=3u;return;}
+  // Keep shadow-only work pending while any camera refinement remains. A coarse
+  // shadow upgrade cannot consume slots needed by a later camera hierarchy level.
+  if (current[at].z&256u)==0u && atomicLoad(&state[18])!=0u {
+   proposals[at].control.w=2u;proposals[at].control.z=1u;return;
+  }
+- var before=plus(p.prefix,blocks[32u+(at/256u)*32u+p.control.x]);
++ var before=plus(p.prefix,blocks[32u+(p.output.z/256u)*32u+p.control.x]);
+  for(var b=p.control.x+1u;b<32u;b++) {before=plus(before,blocks[b]);}
+  let delta=p.replacement-min(p.replacement,p.old);
+  let used=vec4<u32>(atomicLoad(&state[4]),atomicLoad(&state[5]),atomicLoad(&state[6]),0u);
+  let available=vec4<u32>(view.consumer_count.y,view.consumer_count.z,view.consumer_count.w,0u);
+  // Zero/negative-cost replacements remain allowed when a baseline exceeds a cap.
+  let cost=plus(before,delta);let fits=all(select(cost.xyz<=available.xyz-min(used.xyz,available.xyz),vec3<bool>(true),delta.xyz==vec3<u32>(0u)));
+- if fits && (atomicLoad(&state[15])&3u)==0u {proposals[at].control.w=1u;}
+- else {atomicAdd(&state[17],1u);}
++ if fits && (atomicLoad(&state[15])&3u)==0u {
++  proposals[at].control.w=1u;
++  // Retain rejected work only while accepted work can still release capacity:
++  // an immediate refund, or a nonterminal replacement with future refinements.
++  if p.control.z!=0u || any(p.replacement.xyz<p.old.xyz) {atomicOr(&state[29],1u);}
++ }else {proposals[at].control.w=3u;atomicAdd(&state[17],1u);}
+ }
+ @compute @workgroup_size(1) fn output_scan(@builtin(workgroup_id) block:vec3<u32>) {
+  var sum=0u;let end=min((block.x+1u)*256u,atomicLoad(&state[3]));
+  for(var at=block.x*256u;at<end;at++) {
++  if proposals[at].control.w==3u {
++   if atomicLoad(&state[29])!=0u {proposals[at].control.w=2u;proposals[at].control.z=1u;}
++   else {proposals[at].control.w=0u;}
++  }
+   proposals[at].output.x=sum;
+   if proposals[at].control.w!=0u {sum+=proposals[at].control.z;}
+  }
