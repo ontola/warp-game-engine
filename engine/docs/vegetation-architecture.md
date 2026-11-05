@@ -11,6 +11,35 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+## 5 November: whole-root grass ownership is now observable
+
+Offline raster profiling now decodes whole-root volumes, including separate
+camera and shadow publication ranges after an allocation-sized branch prefix.
+It reads the actual published representation, maps it back into that root's
+recipe subtree, reports child-page residency, and replays the GPU proposal.
+No CPU root/branch selection or per-frame readback was introduced.
+
+Normal16M/32768-slot capture identifies the worst15.300px cell as camera root
+109617, recipe2440, selected node2441: a0.32m grass voxel. No fallback fault.
+Its two immediate children are2442 (resident) and2564 (nonresident). Replay
+would replace69 splats/zero slots with85 splats/two slots, but returns inactive
+control because a required child is missing. This proves a page-readiness stop
+at the captured instant, NOT why the page was absent or whether the proposal
+could fit once resident. Slot/splat constraints remain independently saturated.
+
+The cache reports1893 resident pages, zero evictions/misses, no partial upload,
+and ongoing frame uploads. Its per-frame upload-count budget is8. A240-frame
+capture is therefore insufficient evidence of a permanently stuck page: test
+convergence with a fixed camera and inspect generation-qualified demand before
+changing the eviction/request algorithm. Do not label this a confirmed paging bug.
+
+Release build and155 foliage tests PASS, including GPU lifecycle/refinement
+fixtures and root-consumer range boundary test at65537 branch slots. The normal
+capture finishes and intentionally fails strict pixel quality. RGB MAE below
+HUD versus prior16M run is0.01114/0.01083/0.00792; not raw-buffer equivalence.
+Evidence: vegetation-root-attribution.json, root-attribution-16m.* and
+root-attribution-tests.log in build/playtest-unified. No quality gate closed.
+
 ## 5 November: normal-renderer capacity evidence and shared splat budget
 
 Runtime-sized consumers are now verified in normal headless renders, including
