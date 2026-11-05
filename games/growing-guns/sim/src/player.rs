@@ -77,6 +77,7 @@ impl World {
     pub fn predict_player(&mut self, i: usize, input: Input) {
         if i >= self.players.len() { return; }
         self.players[i].bot = false;
+        if let Some(head) = input.head { self.players[i].apply_head(head); }
         let p = &self.players[i];
         let input = if p.offer.is_some() {
             Input { pick: input.pick, ..Default::default() }

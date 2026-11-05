@@ -361,6 +361,7 @@ impl Visuals {
     /// Morph a player's gun into their current stats (a card was given).
     pub fn track_gun(&mut self, player: usize, pose: Option<glam::Affine3A>) { self.guns.track(player, pose); }
     pub fn tracked_muzzle(&self, player: usize, pose: glam::Affine3A) -> Vec3 { self.guns.tracked_muzzle(player, pose) }
+    pub fn gun_tracked(&self, player: usize) -> bool { self.guns.is_tracked(player) }
 
     pub fn grow_gun(&mut self, i: usize, p: &growing_guns::Player) { self.guns.grow(i, p); }
 

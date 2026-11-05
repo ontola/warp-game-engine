@@ -27,6 +27,10 @@ pub enum Screen { Play, Start, Pause, Settings { from_start: bool }, Advanced }
 pub enum Action { None, Resume, Versus, Wave, Settings, Back, Host, Copy, Quit, Rematch, Extend, AddBot, RemoveBot, Advanced,
     /// Join the match in the join field (`Menus::join_ticket`).
     Join,
+    /// Host on the local network, announced so nobody types a ticket.
+    HostLan,
+    /// Join the newest host heard on the local network.
+    JoinLan,
     /// Turn splitscreen on or off (Godot `_pause_toggle_splitscreen`).
     Splitscreen,
     /// A party setting (index into `Ctx::party`) changed to this value.
@@ -138,11 +142,13 @@ impl Default for Menus {
 }
 
 const SHARE: &[(&str, Action)] = &[("HOST ONLINE", Action::Host), ("COPY", Action::Copy)];
+const LAN: &[(&str, Action)] = &[("HOST LAN", Action::HostLan), ("JOIN LAN", Action::JoinLan)];
 
 fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
     let label = [0.7, 0.7, 0.85, 1.0];
     if ctx.xr && matches!(screen, Screen::Start | Screen::Pause) {
         return vec![Item::Button("RESUME", Action::Resume, true),
+            Item::Button("HOST LAN GAME", Action::HostLan, !ctx.client && ctx.ticket.is_none()), Item::Button("JOIN LAN GAME", Action::JoinLan, !ctx.client && ctx.ticket.is_none()),
             Item::Button("RESTART MATCH", Action::Rematch, !ctx.client), Item::Bots("AI PLAYERS"),
             Item::Button("SETTINGS", Action::Settings, true), Item::Button("EXIT GAME", Action::Quit, true),
             Item::Note("Left stick: select · A: confirm · B: back")];
@@ -154,7 +160,7 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
             Item::Button("SETTINGS", Action::Settings, true), Item::Rule,
             Item::Text("Share your Match ID:", label), Item::Field(Field::Ticket), Item::Row(SHARE),
             Item::Text("Or join a friend's match:", label), Item::Field(Field::Join),
-            Item::Text("Bots:", label), Item::Bots(""),
+            Item::Text("Bots:", label), Item::Bots(""), Item::Row(LAN),
             Item::Note("Click or arrows + Enter · Esc exits"),
         ],
         Screen::Pause if ctx.party.is_some() => vec![

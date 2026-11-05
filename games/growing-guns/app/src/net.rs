@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 // Version 2 adds the cage countdown to positional postcard snapshots, 3 the
-// players' recoil lift. Reject older peers during connection setup, before
-// decoding any state.
-pub const ALPN: &[u8] = b"warp/growing-guns/3";
+// players' recoil lift, 4 headset view and gun in inputs and players. Reject
+// older peers during connection setup, before decoding any state.
+pub const ALPN: &[u8] = b"warp/growing-guns/4";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ToHost {
@@ -52,6 +52,15 @@ mod tests {
         Welcome { slots: Vec<usize>, players: usize, arena: Arena, coop: bool },
         Arena(Arena), Broken(Breakage), Snap { ack: u32, snap: Snapshot }, Full,
     }
+    #[test]
+    fn a_headset_input_survives_the_wire() {
+        let aim = growing_guns::TrackedAim { offset: glam::Vec3::new(0.1, 0.2, 0.3), direction: glam::Vec3::NEG_Z };
+        let input = Input { head: Some([0.5, -0.25]), tracked: Some(aim), fire: true, ..Default::default() };
+        let bytes = postcard::to_allocvec(&ToHost::Input { seq: 7, inputs: vec![input] }).unwrap();
+        let ToHost::Input { seq, inputs } = postcard::from_bytes(&bytes).unwrap() else { panic!("wrong packet kind") };
+        assert_eq!((seq, inputs), (7, vec![input]));
+    }
+
     #[test]
     fn shared_snapshot_retains_exact_wire_format_and_shares_across_peers() {
         let world = growing_guns::World::new(3, &[true; 4]);
