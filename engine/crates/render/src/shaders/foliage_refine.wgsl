@@ -181,6 +181,20 @@ fn source_frontier(tree:u32,node:u32,old:vec4<u32>,used:vec3<u32>,request_pages:
   let cached=parked[task.w-2u].proposal;p.old=cached.old;p.replacement=cached.replacement;
   p.control=vec4<u32>(cached.control.x,1u,cached.output.y,0u);p.output.y=cached.output.y;
   let used=vec3<u32>(atomicLoad(&state[4]),atomicLoad(&state[5]),atomicLoad(&state[6]));
+  // A parked proposal lost collective admission. Reusing only its original
+  // intermediate cut serializes cost-release waves even when all complete
+  // source endpoints fit together. Reconsider that endpoint on retry.
+  if task.y!=NONE && task.z==256u && p.replacement.y>p.old.y {
+   let source=source_frontier(task.x,task.y,p.old,used,true);
+   if source.w!=0u {
+    p.replacement=source;p.control.z=0u;p.output.y=0u;
+    let n=nodes[task.y];let scale=projected(trees[task.x],n,task.z);
+    let delta=source-min(source,p.old);let price=max(1.0,f32(delta.x)*256.0+f32(delta.y));
+    let parent_error=select(n.error.x,n.sphere.w,(n.links.w&1u)!=0u);
+    let benefit=max(0.001,scale.y*parent_error);
+    p.control.x=u32(clamp(floor(log2(max(benefit/price,1e-20)))+12.0,0.0,15.0))+16u;
+   }
+  }
   let capacity=view.consumer_count.yzw;let delta=p.replacement-min(p.replacement,p.old);
   if any(delta.xyz>capacity-min(used,capacity)) {p.control.y=2u;atomicAdd(&state[17],1u);}
   else if (task.z&256u)!=0u {atomicOr(&state[18],1u);}
@@ -386,7 +400,14 @@ fn wakeable(at:u32)->bool {
  if parked[at].task.w!=1u {return false;}
  let p=parked[at].proposal;let delta=p.replacement-min(p.replacement,p.old);
  let used=vec3<u32>(atomicLoad(&state[0]),atomicLoad(&state[1]),atomicLoad(&state[2]));
- return all(delta.xyz<=view.consumer_count.yzw-min(used,view.consumer_count.yzw));
+ if all(delta.xyz<=view.consumer_count.yzw-min(used,view.consumer_count.yzw)) {return true;}
+ // A cheaper complete endpoint may wake even while the cached intermediate
+ // splat reservation cannot. Publication remains in propose/decide/apply.
+ let task=parked[at].task;
+ if task.y!=NONE && task.z==256u && p.replacement.y>p.old.y {
+  return source_frontier(task.x,task.y,p.old,used,true).w!=0u;
+ }
+ return false;
 }
 var<workgroup> wake_scan:array<vec2<u32>,256>;
 @compute @workgroup_size(256) fn wake_count(@builtin(workgroup_id) block:vec3<u32>,@builtin(local_invocation_index) lane:u32) {

@@ -11,6 +11,42 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+## 5 November: deferred proposals reconsider complete endpoints
+
+- [x] Reject increasing refinement waves fourfold. Same fixed-camera1200-frame
+  diagnostic: largest submitted cell stays8.564px; detailed shadow branches
+  stay zero; final120-frame GPU covered median25.460 ->54.293ms. Restore the
+  original2*(hierarchy_depth+1) wave bound. This is not repeated perf acceptance.
+- [x] Reproduce a collective-admission failure with128 GPU roots: each
+  intermediate cut fits alone, only one fits collectively, all complete source
+  endpoints fit together. Before the fix, some roots retain intermediate[1,4]
+  cuts because parked proposals cache the expensive route and serialize releases.
+- [x] Deferred camera proposals now reconsider the complete resident source
+  endpoint and its priority. Wake eligibility also considers that endpoint if
+  the cached intermediate splat cost cannot fit. Same atomic complete-cut
+  reservation/publication, no CPU root selection. All157 foliage tests pass.
+- [x] Release build and normal stationary captures inspected, original wave bound.
+  32768 slots: largest cell7.009px (previous8.564),32768 source slots, no detailed
+  shadow slots. GPU covered median22.761ms in this single diagnostic run.
+  131072 slots: largest cell4.440px,131071 source slots, one shadow voxel slot;
+  GPU covered median35.025ms. Both strict pixel checks FAIL; no missing voxel records
+  or refinement faults reported. Nearby grass improves, spheres remain farther
+  out and grass shadows remain coarse. Defaults were NOT increased.
+- [ ] Efficient complete ONE-PIXEL voxel cuts: larger slot capacity largely
+  buys whole source endpoints. It does not solve fine-voxel admission or
+  consumer budget fairness. At131072 slots,31816 camera parents are slot-blocked,
+  no camera parents are page-blocked, and6017 are individually affordable but
+  not published finer. Investigate finer complete cuts and their conservative
+  work accounting; do not call repeated source-pool expansion the final design.
+- [ ] Shadow refinement and quality: camera-first admission still leaves almost
+  every shadow on whole-root representations. Visible grass-shadow spheres
+  remain a failed requirement, independent of the camera-cell measurement.
+
+Reports: vegetation-refinement-wave-experiment.json and
+vegetation-parked-source-measurements.json. Build/test/capture artifacts in
+build/playtest-unified/{refinement-depth,parked-source}*. No interactive game
+was opened during these experiments. F1-F8 delivery still needs playtest evidence.
+
 ## 5 November: branching splat barrier and playtest feedback
 
 - [x] GPU regression proves a temporary-cost barrier: four source leaves cost
