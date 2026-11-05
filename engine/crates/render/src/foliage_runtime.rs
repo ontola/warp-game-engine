@@ -344,6 +344,11 @@ pub(crate) fn root_shadow_sphere(root:Instance,local:[f32;4])->Option<[f32;4]> {
     let centre=matrix(root.rows).transform_point3(Vec3::from_slice(&local));
     Some(centre.extend(local[3]*root.scale[0]+root.scale[1]).to_array())
 }
+fn profile_root_volume(volume:usize,slots:u32,trees:u32)->Option<(u32,u32)> {
+    let index=volume.checked_sub(slots as usize)?;
+    if trees==0 || index>=2*trees as usize {return None;}
+    Some(((index%trees as usize)as u32,256u32<<((index/trees as usize)as u32)))
+}
 impl Runtime {
     pub(crate) fn root_shadow_bound(&self,root:Instance)->Option<[f32;4]> {
         self.templates.iter().find(|t|t.node==root.info[0]).and_then(|t|root_shadow_sphere(root,t.shadow_sphere))
@@ -456,16 +461,39 @@ impl Runtime {
             let data=out.slice(..).get_mapped_range().map_err(|e|e.to_string())?;Ok(data.to_vec())
         }
         let slot_bytes=read(gpu,&self.residency.slots)?;let node_bytes=read(gpu,&self.selector._nodes)?;let page_bytes=read(gpu,&self.selector.asset_pages)?;
+        let root_bytes=read(gpu,&self.selector._instances)?;let publication_bytes=read(gpu,&self.selector.demand)?;let fallback_bytes=read(gpu,&self.selector.fallback)?;
         let slots:Vec<crate::foliage_residency::ResidentSlot>=slot_bytes.chunks_exact(32).map(bytemuck::pod_read_unaligned).collect();
         let nodes:Vec<crate::foliage_select::Node>=node_bytes.chunks_exact(48).map(bytemuck::pod_read_unaligned).collect();
         let pages:Vec<[u32;4]>=page_bytes.chunks_exact(16).map(bytemuck::pod_read_unaligned).collect();
+        let roots:Vec<Instance>=root_bytes.chunks_exact(std::mem::size_of::<Instance>()).map(bytemuck::pod_read_unaligned).collect();
+        let publications:Vec<[u32;4]>=publication_bytes.chunks_exact(16).map(bytemuck::pod_read_unaligned).collect();
+        let fallbacks:Vec<u32>=fallback_bytes.chunks_exact(4).map(bytemuck::pod_read_unaligned).collect();
+        #[derive(Clone,Copy)]
+        struct Owner {root:u32,node:u32,consumer:u32,generation:u32,history:[u32;4],whole:bool}
+        let resolve=|volume:usize|->Result<Owner,String> {
+            if volume<self.slots as usize {
+                let slot=slots.get(volume).ok_or("offline cut slot out of range")?;
+                return Ok(Owner {root:slot.key[0],node:slot.key[1],consumer:256,generation:slot.key[3],history:slot.history,whole:false});
+            }
+            let (root,consumer)=profile_root_volume(volume,self.slots,self.trees).ok_or("offline root volume out of range")?;
+            let instance=roots.get(root as usize).ok_or("offline root instance missing")?;
+            let index=root as usize+if consumer==512 {self.trees as usize}else{0};
+            let publication=*publications.get(index).ok_or("offline consumer publication missing")?;
+            let fault=*fallbacks.get(root as usize).ok_or("offline root fallback missing")?;
+            let mut selected=crate::foliage_select::NONE;
+            if fault&(consumer|7)==0 && publication[2]!=0 {
+                let start=instance.info[0]as usize;let end=nodes.get(start).ok_or("offline recipe root missing")?.links[1]as usize;
+                if end>nodes.len() || end<=start {return Err("offline recipe span invalid".into());}
+                let representation=publication[2]-1;
+                selected=(start..end).find(|&i|nodes[i].links[2]==representation).ok_or("published root representation missing from recipe")? as u32;
+            }
+            Ok(Owner {root,node:selected,consumer,generation:instance.info[1],history:publication,whole:true})
+        };
         let mut tasks=Vec::new();let mut task_indices=std::collections::BTreeMap::new();
         for profile in profiles.iter() {if let Some(cells)=profile["largest_submitted_cells"].as_array(){for cell in cells {
-            let volume=cell["volume"].as_u64().ok_or("missing profile volume")? as usize;
-            if volume<self.slots as usize {
-                let slot=slots.get(volume).ok_or("offline cut slot out of range")?;let key=(slot.key[0],slot.key[1]);
-                if let std::collections::btree_map::Entry::Vacant(entry)=task_indices.entry(key){entry.insert(tasks.len());tasks.push([key.0,key.1,256,0]);}
-            }
+            let owner=resolve(cell["volume"].as_u64().ok_or("missing profile volume")? as usize)?;
+            let key=(owner.root,owner.node,owner.consumer);
+            if let std::collections::btree_map::Entry::Vacant(entry)=task_indices.entry(key){entry.insert(tasks.len());tasks.push([key.0,key.1,key.2,0]);}
         }}}
         let traced=self.selector.refiner.trace_proposals(gpu,&self.selector,&tasks)?;
         let describe=|id:usize|->Result<serde_json::Value,String>{
@@ -474,15 +502,22 @@ impl Runtime {
             Ok(serde_json::json!({"node":id,"sphere":n.sphere,"error_and_splat_cost":n.error,"links":n.links,"page":page}))
         };
         for profile in profiles {if let Some(cells)=profile["largest_submitted_cells"].as_array_mut(){for cell in cells {
-            let volume=cell["volume"].as_u64().ok_or("missing profile volume")? as usize;
-            if volume>=self.slots as usize {cell["cut_owner"]=serde_json::json!({"kind":"whole_root","attribution":"not yet decoded"});continue;}
-            let slot=slots.get(volume).ok_or("offline cut slot out of range")?;
-            let node=nodes.get(slot.key[1]as usize).ok_or("offline cut owner node out of range")?;
-            let mut children=Vec::new();let mut child=node.links[0];
-            while child!=crate::foliage_select::NONE && child<node.links[1] {
-                children.push(describe(child as usize)?);let next=nodes[child as usize].links[1];if next<=child{return Err("offline cut invalid child span".into());}child=next;
+            let owner=resolve(cell["volume"].as_u64().ok_or("missing profile volume")? as usize)?;
+            let mut children=Vec::new();let mut selected=serde_json::Value::Null;
+            if owner.node!=crate::foliage_select::NONE {
+                let node=nodes.get(owner.node as usize).ok_or("offline cut owner node out of range")?;
+                selected=describe(owner.node as usize)?;let mut child=node.links[0];
+                while child!=crate::foliage_select::NONE && child<node.links[1] {
+                    children.push(describe(child as usize)?);let next=nodes[child as usize].links[1];if next<=child{return Err("offline cut invalid child span".into());}child=next;
+                }
             }
-            cell["cut_owner"]=serde_json::json!({"kind":"articulated_slot","root":slot.key[0],"generation":slot.key[3],"history":slot.history,"selected":describe(slot.key[1]as usize)?,"immediate_children":children,"final_budget_proposal_replay":{"scope":"actual GPU propose kernel after unary skipping, final-frame budget; not historical admission","old":traced[task_indices[&(slot.key[0],slot.key[1])]][0],"replacement":traced[task_indices[&(slot.key[0],slot.key[1])]][1],"control":traced[task_indices[&(slot.key[0],slot.key[1])]][3]}});
+            let trace=traced[task_indices[&(owner.root,owner.node,owner.consumer)]];
+            cell["cut_owner"]=serde_json::json!({"kind":if owner.whole {"whole_root"}else{"articulated_slot"},"root":owner.root,
+                "consumer":owner.consumer,"generation":owner.generation,"history":if owner.whole {None}else{Some(owner.history)},
+                "publication":if owner.whole {Some(owner.history)}else{None},"fallback_flags":fallbacks[owner.root as usize],
+                "root_recipe":roots[owner.root as usize].info[0],"selected":selected,"immediate_children":children,
+                "final_budget_proposal_replay":{"scope":"actual GPU propose kernel after unary skipping, final-frame budget; not historical admission",
+                "old":trace[0],"replacement":trace[1],"control":trace[3]}});
         }}}
         Ok(())
     }
@@ -1075,5 +1110,20 @@ impl Runtime {
         assert_eq!(d.refinement_faults,0);
         assert!(d.reserved_raster_splats.iter().all(|&n|n<=scene.gpu_forest.as_ref().unwrap().raster_budget));
         eprintln!("GPU forest source/voxel draws, fallback, teleport, four cameras PASS");
+    }
+}
+
+#[cfg(test)] mod profile_volume_tests {
+    #[test] fn root_consumers_follow_allocation_sized_volume_ranges() {
+        for slots in [1u32,4096,32768,65537] {
+            let decode=|v|super::profile_root_volume(v,slots,3);
+            assert_eq!(decode(slots as usize-1),None);
+            for root in 0..3usize {
+                assert_eq!(decode(slots as usize+root),Some((root as u32,256)));
+                assert_eq!(decode(slots as usize+3+root),Some((root as u32,512)));
+            }
+            assert_eq!(decode(slots as usize+6),None);
+        }
+        assert_eq!(super::profile_root_volume(0,0,0),None);
     }
 }
