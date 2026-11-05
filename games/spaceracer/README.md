@@ -55,7 +55,7 @@ Crossing the sound barrier briefly produces a hollow, fluctuating vapor cone wit
 changing boost or covering the centre of the view.
 Windows opens without a terminal, shows an icon in the taskbar while loading,
 and defaults to fullscreen (`--windowed` opts out). See the dated
-[parity audit](parity-review.md#source-audit-and-follow-up---2-november-2026)
+[parity audit](docs/history/parity-review.md#source-audit-and-follow-up---2-november-2026)
 for remaining startup-animation, signage, menu and environment gaps and tests.
 
 ## Growing Guns smoke (1 November 2026)
@@ -74,7 +74,7 @@ reduced the measured GPU interval from about 8.6 to 6.2 ms; the reference 4K
 image is pixel-identical. Packaging defaults to release. Native measurements
 cover all five biomes with one/two views and two city seeds with four views.
 This is not a claim of locked 4K/120 FPS: see
-[measurements and remaining costs](../../engine/docs/spaceracer-native4k-2026-11-01.md).
+[measurements and remaining costs](../../engine/docs/log/spaceracer-native4k-2026-11-01.md).
 
 ## Boost presentation (1 November 2026)
 
@@ -92,7 +92,7 @@ live in `rules/game.luau`; results remain locked. See the parity review for chec
 
 ## Source restoration follow-up (31 October 2026)
 
-See [the parity review](parity-review.md) for restored HUD/visor, cruise guidance
+See [the parity review](docs/history/parity-review.md) for restored HUD/visor, cruise guidance
 and model, four-angle victory replay, checks and the explicit remaining gaps.
 The port remains incomplete. `missile` and `victory` in `rules/game.luau` now
 control cruise timing and finish choreography without a native rebuild.

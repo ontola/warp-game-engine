@@ -12,7 +12,7 @@ engine/
   assets/                   licensed default fonts, reusable audio resources,
                             renderer test fixtures
   tools/                    Python diagnostics: frame budgets, scenarios
-  docs/                     these guides and the engineering notes
+  docs/                     these guides; docs/log/ holds the development log
 games/
   sideways/                 rally game: app/, sim/, determinism/, assets/,
                             data/, scenarios/, tools/

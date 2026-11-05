@@ -7,8 +7,9 @@
 Only the Python standard library is used. The markdown files in the
 repository are the single source: this script converts them to HTML pages,
 rewrites links between them, and points links to code at GitHub. The
-navigation comes from engine/docs/README.md (its Guides table and its
-Engineering notes lists), so adding a guide there adds it to the site.
+navigation comes from engine/docs/README.md (its Guides table) and
+engine/docs/log/README.md (its sections of dated notes), so adding a guide
+or a log entry there adds it to the site.
 
 The converter handles the markdown the docs use: headings, paragraphs,
 lists (nested), fenced code, tables, block quotes, rules, emphasis, inline
@@ -29,14 +30,11 @@ ROOT = Path(__file__).resolve().parent.parent
 SITE_SRC = ROOT / "website"
 REPO_URL = "https://github.com/ontola/warp-game-engine"
 INDEX = "engine/docs/README.md"
+LOG_INDEX = "engine/docs/log/README.md"
 
 # Markdown outside engine/docs that also becomes a page: repo path -> page.
 EXTRA_PAGES = {
     "engine/README.md": "docs/engine.html",
-    "engine/HANDOFF.md": "docs/handoff.html",
-    "engine/ATMOSPHERE.md": "docs/atmosphere.html",
-    "engine/GPU_RUNNER.md": "docs/gpu-runner.html",
-    "engine/WINDOWS_VALIDATION.md": "docs/windows-validation.html",
     "engine/tools/README.md": "docs/tools.html",
     "engine/tools/frame-budget.md": "docs/frame-budget.html",
     "games/sideways/README.md": "docs/sideways.html",
@@ -314,6 +312,8 @@ def page_map() -> dict[str, str]:
     for p in sorted((ROOT / "engine/docs").glob("*.md")):
         rel = p.relative_to(ROOT).as_posix()
         pages[rel] = "docs/index.html" if p.name == "README.md" else f"docs/{p.stem}.html"
+    for p in sorted((ROOT / "engine/docs/log").glob("*.md")):
+        pages[p.relative_to(ROOT).as_posix()] = f"docs/log/{'index' if p.name == 'README.md' else p.stem}.html"
     for src, out in EXTRA_PAGES.items():
         if (ROOT / src).exists():
             pages[src] = out
@@ -349,8 +349,8 @@ class Linker:
         return link
 
 
-def read_nav(index_md: str) -> tuple[list[tuple[str, str]], list[tuple[str, list[tuple[str, str]]]]]:
-    """Guides (label, repo path) and note groups from the docs index."""
+def read_nav(index_md: str, log_md: str) -> tuple[list[tuple[str, str]], list[tuple[str, list[tuple[str, str]]]]]:
+    """Guides (label, repo path) from the docs index, note groups from the log index."""
     guides, groups = [], []
     section = ""
     for line in index_md.splitlines():
@@ -361,13 +361,16 @@ def read_nav(index_md: str) -> tuple[list[tuple[str, str]], list[tuple[str, list
             m = re.search(r"\[([^\]]+)\]\(([^)]+)\)", line.split("|")[1])
             if m:
                 guides.append((m.group(1), posixpath.normpath(posixpath.join("engine/docs", m.group(2)))))
-        elif section == "engineering notes":
-            if line.strip().endswith(":") and not line.startswith("-"):
-                groups.append((line.strip()[:-1], []))
-            m = re.match(r"^- \[([^\]]+)\]\(([^)#]+)", line)
-            if m and groups:
-                groups[-1][1].append((m.group(1), posixpath.normpath(posixpath.join("engine/docs", m.group(2)))))
-    return guides, groups
+    for line in log_md.splitlines():
+        if line.startswith("## "):
+            groups.append((line[3:].strip(), []))
+            continue
+        m = re.match(r"^- \[([^\]]+)\]\(([^)#]+)", line)
+        if m and groups:
+            target = posixpath.normpath(posixpath.join("engine/docs/log", m.group(2)))
+            if target.startswith("engine/docs/log/"):
+                groups[-1][1].append((m.group(1), target))
+    return guides, [g for g in groups if g[1]]
 
 
 def render_nav(current: Page, pages, guides, groups) -> str:
@@ -386,7 +389,8 @@ def render_nav(current: Page, pages, guides, groups) -> str:
     for name, items in groups:
         open_ = " open" if any(current.src == s for _, s in items) else ""
         notes.append(f"<details{open_}><summary>{html.escape(name)}</summary><ul>" + "".join(a(l, s) for l, s in items) + "</ul></details>")
-    parts.append(f'<h2>Engineering notes</h2><div class="notes{" here" if in_notes else ""}">' + "".join(notes) + "</div>")
+    log = posixpath.relpath(pages[LOG_INDEX], posixpath.dirname(current.out)) if LOG_INDEX in pages else "#"
+    parts.append(f'<h2><a href="{log}">Development log</a></h2><div class="notes{" here" if in_notes else ""}">' + "".join(notes) + "</div>")
     return "\n".join(parts)
 
 
@@ -406,7 +410,7 @@ def build(out: Path, ref: str, strict: bool) -> int:
     pages = page_map()
     linker = Linker(pages, ref)
     index_md = (ROOT / INDEX).read_text(encoding="utf-8")
-    guides, groups = read_nav(index_md)
+    guides, groups = read_nav(index_md, (ROOT / LOG_INDEX).read_text(encoding="utf-8"))
 
     rendered: list[Page] = []
     for src, dst in pages.items():
@@ -420,11 +424,11 @@ def build(out: Path, ref: str, strict: bool) -> int:
     page_tpl = (SITE_SRC / "templates/page.html").read_text(encoding="utf-8")
     for p in rendered:
         root = posixpath.relpath(".", posixpath.dirname(p.out))
-        kind = "note" if any(p.src == s for _, items in groups for _, s in items) else "guide"
+        kind = "note" if p.src.startswith("engine/docs/log/") and p.src != LOG_INDEX else "guide"
         banner = ""
         if kind == "note":
-            notes = posixpath.relpath("docs/index.html", posixpath.dirname(p.out)) + "#engineering-notes"
-            banner = (f'<p class="note-banner">An <a href="{notes}">engineering note</a>, kept as it was written. '
+            notes = posixpath.relpath(pages[LOG_INDEX], posixpath.dirname(p.out))
+            banner = (f'<p class="note-banner">A <a href="{notes}">development log</a> entry, kept as it was written. '
                       "Numbers in it belong to the build and scene it names; paths on a developer's machine are shown, not linked.</p>")
         html_ = fill(page_tpl,
                      title=html.escape(p.title), root=root, nav=render_nav(p, pages, guides, groups),

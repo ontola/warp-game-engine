@@ -220,7 +220,7 @@ struct Config {
     /// First whole-plant proxy tree, its pixel error, the distance past which that error grows.
     proxy: [f32; 4],
 }
-/// Rasterized voxels (KERN_VOXEL_RASTER=1, docs/voxel-raster-plan.md): the
+/// Rasterized voxels (KERN_VOXEL_RASTER=1, docs/log/voxel-raster-plan.md): the
 /// static cell list and the id/depth raster pipeline.
 struct SplatRaster {
     /// Into the scene's visibility buffer and depth (Stage::Splats with
