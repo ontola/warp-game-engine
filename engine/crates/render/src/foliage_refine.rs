@@ -47,7 +47,7 @@ impl Refiner {
         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage incremental admission"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_refine.wgsl").into())});
         let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit","wake_count","wake_prefix","wake_scatter","seed_scatter"].into_iter().map(|entry|
             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()})).collect();
-        Self {capacity,proposals:storage("foliage active proposals",capacity as u64*80),parked:storage("foliage dormant proposals",capacity as u64*96),
+        Self {capacity,proposals:storage("foliage active proposals",capacity as u64*96),parked:storage("foliage dormant proposals",capacity as u64*112),
             queues:[storage("foliage complete cut A",capacity as u64*16),storage("foliage complete cut B",capacity as u64*16)],
             blocks:storage("foliage refinement prefixes",(capacity.div_ceil(256)as u64+1)*32*16),
             state:storage("foliage refinement allocation",320),
@@ -126,11 +126,11 @@ impl Refiner {
     }
     /// Offline replay of the actual GPU proposal kernel, against final frame
     /// residency/budget. Scratch resources preserve all live queues and counters.
-    pub(crate) fn trace_proposals(&self,gpu:&Gpu,s:&Selector,tasks:&[[u32;4]])->Result<Vec<[[u32;4];5]>,String> {
+    pub(crate) fn trace_proposals(&self,gpu:&Gpu,s:&Selector,tasks:&[[u32;4]])->Result<Vec<[[u32;4];6]>,String> {
         if tasks.is_empty(){return Ok(Vec::new());}
         if tasks.len()>self.capacity as usize{return Err("too many offline foliage proposals".into());}
         let scratch=|label,size|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some(label),size,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
-        let state=scratch("offline proposal state",self.state.size());let proposals=scratch("offline proposals",tasks.len()as u64*80);
+        let state=scratch("offline proposal state",self.state.size());let proposals=scratch("offline proposals",tasks.len()as u64*96);
         let queue=scratch("offline proposal tasks",tasks.len()as u64*16);gpu.queue.write_buffer(&queue,0,bytemuck::cast_slice(tasks));
         let pages=scratch("offline proposal pages",s.asset_pages.size());let counters=scratch("offline proposal counters",s.counters.size());
         let count=scratch("offline proposal count",4);gpu.queue.write_buffer(&count,0,bytemuck::bytes_of(&(tasks.len()as u32)));
@@ -139,16 +139,17 @@ impl Refiner {
         let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("offline proposal replay"),layout:&self.layout,entries:&entries});
         let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("offline proposal readback"),size:proposals.size(),usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
         let mut enc=gpu.device.create_command_encoder(&Default::default());
-        enc.copy_buffer_to_buffer(&self.state,0,&state,0,self.state.size());enc.copy_buffer_to_buffer(&self.state,0,&state,16,12);
+        enc.copy_buffer_to_buffer(&self.state,0,&state,0,self.state.size());enc.copy_buffer_to_buffer(&self.state,0,&state,16,12);enc.copy_buffer_to_buffer(&self.state,69*4,&state,70*4,4);
         enc.copy_buffer_to_buffer(&count,0,&state,12,4);enc.copy_buffer_to_buffer(&s.asset_pages,0,&pages,0,pages.size());
         self.dispatch(&mut enc,&bind,3,Some((tasks.len()as u32).div_ceil(64)),0);
         enc.copy_buffer_to_buffer(&proposals,0,&out,0,proposals.size());gpu.queue.submit([enc.finish()]);
         let(tx,rx)=std::sync::mpsc::sync_channel(1);out.slice(..).map_async(wgpu::MapMode::Read,move|r|{let _=tx.send(r);});gpu.wait();rx.recv().map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
         let data=out.slice(..).get_mapped_range().map_err(|e|e.to_string())?;
-        Ok(data.chunks_exact(80).map(bytemuck::pod_read_unaligned).collect())
+        Ok(data.chunks_exact(96).map(bytemuck::pod_read_unaligned).collect())
     }
     pub fn audit(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,s:&Selector) {
         enc.clear_buffer(&self.state,19*4,Some(9*4));
+        enc.clear_buffer(&self.state,72*4,Some(4));
         enc.clear_buffer(&self.state,32*4,Some(23*4));
         self.dispatch(enc,&self.bind(gpu,s,0),12,Some(s.count.max(s.dimensions().0).div_ceil(64)),0);
     }
@@ -204,7 +205,7 @@ impl Refiner {
         let tree=Instance {rows:[[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.]],scale:[1.,0.,0.,0.],info:[0,1,0,0]};
         let selector=crate::foliage_select::Selector::new(&gpu,&[node],&[tree,tree],2,2).unwrap();
         let r=&selector.refiner;let bind=r.bind(&gpu,&selector,0);
-        let mut parked=[0u32;48];parked[..4].copy_from_slice(&[0,0,256,1]);parked[24..28].copy_from_slice(&[1,0,512,1]);
+        let mut parked=[0u32;56];parked[..4].copy_from_slice(&[0,0,256,1]);parked[28..32].copy_from_slice(&[1,0,512,1]);
         gpu.queue.write_buffer(&r.parked,0,bytemuck::cast_slice(&parked));
         gpu.queue.write_buffer(&r.state,29*4,bytemuck::cast_slice(&[2u32]));
         fn read(gpu:&crate::Gpu,b:&wgpu::Buffer)->Vec<u32> {

@@ -12,7 +12,7 @@ struct View { consumers:array<Consumer,32>, consumer_count:vec4<u32>, vp:mat4x4<
 @group(0) @binding(2) var<storage,read> trees:array<Tree>;
 struct AssetPage {resident:u32,requested:atomic<u32>,generation:u32,padding:u32};
 @group(0) @binding(3) var<storage,read_write> pages:array<AssetPage>;
-struct Proposal {old:vec4<u32>,replacement:vec4<u32>,prefix:vec4<u32>,control:vec4<u32>,output:vec4<u32>};
+struct Proposal {old:vec4<u32>,replacement:vec4<u32>,prefix:vec4<u32>,control:vec4<u32>,output:vec4<u32>,publication:vec4<u32>};
 @group(0) @binding(4) var<storage,read_write> proposals:array<Proposal>;
 // task: root, node (NONE means emergency proxy), consumer mask, dormant index+2 (0=new).
 @group(0) @binding(5) var<storage,read_write> current:array<vec4<u32>>;
@@ -48,10 +48,20 @@ fn mask(s:vec4<f32>)->u32 {
  }
  return result;
 }
+fn limits()->vec4<u32> {return vec4<u32>(view.consumer_count.yzw,u32(view.pixels.w));}
+fn used_now()->vec4<u32> {return vec4<u32>(atomicLoad(&state[0]),atomicLoad(&state[1]),atomicLoad(&state[2]),atomicLoad(&state[69]));}
+fn used_snapshot()->vec4<u32> {return vec4<u32>(atomicLoad(&state[4]),atomicLoad(&state[5]),atomicLoad(&state[6]),atomicLoad(&state[70]));}
 fn work(tree:u32,node:u32,consumers:u32)->vec4<u32> {
  var cost=vec4<u32>(0u);
  if node==NONE {cost.y=u32(trees[tree].scale.z);cost.z=u32(trees[tree].scale.w);}
  else {let n=nodes[node];cost=vec4<u32>(select(1u,0u,(n.links.w&2u)!=0u),u32(n.error.z),u32(n.error.w),0u);}
+ if node!=NONE && (nodes[node].links.w>>8u)!=0u {
+  var views=0u;let bound=sphere(trees[tree],nodes[node]);
+  for(var i=0u;i<view.consumer_count.x;i++) {let c=view.consumers[i];
+   if (consumers&select(512u,256u,c.pixels.z==0.0))!=0u && visible_in(bound,c.vp) {views++;}
+  }
+  cost.w=(nodes[node].links.w>>8u)*views;
+ }
  if (consumers&256u)==0u {cost.y=0u;}if (consumers&512u)==0u {cost.z=0u;}
  return cost;
 }
@@ -103,19 +113,20 @@ var<workgroup> seed_scan:array<vec4<u32>,256>;
 }
 @compute @workgroup_size(1) fn prepare() {
  let count=atomicLoad(&state[3]);
+ atomicStore(&state[70],atomicLoad(&state[69]));
  for(var k=0u;k<3u;k++) {atomicStore(&state[4u+k],atomicLoad(&state[k]));}
  atomicStore(&state[7],0u);atomicStore(&state[18],0u);
  atomicStore(&state[8],(count+63u)/64u);atomicStore(&state[9],1u);atomicStore(&state[10],1u);
  atomicStore(&state[12],(count+255u)/256u);atomicStore(&state[13],1u);atomicStore(&state[14],1u);
  // A dormant queue is revisited only after the active frontier drains and
  // capacity or new pending work changed since its last wake attempt.
- let used=vec3<u32>(atomicLoad(&state[0]),atomicLoad(&state[1]),atomicLoad(&state[2]));
- let previous=vec3<u32>(atomicLoad(&state[56]),atomicLoad(&state[57]),atomicLoad(&state[58]));
+ let used=used_now();
+ let previous=vec4<u32>(atomicLoad(&state[56]),atomicLoad(&state[57]),atomicLoad(&state[58]),atomicLoad(&state[71]));
  let parked_count=atomicLoad(&state[29]);
  let wake=count==0u && (atomicLoad(&state[15])&3u)==0u && (parked_count!=atomicLoad(&state[59]) || any(used!=previous) || atomicLoad(&state[30])!=0u);
  atomicStore(&state[55],select(0u,1u,wake));
  atomicStore(&state[64],select(0u,(parked_count+255u)/256u,wake));atomicStore(&state[65],1u);atomicStore(&state[66],1u);
- if wake {for(var k=0u;k<3u;k++) {atomicStore(&state[56u+k],used[k]);}atomicStore(&state[59],parked_count);atomicAdd(&state[62],1u);}
+ if wake {atomicStore(&state[71],used.w);for(var k=0u;k<3u;k++) {atomicStore(&state[56u+k],used[k]);}atomicStore(&state[59],parked_count);atomicAdd(&state[62],1u);}
  // Rounds that do work form a prefix: an idle round without a wake changes
  // nothing, so every later round is idle too. The CPU sizes the next frames'
  // round count from this (Refiner::encode).
@@ -160,31 +171,32 @@ fn endpoint_acceptable(tree:u32,node:u32)->bool {
  let n=nodes[node];let scale=projected(trees[tree],n,256u);
  return (n.links.w&1u)==0u && scale.x<1e29 && scale.x*n.error.x<=view.pixels.z && scale.x*n.error.y<=1.0;
 }
-fn endpoint_frontier(tree:u32,node:u32,old:vec4<u32>,used:vec3<u32>,request_pages:bool,source_only:bool)->vec4<u32> {
+struct Endpoint {cost:vec4<u32>,mode:u32};
+fn endpoint_frontier(tree:u32,node:u32,old:vec4<u32>,used:vec4<u32>,request_pages:bool,source_only:bool)->Endpoint {
  let t=trees[tree];let end=nodes[node].links.y;var at=nodes[node].links.x;
  var cost=vec4<u32>(0u);var resident=true;
- let available=view.consumer_count.yzw-min(used,view.consumer_count.yzw);
+ let available=limits()-min(used,limits());
  loop {
   if at==NONE || at>=end {break;}
   let n=nodes[at];let roles=mask(sphere(t,n))&256u;
   if roles==0u {at=n.links.y;continue;}
   let endpoint=select(endpoint_acceptable(tree,at),(n.links.w&4u)!=0u && n.links.x==NONE,source_only);
   if !endpoint {
-   if n.links.x==NONE {return vec4<u32>(0u);}
+   if n.links.x==NONE {return Endpoint(vec4<u32>(0u),0u);}
    at=n.links.x;continue;
   }
   cost=plus(cost,work(tree,at,roles));
-  if any((cost-min(cost,old)).xyz>available) {return vec4<u32>(0u);}
+  if any((cost-min(cost,old))>available) {return Endpoint(vec4<u32>(0u),0u);}
   if request_pages {resident=ready(n.links.z)&&resident;}
   else {resident=(pages[n.links.z].resident!=0u)&&resident;}
   at=n.links.y;
  }
- if !resident {return vec4<u32>(0u);}
- cost.w=select(2u,1u,source_only);return cost;
+ if !resident {return Endpoint(vec4<u32>(0u),0u);}
+ return Endpoint(cost,select(2u,1u,source_only));
 }
-fn complete_endpoint(tree:u32,node:u32,old:vec4<u32>,used:vec3<u32>,request_pages:bool)->vec4<u32> {
+fn complete_endpoint(tree:u32,node:u32,old:vec4<u32>,used:vec4<u32>,request_pages:bool)->Endpoint {
  let mixed=endpoint_frontier(tree,node,old,used,request_pages,false);
- if mixed.w!=0u {return mixed;}
+ if mixed.mode!=0u {return mixed;}
  return endpoint_frontier(tree,node,old,used,request_pages,true);
 }
 @compute @workgroup_size(64) fn propose(@builtin(global_invocation_id) id:vec3<u32>) {
@@ -193,25 +205,25 @@ fn complete_endpoint(tree:u32,node:u32,old:vec4<u32>,used:vec3<u32>,request_page
  // Cache lives only within this encode: camera, pages and nodes are immutable.
  // Available budget changes, so admission is always rechecked.
  if task.w>=2u {
-  let cached=parked[task.w-2u].proposal;p.old=cached.old;p.replacement=cached.replacement;
+  let cached=parked[task.w-2u].proposal;p.old=cached.old;p.replacement=cached.replacement;p.publication=cached.publication;
   p.control=vec4<u32>(cached.control.x,1u,cached.output.y,0u);p.output.y=cached.output.y;
-  let used=vec3<u32>(atomicLoad(&state[4]),atomicLoad(&state[5]),atomicLoad(&state[6]));
+  let used=used_snapshot();
   // A parked proposal lost collective admission. Reusing only its original
   // intermediate cut serializes cost-release waves even when all complete
   // complete endpoints fit together. Reconsider that endpoint on retry.
-  if task.y!=NONE && task.z==256u && p.replacement.y>p.old.y {
+  if task.y!=NONE && task.z==256u && (p.replacement.y>p.old.y || p.replacement.w>p.old.w) {
    let source=complete_endpoint(task.x,task.y,p.old,used,true);
-   if source.w!=0u {
-    p.replacement=source;p.control.z=0u;p.output.y=0u;
+   if source.mode!=0u {
+    p.replacement=source.cost;p.publication.x=source.mode;p.control.z=0u;p.output.y=0u;
     let n=nodes[task.y];let scale=projected(trees[task.x],n,task.z);
-    let delta=source-min(source,p.old);let price=max(1.0,f32(delta.x)*256.0+f32(delta.y));
+    let delta=source.cost-min(source.cost,p.old);let price=max(1.0,f32(delta.x)*256.0+f32(delta.y));
     let parent_error=select(n.error.x,n.sphere.w,(n.links.w&1u)!=0u);
     let benefit=max(0.001,scale.y*parent_error);
     p.control.x=u32(clamp(floor(log2(max(benefit/price,1e-20)))+12.0,0.0,15.0))+16u;
    }
   }
-  let capacity=view.consumer_count.yzw;let delta=p.replacement-min(p.replacement,p.old);
-  if any(delta.xyz>capacity-min(used,capacity)) {p.control.y=2u;atomicAdd(&state[17],1u);}
+  let capacity=limits();let delta=p.replacement-min(p.replacement,p.old);
+  if any(delta>capacity-min(used,capacity)) {p.control.y=2u;atomicAdd(&state[17],1u);}
   else if (task.z&256u)!=0u {atomicOr(&state[18],1u);}
   atomicAdd(&state[28],1u);proposals[at]=p;return;
  }
@@ -242,21 +254,21 @@ fn complete_endpoint(tree:u32,node:u32,old:vec4<u32>,used:vec3<u32>,request_page
  // is resident; missing source pages still retain the current complete parent.
 
  if wanted_refine && task.y!=NONE && task.z==256u {
-  let used=vec3<u32>(atomicLoad(&state[4]),atomicLoad(&state[5]),atomicLoad(&state[6]));
+  let used=used_snapshot();
   let delta=p.replacement-min(p.replacement,p.old);
-  if delta.y>view.consumer_count.z-min(used.y,view.consumer_count.z) {
+  if delta.y>view.consumer_count.z-min(used.y,view.consumer_count.z) || delta.w>limits().w-min(used.w,limits().w) {
    let source=complete_endpoint(task.x,task.y,p.old,used,true);
-   if source.w!=0u {p.replacement=source;children=0u;child_error=0.0;refine=true;}
+   if source.mode!=0u {p.replacement=source.cost;p.publication.x=source.mode;children=0u;child_error=0.0;refine=true;}
   }
  }
  // All visible siblings must fit together. Missing pages keep the current parent.
  if refine {
   let delta=p.replacement-min(p.replacement,p.old);
-  let used=vec3<u32>(atomicLoad(&state[4]),atomicLoad(&state[5]),atomicLoad(&state[6]));
-  let capacity=view.consumer_count.yzw;
+  let used=used_snapshot();
+  let capacity=limits();
   // An individually impossible proposal must not reserve prefix space and
   // starve cheaper candidates. Retain its parent without entering the scan.
-  let individually_fits=all(delta.xyz<=capacity-min(used,capacity));
+  let individually_fits=all(delta<=capacity-min(used,capacity));
   if !individually_fits {atomicAdd(&state[17],1u);}
   if individually_fits && (task.z&256u)!=0u {atomicOr(&state[18],1u);}
   let price=max(1.0,f32(delta.x)*256.0+f32(delta.y)+f32(delta.z));
@@ -274,19 +286,21 @@ fn complete_endpoint(tree:u32,node:u32,old:vec4<u32>,used:vec3<u32>,request_page
 // Read each proposal once with coalesced lanes; the stable per-bucket scan
 // then operates on 4 KiB of shared data instead of rereading global proposals.
 var<workgroup> priority_items:array<vec4<u32>,256>;
+var<workgroup> priority_source:array<u32,256>;
 @compute @workgroup_size(256) fn priority_scan(@builtin(workgroup_id) block:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
  let start=block.x*256u;let end=min(start+256u,atomicLoad(&state[3]));
- var item=vec4<u32>(0u);
+ var item=vec4<u32>(0u);var source=0u;
  if start+lane<end {
   let p=proposals[start+lane];
+  source=p.replacement.w-min(p.replacement.w,p.old.w);
   item=vec4<u32>((p.replacement-min(p.replacement,p.old)).xyz,select(0u,p.control.x+1u,p.control.y==1u));
  }
- priority_items[lane]=item;workgroupBarrier();
+ priority_items[lane]=item;priority_source[lane]=source;workgroupBarrier();
  if lane>=32u {return;}
  var sum=vec4<u32>(0u);
  for(var offset=0u;offset<end-start;offset++) {
   let value=priority_items[offset];if value.w==lane+1u {
-   proposals[start+offset].prefix=sum;sum=plus(sum,vec4<u32>(value.xyz,0u));
+   proposals[start+offset].prefix=sum;sum=plus(sum,vec4<u32>(value.xyz,priority_source[offset]));
   }
  }
  blocks[32u+block.x*32u+lane]=sum;
@@ -311,10 +325,10 @@ var<workgroup> priority_items:array<vec4<u32>,256>;
  var before=plus(p.prefix,blocks[32u+(at/256u)*32u+p.control.x]);
  for(var b=p.control.x+1u;b<32u;b++) {before=plus(before,blocks[b]);}
  let delta=p.replacement-min(p.replacement,p.old);
- let used=vec4<u32>(atomicLoad(&state[4]),atomicLoad(&state[5]),atomicLoad(&state[6]),0u);
- let available=vec4<u32>(view.consumer_count.y,view.consumer_count.z,view.consumer_count.w,0u);
+ let used=used_snapshot();
+ let available=limits();
  // Zero/negative-cost replacements remain allowed when a baseline exceeds a cap.
- let cost=plus(before,delta);let fits=all(select(cost.xyz<=available.xyz-min(used.xyz,available.xyz),vec3<bool>(true),delta.xyz==vec3<u32>(0u)));
+ let cost=plus(before,delta);let fits=all(select(cost<=available-min(used,available),vec4<bool>(true),delta==vec4<u32>(0u)));
  if fits && (atomicLoad(&state[15])&3u)==0u {proposals[at].control.w=1u;}
  else {proposals[at].control.w=2u;atomicAdd(&state[17],1u);}
 }
@@ -376,15 +390,17 @@ fn state_park_index(at:u32,p:Proposal)->u32 {
   if p.replacement[k]>=p.old[k] {atomicAdd(&state[k],p.replacement[k]-p.old[k]);}
   else {atomicSub(&state[k],p.old[k]-p.replacement[k]);}
  }
+ if p.replacement.w>=p.old.w {atomicAdd(&state[69],p.replacement.w-p.old.w);}
+ else {atomicSub(&state[69],p.old.w-p.replacement.w);}
  // Admission reserved the entire endpoint frontier; replay exactly the same
  // traversal. Pages and views are immutable throughout this encode.
- if p.replacement.w!=0u {
+ if p.publication.x!=0u {
   let t=trees[task.x];let end=nodes[task.y].links.y;var child=nodes[task.y].links.x;
   loop {
    if child==NONE || child>=end {break;}
    let n=nodes[child];let roles=mask(sphere(t,n))&256u;
    if roles==0u {child=n.links.y;continue;}
-   let endpoint=select(endpoint_acceptable(task.x,child),(n.links.w&4u)!=0u && n.links.x==NONE,p.replacement.w==1u);
+   let endpoint=select(endpoint_acceptable(task.x,child),(n.links.w&4u)!=0u && n.links.x==NONE,p.publication.x==1u);
    if !endpoint {child=n.links.x;continue;}
    publish(vec4<u32>(task.x,child,roles,0u));child=n.links.y;
   }
@@ -416,13 +432,13 @@ fn state_park_index(at:u32,p:Proposal)->u32 {
 fn wakeable(at:u32)->bool {
  if parked[at].task.w!=1u {return false;}
  let p=parked[at].proposal;let delta=p.replacement-min(p.replacement,p.old);
- let used=vec3<u32>(atomicLoad(&state[0]),atomicLoad(&state[1]),atomicLoad(&state[2]));
- if all(delta.xyz<=view.consumer_count.yzw-min(used,view.consumer_count.yzw)) {return true;}
+ let used=used_now();
+ if all(delta<=limits()-min(used,limits())) {return true;}
  // A cheaper complete endpoint may wake even while the cached intermediate
  // splat reservation cannot. Publication remains in propose/decide/apply.
  let task=parked[at].task;
- if task.y!=NONE && task.z==256u && p.replacement.y>p.old.y {
-  return complete_endpoint(task.x,task.y,p.old,used,true).w!=0u;
+ if task.y!=NONE && task.z==256u && (p.replacement.y>p.old.y || p.replacement.w>p.old.w) {
+  return complete_endpoint(task.x,task.y,p.old,used,true).mode!=0u;
  }
  return false;
 }
@@ -502,13 +518,14 @@ fn audit_camera_limit(tree:u32,node:u32,camera_scale:f32) {
   child=nodes[child].links.y;
  }
  let old=work(tree,node,mask(sphere(t,n))&256u);let delta=replacement-min(replacement,old);
- let used=vec3<u32>(atomicLoad(&state[0]),atomicLoad(&state[1]),atomicLoad(&state[2]));
- let capacity=view.consumer_count.yzw;var blocked=delta.xyz>capacity-min(used,capacity);
- if blocked.y {
+ let used=used_now();
+ let capacity=limits();var blocked=delta>capacity-min(used,capacity);
+ if blocked.y || blocked.w {
   let source=complete_endpoint(tree,node,old,used,false);
-  if source.w!=0u {blocked=(source-min(source,old)).xyz>capacity-min(used,capacity);missing=false;}
+  if source.mode!=0u {blocked=(source.cost-min(source.cost,old))>capacity-min(used,capacity);missing=false;}
  }
- if blocked.x {atomicAdd(&state[49],1u);}if blocked.y {atomicAdd(&state[50],1u);}if blocked.z {atomicAdd(&state[51],1u);}
+ if blocked.w {atomicAdd(&state[72],1u);}
+ if blocked.x {atomicAdd(&state[49],1u);}if blocked.y || blocked.w {atomicAdd(&state[50],1u);}if blocked.z {atomicAdd(&state[51],1u);}
  if missing {atomicAdd(&state[52],1u);}if !any(blocked) && !missing {atomicAdd(&state[54],1u);}
 }
 fn audit_node(tree:u32,node:u32,roles:u32) {
