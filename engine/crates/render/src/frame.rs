@@ -613,6 +613,15 @@ pub struct FrameStats {
     pub picks: Vec<Option<(u32, u32, u32)>>,
 }
 
+struct FoliageSeedTarget {
+    targets:ViewTargets, depth:wgpu::TextureView, color:wgpu::TextureView,
+    pyramid:crate::depth_pyramid::PyramidTarget,
+}
+struct FoliageSeedDepth {
+    pyramid:crate::depth_pyramid::DepthPyramid,
+    targets:std::sync::Mutex<Vec<FoliageSeedTarget>>,
+}
+
 #[derive(Clone)]
 struct ViewTargets {
     uniform: wgpu::Buffer,
@@ -741,6 +750,7 @@ pub struct Renderer {
     wind: crate::wind::WindRenderer,
     part_wind: Option<crate::part_wind::PartWindRenderer>,
     gpu_forest: Option<(crate::foliage_runtime::Runtime,u32)>,
+    foliage_seed_depth:Option<FoliageSeedDepth>,
     part_wind_lod: bool,
     aggregate_lod: Option<crate::aggregate_lod::Selector>,
     aggregate_lod_enabled: std::sync::atomic::AtomicBool,
@@ -2020,6 +2030,7 @@ impl Renderer {
             instance_buffer: instances,
             wind,
             part_wind,
+            foliage_seed_depth:gpu_forest.as_ref().map(|_|FoliageSeedDepth {pyramid:crate::depth_pyramid::DepthPyramid::new(gpu),targets:Default::default()}),
             gpu_forest,
             part_wind_lod: scene.part_wind_lod,
             aggregate_lod,
@@ -3214,7 +3225,9 @@ impl Renderer {
     /// Explicit offline validation readback; normal frame rendering never waits.
     /// Expensive explicit offline diagnostic; never part of the frame loop.
     pub fn voxel_raster_profile(&self,gpu:&Gpu)->Result<Vec<serde_json::Value>,String> {
-        self.voxel_forest.as_ref().map_or(Ok(Vec::new()),|f|f.raster_profile(gpu))
+        let mut profiles=self.voxel_forest.as_ref().map_or(Ok(Vec::new()),|f|f.raster_profile(gpu))?;
+        if let Some(forest)=&self.gpu_forest {forest.0.annotate_raster_profile(gpu,&mut profiles)?;}
+        Ok(profiles)
     }
     pub fn voxel_diagnostics(&self, gpu: &Gpu) -> Result<Option<Vec<crate::voxel_forest::VoxelViewDiagnostics>>,String> {
         self.voxel_forest.as_ref().map(|forest|forest.diagnostics(gpu)).transpose()
@@ -3484,6 +3497,11 @@ impl Renderer {
     }
 
     /// Queue patches for the GPU build at the start of the next frame.
+    /// The minimum renderer's characters this frame (`Scene::rigid_models`).
+    pub fn set_rigid_actors(&self, gpu: &Gpu, actors: &[crate::scene::RigidActor]) {
+        if let Some(forward) = &self.minimal_forward { forward.lock().unwrap().set_rigid_actors(gpu, actors); }
+    }
+
     pub fn queue_procedural_terrain(&self, jobs: Vec<crate::procedural_terrain::Job>) -> Result<(), String> {
         self.procedural_terrain.as_ref().ok_or("this scene reserved no procedural terrain")?.queue(jobs);
         Ok(())
@@ -4015,6 +4033,33 @@ impl Renderer {
             }
         }
         if let Some((forest,first_owner))=&self.gpu_forest {
+            // CURRENT terrain depth is safe before vegetation publication. No old
+            // vegetation slots/pages/poses enter this seed, so recycled owners and
+            // rejected partial cuts cannot leave false occluders behind.
+            let seed=self.foliage_seed_depth.as_ref().unwrap();
+            let mut seed_targets=seed.targets.lock().unwrap();
+            for (vi,v) in views.iter().enumerate() {
+                let size=if let Some(backend)=&mut up.backend {backend.optimal_size(mode,(v.w,v.h))?}else{(v.w,v.h)};
+                if seed_targets.len()<=vi || seed_targets[vi].pyramid.size!=size {
+                    let texture=|format|gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("foliage current terrain seed"),size:wgpu::Extent3d {width:size.0,height:size.1,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]}).create_view(&Default::default());
+                    let t=FoliageSeedTarget {targets:self.view_targets_capacity(gpu,"foliage seed view",8192,true,false),depth:texture(wgpu::TextureFormat::Depth32Float),color:texture(wgpu::TextureFormat::R32Uint),pyramid:seed.pyramid.target(gpu,size)};
+                    if seed_targets.len()==vi {seed_targets.push(t);}else{seed_targets[vi]=t;}
+                }
+                let t=&seed_targets[vi];
+                let projection=camera_projections.get(vi).copied().unwrap_or_else(||Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near));
+                let mut uniform=view_uniform(part_animation_views[vi].view_projection,v.cam.pos,projection.y_axis.y*0.5*v.h as f32,[light.lod_pixels,v.cam.near,0.,8192.],[size.0 as f32,size.1 as f32,1./size.0 as f32,1./size.1 as f32],cut);
+                // Only the terrain category may occlude upstream. Missing seed
+                // clusters at the bounded capacity fail open (less occlusion).
+                uniform.fog_cull[3]=((31u32 & !(1u32<<1))|geometry_diagnostic.excluded_mask) as f32;
+                gpu.queue.write_buffer(&t.targets.uniform,0,bytemuck::bytes_of(&uniform));
+                let start=names.len();
+                self.cull_and_raster(&mut enc,gpu,&t.targets,Some(&t.color),&t.depth,&mut ts,&mut names,"foliage seed terrain cull",RasterPass::Color);
+                for name in &mut names[start..] {*name=match *name {"raster"=>"foliage seed terrain raster","instance group select"=>"foliage seed groups","instance broadphase"=>"foliage seed broadphase",other=>other};}
+                let time=self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs,_,_)|{names.push("foliage seed pyramid");(qs,timestamp_pair(&mut ts))});
+                seed.pyramid.encode(gpu,&mut enc,&t.depth,&t.pyramid,time);
+                if let Some((q,i))=time {enc.write_timestamp(q,i+1);}
+            }
+            let current=seed_targets.iter().take(views.len()).enumerate().map(|(i,t)|crate::foliage_seed_visibility::CameraDepth {projection:part_animation_views[i].view_projection,pyramid:&t.pyramid.view}).collect::<Vec<_>>();
             let time=self.query.as_ref().map(|(qs,_,_)| {let first=timestamp_pair(&mut ts);timestamp_pair(&mut ts);timestamp_pair(&mut ts);(qs,first)});
             if time.is_some(){names.extend(["GPU forest selection residency","GPU forest shared poses","GPU forest materialize"]);}
             // Cameras were appended first; all following consumers are shadow
@@ -4023,7 +4068,7 @@ impl Renderer {
                 if i<views.len(){crate::foliage_select::ConsumerView::camera(v)}
                 else{crate::foliage_select::ConsumerView::shadow(v)}
             }).collect::<Vec<_>>();
-            forest.encode_timed(gpu,&mut enc,&consumers,*first_owner,time)?;
+            forest.encode_timed_depth(gpu,&mut enc,&consumers,*first_owner,time,Some(&current))?;
             enc.copy_buffer_to_buffer(&forest.choices,65536,&shadow_t.foliage_selection,0,65536);
         }
         // Actual updated instance/branch spheres and wind bounds, once shared

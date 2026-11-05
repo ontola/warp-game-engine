@@ -31,6 +31,7 @@ struct Demand {count:atomic<u32>,bucket:u32,prefix:u32,failed:atomic<u32>};
 struct Parked { task:vec4<u32>, proposal:Proposal };
 @group(0) @binding(14) var<storage,read_write> parked:array<Parked>;
 @group(0) @binding(15) var<storage,read_write> record_consumers:array<u32>;
+@group(0) @binding(16) var<storage,read> seed_visibility:array<u32>;
 const NONE:u32=0xffffffffu;
 fn ready(rep:u32)->bool {
  if atomicLoad(&pages[rep].requested)==0u {atomicOr(&pages[rep].requested,1u);}
@@ -67,6 +68,7 @@ var<workgroup> seed_scan:array<vec4<u32>,256>;
  if tree<view.counts.x {
   let root=trees[tree];var consumers=0u;
   if root.info.w==0u {consumers=mask(sphere(root,nodes[root.info.x]));}
+  if view.counts.w!=0u && seed_visibility[tree]==0u {consumers&=~256u;}
   demand[tree].bucket=consumers;demand[tree].prefix=0u;
   demand[tree+view.counts.x].bucket=consumers&512u;demand[tree+view.counts.x].prefix=0u;
   atomicStore(&demand[tree].count,0u);atomicStore(&demand[tree].failed,0u);

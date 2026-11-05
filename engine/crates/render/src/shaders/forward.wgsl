@@ -6,13 +6,21 @@ struct Material {tint:vec3<f32>,layer:i32,roughness:f32,flags:u32,scale:f32,meta
 @group(0) @binding(2) var lava_field:texture_2d<f32>;
 @group(0) @binding(3) var lava_sampler:sampler;
 @group(0) @binding(4) var stone_field:texture_2d<f32>;
+@group(0) @binding(5) var<storage,read> joints:array<vec4<f32>>;
 struct Out {@builtin(position) pos:vec4<f32>,@location(0) color:vec3<f32>,@location(1) world:vec3<f32>,@location(2) @interpolate(flat) lava:vec4<f32>,
  @location(3) stone_uv:vec2<f32>,@location(4) @interpolate(flat) stone:vec2<f32>};
 @vertex fn vs(@location(0) position:vec3<f32>,@location(1) normal:vec3<f32>,@location(2) uv:vec2<f32>,
- @location(3) r0:vec4<f32>,@location(4) r1:vec4<f32>,@location(5) r2:vec4<f32>,@location(6) material:u32,@location(7) flags:u32)->Out {
- let p=vec4<f32>(position,1.0);let world=vec3<f32>(dot(r0,p),dot(r1,p),dot(r2,p));
- let n=normalize(vec3<f32>(dot(r0.xyz,normal),dot(r1.xyz,normal),dot(r2.xyz,normal)));
- let m=materials[material];
+ @location(3) r0:vec4<f32>,@location(4) r1:vec4<f32>,@location(5) r2:vec4<f32>,@location(6) material:u32,@location(7) flags:u32,@location(8) rigid:u32)->Out {
+ var p=vec4<f32>(position,1.0);var bent=normal;var surface_material=material;
+ // A character: this vertex follows one joint and names its own material.
+ if rigid>0u {
+  let row=rigid-1u+u32(uv.x+0.5)*3u;let a=joints[row];let b=joints[row+1u];let c=joints[row+2u];
+  p=vec4<f32>(dot(a,p),dot(b,p),dot(c,p),1.0);bent=vec3<f32>(dot(a.xyz,normal),dot(b.xyz,normal),dot(c.xyz,normal));
+  surface_material=u32(uv.y+0.5);
+ }
+ let world=vec3<f32>(dot(r0,p),dot(r1,p),dot(r2,p));
+ let n=normalize(vec3<f32>(dot(r0.xyz,bent),dot(r1.xyz,bent),dot(r2.xyz,bent)));
+ let m=materials[surface_material];
  var illumination=vec3<f32>(u.ambient.x*(0.2+0.3*max(n.y,0.0)))+u.sun_color.rgb*u.sun.w*max(dot(n,u.sun.xyz),0.0);
  for(var i=0u;i<u32(u.ambient.y);i++) {let lamp=u.spots[i];let offset=world-lamp.position.xyz;let d=length(offset);
   if d>0.05 && d<lamp.position.w {let outward=offset/d;let cone=smoothstep(lamp.direction.w,lamp.intensity.w,dot(outward,lamp.direction.xyz));

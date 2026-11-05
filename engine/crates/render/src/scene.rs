@@ -369,6 +369,15 @@ pub struct TextureSource {
     pub normal: Option<image::RgbaImage>,
 }
 
+/// A character for the minimum renderer: one draw, each vertex following one
+/// joint. `uv` holds the joint index and the material index.
+#[derive(Clone, Debug, Default)]
+pub struct RigidModel { pub vertices: Vec<crate::cluster::Vertex>, pub indices: Vec<u32> }
+
+/// One character this frame: `palette` has a matrix per joint.
+#[derive(Clone, Debug)]
+pub struct RigidActor { pub model: usize, pub transform: glam::Affine3A, pub palette: Vec<glam::Mat4>, pub hidden_views: u8 }
+
 /// Startup graphics modifiers, independent of windowing or XR presentation.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Graphics {
@@ -389,6 +398,8 @@ pub struct Graphics {
 
 #[derive(Default)]
 pub struct Scene {
+    /// Characters for the minimum renderer (see [`RigidModel`]).
+    pub rigid_models: Vec<RigidModel>,
     pub graphics: Graphics,
     pub vertices: Vec<Vertex>,
     pub cluster_verts: Vec<u32>,
