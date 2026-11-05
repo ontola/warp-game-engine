@@ -1000,9 +1000,10 @@ impl Runtime {
         let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
         let gpu=Gpu::new().unwrap();let light=Lighting {gi:0.,sun_lux:0.,shadow_strength:0.,..Default::default()};
         // wall: (centre, size, category). None means open ground.
-        let frame=|wall:Option<(Vec3,Vec3,GeometryCategory)>,cam:Camera| {
+        let forest=|trees:&[f32],wall:Option<(Vec3,Vec3,GeometryCategory)>,cam:Camera| {
+            let roots:Vec<_>=trees.iter().map(|&x|RootPlacement {up:Vec3::Y,pos:Vec3::new(x,0.,0.),yaw:0.,scale:1.,variant:0}).collect();
             let mut scene=Scene::default();
-            plant(&mut scene,std::slice::from_ref(&cooked),&[RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}],8,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
+            plant(&mut scene,std::slice::from_ref(&cooked),&roots,8,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
             if let Some((at,size,category))=wall {
                 let paint=scene.add_material(Material {tint:[0.5;3],layer:-1,roughness:0.9,flags:0,scale:1.,metal:0.});
                 let mesh=scene.add_mesh(&crate::primitives::cube(paint).mesh());
@@ -1012,8 +1013,13 @@ impl Runtime {
             let views=[ViewRect {cam,x:0,y:0,w:128,h:128}];
             let mut last=None;
             for _ in 0..3 {let (image,_)=renderer.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();last=Some((image,renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap()));}
-            last.unwrap()
+            let (image,diagnostics)=last.unwrap();
+            let splats=renderer.voxel_diagnostics(&gpu).unwrap().unwrap()[0].raster_splats;
+            let drawn=splats as usize+diagnostics.source_slots as usize+diagnostics.voxel_slots as usize>0;
+            assert_eq!(drawn,diagnostics.camera_roots>0,"forest is drawn exactly while the camera may see it");
+            (image,diagnostics)
         };
+        let frame=|wall,cam|forest(&[0.],wall,cam);
         // The root's bounding sphere has radius ~2.1 around (0.6,0.6,0.2).
         let front=Camera {pos:Vec3::new(0.6,0.6,12.),target:Vec3::new(0.6,0.6,0.),fov_y:1.,near:0.05};
         // Close enough that the tree's bounds run past every screen edge.
@@ -1033,6 +1039,12 @@ impl Runtime {
         // A wall over only the left half leaves the tree's right side showing.
         let (_,half)=frame(Some((Vec3::new(-14.4,0.6,5.),Vec3::new(30.,30.,0.05),GeometryCategory::Structures)),front);
         assert_eq!(half.camera_roots,1,"a partly covered tree stays selected");
+        let (_,behind)=frame(full(-5.,GeometryCategory::Structures),front);
+        assert_eq!(behind.camera_roots,1,"a wall behind the tree must not hide it");
+        let (_,low)=frame(Some((Vec3::new(0.6,-14.4,5.),Vec3::new(30.,30.,0.05),GeometryCategory::Structures)),front);
+        assert_eq!(low.camera_roots,1,"a low block must not hide the tree above it");
+        let (_,beside)=forest(&[0.,7.],Some((Vec3::new(0.6,0.6,5.),Vec3::new(6.,6.,0.05),GeometryCategory::Structures)),front);
+        assert_eq!(beside.camera_roots,1,"only the tree behind the wall goes");
     }
     #[test]
     #[ignore="exclusive GPU deferred queue overflow fixture"]
