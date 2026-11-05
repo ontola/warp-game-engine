@@ -736,7 +736,8 @@ fn main() -> Result<(), String> {
         return Ok(());
     }
     // --fly N: N headless frames flying straight ahead at --speed (m/s,
-    // default 80), one tick per frame; prints frame-time percentiles, so
+    // default 80), or --stationary for fixed-camera streaming convergence.
+    // One tick per frame; prints frame-time percentiles, so
     // hitches from scene rebuilds show without a window.
     if let Some(n) = arg("--fly") {
         let [w, h] = arg("--size").and_then(|s| s.split_once('x').and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?]))).unwrap_or([1280, 720]);
@@ -748,7 +749,9 @@ fn main() -> Result<(), String> {
         let mut cpu_times = Vec::new();
         let mut gpu_samples = Vec::new();
         let mut page_samples = Vec::new();
-        let forward = Controls { mv: [0.0, 1.0], ..Default::default() };
+        let stationary=std::env::args().any(|a|a=="--stationary");
+        println!("Headless camera stationary={stationary}; wind and asset streaming continue");
+        let forward = Controls { mv: [0.0, if stationary {0.0}else{1.0}], ..Default::default() };
         let frames = n.parse::<u32>().map_err(|_| "--fly N")?;
         if frames <= 5 { return Err("--fly needs at least six frames".into()); }
         for i in 0..frames {
