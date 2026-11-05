@@ -56,10 +56,15 @@ pub(crate) struct Resources {
     pub pyramid: Option<DepthPyramid>,
     pub targets: Mutex<Vec<Option<PyramidTarget>>>,
 }
+/// Clusters phase two can test from its queue. Past this it falls back to a
+/// full scan of the scene, 2 to 3 ms in open views, so it must hold what those
+/// views defer (340,000 in the render suite's flight).
+const DEFERRED_CLUSTERS:u32=1<<20;
+
 impl Resources {
-    pub fn new(gpu: &Gpu, bucketed: bool, gpu_forest:bool) -> Self {Self::with_history_capacity(gpu,bucketed,gpu_forest,262144)}
+    pub fn new(gpu: &Gpu, bucketed: bool, gpu_forest:bool) -> Self {Self::with_history_capacity(gpu,bucketed,gpu_forest,DEFERRED_CLUSTERS)}
     pub(crate) fn with_history_capacity(gpu:&Gpu,bucketed:bool,gpu_forest:bool,deferred_capacity:u32)->Self {
-        assert!((1..=262144).contains(&deferred_capacity));
+        assert!((1..=DEFERRED_CLUSTERS).contains(&deferred_capacity));
         // On by default for every scene: hidden geometry of any category is
         // tested against the Hi-Z of what was visible last frame.
         // KERN_OCCLUSION=0 (or the older KERN_TREE_OCCLUSION=0) turns it off.

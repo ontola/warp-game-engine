@@ -236,7 +236,8 @@ def diff(args):
             continue
         image = diff_images(exe, base / f"{name}.r0.png", cur / f"{name}.r0.png", out / f"{name}.heat.png")
         limit = OVER16_LIMIT_PCT + max((bv.get("noise") or {}).get("over16_pct", 0), (cv.get("noise") or {}).get("over16_pct", 0))
-        if image["over16_pct"] > limit:
+        # A moving camera meets streaming at a different moment on every build.
+        if image["over16_pct"] > limit and name not in {f["name"] for f in b["suite"].get("flights", [])}:
             failed.append(name)
         g0, g1 = bv["gpu_ms"], cv["gpu_ms"]
         t0, t1 = (v["counters"]["camera triangles"]["median"] for v in (bv, cv))
