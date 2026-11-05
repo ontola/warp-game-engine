@@ -11,7 +11,14 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
-Latest integrated change (5 November): camera and shadow classes now choose
+Latest integrated change (5 November): current-frame TERRAIN seed depth now feeds
+GPU root visibility BEFORE normal shared refinement. Camera rejection preserves
+shadow demand and unions every camera; no historical-depth rejection. 154 foliage
+tests pass. Three alternating runs per route show ADDED cost, not a speedup:
+lowland about +0.23 ms, alpine +0.47 ms (native720p ONE view). Tree/cluster seed
+recovery is still missing; oversized cells remain. G3.2 is NOT complete.
+
+Earlier integrated change (5 November): camera and shadow classes now choose
 independent GPU cuts with shared residency/poses, compact live root tasks,
 consumer-local fallback and consumer-specific raster dispatch. 152 foliage tests
 pass. Final routes have zero emergency fallbacks but are NOT faster; pixel-scale
@@ -1317,3 +1324,57 @@ alone must never discard a group; moved/recycled owners and rejected partial
 cuts cannot remain occluders. Preserve old cut/page lifetime through the seed
 phase and final publication. Continue G3.2 here rather than more budget, round
 count or priority-only changes.
+
+
+## Current terrain depth before refinement (5 November)
+
+Normal frame.rs now draws a bounded terrain-only seed per camera, builds current
+reversed-minimum depth, and classifies persistent GPU roots before their detail
+reservation. This is the first upstream visibility stage, NOT full two-phase
+vegetation occlusion. No old tree slots, old poses, historical camera depth or
+CPU shortlist are used as evidence. Visible root bits union all camera consumers;
+a camera looking away contributes nothing. Offscreen-edge uncertainty and
+near-plane/wind-bound crossings fail open. Shadow roles are never removed.
+
+Each camera uses its actual current jittered projection/internal viewport.
+Root bounds include authored wind support. Missing cameras or mismatched matrices
+reject the API call. Terrain seed capacity is 8192 clusters: missing occluders
+reduce rejection rather than create holes. Normal final terrain rendering stays
+complete. Terrain hidden by geometry diagnostics also leaves seed depth empty.
+The seed's visibility/depth/pyramid targets and aligned camera uniforms/bind
+groups are reused across frames, recreated on resize. A four-byte visibility
+word per reserved root is added; the refiner now requires 16 storage bindings.
+Seed render targets and cull scratch are additional memory/work, not free.
+
+Validation: 154 foliage tests, release terrain_fly build, six alternating runs
+per camera route (three each baseline/candidate). New GPU oracle checks actual
+root-demand masks for clear/blocked transitions, two/four cameras disagreeing,
+a camera looking away, missing consumers and wind bounds crossing the near plane.
+Existing lifecycle/cached-shadow/consumer tests pass. No allocation/frontier
+faults or emergency fallbacks in measured routes. Evidence:
+[vegetation-current-depth-measurements.json](vegetation-current-depth-measurements.json).
+
+Native720p ONE view, 240 frames, samples >=120:
+- Lowland baseline 15.060/15.009/14.807 ms; current seed 15.337/15.057/15.241 ms.
+  Camera roots 42189 -> 42186; shadow-only roots 52726 unchanged.
+- Alpine baseline 13.838/13.851/13.846 ms; current seed 14.314/14.295/14.315 ms.
+  Camera roots 29512 -> 28764; shadow-only roots 46714 unchanged.
+- CPU wall frame time is not used as GPU time. These measurements predate the
+  unrelated incoming HDR/exposure/VR/stone changes.
+
+Images inspected: lowland gains some nearby detail as reservation changes, but
+spherical cells remain; alpine broadly similar. RGB MAE about 5.25/2.32 at worst
+channel, not image equivalence or a raw-depth correctness proof. This is a
+correctness/architecture checkpoint with a measured cost regression.
+
+Remaining G3.2: seed a safe current-pose vegetation cut as well, recover deferred
+clusters against current depth, preserve page/owner lifetime through publication,
+and avoid spending refinement on hidden branches inside otherwise visible roots.
+Current root-only terrain rejection is insufficient for the dense forest. It
+must not be presented as completed two-phase visibility, full per-view cuts, a
+fix for 24px cells, or acceptance of the 4K/four-view 8.3ms target.
+
+Integration check: rebased onto effa40f (HDR/exposure, VR, stone changes);
+release DLSS-enabled terrain_fly build and a 60-frame headless lowland GPU smoke
+run PASS. Smoke is not a steady-state performance sample. Logs:
+build/playtest-unified/seed-rebase-build.log and seed-rebase-smoke.log.

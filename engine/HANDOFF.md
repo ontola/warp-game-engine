@@ -1,3 +1,18 @@
+## 5 November: upstream current-terrain root visibility checkpoint
+
+Normal renderer now draws current terrain-only depth before shared GPU foliage
+refinement; root camera rejection unions every camera and preserves shadow roles.
+154 foliage tests pass, including four-camera current-depth ownership/fail-open
+cases. No CPU tree selection or new user opt-in switch. Targets/uniforms cached.
+
+NOT a performance win: three alternating native720p SINGLE-VIEW runs per route
+show about +0.23 ms lowland and +0.47 ms alpine. Camera roots rejected: 3 / 748.
+Oversized rounded cells persist. G3.2 tree/cluster seed recovery and per-view
+publication remain OPEN. Authoritative checklist and per-pass evidence:
+engine/docs/vegetation-architecture.md and vegetation-current-depth-measurements.json.
+Measurements predate incoming HDR/exposure/VR/stone changes; rebase/build integration
+is a separate check. No interactive playtest opened.
+
 ## 5 November: automatic exposure and HDR output
 
 Both opt-in; the default SDR image is unchanged. Guide:
