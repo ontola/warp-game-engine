@@ -1,18 +1,19 @@
-//! Regions: where the world is which kind of land. Up to four terrain
-//! styles (`terrain_field::Style`, usually a biome's) and a coarse grid of
-//! weights saying how much of each holds at every point, so one world can
-//! run from alpine massifs in the north to polder in the south, with the
-//! land changing gradually in between instead of one style everywhere.
+//! Regions: where the world is which kind of land. A palette of terrain
+//! styles (`terrain_field::Style`, usually biomes', up to 256 per world)
+//! and a coarse grid saying which of them hold at every point, so one
+//! world can run from alpine massifs through lowland and tundra to polder,
+//! with the land changing gradually wherever two meet.
 //!
-//! The grid is tiny (four bytes per node, 64 m apart by default) and
-//! cheap to read: a sample takes its four surrounding nodes, blends their
-//! weights bilinearly and mixes the styles by them, a fixed cost on the
-//! CPU and the GPU. `world_constraints` carries the regions to both (its
-//! `World::eval` on the CPU, `terrain_eval_world` in
-//! `shaders/world_constraints.wgsl`, line for line the same as
-//! `Regions::style_at`). Every LOD cut reads the same style at the same
-//! point, so the change from one land to another has no seams at any
-//! distance.
+//! Each grid node keeps its four strongest styles as (id, weight) pairs,
+//! eight bytes a node, 64 m apart by default. How many styles a world has
+//! costs nothing per sample; how many meet at one spot does, so that is
+//! what is bounded: a sample reads its four surrounding nodes and mixes at
+//! most their sixteen pairs, a fixed cost on the CPU and the GPU.
+//! `world_constraints` carries the regions to both (`World::eval` on the
+//! CPU, `terrain_eval_world` in `shaders/world_constraints.wgsl`, line for
+//! line the same as `Regions::style_at`). Every LOD cut reads the same
+//! style at the same point, so the change from one land to another has no
+//! seams at any distance. Where only one style holds, it holds bit for bit.
 //!
 //! ```ignore
 //! let regions = Regions::split([alpine.terrain, polder.terrain], Vec2::ZERO, 16_000.0, Vec2::X, 1_500.0, 600.0, seed);
@@ -22,14 +23,18 @@
 use crate::terrain_field::{self, Style};
 use glam::Vec2;
 
-/// Most styles one world blends.
-pub const MAX_STYLES: usize = 4;
-/// Default spacing of the weight grid (metres).
+/// Most styles one world's palette holds (ids are one byte).
+pub const MAX_STYLES: usize = 256;
+/// Styles one grid node keeps: at most this many meet at any point.
+pub const SLOTS: usize = 4;
+/// Default spacing of the grid (metres).
 pub const CELL: f32 = 64.0;
 /// Words of one style as the GPU reads it (Style is 16 floats).
 pub const STYLE_WORDS: usize = 16;
+/// Words of one grid node: its four style ids, then their weights, a byte each.
+pub const NODE_WORDS: usize = 2;
 
-/// Up to four styles and the grid of their weights.
+/// A palette of styles and the grid of which hold where.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Regions {
     pub styles: Vec<Style>,
@@ -39,9 +44,10 @@ pub struct Regions {
     pub cell: f32,
     /// Nodes across x and z.
     pub size: [u32; 2],
-    /// One word per node, row by row: byte k is style k's weight (0..255).
-    /// Points past the grid take its edge.
-    pub weights: Vec<u32>,
+    /// Two words per node, row by row: byte k of the first is slot k's
+    /// style id, byte k of the second its weight (0..255, a node's
+    /// weights summing to 255). Points past the grid take its edge.
+    pub nodes: Vec<[u32; NODE_WORDS]>,
 }
 
 fn smooth(a: f32, b: f32, x: f32) -> f32 {
@@ -49,36 +55,50 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// A node from per-style weights: the strongest four, scaled to sum 255.
+fn node(weights: &[f32]) -> [u32; NODE_WORDS] {
+    let mut order: Vec<usize> = (0..weights.len()).filter(|&k| weights[k] > 0.0).collect();
+    order.sort_by(|&a, &b| weights[b].total_cmp(&weights[a]).then(a.cmp(&b)));
+    order.truncate(SLOTS);
+    let sum: f32 = order.iter().map(|&k| weights[k]).sum();
+    if order.is_empty() || sum <= 0.0 { return [0, 255]; }
+    let mut bytes: Vec<u32> = order.iter().map(|&k| (weights[k] / sum * 255.0).round() as u32).collect();
+    // Rounding may leave the sum off by a few: the strongest takes it up.
+    let total: u32 = bytes.iter().sum();
+    bytes[0] = (bytes[0] + 255).saturating_sub(total).min(255);
+    let (mut ids, mut ws) = (0u32, 0u32);
+    for (slot, (&k, &w)) in order.iter().zip(&bytes).enumerate() {
+        ids |= (k as u32) << (8 * slot);
+        ws |= w << (8 * slot);
+    }
+    [ids, ws]
+}
+
 impl Regions {
-    /// Weights from `weight` at every node of a grid `extent` metres square
-    /// round `centre`, `cell` metres apart. `weight` returns the share of
-    /// each style there (any scale; normalised per node); a node where all
-    /// are zero takes the first style.
-    pub fn paint(styles: &[Style], centre: Vec2, extent: f32, cell: f32, weight: impl Fn(Vec2) -> [f32; MAX_STYLES]) -> Self {
+    /// The grid `extent` metres square round `centre`, nodes `cell` metres
+    /// apart, from `weight`, which fills in the share of each style (any
+    /// scale) at a point; a node keeps its four strongest. A node where
+    /// all are zero takes the first style.
+    pub fn paint(styles: &[Style], centre: Vec2, extent: f32, cell: f32, weight: impl Fn(Vec2, &mut [f32])) -> Self {
         assert!(!styles.is_empty() && styles.len() <= MAX_STYLES, "1 to {MAX_STYLES} styles");
         assert!(cell > 0.0 && extent > 0.0);
         let n = (extent / cell).ceil() as u32 + 1;
         let origin = centre - Vec2::splat((n - 1) as f32 * cell * 0.5);
-        let mut weights = Vec::with_capacity((n * n) as usize);
+        let mut w = vec![0.0f32; styles.len()];
+        let mut nodes = Vec::with_capacity((n * n) as usize);
         for j in 0..n {
             for i in 0..n {
-                let w = weight(origin + Vec2::new(i as f32, j as f32) * cell);
-                let w: Vec<f32> = (0..styles.len()).map(|k| w[k].max(0.0)).collect();
-                let sum: f32 = w.iter().sum();
-                let mut word = 0u32;
-                if sum > 0.0 {
-                    for (k, v) in w.iter().enumerate() { word |= ((v / sum * 255.0).round() as u32).min(255) << (8 * k); }
-                }
-                if word == 0 { word = 255; }
-                weights.push(word);
+                w.iter_mut().for_each(|v| *v = 0.0);
+                weight(origin + Vec2::new(i as f32, j as f32) * cell, &mut w);
+                nodes.push(node(&w));
             }
         }
-        Regions { styles: styles.to_vec(), origin, cell, size: [n, n], weights }
+        Regions { styles: styles.to_vec(), origin, cell, size: [n, n], nodes }
     }
 
     /// One style everywhere: the world as if it had no regions.
     pub fn uniform(style: Style) -> Self {
-        Regions { styles: vec![style], origin: Vec2::ZERO, cell: CELL, size: [1, 1], weights: vec![255] }
+        Regions { styles: vec![style], origin: Vec2::ZERO, cell: CELL, size: [1, 1], nodes: vec![[0, 255]] }
     }
 
     /// Two lands meeting along a line through `centre` across `dir` (style
@@ -87,27 +107,45 @@ impl Regions {
     /// The grid covers `extent` metres square; past it the edge holds.
     pub fn split(styles: [Style; 2], centre: Vec2, extent: f32, dir: Vec2, blend: f32, wobble: f32, seed: u32) -> Self {
         let dir = dir.normalize_or(Vec2::X);
-        Regions::paint(&styles, centre, extent, CELL, |p| {
-            let q = p / 3000.0;
-            let wander = wobble * (terrain_field::noised(q, seed.wrapping_add(41)).x + 0.5 * terrain_field::noised(q * 2.3, seed.wrapping_add(42)).x);
-            let t = smooth(-0.5 * blend, 0.5 * blend, (p - centre).dot(dir) + wander);
-            [1.0 - t, t, 0.0, 0.0]
+        Regions::paint(&styles, centre, extent, CELL, |p, w| {
+            let t = smooth(-0.5 * blend, 0.5 * blend, (p - centre).dot(dir) + wander(p, wobble, seed));
+            w[0] = 1.0 - t;
+            w[1] = t;
+        })
+    }
+
+    /// Any number of lands as cells round `sites` (style k round site k),
+    /// each meeting its neighbours over `blend` metres along borders that
+    /// wander up to `wobble` metres: a whole map of biomes from a handful
+    /// of points.
+    pub fn cells(styles: &[Style], sites: &[Vec2], extent: f32, blend: f32, wobble: f32, seed: u32) -> Self {
+        assert_eq!(styles.len(), sites.len());
+        let lo = sites.iter().fold(Vec2::splat(f32::MAX), |a, &b| a.min(b));
+        let hi = sites.iter().fold(Vec2::splat(f32::MIN), |a, &b| a.max(b));
+        Regions::paint(styles, (lo + hi) * 0.5, extent, CELL, |p, w| {
+            let q = p + Vec2::new(wander(p, wobble, seed), wander(p + Vec2::splat(7919.0), wobble, seed));
+            let near = sites.iter().map(|s| s.distance(q)).fold(f32::MAX, f32::min);
+            for (k, s) in sites.iter().enumerate() {
+                w[k] = 1.0 - smooth(0.0, blend, s.distance(q) - near);
+            }
         })
     }
 
     /// Bytes the regions take as the GPU reads them.
     pub fn bytes(&self) -> usize { 4 * self.words().len() }
 
-    /// The styles then the weights, as the GPU reads them (u32 words; a
+    /// The styles then the nodes, as the GPU reads them (u32 words; a
     /// style is its 16 floats' bits).
     pub fn words(&self) -> Vec<u32> {
         let mut w: Vec<u32> = self.styles.iter().flat_map(|s| bytemuck::cast_ref::<Style, [u32; STYLE_WORDS]>(s).to_vec()).collect();
-        w.extend_from_slice(&self.weights);
+        w.extend(self.nodes.iter().flatten());
         w
     }
 
-    /// Each style's share at (x, z), summing to 1.
-    pub fn shares(&self, x: f32, z: f32) -> [f32; MAX_STYLES] {
+    /// The style at (x, z): the styles of the four surrounding nodes,
+    /// mixed by their weights and bilinear shares. Where one style is all
+    /// there is, that style exactly.
+    pub fn style_at(&self, x: f32, z: f32) -> Style {
         let (w, h) = (self.size[0], self.size[1]);
         let fx = ((x - self.origin.x) / self.cell).clamp(0.0, (w - 1) as f32);
         let fz = ((z - self.origin.y) / self.cell).clamp(0.0, (h - 1) as f32);
@@ -115,31 +153,42 @@ impl Regions {
         let j0 = (fz.floor() as u32).min(h.max(2) - 2);
         let (i1, j1) = ((i0 + 1).min(w - 1), (j0 + 1).min(h - 1));
         let (tx, tz) = (fx - i0 as f32, fz - j0 as f32);
-        let node = |i: u32, j: u32| self.weights[(j * w + i) as usize];
-        let (a, b, c, d) = (node(i0, j0), node(i1, j0), node(i0, j1), node(i1, j1));
-        let byte = |word: u32, k: u32| ((word >> (8 * k)) & 255) as f32 / 255.0;
-        let mut share = [0.0f32; MAX_STYLES];
-        let mut sum = 0.0f32;
-        for k in 0..MAX_STYLES as u32 {
-            let top = byte(a, k) * (1.0 - tx) + byte(b, k) * tx;
-            let bottom = byte(c, k) * (1.0 - tx) + byte(d, k) * tx;
-            share[k as usize] = top * (1.0 - tz) + bottom * tz;
-            sum += share[k as usize];
+        let corners = [(i0, j0, (1.0 - tx) * (1.0 - tz)), (i1, j0, tx * (1.0 - tz)), (i0, j1, (1.0 - tx) * tz), (i1, j1, tx * tz)];
+        // One style alone: return it untouched (no rounding from the mix).
+        let mut only = u32::MAX;
+        let mut mixed = false;
+        for &(i, j, f) in &corners {
+            let n = self.nodes[(j * w + i) as usize];
+            for k in 0..SLOTS as u32 {
+                if f > 0.0 && (n[1] >> (8 * k)) & 255 > 0 {
+                    let id = (n[0] >> (8 * k)) & 255;
+                    if only == u32::MAX { only = id; } else if id != only { mixed = true; }
+                }
+            }
         }
-        for s in &mut share { *s /= sum; }
-        share
-    }
-
-    /// The style at (x, z): the styles mixed by their shares there.
-    pub fn style_at(&self, x: f32, z: f32) -> Style {
-        let share = self.shares(x, z);
+        if !mixed { return self.styles[only as usize]; }
         let mut acc = [0.0f32; STYLE_WORDS];
-        for (k, style) in self.styles.iter().enumerate() {
-            let s: &[f32; STYLE_WORDS] = bytemuck::cast_ref(style);
-            for f in 0..STYLE_WORDS { acc[f] += s[f] * share[k]; }
+        let mut sum = 0.0f32;
+        for &(i, j, f) in &corners {
+            let n = self.nodes[(j * w + i) as usize];
+            for k in 0..SLOTS as u32 {
+                let share = ((n[1] >> (8 * k)) & 255) as f32 / 255.0 * f;
+                if share > 0.0 {
+                    let s: &[f32; STYLE_WORDS] = bytemuck::cast_ref(&self.styles[((n[0] >> (8 * k)) & 255) as usize]);
+                    for v in 0..STYLE_WORDS { acc[v] += s[v] * share; }
+                    sum += share;
+                }
+            }
         }
+        for v in &mut acc { *v /= sum; }
         bytemuck::cast(acc)
     }
+}
+
+/// A border's sideways wander at p: up to `wobble` metres, over kilometres.
+fn wander(p: Vec2, wobble: f32, seed: u32) -> f32 {
+    let q = p / 3000.0;
+    wobble * (terrain_field::noised(q, seed.wrapping_add(41)).x + 0.5 * terrain_field::noised(q * 2.3, seed.wrapping_add(42)).x)
 }
 
 #[cfg(test)]
@@ -150,7 +199,7 @@ mod tests {
     fn one_style_is_that_style_exactly() {
         let alpine = Style::alpine();
         let r = Regions::uniform(alpine);
-        let p = Regions::paint(&[alpine, Style::lowland()], Vec2::ZERO, 2000.0, 64.0, |_| [1.0, 0.0, 0.0, 0.0]);
+        let p = Regions::paint(&[alpine, Style::lowland()], Vec2::ZERO, 2000.0, 64.0, |_, w| w[0] = 1.0);
         for k in 0..500 {
             let (x, z) = (k as f32 * 37.1 - 9000.0, k as f32 * -23.3 + 4000.0);
             assert_eq!(r.style_at(x, z), alpine);
@@ -175,7 +224,31 @@ mod tests {
         }
         let half = r.style_at(0.0, 7.0);
         assert!((half.mountains - 0.5 * (a.mountains + b.mountains)).abs() < 0.05, "{half:?}");
-        assert!(r.bytes() < 200_000, "{} bytes", r.bytes());
+        assert!(r.bytes() < 400_000, "{} bytes", r.bytes());
+    }
+
+    /// Far more lands than meet at any one point: twelve biomes' cells
+    /// over a 20 km map, each its own land at its centre, and nowhere more
+    /// than four mixed.
+    #[test]
+    fn a_map_of_many_lands() {
+        let base = [Style::alpine(), Style::lowland(), Style::default()];
+        let styles: Vec<Style> = (0..12).map(|k| Style { snow_line: 500.0 + 100.0 * k as f32, ..base[k % 3] }).collect();
+        let sites: Vec<Vec2> = (0..12).map(|k| Vec2::new((k % 4) as f32 * 5000.0 - 7500.0, (k / 4) as f32 * 6000.0 - 6000.0)).collect();
+        let r = Regions::cells(&styles, &sites, 22_000.0, 800.0, 400.0, 5);
+        for (k, s) in sites.iter().enumerate() {
+            assert_eq!(r.style_at(s.x, s.y), styles[k], "site {k}");
+        }
+        let mut most = 0;
+        for n in &r.nodes {
+            most = most.max((0..4).filter(|k| (n[1] >> (8 * k)) & 255 > 0).count());
+            assert_eq!((0..4).map(|k| (n[1] >> (8 * k)) & 255).sum::<u32>(), 255);
+        }
+        assert!(most >= 2, "no borders blend");
+        // A sample between two lands lies between their snow lines.
+        let mid = (sites[0] + sites[1]) * 0.5;
+        let s = r.style_at(mid.x, mid.y).snow_line;
+        assert!((499.0..=601.0).contains(&s), "{s}");
     }
 
     #[test]

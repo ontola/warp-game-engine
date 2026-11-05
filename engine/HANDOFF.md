@@ -1,7 +1,8 @@
 ## 5 November: terrain regions (several kinds of land in one world)
 
-`render::regions`: up to four terrain styles and a 64 m grid of weights (4 bytes
-a node); `Regions::style_at` blends them per point. Carried by
+`render::regions`: a palette of up to 256 terrain styles and a 64 m grid whose
+nodes keep their four strongest (id, weight) pairs (8 bytes a node);
+`Regions::style_at` blends them per point, one style alone exactly. Carried by
 `world_constraints` (`Constraints::regions`, `World::style_at`; GPU words after
 the cell lists in the index buffer, `wc_style` line for line). The terrain mesh,
 `World::eval/height/trees`, placement fields and `sun_heightfield` (new
