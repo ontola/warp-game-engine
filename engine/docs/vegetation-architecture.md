@@ -1266,3 +1266,23 @@ submitted cells (world position, cell size, volume, opacity) and bins through
 16/32/64/128 pixels. No frame-time readback or CPU selection was introduced.
 Release build and normal-route readback pass; rendering is unchanged. G1.4,
 G2/G3 and G8 remain open; no pixel-scale visual or 8.3 ms acceptance.
+
+
+### Traversal deadline experiment (rejected, 5 November)
+
+Doubled encode rounds from 2*(hierarchy depth+1) to 4*(depth+1), with the
+same asset/branch/raster budgets. One lowland native720p single-view diagnostic
+route each; not an alternating repeated performance claim. Evidence:
+[vegetation-refinement-deadline-experiment.json](vegetation-refinement-deadline-experiment.json).
+
+Affordable unfinished camera cuts fell from 31,414 to zero, but over-target
+camera cuts stayed at about 41,949. Largest submitted cell remained 24.04 px;
+787 articulated-group cells still exceeded 16 px. The image still has blatant
+spherical near-tree cells. The final budget now has only three camera records
+free: individually affordable requests compete for the same remaining capacity.
+The earlier affordable-count diagnosis did NOT mean all 31,414 replacements
+could fit together. Longer traversal alone does not fix the image.
+
+Production round count restored; no new mode. Next work must address upstream
+visibility/budget reservation and screen-error priority across near/far cuts,
+rather than multiplying traversal passes or shrinking coverage discs.
