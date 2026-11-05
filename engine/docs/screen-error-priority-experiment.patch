@@ -1,0 +1,68 @@
+diff --git a/engine/crates/render/src/foliage_select.rs b/engine/crates/render/src/foliage_select.rs
+index c30dbb3..5dcb259 100644
+--- a/engine/crates/render/src/foliage_select.rs
++++ b/engine/crates/render/src/foliage_select.rs
+@@ -380,6 +380,24 @@ mod tests {
+   }
+  }
+  #[test]
++ #[ignore="exclusive GPU screen-error versus cost priority fixture"]
++ fn gpu_screen_error_precedes_cheaper_low_error_refinement() {
++  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(2);
++  trees[0].info[0]=0;trees[1].info[0]=2;
++  for t in &mut trees {t.rows[0][3]=0.;t.scale[2]=1.;t.scale[3]=1.;}
++  let n=|child,end,rep,cost,error|Node {sphere:[0.,0.,0.5,0.2],error:[error,0.,cost,cost],links:[child,end,rep,2]};
++  // Both fit alone. The cheap cut has better error-per-record benefit, but
++  // the expensive cut has ten times the visible error and must go first.
++  let nodes=[n(1,2,0,1.,0.01),n(NONE,2,1,5.,0.),n(3,4,2,1.,0.1),n(NONE,4,3,1000.,0.)];
++  let selector=Selector::new(&gpu,&nodes,&trees,4,4).unwrap();let empty=depth(&gpu,0.);
++  let views=[ConsumerView::camera(crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]})];
++  for _ in 0..3 {
++   let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers_budget(&gpu,&mut enc,&views,0.01,4,[1001;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
++   assert_eq!(read(&gpu,&selector.direct),[1,4]);assert_eq!(read(&gpu,&selector.fallback),[0,0]);
++   let state=read(&gpu,&selector.refiner.state);assert_eq!(state[1],1001);assert_eq!(state[15],0);
++  }
++ }
++ #[test]
+  #[ignore="exclusive GPU unaffordable priority starvation fixture"]
+  fn gpu_impossible_proposal_does_not_block_cheaper_root() {
+   let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(2);
+diff --git a/engine/crates/render/src/shaders/foliage_refine.wgsl b/engine/crates/render/src/shaders/foliage_refine.wgsl
+index 8611531..00d611b 100644
+--- a/engine/crates/render/src/shaders/foliage_refine.wgsl
++++ b/engine/crates/render/src/shaders/foliage_refine.wgsl
+@@ -168,7 +168,7 @@ fn candidate(tree:u32,start:u32,request_pages:bool,roles:u32)->u32 {
+  var refine=task.y==NONE || (n.links.x!=NONE && ((n.links.w&1u)!=0u || scale.x>=1e29 || scale.x*n.error.x>view.pixels.z || scale.x*n.error.y>1.0));
+  var child=node_id;var end=node_id+1u;
+  if task.y!=NONE {child=n.links.x;end=n.links.y;}
+- var children=0u;var child_error=0.0;
++ var children=0u;
+  if refine {
+   loop {
+    if child==NONE || child>=end {break;}
+@@ -177,7 +177,6 @@ fn candidate(tree:u32,start:u32,request_pages:bool,roles:u32)->u32 {
+     let resident=ready(c.links.z);refine=refine&&resident;
+     p.replacement=plus(p.replacement,work(task.x,selected,consumers));
+     if c.links.x!=NONE {children++;}
+-    child_error=max(child_error,c.error.x);
+    }
+    child=nodes[child].links.y;
+   }
+@@ -192,13 +191,14 @@ fn candidate(tree:u32,start:u32,request_pages:bool,roles:u32)->u32 {
+   let individually_fits=all(delta.xyz<=capacity-min(used,capacity));
+   if !individually_fits {atomicAdd(&state[17],1u);}
+   if individually_fits && (task.z&256u)!=0u {atomicOr(&state[18],1u);}
+-  let price=max(1.0,f32(delta.x)*256.0+f32(delta.y)+f32(delta.z));
+   // Mandatory root fallbacks carry zero authored error. Their projected size
+   // still determines benefit; otherwise all roots tie regardless of distance.
+   let parent_error=select(n.error.x,n.sphere.w,task.y==NONE || (n.links.w&1u)!=0u);
+   let priority_scale=select(scale.x,scale.y,(task.z&256u)!=0u);
+-  let benefit=max(0.001,priority_scale*max(parent_error-child_error,parent_error*0.01));
+-  let bucket=u32(clamp(floor(log2(max(benefit/price,1e-20)))+12.0,0.0,15.0));
++  // Largest current screen-space error first. Cost controls admission,
++  // not priority: cheap distant cells must not starve coarse nearby detail.
++  let error_ratio=max(priority_scale*parent_error/max(view.pixels.z,1e-8),priority_scale*n.error.y);
++  let bucket=u32(clamp(floor(log2(max(error_ratio,1e-20)))+1.0,0.0,15.0));
+   p.control=vec4<u32>(bucket+select(0u,16u,(task.z&256u)!=0u),select(2u,1u,individually_fits),children,0u);
+   p.output.y=children; // Deferred queue count is one; preserve replacement arity.
+  }

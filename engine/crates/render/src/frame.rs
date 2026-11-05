@@ -248,6 +248,7 @@ struct ToneUniform {
     time: f32,
     sun: [f32; 4], // view UV, angular footprint in UV-y, exposed flare strength
     sun_tint: [f32; 4],
+    hdr: [f32; 4], // display headroom (1 or less: no HDR copy), knee
 }
 
 /// Project a direction (w=0), so camera translation cannot move the distant sun.
@@ -331,8 +332,12 @@ pub struct Lighting {
     /// lava) follow. Keep it running with the game, not the wall clock.
     pub time: f32,
     pub night_stars: [f32; 4],
-    /// Exposure value at ISO 100 (sunny 16: about 15).
+    /// Exposure value at ISO 100 (sunny 16: about 15). With
+    /// `auto_exposure` this is where each view starts before it is metered.
     pub ev100: f32,
+    /// Meter every view and adapt its exposure like an eye (`None`: the
+    /// fixed `ev100`). See [`crate::auto_exposure`].
+    pub auto_exposure: Option<crate::auto_exposure::AutoExposure>,
     /// Exposure compensation for emitted light (EMISSIVE and LAVA materials,
     /// car lamps), 0 (off: physical) to 1: emission is shown as if the frame
     /// were exposed at `emissive_ev100`, so a glow tuned for one exposure
@@ -416,6 +421,8 @@ impl Lighting {
             "shadow_strength" => self.shadow_strength = f,
             "sky_lux" => self.sky_lux = f,
             "ev100" => self.ev100 = f,
+            "auto_exposure" if f == 0.0 || f == 1.0 => self.auto_exposure = (f == 1.0).then(|| self.auto_exposure.unwrap_or_default()),
+            k if k.starts_with("auto_") => self.auto_exposure.get_or_insert_with(Default::default).set(k, f)?,
             "sun_disc" if f == 0.0 || f == 1.0 => self.sun_disc = f > 0.0,
             "bloom_boost" if (0.0..=32.0).contains(&f) => self.bloom_boost = f,
             "bloom_rounds" if (1.0..=6.0).contains(&f) && f.fract() == 0.0 => self.bloom_rounds = f as u32,
@@ -482,6 +489,7 @@ impl Default for Lighting {
             night_stars: [0.0; 4],
             time: 0.0,
             ev100: 14.0,
+            auto_exposure: None,
             emissive_compensation: 0.0,
             emissive_ev100: 14.0,
             fx_white_floor: 0.0,
@@ -875,6 +883,8 @@ pub struct Renderer {
     material_count: usize,
     tone: wgpu::ComputePipeline,
     bloom: crate::bloom::Bloom,
+    auto_exposure: crate::auto_exposure::AutoExposureGpu,
+    hdr_target: std::sync::Mutex<crate::hdr::HdrTarget>,
     shade_layout: wgpu::BindGroupLayout,
     hidden_meadow_fallback: wgpu::Buffer,
     tone_layout: wgpu::BindGroupLayout,
@@ -1668,6 +1678,7 @@ impl Renderer {
                 (3, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
                 (4, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
                 (5, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (6, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }),
             ],
         );
         let float_tex = |filterable| wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false };
@@ -1695,6 +1706,7 @@ impl Renderer {
         startup.mark("shade_shader_module");
         let tone_mod = module("tonemap", include_str!("shaders/tonemap.wgsl"));
         let bloom=crate::bloom::Bloom::new(gpu);
+        let auto_exposure=crate::auto_exposure::AutoExposureGpu::new(gpu);
         startup.mark("tone_shader_module");
         let pl = |layouts: &[&wgpu::BindGroupLayout]| {
             let l: Vec<Option<&wgpu::BindGroupLayout>> = layouts.iter().map(|x| Some(*x)).collect();
@@ -2117,6 +2129,8 @@ impl Renderer {
             material_count: scene.materials.len(),
             tone,
             bloom,
+            auto_exposure,
+            hdr_target: std::sync::Mutex::new(crate::hdr::HdrTarget::new()),
             shade_layout,
             hidden_meadow_fallback,
             tone_layout,
@@ -2895,9 +2909,41 @@ impl Renderer {
         stats
     }
 
+    /// The exposure (EV100) automatic exposure chose for `view`, as it
+    /// reached the CPU a few frames after the GPU adapted it. `None` without
+    /// [`Lighting::auto_exposure`] or before the view's first measurement.
+    pub fn exposure_ev100(&self, view: usize) -> Option<f32> { self.auto_exposure.mirrored(view).map(|m| m[0]) }
+
+    /// What automatic exposure's meter read for `view`: the scene's EV100
+    /// before the range and compensation. Tune `min_ev100`/`max_ev100` with it.
+    pub fn metered_ev100(&self, view: usize) -> Option<f32> { self.auto_exposure.mirrored(view).map(|m| m[1]) }
+
+    /// Also tone every frame for an HDR screen: `headroom` is how many times
+    /// brighter than SDR white the display can show (from
+    /// [`crate::hdr::HdrDisplay`]); 1 or less turns the HDR copy off. The
+    /// SDR output is unchanged either way. See [`crate::hdr`].
+    pub fn set_hdr_headroom(&self, headroom: f32) {
+        self.hdr_target.lock().unwrap().headroom = if headroom.is_finite() { headroom.clamp(1.0, 64.0) } else { 1.0 };
+    }
+    pub fn hdr_headroom(&self) -> f32 { self.hdr_target.lock().unwrap().headroom }
+
+    /// The last frame for an HDR screen (`Rgba16Float`, linear, 1.0 = SDR
+    /// white, the output's size), while a headroom above 1 is set. The
+    /// minimum graphics profile tones SDR only and has none.
+    pub fn hdr_output(&self) -> Option<wgpu::Texture> {
+        if self.minimal_forward.is_some() { return None; }
+        self.hdr_target.lock().unwrap().texture()
+    }
+
+    /// Snap automatic exposure to the next measurement (a level change, a
+    /// teleport) without forgetting TAA history.
+    pub fn reset_exposure(&self) { self.auto_exposure.reset(); }
+
     /// Forget TAA history: the next frame starts from scratch (a camera cut).
+    /// Automatic exposure snaps to its next measurement too.
     pub fn reset_history(&self) {
         self.history.lock().unwrap().clear();
+        self.auto_exposure.reset();
         self.foliage_planners.lock().unwrap().clear();
         let mut up = self.upscaling.lock().unwrap();
         if let Some(motion) = &up.motion { motion.reset(); }
@@ -3534,6 +3580,31 @@ impl Renderer {
             let pixels=if readback==Readback::ImageAndMetrics {gpu.read_rgba8(&output)}else{Vec::new()};
             return Ok((output,pixels,stats));
         }
+        // Automatic exposure: tone, bloom and TAA take each view's exposure
+        // from the GPU (copied into their uniforms below). Everything else
+        // that follows exposure on the CPU (emissive compensation, flare,
+        // fx white) uses the views' mean exposure as it reached the CPU.
+        let auto_exposure = light.auto_exposure.map(|a| a.sanitized());
+        let manual_ev100 = light.ev100;
+        self.auto_exposure.set_view_count(views.len());
+        let exposure_dt = if auto_exposure.is_some() {
+            self.auto_exposure.drain(gpu);
+            self.auto_exposure.frame_dt()
+        } else {
+            self.auto_exposure.clear_mirror();
+            0.0
+        };
+        let auto_light;
+        let light: &Lighting = match auto_exposure {
+            Some(_) => {
+                let evs: Vec<f32> = (0..views.len()).filter_map(|v| self.auto_exposure.mirrored(v).map(|m| m[0])).collect();
+                if evs.is_empty() { light } else {
+                    auto_light = Lighting { ev100: evs.iter().sum::<f32>() / evs.len() as f32, ..light.clone() };
+                    &auto_light
+                }
+            }
+            None => light,
+        };
         // Serialize explicit diagnostic readbacks with writes to reused targets.
         // Errors before submission leave no stale frame advertised as current.
         let mut cpu = crate::cpu_spans::Spans::start(self.cpu_spans.as_ref());
@@ -3578,6 +3649,7 @@ impl Renderer {
             None => tex2d("ldr", out_w, out_h, wgpu::TextureFormat::Rgba8Unorm, ldr_usage),
         };
         let ldr_v = self.output_view.lock().unwrap().get(&ldr);
+        let (hdr_headroom, hdr_out_v) = self.hdr_target.lock().unwrap().prepare(gpu, out_w, out_h);
         let mut up = self.upscaling.lock().unwrap();
         let dlss_on = up.mode != crate::upscale::UpscaleMode::Native;
         let blur=self.motion_blur.lock().unwrap();
@@ -4297,14 +4369,19 @@ impl Renderer {
                 };
                 hh.prev_view_proj = proj * view_m;
                 hh.cur = 1 - hh.cur;
-                Some((src, dst, self.view_uniform(gpu, vi, 2, "taa", bytemuck::bytes_of(&u))))
+                let taa_buf = self.view_uniform(gpu, vi, 2, "taa", bytemuck::bytes_of(&u));
+                // TAA runs before this frame's meter: last frame's exposure.
+                if let Some(state) = auto_exposure.and_then(|_| self.auto_exposure.previous_state(vi)) {
+                    enc.copy_buffer_to_buffer(&state, 0, &taa_buf, std::mem::offset_of!(TaaUniform, params) as u64, 4);
+                }
+                Some((src, dst, taa_buf))
             } else {
                 None
             };
             let bloom_strength=(debug_options.bloom_strength*light.bloom_boost.clamp(0.0,32.0)).min(2.0);
             let bloom_on=crate::bloom::active(debug_options.bloom_enabled,bloom_strength);
             let solar = solar_projection(cam, view_m, view.w as f32 / view.h as f32, light, sun_visibility);
-            let tone_buf = self.view_uniform(gpu, vi, 3, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {bloom_strength}else{0.0},screen:u32::from(bloom_on&&debug_options.bloom_screen), vignette: light.vignette, grain: light.grain, aberration: light.aberration, time: light.time, sun: solar, sun_tint: [light.sun_color.x, light.sun_color.y, light.sun_color.z, 0.0] }));
+            let tone_buf = self.view_uniform(gpu, vi, 3, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {bloom_strength}else{0.0},screen:u32::from(bloom_on&&debug_options.bloom_screen), vignette: light.vignette, grain: light.grain, aberration: light.aberration, time: light.time, sun: solar, sun_tint: [light.sun_color.x, light.sun_color.y, light.sun_color.z, 0.0], hdr: [hdr_headroom, crate::hdr::KNEE, 0.0, 0.0] }));
             cpu.mark("view setup");
             if self.tree_occlusion.enabled {
                 if let Some(selector)=&self.source_replacement {
@@ -4768,15 +4845,25 @@ impl Renderer {
 
             // Extract the actual final HDR, including lens emission and exhaust,
             // after temporal reconstruction. Every view owns separate targets.
+            // Meter that same final HDR; tone and bloom then use the result.
+            let exposure_state = match &auto_exposure {
+                Some(settings) => {
+                    let time=self.query.as_ref().map(|(qs,_,_)|{names.push("auto exposure");(qs,timestamp_pair(&mut ts))});
+                    let state = self.auto_exposure.meter(gpu, &mut enc, vi, result, settings, manual_ev100, exposure_dt, time);
+                    enc.copy_buffer_to_buffer(&state, 0, &tone_buf, std::mem::offset_of!(ToneUniform, exposure) as u64, 4);
+                    Some(state)
+                }
+                None => { self.auto_exposure.idle(vi); None }
+            };
             let bloom_view=if bloom_on {
                 let time=self.query.as_ref().map(|(qs,_,_)|{names.push("bloom");(qs,timestamp_pair(&mut ts))});
-                self.bloom.render(gpu,&mut enc,vi,result,exposure,debug_options.bloom_threshold.min(light.bloom_threshold.clamp(0.0,16.0)),debug_options.bloom_rounds.max(light.bloom_rounds.clamp(1,crate::bloom::MAX_ROUNDS)),debug_options.bloom_screen,time)
+                self.bloom.render(gpu,&mut enc,vi,result,exposure,exposure_state.as_ref(),debug_options.bloom_threshold.min(light.bloom_threshold.clamp(0.0,16.0)),debug_options.bloom_rounds.max(light.bloom_rounds.clamp(1,crate::bloom::MAX_ROUNDS)),debug_options.bloom_screen,time)
             }else{self.bloom.disabled_view()};
             let result_view = resources.result.get(result);
             let tone_bind = resources.tone.get(gpu, &self.tone_layout, "cached tone view", &[
                 (0, wgpu::BindingResource::TextureView(&result_view)),
                 (1, wgpu::BindingResource::TextureView(&ldr_v)), (2, tone_buf.as_entire_binding()),
-                (3,wgpu::BindingResource::TextureView(&bloom_view)),(4,wgpu::BindingResource::Sampler(&self.bloom.sampler)),(5,wgpu::BindingResource::TextureView(&depth_v))]);
+                (3,wgpu::BindingResource::TextureView(&bloom_view)),(4,wgpu::BindingResource::Sampler(&self.bloom.sampler)),(5,wgpu::BindingResource::TextureView(&depth_v)),(6,wgpu::BindingResource::TextureView(&hdr_out_v))]);
             let t = self.query.as_ref().map(|(qs, _, _)| {
                 names.push("tonemap"); (qs, timestamp_pair(&mut ts))
             });
@@ -4793,6 +4880,7 @@ impl Renderer {
             cpu.mark("view effects, bloom, tonemap");
         }
         if let Some(motion) = &up.motion { motion.finish_frame(&mut enc); }
+        let exposure_mirrored = auto_exposure.is_some() && self.auto_exposure.copy_for_cpu(&mut enc, views.len());
         // Every view has finished sampling the albedo array. Update shared
         // displays now for the NEXT frame, before app HUD/UI is composed.
         if let Some(screens) = &self.live_screens {
@@ -4855,6 +4943,7 @@ impl Renderer {
             };
             segments.push(enc.finish());
             gpu.queue.submit(segments);
+            if exposure_mirrored { self.auto_exposure.submitted(); }
             cpu.mark("submit");
             if let Some(ticket)=page_validation {shadow_validation.as_mut().unwrap().submitted(ticket);}
             *self.sun_diagnostics.lock().unwrap()=crate::shadow_diagnostics::State {context:Some(profile_context),passes:solar_passes};
@@ -4901,6 +4990,7 @@ impl Renderer {
         }
         segments.push(enc.finish());
         gpu.queue.submit(segments);
+        if exposure_mirrored { self.auto_exposure.submitted(); }
         *self.sun_diagnostics.lock().unwrap()=crate::shadow_diagnostics::State {context:Some(profile_context),passes:solar_passes};
         *self.headlight_diagnostics.lock().unwrap()=crate::shadow_diagnostics::State {context:Some(profile_context),passes:lamp_passes};
         if let Some(meadow) = &self.meadow { meadow.group_cache_submitted(); }
@@ -5715,7 +5805,7 @@ mod solar_effect_tests {
         let src=include_str!("shaders/tonemap.wgsl");
         let module=naga::front::wgsl::parse_str(src).unwrap_or_else(|e|panic!("{}",e.emit_to_string(src)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();
-        assert_eq!(std::mem::size_of::<ToneUniform>(),80);
+        assert_eq!(std::mem::size_of::<ToneUniform>(),96);
     }
 }
 

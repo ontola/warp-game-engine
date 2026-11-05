@@ -22,6 +22,96 @@ with and without regions, `terrain_field::biome_shapes_match_on_gpu`) PASS on Me
 lavapipe in the cloud container, not yet on real hardware; naga validation of the
 composed shaders; workspace check clean. No interactive playtest.
 
+## 5 November: automatic exposure and HDR output
+
+Both opt-in; the default SDR image is unchanged. Guide:
+engine/docs/hdr-and-exposure.md.
+
+Automatic exposure (`Lighting::auto_exposure`, Luau `light.set({ exposure =
+"auto", ... })`): per-view GPU log-luminance histogram after TAA, percentile
+mean, eye-like adaptation in the same frame; tone, bloom and TAA copy the
+exposure into their uniforms on the GPU (no readback stall). An async mirror
+feeds `Renderer::exposure_ev100`, emissive compensation and flare. F10 has an
+Auto exposure toggle showing current and metered EV.
+
+HDR output (`WARP_HDR=1`, F10, `Game::hdr`): the tone pass also writes a linear
+`Rgba16Float` copy with AgX highlights above knee 0.6 stretched to the display
+headroom; the app presenter composes it with an SDR HUD layer on an fp16 scRGB
+surface at the OS's SDR white. Screenshots stay SDR. Sideways' own presenter
+and the minimum profile stay SDR. Unit tests and shader validation PASS; no
+GPU fixture or HDR screen was available here, so it still needs a visual check
+on Windows HDR and macOS EDR before it is turned on by default.
+
+## 5 November: independent camera/shadow class cuts integrated
+
+GPU tasks now refine camera and shadow demand independently. Each root has a
+camera and a shadow draw record referencing the SAME asset, pose and canonical
+source owner. Matching branch requests deduplicate into shared physical residency.
+Whole-root histories invalidate their shared owner when either publication changes.
+No CPU selection, CPU near-tree pool or opt-in route was added.
+
+Live consumer tasks are compacted in stable root/role order on the GPU; inactive
+world capacity does not enter refinement scans. Initial raster reservations are
+summed per workgroup instead of one contended atomic sequence per root. Raster
+passes dispatch only their own root range plus the shared branch prefix.
+
+Important fixes from the first normal-route check:
+- Camera priority now defers only shadow upgrades requiring MORE SHARED BRANCH
+  SLOTS. Spending the separate shadow raster budget cannot starve camera work.
+  Resident shadow ancestors no longer wait behind unrelated camera refinement.
+- A consumer deadline/fallback suppresses ONLY that consumer's cut. Physical
+  allocation/hash/record overflow still invalidates both partial cuts atomically.
+  Residency filters consumer roles before publication, including retained slots.
+- The rejected intermediate caused76,049 emergency root fallbacks in the low
+  route and huge near-camera spheres. Final high AND low routes have zero
+  emergency fallbacks. This does not imply acceptable projected voxel detail.
+
+Validation:152 foliage tests,2 vegetation-cell tests,6 shadow-cache tests and
+composed shader validation PASS. New raw GPU oracles cover different camera/
+shadow detail, missing pages, stable sparse/empty-world compaction across workgroup
+boundaries, exact initial reservations, exhausted parked storage, consumer-local
+fallback, and shadow raster admission while cameras wait for shared slots.
+Existing cached-versus-full shadow depth, population lifecycle, four-camera
+teleports and shared articulated pose tests also pass. Release DLSS build passes.
+
+Final normal renderer:RTX5070Ti/Vulkan, native1280x720 ONE VIEW, lowland+grass,
+240-frame route,120 warm GPU samples/run. Three alternating baseline/final runs:
+
+| Camera | Before covered GPU ms | After covered GPU ms |
+| --- | --- | --- |
+| High | 13.899 / 13.902 / 13.927 | 13.948 / 13.969 / 13.946 |
+| Low | 14.781 / 14.784 / 14.778 | 15.032 / 15.044 / 15.056 |
+
+This is NOT a speedup. High route is roughly unchanged; low is about0.26ms slower.
+High selection median changes8.019->7.815ms, low7.978->7.962ms. Materialization
+rises0.142->0.228ms; shadow damage0.286->0.402ms. Low-route shadow work increases
+because resident caster detail replaces52,726 baseline shadow-only emergency
+fallbacks. Camera raster stays~0.728ms. Low camera source records169->183, voxel
+records282->127; over-target camera nodes42,083->41,943. Physical pose requests
+503->192. These are route diagnostics, NOT4K/four-view or gameplay claims.
+
+Image review: mixed source/coarse crowns and hard shadows persist. High/low
+non-HUD RGB MAE are~3.24/~12.75 at worst channel, not image equivalence. Near-ground
+shapes/shadows change; oversized rounded cells are explicitly NOT accepted.
+The user correctly points out that20-pixel spheres violate the pixel-scale voxel
+goal. Current fixed selected-level publication can retain such a coarse level
+under budget/deadline pressure; the rasterizer cannot invent finer payloads.
+Do NOT shrink splats to hide this: preserve coverage with finer cells/source
+geometry. Actual projected-cell footprint distribution and retention reasons
+must be measured under existing G1.4/G8 work, then fixed; shader appearance polish
+is not a substitute.
+
+Remaining G3 gaps: independent PER-VIEW cuts within each class, upstream
+history/current-depth recovery and conservative shared-slot accounting (matching
+requests deduplicate physically but admission still charges each request).
+G2/G3/G8 remain open. Extra root publication/history storage is128 bytes per
+reserved root before secondary renderer/cache bookkeeping; assets are not copied.
+
+Full final and rejected-intermediate per-pass medians/counters:
+independent-consumer-cut-measurements.json. Local evidence:
+build/playtest-unified/independent-cuts-final-{high,low}-{before,after}-*;
+comparison JPEGs and test/build logs use independent-cuts-* names. No playtest.
+
 ## 5 November: whole-root consumer publication and shadow-cache correctness
 
 Direct resident ancestors and emergency root fallbacks now carry camera/shadow

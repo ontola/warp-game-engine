@@ -116,6 +116,18 @@ pub struct Character {
     joints: Vec<(String, Mat4)>,
 }
 
+/// A piece of a character that follows one joint rigidly, for renderers
+/// without skinning: bind-pose mesh (the joint's palette matrix places it),
+/// simplified, with the piece's average texture colour as its `tint`.
+#[derive(Clone, Debug)]
+pub struct RigidPart {
+    pub joint: usize,
+    pub tint: [f32; 3],
+    pub positions: Vec<Vec3>,
+    pub normals: Vec<Vec3>,
+    pub indices: Vec<u32>,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ActorHandle {
     pub actor: usize,
@@ -532,6 +544,60 @@ impl Character {
     }
 
     /// Register or reuse the scene materials for every surface of this character.
+    /// The model cut into one piece per joint: each triangle goes to the joint
+    /// that moves it most, and vertices within `cell` metres merge, which is
+    /// what makes it cheap. Pieces in the same place do not share vertices,
+    /// so joints show small seams when they bend: stiff, but far from a blob.
+    pub fn rigid_parts(&self, cell: f32) -> Vec<RigidPart> {
+        #[derive(Default)]
+        struct Build { key: HashMap<[i32; 3], u32>, sum: Vec<(Vec3, Vec3, f32)>, indices: Vec<u32>, colour: Vec3, area: f32 }
+        let mut parts: HashMap<usize, Build> = HashMap::new();
+        for surface in &self.surfaces {
+            let albedo = |uv: [f32; 2]| -> Vec3 {
+                let base = Vec3::from_slice(&surface.material.albedo[..3]);
+                let Some((_, image)) = &surface.texture else { return base };
+                let (w, h) = image.dimensions();
+                let (x, y) = ((uv[0].rem_euclid(1.0) * w as f32) as u32, (uv[1].rem_euclid(1.0) * h as f32) as u32);
+                let p = image.get_pixel(x.min(w - 1), y.min(h - 1));
+                Vec3::new(p[0] as f32, p[1] as f32, p[2] as f32) / 255.0 * base
+            };
+            for tri in surface.indices.chunks_exact(3) {
+                let [a, b, c] = [tri[0] as usize, tri[1] as usize, tri[2] as usize];
+                let mut weight: HashMap<u32, f32> = HashMap::new();
+                for &v in &[a, b, c] {
+                    let influence = &surface.influences[v];
+                    for (j, w) in influence.joints.iter().zip(&influence.weights) { *weight.entry(*j).or_default() += *w; }
+                }
+                let Some((&joint, _)) = weight.iter().max_by(|x, y| x.1.total_cmp(y.1).then(y.0.cmp(x.0))) else { continue };
+                let part = parts.entry(joint as usize).or_default();
+                let at = |v: usize| Vec3::from(surface.vertices[v].pos);
+                let area = (at(b) - at(a)).cross(at(c) - at(a)).length() * 0.5;
+                let centre = [0, 1].map(|k| (surface.vertices[a].uv[k] + surface.vertices[b].uv[k] + surface.vertices[c].uv[k]) / 3.0);
+                part.colour += albedo(centre) * area;
+                part.area += area;
+                let mut corner = [0u32; 3];
+                for (k, &v) in [a, b, c].iter().enumerate() {
+                    let pos = at(v);
+                    let key = (pos / cell).floor().as_ivec3().to_array();
+                    let next = part.sum.len() as u32;
+                    let id = *part.key.entry(key).or_insert(next);
+                    if id == next { part.sum.push((Vec3::ZERO, Vec3::ZERO, 0.0)); }
+                    let s = &mut part.sum[id as usize];
+                    s.0 += pos; s.1 += Vec3::from(surface.vertices[v].normal); s.2 += 1.0;
+                    corner[k] = id;
+                }
+                if corner[0] != corner[1] && corner[1] != corner[2] && corner[0] != corner[2] { part.indices.extend(corner); }
+            }
+        }
+        let mut out: Vec<RigidPart> = parts.into_iter().filter(|(_, p)| !p.indices.is_empty()).map(|(joint, p)| {
+            let colour = p.colour / p.area.max(1e-6);
+            RigidPart { joint, tint: colour.to_array().map(srgb_to_linear),
+                positions: p.sum.iter().map(|s| s.0 / s.2).collect(), normals: p.sum.iter().map(|s| s.1.normalize_or(Vec3::Y)).collect(), indices: p.indices }
+        }).collect();
+        out.sort_by_key(|p| p.joint);
+        out
+    }
+
     pub fn surface_materials(&self, scene: &mut Scene) -> Vec<u32> {
         let mut material_ids = Vec::with_capacity(self.surfaces.len());
         for surface in &self.surfaces {

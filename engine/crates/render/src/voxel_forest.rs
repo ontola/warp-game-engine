@@ -377,6 +377,8 @@ pub(crate) struct VoxelRenderer {
     brick_catalog: wgpu::Buffer,
     bin_count: u32,
     count: u32,
+    /// GPU-owned root pairs: one camera range, one shadow range; shared branch prefix.
+    consumer_roots: u32,
     /// Scene::voxel_far_distance_m; written as config march.y.
     far: f32,
     /// Scene::voxel_proxies and voxel_proxy_pixels: config proxy.
@@ -925,6 +927,7 @@ impl VoxelRenderer {
             brick_catalog,
             bin_count,
             count: forest.instances.len() as u32,
+            consumer_roots: scene.gpu_forest.as_ref().map_or(0,|f|f.roots.len()as u32),
             far,
             proxies,
             proxy_pixels: scene.voxel_proxy_pixels,
@@ -1104,7 +1107,7 @@ impl VoxelRenderer {
                     march: [self.step, self.far, u32::from(self.empty_skip) as f32, self.lod_pixels],
                     dispatch: [u32::from(self.active_tiles), 0, interval_stream.map_or(0,|s|s.header_word),
                         interval_stream.map_or(0,|s|s.pixel_slots)],
-                    proxy: [(self.count - self.proxies) as f32, self.proxy_pixels, self.proxy_pixels_from, 0.0],
+                    proxy: [(self.count - self.proxies) as f32, self.proxy_pixels, self.proxy_pixels_from, self.consumer_roots as f32],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -1243,7 +1246,7 @@ impl VoxelRenderer {
         {
             let mut pass=encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("voxel visible tree list"),timestamp_writes:None});
             pass.set_pipeline(pipeline);pass.set_bind_group(0,scene,&[]);pass.set_bind_group(1,view,&[]);pass.set_bind_group(2,&target.bind,&[]);
-            let groups=self.count.div_ceil(64);pass.dispatch_workgroups(groups.min(65535),groups.div_ceil(65535).max(1),1);
+            let groups=(self.count-self.consumer_roots).div_ceil(64);pass.dispatch_workgroups(groups.min(65535),groups.div_ceil(65535).max(1),1);
         }
         encoder.copy_buffer_to_buffer(&target.tiles,0,&target.indirect,0,12);
     }
@@ -1312,7 +1315,7 @@ impl VoxelRenderer {
                 pass.set_pipeline(splats);
                 // One workgroup per tree.
                 if selection.is_some() {pass.dispatch_workgroups_indirect(&target.indirect,0);}
-                else {pass.dispatch_workgroups(self.count.min(65535), self.count.div_ceil(65535).max(1), 1);}
+                else {let count=self.count-self.consumer_roots;pass.dispatch_workgroups(count.min(65535), count.div_ceil(65535).max(1), 1);}
             }
             for phase in 0..if self.brick_hzb.is_some() { 2 } else { 1 } {
                 if phase == 1 {
@@ -1483,7 +1486,7 @@ impl VoxelRenderer {
             pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, &raster.sun_empty, &[]); pass.set_bind_group(2, &target.bind, &[]);
             pass.set_pipeline(if sun.damage.is_some(){&raster.sun_cached_splats}else{&raster.sun_splats});
             if let Some(mask)=sun.damage {pass.set_bind_group(3,mask,&[]);}
-            pass.dispatch_workgroups(self.count.min(65535), self.count.div_ceil(65535).max(1), 1);
+            let count=self.count-self.consumer_roots;pass.dispatch_workgroups(count.min(65535), count.div_ceil(65535).max(1), 1);
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("voxel sun splat raster"), color_attachments: &[],
@@ -1520,7 +1523,7 @@ impl VoxelRenderer {
             let data:&[[u32;4]]=bytemuck::cast_slice(&bytes);
             let vp=glam::Mat4::from_cols_array_2d(&[data[0].map(f32::from_bits),data[1].map(f32::from_bits),data[2].map(f32::from_bits),data[3].map(f32::from_bits)]);
             let right=vp.row(0).truncate().normalize();let up=vp.row(1).truncate().normalize();
-            let mut bins=[[0u64;6];2];let mut behind=0u64;let mut unique=std::collections::HashSet::new();
+            let mut bins=[[0u64;10];2];let mut largest:Vec<(f32,serde_json::Value)>=Vec::new();let mut behind=0u64;let mut unique=std::collections::HashSet::new();
             let first=12+4*self.count as usize;
             for record in &data[first..first+count as usize] {
                 let index=record[0]as usize;if index>=self.count as usize{return Err("splat profile invalid tree index".into());}
@@ -1534,10 +1537,16 @@ impl VoxelRenderer {
                 let alpha=(record[3]&65535)as f32/65535.;let half=0.688*grid.w*scale*alpha.max(0.25).sqrt();
                 let a=vp*(centre-right*half-up*half).extend(1.);let b=vp*(centre+right*half+up*half).extend(1.);
                 let diameter=if a.w<=0. || b.w<=0. {behind+=1;f32::INFINITY}else{let delta=(a.truncate()/a.w-b.truncate()/b.w).abs();(delta.x*target.size.0 as f32*0.5).max(delta.y*target.size.1 as f32*0.5)};
-                let bin=[0.5,1.,2.,4.,8.].iter().position(|&edge|diameter<=edge).unwrap_or(5);
+                let bin=[0.5,1.,2.,4.,8.,16.,32.,64.,128.].iter().position(|&edge|diameter<=edge).unwrap_or(9);
+                // Offline diagnosis only: retain a bounded list, not every cell.
+                // These are submitted quads, not necessarily visible/depth-winning pixels.
+                if diameter.is_finite() && (largest.len()<16 || diameter>largest.last().unwrap().0) {
+                    largest.push((diameter,serde_json::json!({"volume":index,"packed_cell":record[2],"diameter_px":diameter,"world_centre":centre.to_array(),"world_cell_size":grid.w*scale,"alpha":alpha})));
+                    largest.sort_by(|a,b|b.0.total_cmp(&a.0));largest.truncate(16);
+                }
                 let kind=usize::from(index>=self.count.saturating_sub(self.proxies)as usize);bins[kind][bin]+=1;
             }
-            output.push(serde_json::json!({"viewport":target.size,"requested_splats":d.raster_splats,"stored_splats":count,"capacity":d.raster_capacity,"missing_records":u64::from(d.raster_splats).saturating_sub(count),"unique_stored_volumes":unique.len(),"diameter_bin_upper_px":[0.5,1.,2.,4.,8.,null],"articulated_group_bins":bins[0],"whole_root_bins":bins[1],"near_plane_crossings":behind,"scope":"stored records only; screen-aligned diameter excludes sub-cell jitter; explicit offline readback"}));
+            output.push(serde_json::json!({"viewport":target.size,"requested_splats":d.raster_splats,"stored_splats":count,"capacity":d.raster_capacity,"missing_records":u64::from(d.raster_splats).saturating_sub(count),"unique_stored_volumes":unique.len(),"diameter_bin_upper_px":[0.5,1.,2.,4.,8.,16.,32.,64.,128.,null],"largest_submitted_cells":largest.into_iter().map(|(_,v)|v).collect::<Vec<_>>(),"articulated_group_bins":bins[0],"whole_root_bins":bins[1],"near_plane_crossings":behind,"scope":"stored records only; screen-aligned diameter excludes sub-cell jitter; explicit offline readback"}));
         }
         Ok(output)
     }
