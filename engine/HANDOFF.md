@@ -18,8 +18,22 @@ selection, and 5.6 ms of that is the fixed `rounds=2*(levels+1)` loop in
 even with an empty work list). Shadow forest (~3.3 ms) is unchanged by camera
 occlusion by design. Only ~1.2 ms of camera forest work is left behind a wall.
 Forcing 12 rounds gave 16.8 to 13.1 ms per GPU frame with near-identical
-images in three far views; not proven safe for close-up forest. Next: stop
-the rounds when the frontier is empty, or size them from the real depth.
+images in three far views.
+
+Now: `foliage_refine.wgsl` counts the rounds that did work (state[68]; they
+form a prefix), and `Refiner::rounds` reads that back asynchronously (two-slot
+ring, never waits) and encodes the need plus 4, shrinking 2 per observation,
+even. A frame that used every encoded round may have been cut short; its drain
+publishes the current complete cut (coarser, never missing) and the next
+frames return to the full bound. Tests: `rounds_follow_need_and_recover_from_a_short_frame`
+(CPU) and `gpu_selection_rounds_follow_reported_need` (ignored; the fixture is
+only 2 levels deep, so it checks the readback, identical images and recovery
+from a forced short hint, not the size of the saving). Mac timing still to
+measure.
+
+`frame.rs` no longer fails a render when a timestamp pair runs backwards
+(Metal with overlapping passes): that frame just has no GPU timings. It made
+4 forest GPU tests fail on the Mac.
 
 ## 5 November: buildings in terrain_fly and the Structures category
 

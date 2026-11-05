@@ -7,6 +7,29 @@ pub(crate) struct Refiner {
     pub state:wgpu::Buffer,args:wgpu::Buffer,layout:wgpu::BindGroupLayout,
     pipelines:Vec<wgpu::ComputePipeline>,
     binds:std::sync::Mutex<crate::frame::resource_cache::BindGroups<2>>,
+    /// Last frame's working-round count (state[68]), kept for async readback.
+    worked:wgpu::Buffer,rounds:std::sync::Mutex<Rounds>,
+}
+/// How many refinement rounds to encode. Every round costs a fixed set of
+/// dispatches and barriers even when its work list is empty, and the hierarchy
+/// depth bound (2*(levels+1)) is far more than a typical frame needs. Rounds
+/// that do work form a prefix, so the GPU reports how many it used and later
+/// frames encode that plus a margin. A frame that used every encoded round may
+/// have been cut short: its drain publishes the current complete cut (coarser,
+/// never missing), and the next frames go back to the full bound.
+struct Rounds {full:bool,used:Option<u32>,hint:Option<u32>,encoded:u32,frame:u64,newest:u64,slots:Vec<RoundSlot>}
+struct RoundSlot {buffer:wgpu::Buffer,encoded:u32,frame:u64,pending:Option<std::sync::mpsc::Receiver<Result<(),wgpu::BufferAsyncError>>>}
+impl Rounds {
+    /// Margin over the observed need, so a camera that moves a little does not
+    /// cut refinement short. Shrinks one round per observation.
+    const MARGIN:u32=4;
+    fn next(&mut self,bound:u32,used:u32,encoded:u32) {
+        let want=if used>=encoded {bound} else {(used+Self::MARGIN).min(bound)};
+        let shrink=self.hint.unwrap_or(bound).saturating_sub(2);
+        self.hint=Some(want.max(shrink).min(bound));
+    }
+    /// Even, so the final queue is the same buffer as with the full bound.
+    fn count(&self,bound:u32)->u32 {if self.full {return bound;}self.hint.map_or(bound,|h|(h+(h&1)).clamp(2,bound))}
 }
 impl Refiner {
     pub fn new(gpu:&Gpu,capacity:u32)->Self {
@@ -25,8 +48,46 @@ impl Refiner {
             blocks:storage("foliage refinement prefixes",(capacity.div_ceil(256)as u64+1)*32*16),
             state:storage("foliage refinement allocation",320),
             args:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement indirect"),size:36,usage:wgpu::BufferUsages::INDIRECT|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),
-            pipelines,layout,binds:Default::default()}
+            pipelines,layout,binds:Default::default(),
+            worked:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement rounds used"),size:4,usage:wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),
+            rounds:std::sync::Mutex::new(Rounds {full:false,used:None,hint:None,encoded:0,frame:0,newest:0,slots:(0..2).map(|_|RoundSlot {buffer:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement rounds readback"),size:4,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),encoded:0,frame:0,pending:None}).collect()})}
     }
+    /// Reads finished round counts without waiting, starts a readback of the
+    /// last encoded frame, and returns how many rounds to encode now.
+    fn rounds(&self,gpu:&Gpu,bound:u32)->u32 {
+        let mut r=self.rounds.lock().unwrap();let r=&mut *r;
+        let _=gpu.device.poll(wgpu::PollType::Poll);
+        let mut seen=Vec::new();
+        for slot in &mut r.slots {
+            let Some(Ok(result))=slot.pending.as_ref().map(|rx|rx.try_recv()) else {continue};
+            slot.pending=None;
+            if result.is_ok() {
+                let used=bytemuck::pod_read_unaligned::<u32>(&slot.buffer.slice(..).get_mapped_range().unwrap());
+                seen.push((slot.frame,used,slot.encoded));
+            }
+            slot.buffer.unmap();
+        }
+        seen.sort_unstable();
+        for (frame,used,encoded) in seen {if frame>r.newest {r.newest=frame;r.used=Some(used);r.next(bound,used,encoded);}}
+        // `worked` holds the previous encode's count; queue order makes this
+        // copy see it once that frame's commands ran.
+        if r.encoded!=0 {
+            let (encoded,frame)=(r.encoded,r.frame);
+            if let Some(slot)=r.slots.iter_mut().find(|s|s.pending.is_none()) {
+                let mut enc=gpu.device.create_command_encoder(&Default::default());enc.copy_buffer_to_buffer(&self.worked,0,&slot.buffer,0,4);gpu.queue.submit([enc.finish()]);
+                let (tx,rx)=std::sync::mpsc::sync_channel(1);slot.buffer.slice(..).map_async(wgpu::MapMode::Read,move|v|{let _=tx.send(v);});
+                slot.pending=Some(rx);slot.encoded=encoded;slot.frame=frame;
+            }
+        }
+        r.frame+=1;r.encoded=r.count(bound);r.encoded
+    }
+    /// Rounds the most recent encode used, for diagnostics and tests.
+    /// (rounds the most recent encode used, latest working rounds the GPU reported).
+    #[cfg(test)] pub(crate) fn encoded_rounds(&self)->(u32,Option<u32>) {let r=self.rounds.lock().unwrap();(r.encoded,r.used)}
+    /// Always encode the depth bound, as before the readback (test reference).
+    #[cfg(test)] pub(crate) fn test_full_rounds(&self) {self.rounds.lock().unwrap().full=true;}
+    /// Pretend the GPU last needed this few rounds.
+    #[cfg(test)] pub(crate) fn test_hint(&self,rounds:u32) {self.rounds.lock().unwrap().hint=Some(rounds);}
     fn bind(&self,gpu:&Gpu,s:&Selector,front:usize)->wgpu::BindGroup {
         let buffers=[&s.uniform,&s._nodes,&s._instances,&s.asset_pages,&self.proposals,&self.queues[front],&self.queues[1-front],&self.blocks,&s.records,&s.counters,&s.fallback,&s.direct,&s.demand,&self.state,&self.parked,&s.record_consumers,&s.seed_visibility];
         let entries=buffers.iter().enumerate().map(|(binding,b)|wgpu::BindGroupEntry {binding:binding as u32,resource:b.as_entire_binding()}).collect::<Vec<_>>();
@@ -84,7 +145,7 @@ impl Refiner {
         self.dispatch(enc,&binds[0],16,Some(s.count.div_ceil(64)),0);
         // One extra transition admits the initial emergency proxy into the
         // recipe root. A final drain makes depth bounds conservative.
-        let rounds=2*(s.levels+1);
+        let rounds=self.rounds(gpu,2*(s.levels+1));
         for round in 0..rounds {
             let bind=&binds[round as usize%2];self.prepare(enc,bind);
             // Compute dispatches are ordered storage-usage scopes. Keep the
@@ -98,9 +159,23 @@ impl Refiner {
             }
         }
         let bind=&binds[rounds as usize%2];self.dispatch(enc,bind,11,Some(self.capacity.div_ceil(64)),0);
+        enc.copy_buffer_to_buffer(&self.state,68*4,&self.worked,0,4);
     }
 }
 #[cfg(test)] mod tests {
+    #[test]
+    fn rounds_follow_need_and_recover_from_a_short_frame() {
+        let mut r=super::Rounds {full:false,used:None,hint:None,encoded:0,frame:0,newest:0,slots:Vec::new()};
+        assert_eq!(r.count(48),48,"nothing observed yet: the depth bound");
+        r.next(48,6,48);assert_eq!(r.count(48),46,"shrinks gradually");
+        for _ in 0..30 {let n=r.count(48);r.next(48,6,n);}
+        assert_eq!(r.count(48),10,"settles at the need plus the margin");
+        r.next(48,10,10);assert_eq!(r.count(48),48,"a frame that used every round may be short: back to the bound");
+        r.next(48,7,48);assert_eq!(r.count(48),46);
+        let mut odd=super::Rounds {full:false,used:None,hint:Some(5),encoded:0,frame:0,newest:0,slots:Vec::new()};
+        assert_eq!(odd.count(48),6,"even, so the final queue matches the full bound");odd.hint=Some(0);assert_eq!(odd.count(48),2);
+        odd.full=true;assert_eq!(odd.count(48),48);
+    }
     #[test]
     #[ignore="exclusive GPU dormant role scheduling fixture"]
     fn dormant_shadows_wake_after_free_camera_batch() {
