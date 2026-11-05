@@ -47,7 +47,7 @@ fn mark(low:vec3<f32>,high:vec3<f32>) {
 fn mark_snapshot(s:Snapshot,voxel:bool) {
  if voxel {
   let lo=bitcast<vec4<f32>>(s.words[3]);let hi=bitcast<vec4<f32>>(s.words[4]);
-  if lo.w==0. && s.words[5].z!=0u {mark(lo.xyz,hi.xyz);}
+  if (lo.w==0. || lo.w==2.) && s.words[5].z!=0u {mark(lo.xyz,hi.xyz);}
  }else {
   let bound=bitcast<vec4<f32>>(s.words[3]);
   // A virtual owner has its encoded member count in first_cluster. No source

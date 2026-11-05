@@ -400,7 +400,7 @@ impl Runtime {
             let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("GPU forest materialization"),entries:&(0..18).map(|binding|wgpu::BindGroupLayoutEntry {
                 binding,visibility:wgpu::ShaderStages::COMPUTE,count:None,ty:wgpu::BindingType::Buffer {ty:if binding==0 || binding==16 {wgpu::BufferBindingType::Uniform}else{wgpu::BufferBindingType::Storage {read_only:binding<8 || binding==11 || binding==17}},has_dynamic_offset:binding==16,min_binding_size:None},
             }).collect::<Vec<_>>()});
-            let buffers=[&uniform,&selector._instances,&selector._nodes,&branches,&reps,&residency.slots,&selector.fallback,&proxies,instances,volumes,&choices,&selector.direct,&root_history,&pose_cache,&pose_work,&root_poses,&levels,&selector.asset_pages];
+            let buffers=[&uniform,&selector._instances,&selector._nodes,&branches,&reps,&residency.slots,&selector.fallback,&proxies,instances,volumes,&choices,&selector.demand,&root_history,&pose_cache,&pose_work,&root_poses,&levels,&selector.asset_pages];
             let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("GPU forest materialization"),layout:&layout,entries:&buffers.iter().enumerate().map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:if i==16 {wgpu::BindingResource::Buffer(wgpu::BufferBinding {buffer:b,offset:0,size:std::num::NonZeroU64::new(16)})}else{b.as_entire_binding()}}).collect::<Vec<_>>()});
             let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("GPU forest materialization"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("GPU forest materialization"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_materialize.wgsl").into())});
@@ -674,6 +674,53 @@ impl Runtime {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|e|panic!("{}",e.emit_to_string(src)));}}
 
     #[test]
+    #[ignore="exclusive GPU root consumer publication oracle"]
+    fn gpu_root_ancestors_and_fallback_preserve_consumers() {
+        use super::*;
+        let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
+        let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
+        let mut scene=Scene::default();plant(&mut scene,&[cooked],&[RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}],8,
+            crate::aggregate_lod::Policy {allow_sampled_optics:true,max_color_error:1.,max_coverage_error:1.,max_error_pixels:10000.,..Default::default()}).unwrap();
+        let spec=scene.gpu_forest.as_ref().unwrap();let gpu=Gpu::new().unwrap();
+        let upload=|bytes:&[u8]|gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:None,contents:bytes,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC});
+        let read=|buffer:&wgpu::Buffer| {
+            let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:buffer.size(),usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+            let mut enc=gpu.device.create_command_encoder(&Default::default());enc.copy_buffer_to_buffer(buffer,0,&out,0,buffer.size());gpu.queue.submit([enc.finish()]);out.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
+            let bytes=out.slice(..).get_mapped_range().unwrap().to_vec();out.unmap();bytes
+        };
+        let instances=upload(bytemuck::cast_slice(&scene.instances));let volumes=upload(bytemuck::cast_slice(&scene.voxel_forest.as_ref().unwrap().instances));
+        let runtime=Runtime::new(&gpu,spec,&instances,&volumes).unwrap();
+        let view=crate::part_wind::AnimationView {view_projection:Mat4::perspective_infinite_reverse_rh(1.,1.,0.05)*Mat4::look_at_rh(Vec3::new(0.3,0.4,20.),Vec3::new(0.3,0.4,0.),Vec3::Y),viewport:[128;2]};
+        let owner=spec.proxies[0].meta[0]as usize;
+        for fallback in [false,true] {
+            let mut previous:Option<(u32,u32)>=None;
+            for roles in [512u32,768,768,256,768,512] {
+                let mut consumers=Vec::new();
+                if roles&256!=0 {consumers.push(crate::foliage_select::ConsumerView::camera(view));}
+                if roles&512!=0 {consumers.push(crate::foliage_select::ConsumerView::shadow(view));}
+                let mut enc=gpu.device.create_command_encoder(&Default::default());runtime.encode_timed(&gpu,&mut enc,&consumers,spec.first_owner,None).unwrap();gpu.queue.submit([enc.finish()]);
+                let raw=read(&runtime.selector.direct);let direct:&[u32]=bytemuck::cast_slice(&raw);assert_ne!(direct[0],0,"fixture must publish a complete resident ancestor");
+                if fallback {
+                    // Exercise the actual fallback materializer without changing consumer demand.
+                    gpu.queue.write_buffer(&runtime.selector.fallback,0,bytemuck::cast_slice(&[2u32]));
+                    gpu.queue.write_buffer(&runtime.selector.demand,0,bytemuck::cast_slice(&[0u32,roles,0,0]));
+                    let mut enc=gpu.device.create_command_encoder(&Default::default());
+                    {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_pipeline(&runtime.pipeline);pass.set_bind_group(0,&runtime.bind,&[0]);pass.dispatch_workgroups((spec.slots+spec.roots.len()as u32).div_ceil(64),1,1);}
+                    gpu.queue.submit([enc.finish()]);
+                }
+                let raw=read(&volumes);let rendered:&[GpuTree]=bytemuck::cast_slice(&raw);
+                assert_eq!(rendered[spec.slots as usize].bounds_min[3],match roles {256=>3.,512=>2.,_=>0.});
+                let raw=read(&instances);let rendered:&[GpuInstance]=bytemuck::cast_slice(&raw);let flags=rendered[owner].flags;
+                assert_eq!(flags&768,0,"consumer bits cannot leak into per-view source hide flags");
+                if !fallback {if let Some((old_roles,old_epoch))=previous {
+                    assert_eq!(flags&128!=old_epoch,roles&!old_roles!=0,"new consumer rejects history; losing a consumer retains history");
+                }}
+                previous=Some((roles,flags&128));
+            }
+        }
+    }
+
+    #[test]
     #[ignore="exclusive GPU shared ancestry oracle"]
     fn gpu_geometry_groups_use_existing_pose_and_distinct_volume_pages() {
         use super::*;
@@ -788,7 +835,7 @@ impl Runtime {
             assert!(entries.iter().any(|r|r[0]==page && r[1]==0));
             assert_eq!(entries.iter().map(|r|r[0]).collect::<std::collections::HashSet<_>>().len(),entries.len());
             let bytes=read(&volumes,scene.voxel_forest.as_ref().unwrap().instances.len()as u64*96);let visible:&[GpuTree]=bytemuck::cast_slice(&bytes);
-            assert!(visible[spec.slots as usize..].iter().all(|v|v.bounds_min[3]==0.),"root fallback remains visible");
+            assert!(visible[spec.slots as usize..].iter().all(|v|v.bounds_min[3]==3.),"camera-only root fallback remains visible without becoming a shadow caster");
             runtime.selector.publish_asset_pages(&gpu,&[(page,true,2)]).unwrap();let d=draw();assert_eq!(d.fallback_trees,0);assert_eq!(d.assigned,6);
             assert!(runtime.selector.publish_asset_pages(&gpu,&[(page,true,1)]).is_err());
             let pinned=spec.nodes.iter().find(|n|n.links[3]&2!=0).unwrap().links[2];

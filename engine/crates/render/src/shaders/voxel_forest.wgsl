@@ -1098,9 +1098,9 @@ fn volume_proxy(index:u32)->bool {return f32(index)>=volume_config.proxy.x;}
 // A proxy another representation stands in for (recipe_forest::Pool):
 // bounds_min.w=1 draws nothing (a full tree, which casts itself), 2 only
 // casts sun (a card tree: every non-full tree's shadow stays these voxels,
-// so no shadow pops in where cards end).
-fn volume_proxy_shown(index:u32)->bool {return volume_trees[index].bounds_min.w==0.0;}
-fn volume_proxy_casts(index:u32)->bool {return volume_trees[index].bounds_min.w!=1.0;}
+// so no shadow pops in where cards end). 3 is camera-only for GPU root demand.
+fn volume_proxy_shown(index:u32)->bool {let mode=volume_trees[index].bounds_min.w;return mode==0.0 || mode==3.0;}
+fn volume_proxy_casts(index:u32)->bool {let mode=volume_trees[index].bounds_min.w;return mode==0.0 || mode==2.0;}
 fn volume_splat_level(index:u32)->u32 {
     let tree=volume_trees[index];
     if volume_proxy(index) {
