@@ -17,7 +17,7 @@ pub(crate) struct Refiner {
 /// frames encode that plus a margin. A frame that used every encoded round may
 /// have been cut short: its drain publishes the current complete cut (coarser,
 /// never missing), and the next frames go back to the full bound.
-struct Rounds {full:bool,used:Option<u32>,hint:Option<u32>,encoded:u32,frame:u64,newest:u64,slots:Vec<RoundSlot>}
+struct Rounds {cameras:Vec<(glam::Vec3,glam::Vec3,f32)>,stale:u64,full:bool,used:Option<u32>,hint:Option<u32>,encoded:u32,frame:u64,newest:u64,slots:Vec<RoundSlot>}
 struct RoundSlot {buffer:wgpu::Buffer,encoded:u32,frame:u64,pending:Option<std::sync::mpsc::Receiver<Result<(),wgpu::BufferAsyncError>>>}
 impl Rounds {
     /// Margin over the observed need, so a camera that moves a little does not
@@ -27,6 +27,10 @@ impl Rounds {
         let want=if used>=encoded {bound} else {(used+Self::MARGIN).min(bound)};
         let shrink=self.hint.unwrap_or(bound).saturating_sub(2);
         self.hint=Some(want.max(shrink).min(bound));
+    }
+    /// More than half a metre, about 3 degrees of turn, or 5% zoom in a frame.
+    fn cut(a:(glam::Vec3,glam::Vec3,f32),b:(glam::Vec3,glam::Vec3,f32))->bool {
+        a.0.distance(b.0)>0.5 || a.1.dot(b.1)<0.9986 || (a.2-b.2).abs()>0.05*a.2.max(b.2)
     }
     /// Even, so the final queue is the same buffer as with the full bound.
     fn count(&self,bound:u32)->u32 {if self.full {return bound;}self.hint.map_or(bound,|h|(h+(h&1)).clamp(2,bound))}
@@ -50,7 +54,7 @@ impl Refiner {
             args:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement indirect"),size:36,usage:wgpu::BufferUsages::INDIRECT|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),
             pipelines,layout,binds:Default::default(),
             worked:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement rounds used"),size:4,usage:wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),
-            rounds:std::sync::Mutex::new(Rounds {full:false,used:None,hint:None,encoded:0,frame:0,newest:0,slots:(0..2).map(|_|RoundSlot {buffer:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement rounds readback"),size:4,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),encoded:0,frame:0,pending:None}).collect()})}
+            rounds:std::sync::Mutex::new(Rounds {cameras:Vec::new(),stale:0,full:false,used:None,hint:None,encoded:0,frame:0,newest:0,slots:(0..2).map(|_|RoundSlot {buffer:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement rounds readback"),size:4,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),encoded:0,frame:0,pending:None}).collect()})}
     }
     /// Reads finished round counts without waiting, starts a readback of the
     /// last encoded frame, and returns how many rounds to encode now.
@@ -68,7 +72,8 @@ impl Refiner {
             slot.buffer.unmap();
         }
         seen.sort_unstable();
-        for (frame,used,encoded) in seen {if frame>r.newest {r.newest=frame;r.used=Some(used);r.next(bound,used,encoded);}}
+        // Readbacks of frames encoded before a camera cut describe the old view.
+        for (frame,used,encoded) in seen {if frame>r.newest && frame>=r.stale {r.newest=frame;r.used=Some(used);r.next(bound,used,encoded);}}
         // `worked` holds the previous encode's count; queue order makes this
         // copy see it once that frame's commands ran.
         if r.encoded!=0 {
@@ -80,6 +85,15 @@ impl Refiner {
             }
         }
         r.frame+=1;r.encoded=r.count(bound);r.encoded
+    }
+    /// A camera that jumps, turns fast or zooms needs refinement the last
+    /// readback did not see: go back to the full bound, and ignore readbacks
+    /// of frames encoded before the cut.
+    pub(crate) fn note_cameras(&self,cameras:&[(glam::Vec3,glam::Vec3,f32)]) {
+        let mut r=self.rounds.lock().unwrap();
+        let cut=r.cameras.len()!=cameras.len() || r.cameras.iter().zip(cameras).any(|(a,b)|Rounds::cut(*a,*b));
+        if cut && !r.cameras.is_empty() {r.hint=None;r.stale=r.frame+1;}
+        r.cameras=cameras.to_vec();
     }
     /// Rounds the most recent encode used, for diagnostics and tests.
     /// (rounds the most recent encode used, latest working rounds the GPU reported).
@@ -165,16 +179,21 @@ impl Refiner {
 #[cfg(test)] mod tests {
     #[test]
     fn rounds_follow_need_and_recover_from_a_short_frame() {
-        let mut r=super::Rounds {full:false,used:None,hint:None,encoded:0,frame:0,newest:0,slots:Vec::new()};
+        let mut r=super::Rounds {cameras:Vec::new(),stale:0,full:false,used:None,hint:None,encoded:0,frame:0,newest:0,slots:Vec::new()};
         assert_eq!(r.count(48),48,"nothing observed yet: the depth bound");
         r.next(48,6,48);assert_eq!(r.count(48),46,"shrinks gradually");
         for _ in 0..30 {let n=r.count(48);r.next(48,6,n);}
         assert_eq!(r.count(48),10,"settles at the need plus the margin");
         r.next(48,10,10);assert_eq!(r.count(48),48,"a frame that used every round may be short: back to the bound");
         r.next(48,7,48);assert_eq!(r.count(48),46);
-        let mut odd=super::Rounds {full:false,used:None,hint:Some(5),encoded:0,frame:0,newest:0,slots:Vec::new()};
+        let mut odd=super::Rounds {cameras:Vec::new(),stale:0,full:false,used:None,hint:Some(5),encoded:0,frame:0,newest:0,slots:Vec::new()};
         assert_eq!(odd.count(48),6,"even, so the final queue matches the full bound");odd.hint=Some(0);assert_eq!(odd.count(48),2);
         odd.full=true;assert_eq!(odd.count(48),48);
+        let (at,ahead)=(glam::Vec3::ZERO,glam::Vec3::NEG_Z);
+        assert!(!super::Rounds::cut((at,ahead,1.),(glam::Vec3::new(0.3,0.,0.),ahead,1.)),"walking speed is not a cut");
+        assert!(super::Rounds::cut((at,ahead,1.),(glam::Vec3::new(3.,0.,0.),ahead,1.)),"a jump is");
+        assert!(super::Rounds::cut((at,ahead,1.),(at,glam::Vec3::new(0.1,0.,-1.).normalize(),1.)),"so is a fast turn");
+        assert!(super::Rounds::cut((at,ahead,1.),(at,ahead,0.8)),"and a zoom");
     }
     #[test]
     #[ignore="exclusive GPU dormant role scheduling fixture"]

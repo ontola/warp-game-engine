@@ -521,6 +521,7 @@ impl Runtime {
     pub(crate) fn encode_timed(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::foliage_select::ConsumerView],first_owner:u32,time:Option<(&wgpu::QuerySet,u32)>)->Result<(),String> {
         self.encode_timed_depth(gpu,enc,views,first_owner,time,None)
     }
+    pub(crate) fn note_cameras(&self,cameras:&[(Vec3,Vec3,f32)]) {self.selector.refiner.note_cameras(cameras);}
     #[cfg(test)]
     pub(crate) fn test_rounds(&self,full:bool,hint:Option<u32>)->(u32,Option<u32>,u32) {let r=&self.selector.refiner;if full {r.test_full_rounds();}if let Some(h)=hint {r.test_hint(h);}let (e,u)=r.encoded_rounds();(e,u,2*(self.selector.levels+1))}
     pub(crate) fn encode_timed_depth(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::foliage_select::ConsumerView],first_owner:u32,time:Option<(&wgpu::QuerySet,u32)>,depth:Option<&[crate::foliage_seed_visibility::CameraDepth<'_>]>)->Result<(),String> {
@@ -1063,8 +1064,8 @@ impl Runtime {
         adaptive.test_warm_foliage_assets(&gpu);reference.test_warm_foliage_assets(&gpu);reference.test_forest_rounds(true,None);
         let mut views=[ViewRect {cam:Camera {pos:Vec3::new(0.,1.,9.),target:Vec3::new(0.,0.8,0.),fov_y:1.,near:0.05},x:0,y:0,w:128,h:128}];
         for frame in 0..12 {
-            // A jump halfway, with too few rounds encoded for it: that frame
-            // may draw a coarser complete cut, but the hint must recover.
+            // A jump halfway, after pretending the last frames needed almost
+            // nothing: the cut must encode the full bound, not the stale hint.
             if frame==8 {views[0].cam.pos=Vec3::new(-7.,0.9,2.5);views[0].cam.target=Vec3::new(-7.5,0.8,0.);adaptive.test_forest_rounds(false,Some(2));}
             let (a,_)=adaptive.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();
             let (b,_)=reference.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();
@@ -1072,7 +1073,8 @@ impl Runtime {
             let (da,db)=(adaptive.gpu_forest_diagnostics(&gpu).unwrap().unwrap(),reference.gpu_forest_diagnostics(&gpu).unwrap().unwrap());
             eprintln!("frame {frame}: {rounds} of {bound} rounds encoded, GPU reported {used:?} working, source slots {} vs {}",da.source_slots,db.source_slots);
             if frame==7 {assert!(used.is_some_and(|u|u<bound),"the GPU must report how many rounds did work");}
-            if frame<8 || frame>=11 {assert_eq!(a,b,"frame {frame}: fewer rounds must draw the same image");}
+            if frame==8 {assert_eq!(rounds,bound,"a camera cut encodes the full bound");}
+            assert_eq!(a,b,"frame {frame}: fewer rounds must draw the same image");
         }
     }
     #[test]
