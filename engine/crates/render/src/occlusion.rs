@@ -58,22 +58,23 @@ impl Resources {
         assert!((1..=262144).contains(&deferred_capacity));
         // On by default for every scene: hidden geometry of any category is
         // tested against the Hi-Z of what was visible last frame.
-        // KERN_TREE_OCCLUSION=0 turns it off (A/B, diagnostics).
+        // KERN_OCCLUSION=0 (or the older KERN_TREE_OCCLUSION=0) turns it off.
         let _=gpu_forest;
-        let requested = std::env::var("KERN_TREE_OCCLUSION").as_deref() != Ok("0");
+        let off=|name|std::env::var(name).as_deref()==Ok("0");
+        let requested = !off("KERN_OCCLUSION") && !off("KERN_TREE_OCCLUSION");
         let history_first=requested && bucketed;
         let enabled = requested && bucketed;
         let rejection_enabled = enabled
-            && std::env::var("KERN_TREE_OCCLUSION_REJECT").as_deref() != Ok("0");
+            && !off("KERN_OCCLUSION_REJECT") && !off("KERN_TREE_OCCLUSION_REJECT");
         let disabled_reason = if requested && !bucketed { Some("cluster_buckets_required") }
             else if !requested { Some("not_requested") } else { None };
         let control = |phase: f32| gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("immutable tree occlusion phase"),
+            label: Some("immutable occlusion phase"),
             contents: bytemuck::cast_slice(&[phase, if history_first {deferred_capacity as f32}else{SPLIT_METRES}, if rejection_enabled {1.0} else {0.0}, if history_first {1.0}else{0.0}]),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let empty = gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("disabled tree occlusion depth"), size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            label: Some("disabled occlusion depth"), size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::R32Float, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
         }).create_view(&Default::default());
@@ -99,17 +100,17 @@ impl Resources {
             wgpu::BindGroupEntry {binding:0,resource:wgpu::BindingResource::TextureView(visibility)},
             wgpu::BindGroupEntry {binding:1,resource:visible.as_entire_binding()},
             wgpu::BindGroupEntry {binding:2,resource:history.as_entire_binding()}]});
-        let mut pass=enc.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("tree visibility history"),timestamp_writes:time.map(|(query_set,i)|wgpu::ComputePassTimestampWrites {query_set,beginning_of_pass_write_index:Some(i),end_of_pass_write_index:Some(i+1)})});
+        let mut pass=enc.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("visibility history"),timestamp_writes:time.map(|(query_set,i)|wgpu::ComputePassTimestampWrites {query_set,beginning_of_pass_write_index:Some(i),end_of_pass_write_index:Some(i+1)})});
         pass.set_pipeline(&self.history_pipeline);pass.set_bind_group(0,&bind,&[]);pass.dispatch_workgroups(size.0.div_ceil(8),size.1.div_ceil(8),1);
     }
     pub fn decode(&self, words: &[u32], frame_id:u64, render_sequence:u64, view_index:usize) -> Result<Diagnostics,String> {
-        if words.len() != COUNTER_WORDS { return Err("invalid tree occlusion counter size".into()); }
+        if words.len() != COUNTER_WORDS { return Err("invalid occlusion counter size".into()); }
         if self.enabled && (words[13].checked_add(words[14]) != Some(words[0])
             || words[16] > words[15] || words[18] > words[17]) {
-            return Err("inconsistent tree occlusion submitted/rejected counters".into());
+            return Err("inconsistent occlusion submitted/rejected counters".into());
         }
         if !self.rejection_enabled && (words[16] != 0 || words[18] != 0) {
-            return Err("tree occlusion rejection counters are nonzero while rejection is disabled".into());
+            return Err("occlusion rejection counters are nonzero while rejection is disabled".into());
         }
         Ok(Diagnostics { enabled:self.enabled, rejection_enabled:self.rejection_enabled, disabled_reason:self.disabled_reason, frame_id, render_sequence, view_index,
             split_m:if self.history_first {0.0}else{SPLIT_METRES},history_first:self.history_first,deferred_capacity:self.deferred_capacity,deferred_clusters:words[19],deferred_overflow:self.history_first&&words[19]>self.deferred_capacity, phase1_clusters:if self.enabled {words[13]} else {words[0]},
@@ -186,7 +187,7 @@ mod tests {
             // In front of the wall: always in view, so it must always draw.
             let front=scene.instances.len() as u32;scene.add_classified_instance(cube,glam::Affine3A::from_translation(Vec3::new(1.5,0.5,8.)),GeometryCategory::Other);
             let renderer=Renderer::new(&gpu,&scene,&light);
-            assert!(renderer.debug_tree_occlusion_enabled(),"occlusion is on by default for every scene");
+            assert!(renderer.debug_occlusion_enabled(),"occlusion is on by default for every scene");
             let views=[ViewRect {cam,x:0,y:0,w:128,h:128}];
             let mut drawn=Vec::new();
             for frame in 0..40 {

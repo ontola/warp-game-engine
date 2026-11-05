@@ -592,8 +592,8 @@ pub struct FrameStats {
     pub headlight_instance_groups: bool,
     /// Conservative shared mesh-cluster BVH; independent of owner grouping.
     pub cluster_traversal: bool,
-    /// Current-frame two-phase tree occlusion, never applied to shadows.
-    pub tree_occlusion: bool,
+    /// Current-frame two-phase occlusion, never applied to shadows.
+    pub occlusion: bool,
     pub shadow_clusters: u32,
     pub shadow_triangles: u32,
     /// Subset of total shadow work spent on the per-view near maps.
@@ -808,7 +808,7 @@ pub struct Renderer {
     scatter: wgpu::ComputePipeline,
     prepare_tree_phase: Option<wgpu::ComputePipeline>,
     recover_tree_clusters:Option<wgpu::ComputePipeline>,
-    tree_occlusion: crate::tree_occlusion::Resources,
+    occlusion: crate::occlusion::Resources,
     cluster_buckets: bool,
     simple_lighting: bool,
     sharp_sprites: bool,
@@ -1741,7 +1741,7 @@ impl Renderer {
         // identical assets, LOD thresholds, lighting and camera inputs.
         let cluster_buckets = std::env::var("KERN_CLUSTER_BUCKETS").as_deref() != Ok("0");
         let simple_lighting=std::env::var("KERN_SIMPLE_LIGHTING").map_or(scene.graphics.simple_lighting,|v|v=="1");
-        let tree_occlusion = crate::tree_occlusion::Resources::new(gpu,cluster_buckets,scene.gpu_forest.is_some());
+        let occlusion = crate::occlusion::Resources::new(gpu,cluster_buckets,scene.gpu_forest.is_some());
         let plain_meshes = scene.meadow.is_none() && scene.far_grass.is_none()
             && scene.voxel_forest.is_none() && scene.foliage_world.is_none()
             && scene.foliage_representations.is_empty() && scene.foliage_source_groups.is_empty()
@@ -1751,7 +1751,7 @@ impl Renderer {
             && scene.instances.iter().all(|i|i.flags & (crate::scene::FOLIAGE | crate::scene::LIVE_GRASS
                 | crate::scene::WIND_GRASS | crate::scene::PART_WIND)==0);
         let simple_cull=std::env::var("KERN_SIMPLE_CULL").map_or(scene.graphics.simple_mesh_culling,|v|v=="1")
-            && plain_meshes && !instance_groups.allocated() && !cluster_traversal.enabled && !tree_occlusion.enabled
+            && plain_meshes && !instance_groups.allocated() && !cluster_traversal.enabled && !occlusion.enabled
             && std::env::var("KERN_STATIC_SUN_CACHE").as_deref()!=Ok("1")
             && std::env::var("KERN_INSTANCE_BROADPHASE").as_deref()!=Ok("1");
         let early_grass_cull = std::env::var("KERN_EARLY_GRASS_CULL").as_deref() != Ok("0");
@@ -1796,8 +1796,8 @@ impl Renderer {
         let headlight_spatial_cull=instance_groups.headlight_enabled.then(||(cull_compute("headlight_spatial_select"),cull_compute("spatial_dispatch"),cull_compute("cull_spatial")));
         let finalize = cull_compute("finalize");
         let scatter = cull_compute("scatter");
-        let prepare_tree_phase = tree_occlusion.enabled.then(||cull_compute("prepare_tree_phase"));
-        let recover_tree_clusters=tree_occlusion.history_first.then(||cull_compute("recover_tree_clusters"));
+        let prepare_tree_phase = occlusion.enabled.then(||cull_compute("prepare_tree_phase"));
+        let recover_tree_clusters=occlusion.history_first.then(||cull_compute("recover_tree_clusters"));
         startup.mark("cull_finalize_scatter_pipelines");
         let raster_pl = pl(&[&scene_layout, &view_raster_layout]);
         let shadow_mask_layout=crate::shadow_damage::mask_layout(gpu);
@@ -2085,7 +2085,7 @@ impl Renderer {
             finalize,
             scatter,
             prepare_tree_phase,recover_tree_clusters,
-            tree_occlusion,
+            occlusion,
             cluster_buckets,
             simple_lighting,
             sharp_sprites: scene.graphics.sharp_sprites,
@@ -2300,22 +2300,22 @@ impl Renderer {
     /// Exact current-view occlusion counters. Explicit blocking capture only;
     /// ordinary gameplay uses GPU-side decisions without counter readback.
     #[cfg(test)]
-    pub(crate) fn debug_tree_occlusion_enabled(&self)->bool {self.tree_occlusion.enabled}
+    pub(crate) fn debug_occlusion_enabled(&self)->bool {self.occlusion.enabled}
     pub fn debug_tree_occlusion(&self,gpu:&Gpu,view:usize,expected_render_sequence:Option<u64>)
-        ->Result<crate::tree_occlusion::Diagnostics,String> {
+        ->Result<crate::occlusion::Diagnostics,String> {
         let diagnostics=self.color_diagnostics.lock().unwrap();
         let context=diagnostics.context.ok_or("no submitted colour frame is available")?;
-        if expected_render_sequence.is_some_and(|s|s!=context.render_sequence) {return Err("stale tree occlusion diagnostic request".into());}
+        if expected_render_sequence.is_some_and(|s|s!=context.render_sequence) {return Err("stale occlusion diagnostic request".into());}
         let target=diagnostics.views.get(view).ok_or("colour view is not active in last submitted frame")?;
-        let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("tree occlusion counters"),
-            size:crate::tree_occlusion::COUNTER_BYTES,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+        let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("occlusion counters"),
+            size:crate::occlusion::COUNTER_BYTES,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
         let mut enc=gpu.device.create_command_encoder(&Default::default());
-        enc.copy_buffer_to_buffer(&target.counter,0,&read,0,crate::tree_occlusion::COUNTER_BYTES);
+        enc.copy_buffer_to_buffer(&target.counter,0,&read,0,crate::occlusion::COUNTER_BYTES);
         gpu.queue.submit([enc.finish()]);read.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
         let result={let mapped=read.slice(..).get_mapped_range().map_err(|e|e.to_string())?;
             let words:&[u32]=bytemuck::cast_slice(&mapped);
             if words[0]>MAX_VISIBLE {return Err("visible-cluster capacity exceeded".into());}
-            self.tree_occlusion.decode(words,context.frame_id,context.render_sequence,view).and_then(|mut result|{
+            self.occlusion.decode(words,context.frame_id,context.render_sequence,view).and_then(|mut result|{
                 result.instance_groups=Some(self.instance_groups.diagnostics(words)?);Ok(result)
             })};
         read.unmap();
@@ -2379,12 +2379,12 @@ impl Renderer {
         let foliage_selection = buffer(gpu, "per-view foliage representation", bytemuck::cast_slice(&choices),
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC);
         let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: std::mem::size_of::<ViewUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let visible = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("visible"), size: (capacity as u64 + if camera && self.tree_occlusion.history_first {self.tree_occlusion.deferred_capacity as u64*3}else{0})*8, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
-        let counter = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("counter"), size: crate::tree_occlusion::COUNTER_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let visible = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("visible"), size: (capacity as u64 + if camera && self.occlusion.history_first {self.occlusion.deferred_capacity as u64*3}else{0})*8, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let counter = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("counter"), size: crate::occlusion::COUNTER_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let args = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("args"), size: 80, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         // Separate from writable storage args: indirect dispatch cannot alias a
         // storage-write binding in the same compute pass. No CPU readback.
-        let instance_dispatch = ((camera && (self.compact_cull.is_some() || self.spatial_cull.is_some() || self.tree_occlusion.history_first))
+        let instance_dispatch = ((camera && (self.compact_cull.is_some() || self.spatial_cull.is_some() || self.occlusion.history_first))
             || light_groups).then(|| gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instance dispatch"), size: 12,
             usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
@@ -2392,11 +2392,11 @@ impl Renderer {
         let spatial_owners=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("per-view spatial owner scratch"),
             size:if camera&&(self.instance_groups.enabled||self.instance_groups.replacement_enabled){self.instance_groups.scratch_bytes()}else if light_groups{self.instance_groups.owner_scratch_bytes()}else{4},usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
         let cull_bind = bind(gpu, &self.view_cull_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, counter.as_entire_binding()), (3, args.as_entire_binding()), (4, draw_map.as_entire_binding()), (5, foliage_selection.as_entire_binding()),
-            (6,self.tree_occlusion.reference.as_entire_binding()),(7,wgpu::BindingResource::TextureView(&self.tree_occlusion.empty)),
+            (6,self.occlusion.reference.as_entire_binding()),(7,wgpu::BindingResource::TextureView(&self.occlusion.empty)),
             (8,self.instance_groups.groups.as_entire_binding()),(9,self.instance_groups.owners.as_entire_binding()),(10,spatial_owners.as_entire_binding()),
             (11,self.sun_owner_buffer.as_entire_binding()),
             (12,self.cluster_traversal.buffer.as_entire_binding()),
-            (14,self.receiver_demand.buffer().as_entire_binding()),(15,self.tree_occlusion.empty_history.as_entire_binding())]);
+            (14,self.receiver_demand.buffer().as_entire_binding()),(15,self.occlusion.empty_history.as_entire_binding())]);
         let raster_bind = bind(gpu, &self.view_raster_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, draw_map.as_entire_binding()), (3, args.as_entire_binding()), (4, foliage_selection.as_entire_binding())]);
         ViewTargets { uniform, foliage_selection, visible, counter, args, draw_map, spatial_owners,instance_dispatch, cull_bind, raster_bind }
     }
@@ -2411,7 +2411,7 @@ impl Renderer {
         let cull_scene_bind=match kind {RasterPass::FarSun=>&self.far_cull_scene_bind,RasterPass::FoliagePage=>&self.foliage_cull_scene_bind,_=>&self.cull_scene_bind};
         // Reset in command order without allocating upload staging. A tree's
         // appended phase must retain the preceding visible prefix and counters.
-        if phase_bind.is_none() || !append { enc.clear_buffer(&v.counter, 0, Some(crate::tree_occlusion::PHASE_COUNTER_BYTES)); }
+        if phase_bind.is_none() || !append { enc.clear_buffer(&v.counter, 0, Some(crate::occlusion::PHASE_COUNTER_BYTES)); }
         let cull_bind=phase_bind.unwrap_or(&v.cull_bind);
         let tw = |ts: &mut u32| {
             self.query.as_ref().map(|(qs, _, _)| {
@@ -2424,7 +2424,7 @@ impl Renderer {
         let solar=matches!(kind,RasterPass::Sun)&&self.sun_spatial_cull.is_some();
         let lamp=matches!(kind,RasterPass::Headlight)&&self.headlight_spatial_cull.is_some();
         let spatial=(matches!(kind,RasterPass::Color)&&self.spatial_cull.is_some())||solar||lamp;
-        let recover=append && phase_bind.is_some() && self.tree_occlusion.history_first;
+        let recover=append && phase_bind.is_some() && self.occlusion.history_first;
         let compact = if recover {None}else if lamp {self.headlight_spatial_cull.as_ref()} else if solar {self.sun_spatial_cull.as_ref()} else if spatial {self.spatial_cull.as_ref()}
             else if matches!(kind, RasterPass::Color) && phase_bind.is_none() { self.compact_cull.as_ref() } else { None };
         if recover {
@@ -2501,7 +2501,7 @@ impl Renderer {
         }
         let t = tw(ts);
         if t.is_some() {
-            names.push(if name=="tree occluder cull" {"tree occluder raster"} else if name=="tree remaining cull" {"tree remaining raster"} else if color.is_some() { "raster" } else if name == "near shadow cull" { "near shadow raster" }
+            names.push(if name=="occluder cull" {"occluder raster"} else if name=="remaining cull" {"remaining raster"} else if color.is_some() { "raster" } else if name == "near shadow cull" { "near shadow raster" }
                 else if name=="headlight shadow cull" {"headlight shadow raster"}
                 else if matches!(kind,RasterPass::SunStatic(_)) {"static sun raster"}
                 else if matches!(kind,RasterPass::SunDynamic(_)) {"dynamic sun raster"}
@@ -2771,7 +2771,7 @@ impl Renderer {
     #[cfg(test)]
     pub(crate) fn test_tree_deferred_capacity(&mut self,gpu:&Gpu,capacity:u32) {
         assert!(self.cluster_views.lock().unwrap().is_empty());
-        self.tree_occlusion=crate::tree_occlusion::Resources::with_history_capacity(gpu,self.cluster_buckets,self.gpu_forest.is_some(),capacity);
+        self.occlusion=crate::occlusion::Resources::with_history_capacity(gpu,self.cluster_buckets,self.gpu_forest.is_some(),capacity);
     }
     pub fn gpu_forest_diagnostics(&self,gpu:&Gpu)->Result<Option<crate::foliage_runtime::Diagnostics>,String> {
         self.gpu_forest.as_ref().map(|(forest,_)|forest.diagnostics(gpu)).transpose()
@@ -3296,28 +3296,27 @@ impl Renderer {
 
     fn tree_cull_and_raster(&self,enc:&mut wgpu::CommandEncoder,gpu:&Gpu,v:&ViewTargets,color:&wgpu::TextureView,depth:&wgpu::TextureView,
         index:usize,size:(u32,u32),ts:&mut u32,names:&mut Vec<&'static str>) {
-        let mut targets=self.tree_occlusion.targets.lock().unwrap();
+        let mut targets=self.occlusion.targets.lock().unwrap();
         if targets.len()<=index {targets.resize_with(index+1,||None);}
-        let pyramid=self.tree_occlusion.pyramid.as_ref().expect("enabled tree pyramid");
+        let pyramid=self.occlusion.pyramid.as_ref().expect("enabled tree pyramid");
         if !targets[index].as_ref().is_some_and(|t|t.size==size) {targets[index]=Some(pyramid.target(gpu,size));}
         let target=targets[index].as_ref().unwrap();
-        let history=self.tree_occlusion.history_buffer(gpu,index,self.instances);
+        let history=self.occlusion.history_buffer(gpu,index,self.instances);
         let phases: [wgpu::BindGroup;2]=std::array::from_fn(|phase|bind(gpu,&self.view_cull_layout,&[
             (0,v.uniform.as_entire_binding()),(1,v.visible.as_entire_binding()),(2,v.counter.as_entire_binding()),
             (3,v.args.as_entire_binding()),(4,v.draw_map.as_entire_binding()),(5,v.foliage_selection.as_entire_binding()),
-            (6,self.tree_occlusion.phases[phase].as_entire_binding()),(7,wgpu::BindingResource::TextureView(&target.view)),
+            (6,self.occlusion.phases[phase].as_entire_binding()),(7,wgpu::BindingResource::TextureView(&target.view)),
             (8,self.instance_groups.groups.as_entire_binding()),(9,self.instance_groups.owners.as_entire_binding()),(10,v.spatial_owners.as_entire_binding()),
             (11,self.sun_owner_buffer.as_entire_binding()),
             (12,self.cluster_traversal.buffer.as_entire_binding()),
             (14,self.receiver_demand.buffer().as_entire_binding()),(15,history.as_entire_binding())]));
-        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"tree occluder cull",RasterPass::Color,Some(&phases[0]),false,None);
-        let time=self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs,_,_)|{names.push("tree occlusion pyramid");(qs,timestamp_pair(ts))});
+        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"occluder cull",RasterPass::Color,Some(&phases[0]),false,None);
+        let time=self.query.as_ref().map(|(qs,_,_)|{names.push("occlusion pyramid");(qs,timestamp_pair(ts))});
         pyramid.encode(gpu,enc,depth,target,time);
-        if let Some((qs,i))=time {enc.write_timestamp(qs,i+1);}
-        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"tree remaining cull",RasterPass::Color,Some(&phases[1]),true,None);
-        let time=self.query.as_ref().filter(|_|self.tree_occlusion.history_first).map(|(qs,_,_)|{names.push("tree visibility history");(qs,timestamp_pair(ts))});
-        self.tree_occlusion.capture_history(gpu,enc,&history,color,&v.visible,size,time);
-        if self.tree_occlusion.history_first {enc.copy_buffer_to_buffer(&v.counter,18*4,&history,32772,4);}
+        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"remaining cull",RasterPass::Color,Some(&phases[1]),true,None);
+        let time=self.query.as_ref().filter(|_|self.occlusion.history_first).map(|(qs,_,_)|{names.push("visibility history");(qs,timestamp_pair(ts))});
+        self.occlusion.capture_history(gpu,enc,&history,color,&v.visible,size,time);
+        if self.occlusion.history_first {enc.copy_buffer_to_buffer(&v.counter,18*4,&history,32772,4);}
     }
     /// Blocking diagnostic only: per-input-pixel opacity-weighted
     /// (previous_world-current_world).xyz and current ray distance.w, RGBA32F.
@@ -3928,10 +3927,10 @@ impl Renderer {
         let static_counts = static_sun.as_ref().map_or(Default::default(),|s|s.counts());
         let mut split_stats = FrameStats {
             cluster_buckets:self.cluster_buckets,early_grass_cull:self.early_grass_cull,
-            instance_broadphase:self.compact_cull.is_some()&&!self.tree_occlusion.enabled&&!self.instance_groups.enabled,
+            instance_broadphase:self.compact_cull.is_some()&&!self.occlusion.enabled&&!self.instance_groups.enabled,
             instance_groups:self.instance_groups.enabled,sun_instance_groups:self.instance_groups.sun_enabled,cluster_traversal:self.cluster_traversal.enabled,
             headlight_instance_groups:self.instance_groups.headlight_enabled,
-            tree_occlusion:self.tree_occlusion.enabled,
+            occlusion:self.occlusion.enabled,
             static_sun_cache: static_sun.is_some(), static_sun_redrawn: draw_static_sun,
             static_sun_reused: sun_needed && static_plan.is_some_and(|p|!p.redraw_static),
             static_sun_seed_bytes: if static_sun.is_some() && draw_main_sun {u64::from(SHADOW_SIZE).pow(2)*4}else{0},
@@ -4083,9 +4082,8 @@ impl Renderer {
                 let start=names.len();
                 self.cull_and_raster(&mut enc,gpu,&t.targets,Some(&t.color),&t.depth,&mut ts,&mut names,"foliage seed terrain cull",RasterPass::Color);
                 for name in &mut names[start..] {*name=match *name {"raster"=>"foliage seed terrain raster","instance group select"=>"foliage seed groups","instance broadphase"=>"foliage seed broadphase",other=>other};}
-                let time=self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs,_,_)|{names.push("foliage seed pyramid");(qs,timestamp_pair(&mut ts))});
+                let time=self.query.as_ref().map(|(qs,_,_)|{names.push("foliage seed pyramid");(qs,timestamp_pair(&mut ts))});
                 seed.pyramid.encode(gpu,&mut enc,&t.depth,&t.pyramid,time);
-                if let Some((q,i))=time {enc.write_timestamp(q,i+1);}
             }
             let current=seed_targets.iter().take(views.len()).enumerate().map(|(i,t)|crate::foliage_seed_visibility::CameraDepth {projection:part_animation_views[i].view_projection,pyramid:&t.pyramid.view}).collect::<Vec<_>>();
             let time=self.query.as_ref().map(|(qs,_,_)| {let first=timestamp_pair(&mut ts);timestamp_pair(&mut ts);timestamp_pair(&mut ts);(qs,first)});
@@ -4473,7 +4471,7 @@ impl Renderer {
             let solar = solar_projection(cam, view_m, view.w as f32 / view.h as f32, light, sun_visibility);
             let tone_buf = self.view_uniform(gpu, vi, 3, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {bloom_strength}else{0.0},screen:u32::from(bloom_on&&debug_options.bloom_screen), vignette: light.vignette, grain: light.grain, aberration: light.aberration, time: light.time, sun: solar, sun_tint: [light.sun_color.x, light.sun_color.y, light.sun_color.z, 0.0], hdr: [hdr_headroom, crate::hdr::KNEE, 0.0, 0.0] }));
             cpu.mark("view setup");
-            if self.tree_occlusion.enabled {
+            if self.occlusion.enabled {
                 if let Some(selector)=&self.source_replacement {
                     let time=self.query.as_ref().map(|(qs,_,_)| {names.push("world foliage select");(qs,timestamp_pair(&mut ts))});
                     selector.encode(gpu,&mut enc,&self.instance_groups.owners,&main.spatial_owners,self.source_readiness.as_ref().unwrap(),
@@ -5109,10 +5107,10 @@ impl Renderer {
             upscale: upscale_status,
             cluster_buckets: self.cluster_buckets,
             early_grass_cull: self.early_grass_cull,
-            instance_broadphase: self.compact_cull.is_some() && !self.tree_occlusion.enabled && !self.instance_groups.enabled,
+            instance_broadphase: self.compact_cull.is_some() && !self.occlusion.enabled && !self.instance_groups.enabled,
             instance_groups: self.instance_groups.enabled,
             cluster_traversal:self.cluster_traversal.enabled,
-            tree_occlusion: self.tree_occlusion.enabled,
+            occlusion: self.occlusion.enabled,
             canopy_updated_levels,
             canopy_pitch_m,
             camera_sun_visibility,

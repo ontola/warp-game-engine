@@ -38,7 +38,7 @@ pub mod meadow_brick_field;
 pub mod vegetation_brick_render;
 mod meadow_substrate;
 mod meadow_index;
-pub mod tree_occlusion;
+pub mod occlusion;
 pub mod cull_groups;
 pub mod cluster_traversal;
 pub mod shadow_diagnostics;
