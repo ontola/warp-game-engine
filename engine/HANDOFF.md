@@ -1,3 +1,20 @@
+## 5 November: camera refinement limit audit
+
+Explicit diagnostics now report the next complete replacement against final
+remaining budgets, with overlapping slot/camera/shadow/page/leaf reasons and
+an affordable-resident count. Audit does not request pages or run in normal
+frame scheduling. State buffer enlarged to 256 bytes.
+
+Normal lowland+grass 240-frame native720p single-view route:
+40,529 camera over-target nodes, all affordable/resident, zero other limits.
+All 821 published branches still shadow-only. Earlier scheduler/admission
+behavior needs investigation; this is not a capacity diagnosis or a fix.
+Full 141 foliage GPU tests PASS; focused mixed-cut test also PASS with exact
+reason histograms for slot, splat, residency and complete-leaf cases.
+Evidence: build/playtest-unified/refinement-limits-{tests,oracle,build,route}.log
+and refinement-limits-route.json GPU/CPU sidecars and PNG. Single diagnostic
+run, no speedup claim or four-view acceptance. Budgets remain 8.30 ms TOTAL.
+
 ## 5 November 2026 - actual branch-level consumer counts
 
 Added explicit audit histograms for source/voxel branches and direct root

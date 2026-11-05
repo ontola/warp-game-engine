@@ -23,7 +23,7 @@ impl Refiner {
         Self {proposals:[storage("foliage refinement proposals A",capacity as u64*80),storage("foliage refinement proposals B",capacity as u64*80)],
             queues:[storage("foliage complete cut A",capacity as u64*16),storage("foliage complete cut B",capacity as u64*16)],
             blocks:storage("foliage refinement prefixes",(capacity.div_ceil(256)as u64+1)*32*16),
-            state:storage("foliage refinement allocation",192),
+            state:storage("foliage refinement allocation",256),
             args:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement indirect"),size:24,usage:wgpu::BufferUsages::INDIRECT|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),
             pipelines,layout,binds:Default::default()}
     }
@@ -43,7 +43,7 @@ impl Refiner {
     }
     pub fn audit(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,s:&Selector) {
         enc.clear_buffer(&self.state,19*4,Some(9*4));
-        enc.clear_buffer(&self.state,32*4,Some(16*4));
+        enc.clear_buffer(&self.state,32*4,Some(32*4));
         self.dispatch(enc,&self.bind(gpu,s,0),12,Some(s.count.max(s.dimensions().0).div_ceil(64)),0);
     }
     pub fn encode(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,s:&Selector) {
