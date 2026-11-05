@@ -104,7 +104,11 @@ fn validate(nodes:&[Node],instances:&[Instance],capacity:u32)->Result<(),String>
     Ok(())
 }
 
+/// Safety ceiling until a lower source-work limit passes normal-scene visual acceptance.
+pub const DEFAULT_SOURCE_CLUSTER_BUDGET:u32=1<<30;
+
 pub struct Selector {
+    source_cluster_budget:std::sync::atomic::AtomicU32,
     pub(crate) _nodes:wgpu::Buffer,pub(crate) _instances:wgpu::Buffer,pub(crate) uniform:wgpu::Buffer,
     /// vec4(instance ID, node ID, representation ID, generation).
     pub records:wgpu::Buffer,
@@ -190,7 +194,7 @@ impl Selector {
             let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("foliage GPU selection"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage GPU selection"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_select.wgsl").into())});
             let make=|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
-            Self {seed_visibility:storage("foliage current seed visibility",instances.len()as u64*4),seed_classifier:crate::foliage_seed_visibility::Visibility::new(gpu),refiner:crate::foliage_refine::Refiner::new(gpu,work_capacity),asset_pages:upload("foliage asset publication",bytemuck::cast_slice(&asset_state)),asset_requests:storage("foliage compact asset demand",16+page_count as u64*16),asset_state:std::sync::Mutex::new(asset_state),pinned_pages,compact_assets:make("compact_asset_requests"),children:upload("shared foliage child spans",bytemuck::cast_slice(&children)),work:[storage("unused legacy frontier A",24),storage("unused legacy frontier B",24)],levels,
+            Self {source_cluster_budget:std::sync::atomic::AtomicU32::new(DEFAULT_SOURCE_CLUSTER_BUDGET),seed_visibility:storage("foliage current seed visibility",instances.len()as u64*4),seed_classifier:crate::foliage_seed_visibility::Visibility::new(gpu),refiner:crate::foliage_refine::Refiner::new(gpu,work_capacity),asset_pages:upload("foliage asset publication",bytemuck::cast_slice(&asset_state)),asset_requests:storage("foliage compact asset demand",16+page_count as u64*16),asset_state:std::sync::Mutex::new(asset_state),pinned_pages,compact_assets:make("compact_asset_requests"),children:upload("shared foliage child spans",bytemuck::cast_slice(&children)),work:[storage("unused legacy frontier A",24),storage("unused legacy frontier B",24)],levels,
                 _nodes:upload("shared foliage hierarchy",bytemuck::cast_slice(nodes)),_instances:upload("persistent foliage instances",bytemuck::cast_slice(instances)),uniform,
                 records:storage("selected foliage records",capacity as u64*16),record_consumers:storage("selected foliage consumers",capacity as u64*4),deferred:storage("deferred foliage subtrees",deferred_capacity as u64*8),
                 counters:storage("foliage selection counters",64),arguments:storage("foliage indirect arguments",24),fallback:storage("foliage root fallbacks",instances.len()as u64*4),
@@ -251,6 +255,11 @@ impl Selector {
         let consumers=views.iter().copied().map(ConsumerView::camera).collect::<Vec<_>>();
         self.union_consumers(gpu,enc,&consumers,error,branch_budget,empty_depth)
     }
+    /// Total conservative source-cluster visits across all camera/shadow consumers.
+    pub fn set_source_cluster_budget(&self,budget:u32)->Result<(),String> {
+        if budget>1<<30 || (budget as f32)as u32!=budget {return Err("source cluster budget exceeds exact uniform range".into());}
+        self.source_cluster_budget.store(budget,std::sync::atomic::Ordering::Relaxed);Ok(())
+    }
     /// Frame-wide residency union with independent camera/shadow cuts. Shadows retain demand even
     /// when cameras cannot see their casters; only cameras get budget priority.
     pub fn union_consumers(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[ConsumerView],error:f32,branch_budget:u32,empty_depth:&wgpu::TextureView)->Result<(),String> {
@@ -275,7 +284,7 @@ impl Selector {
             *dst=v.packed()?;
         }
         gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform {consumers,consumer_count:[views.len()as u32,branch_budget,raster_budget[0],raster_budget[1]],
-            vp:views[0].projection.view_projection.to_cols_array(),previous_vp:views[0].projection.view_projection.to_cols_array(),pixels:[0.,0.,error,0.],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(current.is_some())]}));
+            vp:views[0].projection.view_projection.to_cols_array(),previous_vp:views[0].projection.view_projection.to_cols_array(),pixels:[0.,0.,error,self.source_cluster_budget.load(std::sync::atomic::Ordering::Relaxed) as f32],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(current.is_some())]}));
         enc.clear_buffer(&self.counters,0,None);enc.clear_buffer(&self.fallback,0,None);enc.clear_buffer(&self.direct,0,None);enc.clear_buffer(&self.record_consumers,0,None);
         let binds=[self.bind_work(gpu,empty_depth,0),self.bind_work(gpu,empty_depth,1)];
         self.refiner.encode(gpu,enc,self);
@@ -587,6 +596,43 @@ mod tests {
   selector.publish_asset_pages(&gpu,&[(1,true,2),(3,false,1)]).unwrap();assert_eq!(draw(16),[1,5,6]);
   assert_eq!(draw(2),[1,4]);assert_eq!(read(&gpu,&selector.fallback),[0],"budget retains both complete intermediate parents");
   selector.publish_asset_pages(&gpu,&[(3,true,2)]).unwrap();assert_eq!(draw(16),[2,3,5,6]);
+ }
+ #[test]
+ #[ignore="exclusive GPU source refund and cached retry"]
+ fn gpu_source_work_refunds_wake_complete_endpoints() {
+  let gpu=Gpu::new().unwrap();let (_,trees)=fixture(2);
+  let n=|first,end,rep,flags|Node {sphere:[0.,0.,0.5,0.2],error:[if first==NONE {0.}else{1.},0.,0.,0.],links:[first,end,rep,flags]};
+  let nodes=[n(1,4,0,2),n(2,4,1,4|(10<<8)),n(NONE,3,2,4|(3<<8)),n(NONE,4,3,4|(3<<8))];
+  let selector=Selector::new(&gpu,&nodes,&trees,4,4).unwrap();selector.set_source_cluster_budget(12).unwrap();
+  let empty=depth(&gpu,0.);let projection=crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]};
+  let mut enc=gpu.device.create_command_encoder(&Default::default());
+  selector.union_consumers_budget(&gpu,&mut enc,&[ConsumerView::camera(projection)],0.1,4,[1;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
+  let state=read(&gpu,&selector.refiner.state);assert_eq!(state[15],0);assert_eq!(state[69],12,"10-work intermediate must refund to6; cached other root may use complete6-work endpoint");
+  let count=read(&gpu,&selector.counters)[0]as usize;assert_eq!(count,4);
+  let mut cut=read(&gpu,&selector.records).chunks_exact(4).take(count).map(|r|(r[0],r[1])).collect::<Vec<_>>();cut.sort();
+  assert_eq!(cut,[(0,2),(0,3),(1,2),(1,3)]);assert_eq!(read(&gpu,&selector.fallback),[0,0]);
+ }
+ #[test]
+ #[ignore="exclusive GPU source work budget and consumer multiplicity"]
+ fn gpu_source_work_budget_bounds_collective_admission_and_bypass() {
+  let gpu=Gpu::new().unwrap();let (_,trees)=fixture(2);
+  let n=|first,end,rep,flags,cost|Node {sphere:[0.,0.,0.5,0.2],error:[if first==NONE {0.}else{1.},0.,cost,cost],links:[first,end,rep,flags]};
+  // An expensive intermediate voxel must not make the source endpoint free.
+  let nodes=[n(1,4,0,2,1.),n(2,4,1,0,100.),n(NONE,3,2,4|(6<<8),0.),n(NONE,4,3,4|(6<<8),0.)];
+  let selector=Selector::new(&gpu,&nodes,&trees,8,8).unwrap();let empty=depth(&gpu,0.);
+  let projection=crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]};
+  for (budget,views,expected) in [(0,1,0),(11,1,0),(12,1,2),(24,1,4),(24,2,2),(48,2,4),(12,1,2)] {
+   selector.set_source_cluster_budget(budget).unwrap();
+   let consumers=vec![ConsumerView::camera(projection);views];
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union_consumers_budget(&gpu,&mut enc,&consumers,0.1,8,[5;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
+   let count=read(&gpu,&selector.counters)[0]as usize;
+   let records=read(&gpu,&selector.records);let mut cost=0;
+   for r in records.chunks_exact(4).take(count) {cost+=(nodes[r[1]as usize].links[3]>>8)*views as u32;}
+   let state=read(&gpu,&selector.refiner.state);assert_eq!(state[15],0);assert_eq!(state[69],cost);assert!(cost<=budget);
+   assert_eq!(count,expected,"source cost must apply collectively and to every view, budget={budget} views={views}");
+   assert_eq!(read(&gpu,&selector.fallback),[0,0],"retain complete root for unaffordable source detail");
+  }
  }
  #[test]
  #[ignore="exclusive GPU complete mixed endpoint admission"]
