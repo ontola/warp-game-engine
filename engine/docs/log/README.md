@@ -74,6 +74,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [Stable streamed population, 4 November](foliage-population-2026-11-04.md)
 - [History-first source recovery, 4 November](foliage-history-2026-11-04.md)
 - [Shared articulated poses, 4 November](foliage-shared-poses-2026-11-04.md)
+- [Render suite and first iterations, 5 November](2026-11-05-render-suite.md)
 - [Asset demand and publication, 4 November](foliage-asset-publication-2026-11-04.md)
 - [Relocatable voxel pages, 4 November](foliage-page-layout-2026-11-04.md)
 - [Bounded voxel asset cache, 4 November](foliage-cache-2026-11-04.md)

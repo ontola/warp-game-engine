@@ -17,6 +17,8 @@ resolution, reconstruction mode, sample count and scene with a number.
 
 - **Default:** cluster LOD, GPU culling, visibility buffer and compute
   shading, TAA, AgX ([rendering overview](rendering.md)).
+- **Render suite** (5 November): `engine/tools/render-suite.py` measures one
+  world from fixed cameras and compares runs ([guide](render-suite.md)).
 - **Occlusion culling for every category** (5 November): history-first
   two-phase Hi-Z, on by default (`KERN_OCCLUSION=0` turns it off). Any rigid
   opaque geometry hides anything behind it, including the GPU forest; there
