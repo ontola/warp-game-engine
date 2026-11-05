@@ -32,7 +32,20 @@ are still unaccepted. There is no CPU near-tree pool.
   voxel work before further bypass tuning. Do not substitute a screen-size gate.
 - [x] Retained integration after reverting the experiment:161/161 foliage
   tests PASS (pr8-retained-tests.log).
-- [ ] Release build and normal capture of the retained integration.
+- [x] Retained release build and normal1200-frame capture inspected. Largest
+  cell5.482px, zero missing raster records/refinement faults, no page misses;
+  strict quality still FAILS. Final120 covered GPU median36.504ms, native720p
+  ONE view/TAA. This includes PR8 far-shadow demand; not an isolated comparison.
+- [x] Source work metadata: count repeated templates separately from unique
+  cached meshes; validate catalog ranges and arithmetic overflow. Nodes carry
+  conservative source cluster work in flags bits8..31. SourceWork also reports
+  triangle upper bounds across the full CLOD catalog. These are conservative
+  potential costs, not actual drawn triangles. New regression: three repeated
+  templates share one resident mesh but cost three instances of work.
+  All162 foliage tests PASS (source-work-foliage-tests.log).
+- [ ] Source work admission: feed those counts into reservation, prefix
+  admission, refunds, retries and diagnostics. Metadata alone does not fix the
+  bypass or enforce a GPU frame budget. Source work is still unbudgeted.
 - [ ] One-pixel camera/shadow, bounded work, repeated timing and4K/four-view
   acceptance remain incomplete. Do not launch this rejected capture as playtest.
 

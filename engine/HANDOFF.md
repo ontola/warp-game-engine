@@ -1,3 +1,13 @@
+# 5 November: source work accounting prerequisite
+
+PR8 retained build/capture: strict pixel quality FAIL at5.482px, no page
+misses,36.504ms covered GPU median in final120 frames of1200, native720p
+one view/TAA. Source cluster upper bounds now travel in Node.links[3] bits
+8..31; existing flags stay in low8 bits. Counts include every repeated
+mesh template; do not use unique source-page cluster counts for work.
+162 foliage tests pass. Admission/refunds do NOT consume this metadata yet.
+Source triangle/cluster budget remains the next task. Ownership unchanged.
+
 Post-revert validation:161/161 foliage tests PASS. No one-pixel or performance
 acceptance; release rebuild/capture still pending. See pr8-retained-tests.log.
 

@@ -26,6 +26,7 @@ pub struct Node {
     /// Flag bit 0: resident overflow fallback only; always refine normally.
     /// Flag bit 1: whole-root voxel choice, emitted without a transient slot.
     /// Flag bit 2: source representation (consumer diagnostics; not an LOD override).
+    /// Bits8..31: conservative source cluster work including repeated templates.
     pub links:[u32;4],
 }
 #[repr(C)]
