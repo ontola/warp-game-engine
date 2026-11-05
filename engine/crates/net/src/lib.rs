@@ -8,6 +8,7 @@
 //! client. A host-authoritative game sends inputs up and snapshots down;
 //! `latest` marks messages where only the newest matters (snapshots), so a
 //! slow client gets the newest instead of a backlog.
+pub mod lan;
 use iroh::endpoint::{presets, Connection, PortmapperConfig, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, RelayMode};
 use serde::{de::DeserializeOwned, Serialize};

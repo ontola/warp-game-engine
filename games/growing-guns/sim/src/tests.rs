@@ -905,3 +905,20 @@ fn recoil_hops_but_shooting_at_the_floor_cannot_fly() {
     // A 4.5 m/s hop climbs 4.5² / (2 · 30) = 0.34 m; a jump reaches 1.35 m.
     assert!(peak > 0.05 && peak < 0.45, "{peak}");
 }
+
+#[test]
+fn a_headset_players_view_and_gun_arrive_with_their_input() {
+    let mut w = flat_world();
+    let aim = TrackedAim { offset: Vec3::new(0.2, 0.4, -0.3), direction: Vec3::new(0.0, 0.0, -2.0) };
+    let input = Input { head: Some([1.0, 0.25]), tracked: Some(aim), ..Default::default() };
+    w.step(&[input, Input::default()]);
+    let p = &w.players[0];
+    assert_eq!((p.yaw, p.pitch), (1.0, 0.25));
+    assert_eq!(p.tracked.unwrap().direction, Vec3::NEG_Z, "normalised, and in the snapshot for the others");
+    assert!(w.tracked_ray(0).is_some(), "the shot follows the hand");
+    assert_eq!(w.players[1].tracked, None);
+    // Nonsense from the network changes nothing.
+    w.step(&[Input { head: Some([f32::NAN, 0.0]), tracked: Some(TrackedAim { offset: Vec3::splat(9.0), direction: Vec3::Z }), ..Default::default() }, Input::default()]);
+    assert_eq!(w.players[0].yaw, 1.0);
+    assert_eq!(w.players[0].tracked, None);
+}

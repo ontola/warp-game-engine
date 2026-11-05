@@ -98,9 +98,10 @@ unsupported GPU-deformed/generated scenes retain the general renderer.
 
 The game starts directly in the arena. Pause and card menus use the original
 HUD, submitted on a head-relative OpenXR quad two metres away. The fixed
-screen-centred crosshair is hidden; aim follows the gun. Online and splitscreen
-entries are omitted from the native demo's pause menu because tracked poses
-are not sent by the existing network protocol. Locomotion is smooth, not
+screen-centred crosshair is hidden; aim follows the gun. The pause menu has
+HOST LAN GAME and JOIN LAN GAME: the host announces itself on the local network
+(`net::lan`) and JOIN takes the newest host heard, so nobody types a ticket.
+Head and gun poses travel in the network input. Splitscreen stays omitted. Locomotion is smooth, not
 teleportation; jumps, falling and physical knockback remain gameplay movement.
 Headset views have no camera shake, recoil rotation, desktop zoom or TAA jitter.
 

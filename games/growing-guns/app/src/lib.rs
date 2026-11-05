@@ -108,6 +108,7 @@ pub fn desktop_main() {
         "bench" => bench::run(&args),
         "script" => script(&args),
         "nettest" => nettest(&args),
+        "lantest" => lantest(),
         "serve" => live::serve(&args),
         "mods-api" => mods_api(),
         _ => Err(format!("unknown command {cmd}; use play, shot or sim")),
@@ -219,6 +220,49 @@ fn script(args: &Args) -> Result<(), String> {
 /// driven through the same Game::tick as play: the client walks and fires;
 /// checks that the host treats it as a human, that it moves, and that the
 /// client's world follows the host's ticks.
+/// Two games in one process find each other as two headsets would: HOST LAN
+/// GAME on one, JOIN LAN GAME on the other, no ticket typed. The client plays
+/// as a headset, and its view and gun must reach the host's simulation.
+fn lantest() -> Result<(), String> {
+    use app::{Controls, Game};
+    let aim = growing_guns::TrackedAim { offset: glam::Vec3::new(0.2, 0.3, -0.4), direction: glam::Vec3::NEG_X };
+    let host = std::thread::spawn(move || -> Result<String, String> {
+        let mut host = play::Gg::new(World::new(9, &[false, true, true, true]), session::Session::Local, vec![0]);
+        host.command("lan host")?;
+        if !matches!(host.session(), session::Session::Host { .. }) { return Err(format!("not hosting: {:?}", host.ui.notice)); }
+        let start = std::time::Instant::now();
+        while start.elapsed().as_secs() < 25 {
+            host.tick(&[Controls::default()]);
+            if let Some((i, p)) = host.world.players.iter().enumerate().find(|(_, p)| p.tracked.is_some()) {
+                if p.tracked.map(|t| t.direction) != Some(aim.direction) || (p.yaw - 1.0).abs() > 1e-5 { return Err(format!("player {i}: yaw {} tracked {:?}", p.yaw, p.tracked)); }
+                return Ok(format!("host sees player {} with yaw {} and gun {:?}", i + 1, p.yaw, p.tracked.unwrap().direction));
+            }
+            std::thread::sleep(std::time::Duration::from_secs_f32(1.0 / TICK_HZ as f32));
+        }
+        Err("the host never saw the client's gun".into())
+    });
+    let t = std::time::Instant::now();
+    let mut client = play::Gg::new(World::new(1, &[false, true]), session::Session::Local, vec![0]);
+    client.lan_hosts = Some(::net::lan::Listener::start(&String::from_utf8_lossy(net::ALPN))?);
+    client.xr_stereo = true;
+    while !client.session().is_client() {
+        if t.elapsed().as_secs() > 20 { return Err(format!("lantest failed: no join ({:?})", client.ui.notice)); }
+        client.command("lan join")?;
+        client.tick(&[Controls::default()]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    println!("found and joined in {:.0} ms as player {}", t.elapsed().as_secs_f64() * 1000.0, client.slots[0] + 1);
+    client.xr_head = Some([1.0, 0.2]);
+    client.xr_aim = Some(aim);
+    while !host.is_finished() {
+        client.tick(&[Controls::default()]);
+        std::thread::sleep(std::time::Duration::from_secs_f32(1.0 / TICK_HZ as f32));
+    }
+    println!("{}", host.join().map_err(|_| "host panicked")??);
+    println!("lantest ok");
+    Ok(())
+}
+
 fn nettest(args: &Args) -> Result<(), String> {
     use app::{Buttons, Controls, Game};
     let seconds = args.num("--seconds", 4.0f32);

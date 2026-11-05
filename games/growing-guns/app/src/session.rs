@@ -117,6 +117,8 @@ fn merge(into: &mut Input, i: &Input) {
     into.dash |= i.dash;
     into.reload |= i.reload;
     into.pick = i.pick.or(into.pick);
+    into.head = i.head.or(into.head);
+    into.tracked = i.tracked.or(into.tracked);
 }
 
 impl Session {

@@ -6,6 +6,7 @@ license.workspace = true
 description = "Online play over iroh: a host and clients exchanging typed messages, behind channels the game loop polls"
 
 [dependencies]
+socket2 = { version = "0.6", features = ["all"] }
 iroh = "1.4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
 postcard = { version = "1", features = ["alloc"] }

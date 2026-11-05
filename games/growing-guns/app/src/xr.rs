@@ -21,6 +21,7 @@ impl NativeGame {
         let mut game=crate::play::Gg::new(World::new(3,&[false,true,true,true]),crate::session::Session::Local,vec![0]);
         if game.scripts.is_none() {return Err("Growing Guns card scripts did not load".into());}
         game.xr_stereo=true;game.no_kbm=true;game.ui.tilt=false;
+        game.lan_hosts=net::lan::Listener::start(&String::from_utf8_lossy(crate::net::ALPN)).map_err(|e|eprintln!("LAN listener: {e}")).ok();
         game.world.release_cage();
         // VR supplies an unjittered projection. Camera shake/zoom never changes it.
         game.light_mut().taa=0.0;
@@ -100,11 +101,14 @@ impl warp_xr::Game for NativeGame {
         self.pending|=t.controls.pressed.0;
         if t.focused {self.accumulator=(self.accumulator+dt).min(DT*4.0);}else{self.accumulator=0.0;self.pending=0;}
         while self.accumulator>=DT {
-            let p=&mut self.game.world.players[0];
+            // A client plays another slot than the host's first.
+            let slot=self.game.slots[0];
+            let p=&mut self.game.world.players[slot];
             p.yaw=(-forward.x).atan2(-forward.z);p.pitch=forward.y.clamp(-1.0,1.0).asin();
-            let hand=self.hand(t,self.game.world.players[0].eye());
+            self.game.xr_head=Some([p.yaw,p.pitch]);
+            let hand=self.hand(t,self.game.world.players[slot].eye());
             self.game.xr_gun=hand;
-            self.game.xr_aim=hand.map(|pose|TrackedAim {offset:(self.game.vis.tracked_muzzle(0,pose)-self.game.world.players[0].pos).clamp_length_max(2.45),direction:pose.transform_vector3(Vec3::NEG_Z)});
+            self.game.xr_aim=hand.map(|pose|TrackedAim {offset:(self.game.vis.tracked_muzzle(slot,pose)-self.game.world.players[slot].pos).clamp_length_max(2.45),direction:pose.transform_vector3(Vec3::NEG_Z)});
             let mut controls=t.controls;controls.pressed.0=std::mem::take(&mut self.pending);
             if hand.is_none() {controls.held.0 &= !(app::Buttons::RIGHT_TRIGGER|app::Buttons::LEFT_TRIGGER|app::Buttons::EAST);}
             self.game.tick(&[controls]);

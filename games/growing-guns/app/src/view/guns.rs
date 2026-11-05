@@ -80,6 +80,7 @@ impl Guns {
     pub fn track(&mut self, player: usize, pose: Option<Affine3A>) {
         if let Some(p) = self.tracked.get_mut(player) { *p = pose; self.tracking[player] = true; }
     }
+    pub fn is_tracked(&self, player: usize) -> bool { self.tracked.get(player).is_some_and(Option::is_some) }
     pub fn tracked_muzzle(&self, player: usize, pose: Affine3A) -> Vec3 {
         pose.transform_point3(self.rigs[player].build.muzzle)
     }

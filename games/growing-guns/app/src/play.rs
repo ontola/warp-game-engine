@@ -35,6 +35,7 @@ fn input(c: &Controls) -> Input {
         fire: c.held.has(Buttons::RIGHT_TRIGGER),
         special: c.held.has(Buttons::LEFT_TRIGGER | Buttons::EAST),
         pick: None,
+        ..Default::default()
     }
 }
 
@@ -50,6 +51,11 @@ pub struct Gg {
     stepped: bool,
     pub(crate) xr_gun: Option<glam::Affine3A>,
     pub(crate) xr_aim: Option<growing_guns::TrackedAim>,
+    /// The headset's yaw and pitch this tick.
+    pub(crate) xr_head: Option<[f32; 2]>,
+    /// Hosts heard on the LAN, and this game's own announcement.
+    pub(crate) lan_hosts: Option<net::lan::Listener>,
+    lan_beacon: Option<net::lan::Announcer>,
     pub(crate) xr_stereo: bool,
     pub vis: view::Visuals,
     light: Lighting,
@@ -142,7 +148,7 @@ impl Gg {
         Gg { recorder: Default::default(), replay: None, replay_size: [1600, 900], replay_alpha: 1.0, prev: view::Pose::all(&world), stepped: true, xr_gun: None, xr_aim: None, xr_stereo: false, vis, light: view::lighting(),
             hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, environment_dirty: false, split_hint_left: 0.0, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), aim_synced: Vec::new(), live: None,
             sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, before_blackout: None, light_overrides: Vec::new(), scatter: Default::default(),
-            split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), probe_tries: Vec::new(), lan: false, debug: Default::default() }
+            split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), probe_tries: Vec::new(), lan: false, lan_hosts: None, lan_beacon: None, xr_head: None, debug: Default::default() }
             .with_split()
     }
 
@@ -755,6 +761,32 @@ impl Gg {
                 self.hud.round_age = 0.0;
                 self.ui.open(Screen::Play);
             }
+            Action::HostLan if matches!(self.session, Session::Local) => match Session::host(true) {
+                Ok(s) => {
+                    let name = if self.ui.player_name.is_empty() { "Player" } else { self.ui.player_name.as_str() };
+                    let game = String::from_utf8_lossy(crate::net::ALPN);
+                    match s.ticket().map(|t| net::lan::Announcer::start(&game, name, t)) {
+                        Some(Ok(beacon)) => self.lan_beacon = Some(beacon),
+                        Some(Err(e)) => eprintln!("LAN beacon: {e}"),
+                        None => {}
+                    }
+                    self.session = s;
+                    self.lan = true;
+                    self.ui.notice = Some("Hosting on this network: the other player picks JOIN LAN GAME".into());
+                }
+                Err(e) => { self.ui.notice = Some(format!("could not host: {e}")); }
+            },
+            Action::JoinLan if self.joining.is_none() && matches!(self.session, Session::Local) => {
+                let found = self.lan_hosts.as_ref().and_then(|l| l.hosts().pop());
+                let Some(host) = found else { self.ui.notice = Some("No game found yet: is the host on the same Wi-Fi?".into()); return };
+                let players = self.slots.len().max(1) as u8;
+                self.lan = true;
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || { let _ = tx.send(Session::join(&host.ticket, players, true)); });
+                self.joining = Some(rx);
+                self.ui.joining = true;
+                self.ui.notice = Some("Joining...".into());
+            }
             Action::Host if matches!(self.session, Session::Local) => match Session::host(false) {
                 // The field shows the match ID; COPY puts it on the clipboard.
                 Ok(s) => {
@@ -1067,6 +1099,8 @@ impl app::Game for Gg {
             let focus = (age >= 0.75).then(|| self.menus[k].focus);
             if let Some(f) = self.hud.fb.get_mut(s) { hud::cards::ease_highlight(f, n, focus, DT); }
         }
+        // A headset's view and gun travel with its input.
+        if self.xr_stereo && let Some(i) = local.first_mut() { i.head = self.xr_head; i.tracked = self.xr_aim; }
         if self.session.is_client() {
             self.session.send(&mut self.world, &self.slots, local);
             self.stepped = true;
@@ -1132,6 +1166,11 @@ impl app::Game for Gg {
         self.replay_alpha = alpha;
         self.split_hint_left = (self.split_hint_left - frame.dt).max(0.0);
         self.hud.xr = self.xr_stereo;
+        // Other headset players' guns point where their hands do.
+        for (i, p) in self.world.players.iter().enumerate() {
+            if self.slots.contains(&i) || (p.tracked.is_none() && !self.vis.gun_tracked(i)) { continue; }
+            self.vis.track_gun(i, p.tracked.map(|a| glam::Affine3A::from_rotation_translation(glam::Quat::from_rotation_arc(Vec3::NEG_Z, a.direction), p.pos + a.offset)));
+        }
         if self.xr_stereo {
             self.vis.hide_own_bodies(&[self.slots[0], self.slots[0]]);
             self.vis.track_gun(self.slots[0], self.xr_gun);
@@ -1346,7 +1385,7 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | debug [on|off] | debug tab cards|items|sky|modes | debug player P | debug focus search|N | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | remove P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | knobs | knob NAME VALUE | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | graphics auto|full|low|minimum | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | debug [on|off] | debug tab cards|items|sky|modes | debug player P | debug focus search|N | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | remove P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | knobs | knob NAME VALUE | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | lan host|join | graphics auto|full|low|minimum | cage | rematch | extend".into()),
             // The keyboard focus on a text field of the open menu.
             "focus" => {
                 use hud::menus::Field;
@@ -1436,6 +1475,10 @@ impl app::Game for Gg {
                 Ok(format!("{} = {} in mods/{rel}", name.trim(), value.trim()))
             }
             "round" => { self.world.next_round(); self.new_arena(); Ok(format!("round {}", self.world.round)) }
+            "lan" => {
+                match w.get(1).copied() { Some("host") => self.act(hud::menus::Action::HostLan), Some("join") => self.act(hud::menus::Action::JoinLan), _ => return Err("lan host|join".into()) }
+                Ok(self.ui.notice.clone().unwrap_or_default())
+            }
             "graphics" => {
                 let choice = w.get(1).copied().unwrap_or("auto");
                 let want = if choice == "auto" { crate::graphics::auto() } else { crate::graphics::Graphics::parse(choice)? };
@@ -1667,6 +1710,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     game.lan = lan;
     // Settings persist like Godot's user://settings.cfg.
     game.settings_file = settings_path();
+    game.lan_hosts = net::lan::Listener::start(&String::from_utf8_lossy(crate::net::ALPN)).map_err(|e| eprintln!("LAN listener: {e}")).ok();
     if let Some(v) = game.settings_file.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) { game.ui.load_settings(&v); }
     // Godot names a new player Player_NNN.
     if game.ui.player_name.is_empty() { game.ui.player_name = format!("Player_{}", seed % 1000); }

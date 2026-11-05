@@ -106,9 +106,8 @@ pub const FELL_OFF_Y: f32 = -30.0;
 pub const HITBOXES: [(f32, f32, bool); 3] = [(-0.20, 0.31, false), (0.16, 0.37, false), (0.64, 0.27, true)];
 
 /// A tracked weapon pose for one tick, in metres relative to the player's
-/// capsule centre. Kept outside Input/Snapshot so desktop replay and network
-/// wire formats stay unchanged. Desktop callers continue to use `step`.
-#[derive(Clone, Copy, Debug)]
+/// capsule centre: a headset's hand, in `Input` so it crosses the network.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TrackedAim { pub offset: Vec3, pub direction: Vec3 }
 
 /// One tick of input for one player. `jump` and `reload` are edges
@@ -130,6 +129,12 @@ pub struct Input {
     /// Card choice (0..offer length) while this player has an offer.
     #[serde(default)]
     pub pick: Option<u8>,
+    /// A headset's yaw and pitch, absolute: they replace `look`.
+    #[serde(default)]
+    pub head: Option<[f32; 2]>,
+    /// A headset's gun.
+    #[serde(default)]
+    pub tracked: Option<TrackedAim>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -203,6 +208,9 @@ pub struct Player {
     /// Coop: down, waiting for a teammate.
     #[serde(default)]
     pub downed: bool,
+    /// This tick's tracked gun, so others see where a headset player aims.
+    #[serde(default)]
+    pub tracked: Option<TrackedAim>,
     /// Upward speed recoil has given since leaving the floor (capped by
     /// `RECOIL_LIFT`, so shooting down cannot keep a player airborne).
     #[serde(default)]
@@ -219,8 +227,12 @@ impl Player {
             cards: Vec::new(), weapon: Weapon::default(), offer: None, offer_age: 0.0,
             iframes: 0.0, slow_mult: 1.0, slow_timer: 0.0, poison_left: 0.0, poison_dps: 0.0, poison_accum: 0.0, poison_from: None,
             phoenix_charges: 0, phoenix: None, launching: None, frozen: false, lava_accum: 0.0,
-            special_cd: 0.0, air_strike_charges: 0, zooming: false, held_fire: false, held_special: false, downed: false, recoil_lift: 0.0,
+            special_cd: 0.0, air_strike_charges: 0, zooming: false, held_fire: false, held_special: false, downed: false, tracked: None, recoil_lift: 0.0,
         }
+    }
+    /// A headset's view, ignoring anything that is not a number.
+    pub(crate) fn apply_head(&mut self, [yaw, pitch]: [f32; 2]) {
+        if yaw.is_finite() && pitch.is_finite() { self.yaw = yaw; self.pitch = pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT); }
     }
     /// Camera height scales with the body cards.
     pub fn eye_height(&self) -> f32 { EYE * self.weapon.body_scale.max(0.1) * self.weapon.body_scale_axes.y.max(0.1) }
@@ -538,10 +550,14 @@ impl World {
     /// aiming; the caller must release fire on tracking loss.
     pub fn step_tracked(&mut self, inputs: &[Input], aims: &[Option<TrackedAim>]) {
         self.tracked_aims.clear();
-        self.tracked_aims.extend(aims.iter().take(self.players.len()).map(|a| a.filter(|a|
+        // An aim handed in here, else one that came with the player's input.
+        let chosen: Vec<Option<TrackedAim>> = (0..self.players.len()).map(|i| aims.get(i).copied().flatten().or(inputs.get(i).and_then(|input| input.tracked))).collect();
+        self.tracked_aims.extend(chosen.iter().map(|a| a.filter(|a|
             a.offset.is_finite() && a.offset.length() <= 2.5 &&
             a.direction.is_finite() && a.direction.length_squared().is_finite() && a.direction.length_squared() > 0.5
         ).map(|a| TrackedAim { offset: a.offset, direction: a.direction.normalize() })));
+        for (p, a) in self.players.iter_mut().zip(&self.tracked_aims) { p.tracked = *a; }
+        for (p, head) in self.players.iter_mut().zip(inputs.iter().map(|i| i.head)) { if let Some(h) = head { p.apply_head(h); } }
 
         self.events.clear();
         self.breakage = Breakage::default();
