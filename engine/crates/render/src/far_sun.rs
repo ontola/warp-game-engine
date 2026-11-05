@@ -134,15 +134,19 @@ impl Resources {
     pub fn update(&self,gpu:&Gpu,first:usize,input:&[GpuInstance]) {
         if !self.enabled{return;}
         let mut s=self.state.lock().unwrap();
+        let (mut from,mut to)=(usize::MAX,0);
         for (n,&i) in input.iter().enumerate(){let index=first+n;
             if !s.owners[index]{continue;}
             let keep=if self.anchored {eligible_anchored(&i)} else {eligible(&i,self.stage)};
             let next=if keep{i}else{hidden(i)};
             if bytemuck::bytes_of(&next)!=bytemuck::bytes_of(&s.sources[index]){
                 s.sources[index]=next;s.dirty=true;
-                gpu.queue.write_buffer(&self.instances,(index*std::mem::size_of::<GpuInstance>())as u64,bytemuck::bytes_of(&next));
+                from=from.min(index);to=index+1;
             }
         }
+        // One write for the changed range: a write per instance took tens of
+        // milliseconds per frame while terrain patches streamed.
+        if from<to {gpu.queue.write_buffer(&self.instances,(from*std::mem::size_of::<GpuInstance>())as u64,bytemuck::cast_slice(&s.sources[from..to]));}
     }
     /// Returns whether the persistent map needs one shared redraw. The caller
     /// must encode that redraw before any view samples the new uniform.

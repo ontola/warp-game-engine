@@ -123,9 +123,11 @@ def run_view(exe, suite, view, out, stem, extra, env):
             passes.setdefault(name, []).append(ms)
     covered = [s["covered_ms"] for s in samples]
     stats = json.loads(Path(f"{base}.stats.json").read_text())
+    cpu = json.loads(Path(f"{base}.times.json.cpu.json").read_text())[-measured:]
     return {"seconds": time.time() - started, "samples": len(samples), "gpu_ms": statistics.median(covered), "gpu_p95_ms": percentile(covered, 0.95), "gpu_max_ms": max(covered),
             "wall_ms": statistics.median(walls), "wall_p99_ms": percentile(walls, 0.99), "wall_max_ms": max(walls),
             "hitches": sum(w > 3 * statistics.median(walls) for w in walls),
+            "terrain_cpu_ms": statistics.median(c["terrain_ms"] for c in cpu), "render_cpu_ms": statistics.median(c["draw"]["render_ms"] for c in cpu),
             "passes": {name: statistics.median(ms) * len(ms) / len(samples) for name, ms in passes.items()},
             "stats": stats, "vram_peak_mib": memory.vram_mib, "ram_peak_mib": memory.ram_mib}
 
@@ -155,6 +157,7 @@ def summarize(repeats):
     last = repeats[-1]
     return {"gpu_ms": spread([r["gpu_ms"] for r in repeats]), "gpu_p95_ms": spread([r["gpu_p95_ms"] for r in repeats]), "wall_ms": spread([r["wall_ms"] for r in repeats]),
             "wall_p99_ms": spread([r["wall_p99_ms"] for r in repeats]), "wall_max_ms": spread([r["wall_max_ms"] for r in repeats]), "hitches": max(r["hitches"] for r in repeats),
+            "terrain_cpu_ms": spread([r["terrain_cpu_ms"] for r in repeats]), "render_cpu_ms": spread([r["render_cpu_ms"] for r in repeats]),
             "passes": {n: spread([r["passes"].get(n, 0.0) for r in repeats]) for n in names},
             "counters": {k: spread([counters(r["stats"])[k] for r in repeats]) for k in counters(last["stats"])},
             "vram_peak_mib": spread([r["vram_peak_mib"] for r in repeats]), "ram_peak_mib": spread([r["ram_peak_mib"] for r in repeats]),
@@ -239,6 +242,9 @@ def diff(args):
         t0, t1 = (v["counters"]["camera triangles"]["median"] for v in (bv, cv))
         mark = "*" if changed(g0, g1) else " "
         lines.append(f"{name:>8} {g0['median']:7.2f}>{g1['median']:7.2f}{mark} {bv['wall_ms']['median']:7.2f}>{cv['wall_ms']['median']:7.2f}  {t0:>8.0f}>{t1:>8.0f} {image['over16_pct']:9.3f} {image['max']:4d} {image['ssim']:7.4f}" + ("  IMAGE CHANGED" if name in failed else ""))
+        for label in ("terrain_cpu_ms", "render_cpu_ms"):
+            if changed(bv.get(label), cv.get(label)):
+                lines.append(f"{'':>10}{cv[label]['median'] - bv[label]['median']:+7.2f} ms  {label}")
         passes = sorted(((cv["passes"].get(n) or {"median": 0, "spread": 0})["median"] - (bv["passes"].get(n) or {"median": 0, "spread": 0})["median"], n)
                         for n in set(bv["passes"]) | set(cv["passes"]) if changed(bv["passes"].get(n) or {"median": 0, "spread": 0}, cv["passes"].get(n) or {"median": 0, "spread": 0}))
         passes.sort(key=lambda p: -abs(p[0]))

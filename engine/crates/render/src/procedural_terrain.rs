@@ -16,7 +16,8 @@ use crate::scene::{GeometryCategory, GpuInstance, Material, Scene, INSTANCE_CATE
 use crate::{forest_field, terrain_field, vegetation_style, world_constraints, Camera, Gpu, Renderer};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
-use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
+use std::sync::Arc;
 use std::sync::Mutex;
 
 /// Cells per patch side. 8x8 cells = 128 triangles = one cluster.
@@ -407,6 +408,19 @@ pub struct Stats {
     pub lod_scale: f32,
 }
 
+/// Quadtree keys are a few small integers, looked up millions of times per
+/// second while the camera moves: the default SipHash was most of that cost.
+#[derive(Default)]
+struct NodeHash(u64);
+impl Hasher for NodeHash {
+    fn write(&mut self, bytes: &[u8]) { for &b in bytes { self.write_u32(u32::from(b)); } }
+    fn write_u32(&mut self, n: u32) { self.0 = (self.0.rotate_left(5) ^ u64::from(n)).wrapping_mul(0xf135_7aea_2e62_a9c5); }
+    fn write_i32(&mut self, n: i32) { self.write_u32(n as u32); }
+    fn finish(&self) -> u64 { self.0.rotate_left(26) }
+}
+type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<NodeHash>>;
+type HashSet<K> = std::collections::HashSet<K, BuildHasherDefault<NodeHash>>;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 struct Node { level: u32, ix: i32, iz: i32 }
 
@@ -433,7 +447,12 @@ pub struct ProceduralTerrain {
     /// Patches built but not shown yet: slot and the instance that shows it.
     hidden: HashMap<(Node, u32), (u32, GpuInstance)>,
     /// The last selection, its views, patch count and finest level.
-    selection: Option<(Vec<TerrainView>, HashSet<(Node, u32)>, usize, u32)>,
+    selection: Option<(Vec<TerrainView>, Arc<HashSet<(Node, u32)>>, usize, u32)>,
+    /// The selection whose patches are all built and shown: while it stands,
+    /// a frame has nothing to plan.
+    settled: Option<Arc<HashSet<(Node, u32)>>>,
+    /// What each slot's instance holds on the GPU.
+    instances: Vec<GpuInstance>,
 }
 
 /// One frame of terrain changes: instance writes and patch builds.
@@ -452,8 +471,9 @@ const BUDGET: f32 = 0.9;
 
 impl ProceduralTerrain {
     pub fn new(spec: TerrainSpec, settings: Settings) -> Self {
-        ProceduralTerrain { free: (0..spec.capacity).rev().collect(), spec, settings, slots: HashMap::new(), lod: 1.0, samples: Default::default(),
-            hidden: HashMap::new(), selection: None }
+        let instances = (0..spec.capacity).map(|slot| hidden_instance(&spec, slot)).collect();
+        ProceduralTerrain { free: (0..spec.capacity).rev().collect(), instances, spec, settings, slots: HashMap::default(), lod: 1.0, samples: Default::default(),
+            hidden: HashMap::default(), selection: None, settled: None }
     }
 
     fn cell(&self, level: u32) -> f32 { self.settings.finest * (1u32 << level) as f32 }
@@ -504,7 +524,7 @@ impl ProceduralTerrain {
         let root = self.settings.root_level;
         let rs = self.size(root);
         let vd = self.settings.view_distance;
-        let mut roots = HashSet::new();
+        let mut roots = HashSet::default();
         for v in views {
             let (a, b) = (((v.pos.x - vd) / rs).floor() as i32, ((v.pos.x + vd) / rs).floor() as i32);
             let (c, d) = (((v.pos.z - vd) / rs).floor() as i32, ((v.pos.z + vd) / rs).floor() as i32);
@@ -516,7 +536,7 @@ impl ProceduralTerrain {
                 }
             }
         }
-        let mut leaves = HashSet::new();
+        let mut leaves = HashSet::default();
         let mut stack: Vec<Node> = roots.into_iter().collect();
         while let Some(n) = stack.pop() {
             if self.wants_split(n, views) { stack.extend(n.children()); } else { leaves.insert(n); }
@@ -543,7 +563,7 @@ impl ProceduralTerrain {
 
     /// The wanted patches (with their stitch masks) for these views; the
     /// last selection while the views stay within the reselect thresholds.
-    fn wanted(&mut self, views: &[TerrainView]) -> (HashSet<(Node, u32)>, usize, u32) {
+    fn wanted(&mut self, views: &[TerrainView]) -> (Arc<HashSet<(Node, u32)>>, usize, u32) {
         let cos_turn = self.settings.reselect_deg.to_radians().cos();
         if let Some((last, keys, patches, finest)) = &self.selection {
             let same = last.len() == views.len() && last.iter().zip(views).all(|(a, b)| a.pos.distance(b.pos) <= self.settings.reselect_m
@@ -552,7 +572,7 @@ impl ProceduralTerrain {
         }
         let leaves = self.select_within_budget(views);
         let topology = TerrainTopology::new(&leaves, self.settings.root_level);
-        let keys: HashSet<(Node, u32)> = leaves.iter().map(|&n| (n, mask(&topology, n, self.settings.root_level))).collect();
+        let keys: Arc<HashSet<(Node, u32)>> = Arc::new(leaves.iter().map(|&n| (n, mask(&topology, n, self.settings.root_level))).collect());
         let finest = leaves.iter().map(|n| n.level).min().unwrap_or(u32::MAX);
         self.selection = Some((views.to_vec(), keys.clone(), leaves.len(), finest));
         (keys, leaves.len(), finest)
@@ -582,6 +602,7 @@ impl ProceduralTerrain {
     pub fn plan(&mut self, views: &[TerrainView]) -> Plan {
         let (wanted, patches, finest_level) = self.wanted(views);
         let mut stats = Stats { patches, finest_level, lod_scale: self.lod, ..Default::default() };
+        if self.settled.as_ref().is_some_and(|s| Arc::ptr_eq(s, &wanted)) { return Plan { stats, changed: Vec::new(), jobs: Vec::new() }; }
         let mut changed: Vec<(u32, GpuInstance)> = Vec::new();
         let mut jobs = Vec::new();
         // Hidden patches no longer wanted go back to the pool (still hidden).
@@ -626,6 +647,7 @@ impl ProceduralTerrain {
             stats.built += 1;
         }
         changed.sort_by_key(|c| c.0);
+        if stats.overflow == 0 { self.settled = Some(wanted); }
         Plan { stats, changed, jobs }
     }
 
@@ -633,14 +655,11 @@ impl ProceduralTerrain {
     /// the ones no longer needed. Call once per frame before rendering.
     pub fn update(&mut self, gpu: &Gpu, renderer: &Renderer, views: &[TerrainView]) -> Result<Stats, String> {
         let Plan { stats, changed, jobs } = self.plan(views);
-        // Coalesce neighbouring slots into one upload each.
-        let mut i = 0;
-        while i < changed.len() {
-            let mut j = i + 1;
-            while j < changed.len() && changed[j].0 == changed[j - 1].0 + 1 { j += 1; }
-            let run: Vec<GpuInstance> = changed[i..j].iter().map(|c| c.1).collect();
-            renderer.write_procedural_instances(gpu, (self.spec.first_instance + changed[i].0) as usize, &run)?;
-            i = j;
+        // One upload from the first changed slot to the last: freed slots are
+        // scattered, and every separate write costs more than the bytes between.
+        if let (Some(&(first, _)), Some(&(last, _))) = (changed.first(), changed.last()) {
+            for &(slot, instance) in &changed { self.instances[slot as usize] = instance; }
+            renderer.write_procedural_instances(gpu, (self.spec.first_instance + first) as usize, &self.instances[first as usize..=last as usize])?;
         }
         if !jobs.is_empty() { renderer.queue_procedural_terrain(jobs)?; }
         Ok(stats)
@@ -679,7 +698,7 @@ impl TerrainTopology {
         Self::with_index(leaves, root, std::env::var("WARP_TERRAIN_TOPOLOGY_INDEX").is_ok_and(|v| v == "1"))
     }
     fn with_index(leaves: &HashSet<Node>, root: u32, indexed: bool) -> Self {
-        let mut nodes = HashMap::with_capacity(leaves.len() * 2);
+        let mut nodes = HashMap::with_capacity_and_hasher(leaves.len() * 2, Default::default());
         for &leaf in leaves {
             nodes.insert(leaf, true);
             let mut n = leaf;
@@ -822,7 +841,7 @@ impl TerrainRenderer {
     pub fn queue(&self, jobs: Vec<Job>) {
         let mut pending = self.pending.lock().unwrap();
         // A slot rebuilt twice before a frame keeps only its last job.
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         for j in jobs.iter() { seen.insert(j.slot); }
         pending.retain(|j| !seen.contains(&j.slot));
         pending.extend(jobs);
@@ -903,7 +922,7 @@ mod tests {
         }
         let mut hist = std::collections::BTreeMap::new();
         for n in &leaves { *hist.entry(n.level).or_insert(0) += 1; }
-        let mut raw = HashSet::new();
+        let mut raw = HashSet::default();
         let mut stack: Vec<Node> = Vec::new();
         let rs = t.size(t.settings.root_level);
         for ix in -3..=3 { for iz in -3..=3 { stack.push(Node { level: t.settings.root_level, ix, iz }); } }
@@ -943,7 +962,7 @@ mod tests {
                 let plan = t.plan(&[view]);
                 assert!(plan.jobs.len() <= budget, "{} builds in one frame", plan.jobs.len());
                 let now: HashSet<(Node, u32)> = t.slots.keys().copied().collect();
-                let wanted = t.selection.as_ref().unwrap().1.clone();
+                let wanted = (*t.selection.as_ref().unwrap().1).clone();
                 // The shown set is the previous selection or the new one,
                 // never a mix with holes or overlaps.
                 assert!(now == shown || now == wanted, "partial swap at step {step}");
@@ -951,7 +970,7 @@ mod tests {
                 if plan.stats.pending == 0 && shown == wanted { break; }
                 deferred += 1;
             }
-            assert_eq!(shown, t.selection.as_ref().unwrap().1, "step {step} never completed");
+            assert_eq!(shown, *t.selection.as_ref().unwrap().1, "step {step} never completed");
         }
         assert!(deferred > 0, "no turn needed more than one frame's budget");
     }
@@ -961,12 +980,12 @@ mod tests {
         let worst = |settings: Settings| {
             let mut t = ProceduralTerrain::new(TerrainSpec { first_instance: 0, first_cluster: 0, first_vertex: 0, capacity: 1 << 16, seed: 1,
                 style: terrain_field::Style::default(), constraints: None }, settings);
-            let mut prev = HashSet::new();
+            let mut prev = HashSet::default();
             let mut worst = 0;
             for step in 0..=24 {
                 let view = turn_view(&t, step as f32 * 30.0);
                 t.wanted(&[view]);
-                let keys = t.selection.as_ref().unwrap().1.clone();
+                let keys = (*t.selection.as_ref().unwrap().1).clone();
                 if step > 12 { worst = worst.max(keys.difference(&prev).count()); }
                 prev = keys;
             }
