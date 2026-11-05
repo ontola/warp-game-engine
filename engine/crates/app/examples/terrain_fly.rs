@@ -757,9 +757,29 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
     let (trees, shrubs): (Vec<_>, Vec<_>) = placement::thinned(lands.rules(), "zone:town").into_iter().partition(|r| placement::base_rule(r.id) == placement::TREE);
     // Trees out to the painted forest, handed over to it tree by tree;
     // shrubs only near, where a knee-high bush is more than a pixel.
-    let woody=if world.trees {placement::place(&trees, &land, c, world.tree_radius).into_iter()
-        .filter(|t| render::forest_field::handover_keep(t.pos, c, start, end))
-        .chain(placement::place(&shrubs, &land, c, world.tree_radius.min(SHRUB_RADIUS)))
+    // --overrides FILE (render::overrides): removed, moved and added objects
+    // by id. Pinned trees stand whatever the handover to the far forest says.
+    // --write-overrides FILE: an example edit around the start, written out
+    // and used: the 30 trees nearest the camera go, the next one moves 6 m
+    // and a row of five trees is added 20 m north.
+    if let (None,Some(path))=(OVERRIDES.get(),std::env::args().skip_while(|a|a!="--write-overrides").nth(1)) {
+        let mut near=placement::place(&trees,&land,c,120.0);
+        near.sort_by(|a,b|a.pos.distance_squared(centre).total_cmp(&b.pos.distance_squared(centre)));
+        let mut edits=render::overrides::Overrides::default();
+        for t in near.iter().take(30) {edits.remove(t.id);}
+        if let Some(t)=near.get(30) {let mut p=render::overrides::Pinned::of(t,&land);p.x+=6.;edits.replace(t.id,p);}
+        if let Some(t)=near.first() {
+            for k in 0..5 {let mut p=render::overrides::Pinned::of(t,&land);p.x=c.x-10.+5.*k as f32;p.z=c.y-20.;p.lift=0.;edits.add(p);}
+        }
+        if let Err(e)=std::fs::write(&path,edits.to_text()) {eprintln!("--write-overrides {path}: {e}");}
+        else {eprintln!("overrides: wrote {} edits to {path}",edits.edits.len());}
+        let _=OVERRIDES.set(edits);
+    }
+    let edits=OVERRIDES.get().filter(|o|!o.is_empty());
+    let edited=|placed:Vec<placement::Instance>,rules:&[placement::Rule],radius:f32|match edits {Some(o)=>o.apply(placed,rules,&land,c,radius),None=>placed};
+    let woody=if world.trees {edited(placement::place(&trees, &land, c, world.tree_radius),&trees,world.tree_radius).into_iter()
+        .filter(|t| edits.is_some_and(|o|o.edits.contains_key(&t.id)) || render::forest_field::handover_keep(t.pos, c, start, end))
+        .chain(edited(placement::place(&shrubs, &land, c, world.tree_radius.min(SHRUB_RADIUS)),&shrubs,world.tree_radius.min(SHRUB_RADIUS)))
         .map(|t|WorldRoot {id:t.id,placement:RootPlacement {up:Vec3::Y,pos:t.pos,yaw:t.yaw,scale:t.scale.y,variant:t.variant as usize}}).collect()} else {Vec::new()};
     if !world.grass {return woody;}
     let offset=if world.trees {lands.species().len()} else {0};
@@ -769,6 +789,9 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
     eprintln!("grass world cells: count={} generation_cpu_ms={:.2} radius_m={GRASS_RADIUS}",cells.len(),started.elapsed().as_secs_f64()*1000.);
     roots.extend(cells);roots
 }
+
+/// Artist edits from --overrides FILE, read once at start.
+static OVERRIDES: std::sync::OnceLock<render::overrides::Overrides> = std::sync::OnceLock::new();
 
 /// Shrubs are placed this far around the camera (metres).
 const SHRUB_RADIUS: f32 = 400.0;
@@ -807,6 +830,12 @@ fn main() -> Result<(), String> {
     // culling stage, but never select a different CPU population backend.
     for name in ["KERN_TREE_OCCLUSION", "KERN_CLUSTER_TRAVERSAL"] {
         if std::env::var_os(name).is_none() {unsafe {std::env::set_var(name,"1");}}
+    }
+    if let Some(path) = std::env::args().skip_while(|a| a != "--overrides").nth(1) {
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("--overrides {path}: {e}"))?;
+        let edits = render::overrides::Overrides::parse(&text)?;
+        eprintln!("overrides: {} edits from {path}", edits.edits.len());
+        let _ = OVERRIDES.set(edits);
     }
     // A/B: only the land hides forest, as if no other geometry were there.
     if std::env::args().any(|a| a == "--no-building-occlusion") { unsafe { std::env::set_var("KERN_FOLIAGE_OCCLUDERS", "terrain"); } }
