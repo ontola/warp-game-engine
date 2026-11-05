@@ -588,6 +588,31 @@ mod tests {
   selector.publish_asset_pages(&gpu,&[(3,true,2)]).unwrap();assert_eq!(draw(16),[2,3,5,6]);
  }
  #[test]
+ #[ignore="exclusive GPU branching splat-cost barrier fixture"]
+ fn gpu_branching_refinement_crosses_temporary_splat_cost_barrier() {
+  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].scale[2]=1.;trees[0].scale[3]=1.;
+  let n=|first,end,rep,flags,cost,error|Node {sphere:[0.,0.,0.5,0.2],error:[error,0.,cost,cost],links:[first,end,rep,flags]};
+  // Complete source cut costs four slots and zero camera splats. Reaching it
+  // through the immediate voxel cut would temporarily cost 200 splats.
+  let nodes=[n(1,7,0,2,1.,1.),n(2,4,1,0,100.,1.),n(NONE,3,2,4,0.,0.),n(NONE,4,3,4,0.,0.),
+   n(5,7,4,0,100.,1.),n(NONE,6,5,4,0.,0.),n(NONE,7,6,4,0.,0.)];
+  let selector=Selector::new(&gpu,&nodes,&trees,8,8).unwrap();let empty=depth(&gpu,0.);
+  let consumers=[ConsumerView::camera(crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]})];
+  let draw=|slots| {
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union_consumers_budget(&gpu,&mut enc,&consumers,0.01,slots,[5;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
+   let count=read(&gpu,&selector.counters)[0]as usize;let state=read(&gpu,&selector.refiner.state);
+   assert_eq!(state[15],0);assert!(state[0]<=slots && state[1]<=5);
+   assert_eq!(read(&gpu,&selector.fallback),[0]);
+   let mut cut=read(&gpu,&selector.records).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();cut
+  };
+  for _ in 0..3 {assert_eq!(draw(4),[2,3,5,6],"affordable complete source cut must bypass temporary splat barrier");}
+  assert!(draw(3).is_empty(),"never publish an incomplete source cut");assert_eq!(read(&gpu,&selector.direct),[1]);
+  selector.publish_asset_pages(&gpu,&[(5,false,2)]).unwrap();assert!(draw(4).is_empty());assert_eq!(read(&gpu,&selector.direct),[1]);
+  selector.publish_asset_pages(&gpu,&[(5,true,3),(1,false,2),(4,false,2)]).unwrap();
+  assert_eq!(draw(4),[2,3,5,6],"unused intermediate voxel pages are not required");
+ }
+ #[test]
  #[ignore="exclusive GPU non-monotonic unary admission fixture"]
  fn gpu_unary_refinement_skips_expensive_intermediate_mips() {
   let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].scale[2]=1.;trees[0].scale[3]=1.;
