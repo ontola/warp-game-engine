@@ -11,6 +11,14 @@ struct WcHeader {
     size: vec2<u32>,
     segments: u32,
     pad0: u32,
+    // The regions (regions.rs): grid node (0, 0), spacing, where their
+    // words start in wc_index, nodes across, styles (0: none).
+    region_origin: vec2<f32>,
+    region_cell: f32,
+    region_at: u32,
+    region_size: vec2<u32>,
+    region_styles: u32,
+    pad1: u32,
 };
 
 struct WcSegment {
@@ -209,8 +217,49 @@ fn wc_apply(x: f32, z: f32, s_in: TerrainSample) -> TerrainSample {
     return s;
 }
 
+fn wc_byte(word: u32, k: u32) -> f32 { return f32((word >> (8u * k)) & 255u) / 255.0; }
+
+// Regions::style_at: the styles mixed by their bilinear shares at (x, z);
+// `st` where the world has no regions.
+fn wc_style(x: f32, z: f32, st: TerrainStyle) -> TerrainStyle {
+    let h = wc_header;
+    if h.region_styles == 0u { return st; }
+    let w = h.region_size.x;
+    let hh = h.region_size.y;
+    let fx = clamp((x - h.region_origin.x) / h.region_cell, 0.0, f32(w - 1u));
+    let fz = clamp((z - h.region_origin.y) / h.region_cell, 0.0, f32(hh - 1u));
+    let i0 = min(u32(floor(fx)), max(w, 2u) - 2u);
+    let j0 = min(u32(floor(fz)), max(hh, 2u) - 2u);
+    let i1 = min(i0 + 1u, w - 1u);
+    let j1 = min(j0 + 1u, hh - 1u);
+    let tx = fx - f32(i0);
+    let tz = fz - f32(j0);
+    let nodes = h.region_at + h.region_styles * 16u;
+    let a = wc_index[nodes + j0 * w + i0];
+    let b = wc_index[nodes + j0 * w + i1];
+    let c = wc_index[nodes + j1 * w + i0];
+    let d = wc_index[nodes + j1 * w + i1];
+    var share: array<f32, 4>;
+    var sum = 0.0;
+    for (var k = 0u; k < 4u; k++) {
+        let top = wc_byte(a, k) * (1.0 - tx) + wc_byte(b, k) * tx;
+        let bottom = wc_byte(c, k) * (1.0 - tx) + wc_byte(d, k) * tx;
+        share[k] = top * (1.0 - tz) + bottom * tz;
+        sum += share[k];
+    }
+    for (var k = 0u; k < 4u; k++) { share[k] /= sum; }
+    var acc: array<f32, 16>;
+    for (var k = 0u; k < h.region_styles; k++) {
+        for (var f = 0u; f < 16u; f++) {
+            acc[f] += bitcast<f32>(wc_index[h.region_at + k * 16u + f]) * share[k];
+        }
+    }
+    return TerrainStyle(acc[0], acc[1], acc[2], acc[3], acc[4], acc[5], acc[6], acc[7],
+        acc[8], acc[9], acc[10], acc[11], acc[12], acc[13], acc[14], acc[15]);
+}
+
 fn terrain_eval_world(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> TerrainSample {
-    let s = terrain_eval(x, z, cut, seed, st);
+    let s = terrain_eval(x, z, cut, seed, wc_style(x, z, st));
     if wc_header.segments == 0u { return s; }
     return wc_apply(x, z, s);
 }

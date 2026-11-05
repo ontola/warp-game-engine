@@ -4,6 +4,8 @@
 //! high the game says, and the terrain bends to it with cuttings and
 //! embankments, rivers stop at it, and no tree grows on it. Pads are round
 //! flat places (a service park, a village square, a landmark's footing).
+//! Regions (`crate::regions`) say which kind of land lies where: the style
+//! the terrain takes at each point, blended between up to four.
 //!
 //! Storage stays tiny: a track is its centre line, a pad four numbers. The
 //! constraints are baked once into a coarse grid of the segments and pads
@@ -15,10 +17,11 @@
 //! ```ignore
 //! let mut track = Track::spline(&control_points, 4.5, true);
 //! track.fit_heights(|x, z| terrain_field::height(x, z, seed, &style), 0.08, 80.0);
-//! let world = Constraints { tracks: vec![track], pads: vec![] }.bake();
+//! let world = Constraints { tracks: vec![track], ..Default::default() }.bake(seed, &style);
 //! let s = world.eval(x, z, cut, seed, &style); // terrain_field::eval with the constraints
 //! ```
 use crate::forest_field;
+use crate::regions::Regions;
 use crate::terrain_field::{self, Sample, Style};
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3};
@@ -191,6 +194,8 @@ pub struct Pad {
 pub struct Constraints {
     pub tracks: Vec<Track>,
     pub pads: Vec<Pad>,
+    /// Which land lies where; None: the one style everywhere.
+    pub regions: Option<Regions>,
 }
 
 /// One straight piece of a road, as the GPU reads it.
@@ -216,6 +221,15 @@ pub struct Header {
     pub size: [u32; 2],
     pub segments: u32,
     pub _pad: u32,
+    /// The regions' grid (crate::regions): node (0, 0), spacing, where
+    /// their words start in the index buffer, nodes across and how many
+    /// styles (0: no regions, the style passed in holds everywhere).
+    pub region_origin: [f32; 2],
+    pub region_cell: f32,
+    pub region_at: u32,
+    pub region_size: [u32; 2],
+    pub region_styles: u32,
+    pub _pad2: u32,
 }
 
 /// The constraints baked for lookup: a grid of cells, each with the list
@@ -227,6 +241,8 @@ pub struct World {
     /// size.x * size.y + 1 offsets into `items`.
     pub cells: Vec<u32>,
     pub items: Vec<u32>,
+    /// Which land lies where (its words follow `items` on the GPU).
+    pub regions: Option<Regions>,
     tracks: usize,
 }
 
@@ -258,10 +274,10 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
 struct Pull { y: f32, band: f32, slope: f32, core: f32, near: Near }
 
 impl Constraints {
-    pub fn is_empty(&self) -> bool { self.tracks.is_empty() && self.pads.is_empty() }
+    pub fn is_empty(&self) -> bool { self.tracks.is_empty() && self.pads.is_empty() && self.regions.is_none() }
 
     /// Bake for lookup. Pads without a height take the land's at their
-    /// centre from `seed` and `style`.
+    /// centre from `seed` and `style` (the regions' style there, if any).
     pub fn bake(&self, seed: u32, style: &Style) -> World {
         let mut segments = Vec::new();
         for (t, track) in self.tracks.iter().enumerate() {
@@ -276,10 +292,21 @@ impl Constraints {
             }
         }
         for pad in &self.pads {
-            let h = pad.height.unwrap_or_else(|| terrain_field::height(pad.centre.x, pad.centre.y, seed, style));
+            let st = self.regions.as_ref().map_or(*style, |r| r.style_at(pad.centre.x, pad.centre.y));
+            let h = pad.height.unwrap_or_else(|| terrain_field::height(pad.centre.x, pad.centre.y, seed, &st));
             segments.push(Segment { a: [pad.centre.x, h, pad.centre.y, 0.0], b: [pad.radius, pad.feather.max(MIN_REACH), 0.0, 0.0], w: [0.0, 0.0, 0.0, 1.0] });
         }
-        World::from_segments(segments, self.tracks.len())
+        let mut world = World::from_segments(segments, self.tracks.len());
+        if let Some(r) = &self.regions {
+            let h = &mut world.header;
+            h.region_origin = r.origin.into();
+            h.region_cell = r.cell;
+            h.region_at = (world.cells.len() + world.items.len()) as u32;
+            h.region_size = r.size;
+            h.region_styles = r.styles.len() as u32;
+            world.regions = Some(r.clone());
+        }
+        world
     }
 }
 
@@ -300,7 +327,7 @@ impl World {
 
     fn from_segments(segments: Vec<Segment>, tracks: usize) -> Self {
         if segments.is_empty() {
-            return World { header: Header { size: [1, 1], cell: CELL, ..Default::default() }, segments, cells: vec![0, 0], items: Vec::new(), tracks };
+            return World { header: Header { size: [1, 1], cell: CELL, ..Default::default() }, segments, cells: vec![0, 0], items: Vec::new(), regions: None, tracks };
         }
         let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
         for s in &segments {
@@ -328,8 +355,8 @@ impl World {
             items.extend_from_slice(l);
         }
         cells.push(items.len() as u32);
-        let header = Header { origin: origin.into(), cell: CELL, arms: MAX_ARMS as u32, size, segments: segments.len() as u32, _pad: 0 };
-        World { header, segments, cells, items, tracks }
+        let header = Header { origin: origin.into(), cell: CELL, arms: MAX_ARMS as u32, size, segments: segments.len() as u32, ..Default::default() };
+        World { header, segments, cells, items, regions: None, tracks }
     }
 
     /// Whether segment `s` can pull any point of the cell at `corner`.
@@ -412,10 +439,16 @@ impl World {
         n
     }
 
-    /// terrain_field::eval with the constraints: the land, bent to every
-    /// road and pad within reach.
+    /// The terrain style at (x, z): the regions' blend there, or `style`
+    /// when the world has no regions.
+    pub fn style_at(&self, x: f32, z: f32, style: &Style) -> Style {
+        self.regions.as_ref().map_or(*style, |r| r.style_at(x, z))
+    }
+
+    /// terrain_field::eval with the constraints: the land of the region
+    /// it lies in, bent to every road and pad within reach.
     pub fn eval(&self, x: f32, z: f32, cut: f32, seed: u32, style: &Style) -> Sample {
-        let s = terrain_field::eval(x, z, cut, seed, style);
+        let s = terrain_field::eval(x, z, cut, seed, &self.style_at(x, z, style));
         if self.segments.is_empty() { return s; }
         self.apply(x, z, s)
     }
@@ -487,12 +520,12 @@ impl World {
     /// verge or a pad (within `margin` metres of their edge) or on a bank
     /// too steep or bare to grow on; the rest stand on the bent ground.
     pub fn trees(&self, trees: Vec<forest_field::Tree>, margin: f32, seed: u32, style: &Style) -> Vec<forest_field::Tree> {
-        if self.segments.is_empty() { return trees; }
+        if self.segments.is_empty() && self.regions.is_none() { return trees; }
         trees.into_iter().filter_map(|mut t| {
-            if self.list(t.pos.x, t.pos.z).is_empty() { return Some(t); }
+            if self.regions.is_none() && self.list(t.pos.x, t.pos.z).is_empty() { return Some(t); }
             if self.clearance(t.pos.x, t.pos.z) < margin { return None; }
             let s = self.eval(t.pos.x, t.pos.z, forest_field::CUT, seed, style);
-            if !forest_field::grows(&s, style) { return None; }
+            if !forest_field::grows(&s, &self.style_at(t.pos.x, t.pos.z, style)) { return None; }
             t.pos.y = s.pos.y - 0.2;
             Some(t)
         }).collect()
@@ -567,6 +600,10 @@ impl GpuWorld {
         let segments: Vec<Segment> = if world.segments.is_empty() { vec![Segment::default()] } else { world.segments.clone() };
         let mut index = world.cells.clone();
         index.extend_from_slice(&world.items);
+        if let Some(r) = &world.regions {
+            debug_assert_eq!(index.len() as u32, world.header.region_at);
+            index.extend(r.words());
+        }
         index.push(0);
         GpuWorld {
             header: make("world constraints header", bytemuck::bytes_of(&world.header)),
@@ -765,14 +802,59 @@ mod tests {
         let _ = (wet, checked);
     }
 
+    /// Regions give each point its land; roads still bend it, and a
+    /// world of regions alone (no roads) takes the regions' style.
+    #[test]
+    fn regions_shape_the_land_under_the_roads() {
+        let (a, b) = (Style::alpine(), Style::lowland());
+        let regions = crate::regions::Regions::split([a, b], Vec2::new(150.0, -60.0), 4000.0, Vec2::X, 600.0, 200.0, 4);
+        let only = Constraints { regions: Some(regions.clone()), ..Default::default() }.bake(4, &a);
+        assert!(!Constraints { regions: Some(regions.clone()), ..Default::default() }.is_empty());
+        for (x, z) in [(-1900.0f32, 10.0f32), (2200.0, -300.0), (150.0, 40.0)] {
+            assert_eq!(only.eval(x, z, 0.0, 4, &a), terrain_field::eval(x, z, 0.0, 4, &regions.style_at(x, z)));
+        }
+        let (track, _) = ring(4, &a);
+        let world = Constraints { tracks: vec![track.clone()], pads: vec![], regions: Some(regions) }.bake(4, &a);
+        let p = track.points[5];
+        assert!((world.eval(p.x, p.z, 0.0, 4, &a).pos.y - p.y).abs() < 1e-3);
+        assert_eq!(world.header.region_at as usize, world.cells.len() + world.items.len());
+    }
+
+    /// The constraints' WGSL (regions included) parses and validates, and
+    /// the procedural terrain shader that includes it does too: the check
+    /// that runs where there is no GPU.
+    #[test]
+    fn wgsl_validates() {
+        let entry = r#"
+@group(0) @binding(0) var<storage, read_write> out: array<vec4<f32>>;
+@compute @workgroup_size(1) fn main() {
+    let s = terrain_eval_world(1.0, 2.0, 0.5, 3u, TerrainStyle(0.5, 0.5, 1500.0, 1.0, 0.5, 0.5, 0.5, 1.0, 0.5, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
+    out[0] = vec4<f32>(s.pos, wc_clearance(1.0, 2.0));
+}"#;
+        for source in [format!("{}\n{}\n{}", terrain_field::WGSL, wgsl(0, 3), entry),
+            format!("{}\n{}\n{}", terrain_field::WGSL, wgsl(0, 4), include_str!("shaders/procedural_terrain.wgsl"))] {
+            let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module)
+                .unwrap_or_else(|e| panic!("{e:?}"));
+        }
+    }
+
     /// CPU and GPU bend the land the same way, to float rounding.
     #[test]
     fn gpu_matches_cpu() {
         let Ok(gpu) = crate::Gpu::new() else { return };
+        for regions in [false, true] { gpu_matches_cpu_with(&gpu, regions); }
+    }
+
+    fn gpu_matches_cpu_with(gpu: &crate::Gpu, regions: bool) {
         use wgpu::util::DeviceExt;
         let style = Style::default();
         let seed = 4u32;
-        let (_, world) = ring(seed, &style);
+        let (track, world) = ring(seed, &style);
+        let world = if regions {
+            let r = crate::regions::Regions::split([Style::alpine(), Style::lowland()], Vec2::new(150.0, -60.0), 3000.0, Vec2::new(1.0, 0.4), 500.0, 150.0, seed);
+            Constraints { tracks: vec![track], pads: vec![Pad { centre: Vec2::new(150.0, -60.0), radius: 25.0, feather: 15.0, height: None }], regions: Some(r) }.bake(seed, &style)
+        } else { world };
         let points: Vec<[f32; 2]> = (0..4096).map(|k| [(k as f32 * 37.31) % 1300.0 - 500.0, (k as f32 * 91.73) % 1300.0 - 710.0]).collect();
         let shader = format!("{}\n{}\n{}", terrain_field::WGSL, wgsl(0, 3), r#"
 struct Params { seed: u32, pad0: u32, pad1: u32, pad2: u32, style: TerrainStyle };
@@ -796,7 +878,7 @@ struct Params { seed: u32, pad0: u32, pad1: u32, pad2: u32, style: TerrainStyle 
         let size = (points.len() * 32) as u64;
         let output = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let read = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
-        let gw = GpuWorld::new(&gpu, &world);
+        let gw = GpuWorld::new(gpu, &world);
         let mut entries = vec![
             wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: input.as_entire_binding() },
@@ -819,7 +901,7 @@ struct Params { seed: u32, pad0: u32, pad1: u32, pad2: u32, style: TerrainStyle 
         for (k, p) in points.iter().enumerate() {
             let s = world.eval(p[0], p[1], 0.5, seed, &style);
             let (g, n) = (got[k * 2], got[k * 2 + 1]);
-            if s != terrain_field::eval(p[0], p[1], 0.5, seed, &style) { bent += 1; }
+            if s != terrain_field::eval(p[0], p[1], 0.5, seed, &world.style_at(p[0], p[1], &style)) { bent += 1; }
             // terrain_eval differs from eval in the last bits.
             if (g[0] - s.pos.y).abs() < 0.02 && (g[1] - s.scree).abs() < 1e-3 && (g[2] - s.up).abs() < 1e-3 && (g[3] - s.water).abs() < 0.02 { agree += 1; }
             // `along` is metres from the track start: allow f32 rounding that grows with it (Metal fma).
@@ -843,6 +925,6 @@ pub(crate) fn tests_ring(seed: u32, style: &Style) -> (Track, World) {
     }).collect();
     let mut track = Track::spline(&control, 4.0, true);
     track.fit_heights(|x, z| terrain_field::height(x, z, seed, style), 0.1, 80.0);
-    let world = Constraints { tracks: vec![track.clone()], pads: vec![Pad { centre: Vec2::new(150.0, -60.0), radius: 25.0, feather: 15.0, height: None }] }.bake(seed, style);
+    let world = Constraints { tracks: vec![track.clone()], pads: vec![Pad { centre: Vec2::new(150.0, -60.0), radius: 25.0, feather: 15.0, height: None }], regions: None }.bake(seed, style);
     (track, world)
 }
