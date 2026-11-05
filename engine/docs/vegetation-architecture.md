@@ -11,24 +11,32 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
-## 5 November: selected-mip residency and PR8 integration (capture pending)
+## 5 November: PR8 integration and rejected selected-mip experiment
 
-- [x] Publish a one-level voxel volume view matching the selected candidate.
-  Camera, ray and shadow paths cannot read unresident sibling mips. Preserve
-  the shadow-caster flag independently of that one-level view. Source nodes
-  still require only source pages. Splat accounting uses the selected level.
-- [x] Extend complete-endpoint admission: lack of splat budget alone must not
-  replace a fully pixel-acceptable voxel frontier with full source meshes.
-  The GPU regression includes this case. Pre-integration foliage tests158/158.
-- [x] Fetch PR8 through6a4002f. Preserve far sun map, per-depth-target voxel shadow
-  headers, opaque-category occlusion, selection-round readback and terrain work.
-  The agent withdrew both source-bypass gates in6a4002f after they failed on
-  the Mac. Remove the local shared-helper gate too. Source triangle/cluster
-  work is still unbudgeted; this is the next required selection correction.
-- [x] Combined foliage tests161/161 at0c40113 integration. The subsequent
-  6a4002f resolution only removes the failed screen-height guard.
-- [ ] Release build and same-scene capture of the final integration.
-- [ ] Full one-pixel and shadow acceptance, repeated performance and4K/four views.
+- [x] Integrate PR8 through6a4002f, preserving the other agent's occlusion,
+  terrain, far sun map and per-depth-target voxel shadow headers. Both failed
+  source bypass gates were withdrawn upstream; no10%-height gate remains.
+- [x] Test publishing only the selected mip and preventing whole-source bypass
+  when a fine voxel endpoint is already pixel-acceptable. Combined foliage
+  tests161/161 pass; release builds. This does NOT establish visual acceptance.
+- [x] Reject that experiment after the normal1200-frame stationary capture:
+  source slots32766 ->335, voxel slots2 ->32433, maximum submitted cell
+  5.482 ->31.660px. Page misses602862, page-blocked refinements7001, splat-blocked
+  40357; no missing raster records or refinement faults. Image visibly regresses.
+  GPU covered median22.629ms is not a speedup claim: detail is worse and the
+  newly integrated far sun consumer changes the workload. Revert90d51dd's
+  selected-mip and endpoint-source restriction; retain PR8 and prior fine cook.
+- [ ] Source work budget: source leaves reserve no voxel splats but their real
+  cluster/triangle costs are absent. Mac handoff reports6.8M rather than0.3M
+  triangles on the hill. Implement actual source work accounting alongside
+  voxel work before further bypass tuning. Do not substitute a screen-size gate.
+- [ ] Validate the retained integration after rejecting the experiment.
+- [ ] One-pixel camera/shadow, bounded work, repeated timing and4K/four-view
+  acceptance remain incomplete. Do not launch this rejected capture as playtest.
+
+Evidence: vegetation-fine-endpoint-measurements.json, pr8-integrated-* artifacts.
+Diagnostic: native1280x720 ONE view/TAA,151058 active roots,32768 slots,16M splats.
+The source-shadow baseline lacks PR8's far sun consumer; not an isolated A/B.
 
 ## 5 November: retain fine voxel candidates and preserve shadow selections
 
