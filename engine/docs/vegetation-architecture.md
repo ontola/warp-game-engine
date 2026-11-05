@@ -11,6 +11,45 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+## 5 November: normal-renderer capacity evidence and shared splat budget
+
+Runtime-sized consumers are now verified in normal headless renders, including
+32,768 branch slots above the old uniform limit. Default TAA/native1280x720,
+ONE view, 151,058 active roots including grass; no 4K/four-view acceptance.
+The ordinary4096-slot image is effectively unchanged below the HUD (RGB MAE
+0.000261/0.000239/0.000199); this is PNG comparison, not raw visibility proof.
+
+The new diagnostic --splat-budget N controls the SAME renderer and selector
+capacity. Both subtract per-tree record headers from the actual device buffer
+limit. Previously independent4M clamps prevented an honest larger-capacity test;
+selector reservations could also exceed a hardware-clamped target. Added unit
+checks for header exhaustion, device truncation and overflow-safe arithmetic.
+Default splat/branch budgets and one-pixel policy remain unchanged.
+
+Single diagnostic runs (NOT repeated performance acceptance):
+-4096 slots /4M splats: largest cell21.308px;41,944 over-target camera cuts.
+ GPU covered median15.468ms. No missing records or refinement faults.
+-32768 slots /4M: same21.308px maximum;41,925 over-target cuts. Camera splat
+ capacity exhausted, no branch-slot stops. GPU covered median16.281ms.
+-32768 slots /16M: near trees gain source detail, but largest grass cell15.300px
+ at about(-17.70,0.14,-6.68), world cell width0.32m.42,878 cuts over target.
+ All32768 slots occupied; camera splats saturated;12,048 camera proposals
+ await pages. Deferred-cluster queue OVERFLOWS (431256 requested vs262144).
+ GPU covered median92.252ms. Selection19.325ms, recovery cull14.721ms,
+ voxel listing8.100ms and voxel raster8.099ms. The larger budget is NOT a fix.
+
+All strict pixel checks FAIL, as they should. Images inspected; detailed nearby
+tree shapes return with more capacity, but grass remains oversized and spherical.
+No FPS gain or full-forest correctness claim. Median timestamps use frames>=120,
+not wall time. Evidence: vegetation-dynamic-capacity-measurements.json and
+build/playtest-unified/{dynamic-choice-4096,dynamic-choice-32768,shared-budget-16m}.*.
+Release build,29 voxel tests and154 foliage tests PASS, including exclusive GPU
+choice-boundary, lifecycle, paging, refinement and shared-pose fixtures.
+
+Next: decode whole-root grass attribution and its pending refinement, preserve
+camera and shadow correctness under shared-slot contention, and resolve deferred
+queue capacity/recovery. Raising budgets alone does not satisfy the requirement.
+
 ## 5 November: allocation-sized producer choice tables
 
 GPU materialization, camera/shadow transfers, offline diagnostics and animated
@@ -29,8 +68,8 @@ Correction: the earlier pixel-policy-full capture omitted grass; it has71112root
 The new trees+grass capture has151058roots. Keep these populations distinct.
 Evidence: vegetation-choice-stride-measurements.json; original report annotated.
 
-This removes a producer assumption, NOT the publication limit itself. Per-view
-cull/raster/voxel consumers still use64KiB uniform choice tables and retain the
+Historical producer-only checkpoint (superseded by runtime-sized consumers above).
+At this point cull/raster/voxel used64KiB uniform choice tables and retained the
 16384 checked limit. Next: migrate those consumers to dynamically sized storage.
 Cull already uses16 storage bindings: consolidate traversal counters with its
 existing counter buffer before adding the choice storage binding. Preserve current

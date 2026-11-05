@@ -354,6 +354,10 @@ impl Runtime {
     }
     fn with_pose_capacity(gpu:&Gpu,spec:&Spec,instances:&wgpu::Buffer,volumes:&wgpu::Buffer,capacity_override:Option<u32>)->Result<Self,String> {
         if gpu.device.limits().max_storage_buffers_per_shader_stage<16 {return Err("GPU forest materialization requires 16 storage bindings".into());}
+        let limits=gpu.device.limits();
+        let raster_budget=crate::voxel_forest::bounded_splat_capacity(u64::from(spec.raster_budget),volumes.size()/96,
+            u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size))as u32;
+        if raster_budget==0 {return Err("GPU forest has no splat capacity after per-tree headers".into());}
         let mut cooked_branches=spec.branches.clone();let mut max_depth=0u32;
         for i in 0..spec.branches.len() {
             let mut n=i;let mut depth=1;
@@ -412,7 +416,7 @@ impl Runtime {
             let publish_pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("forest population publish"),bind_group_layouts:&[Some(&publish_layout)],immediate_size:0});
             let publish_module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("forest population publish"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_publish.wgsl").into())});
             let publish_pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("forest population publish"),layout:Some(&publish_pl),module:&publish_module,entry_point:Some("publish"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
-            Self {pose_dispatch,pose_dispatch_bind,pose_args,pose_pipelines,pose_cache,pose_work,pose_depth:max_depth,branch_count:spec.branches.len()as u32,publish_pipeline,publish_layout,source_buffer:instances.clone(),population:std::sync::Mutex::new(std::sync::Arc::new(spec.population.clone())),templates:std::sync::Arc::new(spec.templates.clone()),proxy_owners:std::sync::Arc::new(spec.proxies.iter().map(|v|v.meta[0]).collect()),proxy_buffer:proxies,selector,residency,uniform,bind,pipeline,empty_depth,choices,slots:spec.slots,trees:spec.roots.len()as u32,error:spec.error,raster_budget:spec.raster_budget,wind:Default::default()}
+            Self {pose_dispatch,pose_dispatch_bind,pose_args,pose_pipelines,pose_cache,pose_work,pose_depth:max_depth,branch_count:spec.branches.len()as u32,publish_pipeline,publish_layout,source_buffer:instances.clone(),population:std::sync::Mutex::new(std::sync::Arc::new(spec.population.clone())),templates:std::sync::Arc::new(spec.templates.clone()),proxy_owners:std::sync::Arc::new(spec.proxies.iter().map(|v|v.meta[0]).collect()),proxy_buffer:proxies,selector,residency,uniform,bind,pipeline,empty_depth,choices,slots:spec.slots,trees:spec.roots.len()as u32,error:spec.error,raster_budget,wind:Default::default()}
         })
     }
     pub fn set_wind(&self,state:&crate::wind::WindState)->Result<(),String>{*self.wind.lock().unwrap()=state.validated()?;Ok(())}
