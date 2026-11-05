@@ -926,8 +926,10 @@ fn apply_distance_fog(radiance: vec3<f32>, distance: f32, direction: vec3<f32>) 
         if light.fog.y <= 0.0 { return radiance; }
         let column = fog_column(distance, view.cam.y, direction.y, light.fog.z);
         // Night/occluded sun contributes no directional scattering. Avoid
-        // marching solar shadows when only diffuse skylight remains.
-        if light.sun_dir.w <= 0.0 || view.fog_cull.z <= 0.0 || light.sun_color.w <= 0.0 {
+        // marching solar shadows when only diffuse skylight remains. Thin air
+        // (a near wall: optical depth under 0.004) blends at most 0.4% of the
+        // fog source in, so its shadowing is not worth eight shadow samples.
+        if light.sun_dir.w <= 0.0 || view.fog_cull.z <= 0.0 || light.sun_color.w <= 0.0 || light.fog.y * column < 0.004 {
             return fog_segment(radiance, fog_scattering_source(direction), light.fog.y * column);
         }
         // Stratified integration avoids coherent four-slice light curtains.

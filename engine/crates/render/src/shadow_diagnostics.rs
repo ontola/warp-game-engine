@@ -44,7 +44,7 @@ pub(crate) fn capture(gpu:&Gpu, groups:&cull_groups::Resources, state:&State,
     if expected_sequence.is_some_and(|s|s!=context.render_sequence) {return Err("stale solar diagnostic request".into());}
     let mut result=Vec::with_capacity(state.passes.len());
     for pass in &state.passes {
-        let bytes=read(gpu,&pass.counter,crate::tree_occlusion::COUNTER_BYTES)?;
+        let bytes=read(gpu,&pass.counter,crate::occlusion::COUNTER_BYTES)?;
         let words:Vec<u32>=bytes.chunks_exact(4).map(|b|u32::from_le_bytes(b.try_into().unwrap())).collect();
         if words[0]>pass.capacity {return Err("solar diagnostic visible capacity exceeded".into());}
         let work=groups.diagnostics_for(&words,pass.grouped)?;
