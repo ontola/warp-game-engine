@@ -320,6 +320,11 @@ fn splat_capacity(forest: &crate::foliage_volume_data::GpuForest, cells: &[[u32;
     const MAX_SPLATS: u64 = 4 << 20;
     forest.instances.iter().map(|tree| u64::from(cells[tree.meta[1] as usize][1])).sum::<u64>().clamp(1, MAX_SPLATS)
 }
+/// Shared selector/raster capacity after per-tree record headers. The selector
+/// must never reserve more records than a target can actually store.
+pub(crate) fn bounded_splat_capacity(requested:u64,trees:u64,byte_limit:u64)->u64 {
+    requested.min((byte_limit/16).saturating_sub(12u64.saturating_add(trees.saturating_mul(4))))
+}
 struct Targets {
     hzb: Option<crate::depth_pyramid::PyramidTarget>,
     splat: Option<SplatTargets>,
@@ -844,7 +849,9 @@ impl VoxelRenderer {
             integrator_options.global_intervals,INTERVAL_STREAM_BYTES,INTERVAL_STREAM_PIXEL_SLOTS);
         let raster = if integrator_options.raster { match if brick_hzb.is_some() { splat_cells_bricked(forest) } else { splat_cells(forest) } {
             Ok(cells) if cells.len() > forest.levels.len() => {
-                let capacity = splat_capacity(forest, &cells);
+                let requested=scene.gpu_forest.as_ref().map_or_else(||splat_capacity(forest,&cells),|spec|u64::from(spec.raster_budget));
+                let limits=gpu.device.limits();
+                let capacity=bounded_splat_capacity(requested,forest.instances.len()as u64,u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size));
                 eprintln!("voxel raster: enabled cells={} splats_per_view={capacity} (stochastic opaque voxels; integrator off)", cells.len() - forest.levels.len());
                 Some(splat_raster(gpu, &cells, capacity, scene_layout, &data_layout, &specialized_source,page_cache.as_ref().map(|c|&c.buffers[3])))
             }
@@ -1171,8 +1178,7 @@ impl VoxelRenderer {
             usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
         }).create_view(&Default::default());
         let splat_depth = texture("voxel splat depth", wgpu::TextureFormat::Depth32Float);
-        let splat_capacity = self.raster.as_ref().map_or(0, |r| r.capacity
-            .min((u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size) / 16).saturating_sub(12 + 4 * u64::from(self.count))));
+        let splat_capacity = self.raster.as_ref().map_or(0, |r| bounded_splat_capacity(r.capacity,u64::from(self.count),u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size)));
         let splat_records = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel splats"), size: (12 + 4 * u64::from(self.count) + splat_capacity) * 16,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
@@ -2076,6 +2082,15 @@ mod tests {
             let mapped=read.slice(..).get_mapped_range().unwrap();let actual:&[[u32;4]]=bytemuck::cast_slice(&mapped);
             assert_eq!(actual,indices.map(|i|super::selection_unpack(words[i])),"{lookup}");
         }
+    }
+    #[test]
+    fn raster_budget_accounts_for_headers_and_device_capacity() {
+        let cap=super::bounded_splat_capacity;
+        assert_eq!(cap(4<<20,100,128<<20),4<<20);
+        assert_eq!(cap(16<<20,32768,128<<20),(128<<20)/16-12-4*32768);
+        assert_eq!(cap(10,100,16*(12+4*100)),0);
+        assert_eq!(cap(10,u64::MAX,u64::MAX),0);
+        assert_eq!(cap(0,0,128<<20),0);
     }
     #[test]
     fn temporal_layout_fits_sixteen_storage_bindings() {
