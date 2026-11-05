@@ -1,0 +1,587 @@
+{
+  "scope": "Fixed camera, native1280x720 ONE view, default TAA,151058 active roots,32768 slots,16M splats. Live wind; separate240/1200-frame runs. Not repeated performance acceptance. Both strict pixel checks FAIL.",
+  "runs": {
+    "240": {
+      "forest": {
+        "trees": 302116,
+        "active_roots": 151058,
+        "branch_capacity": 32768,
+        "selected_records": 32768,
+        "tested_nodes": 409314,
+        "source_slots": 9077,
+        "voxel_slots": 2728,
+        "shadow_voxel_slots": 20960,
+        "direct_roots": 106512,
+        "fallback_trees": 0,
+        "retained": 30753,
+        "assigned": 784,
+        "slot_failures": 0,
+        "hash_failures": 0,
+        "frontier_overflow_requests": 0,
+        "peak_frontier_requests": 118962,
+        "reserved_raster_splats": [
+          16777209,
+          6793410
+        ],
+        "refinement_budget_stops": 315850,
+        "refinement_faults": 0,
+        "reused_refinement_proposals": 282229,
+        "dormant_records": 85237,
+        "dormant_wakes": 282229,
+        "dormant_wake_passes": 11,
+        "dormant_park_events": 355232,
+        "dormant_overflows": 0,
+        "selected_spatial_error_pixels": [
+          1e+30,
+          1e+30
+        ],
+        "selected_error_target_ratio": [
+          1e+30,
+          1e+30
+        ],
+        "selected_over_target": [
+          130190,
+          43938
+        ],
+        "error_unknown_proxies": 0,
+        "error_unmatched_direct": 0,
+        "error_forced_nodes": 0,
+        "pose_requests": 8984,
+        "evaluated_shared_poses": 8984,
+        "pose_hash_failures": 0,
+        "camera_roots": 42891,
+        "shadow_only_roots": 52118,
+        "camera_fallback_roots": 0,
+        "shadow_only_fallback_roots": 0,
+        "camera_refinement_limits": {
+          "over_target": 43938,
+          "branch_slots": 38112,
+          "camera_splats": 43105,
+          "shadow_splats": 0,
+          "missing_pages": 12713,
+          "no_children": 0,
+          "affordable_resident": 0
+        },
+        "selected_source_consumers": {
+          "outside": 0,
+          "camera_only": 9077,
+          "shadow_only": 3,
+          "both": 0
+        },
+        "selected_voxel_consumers": {
+          "outside": 0,
+          "camera_only": 2728,
+          "shadow_only": 20960,
+          "both": 0
+        },
+        "selected_direct_consumers": {
+          "outside": 0,
+          "camera_only": 41220,
+          "shadow_only": 65292,
+          "both": 0
+        },
+        "camera_published_branches": 11805,
+        "shadow_only_published_branches": 6883
+      },
+      "cache": {
+        "allocated_bytes": 88190432,
+        "resident_pages": 1893,
+        "pending_pages": 0,
+        "uploads": 1893,
+        "evictions": 0,
+        "uploaded_bytes": 45102780,
+        "frame_upload_bytes": 14156,
+        "misses": 0,
+        "feedback_skipped": 0,
+        "source": {
+          "allocated_bytes": 77144872,
+          "resident_pages": 20,
+          "total_pages": 20,
+          "uploads": 20,
+          "evictions": 0,
+          "uploaded_bytes": 77144872,
+          "pinned_bytes": 74620864
+        }
+      },
+      "recovery": {
+        "clusters_rejected": 94,
+        "clusters_tested": 389001,
+        "deferred_capacity": 262144,
+        "deferred_clusters": 391390,
+        "deferred_overflow": true,
+        "history_first": true,
+        "phase1_clusters": 95336,
+        "phase2_clusters": 388907
+      },
+      "largest_cell": {
+        "alpha": 0.5000076293945312,
+        "cut_owner": {
+          "consumer": 256,
+          "fallback_flags": 0,
+          "final_budget_proposal_replay": {
+            "control": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "old": [
+              1,
+              17,
+              0,
+              0
+            ],
+            "replacement": [
+              2,
+              131,
+              0,
+              0
+            ],
+            "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+          },
+          "generation": 1,
+          "history": [
+            3,
+            1,
+            1,
+            256
+          ],
+          "immediate_children": [
+            {
+              "error_and_splat_cost": [
+                1.5588457584381104,
+                0.9797959327697754,
+                118.0,
+                118.0
+              ],
+              "links": [
+                2162,
+                2165,
+                2161,
+                0
+              ],
+              "node": 2161,
+              "page": [
+                0,
+                0,
+                2,
+                0
+              ],
+              "sphere": [
+                0.19756415486335754,
+                0.6143824458122253,
+                0.2954496741294861,
+                1.7888569831848145
+              ]
+            },
+            {
+              "error_and_splat_cost": [
+                6.5751261711120605,
+                1.9595918655395508,
+                13.0,
+                13.0
+              ],
+              "links": [
+                2166,
+                2176,
+                2165,
+                0
+              ],
+              "node": 2165,
+              "page": [
+                0,
+                0,
+                2,
+                0
+              ],
+              "sphere": [
+                0.5999999046325684,
+                1.1999999284744263,
+                1.1999999284744263,
+                4.496719837188721
+              ]
+            }
+          ],
+          "kind": "articulated_slot",
+          "publication": null,
+          "root": 70285,
+          "root_recipe": 1913,
+          "selected": {
+            "error_and_splat_cost": [
+              1.8985888957977295,
+              0.0,
+              17.0,
+              17.0
+            ],
+            "links": [
+              2161,
+              2176,
+              2160,
+              0
+            ],
+            "node": 2160,
+            "page": [
+              1,
+              0,
+              3,
+              0
+            ],
+            "sphere": [
+              0.3000001907348633,
+              0.9000000953674316,
+              0.5999999046325684,
+              5.231566429138184
+            ]
+          }
+        },
+        "diameter_px": 18.79747772216797,
+        "packed_cell": 1049601,
+        "volume": 3997,
+        "world_cell_size": 0.394221693277359,
+        "world_centre": [
+          0.32805225253105164,
+          0.019148409366607666,
+          -14.202037811279297
+        ]
+      },
+      "last_page_upload_frame": 239,
+      "resident_page_timeline": [
+        {
+          "frame": 0,
+          "resident": 16,
+          "upload_bytes": 0,
+          "misses": 0
+        },
+        {
+          "frame": 120,
+          "resident": 941,
+          "upload_bytes": 64832,
+          "misses": 0
+        },
+        {
+          "frame": 239,
+          "resident": 1893,
+          "upload_bytes": 14156,
+          "misses": 0
+        }
+      ],
+      "final120_gpu_covered_median_ms": 25.668864,
+      "evidence_prefix": "build\\playtest-unified\\stationary-240"
+    },
+    "1200": {
+      "forest": {
+        "trees": 302116,
+        "active_roots": 151058,
+        "branch_capacity": 32768,
+        "selected_records": 22137,
+        "tested_nodes": 400188,
+        "source_slots": 20285,
+        "voxel_slots": 1852,
+        "shadow_voxel_slots": 0,
+        "direct_roots": 116748,
+        "fallback_trees": 0,
+        "retained": 21867,
+        "assigned": 270,
+        "slot_failures": 0,
+        "hash_failures": 0,
+        "frontier_overflow_requests": 0,
+        "peak_frontier_requests": 118962,
+        "reserved_raster_splats": [
+          16776996,
+          6657764
+        ],
+        "refinement_budget_stops": 363136,
+        "refinement_faults": 0,
+        "reused_refinement_proposals": 320440,
+        "dormant_records": 122836,
+        "dormant_wakes": 320440,
+        "dormant_wake_passes": 8,
+        "dormant_park_events": 438984,
+        "dormant_overflows": 0,
+        "selected_spatial_error_pixels": [
+          448.16812,
+          102.99813
+        ],
+        "selected_error_target_ratio": [
+          492.97284,
+          321.85867
+        ],
+        "selected_over_target": [
+          118551,
+          42703
+        ],
+        "error_unknown_proxies": 0,
+        "error_unmatched_direct": 0,
+        "error_forced_nodes": 0,
+        "pose_requests": 20292,
+        "evaluated_shared_poses": 20292,
+        "pose_hash_failures": 0,
+        "camera_roots": 42891,
+        "shadow_only_roots": 52118,
+        "camera_fallback_roots": 0,
+        "shadow_only_fallback_roots": 0,
+        "camera_refinement_limits": {
+          "over_target": 42703,
+          "branch_slots": 0,
+          "camera_splats": 5945,
+          "shadow_splats": 0,
+          "missing_pages": 0,
+          "no_children": 0,
+          "affordable_resident": 36758
+        },
+        "selected_source_consumers": {
+          "outside": 0,
+          "camera_only": 20285,
+          "shadow_only": 0,
+          "both": 0
+        },
+        "selected_voxel_consumers": {
+          "outside": 0,
+          "camera_only": 1852,
+          "shadow_only": 0,
+          "both": 0
+        },
+        "selected_direct_consumers": {
+          "outside": 0,
+          "camera_only": 40900,
+          "shadow_only": 75848,
+          "both": 0
+        },
+        "camera_published_branches": 22137,
+        "shadow_only_published_branches": 0
+      },
+      "cache": {
+        "allocated_bytes": 88190432,
+        "resident_pages": 2250,
+        "pending_pages": 0,
+        "uploads": 2250,
+        "evictions": 0,
+        "uploaded_bytes": 46417432,
+        "frame_upload_bytes": 0,
+        "misses": 0,
+        "feedback_skipped": 0,
+        "source": {
+          "allocated_bytes": 77144872,
+          "resident_pages": 20,
+          "total_pages": 20,
+          "uploads": 20,
+          "evictions": 0,
+          "uploaded_bytes": 77144872,
+          "pinned_bytes": 74620864
+        }
+      },
+      "recovery": {
+        "clusters_rejected": 1117,
+        "clusters_tested": 167113,
+        "deferred_capacity": 262144,
+        "deferred_clusters": 167113,
+        "deferred_overflow": false,
+        "history_first": true,
+        "phase1_clusters": 515127,
+        "phase2_clusters": 165996
+      },
+      "largest_cell": {
+        "alpha": 0.5000076293945312,
+        "cut_owner": {
+          "consumer": 256,
+          "fallback_flags": 0,
+          "final_budget_proposal_replay": {
+            "control": [
+              18,
+              1,
+              2,
+              0
+            ],
+            "old": [
+              0,
+              69,
+              0,
+              0
+            ],
+            "replacement": [
+              2,
+              85,
+              0,
+              0
+            ],
+            "scope": "actual GPU propose kernel after unary skipping, final-frame budget; not historical admission"
+          },
+          "generation": 1,
+          "history": null,
+          "immediate_children": [
+            {
+              "error_and_splat_cost": [
+                1.8797188997268677,
+                3.1678383350372314,
+                40.0,
+                40.0
+              ],
+              "links": [
+                2443,
+                2564,
+                2442,
+                0
+              ],
+              "node": 2442,
+              "page": [
+                1,
+                0,
+                3,
+                0
+              ],
+              "sphere": [
+                0.15999984741210938,
+                0.48000001907348633,
+                0.15999984741210938,
+                4.4101972579956055
+              ]
+            },
+            {
+              "error_and_splat_cost": [
+                1.8797188997268677,
+                3.1678383350372314,
+                45.0,
+                45.0
+              ],
+              "links": [
+                2565,
+                2686,
+                2564,
+                0
+              ],
+              "node": 2564,
+              "page": [
+                1,
+                0,
+                4,
+                0
+              ],
+              "sphere": [
+                0.7999999523162842,
+                0.48000001907348633,
+                0.31999993324279785,
+                4.33465576171875
+              ]
+            }
+          ],
+          "kind": "whole_root",
+          "publication": [
+            0,
+            768,
+            2442,
+            0
+          ],
+          "root": 107384,
+          "root_recipe": 2440,
+          "selected": {
+            "error_and_splat_cost": [
+              1.0137412548065186,
+              3.1678383350372314,
+              69.0,
+              69.0
+            ],
+            "links": [
+              2442,
+              2686,
+              2441,
+              2
+            ],
+            "node": 2441,
+            "page": [
+              1,
+              0,
+              3,
+              0
+            ],
+            "sphere": [
+              0.16000008583068848,
+              0.48000001907348633,
+              0.16000008583068848,
+              4.994352340698242
+            ]
+          }
+        },
+        "diameter_px": 8.564486503601074,
+        "packed_cell": 1048577,
+        "volume": 140152,
+        "world_cell_size": 0.3199999928474426,
+        "world_centre": [
+          -12.102577209472656,
+          -0.5832886695861816,
+          -16.61794090270996
+        ]
+      },
+      "last_page_upload_frame": 288,
+      "resident_page_timeline": [
+        {
+          "frame": 0,
+          "resident": 16,
+          "upload_bytes": 0,
+          "misses": 0
+        },
+        {
+          "frame": 120,
+          "resident": 941,
+          "upload_bytes": 64832,
+          "misses": 0
+        },
+        {
+          "frame": 240,
+          "resident": 1901,
+          "upload_bytes": 90472,
+          "misses": 0
+        },
+        {
+          "frame": 360,
+          "resident": 2250,
+          "upload_bytes": 0,
+          "misses": 0
+        },
+        {
+          "frame": 480,
+          "resident": 2250,
+          "upload_bytes": 0,
+          "misses": 0
+        },
+        {
+          "frame": 600,
+          "resident": 2250,
+          "upload_bytes": 0,
+          "misses": 0
+        },
+        {
+          "frame": 720,
+          "resident": 2250,
+          "upload_bytes": 0,
+          "misses": 0
+        },
+        {
+          "frame": 840,
+          "resident": 2250,
+          "upload_bytes": 0,
+          "misses": 0
+        },
+        {
+          "frame": 960,
+          "resident": 2250,
+          "upload_bytes": 0,
+          "misses": 0
+        },
+        {
+          "frame": 1080,
+          "resident": 2250,
+          "upload_bytes": 0,
+          "misses": 0
+        },
+        {
+          "frame": 1199,
+          "resident": 2250,
+          "upload_bytes": 0,
+          "misses": 0
+        }
+      ],
+      "final120_gpu_covered_median_ms": 24.986416,
+      "evidence_prefix": "build\\playtest-unified\\stationary-1200"
+    }
+  }
+}

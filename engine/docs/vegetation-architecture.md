@@ -11,6 +11,43 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+## 5 November: fixed-camera convergence separates loading from selection
+
+Added terrain_fly --fly N --stationary: zero translation input while ticks,
+wind, rendering and asynchronous page service continue. This makes streaming
+convergence measurable without moving the camera into a different workload.
+The HUD speed is the configured movement speed; stationary input does not move.
+
+Same native1280x720 ONE-view camera at(0,8,0),151058 roots,32768 slots,16M splats:
+- Frame240:1893 pages resident, largest cell18.797px,12713 camera proposals
+ blocked by pages. Deferred queue overflows391390 requests vs262144 capacity.
+- Frame1200:2250 pages resident, last upload at frame288. No page misses,
+ evictions, pending uploads, or camera proposals blocked by pages. Largest cell
+ still8.564px;42703 camera cuts remain over target. Deferred queue no longer
+ overflows (167113 requests). The pixel-quality requirement STILL FAILS.
+- Worst settled cell is grass root107384, recipe2440, node2441. Both immediate
+ child pages are resident. GPU replay reports an eligible2-slot/85-splat
+ replacement for its0-slot/69-splat parent. Published camera budget is16776996
+ of16777216 splats;36758 resident proposals are individually affordable.
+ This does not mean all proposals fit collectively. The scene still saturates
+ its splat reservation even after asset loading is complete.
+
+Images inspected: nearby blades replace some coarse grass, but a prominent
+coarse-cell band remains. This disproves incomplete page loading as the sole
+cause of the persistent sphere problem. Do not change eviction logic on the
+basis of the earlier240-frame nonresident snapshot alone.
+
+Next correctness work: refinement scheduling and complete target-quality cuts
+under budget contention. The encoder currently reseeds roots each frame; a
+static camera does not accumulate refinement across frames. Distinguish final
+individually-affordable proposals from a collectively feasible complete cut.
+Investigate temporary-cost barriers before repeating rejected lookahead changes.
+
+Release build and both headless runs complete; strict quality exits nonzero.
+Single-run final120-frame GPU covered medians25.669/24.986ms are diagnostics,
+not repeated performance acceptance. Evidence: vegetation-stationary-convergence.json
+and build/playtest-unified/stationary-{240,1200}.*. No gate closed.
+
 ## 5 November: whole-root grass ownership is now observable
 
 Offline raster profiling now decodes whole-root volumes, including separate
