@@ -11,6 +11,25 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+## 5 November: static split retains GPU forest casters
+
+- [x] Repair static/dynamic sun split: reserved GPU branch owners remain in
+  the dynamic candidate list even when their CPU placeholders have no geometry.
+  Voxel sun rendering now runs after either the shared or split source path,
+  with the same source-replacement selection contract.
+- [x] Raw full-map depth oracle: split versus normal matches bit-for-bit for
+  still, wind, root removal and restoration. Existing cached/full oracle PASS;
+  all9 static-sun tests PASS. No performance/default-cache change claimed.
+- [ ] World-anchored static pages for terrain/rocks/buildings/voxel foliage,
+  with dynamic casters composited without losing static depth.
+- [ ] Page-specific shadow cuts independent of camera refinement; unchanged
+  pages must skip selection/cull/splat generation, not only rasterization.
+- [ ] Near-map page reuse, bounded invalidation from changed caster bounds,
+  sun/terrain revisions, and an explicit animated near-band policy.
+- [ ] Handoff acceptance: raw cached/full depth through camera movement,
+  zero static-page cull/splat counters when still, local damage for one moving
+  caster; wall/town/skyline/hill images and per-pass measurements.
+
 ## 5 November: compact voxel storage
 
 - [x] Pack six normal-moment/weight records as signed normalized16; retain

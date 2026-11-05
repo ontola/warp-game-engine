@@ -1,3 +1,17 @@
+## 5 November: static split GPU forest correctness prerequisite
+
+Cross-owner edits: frame.rs now invokes voxel sun rendering for both shared
+and static/dynamic split paths; static_sun.rs includes reserved GPU forest
+source slots in its dynamic owner list even while CPU placeholders are empty.
+No cull.wgsl/occlusion/terrain changes. No static-cache default enabled.
+
+New gpu_static_split_preserves_forest_sun_depth oracle matches full depth
+exactly for still, wind, removal and restoration.9 static-sun tests and the
+existing gpu_cached_sun_depth_matches_full_redraw pass. Logs static-forest-*.
+This repairs missing shadows; it does NOT avoid cull/splat work. Next: GPU
+conditional dispatch for unchanged damage, independent page cuts, world pages
+and near-map reuse. Read the authoritative checklist for acceptance criteria.
+
 ## 5 November: packed voxel normal storage
 
 GPU voxel cell stride is128 bytes; logical GpuCell remains176. PackedCell

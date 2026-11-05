@@ -100,6 +100,7 @@ fn class(instance: &GpuInstance, animated: bool, frozen: bool) -> u32 {
 /// CPU source ownership plus a fixed-layout GPU list. Original owner IDs never
 /// change, so the same live instance/wind buffers serve both shadow passes.
 struct Partition {
+    gpu_owned:Option<std::ops::Range<usize>>,
     sources: Vec<GpuInstance>,
     animated: Vec<bool>,
     /// Trees beyond the freeze radius of every pinned camera.
@@ -128,12 +129,20 @@ impl Partition {
         if let Some(animation) = &scene.baked_animations {
             for part in &animation.parts { mark(part.owner)?; }
         }
-        let mut result = Self { sources: scene.instances.clone(), frozen: vec![false; n], animated,
+        let gpu_owned=scene.gpu_forest.as_ref().map(|f|f.first_owner as usize..f.first_owner as usize+f.slots as usize);
+        if gpu_owned.as_ref().is_some_and(|r|r.end>n){return Err("GPU sun caster range outside scene".into());}
+        let mut result = Self { gpu_owned,sources: scene.instances.clone(), frozen: vec![false; n], animated,
             words: vec![0; word_count], counts: CasterCounts::default() };
         result.rebuild();
         Ok(result)
     }
 
+    fn kind(&self,owner:usize,source:&GpuInstance,frozen:bool)->u32 {
+        // The CPU placeholder is not the current GPU-published caster. Keep
+        // every reserved slot eligible; GPU culling handles empty/NO_SHADOW.
+        if self.gpu_owned.as_ref().is_some_and(|r|r.contains(&owner)){DYNAMIC}
+        else{class(source,self.animated[owner],frozen)}
+    }
     fn rebuild(&mut self) {
         self.words.fill(0);
         self.counts = CasterCounts::default();
@@ -143,7 +152,7 @@ impl Partition {
         self.words[2] = static_start as u32;
         self.words[3] = dynamic_start as u32;
         for (owner, source) in self.sources.iter().enumerate() {
-            let kind = class(source, self.animated[owner], self.frozen[owner]);
+            let kind = self.kind(owner,source,self.frozen[owner]);
             self.words[4 + owner] = kind;
             match kind {
                 STATIC => {
@@ -170,9 +179,9 @@ impl Partition {
             let frozen = !cameras.is_empty() && cameras.iter()
                 .all(|c| root.distance(glam::Vec2::new(c.x, c.z)) >= radius);
             if frozen != self.frozen[owner] {
-                let before = class(source, self.animated[owner], self.frozen[owner]);
+                let before = self.kind(owner,source,self.frozen[owner]);
                 self.frozen[owner] = frozen;
-                changed |= before != class(source, self.animated[owner], frozen);
+                changed |= before != self.kind(owner,source,frozen);
             }
         }
         if changed { self.rebuild(); }
@@ -189,12 +198,12 @@ impl Partition {
         for (offset, (&before, &after)) in self.sources[first..end].iter().zip(instances).enumerate() {
             if bytemuck::bytes_of(&before) == bytemuck::bytes_of(&after) { continue; }
             let owner = first + offset;
-            let old = class(&before, self.animated[owner], self.frozen[owner]);
+            let old = self.kind(owner,&before,self.frozen[owner]);
             // A changed transform invalidates the proof that this root stays
             // outside every pinned camera's wind radius. Keep it dynamic until
             // the next explicit pin certifies its new position.
             if before.rows != after.rows { self.frozen[owner] = false; }
-            let new = class(&after, self.animated[owner], self.frozen[owner]);
+            let new = self.kind(owner,&after,self.frozen[owner]);
             dirty |= old == STATIC || new == STATIC;
             membership |= old != new;
         }
@@ -367,6 +376,15 @@ mod tests {
     }
 
     fn key() -> SunRasterKey { SunRasterKey::new(Mat4::IDENTITY, 0.5, 2.0, 0).unwrap() }
+
+    #[test]
+    fn gpu_reserved_owners_stay_in_dynamic_list_while_empty() {
+        let mut scene=Scene::default();scene.instances=vec![bytemuck::Zeroable::zeroed();3];
+        let mut p=Partition::new(&scene).unwrap();p.gpu_owned=Some(1..3);p.rebuild();
+        assert_eq!(ids(&p,DYNAMIC),[1,2]);assert_eq!(p.counts.skipped,1);
+        assert!(!p.pin_frozen(&[Vec3::splat(1000.)],1.));
+        assert_eq!(ids(&p,DYNAMIC),[1,2]);
+    }
 
     fn ids(p: &Partition, kind: u32) -> &[u32] {
         let index = (kind - 1) as usize;
