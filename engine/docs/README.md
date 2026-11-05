@@ -159,6 +159,8 @@ Sky, fog and terrain:
 - [Volumetric light from local lights](volumetric-light.md)
 - [Terrain normals follow the rendered surface](terrain-surface-normals.md)
 - [Shared terrain visibility foundation](terrain-world-visibility.md)
+- [Terrain regions: several kinds of land in one world](terrain-regions.md)
+- [Zones and footprints: what each place is for, and where things stand](terrain-zones.md)
 - [Repetitive roadside wedges, r52](roadside-verge-r52.md)
 - [Disappearing roadside shadow, r53](roadside-shadow-r53.md)
 

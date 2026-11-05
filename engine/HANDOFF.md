@@ -1,3 +1,119 @@
+## 5 November: any rigid opaque geometry hides forest
+
+Decided with Joep: occluders for the foliage seed come from material and
+motion, not a tag. frame.rs sets `OCCLUDERS_ONLY` (128) in the seed view's
+fog_cull.w and excludes only Trees and Grass categories; cull.wgsl then drops
+DEFORMING instances (FOLIAGE, LIVE_GRASS, WIND_GRASS, PART_WIND, SKINNED;
+not 128, which procedural terrain's PROCEDURAL shares with MOLTEN_DEBRIS: 654ca74
+dropped every terrain patch from the seed and broke close trees, see the
+`occluder_filter_never_drops_procedural_terrain` test), any HIDE_IN_VIEW bit, and SEE_THROUGH materials (ALPHA_TEST,
+GRASS, BLEND, THIN_FOLIAGE). `KERN_FOLIAGE_OCCLUDERS=terrain` restores
+land-only occlusion (terrain_fly `--no-building-occlusion`). Extra seed
+seed cost on the Mac (M5 Pro, fixed build): 0.4-0.6 ms, no more than before;
+wall views 3-4 ms faster than land-only, images identical to cb7cd19.
+
+## 5 November: occlusion culling for every category
+
+Joep: rigid opaque geometry should hide anything, not just forest. The
+history-first two-phase Hi-Z (tree_occlusion.rs, cull.wgsl `tree_phase`) was
+trees only; now every category defers clusters that were not visible last
+frame and tests them against phase one's depth. On by default for every
+scene (`KERN_TREE_OCCLUSION=0` turns it off); the no-proof probe runs every 4
+frames instead of 32. Test: `gpu_hidden_geometry_of_any_category_is_not_drawn`.
+Names still say "tree"; renaming is a follow-up.
+
+## 5 November: forest culling behind structures, screen edge and selection cost
+
+`foliage_seed_visibility.wgsl` used to refuse to hide a tree whose bounds
+crossed the screen edge, so roots next to a building that filled the view
+stayed selected (about 225k splats in terrain_fly's wall views on the Mac).
+The test is against the current camera's own depth after a frustum overlap
+check, so the bounds are now clamped to the screen. The GPU test
+`gpu_opaque_structures_hide_forest_from_camera` (ignored, run with
+`--ignored`) checks that a tree behind an opaque Structures wall is not
+selected for the camera, also when its bounds cross the screen edge, that the
+same wall as `Other` culls nothing, that a half-covered tree stays, and that
+the image is unchanged.
+
+Why GPU time still barely drops when a building blocks the view (Mac M5 Pro,
+terrain_fly 1280x720): about 6 ms of the ~12 ms forest cost is GPU forest
+selection, and 5.6 ms of that is the fixed `rounds=2*(levels+1)` loop in
+`foliage_refine.rs` (48 rounds for a 23-level hierarchy, 8 dispatches each,
+even with an empty work list). Shadow forest (~3.3 ms) is unchanged by camera
+occlusion by design. Only ~1.2 ms of camera forest work is left behind a wall.
+Forcing 12 rounds gave 16.8 to 13.1 ms per GPU frame with near-identical
+images in three far views.
+
+Now: `foliage_refine.wgsl` counts the rounds that did work (state[68]; they
+form a prefix), and `Refiner::rounds` reads that back asynchronously (two-slot
+ring, never waits) and encodes the need plus 4, shrinking 2 per observation,
+even. A frame that used every encoded round may have been cut short; its drain
+publishes the current complete cut (coarser, never missing) and the next
+frames return to the full bound. A camera cut (over 0.5 m, about 3 degrees
+or 5% zoom in one frame, see `Rounds::cut`) also goes straight to the full
+bound and ignores readbacks from before it; without that a teleport on the
+Mac left ~8% of pixels coarser for 2-3 frames. Mac (59de6db, before the cut
+rule): wall views 13.4 to 10.9 ms GPU frame, forest-heavy views only 0.4-0.8 ms
+better because their need moves between ~11 and 42 rounds. Tests: `rounds_follow_need_and_recover_from_a_short_frame`
+(CPU) and `gpu_selection_rounds_follow_reported_need` (ignored; the fixture is
+only 2 levels deep, so it checks the readback, identical images and recovery
+from a forced short hint, not the size of the saving). Mac timing still to
+measure.
+
+`frame.rs` no longer fails a render when a timestamp pair runs backwards
+(Metal with overlapping passes): that frame just has no GPU timings. It made
+4 forest GPU tests fail on the Mac.
+
+## 5 November: buildings in terrain_fly and the Structures category
+
+`GeometryCategory::Structures` (5): static opaque buildings and walls that may
+hide the GPU forest before selection, like terrain (frame.rs foliage seed mask,
+cull.wgsl category decode). Before, forest behind buildings was depth-hidden but
+still drawn. `terrain_fly --town` builds 1-16 storey blocks on the plots
+(`--no-buildings`, `--no-building-occlusion`, `--at`). M5 Pro: -73..82 % voxel
+splats behind a building filling the view. Open: mesh-tree Hi-Z behind
+buildings untested; ~240k splats remain behind a full wall. Doc:
+docs/terrain-zones.md.
+
+## 5 November: zones and footprints (roadmap step 2)
+
+`world_constraints::Footprint`: flat plots of any outline (pads generalised;
+`Footprint::rect`, `.bare()` for gravel). Same cell lists as roads and pads;
+corners after the region words in the index buffer (`Header::shape_at`).
+`render::zones`: tagged outlines with soft density/wealth/age, feathered so
+neighbours sum to one, own 64 m grid with wholly-inside cells marked.
+`World::zone/zoning`, placement fields "zone:TAG", "zoned", "density",
+"wealth", "age", `placement::thinned`. WGSL `wc_zone`, `wc_zoning`,
+`wc_outline`. `terrain_fly --town`. Doc: docs/terrain-zones.md. Far forest
+and grass ignore zones; no buildings or streets yet.
+
+Validation: render lib 827 PASS; GPU parity with footprints and zones PASS on
+Mesa lavapipe only; workspace check clean. No interactive playtest.
+
+## 5 November: terrain regions (several kinds of land in one world)
+
+`render::regions`: a palette of up to 256 terrain styles and a 64 m grid whose
+nodes keep their four strongest (id, weight) pairs (8 bytes a node);
+`Regions::style_at` blends them per point, one style alone exactly. Carried by
+`world_constraints` (`Constraints::regions`, `World::style_at`; GPU words after
+the cell lists in the index buffer, `wc_style` line for line). The terrain mesh,
+`World::eval/height/trees`, placement fields and `sun_heightfield` (new
+`constraints` argument) follow the regions. One style at full weight is bit for
+bit the old world. `terrain_fly --regions NAME`. Doc: docs/terrain-regions.md.
+
+Kinds: a region's palette index is its kind id and each system keeps its own
+table by kind (terrain Style, GroundStyle, flora rules; cities and buildings
+later as more tables). `Regions::mix/share`, `placement::World::share`,
+`placement::regional` (density scaled by share, kind in the rule id),
+`biome::Lands`, `procedural_terrain::region_ground` + `region_ground` in
+terrain_surface.wgsl (ground colours per kind). Still global: far forest colour
+and `forest_at`.
+
+Validation: render lib 810 PASS; GPU parity (`world_constraints::gpu_matches_cpu`
+with and without regions, `terrain_field::biome_shapes_match_on_gpu`) PASS on Mesa
+lavapipe in the cloud container, not yet on real hardware; naga validation of the
+composed shaders; workspace check clean. No interactive playtest.
+
 ## 5 November: ditches, streams and rivers no longer pop in
 
 Water in ditches, stream beds and river channels existed only where the

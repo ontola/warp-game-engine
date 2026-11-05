@@ -11,6 +11,24 @@ struct WcHeader {
     size: vec2<u32>,
     segments: u32,
     pad0: u32,
+    // The regions (regions.rs): grid node (0, 0), spacing, where their
+    // words start in wc_index (styles, then two words a node), nodes
+    // across, styles in the palette (0: none).
+    region_origin: vec2<f32>,
+    region_cell: f32,
+    region_at: u32,
+    region_size: vec2<u32>,
+    region_styles: u32,
+    // Where the footprints' corners start in wc_index (x, z bits each).
+    shape_at: u32,
+    // The zones (zones.rs): grid cell (0, 0), spacing, how many (0: none),
+    // cells across, where their words start in wc_index.
+    zone_origin: vec2<f32>,
+    zone_cell: f32,
+    zone_count: u32,
+    zone_size: vec2<u32>,
+    zone_at: u32,
+    pad3: u32,
 };
 
 struct WcSegment {
@@ -96,6 +114,35 @@ fn wc_arm(y: f32, u: f32, core: f32, distance: f32) -> WcPull {
     return WcPull(y, b.x, b.y, core, distance);
 }
 
+// outline_distance: signed metres from p to the closed outline of `count`
+// corners at wc_index[at] (x, z bits each); negative inside.
+fn wc_outline(at: u32, count: u32, p: vec2<f32>) -> f32 {
+    let v0 = vec2<f32>(bitcast<f32>(wc_index[at]), bitcast<f32>(wc_index[at + 1u]));
+    var d = dot(p - v0, p - v0);
+    var sign = 1.0;
+    var j = count - 1u;
+    for (var i = 0u; i < count; i++) {
+        let vi = vec2<f32>(bitcast<f32>(wc_index[at + 2u * i]), bitcast<f32>(wc_index[at + 2u * i + 1u]));
+        let vj = vec2<f32>(bitcast<f32>(wc_index[at + 2u * j]), bitcast<f32>(wc_index[at + 2u * j + 1u]));
+        let e = vj - vi;
+        let w = p - vi;
+        let b = w - e * clamp(dot(w, e) / dot(e, e), 0.0, 1.0);
+        d = min(d, dot(b, b));
+        let c0 = p.y >= vi.y;
+        let c1 = p.y < vj.y;
+        let c2 = e.x * w.y > e.y * w.x;
+        if (c0 && c1 && c2) || (!c0 && !c1 && !c2) { sign = -sign; }
+        j = i;
+    }
+    return sign * sqrt(d);
+}
+
+// Metres from p to a pad's rim or a footprint's outline; negative inside.
+fn wc_rim(s: WcSegment, p: vec2<f32>) -> f32 {
+    if s.w.w > 1.5 { return wc_outline(wc_header.shape_at + 2u * u32(s.b.x), u32(s.b.y), p); }
+    return distance(p, s.a.xz) - s.b.x;
+}
+
 fn wc_smax(a: f32, b: f32, k: f32) -> f32 {
     if k <= 0.0 { return max(a, b); }
     let h = max(k - abs(a - b), 0.0) / k;
@@ -120,7 +167,7 @@ fn wc_near(x: f32, z: f32) -> WcNear {
     return best;
 }
 
-// Metres to the nearest road edge or pad rim; negative inside.
+// Metres to the nearest road edge, pad rim or footprint outline; negative inside.
 fn wc_clearance(x: f32, z: f32) -> f32 {
     let p = vec2<f32>(x, z);
     let list = wc_list(x, z);
@@ -128,7 +175,7 @@ fn wc_clearance(x: f32, z: f32) -> f32 {
     for (var i = list.x; i < list.y; i++) {
         let s = wc_segments[wc_index[i]];
         if s.w.w > 0.5 {
-            c = min(c, distance(p, s.a.xz) - s.b.x);
+            c = min(c, wc_rim(s, p));
         } else {
             let n = wc_segment_near(s, p);
             c = min(c, n.distance - n.half);
@@ -152,8 +199,11 @@ fn wc_apply(x: f32, z: f32, s_in: TerrainSample) -> TerrainSample {
         let seg = wc_segments[k];
         var pull: WcPull;
         if seg.w.w > 0.5 {
-            let d = distance(p, seg.a.xz);
-            pull = wc_arm(seg.a.y, d - seg.b.x, 0.0, d);
+            let d = wc_rim(seg, p);
+            // A bare footprint is gravel inside, fading out over the verge.
+            var core = 0.0;
+            if seg.w.w > 1.5 { core = seg.w.x * wc_smooth(WC_VERGE, 0.0, d); }
+            pull = wc_arm(seg.a.y, d, core, d);
         } else {
             let near = wc_segment_near(seg, p);
             pull = wc_arm(near.height, near.distance - near.half - WC_VERGE, wc_smooth(near.half + WC_VERGE, near.half, near.distance), near.distance);
@@ -210,8 +260,117 @@ fn wc_apply(x: f32, z: f32, s_in: TerrainSample) -> TerrainSample {
     return s;
 }
 
+
+// Regions::style_at: the styles of the four surrounding nodes mixed by
+// their weights and bilinear shares; one style alone exactly; `st` where
+// the world has no regions.
+fn wc_style(x: f32, z: f32, st: TerrainStyle) -> TerrainStyle {
+    let h = wc_header;
+    if h.region_styles == 0u { return st; }
+    let w = h.region_size.x;
+    let hh = h.region_size.y;
+    let fx = clamp((x - h.region_origin.x) / h.region_cell, 0.0, f32(w - 1u));
+    let fz = clamp((z - h.region_origin.y) / h.region_cell, 0.0, f32(hh - 1u));
+    let i0 = min(u32(floor(fx)), max(w, 2u) - 2u);
+    let j0 = min(u32(floor(fz)), max(hh, 2u) - 2u);
+    let i1 = min(i0 + 1u, w - 1u);
+    let j1 = min(j0 + 1u, hh - 1u);
+    let tx = fx - f32(i0);
+    let tz = fz - f32(j0);
+    let nodes = h.region_at + h.region_styles * 16u;
+    var at = array<u32, 4>(nodes + 2u * (j0 * w + i0), nodes + 2u * (j0 * w + i1), nodes + 2u * (j1 * w + i0), nodes + 2u * (j1 * w + i1));
+    var f = array<f32, 4>((1.0 - tx) * (1.0 - tz), tx * (1.0 - tz), (1.0 - tx) * tz, tx * tz);
+    // One style alone: return it untouched (no rounding from the mix).
+    var only = 0xffffffffu;
+    var mixed = false;
+    for (var c = 0u; c < 4u; c++) {
+        let ids = wc_index[at[c]];
+        let ws = wc_index[at[c] + 1u];
+        for (var k = 0u; k < 4u; k++) {
+            if f[c] > 0.0 && ((ws >> (8u * k)) & 255u) > 0u {
+                let id = (ids >> (8u * k)) & 255u;
+                if only == 0xffffffffu { only = id; } else if id != only { mixed = true; }
+            }
+        }
+    }
+    var acc: array<f32, 16>;
+    if !mixed {
+        for (var v = 0u; v < 16u; v++) { acc[v] = bitcast<f32>(wc_index[h.region_at + only * 16u + v]); }
+    } else {
+        var sum = 0.0;
+        for (var c = 0u; c < 4u; c++) {
+            let ids = wc_index[at[c]];
+            let ws = wc_index[at[c] + 1u];
+            for (var k = 0u; k < 4u; k++) {
+                let share = f32((ws >> (8u * k)) & 255u) / 255.0 * f[c];
+                if share > 0.0 {
+                    let base = h.region_at + ((ids >> (8u * k)) & 255u) * 16u;
+                    for (var v = 0u; v < 16u; v++) { acc[v] += bitcast<f32>(wc_index[base + v]) * share; }
+                    sum += share;
+                }
+            }
+        }
+        for (var v = 0u; v < 16u; v++) { acc[v] /= sum; }
+    }
+    return TerrainStyle(acc[0], acc[1], acc[2], acc[3], acc[4], acc[5], acc[6], acc[7],
+        acc[8], acc[9], acc[10], acc[11], acc[12], acc[13], acc[14], acc[15]);
+}
+
 fn terrain_eval_world(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> TerrainSample {
-    let s = terrain_eval(x, z, cut, seed, st);
+    let s = terrain_eval(x, z, cut, seed, wc_style(x, z, st));
     if wc_header.segments == 0u { return s; }
     return wc_apply(x, z, s);
+}
+
+// Zones (zones.rs, line for line): the zones listed in the zone cell under
+// (x, z), as (first, end) into wc_index.
+fn wc_zone_list(x: f32, z: f32) -> vec2<u32> {
+    let h = wc_header;
+    let fi = floor((x - h.zone_origin.x) / h.zone_cell);
+    let fj = floor((z - h.zone_origin.y) / h.zone_cell);
+    if h.zone_count == 0u || fi < 0.0 || fj < 0.0 || fi >= f32(h.zone_size.x) || fj >= f32(h.zone_size.y) { return vec2<u32>(0u, 0u); }
+    let cells = h.zone_at + 8u * h.zone_count;
+    let c = u32(fj) * h.zone_size.x + u32(fi);
+    let items = cells + h.zone_size.x * h.zone_size.y + 1u;
+    return vec2<u32>(items + wc_index[cells + c], items + wc_index[cells + c + 1u]);
+}
+
+// How much of a zone a cell item's point is: 1 for a cell wholly inside.
+fn wc_zone_share(item: u32, p: vec2<f32>) -> f32 {
+    if (item & 0x80000000u) != 0u { return 1.0; }
+    let r = wc_header.zone_at + 8u * item;
+    let d = wc_outline(wc_header.zone_at + wc_index[r], wc_index[r + 1u], p);
+    let h = 0.5 * max(bitcast<f32>(wc_index[r + 3u]), 1e-3);
+    let t = clamp((d + h) / (2.0 * h), 0.0, 1.0);
+    return 1.0 - t * t * (3.0 - 2.0 * t);
+}
+
+// Zones::weight: the share of tag `tag` at (x, z), its strongest zone there.
+fn wc_zone(x: f32, z: f32, tag: u32) -> f32 {
+    let p = vec2<f32>(x, z);
+    let list = wc_zone_list(x, z);
+    var w = 0.0;
+    for (var i = list.x; i < list.y; i++) {
+        let item = wc_index[i];
+        if wc_index[wc_header.zone_at + 8u * (item & 0x7fffffffu) + 2u] == tag { w = max(w, wc_zone_share(item, p)); }
+    }
+    return w;
+}
+
+// Zones::zoning: (covered, density, wealth, age) at (x, z).
+fn wc_zoning(x: f32, z: f32) -> vec4<f32> {
+    let p = vec2<f32>(x, z);
+    let list = wc_zone_list(x, z);
+    var sum = 0.0;
+    var acc = vec3<f32>(0.0);
+    for (var i = list.x; i < list.y; i++) {
+        let item = wc_index[i];
+        let w = wc_zone_share(item, p);
+        if w <= 0.0 { continue; }
+        let r = wc_header.zone_at + 8u * (item & 0x7fffffffu);
+        acc += vec3<f32>(bitcast<f32>(wc_index[r + 4u]), bitcast<f32>(wc_index[r + 5u]), bitcast<f32>(wc_index[r + 6u])) * w;
+        sum += w;
+    }
+    if sum <= 0.0 { return vec4<f32>(0.0); }
+    return vec4<f32>(min(sum, 1.0), acc / sum);
 }

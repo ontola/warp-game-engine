@@ -16,11 +16,17 @@ struct State {
     sources:Vec<GpuInstance>,
     owners:Vec<bool>,
     dirty:bool,
-    key:Option<[u32;5]>,
+    key:Option<[u32;7]>,
     projection:Projection,
 }
 pub(crate) struct Resources {
     pub enabled:bool,
+    /// Follows the camera in steps of a quarter of `reach` instead of fitting
+    /// a fixed stage: a streamed world's distant shadows, redrawn only when
+    /// the camera has moved that far or the sun changed.
+    pub anchored:bool,
+    /// Half width (metres) of the anchored map.
+    pub reach:f32,
     pub lod_pixels:f32,
     pub stage:bool,
     min_extent:f32,
@@ -38,8 +44,17 @@ fn eligible(i:&GpuInstance,stage:bool)->bool {
     let excluded=NO_SHADOW|LIVE_GRASS|WIND_GRASS|PART_WIND|SKINNED|if stage {0}else{SOLID};
     i.flags&excluded==0 && i.category()!=crate::scene::GeometryCategory::Cars
 }
-fn owners(scene:&Scene,stage:bool)->Vec<bool> {
-    let mut result:Vec<_>=scene.instances.iter().map(|i|eligible(i,stage)).collect();
+/// Camera-anchored map (streamed GPU forest worlds): static props and
+/// buildings. The land has its baked heightfield sun, and the voxel forest
+/// draws itself into this map (frame.rs); everything that moves or sways
+/// stays in the per-frame maps.
+fn eligible_anchored(i:&GpuInstance)->bool {
+    use crate::scene::GeometryCategory as C;
+    i.flags&(NO_SHADOW|LIVE_GRASS|WIND_GRASS|PART_WIND|SKINNED|FOLIAGE)==0
+        && !matches!(i.category(),C::Cars|C::Terrain|C::Trees|C::Grass)
+}
+fn owners(scene:&Scene,stage:bool,anchored:bool)->Vec<bool> {
+    let mut result:Vec<_>=scene.instances.iter().map(|i|if anchored {eligible_anchored(i)} else {eligible(i,stage)}).collect();
     for range in &scene.dynamic_instances {for owner in range.clone(){if let Some(v)=result.get_mut(owner){*v=false;}}}
     for part in &scene.part_wind {if let Some(owner)=part.owner {result[owner as usize]=false;}}
     for part in &scene.part_attachments {result[part.owner as usize]=false;}
@@ -81,17 +96,30 @@ fn fit_min(instances:&[GpuInstance],sun:Vec3,stage:bool,min_extent:f32)->Project
     Projection{vp:crate::stability::stable_shadow_depth(focus,sun,extent,SIZE,range),
         eye:crate::stability::shadow_eye(focus,sun,range),extent}
 }
+/// A square map `reach` metres each way around `centre`, deep enough for
+/// every caster `range` reports there. The shader fades its outer 20 %.
+fn anchored(centre:Vec3,sun:Vec3,reach:f32,range:&dyn Fn(Vec3,f32)->[f32;2])->Projection {
+    let raw=range(centre,reach);
+    let mid=(raw[0]+raw[1])*0.5;let half=(raw[1]-raw[0])*0.5/0.9+16.;
+    let range=[mid-half,mid+half];
+    Projection{vp:crate::stability::stable_shadow_depth(centre,sun,reach,SIZE,range),eye:crate::stability::shadow_eye(centre,sun,range),extent:reach}
+}
 impl Resources {
     pub fn new(gpu:&Gpu,scene:&Scene)->Self {
         let explicit=!scene.static_sun_instances.is_empty();
         let stage=scene.stage_sun || explicit;
         let min_extent=if explicit{128.}else{1024.};
-        let enabled=match std::env::var("KERN_FAR_SUN_SHADOW").as_deref(){Ok("0")=>false,Ok("1")=>true,_=>stage && std::env::var("KERN_PAGED_FOLIAGE_SUN").as_deref()!=Ok("1")};
+        let paged=std::env::var("KERN_PAGED_FOLIAGE_SUN").as_deref()==Ok("1");
+        let setting=std::env::var("KERN_FAR_SUN_SHADOW");
+        // A streamed GPU forest world gets a camera-anchored map by default.
+        let anchored=!stage && scene.gpu_forest.is_some() && !paged && setting.as_deref()!=Ok("0");
+        let enabled=anchored || match setting.as_deref(){Ok("0")=>false,Ok("1")=>true,_=>stage && !paged};
+        let reach=std::env::var("KERN_FAR_SUN_REACH").ok().and_then(|v|v.parse::<f32>().ok()).filter(|v|v.is_finite()&&*v>=256.).unwrap_or(1024.);
         let lod_pixels=configured_lod(std::env::var("KERN_FAR_SUN_LOD").ok().as_deref());
-        let mut owners=if enabled {owners(scene,stage)}else{Vec::new()};
+        let mut owners=if enabled {owners(scene,stage,anchored)}else{Vec::new()};
         if enabled && explicit {owners.fill(false);for &id in &scene.static_sun_instances {if let Some(owner)=owners.get_mut(id as usize){*owner=eligible(&scene.instances[id as usize],true);}}}
         let sources:Vec<_>=scene.instances.iter().zip(&owners).map(|(&i,&owner)|if owner{i}else{hidden(i)}).collect();
-        let capacity=sources.iter().map(|i|i.cluster_count as u64).sum::<u64>().clamp(1,crate::frame::MAX_VISIBLE as u64) as u32;
+        let capacity=sources.iter().map(|i|i.cluster_count as u64).sum::<u64>().max(if anchored {65536} else {1}).clamp(1,crate::frame::MAX_VISIBLE as u64) as u32;
         let data=if enabled && !sources.is_empty(){bytemuck::cast_slice(&sources)}else{&[0u8;80]};
         let instances=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("far sun static sources"),contents:data,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST});
         let wind=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("far sun rest pose"),size:if enabled{(sources.len().max(1)*16)as u64}else{16},usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false});
@@ -101,14 +129,15 @@ impl Resources {
         let target=texture.create_view(&Default::default());
         let array_view=wgpu::TextureViewDescriptor{dimension:Some(wgpu::TextureViewDimension::D2Array),..Default::default()};
         let view=texture.create_view(&array_view);let empty=empty_texture.create_view(&array_view);
-        Self{enabled,lod_pixels,stage,min_extent,uniform,instances,wind,_texture:texture,view,target,empty,capacity,state:std::sync::Mutex::new(State{sources,owners,dirty:true,key:None,projection:Projection{vp:Mat4::IDENTITY,eye:Vec3::ZERO,extent:1024.}})}
+        Self{enabled,anchored,reach,lod_pixels,stage,min_extent,uniform,instances,wind,_texture:texture,view,target,empty,capacity,state:std::sync::Mutex::new(State{sources,owners,dirty:true,key:None,projection:Projection{vp:Mat4::IDENTITY,eye:Vec3::ZERO,extent:1024.}})}
     }
     pub fn update(&self,gpu:&Gpu,first:usize,input:&[GpuInstance]) {
         if !self.enabled{return;}
         let mut s=self.state.lock().unwrap();
         for (n,&i) in input.iter().enumerate(){let index=first+n;
             if !s.owners[index]{continue;}
-            let next=if eligible(&i,self.stage){i}else{hidden(i)};
+            let keep=if self.anchored {eligible_anchored(&i)} else {eligible(&i,self.stage)};
+            let next=if keep{i}else{hidden(i)};
             if bytemuck::bytes_of(&next)!=bytemuck::bytes_of(&s.sources[index]){
                 s.sources[index]=next;s.dirty=true;
                 gpu.queue.write_buffer(&self.instances,(index*std::mem::size_of::<GpuInstance>())as u64,bytemuck::bytes_of(&next));
@@ -117,11 +146,19 @@ impl Resources {
     }
     /// Returns whether the persistent map needs one shared redraw. The caller
     /// must encode that redraw before any view samples the new uniform.
-    pub fn prepare(&self,gpu:&Gpu,sun:Vec3,alpha:f32,lod:f32)->Option<(Projection,bool)> {
+    /// `focus`: where the camera's lighting is centred, and the sun-axis
+    /// depth range of everything that may cast within `reach` of it (anchored
+    /// maps only).
+    pub fn prepare(&self,gpu:&Gpu,sun:Vec3,alpha:f32,lod:f32,focus:Vec3,range:impl Fn(Vec3,f32)->[f32;2])->Option<(Projection,bool)> {
         if !self.enabled{return None;}
-        let key=[sun.x.to_bits(),sun.y.to_bits(),sun.z.to_bits(),alpha.to_bits(),lod.to_bits()];
+        let step=self.reach*0.25;
+        let cell=if self.anchored {[(focus.x/step).round() as i32,(focus.z/step).round() as i32]} else {[0,0]};
+        let key=[sun.x.to_bits(),sun.y.to_bits(),sun.z.to_bits(),alpha.to_bits(),lod.to_bits(),cell[0] as u32,cell[1] as u32];
         let mut s=self.state.lock().unwrap();let changed=s.dirty||s.key!=Some(key);
-        if changed{s.projection=fit_min(&s.sources,sun,self.stage,self.min_extent);s.key=Some(key);s.dirty=true;
+        if changed{
+            s.projection=if self.anchored {anchored(Vec3::new(cell[0] as f32*step,focus.y,cell[1] as f32*step),sun,self.reach,&range)}
+                else {fit_min(&s.sources,sun,self.stage,self.min_extent)};
+            s.key=Some(key);s.dirty=true;
             gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform{view_proj:s.projection.vp.to_cols_array_2d(),params:[2.*s.projection.extent/SIZE as f32,0.8,1.,if self.stage {1.+lod}else{0.}]}));}
         Some((s.projection,changed))
     }
@@ -137,9 +174,9 @@ impl Resources {
         let mut scene=Scene::default();scene.stage_sun=true;
         scene.instances=vec![source(Vec3::ZERO,1.,SOLID),source(Vec3::ZERO,1.,FOLIAGE),source(Vec3::ZERO,1.,0),source(Vec3::ZERO,1.,SKINNED)];
         scene.dynamic_instances.push(2..3);
-        assert_eq!(owners(&scene,true),vec![true,true,false,false]);
+        assert_eq!(owners(&scene,true,false),vec![true,true,false,false]);
         // Empty at level creation still remains dynamic when filled later.
-        scene.instances[2].cluster_count=0;assert!(!owners(&scene,true)[2]);
+        scene.instances[2].cluster_count=0;assert!(!owners(&scene,true,false)[2]);
     }
     #[test]fn stage_fit_includes_buildings_and_roads_outside_the_forest(){
         let sources=[source(Vec3::ZERO,20.,FOLIAGE),source(Vec3::new(6000.,200.,0.),300.,SOLID)];
@@ -167,17 +204,17 @@ impl Resources {
         let cache=Resources::new(&gpu,&scene);
         assert_eq!(cache.state.lock().unwrap().owners,vec![true,false]);
         let sun=Vec3::new(0.3,0.8,0.4).normalize();
-        assert!(cache.prepare(&gpu,sun,0.5,0.5).unwrap().1);
+        assert!(cache.prepare(&gpu,sun,0.5,0.5,Vec3::ZERO,|_,_|[-512.,512.]).unwrap().1);
         cache.submitted();
-        assert!(!cache.prepare(&gpu,sun,0.5,0.5).unwrap().1);
+        assert!(!cache.prepare(&gpu,sun,0.5,0.5,Vec3::ZERO,|_,_|[-512.,512.]).unwrap().1);
         scene.instances[1].rows[0][3]+=10.;
         cache.update(&gpu,1,&scene.instances[1..]);
-        assert!(!cache.prepare(&gpu,sun,0.5,0.5).unwrap().1);
+        assert!(!cache.prepare(&gpu,sun,0.5,0.5,Vec3::ZERO,|_,_|[-512.,512.]).unwrap().1);
         scene.instances[0].rows[0][3]+=10.;scene.instances[0].sphere[0]+=10.;
         cache.update(&gpu,0,&scene.instances[..1]);
-        assert!(cache.prepare(&gpu,sun,0.5,0.5).unwrap().1);
+        assert!(cache.prepare(&gpu,sun,0.5,0.5,Vec3::ZERO,|_,_|[-512.,512.]).unwrap().1);
         cache.submitted();
-        assert!(cache.prepare(&gpu,Vec3::Y,0.5,0.5).unwrap().1);
+        assert!(cache.prepare(&gpu,Vec3::Y,0.5,0.5,Vec3::ZERO,|_,_|[-512.,512.]).unwrap().1);
     }
     #[test]fn explicit_stadium_cache_fits_small_scene_without_camera_dependence(){
         let sources=[source(Vec3::new(-120.,30.,0.),40.,0),source(Vec3::new(120.,40.,0.),40.,0)];

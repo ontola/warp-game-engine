@@ -184,15 +184,19 @@ pub enum GeometryCategory {
     Trees = 2,
     Grass = 3,
     Cars = 4,
+    /// Buildings, walls and other built things. A label for diagnostics and
+    /// games: any rigid opaque geometry outside Trees and Grass hides foliage
+    /// behind it before selection, whatever its category.
+    Structures = 5,
 }
 
 impl GeometryCategory {
-    pub const ALL: [Self; 5] = [Self::Other, Self::Terrain, Self::Trees, Self::Grass, Self::Cars];
+    pub const ALL: [Self; 6] = [Self::Other, Self::Terrain, Self::Trees, Self::Grass, Self::Cars, Self::Structures];
 
     pub const fn name(self) -> &'static str {
         match self {
             Self::Other => "other", Self::Terrain => "terrain", Self::Trees => "trees",
-            Self::Grass => "grass", Self::Cars => "cars",
+            Self::Grass => "grass", Self::Cars => "cars", Self::Structures => "structures",
         }
     }
 
@@ -203,7 +207,7 @@ impl GpuInstance {
     pub const fn category(&self) -> GeometryCategory {
         match (self.flags & INSTANCE_CATEGORY_MASK) >> INSTANCE_CATEGORY_SHIFT {
             1 => GeometryCategory::Terrain, 2 => GeometryCategory::Trees,
-            3 => GeometryCategory::Grass, 4 => GeometryCategory::Cars,
+            3 => GeometryCategory::Grass, 4 => GeometryCategory::Cars, 5 => GeometryCategory::Structures,
             _ => GeometryCategory::Other,
         }
     }
@@ -619,8 +623,8 @@ impl Scene {
     }
 
     /// Explicit O(source instances) startup/diagnostic scan; never part of rendering.
-    pub fn geometry_category_counts(&self) -> [GeometryCategoryCounts; 5] {
-        let mut counts = [GeometryCategoryCounts::default(); 5];
+    pub fn geometry_category_counts(&self) -> [GeometryCategoryCounts; 6] {
+        let mut counts = [GeometryCategoryCounts::default(); 6];
         for instance in &self.instances {
             let count = &mut counts[instance.category() as usize];
             count.instances += 1;

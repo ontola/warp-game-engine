@@ -72,7 +72,8 @@ pub fn constrain(scene: &mut Scene, world: std::sync::Arc<world_constraints::Wor
 /// grid's heights are the "unknown" sentinel: the coarse samples would lie
 /// above the finer mesh in places, and the heightfield's ground tests would
 /// then black out the ground under them.
-pub fn sun_heightfield(seed: u32, style: &terrain_field::Style, centre: [f32; 2], size: f32, cell: f32, sun: Vec3)
+/// `constraints` bend the land and give it its regions, as the mesh does.
+pub fn sun_heightfield(seed: u32, style: &terrain_field::Style, constraints: Option<&world_constraints::World>, centre: [f32; 2], size: f32, cell: f32, sun: Vec3)
     -> (crate::scene::Heightfield, Vec<f32>) {
     let n = (size / cell).ceil() as usize + 1;
     let origin = [(centre[0] / cell).floor() * cell - (n / 2) as f32 * cell, (centre[1] / cell).floor() * cell - (n / 2) as f32 * cell];
@@ -84,7 +85,11 @@ pub fn sun_heightfield(seed: u32, style: &terrain_field::Style, centre: [f32; 2]
             s.spawn(move || {
                 for (i, h) in chunk.iter_mut().enumerate() {
                     let (x, z) = ((i % n) as f32, (k * rows + i / n) as f32);
-                    *h = terrain_field::eval(origin[0] + x * cell, origin[1] + z * cell, cell, seed, style).pos.y;
+                    let (u, v) = (origin[0] + x * cell, origin[1] + z * cell);
+                    *h = match constraints {
+                        Some(w) => w.eval(u, v, cell, seed, style).pos.y,
+                        None => terrain_field::eval(u, v, cell, seed, style).pos.y,
+                    };
                 }
             });
         }
@@ -170,8 +175,32 @@ pub fn vegetation_style(scene: &mut Scene, material: u32, style: &vegetation_sty
     let first = style_block(scene, material);
     let forest: [Material; 2] = bytemuck::cast(style.forest);
     let ground: [Material; 4] = bytemuck::cast(style.ground);
+    // The region palette pointer (region_ground) lives in the ground's
+    // reserved word; a new palette keeps it.
+    let regions = scene.materials[first + 6].roughness;
     scene.materials[first..first + 2].copy_from_slice(&forest);
     scene.materials[first + 3..first + 7].copy_from_slice(&ground);
+    scene.materials[first + 6].roughness = regions;
+}
+
+/// Ground colours per region (crate::regions): region kind k is drawn in
+/// `grounds[k]` (its biome's palette at the season), blended across
+/// borders the way the terrain's shape is, per pixel
+/// (terrain_surface.wgsl region_ground). Replaces the single palette of
+/// `vegetation_style` wherever the regions' grid reaches (its edge holds
+/// beyond). The data goes into materials after the style block; the
+/// GroundStyle's reserved.x points at it (first + 1, 0 for none).
+pub fn region_ground(scene: &mut Scene, material: u32, regions: &crate::regions::Regions, grounds: &[vegetation_style::GroundStyle]) {
+    let first = style_block(scene, material);
+    let words = regions.surface_words(bytemuck::cast_slice(grounds), 32);
+    let at = scene.materials.len();
+    assert!(at + words.len() / 8 < 1 << 24, "region ground material index out of range");
+    for chunk in words.chunks(8) {
+        let mut w = [0.0f32; 8];
+        w[..chunk.len()].copy_from_slice(chunk);
+        scene.materials.push(Material { tint: [w[0], w[1], w[2]], layer: w[3].to_bits() as i32, roughness: w[4], flags: w[5].to_bits(), scale: w[6], metal: w[7] });
+    }
+    scene.materials[first + 6].roughness = at as f32 + 1.0;
 }
 
 /// Draw the forest of `forest_field` into the terrain from `start_m` from

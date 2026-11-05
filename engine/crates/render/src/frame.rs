@@ -613,6 +613,12 @@ pub struct FrameStats {
     pub picks: Vec<Option<(u32, u32, u32)>>,
 }
 
+/// cull.wgsl OCCLUDERS_ONLY: the foliage seed view draws only rigid opaque geometry.
+const OCCLUDERS_ONLY:u32=128;
+fn terrain_only_occluders()->bool {
+    static ONLY:std::sync::OnceLock<bool>=std::sync::OnceLock::new();
+    *ONLY.get_or_init(||std::env::var("KERN_FOLIAGE_OCCLUDERS").as_deref()==Ok("terrain"))
+}
 struct FoliageSeedTarget {
     targets:ViewTargets, depth:wgpu::TextureView, color:wgpu::TextureView,
     pyramid:crate::depth_pyramid::PyramidTarget,
@@ -649,7 +655,7 @@ pub struct VisibleClusterDiagnostic {
     pub output_size: [u32; 2],
     pub camera: Camera,
     pub pairs: Vec<[u32; 2]>,
-    pub categories: Option<[crate::geometry_diagnostics::Counts;5]>,
+    pub categories: Option<[crate::geometry_diagnostics::Counts;6]>,
     /// Actual submitted per-volume [enabled, maximum mip, reserved, reserved]
     /// selection, read from this view's GPU buffer. Empty without foliage bindings.
     pub foliage_selection: Vec<[u32; 4]>,
@@ -2293,6 +2299,8 @@ impl Renderer {
 
     /// Exact current-view occlusion counters. Explicit blocking capture only;
     /// ordinary gameplay uses GPU-side decisions without counter readback.
+    #[cfg(test)]
+    pub(crate) fn debug_tree_occlusion_enabled(&self)->bool {self.tree_occlusion.enabled}
     pub fn debug_tree_occlusion(&self,gpu:&Gpu,view:usize,expected_render_sequence:Option<u64>)
         ->Result<crate::tree_occlusion::Diagnostics,String> {
         let diagnostics=self.color_diagnostics.lock().unwrap();
@@ -2755,6 +2763,9 @@ impl Renderer {
         Ok(())
     }
 
+    /// (rounds encoded last frame, working rounds last reported, depth bound) of GPU forest selection.
+    #[cfg(test)]
+    pub(crate) fn test_forest_rounds(&self,full:bool,hint:Option<u32>)->(u32,Option<u32>,u32) {let (r,_)=self.gpu_forest.as_ref().unwrap();r.test_rounds(full,hint)}
     #[cfg(test)]
     pub(crate) fn test_warm_foliage_assets(&self,gpu:&Gpu){if let(Some(v),Some((r,_)))=(&self.voxel_forest,&self.gpu_forest){v.warm_page_fixture(gpu,r);}}
     #[cfg(test)]
@@ -3842,7 +3853,16 @@ impl Renderer {
         }
         // A generated level bake must not change as adaptive camera quality changes.
         let far_lod=if self.far_sun.stage {self.far_sun.lod_pixels}else{crate::far_sun::effective_lod(self.far_sun.lod_pixels,light.lod_pixels)};
-        let far_projection=if sun_needed {self.far_sun.prepare(gpu,light.sun_dir,light.alpha_cut,far_lod)} else {None};
+        // Anchored far map: every caster within its reach, the land included
+        // (up to 600 m above or below the focus), on the sun axis.
+        let far_range=|focus:Vec3,reach:f32| {
+            let corners=(0..8).map(|k|focus+Vec3::new(if k&1==0{-reach}else{reach},if k&2==0{-600.}else{600.},if k&4==0{-reach}else{reach})).collect::<Vec<_>>();
+            self.sun_scene_bounds.as_ref().map_or_else(||{
+                let (_,_,z)=crate::stability::sun_basis(light.sun_dir);
+                let d=corners.iter().map(|p|z.dot(*p));[d.clone().fold(f32::INFINITY,f32::min),d.fold(f32::NEG_INFINITY,f32::max)]
+            },|b|b.lock().unwrap().depth_range(light.sun_dir,&corners))
+        };
+        let far_projection=if sun_needed {self.far_sun.prepare(gpu,light.sun_dir,light.alpha_cut,far_lod,centre,far_range)} else {None};
         let far_updated=far_projection.is_some_and(|(_,updated)|updated);
         let mut far_targets=self.far_sun_targets.lock().unwrap();
         if let Some((projection,true))=far_projection {
@@ -4049,9 +4069,16 @@ impl Renderer {
                 let t=&seed_targets[vi];
                 let projection=camera_projections.get(vi).copied().unwrap_or_else(||Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near));
                 let mut uniform=view_uniform(part_animation_views[vi].view_projection,v.cam.pos,projection.y_axis.y*0.5*v.h as f32,[light.lod_pixels,v.cam.near,0.,8192.],[size.0 as f32,size.1 as f32,1./size.0 as f32,1./size.1 as f32],cut);
-                // Only the terrain category may occlude upstream. Missing seed
-                // clusters at the bounded capacity fail open (less occlusion).
-                uniform.fog_cull[3]=((31u32 & !(1u32<<1))|geometry_diagnostic.excluded_mask) as f32;
+                // Any rigid opaque geometry may occlude upstream: everything but
+                // trees and grass, minus see-through materials and deforming or
+                // per-view hidden instances (cull.wgsl OCCLUDERS_ONLY). This is
+                // current-frame depth, so moving rigid bodies are fine.
+                // Missing seed clusters at the bounded capacity fail open
+                // (less occlusion).
+                let foliage=crate::scene::GeometryCategory::Trees.exclusion_bit()|crate::scene::GeometryCategory::Grass.exclusion_bit();
+                // KERN_FOLIAGE_OCCLUDERS=terrain: A/B diagnostic, only the land occludes.
+                let not_occluding=if terrain_only_occluders() {63&!crate::scene::GeometryCategory::Terrain.exclusion_bit()} else {foliage};
+                uniform.fog_cull[3]=(not_occluding|geometry_diagnostic.excluded_mask|OCCLUDERS_ONLY) as f32;
                 gpu.queue.write_buffer(&t.targets.uniform,0,bytemuck::bytes_of(&uniform));
                 let start=names.len();
                 self.cull_and_raster(&mut enc,gpu,&t.targets,Some(&t.color),&t.depth,&mut ts,&mut names,"foliage seed terrain cull",RasterPass::Color);
@@ -4065,10 +4092,19 @@ impl Renderer {
             if time.is_some(){names.extend(["GPU forest selection residency","GPU forest shared poses","GPU forest materialize"]);}
             // Cameras were appended first; all following consumers are shadow
             // maps (including perspective headlights). Do not infer roles from VP.
-            let consumers=part_animation_views.iter().copied().enumerate().map(|(i,v)| {
+            let mut consumers=part_animation_views.iter().copied().enumerate().map(|(i,v)| {
                 if i<views.len(){crate::foliage_select::ConsumerView::camera(v)}
                 else{crate::foliage_select::ConsumerView::shadow(v)}
             }).collect::<Vec<_>>();
+            // The anchored far sun map is a shadow consumer every frame, not only
+            // when it is redrawn, so its presence never changes the shared cut
+            // (and with it the cached main sun map) from frame to frame.
+            if let Some((projection,_))=far_projection.filter(|_|self.far_sun.anchored) {
+                consumers.push(crate::foliage_select::ConsumerView::shadow(crate::part_wind::AnimationView {view_projection:projection.vp,viewport:[crate::far_sun::SIZE;2]}));
+            }
+            // A camera cut needs deeper refinement than last frame's readback
+            // says; encode the full round bound until the GPU reports again.
+            forest.note_cameras(&views.iter().map(|v|(v.cam.pos,(v.cam.target-v.cam.pos).normalize_or_zero(),v.cam.fov_y)).collect::<Vec<_>>());
             forest.encode_timed_depth(gpu,&mut enc,&consumers,*first_owner,time,Some(&current))?;
             enc.copy_buffer_to_buffer(&forest.choices,forest.choice_table_bytes(),&shadow_t.foliage_selection,0,forest.choice_table_bytes());
         }
@@ -4181,6 +4217,14 @@ impl Renderer {
         if far_updated {
             self.cull_and_raster(&mut enc,gpu,far_targets.as_ref().unwrap(),None,&self.far_sun.target,
                 &mut ts,&mut names,"far sun cull",RasterPass::FarSun);
+            // Streamed worlds: the GPU forest casts into the anchored map once
+            // per redraw, not every frame.
+            if let (true,Some((projection,_)),Some(forest))=(self.far_sun.anchored,far_projection,self.voxel_forest.as_ref().filter(|f|f.casts_sun())) {
+                let texel=2.*projection.extent/crate::far_sun::SIZE as f32;
+                let planes=view_uniform(projection.vp,projection.eye,1.,[0.;4],[0.;4],0.).planes;
+                forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&shadow_t.foliage_selection,crate::voxel_forest::SunSplatView {
+                    damage:None,depth:&self.far_sun.target,view_proj:projection.vp,planes,direction:light.sun_dir,texel_m:sun_voxel_m(texel,SHARED_SUN_VOXEL_M)},[None,None])?;
+            }
         }
         for (index,page) in page_plan.updates.iter().enumerate() {
             let layer=self.foliage_sun_pages.layer_view(page.layer);
@@ -5192,7 +5236,10 @@ impl Renderer {
                 }
             };
             read.unmap();
-            stats.gpu_ms = sample.map_err(|()| "invalid synchronous GPU timestamps")?;
+            // Timings are diagnostics. Metal can report pairs that run backwards
+            // when passes overlap; such a frame has no timings (never zeros),
+            // but the frame itself is fine.
+            stats.gpu_ms = sample.unwrap_or_default();
         }
         Ok((ldr, pixels, stats))
     }
