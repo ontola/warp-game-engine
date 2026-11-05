@@ -21,6 +21,9 @@ struct TerrainSample {
     wet: f32,
     // Metres of water above the bed (0 on dry land).
     water: f32,
+    // 0..1 share of the ground round here under water at full detail,
+    // for drawing (terrain_field.rs Sample::film).
+    film: f32,
     // 0..1 vegetation kind: 0 short grass, 1 heather and moss.
     moor: f32,
     // 0..1 lying snow.
@@ -110,6 +113,14 @@ fn tf_rotate(q: vec2<f32>) -> vec2<f32> {
 
 // Half-buried boulders on a jittered 7 m grid, flat-topped and a little
 // elongated: (height, coverage).
+// Share of ground at distance `d` from a line that a strip |d| < w covers,
+// seen at grid spacing `cut` (terrain_field.rs seen).
+fn tf_seen(d: f32, w: f32, cut: f32) -> f32 {
+    let hw = max(w, cut);
+    let e = 0.5 * cut + 0.01;
+    return w / hw * tf_smooth(hw + e, hw - e, d);
+}
+
 fn tf_boulders(x: f32, z: f32, density: f32, cut: f32, seed: u32) -> vec2<f32> {
     let cell = 7.0;
     let cx = i32(floor(x / cell));
@@ -387,6 +398,7 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     let flat = tf_smooth(0.97, 0.995, up0);
     var ditch = 1000.0;
     var water_d = 0.0;
+    var wet_d = 0.0;
     if st.ditches > 0.0 && flat > 0.0 {
         let a = f32(seed % 97u) * 0.0647;
         let u = x * cos(a) + z * sin(a);
@@ -397,6 +409,7 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
         let on = st.ditches * flat * tf_fade(3.0, cut);
         y -= on * 1.3 * (1.0 - tf_smooth(0.6, 1.8, ditch));
         if ditch < 1.6 { water_d = max((y_base - 0.5) - y, 0.0) * on; }
+        wet_d = st.ditches * flat * mix(tf_seen(ditch, 3.25, cut), tf_smooth(5.0, 1.5, ditch), tf_fade(13.0, cut));
     }
     // Ponds in flat hollows, their water level with the ground round them.
     var water_p = 0.0;
@@ -408,6 +421,11 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     let water_r = select(0.0, max(river_level - y, 0.0), ch < ch_w);
     let water_s = select(0.0, max(stream_level - y, 0.0) * notch, stream_line < 1.2 && notch > 0.0);
     let water = max(max(max(water_r, water_s) * channel, water_d), water_p);
+    // The water a fine mesh would hold, as a share of each cell: ditches,
+    // stream beds and the river's channel (half-widths where the carved
+    // beds hold water). Wet banks narrower than the cell blend the same way.
+    let film = max(max(st.ditches * flat * tf_seen(ditch, 1.2, cut), streams_here * tf_seen(stream_line, 1.0, cut)), tf_seen(ch, 0.5 * ch_w, cut));
+    let wet_far = max((1.0 - rf) * tf_seen(ch, ch_w + 4.5, cut), streams_here * (1.0 - tf_fade(sw, cut)) * tf_seen(stream_line, 4.5, cut));
 
     // Bedrock strata: ledges stick out of steep rock and overhang a little.
     var pos = vec3<f32>(x, y + water, z);
@@ -424,8 +442,9 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     o.up = up;
     o.rock = rock;
     o.scree = clamp(scree, 0.0, 1.0);
-    o.wet = max(max(tf_smooth(8.0, 1.0, near_wet), st.ditches * flat * tf_smooth(5.0, 1.5, ditch)), tf_smooth(0.0, 0.3, water_p));
+    o.wet = max(max(max(tf_smooth(8.0, 1.0, near_wet), wet_d), tf_smooth(0.0, 0.3, water_p)), wet_far);
     o.water = water;
+    o.film = film;
     o.moor = moor;
     // Snow lies above the snow line on all but steep faces, in drifts.
     // Snow follows the broad slope, so ledges and steps do not stripe it;

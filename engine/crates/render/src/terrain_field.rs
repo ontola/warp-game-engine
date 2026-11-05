@@ -28,6 +28,11 @@ pub struct Sample {
     pub wet: f32,
     /// Metres of water above the bed (0 on dry land).
     pub water: f32,
+    /// 0..1 share of the ground round here under water at full detail,
+    /// for drawing: a ditch or stream too narrow for this cut to carve
+    /// still covers its share of the cell, so it fades with distance
+    /// instead of popping in where the mesh gets fine enough.
+    pub film: f32,
     /// 0..1 vegetation kind: 0 short grass, 1 heather and moss.
     pub moor: f32,
     /// 0..1 lying snow.
@@ -147,6 +152,16 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
 fn fade(size: f32, cut: f32) -> f32 {
     if cut <= 0.0 { return 1.0; }
     (size / (2.0 * cut) - 1.0).clamp(0.0, 1.0)
+}
+
+/// Share of ground at distance `d` from a line that a strip |d| < w covers,
+/// seen at grid spacing `cut`: thinner than the cell, the strip widens to
+/// it and thins in proportion (the cell keeps its share of water), so
+/// vertices that straddle the line still see it.
+fn seen(d: f32, w: f32, cut: f32) -> f32 {
+    let hw = w.max(cut);
+    let e = 0.5 * cut + 0.01;
+    w / hw * smooth(hw + e, hw - e, d)
 }
 
 fn line(n: Vec3, freq: f32) -> f32 {
@@ -412,6 +427,7 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     let flat = smooth(0.97, 0.995, up0);
     let mut ditch = 1000.0f32;
     let mut water_d = 0.0f32;
+    let mut wet_d = 0.0f32;
     if st.ditches > 0.0 && flat > 0.0 {
         let a = (seed % 97) as f32 * 0.0647;
         let (u, v) = (x * a.cos() + z * a.sin(), z * a.cos() - x * a.sin());
@@ -421,6 +437,7 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
         let on = st.ditches * flat * fade(3.0, cut);
         y -= on * 1.3 * (1.0 - smooth(0.6, 1.8, ditch));
         if ditch < 1.6 { water_d = ((y_base - 0.5) - y).max(0.0) * on; }
+        wet_d = st.ditches * flat * mix(seen(ditch, 3.25, cut), smooth(5.0, 1.5, ditch), fade(13.0, cut));
     }
     // Ponds in flat hollows, their water level with the ground round them.
     let mut water_p = 0.0f32;
@@ -432,6 +449,11 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     let water_r = if ch < ch_w { (river_level - y).max(0.0) } else { 0.0 };
     let water_s = if stream_line < 1.2 && notch > 0.0 { (stream_level - y).max(0.0) * notch } else { 0.0 };
     let water = (water_r.max(water_s) * channel).max(water_d).max(water_p);
+    // The water a fine mesh would hold, as a share of each cell: ditches,
+    // stream beds and the river's channel (half-widths where the carved
+    // beds hold water). Wet banks narrower than the cell blend the same way.
+    let film = (st.ditches * flat * seen(ditch, 1.2, cut)).max(streams_here * seen(stream_line, 1.0, cut)).max(seen(ch, 0.5 * ch_w, cut));
+    let wet_far = ((1.0 - rf) * seen(ch, ch_w + 4.5, cut)).max(streams_here * (1.0 - fade(sw, cut)) * seen(stream_line, 4.5, cut));
 
     let mut pos = Vec3::new(x, y + water, z);
     if rock > 0.0 && steep > 0.0 {
@@ -446,8 +468,8 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     // only sheer walls stay bare.
     let snow = smooth(st.snow_line - 150.0, st.snow_line + 150.0, y + 120.0 * noised(p * 12.0, sd(19)).x)
         * smooth(0.5, 0.7, up0) * smooth(0.35, 0.55, up);
-    let wet = smooth(8.0, 1.0, near_wet).max(st.ditches * flat * smooth(5.0, 1.5, ditch)).max(smooth(0.0, 0.3, water_p));
-    Sample { pos, up, rock, scree: scree.clamp(0.0, 1.0), wet, water, moor, snow, amp, tors: tor_amp }
+    let wet = smooth(8.0, 1.0, near_wet).max(wet_d).max(smooth(0.0, 0.3, water_p)).max(wet_far);
+    Sample { pos, up, rock, scree: scree.clamp(0.0, 1.0), wet, water, film, moor, snow, amp, tors: tor_amp }
 }
 
 /// Ground height under world (x, z) at full detail, for physics. The strata
@@ -495,7 +517,7 @@ struct Params { seed: u32, cut: f32, pad0: u32, pad1: u32, style: TerrainStyle }
 @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= arrayLength(&points) { return; }
     let s = terrain_eval(points[gid.x].x, points[gid.x].y, params.cut, params.seed, params.style);
-    out[gid.x] = vec4<f32>(s.pos.y, s.water, s.wet, s.up);
+    out[gid.x] = vec4<f32>(s.pos.y, s.water, s.wet, s.film);
 }"#);
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(shader.into()) });
         let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: None, layout: None, module: &module,
@@ -503,6 +525,7 @@ struct Params { seed: u32, cut: f32, pad0: u32, pad1: u32, style: TerrainStyle }
         let points: Vec<[f32; 2]> = (0..4096).map(|i| [(i % 64) as f32 * 13.7 - 400.0, (i / 64) as f32 * 11.3 - 300.0]).collect();
         let styles = [Style { dunes: 1.0, rivers: 0.0, streams: 0.0, mountains: 0.3, ..Style::default() },
             Style { ditches: 1.0, mountains: 0.0, peaks: 0.0, hills: 0.04, ..Style::default() },
+            Style { ditches: 1.0, rivers: 1.0, streams: 0.9, mountains: 0.0, peaks: 0.0, hills: 0.04, ..Style::default() },
             Style { ponds: 1.0, mountains: 0.1, peaks: 0.0, hills: 0.5, ..Style::default() }];
         for (k, style) in styles.iter().enumerate() {
             for cut in [0.5f32, 8.0] {
@@ -532,13 +555,36 @@ struct Params { seed: u32, cut: f32, pad0: u32, pad1: u32, style: TerrainStyle }
                 let (mut agree, mut wet) = (0, 0);
                 for (p, g) in points.iter().zip(&got) {
                     let c = eval(p[0], p[1], cut, 7, style);
-                    if (g[0] - c.pos.y).abs() < 0.05 && (g[1] - c.water).abs() < 0.05 && (g[2] - c.wet).abs() < 0.02 { agree += 1; }
+                    if (g[0] - c.pos.y).abs() < 0.05 && (g[1] - c.water).abs() < 0.05 && (g[2] - c.wet).abs() < 0.02 && (g[3] - c.film).abs() < 0.02 { agree += 1; }
                     if c.water > 0.01 { wet += 1; }
                 }
                 assert!(agree * 100 >= points.len() * 99, "style {k} cut {cut}: {agree} of {} agree", points.len());
                 // The shapes are there: dunes raise the ground, ditches and ponds hold water.
                 if k > 0 && cut < 1.0 { assert!(wet > 20, "style {k}: {wet} wet points"); }
             }
+        }
+    }
+
+    /// Ditches, streams and rivers keep their share of water at every cut:
+    /// a coarse patch draws them as a fainter, wider film rather than
+    /// dropping them, so they do not pop in where the mesh gets fine.
+    #[test]
+    fn water_keeps_its_share_at_every_cut() {
+        let st = Style { mountains: 0.0, peaks: 0.0, hills: 0.04, rivers: 1.0, streams: 0.9, rocks: 0.0, boulders: 0.0,
+            moor: 0.05, ditches: 1.0, ..Style::default() };
+        let share = |cut: f32| {
+            let mut sum = 0.0f64;
+            for j in 0..300 { for i in 0..300 {
+                let s = eval(i as f32 * 3.3 + 0.3, j as f32 * 3.1 + 0.7, cut, 7, &st);
+                sum += (s.water.max(0.04 * s.film) / 0.04).min(1.0) as f64;
+            }}
+            sum / 90000.0
+        };
+        let near = share(0.25);
+        assert!(near > 0.02, "polder has water: {near}");
+        for cut in [0.5f32, 1.0, 2.0, 4.0, 8.0, 16.0] {
+            let s = share(cut);
+            assert!(s > 0.75 * near && s < 1.4 * near, "cut {cut}: water share {s} against {near} near");
         }
     }
 
