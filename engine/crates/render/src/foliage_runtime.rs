@@ -521,6 +521,8 @@ impl Runtime {
     pub(crate) fn encode_timed(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::foliage_select::ConsumerView],first_owner:u32,time:Option<(&wgpu::QuerySet,u32)>)->Result<(),String> {
         self.encode_timed_depth(gpu,enc,views,first_owner,time,None)
     }
+    #[cfg(test)]
+    pub(crate) fn test_rounds(&self,full:bool,hint:Option<u32>)->(u32,Option<u32>,u32) {let r=&self.selector.refiner;if full {r.test_full_rounds();}if let Some(h)=hint {r.test_hint(h);}let (e,u)=r.encoded_rounds();(e,u,2*(self.selector.levels+1))}
     pub(crate) fn encode_timed_depth(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::foliage_select::ConsumerView],first_owner:u32,time:Option<(&wgpu::QuerySet,u32)>,depth:Option<&[crate::foliage_seed_visibility::CameraDepth<'_>]>)->Result<(),String> {
         // All of these are encoder writes: untimed where the GPU lacks them
         // (Apple), or Metal rejects the submit.
@@ -1045,6 +1047,33 @@ impl Runtime {
         assert_eq!(low.camera_roots,1,"a low block must not hide the tree above it");
         let (_,beside)=forest(&[0.,7.],Some((Vec3::new(0.6,0.6,5.),Vec3::new(6.,6.,0.05),GeometryCategory::Structures)),front);
         assert_eq!(beside.camera_roots,1,"only the tree behind the wall goes");
+    }
+    // Selection encodes only the refinement rounds the GPU reported needing,
+    // instead of the hierarchy depth bound, without changing what is drawn.
+    #[test]
+    #[ignore="exclusive GPU forest selection rounds fixture"]
+    fn gpu_selection_rounds_follow_reported_need() {
+        use super::*;use crate::{Camera,Lighting,Renderer,ViewRect};
+        let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
+        let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
+        let trees=(0..6).map(|i|RootPlacement {up:Vec3::Y,pos:Vec3::new(i as f32*3.-7.5,0.,-(i%3) as f32*4.),yaw:i as f32,scale:1.,variant:0}).collect::<Vec<_>>();
+        let mut scene=Scene::default();plant(&mut scene,&[cooked],&trees,24,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
+        let gpu=Gpu::new().unwrap();let light=Lighting {gi:0.,sun_lux:0.,shadow_strength:0.,..Default::default()};
+        let adaptive=Renderer::new(&gpu,&scene,&light);let reference=Renderer::new(&gpu,&scene,&light);
+        adaptive.test_warm_foliage_assets(&gpu);reference.test_warm_foliage_assets(&gpu);reference.test_forest_rounds(true,None);
+        let mut views=[ViewRect {cam:Camera {pos:Vec3::new(0.,1.,9.),target:Vec3::new(0.,0.8,0.),fov_y:1.,near:0.05},x:0,y:0,w:128,h:128}];
+        for frame in 0..12 {
+            // A jump halfway, with too few rounds encoded for it: that frame
+            // may draw a coarser complete cut, but the hint must recover.
+            if frame==8 {views[0].cam.pos=Vec3::new(-7.,0.9,2.5);views[0].cam.target=Vec3::new(-7.5,0.8,0.);adaptive.test_forest_rounds(false,Some(2));}
+            let (a,_)=adaptive.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();
+            let (b,_)=reference.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();
+            let (rounds,used,bound)=adaptive.test_forest_rounds(false,None);
+            let (da,db)=(adaptive.gpu_forest_diagnostics(&gpu).unwrap().unwrap(),reference.gpu_forest_diagnostics(&gpu).unwrap().unwrap());
+            eprintln!("frame {frame}: {rounds} of {bound} rounds encoded, GPU reported {used:?} working, source slots {} vs {}",da.source_slots,db.source_slots);
+            if frame==7 {assert!(used.is_some_and(|u|u<bound),"the GPU must report how many rounds did work");}
+            if frame<8 || frame>=11 {assert_eq!(a,b,"frame {frame}: fewer rounds must draw the same image");}
+        }
     }
     #[test]
     #[ignore="exclusive GPU deferred queue overflow fixture"]

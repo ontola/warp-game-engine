@@ -2755,6 +2755,9 @@ impl Renderer {
     }
 
     #[cfg(test)]
+    /// (rounds encoded last frame, working rounds last reported, depth bound) of GPU forest selection.
+    #[cfg(test)]
+    pub(crate) fn test_forest_rounds(&self,full:bool,hint:Option<u32>)->(u32,Option<u32>,u32) {let (r,_)=self.gpu_forest.as_ref().unwrap();r.test_rounds(full,hint)}
     pub(crate) fn test_warm_foliage_assets(&self,gpu:&Gpu){if let(Some(v),Some((r,_)))=(&self.voxel_forest,&self.gpu_forest){v.warm_page_fixture(gpu,r);}}
     #[cfg(test)]
     pub(crate) fn test_tree_deferred_capacity(&mut self,gpu:&Gpu,capacity:u32) {
@@ -5193,7 +5196,10 @@ impl Renderer {
                 }
             };
             read.unmap();
-            stats.gpu_ms = sample.map_err(|()| "invalid synchronous GPU timestamps")?;
+            // Timings are diagnostics. Metal can report pairs that run backwards
+            // when passes overlap; such a frame has no timings (never zeros),
+            // but the frame itself is fine.
+            stats.gpu_ms = sample.unwrap_or_default();
         }
         Ok((ldr, pixels, stats))
     }

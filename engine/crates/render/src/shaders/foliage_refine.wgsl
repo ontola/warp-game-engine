@@ -116,7 +116,10 @@ var<workgroup> seed_scan:array<vec4<u32>,256>;
  atomicStore(&state[55],select(0u,1u,wake));
  atomicStore(&state[64],select(0u,(parked_count+255u)/256u,wake));atomicStore(&state[65],1u);atomicStore(&state[66],1u);
  if wake {for(var k=0u;k<3u;k++) {atomicStore(&state[56u+k],used[k]);}atomicStore(&state[59],parked_count);atomicAdd(&state[62],1u);}
-
+ // Rounds that do work form a prefix: an idle round without a wake changes
+ // nothing, so every later round is idle too. The CPU sizes the next frames'
+ // round count from this (Refiner::encode).
+ if count!=0u || wake {atomicAdd(&state[68],1u);}
 }
 fn projected(t:Tree,n:Node,roles:u32)->vec2<f32> {
  let s=sphere(t,n);var all_scale=0.0;var camera_scale=0.0;
