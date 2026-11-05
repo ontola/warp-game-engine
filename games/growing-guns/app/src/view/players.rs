@@ -167,7 +167,8 @@ impl PlayersView {
 
     /// Player and tracer instances, rewritten every frame.
     pub fn reserve_dynamic(&mut self, scene: &mut Scene, players: usize) {
-        self.characters = if !crate::graphics::get().characters {None}else{match Characters::load() {
+        let rigid = crate::graphics::get().rigid_characters;
+        self.characters = if !crate::graphics::get().characters && !rigid {None}else{match Characters::load() {
             Ok(characters) => Some(characters),
             Err(error) => { eprintln!("characters: using primitive fallback: {error}"); None }
         }};
@@ -177,8 +178,9 @@ impl PlayersView {
             let body_m = material(scene, PLAYER_COLORS[i % 4], 0.55);
             let prims = if crate::graphics::get().minimal_forward {[primitives::sphere(body_m,4,6),primitives::sphere(body_m,4,6),primitives::sphere(eye_m,3,4)]}else{[primitives::sphere(body_m, 10, 16), primitives::sphere(body_m, 8, 14), primitives::sphere(eye_m, 6, 8)]};
             let [proxy_body, head, eyes] = std::array::from_fn(|k| scene.add_mesh(&prims[k].mesh()));
-            let actor = self.characters.as_mut().and_then(|c| c.reserve_actor(scene, i).ok());
-            let skinned = actor.is_some();
+            let actor = if rigid { None } else { self.characters.as_mut().and_then(|c| c.reserve_actor(scene, i).ok()) };
+            // Rigid pieces share the skinned path but for how they are drawn.
+            let skinned = actor.is_some() || (rigid && self.characters.is_some());
             let body = actor.unwrap_or_else(|| {
                 scene.add_instance(proxy_body, Affine3A::from_translation(HIDDEN));
                 proxy_body
@@ -203,7 +205,10 @@ impl PlayersView {
             tint: [1.0, 0.20, 0.02], layer: -2, roughness: 1.0,
             flags: render::scene::LAVA, scale: 5000.0, metal: 0.0,
         });
-        if let Some(characters) = &mut self.characters { characters.reserve_lava(scene, lava_m); }
+        if let Some(characters) = &mut self.characters {
+            if rigid { for i in 0..players { if let Err(e) = characters.reserve_rigid(scene, i) { eprintln!("characters: {e}"); } } }
+            characters.reserve_lava(scene, lava_m);
+        }
         self.lava_meshes = LavaMeshes {
             body: scene.add_mesh(&primitives::sphere(lava_m, 10, 16).mesh()),
             head: scene.add_mesh(&primitives::sphere(lava_m, 8, 14).mesh()),
@@ -213,7 +218,8 @@ impl PlayersView {
 
     /// Gib pieces shattered from the players' own meshes.
     pub fn reserve_gore(&mut self, scene: &mut Scene, seed: u64) {
-        let models = self.characters.as_ref().map_or(&[][..], |c| c.models());
+        // The minimum renderer's rigid pieces use the plain gib meshes.
+        let models = self.characters.as_ref().filter(|_| !crate::graphics::get().rigid_characters).map_or(&[][..], |c| c.models());
         self.gore = Some(Gore::reserve(scene, &std::mem::take(&mut self.sources), models, seed));
     }
 
@@ -449,7 +455,7 @@ impl PlayersView {
             let drawn = crate::view::pose(world, i, prev, alpha);
             let (pos, rot) = (drawn.pos, Quat::from_rotation_y(drawn.yaw));
             let (body, head, eyes) = if m.skinned {
-                (characters::model_transform(pos, drawn.yaw), Affine3A::from_translation(HIDDEN), Affine3A::from_translation(HIDDEN))
+                (if crate::graphics::get().rigid_characters {Affine3A::from_translation(HIDDEN)} else {characters::model_transform(pos, drawn.yaw)}, Affine3A::from_translation(HIDDEN), Affine3A::from_translation(HIDDEN))
             } else {
                 (Affine3A::from_scale_rotation_translation(BODY, rot, pos + Vec3::Y * -0.25),
                  Affine3A::from_scale_rotation_translation(Vec3::splat(HEAD), rot, pos + Vec3::Y * 0.55),
@@ -460,6 +466,10 @@ impl PlayersView {
                 scene.instances[slot].hide_in_views(m.own_views);
                 slot += 1;
             }
+        }
+        if crate::graphics::get().rigid_characters && let Some(characters) = &self.characters {
+            let hide: Vec<u8> = self.meshes.iter().map(|m| m.own_views).collect();
+            characters.pose_rigid(scene, world, prev, alpha, &hide);
         }
         self.pose_lava(scene, world, (world.tick as f32 - 1.0 + alpha) * growing_guns::DT);
         // Bullets, drawn where they are at this frame (between ticks), nose
