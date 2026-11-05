@@ -11,6 +11,38 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+## 5 November: correctness-first pixel policy and explicit failure
+
+User priority: establish pixel-scale voxel correctness before optimizing speed.
+Removed terrain demo's32px geometric-error override and6px/distance-growing
+proxy policy. Normal demo now requests1px with no distance relaxation. Resource
+limits are NOT enlarged or silently reinterpreted as visual acceptance.
+`--require-pixel-vegetation` on --fly captures checks final submitted cell diameter
+<=1px, missing splats, near-plane crossings, camera over-target nodes and physical
+fault/fallback counts. It saves captures/timings before returning an error. This
+is a final-frame conservative submitted-work check, not full visibility/coverage,
+motion, all-weather or four-view acceptance. Sampled optical policy is unchanged.
+
+The normal full scene FAILS (153.62px maximum,19782 over-target camera nodes).
+The100m tree test also FAILS (15.06px;16384 slots exhausted). Do not present either
+as corrected rendering or use their faster frames as a performance gain.
+A fixture bug ignored tree radius for shrubs: shrubs now respect min(radius,400m).
+Default2500m scene population is unaffected; tiny fixtures now have two roots.
+Two-root close view renders58 source branches, no voxel slots,0 over-target nodes;
+image inspected. At1000m elevation the same tiny domain renders1885 voxel splats,
+max0.1965px,100 voxel slots,0 over-target nodes. Both final-frame checks pass.
+These are component proofs ONLY; they do not satisfy the forest-scale goal.
+
+Reproduce isolated checks with terrain_fly --style lowland --fly 240 --speed 1
+--size 1280x720 --tree-radius 10 --branch-slots 16384 --voxel-raster-profile
+--require-pixel-vegetation --from engine/docs/fixtures/vegetation-pixel-near.json
+(or vegetation-pixel-far.json); CLI options and values require spaces.
+Evidence: vegetation-pixel-correctness.json. Release build, pixel-policy unit test
+and headless pass/fail routes completed. No interactive playtest started.
+Next: remove publication's small fixed branch-slot/owner constraints while keeping
+bounded residency and complete source/voxel coverage. Performance comes AFTER
+normal full-scene pixel correctness; G1/G2/G3/G6/G8 remain incomplete.
+
 ## 5 November: GPU proposal replay; reject complete-cut lookahead candidate
 
 Offline cell attribution now replays the actual GPU proposal kernel against final

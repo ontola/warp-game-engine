@@ -581,6 +581,12 @@ fn cooked_flora(biome: &render::biome::Biome) -> Result<&'static Vec<CookedPlant
     Ok(flora)
 }
 
+// Quality is a rendering requirement, not a performance pressure valve.
+fn vegetation_quality_policy()->render::aggregate_lod::Policy {
+    render::aggregate_lod::Policy {max_error_pixels:1.,allow_sampled_optics:true,
+        measured_source_cuts:false,proxy_pixels:1.,proxy_pixels_from:0.,..Default::default()}
+}
+
 fn recipe_spruces(scene:&mut Scene,biome:&render::biome::Biome,season:f32,world:World,roots:&[WorldRoot],branch_slots:u32)->Result<(),String> {
     let cooked=if world.trees {Some(cooked_flora(biome)?)} else {None};
     let cache=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
@@ -590,7 +596,7 @@ fn recipe_spruces(scene:&mut Scene,biome:&render::biome::Biome,season:f32,world:
     }
     let species=cooked.into_iter().flat_map(|c|c.iter()).map(|plant|render::foliage_runtime::Species {plant,category:render::scene::GeometryCategory::Trees,deformation:render::foliage_runtime::Deformation::Rigid})
         .chain(grass.iter().map(|c|render::foliage_runtime::Species {plant:&c.plant,category:render::scene::GeometryCategory::Grass,deformation:render::foliage_runtime::Deformation::BasalShear})).collect::<Vec<_>>();
-    let policy=render::aggregate_lod::Policy {max_error_pixels:32.,allow_sampled_optics:true,measured_source_cuts:false,proxy_pixels:6.,proxy_pixels_from:50.,..Default::default()};
+    let policy=vegetation_quality_policy();
     if std::env::args().any(|a|a=="--validate-world") {
         for (index,species) in species.iter().enumerate() {
             println!("vegetation selection evidence {index}: {}",serde_json::to_string(&species.plant.selection_evidence(policy)).map_err(|e|e.to_string())?);
@@ -632,7 +638,7 @@ fn forest(seed: u32, style: &Style, biome: &render::biome::Biome, centre: Vec3, 
     // shrubs only near, where a knee-high bush is more than a pixel.
     let woody=if world.trees {placement::place(&trees, &land, c, world.tree_radius).into_iter()
         .filter(|t| render::forest_field::handover_keep(t.pos, c, start, end))
-        .chain(placement::place(&shrubs, &land, c, SHRUB_RADIUS))
+        .chain(placement::place(&shrubs, &land, c, world.tree_radius.min(SHRUB_RADIUS)))
         .map(|t|WorldRoot {id:t.id,placement:RootPlacement {up:Vec3::Y,pos:t.pos,yaw:t.yaw,scale:t.scale.y,variant:t.variant as usize}}).collect()} else {Vec::new()};
     if !world.grass {return woody;}
     let offset=if world.trees {biome.species().len()} else {0};
@@ -783,6 +789,24 @@ fn main() -> Result<(), String> {
         let p = |q: f64| times[((times.len() - 1) as f64 * q) as usize];
         let slow = times.iter().filter(|&&t| t > 3.0 * p(0.5)).count();
         println!("{w}x{h} {} frames at {} m/s: p50 {:.1} ms  p99 {:.1} ms  max {:.1} ms  {} frames over 3x p50", times.len(), game.speed, p(0.5), p(0.99), p(1.0), slow);
+        if args.iter().any(|a|a=="--require-pixel-vegetation") {
+            let renderer=headless.renderer().ok_or("missing renderer for pixel validation")?;
+            let profile=renderer.voxel_raster_profile(&gpu)?;
+            let mut violations=Vec::new();
+            for (view,p) in profile.iter().enumerate() {
+                let largest=p["largest_submitted_cells"].as_array().and_then(|c|c.first()).and_then(|c|c["diameter_px"].as_f64()).unwrap_or(0.);
+                let missing=p["missing_records"].as_u64().unwrap_or(0);
+                let crossings=p["near_plane_crossings"].as_u64().unwrap_or(0);
+                if largest>1.0 || missing>0 || crossings>0 {violations.push(format!("view {view}: largest submitted cell {largest:.3}px, missing {missing}, near-plane crossings {crossings}"));}
+            }
+            if let Some(d)=renderer.gpu_forest_diagnostics(&gpu)? {
+                if d.selected_over_target[1]>0 || d.refinement_faults!=0 || d.camera_fallback_roots>0 {
+                    violations.push(format!("camera over-target {}, refinement faults {}, camera fallbacks {}",d.selected_over_target[1],d.refinement_faults,d.camera_fallback_roots));
+                }
+            }
+            if !violations.is_empty(){return Err(format!("PIXEL VEGETATION QUALITY FAILED: {}",violations.join("; ")));}
+            println!("PIXEL VEGETATION QUALITY PASS (final-frame submitted-cell check only)");
+        }
         return Ok(());
     }
     // --dump N DIR: N consecutive headless frames as PNGs (flicker checks);
@@ -815,6 +839,12 @@ fn main() -> Result<(), String> {
 
 #[cfg(test)]
 mod vegetation_tests {
+    #[test]
+    fn vegetation_policy_does_not_relax_pixel_error_with_distance() {
+        let p=super::vegetation_quality_policy();
+        assert_eq!(p.max_error_pixels,1.);assert_eq!(p.proxy_pixels,1.);assert_eq!(p.proxy_pixels_from,0.);
+    }
+
     use super::*;
     struct Slope;
     impl render::placement::World for Slope {
