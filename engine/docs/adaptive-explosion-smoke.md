@@ -89,7 +89,7 @@ scene, with 12 warmup frames and 24 timestamp samples per case. Startup, asset
 upload and image readback are excluded. All adaptive inside cases above select the
 eighth-resolution tier. The current forced-full run retains the new bounds and
 volume budget, isolating the adaptive resolution/sample savings. The full-resolution path bypasses the adaptive composite and depth-bound scan.
-The [historical baseline](baked-smoke-scaling.md) retained only 16 smoke volumes;
+The [historical baseline](log/baked-smoke-scaling.md) retained only 16 smoke volumes;
 its sustained workload therefore had shorter smoke persistence.
 
 The game stress run uses radius-6.5 m, damage-140 explosions at live arena chunks,

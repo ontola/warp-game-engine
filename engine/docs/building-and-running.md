@@ -159,15 +159,15 @@ renders slightly differently, so compare like with like.
 | `GG_CHARACTERS=off` | Growing Guns: primitive players instead of the animated characters. |
 | `SIDEWAYS_GAME_ROOT` | Sideways: the game root with `assets/` and `data/`. |
 
-Many more `KERN_*` switches turn experimental renderer paths on or off;
-they are described in the engineering notes that introduced them.
+Every other `KERN_*` switch the renderer reads, with its default, is in
+[renderer switches](renderer-switches.md).
 
 ## Measuring
 
 - GPU timestamps per pass: `Renderer::set_async_gpu_profiling`; Growing
   Guns' `bench` shows how (`bench --views 4 --size 3840x2160`). Minimum rendering
   reports geometry, FX and sprites per view with inside-encoder timestamps;
-  [Quest profiling](quest-profile-2026-10-31.md) documents the opt-in live capture
+  [Quest profiling](log/quest-profile-2026-10-31.md) documents the opt-in live capture
   and paired lava/HUD probes. `HudStats::phase_ms` separates CPU upload, shaping,
   glyph warmup, outlines and atlas preparation. Low-end games can opt into
   `HudDrawList.cached_text` for animated labels: bounded fixed-size label
