@@ -1,3 +1,13 @@
+# 5 November: selected-mip experiment REJECTED
+
+PR8 through6a4002f is integrated locally, ownership split preserved. The
+selected-mip/endpoint restriction experiment passed161 foliage tests but
+regressed normal-scene cells to31.660px (from5.482); it is reverted. Keep
+PR8 occlusion/far-sun work and the earlier fine cook/source-shadow correction.
+Source cluster/triangle costs are missing from selection budgeting: next task.
+See docs/vegetation-architecture.md and vegetation-fine-endpoint-measurements.json.
+No additional occlusion/terrain-owned edits beyond merging PR8.
+
 # 5 November: foliage integration ownership
 
 Foliage worktree integrated PR8 through6a4002f, retaining the occlusion/terrain

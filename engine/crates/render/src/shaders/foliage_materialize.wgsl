@@ -143,17 +143,14 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
   sources[owner]=source;
   var volume=bounds(branch.volume,m,branch.low.xyz,branch.high.xyz);volume.inverse=inverse(m);volume.identity.x=owner;
   volume.high.w=appearance_seed(slot.key.x,rep.x);
-  // Publish a one-level view so camera, sun and ray consumers cannot sample
-  // any mip outside this representation's resident page contract.
-  if rep.y==1u {volume.identity.y+=rep.z;volume.identity.z=1u;}
   let roles=slot.history.w&768u;
   let visibility=select(1024u,0u,(roles&256u)!=0u)|select(2048u,0u,(roles&512u)!=0u);
-  volumes[i]=volume;choices[i]=select(3u,select(0u,257u,rep.y==1u),(roles&256u)!=0u)|visibility;
+  volumes[i]=volume;choices[i]=select(3u,select(0u,1u|(rep.z<<2u)|512u,rep.y==1u),(roles&256u)!=0u)|visibility;
   // Preserve the independently selected shadow representation. Source
   // leaves cast source geometry; replacing them with adaptive voxels here
   // violates the selected error and unnecessarily couples source residency
-  // to every voxel mip. Each consumer uses exactly its selected voxel mip.
-  choices[i+state.counts.x]=select(3u,select(0u,513u,rep.y==1u),(roles&512u)!=0u)|visibility;
+  // to every voxel mip. Voxel shadow selections retain adaptive mip choice.
+  choices[i+state.counts.x]=select(3u,select(0u,765u,rep.y==1u),(roles&512u)!=0u)|visibility;
  }else {
   let tree=i-state.counts.x;if tree>=state.counts.z {return;}
   let root=roots[tree];let original=proxies[tree];
