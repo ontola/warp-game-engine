@@ -1,3 +1,17 @@
+## 5 November: rejected paged whole-volume occlusion
+
+Measured a real paged-path integration of current-frame two-phase voxel culling.
+145 foliage tests + composed shaders + GPU sky-hole/crossing oracle PASS.
+Native720p one-view three alternating routes: before14.839/14.971/15.072ms,
+candidate15.178/15.100/15.151ms. Final splat count unchanged1,364,203; images
+effectively identical. Rejected; production renderer restored to0741ccb.
+
+Tested patch and full per-pass numbers are tracked in engine/docs/paged-volume-
+occlusion-experiment.patch and paged-volume-occlusion-measurements.json.
+Smaller paged groups need bounded cell ranges and conservative bounds; whole
+volume boxes did not save work on this route. G3 upstream recovery and independent
+camera/shadow cuts remain unfinished. No playtest or new opt-in mode.
+
 ## 5 November: consumer-scoped branch publication prerequisite
 
 Camera/shadow ownership now survives shared residency and materialization;
