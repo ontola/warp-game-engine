@@ -7,10 +7,17 @@ nodes keep their four strongest (id, weight) pairs (8 bytes a node);
 the cell lists in the index buffer, `wc_style` line for line). The terrain mesh,
 `World::eval/height/trees`, placement fields and `sun_heightfield` (new
 `constraints` argument) follow the regions. One style at full weight is bit for
-bit the old world. `terrain_fly --regions NAME`. Palette, flora and grass amount
-are still one per world. Doc: docs/terrain-regions.md.
+bit the old world. `terrain_fly --regions NAME`. Doc: docs/terrain-regions.md.
 
-Validation: render lib 808 PASS; GPU parity (`world_constraints::gpu_matches_cpu`
+Kinds: a region's palette index is its kind id and each system keeps its own
+table by kind (terrain Style, GroundStyle, flora rules; cities and buildings
+later as more tables). `Regions::mix/share`, `placement::World::share`,
+`placement::regional` (density scaled by share, kind in the rule id),
+`biome::Lands`, `procedural_terrain::region_ground` + `region_ground` in
+terrain_surface.wgsl (ground colours per kind). Still global: far forest colour
+and `forest_at`.
+
+Validation: render lib 810 PASS; GPU parity (`world_constraints::gpu_matches_cpu`
 with and without regions, `terrain_field::biome_shapes_match_on_gpu`) PASS on Mesa
 lavapipe in the cloud container, not yet on real hardware; naga validation of the
 composed shaders; workspace check clean. No interactive playtest.

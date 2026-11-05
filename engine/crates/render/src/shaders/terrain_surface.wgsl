@@ -323,15 +323,75 @@ const FIELD_GROUND_DEFAULT = FieldGround(vec4<f32>(0.43, 0.55, 0.23, 0.3), vec4<
 fn field_material_pair(m: Material) -> array<vec4<f32>, 2> {
     return array<vec4<f32>, 2>(vec4<f32>(m.tint, bitcast<f32>(m.layer)), vec4<f32>(m.roughness, bitcast<f32>(m.flags), m.scale, m.metal));
 }
-// The style block's GroundStyle, after its ForestStyle and far forest params.
-fn field_ground(s: SurfaceIn) -> FieldGround {
-    if s.scale >= 0.0 { return FIELD_GROUND_DEFAULT; }
-    let at = u32(-s.scale - 0.5) + 3u;
+fn field_ground_at(at: u32) -> FieldGround {
     let a = field_material_pair(materials[at]);
     let b = field_material_pair(materials[at + 1u]);
     let c = field_material_pair(materials[at + 2u]);
     let d = field_material_pair(materials[at + 3u]);
     return FieldGround(a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1]);
+}
+
+fn field_ground_add(acc: FieldGround, g: FieldGround, w: f32) -> FieldGround {
+    return FieldGround(acc.grass_dry + g.grass_dry * w, acc.grass_lush + g.grass_lush * w, acc.moor + g.moor * w, acc.soil + g.soil * w,
+        acc.gravel + g.gravel * w, acc.rock + g.rock * w, acc.snow + g.snow * w, acc.reserved + g.reserved * w);
+}
+
+// Ground colours per region (procedural_terrain.rs region_ground,
+// regions.rs surface_words): material `base` holds the grid (origin, cell,
+// nodes across, kinds), then each kind's GroundStyle (4 materials), then
+// the nodes two to a material, each four slots of id * 256 + weight. The
+// pixel mixes the kinds of its four surrounding nodes, as the terrain's
+// shape does (regions.rs style_at), each kind read once.
+fn region_ground(p: vec2<f32>, base: u32) -> FieldGround {
+    let h = field_material_pair(materials[base]);
+    let sx = u32(h[0].w);
+    let sz = u32(h[1].x);
+    let kinds = u32(h[1].y);
+    let fx = clamp((p.x - h[0].x) / h[0].z, 0.0, f32(sx - 1u));
+    let fz = clamp((p.y - h[0].y) / h[0].z, 0.0, f32(sz - 1u));
+    let i0 = min(u32(floor(fx)), max(sx, 2u) - 2u);
+    let j0 = min(u32(floor(fz)), max(sz, 2u) - 2u);
+    let i1 = min(i0 + 1u, sx - 1u);
+    let j1 = min(j0 + 1u, sz - 1u);
+    let tx = fx - f32(i0);
+    let tz = fz - f32(j0);
+    let nodes = base + 1u + kinds * 4u;
+    var at = array<u32, 4>(j0 * sx + i0, j0 * sx + i1, j1 * sx + i0, j1 * sx + i1);
+    var f = array<f32, 4>((1.0 - tx) * (1.0 - tz), tx * (1.0 - tz), (1.0 - tx) * tz, tx * tz);
+    var ids: array<u32, 16>;
+    var ws: array<f32, 16>;
+    var count = 0u;
+    var sum = 0.0;
+    for (var c = 0u; c < 4u; c++) {
+        var pair = field_material_pair(materials[nodes + at[c] / 2u]);
+        let slots = pair[at[c] % 2u];
+        for (var k = 0u; k < 4u; k++) {
+            let word = u32(slots[k]);
+            let w = f32(word & 255u) / 255.0 * f[c];
+            if w <= 0.0 { continue; }
+            let id = word >> 8u;
+            var found = false;
+            for (var e = 0u; e < count; e++) {
+                if ids[e] == id { ws[e] += w; found = true; }
+            }
+            if !found { ids[count] = id; ws[count] = w; count++; }
+            sum += w;
+        }
+    }
+    var g = FieldGround(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0));
+    for (var e = 0u; e < count; e++) {
+        g = field_ground_add(g, field_ground_at(base + 1u + min(ids[e], kinds - 1u) * 4u), ws[e] / sum);
+    }
+    return g;
+}
+
+// The style block's GroundStyle, after its ForestStyle and far forest
+// params; per region when its reserved.x points at region colours.
+fn field_ground(s: SurfaceIn) -> FieldGround {
+    if s.scale >= 0.0 { return FIELD_GROUND_DEFAULT; }
+    let g = field_ground_at(u32(-s.scale - 0.5) + 3u);
+    if g.reserved.x >= 0.5 { return region_ground(s.p.xz, u32(g.reserved.x - 0.5)); }
+    return g;
 }
 
 // Roads drawn into the pixels (procedural_terrain.rs road_surface,

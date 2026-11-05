@@ -70,12 +70,34 @@ it the same spot is alpine throughout:
   parity tests passed on Mesa lavapipe (software Vulkan) in the cloud
   container; not yet run on a real GPU.
 
+## Kinds: one id, a table per system
+
+A region's palette index is its *kind*. The regions only say which kinds hold
+where and how strongly; every system that cares keeps its own table indexed
+by kind id. Terrain keeps a `Style` per kind (the palette itself), the ground
+shader a `GroundStyle` per kind, flora a list of placement rules per kind.
+Cities, building styles or street patterns can later be added the same way,
+as one more table by kind id, without touching the regions or the GPU layout.
+
+- `Regions::mix(x, z)` gives the (kind, share) pairs at a point and
+  `Regions::share(kind, x, z)` one kind's share; `placement::World::share`
+  exposes it to placement rules (worlds without regions are all kind 0).
+- `placement::regional(per_kind, variant)` turns a rule list per kind into
+  one rule set: each rule's density is scaled by its kind's share, so plants
+  thin out across a border instead of stopping at a line. Rule ids carry the
+  kind (`kind_rule`, `base_rule`, `rule_kind`), salts differ per kind.
+- `biome::Lands` is a list of biomes, one per kind: `styles()` for the
+  regions, `species()` (shared, deduplicated) and `rules()` for flora.
+- Ground colours: `procedural_terrain::region_ground` appends the grid and a
+  `GroundStyle` per kind to the scene's material data and points the
+  terrain's ground style at it; `region_ground` in `terrain_surface.wgsl`
+  mixes up to 16 styles per pixel and reads each kind once. Without regions
+  the shader takes the old single-style path.
+- `terrain_fly --regions NAME` uses all of it: the east side gets that
+  biome's ground colours, species, tree density and grass amount.
+
 ## Not yet regional
 
-- The ground palette (`VegetationStyle`), far forest colour and grass
-  colour are still one per world: the polder half keeps the first biome's
-  grass and rock colours.
-- Flora: species and tree density come from one biome; `forest_field`'s GPU
-  copy (`forest_at`) still takes the world style.
-- `grass_cells` in `terrain_fly` reads the base style's `grass` amount.
+- The far forest colour (`ForestStyle`) and `forest_field`'s GPU copy
+  (`forest_at`) still take the world style.
 - Sideways and SpaceRacer do not use regions yet.

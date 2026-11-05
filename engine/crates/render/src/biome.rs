@@ -187,6 +187,43 @@ impl Biome {
     }
 }
 
+/// Several biomes as the kinds of one world's regions (crate::regions):
+/// biome k is region kind k, its terrain the regions' style k. Their
+/// species share one list and their rules place each biome's flora where
+/// its region holds, thinning out across a border as the other's thickens.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lands {
+    pub biomes: Vec<Biome>,
+}
+
+impl Lands {
+    /// The terrain styles, in kind order, for `regions::Regions`.
+    pub fn styles(&self) -> Vec<Style> { self.biomes.iter().map(|b| b.terrain).collect() }
+
+    /// Every species any biome grows, each once (by name), in first-seen
+    /// order. Placed objects' variants index this list.
+    pub fn species(&self) -> Vec<(&'static str, crate::plant_recipe::WoodyRecipe)> {
+        let mut out: Vec<(&'static str, crate::plant_recipe::WoodyRecipe)> = Vec::new();
+        for b in &self.biomes {
+            for (name, recipe) in b.species() {
+                if !out.iter().any(|(n, _)| *n == name) { out.push((name, recipe)); }
+            }
+        }
+        out
+    }
+
+    /// Every biome's rules, scaled by its region's share (placement::regional).
+    /// One biome alone gives exactly `Biome::rules`.
+    pub fn rules(&self) -> Vec<crate::placement::Rule> {
+        let all = self.species();
+        let map: Vec<Vec<u32>> = self.biomes.iter().map(|b| b.species().iter()
+            .map(|(n, _)| all.iter().position(|(m, _)| m == n).expect("species listed") as u32).collect()).collect();
+        let map = std::sync::Arc::new(map);
+        crate::placement::regional(self.biomes.iter().map(|b| b.rules()).collect(),
+            move |kind, v| map[kind as usize].get(v as usize).copied().unwrap_or(v))
+    }
+}
+
 /// The time of year, 0..1: 0 spring equinox, 0.25 midsummer, 0.5 autumn
 /// equinox, 0.75 midwinter (northern hemisphere).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -321,6 +358,37 @@ mod tests {
                 _ => assert!(count(crate::placement::TREE) > 100),
             }
         }
+    }
+
+    /// One biome as Lands places exactly what the biome places; two biomes
+    /// over regions each grow their own flora on their own side, with
+    /// distinct ids and variants from the shared species list.
+    #[test]
+    fn each_region_grows_its_own_biome() {
+        use crate::placement::{self, TerrainWorld};
+        use crate::world_constraints::Constraints;
+        let temperate = Biome::named("temperate").unwrap();
+        let one = Lands { biomes: vec![temperate] };
+        let land = Land(temperate);
+        assert_eq!(placement::place(&one.rules(), &land, glam::Vec2::ZERO, 200.0), placement::place(&temperate.rules(), &land, glam::Vec2::ZERO, 200.0));
+        let tundra = Biome::named("tundra").unwrap();
+        let lands = Lands { biomes: vec![temperate, tundra] };
+        let regions = crate::regions::Regions::split([temperate.terrain, tundra.terrain], glam::Vec2::ZERO, 6000.0, glam::Vec2::X, 400.0, 0.0, 1);
+        let world = Constraints { regions: Some(regions), ..Default::default() }.bake(1, &temperate.terrain);
+        let tw = TerrainWorld { seed: 1, style: &temperate.terrain, constraints: Some(&world) };
+        let species = lands.species();
+        let rules = lands.rules();
+        let west = placement::place(&rules, &tw, glam::Vec2::new(-1500.0, 0.0), 250.0);
+        let east = placement::place(&rules, &tw, glam::Vec2::new(1500.0, 0.0), 250.0);
+        assert!(west.iter().all(|i| placement::rule_kind(i.rule) == 0) && east.iter().all(|i| placement::rule_kind(i.rule) == 1));
+        assert!(!west.is_empty() && !east.is_empty());
+        let named = |i: &placement::Instance| species[i.variant as usize].0;
+        assert!(east.iter().any(|i| named(i) == "dwarf_birch"), "tundra shrubs east");
+        assert!(west.iter().all(|i| named(i) != "dwarf_birch"), "no tundra shrubs west");
+        let mut ids: Vec<u64> = west.iter().chain(&east).map(|i| i.id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), west.len() + east.len());
     }
 
     #[test]

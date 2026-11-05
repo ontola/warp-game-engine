@@ -189,6 +189,16 @@ impl Fly {
     }
 
     fn style(&self) -> Style { environment(self.style).biome.terrain }
+
+    /// The world's biomes as region kinds: the style's, then --regions'.
+    /// Their tree densities follow the density knob (60 % by default).
+    fn lands(&self) -> render::biome::Lands {
+        let biomes = std::iter::once(self.style).chain(self.regions).map(|k| {
+            let b = environment(k).biome;
+            render::biome::Biome { tree_density: self.world.tree_density / 0.6 * b.tree_density, ..b }
+        }).collect();
+        render::biome::Lands { biomes }
+    }
     fn ground(&self, x: f32, z: f32) -> f32 {
         match self.current_track() {
             Some(w) => w.height(x, z, self.seed, &self.style()),
@@ -242,7 +252,7 @@ impl Fly {
         if self.building.is_some() { self.stale = true; return Ok(()); }
         self.bake_track();
         let track = self.current_track().cloned();
-        let (seed, style, pos) = (self.seed, self.style(), self.pos);
+        let (seed, style, pos, lands) = (self.seed, self.style(), self.pos, self.lands());
         // Each biome has its palette, turned by the season (render::biome).
         let env = environment(self.style);
         let palette = env.vegetation();
@@ -253,9 +263,8 @@ impl Fly {
         let (tx, rx) = channel();
         let (gpu, settings) = (self.gpu.clone(), self.terrain_settings);
         std::thread::spawn(move || {
-            let biome = env.biome;
             let started = std::time::Instant::now();
-            let ready = build_scene(seed, style, &biome, &palette, sun_degrees(&env), pos, world, track).map(|(scene, light, pool, at)| {
+            let ready = build_scene(seed, style, &lands, &env, &palette, sun_degrees(&env), pos, world, track).map(|(scene, light, pool, at)| {
                 let scene_ms = started.elapsed().as_secs_f64() * 1000.0;
                 let renderer_started = std::time::Instant::now();
                 let built = gpu.map(|gpu| renderer_for(&gpu, &scene, &light, pool.clone(), settings));
@@ -379,8 +388,8 @@ impl Game for Fly {
                 let Some(renderer)=frame.renderer() else {return Err("forest streaming has no renderer".into());};
                 let preparation=renderer.gpu_forest_population_seed()?;
                 let (tx,rx)=channel();let (seed,style,centre)=(self.seed,self.style(),self.pos);
-                let biome=environment(self.style).biome;let world=World {tree_density:self.world.tree_density/0.6*biome.tree_density,..self.world};let track=self.current_track().cloned();
-                std::thread::spawn(move||{let roots=forest(seed,&style,&biome,centre,world,track.as_deref());let _=tx.send((centre,preparation.prepare(&roots)));});
+                let biome=environment(self.style).biome;let world=World {tree_density:self.world.tree_density/0.6*biome.tree_density,..self.world};let track=self.current_track().cloned();let lands=self.lands();
+                std::thread::spawn(move||{let roots=forest(seed,&style,&lands,centre,world,track.as_deref());let _=tx.send((centre,preparation.prepare(&roots)));});
                 self.forest_building=Some(rx);
             }
         }
@@ -507,7 +516,7 @@ impl Default for World {
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
 /// `centre` as `world` asks, and the shadow heightfield around it. Returns the centre.
-fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &VegetationStyle, sun: (f32, f32), centre: Vec3, world: World, track: Option<Arc<Constraints>>) -> Built {
+fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &render::biome::Environment, palette: &VegetationStyle, sun: (f32, f32), centre: Vec3, world: World, track: Option<Arc<Constraints>>) -> Built {
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/sideways/assets");
     let root = assets.join("textures");
     let mut scene = Scene::default();
@@ -520,13 +529,18 @@ fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &
     scene.add_texture(&root.join("mossy_rock_albedo.jpg"))?;
     let material = scene.add_material(Material { tint: [1.0; 3], layer: t0, roughness: 0.9, flags: TERRAIN | SURFACE, scale: 4.0, metal: 0.0 });
     if world.trees || world.grass {
-        let roots = forest(seed, &style, biome, centre, world, track.as_deref());
-        recipe_spruces(&mut scene, biome, palette.meadow_dry_season, world, &roots, world.branch_slots)?;
+        let roots = forest(seed, &style, lands, centre, world, track.as_deref());
+        recipe_spruces(&mut scene, lands, palette.meadow_dry_season, world, &roots, world.branch_slots)?;
     }
     let mut pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
     // Beyond the trees the terrain draws the same forest as colour, out to
     // the horizon.
     procedural_terrain::vegetation_style(&mut scene, material, palette);
+    // --regions: each region's ground in its own biome's colours.
+    if let Some(regions) = track.as_ref().and_then(|w| w.regions.as_ref()) {
+        let grounds: Vec<_> = lands.biomes.iter().map(|b| render::biome::Environment { biome: *b, ..*env }.vegetation().ground).collect();
+        procedural_terrain::region_ground(&mut scene, material, regions, &grounds);
+    }
     // Drawn trees hand over to the painted forest in the outer 15 % of their
     // radius, tree by tree (forest_field::handover_keep), so the forest share
     // holds across the ring.
@@ -578,26 +592,27 @@ fn renderer_for(gpu: &render::Gpu, scene: &Scene, light: &Lighting, pool: proced
     (render::Renderer::new(gpu, scene, light), ProceduralTerrain::new(pool, settings))
 }
 
-/// Shared recipes are cooked once per biome, independently of world population.
-fn cooked_flora(biome: &render::biome::Biome) -> Result<&'static Vec<CookedPlant>, String> {
+/// Shared recipes are cooked once per set of biomes, independently of world population.
+fn cooked_flora(lands: &render::biome::Lands) -> Result<&'static Vec<CookedPlant>, String> {
     type Flora = Vec<CookedPlant>;
-    static COOKED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<&'static str, &'static Flora>>> = std::sync::OnceLock::new();
+    static COOKED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, &'static Flora>>> = std::sync::OnceLock::new();
     let mut map = COOKED.get_or_init(Default::default).lock().unwrap();
-    if let Some(&flora) = map.get(biome.name) { return Ok(flora); }
+    let key = lands.biomes.iter().map(|b| b.name).collect::<Vec<_>>().join("+");
+    if let Some(&flora) = map.get(&key) { return Ok(flora); }
     let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
-    let species = biome.species();
+    let species = lands.species();
     let recipes: Vec<_> = species.iter().map(|(_, r)| (*r, 1)).collect();
     let cooked = recipe_forest::cook_variants(&recipes, Some(&cache))?;
     for (c, (name, _)) in cooked.iter().zip(&species) {
         eprintln!("{name}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
     }
     let flora: &'static Flora = Box::leak(Box::new(cooked.into_iter().map(|c| c.plant).collect()));
-    map.insert(biome.name, flora);
+    map.insert(key, flora);
     Ok(flora)
 }
 
-fn recipe_spruces(scene:&mut Scene,biome:&render::biome::Biome,season:f32,world:World,roots:&[WorldRoot],branch_slots:u32)->Result<(),String> {
-    let cooked=if world.trees {Some(cooked_flora(biome)?)} else {None};
+fn recipe_spruces(scene:&mut Scene,lands:&render::biome::Lands,season:f32,world:World,roots:&[WorldRoot],branch_slots:u32)->Result<(),String> {
+    let cooked=if world.trees {Some(cooked_flora(lands)?)} else {None};
     let cache=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
     let grass=if world.grass {recipe_forest::cook_meadow_cells(&[(47,season),(83,season)],Some(&cache))?} else {Vec::new()};
     for (i,c) in grass.iter().enumerate() {
@@ -635,14 +650,14 @@ fn recipe_spruces(scene:&mut Scene,biome:&render::biome::Biome,season:f32,world:
 /// Trees within `world.tree_radius` of `centre`, from the engine's forest
 /// field (the distant terrain draws the same forest). Position, yaw, scale
 /// and variant.
-fn forest(seed: u32, style: &Style, biome: &render::biome::Biome, centre: Vec3, world: World, track: Option<&Constraints>) -> Vec<WorldRoot> {
+fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, world: World, track: Option<&Constraints>) -> Vec<WorldRoot> {
     use render::placement::{self, TerrainWorld};
     let (start, end) = handover_band(world);
     let c = Vec2::new(centre.x, centre.z);
-    let biome = render::biome::Biome { tree_density: world.tree_density, ..*biome };
     // Bent to the --track road; the rules keep off it (placement::off_road).
     let land = TerrainWorld { seed, style, constraints: track };
-    let (trees, shrubs): (Vec<_>, Vec<_>) = biome.rules().into_iter().partition(|r| r.id == placement::TREE);
+    // Each region grows its own biome's flora (render::biome::Lands).
+    let (trees, shrubs): (Vec<_>, Vec<_>) = lands.rules().into_iter().partition(|r| placement::base_rule(r.id) == placement::TREE);
     // Trees out to the painted forest, handed over to it tree by tree;
     // shrubs only near, where a knee-high bush is more than a pixel.
     let woody=if world.trees {placement::place(&trees, &land, c, world.tree_radius).into_iter()
@@ -650,10 +665,10 @@ fn forest(seed: u32, style: &Style, biome: &render::biome::Biome, centre: Vec3, 
         .chain(placement::place(&shrubs, &land, c, SHRUB_RADIUS))
         .map(|t|WorldRoot {id:t.id,placement:RootPlacement {up:Vec3::Y,pos:t.pos,yaw:t.yaw,scale:t.scale.y,variant:t.variant as usize}}).collect()} else {Vec::new()};
     if !world.grass {return woody;}
-    let offset=if world.trees {biome.species().len()} else {0};
+    let offset=if world.trees {lands.species().len()} else {0};
     let mut roots=woody;
     let started=std::time::Instant::now();
-    let cells=grass_cells(seed,style,&land,c,offset,GRASS_RADIUS);
+    let cells=grass_cells(seed,&land,c,offset,GRASS_RADIUS);
     eprintln!("grass world cells: count={} generation_cpu_ms={:.2} radius_m={GRASS_RADIUS}",cells.len(),started.elapsed().as_secs_f64()*1000.);
     roots.extend(cells);roots
 }
@@ -668,7 +683,8 @@ fn handover_band(world: World) -> (f32, f32) {
 
 /// Stable world cells share two cooked assemblies. Terrain sampling happens
 /// only on world streaming; no CPU visibility or near-source shortlist.
-fn grass_cells(seed:u32,style:&Style,land:&dyn render::placement::World,centre:Vec2,variant_offset:usize,radius:f32)->Vec<WorldRoot> {
+fn grass_cells(seed:u32,land:&render::placement::TerrainWorld,centre:Vec2,variant_offset:usize,radius:f32)->Vec<WorldRoot> {
+    use render::placement::World as _;
     let cell=recipe_forest::MEADOW_CELL_SIZE;
     let lo=((centre-Vec2::splat(radius))/cell).floor().as_ivec2();
     let hi=((centre+Vec2::splat(radius))/cell).ceil().as_ivec2();
@@ -677,7 +693,7 @@ fn grass_cells(seed:u32,style:&Style,land:&dyn render::placement::World,centre:V
         let x=(i as f32+0.5)*cell;let z=(j as f32+0.5)*cell;
         if Vec2::new(x,z).distance_squared(centre)>radius*radius {continue;}
         let s=land.ground(x,z);
-        let sparse=0.5+0.8*terrain_field::noised(Vec2::new(x,z)/40.,seed.wrapping_add(31)).x>style.grass;
+        let sparse=0.5+0.8*terrain_field::noised(Vec2::new(x,z)/40.,seed.wrapping_add(31)).x>land.style_at(x,z).grass;
         if sparse || s.rock>0.5 || s.scree>0.8 || s.water>0.02 || s.snow>0.3 || land.clearance(x,z)<cell {continue;}
         let dx=land.ground(x+0.5,z).pos.y-land.ground(x-0.5,z).pos.y;
         let dz=land.ground(x,z+0.5).pos.y-land.ground(x,z-0.5).pos.y;
