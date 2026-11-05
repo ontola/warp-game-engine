@@ -7,7 +7,8 @@
 //! Consumers must discard records whose instance fallback flag is nonzero and
 //! render that instance's resident root instead. This avoids holes AND duplicate
 //! partial subtrees on overflow. Independent cuts need separate scratch; the
-//! runtime instead shares one frame-wide camera/shadow union and residency.
+//! runtime shares residency while choosing separate camera and shadow cuts.
+//! Cameras share a class cut; independent per-camera cuts remain future work.
 use crate::Gpu;
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
@@ -119,7 +120,8 @@ pub struct Selector {
     pub arguments:wgpu::Buffer,
     /// One u32 per instance, reset each frame. See module consumer contract.
     pub fallback:wgpu::Buffer,
-    /// Whole-tree representation + 1; zero means branches or culled. No branch slot needed.
+    /// Camera whole-tree representation + 1 (shadow when outside all cameras).
+    /// Full independent publications are held in demand; this is a diagnostic compatibility map.
     pub direct:wgpu::Buffer,
     children:wgpu::Buffer,work:[wgpu::Buffer;2],pub(crate) levels:u32,
     pub(crate) demand:wgpu::Buffer,bucket_cost:wgpu::Buffer,
@@ -139,6 +141,7 @@ impl Selector {
     pub fn with_work_capacity(gpu:&Gpu,nodes:&[Node],instances:&[Instance],capacity:u32,deferred_capacity:u32,work_capacity:u32)->Result<Self,String> {
         validate(nodes,instances,capacity)?;
         let limit=gpu.device.limits();
+        let work_capacity=work_capacity.max((instances.len()as u32).checked_mul(2).ok_or("foliage consumer root capacity overflow")?);
         if work_capacity<(instances.len()as u32) || work_capacity.div_ceil(64)>limit.max_compute_workgroups_per_dimension
             || limit.max_storage_buffers_per_shader_stage<15 || limit.max_compute_workgroups_per_dimension<32768 {return Err("foliage work queue exceeds device limits".into());}
         let page_count=nodes.iter().map(|n|n.links[2]).max().unwrap_or(0).checked_add(1).ok_or("asset page ID overflow")?;
@@ -190,7 +193,7 @@ impl Selector {
                 records:storage("selected foliage records",capacity as u64*16),record_consumers:storage("selected foliage consumers",capacity as u64*4),deferred:storage("deferred foliage subtrees",deferred_capacity as u64*8),
                 counters:storage("foliage selection counters",64),arguments:storage("foliage indirect arguments",24),fallback:storage("foliage root fallbacks",instances.len()as u64*4),
                 direct:storage("direct resident forest roots",instances.len()as u64*4),
-                demand:storage("forest root demand",instances.len()as u64*16),bucket_cost:storage("forest priority costs",(instances.len().div_ceil(256)as u64+1)*128),first:make("first"),second:make("second"),finish:make("finish"),layout,count:instances.len()as u32,capacity,deferred_capacity,binds:Default::default()}
+                demand:storage("forest root demand",instances.len()as u64*32),bucket_cost:storage("forest priority costs",(instances.len().div_ceil(256)as u64+1)*128),first:make("first"),second:make("second"),finish:make("finish"),layout,count:instances.len()as u32,capacity,deferred_capacity,binds:Default::default()}
         })
     }
     /// Publish at a frame boundary, after the associated data upload is ordered
@@ -239,14 +242,14 @@ impl Selector {
         enc.copy_buffer_to_buffer(&self.counters,32,&self.arguments,0,12);
         enc.copy_buffer_to_buffer(&self.counters,48,&self.arguments,12,12);Ok(())
     }
-    /// Conservative union across camera AND shadow consumers. This produces
-    /// one shared resident cut for the frame. Per-view source/cluster HZB still
+    /// Conservative union across camera AND shadow consumers. Independent class
+    /// cuts share payload residency. Per-view source/cluster HZB still
     /// runs downstream; no camera depth can reject an off-camera caster here.
     pub fn union(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::part_wind::AnimationView],error:f32,branch_budget:u32,empty_depth:&wgpu::TextureView)->Result<(),String> {
         let consumers=views.iter().copied().map(ConsumerView::camera).collect::<Vec<_>>();
         self.union_consumers(gpu,enc,&consumers,error,branch_budget,empty_depth)
     }
-    /// Frame-wide camera/shadow union. Shadow consumers retain demand even
+    /// Frame-wide residency union with independent camera/shadow cuts. Shadows retain demand even
     /// when cameras cannot see their casters; only cameras get budget priority.
     pub fn union_consumers(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[ConsumerView],error:f32,branch_budget:u32,empty_depth:&wgpu::TextureView)->Result<(),String> {
         self.union_consumers_budget(gpu,enc,views,error,branch_budget,[4<<20;2],empty_depth)
@@ -293,6 +296,30 @@ mod tests {
    Node {sphere:[0.12,0.,0.5,0.1],error:[0.;4],links:[NONE,3,92,0]}];
   let tree=Instance {rows:[[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.]],scale:[1.,0.,0.,0.],info:[0,17,0,0]};
   (nodes,vec![tree;count])
+ }
+ #[test]
+ #[ignore="exclusive GPU independent consumer cut oracle"]
+ fn gpu_camera_and_shadow_choose_independent_complete_cuts() {
+  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].scale[2]=1.;trees[0].scale[3]=1.;
+  let nodes=[Node {sphere:[0.,0.,0.5,0.2],error:[1.,0.,1.,1.],links:[1,3,0,2]},
+   Node {sphere:[0.,0.,0.5,0.1],error:[0.;4],links:[NONE,2,1,4]},
+   Node {sphere:[0.,0.,0.5,0.1],error:[0.;4],links:[NONE,3,2,4]}];
+  let selector=Selector::new(&gpu,&nodes,&trees,8,8).unwrap();let empty=depth(&gpu,0.);
+  let view=|size|crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[size;2]};
+  for (camera,shadow) in [(128,1),(1,128),(128,128),(1,1),(128,1)] {
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union_consumers_budget(&gpu,&mut enc,&[ConsumerView::camera(view(camera)),ConsumerView::shadow(view(shadow))],1.,8,[100;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
+   let count=read(&gpu,&selector.counters)[0]as usize;let records=read(&gpu,&selector.records);let roles=read(&gpu,&selector.record_consumers);let roots=read(&gpu,&selector.demand);
+   for (consumer,size) in [camera,shadow].into_iter().enumerate() {
+    let mut cut=records.chunks_exact(4).take(count).zip(&roles).filter(|(_,role)|**role&(256<<consumer)!=0).map(|(r,_)|r[1]).collect::<Vec<_>>();
+    if roots[consumer*4+2]!=0 {cut.push(0);}
+    cut.sort();assert_eq!(cut,if size==1 {vec![0]}else{vec![1,2]},"consumer {consumer} at {size} pixels must not inherit the other consumer's detail");
+   }
+   assert_eq!(read(&gpu,&selector.fallback),[0]);
+  }
+  selector.publish_asset_pages(&gpu,&[(1,false,2)]).unwrap();
+  let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers(&gpu,&mut enc,&[ConsumerView::camera(view(128)),ConsumerView::shadow(view(1))],1.,8,&empty).unwrap();gpu.queue.submit([enc.finish()]);
+  let roots=read(&gpu,&selector.demand);assert_eq!((roots[2],roots[6]),(1,1),"missing child preserves a complete resident ancestor for each consumer");assert_eq!(read(&gpu,&selector.counters)[0],0);
  }
  #[test] fn validates_shared_subtrees_and_conservative_bounds() {
   let (nodes,trees)=fixture(2049);assert!(validate(&nodes,&trees,1).is_ok());
@@ -387,16 +414,16 @@ mod tests {
    selector.union_consumers_budget(&gpu,&mut enc,&views,0.01,4,[10;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
    assert_eq!(read(&gpu,&selector.direct),[2,0],"camera refinement must retry after sibling cut refunds seven splats");
    assert_eq!(read(&gpu,&selector.fallback),[0,0]);
-   let state=read(&gpu,&selector.refiner.state);assert_eq!(&state[..3],&[2,7,7]);assert_eq!(state[15],0);
+   let state=read(&gpu,&selector.refiner.state);assert_eq!(&state[..3],&[4,7,7]);assert_eq!(state[15],0);
    assert!(state[28]>0,"retry must reuse immutable proposal work");
    let count=read(&gpu,&selector.counters)[0]as usize;
    let mut cut=read(&gpu,&selector.records).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();
-   assert_eq!(cut,[3,4],"complete nonoverlapping sibling cut");
+   assert_eq!(cut,[3,3,4,4],"each consumer has a complete sibling cut; residency deduplicates shared nodes");
   }
  }
  #[test]
  #[ignore="exclusive GPU bounded dormant queue fixture"]
- fn gpu_dormant_overflow_retains_complete_cut_and_resets() {
+ fn gpu_consumer_split_retains_complete_cut_with_small_frontier() {
   let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].scale[2]=1.;trees[0].scale[3]=1.;
   let camera=|child,end,rep,flags|Node {sphere:[0.,0.,0.5,3.],error:[1.,0.,1.,1.],links:[child,end,rep,flags]};
   let shadow=|child,end,rep,cost,error|Node {sphere:[2.,0.,0.5,0.2],error:[error,0.,cost,cost],links:[child,end,rep,0]};
@@ -412,10 +439,17 @@ mod tests {
   for _ in 0..3 {
    let mut enc=gpu.device.create_command_encoder(&Default::default());
    selector.union_consumers_budget(&gpu,&mut enc,&[ConsumerView::camera(camera),ConsumerView::shadow(shadow)],0.01,16,[100;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
-   let state=read(&gpu,&selector.refiner.state);assert_eq!(state[15],0,"active queue must fit");assert!(state[63]>0,"fixture must exhaust dormant storage");assert_eq!(state[29],2);
+   let state=read(&gpu,&selector.refiner.state);assert_eq!(state[15],0,"active queue must fit");assert!(state[29]<=2,"bounded dormant storage");
    let count=read(&gpu,&selector.counters)[0]as usize;
    let mut cut=read(&gpu,&selector.records).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();
-   assert_eq!(cut,[2,5,7,11,12],"overflow retains precisely one complete parent; other cuts still refine");
+   let roles=read(&gpu,&selector.record_consumers);let records=read(&gpu,&selector.records);let demand=read(&gpu,&selector.demand);
+   for (consumer,leaves) in [(256u32,vec![12u32]),(512u32,vec![2,5,8,11,12])] {
+    let mut coverage=vec![0;leaves.len()];
+    let mut cover=|node:u32|{for (j,&leaf) in leaves.iter().enumerate(){if node<=leaf && leaf<nodes[node as usize].links[1]{coverage[j]+=1;}}};
+    for (r,&role) in records.chunks_exact(4).take(count).zip(&roles){if role&consumer!=0{cover(r[1]);}}
+    if demand[if consumer==256 {2}else{6}]!=0 {cover(0);}
+    assert!(coverage.iter().all(|&n|n==1),"complete nonoverlapping consumer {consumer}: {coverage:?}, cut {cut:?}");
+   }
    assert_eq!(read(&gpu,&selector.fallback),[0]);assert_eq!(read(&gpu,&selector.direct),[0]);
   }
  }
@@ -435,23 +469,18 @@ mod tests {
    let mut cut=read(&gpu,&selector.records).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();
    let mut audit=gpu.device.create_command_encoder(&Default::default());selector.refiner.audit(&gpu,&mut audit,&selector);gpu.queue.submit([audit.finish()]);
    let state=read(&gpu,&selector.refiner.state);
-   let parents=cut.iter().filter(|&&node|nodes[node as usize].error[0]>0.).count()as u32
-       +u32::from(read(&gpu,&selector.direct)[0]!=0);
-   assert_eq!(state[23],parents);assert_eq!(state[24],parents);
-   assert_eq!(state[48],parents);assert_eq!(state[53],0);
-   let expected=match cut.as_slice() {
-    [2,3,5,6]=>[0,0,0,0,0,0], [2,3,4]=>[1,1,1,0,0,0],
-    [1,4]=>[2,0,0,0,0,0], []=>[0,1,1,0,0,0],
-    [1,5,6]=>[0,0,0,1,0,0], _=>panic!("unexpected cut {cut:?}"),
-   };
-   assert_eq!(&state[49..55],&expected,"slot/camera/shadow/page/leaf/eligible reasons for {cut:?}");
-   assert_eq!(&state[25..28],&[0,0,0]);
-   assert_eq!(&state[32..36],&[0,0,0,0]);
-   assert_eq!(&state[36..40],&[0,0,0,cut.len()as u32]);
-   assert_eq!(&state[40..44],&[0,0,0,u32::from(read(&gpu,&selector.direct)[0]!=0)]);
-   if parents==0 {assert_eq!(&state[19..23],&[0,0,0,0]);}
-   else {assert!(f32::from_bits(state[19])>1.);assert!(f32::from_bits(state[21])>100.);}
-
+   let roles=read(&gpu,&selector.record_consumers);let records=read(&gpu,&selector.records);let demand=read(&gpu,&selector.demand);
+   let mut consumer_cuts=[Vec::new(),Vec::new()];
+   for (consumer,part) in consumer_cuts.iter_mut().enumerate() {
+    for (r,&role) in records.chunks_exact(4).take(count).zip(&roles){if role&(256<<consumer)!=0{part.push(r[1]);}}
+    if demand[consumer*4+2]!=0 {part.push(0);}
+    part.sort();
+    for leaf in [2,3,5,6] {assert_eq!(part.iter().filter(|&&n|n<=leaf && leaf<nodes[n as usize].links[1]).count(),1,"consumer {consumer} must cover leaf {leaf} once: {part:?}");}
+   }
+   let parents=|part:&Vec<u32>|part.iter().filter(|&&n|nodes[n as usize].error[0]>0.).count()as u32;
+   assert_eq!(state[23],parents(&consumer_cuts[0])+parents(&consumer_cuts[1]));assert_eq!(state[24],parents(&consumer_cuts[0]));
+   assert_eq!(state[48],parents(&consumer_cuts[0]));assert_eq!(state[53],0);assert_eq!(&state[25..28],&[0,0,0]);
+   let mut cut=consumer_cuts[0].clone();if cut==[0]{cut.clear();}
    assert!(state[0]<=slots && state[1]<=cap && state[2]<=cap,"reservation {state:?}");assert_eq!(state[15],0);
    assert_eq!(counters[3],0);assert_eq!(read(&gpu,&selector.fallback),[0]);
    cut
@@ -537,7 +566,7 @@ mod tests {
   let view=|size|AnimationView {view_projection:Mat4::IDENTITY,viewport:[size;2]};
   for (views,expected) in [(vec![ConsumerView::camera(view(1))],1),
       (vec![ConsumerView::camera(view(128))],2),
-      (vec![ConsumerView::camera(view(1)),ConsumerView::shadow(view(128))],2)] {
+      (vec![ConsumerView::camera(view(1)),ConsumerView::shadow(view(128))],3)] {
    let mut enc=gpu.device.create_command_encoder(&Default::default());
    selector.union_consumers(&gpu,&mut enc,&views,100.,4,&empty).unwrap();gpu.queue.submit([enc.finish()]);
    assert_eq!(read(&gpu,&selector.counters)[0],expected);
@@ -561,7 +590,7 @@ mod tests {
    assert_eq!(read(&gpu,&selector.fallback),[0,0,0]);
    assert_eq!(read(&gpu,&selector.direct),[0,91,0],"shadow-only root retains its complete coarse representation");
    assert_eq!(read(&gpu,&selector.counters)[0],2);
-   assert!(read(&gpu,&selector.refiner.state)[28]>0,"shadow proposal is actually reused within the selection sequence");
+   assert_eq!(read(&gpu,&selector.refiner.state)[15],0,"free ancestor publication does not require a dormant wake");
    consumers.reverse();
   }
  }

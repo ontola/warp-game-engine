@@ -11,7 +11,14 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
-Latest integrated change (5 November): whole-root resident ancestors and emergency
+Latest integrated change (5 November): camera and shadow classes now choose
+independent GPU cuts with shared residency/poses, compact live root tasks,
+consumer-local fallback and consumer-specific raster dispatch. 152 foliage tests
+pass. Final routes have zero emergency fallbacks but are NOT faster; pixel-scale
+voxel detail remains unaccepted (oversized rounded cells persist). See evidence
+below. Per-view cuts within each class and upstream recovery remain open.
+
+Earlier integrated change (5 November): whole-root resident ancestors and emergency
 fallbacks now preserve camera/shadow roles, root motion history and cached-shadow
 damage. 147 foliage tests plus six shadow-cache tests pass. Normal route images
 match; variable timing results are recorded below without a speedup claim.
@@ -42,11 +49,10 @@ error; 40,418 are camera-splat constrained and 21,608 also shadow-splat constrai
 (reasons overlap). Seven have a missing next-detail page. No affordable/resident
 next refinement remains in this audit. Nearby crowns remain visibly coarse.
 
-Next: G3 upstream two-phase visibility and independently budgeted camera/shadow
-representation demand. The remaining broad frustum-only shared cut spends its
-physical budget on hidden trees and shared shadow demands. Avoid another round
-of full-frontier retry/queue tuning. The pixel-scale raster and upscaler probes
-below remain required; none of this closes G1.4, G2.2/G2.3, G3 or G8.
+Next: quantify actual oversized cell footprints and their retention reasons,
+then address them with finer source/voxel coverage. G3 upstream two-phase
+visibility and per-view consumer cuts remain necessary. Shared-slot reservation
+is still conservative before deduplication. None of this closes G1.4, G2 or G8.
 
 ## Immediate performance decision (existing G1.4/G8 evidence, not new gates)
 
@@ -56,6 +62,8 @@ below remain required; none of this closes G1.4, G2.2/G2.3, G3 or G8.
 - [ ] Same executable, alternating native/DLSS Quality/Balanced/Performance route
   runs, at least three per mode. Record actual input/output sizes, per-pass medians,
   reconstruction cost and comparable images. No silent fallback.
+  Record actual projected voxel-cell footprint percentiles/maxima and counts
+  above the pixel-scale target; identify why coarse representations survive.
 - [ ] Apply the following provisional TOTAL frame allocation to these measurements,
   then proceed to G2. These are engineering targets, not achieved measurements.
 
@@ -179,8 +187,9 @@ only to the other consumer. Newly added consumers invalidate motion history.
 147 foliage tests, six shadow-cache tests and composed shader validation pass.
 Direct whole-root ancestors and emergency fallbacks now preserve consumer roles
 as well. Shadow-only roots invalidate cached shadow tiles; newly added consumers
-reset root motion history. G3.3 remains open: the hierarchy still chooses one
-shared finest cut. G3.2 upstream visibility is unchanged.
+reset root motion history. Camera/shadow classes now choose separate cuts; G3.3 remains open for
+independent per-view cuts within each class and tighter shared-slot accounting.
+G3.2 upstream visibility is unchanged.
 
 ## G4 — Bounded paging and lifecycle (NOT COMPLETE)
 
@@ -1158,3 +1167,73 @@ and root-consumers-repeat-* (logs, GPU/CPU JSON, PNG and JPEG comparisons).
 Tests: root-consumers-{tests,shadow-tests,shaders}.log. G3.2 upstream recovery
 and G3.3 independent consumer cuts remain OPEN; this closes their root publication
 prerequisite, not traversal or detail selection. No interactive playtest opened.
+
+## 5 November: independent camera/shadow class cuts integrated
+
+GPU tasks now refine camera and shadow demand independently. Each root has a
+camera and a shadow draw record referencing the SAME asset, pose and canonical
+source owner. Matching branch requests deduplicate into shared physical residency.
+Whole-root histories invalidate their shared owner when either publication changes.
+No CPU selection, CPU near-tree pool or opt-in route was added.
+
+Live consumer tasks are compacted in stable root/role order on the GPU; inactive
+world capacity does not enter refinement scans. Initial raster reservations are
+summed per workgroup instead of one contended atomic sequence per root. Raster
+passes dispatch only their own root range plus the shared branch prefix.
+
+Important fixes from the first normal-route check:
+- Camera priority now defers only shadow upgrades requiring MORE SHARED BRANCH
+  SLOTS. Spending the separate shadow raster budget cannot starve camera work.
+  Resident shadow ancestors no longer wait behind unrelated camera refinement.
+- A consumer deadline/fallback suppresses ONLY that consumer's cut. Physical
+  allocation/hash/record overflow still invalidates both partial cuts atomically.
+  Residency filters consumer roles before publication, including retained slots.
+- The rejected intermediate caused76,049 emergency root fallbacks in the low
+  route and huge near-camera spheres. Final high AND low routes have zero
+  emergency fallbacks. This does not imply acceptable projected voxel detail.
+
+Validation:152 foliage tests,2 vegetation-cell tests,6 shadow-cache tests and
+composed shader validation PASS. New raw GPU oracles cover different camera/
+shadow detail, missing pages, stable sparse/empty-world compaction across workgroup
+boundaries, exact initial reservations, exhausted parked storage, consumer-local
+fallback, and shadow raster admission while cameras wait for shared slots.
+Existing cached-versus-full shadow depth, population lifecycle, four-camera
+teleports and shared articulated pose tests also pass. Release DLSS build passes.
+
+Final normal renderer:RTX5070Ti/Vulkan, native1280x720 ONE VIEW, lowland+grass,
+240-frame route,120 warm GPU samples/run. Three alternating baseline/final runs:
+
+| Camera | Before covered GPU ms | After covered GPU ms |
+| --- | --- | --- |
+| High | 13.899 / 13.902 / 13.927 | 13.948 / 13.969 / 13.946 |
+| Low | 14.781 / 14.784 / 14.778 | 15.032 / 15.044 / 15.056 |
+
+This is NOT a speedup. High route is roughly unchanged; low is about0.26ms slower.
+High selection median changes8.019->7.815ms, low7.978->7.962ms. Materialization
+rises0.142->0.228ms; shadow damage0.286->0.402ms. Low-route shadow work increases
+because resident caster detail replaces52,726 baseline shadow-only emergency
+fallbacks. Camera raster stays~0.728ms. Low camera source records169->183, voxel
+records282->127; over-target camera nodes42,083->41,943. Physical pose requests
+503->192. These are route diagnostics, NOT4K/four-view or gameplay claims.
+
+Image review: mixed source/coarse crowns and hard shadows persist. High/low
+non-HUD RGB MAE are~3.24/~12.75 at worst channel, not image equivalence. Near-ground
+shapes/shadows change; oversized rounded cells are explicitly NOT accepted.
+The user correctly points out that20-pixel spheres violate the pixel-scale voxel
+goal. Current fixed selected-level publication can retain such a coarse level
+under budget/deadline pressure; the rasterizer cannot invent finer payloads.
+Do NOT shrink splats to hide this: preserve coverage with finer cells/source
+geometry. Actual projected-cell footprint distribution and retention reasons
+must be measured under existing G1.4/G8 work, then fixed; shader appearance polish
+is not a substitute.
+
+Remaining G3 gaps: independent PER-VIEW cuts within each class, upstream
+history/current-depth recovery and conservative shared-slot accounting (matching
+requests deduplicate physically but admission still charges each request).
+G2/G3/G8 remain open. Extra root publication/history storage is128 bytes per
+reserved root before secondary renderer/cache bookkeeping; assets are not copied.
+
+Full final and rejected-intermediate per-pass medians/counters:
+independent-consumer-cut-measurements.json. Local evidence:
+build/playtest-unified/independent-cuts-final-{high,low}-{before,after}-*;
+comparison JPEGs and test/build logs use independent-cuts-* names. No playtest.

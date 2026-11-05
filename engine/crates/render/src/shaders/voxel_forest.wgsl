@@ -1094,6 +1094,13 @@ fn volume_far_tree(index:u32)->bool {
     let owner=instances[volume_trees[index].identity.x];
     return distance(vec3<f32>(owner.r0.w,owner.r1.w,owner.r2.w),view.cam.xyz)>volume_config.march.y;
 }
+// GPU-owned roots publish separate camera/shadow arrays after the shared branch
+// prefix. Never launch the other consumer's root workgroups just to reject them.
+fn volume_consumer_count()->u32 {return volume_config.size_count.w-u32(volume_config.proxy.w);}
+fn volume_shadow_index(work:u32)->u32 {
+ if work>=volume_consumer_count() {return volume_config.size_count.w;}
+ return work+select(0u,u32(volume_config.proxy.w),f32(work)>=volume_config.proxy.x);
+}
 fn volume_proxy(index:u32)->bool {return f32(index)>=volume_config.proxy.x;}
 // A proxy another representation stands in for (recipe_forest::Pool):
 // bounds_min.w=1 draws nothing (a full tree, which casts itself), 2 only
@@ -1249,12 +1256,12 @@ fn volume_splat_wanted(index:u32)->bool {
 @compute @workgroup_size(64)
 fn voxel_splat_tree_list(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
     let index=(group.x+group.y*65535u)*64u+lane;
-    if index>=volume_config.size_count.w || !volume_splat_wanted(index) {return;}
+    if index>=volume_consumer_count() || !volume_splat_wanted(index) {return;}
     let slot=atomicAdd(&volume_tiles[3],1u);
     let capacity=arrayLength(&volume_tiles)-4u;
     if slot<capacity {atomicStore(&volume_tiles[4u+slot],index);}
     // On overflow dispatch every tree and use the direct path. Never drop it.
-    let count=select(volume_config.size_count.w,slot+1u,slot<capacity);
+    let count=select(volume_consumer_count(),slot+1u,slot<capacity);
     atomicMax(&volume_tiles[0],min(count,65535u));
     atomicMax(&volume_tiles[1],(count+65534u)/65535u);
     atomicMax(&volume_tiles[2],1u);
@@ -1263,7 +1270,7 @@ fn voxel_splat_tree_list(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_i
 @compute @workgroup_size(64)
 fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
     let work=group.x+group.y*65535u;
-    var index=work;
+    var index=select(volume_config.size_count.w,work,work<volume_consumer_count());
     if VOXEL_COMPACT {
         let count=atomicLoad(&volume_tiles[3]);
         if count<=arrayLength(&volume_tiles)-4u {
@@ -1511,13 +1518,13 @@ fn voxel_splat_resolve(@builtin(global_invocation_id) id:vec3<u32>) {
 
 @compute @workgroup_size(64)
 fn voxel_sun_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
-    volume_sun_splats_impl(group.x+group.y*65535u,lane,true);
+    volume_sun_splats_impl(volume_shadow_index(group.x+group.y*65535u),lane,true);
 }
 @group(3) @binding(0) var<uniform> shadow_damage_words:array<vec4<u32>,32>;
 override SHADOW_DAMAGE_MAP_SIZE:f32=4096.;
 @compute @workgroup_size(64)
 fn voxel_cached_sun_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
-    let index=group.x+group.y*65535u;
+    let index=volume_shadow_index(group.x+group.y*65535u);
     var damaged=false;
     if lane==0u && index<volume_config.size_count.w {
         let tree=volume_trees[index];

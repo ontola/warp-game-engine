@@ -245,6 +245,7 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
     placeholder.bounds_min=[0.,-100001.,0.,0.];placeholder.bounds_max=[1.,-100000.,1.,0.];
     forest.instances=(0..slots).map(|slot|GpuTree {meta:[first_owner+slot,placeholder.meta[1],placeholder.meta[2],u32::MAX],..placeholder}).collect();
     forest.instances.extend_from_slice(&proxies);
+    forest.instances.extend_from_slice(&proxies); // Independent shadow roots share asset and pose ownership.
     let mut templates=templates;
     for (i,t) in templates.iter_mut().enumerate(){t.proxy_work=exact_work(work[t.proxy.meta[1]as usize])?;t.node=root_nodes[i];t.shadow_sphere=nodes[t.node as usize].sphere;t.branch=handles[i].pose_range.start as u32;}
     let roots=trees.iter().enumerate().map(|(i,t)| {
@@ -257,7 +258,7 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
         Instance {rows:rows(m),scale:[(row*col).sqrt(),0.,templates[t.variant].proxy_work,templates[t.variant].proxy_work],info:[root_nodes[t.variant],population.generations[i],handles[t.variant].pose_range.start as u32,u32::from(population.slots[i].is_none())]}
     }).collect();
     let raster_budget=forest.instances.iter().map(|v|work[v.meta[1]as usize]as u64).sum::<u64>().clamp(1,4<<20)as u32;
-    scene.voxel_forest=Some(forest);scene.voxel_proxies=trees.len()as u32;
+    scene.voxel_forest=Some(forest);scene.voxel_proxies=trees.len()as u32*2;
     scene.gpu_forest=Some(Spec {page_budget:Default::default(),source_budget:Default::default(),nodes,roots,branches,representations,proxies,templates,population,first_owner,slots,raster_budget,error:policy.max_error_pixels.max(0.25)});
     Ok(())
 }
@@ -379,7 +380,7 @@ impl Runtime {
             let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest pose state"),size:32,usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
             let choices=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest shared representation choices"),size:131072,
                 usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
-            let root_history=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest root representation history"),size:spec.roots.len()as u64*16,usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false});
+            let root_history=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("GPU forest root representation history"),size:spec.roots.len()as u64*32,usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false});
             let branches=upload("shared forest branch rigs",bytemuck::cast_slice(&cooked_branches));
             let reps=upload("shared forest representations",bytemuck::cast_slice(&spec.representations));
             let proxies=upload("resident forest roots",bytemuck::cast_slice(&spec.proxies));
@@ -442,7 +443,7 @@ impl Runtime {
     }
     /// Explicit synchronous diagnostic only; never called to select or draw.
     pub fn diagnostics(&self,gpu:&Gpu)->Result<Diagnostics,String> {
-        let inputs=[(&self.selector.counters,64u64),(&self.residency.counters,32),(&self.selector.fallback,self.trees as u64*4),(&self.choices,131072),(&self.pose_work,268),(&self.selector.demand,self.trees as u64*16),(&self.selector.refiner.state,256)];
+        let inputs=[(&self.selector.counters,64u64),(&self.residency.counters,32),(&self.selector.fallback,self.trees as u64*4),(&self.choices,131072),(&self.pose_work,268),(&self.selector.demand,self.trees as u64*32),(&self.selector.refiner.state,256)];
         let size=inputs.iter().map(|(_,n)|n).sum();
         let output=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("forest diagnostic snapshot"),size,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
         let mut enc=gpu.device.create_command_encoder(&Default::default());let mut offset=0;
@@ -457,13 +458,13 @@ impl Runtime {
         let c=&words[..16];let r=&words[16..24];let fallback=&words[24..24+self.trees as usize];
         let choices=&words[24+self.trees as usize..24+self.trees as usize+32768];
         let pose_start=24+self.trees as usize+32768;let poses=&words[pose_start..pose_start+67];
-        let demand=&words[pose_start+67..pose_start+67+self.trees as usize*4];
-        let refinement=&words[pose_start+67+self.trees as usize*4..];
+        let demand=&words[pose_start+67..pose_start+67+self.trees as usize*8];
+        let refinement=&words[pose_start+67+self.trees as usize*8..];
         let (mut camera_roots,mut shadow_only_roots,mut camera_fallback_roots,mut shadow_only_fallback_roots)=(0,0,0,0);
         let (mut camera_published_branches,mut shadow_only_published_branches)=(0u64,0u64);
-        for (d,&fallback) in demand.chunks_exact(4).zip(fallback) {
-            if d[1]&256!=0 {camera_roots+=1;camera_published_branches+=d[0]as u64;camera_fallback_roots+=u32::from(fallback!=0);}
-            else if d[1]&512!=0 {shadow_only_roots+=1;shadow_only_published_branches+=d[0]as u64;shadow_only_fallback_roots+=u32::from(fallback!=0);}
+        for (i,(d,&fallback)) in demand.chunks_exact(4).zip(fallback).enumerate() {
+            if d[1]&256!=0 {camera_roots+=1;camera_published_branches+=d[0]as u64;camera_fallback_roots+=u32::from(fallback&(256|7)!=0);}
+            else if d[1]&512!=0 {shadow_only_roots+=1;shadow_only_published_branches+=demand[(self.trees as usize+i)*4]as u64;shadow_only_fallback_roots+=u32::from(fallback&(512|7)!=0);}
         }
         let voxels=choices[..self.slots as usize].iter().filter(|w|**w&3==1).count()as u32;
         let shadow_voxel_slots=choices[16384..16384+self.slots as usize].iter().filter(|w|**w&3==1).count()as u32;
@@ -709,11 +710,12 @@ impl Runtime {
                     gpu.queue.submit([enc.finish()]);
                 }
                 let raw=read(&volumes);let rendered:&[GpuTree]=bytemuck::cast_slice(&raw);
-                assert_eq!(rendered[spec.slots as usize].bounds_min[3],match roles {256=>3.,512=>2.,_=>0.});
+                assert_eq!(rendered[spec.slots as usize].bounds_min[3],if roles&256!=0 {3.}else{1.});
+                assert_eq!(rendered[spec.slots as usize+spec.roots.len()].bounds_min[3],if roles&512!=0 {2.}else{1.});
                 let raw=read(&instances);let rendered:&[GpuInstance]=bytemuck::cast_slice(&raw);let flags=rendered[owner].flags;
                 assert_eq!(flags&768,0,"consumer bits cannot leak into per-view source hide flags");
                 if !fallback {if let Some((old_roles,old_epoch))=previous {
-                    assert_eq!(flags&128!=old_epoch,roles&!old_roles!=0,"new consumer rejects history; losing a consumer retains history");
+                    assert_eq!(flags&128!=old_epoch,roles!=old_roles,"changing either root publication rejects shared owner history");
                 }}
                 previous=Some((roles,flags&128));
             }
@@ -835,7 +837,7 @@ impl Runtime {
             assert!(entries.iter().any(|r|r[0]==page && r[1]==0));
             assert_eq!(entries.iter().map(|r|r[0]).collect::<std::collections::HashSet<_>>().len(),entries.len());
             let bytes=read(&volumes,scene.voxel_forest.as_ref().unwrap().instances.len()as u64*96);let visible:&[GpuTree]=bytemuck::cast_slice(&bytes);
-            assert!(visible[spec.slots as usize..].iter().all(|v|v.bounds_min[3]==3.),"camera-only root fallback remains visible without becoming a shadow caster");
+            assert!(visible[spec.slots as usize..spec.slots as usize+spec.roots.len()].iter().all(|v|v.bounds_min[3]==3.),"camera-only root fallback remains visible without becoming a shadow caster");
             runtime.selector.publish_asset_pages(&gpu,&[(page,true,2)]).unwrap();let d=draw();assert_eq!(d.fallback_trees,0);assert_eq!(d.assigned,6);
             assert!(runtime.selector.publish_asset_pages(&gpu,&[(page,true,1)]).is_err());
             let pinned=spec.nodes.iter().find(|n|n.links[3]&2!=0).unwrap().links[2];
@@ -856,7 +858,7 @@ impl Runtime {
         plant(&mut scene,&[cooked],&trees,8,crate::aggregate_lod::Policy::default()).unwrap();
         let spec=scene.gpu_forest.as_ref().unwrap();
         assert_eq!(spec.roots.len(),20000);assert_eq!(spec.branches.len(),3);
-        assert_eq!(scene.voxel_forest.as_ref().unwrap().instances.len(),20008);
+        assert_eq!(scene.voxel_forest.as_ref().unwrap().instances.len(),40008);
         assert!(scene.part_wind.is_empty());
     }
 
@@ -986,7 +988,7 @@ impl Runtime {
             d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();
         }
         eprintln!("bounded ancestor diagnostics: {d:?}");
-        assert_eq!(d.fallback_trees,0);assert_eq!(d.direct_roots,1);assert_eq!(d.source_slots+d.voxel_slots,0);
+        assert_eq!(d.fallback_trees,0);assert_eq!(d.direct_roots,2);assert_eq!(d.source_slots+d.voxel_slots,0);
         assert!(d.refinement_budget_stops>0);assert_eq!(d.refinement_faults,0);
         let raster=renderer.voxel_diagnostics(&gpu).unwrap().unwrap();
         assert!(raster[0].raster_splats>0);assert!(raster[0].raster_splats as u64<=raster[0].raster_capacity);
@@ -998,7 +1000,7 @@ impl Runtime {
         let mut scene=Scene::default();let coarse=crate::aggregate_lod::Policy {allow_sampled_optics:true,max_color_error:1.,max_coverage_error:1.,max_error_pixels:10000.,..policy};
         plant(&mut scene,std::slice::from_ref(&cooked),&[tree],8,coarse).unwrap();
         let renderer=Renderer::new(&gpu,&scene,&light);let distant=[ViewRect {cam:Camera {pos:Vec3::new(0.3,0.4,20.),..cam(0.)},..view[0]}];renderer.try_render_views(&gpu,&distant,&light,128,128,&[]).unwrap();
-        let d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();assert_eq!(d.direct_roots,1);assert_eq!(d.voxel_slots,0);assert_eq!(d.source_slots,0);assert_eq!(d.fallback_trees,0);
+        let d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();assert_eq!(d.direct_roots,2);assert_eq!(d.voxel_slots,0);assert_eq!(d.source_slots,0);assert_eq!(d.fallback_trees,0);
         // Move between disjoint tree populations, then use four simultaneous
         // cameras. No host assignment, renderer rebuild or root upload occurs.
         let trees=(0..4).map(|i|RootPlacement {up:Vec3::Y,pos:Vec3::X*(i as f32*8.),..tree}).collect::<Vec<_>>();
@@ -1017,7 +1019,7 @@ impl Runtime {
         let d=renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap();
         assert_eq!(d.fallback_trees,0);assert_eq!(d.voxel_slots,0);
         let source=d.selected_source_consumers;
-        assert_eq!(source.camera_only+source.shadow_only+source.both+source.outside+3*d.direct_roots,12,"all four trees remain complete casters, including any budget-retained whole root");
+        assert_eq!(source.shadow_only+source.both+3*(d.selected_direct_consumers.shadow_only+d.selected_direct_consumers.both),12,"all four trees remain complete casters, including any budget-retained whole root");
         assert!(d.shadow_voxel_slots>0 || d.direct_roots>0,"daylight must restore shadow publication");
         assert_eq!(d.refinement_faults,0);
         assert!(d.reserved_raster_splats.iter().all(|&n|n<=scene.gpu_forest.as_ref().unwrap().raster_budget));
