@@ -153,6 +153,8 @@ renders slightly differently, so compare like with like.
 | `KERN_SHADE_FEATURES=all` | Compile every shading path instead of only those the scene's materials reach. For checking that specialisation does not change images. |
 | `KERN_STARTUP_PROFILE=1` | CPU attribution of renderer construction. |
 | `KERN_CPU_SPANS=1` | Average CPU time per frame for each phase of frame output. |
+| `WARP_HDR=1` | HDR output on an HDR screen, for games on the `app` shell (`0` refuses it). See [Exposure and HDR output](hdr-and-exposure.md). |
+| `WARP_HDR_HEADROOM=4` | HDR highlight headroom (times SDR white) instead of what the display reports. |
 | `GG_MODS=DIR` | Growing Guns: load mods from another folder. |
 | `GG_CHARACTERS=off` | Growing Guns: primitive players instead of the animated characters. |
 | `SIDEWAYS_GAME_ROOT` | Sideways: the game root with `assets/` and `data/`. |

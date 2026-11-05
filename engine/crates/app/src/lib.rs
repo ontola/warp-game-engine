@@ -190,6 +190,27 @@ pub trait Game {
     /// Target framerate for dynamic adaptive graphics quality (e.g. Some(60.0)).
     /// None falls back to `Config::target_fps`, `WARP_TARGET_FPS`, or the monitor refresh rate.
     fn target_fps(&self) -> Option<f32> { None }
+    /// HDR output on an HDR screen, as the game's own settings say: Some(true)
+    /// asks for it, Some(false) refuses it, None follows `WARP_HDR` (off when
+    /// unset). The F10 menu overrides both. It needs a screen and driver that
+    /// offer an HDR surface (Windows with HDR on, macOS EDR, some Vulkan);
+    /// elsewhere it stays SDR. Screenshots and captures are always SDR.
+    fn hdr(&self) -> Option<bool> { None }
+}
+
+/// `WARP_HDR`: 1/on/true asks for HDR output, 0/off/false refuses it.
+fn hdr_from_env() -> Option<bool> {
+    match std::env::var("WARP_HDR").ok()?.to_ascii_lowercase().as_str() {
+        "1" | "on" | "true" | "yes" | "auto" => Some(true),
+        "0" | "off" | "false" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+/// `WARP_HDR_HEADROOM`: the highlight headroom to use instead of what the
+/// display reports (4 shows the brightest highlights 4x SDR white).
+fn hdr_headroom_from_env() -> Option<f32> {
+    std::env::var("WARP_HDR_HEADROOM").ok()?.parse::<f32>().ok().filter(|h| h.is_finite() && *h >= 1.0)
 }
 
 /// What a start probe measured: GPU milliseconds per scene frame (covered
@@ -297,7 +318,9 @@ struct Output { presenter: Presenter, hud: HudRenderer, picture: Option<wgpu::Te
 
 impl Output {
     fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Result<Self, String> {
-        Ok(Self { presenter: Presenter::new(gpu, format), hud: HudRenderer::new(gpu, format)?, picture: None, rects: Vec::new(), timings: Default::default() })
+        let presenter = Presenter::new(gpu, format);
+        let hud = HudRenderer::new(gpu, presenter.hud_format(format))?;
+        Ok(Self { presenter, hud, picture: None, rects: Vec::new(), timings: Default::default() })
     }
     fn draw(&mut self, gpu: &Gpu, renderer: &Renderer, draw: &Draw, size: [u32; 2], split: render::SplitLayout, target: &wgpu::TextureView, max_height: Option<u32>) -> Result<(), String> {
         self.draw_with(gpu, renderer, draw, size, split, target, max_height, true)
@@ -326,7 +349,9 @@ impl Output {
         self.timings.hud_ms = started.elapsed().as_secs_f64() * 1000.;
         (self.timings.hud_vertices, self.timings.hud_text_runs) = (draw.hud.vertices.len(), draw.hud.text.len());
         let started = Instant::now();
-        self.presenter.present(gpu, picture, target, Some(&self.hud), None)?;
+        // An HDR surface shows the renderer's HDR copy when it matches this picture.
+        let hdr = if self.presenter.is_hdr() { renderer.hdr_output().filter(|t| t.size() == picture.size()) } else { None };
+        self.presenter.present_hdr(gpu, picture, hdr.as_ref(), target, Some(&self.hud), None)?;
         self.timings.present_ms = started.elapsed().as_secs_f64() * 1000.;
         Ok(())
     }
@@ -517,6 +542,16 @@ pub fn run_headless(cfg: &Config, game: &mut dyn Game, gpu: &Gpu, seconds: f32) 
 struct Live {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
+    adapter: wgpu::Adapter,
+    /// The surface is configured for HDR (fp16 scRGB) right now.
+    hdr: bool,
+    /// What the surface and display offer, polled every few seconds while
+    /// HDR is wanted (the OS can switch HDR on and off at any time).
+    hdr_supported: bool,
+    display: render::hdr::HdrDisplay,
+    display_at: Option<Instant>,
+    /// HDR was asked for and refused (logged once).
+    hdr_refused: bool,
     gpu: Gpu,
     out: Output,
     renderer: Option<Renderer>,
@@ -532,10 +567,10 @@ impl Live {
         let open = |instance: wgpu::Instance| -> Result<_, String> {
             let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
             let surfaced = t.elapsed().as_millis();
-            let (gpu, config) = Gpu::for_surface(&instance, &surface, size.width.max(1), size.height.max(1))?;
-            Ok((surface, gpu, config, surfaced))
+            let (gpu, config, adapter) = Gpu::for_surface_with_adapter(&instance, &surface, size.width.max(1), size.height.max(1))?;
+            Ok((surface, gpu, config, adapter, surfaced))
         };
-        let (surface, gpu, config, surfaced) = match render::gpu::window_instance().map(&open) {
+        let (surface, gpu, config, adapter, surfaced) = match render::gpu::window_instance().map(&open) {
             Some(Ok(v)) => v,
             Some(Err(e)) => { println!("{} Vulkan: {e}; trying the other backends", manners::stamp()); open(render::gpu::instance())? }
             None => open(render::gpu::instance())?,
@@ -544,10 +579,36 @@ impl Live {
         surface.configure(&gpu.device, &config);
         let out = Output::new(&gpu, config.format)?;
         let lost = watch(&gpu);
-        Ok((Live { surface, config, gpu, out, renderer: None, lost }, [surfaced, devised]))
+        Ok((Live { surface, config, adapter, hdr: false, hdr_supported: false, display: Default::default(), display_at: None, hdr_refused: false, gpu, out, renderer: None, lost }, [surfaced, devised]))
     }
 
     fn is_lost(&self) -> bool { self.lost.load(std::sync::atomic::Ordering::Relaxed) }
+
+    /// Switch the surface between HDR and SDR when `want` and what it shows
+    /// differ, and keep the display's figures fresh. Returns a line to log
+    /// when something changed.
+    fn sync_hdr(&mut self, want: bool) -> Result<Option<String>, String> {
+        let due = self.display_at.is_none_or(|t| t.elapsed().as_secs_f32() >= 2.0);
+        if (want || self.hdr) && due {
+            let caps = self.surface.get_capabilities(&self.adapter);
+            self.hdr_supported = render::hdr::surface_supports_hdr(&caps);
+            self.display = render::hdr::HdrDisplay::query(&self.surface, &self.adapter);
+            self.display_at = Some(Instant::now());
+        }
+        let on = want && self.hdr_supported;
+        if on == self.hdr {
+            let refused = want && !self.hdr_supported;
+            let say = refused && !self.hdr_refused;
+            self.hdr_refused = refused;
+            return Ok(say.then(|| "HDR output asked for, but this screen and driver offer no HDR surface; staying SDR".into()));
+        }
+        let caps = self.surface.get_capabilities(&self.adapter);
+        self.hdr = render::hdr::configure_surface(&mut self.config, &caps, on);
+        self.surface.configure(&self.gpu.device, &self.config);
+        // Presenter and HUD pipelines are made for the surface's format.
+        self.out = Output::new(&self.gpu, self.config.format)?;
+        Ok(Some(if self.hdr { format!("HDR output on ({:?}, {})", self.config.format, self.display.describe()) } else { "HDR output off".into() }))
+    }
 }
 
 /// Log wgpu errors instead of panicking on them, and flag a lost device so
@@ -742,6 +803,9 @@ impl Shell<'_> {
         }
         if self.live.as_ref().is_some_and(Live::is_lost) && !self.recover() { return Ok(()); }
         let Some(live) = &mut self.live else { return Ok(()) };
+        // HDR output: F10 first, then the game's settings, then WARP_HDR.
+        let want_hdr = self.debug.hdr().or(self.game.hdr()).or_else(hdr_from_env).unwrap_or(false);
+        if let Some(line) = live.sync_hdr(want_hdr)? { println!("{} {line}", manners::stamp()); }
         let size = [live.config.width, live.config.height];
         let split = self.game.split();
         if live.renderer.is_none() { self.game.loading(75, "building the scene"); }
@@ -768,6 +832,11 @@ impl Shell<'_> {
         let mut draw = self.game.draw(&mut frame)?;
         let draw_ms=draw_started.elapsed().as_secs_f64()*1000.0;
         let Some(renderer) = &live.renderer else { return Err("the game drew without a scene".into()) };
+        let headroom = if live.hdr { self.debug.hdr_headroom().or_else(hdr_headroom_from_env).or(live.display.headroom).unwrap_or(1.0) } else { 1.0 };
+        renderer.set_hdr_headroom(headroom);
+        live.out.presenter.set_white_scale(live.display.white_scale);
+        self.debug.set_display(live.hdr_supported, live.hdr, headroom, &live.display);
+        self.debug.set_exposure(renderer.exposure_ev100(0), renderer.metered_ev100(0));
         draw.light = self.debug.light(draw.light);
         if let Some(q) = &self.quality {
             draw.light = q.apply_light(draw.light);

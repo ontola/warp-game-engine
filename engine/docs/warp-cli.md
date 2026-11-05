@@ -170,7 +170,7 @@ keyboard mapping is in `app::input`.
 | `post` | `set({bloom, bloom_radius, bloom_threshold, bloom_wide, contrast, saturation, vignette, grain, aberration})`, `reset()` |
 | `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `clear()` |
 | `sky` | `set(name)`, `get()` |
-| `light` | `set({sun, sun_lux, sky_lux, exposure, fog_start, fog_end, fog_density})`, `reset()` |
+| `light` | `set({sun, sun_lux, sky_lux, exposure, exposure_min, exposure_max, exposure_bias, adapt_speed, fog_start, fog_end, fog_density})`, `reset()` |
 | `random` | `float()`, `range(lo, hi)`, `int(lo, hi)`, `chance(p)`, `seed(n)` |
 | `game` | `tick()`, `time()`, `dt()`, `players()`, `title()`, `finish()`, `log(text)` |
 
@@ -230,7 +230,12 @@ keyboard mapping is in `app::input`.
   they are fixed.
 - **Sky and light**: `sky.set("sunset:haze")` bakes a procedural sky
   (about 0.2 s, on the next frame) and sets its sun, skylight, fog and
-  exposure. `light.set` overrides parts of that.
+  exposure. `light.set` overrides parts of that. `exposure` is a number
+  (EV100: sunny daylight about 15, a lit room about 7) or `"auto"`: the
+  camera meters each player's view and adapts like an eye, within
+  `exposure_min` and `exposure_max`, shifted by `exposure_bias` stops, at
+  `adapt_speed` per second. See [Exposure and HDR output](hdr-and-exposure.md),
+  which also covers HDR screens (`WARP_HDR=1`, or F10).
 - **Post and lights**: `post.set` is the look after lighting: `bloom`
   (0 to 2), `bloom_radius` (blur rounds 1 to 6), `bloom_threshold`
   (exposed brightness where it starts), `bloom_wide` (true, the default: a
