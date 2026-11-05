@@ -144,7 +144,9 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
 
 /// Data materials the terrain material's scale points at, -(first + 1):
 /// the ForestStyle (2), far forest start and density (1), the GroundStyle
-/// (4); terrain_surface.wgsl far_forest_params and field_ground read them.
+/// (4), terrain shape params (1: tint.x the ditch amount);
+/// terrain_surface.wgsl far_forest_params, field_ground and field_ditch
+/// read them.
 /// Created with the defaults (no far forest) on first use.
 fn style_block(scene: &mut Scene, material: u32) -> usize {
     let scale = scene.materials[material as usize].scale;
@@ -156,6 +158,7 @@ fn style_block(scene: &mut Scene, material: u32) -> usize {
     scene.materials.extend(forest);
     scene.materials.push(Material { tint: [0.0; 3], layer: -1, roughness: 1.0, flags: 0, scale: 1.0, metal: 0.0 });
     scene.materials.extend(ground);
+    scene.materials.push(Material { tint: [0.0; 3], layer: -1, roughness: 1.0, flags: 0, scale: 1.0, metal: 0.0 });
     scene.materials[material as usize].scale = -(first as f32 + 1.0);
     first
 }
@@ -221,6 +224,11 @@ pub fn reserve(scene: &mut Scene, capacity: u32, material: u32, seed: u32, style
     // terrain_surface.wgsl reads the seed from the material's metalness
     // (terrain is never metal) for detail finer than the mesh.
     scene.materials[material as usize].metal = seed as f32;
+    // Ditches are drawn into the pixels too (terrain_surface.wgsl field_ditch).
+    if style.ditches > 0.0 {
+        let first = style_block(scene, material);
+        scene.materials[first + 7].tint[0] = style.ditches;
+    }
     let first_vertex = scene.vertices.len() as u32;
     let first_tri = scene.tris.len() as u32;
     let first_cluster = scene.clusters.len() as u32;
