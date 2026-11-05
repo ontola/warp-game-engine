@@ -37,6 +37,9 @@ const GRASS_DISTANCE: u32 = 30;
 const GRASS_SIZE: u32 = 31;
 const GRASS_COUNT: u32 = 32;
 const GRASS_LOD: u32 = 33;
+const HDR_OUTPUT: u32 = 34;
+const HDR_HEADROOM: u32 = 35;
+const AUTO_EXPOSURE: u32 = 36;
 
 /// Render heights offered, tallest first; 0 is native.
 const HEIGHTS: [u32; 6] = [0, 2160, 1800, 1440, 1080, 720];
@@ -62,12 +65,18 @@ struct Settings {
     contact: bool,
     gi: bool,
     reflection: bool,
+    /// None: the game's own choice.
+    auto_exposure: Option<bool>,
+    /// None: the game's choice or `WARP_HDR`.
+    hdr: Option<bool>,
+    /// None: what the display reports (or `WARP_HDR_HEADROOM`).
+    hdr_headroom: Option<f32>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Settings { options: DebugRenderOptions::default(), fog: true, taa: true, adaptive_quality: true, fps_target: None, lod_pixels: None, exposure: 0.0, render_height: None,
-            sun: 1.0, shadows: 1.0, near_shadows: true, contact: true, gi: true, reflection: true }
+            sun: 1.0, shadows: 1.0, near_shadows: true, contact: true, gi: true, reflection: true, auto_exposure: None, hdr: None, hdr_headroom: None }
     }
 }
 
@@ -91,7 +100,16 @@ pub struct EngineDebug {
     /// When a setting last changed, so the shell can re-render the scene
     /// soon after instead of every frame while the menu is used.
     pub changed: Option<std::time::Instant>,
+    /// The game's light had automatic exposure on (before this menu).
+    game_auto_exposure: bool,
+    /// The newest exposure and meter reading of view 0 (EV100).
+    exposure: (Option<f32>, Option<f32>),
+    display: DisplayStatus,
 }
+
+/// What the window's screen offers, for the HDR controls.
+#[derive(Clone, Debug, Default)]
+struct DisplayStatus { supported: bool, on: bool, headroom: f32, line: String }
 
 impl EngineDebug {
     pub fn open(&self) -> bool { self.ui.open }
@@ -111,17 +129,29 @@ impl EngineDebug {
         toggle(CONTACT, LIGHT_MENU, "Contact occlusion", s.contact, "Small-scale darkening where surfaces meet.");
         toggle(GI, LIGHT_MENU, "Global illumination", s.gi, "Bounced light; off leaves sun and sky only.");
         toggle(REFLECTION, LIGHT_MENU, "Reflection occlusion", s.reflection, "Darkens sky reflections in creases.");
+        let auto_help = match self.exposure {
+            (Some(ev), Some(metered)) => format!("Meters each view and adapts like an eye. Now EV {ev:.1}; the scene meters EV {metered:.1}."),
+            _ => "Meters each view and adapts like an eye. Off: the game's fixed exposure.".into(),
+        };
+        toggle(AUTO_EXPOSURE, RENDER_MENU, "Auto exposure", s.auto_exposure.unwrap_or(self.game_auto_exposure), &auto_help);
+        let d = &self.display;
+        controls.push(DebugControl { id: HDR_OUTPUT, label: "HDR output".into(), value: DebugValue::Toggle(d.on), enabled: d.supported || d.on, menu: Some(RENDER_MENU), advanced: false,
+            help: if d.supported || d.on { format!("Brighter highlights on an HDR screen; screenshots stay SDR. {}.", d.line) }
+                else { "This screen and driver offer no HDR surface (on Windows: turn on HDR in the display settings).".into() } });
         let mut number = |id, menu, label: &str, value: f64, (min, max, step, decimals): (f64, f64, f64, u8), unit: &str, help: &str| controls.push(DebugControl {
             id, label: label.into(), value: DebugValue::Number { value, min, max, step, decimals, unit: unit.into() }, enabled: true, menu: Some(menu), advanced: false, help: help.into() });
         number(BLOOM_STRENGTH, RENDER_MENU, "Bloom strength", f64::from(s.options.bloom_strength) * 100.0, (0.0, 20.0, 1.0, 0), "%", "0% skips the bloom passes.");
         number(LOD, RENDER_MENU, "Geometry LOD error", f64::from(s.lod_pixels.unwrap_or(base_lod)), (0.25, 8.0, 0.25, 2), "px", "Larger error picks simpler cluster meshes (trees, rocks, props) sooner.");
-        number(EXPOSURE, RENDER_MENU, "Exposure offset", f64::from(s.exposure), (-3.0, 3.0, 0.25, 2), "EV", "Positive darkens, negative brightens.");
+        number(EXPOSURE, RENDER_MENU, "Exposure offset", f64::from(s.exposure), (-3.0, 3.0, 0.25, 2), "EV", "Positive darkens, negative brightens (also with auto exposure).");
         number(SUN, LIGHT_MENU, "Sun", f64::from(s.sun) * 100.0, (0.0, 200.0, 10.0, 0), "%", "Sun illuminance.");
         number(SHADOWS, LIGHT_MENU, "Shadow strength", f64::from(s.shadows) * 100.0, (0.0, 100.0, 10.0, 0), "%", "0% leaves the sun unshadowed.");
         number(GRASS_DISTANCE, GRASS_MENU, "Grass draw distance", f64::from(s.options.meadow_distance_scale) * 100.0, (10.0, 100.0, 5.0, 0), "%", "Shrinks the blade radius; past it the ground is shaded as grass. Density unchanged.");
         number(GRASS_SIZE, GRASS_MENU, "Grass size", f64::from(s.options.meadow_size_scale) * 100.0, (50.0, 200.0, 5.0, 0), "%", "Blade size around fixed roots.");
         number(GRASS_COUNT, GRASS_MENU, "Grass patch count", f64::from(s.options.meadow_density) * 100.0, (0.0, 100.0, 5.0, 0), "%", "Share of grass patches drawn.");
         number(GRASS_LOD, GRASS_MENU, "Grass LOD error", f64::from(s.options.meadow_lod_pixels), (0.5, 4.0, 0.25, 2), "px", "Higher picks simpler blades sooner.");
+        let headroom_help = format!("How many times brighter than SDR white the brightest highlights get. The display reports {}.", d.line);
+        controls.push(DebugControl { id: HDR_HEADROOM, label: "HDR peak".into(), enabled: d.on, menu: Some(RENDER_MENU), advanced: false, help: headroom_help,
+            value: DebugValue::Number { value: f64::from(s.hdr_headroom.unwrap_or(d.headroom.max(1.0))), min: 1.0, max: 16.0, step: 0.5, decimals: 1, unit: "x".into() } });
         let height = s.render_height.or(base_height).unwrap_or(0);
         let index = HEIGHTS.iter().position(|&h| h == height).unwrap_or(0);
         controls.push(DebugControl { id: EMULATE, label: "Emulate hardware".into(), enabled: true, menu: Some(RENDER_MENU), advanced: false,
@@ -201,6 +231,8 @@ impl EngineDebug {
                 CONTACT => s.contact = value,
                 GI => s.gi = value,
                 REFLECTION => s.reflection = value,
+                AUTO_EXPOSURE => s.auto_exposure = Some(value),
+                HDR_OUTPUT => s.hdr = Some(value),
                 _ => {}
             },
             DebugAction::SetNumber { id, value } if id < GAME_IDS && value.is_finite() => match id {
@@ -214,6 +246,7 @@ impl EngineDebug {
                 GRASS_COUNT => s.options.meadow_density = pct(value, 0.0, 1.0),
                 GRASS_LOD => s.options.meadow_lod_pixels = value.clamp(0.5, 4.0) as f32,
                 EMULATE_GPU => crate::emulate::set_gpu_factor(value.clamp(1.0, 8.0) as f32),
+                HDR_HEADROOM => s.hdr_headroom = Some(value.clamp(1.0, 16.0) as f32),
                 _ => {}
             },
             DebugAction::SetChoice { id: RESOLUTION, index } => s.render_height = HEIGHTS.get(index).copied(),
@@ -231,7 +264,15 @@ impl EngineDebug {
         self.base_lod = l.lod_pixels;
         let s = &self.s;
         if let Some(px) = s.lod_pixels { l.lod_pixels = px; }
+        self.game_auto_exposure = l.auto_exposure.is_some();
+        match s.auto_exposure {
+            Some(true) => { l.auto_exposure.get_or_insert_with(Default::default); }
+            Some(false) => l.auto_exposure = None,
+            None => {}
+        }
         l.ev100 += s.exposure;
+        // Positive darkens: one stop less compensation per EV of offset.
+        if let Some(a) = &mut l.auto_exposure { a.compensation -= s.exposure; }
         if !s.fog { l.fog_density = 0.0; l.fog_culling = false; }
         if !s.taa { l.taa = 0.0; }
         l.sun_lux *= s.sun;
@@ -244,6 +285,22 @@ impl EngineDebug {
     }
 
     pub fn adaptive_quality(&self) -> bool { self.s.adaptive_quality }
+
+    /// HDR output as set here (None: not touched).
+    pub fn hdr(&self) -> Option<bool> { self.s.hdr }
+    /// The HDR highlight headroom set here (None: the display's).
+    pub fn hdr_headroom(&self) -> Option<f32> { self.s.hdr_headroom }
+
+    /// What the window's screen offers, shown by the HDR controls.
+    pub fn set_display(&mut self, supported: bool, on: bool, headroom: f32, display: &render::hdr::HdrDisplay) {
+        let line = display.describe();
+        if self.display.line != line || (self.display.supported, self.display.on, self.display.headroom) != (supported, on, headroom) {
+            self.display = DisplayStatus { supported, on, headroom, line };
+        }
+    }
+
+    /// The newest automatic exposure of the first view, shown by its control.
+    pub fn set_exposure(&mut self, ev100: Option<f32>, metered: Option<f32>) { self.exposure = (ev100, metered); }
 
     /// Target framerate from the debug menu.
     /// `None`: follows game / display default.
@@ -316,6 +373,8 @@ impl EngineDebug {
             "sun_scale": s.sun, "shadow_scale": s.shadows, "near_shadows": s.near_shadows, "contact_occlusion": s.contact, "gi": s.gi,
             "reflection_occlusion": s.reflection, "grass_distance": o.meadow_distance_scale, "grass_size": o.meadow_size_scale,
             "grass_count": o.meadow_density, "grass_lod_pixels": o.meadow_lod_pixels,
+            "auto_exposure": s.auto_exposure.unwrap_or(self.game_auto_exposure), "exposure_ev100": self.exposure.0, "metered_ev100": self.exposure.1,
+            "hdr_output": self.display.on, "hdr_headroom": self.display.headroom, "hdr_display": self.display.line,
             "gpu_pass_ms": self.passes.iter().map(|(n, ms)| (n.to_string(), serde_json::json!(ms))).collect::<serde_json::Map<_, _>>(),
         })
     }
@@ -331,6 +390,26 @@ fn action_id(a: DebugAction) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_exposure_and_hdr_controls() {
+        let mut d = EngineDebug::default();
+        let manual = Lighting::default();
+        assert!(d.light(manual.clone()).auto_exposure.is_none(), "the game's choice by default");
+        d.apply(DebugAction::SetToggle { id: AUTO_EXPOSURE, value: true });
+        d.apply(DebugAction::SetNumber { id: EXPOSURE, value: 1.0 });
+        let l = d.light(manual.clone());
+        assert_eq!(l.auto_exposure.unwrap().compensation, -1.0, "a darker offset is less compensation");
+        d.apply(DebugAction::SetToggle { id: AUTO_EXPOSURE, value: false });
+        let auto = Lighting { auto_exposure: Some(Default::default()), ..manual };
+        assert!(d.light(auto).auto_exposure.is_none(), "the menu can switch the game's off");
+        assert_eq!((d.hdr(), d.hdr_headroom()), (None, None));
+        d.apply(DebugAction::SetToggle { id: HDR_OUTPUT, value: true });
+        d.apply(DebugAction::SetNumber { id: HDR_HEADROOM, value: 40.0 });
+        assert_eq!((d.hdr(), d.hdr_headroom()), (Some(true), Some(16.0)));
+        d.apply(DebugAction::ResetDefaults);
+        assert_eq!(d.hdr(), None);
+    }
 
     #[test]
     fn fps_target_choice_updates_settings() {

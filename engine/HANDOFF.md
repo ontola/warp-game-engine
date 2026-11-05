@@ -1,3 +1,23 @@
+## 5 November: automatic exposure and HDR output
+
+Both opt-in; the default SDR image is unchanged. Guide:
+engine/docs/hdr-and-exposure.md.
+
+Automatic exposure (`Lighting::auto_exposure`, Luau `light.set({ exposure =
+"auto", ... })`): per-view GPU log-luminance histogram after TAA, percentile
+mean, eye-like adaptation in the same frame; tone, bloom and TAA copy the
+exposure into their uniforms on the GPU (no readback stall). An async mirror
+feeds `Renderer::exposure_ev100`, emissive compensation and flare. F10 has an
+Auto exposure toggle showing current and metered EV.
+
+HDR output (`WARP_HDR=1`, F10, `Game::hdr`): the tone pass also writes a linear
+`Rgba16Float` copy with AgX highlights above knee 0.6 stretched to the display
+headroom; the app presenter composes it with an SDR HUD layer on an fp16 scRGB
+surface at the OS's SDR white. Screenshots stay SDR. Sideways' own presenter
+and the minimum profile stay SDR. Unit tests and shader validation PASS; no
+GPU fixture or HDR screen was available here, so it still needs a visual check
+on Windows HDR and macOS EDR before it is turned on by default.
+
 ## 5 November: independent camera/shadow class cuts integrated
 
 GPU tasks now refine camera and shadow demand independently. Each root has a
