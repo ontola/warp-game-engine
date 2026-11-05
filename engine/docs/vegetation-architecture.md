@@ -11,6 +11,40 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+## 5 November: branching splat barrier and playtest feedback
+
+- [x] GPU regression proves a temporary-cost barrier: four source leaves cost
+  four slots/zero camera splats, but the immediate branching voxel cut needs
+  200 splats against a five-splat budget. Before the fix it retains the root.
+- [x] Camera admission can bypass that barrier with the complete resident
+  source frontier. Reservation remains collective; missing source pages or
+  insufficient slots retain the parent. Intermediate voxel pages are not
+  required for a source-only publication. Propose/apply and diagnostic audit
+  agree; cached proposals preserve their publication mode. No CPU selection.
+- [x] All156 foliage tests pass including the new regression; release renderer
+  builds. Normal fixed-camera1200-frame strict check still FAILS at8.564px.
+- [ ] One-pixel camera and shadow acceptance: UNRESOLVED. User playtest still
+  shows many vegetation spheres and sphere-shaped grass shadows. Source-only
+  budget relief is not the requested pixel-voxel architecture's completion.
+- [ ] Full-scene scheduling convergence:42515 camera parents remain over target,
+  now individually affordable/resident according to the final-budget audit.
+  Individual affordability does not prove collective affordability or admission
+  within the finite wave schedule. Camera source slots20285 ->20678; camera
+  voxel slots1852 ->1594. No visible sphere fix or speedup is claimed.
+- [ ] Investigate biome/jump keys with playtester. Existing log shows scene
+  rebuilds but did not identify received keys. Add immediate action/building
+  status and input logging; do not label that as a proven input-route repair.
+
+Playtest was accidentally launched with the benchmark camera's1m/s speed;
+normal flight is40m/s. Explicit --speed now also overrides captured interactive
+speed. The inspection demo disables adaptive quality by default: the playtest
+had silently fallen to856x482 internal pixels, undermining visual assessment.
+Foliage defaults and physics are unchanged. These app adjustments require the
+next playtest to verify keyboard delivery; no interactive restart is automatic.
+
+Evidence: vegetation-source-frontier-measurements.json and
+build/playtest-unified/source-frontier-{tests,build,1200,playtest} logs/captures.
+
 ## 5 November: fixed-camera convergence separates loading from selection
 
 Added terrain_fly --fly N --stationary: zero translation input while ticks,

@@ -119,6 +119,8 @@ struct Fly {
     turn: (f32, f32),
     /// Cruise speed, metres per second.
     speed: f32,
+    /// Immediate feedback while a biome rebuild runs asynchronously.
+    last_action: String,
     /// Keep a fixed height above the ground, like walking with a drone.
     hug: Option<f32>,
     wheel: f32,
@@ -155,7 +157,7 @@ struct Fly {
 
 impl Fly {
     fn new(seed: u32, style: usize, world: World) -> Result<Self, String> {
-        let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, turn: (0.0, 0.0), speed: 40.0, hug: None, wheel: 0.0,
+        let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, turn: (0.0, 0.0), speed: 40.0, last_action: "Ready".into(), hug: None, wheel: 0.0,
             building: None, gpu: None, stale: false, world, built_world: world, world_at: None, sun_building:None, forest_at:None, forest_building:None, forest_material:None, terrain_settings: Settings::default(), terrain: None, light: Lighting::default(), stats: Stats::default(), last_updates: [0.0;2], jumps: 0, fps: 0.0, worst_ms: 0.0,
             track: std::env::args().any(|a| a == "--track"), constraints: None };
         fly.bake_track();
@@ -284,6 +286,10 @@ fn look(yaw: f32, pitch: f32) -> Vec3 {
 impl Game for Fly {
     fn local_players(&self) -> usize { 1 }
 
+    // This is a renderer inspection demo: changing resolution or density while
+    // judging LOD hides failures. Keep the requested quality stable by default.
+    fn fixed_quality(&self) -> bool { true }
+
     fn pointer(&mut self, pointer: Pointer, _size: [u32; 2]) { self.wheel += pointer.wheel; }
 
     fn tick(&mut self, c: &[Controls]) {
@@ -317,7 +323,15 @@ impl Game for Fly {
             7 => { self.hug = match self.hug { Some(_) => None, None => Some(1.7) }; Ok(()) }
             _ => return false,
         };
-        if let Err(e) = result { eprintln!("terrain fly: {e}"); }
+        self.last_action = match n {
+            1 | 2 | 4 | 8 => format!("F{n}: {} requested", STYLES[self.style]),
+            5 => format!("F5: seed {} requested", self.seed),
+            6 => format!("F6: jumped to x {:.0}, z {:.0}", self.pos.x, self.pos.z),
+            7 => format!("F7: ground hug {}", if self.hug.is_some() { "on" } else { "off" }),
+            _ => unreachable!(),
+        };
+        if let Err(e) = result { self.last_action = format!("F{n}: {e}"); }
+        println!("terrain input: {}", self.last_action);
         if matches!(n, 1 | 2 | 4 | 5 | 8) {
             // Stay at the same height above the new ground.
             let floor = self.ground(self.pos.x, self.pos.z);
@@ -401,6 +415,7 @@ impl Game for Fly {
             format!("speed {:.0} m/s{}", self.speed, if self.hug.is_some() { "  ground hug" } else { "" }),
             format!("patches {}  overflow {}  finest {}  lod x{:.2}", self.stats.patches, self.stats.overflow, self.stats.finest_level, self.stats.lod_scale),
             format!("ground: rock {:.2}  scree {:.2}  snow {:.2}  water {:.2}  slope {:.0}°", s.rock, s.scree, s.snow, s.water, s.up.clamp(0.0, 1.0).acos().to_degrees()),
+            format!("{}{}", self.last_action, if self.building.is_some() { " - building scene..." } else { "" }),
             "F1 default  F2 lowland  F4 alpine  F8 next biome  F5 seed  F6 jump  F7 hug  wheel speed  F12 screenshot".to_string(),
         ];
         let mut hud = HudDrawList::new(frame.size);
@@ -712,6 +727,12 @@ fn main() -> Result<(), String> {
         tree_radius: arg("--tree-radius").map(|n| n.parse().map_err(|_| "--tree-radius M")).transpose()?.unwrap_or(World::default().tree_radius),
         branch_slots: arg("--branch-slots").map(|n|n.parse().map_err(|_|"--branch-slots N")).transpose()?.unwrap_or(if low {512}else{4096}), ..World::default() };
     let mut game = Fly::new(seed, style, world)?;
+    // Explicit speed overrides captured camera state in interactive runs too.
+    if let Some(speed) = arg("--speed") {
+        let speed = speed.parse::<f32>().map_err(|_| "--speed needs metres per second")?;
+        if !speed.is_finite() || !(1.0..=4000.0).contains(&speed) { return Err("--speed must be between 1 and 4000 m/s".into()); }
+        game.speed = speed;
+    }
     // Build the exact normal world/catalog without acquiring an adapter or
     // opening a window. Useful while another game owns the GPU.
     if args.iter().any(|a|a=="--validate-world") {

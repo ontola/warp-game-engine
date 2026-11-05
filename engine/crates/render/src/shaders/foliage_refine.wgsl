@@ -149,6 +149,29 @@ fn candidate(tree:u32,start:u32,request_pages:bool,roles:u32)->u32 {
  }
  return best;
 }
+// A branching voxel hierarchy can have an expensive intermediate cut even
+// when its complete source frontier costs zero camera splats. Only bypass a
+// splat barrier with an affordable, resident, complete source frontier. w is
+// a proposal mode, not a resource count. No CPU selection or missing siblings.
+fn source_frontier(tree:u32,node:u32,old:vec4<u32>,used:vec3<u32>,request_pages:bool)->vec4<u32> {
+ let t=trees[tree];let end=nodes[node].links.y;var at=nodes[node].links.x;
+ var cost=vec4<u32>(0u);var resident=true;
+ let available=view.consumer_count.yzw-min(used,view.consumer_count.yzw);
+ loop {
+  if at==NONE || at>=end {break;}
+  let n=nodes[at];let roles=mask(sphere(t,n))&256u;
+  if roles==0u {at=n.links.y;continue;}
+  if n.links.x!=NONE {at=n.links.x;continue;}
+  if (n.links.w&4u)==0u {return vec4<u32>(0u);}
+  cost=plus(cost,work(tree,at,roles));
+  if any((cost-min(cost,old)).xyz>available) {return vec4<u32>(0u);}
+  if request_pages {resident=ready(n.links.z)&&resident;}
+  else {resident=(pages[n.links.z].resident!=0u)&&resident;}
+  at=n.links.y;
+ }
+ if !resident {return vec4<u32>(0u);}
+ cost.w=1u;return cost;
+}
 @compute @workgroup_size(64) fn propose(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
  let task=current[at];var p:Proposal;
@@ -168,6 +191,7 @@ fn candidate(tree:u32,start:u32,request_pages:bool,roles:u32)->u32 {
  p.old=work(task.x,task.y,task.z);atomicAdd(&counters[4],1u);
  let scale=projected(t,n,task.z);
  var refine=task.y==NONE || (n.links.x!=NONE && ((n.links.w&1u)!=0u || scale.x>=1e29 || scale.x*n.error.x>view.pixels.z || scale.x*n.error.y>1.0));
+ let wanted_refine=refine;
  var child=node_id;var end=node_id+1u;
  if task.y!=NONE {child=n.links.x;end=n.links.y;}
  var children=0u;var child_error=0.0;
@@ -182,6 +206,17 @@ fn candidate(tree:u32,start:u32,request_pages:bool,roles:u32)->u32 {
     child_error=max(child_error,c.error.x);
    }
    child=nodes[child].links.y;
+  }
+ }
+ // Relieve a temporary camera-splat barrier without publishing intermediate
+ // voxel levels. A missing intermediate page is harmless if every source leaf
+ // is resident; missing source pages still retain the current complete parent.
+ if wanted_refine && task.y!=NONE && task.z==256u {
+  let used=vec3<u32>(atomicLoad(&state[4]),atomicLoad(&state[5]),atomicLoad(&state[6]));
+  let delta=p.replacement-min(p.replacement,p.old);
+  if delta.y>view.consumer_count.z-min(used.y,view.consumer_count.z) {
+   let source=source_frontier(task.x,task.y,p.old,used,true);
+   if source.w!=0u {p.replacement=source;children=0u;child_error=0.0;refine=true;}
   }
  }
  // All visible siblings must fit together. Missing pages keep the current parent.
@@ -311,6 +346,19 @@ fn state_park_index(at:u32,p:Proposal)->u32 {
   if p.replacement[k]>=p.old[k] {atomicAdd(&state[k],p.replacement[k]-p.old[k]);}
   else {atomicSub(&state[k],p.old[k]-p.replacement[k]);}
  }
+ // Admission reserved the entire source frontier; replay exactly the same
+ // traversal. Pages and views are immutable throughout this encode.
+ if p.replacement.w==1u {
+  let t=trees[task.x];let end=nodes[task.y].links.y;var child=nodes[task.y].links.x;
+  loop {
+   if child==NONE || child>=end {break;}
+   let n=nodes[child];let roles=mask(sphere(t,n))&256u;
+   if roles==0u {child=n.links.y;continue;}
+   if n.links.x!=NONE {child=n.links.x;continue;}
+   publish(vec4<u32>(task.x,child,roles,0u));child=n.links.y;
+  }
+  return;
+ }
  var offset=p.output.x+blocks[32u+(at/256u)*32u].y;
  let t=trees[task.x];var child=t.info.x;var end=child+1u;
  if task.y!=NONE {child=nodes[task.y].links.x;end=nodes[task.y].links.y;}
@@ -417,7 +465,11 @@ fn audit_camera_limit(tree:u32,node:u32,camera_scale:f32) {
  }
  let old=work(tree,node,mask(sphere(t,n))&256u);let delta=replacement-min(replacement,old);
  let used=vec3<u32>(atomicLoad(&state[0]),atomicLoad(&state[1]),atomicLoad(&state[2]));
- let capacity=view.consumer_count.yzw;let blocked=delta.xyz>capacity-min(used,capacity);
+ let capacity=view.consumer_count.yzw;var blocked=delta.xyz>capacity-min(used,capacity);
+ if blocked.y {
+  let source=source_frontier(tree,node,old,used,false);
+  if source.w!=0u {blocked=(source-min(source,old)).xyz>capacity-min(used,capacity);missing=false;}
+ }
  if blocked.x {atomicAdd(&state[49],1u);}if blocked.y {atomicAdd(&state[50],1u);}if blocked.z {atomicAdd(&state[51],1u);}
  if missing {atomicAdd(&state[52],1u);}if !any(blocked) && !missing {atomicAdd(&state[54],1u);}
 }
