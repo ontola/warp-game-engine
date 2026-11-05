@@ -304,7 +304,10 @@ impl CookedPlant {
         plant.branches[0].aggregate = aggregate_candidates(&root,motion);
         plant.branches[0].aggregate_motion_error = motion;
         plant.branches[0].volume = Some(root.volume);
-        geometry::cook(&mut plant,source,root_config)?;
+        // Spatial descendants need the authored detail resolution. The coarse
+        // whole-subtree root config is only a fallback, not a detail ceiling
+        // for every group in the hierarchy. Each group still obeys brick caps.
+        geometry::cook(&mut plant,source,config)?;
         plant.stats.geometry_volume_assets=plant.geometry.iter().filter(|g|g.volume.is_some()).count();
         plant.stats.volume_assets = plant.branches.iter().filter(|b|b.volume.is_some()).count();
         Ok(plant)

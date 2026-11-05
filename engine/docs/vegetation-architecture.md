@@ -11,6 +11,120 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+## 5 November: PR8 integration and rejected selected-mip experiment
+
+- [x] Integrate PR8 through6a4002f, preserving the other agent's occlusion,
+  terrain, far sun map and per-depth-target voxel shadow headers. Both failed
+  source bypass gates were withdrawn upstream; no10%-height gate remains.
+- [x] Test publishing only the selected mip and preventing whole-source bypass
+  when a fine voxel endpoint is already pixel-acceptable. Combined foliage
+  tests161/161 pass; release builds. This does NOT establish visual acceptance.
+- [x] Reject that experiment after the normal1200-frame stationary capture:
+  source slots32766 ->335, voxel slots2 ->32433, maximum submitted cell
+  5.482 ->31.660px. Page misses602862, page-blocked refinements7001, splat-blocked
+  40357; no missing raster records or refinement faults. Image visibly regresses.
+  GPU covered median22.629ms is not a speedup claim: detail is worse and the
+  newly integrated far sun consumer changes the workload. Revert90d51dd's
+  selected-mip and endpoint-source restriction; retain PR8 and prior fine cook.
+- [ ] Source work budget: source leaves reserve no voxel splats but their real
+  cluster/triangle costs are absent. Mac handoff reports6.8M rather than0.3M
+  triangles on the hill. Implement actual source work accounting alongside
+  voxel work before further bypass tuning. Do not substitute a screen-size gate.
+- [x] Retained integration after reverting the experiment:161/161 foliage
+  tests PASS (pr8-retained-tests.log).
+- [x] Retained release build and normal1200-frame capture inspected. Largest
+  cell5.482px, zero missing raster records/refinement faults, no page misses;
+  strict quality still FAILS. Final120 covered GPU median36.504ms, native720p
+  ONE view/TAA. This includes PR8 far-shadow demand; not an isolated comparison.
+- [x] Source work metadata: count repeated templates separately from unique
+  cached meshes; validate catalog ranges and arithmetic overflow. Nodes carry
+  conservative source cluster work in flags bits8..31. SourceWork also reports
+  triangle upper bounds across the full CLOD catalog. These are conservative
+  potential costs, not actual drawn triangles. New regression: three repeated
+  templates share one resident mesh but cost three instances of work.
+  All162 foliage tests PASS (source-work-foliage-tests.log).
+- [ ] Source work admission: feed those counts into reservation, prefix
+  admission, refunds, retries and diagnostics. Metadata alone does not fix the
+  bypass or enforce a GPU frame budget. Source work is still unbudgeted.
+- [ ] One-pixel camera/shadow, bounded work, repeated timing and4K/four-view
+  acceptance remain incomplete. Do not launch this rejected capture as playtest.
+
+Evidence: vegetation-fine-endpoint-measurements.json, pr8-integrated-* artifacts.
+Diagnostic: native1280x720 ONE view/TAA,151058 active roots,32768 slots,16M splats.
+The source-shadow baseline lacks PR8's far sun consumer; not an isolated A/B.
+
+## 5 November: retain fine voxel candidates and preserve shadow selections
+
+- [x] Preserve the reference voxel grid as candidate zero when it fits the
+  existing brick cap. Previously every asset discarded that grid immediately.
+  Spatial groups now cook at their authored resolution; coarse whole-root
+  fallback volumes remain separate. Cache keys include the changed cook source.
+- [x] Complete endpoint admission first tries a pixel-acceptable mixed
+  source/voxel frontier, then the complete source alternative. A GPU regression
+  proves two fine voxel groups can fit where their four source leaves cannot;
+  missing required pages retain the complete ancestor.
+- [x] Preserve source geometry when the shadow consumer selects source. The
+  materializer previously substituted adaptive voxels even for source choices.
+  Source representations no longer require unrelated voxel mip pages or reserve
+  voxel splats. Source triangle work is still real work, not free rendering.
+- [x] All158 foliage tests pass, including actual GPU publication across camera,
+  shadow and combined roles, wind times, night/day, teleport and four views.
+  Aggregate tests10/10 and asset tests24/24 passed for the fine cook. Release
+  terrain_fly builds; normal fixed-camera1200-frame capture inspected.
+- [ ] ONE-PIXEL acceptance: still FAIL. Fine cook alone regressed to18.993px
+  and535911 page misses. Correct source-shadow publication removes page misses
+  in this capture and reduces the largest submitted cell to5.482px. Nearby
+  source detail improves visibly; coarse grass/tree regions and shadows remain.
+- [ ] Complete fine-voxel admission and consumer fairness. All32768 slots fill:
+  32766 camera source slots,2 camera voxel slots, no detailed shadow slots.
+  Camera refinements:30428 slot-blocked,0 page-blocked,9972 individually
+  affordable but not collectively published. Increasing source capacity is not
+  the desired solution. Shadow raster reservation also nearly fills16M.
+- [ ] Performance acceptance. Single-run final120-frame covered GPU medians:
+  mixed endpoint29.114ms; fine cook41.269ms; source-shadow correction30.534ms.
+  All native1280x720 ONE view/TAA,151058 active roots,32768 slots,16M splats.
+  These are diagnostics, not alternating repeat acceptance or4K/four-view results.
+
+Evidence: vegetation-fine-endpoint-measurements.json; build/playtest-unified/
+{mixed-endpoint,fine-cook,source-shadow}* logs and captures. No interactive
+playtest started. The capture HUD's fixed simulation fps is not GPU performance.
+
+## 5 November: deferred proposals reconsider complete endpoints
+
+- [x] Reject increasing refinement waves fourfold. Same fixed-camera1200-frame
+  diagnostic: largest submitted cell stays8.564px; detailed shadow branches
+  stay zero; final120-frame GPU covered median25.460 ->54.293ms. Restore the
+  original2*(hierarchy_depth+1) wave bound. This is not repeated perf acceptance.
+- [x] Reproduce a collective-admission failure with128 GPU roots: each
+  intermediate cut fits alone, only one fits collectively, all complete source
+  endpoints fit together. Before the fix, some roots retain intermediate[1,4]
+  cuts because parked proposals cache the expensive route and serialize releases.
+- [x] Deferred camera proposals now reconsider the complete resident source
+  endpoint and its priority. Wake eligibility also considers that endpoint if
+  the cached intermediate splat cost cannot fit. Same atomic complete-cut
+  reservation/publication, no CPU root selection. All157 foliage tests pass.
+- [x] Release build and normal stationary captures inspected, original wave bound.
+  32768 slots: largest cell7.009px (previous8.564),32768 source slots, no detailed
+  shadow slots. GPU covered median22.761ms in this single diagnostic run.
+  131072 slots: largest cell4.440px,131071 source slots, one shadow voxel slot;
+  GPU covered median35.025ms. Both strict pixel checks FAIL; no missing voxel records
+  or refinement faults reported. Nearby grass improves, spheres remain farther
+  out and grass shadows remain coarse. Defaults were NOT increased.
+- [ ] Efficient complete ONE-PIXEL voxel cuts: larger slot capacity largely
+  buys whole source endpoints. It does not solve fine-voxel admission or
+  consumer budget fairness. At131072 slots,31816 camera parents are slot-blocked,
+  no camera parents are page-blocked, and6017 are individually affordable but
+  not published finer. Investigate finer complete cuts and their conservative
+  work accounting; do not call repeated source-pool expansion the final design.
+- [ ] Shadow refinement and quality: camera-first admission still leaves almost
+  every shadow on whole-root representations. Visible grass-shadow spheres
+  remain a failed requirement, independent of the camera-cell measurement.
+
+Reports: vegetation-refinement-wave-experiment.json and
+vegetation-parked-source-measurements.json. Build/test/capture artifacts in
+build/playtest-unified/{refinement-depth,parked-source}*. No interactive game
+was opened during these experiments. F1-F8 delivery still needs playtest evidence.
+
 ## 5 November: branching splat barrier and playtest feedback
 
 - [x] GPU regression proves a temporary-cost barrier: four source leaves cost

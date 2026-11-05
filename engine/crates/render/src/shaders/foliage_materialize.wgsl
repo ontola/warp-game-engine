@@ -146,10 +146,11 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
   let roles=slot.history.w&768u;
   let visibility=select(1024u,0u,(roles&256u)!=0u)|select(2048u,0u,(roles&512u)!=0u);
   volumes[i]=volume;choices[i]=select(3u,select(0u,1u|(rep.z<<2u)|512u,rep.y==1u),(roles&256u)!=0u)|visibility;
-  // Shadow consumers use the existing adaptive voxel-caster policy, even
-  // when camera detail requires source needles. The trunk stays source:
-  // branch zero's aggregate covers the WHOLE tree, not just its own members.
-  choices[i+state.counts.x]=select(3u,select(0u,765u,rep.y==1u || branch.info.y!=0u),(roles&512u)!=0u)|visibility;
+  // Preserve the independently selected shadow representation. Source
+  // leaves cast source geometry; replacing them with adaptive voxels here
+  // violates the selected error and unnecessarily couples source residency
+  // to every voxel mip. Voxel shadow selections retain adaptive mip choice.
+  choices[i+state.counts.x]=select(3u,select(0u,765u,rep.y==1u),(roles&512u)!=0u)|visibility;
  }else {
   let tree=i-state.counts.x;if tree>=state.counts.z {return;}
   let root=roots[tree];let original=proxies[tree];
