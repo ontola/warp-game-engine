@@ -1286,3 +1286,34 @@ could fit together. Longer traversal alone does not fix the image.
 Production round count restored; no new mode. Next work must address upstream
 visibility/budget reservation and screen-error priority across near/far cuts,
 rather than multiplying traversal passes or shrinking coverage discs.
+
+
+### Screen-error-first allocation experiment (rejected, 5 November)
+
+Replacing error-improvement-per-reserved-record priority with current projected
+error priority improves the two nearby trees, but shifts coarse spherical detail
+to grass and other trees. The high-camera comparison shows notably worse coarse
+grass coverage. Do NOT integrate as a visual fix. Original priority restored.
+Patch plus focused GPU allocation test preserved in
+[screen-error-priority-experiment.patch](screen-error-priority-experiment.patch);
+full per-pass medians in
+[screen-error-priority-measurements.json](screen-error-priority-measurements.json).
+
+Three alternating before/after runs at native720p, ONE view, 240-frame routes,
+GPU samples frame>=120. Low-camera covered GPU: before 14.780/14.764/14.737 ms,
+after 14.878/14.877/15.177 ms. High: before 14.050/14.011/13.755 ms, after
+13.974/13.707/13.721 ms. No overall speedup claim. Existing 153 foliage tests
+and the new focused cost-versus-error priority test pass. Low-camera cells above
+16 px drop from 836 to 112, but maximum rises from 24.04 to 27.24 px and the
+coarse-grass failure remains. MAE is substantial; not visual equivalence.
+
+The integration obstacle for G3.2 is concrete: frame.rs calls
+forest.encode_timed before current camera depth, then tree_cull_and_raster
+builds current depth only AFTER residency/materialization. That downstream
+culling cannot refund upstream reservation. A correct early path must draw a
+valid seed cut at CURRENT poses, build per-camera depth, recover deferred groups
+and publish complete cuts with shadow-class demand retained. Historical depth
+alone must never discard a group; moved/recycled owners and rejected partial
+cuts cannot remain occluders. Preserve old cut/page lifetime through the seed
+phase and final publication. Continue G3.2 here rather than more budget, round
+count or priority-only changes.
