@@ -5383,6 +5383,8 @@ dependencies = [
 name = "spaceracer-app"
 version = "0.1.0"
 dependencies = [
+ "android-activity",
+ "android_logger",
  "app",
  "assets",
  "fastnoise-lite",
@@ -5391,12 +5393,16 @@ dependencies = [
  "gdcompat",
  "glam 0.31.1",
  "image",
+ "log",
  "render",
  "script",
  "serde",
  "serde_json",
  "spaceracer",
  "tungstenite",
+ "warp-xr",
+ "wgpu",
+ "zip",
 ]
 
 [[package]]

@@ -5,7 +5,7 @@
 //! yaw. Turning rotates the room about the current head, so the player's view
 //! turns without their head moving through the world. Game-independent; the
 //! game decides where the anchor is (a player's eye, a cockpit seat).
-use glam::{Quat, Vec3};
+use glam::{Affine3A, Quat, Vec3};
 use crate::{Pose, Tracking};
 
 /// Thumbstick past this snaps once; it must return below `SNAP_RELEASE` first.
@@ -84,6 +84,25 @@ impl PlaySpace {
 
     /// World forward of the head.
     pub fn forward(&self, head: Pose) -> Vec3 { Quat::from_rotation_y(self.yaw) * head.orientation * Vec3::NEG_Z }
+
+    /// A room pose carried by a vehicle: the room's origin sits at `seat`, a
+    /// world transform whose -Z looks ahead and +Y is up. The room's own yaw
+    /// (snap turn) still applies inside the seat.
+    pub fn place_on(&self, pose: Pose, seat: Affine3A) -> Pose {
+        let local = Quat::from_rotation_y(self.yaw);
+        let (_, rotation, _) = seat.to_scale_rotation_translation();
+        let offset = local * (pose.position - self.origin.unwrap_or(pose.position));
+        Pose { position: seat.transform_point3(offset), orientation: rotation * local * pose.orientation }
+    }
+}
+
+/// A seat that keeps the horizon level: only the vehicle's heading turns the
+/// player, not its pitch and roll. Comfort option for fast vehicles.
+pub fn level_seat(seat: Affine3A) -> Affine3A {
+    let ahead = seat.transform_vector3(Vec3::NEG_Z);
+    let flat = Vec3::new(ahead.x, 0.0, ahead.z);
+    let yaw = if flat.length_squared() > 1e-8 { (-flat.x).atan2(-flat.z) } else { 0.0 };
+    Affine3A::from_rotation_translation(Quat::from_rotation_y(yaw), seat.translation.into())
 }
 
 /// Yaw of the head in room space.
@@ -129,6 +148,24 @@ mod tests {
         space.update(&tracking(moved, 0.0));
         space.update(&tracking(moved, -0.9));
         assert!(space.yaw.abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_seat_carries_the_head_and_a_level_seat_drops_roll() {
+        let head = Pose { position: Vec3::new(0.2, 1.2, 0.1), orientation: Quat::IDENTITY };
+        let mut space = PlaySpace::new(0.0);
+        space.update(&tracking(head, 0.0));
+        let roll = Quat::from_rotation_y(0.7) * Quat::from_rotation_z(0.5);
+        let seat = Affine3A::from_rotation_translation(roll, Vec3::new(10.0, 3.0, -4.0));
+        let at = space.place_on(head, seat);
+        assert!(at.position.distance(Vec3::new(10.0, 3.0, -4.0)) < 1e-5, "the tracked head sits on the seat");
+        assert!((at.orientation * Vec3::Y - roll * Vec3::Y).length() < 1e-5, "rolls with the vehicle");
+        let level = space.place_on(head, level_seat(seat));
+        assert!((level.orientation * Vec3::Y - Vec3::Y).length() < 1e-5, "level seat keeps the horizon");
+        assert!(((level.orientation * Vec3::NEG_Z).x - (roll * Vec3::NEG_Z).x).abs() < 0.2);
+        // Leaning 10 cm right moves the eye 10 cm along the seat's right.
+        let lean = space.place_on(Pose { position: head.position + Vec3::X * 0.1, ..head }, seat);
+        assert!((lean.position - at.position - roll * Vec3::X * 0.1).length() < 1e-5);
     }
 
     #[test]
