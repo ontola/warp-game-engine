@@ -1,3 +1,15 @@
+# 5 November: foliage integration ownership
+
+Foliage worktree integrated PR8 through6a4002f, retaining the occlusion/terrain
+agent's changes. Resolved foliage_refine.wgsl by removing the withdrawn10%
+screen-height gate, including its local shared-helper copy. Selected voxel
+volumes expose only their selected mip, with the voxel shadow-caster flag
+retained. Source triangle/cluster work is NOT budgeted yet; do not consider
+the source bypass or one-pixel requirement solved. No additional edits were
+made to the occlusion/terrain-owned files beyond merging PR8.
+Combined foliage suite161/161 passed before the withdrawn gate was removed.
+Final build/capture evidence goes in docs/vegetation-architecture.md.
+
 ## 5 November: any rigid opaque geometry hides forest
 
 Decided with Joep: occluders for the foliage seed come from material and

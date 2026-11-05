@@ -11,7 +11,7 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
-## 5 November: selected-mip residency and PR8 integration (validation pending)
+## 5 November: selected-mip residency and PR8 integration (capture pending)
 
 - [x] Publish a one-level voxel volume view matching the selected candidate.
   Camera, ray and shadow paths cannot read unresident sibling mips. Preserve
@@ -20,12 +20,14 @@ are still unaccepted. There is no CPU near-tree pool.
 - [x] Extend complete-endpoint admission: lack of splat budget alone must not
   replace a fully pixel-acceptable voxel frontier with full source meshes.
   The GPU regression includes this case. Pre-integration foliage tests158/158.
-- [x] Fetch PR8 at0c40113. Preserve far sun map, per-depth-target voxel shadow
+- [x] Fetch PR8 through6a4002f. Preserve far sun map, per-depth-target voxel shadow
   headers, opaque-category occlusion, selection-round readback and terrain work.
-  Apply its10%-screen-height source bypass guard in the shared endpoint helper,
-  including cached retries; allow mixed voxel endpoints at any distance.
-- [ ] Combined tests, release build and same-scene capture. The screen-height
-  guard is a performance safeguard, NOT proof of one-pixel representation.
+  The agent withdrew both source-bypass gates in6a4002f after they failed on
+  the Mac. Remove the local shared-helper gate too. Source triangle/cluster
+  work is still unbudgeted; this is the next required selection correction.
+- [x] Combined foliage tests161/161 at0c40113 integration. The subsequent
+  6a4002f resolution only removes the failed screen-height guard.
+- [ ] Release build and same-scene capture of the final integration.
 - [ ] Full one-pixel and shadow acceptance, repeated performance and4K/four views.
 
 ## 5 November: retain fine voxel candidates and preserve shadow selections
