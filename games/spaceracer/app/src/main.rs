@@ -446,7 +446,24 @@ impl Game for Racer {
                 return;
             }
         }
-        if self.party.is_none() {
+        // Start opens the race menu with the track settings; only Back
+        // (kept by the host) goes to the lobby.
+        let mut party_inputs = None;
+        if let Some(p) = &mut self.party {
+            let (drive, menu) = p.controls();
+            if self.menu.is_some() {
+                let seated = self.players;
+                self.menu_tick(menu);
+                // The roster decides the player count under the host.
+                self.players = seated;
+                return;
+            }
+            if menu.pressed.has(Buttons::START) {
+                self.menu = Some(0);
+                return;
+            }
+            party_inputs = Some(drive);
+        } else {
             let c = controls.first().copied().unwrap_or_default();
             if self.menu.is_some() {
                 self.menu_tick(c);
@@ -460,8 +477,8 @@ impl Game for Racer {
         self.previous = (0..self.race.pilots.len())
             .map(|i| self.race.pose(i))
             .collect();
-        let mut inputs = if let Some(p) = &mut self.party {
-            p.controls()
+        let mut inputs = if let Some(drive) = party_inputs {
+            drive
         } else {
             controls
                 .iter()
