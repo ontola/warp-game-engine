@@ -136,17 +136,16 @@ impl DepthPyramid {
             ],
         );
         for i in 0..target.levels.len() {
+            // Pass-level begin (first) and end (last, index + 1) timestamps, so
+            // GPUs without encoder timestamps (Apple) can time the pyramid.
+            let last = i + 1 == target.levels.len();
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("depth pyramid"),
-                timestamp_writes: if i == 0 {
-                    begin.map(|(query_set, index)| wgpu::ComputePassTimestampWrites {
-                        query_set,
-                        beginning_of_pass_write_index: Some(index),
-                        end_of_pass_write_index: None,
-                    })
-                } else {
-                    None
-                },
+                timestamp_writes: begin.filter(|_| i == 0 || last).map(|(query_set, index)| wgpu::ComputePassTimestampWrites {
+                    query_set,
+                    beginning_of_pass_write_index: (i == 0).then_some(index),
+                    end_of_pass_write_index: last.then_some(index + 1),
+                }),
             });
             pass.set_pipeline(if i == 0 { &self.copy } else { &self.reduce });
             pass.set_bind_group(0, if i == 0 { &bind } else { &target.binds[i - 1] }, &[]);

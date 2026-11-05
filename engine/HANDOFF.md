@@ -70,12 +70,18 @@ wall views 3-4 ms faster than land-only, images identical to cb7cd19.
 ## 5 November: occlusion culling for every category
 
 Joep: rigid opaque geometry should hide anything, not just forest. The
-history-first two-phase Hi-Z (tree_occlusion.rs, cull.wgsl `tree_phase`) was
+history-first two-phase Hi-Z (occlusion.rs, cull.wgsl `tree_phase`) was
 trees only; now every category defers clusters that were not visible last
 frame and tests them against phase one's depth. On by default for every
-scene (`KERN_TREE_OCCLUSION=0` turns it off); the no-proof probe runs every 4
-frames instead of 32. Test: `gpu_hidden_geometry_of_any_category_is_not_drawn`.
-Names still say "tree"; renaming is a follow-up.
+scene (`KERN_OCCLUSION=0` turns it off; the old `KERN_TREE_OCCLUSION=0`
+still works); the no-proof probe runs every 4 frames instead of 32. Test:
+`gpu_hidden_geometry_of_any_category_is_not_drawn`. The module is now
+`occlusion.rs` and the timers are "occluder cull/raster", "remaining
+cull/raster", "occlusion pyramid" and "visibility history". The pyramid is
+timed with pass timestamps, so it shows on Metal too. `debug_tree_occlusion`
+and cull.wgsl's `tree_phase` keep their names (foliage tests use the first).
+Wall view on the Mac: the cull costs 0.26 ms more (history test on every
+cluster), the raster 0.39 ms less.
 
 ## 5 November: forest culling behind structures, screen edge and selection cost
 
