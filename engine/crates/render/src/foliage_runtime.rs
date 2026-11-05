@@ -550,6 +550,9 @@ impl Runtime {
     pub(crate) fn encode_timed(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::foliage_select::ConsumerView],first_owner:u32,time:Option<(&wgpu::QuerySet,u32)>)->Result<(),String> {
         self.encode_timed_depth(gpu,enc,views,first_owner,time,None)
     }
+    pub(crate) fn note_cameras(&self,cameras:&[(Vec3,Vec3,f32)]) {self.selector.refiner.note_cameras(cameras);}
+    #[cfg(test)]
+    pub(crate) fn test_rounds(&self,full:bool,hint:Option<u32>)->(u32,Option<u32>,u32) {let r=&self.selector.refiner;if full {r.test_full_rounds();}if let Some(h)=hint {r.test_hint(h);}let (e,u)=r.encoded_rounds();(e,u,2*(self.selector.levels+1))}
     pub(crate) fn encode_timed_depth(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::foliage_select::ConsumerView],first_owner:u32,time:Option<(&wgpu::QuerySet,u32)>,depth:Option<&[crate::foliage_seed_visibility::CameraDepth<'_>]>)->Result<(),String> {
         // All of these are encoder writes: untimed where the GPU lacks them
         // (Apple), or Metal rejects the submit.
@@ -1023,6 +1026,101 @@ impl Runtime {
         let bad=[root(30,0.),root(40,8.),root(50,16.),root(60,24.)];assert!(renderer.replace_gpu_forest_roots(&gpu,&bad).is_err());assert_eq!(draw().active_roots,2);
         let stats=renderer.replace_gpu_forest_roots(&gpu,&[]).unwrap();assert_eq!(stats.changed,2);let d=draw();assert_eq!(d.active_roots,0);assert_eq!(d.source_slots+d.voxel_slots+d.direct_roots,0);
         renderer.replace_gpu_forest_roots(&gpu,&original).unwrap();let d=draw();assert_eq!(d.active_roots,2);assert_eq!(d.source_slots,6);assert_eq!(d.assigned,6);
+    }
+    // Whatever is rigid and opaque in front of the forest hides it from the
+    // camera through the current-frame seed depth, never through a rule about
+    // walls or a tag. A cutout material is the control: same pixels, same
+    // geometry, but the forest is selected as if nothing were in front.
+    #[test]
+    #[ignore="exclusive GPU forest occlusion fixture"]
+    fn gpu_opaque_geometry_hides_forest_from_camera() {
+        use super::*;use crate::{Camera,Lighting,Renderer,ViewRect,scene::{GeometryCategory,Material}};
+        let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
+        let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
+        let gpu=Gpu::new().unwrap();let light=Lighting {gi:0.,sun_lux:0.,shadow_strength:0.,..Default::default()};
+        // wall: (centre, size, category, material flags). None means open ground.
+        let forest=|trees:&[f32],wall:Option<(Vec3,Vec3,GeometryCategory,u32)>,cam:Camera| {
+            let roots:Vec<_>=trees.iter().map(|&x|RootPlacement {up:Vec3::Y,pos:Vec3::new(x,0.,0.),yaw:0.,scale:1.,variant:0}).collect();
+            let mut scene=Scene::default();
+            plant(&mut scene,std::slice::from_ref(&cooked),&roots,8,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
+            if let Some((at,size,category,flags))=wall {
+                let paint=scene.add_material(Material {tint:[0.5;3],layer:-1,roughness:0.9,flags,scale:1.,metal:0.});
+                let mesh=scene.add_mesh(&crate::primitives::cube(paint).mesh());
+                scene.add_classified_instance(mesh,glam::Affine3A::from_scale_rotation_translation(size,glam::Quat::IDENTITY,at),category);
+            }
+            let renderer=Renderer::new(&gpu,&scene,&light);renderer.test_warm_foliage_assets(&gpu);
+            let views=[ViewRect {cam,x:0,y:0,w:128,h:128}];
+            let mut last=None;
+            for _ in 0..3 {let (image,_)=renderer.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();last=Some((image,renderer.gpu_forest_diagnostics(&gpu).unwrap().unwrap()));}
+            let (image,diagnostics)=last.unwrap();
+            let splats=renderer.voxel_diagnostics(&gpu).unwrap().unwrap()[0].raster_splats;
+            let drawn=splats as usize+diagnostics.source_slots as usize+diagnostics.voxel_slots as usize>0;
+            assert_eq!(drawn,diagnostics.camera_roots>0,"forest is drawn exactly while the camera may see it");
+            (image,diagnostics)
+        };
+        let frame=|wall,cam|forest(&[0.],wall,cam);
+        // The root's bounding sphere has radius ~2.1 around (0.6,0.6,0.2).
+        let front=Camera {pos:Vec3::new(0.6,0.6,12.),target:Vec3::new(0.6,0.6,0.),fov_y:1.,near:0.05};
+        // Close enough that the tree's bounds run past every screen edge.
+        let close=Camera {pos:Vec3::new(0.6,0.6,5.),target:Vec3::new(0.6,0.6,0.),fov_y:1.,near:0.05};
+        let full=|z:f32,category|Some((Vec3::new(0.6,0.6,z),Vec3::new(30.,30.,0.05),category,0));
+        // Untextured cutout draws exactly like the opaque wall, but a cutout
+        // material may have holes, so it must never hide anything.
+        let cutout=|z:f32|Some((Vec3::new(0.6,0.6,z),Vec3::new(30.,30.,0.05),GeometryCategory::Other,crate::scene::ALPHA_TEST));
+        let (_,open)=frame(None,front);
+        assert_eq!(open.camera_roots,1,"fixture: the tree is in view");assert!(open.source_slots+open.voxel_slots>0,"fixture: the tree draws");
+        for (name,cam,z) in [("whole tree on screen",front,5.),("tree bounds cross the screen edge",close,3.5)] {
+            let (seen,control)=frame(cutout(z),cam);
+            eprintln!("{name}: camera roots {} behind a cutout wall",control.camera_roots);
+            assert_eq!(control.camera_roots,1,"{name}: a cutout material must not cull");
+            // No tag needed: any rigid opaque geometry hides the forest.
+            for category in [GeometryCategory::Other,GeometryCategory::Structures,GeometryCategory::Cars,GeometryCategory::Terrain] {
+                let (hidden,culled)=frame(full(z,category),cam);
+                assert_eq!(culled.camera_roots,0,"{name}: a tree fully behind an opaque {} wall must not be selected for the camera",category.name());
+                let differ=seen.chunks_exact(4).zip(hidden.chunks_exact(4)).filter(|(a,b)|a.iter().zip(b.iter()).any(|(&a,&b)|a.abs_diff(b)>2)).count();
+                assert_eq!(differ,0,"{name}: culling must not change a single visible pixel");
+            }
+            // Foliage never occludes foliage: its cards are full of gaps.
+            let (_,leafy)=frame(full(z,GeometryCategory::Trees),cam);
+            assert_eq!(leafy.camera_roots,1,"{name}: geometry in the trees category must not cull");
+        }
+        // A wall over only the left half leaves the tree's right side showing.
+        let (_,half)=frame(Some((Vec3::new(-14.4,0.6,5.),Vec3::new(30.,30.,0.05),GeometryCategory::Structures,0)),front);
+        assert_eq!(half.camera_roots,1,"a partly covered tree stays selected");
+        let (_,behind)=frame(full(-5.,GeometryCategory::Structures),front);
+        assert_eq!(behind.camera_roots,1,"a wall behind the tree must not hide it");
+        let (_,low)=frame(Some((Vec3::new(0.6,-14.4,5.),Vec3::new(30.,30.,0.05),GeometryCategory::Structures,0)),front);
+        assert_eq!(low.camera_roots,1,"a low block must not hide the tree above it");
+        let (_,beside)=forest(&[0.,7.],Some((Vec3::new(0.6,0.6,5.),Vec3::new(6.,6.,0.05),GeometryCategory::Structures,0)),front);
+        assert_eq!(beside.camera_roots,1,"only the tree behind the wall goes");
+    }
+    // Selection encodes only the refinement rounds the GPU reported needing,
+    // instead of the hierarchy depth bound, without changing what is drawn.
+    #[test]
+    #[ignore="exclusive GPU forest selection rounds fixture"]
+    fn gpu_selection_rounds_follow_reported_need() {
+        use super::*;use crate::{Camera,Lighting,Renderer,ViewRect};
+        let source=crate::vegetation_asset::tests::aggregate_fixture();let config=crate::vegetation_asset::tests::aggregate_config();
+        let mut cooked=crate::vegetation_asset::CookedPlant::cook_aggregate(&source,config).unwrap();cooked.cook_proxy(&source,config,3).unwrap();
+        let trees=(0..6).map(|i|RootPlacement {up:Vec3::Y,pos:Vec3::new(i as f32*3.-7.5,0.,-(i%3) as f32*4.),yaw:i as f32,scale:1.,variant:0}).collect::<Vec<_>>();
+        let mut scene=Scene::default();plant(&mut scene,&[cooked],&trees,24,crate::aggregate_lod::Policy {allow_sampled_optics:false,..Default::default()}).unwrap();
+        let gpu=Gpu::new().unwrap();let light=Lighting {gi:0.,sun_lux:0.,shadow_strength:0.,..Default::default()};
+        let adaptive=Renderer::new(&gpu,&scene,&light);let reference=Renderer::new(&gpu,&scene,&light);
+        adaptive.test_warm_foliage_assets(&gpu);reference.test_warm_foliage_assets(&gpu);reference.test_forest_rounds(true,None);
+        let mut views=[ViewRect {cam:Camera {pos:Vec3::new(0.,1.,9.),target:Vec3::new(0.,0.8,0.),fov_y:1.,near:0.05},x:0,y:0,w:128,h:128}];
+        for frame in 0..12 {
+            // A jump halfway, after pretending the last frames needed almost
+            // nothing: the cut must encode the full bound, not the stale hint.
+            if frame==8 {views[0].cam.pos=Vec3::new(-7.,0.9,2.5);views[0].cam.target=Vec3::new(-7.5,0.8,0.);adaptive.test_forest_rounds(false,Some(2));}
+            let (a,_)=adaptive.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();
+            let (b,_)=reference.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();
+            let (rounds,used,bound)=adaptive.test_forest_rounds(false,None);
+            let (da,db)=(adaptive.gpu_forest_diagnostics(&gpu).unwrap().unwrap(),reference.gpu_forest_diagnostics(&gpu).unwrap().unwrap());
+            eprintln!("frame {frame}: {rounds} of {bound} rounds encoded, GPU reported {used:?} working, source slots {} vs {}",da.source_slots,db.source_slots);
+            if frame==7 {assert!(used.is_some_and(|u|u<bound),"the GPU must report how many rounds did work");}
+            if frame==8 {assert_eq!(rounds,bound,"a camera cut encodes the full bound");}
+            assert_eq!(a,b,"frame {frame}: fewer rounds must draw the same image");
+        }
     }
     #[test]
     #[ignore="exclusive GPU deferred queue overflow fixture"]

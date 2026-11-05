@@ -210,14 +210,18 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     // quarter of the frame at forest views (4 ms of 37 at the playtest's
     // camera 4). Hills still shade it.
     var others = 1.0;
-    if sun_coverage_fade(light.shadow_view_proj, p, 0.45) < 1.0 {
+    // A camera-anchored far map (far_sun.rs, streamed forests) holds the
+    // neighbours past the shared map too: crowns keep the maps' pairing.
+    let anchored = far_sun.params.z > 0.5 && far_sun.params.w < 0.5;
+    if sun_coverage_fade(light.shadow_view_proj, p, 0.45) < 1.0 || anchored {
         others = shadow_at_surface(p, n * sign(dot(n, l) + 1e-4), vec3<f32>(0.0), 0.0);
     } else if FEATURE_WORLD_TERRAIN && sun_visibility_required() {
         others = world_terrain_sun_visibility(p, n, 0.0);
     }
     // Out there its neighbours' shade is folded into its own: the plant's
     // full transmittance instead of the square root the maps pair with.
-    let outside = sun_coverage_fade(light.shadow_view_proj, p, 0.45);
+    var outside = sun_coverage_fade(light.shadow_view_proj, p, 0.45);
+    if anchored {outside *= sun_coverage_fade(far_sun.view_proj, p, far_sun.params.y);}
     var shadow = mix(1.0, others * mix(sqrt(own), own * own, outside), light.sun_color.w);
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow;
     let sky_vis = sky_visibility(p + n * VOXEL_SKY_LIFT, n);

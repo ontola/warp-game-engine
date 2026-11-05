@@ -1,5 +1,7 @@
-//! Current-frame conservative tree occlusion. Only real, alpha-tested source
-//! depth is an occluder; camera visibility never removes shadow/GI casters.
+//! Current-frame conservative occlusion for all camera geometry (the name is
+//! historical: it started with trees). Phase one draws what was visible last
+//! frame; phase two tests everything else against that real, alpha-tested
+//! depth. Camera visibility never removes shadow/GI casters.
 use crate::{depth_pyramid::{DepthPyramid, PyramidTarget}, Gpu};
 use std::sync::Mutex;
 use wgpu::util::DeviceExt;
@@ -54,8 +56,12 @@ impl Resources {
     pub fn new(gpu: &Gpu, bucketed: bool, gpu_forest:bool) -> Self {Self::with_history_capacity(gpu,bucketed,gpu_forest,262144)}
     pub(crate) fn with_history_capacity(gpu:&Gpu,bucketed:bool,gpu_forest:bool,deferred_capacity:u32)->Self {
         assert!((1..=262144).contains(&deferred_capacity));
-        let requested = gpu_forest || std::env::var("KERN_TREE_OCCLUSION").as_deref() == Ok("1");
-        let history_first=gpu_forest && bucketed;
+        // On by default for every scene: hidden geometry of any category is
+        // tested against the Hi-Z of what was visible last frame.
+        // KERN_TREE_OCCLUSION=0 turns it off (A/B, diagnostics).
+        let _=gpu_forest;
+        let requested = std::env::var("KERN_TREE_OCCLUSION").as_deref() != Ok("0");
+        let history_first=requested && bucketed;
         let enabled = requested && bucketed;
         let rejection_enabled = enabled
             && std::env::var("KERN_TREE_OCCLUSION_REJECT").as_deref() != Ok("0");
@@ -149,6 +155,56 @@ mod tests {
             expected[8192]=if clear {2}else{1};
             assert_eq!(actual,expected);drop(mapped);read.unmap();
         }
+    }
+    // The foliage seed's DEFORMING instance filter must never match procedural
+    // terrain patches (PROCEDURAL shares bit 128 with MOLTEN_DEBRIS): without
+    // the land in the seed, trees behind hills count as visible.
+    #[test]
+    fn occluder_filter_never_drops_procedural_terrain() {
+        let shader=include_str!("shaders/cull.wgsl");
+        let line=shader.lines().find(|l|l.starts_with("const DEFORMING:u32=")).unwrap();
+        let bits=line.trim_start_matches("const DEFORMING:u32=").trim_end_matches(';').split('|').map(|b|b.trim_end_matches('u').parse::<u32>().unwrap()).fold(0,|a,b|a|b);
+        assert_eq!(bits&crate::procedural_terrain::PROCEDURAL,0);
+        assert_eq!(bits&crate::scene::SKINNED,crate::scene::SKINNED);
+    }
+    // Occlusion is not about trees or walls: any geometry fully behind what
+    // the camera sees is not drawn, whatever its category, and nothing in
+    // view is lost. A rock, a building and a terrain patch hide behind a wall.
+    #[test]
+    #[ignore="exclusive GPU occlusion of every category"]
+    fn gpu_hidden_geometry_of_any_category_is_not_drawn() {
+        use crate::{Camera,Lighting,Renderer,ViewRect,scene::{GeometryCategory,Material,Scene}};
+        let gpu=crate::Gpu::new().unwrap();let light=Lighting {gi:0.,sun_lux:0.,shadow_strength:0.,..Default::default()};
+        let cam=Camera {pos:Vec3::new(0.,1.,12.),target:Vec3::new(0.,1.,0.),fov_y:1.,near:0.05};
+        let hidden=[(GeometryCategory::Other,Vec3::new(-2.,1.,0.)),(GeometryCategory::Structures,Vec3::new(0.,1.,-3.)),(GeometryCategory::Terrain,Vec3::new(2.,0.5,0.)),(GeometryCategory::Cars,Vec3::new(0.,0.5,-8.))];
+        let render=|wall:bool| {
+            let mut scene=Scene::default();
+            let paint=scene.add_material(Material {tint:[0.5;3],layer:-1,roughness:0.9,flags:0,scale:1.,metal:0.});
+            let cube=scene.add_mesh(&crate::primitives::cube(paint).mesh());
+            for (category,at) in hidden {scene.add_classified_instance(cube,glam::Affine3A::from_translation(at),category);}
+            if wall {scene.add_classified_instance(cube,glam::Affine3A::from_scale_rotation_translation(Vec3::new(60.,60.,0.1),glam::Quat::IDENTITY,Vec3::new(0.,1.,6.)),GeometryCategory::Other);}
+            // In front of the wall: always in view, so it must always draw.
+            let front=scene.instances.len() as u32;scene.add_classified_instance(cube,glam::Affine3A::from_translation(Vec3::new(1.5,0.5,8.)),GeometryCategory::Other);
+            let renderer=Renderer::new(&gpu,&scene,&light);
+            assert!(renderer.debug_tree_occlusion_enabled(),"occlusion is on by default for every scene");
+            let views=[ViewRect {cam,x:0,y:0,w:128,h:128}];
+            let mut drawn=Vec::new();
+            for frame in 0..40 {
+                renderer.try_render_views(&gpu,&views,&light,128,128,&[]).unwrap();
+                let pairs=renderer.debug_visible_clusters(&gpu,0,None).unwrap().pairs;
+                assert!(pairs.iter().any(|p|p[0]==front),"frame {frame}: geometry in view must never be culled");
+                let mut owners=pairs.iter().map(|p|p[0]).filter(|&o|o<hidden.len()as u32).collect::<Vec<_>>();owners.sort_unstable();owners.dedup();
+                // Frame 0 has no history, and a scene without proven occlusion
+                // draws directly until the next probe (every 4th frame).
+                if frame>=5 {drawn.push(owners);}
+            }
+            drawn
+        };
+        let open=render(false);
+        assert!(open.iter().all(|o|o.len()==hidden.len()),"fixture: without the wall every object is drawn");
+        let blocked=render(true);
+        eprintln!("hidden objects drawn per frame behind the wall: {:?}",blocked.iter().map(Vec::len).collect::<Vec<_>>());
+        assert!(blocked.iter().all(Vec::is_empty),"objects fully behind the wall must not be drawn: {blocked:?}");
     }
     // Independent clip projection oracle: near-plane or W
     // crossings must never become an occluded box. Mirrors only the geometric

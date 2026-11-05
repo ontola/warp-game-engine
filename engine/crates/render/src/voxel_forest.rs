@@ -241,7 +241,9 @@ struct SplatRaster {
     sun_cached_raster: wgpu::RenderPipeline,
     /// The sun target's selection buffer and its splat targets.
     /// One target per sun map, keyed by its selection buffer.
-    sun_target: Mutex<Vec<(wgpu::Buffer, Targets)>>,
+    /// One splat target per (selection, depth map): each map's header is
+    /// written with queue.write_buffer, so two maps in one submit must not share it.
+    sun_target: Mutex<Vec<((wgpu::Buffer, wgpu::TextureView), Targets)>>,
 }
 /// Where render_sun draws: the sun map's depth, view and texel size.
 pub(crate) struct SunSplatView<'a> {
@@ -1475,9 +1477,9 @@ impl VoxelRenderer {
         selection: &wgpu::Buffer, sun: SunSplatView<'_>, times: [Option<(&wgpu::QuerySet, u32)>; 2]) -> Result<(), String> {
         let Some(raster) = &self.raster else { return Ok(()) };
         let mut slots = raster.sun_target.lock().unwrap();
-        let slot = match slots.iter().position(|(buffer, _)| buffer == selection) {
+        let slot = match slots.iter().position(|((buffer, depth), _)| buffer == selection && depth == sun.depth) {
             Some(slot) => slot,
-            None => { slots.push((selection.clone(), self.targets(gpu, (1, 1), selection, None)?)); slots.len() - 1 }
+            None => { slots.push(((selection.clone(), sun.depth.clone()), self.targets(gpu, (1, 1), selection, None)?)); slots.len() - 1 }
         };
         let target = &slots[slot].1;
         let splat = target.splat.as_ref().unwrap();

@@ -22,8 +22,10 @@ fn occluded(s:vec4<f32>,vp:mat4x4<f32>)->bool {
   let uv=vec2<f32>(q.x/q.w*0.5+0.5,0.5-q.y/q.w*0.5);
   lo=min(lo,uv);hi=max(hi,uv);nearest=max(nearest,q.z/q.w);
  }
- // Offscreen bounds in the historical view cannot prove occlusion.
- if any(lo<vec2<f32>(0.0)) || any(hi>vec2<f32>(1.0)){return false;}
+ // This is the current camera's own depth, and the root already overlaps its
+ // frustum: whatever lies past the screen edge cannot be seen by it, so only
+ // the on-screen part of the bounds has to be covered.
+ lo=clamp(lo,vec2<f32>(0.0),vec2<f32>(1.0));hi=clamp(hi,vec2<f32>(0.0),vec2<f32>(1.0));
  let size=textureDimensions(depth,0);
  let a=vec2<u32>(max(floor(lo*vec2<f32>(size))-1.0,vec2<f32>(0.0)));
  let b=min(vec2<u32>(ceil(hi*vec2<f32>(size))+1.0),size-1u);
@@ -46,6 +48,6 @@ fn occluded(s:vec4<f32>,vp:mat4x4<f32>)->bool {
  // Only cameras containing the root contribute. An unrelated camera looking
  // away must not undo another camera's proven current-depth rejection.
  if !visible_in(s,camera.vp) {return;}
- // Uncertain screen-edge/near-plane support remains visible.
+ // Uncertain near-plane support remains visible.
  if !occluded(s,camera.vp) {atomicOr(&visible[i],1u);}
 }

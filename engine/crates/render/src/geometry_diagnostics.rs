@@ -29,7 +29,7 @@ impl Config {
         let mut config=Self {enabled:value.is_some(),excluded_mask:0,near_grass_present:false,far_grass_present:false,transparency_present:false};
         if let Some(value)=value {
             if value=="none" {return Ok(config);}
-            if value.is_empty() {return Err("KERN_DIAGNOSTIC_HIDE must be 'none' or comma-separated other,terrain,trees,grass,cars".into());}
+            if value.is_empty() {return Err("KERN_DIAGNOSTIC_HIDE must be 'none' or comma-separated other,terrain,trees,grass,cars,structures".into());}
             for name in value.split(',').map(str::trim) {
                 let category=GeometryCategory::ALL.into_iter().find(|category|category.name()==name)
                     .ok_or_else(||format!("unknown KERN_DIAGNOSTIC_HIDE category {name:?}"))?;
@@ -107,7 +107,7 @@ impl State {
             }
         }
     }
-    pub fn count(&self,pairs:&[[u32;2]],owners:&[GeometryCategory],bucketed:bool)->Result<[Counts;5],String> {
+    pub fn count(&self,pairs:&[[u32;2]],owners:&[GeometryCategory],bucketed:bool)->Result<[Counts;6],String> {
         aggregate(pairs,owners,&self.triangles,bucketed)
     }
     pub fn owner_pixels(&self,raw:&[u8],size:[u32;2],pairs:&[[u32;2]],owner_count:usize)->Result<Vec<u32>,String> {
@@ -130,7 +130,7 @@ fn decode_owner_pixels(raw:&[u8],size:[u32;2],pairs:&[[u32;2]],owner_count:usize
     }).collect()
 }
 
-pub(crate) fn aggregate(pairs:&[[u32;2]],owners:&[GeometryCategory],triangles:&[u32],bucketed:bool)->Result<[Counts;5],String> {
+pub(crate) fn aggregate(pairs:&[[u32;2]],owners:&[GeometryCategory],triangles:&[u32],bucketed:bool)->Result<[Counts;6],String> {
     let mut result=GeometryCategory::ALL.map(|category|Counts{category,instances:0,clusters:0,triangles:0,submitted_vertices:0});
     let mut selected=std::collections::HashSet::new();
     for &[owner,cluster] in pairs {

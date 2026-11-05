@@ -9,7 +9,7 @@ use glam::{Mat4, Vec3, Vec4};
 const MIN_EXTENT: f32 = 96.0;
 const EXTENT_STEP: f32 = 16.0;
 
-fn sun_basis(sun_dir: Vec3) -> (Vec3, Vec3, Vec3) {
+pub(crate) fn sun_basis(sun_dir: Vec3) -> (Vec3, Vec3, Vec3) {
     let z = if sun_dir.is_finite() { sun_dir.normalize_or(Vec3::Y) } else { Vec3::Y };
     // Avoid the singular look-at basis at noon or with an invalid zero sun.
     let up = if z.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
