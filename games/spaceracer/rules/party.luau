@@ -4,6 +4,7 @@ local specs={
  {key="difficulty",label="Difficulty (next race)",kind="choice",default="normal",options={"easy","normal","hard"}},
  {key="biome",label="World (next race)",kind="choice",default="city",options={"random","city","forest","cell","desert","ocean"}},
  {key="seed",label="Track seed, 0 = random (next race)",kind="number",default=0,min=0,max=99999},
+ {key="ai_players",label="AI racers: auto is none with several players (next race)",kind="choice",default="auto",options={"auto","0","1","2","3","4","5"}},
  {key="quality",label="Graphics (live)",kind="choice",default="high",options={"performance","balanced","high"}},
  {key="boost_cost",label="Boost energy cost (live)",kind="number",default=22,min=5,max=50},
  {key="boost_duration",label="Boost duration % (next boost)",kind="number",default=100,min=50,max=200},

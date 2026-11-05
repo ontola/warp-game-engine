@@ -81,6 +81,7 @@ impl Racer {
             DIFFICULTIES[difficulty],
             BIOMES[biome],
             players,
+            if players > 1 { players } else { spaceracer::race::MAX_RACERS },
             3,
             rules,
         )?;
@@ -128,6 +129,17 @@ impl Racer {
             missile_view: false,
         })
     }
+    /// The grid: the people here plus the AI racers. Auto is a full grid for
+    /// someone alone and no AI with several players.
+    fn racers(&self) -> usize {
+        let seated = self.party.as_ref().map_or(self.players, |p| p.seats.len()).max(self.players);
+        let ai = self.preferences.values["ai_players"].as_str().and_then(|s| s.parse::<usize>().ok());
+        match ai {
+            Some(n) => seated + n,
+            None if self.players > 1 => seated,
+            None => spaceracer::race::MAX_RACERS,
+        }
+    }
     fn restart(&mut self) -> Result<(), String> {
         let rules = Rules::new(Some(&self.root.join("rules")))?;
         let mut race = Race::with_rules(
@@ -135,11 +147,12 @@ impl Racer {
             DIFFICULTIES[self.difficulty],
             BIOMES[self.biome],
             self.players,
+            self.racers(),
             self.preferences.values["laps"].as_u64().unwrap_or(3) as u32,
             rules,
         )?;
         if let Some(p) = &self.party {
-            for (i, seat) in p.seats.iter().enumerate().take(6) {
+            for (i, seat) in p.seats.iter().enumerate().take(race.drivers.len()) {
                 race.drivers[i].name = seat.name.clone();
                 race.drivers[i].bot = seat.ai;
             }
@@ -194,7 +207,7 @@ impl Racer {
     }
     fn sync_profiles(&mut self) {
         if let Some(p) = &self.party {
-            for (i, seat) in p.seats.iter().enumerate().take(6) {
+            for (i, seat) in p.seats.iter().enumerate().take(self.race.drivers.len()) {
                 self.race.drivers[i].name = seat.name.clone();
                 self.race.drivers[i].bot = seat.ai;
                 if let Some(profile) = p.client.state.player(&seat.player_id) {
@@ -427,7 +440,7 @@ impl Game for Racer {
                             && self.preferences.values[&key] != value
                             && matches!(
                                 key.as_str(),
-                                "seed" | "difficulty" | "biome" | "laps" | "weapon_pickups"
+                                "seed" | "difficulty" | "biome" | "laps" | "weapon_pickups" | "ai_players"
                             )
                         {
                             prepare = true;
