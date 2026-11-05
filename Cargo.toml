@@ -44,3 +44,9 @@ inherits = "release"
 lto = false
 codegen-units = 16
 strip = "debuginfo"
+
+# meshoptimizer's cluster LOD builder, also on wasm32 (the browser build):
+# crates.io meshopt 0.7.0 leaves it out there. Native builds are unchanged.
+# See engine/vendor/meshopt/WARP.md.
+[patch.crates-io]
+meshopt = { path = "engine/vendor/meshopt" }

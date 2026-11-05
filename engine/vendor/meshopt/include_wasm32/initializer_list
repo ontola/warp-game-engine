@@ -1,0 +1,21 @@
+#pragma once
+// Warp: std::initializer_list for wasm32 builds without a C++ standard
+// library (clang fills in the pointer and length).
+
+#include <stddef.h>
+
+namespace std
+{
+template <typename E> class initializer_list
+{
+	const E* first;
+	size_t length;
+	constexpr initializer_list(const E* b, size_t n) : first(b), length(n) {}
+
+public:
+	constexpr initializer_list() : first(nullptr), length(0) {}
+	constexpr size_t size() const { return length; }
+	constexpr const E* begin() const { return first; }
+	constexpr const E* end() const { return first + length; }
+};
+}

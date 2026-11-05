@@ -122,6 +122,27 @@ impl Gpu {
         limits.max_compute_workgroups_per_dimension = al.max_compute_workgroups_per_dimension;
         #[cfg(test)]
         if let Some(side) = TEST_MAX_TEXTURE.with(|c| c.get()) { limits.max_texture_dimension_2d = side; }
+        // KERN_WEBGPU_LIMITS: render natively with what a browser gives, to
+        // find what a browser build would hit. Both keep only WebGPU's
+        // optional timestamp and first-instance features. `spec` is the
+        // spec's default limits (every browser); `browser` is what about
+        // 80 % of WebGPU devices offer (web3dsurvey.com, 2026-11): 16
+        // storage buffers per stage, 32 sampled textures, 1 GiB buffers.
+        let web = std::env::var("KERN_WEBGPU_LIMITS").ok();
+        let (features, limits) = match web.as_deref() {
+            Some(mode @ ("spec" | "browser")) => {
+                let mut web = wgpu::Limits::default();
+                if mode == "browser" {
+                    web.max_storage_buffers_per_shader_stage = 16;
+                    web.max_sampled_textures_per_shader_stage = 32;
+                    web.max_storage_buffer_binding_size = 1 << 30;
+                    web.max_buffer_size = 1 << 30;
+                }
+                // Never above what this adapter allows.
+                (features & (wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::INDIRECT_FIRST_INSTANCE), web.or_worse_values_from(&al))
+            }
+            _ => (features, limits),
+        };
         let descriptor = wgpu::DeviceDescriptor {
             label: Some("kern"),
             required_features: features,
