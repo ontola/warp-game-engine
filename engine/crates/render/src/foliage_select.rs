@@ -540,6 +540,17 @@ mod tests {
    let mut cut=consumer_cuts[0].clone();if cut==[0]{cut.clear();}
    assert!(state[0]<=slots && state[1]<=cap && state[2]<=cap,"reservation {state:?}");assert_eq!(state[15],0);
    assert_eq!(counters[3],0);assert_eq!(read(&gpu,&selector.fallback),[0]);
+   // Replaying a selected parent's proposal must preserve all live cut state.
+   let before_pages=read(&gpu,&selector.asset_pages);
+   let trace=selector.refiner.trace_proposals(&gpu,&selector,&[[0,1,256,0]]).unwrap();
+   assert_eq!(trace[0][0],[1,10,0,0]);
+   assert_eq!(trace[0][1],[2,30,0,0]);
+   assert_eq!(trace[0][3][1],if before_pages[8]==0 {0}else if slots-state[0]>=1 && cap-state[1]>=20 {1}else{2});
+   assert_eq!(read(&gpu,&selector.refiner.state),state);
+   assert_eq!(read(&gpu,&selector.asset_pages),before_pages);
+   assert_eq!(read(&gpu,&selector.counters),counters);
+   assert_eq!(read(&gpu,&selector.records),records);
+   assert_eq!(read(&gpu,&selector.demand),demand);
    cut
   };
   for _ in 0..4 {

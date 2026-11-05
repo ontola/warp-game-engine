@@ -49,6 +49,29 @@ impl Refiner {
         enc.copy_buffer_to_buffer(&self.state,32,&self.args,0,12);
         enc.copy_buffer_to_buffer(&self.state,48,&self.args,12,12);
     }
+    /// Offline replay of the actual GPU proposal kernel, against final frame
+    /// residency/budget. Scratch resources preserve all live queues and counters.
+    pub(crate) fn trace_proposals(&self,gpu:&Gpu,s:&Selector,tasks:&[[u32;4]])->Result<Vec<[[u32;4];5]>,String> {
+        if tasks.is_empty(){return Ok(Vec::new());}
+        if tasks.len()>self.capacity as usize{return Err("too many offline foliage proposals".into());}
+        let scratch=|label,size|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some(label),size,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+        let state=scratch("offline proposal state",self.state.size());let proposals=scratch("offline proposals",tasks.len()as u64*80);
+        let queue=scratch("offline proposal tasks",tasks.len()as u64*16);gpu.queue.write_buffer(&queue,0,bytemuck::cast_slice(tasks));
+        let pages=scratch("offline proposal pages",s.asset_pages.size());let counters=scratch("offline proposal counters",s.counters.size());
+        let count=scratch("offline proposal count",4);gpu.queue.write_buffer(&count,0,bytemuck::bytes_of(&(tasks.len()as u32)));
+        let buffers=[&s.uniform,&s._nodes,&s._instances,&pages,&proposals,&queue,&self.queues[1],&self.blocks,&s.records,&counters,&s.fallback,&s.direct,&s.demand,&state,&self.parked,&s.record_consumers,&s.seed_visibility];
+        let entries=buffers.iter().enumerate().map(|(binding,b)|wgpu::BindGroupEntry {binding:binding as u32,resource:b.as_entire_binding()}).collect::<Vec<_>>();
+        let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("offline proposal replay"),layout:&self.layout,entries:&entries});
+        let out=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("offline proposal readback"),size:proposals.size(),usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+        let mut enc=gpu.device.create_command_encoder(&Default::default());
+        enc.copy_buffer_to_buffer(&self.state,0,&state,0,self.state.size());enc.copy_buffer_to_buffer(&self.state,0,&state,16,12);
+        enc.copy_buffer_to_buffer(&count,0,&state,12,4);enc.copy_buffer_to_buffer(&s.asset_pages,0,&pages,0,pages.size());
+        self.dispatch(&mut enc,&bind,3,Some((tasks.len()as u32).div_ceil(64)),0);
+        enc.copy_buffer_to_buffer(&proposals,0,&out,0,proposals.size());gpu.queue.submit([enc.finish()]);
+        let(tx,rx)=std::sync::mpsc::sync_channel(1);out.slice(..).map_async(wgpu::MapMode::Read,move|r|{let _=tx.send(r);});gpu.wait();rx.recv().map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
+        let data=out.slice(..).get_mapped_range().map_err(|e|e.to_string())?;
+        Ok(data.chunks_exact(80).map(bytemuck::pod_read_unaligned).collect())
+    }
     pub fn audit(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,s:&Selector) {
         enc.clear_buffer(&self.state,19*4,Some(9*4));
         enc.clear_buffer(&self.state,32*4,Some(23*4));
