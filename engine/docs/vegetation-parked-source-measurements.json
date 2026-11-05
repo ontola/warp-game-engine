@@ -1,0 +1,254 @@
+{
+  "scope": "One diagnostic1200-frame stationary run per allocation, native1280x720 ONE view, TAA,16M splats. No repeated speedup claim; neither strict pixel check passes.",
+  "tests": {
+    "foliage_passed": 157,
+    "before": "128-root collective admission fixture retains intermediate[1,4] cut although all source endpoints fit.",
+    "after": "Every root reaches complete[2,3,5,6] source cut at original wave count."
+  },
+  "runs": {
+    "parked-source-1200": {
+      "forest": {
+        "trees": 302116,
+        "active_roots": 151058,
+        "branch_capacity": 32768,
+        "selected_records": 32768,
+        "tested_nodes": 389692,
+        "source_slots": 32768,
+        "voxel_slots": 0,
+        "shadow_voxel_slots": 0,
+        "direct_roots": 116445,
+        "fallback_trees": 0,
+        "retained": 32361,
+        "assigned": 407,
+        "slot_failures": 0,
+        "hash_failures": 0,
+        "frontier_overflow_requests": 0,
+        "peak_frontier_requests": 118962,
+        "reserved_raster_splats": [
+          16259669,
+          6657764
+        ],
+        "refinement_budget_stops": 123553,
+        "refinement_faults": 0,
+        "reused_refinement_proposals": 82966,
+        "dormant_records": 118115,
+        "dormant_wakes": 82966,
+        "dormant_wake_passes": 6,
+        "dormant_park_events": 199401,
+        "dormant_overflows": 0,
+        "selected_spatial_error_pixels": [
+          448.16812,
+          71.93967
+        ],
+        "selected_error_target_ratio": [
+          492.97284,
+          224.66805
+        ],
+        "selected_over_target": [
+          116435,
+          40587
+        ],
+        "error_unknown_proxies": 0,
+        "error_unmatched_direct": 0,
+        "error_forced_nodes": 0,
+        "pose_requests": 32622,
+        "evaluated_shared_poses": 32622,
+        "pose_hash_failures": 0,
+        "camera_roots": 42891,
+        "shadow_only_roots": 52118,
+        "camera_fallback_roots": 0,
+        "shadow_only_fallback_roots": 0,
+        "camera_refinement_limits": {
+          "over_target": 40587,
+          "branch_slots": 34569,
+          "camera_splats": 0,
+          "shadow_splats": 0,
+          "missing_pages": 0,
+          "no_children": 0,
+          "affordable_resident": 6018
+        },
+        "selected_source_consumers": {
+          "outside": 0,
+          "camera_only": 32768,
+          "shadow_only": 0,
+          "both": 0
+        },
+        "selected_voxel_consumers": {
+          "outside": 0,
+          "camera_only": 0,
+          "shadow_only": 0,
+          "both": 0
+        },
+        "selected_direct_consumers": {
+          "outside": 0,
+          "camera_only": 40597,
+          "shadow_only": 75848,
+          "both": 0
+        },
+        "camera_published_branches": 32768,
+        "shadow_only_published_branches": 0
+      },
+      "gpu_covered_median_ms": 22.760768,
+      "per_pass_median_ms": {
+        "GPU forest materialize": 0.250048,
+        "GPU forest selection residency": 7.272608,
+        "GPU forest shared poses": 0.135744,
+        "bloom": 0.026303999999999998,
+        "exhaust": 0.00031999999999999997,
+        "foliage seed pyramid": 0.07708799999999999,
+        "foliage seed terrain cull": 0.224528,
+        "foliage seed terrain raster": 0.018368,
+        "motion vectors": 0.044416,
+        "near shadow cull": 0.286944,
+        "near shadow raster": 0.039744,
+        "shade": 0.195136,
+        "shade terrain": 0.277408,
+        "shade voxels": 0.037536,
+        "shadow cull": 0.434928,
+        "shadow raster": 0.062368,
+        "shadow tile damage and clear": 0.290144,
+        "taa": 0.029408,
+        "terrain coarse": 0.053792,
+        "tonemap": 0.025792,
+        "tree occluder cull": 3.981408,
+        "tree occluder raster": 1.795728,
+        "tree occlusion pyramid": 0.076768,
+        "tree recovery dispatch": 0.001984,
+        "tree remaining cull": 0.059088,
+        "tree remaining raster": 0.656176,
+        "tree visibility history": 0.029279999999999997,
+        "voxel near sun splat raster": 0.06403199999999999,
+        "voxel near sun splats": 0.20143999999999998,
+        "voxel splat raster": 2.688992,
+        "voxel splat resolve": 0.071408,
+        "voxel splats": 2.572224,
+        "voxel sun splat raster": 0.1152,
+        "voxel sun splats": 0.42825599999999997,
+        "wheel particles": 0.00031999999999999997
+      },
+      "strict_result": "Error: \"PIXEL VEGETATION QUALITY FAILED: view 0: largest submitted cell 7.009px, missing 0, near-plane crossings 0; camera over-target 40587, refinement faults 0, camera fallbacks 0\""
+    },
+    "parked-source-131k": {
+      "forest": {
+        "trees": 302116,
+        "active_roots": 151058,
+        "branch_capacity": 131072,
+        "selected_records": 131072,
+        "tested_nodes": 389711,
+        "source_slots": 131071,
+        "voxel_slots": 0,
+        "shadow_voxel_slots": 1,
+        "direct_roots": 113680,
+        "fallback_trees": 0,
+        "retained": 130224,
+        "assigned": 848,
+        "slot_failures": 0,
+        "hash_failures": 0,
+        "frontier_overflow_requests": 0,
+        "peak_frontier_requests": 118962,
+        "reserved_raster_splats": [
+          16066796,
+          6651174
+        ],
+        "refinement_budget_stops": 119750,
+        "refinement_faults": 0,
+        "reused_refinement_proposals": 81927,
+        "dormant_records": 118116,
+        "dormant_wakes": 81927,
+        "dormant_wake_passes": 16,
+        "dormant_park_events": 195598,
+        "dormant_overflows": 0,
+        "selected_spatial_error_pixels": [
+          448.16812,
+          57.067722
+        ],
+        "selected_error_target_ratio": [
+          492.97284,
+          112.26291
+        ],
+        "selected_over_target": [
+          113671,
+          37833
+        ],
+        "error_unknown_proxies": 0,
+        "error_unmatched_direct": 0,
+        "error_forced_nodes": 0,
+        "pose_requests": 130951,
+        "evaluated_shared_poses": 130951,
+        "pose_hash_failures": 0,
+        "camera_roots": 42891,
+        "shadow_only_roots": 52118,
+        "camera_fallback_roots": 0,
+        "shadow_only_fallback_roots": 0,
+        "camera_refinement_limits": {
+          "over_target": 37833,
+          "branch_slots": 31816,
+          "camera_splats": 0,
+          "shadow_splats": 0,
+          "missing_pages": 0,
+          "no_children": 0,
+          "affordable_resident": 6017
+        },
+        "selected_source_consumers": {
+          "outside": 0,
+          "camera_only": 131071,
+          "shadow_only": 0,
+          "both": 0
+        },
+        "selected_voxel_consumers": {
+          "outside": 0,
+          "camera_only": 0,
+          "shadow_only": 1,
+          "both": 0
+        },
+        "selected_direct_consumers": {
+          "outside": 0,
+          "camera_only": 37843,
+          "shadow_only": 75837,
+          "both": 0
+        },
+        "camera_published_branches": 131071,
+        "shadow_only_published_branches": 0
+      },
+      "gpu_covered_median_ms": 35.024671999999995,
+      "per_pass_median_ms": {
+        "GPU forest materialize": 0.289968,
+        "GPU forest selection residency": 7.328895999999999,
+        "GPU forest shared poses": 0.21543999999999996,
+        "bloom": 0.026319999999999996,
+        "exhaust": 0.00031999999999999997,
+        "foliage seed pyramid": 0.07696,
+        "foliage seed terrain cull": 0.33192,
+        "foliage seed terrain raster": 0.018592,
+        "motion vectors": 0.05568,
+        "near shadow cull": 0.40355199999999997,
+        "near shadow raster": 0.039152,
+        "shade": 0.21216,
+        "shade terrain": 0.269136,
+        "shade voxels": 0.033984,
+        "shadow cull": 0.6351359999999999,
+        "shadow raster": 0.06304,
+        "shadow tile damage and clear": 0.342304,
+        "taa": 0.03,
+        "terrain coarse": 0.05576,
+        "tonemap": 0.025759999999999998,
+        "tree occluder cull": 12.545487999999999,
+        "tree occluder raster": 4.888016,
+        "tree occlusion pyramid": 0.07667199999999999,
+        "tree recovery dispatch": 0.002336,
+        "tree remaining cull": 0.048799999999999996,
+        "tree remaining raster": 0.48875199999999996,
+        "tree visibility history": 0.033344,
+        "voxel near sun splat raster": 0.06401599999999999,
+        "voxel near sun splats": 0.229984,
+        "voxel splat raster": 2.656768,
+        "voxel splat resolve": 0.051664,
+        "voxel splats": 2.5138879999999997,
+        "voxel sun splat raster": 0.131792,
+        "voxel sun splats": 0.536416,
+        "wheel particles": 0.00031999999999999997
+      },
+      "strict_result": "Error: \"PIXEL VEGETATION QUALITY FAILED: view 0: largest submitted cell 4.440px, missing 0, near-plane crossings 0; camera over-target 37833, refinement faults 0, camera fallbacks 0\""
+    }
+  }
+}

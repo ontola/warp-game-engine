@@ -26,6 +26,7 @@ pub struct Node {
     /// Flag bit 0: resident overflow fallback only; always refine normally.
     /// Flag bit 1: whole-root voxel choice, emitted without a transient slot.
     /// Flag bit 2: source representation (consumer diagnostics; not an LOD override).
+    /// Bits8..31: conservative source cluster work including repeated templates.
     pub links:[u32;4],
 }
 #[repr(C)]
@@ -586,6 +587,51 @@ mod tests {
   selector.publish_asset_pages(&gpu,&[(1,true,2),(3,false,1)]).unwrap();assert_eq!(draw(16),[1,5,6]);
   assert_eq!(draw(2),[1,4]);assert_eq!(read(&gpu,&selector.fallback),[0],"budget retains both complete intermediate parents");
   selector.publish_asset_pages(&gpu,&[(3,true,2)]).unwrap();assert_eq!(draw(16),[2,3,5,6]);
+ }
+ #[test]
+ #[ignore="exclusive GPU complete mixed endpoint admission"]
+ fn gpu_complete_endpoint_keeps_pixel_acceptable_voxels() {
+  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].scale[2]=1.;trees[0].scale[3]=1.;
+  let n=|first,end,rep,flags,cost,error|Node {sphere:[0.,0.,0.5,0.2],error:[error,0.,cost,cost],links:[first,end,rep,flags]};
+  let nodes=[n(1,8,0,2,1.,1.),n(2,8,1,0,100.,1.),
+   n(3,5,2,0,1.,0.005),n(NONE,4,3,4,0.,0.),n(NONE,5,4,4,0.,0.),
+   n(6,8,5,0,1.,0.005),n(NONE,7,6,4,0.,0.),n(NONE,8,7,4,0.,0.)];
+  let selector=Selector::new(&gpu,&nodes,&trees,4,4).unwrap();let empty=depth(&gpu,0.);
+  let projection=crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]};
+  let draw=|pixel_error,slots| {
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union_consumers_budget(&gpu,&mut enc,&[ConsumerView::camera(projection)],pixel_error,slots,[5;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
+   let count=read(&gpu,&selector.counters)[0]as usize;let state=read(&gpu,&selector.refiner.state);assert_eq!(state[15],0);assert!(state[0]<=slots && state[1]<=5);
+   let mut cut=read(&gpu,&selector.records).chunks_exact(4).take(count).map(|r|r[1]).collect::<Vec<_>>();cut.sort();cut
+  };
+  assert_eq!(draw(1.,2),[2,5],"two pixel-acceptable voxel groups fit; four source leaves do not");
+  assert_eq!(draw(0.01,4),[3,4,6,7],"closer/error-stricter consumers still require exact sources");
+  selector.publish_asset_pages(&gpu,&[(2,false,2)]).unwrap();
+  assert!(draw(1.,2).is_empty(),"missing mixed endpoint must retain complete ancestor");
+  assert_eq!(read(&gpu,&selector.direct),[1]);
+  selector.publish_asset_pages(&gpu,&[(2,true,3),(1,false,2)]).unwrap();
+  assert_eq!(draw(1.,2),[2,5],"unused expensive intermediate page is unnecessary");
+ }
+ #[test]
+ #[ignore="exclusive GPU collective admission retries source frontier"]
+ fn gpu_parked_branching_proposals_reconsider_complete_source_frontier() {
+  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(128);
+  for t in &mut trees {t.scale[2]=1.;t.scale[3]=1.;}
+  let n=|first,end,rep,flags,cost,error|Node {sphere:[0.,0.,0.5,0.2],error:[error,0.,cost,cost],links:[first,end,rep,flags]};
+  let nodes=[n(1,7,0,2,1.,1.),n(2,4,1,0,2.,1.),n(NONE,3,2,4,0.,0.),n(NONE,4,3,4,0.,0.),
+   n(5,7,4,0,2.,1.),n(NONE,6,5,4,0.,0.),n(NONE,7,6,4,0.,0.)];
+  let selector=Selector::new(&gpu,&nodes,&trees,512,512).unwrap();let empty=depth(&gpu,0.);
+  let consumers=[ConsumerView::camera(crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]})];
+  let mut enc=gpu.device.create_command_encoder(&Default::default());
+  // Each intermediate proposal fits alone; only one fits collectively. A
+  // retry must reconsider its source cut, not serialize128 expensive bridges.
+  selector.union_consumers_budget(&gpu,&mut enc,&consumers,0.01,512,[131;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
+  let state=read(&gpu,&selector.refiner.state);assert_eq!(state[15],0);assert!(state[1]<=131);
+  let count=read(&gpu,&selector.counters)[0]as usize;
+  let mut per_root=vec![Vec::new();128];
+  for r in read(&gpu,&selector.records).chunks_exact(4).take(count) {per_root[r[0]as usize].push(r[1]);}
+  for cut in &mut per_root {cut.sort();assert_eq!(cut,&[2,3,5,6],"complete source endpoint must not wait128 budget-release waves");}
+  assert!(read(&gpu,&selector.fallback).iter().all(|&x|x==0));
  }
  #[test]
  #[ignore="exclusive GPU branching splat-cost barrier fixture"]

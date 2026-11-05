@@ -17,6 +17,41 @@ pipeline for both halves (its tile mask discards anyway). Test:
 for every pixel as the single pipeline, holes still cut). Not timed on a real
 GPU yet: A/B with `KERN_RASTER_SPLIT=0` on the Mac and the 5070 Ti.
 
+# 5 November: source work accounting prerequisite
+
+PR8 retained build/capture: strict pixel quality FAIL at5.482px, no page
+misses,36.504ms covered GPU median in final120 frames of1200, native720p
+one view/TAA. Source cluster upper bounds now travel in Node.links[3] bits
+8..31; existing flags stay in low8 bits. Counts include every repeated
+mesh template; do not use unique source-page cluster counts for work.
+162 foliage tests pass. Admission/refunds do NOT consume this metadata yet.
+Source triangle/cluster budget remains the next task. Ownership unchanged.
+
+Post-revert validation:161/161 foliage tests PASS. No one-pixel or performance
+acceptance; release rebuild/capture still pending. See pr8-retained-tests.log.
+
+# 5 November: selected-mip experiment REJECTED
+
+PR8 through6a4002f is integrated locally, ownership split preserved. The
+selected-mip/endpoint restriction experiment passed161 foliage tests but
+regressed normal-scene cells to31.660px (from5.482); it is reverted. Keep
+PR8 occlusion/far-sun work and the earlier fine cook/source-shadow correction.
+Source cluster/triangle costs are missing from selection budgeting: next task.
+See docs/vegetation-architecture.md and vegetation-fine-endpoint-measurements.json.
+No additional occlusion/terrain-owned edits beyond merging PR8.
+
+# 5 November: foliage integration ownership
+
+Foliage worktree integrated PR8 through6a4002f, retaining the occlusion/terrain
+agent's changes. Resolved foliage_refine.wgsl by removing the withdrawn10%
+screen-height gate, including its local shared-helper copy. Selected voxel
+volumes expose only their selected mip, with the voxel shadow-caster flag
+retained. Source triangle/cluster work is NOT budgeted yet; do not consider
+the source bypass or one-pixel requirement solved. No additional edits were
+made to the occlusion/terrain-owned files beyond merging PR8.
+Combined foliage suite161/161 passed before the withdrawn gate was removed.
+Final build/capture evidence goes in docs/vegetation-architecture.md.
+
 ## 5 November: any rigid opaque geometry hides forest
 
 Decided with Joep: occluders for the foliage seed come from material and

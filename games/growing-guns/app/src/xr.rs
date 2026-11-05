@@ -2,13 +2,13 @@
 use app::Game as _;
 use glam::{Affine3A,Quat,Vec3};
 use growing_guns::{World,TrackedAim,DT};
-use warp_xr::{Eye,Pose,Tracking};
+use warp_xr::{Eye,Pose,Tracking,PlaySpace,HUD_SIZE,hud_point,rig::yaw_pitch};
 
 pub struct NativeGame {
     game:crate::play::Gg,
     renderer:Option<render::Renderer>,
     output:Option<wgpu::Texture>,
-    origin:Option<Vec3>, yaw:f32, snap_ready:bool, accumulator:f32, pending:u32,
+    space:PlaySpace, accumulator:f32, pending:u32,
     _speaker:Option<app::sound::Speaker>,
     audio_pending:bool,
     diagnostic:bool,
@@ -20,27 +20,8 @@ pub struct NativeGame {
     cursor:Option<[f32;2]>,
 }
 
-/// The HUD quad (engine/crates/xr/src/android.rs): this far ahead of the head
-/// and this large, showing the game's HUD at `HUD_SIZE`.
-const HUD_DISTANCE:f32=2.0;
-const HUD_METRES:[f32;2]=[2.4,1.35];
-const HUD_SIZE:[u32;2]=[1280,720];
-
-/// Where a controller ray meets the head-locked HUD, in HUD pixels.
-fn hud_point(head:Pose,aim:Pose)->Option<[f32;2]> {
-    let inverse=head.orientation.inverse();
-    let origin=inverse*(aim.position-head.position);
-    let direction=inverse*(aim.orientation*Vec3::NEG_Z);
-    if direction.z>=-1e-3 {return None;}
-    let hit=origin+direction*((-HUD_DISTANCE-origin.z)/direction.z);
-    let (u,v)=(hit.x/HUD_METRES[0]+0.5,0.5-hit.y/HUD_METRES[1]);
-    ((0.0..=1.0).contains(&u)&&(0.0..=1.0).contains(&v)).then(||[u*HUD_SIZE[0] as f32,v*HUD_SIZE[1] as f32])
-}
-
 /// The yaw that looks from `pos` to the arena's centre.
 fn face_centre(pos:Vec3)->f32 {(pos.x).atan2(pos.z)}
-/// Yaw and pitch of a world direction.
-fn yaw_pitch(d:Vec3)->[f32;2] {[(-d.x).atan2(-d.z),d.y.clamp(-1.0,1.0).asin()]}
 impl NativeGame {
     pub fn new(sound:bool)->Result<Self,String> {
         // `xr-graphics` beside the data: a profile with switches, to A/B on the
@@ -57,13 +38,7 @@ impl NativeGame {
         game.light_mut().near_shadows=0.0;
         game.light_mut().lod_pixels=crate::graphics::get().lod_pixels;
         let yaw = game.world.players[0].yaw;
-        Ok(Self {game,renderer:None,output:None,origin:None,yaw,snap_ready:true,accumulator:0.0,pending:0,_speaker:None,audio_pending:sound,diagnostic:false,spawned:None,cursor:None,profile:std::path::Path::new("xr-profile").exists(),profile_sequence:0,diagnostic_requested:std::path::Path::new("diagnose").exists()})
-    }
-    /// Turn the play space about the head by `by` radians.
-    fn turn(&mut self,t:&Tracking,by:f32) {
-        let old=Quat::from_rotation_y(self.yaw)*(t.head.position-self.origin.unwrap());
-        self.yaw+=by;
-        self.origin=Some(t.head.position-Quat::from_rotation_y(-self.yaw)*old);
+        Ok(Self {game,renderer:None,output:None,space:PlaySpace::new(yaw),accumulator:0.0,pending:0,_speaker:None,audio_pending:sound,diagnostic:false,spawned:None,cursor:None,profile:std::path::Path::new("xr-profile").exists(),profile_sequence:0,diagnostic_requested:std::path::Path::new("diagnose").exists()})
     }
     /// A new round or a new life: look at the arena, not whatever wall the
     /// real room happens to face.
@@ -75,13 +50,10 @@ impl NativeGame {
         self.spawned=Some(now);
         if !changed||!p.alive||p.ghost {return;}
         let target=face_centre(p.pos);
-        let f=Quat::from_rotation_y(self.yaw)*t.head.orientation*Vec3::NEG_Z;
-        let by=(target-(-f.x).atan2(-f.z)+std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)-std::f32::consts::PI;
-        self.turn(t,by);
+        self.space.face(t.head,target);
     }
-    fn anchor(&self,eye:Vec3)->Vec3 {eye-Quat::from_rotation_y(self.yaw)*self.origin.unwrap()}
     fn hand(&self,t:&Tracking,eye:Vec3)->Option<Affine3A> {
-        let pose=t.aim?.transformed(self.anchor(eye),self.yaw);
+        let pose=self.space.place(t.aim?,eye);
         Some(Affine3A::from_rotation_translation(pose.orientation,pose.position))
     }
 }
@@ -104,7 +76,7 @@ impl warp_xr::Game for NativeGame {
             eprintln!("XR diagnostic {name}: {:.1} ms, mean RGB {:.1}, sun {}, sky {}, EV {}",start.elapsed().as_secs_f64()*1000.0,
                 rgba.chunks_exact(4).map(|p|p[..3].iter().map(|v|*v as u64).sum::<u64>()).sum::<u64>() as f64/(1024.0*512.0*3.0),light.sun_lux,light.sky_lux,light.ev100);
         }
-        self.game.light_mut().debug=0.0;self.origin=None;self.diagnostic=false;
+        self.game.light_mut().debug=0.0;self.space.reset();self.diagnostic=false;
         // Independent renderer probe distinguishes game data from Vulkan setup.
         for (name, device) in [("xr-device", gpu.clone()), ("wgpu-device", render::Gpu::new()?)] {
             let mut scene=render::Scene::default();
@@ -133,19 +105,9 @@ impl warp_xr::Game for NativeGame {
                 Err(error)=>eprintln!("XR audio unavailable: {error}"),
             }
         }
-        if self.origin.is_none() {
-            let f = t.head.orientation * Vec3::NEG_Z;
-            self.yaw -= (-f.x).atan2(-f.z);
-            self.origin = Some(t.head.position);
-        } else if t.recentered { self.origin=Some(t.head.position); }
-        if t.focused && t.turn.abs()>0.7 && self.snap_ready {
-            // Rotate about the current head, preserving its world position.
-            self.turn(t,-t.turn.signum()*30f32.to_radians());
-            self.snap_ready=false;
-        }
-        if t.turn.abs()<0.3 {self.snap_ready=true;}
+        self.space.update(t);
         self.face_on_spawn(t);
-        let forward=Quat::from_rotation_y(self.yaw)*t.head.orientation*Vec3::NEG_Z;
+        let forward=self.space.forward(t.head);
         self.pending|=t.controls.pressed.0;
         if t.focused {self.accumulator=(self.accumulator+dt).min(DT*4.0);}else{self.accumulator=0.0;self.pending=0;}
         while self.accumulator>=DT {
@@ -179,13 +141,8 @@ impl warp_xr::Game for NativeGame {
         self.game.xr_gun=self.hand(t,base);
         let mut frame=app::Frame::new(gpu,&mut self.renderer,HUD_SIZE,dt,alpha);
         let mut draw=self.game.draw(&mut frame)?;
-        if let Some(at)=self.cursor {
-            let clip=[0.0,0.0,HUD_SIZE[0] as f32,HUD_SIZE[1] as f32];
-            draw.hud.begin_overlay();
-            draw.hud.circle(at,7.0,[0.0,0.0,0.0,0.7],clip);
-            draw.hud.circle(at,5.0,[1.0,0.85,0.35,1.0],clip);
-        }
-        let eyes:[Eye;2]=t.eyes.map(|eye|Eye {pose:eye.pose.transformed(self.anchor(base),self.yaw),..eye});
+        if let Some(at)=self.cursor {warp_xr::pointer::cursor(&mut draw.hud,at);}
+        let eyes:[Eye;2]=t.eyes.map(|eye|Eye {pose:self.space.place(eye.pose,base),..eye});
         let renderer=self.renderer.as_ref().ok_or("Growing Guns did not create its renderer")?;
         renderer.set_camera_up_axes(&eyes.map(|e|e.pose.orientation*Vec3::Y));
         renderer.set_camera_projections(&eyes.map(Eye::projection));
@@ -283,24 +240,6 @@ fn install_assets(app:&android_activity::AndroidApp)->Result<(),String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn pose(position:Vec3,orientation:Quat)->Pose {Pose {position,orientation}}
-
-    #[test]
-    fn the_controller_points_at_hud_pixels() {
-        let head=pose(Vec3::new(0.0,1.6,0.0),Quat::IDENTITY);
-        // Straight ahead from the head: the middle of the HUD.
-        let [x,y]=hud_point(head,pose(head.position,Quat::IDENTITY)).unwrap();
-        assert!((x-640.0).abs()<0.01&&(y-360.0).abs()<0.01);
-        // A hand to the right and low, pointing ahead, lands right and low.
-        let [x,y]=hud_point(head,pose(head.position+Vec3::new(0.6,-0.3,0.0),Quat::IDENTITY)).unwrap();
-        assert!((x-960.0).abs()<0.01&&(y-520.0).abs()<0.01);
-        // The HUD turns with the head.
-        let turned=pose(head.position,Quat::from_rotation_y(1.0));
-        assert!(hud_point(turned,pose(head.position,Quat::from_rotation_y(1.0))).is_some());
-        // Away from it, or past its edge: no pointer.
-        assert_eq!(hud_point(head,pose(head.position,Quat::from_rotation_y(3.0))),None);
-        assert_eq!(hud_point(head,pose(head.position,Quat::from_rotation_y(1.2))),None);
-    }
 
     #[test]
     fn spawning_faces_the_centre_of_the_arena() {

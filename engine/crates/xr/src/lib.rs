@@ -3,6 +3,11 @@
 //! Vulkan interop, Touch bindings and compositor submission.
 use glam::{Mat4, Quat, Vec3, Vec4};
 
+pub mod rig;
+pub mod pointer;
+pub use rig::PlaySpace;
+pub use pointer::{HUD_SIZE, HUD_DISTANCE, HUD_METRES, hud_point};
+
 #[cfg(target_os = "android")]
 mod android;
 #[cfg(target_os = "android")]

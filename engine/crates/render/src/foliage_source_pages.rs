@@ -47,6 +47,26 @@ pub struct Cache {
     pages:Vec<Page>,pub deps:Vec<Vec<usize>>,pub capacities:[u64;3],arenas:[Arena;3],resident:Vec<Option<Resident>>,pending:Option<Pending>,
     pub buffers:[wgpu::Buffer;4],pub dirty:BTreeSet<usize>,stats:Stats,
 }
+/// Conservative draw/traversal work, NOT unique resident asset bytes.
+/// Repeated templates sharing one mesh each consume work. Includes every CLOD
+/// cluster and triangle as an upper bound; actual selected cuts can be cheaper.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub(crate) struct SourceWork {pub clusters:u32,pub triangles:u32}
+pub(crate) fn source_work(scene:&Scene,source:GpuInstance)->Result<SourceWork,String>{
+    let members=if source.cluster_count==0 && source.first_cluster!=0 && source.flags&crate::scene::PART_WIND!=0 {
+        let start=(source.first_cluster>>12)as usize;let count=(source.first_cluster&4095)as usize;
+        scene.instances.get(start..start+count).ok_or("source work templates outside catalog")?
+    }else{std::slice::from_ref(&source)};
+    let mut result=SourceWork::default();
+    for member in members {
+        let end=member.first_cluster.checked_add(member.cluster_count).ok_or("source work cluster range overflow")?;
+        let clusters=scene.clusters.get(member.first_cluster as usize..end as usize).ok_or("source work clusters outside catalog")?;
+        result.clusters=result.clusters.checked_add(member.cluster_count).ok_or("source cluster work overflow")?;
+        for cluster in clusters {result.triangles=result.triangles.checked_add(cluster.tri_count).ok_or("source triangle work overflow")?;}
+    }
+    Ok(result)
+}
+
 fn clusters(scene:&Scene,source:GpuInstance)->Result<BTreeSet<u32>,String>{
     let members=if source.cluster_count==0 && source.first_cluster!=0 && source.flags&32!=0 {
         let start=(source.first_cluster>>12)as usize;let count=(source.first_cluster&4095)as usize;
@@ -180,5 +200,22 @@ pub(crate) mod tests {
         }
         assert_eq!(cache.stats().evictions,2);
         assert!(Cache::new(&gpu,&scene,&reps,Budget{vertices:2,..budget}).is_err());
+    }
+}
+
+#[cfg(test)] mod work_tests {
+    use super::*;
+    use bytemuck::Zeroable;
+    #[test] fn foliage_source_work_counts_instances_not_unique_meshes() {
+        let mut scene=Scene::default();
+        let mut cluster=GpuCluster::zeroed();cluster.tri_count=64;scene.clusters.push(cluster);
+        let mesh=GpuInstance {cluster_count:1,..GpuInstance::zeroed()};scene.instances=vec![mesh;3];
+        let carrier=GpuInstance {first_cluster:3,flags:crate::scene::PART_WIND,..GpuInstance::zeroed()};
+        assert_eq!(clusters(&scene,carrier).unwrap().len(),1,"one shared resident mesh");
+        assert_eq!(source_work(&scene,carrier).unwrap(),SourceWork {clusters:3,triangles:192},"three instances still execute three times");
+        assert_eq!(source_work(&scene,mesh).unwrap(),SourceWork {clusters:1,triangles:64});
+        assert!(source_work(&scene,GpuInstance {first_cluster:4,..carrier}).is_err());
+        assert!(source_work(&scene,GpuInstance {first_cluster:u32::MAX,..mesh}).is_err());
+        scene.clusters[0].tri_count=u32::MAX;assert!(source_work(&scene,carrier).is_err());
     }
 }
