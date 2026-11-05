@@ -16,7 +16,10 @@ struct Slot { key:vec4<u32>, history:vec4<u32> };
 @group(0) @binding(9) var<storage,read> asset_pages:array<vec4<u32>>;
 @group(0) @binding(10) var<storage,read> request_consumers:array<u32>;
 @group(0) @binding(11) var<storage,read_write> consumer_union:array<atomic<u32>>;
-fn consumers(i:u32)->u32 {let roles=request_consumers[i]&768u;return select(roles,768u,roles==0u);}
+fn available(root:u32)->u32 {
+ let failure=atomicLoad(&fallback[root]);return select(768u&~failure,0u,(failure&7u)!=0u);
+}
+fn consumers(i:u32)->u32 {let roles=request_consumers[i]&768u;return select(roles,768u,roles==0u)&available(requests[i].x);}
 const NONE:u32=0xffffffffu;
 fn count()->u32 {return min(selection_counts[0],config.counts.x);}
 fn same(a:vec4<u32>,b:vec4<u32>)->bool {
@@ -42,7 +45,7 @@ fn index_requests(@builtin(global_invocation_id) id:vec3<u32>) {
     request_slot[i]=NONE;
     let key=requests[i];
     if key.x>=config.counts.w {return;}
-    if atomicLoad(&fallback[key.x])!=0u {return;}
+    if consumers(i)==0u {return;}
     let start=hash(key);
     for(var probe=0u;probe<config.limits.x;probe++) {
         let cell=(start+probe)&(config.counts.z-1u);
@@ -58,14 +61,14 @@ fn index_requests(@builtin(global_invocation_id) id:vec3<u32>) {
         }
         if same(requests[entry-1u],key) {atomicOr(&consumer_union[entry-1u],consumers(i));return;}
     }
-    atomicStore(&fallback[key.x],1u);atomicAdd(&stats[5],1u);
+    atomicOr(&fallback[key.x],1u);atomicAdd(&stats[5],1u);
 }
 @compute @workgroup_size(64)
 fn retain_slots(@builtin(global_invocation_id) id:vec3<u32>) {
     let i=id.x;if i>=config.counts.y {return;}
     var slot=slots[i];var request=NONE;
     if slot.history.x!=0u && slot.key.x<config.counts.w && slot.history.x==asset_pages[slot.key.z].z {
-        if atomicLoad(&fallback[slot.key.x])==0u {request=lookup(slot.key);}
+        if available(slot.key.x)!=0u {request=lookup(slot.key);}
     }
     if request!=NONE {
         request_slot[request]=i;slot.key=requests[request];
@@ -86,11 +89,11 @@ fn retain_slots(@builtin(global_invocation_id) id:vec3<u32>) {
 fn allocate_slots(@builtin(global_invocation_id) id:vec3<u32>) {
     let i=id.x;if i>=count(){return;}
     let key=requests[i];if key.x>=config.counts.w {return;}
-    if atomicLoad(&fallback[key.x])!=0u || lookup(key)!=i {return;}
+    if consumers(i)==0u || lookup(key)!=i {return;}
     if request_slot[i]!=NONE {return;}
     let offset=atomicAdd(&stats[1],1u);
     if offset>=atomicLoad(&stats[0]) {
-        atomicStore(&fallback[key.x],1u);atomicAdd(&stats[4],1u);return;
+        atomicOr(&fallback[key.x],1u);atomicAdd(&stats[4],1u);return;
     }
     let index=free_slots[offset];let old_epoch=slots[index].history.w&128u;
     slots[index]=Slot(key,vec4<u32>(asset_pages[key.z].z,0u,0u,old_epoch^128u));
@@ -105,8 +108,8 @@ fn publish_slots(@builtin(global_invocation_id) id:vec3<u32>) {
     let published=slot.history.x!=0u && slot.key.x<config.counts.w;
     if published {
         let request=lookup(slot.key);
-        slot.history.z=u32(atomicLoad(&fallback[slot.key.x])==0u && request!=NONE);
-        var roles=0u;if slot.history.z!=0u {roles=atomicLoad(&consumer_union[request]);}
+        var roles=0u;if request!=NONE {roles=atomicLoad(&consumer_union[request])&available(slot.key.x);}
+        slot.history.z=u32(roles!=0u);
         slot.history.w=(slot.history.w&128u)|roles;
         if slot.history.z==0u {slot.history.y=0u;}
         atomicAdd(&stats[6],slot.history.z);
@@ -118,7 +121,7 @@ fn resolve_requests(@builtin(global_invocation_id) id:vec3<u32>) {
     let i=id.x;if i>=count(){return;}
     let key=requests[i];
     if key.x>=config.counts.w {request_slot[i]=NONE;return;}
-    if atomicLoad(&fallback[key.x])!=0u {request_slot[i]=NONE;return;}
+    if consumers(i)==0u {request_slot[i]=NONE;return;}
     // Duplicate requests intentionally retain NONE: only the canonical request
     // emits a draw. Reading another mapping here would race its publication.
 }

@@ -654,6 +654,7 @@ impl LuaGame {
         if let Some(v) = o.sun_lux { l.sun_lux = v; }
         if let Some(v) = o.sky_lux { l.sky_lux = v; }
         if let Some(v) = o.ev100 { l.ev100 = v; }
+        if let Some(a) = o.auto { l.auto_exposure = Some(a); }
         if let Some(v) = o.fog[0] { l.fog_start = v; }
         if let Some(v) = o.fog[1] { l.fog_end = v; }
         if let Some(v) = o.fog[2] { l.fog_density = v; }

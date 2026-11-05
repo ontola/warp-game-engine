@@ -235,6 +235,20 @@ mod tests {
         assert_eq!(slots[index*8+7]&768,768);assert_eq!(slots[index*8+5],0);
     }
     #[test]
+    #[ignore="exclusive GPU consumer fallback isolation oracle"]
+    fn gpu_consumer_fallback_does_not_retire_other_consumer() {
+        let gpu=Gpu::new().unwrap();let select=selector(&gpu);let resident=Residency::new(&gpu,&select,8).unwrap();let key=[1,2,12,4];
+        gpu.queue.write_buffer(&select.record_consumers,0,bytemuck::cast_slice(&[256u32,512]));run(&gpu,&select,&resident,&[key,key]);
+        for failure in [512u32,256,1,0] {
+            gpu.queue.write_buffer(&select.fallback,4,bytemuck::cast_slice(&[failure]));
+            let mut enc=gpu.device.create_command_encoder(&Default::default());resident.encode(&mut enc);gpu.queue.submit([enc.finish()]);
+            let slots=read(&gpu,&resident.slots);let published=slots.chunks_exact(8).filter(|s|s[6]!=0).collect::<Vec<_>>();
+            if failure==1 {assert!(published.is_empty(),"physical allocation failure invalidates both consumers");}
+            else {assert_eq!(published.len(),1);assert_eq!(published[0][7]&768,768&!failure);}
+            assert_eq!(read(&gpu,&select.fallback)[1],failure);
+        }
+    }
+    #[test]
     fn residency_shader_validates() {
         let src = include_str!("shaders/foliage_residency.wgsl");
         let module = naga::front::wgsl::parse_str(src).unwrap_or_else(|e| panic!("{}", e.emit_to_string(src)));

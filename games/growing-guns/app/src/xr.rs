@@ -14,7 +14,33 @@ pub struct NativeGame {
     diagnostic:bool,
     profile:bool, profile_sequence:u64,
     diagnostic_requested:bool,
+    /// Round, alive and slot when last checked: a change faces the arena.
+    spawned:Option<(u32,bool,usize)>,
+    /// Where the controller's ray meets the HUD while a menu is up.
+    cursor:Option<[f32;2]>,
 }
+
+/// The HUD quad (engine/crates/xr/src/android.rs): this far ahead of the head
+/// and this large, showing the game's HUD at `HUD_SIZE`.
+const HUD_DISTANCE:f32=2.0;
+const HUD_METRES:[f32;2]=[2.4,1.35];
+const HUD_SIZE:[u32;2]=[1280,720];
+
+/// Where a controller ray meets the head-locked HUD, in HUD pixels.
+fn hud_point(head:Pose,aim:Pose)->Option<[f32;2]> {
+    let inverse=head.orientation.inverse();
+    let origin=inverse*(aim.position-head.position);
+    let direction=inverse*(aim.orientation*Vec3::NEG_Z);
+    if direction.z>=-1e-3 {return None;}
+    let hit=origin+direction*((-HUD_DISTANCE-origin.z)/direction.z);
+    let (u,v)=(hit.x/HUD_METRES[0]+0.5,0.5-hit.y/HUD_METRES[1]);
+    ((0.0..=1.0).contains(&u)&&(0.0..=1.0).contains(&v)).then(||[u*HUD_SIZE[0] as f32,v*HUD_SIZE[1] as f32])
+}
+
+/// The yaw that looks from `pos` to the arena's centre.
+fn face_centre(pos:Vec3)->f32 {(pos.x).atan2(pos.z)}
+/// Yaw and pitch of a world direction.
+fn yaw_pitch(d:Vec3)->[f32;2] {[(-d.x).atan2(-d.z),d.y.clamp(-1.0,1.0).asin()]}
 impl NativeGame {
     pub fn new(sound:bool)->Result<Self,String> {
         crate::graphics::configure(crate::graphics::Graphics::MINIMUM)?;
@@ -28,7 +54,27 @@ impl NativeGame {
         game.light_mut().near_shadows=0.0;
         game.light_mut().lod_pixels=crate::graphics::get().lod_pixels;
         let yaw = game.world.players[0].yaw;
-        Ok(Self {game,renderer:None,output:None,origin:None,yaw,snap_ready:true,accumulator:0.0,pending:0,_speaker:None,audio_pending:sound,diagnostic:false,profile:std::path::Path::new("xr-profile").exists(),profile_sequence:0,diagnostic_requested:std::path::Path::new("diagnose").exists()})
+        Ok(Self {game,renderer:None,output:None,origin:None,yaw,snap_ready:true,accumulator:0.0,pending:0,_speaker:None,audio_pending:sound,diagnostic:false,spawned:None,cursor:None,profile:std::path::Path::new("xr-profile").exists(),profile_sequence:0,diagnostic_requested:std::path::Path::new("diagnose").exists()})
+    }
+    /// Turn the play space about the head by `by` radians.
+    fn turn(&mut self,t:&Tracking,by:f32) {
+        let old=Quat::from_rotation_y(self.yaw)*(t.head.position-self.origin.unwrap());
+        self.yaw+=by;
+        self.origin=Some(t.head.position-Quat::from_rotation_y(-self.yaw)*old);
+    }
+    /// A new round or a new life: look at the arena, not whatever wall the
+    /// real room happens to face.
+    fn face_on_spawn(&mut self,t:&Tracking) {
+        let slot=self.game.slots[0];
+        let Some(p)=self.game.world.players.get(slot) else {return};
+        let now=(self.game.world.round,p.alive,slot);
+        let changed=self.spawned!=Some(now);
+        self.spawned=Some(now);
+        if !changed||!p.alive||p.ghost {return;}
+        let target=face_centre(p.pos);
+        let f=Quat::from_rotation_y(self.yaw)*t.head.orientation*Vec3::NEG_Z;
+        let by=(target-(-f.x).atan2(-f.z)+std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)-std::f32::consts::PI;
+        self.turn(t,by);
     }
     fn anchor(&self,eye:Vec3)->Vec3 {eye-Quat::from_rotation_y(self.yaw)*self.origin.unwrap()}
     fn hand(&self,t:&Tracking,eye:Vec3)->Option<Affine3A> {
@@ -91,34 +137,51 @@ impl warp_xr::Game for NativeGame {
         } else if t.recentered { self.origin=Some(t.head.position); }
         if t.focused && t.turn.abs()>0.7 && self.snap_ready {
             // Rotate about the current head, preserving its world position.
-            let old=Quat::from_rotation_y(self.yaw)*(t.head.position-self.origin.unwrap());
-            self.yaw-=t.turn.signum()*30f32.to_radians();
-            self.origin=Some(t.head.position-Quat::from_rotation_y(-self.yaw)*old);
+            self.turn(t,-t.turn.signum()*30f32.to_radians());
             self.snap_ready=false;
         }
         if t.turn.abs()<0.3 {self.snap_ready=true;}
+        self.face_on_spawn(t);
         let forward=Quat::from_rotation_y(self.yaw)*t.head.orientation*Vec3::NEG_Z;
         self.pending|=t.controls.pressed.0;
         if t.focused {self.accumulator=(self.accumulator+dt).min(DT*4.0);}else{self.accumulator=0.0;self.pending=0;}
         while self.accumulator>=DT {
             // A client plays another slot than the host's first.
             let slot=self.game.slots[0];
-            let p=&mut self.game.world.players[slot];
-            p.yaw=(-forward.x).atan2(-forward.z);p.pitch=forward.y.clamp(-1.0,1.0).asin();
-            self.game.xr_head=Some([p.yaw,p.pitch]);
             let hand=self.hand(t,self.game.world.players[slot].eye());
+            // The artillery and crossbow seats aim with the controller; the head only looks around.
+            let seated=self.game.world.players[slot].howitzer.is_some();
+            let view=hand.filter(|_|seated).map_or(forward,|pose|pose.transform_vector3(Vec3::NEG_Z).normalize_or(forward));
+            let [yaw,pitch]=yaw_pitch(view);
+            let p=&mut self.game.world.players[slot];
+            p.yaw=yaw;p.pitch=pitch;
+            self.game.xr_head=Some([yaw,pitch]);
             self.game.xr_gun=hand;
             self.game.xr_aim=hand.map(|pose|TrackedAim {offset:(self.game.vis.tracked_muzzle(slot,pose)-self.game.world.players[slot].pos).clamp_length_max(2.45),direction:pose.transform_vector3(Vec3::NEG_Z)});
             let mut controls=t.controls;controls.pressed.0=std::mem::take(&mut self.pending);
             if hand.is_none() {controls.held.0 &= !(app::Buttons::RIGHT_TRIGGER|app::Buttons::LEFT_TRIGGER|app::Buttons::EAST);}
+            // While a menu or the cards are up the controller is a pointer: the
+            // game's own mouse path hovers, and the trigger clicks.
+            self.cursor=if self.game.wants_pointer() {t.aim.and_then(|aim|hud_point(t.head,aim))} else {None};
+            if let Some(position)=self.cursor {
+                let pressed=controls.pressed.has(app::Buttons::RIGHT_TRIGGER);
+                self.game.xr_pointer(app::Pointer {position:Some(position),moved:true,pressed,held:controls.held.has(app::Buttons::RIGHT_TRIGGER),..Default::default()},HUD_SIZE);
+                controls.held.0&=!app::Buttons::RIGHT_TRIGGER;controls.pressed.0&=!app::Buttons::RIGHT_TRIGGER;
+            }
             self.game.tick(&[controls]);
             self.accumulator-=DT;
         }
         let alpha=self.accumulator/DT;
         let base=self.game.xr_eye(alpha);
         self.game.xr_gun=self.hand(t,base);
-        let mut frame=app::Frame::new(gpu,&mut self.renderer,[1280,720],dt,alpha);
-        let draw=self.game.draw(&mut frame)?;
+        let mut frame=app::Frame::new(gpu,&mut self.renderer,HUD_SIZE,dt,alpha);
+        let mut draw=self.game.draw(&mut frame)?;
+        if let Some(at)=self.cursor {
+            let clip=[0.0,0.0,HUD_SIZE[0] as f32,HUD_SIZE[1] as f32];
+            draw.hud.begin_overlay();
+            draw.hud.circle(at,7.0,[0.0,0.0,0.0,0.7],clip);
+            draw.hud.circle(at,5.0,[1.0,0.85,0.35,1.0],clip);
+        }
         let eyes:[Eye;2]=t.eyes.map(|eye|Eye {pose:eye.pose.transformed(self.anchor(base),self.yaw),..eye});
         let renderer=self.renderer.as_ref().ok_or("Growing Guns did not create its renderer")?;
         renderer.set_camera_up_axes(&eyes.map(|e|e.pose.orientation*Vec3::Y));
@@ -212,4 +275,37 @@ fn install_assets(app:&android_activity::AndroidApp)->Result<(),String> {
         std::env::set_var("GG_SOUNDS",root.join("audio"));
     }
     std::env::set_current_dir(root).map_err(|e|e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn pose(position:Vec3,orientation:Quat)->Pose {Pose {position,orientation}}
+
+    #[test]
+    fn the_controller_points_at_hud_pixels() {
+        let head=pose(Vec3::new(0.0,1.6,0.0),Quat::IDENTITY);
+        // Straight ahead from the head: the middle of the HUD.
+        let [x,y]=hud_point(head,pose(head.position,Quat::IDENTITY)).unwrap();
+        assert!((x-640.0).abs()<0.01&&(y-360.0).abs()<0.01);
+        // A hand to the right and low, pointing ahead, lands right and low.
+        let [x,y]=hud_point(head,pose(head.position+Vec3::new(0.6,-0.3,0.0),Quat::IDENTITY)).unwrap();
+        assert!((x-960.0).abs()<0.01&&(y-520.0).abs()<0.01);
+        // The HUD turns with the head.
+        let turned=pose(head.position,Quat::from_rotation_y(1.0));
+        assert!(hud_point(turned,pose(head.position,Quat::from_rotation_y(1.0))).is_some());
+        // Away from it, or past its edge: no pointer.
+        assert_eq!(hud_point(head,pose(head.position,Quat::from_rotation_y(3.0))),None);
+        assert_eq!(hud_point(head,pose(head.position,Quat::from_rotation_y(1.2))),None);
+    }
+
+    #[test]
+    fn spawning_faces_the_centre_of_the_arena() {
+        for pos in [Vec3::new(10.0,1.0,0.0),Vec3::new(-4.0,1.0,7.0),Vec3::new(0.0,1.0,-9.0)] {
+            let [yaw,_]=[face_centre(pos),0.0];
+            let forward=Quat::from_rotation_y(yaw)*Vec3::NEG_Z;
+            assert!(forward.dot(-Vec3::new(pos.x,0.0,pos.z).normalize())>0.999,"{pos}");
+            assert!((yaw_pitch(forward)[0]-yaw).cos()>0.9999,"the same direction, wrapped or not");
+        }
+    }
 }

@@ -13,6 +13,8 @@ pub mod frame;
 pub mod static_sun;
 pub mod debug_settings;
 pub mod bloom;
+pub mod auto_exposure;
+pub mod hdr;
 pub mod debug_ui;
 pub mod debug_timing;
 pub mod cpu_time;
@@ -147,6 +149,7 @@ mod rock_mapping;
 
 pub use frame::{Camera, FrameStats, Lighting, Renderer, SplitLayout, ViewRect, split_rects, split_rects_with};
 pub use gpu::{Gpu, Stopwatch, write_png};
+pub use auto_exposure::AutoExposure;
 pub use scene::Scene;
 pub use shaders::{checked as validated, set_game_surface, set_game_mask};
 /// A test frame: a compute shader fills an RGBA8 image with a gradient.
@@ -263,3 +266,4 @@ mod shader_tests {
 
 mod forward;
 mod minimum_lava;
+mod minimum_stone;

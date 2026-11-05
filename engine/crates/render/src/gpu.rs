@@ -69,6 +69,13 @@ impl Gpu {
     /// Only an explicitly opened game window calls this. Headless tools keep
     /// selecting their adapters without creating a surface or window.
     pub fn for_surface(instance: &wgpu::Instance, surface: &wgpu::Surface<'_>, w: u32, h: u32) -> Result<(Gpu, wgpu::SurfaceConfiguration), String> {
+        Self::for_surface_with_adapter(instance, surface, w, h).map(|(gpu, config, _)| (gpu, config))
+    }
+
+    /// [`Self::for_surface`], also returning the adapter: a window keeps it
+    /// to query the surface's HDR support and its display
+    /// ([`crate::hdr::HdrDisplay::query`]).
+    pub fn for_surface_with_adapter(instance: &wgpu::Instance, surface: &wgpu::Surface<'_>, w: u32, h: u32) -> Result<(Gpu, wgpu::SurfaceConfiguration, wgpu::Adapter), String> {
         let (gpu, adapter) = Self::request(instance, Some(surface))?;
         let mut config = surface.get_default_config(&adapter, w.max(1), h.max(1)).ok_or("adapter cannot present to this window")?;
         // Presentation decodes the already-tonemapped scene into linear light.
@@ -77,7 +84,7 @@ impl Gpu {
         if let Some(format) = caps.formats.iter().find(|f| f.is_srgb()) { config.format = *format; }
         config.present_mode = wgpu::PresentMode::AutoVsync;
         config.desired_maximum_frame_latency = 2;
-        Ok((gpu, config))
+        Ok((gpu, config, adapter))
     }
 
     fn request(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) -> Result<(Gpu, wgpu::Adapter), String> {

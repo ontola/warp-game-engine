@@ -104,7 +104,7 @@ mod tests {
             &[crate::foliage_population::WorldRoot {id:123,placement:crate::foliage_runtime::RootPlacement {up:Vec3::Y,pos:Vec3::ZERO,yaw:0.,scale:1.,variant:0}}],
             1,16,crate::aggregate_lod::Policy {allow_sampled_optics:true,..Default::default()}).unwrap();
         let spec=scene.gpu_forest.as_ref().unwrap();
-        assert_eq!(spec.roots.len(),1);assert_eq!(scene.voxel_proxies,1);
+        assert_eq!(spec.roots.len(),1);assert_eq!(scene.voxel_proxies,2,"camera and shadow root records share one cell asset");
         assert_eq!(cooked.stats().branches,9);assert!(scene.meadow.is_none());
     }
     #[test]

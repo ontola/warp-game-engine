@@ -59,18 +59,45 @@ fn add_used(cost:vec4<u32>) {
   let old=atomicAdd(&state[k],cost[k]);if old>NONE-cost[k] {atomicOr(&state[15],1u);}
  }
 }
-@compute @workgroup_size(64) fn seed(@builtin(global_invocation_id) id:vec3<u32>) {
- let tree=id.x;if tree>=view.counts.x {return;}
- let root=trees[tree];var consumers=0u;
- if root.info.w==0u {consumers=mask(sphere(root,nodes[root.info.x]));}
- current[tree]=vec4<u32>(tree,NONE,consumers,0u);
- demand[tree].bucket=consumers;demand[tree].prefix=0u;
- atomicStore(&demand[tree].count,0u);atomicStore(&demand[tree].failed,0u);
- if consumers!=0u {add_used(work(tree,NONE,consumers));}
+// Compact only live consumer tasks, in stable root/role order. Reserved world
+// capacity and roots invisible to every consumer never enter refinement scans.
+var<workgroup> seed_scan:array<vec4<u32>,256>;
+@compute @workgroup_size(256) fn seed(@builtin(global_invocation_id) id:vec3<u32>,@builtin(local_invocation_index) lane:u32,@builtin(workgroup_id) group:vec3<u32>) {
+ let tree=id.x;var value=vec4<u32>(0u);
+ if tree<view.counts.x {
+  let root=trees[tree];var consumers=0u;
+  if root.info.w==0u {consumers=mask(sphere(root,nodes[root.info.x]));}
+  demand[tree].bucket=consumers;demand[tree].prefix=0u;
+  demand[tree+view.counts.x].bucket=consumers&512u;demand[tree+view.counts.x].prefix=0u;
+  atomicStore(&demand[tree].count,0u);atomicStore(&demand[tree].failed,0u);
+  atomicStore(&demand[tree+view.counts.x].count,0u);
+  if consumers!=0u {let cost=work(tree,NONE,consumers);value=vec4<u32>(countOneBits(consumers),cost.yz,0u);}
+ }
+ seed_scan[lane]=value;workgroupBarrier();
+ for(var step=1u;step<256u;step*=2u) {
+  var prior=vec4<u32>(0u);if lane>=step {prior=seed_scan[lane-step];}
+  workgroupBarrier();seed_scan[lane]=plus(seed_scan[lane],prior);workgroupBarrier();
+ }
+ if tree<view.counts.x {atomicStore(&demand[tree+view.counts.x].failed,seed_scan[lane].x-value.x);}
+ if lane==255u {
+  let sum=seed_scan[lane];blocks[32u+group.x*32u]=vec4<u32>(sum.x,0u,0u,0u);
+  if sum.y==NONE || sum.z==NONE {atomicOr(&state[15],1u);}
+  add_used(vec4<u32>(0u,sum.yz,0u));
+ }
 }
 @compute @workgroup_size(1) fn start() {
- atomicStore(&state[3],view.counts.x);atomicStore(&state[16],view.counts.x);
+ var count=0u;
+ for(var group=0u;group<(view.counts.x+255u)/256u;group++) {
+  let at=32u+group*32u;let n=blocks[at].x;blocks[at].y=count;count+=n;
+ }
+ atomicStore(&state[3],count);atomicStore(&state[16],count);
  if atomicLoad(&state[1])>view.consumer_count.z || atomicLoad(&state[2])>view.consumer_count.w {atomicOr(&state[15],4u);}
+}
+@compute @workgroup_size(64) fn seed_scatter(@builtin(global_invocation_id) id:vec3<u32>) {
+ let tree=id.x;if tree>=view.counts.x {return;}
+ let roles=demand[tree].bucket;var at=blocks[32u+(tree/256u)*32u].y+atomicLoad(&demand[tree+view.counts.x].failed);
+ if (roles&256u)!=0u {current[at]=vec4<u32>(tree,NONE,256u,0u);at++;}
+ if (roles&512u)!=0u {current[at]=vec4<u32>(tree,NONE,512u,0u);}
 }
 @compute @workgroup_size(1) fn prepare() {
  let count=atomicLoad(&state[3]);
@@ -89,10 +116,10 @@ fn add_used(cost:vec4<u32>) {
  if wake {for(var k=0u;k<3u;k++) {atomicStore(&state[56u+k],used[k]);}atomicStore(&state[59],parked_count);atomicAdd(&state[62],1u);}
 
 }
-fn projected(t:Tree,n:Node)->vec2<f32> {
+fn projected(t:Tree,n:Node,roles:u32)->vec2<f32> {
  let s=sphere(t,n);var all_scale=0.0;var camera_scale=0.0;
  for(var i=0u;i<view.consumer_count.x;i++) {
-  let c=view.consumers[i];if visible_in(s,c.vp) {
+  let c=view.consumers[i];if (roles&select(512u,256u,c.pixels.z==0.0))!=0u && visible_in(s,c.vp) {
    let p=error_in(s,1.0,c.vp,c.pixels.xy);all_scale=max(all_scale,p);
    if c.pixels.z==0.0 {camera_scale=max(camera_scale,p);}
   }
@@ -102,15 +129,15 @@ fn projected(t:Tree,n:Node)->vec2<f32> {
 // A unary chain represents the same complete support at several LODs.
 // Intermediate occupancy need not be monotonic: inspect through expensive or
 // nonresident intermediate levels, but publish only a resident affordable end.
-fn candidate(tree:u32,start:u32,request_pages:bool)->u32 {
+fn candidate(tree:u32,start:u32,request_pages:bool,roles:u32)->u32 {
  let t=trees[tree];var at=start;var best=start;
- let budget=work(tree,start,mask(sphere(t,nodes[start])));
+ let budget=work(tree,start,mask(sphere(t,nodes[start]))&roles);
  loop {
   let n=nodes[at];if n.links.x==NONE {break;}
-  let scale=projected(t,n);
+  let scale=projected(t,n,roles);
   if at==best && (n.links.w&1u)==0u && scale.x<1e29 && scale.x*n.error.x<=view.pixels.z && (n.error.y==0.0 || scale.x*n.error.y<=1.0) {break;}
   let child=n.links.x;let c=nodes[child];if c.links.y!=n.links.y {break;}
-  let cost=work(tree,child,mask(sphere(t,c)));
+  let cost=work(tree,child,mask(sphere(t,c))&roles);
   if all(cost<=budget) {
    var resident=pages[c.links.z].resident!=0u;
    if request_pages {resident=ready(c.links.z);}
@@ -137,7 +164,7 @@ fn candidate(tree:u32,start:u32,request_pages:bool)->u32 {
  if task.z==0u {proposals[at]=p;return;}
  let t=trees[task.x];let node_id=select(task.y,t.info.x,task.y==NONE);let n=nodes[node_id];
  p.old=work(task.x,task.y,task.z);atomicAdd(&counters[4],1u);
- let scale=projected(t,n);
+ let scale=projected(t,n,task.z);
  var refine=task.y==NONE || (n.links.x!=NONE && ((n.links.w&1u)!=0u || scale.x>=1e29 || scale.x*n.error.x>view.pixels.z || scale.x*n.error.y>1.0));
  var child=node_id;var end=node_id+1u;
  if task.y!=NONE {child=n.links.x;end=n.links.y;}
@@ -145,7 +172,7 @@ fn candidate(tree:u32,start:u32,request_pages:bool)->u32 {
  if refine {
   loop {
    if child==NONE || child>=end {break;}
-   let selected=candidate(task.x,child,true);let c=nodes[selected];let consumers=mask(sphere(t,c));
+   let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
    if consumers!=0u {
     let resident=ready(c.links.z);refine=refine&&resident;
     p.replacement=plus(p.replacement,work(task.x,selected,consumers));
@@ -208,9 +235,10 @@ var<workgroup> priority_items:array<vec4<u32>,256>;
  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
  let p=proposals[at];if p.control.y==0u {return;}
  if p.control.y==2u {proposals[at].control.w=2u;return;}
- // Keep shadow-only work pending while any camera refinement remains. A coarse
- // shadow upgrade cannot consume slots needed by a later camera hierarchy level.
- if (current[at].z&256u)==0u && atomicLoad(&state[18])!=0u {
+ // Only branch slots are shared across consumer budgets. A shadow-only
+ // raster upgrade with no additional slot demand cannot starve the camera,
+ // and admission to a resident ancestor must not wait behind camera work.
+ if (current[at].z&256u)==0u && atomicLoad(&state[18])!=0u && p.replacement.x>p.old.x {
   proposals[at].control.w=2u;return;
  }
  var before=plus(p.prefix,blocks[32u+(at/256u)*32u+p.control.x]);
@@ -246,13 +274,19 @@ var<workgroup> priority_items:array<vec4<u32>,256>;
 }
 fn publish(task:vec4<u32>) {
  if task.z==0u {return;}
- if task.y==NONE {atomicStore(&fallback[task.x],2u);return;}
+ if task.y==NONE {atomicOr(&fallback[task.x],task.z);return;}
  let n=nodes[task.y];let resident=ready(n.links.z);
- if !resident {atomicStore(&fallback[task.x],4u);return;}
- if (n.links.w&2u)!=0u {direct[task.x]=n.links.z+1u;demand[task.x].prefix=n.links.z+1u;demand[task.x].bucket=task.z;atomicAdd(&counters[7],1u);return;}
- let at=atomicAdd(&counters[0],1u);atomicAdd(&demand[task.x].count,1u);
+ if !resident {atomicOr(&fallback[task.x],task.z);return;}
+ if (n.links.w&2u)!=0u {
+  let publication=task.x+select(0u,view.counts.x,task.z==512u);
+  demand[publication].prefix=n.links.z+1u;
+  // Compatibility diagnostic: camera root, or shadow root outside camera demand.
+  if task.z==256u || (demand[task.x].bucket&256u)==0u {direct[task.x]=n.links.z+1u;}
+  atomicAdd(&counters[7],1u);return;
+ }
+ let at=atomicAdd(&counters[0],1u);atomicAdd(&demand[task.x+select(0u,view.counts.x,task.z==512u)].count,1u);
  if at<view.counts.y {records[at]=vec4<u32>(task.x,task.y,n.links.z,trees[task.x].info.y);record_consumers[at]=task.z;}
- else {atomicStore(&fallback[task.x],1u);atomicAdd(&counters[3],1u);}
+ else {atomicOr(&fallback[task.x],1u);atomicAdd(&counters[3],1u);}
 }
 fn state_park_index(at:u32,p:Proposal)->u32 {
  if current[at].w>=2u {return current[at].w-2u;}
@@ -280,7 +314,7 @@ fn state_park_index(at:u32,p:Proposal)->u32 {
  if task.y!=NONE {child=nodes[task.y].links.x;end=nodes[task.y].links.y;}
  loop {
   if child==NONE || child>=end {break;}
-  let selected=candidate(task.x,child,true);let c=nodes[selected];let consumers=mask(sphere(t,c));
+  let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
   if consumers!=0u {
    let replacement=vec4<u32>(task.x,selected,consumers,0u);
    if c.links.x==NONE {publish(replacement);}else{next[offset]=replacement;offset++;}
@@ -375,18 +409,18 @@ fn audit_camera_limit(tree:u32,node:u32,camera_scale:f32) {
  let t=trees[tree];var replacement=vec4<u32>(0u);var missing=false;var child=n.links.x;
  loop {
   if child==NONE || child>=n.links.y {break;}
-  let selected=candidate(tree,child,false);let c=nodes[selected];let consumers=mask(sphere(t,c));
+  let selected=candidate(tree,child,false,256u);let c=nodes[selected];let consumers=mask(sphere(t,c))&256u;
   if consumers!=0u {replacement=plus(replacement,work(tree,selected,consumers));missing=missing||pages[c.links.z].resident==0u;}
   child=nodes[child].links.y;
  }
- let old=work(tree,node,mask(sphere(t,n)));let delta=replacement-min(replacement,old);
+ let old=work(tree,node,mask(sphere(t,n))&256u);let delta=replacement-min(replacement,old);
  let used=vec3<u32>(atomicLoad(&state[0]),atomicLoad(&state[1]),atomicLoad(&state[2]));
  let capacity=view.consumer_count.yzw;let blocked=delta.xyz>capacity-min(used,capacity);
  if blocked.x {atomicAdd(&state[49],1u);}if blocked.y {atomicAdd(&state[50],1u);}if blocked.z {atomicAdd(&state[51],1u);}
  if missing {atomicAdd(&state[52],1u);}if !any(blocked) && !missing {atomicAdd(&state[54],1u);}
 }
-fn audit_node(tree:u32,node:u32) {
- let n=nodes[node];let scale=projected(trees[tree],n);
+fn audit_node(tree:u32,node:u32,roles:u32) {
+ let n=nodes[node];let scale=projected(trees[tree],n,roles);
  audit_camera_limit(tree,node,scale.y);
  let spatial=min(scale*n.error.x,vec2<f32>(1e30));
  let ratio=min(max(spatial/max(view.pixels.z,1e-8),scale*n.error.y),vec2<f32>(1e30));
@@ -398,16 +432,20 @@ fn audit_node(tree:u32,node:u32) {
 @compute @workgroup_size(64) fn audit(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;
  if at<min(atomicLoad(&counters[0]),view.counts.y) {
-  let r=records[at];let n=nodes[r.y];audit_node(r.x,r.y);
+  let r=records[at];let n=nodes[r.y];let failure=atomicLoad(&fallback[r.x]);var roles=record_consumers[at]&~failure;
+  if (failure&7u)!=0u {roles=0u;}if roles!=0u {audit_node(r.x,r.y,roles);
   let base=select(36u,32u,(n.links.w&4u)!=0u);
-  atomicAdd(&state[base+(mask(sphere(trees[r.x],n))>>8u)],1u);
+  atomicAdd(&state[base+(roles>>8u)],1u);}
  }
  if at>=view.counts.x {return;}
- if atomicLoad(&fallback[at])!=0u {atomicAdd(&state[25],1u);return;}
- let rep=direct[at];if rep==0u {return;}
+ let failure=atomicLoad(&fallback[at]);if failure!=0u {atomicAdd(&state[25],1u);}
  let first=trees[at].info.x;let end=nodes[first].links.y;
- for(var n=first;n<end;n++) {
-  if nodes[n].links.z+1u==rep && (nodes[n].links.w&2u)!=0u {audit_node(at,n);atomicAdd(&state[40u+(mask(sphere(trees[at],nodes[n]))>>8u)],1u);return;}
+ for(var role=0u;role<2u;role++) {
+  let rep=demand[at+role*view.counts.x].prefix;if rep==0u {continue;}
+  let roles=256u<<role;if (failure&(roles|7u))!=0u {continue;}var found=false;
+  for(var n=first;n<end;n++) {
+   if nodes[n].links.z+1u==rep && (nodes[n].links.w&2u)!=0u {audit_node(at,n,roles);atomicAdd(&state[40u+(roles>>8u)],1u);found=true;break;}
+  }
+  if !found {atomicAdd(&state[26],1u);}
  }
- atomicAdd(&state[26],1u);
 }
