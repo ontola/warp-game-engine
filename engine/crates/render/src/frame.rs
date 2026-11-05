@@ -868,7 +868,10 @@ pub struct Renderer {
     /// shade and shade terrain without spot and local lights
     /// (FEATURE_LOCAL_LIGHTS off), built the first frame that has none: about
     /// 0.5 ms less shading at 2296x1440 on an M5 Pro (fewer registers).
-    shade_unlit: std::sync::OnceLock<(wgpu::ComputePipeline, Option<wgpu::ComputePipeline>)>,
+    /// Shade pipelines without the local light loop, built on a worker thread
+    /// the first time a frame has no lights; frames use the full pipelines
+    /// until they are ready, so a cold shader compile never stalls a frame.
+    shade_unlit: std::sync::Mutex<Option<std::sync::Arc<std::sync::OnceLock<(wgpu::ComputePipeline, Option<wgpu::ComputePipeline>)>>>>,
     /// Coarse terrain material (shade.wgsl terrain_coarse; KERN_TERRAIN_COARSE=0
     /// turns it off), its half-resolution target per view, the stand-in
     /// bound while it is written, and its output layout.
@@ -2141,7 +2144,7 @@ impl Renderer {
             terrain_shade,
             diagnostic_constants,
             shade_diagnostic: std::sync::OnceLock::new(),
-            shade_unlit: std::sync::OnceLock::new(),
+            shade_unlit: std::sync::Mutex::new(None),
             voxel_surface_fallback: gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no voxel surface"),
                 size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
                 dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Uint,
@@ -2949,7 +2952,7 @@ impl Renderer {
         let rebuilt = shade.is_some() || transparency.is_some() || grass.is_some() || far_grass.is_some() || voxel.is_some();
         snapshot.ensure_current()?;
         if !rebuilt { return Ok(false); }
-        if let Some((pipeline, classify)) = shade { self.shade = pipeline; self.shade_classify = classify; self.shade_text = sources.shade; self.shade_unlit = std::sync::OnceLock::new(); }
+        if let Some((pipeline, classify)) = shade { self.shade = pipeline; self.shade_classify = classify; self.shade_text = sources.shade; *self.shade_unlit.lock().unwrap() = None; }
         if let Some(reload) = transparency { self.transparency.as_mut().unwrap().commit_reload(reload); }
         if let Some(reload) = grass { self.grass.as_mut().unwrap().commit_reload(reload); }
         if let Some(reload) = far_grass { self.far_grass.as_mut().unwrap().commit_reload(reload); }
@@ -4658,19 +4661,28 @@ impl Renderer {
             }));
             // No spot or local light this frame: the pipelines without them.
             let lights=!self.headlight_state.lock().unwrap().is_empty() || !self.local_light_state.lock().unwrap().is_empty();
-            let unlit=(!lights && !self.simple_lighting && std::env::var("KERN_SHADE_UNLIT").as_deref()!=Ok("0")).then(|| self.shade_unlit.get_or_init(|| {
-                let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade without local lights"),
-                    source: wgpu::ShaderSource::Wgsl(self.shade_text.as_str().into()) });
-                let make = |label: &'static str, constants: &[(&str, f64)]| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some(label), layout: Some(&self.shade_pl), module: &module, entry_point: Some("shade"),
-                    compilation_options: wgpu::PipelineCompilationOptions { constants, ..Default::default() }, cache: gpu.pipeline_cache() });
+            let unlit_cell=(!lights && !self.simple_lighting && std::env::var("KERN_SHADE_UNLIT").as_deref()!=Ok("0")).then(|| self.shade_unlit.lock().unwrap().get_or_insert_with(|| {
+                let cell = std::sync::Arc::new(std::sync::OnceLock::new());
                 let unlit=[("SHADE_DIAGNOSTICS",0.0),("FEATURE_LOCAL_LIGHTS",0.0)];
-                let rest: Vec<(&str, f64)> = self.diagnostic_constants.iter().copied().chain(unlit).collect();
-                let terrain: Vec<(&str, f64)> = self.diagnostic_constants.iter().map(|&(k, v)| match k {
+                let rest: Vec<(&'static str, f64)> = self.diagnostic_constants.iter().copied().chain(unlit).collect();
+                let terrain: Vec<(&'static str, f64)> = self.diagnostic_constants.iter().map(|&(k, v)| match k {
                     "FEATURE_CARS" | "FEATURE_FOLIAGE" | "FEATURE_PROCEDURAL" | "FEATURE_GRASS" => (k, 0.0), "FEATURE_TERRAIN" => (k, 1.0),
                     "SHADE_CLASS" => (k, 1.0), _ => (k, v) }).chain(unlit).collect();
-                (make("shade", &rest), self.terrain_shade.as_ref().map(|_| make("shade terrain", &terrain)))
-            }));
+                let (device, layout, cache, text, with_terrain, out) = (gpu.device.clone(), self.shade_pl.clone(), gpu.pipeline_cache().cloned(),
+                    self.shade_text.clone(), self.terrain_shade.is_some(), cell.clone());
+                let build = move || {
+                    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade without local lights"),
+                        source: wgpu::ShaderSource::Wgsl(text.as_str().into()) });
+                    let make = |label: &'static str, constants: &[(&str, f64)]| device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some(label), layout: Some(&layout), module: &module, entry_point: Some("shade"),
+                        compilation_options: wgpu::PipelineCompilationOptions { constants, ..Default::default() }, cache: cache.as_ref() });
+                    let _ = out.set((make("shade", &rest), with_terrain.then(|| make("shade terrain", &terrain))));
+                };
+                // Without a thread the cell stays empty and frames keep the full pipelines.
+                let _ = std::thread::Builder::new().name("shade unlit".into()).spawn(build);
+                cell
+            }).clone());
+            let unlit = unlit_cell.as_ref().and_then(|c| c.get());
             // Terrain and voxels first: glossy surfaces in the main pass
             // reflect the already lit frame around them.
             if let Some(terrain) = &self.terrain_shade {
