@@ -8,7 +8,11 @@ use wgpu::util::DeviceExt;
 
 pub const SPLIT_METRES: f32 = 32.0;
 pub(crate) const PHASE_COUNTER_BYTES: u64 = 32 * 4;
-pub(crate) const COUNTER_WORDS: usize = 40;
+/// Words 40..47: masked cluster counts and cursors (cull.wgsl RASTER_SPLIT),
+/// phase counters like 0..31 but after the traversal block.
+pub(crate) const SPLIT_COUNTER_OFFSET: u64 = 40 * 4;
+pub(crate) const SPLIT_COUNTER_BYTES: u64 = 8 * 4;
+pub(crate) const COUNTER_WORDS: usize = 48;
 pub(crate) const COUNTER_BYTES: u64 = COUNTER_WORDS as u64 * 4;
 
 #[derive(Clone, Debug)]
@@ -275,6 +279,7 @@ mod tests {
         // its phase counters; traversal accounting has its own frame lifetime.
         enc.copy_buffer_to_buffer(&buffer,0,&read,0,super::COUNTER_BYTES);
         enc.clear_buffer(&buffer,0,Some(super::PHASE_COUNTER_BYTES));
+        enc.clear_buffer(&buffer,super::SPLIT_COUNTER_OFFSET,Some(super::SPLIT_COUNTER_BYTES));
         enc.copy_buffer_to_buffer(&buffer,0,&read,super::COUNTER_BYTES,super::COUNTER_BYTES);
         enc.clear_buffer(&buffer,crate::cluster_traversal::COUNTER_OFFSET,Some(crate::cluster_traversal::COUNTER_BYTES));
         enc.copy_buffer_to_buffer(&buffer,0,&read,super::COUNTER_BYTES*2,super::COUNTER_BYTES);
@@ -283,7 +288,9 @@ mod tests {
         let n=super::COUNTER_WORDS;let split=(super::PHASE_COUNTER_BYTES/4)as usize;
         assert_eq!(&words[..n],initial);
         assert!(words[n..n+split].iter().all(|v|*v==0));
-        assert_eq!(&words[n+split..2*n],&initial[split..]);
+        let traversal_end=(super::SPLIT_COUNTER_OFFSET/4)as usize;
+        assert_eq!(&words[n+split..n+traversal_end],&initial[split..traversal_end]);
+        assert!(words[n+traversal_end..2*n].iter().all(|v|*v==0));
         assert!(words[2*n..].iter().all(|v|*v==0));
     }
     #[test]

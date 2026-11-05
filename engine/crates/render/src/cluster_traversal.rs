@@ -328,7 +328,7 @@ mod tests {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&m).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));
         let n=m.global_variables.iter().filter(|(_,g)|matches!(g.space,naga::AddressSpace::Storage {..})).count();
         assert!(n<=16,"allocation-sized choices must fit portable storage limit: {n}");
-        assert_eq!(COUNTER_OFFSET+COUNTER_BYTES,crate::occlusion::COUNTER_BYTES);
+        assert_eq!(COUNTER_OFFSET+COUNTER_BYTES,crate::occlusion::SPLIT_COUNTER_OFFSET);
         assert!(!m.global_variables.iter().any(|(_,g)|g.binding.as_ref().is_some_and(|b|b.group==1&&b.binding==13)));
         assert_eq!(LEAF_CLUSTERS,32);assert_eq!(COUNTER_BYTES,32);
         assert!(source.contains("if cluster_traverse(id,inst,li,base_thr,wind_pad) {return;}"));
