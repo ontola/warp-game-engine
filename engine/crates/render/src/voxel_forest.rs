@@ -1267,6 +1267,11 @@ impl VoxelRenderer {
         // shade lights them (Rest then writes their surface, no composite).
         scene_targets: Option<(&wgpu::TextureView, &wgpu::TextureView)>,
     ) -> Result<(),String> {
+        // Splat, pyramid and second-pass times are written on the encoder
+        // between passes; without that feature (Apple GPUs) Metal rejects
+        // the whole submit, so those three go untimed there.
+        let mut times = times;
+        if !gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) { times[0] = None; times[5] = None; times[6] = None; }
         let temporal_guard=self.temporal.lock().unwrap();
         let temporal_pipelines=temporal.as_ref().map(|_|temporal_guard.as_ref().expect("prepare_temporal before voxel render"));
         let mut targets = self.targets.lock().unwrap();
