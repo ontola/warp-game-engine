@@ -6,6 +6,18 @@ valid equal-content performance comparison. Source provenance remains pinned
 in `port-status.json`; original assets and their attribution are retained.
 There is no Godot runtime or Godot build/export step.
 
+## VR on Quest (5 November 2026, not yet tried on a headset)
+
+`src/xr.rs` runs the same race in VR from the cockpit: the play space rides a
+seat on the player's ship (`SEAT`, or `SPACERACER_SEAT=x,y,z` to try another),
+the triggers are throttle and brake, the menus show on the head-locked HUD quad
+and use the stick and A. Motion blur and screen curvature are off. Build with
+`python3 engine/tools/build-quest-native.py --game spaceracer --install`.
+`cargo run --release -p spaceracer-app -- xr-shot --out stereo.png` renders a
+stereo frame from the cockpit on the desktop renderer (not a headset test).
+Open: frame rate on Quest (the full renderer, not the minimum one), a level
+horizon setting in the menu, a comfort vignette, race HUD on the dashboard.
+
 ## Exhaust volume and speed presentation (2 November 2026)
 
 Jet volumes now bend, ripple and vary in length rapidly, independently for each
