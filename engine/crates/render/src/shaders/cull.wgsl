@@ -231,7 +231,7 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
     // perspective headlights keep all casters, as do the retained GI fields.
     if view.params.z<0.5 && view.extra.y<1.5 && view.fog_cull.w>0.0 {
         let code=(inst.flags>>24u)&7u;
-        let category=select(code,0u,code>4u);
+        let category=select(code,0u,code>5u);
         if (u32(view.fog_cull.w)&(1u<<category))!=0u {return 0u;}
     }
     // Runtime groups replace this entire branch in the colour view only.
