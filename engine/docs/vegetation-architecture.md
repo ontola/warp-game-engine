@@ -11,7 +11,15 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
-Latest integrated change (5 November): a separate GPU dormant queue retains
+Latest integrated change (5 November): bounded voxel pages now publish shared
+4x4x4 occupied-cell group ranges with their resident payloads. Metadata shares
+page allocation, upload readiness and eviction; no per-instance cell copies.
+146 foliage tests pass, including raw GPU descriptor checks after reload.
+Normal rendering remains effectively unchanged in matched high/low camera routes.
+The attempted downstream group culling was slower and is NOT integrated; see the
+latest evidence below. G3 upstream recovery and independent cuts remain open.
+
+Earlier integrated change (5 November): a separate GPU dormant queue retains
 budget-rejected refinements until active work drains and capacity/new pending
 work changes. Stable parallel wake compaction gives cameras priority while
 keeping eligible shadow work pending, including zero-cost camera batches.
@@ -1046,3 +1054,55 @@ so coarse tree bounds do not force all cells to run. Reuse the same page ownersh
 pose and conservative world-space support. This experiment is downstream of
 selection and cannot solve the ~8.6ms hierarchy bottleneck; G3.2 upstream
 history/current-depth recovery and G3.3 independent consumer cuts remain OPEN.
+
+## 5 November: bounded paged voxel groups integrated; culling rejected
+
+Each voxel asset page now groups occupied cells by deterministic 4x4x4 origin.
+The original contiguous cell-range header remains valid for camera and sun
+consumers. A second logical header addresses group descriptors stored in the
+same bounded index arena: physical cell-range start/count and local group origin.
+All instances share these asset records. Metadata is included in pinned sizes,
+allocation and demand budgets. Grid, cells, ranges and group descriptors upload
+before readiness is published; relocation and eviction use one ownership domain.
+The atomic publication payload grows from 40 to 48 bytes; minimum upload budget
+is 52 bytes. Existing default byte budgets are unchanged.
+
+146 foliage tests PASS on the final production code. New sparse-cell coverage
+oracle checks every occupied cell appears exactly once, groups contain <=64
+cells and grouping is deterministic. The bounded two-page GPU fixture reads
+actual group headers/ranges after repeated eviction/reload, checks partial pages
+stay unpublished, and checks upload limits, pinned ancestors and payload bytes.
+
+Three alternating baseline/new runs per scene, native 1280x720 ONE VIEW, 240 route
+frames, 120 warm GPU samples/run. Full per-pass medians and counts are in
+paged-brick-measurements.json. Baseline is a90a1f9 (renderer0741ccb).
+
+| Final data-only integration | Before covered GPU ms | After covered GPU ms |
+| --- | --- | --- |
+| Elevated route | 14.705 / 14.639 / 14.734 | 14.809 / 14.709 / 14.700 |
+| Low camera, pos [0,8,0] | 15.517 / 15.533 / 15.784 | 15.582 / 15.504 / 15.636 |
+
+No speedup claimed. Final hierarchy counts and images are effectively unchanged:
+non-HUD per-channel RGB MAE below 0.00006/255. Visual inspection still shows
+coarse crowns and unaccepted appearance. No interactive playtest started.
+Local comparisons: build/playtest-unified/paged-groups-{high,low}-comparison.jpg.
+
+Two actual renderer integrations were tried and rejected before retaining only
+the asset data. The 150m spatial seed / current-depth group tests reduced final
+low-camera splats from 1,451,829 to 1,016,945, but took 16.952-17.022ms versus
+15.940-15.958ms baseline. The elevated route rejected no final splats and slowed
+from 14.832-15.048ms to 16.371-16.533ms. A min/max depth hierarchy classified whole
+volumes as hidden/visible/uncertain before testing groups. It reduced overhead,
+but remained slower: elevated 15.980-16.253ms vs 14.751-14.890ms, low 16.493-16.821ms
+vs 15.771-15.875ms. Matched images remained effectively unchanged. Both variants
+passed foliage tests and an actual GPU sky-hole/crossing/recovery oracle.
+
+Preserved final culling/classification implementation plus oracle:
+paged-brick-culling-experiment.patch (applies on top of this data integration).
+It is not an enabled option or an acceptance gate. Do not repeat unconditional
+per-brick eight-corner HZB queries: many far groups are cheaper to rasterize than
+to test. Future scheduling must account for actual saved work and amortize tests
+across hierarchy levels; upstream visibility must also prevent paying selection
+cost for hidden detail. G3.2/G3.3 and full G4 acceptance remain OPEN. No 4K/four-view
+or 8.33ms acceptance. Continue the full architecture, not more standalone culling
+threshold experiments.

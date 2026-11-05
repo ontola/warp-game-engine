@@ -1,0 +1,5285 @@
+{
+  "paged-bricks-high": {
+    "before": [
+      {
+        "covered": 15.012912,
+        "passes": {
+          "GPU forest selection residency": 8.670112,
+          "GPU forest shared poses": 0.11003199999999999,
+          "GPU forest materialize": 0.140928,
+          "shadow tile damage and clear": 0.28937599999999997,
+          "shadow cull": 0.41542399999999996,
+          "shadow raster": 0.091376,
+          "voxel sun splats": 0.7901119999999999,
+          "voxel sun splat raster": 0.667168,
+          "near shadow cull": 0.26118399999999997,
+          "near shadow raster": 0.0224,
+          "voxel near sun splats": 0.170064,
+          "voxel near sun splat raster": 0.053632,
+          "tree occluder cull": 0.260864,
+          "tree occluder raster": 0.016239999999999997,
+          "tree occlusion pyramid": 0.079376,
+          "tree recovery dispatch": 0.002048,
+          "tree remaining cull": 0.008352,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.021376,
+          "voxel splats": 0.686928,
+          "voxel splat raster": 0.6821759999999999,
+          "voxel splat resolve": 0.21715199999999998,
+          "terrain coarse": 0.07395199999999999,
+          "shade terrain": 0.354944,
+          "shade voxels": 0.088928,
+          "shade": 0.04872,
+          "motion vectors": 0.022047999999999998,
+          "taa": 0.029935999999999997,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.027167999999999998,
+          "tonemap": 0.025632
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 40880368,
+          "frame_upload_bytes": 391136,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 15.047632,
+        "passes": {
+          "GPU forest selection residency": 8.628816,
+          "GPU forest shared poses": 0.11033599999999999,
+          "GPU forest materialize": 0.141088,
+          "shadow tile damage and clear": 0.288832,
+          "shadow cull": 0.41515199999999997,
+          "shadow raster": 0.090496,
+          "voxel sun splats": 0.7904,
+          "voxel sun splat raster": 0.66304,
+          "near shadow cull": 0.261104,
+          "near shadow raster": 0.022463999999999998,
+          "voxel near sun splats": 0.169824,
+          "voxel near sun splat raster": 0.053632,
+          "tree occluder cull": 0.26095999999999997,
+          "tree occluder raster": 0.016176,
+          "tree occlusion pyramid": 0.079424,
+          "tree recovery dispatch": 0.002048,
+          "tree remaining cull": 0.008383999999999999,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.021376,
+          "voxel splats": 0.688128,
+          "voxel splat raster": 0.683072,
+          "voxel splat resolve": 0.21753599999999998,
+          "terrain coarse": 0.074048,
+          "shade terrain": 0.355008,
+          "shade voxels": 0.088768,
+          "shade": 0.048687999999999995,
+          "motion vectors": 0.022031999999999996,
+          "taa": 0.029887999999999998,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.027232,
+          "tonemap": 0.025568
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 40880368,
+          "frame_upload_bytes": 391136,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 14.831983999999999,
+        "passes": {
+          "GPU forest selection residency": 8.499648,
+          "GPU forest shared poses": 0.10855999999999999,
+          "GPU forest materialize": 0.140832,
+          "shadow tile damage and clear": 0.288496,
+          "shadow cull": 0.414528,
+          "shadow raster": 0.09119999999999999,
+          "voxel sun splats": 0.786288,
+          "voxel sun splat raster": 0.665664,
+          "near shadow cull": 0.26048,
+          "near shadow raster": 0.022368,
+          "voxel near sun splats": 0.169824,
+          "voxel near sun splat raster": 0.053439999999999994,
+          "tree occluder cull": 0.260224,
+          "tree occluder raster": 0.016191999999999998,
+          "tree occlusion pyramid": 0.079216,
+          "tree recovery dispatch": 0.002048,
+          "tree remaining cull": 0.008288,
+          "tree remaining raster": 0.000896,
+          "tree visibility history": 0.021248,
+          "voxel splats": 0.6887679999999999,
+          "voxel splat raster": 0.681456,
+          "voxel splat resolve": 0.2172,
+          "terrain coarse": 0.073728,
+          "shade terrain": 0.353792,
+          "shade voxels": 0.08839999999999999,
+          "shade": 0.048704,
+          "motion vectors": 0.021887999999999998,
+          "taa": 0.029759999999999998,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.027344,
+          "tonemap": 0.025536
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 40880368,
+          "frame_upload_bytes": 391136,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      }
+    ],
+    "after": [
+      {
+        "covered": 16.437088,
+        "passes": {
+          "GPU forest selection residency": 8.632832,
+          "GPU forest shared poses": 0.111312,
+          "GPU forest materialize": 0.14140799999999998,
+          "shadow tile damage and clear": 0.28926399999999997,
+          "shadow cull": 0.415328,
+          "shadow raster": 0.090496,
+          "voxel sun splats": 0.7940799999999999,
+          "voxel sun splat raster": 0.6630879999999999,
+          "near shadow cull": 0.261088,
+          "near shadow raster": 0.022463999999999998,
+          "voxel near sun splats": 0.16988799999999998,
+          "voxel near sun splat raster": 0.05368,
+          "tree occluder cull": 0.260864,
+          "tree occluder raster": 0.016272000000000002,
+          "tree occlusion pyramid": 0.07966399999999998,
+          "tree recovery dispatch": 0.002048,
+          "tree remaining cull": 0.008368,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.021376,
+          "voxel splats": 0.09416,
+          "voxel splat raster": 0.051615999999999995,
+          "voxel splat resolve": 0.21872,
+          "voxel brick hzb": 0.08075199999999999,
+          "voxel brick cull": 1.966144,
+          "voxel brick raster": 0.684048,
+          "terrain coarse": 0.07500799999999999,
+          "shade terrain": 0.355728,
+          "shade voxels": 0.08881599999999999,
+          "shade": 0.048864,
+          "motion vectors": 0.022112,
+          "taa": 0.02992,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.027408,
+          "tonemap": 0.025599999999999998
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 41086152,
+          "frame_upload_bytes": 392720,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 16.533456,
+        "passes": {
+          "GPU forest selection residency": 8.640416,
+          "GPU forest shared poses": 0.10958399999999999,
+          "GPU forest materialize": 0.141088,
+          "shadow tile damage and clear": 0.288512,
+          "shadow cull": 0.415168,
+          "shadow raster": 0.09136,
+          "voxel sun splats": 0.7967839999999999,
+          "voxel sun splat raster": 0.666592,
+          "near shadow cull": 0.260656,
+          "near shadow raster": 0.022432,
+          "voxel near sun splats": 0.169904,
+          "voxel near sun splat raster": 0.053632,
+          "tree occluder cull": 0.260592,
+          "tree occluder raster": 0.016256,
+          "tree occlusion pyramid": 0.07896,
+          "tree recovery dispatch": 0.002048,
+          "tree remaining cull": 0.008352,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.021376,
+          "voxel splats": 0.094064,
+          "voxel splat raster": 0.051039999999999995,
+          "voxel splat resolve": 0.217936,
+          "voxel brick hzb": 0.08035199999999999,
+          "voxel brick cull": 1.977824,
+          "voxel brick raster": 0.681056,
+          "terrain coarse": 0.074928,
+          "shade terrain": 0.355552,
+          "shade voxels": 0.088864,
+          "shade": 0.048912,
+          "motion vectors": 0.02208,
+          "taa": 0.029887999999999998,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026928,
+          "tonemap": 0.025599999999999998
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 41086152,
+          "frame_upload_bytes": 392720,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 16.371232,
+        "passes": {
+          "GPU forest selection residency": 8.573312,
+          "GPU forest shared poses": 0.108944,
+          "GPU forest materialize": 0.14118399999999998,
+          "shadow tile damage and clear": 0.28912,
+          "shadow cull": 0.41416,
+          "shadow raster": 0.090208,
+          "voxel sun splats": 0.792176,
+          "voxel sun splat raster": 0.662144,
+          "near shadow cull": 0.260448,
+          "near shadow raster": 0.022368,
+          "voxel near sun splats": 0.16976,
+          "voxel near sun splat raster": 0.053408,
+          "tree occluder cull": 0.260368,
+          "tree occluder raster": 0.016224,
+          "tree occlusion pyramid": 0.08105599999999999,
+          "tree recovery dispatch": 0.002048,
+          "tree remaining cull": 0.00832,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.021311999999999998,
+          "voxel splats": 0.094064,
+          "voxel splat raster": 0.051008,
+          "voxel splat resolve": 0.217296,
+          "voxel brick hzb": 0.08033599999999999,
+          "voxel brick cull": 1.928592,
+          "voxel brick raster": 0.6807679999999999,
+          "terrain coarse": 0.07467199999999999,
+          "shade terrain": 0.354112,
+          "shade voxels": 0.088544,
+          "shade": 0.048656,
+          "motion vectors": 0.022047999999999998,
+          "taa": 0.029792,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.027311999999999996,
+          "tonemap": 0.025536
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 41086152,
+          "frame_upload_bytes": 392720,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      }
+    ]
+  },
+  "paged-bricks-low": {
+    "before": [
+      {
+        "covered": 15.957856,
+        "passes": {
+          "GPU forest selection residency": 8.529247999999999,
+          "GPU forest shared poses": 0.111328,
+          "GPU forest materialize": 0.142016,
+          "shadow tile damage and clear": 0.28958399999999995,
+          "shadow cull": 0.418464,
+          "shadow raster": 0.097312,
+          "voxel sun splats": 0.5662240000000001,
+          "voxel sun splat raster": 0.35609599999999997,
+          "near shadow cull": 0.263968,
+          "near shadow raster": 0.04112,
+          "voxel near sun splats": 0.17241599999999999,
+          "voxel near sun splat raster": 0.06454399999999999,
+          "tree occluder cull": 0.8491519999999999,
+          "tree occluder raster": 0.844896,
+          "tree occlusion pyramid": 0.079072,
+          "tree recovery dispatch": 0.002016,
+          "tree remaining cull": 0.008383999999999999,
+          "tree remaining raster": 0.000896,
+          "tree visibility history": 0.020384,
+          "voxel splats": 0.68272,
+          "voxel splat raster": 0.7278399999999999,
+          "voxel splat resolve": 0.143808,
+          "terrain coarse": 0.047008,
+          "shade terrain": 0.260656,
+          "shade voxels": 0.061119999999999994,
+          "shade": 0.11384,
+          "motion vectors": 0.027903999999999998,
+          "taa": 0.029824,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.027104,
+          "tonemap": 0.025504
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1451829,
+          "vertices": 8710974,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40045824,
+          "frame_upload_bytes": 306560,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 15.943663999999998,
+        "passes": {
+          "GPU forest selection residency": 8.584368,
+          "GPU forest shared poses": 0.11116799999999999,
+          "GPU forest materialize": 0.14212799999999998,
+          "shadow tile damage and clear": 0.287056,
+          "shadow cull": 0.417952,
+          "shadow raster": 0.09736,
+          "voxel sun splats": 0.565856,
+          "voxel sun splat raster": 0.35574399999999995,
+          "near shadow cull": 0.263216,
+          "near shadow raster": 0.041552,
+          "voxel near sun splats": 0.172176,
+          "voxel near sun splat raster": 0.064384,
+          "tree occluder cull": 0.846832,
+          "tree occluder raster": 0.848144,
+          "tree occlusion pyramid": 0.079152,
+          "tree recovery dispatch": 0.002048,
+          "tree remaining cull": 0.008383999999999999,
+          "tree remaining raster": 0.000896,
+          "tree visibility history": 0.020256,
+          "voxel splats": 0.680032,
+          "voxel splat raster": 0.728304,
+          "voxel splat resolve": 0.14302399999999998,
+          "terrain coarse": 0.04736,
+          "shade terrain": 0.261008,
+          "shade voxels": 0.061072,
+          "shade": 0.114048,
+          "motion vectors": 0.027824,
+          "taa": 0.029759999999999998,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.0272,
+          "tonemap": 0.025536
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1451829,
+          "vertices": 8710974,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40045824,
+          "frame_upload_bytes": 306560,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 15.939888,
+        "passes": {
+          "GPU forest selection residency": 8.517648,
+          "GPU forest shared poses": 0.11127999999999999,
+          "GPU forest materialize": 0.1412,
+          "shadow tile damage and clear": 0.286944,
+          "shadow cull": 0.41775999999999996,
+          "shadow raster": 0.09648,
+          "voxel sun splats": 0.564592,
+          "voxel sun splat raster": 0.351696,
+          "near shadow cull": 0.263104,
+          "near shadow raster": 0.041696,
+          "voxel near sun splats": 0.17238399999999998,
+          "voxel near sun splat raster": 0.06451199999999999,
+          "tree occluder cull": 0.850304,
+          "tree occluder raster": 0.8468959999999999,
+          "tree occlusion pyramid": 0.07991999999999999,
+          "tree recovery dispatch": 0.002048,
+          "tree remaining cull": 0.008383999999999999,
+          "tree remaining raster": 0.000896,
+          "tree visibility history": 0.020159999999999997,
+          "voxel splats": 0.682096,
+          "voxel splat raster": 0.725776,
+          "voxel splat resolve": 0.144832,
+          "terrain coarse": 0.047008,
+          "shade terrain": 0.25992,
+          "shade voxels": 0.061231999999999995,
+          "shade": 0.11385599999999998,
+          "motion vectors": 0.027871999999999997,
+          "taa": 0.029855999999999997,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.027072,
+          "tonemap": 0.025568
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1451829,
+          "vertices": 8710974,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40045824,
+          "frame_upload_bytes": 306560,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      }
+    ],
+    "after": [
+      {
+        "covered": 17.022464,
+        "passes": {
+          "GPU forest selection residency": 8.505951999999999,
+          "GPU forest shared poses": 0.112288,
+          "GPU forest materialize": 0.14145599999999997,
+          "shadow tile damage and clear": 0.28744000000000003,
+          "shadow cull": 0.41744,
+          "shadow raster": 0.096496,
+          "voxel sun splats": 0.565328,
+          "voxel sun splat raster": 0.351968,
+          "near shadow cull": 0.262976,
+          "near shadow raster": 0.04187199999999999,
+          "voxel near sun splats": 0.17196799999999998,
+          "voxel near sun splat raster": 0.06454399999999999,
+          "tree occluder cull": 0.850768,
+          "tree occluder raster": 0.812368,
+          "tree occlusion pyramid": 0.078912,
+          "tree recovery dispatch": 0.002048,
+          "tree remaining cull": 0.008224,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.020159999999999997,
+          "voxel splats": 0.12609599999999999,
+          "voxel splat raster": 0.10583999999999999,
+          "voxel splat resolve": 0.145424,
+          "voxel brick hzb": 0.07875199999999999,
+          "voxel brick cull": 1.4870079999999999,
+          "voxel brick raster": 0.6211199999999999,
+          "terrain coarse": 0.049088,
+          "shade terrain": 0.261344,
+          "shade voxels": 0.062016,
+          "shade": 0.114032,
+          "motion vectors": 0.027648,
+          "taa": 0.029952,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026639999999999997,
+          "tonemap": 0.025536
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1016945,
+          "vertices": 6101670,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40250856,
+          "frame_upload_bytes": 307936,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 16.952432,
+        "passes": {
+          "GPU forest selection residency": 8.536016,
+          "GPU forest shared poses": 0.11108799999999999,
+          "GPU forest materialize": 0.14083199999999998,
+          "shadow tile damage and clear": 0.28752,
+          "shadow cull": 0.418192,
+          "shadow raster": 0.09744,
+          "voxel sun splats": 0.564416,
+          "voxel sun splat raster": 0.355232,
+          "near shadow cull": 0.263808,
+          "near shadow raster": 0.04144,
+          "voxel near sun splats": 0.171808,
+          "voxel near sun splat raster": 0.064416,
+          "tree occluder cull": 0.848608,
+          "tree occluder raster": 0.815472,
+          "tree occlusion pyramid": 0.08088000000000001,
+          "tree recovery dispatch": 0.002048,
+          "tree remaining cull": 0.008383999999999999,
+          "tree remaining raster": 0.000896,
+          "tree visibility history": 0.020319999999999998,
+          "voxel splats": 0.127616,
+          "voxel splat raster": 0.10574399999999999,
+          "voxel splat resolve": 0.145376,
+          "voxel brick hzb": 0.07971199999999999,
+          "voxel brick cull": 1.518992,
+          "voxel brick raster": 0.61592,
+          "terrain coarse": 0.04888,
+          "shade terrain": 0.260448,
+          "shade voxels": 0.061135999999999996,
+          "shade": 0.114128,
+          "motion vectors": 0.028016,
+          "taa": 0.02992,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.027184,
+          "tonemap": 0.025568
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1016945,
+          "vertices": 6101670,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40250856,
+          "frame_upload_bytes": 307936,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 16.988208,
+        "passes": {
+          "GPU forest selection residency": 8.566752,
+          "GPU forest shared poses": 0.11216,
+          "GPU forest materialize": 0.141264,
+          "shadow tile damage and clear": 0.28948799999999997,
+          "shadow cull": 0.41892799999999997,
+          "shadow raster": 0.097248,
+          "voxel sun splats": 0.564576,
+          "voxel sun splat raster": 0.355568,
+          "near shadow cull": 0.264352,
+          "near shadow raster": 0.041504,
+          "voxel near sun splats": 0.171616,
+          "voxel near sun splat raster": 0.064448,
+          "tree occluder cull": 0.846624,
+          "tree occluder raster": 0.897632,
+          "tree occlusion pyramid": 0.079952,
+          "tree recovery dispatch": 0.002048,
+          "tree remaining cull": 0.008383999999999999,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.02024,
+          "voxel splats": 0.12696000000000002,
+          "voxel splat raster": 0.10574399999999999,
+          "voxel splat resolve": 0.146048,
+          "voxel brick hzb": 0.07896,
+          "voxel brick cull": 1.5100799999999999,
+          "voxel brick raster": 0.6168959999999999,
+          "terrain coarse": 0.048608,
+          "shade terrain": 0.260144,
+          "shade voxels": 0.06128,
+          "shade": 0.11468799999999998,
+          "motion vectors": 0.02792,
+          "taa": 0.029952,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.02712,
+          "tonemap": 0.025536
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1016945,
+          "vertices": 6101670,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40250856,
+          "frame_upload_bytes": 307936,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      }
+    ]
+  },
+  "paged-range-high": {
+    "before": [
+      {
+        "covered": 14.890191999999999,
+        "passes": {
+          "GPU forest selection residency": 8.565392,
+          "GPU forest shared poses": 0.109232,
+          "GPU forest materialize": 0.14116800000000002,
+          "shadow tile damage and clear": 0.288672,
+          "shadow cull": 0.41564799999999996,
+          "shadow raster": 0.09059199999999999,
+          "voxel sun splats": 0.791152,
+          "voxel sun splat raster": 0.664416,
+          "near shadow cull": 0.261216,
+          "near shadow raster": 0.022432,
+          "voxel near sun splats": 0.17030399999999998,
+          "voxel near sun splat raster": 0.053599999999999995,
+          "tree occluder cull": 0.26095999999999997,
+          "tree occluder raster": 0.016208,
+          "tree occlusion pyramid": 0.07904,
+          "tree recovery dispatch": 0.002048,
+          "tree remaining cull": 0.008272,
+          "tree remaining raster": 0.000896,
+          "tree visibility history": 0.021408,
+          "voxel splats": 0.689936,
+          "voxel splat raster": 0.684704,
+          "voxel splat resolve": 0.21806399999999998,
+          "terrain coarse": 0.07375999999999999,
+          "shade terrain": 0.3544,
+          "shade voxels": 0.088656,
+          "shade": 0.04896,
+          "motion vectors": 0.021984,
+          "taa": 0.029855999999999997,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.02672,
+          "tonemap": 0.025568
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 40880368,
+          "frame_upload_bytes": 391136,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 14.793392,
+        "passes": {
+          "GPU forest selection residency": 8.512016,
+          "GPU forest shared poses": 0.10536,
+          "GPU forest materialize": 0.139712,
+          "shadow tile damage and clear": 0.28769599999999995,
+          "shadow cull": 0.415952,
+          "shadow raster": 0.09035199999999999,
+          "voxel sun splats": 0.7996,
+          "voxel sun splat raster": 0.662816,
+          "near shadow cull": 0.26206399999999996,
+          "near shadow raster": 0.022463999999999998,
+          "voxel near sun splats": 0.16976,
+          "voxel near sun splat raster": 0.053568,
+          "tree occluder cull": 0.261472,
+          "tree occluder raster": 0.016128,
+          "tree occlusion pyramid": 0.077008,
+          "tree recovery dispatch": 0.00208,
+          "tree remaining cull": 0.008896000000000001,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.021344,
+          "voxel splats": 0.685856,
+          "voxel splat raster": 0.68128,
+          "voxel splat resolve": 0.214944,
+          "terrain coarse": 0.073728,
+          "shade terrain": 0.354464,
+          "shade voxels": 0.088592,
+          "shade": 0.048752,
+          "motion vectors": 0.021984,
+          "taa": 0.029759999999999998,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026336,
+          "tonemap": 0.025504
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 40880368,
+          "frame_upload_bytes": 391136,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 14.750943999999999,
+        "passes": {
+          "GPU forest selection residency": 8.456288,
+          "GPU forest shared poses": 0.106752,
+          "GPU forest materialize": 0.139616,
+          "shadow tile damage and clear": 0.286304,
+          "shadow cull": 0.41564799999999996,
+          "shadow raster": 0.090336,
+          "voxel sun splats": 0.791472,
+          "voxel sun splat raster": 0.6627839999999999,
+          "near shadow cull": 0.26156799999999997,
+          "near shadow raster": 0.022463999999999998,
+          "voxel near sun splats": 0.16985599999999998,
+          "voxel near sun splat raster": 0.053696,
+          "tree occluder cull": 0.26107199999999997,
+          "tree occluder raster": 0.01616,
+          "tree occlusion pyramid": 0.07699199999999999,
+          "tree recovery dispatch": 0.00208,
+          "tree remaining cull": 0.008912,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.021376,
+          "voxel splats": 0.688288,
+          "voxel splat raster": 0.680832,
+          "voxel splat resolve": 0.21752,
+          "terrain coarse": 0.073696,
+          "shade terrain": 0.35452799999999995,
+          "shade voxels": 0.08870399999999999,
+          "shade": 0.048496,
+          "motion vectors": 0.021984,
+          "taa": 0.029887999999999998,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026319999999999996,
+          "tonemap": 0.025568
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 40880368,
+          "frame_upload_bytes": 391136,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      }
+    ],
+    "after": [
+      {
+        "covered": 15.980176,
+        "passes": {
+          "GPU forest selection residency": 8.429359999999999,
+          "GPU forest shared poses": 0.10627199999999999,
+          "GPU forest materialize": 0.13999999999999999,
+          "shadow tile damage and clear": 0.286576,
+          "shadow cull": 0.41556799999999994,
+          "shadow raster": 0.090416,
+          "voxel sun splats": 0.791312,
+          "voxel sun splat raster": 0.662752,
+          "near shadow cull": 0.261632,
+          "near shadow raster": 0.022432,
+          "voxel near sun splats": 0.169792,
+          "voxel near sun splat raster": 0.053632,
+          "tree occluder cull": 0.26139199999999996,
+          "tree occluder raster": 0.016191999999999998,
+          "tree occlusion pyramid": 0.077168,
+          "tree recovery dispatch": 0.002208,
+          "tree remaining cull": 0.008672,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.021376,
+          "voxel splats": 0.091248,
+          "voxel splat raster": 0.051039999999999995,
+          "voxel splat resolve": 0.21915199999999999,
+          "voxel brick hzb": 0.07672,
+          "voxel brick cull": 1.7568959999999998,
+          "voxel brick raster": 0.6803359999999999,
+          "terrain coarse": 0.07467199999999999,
+          "shade terrain": 0.35603199999999996,
+          "shade voxels": 0.089152,
+          "shade": 0.048976,
+          "motion vectors": 0.022064,
+          "taa": 0.029855999999999997,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.02624,
+          "tonemap": 0.025536
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 41086152,
+          "frame_upload_bytes": 392720,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 16.108736,
+        "passes": {
+          "GPU forest selection residency": 8.494655999999999,
+          "GPU forest shared poses": 0.10663999999999998,
+          "GPU forest materialize": 0.14030399999999998,
+          "shadow tile damage and clear": 0.28670399999999996,
+          "shadow cull": 0.41582399999999997,
+          "shadow raster": 0.090336,
+          "voxel sun splats": 0.7912159999999999,
+          "voxel sun splat raster": 0.662816,
+          "near shadow cull": 0.26183999999999996,
+          "near shadow raster": 0.022432,
+          "voxel near sun splats": 0.16980800000000001,
+          "voxel near sun splat raster": 0.053599999999999995,
+          "tree occluder cull": 0.261456,
+          "tree occluder raster": 0.016128,
+          "tree occlusion pyramid": 0.07667199999999999,
+          "tree recovery dispatch": 0.002208,
+          "tree remaining cull": 0.008816,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.021408,
+          "voxel splats": 0.09104,
+          "voxel splat raster": 0.051039999999999995,
+          "voxel splat resolve": 0.219024,
+          "voxel brick hzb": 0.07731199999999999,
+          "voxel brick cull": 1.7516639999999999,
+          "voxel brick raster": 0.680736,
+          "terrain coarse": 0.074832,
+          "shade terrain": 0.35526399999999997,
+          "shade voxels": 0.08904,
+          "shade": 0.049055999999999995,
+          "motion vectors": 0.022095999999999998,
+          "taa": 0.029871999999999996,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026256,
+          "tonemap": 0.025536
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 41086152,
+          "frame_upload_bytes": 392720,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 16.252575999999998,
+        "passes": {
+          "GPU forest selection residency": 8.529232,
+          "GPU forest shared poses": 0.107664,
+          "GPU forest materialize": 0.14068799999999998,
+          "shadow tile damage and clear": 0.28691199999999994,
+          "shadow cull": 0.41558399999999995,
+          "shadow raster": 0.090224,
+          "voxel sun splats": 0.7891839999999999,
+          "voxel sun splat raster": 0.662592,
+          "near shadow cull": 0.262144,
+          "near shadow raster": 0.0224,
+          "voxel near sun splats": 0.1696,
+          "voxel near sun splat raster": 0.053552,
+          "tree occluder cull": 0.261504,
+          "tree occluder raster": 0.01616,
+          "tree occlusion pyramid": 0.07636799999999999,
+          "tree recovery dispatch": 0.002176,
+          "tree remaining cull": 0.008688,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.02128,
+          "voxel splats": 0.091072,
+          "voxel splat raster": 0.051072,
+          "voxel splat resolve": 0.2176,
+          "voxel brick hzb": 0.07632,
+          "voxel brick cull": 1.889968,
+          "voxel brick raster": 0.6807679999999999,
+          "terrain coarse": 0.07491199999999999,
+          "shade terrain": 0.355456,
+          "shade voxels": 0.088832,
+          "shade": 0.048895999999999995,
+          "motion vectors": 0.02208,
+          "taa": 0.029792,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026208,
+          "tonemap": 0.025568
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 41086152,
+          "frame_upload_bytes": 392720,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      }
+    ]
+  },
+  "paged-range-low": {
+    "before": [
+      {
+        "covered": 15.875039999999998,
+        "passes": {
+          "GPU forest selection residency": 8.587152,
+          "GPU forest shared poses": 0.111216,
+          "GPU forest materialize": 0.141008,
+          "shadow tile damage and clear": 0.287392,
+          "shadow cull": 0.417776,
+          "shadow raster": 0.096608,
+          "voxel sun splats": 0.56464,
+          "voxel sun splat raster": 0.35283200000000003,
+          "near shadow cull": 0.263072,
+          "near shadow raster": 0.041679999999999995,
+          "voxel near sun splats": 0.17232,
+          "voxel near sun splat raster": 0.064512,
+          "tree occluder cull": 0.8487039999999999,
+          "tree occluder raster": 0.850592,
+          "tree occlusion pyramid": 0.08,
+          "tree recovery dispatch": 0.002048,
+          "tree remaining cull": 0.00832,
+          "tree remaining raster": 0.000896,
+          "tree visibility history": 0.020111999999999998,
+          "voxel splats": 0.684144,
+          "voxel splat raster": 0.7279519999999999,
+          "voxel splat resolve": 0.14528,
+          "terrain coarse": 0.046944,
+          "shade terrain": 0.261008,
+          "shade voxels": 0.0612,
+          "shade": 0.113936,
+          "motion vectors": 0.02784,
+          "taa": 0.029855999999999997,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.027072,
+          "tonemap": 0.025536
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1451829,
+          "vertices": 8710974,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40045824,
+          "frame_upload_bytes": 306560,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 15.786912,
+        "passes": {
+          "GPU forest selection residency": 8.450112,
+          "GPU forest shared poses": 0.10833599999999999,
+          "GPU forest materialize": 0.140208,
+          "shadow tile damage and clear": 0.28499199999999997,
+          "shadow cull": 0.41798399999999997,
+          "shadow raster": 0.09692799999999999,
+          "voxel sun splats": 0.5636,
+          "voxel sun splat raster": 0.352816,
+          "near shadow cull": 0.263488,
+          "near shadow raster": 0.043136,
+          "voxel near sun splats": 0.17243199999999997,
+          "voxel near sun splat raster": 0.06464,
+          "tree occluder cull": 0.8472,
+          "tree occluder raster": 0.812608,
+          "tree occlusion pyramid": 0.07667199999999999,
+          "tree recovery dispatch": 0.00208,
+          "tree remaining cull": 0.008832,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.020128,
+          "voxel splats": 0.6878879999999999,
+          "voxel splat raster": 0.7276959999999999,
+          "voxel splat resolve": 0.145472,
+          "terrain coarse": 0.046815999999999997,
+          "shade terrain": 0.259824,
+          "shade voxels": 0.06110399999999999,
+          "shade": 0.114064,
+          "motion vectors": 0.027887999999999996,
+          "taa": 0.029824,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.02624,
+          "tonemap": 0.025504
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1451829,
+          "vertices": 8710974,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40045824,
+          "frame_upload_bytes": 306560,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 15.771472,
+        "passes": {
+          "GPU forest selection residency": 8.473872,
+          "GPU forest shared poses": 0.108224,
+          "GPU forest materialize": 0.139824,
+          "shadow tile damage and clear": 0.285728,
+          "shadow cull": 0.418384,
+          "shadow raster": 0.0968,
+          "voxel sun splats": 0.574016,
+          "voxel sun splat raster": 0.35224,
+          "near shadow cull": 0.263344,
+          "near shadow raster": 0.04302399999999999,
+          "voxel near sun splats": 0.17260799999999998,
+          "voxel near sun splat raster": 0.06451199999999999,
+          "tree occluder cull": 0.849744,
+          "tree occluder raster": 0.8333919999999999,
+          "tree occlusion pyramid": 0.07657599999999999,
+          "tree recovery dispatch": 0.002016,
+          "tree remaining cull": 0.008768,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.020288,
+          "voxel splats": 0.6750879999999999,
+          "voxel splat raster": 0.727744,
+          "voxel splat resolve": 0.142272,
+          "terrain coarse": 0.047023999999999996,
+          "shade terrain": 0.26038399999999995,
+          "shade voxels": 0.061264,
+          "shade": 0.11396799999999999,
+          "motion vectors": 0.027871999999999997,
+          "taa": 0.029792,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026175999999999998,
+          "tonemap": 0.025471999999999998
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1451829,
+          "vertices": 8710974,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40045824,
+          "frame_upload_bytes": 306560,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      }
+    ],
+    "after": [
+      {
+        "covered": 16.710464,
+        "passes": {
+          "GPU forest selection residency": 8.45992,
+          "GPU forest shared poses": 0.109152,
+          "GPU forest materialize": 0.14023999999999998,
+          "shadow tile damage and clear": 0.28476799999999997,
+          "shadow cull": 0.418272,
+          "shadow raster": 0.097232,
+          "voxel sun splats": 0.565744,
+          "voxel sun splat raster": 0.35251199999999994,
+          "near shadow cull": 0.26371199999999995,
+          "near shadow raster": 0.043264,
+          "voxel near sun splats": 0.172368,
+          "voxel near sun splat raster": 0.06444799999999999,
+          "tree occluder cull": 0.845328,
+          "tree occluder raster": 0.84456,
+          "tree occlusion pyramid": 0.076592,
+          "tree recovery dispatch": 0.0021119999999999997,
+          "tree remaining cull": 0.008768,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.020191999999999998,
+          "voxel splats": 0.122864,
+          "voxel splat raster": 0.104992,
+          "voxel splat resolve": 0.145424,
+          "voxel brick hzb": 0.076528,
+          "voxel brick cull": 1.446176,
+          "voxel brick raster": 0.6108959999999999,
+          "terrain coarse": 0.04887999999999999,
+          "shade terrain": 0.260112,
+          "shade voxels": 0.061776,
+          "shade": 0.11376,
+          "motion vectors": 0.028031999999999998,
+          "taa": 0.029887999999999998,
+          "exhaust": 0.00031999999999999997,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026175999999999998,
+          "tonemap": 0.025504
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1016474,
+          "vertices": 6098844,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40250856,
+          "frame_upload_bytes": 307936,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 16.821184000000002,
+        "passes": {
+          "GPU forest selection residency": 8.424112000000001,
+          "GPU forest shared poses": 0.109248,
+          "GPU forest materialize": 0.13955199999999998,
+          "shadow tile damage and clear": 0.285728,
+          "shadow cull": 0.418432,
+          "shadow raster": 0.097104,
+          "voxel sun splats": 0.565504,
+          "voxel sun splat raster": 0.3524,
+          "near shadow cull": 0.26406399999999997,
+          "near shadow raster": 0.04312,
+          "voxel near sun splats": 0.172064,
+          "voxel near sun splat raster": 0.064624,
+          "tree occluder cull": 0.851648,
+          "tree occluder raster": 0.86688,
+          "tree occlusion pyramid": 0.076416,
+          "tree recovery dispatch": 0.0021119999999999997,
+          "tree remaining cull": 0.008896,
+          "tree remaining raster": 0.000896,
+          "tree visibility history": 0.020256,
+          "voxel splats": 0.12353599999999999,
+          "voxel splat raster": 0.104992,
+          "voxel splat resolve": 0.145392,
+          "voxel brick hzb": 0.076432,
+          "voxel brick cull": 1.452896,
+          "voxel brick raster": 0.616784,
+          "terrain coarse": 0.04872,
+          "shade terrain": 0.260368,
+          "shade voxels": 0.061551999999999996,
+          "shade": 0.114816,
+          "motion vectors": 0.027951999999999998,
+          "taa": 0.029792,
+          "exhaust": 0.000704,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026208,
+          "tonemap": 0.025504
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1016474,
+          "vertices": 6098844,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40250856,
+          "frame_upload_bytes": 307936,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 16.493327999999998,
+        "passes": {
+          "GPU forest selection residency": 8.417728,
+          "GPU forest shared poses": 0.10825599999999999,
+          "GPU forest materialize": 0.13977599999999998,
+          "shadow tile damage and clear": 0.284944,
+          "shadow cull": 0.4184,
+          "shadow raster": 0.09703999999999999,
+          "voxel sun splats": 0.5654079999999999,
+          "voxel sun splat raster": 0.35254399999999997,
+          "near shadow cull": 0.263488,
+          "near shadow raster": 0.043376,
+          "voxel near sun splats": 0.17232,
+          "voxel near sun splat raster": 0.06454399999999999,
+          "tree occluder cull": 0.8378399999999999,
+          "tree occluder raster": 0.9032,
+          "tree occlusion pyramid": 0.07636799999999999,
+          "tree recovery dispatch": 0.00208,
+          "tree remaining cull": 0.008832,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.02024,
+          "voxel splats": 0.12310399999999999,
+          "voxel splat raster": 0.10496,
+          "voxel splat resolve": 0.14488,
+          "voxel brick hzb": 0.07632,
+          "voxel brick cull": 1.417072,
+          "voxel brick raster": 0.615184,
+          "terrain coarse": 0.048496,
+          "shade terrain": 0.259696,
+          "shade voxels": 0.061488,
+          "shade": 0.11452799999999999,
+          "motion vectors": 0.02792,
+          "taa": 0.029824,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026175999999999998,
+          "tonemap": 0.025504
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1016474,
+          "vertices": 6098844,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40250856,
+          "frame_upload_bytes": 307936,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      }
+    ]
+  },
+  "paged-groups-high": {
+    "before": [
+      {
+        "covered": 14.705248,
+        "passes": {
+          "GPU forest selection residency": 8.477232,
+          "GPU forest shared poses": 0.10617599999999999,
+          "GPU forest materialize": 0.139904,
+          "shadow tile damage and clear": 0.285888,
+          "shadow cull": 0.41587199999999996,
+          "shadow raster": 0.09038399999999999,
+          "voxel sun splats": 0.791152,
+          "voxel sun splat raster": 0.662928,
+          "near shadow cull": 0.26172799999999996,
+          "near shadow raster": 0.022463999999999998,
+          "voxel near sun splats": 0.169984,
+          "voxel near sun splat raster": 0.05368,
+          "tree occluder cull": 0.261312,
+          "tree occluder raster": 0.01616,
+          "tree occlusion pyramid": 0.07647999999999999,
+          "tree recovery dispatch": 0.0021119999999999997,
+          "tree remaining cull": 0.008752,
+          "tree remaining raster": 0.000896,
+          "tree visibility history": 0.021344,
+          "voxel splats": 0.6857279999999999,
+          "voxel splat raster": 0.681344,
+          "voxel splat resolve": 0.217696,
+          "terrain coarse": 0.073824,
+          "shade terrain": 0.35456,
+          "shade voxels": 0.08864,
+          "shade": 0.048912,
+          "motion vectors": 0.021984,
+          "taa": 0.029759999999999998,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026208,
+          "tonemap": 0.025536
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 40880368,
+          "frame_upload_bytes": 391136,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 14.638624,
+        "passes": {
+          "GPU forest selection residency": 8.449904,
+          "GPU forest shared poses": 0.105296,
+          "GPU forest materialize": 0.13968,
+          "shadow tile damage and clear": 0.28623999999999994,
+          "shadow cull": 0.41569599999999995,
+          "shadow raster": 0.0904,
+          "voxel sun splats": 0.789488,
+          "voxel sun splat raster": 0.66296,
+          "near shadow cull": 0.261648,
+          "near shadow raster": 0.022463999999999998,
+          "voxel near sun splats": 0.170016,
+          "voxel near sun splat raster": 0.053696,
+          "tree occluder cull": 0.261264,
+          "tree occluder raster": 0.016128,
+          "tree occlusion pyramid": 0.076352,
+          "tree recovery dispatch": 0.00208,
+          "tree remaining cull": 0.008768,
+          "tree remaining raster": 0.000896,
+          "tree visibility history": 0.021344,
+          "voxel splats": 0.687264,
+          "voxel splat raster": 0.6810879999999999,
+          "voxel splat resolve": 0.216992,
+          "terrain coarse": 0.073824,
+          "shade terrain": 0.354848,
+          "shade voxels": 0.088576,
+          "shade": 0.048912,
+          "motion vectors": 0.021984,
+          "taa": 0.029759999999999998,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.02624,
+          "tonemap": 0.025552
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 40880368,
+          "frame_upload_bytes": 391136,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 14.73368,
+        "passes": {
+          "GPU forest selection residency": 8.451632,
+          "GPU forest shared poses": 0.10527999999999998,
+          "GPU forest materialize": 0.139808,
+          "shadow tile damage and clear": 0.28659199999999996,
+          "shadow cull": 0.41601599999999994,
+          "shadow raster": 0.09036799999999999,
+          "voxel sun splats": 0.7896799999999999,
+          "voxel sun splat raster": 0.663168,
+          "near shadow cull": 0.26176,
+          "near shadow raster": 0.022432,
+          "voxel near sun splats": 0.170016,
+          "voxel near sun splat raster": 0.053663999999999996,
+          "tree occluder cull": 0.26136,
+          "tree occluder raster": 0.016128,
+          "tree occlusion pyramid": 0.076352,
+          "tree recovery dispatch": 0.0021119999999999997,
+          "tree remaining cull": 0.008735999999999999,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.021328,
+          "voxel splats": 0.687936,
+          "voxel splat raster": 0.681248,
+          "voxel splat resolve": 0.21952,
+          "terrain coarse": 0.073824,
+          "shade terrain": 0.354704,
+          "shade voxels": 0.088592,
+          "shade": 0.048687999999999995,
+          "motion vectors": 0.022015999999999997,
+          "taa": 0.029727999999999997,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026272,
+          "tonemap": 0.025536
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 40880368,
+          "frame_upload_bytes": 391136,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      }
+    ],
+    "after": [
+      {
+        "covered": 14.808751999999998,
+        "passes": {
+          "GPU forest selection residency": 8.467808,
+          "GPU forest shared poses": 0.106208,
+          "GPU forest materialize": 0.13984,
+          "shadow tile damage and clear": 0.28656000000000004,
+          "shadow cull": 0.416,
+          "shadow raster": 0.09036799999999999,
+          "voxel sun splats": 0.791296,
+          "voxel sun splat raster": 0.663024,
+          "near shadow cull": 0.262208,
+          "near shadow raster": 0.022432,
+          "voxel near sun splats": 0.16988799999999998,
+          "voxel near sun splat raster": 0.053663999999999996,
+          "tree occluder cull": 0.26183999999999996,
+          "tree occluder raster": 0.016191999999999998,
+          "tree occlusion pyramid": 0.076512,
+          "tree recovery dispatch": 0.0021119999999999997,
+          "tree remaining cull": 0.008799999999999999,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.021376,
+          "voxel splats": 0.688128,
+          "voxel splat raster": 0.681392,
+          "voxel splat resolve": 0.21936,
+          "terrain coarse": 0.073632,
+          "shade terrain": 0.354512,
+          "shade voxels": 0.08868799999999999,
+          "shade": 0.048783999999999994,
+          "motion vectors": 0.021952,
+          "taa": 0.029727999999999997,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026272,
+          "tonemap": 0.025536
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 41086152,
+          "frame_upload_bytes": 392720,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 14.709456,
+        "passes": {
+          "GPU forest selection residency": 8.419712,
+          "GPU forest shared poses": 0.105456,
+          "GPU forest materialize": 0.138176,
+          "shadow tile damage and clear": 0.287568,
+          "shadow cull": 0.41670399999999996,
+          "shadow raster": 0.090336,
+          "voxel sun splats": 0.799472,
+          "voxel sun splat raster": 0.6633439999999999,
+          "near shadow cull": 0.262896,
+          "near shadow raster": 0.022463999999999998,
+          "voxel near sun splats": 0.16987199999999997,
+          "voxel near sun splat raster": 0.053728,
+          "tree occluder cull": 0.26192,
+          "tree occluder raster": 0.016096,
+          "tree occlusion pyramid": 0.076464,
+          "tree recovery dispatch": 0.002048,
+          "tree remaining cull": 0.008608,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.021376,
+          "voxel splats": 0.680256,
+          "voxel splat raster": 0.681184,
+          "voxel splat resolve": 0.21481599999999998,
+          "terrain coarse": 0.073632,
+          "shade terrain": 0.354,
+          "shade voxels": 0.088576,
+          "shade": 0.048864,
+          "motion vectors": 0.022015999999999997,
+          "taa": 0.029824,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.02624,
+          "tonemap": 0.025568
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 41086152,
+          "frame_upload_bytes": 392720,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 14.699663999999999,
+        "passes": {
+          "GPU forest selection residency": 8.46592,
+          "GPU forest shared poses": 0.10667199999999999,
+          "GPU forest materialize": 0.13968,
+          "shadow tile damage and clear": 0.286848,
+          "shadow cull": 0.41552,
+          "shadow raster": 0.09038399999999999,
+          "voxel sun splats": 0.796128,
+          "voxel sun splat raster": 0.6631039999999999,
+          "near shadow cull": 0.261632,
+          "near shadow raster": 0.022432,
+          "voxel near sun splats": 0.169792,
+          "voxel near sun splat raster": 0.053648,
+          "tree occluder cull": 0.261264,
+          "tree occluder raster": 0.01616,
+          "tree occlusion pyramid": 0.076416,
+          "tree recovery dispatch": 0.00208,
+          "tree remaining cull": 0.008704,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.021376,
+          "voxel splats": 0.683344,
+          "voxel splat raster": 0.681216,
+          "voxel splat resolve": 0.21745599999999998,
+          "terrain coarse": 0.073728,
+          "shade terrain": 0.35488,
+          "shade voxels": 0.088672,
+          "shade": 0.048928,
+          "motion vectors": 0.022015999999999997,
+          "taa": 0.029792,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026208,
+          "tonemap": 0.025536
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1701,
+          "tested_nodes": 261827,
+          "source_slots": 124,
+          "voxel_slots": 66,
+          "shadow_voxel_slots": 1691,
+          "direct_roots": 94251,
+          "fallback_trees": 0,
+          "retained": 1133,
+          "assigned": 568,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4194303,
+            4194304
+          ],
+          "refinement_budget_stops": 299529,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 259096,
+          "dormant_records": 149699,
+          "dormant_wakes": 259096,
+          "dormant_wake_passes": 8,
+          "dormant_park_events": 353953,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            727.0977,
+            654.9772
+          ],
+          "selected_error_target_ratio": [
+            721.0206,
+            600.52954
+          ],
+          "selected_over_target": [
+            79070,
+            40424
+          ],
+          "error_unknown_proxies": 0,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 16272,
+          "pose_requests": 613,
+          "evaluated_shared_poses": 613,
+          "pose_hash_failures": 0,
+          "camera_roots": 40697,
+          "shadow_only_roots": 53990,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 0,
+          "camera_refinement_limits": {
+            "over_target": 40424,
+            "branch_slots": 0,
+            "camera_splats": 40418,
+            "shadow_splats": 21608,
+            "missing_pages": 7,
+            "no_children": 0,
+            "affordable_resident": 0
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 258,
+            "both": 124
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 1253,
+            "both": 66
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18805,
+            "shadow_only": 53838,
+            "both": 21608
+          },
+          "camera_published_branches": 1547,
+          "shadow_only_published_branches": 154
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1364203,
+          "vertices": 8185218,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1891,
+          "pending_pages": 0,
+          "uploads": 1891,
+          "evictions": 0,
+          "uploaded_bytes": 41086152,
+          "frame_upload_bytes": 392720,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      }
+    ]
+  },
+  "paged-groups-low": {
+    "before": [
+      {
+        "covered": 15.516991999999998,
+        "passes": {
+          "GPU forest selection residency": 8.38912,
+          "GPU forest shared poses": 0.10825599999999999,
+          "GPU forest materialize": 0.13985599999999998,
+          "shadow tile damage and clear": 0.28555200000000003,
+          "shadow cull": 0.418832,
+          "shadow raster": 0.097024,
+          "voxel sun splats": 0.5671679999999999,
+          "voxel sun splat raster": 0.353072,
+          "near shadow cull": 0.26395199999999996,
+          "near shadow raster": 0.043232,
+          "voxel near sun splats": 0.17227199999999998,
+          "voxel near sun splat raster": 0.064704,
+          "tree occluder cull": 0.848336,
+          "tree occluder raster": 0.823008,
+          "tree occlusion pyramid": 0.076592,
+          "tree recovery dispatch": 0.00208,
+          "tree remaining cull": 0.008944,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.020367999999999997,
+          "voxel splats": 0.689168,
+          "voxel splat raster": 0.727328,
+          "voxel splat resolve": 0.14124799999999998,
+          "terrain coarse": 0.046848,
+          "shade terrain": 0.261424,
+          "shade voxels": 0.061343999999999996,
+          "shade": 0.113824,
+          "motion vectors": 0.028064,
+          "taa": 0.029759999999999998,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.02624,
+          "tonemap": 0.025504
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1451829,
+          "vertices": 8710974,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40045824,
+          "frame_upload_bytes": 306560,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 15.533183999999999,
+        "passes": {
+          "GPU forest selection residency": 8.386351999999999,
+          "GPU forest shared poses": 0.108176,
+          "GPU forest materialize": 0.13956799999999997,
+          "shadow tile damage and clear": 0.285632,
+          "shadow cull": 0.41958399999999996,
+          "shadow raster": 0.097312,
+          "voxel sun splats": 0.564288,
+          "voxel sun splat raster": 0.352912,
+          "near shadow cull": 0.26464,
+          "near shadow raster": 0.043488,
+          "voxel near sun splats": 0.17232,
+          "voxel near sun splat raster": 0.0648,
+          "tree occluder cull": 0.846304,
+          "tree occluder raster": 0.822016,
+          "tree occlusion pyramid": 0.07622399999999999,
+          "tree recovery dispatch": 0.0021119999999999997,
+          "tree remaining cull": 0.008896,
+          "tree remaining raster": 0.000896,
+          "tree visibility history": 0.020111999999999998,
+          "voxel splats": 0.687712,
+          "voxel splat raster": 0.727584,
+          "voxel splat resolve": 0.146432,
+          "terrain coarse": 0.04696,
+          "shade terrain": 0.260224,
+          "shade voxels": 0.061408,
+          "shade": 0.114336,
+          "motion vectors": 0.027871999999999997,
+          "taa": 0.029855999999999997,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026208,
+          "tonemap": 0.025536
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1451829,
+          "vertices": 8710974,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40045824,
+          "frame_upload_bytes": 306560,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 15.783984,
+        "passes": {
+          "GPU forest selection residency": 8.475696,
+          "GPU forest shared poses": 0.109264,
+          "GPU forest materialize": 0.13856,
+          "shadow tile damage and clear": 0.286192,
+          "shadow cull": 0.41912,
+          "shadow raster": 0.097312,
+          "voxel sun splats": 0.587552,
+          "voxel sun splat raster": 0.35297599999999996,
+          "near shadow cull": 0.264592,
+          "near shadow raster": 0.043056,
+          "voxel near sun splats": 0.17241599999999999,
+          "voxel near sun splat raster": 0.06444799999999999,
+          "tree occluder cull": 0.849728,
+          "tree occluder raster": 0.83192,
+          "tree occlusion pyramid": 0.076432,
+          "tree recovery dispatch": 0.0021119999999999997,
+          "tree remaining cull": 0.008832,
+          "tree remaining raster": 0.000896,
+          "tree visibility history": 0.020128,
+          "voxel splats": 0.682496,
+          "voxel splat raster": 0.727424,
+          "voxel splat resolve": 0.1452,
+          "terrain coarse": 0.046864,
+          "shade terrain": 0.25995199999999996,
+          "shade voxels": 0.061056,
+          "shade": 0.11396799999999999,
+          "motion vectors": 0.027903999999999998,
+          "taa": 0.029855999999999997,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026208,
+          "tonemap": 0.025504
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1451829,
+          "vertices": 8710974,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88172080,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40045824,
+          "frame_upload_bytes": 306560,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      }
+    ],
+    "after": [
+      {
+        "covered": 15.581519999999998,
+        "passes": {
+          "GPU forest selection residency": 8.385472,
+          "GPU forest shared poses": 0.10825599999999999,
+          "GPU forest materialize": 0.13977599999999998,
+          "shadow tile damage and clear": 0.285424,
+          "shadow cull": 0.418864,
+          "shadow raster": 0.09703999999999999,
+          "voxel sun splats": 0.568176,
+          "voxel sun splat raster": 0.353024,
+          "near shadow cull": 0.263712,
+          "near shadow raster": 0.042816,
+          "voxel near sun splats": 0.17219199999999998,
+          "voxel near sun splat raster": 0.06484799999999999,
+          "tree occluder cull": 0.843488,
+          "tree occluder raster": 0.82512,
+          "tree occlusion pyramid": 0.076432,
+          "tree recovery dispatch": 0.00208,
+          "tree remaining cull": 0.008864,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.020176,
+          "voxel splats": 0.682944,
+          "voxel splat raster": 0.7274719999999999,
+          "voxel splat resolve": 0.145376,
+          "terrain coarse": 0.046928,
+          "shade terrain": 0.260336,
+          "shade voxels": 0.061327999999999994,
+          "shade": 0.114784,
+          "motion vectors": 0.028031999999999998,
+          "taa": 0.029887999999999998,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.02624,
+          "tonemap": 0.025536
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1451829,
+          "vertices": 8710974,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40250856,
+          "frame_upload_bytes": 307936,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 15.503871999999998,
+        "passes": {
+          "GPU forest selection residency": 8.369328,
+          "GPU forest shared poses": 0.10824,
+          "GPU forest materialize": 0.139808,
+          "shadow tile damage and clear": 0.28543999999999997,
+          "shadow cull": 0.418864,
+          "shadow raster": 0.097312,
+          "voxel sun splats": 0.5682079999999999,
+          "voxel sun splat raster": 0.35265599999999997,
+          "near shadow cull": 0.263776,
+          "near shadow raster": 0.043232,
+          "voxel near sun splats": 0.172288,
+          "voxel near sun splat raster": 0.064736,
+          "tree occluder cull": 0.8453759999999999,
+          "tree occluder raster": 0.828256,
+          "tree occlusion pyramid": 0.076336,
+          "tree recovery dispatch": 0.00208,
+          "tree remaining cull": 0.00928,
+          "tree remaining raster": 0.000896,
+          "tree visibility history": 0.02024,
+          "voxel splats": 0.68224,
+          "voxel splat raster": 0.727584,
+          "voxel splat resolve": 0.145088,
+          "terrain coarse": 0.046992,
+          "shade terrain": 0.260768,
+          "shade voxels": 0.061264,
+          "shade": 0.11388799999999999,
+          "motion vectors": 0.027903999999999998,
+          "taa": 0.029887999999999998,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.026208,
+          "tonemap": 0.025536
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1451829,
+          "vertices": 8710974,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40250856,
+          "frame_upload_bytes": 307936,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      },
+      {
+        "covered": 15.635967999999998,
+        "passes": {
+          "GPU forest selection residency": 8.381328,
+          "GPU forest shared poses": 0.108224,
+          "GPU forest materialize": 0.13984,
+          "shadow tile damage and clear": 0.285072,
+          "shadow cull": 0.41888000000000003,
+          "shadow raster": 0.09684799999999999,
+          "voxel sun splats": 0.567456,
+          "voxel sun splat raster": 0.352784,
+          "near shadow cull": 0.263744,
+          "near shadow raster": 0.04296,
+          "voxel near sun splats": 0.17256,
+          "voxel near sun splat raster": 0.064608,
+          "tree occluder cull": 0.8449439999999999,
+          "tree occluder raster": 0.8208,
+          "tree occlusion pyramid": 0.076432,
+          "tree recovery dispatch": 0.00208,
+          "tree remaining cull": 0.008799999999999999,
+          "tree remaining raster": 0.000864,
+          "tree visibility history": 0.020096,
+          "voxel splats": 0.680928,
+          "voxel splat raster": 0.727424,
+          "voxel splat resolve": 0.14534399999999997,
+          "terrain coarse": 0.04696,
+          "shade terrain": 0.261024,
+          "shade voxels": 0.061264,
+          "shade": 0.114592,
+          "motion vectors": 0.028031999999999998,
+          "taa": 0.029824,
+          "exhaust": 0.000736,
+          "wheel particles": 0.00031999999999999997,
+          "bloom": 0.02624,
+          "tonemap": 0.025504
+        },
+        "forest": {
+          "trees": 302116,
+          "active_roots": 151058,
+          "branch_capacity": 4096,
+          "selected_records": 1501,
+          "tested_nodes": 172562,
+          "source_slots": 169,
+          "voxel_slots": 282,
+          "shadow_voxel_slots": 1488,
+          "direct_roots": 41823,
+          "fallback_trees": 52726,
+          "retained": 877,
+          "assigned": 624,
+          "slot_failures": 0,
+          "hash_failures": 0,
+          "frontier_overflow_requests": 0,
+          "peak_frontier_requests": 302116,
+          "reserved_raster_splats": [
+            4186724,
+            1839599
+          ],
+          "refinement_budget_stops": 294252,
+          "refinement_faults": 0,
+          "reused_refinement_proposals": 252341,
+          "dormant_records": 95415,
+          "dormant_wakes": 252341,
+          "dormant_wake_passes": 7,
+          "dormant_park_events": 347446,
+          "dormant_overflows": 0,
+          "selected_spatial_error_pixels": [
+            1e+30,
+            1e+30
+          ],
+          "selected_error_target_ratio": [
+            1e+30,
+            1e+30
+          ],
+          "selected_over_target": [
+            42873,
+            42083
+          ],
+          "error_unknown_proxies": 52726,
+          "error_unmatched_direct": 0,
+          "error_forced_nodes": 0,
+          "pose_requests": 503,
+          "evaluated_shared_poses": 503,
+          "pose_hash_failures": 0,
+          "camera_roots": 42189,
+          "shadow_only_roots": 52726,
+          "camera_fallback_roots": 0,
+          "shadow_only_fallback_roots": 52726,
+          "camera_refinement_limits": {
+            "over_target": 42083,
+            "branch_slots": 0,
+            "camera_splats": 0,
+            "shadow_splats": 0,
+            "missing_pages": 171,
+            "no_children": 0,
+            "affordable_resident": 41912
+          },
+          "selected_source_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 203,
+            "both": 169
+          },
+          "selected_voxel_consumers": {
+            "outside": 0,
+            "camera_only": 0,
+            "shadow_only": 847,
+            "both": 282
+          },
+          "selected_direct_consumers": {
+            "outside": 0,
+            "camera_only": 18861,
+            "shadow_only": 0,
+            "both": 22962
+          },
+          "camera_published_branches": 1501,
+          "shadow_only_published_branches": 0
+        },
+        "voxel_raster": {
+          "capacity": 4194304,
+          "splats": 1451829,
+          "vertices": 8710974,
+          "view": 0
+        },
+        "page_cache": {
+          "allocated_bytes": 88190432,
+          "resident_pages": 1889,
+          "pending_pages": 0,
+          "uploads": 1889,
+          "evictions": 0,
+          "uploaded_bytes": 40250856,
+          "frame_upload_bytes": 307936,
+          "misses": 0,
+          "feedback_skipped": 0,
+          "source": {
+            "allocated_bytes": 77144872,
+            "resident_pages": 20,
+            "total_pages": 20,
+            "uploads": 20,
+            "evictions": 0,
+            "uploaded_bytes": 77144872,
+            "pinned_bytes": 74620864
+          }
+        }
+      }
+    ]
+  },
+  "method": {
+    "baseline_commit": "a90a1f9 (renderer 0741ccb)",
+    "output": [
+      1280,
+      720
+    ],
+    "views": 1,
+    "upscaler": "none",
+    "frames": 240,
+    "warm_samples": 120,
+    "order_per_scenario": "before1 after1 before2 after2 before3 after3",
+    "low_camera": {
+      "state": {
+        "style": "lowland",
+        "seed": 1,
+        "pos": [
+          0,
+          8,
+          0
+        ],
+        "yaw_deg": 34.3774677,
+        "pitch_deg": 0,
+        "speed": 1
+      }
+    },
+    "decision": "Integrate bounded paged brick data only. Both per-brick culling and min/max classification lose time and remain a preserved patch, not a default or opt-in mode."
+  }
+}
