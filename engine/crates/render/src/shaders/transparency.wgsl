@@ -25,7 +25,7 @@ fn transparent_vs(@builtin(vertex_index) corner: u32, @builtin(instance_index) i
     let tri = blend_triangles[id];
     let inst = instances[tri.owner];
     let v = vtx(tri.vertices[corner]);
-    let local_normal = vec3<f32>(vertices[v + 3u], vertices[v + 4u], vertices[v + 5u]);
+    let local_normal = vec3<f32>(vertex_f32(v + 3u), vertex_f32(v + 4u), vertex_f32(v + 5u));
     let ax = vec3<f32>(inst.r0.x, inst.r1.x, inst.r2.x);
     let ay = vec3<f32>(inst.r0.y, inst.r1.y, inst.r2.y);
     let az = vec3<f32>(inst.r0.z, inst.r1.z, inst.r2.z);
@@ -37,7 +37,7 @@ fn transparent_vs(@builtin(vertex_index) corner: u32, @builtin(instance_index) i
     out.world = wind_position(tri.owner, inst.r1.w, xform(inst, pos_of(v)));
     out.position = view.view_proj * vec4<f32>(out.world, 1.0);
     out.normal = safe_normalize(wind_normal(tri.owner, normal));
-    out.uv = vec2<f32>(vertices[v + 6u], vertices[v + 7u]);
+    out.uv = vec2<f32>(vertex_f32(v + 6u), vertex_f32(v + 7u));
     out.triangle = id;
     return out;
 }

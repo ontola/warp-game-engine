@@ -43,7 +43,7 @@ const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 impl Portable {
-    pub fn new(gpu: &Gpu, scene: &crate::Scene, spec: &crate::procedural_terrain::TerrainSpec, vertices: &wgpu::Buffer, instances: &wgpu::Buffer,
+    pub fn new(gpu: &Gpu, scene: &crate::Scene, spec: &crate::procedural_terrain::TerrainSpec, vertices: &crate::topology::Topology, instances: &wgpu::Buffer,
         materials: &wgpu::Buffer, albedo: &wgpu::Texture, sampler: &wgpu::Sampler) -> Self {
         let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry { binding, visibility, ty, count: None };
         let storage = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None };
@@ -71,7 +71,7 @@ impl Portable {
         let terrain = pipeline("portable terrain", "vs_terrain", "fs_terrain", true);
         let sky = pipeline("portable sky", "vs_sky", "fs_sky", false);
         let material = scene.clusters.get(spec.first_cluster as usize).map_or(0, |c| c.material);
-        Portable { terrain, sky, layout, vertices: vertices.clone(), instances: instances.clone(), materials: materials.clone(),
+        Portable { terrain, sky, layout, vertices: vertices.buffer.clone(), instances: instances.clone(), materials: materials.clone(),
             albedo: albedo.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() }),
             sampler: sampler.clone(), pool: [spec.first_instance, spec.first_vertex, material, spec.capacity],
             spheres: vec![[0.0, 0.0, 0.0, -1.0]; spec.capacity as usize], visible: Self::slots(gpu, 1024), targets: Vec::new() }

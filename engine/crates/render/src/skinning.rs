@@ -188,7 +188,7 @@ impl SkinningRenderer {
         skinning: &Skinning,
         vertices: &[Vertex],
         instances: &[GpuInstance],
-        output: &wgpu::Buffer,
+        output: &crate::topology::Topology,
         owners: &wgpu::Buffer,
     ) -> Result<Self, String> {
         skinning.validate(vertices, instances)?;
@@ -271,7 +271,7 @@ impl SkinningRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: output.as_entire_binding(),
+                    resource: output.vertices(),
                 },
                 wgpu::BindGroupEntry { binding: 3, resource: owners.as_entire_binding() },
             ],

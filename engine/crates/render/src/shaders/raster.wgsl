@@ -53,9 +53,12 @@ struct Material {
     pad: f32,
 };
 
-@group(0) @binding(0) var<storage, read> vertices: array<f32>;
-@group(0) @binding(1) var<storage, read> cluster_verts: array<u32>;
-@group(0) @binding(2) var<storage, read> tris: array<u32>;
+// Cluster geometry in one buffer (topology.rs): vertices from word 0, then
+// cluster vertex indices and triangles from scene table vec4 1.z and 1.w.
+@group(0) @binding(0) var<storage, read> topology: array<u32>;
+fn vertex_f32(i: u32) -> f32 { return bitcast<f32>(topology[i]); }
+fn cluster_vert(i: u32) -> u32 { return topology[scene_tables[1].z + i]; }
+fn tri_word(i: u32) -> u32 { return topology[scene_tables[1].w + i]; }
 @group(0) @binding(3) var<storage, read> clusters: array<Cluster>;
 @group(0) @binding(4) var<storage, read> instances: array<Instance>;
 
@@ -126,17 +129,17 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
         return o;
     }
     let inst = instance_at(vis.x);
-    let packed = tris[cl.first_tri + tri];
+    let packed = tri_word(cl.first_tri + tri);
     let local = (packed >> (8u * (vi % 3u))) & 0xffu;
-    let v = cluster_verts[cl.first_vert + local] * 8u;
-    let p = vec4<f32>(vertices[v], vertices[v + 1u], vertices[v + 2u], 1.0);
+    let v = cluster_vert(cl.first_vert + local) * 8u;
+    let p = vec4<f32>(vertex_f32(v), vertex_f32(v + 1u), vertex_f32(v + 2u), 1.0);
     let rest = vec3<f32>(dot(inst.r0, p), dot(inst.r1, p), dot(inst.r2, p));
     let w = wind_position(member_slot(vis.x), inst.r1.w, rest);
     o.pos = view.view_proj * vec4<f32>(w, 1.0);
     o.world = w; o.instance = vis.x;
     o.id = (slot << 7u) | tri;
     o.material = cl.material;
-    o.uv = vec2<f32>(vertices[v + 6u], vertices[v + 7u]);
+    o.uv = vec2<f32>(vertex_f32(v + 6u), vertex_f32(v + 7u));
     // Only the explicitly packed crown material is replaced in color. Wood,
     // unrelated cutouts and source sun-shadow geometry remain unchanged.
     let replacement=voxel_replacement[member_slot(vis.x)];
