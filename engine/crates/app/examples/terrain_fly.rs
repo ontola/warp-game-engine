@@ -826,7 +826,10 @@ fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f3
         let x=(i as f32+0.5)*cell;let z=(j as f32+0.5)*cell;
         if Vec2::new(x,z).distance_squared(centre)>radius*radius {continue;}
         let s=land.ground(x,z);
-        let sparse=0.5+0.8*terrain_field::noised(Vec2::new(x,z)/40.,seed.wrapping_add(31)).x>grass(x,z);
+        // Dither the patch edge per cell over a band of the noise, so a grass
+        // patch thins out instead of ending in a hard line against bare ground.
+        let dither=0.35*(render::placement::Cell::new(i,j,seed).hash(91)-0.5);
+        let sparse=0.5+0.8*terrain_field::noised(Vec2::new(x,z)/40.,seed.wrapping_add(31)).x+dither>grass(x,z);
         if sparse || s.rock>0.5 || s.scree>0.8 || s.water>0.02 || s.snow>0.3 || land.clearance(x,z)<cell {continue;}
         let dx=land.ground(x+0.5,z).pos.y-land.ground(x-0.5,z).pos.y;
         let dz=land.ground(x,z+0.5).pos.y-land.ground(x,z-0.5).pos.y;
