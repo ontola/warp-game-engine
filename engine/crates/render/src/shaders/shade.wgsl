@@ -28,6 +28,8 @@ struct Light {
     night_stars: vec4<f32>, // peak radiance, zenith optical depth, zero-sun fast path, seed
     anim: vec4<f32>,        // x: seconds for animated procedural materials, y: emission scale, z: radiance shown as white
     fog_sampling: vec4<f32>, // x: sequence phase, y: temporal accumulation enabled, z: diffuse room return (lux)
+    near_levels_view_proj: array<mat4x4<f32>, 3>, // sun clipmap levels 1..3 (frame.rs near_levels)
+    near_levels: vec4<f32>, // x: levels drawn
 };
 
 struct Cluster {
@@ -169,7 +171,7 @@ fn sun_pages_counts() -> vec4<u32> { return scene_tables[scene_tables[2].y + 5u]
 fn sun_page_entry(i: u32) -> vec4<i32> { return bitcast<vec4<i32>>(scene_tables[scene_tables[2].y + 6u + i]); }
 @group(1) @binding(13) var canopy_tex: texture_3d<f32>;
 @group(1) @binding(14) var canopy_sampler: sampler;
-@group(1) @binding(15) var near_shadow_tex: texture_depth_2d;
+@group(1) @binding(15) var near_shadow_tex: texture_depth_2d_array;
 // The shade pass's one read-write buffer (shade_scratch.rs). The texture
 // binding budget is already full, so certified meadow source IDs are copied
 // into `words` (two words per pixel, rows of row_pairs) and the opaque
@@ -1373,6 +1375,85 @@ fn shadow_filter(map: texture_depth_2d, projection: mat4x4<f32>, world_texel: f3
     return lit / 9.0;
 }
 
+// The same on a sun clipmap level (near_shadow_tex layer `layer`).
+fn shadow_filter_plane_layer(map: texture_depth_2d_array, layer: i32, projection: mat4x4<f32>, world_texel: f32, p: vec3<f32>, plane_n: vec3<f32>) -> f32 {
+    let c = projection * vec4<f32>(p, 1.0);
+    let uv = c.xy * vec2<f32>(0.5, -0.5) + 0.5;
+    if !all(abs(c) < vec4<f32>(1e20)) || any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || c.z < 0.0 || c.z > 1.0 { return 1.0; }
+    let size = vec2<i32>(textureDimensions(map));
+    let q = uv * vec2<f32>(size) - 0.5;
+    let base = vec2<i32>(floor(q));
+    let f = fract(q);
+    let wx = vec4<f32>(1.0-f.x, 1.0, 1.0, f.x) / 3.0;
+    let wy = vec4<f32>(1.0-f.y, 1.0, 1.0, f.y) / 3.0;
+    let row_x = vec3<f32>(projection[0].x, projection[1].x, projection[2].x);
+    let row_y = vec3<f32>(projection[0].y, projection[1].y, projection[2].y);
+    let row_z = vec3<f32>(projection[0].z, projection[1].z, projection[2].z);
+    let denominator = dot(plane_n, -normalize(row_z));
+    var gradient = vec2<f32>(0.0);
+    // Zero means no actual triangle plane was supplied (volume/transparency).
+    // A nearly sun-parallel plane has no stable depth function; use a centred
+    // comparison, never an arbitrary metre-scale bias or unsafe division.
+    if all(abs(plane_n) < vec3<f32>(1e10)) && dot(plane_n,plane_n) > 1e-12
+        && abs(denominator) > 1e-4 && dot(row_x,row_x) > 1e-20 && dot(row_y,row_y) > 1e-20 {
+        gradient = vec2<f32>(dot(plane_n,normalize(row_x)), -dot(plane_n,normalize(row_y)))
+            * (world_texel * length(row_z) / denominator);
+    }
+    // f32 projection roundoff, in normalized depth. Unlike slope bias this
+    // grows only with arithmetic precision, not the receiving/casting slope.
+    let epsilon = 4.7683716e-7 * (dot(abs(row_z),abs(p)) + abs(projection[3].z) + 1.0);
+    let clipped = sun_receiver_tri_set && dot(plane_n,plane_n)>1e-12;
+    var triangle:array<vec2<f32>,3>;
+    var orientation=0.0;
+    if clipped {
+        for(var i=0;i<3;i++) {
+            let vertex=projection*vec4<f32>(sun_receiver_tri[i],1.0);
+            triangle[i]=(vertex.xy*vec2<f32>(0.5,-0.5)+0.5)*vec2<f32>(size)-0.5;
+        }
+        orientation=sign(shadow_cross2(triangle[1]-triangle[0],triangle[2]-triangle[0]));
+    }
+    var lit = 0.0;
+    var total = 0.0;
+    for (var y=0; y<4; y++) { for (var x=0; x<4; x++) {
+        let pixel = clamp(base + vec2<i32>(x-1,y-1), vec2<i32>(0), size-1);
+        // A plane is valid only inside its actual triangle. Extrapolating it
+        // into a neighbouring concave face creates false triangle-wire shadow
+        // even with identical source geometry and infinite numeric precision.
+        if clipped && (orientation==0.0 || !shadow_triangle_contains(vec2<f32>(pixel),triangle[0],triangle[1],triangle[2],orientation)) { continue; }
+        let delta = vec2<f32>(pixel) - q;
+        let reference = c.z + dot(gradient,delta) - epsilon;
+        let depth = textureLoad(map,pixel,layer,0);
+        let weight=wx[x]*wy[y];
+        lit += weight * select(0.0,1.0,reference <= depth);
+        total += weight;
+    }}
+    if total>1e-8 {return lit/total;}
+    // Subtexel / edge-on triangles may contain no shadow-map sample centre.
+    // Fall back to ONE nearest depth sample at the actual receiver depth.
+    // This has <=half-texel quantization per axis and may alias; it cannot
+    // invent an arbitrarily extrapolated plane or force an unoccluded result.
+    let nearest=clamp(vec2<i32>(floor(q+0.5)),vec2<i32>(0),size-1);
+    return select(0.0,1.0,c.z-epsilon<=textureLoad(map,nearest,layer,0));
+}
+
+fn shadow_filter_layer(map: texture_depth_2d_array, layer: i32, projection: mat4x4<f32>, world_texel: f32, p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
+    if light.near_shadow.w > 0.5 { return shadow_filter_plane_layer(map,layer,projection,world_texel,p,plane_n); }
+    let biased = p + n * world_texel * 1.5 + light.sun_dir.xyz * world_texel;
+    let c = projection * vec4<f32>(biased, 1.0);
+    let uv = vec2<f32>(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
+    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || c.z < 0.0 || c.z > 1.0 {
+        return 1.0;
+    }
+    let texel = 1.0 / vec2<f32>(textureDimensions(map));
+    var lit = 0.0;
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            lit += textureSampleCompareLevel(map, shadow_samp, uv + vec2<f32>(f32(x), f32(y)) * texel, layer, c.z);
+        }
+    }
+    return lit / 9.0;
+}
+
 fn sun_coverage_fade(projection: mat4x4<f32>, p: vec3<f32>, blend_start: f32) -> f32 {
     let c = projection * vec4<f32>(p, 1.0);
     let edge = max(abs(c.x), abs(c.y));
@@ -1470,32 +1551,52 @@ fn distant_sun_visibility(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
 // Detail follows each camera but its texels remain fixed in world space.
 // Blend the shared maps before adding the near detail, so a camera
 // near the shared-map edge cannot overwrite a valid car shadow with foliage.
+fn near_level_projection(k: i32) -> mat4x4<f32> {
+    if k == 0 { return light.near_shadow_view_proj; }
+    return light.near_levels_view_proj[k - 1];
+}
+// How much sun clipmap level k covers p: round, wide fade (light-space
+// radius, 0.45 to 0.95 of the half extent): a square edge 20 % wide showed
+// the map's outline on the ground where sharp voxel shadows met the soft
+// shared map.
+fn near_level_weight(k: i32, p: vec3<f32>) -> f32 {
+    let c = near_level_projection(k) * vec4<f32>(p, 1.0);
+    if c.z < 0.0 || c.z > 1.0 { return 0.0; }
+    return 1.0 - smoothstep(light.near_shadow.y, 0.95, length(c.xy));
+}
+fn near_level_visibility(k: i32, p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
+    let texel = light.near_shadow.x * f32(1 << u32(k));
+    return shadow_filter_layer(near_shadow_tex, k, near_level_projection(k), texel, p, n, plane_n);
+}
 fn shadow_detail_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
-    var weight = 0.0;
-    if light.near_shadow.z > 0.5 {
-        let c = light.near_shadow_view_proj * vec4<f32>(p, 1.0);
-        if c.z >= 0.0 && c.z <= 1.0 {
-            // Round, wide fade (light-space radius, 0.45 to 0.95 of the half
-            // extent): a square edge 20 % wide showed the map's outline on
-            // the ground where sharp voxel shadows met the soft shared map.
-            weight = 1.0 - smoothstep(light.near_shadow.y, 0.95, length(c.xy));
+    // The finest clipmap level that covers p in full; coarser ones only
+    // matter outside it.
+    let levels = select(0, i32(light.near_levels.x), light.near_shadow.z > 0.5);
+    var full = levels;
+    var weights = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
+    for (var k = 0; k < levels; k++) {
+        weights[k] = near_level_weight(k, p);
+        if weights[k] >= 1.0 { full = k; break; }
+    }
+    var vis = 1.0;
+    if full < levels {
+        vis = near_level_visibility(full, p, n, plane_n);
+    } else {
+        vis = shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p, n, plane_n);
+        // The outer map uses actual alpha-tested tree geometry, not the coarse
+        // density field that wrongly buried sunlit crowns in their own shadow.
+        // Over the outer 55 % of the map: sharp tree shadows thin out into the
+        // coarse distant field instead of meeting it at a line.
+        let coverage_fade = sun_coverage_fade(light.shadow_view_proj, p, 0.45);
+        if coverage_fade > 0.0 && (far_sun.params.z > 0.5 || sun_pages_counts().z != 0u || gi.vol_dims.w != 0u) {
+            vis = mix(vis, distant_sun_visibility(p,n,plane_n), coverage_fade);
         }
     }
-    if weight >= 1.0 {
-        return shadow_filter(near_shadow_tex, light.near_shadow_view_proj, light.near_shadow.x, p, n, plane_n);
+    // Finer levels that cover p in part, coarsest first.
+    for (var k = min(full, levels) - 1; k >= 0; k--) {
+        if weights[k] > 0.0 { vis = mix(vis, near_level_visibility(k, p, n, plane_n), weights[k]); }
     }
-    var far = shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p, n, plane_n);
-    // The outer map uses actual alpha-tested tree geometry, not the coarse
-    // density field that wrongly buried sunlit crowns in their own shadow.
-    // Over the outer 55 % of the map: sharp tree shadows thin out into the
-    // coarse distant field instead of meeting it at a line.
-    let coverage_fade = sun_coverage_fade(light.shadow_view_proj, p, 0.45);
-    if coverage_fade > 0.0 && (far_sun.params.z > 0.5 || sun_pages_counts().z != 0u || gi.vol_dims.w != 0u) {
-        far = mix(far, distant_sun_visibility(p,n,plane_n), coverage_fade);
-    }
-    if weight <= 0.0 { return far; }
-    let detail = shadow_filter(near_shadow_tex, light.near_shadow_view_proj, light.near_shadow.x, p, n, plane_n);
-    return mix(far, detail, weight);
+    return vis;
 }
 
 // The renderer reserves night_stars.z for this execution policy. Diagnostics
@@ -2734,7 +2835,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     } else if light.sky.z > 13.5 && light.sky.z < 14.5 {
         rad = vec3<f32>(max(dot(surface_n,l),0.0)) * 6000.0;
     } else if light.sky.z > 14.5 && light.sky.z < 15.5 {
-        rad = vec3<f32>(shadow_filter(near_shadow_tex,light.near_shadow_view_proj,light.near_shadow.x,p,surface_n*sign(dot(surface_n,l)+1e-4),geo_n)) * 6000.0;
+        rad = vec3<f32>(shadow_filter_layer(near_shadow_tex,0,light.near_shadow_view_proj,light.near_shadow.x,p,surface_n*sign(dot(surface_n,l)+1e-4),geo_n)) * 6000.0;
     } else if light.sky.z > 15.5 && light.sky.z < 16.5 {
         rad = vec3<f32>(shadow_filter(shadow_tex,light.shadow_view_proj,light.sky.w,p,surface_n*sign(dot(surface_n,l)+1e-4),geo_n)) * 6000.0;
     } else if light.sky.z > 16.5 && light.sky.z < 17.5 {

@@ -56,7 +56,8 @@ pub(crate) fn create_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
             14,
             wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
         ),
-        (15, depth),
+        // The sun clipmap (frame.rs near_levels): one layer per level.
+        (15, tex(wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2Array)),
     ];
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("shared volume lighting view"),
