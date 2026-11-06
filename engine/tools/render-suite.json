@@ -9,7 +9,7 @@
     {"name": "wall", "at": "61,37,1.7,-0.35,0.05", "about": "facing a building a few metres away: nearly everything is hidden"},
     {"name": "town", "at": "40,120,1.7,0.6,0", "about": "street level between the buildings"},
     {"name": "hill", "at": "-550,1500,40,-1.57,-0.15", "about": "vista from the slope over forest and polder"},
-    {"name": "polder", "at": "2500,300,6,-1.57,-0.05", "frames": 1200, "about": "low over flat land with ditches and water; the forest cut takes this long to settle here"},
+    {"name": "polder", "at": "2500,300,6,-1.57,-0.05", "frames": 1200, "advisory_image": true, "about": "low over flat land with ditches and water; the forest cut rests in one of two states, chosen by timing"},
     {"name": "far", "at": "0,2500,900,0,-0.35", "about": "900 m up: the whole valley, town and distant forest"}
   ],
   "flights": [

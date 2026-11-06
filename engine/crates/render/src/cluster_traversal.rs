@@ -331,6 +331,6 @@ mod tests {
         assert_eq!(COUNTER_OFFSET+COUNTER_BYTES,crate::occlusion::SPLIT_COUNTER_OFFSET);
         assert!(!m.global_variables.iter().any(|(_,g)|g.binding.as_ref().is_some_and(|b|b.group==1&&b.binding==13)));
         assert_eq!(LEAF_CLUSTERS,32);assert_eq!(COUNTER_BYTES,32);
-        assert!(source.contains("if cluster_traverse(id,inst,li,base_thr,wind_pad) {return;}"));
+        assert!(source.contains("cluster_traverse(id,inst,li,base_thr,wind_pad);"));
     }
 }

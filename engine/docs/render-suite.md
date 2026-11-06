@@ -67,11 +67,13 @@ spread of either run. Pictures are compared per pixel on the largest colour
 channel: `over16` is the share of pixels off by more than 16 levels. More than
 0.1% above the noise floor between repeats is a failure. The noise floor is very
 low (views without trees repeat bit for bit), so a changed picture is a real
-change, but not always of the code under test: the forest cut keeps moving for
-hundreds of frames and streaming runs on wall time, so a build with faster
-frames can catch it at another moment. That is why `polder` runs 1200 frames.
-If only trees differ, rerun that view with more frames before blaming the
-change. The `flight` picture is reported but never fails a diff. A passing diff does not replace looking at the pictures: a faster frame
+change, but not always of the code under test: streaming runs on wall time, and
+on `polder` the forest cut rests in one of two states (8.09M or 8.22M triangles,
+1.1% of pixels apart), chosen by timing, even between repeats of one build. The
+`polder` and `flight` pictures are therefore reported but never fail a diff. If
+only trees differ on another view, compare its triangle count and repeat the run
+before blaming the change.
+A passing diff does not replace looking at the pictures: a faster frame
 with a missing effect is not a win.
 
 Times from different machines or backends are not comparable; shadow passes that

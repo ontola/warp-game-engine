@@ -110,8 +110,8 @@ Owned by the foliage work; its working checklist is
   pass times there.
 - Browser (wasm32, WebGPU): `terrain_fly` builds for the browser
   (`engine/tools/build-web.py`) as a prototype that loads and runs its
-  frame loop in Chrome but draws nothing yet: Chrome rejects the cull
-  shader's barriers (WGSL uniformity). No threads, gamepads, F10 menu or
+  frame loop in Chrome. The cull shader compiles there now; a drawn frame
+  is not confirmed yet. No threads, gamepads, F10 menu or
   HDR, and trees are cooked at every load
   ([Running in a browser](browser.md)). It needs 16 storage buffers per
   shader stage, which about 80 % of WebGPU devices offer.
