@@ -248,9 +248,12 @@ const VOXEL_SKY_LIFT: f32 = 1.0;
 // Branch voxel volumes carry no crown of their own (only whole-plant
 // proxies march one), so at 25-200 m crowns lit as if every leaf faced the
 // sun: ~2x the same tree as a mesh (Mancave tree series, 6 November).
-// 0.35: the tree series' best match to mesh crowns (0.55 left a dark band
-// past the clipmap, Joep playtest 5).
-const CROWN_EXTINCTION_PER_M: f32 = 0.35;
+// Off: wherever this estimate applied, a sun map (clipmap or shared) holds
+// the crown's own voxels too and already shades it from inside, so the two
+// counted its depth twice: a dark band of trees between the clipmap and the
+// shared map's edge (Joep playtest 5; Mancave band spot 0.62 of far trees at
+// 0.35). Mesh and voxel crowns now take one lighting source, the maps.
+const CROWN_EXTINCTION_PER_M: f32 = 0.0;
 fn crown_depth_in(map: texture_depth_2d, projection: mat4x4<f32>, p: vec3<f32>) -> f32 {
     let c = projection * vec4<f32>(p, 1.0);
     let uv = vec2<f32>(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
