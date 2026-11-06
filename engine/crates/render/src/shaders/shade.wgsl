@@ -281,8 +281,13 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     if anchored {outside *= sun_coverage_fade(far_sun.view_proj, p, far_sun.params.y);}
     var shadow = mix(1.0, others * mix(sqrt(own), own * own, outside), light.sun_color.w);
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow;
-    let sky_vis = sky_visibility(p + n * VOXEL_SKY_LIFT, n);
-    let back_sky_vis = sky_visibility(p - n * VOXEL_SKY_LIFT, -n);
+    // Sky reaches a cell through its own crown too. sky_visibility only sees
+    // what lies past the lift, so inner cells lit as if under open sky and
+    // a voxel crown read ~3.5x brighter than the same tree as a mesh (Joep,
+    // 6 November). The crown's sun transmittance stands in for the sky's.
+    let crown_sky = 0.25 + 0.75 * sqrt(own);
+    let sky_vis = sky_visibility(p + n * VOXEL_SKY_LIFT, n) * crown_sky;
+    let back_sky_vis = sky_visibility(p - n * VOXEL_SKY_LIFT, -n) * crown_sky;
     let refl = reflect(dir, n);
     // No screen-space AO: a voxel's blocky depth darkened its own crown to
     // 60 % of the leaves' sky light (forest_ladder, sun_lux=0).
