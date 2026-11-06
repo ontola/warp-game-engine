@@ -1553,7 +1553,11 @@ fn voxel_splat_resolve(@builtin(global_invocation_id) id:vec3<u32>) {
     let others=shadow_at(p+sun*(exit+volume_sun_texel(p)*2.0),up);
     let shadow=mix(1.0,others*volume_self_transmittance(tree,grid,p,sun),light.sun_color.w);
     let cell_m=grid.w/max(length(vec3<f32>(tree.inverse[0].x,tree.inverse[1].x,tree.inverse[2].x)),1e-6);
-    let rad=volume_radiance(sample,tree,p,-direction,shadow,sky_visibility(p+up*cell_m,up));
+    // Sky light reaches a cell through the crown above it too. The sky term
+    // alone lit inner cells as if they faced open sky, so a voxel crown read
+    // pale and blue next to the same tree as a mesh (Joep, 6 November).
+    let crown_sky=0.2+0.8*volume_self_transmittance(tree,grid,p,up);
+    let rad=volume_radiance(sample,tree,p,-direction,shadow,sky_visibility(p+up*cell_m,up)*crown_sky);
     textureStore(volume_output,px,vec4<f32>(rad,1.0));
 }
 
