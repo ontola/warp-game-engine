@@ -33,6 +33,9 @@ struct Parked { task:vec4<u32>, proposal:Proposal };
 @group(0) @binding(15) var<storage,read_write> record_consumers:array<u32>;
 @group(0) @binding(16) var<storage,read> seed_visibility:array<u32>;
 const NONE:u32=0xffffffffu;
+// Error-driven cut (fast_*): multiplier on the pixel targets, 1 = exact target.
+// The budgeted admission kernels never change it.
+var<private> cut_scale:f32=1.0;
 fn ready(rep:u32)->bool {
  if atomicLoad(&pages[rep].requested)==0u {atomicOr(&pages[rep].requested,1u);}
  return pages[rep].resident!=0u;
@@ -151,7 +154,7 @@ fn candidate(tree:u32,start:u32,request_pages:bool,roles:u32)->u32 {
  loop {
   let n=nodes[at];if n.links.x==NONE {break;}
   let scale=projected(t,n,roles);
-  if at==best && (n.links.w&1u)==0u && scale.x<1e29 && scale.x*n.error.x<=view.pixels.z && (n.error.y==0.0 || scale.x*n.error.y<=1.0) {break;}
+  if at==best && (n.links.w&1u)==0u && scale.x<1e29 && scale.x*n.error.x<=view.pixels.z*cut_scale && (n.error.y==0.0 || scale.x*n.error.y<=cut_scale) {break;}
   let child=n.links.x;let c=nodes[child];if c.links.y!=n.links.y {break;}
   let cost=work(tree,child,mask(sphere(t,c))&roles);
   if all(cost<=budget) {
@@ -557,4 +560,92 @@ fn audit_node(tree:u32,node:u32,roles:u32) {
   }
   if !found {atomicAdd(&state[26],1u);}
  }
+}
+
+// ---------------------------------------------------------------------------
+// Error-driven cut, Nanite style. Every task decides alone: refine while the
+// projected error exceeds the target and every replacement page is resident.
+// No priority scan, no collective admission, no dormant queue. Budgets are
+// safety caps reserved with atomics; when they bind, fast_adapt loosens the
+// error target for the next frame (state[79], kept across encodes) so the
+// caps stay slack and the cut does not depend on dispatch order.
+fn fast_scale()->f32 {let s=bitcast<f32>(atomicLoad(&state[79]));return select(1.0,s,s>=1.0 && s<1e6);}
+fn fast_reserve(delta:vec4<u32>)->bool {
+ let cap=limits();var ok=true;var taken=vec4<u32>(0u);
+ for(var k=0u;k<4u;k++) {
+  if delta[k]==0u {continue;}
+  let word=select(k,69u,k==3u);
+  let before=atomicAdd(&state[word],delta[k]);taken[k]=delta[k];
+  if before>cap[k] || delta[k]>cap[k]-before {ok=false;break;}
+ }
+ if !ok {for(var k=0u;k<4u;k++) {if taken[k]!=0u {atomicSub(&state[select(k,69u,k==3u)],taken[k]);}}}
+ return ok;
+}
+fn fast_refund(amount:vec4<u32>) {
+ for(var k=0u;k<4u;k++) {if amount[k]!=0u {atomicSub(&state[select(k,69u,k==3u)],amount[k]);}}
+}
+fn fast_set_args(count:u32) {
+ atomicStore(&state[3],count);atomicMax(&state[16],count);
+ atomicStore(&state[8],(count+63u)/64u);atomicStore(&state[9],1u);atomicStore(&state[10],1u);
+}
+@compute @workgroup_size(1) fn fast_begin() {fast_set_args(atomicLoad(&state[3]));atomicStore(&state[7],0u);}
+@compute @workgroup_size(64) fn fast_round(@builtin(global_invocation_id) id:vec3<u32>) {
+ let at=id.x;if at>=atomicLoad(&state[3]) {return;}
+ cut_scale=fast_scale();
+ let task=current[at];if task.z==0u {return;}
+ let t=trees[task.x];let node_id=select(task.y,t.info.x,task.y==NONE);let n=nodes[node_id];
+ atomicAdd(&counters[4],1u);
+ let scale=projected(t,n,task.z);
+ let wanted=task.y==NONE || (n.links.x!=NONE && ((n.links.w&1u)!=0u || scale.x>=1e29 || scale.x*n.error.x>view.pixels.z*cut_scale || scale.x*n.error.y>cut_scale));
+ if !wanted {publish(task);return;}
+ var first=node_id;var end=node_id+1u;
+ if task.y!=NONE {first=n.links.x;end=n.links.y;}
+ var replacement=vec4<u32>(0u);var resident=true;var branching=0u;var child=first;
+ loop {
+  if child==NONE || child>=end {break;}
+  let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
+  if consumers!=0u {
+   resident=ready(c.links.z)&&resident;
+   replacement=plus(replacement,work(task.x,selected,consumers));
+   if c.links.x!=NONE {branching++;}
+  }
+  child=nodes[child].links.y;
+ }
+ // Missing pages keep the complete parent; ready() has requested them.
+ if !resident {atomicAdd(&state[73],1u);publish(task);return;}
+ let old=work(task.x,task.y,task.z);
+ if !fast_reserve(replacement-min(replacement,old)) {atomicAdd(&state[17],1u);publish(task);return;}
+ let offset=atomicAdd(&state[7],branching);let capacity=arrayLength(&next);
+ if offset>capacity || branching>capacity-offset {
+  // Queue overflow: keep the parent and blank the claimed in-range entries.
+  for(var i=offset;i<min(offset+branching,capacity);i++) {next[i]=vec4<u32>(0u,NONE,0u,0u);}
+  fast_refund(replacement-min(replacement,old));atomicOr(&state[15],8u);publish(task);return;
+ }
+ fast_refund(old-min(old,replacement));
+ var out=offset;child=first;
+ loop {
+  if child==NONE || child>=end {break;}
+  let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
+  if consumers!=0u {
+   let replacement_task=vec4<u32>(task.x,selected,consumers,0u);
+   if c.links.x==NONE {publish(replacement_task);}else{next[out]=replacement_task;out++;}
+  }
+  child=nodes[child].links.y;
+ }
+}
+@compute @workgroup_size(1) fn fast_advance() {
+ let count=min(atomicLoad(&state[7]),arrayLength(&next));atomicStore(&state[7],0u);
+ if count!=0u {atomicAdd(&state[68],1u);}
+ fast_set_args(count);
+}
+// After the drain: compare the reserved totals with their caps. Coarsen fast
+// when a cap refused work or is nearly full, refine back slowly when slack.
+@compute @workgroup_size(1) fn fast_adapt() {
+ let used=used_now();let cap=max(limits(),vec4<u32>(1u));
+ var fill=0.0;for(var k=0u;k<4u;k++) {fill=max(fill,f32(used[k])/f32(cap[k]));}
+ var s=fast_scale();
+ if atomicLoad(&state[17])!=0u || fill>0.92 {s=s*1.1;}
+ else if fill<0.75 {s=max(1.0,s/1.03);}
+ atomicStore(&state[79],bitcast<u32>(min(s,1e5)));
+ atomicStore(&state[74],bitcast<u32>(fill));
 }
