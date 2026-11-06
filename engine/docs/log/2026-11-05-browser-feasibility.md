@@ -184,3 +184,14 @@ web3dsurvey.com (November 2026): sampled textures per stage are 44 or more
 on 98 % of Macs and 92 % of all devices, so 20 is not a practical limit;
 SwiftShader in headless Chrome offers only 16, so it still picks portable
 and cannot show the full path here.
+
+Step 9, cull to 8: materials and the voxel crown replacement words are two
+more `cull_tables` regions (read through `cull_material(i)` and
+`cull_voxel_replacement_at(i)`; `update_materials` writes them there too),
+so the cull scene layout drops `scene_tables`. Receiver shadow demand is
+opt-in (`KERN_RECEIVER_SHADOW_DEMAND=1`); when it is off, cull is built with
+a `receiver_shadow_keep` that keeps every caster (what the query returned on
+the zeroed buffer) and without binding 14. Cull is at 8, 9 with receiver
+demand. The portable threshold is now 8 storage buffers or 20 sampled
+textures. Pixel-identical (terrain_fly with and without trees, paged
+foliage sun, sky tiles, world_sun_visibility, meadow_shading_gpu).

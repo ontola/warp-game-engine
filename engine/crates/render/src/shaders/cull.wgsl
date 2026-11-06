@@ -75,20 +75,6 @@ fn instance_at(id: u32) -> Instance {
     let owner = instances[member_owner(id)];
     return compose_member(owner, instances[member_template(owner,id)]);
 }
-// Materials and crown replacement words from the scene tables
-// (scene_tables.rs): materials from vec4 0.x, two vec4s each; replacement
-// words from vec4 2.z.
-@group(0) @binding(5) var<storage, read> scene_tables: array<vec4<u32>>;
-fn cull_material(i: u32) -> CullMaterial {
-    let at = scene_tables[0].x + 2u * i;
-    let a = scene_tables[at];
-    let b = scene_tables[at + 1u];
-    return CullMaterial(bitcast<vec3<f32>>(a.xyz), bitcast<i32>(a.w), bitcast<f32>(b.x), b.y, bitcast<f32>(b.z), bitcast<f32>(b.w));
-}
-fn cull_voxel_replacement_at(i: u32) -> u32 {
-    let v = scene_tables[scene_tables[2].z + (i >> 2u)];
-    return v[i & 3u];
-}
 @group(0) @binding(12) var<storage, read> cull_wind: array<vec4<f32>>;
 
 @group(1) @binding(0) var<uniform> view: View;
@@ -133,9 +119,10 @@ fn selection_unpack(w:u32)->vec4<u32> {
 // static count, dynamic count, static word offset, dynamic word offset.
 struct SpatialGroup {sphere:vec4<f32>,span:vec4<u32>}
 struct SpatialGroups {header:vec4<u32>,groups:array<SpatialGroup>}
-// The BVH, spatial groups, their members and the sun owner lists, copied
-// into one buffer (cull_tables.rs); vec4 0 says where each starts, vec4
-// 1.x how many member words there are.
+// The BVH, spatial groups, their members, the sun owner lists, materials
+// and crown replacement words, copied into one buffer (cull_tables.rs);
+// vec4 0 says where the first four start, vec4 1.x how many member words
+// there are.
 @group(1) @binding(8) var<storage,read> cull_tables: array<vec4<u32>>;
 fn cull_table_word(at: u32) -> u32 { let v = cull_tables[at >> 2u]; return v[at & 3u]; }
 fn cluster_tree_at(i: u32) -> u32 { return cull_table_word(cull_tables[0].x + i); }
@@ -146,6 +133,17 @@ fn spatial_header() -> vec4<u32> { return cull_tables[cull_tables[0].w]; }
 fn spatial_group(i: u32) -> SpatialGroup {
     let at = cull_tables[0].w + 1u + 2u * i;
     return SpatialGroup(bitcast<vec4<f32>>(cull_tables[at]), cull_tables[at + 1u]);
+}
+// Materials from vec4 1.y, two vec4s each; crown replacement words from 1.z.
+fn cull_material(i: u32) -> CullMaterial {
+    let at = cull_tables[1].y + 2u * i;
+    let a = cull_tables[at];
+    let b = cull_tables[at + 1u];
+    return CullMaterial(bitcast<vec3<f32>>(a.xyz), bitcast<i32>(a.w), bitcast<f32>(b.x), b.y, bitcast<f32>(b.z), bitcast<f32>(b.w));
+}
+fn cull_voxel_replacement_at(i: u32) -> u32 {
+    let v = cull_tables[cull_tables[1].z + (i >> 2u)];
+    return v[i & 3u];
 }
 // Dedicated scratch: phase2 must not overwrite phase1's bucket draw map.
 @group(1) @binding(10) var<storage,read_write> spatial_owners:array<u32>;

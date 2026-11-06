@@ -127,9 +127,9 @@ Owned by the foliage work; its working checklist is
   is not confirmed yet. No threads, gamepads, F10 menu or
   HDR; trees are opt-in (`?trees=1`) because they are cooked at every load
   ([Running in a browser](browser.md)). Without trees the full renderer
-  needs 10 storage buffers per shader stage (94 % of Macs; not Firefox,
-  which gives 9) and 20 sampled textures; trees still need 16. Below that a
-  portable renderer draws terrain and sky only (`render::portable`). The
-  engine rule is 8 per stage: shade and raster fit, cull is at 10.
+  fits the engine rule of 8 storage buffers per shader stage but needs 20
+  sampled textures (spec minimum 16); trees still need 16 storage buffers.
+  Below that a portable renderer draws terrain and sky only
+  (`render::portable`).
 - The cloud container has no GPU: Mesa lavapipe runs GPU tests in software.
   It proves correctness, not performance.
