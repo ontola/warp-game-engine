@@ -1524,10 +1524,23 @@ fn voxel_splat_gbuffer(@builtin(global_invocation_id) id:vec3<u32>) {
         // Not ground cover: grass voxels already matched their blades.
         if exit<63.0 {own=select(1.0,(1.0-exp(-tau))/tau,tau>1e-4);}
     }
+    // A mesh crown shows dark inner branches and gaps between its needles;
+    // a disc shows the cell's mean colour. Darken discs toward the trunk and
+    // the crown's foot, so a crown has shape under sky light alone (Joep,
+    // playtest 5: voxel crowns flat and lighter than the mesh). Not ground
+    // cover.
+    var albedo=sample.albedo;
+    if exit<63.0 && !volume_proxy(record.x) {
+        let mid=0.5*(tree.bounds_min.xyz+tree.bounds_max.xyz);
+        let half=max(0.5*(tree.bounds_max.xyz-tree.bounds_min.xyz),vec3<f32>(1e-3));
+        let inner=1.0-clamp(length((p.xz-mid.xz)/half.xz),0.0,1.0);
+        let low=1.0-clamp((p.y-tree.bounds_min.y)/(2.0*half.y),0.0,1.0);
+        albedo*=1.0-0.45*clamp(0.6*inner+0.5*low,0.0,1.0);
+    }
     let rough_leaf=u32(round(clamp(sample.roughness,0.0,1.0)*255.0))|(u32(round(clamp(sample.leaf_fraction,0.0,1.0)*255.0))<<8u);
     let own_exit=u32(round(own*255.0))|(u32(round(exit*4.0))<<8u);
-    textureStore(volume_gbuffer,px,vec4<u32>(pack2x16float(sample.albedo.rg),
-        (pack2x16float(vec2<f32>(sample.albedo.b,0.0))&0xffffu)|(rough_leaf<<16u),
+    textureStore(volume_gbuffer,px,vec4<u32>(pack2x16float(albedo.rg),
+        (pack2x16float(vec2<f32>(albedo.b,0.0))&0xffffu)|(rough_leaf<<16u),
         pack2x16float(n.xy),(pack2x16float(vec2<f32>(n.z,0.0))&0xffffu)|(own_exit<<16u)));
 }
 
