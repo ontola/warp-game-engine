@@ -24,6 +24,8 @@ current defaults, in [renderer switches](../renderer-switches.md).
 
 ## Status and plans
 
+- [Vegetation takeover handoff, 6 November 2026](2026-11-06-vegetation-handoff.md)
+
 - [Handoff log, 23 October to 5 November 2026](handoff.md)
 - [Forest rendering roadmap](forest-rendering-roadmap.md) (in Dutch; overtaken by
   the [vegetation checklist](../vegetation-architecture.md))
