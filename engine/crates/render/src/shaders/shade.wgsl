@@ -279,7 +279,11 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     // full transmittance instead of the square root the maps pair with.
     var outside = sun_coverage_fade(light.shadow_view_proj, p, 0.45);
     if anchored {outside *= sun_coverage_fade(far_sun.view_proj, p, far_sun.params.y);}
-    var shadow = mix(1.0, others * mix(sqrt(own), own * own, outside), light.sun_color.w);
+    // Inside the maps the crown's own transmittance counts in full: with
+    // sqrt(own) (the maps were meant to supply the rest, but at 1 m cells and
+    // a texel of bias they barely shade a crown) voxel crowns caught ~1.4x
+    // the sun of the same tree as a mesh (Mancave tree series, 6 November).
+    var shadow = mix(1.0, others * mix(own, own * own, outside), light.sun_color.w);
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow;
     // Sky reaches a cell through its own crown too. sky_visibility only sees
     // what lies past the lift, so inner cells lit as if under open sky and
