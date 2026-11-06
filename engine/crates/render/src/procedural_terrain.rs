@@ -337,13 +337,23 @@ pub struct Settings {
     /// or turns this much (degrees).
     pub reselect_m: f32,
     pub reselect_deg: f32,
+    /// Seconds a patch takes to slide from the shape it replaced into its
+    /// own after a change of detail (0: swap at once).
+    pub morph_s: f32,
+    /// Only patches with cells up to this long (metres) slide: farther
+    /// ones change less than a pixel, and every sliding patch is rebuilt
+    /// each frame.
+    pub morph_max_cell: f32,
+    /// At most this many patches slide at once (the finest first); the rest
+    /// swap at once. A fast flight changes thousands a second.
+    pub morph_max_patches: usize,
 }
 
 impl Default for Settings {
     // offscreen_factor 8 swung a 5K view between 4k and 12k patches as it
     // turned (6.9k new in one 30 degree step): mouse turns hitched.
     fn default() -> Self { Settings { cell_pixels: 24.0, error_pixels: 1.5, view_distance: 20000.0, finest: 1.0 / 16.0, root_level: 13,
-        offscreen_factor: 2.5, cone_margin_deg: 15.0, build_budget: 1024, reselect_m: 0.5, reselect_deg: 1.0 } }
+        offscreen_factor: 2.5, cone_margin_deg: 15.0, build_budget: 1024, reselect_m: 0.5, reselect_deg: 1.0, morph_s: 0.35, morph_max_cell: 2.0, morph_max_patches: 768 } }
 }
 
 /// One camera as the LOD sees it.
@@ -401,7 +411,29 @@ pub struct Job {
     spacing: f32,
     mask: u32,
     slot: u32,
-    _pad: [u32; 3],
+    /// Geomorph: bits 0..1 [`MORPH_FROM_COARSER`] or [`MORPH_FROM_FINER`],
+    /// bits 2..5 the edges (west, east, north, south) that slide too.
+    morph: u32,
+    /// 0 the old shape, 1 the patch's own.
+    morph_t: f32,
+    _pad: u32,
+}
+
+/// Job.morph: the patch replaces a coarser one (a split).
+const MORPH_FROM_COARSER: u32 = 1;
+/// Job.morph: the patch replaces finer ones (a merge).
+const MORPH_FROM_FINER: u32 = 2;
+
+/// A shown patch sliding from the shape it replaced into its own
+/// (procedural_terrain.wgsl build): rebuilt every frame until it is there.
+#[derive(Clone, Copy, Debug)]
+struct Morph {
+    job: Job,
+    started_s: f64,
+    /// The same-level neighbour each sliding edge slides with: an edge stops
+    /// sliding (takes its own shape) once that neighbour is gone, because
+    /// the patch that replaced it does not slide along it.
+    with: [Option<(Node, u32)>; 4],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -463,6 +495,9 @@ pub struct ProceduralTerrain {
     settled: Option<Arc<HashSet<(Node, u32)>>>,
     /// What each slot's instance holds on the GPU.
     instances: Vec<GpuInstance>,
+    /// Shown patches still sliding into their own shape, by slot.
+    morphs: HashMap<u32, Morph>,
+    clock: web_time::Instant,
 }
 
 /// One frame of terrain changes: instance writes and patch builds.
@@ -470,6 +505,8 @@ pub struct Plan {
     pub stats: Stats,
     changed: Vec<(u32, GpuInstance)>,
     jobs: Vec<Job>,
+    /// Rebuilds of sliding patches (Settings::morph_s), outside the budget.
+    morph_jobs: Vec<Job>,
 }
 
 /// Cached node samples before the cache starts over.
@@ -483,7 +520,7 @@ impl ProceduralTerrain {
     pub fn new(spec: TerrainSpec, settings: Settings) -> Self {
         let instances = (0..spec.capacity).map(|slot| hidden_instance(&spec, slot)).collect();
         ProceduralTerrain { free: (0..spec.capacity).rev().collect(), instances, spec, settings, slots: HashMap::default(), lod: 1.0, samples: Default::default(),
-            hidden: HashMap::default(), selection: None, settled: None }
+            hidden: HashMap::default(), selection: None, settled: None, morphs: HashMap::default(), clock: web_time::Instant::now() }
     }
 
     fn cell(&self, level: u32) -> f32 { self.settings.finest * (1u32 << level) as f32 }
@@ -603,7 +640,7 @@ impl ProceduralTerrain {
 
     fn job(&self, (n, m): (Node, u32), slot: u32) -> Job {
         let size = self.size(n.level);
-        Job { origin: [n.ix as f32 * size, n.iz as f32 * size], spacing: self.cell(n.level), mask: m, slot, _pad: [0; 3] }
+        Job { origin: [n.ix as f32 * size, n.iz as f32 * size], spacing: self.cell(n.level), mask: m, slot, morph: 0, morph_t: 1.0, _pad: 0 }
     }
 
     /// This frame's changes, CPU only. Up to `build_budget` new patches are
@@ -612,7 +649,10 @@ impl ProceduralTerrain {
     pub fn plan(&mut self, views: &[TerrainView]) -> Plan {
         let (wanted, patches, finest_level) = self.wanted(views);
         let mut stats = Stats { patches, finest_level, lod_scale: self.lod, ..Default::default() };
-        if self.settled.as_ref().is_some_and(|s| Arc::ptr_eq(s, &wanted)) { return Plan { stats, changed: Vec::new(), jobs: Vec::new() }; }
+        if self.settled.as_ref().is_some_and(|s| Arc::ptr_eq(s, &wanted)) {
+            let morph_jobs = self.morph_jobs();
+            return Plan { stats, changed: Vec::new(), jobs: Vec::new(), morph_jobs };
+        }
         let mut changed: Vec<(u32, GpuInstance)> = Vec::new();
         let mut jobs = Vec::new();
         // Hidden patches no longer wanted go back to the pool (still hidden).
@@ -634,12 +674,18 @@ impl ProceduralTerrain {
                 stats.built += 1;
             }
             stats.pending = wanted.len() - self.slots.keys().filter(|k| wanted.contains(*k)).count() - self.hidden.len();
-            return Plan { stats, changed, jobs };
+            let morph_jobs = self.morph_jobs();
+            return Plan { stats, changed, jobs, morph_jobs };
         }
         // Swap: everything wanted is built by the end of this frame (or the
         // pool has no room to build ahead, which is the old behaviour).
+        let old: HashSet<Node> = self.slots.keys().map(|k| k.0).collect();
+        let root = self.settings.root_level;
+        let mut fresh: Vec<((Node, u32), u32)> = Vec::new();
+        let morphs = &mut self.morphs;
         self.slots.retain(|key, slot| {
             if wanted.contains(key) { return true; }
+            morphs.remove(slot);
             self.free.push(*slot);
             changed.push((*slot, hidden_instance(&self.spec, *slot)));
             stats.freed += 1;
@@ -648,23 +694,94 @@ impl ProceduralTerrain {
         for (key, (slot, inst)) in self.hidden.drain() {
             changed.push((slot, inst));
             self.slots.insert(key, slot);
+            fresh.push((key, slot));
         }
         for key in new {
             let Some(slot) = self.free.pop() else { stats.overflow += 1; continue; };
             jobs.push(self.job(key, slot));
             changed.push((slot, self.shown_instance(key.0, slot)));
             self.slots.insert(key, slot);
+            fresh.push((key, slot));
             stats.built += 1;
         }
+        if self.settings.morph_s > 0.0 && !old.is_empty() { self.start_morphs(&old, &fresh, root); }
         changed.sort_by_key(|c| c.0);
         if stats.overflow == 0 { self.settled = Some(wanted); }
-        Plan { stats, changed, jobs }
+        let morph_jobs = self.morph_jobs();
+        Plan { stats, changed, jobs, morph_jobs }
+    }
+
+    /// Where each patch shown by a swap comes from (`old`: the nodes shown
+    /// before it), and which of its edges slide with a neighbour that comes
+    /// from the same side; a patch with nothing to slide from swaps at once.
+    fn start_morphs(&mut self, old: &HashSet<Node>, fresh: &[((Node, u32), u32)], root: u32) {
+        let mut below: HashSet<Node> = HashSet::default();
+        for &n in old {
+            let mut a = n;
+            while a.level < root { a = a.parent(); if !below.insert(a) { break; } }
+        }
+        let from = |n: Node| {
+            if old.contains(&n) { return 0; }
+            if below.contains(&n) { return MORPH_FROM_FINER; }
+            let mut a = n;
+            while a.level < root { a = a.parent(); if old.contains(&a) { return MORPH_FROM_COARSER; } }
+            0
+        };
+        let mut sliding: Vec<((Node, u32), u32, u32)> = fresh.iter().map(|&(key, slot)| (key, slot, from(key.0)))
+            .filter(|&(key, _, dir)| dir != 0 && self.cell(key.0.level) <= self.settings.morph_max_cell).collect();
+        sliding.sort_by_key(|&(key, _, _)| (key.0.level, key.0.ix, key.0.iz));
+        sliding.truncate(self.settings.morph_max_patches.saturating_sub(self.morphs.len()));
+        // Only patches that slide count as sliding neighbours.
+        let dirs: HashMap<Node, (u32, (Node, u32))> = sliding.iter().map(|&(key, _, dir)| (key.0, (dir, key))).collect();
+        let started_s = self.clock.elapsed().as_secs_f64();
+        for &(key, slot, dir) in &sliding {
+            let n = key.0;
+            let mut with = [None; 4];
+            let mut morph = dir;
+            for (e, (dx, dz)) in [(-1, 0), (1, 0), (0, -1), (0, 1)].into_iter().enumerate() {
+                let nb = Node { level: n.level, ix: n.ix + dx, iz: n.iz + dz };
+                if let Some(&(d, nb_key)) = dirs.get(&nb) {
+                    if d == dir { with[e] = Some(nb_key); morph |= 4 << e; }
+                }
+            }
+            let mut job = self.job(key, slot);
+            job.morph = morph;
+            job.morph_t = 0.0;
+            self.morphs.insert(slot, Morph { job, started_s, with });
+        }
+    }
+
+    /// This frame's rebuilds of the sliding patches; the last one of each
+    /// builds its own shape.
+    fn morph_jobs(&mut self) -> Vec<Job> {
+        if self.morphs.is_empty() { return Vec::new(); }
+        let now = self.clock.elapsed().as_secs_f64();
+        let span = f64::from(self.settings.morph_s.max(1e-3));
+        let slots = &self.slots;
+        let mut jobs = Vec::with_capacity(self.morphs.len());
+        self.morphs.retain(|_, m| {
+            for (e, w) in m.with.iter_mut().enumerate() {
+                if w.is_some_and(|k| !slots.contains_key(&k)) { *w = None; m.job.morph &= !(4 << e); }
+            }
+            let t = ((now - m.started_s) / span) as f32;
+            let mut job = m.job;
+            if t >= 1.0 { job.morph = 0; job.morph_t = 1.0; } else { job.morph_t = t.max(0.0); }
+            jobs.push(job);
+            t < 1.0
+        });
+        jobs
     }
 
     /// Choose this frame's patches, build the new ones on the GPU and hide
     /// the ones no longer needed. Call once per frame before rendering.
     pub fn update(&mut self, gpu: &Gpu, renderer: &Renderer, views: &[TerrainView]) -> Result<Stats, String> {
-        let Plan { stats, changed, jobs } = self.plan(views);
+        let Plan { stats, changed, mut jobs, morph_jobs } = self.plan(views);
+        // One job per slot: a sliding patch's rebuild replaces its plain build.
+        if !morph_jobs.is_empty() {
+            let sliding: HashSet<u32> = morph_jobs.iter().map(|j| j.slot).collect();
+            jobs.retain(|j| !sliding.contains(&j.slot));
+            jobs.extend(morph_jobs);
+        }
         // One upload from the first changed slot to the last: freed slots are
         // scattered, and every separate write costs more than the bytes between.
         if let (Some(&(first, _)), Some(&(last, _))) = (changed.first(), changed.last()) {
@@ -1004,6 +1121,51 @@ mod tests {
         let old = worst(Settings { offscreen_factor: 8.0, cone_margin_deg: 0.0, ..Settings::default() });
         let new = worst(Settings::default());
         assert!(new * 10 <= old * 8, "worst new patches per 30 degree turn: {new}, was {old}");
+    }
+
+    #[test]
+    fn build_shader_validates() {
+        let source = format!("{}\n{}\n{}", terrain_field::WGSL, world_constraints::wgsl(0, 4), SHADER);
+        let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&module).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+        assert_eq!(std::mem::size_of::<Job>(), 32);
+    }
+
+    #[test]
+    fn walking_slides_new_detail_in_and_ends_on_the_patches_own_shape() {
+        let mut t = terrain();
+        t.settings.morph_s = 1e6;
+        let mut view = turn_view(&t, 40.0);
+        while t.plan(&[view]).stats.pending > 0 {}
+        let mut splits = 0;
+        let mut merges = 0;
+        for step in 0..40 {
+            view.pos += Vec3::new(0.0, 0.0, -1.0);
+            let plan = t.plan(&[view]);
+            for j in &plan.morph_jobs {
+                assert!(j.morph & 3 != 0 && j.morph_t < 1.0, "step {step}: {j:?}");
+                assert!(t.slots.values().any(|&s| s == j.slot), "a sliding slot is shown");
+                splits += usize::from(j.morph & 3 == MORPH_FROM_COARSER);
+                merges += usize::from(j.morph & 3 == MORPH_FROM_FINER);
+            }
+            // Every sliding edge slides with a shown same-level neighbour
+            // that slides along it the same way.
+            for m in t.morphs.values() {
+                for (e, w) in m.with.iter().enumerate() {
+                    let Some(k) = w else { assert_eq!(m.job.morph & (4 << e), 0); continue };
+                    let other = t.morphs.get(&t.slots[k]).expect("neighbour still sliding");
+                    assert_eq!(other.job.morph & 3, m.job.morph & 3);
+                    assert_ne!(other.job.morph & (4 << (e ^ 1)), 0, "edge slides on one side only");
+                }
+            }
+        }
+        assert!(splits > 0 && merges > 0, "splits {splits}, merges {merges}");
+        // Finished slides rebuild the patch in its own shape once.
+        t.settings.morph_s = 1e-9;
+        let last = t.plan(&[view]).morph_jobs;
+        assert!(!last.is_empty() && last.iter().all(|j| j.morph == 0 && j.morph_t == 1.0));
+        assert!(t.plan(&[view]).morph_jobs.is_empty());
     }
 
     #[test]
