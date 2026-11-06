@@ -292,7 +292,7 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     // term counts at most 1.5 m of it: grass under a tree is metres below
     // the crown, and lost its sky fill too (shadows went nearly black).
     let marched = f32((g.w >> 16u) & 255u) / 255.0;
-    let canopy = crown_depth(p);
+    let canopy = select(crown_depth(p), 0.0, (g.w >> 24u) == 255u);
     let own = min(marched, exp(-CROWN_EXTINCTION_PER_M * canopy));
     let own_sky = min(marched, exp(-CROWN_EXTINCTION_PER_M * min(canopy, 1.5)));
     let exit = f32(g.w >> 24u) / 4.0;
