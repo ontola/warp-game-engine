@@ -138,7 +138,8 @@ impl Shell {
                     // The renderer's scene and cull layouts need 16 (browser.md).
                     let storage = l.gpu.device.limits().max_storage_buffers_per_shader_stage;
                     if storage < 16 {
-                        progress(Some(0.8), &format!("This GPU offers {storage} storage buffers per shader stage; the renderer needs 16. Try Chrome or Edge on a desktop GPU."));
+                        let agent = web_sys::window().and_then(|w| w.navigator().user_agent().ok()).unwrap_or_default();
+                        progress(Some(0.8), &format!("This GPU offers {storage} storage buffers per shader stage; the renderer needs 16. Try the latest Chrome or Edge on a desktop GPU.\n{agent}"));
                         return;
                     }
                     *live.borrow_mut() = Some(l);

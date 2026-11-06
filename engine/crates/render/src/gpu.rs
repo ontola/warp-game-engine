@@ -143,13 +143,14 @@ impl Gpu {
         // optional timestamp and first-instance features. `spec` is the
         // spec's default limits (every browser); `browser` is what about
         // 80 % of WebGPU devices offer (web3dsurvey.com, 2026-11): 16
-        // storage buffers per stage, 32 sampled textures, 1 GiB buffers.
+        // storage buffers per stage, 32 sampled textures, 1 GiB buffers;
+        // `mac` is `browser` with the 10 storage buffers most Macs give.
         let web = std::env::var("KERN_WEBGPU_LIMITS").ok();
         let (features, limits) = match web.as_deref() {
-            Some(mode @ ("spec" | "browser")) => {
+            Some(mode @ ("spec" | "browser" | "mac")) => {
                 let mut web = wgpu::Limits::default();
-                if mode == "browser" {
-                    web.max_storage_buffers_per_shader_stage = 16;
+                if mode != "spec" {
+                    web.max_storage_buffers_per_shader_stage = if mode == "mac" { 10 } else { 16 };
                     web.max_sampled_textures_per_shader_stage = 32;
                     web.max_storage_buffer_binding_size = 1 << 30;
                     web.max_buffer_size = 1 << 30;
@@ -182,6 +183,15 @@ impl Gpu {
             }
             None => adapter.request_device(&descriptor).await.map_err(|e| format!("device: {e}"))?,
         };
+        // Under KERN_WEBGPU_LIMITS, report each distinct GPU error once and
+        // keep going, so one run lists every layout over the limits.
+        if web.is_some() {
+            let seen = std::sync::Mutex::new(std::collections::HashSet::new());
+            device.on_uncaptured_error(std::sync::Arc::new(move |error: wgpu::Error| {
+                let text = error.to_string();
+                if seen.lock().map(|mut s| s.insert(text.clone())).unwrap_or(true) { eprintln!("KERN_WEBGPU_LIMITS GPU error: {text}"); }
+            }));
+        }
         let pipeline_cache = std::sync::Arc::new(crate::pipeline_cache::Cache::new(&device, &info));
         Ok((Gpu { device, queue, info, features, limits, pipeline_cache }, adapter))
     }
