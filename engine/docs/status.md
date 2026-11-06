@@ -64,7 +64,7 @@ Owned by the foliage work; its working checklist is
   GPU loosens the camera and shadow targets separately), bounded source and
   voxel paging (256 MiB voxel cache, fitted to the device binding limit,
   pages streamed most urgent first), shared poses and a shadow tile cache.
-  49152 branch slots. Sub-pixel camera splats are thinned by area (kept with
+  32768 branch slots. Sub-pixel camera splats are thinned by area (kept with
   probability = disc area, drawn larger), and splat booking is calibrated
   against the splats the raster stored last frame. No CPU near-tree pool.
   `KERN_FOLIAGE_CUT=budget` restores the old budgeted admission.

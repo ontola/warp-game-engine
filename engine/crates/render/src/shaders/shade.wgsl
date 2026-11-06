@@ -1409,7 +1409,10 @@ fn shadow_detail_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
     if light.near_shadow.z > 0.5 {
         let c = light.near_shadow_view_proj * vec4<f32>(p, 1.0);
         if c.z >= 0.0 && c.z <= 1.0 {
-            weight = 1.0 - smoothstep(light.near_shadow.y, 1.0, max(abs(c.x), abs(c.y)));
+            // Round, wide fade (light-space radius, 0.45 to 0.95 of the half
+            // extent): a square edge 20 % wide showed the map's outline on
+            // the ground where sharp voxel shadows met the soft shared map.
+            weight = 1.0 - smoothstep(light.near_shadow.y, 0.95, length(c.xy));
         }
     }
     if weight >= 1.0 {
@@ -2671,7 +2674,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     } else if light.sky.z > 16.5 && light.sky.z < 17.5 {
         let clip=light.near_shadow_view_proj*vec4<f32>(p,1.0);
         let valid=light.near_shadow.z>0.5 && clip.z>=0.0 && clip.z<=1.0;
-        rad=vec3<f32>(select(0.0,1.0-smoothstep(light.near_shadow.y,1.0,max(abs(clip.x),abs(clip.y))),valid))*6000.0;
+        rad=vec3<f32>(select(0.0,1.0-smoothstep(light.near_shadow.y,0.95,length(clip.xy)),valid))*6000.0;
     } else if light.sky.z > 19.5 && light.sky.z < 22.5 {
         rad = car_debug * 6000.0;
     } else if light.sky.z > 22.5 && light.sky.z < 24.5 {
