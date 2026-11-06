@@ -2439,7 +2439,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         ao = mix(0.45, 1.0, height);
         back = vec3<f32>(0.12, 0.16, 0.05) * max(-ndl, 0.0);
     }
-    if SHADE_CLASS == 1u && TERRAIN_COARSE && sun_coverage_fade(light.shadow_view_proj, p, 0.45) > 0.0 {
+    // distant_sun_visibility reads it only past the far sun map, if any.
+    if SHADE_CLASS == 1u && TERRAIN_COARSE && sun_coverage_fade(light.shadow_view_proj, p, 0.45) > 0.0
+        && (far_sun.params.z <= 0.5 || sun_coverage_fade(far_sun.view_proj, p, far_sun.params.y) > 0.0) {
         coarse_sun_transmittance = coarse_sun_at(px, depth);
     }
     let terrain_error=select(0.0,world_visibility.params.z,(m.flags&6u)!=0u);
