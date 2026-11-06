@@ -106,20 +106,23 @@ pub fn cook_meadow_cells(variants:&[(u64,f32)],cache:Option<&Path>)->Result<Vec<
             // Patches sit jittered within their third of the cell, each at
             // its own turn: on the bare 0.5 m lattice the patches' feathered
             // edges lined up into stripes across the whole field from above
-            // (Joep, playtest 4). Jitter stays within +-0.15 m so neighbouring
-            // patches (0.36 m radius) still meet.
+            // (Joep, playtest 4). Each patch is uniform over its whole third
+            // (+-0.25 m): a uniform jitter as wide as the 0.5 m spacing cancels
+            // that lattice's frequency and its harmonics exactly, where the
+            // earlier +-0.15 m left half of it (measured lattice at 4-7x noise
+            // with variants and turns on).
             let unit=|i:u64,k:u64|{let mut z=seed^(i<<32)^k.wrapping_mul(0x9e37_79b9_7f4a_7c15);
                 z=(z^(z>>30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);z=(z^(z>>27)).wrapping_mul(0x94d0_49bb_1331_11eb);
                 ((z^(z>>31))>>40) as f32/16_777_216.0};
             let members=(0..9).map(|i|crate::vegetation_cell::Placement {id:i+1,
                 rest:Mat4::from_rotation_translation(glam::Quat::from_rotation_y(unit(i,1)*std::f32::consts::TAU),
-                    Vec3::new((i%3)as f32*0.5-0.5+(unit(i,2)-0.5)*0.3,0.,(i/3)as f32*0.5-0.5+(unit(i,3)-0.5)*0.3))}).collect::<Vec<_>>();
+                    Vec3::new((i%3)as f32*0.5-0.5+(unit(i,2)-0.5)*0.5,0.,(i/3)as f32*0.5-0.5+(unit(i,3)-0.5)*0.5))}).collect::<Vec<_>>();
             let cell=crate::vegetation_cell::compose(seed,&source,&members,Limits {max_branches:64,max_instances:1080,..Limits::default()})?;
             let mut plant=CookedPlant::cook_aggregate(&cell,config)?;
             plant.cook_proxy(&cell,config,7)?;Ok(plant)
         };
         let (plant,loaded)=match cache {
-            Some(path)=>CookedPlant::cached(path,&format!("meadow cell 3x3 jittered {parameters:?} {config:?} levels7"),cook)?,
+            Some(path)=>CookedPlant::cached(path,&format!("meadow cell 3x3 stratified {parameters:?} {config:?} levels7"),cook)?,
             None=>(cook()?,false),
         };
         Ok(Cooked {plant,loaded,millis:started.elapsed().as_secs_f64()*1000.})
