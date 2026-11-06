@@ -29,6 +29,12 @@ resolution, reconstruction mode, sample count and scene with a number.
   Same pixels as before on lavapipe (`gpu_opaque_and_masked_pipelines_draw_the_same_pixels`).
   **Open:** not timed on a real GPU yet; A/B with `KERN_RASTER_SPLIT=0` on the
   Mac and the RTX 5070 Ti.
+- **F3 stats overlay** (6 November): every app-shell game shows frame,
+  CPU and GPU cost, a nested GPU tree (group, pass, sub-scope), memory and
+  game lines ([guide](stats-overlay.md)). The procedural terrain build pass
+  is now timed. **Open:** no async cluster/triangle counters yet (they need
+  a non-blocking counter readback); not in the browser shell or Sideways'
+  own shell; overlay cost not measured on a real GPU yet.
 - **Open:** fixed per-frame work for unused features; `frame.rs` still refers
   to Sideways features; new meshes or materials need a new renderer;
   animated pixels reject TAA history (no deformation motion vectors).
