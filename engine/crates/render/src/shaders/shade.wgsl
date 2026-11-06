@@ -240,6 +240,40 @@ const VOXEL_SKY_LIFT: f32 = 1.0;
 // A voxel pixel: the same sun, sky, contact and fog terms as a procedural
 // leaf in `shade`, from the voxel's albedo, picked normal lobe and leaf
 // fraction instead of a triangle's.
+// How deep a point lies inside the canopy along the sun, from the first
+// caster a sun map holds above it: metres between that depth and the
+// point's own (the map is orthographic, so depth is linear along the sun).
+// Branch voxel volumes carry no crown of their own (only whole-plant
+// proxies march one), so at 25-200 m crowns lit as if every leaf faced the
+// sun: ~2x the same tree as a mesh (Mancave tree series, 6 November).
+const CROWN_EXTINCTION_PER_M: f32 = 0.55;
+fn crown_depth_in(map: texture_depth_2d, projection: mat4x4<f32>, p: vec3<f32>) -> f32 {
+    let c = projection * vec4<f32>(p, 1.0);
+    let uv = vec2<f32>(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
+    if any(uv <= vec2<f32>(0.0)) || any(uv >= vec2<f32>(1.0)) || c.z < 0.0 || c.z > 1.0 { return -1.0; }
+    let rate = abs(dot(vec3<f32>(projection[0].z, projection[1].z, projection[2].z), light.sun_dir.xyz));
+    if rate <= 1e-9 { return -1.0; }
+    let size = vec2<i32>(textureDimensions(map));
+    let at = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(1), size - 2);
+    // Mean of a plus of taps: one texel of a 1 m voxel disc is noise.
+    var sum = 0.0;
+    for (var k = 0; k < 5; k++) {
+        let o = select(select(select(select(vec2<i32>(0, 0), vec2<i32>(1, 0), k == 1), vec2<i32>(-1, 0), k == 2), vec2<i32>(0, 1), k == 3), vec2<i32>(0, -1), k == 4);
+        sum += abs(c.z - textureLoad(map, at + o, 0)) / rate;
+    }
+    return sum / 5.0;
+}
+fn crown_transmittance(p: vec3<f32>) -> f32 {
+    var depth = -1.0;
+    if light.near_shadow.z > 0.5 {
+        let c = light.near_shadow_view_proj * vec4<f32>(p, 1.0);
+        if length(c.xy) < 0.9 { depth = crown_depth_in(near_shadow_tex, light.near_shadow_view_proj, p); }
+    }
+    if depth < 0.0 { depth = crown_depth_in(shadow_tex, light.shadow_view_proj, p); }
+    if depth < 0.0 { return 1.0; }
+    return exp(-CROWN_EXTINCTION_PER_M * max(depth - 0.25, 0.0));
+}
+
 fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     let ndc = vec2<f32>((f32(px.x) + 0.5) / view.size.x * 2.0 - 1.0, 1.0 - (f32(px.y) + 0.5) / view.size.y * 2.0);
     let hit = view.inv_view_proj * vec4<f32>(ndc, depth, 1.0);
@@ -253,7 +287,9 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     var n = normalize(vec3<f32>(unpack2x16float(g.z), unpack2x16float(g.w & 0xffffu).x));
     let rough = clamp(f32((g.y >> 16u) & 255u) / 255.0, 0.04, 1.0);
     let leaf = f32(g.y >> 24u) / 255.0;
-    let own = f32((g.w >> 16u) & 255u) / 255.0;
+    // A proxy's own march, or for branch volumes (own 1) the canopy depth
+    // the sun maps see above this point; the smaller of the two.
+    let own = min(f32((g.w >> 16u) & 255u) / 255.0, crown_transmittance(p));
     let exit = f32(g.w >> 24u) / 4.0;
     let l = light.sun_dir.xyz;
     let v = -dir;
