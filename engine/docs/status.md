@@ -120,9 +120,10 @@ Owned by the foliage work; its working checklist is
   frame loop in Chrome. The cull shader compiles there now; a drawn frame
   is not confirmed yet. No threads, gamepads, F10 menu or
   HDR; trees are opt-in (`?trees=1`) because they are cooked at every load
-  ([Running in a browser](browser.md)). The full renderer needs 16 storage
-  buffers per shader stage, which about 80 % of WebGPU devices offer but
-  only about 29 % of Macs (most give 10) and not Firefox (9). Below 16 a
-  portable renderer draws terrain and sky only (`render::portable`).
+  ([Running in a browser](browser.md)). Without trees the full renderer
+  needs 10 storage buffers per shader stage (94 % of Macs; not Firefox,
+  which gives 9) and 20 sampled textures; trees still need 16. Below that a
+  portable renderer draws terrain and sky only (`render::portable`). The
+  engine rule is 8 per stage: shade and raster fit, cull is at 10.
 - The cloud container has no GPU: Mesa lavapipe runs GPU tests in software.
   It proves correctness, not performance.

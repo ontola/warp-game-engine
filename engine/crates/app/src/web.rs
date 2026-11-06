@@ -135,10 +135,12 @@ impl Shell {
             match setup(window.clone()).await {
                 Ok(l) => {
                     log(&format!("GPU: {} ({:?}), {}x{}, {:?}", l.gpu.info.name, l.gpu.info.backend, l.config.width, l.config.height, l.config.format));
-                    // Below 16 storage buffers per stage the renderer draws with
-                    // its portable path (render::portable): terrain and sky only.
-                    let storage = l.gpu.device.limits().max_storage_buffers_per_shader_stage;
-                    if storage < 16 { log(&format!("{storage} storage buffers per shader stage: portable renderer (terrain and sky only)")); }
+                    // Below the full renderer's limits it draws with its portable
+                    // path (render::portable): terrain and sky only.
+                    let limits = l.gpu.device.limits();
+                    let (storage, textures) = (limits.max_storage_buffers_per_shader_stage, limits.max_sampled_textures_per_shader_stage);
+                    if render::portable::needed(&limits) { log(&format!("{storage} storage buffers, {textures} sampled textures per shader stage: portable renderer (terrain and sky only)")); }
+                    else if storage < 16 { log(&format!("{storage} storage buffers per shader stage: full renderer, no trees (they need 16)")); }
                     *live.borrow_mut() = Some(l);
                     window.request_redraw();
                 }

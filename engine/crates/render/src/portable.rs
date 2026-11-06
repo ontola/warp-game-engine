@@ -32,10 +32,20 @@ pub(crate) struct Portable {
     targets: Vec<Target>,
 }
 
-/// Whether this device needs the portable renderer.
-pub(crate) fn wanted(gpu: &Gpu) -> bool {
-    gpu.limits.max_storage_buffers_per_shader_stage < 16 || std::env::var("KERN_PORTABLE").as_deref() == Ok("1")
+/// Storage buffers per stage and sampled textures per stage the full
+/// renderer needs without trees (cull is at 10, shade at 20 textures;
+/// browser.md). The GPU forest still needs 16 storage buffers.
+pub const FULL_STORAGE_BUFFERS: u32 = 10;
+pub const FULL_SAMPLED_TEXTURES: u32 = 20;
+
+/// Whether a device with these limits needs the portable renderer.
+pub fn needed(limits: &wgpu::Limits) -> bool {
+    limits.max_storage_buffers_per_shader_stage < FULL_STORAGE_BUFFERS
+        || limits.max_sampled_textures_per_shader_stage < FULL_SAMPLED_TEXTURES
+        || std::env::var("KERN_PORTABLE").as_deref() == Ok("1")
 }
+
+pub(crate) fn wanted(gpu: &Gpu) -> bool { needed(&gpu.limits) }
 
 const SLOT: [Option<wgpu::VertexBufferLayout<'static>>; 1] = [Some(wgpu::VertexBufferLayout { array_stride: 4, step_mode: wgpu::VertexStepMode::Instance,
     attributes: &wgpu::vertex_attr_array![0 => Uint32] })];

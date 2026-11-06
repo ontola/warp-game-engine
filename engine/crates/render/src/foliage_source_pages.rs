@@ -46,7 +46,7 @@ pub struct Stats {pub allocated_bytes:u64,pub resident_pages:u32,pub total_pages
 pub struct Cache {
     pages:Vec<Page>,pub deps:Vec<Vec<usize>>,pub capacities:[u64;3],arenas:[Arena;3],resident:Vec<Option<Resident>>,pending:Option<Pending>,
     /// Vertices, cluster vertices and triangles share one buffer (topology.rs).
-    pub topology:crate::topology::Topology,pub clusters:wgpu::Buffer,pub dirty:BTreeSet<usize>,stats:Stats,
+    pub(crate) topology:crate::topology::Topology,pub clusters:wgpu::Buffer,pub dirty:BTreeSet<usize>,stats:Stats,
 }
 /// Conservative draw/traversal work, NOT unique resident asset bytes.
 /// Repeated templates sharing one mesh each consume work. Includes every CLOD

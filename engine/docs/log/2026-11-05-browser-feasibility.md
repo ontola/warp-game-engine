@@ -176,3 +176,11 @@ pass maps the same query accessors onto its own members binding.
 `KERN_WEBGPU_LIMITS=mac terrain_fly --no-trees` now runs with no GPU
 errors. At `spec`, cull is at 10 and shade has 20 sampled textures (16
 allowed). Pixel-identical.
+
+Browser rule after step 8: the portable renderer is used below 10 storage
+buffers or 20 sampled textures per stage (`render::portable::needed`), so
+most Macs (94 % offer 10 or more) get the full renderer without trees.
+web3dsurvey.com (November 2026): sampled textures per stage are 44 or more
+on 98 % of Macs and 92 % of all devices, so 20 is not a practical limit;
+SwiftShader in headless Chrome offers only 16, so it still picks portable
+and cannot show the full path here.
