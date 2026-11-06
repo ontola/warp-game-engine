@@ -1070,7 +1070,9 @@ fn main() -> Result<(), String> {
                 // profiling on the actual instance, not just pointer changes.
                 if let Some(stats)=renderer.foliage_page_stats(){page_samples.push(serde_json::json!({"frame":i,"cache":stats}));}
                 renderer.set_async_gpu_profiling(&gpu,true)?;
-                for sample in renderer.drain_gpu_profiles(&gpu).samples {
+                // WARP_STATS: the overlay in the shot takes the samples.
+                let samples=if headless.stats.open(){Vec::new()}else{renderer.drain_gpu_profiles(&gpu).samples};
+                for sample in samples {
                     gpu_samples.push(serde_json::json!({"frame":sample.render_sequence,"output":sample.output_size,"views":sample.views,
                         "covered_ms":sample.covered_interval_ms,"passes":sample.gpu_ms,
                         "upscale":renderer.upscale_status().mode.as_str(),
