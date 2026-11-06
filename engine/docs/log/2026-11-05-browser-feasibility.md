@@ -91,3 +91,19 @@ WebGPU canvas page does the same, so it is the setup, not Warp.)
     analysis, so native builds never see it. Fixing it means deciding those
     in one lane and sharing them with `workgroupUniformLoad`. Other modules
     may have more: Tint stops at the first error per module.
+
+## Storage buffer limits and the portable renderer (6 November 2026)
+
+- Joep's Mac: Chrome 156 offers 10 storage buffers per stage, Zen
+  (Firefox 159) 9. web3dsurvey, macOS: 94 % offer at least 10, 29 % at
+  least 16.
+- Per pipeline, from a wgpu trace of a native run with trees: shade,
+  raster, terrain coarse and cull 16; canopy clipmap 14; voxel forest 15
+  and 16; foliage selection 14, refinement 16, materialization 16, branch
+  residency 11. Everything else 8 or fewer.
+- Portable renderer (`render::portable`, three storage buffers): native at
+  `KERN_WEBGPU_LIMITS=mac` (lavapipe) draws the terrain with no errors of
+  its own; the full renderer's layouts fail validation 21 times at
+  startup. Headless Chrome (SwiftShader, 10): Tint compiles it, frames run
+  at about 1.3 s each in software; the canvas cannot be read back there,
+  so pixels in a browser still need a real GPU.
