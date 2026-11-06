@@ -91,16 +91,19 @@ fn near_levels() -> usize {
 /// Half extent of clipmap level `k` (metres).
 fn near_level_extent(k: usize) -> f32 { NEAR_SHADOW_EXTENT * (1u32 << k) as f32 }
 /// Finest voxel cell level `k` splats: half a pixel's growth per level.
-/// Level 0 redraws every frame, level 1 every other frame, levels 2 and 3
-/// every fourth (on different frames): at most two levels per frame. All
+/// Level 0 redraws every frame, level 1 every other frame, level 2 every
+/// fourth and level 3 every eighth (on different frames): at most two levels
+/// per frame. All
 /// four every frame cost ~6.5 ms at 4K-class settings (Mancave, f5af817).
 /// KERN_SUN_STAGGER=0 redraws every level every frame.
 fn near_level_due(k: usize, frame: u64) -> bool {
     static STAGGER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if k == 0 || !*STAGGER.get_or_init(|| std::env::var("KERN_SUN_STAGGER").as_deref() != Ok("0")) { return true; }
-    match k { 1 => frame % 2 == 0, 2 => frame % 4 == 1, _ => frame % 4 == 3 }
+    match k { 1 => frame % 2 == 0, 2 => frame % 4 == 1, _ => frame % 8 == 3 }
 }
-fn near_level_voxel_m(k: usize) -> f32 { NEAR_SUN_VOXEL_M * std::f32::consts::SQRT_2.powi(k as i32) }
+// The outermost level (96-192 m) splats a voxel LOD coarser: walking its
+// cells was a fixed ~1 ms whatever reached the raster (Mancave, bbf410b).
+fn near_level_voxel_m(k: usize) -> f32 { NEAR_SUN_VOXEL_M * std::f32::consts::SQRT_2.powi(k as i32) * if k >= 3 { 1.42 } else { 1.0 } }
 fn near_shadow_lod() -> f32 {
     static SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *SCALE.get_or_init(|| std::env::var("KERN_NEAR_SHADOW_LOD").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0))
