@@ -125,7 +125,7 @@ def line_strength(image):
         variance = sum(v * v for v in high) / n
         if variance <= 0:
             return {"c": 0.0, "px": 0}
-        best = max((sum(high[i] * high[i + lag] for i in range(n - lag)) / (n - lag) / variance, lag) for lag in range(2, min(60, n // 2)))
+        best = max((sum(high[i] * high[i + lag] for i in range(n - lag)) / (n - lag) / variance, lag) for lag in range(8, min(60, n // 2)))
         return {"c": round(best[0], 2), "px": best[1] * 2}
     return {"rows": peak(across), "columns": peak(down)}
 
@@ -221,6 +221,7 @@ def measure(label):
                        "counts": counters, "selected": (summary.get("forest") or {}).get("selected_records"),
                        "crown_rgb": crown_rgb(image, view["crown"]) if "crown" in view else None,
                        "grid": grid_strength(image, view["grid_px"]) if "grid_px" in view else None,
+                       "lines": line_strength(image) if view.get("lines") else None,
                        "largest_cell": largest_cell(run / f"{name}.r0.log")}
     near = next((v["crown_rgb"] for v in views.values() if v["crown_rgb"]), None)
     for view in views.values():
