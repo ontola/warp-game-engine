@@ -59,14 +59,21 @@ Owned by the foliage work; its working checklist is
 [vegetation-architecture.md](vegetation-architecture.md).
 
 - **Default in `terrain_fly`:** one GPU route for trees and terrain grass:
-  shared assemblies, GPU incremental complete-cut selection, bounded source
-  and voxel paging, shared poses and a shadow tile cache. There is no CPU
-  near-tree pool. Selection rounds follow the need read back from the GPU.
-- **Open:** requested detail is not met (submitted voxel cells up to about
-  5.5 px against a 1 px target in the normal scene, more in the full scene),
-  upstream two-phase visibility, independent per-consumer detail and target
-  performance. Source triangle and cluster work is accounted for but a tight
-  budget was rejected. Games (Sideways) still use their own meadow path.
+  shared assemblies, a Nanite-style error-driven GPU cut (each root refines
+  until its error is under the pixel target; when slots or splats run out the
+  GPU loosens the camera and shadow targets separately), bounded source and
+  voxel paging (256 MiB voxel cache, fitted to the device binding limit),
+  shared poses and a shadow tile cache. 65536 branch slots. No CPU near-tree
+  pool. `KERN_FOLIAGE_CUT=budget` restores the old budgeted admission.
+- **Measured** (6 November, RTX 5070 Ti, 720p, one view, lowland diagnostic):
+  18.9 ms GPU against 27.1 ms on the old route, selection 1.35 ms against
+  11.3 ms, largest voxel cell 2.7 px against 5.5 px, 95% of splats at or
+  under 1 px.
+- **Open:** the 1 px target is not met everywhere (the camera target settles
+  about 12x loose, held by the splat reservation, which still books ~75% more
+  than the raster keeps after frustum culling); a visible patch boundary in
+  the near ground cover; shadow refinement costs ~2 ms of near shadow raster;
+  4K/four-view budgets. Games (Sideways) still use their own meadow path.
 - Distant trees freeze to their rest pose between 60 and 90 m
   (`KERN_WIND_FREEZE`), so they match cached sun shadows.
 
