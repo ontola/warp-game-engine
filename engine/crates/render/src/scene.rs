@@ -398,6 +398,13 @@ pub struct Graphics {
     /// One lane per mesh owner. For plain mesh scenes without wind, vegetation
     /// replacement, spatial aggregation, cluster traversal or cached sun pages.
     pub simple_mesh_culling: bool,
+    /// Minimum renderer: skip owners whose bounding sphere starts beyond this
+    /// many metres from the camera (0: no limit). For large worlds on Quest.
+    pub minimal_draw_distance: f32,
+    /// Minimum renderer: skip owners whose bounding sphere spans less than this
+    /// angle in radians as seen from the camera (0: draw all). Drops distant
+    /// small detail that covers a pixel or two.
+    pub minimal_min_angle: f32,
 }
 
 #[derive(Default)]

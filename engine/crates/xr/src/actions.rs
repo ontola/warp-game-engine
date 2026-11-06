@@ -66,7 +66,10 @@ impl Actions {
         // thresholded buttons above stay for everything else.
         let level=|a:&xr::Action<f32>| -> Result<f32> {let s=a.state(session,path)?;Ok(if s.is_active {s.current_state.clamp(0.0,1.0)} else {0.0})};
         let triggers=[level(&self.grenade)?,level(&self.fire)?];
-        let controls=Controls {mv, triggers, held:Buttons(held),pressed:Buttons(held & !self.previous),..Default::default()};
+        // The right stick as a pad's: games that fly or aim with it read `aim`;
+        // snap turn reads the same x through the returned `turn`.
+        let aim_stick=vec(&self.turn)?.map(|x| if x.abs()<0.18 {0.0}else{x});
+        let controls=Controls {mv, aim:aim_stick, triggers, held:Buttons(held),pressed:Buttons(held & !self.previous),..Default::default()};
         self.previous=held;
         let aim=if self.aim.is_active(session,path)? { let loc=self.space.locate(base,time)?;
             loc.location_flags.contains(xr::SpaceLocationFlags::POSITION_VALID|xr::SpaceLocationFlags::ORIENTATION_VALID).then(||crate::android::pose(loc.pose))

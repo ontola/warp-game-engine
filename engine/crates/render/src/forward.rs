@@ -20,6 +20,8 @@ struct Target {size:[u32;2],color:wgpu::Texture,depth:wgpu::Texture,instances:wg
 pub(crate) struct Forward {
     pipeline:wgpu::RenderPipeline,pipeline_srgb:wgpu::RenderPipeline,layout:wgpu::BindGroupLayout,vertices:wgpu::Buffer,indices:wgpu::Buffer,materials:wgpu::Buffer,
     lava_view:wgpu::TextureView,lava_sampler:wgpu::Sampler,stone_view:wgpu::TextureView,stone_detail:bool,
+    /// `Graphics::minimal_draw_distance` and `minimal_min_angle`.
+    draw_distance:f32,min_angle:f32,
     /// Index ranges of `Scene::rigid_models`, this frame's characters and
     /// their joints: three rows per joint, one draw per character.
     rigid_models:Vec<Range<u32>>,rigid_actors:Vec<RigidDraw>,palette:wgpu::Buffer,
@@ -76,7 +78,7 @@ impl Forward {
         let stone_view=crate::minimum_stone::texture(gpu);
         let supported=gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY|wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
         let query=supported.then(||(gpu.device.create_query_set(&wgpu::QuerySetDescriptor{label:Some("minimum timestamps"),ty:wgpu::QueryType::Timestamp,count:48}),gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("minimum timestamps resolve"),size:48*8,usage:wgpu::BufferUsages::QUERY_RESOLVE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false})));
-        Self{profiler:crate::gpu_profile::Profiler::new(supported,48),profiling:false,query,sequence:0,profile_frame_id:None,pipeline,pipeline_srgb,layout,lava_view,lava_sampler,stone_view,stone_detail:scene.graphics.stone_detail,rigid_models,rigid_actors:Vec::new(),palette,vertices,indices,materials:materials.clone(),meshes,ranges,owners:scene.instances.clone(),targets:Vec::new()}
+        Self{profiler:crate::gpu_profile::Profiler::new(supported,48),profiling:false,query,sequence:0,profile_frame_id:None,pipeline,pipeline_srgb,layout,lava_view,lava_sampler,stone_view,stone_detail:scene.graphics.stone_detail,draw_distance:scene.graphics.minimal_draw_distance,min_angle:scene.graphics.minimal_min_angle,rigid_models,rigid_actors:Vec::new(),palette,vertices,indices,materials:materials.clone(),meshes,ranges,owners:scene.instances.clone(),targets:Vec::new()}
     }
     pub fn update(&mut self,first:usize,instances:&[GpuInstance])->Result<(),String>{
         if first.checked_add(instances.len()).is_none_or(|n|n>self.owners.len()){return Err("minimal owner update exceeds scene".into());}
@@ -123,6 +125,11 @@ impl Forward {
                 if i.cluster_count==0 || (i.flags>>(8+vi))&1!=0 {continue;}
                 let c=Vec3::from_slice(&i.sphere[..3]);let r=i.sphere[3];
                 if planes.iter().any(|p|p.dot(c.extend(1.0)) < -r*p.truncate().length()){continue;}
+                if self.draw_distance>0.0||self.min_angle>0.0 {
+                    let d=c.distance(view.cam.pos);
+                    if self.draw_distance>0.0 && d-r>self.draw_distance {continue;}
+                    if r<d*self.min_angle {continue;}
+                }
                 if let Some(&mesh)=self.ranges.get(&(i.first_cluster,i.cluster_count)){groups[mesh].push(owner);}
             }
             let mut packed=Vec::new();let mut draws=Vec::new();
@@ -206,6 +213,25 @@ impl Forward {
         let hidden=draw();assert_eq!(pixel(&hidden,32),0);assert_eq!(pixel(&hidden,96),0);
         scene.update_instance(0,mesh,glam::Affine3A::IDENTITY);scene.instances[0].hide_in_views(0);
         renderer.update_instances(&gpu,0,&scene.instances).unwrap();let shown=draw();assert!(pixel(&shown,32)>100&&pixel(&shown,96)>100);
+    }
+    #[test] fn minimum_skips_owners_beyond_the_draw_distance_or_too_small_to_see() {
+        let gpu=Gpu::new().unwrap();
+        let draw=|distance:f32,angle:f32,z:f32|{
+            let mut scene=Scene::default();scene.graphics.minimal_forward=true;
+            scene.graphics.minimal_draw_distance=distance;scene.graphics.minimal_min_angle=angle;
+            let m=scene.add_material(crate::scene::Material{tint:[1.,0.,0.],layer:-1,roughness:1.,flags:crate::scene::EMISSIVE,scale:30000.,metal:0.});
+            let mesh=scene.add_mesh(&crate::primitives::quad(m).mesh());scene.add_instance(mesh,glam::Affine3A::from_translation(Vec3::new(0.,0.,z)));
+            let light=Lighting{sun_lux:0.,sky_lux:0.,..Default::default()};
+            let renderer=crate::Renderer::new(&gpu,&scene,&light);
+            let camera=crate::Camera{pos:Vec3::new(0.,0.,3.),target:Vec3::new(0.,0.,z),fov_y:1.,near:0.05};
+            let image=renderer.try_render_views(&gpu,&[ViewRect{cam:camera,x:0,y:0,w:64,h:64}],&light,64,64,&[]).unwrap().0;
+            image[(32*64+32)*4]
+        };
+        assert!(draw(0.,0.,0.)>100,"no limits: drawn");
+        assert!(draw(50.,0.,0.)>100,"within the draw distance");
+        assert_eq!(draw(50.,0.,-60.),0,"beyond the draw distance");
+        assert!(draw(0.,0.01,0.)>100,"large enough");
+        assert_eq!(draw(0.,0.5,0.),0,"smaller than the minimum angle");
     }
     #[test] fn minimum_keeps_explosion_and_ion_column_visible_until_their_expiry() {
         let gpu=Gpu::new().unwrap();let mut scene=Scene::default();scene.graphics.minimal_forward=true;
