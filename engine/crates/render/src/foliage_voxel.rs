@@ -186,6 +186,31 @@ pub struct VoxelAsset {
     pub stats: BakeStats,
 }
 
+impl VoxelAsset {
+    /// What the asset looks like from afar: its mean albedo weighted by the
+    /// area it shows, and that area per square metre of its xz footprint seen
+    /// along Y and (mean of X and Z) sideways. A view at elevation sin `e`
+    /// sees a share 1 - exp(-(y e + side sqrt(1 - e^2)) / e) of the ground
+    /// covered, overlaps taken as random. A far stand-in for the plant (a
+    /// grass field painted into the ground) takes this look instead of
+    /// guessing it.
+    pub fn far_look(&self) -> ([f32; 3], [f32; 2]) {
+        let Some(level) = self.levels.last() else { return ([0.0; 3], [0.0; 2]) };
+        let (mut rgb, mut y, mut side) = ([0.0f64; 3], 0.0f64, 0.0f64);
+        for v in &level.voxels {
+            let [ax, ay, az] = v.projected_area.map(|a| f64::from(a.max(0.0)));
+            let a = ay + 0.5 * (ax + az);
+            for k in 0..3 { rgb[k] += a * f64::from(v.albedo[k]); }
+            y += ay;
+            side += 0.5 * (ax + az);
+        }
+        let [lo, hi] = self.source_bounds;
+        let footprint = f64::from(((hi[0] - lo[0]) * (hi[2] - lo[2])).max(1e-6));
+        if y + side <= 0.0 { return ([0.0; 3], [0.0; 2]) }
+        (rgb.map(|c| (c / (y + side)) as f32), [(y / footprint) as f32, (side / footprint) as f32])
+    }
+}
+
 // Accumulate in f64 and retain the accumulators between levels. Reconstructing
 // mass from rounded f32 means at every level would gradually lose coverage.
 #[derive(Clone, Default)]
