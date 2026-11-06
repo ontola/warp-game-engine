@@ -171,6 +171,9 @@ fn fs_noised(p: vec2<f32>, seed: u32) -> vec3<f32> {
 // octaves terrain_field.wgsl adds as geometry closer in. The mesh cell is
 // taken as ~24 pixels (procedural_terrain::Settings::cell_pixels).
 fn field_detail_slope(xz: vec2<f32>, seed: u32, footprint: f32, rock: f32, up: f32, moor: f32) -> vec2<f32> {
+    // Pixels too large for the first octave (the loop's first break) need
+    // neither the warp nor the rotations.
+    if clamp(16.0 / (4.0 * footprint) - 1.0, 0.0, 1.0) <= 0.0 { return vec2<f32>(0.0); }
     let p = xz / 2048.0;
     let warp = vec2<f32>(fs_noised(p * 1.5 + vec2<f32>(5.2, 1.3), seed + 3u).x, fs_noised(p * 1.5 + vec2<f32>(1.7, 9.2), seed + 3u).x);
     var q = p + warp * 0.12;
@@ -248,6 +251,9 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
         for (var k = 1; k <= 8; k++) {
             let t = f32(k) * 0.125;
             let tall = 1.0 - smoothstep(0.5, 1.0, t);
+            // tall only falls with k and a stand is at most 1: no later tap
+            // can raise the maximum any more.
+            if shade >= tall { break; }
             shade = max(shade, tall * far_forest_stand(s.p.xz + toward * reach * t, seed, site, footprint, edge_w));
         }
     }
@@ -269,6 +275,8 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     var wall = 0.0;
     let taps = select(1, 6, reach > footprint);
     for (var k = 0; k < taps; k++) {
+        // Behind a solid stand nothing more is seen: the rest adds nothing.
+        if seen <= 0.0 { break; }
         let t = select(0.0, f32(k) / f32(taps - 1), taps > 1);
         let a = far_forest_stand(mix(q, s.p.xz, t), seed, site, footprint, edge_w);
         if k == 0 { top = seen * a; } else { wall += seen * a; }
