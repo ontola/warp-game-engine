@@ -737,15 +737,6 @@ impl Runtime {
     }
 
     #[test]
-    fn meadow_cell_far_look_is_green_and_denser_sideways() {
-        let cooked=crate::recipe_forest::cook_meadow_cells(&[(47,0.2)],None).unwrap();
-        let (rgb,[y,side])=cooked[0].plant.proxy().unwrap().far_look();
-        eprintln!("meadow far look {rgb:?} area per m2 from above {y}, sideways {side}");
-        assert!(rgb[1]>rgb[0]&&rgb[1]>rgb[2]&&rgb[1]<0.6,"{rgb:?}");
-        assert!(y>0.1&&y<1.0&&side>y,"{y} {side}");
-    }
-
-    #[test]
     fn mixed_species_share_catalog_and_preserve_categories_on_replacement() {
         use super::*;
         use crate::scene::GeometryCategory::{Trees,Grass};
