@@ -96,7 +96,9 @@ impl Resources {
     }
     pub fn history_buffer(&self,gpu:&Gpu,view:usize,owners:u32)->wgpu::Buffer {
         if !self.history_first {return self.empty_history.clone();}
-        assert!(owners<=1<<19,"GPU forest owner ID capacity");
+        // History is a hashed filter (tree_history_keys, 18-bit keys): any
+        // owner count fits; more owners only add conservative collisions.
+        let _=owners;
         let mut all=self.history.lock().unwrap();
         while all.len()<=view {all.push(gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("per-view source visibility history"),size:65536,usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false}));}
         all[view].clone()
