@@ -274,6 +274,7 @@ mod shader_tests {
 mod forward;
 mod portable;
 mod scene_tables;
+mod cull_tables;
 mod shade_scratch;
 mod topology;
 mod minimum_lava;

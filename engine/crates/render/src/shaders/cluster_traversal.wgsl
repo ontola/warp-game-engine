@@ -3,7 +3,7 @@
 // slot identify its root and exact mesh count; UINT_MAX means flat fallback.
 // Nodes are20words: cull/parent/own spheres, max parent/min own errors,
 // two reserved words, escape/first member/member count/descendant count.
-@group(1) @binding(12) var<storage,read> cluster_tree:array<u32>;
+// The BVH words come from the cull tables (cull.wgsl cluster_tree_at).
 // Traversal diagnostics occupy cull_draw.counter[32..40], sharing the cull binding.
 
 var<workgroup> cluster_cursor:u32;
@@ -13,8 +13,8 @@ var<workgroup> cluster_linear_bound:f32;
 var<workgroup> cluster_error_scale:f32;
 
 fn cluster_tree_sphere(word:u32)->vec4<f32> {
-    return vec4<f32>(bitcast<f32>(cluster_tree[word]),bitcast<f32>(cluster_tree[word+1u]),
-        bitcast<f32>(cluster_tree[word+2u]),bitcast<f32>(cluster_tree[word+3u]));
+    return vec4<f32>(bitcast<f32>(cluster_tree_at(word)),bitcast<f32>(cluster_tree_at(word+1u)),
+        bitcast<f32>(cluster_tree_at(word+2u)),bitcast<f32>(cluster_tree_at(word+3u)));
 }
 
 // sqrt(max absolute row sum(A^T A)) bounds the affine operator norm, including
@@ -43,7 +43,7 @@ fn cluster_node_reject(node:u32,inst:Instance,threshold:f32,wind:f32)->u32 {
     let cull=cluster_world_bound(inst,cluster_tree_sphere(node),wind);
     if !all(abs(cull)<vec4<f32>(1e19)){return 0u;}
     if !in_frustum(cull.xyz,cull.w) || hidden_by_camera_fog(cull.xyz,cull.w){return 1u;}
-    let parent_error=bitcast<f32>(cluster_tree[node+12u]);
+    let parent_error=bitcast<f32>(cluster_tree_at(node+12u));
     if parent_error<=1e30 {
         let parent=cluster_world_bound(inst,cluster_tree_sphere(node+4u),wind);
         let nearest=max(distance(parent.xyz,view.cam.xyz)-parent.w,view.params.y);
@@ -52,7 +52,7 @@ fn cluster_node_reject(node:u32,inst:Instance,threshold:f32,wind:f32)->u32 {
         // exact predicate. Root sentinel errors must never become finite.
         if upper>=0.0 && upper+max(1e-4,abs(upper)*2e-5)<threshold {return 2u;}
     }
-    let own_error=bitcast<f32>(cluster_tree[node+13u]);
+    let own_error=bitcast<f32>(cluster_tree_at(node+13u));
     if own_error>0.0 {
         let own=cluster_world_bound(inst,cluster_tree_sphere(node+8u),wind);
         let farthest=max(distance(own.xyz,view.cam.xyz)+own.w,view.params.y);
@@ -65,23 +65,23 @@ fn cluster_node_reject(node:u32,inst:Instance,threshold:f32,wind:f32)->u32 {
 // Lane 0 only: whether this owner has a usable hierarchy, and the traversal's
 // shared state if so. False leaves the owner to the flat scan.
 fn cluster_traverse_begin(id:u32,inst:Instance,threshold:f32,wind:f32)->bool {
-    if cluster_tree[0]==0u {return false;}
-    if inst.first_cluster>=cluster_tree[1] {
+    if cluster_tree_at(0)==0u {return false;}
+    if inst.first_cluster>=cluster_tree_at(1) {
         atomicAdd(&cull_draw.counter[38],1u);return false;
     }
     let table=4u+inst.first_cluster*2u;
-    let root=cluster_tree[table];
+    let root=cluster_tree_at(table);
     if root==0xffffffffu {atomicAdd(&cull_draw.counter[37],1u);return false;}
     // Mesh replacement may change an owner's range. Unknown/sub-ranges do
     // not borrow a broader mesh's hierarchy, and never silently lose clusters.
-    if cluster_tree[table+1u]!=inst.cluster_count || root<cluster_tree[2]
-        || root+20u>cluster_tree[3] || !(inst.scale>0.0 && inst.scale<1e12)
+    if cluster_tree_at(table+1u)!=inst.cluster_count || root<cluster_tree_at(2)
+        || root+20u>cluster_tree_at(3) || !(inst.scale>0.0 && inst.scale<1e12)
         || !(wind>=0.0 && wind<1e12) || !(threshold>=0.0 && threshold<1e20)
         || !all(abs(inst.r0)<vec4<f32>(1e18)) || !all(abs(inst.r1)<vec4<f32>(1e18))
         || !all(abs(inst.r2)<vec4<f32>(1e18)) || !all(abs(cull_wind[id].xy)<vec2<f32>(1e12)) {
         atomicAdd(&cull_draw.counter[38],1u);return false;
     }
-    cluster_cursor=root;cluster_end=cluster_tree[root+16u];
+    cluster_cursor=root;cluster_end=cluster_tree_at(root+16u);
     cluster_linear_bound=cluster_transform_bound(inst);
     cluster_error_scale=inst.scale*(1.0+length(cull_wind[id].xy));
     atomicAdd(&cull_draw.counter[32],1u);atomicAdd(&cull_draw.counter[39],inst.cluster_count);
@@ -94,25 +94,25 @@ fn cluster_traverse(id:u32,inst:Instance,li:u32,threshold:f32,wind:f32) {
         // accept a barrier under a branch on a plain workgroup read.
         let node=workgroupUniformLoad(&cluster_cursor);
         if node>=workgroupUniformLoad(&cluster_end) {break;}
-        let count=cluster_tree[node+18u];
+        let count=cluster_tree_at(node+18u);
         if li==0u {
             atomicAdd(&cull_draw.counter[33],1u);
             cluster_action=cluster_node_reject(node,inst,threshold,wind);
             if cluster_action!=0u {
                 atomicAdd(&cull_draw.counter[34],1u);
-                atomicAdd(&cull_draw.counter[36],cluster_tree[node+19u]);
+                atomicAdd(&cull_draw.counter[36],cluster_tree_at(node+19u));
             }else if count!=0u {atomicAdd(&cull_draw.counter[35],count);}
         }
         workgroupBarrier();
         if cluster_action==0u && li<count {
-            let ci=cluster_tree[cluster_tree[node+17u]+li];
+            let ci=cluster_tree_at(cluster_tree_at(node+17u)+li);
             cull_cluster(id,inst,ci,threshold,wind);
         }
         // Every lane follows the same node loop. No lane's local rejection
         // or empty work can skip a barrier or change the shared traversal.
         workgroupBarrier();
         if li==0u {
-            cluster_cursor=select(node+20u,cluster_tree[node+16u],cluster_action!=0u || count!=0u);
+            cluster_cursor=select(node+20u,cluster_tree_at(node+16u),cluster_action!=0u || count!=0u);
         }
         workgroupBarrier();
     }

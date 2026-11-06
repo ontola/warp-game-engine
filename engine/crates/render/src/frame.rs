@@ -949,6 +949,7 @@ pub struct Renderer {
     shadow_cache: std::sync::Mutex<Option<ShadowCache>>,
     static_sun: Option<std::sync::Mutex<crate::static_sun::StaticSun>>,
     sun_owner_buffer: wgpu::Buffer,
+    cull_tables: crate::cull_tables::CullTables,
     static_sun_targets: std::sync::Mutex<Option<ViewTargets>>,
     reuse_sun_texture: bool,
     zero_sun_fast_path: bool,
@@ -1669,8 +1670,7 @@ impl Renderer {
         ]);
         let view_cull_layout = layout(gpu, "view cull", &[(0, uniform()), (1, storage(false)), (2, storage(false)), (5, storage(true)), (6, uniform()),
             (7,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
-            (8,storage(true)),(9,storage(true)),(10,storage(false)),(11,storage(true)),
-            (12,storage(true)),(14,storage(false)),(15,uniform())]);
+            (8,storage(true)),(10,storage(false)),(14,storage(false)),(15,uniform())]);
         // Only raster's vertex stage reads the visible list, draws and foliage
         // choices; fragments would otherwise count them against the 8 storage
         // buffers per stage beside the scene's.
@@ -1816,7 +1816,8 @@ impl Renderer {
         } else { None };
         let split_sun_cull = static_sun.as_ref().map(|_| (cull_compute("cull_sun_static"), cull_compute("cull_sun_dynamic")));
         let sun_owner_buffer = static_sun.as_ref().map(|s| s.owner_buffer().clone()).unwrap_or_else(||
-            buffer(gpu, "disabled static sun owners", bytemuck::cast_slice(&[0u32,0,4,4]), wgpu::BufferUsages::STORAGE));
+            buffer(gpu, "disabled static sun owners", bytemuck::cast_slice(&[0u32,0,4,4]), wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC));
+        let cull_tables = crate::cull_tables::CullTables::new(gpu, [&cluster_traversal.buffer, &instance_groups.owners, &sun_owner_buffer, &instance_groups.groups]);
         let compact_cull = (std::env::var("KERN_INSTANCE_BROADPHASE").as_deref() == Ok("1"))
             .then(|| (cull_compute("instance_broadphase"), cull_compute("instance_dispatch"), cull_compute("cull_compacted")));
         let spatial_cull=instance_groups.enabled.then(||(cull_compute("spatial_select"),cull_compute("spatial_dispatch"),cull_compute("cull_spatial")));
@@ -2206,6 +2207,7 @@ impl Renderer {
             shadow_cache: Default::default(),
             static_sun: static_sun.map(std::sync::Mutex::new),
             sun_owner_buffer,
+            cull_tables,
             static_sun_targets: Default::default(),
             // Explicit reference switches for paired captures; both preserve
             // the existing caster geometry, filtering and daylight lighting.
@@ -2421,9 +2423,7 @@ impl Renderer {
             size:if camera&&(self.instance_groups.enabled||self.instance_groups.replacement_enabled){self.instance_groups.scratch_bytes()}else if light_groups{self.instance_groups.owner_scratch_bytes()}else{4},usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
         let cull_bind = bind(gpu, &self.view_cull_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, counter.as_entire_binding()), (5, foliage_selection.as_entire_binding()),
             (6,self.occlusion.reference.as_entire_binding()),(7,wgpu::BindingResource::TextureView(&self.occlusion.empty)),
-            (8,self.instance_groups.groups.as_entire_binding()),(9,self.instance_groups.owners.as_entire_binding()),(10,spatial_owners.as_entire_binding()),
-            (11,self.sun_owner_buffer.as_entire_binding()),
-            (12,self.cluster_traversal.buffer.as_entire_binding()),
+            (8,self.cull_tables.buffer.as_entire_binding()),(10,spatial_owners.as_entire_binding()),
             (14,self.receiver_demand.buffer().as_entire_binding()),(15,self.occlusion.empty_history.as_entire_binding())]);
         let raster_bind = bind(gpu, &self.view_raster_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, counter.as_entire_binding()), (4, foliage_selection.as_entire_binding())]);
         ViewTargets { uniform, foliage_selection, visible, counter, spatial_owners,instance_dispatch, cull_bind, raster_bind }
@@ -3361,9 +3361,7 @@ impl Renderer {
             (0,v.uniform.as_entire_binding()),(1,v.visible.as_entire_binding()),(2,v.counter.as_entire_binding()),
             (5,v.foliage_selection.as_entire_binding()),
             (6,self.occlusion.phases[phase].as_entire_binding()),(7,wgpu::BindingResource::TextureView(&target.view)),
-            (8,self.instance_groups.groups.as_entire_binding()),(9,self.instance_groups.owners.as_entire_binding()),(10,v.spatial_owners.as_entire_binding()),
-            (11,self.sun_owner_buffer.as_entire_binding()),
-            (12,self.cluster_traversal.buffer.as_entire_binding()),
+            (8,self.cull_tables.buffer.as_entire_binding()),(10,v.spatial_owners.as_entire_binding()),
             (14,self.receiver_demand.buffer().as_entire_binding()),(15,history.as_entire_binding())]));
         self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"occluder cull",RasterPass::Color,Some(&phases[0]),false,None);
         let time=self.query.as_ref().map(|(qs,_,_)|{names.push("occlusion pyramid");(qs,timestamp_pair(ts))});
@@ -4195,6 +4193,10 @@ impl Renderer {
         if self.instance_groups.encode(&mut enc,group_time) && group_time.is_some() {
             timestamp_pair(&mut ts);names.push("instance group refit");
         }
+        // Cull reads the refitted groups and the sun owner lists from its
+        // tables (cull_tables.rs).
+        self.cull_tables.copy(&mut enc,crate::cull_tables::GROUPS,&self.instance_groups.groups);
+        if self.static_sun.is_some() {self.cull_tables.copy(&mut enc,crate::cull_tables::SUN_OWNERS,&self.sun_owner_buffer);}
         if self.receiver_demand.enabled() && sun_needed {
             use crate::receiver_shadow_demand::{ReceiverCamera,ShadowMap};
             let near_enabled=light.near_shadows>0.5&&light.shadow_strength>0.0&&light.sun_lux>0.0;
