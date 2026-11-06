@@ -272,5 +272,6 @@ mod shader_tests {
 }
 
 mod forward;
+mod portable;
 mod minimum_lava;
 mod minimum_stone;

@@ -815,6 +815,8 @@ pub struct Renderer {
     simple_cull: bool,
     small_cluster_vertices:u32,
     minimal_forward: Option<std::sync::Mutex<crate::forward::Forward>>,
+    /// Procedural terrain and sky for devices below 16 storage buffers per stage.
+    portable: Option<std::sync::Mutex<crate::portable::Portable>>,
     direct_bounds: Option<std::sync::Mutex<crate::direct_draw::Bounds>>,
     raster_large_first: bool,
     early_grass_cull: bool,
@@ -1781,6 +1783,8 @@ impl Renderer {
         let bounded_draws=plain_meshes && std::env::var("KERN_BOUNDED_DRAWS").map_or(adreno && simple_cull,|v|v=="1");
         let minimal_forward=(scene.graphics.minimal_forward && plain_meshes && scene.skinning.actors.is_empty()
             && scene.debris.is_none_or(|d|d.capacity==0)).then(||std::sync::Mutex::new(crate::forward::Forward::new(gpu,scene,&materials)));
+        let portable=scene.procedural_terrain.as_ref().filter(|_|crate::portable::wanted(gpu)).map(|spec|std::sync::Mutex::new(
+            crate::portable::Portable::new(gpu,scene,spec,&vertices,&instances,&materials,&albedo,&samp)));
         let direct_bounds=bounded_draws.then(||std::sync::Mutex::new(crate::direct_draw::Bounds::new(scene,small_cluster_triangles)));
         // Opaque clusters skip the `discard` pipeline (early depth). Off with
         // a game mask, which may cut any material, and for bounded draws.
@@ -2120,6 +2124,7 @@ impl Renderer {
             small_cluster_vertices:small_cluster_triangles*3,
             direct_bounds,
             minimal_forward,
+            portable,
             raster_large_first: std::env::var("KERN_RASTER_LARGE_FIRST").as_deref()==Ok("1"),
             early_grass_cull,
             raster,
@@ -3003,7 +3008,7 @@ impl Renderer {
     /// white, the output's size), while a headroom above 1 is set. The
     /// minimum graphics profile tones SDR only and has none.
     pub fn hdr_output(&self) -> Option<wgpu::Texture> {
-        if self.minimal_forward.is_some() { return None; }
+        if self.minimal_forward.is_some() || self.portable.is_some() { return None; }
         self.hdr_target.lock().unwrap().texture()
     }
 
@@ -3598,6 +3603,7 @@ impl Renderer {
         if !proxies { self.canopies.lock().unwrap()[0].validate_update(first, instances)?; }
         if let Some(bounds)=&self.direct_bounds {bounds.lock().unwrap().update(first,instances)?;}
         if let Some(forward)=&self.minimal_forward {forward.lock().unwrap().update(first,instances)?;}
+        if let Some(portable)=&self.portable {portable.lock().unwrap().update(first,instances);}
         if let Some(cache) = &self.static_sun { cache.lock().unwrap().update_instances(gpu,first,instances)?; }
         if !instances.is_empty() {
             // Canopy density only changes with foliage. Moving cars and the
@@ -3649,6 +3655,17 @@ impl Renderer {
 
     #[allow(clippy::too_many_arguments)]
     fn frame_output_into(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: Readback, target: Option<&wgpu::Texture>) -> Result<(wgpu::Texture, Vec<u8>, FrameStats), String> {
+        if let Some(portable)=&self.portable {
+            let output=target.cloned().unwrap_or_else(||Self::output_texture(gpu,out_w,out_h));
+            let axes=self.camera_up_axes.lock().unwrap();let projections=self.camera_projections.lock().unwrap();
+            let matrices:Vec<_>=views.iter().enumerate().map(|(vi,v)|projections.get(vi).copied().unwrap_or_else(||
+                Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near))*camera_view(v.cam,axes.get(vi).copied())).collect();
+            let mut enc=gpu.device.create_command_encoder(&Default::default());
+            if let Some(terrain)=&self.procedural_terrain {terrain.encode(gpu,&mut enc);}
+            let stats=portable.lock().unwrap().render(gpu,enc,views,&matrices,light,self.sky_horizon,&output);
+            let pixels=if readback==Readback::ImageAndMetrics {gpu.read_rgba8(&output)}else{Vec::new()};
+            return Ok((output,pixels,stats));
+        }
         if let Some(forward)=&self.minimal_forward {
             if views.len()>8 || views.iter().any(|v|v.w==0||v.h==0||v.x.checked_add(v.w).is_none_or(|n|n>out_w)||v.y.checked_add(v.h).is_none_or(|n|n>out_h)) {
                 return Err("minimum renderer requires up to eight nonempty views inside its output".into());

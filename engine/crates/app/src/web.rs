@@ -135,13 +135,10 @@ impl Shell {
             match setup(window.clone()).await {
                 Ok(l) => {
                     log(&format!("GPU: {} ({:?}), {}x{}, {:?}", l.gpu.info.name, l.gpu.info.backend, l.config.width, l.config.height, l.config.format));
-                    // The renderer's scene and cull layouts need 16 (browser.md).
+                    // Below 16 storage buffers per stage the renderer draws with
+                    // its portable path (render::portable): terrain and sky only.
                     let storage = l.gpu.device.limits().max_storage_buffers_per_shader_stage;
-                    if storage < 16 {
-                        let agent = web_sys::window().and_then(|w| w.navigator().user_agent().ok()).unwrap_or_default();
-                        progress(Some(0.8), &format!("This GPU offers {storage} storage buffers per shader stage; the renderer needs 16. Try the latest Chrome or Edge on a desktop GPU.\n{agent}"));
-                        return;
-                    }
+                    if storage < 16 { log(&format!("{storage} storage buffers per shader stage: portable renderer (terrain and sky only)")); }
                     *live.borrow_mut() = Some(l);
                     window.request_redraw();
                 }
@@ -205,7 +202,7 @@ impl Shell {
         live.gpu.queue.present(texture);
         self.frames += 1;
         if self.frames == 1 { progress(None, "Ready"); }
-        if self.frames == 1 || self.frames.is_power_of_two() && self.frames >= 64 {
+        if self.frames <= 4 || self.frames.is_power_of_two() && self.frames >= 64 {
             log(&format!("frame {} after {:.1} s, wasm memory {} MB", self.frames, self.started.elapsed().as_secs_f32(), memory_mb()));
         }
         Ok(())
