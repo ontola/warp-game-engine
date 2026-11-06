@@ -33,6 +33,9 @@
     {"name": "edge.lowland", "at": "-820.4,150,18,-6.9351,-0.9456", "about": "shadow map handover on the ground"},
     {"name": "edge.alpine", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "-820.4,150,18,-6.9351,-0.9456", "about": "the same spot in alpine"},
 
+    {"name": "far.alpine", "world": ["--style", "alpine", "--grass", "--seed", "1", "--light", "sun_elevation=9,sun_azimuth=250"], "at": "-224.6,550.1,150,-2.8,-0.12", "about": "slopes 300 to 2000 m away, low sun ahead: blurry far terrain"},
+    {"name": "far.alpine.lit", "world": ["--style", "alpine", "--grass", "--seed", "1", "--light", "sun_elevation=9,sun_azimuth=70"], "at": "-224.6,550.1,150,-2.8,-0.12", "about": "the same with the low sun behind the camera"},
+
     {"name": "grassedge.f12", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "709.6,829.8,148.7,-2.7681,-0.4485", "about": "pale grass against shaded ground"},
     {"name": "grassedge.low", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "709.6,829.8,40,-2.7681,-0.4485", "about": "the same place from 40 m up"},
 
