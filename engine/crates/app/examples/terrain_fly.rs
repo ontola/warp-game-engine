@@ -496,7 +496,7 @@ impl Game for Fly {
                 format!(" - building {} seed {}: {:.0} s (takes 30-50 s){}", STYLES[self.building_for.1], self.building_for.0,
                     self.building_started.elapsed().as_secs_f32(), if self.stale { ", then the latest request" } else { "" })
             } else { String::new() }),
-            "F1 default  F2 lowland  F4 alpine  F8 next biome  F5 seed  F6 jump  F7 hug  wheel speed  F12 screenshot".to_string(),
+            "F1 default  F2 lowland  F3 stats  F4 alpine  F8 next biome  F5 seed  F6 jump  F7 hug  wheel speed  F12 screenshot".to_string(),
         ];
         let mut hud = HudDrawList::new(frame.size);
         // --no-hud: captures that are compared pixel by pixel.
@@ -542,6 +542,22 @@ impl Game for Fly {
     }
 
     fn title(&self) -> Option<String> { Some(format!("Terrain fly: {} seed {}", STYLES[self.style], self.seed)) }
+
+    fn debug_stats(&self) -> Vec<(String, String)> {
+        let t = &self.stats;
+        let above = self.pos.y - self.ground(self.pos.x, self.pos.z);
+        let mut lines = vec![
+            ("World".into(), format!("{} seed {}", STYLES[self.style], self.seed)),
+            ("Camera".into(), format!("x {:.0} z {:.0}, {:.0} m up, {:.0} m/s", self.pos.x, self.pos.z, above, self.speed)),
+            ("Terrain".into(), format!("{} patches, finest level {}, lod x{:.2}", t.patches, t.finest_level, t.lod_scale)),
+            ("Streaming".into(), format!("{} built, {} freed, {} pending, {} overflow", t.built, t.freed, t.pending, t.overflow)),
+            ("Terrain CPU".into(), format!("{:.2} ms quadtree update", self.last_updates[0])),
+        ];
+        if self.building.is_some() {
+            lines.push(("Rebuilding".into(), format!("{} seed {}, {:.0} s", STYLES[self.building_for.1], self.building_for.0, self.building_started.elapsed().as_secs_f32())));
+        }
+        lines
+    }
 
     fn state(&self) -> Option<String> {
         let g = self.sample(self.pos.x, self.pos.z);

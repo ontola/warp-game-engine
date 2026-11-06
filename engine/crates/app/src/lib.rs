@@ -8,7 +8,8 @@
 //! fullscreen, F12 saves a feedback screenshot (PNG, JSON and the clipboard;
 //! see [`screenshot`]); Shift+F12, or F12 twice, then a dragged rectangle
 //! saves a crop of it. These reserved keys run before game/menu/text input.
-//! F1 to F9 belong to [`Game::function_key`].
+//! F1 to F9 belong to [`Game::function_key`]; F3 that the game leaves
+//! unused opens the engine's stats overlay ([`stats`], Shift+F3 for depth).
 //!
 //! Text entry: while [`Game::text_input`] is true the keyboard types
 //! ([`Game::text`] gets characters, IME commits, editing keys and
@@ -18,6 +19,7 @@
 //! let a spare pad join mid-match.
 pub mod clipboard;
 pub mod debug;
+pub mod stats;
 pub mod input;
 pub mod text;
 pub mod script;
@@ -149,8 +151,13 @@ pub trait Game {
     /// renderer is gone too, so the next [`Game::draw`] sets the scene again.
     fn gpu_reset(&mut self) {}
     /// Function key F`n` (1..=9) was pressed, also while typing: return
-    /// true when the game used it. F10, F11 and F12 stay the shell's.
+    /// true when the game used it. F10, F11 and F12 stay the shell's; F3
+    /// the game does not use opens the engine's stats overlay.
     fn function_key(&mut self, _n: u8) -> bool { false }
+    /// Lines (label, value) for the F3 stats overlay's Game section: what
+    /// the game streams, builds or simulates. Asked for a few times a second
+    /// while the overlay is open, never otherwise.
+    fn debug_stats(&self) -> Vec<(String, String)> { Vec::new() }
     /// The game asks the shell to close (an Exit menu item).
     fn quit(&self) -> bool { false }
     /// Extra menus and controls for the F10 debug menu, with ids from
@@ -254,17 +261,18 @@ pub fn engine_shortcut(code: KeyCode) -> Option<EngineShortcut> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum KeyRoute { Engine(EngineShortcut), Consumed, Other }
+enum KeyRoute { Engine(EngineShortcut), Stats { shift: bool }, Consumed, Other }
 
 /// Route every function-key edge before either the game or text/navigation handlers.
-fn route_function_key(game: &mut dyn Game, code: KeyCode, state: ElementState, repeat: bool) -> KeyRoute {
+fn route_function_key(game: &mut dyn Game, code: KeyCode, state: ElementState, repeat: bool, shift: bool) -> KeyRoute {
     let press = state == ElementState::Pressed && !repeat;
     if let Some(action) = engine_shortcut(code) {
         return if press { KeyRoute::Engine(action) } else { KeyRoute::Consumed };
     }
     use KeyCode::*;
     if let Some(n) = [F1, F2, F3, F4, F5, F6, F7, F8, F9].iter().position(|&k| k == code) {
-        if press { game.function_key(n as u8 + 1); }
+        // F3 the game leaves alone is the engine's stats overlay.
+        if press && !game.function_key(n as u8 + 1) && code == F3 { return KeyRoute::Stats { shift }; }
         KeyRoute::Consumed
     } else { KeyRoute::Other }
 }
@@ -359,6 +367,19 @@ impl Output {
     }
 }
 
+/// What the F3 stats overlay shows about the renderer.
+fn render_info(gpu: &Gpu, renderer: &Renderer, output: [u32; 2]) -> stats::RenderInfo {
+    let upscale = renderer.upscale_status();
+    stats::RenderInfo {
+        adapter: gpu.info.name.clone(),
+        backend: format!("{:?}", gpu.info.backend),
+        output,
+        views: upscale.views.iter().map(|v| (v.input, v.output)).collect(),
+        upscale: upscale.mode.as_str().into(),
+        foliage_pages: renderer.foliage_page_stats().map(|p| (p.resident_pages, p.pending_pages, p.allocated_bytes)),
+    }
+}
+
 /// A screenshot's line along the bottom of the screen.
 /// A frozen frame waiting for its crop rectangle (Shift+F12): shown dimmed
 /// outside the rectangle while the mouse drags it; Esc cancels.
@@ -444,12 +465,17 @@ pub struct Headless<'g> {
     last_draw_timings: profile::DrawTimings,
     emulator: emulate::Emulator,
     profiling: bool,
+    /// The F3 stats overlay, drawn into captures when open (`WARP_STATS`).
+    /// While open it takes the GPU samples: callers draining the profile
+    /// themselves get none.
+    pub stats: stats::Stats,
+    last_render: Option<Instant>,
 }
 
 impl<'g> Headless<'g> {
     pub fn new(gpu: &'g Gpu, size: [u32; 2], tick_hz: f32) -> Result<Self, String> {
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        Ok(Self { gpu, size, tick_hz, audio: None, recorded: Vec::new(), max_height: None, renderer: None, out: Output::new(gpu, format)?, target: offscreen(gpu, size, format), last_draw_timings: Default::default(), emulator: Default::default(), profiling: false })
+        Ok(Self { gpu, size, tick_hz, audio: None, recorded: Vec::new(), max_height: None, renderer: None, out: Output::new(gpu, format)?, target: offscreen(gpu, size, format), last_draw_timings: Default::default(), emulator: Default::default(), profiling: false, stats: stats::Stats::from_env(), last_render: None })
     }
     /// Draw one frame and read it back as RGBA8.
     pub fn frame(&mut self, game: &mut dyn Game) -> Result<Vec<u8>, String> {
@@ -467,10 +493,26 @@ impl<'g> Headless<'g> {
         let split = game.split();
         let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha, split, scene_fps: self.tick_hz, scene_worst_ms: 1000.0 / self.tick_hz, renderer: &mut self.renderer };
         let started = Instant::now();
-        let draw = game.draw(&mut frame)?;
+        let mut draw = game.draw(&mut frame)?;
         let game_ms = started.elapsed().as_secs_f64() * 1000.;
         let renderer = self.renderer.as_ref().ok_or("the game drew without a scene")?;
+        if self.stats.open() {
+            if !self.profiling { self.profiling = renderer.set_async_gpu_profiling(self.gpu, true).is_ok(); }
+            let samples = renderer.drain_gpu_profiles(self.gpu).samples;
+            self.stats.gpu(&samples);
+            self.stats.memory(self.gpu);
+            if self.stats.wants_info() { self.stats.set_info(render_info(self.gpu, renderer, self.size)); }
+            let game = &*game;
+            self.stats.draw(&mut draw.hud, || game.debug_stats());
+        }
         self.out.draw(self.gpu, renderer, &draw, self.size, split, &self.target.create_view(&Default::default()), self.max_height)?;
+        if self.stats.open() {
+            let now = Instant::now();
+            let t = self.out.timings;
+            let frame_ms = self.last_render.map_or(0.0, |l| (now - l).as_secs_f64() * 1000.0);
+            if frame_ms > 0.0 { self.stats.cpu(frame_ms, &[("game draw", game_ms), ("render encode + submit", t.render_ms), ("HUD", t.hud_ms), ("present", t.present_ms)]); }
+            self.last_render = Some(now);
+        }
         if emulate::active() {
             emulate::set_host(&self.gpu.info.name);
             if !self.profiling { self.profiling = renderer.set_async_gpu_profiling(self.gpu, true).is_ok(); }
@@ -513,7 +555,7 @@ pub fn bench(game: &mut dyn Game, gpu: &Gpu, size: [u32; 2], frames: u32, tick_h
         if i == warmup { started = Instant::now(); }
         game.tick(&vec![Controls::default(); players]);
         h.frame(game)?;
-        if let Some(r) = h.renderer() { profile.profile(gpu, r, true); }
+        if let Some(r) = h.renderer() { let _ = profile.profile(gpu, r, true); }
     }
     Ok((f64::from(frames.saturating_sub(warmup)) / started.elapsed().as_secs_f64(), profile.passes().to_vec()))
 }
@@ -652,6 +694,8 @@ fn under_host() -> bool {
 
 struct Shell<'g> {
     cfg: Config,
+    /// The F3 stats overlay.
+    stats: stats::Stats,
     game: &'g mut dyn Game,
     devices: Devices,
     live: Option<Live>,
@@ -723,7 +767,7 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
         println!("{}: adaptive quality enabled, {}", cfg.title, q.label());
     }
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), probe: None, probed: None, emulator: Default::default(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
+    let mut shell = Shell { stats: stats::Stats::from_env(), devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), probe: None, probed: None, emulator: Default::default(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -862,8 +906,13 @@ impl Shell<'_> {
         };
         self.debug.sync_options(renderer, debug_options);
         let profile_started = Instant::now();
-        self.debug.profile(&live.gpu, renderer, self.debug.open() || self.cfg.frames > 0 || frame_log::enabled() || self.probe.is_some() || emulate::active());
+        let samples = self.debug.profile(&live.gpu, renderer, self.debug.open() || self.stats.open() || self.cfg.frames > 0 || frame_log::enabled() || self.probe.is_some() || emulate::active());
         let profile_ms = profile_started.elapsed().as_secs_f64() * 1000.0;
+        if self.stats.open() {
+            self.stats.gpu(&samples);
+            self.stats.memory(&live.gpu);
+            if self.stats.wants_info() { self.stats.set_info(render_info(&live.gpu, renderer, size)); }
+        }
         if self.debug.open() {
             let quality_label = self.quality.as_ref().map(|q| q.label());
             self.debug.refresh(self.game.debug(), self.cfg.max_render_height, self.fps, quality_label.as_deref());
@@ -955,6 +1004,7 @@ impl Shell<'_> {
                 bounds: [0.0, 0.0, size[0] as f32, size[1] as f32], font_size: 18.0 * s, color: [255, 190, 90, 230], font: render::hud::FontFace::Body,
                 align: render::hud::TextAlign::Left, width: size[0] as f32 * 0.6 });
         }
+        if self.stats.open() { let game = &*self.game; self.stats.draw(&mut draw.hud, || game.debug_stats()); }
         if self.debug.open() { self.debug.draw(&mut draw.hud); }
         // Nothing to show on a window without pixels; the game keeps ticking.
         if self.zero_size || live.is_lost() { return Ok(()); }
@@ -995,6 +1045,13 @@ impl Shell<'_> {
         self.mouse_delta = [0.0; 2];
         self.mouse_peak = 0.0;
         self.cursor_events = 0;
+        if self.stats.open() {
+            let t = live.out.timings;
+            let presenting = present_started.elapsed().as_secs_f64() * 1000.0;
+            self.stats.cpu(frame_interval_ms, &[("window + input", window_ms + input_ms), ("game ticks", tick_ms), ("game draw", draw_ms),
+                ("render encode + submit", t.render_ms), ("HUD", t.hud_ms), ("acquire + present", (presenting - t.render_ms - t.hud_ms).max(0.0)),
+                ("GPU timestamp readback", profile_ms)]);
+        }
         self.emulator.cpu(frame_started);
         self.last_frame_end = Instant::now();
         self.step_probe(size, render_height, &adapter);
@@ -1293,7 +1350,8 @@ impl ApplicationHandler for Shell<'_> {
                     if code == KeyCode::Escape && event.state == ElementState::Pressed { self.end_crop("crop cancelled".into()); }
                     return;
                 }
-                match route_function_key(self.game, code, event.state, event.repeat) {
+                let shift = self.modifiers.shift_key() || self.shift_down;
+                match route_function_key(self.game, code, event.state, event.repeat, shift) {
                     KeyRoute::Engine(action) => {
                         match action {
                             EngineShortcut::DebugMenu => { self.debug_key(KeyCode::F10, false); }
@@ -1309,6 +1367,10 @@ impl ApplicationHandler for Shell<'_> {
                             },
                         }
                         self.sync_capture();
+                        return;
+                    }
+                    KeyRoute::Stats { shift } => {
+                        if shift { self.stats.cycle_detail() } else { self.stats.toggle() }
                         return;
                     }
                     KeyRoute::Consumed => { self.sync_capture(); return; }
@@ -1405,18 +1467,34 @@ mod shortcut_tests {
         for typing in [false, true] {
             let mut game = ClaimsAllKeys { typing, ..Default::default() };
             for (code, action) in [(KeyCode::F10, EngineShortcut::DebugMenu), (KeyCode::F11, EngineShortcut::Fullscreen), (KeyCode::F12, EngineShortcut::Screenshot)] {
-                assert_eq!(route_function_key(&mut game, code, ElementState::Pressed, false), KeyRoute::Engine(action));
-                assert_eq!(route_function_key(&mut game, code, ElementState::Pressed, true), KeyRoute::Consumed);
-                assert_eq!(route_function_key(&mut game, code, ElementState::Released, false), KeyRoute::Consumed);
+                assert_eq!(route_function_key(&mut game, code, ElementState::Pressed, false, false), KeyRoute::Engine(action));
+                assert_eq!(route_function_key(&mut game, code, ElementState::Pressed, true, false), KeyRoute::Consumed);
+                assert_eq!(route_function_key(&mut game, code, ElementState::Released, false, false), KeyRoute::Consumed);
             }
             assert!(game.received.is_empty());
             for code in [KeyCode::F3, KeyCode::F9] {
-                assert_eq!(route_function_key(&mut game, code, ElementState::Pressed, false), KeyRoute::Consumed);
-                route_function_key(&mut game, code, ElementState::Pressed, true);
-                route_function_key(&mut game, code, ElementState::Released, false);
+                assert_eq!(route_function_key(&mut game, code, ElementState::Pressed, false, false), KeyRoute::Consumed);
+                route_function_key(&mut game, code, ElementState::Pressed, true, false);
+                route_function_key(&mut game, code, ElementState::Released, false, false);
             }
             assert_eq!(game.received, [3, 9]);
-            assert_eq!(route_function_key(&mut game, KeyCode::KeyW, ElementState::Pressed, false), KeyRoute::Other);
+            assert_eq!(route_function_key(&mut game, KeyCode::KeyW, ElementState::Pressed, false, false), KeyRoute::Other);
         }
+    }
+
+    struct NoKeys;
+    impl Game for NoKeys {
+        fn local_players(&self) -> usize { 0 }
+        fn tick(&mut self, _: &[Controls]) {}
+        fn draw(&mut self, _: &mut Frame) -> Result<Draw, String> { unreachable!() }
+    }
+
+    #[test]
+    fn f3_the_game_leaves_alone_opens_the_stats_overlay() {
+        assert_eq!(route_function_key(&mut NoKeys, KeyCode::F3, ElementState::Pressed, false, false), KeyRoute::Stats { shift: false });
+        assert_eq!(route_function_key(&mut NoKeys, KeyCode::F3, ElementState::Pressed, false, true), KeyRoute::Stats { shift: true });
+        assert_eq!(route_function_key(&mut NoKeys, KeyCode::F3, ElementState::Pressed, true, false), KeyRoute::Consumed);
+        assert_eq!(route_function_key(&mut NoKeys, KeyCode::F3, ElementState::Released, false, false), KeyRoute::Consumed);
+        assert_eq!(route_function_key(&mut NoKeys, KeyCode::F4, ElementState::Pressed, false, false), KeyRoute::Consumed);
     }
 }
