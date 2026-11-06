@@ -260,7 +260,7 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
         if population.slots[i].is_none(){let owner=&mut scene.instances[proxies[i].meta[0]as usize];owner.flags=PART_WIND;owner.sphere[3]=-1.;}
         Instance {rows:rows(m),scale:[(row*col).sqrt(),0.,templates[t.variant].proxy_work,templates[t.variant].proxy_work],info:[root_nodes[t.variant],population.generations[i],handles[t.variant].pose_range.start as u32,u32::from(population.slots[i].is_none())]}
     }).collect();
-    let raster_budget=forest.instances.iter().map(|v|work[v.meta[1]as usize]as u64).sum::<u64>().clamp(1,4<<20)as u32;
+    let raster_budget=forest.instances.iter().map(|v|work[v.meta[1]as usize]as u64).sum::<u64>().clamp(1,8<<20)as u32;
     scene.voxel_forest=Some(forest);scene.voxel_proxies=trees.len()as u32*2;
     scene.gpu_forest=Some(Spec {page_budget:Default::default(),source_budget:Default::default(),nodes,roots,branches,representations,proxies,templates,population,first_owner,slots,raster_budget,source_cluster_budget:crate::foliage_select::DEFAULT_SOURCE_CLUSTER_BUDGET,error:policy.max_error_pixels.max(0.25)});
     Ok(())
