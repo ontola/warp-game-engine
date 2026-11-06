@@ -21,7 +21,10 @@ pub struct Stats {pub allocated_bytes:u64,pub resident_pages:u32,pub pending_pag
 pub struct Cache {
     pub source:Option<super::source::Cache>,source_wanted:BTreeSet<usize>,
     pages:Vec<VoxelPage>,deps:Vec<Vec<usize>>,pinned:Vec<bool>,resident:Vec<Option<Resident>>,
-    capacities:[u32;3],last_requested:Vec<u64>,index:Arena,cell:Arena,splat:Arena,pending:Option<Pending>,budget:Budget,
+    capacities:[u32;3],last_requested:Vec<u64>,
+    /// Urgency the GPU last asked for each page with (projected pixel error
+    /// of the cut waiting on it, x16; camera x4). Uploads go most urgent first.
+    priority:Vec<u32>,index:Arena,cell:Arena,splat:Arena,pending:Option<Pending>,budget:Budget,
     pub buffers:[wgpu::Buffer;4], // levels, indices + brick descriptors, cells, splats (two logical headers + pool)
     publication:Vec<(bool,u32)>,dirty:BTreeSet<usize>,wanted:BTreeSet<usize>,frame:u64,
     feedback:Vec<Feedback>,last_feedback:u64,stats:Stats,
@@ -54,7 +57,8 @@ impl Cache {
         if sizes.iter().any(|&s|s>gpu.device.limits().max_storage_buffer_binding_size as u64) {return Err("voxel cache exceeds device buffer limit".into());}
         let buffers=std::array::from_fn(|i|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("bounded voxel asset arena"),size:sizes[i].max(176),usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false}));
         let last_requested=vec![0;deps.len()];
-        let mut this=Self {source:None,source_wanted:BTreeSet::from([0]),capacities,last_requested,resident:vec![None;pages.len()],pages,deps,pinned,index:Arena::new(capacities[0]),cell:Arena::new(capacities[1]),splat:Arena::new(capacities[2]),pending:None,budget,buffers,publication:Vec::new(),dirty:BTreeSet::new(),wanted:BTreeSet::new(),frame:0,feedback:Vec::new(),last_feedback:0,stats:Stats {allocated_bytes:sizes.iter().map(|s|(*s).max(176)).sum(),..Default::default()}};
+        let priority=vec![0;deps.len()];
+        let mut this=Self {source:None,source_wanted:BTreeSet::from([0]),capacities,last_requested,priority,resident:vec![None;pages.len()],pages,deps,pinned,index:Arena::new(capacities[0]),cell:Arena::new(capacities[1]),splat:Arena::new(capacities[2]),pending:None,budget,buffers,publication:Vec::new(),dirty:BTreeSet::new(),wanted:BTreeSet::new(),frame:0,feedback:Vec::new(),last_feedback:0,stats:Stats {allocated_bytes:sizes.iter().map(|s|(*s).max(176)).sum(),..Default::default()}};
         this.publication=vec![(true,1);this.deps.len()];
         this.dirty.extend(0..this.pages.len());
         // Ancestors are uploaded at construction, before any selector can use
@@ -144,7 +148,7 @@ impl Cache {
                 let words:&[u32]=bytemuck::cast_slice(&bytes);let count=(words[0]as usize).min(self.deps.len());
                 let mut wanted=BTreeSet::new();
                 for r in words[4..4+count*4].chunks_exact(4) {let id=r[0]as usize;
-                    if id<self.deps.len() && r[2]==self.publication[id].1 {wanted.insert(id);}
+                    if id<self.deps.len() && r[2]==self.publication[id].1 {wanted.insert(id);self.priority[id]=r[3];}
                 }
                 if slot.sequence>self.last_feedback {self.last_feedback=slot.sequence;observed=Some(wanted);}
                 drop(bytes);slot.buffer.unmap();
@@ -156,7 +160,7 @@ impl Cache {
             // Admit whole dependency bundles, retaining already-ready bundles
             // first. Short leases bridge async feedback and failed-cut frames.
             let mut requests=(0..self.deps.len()).filter(|&id|self.last_requested[id]!=0 && self.frame-self.last_requested[id]<=8).collect::<Vec<_>>();
-            requests.sort_by_key(|&id|(!(self.deps[id].iter().all(|&p|self.resident[p].is_some()) && self.source.as_ref().is_none_or(|s|s.ready(id))),id));
+            requests.sort_by_key(|&id|(!(self.deps[id].iter().all(|&p|self.resident[p].is_some()) && self.source.as_ref().is_none_or(|s|s.ready(id))),std::cmp::Reverse(self.priority[id]),id));
             let cost=|id:usize|[self.pages[id].index_words()as u64,self.pages[id].cells.len()as u64,self.pages[id].splats.len()as u64];
             let mut wanted=self.pinned.iter().enumerate().filter_map(|(id,&pin)|pin.then_some(id)).collect::<BTreeSet<_>>();
             let mut used=[0u64;3];for &id in &wanted {let c=cost(id);for i in 0..3 {used[i]+=c[i];}}
@@ -174,7 +178,12 @@ impl Cache {
         let mut remaining=self.budget.upload_bytes&!3;let mut completed=0;
         if let Some(source)=&mut self.source{source.service(gpu,&self.source_wanted,self.frame,&mut remaining,&mut completed,self.budget.uploads)?;}
         if self.pending.is_some(){remaining-=self.advance(gpu,remaining)?;if self.pending.is_none(){completed+=1;}}
-        let candidates=self.wanted.iter().copied().filter(|&id|self.resident[id].is_none()).collect::<Vec<_>>();
+        // Most urgent first: a page's urgency is the highest of the requests
+        // whose bundles hold it (a bush 12 m away before distant detail).
+        let mut urgency=vec![0u32;self.pages.len()];
+        for (id,deps) in self.deps.iter().enumerate() {if self.frame-self.last_requested[id]<=8 {for &p in deps {urgency[p]=urgency[p].max(self.priority[id]);}}}
+        let mut candidates=self.wanted.iter().copied().filter(|&id|self.resident[id].is_none()).collect::<Vec<_>>();
+        candidates.sort_by_key(|&id|(std::cmp::Reverse(urgency[id]),id));
         for id in candidates {
             if self.pending.is_some() || remaining<52 || completed>=self.budget.uploads {break;}
             self.begin(id)?;

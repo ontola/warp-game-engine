@@ -36,8 +36,11 @@ const NONE:u32=0xffffffffu;
 // Error-driven cut (fast_*): multiplier on the pixel targets, 1 = exact target.
 // The budgeted admission kernels never change it.
 var<private> cut_scale:f32=1.0;
+// Urgency ready() requests pages with (the page cache uploads the highest
+// first): set by fast_round from the waiting cut's projected error.
+var<private> request_urgency:u32=1u;
 fn ready(rep:u32)->bool {
- if atomicLoad(&pages[rep].requested)==0u {atomicOr(&pages[rep].requested,1u);}
+ if atomicLoad(&pages[rep].requested)<request_urgency {atomicMax(&pages[rep].requested,request_urgency);}
  return pages[rep].resident!=0u;
 }
 fn plus(a:vec4<u32>,b:vec4<u32>)->vec4<u32> {
@@ -661,6 +664,9 @@ fn fast_set_args(count:u32) {
  var first=node_id;var end=node_id+1u;
  if task.y!=NONE {first=n.links.x;end=n.links.y;}
  var replacement=vec4<u32>(0u);var resident=true;var branching=0u;var child=first;var source_leaves=false;
+ // Pages for a coarse cut close to the camera come first: urgency is the
+ // pixel error waiting on them (x16), x4 for camera tasks.
+ request_urgency=u32(clamp(min(scale.x,1e8)*n.error.x*16.0*select(1.0,4.0,(task.z&256u)!=0u),1.0,1e9));
  loop {
   if child==NONE || child>=end {break;}
   let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
