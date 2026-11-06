@@ -1123,6 +1123,9 @@ fn volume_splat_level(index:u32)->u32 {
     if volume_config.march.y>0.0 {return volume_footprint_level(index,tree.identity.z-1u,volume_config.march.w);}
     let selected=volume_selection_at(index);
     let ceiling=min(tree.identity.z-1u,selected.y);
+    // Bit 12: the GPU forest selected this exact mip for the camera (its
+    // error and splat booking assume it); never draw a finer one.
+    if (volume_selection_words[index]&4096u)!=0u {return ceiling;}
     if selected.w==1u || volume_config.march.w<=0.0 {return select(0u,ceiling,selected.w==1u);}
     return volume_footprint_level(index,ceiling,volume_config.march.w);
 }

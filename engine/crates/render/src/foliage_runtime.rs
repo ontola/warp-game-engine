@@ -78,9 +78,9 @@ fn representation_raster_work(rep:[u32;4],branch:&Branch,counts:&[u32])->Result<
         return Ok([work,work]);
     }
     let shadow=*mips.iter().max().unwrap();
-    let camera=if rep[1]==0 {0} else {
-        *mips.get(..=rep[2]as usize).ok_or("raster work selected mip outside catalog")?.iter().max().unwrap()
-    };
+    // The camera raster draws exactly the selected mip (selection bit 12 from
+    // foliage_materialize); only shadows still choose a level per texel.
+    let camera=if rep[1]==0 {0} else {*mips.get(rep[2]as usize).ok_or("raster work selected mip outside catalog")?};
     Ok([camera,shadow])
 }
 /// The emergency stand-in must not pin its entire high-resolution mip chain.
@@ -231,12 +231,13 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
         if source_work>0x00ff_ffff {return Err("source cluster work exceeds node metadata range".into());}
         node.links[3]=(node.links[3]&255&!4)|if rep[1]==0 {4}else{0}|(source_work<<8);
         let bound=representation_raster_work(rep,branch,&work)?;
-        // Near-pixel voxels: a voxel node's cell must project under the pixel
-        // target too, not only its optical footprint (0 when the optics
-        // validate at any size, which let 37 px cells stand 12 m away).
+        // Near-pixel voxels: a voxel node's spatial error is at least its cell,
+        // so cells project under the pixel target. The optical footprint (second
+        // error) is 0 when optics validate at any size, which let 37 px cells
+        // stand 12 m away.
         if rep[1]==1 {
             let level=forest.levels.get((branch.volume.meta[1]+rep[2])as usize).ok_or("voxel node mip outside catalog")?;
-            node.error[1]=node.error[1].max(level.origin_cell[3]);
+            node.error[0]=node.error[0].max(level.origin_cell[3]);
         }
         node.error[2]=exact_work(bound[0])?;
         node.error[3]=exact_work(bound[1])?;
@@ -616,12 +617,14 @@ impl Runtime {
         // Non-monotonic occupancy intentionally prevents assuming mip zero is largest.
         let counts=[999,7,13,2];
         assert_eq!(representation_raster_work([0,1,0,0],&branch,&counts).unwrap(),[7,13]);
+        assert_eq!(representation_raster_work([0,1,2,1],&branch,&counts).unwrap(),[2,13],"the camera books exactly its selected mip");
         assert_eq!(representation_raster_work([0,1,1,0],&branch,&counts).unwrap(),[13,13]);
         assert_eq!(representation_raster_work([0,0,0,0],&branch,&counts).unwrap(),[0,0]);
         branch.info[0]=NONE;
         assert_eq!(representation_raster_work([0,1,2,0],&branch,&counts).unwrap(),[2,2]);
-        // A geometry group may also have parent NONE, but uses an adaptive bundle.
-        assert_eq!(representation_raster_work([0,1,2,1],&branch,&counts).unwrap(),[13,13]);
+        // A geometry group may also have parent NONE: its camera draws the selected
+        // mip, its shadow still an adaptive bundle.
+        assert_eq!(representation_raster_work([0,1,2,1],&branch,&counts).unwrap(),[2,13]);
         branch.info[1]=0;
         assert_eq!(representation_raster_work([0,0,0,0],&branch,&counts).unwrap(),[0,0]);
         assert!(representation_raster_work([0,1,3,0],&branch,&counts).is_err());
