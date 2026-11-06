@@ -701,7 +701,7 @@ mod tests {
                 if !uses[handle].is_empty() {used.push(global.name.as_deref().unwrap());}
             }
             used.sort_unstable();
-            assert_eq!(used,["albedo","grass_range","materials","plant_samp","view"]);
+            assert_eq!(used,["albedo","grass_range","plant_samp","scene_tables","view"]);
             assert!(module.entry_points[entry].function.result.is_none());
         }
     }

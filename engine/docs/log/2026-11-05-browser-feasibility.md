@@ -107,3 +107,15 @@ WebGPU canvas page does the same, so it is the setup, not Warp.)
   startup. Headless Chrome (SwiftShader, 10): Tint compiles it, frames run
   at about 1.3 s each in software; the canvas cannot be read back there,
   so pixels in a browser still need a real GPU.
+
+## Packing toward 8 storage buffers per stage (2026-11-06)
+
+Engine rule: every pass must fit 8 storage buffers per stage (WebGPU spec
+minimum). Step 1, scene tables: materials, car materials and solid occluders
+now live in one `scene_tables` buffer (`scene_tables.rs`) with a header vec4 of
+offsets, read through `material(i)`, `car_material(i)` and `solid_occluder(i)`
+in WGSL. Shade drops from 16 to 14 storage buffers, the scene group from 12 to
+11. Native output is pixel-identical (lavapipe, alpine, with and without
+trees). Cull, forward and portable still use the typed `materials` buffer.
+Next: topology arena (cluster verts, tris, aux), then GPU-written data and
+shade scratch.

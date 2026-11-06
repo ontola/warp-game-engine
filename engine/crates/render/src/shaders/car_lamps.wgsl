@@ -8,7 +8,7 @@
 fn car_lamp_emission(flags:u32, source_base:vec3<f32>, inst:Instance, p:vec3<f32>)->vec3<f32> {
     let tag=flags>>16u;
     if tag==0u {return vec3<f32>(0.0);}
-    let cm=car_materials[tag-1u];
+    let cm=car_material(tag-1u);
     if u32(cm.colour.w+0.5)!=7u {return vec3<f32>(0.0);}
     let levels=clamp(cm.second.xy,vec2<f32>(0.0),vec2<f32>(8000.0));
     if all(levels==vec2<f32>(0.0)){return vec3<f32>(0.0);}

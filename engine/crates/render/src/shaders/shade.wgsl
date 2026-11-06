@@ -76,7 +76,15 @@ fn instance_at(id: u32) -> Instance {
     let owner = instances[member_owner(id)];
     return compose_member(owner, instances[member_template(owner,id)]);
 }
-@group(0) @binding(5) var<storage, read> materials: array<Material>;
+// Read-only scene tables in one buffer (scene_tables.rs): vec4 0 holds where
+// the materials, car materials and solid occluders start (in vec4s).
+@group(0) @binding(5) var<storage, read> scene_tables: array<vec4<u32>>;
+fn material(i: u32) -> Material {
+    let at = scene_tables[0].x + 2u * i;
+    let a = scene_tables[at];
+    let b = scene_tables[at + 1u];
+    return Material(bitcast<vec3<f32>>(a.xyz), bitcast<i32>(a.w), bitcast<f32>(b.x), b.y, bitcast<f32>(b.z), bitcast<f32>(b.w));
+}
 @group(0) @binding(6) var albedo: texture_2d_array<f32>;
 @group(0) @binding(7) var samp: sampler;
 @group(0) @binding(8) var<storage, read> aux: array<u32>;
@@ -124,7 +132,10 @@ struct SolidOccluder {
     half_extent: vec4<f32>,
     identity: vec4<u32>,
 };
-@group(1) @binding(12) var<storage, read> solids: array<SolidOccluder>;
+fn solid_occluder(i: u32) -> SolidOccluder {
+    let at = scene_tables[0].z + 3u * i;
+    return SolidOccluder(bitcast<vec4<f32>>(scene_tables[at]), bitcast<vec4<f32>>(scene_tables[at + 1u]), scene_tables[at + 2u]);
+}
 @group(1) @binding(13) var canopy_tex: texture_3d<f32>;
 @group(1) @binding(14) var canopy_sampler: sampler;
 @group(1) @binding(15) var near_shadow_tex: texture_depth_2d;
@@ -507,7 +518,7 @@ fn contact_visibility(p: vec3<f32>, n: vec3<f32>, refl: vec3<f32>, owner: u32) -
     var diffuse = dfao.x;
     var specular = dfao.y;
     for (var i = 0u; i < gi.hf_dims.z; i++) {
-        let bounds = solids[i];
+        let bounds = solid_occluder(i);
         // A coarse interior proxy must never shade its own visible body:
         // segment boundaries otherwise appear as planes across the paint.
         if bounds.identity.x == owner {
@@ -1864,13 +1875,13 @@ fn terrain_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
         if textureLoad(depth_tex, c, 0) <= 0.0 { continue; }
         let candidate = textureLoad(vis_tex, c, 0).r;
         if (candidate & 0x80000000u) != 0u { continue; }
-        let flags = materials[clusters[visible[candidate >> 7u].y].material].flags;
+        let flags = material(clusters[visible[candidate >> 7u].y].material).flags;
         if (flags & 2u) != 0u && (flags >> 16u) == 0u { px = c; id = candidate; rep = k; break; }
     }
     if px.x < 0 { textureStore(terrain_coarse_out, cx, invalid); return; }
     let vis = visible[id >> 7u];
     let cl = clusters[vis.y];
-    let m = materials[cl.material];
+    let m = material(cl.material);
     let inst = instance_at(vis.x);
     let packed = tris[cl.first_tri + (id & 127u)];
     var vi: array<u32, 3>;
@@ -2075,7 +2086,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let cl = clusters[vis.y];
     // Terrain: a TERRAIN material that is not a car part (car materials keep
     // their index in bits 16.. and may carry low flag bits of their own).
-    let terrain_class = (materials[cl.material].flags & 2u) != 0u && (materials[cl.material].flags >> 16u) == 0u;
+    let terrain_class = (material(cl.material).flags & 2u) != 0u && (material(cl.material).flags >> 16u) == 0u;
     if SHADE_CLASS != 0u && terrain_class != (SHADE_CLASS == 1u) { return; }
     let inst = instance_at(vis.x);
     let packed = tris[cl.first_tri + tri];
@@ -2113,7 +2124,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     sun_receiver_tri[0]=p0;sun_receiver_tri[1]=p1;sun_receiver_tri[2]=p2;
     sun_receiver_tri_set=true;
     sun_receiver_error=cl.own_error*inst.scale;
-    let m = materials[cl.material];
+    let m = material(cl.material);
     // Two-sided cards and backfaces face the viewer.
     if dot(n, dir) > 0.0 && (m.flags & 8u) != 0u && (m.flags & 64u) == 0u {
         n = -n;
@@ -2392,7 +2403,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         surface_emit = so.emission;
     }
     if FEATURE_CARS && car != 0u {
-        let cs = car_surface(car_materials[car - 1u], inst, p, n, dir, uv, base, m.roughness, m.metal);
+        let cs = car_surface(car_material(car - 1u), inst, p, n, dir, uv, base, m.roughness, m.metal);
         base = cs.base;
         n = cs.n;
         rough_m = cs.rough;
@@ -2697,7 +2708,7 @@ fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
     let authored=normals[0]*b0+normals[1]*b1+normals[2]*b2;
     var n=normalize(wind_normal(member_slot(vis.x),xform_dir(inst,authored)));
     if dot(n,dir)>0.0 {n=-n;}
-    let m=materials[cl.material];var base=m.tint;
+    let m=material(cl.material);var base=m.tint;
     if m.layer>=0 {let uv=uvs[0]*b0+uvs[1]*b1+uvs[2]*b2;
         base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(distance(p,view.cam.xyz)*0.03,1.0)),0.0)).rgb;}
     let ambient=sky_irradiance(n);
