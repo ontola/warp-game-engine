@@ -451,6 +451,14 @@ impl Game for Fly {
         let pos = self.prev.lerp(self.pos, frame.alpha);
         let cam = self.camera(pos, frame.alpha);
         let [w, h] = frame.size;
+        // Sharp sun shadow reaches about four times the height above the
+        // ground, in steps of sqrt(2) (each step resizes the map), at most out
+        // to the trees: from 600 m up its edge read as a ring in the forest.
+        if let Some(renderer)=frame.renderer() {
+            let above=(pos.y-self.ground(pos.x,pos.z)).max(0.0);
+            let steps=(2.0*(4.0*above/180.0).max(1.0).log2()).ceil();
+            renderer.set_shadow_reach((180.0*2f32.powf(steps/2.0)).min(self.world.tree_radius.max(180.0)));
+        }
         if let (Some(terrain), Some(renderer)) = (self.terrain.as_mut(), frame.renderer()) {
             let started=web_time::Instant::now();
             self.stats = terrain.update(frame.gpu, renderer, &[TerrainView::new(&cam, w, h)])?;
