@@ -1,0 +1,53 @@
+{
+  "world": ["--style", "lowland", "--grass", "--seed", "1"],
+  "size": "1600x900",
+  "frames": 300,
+  "measure_frames": 60,
+  "cameras": [
+    {"name": "tree.d10", "at": "-537.0,452.2,10,-5.4018,0", "crown": [575, 30, 965, 400], "about": "one tree from 10 m: mesh"},
+    {"name": "tree.d25", "at": "-525.4,461.7,10,-5.4018,0", "crown": [690, 300, 880, 480], "about": "the same tree from 25 m"},
+    {"name": "tree.d50", "at": "-506.1,477.6,10,-5.4018,0", "crown": [735, 345, 855, 470], "about": "the same tree from 50 m"},
+    {"name": "tree.d100", "at": "-467.5,509.4,10,-5.4018,0", "crown": [755, 385, 830, 460], "about": "the same tree from 100 m: voxels"},
+    {"name": "tree.d200", "at": "-390.4,573.0,10,-5.4018,0", "crown": [775, 405, 825, 455], "about": "the same line from 200 m; a nearer tree can stand in the box"},
+
+    {"name": "ring.f12", "at": "449.9,526.4,150,-2.348,-0.4999", "about": "150 m up: the edge of the grass disc"},
+    {"name": "ring.turned", "at": "449.9,526.4,150,-0.7772,-0.4999", "about": "the same place a quarter turn on"},
+    {"name": "ring.high", "at": "449.9,526.4,300,-2.348,-0.7", "about": "300 m up, steeper"},
+
+    {"name": "shadow.h8", "at": "2932.6,2312.4,8,5.7041,-0.7871", "about": "sharp shadow under the camera, 8 m up"},
+    {"name": "shadow.h16", "at": "2932.6,2312.4,16,5.7041,-0.7871", "about": "Joep's blurred shadows, 16 m up"},
+    {"name": "shadow.h30", "at": "2932.6,2312.4,30,5.7041,-0.7871", "about": "30 m up"},
+
+    {"name": "boulder.far", "at": "-102.9,-3.6,11.5,-0.7133,-0.1895", "about": "90 m back: no wide soft hills"},
+    {"name": "boulder.s0", "at": "-43.5,-71.1,11.5,-0.7133,-0.1895", "about": "where the rock was a flat patch"},
+    {"name": "boulder.s2", "at": "-39.54,-75.6,11.5,-0.7133,-0.1895", "about": "6 m closer"},
+    {"name": "boulder.s4", "at": "-35.58,-80.1,11.5,-0.7133,-0.1895", "about": "12 m closer"},
+
+    {"name": "stripes.f12", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "-224.6,550.1,37.3,-5.9208,-0.2965", "about": "grass bands along an alpine slope"},
+    {"name": "stripes.low", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "-224.6,550.1,5,-5.9208,-0.3", "about": "the same slope from 5 m up"},
+
+    {"name": "circle.f12", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "-787.4,201.5,6.4,-7.8018,-0.51", "grid_px": 180, "about": "black spots on the 1.5 m grass grid, 28 degree slope"},
+    {"name": "circle.turned", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "-787.4,201.5,6.4,-6.2310,-0.51", "grid_px": 180, "about": "the same place a quarter turn on"},
+    {"name": "circle.flat", "at": "341.8,-641.4,9,-1.4373,-1.3614", "grid_px": 116, "about": "looking down at flat grass under a tree"},
+
+    {"name": "edge.lowland", "at": "-820.4,150,18,-6.9351,-0.9456", "about": "shadow map handover on the ground"},
+    {"name": "edge.alpine", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "-820.4,150,18,-6.9351,-0.9456", "about": "the same spot in alpine"},
+
+    {"name": "grassedge.f12", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "709.6,829.8,148.7,-2.7681,-0.4485", "about": "pale grass against shaded ground"},
+    {"name": "grassedge.low", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "709.6,829.8,40,-2.7681,-0.4485", "about": "the same place from 40 m up"},
+
+    {"name": "load.near60", "world": ["--style", "alpine", "--regions", "polder", "--town", "--seed", "1", "--voxel-raster-profile"], "at": "60,1600,1.7,0.3,0", "frames": 60, "about": "bushes one second after arriving"},
+    {"name": "load.near120", "world": ["--style", "alpine", "--regions", "polder", "--town", "--seed", "1", "--voxel-raster-profile"], "at": "60,1600,1.7,0.3,0", "frames": 120, "about": "two seconds after arriving"},
+    {"name": "load.forest60", "world": ["--style", "alpine", "--regions", "polder", "--town", "--seed", "1", "--voxel-raster-profile"], "at": "0,1150,1.7,0,-0.05", "frames": 60, "about": "forest one second after arriving"},
+    {"name": "load.forest120", "world": ["--style", "alpine", "--regions", "polder", "--town", "--seed", "1", "--voxel-raster-profile"], "at": "0,1150,1.7,0,-0.05", "frames": 120, "about": "two seconds after arriving"}
+  ],
+  "clips": [
+    {"name": "tree", "at": "-390.4,573.0,10,-5.4018,0", "speed": 38, "seconds": 5, "about": "toward one tree from 200 m to 10 m"},
+    {"name": "boulder", "at": "-102.9,-3.6,16,-0.7133,-0.1", "speed": 20, "seconds": 5, "about": "toward the popping rock"},
+    {"name": "descent", "at": "449.9,526.4,150,-2.348,-1.2", "speed": 31, "seconds": 5, "about": "down from 150 m to 5 m over grass"}
+  ],
+  "flights": [
+    {"name": "fly.low", "at": "-400,300,12,2.4,-0.25", "speed": 40, "frames": 300, "about": "flying at 40 m/s, 12 m up: shadow edges and pages in motion"},
+    {"name": "fly.high", "at": "-400,300,80,2.4,-0.4", "speed": 40, "frames": 300, "about": "the same 80 m up"}
+  ]
+}
