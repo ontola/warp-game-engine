@@ -143,8 +143,12 @@ fn configuration(generation:u32,owners:u32,cameras:&[ReceiverCamera],maps:&[Shad
     Ok((c,uploaded))
 }
 
-pub(crate) fn cull_source()->String {
-    format!("{}\n{}",include_str!("shaders/receiver_shadow_math.wgsl"),include_str!("shaders/receiver_shadow_query.wgsl"))
+/// Off, cull keeps every caster (what the query does on a zeroed buffer)
+/// and binds no demand buffer.
+pub(crate) fn cull_source(enabled:bool)->String {
+    let query=if enabled {include_str!("shaders/receiver_shadow_query.wgsl")}
+        else {"fn receiver_shadow_keep(center:vec3<f32>,radius:f32)->bool {return true;}\n"};
+    format!("{}\n{}",include_str!("shaders/receiver_shadow_math.wgsl"),query)
 }
 fn builder_source()->String {
     format!("{}\n{}",include_str!("shaders/receiver_shadow_math.wgsl"),include_str!("shaders/receiver_shadow_demand.wgsl"))

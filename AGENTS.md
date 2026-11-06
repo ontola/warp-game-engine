@@ -16,7 +16,7 @@ One Rust workspace, with Cargo.toml and Cargo.lock at the repository root.
 | --- | --- |
 | `engine/crates/kern` | Engine core: a game is a deterministic `Sim` in fixed ticks; state digests, divergence search, value traces. |
 | `engine/crates/render` | The renderer (wgpu): headless by design, renders into textures. Clusters/LOD, shadows, GI, sky and fog, procedural terrain (`terrain_field`, `procedural_terrain`), grass (`meadow*`), trees and vegetation (`vegetation_asset`, `plant_recipe`, `foliage_*`, `voxel_*`), HUD, debug UI widgets. Shaders in `src/shaders/`. Many GPU probes in `examples/`. |
-| `engine/crates/app` | The game shell: window, fixed tick, input, split screen, HUD, headless capture and `bench`. Built-in keys: F10 debug menu (`debug.rs`), F11 fullscreen, F12 feedback screenshot (`screenshot.rs`). Example games in `examples/` (`terrain_fly`, `hello`). |
+| `engine/crates/app` | The game shell: window, fixed tick, input, split screen, HUD, headless capture and `bench`. Built-in keys: F3 stats overlay unless the game uses F3 (`stats.rs`), F10 debug menu (`debug.rs`), F11 fullscreen, F12 feedback screenshot (`screenshot.rs`). Example games in `examples/` (`terrain_fly`, `hello`). |
 | `engine/crates/audio` | Synthesised engine and effect sound. |
 | `engine/crates/physics` | Rapier rigid bodies with enhanced determinism. |
 | `engine/crates/body` | Bodies that move without hand animation: a standard skeleton, built-in motion-captured clips (CC0), `Gait` (what to blend from what a body does, pace from leg length), rigs of rigid pieces. |

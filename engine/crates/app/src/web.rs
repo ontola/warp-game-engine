@@ -140,7 +140,8 @@ impl Shell {
                     let limits = l.gpu.device.limits();
                     let (storage, textures) = (limits.max_storage_buffers_per_shader_stage, limits.max_sampled_textures_per_shader_stage);
                     if render::portable::needed(&limits) { log(&format!("{storage} storage buffers, {textures} sampled textures per shader stage: portable renderer (terrain and sky only)")); }
-                    else if storage < 16 { log(&format!("{storage} storage buffers per shader stage: full renderer, no trees (they need 16)")); }
+                    else if storage < 16 { log(&format!("{storage} storage buffers, {textures} sampled textures per shader stage: full renderer, no trees (they need 16 storage buffers)")); }
+                    else { log(&format!("{storage} storage buffers, {textures} sampled textures per shader stage: full renderer")); }
                     *live.borrow_mut() = Some(l);
                     window.request_redraw();
                 }
