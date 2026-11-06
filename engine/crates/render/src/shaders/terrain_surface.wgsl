@@ -428,7 +428,10 @@ fn grass_proxy(c: vec3<f32>, s: SurfaceIn, f: FieldAttr, meadow_w: f32) -> vec3<
     let radius = m.tint.y;
     if radius <= 0.0 { return c; }
     let d = distance(s.p.xz, view.cam.xz);
-    let w = smoothstep(0.7 * radius, radius, d) * meadow_w
+    // Inside the blade disc too, at 70 %: the ground between jittered
+    // patches showed through as smooth brown blobs (Mancave, 0b1e295);
+    // grass ground is the stand's own shaded thatch, not bare soil.
+    let w = max(smoothstep(0.7 * radius, radius, d), 0.7) * meadow_w
         * (1.0 - smoothstep(0.3, 0.8, f.rock)) * (1.0 - smoothstep(0.6, 0.8, f.scree))
         * (1.0 - smoothstep(0.0, 0.02, f.water)) * (1.0 - smoothstep(0.15, 0.45, f.snow));
     return mix(c, c * vec3<f32>(m.roughness, m.scale, m.metal), w);
