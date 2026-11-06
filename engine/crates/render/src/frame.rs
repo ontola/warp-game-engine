@@ -66,8 +66,10 @@ const NEAR_SHADOW_EXTENT: f32 = 24.0;
 /// 6 November: 0.5 m near cells printed leopard spots (round blobs) on the
 /// ground and trunks under a crown; 0.25 m makes them leaf-sized for +0.14 ms
 /// (lowland, both maps at 0.25; 0.125 adds another 0.45 ms for little gain).
+/// The shared map's 1 m cells drew tree shadows past the near map as metre
+/// squares (Joep, playtest 3, 22 m up): 0.5 m.
 const NEAR_SUN_VOXEL_M: f32 = 0.25;
-const SHARED_SUN_VOXEL_M: f32 = 1.0;
+const SHARED_SUN_VOXEL_M: f32 = 0.5;
 fn sun_voxel_m(texel: f32, cell: f32) -> f32 {
     static CELL: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     CELL.get_or_init(|| std::env::var("KERN_SUN_VOXEL_M").ok().and_then(|v| v.parse().ok())).unwrap_or(cell).max(texel)
