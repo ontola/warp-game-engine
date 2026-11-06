@@ -773,7 +773,6 @@ impl MeadowRenderer {
                 (7, texture(unfiltered, d2)),
                 (10, texture(unfiltered, d2)),
                 (11, uniform()),
-                (12, storage(true)),
                 (
                     13,
                     texture(
@@ -1171,7 +1170,6 @@ impl MeadowRenderer {
     pub fn set_spatial_filter_temporal_active(&self, active: bool) {
         self.spatial_filter_temporal_active.store(active, std::sync::atomic::Ordering::Relaxed);
     }
-    pub(crate) fn hidden_shade_fallback(gpu:&Gpu)->wgpu::Buffer {visibility::hidden_fallback(gpu)}
     /// Experimental cached pages do not yet preserve previous-frame coverage
     /// through page/reference transitions. Do not feed them to reconstruction.
     pub fn group_cache_enabled(&self) -> bool { self.groups.is_some() }

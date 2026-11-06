@@ -137,3 +137,13 @@ versions from `terrain_trace::TYPED`. The voxel lighting layout swaps
 bindings 24 and 26 for 5. Shade is at 9. Pixel-identical, also with
 `KERN_PAGED_FOLIAGE_SUN=1` and on all `world_sun_visibility` images (that
 example's split-view check fails the same way on main before this change).
+
+Step 5: the hidden meadow IDs and the sky tile list share one read-write
+`ShadeScratch` buffer per view (`shade_scratch.rs`): the meadow's ID buffer
+when it skips hidden shading, otherwise the renderer's own. Shade is at 8
+storage buffers per stage. Pixel-identical, also with `KERN_SKY_TILES=1` and
+on `meadow_shading_gpu` with `KERN_MEADOW_VISIBILITY=1
+KERN_MEADOW_SKIP_HIDDEN_SHADE=1`, compared with main before step 1. That
+check also caught a step 1 regression: the meadow lighting layout still
+listed group 1 binding 12 (solid occluders), so legacy meadows failed to
+create their bind group. Fixed here.
