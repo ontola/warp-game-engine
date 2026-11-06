@@ -710,7 +710,6 @@ pub struct Renderer {
     resource_device: wgpu::Device,
     albedo_array: wgpu::Texture,
     live_screens: Option<std::sync::Mutex<crate::screen_feed::LiveScreens>>,
-    aux_buffer: wgpu::Buffer,
     dents: Option<(usize, usize)>,
     dfao: Option<(usize, crate::dfao::Grid)>,
     irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
@@ -1265,17 +1264,14 @@ impl Renderer {
     /// Update a game-owned range reserved in `Scene::aux` before construction.
     /// The caller owns the range; engine reservations must not be overwritten.
     pub fn update_aux_words(&self, gpu: &Gpu, offset: usize, words: &[u32]) -> Result<(), String> {
-        let end = offset.checked_add(words.len()).and_then(|n| n.checked_mul(4)).ok_or("aux range overflow")?;
-        if end as u64 > self.aux_buffer.size() { return Err("aux write outside reserved buffer".into()); }
-        gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(words));
-        Ok(())
+        self.scene_tables.write_aux(gpu, offset, words)
     }
 
     /// Replace the bullet dents reserved with `Scene::reserve_dents`.
     pub fn set_dents(&self, gpu: &Gpu, dents: &[crate::dents::Dent]) -> Result<(), String> {
         let (offset, capacity) = self.dents.ok_or("the scene reserved no dents")?;
         let words = crate::dents::pack(capacity, dents);
-        gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(&words));
+        self.scene_tables.write_aux(gpu, offset, &words)?;
         Ok(())
     }
 
@@ -1283,7 +1279,7 @@ impl Renderer {
     pub fn set_dfao(&self, gpu: &Gpu, words: &[u32]) -> Result<(), String> {
         let (offset, grid) = self.dfao.ok_or("the scene reserved no dfao field")?;
         if words.len() != grid.words() { return Err("dfao word count differs from the grid".into()); }
-        gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(words));
+        self.scene_tables.write_aux(gpu, offset, words)?;
         Ok(())
     }
 
@@ -1292,7 +1288,7 @@ impl Renderer {
     pub fn set_irradiance_volume(&self, gpu: &Gpu, probes: &[crate::irradiance_volume::Probe]) -> Result<(), String> {
         let (offset, grid) = self.irradiance_volume.ok_or("the scene reserved no irradiance volume")?;
         let words = crate::irradiance_volume::pack(&grid, probes)?;
-        gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(&words));
+        self.scene_tables.write_aux(gpu, offset, &words)?;
         Ok(())
     }
 
@@ -1301,7 +1297,7 @@ impl Renderer {
         let (offset, grid) = self.irradiance_volume.ok_or("no reserved probe volume")?;
         let mut words = crate::irradiance_volume::pack(&grid, probes)?;
         words[7] = 1;
-        gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(&words));
+        self.scene_tables.write_aux(gpu, offset, &words)?;
         Ok(())
     }
 
@@ -1310,7 +1306,7 @@ impl Renderer {
         let (offset, grid) = self.irradiance_volume.ok_or("no reserved probe volume")?;
         let mut words = crate::irradiance_volume::pack(&grid, probes)?;
         words[7] = 2;
-        gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(&words));
+        self.scene_tables.write_aux(gpu, offset, &words)?;
         Ok(())
     }
 
@@ -1329,7 +1325,7 @@ impl Renderer {
                 }
             }
         }
-        gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(&words));
+        self.scene_tables.write_aux(gpu, offset, &words)?;
         Ok(())
     }
 
@@ -1340,7 +1336,7 @@ impl Renderer {
         let header=[grid.origin.x.to_bits(),grid.origin.y.to_bits(),grid.origin.z.to_bits(),grid.cell.to_bits(),grid.dims[0],grid.dims[1],grid.dims[2]];
         if words.len()!=crate::irradiance_volume::HEADER_WORDS+grid.count()*crate::irradiance_volume::PROBE_WORDS
             || words[..7]!=header || words[7]>7 { return Err("packed irradiance grid mismatch".into()); }
-        gpu.queue.write_buffer(&self.aux_buffer,(offset*4)as u64,bytemuck::cast_slice(words));
+        self.scene_tables.write_aux(gpu, offset, words)?;
         Ok(())
     }
 
@@ -1348,7 +1344,7 @@ impl Renderer {
     pub fn set_sky_sun_emission(&self, gpu: &Gpu, probes: &[crate::irradiance_volume::Probe], emission: &[crate::irradiance_volume::Probe], planes: &[[f32;4]]) -> Result<(),String> {
         let (offset,grid)=self.irradiance_volume.ok_or("no reserved probe volume")?;
         let words=crate::irradiance_volume::pack_sky_emission(&grid,probes,emission,planes)?;
-        gpu.queue.write_buffer(&self.aux_buffer,(offset*4) as u64,bytemuck::cast_slice(&words));
+        self.scene_tables.write_aux(gpu, offset, &words)?;
         Ok(())
     }
 
@@ -1365,7 +1361,7 @@ impl Renderer {
             }
             for (j,slot) in [1,2,4,5].into_iter().enumerate() { words[8+i*18+slot]=planes[i][j].to_bits(); }
         }
-        gpu.queue.write_buffer(&self.aux_buffer,(offset*4) as u64,bytemuck::cast_slice(&words));
+        self.scene_tables.write_aux(gpu, offset, &words)?;
         Ok(())
     }
 
@@ -1381,12 +1377,11 @@ impl Renderer {
         let clusters = source_buffers.as_ref().map(|s|s[3].clone()).unwrap_or_else(||buffer(gpu, "clusters", if scene.clusters.is_empty() {&[0u8;std::mem::size_of::<crate::cluster::GpuCluster>()]} else {bytemuck::cast_slice(&scene.clusters)}, u | wgpu::BufferUsages::COPY_SRC));
         let instances = buffer(gpu, "instances", if scene.instances.is_empty() {&[0u8;std::mem::size_of::<crate::scene::GpuInstance>()]} else {bytemuck::cast_slice(&scene.instances)}, u | wgpu::BufferUsages::COPY_SRC);
         let materials = buffer(gpu, "materials", if scene.materials.is_empty() {&[0u8;std::mem::size_of::<crate::scene::Material>()]} else {bytemuck::cast_slice(&scene.materials)}, u);
-        let aux = buffer(gpu, "aux", bytemuck::cast_slice(&scene.aux), u);
         // Never empty: a binding needs at least one element.
         let car_list = if scene.car_materials.is_empty() { vec![crate::scene::GpuCarMaterial::default()] } else { scene.car_materials.clone() };
         let solids = scene.solid_occluders();
         let solid_count = solids.len() as u32;
-        let scene_tables = crate::scene_tables::SceneTables::new(gpu, &scene.materials, &car_list, &solids);
+        let scene_tables = crate::scene_tables::SceneTables::new(gpu, &scene.materials, &car_list, &solids, &scene.aux);
         startup.mark("geometry_material_buffers");
         crate::foliage_representation::validate_bindings(scene).expect("invalid foliage representation bindings");
         let voxel_replacement = buffer(gpu, "voxel crown replacement", bytemuck::cast_slice(&crate::voxel_forest::replacement_materials(scene)), u);
@@ -1439,7 +1434,6 @@ impl Renderer {
                 (5, storage(true)),
                 (6, tex_array),
                 (7, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
-                (8, storage(true)),
                 (9, tex_array),
                 (10, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
                 (11, storage(true)),
@@ -1601,7 +1595,6 @@ impl Renderer {
                 (5, scene_tables.buffer.as_entire_binding()),
                 (6, wgpu::BindingResource::TextureView(&albedo_view)),
                 (7, wgpu::BindingResource::Sampler(&samp)),
-                (8, aux.as_entire_binding()),
                 (9, wgpu::BindingResource::TextureView(&normals_view)),
                 (10, wgpu::BindingResource::Sampler(&plant_samp)),
                 (11, voxel_replacement.as_entire_binding()),
@@ -2009,7 +2002,6 @@ impl Renderer {
             resource_device: gpu.device.clone(),
             albedo_array: albedo.clone(),
             live_screens: (!scene.live_screen_feeds.is_empty()).then(|| std::sync::Mutex::new(crate::screen_feed::LiveScreens::new(gpu, &albedo, &scene.live_screen_feeds))),
-            aux_buffer: aux.clone(),
             irradiance_volume: scene.irradiance_volume,
             dents: scene.dents,
             dfao: scene.dfao,

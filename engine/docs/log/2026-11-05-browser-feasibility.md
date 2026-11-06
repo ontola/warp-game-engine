@@ -117,5 +117,7 @@ offsets, read through `material(i)`, `car_material(i)` and `solid_occluder(i)`
 in WGSL. Shade drops from 16 to 14 storage buffers, the scene group from 12 to
 11. Native output is pixel-identical (lavapipe, alpine, with and without
 trees). Cull, forward and portable still use the typed `materials` buffer.
-Next: topology arena (cluster verts, tris, aux), then GPU-written data and
-shade scratch.
+Step 2: `Scene::aux` moved into the same buffer (header vec4 1 holds its
+start and length; `aux_word(i)`, `aux_len()`). Shade is at 13, still
+pixel-identical. Next: one topology buffer for vertices, cluster verts and
+tris (also in the foliage source cache), then GPU-written data.
