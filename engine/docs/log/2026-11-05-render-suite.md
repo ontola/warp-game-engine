@@ -66,10 +66,11 @@ Foliage, not changed here:
 
 - Selection is the largest pass in every view, 1.7 to 10.6 ms.
 - The forest cut on a still camera does not reach one result. On `polder` it
-  rests in one of two states, 98 voxel slots (8,085,136 triangles) or 50
-  (8,219,540), 1.1% of pixels apart. Which one depends on timing: repeats of
-  one build differ at 1000 frames, and it stayed in one state to 1800 frames.
-  Whether it also flips while running is not known; a capture only shows the end.
+  rests in one of at least three states: 98 voxel slots (8,085,136 triangles,
+  224k shadow triangles), 92 (8,085,652, 421k) or 50 (8,219,540, 219k); the
+  largest gap is 1.1% of pixels. Which one depends on timing: repeats of one
+  build differed at 1000 and 2400 frames, up to 3000 frames tried. Whether it
+  also flips while running is not known; a capture only shows the end.
 - `forest` draws 67M triangles and `occluder raster` takes 5.68 ms. This fits
   handoff problem 1 (source bypass) but was not tested here.
 - Ball-shaped clusters and ball-shaped tree shadows at 20 to 40 m on `forest`.
@@ -78,8 +79,21 @@ Terrain and shading, still to do:
 
 - Faint vertical bands remain on steep plot cuts after the fix below: the colour
   breakup noise is still mapped from above.
-- Faint rings in the sky on `forest`.
-- The building slab shadow is stepped on `wall`.
-- `render_cpu_ms` is 8 to 16 ms, now the largest CPU cost measured. With
-  `KERN_CPU_SPANS=1` on `town`, one sampled frame spent 6.9 ms in `submit` and
-  under 1.5 ms in everything else, so encoding is not the problem.
+- `render_cpu_ms` is 7 to 19 ms, the largest CPU cost measured. On `town` it is
+  9.55 ms in `enc.finish()` and 0.61 ms in `queue.submit`: wgpu 30 does its real
+  encoding in finish.
+
+## Checked, no change
+
+- Rings in the sky on `forest` are not in the picture. Averaged over 128 columns
+  the sky rises smoothly, about 0.04 code values per row, with no steps, so the
+  tonemap dither works. They came from viewing a scaled image.
+- Stepped slab shadows on `wall`: turning the camera by 0.04 rad keeps the steps
+  on the shadow edge, about 8 pixels tall, so they follow the near sun map's
+  1.6 cm texels. A resolution limit five metres from a wall.
+
+## Rejected
+
+Finishing the shadow and prepass encoder on a second thread: `render_cpu_ms` got
+worse in six of seven views (wall 7.3 to 10.8, flight 18.8 to 31.9) and better
+only on `hill`. CPU times were noisy that morning, but nothing suggested a win.

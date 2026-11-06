@@ -68,8 +68,9 @@ channel: `over16` is the share of pixels off by more than 16 levels. More than
 0.1% above the noise floor between repeats is a failure. The noise floor is very
 low (views without trees repeat bit for bit), so a changed picture is a real
 change, but not always of the code under test: streaming runs on wall time, and
-on `polder` the forest cut rests in one of two states (8.09M or 8.22M triangles,
-1.1% of pixels apart), chosen by timing, even between repeats of one build. The
+on `polder` the forest cut rests in one of several states (8.09M or 8.22M
+triangles, up to 1.1% of pixels apart), chosen by timing, even between repeats of
+one build. The
 `polder` and `flight` pictures are therefore reported but never fail a diff. If
 only trees differ on another view, compare its triangle count and repeat the run
 before blaming the change.
