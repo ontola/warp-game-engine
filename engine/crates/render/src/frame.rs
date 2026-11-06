@@ -1894,7 +1894,6 @@ impl Renderer {
         let terrain_coarse_on = !simple_lighting && shade_features.terrain && std::env::var("KERN_TERRAIN_COARSE").as_deref() != Ok("0");
         shade_constants.push(("TERRAIN_COARSE", if terrain_coarse_on {1.0} else {0.0}));
         if let Some(m) = std::env::var("KERN_COARSE_FOOTPRINT_M").ok().and_then(|v| v.parse::<f64>().ok()) { shade_constants.push(("COARSE_FOOTPRINT_M", m)); }
-        if let Some(b) = std::env::var("KERN_TERRAIN_VARIANT_BLEND").ok().and_then(|v| v.parse::<f64>().ok()) { shade_constants.push(("TERRAIN_VARIANT_BLEND", b.clamp(0.0, 0.5))); }
         // KERN_SHADE_CLASSES=0: one shade pipeline for terrain and the rest.
         let shade_classes = !simple_lighting && shade_features.terrain && std::env::var("KERN_SHADE_CLASSES").as_deref() != Ok("0");
         // The terrain class keeps every feature terrain pixels can reach.
