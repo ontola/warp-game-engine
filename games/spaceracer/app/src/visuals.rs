@@ -381,7 +381,15 @@ fn transform(v: &Value) -> Affine3A {
 /// Quest: the minimum forward renderer (plain meshes, no skinning, no GPU
 /// debris), the only one that draws straight into the headset's eye images.
 pub static MINIMUM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Smallest angle an owner must span to be drawn on Quest, radians: about
+/// five pixels at the Quest 2's 1584-pixel, 100-degree eye. With a 1200 m
+/// draw distance it cut a city view from 177k to about 107k triangles with
+/// no visible change but a few distant lamps.
+pub const MINIMUM_ANGLE: f32 = 0.005;
 pub fn minimum() -> bool { MINIMUM.load(std::sync::atomic::Ordering::Relaxed) }
+/// How far a race build has got, per mille, for the loading screen.
+pub static PROGRESS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub fn progress(per_mille: u32) { PROGRESS.store(per_mille, std::sync::atomic::Ordering::Relaxed); }
 impl Visuals {
     pub fn new(race: &Race, root: &Path) -> Result<Self, String> {
         let mut scene = Scene {stage_sun:true,..Default::default()};
@@ -453,7 +461,9 @@ impl Visuals {
         lighting.vignette = 0.12;
         lighting.sharpen = 0.15;
         road(&mut scene, race);
+        progress(200);
         let mut stage = super::stage::Stage::build(&mut scene, race, root)?;
+        progress(750);
         let obstacles = stage.obstacles.clone();
         let mut lamps = track_lights(&mut scene, race);
         lamps.extend(stage.lamps.iter().copied());
@@ -531,6 +541,7 @@ impl Visuals {
         let pickup_mat = material(&mut scene, [0.6, 0.15, 0.95], 0.3, 100.);
         let pickup_mesh = pickup_mesh(&mut scene, pickup_mat);
         let missile_mat = material(&mut scene, [0.32, 0.36, 0.4], 0.25, 0.);
+        progress(850);
         let mut weapon_art=super::weapon_art::Art::new(&mut scene,race.environment.exposure);
         let mount_meshes: Vec<_> = (0..6)
             .map(|k| match k {1=>weapon_art.coil,2=>weapon_art.base,4=>weapon_art.rail,5=>weapon_art.bomb,_=>weapon_mesh(&mut scene,k,missile_mat,pickup_mat)})
@@ -603,6 +614,20 @@ impl Visuals {
             record[1] = parts.iter().map(|p| slots.instance(p.slot)).max().unwrap() as u32 + 1;
             record[3] = 1f32.to_bits();
             scene.aux.extend(record);
+        }
+        progress(930);
+        if minimum() {
+            // Quest: what the fog hides, and detail a few pixels across, is not drawn.
+            scene.graphics.minimal_draw_distance = if lighting.fog_end > 0. { lighting.fog_end.min(1200.) } else { 1200. };
+            scene.graphics.minimal_min_angle = MINIMUM_ANGLE;
+            // `SPACERACER_CULL=metres,radians` to compare on the headset (0,0: off).
+            if let Some([d, a]) = std::env::var("SPACERACER_CULL").ok().and_then(|v| {
+                let n: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                (n.len() == 2).then(|| [n[0], n[1]])
+            }) {
+                scene.graphics.minimal_draw_distance = d;
+                scene.graphics.minimal_min_angle = a;
+            }
         }
         let jets = super::jets::Jets::new(root)?;
         let crash_fx = super::crash_fx::Crashes::new(root)?;

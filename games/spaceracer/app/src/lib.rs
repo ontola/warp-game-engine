@@ -64,6 +64,47 @@ struct Racer {
     portrait: bool,
     weapon_view: bool,
     missile_view: bool,
+    /// A pointer click on a menu row this tick: the side clicked (VR pointer).
+    menu_click: Option<i32>,
+    /// Build new races on a worker thread behind a loading screen (VR: a
+    /// frozen frame in a headset is not acceptable).
+    background_loading: bool,
+    loading: Option<Loading>,
+}
+/// A race being built on a worker thread.
+struct Loading {
+    worker: std::thread::JoinHandle<Result<(Race, visuals::Visuals), String>>,
+    started: std::time::Instant,
+}
+/// What a new race is built from; all owned, so it can move to a worker.
+struct RaceSpec {
+    root: PathBuf,
+    seed: i64,
+    difficulty: usize,
+    biome: usize,
+    players: usize,
+    racers: usize,
+    laps: u32,
+    seats: Vec<(String, bool)>,
+    pickups: bool,
+}
+impl RaceSpec {
+    fn build(self) -> Result<(Race, visuals::Visuals), String> {
+        visuals::progress(20);
+        let rules = Rules::new(Some(&self.root.join("rules")))?;
+        let mut race = Race::with_rules(self.seed, DIFFICULTIES[self.difficulty], BIOMES[self.biome], self.players, self.racers, self.laps, rules)?;
+        visuals::progress(150);
+        for (driver, (name, bot)) in race.drivers.iter_mut().zip(self.seats) {
+            driver.name = name;
+            driver.bot = bot;
+        }
+        if !self.pickups {
+            race.pickups.clear();
+        }
+        let visuals = visuals::Visuals::new(&race, &self.root.join("assets"))?;
+        visuals::progress(1000);
+        Ok((race, visuals))
+    }
 }
 const BIOMES: [&str; 5] = ["city", "forest", "cell", "desert", "ocean"];
 const DIFFICULTIES: [&str; 3] = ["easy", "normal", "hard"];
@@ -128,6 +169,9 @@ impl Racer {
             portrait: false,
             weapon_view: false,
             missile_view: false,
+            menu_click: None,
+            background_loading: false,
+            loading: None,
         })
     }
     /// The grid: the people here plus the AI racers. Auto is a full grid for
@@ -141,27 +185,36 @@ impl Racer {
             None => spaceracer::race::MAX_RACERS,
         }
     }
+    fn race_spec(&self) -> RaceSpec {
+        RaceSpec {
+            root: self.root.clone(),
+            seed: self.seed,
+            difficulty: self.difficulty,
+            biome: self.biome,
+            players: self.players,
+            racers: self.racers(),
+            laps: self.preferences.values["laps"].as_u64().unwrap_or(3) as u32,
+            seats: self.party.as_ref().map_or(vec![], |p| p.seats.iter().map(|s| (s.name.clone(), s.ai)).collect()),
+            pickups: self.preferences.values["weapon_pickups"] != false,
+        }
+    }
     fn restart(&mut self) -> Result<(), String> {
-        let rules = Rules::new(Some(&self.root.join("rules")))?;
-        let mut race = Race::with_rules(
-            self.seed,
-            DIFFICULTIES[self.difficulty],
-            BIOMES[self.biome],
-            self.players,
-            self.racers(),
-            self.preferences.values["laps"].as_u64().unwrap_or(3) as u32,
-            rules,
-        )?;
-        if let Some(p) = &self.party {
-            for (i, seat) in p.seats.iter().enumerate().take(race.drivers.len()) {
-                race.drivers[i].name = seat.name.clone();
-                race.drivers[i].bot = seat.ai;
-            }
+        let spec = self.race_spec();
+        if self.background_loading {
+            visuals::progress(0);
+            self.menu = None;
+            self.loading = Some(Loading { worker: std::thread::spawn(move || spec.build()), started: std::time::Instant::now() });
+            return Ok(());
         }
-        if self.preferences.values["weapon_pickups"] == false {
-            race.pickups.clear();
-        }
-        self.visuals = visuals::Visuals::new(&race, &self.root.join("assets"))?;
+        let (race, visuals) = spec.build()?;
+        self.finish_restart(race, visuals)
+    }
+    /// The loading screen's bar, 0..1, while a race builds in the background.
+    fn loading_progress(&self) -> Option<f32> {
+        self.loading.as_ref().map(|_| visuals::PROGRESS.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.)
+    }
+    fn finish_restart(&mut self, mut race: Race, visuals: visuals::Visuals) -> Result<(), String> {
+        self.visuals = visuals;
         race.obstacles = self.visuals.obstacles.clone();
         race.environment.landscape = Some(self.visuals.stage.landscape.clone());
         self.previous = (0..race.pilots.len()).map(|i| race.pose(i)).collect();
@@ -277,6 +330,16 @@ impl Racer {
             rail_aim:None,
         }
     }
+    /// A pointer over the menu at `at` (HUD pixels of a `size` HUD): hovering
+    /// selects a row, a click accepts it or steps its value left or right.
+    fn menu_pointer(&mut self, at: [f32; 2], size: [u32; 2], click: bool) -> bool {
+        if self.menu.is_none() { return false; }
+        let ui_scale = (size[1] as f32 / 900.).max(1.);
+        let Some((row, side)) = menu_view::hit(size.map(|x| x as f32 / ui_scale), self.race_started, at.map(|v| v / ui_scale)) else { return false };
+        self.menu = Some(row);
+        if click { self.menu_click = Some(side); }
+        true
+    }
     fn menu_tick(&mut self, c: Controls) {
         let Some(row) = self.menu else {
             return;
@@ -293,7 +356,9 @@ impl Racer {
                 0
             },
         ];
+        let click = self.menu_click.take();
         let horizontal = c.pressed.has(Buttons::RIGHT) as i32 - c.pressed.has(Buttons::LEFT) as i32
+            + if row >= 2 { click.unwrap_or(0) } else { 0 }
             + if axis[0] != self.menu_axis[0] {
                 axis[0]
             } else {
@@ -306,7 +371,7 @@ impl Racer {
                 0
             };
         self.menu_axis = axis;
-        let out=self.race.rules.call::<serde_json::Value>("menu",json!({"players":self.players,"biome":if self.random_biome {-1}else{self.biome as i64},"difficulty":if self.random_difficulty {-1}else{self.difficulty as i64},"seed":if self.random_seed {0}else{self.seed},"can_resume":self.race_started,"row":row,"vertical":vertical,"horizontal":horizontal,"accept":c.pressed.has(Buttons::SOUTH),"start":c.pressed.has(Buttons::START)}));
+        let out=self.race.rules.call::<serde_json::Value>("menu",json!({"players":self.players,"biome":if self.random_biome {-1}else{self.biome as i64},"difficulty":if self.random_difficulty {-1}else{self.difficulty as i64},"seed":if self.random_seed {0}else{self.seed},"can_resume":self.race_started,"row":row,"vertical":vertical,"horizontal":horizontal,"accept":c.pressed.has(Buttons::SOUTH) || (row < 2 && click.is_some()),"start":c.pressed.has(Buttons::START)}));
         let result = (|| -> Result<(), String> {
             let out = out?;
             let row = out["row"].as_u64().ok_or("menu row")? as usize;
@@ -394,6 +459,18 @@ impl Game for Racer {
     fn tick(&mut self, controls: &[Controls]) {
         if self.fatal.is_some() {
             return;
+        }
+        if let Some(loading) = self.loading.take() {
+            if !loading.worker.is_finished() {
+                self.loading = Some(loading);
+                return;
+            }
+            let built = loading.worker.join().map_err(|_| "race build panicked".to_string()).and_then(|r| r);
+            let started = loading.started;
+            match built.and_then(|(race, visuals)| self.finish_restart(race, visuals)) {
+                Ok(()) => println!("race built in the background in {} ms", started.elapsed().as_millis()),
+                Err(e) => { self.fatal = Some(e); return; }
+            }
         }
         self.reload_ticks += 1;
         if self.reload_ticks % 60 == 0 {
@@ -688,7 +765,9 @@ impl Game for Racer {
             }
         }
         renderer.set_camera_up_axes(&ups);
-        if let Some(row) = self.menu {
+        if let Some(done) = self.loading_progress() {
+            menu_view::loading(&mut hud, frame.size.map(|x| x as f32 / ui_scale), done);
+        } else if let Some(row) = self.menu {
             menu_view::draw(&mut hud, frame.size.map(|x| x as f32 / ui_scale), row, self);
         }
         if let Some(error) = self.fatal.as_ref().or(self.race.script_error.as_ref()) {
@@ -971,6 +1050,40 @@ mod tests {
         assert_eq!(game.biome,0);assert_eq!(game.players,2);
         assert!(game.random_seed && game.random_difficulty && !game.random_biome);
         assert_eq!(game.race.world.centreline.difficulty,DIFFICULTIES[game.difficulty]);
+    }
+    #[test]
+    fn a_background_race_shows_progress_then_starts() {
+        let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut game=Racer::new(root,1,31,0,0,false).unwrap();
+        game.background_loading=true;
+        let old_seed=game.seed;
+        game.menu=Some(5);
+        game.menu_tick(Controls{pressed:Buttons(Buttons::RIGHT|Buttons::START),..Default::default()});
+        assert!(game.loading_progress().is_some(),"loading screen while building");
+        assert!(game.menu.is_none());
+        let start=std::time::Instant::now();
+        while game.loading.is_some() {
+            assert!(start.elapsed().as_secs()<120,"race build finished");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            game.tick(&[Controls::default()]);
+        }
+        assert!(game.fatal.is_none(),"{:?}",game.fatal);
+        assert_eq!(game.seed,old_seed+1);
+        assert!(game.race_started && !game.visuals.uploaded);
+    }
+    #[test]
+    fn the_pointer_hovers_and_clicks_menu_rows() {
+        let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut game=Racer::new(root,1,31,0,0,false).unwrap();
+        // Row 3 (World) sits at y 180+2*66 before a race; its right third steps right.
+        assert!(game.menu_pointer([420.,340.],[1280,720],false));
+        assert_eq!(game.menu,Some(3));
+        let biome=game.biome;
+        game.random_biome=false;
+        game.menu_pointer([420.,340.],[1280,720],true);
+        game.menu_tick(Controls::default());
+        assert_eq!(game.biome,(biome+1)%5);
+        assert!(!game.menu_pointer([1200.,700.],[1280,720],true),"outside the panel");
     }
     #[test]
     fn city_lights_remain_valid_during_race() {

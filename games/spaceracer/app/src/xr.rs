@@ -8,13 +8,19 @@
 //! off because the headset owns the projection.
 use app::Game as _;
 use glam::{Affine3A, Quat, Vec3};
-use warp_xr::{Eye, PlaySpace, Pose, Tracking, HUD_SIZE, rig::level_seat};
+use warp_xr::{Eye, PlaySpace, Pose, Tracking, HUD_SIZE, hud_point};
 
 const DT: f32 = 1.0 / 120.0;
 /// Where the pilot's head sits on the ship: +Z ahead, +Y up, metres.
 pub const SEAT: Vec3 = Vec3::new(0.0, 2.0, 0.5);
 /// The chase view: behind and above the ship, always level (comfort).
-pub const CHASE: Vec3 = Vec3::new(0.0, 3.2, -12.0);
+pub const CHASE: Vec3 = Vec3::new(0.0, 4.5, -19.0);
+/// How fast the view follows the ship's heading, seconds (time constant).
+/// The cockpit stays close; the chase camera swings round behind slowly.
+const COCKPIT_TURN: f32 = 0.12;
+const CHASE_TURN: f32 = 0.35;
+/// The chase camera follows climbs and dips this slowly, seconds.
+const CHASE_HEIGHT: f32 = 0.25;
 
 pub struct NativeGame {
     game: crate::Racer,
@@ -23,8 +29,18 @@ pub struct NativeGame {
     space: PlaySpace,
     accumulator: f32,
     pending: u32,
-    /// Keep the horizon level instead of rolling with the ship.
+    /// Keep the horizon level instead of rolling and pitching with the ship
+    /// (default: the cockpit moved too much when turning and climbing).
     pub level: bool,
+    /// The view's smoothed heading and the chase camera's smoothed height.
+    follow: Option<(f32, f32)>,
+    /// Where the controller points on the menu, in HUD pixels.
+    cursor: Option<[f32; 2]>,
+    /// The last direct frame's renderer statistics (xr-shot).
+    last_stats: Option<render::FrameStats>,
+    /// Log GPU pass times (an `xr-profile` file in the data folder).
+    profile: bool,
+    profile_sequence: u64,
     /// `SEAT`, or `SPACERACER_SEAT=x,y,z` to try another on the headset.
     pub seat_offset: Vec3,
     /// Chase view instead of the cockpit: right stick press toggles,
@@ -49,35 +65,65 @@ impl NativeGame {
         game.random_biome = true;
         game.random_seed = true;
         game.blur_enabled = false;
+        game.background_loading = true;
         // Touch controllers read like a gamepad: triggers are throttle and brake.
         game.devices = vec![app::Device::Pad(0)];
-        Ok(Self { game, renderer: None, output: None, space: PlaySpace::new(0.0), accumulator: 0.0, pending: 0, level: false, seat_offset: seat_offset(), chase: std::env::var("SPACERACER_VIEW").is_ok_and(|v| v == "chase") })
+        // The right stick flies the ship (strafe and climb), as on a pad: no snap turn.
+        let mut space = PlaySpace::new(0.0);
+        space.snap_degrees = 0.0;
+        Ok(Self { game, renderer: None, output: None, space, accumulator: 0.0, pending: 0, level: std::env::var("SPACERACER_LEVEL").map_or(true, |v| v != "0"), follow: None, cursor: None, last_stats: None, profile: std::path::Path::new("xr-profile").exists(), profile_sequence: 0, seat_offset: seat_offset(), chase: std::env::var("SPACERACER_VIEW").is_ok_and(|v| v == "chase") })
     }
 
-    /// The seat on the local pilot's ship, interpolated between ticks.
-    fn seat(&self, alpha: f32) -> Affine3A {
+    /// The seat on the local pilot's ship, interpolated between ticks. `dt`
+    /// advances the smoothed heading and height (0 keeps them).
+    fn seat(&mut self, alpha: f32, dt: f32) -> Affine3A {
         let current = self.game.race.pose(0);
         let previous = self.game.previous.first().copied().unwrap_or(current);
         let rotation = Quat::from_mat3(&previous.basis).slerp(Quat::from_mat3(&current.basis), alpha);
-        let ship = Affine3A::from_rotation_translation(rotation, previous.origin.lerp(current.origin, alpha));
+        let origin = previous.origin.lerp(current.origin, alpha);
         // The headset looks along -Z; the ship flies along +Z.
-        let offset = if self.chase { CHASE } else { self.seat_offset };
-        let seat = ship * Affine3A::from_rotation_translation(Quat::from_rotation_y(std::f32::consts::PI), offset);
-        if self.level || self.chase { level_seat(seat) } else { seat }
+        let facing = rotation * Quat::from_rotation_y(std::f32::consts::PI);
+        let ahead = facing * Vec3::NEG_Z;
+        let heading = (-ahead.x).atan2(-ahead.z);
+        let (turn, lift) = if self.chase { (CHASE_TURN, CHASE_HEIGHT) } else { (COCKPIT_TURN, 0.0) };
+        let (mut yaw, mut height) = self.follow.unwrap_or((heading, origin.y));
+        let pi = std::f32::consts::PI;
+        yaw += ((heading - yaw + pi).rem_euclid(std::f32::consts::TAU) - pi) * ease(dt, turn);
+        height += (origin.y - height) * ease(dt, lift);
+        self.follow = Some((yaw, height));
+        let level = Quat::from_rotation_y(yaw);
+        if self.chase {
+            // Behind the smoothed heading, at the smoothed height.
+            let at = Vec3::new(origin.x, height, origin.z) + level * Vec3::new(-CHASE.x, CHASE.y, -CHASE.z);
+            return Affine3A::from_rotation_translation(level, at);
+        }
+        // The cockpit seat itself always rides exactly on the ship.
+        let at = origin + rotation * self.seat_offset;
+        Affine3A::from_rotation_translation(if self.level { level } else { facing }, at)
     }
 }
+
+/// The share of the way to close in `dt` with time constant `tau` (0: at once).
+fn ease(dt: f32, tau: f32) -> f32 { if tau <= 0.0 { 1.0 } else { 1.0 - (-dt / tau).exp() } }
 
 impl warp_xr::Game for NativeGame {
     fn refresh_rate(&self) -> Option<f32> { Some(120.0) }
     fn quit(&self) -> bool { self.game.quit() }
     fn frame(&mut self, gpu: &render::Gpu, t: &Tracking, size: [u32; 2], dt: f32, targets: Option<&[&wgpu::Texture]>) -> Result<warp_xr::FrameOutput, String> {
         self.space.update(t);
-        if t.focused && t.controls.pressed.has(app::Buttons::RIGHT_STICK) { self.chase = !self.chase; }
+        if t.focused && t.controls.pressed.has(app::Buttons::RIGHT_STICK) { self.chase = !self.chase; self.follow = None; }
         self.pending |= t.controls.pressed.0;
         if t.focused { self.accumulator = (self.accumulator + dt).min(DT * 4.0); } else { self.accumulator = 0.0; self.pending = 0; }
         while self.accumulator >= DT {
             let mut controls = t.controls;
             controls.pressed.0 = std::mem::take(&mut self.pending);
+            // While the menu is up the controller is a pointer: hover picks a
+            // row, the trigger clicks it.
+            self.cursor = if self.game.menu.is_some() { t.aim.and_then(|aim| hud_point(t.head, aim)) } else { None };
+            if let Some(at) = self.cursor {
+                self.game.menu_pointer(at, HUD_SIZE, controls.pressed.has(app::Buttons::RIGHT_TRIGGER));
+                controls.pressed.0 &= !app::Buttons::RIGHT_TRIGGER;
+            }
             self.game.tick(&[controls]);
             self.accumulator -= DT;
         }
@@ -86,14 +132,25 @@ impl warp_xr::Game for NativeGame {
         let mut draw = self.game.draw(&mut frame)?;
         // The quad is flat and head-locked: no simulated screen curvature.
         draw.hud.optics.clear();
-        let seat = self.seat(alpha);
+        if let Some(at) = self.cursor { warp_xr::pointer::cursor(&mut draw.hud, at); }
+        let seat = self.seat(alpha, dt);
         let eyes: [Eye; 2] = t.eyes.map(|eye| Eye { pose: self.space.place_on(eye.pose, seat), ..eye });
         let renderer = self.renderer.as_ref().ok_or("SpaceRacer did not create its renderer")?;
         renderer.set_camera_up_axes(&eyes.map(|e| e.pose.orientation * Vec3::Y));
         renderer.set_camera_projections(&eyes.map(Eye::projection));
         let views: Vec<_> = eyes.iter().enumerate().map(|(i, e)| render::ViewRect { cam: e.camera(), x: i as u32 * size[0], y: 0, w: size[0], h: size[1] }).collect();
         if let Some(targets) = targets {
-            renderer.try_render_eye_targets(gpu, &views, &draw.light, targets)?;
+            if self.profile {
+                // GPU time per pass in logcat, when `xr-profile` sits beside the data.
+                renderer.set_async_gpu_profiling(gpu, true)?;
+                for sample in renderer.drain_gpu_profiles(gpu).samples {
+                    #[cfg(target_os = "android")] log::info!("XR GPU frame={} passes={:?}", sample.frame_id, sample.gpu_ms);
+                    #[cfg(not(target_os = "android"))] eprintln!("XR GPU frame={} passes={:?}", sample.frame_id, sample.gpu_ms);
+                }
+                renderer.set_gpu_profile_frame_id(self.profile_sequence);
+                self.profile_sequence += 1;
+            }
+            self.last_stats = Some(renderer.try_render_eye_targets(gpu, &views, &draw.light, targets)?);
             return Ok(warp_xr::FrameOutput { color: None, hud: draw.hud });
         }
         if self.output.as_ref().is_none_or(|tex| tex.width() != size[0] * 2 || tex.height() != size[1]) {
@@ -106,7 +163,7 @@ impl warp_xr::Game for NativeGame {
 }
 
 /// Headless stereo fixture on the desktop renderer: `spaceracer xr-shot --out
-/// FILE.png [--ticks N] [--level] [--size W]`. Not a headset test.
+/// FILE.png [--ticks N] [--roll] [--chase] [--size W]`. Not a headset test.
 pub fn shot(args: &[String]) -> Result<(), String> {
     use warp_xr::Game;
     let arg = |key: &str| args.windows(2).find(|w| w[0] == key).map(|w| w[1].clone());
@@ -116,7 +173,7 @@ pub fn shot(args: &[String]) -> Result<(), String> {
     use_minimum_renderer();
     let gpu = render::Gpu::new()?;
     let mut game = NativeGame::new(crate::game_root(arg("--game-dir")))?;
-    game.level = args.iter().any(|a| a == "--level");
+    if args.iter().any(|a| a == "--roll") { game.level = false; }
     game.chase = game.chase || args.iter().any(|a| a == "--chase");
     // Close the start menu and fly: full throttle on the right trigger.
     game.game.menu = None;
@@ -130,6 +187,7 @@ pub fn shot(args: &[String]) -> Result<(), String> {
     let eye_texture = || gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("fixture eye"), size: wgpu::Extent3d { width: eye, height: eye, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8UnormSrgb, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
     let (left, right) = (eye_texture(), eye_texture());
     for _ in 0..3 { game.frame(&gpu, &tracking, [eye, eye], 0.0, Some(&[&left, &right]))?; }
+    if let Some(stats) = &game.last_stats { println!("direct eye path: {} triangles, {} vertices submitted", stats.triangles, stats.submitted_vertices); }
     let (l, r) = (gpu.read_rgba8(&left), gpu.read_rgba8(&right));
     let mut both = Vec::with_capacity(l.len() * 2);
     for row in 0..eye as usize { let w = eye as usize * 4; both.extend_from_slice(&l[row * w..][..w]); both.extend_from_slice(&r[row * w..][..w]); }
@@ -179,7 +237,9 @@ mod tests {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
         let game = NativeGame::new(root).unwrap();
         let pose = game.game.race.pose(0);
-        let seat = game.seat(1.0);
+        let mut game = game;
+        game.level = false;
+        let seat = game.seat(1.0, 0.0);
         let ahead = seat.transform_vector3(Vec3::NEG_Z);
         assert!(ahead.dot(pose.basis * Vec3::Z) > 0.999);
         assert!((seat.translation.distance(pose.origin.into()) - SEAT.length()).abs() < 1e-3);
