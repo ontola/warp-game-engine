@@ -81,14 +81,19 @@ fn material(i: u32) -> Material {
 @group(0) @binding(6) var albedo: texture_2d_array<f32>;
 @group(0) @binding(7) var samp: sampler;
 @group(0) @binding(10) var plant_samp: sampler;
-@group(0) @binding(11) var<storage,read> voxel_replacement: array<u32>;
+// Voxel crown replacement words in the scene tables, from vec4 2.z.
+fn voxel_replacement_at(i: u32) -> u32 {
+    let v = scene_tables[scene_tables[2].z + (i >> 2u)];
+    return v[i & 3u];
+}
 
 @group(1) @binding(0) var<uniform> view: View;
 @group(1) @binding(1) var<storage, read> visible: array<vec2<u32>>;
-@group(1) @binding(2) var<storage, read> draw_map: array<u32>;
+// Draw args then the bucket draw map, one buffer (frame.rs ViewTargets::draw).
 // cull.wgsl finalize: opaque records 0..15 and starts 16..19, masked
-// records 20..35 (first_vertex (4+bucket)*384) and starts 36..39.
-@group(1) @binding(3) var<storage, read> draw_args: array<u32, 40>;
+// records 20..35 (first_vertex (4+bucket)*384) and starts 36..39. The draw
+// map starts at word 64 (byte 256).
+@group(1) @binding(2) var<storage, read> draw_words: array<u32>;
 @group(1) @binding(4) var<storage,read> foliage_selection_words: array<u32>;
 fn foliage_selection_at(i:u32)->vec4<u32> { return selection_unpack(foliage_selection_words[i]); }
 // Packed group selection (aggregate_lod.wgsl writes it): one u32 per group,
@@ -113,13 +118,13 @@ struct VOut {
 @vertex
 fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
     var o: VOut;
-    if DIRECT_BOUNDED && ii>=draw_args[(vi/384u)*4u+1u] {
+    if DIRECT_BOUNDED && ii>=draw_words[(vi/384u)*4u+1u] {
         o.pos=vec4<f32>(2.0,2.0,2.0,1.0);return o;
     }
     var slot = ii;
     if CLUSTER_BUCKETS {
         let record = vi / 384u;
-        slot = draw_map[draw_args[select(36u + record - 4u, 16u + record, record < 4u)] + ii];
+        slot = draw_words[64u + draw_words[select(36u + record - 4u, 16u + record, record < 4u)] + ii];
     }
     let vis = visible[slot];
     let cl = clusters[vis.y];
@@ -142,7 +147,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     o.uv = vec2<f32>(vertex_f32(v + 6u), vertex_f32(v + 7u));
     // Only the explicitly packed crown material is replaced in color. Wood,
     // unrelated cutouts and source sun-shadow geometry remain unchanged.
-    let replacement=voxel_replacement[member_slot(vis.x)];
+    let replacement=voxel_replacement_at(member_slot(vis.x));
     var replaced=replacement==0xffffffffu || replacement==cl.material+1u;
     if replacement!=0xffffffffu && (replacement&0x80000000u)!=0u {
         replaced=foliage_selection_at(replacement&0x7fffffffu).x!=0u;
