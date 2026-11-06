@@ -311,7 +311,12 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     // the crown, and lost its sky fill too (shadows went nearly black).
     let marched = f32((g.w >> 16u) & 255u) / 255.0;
     let canopy = select(crown_depth(p), 0.0, (g.w >> 24u) == 255u);
-    let own = min(marched, exp(-CROWN_EXTINCTION_PER_M * canopy));
+    // Inside the sun clipmap the maps hold every caster (mesh leaves and
+    // voxel cells) at a fine texel, so the crown shades itself through
+    // shadow_at_surface exactly as a mesh tree does: one lighting source at
+    // every distance. The canopy estimate only covers the gap beyond it.
+    let estimate = 1.0 - sun_clipmap_cover(p);
+    let own = min(marched, exp(-CROWN_EXTINCTION_PER_M * canopy * estimate));
     let own_sky = min(marched, exp(-CROWN_EXTINCTION_PER_M * min(canopy, 1.5)));
     let exit = f32(g.w >> 24u) / 4.0;
     let l = light.sun_dir.xyz;
@@ -1567,6 +1572,13 @@ fn near_level_weight(k: i32, p: vec3<f32>) -> f32 {
 fn near_level_visibility(k: i32, p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
     let texel = light.near_shadow.x * f32(1 << u32(k));
     return shadow_filter_layer(near_shadow_tex, k, near_level_projection(k), texel, p, n, plane_n);
+}
+// How fully the sun clipmap's levels cover p (0 when near maps are off).
+fn sun_clipmap_cover(p: vec3<f32>) -> f32 {
+    let levels = select(0, i32(light.near_levels.x), light.near_shadow.z > 0.5);
+    var cover = 0.0;
+    for (var k = 0; k < levels; k++) { cover = max(cover, near_level_weight(k, p)); }
+    return cover;
 }
 fn shadow_detail_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
     // The finest clipmap level that covers p in full; coarser ones only
