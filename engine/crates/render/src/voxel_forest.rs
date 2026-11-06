@@ -1242,6 +1242,14 @@ impl VoxelRenderer {
     }
     /// The view's rastered splat depth (reversed Z, 0 where none), once
     /// Stage::Splats has run for it.
+    /// Copy view `index`'s stored camera splat count (counter word 23,
+    /// VOLUME_DRAW_WORD+1) to `dst` at `offset`. The GPU forest calibrates
+    /// its splat booking against it (foliage_refine.wgsl fast_adapt).
+    pub(crate) fn copy_camera_splat_count(&self, encoder:&mut wgpu::CommandEncoder, index:usize, dst:&wgpu::Buffer, offset:u64) {
+        if let Some(Some(target))=self.targets.lock().unwrap().get(index) {
+            if target.splat.is_some() {encoder.copy_buffer_to_buffer(&target.counters,23*4,dst,offset,4);}
+        }
+    }
     pub(crate) fn splat_depth(&self, index: usize) -> Option<wgpu::TextureView> {
         self.targets.lock().unwrap().get(index)?.as_ref()?.splat.as_ref().map(|s| s.depth.clone())
     }
