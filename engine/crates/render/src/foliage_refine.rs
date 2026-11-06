@@ -9,6 +9,9 @@ pub(crate) struct Refiner {
     binds:std::sync::Mutex<crate::frame::resource_cache::BindGroups<2>>,
     /// Last frame's working-round count (state[68]), kept for async readback.
     worked:wgpu::Buffer,rounds:std::sync::Mutex<Rounds>,
+    /// Error-driven cut (default) instead of budgeted collective admission.
+    /// `KERN_FOLIAGE_CUT=budget` selects the old admission for A/B.
+    fast:std::sync::atomic::AtomicBool,
 }
 /// How many refinement rounds to encode. Every round costs a fixed set of
 /// dispatches and barriers even when its work list is empty, and the hierarchy
@@ -45,17 +48,21 @@ impl Refiner {
         let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("foliage complete-cut refinement"),entries:&entries});
         let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage incremental admission"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_refine.wgsl").into())});
-        let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit","wake_count","wake_prefix","wake_scatter","seed_scatter"].into_iter().map(|entry|
+        let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit","wake_count","wake_prefix","wake_scatter","seed_scatter","fast_begin","fast_round","fast_advance","fast_adapt"].into_iter().map(|entry|
             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()})).collect();
         Self {capacity,proposals:storage("foliage active proposals",capacity as u64*96),parked:storage("foliage dormant proposals",capacity as u64*112),
             queues:[storage("foliage complete cut A",capacity as u64*16),storage("foliage complete cut B",capacity as u64*16)],
             blocks:storage("foliage refinement prefixes",(capacity.div_ceil(256)as u64+1)*32*16),
             state:storage("foliage refinement allocation",320),
             args:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement indirect"),size:36,usage:wgpu::BufferUsages::INDIRECT|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),
-            pipelines,layout,binds:Default::default(),
+            pipelines,layout,binds:Default::default(),fast:std::sync::atomic::AtomicBool::new(Self::default_fast()),
             worked:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement rounds used"),size:4,usage:wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),
             rounds:std::sync::Mutex::new(Rounds {cameras:Vec::new(),stale:0,full:false,used:None,hint:None,encoded:0,frame:0,newest:0,slots:(0..2).map(|_|RoundSlot {buffer:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement rounds readback"),size:4,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),encoded:0,frame:0,pending:None}).collect()})}
     }
+    /// Tests keep the budgeted admission unless they ask for the error cut.
+    fn default_fast()->bool {!cfg!(test) && std::env::var("KERN_FOLIAGE_CUT").map_or(true,|v|v!="budget")}
+    pub(crate) fn set_error_cut(&self,on:bool) {self.fast.store(on,std::sync::atomic::Ordering::Relaxed);}
+    pub(crate) fn error_cut(&self)->bool {self.fast.load(std::sync::atomic::Ordering::Relaxed)}
     /// Reads finished round counts without waiting, starts a readback of the
     /// last encoded frame, and returns how many rounds to encode now.
     fn rounds(&self,gpu:&Gpu,bound:u32)->u32 {
@@ -154,13 +161,30 @@ impl Refiner {
         self.dispatch(enc,&self.bind(gpu,s,0),12,Some(s.count.max(s.dimensions().0).div_ceil(64)),0);
     }
     pub fn encode(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,s:&Selector) {
-        let binds=[self.bind(gpu,s,0),self.bind(gpu,s,1)];enc.clear_buffer(&self.state,0,None);
+        // state[76..80] persists across encodes (state[79]: error-cut scale).
+        let binds=[self.bind(gpu,s,0),self.bind(gpu,s,1)];enc.clear_buffer(&self.state,0,Some(76*4));
         self.dispatch(enc,&binds[0],0,Some(s.count.div_ceil(256)),0);
         self.dispatch(enc,&binds[0],1,Some(1),0);
         self.dispatch(enc,&binds[0],16,Some(s.count.div_ceil(64)),0);
         // One extra transition admits the initial emergency proxy into the
         // recipe root. A final drain makes depth bounds conservative.
         let rounds=self.rounds(gpu,2*(s.levels+1));
+        if self.error_cut() {
+            // One dispatch per hierarchy level plus a one-thread advance; the
+            // indirect copy is the only reason to leave the pass.
+            self.dispatch(enc,&binds[0],17,Some(1),0);
+            for round in 0..rounds {
+                let bind=&binds[round as usize%2];
+                enc.copy_buffer_to_buffer(&self.state,32,&self.args,0,12);
+                let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,bind,&[]);
+                pass.set_pipeline(&self.pipelines[18]);pass.dispatch_workgroups_indirect(&self.args,0);
+                pass.set_pipeline(&self.pipelines[19]);pass.dispatch_workgroups(1,1,1);
+            }
+            let bind=&binds[rounds as usize%2];self.dispatch(enc,bind,11,Some(self.capacity.div_ceil(64)),0);
+            self.dispatch(enc,bind,20,Some(1),0);
+            enc.copy_buffer_to_buffer(&self.state,68*4,&self.worked,0,4);
+            return;
+        }
         for round in 0..rounds {
             let bind=&binds[round as usize%2];self.prepare(enc,bind);
             // Compute dispatches are ordered storage-usage scopes. Keep the
