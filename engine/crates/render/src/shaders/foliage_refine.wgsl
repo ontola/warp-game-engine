@@ -597,7 +597,10 @@ fn audit_node(tree:u32,node:u32,roles:u32) {
 // a full shadow reservation must not coarsen what the camera sees.
 fn fast_scale_word(word:u32)->f32 {let s=bitcast<f32>(atomicLoad(&state[word]));return select(1.0,s,s>=1.0 && s<1e6);}
 fn fast_scale(roles:u32)->f32 {return fast_scale_word(select(78u,79u,(roles&256u)!=0u));}
-fn fast_reserve(delta:vec4<u32>)->bool {
+// Shadow consumers may hold at most a quarter of the branch slots (state[81]
+// counts theirs): grass shadows otherwise took 78% of slots from the camera.
+fn fast_shadow_slots()->u32 {return limits().x/4u;}
+fn fast_reserve(delta:vec4<u32>,shadow:bool)->bool {
  let cap=limits();var ok=true;var taken=vec4<u32>(0u);
  for(var k=0u;k<4u;k++) {
   if delta[k]==0u {continue;}
@@ -605,11 +608,20 @@ fn fast_reserve(delta:vec4<u32>)->bool {
   let before=atomicAdd(&state[word],delta[k]);taken[k]=delta[k];
   if before>cap[k] || delta[k]>cap[k]-before {ok=false;break;}
  }
- if !ok {for(var k=0u;k<4u;k++) {if taken[k]!=0u {atomicSub(&state[select(k,69u,k==3u)],taken[k]);}}}
+ var own=false;
+ if ok && shadow && delta.x!=0u {
+  let before=atomicAdd(&state[81],delta.x);own=true;
+  if before>fast_shadow_slots() || delta.x>fast_shadow_slots()-before {ok=false;}
+ }
+ if !ok {
+  for(var k=0u;k<4u;k++) {if taken[k]!=0u {atomicSub(&state[select(k,69u,k==3u)],taken[k]);}}
+  if own {atomicSub(&state[81],delta.x);}
+ }
  return ok;
 }
-fn fast_refund(amount:vec4<u32>) {
+fn fast_refund(amount:vec4<u32>,shadow:bool) {
  for(var k=0u;k<4u;k++) {if amount[k]!=0u {atomicSub(&state[select(k,69u,k==3u)],amount[k]);}}
+ if shadow && amount.x!=0u {atomicSub(&state[81],min(amount.x,atomicLoad(&state[81])));}
 }
 fn fast_set_args(count:u32) {
  atomicStore(&state[3],count);atomicMax(&state[16],count);
@@ -642,14 +654,15 @@ fn fast_set_args(count:u32) {
  // Missing pages keep the complete parent; ready() has requested them.
  if !resident {atomicAdd(&state[73],1u);publish(task);return;}
  let old=work(task.x,task.y,task.z);
- if !fast_reserve(replacement-min(replacement,old)) {atomicAdd(&state[17],1u);atomicAdd(&state[select(75u,76u,(task.z&256u)!=0u)],1u);publish(task);return;}
+ let shadow=(task.z&256u)==0u;
+ if !fast_reserve(replacement-min(replacement,old),shadow) {atomicAdd(&state[17],1u);atomicAdd(&state[select(75u,76u,(task.z&256u)!=0u)],1u);publish(task);return;}
  let offset=atomicAdd(&state[7],branching);let capacity=arrayLength(&next);
  if offset>capacity || branching>capacity-offset {
   // Queue overflow: keep the parent and blank the claimed in-range entries.
   for(var i=offset;i<min(offset+branching,capacity);i++) {next[i]=vec4<u32>(0u,NONE,0u,0u);}
-  fast_refund(replacement-min(replacement,old));atomicOr(&state[15],8u);publish(task);return;
+  fast_refund(replacement-min(replacement,old),shadow);atomicOr(&state[15],8u);publish(task);return;
  }
- fast_refund(old-min(old,replacement));
+ fast_refund(old-min(old,replacement),shadow);
  var out=offset;child=first;
  loop {
   if child==NONE || child>=end {break;}
@@ -672,7 +685,8 @@ fn fast_set_args(count:u32) {
  let used=used_now();let cap=max(limits(),vec4<u32>(1u));
  let f=vec4<f32>(used)/vec4<f32>(cap);
  // Slots and source work are shared; splats are per class (y camera, z shadow).
- let fills=vec2<f32>(max(max(f.x,f.y),f.w),max(max(f.x,f.z),f.w));
+ let shadow_slots=f32(atomicLoad(&state[81]))/f32(max(fast_shadow_slots(),1u));
+ let fills=vec2<f32>(max(max(f.x,f.y),f.w),max(max(shadow_slots,f.z),f.w));
  for(var c=0u;c<2u;c++) {
   let word=79u-c;var s=fast_scale_word(word);
   let blocked=atomicLoad(&state[76u-c])!=0u;
