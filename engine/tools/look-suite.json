@@ -28,7 +28,7 @@
 
     {"name": "circle.f12", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "-787.4,201.5,6.4,-7.8018,-0.51", "grid_px": 180, "about": "black spots on the 1.5 m grass grid, 28 degree slope"},
     {"name": "circle.turned", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "-787.4,201.5,6.4,-6.2310,-0.51", "grid_px": 180, "about": "the same place a quarter turn on"},
-    {"name": "circle.flat", "at": "341.8,-641.4,9,-1.4373,-1.3614", "grid_px": 116, "about": "looking down at flat grass under a tree"},
+    {"name": "circle.flat", "at": "341.8,-641.4,9,-1.4373,-1.3614", "grid_px": 116, "lines": true, "about": "looking down at flat grass under a tree"},
 
     {"name": "edge.lowland", "at": "-820.4,150,18,-6.9351,-0.9456", "about": "shadow map handover on the ground"},
     {"name": "edge.alpine", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "-820.4,150,18,-6.9351,-0.9456", "about": "the same spot in alpine"},
@@ -36,8 +36,12 @@
     {"name": "far.alpine", "world": ["--style", "alpine", "--grass", "--seed", "1", "--light", "sun_elevation=9,sun_azimuth=250"], "at": "-224.6,550.1,150,-2.8,-0.12", "about": "slopes 300 to 2000 m away, low sun ahead: blurry far terrain"},
     {"name": "far.alpine.lit", "world": ["--style", "alpine", "--grass", "--seed", "1", "--light", "sun_elevation=9,sun_azimuth=70"], "at": "-224.6,550.1,150,-2.8,-0.12", "about": "the same with the low sun behind the camera"},
 
+    {"name": "grass.high", "at": "737.6,-66.8,74.9,1.5152,-0.9156", "lines": true, "about": "Joep's lines in the grass from 75 m up"},
+    {"name": "grass.top", "at": "845.9,92.4,13.5,-0.0028,-1.5", "lines": true, "about": "looking straight down at grass in shade, 13 m up"},
+    {"name": "tree.mix", "at": "-183.3,374.1,14.7,1.2424,-0.1126", "about": "Joep's tree with mesh branches round a voxel core"},
+
     {"name": "grassedge.f12", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "709.6,829.8,148.7,-2.7681,-0.4485", "about": "pale grass against shaded ground"},
-    {"name": "grassedge.low", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "709.6,829.8,40,-2.7681,-0.4485", "about": "the same place from 40 m up"},
+    {"name": "grassedge.low", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "709.6,829.8,40,-2.7681,-0.4485", "lines": true, "about": "the same place from 40 m up"},
 
     {"name": "load.near60", "world": ["--style", "alpine", "--regions", "polder", "--town", "--seed", "1", "--voxel-raster-profile"], "at": "60,1600,1.7,0.3,0", "frames": 60, "about": "bushes one second after arriving"},
     {"name": "load.near120", "world": ["--style", "alpine", "--regions", "polder", "--town", "--seed", "1", "--voxel-raster-profile"], "at": "60,1600,1.7,0.3,0", "frames": 120, "about": "two seconds after arriving"},
