@@ -290,7 +290,7 @@ impl StaticSun {
         }
         let owners = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("static/dynamic sun owner lists"), contents: bytemuck::cast_slice(&partition.words),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
         });
         let depth = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("cached static sun depth"),

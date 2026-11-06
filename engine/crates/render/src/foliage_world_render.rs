@@ -121,9 +121,13 @@ pub(crate) fn shader_source() -> Result<String, String> {
     ] {
         helpers = helpers.replace(from, to);
     }
+    // The query reads members through accessors (cull reads them from its
+    // tables, cull.wgsl); here they are this pass's own binding.
     let query = crate::source_replacement::query_source()
-        .replace("spatial_members", "world_members")
-        .replace("spatial_owners", "world_selection");
+        .replace("spatial_members_len()", "arrayLength(&world_members)")
+        .replace("spatial_member(", "world_member(")
+        .replace("spatial_owners", "world_selection")
+        + "\nfn world_member(i:u32)->u32 {return world_members[i];}\n";
     let body =
         include_str!("shaders/foliage_world.wgsl").replace("// SHARED_VOLUME_HELPERS", &helpers);
     Ok(format!("{}\n{query}\n{body}", source.shade()))

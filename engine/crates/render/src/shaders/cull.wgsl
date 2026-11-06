@@ -131,11 +131,22 @@ fn selection_unpack(w:u32)->vec4<u32> {
 @group(1) @binding(7) var tree_hiz: texture_2d<f32>;
 // Original source-owner IDs, independent of camera visibility. Header:
 // static count, dynamic count, static word offset, dynamic word offset.
-@group(1) @binding(11) var<storage,read> sun_owners: array<u32>;
 struct SpatialGroup {sphere:vec4<f32>,span:vec4<u32>}
 struct SpatialGroups {header:vec4<u32>,groups:array<SpatialGroup>}
-@group(1) @binding(8) var<storage,read> spatial:SpatialGroups;
-@group(1) @binding(9) var<storage,read> spatial_members:array<u32>;
+// The BVH, spatial groups, their members and the sun owner lists, copied
+// into one buffer (cull_tables.rs); vec4 0 says where each starts, vec4
+// 1.x how many member words there are.
+@group(1) @binding(8) var<storage,read> cull_tables: array<vec4<u32>>;
+fn cull_table_word(at: u32) -> u32 { let v = cull_tables[at >> 2u]; return v[at & 3u]; }
+fn cluster_tree_at(i: u32) -> u32 { return cull_table_word(cull_tables[0].x + i); }
+fn spatial_member(i: u32) -> u32 { return cull_table_word(cull_tables[0].y + i); }
+fn spatial_members_len() -> u32 { return cull_tables[1].x; }
+fn sun_owner(i: u32) -> u32 { return cull_table_word(cull_tables[0].z + i); }
+fn spatial_header() -> vec4<u32> { return cull_tables[cull_tables[0].w]; }
+fn spatial_group(i: u32) -> SpatialGroup {
+    let at = cull_tables[0].w + 1u + 2u * i;
+    return SpatialGroup(bitcast<vec4<f32>>(cull_tables[at]), cull_tables[at + 1u]);
+}
 // Dedicated scratch: phase2 must not overwrite phase1's bucket draw map.
 @group(1) @binding(10) var<storage,read_write> spatial_owners:array<u32>;
 
@@ -261,8 +272,8 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
     }
     // Scalable whole-owner replacement is a colour-only decision. It neither
     // changes source wind tags nor removes any sun/headlight shadow caster.
-    if view.params.z<0.5 && view.extra.y<1.5 && (spatial.header.w&8u)!=0u {
-        if source_replacement_owner_selected(spatial.header.z,member_slot(id)) {return 0u;}
+    if view.params.z<0.5 && view.extra.y<1.5 && (spatial_header().w&8u)!=0u {
+        if source_replacement_owner_selected(spatial_header().z,member_slot(id)) {return 0u;}
     }
     if tree_phase.x>0.5 && tree_phase.w<0.5 {
         let tree=((inst.flags>>24u)&7u)==2u;
@@ -398,9 +409,9 @@ fn cull_member(id: u32, inst: Instance, li: u32) {
                 if tree_occluded(inst.sphere.xyz,radius) {keep=false;atomicAdd(&cull_draw.counter[16],1u);}
             }
             if keep {
-                let camera_groups=(spatial.header.w&1u)!=0u && view.params.z<0.5 && view.extra.y<1.5;
-                let sun_groups=(spatial.header.w&2u)!=0u && view.params.z>0.5;
-                let headlight_groups=(spatial.header.w&4u)!=0u && view.params.z<0.5 && view.extra.y>1.5;
+                let camera_groups=(spatial_header().w&1u)!=0u && view.params.z<0.5 && view.extra.y<1.5;
+                let sun_groups=(spatial_header().w&2u)!=0u && view.params.z>0.5;
+                let headlight_groups=(spatial_header().w&4u)!=0u && view.params.z<0.5 && view.extra.y>1.5;
                 if camera_groups || sun_groups || headlight_groups {
                     atomicAdd(&cull_draw.counter[26],inst.cluster_count);
                 }
@@ -522,15 +533,15 @@ fn cull(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
 @compute @workgroup_size(64)
 fn cull_sun_static(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
     let slot=wg.x+wg.y*65535u;
-    if slot>=sun_owners[0] {return;}
-    cull_instance(sun_owners[sun_owners[2]+slot],li);
+    if slot>=sun_owner(0) {return;}
+    cull_instance(sun_owner(sun_owner(2)+slot),li);
 }
 
 @compute @workgroup_size(64)
 fn cull_sun_dynamic(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
     let slot=wg.x+wg.y*65535u;
-    if slot>=sun_owners[1] {return;}
-    cull_instance(sun_owners[sun_owners[3]+slot],li);
+    if slot>=sun_owner(1) {return;}
+    cull_instance(sun_owner(sun_owner(3)+slot),li);
 }
 
 // draw_map is scratch until cluster selection has finished; the later bucket
@@ -609,7 +620,7 @@ fn spatial_select_owner(id:u32,sun:bool) {
     if !sun && hidden_by_camera_fog(inst.sphere.xyz,radius) {return;}
     let slot=atomicAdd(&cull_draw.counter[11],1u);atomicAdd(&cull_draw.counter[25],1u);
     // The decision tail is not compacted-owner capacity.
-    if slot<spatial.header.z {spatial_owners[slot]=id;}
+    if slot<spatial_header().z {spatial_owners[slot]=id;}
 }
 
 // One workgroup per512-owner spatial parent, all64 lanes per retained leaf.
@@ -619,8 +630,8 @@ fn spatial_select_owner(id:u32,sun:bool) {
 // owner is empty/outside or the final leaf has fewer than64 members. The old
 // divergent eight-lane traversal lost most retained owners on the tested GPU.
 fn select_spatial_parent(parent_id:u32,li:u32,sun:bool) {
-    if parent_id>=spatial.header.y {return;}
-    let parent=spatial.groups[spatial.header.x+parent_id];
+    if parent_id>=spatial_header().y {return;}
+    let parent=spatial_group(spatial_header().x+parent_id);
     if li==0u {
         atomicAdd(&cull_draw.counter[20],1u);
         if sun {spatial_parent_keep=sun_group_visible(parent.sphere);}
@@ -629,7 +640,7 @@ fn select_spatial_parent(parent_id:u32,li:u32,sun:bool) {
     }
     if !workgroupUniformLoad(&spatial_parent_keep) {return;}
     for(var leaf_id=0u;leaf_id<parent.span.y;leaf_id++) {
-        let leaf=spatial.groups[parent.span.x+leaf_id];
+        let leaf=spatial_group(parent.span.x+leaf_id);
         if li==0u {
             atomicAdd(&cull_draw.counter[22],1u);
             if sun {spatial_leaf_keep=sun_group_visible(leaf.sphere);}
@@ -639,7 +650,7 @@ fn select_spatial_parent(parent_id:u32,li:u32,sun:bool) {
         }
         workgroupBarrier();
         if spatial_leaf_keep && li<leaf.span.y {
-            spatial_select_owner(spatial_members[leaf.span.x+li],sun);
+            spatial_select_owner(spatial_member(leaf.span.x+li),sun);
         }
         workgroupBarrier();
     }
@@ -660,7 +671,7 @@ fn headlight_spatial_select(@builtin(workgroup_id) wg:vec3<u32>,@builtin(local_i
 }
 @compute @workgroup_size(1)
 fn spatial_dispatch() {
-    let count=atomicLoad(&cull_draw.counter[11]);let overflow=count>spatial.header.z;
+    let count=atomicLoad(&cull_draw.counter[11]);let overflow=count>spatial_header().z;
     let mismatch=atomicLoad(&cull_draw.counter[29])!=atomicLoad(&cull_draw.counter[30]);
     let fallback=overflow || mismatch;
     let n=select(count,INSTANCE_COUNT,fallback);
@@ -668,7 +679,7 @@ fn spatial_dispatch() {
     if fallback {
         // The consumer already recognizes an over-capacity count as the exact
         // original full-owner scan. Never trust a partially visited list.
-        atomicStore(&cull_draw.counter[11],spatial.header.z+1u);
+        atomicStore(&cull_draw.counter[11],spatial_header().z+1u);
         atomicAdd(&cull_draw.counter[27],1u);
         if mismatch {atomicAdd(&cull_draw.counter[31],1u);}
     }else{atomicAdd(&cull_draw.counter[3],atomicLoad(&cull_draw.counter[28]));}
@@ -678,7 +689,7 @@ fn spatial_dispatch() {
 // The owner this workgroup's slot holds, or NO_OWNER past the end of the list.
 fn spatial_owner(slot:u32,li:u32)->u32 {
     if li==0u {
-        let count=atomicLoad(&cull_draw.counter[11]);let overflow=count>spatial.header.z;
+        let count=atomicLoad(&cull_draw.counter[11]);let overflow=count>spatial_header().z;
         cull_owner=NO_OWNER;
         if slot<select(count,INSTANCE_COUNT,overflow) {
             cull_owner=slot;

@@ -151,7 +151,7 @@ impl Resources {
         let packed=Packed::new(scene,enabled)?;
         let bytes=bytemuck::cast_slice(&packed.words);
         if bytes.len()as u64>u64::from(gpu.limits.max_storage_buffer_binding_size){return Err("cluster BVH exceeds storage binding limit".into());}
-        let buffer=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("shared cluster predicate BVH"),contents:bytes,usage:wgpu::BufferUsages::STORAGE});
+        let buffer=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("shared cluster predicate BVH"),contents:bytes,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC});
         if enabled {
             eprintln!("Cluster traversal: {} meshes, {} nodes, {} shared bytes; exact camera predicates, shadow paths unchanged",packed.meshes,packed.nodes,bytes.len());
             // Bounded startup evidence of actual mesh eligibility. This scan

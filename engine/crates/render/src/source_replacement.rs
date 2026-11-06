@@ -204,8 +204,8 @@ mod tests {
         assert_eq!(&view[3..],&overwritten[3..]);assert!(selected(&plan,&words,&overwritten,0));
         let cull=include_str!("shaders/cull.wgsl");
         assert!(!cull.contains("arrayLength(&spatial_owners)"));
-        assert!(cull.contains("if slot<spatial.header.z {spatial_owners[slot]=id;}"));
-        assert!(cull.contains("view.params.z<0.5 && view.extra.y<1.5 && (spatial.header.w&8u)!=0u"));
+        assert!(cull.contains("if slot<spatial_header().z {spatial_owners[slot]=id;}"));
+        assert!(cull.contains("view.params.z<0.5 && view.extra.y<1.5 && (spatial_header().w&8u)!=0u"));
     }
     fn ppm(v:View,center:Vec3,radius:f32)->f32 {
         let m=v.view_projection.transpose();let p=center.extend(1.);let w=m.w_axis;let z=m.z_axis;

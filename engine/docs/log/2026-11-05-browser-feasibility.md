@@ -165,3 +165,14 @@ map are one `CullDraw` binding (frame.rs `ViewTargets::counter`: counters at
 byte 0, args at 192 so the indirect draws add `ARGS`, the map from 512;
 raster reads the same buffer). Cull is at 13. Pixel-identical; the ignored
 occlusion GPU tests pass.
+
+Step 8, cull to 10: the cluster BVH, the spatial group members, the sun
+owner lists and the refitted spatial groups are copied into one
+`cull_tables` buffer (`cull_tables.rs`; members and BVH once, groups after
+each refit, sun owners each frame with a static sun map), read through
+`cluster_tree_at(i)`, `spatial_member(i)`, `spatial_members_len()`,
+`sun_owner(i)`, `spatial_header()`, `spatial_group(i)`. The foliage world
+pass maps the same query accessors onto its own members binding.
+`KERN_WEBGPU_LIMITS=mac terrain_fly --no-trees` now runs with no GPU
+errors. At `spec`, cull is at 10 and shade has 20 sampled textures (16
+allowed). Pixel-identical.

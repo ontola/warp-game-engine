@@ -145,9 +145,9 @@ impl Resources {
             return Err("spatial instance groups exceed storage buffer limit".into());
         }
         let groups=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("spatial instance group bounds"),contents:&bytes,
-            usage:wgpu::BufferUsages::STORAGE});
+            usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC});
         let owners=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("spatial stable owner ordering"),contents:bytemuck::cast_slice(owner_data),
-            usage:wgpu::BufferUsages::STORAGE});
+            usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC});
         let refit=if enablement.allocated() {
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("spatial group bounds refit"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/cull_groups.wgsl").into())});
             // Explicit common layout: parent refit consumes fewer inputs but
