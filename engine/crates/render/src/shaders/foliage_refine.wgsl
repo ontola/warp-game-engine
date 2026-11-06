@@ -613,8 +613,15 @@ fn fast_scale(roles:u32)->f32 {return fast_scale_word(select(78u,79u,(roles&256u
 // Shadow consumers may hold at most a quarter of the branch slots (state[81]
 // counts theirs): grass shadows otherwise took 78% of slots from the camera.
 fn fast_shadow_slots()->u32 {return limits().x/4u;}
+// Booked camera splats per splat actually stored last frame (state[83]):
+// bookings bound every direction, alpha and pixel size conservatively, so
+// the camera may book this much past its splat buffer. 1 without feedback.
+fn fast_splat_ratio()->f32 {let r=bitcast<f32>(atomicLoad(&state[83]));return select(1.0,r,r>=1.0 && r<=8.0);}
+fn fast_limits()->vec4<u32> {
+ var cap=limits();cap.y=u32(min(f32(cap.y)*fast_splat_ratio(),4e9));return cap;
+}
 fn fast_reserve(delta:vec4<u32>,shadow:bool)->bool {
- let cap=limits();var ok=true;var taken=vec4<u32>(0u);
+ let cap=fast_limits();var ok=true;var taken=vec4<u32>(0u);
  for(var k=0u;k<4u;k++) {
   if delta[k]==0u {continue;}
   let word=select(k,69u,k==3u);
@@ -699,7 +706,13 @@ fn fast_set_args(count:u32) {
 // After the drain: compare the reserved totals with their caps. Coarsen fast
 // when a cap refused work or is nearly full, refine back slowly when slack.
 @compute @workgroup_size(1) fn fast_adapt() {
- let used=used_now();let cap=max(limits(),vec4<u32>(1u));
+ // Last frame's bookings over the splats its raster stored (state[82], copied
+ // from the first camera view), smoothed, with 15% margin for the next frame.
+ let stored=atomicLoad(&state[82]);let booked=atomicLoad(&state[84]);
+ var ratio=fast_splat_ratio();
+ if stored>4096u && booked>0u {ratio=clamp(mix(ratio,0.85*f32(booked)/f32(stored),0.25),1.0,8.0);}
+ atomicStore(&state[83],bitcast<u32>(ratio));atomicStore(&state[84],atomicLoad(&state[1]));
+ let used=used_now();let cap=max(fast_limits(),vec4<u32>(1u));
  let f=vec4<f32>(used)/vec4<f32>(cap);
  // Slots and source work are shared; splats are per class (y camera, z shadow).
  let shadow_slots=f32(atomicLoad(&state[81]))/f32(max(fast_shadow_slots(),1u));

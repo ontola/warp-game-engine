@@ -747,6 +747,8 @@ pub struct Renderer {
     spot_falloff: std::sync::Mutex<Vec<f32>>,
     spot_softness: std::sync::Mutex<f32>,
     lighting_focus: std::sync::Mutex<Vec<Vec3>>,
+    /// Metres of shared sun map around the focus; 0 uses the default (set_shadow_reach).
+    shadow_reach: std::sync::Mutex<f32>,
     diagnostic_sun_focus: std::sync::Mutex<Vec<Vec3>>,
     legacy_light_lookahead: bool,
     headlight_targets: std::sync::Mutex<Vec<ViewTargets>>,
@@ -2065,6 +2067,7 @@ impl Renderer {
             spot_falloff: Default::default(),
             spot_softness: Default::default(),
             lighting_focus: Default::default(),
+            shadow_reach: Default::default(),
             diagnostic_sun_focus: Default::default(),
             legacy_light_lookahead: std::env::var("KERN_LEGACY_LIGHT_LOOKAHEAD").is_ok_and(|v|v=="1"),
             headlight_targets: Default::default(),
@@ -2746,6 +2749,14 @@ impl Renderer {
             return Err("lighting focus must contain finite world positions".into());
         }
         *self.lighting_focus.lock().unwrap()=points.to_vec(); Ok(())
+    }
+
+    /// Metres of sharp shared sun shadow around the focus (default 180).
+    /// A game raises it with altitude: from high up the edge of the map reads
+    /// as a ring through the forest. Texels grow with it; the per-view near
+    /// maps keep close shadows sharp. KERN_SHADOW_REACH still overrides.
+    pub fn set_shadow_reach(&self, metres:f32) {
+        *self.shadow_reach.lock().unwrap()=if metres.is_finite() {metres.max(0.0)} else {0.0};
     }
 
     /// Diagnostic shadow-coverage override. Empty restores the normal physical
@@ -3826,7 +3837,8 @@ impl Renderer {
         // dark crown-sphere blobs read as a seam against sharp tree shadows:
         // at 90 m that seam ran through the view from 140 m up (terrain_fly
         // playtest); 180 m costs no measurable time at 1440p.
-        let reach = std::env::var("KERN_SHADOW_REACH").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(180.0);
+        let set_reach=*self.shadow_reach.lock().unwrap();
+        let reach = std::env::var("KERN_SHADOW_REACH").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(if set_reach>0.0 {set_reach} else {180.0});
         let required_extent = if self.sun_cache_guard_m>0.0 {
             (reach+spread+self.sun_cache_guard_m)/crate::static_sun::FULL_COVERAGE_NDC
         } else {reach+spread};
@@ -4641,6 +4653,10 @@ impl Renderer {
                         previous_instances:motion.previous_instances(),snapshot_valid:motion.snapshot_valid()}),voxel_times.unwrap(),
                     crate::voxel_forest::Stage::Splats, self.voxel_surface.then_some((&vis_v, &depth_v)))?;
             }
+            // The first view's stored camera splats calibrate next frame's booking.
+            if vi==0 {if let (Some(voxels),Some((forest,_)))=(&self.voxel_forest,&self.gpu_forest) {
+                let (state,offset)=forest.splat_feedback();voxels.copy_camera_splat_count(&mut enc,0,state,offset);
+            }}
             let voxel_depth = self.voxel_forest.as_ref().and_then(|forest| forest.splat_depth(vi));
             let voxel_surface = self.voxel_forest.as_ref().filter(|_| self.voxel_surface).and_then(|forest| forest.surface(vi));
             let coarse_target = self.terrain_coarse.as_ref().map(|_| {

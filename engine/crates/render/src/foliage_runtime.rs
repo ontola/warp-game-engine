@@ -367,6 +367,9 @@ fn profile_root_volume(volume:usize,slots:u32,trees:u32)->Option<(u32,u32)> {
     Some(((index%trees as usize)as u32,256u32<<((index/trees as usize)as u32)))
 }
 impl Runtime {
+    /// The refiner's state buffer and the word that takes last frame's stored
+    /// camera splat count (foliage_refine.wgsl fast_adapt).
+    pub(crate) fn splat_feedback(&self)->(&wgpu::Buffer,u64) {(&self.selector.refiner.state,82*4)}
     pub(crate) fn root_shadow_bound(&self,root:Instance)->Option<[f32;4]> {
         self.templates.iter().find(|t|t.node==root.info[0]).and_then(|t|root_shadow_sphere(root,t.shadow_sphere))
     }
