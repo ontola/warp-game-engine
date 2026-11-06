@@ -27,17 +27,15 @@ impl Target {
         },wgpu::Extent3d{width:self.size.0,height:self.size.1,depth_or_array_layers:1});
     }
 }
-fn hidden_row_bytes(width:u32)->u32 {(width*8).div_ceil(256)*256}
-fn hidden_bytes(size:(u32,u32))->u64 {256+u64::from(hidden_row_bytes(size.0))*u64::from(size.1)}
+fn hidden_row_bytes(width:u32)->u32 {crate::shade_scratch::id_row_bytes(width)}
+// The IDs share the shade pass's scratch buffer with its tile list (shade_scratch.rs).
+fn hidden_bytes(size:(u32,u32))->u64 {crate::shade_scratch::bytes(size,true)}
 pub(super) fn validate_hidden_size(gpu:&Gpu,size:(u32,u32))->Result<(),String> {
     let bytes=hidden_bytes(size);
     if bytes>u64::from(gpu.limits.max_storage_buffer_binding_size) || bytes>gpu.limits.max_buffer_size {
         return Err(format!("hidden meadow ID copy needs {bytes} bytes, exceeds the device buffer budget"));
     }
     Ok(())
-}
-pub(crate) fn hidden_fallback(gpu:&Gpu)->wgpu::Buffer {
-    buffer(gpu,"disabled hidden meadow",&[0;264],wgpu::BufferUsages::STORAGE)
 }
 #[derive(Default, Debug)]
 pub(super) struct Coverage {
@@ -119,7 +117,7 @@ impl Renderer {
         let hidden=skip_hidden.then(|| {
             let result=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("certified meadow IDs and opaque skip count"),
                 size:hidden_bytes(size),usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
-            gpu.queue.write_buffer(&result,0,bytemuck::cast_slice(&[0u32,size.0,size.1,hidden_row_bytes(size.0)/8]));result
+            gpu.queue.write_buffer(&result,0,bytemuck::cast_slice(&crate::shade_scratch::meadow_header(size,true)));result
         });
         Target{size,ids,view,bind,hidden}
     }
@@ -200,8 +198,8 @@ mod tests {
     }
     #[test]
     fn hidden_id_copy_budget_includes_alignment_and_header() {
-        assert_eq!(hidden_bytes((1920,1080)),1920*1080*8+256);
-        assert_eq!(hidden_bytes((639,359)),5120*359+256);
+        assert_eq!(hidden_bytes((1920,1080)),1920*1080*8+256+4*240*135,"IDs, header and the shade tile list");
+        assert_eq!(hidden_bytes((639,359)),5120*359+256+4*80*45);
         assert_eq!(hidden_row_bytes(1),256);
     }
     #[test]

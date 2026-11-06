@@ -170,13 +170,18 @@ fn sun_page_entry(i: u32) -> vec4<i32> { return bitcast<vec4<i32>>(scene_tables[
 @group(1) @binding(13) var canopy_tex: texture_3d<f32>;
 @group(1) @binding(14) var canopy_sampler: sampler;
 @group(1) @binding(15) var near_shadow_tex: texture_depth_2d;
-// The texture binding budget is already full. Copy the certified source IDs
-// into this buffer; the opaque lighting pass reads one owner word per pixel.
-struct HiddenMeadow {
+// The shade pass's one read-write buffer (shade_scratch.rs). The texture
+// binding budget is already full, so certified meadow source IDs are copied
+// into `words` (two words per pixel, rows of row_pairs) and the opaque
+// lighting pass reads one owner word per pixel. Sky tiles: `classify` lists
+// the 8x8 tiles that need shading from words[tiles_at]; tiles_x/y/z are the
+// indirect dispatch.
+struct ShadeScratch {
     skipped:atomic<u32>, width:u32, height:u32, row_pairs:u32,
-    padding:array<u32,60>, ids:array<vec2<u32>>,
+    tiles_x:atomic<u32>, tiles_y:u32, tiles_z:u32, tiles_at:u32,
+    padding:array<u32,56>, words:array<u32>,
 };
-@group(1) @binding(16) var<storage,read_write> hidden_meadow:HiddenMeadow;
+@group(1) @binding(16) var<storage,read_write> shade_scratch:ShadeScratch;
 // Scene features, specialised per pipeline. All default to true: every
 // shader that includes this file behaves as before. The main shade pipeline
 // sets a feature false when its scene cannot use it (Renderer::new), so a
@@ -210,8 +215,6 @@ var<workgroup> hidden_meadow_count:atomic<u32>;
 // lists the others; `shade` then runs (indirectly) over listed tiles only,
 // so pure sky never occupies the heavy shading kernel.
 override SKY_TILES: bool = false;
-struct ShadeTiles { x: atomic<u32>, y: u32, z: u32, pad: u32, tiles: array<u32> };
-@group(1) @binding(17) var<storage,read_write> shade_tiles: ShadeTiles;
 // Rasterized voxel trees (voxel_forest.rs Stage::Splats): their depth,
 // reversed Z, 0 where there is none. A pixel they cover in front of the
 // opaque surface is theirs; its composite replaces whatever shade wrote.
@@ -2054,7 +2057,7 @@ fn classify(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invoca
     workgroupBarrier();
     let any_geometry = atomicLoad(&tile_has_geometry);
     if any_geometry != 0u {
-        if local == 0u { shade_tiles.tiles[atomicAdd(&shade_tiles.x, 1u)] = wid.y * groups.x + wid.x; }
+        if local == 0u { shade_scratch.words[shade_scratch.tiles_at + atomicAdd(&shade_scratch.tiles_x, 1u)] = wid.y * groups.x + wid.x; }
         return;
     }
     if !inside { return; }
@@ -2070,7 +2073,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     // With sky tiles the dispatch walks the list of tiles with geometry.
     var tile = wid.xy;
     if SKY_TILES {
-        let t = shade_tiles.tiles[wid.x];
+        let t = shade_scratch.words[shade_scratch.tiles_at + wid.x];
         let across = (size.x + 7u) / 8u;
         tile = vec2<u32>(t % across, t / across);
     }
@@ -2081,13 +2084,13 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // Count the actual early returns, with only one global atomic per tile.
         if local==0u {atomicStore(&hidden_meadow_count,0u);}
         workgroupBarrier();
-        if light.sky.z==0.0 && all(gid.xy<size) && hidden_meadow.width==size.x && hidden_meadow.height==size.y {
-            let owner=hidden_meadow.ids[gid.y*hidden_meadow.row_pairs+gid.x].x;
+        if light.sky.z==0.0 && all(gid.xy<size) && shade_scratch.width==size.x && shade_scratch.height==size.y {
+            let owner=shade_scratch.words[2u*(gid.y*shade_scratch.row_pairs+gid.x)];
             hidden=(owner&0x80000000u)!=0u && textureLoad(depth_tex,vec2<i32>(gid.xy),0)>0.0;
         }
         if hidden {atomicAdd(&hidden_meadow_count,1u);}
         workgroupBarrier();
-        if local==0u {let count=atomicLoad(&hidden_meadow_count);if count!=0u {atomicAdd(&hidden_meadow.skipped,count);}}
+        if local==0u {let count=atomicLoad(&hidden_meadow_count);if count!=0u {atomicAdd(&shade_scratch.skipped,count);}}
     }
     if gid.x >= size.x || gid.y >= size.y {
         return;

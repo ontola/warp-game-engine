@@ -915,7 +915,6 @@ pub struct Renderer {
     auto_exposure: crate::auto_exposure::AutoExposureGpu,
     hdr_target: std::sync::Mutex<crate::hdr::HdrTarget>,
     shade_layout: wgpu::BindGroupLayout,
-    hidden_meadow_fallback: wgpu::Buffer,
     tone_layout: wgpu::BindGroupLayout,
     view_cull_layout: wgpu::BindGroupLayout,
     view_raster_layout: wgpu::BindGroupLayout,
@@ -1690,7 +1689,6 @@ impl Renderer {
                 (14, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
                 (15, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (16, storage(false)),
-                (17, storage(false)),
                 (18, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (19, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (20, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
@@ -1872,7 +1870,6 @@ impl Renderer {
         let shade_pl = pl(&[&scene_layout, &shade_layout]);
         let rock_variation=std::env::var("KERN_ROCK_VARIATION").as_deref()==Ok("1");
         let skip_hidden_meadow=meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled());
-        let hidden_meadow_fallback=crate::meadow::MeadowRenderer::hidden_shade_fallback(gpu);
         let meadow_edge_enabled=meadow.as_ref().is_some_and(|m|m.edge_shadow_stats().is_some_and(|s|s.enabled));
         let shade_features=crate::shade_features::ShadeFeatures::for_scene(scene,world_visibility.enabled,foliage_sun_pages.enabled,meadow_substrate_settings.control[0]!=0 || meadow_edge_enabled);
         let sky_tiles=!simple_lighting && std::env::var("KERN_SKY_TILES").as_deref()==Ok("1");
@@ -2174,7 +2171,6 @@ impl Renderer {
             auto_exposure,
             hdr_target: std::sync::Mutex::new(crate::hdr::HdrTarget::new()),
             shade_layout,
-            hidden_meadow_fallback,
             tone_layout,
             view_cull_layout,
             view_raster_layout,
@@ -4589,20 +4585,23 @@ impl Renderer {
                 Some(meadow.prepare_visibility(gpu,&mut enc,vi,(w,h),&self.scene_bind,&meadow_bindings,
                     &hdr_v,&depth,times,motion_on,debug_options)?)
             } else {None};
-            // Tile list for this view: reset to an empty indirect dispatch.
+            // Shade scratch for this view (shade_scratch.rs): the meadow's
+            // certified IDs when it skips hidden shading, else our own; the
+            // tile list inside it resets to an empty indirect dispatch.
             let shade_tiles = {
-                let tiles = (w.div_ceil(8) * h.div_ceil(8)) as u64;
+                let ids = hidden_meadow.is_some();
                 let mut all = self.shade_tiles.lock().unwrap();
                 if all.len() <= vi { all.resize_with(vi + 1, || None); }
-                if all[vi].as_ref().is_none_or(|b| b.0.size() < 16 + 4 * tiles) {
-                    all[vi] = Some((gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("shade tiles"), size: 16 + 4 * tiles,
+                if all[vi].as_ref().is_none_or(|b| !ids && b.0.size() < crate::shade_scratch::bytes((w, h), false)) {
+                    all[vi] = Some((gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("shade scratch"), size: crate::shade_scratch::bytes((w, h), false),
                         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
                         gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("shade tile dispatch"), size: 16,
                         usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })));
                 }
-                let b = all[vi].clone().unwrap();
-                gpu.queue.write_buffer(&b.0, 0, bytemuck::cast_slice(&[0u32, 1, 1, 0]));
-                b
+                let (own, dispatch) = all[vi].clone().unwrap();
+                let scratch = hidden_meadow.clone().unwrap_or(own);
+                gpu.queue.write_buffer(&scratch, crate::shade_scratch::TILES, bytemuck::cast_slice(&crate::shade_scratch::tile_header((w, h), ids)));
+                (scratch, dispatch)
             };
             let volume_view=(self.far_grass.is_some() || self.voxel_forest.is_some() || self.foliage_world.is_some() || self.meadow_brick_fixture.is_some()).then(||
                 crate::volume_view::VolumeViewInputs {
@@ -4661,8 +4660,7 @@ impl Renderer {
                     (13, wgpu::BindingResource::TextureView(&density_view)),
                     (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
                     (15, wgpu::BindingResource::TextureView(&near_view)),
-                    (16, hidden_meadow.as_ref().unwrap_or(&self.hidden_meadow_fallback).as_entire_binding()),
-                    (17, shade_tiles.0.as_entire_binding()),
+                    (16, shade_tiles.0.as_entire_binding()),
                     (18, wgpu::BindingResource::TextureView(voxel_depth.as_ref().unwrap_or(&self.voxel_depth_fallback))),
                     (19, wgpu::BindingResource::TextureView(coarse)),
                     (20, wgpu::BindingResource::TextureView(voxel_surface.as_ref().unwrap_or(&self.voxel_surface_fallback))),
@@ -4739,7 +4737,7 @@ impl Renderer {
                     pass.set_pipeline(&self.shade_classify);
                     pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
                     drop(pass);
-                    enc.copy_buffer_to_buffer(&shade_tiles.0, 0, &shade_tiles.1, 0, 16);
+                    enc.copy_buffer_to_buffer(&shade_tiles.0, crate::shade_scratch::TILES, &shade_tiles.1, 0, 16);
                     let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                         label: Some(label),
                         timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: None, end_of_pass_write_index: Some(i + 1) }),
