@@ -33,10 +33,12 @@ pub struct ShadeFeatures {
     pub foliage: bool,
     /// Procedural rock and lava surfaces (ROCK or LAVA materials).
     pub procedural: bool,
+    /// The indoor irradiance volume (`Scene::reserve_irradiance_volume`).
+    pub irradiance: bool,
 }
 
 impl ShadeFeatures {
-    pub const ALL: Self = Self { cars: true, grass: true, grass_shade: true, tracks: true, world_terrain: true, foliage_pages: true, meadow: true, terrain: true, foliage: true, procedural: true };
+    pub const ALL: Self = Self { cars: true, grass: true, grass_shade: true, tracks: true, world_terrain: true, foliage_pages: true, meadow: true, terrain: true, foliage: true, procedural: true, irradiance: true };
 
     pub fn for_scene(scene: &Scene, world_terrain: bool, foliage_pages: bool, meadow: bool) -> Self {
         if std::env::var("KERN_SHADE_FEATURES").as_deref() == Ok("all") { return Self::ALL; }
@@ -52,6 +54,7 @@ impl ShadeFeatures {
             terrain: any(TERRAIN),
             foliage: any(THIN_FOLIAGE | ALPHA_TEST),
             procedural: any(ROCK | LAVA),
+            irradiance: scene.irradiance_volume.is_some(),
         }
     }
 
@@ -71,6 +74,7 @@ impl ShadeFeatures {
             ("FEATURE_TERRAIN", b(self.terrain)),
             ("FEATURE_FOLIAGE", b(self.foliage)),
             ("FEATURE_PROCEDURAL", b(self.procedural)),
+            ("FEATURE_IRRADIANCE", b(self.irradiance)),
         ]
     }
 }
@@ -85,13 +89,13 @@ mod tests {
         let mut scene = Scene::default();
         scene.add_material(Material { tint: [0.5; 3], layer: -1, roughness: 0.8, flags: 0, scale: 1.0, metal: 0.0 });
         let f = ShadeFeatures::for_scene(&scene, false, false, false);
-        assert!(!f.cars && !f.grass && !f.tracks && !f.terrain && !f.foliage);
+        assert!(!f.cars && !f.grass && !f.tracks && !f.terrain && !f.foliage && !f.irradiance);
         scene.add_material(Material { tint: [0.5; 3], layer: -1, roughness: 0.8, flags: ROAD, scale: 1.0, metal: 0.0 });
         let f = ShadeFeatures::for_scene(&scene, false, false, true);
         // A road alone has no grass to light or to shade it.
         assert!(!f.grass && !f.grass_shade && f.tracks && !f.cars && f.meadow);
         scene.add_material(Material { tint: [0.5; 3], layer: -1, roughness: 0.8, flags: GRASS, scale: 1.0, metal: 0.0 });
         assert!(ShadeFeatures::for_scene(&scene, false, false, true).grass);
-        assert_eq!(ShadeFeatures::ALL.constants(false, false).len(), 12);
+        assert_eq!(ShadeFeatures::ALL.constants(false, false).len(), 13);
     }
 }

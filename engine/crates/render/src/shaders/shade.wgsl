@@ -153,6 +153,10 @@ override FEATURE_FOLIAGE: bool = true;
 // Spot and local lights (Renderer::set_headlights, set_local_lights). A frame
 // with none uses a pipeline without their loop: fewer registers per pixel.
 override FEATURE_LOCAL_LIGHTS: bool = true;
+// The indoor irradiance volume. Without one gi.params.w is 0 and the lookup
+// returns at once, but its code still costs registers (0.37 ms of land
+// shading at the hill view on an M5 Pro).
+override FEATURE_IRRADIANCE: bool = true;
 override SKIP_HIDDEN_MEADOW:bool=false;
 var<workgroup> hidden_meadow_count:atomic<u32>;
 // Sky tiles: `classify` writes the sky of 8x8 tiles without geometry and
@@ -1050,7 +1054,7 @@ fn unpack_emission(word: u32) -> vec3<f32> {
 }
 fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
     let o = u32(gi.params.w);
-    if o == 0u { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
+    if !FEATURE_IRRADIANCE || o == 0u { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
     let transport = aux[o + 7u] >= 2u;
     let sun_transport = aux[o + 7u] == 3u;
     let visibility = aux[o + 7u] >= 1u;
@@ -2491,7 +2495,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // Inside an indoor irradiance volume its probes replace sky and bounce.
         let cached=irradiance_sample(p+visibility_n*0.05,n);
         let room=cached.value;
-        if room.w>0.0 {
+        if FEATURE_IRRADIANCE && room.w>0.0 {
           if aux[u32(gi.params.w)+7u] >= 1u {
             let access=clamp(room.x,0.0,1.0);
             // Attenuate only sky. Preserve the existing bounce term and add
