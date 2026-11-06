@@ -248,7 +248,9 @@ const VOXEL_SKY_LIFT: f32 = 1.0;
 // Branch voxel volumes carry no crown of their own (only whole-plant
 // proxies march one), so at 25-200 m crowns lit as if every leaf faced the
 // sun: ~2x the same tree as a mesh (Mancave tree series, 6 November).
-const CROWN_EXTINCTION_PER_M: f32 = 0.55;
+// 0.35: the tree series' best match to mesh crowns (0.55 left a dark band
+// past the clipmap, Joep playtest 5).
+const CROWN_EXTINCTION_PER_M: f32 = 0.35;
 fn crown_depth_in(map: texture_depth_2d, projection: mat4x4<f32>, p: vec3<f32>) -> f32 {
     let c = projection * vec4<f32>(p, 1.0);
     let uv = vec2<f32>(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
@@ -317,7 +319,7 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     // every distance. The canopy estimate only covers the gap beyond it.
     let estimate = 1.0 - sun_clipmap_cover(p);
     let own = min(marched, exp(-CROWN_EXTINCTION_PER_M * canopy * estimate));
-    let own_sky = min(marched, exp(-CROWN_EXTINCTION_PER_M * min(canopy, 1.5)));
+    let own_sky = min(marched, exp(-CROWN_EXTINCTION_PER_M * min(canopy, 1.5) * estimate));
     let exit = f32(g.w >> 24u) / 4.0;
     let l = light.sun_dir.xyz;
     let v = -dir;
@@ -335,7 +337,12 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     // neighbours past the shared map too: crowns keep the maps' pairing.
     let anchored = far_sun.params.z > 0.5 && far_sun.params.w < 0.5;
     if sun_coverage_fade(light.shadow_view_proj, p, 0.45) < 1.0 || anchored {
-        others = shadow_at_surface(p, n * sign(dot(n, l) + 1e-4), vec3<f32>(0.0), 0.0);
+        // Lift the receiver toward the sun by most of a sun-map voxel cell:
+        // the pixel lies on its own cell's splat, which the map holds at
+        // the same depth, so every crown half-shadowed itself. With cells
+        // growing per clipmap level that darkened mid-distance trees most
+        // (Joep, playtest 5).
+        others = shadow_at_surface(p + l * 0.75 * sun_voxel_cell(p), n * sign(dot(n, l) + 1e-4), vec3<f32>(0.0), 0.0);
     } else if FEATURE_WORLD_TERRAIN && sun_visibility_required() {
         others = world_terrain_sun_visibility(p, n, 0.0);
     }
@@ -1572,6 +1579,18 @@ fn near_level_weight(k: i32, p: vec3<f32>) -> f32 {
 fn near_level_visibility(k: i32, p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
     let texel = light.near_shadow.x * f32(1 << u32(k));
     return shadow_filter_layer(near_shadow_tex, k, near_level_projection(k), texel, p, n, plane_n);
+}
+// Voxel cell size the sun map that shades p splats (frame.rs
+// near_level_voxel_m, SHARED_SUN_VOXEL_M): the finest clipmap level that
+// covers p, else the shared map's.
+fn sun_voxel_cell(p: vec3<f32>) -> f32 {
+    let levels = select(0, i32(light.near_levels.x), light.near_shadow.z > 0.5);
+    for (var k = 0; k < levels; k++) {
+        if near_level_weight(k, p) > 0.5 {
+            return 0.25 * pow(1.41421356, f32(k)) * select(1.0, 1.42, k >= 3);
+        }
+    }
+    return 0.5;
 }
 // How fully the sun clipmap's levels cover p (0 when near maps are off).
 fn sun_clipmap_cover(p: vec3<f32>) -> f32 {
