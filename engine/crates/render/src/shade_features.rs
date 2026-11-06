@@ -8,7 +8,7 @@
 //! construction. A disabled feature is exactly the path the shader would
 //! have taken anyway, so images do not change. `KERN_SHADE_FEATURES=all`
 //! restores the unspecialised pipeline for comparisons.
-use crate::scene::{Scene, ALPHA_TEST, CAR_SHIFT, GRASS, LAVA, ROAD, ROCK, TERRAIN, THIN_FOLIAGE};
+use crate::scene::{Scene, ALPHA_TEST, CAR_SHIFT, GRASS, LAVA, ROAD, ROCK, SURFACE, TERRAIN, THIN_FOLIAGE};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShadeFeatures {
@@ -33,10 +33,34 @@ pub struct ShadeFeatures {
     pub foliage: bool,
     /// Procedural rock and lava surfaces (ROCK or LAVA materials).
     pub procedural: bool,
+    /// The indoor irradiance volume (`Scene::reserve_irradiance_volume`).
+    pub irradiance: bool,
+    /// Ground colours per region in the procedural terrain's style blocks
+    /// (procedural_terrain::region_ground).
+    pub field_regions: bool,
+    /// Roads drawn into the procedural terrain's pixels
+    /// (procedural_terrain::road_surface).
+    pub field_roads: bool,
 }
 
+/// The style blocks of the procedural terrain materials (TERRAIN | SURFACE
+/// with a negative scale, terrain_surface.wgsl field_ground and road_at).
+pub fn field_style_blocks(scene: &Scene) -> Vec<usize> {
+    let mut blocks: Vec<usize> = scene.materials.iter()
+        .filter(|m| m.flags & (TERRAIN | SURFACE) == TERRAIN | SURFACE && m.scale < 0.0)
+        .map(|m| (-m.scale - 1.0).round() as usize).collect();
+    blocks.sort_unstable();
+    blocks.dedup();
+    blocks
+}
+
+/// Region ground pointer of a style block (its GroundStyle's reserved.x).
+pub const REGION_WORD: usize = 6;
+/// Road data pointer of a style block (its far forest params' metal).
+pub const ROAD_WORD: usize = 2;
+
 impl ShadeFeatures {
-    pub const ALL: Self = Self { cars: true, grass: true, grass_shade: true, tracks: true, world_terrain: true, foliage_pages: true, meadow: true, terrain: true, foliage: true, procedural: true };
+    pub const ALL: Self = Self { cars: true, grass: true, grass_shade: true, tracks: true, world_terrain: true, foliage_pages: true, meadow: true, terrain: true, foliage: true, procedural: true, irradiance: true, field_regions: true, field_roads: true };
 
     pub fn for_scene(scene: &Scene, world_terrain: bool, foliage_pages: bool, meadow: bool) -> Self {
         if std::env::var("KERN_SHADE_FEATURES").as_deref() == Ok("all") { return Self::ALL; }
@@ -52,6 +76,9 @@ impl ShadeFeatures {
             terrain: any(TERRAIN),
             foliage: any(THIN_FOLIAGE | ALPHA_TEST),
             procedural: any(ROCK | LAVA),
+            irradiance: scene.irradiance_volume.is_some(),
+            field_regions: field_style_blocks(scene).iter().any(|&b| scene.materials.get(b + REGION_WORD).is_some_and(|m| m.roughness >= 0.5)),
+            field_roads: field_style_blocks(scene).iter().any(|&b| scene.materials.get(b + ROAD_WORD).is_some_and(|m| m.metal >= 0.5)),
         }
     }
 
@@ -71,6 +98,9 @@ impl ShadeFeatures {
             ("FEATURE_TERRAIN", b(self.terrain)),
             ("FEATURE_FOLIAGE", b(self.foliage)),
             ("FEATURE_PROCEDURAL", b(self.procedural)),
+            ("FEATURE_IRRADIANCE", b(self.irradiance)),
+            ("FEATURE_FIELD_REGIONS", b(self.field_regions)),
+            ("FEATURE_FIELD_ROADS", b(self.field_roads)),
         ]
     }
 }
@@ -85,13 +115,29 @@ mod tests {
         let mut scene = Scene::default();
         scene.add_material(Material { tint: [0.5; 3], layer: -1, roughness: 0.8, flags: 0, scale: 1.0, metal: 0.0 });
         let f = ShadeFeatures::for_scene(&scene, false, false, false);
-        assert!(!f.cars && !f.grass && !f.tracks && !f.terrain && !f.foliage);
+        assert!(!f.cars && !f.grass && !f.tracks && !f.terrain && !f.foliage && !f.irradiance);
         scene.add_material(Material { tint: [0.5; 3], layer: -1, roughness: 0.8, flags: ROAD, scale: 1.0, metal: 0.0 });
         let f = ShadeFeatures::for_scene(&scene, false, false, true);
         // A road alone has no grass to light or to shade it.
         assert!(!f.grass && !f.grass_shade && f.tracks && !f.cars && f.meadow);
         scene.add_material(Material { tint: [0.5; 3], layer: -1, roughness: 0.8, flags: GRASS, scale: 1.0, metal: 0.0 });
         assert!(ShadeFeatures::for_scene(&scene, false, false, true).grass);
-        assert_eq!(ShadeFeatures::ALL.constants(false, false).len(), 12);
+        assert_eq!(ShadeFeatures::ALL.constants(false, false).len(), 15);
+    }
+
+    #[test]
+    fn terrain_regions_and_roads_follow_the_style_block() {
+        let mut scene = Scene::default();
+        let plain = Material { tint: [0.5; 3], layer: -1, roughness: 0.0, flags: 0, scale: 1.0, metal: 0.0 };
+        for _ in 0..8 { scene.add_material(plain); }
+        // A procedural terrain material whose style block starts at 0.
+        scene.add_material(Material { flags: TERRAIN | SURFACE, scale: -1.0, ..plain });
+        let f = ShadeFeatures::for_scene(&scene, false, false, false);
+        assert_eq!(field_style_blocks(&scene), vec![0]);
+        assert!(f.terrain && !f.field_regions && !f.field_roads);
+        scene.materials[ROAD_WORD].metal = 9.0;
+        assert!(ShadeFeatures::for_scene(&scene, false, false, false).field_roads);
+        scene.materials[REGION_WORD].roughness = 9.0;
+        assert!(ShadeFeatures::for_scene(&scene, false, false, false).field_regions);
     }
 }

@@ -150,6 +150,18 @@ override FEATURE_FOLIAGE_PAGES: bool = true;
 override FEATURE_MEADOW: bool = true;
 override FEATURE_TERRAIN: bool = true;
 override FEATURE_FOLIAGE: bool = true;
+// Spot and local lights (Renderer::set_headlights, set_local_lights). A frame
+// with none uses a pipeline without their loop: fewer registers per pixel.
+override FEATURE_LOCAL_LIGHTS: bool = true;
+// The indoor irradiance volume. Without one gi.params.w is 0 and the lookup
+// returns at once, but its code still costs registers (0.37 ms of land
+// shading at the hill view on an M5 Pro).
+override FEATURE_IRRADIANCE: bool = true;
+// Procedural terrain with region ground colours, and with roads drawn into
+// its pixels (shade_features.rs). Without them both lookups return at once,
+// but cost registers: about 0.3-0.5 and 0.2 ms of land shading on an M5 Pro.
+override FEATURE_FIELD_REGIONS: bool = true;
+override FEATURE_FIELD_ROADS: bool = true;
 override SKIP_HIDDEN_MEADOW:bool=false;
 var<workgroup> hidden_meadow_count:atomic<u32>;
 // Sky tiles: `classify` writes the sky of 8x8 tiles without geometry and
@@ -1047,7 +1059,7 @@ fn unpack_emission(word: u32) -> vec3<f32> {
 }
 fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
     let o = u32(gi.params.w);
-    if o == 0u { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
+    if !FEATURE_IRRADIANCE || o == 0u { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
     let transport = aux[o + 7u] >= 2u;
     let sun_transport = aux[o + 7u] == 3u;
     let visibility = aux[o + 7u] >= 1u;
@@ -2427,7 +2439,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         ao = mix(0.45, 1.0, height);
         back = vec3<f32>(0.12, 0.16, 0.05) * max(-ndl, 0.0);
     }
-    if SHADE_CLASS == 1u && TERRAIN_COARSE && sun_coverage_fade(light.shadow_view_proj, p, 0.45) > 0.0 {
+    // distant_sun_visibility reads it only past the far sun map, if any.
+    if SHADE_CLASS == 1u && TERRAIN_COARSE && sun_coverage_fade(light.shadow_view_proj, p, 0.45) > 0.0
+        && (far_sun.params.z <= 0.5 || sun_coverage_fade(far_sun.view_proj, p, far_sun.params.y) > 0.0) {
         coarse_sun_transmittance = coarse_sun_at(px, depth);
     }
     let terrain_error=select(0.0,world_visibility.params.z,(m.flags&6u)!=0u);
@@ -2488,7 +2502,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // Inside an indoor irradiance volume its probes replace sky and bounce.
         let cached=irradiance_sample(p+visibility_n*0.05,n);
         let room=cached.value;
-        if room.w>0.0 {
+        if FEATURE_IRRADIANCE && room.w>0.0 {
           if aux[u32(gi.params.w)+7u] >= 1u {
             let access=clamp(room.x,0.0,1.0);
             // Attenuate only sky. Preserve the existing bounce term and add
@@ -2527,9 +2541,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         indirect *= 1.0 - fc;
         specular = specular * (1.0 - fc) + mix(bounce / PI, environment(coat_refl, coat_rough, bounce), reflection_vis) * coat_contact * fc;
     }
-    if FEATURE_GRASS && grass {
+    if FEATURE_LOCAL_LIGHTS && FEATURE_GRASS && grass {
         direct += headlight_grass_radiance(p,v,base,rough);
-    } else {
+    } else if FEATURE_LOCAL_LIGHTS {
         direct += contact_headlight_radiance(p,n,visibility_n,v,diffuse,rough,f0,size,dist);
     }
     var rad = direct + indirect + specular;
