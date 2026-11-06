@@ -147,3 +147,13 @@ KERN_MEADOW_SKIP_HIDDEN_SHADE=1`, compared with main before step 1. That
 check also caught a step 1 regression: the meadow lighting layout still
 listed group 1 binding 12 (solid occluders), so legacy meadows failed to
 create their bind group. Fixed here.
+
+Step 6, raster: the draw args and the bucket draw map share one buffer per
+view (`ViewTargets::draw`, args at byte 0 so the indirect draws keep their
+offsets, the map from byte 256; cull still binds them as two sub-ranges).
+The voxel crown replacement words are also in the scene tables (vec4 2.z),
+so the main scene layout drops binding 11 (cull's reduced layout keeps it).
+The view raster storage bindings are vertex-only, so raster fragments count
+only the scene's. Raster now passes at `KERN_WEBGPU_LIMITS=spec`; still
+failing there: the view cull layout (11) and shade's 20 sampled textures
+(spec allows 16). Pixel-identical.
