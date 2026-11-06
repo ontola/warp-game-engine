@@ -584,7 +584,9 @@ impl Game for Fly {
 }
 
 impl Default for World {
-    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, branch_slots: 49152 } }
+    // 32768 slots (6 November, settled pages): forest 25.2 -> 22.2 ms, near 21.0 -> 17.3,
+    // mostly voxel splat walk and occluder cull; 541 of 2.2M splats over 2 px.
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, branch_slots: 32768 } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
@@ -849,7 +851,7 @@ fn handover_band(world: World) -> (f32, f32) {
 /// Stable world cells share two cooked assemblies. Terrain sampling happens
 /// only on world streaming; no CPU visibility or near-source shortlist.
 fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f32)->f32,centre:Vec2,variant_offset:usize,radius:f32)->Vec<WorldRoot> {
-    use render::placement::World as _;
+    use render::placement::Cell;
     let cell=recipe_forest::MEADOW_CELL_SIZE;
     let lo=((centre-Vec2::splat(radius))/cell).floor().as_ivec2();
     let hi=((centre+Vec2::splat(radius))/cell).ceil().as_ivec2();
@@ -859,13 +861,21 @@ fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f3
         if Vec2::new(x,z).distance_squared(centre)>radius*radius {continue;}
         let s=land.ground(x,z);
         let sparse=0.5+0.8*terrain_field::noised(Vec2::new(x,z)/40.,seed.wrapping_add(31)).x>grass(x,z);
-        if sparse || s.rock>0.5 || s.scree>0.8 || s.water>0.02 || s.snow>0.3 || land.clearance(x,z)<cell {continue;}
+        // Rock and snow thin the grass out instead of cutting it at one value:
+        // a hard rock>0.5 drew stripes along the contour lines of a slope.
+        let cut=Cell::new(i,j,seed).hash(78);
+        let smooth=|v:f32,a:f32,b:f32|((v-a)/(b-a)).clamp(0.,1.);
+        if sparse || cut<smooth(s.rock,0.3,0.8) || cut<smooth(s.snow,0.15,0.45) || s.scree>0.8 || s.water>0.02 || land.clearance(x,z)<cell {continue;}
         let dx=land.ground(x+0.5,z).pos.y-land.ground(x-0.5,z).pos.y;
         let dz=land.ground(x,z+0.5).pos.y-land.ground(x,z-0.5).pos.y;
         let up=Vec3::new(-dx,1.,-dz).normalize();
-        let hash=render::placement::Cell::new(i,j,seed).hash(77);
+        let hash=Cell::new(i,j,seed).hash(77);
+        // A cell is a 3x3 block of patches that tiles the 1.5 m square: turn
+        // it by quarter turns only. Any yaw left its corners bare, a dark hole
+        // at every grid corner (Joep's regular black circles).
+        let quarter=(hash*8.).floor() as u32%4;
         roots.push(WorldRoot {id:render::placement::instance_id(1000,i,j),placement:RootPlacement {
-            pos:Vec3::new(x,s.pos.y-0.015,z),up,yaw:hash*std::f32::consts::TAU,scale:1.,variant:variant_offset+usize::from(hash>=0.5)}});
+            pos:Vec3::new(x,s.pos.y-0.015,z),up,yaw:quarter as f32*std::f32::consts::FRAC_PI_2,scale:1.,variant:variant_offset+usize::from(hash>=0.5)}});
     }}
     roots
 }

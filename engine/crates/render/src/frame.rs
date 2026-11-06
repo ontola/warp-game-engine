@@ -48,7 +48,9 @@ pub const TEXTURE_SIZE: u32 = if cfg!(target_os = "android") { 512 } else { 2048
 const NORMAL_SIZE: u32 = if cfg!(target_os = "android") { 512 } else { 1024 };
 pub(crate) const SHADOW_SIZE: u32 = if cfg!(target_os = "android") { 2048 } else { 4096 };
 const NEAR_SHADOW_SIZE: u32 = if cfg!(target_os = "android") { 1024 } else { 2048 };
-const NEAR_SHADOW_EXTENT: f32 = 16.0;
+/// Half side of the near sun map. 24 m (2.3 cm texels): with the round fade
+/// in shade.wgsl, full detail reaches ~11 m and fades out by ~23 m.
+const NEAR_SHADOW_EXTENT: f32 = 24.0;
 /// The near shadow's cluster LOD error, in multiples of the camera's
 /// (KERN_NEAR_SHADOW_LOD, for A/B runs). Its 1.6 cm texels pick full detail:
 /// a full spruce assembly casts for ~2.5 ms (low2, 8 trees: 18 ms; 2x: 9.5,
@@ -4067,7 +4069,7 @@ impl Renderer {
                 light.fog_scattering_albedo.z, light.fog_phase_g],
             sh,
             near_shadow_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
-            near_shadow: [2.0 * NEAR_SHADOW_EXTENT / NEAR_SHADOW_SIZE as f32, 0.8, 0.0, if self.raster_sun_depth.is_some() {1.0} else {0.0}],
+            near_shadow: [2.0 * NEAR_SHADOW_EXTENT / NEAR_SHADOW_SIZE as f32, 0.45, 0.0, if self.raster_sun_depth.is_some() {1.0} else {0.0}],
             night_stars: [light.night_stars[0], light.night_stars[1],
                 if self.zero_sun_fast_path {1.0} else {0.0}, light.night_stars[3]],
             anim: [light.time, light.emissive_scale(), 1.2 * 2f32.powf(light.ev100), if light.sun_disc {light.sun_radius} else {0.0}],
@@ -5759,12 +5761,12 @@ mod layout_tests {
     fn sun_terrain_error_cap_is_equal_in_world_units_without_changing_other_view_settings() {
         let make=|scale,threshold|super::view_uniform(glam::Mat4::IDENTITY,glam::Vec3::ZERO,scale,
             [threshold,1.0,1.0,1024.0],[2048.0;4],0.5);
-        let mut far=make(4096.0/192.0,2.0);let mut near=make(2048.0/32.0,1.0);
+        let mut far=make(4096.0/192.0,2.0);let mut near=make(super::NEAR_SHADOW_SIZE as f32/(2.0*super::NEAR_SHADOW_EXTENT),1.0);
         let old_far=far;let old_near=near;
         super::configure_sun_terrain_error(&mut far,true);
         super::configure_sun_terrain_error(&mut near,true);
         assert_eq!(far.params,old_far.params);assert_eq!(near.params,old_near.params);
-        assert_eq!(far.fog_cull,[0.0,0.0,0.015625,0.0]);assert_eq!(near.fog_cull,far.fog_cull);
+        assert_eq!(far.fog_cull,[0.0,0.0,2.0*super::NEAR_SHADOW_EXTENT/super::NEAR_SHADOW_SIZE as f32,0.0]);assert_eq!(near.fog_cull,far.fog_cull);
         let threshold=|v:&super::ViewUniform|v.params[0].min(v.fog_cull[2]*v.cam[3]);
         assert_eq!(threshold(&far)/far.cam[3],threshold(&near)/near.cam[3]);
         // A representative parent/child hierarchy gets the identical cut at
