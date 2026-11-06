@@ -137,17 +137,20 @@ fn tf_boulders(x: f32, z: f32, density: f32, cut: f32, seed: u32) -> vec2<f32> {
             let oz = (f32(cz + j) + 0.15 + 0.7 * f32((h >> 18u) & 255u) / 255.0) * cell;
             let k = f32((h >> 26u) & 63u) / 63.0;
             let r = 0.4 + 1.5 * k * k;
-            let w = tf_fade(r * 2.0, cut);
+            // Height preserving across LOD (terrain_field.rs boulders).
+            let w = clamp((4.0 * r - cut) / (2.0 * r), 0.0, 1.0);
             if w <= 0.0 { continue; }
+            let height = r * (0.22 + 0.2 * f32((h2 >> 16u) & 255u) / 255.0);
+            let rr = max(r, 1.5 * cut);
             let dx = (x - ox) * (0.75 + 0.5 * f32(h2 & 255u) / 255.0);
             let dz = (z - oz) * (0.75 + 0.5 * f32((h2 >> 8u) & 255u) / 255.0);
             // Skewed, half-buried and rounded: a low cap with a soft foot,
             // not a bell with walls the texture smears down.
             let skew = f32((h2 >> 24u) & 255u) / 255.0 - 0.5;
             let d2 = dx * dx + dz * dz;
-            let s = d2 / (r * r) * (1.0 + 0.6 * skew * dx * dz / (d2 + 1e-6));
+            let s = d2 / (rr * rr) * (1.0 + 0.6 * skew * dx * dz / (d2 + 1e-6));
             if s < 1.0 {
-                let b = r * (0.22 + 0.2 * f32((h2 >> 16u) & 255u) / 255.0) * sqrt(1.0 - s) * tf_smooth(0.0, 0.25, 1.0 - s) * w;
+                let b = height * sqrt(1.0 - s) * tf_smooth(0.0, 0.25, 1.0 - s) * w;
                 best = max(best, b);
                 cover = max(cover, tf_smooth(0.0, 0.3, 1.0 - s) * w);
             }
