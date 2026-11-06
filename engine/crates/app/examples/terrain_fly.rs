@@ -761,7 +761,7 @@ fn vegetation_quality_policy()->render::aggregate_lod::Policy {
 fn recipe_spruces(scene:&mut Scene,lands:&render::biome::Lands,season:f32,world:World,roots:&[WorldRoot],branch_slots:u32)->Result<(),String> {
     let cooked=if world.trees {Some(cooked_flora(lands)?)} else {None};
     let cache=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
-    let grass=if world.grass {recipe_forest::cook_meadow_cells(&[(47,season),(83,season)],Some(&cache))?} else {Vec::new()};
+    let grass=if world.grass {recipe_forest::cook_meadow_cells(&GRASS_VARIANT_SEEDS.map(|seed|(seed,season)),Some(&cache))?} else {Vec::new()};
     for (i,c) in grass.iter().enumerate() {
         eprintln!("grass cell {i}: {} in {:.1} ms, {} placements, {} branches, {} mesh bindings",if c.loaded {"loaded"} else {"cooked"},c.millis,c.plant.stats().placements,c.plant.stats().branches,c.plant.stats().primitive_meshes);
     }
@@ -868,6 +868,9 @@ fn handover_band(world: World) -> (f32, f32) {
 
 /// Stable world cells share two cooked assemblies. Terrain sampling happens
 /// only on world streaming; no CPU visibility or near-source shortlist.
+/// Seeds of the cooked meadow cell variants (recipe_forest::cook_meadow_cells).
+const GRASS_VARIANT_SEEDS: [u64; 4] = [47, 83, 131, 197];
+
 fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f32)->f32,centre:Vec2,variant_offset:usize,radius:f32)->Vec<WorldRoot> {
     use render::placement::Cell;
     let cell=recipe_forest::MEADOW_CELL_SIZE;
@@ -881,7 +884,12 @@ fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f3
     let shift=Cell::new(0,j,seed).hash(79)*cell;
     for i in lo.x-1..=hi.x {
         let x=(i as f32+0.5)*cell+shift;let z=(j as f32+0.5)*cell;
-        if Vec2::new(x,z).distance_squared(centre)>radius*radius {continue;}
+        let d=Vec2::new(x,z).distance(centre);
+        if d>radius {continue;}
+        // The outer 30 % thins out cell by cell while the ground proxy
+        // (terrain_surface.wgsl grass_proxy) fades in over the same band:
+        // no line where the blades end.
+        if Cell::new(i,j,seed).hash(81)<((d-0.7*radius)/(0.3*radius)).clamp(0.,1.) {continue;}
         let s=land.ground(x,z);
         let sparse=0.5+0.8*terrain_field::noised(Vec2::new(x,z)/40.,seed.wrapping_add(31)).x>grass(x,z);
         if sparse || s.scree>0.8 || s.water>0.02 || land.clearance(x,z)<cell {continue;}
@@ -901,8 +909,20 @@ fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f3
         // it by quarter turns only. Any yaw left its corners bare, a dark hole
         // at every grid corner (Joep's regular black circles).
         let quarter=(hash*8.).floor() as u32%4;
+        // Taller, wider tufts in patches a few metres across plus some per
+        // cell (Joep: vary size and height); a cell only grows, so it can
+        // move by the half of its growth without opening a gap.
+        let patch=terrain_field::noised(Vec2::new(x,z)/6.,seed.wrapping_add(41)).x;
+        let grow=1.0+(0.18+0.18*patch+0.12*(Cell::new(i,j,seed).hash(82)-0.5)).clamp(0.,0.4);
+        let room=0.5*(grow-1.0)*cell;
+        let shift=Vec2::new(Cell::new(i,j,seed).hash(83)-0.5,Cell::new(i,j,seed).hash(84)-0.5)*2.0*room;
+        if land.clearance(x+shift.x,z+shift.y)<cell {continue;}
+        // Four cooked variants, picked independently of the turn: two
+        // repeated every few cells and read as a grid from above.
+        let variant=((Cell::new(i,j,seed).hash(80)*GRASS_VARIANT_SEEDS.len() as f32) as usize).min(GRASS_VARIANT_SEEDS.len()-1);
         roots.push(WorldRoot {id:render::placement::instance_id(1000,i,j),placement:RootPlacement {
-            pos:Vec3::new(x,s.pos.y-0.015,z),up,yaw:quarter as f32*std::f32::consts::FRAC_PI_2,scale:GRASS_CELL_OVERLAP/up.y.max(0.7),variant:variant_offset+usize::from(hash>=0.5)}});
+            pos:Vec3::new(x+shift.x,land.ground(x+shift.x,z+shift.y).pos.y-0.015,z+shift.y),up,yaw:quarter as f32*std::f32::consts::FRAC_PI_2,
+            scale:GRASS_CELL_OVERLAP*grow/up.y.max(0.7),variant:variant_offset+variant}});
     }}
     roots
 }
@@ -1225,7 +1245,7 @@ mod vegetation_tests {
             let p=root.placement;
             assert!((p.pos.y-(0.2*p.pos.x-0.1*p.pos.z-0.015)).abs()<1e-5);
             assert!(p.up.abs_diff_eq(Vec3::new(-0.2,1.,0.1).normalize(),1e-5));
-            assert!(!(2.0..4.0).contains(&p.pos.x));assert!((7..9).contains(&p.variant));
+            assert!(!(2.0..4.0).contains(&p.pos.x));assert!((7..7+GRASS_VARIANT_SEEDS.len()).contains(&p.variant));
             if let Some(next)=b.iter().find(|r|r.id==root.id) {assert_eq!(root,next);overlap+=1;}
         }
         assert!(overlap>a.len()/3);
