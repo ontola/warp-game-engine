@@ -62,14 +62,16 @@ fn cluster_node_reject(node:u32,inst:Instance,threshold:f32,wind:f32)->u32 {
     return 0u;
 }
 
-fn cluster_traverse(id:u32,inst:Instance,li:u32,threshold:f32,wind:f32)->bool {
+// Lane 0 only: whether this owner has a usable hierarchy, and the traversal's
+// shared state if so. False leaves the owner to the flat scan.
+fn cluster_traverse_begin(id:u32,inst:Instance,threshold:f32,wind:f32)->bool {
     if cluster_tree[0]==0u {return false;}
     if inst.first_cluster>=cluster_tree[1] {
-        if li==0u {atomicAdd(&counter[38],1u);}return false;
+        atomicAdd(&counter[38],1u);return false;
     }
     let table=4u+inst.first_cluster*2u;
     let root=cluster_tree[table];
-    if root==0xffffffffu {if li==0u {atomicAdd(&counter[37],1u);}return false;}
+    if root==0xffffffffu {atomicAdd(&counter[37],1u);return false;}
     // Mesh replacement may change an owner's range. Unknown/sub-ranges do
     // not borrow a broader mesh's hierarchy, and never silently lose clusters.
     if cluster_tree[table+1u]!=inst.cluster_count || root<cluster_tree[2]
@@ -77,15 +79,16 @@ fn cluster_traverse(id:u32,inst:Instance,li:u32,threshold:f32,wind:f32)->bool {
         || !(wind>=0.0 && wind<1e12) || !(threshold>=0.0 && threshold<1e20)
         || !all(abs(inst.r0)<vec4<f32>(1e18)) || !all(abs(inst.r1)<vec4<f32>(1e18))
         || !all(abs(inst.r2)<vec4<f32>(1e18)) || !all(abs(cull_wind[id].xy)<vec2<f32>(1e12)) {
-        if li==0u {atomicAdd(&counter[38],1u);}return false;
+        atomicAdd(&counter[38],1u);return false;
     }
-    if li==0u {
-        cluster_cursor=root;cluster_end=cluster_tree[root+16u];
-        cluster_linear_bound=cluster_transform_bound(inst);
-        cluster_error_scale=inst.scale*(1.0+length(cull_wind[id].xy));
-        atomicAdd(&counter[32],1u);atomicAdd(&counter[39],inst.cluster_count);
-    }
-    workgroupBarrier();
+    cluster_cursor=root;cluster_end=cluster_tree[root+16u];
+    cluster_linear_bound=cluster_transform_bound(inst);
+    cluster_error_scale=inst.scale*(1.0+length(cull_wind[id].xy));
+    atomicAdd(&counter[32],1u);atomicAdd(&counter[39],inst.cluster_count);
+    return true;
+}
+
+fn cluster_traverse(id:u32,inst:Instance,li:u32,threshold:f32,wind:f32) {
     loop {
         // Uniform loads: WGSL's uniformity rules (enforced by browsers) do not
         // accept a barrier under a branch on a plain workgroup read.
@@ -113,5 +116,4 @@ fn cluster_traverse(id:u32,inst:Instance,li:u32,threshold:f32,wind:f32)->bool {
         }
         workgroupBarrier();
     }
-    return true;
 }

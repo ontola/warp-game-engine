@@ -311,7 +311,6 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
     return 1u;
 }
 
-var<workgroup> keep: bool;
 
 // A GPU aggregate decision may retain a measured world-error triangle cut.
 // Negative means the legacy screen-error policy. Shadows are independent.
@@ -329,19 +328,27 @@ fn virtual_owner(inst: Instance) -> bool {
 }
 
 var<workgroup> branch_keep: bool;
+var<workgroup> cull_owner: u32;
+const NO_OWNER: u32 = 0xffffffffu;
+var<workgroup> member_plan: u32;
 
+// One instance per workgroup, so everything below is the same in every lane,
+// but WGSL's uniformity analysis (enforced by browsers) cannot see that through
+// storage reads. Lane 0 decides whatever guards a barrier and shares it with a
+// uniform load, which is a barrier as well.
 fn cull_instance(id: u32, li: u32) {
     if id >= INSTANCE_COUNT { return; }
     let inst = instances[id];
     if !virtual_owner(inst) { cull_member(id, inst, li); return; }
     // A virtual branch: its own policy (a branch on voxels is skipped
     // whole) and bounds first, then each template composed with its pose.
-    if instance_policy(id, inst) != 1u { return; }
     if li == 0u {
-        let radius = inst.sphere.w + cull_wind[id].z;
-        branch_keep = in_frustum(inst.sphere.xyz, radius) && !hidden_by_camera_fog(inst.sphere.xyz, radius);
+        branch_keep = false;
+        if instance_policy(id, inst) == 1u {
+            let radius = inst.sphere.w + cull_wind[id].z;
+            branch_keep = in_frustum(inst.sphere.xyz, radius) && !hidden_by_camera_fog(inst.sphere.xyz, radius);
+        }
     }
-    workgroupBarrier();
     if !workgroupUniformLoad(&branch_keep) { return; }
     let start = inst.first_cluster >> 12u;
     let count = inst.first_cluster & 0xfffu;
@@ -351,39 +358,47 @@ fn cull_instance(id: u32, li: u32) {
     }
 }
 
+const PLAN_SKIP: u32 = 0u;
+const PLAN_FLAT: u32 = 1u;
+const PLAN_TRAVERSE: u32 = 2u;
+
 fn cull_member(id: u32, inst: Instance, li: u32) {
-    let policy = instance_policy(id, inst);
-    if policy != 1u {
-        if li == 0u && policy == 2u { atomicAdd(&counter[3], 1u); }
-        return;
-    }
-    let wind_pad = cull_wind[member_slot(id)].z;
-    if li == 0u {
-        let radius = inst.sphere.w + wind_pad;
-        keep = in_frustum(inst.sphere.xyz, radius) && !hidden_by_camera_fog(inst.sphere.xyz, radius);
-        if keep && tree_phase.x>1.5 {
-            atomicAdd(&counter[15],1u);
-            if tree_occluded(inst.sphere.xyz,radius) {keep=false;atomicAdd(&counter[16],1u);}
-        }
-    }
-    // A uniform load (a barrier as well): browsers reject barriers further
-    // down under a branch on a plain workgroup read.
-    if !workgroupUniformLoad(&keep) {
-        return;
-    }
-    let camera_groups=(spatial.header.w&1u)!=0u && view.params.z<0.5 && view.extra.y<1.5;
-    let sun_groups=(spatial.header.w&2u)!=0u && view.params.z>0.5;
-    let headlight_groups=(spatial.header.w&4u)!=0u && view.params.z<0.5 && view.extra.y>1.5;
-    if li==0u && (camera_groups || sun_groups || headlight_groups) {
-        atomicAdd(&counter[26],inst.cluster_count);
-    }
     // Keep car body geometry consistent in the visible and sun passes. A
     // coarse shadow mesh can cut across its own finer visible panels.
     let base_thr = select(view.params.x, 0.0, (inst.flags & 2u) != 0u);
-    // Shared cluster BVH only accelerates camera predicates. Shadow caster
-    // thresholds and independently selected offscreen casters keep the flat path.
-    if view.params.z<0.5 && view.extra.y<1.5 && aggregate_triangle_error(id)<0.0 {
-        if cluster_traverse(id,inst,li,base_thr,wind_pad) {return;}
+    if li == 0u {
+        member_plan = PLAN_SKIP;
+        let policy = instance_policy(id, inst);
+        if policy == 2u { atomicAdd(&counter[3], 1u); }
+        if policy == 1u {
+            let wind_pad = cull_wind[member_slot(id)].z;
+            let radius = inst.sphere.w + wind_pad;
+            var keep = in_frustum(inst.sphere.xyz, radius) && !hidden_by_camera_fog(inst.sphere.xyz, radius);
+            if keep && tree_phase.x>1.5 {
+                atomicAdd(&counter[15],1u);
+                if tree_occluded(inst.sphere.xyz,radius) {keep=false;atomicAdd(&counter[16],1u);}
+            }
+            if keep {
+                let camera_groups=(spatial.header.w&1u)!=0u && view.params.z<0.5 && view.extra.y<1.5;
+                let sun_groups=(spatial.header.w&2u)!=0u && view.params.z>0.5;
+                let headlight_groups=(spatial.header.w&4u)!=0u && view.params.z<0.5 && view.extra.y>1.5;
+                if camera_groups || sun_groups || headlight_groups {
+                    atomicAdd(&counter[26],inst.cluster_count);
+                }
+                member_plan = PLAN_FLAT;
+                // Shared cluster BVH only accelerates camera predicates. Shadow caster
+                // thresholds and independently selected offscreen casters keep the flat path.
+                if view.params.z<0.5 && view.extra.y<1.5 && aggregate_triangle_error(id)<0.0
+                    && cluster_traverse_begin(id,inst,base_thr,wind_pad) {member_plan = PLAN_TRAVERSE;}
+            }
+        }
+    }
+    let plan = workgroupUniformLoad(&member_plan);
+    if plan == PLAN_SKIP { return; }
+    let wind_pad = cull_wind[member_slot(id)].z;
+    if plan == PLAN_TRAVERSE {
+        cluster_traverse(id,inst,li,base_thr,wind_pad);
+        return;
     }
     for (var c = li; c < inst.cluster_count; c += 64u) {
         cull_cluster(id,inst,inst.first_cluster+c,base_thr,wind_pad);
@@ -532,12 +547,16 @@ fn instance_dispatch() {
 @compute @workgroup_size(64)
 fn cull_compacted(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
     let slot = wg.x + wg.y * 65535u;
-    let count = atomicLoad(&counter[11]);
-    let overflow = count > arrayLength(&draw_map);
-    if slot >= select(count, INSTANCE_COUNT, overflow) { return; }
-    var id = slot;
-    if !overflow { id = draw_map[slot]; }
-    cull_instance(id, li);
+    if li == 0u {
+        let count = atomicLoad(&counter[11]);
+        let overflow = count > arrayLength(&draw_map);
+        cull_owner = NO_OWNER;
+        if slot < select(count, INSTANCE_COUNT, overflow) {
+            cull_owner = slot;
+            if !overflow { cull_owner = draw_map[slot]; }
+        }
+    }
+    cull_instance(workgroupUniformLoad(&cull_owner), li);
 }
 
 fn spatial_group_visible(sphere:vec4<f32>)->bool {
@@ -637,13 +656,21 @@ fn spatial_dispatch() {
     atomicStore(&counter[28],0u);
     atomicStore(&counter[29],0u);atomicStore(&counter[30],0u);
 }
+// The owner this workgroup's slot holds, or NO_OWNER past the end of the list.
+fn spatial_owner(slot:u32,li:u32)->u32 {
+    if li==0u {
+        let count=atomicLoad(&counter[11]);let overflow=count>spatial.header.z;
+        cull_owner=NO_OWNER;
+        if slot<select(count,INSTANCE_COUNT,overflow) {
+            cull_owner=slot;
+            if !overflow {cull_owner=spatial_owners[slot];}
+        }
+    }
+    return workgroupUniformLoad(&cull_owner);
+}
 @compute @workgroup_size(64)
 fn cull_spatial(@builtin(workgroup_id) wg:vec3<u32>,@builtin(local_invocation_index) li:u32) {
-    let slot=wg.x+wg.y*65535u;let count=atomicLoad(&counter[11]);
-    let overflow=count>spatial.header.z;
-    if slot>=select(count,INSTANCE_COUNT,overflow){return;}
-    var id=slot;if !overflow {id=spatial_owners[slot];}
-    cull_instance(id,li);
+    cull_instance(spatial_owner(wg.x+wg.y*65535u,li),li);
 }
 
 // Keep visible[] and its IDs unchanged. Only draw order and padded vertex
@@ -822,9 +849,5 @@ fn cull_cached_sun(@builtin(workgroup_id) wg:vec3<u32>,@builtin(local_invocation
 }
 @compute @workgroup_size(64)
 fn cull_spatial_cached_sun(@builtin(workgroup_id) wg:vec3<u32>,@builtin(local_invocation_index) li:u32) {
-    let slot=wg.x+wg.y*65535u;let count=atomicLoad(&counter[11]);
-    let overflow=count>spatial.header.z;
-    if slot>=select(count,INSTANCE_COUNT,overflow){return;}
-    var id=slot;if !overflow {id=spatial_owners[slot];}
-    cull_damaged_instance(id,li);
+    cull_damaged_instance(spatial_owner(wg.x+wg.y*65535u,li),li);
 }

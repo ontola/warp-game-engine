@@ -46,17 +46,30 @@ PR #10 at fc759df on `--town`: frame time unchanged (wall 7.01 to 6.98 ms, hill
 18.61 to 18.65), `shade terrain` down at most 0.06 ms. Pixels: wall identical,
 hill at most 22 levels on no measurable share of pixels.
 
+## Culling in Chrome
+
+Chrome's Tint rejected `cull` under WGSL's uniformity rules, which naga does not
+check. Lane 0 now decides what guards a barrier and shares it with
+`workgroupUniformLoad`: owner ids from the compacted lists, policy, frustum,
+occlusion, and whether a member traverses its cluster BVH. Headless Chromium
+(SwiftShader) compiles the module with no messages. Suite on an idle machine:
+GPU time within noise in every view, all still views but `polder` unchanged,
+and `polder` matches an older capture of the same cut state (0.002% over 16).
+Only module compilation was checked, not a frame drawn in a browser.
+
+Wall times were 1.5 to 2 times higher on the idle morning run than under evening
+CI load, with GPU times the same, so wall times cannot be compared across sessions.
+
 ## Findings left open
 
 Foliage, not changed here:
 
 - Selection is the largest pass in every view, 1.7 to 10.6 ms.
-- The forest cut does not settle quickly on a still camera. On `polder`, voxel
-  slots went 64, 98, 50 at 300, 600 and 1200 frames on one build, and 95, 50, 50
-  on a faster one; 1.1% of pixels differ between those states. Both builds
-  agree at 1200 frames (at most 31 levels, 0.00005% over 16). The cut depends on
-  wall time as well as frames, so a player can see trees change while standing
-  still.
+- The forest cut on a still camera does not reach one result. On `polder` it
+  rests in one of two states, 98 voxel slots (8,085,136 triangles) or 50
+  (8,219,540), 1.1% of pixels apart. Which one depends on timing: repeats of
+  one build differ at 1000 frames, and it stayed in one state to 1800 frames.
+  Whether it also flips while running is not known; a capture only shows the end.
 - `forest` draws 67M triangles and `occluder raster` takes 5.68 ms. This fits
   handoff problem 1 (source bypass) but was not tested here.
 - Ball-shaped clusters and ball-shaped tree shadows at 20 to 40 m on `forest`.

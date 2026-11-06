@@ -2,8 +2,8 @@
 
 `terrain_fly` builds for the browser: wasm32 with wgpu's WebGPU backend,
 drawn into a canvas. It is a prototype: it loads, builds the world and runs
-its frame loop in Chrome, but the cull shader does not compile there yet
-(see Open), so nothing is drawn. It uses the same renderer as the native
+its frame loop in Chrome. The cull shader now compiles there, but a drawn
+frame has not been confirmed since (see Open). It uses the same renderer as the native
 build, without threads, gamepads, the F10 menu, screenshots, HDR or
 adaptive quality.
 
@@ -58,11 +58,9 @@ host serves it.
 - Trees: their cooked assets are cached on disk natively (`build/cook-cache`,
   about 260 MB for one forest); a browser cooks them at every load.
 - Shaders are compiled by the browser's own WGSL compiler (Tint in Chrome),
-  which runs WGSL's uniformity analysis; naga does not. The cull shader
-  still has barriers after per-instance early returns that Tint rejects, so
-  the browser build does not draw yet. Fixed so far: unparenthesised
-  `a*b ^ c*d`, and branches on workgroup reads now go through
-  `workgroupUniformLoad`. Test in Chrome after changing a compute shader
-  with barriers.
+  which runs WGSL's uniformity analysis; naga does not. In `cull.wgsl` lane 0
+  decides whatever guards a barrier and shares it with
+  `workgroupUniformLoad`. Other modules have not been checked the same way.
+  Test in Chrome after changing a compute shader with barriers.
 - Measurements and the feasibility check:
   [log entry](log/2026-11-05-browser-feasibility.md).
