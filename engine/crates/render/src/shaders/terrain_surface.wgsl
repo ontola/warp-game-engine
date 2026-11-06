@@ -248,7 +248,9 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
         let toward = sun.xz / sun_xz;
         // Crowns differ in height, so the shadow fades out over the last
         // part of its reach instead of ending in steps one tap apart.
-        for (var k = 1; k <= 8; k++) {
+        // Pixels wider than FAR_FOREST_COARSE_M take every other tap.
+        let step = select(1, 2, footprint > FAR_FOREST_COARSE_M);
+        for (var k = step; k <= 8; k += step) {
             let t = f32(k) * 0.125;
             let tall = 1.0 - smoothstep(0.5, 1.0, t);
             // tall only falls with k and a stand is at most 1: no later tap
@@ -273,7 +275,7 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     var seen = 1.0;
     var top = 0.0;
     var wall = 0.0;
-    let taps = select(1, 6, reach > footprint);
+    let taps = select(1, select(6, 4, footprint > FAR_FOREST_COARSE_M), reach > footprint);
     for (var k = 0; k < taps; k++) {
         // Behind a solid stand nothing more is seen: the rest adds nothing.
         if seen <= 0.0 { break; }
