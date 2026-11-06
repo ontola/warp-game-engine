@@ -16,10 +16,16 @@ python3 engine/tools/build-web.py --serve
 ```
 
 Then open http://localhost:8790 in Chrome or Edge (WebGPU needs localhost or
-HTTPS). `?style=alpine`, `?seed=2` and `?trees=0` pick the world; hosts
-that pass only a fragment get the same from `#alpine-notrees`. Click to
-capture the mouse; WASD and the mouse fly, F1 to F9 work as natively, Esc
-releases the mouse. The page shows the log in its corner.
+HTTPS). `?style=alpine` and `?seed=2` pick the world; trees are off unless
+`?trees=1` (cooking them freezes the page for minutes, see Open). Hosts
+that pass only a fragment get the same from words in it: `#alpine-trees`.
+Click to capture the mouse; WASD and the mouse fly, F1 to F9 work as
+natively, Esc releases the mouse.
+
+The page shows a progress bar until the first frame: the wasm download
+(with bytes), the ground textures, building the world, WebGPU setup and
+the first upload. A GPU with fewer than 16 storage buffers per stage stops
+there with a message. The log sits in the corner.
 
 `build/web` holds `index.html` (from `engine/crates/app/web`), `pkg/` (the
 wasm and its JavaScript) and `assets/` (the ground textures). Any static
@@ -45,7 +51,8 @@ host serves it.
 - No threads: `render::par::scope` is `std::thread::scope` natively and runs
   each spawned job at once in a browser. `terrain_fly` builds scenes,
   forests and sun bakes inline there (`background`), which stalls the page
-  while it works.
+  while it works; `app::web::yield_to_browser` lets the progress bar paint
+  before each long step.
 - Time comes from `web_time::Instant` (`std::time::Instant` natively).
 - Files: the page fetches the textures first and hands them to
   `render::files::preload`; `render::files::read` and `open_image` find them

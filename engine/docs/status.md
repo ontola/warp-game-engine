@@ -112,7 +112,7 @@ Owned by the foliage work; its working checklist is
   (`engine/tools/build-web.py`) as a prototype that loads and runs its
   frame loop in Chrome. The cull shader compiles there now; a drawn frame
   is not confirmed yet. No threads, gamepads, F10 menu or
-  HDR, and trees are cooked at every load
+  HDR; trees are opt-in (`?trees=1`) because they are cooked at every load
   ([Running in a browser](browser.md)). It needs 16 storage buffers per
   shader stage, which about 80 % of WebGPU devices offer.
 - The cloud container has no GPU: Mesa lavapipe runs GPU tests in software.

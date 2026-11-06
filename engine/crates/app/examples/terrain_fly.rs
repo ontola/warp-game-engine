@@ -875,28 +875,35 @@ fn diff_images(a:&str,b:&str,heat:&str)->Result<(),String> {
 #[cfg(target_arch = "wasm32")]
 const WEB_TEXTURES: [&str; 6] = ["grass_ground", "forest_leaves_02", "forest_ground_04", "rock_face_03", "gravel_ground_01", "mossy_rock"];
 
-/// In a browser: `?style=alpine&seed=2` picks the world, `?trees=0` leaves
-/// the trees out (or `#alpine-notrees`); the low profile.
+/// In a browser: `?style=alpine&seed=2` picks the world, `?trees=1` adds
+/// the trees (or `#alpine-trees`); the low profile.
 #[cfg(target_arch = "wasm32")]
 fn main() {
     app::web::install_panic_hook();
     wasm_bindgen_futures::spawn_local(async {
-        for name in WEB_TEXTURES.iter().flat_map(|t| [format!("{t}_albedo.jpg"), format!("{t}_normal.jpg")]) {
+        let names: Vec<String> = WEB_TEXTURES.iter().flat_map(|t| [format!("{t}_albedo.jpg"), format!("{t}_normal.jpg")]).collect();
+        for (i, name) in names.iter().enumerate() {
+            app::web::progress(Some(0.3 + 0.3 * i as f32 / names.len() as f32), &format!("Downloading ground textures ({}/{})", i + 1, names.len()));
             match app::web::fetch(&format!("assets/{name}")).await {
-                Ok(bytes) => render::files::preload(&name, bytes),
+                Ok(bytes) => render::files::preload(name, bytes),
                 Err(e) => app::web::log(&format!("asset {e}")),
             }
         }
         let query = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
         let param = |k: &str| query.trim_start_matches('?').split('&').find_map(|kv| kv.split_once('=').filter(|(key, _)| *key == k).map(|(_, v)| v.to_owned()));
-        // Hosts that pass only a `#name` get the same as words: `#alpine-notrees`.
+        // Hosts that pass only a `#name` get the same as words: `#alpine-trees`.
         let hash = web_sys::window().and_then(|w| w.location().hash().ok()).unwrap_or_default();
         let words: Vec<&str> = hash.trim_start_matches('#').split('-').collect();
         let seed = param("seed").and_then(|s| s.parse().ok()).unwrap_or(1);
         let style = param("style").or_else(|| words.iter().find(|w| STYLES.contains(w)).map(|w| w.to_string()))
             .and_then(|s| STYLES.iter().position(|n| *n == s)).unwrap_or(0);
-        let world = World { trees: param("trees").as_deref() != Some("0") && !words.contains(&"notrees"), branch_slots: 512, ..World::default() };
-        app::web::log(&format!("terrain fly: seed {seed}, style {}, building the world", STYLES[style]));
+        // Trees are opt-in here: without threads or the native cook cache,
+        // preparing them blocks the page for minutes.
+        let trees = param("trees").as_deref() == Some("1") || words.contains(&"trees");
+        let world = World { trees, branch_slots: 512, ..World::default() };
+        app::web::log(&format!("terrain fly: seed {seed}, style {}, trees {trees}", STYLES[style]));
+        app::web::progress(Some(0.6), if trees { "Building the world and cooking trees (minutes, the page freezes meanwhile)" } else { "Building the world" });
+        app::web::yield_to_browser().await;
         match Fly::new(seed, style, world) {
             Ok(game) => app::web::run(app::Config { title: "Terrain fly".into(), tick_hz: TICK_HZ, max_render_height: Some(720), ..Default::default() }, Box::new(game)),
             Err(e) => app::web::log(&format!("terrain fly: {e}")),
