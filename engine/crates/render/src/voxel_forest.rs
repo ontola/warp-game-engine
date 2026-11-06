@@ -1545,7 +1545,8 @@ impl VoxelRenderer {
                 let local=(grid.truncate()+(coord+glam::Vec3::splat(0.5))*grid.w).extend(1.);
                 let centre=glam::Vec3::new(rows[0].dot(local),rows[1].dot(local),rows[2].dot(local));
                 let scale=glam::Vec3::new(rows[0].x,rows[1].x,rows[2].x).length();
-                let alpha=(record[3]&65535)as f32/65535.;let half=0.688*grid.w*scale*alpha.max(0.25).sqrt();
+                // alpha/64 in 16 bits (VOLUME_SPLAT_ALPHA_RANGE); above 1 a thinned sub-pixel splat drawn larger.
+                let alpha=(record[3]&65535)as f32/65535.*64.;let half=0.688*grid.w*scale*alpha.max(0.25).sqrt();
                 let a=vp*(centre-right*half-up*half).extend(1.);let b=vp*(centre+right*half+up*half).extend(1.);
                 let diameter=if a.w<=0. || b.w<=0. {behind+=1;f32::INFINITY}else{let delta=(a.truncate()/a.w-b.truncate()/b.w).abs();(delta.x*target.size.0 as f32*0.5).max(delta.y*target.size.1 as f32*0.5)};
                 let bin=[0.5,1.,2.,4.,8.,16.,32.,64.,128.].iter().position(|&edge|diameter<=edge).unwrap_or(9);

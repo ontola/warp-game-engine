@@ -229,7 +229,7 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
         let branch=&branches[if rep[3]==0 {rep[0]} else {rep[3]-1}as usize];
         let source_work=if rep[1]==0 {crate::foliage_pages::source::source_work(scene,branch.source)?.clusters}else{0};
         if source_work>0x00ff_ffff {return Err("source cluster work exceeds node metadata range".into());}
-        node.links[3]=(node.links[3]&255&!4)|if rep[1]==0 {4}else{0}|(source_work<<8);
+        node.links[3]=(node.links[3]&3)|if rep[1]==0 {4}else{0}|(source_work<<8);
         let bound=representation_raster_work(rep,branch,&work)?;
         // Near-pixel voxels: a voxel node's spatial error is at least its cell,
         // so cells project under the pixel target. The optical footprint (second
@@ -238,6 +238,10 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
         if rep[1]==1 {
             let level=forest.levels.get((branch.volume.meta[1]+rep[2])as usize).ok_or("voxel node mip outside catalog")?;
             node.error[0]=node.error[0].max(level.origin_cell[3]);
+            // Bits 3-7: k with cell <= error.x/2^k, so the error cut can book
+            // the raster's sub-pixel thinning from the real cell, not the error.
+            let k=(node.error[0]/level.origin_cell[3].max(1e-12)).log2().floor().clamp(0.,31.)as u32;
+            node.links[3]=(node.links[3]&!(31<<3))|(k<<3);
         }
         node.error[2]=exact_work(bound[0])?;
         node.error[3]=exact_work(bound[1])?;
