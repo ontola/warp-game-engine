@@ -81,10 +81,10 @@ const SHADOW_CELL: f32 = 20.0;
 const SHADOW_RECENTRE: f32 = 4000.0;
 /// Loaded grass-cell domain, not source LOD distance. GPU chooses all cuts.
 const GRASS_RADIUS: f32 = 240.0;
-/// Grass cells are drawn this much larger than their 1.5 m step so the
-/// seams between neighbouring 3x3 patch blocks overlap: at 1.0 the gaps
-/// along every seam showed as a dark grid from above.
-const GRASS_CELL_OVERLAP: f32 = 1.15;
+/// Grass cells tile their 1.5 m step exactly. At 1.15 (against bare seams
+/// of the old 3x3 lattice) the overlap doubled the blades along every seam:
+/// lines from the air. Jittered patches (cook_meadow_cells) cover the seams.
+const GRASS_CELL_OVERLAP: f32 = 1.0;
 
 type Built = Result<(Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>), String>;
 /// A scene from the builder thread, with its renderer when the thread had
@@ -909,27 +909,20 @@ fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f3
         // it by quarter turns only. Any yaw left its corners bare, a dark hole
         // at every grid corner (Joep's regular black circles).
         let quarter=(hash*8.).floor() as u32%4;
-        // Taller, wider tufts in patches a few metres across plus some per
-        // cell (Joep: vary size and height); a cell only grows, so it can
-        // move by the half of its growth without opening a gap.
-        let patch=terrain_field::noised(Vec2::new(x,z)/6.,seed.wrapping_add(41)).x;
-        let grow=1.0+(0.24+0.15*patch+0.12*(Cell::new(i,j,seed).hash(82)-0.5)).clamp(0.1,0.42);
-        // A free turn on top of the quarter turn: the cooked block's 0.5 m
-        // patches all ran along the world axes, which read as grid lines from
-        // the air (Joep, playtest 4). A square turned by a still covers the
-        // cell while side*(cos a+sin a) <= grown side, so the turn takes
-        // what the growth allows (up to 30 degrees) and the shift the rest.
-        let max_turn=((grow/std::f32::consts::SQRT_2).min(1.0).asin()-std::f32::consts::FRAC_PI_4).clamp(0.0,0.52);
-        let turn=(Cell::new(i,j,seed).hash(85)*2.0-1.0)*max_turn;
-        let room=0.5*(grow-(turn.cos()+turn.abs().sin()))*cell;
-        let shift=Vec2::new(Cell::new(i,j,seed).hash(83)-0.5,Cell::new(i,j,seed).hash(84)-0.5)*2.0*room.max(0.0);
+        // Cells tile exactly: no growth, shift or free turn. Any overlap
+        // doubled the blades along every seam, which read as lines from the
+        // air (Joep, playtest 4); the cell's own patches are jittered at cook
+        // time (recipe_forest::cook_meadow_cells), so seams look like the
+        // inside of a cell.
+        let turn=0.0;
+        let shift=Vec2::ZERO;
         if land.clearance(x+shift.x,z+shift.y)<cell {continue;}
         // Four cooked variants, picked independently of the turn: two
         // repeated every few cells and read as a grid from above.
         let variant=((Cell::new(i,j,seed).hash(80)*GRASS_VARIANT_SEEDS.len() as f32) as usize).min(GRASS_VARIANT_SEEDS.len()-1);
         roots.push(WorldRoot {id:render::placement::instance_id(1000,i,j),placement:RootPlacement {
             pos:Vec3::new(x+shift.x,land.ground(x+shift.x,z+shift.y).pos.y-0.015,z+shift.y),up,yaw:quarter as f32*std::f32::consts::FRAC_PI_2+turn,
-            scale:GRASS_CELL_OVERLAP*grow/up.y.max(0.7),variant:variant_offset+variant}});
+            scale:GRASS_CELL_OVERLAP/up.y.max(0.7),variant:variant_offset+variant}});
     }}
     roots
 }
