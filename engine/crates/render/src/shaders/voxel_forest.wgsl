@@ -1395,7 +1395,9 @@ fn volume_sun_splats_impl(index:u32,lane:u32,damaged:bool) {
         let cell=volume_splat_cell(index,level,cell_ref.y);
         var inside=true;
         for(var p=0u;p<6u;p++) {inside=inside&&!volume_splat_outside(cell,volume_splat_header(4u+p));}
-        if inside {volume_splat_append(index,cell_ref,cell,toward,sun.w);}
+        // No area thinning into the sun maps: filtered depth turned it into grain
+        // and lost tree shadow density.
+        if inside {volume_splat_append(index,cell_ref,cell,toward,0.0);}
     }
 }
 
