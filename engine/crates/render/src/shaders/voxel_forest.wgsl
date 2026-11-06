@@ -1508,6 +1508,12 @@ fn voxel_splat_gbuffer(@builtin(global_invocation_id) id:vec3<u32>) {
     if volume_proxy(record.x) {
         exit=clamp(max(volume_interval(tree,p,sun,1e4).y,0.0)+volume_sun_texel(p)*2.0,0.0,63.0);
         own=clamp(volume_self_transmittance(tree,grid,p,sun),0.0,1.0);
+    } else {
+        // Ground cover (a volume under 1.2 m tall, e.g. a meadow cell):
+        // exit 63.75 tells shade_voxel to skip the canopy-depth crown term,
+        // which counted the tree above as its own crown.
+        let per_m=length(vec3<f32>(tree.inverse[0].y,tree.inverse[1].y,tree.inverse[2].y));
+        if (tree.bounds_max.y-tree.bounds_min.y)/max(per_m,1e-6)<1.2 {exit=63.75;}
     }
     let rough_leaf=u32(round(clamp(sample.roughness,0.0,1.0)*255.0))|(u32(round(clamp(sample.leaf_fraction,0.0,1.0)*255.0))<<8u);
     let own_exit=u32(round(own*255.0))|(u32(round(exit*4.0))<<8u);
