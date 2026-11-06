@@ -34,8 +34,9 @@ host serves it.
 ## What the browser needs
 
 - WebGPU with at least 16 storage buffers and 20 sampled textures per shader
-  stage. About 80 % of WebGPU devices offer that (Chrome on a desktop GPU
-  does); the spec's minimum is 8 storage buffers and 16 textures, and
+  stage. About 80 % of WebGPU devices offer that, but on macOS only about
+  29 %: most Macs offer 10 (Joep's M-series Mac too, 6 November 2026), so
+  the demo does not run on most Macs yet. The spec's minimum is 8 storage buffers and 16 textures, and
   Chrome's software adapter (SwiftShader) offers 10 and 16, so it cannot run
   the renderer. `KERN_WEBGPU_LIMITS=browser` or `=spec` ([renderer
   switches](renderer-switches.md)) checks this natively.
