@@ -234,9 +234,10 @@ impl Devices {
         if self.mouse_captured { self.kb.look[0] += dx; self.kb.look[1] += dy; }
     }
 
-    /// The mouse wheel over the free cursor, in lines (positive up).
+    /// The mouse wheel in lines (positive up). Also while the mouse is
+    /// captured for looking: flying games set their speed with it.
     pub fn wheel(&mut self, lines: f32) {
-        if !self.mouse_captured { self.pointer.wheel += lines; }
+        self.pointer.wheel += lines;
     }
 
     pub fn cursor(&mut self, position: Option<[f32; 2]>) {
@@ -246,7 +247,9 @@ impl Devices {
 
     pub fn pointer(&mut self) -> Pointer {
         let p = self.pointer.take();
-        if (self.keyboard_enabled || self.pointer_enabled) && !self.mouse_captured { p } else { Pointer::default() }
+        if !(self.keyboard_enabled || self.pointer_enabled) { return Pointer::default(); }
+        // A captured mouse has no cursor, but its wheel still counts.
+        if self.mouse_captured { Pointer { wheel: p.wheel, ..Pointer::default() } } else { p }
     }
 
     /// Capture transitions must not carry a menu click or old look delta into play.
