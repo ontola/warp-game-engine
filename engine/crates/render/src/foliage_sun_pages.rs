@@ -319,7 +319,7 @@ impl Resources {
         let instances=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("foliage sun static sources"),contents:data,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST});
         let wind=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("foliage sun rest pose"),size:if enabled{(sources.len().max(1)*16)as u64}else{16},usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false});
         let metadata=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("foliage sun page table"),size:(std::mem::size_of::<Header>()+MAX_PAGES*std::mem::size_of::<PageEntry>())as u64,
-            usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+            usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
         let texture=gpu.device.create_texture(&wgpu::TextureDescriptor{label:Some("foliage sun bounded pages"),size:wgpu::Extent3d{width:if enabled{PAGE_SIZE}else{1},height:if enabled{PAGE_SIZE}else{1},depth_or_array_layers:if enabled{MAX_PAGES as u32}else{1}},
             mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Depth32Float,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]});
         let empty_texture=gpu.device.create_texture(&wgpu::TextureDescriptor{label:Some("foliage sun empty array binding"),size:wgpu::Extent3d{width:1,height:1,depth_or_array_layers:1},mip_level_count:1,sample_count:1,

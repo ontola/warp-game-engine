@@ -146,6 +146,27 @@ fn solid_occluder(i: u32) -> SolidOccluder {
     let at = scene_tables[0].z + 3u * i;
     return SolidOccluder(bitcast<vec4<f32>>(scene_tables[at]), bitcast<vec4<f32>>(scene_tables[at + 1u]), scene_tables[at + 2u]);
 }
+// The world terrain hierarchy (terrain_trace.wgsl) and the foliage sun page
+// table (foliage_sun_pages.wgsl) are copied into the scene tables; vec4 2.x
+// and 2.y are where (scene_tables.rs).
+fn terrain_world() -> TerrainWorld {
+    let b = scene_tables[2].x;
+    return TerrainWorld(bitcast<vec4<f32>>(scene_tables[b]), scene_tables[b + 1u]);
+}
+fn terrain_level(i: u32) -> vec4<u32> { return scene_tables[scene_tables[2].x + 2u + i]; }
+fn terrain_info() -> vec4<u32> { return scene_tables[scene_tables[2].x + 18u]; }
+fn terrain_bounds(i: u32) -> vec2<f32> {
+    let v = scene_tables[scene_tables[2].x + 19u + (i >> 1u)];
+    return bitcast<vec2<f32>>(select(v.xy, v.zw, (i & 1u) == 1u));
+}
+fn sun_pages_world_to_light() -> mat4x4<f32> {
+    let b = scene_tables[2].y;
+    return mat4x4<f32>(bitcast<vec4<f32>>(scene_tables[b]), bitcast<vec4<f32>>(scene_tables[b + 1u]),
+        bitcast<vec4<f32>>(scene_tables[b + 2u]), bitcast<vec4<f32>>(scene_tables[b + 3u]));
+}
+fn sun_pages_geometry() -> vec4<f32> { return bitcast<vec4<f32>>(scene_tables[scene_tables[2].y + 4u]); }
+fn sun_pages_counts() -> vec4<u32> { return scene_tables[scene_tables[2].y + 5u]; }
+fn sun_page_entry(i: u32) -> vec4<i32> { return bitcast<vec4<i32>>(scene_tables[scene_tables[2].y + 6u + i]); }
 @group(1) @binding(13) var canopy_tex: texture_3d<f32>;
 @group(1) @binding(14) var canopy_sampler: sampler;
 @group(1) @binding(15) var near_shadow_tex: texture_depth_2d;
@@ -1397,7 +1418,7 @@ fn shadow_detail_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
     // Over the outer 55 % of the map: sharp tree shadows thin out into the
     // coarse distant field instead of meeting it at a line.
     let coverage_fade = sun_coverage_fade(light.shadow_view_proj, p, 0.45);
-    if coverage_fade > 0.0 && (far_sun.params.z > 0.5 || foliage_sun_pages.counts.z != 0u || gi.vol_dims.w != 0u) {
+    if coverage_fade > 0.0 && (far_sun.params.z > 0.5 || sun_pages_counts().z != 0u || gi.vol_dims.w != 0u) {
         far = mix(far, distant_sun_visibility(p,n,plane_n), coverage_fade);
     }
     if weight <= 0.0 { return far; }
