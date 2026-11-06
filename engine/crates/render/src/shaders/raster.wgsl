@@ -66,7 +66,8 @@ fn instance_at(id: u32) -> Instance {
     return compose_member(owner, instances[member_template(owner,id)]);
 }
 // Read-only scene tables in one buffer (scene_tables.rs): vec4 0 holds where
-// the materials, car materials and solid occluders start (in vec4s).
+// the materials, car materials and solid occluders start (in vec4s), vec4 1.x
+// where the aux words start.
 @group(0) @binding(5) var<storage, read> scene_tables: array<vec4<u32>>;
 fn material(i: u32) -> Material {
     let at = scene_tables[0].x + 2u * i;
@@ -76,7 +77,6 @@ fn material(i: u32) -> Material {
 }
 @group(0) @binding(6) var albedo: texture_2d_array<f32>;
 @group(0) @binding(7) var samp: sampler;
-@group(0) @binding(8) var<storage,read> aux: array<u32>;
 @group(0) @binding(10) var plant_samp: sampler;
 @group(0) @binding(11) var<storage,read> voxel_replacement: array<u32>;
 

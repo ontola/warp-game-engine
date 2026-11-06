@@ -77,7 +77,8 @@ fn instance_at(id: u32) -> Instance {
     return compose_member(owner, instances[member_template(owner,id)]);
 }
 // Read-only scene tables in one buffer (scene_tables.rs): vec4 0 holds where
-// the materials, car materials and solid occluders start (in vec4s).
+// the materials, car materials and solid occluders start (in vec4s), vec4 1.x
+// where the aux words start.
 @group(0) @binding(5) var<storage, read> scene_tables: array<vec4<u32>>;
 fn material(i: u32) -> Material {
     let at = scene_tables[0].x + 2u * i;
@@ -87,7 +88,13 @@ fn material(i: u32) -> Material {
 }
 @group(0) @binding(6) var albedo: texture_2d_array<f32>;
 @group(0) @binding(7) var samp: sampler;
-@group(0) @binding(8) var<storage, read> aux: array<u32>;
+// Scene aux words (Scene::aux) live after the tables; vec4 1.x is their start,
+// 1.y their count.
+fn aux_word(i: u32) -> u32 {
+    let v = scene_tables[scene_tables[1].x + (i >> 2u)];
+    return v[i & 3u];
+}
+fn aux_len() -> u32 { return scene_tables[1].y; }
 @group(0) @binding(9) var normal_tex: texture_2d_array<f32>;
 @group(0) @binding(10) var plant_samp: sampler;
 // Sparse persistent tyre material data: no geometry, emission or extra lights.
@@ -405,7 +412,7 @@ fn foliage(p: vec3<f32>) -> f32 {
 // Fast distance lookup in the packed 3D unsigned Euclidean distance field
 // (`dfao.rs`) stored in `aux` at offset `u32(gi.hf.w)`.
 fn dfao_byte(idx: u32, o: u32) -> f32 {
-    return f32((aux[o + 8u + (idx >> 2u)] >> ((idx & 3u) * 8u)) & 0xffu);
+    return f32((aux_word(o + 8u + (idx >> 2u)) >> ((idx & 3u) * 8u)) & 0xffu);
 }
 
 fn dfao_sample(q: vec3<f32>, o: u32, origin: vec3<f32>, inv_voxel: f32, dims: vec3<u32>, scale: f32) -> f32 {
@@ -435,7 +442,7 @@ fn dfao_visibility(p: vec3<f32>, n: vec3<f32>, refl: vec3<f32>) -> vec2<f32> {
     if o == 0u { return vec2<f32>(1.0); }
     let origin = vec3<f32>(aux_f32(o), aux_f32(o + 1u), aux_f32(o + 2u));
     let voxel = aux_f32(o + 3u);
-    let dims = vec3<u32>(aux[o + 4u], aux[o + 5u], aux[o + 6u]);
+    let dims = vec3<u32>(aux_word(o + 4u), aux_word(o + 5u), aux_word(o + 6u));
     let extent = origin + vec3<f32>(dims) * voxel;
     if any(p < origin) || any(p > extent) { return vec2<f32>(1.0); }
     let max_dist = aux_f32(o + 7u);
@@ -998,7 +1005,7 @@ fn apply_distance_fog(radiance: vec3<f32>, distance: f32, direction: vec3<f32>) 
 // Indoor irradiance probes (irradiance_volume.rs): an ambient cube per grid
 // point in `aux`. Returns irradiance and a weight, 1 inside the grid, fading
 // to 0 over the outer half cell, 0 without a volume.
-fn aux_f32(i: u32) -> f32 { return bitcast<f32>(aux[i]); }
+fn aux_f32(i: u32) -> f32 { return bitcast<f32>(aux_word(i)); }
 
 // Bullet dents (dents.rs): the aux offset of their grid, 0 for none.
 fn view_hf_dents() -> u32 { return gi.hf_dims.w; }
@@ -1009,12 +1016,12 @@ fn view_hf_dents() -> u32 { return gi.hf_dims.w; }
 // Returns (normal, albedo multiplier).
 fn rock_dents(p: vec3<f32>, face: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     let o = view_hf_dents();
-    let buckets = aux[o];
-    let index_cap = aux[o + 2u];
+    let buckets = aux_word(o);
+    let index_cap = aux_word(o + 2u);
     let cell_m = aux_f32(o + 3u);
     let c = vec3<i32>(floor(p / cell_m));
     let h = (u32(c.x) * 73856093u) ^ (u32(c.y) * 19349663u) ^ (u32(c.z) * 83492791u);
-    let entry = aux[o + 4u + (h & (buckets - 1u))];
+    let entry = aux_word(o + 4u + (h & (buckets - 1u)));
     let count = min(entry & 255u, 15u);
     if count == 0u { return vec4<f32>(normal, 1.0); }
     var nn = normal;
@@ -1022,7 +1029,7 @@ fn rock_dents(p: vec3<f32>, face: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     let list = o + 4u + buckets + (entry >> 8u);
     let dent_base = o + 4u + buckets + index_cap;
     for (var k = 0u; k < count; k++) {
-        let i = aux[list + k];
+        let i = aux_word(list + k);
         let q = dent_base + i * 4u;
         let centre = vec3<f32>(aux_f32(q), aux_f32(q + 1u), aux_f32(q + 2u));
         let r = aux_f32(q + 3u);
@@ -1071,12 +1078,12 @@ fn unpack_emission(word: u32) -> vec3<f32> {
 fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
     let o = u32(gi.params.w);
     if !FEATURE_IRRADIANCE || o == 0u { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
-    let transport = aux[o + 7u] >= 2u;
-    let sun_transport = aux[o + 7u] == 3u;
-    let visibility = aux[o + 7u] >= 1u;
+    let transport = aux_word(o + 7u) >= 2u;
+    let sun_transport = aux_word(o + 7u) == 3u;
+    let visibility = aux_word(o + 7u) >= 1u;
     let origin = vec3<f32>(aux_f32(o), aux_f32(o + 1u), aux_f32(o + 2u));
     let cell = aux_f32(o + 3u);
-    let dims = vec3<u32>(aux[o + 4u], aux[o + 5u], aux[o + 6u]);
+    let dims = vec3<u32>(aux_word(o + 4u), aux_word(o + 5u), aux_word(o + 6u));
     let f = (p - origin) / cell;
     let last = vec3<f32>(dims - vec3<u32>(1u));
     let outside = max(max(-f, f - last), vec3<f32>(0.0));
@@ -1101,7 +1108,7 @@ fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
         var value=vec3<f32>(0.0);
         var emission=vec3<f32>(0.0);
         var valid_weight=0.0;
-        let trilinear=aux[o+7u]==6u;
+        let trilinear=aux_word(o+7u)==6u;
         for(var c=0u;c<select(4u,8u,trilinear);c++) {
             if c==1u { corner[high]=1u; }
             if c==2u { corner[middle]=1u; }
@@ -1114,24 +1121,24 @@ fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
             }
             let g=vec3<u32>(cell0)+corner;
             let base=o+8u+(g.x+g.y*dims.x+g.z*dims.x*dims.y)*18u;
-            if aux[o+7u]>=4u {
-                var valid=select(1.0,0.0,(aux[base]&0x80000000u)!=0u);
-                if aux[o+7u]==5u {
+            if aux_word(o+7u)>=4u {
+                var valid=select(1.0,0.0,(aux_word(base)&0x80000000u)!=0u);
+                if aux_word(o+7u)==5u {
                     let plane=vec4<f32>(aux_f32(base+1u),aux_f32(base+2u),aux_f32(base+4u),aux_f32(base+5u));
                     // Zero plane passes through. Blend over 15 cm to avoid a hard edge.
                     valid*=smoothstep(-0.15,0.0,dot(plane.xyz,p)+plane.w);
                 }
-                if aux[o+7u]==7u {
+                if aux_word(o+7u)==7u {
                     let plane=vec4<f32>(aux_f32(base+2u),aux_f32(base+5u),aux_f32(base+8u),aux_f32(base+11u));
                     valid*=smoothstep(-0.15,0.0,dot(plane.xyz,p)+plane.w);
-                    let e=unpack_emission(aux[base+axis.x+1u])*n2.x
-                        +unpack_emission(aux[base+axis.y+1u])*n2.y
-                        +unpack_emission(aux[base+axis.z+1u])*n2.z;
+                    let e=unpack_emission(aux_word(base+axis.x+1u))*n2.x
+                        +unpack_emission(aux_word(base+axis.y+1u))*n2.y
+                        +unpack_emission(aux_word(base+axis.z+1u))*n2.z;
                     emission+=e*blend_weight*valid;
                 }
-                let v=unpack_sky_transport(aux[base+axis.x])*n2.x
-                    +unpack_sky_transport(aux[base+axis.y])*n2.y
-                    +unpack_sky_transport(aux[base+axis.z])*n2.z;
+                let v=unpack_sky_transport(aux_word(base+axis.x))*n2.x
+                    +unpack_sky_transport(aux_word(base+axis.y))*n2.y
+                    +unpack_sky_transport(aux_word(base+axis.z))*n2.z;
                 value+=v*blend_weight*valid;
                 valid_weight+=blend_weight*valid;
                 continue;
@@ -2256,9 +2263,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // Road (src/shaders/road.gdshader): uv = (across -1..1, metres
         // along); aux holds the surface per 2 m row (3 earth, 5 asphalt, 6 mud).
         var wuv = p.xz;
-        let rows = arrayLength(&aux);
+        let rows = aux_len();
         let row = u32(clamp(floor(uv.y / 2.0), 0.0, f32(max(rows, 1u) - 1u)));
-        let surf = select(0u, aux[row], rows > 0u);
+        let surf = select(0u, aux_word(row), rows > 0u);
         let a = abs(uv.x);
         let firm = 1.0 - smoothstep(0.85, 1.05, a);
         let earth = select(0.0, 1.0, surf == 3u) * firm;
@@ -2514,7 +2521,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         let cached=irradiance_sample(p+visibility_n*0.05,n);
         let room=cached.value;
         if FEATURE_IRRADIANCE && room.w>0.0 {
-          if aux[u32(gi.params.w)+7u] >= 1u {
+          if aux_word(u32(gi.params.w)+7u) >= 1u {
             let access=clamp(room.x,0.0,1.0);
             // Attenuate only sky. Preserve the existing bounce term and add
             // the cached diffuse return from static surfaces under unit sky.
