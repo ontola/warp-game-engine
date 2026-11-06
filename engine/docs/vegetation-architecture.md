@@ -11,6 +11,34 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+## 6 November (afternoon): booking, shadows on voxels, exact camera mips
+
+Mancave RTX 5070 Ti; lowland 720p --grass and render suite 1440p (no grass), real
+defaults (65536 slots, 8M splats per class), single runs under CI load.
+
+- [x] Splat bookings scale by the share of the bound inside each class's
+  frustums (state[80] marks the error cut). Safe: 0 missing records in every view.
+- [x] terrain_fly --branch-slots really defaults to 65536 (a hardcoded 4096 overrode
+  World::default()). Default splat cap per class 8M (was 4M), clamped to the device.
+- [x] Shadow consumers hold at most a quarter of the slots (state[81]); binds in
+  grass-only at 16M (shadow 45,485 -> 13,998 voxel slots, camera 1.89 px).
+- [x] Shadows never refine into source leaves: hill 45.9 -> 16.2 ms (near shadow
+  triangles 297M -> 4.6K), near 22.2 -> 15.6, forest 31.0 -> 20.5. Thin shadow
+  lines are softer.
+- [x] Voxel spatial error covers its cell; the camera raster draws exactly the
+  selected mip (selection bit 12) and books only it. Over 1 px: lowland 20.7 ->
+  18.7%, near 17.3 -> 14.2%, forest 23.0 -> 17.6%, hill 5.8 -> 2.1%.
+  Selection +0.7 ms (25-40% more records).
+- [ ] Camera scale still x7-15 at 8M: 17-43% of splats are under 0.5 px, mostly
+  far roots whose coarsest mip is already sub-pixel. Needs coarser far
+  aggregates or coverage-preserving stochastic thinning of sub-pixel cells.
+- [ ] Recipe 2360 bushes: 16-31 px cells at 12 m (both whole-root and
+  articulated) follow from that loose scale.
+- [ ] Ground-cover "wedge" is lighting, not LOD: the camera cut is identical at
+  three sun hours while the wedge changes; bare ground under it is not darker.
+  Likely grass shadowing grass at the x69 shadow scale. Not
+  KERN_GRASS_SUN_OCCLUSION.
+
 ## 6 November: error-driven cut (Nanite-style), replaces budgeted admission
 
 Handoff: [log/2026-11-06-vegetation-handoff.md](log/2026-11-06-vegetation-handoff.md).

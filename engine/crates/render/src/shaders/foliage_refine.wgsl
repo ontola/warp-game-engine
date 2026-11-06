@@ -66,7 +66,31 @@ fn work(tree:u32,node:u32,consumers:u32)->vec4<u32> {
   cost.w=(nodes[node].links.w>>8u)*views;
  }
  if (consumers&256u)==0u {cost.y=0u;}if (consumers&512u)==0u {cost.z=0u;}
+ // Error cut: book splats for the part of the bound inside each class's
+ // frustums (the raster drops cells outside them). The same fraction is
+ // recomputed for the refund within one encode, so books stay balanced.
+ if atomicLoad(&state[80])!=0u && (cost.y!=0u || cost.z!=0u) {
+  var bound=vec4<f32>(0.0);
+  if node==NONE {bound=sphere(trees[tree],nodes[trees[tree].info.x]);}else{bound=sphere(trees[tree],nodes[node]);}
+  var inside=vec2<f32>(0.0);
+  for(var i=0u;i<view.consumer_count.x;i++) {let c=view.consumers[i];
+   let k=select(1u,0u,c.pixels.z==0.0);inside[k]=max(inside[k],inside_fraction(bound,c.vp));
+  }
+  cost.y=u32(ceil(f32(cost.y)*inside.x));cost.z=u32(ceil(f32(cost.z)*inside.y));
+ }
  return cost;
+}
+// Share of a sphere's volume inside a frustum: product over the planes of
+// the cap volume x^2(3-2x), x the inside share of the diameter, never below x.
+fn inside_fraction(s:vec4<f32>,vp:mat4x4<f32>)->f32 {
+ let r=transpose(vp);
+ let planes=array<vec4<f32>,6>(r[3]+r[0],r[3]-r[0],r[3]+r[1],r[3]-r[1],r[2],r[3]-r[2]);
+ var f=1.0;
+ for(var i=0u;i<6u;i++){
+  let d=dot(planes[i],vec4<f32>(s.xyz,1.0))/max(length(planes[i].xyz),1e-20);
+  let x=clamp((d+s.w)/max(2.0*s.w,1e-20),0.0,1.0);f*=max(x,x*x*(3.0-2.0*x));
+ }
+ return f;
 }
 fn add_used(cost:vec4<u32>) {
  for(var k=0u;k<3u;k++) {
@@ -573,7 +597,10 @@ fn audit_node(tree:u32,node:u32,roles:u32) {
 // a full shadow reservation must not coarsen what the camera sees.
 fn fast_scale_word(word:u32)->f32 {let s=bitcast<f32>(atomicLoad(&state[word]));return select(1.0,s,s>=1.0 && s<1e6);}
 fn fast_scale(roles:u32)->f32 {return fast_scale_word(select(78u,79u,(roles&256u)!=0u));}
-fn fast_reserve(delta:vec4<u32>)->bool {
+// Shadow consumers may hold at most a quarter of the branch slots (state[81]
+// counts theirs): grass shadows otherwise took 78% of slots from the camera.
+fn fast_shadow_slots()->u32 {return limits().x/4u;}
+fn fast_reserve(delta:vec4<u32>,shadow:bool)->bool {
  let cap=limits();var ok=true;var taken=vec4<u32>(0u);
  for(var k=0u;k<4u;k++) {
   if delta[k]==0u {continue;}
@@ -581,16 +608,26 @@ fn fast_reserve(delta:vec4<u32>)->bool {
   let before=atomicAdd(&state[word],delta[k]);taken[k]=delta[k];
   if before>cap[k] || delta[k]>cap[k]-before {ok=false;break;}
  }
- if !ok {for(var k=0u;k<4u;k++) {if taken[k]!=0u {atomicSub(&state[select(k,69u,k==3u)],taken[k]);}}}
+ var own=false;
+ if ok && shadow && delta.x!=0u {
+  let before=atomicAdd(&state[81],delta.x);own=true;
+  if before>fast_shadow_slots() || delta.x>fast_shadow_slots()-before {ok=false;}
+ }
+ if !ok {
+  for(var k=0u;k<4u;k++) {if taken[k]!=0u {atomicSub(&state[select(k,69u,k==3u)],taken[k]);}}
+  if own {atomicSub(&state[81],delta.x);}
+ }
  return ok;
 }
-fn fast_refund(amount:vec4<u32>) {
+fn fast_refund(amount:vec4<u32>,shadow:bool) {
  for(var k=0u;k<4u;k++) {if amount[k]!=0u {atomicSub(&state[select(k,69u,k==3u)],amount[k]);}}
+ if shadow && amount.x!=0u {atomicSub(&state[81],min(amount.x,atomicLoad(&state[81])));}
 }
 fn fast_set_args(count:u32) {
  atomicStore(&state[3],count);atomicMax(&state[16],count);
  atomicStore(&state[8],(count+63u)/64u);atomicStore(&state[9],1u);atomicStore(&state[10],1u);
 }
+@compute @workgroup_size(1) fn fast_mode() {atomicStore(&state[80],1u);}
 @compute @workgroup_size(1) fn fast_begin() {fast_set_args(atomicLoad(&state[3]));atomicStore(&state[7],0u);}
 @compute @workgroup_size(64) fn fast_round(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
@@ -603,7 +640,7 @@ fn fast_set_args(count:u32) {
  if !wanted {publish(task);return;}
  var first=node_id;var end=node_id+1u;
  if task.y!=NONE {first=n.links.x;end=n.links.y;}
- var replacement=vec4<u32>(0u);var resident=true;var branching=0u;var child=first;
+ var replacement=vec4<u32>(0u);var resident=true;var branching=0u;var child=first;var source_leaves=false;
  loop {
   if child==NONE || child>=end {break;}
   let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
@@ -611,20 +648,25 @@ fn fast_set_args(count:u32) {
    resident=ready(c.links.z)&&resident;
    replacement=plus(replacement,work(task.x,selected,consumers));
    if c.links.x!=NONE {branching++;}
+   if (c.links.w&4u)!=0u {source_leaves=true;}
   }
   child=nodes[child].links.y;
  }
  // Missing pages keep the complete parent; ready() has requested them.
  if !resident {atomicAdd(&state[73],1u);publish(task);return;}
+ // Shadows stay voxel: source leaves in shadow maps cost hundreds of
+ // millions of triangles (hill view) that no slot or splat cap measures.
+ if (task.z&256u)==0u && source_leaves {publish(task);return;}
  let old=work(task.x,task.y,task.z);
- if !fast_reserve(replacement-min(replacement,old)) {atomicAdd(&state[17],1u);atomicAdd(&state[select(75u,76u,(task.z&256u)!=0u)],1u);publish(task);return;}
+ let shadow=(task.z&256u)==0u;
+ if !fast_reserve(replacement-min(replacement,old),shadow) {atomicAdd(&state[17],1u);atomicAdd(&state[select(75u,76u,(task.z&256u)!=0u)],1u);publish(task);return;}
  let offset=atomicAdd(&state[7],branching);let capacity=arrayLength(&next);
  if offset>capacity || branching>capacity-offset {
   // Queue overflow: keep the parent and blank the claimed in-range entries.
   for(var i=offset;i<min(offset+branching,capacity);i++) {next[i]=vec4<u32>(0u,NONE,0u,0u);}
-  fast_refund(replacement-min(replacement,old));atomicOr(&state[15],8u);publish(task);return;
+  fast_refund(replacement-min(replacement,old),shadow);atomicOr(&state[15],8u);publish(task);return;
  }
- fast_refund(old-min(old,replacement));
+ fast_refund(old-min(old,replacement),shadow);
  var out=offset;child=first;
  loop {
   if child==NONE || child>=end {break;}
@@ -647,7 +689,8 @@ fn fast_set_args(count:u32) {
  let used=used_now();let cap=max(limits(),vec4<u32>(1u));
  let f=vec4<f32>(used)/vec4<f32>(cap);
  // Slots and source work are shared; splats are per class (y camera, z shadow).
- let fills=vec2<f32>(max(max(f.x,f.y),f.w),max(max(f.x,f.z),f.w));
+ let shadow_slots=f32(atomicLoad(&state[81]))/f32(max(fast_shadow_slots(),1u));
+ let fills=vec2<f32>(max(max(f.x,f.y),f.w),max(max(shadow_slots,f.z),f.w));
  for(var c=0u;c<2u;c++) {
   let word=79u-c;var s=fast_scale_word(word);
   let blocked=atomicLoad(&state[76u-c])!=0u;

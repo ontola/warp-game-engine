@@ -145,7 +145,7 @@ fn materialize(@builtin(global_invocation_id) id:vec3<u32>) {
   volume.high.w=appearance_seed(slot.key.x,rep.x);
   let roles=slot.history.w&768u;
   let visibility=select(1024u,0u,(roles&256u)!=0u)|select(2048u,0u,(roles&512u)!=0u);
-  volumes[i]=volume;choices[i]=select(3u,select(0u,1u|(rep.z<<2u)|512u,rep.y==1u),(roles&256u)!=0u)|visibility;
+  volumes[i]=volume;choices[i]=select(3u,select(0u,1u|(rep.z<<2u)|512u|4096u,rep.y==1u),(roles&256u)!=0u)|visibility;
   // Preserve the independently selected shadow representation. Source
   // leaves cast source geometry; replacing them with adaptive voxels here
   // violates the selected error and unnecessarily couples source residency
