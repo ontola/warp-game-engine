@@ -161,8 +161,8 @@ impl Refiner {
         self.dispatch(enc,&self.bind(gpu,s,0),12,Some(s.count.max(s.dimensions().0).div_ceil(64)),0);
     }
     pub fn encode(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,s:&Selector) {
-        // state[76..80] persists across encodes (state[79]: error-cut scale).
-        let binds=[self.bind(gpu,s,0),self.bind(gpu,s,1)];enc.clear_buffer(&self.state,0,Some(76*4));
+        // state[78..80] persists across encodes (error-cut scales: 79 camera, 78 shadow).
+        let binds=[self.bind(gpu,s,0),self.bind(gpu,s,1)];enc.clear_buffer(&self.state,0,Some(78*4));
         self.dispatch(enc,&binds[0],0,Some(s.count.div_ceil(256)),0);
         self.dispatch(enc,&binds[0],1,Some(1),0);
         self.dispatch(enc,&binds[0],16,Some(s.count.div_ceil(64)),0);

@@ -569,7 +569,10 @@ fn audit_node(tree:u32,node:u32,roles:u32) {
 // safety caps reserved with atomics; when they bind, fast_adapt loosens the
 // error target for the next frame (state[79], kept across encodes) so the
 // caps stay slack and the cut does not depend on dispatch order.
-fn fast_scale()->f32 {let s=bitcast<f32>(atomicLoad(&state[79]));return select(1.0,s,s>=1.0 && s<1e6);}
+// Camera and shadow consumers adapt separately (state[79] camera, [78] shadow):
+// a full shadow reservation must not coarsen what the camera sees.
+fn fast_scale_word(word:u32)->f32 {let s=bitcast<f32>(atomicLoad(&state[word]));return select(1.0,s,s>=1.0 && s<1e6);}
+fn fast_scale(roles:u32)->f32 {return fast_scale_word(select(78u,79u,(roles&256u)!=0u));}
 fn fast_reserve(delta:vec4<u32>)->bool {
  let cap=limits();var ok=true;var taken=vec4<u32>(0u);
  for(var k=0u;k<4u;k++) {
@@ -591,8 +594,8 @@ fn fast_set_args(count:u32) {
 @compute @workgroup_size(1) fn fast_begin() {fast_set_args(atomicLoad(&state[3]));atomicStore(&state[7],0u);}
 @compute @workgroup_size(64) fn fast_round(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
- cut_scale=fast_scale();
  let task=current[at];if task.z==0u {return;}
+ cut_scale=fast_scale(task.z);
  let t=trees[task.x];let node_id=select(task.y,t.info.x,task.y==NONE);let n=nodes[node_id];
  atomicAdd(&counters[4],1u);
  let scale=projected(t,n,task.z);
@@ -614,7 +617,7 @@ fn fast_set_args(count:u32) {
  // Missing pages keep the complete parent; ready() has requested them.
  if !resident {atomicAdd(&state[73],1u);publish(task);return;}
  let old=work(task.x,task.y,task.z);
- if !fast_reserve(replacement-min(replacement,old)) {atomicAdd(&state[17],1u);publish(task);return;}
+ if !fast_reserve(replacement-min(replacement,old)) {atomicAdd(&state[17],1u);atomicAdd(&state[select(75u,76u,(task.z&256u)!=0u)],1u);publish(task);return;}
  let offset=atomicAdd(&state[7],branching);let capacity=arrayLength(&next);
  if offset>capacity || branching>capacity-offset {
   // Queue overflow: keep the parent and blank the claimed in-range entries.
@@ -642,10 +645,15 @@ fn fast_set_args(count:u32) {
 // when a cap refused work or is nearly full, refine back slowly when slack.
 @compute @workgroup_size(1) fn fast_adapt() {
  let used=used_now();let cap=max(limits(),vec4<u32>(1u));
- var fill=0.0;for(var k=0u;k<4u;k++) {fill=max(fill,f32(used[k])/f32(cap[k]));}
- var s=fast_scale();
- if atomicLoad(&state[17])!=0u || fill>0.92 {s=s*1.1;}
- else if fill<0.75 {s=max(1.0,s/1.03);}
- atomicStore(&state[79],bitcast<u32>(min(s,1e5)));
- atomicStore(&state[74],bitcast<u32>(fill));
+ let f=vec4<f32>(used)/vec4<f32>(cap);
+ // Slots and source work are shared; splats are per class (y camera, z shadow).
+ let fills=vec2<f32>(max(max(f.x,f.y),f.w),max(max(f.x,f.z),f.w));
+ for(var c=0u;c<2u;c++) {
+  let word=79u-c;var s=fast_scale_word(word);
+  let blocked=atomicLoad(&state[76u-c])!=0u;
+  if blocked || fills[c]>0.92 {s=s*1.06;}
+  else if fills[c]<0.85 {s=max(1.0,s/1.02);}
+  atomicStore(&state[word],bitcast<u32>(min(s,1e5)));
+ }
+ atomicStore(&state[74],bitcast<u32>(fills.x));atomicStore(&state[77],bitcast<u32>(fills.y));
 }
