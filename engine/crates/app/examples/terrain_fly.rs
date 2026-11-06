@@ -873,7 +873,9 @@ fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f3
         // alpine rock mask jumps 0 -> 1 across slope steps: refusing grass
         // there drew bare bands along the contours on 25 degree slopes.
         let smooth=|v:f32,a:f32,b:f32|((v-a)/(b-a)).clamp(0.,1.);
-        let rock=s.rock*(1.-0.85*smooth(up.y,0.8,0.95));
+        // s.up is the large-scale slope (the HUD's): the 1 m differences above
+        // also see the rock's fine ledges, 45-77 degrees on a 25 degree slope.
+        let rock=s.rock*(1.-0.85*smooth(s.up,0.8,0.95));
         let cut=Cell::new(i,j,seed).hash(78);
         if cut<smooth(rock,0.3,0.8) || cut<smooth(s.snow,0.15,0.45) {continue;}
         let hash=Cell::new(i,j,seed).hash(77);
