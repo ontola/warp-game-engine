@@ -47,6 +47,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [Quest lightweight graphics, 1 November](quest-optimization-2026-11-01.md)
 - [terrain_fly in a browser (wasm, WebGPU): feasibility, 5 November](2026-11-05-browser-feasibility.md)
 - [Shading without local lights, 5 November](2026-11-05-shade-without-local-lights.md)
+- [Land shading costs, 6 November](2026-11-06-land-shading-costs.md)
 
 ## Traversal and work avoidance
 
