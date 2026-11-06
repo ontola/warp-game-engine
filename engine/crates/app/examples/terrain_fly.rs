@@ -743,9 +743,9 @@ fn recipe_spruces(scene:&mut Scene,lands:&render::biome::Lands,season:f32,world:
         let mib=value[1].parse::<u32>().map_err(|_|"--voxel-cache-mib needs a positive integer")?;
         let bytes=mib.checked_mul(1024*1024).filter(|n|*n>0).ok_or("voxel cache budget overflow/zero")?;
         // Cells are 128 bytes packed; grow the index and splat arenas with them
-        // (the defaults are sized for 64 MiB of cells).
+        // (the defaults are sized for 256 MiB of cells).
         let budget=&mut scene.gpu_forest.as_mut().unwrap().page_budget;
-        let scale=|n:u32|(u64::from(n)*u64::from(mib)/64).clamp(1,u64::from(u32::MAX))as u32;
+        let scale=|n:u32|(u64::from(n)*u64::from(mib)/256).clamp(1,u64::from(u32::MAX))as u32;
         budget.cells=bytes/128;budget.index_words=scale(budget.index_words);budget.splats=scale(budget.splats);
     }
     if let Some(value)=args.windows(2).find(|a|a[0]=="--source-cache-mib") {
