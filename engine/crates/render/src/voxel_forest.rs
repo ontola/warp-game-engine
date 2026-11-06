@@ -1272,11 +1272,12 @@ impl VoxelRenderer {
         // shade lights them (Rest then writes their surface, no composite).
         scene_targets: Option<(&wgpu::TextureView, &wgpu::TextureView)>,
     ) -> Result<(),String> {
-        // Splat, pyramid and second-pass times are written on the encoder
-        // between passes; without that feature (Apple GPUs) Metal rejects
-        // the whole submit, so those three go untimed there.
-        let mut times = times;
-        if !gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) { times[0] = None; times[5] = None; times[6] = None; }
+        // Splat, pyramid and second-pass times start on the encoder, between
+        // passes. Without that feature (Apple GPUs) Metal rejects the whole
+        // submit, so there they are written by the passes themselves and
+        // leave out the tree selection before them. A reserved pair left
+        // unwritten would read a stale timestamp forever.
+        let encoder_times = gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
         let temporal_guard=self.temporal.lock().unwrap();
         let temporal_pipelines=temporal.as_ref().map(|_|temporal_guard.as_ref().expect("prepare_temporal before voxel render"));
         let mut targets = self.targets.lock().unwrap();
@@ -1314,13 +1315,13 @@ impl VoxelRenderer {
             encoder.clear_buffer(&splat.draw, DRAW_OFFSET, Some(16));
             let selection=temporal_pipelines.and_then(|p|p.selection.as_ref()).or(self.selection.as_ref());
             if let Some(p)=selection {
-                if let Some((q,i))=times[0] {encoder.write_timestamp(q,i);}
+                if let Some((q,i))=times[0].filter(|_|encoder_times) {encoder.write_timestamp(q,i);}
                 self.select_splat_trees(encoder,target,scene,view,&p[0]);
             }
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel splats"),
                     timestamp_writes: times[0].map(|(query_set, i)| wgpu::ComputePassTimestampWrites {
-                        query_set, beginning_of_pass_write_index: if selection.is_some() { None } else { Some(i) }, end_of_pass_write_index: Some(i + 1) }) });
+                        query_set, beginning_of_pass_write_index: if selection.is_some() && encoder_times { None } else { Some(i) }, end_of_pass_write_index: Some(i + 1) }) });
                 pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind, &[]);
                 pass.set_pipeline(splats);
                 // One workgroup per tree.
@@ -1331,12 +1332,12 @@ impl VoxelRenderer {
                 if phase == 1 {
                     let pyramid = self.brick_hzb.as_ref().unwrap();
                     pyramid.encode(gpu, encoder, scene_targets.map_or(&splat.depth, |(_, d)| d), target.hzb.as_ref().unwrap(), times[5]);
-                    if let Some((q, i)) = times[5] { encoder.write_timestamp(q, i + 1); }
-                    if let Some((q,i))=times[6] {encoder.write_timestamp(q,i);}
+                    if let Some((q, i)) = times[5].filter(|_|encoder_times) { encoder.write_timestamp(q, i + 1); }
+                    if let Some((q,i))=times[6].filter(|_|encoder_times) {encoder.write_timestamp(q,i);}
                     self.select_splat_trees(encoder,target,scene,view,&selection.unwrap()[1]);
                     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                         label: Some("voxel brick second pass"), timestamp_writes: times[6].map(|(query_set,i)| wgpu::ComputePassTimestampWrites {
-                            query_set, beginning_of_pass_write_index:None,end_of_pass_write_index:Some(i+1) }) });
+                            query_set, beginning_of_pass_write_index:(!encoder_times).then_some(i),end_of_pass_write_index:Some(i+1) }) });
                     pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind, &[]);
                     pass.set_pipeline(temporal_pipelines.and_then(|p|p.second.as_ref()).or(self.second.as_ref()).unwrap());
                     pass.dispatch_workgroups_indirect(&target.indirect,0);

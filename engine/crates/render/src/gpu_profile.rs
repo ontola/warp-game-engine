@@ -289,8 +289,13 @@ pub(crate) fn decode_timestamps(context: Context, specs: &[PassSpec], query_coun
         // Passes can overlap on some backends. Do not infer serialized GPU
         // work from their order, but reject an internally backwards interval.
         if end < start { return Err(()); }
-        first = first.min(start);
-        last = last.max(end);
+        // A pair left at zero was never written (some Metal passes skip
+        // encoder-level timestamps). It must not pull the span back to the
+        // GPU clock's origin: that read as days of covered time.
+        if end != 0 {
+            first = first.min(start);
+            last = last.max(end);
+        }
         let ms = (end - start) as f64 * scale;
         if !ms.is_finite() { return Err(()); }
         if spec.parent.is_none() {
@@ -301,18 +306,20 @@ pub(crate) fn decode_timestamps(context: Context, specs: &[PassSpec], query_coun
             }
         }
     }
+    if last == 0 { first = 0; }
     let covered_interval_ms = (last - first) as f64 * scale;
     if !covered_interval_ms.is_finite() || !instrumented_gpu_ms.is_finite() { return Err(()); }
     // Subtract the integer origin before converting to f64. Device uptime
     // therefore cannot erase short intervals through absolute float rounding.
     let intervals: Vec<_> = specs.iter().map(|spec| GpuPassInterval {
-        name: spec.name, start_ms: (timestamps[spec.queries[0] as usize] - first) as f64 * scale,
-        end_ms: (timestamps[spec.queries[1] as usize] - first) as f64 * scale,
+        name: spec.name, start_ms: timestamps[spec.queries[0] as usize].saturating_sub(first) as f64 * scale,
+        end_ms: timestamps[spec.queries[1] as usize].saturating_sub(first) as f64 * scale,
         parent: spec.parent, view_index: spec.view_index,
     }).collect();
     for interval in &intervals {
         if let Some(parent) = interval.parent {
             let scope = &intervals[parent];
+            if interval.end_ms == 0.0 || scope.end_ms == 0.0 { continue; }
             if scope.start_ms > interval.start_ms || scope.end_ms < interval.end_ms { return Err(()); }
         }
     }
@@ -371,6 +378,16 @@ mod tests {
         assert!(measured.intervals.iter().all(|i| i.parent.is_none() && i.view_index == Some(0)));
         assert!(!measured.gpu_ms.iter().any(|(name, _)| name.contains("aggregate")));
         assert!(measured.view_pass_ms()[0].1.is_empty(), "no fabricated shared work");
+    }
+    #[test]
+    fn unwritten_pairs_do_not_stretch_the_covered_span() {
+        // A Metal pass without encoder timestamps leaves its pair at zero.
+        let p = pending(&["sky", "skipped", "shade"]);
+        let up = 412_000_000_000_000u64; // a GPU clock days after boot
+        let sample = decode(&p, &[up, up + 1000, 0, 0, up + 1000, up + 4000]).unwrap();
+        assert_eq!(sample.covered_interval_ms, 4000.0 * 2.0 / 1e6);
+        assert_eq!(sample.covered_union_ms, 4000.0 * 2.0 / 1e6);
+        assert_eq!((sample.intervals[1].start_ms, sample.intervals[1].end_ms), (0.0, 0.0));
     }
     #[test]
     fn submitted_view_tags_preserve_shared_work_and_survive_next_frame_layout() {

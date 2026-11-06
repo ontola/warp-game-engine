@@ -865,6 +865,16 @@ pub struct Renderer {
     /// Lighting::debug asks for a component view.
     diagnostic_constants: Vec<(&'static str, f64)>,
     shade_diagnostic: std::sync::OnceLock<(wgpu::ComputePipeline, Option<wgpu::ComputePipeline>)>,
+    /// shade and shade terrain without spot and local lights
+    /// (FEATURE_LOCAL_LIGHTS off), built the first frame that has none: about
+    /// 0.5 ms less shading at 2296x1440 on an M5 Pro (fewer registers).
+    /// Shade pipelines without the local light loop, built on a worker thread
+    /// the first time a frame has no lights; frames use the full pipelines
+    /// until they are ready, so a cold shader compile never stalls a frame.
+    /// Procedural terrain style blocks with whether their pipelines kept
+    /// region ground and roads (update_materials must not turn either on).
+    field_features: (Vec<usize>, bool, bool),
+    shade_unlit: std::sync::Mutex<Option<std::sync::Arc<std::sync::OnceLock<(wgpu::ComputePipeline, Option<wgpu::ComputePipeline>)>>>>,
     /// Coarse terrain material (shade.wgsl terrain_coarse; KERN_TERRAIN_COARSE=0
     /// turns it off), its half-resolution target per view, the stand-in
     /// bound while it is written, and its output layout.
@@ -2137,6 +2147,8 @@ impl Renderer {
             terrain_shade,
             diagnostic_constants,
             shade_diagnostic: std::sync::OnceLock::new(),
+            field_features: (crate::shade_features::field_style_blocks(scene), shade_features.field_regions, shade_features.field_roads),
+            shade_unlit: std::sync::Mutex::new(None),
             voxel_surface_fallback: gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no voxel surface"),
                 size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
                 dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Uint,
@@ -2944,7 +2956,7 @@ impl Renderer {
         let rebuilt = shade.is_some() || transparency.is_some() || grass.is_some() || far_grass.is_some() || voxel.is_some();
         snapshot.ensure_current()?;
         if !rebuilt { return Ok(false); }
-        if let Some((pipeline, classify)) = shade { self.shade = pipeline; self.shade_classify = classify; self.shade_text = sources.shade; }
+        if let Some((pipeline, classify)) = shade { self.shade = pipeline; self.shade_classify = classify; self.shade_text = sources.shade; *self.shade_unlit.lock().unwrap() = None; }
         if let Some(reload) = transparency { self.transparency.as_mut().unwrap().commit_reload(reload); }
         if let Some(reload) = grass { self.grass.as_mut().unwrap().commit_reload(reload); }
         if let Some(reload) = far_grass { self.far_grass.as_mut().unwrap().commit_reload(reload); }
@@ -3437,6 +3449,14 @@ impl Renderer {
     /// scene (which materials are drawn blended) stays as built.
     pub fn update_materials(&self, gpu: &Gpu, first: usize, materials: &[crate::scene::Material]) -> Result<(), String> {
         if first.checked_add(materials.len()).is_none_or(|end| end > self.material_count) { return Err("material update exceeds uploaded scene".into()); }
+        let (blocks, regions, roads) = &self.field_features;
+        for (i, m) in materials.iter().enumerate() {
+            let at = first + i;
+            if (!regions && m.roughness >= 0.5 && blocks.iter().any(|b| b + crate::shade_features::REGION_WORD == at))
+                || (!roads && m.metal >= 0.5 && blocks.iter().any(|b| b + crate::shade_features::ROAD_WORD == at)) {
+                return Err("material update adds terrain regions or roads the scene was built without".into());
+            }
+        }
         gpu.queue.write_buffer(&self.materials, (first * std::mem::size_of::<crate::scene::Material>()) as u64, bytemuck::cast_slice(materials));
         Ok(())
     }
@@ -4123,7 +4143,10 @@ impl Renderer {
                 seed.pyramid.encode(gpu,&mut enc,&t.depth,&t.pyramid,time);
             }
             let current=seed_targets.iter().take(views.len()).enumerate().map(|(i,t)|crate::foliage_seed_visibility::CameraDepth {projection:part_animation_views[i].view_projection,pyramid:&t.pyramid.view}).collect::<Vec<_>>();
-            let time=self.query.as_ref().map(|(qs,_,_)| {let first=timestamp_pair(&mut ts);timestamp_pair(&mut ts);timestamp_pair(&mut ts);(qs,first)});
+            // Encoder-level timestamps: GPUs without them (Apple) leave these
+            // untimed, so reserve no pairs that would keep stale values.
+            let time=self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS))
+                .map(|(qs,_,_)| {let first=timestamp_pair(&mut ts);timestamp_pair(&mut ts);timestamp_pair(&mut ts);(qs,first)});
             if time.is_some(){names.extend(["GPU forest selection residency","GPU forest shared poses","GPU forest materialize"]);}
             // Cameras were appended first; all following consumers are shadow
             // maps (including perspective headlights). Do not infer roles from VP.
@@ -4651,13 +4674,41 @@ impl Renderer {
                     "SHADE_CLASS" => (k, 1.0), _ => (k, v) }).collect();
                 (make(&self.diagnostic_constants), self.terrain_shade.as_ref().map(|_| make(&terrain)))
             }));
+            // No spot or local light this frame: the pipelines without them.
+            let lights=!self.headlight_state.lock().unwrap().is_empty() || !self.local_light_state.lock().unwrap().is_empty();
+            let unlit_cell=(!lights && !self.simple_lighting && std::env::var("KERN_SHADE_UNLIT").as_deref()!=Ok("0")).then(|| self.shade_unlit.lock().unwrap().get_or_insert_with(|| {
+                let cell = std::sync::Arc::new(std::sync::OnceLock::new());
+                let unlit=[("SHADE_DIAGNOSTICS",0.0),("FEATURE_LOCAL_LIGHTS",0.0)];
+                let rest: Vec<(&'static str, f64)> = self.diagnostic_constants.iter().copied().chain(unlit).collect();
+                let terrain: Vec<(&'static str, f64)> = self.diagnostic_constants.iter().map(|&(k, v)| match k {
+                    "FEATURE_CARS" | "FEATURE_FOLIAGE" | "FEATURE_PROCEDURAL" | "FEATURE_GRASS" => (k, 0.0), "FEATURE_TERRAIN" => (k, 1.0),
+                    "SHADE_CLASS" => (k, 1.0), _ => (k, v) }).chain(unlit).collect();
+                let (device, layout, cache, text, with_terrain, out) = (gpu.device.clone(), self.shade_pl.clone(), gpu.pipeline_cache().cloned(),
+                    self.shade_text.clone(), self.terrain_shade.is_some(), cell.clone());
+                let build = move || {
+                    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade without local lights"),
+                        source: wgpu::ShaderSource::Wgsl(text.as_str().into()) });
+                    let make = |label: &'static str, constants: &[(&str, f64)]| device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some(label), layout: Some(&layout), module: &module, entry_point: Some("shade"),
+                        compilation_options: wgpu::PipelineCompilationOptions { constants, ..Default::default() }, cache: cache.as_ref() });
+                    let _ = out.set((make("shade", &rest), with_terrain.then(|| make("shade terrain", &terrain))));
+                };
+                // Without a thread the cell stays empty and frames keep the full pipelines.
+                #[cfg(not(target_arch = "wasm32"))]
+                let _ = std::thread::Builder::new().name("shade unlit".into()).spawn(build);
+                // A browser has no threads and its GPU objects aren't Send: build here.
+                #[cfg(target_arch = "wasm32")]
+                build();
+                cell
+            }).clone());
+            let unlit = unlit_cell.as_ref().and_then(|c| c.get());
             // Terrain and voxels first: glossy surfaces in the main pass
             // reflect the already lit frame around them.
             if let Some(terrain) = &self.terrain_shade {
-                passes.push(("shade terrain", diagnostic.and_then(|d| d.1.as_ref()).unwrap_or(terrain), vec![&self.scene_bind, &shade_bind]));
+                passes.push(("shade terrain", diagnostic.and_then(|d| d.1.as_ref()).or(unlit.and_then(|u| u.1.as_ref())).unwrap_or(terrain), vec![&self.scene_bind, &shade_bind]));
             }
             if let Some(voxels) = &self.voxel_pass { passes.push(("shade voxels", voxels, vec![&self.scene_bind, &shade_bind])); }
-            passes.push(("shade", diagnostic.map_or(&self.shade, |d| &d.0), vec![&self.scene_bind, &shade_bind]));
+            passes.push(("shade", diagnostic.map(|d| &d.0).or(unlit.map(|u| &u.0)).unwrap_or(&self.shade), vec![&self.scene_bind, &shade_bind]));
             let mut far_motion_layer = None;
             for (label, pipe, bindings) in passes {
                 let t = self.query.as_ref().map(|(qs, _, _)| {
