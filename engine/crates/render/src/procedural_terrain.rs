@@ -974,8 +974,9 @@ impl TerrainRenderer {
         pending.extend(jobs);
     }
 
-    /// Build queued patches. Runs before every view and shadow pass.
-    pub fn encode(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder) -> bool {
+    /// Build queued patches. Runs before every view and shadow pass. With
+    /// `time` the pass writes its begin and end timestamps at that pair.
+    pub fn encode(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, time: Option<(&wgpu::QuerySet, u32)>) -> bool {
         let jobs = std::mem::take(&mut *self.pending.lock().unwrap());
         if jobs.is_empty() { return false; }
         let mut held = self.jobs.lock().unwrap();
@@ -989,7 +990,8 @@ impl TerrainRenderer {
         let params = [self.spec.first_vertex, self.spec.first_cluster, jobs.len() as u32, self.spec.seed];
         gpu.queue.write_buffer(&self.params, 0, bytemuck::cast_slice(&params));
         gpu.queue.write_buffer(&self.params, 16, bytemuck::bytes_of(&self.spec.style));
-        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("procedural terrain"), timestamp_writes: None });
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("procedural terrain"),
+            timestamp_writes: time.map(|(query_set, i)| wgpu::ComputePassTimestampWrites { query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &held.1, &[]);
         let n = jobs.len() as u32;

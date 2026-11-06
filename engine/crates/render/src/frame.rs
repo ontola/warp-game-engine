@@ -99,8 +99,14 @@ fn near_shadow_lod() -> f32 {
 const TIMESTAMP_CAPACITY: u32 = 512; // includes per-view aggregate depth/material/illumination
 
 /// Keep the grass rejection in culling identical to its opaque raster path.
-pub(crate) fn cull_source() -> String {
-    format!("{}\n{}\n{}\n{}\n{}", concat!(include_str!("shaders/virtual_member.wgsl"), "\n", include_str!("shaders/tree_history_key.wgsl"), "\n", include_str!("shaders/grass_common.wgsl")), concat!(include_str!("shaders/cull.wgsl"), "\n", include_str!("shaders/shadow_damage_query.wgsl")), include_str!("shaders/cluster_traversal.wgsl"), crate::receiver_shadow_demand::cull_source(),crate::source_replacement::query_source())
+#[cfg(test)]
+pub(crate) fn cull_source() -> String { cull_source_with(true) }
+
+/// Without receiver demand (opt-in, KERN_RECEIVER_SHADOW_DEMAND=1) cull
+/// keeps every caster and needs no binding 14, which keeps it at the 8
+/// storage buffers per stage of the engine rule (browser.md).
+pub(crate) fn cull_source_with(receiver_demand: bool) -> String {
+    format!("{}\n{}\n{}\n{}\n{}", concat!(include_str!("shaders/virtual_member.wgsl"), "\n", include_str!("shaders/tree_history_key.wgsl"), "\n", include_str!("shaders/grass_common.wgsl")), concat!(include_str!("shaders/cull.wgsl"), "\n", include_str!("shaders/shadow_damage_query.wgsl")), include_str!("shaders/cluster_traversal.wgsl"), crate::receiver_shadow_demand::cull_source(receiver_demand),crate::source_replacement::query_source())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1418,7 +1424,7 @@ impl Renderer {
             bytemuck::cast_slice(&scene.cluster_verts), bytemuck::cast_slice(&scene.tris), wgpu::BufferUsages::COPY_SRC));
         let clusters = source.map(|s|s.clusters.clone()).unwrap_or_else(||buffer(gpu, "clusters", if scene.clusters.is_empty() {&[0u8;std::mem::size_of::<crate::cluster::GpuCluster>()]} else {bytemuck::cast_slice(&scene.clusters)}, u | wgpu::BufferUsages::COPY_SRC));
         let instances = buffer(gpu, "instances", if scene.instances.is_empty() {&[0u8;std::mem::size_of::<crate::scene::GpuInstance>()]} else {bytemuck::cast_slice(&scene.instances)}, u | wgpu::BufferUsages::COPY_SRC);
-        let materials = buffer(gpu, "materials", if scene.materials.is_empty() {&[0u8;std::mem::size_of::<crate::scene::Material>()]} else {bytemuck::cast_slice(&scene.materials)}, u);
+        let materials = buffer(gpu, "materials", if scene.materials.is_empty() {&[0u8;std::mem::size_of::<crate::scene::Material>()]} else {bytemuck::cast_slice(&scene.materials)}, u | wgpu::BufferUsages::COPY_SRC);
         // Never empty: a binding needs at least one element.
         let car_list = if scene.car_materials.is_empty() { vec![crate::scene::GpuCarMaterial::default()] } else { scene.car_materials.clone() };
         let solids = scene.solid_occluders();
@@ -1426,7 +1432,7 @@ impl Renderer {
         startup.mark("geometry_material_buffers");
         crate::foliage_representation::validate_bindings(scene).expect("invalid foliage representation bindings");
         let replacement_words = crate::voxel_forest::replacement_materials(scene);
-        let voxel_replacement = buffer(gpu, "voxel crown replacement", bytemuck::cast_slice(&replacement_words), u);
+        let voxel_replacement = buffer(gpu, "voxel crown replacement", bytemuck::cast_slice(&replacement_words), u | wgpu::BufferUsages::COPY_SRC);
         let wind = crate::wind::WindRenderer::new(gpu, &instances, &voxel_replacement, scene.instances.len())
             .expect("scene exceeds bounded wind storage");
         startup.mark("foliage_validation_wind_resources");
@@ -1671,7 +1677,7 @@ impl Renderer {
             .filter(|(binding,_)|crate::cull_groups::SCENE_BINDINGS.contains(binding)).collect();
         let cull_scene_layout=layout(gpu,"cull scene",&cull_scene_bindings);
         let make_cull_bind=|instance_data:&wgpu::Buffer,wind_data:&wgpu::Buffer|bind(gpu,&cull_scene_layout,&[
-            (3,clusters.as_entire_binding()),(4,instance_data.as_entire_binding()),(5,scene_tables.buffer.as_entire_binding()),
+            (3,clusters.as_entire_binding()),(4,instance_data.as_entire_binding()),
             (12,wind_data.as_entire_binding())]);
         let cull_scene_bind=make_cull_bind(&instances,wind.buffer());
         let far_cull_scene_bind=make_cull_bind(&far_sun.instances,&far_sun.wind);
@@ -1703,7 +1709,8 @@ impl Renderer {
         ]);
         let view_cull_layout = layout(gpu, "view cull", &[(0, uniform()), (1, storage(false)), (2, storage(false)), (5, storage(true)), (6, uniform()),
             (7,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
-            (8,storage(true)),(10,storage(false)),(14,storage(false)),(15,uniform())]);
+            (8,storage(true)),(10,storage(false)),(14,storage(false)),(15,uniform())].into_iter()
+            .filter(|(binding,_)|*binding!=14||receiver_demand.enabled()).collect::<Vec<_>>());
         // Only raster's vertex stage reads the visible list, draws and foliage
         // choices; fragments would otherwise count them against the 8 storage
         // buffers per stage beside the scene's.
@@ -1767,7 +1774,7 @@ impl Renderer {
         );
         let module = |name: &str, src: &str| gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(name), source: wgpu::ShaderSource::Wgsl(src.into()) });
         startup.mark("postprocess_layouts");
-        let cull_mod = module("cull", &cull_source());
+        let cull_mod = module("cull", &cull_source_with(receiver_demand.enabled()));
         startup.mark("cull_shader_module");
         let raster_mod = module("raster", &crate::grass::raster_source());
         startup.mark("raster_shader_module");
@@ -1850,7 +1857,7 @@ impl Renderer {
         let split_sun_cull = static_sun.as_ref().map(|_| (cull_compute("cull_sun_static"), cull_compute("cull_sun_dynamic")));
         let sun_owner_buffer = static_sun.as_ref().map(|s| s.owner_buffer().clone()).unwrap_or_else(||
             buffer(gpu, "disabled static sun owners", bytemuck::cast_slice(&[0u32,0,4,4]), wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC));
-        let cull_tables = crate::cull_tables::CullTables::new(gpu, [&cluster_traversal.buffer, &instance_groups.owners, &sun_owner_buffer, &instance_groups.groups]);
+        let cull_tables = crate::cull_tables::CullTables::new(gpu, [&cluster_traversal.buffer, &instance_groups.owners, &sun_owner_buffer, &instance_groups.groups, &materials, &voxel_replacement]);
         let compact_cull = (std::env::var("KERN_INSTANCE_BROADPHASE").as_deref() == Ok("1"))
             .then(|| (cull_compute("instance_broadphase"), cull_compute("instance_dispatch"), cull_compute("cull_compacted")));
         let spatial_cull=instance_groups.enabled.then(||(cull_compute("spatial_select"),cull_compute("spatial_dispatch"),cull_compute("cull_spatial")));
@@ -2436,6 +2443,12 @@ impl Renderer {
             view_index:view,input_size:target.input_size,owners:pixels},owners.clone()))
     }
 
+    /// The view cull entries, without receiver demand's when it is off
+    /// (cull_source_with).
+    fn cull_view_entries<'a>(&self, entries: [(u32, wgpu::BindingResource<'a>); 10]) -> Vec<(u32, wgpu::BindingResource<'a>)> {
+        entries.into_iter().filter(|(binding, _)| *binding != 14 || self.receiver_demand.enabled()).collect()
+    }
+
     fn view_targets_capacity(&self, gpu: &Gpu, label: &str, capacity: u32,camera:bool,light_groups:bool) -> ViewTargets {
         let mut choices=crate::voxel_forest::default_selection();
         if let Some((forest,_))=&self.gpu_forest {
@@ -2454,10 +2467,10 @@ impl Renderer {
             usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
         let spatial_owners=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("per-view spatial owner scratch"),
             size:if camera&&(self.instance_groups.enabled||self.instance_groups.replacement_enabled){self.instance_groups.scratch_bytes()}else if light_groups{self.instance_groups.owner_scratch_bytes()}else{4},usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
-        let cull_bind = bind(gpu, &self.view_cull_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, counter.as_entire_binding()), (5, foliage_selection.as_entire_binding()),
+        let cull_bind = bind(gpu, &self.view_cull_layout, &self.cull_view_entries([(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, counter.as_entire_binding()), (5, foliage_selection.as_entire_binding()),
             (6,self.occlusion.reference.as_entire_binding()),(7,wgpu::BindingResource::TextureView(&self.occlusion.empty)),
             (8,self.cull_tables.buffer.as_entire_binding()),(10,spatial_owners.as_entire_binding()),
-            (14,self.receiver_demand.buffer().as_entire_binding()),(15,self.occlusion.empty_history.as_entire_binding())]);
+            (14,self.receiver_demand.buffer().as_entire_binding()),(15,self.occlusion.empty_history.as_entire_binding())]));
         let raster_bind = bind(gpu, &self.view_raster_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, counter.as_entire_binding()), (4, foliage_selection.as_entire_binding())]);
         ViewTargets { uniform, foliage_selection, visible, counter, spatial_owners,instance_dispatch, cull_bind, raster_bind }
     }
@@ -3390,12 +3403,12 @@ impl Renderer {
         if !targets[index].as_ref().is_some_and(|t|t.size==size) {targets[index]=Some(pyramid.target(gpu,size));}
         let target=targets[index].as_ref().unwrap();
         let history=self.occlusion.history_buffer(gpu,index,self.instances);
-        let phases: [wgpu::BindGroup;2]=std::array::from_fn(|phase|bind(gpu,&self.view_cull_layout,&[
+        let phases: [wgpu::BindGroup;2]=std::array::from_fn(|phase|bind(gpu,&self.view_cull_layout,&self.cull_view_entries([
             (0,v.uniform.as_entire_binding()),(1,v.visible.as_entire_binding()),(2,v.counter.as_entire_binding()),
             (5,v.foliage_selection.as_entire_binding()),
             (6,self.occlusion.phases[phase].as_entire_binding()),(7,wgpu::BindingResource::TextureView(&target.view)),
             (8,self.cull_tables.buffer.as_entire_binding()),(10,v.spatial_owners.as_entire_binding()),
-            (14,self.receiver_demand.buffer().as_entire_binding()),(15,history.as_entire_binding())]));
+            (14,self.receiver_demand.buffer().as_entire_binding()),(15,history.as_entire_binding())])));
         self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"occluder cull",RasterPass::Color,Some(&phases[0]),false,None);
         let time=self.query.as_ref().map(|(qs,_,_)|{names.push("occlusion pyramid");(qs,timestamp_pair(ts))});
         pyramid.encode(gpu,enc,depth,target,time);
@@ -3496,6 +3509,7 @@ impl Renderer {
         }
         gpu.queue.write_buffer(&self.materials, (first * std::mem::size_of::<crate::scene::Material>()) as u64, bytemuck::cast_slice(materials));
         self.scene_tables.write_materials(gpu, first, materials);
+        self.cull_tables.write(gpu, crate::cull_tables::MATERIALS, (first * std::mem::size_of::<crate::scene::Material>()) as u64, bytemuck::cast_slice(materials));
         Ok(())
     }
 
@@ -3694,7 +3708,7 @@ impl Renderer {
             let matrices:Vec<_>=views.iter().enumerate().map(|(vi,v)|projections.get(vi).copied().unwrap_or_else(||
                 Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near))*camera_view(v.cam,axes.get(vi).copied())).collect();
             let mut enc=gpu.device.create_command_encoder(&Default::default());
-            if let Some(terrain)=&self.procedural_terrain {terrain.encode(gpu,&mut enc);}
+            if let Some(terrain)=&self.procedural_terrain {terrain.encode(gpu,&mut enc,None);}
             let stats=portable.lock().unwrap().render(gpu,enc,views,&matrices,light,self.sky_horizon,&output);
             let pixels=if readback==Readback::ImageAndMetrics {gpu.read_rgba8(&output)}else{Vec::new()};
             return Ok((output,pixels,stats));
@@ -4160,7 +4174,12 @@ impl Renderer {
             }
         }
         if let Some(terrain) = &self.procedural_terrain {
-            terrain.encode(gpu, &mut enc);
+            // Timed only when it builds patches: the pair stays unused otherwise.
+            let times = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
+            if terrain.encode(gpu, &mut enc, times) && times.is_some() {
+                timestamp_pair(&mut ts);
+                names.push("procedural terrain");
+            }
         }
         if let Some(debris) = &self.debris {
             let times = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
@@ -5736,6 +5755,20 @@ mod layout_tests {
             if let naga::TypeInner::Struct {members,span}= &view.inner {
                 assert_eq!(*span,320);assert_eq!(members.last().unwrap().offset,304);
             } else {panic!("View is not a struct");}
+        }
+    }
+    #[test]
+    fn cull_fits_eight_storage_buffers_without_receiver_demand() {
+        // The engine rule (browser.md): 8 storage buffers per stage. Receiver
+        // demand is opt-in and adds the ninth.
+        for (demand, limit) in [(false, 8), (true, 9)] {
+            let source = super::cull_source_with(demand);
+            let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+                .validate(&module).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+            let storage = module.global_variables.iter().filter(|(_, g)| g.binding.as_ref().is_some_and(|b| b.group < 2)
+                && matches!(g.space, naga::AddressSpace::Storage { .. })).count();
+            assert_eq!(storage, limit, "receiver demand {demand}");
         }
     }
     #[test]
