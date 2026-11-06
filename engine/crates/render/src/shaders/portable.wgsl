@@ -143,7 +143,8 @@ fn sky(dir: vec3<f32>) -> vec3<f32> {
     let horizon = mix(u.horizon.rgb, lum * vec3<f32>(0.85, 0.93, 1.05), 0.5);
     let zenith = lum * vec3<f32>(0.3, 0.5, 0.95);
     var c = mix(horizon, zenith, sqrt(max(up, 0.0)));
-    c = select(c, horizon * 0.6, up < 0.0);
+    // Below the horizon it darkens gradually: a step there showed as a line.
+    c = mix(c, horizon * 0.6, smoothstep(0.0, 0.25, -up));
     let mu = dot(dir, u.sun.xyz);
     c += u.sun_color.rgb * u.sun.w * 0.002 * pow(max(mu, 0.0), 64.0);
     if u.sun_color.w > 0.5 && mu > 0.99996 { c += u.sun_color.rgb * u.sun.w * 0.05; }
@@ -210,7 +211,8 @@ fn tone(c: vec3<f32>) -> vec4<f32> {
     let d = distance(p, u.camera.xyz);
     let density = select(1.0 / 9000.0, u.horizon.w, u.horizon.w > 0.0);
     let fog = 1.0 - exp(-d * density);
-    lit = mix(lit, sky(view), clamp(fog, 0.0, 1.0));
+    // Haze takes the sky at or above the horizon, so hills crossing it fade to one colour.
+    lit = mix(lit, sky(normalize(vec3<f32>(view.x, max(view.y, 0.0), view.z))), clamp(fog, 0.0, 1.0));
     if u.sky.w == 2.0 { lit = c; }
     if u.sky.w == 11.0 { lit = n * 0.5 + 0.5; }
     return tone(lit);
