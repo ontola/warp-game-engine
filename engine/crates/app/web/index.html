@@ -1,10 +1,38 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><title>Terrain fly</title>
-<style>html,body{margin:0;height:100%;background:#000;color:#ddd;font:12px monospace}canvas#warp{width:100vw;height:100vh;display:block}#warp-log{position:fixed;left:8px;bottom:8px;white-space:pre-wrap;max-width:90vw;pointer-events:none;text-shadow:0 0 3px #000}</style>
-</head><body><canvas id="warp"></canvas><div id="warp-log"></div>
+<style>
+html,body{margin:0;height:100%;background:#000;color:#ddd;font:12px monospace}
+canvas#warp{width:100vw;height:100vh;display:block}
+#warp-log{position:fixed;left:8px;bottom:8px;white-space:pre-wrap;max-width:90vw;max-height:40vh;overflow:hidden;pointer-events:none;text-shadow:0 0 3px #000}
+#warp-progress{position:fixed;left:50%;top:45%;transform:translate(-50%,-50%);width:min(420px,80vw)}
+#warp-progress[hidden]{display:none}
+#warp-track{height:6px;background:#333;border-radius:3px;overflow:hidden}
+#warp-bar{height:100%;width:0;background:#8fd19e;transition:width .2s}
+#warp-step{margin-top:8px;text-align:center}
+</style>
+</head><body><canvas id="warp"></canvas>
+<div id="warp-progress"><div id="warp-track"><div id="warp-bar"></div></div><div id="warp-step">Loading</div></div>
+<div id="warp-log"></div>
 <script type="module">
 import init from './pkg/terrain_fly.js';
-const log = document.getElementById('warp-log');
-if (!navigator.gpu) log.textContent = 'This browser has no WebGPU.\n';
-init().catch(e => { log.textContent += 'start failed: ' + e + '\n'; console.error(e); });
+const log = document.getElementById('warp-log'), bar = document.getElementById('warp-bar'), step = document.getElementById('warp-step');
+const show = (f, t) => { bar.style.width = (f * 100).toFixed(1) + '%'; step.textContent = t; };
+// Download the wasm with byte progress (the first 30 % of the bar); the
+// engine reports the later steps itself.
+async function wasm() {
+  const r = await fetch('pkg/terrain_fly_bg.wasm');
+  if (!r.ok) throw new Error('pkg/terrain_fly_bg.wasm: HTTP ' + r.status);
+  const total = +r.headers.get('content-length') || 0, parts = [];
+  let got = 0;
+  for (const reader = r.body.getReader();;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value); got += value.length;
+    show(total ? 0.3 * got / total : 0.15, `Downloading the engine (${(got / 1e6).toFixed(1)}${total ? ' of ' + (total / 1e6).toFixed(1) : ''} MB)`);
+  }
+  return new Blob(parts).arrayBuffer();
+}
+if (!navigator.gpu) show(0, 'This browser has no WebGPU. Use Chrome or Edge on a desktop.');
+else wasm().then(bytes => { show(0.3, 'Starting the engine'); return init({ module_or_path: bytes }); })
+  .catch(e => { show(0, 'Could not start: ' + e); log.textContent += 'start failed: ' + e + '\n'; console.error(e); });
 </script></body></html>

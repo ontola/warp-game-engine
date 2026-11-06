@@ -26,6 +26,35 @@ pub fn log(line: &str) {
     }
 }
 
+/// Show loading progress in the page's `#warp-progress` box (a bar
+/// `#warp-bar` and a line `#warp-step`), when it has one: `fraction` 0..1,
+/// `None` hides the box. Also logged to the console.
+pub fn progress(fraction: Option<f32>, step: &str) {
+    web_sys::console::log_1(&format!("loading: {step}").into());
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else { return };
+    if let Some(el) = document.get_element_by_id("warp-progress") {
+        let _ = if fraction.is_some() { el.remove_attribute("hidden") } else { el.set_attribute("hidden", "") };
+    }
+    if let (Some(f), Some(bar)) = (fraction, document.get_element_by_id("warp-bar")) {
+        let _ = bar.set_attribute("style", &format!("width: {:.1}%", f.clamp(0.0, 1.0) * 100.0));
+    }
+    if let Some(el) = document.get_element_by_id("warp-step") { el.set_text_content(Some(step)); }
+}
+
+/// Let the browser draw (the progress bar) before a long blocking step.
+pub async fn yield_to_browser() {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        let window = web_sys::window().expect("window");
+        // Two frames: the first lays out the change, the second paints it.
+        let paint = wasm_bindgen::closure::Closure::once_into_js(move || {
+            let window = web_sys::window().expect("window");
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(resolve.unchecked_ref(), 0);
+        });
+        let _ = window.request_animation_frame(paint.unchecked_ref());
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
 /// Fetch `url` (relative to the page) as bytes.
 pub async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     use wasm_bindgen_futures::JsFuture;
@@ -72,6 +101,8 @@ struct Shell {
     frames: u64,
     started: Instant,
     failed: bool,
+    /// The scene upload was announced (see [`Shell::frame`]).
+    announced: bool,
 }
 
 /// Run `game` in the page's canvas `#warp` (or a new one) until the page
@@ -80,7 +111,7 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     install_panic_hook();
     let mut devices = Devices::new(cfg.keyboard);
     devices.pointer_enabled = cfg.pointer;
-    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false };
+    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false };
     match EventLoop::new() {
         Ok(events) => events.spawn_app(shell),
         Err(e) => log(&format!("event loop: {e}")),
@@ -99,14 +130,21 @@ impl Shell {
         let window = Arc::new(event_loop.create_window(attributes).map_err(|e| e.to_string())?);
         self.window = Some(window.clone());
         let live = self.live.clone();
+        progress(Some(0.8), "Starting WebGPU");
         wasm_bindgen_futures::spawn_local(async move {
             match setup(window.clone()).await {
                 Ok(l) => {
                     log(&format!("GPU: {} ({:?}), {}x{}, {:?}", l.gpu.info.name, l.gpu.info.backend, l.config.width, l.config.height, l.config.format));
+                    // The renderer's scene and cull layouts need 16 (browser.md).
+                    let storage = l.gpu.device.limits().max_storage_buffers_per_shader_stage;
+                    if storage < 16 {
+                        progress(Some(0.8), &format!("This GPU offers {storage} storage buffers per shader stage; the renderer needs 16. Try Chrome or Edge on a desktop GPU."));
+                        return;
+                    }
                     *live.borrow_mut() = Some(l);
                     window.request_redraw();
                 }
-                Err(e) => log(&format!("GPU setup failed: {e}")),
+                Err(e) => { progress(Some(0.8), &format!("WebGPU could not start: {e}")); log(&format!("GPU setup failed: {e}")) }
             }
         });
         Ok(())
@@ -145,6 +183,12 @@ impl Shell {
         if steps == 6 { self.acc = 0.0; }
         let alpha = (self.acc / step).clamp(0.0, 1.0);
         let split = self.game.split();
+        // The first scene upload blocks for seconds: show it first.
+        if live.renderer.is_none() && !self.announced {
+            self.announced = true;
+            progress(Some(0.9), "Uploading the world to the GPU");
+            return Ok(());
+        }
         let mut frame = Frame { gpu: &live.gpu, size, dt, alpha, split, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, renderer: &mut live.renderer };
         let draw: Draw = self.game.draw(&mut frame)?;
         let Some(renderer) = live.renderer.as_ref() else { return Ok(()) };
@@ -159,6 +203,7 @@ impl Shell {
         live.out.draw(&live.gpu, renderer, &draw, size, split, &view, self.cfg.max_render_height)?;
         live.gpu.queue.present(texture);
         self.frames += 1;
+        if self.frames == 1 { progress(None, "Ready"); }
         if self.frames == 1 || self.frames.is_power_of_two() && self.frames >= 64 {
             log(&format!("frame {} after {:.1} s, wasm memory {} MB", self.frames, self.started.elapsed().as_secs_f32(), memory_mb()));
         }
@@ -242,6 +287,7 @@ impl ApplicationHandler for Shell {
                 if self.failed { return; }
                 if self.game.screen() == Screen::Hidden { return; }
                 if let Err(e) = self.frame() {
+                    progress(Some(1.0), &format!("Stopped: {e}"));
                     log(&format!("frame error: {e}"));
                     self.failed = true;
                     return;
