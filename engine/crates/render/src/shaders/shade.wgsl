@@ -263,15 +263,15 @@ fn crown_depth_in(map: texture_depth_2d, projection: mat4x4<f32>, p: vec3<f32>) 
     }
     return sum / 5.0;
 }
-fn crown_transmittance(p: vec3<f32>) -> f32 {
+// Metres below the first caster along the sun (0 where no map covers p).
+fn crown_depth(p: vec3<f32>) -> f32 {
     var depth = -1.0;
     if light.near_shadow.z > 0.5 {
         let c = light.near_shadow_view_proj * vec4<f32>(p, 1.0);
         if length(c.xy) < 0.9 { depth = crown_depth_in(near_shadow_tex, light.near_shadow_view_proj, p); }
     }
     if depth < 0.0 { depth = crown_depth_in(shadow_tex, light.shadow_view_proj, p); }
-    if depth < 0.0 { return 1.0; }
-    return exp(-CROWN_EXTINCTION_PER_M * max(depth - 0.25, 0.0));
+    return max(depth - 0.25, 0.0);
 }
 
 fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
@@ -288,8 +288,13 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     let rough = clamp(f32((g.y >> 16u) & 255u) / 255.0, 0.04, 1.0);
     let leaf = f32(g.y >> 24u) / 255.0;
     // A proxy's own march, or for branch volumes (own 1) the canopy depth
-    // the sun maps see above this point; the smaller of the two.
-    let own = min(f32((g.w >> 16u) & 255u) / 255.0, crown_transmittance(p));
+    // the sun maps see above this point; the smaller of the two. The sky
+    // term counts at most 1.5 m of it: grass under a tree is metres below
+    // the crown, and lost its sky fill too (shadows went nearly black).
+    let marched = f32((g.w >> 16u) & 255u) / 255.0;
+    let canopy = crown_depth(p);
+    let own = min(marched, exp(-CROWN_EXTINCTION_PER_M * canopy));
+    let own_sky = min(marched, exp(-CROWN_EXTINCTION_PER_M * min(canopy, 1.5)));
     let exit = f32(g.w >> 24u) / 4.0;
     let l = light.sun_dir.xyz;
     let v = -dir;
@@ -325,7 +330,7 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     // what lies past the lift, so inner cells lit as if under open sky and
     // a voxel crown read ~3.5x brighter than the same tree as a mesh (Joep,
     // 6 November). The crown's sun transmittance stands in for the sky's.
-    let crown_sky = 0.25 + 0.75 * sqrt(own);
+    let crown_sky = 0.25 + 0.75 * sqrt(own_sky);
     let sky_vis = sky_visibility(p + n * VOXEL_SKY_LIFT, n) * crown_sky;
     let back_sky_vis = sky_visibility(p - n * VOXEL_SKY_LIFT, -n) * crown_sky;
     let refl = reflect(dir, n);
