@@ -491,7 +491,7 @@ impl Game for Fly {
         (menu, vec![
             toggle(TREES, "Trees", w.trees, "Spruce forest around the camera."),
             number(TREE_DENSITY, "Tree density", f64::from(w.tree_density) * 100.0, (5.0, 100.0, 5.0, 0), "%", "Share of forest ground that grows a tree."),
-            number(BRANCH_SLOTS, "GPU branch budget", f64::from(w.branch_slots), (256.0, 16384.0, 256.0, 0), "", "Shared resident branch capacity; the GPU selects detail for all trees."),
+            number(BRANCH_SLOTS, "GPU branch budget", f64::from(w.branch_slots), (256.0, 131072.0, 1024.0, 0), "", "Shared resident branch capacity; the GPU selects detail for all trees."),
             number(TREE_RADIUS, "Tree radius", f64::from(w.tree_radius), (200.0, 3000.0, 100.0, 0), "m", "Trees are placed this far around the camera."),
             toggle(GRASS, "Grass in scene", w.grass, "Streams shared articulated grass cells; GPU selects source or voxel detail. The Grass menu only hides it."),
             number(CELL_PX, "Terrain cell size", f64::from(t.cell_pixels), (4.0, 96.0, 4.0, 0), "px", "Largest projected terrain cell before a patch splits."),
@@ -505,7 +505,7 @@ impl Game for Fly {
             DebugAction::SetToggle { id: TREES, value } => self.world.trees = value,
             DebugAction::SetToggle { id: GRASS, value } => self.world.grass = value,
             DebugAction::SetNumber { id: TREE_DENSITY, value } => self.world.tree_density = (value / 100.0).clamp(0.05, 1.0) as f32,
-            DebugAction::SetNumber { id: BRANCH_SLOTS, value } => self.world.branch_slots = value.clamp(256.0, 16384.0) as u32,
+            DebugAction::SetNumber { id: BRANCH_SLOTS, value } => self.world.branch_slots = value.clamp(256.0, 131072.0) as u32,
             DebugAction::SetNumber { id: TREE_RADIUS, value } => self.world.tree_radius = value.clamp(200.0, 3000.0) as f32,
             DebugAction::SetNumber { id: CELL_PX, value } => self.terrain_settings.cell_pixels = value.clamp(4.0, 96.0) as f32,
             DebugAction::SetNumber { id: ERROR_PX, value } => self.terrain_settings.error_pixels = value.clamp(0.25, 12.0) as f32,
@@ -557,7 +557,7 @@ impl Game for Fly {
 }
 
 impl Default for World {
-    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, branch_slots: 4096 } }
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, branch_slots: 65536 } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
@@ -742,7 +742,11 @@ fn recipe_spruces(scene:&mut Scene,lands:&render::biome::Lands,season:f32,world:
     if let Some(value)=args.windows(2).find(|a|a[0]=="--voxel-cache-mib") {
         let mib=value[1].parse::<u32>().map_err(|_|"--voxel-cache-mib needs a positive integer")?;
         let bytes=mib.checked_mul(1024*1024).filter(|n|*n>0).ok_or("voxel cache budget overflow/zero")?;
-        scene.gpu_forest.as_mut().unwrap().page_budget.cells=bytes/176;
+        // Cells are 128 bytes packed; grow the index and splat arenas with them
+        // (the defaults are sized for 256 MiB of cells).
+        let budget=&mut scene.gpu_forest.as_mut().unwrap().page_budget;
+        let scale=|n:u32|(u64::from(n)*u64::from(mib)/256).clamp(1,u64::from(u32::MAX))as u32;
+        budget.cells=bytes/128;budget.index_words=scale(budget.index_words);budget.splats=scale(budget.splats);
     }
     if let Some(value)=args.windows(2).find(|a|a[0]=="--source-cache-mib") {
         let mib=value[1].parse::<u32>().map_err(|_|"--source-cache-mib needs a positive integer")?;

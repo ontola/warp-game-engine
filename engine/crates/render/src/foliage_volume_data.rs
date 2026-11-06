@@ -193,20 +193,28 @@ impl GpuForest {
         self.instances.extend(other.instances.into_iter().map(|mut t| { t.meta[1] += levels as u32; t }));
         Ok(())
     }
-    /// Maximum appended splats per level before view/opacity rejection. Count
-    /// occupied grid entries, not unique cell payloads: aliases still rasterize
-    /// once per coordinate. Computed once for the shared asset catalog.
+    /// Expected appended splats per level before view rejection: the raster
+    /// drops cells under 1/255 alpha and keeps cells under
+    /// `SPLAT_MIN_ALPHA` with probability alpha/min (voxel_forest.wgsl
+    /// volume_splat_append). Alpha is bounded by the strongest of the thirteen
+    /// directions over one cell, so this is an upper bound on the expectation.
+    /// Count grid entries, not unique payloads: aliases rasterize once per
+    /// coordinate. Computed once for the shared asset catalog.
     pub(crate) fn raster_work_bounds(&self) -> Result<Vec<u32>, String> {
-        let payload_count = |entries: &[u32]| -> Result<u32, String> {
-            if entries.iter().any(|&i| i as usize > self.cells.len()) {
-                return Err("raster work references a missing voxel cell".into());
+        let kept: Vec<f32> = self.cells.iter().map(|c| c.extinction.as_flattened()[..13].iter().fold(0f32, |m, &v| m.max(v))).collect();
+        let payload = |entries: &[u32], size: f32| -> Result<f64, String> {
+            let mut sum = 0f64;
+            for &i in entries.iter().filter(|&&i| i != 0) {
+                let sigma = *kept.get(i as usize - 1).ok_or("raster work references a missing voxel cell")?;
+                let alpha = 1.0 - (-sigma.max(0.0) * size).exp();
+                if alpha >= 1.0 / 255.0 { sum += f64::from((alpha / SPLAT_MIN_ALPHA).min(1.0)); }
             }
-            u32::try_from(entries.iter().filter(|&&i| i != 0).count())
-                .map_err(|_| "raster work exceeds u32".into())
+            Ok(sum)
         };
         self.levels.iter().map(|level| {
             let dims = &level.dims_offset[..3];
             if dims.contains(&0) { return Err("raster work has empty dimensions".into()); }
+            let size = level.origin_cell[3];
             let bricked = level.dims_offset[3] & BRICK_INDIRECTION != 0;
             let length = dims.iter().try_fold(1usize, |n, &d|
                 n.checked_mul(if bricked { d.div_ceil(4) } else { d } as usize))
@@ -214,15 +222,17 @@ impl GpuForest {
             let base = (level.dims_offset[3] & !BRICK_INDIRECTION) as usize;
             let end = base.checked_add(length).ok_or("raster work address overflow")?;
             let entries = self.indices.get(base..end).ok_or("raster work grid outside catalog")?;
-            if !bricked { return payload_count(entries); }
-            let mut count = 0u32;
-            for &address in entries.iter().filter(|&&i| i != 0) {
-                let start = (address - 1) as usize;
-                let end = start.checked_add(64).ok_or("raster work brick overflow")?;
-                let brick = self.indices.get(start..end).ok_or("raster work brick outside catalog")?;
-                count = count.checked_add(payload_count(brick)?).ok_or("raster work sum overflow")?;
-            }
-            Ok(count)
+            let expected = if !bricked { payload(entries, size)? } else {
+                let mut sum = 0f64;
+                for &address in entries.iter().filter(|&&i| i != 0) {
+                    let start = (address - 1) as usize;
+                    let end = start.checked_add(64).ok_or("raster work brick overflow")?;
+                    let brick = self.indices.get(start..end).ok_or("raster work brick outside catalog")?;
+                    sum += payload(brick, size)?;
+                }
+                sum
+            };
+            u32::try_from(expected.ceil() as u64).map_err(|_| "raster work exceeds u32".into())
         }).collect()
     }
     pub fn byte_len(&self) -> usize {
@@ -236,6 +246,8 @@ impl GpuForest {
 /// Aggregate levels use a sparse directory of 4x4x4 bricks. Bit31 of the
 /// level offset tags this encoding; ordinary providers retain dense indices.
 pub const BRICK_INDIRECTION: u32 = 1 << 31;
+/// voxel_forest.wgsl VOLUME_SPLAT_MIN_ALPHA: fainter cells are thinned to this alpha.
+pub(crate) const SPLAT_MIN_ALPHA: f32 = 0.5;
 pub(crate) fn cell_index(forest:&GpuForest,level:&GpuLevel,c:[u32;3])->Option<u32> {
     if (0..3).any(|a|c[a]>=level.dims_offset[a]) {return Some(0);}
     let base=(level.dims_offset[3]&!BRICK_INDIRECTION)as usize;
@@ -499,7 +511,15 @@ mod tests {
         let mut f=super::GpuForest {
             levels:vec![super::GpuLevel {origin_cell:[0.,0.,0.,1.],dims_offset:[3,1,1,0]}],
             indices:vec![1,0,1],cells:vec![bytemuck::Zeroable::zeroed()],instances:vec![]};
+        assert_eq!(f.raster_work_bounds().unwrap(),[0],"empty optics never rasterize");
+        f.cells[0].extinction[1][2]=50.;
         assert_eq!(f.raster_work_bounds().unwrap(),[2]);
+        // A faint cell is thinned to the minimum alpha: half a splat expected each.
+        f.cells[0].extinction[1][2]=-(1.-0.25f32).ln();
+        assert_eq!(f.raster_work_bounds().unwrap(),[1]);
+        f.cells[0].extinction[1][2]=0.001;
+        assert_eq!(f.raster_work_bounds().unwrap(),[0],"under 1/255 alpha is dropped");
+        f.cells[0].extinction[1][2]=50.;
         super::pack_bricks(&mut f,128).unwrap();
         assert_eq!(f.raster_work_bounds().unwrap(),[2]);
         f.indices[0]=u32::MAX;

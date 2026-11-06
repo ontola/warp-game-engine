@@ -1,6 +1,6 @@
 # Warp vegetation: implementation checklist
 
-Updated 5 November 2026. **This is the single authoritative checklist.**
+Updated 6 November 2026. **This is the single authoritative checklist.**
 Older reports and `engine/docs/log/handoff.md` contain supporting history, not separate
 plans. Architecture first; no interactive playtest until requested.
 
@@ -10,6 +10,40 @@ plans. Architecture first; no interactive playtest until requested.
 paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
+
+## 6 November: error-driven cut (Nanite-style), replaces budgeted admission
+
+Handoff: [log/2026-11-06-vegetation-handoff.md](log/2026-11-06-vegetation-handoff.md).
+Measured on Mancave (RTX 5070 Ti, Vulkan), lowland diagnostic, native 720p,
+ONE view, 1200 stationary frames, last-120 medians, single runs.
+
+- [x] Error-driven cut (`fast_*` in foliage_refine.wgsl, default): each task
+  refines while its projected error exceeds the target and every replacement
+  page is resident. Caps are atomic reservations; no priority scans, prefix
+  loops or dormant queue. When a cap binds, `fast_adapt` coarsens that
+  class's target (state[79] camera, [78] shadow; kept across encodes) and
+  relaxes it when the caps are slack. `KERN_FOLIAGE_CUT=budget` for A/B.
+  GPU test: gpu_error_cut_refines_by_error_and_coarsens_when_a_cap_binds.
+- [x] Splat booking counts the expected kept splats (alpha thinning at 0.5,
+  drop under 1/255), not every occupied cell: about 3x lower.
+- [x] Voxel page cache 256 MiB by default (64 MiB missed ~600 pages a frame
+  forever and kept 9.8 px cells at 14 m). Arenas shrink to the device's
+  storage binding limit. terrain_fly default branch slots 65536.
+- [x] Results: main 27.05 ms / selection 11.32 ms / largest 5.48 px / 7.4% of
+  splats over 1 px. Error cut, 256 MiB, 32k slots: 11.94 / 1.21 / 3.24 px /
+  15.3%. 64k slots: 18.87 / 1.35 / 2.68 px / 5.1%. 128k: 19.66 ms, same picture.
+  Near grass reads as blades, tree self-shadow clean, no holes.
+- [ ] 1 px everywhere: camera target settles ~12x loose at 64k slots, held by
+  the camera splat reservation (14.4M booked against 8.1M stored; the gap is
+  per-cell frustum rejection). Book visible fraction, or raise the budget.
+- [ ] Near ground cover shows a patch boundary (speckled wedge against smooth
+  grass) that more slots do not move. Not traced.
+- [ ] Shadow detail costs ~2 ms of near shadow raster at 64k; consider a
+  coarser shadow target or caching.
+- [ ] Raster still may draw finer mips than selected for articulated groups
+  (footprint override), so their pages stay whole mip bundles.
+- [ ] Order-dependent admission when a cap binds within a frame (atomics):
+  watch for flicker in motion; the adaptive target keeps caps slack.
 
 ## 5 November: static split retains GPU forest casters
 

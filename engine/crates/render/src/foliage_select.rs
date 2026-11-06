@@ -342,6 +342,36 @@ mod tests {
   let mut enc=gpu.device.create_command_encoder(&Default::default());selector.union_consumers(&gpu,&mut enc,&[ConsumerView::camera(view(128)),ConsumerView::shadow(view(1))],1.,8,&empty).unwrap();gpu.queue.submit([enc.finish()]);
   let roots=read(&gpu,&selector.demand);assert_eq!((roots[2],roots[6]),(1,1),"missing child preserves a complete resident ancestor for each consumer");assert_eq!(read(&gpu,&selector.counters)[0],0);
  }
+ #[test]
+ #[ignore="exclusive GPU error-driven cut oracle"]
+ fn gpu_error_cut_refines_by_error_and_coarsens_when_a_cap_binds() {
+  let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].scale[2]=1.;trees[0].scale[3]=1.;
+  let nodes=[Node {sphere:[0.,0.,0.5,0.2],error:[1.,0.,1.,1.],links:[1,3,0,2]},
+   Node {sphere:[0.,0.,0.5,0.1],error:[0.;4],links:[NONE,2,1,4]},
+   Node {sphere:[0.,0.,0.5,0.1],error:[0.;4],links:[NONE,3,2,4]}];
+  let selector=Selector::new(&gpu,&nodes,&trees,8,8).unwrap();selector.refiner.set_error_cut(true);let empty=depth(&gpu,0.);
+  let view=|size|crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[size;2]};
+  let cut=|slots:u32|{
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union_consumers_budget(&gpu,&mut enc,&[ConsumerView::camera(view(128)),ConsumerView::shadow(view(1))],1.,slots,[100;2],&empty).unwrap();gpu.queue.submit([enc.finish()]);
+   let count=read(&gpu,&selector.counters)[0]as usize;let records=read(&gpu,&selector.records);let roles=read(&gpu,&selector.record_consumers);let roots=read(&gpu,&selector.demand);
+   let mut camera=records.chunks_exact(4).take(count).zip(&roles).filter(|(_,role)|**role&256!=0).map(|(r,_)|r[1]).collect::<Vec<_>>();
+   if roots[2]!=0 {camera.push(0);}camera.sort();
+   let shadow_root=roots[6]!=0;let state=read(&gpu,&selector.refiner.state);
+   assert_eq!(read(&gpu,&selector.fallback),[0]);assert_eq!(state[15],0,"no faults");
+   (camera,shadow_root,f32::from_bits(state[79]))
+  };
+  let (camera,shadow,scale)=cut(8);
+  assert_eq!(camera,vec![1,2],"camera over its error target refines to the leaves");
+  assert!(shadow,"the one-pixel shadow consumer keeps the root");assert!(scale<=1.,"slack caps leave the exact target");
+  // One slot cannot hold both leaves: keep the complete parent, never half a cut,
+  // and loosen the target for the next frames instead of auctioning.
+  let (camera,_,scale)=cut(1);
+  assert_eq!(camera,vec![0]);assert!(scale>1.,"a binding cap coarsens the error target: {scale}");
+  let mut last=scale;for _ in 0..4 {let (_,_,s)=cut(1);assert!(s>=last);last=s;}
+  // Back under the cap the target relaxes toward exact again.
+  for _ in 0..4 {let (_,_,s)=cut(8);assert!(s<=last);last=s;}
+ }
  #[test] fn validates_shared_subtrees_and_conservative_bounds() {
   let (nodes,trees)=fixture(2049);assert!(validate(&nodes,&trees,1).is_ok());
   let mut bad=nodes.clone();bad[0].links[0]=0;assert!(validate(&bad,&trees,1).is_err());
