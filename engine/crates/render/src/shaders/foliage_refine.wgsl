@@ -66,7 +66,31 @@ fn work(tree:u32,node:u32,consumers:u32)->vec4<u32> {
   cost.w=(nodes[node].links.w>>8u)*views;
  }
  if (consumers&256u)==0u {cost.y=0u;}if (consumers&512u)==0u {cost.z=0u;}
+ // Error cut: book splats for the part of the bound inside each class's
+ // frustums (the raster drops cells outside them). The same fraction is
+ // recomputed for the refund within one encode, so books stay balanced.
+ if atomicLoad(&state[80])!=0u && (cost.y!=0u || cost.z!=0u) {
+  var bound=vec4<f32>(0.0);
+  if node==NONE {bound=sphere(trees[tree],nodes[trees[tree].info.x]);}else{bound=sphere(trees[tree],nodes[node]);}
+  var inside=vec2<f32>(0.0);
+  for(var i=0u;i<view.consumer_count.x;i++) {let c=view.consumers[i];
+   let k=select(1u,0u,c.pixels.z==0.0);inside[k]=max(inside[k],inside_fraction(bound,c.vp));
+  }
+  cost.y=u32(ceil(f32(cost.y)*inside.x));cost.z=u32(ceil(f32(cost.z)*inside.y));
+ }
  return cost;
+}
+// Share of a sphere's volume inside a frustum: product over the planes of
+// the cap volume x^2(3-2x), x the inside share of the diameter, never below x.
+fn inside_fraction(s:vec4<f32>,vp:mat4x4<f32>)->f32 {
+ let r=transpose(vp);
+ let planes=array<vec4<f32>,6>(r[3]+r[0],r[3]-r[0],r[3]+r[1],r[3]-r[1],r[2],r[3]-r[2]);
+ var f=1.0;
+ for(var i=0u;i<6u;i++){
+  let d=dot(planes[i],vec4<f32>(s.xyz,1.0))/max(length(planes[i].xyz),1e-20);
+  let x=clamp((d+s.w)/max(2.0*s.w,1e-20),0.0,1.0);f*=max(x,x*x*(3.0-2.0*x));
+ }
+ return f;
 }
 fn add_used(cost:vec4<u32>) {
  for(var k=0u;k<3u;k++) {
@@ -591,6 +615,7 @@ fn fast_set_args(count:u32) {
  atomicStore(&state[3],count);atomicMax(&state[16],count);
  atomicStore(&state[8],(count+63u)/64u);atomicStore(&state[9],1u);atomicStore(&state[10],1u);
 }
+@compute @workgroup_size(1) fn fast_mode() {atomicStore(&state[80],1u);}
 @compute @workgroup_size(1) fn fast_begin() {fast_set_args(atomicLoad(&state[3]));atomicStore(&state[7],0u);}
 @compute @workgroup_size(64) fn fast_round(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
