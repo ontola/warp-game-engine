@@ -861,17 +861,21 @@ fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f3
         if Vec2::new(x,z).distance_squared(centre)>radius*radius {continue;}
         let s=land.ground(x,z);
         let sparse=0.5+0.8*terrain_field::noised(Vec2::new(x,z)/40.,seed.wrapping_add(31)).x>grass(x,z);
-        // Rock and snow thin the grass out instead of cutting it at one value:
-        // a hard rock>0.5 drew stripes along the contour lines of a slope.
-        let cut=Cell::new(i,j,seed).hash(78);
-        let smooth=|v:f32,a:f32,b:f32|((v-a)/(b-a)).clamp(0.,1.);
-        if sparse || cut<smooth(s.rock,0.3,0.8) || cut<smooth(s.snow,0.15,0.45) || s.scree>0.8 || s.water>0.02 || land.clearance(x,z)<cell {continue;}
+        if sparse || s.scree>0.8 || s.water>0.02 || land.clearance(x,z)<cell {continue;}
         let dx=land.ground(x+0.5,z).pos.y-land.ground(x-0.5,z).pos.y;
         let dz=land.ground(x,z+0.5).pos.y-land.ground(x,z-0.5).pos.y;
         // The cell tilts with the ground, so along the fall line it covers
         // only cos(slope) of the grid step: a bare strip per row on a slope
         // (Mancave, 28 degrees: 0.18 m). Scaled by 1/up.y it meets the next row.
         let up=Vec3::new(-dx,1.,-dz).normalize();
+        // Rock and snow thin the grass out by a per-cell hash, not at one value.
+        // Rock that faces up is painted mossy (terrain_surface.wgsl), and the
+        // alpine rock mask jumps 0 -> 1 across slope steps: refusing grass
+        // there drew bare bands along the contours on 25 degree slopes.
+        let smooth=|v:f32,a:f32,b:f32|((v-a)/(b-a)).clamp(0.,1.);
+        let rock=s.rock*(1.-0.85*smooth(up.y,0.8,0.95));
+        let cut=Cell::new(i,j,seed).hash(78);
+        if cut<smooth(rock,0.3,0.8) || cut<smooth(s.snow,0.15,0.45) {continue;}
         let hash=Cell::new(i,j,seed).hash(77);
         // A cell is a 3x3 block of patches that tiles the 1.5 m square: turn
         // it by quarter turns only. Any yaw left its corners bare, a dark hole
