@@ -19,8 +19,12 @@ struct Job {
     // Bits 4..7: corners (x0z0, x1z0, x0z1, x1z1) touch a coarser patch.
     mask: u32,
     slot: u32,
-    pad0: u32,
-    pad1: u32,
+    // Geomorph (procedural_terrain.rs Morph): bits 0..1 where the patch
+    // comes from (1 a coarser patch, 2 finer ones, 0 nothing to slide
+    // from), bits 2..5 the edges (west, east, north, south) that slide too.
+    morph: u32,
+    // How far the slide is, 0 (the old shape) to 1 (this patch's own).
+    morph_t: f32,
     pad2: u32,
 };
 
@@ -36,6 +40,8 @@ var<workgroup> pos: array<vec3<f32>, 121>;
 // (rock, scree, wet, up) and (water, moor, snow) per point.
 var<workgroup> attr: array<vec4<f32>, 121>;
 var<workgroup> attr2: array<vec3<f32>, 121>;
+// The old shape at each point while a patch slides into its own.
+var<workgroup> start: array<vec3<f32>, 121>;
 
 fn cell(i: i32, j: i32) -> i32 { return (j + 1) * B + (i + 1); }
 
@@ -52,6 +58,21 @@ fn cut_at(i: i32, j: i32, s: f32, mask: u32) -> f32 {
             || (j == N && i > 0 && i < N && (mask & 8u) != 0u);
     }
     return select(s, 2.0 * s, coarse);
+}
+
+// Whether grid point (i, j) of this patch slides (Job.morph): points inside
+// it, and points on the edges flagged to slide with their neighbour, never
+// corners or the border ring outside the patch.
+fn slides(i: i32, j: i32, morph: u32) -> bool {
+    if i < 0 || i > N || j < 0 || j > N { return false; }
+    let on_i = i == 0 || i == N;
+    let on_j = j == 0 || j == N;
+    if on_i && on_j { return false; }
+    if i == 0 { return (morph & 4u) != 0u; }
+    if i == N { return (morph & 8u) != 0u; }
+    if j == 0 { return (morph & 16u) != 0u; }
+    if j == N { return (morph & 32u) != 0u; }
+    return true;
 }
 
 @compute @workgroup_size(128)
@@ -72,6 +93,51 @@ fn build(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index)
         // Water too narrow for this patch's cells to carve stays as a thin
         // film over its share of them (terrain_surface.wgsl WATER_FILM).
         attr2[t] = vec3<f32>(max(e.water, 0.04 * e.film), e.moor, e.snow);
+        start[t] = e.pos;
+        // Geomorph: a patch that replaces a coarser one starts in that
+        // patch's shape (its points at its cut, ours between them on its
+        // triangles), one that replaces finer ones at their cut, and slides
+        // into its own over a few frames instead of swapping at once.
+        // Corners, and edges whose neighbour is not sliding the same way,
+        // keep their own shape so no crack opens.
+        let dir = job.morph & 3u;
+        if dir != 0u && job.morph_t < 1.0 && slides(i, j, job.morph) {
+            let even = (i & 1) == 0 && (j & 1) == 0;
+            if dir == 2u || even {
+                let f = select(2.0, 0.5, dir == 2u);
+                start[t] = terrain_eval_world(x, z, f * cut_at(i, j, s, job.mask), params.seed, params.style).pos;
+            }
+        }
+    }
+    workgroupBarrier();
+    // Coarser parent: points between its points sit on its triangles.
+    let sliding = (job.morph & 3u) != 0u && job.morph_t < 1.0;
+    var p = vec3<f32>(0.0);
+    if t < 121u {
+        let i = i32(t % 11u) - 1;
+        let j = i32(t / 11u) - 1;
+        let odd_i = (i & 1) == 1;
+        let odd_j = (j & 1) == 1;
+        p = start[t];
+        if sliding && (job.morph & 3u) == 1u && slides(i, j, job.morph) && (odd_i || odd_j) {
+            if odd_i && odd_j {
+                // The parent cell's diagonal (procedural_terrain.rs reserve):
+                // b-c on even cells, a-d on odd ones.
+                if (((i - 1) / 2 + (j - 1) / 2) & 1) == 0 {
+                    p = 0.5 * (start[cell(i + 1, j - 1)] + start[cell(i - 1, j + 1)]);
+                } else {
+                    p = 0.5 * (start[cell(i - 1, j - 1)] + start[cell(i + 1, j + 1)]);
+                }
+            } else if odd_i {
+                p = 0.5 * (start[cell(i - 1, j)] + start[cell(i + 1, j)]);
+            } else {
+                p = 0.5 * (start[cell(i, j - 1)] + start[cell(i, j + 1)]);
+            }
+        }
+    }
+    workgroupBarrier();
+    if t < 121u && sliding {
+        pos[t] = mix(p, pos[t], clamp(job.morph_t, 0.0, 1.0));
     }
     workgroupBarrier();
     // Odd vertices on a coarser edge sit on that edge's straight segment.
