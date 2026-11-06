@@ -882,8 +882,13 @@ fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f3
     let lo=((centre-Vec2::splat(radius))/cell).floor().as_ivec2();
     let hi=((centre+Vec2::splat(radius))/cell).ceil().as_ivec2();
     let mut roots=Vec::new();
-    for j in lo.y..=hi.y {for i in lo.x..=hi.x {
-        let x=(i as f32+0.5)*cell;let z=(j as f32+0.5)*cell;
+    for j in lo.y..=hi.y {
+    // Each row slides along x by its own fraction of a cell: cells still tile
+    // the row, but the seams and the 0.5 m patch lattice of one row no longer
+    // line up with the next, so the field shows no square grid from above.
+    let shift=Cell::new(0,j,seed).hash(79)*cell;
+    for i in lo.x-1..=hi.x {
+        let x=(i as f32+0.5)*cell+shift;let z=(j as f32+0.5)*cell;
         if Vec2::new(x,z).distance_squared(centre)>radius*radius {continue;}
         let s=land.ground(x,z);
         let sparse=0.5+0.8*terrain_field::noised(Vec2::new(x,z)/40.,seed.wrapping_add(31)).x>grass(x,z);
