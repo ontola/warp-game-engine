@@ -13,7 +13,7 @@ use wgpu::util::DeviceExt;
 
 pub const OWNERS_PER_LEAF: usize = 64;
 pub const LEAVES_PER_PARENT: usize = 8;
-pub(crate) const SCENE_BINDINGS: [u32; 5] = [3, 4, 5, 11, 12];
+pub(crate) const SCENE_BINDINGS: [u32; 4] = [3, 4, 5, 12];
 
 /// Independent switches share only topology/refitted bounds, never visibility.
 #[derive(Clone, Copy, Debug)]
@@ -462,7 +462,7 @@ mod tests {
             let view_buffers=module.global_variables.iter().filter(|(_,g)|g.binding.as_ref().is_some_and(|b|b.group==1)&&matches!(g.space,naga::AddressSpace::Storage {..})).count();
             assert!(scene_buffers+view_buffers<=16);
         }
-        assert_eq!(SCENE_BINDINGS,[3,4,5,11,12]);
+        assert_eq!(SCENE_BINDINGS,[3,4,5,12]);
     }
     #[test]
     fn shadow_group_predicate_has_no_camera_depth_or_fog_dependencies() {

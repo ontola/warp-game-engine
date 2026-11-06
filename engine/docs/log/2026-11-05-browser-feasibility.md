@@ -157,3 +157,11 @@ The view raster storage bindings are vertex-only, so raster fragments count
 only the scene's. Raster now passes at `KERN_WEBGPU_LIMITS=spec`; still
 failing there: the view cull layout (11) and shade's 20 sampled textures
 (spec allows 16). Pixel-identical.
+
+Step 7, cull (16 storage buffers per pipeline before): cull reads materials
+and crown replacements through the scene tables (`cull_material(i)`,
+`cull_voxel_replacement_at(i)`), and the counters, draw args and bucket draw
+map are one `CullDraw` binding (frame.rs `ViewTargets::counter`: counters at
+byte 0, args at 192 so the indirect draws add `ARGS`, the map from 512;
+raster reads the same buffer). Cull is at 13. Pixel-identical; the ignored
+occlusion GPU tests pass.
