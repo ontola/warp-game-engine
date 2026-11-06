@@ -660,10 +660,9 @@ fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &rend
     scene.add_texture_with_normal_encoding(&root.join("gravel_ground_01_albedo.jpg"), render::scene::NormalEncoding::SrgbTransferred)?;
     scene.add_texture(&root.join("mossy_rock_albedo.jpg"))?;
     let material = scene.add_material(Material { tint: [1.0; 3], layer: t0, roughness: 0.9, flags: TERRAIN | SURFACE, scale: 4.0, metal: 0.0 });
-    let mut blades = None;
     if world.trees || world.grass {
         let roots = forest(seed, &style, lands, centre, world, track.as_deref());
-        blades = recipe_spruces(&mut scene, lands, palette.meadow_dry_season, world, &roots, world.branch_slots)?;
+        recipe_spruces(&mut scene, lands, palette.meadow_dry_season, world, &roots, world.branch_slots)?;
     }
     let mut pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
     // Beyond the trees the terrain draws the same forest as colour, out to
@@ -681,16 +680,13 @@ fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &rend
         let (start, end) = handover_band(world);
         procedural_terrain::far_forest_handover(&mut scene, material, [centre.x, centre.z], start, end, world.tree_density, &palette.forest);
     }
-    // Past the grass disc the ground takes the blades' colour as seen from
-    // afar, over the share of ground they cover at the view's angle
-    // (KERN_GRASS_PROXY=r,g,b,area_above,area_sideways to tune).
-    if let Some((albedo, area)) = blades {
-        let (albedo, area) = std::env::var("KERN_GRASS_PROXY").ok().and_then(|v| {
-            let p: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
-            (p.len() == 5).then(|| ([p[0], p[1], p[2]], [p[3], p[4]]))
-        }).unwrap_or((albedo, area));
-        eprintln!("grass proxy: albedo {albedo:.3?}, area per m2 {area:.2?}");
-        procedural_terrain::grass_proxy(&mut scene, material, GRASS_RADIUS, albedo, area);
+    // Past the grass disc the ground takes the blades' mean colour (measured
+    // against the bare ground at the disc edge; KERN_GRASS_PROXY=r,g,b to tune).
+    if world.grass {
+        let tint=std::env::var("KERN_GRASS_PROXY").ok().and_then(|v|{
+            let p:Vec<f32>=v.split(',').filter_map(|x|x.trim().parse().ok()).collect();
+            (p.len()==3).then(||[p[0],p[1],p[2]])}).unwrap_or([0.6,0.85,0.5]);
+        procedural_terrain::grass_proxy(&mut scene, material, GRASS_RADIUS, tint);
     }
     // The --track road: the land bends to it, and its pixels draw gravel.
     if let Some(w) = track.clone() {
@@ -762,14 +758,10 @@ fn vegetation_quality_policy()->render::aggregate_lod::Policy {
         measured_source_cuts:false,proxy_pixels:1.,proxy_pixels_from:0.,..Default::default()}
 }
 
-/// Returns the grass cells' look from afar (VoxelAsset::far_look), mean over the variants.
-fn recipe_spruces(scene:&mut Scene,lands:&render::biome::Lands,season:f32,world:World,roots:&[WorldRoot],branch_slots:u32)->Result<Option<([f32;3],[f32;2])>,String> {
+fn recipe_spruces(scene:&mut Scene,lands:&render::biome::Lands,season:f32,world:World,roots:&[WorldRoot],branch_slots:u32)->Result<(),String> {
     let cooked=if world.trees {Some(cooked_flora(lands)?)} else {None};
     let cache=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
     let grass=if world.grass {recipe_forest::cook_meadow_cells(&[(47,season),(83,season)],Some(&cache))?} else {Vec::new()};
-    let looks=grass.iter().filter_map(|c|c.plant.proxy()).map(|a|a.far_look()).collect::<Vec<_>>();
-    let blades=(!looks.is_empty()).then(||{let n=looks.len() as f32;
-        (std::array::from_fn(|k|looks.iter().map(|l|l.0[k]).sum::<f32>()/n),std::array::from_fn(|k|looks.iter().map(|l|l.1[k]).sum::<f32>()/n))});
     for (i,c) in grass.iter().enumerate() {
         eprintln!("grass cell {i}: {} in {:.1} ms, {} placements, {} branches, {} mesh bindings",if c.loaded {"loaded"} else {"cooked"},c.millis,c.plant.stats().placements,c.plant.stats().branches,c.plant.stats().primitive_meshes);
     }
@@ -808,7 +800,7 @@ fn recipe_spruces(scene:&mut Scene,lands:&render::biome::Lands,season:f32,world:
         let bytes=mib.checked_mul(1024*1024).filter(|n|*n>0).ok_or("source cache budget overflow/zero")?;
         scene.gpu_forest.as_mut().unwrap().source_budget.vertices=bytes/32;
     }
-    println!("GPU vegetation: {} world roots, {capacity} reserved roots, {branch_slots} shared branch slots",roots.len());Ok(blades)
+    println!("GPU vegetation: {} world roots, {capacity} reserved roots, {branch_slots} shared branch slots",roots.len());Ok(())
 }
 
 /// Trees within `world.tree_radius` of `centre`, from the engine's forest
