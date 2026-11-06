@@ -162,10 +162,6 @@ override FEATURE_IRRADIANCE: bool = true;
 // but cost registers: about 0.3-0.5 and 0.2 ms of land shading on an M5 Pro.
 override FEATURE_FIELD_REGIONS: bool = true;
 override FEATURE_FIELD_ROADS: bool = true;
-// Half the width of the blend between two adjacent texture variants (rotated
-// copies) around the middle of a selector cell, 0..0.5. Outside it a layer
-// takes one texture read instead of two. KERN_TERRAIN_VARIANT_BLEND sets it.
-override TERRAIN_VARIANT_BLEND: f32 = 0.35;
 override SKIP_HIDDEN_MEADOW:bool=false;
 var<workgroup> hidden_meadow_count:atomic<u32>;
 // Sky tiles: `classify` writes the sky of 8x8 tiles without geometry and
@@ -1595,7 +1591,7 @@ fn terrain_mapping(p: vec3<f32>) -> TerrainMapping {
     mapping.b = terrain_turn(index + 1.0);
     mapping.offset_a = vec2<f32>(hash2(vec2<f32>(index, 11.0)), hash2(vec2<f32>(index, 23.0)));
     mapping.offset_b = vec2<f32>(hash2(vec2<f32>(index + 1.0, 11.0)), hash2(vec2<f32>(index + 1.0, 23.0)));
-    mapping.blend = smoothstep(0.5 - TERRAIN_VARIANT_BLEND, 0.5 + TERRAIN_VARIANT_BLEND, fract(selector));
+    mapping.blend = smoothstep(0.15, 0.85, fract(selector));
     return mapping;
 }
 
@@ -1681,7 +1677,7 @@ fn rock_mapping(p: vec3<f32>) -> RockMapping {
     var result: RockMapping;
     result.a = rock_variant(index);
     result.b = rock_variant(index + 1);
-    result.blend = smoothstep(0.5 - TERRAIN_VARIANT_BLEND, 0.5 + TERRAIN_VARIANT_BLEND, fract(selector));
+    result.blend = smoothstep(0.15, 0.85, fract(selector));
     return result;
 }
 
