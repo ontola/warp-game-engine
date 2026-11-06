@@ -16,7 +16,8 @@ python3 engine/tools/build-web.py --serve
 ```
 
 Then open http://localhost:8790 in Chrome or Edge (WebGPU needs localhost or
-HTTPS). `?style=alpine`, `?seed=2` and `?trees=0` pick the world. Click to
+HTTPS). `?style=alpine`, `?seed=2` and `?trees=0` pick the world; hosts
+that pass only a fragment get the same from `#alpine-notrees`. Click to
 capture the mouse; WASD and the mouse fly, F1 to F9 work as natively, Esc
 releases the mouse. The page shows the log in its corner.
 

@@ -876,7 +876,7 @@ fn diff_images(a:&str,b:&str,heat:&str)->Result<(),String> {
 const WEB_TEXTURES: [&str; 6] = ["grass_ground", "forest_leaves_02", "forest_ground_04", "rock_face_03", "gravel_ground_01", "mossy_rock"];
 
 /// In a browser: `?style=alpine&seed=2` picks the world, `?trees=0` leaves
-/// the trees out; the low profile.
+/// the trees out (or `#alpine-notrees`); the low profile.
 #[cfg(target_arch = "wasm32")]
 fn main() {
     app::web::install_panic_hook();
@@ -889,9 +889,13 @@ fn main() {
         }
         let query = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
         let param = |k: &str| query.trim_start_matches('?').split('&').find_map(|kv| kv.split_once('=').filter(|(key, _)| *key == k).map(|(_, v)| v.to_owned()));
+        // Hosts that pass only a `#name` get the same as words: `#alpine-notrees`.
+        let hash = web_sys::window().and_then(|w| w.location().hash().ok()).unwrap_or_default();
+        let words: Vec<&str> = hash.trim_start_matches('#').split('-').collect();
         let seed = param("seed").and_then(|s| s.parse().ok()).unwrap_or(1);
-        let style = param("style").and_then(|s| STYLES.iter().position(|n| *n == s)).unwrap_or(0);
-        let world = World { trees: param("trees").as_deref() != Some("0"), branch_slots: 512, ..World::default() };
+        let style = param("style").or_else(|| words.iter().find(|w| STYLES.contains(w)).map(|w| w.to_string()))
+            .and_then(|s| STYLES.iter().position(|n| *n == s)).unwrap_or(0);
+        let world = World { trees: param("trees").as_deref() != Some("0") && !words.contains(&"notrees"), branch_slots: 512, ..World::default() };
         app::web::log(&format!("terrain fly: seed {seed}, style {}, building the world", STYLES[style]));
         match Fly::new(seed, style, world) {
             Ok(game) => app::web::run(app::Config { title: "Terrain fly".into(), tick_hz: TICK_HZ, max_render_height: Some(720), ..Default::default() }, Box::new(game)),
