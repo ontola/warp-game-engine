@@ -253,24 +253,40 @@ fn crown_depth_in(map: texture_depth_2d, projection: mat4x4<f32>, p: vec3<f32>) 
     if any(uv <= vec2<f32>(0.0)) || any(uv >= vec2<f32>(1.0)) || c.z < 0.0 || c.z > 1.0 { return -1.0; }
     let rate = abs(dot(vec3<f32>(projection[0].z, projection[1].z, projection[2].z), light.sun_dir.xyz));
     if rate <= 1e-9 { return -1.0; }
-    let size = vec2<i32>(textureDimensions(map));
-    let at = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(1), size - 2);
-    // Mean of a plus of taps: one texel of a 1 m voxel disc is noise.
+    let size = vec2<f32>(textureDimensions(map));
+    // A 3x3 grid of taps 0.6 m apart, bilinear in between: the casters are
+    // voxel cells half a metre wide, and one texel per point printed them
+    // as squares across the crown that flickered as the camera moved
+    // (Joep, playtest 3).
+    let texel_m = 2.0 / max(length(vec3<f32>(projection[0].x, projection[1].x, projection[2].x)) * size.x, 1e-9);
+    let step = 0.6 / texel_m;
+    let f = uv * size - 0.5;
+    let base = floor(f);
+    let frac = f - base;
     var sum = 0.0;
-    for (var k = 0; k < 5; k++) {
-        let o = select(select(select(select(vec2<i32>(0, 0), vec2<i32>(1, 0), k == 1), vec2<i32>(-1, 0), k == 2), vec2<i32>(0, 1), k == 3), vec2<i32>(0, -1), k == 4);
-        sum += abs(c.z - textureLoad(map, at + o, 0)) / rate;
+    var weight = 0.0;
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let w = (2.0 - abs(f32(x))) * (2.0 - abs(f32(y)));
+            let o = vec2<f32>(f32(x), f32(y)) * step;
+            let t = clamp(base + o, vec2<f32>(0.0), size - 2.0);
+            let i = vec2<i32>(t);
+            let d00 = textureLoad(map, i, 0);
+            let d10 = textureLoad(map, i + vec2<i32>(1, 0), 0);
+            let d01 = textureLoad(map, i + vec2<i32>(0, 1), 0);
+            let d11 = textureLoad(map, i + vec2<i32>(1, 1), 0);
+            let d = mix(mix(d00, d10, frac.x), mix(d01, d11, frac.x), frac.y);
+            sum += w * abs(c.z - d) / rate;
+            weight += w;
+        }
     }
-    return sum / 5.0;
+    return sum / weight;
 }
 // Metres below the first caster along the sun (0 where no map covers p).
+// The shared map only: switching to the near map at a radius round the
+// camera made a crown's darkness jump as you walked.
 fn crown_depth(p: vec3<f32>) -> f32 {
-    var depth = -1.0;
-    if light.near_shadow.z > 0.5 {
-        let c = light.near_shadow_view_proj * vec4<f32>(p, 1.0);
-        if length(c.xy) < 0.9 { depth = crown_depth_in(near_shadow_tex, light.near_shadow_view_proj, p); }
-    }
-    if depth < 0.0 { depth = crown_depth_in(shadow_tex, light.shadow_view_proj, p); }
+    let depth = crown_depth_in(shadow_tex, light.shadow_view_proj, p);
     return max(depth - 0.25, 0.0);
 }
 
