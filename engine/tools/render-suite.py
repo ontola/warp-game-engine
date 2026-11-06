@@ -102,7 +102,7 @@ def run_view(exe, suite, view, out, stem, extra, env):
     """One process per view: no state leaks from one camera into the next."""
     frames = view.get("frames", suite["frames"])
     base = out / stem
-    command = [str(exe), *suite["world"], *extra, "--no-hud", "--at", view["at"], "--fly", str(frames), "--size", suite["size"],
+    command = [str(exe), *view.get("world", suite["world"]), *extra, "--no-hud", "--at", view["at"], "--fly", str(frames), "--size", suite["size"],
                "--fly-times", native_path(f"{base}.times.json", exe), "--fly-shot", native_path(f"{base}.png", exe), "--fly-stats", native_path(f"{base}.stats.json", exe)]
     command += ["--speed", str(view["speed"])] if "speed" in view else ["--stationary"]
     started = time.time()
