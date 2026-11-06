@@ -42,7 +42,10 @@ fn hash(x: u32) -> u32 {
     // sub-pixel splat standing for several, drawn larger and solid.
     let alpha = f32(record.w & 0xffffu) / 65535.0 * 64.0;
     let solid = max(alpha, 0.25);
-    let half = 0.688 * grid.w * scale * sqrt(solid);
+    // 1.15x: kept() thins the rim of discs several pixels wide into ragged
+    // leaf edges (and every disc evenly when it is tiny), losing ~24 % of
+    // the area; the larger disc keeps the cell's coverage.
+    let half = 1.15 * 0.688 * grid.w * scale * sqrt(solid);
     let corners = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
     let corner = corners[vertex % 6u];
     let view_proj = mat4x4<f32>(bitcast<vec4<f32>>(splats[0]), bitcast<vec4<f32>>(splats[1]), bitcast<vec4<f32>>(splats[2]), bitcast<vec4<f32>>(splats[3]));
@@ -63,9 +66,15 @@ fn hash(x: u32) -> u32 {
     return out;
 }
 fn kept(in: Out) -> bool {
-    if dot(in.disc, in.disc) > 1.0 { return false; }
+    let r2 = dot(in.disc, in.disc);
+    if r2 > 1.0 { return false; }
+    // Disc radius in pixels: wide discs read as balls (Joep, 6 November),
+    // so their rim breaks up stochastically; small ones drop evenly.
+    let radius_px = 1.0 / max(fwidth(in.disc.x), 1e-4);
+    let wide = smoothstep(1.5, 4.0, radius_px);
+    let keep = mix(0.76, 1.0 - 0.75 * smoothstep(0.3, 1.0, r2), wide);
     let p = vec2<u32>(in.position.xy);
-    return f32(hash(p.x ^ hash(p.y ^ hash(in.key))) >> 8u) / 16777216.0 < in.alpha;
+    return f32(hash(p.x ^ hash(p.y ^ hash(in.key))) >> 8u) / 16777216.0 < in.alpha * keep;
 }
 @fragment fn fs(in: Out) -> @location(0) u32 {
     if !kept(in) { discard; }
