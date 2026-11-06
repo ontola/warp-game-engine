@@ -246,6 +246,11 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     if sun.y > 0.02 && sun_xz > 1e-3 && stand < 1.0 {
         let reach = min(params.style.far.w * 1.3 * sun_xz / sun.y, 160.0);
         let toward = sun.xz / sun_xz;
+        // Each tap is a copy of the stand edge shifted by reach/8; filtered
+        // at that spacing the copies blend instead of stacking into steps
+        // (the staircase seen from the air).
+        let tap_fp = max(footprint, reach * 0.125);
+        let tap_w = max(edge_w, tap_fp / 150.0);
         // Crowns differ in height, so the shadow fades out over the last
         // part of its reach instead of ending in steps one tap apart.
         for (var k = 1; k <= 8; k++) {
@@ -254,7 +259,7 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
             // tall only falls with k and a stand is at most 1: no later tap
             // can raise the maximum any more.
             if shade >= tall { break; }
-            shade = max(shade, tall * far_forest_stand(s.p.xz + toward * reach * t, seed, site, footprint, edge_w));
+            shade = max(shade, tall * far_forest_stand(s.p.xz + toward * reach * t, seed, site, tap_fp, tap_w));
         }
     }
     let shaded = ground * mix(1.0, 0.45, shade * (1.0 - stand) * fade);
@@ -274,11 +279,16 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     var top = 0.0;
     var wall = 0.0;
     let taps = select(1, 6, reach > footprint);
+    // Wall taps sit reach/5 apart: filter them at that spacing, as above.
+    let wall_fp = max(footprint, reach / 5.0);
+    let wall_w = max(edge_w, wall_fp / 150.0);
     for (var k = 0; k < taps; k++) {
         // Behind a solid stand nothing more is seen: the rest adds nothing.
         if seen <= 0.0 { break; }
         let t = select(0.0, f32(k) / f32(taps - 1), taps > 1);
-        let a = far_forest_stand(mix(q, s.p.xz, t), seed, site, footprint, edge_w);
+        var a = 0.0;
+        if k == 0 { a = far_forest_stand(q, seed, site, footprint, edge_w); }
+        else { a = far_forest_stand(mix(q, s.p.xz, t), seed, site, wall_fp, wall_w); }
         if k == 0 { top = seen * a; } else { wall += seen * a; }
         seen *= 1.0 - a;
     }
