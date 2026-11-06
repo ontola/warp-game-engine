@@ -40,8 +40,12 @@ impl Cache {
             || deps.iter().flatten().any(|&i|i>=forest.levels.len()) {return Err("invalid voxel cache contract/budget".into());}
         let pages=(0..forest.levels.len()).map(|i|VoxelPage::cook(forest,i).map(|mut p|{p.group_splats();p})).collect::<Result<Vec<_>,_>>()?;
         let total=|f:fn(&VoxelPage)->usize| pages.iter().map(|p|f(p)as u64).sum::<u64>();
-        let capacities=[(budget.index_words as u64).min(total(|p|p.index_words()))as u32,
-            (budget.cells as u64).min(total(|p|p.cells.len()))as u32,(budget.splats as u64).min(total(|p|p.splats.len()))as u32];
+        // Each arena is one binding: shrink to the device's binding limit (WebGPU's
+        // default is 128 MiB) rather than fail. Coarser fallbacks cover the rest.
+        let limit=gpu.device.limits().max_storage_buffer_binding_size as u64;
+        let fit=[limit/4,limit/128,(limit/8).saturating_sub(2*pages.len()as u64)];
+        let capacities=[(budget.index_words as u64).min(total(|p|p.index_words())).min(fit[0])as u32,
+            (budget.cells as u64).min(total(|p|p.cells.len())).min(fit[1])as u32,(budget.splats as u64).min(total(|p|p.splats.len())).min(fit[2])as u32];
         let pinned_sizes=[pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.index_words()as u64).sum::<u64>(),
             pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.cells.len()as u64).sum::<u64>(),
             pages.iter().enumerate().filter(|(i,_)|pinned[*i]).map(|(_,p)|p.splats.len()as u64).sum::<u64>()];
