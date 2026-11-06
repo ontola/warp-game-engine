@@ -285,7 +285,7 @@ impl Stats {
         }
         if tiny.0 > 0 { lines.push(Line { depth: 1, label: format!("{} smaller passes", tiny.0), value: ms(tiny.1), color: MUTED, bar: 0.0, heading: false }); }
         if self.gpu_samples > 0 {
-            lines.push(Line { color: MUTED, ..Line::pair(format!("{} timestamps a frame, read back late", self.timestamps), format!("frame {}", self.gpu_frame.unwrap_or(0))) });
+            lines.push(Line { color: MUTED, ..Line::pair(format!("{} timestamps a frame, read back without waiting (frame {})", self.timestamps, self.gpu_frame.unwrap_or(0)), "") });
         }
 
         lines.push(Line::heading("CPU"));
@@ -336,7 +336,7 @@ impl Stats {
             // Tree rows: name left, milliseconds right. Header rows: a
             // label column, then the value.
             let tree = line.depth > 0 || line.heading || line.bar > 0.0;
-            let label_w = if tree { right - inner - indent - 80.0 * s } else { 110.0 * s };
+            let label_w = if tree { right - inner - indent - 80.0 * s } else if line.value.is_empty() { right - inner } else { 110.0 * s };
             let face = if line.heading || line.depth == 0 && line.bar > 0.0 { FontFace::Title } else { FontFace::Body };
             let id = TEXT_ID + n as u64 * 2;
             let at = [inner + indent + 3.0 * s, y];
