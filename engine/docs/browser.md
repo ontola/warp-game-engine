@@ -38,13 +38,14 @@ host serves it.
   `topology.rs`, `shade_scratch.rs`, `cull_tables.rs`, the cull `CullDraw`
   binding); optional features keep their own bind group. Check a change with
   `KERN_WEBGPU_LIMITS=spec` ([renderer switches](renderer-switches.md)).
-- Where it stands: shade and raster fit 8; cull needs 10; shade needs 20
+- Where it stands: shade, raster and cull fit 8 (cull leaves out the
+  opt-in receiver shadow demand, which adds a ninth); shade needs 20
   sampled textures (spec 16, but 98 % of Macs and 92 % of all WebGPU
   devices offer 44 or more, web3dsurvey.com, November 2026). The GPU forest
   (trees) still needs 16 storage buffers. Storage buffers on macOS: 94 %
   offer 10 or more, 29 % 16; Firefox (Zen) gives 9, Chrome's software
   adapter (SwiftShader) 10 with 16 textures.
-- With fewer than 10 storage buffers or 20 sampled textures
+- With fewer than 8 storage buffers or 20 sampled textures
   (`render::portable::needed`) the renderer switches to its portable path
   (`render::portable`, `KERN_PORTABLE=1` forces it natively): the
   procedural terrain drawn straight from its patch pool, textured with a
