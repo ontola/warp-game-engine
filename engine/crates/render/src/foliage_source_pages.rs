@@ -45,7 +45,8 @@ struct Pending {id:usize,resident:Resident,writes:Vec<Write>,write:usize,offset:
 pub struct Stats {pub allocated_bytes:u64,pub resident_pages:u32,pub total_pages:u32,pub uploads:u64,pub evictions:u64,pub uploaded_bytes:u64,pub pinned_bytes:u64}
 pub struct Cache {
     pages:Vec<Page>,pub deps:Vec<Vec<usize>>,pub capacities:[u64;3],arenas:[Arena;3],resident:Vec<Option<Resident>>,pending:Option<Pending>,
-    pub buffers:[wgpu::Buffer;4],pub dirty:BTreeSet<usize>,stats:Stats,
+    /// Vertices, cluster vertices and triangles share one buffer (topology.rs).
+    pub topology:crate::topology::Topology,pub clusters:wgpu::Buffer,pub dirty:BTreeSet<usize>,stats:Stats,
 }
 /// Conservative draw/traversal work, NOT unique resident asset bytes.
 /// Repeated templates sharing one mesh each consume work. Includes every CLOD
@@ -97,8 +98,9 @@ impl Cache {
         if (0..3).any(|i|pages[0].cost()[i]>capacities[i]){return Err("pinned source geometry exceeds cache budget".into());}
         let sizes=[capacities[0]*32,capacities[1]*4,capacities[2]*4,scene.clusters.len()as u64*80];
         if sizes.iter().any(|&s|s>gpu.device.limits().max_storage_buffer_binding_size as u64){return Err("source cache exceeds device binding limit".into());}
-        let buffers=std::array::from_fn(|i|gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("bounded forest source arena"),size:sizes[i].max(80),usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false}));
-        let mut c=Self{deps,capacities,arenas:std::array::from_fn(|i|Arena::new(capacities[i]as u32)),resident:vec![None;pages.len()],pending:None,buffers,dirty:(0..pages.len()).collect(),stats:Stats{allocated_bytes:sizes.iter().map(|s|s.max(&80)).sum(),total_pages:pages.len()as u32,..Default::default()},pages};
+        let topology=crate::topology::Topology::new(gpu,"bounded forest source topology",[sizes[0],sizes[1],sizes[2]],wgpu::BufferUsages::COPY_SRC);
+        let clusters=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("bounded forest source clusters"),size:sizes[3].max(80),usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
+        let mut c=Self{deps,capacities,arenas:std::array::from_fn(|i|Arena::new(capacities[i]as u32)),resident:vec![None;pages.len()],pending:None,topology,clusters,dirty:(0..pages.len()).collect(),stats:Stats{allocated_bytes:sizes.iter().map(|s|s.max(&80)).sum(),total_pages:pages.len()as u32,..Default::default()},pages};
         c.begin(0,0)?;if c.pending.is_none(){return Err("cannot allocate pinned source geometry".into());}c.advance(gpu,u64::MAX)?;c.stats.pinned_bytes=c.stats.uploaded_bytes;Ok(c)
     }
     pub fn cost(&self,id:usize)->[u64;3]{self.pages[id].cost()}
@@ -122,7 +124,7 @@ impl Cache {
     fn advance(&mut self,gpu:&Gpu,budget:u64)->Result<u64,String>{
         let Some(p)=self.pending.as_mut()else{return Ok(0);};let mut remaining=budget&!3;let initial=remaining;
         while p.write<p.writes.len() {let w=&p.writes[p.write];let n=(w.bytes.len()-p.offset).min(remaining as usize);
-            if n>0 {gpu.queue.write_buffer(&self.buffers[w.buffer],w.offset+p.offset as u64,&w.bytes[p.offset..p.offset+n]);p.offset+=n;remaining-=n as u64;}
+            if n>0 {let bytes=&w.bytes[p.offset..p.offset+n];if w.buffer==3 {gpu.queue.write_buffer(&self.clusters,w.offset+p.offset as u64,bytes);}else{self.topology.write(gpu,w.buffer,w.offset+p.offset as u64,bytes);}p.offset+=n;remaining-=n as u64;}
             if p.offset==w.bytes.len(){p.write+=1;p.offset=0;}else{break;}
         }
         if p.write==p.writes.len(){let p=self.pending.take().unwrap();self.resident[p.id]=Some(p.resident);self.dirty.insert(p.id);self.stats.uploads+=1;}
@@ -193,7 +195,7 @@ pub(crate) mod tests {
             let wanted=BTreeSet::from([0,target]);
             for frame in 0..100 {let mut remaining=256;let mut complete=0;cache.service(&gpu,&wanted,frame,&mut remaining,&mut complete,1).unwrap();assert!(remaining<=256);assert!(complete<=1);assert_eq!(cache.stats().allocated_bytes,allocated);assert!(cache.resident[0].is_some());if frame==0{assert!(!cache.ready(target));}if cache.ready(target){break;}}
             assert!(cache.ready(target));assert!(cache.stats().resident_pages<=2);
-            let cluster_bytes=read(&cache.buffers[3]);let vertices=read(&cache.buffers[0]);let indices=read(&cache.buffers[1]);let triangles=read(&cache.buffers[2]);
+            let cluster_bytes=read(&cache.clusters);let all=read(&cache.topology.buffer);let region=|i:usize|{let (o,n)=cache.topology.regions[i];all[o as usize..(o+n)as usize].to_vec()};let vertices=region(0);let indices=region(1);let triangles=region(2);
             let id=if target==1{1}else{65};let c:GpuCluster=bytemuck::pod_read_unaligned(&cluster_bytes[id*80..][..80]);let tri:u32=bytemuck::pod_read_unaligned(&triangles[c.first_tri as usize*4..][..4]);assert_eq!(tri,scene.tris[id]);
             for x in 0..3{let v:u32=bytemuck::pod_read_unaligned(&indices[(c.first_vert as usize+x)*4..][..4]);let got:Vertex=bytemuck::pod_read_unaligned(&vertices[v as usize*32..][..32]);assert_eq!(bytemuck::bytes_of(&got),bytemuck::bytes_of(&scene.vertices[id*3+x]));}
             assert_eq!(&vertices[..96],bytemuck::cast_slice::<Vertex,u8>(&scene.vertices[..3]));assert_eq!(&cluster_bytes[..80],bytemuck::bytes_of(&scene.clusters[0]));

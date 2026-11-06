@@ -773,13 +773,13 @@ pub(crate) struct TerrainRenderer {
     params: wgpu::Buffer,
     jobs: Mutex<(wgpu::Buffer, wgpu::BindGroup)>,
     pending: Mutex<Vec<Job>>,
-    vertices: wgpu::Buffer,
+    vertices: crate::topology::Topology,
     clusters: wgpu::Buffer,
     world: world_constraints::GpuWorld,
 }
 
 impl TerrainRenderer {
-    pub fn new(gpu: &Gpu, spec: TerrainSpec, vertices: &wgpu::Buffer, clusters: &wgpu::Buffer) -> Self {
+    pub fn new(gpu: &Gpu, spec: TerrainSpec, vertices: &crate::topology::Topology, clusters: &wgpu::Buffer) -> Self {
         let source = format!("{}\n{}\n{}", terrain_field::WGSL, world_constraints::wgsl(0, 4), SHADER);
         let world = world_constraints::GpuWorld::new(gpu, spec.constraints.as_deref().unwrap_or(&world_constraints::World::empty()));
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("procedural terrain"), source: wgpu::ShaderSource::Wgsl(source.into()) });
@@ -805,13 +805,13 @@ impl TerrainRenderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
     }
 
-    fn bind(gpu: &Gpu, layout: &wgpu::BindGroupLayout, params: &wgpu::Buffer, jobs: &wgpu::Buffer, vertices: &wgpu::Buffer, clusters: &wgpu::Buffer,
+    fn bind(gpu: &Gpu, layout: &wgpu::BindGroupLayout, params: &wgpu::Buffer, jobs: &wgpu::Buffer, vertices: &crate::topology::Topology, clusters: &wgpu::Buffer,
         world: &world_constraints::GpuWorld) -> wgpu::BindGroup {
         let [w0, w1, w2] = world.entries(4);
         gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("procedural terrain"), layout, entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: jobs.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: vertices.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: vertices.vertices() },
             wgpu::BindGroupEntry { binding: 3, resource: clusters.as_entire_binding() }, w0, w1, w2] })
     }
 
@@ -827,7 +827,7 @@ impl TerrainRenderer {
             let v = dst.slice(..).get_mapped_range().expect("mapped").to_vec();
             v
         };
-        let v = read(&self.vertices, ((self.spec.first_vertex + slot * VERTS) * 32) as u64, (VERTS * 32) as u64);
+        let v = read(&self.vertices.buffer, ((self.spec.first_vertex + slot * VERTS) * 32) as u64, (VERTS * 32) as u64);
         let c = read(&self.clusters, ((self.spec.first_cluster + slot) * 80) as u64, 80);
         let i = read(instances, ((self.spec.first_instance + slot) * 80) as u64, 80);
         (bytemuck::cast_slice(&v).to_vec(), bytemuck::cast_slice(&c).to_vec(), bytemuck::cast_slice(&i).to_vec())

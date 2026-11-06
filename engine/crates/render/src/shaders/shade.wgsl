@@ -64,9 +64,12 @@ struct Material {
     metal: f32,
 };
 
-@group(0) @binding(0) var<storage, read> vertices: array<f32>;
-@group(0) @binding(1) var<storage, read> cluster_verts: array<u32>;
-@group(0) @binding(2) var<storage, read> tris: array<u32>;
+// Cluster geometry in one buffer (topology.rs): vertices from word 0, then
+// cluster vertex indices and triangles from scene table vec4 1.z and 1.w.
+@group(0) @binding(0) var<storage, read> topology: array<u32>;
+fn vertex_f32(i: u32) -> f32 { return bitcast<f32>(topology[i]); }
+fn cluster_vert(i: u32) -> u32 { return topology[scene_tables[1].z + i]; }
+fn tri_word(i: u32) -> u32 { return topology[scene_tables[1].w + i]; }
 @group(0) @binding(3) var<storage, read> clusters: array<Cluster>;
 @group(0) @binding(4) var<storage, read> instances: array<Instance>;
 
@@ -751,7 +754,7 @@ fn vtx(i: u32) -> u32 {
 }
 
 fn pos_of(v: u32) -> vec3<f32> {
-    return vec3<f32>(vertices[v], vertices[v + 1u], vertices[v + 2u]);
+    return vec3<f32>(vertex_f32(v), vertex_f32(v + 1u), vertex_f32(v + 2u));
 }
 
 fn xform(inst: Instance, p: vec3<f32>) -> vec3<f32> {
@@ -1537,9 +1540,9 @@ fn triplanar_n(l: i32, p: vec3<f32>, n: vec3<f32>, tw: vec3<f32>, scale: f32, ro
 
 // World directions of the mesh uv on a triangle: (dP/du, -dP/dv).
 fn uv_frame(e1: vec3<f32>, e2: vec3<f32>, vi: array<u32, 3>) -> array<vec3<f32>, 2> {
-    let uv0 = vec2<f32>(vertices[vi[0] + 6u], vertices[vi[0] + 7u]);
-    let d1 = vec2<f32>(vertices[vi[1] + 6u], vertices[vi[1] + 7u]) - uv0;
-    let d2 = vec2<f32>(vertices[vi[2] + 6u], vertices[vi[2] + 7u]) - uv0;
+    let uv0 = vec2<f32>(vertex_f32(vi[0] + 6u), vertex_f32(vi[0] + 7u));
+    let d1 = vec2<f32>(vertex_f32(vi[1] + 6u), vertex_f32(vi[1] + 7u)) - uv0;
+    let d2 = vec2<f32>(vertex_f32(vi[2] + 6u), vertex_f32(vi[2] + 7u)) - uv0;
     let det = d1.x * d2.y - d2.x * d1.y;
     let r = select(1.0 / det, 0.0, abs(det) < 1e-12);
     let dpdu = (e1 * d2.y - e2 * d1.y) * r;
@@ -1567,9 +1570,9 @@ fn uv_at(d: vec3<f32>, e1: vec3<f32>, e2: vec3<f32>, vi: array<u32, 3>) -> vec2<
     let inv = select(1.0 / den, 0.0, abs(den) < 1e-20);
     let b1 = (d11 * d20 - d01 * d21) * inv;
     let b2 = (d00 * d21 - d01 * d20) * inv;
-    let uv0 = vec2<f32>(vertices[vi[0] + 6u], vertices[vi[0] + 7u]);
-    let uv1 = vec2<f32>(vertices[vi[1] + 6u], vertices[vi[1] + 7u]);
-    let uv2 = vec2<f32>(vertices[vi[2] + 6u], vertices[vi[2] + 7u]);
+    let uv0 = vec2<f32>(vertex_f32(vi[0] + 6u), vertex_f32(vi[0] + 7u));
+    let uv1 = vec2<f32>(vertex_f32(vi[1] + 6u), vertex_f32(vi[1] + 7u));
+    let uv2 = vec2<f32>(vertex_f32(vi[2] + 6u), vertex_f32(vi[2] + 7u));
     return (uv1 - uv0) * b1 + (uv2 - uv0) * b2;
 }
 
@@ -1890,9 +1893,9 @@ fn terrain_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cl = clusters[vis.y];
     let m = material(cl.material);
     let inst = instance_at(vis.x);
-    let packed = tris[cl.first_tri + (id & 127u)];
+    let packed = tri_word(cl.first_tri + (id & 127u));
     var vi: array<u32, 3>;
-    for (var k = 0u; k < 3u; k++) { vi[k] = vtx(cluster_verts[cl.first_vert + ((packed >> (8u * k)) & 0xffu)]); }
+    for (var k = 0u; k < 3u; k++) { vi[k] = vtx(cluster_vert(cl.first_vert + ((packed >> (8u * k)) & 0xffu))); }
     // The ray through the quad's centre, on the triangle of its terrain pixel.
     let centre = vec2<f32>(cx * 2) + 1.0;
     let ndc = vec2<f32>(centre.x / view.size.x * 2.0 - 1.0, 1.0 - centre.y / view.size.y * 2.0);
@@ -1916,8 +1919,8 @@ fn terrain_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     let w = array<f32, 3>(b0, b1, b2);
     for (var k = 0u; k < 3u; k++) {
         let v = vi[k];
-        n += vec3<f32>(vertices[v + 3u], vertices[v + 4u], vertices[v + 5u]) * w[k];
-        uv += vec2<f32>(vertices[v + 6u], vertices[v + 7u]) * w[k];
+        n += vec3<f32>(vertex_f32(v + 3u), vertex_f32(v + 4u), vertex_f32(v + 5u)) * w[k];
+        uv += vec2<f32>(vertex_f32(v + 6u), vertex_f32(v + 7u)) * w[k];
     }
     n = normalize(wind_normal(member_slot(vis.x), xform_dir(inst, n)));
     let geo_n = normalize(cross(e1, e2));
@@ -1959,8 +1962,8 @@ fn terrain_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     var local = vec3<f32>(0.0);
     for (var k = 0u; k < 3u; k++) { local += pos_of(vi[k]) * w[k]; }
-    let corner = array<vec2<f32>, 3>(vec2<f32>(vertices[vi[0] + 6u], vertices[vi[0] + 7u]),
-        vec2<f32>(vertices[vi[1] + 6u], vertices[vi[1] + 7u]), vec2<f32>(vertices[vi[2] + 6u], vertices[vi[2] + 7u]));
+    let corner = array<vec2<f32>, 3>(vec2<f32>(vertex_f32(vi[0] + 6u), vertex_f32(vi[0] + 7u)),
+        vec2<f32>(vertex_f32(vi[1] + 6u), vertex_f32(vi[1] + 7u)), vec2<f32>(vertex_f32(vi[2] + 6u), vertex_f32(vi[2] + 7u)));
     let si = SurfaceIn(u32(max(-2 - m.layer, 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
         corner[0], corner[1], corner[2], fp.dx, fp.dy, m.tint, m.roughness, m.metal, m.scale, light.anim.x);
     field_sun = 1.0;
@@ -2096,10 +2099,10 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let terrain_class = (material(cl.material).flags & 2u) != 0u && (material(cl.material).flags >> 16u) == 0u;
     if SHADE_CLASS != 0u && terrain_class != (SHADE_CLASS == 1u) { return; }
     let inst = instance_at(vis.x);
-    let packed = tris[cl.first_tri + tri];
+    let packed = tri_word(cl.first_tri + tri);
     var vi: array<u32, 3>;
     for (var k = 0u; k < 3u; k++) {
-        vi[k] = vtx(cluster_verts[cl.first_vert + ((packed >> (8u * k)) & 0xffu)]);
+        vi[k] = vtx(cluster_vert(cl.first_vert + ((packed >> (8u * k)) & 0xffu)));
     }
     // Match the actual deformed raster triangle before ray intersection and
     // texture derivatives. Rest-pose reconstruction would slide UVs and light.
@@ -2123,8 +2126,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let w = array<f32, 3>(b0, b1, b2);
     for (var k = 0u; k < 3u; k++) {
         let v = vi[k];
-        n += vec3<f32>(vertices[v + 3u], vertices[v + 4u], vertices[v + 5u]) * w[k];
-        uv += vec2<f32>(vertices[v + 6u], vertices[v + 7u]) * w[k];
+        n += vec3<f32>(vertex_f32(v + 3u), vertex_f32(v + 4u), vertex_f32(v + 5u)) * w[k];
+        uv += vec2<f32>(vertex_f32(v + 6u), vertex_f32(v + 7u)) * w[k];
     }
     n = normalize(wind_normal(member_slot(vis.x), xform_dir(inst, n)));
     let geo_n = normalize(cross(e1, e2));
@@ -2391,8 +2394,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     if (m.flags & 32768u) != 0u {
         var local = vec3<f32>(0.0);
         for (var k = 0u; k < 3u; k++) { local += pos_of(vi[k]) * w[k]; }
-        let corner = array<vec2<f32>, 3>(vec2<f32>(vertices[vi[0] + 6u], vertices[vi[0] + 7u]),
-            vec2<f32>(vertices[vi[1] + 6u], vertices[vi[1] + 7u]), vec2<f32>(vertices[vi[2] + 6u], vertices[vi[2] + 7u]));
+        let corner = array<vec2<f32>, 3>(vec2<f32>(vertex_f32(vi[0] + 6u), vertex_f32(vi[0] + 7u)),
+            vec2<f32>(vertex_f32(vi[1] + 6u), vertex_f32(vi[1] + 7u)), vec2<f32>(vertex_f32(vi[2] + 6u), vertex_f32(vi[2] + 7u)));
         let si = SurfaceIn(u32(max(-2 - m.layer, 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
             corner[0], corner[1], corner[2], fp.dx, fp.dy, m.tint, rough_m, metal, m.scale, light.anim.x);
         // TERRAIN + SURFACE: the engine's procedural terrain, not the game's.
@@ -2699,14 +2702,14 @@ fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
         textureStore(out_hdr,px,vec4<f32>(visible_background_radiance(dir),1.0));return;
     }
     let vis=visible[id>>7u];let cl=clusters[vis.y];let inst=instance_at(vis.x);
-    let packed=tris[cl.first_tri+(id&127u)];
+    let packed=tri_word(cl.first_tri+(id&127u));
     var points:array<vec3<f32>,3>;var normals:array<vec3<f32>,3>;var uvs:array<vec2<f32>,3>;
     for(var k=0u;k<3u;k++) {
-        let v=cluster_verts[cl.first_vert+((packed>>(8u*k))&255u)]*8u;
-        let pos=vec4<f32>(vertices[v],vertices[v+1u],vertices[v+2u],1.0);
+        let v=cluster_vert(cl.first_vert+((packed>>(8u*k))&255u))*8u;
+        let pos=vec4<f32>(vertex_f32(v),vertex_f32(v+1u),vertex_f32(v+2u),1.0);
         points[k]=wind_position(member_slot(vis.x),inst.r1.w,vec3<f32>(dot(inst.r0,pos),dot(inst.r1,pos),dot(inst.r2,pos)));
-        normals[k]=vec3<f32>(vertices[v+3u],vertices[v+4u],vertices[v+5u]);
-        uvs[k]=vec2<f32>(vertices[v+6u],vertices[v+7u]);
+        normals[k]=vec3<f32>(vertex_f32(v+3u),vertex_f32(v+4u),vertex_f32(v+5u));
+        uvs[k]=vec2<f32>(vertex_f32(v+6u),vertex_f32(v+7u));
     }
     let e1=points[1]-points[0];let e2=points[2]-points[0];let pv=cross(dir,e2);
     let det=dot(e1,pv);let inv=select(1.0/det,0.0,abs(det)<1e-12);let tv=view.cam.xyz-points[0];

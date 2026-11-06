@@ -2,7 +2,8 @@
 //! one binding on all of them (the engine rule is 8 storage buffers per
 //! stage, browser.md). Layout in vec4s: 0 and 1 are the header (where
 //! materials, car materials and solid occluders start, solid occluder count;
-//! where the aux words start and how many), then each table packed as its GPU struct, then
+//! where the aux words start and how many, where cluster vertices and
+//! triangles start in the topology buffer, topology.rs), then each table packed as its GPU struct, then
 //! `Scene::aux`. Read in WGSL through `material(i)`, `car_material(i)`,
 //! `solid_occluder(i)` and `aux_word(i)` (shade.wgsl, car_material.wgsl).
 use crate::scene::{GpuCarMaterial, GpuSolidOccluder, Material};
@@ -21,13 +22,13 @@ pub(crate) struct SceneTables {
 }
 
 impl SceneTables {
-    pub fn new(gpu: &Gpu, materials: &[Material], cars: &[GpuCarMaterial], solids: &[GpuSolidOccluder], aux: &[u32]) -> Self {
+    pub fn new(gpu: &Gpu, materials: &[Material], cars: &[GpuCarMaterial], solids: &[GpuSolidOccluder], aux: &[u32], topology: [u32; 2]) -> Self {
         let vec4s = |bytes: usize| (bytes / 16) as u32;
         let m = vec4s(std::mem::size_of_val(materials)).max(2);
         let c = vec4s(std::mem::size_of_val(cars));
         let s = vec4s(std::mem::size_of_val(solids));
         let aux_at = HEADER + m + c + s;
-        let header = [HEADER, HEADER + m, HEADER + m + c, solids.len() as u32, aux_at, aux.len() as u32, 0, 0];
+        let header = [HEADER, HEADER + m, HEADER + m + c, solids.len() as u32, aux_at, aux.len() as u32, topology[0], topology[1]];
         let mut bytes: Vec<u8> = bytemuck::cast_slice(&header).to_vec();
         bytes.extend_from_slice(bytemuck::cast_slice(materials));
         bytes.resize(16 * (HEADER + m) as usize, 0);

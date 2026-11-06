@@ -1370,18 +1370,20 @@ impl Renderer {
         let geometry_diagnostics=crate::geometry_diagnostics::State::new(scene);
         let u = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         let forest_assets=crate::foliage_pages::cache::Cache::for_scene(gpu,scene).expect("invalid forest asset cache");
-        let source_buffers=forest_assets.as_ref().and_then(|c|c.source.as_ref()).map(|s|s.buffers.clone());
-        let vertices = source_buffers.as_ref().map(|s|s[0].clone()).unwrap_or_else(||buffer(gpu, "vertices", if scene.vertices.is_empty() {&[0u8;std::mem::size_of::<crate::cluster::Vertex>()]} else {bytemuck::cast_slice(&scene.vertices)}, u | wgpu::BufferUsages::COPY_SRC));
-        let cverts = source_buffers.as_ref().map(|s|s[1].clone()).unwrap_or_else(||buffer(gpu, "cluster verts", bytemuck::cast_slice(&scene.cluster_verts), u));
-        let tris = source_buffers.as_ref().map(|s|s[2].clone()).unwrap_or_else(||buffer(gpu, "tris", bytemuck::cast_slice(&scene.tris), u));
-        let clusters = source_buffers.as_ref().map(|s|s[3].clone()).unwrap_or_else(||buffer(gpu, "clusters", if scene.clusters.is_empty() {&[0u8;std::mem::size_of::<crate::cluster::GpuCluster>()]} else {bytemuck::cast_slice(&scene.clusters)}, u | wgpu::BufferUsages::COPY_SRC));
+        let source=forest_assets.as_ref().and_then(|c|c.source.as_ref());
+        // Vertices, cluster vertices and triangles share one storage buffer
+        // (topology.rs): the foliage source cache's, or one built here.
+        let topology = source.map(|s|s.topology.clone()).unwrap_or_else(||crate::topology::Topology::with(gpu, "topology",
+            if scene.vertices.is_empty() {&[0u8;std::mem::size_of::<crate::cluster::Vertex>()]} else {bytemuck::cast_slice(&scene.vertices)},
+            bytemuck::cast_slice(&scene.cluster_verts), bytemuck::cast_slice(&scene.tris), wgpu::BufferUsages::COPY_SRC));
+        let clusters = source.map(|s|s.clusters.clone()).unwrap_or_else(||buffer(gpu, "clusters", if scene.clusters.is_empty() {&[0u8;std::mem::size_of::<crate::cluster::GpuCluster>()]} else {bytemuck::cast_slice(&scene.clusters)}, u | wgpu::BufferUsages::COPY_SRC));
         let instances = buffer(gpu, "instances", if scene.instances.is_empty() {&[0u8;std::mem::size_of::<crate::scene::GpuInstance>()]} else {bytemuck::cast_slice(&scene.instances)}, u | wgpu::BufferUsages::COPY_SRC);
         let materials = buffer(gpu, "materials", if scene.materials.is_empty() {&[0u8;std::mem::size_of::<crate::scene::Material>()]} else {bytemuck::cast_slice(&scene.materials)}, u);
         // Never empty: a binding needs at least one element.
         let car_list = if scene.car_materials.is_empty() { vec![crate::scene::GpuCarMaterial::default()] } else { scene.car_materials.clone() };
         let solids = scene.solid_occluders();
         let solid_count = solids.len() as u32;
-        let scene_tables = crate::scene_tables::SceneTables::new(gpu, &scene.materials, &car_list, &solids, &scene.aux);
+        let scene_tables = crate::scene_tables::SceneTables::new(gpu, &scene.materials, &car_list, &solids, &scene.aux, topology.starts());
         startup.mark("geometry_material_buffers");
         crate::foliage_representation::validate_bindings(scene).expect("invalid foliage representation bindings");
         let voxel_replacement = buffer(gpu, "voxel crown replacement", bytemuck::cast_slice(&crate::voxel_forest::replacement_materials(scene)), u);
@@ -1427,8 +1429,6 @@ impl Renderer {
         let tex_array = wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false };
         let scene_bindings = [
                 (0, storage(true)),
-                (1, storage(true)),
-                (2, storage(true)),
                 (3, storage(true)),
                 (4, storage(true)),
                 (5, storage(true)),
@@ -1520,11 +1520,11 @@ impl Renderer {
             crate::baked_animation::AnimationRenderer::new(gpu, animation, &scene.instances, &instances)
                 .expect("invalid baked animation scene"));
         let skinning = if scene.skinning.actors.is_empty() { None } else {
-            Some(crate::skinning::SkinningRenderer::new(gpu, &scene.skinning, &scene.vertices, &scene.instances, &vertices, &instances)
+            Some(crate::skinning::SkinningRenderer::new(gpu, &scene.skinning, &scene.vertices, &scene.instances, &topology, &instances)
                 .expect("invalid weighted skinning scene"))
         };
         let debris = scene.debris.map(|spec| crate::debris::DebrisRenderer::new(gpu, spec, &instances));
-        let procedural_terrain = scene.procedural_terrain.clone().map(|spec| crate::procedural_terrain::TerrainRenderer::new(gpu, spec, &vertices, &clusters));
+        let procedural_terrain = scene.procedural_terrain.clone().map(|spec| crate::procedural_terrain::TerrainRenderer::new(gpu, spec, &topology, &clusters));
         let crowd = scene.crowd.map(|spec| crate::crowd::CrowdRenderer::new(gpu, &spec, &instances));
         startup.mark("part_wind_animation_resources");
         let grass_lighting=crate::grass_lighting::Resources::new(gpu,scene.far_grass.as_ref().zip(far_grass.as_ref()),scene.terrain_visual_offset_m);
@@ -1587,9 +1587,7 @@ impl Renderer {
             gpu,
             &scene_layout,
             &[
-                (0, vertices.as_entire_binding()),
-                (1, cverts.as_entire_binding()),
-                (2, tris.as_entire_binding()),
+                (0, topology.buffer.as_entire_binding()),
                 (3, clusters.as_entire_binding()),
                 (4, instance_data.as_entire_binding()),
                 (5, scene_tables.buffer.as_entire_binding()),
@@ -1775,7 +1773,7 @@ impl Renderer {
         let minimal_forward=(scene.graphics.minimal_forward && plain_meshes && scene.skinning.actors.is_empty()
             && scene.debris.is_none_or(|d|d.capacity==0)).then(||std::sync::Mutex::new(crate::forward::Forward::new(gpu,scene,&materials)));
         let portable=scene.procedural_terrain.as_ref().filter(|_|crate::portable::wanted(gpu)).map(|spec|std::sync::Mutex::new(
-            crate::portable::Portable::new(gpu,scene,spec,&vertices,&instances,&materials,&albedo,&samp)));
+            crate::portable::Portable::new(gpu,scene,spec,&topology,&instances,&materials,&albedo,&samp)));
         let direct_bounds=bounded_draws.then(||std::sync::Mutex::new(crate::direct_draw::Bounds::new(scene,small_cluster_triangles)));
         // Opaque clusters skip the `discard` pipeline (early depth). Off with
         // a game mask, which may cut any material, and for bounded draws.

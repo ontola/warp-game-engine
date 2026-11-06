@@ -119,5 +119,11 @@ in WGSL. Shade drops from 16 to 14 storage buffers, the scene group from 12 to
 trees). Cull, forward and portable still use the typed `materials` buffer.
 Step 2: `Scene::aux` moved into the same buffer (header vec4 1 holds its
 start and length; `aux_word(i)`, `aux_len()`). Shade is at 13, still
-pixel-identical. Next: one topology buffer for vertices, cluster verts and
-tris (also in the foliage source cache), then GPU-written data.
+pixel-identical. Step 3: vertices, cluster vertices and triangles share one
+`topology` buffer (`topology.rs`), with vertices at byte 0 and the other two
+regions 256-byte aligned so writers (procedural terrain, skinning) and the
+portable renderer bind the vertex region alone. The foliage source cache
+allocates the same layout. Shade reads it through `vertex_f32(i)`,
+`cluster_vert(i)`, `tri_word(i)`; the region starts sit in scene table vec4
+1.z and 1.w. Shade is at 11, still pixel-identical. Next: GPU-written data
+(terrain hierarchy, foliage sun pages, meadow edges) and shade scratch.
