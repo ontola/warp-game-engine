@@ -60,8 +60,11 @@ const NEAR_SHADOW_EXTENT: f32 = 16.0;
 /// level), the shared map, which only shades past it, 1 m. terrain_fly low2,
 /// 3 full spruces: near sun splats 2.26 -> 0.63 ms, their raster 2.0 -> 0.44;
 /// Sideways' 32k recipe trees, shared map: splats 30 -> 2.4 ms, raster 62 ->
-/// 5.5. Crown shadows only get slightly softer. KERN_SUN_VOXEL_M sets both.
-const NEAR_SUN_VOXEL_M: f32 = 0.5;
+/// 5.5. KERN_SUN_VOXEL_M sets both.
+/// 6 November: 0.5 m near cells printed leopard spots (round blobs) on the
+/// ground and trunks under a crown; 0.25 m makes them leaf-sized for +0.14 ms
+/// (lowland, both maps at 0.25; 0.125 adds another 0.45 ms for little gain).
+const NEAR_SUN_VOXEL_M: f32 = 0.25;
 const SHARED_SUN_VOXEL_M: f32 = 1.0;
 fn sun_voxel_m(texel: f32, cell: f32) -> f32 {
     static CELL: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();

@@ -130,6 +130,13 @@ struct Fly {
     wheel: f32,
     /// A scene being built on another thread (style, seed or grass moved).
     building: Option<Receiver<Ready>>,
+    /// Seed and style the scene in `building` is for, and when it started.
+    building_for: (u32, usize), building_started: web_time::Instant,
+    /// Seed and style of the scene on screen. The camera follows its ground
+    /// until a new scene swaps in (F1-F8 take 30-50 s to build).
+    shown: (u32, usize),
+    /// Lift the camera above the new ground once the requested scene shows.
+    lift_on_swap: bool,
     /// The GPU, cloned from the first frame, for building renderers off the
     /// frame thread.
     gpu: Option<render::Gpu>,
@@ -168,7 +175,7 @@ struct Fly {
 impl Fly {
     fn new(seed: u32, style: usize, world: World) -> Result<Self, String> {
         let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, turn: (0.0, 0.0), speed: 40.0, last_action: "Ready".into(), hug: None, wheel: 0.0,
-            building: None, gpu: None, stale: false, world, built_world: world, world_at: None, sun_building:None, forest_at:None, forest_building:None, forest_material:None, terrain_settings: Settings::default(), terrain: None, light: Lighting::default(), stats: Stats::default(), last_updates: [0.0;2], jumps: 0, fps: 0.0, worst_ms: 0.0,
+            building: None, building_for: (seed, style), building_started: web_time::Instant::now(), shown: (seed, style), lift_on_swap: false, gpu: None, stale: false, world, built_world: world, world_at: None, sun_building:None, forest_at:None, forest_building:None, forest_material:None, terrain_settings: Settings::default(), terrain: None, light: Lighting::default(), stats: Stats::default(), last_updates: [0.0;2], jumps: 0, fps: 0.0, worst_ms: 0.0,
             track: std::env::args().any(|a| a == "--track"), regions: None, town: std::env::args().any(|a| a == "--town"), constraints: None };
         if let Some(name) = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--regions").map(|w| w[1].clone()) {
             fly.regions = Some(STYLES.iter().position(|n| *n == name).ok_or_else(|| format!("unknown biome {name}; one of {}", STYLES.join(", ")))?);
@@ -208,6 +215,10 @@ impl Fly {
         render::biome::Lands { biomes }
     }
     fn ground(&self, x: f32, z: f32) -> f32 {
+        // Until a requested world swaps in, the ground on screen is the old one.
+        if self.shown != (self.seed, self.style) {
+            return terrain_field::height(x, z, self.shown.0, &environment(self.shown.1).biome.terrain);
+        }
         match self.current_track() {
             Some(w) => w.height(x, z, self.seed, &self.style()),
             None => terrain_field::height(x, z, self.seed, &self.style()),
@@ -275,6 +286,8 @@ impl Fly {
     fn rebuild(&mut self) -> Result<(), String> {
         if self.building.is_some() { self.stale = true; return Ok(()); }
         self.bake_track();
+        self.building_for = (self.seed, self.style);
+        self.building_started = web_time::Instant::now();
         let track = self.current_track().cloned();
         let (seed, style, pos, lands) = (self.seed, self.style(), self.pos, self.lands());
         // Each biome has its palette, turned by the season (render::biome).
@@ -385,12 +398,8 @@ impl Game for Fly {
         };
         if let Err(e) = result { self.last_action = format!("F{n}: {e}"); }
         println!("terrain input: {}", self.last_action);
-        if matches!(n, 1 | 2 | 4 | 5 | 8) {
-            // Stay at the same height above the new ground.
-            let floor = self.ground(self.pos.x, self.pos.z);
-            self.pos.y = self.pos.y.max(floor + 30.0);
-            self.prev = self.pos;
-        }
+        // Rise above the new ground only once it shows (lift_on_swap).
+        if matches!(n, 1 | 2 | 4 | 5 | 8) { self.lift_on_swap = true; }
         true
     }
 
@@ -414,6 +423,13 @@ impl Game for Fly {
             }
             self.light = light;
             self.world_at = world_at;
+            self.shown = self.building_for;
+            if self.lift_on_swap && self.shown == (self.seed, self.style) {
+                self.lift_on_swap = false;
+                let floor = self.ground(self.pos.x, self.pos.z);
+                self.pos.y = self.pos.y.max(floor + 30.0);
+                self.prev = self.pos;
+            }
             if std::mem::take(&mut self.stale) { self.rebuild()?; }
         }
         if self.building.is_none() && self.world_stale() { self.rebuild()?; }
@@ -476,7 +492,10 @@ impl Game for Fly {
             format!("speed {:.0} m/s{}", self.speed, if self.hug.is_some() { "  ground hug" } else { "" }),
             format!("patches {}  overflow {}  finest {}  lod x{:.2}", self.stats.patches, self.stats.overflow, self.stats.finest_level, self.stats.lod_scale),
             format!("ground: rock {:.2}  scree {:.2}  snow {:.2}  water {:.2}  slope {:.0}°", s.rock, s.scree, s.snow, s.water, s.up.clamp(0.0, 1.0).acos().to_degrees()),
-            format!("{}{}", self.last_action, if self.building.is_some() { " - building scene..." } else { "" }),
+            format!("{}{}", self.last_action, if self.building.is_some() {
+                format!(" - building {} seed {}: {:.0} s (takes 30-50 s){}", STYLES[self.building_for.1], self.building_for.0,
+                    self.building_started.elapsed().as_secs_f32(), if self.stale { ", then the latest request" } else { "" })
+            } else { String::new() }),
             "F1 default  F2 lowland  F4 alpine  F8 next biome  F5 seed  F6 jump  F7 hug  wheel speed  F12 screenshot".to_string(),
         ];
         let mut hud = HudDrawList::new(frame.size);
