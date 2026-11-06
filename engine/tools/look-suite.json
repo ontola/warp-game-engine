@@ -40,6 +40,11 @@
     {"name": "grass.top", "at": "845.9,92.4,13.5,-0.0028,-1.5", "lines": true, "about": "looking straight down at grass in shade, 13 m up"},
     {"name": "tree.mix", "at": "-183.3,374.1,14.7,1.2424,-0.1126", "about": "Joep's tree with mesh branches round a voxel core"},
 
+    {"name": "tree.switch", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "-93.4,-210.2,25.7,1.1346,-0.084", "about": "Joep's pines: voxel tops over mesh branches"},
+    {"name": "forest.band", "at": "-595.1,-236.0,57.9,1.1808,-0.1654", "about": "Joep's dark band of mid-distance trees"},
+    {"name": "grass.alpine", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "1517.6,1881.1,200.1,-16.0474,-0.7542", "lines": true, "about": "where the blades end, 200 m up in the mountains"},
+    {"name": "grass.alpine.top", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "1529.2,2036.8,51.9,-15.1982,-0.763", "lines": true, "about": "weave in alpine grass, 52 m up"},
+
     {"name": "grassedge.f12", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "709.6,829.8,148.7,-2.7681,-0.4485", "about": "pale grass against shaded ground"},
     {"name": "grassedge.low", "world": ["--style", "alpine", "--grass", "--seed", "1"], "at": "709.6,829.8,40,-2.7681,-0.4485", "lines": true, "about": "the same place from 40 m up"},
 
