@@ -6,13 +6,15 @@
 
 Prints per view: mean linear crown colour (tree series, with the ratio to the
 nearest view), the strength of the grass grid (autocorrelation of dark pixels at
-the spacing in the view's "grid_px"), straight lines in views with "lines" and the
+the spacing in the view's "grid_px"), a repeating ground pattern in views with "lines" and the
 largest voxel cell. With --out it
 writes report.json and a 960 px JPEG per view (and per base view) for a web page.
 Standard library only; JPEGs need Pillow, ffmpeg, ImageMagick or, from WSL,
 Windows PowerShell.
 """
 import argparse
+import cmath
+import math
 import json
 import re
 import shutil
@@ -110,25 +112,44 @@ def crown_rgb(image, box):
     return [round(t / count, 4) for t in total] if count else None
 
 
-def line_strength(image):
-    """Straight lines in the ground: peak autocorrelation of the row and column means, high-passed."""
+def fft(values):
+    n = len(values)
+    if n == 1:
+        return values
+    even, odd = fft(values[0::2]), fft(values[1::2])
+    turned = [cmath.exp(-2j * math.pi * k / n) * odd[k] for k in range(n // 2)]
+    return [even[k] + turned[k] for k in range(n // 2)] + [even[k] - turned[k] for k in range(n // 2)]
+
+
+def line_strength(image, size=256):
+    """A repeating pattern on the ground: the strongest frequency over the median of its ring.
+
+    Two windows, the larger score counts. Noise scores about 15; a weak hidden grid hundreds.
+    Returns the score, the spacing in pixels and the direction of the frequency in degrees.
+    """
     width, height, bpp, rows = image
-    top = height // 4  # above the ground in most views
-    lum = [[0.3 * row[x * bpp] + 0.6 * row[x * bpp + 1] + 0.1 * row[x * bpp + 2] for x in range(0, width, 2)] for row in rows[top::2]]
-    across = [sum(line) / len(line) for line in lum]
-    down = [sum(line[x] for line in lum) / len(lum) for x in range(len(lum[0]))]
-
-    def peak(means):
-        n = len(means)
-        smooth = [sum(means[max(0, i - 10):i + 11]) / len(means[max(0, i - 10):i + 11]) for i in range(n)]
-        high = [a - b for a, b in zip(means, smooth)]
-        variance = sum(v * v for v in high) / n
-        if variance <= 0:
-            return {"c": 0.0, "px": 0}
-        best = max((sum(high[i] * high[i + lag] for i in range(n - lag)) / (n - lag) / variance, lag) for lag in range(8, min(60, n // 2)))
-        return {"c": round(best[0], 2), "px": best[1] * 2}
-    return {"rows": peak(across), "columns": peak(down)}
-
+    best = None
+    for x0, y0 in ((width // 3, height * 2 // 5), (width // 2, height * 5 // 9)):
+        grey = [[0.3 * rows[y0 + y][(x0 + x) * bpp] + 0.6 * rows[y0 + y][(x0 + x) * bpp + 1] + 0.1 * rows[y0 + y][(x0 + x) * bpp + 2] for x in range(size)] for y in range(size)]
+        mean = sum(map(sum, grey)) / size ** 2
+        window = [0.5 - 0.5 * math.cos(2 * math.pi * i / (size - 1)) for i in range(size)]
+        across = [fft([complex((grey[y][x] - mean) * window[x] * window[y]) for x in range(size)]) for y in range(size)]
+        down = [fft([across[y][x] for y in range(size)]) for x in range(size)]
+        rings = {}
+        for y in range(size):
+            for x in range(size):
+                fy, fx = (y if y < size // 2 else y - size), (x if x < size // 2 else x - size)
+                ring = int(math.hypot(fx, fy) + 0.5)
+                # Spacing 3 to 40 px: finer is dither and 8-bit steps.
+                if size // 40 <= ring <= size // 3:
+                    rings.setdefault(ring, []).append((abs(down[x][y]) ** 2, fx, fy))
+        for ring, values in rings.items():
+            power = sorted(v[0] for v in values)
+            strongest, fx, fy = max(values)
+            score = strongest / max(power[len(power) // 2], 1e-9)
+            if best is None or score > best["score"]:
+                best = {"score": round(score, 1), "px": round(size / ring, 1), "degrees": round(math.degrees(math.atan2(fy, fx)) % 180)}
+    return best
 
 def grid_strength(image, spacing):
     """Peak autocorrelation of the dark pixels around one grid step, as big-integer masks."""
@@ -238,7 +259,7 @@ def show(views):
         if v["grid"]:
             extra.append(f"grid c={v['grid']['c']} at ({v['grid']['dx']},{v['grid']['dy']})")
         if v.get("lines"):
-            extra.append(f"lines rows {v['lines']['rows']['c']} at {v['lines']['rows']['px']} px, columns {v['lines']['columns']['c']} at {v['lines']['columns']['px']} px")
+            extra.append(f"pattern {v['lines']['score']} at {v['lines']['px']} px, {v['lines']['degrees']} degrees")
         if v["largest_cell"]:
             extra.append(f"largest {v['largest_cell']['px']} px recipe {v['largest_cell']['recipe']}")
         print(f"{name:>16} {v['gpu_ms']:6.2f} ms  {'  '.join(extra)}")
