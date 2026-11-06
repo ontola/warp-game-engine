@@ -1176,7 +1176,36 @@ fn volume_splat_outside(cell:VolumeSplatCell,plane:vec4<f32>)->bool {
 }
 // `toward`: local unit direction from the cell to the viewer. The thirteen
 // extinction directions are antipodal, so its sign does not change sigma.
-fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:vec3<f32>) {
+// Splat records carry alpha/VOLUME_SPLAT_ALPHA_RANGE in 16 bits, so a
+// sub-pixel splat can stand for several (its disc area grows with alpha).
+const VOLUME_SPLAT_ALPHA_RANGE: f32 = 64.0;
+fn volume_splat_alpha(record:vec4<u32>)->f32 {return f32(record.w&0xffffu)/65535.0*VOLUME_SPLAT_ALPHA_RANGE;}
+// Disc area in pixels of a kept cell (radius 0.688 sqrt(alpha) cells) below
+// which splats are thinned by area: kept with probability area/target and
+// grown to the target, so expected coverage holds while a far crown costs
+// about one splat per covered pixel. foliage_refine.wgsl books the same.
+const VOLUME_SPLAT_AREA_TARGET: f32 = 1.0;
+// World size of one camera pixel at a point (render size from the config).
+fn volume_camera_texel(p:vec3<f32>)->f32 {
+    let w=dot(vec3<f32>(view.view_proj[0].w,view.view_proj[1].w,view.view_proj[2].w),p)+view.view_proj[3].w;
+    let row_y=vec3<f32>(view.view_proj[0].y,view.view_proj[1].y,view.view_proj[2].y);
+    if w<=1e-4 {return 0.0;}
+    return w/max(0.5*f32(volume_config.size_count.y)*length(row_y),1e-8);
+}
+fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:vec3<f32>,texel:f32) {
+    let stable=volume_trees[index].bounds_max.w;
+    let appearance=select(index,u32(max(stable-1.0,0.0)),stable>0.0);
+    // Area thinning below keeps a cell with probability at most
+    // max(area at alpha 1, 1/64): test that first and skip the cell fetch
+    // for most cells of a far crown. Same hash, so the same cells survive.
+    var area_one=0.0;var area_draw=1.0;
+    if texel>0.0 {
+        let owner=instances[volume_trees[index].identity.x];
+        let side=cell.size*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x))/texel;
+        area_one=1.48711*side*side;
+        area_draw=f32(volume_splat_hash((appearance*0x85ebca6bu)^(cell_ref.y*0xc2b2ae35u)^0x27d4eb2fu)>>8u)/16777216.0;
+        if area_one<VOLUME_SPLAT_AREA_TARGET && area_draw>=max(area_one/VOLUME_SPLAT_AREA_TARGET,1.0/VOLUME_SPLAT_ALPHA_RANGE) {return;}
+    }
     // Optical depth of the mean chord through this cell along the view.
     let sigma=volume_sigma(unpack_volume_cell(volume_cells[cell_ref.x]),volume_direction(toward));
     let alpha=1.0-exp(-sigma*cell.size/max(dot(abs(toward),vec3<f32>(1.0)),1.0));
@@ -1184,18 +1213,24 @@ fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:
     // Faint cells are thinned to VOLUME_SPLAT_MIN_ALPHA: kept with
     // probability alpha/min by a hash stable per tree and cell (no flicker),
     // so expected coverage holds while the raster draws far fewer quads.
-    let stable=volume_trees[index].bounds_max.w;
-    let appearance=select(index,u32(max(stable-1.0,0.0)),stable>0.0);
     var kept_alpha=alpha;
     if alpha<VOLUME_SPLAT_MIN_ALPHA {
         let h=volume_splat_hash(appearance*0x9e3779b9u^cell_ref.y);
         if f32(h>>8u)/16777216.0>=alpha/VOLUME_SPLAT_MIN_ALPHA {return;}
         kept_alpha=VOLUME_SPLAT_MIN_ALPHA;
     }
+    if texel>0.0 {
+        let area=area_one*kept_alpha;
+        if area<VOLUME_SPLAT_AREA_TARGET {
+            let keep=max(area/VOLUME_SPLAT_AREA_TARGET,kept_alpha/VOLUME_SPLAT_ALPHA_RANGE);
+            if area_draw>=keep {return;}
+            kept_alpha/=keep;
+        }
+    }
     let faces=select(0u,1u,toward.x>0.0)|select(0u,2u,toward.y>0.0)|select(0u,4u,toward.z>0.0);
     let slot=volume_splat_first()+atomicAdd(&volume_stats[VOLUME_DRAW_WORD+1],1u);
     if slot>=arrayLength(&volume_splats) {return;}
-    volume_splats[slot]=vec4<u32>(index,cell_ref.x,cell_ref.y,u32(kept_alpha*65535.0+0.5)|(faces<<16u)|((volume_splat_hash(appearance)&8191u)<<19u));
+    volume_splats[slot]=vec4<u32>(index,cell_ref.x,cell_ref.y,u32(min(kept_alpha/VOLUME_SPLAT_ALPHA_RANGE,1.0)*65535.0+0.5)|(faces<<16u)|((volume_splat_hash(appearance)&8191u)<<19u));
 }
 
 // Experimental current-frame, two-phase brick culling. Seed trees are drawn
@@ -1311,7 +1346,7 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
                 let cell=volume_splat_cell(index,level,cell_ref.y);
                 var inside=true;
                 for(var p=0u;p<6u;p++) {inside=inside&&!volume_splat_outside(cell,view.planes[p]);}
-                if inside {volume_splat_append(index,cell_ref,cell,normalize(eye_local-cell.local));}
+                if inside {volume_splat_append(index,cell_ref,cell,normalize(eye_local-cell.local),volume_camera_texel(cell.centre));}
             }
         }
         return;
@@ -1322,7 +1357,7 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
         let cell=volume_splat_cell(index,level,cell_ref.y);
         var inside=true;
         for(var p=0u;p<6u;p++) {inside=inside&&!volume_splat_outside(cell,view.planes[p]);}
-        if inside {volume_splat_append(index,cell_ref,cell,normalize(eye_local-cell.local));}
+        if inside {volume_splat_append(index,cell_ref,cell,normalize(eye_local-cell.local),volume_camera_texel(cell.centre));}
     }
 }
 
@@ -1368,7 +1403,9 @@ fn volume_sun_splats_impl(index:u32,lane:u32,damaged:bool) {
         let cell=volume_splat_cell(index,level,cell_ref.y);
         var inside=true;
         for(var p=0u;p<6u;p++) {inside=inside&&!volume_splat_outside(cell,volume_splat_header(4u+p));}
-        if inside {volume_splat_append(index,cell_ref,cell,toward);}
+        // No area thinning into the sun maps: filtered depth turned it into grain
+        // and lost tree shadow density.
+        if inside {volume_splat_append(index,cell_ref,cell,toward,0.0);}
     }
 }
 
@@ -1455,7 +1492,7 @@ fn voxel_splat_gbuffer(@builtin(global_invocation_id) id:vec3<u32>) {
         let key=volume_splat_hash(record.w>>19u)^record.z;
         let jitter=vec2<f32>(f32(volume_splat_hash(key)&0xffffu),f32(volume_splat_hash(key^0x9e3779b9u)&0xffffu))/65535.0-0.5;
         let centre=vec3<f32>(dot(r0,local),dot(r1,local),dot(r2,local))+(right*jitter.x+up*jitter.y)*0.5*g.w*scale;
-        let half=0.688*g.w*scale*sqrt(max(f32(record.w&0xffffu)/65535.0,0.25));
+        let half=0.688*g.w*scale*sqrt(max(volume_splat_alpha(record),0.25));
         let d=vec2<f32>(dot(p-centre,right),dot(p-centre,up))/max(half,1e-6);
         let sphere=right*d.x+up*d.y-direction*sqrt(max(1.0-dot(d,d),0.0));
         n=normalize(mix(n,normalize(sphere),0.5));

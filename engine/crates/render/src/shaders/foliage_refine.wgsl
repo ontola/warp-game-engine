@@ -76,6 +76,19 @@ fn work(tree:u32,node:u32,consumers:u32)->vec4<u32> {
   for(var i=0u;i<view.consumer_count.x;i++) {let c=view.consumers[i];
    let k=select(1u,0u,c.pixels.z==0.0);inside[k]=max(inside[k],inside_fraction(bound,c.vp));
   }
+  // The camera raster thins sub-pixel cells by disc area (volume_splat_append:
+  // 1.487 side^2 alpha px, target 1, at most 64x): book that share too,
+  // with the cell side at the bound's nearest point. Links bits 3-7 hold k,
+  // cell <= error.x/2^k (foliage_runtime). error_in measures length(dx,dy),
+  // sqrt(2) times one axis for square pixels. The sun maps do not thin.
+  if node!=NONE {
+   let n=nodes[node];let cell=n.error.x*exp2(-f32((n.links.w>>3u)&31u))*trees[tree].scale.x;
+   var side=0.0;
+   for(var i=0u;i<view.consumer_count.x;i++) {let c=view.consumers[i];
+    if c.pixels.z==0.0 && visible_in(bound,c.vp) {side=max(side,error_in(bound,cell,c.vp,c.pixels.xy));}
+   }
+   inside.x*=clamp(0.743555*side*side,1.0/64.0,1.0);
+  }
   cost.y=u32(ceil(f32(cost.y)*inside.x));cost.z=u32(ceil(f32(cost.z)*inside.y));
  }
  return cost;

@@ -38,7 +38,9 @@ fn hash(x: u32) -> u32 {
     // with sqrt(alpha), the same coverage), so crowns end in ragged edges
     // rather than speckled squares; below alpha 0.25 the rest is dithered.
     let scale = length(vec3<f32>(r0.x, r1.x, r2.x));
-    let alpha = f32(record.w & 0xffffu) / 65535.0;
+    // alpha/64 in 16 bits (VOLUME_SPLAT_ALPHA_RANGE): above 1 it is a
+    // sub-pixel splat standing for several, drawn larger and solid.
+    let alpha = f32(record.w & 0xffffu) / 65535.0 * 64.0;
     let solid = max(alpha, 0.25);
     let half = 0.688 * grid.w * scale * sqrt(solid);
     let corners = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
@@ -56,7 +58,7 @@ fn hash(x: u32) -> u32 {
     let p = centre + shift + (right * corner.x + up * corner.y) * half;
     out.position = view_proj * vec4<f32>(p, 1.0);
     out.splat = instance + 1u;
-    out.alpha = alpha / solid;
+    out.alpha = min(alpha, 1.0) / solid;
     out.disc = corner;
     return out;
 }
