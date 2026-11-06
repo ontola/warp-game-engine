@@ -166,9 +166,6 @@ override FEATURE_FIELD_ROADS: bool = true;
 // copies) around the middle of a selector cell, 0..0.5. Outside it a layer
 // takes one texture read instead of two. KERN_TERRAIN_VARIANT_BLEND sets it.
 override TERRAIN_VARIANT_BLEND: f32 = 0.35;
-// Footprint (metres per pixel) above which the painted far forest takes half
-// its shadow taps and four view taps instead of six. KERN_FAR_FOREST_COARSE_M.
-override FAR_FOREST_COARSE_M: f32 = 1e9;
 override SKIP_HIDDEN_MEADOW:bool=false;
 var<workgroup> hidden_meadow_count:atomic<u32>;
 // Sky tiles: `classify` writes the sky of 8x8 tiles without geometry and
