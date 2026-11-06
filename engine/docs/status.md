@@ -62,18 +62,24 @@ Owned by the foliage work; its working checklist is
   shared assemblies, a Nanite-style error-driven GPU cut (each root refines
   until its error is under the pixel target; when slots or splats run out the
   GPU loosens the camera and shadow targets separately), bounded source and
-  voxel paging (256 MiB voxel cache, fitted to the device binding limit),
-  shared poses and a shadow tile cache. 65536 branch slots. No CPU near-tree
-  pool. `KERN_FOLIAGE_CUT=budget` restores the old budgeted admission.
-- **Measured** (6 November, RTX 5070 Ti, 720p, one view, lowland diagnostic):
-  18.9 ms GPU against 27.1 ms on the old route, selection 1.35 ms against
-  11.3 ms, largest voxel cell 2.7 px against 5.5 px, 95% of splats at or
-  under 1 px.
-- **Open:** the 1 px target is not met everywhere (the camera target settles
-  about 12x loose, held by the splat reservation, which still books ~75% more
-  than the raster keeps after frustum culling); a visible patch boundary in
-  the near ground cover; shadow refinement costs ~2 ms of near shadow raster;
-  4K/four-view budgets. Games (Sideways) still use their own meadow path.
+  voxel paging (256 MiB voxel cache, fitted to the device binding limit,
+  pages streamed most urgent first), shared poses and a shadow tile cache.
+  49152 branch slots. Sub-pixel camera splats are thinned by area (kept with
+  probability = disc area, drawn larger), and splat booking is calibrated
+  against the splats the raster stored last frame. No CPU near-tree pool.
+  `KERN_FOLIAGE_CUT=budget` restores the old budgeted admission.
+- **Measured** (6 November evening, RTX 5070 Ti, Vulkan): lowland+grass 720p
+  12.2 ms GPU (27.1 ms this morning); render suite at 1440p after streaming
+  settles: near 18.7, forest 23.2, hill 17.9, flight 18.2 ms, every voxel
+  splat 1 to 2 px, largest cell under 2 px, 0 missing records.
+- **Open:** cost (vegetation is far over its 3.5 ms share at 4K/four views:
+  selection, voxel splat walking and occluder cull grow with branch slots);
+  the first 2 to 4 s after a jump still show coarse balls while pages stream;
+  from high up the default style overflows the shadow splat budget and the
+  sharp shadow ends in a ring at 1.5 km (`Renderer::set_shadow_reach`); the
+  painted far forest past the trees has stepped stand edges; a darker wedge
+  of grass-on-grass shadow in the near ground cover. Games (Sideways) still
+  use their own meadow path.
 - Distant trees freeze to their rest pose between 60 and 90 m
   (`KERN_WIND_FREEZE`), so they match cached sun shadows.
 

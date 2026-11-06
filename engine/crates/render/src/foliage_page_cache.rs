@@ -10,7 +10,7 @@ impl Default for Budget {
     // 256 MiB of cells: at 64 MiB the lowland view missed ~600 pages a frame
     // forever and kept 9.8 px cells 14 m from the camera; 256 MiB serves the
     // whole view (2252 pages, 233 MB allocated, RTX 5070 Ti, 2026-11-06).
-    fn default()->Self {Self {index_words:16*1024*1024,cells:256*1024*1024/128,splats:2*1024*1024,upload_bytes:8*1024*1024,uploads:8}}
+    fn default()->Self {Self {index_words:16*1024*1024,cells:256*1024*1024/128,splats:2*1024*1024,upload_bytes:8*1024*1024,uploads:32}}
 }
 #[derive(Clone)]
 struct Resident {index:Allocation,cell:Allocation,splat:Allocation,last_used:u64}
