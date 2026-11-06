@@ -4679,7 +4679,11 @@ impl Renderer {
                     let _ = out.set((make("shade", &rest), with_terrain.then(|| make("shade terrain", &terrain))));
                 };
                 // Without a thread the cell stays empty and frames keep the full pipelines.
+                #[cfg(not(target_arch = "wasm32"))]
                 let _ = std::thread::Builder::new().name("shade unlit".into()).spawn(build);
+                // A browser has no threads and its GPU objects aren't Send: build here.
+                #[cfg(target_arch = "wasm32")]
+                build();
                 cell
             }).clone());
             let unlit = unlit_cell.as_ref().and_then(|c| c.get());
