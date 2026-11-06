@@ -913,15 +913,22 @@ fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f3
         // cell (Joep: vary size and height); a cell only grows, so it can
         // move by the half of its growth without opening a gap.
         let patch=terrain_field::noised(Vec2::new(x,z)/6.,seed.wrapping_add(41)).x;
-        let grow=1.0+(0.18+0.18*patch+0.12*(Cell::new(i,j,seed).hash(82)-0.5)).clamp(0.,0.4);
-        let room=0.5*(grow-1.0)*cell;
-        let shift=Vec2::new(Cell::new(i,j,seed).hash(83)-0.5,Cell::new(i,j,seed).hash(84)-0.5)*2.0*room;
+        let grow=1.0+(0.24+0.15*patch+0.12*(Cell::new(i,j,seed).hash(82)-0.5)).clamp(0.1,0.42);
+        // A free turn on top of the quarter turn: the cooked block's 0.5 m
+        // patches all ran along the world axes, which read as grid lines from
+        // the air (Joep, playtest 4). A square turned by a still covers the
+        // cell while side*(cos a+sin a) <= grown side, so the turn takes
+        // what the growth allows (up to 30 degrees) and the shift the rest.
+        let max_turn=((grow/std::f32::consts::SQRT_2).min(1.0).asin()-std::f32::consts::FRAC_PI_4).clamp(0.0,0.52);
+        let turn=(Cell::new(i,j,seed).hash(85)*2.0-1.0)*max_turn;
+        let room=0.5*(grow-(turn.cos()+turn.abs().sin()))*cell;
+        let shift=Vec2::new(Cell::new(i,j,seed).hash(83)-0.5,Cell::new(i,j,seed).hash(84)-0.5)*2.0*room.max(0.0);
         if land.clearance(x+shift.x,z+shift.y)<cell {continue;}
         // Four cooked variants, picked independently of the turn: two
         // repeated every few cells and read as a grid from above.
         let variant=((Cell::new(i,j,seed).hash(80)*GRASS_VARIANT_SEEDS.len() as f32) as usize).min(GRASS_VARIANT_SEEDS.len()-1);
         roots.push(WorldRoot {id:render::placement::instance_id(1000,i,j),placement:RootPlacement {
-            pos:Vec3::new(x+shift.x,land.ground(x+shift.x,z+shift.y).pos.y-0.015,z+shift.y),up,yaw:quarter as f32*std::f32::consts::FRAC_PI_2,
+            pos:Vec3::new(x+shift.x,land.ground(x+shift.x,z+shift.y).pos.y-0.015,z+shift.y),up,yaw:quarter as f32*std::f32::consts::FRAC_PI_2+turn,
             scale:GRASS_CELL_OVERLAP*grow/up.y.max(0.7),variant:variant_offset+variant}});
     }}
     roots
