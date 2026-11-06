@@ -39,9 +39,12 @@ fn seat_offset() -> Vec3 {
     }).unwrap_or(SEAT)
 }
 
+/// Process-wide, before the first race: the headset shell draws straight
+/// into the eye images, which needs the minimum renderer.
+fn use_minimum_renderer() { crate::visuals::MINIMUM.store(true, std::sync::atomic::Ordering::Relaxed); }
+
 impl NativeGame {
     pub fn new(root: std::path::PathBuf) -> Result<Self, String> {
-        crate::visuals::MINIMUM.store(true, std::sync::atomic::Ordering::Relaxed);
         let mut game = crate::Racer::new(root, 1, 35, 0, 1, false)?;
         game.random_biome = true;
         game.random_seed = true;
@@ -110,6 +113,7 @@ pub fn shot(args: &[String]) -> Result<(), String> {
     let out = arg("--out").ok_or("xr-shot --out FILE.png")?;
     let eye = arg("--size").and_then(|s| s.parse().ok()).unwrap_or(640u32);
     crate::install_shaders(false);
+    use_minimum_renderer();
     let gpu = render::Gpu::new()?;
     let mut game = NativeGame::new(crate::game_root(arg("--game-dir")))?;
     game.level = args.iter().any(|a| a == "--level");
@@ -145,6 +149,7 @@ fn android_main(app: android_activity::AndroidApp) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
         let root = install_assets(&app)?;
         crate::install_shaders(false);
+        use_minimum_renderer();
         warp_xr::run(app, move || NativeGame::new(root.clone())).map_err(|e| format!("{e:#}"))
     }));
     match result { Ok(Ok(())) => {}, Ok(Err(e)) => log::error!("Warp XR stopped: {e}"), Err(_) => log::error!("Warp XR panicked; inspect logcat") }
