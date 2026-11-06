@@ -11,6 +11,38 @@ paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
 
+## 6 November (evening): near-pixel splats, urgent streaming
+
+Measured on the RTX 5070 Ti (Vulkan) after each round; numbers are GPU ms.
+
+- **Area thinning** (`volume_splat_append`): a camera cell whose disc covers
+  under 1 px is kept with probability = area and drawn that much larger
+  (records carry alpha/64). Splat raster halved (lowland 2.35 -> 1.10 ms).
+  The test runs before the cell fetch. Sun maps are not thinned: filtered
+  depth turned it into grainy, lighter tree shadows.
+- **Calibrated booking:** bookings bound every view direction, alpha and
+  pixel size and ran ~3.3x the stored splats, so the camera error scale
+  never moved. The first view's stored count is copied to refiner state[82];
+  `fast_adapt` keeps a smoothed booked/stored ratio (state[83], 1..8, 15%
+  margin) that scales the camera splat limit. Branch slots now bind: 65536
+  gave scale 15 -> 11 for +4..6 ms, the default is 49152 (about half that).
+- **Urgent streaming:** pages were uploaded in id order, so recipe 2360's
+  finer pages came last and near bushes stayed 31 px balls for ~290 frames
+  (every earlier "largest cell" in near/forest was measured mid-streaming).
+  `ready()` now requests with an urgency (waiting cut's px error x16, camera
+  x4) and the page cache admits and uploads highest first; 32 uploads per
+  frame (was 8). At frame 240 near/forest largest cells 31/19 -> 3.3/2.7 px.
+- **Render suite** now runs 600 frames so streaming settles before measuring
+  (`tools/render-suite.json`). Settled: every splat 1-2 px in all four views.
+- **From high up** (Joep's flight at 626 m): the ~1 km ring was the 180 m sun
+  map's edge (reach now grows with altitude, at most 1500 m); the ~2.1 km
+  change is the handover to the painted `far_forest` (terrain_surface.wgsl);
+  its stair-stepped stands come from the stand edge itself (tap filtering
+  only softened them). The default style overflows the shadow splat budget
+  at 1500 m reach.
+- **Next:** cost per view (selection, voxel splat walking, occluder cull),
+  far shadows at height, the far forest stand edge, the grass-on-grass wedge.
+
 ## 6 November (afternoon): booking, shadows on voxels, exact camera mips
 
 Mancave RTX 5070 Ti; lowland 720p --grass and render suite 1440p (no grass), real

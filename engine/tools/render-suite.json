@@ -1,7 +1,7 @@
 {
   "world": ["--style", "alpine", "--regions", "polder", "--town", "--seed", "1"],
   "size": "2560x1440",
-  "frames": 240,
+  "frames": 600,
   "measure_frames": 60,
   "cameras": [
     {"name": "near", "at": "60,1600,1.7,0.3,0", "about": "standing among single trees, mountain behind"},

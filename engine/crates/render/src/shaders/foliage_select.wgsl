@@ -38,11 +38,12 @@ fn asset_ready(representation:u32)->bool {
 }
 @compute @workgroup_size(64) fn compact_asset_requests(@builtin(global_invocation_id) id:vec3<u32>) {
  let page=id.x;if page>=arrayLength(&asset_pages) {return;}
- if atomicExchange(&asset_pages[page].requested,0u)==0u {return;}
+ // requested holds the urgency (foliage_refine.wgsl ready), 1 the lowest.
+ let urgency=atomicExchange(&asset_pages[page].requested,0u);if urgency==0u {return;}
  let i=atomicAdd(&asset_requests[0],1u);let at=4u+i*4u;
  // Exactly one invocation per page: capacity equals logical page count.
  atomicStore(&asset_requests[at],page);atomicStore(&asset_requests[at+1u],asset_pages[page].resident);
- atomicStore(&asset_requests[at+2u],asset_pages[page].generation);atomicStore(&asset_requests[at+3u],0u);
+ atomicStore(&asset_requests[at+2u],asset_pages[page].generation);atomicStore(&asset_requests[at+3u],urgency);
 }
 const NONE:u32=0xffffffffu;
 fn sphere(t:Tree,n:Node)->vec4<f32> {
