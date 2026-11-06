@@ -19,7 +19,7 @@ pub use resource_cache::CacheStats as ResourceCacheStats;
 #[derive(Default)]
 struct FrameResources {
     targets: [resource_cache::TextureViews<1>; 3],
-    near_shadow: resource_cache::TextureViews<1>,
+    near_shadow_off: resource_cache::TextureViews<1>,
     history: resource_cache::TextureViews<2>,
     result: resource_cache::TextureViews<2>,
     shade: resource_cache::BindGroups<2>,
@@ -31,7 +31,7 @@ impl FrameResources {
     fn stats(&self) -> ResourceCacheStats {
         let mut stats = ResourceCacheStats::default();
         for target in &self.targets { stats.add(target.stats()); }
-        for other in [self.near_shadow.stats(), self.history.stats(), self.result.stats(),
+        for other in [self.near_shadow_off.stats(), self.history.stats(), self.result.stats(),
             self.shade.stats(), self.taa.stats(), self.tone.stats(), self.volume.stats()] { stats.add(other); }
         stats
     }
@@ -166,6 +166,11 @@ struct NearShadow {
     targets: ViewTargets,
     /// Culling targets of levels 1.. (level 0 uses `targets`).
     outer: Vec<ViewTargets>,
+    /// Stable per-layer and whole-array views. Caches downstream (voxel sun
+    /// splat targets, bind groups) key on view identity, so a fresh view per
+    /// frame would allocate a new full splat target every frame.
+    layers: Vec<wgpu::TextureView>,
+    array: wgpu::TextureView,
 }
 
 #[derive(Default)]
@@ -3909,10 +3914,14 @@ impl Renderer {
                 for (vi,view) in views.iter().enumerate() {
                     let center=if !diagnostic_sun.is_empty(){anchors[vi]}
                         else if self.legacy_light_lookahead{view.cam.target}else{focus[vi]};
-                    part_animation_views.push(AnimationView {
-                        view_projection:sun_projection(center,NEAR_SHADOW_EXTENT,NEAR_SHADOW_SIZE),
-                        viewport:[NEAR_SHADOW_SIZE;2],
-                    });
+                    // Every clipmap level is a shadow consumer: its casters
+                    // need the same wind poses and LOD cut as level 0.
+                    for k in 0..near_levels() {
+                        part_animation_views.push(AnimationView {
+                            view_projection:sun_projection(center,near_level_extent(k),NEAR_SHADOW_SIZE),
+                            viewport:[NEAR_SHADOW_SIZE;2],
+                        });
+                    }
                 }
             }
             for lamp in &headlights {part_animation_views.push(AnimationView {
@@ -4352,14 +4361,19 @@ impl Renderer {
         let mut near_shadows = self.near_shadows.lock().unwrap();
         if near_enabled {
             while near_shadows.len() < views.len() {
-                near_shadows.push(NearShadow {
-                    tex: gpu.device.create_texture(&wgpu::TextureDescriptor {
+                let tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
                         label: Some("near sun shadow"),
                         size: wgpu::Extent3d { width: NEAR_SHADOW_SIZE, height: NEAR_SHADOW_SIZE, depth_or_array_layers: near_levels() as u32 },
                         mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
                         format: wgpu::TextureFormat::Depth32Float,
                         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
-                        view_formats: &[] }),
+                        view_formats: &[] });
+                let layers = (0..near_levels()).map(|k| tex.create_view(&wgpu::TextureViewDescriptor { label: Some("sun clipmap level"),
+                    dimension: Some(wgpu::TextureViewDimension::D2), base_array_layer: k as u32, array_layer_count: Some(1), ..Default::default() })).collect();
+                let array = tex.create_view(&wgpu::TextureViewDescriptor { label: Some("sun clipmap"),
+                    dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
+                near_shadows.push(NearShadow {
+                    tex, layers, array,
                     targets: self.view_targets_capacity(gpu, "near sun view", self.shadow_capacity,false,self.instance_groups.sun_enabled),
                     outer: (1..near_levels()).map(|_| self.view_targets_capacity(gpu, "sun clipmap view", self.shadow_capacity,false,self.instance_groups.sun_enabled)).collect(),
                 });
@@ -4451,8 +4465,6 @@ impl Renderer {
                 let near = &near_shadows[vi];
                 let near_centre=if !diagnostic_sun.is_empty() {anchors[vi]}
                     else if self.legacy_light_lookahead {cam.target} else {focus[vi]};
-                let layer_view = |k: usize| near.tex.create_view(&wgpu::TextureViewDescriptor { label: Some("sun clipmap level"),
-                    dimension: Some(wgpu::TextureViewDimension::D2), base_array_layer: k as u32, array_layer_count: Some(1), ..Default::default() });
                 // Branch groups with voxels cast them here too, not their
                 // source sprays: a full spruce's sprays cost ~2.5 ms each in
                 // this 1.6 cm map, its voxels a fraction, at the same coverage
@@ -4471,8 +4483,7 @@ impl Renderer {
                     near_uniform.fog_cull[3]=if self.sun_surface_source{1.0}else{0.0};
                     if self.receiver_demand.enabled() && k == 0 {near_uniform.extra[2]=-((vi+2)as f32);}
                     gpu.queue.write_buffer(&targets.uniform, 0, bytemuck::bytes_of(&near_uniform));
-                    let texture_view = if k == 0 { resources.near_shadow.get(&near.tex) } else { layer_view(k) };
-                    let texture_view = if k == 0 && near_levels() > 1 { layer_view(0) } else { texture_view };
+                    let texture_view = near.layers[k].clone();
                     if voxel_casters {
                         gpu.queue.write_buffer(&targets.foliage_selection,0,bytemuck::cast_slice(&crate::voxel_forest::VoxelRenderer::sun_selection()));
                     }
@@ -4496,14 +4507,10 @@ impl Renderer {
                     }
                 }
                 view_light.near_levels[0] = near_levels() as f32;
-                let array = near.tex.create_view(&wgpu::TextureViewDescriptor { label: Some("sun clipmap"),
-                    dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
-                (array, layer0.unwrap())
+                (near.array.clone(), layer0.unwrap())
             } else {
                 // Valid but unused binding when the feature is disabled.
-                let tex = &cache.as_ref().unwrap().tex;
-                (tex.create_view(&wgpu::TextureViewDescriptor { label: Some("sun clipmap (off)"),
-                    dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() }), shadow_v.clone())
+                (resources.near_shadow_off.get_array(&cache.as_ref().unwrap().tex), shadow_v.clone())
             };
             let light_buf = self.view_uniform(gpu, vi, 1, "view light", bytemuck::bytes_of(&view_light));
             // Per-view targets live across frames while the view keeps its size:
