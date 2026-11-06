@@ -1,4 +1,4 @@
-﻿# Render suite
+# Render suite
 
 `engine/tools/render-suite.py` measures the renderer on one fixed world from a
 fixed set of cameras, keeps the pictures, and compares two runs. Use it for any
@@ -97,6 +97,7 @@ grass).
 | `circle` | Dark spots on the 1.5 m grass grid |
 | `edge` | Shadow map handover on the ground |
 | `grassedge` | Voxel grass against shaded ground |
+| `far` | Slopes 300 to 2000 m away under a low sun |
 | `load` | Bushes 60 and 120 frames after arriving |
 | `fly` | In motion, at 40 m/s |
 
