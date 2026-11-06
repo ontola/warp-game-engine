@@ -114,6 +114,7 @@ Owned by the foliage work; its working checklist is
   is not confirmed yet. No threads, gamepads, F10 menu or
   HDR; trees are opt-in (`?trees=1`) because they are cooked at every load
   ([Running in a browser](browser.md)). It needs 16 storage buffers per
-  shader stage, which about 80 % of WebGPU devices offer.
+  shader stage, which about 80 % of WebGPU devices offer but only about
+  29 % of Macs (most give 10).
 - The cloud container has no GPU: Mesa lavapipe runs GPU tests in software.
   It proves correctness, not performance.
