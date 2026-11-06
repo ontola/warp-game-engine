@@ -41,6 +41,7 @@ fn seat_offset() -> Vec3 {
 
 impl NativeGame {
     pub fn new(root: std::path::PathBuf) -> Result<Self, String> {
+        crate::visuals::MINIMUM.store(true, std::sync::atomic::Ordering::Relaxed);
         let mut game = crate::Racer::new(root, 1, 35, 0, 1, false)?;
         game.random_biome = true;
         game.random_seed = true;
@@ -121,6 +122,14 @@ pub fn shot(args: &[String]) -> Result<(), String> {
     let head = Pose { position: Vec3::new(0.0, 1.2, 0.0), orientation: Quat::IDENTITY };
     let eyes = [-0.032, 0.032].map(|x| Eye { pose: Pose { position: head.position + Vec3::X * x, ..head }, fov: [-0.8, 0.8, 0.8, -0.8] });
     let tracking = Tracking { eyes, head, aim: None, controls: fly, turn: 0.0, focused: true, recentered: false };
+    // The Quest path: draw straight into two eye images, as android.rs does.
+    let eye_texture = || gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("fixture eye"), size: wgpu::Extent3d { width: eye, height: eye, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8UnormSrgb, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
+    let (left, right) = (eye_texture(), eye_texture());
+    for _ in 0..3 { game.frame(&gpu, &tracking, [eye, eye], 0.0, Some(&[&left, &right]))?; }
+    let (l, r) = (gpu.read_rgba8(&left), gpu.read_rgba8(&right));
+    let mut both = Vec::with_capacity(l.len() * 2);
+    for row in 0..eye as usize { let w = eye as usize * 4; both.extend_from_slice(&l[row * w..][..w]); both.extend_from_slice(&r[row * w..][..w]); }
+    render::write_png(std::path::Path::new(&out.replace(".png", "-direct.png")), eye * 2, eye, &both)?;
     let mut frame = game.frame(&gpu, &tracking, [eye, eye], 0.0, None)?;
     for _ in 0..7 { frame = game.frame(&gpu, &tracking, [eye, eye], 0.0, None)?; }
     render::write_png(std::path::Path::new(&out), eye * 2, eye, &gpu.read_rgba8(frame.color.as_ref().unwrap()))?;
