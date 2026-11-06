@@ -335,27 +335,31 @@ impl EngineDebug {
     }
 
     /// Collect GPU pass times (when `on`; switching on is per renderer).
-    pub fn profile(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, on: bool) {
+    /// Turn async GPU timestamps on or off and fold in what arrived. The
+    /// samples are returned for other readers (the F3 stats overlay).
+    pub fn profile(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, on: bool) -> Vec<render::gpu_profile::GpuProfileSample> {
         let id = std::ptr::from_ref(renderer) as usize;
         if !on {
             if self.profiling.take() == Some(id) { let _ = renderer.set_async_gpu_profiling(gpu, false); }
-            return;
+            return Vec::new();
         }
         if self.profiling != Some(id) {
             self.profiling = renderer.set_async_gpu_profiling(gpu, true).is_ok().then_some(id);
             self.passes.clear();
         }
-        for sample in renderer.drain_gpu_profiles(gpu).samples {
+        let samples = renderer.drain_gpu_profiles(gpu).samples;
+        for sample in &samples {
             crate::frame_log::gpu(sample.frame_id,sample.covered_union_ms,&sample.gpu_ms);
             if self.covered.len() < 4096 { self.covered.push(sample.covered_union_ms); }
             self.last_gpu_ms = Some(sample.covered_union_ms);
-            for (name, ms) in sample.gpu_ms {
+            for &(name, ms) in &sample.gpu_ms {
                 match self.passes.iter_mut().find(|p| p.0 == name) {
                     Some(p) => p.1 += (ms - p.1) * 0.1,
                     None => self.passes.push((name, ms)),
                 }
             }
         }
+        samples
     }
 
     /// Smoothed GPU milliseconds per pass, as measured by [`Self::profile`].

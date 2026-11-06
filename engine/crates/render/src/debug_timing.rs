@@ -263,16 +263,22 @@ fn exclusive_ranges(interval: &GpuPassInterval, mut children: Vec<(f64, f64)>) -
     output
 }
 
-fn pass_group(name: &str) -> &'static str {
-    if name.contains("shadow") || name.starts_with("foliage page") || name.starts_with("far sun") { "Shadows" }
+/// The feature a GPU pass belongs to, for grouped cost views (the F10 pass
+/// list, the F3 stats overlay). Unknown names land in "Other".
+pub fn pass_group(name: &str) -> &'static str {
+    if name.contains("shadow") || name.starts_with("foliage page") || name.contains(" sun ") || name.starts_with("far sun")
+        || name.starts_with("static sun") || name.starts_with("sun ") { "Shadows" }
+    else if name.starts_with("shade") || name.contains("radiance") || name.contains("volumetric") { "Lighting" }
+    else if name.contains("terrain") && !name.contains("foliage") { "Terrain" }
     else if name.contains("grass") || name.contains("meadow") || name.contains("voxel")
-        || name.contains("wind") || name.contains("vegetation") || name.contains("canopy") { "Vegetation" }
+        || name.contains("wind") || name.contains("vegetation") || name.contains("canopy")
+        || name.contains("foliage") || name.contains("forest") || name.contains("tree") || name.contains("branch") { "Vegetation" }
     else if name.contains("cull") || name.contains("raster") || name.contains("broadphase")
-        || name.contains("occlusion pyramid") { "Geometry" }
-    else if matches!(name, "shade") || name.contains("radiance") { "Lighting" }
-    else if matches!(name, "taa" | "dlss" | "tonemap" | "auto exposure" | "motion vectors" | "motion blur") { "Post-processing" }
+        || name.contains("occlusion pyramid") || name.contains("visibility") || name.contains("refit") { "Geometry" }
+    else if matches!(name, "taa" | "dlss" | "tonemap" | "auto exposure" | "motion vectors" | "motion blur" | "bloom") { "Post-processing" }
     else if name.contains("particles") || name.contains("exhaust") || name.contains("transparency")
-        || name.contains("animation") { "Effects" }
+        || name.contains("animation") || name.contains("skinning") || name.contains("crowd") || name.contains("debris")
+        || matches!(name, "fx" | "sprites") { "Effects" }
     else { "Other" }
 }
 

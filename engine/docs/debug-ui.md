@@ -1,6 +1,6 @@
 # Live render debug panel
 
-The engine reserves **F10** for this panel, **F11** for fullscreen and **F12** for a feedback screenshot in every build. Games receive F1–F9. The engine keys run before game menus, replay and text-entry handlers.
+The engine reserves **F10** for this panel, **F11** for fullscreen and **F12** for a feedback screenshot in every build. Games receive F1–F9; F3 a game leaves unused opens the [stats overlay](stats-overlay.md). The engine keys run before game menus, replay and text-entry handlers.
 
 Press **F10** during a Sideways playtest to open or close the panel. Opening it
 does not pause the race. To start with it open:

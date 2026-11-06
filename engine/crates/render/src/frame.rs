@@ -3678,7 +3678,7 @@ impl Renderer {
             let matrices:Vec<_>=views.iter().enumerate().map(|(vi,v)|projections.get(vi).copied().unwrap_or_else(||
                 Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near))*camera_view(v.cam,axes.get(vi).copied())).collect();
             let mut enc=gpu.device.create_command_encoder(&Default::default());
-            if let Some(terrain)=&self.procedural_terrain {terrain.encode(gpu,&mut enc);}
+            if let Some(terrain)=&self.procedural_terrain {terrain.encode(gpu,&mut enc,None);}
             let stats=portable.lock().unwrap().render(gpu,enc,views,&matrices,light,self.sky_horizon,&output);
             let pixels=if readback==Readback::ImageAndMetrics {gpu.read_rgba8(&output)}else{Vec::new()};
             return Ok((output,pixels,stats));
@@ -4138,7 +4138,12 @@ impl Renderer {
             }
         }
         if let Some(terrain) = &self.procedural_terrain {
-            terrain.encode(gpu, &mut enc);
+            // Timed only when it builds patches: the pair stays unused otherwise.
+            let times = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
+            if terrain.encode(gpu, &mut enc, times) && times.is_some() {
+                timestamp_pair(&mut ts);
+                names.push("procedural terrain");
+            }
         }
         if let Some(debris) = &self.debris {
             let times = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
