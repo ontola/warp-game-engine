@@ -868,6 +868,9 @@ fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f3
         if sparse || cut<smooth(s.rock,0.3,0.8) || cut<smooth(s.snow,0.15,0.45) || s.scree>0.8 || s.water>0.02 || land.clearance(x,z)<cell {continue;}
         let dx=land.ground(x+0.5,z).pos.y-land.ground(x-0.5,z).pos.y;
         let dz=land.ground(x,z+0.5).pos.y-land.ground(x,z-0.5).pos.y;
+        // The cell tilts with the ground, so along the fall line it covers
+        // only cos(slope) of the grid step: a bare strip per row on a slope
+        // (Mancave, 28 degrees: 0.18 m). Scaled by 1/up.y it meets the next row.
         let up=Vec3::new(-dx,1.,-dz).normalize();
         let hash=Cell::new(i,j,seed).hash(77);
         // A cell is a 3x3 block of patches that tiles the 1.5 m square: turn
@@ -875,7 +878,7 @@ fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f3
         // at every grid corner (Joep's regular black circles).
         let quarter=(hash*8.).floor() as u32%4;
         roots.push(WorldRoot {id:render::placement::instance_id(1000,i,j),placement:RootPlacement {
-            pos:Vec3::new(x,s.pos.y-0.015,z),up,yaw:quarter as f32*std::f32::consts::FRAC_PI_2,scale:1.,variant:variant_offset+usize::from(hash>=0.5)}});
+            pos:Vec3::new(x,s.pos.y-0.015,z),up,yaw:quarter as f32*std::f32::consts::FRAC_PI_2,scale:1./up.y.max(0.7),variant:variant_offset+usize::from(hash>=0.5)}});
     }}
     roots
 }
