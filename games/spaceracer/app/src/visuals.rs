@@ -378,9 +378,14 @@ fn transform(v: &Value) -> Affine3A {
     ]);
     Affine3A::from_mat3_translation(Mat3::from_cols_array_2d(&basis), Vec3::from(origin))
 }
+/// Quest: the minimum forward renderer (plain meshes, no skinning, no GPU
+/// debris), the only one that draws straight into the headset's eye images.
+pub static MINIMUM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn minimum() -> bool { MINIMUM.load(std::sync::atomic::Ordering::Relaxed) }
 impl Visuals {
     pub fn new(race: &Race, root: &Path) -> Result<Self, String> {
         let mut scene = Scene {stage_sun:true,..Default::default()};
+        scene.graphics.minimal_forward = minimum();
         scene.graphics.sharp_sprites=true;
         let mut lighting = Lighting::default();
         if race.biome == "city" || race.biome == "cell" || race.biome == "ocean" {

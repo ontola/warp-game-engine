@@ -831,10 +831,12 @@ impl Stage {
             dynamic.len(),
             walkers.lock().unwrap().len()
         );
+        // The minimum renderer has no skinning: no octopuses there.
         let animals: Vec<_> = octopuses
             .lock()
             .unwrap()
             .iter()
+            .filter(|_| !super::visuals::minimum())
             .map(|&site| {
                 let bounds = Bounds {
                     lo: Vec3::new(-1.2, 0., -1.2) * site.size,
