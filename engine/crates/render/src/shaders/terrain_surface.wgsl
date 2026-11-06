@@ -419,7 +419,9 @@ fn field_ground(s: SurfaceIn) -> FieldGround {
 
 // Grass proxy (style block material 7, procedural_terrain.rs grass_proxy):
 // tint.y the drawn grass radius round the camera (0: off), roughness,
-// scale, metal the colour the blades multiply the ground by. Fades in over
+// scale, metal the blades' linear albedo, tint.z and layer / 1000 their area
+// per m² of ground seen from above and sideways (VoxelAsset::far_look), so
+// they cover more of it the flatter the view. Fades in over
 // the outer 30 % of the disc, where the cells thin out, on ground where
 // grass_cells would plant them (rock, scree, water, snow excluded).
 fn grass_proxy(c: vec3<f32>, s: SurfaceIn, f: FieldAttr, meadow_w: f32) -> vec3<f32> {
@@ -431,7 +433,10 @@ fn grass_proxy(c: vec3<f32>, s: SurfaceIn, f: FieldAttr, meadow_w: f32) -> vec3<
     let w = smoothstep(0.7 * radius, radius, d) * meadow_w
         * (1.0 - smoothstep(0.3, 0.8, f.rock)) * (1.0 - smoothstep(0.6, 0.8, f.scree))
         * (1.0 - smoothstep(0.0, 0.02, f.water)) * (1.0 - smoothstep(0.15, 0.45, f.snow));
-    return mix(c, c * vec3<f32>(m.roughness, m.scale, m.metal), w);
+    let e = max(abs(s.dir.y), 0.05);
+    let cover = 1.0 - exp(-(m.tint.z * e + f32(m.layer) * 0.001 * sqrt(1.0 - e * e)) / e);
+    let blades = mix(c, vec3<f32>(m.roughness, m.scale, m.metal), cover);
+    return mix(c, blades, w);
 }
 
 // Ditches drawn into the pixels: the terrain's ditch amount (style block

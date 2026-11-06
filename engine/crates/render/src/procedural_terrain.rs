@@ -204,14 +204,20 @@ pub fn region_ground(scene: &mut Scene, material: u32, regions: &crate::regions:
     scene.materials[first + 6].roughness = at as f32 + 1.0;
 }
 
-/// Past `radius_m` from the camera, where the drawn grass cells end, colour
-/// grass ground by `tint` (multiplying the ground): a near-free far proxy for
-/// the blades (terrain_surface.wgsl grass_proxy). Radius 0 turns it off.
-pub fn grass_proxy(scene: &mut Scene, material: u32, radius_m: f32, tint: [f32; 3]) {
+/// Past `radius_m` from the camera, where the drawn grass cells end, grass
+/// ground takes the blades' look from afar (VoxelAsset::far_look): their
+/// linear `albedo` over the share of ground their `area` (per m² of ground,
+/// seen from above and sideways) covers at the view's angle. A near-free far
+/// proxy for the blades (terrain_surface.wgsl grass_proxy). Radius 0 turns
+/// it off.
+pub fn grass_proxy(scene: &mut Scene, material: u32, radius_m: f32, albedo: [f32; 3], area: [f32; 2]) {
     let first = style_block(scene, material);
     let m = &mut scene.materials[first + 7];
     m.tint[1] = radius_m.max(0.0);
-    m.roughness = tint[0]; m.scale = tint[1]; m.metal = tint[2];
+    m.tint[2] = area[0].max(0.0);
+    // A data word: the sideways area in thousandths.
+    m.layer = (area[1].max(0.0) * 1000.0).round() as i32;
+    m.roughness = albedo[0]; m.scale = albedo[1]; m.metal = albedo[2];
 }
 
 /// Draw the forest of `forest_field` into the terrain from `start_m` from
