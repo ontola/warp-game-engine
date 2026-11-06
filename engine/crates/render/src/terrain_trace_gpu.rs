@@ -77,7 +77,7 @@ impl GpuHierarchy {
         for level in 0..header.info[0]{let params=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("terrain mip level"),contents:bytemuck::cast_slice(&[level,0,0,0]),usage:wgpu::BufferUsages::UNIFORM});
             build_groups.push(bind(gpu,&build_layout,&[(0,params.as_entire_binding()),(1,wgpu::BindingResource::TextureView(&height_view)),(2,buffer.as_entire_binding())]));}
         let query_layout=layout(gpu,"terrain trace query",&[(0,uniform()),(1,texture()),(3,storage(true)),(4,storage(false)),(24,storage(true))]);
-        let query_pipeline=pipeline(gpu,&query_layout,&format!("{}\n{}",super::SHADER,include_str!("shaders/terrain_trace_query.wgsl")),"query_terrain");
+        let query_pipeline=pipeline(gpu,&query_layout,&format!("{}\n{}\n{}",super::SHADER,super::TYPED,include_str!("shaders/terrain_trace_query.wgsl")),"query_terrain");
         Ok(Self{buffer,height_view,_owned_heights:owned,header,build_pipeline,build_groups,query_pipeline,query_layout})
     }
     pub fn bytes(&self)->u64 {self.buffer.size()}
@@ -127,5 +127,5 @@ impl GpuBatch {pub fn read(self,gpu:&Gpu)->Vec<TraceResult>{
         assert_eq!(&bytes[312..],&[0;8]);
         for count in [1,2,5,21,341]{assert_eq!(packed_size(count)%16,0);assert!(packed_size(count)>=304+count as usize*8);}
     }
-    #[test]fn hierarchy_build_and_trace_shaders_validate(){for source in [include_str!("shaders/terrain_trace_build.wgsl").to_string(),format!("{}\n{}",super::super::SHADER,include_str!("shaders/terrain_trace_query.wgsl"))]{let module=naga::front::wgsl::parse_str(&source).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();}}
+    #[test]fn hierarchy_build_and_trace_shaders_validate(){for source in [include_str!("shaders/terrain_trace_build.wgsl").to_string(),format!("{}\n{}\n{}",super::super::SHADER,super::super::TYPED,include_str!("shaders/terrain_trace_query.wgsl"))]{let module=naga::front::wgsl::parse_str(&source).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();}}
 }

@@ -125,5 +125,15 @@ regions 256-byte aligned so writers (procedural terrain, skinning) and the
 portable renderer bind the vertex region alone. The foliage source cache
 allocates the same layout. Shade reads it through `vertex_f32(i)`,
 `cluster_vert(i)`, `tri_word(i)`; the region starts sit in scene table vec4
-1.z and 1.w. Shade is at 11, still pixel-identical. Next: GPU-written data
-(terrain hierarchy, foliage sun pages, meadow edges) and shade scratch.
+1.z and 1.w. Shade is at 11, still pixel-identical.
+
+Step 4: the world terrain hierarchy (built once on the GPU) and the foliage
+sun page table (copied in each frame, 4 KiB) are copied into regions of the
+scene tables; header vec4 2.x and 2.y say where. terrain_trace.wgsl and
+foliage_sun_pages.wgsl now read through `terrain_world()`, `terrain_level(i)`,
+`terrain_info()`, `terrain_bounds(i)` and `sun_pages_*()`, defined over the
+scene tables in shade.wgsl; the standalone trace query pass gets typed
+versions from `terrain_trace::TYPED`. The voxel lighting layout swaps
+bindings 24 and 26 for 5. Shade is at 9. Pixel-identical, also with
+`KERN_PAGED_FOLIAGE_SUN=1` and on all `world_sun_visibility` images (that
+example's split-view check fails the same way on main before this change).

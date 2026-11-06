@@ -120,7 +120,7 @@ fn diagnostic_u64(bytes: &[u8], word: usize) -> u64 {
 // Reusing the entire mesh scene layout also counts unused mesh/car buffers
 // against WebGPU's per-stage limit (10 scene + 7 volume = 17). Keep this
 // interface small instead of increasing the requested hardware limit.
-pub(crate) const SCENE_BINDINGS: &[u32] = &[4, 12, 13, 14, 15, 16, 17, 18, 22, 23, 24, 25, 26];
+pub(crate) const SCENE_BINDINGS: &[u32] = &[4, 5, 12, 13, 14, 15, 16, 17, 18, 22, 23, 25];
 /// Legacy authored selection capacity; GPU-driven tables use the runtime slot count.
 pub(crate) const MAX_VIEW_GROUPS: usize = 16384;
 /// Volumes the integrator path (no rasterized voxels) may march: its per-ray

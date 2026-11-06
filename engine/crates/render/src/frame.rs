@@ -1383,7 +1383,6 @@ impl Renderer {
         let car_list = if scene.car_materials.is_empty() { vec![crate::scene::GpuCarMaterial::default()] } else { scene.car_materials.clone() };
         let solids = scene.solid_occluders();
         let solid_count = solids.len() as u32;
-        let scene_tables = crate::scene_tables::SceneTables::new(gpu, &scene.materials, &car_list, &solids, &scene.aux, topology.starts());
         startup.mark("geometry_material_buffers");
         crate::foliage_representation::validate_bindings(scene).expect("invalid foliage representation bindings");
         let voxel_replacement = buffer(gpu, "voxel crown replacement", bytemuck::cast_slice(&crate::voxel_forest::replacement_materials(scene)), u);
@@ -1448,9 +1447,7 @@ impl Renderer {
                 (21, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Sint,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
                 (22, uniform()),
                 (23, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Depth,view_dimension:wgpu::TextureViewDimension::D2Array,multisampled:false}),
-                (24, storage(true)),
                 (25, uniform()),
-                (26, storage(true)),
                 (27, uniform()),
                 (28, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (29, storage(true)),
@@ -1561,6 +1558,20 @@ impl Renderer {
         let far_sun=crate::far_sun::Resources::new(gpu,scene);
         startup.mark("far_sun_resources");
         let foliage_sun_pages=crate::foliage_sun_pages::Resources::new(gpu,scene).expect("foliage sun pages");
+        // The terrain hierarchy is built once; the sun page table is copied in
+        // again each frame it can change (frame_output_into).
+        let scene_tables = crate::scene_tables::SceneTables::new(gpu, &scene.materials, &car_list, &solids, &scene.aux, topology.starts(),
+            [world_visibility.buffer.size(), foliage_sun_pages.metadata.size()]);
+        if scene_tables.buffer.size() > gpu.limits.max_storage_buffer_binding_size as u64 {
+            panic!("scene tables need {} bytes, over the device's {} byte storage binding", scene_tables.buffer.size(), gpu.limits.max_storage_buffer_binding_size);
+        }
+        {
+            let mut enc = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("scene table copies") });
+            // A disabled or baked hierarchy is a placeholder that shading never reads.
+            if world_visibility.enabled && !world_visibility.baked { scene_tables.copy_in(&mut enc, &world_visibility.buffer, scene_tables.terrain); }
+            if foliage_sun_pages.enabled { scene_tables.copy_in(&mut enc, &foliage_sun_pages.metadata, scene_tables.sun); }
+            gpu.queue.submit([enc.finish()]);
+        }
         startup.mark("foliage_sun_page_resources");
         let meadow_substrate_enabled = crate::meadow_substrate::enabled(
             std::env::var("KERN_MEADOW_AGGREGATE").as_deref() == Ok("1"),
@@ -1607,9 +1618,7 @@ impl Renderer {
                 (21, wgpu::BindingResource::TextureView(&tracks.lookup_view)),
                 (22, far_sun.uniform.as_entire_binding()),
                 (23, wgpu::BindingResource::TextureView(far_view)),
-                (24, world_visibility.buffer.as_entire_binding()),
                 (25, world_visibility.uniform.as_entire_binding()),
-                (26, foliage_sun_pages.metadata.as_entire_binding()),
                 (27, meadow_substrate.as_entire_binding()),
                 (28, wgpu::BindingResource::TextureView(&noise_view)),
                 (29, meadow_edge_buffer.as_entire_binding()),
@@ -1654,9 +1663,8 @@ impl Renderer {
             (18, wgpu::BindingResource::TextureView(&headlights.sampled)),
             (22, far_sun.uniform.as_entire_binding()),
             (23, wgpu::BindingResource::TextureView(sampled_far)),
-            (24, world_visibility.buffer.as_entire_binding()),
             (25, world_visibility.uniform.as_entire_binding()),
-            (26, foliage_sun_pages.metadata.as_entire_binding()),
+            (5, scene_tables.buffer.as_entire_binding()),
         ]);
         let view_cull_layout = layout(gpu, "view cull", &[(0, uniform()), (1, storage(false)), (2, storage(false)), (3, storage(false)), (4, storage(false)), (5, storage(true)), (6, uniform()),
             (7,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
@@ -4060,6 +4068,9 @@ impl Renderer {
         let revision = self.foliage_revision.load(std::sync::atomic::Ordering::Relaxed);
         cpu.mark("setup");
         let mut enc = gpu.device.create_command_encoder(&Default::default());
+        if self.foliage_sun_pages.enabled {
+            self.scene_tables.copy_in(&mut enc, &self.foliage_sun_pages.metadata, self.scene_tables.sun);
+        }
         // wgpu30 requires native API commands on a separate encoder. All
         // tracked and native segments still submit once, in queue order.
         let mut segments = Vec::new();

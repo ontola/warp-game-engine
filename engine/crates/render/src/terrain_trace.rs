@@ -10,6 +10,14 @@ pub const MAX_LEVELS:usize=16;
 pub const MAX_BASE_CELLS:usize=16*1024*1024;
 pub const UNKNOWN_HEIGHT:f32=-1.0e8;
 pub const SHADER:&str=include_str!("shaders/terrain_trace.wgsl");
+/// The hierarchy as its own typed binding, for passes without the scene
+/// tables (shade reads it from there, shade.wgsl).
+pub const TYPED:&str="@group(0) @binding(24) var<storage,read> terrain_hierarchy:TerrainHierarchy;
+fn terrain_world()->TerrainWorld{return terrain_hierarchy.world;}
+fn terrain_level(i:u32)->vec4<u32>{return terrain_hierarchy.levels[i];}
+fn terrain_info()->vec4<u32>{return terrain_hierarchy.info;}
+fn terrain_bounds(i:u32)->vec2<f32>{return terrain_hierarchy.bounds[i];}
+";
 const UNKNOWN_RANGE:[f32;2]=[-1.0e30,1.0e30];
 const EMPTY_RANGE:[f32;2]=[1.0e30,-1.0e30];
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
