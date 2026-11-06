@@ -39,7 +39,7 @@ fn grass_sample(in: GrassVertex) -> vec4<f32> {
     let mip_scale = select(1.0, view.extra.z, view.extra.z > 0.0);
     let dx = dpdx(in.uv) * mip_scale;
     let dy = dpdy(in.uv) * mip_scale;
-    let m = materials[grass_range.indices.z];
+    let m = material(grass_range.indices.z);
     return textureSampleGrad(albedo, plant_samp, in.uv, m.layer, dx, dy);
 }
 @fragment fn grass_depth_fs(in: GrassVertex) {
@@ -47,7 +47,7 @@ fn grass_sample(in: GrassVertex) -> vec4<f32> {
 }
 fn grass_color(in: GrassVertex) -> vec4<f32> {
     let sample = grass_sample(in);
-    let m = materials[grass_range.indices.z];
+    let m = material(grass_range.indices.z);
     // Identical photo silhouette at the opaque/transition boundary. Opacity
     // fades its covered pixels continuously instead of eroding their shape.
     if sample.a < 0.5 || in.opacity <= 0.0 { discard; }

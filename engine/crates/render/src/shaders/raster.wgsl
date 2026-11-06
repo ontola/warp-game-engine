@@ -65,7 +65,15 @@ fn instance_at(id: u32) -> Instance {
     let owner = instances[member_owner(id)];
     return compose_member(owner, instances[member_template(owner,id)]);
 }
-@group(0) @binding(5) var<storage, read> materials: array<Material>;
+// Read-only scene tables in one buffer (scene_tables.rs): vec4 0 holds where
+// the materials, car materials and solid occluders start (in vec4s).
+@group(0) @binding(5) var<storage, read> scene_tables: array<vec4<u32>>;
+fn material(i: u32) -> Material {
+    let at = scene_tables[0].x + 2u * i;
+    let a = scene_tables[at];
+    let b = scene_tables[at + 1u];
+    return Material(bitcast<vec3<f32>>(a.xyz), bitcast<i32>(a.w), bitcast<f32>(b.x), b.y, bitcast<f32>(b.z), bitcast<f32>(b.w));
+}
 @group(0) @binding(6) var albedo: texture_2d_array<f32>;
 @group(0) @binding(7) var samp: sampler;
 @group(0) @binding(8) var<storage,read> aux: array<u32>;
@@ -159,7 +167,7 @@ fn alpha_cut(in: VOut) -> bool {
     let dy = dpdy(in.uv) * mip_scale;
     if in.grass_opacity < GRASS_OPAQUE_THRESHOLD { return true; }
     if game_mask(in.world,in.instance,in.material) {return true;}
-    let m = materials[in.material];
+    let m = material(in.material);
     if (m.flags & 1u) != 0u && m.layer >= 0 {
         // PIXEL_ART keeps the top mip's hard silhouette.
         let sharp = select(1.0, 0.0, (m.flags & 8192u) != 0u);

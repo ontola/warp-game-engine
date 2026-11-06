@@ -211,7 +211,7 @@ fn field_detail_slope(xz: vec2<f32>, seed: u32, footprint: f32, rock: f32, up: f
 // from `centre` (where the trees were placed) when `centred`, else the camera.
 struct FarForest { style: ForestStyle, start: f32, density: f32, end: f32, centre: vec2<f32>, centred: bool };
 fn far_forest_params(at: u32) -> FarForest {
-    let a = materials[at]; let b = materials[at + 1u]; let c = materials[at + 2u];
+    let a = material(at); let b = material(at + 1u); let c = material(at + 2u);
     let fs = ForestStyle(vec4<f32>(a.tint, bitcast<f32>(a.layer)), vec4<f32>(a.roughness, bitcast<f32>(a.flags), a.scale, a.metal),
         vec4<f32>(b.tint, bitcast<f32>(b.layer)), vec4<f32>(b.roughness, bitcast<f32>(b.flags), b.scale, b.metal));
     return FarForest(fs, c.tint.x, c.tint.y, c.scale, vec2<f32>(c.tint.z, c.roughness), (c.flags & 1u) != 0u);
@@ -337,10 +337,10 @@ fn field_material_pair(m: Material) -> array<vec4<f32>, 2> {
     return array<vec4<f32>, 2>(vec4<f32>(m.tint, bitcast<f32>(m.layer)), vec4<f32>(m.roughness, bitcast<f32>(m.flags), m.scale, m.metal));
 }
 fn field_ground_at(at: u32) -> FieldGround {
-    let a = field_material_pair(materials[at]);
-    let b = field_material_pair(materials[at + 1u]);
-    let c = field_material_pair(materials[at + 2u]);
-    let d = field_material_pair(materials[at + 3u]);
+    let a = field_material_pair(material(at));
+    let b = field_material_pair(material(at + 1u));
+    let c = field_material_pair(material(at + 2u));
+    let d = field_material_pair(material(at + 3u));
     return FieldGround(a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1]);
 }
 
@@ -356,7 +356,7 @@ fn field_ground_add(acc: FieldGround, g: FieldGround, w: f32) -> FieldGround {
 // pixel mixes the kinds of its four surrounding nodes, as the terrain's
 // shape does (regions.rs style_at), each kind read once.
 fn region_ground(p: vec2<f32>, base: u32) -> FieldGround {
-    let h = field_material_pair(materials[base]);
+    let h = field_material_pair(material(base));
     let sx = u32(h[0].w);
     let sz = u32(h[1].x);
     let kinds = u32(h[1].y);
@@ -376,7 +376,7 @@ fn region_ground(p: vec2<f32>, base: u32) -> FieldGround {
     var count = 0u;
     var sum = 0.0;
     for (var c = 0u; c < 4u; c++) {
-        var pair = field_material_pair(materials[nodes + at[c] / 2u]);
+        var pair = field_material_pair(material(nodes + at[c] / 2u));
         let slots = pair[at[c] % 2u];
         for (var k = 0u; k < 4u; k++) {
             let word = u32(slots[k]);
@@ -412,7 +412,7 @@ fn field_ground(s: SurfaceIn) -> FieldGround {
 // distance (metres) to the nearest ditch line on terrain_field's grid.
 fn field_ditch(xz: vec2<f32>, s: SurfaceIn, up: f32) -> vec2<f32> {
     if s.scale >= 0.0 { return vec2<f32>(0.0, 1000.0); }
-    let amount = materials[u32(-s.scale - 0.5) + 7u].tint.x * smoothstep(0.97, 0.995, up);
+    let amount = material(u32(-s.scale - 0.5) + 7u).tint.x * smoothstep(0.97, 0.995, up);
     if amount <= 0.0 { return vec2<f32>(0.0, 1000.0); }
     let a = f32(u32(s.metal + 0.5) % 97u) * 0.0647;
     let u = xz.x * cos(a) + xz.y * sin(a);
@@ -433,7 +433,7 @@ fn field_strip(d: f32, w: f32, fw: f32) -> f32 {
 // world_constraints.rs surface_words): data materials holding f32 words; the
 // style block's far forest params' metal points at them (first + 1).
 fn road_word(base: u32, i: u32) -> f32 {
-    let m = materials[base + i / 8u];
+    let m = material(base + i / 8u);
     switch i % 8u {
         case 0u: { return m.tint.x; }
         case 1u: { return m.tint.y; }
@@ -452,7 +452,7 @@ struct RoadPixel { found: bool, edge: f32, u: f32, half: f32, along: f32 };
 fn road_at(xz: vec2<f32>, scale: f32) -> RoadPixel {
     var r = RoadPixel(false, 1e9, 0.0, 1.0, 0.0);
     if !FEATURE_FIELD_ROADS || scale >= 0.0 { return r; }
-    let ptr = materials[u32(-scale - 0.5) + 2u].metal;
+    let ptr = material(u32(-scale - 0.5) + 2u).metal;
     if ptr < 0.5 { return r; }
     let base = u32(ptr - 0.5);
     let cell = road_word(base, 2u);

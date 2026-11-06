@@ -48,7 +48,7 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
     let dx = dpdx(in.uv) * mip_scale;
     let dy = dpdy(in.uv) * mip_scale;
     let tri = blend_triangles[in.triangle];
-    let m = materials[tri.material];
+    let m = material(tri.material);
     if !front && tri.double_sided == 0u { discard; }
     var sample = vec4<f32>(1.0);
     if m.layer >= 0 { sample = textureSampleGrad(albedo, samp, in.uv, m.layer, dx, dy); }

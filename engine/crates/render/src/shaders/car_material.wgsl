@@ -21,7 +21,12 @@ struct CarMaterial {
     body: vec4<f32>,    // object-space bounds: min y, max y, min z, max z
     axles: vec4<f32>,   // front axle z, rear axle z, wheel radius, half track (< 0: a wheel)
 };
-@group(0) @binding(19) var<storage, read> car_materials: array<CarMaterial>;
+fn car_material(i: u32) -> CarMaterial {
+    let at = scene_tables[0].y + 9u * i;
+    var v: array<vec4<f32>, 9>;
+    for (var k = 0u; k < 9u; k++) { v[k] = bitcast<vec4<f32>>(scene_tables[at + k]); }
+    return CarMaterial(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]);
+}
 
 const CAR_PAINT: u32 = 0u;
 const CAR_RUBBER: u32 = 1u;

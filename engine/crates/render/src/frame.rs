@@ -906,7 +906,7 @@ pub struct Renderer {
     /// attenuated, so sky, reflection and sun-fallback marches are skipped
     /// (exactly 1). Foliage cannot be added later without a rebuild.
     empty_gi_volume: bool,
-    car_materials: wgpu::Buffer,
+    scene_tables: crate::scene_tables::SceneTables,
     car_material_count: usize,
     /// The scene's materials, rewritable with [`Renderer::update_materials`].
     materials: wgpu::Buffer,
@@ -932,7 +932,6 @@ pub struct Renderer {
     instance_flags: std::sync::Mutex<Vec<u32>>,
     foliage_revision: std::sync::atomic::AtomicU64,
     density_sampler: wgpu::Sampler,
-    solid_occluders: wgpu::Buffer,
     solid_count: u32,
     heightfield: wgpu::TextureView,
     hf: crate::scene::Heightfield,
@@ -1385,7 +1384,9 @@ impl Renderer {
         let aux = buffer(gpu, "aux", bytemuck::cast_slice(&scene.aux), u);
         // Never empty: a binding needs at least one element.
         let car_list = if scene.car_materials.is_empty() { vec![crate::scene::GpuCarMaterial::default()] } else { scene.car_materials.clone() };
-        let car_materials = buffer(gpu, "car materials", bytemuck::cast_slice(&car_list), u);
+        let solids = scene.solid_occluders();
+        let solid_count = solids.len() as u32;
+        let scene_tables = crate::scene_tables::SceneTables::new(gpu, &scene.materials, &car_list, &solids);
         startup.mark("geometry_material_buffers");
         crate::foliage_representation::validate_bindings(scene).expect("invalid foliage representation bindings");
         let voxel_replacement = buffer(gpu, "voxel crown replacement", bytemuck::cast_slice(&crate::voxel_forest::replacement_materials(scene)), u);
@@ -1449,7 +1450,6 @@ impl Renderer {
                 (16, wgpu::BindingType::Texture { sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false }),
                 (17, uniform()),
                 (18, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Depth,view_dimension:wgpu::TextureViewDimension::D2Array,multisampled:false}),
-                (19, storage(true)),
                 (20, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
                 (21, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Sint,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
                 (22, uniform()),
@@ -1598,7 +1598,7 @@ impl Renderer {
                 (2, tris.as_entire_binding()),
                 (3, clusters.as_entire_binding()),
                 (4, instance_data.as_entire_binding()),
-                (5, materials.as_entire_binding()),
+                (5, scene_tables.buffer.as_entire_binding()),
                 (6, wgpu::BindingResource::TextureView(&albedo_view)),
                 (7, wgpu::BindingResource::Sampler(&samp)),
                 (8, aux.as_entire_binding()),
@@ -1612,7 +1612,6 @@ impl Renderer {
                 (16, wgpu::BindingResource::TextureView(&grass_lighting.tiles)),
                 (17, headlights.uniform.as_entire_binding()),
                 (18, wgpu::BindingResource::TextureView(headlight_view)),
-                (19, car_materials.as_entire_binding()),
                 (20, wgpu::BindingResource::TextureView(&tracks.atlas_view)),
                 (21, wgpu::BindingResource::TextureView(&tracks.lookup_view)),
                 (22, far_sun.uniform.as_entire_binding()),
@@ -1688,7 +1687,6 @@ impl Renderer {
                 (8, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }),
                 (10, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (11, uniform()),
-                (12, storage(true)),
                 (13, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false }),
                 (14, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
                 (15, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
@@ -1983,10 +1981,6 @@ impl Renderer {
         startup.mark("tonemap_taa_pipelines");
         let clamp_samp = gpu.device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let density_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor { label: Some("linear canopy"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
-        let solids = scene.solid_occluders();
-        let solid_count = solids.len() as u32;
-        let solid_occluders = buffer(gpu, "solid occluders", if solids.is_empty() { &[0u8; 48] } else { bytemuck::cast_slice(&solids) }, wgpu::BufferUsages::STORAGE);
-        startup.mark("solid_occluder_resources");
 
         let (sky_tex, sky_sh, raw_horizon_scaled, sky_scale, sky_limit, rotation) = scene_environment(gpu, scene, light);
         let shadow_samp = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
@@ -2173,7 +2167,7 @@ impl Renderer {
             cpu_spans: crate::cpu_spans::Collector::from_env(),
             empty_gi_volume: scene.heightfield.heights.iter().all(|&h| h <= -1e8) && scene.voxel_forest.is_none() && scene.foliage_world.is_none()
                 && !scene.instances.iter().any(|i| i.flags & crate::scene::FOLIAGE != 0),
-            car_materials,
+            scene_tables,
             car_material_count: car_list.len(),
             materials,
             material_count: scene.materials.len(),
@@ -2198,7 +2192,6 @@ impl Renderer {
             instance_flags: std::sync::Mutex::new(scene.instances.iter().map(|i| i.flags).collect()),
             foliage_revision: Default::default(),
             density_sampler,
-            solid_occluders,
             solid_count,
             heightfield: height_view,
             hf,
@@ -2904,7 +2897,7 @@ impl Renderer {
         if materials.len() != self.car_material_count {
             return Err(format!("{} car materials for a scene built with {}", materials.len(), self.car_material_count));
         }
-        gpu.queue.write_buffer(&self.car_materials, 0, bytemuck::cast_slice(materials));
+        self.scene_tables.write_cars(gpu, materials);
         Ok(())
     }
 
@@ -3463,6 +3456,7 @@ impl Renderer {
             }
         }
         gpu.queue.write_buffer(&self.materials, (first * std::mem::size_of::<crate::scene::Material>()) as u64, bytemuck::cast_slice(materials));
+        self.scene_tables.write_materials(gpu, first, materials);
         Ok(())
     }
 
@@ -4574,7 +4568,7 @@ impl Renderer {
                             (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
                             (7, wgpu::BindingResource::TextureView(&self.sky_view)),
                             (10, wgpu::BindingResource::TextureView(&self.heightfield)),
-                            (11, gi_buf.as_entire_binding()), (12, self.solid_occluders.as_entire_binding()),
+                            (11, gi_buf.as_entire_binding()),
                             (13, wgpu::BindingResource::TextureView(&density_view)),
                             (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
                             (15, wgpu::BindingResource::TextureView(&near_view)),
@@ -4663,7 +4657,6 @@ impl Renderer {
                     (8, wgpu::BindingResource::TextureView(&hdr_v)),
                     (10, wgpu::BindingResource::TextureView(&self.heightfield)),
                     (11, gi_buf.as_entire_binding()),
-                    (12, self.solid_occluders.as_entire_binding()),
                     (13, wgpu::BindingResource::TextureView(&density_view)),
                     (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
                     (15, wgpu::BindingResource::TextureView(&near_view)),
@@ -4803,7 +4796,7 @@ impl Renderer {
                             (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
                             (7, wgpu::BindingResource::TextureView(&self.sky_view)),
                             (10, wgpu::BindingResource::TextureView(&self.heightfield)),
-                            (11, gi_buf.as_entire_binding()), (12, self.solid_occluders.as_entire_binding()),
+                            (11, gi_buf.as_entire_binding()),
                             (13, wgpu::BindingResource::TextureView(&density_view)),
                             (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
                             (15, wgpu::BindingResource::TextureView(&near_view)),
@@ -4865,7 +4858,7 @@ impl Renderer {
                             (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
                             (7, wgpu::BindingResource::TextureView(&self.sky_view)),
                             (10, wgpu::BindingResource::TextureView(&self.heightfield)),
-                            (11, gi_buf.as_entire_binding()), (12, self.solid_occluders.as_entire_binding()),
+                            (11, gi_buf.as_entire_binding()),
                             (13, wgpu::BindingResource::TextureView(&density_view)),
                             (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
                             (15, wgpu::BindingResource::TextureView(&near_view)),
