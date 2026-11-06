@@ -1167,10 +1167,16 @@ fn main() -> Result<(), String> {
         let mut headless = app::Headless::new(&gpu, [w, h], TICK_HZ)?;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let pan = arg("--pan").and_then(|d| d.parse::<f32>().ok()).unwrap_or(0.0).to_radians();
+        // Clips: --dump-warm N still frames first (pages stream in), then fly
+        // forward (--dump-forward) keeping every --dump-every th frame.
+        let warm = arg("--dump-warm").and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
+        let every = arg("--dump-every").and_then(|n| n.parse::<u32>().ok()).unwrap_or(1).max(1);
+        let forward = if args.iter().any(|a| a == "--dump-forward") { 1.0 } else { 0.0 };
+        for _ in 0..warm { game.tick(&[Controls::default()]); headless.frame(&mut game)?; }
         for i in 0..n.parse::<u32>().map_err(|_| "--dump N DIR")? {
-            game.tick(&[Controls { look: [pan, 0.0], ..Default::default() }]);
+            game.tick(&[Controls { look: [pan, 0.0], mv: [0.0, forward], ..Default::default() }]);
             let rgba = headless.frame(&mut game)?;
-            render::write_png(&PathBuf::from(&dir).join(format!("{i:03}.png")), w, h, &rgba)?;
+            if i % every == 0 { render::write_png(&PathBuf::from(&dir).join(format!("{:03}.png", i / every)), w, h, &rgba)?; }
         }
         return Ok(());
     }
