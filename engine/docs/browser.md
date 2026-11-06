@@ -24,8 +24,7 @@ natively, Esc releases the mouse.
 
 The page shows a progress bar until the first frame: the wasm download
 (with bytes), the ground textures, building the world, WebGPU setup and
-the first upload. A GPU with fewer than 16 storage buffers per stage stops
-there with a message. The log sits in the corner.
+the first upload. The log sits in the corner.
 
 `build/web` holds `index.html` (from `engine/crates/app/web`), `pkg/` (the
 wasm and its JavaScript) and `assets/` (the ground textures). Any static
@@ -33,21 +32,27 @@ host serves it.
 
 ## What the browser needs
 
-- The full renderer needs 16 storage buffers and 20 sampled textures per
-  shader stage. About 80 % of WebGPU devices offer that, but on macOS only
-  about 29 %: most Macs offer 10 (Chrome 156 on Joep's Mac, 6 November
-  2026), Firefox (Zen) 9, Chrome's software adapter (SwiftShader) 10. The
-  spec's minimum is 8.
-- Below 16 the renderer switches to its portable path
+- Engine rule (Joep, 6 November 2026): every pass fits 8 storage buffers
+  per shader stage, the spec minimum. Data a pass reads is packed into a few
+  shared buffers read through WGSL accessor functions (`scene_tables.rs`,
+  `topology.rs`, `shade_scratch.rs`, `cull_tables.rs`, the cull `CullDraw`
+  binding); optional features keep their own bind group. Check a change with
+  `KERN_WEBGPU_LIMITS=spec` ([renderer switches](renderer-switches.md)).
+- Where it stands: shade and raster fit 8; cull needs 10; shade needs 20
+  sampled textures (spec 16, but 98 % of Macs and 92 % of all WebGPU
+  devices offer 44 or more, web3dsurvey.com, November 2026). The GPU forest
+  (trees) still needs 16 storage buffers. Storage buffers on macOS: 94 %
+  offer 10 or more, 29 % 16; Firefox (Zen) gives 9, Chrome's software
+  adapter (SwiftShader) 10 with 16 textures.
+- With fewer than 10 storage buffers or 20 sampled textures
+  (`render::portable::needed`) the renderer switches to its portable path
   (`render::portable`, `KERN_PORTABLE=1` forces it natively): the
   procedural terrain drawn straight from its patch pool, textured with a
   simplified `field_surface`, a sky gradient and haze, with three storage
   buffers. No shadows, trees, grass, cars, GI or post-processing. The full
   renderer is still built next to it, so the console shows its layouts
-  failing validation once at startup; harmless, to be removed when the
-  main passes are packed to fit 8 (Joep's choice, 6 November 2026).
-  `KERN_WEBGPU_LIMITS=mac` or `=spec` ([renderer
-  switches](renderer-switches.md)) runs this natively.
+  failing validation once at startup. `KERN_WEBGPU_LIMITS=mac` or `=spec`
+  runs this natively.
 - Optional features are used when there: timestamps; `primitive_index`
   (meadow visibility) has a fallback. There is no pipeline cache.
 

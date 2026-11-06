@@ -272,7 +272,7 @@ mod shader_tests {
 }
 
 mod forward;
-mod portable;
+pub mod portable;
 mod scene_tables;
 mod cull_tables;
 mod shade_scratch;

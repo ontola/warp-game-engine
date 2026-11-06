@@ -69,7 +69,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_CPU_SPANS=1`, `KERN_STARTUP_PROFILE=1` | CPU time per frame phase; renderer construction profile. |
 | `KERN_DIAGNOSTIC_HIDE` | Hide geometry categories in captures. |
 | `KERN_MEADOW_CAPTURE_RAW=1` | Sideways: raw meadow buffers in the capture JSON. |
-| `KERN_PORTABLE=1` | Draw with the portable renderer (`render::portable`: procedural terrain, sky and haze, three storage buffers per stage) as a device below 16 storage buffers per stage does. Default off; such a device always uses it. See [Running in a browser](browser.md). |
+| `KERN_PORTABLE=1` | Draw with the portable renderer (`render::portable`: procedural terrain, sky and haze, three storage buffers per stage) as a device below 10 storage buffers or 20 sampled textures per stage does (`render::portable::needed`). Default off; such a device always uses it. See [Running in a browser](browser.md). |
 | `KERN_WEBGPU_LIMITS=spec`, `=browser`, `=mac` | Native device with only what a browser's WebGPU gives: the timestamp and first-instance features, and the spec's default limits (`spec`), what about 80 % of WebGPU devices offer (`browser`: 16 storage buffers and 32 sampled textures per stage, 1 GiB buffers) or `browser` with the 10 storage buffers most Macs offer (`mac`), never above the adapter. GPU errors are printed once each and do not stop the run, so one run lists every layout over the limits. For checking a [browser build](log/2026-11-05-browser-feasibility.md) without a browser. |
 | `KERN_DLSS_RUNTIME_DIR` | Where to find `nvngx_dlss.dll` ([DLSS](../crates/render/native/DLSS.md)). |
 
