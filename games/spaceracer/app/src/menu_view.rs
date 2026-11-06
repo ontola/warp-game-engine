@@ -4,6 +4,38 @@ use render::{
     picture::Picture,
 };
 use std::sync::{Arc, OnceLock};
+/// The menu row under `at` (menu units, as `draw` lays out) and which side of
+/// it: -1 the left third, +1 the right third, 0 the middle.
+pub fn hit(size: [f32; 2], race_started: bool, at: [f32; 2]) -> Option<(usize, i32)> {
+    let x = (size[0] * 0.065).max(36.);
+    let width = 480_f32.min(size[0] - x * 2.);
+    let first_row = if race_started { 0 } else { 1 };
+    (first_row..6).find_map(|i| {
+        let y = 180. + (i - first_row) as f32 * 66.;
+        let inside = at[0] >= x && at[0] <= x + width && at[1] >= y && at[1] <= y + 54.;
+        let side = if at[0] < x + width / 3. { -1 } else if at[0] > x + width * 2. / 3. { 1 } else { 0 };
+        inside.then_some((i, side))
+    })
+}
+/// The loading screen while a new race builds: the logo panel and a bar.
+pub fn loading(hud: &mut HudDrawList, size: [f32; 2], done: f32) {
+    let [w, h] = size;
+    let clip = [0., 0., w, h];
+    hud.rect(clip, [0.015, 0.025, 0.045, 0.96], clip);
+    let width = 480_f32.min(w * 0.8);
+    let x = (w - width) * 0.5;
+    let y = h * 0.5;
+    super::text(hud, 95, "Loading race", [x, y - 52.], 26., clip, [220, 246, 245, 245]);
+    let t = hud.text.last_mut().unwrap();
+    t.width = width;
+    t.align = TextAlign::Center;
+    hud.rect([x, y, width, 14.], [1., 1., 1., 0.08], clip);
+    hud.rect([x, y, width * done.clamp(0., 1.), 14.], [0.49, 0.91, 0.84, 0.9], clip);
+    super::text(hud, 96, &format!("{}%", (done.clamp(0., 1.) * 100.).round()), [x, y + 26.], 18., clip, [125, 233, 214, 235]);
+    let t = hud.text.last_mut().unwrap();
+    t.width = width;
+    t.align = TextAlign::Center;
+}
 pub fn draw(hud: &mut HudDrawList, size: [f32; 2], row: usize, r: &super::Racer) {
     let [w, h] = size;
     let clip = [0., 0., w, h];
