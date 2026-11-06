@@ -157,6 +157,11 @@ override FEATURE_LOCAL_LIGHTS: bool = true;
 // returns at once, but its code still costs registers (0.37 ms of land
 // shading at the hill view on an M5 Pro).
 override FEATURE_IRRADIANCE: bool = true;
+// Procedural terrain with region ground colours, and with roads drawn into
+// its pixels (shade_features.rs). Without them both lookups return at once,
+// but cost registers: about 0.3-0.5 and 0.2 ms of land shading on an M5 Pro.
+override FEATURE_FIELD_REGIONS: bool = true;
+override FEATURE_FIELD_ROADS: bool = true;
 override SKIP_HIDDEN_MEADOW:bool=false;
 var<workgroup> hidden_meadow_count:atomic<u32>;
 // Sky tiles: `classify` writes the sky of 8x8 tiles without geometry and

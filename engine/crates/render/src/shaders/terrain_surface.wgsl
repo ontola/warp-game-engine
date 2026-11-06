@@ -395,7 +395,7 @@ fn region_ground(p: vec2<f32>, base: u32) -> FieldGround {
 fn field_ground(s: SurfaceIn) -> FieldGround {
     if s.scale >= 0.0 { return FIELD_GROUND_DEFAULT; }
     let g = field_ground_at(u32(-s.scale - 0.5) + 3u);
-    if g.reserved.x >= 0.5 { return region_ground(s.p.xz, u32(g.reserved.x - 0.5)); }
+    if FEATURE_FIELD_REGIONS && g.reserved.x >= 0.5 { return region_ground(s.p.xz, u32(g.reserved.x - 0.5)); }
     return g;
 }
 
@@ -443,7 +443,7 @@ fn road_word(base: u32, i: u32) -> f32 {
 struct RoadPixel { found: bool, edge: f32, u: f32, half: f32, along: f32 };
 fn road_at(xz: vec2<f32>, scale: f32) -> RoadPixel {
     var r = RoadPixel(false, 1e9, 0.0, 1.0, 0.0);
-    if scale >= 0.0 { return r; }
+    if !FEATURE_FIELD_ROADS || scale >= 0.0 { return r; }
     let ptr = materials[u32(-scale - 0.5) + 2u].metal;
     if ptr < 0.5 { return r; }
     let base = u32(ptr - 0.5);
