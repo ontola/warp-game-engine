@@ -231,6 +231,13 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
         if source_work>0x00ff_ffff {return Err("source cluster work exceeds node metadata range".into());}
         node.links[3]=(node.links[3]&255&!4)|if rep[1]==0 {4}else{0}|(source_work<<8);
         let bound=representation_raster_work(rep,branch,&work)?;
+        // Near-pixel voxels: a voxel node's cell must project under the pixel
+        // target too, not only its optical footprint (0 when the optics
+        // validate at any size, which let 37 px cells stand 12 m away).
+        if rep[1]==1 {
+            let level=forest.levels.get((branch.volume.meta[1]+rep[2])as usize).ok_or("voxel node mip outside catalog")?;
+            node.error[1]=node.error[1].max(level.origin_cell[3]);
+        }
         node.error[2]=exact_work(bound[0])?;
         node.error[3]=exact_work(bound[1])?;
     }

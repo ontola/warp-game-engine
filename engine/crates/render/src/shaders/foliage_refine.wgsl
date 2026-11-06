@@ -640,7 +640,7 @@ fn fast_set_args(count:u32) {
  if !wanted {publish(task);return;}
  var first=node_id;var end=node_id+1u;
  if task.y!=NONE {first=n.links.x;end=n.links.y;}
- var replacement=vec4<u32>(0u);var resident=true;var branching=0u;var child=first;
+ var replacement=vec4<u32>(0u);var resident=true;var branching=0u;var child=first;var source_leaves=false;
  loop {
   if child==NONE || child>=end {break;}
   let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
@@ -648,11 +648,15 @@ fn fast_set_args(count:u32) {
    resident=ready(c.links.z)&&resident;
    replacement=plus(replacement,work(task.x,selected,consumers));
    if c.links.x!=NONE {branching++;}
+   if (c.links.w&4u)!=0u {source_leaves=true;}
   }
   child=nodes[child].links.y;
  }
  // Missing pages keep the complete parent; ready() has requested them.
  if !resident {atomicAdd(&state[73],1u);publish(task);return;}
+ // Shadows stay voxel: source leaves in shadow maps cost hundreds of
+ // millions of triangles (hill view) that no slot or splat cap measures.
+ if (task.z&256u)==0u && source_leaves {publish(task);return;}
  let old=work(task.x,task.y,task.z);
  let shadow=(task.z&256u)==0u;
  if !fast_reserve(replacement-min(replacement,old),shadow) {atomicAdd(&state[17],1u);atomicAdd(&state[select(75u,76u,(task.z&256u)!=0u)],1u);publish(task);return;}
