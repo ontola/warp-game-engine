@@ -633,10 +633,10 @@ struct ViewTargets {
     uniform: wgpu::Buffer,
     foliage_selection: wgpu::Buffer,
     visible: wgpu::Buffer,
+    /// Cull counters (COUNTER_BYTES at 0), then the draw args from ARGS (also
+    /// the indirect draws), then from DRAW_MAP the bucket draw map: one
+    /// storage binding for cull and one for raster (cull.wgsl CullDraw).
     counter: wgpu::Buffer,
-    /// Draw args (ARGS_BYTES at 0, also the indirect draws) then, from
-    /// DRAW_MAP, the bucket draw map: one storage binding for raster.
-    draw: wgpu::Buffer,
     spatial_owners: wgpu::Buffer,
     instance_dispatch: Option<wgpu::Buffer>,
     cull_bind: wgpu::BindGroup,
@@ -965,14 +965,10 @@ enum RasterPass { Color, Sun, SunStatic(u32), SunDynamic(u32), FarSun, FoliagePa
 /// Cull draw records: four opaque (or all) draws and their starts, then
 /// four masked draws and their starts (cull.wgsl `args`).
 const ARGS_BYTES: u64 = 40 * 4;
-/// Where the bucket draw map starts in ViewTargets::draw (storage offset aligned).
-const DRAW_MAP: u64 = 256;
-fn draw_args(draw: &wgpu::Buffer) -> wgpu::BindingResource<'_> {
-    wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: draw, offset: 0, size: wgpu::BufferSize::new(ARGS_BYTES) })
-}
-fn draw_map(draw: &wgpu::Buffer) -> wgpu::BindingResource<'_> {
-    wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: draw, offset: DRAW_MAP, size: None })
-}
+/// Where the draw args and the bucket draw map start in ViewTargets::counter
+/// (cull.wgsl CullDraw).
+const ARGS: u64 = crate::occlusion::COUNTER_BYTES;
+const DRAW_MAP: u64 = 512;
 
 fn raster_bucket_order(bucketed:bool,large_first:bool,kind:RasterPass)->&'static [u64] {
     if !bucketed {return &[0];}
@@ -1446,7 +1442,6 @@ impl Renderer {
                 (7, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
                 (9, tex_array),
                 (10, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
-                (11, storage(true)),
                 (12, storage(true)),
                 (13, uniform()),
                 (14, wgpu::BindingType::Texture { sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false }),
@@ -1463,15 +1458,8 @@ impl Renderer {
                 (28, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (29, storage(true)),
             ];
-        // Raster reads crown replacements from the scene tables; only cull's
-        // reduced layout keeps binding 11.
         let mut scene_entries = layout_entries(&scene_bindings);
-        scene_entries.retain(|entry| entry.binding != 11);
         for entry in &mut scene_entries {
-            // Full-scene replacement IDs are read only by raster vertices;
-            // compute culling has its own reduced layout. Leaving this visible
-            // to shade would exceed 16 storage buffers after adding contact.
-            if entry.binding == 11 { entry.visibility = wgpu::ShaderStages::VERTEX; }
             if entry.binding == 29 { entry.visibility = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE; }
         }
         let scene_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1642,15 +1630,15 @@ impl Renderer {
         let shadow_scene_bind=make_scene_bind(&headlights.empty,&far_sun.empty,&instances,wind.buffer());
         let far_sun_scene_bind=make_scene_bind(&headlights.empty,&far_sun.empty,&far_sun.instances,&far_sun.wind);
         let foliage_sun_scene_bind=make_scene_bind(&headlights.empty,&foliage_sun_pages.empty,&foliage_sun_pages.instances,&foliage_sun_pages.wind);
-        // Cull consumes five buffers, not the full material/lighting layout.
+        // Cull consumes four buffers, not the full material/lighting layout.
         // Spatial grouping, sun owners and cluster traversal keep this layout
         // within the device's sixteen-storage-buffer stage limit.
         let cull_scene_bindings:Vec<_>=scene_bindings.iter().copied()
             .filter(|(binding,_)|crate::cull_groups::SCENE_BINDINGS.contains(binding)).collect();
         let cull_scene_layout=layout(gpu,"cull scene",&cull_scene_bindings);
         let make_cull_bind=|instance_data:&wgpu::Buffer,wind_data:&wgpu::Buffer|bind(gpu,&cull_scene_layout,&[
-            (3,clusters.as_entire_binding()),(4,instance_data.as_entire_binding()),(5,materials.as_entire_binding()),
-            (11,voxel_replacement.as_entire_binding()),(12,wind_data.as_entire_binding())]);
+            (3,clusters.as_entire_binding()),(4,instance_data.as_entire_binding()),(5,scene_tables.buffer.as_entire_binding()),
+            (12,wind_data.as_entire_binding())]);
         let cull_scene_bind=make_cull_bind(&instances,wind.buffer());
         let far_cull_scene_bind=make_cull_bind(&far_sun.instances,&far_sun.wind);
         let foliage_cull_scene_bind=make_cull_bind(&foliage_sun_pages.instances,&foliage_sun_pages.wind);
@@ -1679,7 +1667,7 @@ impl Renderer {
             (25, world_visibility.uniform.as_entire_binding()),
             (5, scene_tables.buffer.as_entire_binding()),
         ]);
-        let view_cull_layout = layout(gpu, "view cull", &[(0, uniform()), (1, storage(false)), (2, storage(false)), (3, storage(false)), (4, storage(false)), (5, storage(true)), (6, uniform()),
+        let view_cull_layout = layout(gpu, "view cull", &[(0, uniform()), (1, storage(false)), (2, storage(false)), (5, storage(true)), (6, uniform()),
             (7,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
             (8,storage(true)),(9,storage(true)),(10,storage(false)),(11,storage(true)),
             (12,storage(true)),(14,storage(false)),(15,uniform())]);
@@ -2422,8 +2410,7 @@ impl Renderer {
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC);
         let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: std::mem::size_of::<ViewUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let visible = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("visible"), size: (capacity as u64 + if camera && self.occlusion.history_first {self.occlusion.deferred_capacity as u64*3}else{0})*8, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
-        let counter = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("counter"), size: crate::occlusion::COUNTER_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
-        let draw = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("args and bucket draw map"), size: DRAW_MAP + capacity as u64 * 4, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let counter = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("cull counters, args and draw map"), size: DRAW_MAP + capacity as u64 * 4, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         // Separate from writable storage args: indirect dispatch cannot alias a
         // storage-write binding in the same compute pass. No CPU readback.
         let instance_dispatch = ((camera && (self.compact_cull.is_some() || self.spatial_cull.is_some() || self.occlusion.history_first))
@@ -2432,14 +2419,14 @@ impl Renderer {
             usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
         let spatial_owners=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("per-view spatial owner scratch"),
             size:if camera&&(self.instance_groups.enabled||self.instance_groups.replacement_enabled){self.instance_groups.scratch_bytes()}else if light_groups{self.instance_groups.owner_scratch_bytes()}else{4},usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
-        let cull_bind = bind(gpu, &self.view_cull_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, counter.as_entire_binding()), (3, draw_args(&draw)), (4, draw_map(&draw)), (5, foliage_selection.as_entire_binding()),
+        let cull_bind = bind(gpu, &self.view_cull_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, counter.as_entire_binding()), (5, foliage_selection.as_entire_binding()),
             (6,self.occlusion.reference.as_entire_binding()),(7,wgpu::BindingResource::TextureView(&self.occlusion.empty)),
             (8,self.instance_groups.groups.as_entire_binding()),(9,self.instance_groups.owners.as_entire_binding()),(10,spatial_owners.as_entire_binding()),
             (11,self.sun_owner_buffer.as_entire_binding()),
             (12,self.cluster_traversal.buffer.as_entire_binding()),
             (14,self.receiver_demand.buffer().as_entire_binding()),(15,self.occlusion.empty_history.as_entire_binding())]);
-        let raster_bind = bind(gpu, &self.view_raster_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, draw.as_entire_binding()), (4, foliage_selection.as_entire_binding())]);
-        ViewTargets { uniform, foliage_selection, visible, counter, draw, spatial_owners,instance_dispatch, cull_bind, raster_bind }
+        let raster_bind = bind(gpu, &self.view_raster_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, counter.as_entire_binding()), (4, foliage_selection.as_entire_binding())]);
+        ViewTargets { uniform, foliage_selection, visible, counter, spatial_owners,instance_dispatch, cull_bind, raster_bind }
     }
 
     fn cull_and_raster(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass) {
@@ -2476,7 +2463,7 @@ impl Renderer {
             {let mut pass=enc.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("tree recovery dispatch"),timestamp_writes:t.map(|(qs,i)|wgpu::ComputePassTimestampWrites {query_set:qs,beginning_of_pass_write_index:Some(i),end_of_pass_write_index:Some(i+1)})});
              pass.set_bind_group(0,cull_scene_bind,&[]);pass.set_bind_group(1,cull_bind,&[]);
              pass.set_pipeline(self.prepare_tree_phase.as_ref().unwrap());pass.dispatch_workgroups(1,1,1);}
-            enc.copy_buffer_to_buffer(&v.draw,0,v.instance_dispatch.as_ref().unwrap(),0,12);
+            enc.copy_buffer_to_buffer(&v.counter,ARGS,v.instance_dispatch.as_ref().unwrap(),0,12);
         }
         if let Some((broadphase, dispatch, _)) = compact {
             let t = tw(ts);
@@ -2499,7 +2486,7 @@ impl Renderer {
                 pass.set_pipeline(dispatch);
                 pass.dispatch_workgroups(1, 1, 1);
             }
-            enc.copy_buffer_to_buffer(&v.draw, 0, v.instance_dispatch.as_ref().unwrap(), 0, 12);
+            enc.copy_buffer_to_buffer(&v.counter, ARGS, v.instance_dispatch.as_ref().unwrap(), 0, 12);
         }
         {
             let t = tw(ts);
@@ -2555,7 +2542,7 @@ impl Renderer {
         let direct = if bounds.is_none() && std::env::var("KERN_DIRECT_DRAWS").as_deref() == Ok("1") {
             let read = gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("direct draw arguments"),size:ARGS_BYTES,
                 usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
-            enc.copy_buffer_to_buffer(&v.draw,0,&read,0,ARGS_BYTES);
+            enc.copy_buffer_to_buffer(&v.counter,ARGS,&read,0,ARGS_BYTES);
             let pending=std::mem::replace(enc,gpu.device.create_command_encoder(&Default::default()));
             gpu.queue.submit([pending.finish()]);
             read.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
@@ -2610,7 +2597,7 @@ impl Renderer {
             } else if let Some(words)=&direct {
                 let at=half as usize*20+bucket as usize*4;
                 pass.draw(words[at+2]..words[at+2]+words[at],words[at+3]..words[at+3]+words[at+1]);
-            }else{pass.draw_indirect(&v.draw, half*80+bucket * 16);}
+            }else{pass.draw_indirect(&v.counter, ARGS + half*80+bucket * 16);}
 
         }
         }
@@ -3372,7 +3359,7 @@ impl Renderer {
         let history=self.occlusion.history_buffer(gpu,index,self.instances);
         let phases: [wgpu::BindGroup;2]=std::array::from_fn(|phase|bind(gpu,&self.view_cull_layout,&[
             (0,v.uniform.as_entire_binding()),(1,v.visible.as_entire_binding()),(2,v.counter.as_entire_binding()),
-            (3,draw_args(&v.draw)),(4,draw_map(&v.draw)),(5,v.foliage_selection.as_entire_binding()),
+            (5,v.foliage_selection.as_entire_binding()),
             (6,self.occlusion.phases[phase].as_entire_binding()),(7,wgpu::BindingResource::TextureView(&target.view)),
             (8,self.instance_groups.groups.as_entire_binding()),(9,self.instance_groups.owners.as_entire_binding()),(10,v.spatial_owners.as_entire_binding()),
             (11,self.sun_owner_buffer.as_entire_binding()),
@@ -4063,7 +4050,7 @@ impl Renderer {
         }
         if let Some(target)=static_targets.as_ref() {
             split_stats.static_sun_gpu_bytes += [&target.uniform,&target.foliage_selection,&target.visible,
-                &target.counter,&target.draw,&target.spatial_owners].iter().map(|b|b.size()).sum::<u64>()
+                &target.counter,&target.spatial_owners].iter().map(|b|b.size()).sum::<u64>()
                 +target.instance_dispatch.as_ref().map_or(0,|b|b.size());
         }
         let mut sh = self.sky_sh;

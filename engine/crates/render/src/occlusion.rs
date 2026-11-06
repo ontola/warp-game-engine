@@ -304,10 +304,16 @@ mod tests {
     fn cull_counter_abi_has_room_for_both_phases_without_extra_storage_binding() {
         let source=crate::frame::cull_source();
         let module=naga::front::wgsl::parse_str(&source).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));
-        let (_,counter)=module.global_variables.iter().find(|(_,g)|g.name.as_deref()==Some("counter")).unwrap();
+        let (_,draw)=module.global_variables.iter().find(|(_,g)|g.name.as_deref()==Some("cull_draw")).unwrap();
+        let naga::TypeInner::Struct {members,..}=&module.types[draw.ty].inner else {panic!("cull draw struct required")};
+        let counter=members.iter().find(|m|m.name.as_deref()==Some("counter")).unwrap();
+        assert_eq!(counter.offset,0);
         let naga::TypeInner::Array {size:naga::ArraySize::Constant(size),stride,..}=module.types[counter.ty].inner else {panic!("fixed counter array required")};
         assert_eq!(size.get() as usize,super::COUNTER_WORDS);
         assert_eq!(size.get() as u64*stride as u64,super::COUNTER_BYTES);
-        assert_eq!(counter.binding.as_ref().unwrap().binding,2);
+        let offset=|name:&str|members.iter().find(|m|m.name.as_deref()==Some(name)).unwrap().offset as u64;
+        assert_eq!(offset("args"),super::COUNTER_BYTES,"frame.rs ARGS");
+        assert_eq!(offset("draw_map"),512,"frame.rs DRAW_MAP");
+        assert_eq!(draw.binding.as_ref().unwrap().binding,2);
     }
 }

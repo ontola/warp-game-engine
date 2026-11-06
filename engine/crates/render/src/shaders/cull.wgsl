@@ -75,9 +75,21 @@ fn instance_at(id: u32) -> Instance {
     let owner = instances[member_owner(id)];
     return compose_member(owner, instances[member_template(owner,id)]);
 }
-@group(0) @binding(5) var<storage, read> cull_materials: array<CullMaterial>;
+// Materials and crown replacement words from the scene tables
+// (scene_tables.rs): materials from vec4 0.x, two vec4s each; replacement
+// words from vec4 2.z.
+@group(0) @binding(5) var<storage, read> scene_tables: array<vec4<u32>>;
+fn cull_material(i: u32) -> CullMaterial {
+    let at = scene_tables[0].x + 2u * i;
+    let a = scene_tables[at];
+    let b = scene_tables[at + 1u];
+    return CullMaterial(bitcast<vec3<f32>>(a.xyz), bitcast<i32>(a.w), bitcast<f32>(b.x), b.y, bitcast<f32>(b.z), bitcast<f32>(b.w));
+}
+fn cull_voxel_replacement_at(i: u32) -> u32 {
+    let v = scene_tables[scene_tables[2].z + (i >> 2u)];
+    return v[i & 3u];
+}
 @group(0) @binding(12) var<storage, read> cull_wind: array<vec4<f32>>;
-@group(0) @binding(11) var<storage, read> cull_voxel_replacement: array<u32>;
 
 @group(1) @binding(0) var<uniform> view: View;
 @group(1) @binding(1) var<storage, read_write> visible: array<vec2<u32>>;
@@ -91,11 +103,18 @@ fn instance_at(id: u32) -> Instance {
 // 29/30 phase-local expected/visited owners,31 traversal-mismatch fallbacks.
 // 32..39: cluster traversal. 40..43: masked clusters per bucket (included in
 // 4..7), 44..47: masked scatter cursors.
-@group(1) @binding(2) var<storage, read_write> counter: array<atomic<u32>, 48>;
+// The counters, the draw args and the bucket draw map share one binding
+// (frame.rs ViewTargets::counter): counter at byte 0, args at 192, the map
+// from 512.
+struct CullDraw {
+    counter: array<atomic<u32>, 48>,
+    args: array<u32, 40>,
+    pad: array<u32, 40>,
+    draw_map: array<u32>,
+};
+@group(1) @binding(2) var<storage, read_write> cull_draw: CullDraw;
 // Four draw records followed by four bucket starts (opaque clusters when
 // RASTER_SPLIT, else all), then the same for masked clusters.
-@group(1) @binding(3) var<storage, read_write> args: array<u32, 40>;
-@group(1) @binding(4) var<storage, read_write> draw_map: array<u32>;
 @group(1) @binding(5) var<storage,read> foliage_selection_words: array<u32>;
 fn foliage_selection_word(i:u32)->u32 {return foliage_selection_words[i];}
 fn foliage_selection_at(i:u32)->vec4<u32> {return selection_unpack(foliage_selection_word(i));}
@@ -182,13 +201,13 @@ fn cluster_bucket(triangles: u32) -> u32 {
 // Same test as raster.wgsl alpha_cut: an alpha-tested texture or a fading
 // grass card can discard. The game mask disables RASTER_SPLIT on the CPU.
 fn masked_cluster(flags:u32, material:u32) -> bool {
-    let m=cull_materials[material];
+    let m=cull_material(material);
     return ((m.flags&1u)!=0u && m.layer>=0) || (flags&8u)!=0u;
 }
 fn count_cluster(flags:u32, cl:Cluster) {
     let bucket=cluster_bucket(cl.tri_count);
-    atomicAdd(&counter[4u+bucket],1u);
-    if RASTER_SPLIT && masked_cluster(flags,cl.material) {atomicAdd(&counter[40u+bucket],1u);}
+    atomicAdd(&cull_draw.counter[4u+bucket],1u);
+    if RASTER_SPLIT && masked_cluster(flags,cl.material) {atomicAdd(&cull_draw.counter[40u+bucket],1u);}
 }
 fn bucket_vertices(bucket: u32) -> u32 {
     return array<u32, 4>(SMALL_CLUSTER_TRIANGLES*3u, 96u, 192u, 384u)[bucket];
@@ -265,7 +284,7 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
     // Runtime groups replace this entire branch in the colour view only.
     // Do not spend cluster/raster work on the hidden source. Both sun and
     // perspective lamp shadows retain the same animated source geometry.
-    let replacement=cull_voxel_replacement[member_slot(id)];
+    let replacement=cull_voxel_replacement_at(member_slot(id));
     if replacement!=0xffffffffu && (replacement&0x80000000u)!=0u {
         let word=foliage_selection_word(replacement&0x7fffffffu);
         let shadow=view.params.z>0.5 || view.extra.y>1.5;
@@ -316,7 +335,7 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
 // Negative means the legacy screen-error policy. Shadows are independent.
 fn aggregate_triangle_error(id:u32)->f32 {
     if view.params.z>=0.5 || view.extra.y>=1.5 {return -1.0;}
-    let replacement=cull_voxel_replacement[member_slot(id)];
+    let replacement=cull_voxel_replacement_at(member_slot(id));
     if replacement==0xffffffffu || (replacement&0x80000000u)==0u {return -1.0;}
     let selected=foliage_selection_at(replacement&0x7fffffffu);
     if selected.w==0u {return -1.0;}
@@ -369,21 +388,21 @@ fn cull_member(id: u32, inst: Instance, li: u32) {
     if li == 0u {
         member_plan = PLAN_SKIP;
         let policy = instance_policy(id, inst);
-        if policy == 2u { atomicAdd(&counter[3], 1u); }
+        if policy == 2u { atomicAdd(&cull_draw.counter[3], 1u); }
         if policy == 1u {
             let wind_pad = cull_wind[member_slot(id)].z;
             let radius = inst.sphere.w + wind_pad;
             var keep = in_frustum(inst.sphere.xyz, radius) && !hidden_by_camera_fog(inst.sphere.xyz, radius);
             if keep && tree_phase.x>1.5 {
-                atomicAdd(&counter[15],1u);
-                if tree_occluded(inst.sphere.xyz,radius) {keep=false;atomicAdd(&counter[16],1u);}
+                atomicAdd(&cull_draw.counter[15],1u);
+                if tree_occluded(inst.sphere.xyz,radius) {keep=false;atomicAdd(&cull_draw.counter[16],1u);}
             }
             if keep {
                 let camera_groups=(spatial.header.w&1u)!=0u && view.params.z<0.5 && view.extra.y<1.5;
                 let sun_groups=(spatial.header.w&2u)!=0u && view.params.z>0.5;
                 let headlight_groups=(spatial.header.w&4u)!=0u && view.params.z<0.5 && view.extra.y>1.5;
                 if camera_groups || sun_groups || headlight_groups {
-                    atomicAdd(&counter[26],inst.cluster_count);
+                    atomicAdd(&cull_draw.counter[26],inst.cluster_count);
                 }
                 member_plan = PLAN_FLAT;
                 // Shared cluster BVH only accelerates camera predicates. Shadow caster
@@ -411,18 +430,18 @@ fn cull_cluster(id:u32,inst:Instance,ci:u32,base_thr:f32,wind_pad:f32) {
     let cl = clusters[ci];
     // Continuous-alpha surfaces are drawn separately after opaque HDR.
     // Excluding them here also prevents opaque glass sun shadows.
-    if (cull_materials[cl.material].flags & 256u) != 0u { return; }
+    if (cull_material(cl.material).flags & 256u) != 0u { return; }
     // Foliage seed: cutout, grass and thin foliage cards are not solid.
     if view.params.z<0.5 && view.extra.y<1.5 && (u32(view.fog_cull.w)&OCCLUDERS_ONLY)!=0u
-        && (cull_materials[cl.material].flags&SEE_THROUGH)!=0u {return;}
+        && (cull_material(cl.material).flags&SEE_THROUGH)!=0u {return;}
     var thr=base_thr;
     // Diagnostic fixed WORLD error for opaque terrain sun casters only.
     // Parent and child use the same threshold, preserving the DAG cut.
     // Camera and perspective headlights never set the reserved uniform.
-    if view.params.z>0.5 && view.fog_cull.z>0.0 && (cull_materials[cl.material].flags&2u)!=0u {
+    if view.params.z>0.5 && view.fog_cull.z>0.0 && (cull_material(cl.material).flags&2u)!=0u {
         thr=min(thr,view.fog_cull.z*view.cam.w);
     }
-    if view.params.z>0.5 && view.fog_cull.w>0.5 && (cull_materials[cl.material].flags&6u)!=0u {
+    if view.params.z>0.5 && view.fog_cull.w>0.5 && (cull_material(cl.material).flags&6u)!=0u {
         thr=0.0;
     }
     let s = inst.scale;
@@ -472,7 +491,7 @@ fn cull_cluster(id:u32,inst:Instance,ci:u32,base_thr:f32,wind_pad:f32) {
         // trees) is tested against it in phase two.
         let first=direct || (a && b);
         if tree_phase.x<1.5 && !first {
-            let pending=atomicAdd(&counter[19],1u);
+            let pending=atomicAdd(&cull_draw.counter[19],1u);
             if pending<u32(tree_phase.y) {
                 let at=max_visible+pending*3u;
                 visible[at]=vec2<u32>(id,ci);
@@ -484,13 +503,13 @@ fn cull_cluster(id:u32,inst:Instance,ci:u32,base_thr:f32,wind_pad:f32) {
         if tree_phase.x>1.5 && first {return;}
     }
     if tree_phase.x>1.5 {
-        atomicAdd(&counter[17],1u);
-        if tree_occluded(cc,radius) {atomicAdd(&counter[18],1u);return;}
+        atomicAdd(&cull_draw.counter[17],1u);
+        if tree_occluded(cc,radius) {atomicAdd(&cull_draw.counter[18],1u);return;}
     }
-    let slot = atomicAdd(&counter[0], 1u);
+    let slot = atomicAdd(&cull_draw.counter[0], 1u);
     if slot < max_visible {
         visible[slot] = vec2<u32>(id, ci);
-        atomicAdd(&counter[1], cl.tri_count);
+        atomicAdd(&cull_draw.counter[1], cl.tri_count);
         if CLUSTER_BUCKETS { count_cluster(inst.flags, cl); }
     }
 }
@@ -523,37 +542,37 @@ fn instance_broadphase(@builtin(global_invocation_id) gid: vec3<u32>) {
     if id >= INSTANCE_COUNT { return; }
     let inst = instances[id];
     let policy = instance_policy(id, inst);
-    if policy == 2u { atomicAdd(&counter[3], 1u); }
+    if policy == 2u { atomicAdd(&cull_draw.counter[3], 1u); }
     if policy != 1u { return; }
     let radius = inst.sphere.w + cull_wind[member_slot(id)].z;
     if !in_frustum(inst.sphere.xyz, radius) || hidden_by_camera_fog(inst.sphere.xyz, radius) { return; }
-    let slot = atomicAdd(&counter[11], 1u);
-    if slot < arrayLength(&draw_map) { draw_map[slot] = id; }
+    let slot = atomicAdd(&cull_draw.counter[11], 1u);
+    if slot < arrayLength(&cull_draw.draw_map) { cull_draw.draw_map[slot] = id; }
 }
 
 @compute @workgroup_size(1)
 fn instance_dispatch() {
-    let count = atomicLoad(&counter[11]);
-    let overflow = count > arrayLength(&draw_map);
+    let count = atomicLoad(&cull_draw.counter[11]);
+    let overflow = count > arrayLength(&cull_draw.draw_map);
     let dispatch_count = select(count, INSTANCE_COUNT, overflow);
-    args[0] = min(dispatch_count, 65535u);
-    args[1] = (dispatch_count + 65534u) / 65535u;
-    args[2] = 1u;
+    cull_draw.args[0] = min(dispatch_count, 65535u);
+    cull_draw.args[1] = (dispatch_count + 65534u) / 65535u;
+    cull_draw.args[2] = 1u;
     // An overfull scratch list falls back to the exact original full scan.
     // That scan recounts early grass rejects, so do not count them twice.
-    if overflow { atomicStore(&counter[3], 0u); }
+    if overflow { atomicStore(&cull_draw.counter[3], 0u); }
 }
 
 @compute @workgroup_size(64)
 fn cull_compacted(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
     let slot = wg.x + wg.y * 65535u;
     if li == 0u {
-        let count = atomicLoad(&counter[11]);
-        let overflow = count > arrayLength(&draw_map);
+        let count = atomicLoad(&cull_draw.counter[11]);
+        let overflow = count > arrayLength(&cull_draw.draw_map);
         cull_owner = NO_OWNER;
         if slot < select(count, INSTANCE_COUNT, overflow) {
             cull_owner = slot;
-            if !overflow { cull_owner = draw_map[slot]; }
+            if !overflow { cull_owner = cull_draw.draw_map[slot]; }
         }
     }
     cull_instance(workgroupUniformLoad(&cull_owner), li);
@@ -580,15 +599,15 @@ var<workgroup> spatial_parent_keep:bool;
 var<workgroup> spatial_leaf_keep:bool;
 
 fn spatial_select_owner(id:u32,sun:bool) {
-    let inst=instances[id];atomicAdd(&counter[24],1u);
-    atomicAdd(&counter[30],1u);
+    let inst=instances[id];atomicAdd(&cull_draw.counter[24],1u);
+    atomicAdd(&cull_draw.counter[30],1u);
     let policy=instance_policy(id,inst);
-    if policy==2u {atomicAdd(&counter[28],1u);}
+    if policy==2u {atomicAdd(&cull_draw.counter[28],1u);}
     if policy!=1u {return;}
     let radius=inst.sphere.w+cull_wind[member_slot(id)].z;
     if !in_frustum(inst.sphere.xyz,radius) {return;}
     if !sun && hidden_by_camera_fog(inst.sphere.xyz,radius) {return;}
-    let slot=atomicAdd(&counter[11],1u);atomicAdd(&counter[25],1u);
+    let slot=atomicAdd(&cull_draw.counter[11],1u);atomicAdd(&cull_draw.counter[25],1u);
     // The decision tail is not compacted-owner capacity.
     if slot<spatial.header.z {spatial_owners[slot]=id;}
 }
@@ -603,20 +622,20 @@ fn select_spatial_parent(parent_id:u32,li:u32,sun:bool) {
     if parent_id>=spatial.header.y {return;}
     let parent=spatial.groups[spatial.header.x+parent_id];
     if li==0u {
-        atomicAdd(&counter[20],1u);
+        atomicAdd(&cull_draw.counter[20],1u);
         if sun {spatial_parent_keep=sun_group_visible(parent.sphere);}
         else {spatial_parent_keep=spatial_group_visible(parent.sphere);}
-        if !spatial_parent_keep {atomicAdd(&counter[21],1u);}
+        if !spatial_parent_keep {atomicAdd(&cull_draw.counter[21],1u);}
     }
     if !workgroupUniformLoad(&spatial_parent_keep) {return;}
     for(var leaf_id=0u;leaf_id<parent.span.y;leaf_id++) {
         let leaf=spatial.groups[parent.span.x+leaf_id];
         if li==0u {
-            atomicAdd(&counter[22],1u);
+            atomicAdd(&cull_draw.counter[22],1u);
             if sun {spatial_leaf_keep=sun_group_visible(leaf.sphere);}
             else {spatial_leaf_keep=spatial_group_visible(leaf.sphere);}
-            if spatial_leaf_keep {atomicAdd(&counter[29],leaf.span.y);}
-            else {atomicAdd(&counter[23],1u);}
+            if spatial_leaf_keep {atomicAdd(&cull_draw.counter[29],leaf.span.y);}
+            else {atomicAdd(&cull_draw.counter[23],1u);}
         }
         workgroupBarrier();
         if spatial_leaf_keep && li<leaf.span.y {
@@ -641,25 +660,25 @@ fn headlight_spatial_select(@builtin(workgroup_id) wg:vec3<u32>,@builtin(local_i
 }
 @compute @workgroup_size(1)
 fn spatial_dispatch() {
-    let count=atomicLoad(&counter[11]);let overflow=count>spatial.header.z;
-    let mismatch=atomicLoad(&counter[29])!=atomicLoad(&counter[30]);
+    let count=atomicLoad(&cull_draw.counter[11]);let overflow=count>spatial.header.z;
+    let mismatch=atomicLoad(&cull_draw.counter[29])!=atomicLoad(&cull_draw.counter[30]);
     let fallback=overflow || mismatch;
     let n=select(count,INSTANCE_COUNT,fallback);
-    args[0]=min(n,65535u);args[1]=(n+65534u)/65535u;args[2]=1u;
+    cull_draw.args[0]=min(n,65535u);cull_draw.args[1]=(n+65534u)/65535u;cull_draw.args[2]=1u;
     if fallback {
         // The consumer already recognizes an over-capacity count as the exact
         // original full-owner scan. Never trust a partially visited list.
-        atomicStore(&counter[11],spatial.header.z+1u);
-        atomicAdd(&counter[27],1u);
-        if mismatch {atomicAdd(&counter[31],1u);}
-    }else{atomicAdd(&counter[3],atomicLoad(&counter[28]));}
-    atomicStore(&counter[28],0u);
-    atomicStore(&counter[29],0u);atomicStore(&counter[30],0u);
+        atomicStore(&cull_draw.counter[11],spatial.header.z+1u);
+        atomicAdd(&cull_draw.counter[27],1u);
+        if mismatch {atomicAdd(&cull_draw.counter[31],1u);}
+    }else{atomicAdd(&cull_draw.counter[3],atomicLoad(&cull_draw.counter[28]));}
+    atomicStore(&cull_draw.counter[28],0u);
+    atomicStore(&cull_draw.counter[29],0u);atomicStore(&cull_draw.counter[30],0u);
 }
 // The owner this workgroup's slot holds, or NO_OWNER past the end of the list.
 fn spatial_owner(slot:u32,li:u32)->u32 {
     if li==0u {
-        let count=atomicLoad(&counter[11]);let overflow=count>spatial.header.z;
+        let count=atomicLoad(&cull_draw.counter[11]);let overflow=count>spatial.header.z;
         cull_owner=NO_OWNER;
         if slot<select(count,INSTANCE_COUNT,overflow) {
             cull_owner=slot;
@@ -680,54 +699,54 @@ fn cull_spatial(@builtin(workgroup_id) wg:vec3<u32>,@builtin(local_invocation_in
 fn finalize() {
     // The optional broadphase temporarily uses the final bucket cursor.
     // Its list has now been consumed, so scatter owns all four cursors again.
-    for (var cursor = 8u; cursor < 12u; cursor++) { atomicStore(&counter[cursor], 0u); atomicStore(&counter[cursor+36u], 0u); }
-    let n = min(atomicLoad(&counter[0]), u32(view.params.w));
-    let first=atomicLoad(&counter[12]);
-    if tree_phase.x>1.5 {atomicStore(&counter[14],n-first);}
-    else if tree_phase.x>0.5 {atomicStore(&counter[13],n);}
+    for (var cursor = 8u; cursor < 12u; cursor++) { atomicStore(&cull_draw.counter[cursor], 0u); atomicStore(&cull_draw.counter[cursor+36u], 0u); }
+    let n = min(atomicLoad(&cull_draw.counter[0]), u32(view.params.w));
+    let first=atomicLoad(&cull_draw.counter[12]);
+    if tree_phase.x>1.5 {atomicStore(&cull_draw.counter[14],n-first);}
+    else if tree_phase.x>0.5 {atomicStore(&cull_draw.counter[13],n);}
     if !CLUSTER_BUCKETS {
-        args[0] = 384u;
-        args[1] = n;
-        args[2] = 0u;
-        args[3] = 0u;
-        atomicStore(&counter[2], n * 384u);
+        cull_draw.args[0] = 384u;
+        cull_draw.args[1] = n;
+        cull_draw.args[2] = 0u;
+        cull_draw.args[3] = 0u;
+        atomicStore(&cull_draw.counter[2], n * 384u);
         return;
     }
     var start = 0u;
     var submitted = 0u;
     for (var bucket = 0u; bucket < 4u; bucket++) {
-        let count = atomicLoad(&counter[4u + bucket]);
-        let masked = select(0u, min(atomicLoad(&counter[40u + bucket]), count), RASTER_SPLIT);
+        let count = atomicLoad(&cull_draw.counter[4u + bucket]);
+        let masked = select(0u, min(atomicLoad(&cull_draw.counter[40u + bucket]), count), RASTER_SPLIT);
         let vertices = bucket_vertices(bucket);
-        args[bucket * 4u] = vertices;
-        args[bucket * 4u + 1u] = count - masked;
-        args[bucket * 4u + 2u] = bucket * 384u;
-        args[bucket * 4u + 3u] = 0u;
-        args[16u + bucket] = start;
+        cull_draw.args[bucket * 4u] = vertices;
+        cull_draw.args[bucket * 4u + 1u] = count - masked;
+        cull_draw.args[bucket * 4u + 2u] = bucket * 384u;
+        cull_draw.args[bucket * 4u + 3u] = 0u;
+        cull_draw.args[16u + bucket] = start;
         // Masked records: first_vertex (4+bucket)*384 selects their start.
-        args[20u + bucket * 4u] = vertices;
-        args[21u + bucket * 4u] = masked;
-        args[22u + bucket * 4u] = (4u + bucket) * 384u;
-        args[23u + bucket * 4u] = 0u;
-        args[36u + bucket] = start + count - masked;
+        cull_draw.args[20u + bucket * 4u] = vertices;
+        cull_draw.args[21u + bucket * 4u] = masked;
+        cull_draw.args[22u + bucket * 4u] = (4u + bucket) * 384u;
+        cull_draw.args[23u + bucket * 4u] = 0u;
+        cull_draw.args[36u + bucket] = start + count - masked;
         start += count;
         submitted += count * vertices;
     }
     // Phase2 adds to phase1 work; visibility prefix and triangle totals live
     // through both passes. Reference/phase1 start from zero.
-    atomicAdd(&counter[2], submitted);
+    atomicAdd(&cull_draw.counter[2], submitted);
 }
 
 // Encoded only after phase1 raster and its pyramid. This is GPU-ordered,
 // unlike a second queue.write_buffer before the command buffer is submitted.
 @compute @workgroup_size(1)
 fn prepare_tree_phase() {
-    atomicStore(&counter[12],min(atomicLoad(&counter[0]),u32(view.params.w)));
-    for(var i=4u;i<12u;i++){atomicStore(&counter[i],0u);atomicStore(&counter[i+36u],0u);}
+    atomicStore(&cull_draw.counter[12],min(atomicLoad(&cull_draw.counter[0]),u32(view.params.w)));
+    for(var i=4u;i<12u;i++){atomicStore(&cull_draw.counter[i],0u);atomicStore(&cull_draw.counter[i+36u],0u);}
     if tree_phase.w>0.5 {
-        let pending=atomicLoad(&counter[19]);
+        let pending=atomicLoad(&cull_draw.counter[19]);
         let groups=select((pending+63u)/64u,INSTANCE_COUNT,pending>u32(tree_phase.y));
-        args[0]=min(groups,65535u);args[1]=(groups+65534u)/65535u;args[2]=1u;
+        cull_draw.args[0]=min(groups,65535u);cull_draw.args[1]=(groups+65534u)/65535u;cull_draw.args[2]=1u;
     }
 }
 // Phase one already did current LOD/frustum selection. Recover only deferred
@@ -735,7 +754,7 @@ fn prepare_tree_phase() {
 // complementary scan, preserving the first-pass visibility prefix.
 @compute @workgroup_size(64)
 fn recover_tree_clusters(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
-    if lane==0u {tree_pending=atomicLoad(&counter[19]);}
+    if lane==0u {tree_pending=atomicLoad(&cull_draw.counter[19]);}
     workgroupBarrier();
     let work=group.x+group.y*65535u;let pending=workgroupUniformLoad(&tree_pending);
     if pending>u32(tree_phase.y) {cull_instance(work,lane);return;}
@@ -751,9 +770,9 @@ fn recover_tree_clusters(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_i
     var local=0u;if keep {local=atomicAdd(&tree_group_counts[0],1u);}
     workgroupBarrier();
     if lane==0u {
-        tree_output_base=atomicAdd(&counter[0],atomicLoad(&tree_group_counts[0]));
-        atomicAdd(&counter[17],min(64u,pending-work*64u));
-        atomicAdd(&counter[18],atomicLoad(&tree_group_counts[6]));
+        tree_output_base=atomicAdd(&cull_draw.counter[0],atomicLoad(&tree_group_counts[0]));
+        atomicAdd(&cull_draw.counter[17],min(64u,pending-work*64u));
+        atomicAdd(&cull_draw.counter[18],atomicLoad(&tree_group_counts[6]));
     }
     workgroupBarrier();
     if keep && tree_output_base+local<u32(view.params.w) {
@@ -766,10 +785,10 @@ fn recover_tree_clusters(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_i
         }
     }
     workgroupBarrier();
-    if lane==0u {atomicAdd(&counter[1],atomicLoad(&tree_group_counts[1]));}
+    if lane==0u {atomicAdd(&cull_draw.counter[1],atomicLoad(&tree_group_counts[1]));}
     if CLUSTER_BUCKETS && lane<4u {
-        atomicAdd(&counter[4u+lane],atomicLoad(&tree_group_counts[2u+lane]));
-        atomicAdd(&counter[40u+lane],atomicLoad(&tree_group_counts[7u+lane]));
+        atomicAdd(&cull_draw.counter[4u+lane],atomicLoad(&tree_group_counts[2u+lane]));
+        atomicAdd(&cull_draw.counter[40u+lane],atomicLoad(&tree_group_counts[7u+lane]));
     }
 }
 var<workgroup> tree_pending:u32;
@@ -778,19 +797,19 @@ var<workgroup> tree_group_counts:array<atomic<u32>,11>;
 
 @compute @workgroup_size(64)
 fn scatter(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
-    let n = min(atomicLoad(&counter[0]), u32(view.params.w));
-    for (var slot = atomicLoad(&counter[12])+gid.x; slot < n; slot += groups.x * 64u) {
+    let n = min(atomicLoad(&cull_draw.counter[0]), u32(view.params.w));
+    for (var slot = atomicLoad(&cull_draw.counter[12])+gid.x; slot < n; slot += groups.x * 64u) {
         let vis = visible[slot];
         let cl = clusters[vis.y];
         let bucket = cluster_bucket(cl.tri_count);
         if RASTER_SPLIT && masked_cluster(instance_at(vis.x).flags, cl.material) {
             // From the bucket's end: a miscount can only change which
             // pipeline draws a cluster, never leave a draw_map entry stale.
-            let offset = atomicAdd(&counter[44u + bucket], 1u);
-            draw_map[args[16u + bucket] + atomicLoad(&counter[4u + bucket]) - 1u - offset] = slot;
+            let offset = atomicAdd(&cull_draw.counter[44u + bucket], 1u);
+            cull_draw.draw_map[cull_draw.args[16u + bucket] + atomicLoad(&cull_draw.counter[4u + bucket]) - 1u - offset] = slot;
         } else {
-            let offset = atomicAdd(&counter[8u + bucket], 1u);
-            draw_map[args[16u + bucket] + offset] = slot;
+            let offset = atomicAdd(&cull_draw.counter[8u + bucket], 1u);
+            cull_draw.draw_map[cull_draw.args[16u + bucket] + offset] = slot;
         }
     }
 }
@@ -814,15 +833,15 @@ fn cull_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
     let threshold=select(view.params.x,0.0,(inst.flags&2u)!=0u);
     for(var offset=0u;offset<inst.cluster_count;offset++) {
         let ci=inst.first_cluster+offset;let cl=clusters[ci];
-        if (cull_materials[cl.material].flags&256u)!=0u {continue;}
+        if (cull_material(cl.material).flags&256u)!=0u {continue;}
         let parent=to_world(inst,cl.parent.xyz);
         if cl.parent_error<=1e30 && projected(cl.parent_error*inst.scale,parent,cl.parent.w*inst.scale)<=threshold {continue;}
         let own=to_world(inst,cl.own.xyz);
         if projected(cl.own_error*inst.scale,own,cl.own.w*inst.scale)>threshold {continue;}
         if !in_frustum(to_world(inst,cl.cull.xyz),cl.cull.w*inst.scale) {continue;}
-        let slot=atomicAdd(&counter[0],1u);
+        let slot=atomicAdd(&cull_draw.counter[0],1u);
         if slot<u32(view.params.w) {
-            visible[slot]=vec2<u32>(id,ci);atomicAdd(&counter[1],cl.tri_count);
+            visible[slot]=vec2<u32>(id,ci);atomicAdd(&cull_draw.counter[1],cl.tri_count);
             if CLUSTER_BUCKETS {count_cluster(inst.flags,cl);}
         }
     }
