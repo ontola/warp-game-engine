@@ -451,6 +451,14 @@ impl Game for Fly {
         let pos = self.prev.lerp(self.pos, frame.alpha);
         let cam = self.camera(pos, frame.alpha);
         let [w, h] = frame.size;
+        // Sharp sun shadow reaches about four times the height above the
+        // ground, in steps of sqrt(2) (each step resizes the map), at most out
+        // to the trees: from 600 m up its edge read as a ring in the forest.
+        if let Some(renderer)=frame.renderer() {
+            let above=(pos.y-self.ground(pos.x,pos.z)).max(0.0);
+            let steps=(2.0*(4.0*above/180.0).max(1.0).log2()).ceil();
+            renderer.set_shadow_reach((180.0*2f32.powf(steps/2.0)).min(self.world.tree_radius.min(SHADOW_REACH_MAX).max(180.0)));
+        }
         if let (Some(terrain), Some(renderer)) = (self.terrain.as_mut(), frame.renderer()) {
             let started=web_time::Instant::now();
             self.stats = terrain.update(frame.gpu, renderer, &[TerrainView::new(&cam, w, h)])?;
@@ -557,7 +565,7 @@ impl Game for Fly {
 }
 
 impl Default for World {
-    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, branch_slots: 65536 } }
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, branch_slots: 49152 } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
@@ -805,6 +813,11 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
 
 /// Artist edits from --overrides FILE, read once at start.
 static OVERRIDES: std::sync::OnceLock<render::overrides::Overrides> = std::sync::OnceLock::new();
+
+/// Farthest sharp sun shadow from high up (metres). At 2500 m the default
+/// style's 170k shadow-only roots overflowed the shadow splat budget even at
+/// their coarsest level (scale pegged, long streaks on slopes).
+const SHADOW_REACH_MAX: f32 = 1500.0;
 
 /// Shrubs are placed this far around the camera (metres).
 const SHRUB_RADIUS: f32 = 400.0;
