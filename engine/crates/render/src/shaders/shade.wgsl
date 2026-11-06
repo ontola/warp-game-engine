@@ -2040,7 +2040,14 @@ fn thin_foliage_response(base:vec3<f32>,n:vec3<f32>,v:vec3<f32>,rough:f32,leaf_f
     let reflection=1.0-transmission;
     let ndl=dot(n,light.sun_dir.xyz);
     var result:ThinFoliageResponse;
-    result.direct=budget*sun_e*(reflection*max(ndl,0.0)+transmission*max(-ndl,0.0))
+    // Light through a leaf comes out deeper and more saturated than light
+    // off it (it crossed the chlorophyll once more), and most of it keeps
+    // going forward: looking toward the sun through a crown it glows
+    // (Unreal's two-sided foliage, as Joep asked). A few ALU ops, no pass;
+    // the sun's shadow at the leaf already gates it.
+    let deep=budget*clamp(base/max(max(base.r,max(base.g,base.b)),1e-4),vec3<f32>(0.0),vec3<f32>(1.0));
+    let forward=1.0+3.0*pow(max(dot(-v,light.sun_dir.xyz),0.0),6.0);
+    result.direct=sun_e*(budget*reflection*max(ndl,0.0)+deep*transmission*forward*max(-ndl,0.0))
         +sun_e*ggx(n,v,light.sun_dir.xyz,rough,f0);
     result.indirect=budget*(reflection*front_irradiance+transmission*back_irradiance);
     result.specular=env*specular_weight;
