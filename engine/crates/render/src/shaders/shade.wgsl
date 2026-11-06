@@ -348,6 +348,14 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
         others = shadow_at_surface(p + l * 0.75 * sun_voxel_cell(p), n * sign(dot(n, l) + 1e-4), vec3<f32>(0.0), 0.0);
     } else if FEATURE_WORLD_TERRAIN && sun_visibility_required() {
         others = world_terrain_sun_visibility(p, n, 0.0);
+    } else if far_sun.params.z > 0.5 && far_sun.params.w < 0.5 && sun_coverage_fade(far_sun.view_proj, p, far_sun.params.y) < 1.0 {
+        // Past the shared map the ground reads the far map; the crowns on it
+        // did not, and caught full sun on a mountain's shadow side, ~3x the
+        // ground beneath them (Mancave sky test, Joep playtest 5). One
+        // compare tap, lifted a few metres up the ray past the crown's own
+        // coarse copy; no march.
+        let c = far_sun.view_proj * vec4<f32>(p + l * 3.0, 1.0);
+        others = textureSampleCompareLevel(far_sun_tex, shadow_samp, c.xy * vec2<f32>(0.5, -0.5) + 0.5, 0, c.z);
     }
     // Out there its neighbours' shade is folded into its own: the plant's
     // full transmittance instead of the square root the maps pair with.
@@ -1614,7 +1622,13 @@ fn shadow_detail_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
     }
     var vis = 1.0;
     if full < levels {
-        vis = near_level_visibility(full, p, n, plane_n);
+        // The clipmap's sun box is shallow: a ridge or forest far up the sun
+        // ray lies outside it, so trees on a mountain's shadow side caught
+        // full sun (Mancave sky test, Joep playtest 5). The shared map holds
+        // those; read it 3 m up the ray so its coarse copy of this very
+        // crown does not shade it again.
+        vis = min(near_level_visibility(full, p, n, plane_n),
+            shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p + light.sun_dir.xyz * 3.0, n, plane_n));
     } else {
         vis = shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p, n, plane_n);
         // The outer map uses actual alpha-tested tree geometry, not the coarse
