@@ -1398,15 +1398,8 @@ fn volume_sun_splats_impl(index:u32,lane:u32,damaged:bool) {
     let d=vec4<f32>(sun.xyz,0.0);
     let toward=normalize(vec3<f32>(dot(tree.inverse[0],d),dot(tree.inverse[1],d),dot(tree.inverse[2],d)));
     let range=volume_splat_cells[tree.identity.y+level];
-    let grid=volume_levels[tree.identity.y+level];
     for(var i=lane;i<range.y;i+=64u) {
         let cell_ref=volume_splat_cells[range.x+i];
-        // A cell whose neighbour one cell toward the sun is occupied lies
-        // behind it in the map: its depth never wins (sun splats are opaque,
-        // no thinning). Crown interiors were most of the clipmap's splats.
-        let coord=vec3<f32>(f32(cell_ref.y&1023u),f32((cell_ref.y>>10u)&1023u),f32(cell_ref.y>>20u));
-        let ahead=floor(coord+0.5+toward);
-        if all(ahead>=vec3<f32>(0.0)) && all(ahead<vec3<f32>(grid.dims_offset.xyz)) && volume_cell_address(grid,vec3<u32>(ahead))!=0u {continue;}
         let cell=volume_splat_cell(index,level,cell_ref.y);
         var inside=true;
         for(var p=0u;p<6u;p++) {inside=inside&&!volume_splat_outside(cell,volume_splat_header(4u+p));}
