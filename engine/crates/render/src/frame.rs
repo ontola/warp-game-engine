@@ -91,6 +91,15 @@ fn near_levels() -> usize {
 /// Half extent of clipmap level `k` (metres).
 fn near_level_extent(k: usize) -> f32 { NEAR_SHADOW_EXTENT * (1u32 << k) as f32 }
 /// Finest voxel cell level `k` splats: half a pixel's growth per level.
+/// Level 0 redraws every frame, level 1 every other frame, levels 2 and 3
+/// every fourth (on different frames): at most two levels per frame. All
+/// four every frame cost ~6.5 ms at 4K-class settings (Mancave, f5af817).
+/// KERN_SUN_STAGGER=0 redraws every level every frame.
+fn near_level_due(k: usize, frame: u64) -> bool {
+    static STAGGER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if k == 0 || !*STAGGER.get_or_init(|| std::env::var("KERN_SUN_STAGGER").as_deref() != Ok("0")) { return true; }
+    match k { 1 => frame % 2 == 0, 2 => frame % 4 == 1, _ => frame % 4 == 3 }
+}
 fn near_level_voxel_m(k: usize) -> f32 { NEAR_SUN_VOXEL_M * std::f32::consts::SQRT_2.powi(k as i32) }
 fn near_shadow_lod() -> f32 {
     static SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
@@ -177,6 +186,9 @@ struct NearShadow {
     /// frame would allocate a new full splat target every frame.
     layers: Vec<wgpu::TextureView>,
     array: wgpu::TextureView,
+    /// The projection each level was last drawn with: outer levels redraw
+    /// on alternate frames (near_level_due) and keep shading with it.
+    drawn: [std::cell::Cell<Option<Mat4>>; NEAR_LEVELS_MAX],
 }
 
 #[derive(Default)]
@@ -4392,7 +4404,7 @@ impl Renderer {
                 let array = tex.create_view(&wgpu::TextureViewDescriptor { label: Some("sun clipmap"),
                     dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
                 near_shadows.push(NearShadow {
-                    tex, layers, array,
+                    tex, layers, array, drawn: Default::default(),
                     targets: self.view_targets_capacity(gpu, "near sun view", self.shadow_capacity,false,self.instance_groups.sun_enabled),
                     outer: (1..near_levels()).map(|_| self.view_targets_capacity(gpu, "sun clipmap view", self.shadow_capacity,false,self.instance_groups.sun_enabled)).collect(),
                 });
@@ -4494,7 +4506,12 @@ impl Renderer {
                 for k in 0..near_levels() {
                     let extent = near_level_extent(k);
                     let targets = if k == 0 { &near.targets } else { &near.outer[k - 1] };
+                    if let Some(vp) = near.drawn[k].get().filter(|_| !near_level_due(k, render_sequence)) {
+                        view_light.near_levels_view_proj[k - 1] = vp.to_cols_array_2d();
+                        continue;
+                    }
                     let near_vp = sun_projection(near_centre, extent, NEAR_SHADOW_SIZE);
+                    near.drawn[k].set(Some(near_vp));
                     let mut near_uniform=view_uniform(
                         near_vp, sun_eye(near_centre), NEAR_SHADOW_SIZE as f32 / (2.0 * extent),
                         [light.lod_pixels * near_shadow_lod(), 1.0, 1.0, self.shadow_capacity as f32], [NEAR_SHADOW_SIZE as f32; 4], light.alpha_cut);
