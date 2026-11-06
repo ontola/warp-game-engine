@@ -1193,6 +1193,19 @@ fn volume_camera_texel(p:vec3<f32>)->f32 {
     return w/max(0.5*f32(volume_config.size_count.y)*length(row_y),1e-8);
 }
 fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:vec3<f32>,texel:f32) {
+    let stable=volume_trees[index].bounds_max.w;
+    let appearance=select(index,u32(max(stable-1.0,0.0)),stable>0.0);
+    // Area thinning below keeps a cell with probability at most
+    // max(area at alpha 1, 1/64): test that first and skip the cell fetch
+    // for most cells of a far crown. Same hash, so the same cells survive.
+    var area_one=0.0;var area_draw=1.0;
+    if texel>0.0 {
+        let owner=instances[volume_trees[index].identity.x];
+        let side=cell.size*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x))/texel;
+        area_one=1.48711*side*side;
+        area_draw=f32(volume_splat_hash((appearance*0x85ebca6bu)^(cell_ref.y*0xc2b2ae35u)^0x27d4eb2fu)>>8u)/16777216.0;
+        if area_one<VOLUME_SPLAT_AREA_TARGET && area_draw>=max(area_one/VOLUME_SPLAT_AREA_TARGET,1.0/VOLUME_SPLAT_ALPHA_RANGE) {return;}
+    }
     // Optical depth of the mean chord through this cell along the view.
     let sigma=volume_sigma(unpack_volume_cell(volume_cells[cell_ref.x]),volume_direction(toward));
     let alpha=1.0-exp(-sigma*cell.size/max(dot(abs(toward),vec3<f32>(1.0)),1.0));
@@ -1200,8 +1213,6 @@ fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:
     // Faint cells are thinned to VOLUME_SPLAT_MIN_ALPHA: kept with
     // probability alpha/min by a hash stable per tree and cell (no flicker),
     // so expected coverage holds while the raster draws far fewer quads.
-    let stable=volume_trees[index].bounds_max.w;
-    let appearance=select(index,u32(max(stable-1.0,0.0)),stable>0.0);
     var kept_alpha=alpha;
     if alpha<VOLUME_SPLAT_MIN_ALPHA {
         let h=volume_splat_hash(appearance*0x9e3779b9u^cell_ref.y);
@@ -1209,13 +1220,10 @@ fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:
         kept_alpha=VOLUME_SPLAT_MIN_ALPHA;
     }
     if texel>0.0 {
-        let owner=instances[volume_trees[index].identity.x];
-        let side=cell.size*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x))/texel;
-        let area=1.48711*side*side*kept_alpha;
+        let area=area_one*kept_alpha;
         if area<VOLUME_SPLAT_AREA_TARGET {
             let keep=max(area/VOLUME_SPLAT_AREA_TARGET,kept_alpha/VOLUME_SPLAT_ALPHA_RANGE);
-            let h=volume_splat_hash((appearance*0x85ebca6bu)^(cell_ref.y*0xc2b2ae35u)^0x27d4eb2fu);
-            if f32(h>>8u)/16777216.0>=keep {return;}
+            if area_draw>=keep {return;}
             kept_alpha/=keep;
         }
     }
