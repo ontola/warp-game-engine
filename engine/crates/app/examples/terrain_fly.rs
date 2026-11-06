@@ -474,6 +474,12 @@ impl Game for Fly {
             let above=(pos.y-self.ground(pos.x,pos.z)).max(0.0);
             let steps=(2.0*(4.0*above/180.0).max(1.0).log2()).ceil();
             renderer.set_shadow_reach((180.0*2f32.powf(steps/2.0)).min(self.world.tree_radius.min(SHADOW_REACH_MAX).max(180.0)));
+            // Centre the sun maps on the ground under the camera, not on the
+            // camera: seen from the sun, a map round the eye lands height /
+            // tan(sun elevation) downsun on the ground, so 16 m up the sharp
+            // near map missed the ground below and the closest shadows blurred.
+            let foot=Vec3::new(pos.x,pos.y-above,pos.z);
+            let _=renderer.set_lighting_focus(&[foot]);
         }
         if let (Some(terrain), Some(renderer)) = (self.terrain.as_mut(), frame.renderer()) {
             let started=web_time::Instant::now();
@@ -669,6 +675,14 @@ fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &rend
     if world.trees {
         let (start, end) = handover_band(world);
         procedural_terrain::far_forest_handover(&mut scene, material, [centre.x, centre.z], start, end, world.tree_density, &palette.forest);
+    }
+    // Past the grass disc the ground takes the blades' mean colour (measured
+    // against the bare ground at the disc edge; KERN_GRASS_PROXY=r,g,b to tune).
+    if world.grass {
+        let tint=std::env::var("KERN_GRASS_PROXY").ok().and_then(|v|{
+            let p:Vec<f32>=v.split(',').filter_map(|x|x.trim().parse().ok()).collect();
+            (p.len()==3).then(||[p[0],p[1],p[2]])}).unwrap_or([0.6,0.85,0.5]);
+        procedural_terrain::grass_proxy(&mut scene, material, GRASS_RADIUS, tint);
     }
     // The --track road: the land bends to it, and its pixels draw gravel.
     if let Some(w) = track.clone() {
