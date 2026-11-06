@@ -59,6 +59,12 @@ impl<const N: usize> TextureViews<N> {
         self.0.get(|(key, _)| key == texture,
             || (texture.clone(), texture.create_view(&Default::default()))).1.clone()
     }
+    /// Whole-texture view as a 2D array (one layer is fine).
+    pub fn get_array(&mut self, texture: &wgpu::Texture) -> wgpu::TextureView {
+        self.0.get(|(key, _)| key == texture,
+            || (texture.clone(), texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() }))).1.clone()
+    }
     pub fn stats(&self) -> CacheStats { self.0.stats() }
 }
 
