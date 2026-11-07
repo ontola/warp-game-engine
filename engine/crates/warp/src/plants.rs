@@ -14,7 +14,7 @@
 //! the scene and the renderer on the next frame (a short stall, fine for a
 //! tuning lab).
 use glam::{Affine3A, Quat, Vec3};
-use render::cluster::ClusterMesh;
+use render::cluster::{ClusterMesh, SimplificationPolicy};
 use render::scene::Material;
 use render::foliage_population::WorldRoot;
 use render::foliage_runtime::RootPlacement;
@@ -71,7 +71,16 @@ fn preview(species: &Species, look: Look, age: u32, seed: u64) -> Result<Preview
     for inst in &assembly.instances {
         let at = *index.entry((inst.part, inst.material)).or_insert_with(|| {
             let part = &assembly.parts[inst.part as usize];
-            let mesh = ClusterMesh::build(&[render::cluster::Part { vertices: &part.vertices, indices: &part.indices, material: 0 }]);
+            let p = [render::cluster::Part { vertices: &part.vertices, indices: &part.indices, material: 0 }];
+            let material = assembly.materials[inst.material as usize];
+            // Needles keep every triangle at every distance: simplifying a
+            // thin needle drops it, and crowns thin out a few metres away.
+            // The full cook handles distance with voxels instead.
+            let mesh = if material.flags & render::scene::THIN_FOLIAGE != 0 {
+                ClusterMesh::build_with_constraints(&p, |_| SimplificationPolicy::ThinFoliage, |_, _| true)
+            } else {
+                ClusterMesh::build_with_policy(&p, |_| SimplificationPolicy::TexturedGeometry)
+            };
             out.meshes.push((part.id, assembly.materials[inst.material as usize], mesh));
             out.meshes.len() - 1
         });
