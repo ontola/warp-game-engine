@@ -248,10 +248,14 @@ impl Guns {
 
     /// Headless growth review uses the same reserved slots and rig poses.
     pub(crate) fn review_pose(&self, scene: &mut Scene, rig: &Rig) {
+        self.review_mounted(scene, rig, Affine3A::IDENTITY);
+    }
+
+    pub(crate) fn review_mounted(&self, scene: &mut Scene, rig: &Rig, mount: Affine3A) {
         let mut n = 0;
         for (part, xf) in rig.pose(0.0) {
             assert!(n < self.parts, "gun morph exceeds reserved visual capacity");
-            scene.update_instance(self.tp[0] + n, self.mesh(part.shape, part.mat, 0), xf);
+            scene.update_instance(self.tp[0] + n, self.mesh(part.shape, part.mat, 0), mount * xf);
             n += 1;
         }
         empty(scene, self.tp[0], n, self.parts);

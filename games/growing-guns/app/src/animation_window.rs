@@ -26,6 +26,7 @@ struct Preview {
     actor: ActorHandle,
     model: Character,
     arms: TwoHandHold,
+    mount: body::reach::JointMount,
     script: HandAnimation,
     pose: Vec<Mat4>,
     tick: u64,
@@ -48,6 +49,8 @@ struct Inspector {
     yaw: f32,
     pitch: f32,
     zoom: f32,
+    pan: Vec3,
+    pan_start: Option<[f32; 2]>,
     values: [f32; 5],
     paused: bool,
     slider: Option<usize>,
@@ -59,7 +62,7 @@ impl Inspector {
         (height as f32 - ROW * 6.0 - 10.0).max(0.0)
     }
     fn pointer(&mut self, p: app::Pointer, size: [u32; 2]) {
-        if !p.held && !p.pressed {
+        if !p.held && !p.pressed && !p.right_held && !p.right_pressed {
             self.orbit = None;
             self.slider = None;
         }
@@ -71,6 +74,23 @@ impl Inspector {
         let panel = (8.0..WIDTH).contains(&x) && (0.0..6.0).contains(&row);
         if !panel {
             self.zoom = (self.zoom - p.wheel * 0.12).clamp(-1.6, 1.3);
+        }
+        if p.middle_pressed {
+            self.pan_start = Some([x, y]);
+        }
+        if p.middle_held {
+            if let Some(last) = self.pan_start {
+                let orbit = self.orientation();
+                let metres = 2. * 1.93 * self.zoom.exp() * (19f32.to_radians()).tan()
+                    / size[1].max(1) as f32;
+                self.pan += orbit * Vec3::new(last[0] - x, y - last[1], 0.) * metres;
+            }
+            self.pan_start = Some([x, y]);
+            return;
+        }
+        self.pan_start = None;
+        if p.right_pressed && !panel {
+            self.orbit = Some([x, y]);
         }
         if p.pressed {
             self.slider = None;
@@ -88,7 +108,7 @@ impl Inspector {
                 self.orbit = Some([x, y]);
             }
         }
-        if p.held || p.pressed {
+        if p.held || p.pressed || p.right_held {
             if let Some(index) = self.slider {
                 self.values[index] = (((x - TRACK) / (WIDTH - 12.0 - TRACK)).clamp(0.0, 1.0) * 2.0
                     - 1.0)
@@ -99,6 +119,9 @@ impl Inspector {
                 self.orbit = Some([x, y]);
             }
         }
+    }
+    fn orientation(&self) -> Quat {
+        Quat::from_rotation_y(self.yaw - 2.037) * Quat::from_rotation_x(-self.pitch - 0.294)
     }
     fn hud(&self, hud: &mut HudDrawList) {
         let clip = [0.0, 0.0, hud.size[0] as f32, hud.size[1] as f32];
@@ -139,6 +162,11 @@ impl Inspector {
         label(hud, 21, [TRACK, top + ROW * 5.0 + 3.0], "Reset".into());
     }
 }
+fn ui_scale(size: [u32; 2]) -> f32 {
+    (size[1] as f32 / 410.)
+        .min(size[0] as f32 / 570.)
+        .clamp(0.8, 3.5)
+}
 fn label(hud: &mut HudDrawList, id: u64, position: [f32; 2], text: String) {
     let bounds = [0.0, 0.0, hud.size[0] as f32, hud.size[1] as f32];
     hud.text.push(TextRun {
@@ -174,10 +202,16 @@ impl Game for Preview {
         self.rig.update(1.0 / 60.0);
     }
 
-    fn pointer(&mut self, p: app::Pointer, size: [u32; 2]) {
+    fn pointer(&mut self, mut p: app::Pointer, size: [u32; 2]) {
+        let scale = ui_scale(size);
+        let size = size.map(|v| (v as f32 / scale).round() as u32);
+        p.position = p.position.map(|xy| xy.map(|v| v / scale));
         if !self.bones.pointer(p) {
             self.inspector.pointer(p, size);
         } else {
+            if self.bones.manipulating() {
+                self.inspector.paused = true;
+            }
             self.inspector.slider = None;
             self.inspector.orbit = None;
         }
@@ -190,7 +224,7 @@ impl Game for Preview {
         true
     }
     fn state(&self) -> Option<String> {
-        Some(serde_json::json!({"tick":self.tick,"paused":self.inspector.paused,"yaw":self.inspector.yaw,"pitch":self.inspector.pitch,"zoom":self.inspector.zoom,"pose_offsets":self.inspector.values,"model":self.model.name,"selected_joint":self.bones.editor.joints[self.bones.selected].name,"joints":self.bones.editor.snapshot()}).to_string())
+        Some(serde_json::json!({"tick":self.tick,"paused":self.inspector.paused,"yaw":self.inspector.yaw,"pitch":self.inspector.pitch,"pan":self.inspector.pan.to_array(),"zoom":self.inspector.zoom,"pose_offsets":self.inspector.values,"model":self.model.name,"selected_joint":self.bones.editor.joints[self.bones.selected].name,"joints":self.bones.editor.snapshot()}).to_string())
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
@@ -210,20 +244,26 @@ impl Game for Preview {
         let pitch = aim.to_radians();
         let initial =
             Guns::held_transform(body.transform_point3(hand), 0.0, pitch, contacts.primary);
-        let target = body
-            .inverse()
-            .transform_point3(initial.transform_point3(support));
+        let aim = (body.inverse() * initial).to_scale_rotation_translation().1;
+        let sampled_mount = self.mount.place(&self.pose, aim, contacts.primary);
+        let target = hand + sampled_mount.transform_vector3(support - contacts.primary);
         let primary = self.arms.apply(&mut self.pose, hand, target);
         self.arms.orient_support(
             &mut self.pose,
-            characters::grip_rotation(pitch) * Quat::from_rotation_x(roll + palm.to_radians()),
+            sampled_mount.to_scale_rotation_translation().1
+                * aim.inverse()
+                * characters::grip_rotation(pitch)
+                * Quat::from_rotation_x(roll + palm.to_radians()),
         );
         self.bones.editor.apply(&mut self.pose);
-        let gun =
+        let framing =
             Guns::held_transform(body.transform_point3(primary), 0.0, pitch, contacts.primary);
-        self.guns.review_pose(&mut self.scene, &self.rig);
+        let model_to_scene = framing.inverse() * body;
+        let mount = self.mount.place(&self.pose, aim, contacts.primary);
+        self.guns
+            .review_mounted(&mut self.scene, &self.rig, model_to_scene * mount);
         self.scene
-            .update_instance(self.actor.instance, self.actor.mesh, gun.inverse() * body);
+            .update_instance(self.actor.instance, self.actor.mesh, model_to_scene);
         let light = Lighting {
             sun_dir: Vec3::new(-0.6, 0.9, -0.6).normalize(),
             sky_lux: 4500.0,
@@ -239,23 +279,23 @@ impl Game for Preview {
         let renderer = frame.renderer().unwrap();
         renderer.update_instances(frame.gpu, 0, &self.scene.instances)?;
         renderer.set_skinning_palettes(frame.gpu, std::iter::once(self.pose.as_slice()))?;
-        let target = Vec3::new(0.0, 0.0, -0.12);
-        let orbit = Quat::from_rotation_y(self.inspector.yaw - 2.037)
-            * Quat::from_rotation_x(-self.inspector.pitch - 0.294);
+        let target = Vec3::new(0.0, 0.0, -0.12) + self.inspector.pan;
+        let orbit = self.inspector.orientation();
         let camera = Camera {
             pos: target + orbit * Vec3::Z * (1.93 * self.inspector.zoom.exp()),
             target,
             near: 0.02,
             fov_y: 38f32.to_radians(),
         };
-        let mut hud = HudDrawList::new(frame.size);
+        let scale = ui_scale(frame.size);
+        let mut hud = HudDrawList::new(frame.size.map(|v| (v as f32 / scale).round() as u32));
         self.bones
-            .draw(&mut hud, &camera, Mat4::from(gun.inverse() * body));
+            .draw(&mut hud, &camera, Mat4::from(model_to_scene));
         self.inspector.hud(&mut hud);
         hud.text.push(TextRun {
             id: 1,
             text: format!(
-                "F2 bones   |   Drag to orbit   |   Scroll to zoom   |   Foregrip {:.0}%    {}",
+                "L drag: move   R: rotate / orbit   M: pan   Wheel: zoom   F2: bones   {:.0}%  {}",
                 contacts.extension * 100.0,
                 self.script.status
             ),
@@ -267,6 +307,17 @@ impl Game for Preview {
             align: TextAlign::Left,
             width: frame.size[0] as f32 - 28.0,
         });
+        for v in &mut hud.vertices {
+            v.position = v.position.map(|x| x * scale);
+            v.clip = v.clip.map(|x| x * scale);
+        }
+        for t in &mut hud.text {
+            t.position = t.position.map(|x| x * scale);
+            t.bounds = t.bounds.map(|x| x * scale);
+            t.font_size *= scale;
+            t.width *= scale;
+        }
+        hud.size = frame.size;
         Ok(Draw {
             cameras: vec![camera],
             light,
@@ -295,7 +346,14 @@ pub fn run(args: &crate::Args) -> Result<(), String> {
     world.give(0, id);
     let arms = crate::view::characters::grip_arms(&model).ok_or("missing arm joints")?;
     let pose = model.sample("pistol_idle", 0.0, true)?;
+    let (index, (_, bind)) = model
+        .joints()
+        .enumerate()
+        .find(|(_, (name, _))| name.rsplit([':', '_']).next() == Some("RightHand"))
+        .ok_or("missing right hand mount")?;
+    let mount = body::reach::JointMount::new(index, bind, &pose);
     let mut game = Preview {
+        mount,
         bones: bones::Bones::new(&model)?,
         scene,
         rig,
@@ -315,7 +373,7 @@ pub fn run(args: &crate::Args) -> Result<(), String> {
             fullscreen: false,
             keyboard: false,
             pointer: true,
-            size: args.size((960, 640)).into(),
+            size: args.size((1280, 800)).into(),
             target_fps: Some(60.0),
             ..Default::default()
         },

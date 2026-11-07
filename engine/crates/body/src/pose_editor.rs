@@ -7,6 +7,8 @@ pub struct PoseJoint {
     pub parent: Option<usize>,
     pub degrees: Vec3,
     pub position: Vec3,
+    pub local_offset: Vec3,
+    pub basis: Quat,
     entries: Vec<(usize, Mat4)>,
     delta: Mat4,
 }
@@ -32,6 +34,8 @@ impl PoseEditor {
                     parent: None,
                     degrees: Vec3::ZERO,
                     position: Vec3::ZERO,
+                    local_offset: Vec3::ZERO,
+                    basis: Quat::IDENTITY,
                     entries: vec![(i, rest)],
                     delta: Mat4::IDENTITY,
                 });
@@ -60,13 +64,15 @@ impl PoseEditor {
             let (k, bind) = j.entries[0];
             let joint = inherited * pose[k] * bind;
             j.position = joint.transform_point3(Vec3::ZERO);
-            j.delta = inherited;
+            j.basis = joint.to_scale_rotation_translation().1.normalize();
+            let shift = j.basis * j.local_offset;
+            j.position += shift;
+            j.delta = Mat4::from_translation(shift) * inherited;
             if j.degrees != Vec3::ZERO {
-                let basis = joint.to_scale_rotation_translation().1.normalize();
+                let basis = j.basis;
                 let d = j.degrees * (std::f32::consts::PI / 180.0);
                 let q = basis * Quat::from_euler(EulerRot::XYZ, d.x, d.y, d.z) * basis.inverse();
-                j.delta =
-                    Mat4::from_rotation_translation(q, j.position - q * j.position) * inherited;
+                j.delta = Mat4::from_rotation_translation(q, j.position - q * j.position) * j.delta;
             }
             if j.delta != Mat4::IDENTITY {
                 for &(k, _) in &j.entries {
@@ -79,7 +85,7 @@ impl PoseEditor {
     pub fn snapshot(&self) -> Value {
         Value::Array(self.joints.iter().map(|j| json!({"name":j.name,
             "parent":j.parent.map(|i| &self.joints[i].name), "model_position_m":j.position.to_array(),
-            "local_offset_xyz_deg":j.degrees.to_array()})).collect())
+            "local_translation_m":j.local_offset.to_array(), "local_offset_xyz_deg":j.degrees.to_array()})).collect())
     }
 }
 
