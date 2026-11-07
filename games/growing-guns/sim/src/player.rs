@@ -139,8 +139,9 @@ impl World {
 
     /// Eliminated humans operate a stationary audience gun after their pick.
     fn ghost_tick(&mut self, i: usize, input: Input, _fire_edge: bool) {
+        let round_over = self.round_over();
         let p = &mut self.players[i];
-        if p.bot || p.offer.is_some() || self.phase != Phase::Playing {
+        if p.bot || p.offer.is_some() || self.phase != Phase::Playing || round_over {
             p.vel = Vec3::ZERO;
             return;
         }
@@ -424,6 +425,9 @@ impl World {
         v.health = 0;
         v.vel = Vec3::ZERO;
         v.reloading = false;
+        if let Some(killer) = attacker.filter(|&a| a != victim).and_then(|a| self.players.get_mut(a)) {
+            killer.kills += 1;
+        }
         self.events.push(Event::Kill { victim, attacker, gib, dir });
         if let Some(h) = self.hooks.0.clone() { h.kill(self, victim, attacker); }
         self.report_kill(victim);

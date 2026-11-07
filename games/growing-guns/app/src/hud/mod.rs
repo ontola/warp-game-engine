@@ -87,8 +87,8 @@ pub struct Hud {
     hit_size: std::cell::Cell<[u32; 2]>,
     pub fb: Vec<Feedback>,
     pub banner: Option<Banner>,
-    /// Kill feed lines with their age (Godot: 3+ humans only).
-    pub feed: Vec<(String, f32)>,
+    /// Kill feed lines with their age.
+    pub feed: std::collections::VecDeque<(String, f32)>,
     /// Seconds since the match ended.
     pub match_over: Option<f32>,
     /// Seconds since a new round began (the white flash and modifier toast).
@@ -199,7 +199,6 @@ impl Hud {
             self.sync(world);
             for (i, bot) in flips { let n = self.name(i).to_string(); self.announce(if bot { format!("{n} left") } else { format!("{n} joined") }, 2.0, 0.0); }
         }
-        let humans = world.players.iter().filter(|p| !p.bot).count();
         let mut clear_banner = false;
         for (i, f) in self.fb.iter_mut().enumerate() {
             let p = &world.players[i];
@@ -265,8 +264,11 @@ impl Hud {
         // Sudden death: the leak's banner as it starts (Godot `_start_lava_leak`).
         if world.lava.active && !self.lava_was && world.lava.elapsed <= 0.1 { self.announce("LAVA LEAK", 1.5, 0.0); }
         self.lava_was = world.lava.active;
-        for (_, age) in &mut self.feed { *age += dt; }
-        self.feed.retain(|f| f.1 < 3.35);
+        let dwell = if self.feed.len() > 1 { 1.2 } else { 3.0 };
+        if let Some((_, age)) = self.feed.front_mut() {
+            *age += dt;
+            if *age >= dwell { self.feed.pop_front(); }
+        }
         if let Some(b) = &mut self.banner { b.left -= dt; if b.left <= 0.0 { self.banner = None; } }
         self.round_age += dt;
         if world.phase == Phase::MatchOver { *self.match_over.get_or_insert(0.0) += dt; } else { self.match_over = None; }
@@ -292,17 +294,19 @@ impl Hud {
                 Event::Kill { victim, attacker, gib, .. } => {
                     if let Some(a) = attacker.filter(|&a| a != victim) {
                         if let Some(f) = self.fb.get_mut(a) { f.hit = 0.0; f.hit_kind = HitKind::Kill; }
-                        if humans >= 3 { let line = format!("{} => {}", self.name(a), self.name(victim)); self.feed.push((line, 0.0)); }
-                        while self.feed.len() > 6 { self.feed.remove(0); }
                     } else if let Some(f) = self.fb.get_mut(victim) && !world.players[victim].bot {
                         // Lava and falls: the red screen (Godot `_lava_death`).
                         f.burned = Some(0.0);
-                        f.lava_death = matches!(gib, growing_guns::Gib::Lava { .. });
+                        f.lava_death = !(world.phase == Phase::Picking && !world.coop && world.players.len() > 2) && matches!(gib, growing_guns::Gib::Lava { .. });
                     }
-                    if world.players.get(victim).is_some_and(|p| !p.bot) && !(world.coop && world.waves.is_enemy(victim)) {
-                        let line = if world.coop && world.players[victim].downed { format!("{} is down", self.name(victim)) } else { format!("{} died", self.name(victim)) };
-                        self.announce(line, 2.0, 0.0);
-                    }
+                    let name = self.name(victim);
+                    let line = match attacker {
+                        Some(a) if a != victim => format!("{} killed {name}", self.name(a)),
+                        _ if matches!(gib, growing_guns::Gib::Lava { fall: true }) => format!("{name} fell into lava"),
+                        _ if matches!(gib, growing_guns::Gib::Lava { fall: false }) => format!("{name} burned in lava"),
+                        _ => format!("{name} died"),
+                    };
+                    self.feed.push_back((line, 0.0));
                 }
                 // Godot `trigger_explosion_sidechain` (bullet blasts: peak r / 5),
                 // for every player from their own distance; ion strikes flash on their own.
@@ -371,8 +375,10 @@ impl Hud {
             let size = (28.0 * l.s).round().max(16.0) * l.u;
             Label::poster(size).center().draw(d, "REVIVING...", cx, y + h - 98.0 * l.u, clip);
         }
-        self.toasts(d, world, i, &l);
-        self.round_strip(d, world, i, &l);
+        if !picking {
+            if self.banner.is_none() && !world.round_over() && world.phase == Phase::Playing { self.toasts(d, world, i, &l); }
+            self.round_strip(d, world, i, &l);
+        }
         // The death overlay: red after a lava death, then the card pick's
         // dark backdrop (Godot `_blend_death_into_card_pick`).
         let death = death_color(world, p, f);
@@ -475,7 +481,7 @@ impl Hud {
         let top = l.rect[1];
         let clip = l.rect;
         // Round modifier: 2.5 s at the top of each view.
-        if let Some(m) = world.modifier && self.round_age < 2.5 && !world.coop {
+        if f.toast.is_none() && let Some(m) = world.modifier && self.round_age < 2.5 && !world.coop {
             let (t, s, c) = modifier_info(m);
             let lab = Label::label(size::S * l.u, c).center();
             lab.draw(d, &format!("{t}\n{s}").to_uppercase(), cx, top + 76.0 * l.u, clip);
@@ -515,7 +521,7 @@ impl Hud {
         if let Some(t) = text {
             let lab = Label::poster(size::M * l.u).center();
             let size = fit(&t, display(), lab.size, l.rect[2] * 0.96);
-            Label { size, ..lab }.draw(d, &t, l.rect[0] + l.rect[2] * 0.5, l.rect[1] + 32.0 * l.u, l.rect);
+            Label { size, ..lab }.draw(d, &t, l.rect[0] + l.rect[2] * 0.5, l.rect[1] + 68.0 * l.u, l.rect);
         }
     }
 
@@ -544,17 +550,16 @@ impl Hud {
             let lab = Label::label(size::S * u, [1.0, 0.8, 0.4, 1.0]).right();
             lab.draw(d, &format!("KILLED   {}/{}", world.waves.kills, world.waves.total), w - 20.0 * u, 34.0 * u, clip);
         }
-        // Kill feed: top right from y 96, newest last, fading after 3 s.
-        for (k, (line, age)) in self.feed.iter().enumerate() {
-            let a = if *age < 3.0 { 1.0 } else { 1.0 - (age - 3.0) / 0.35 };
-            let lab = Label::label(size::XS * u, with_alpha([1.0, 0.94, 0.8, 1.0], a)).right();
-            let tw = lab.width(line) + 20.0 * u;
-            let (ex, ey, eh) = (w - 18.0 * u - tw, 96.0 * u + k as f32 * 36.0 * u, 30.0 * u);
-            d.rect([ex, ey, tw, eh], [0.02, 0.025, 0.03, 0.78 * a], clip);
-            frame_rect(d, [ex, ey, tw, eh], u.max(1.0), [1.0, 0.78, 0.35, 0.7 * a], clip);
-            lab.draw(d, line, w - 28.0 * u, ey + eh * 0.5, clip);
+        // One shared headline slot keeps a burst of deaths out of the card and aim areas.
+        if let Some((line, _)) = self.feed.front() {
+            let size = fit(line, BODY, size::S * u, w * 0.65);
+            let lab = Label::new(BODY, size, BONE);
+            let width = lab.width(line) + 24.0 * u;
+            plate(d, [12.0 * u, 8.0 * u, width, 32.0 * u], PLATE, Some((3.0 * u, RED)), clip);
+            lab.draw(d, line, 24.0 * u, 24.0 * u, clip);
         }
-        let mut banner = self.banner.clone();
+        let local_pick = self.locals.iter().any(|&i| world.players.get(i).is_some_and(|p| p.offer.is_some()));
+        let mut banner = if local_pick { None } else { self.banner.clone() };
         let mut pop = 1.0;
         if let Some(t) = self.match_over {
             let text = if world.coop { format!("WAVE {} FAILED", world.waves.wave) } else {
@@ -719,6 +724,26 @@ mod pointer_tests {
         assert!(xr.vision_tints.is_empty());assert_eq!(xr.vision_background_tints.last(),Some(&death));
     }
     #[test]
+    fn duel_kills_share_one_notice_slot_in_event_order() {
+        let mut w = World::new(1, &[false, true]);
+        let mut hud = Hud::new(&w);
+        let bot = hud.name(1).to_owned();
+        w.events = vec![
+            Event::Kill { victim: 0, attacker: Some(1), gib: growing_guns::Gib::Ragdoll, dir: glam::Vec3::Y },
+            Event::Kill { victim: 1, attacker: None, gib: growing_guns::Gib::Lava { fall: true }, dir: glam::Vec3::Y },
+        ];
+        hud.tick(&w, DT);
+        w.events.clear();
+        for (expected, dt) in [(format!("{bot} killed P1"), 1.3), (format!("{bot} fell into lava"), 3.1)] {
+            let mut draw = HudDrawList::new([1280, 720]);
+            hud.global(&mut draw, &w, None);
+            assert_eq!(draw.text.iter().filter(|r| r.text == expected).count(), 1);
+            hud.tick(&w, dt);
+        }
+        assert!(hud.feed.is_empty());
+    }
+
+    #[test]
     fn lava_death_tint_does_not_return_after_ghost_card_pick() {
         let mut w = World::new(1, &[false, false, false, false]);
         w.players[0].alive = false;
@@ -760,6 +785,15 @@ mod pointer_tests {
         assert_eq!(h.card_hit(&w, 1, size, pos), None);
         assert_eq!(h.card_hit(&w, 0, [800, 600], pos), None);
         assert_eq!(h.card_hit(&w, 0, size, [900.0, pos[1]]), None);
+        // The shared feed and pick title occupy separate rows, even in a quadrant.
+        let mut split_hud = Hud::new(&w);
+        split_hud.feed.push_back(("P2 killed P1".into(), 0.0));
+        let mut draw = HudDrawList::new(size);
+        split_hud.view(&mut draw, &w, 0, [0.0, 0.0, 800.0, 450.0], 0, 0.0, false);
+        split_hud.global(&mut draw, &w, None);
+        let notice = draw.text.iter().find(|r| r.text == "P2 killed P1").unwrap();
+        let title = draw.text.iter().find(|r| r.text == "PICK A CARD").unwrap();
+        assert!(notice.position[1] + notice.font_size * 1.2 < title.position[1]);
         w.players[0].offer.as_mut().unwrap()[1] = cards[0];
         assert_eq!(h.card_hit(&w, 0, size, pos), None);
         w.players[0].offer = None;

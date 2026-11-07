@@ -14,7 +14,7 @@ use crate::session::Session;
 use crate::{hud, view, Args};
 use app::{Buttons, Controls, Device, Draw, Frame};
 use glam::Vec3;
-use growing_guns::{Event, Input, World, DT, TICK_HZ};
+use growing_guns::{Event, Input, Phase, World, DT, TICK_HZ};
 use render::hud::HudDrawList;
 use render::Lighting;
 
@@ -1260,7 +1260,9 @@ impl app::Game for Gg {
             let error = self.session.error().or_else(|| self.ui.error.clone());
             self.hud.global(&mut list, &self.world, error.as_deref());
             // Splitscreen: the join prompt while seats are open, else the hint.
-            if self.can_join() && self.slots.len() < 4 { hud::menus::join_prompt(&mut list); } else if self.hint_visible() { hud::menus::splitscreen_hint(&mut list); }
+            if self.hud.feed.is_empty() && self.world.phase == Phase::Playing && !self.world.round_over() {
+                if self.can_join() && self.slots.len() < 4 { hud::menus::join_prompt(&mut list); } else if self.hint_visible() { hud::menus::splitscreen_hint(&mut list); }
+            }
             if let Some((k, m)) = &self.player_menu && let Some(&s) = self.slots.get(*k) { hud::menus::player_menu(&mut list, self.hud.name(s), m.focus); }
             self.slots.iter().map(|&s| self.vis.punched(&self.world, s, view::camera(&self.world, s, &self.prev, alpha))).collect()
         };

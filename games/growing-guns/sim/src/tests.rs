@@ -922,3 +922,25 @@ fn a_headset_players_view_and_gun_arrive_with_their_input() {
     assert_eq!(w.players[0].yaw, 1.0);
     assert_eq!(w.players[0].tracked, None);
 }
+
+#[test]
+fn final_group_elimination_opens_picks_without_a_station() {
+    let mut w = World::new_with(3, &[false, false, false], |w| w.modifier_chance = 0.0);
+    w.cards = Arc::new(cards::test_book());
+    w.release_cage();
+    w.queue_damage(2, 1000, Some(0));
+    w.step(&[]);
+    assert!(w.players[2].ghost && w.players[2].offer.is_some());
+    let last_pos = w.players[1].pos;
+    w.queue_damage(1, 1000, Some(0));
+    w.step(&[]);
+    assert_eq!(w.phase, Phase::Picking);
+    assert!(w.players[1].offer.is_some() && !w.players[1].ghost);
+    assert_eq!(w.players[1].pos, last_pos);
+    assert!(w.players.iter().all(|p| p.howitzer.is_none()));
+    assert_eq!((w.players[0].score, w.players[0].kills), (1, 2));
+    w.next_round();
+    assert_eq!(w.players[0].kills, 2);
+    w.restart_match();
+    assert_eq!(w.players[0].kills, 0);
+}

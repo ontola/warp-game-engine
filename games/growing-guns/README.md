@@ -39,7 +39,7 @@ missing.
 | Gun model | Close | Procedural stat-driven parts; `gun-review` captures upgrade combinations from three angles using gameplay geometry and materials. Full-size chamfered blocks close assembly gaps. Large drums have a smooth 48-sided silhouette and rounded rims. Fixed grip/trigger/magazine clearances survive upgrades; a shaped pistol grip with rubber inserts, a steel trigger and an angular guard replace the intersecting cylinder/ring layout. Slim base receiver/magazine, damage-gated rail and separate green poison/blue chilling reservoirs angled rearward along the receiver; low/minimum profiles use simpler opaque gun assemblies with fewer parts/triangles and half the reserved instances; broader finish/detail refinements remain open |
 | Cards | Done | All 49 cards in `mods/base/cards.luau`; Ninja, Dodge and Backblast removed along with dash. Damage, Big Mag and Rapid Fire have 3x common draw weight; rarity, firepower pity slot and trailing-player factor remain |
 | Specials (RMB) | Done | Grenade, cluster, teleport, zoom, sword with backstabs, air strike, ion cannon; echo, tactical reload, refresh |
-| Rounds and match | Done | Spawn cage, kill order, card picks (the dead pick mid-round with 3+ players), first to ten wins, rematch, extend |
+| Rounds and match | Done | Spawn cage, kill order, card picks (the dead pick mid-round with 3+ players), the final group elimination opens card picks immediately, named kill notices and match kill totals on Tab, first to ten wins, rematch, extend |
 | Round modifiers | Close | All twelve play; see the table below |
 | Arenas | Done | Walled, hole, open and lava island (18 %), mirrored layouts; destructible stone chunks with wear, bullet dents and debris; stadium footings extend into lava, with cached orange lava illumination |
 | Stadium | Done | Colosseum masonry, 8,363 animated spectators, crowd sound, four live TV screens |
@@ -59,7 +59,7 @@ missing.
 | Gamepad Party | Done | Party settings, the next round's modifier, live knobs, each player's own stick sensitivity, the session assistant (MCP), loading and pause |
 | Debug card editing | Done | F10: LMB adds; RMB removes one owned copy and updates stats. Start/pause menus include RESTART MATCH. |
 | Menu backdrop | Not yet | Godot's cinematic lava fort behind the start menu |
-| After elimination | Done | After the card pick, humans receive a random howitzer or giant crossbow at a seeded audience seat; ballistic shells (4.5 s reload, 10 m blast) or fast lethal bolts (3 s reload, no blast). Replaces roaming ghosts/mines. |
+| After elimination | Done | With two or more opponents still alive after elimination, humans pick a card, then receive a random howitzer or giant crossbow at a seeded audience seat; ballistic shells (4.5 s reload, 10 m blast) or fast lethal bolts (3 s reload, no blast). Replaces roaming ghosts/mines. |
 
 ### Round modifiers
 
@@ -254,7 +254,7 @@ on a CPU rasteriser. Results and their scope: [docs/measurements.md](docs/measur
 - `docs/`: [UI parity](docs/ui-parity.md), [lava parity](docs/lava-parity.md),
   [measurements](docs/measurements.md), playtest notes.
 
-Online peers must run the same protocol version (`warp/growing-guns/4`);
+Online peers must run the same protocol version (`warp/growing-guns/5`);
 snapshots are positional postcard, so older builds cannot join.
 
 ## Keeping this README current
@@ -486,7 +486,7 @@ Shells fly at 42 m/s with 14.7 m/s^2 gravity, explode on terrain contact (120 ba
 damage, 10 m radius), and expire after 15 s. No homing or trajectory assistance.
 Card weapons remain intact for the next round; parked co-op bots never get guns.
 
-Audience artillery update: after the card pick, each eliminated human receives a fixed random 50/50 howitzer or giant crossbow for that life (no weapon switching). Howitzer barrel offset is now 0.55 rad above the camera instead of 0.9; it can aim slightly downward. Crossbow offset is 0.18 rad, bolt speed 150 m/s, gravity 14.7 m/s^2, reload 3 seconds, swept hit radius 0.22 m, lifetime 8 seconds. Bolts stop at stone and deal the victim's remaining health on contact without any blast or terrain carve. Existing team protection, spawn invulnerability and Phoenix/revive rules still apply. Both weapons return to the normal loadout next round.
+While at least two opponents are still alive, each eliminated human finishes their card pick and receives a fixed random 50/50 howitzer or giant crossbow for that life (no weapon switching). Howitzer barrel offset is now 0.55 rad above the camera instead of 0.9; it can aim slightly downward. Crossbow offset is 0.18 rad, bolt speed 150 m/s, gravity 14.7 m/s^2, reload 3 seconds, swept hit radius 0.22 m, lifetime 8 seconds. Bolts stop at stone and deal the victim's remaining health on contact without any blast or terrain carve. Existing team protection, spawn invulnerability and Phoenix/revive rules still apply. Both weapons return to the normal loadout next round.
 
 Crossbow aiming: hold RMB/LT for 30-degree zoom with reduced look sensitivity. A yellow crosshair shows the launch direction (unzoomed sight reference at 100m; not a predicted impact marker). Scoped camera sits on the bolt axis in front of the weapon. Bolts travel at 150m/s; gravity still produces a small drop.
 
@@ -505,6 +505,6 @@ Ground blast dust: small lit smoke billows sweep outward along nearby solid grou
 ### Live explosion editing
 
 F12 opens Explosions. F10 opens Match tools (also Back + Start on a controller). F11 opens Replay. F3 opens Warp's profiler.
-With `play --live`, the live `command` tool accepts `fx` to read the sliders and `fx fireball_size 1.5` to change the next conventional blast during the match.
+The explosion controls include fireball size, dust reach, fragment impulse, flash green and flash blue. With `play --live`, the live `command` tool accepts `fx` to read the sliders and `fx fireball_size 1.5` to change the next conventional blast during the match.
 Slider and command edits are session-local. **Save changes for LLM** exports the diff. Edit
 `mods/base/explosion_editor.luau` to persist defaults or expose new sliders and map them to the effect. The running game reloads the file.
