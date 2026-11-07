@@ -183,11 +183,6 @@ impl GrassRenderer {
             has_dynamic_offset: false,
             min_binding_size: None,
         };
-        let storage = wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        };
         let tex = |sample_type, view_dimension| wgpu::BindingType::Texture {
             sample_type,
             view_dimension,
@@ -207,7 +202,6 @@ impl GrassRenderer {
             (7, unfiltered),
             (10, unfiltered),
             (11, uniform),
-            (12, storage),
             (
                 13,
                 tex(
