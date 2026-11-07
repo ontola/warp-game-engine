@@ -142,7 +142,7 @@ remain independent of that SDK. With the documented environment configured:
     cargo run --release -p cli --features render/dlss -- play --upscale dlss-quality --size 3840x2160
     ./tools/play-dev-windows.ps1 -Restart -Upscale dlss-quality
 
-`play`, `shot`, GPU jobs and GameNight accept `native` (default),
+`play`, `shot`, GPU jobs and Gamepad Party accept `native` (default),
 `dlss-quality`, `dlss-balanced`, and `dlss-performance`. Each view receives its
 own SDK-selected input size and temporal history. The output and HUD keep the
 requested resolution. Captures and GPU profiles report actual evaluated input
@@ -241,7 +241,7 @@ limitations are in [WINDOWS_VALIDATION.md](WINDOWS_VALIDATION.md).
 
 Only `play` opens a window. Headless commands never create one, and
 `play --smoke-render N` creates an invisible window for validation. In a
-managed GameNight session, even normal `play` stays hidden during preparation
+managed Gamepad Party session, even normal `play` stays hidden during preparation
 and becomes visible only after a valid host start/resume. Host pause hides the
 window, releases fullscreen and stops GPU rendering while input/lifecycle
 polling continues. The initial play
@@ -271,7 +271,7 @@ arrows, Space handbrake, R recovery, C camera, Q/E gears, Escape pause, N next
 stage, M automatic/manual gearbox and F11 fullscreen. Back is left to the
 host. Loss of focus neutralizes standalone driving and pauses simulation.
 
-GameNight activation uses the existing SDK 6 environment variables
+Gamepad Party activation uses the existing SDK 6 environment variables
 (`GAMENIGHT`, `GAMENIGHT_ADDR`, `GAMENIGHT_GAME_ID`, `GAMENIGHT_TOKEN`). Managed
 input is routed by canonical seat/controller tokens, not native device order.
 Start/pause/resume/dispose follow host sessions; missing/stale input becomes
@@ -299,7 +299,7 @@ samples separately. GPU timings from frozen shots are not live-game frame rates.
 The HUD follows the Godot layout: stage time and driver name, gear/speed/revs,
 two pace notes, route progress, handbrake/recovery, countdown and stage results.
 Each player's output rectangle clips its HUD; the text-cache ID follows the
-car when GameNight couch order changes. One font system, glyph atlas and text
+car when Gamepad Party couch order changes. One font system, glyph atlas and text
 renderer serve all four views. Bundled Barlow Condensed SemiBold and ExtraBold
 Italic fonts retain their existing SIL OFL license. Latin accents need no system
 fonts; missing glyphs trigger a one-time system-font fallback lookup.

@@ -16,4 +16,4 @@ warp script . scripts/smoke.json --out /tmp/trails --bots 3
 ```
 
 Not ported yet: the party settings (speed and round pause are constants at
-the top of main.luau until Luau games can declare GameNight settings).
+the top of main.luau until Luau games can declare Gamepad Party settings).

@@ -14,7 +14,7 @@ reverse: a game supplies its simulation, assets, tuning and integration.
 | `body` | Bodies that move without hand animation: standard skeleton, motion-captured clips, gaits, rigs |
 | `assets` | glTF import with materials and textures; baked weighted characters |
 | `net` | Online play over iroh: typed host/client messages |
-| `gamenight` | Native GameNight client: party host, seats, wire contract |
+| `gamenight` | Native Gamepad Party client: party host, seats, wire contract |
 | `script` | Luau modules: sandbox, hot reload, deterministic step budget |
 | `live` | Live control of a running game over MCP |
 | `warp` | The `warp` executable for games made only of Luau, synth patches and assets |

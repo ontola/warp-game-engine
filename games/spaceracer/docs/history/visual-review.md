@@ -114,7 +114,7 @@ tick 750, one view, RTX 5070 Ti/Vulkan) measured shade 2.43 ms and blur 0.14 ms
 4K/4-player performance certification. Original 4K startup built the renderer in
 about 11 seconds; it is not a steady-state hitch measurement.
 
-# Native GameNight integration - 31 October 2026
+# Native Gamepad Party integration - 31 October 2026
 
 The installed Windows Preview daemon launched the portable native game through
 its real authenticated launch path on a private loopback port. The test owns its
@@ -133,11 +133,11 @@ host store and uses synthetic profiles; it does not touch the running party.
   profiles are in the hull shading, not separate floating meshes.
 - One atlas layer, uploaded only on profile changes. Paint changes update
   relevant hull/debris materials; mip sampling is bounded to prevent tile bleed.
-- GameNight keeps a fixed race roster: changing seats in the overlay prepares a
+- Gamepad Party keeps a fixed race roster: changing seats in the overlay prepares a
   fresh race on close. The first test incorrectly expected an immediate active
   seat swap; the corrected test verifies the actual host Prepare boundary.
 - Registration updates only the local SpaceRacer launch, backs up both JSON
-  files, and needs a GameNight restart to load. Public catalog artifacts remain
+  files, and needs a Gamepad Party restart to load. Public catalog artifacts remain
   the previously published build. No user-owned process was stopped.
 
 Physical pads, rumble, foreground/window transitions and sustained gameplay
@@ -314,7 +314,7 @@ Artifacts in `build/spaceracer-jets/`: `city.png`, `forest.png`, `four.png`,
 The moving sequence advances two 120 Hz ticks per frame. Pause effect buffers
 are identical in the unit check; complete pause screenshots differ by about
 0.47/255 mean RGB as temporal reconstruction settles, so pixel identity is not
-claimed. Hardware controllers and production GameNight were not tested.
+claimed. Hardware controllers and production Gamepad Party were not tested.
 
 Four-view city, seed 31, 750 warmup ticks, 1920x1080, 120 moving frames,
 RTX 5070 Ti / Vulkan / NVIDIA 617.14: **81.11 headless readback frames/s**.
@@ -450,7 +450,7 @@ load was not isolated. No original-engine performance comparison is claimed.
 
 20 focused simulation/native-app tests and the 1,207-tick controller/pause/EMP
 scenario pass. Five worlds and one/two/four-view captures were rendered.
-Real controllers and production GameNight were not re-tested in this visual pass.
+Real controllers and production Gamepad Party were not re-tested in this visual pass.
 
 Full scene reflections (including billboard/window images), city traffic,
 complete biome dressing, visor effects and damage/respawn presentation remain

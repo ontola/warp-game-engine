@@ -317,7 +317,7 @@ impl Host {
     }
 
     fn unavailable(&self, game: &Value) -> String {
-        if !self.connected && !self.demo { return "Waiting for GameNight".into(); }
+        if !self.connected && !self.demo { return "Waiting for Gamepad Party".into(); }
         self.shortfall(game)
     }
 

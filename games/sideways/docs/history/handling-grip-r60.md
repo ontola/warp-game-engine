@@ -31,7 +31,7 @@ This intentionally changes simulation trajectories; it is not an equality claim
 against old traces.
 
 The new fields require an executable containing this change. That executable
-loads the game's `data/cars.toml` at startup and GameNight `Prepare`, so later
+loads the game's `data/cars.toml` at startup and Gamepad Party `Prepare`, so later
 number changes need no compilation. A bundle uses its own data copy through
 the normal game-root locator. New Stage reuses the loaded specifications;
 editing the file does not change a running race or reload at stage transitions.
@@ -96,4 +96,4 @@ MV6's faster launch and the higher skidpad grip.
 These are flat-gravel, coasting comparisons. They do not establish subjective
 feel, powered-slide recovery, rough-road or wet-road behavior, or input/display
 latency. MV6's measured steer/recentre recovery time is unchanged. Real
-GameNight driving remains the acceptance step.
+Gamepad Party driving remains the acceptance step.

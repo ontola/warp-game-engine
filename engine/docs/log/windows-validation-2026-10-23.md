@@ -82,7 +82,7 @@ and exited naturally with code 0, with no forced cleanup
 canonical controller tokens, actual car movement, stale input, button edges,
 pause/resume including stopped GPU submissions, consecutive session prepares,
 roster/profile updates, settings, camera directions and disposal.
-The installed GameNight Preview daemon separately advertises protocol 1 / SDK 5;
+The installed Gamepad Party Preview daemon separately advertises protocol 1 / SDK 5;
 SDK 6-only actions and room logs are explicitly disabled for that host.
 
 Release r4 (`sideways-play-r4.exe`) SHA256:
@@ -113,7 +113,7 @@ The one-view capture `play-r4-native4k-one.png` completed 48 actual GPU frames
 at the same native output size (384 simulation ticks).
 
 The exact r4 executable is staged at `engine/build/sideways.exe`, with its hash
-verified after copying. The local Windows GameNight library now has the
+verified after copying. The local Windows Gamepad Party library now has the
 additional entry `sideways-kern`, titled "Sideways (Kern preview)". All nine
 previous entries were preserved, and the previous `local-games.json` was
 backed up before registration (`local-registration-r4.json`). Normal play
@@ -122,7 +122,7 @@ starts fullscreen at 4K output when explicitly selected by the user.
 Hidden GPU checks exercise the presentation shader against the real surface
 format but report zero presented frames. They do not prove visible swapchain
 presentation or a complete physical-controller driving session through the
-GameNight UI. Release r4 had no streamed grass, TAA, audio, full HUD,
+Gamepad Party UI. Release r4 had no streamed grass, TAA, audio, full HUD,
 particles or in-game settings menu. The HUD update below adds the instruments.
 
 ## Native-resolution HUD update
@@ -159,11 +159,11 @@ results screens, resize or first-time Unicode fallback. No total on/off ABBA
 claim is made. Hidden graphics wall time includes GPU synchronization.
 
 After the checks, the exact candidate was copied to `engine/build/sideways.exe`
-and its hash verified. The existing GameNight preview registration points to
+and its hash verified. The existing Gamepad Party preview registration points to
 this path. At the user's request, a visible one-player 4K fullscreen playtest
 was started; `hud-r1-live.log` confirms the first actual presented frame and
 the running window title showed live race speed/time. This visible session was
-standalone. Earlier real GameNight protocol checks remain release-r4 evidence;
+standalone. Earlier real Gamepad Party protocol checks remain release-r4 evidence;
 the full daemon suite was not rerun during the user's live playtest.
 
 ## Indirect visibility and shadow stability update
@@ -174,7 +174,7 @@ was built from the lighting update and copied unchanged to `engine/build/sideway
 All 42 workspace tests passed (`lighting-workspace-tests-r4.log`): shader
 validation, opaque proxy construction/pose invariance, absolute shadow-grid
 stability, split extent hysteresis, stone wall winding and terrain-edge normals
-are included. No driving forces, physics rate or GameNight protocol changed.
+are included. No driving forces, physics rate or Gamepad Party protocol changed.
 
 The production shader was exercised in a deterministic real-car fixture with
 identical car/camera poses, open ground versus an actual 18 m terrain ridge,
@@ -199,7 +199,7 @@ were 1916x1076. Captures `lighting-r3-one.png` and `lighting-r3-four.png` were
 visually inspected. Hidden graphics-wall medians were 15.89495 / 24.7234 ms
 (`lighting-r3-*-profile.json`), including GPU synchronization. They are not
 visible gameplay FPS or an ABBA comparison against the previous release.
-120 FPS is not established. No full GameNight lifecycle rerun was needed for
+120 FPS is not established. No full Gamepad Party lifecycle rerun was needed for
 these renderer-only changes; prior protocol evidence remains version-specific.
 
 The prior playtest exited through its normal window-close path. The new
@@ -247,7 +247,7 @@ All 28 render library tests passed, including composed transparency WGSL,
 blend metadata/order and the eight sparse voxel-baker tests
 (`forest-r5-render-tests.log`). Release compilation passed
 (`forest-r5-build.log`). The exact executable was copied to the registered
-GameNight preview path and launched in a visible one-player native 4K session.
+Gamepad Party preview path and launched in a visible one-player native 4K session.
 `forest-r5-live.log` records the connected XInput controller and first
 presented frame. No competing GPU benchmark ran during the user's playtest;
 this iteration makes no FPS, four-view cost or complete artifact-removal claim.
@@ -346,7 +346,7 @@ of a runtime Nanite-like voxel renderer. Coarse softness remains visible.
 passed 74 selected CPU tests (37 CLI, 35 render, 2 preview-example), release
 compilation and an actual visible native-4K startup with the controller.
 Evidence: `forest-grass-r8-cpu-tests.log`, `forest-grass-r8-build.log`, and
-`forest-grass-r8-live*.log/jsonl`. The registered GameNight executable path
+`forest-grass-r8-live*.log/jsonl`. The registered Gamepad Party executable path
 was updated to this exact binary. No competing GPU benchmark ran.
 
 Seed 1 now has 126,720 background trees instead of 10,000, using the same
@@ -492,7 +492,7 @@ the initial camera and is explicitly experimental.
 The visible remote-viewing demo uses `play --autoplay` with regular source
 trees. `sideways-voxel-r10-autoplay.exe` SHA256:
 `c836c45b1bf600dee6b5d0e3fd9ecb0075d85ad8a292b9896c7c7dc6edfd26a6`.
-This adds the existing race AI to standalone visible play; GameNight controls
+This adds the existing race AI to standalone visible play; Gamepad Party controls
 remain host-owned. It is not a new physics or driving-force implementation.
 
 ## Voxel traversal r2 and incremental grass residency (r11)

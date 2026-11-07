@@ -117,7 +117,7 @@ Owned by the foliage work; its working checklist is
   stable 120 ([native Quest](quest-native.md)).
 - **SpaceRacer:** playable native development port with Luau rules; visual
   and content parity in progress.
-- **Spellstorm** and GameNight's **Game Room** lobby: being ported.
+- **Spellstorm** and Gamepad Party's **Game Room** lobby: being ported.
 - Luau-only games (`hello-warp`, `neon-siege`, `neon-trails`) run with the
   [`warp` executable](warp-cli.md).
 

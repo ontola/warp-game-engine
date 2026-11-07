@@ -382,7 +382,7 @@ pub fn plaque(c: &mut Canvas, show: &Show) {
     let cy = qr[1] + side / 2.0;
     if show.qr.is_empty() {
         text(c, "Phone joining", [qr[0], cy - 6.0], 16.0, DIM, side, TextAlign::Center);
-        text(c, "starts with GameNight", [qr[0], cy + 18.0], 16.0, DIM, side, TextAlign::Center);
+        text(c, "starts with Gamepad Party", [qr[0], cy + 18.0], 16.0, DIM, side, TextAlign::Center);
     } else {
         // White modules on the dark plaque; the wall around is the quiet zone.
         for m in &show.qr { c.rect([qr[0] + m[0] * side, qr[1] + m[1] * side, m[2] * side, m[3] * side], Color::WHITE); }

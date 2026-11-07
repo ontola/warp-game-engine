@@ -22,7 +22,7 @@ One Rust workspace, with Cargo.toml and Cargo.lock at the repository root.
 | `engine/crates/body` | Bodies that move without hand animation: a standard skeleton, built-in motion-captured clips (CC0), `Gait` (what to blend from what a body does, pace from leg length), rigs of rigid pieces. |
 | `engine/crates/assets` | Asset import for scenes. |
 | `engine/crates/net` | Online play over iroh (QUIC). |
-| `engine/crates/gamenight` | Native GameNight client (party host, seats, wire contract). |
+| `engine/crates/gamenight` | Native Gamepad Party client (party host, seats, wire contract). |
 | `engine/crates/script` | Luau scripting host with hot reload. |
 | `engine/crates/live` | Live control of a running game over MCP. |
 | `engine/crates/warp` | The `warp` executable: runs games made only of Luau scripts, synth patches and assets. |
@@ -32,7 +32,7 @@ One Rust workspace, with Cargo.toml and Cargo.lock at the repository root.
 | `games/sideways/` | The rally game: `sim` (simulation), `app` (renderer integration, the `cli` package builds the `sideways` executable), `determinism` (`gdcompat`: deterministic math/RNG, not Godot), assets, scenarios, tools. |
 | `games/growing-guns/`, `games/spellstorm/` | Rust games with `sim` and `app` crates. Growing Guns is a port of the Godot game (github.com/ontola/growing-guns); its README's status tables say how far the port is: update them in the same commit as any change a player would notice (a test checks modifiers, settings, knobs and the card count). |
 | `games/hello-warp/`, `neon-siege/`, `neon-trails/` | Luau games run by `warp run games/NAME` (no Rust). |
-| `lobbies/game-room/` | GameNight's lobby game. |
+| `lobbies/game-room/` | Gamepad Party's lobby game. |
 | `website/` | Static site generator for the engine's site. |
 | `build/` | Ignored output: screenshots (`build/screenshots`), captures, caches. |
 

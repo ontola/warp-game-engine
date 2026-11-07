@@ -9,12 +9,12 @@ changed over MCP.
 Games on it:
 
 - [Sideways](games/sideways/README.md): a gravel rally game for
-  [GameNight](https://gamenight.ontola.io), with up to four local players.
+  [Gamepad Party](https://gamenight.ontola.io), with up to four local players.
 - [Growing Guns](games/growing-guns/README.md): an arena shooter, ported from
   the Godot original, with a native Quest build.
 - [SpaceRacer](games/spaceracer/README.md): a native development port with
   Luau rules.
-- Spellstorm and GameNight's Game Room lobby: being ported.
+- Spellstorm and Gamepad Party's Game Room lobby: being ported.
 - [Hello Warp](games/hello-warp/README.md), Neon Siege and Neon Trails: games
   made only of Luau scripts and sound patches, run by the
   [`warp` executable](engine/docs/warp-cli.md) without compiling anything.

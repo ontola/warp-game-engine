@@ -10,7 +10,7 @@ The input working copy was based on commit
 animation files. The exact input and output SHA-256 hashes are in
 `provenance.json`; those hashes identify the source bytes more precisely than
 the commit. The original project describes the characters as Mixamo-rigged.
-Its only general project license is MIT (GameNight contributors, 2026), and no
+Its only general project license is MIT (Gamepad Party contributors, 2026), and no
 separate model or texture license was found. That software license is **not**
 asserted here as a new license for these third-party models, textures, or clips.
 Existing upstream rights and any original asset terms remain in force. No
