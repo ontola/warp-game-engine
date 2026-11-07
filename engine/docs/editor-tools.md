@@ -3,7 +3,7 @@
 | Tool | Where to open it | What it edits or reports |
 | --- | --- | --- |
 | Pose viewport | Growing Guns `animation-preview`, or embed `app::editor::PoseViewport` in a Rust game | Pick bones on the model, translate and rotate them, orbit and pan the camera, edit game-supplied parameters, export local edits and model-space positions. |
-| Settings inspector | F10 in a game on the Warp shell | Render settings and pass timings. Games register nested menus and typed controls with `Game::debug` and receive changes in `debug_action`. Sideways uses these for vegetation, lighting and weather. |
+| Settings inspector | F10 in a game on the Warp shell | Render settings and game-supplied controls. Games register nested menus and typed controls with `Game::debug` and receive changes in `debug_action`. Sideways uses these for vegetation, lighting and weather. |
 | Frame profiler | F3 when the game leaves it available. Shift+F3 changes detail | CPU, GPU and memory measurements, including the game's own diagnostic rows. |
 | Feedback capture | F12 in a shell game | Image, camera and game-supplied JSON. Growing Guns adds gameplay replay and F9 review. Sideways has a capture inspector for identifying geometry under a pixel. |
 | Live development | Warp MCP, Luau hot reload, scripted runs and captures | Inspect or change a running game, replay a scenario and compare images or timings. These tools also work outside a graphical inspector. |
@@ -19,9 +19,9 @@ The shared viewport owns scaled logical hit regions, joint picking, drag control
 
 ## GUI conventions
 
-F1 closes all editor windows if any are visible and opens the available windows together from a clean screen. Each header shows the F1 shortcut. Debug text uses one viewport-relative size across panels. Game hosts expose their panels through `Game::editor_windows_open` and `Game::set_editor_windows_open`.
+F1 hides the visible editor windows. Press it again to restore that selection. Click an exposed part of a window to bring it forward. Each header shows the F1 shortcut. Debug text uses one viewport-relative size across panels. Game hosts expose their panels through `Game::editor_windows_open` and `Game::set_editor_windows_open`.
 
-Editor windows display their toggle key in the title bar. Drag the title to move, drag the bottom-right grip to resize, and click x to close. F2 opens the Pose editor with joint and pose controls, and F10 opens Warp editor, including every game-owned settings page. F3 opens the engine profiler or Growing Guns match tools, depending on the game. F9 opens the Growing Guns replay window. Pose windows keep their layout when toggled during a preview. The profiler releases the mouse and supports wheel scrolling.
+Editor windows display their toggle key in the title bar. Drag the title to move, drag the bottom-right grip to resize, and click x to close. F2 opens the Pose editor with joint and pose controls, and F10 opens Graphics settings, including every game-owned settings page. F3 opens the engine profiler or Growing Guns match tools, depending on the game. F9 opens the Growing Guns replay window. Pose windows keep their layout when toggled during a preview. The profiler releases the mouse and supports wheel scrolling.
 
 Use the existing F10 controls for settings, choices and commands. Use direct viewport interaction for spatial edits. In the pose viewport, left-drag moves a joint in the view plane, right-drag rotates a joint or orbits empty space, middle-drag pans and the wheel zooms. F2 toggles bones. Reserve F10–F12 for shell controls.
 

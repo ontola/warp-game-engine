@@ -103,6 +103,7 @@ struct Shell {
     failed: bool,
     /// The scene upload was announced (see [`Shell::frame`]).
     announced: bool,
+    hidden_editor: Option<bool>,
 }
 
 /// Run `game` in the page's canvas `#warp` (or a new one) until the page
@@ -111,7 +112,7 @@ pub fn run(cfg: crate::Config, game: Box<dyn Game>) {
     install_panic_hook();
     let mut devices = Devices::new(cfg.keyboard);
     devices.pointer_enabled = cfg.pointer;
-    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false };
+    let shell = Shell { cfg, game, devices, window: None, live: Rc::new(RefCell::new(None)), acc: 0.0, last: Instant::now(), frames: 0, started: Instant::now(), failed: false, announced: false, hidden_editor:None };
     match EventLoop::new() {
         Ok(events) => events.spawn_app(shell),
         Err(e) => log(&format!("event loop: {e}")),
@@ -276,14 +277,14 @@ impl ApplicationHandler for Shell {
                 use KeyCode::*;
                 if code == F1 {
                     if event.state == ElementState::Pressed && !event.repeat {
-                        let open = !self.game.editor_windows_open();
+                        let open = self.hidden_editor.take().unwrap_or_else(|| { self.hidden_editor=Some(self.game.editor_windows_open()); false });
                         self.game.set_editor_windows_open(open);
                         if open { self.capture_mouse(false); }
                     }
                     return;
                 }
                 if let Some(n) = [F1, F2, F3, F4, F5, F6, F7, F8, F9].iter().position(|&k| k == code) {
-                    if event.state == ElementState::Pressed && !event.repeat { self.game.function_key(n as u8 + 1); }
+                    if event.state == ElementState::Pressed && !event.repeat { self.hidden_editor=None; self.game.function_key(n as u8 + 1); }
                     return;
                 }
                 if code == Escape && event.state == ElementState::Pressed && !event.repeat {

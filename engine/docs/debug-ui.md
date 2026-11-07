@@ -93,33 +93,7 @@ Enabling a renderer feature does not create assets or buffers absent from the
 scene. Reset restores the debug overrides, including 100% grass distance and
 zero exposure offset, while retaining the chosen time of day and atmosphere.
 
-The timing values have different meanings:
-
-- **GPU measured intervals** is the union of measured pass intervals: overlap
-  counts once and unmeasured gaps do not count. It is not a hardware utilization
-  or active-cycle counter.
-- **GPU render interval** runs from the first measured GPU start to the last
-  measured end, including any intervening gaps. GPU HUD and presentation are
-  outside this renderer instrumentation.
-- **CPU main thread** is actual Windows user + kernel execution time consumed
-  by the game/window thread during the frame, measured with `GetThreadTimes`.
-  Sleeping, waiting and time when the scheduler runs another process are excluded.
-  Other worker threads are excluded too: this is not total process CPU usage or
-  a hardware-speed benchmark. Counter resolution is coarser than its 100 ns units;
-  the bounded average is more useful than one frame. Unsupported platforms/API
-  failures show unavailable, never a substitute wall-clock number.
-- **Frame wall** is elapsed time of the frame call, including waits. It can
-  follow GPU time when CPU submission waits for the GPU; that does not mean
-  the CPU spent that time executing. Adding CPU and GPU time is misleading.
-
-Largest-pass rows show independent pass durations, not additive percentages of
-a frame total. The panel uses a bounded 32-sample timing window and refreshes
-text at 4 Hz. GPU samples arrive asynchronously; their age, pending samples and
-drops are shown. Missing samples remain unavailable rather than becoming zero.
-Changing a control clears the prior timing window so it does not describe the
-old configuration. The timing area reserves a fixed number of rows even while
-samples are unavailable, so controls never move when a measurement resets.
-The panel does not infer FPS or certify the 8.33 ms target.
+The F10 Graphics settings window contains controls. For CPU and GPU timings, use the engine profiler where available, or a frame log.
 
 The reusable engine UI is `render::debug_ui`, using existing `HudDrawList` and
 `TextRun` objects. It consumes a caller-supplied model and emits typed actions;
@@ -127,12 +101,6 @@ it performs no GPU readback. `render::debug_settings` owns renderer gates and
 `render::debug_timing` owns interval accounting and `render::cpu_time` reads the
 calling thread's OS execution counters. Sideways maps platform input
 and controls in `games/sideways/app/src/engine_debug.rs`.
-
-The panel scales from 1280×720 to 4K and shows a bounded set of largest passes
-above scrollable controls. Its CPU tests cover scaled hit regions, input
-consumption, clamping, disabled controls and timing labels. Visual/runtime
-acceptance is separate from those tests; this document makes no measured
-performance claim.
 
 Validated 2026-10-25: 373 render and 151 game tests passed (one existing ignored
 test in each suite); launcher contract passed. A visible 256-frame native

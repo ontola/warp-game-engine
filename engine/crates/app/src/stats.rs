@@ -27,6 +27,7 @@ use std::collections::{HashMap, VecDeque};
 use web_time::Instant;
 
 /// HUD text ids from here up are this overlay's.
+pub const WINDOW_ID:u64=TEXT_ID+12_000;
 const TEXT_ID: u64 = u64::MAX - 20_000;
 /// Exponential smoothing per sample: about the last ten frames.
 const SMOOTH: f64 = 0.1;
@@ -161,6 +162,7 @@ impl Stats {
 
     /// F3: open or close. Closing forgets the measurements, so reopening
     /// never shows a stale frame.
+    pub fn set_visible(&mut self, open:bool) { self.open=open; self.window.cancel(); }
     pub fn toggle(&mut self) {
         self.window.cancel();
         let detail = self.detail.max(1);
@@ -334,7 +336,7 @@ impl Stats {
         let s=frame.scale;
         let (row,font)=(21.*s,16.*s);
         let first_text=hud.text.len();
-        frame.draw(hud,TEXT_ID+12_000,3,"Profiler");
+        frame.draw(hud,WINDOW_ID,3,"Profiler");
         let [x,top,width,height]=frame.body();
         let fits=((height/row).floor() as usize).saturating_sub(1);
         let shown=self.lines.len().min(fits);

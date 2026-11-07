@@ -43,6 +43,8 @@ impl WindowFrame {
         let r = self.rect;
         let s = self.scale;
         hud.begin_overlay();
+        let [w,h]=hud.size.map(|n|n.max(1) as f32);
+        hud.editor_windows.push(((hud.vertices.len(),hud.text.len()),id,[r[0]/w,r[1]/h,r[2]/w,r[3]/h]));
         editor_style::panel(hud, r, s, r);
         hud.rect(
             [r[0] + 3. * s, r[1], r[2] - 3. * s, 32. * s],
@@ -162,6 +164,32 @@ impl EditorWindow {
                 ]
             };
             self.relative = Some([r[0] / sw, r[1] / sh, r[2] / sw, r[3] / sh]);
+        }
+    }
+}
+
+/// Visible editor windows in painter order. Hit testing reads that same order.
+#[derive(Default)]
+pub struct WindowStack {
+    windows: Vec<(u64,[f32;4])>,
+}
+impl WindowStack {
+    pub fn sync(&mut self, hud: &mut HudDrawList) {
+        self.windows.retain(|(id,_)|hud.editor_windows.iter().any(|(_,drawn,_)|drawn==id));
+        for &(_,id,rect) in &hud.editor_windows {
+            if let Some((_,old))=self.windows.iter_mut().find(|(known,_)|*known==id) { *old=rect; }
+            else { self.windows.push((id,rect)); }
+        }
+        hud.window_order.extend(self.windows.iter().map(|(id,_)|id));
+    }
+    pub fn hit(&self, point: Option<[f32;2]>, size: [u32;2]) -> Option<u64> {
+        let [x,y]=point?;
+        let p=[x/size[0].max(1) as f32,y/size[1].max(1) as f32];
+        self.windows.iter().rev().find(|(_,rect)| EditorButton(*rect).contains(p)).map(|(id,_)|*id)
+    }
+    pub fn raise(&mut self,id:u64) {
+        if let Some(i)=self.windows.iter().position(|(known,_)|*known==id) {
+            self.windows[i..].rotate_left(1);
         }
     }
 }

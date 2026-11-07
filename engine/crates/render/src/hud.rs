@@ -128,6 +128,9 @@ pub struct HudDrawList {
     pub vertices: Vec<HudVertex>,
     pub text: Vec<TextRun>,
     overlay_boundaries: Vec<(usize, usize)>,
+    // Layer origin, stable window ID, normalized rectangle in its drawing viewport.
+    pub(crate) editor_windows: Vec<((usize,usize), u64, [f32;4])>,
+    pub(crate) window_order: Vec<u64>,
     /// (first vertex, picture) where the bound picture changes; plain shapes use None.
     image_runs: Vec<(u32, Option<HudImage>)>,
     /// Pictures this list brings along ([`HudDrawList::provide_image`]):
@@ -141,7 +144,7 @@ pub struct HudDrawList {
 struct HudLayer { vertices: Range<u32>, text: Range<usize> }
 
 impl HudDrawList {
-    pub fn new(size: [u32; 2]) -> Self { Self { cached_text:false,size, optics: Vec::new(), vision_tints: Vec::new(), vision_background_tints:Vec::new(), vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new(), image_runs: Vec::new(), pictures: Vec::new(), outlines: HashMap::new() } }
+    pub fn new(size: [u32; 2]) -> Self { Self { cached_text:false,size, optics: Vec::new(), vision_tints: Vec::new(), vision_background_tints:Vec::new(), vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new(), editor_windows: Vec::new(), window_order: Vec::new(), image_runs: Vec::new(), pictures: Vec::new(), outlines: HashMap::new() } }
 
     /// Draw text run `id` with a real stroke of `width` pixels around its
     /// letters (under the fill), for text over busy scenes.
@@ -225,6 +228,14 @@ impl HudDrawList {
             start = end;
         }
         if result.len() > MAX_LAYERS { return Err("HUD draw list exceeds layer capacity".into()); }
+        if !self.window_order.is_empty() {
+            result.sort_by_key(|layer| {
+                let origin=(layer.vertices.start as usize,layer.text.start);
+                self.editor_windows.iter().rev().find(|(start,_,_)| *start <= origin)
+                    .and_then(|(_,id,_)| self.window_order.iter().position(|known| known==id))
+                    .map_or(0,|index|index+1)
+            });
+        }
         Ok(result)
     }
 
@@ -868,6 +879,28 @@ mod tests {
             for text in &list.text[layer.text.clone()] {order.push(("text",text.id));}
         }
         assert_eq!(order,vec![("geometry",0),("text",1),("geometry",6),("text",2),("geometry",12),("text",3)]);
+    }
+
+    #[test]
+    fn clicking_exposed_window_changes_painter_and_hit_order_together() {
+        use crate::editor_window::{WindowFrame, WindowStack};
+        let size=[600,400];
+        let mut stack=WindowStack::default();
+        let draw=|stack:&mut WindowStack| {
+            let mut hud=HudDrawList::new(size);
+            for (id,x) in [(21,20.),(42,160.)] {
+                WindowFrame{rect:[x,20.,230.,180.],scale:1.}.draw(&mut hud,id,2,"Test");
+            }
+            stack.sync(&mut hud);
+            let layers=hud.layer_ranges().unwrap();
+            layers.iter().map(|layer|hud.text[layer.text.start].id).collect::<Vec<_>>()
+        };
+        assert_eq!(draw(&mut stack),[21,42]);
+        let overlap=Some([190.,40.]);
+        assert_eq!(stack.hit(overlap,size),Some(42));
+        stack.raise(stack.hit(Some([90.,40.]),size).unwrap());
+        assert_eq!(draw(&mut stack),[42,21]);
+        assert_eq!(stack.hit(overlap,size),Some(21));
     }
 
     #[test]
