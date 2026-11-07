@@ -39,6 +39,12 @@ impl SkeletonOverlay {
     }
 
     pub fn pointer(&mut self, p: crate::Pointer) -> bool {
+        let panel = p
+            .position
+            .is_some_and(|xy| style::EditorButton([8., 40., 242., 156.]).contains(xy));
+        self.pointer_at(p, panel)
+    }
+    pub(super) fn pointer_at(&mut self, p: crate::Pointer, panel: bool) -> bool {
         self.cursor = p.position;
         if !p.held && !p.pressed {
             self.drag = None;
@@ -51,7 +57,7 @@ impl SkeletonOverlay {
         let Some([x, y]) = p.position else {
             return false;
         };
-        let panel = (8.0..250.0).contains(&x) && (40.0..196.0).contains(&y);
+
         let cursor = Vec2::new(x, y);
         if let Some((rotate, last)) = self.direct {
             if if rotate { p.right_held } else { p.held } {
@@ -128,10 +134,19 @@ impl SkeletonOverlay {
         panel && (p.held || p.pressed)
     }
 
+    pub(super) fn slider_held(&self) -> bool {
+        self.drag.is_some()
+    }
     pub fn manipulating(&self) -> bool {
         self.direct.is_some()
     }
     pub fn draw(&mut self, hud: &mut HudDrawList, cam: &Camera, model: Mat4) {
+        self.draw_rig(hud, cam, model);
+        if self.shown {
+            self.panel(hud);
+        }
+    }
+    pub(super) fn draw_rig(&mut self, hud: &mut HudDrawList, cam: &Camera, model: Mat4) {
         if !self.shown {
             return;
         }
@@ -162,7 +177,10 @@ impl SkeletonOverlay {
             }
             hud.rect([pos.x - 4., pos.y - 4., 8., 8.], c, clip);
         }
-        style::panel(hud, [8., 40., 242., 156.], 1., clip);
+    }
+
+    pub(super) fn panel(&self, hud: &mut HudDrawList) {
+        let clip = [8., 40., 242., 156.];
         let j = &self.editor.joints[self.selected];
         for (id, button, text) in [
             (47, Self::PREV, "<"),

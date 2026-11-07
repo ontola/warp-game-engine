@@ -66,6 +66,7 @@ struct Hit { rect: [f32; 4], row: usize, entry: usize }
 
 #[derive(Clone, Debug)]
 pub struct DebugMenu {
+    window: render::editor_window::EditorWindow,
     pub open: bool,
     pub tab: usize,
     /// The player the cards, specials and pickups go to.
@@ -89,7 +90,7 @@ pub struct DebugMenu {
 
 impl Default for DebugMenu {
     fn default() -> Self {
-        DebugMenu { open: false, tab: 0, player: 0, search: TextField::new(32), picker: None, menu: Default::default(), col: 0, held_x: 0, repeat: 0.0,
+        DebugMenu { window:Default::default(),open: false, tab: 0, player: 0, search: TextField::new(32), picker: None, menu: Default::default(), col: 0, held_x: 0, repeat: 0.0,
             scroll: Cell::new(0.0), follow: Cell::new(false), hits: Default::default(), hit_size: Cell::new([0; 2]), notice: None, notice_age: 0.0 }
     }
 }
@@ -107,6 +108,7 @@ fn chunked(entries: Vec<Entry>, n: usize) -> Vec<Row> {
 impl DebugMenu {
     pub fn set_open(&mut self, on: bool) {
         self.open = on;
+        self.window.cancel();
         self.picker = None;
         self.follow.set(true);
     }
@@ -322,9 +324,23 @@ impl DebugMenu {
         }
     }
 
+    fn layout(&self,size:[u32;2])->render::editor_window::WindowFrame {
+        let [w,h]=size.map(|n|n as f32);
+        let u=(h/DESIGN_H).min(w/410.).max(0.01);
+        self.window.frame(size,[w-478.*u,8.*u,470.*u,h-16.*u],[390.*u,240.*u],u)
+    }
     /// Mouse: hover focuses, a click takes, the wheel scrolls. Targets are
     /// the last drawn frame's.
     pub fn pointer(&mut self, p: app::Pointer, size: [u32; 2], ctx: &Ctx) -> Vec<String> {
+        let frame=self.layout(size);
+        if self.picker.is_none() {
+            match self.window.pointer(size,frame,[390.*frame.scale,240.*frame.scale],p.position,p.pressed,p.held) {
+                render::editor_window::WindowEvent::Close=>{self.set_open(false);return Vec::new();},
+                render::editor_window::WindowEvent::Handled=>return Vec::new(),
+                _=>{}
+            }
+            if !p.position.is_some_and(|xy|app::ui::contains(frame.body(),xy)) {return Vec::new();}
+        }
         if self.hit_size.get() != size { return Vec::new(); }
         if p.wheel != 0.0 { self.scroll.set((self.scroll.get() - p.wheel * 60.0).max(0.0)); }
         if !p.moved && !p.pressed && !p.right_pressed { return Vec::new(); }
@@ -358,15 +374,14 @@ impl DebugMenu {
         if !self.open { return; }
         d.begin_overlay();
         let [w, h] = d.size.map(|v| v as f32);
-        let u = h / DESIGN_H;
-        let clip = [0.0, 0.0, w, h];
-        let pw = (470.0 * u).min(w - 16.0 * u);
-        let panel = [w - pw - 8.0 * u, 8.0 * u, pw, h - 16.0 * u];
-        menu_panel(d, panel, u, clip);
-        frame_rect(d, panel, u.max(1.0), with_alpha(RED, 0.6), clip);
+        let frame=self.layout(d.size);
+        frame.draw(d,0x6767_5220,3,"Match tools");
+        let u=frame.scale;
+        let panel=frame.body();
+        let clip=panel;
         let x0 = panel[0] + 18.0 * u;
         let iw = panel[2] - 30.0 * u;
-        Label::poster(26.0 * u).draw(d, "DEBUG", x0, panel[1] + 24.0 * u, clip);
+
         Label::new(BODY, 11.0 * u, BONE_DIM).right().draw(d, "F3 / ESC close  ·  Q E tabs  ·  type to search", panel[0] + panel[2] - 12.0 * u, panel[1] + 26.0 * u, clip);
         let rows = self.rows(ctx);
         let focus = self.focused(&rows);
