@@ -93,7 +93,7 @@ fn tools() -> Vec<ToolSpec> {
         ToolSpec::new("restart_match", "Start the match over: scores and cards cleared.", obj(json!({}), &[])),
         ToolSpec::new("load_mod", "Add or replace a Luau module in mods/ (cards and rule hooks, see mods/API.md) and load it now; returns its status or load error. A load error keeps the previous version.",
             obj(json!({ "name": { "type": "string", "description": "module path without .luau, e.g. live/low_gravity" }, "source": { "type": "string" } }), &["name", "source"])),
-        ToolSpec::new("command", "A debug console line (`help` lists them): teleport P X Y Z, health P N, ammo P N, special P NAME, modifier ID, bots pause|resume, boom X Y Z R, arena SEED, cage, extend...",
+        ToolSpec::new("command", "A debug console line (`help` lists them): fx [knob value] reads or edits the live F12 explosion sliders; teleport P X Y Z, health P N, ammo P N, special P NAME, modifier ID, bots pause|resume, boom X Y Z R, arena SEED, cage, extend...",
             obj(json!({ "line": { "type": "string" } }), &["line"])),
     ]
 }

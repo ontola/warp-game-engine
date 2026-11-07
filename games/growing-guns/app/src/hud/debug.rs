@@ -1,4 +1,4 @@
-//! The F12 debug overlay: a panel down the right over the running match
+//! The F10 debug overlay: a panel down the right over the running match
 //! (it is no pause) with four tabs. CARDS gives any card to the target
 //! player (type to filter), ITEMS sets the special, drops pickups and refills
 //! health and ammo, SKY picks the time of day and weather, MODES forces a
@@ -7,7 +7,7 @@
 //! Every entry runs the game's own debug commands (`play.rs`, `help`), so the
 //! overlay adds no game logic of its own.
 //!
-//! Keys: F12 (or Back + Start on a pad) opens and closes it, Esc or B closes
+//! Keys: F10 (or Back + Start on a pad) opens and closes it, Esc or B closes
 //! it. Up and down move, left and right move within a row and pick the
 //! target player on the TARGET row, Q/E or LB/RB change the tab, Space,
 //! Enter or A take. On the CARDS search field the keyboard types (Enter gives
@@ -72,6 +72,7 @@ pub struct DebugMenu {
     /// The player the cards, specials and pickups go to.
     pub player: usize,
     pub search: TextField,
+    selecting_search: bool,
     /// A pad typing into the search field.
     pub picker: Option<app::ui::CharPicker>,
     menu: app::ui::Menu,
@@ -90,7 +91,7 @@ pub struct DebugMenu {
 
 impl Default for DebugMenu {
     fn default() -> Self {
-        DebugMenu { window:Default::default(),open: false, tab: 0, player: 0, search: TextField::new(32), picker: None, menu: Default::default(), col: 0, held_x: 0, repeat: 0.0,
+        DebugMenu { window:Default::default(),open: false, tab: 0, player: 0, search: TextField::new(32), selecting_search:false, picker: None, menu: Default::default(), col: 0, held_x: 0, repeat: 0.0,
             scroll: Cell::new(0.0), follow: Cell::new(false), hits: Default::default(), hit_size: Cell::new([0; 2]), notice: None, notice_age: 0.0 }
     }
 }
@@ -306,7 +307,7 @@ impl DebugMenu {
             match self.menu.focus { 0 => self.set_tab(self.col), 1 => self.player = self.col, _ => {} }
             return Vec::new();
         }
-        // Only B (and Esc, F12) closes: Back is half of the pad's open chord.
+        // Only B (and Esc, F10) closes: Back is half of the pad's open chord.
         let strip = Buttons::LEFT | Buttons::RIGHT | Buttons::SELECT;
         let before = self.menu.focus;
         let ev = self.menu.update(&Controls { mv: [0.0, c.mv[1]], held: Buttons(c.held.0 & !strip), pressed: Buttons(c.pressed.0 & !strip), ..*c }, foci.len(), 1, dt);
@@ -332,6 +333,11 @@ impl DebugMenu {
     /// Mouse: hover focuses, a click takes, the wheel scrolls. Targets are
     /// the last drawn frame's.
     pub fn pointer(&mut self, p: app::Pointer, size: [u32; 2], ctx: &Ctx) -> Vec<String> {
+        if !p.held {self.selecting_search=false;}
+        if self.selecting_search && p.held && !p.pressed {
+            if p.moved && let Some(pos)=p.position {self.search.pointer_select(pos,false);}
+            return Vec::new();
+        }
         let frame=self.layout(size);
         if self.picker.is_none() {
             match self.window.pointer(size,frame,[390.*frame.scale,240.*frame.scale],p.position,p.pressed,p.held) {
@@ -363,7 +369,7 @@ impl DebugMenu {
         if !p.pressed { return Vec::new(); }
         match &rows[hit.row] {
             Row::Line(_, e) => e.get(hit.entry).map_or(Vec::new(), |e| { let a = e.act.clone(); self.activate(a, ctx) }),
-            // A click on the field: the keyboard types (the focus is enough).
+            Row::Search => { self.search.pointer_select(pos,true);self.selecting_search=p.held;Vec::new() }
             _ => Vec::new(),
         }
     }
@@ -376,14 +382,14 @@ impl DebugMenu {
         let [w, h] = d.size.map(|v| v as f32);
         let frame=self.layout(d.size);
         let first_text=d.text.len();
-        frame.draw(d,0x6767_5220,12,"Match tools");
+        frame.draw(d,0x6767_5220,10,"Match tools");
         let u=frame.scale;
         let panel=frame.body();
         let clip=panel;
         let x0 = panel[0] + 18.0 * u;
         let iw = panel[2] - 30.0 * u;
 
-        Label::new(BODY, render::editor_style::font_size(d.size), BONE_DIM).right().draw(d, "F12 / ESC close  ·  Q E tabs  ·  type to search", panel[0] + panel[2] - 12.0 * u, panel[1] + 26.0 * u, clip);
+        Label::new(BODY, render::editor_style::font_size(d.size), BONE_DIM).right().draw(d, "F10 / ESC close  ·  Q E tabs  ·  type to search", panel[0] + panel[2] - 12.0 * u, panel[1] + 26.0 * u, clip);
         let rows = self.rows(ctx);
         let focus = self.focused(&rows);
         let rh = 30.0 * u;

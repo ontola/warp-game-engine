@@ -30,6 +30,7 @@ mod hand_animation;
 mod foregrip_pose;
 mod animation_window;
 mod knobs;
+mod explosion_editor;
 mod scripts;
 mod sky;
 mod stadium;

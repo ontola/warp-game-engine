@@ -349,6 +349,14 @@ impl Menus {
         self.menu.focus = focus;
         self.col = entries.iter().position(|&j| j == hit.entry).unwrap_or(0);
         let item = list[hit.item];
+        if matches!(item,Item::Field(Field::Join | Field::Name)) && hit.entry==0 {
+            if p.pressed {self.drag=p.held.then_some(hit);}
+            if p.pressed || p.held && self.drag.is_some() {
+                let field=if matches!(item,Item::Field(Field::Join)) { &mut self.join } else { &mut self.name };
+                field.pointer_select(pos,p.pressed);
+            }
+            return Action::None;
+        }
         let sliding = matches!(item, Item::Slider(_) | Item::Party(_));
         if p.pressed && sliding { self.drag = p.held.then_some(hit); }
         if !(p.pressed || sliding && p.held && self.drag.is_some()) { return Action::None; }
