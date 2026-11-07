@@ -4,12 +4,26 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from PIL import Image
 
 spec = importlib.util.spec_from_file_location("drive_capture", Path(__file__).with_name("drive-capture.py"))
 capture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(capture)
+
+
+class RunnerIsolation(unittest.TestCase):
+    def test_baseline_and_candidate_have_separate_cargo_outputs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "drive.json").write_text("{}")
+            with patch.dict(capture.os.environ, {"CARGO_TARGET_DIR": "target"}), patch.object(capture.subprocess, "run") as run:
+                capture.replay(root, None, root/"capture", root, True)
+                baseline = Path(run.call_args.kwargs["env"]["CARGO_TARGET_DIR"])
+                capture.replay(capture.ROOT, None, root/"capture", root, True)
+                candidate = Path(run.call_args.kwargs["env"]["CARGO_TARGET_DIR"])
+                self.assertEqual(baseline, candidate / "warp-compare-baseline")
 
 
 class PixelInspection(unittest.TestCase):
