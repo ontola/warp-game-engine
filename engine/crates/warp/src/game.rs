@@ -631,7 +631,10 @@ impl LuaGame {
             c.plants.poll();
             lines.append(&mut c.plants.log);
             let has_plants = !c.plants.plants.is_empty();
-            if c.plants.dirty || (c.world.rebuild && has_plants && c.world.scene.gpu_forest.is_some()) {
+            // Keep showing the old plants until every new one has cooked, so
+            // a regrown row swaps at once instead of blinking out.
+            let cooking = c.plants.status().2 > 0;
+            if (c.plants.dirty && !cooking) || (c.world.rebuild && has_plants && c.world.scene.gpu_forest.is_some()) {
                 c.plants.dirty = false;
                 let c = &mut *c;
                 let started = std::time::Instant::now();
