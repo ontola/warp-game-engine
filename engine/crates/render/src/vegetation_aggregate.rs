@@ -293,7 +293,13 @@ fn triangle(cells: &mut Cells, vertices: [Vertex; 3], material: &Material, origi
     let n = (edge / f64::from(c.reference_cell_size) * f64::from(c.samples_per_cell)).ceil().max(1.0);
     if n > 65_536.0 { return Err("aggregate triangle quadrature dimension exceeded".into()); }
     let n = n as u32;
-    let count = u64::from(n) * u64::from(n);
+    // A sliver (a needle face) narrower than half a cell needs samples only
+    // along its length: 2n strata of equal area from its apex, instead of an
+    // n x n grid across a width that never leaves one cell.
+    let sides = [p[1].distance(p[2]), p[2].distance(p[0]), p[0].distance(p[1])];
+    let apex = (0..3).min_by(|&a, &b| sides[a].total_cmp(&sides[b])).unwrap_or(0);
+    let sliver = n > 1 && 2.0 * area / edge < 0.5 * f64::from(c.reference_cell_size) / f64::from(c.samples_per_cell);
+    let count = if sliver { 2 * u64::from(n) } else { u64::from(n) * u64::from(n) };
     if count > c.max_samples.saturating_sub(stats.quadrature_samples) {
         return Err("aggregate source/candidate quadrature budget exceeded".into());
     }
@@ -327,6 +333,15 @@ fn triangle(cells: &mut Cells, vertices: [Vertex; 3], material: &Material, origi
         Ok(())
     };
     let nf = f64::from(n);
+    if sliver {
+        for i in 0..2 * n {
+            let t = ((f64::from(i) + 0.5) / (2.0 * nf)).sqrt();
+            let mut weight = [t * 0.5; 3]; weight[apex] = 1.0 - t;
+            sample(weight[1], weight[2], cells, stats)?;
+        }
+        if let Some(done) = run.take() { add_run(cells, finish(done), c, stats)?; }
+        return Ok(());
+    }
     for row in 0..n { for column in 0..n-row {
         sample((f64::from(row)+1.0/3.0)/nf, (f64::from(column)+1.0/3.0)/nf, cells, stats)?;
         if row+column+1<n { sample((f64::from(row)+2.0/3.0)/nf,
