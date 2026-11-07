@@ -2109,12 +2109,14 @@ fn bark_surface(p: vec3<f32>, n: vec3<f32>, plate: f32) -> Bark {
     // Reddish-brown to orange plates, some lobes weathered grey-pink, pale
     // peeling rims; furrows of black and orange-brown fibres.
     // Mostly weathered grey-mauve, with salmon where outer flakes have shed.
-    let fresh = smoothstep(0.5, 0.7, bark_noise(q * vec3<f32>(2.4, 1.5, 2.4) + vec3<f32>(3.0, 1.0, 7.0)));
-    let cinnamon = mix(vec3<f32>(0.30, 0.13, 0.07), vec3<f32>(0.42, 0.21, 0.13), h.y);
-    var plates = mix(vec3<f32>(0.30, 0.25, 0.25), cinnamon, fresh) * (0.85 + 0.3 * bark_noise(q * 4.0));
-    plates = mix(plates, vec3<f32>(0.52, 0.44, 0.40), h.w * 0.7);
+    // Darker and even: plates vary a little per ridge and with a few fresh
+    // cinnamon patches, so a trunk reads as one bark, not a patchwork.
+    let fresh = smoothstep(0.55, 0.75, bark_noise(q * vec3<f32>(2.4, 1.5, 2.4) + vec3<f32>(3.0, 1.0, 7.0))) * 0.6;
+    let cinnamon = mix(vec3<f32>(0.16, 0.07, 0.04), vec3<f32>(0.20, 0.09, 0.05), h.y);
+    var plates = mix(vec3<f32>(0.12, 0.085, 0.07), cinnamon, fresh) * (0.92 + 0.16 * bark_noise(q * 4.0));
+    plates = mix(plates, vec3<f32>(0.20, 0.16, 0.14), h.w * 0.5);
     let fibre = smoothstep(0.35, 0.8, bark_noise(q * vec3<f32>(14.0, 2.0, 14.0)));
-    let furrow = mix(vec3<f32>(0.02, 0.015, 0.012), vec3<f32>(0.22, 0.10, 0.04), fibre);
+    let furrow = mix(vec3<f32>(0.02, 0.015, 0.012), vec3<f32>(0.12, 0.06, 0.03), fibre);
     let albedo = mix(plates, furrow, smoothstep(0.2, 0.7, h.z));
     let normal = normalize(n - (t1 * d1 + t2 * d2) * 0.07);
     return Bark(albedo, normal, mix(0.86, 0.98, h.z), mix(1.0, 0.35, h.z));

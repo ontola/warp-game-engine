@@ -17,7 +17,7 @@ use std::f32::consts::TAU;
 #[derive(Clone, Debug)]
 pub struct Parts {
     /// Stems that narrow to 1.0, 0.94, 0.86 and 0.72 of their base radius,
-    /// eight-sided then sixteen-sided: a run picks the taper nearest its own,
+    /// six-sided then ten-sided: a run picks the taper nearest its own,
     /// so consecutive runs meet at nearly the same ring.
     pub stems: [PartGeometry; 8],
     /// A unit ball for joints and branch collars.
@@ -68,7 +68,7 @@ fn stem(id: u64, sides: u32, taper: f32) -> PartGeometry {
 
 /// A closed unit ball: knuckles where stem runs meet and, stretched, the\n/// collar where a branch leaves its parent.
 fn collar(id: u64) -> PartGeometry {
-    let (rings, sides) = (6u32, 12u32);
+    let (rings, sides) = (4u32, 8u32);
     let mut vertices = vec![Vertex { pos: [0.0, -1.0, 0.0], normal: [0.0, -1.0, 0.0], uv: [0.5, 0.0] }];
     for r in 1..rings {
         let a = r as f32 / rings as f32 * std::f32::consts::PI;
@@ -168,7 +168,7 @@ impl Parts {
         }
         let tuft_id = (h & !0xff) | (TUFT & 0xff);
         Self {
-            stems: std::array::from_fn(|k| stem(STEM + 1 + k as u64, if k < 4 { 8 } else { 16 }, TAPERS[k % 4])),
+            stems: std::array::from_fn(|k| stem(STEM + 1 + k as u64, if k < 4 { 6 } else { 10 }, TAPERS[k % 4])),
             collar: collar(STEM + 16),
             tufts: (0..3).map(|v| tuft(tuft_id + v, v, look)).collect(),
         }
@@ -215,7 +215,7 @@ impl Default for Look {
 
 impl Look {
     pub fn jeffrey_pine() -> Self {
-        Self { wood: [0.24, 0.12, 0.07], needles: [0.11, 0.21, 0.09], brush_needles: 50, needle_length: 0.22, brush_spread: 1.7, brush_reach: 0.2, needle_width: 0.0025, brush_round: 0.7 }
+        Self { wood: [0.11, 0.065, 0.045], needles: [0.11, 0.21, 0.09], brush_needles: 50, needle_length: 0.22, brush_spread: 1.7, brush_reach: 0.2, needle_width: 0.0025, brush_round: 0.7 }
     }
 }
 
@@ -335,10 +335,10 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     // parent. Twigs under 2.5 cm get none: their seams are too small to see,
     // and they are most of the stems.
     const JOINT_RADIUS: f32 = 0.025;
-    // Bark by stem size: plates about as wide as a quarter of the stem's
-    // radius up to 15 cm ridges on an old trunk, smooth young twigs
-    // (materials 0, 2, 3 and 4; 1 is the needles).
-    let wood = |radius: f32| if radius >= 0.25 { 0 } else if radius >= 0.08 { 2 } else if radius >= 0.02 { 3 } else { 4 };
+    // One bark for every stem from 3 cm up (bands where a trunk crossed a
+    // size class showed as seams), smooth young twigs below (materials 0 and
+    // 2; 1 is the needles).
+    let wood = |radius: f32| if radius >= 0.03 { 0 } else { 2 };
     let taper_of = |radius: f32, end: f32| {
         let wanted = (end / radius.max(1e-6)).clamp(0.6, 1.0);
         (0..4).min_by(|&a, &c| (TAPERS[a] - wanted).abs().total_cmp(&(TAPERS[c] - wanted).abs())).unwrap_or(0)
@@ -410,7 +410,8 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
         }
         on_branch[b as usize] += 1;
         // Kept tufts grow to cover for the ones the limits leave out.
-        let size = (0.75 + 0.45 * t.fullness) / kept.sqrt();
+        // Grow a little for the left-out ones, not into balls.
+        let size = (0.75 + 0.45 * t.fullness) * (1.0 / kept.sqrt()).min(1.15);
         let twist = Quat::from_axis_angle(Vec3::Y, unit(seed, i as u64, 10) * TAU);
         let world = Mat4::from_scale_rotation_translation(Vec3::splat(size), along(Vec3::ZERO, t.axis) * twist, t.at);
         let part = 9 + (unit(seed, i as u64, 11) * parts.tufts.len() as f32) as u32 % parts.tufts.len().max(1) as u32;
@@ -422,7 +423,7 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     // metres wide; the tint stays the plates' and furrows' mean, for voxels.
     // Twigs (plate 0) are plain smooth grey-brown wood.
     let bark = |plate: f32| Material {
-        tint: if plate > 0.0 { look.wood } else { [look.wood[0] * 0.85, look.wood[1] * 0.85, look.wood[2] * 0.9] },
+        tint: if plate > 0.0 { look.wood } else { [look.wood[0] * 1.1, look.wood[1] * 1.05, look.wood[2] * 1.05] },
         layer: if plate > 0.0 { crate::scene::BARK_LAYER } else { -1 },
         roughness: 0.96,
         flags: 0,
@@ -432,7 +433,7 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     let needles = Material { tint: look.needles, layer: -1, roughness: 0.8, flags: THIN_FOLIAGE | TWO_SIDED, scale: 1.0, metal: 0.0 };
     let geometry = parts.stems.iter().chain(std::iter::once(&parts.collar)).chain(&parts.tufts).cloned().collect();
     let parameters = Parameters { seed, archetype: Archetype::ConiferTwig, growth: 1.0, season: 0.5, density: placed.max(1) as u32 };
-    let assembly = Assembly::from_parts(parameters, geometry, branches, instances, vec![bark(0.15), needles, bark(0.06), bark(0.025), bark(0.0)], limits)?;
+    let assembly = Assembly::from_parts(parameters, geometry, branches, instances, vec![bark(0.10), needles, bark(0.0)], limits)?;
     Ok((assembly, counts))
 }
 
