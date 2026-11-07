@@ -15,7 +15,21 @@ const JUMP: &str = "pistol_jump";
 
 #[derive(Default)]
 struct Motion { idle: f32, run: f32, blend: f32, jump: Option<f32> }
-struct Actor { arms: Option<body::reach::TwoHandHold>, handle: ActorHandle, palette: Vec<Mat4>, run_palette: Vec<Mat4>, motion: Motion,
+struct KnightHold {
+    editor: body::pose_editor::PoseEditor,
+    authored: crate::foregrip_pose::ForegripPose,
+    mount: body::reach::JointMount,
+}
+impl KnightHold {
+    fn bind(model: &Character, reference: &[Mat4]) -> Result<Option<Self>, String> {
+        if model.name != "knight" { return Ok(None); }
+        let editor = body::pose_editor::PoseEditor::bind(model.joints(), crate::foregrip_pose::parent)?;
+        let authored = crate::foregrip_pose::ForegripPose::bind(model, &editor)?;
+        let (i, (_, bind)) = model.joints().enumerate().find(|(_, (n, _))| n.ends_with("RightHand")).ok_or("missing right hand")?;
+        Ok(Some(Self { editor, authored, mount: body::reach::JointMount::new(i, bind, reference) }))
+    }
+}
+struct Actor { knight: Option<KnightHold>, arms: Option<body::reach::TwoHandHold>, handle: ActorHandle, palette: Vec<Mat4>, run_palette: Vec<Mat4>, motion: Motion,
     corpse: Option<Corpse>, corpse_transform: Option<Affine3A>, velocity: Vec3 }
 
 /// A player's body turned to lava (Godot `_apply_lava_body`): the same
@@ -36,11 +50,48 @@ pub struct Characters {
     /// This frame's characters for the renderer.
     rigid_frame: Vec<render::scene::RigidActor>,
     lava: Vec<Option<LavaTwin>>,
-    pub hands: Vec<Option<Vec3>>,
+    pub hands: Vec<Option<Affine3A>>,
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn knight_extended_pose_reproduces_saved_arm_positions() {
+        use crate::gun::{Rig, Stats};
+        let model = Character::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters/knight.json")).unwrap();
+        let mut rig = Rig::default();
+        let mut world = growing_guns::World::new(3, &[false]);
+        let _scripts = crate::scripts::attach(&mut world).unwrap();
+        let id = world.cards.find("sniper").unwrap();
+        world.give(0, id);
+        rig.set(Stats::of(&world.players[0]));
+        let c = rig.contacts_at(1.0);
+        assert!((c.extension - 1.0).abs() < 1e-5);
+        let t = 2312.0 / 60.0;
+        let mut pose = model.sample(IDLE, t, true).unwrap();
+        let mut saved = KnightHold::bind(&model, &model.sample(IDLE, 0.0, true).unwrap()).unwrap().unwrap();
+        let arms = grip_arms(&model).unwrap();
+        let hand = model.sample_socket(IDLE, "RightHand", t, true).unwrap().w_axis.truncate();
+        let (support, roll) = crate::hand_animation::HandAnimation::load().unwrap().pose(c, t);
+        let aim = model_transform(Vec3::ZERO, 0.0).inverse().to_scale_rotation_translation().1;
+        let xf = saved.mount.place(&pose, aim, c.primary);
+        arms.apply(&mut pose, hand, hand + xf.transform_vector3(support - c.primary));
+        arms.orient_support(&mut pose, xf.to_scale_rotation_translation().1 * aim.inverse() * grip_rotation(0.0) * Quat::from_rotation_x(roll));
+        saved.authored.set_extension(&mut saved.editor, 1.0);
+        saved.editor.apply(&mut pose);
+        for (name, expected) in [
+            ("RightArm", [-0.28063533, 1.47436571, 0.06693695]),
+            ("RightForeArm", [-0.21969306, 1.44296432, 0.21131268]),
+            ("RightHand", [-0.12265244, 1.42794120, 0.39420366]),
+            ("LeftArm", [0.22642264, 1.42708194, 0.23549058]),
+            ("LeftForeArm", [0.08812520, 1.39920485, 0.53796691]),
+            ("LeftHand", [0.00424939, 1.40211701, 0.68414390])
+        ] {
+            let actual = model.joint_position(name, &pose).unwrap();
+            assert!(actual.distance(Vec3::from_array(expected)) < 0.001, "{name}: {actual:?} vs {expected:?}");
+        }
+    }
+
     #[test]
     fn support_wrist_reaches_magazine_and_sniper_contacts() {
         use crate::gun::{Rig, Stats};
@@ -174,7 +225,7 @@ impl Characters {
         let palette = model.sample(IDLE, 0.0, true)?;
         let mesh = handle.mesh;
         let run_palette = vec![Mat4::IDENTITY; palette.len()];
-        self.actors.push(Actor { arms: grip_arms(model), handle, palette, run_palette, motion: Motion::default(),
+        self.actors.push(Actor { knight: KnightHold::bind(model, &palette)?, arms: grip_arms(model), handle, palette, run_palette, motion: Motion::default(),
             corpse: None, corpse_transform: None, velocity: Vec3::ZERO });
         self.hands.push(None);
         Ok(mesh)
@@ -199,7 +250,7 @@ impl Characters {
         let palette = model.sample(IDLE, 0.0, true)?;
         let run_palette = vec![Mat4::IDENTITY; palette.len()];
         let handle = ActorHandle { actor: 0, instance: 0, mesh: 0 };
-        self.actors.push(Actor { arms: grip_arms(model), handle, palette, run_palette, motion: Motion::default(), corpse: None, corpse_transform: None, velocity: Vec3::ZERO });
+        self.actors.push(Actor { knight: KnightHold::bind(model, &palette)?, arms: grip_arms(model), handle, palette, run_palette, motion: Motion::default(), corpse: None, corpse_transform: None, velocity: Vec3::ZERO });
         self.pieces.push(self.rigid_meshes[k].unwrap());
         self.hands.push(None);
         Ok(())
@@ -324,11 +375,18 @@ impl Characters {
             let hand = body.transform_point3(socket.w_axis.truncate());
             self.hands[i] = Some(if let (Some(arms), Some(contacts)) = (&actor.arms, guns.and_then(|g| g.contacts(i, alpha))) {
                 let (support, roll) = self.animation.pose(contacts, (world.tick as f32 + alpha) * DT);
-                let target = super::guns::Guns::held_transform(hand, drawn.yaw, drawn.pitch, contacts.primary).transform_point3(support);
+                let base = super::guns::Guns::held_transform(hand, drawn.yaw, drawn.pitch, contacts.primary);
+                let aim = (body.inverse() * base).to_scale_rotation_translation().1;
+                let sampled = actor.knight.as_ref().map(|k| k.mount.place(&actor.palette, aim, contacts.primary));
+                let target = sampled.map_or(base.transform_point3(support), |xf| hand + body.transform_vector3(xf.transform_vector3(support - contacts.primary)));
                 let wrist = arms.apply(&mut actor.palette, socket.w_axis.truncate(), body.inverse().transform_point3(target));
-                arms.orient_support(&mut actor.palette, grip_rotation(drawn.pitch) * Quat::from_rotation_x(roll));
-                body.transform_point3(wrist)
-            } else { hand });
+                arms.orient_support(&mut actor.palette, sampled.map_or(Quat::IDENTITY, |xf| xf.to_scale_rotation_translation().1 * aim.inverse()) * grip_rotation(drawn.pitch) * Quat::from_rotation_x(roll));
+                if let Some(k) = &mut actor.knight {
+                    k.authored.set_extension(&mut k.editor, contacts.extension);
+                    k.editor.apply(&mut actor.palette);
+                    body * k.mount.place(&actor.palette, aim, contacts.primary)
+                } else { super::guns::Guns::held_transform(body.transform_point3(wrist), drawn.yaw, drawn.pitch, contacts.primary) }
+            } else { super::guns::Guns::held_transform(hand, drawn.yaw, drawn.pitch, guns.and_then(|g| g.contacts(i, alpha)).map_or(Vec3::ZERO, |c| c.primary)) });
         }
     }
 

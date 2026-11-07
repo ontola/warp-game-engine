@@ -247,7 +247,7 @@ impl PlayersView {
         if let Some(characters) = &mut self.characters { characters.tick(world, phys); }
     }
 
-    pub fn hands(&self) -> &[Option<Vec3>] {
+    pub fn hands(&self) -> &[Option<glam::Affine3A>] {
         self.characters.as_ref().map_or(&[], |c| c.hands.as_slice())
     }
 

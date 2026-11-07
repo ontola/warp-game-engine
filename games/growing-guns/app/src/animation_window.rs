@@ -19,6 +19,7 @@ mod bones;
 
 struct Preview {
     bones: bones::Bones,
+    authored: crate::foregrip_pose::ForegripPose,
     scene: Scene,
     rig: Rig,
     guns: Guns,
@@ -255,6 +256,7 @@ impl Game for Preview {
                 * characters::grip_rotation(pitch)
                 * Quat::from_rotation_x(roll + palm.to_radians()),
         );
+        self.authored.set_extension(&mut self.bones.editor, contacts.extension);
         self.bones.editor.apply(&mut self.pose);
         let framing =
             Guns::held_transform(body.transform_point3(primary), 0.0, pitch, contacts.primary);
@@ -352,9 +354,12 @@ pub fn run(args: &crate::Args) -> Result<(), String> {
         .find(|(_, (name, _))| name.rsplit([':', '_']).next() == Some("RightHand"))
         .ok_or("missing right hand mount")?;
     let mount = body::reach::JointMount::new(index, bind, &pose);
+    let bones = bones::Bones::new(&model)?;
+    let authored = crate::foregrip_pose::ForegripPose::bind(&model, &bones.editor)?;
     let mut game = Preview {
         mount,
-        bones: bones::Bones::new(&model)?,
+        bones,
+        authored,
         scene,
         rig,
         guns,

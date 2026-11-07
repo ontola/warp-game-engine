@@ -152,7 +152,7 @@ impl Guns {
 
     /// Every rig into its two blocks: first person from the (punched)
     /// camera, third person in the right hand, aimed with the head.
-    pub fn pose(&mut self, scene: &mut Scene, world: &World, prev: &[crate::view::Pose], alpha: f32, fx: &EffectsView, hands: &[Option<Vec3>]) {
+    pub fn pose(&mut self, scene: &mut Scene, world: &World, prev: &[crate::view::Pose], alpha: f32, fx: &EffectsView, hands: &[Option<Affine3A>]) {
         for i in 0..self.rigs.len() {
             // Slots past the players (a coop wave's enemies gone): empty.
             let Some(p) = world.players.get(i) else {
@@ -183,8 +183,8 @@ impl Guns {
             let fp = self.tracked[i].unwrap_or(fp);
             let drawn = crate::view::pose(world, i, prev, alpha);
             let (pos, rot) = (drawn.pos, Quat::from_rotation_y(drawn.yaw));
-            let tp = if let Some(hand) = hands.get(i).copied().flatten() {
-                Self::held_transform(hand, drawn.yaw, drawn.pitch, rig.contacts_at(alpha).primary)
+            let tp = if let Some(mount) = hands.get(i).copied().flatten() {
+                mount
             } else {
                 Affine3A::from_rotation_translation(rot * Quat::from_rotation_x(drawn.pitch),
                     pos + Vec3::Y * 0.05 + rot * Vec3::new(0.45, 0.0, -0.12))
