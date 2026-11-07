@@ -162,8 +162,12 @@ impl Racer {
             party,
             preferences,
             handling:app::editor::SceneTuning::new("spaceracer","Handling",&[
-                app::editor::SceneControl{label:"Steering gain",default:1.,min:0.25,max:2.,step:0.05},
+                app::editor::SceneControl{label:"Steering gain",default:1.,min:0.25,max:6.,step:0.05},
                 app::editor::SceneControl{label:"Airbrake gain",default:1.,min:0.25,max:2.,step:0.05},
+                app::editor::SceneControl{label:"Ground thrust",default:1.,min:0.25,max:3.,step:0.05},
+                app::editor::SceneControl{label:"Lateral grip",default:1.,min:0.1,max:3.,step:0.05},
+                app::editor::SceneControl{label:"Auto-straighten",default:1.,min:0.,max:3.,step:0.05},
+                app::editor::SceneControl{label:"Ground strafe speed",default:1.,min:0.25,max:3.,step:0.05},
             ]),
             live_settings,
             fatal: None,
@@ -595,8 +599,14 @@ impl Game for Racer {
                 d.bot = true;
             }
         }
+        self.race.player_handling = spaceracer::handling::HandlingGains {
+            steering: self.handling.value(0),
+            thrust: self.handling.value(2),
+            lateral_grip: self.handling.value(3),
+            yaw_assist: self.handling.value(4),
+            strafe: self.handling.value(5),
+        };
         for (i,input) in inputs.iter_mut().enumerate() {
-            input.drive.steer=(input.drive.steer*self.handling.value(0)).clamp(-1.,1.);
             input.drive.brake=(input.drive.brake*self.handling.value(1)).clamp(0.,1.);
             if let Some(c)=self.cameras.get(i) {
                 input.rail_aim=Some(spaceracer::railgun::Aim::camera(c.position,c.forward(),c.up(),(c.fov as f32).to_radians(),self.race.combat.rail_guide_radius));
