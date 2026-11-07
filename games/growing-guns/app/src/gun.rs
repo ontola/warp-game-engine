@@ -198,10 +198,13 @@ impl Look {
 #[derive(Clone, Debug, Default)]
 pub struct Build { pub parts: Vec<Part>, pub bolt_travel: f32, pub minigun: bool, pub barrel_length: f32, /** Gun-space barrel exit. */ pub muzzle: Vec3 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct Contacts { pub primary: Vec3, pub magazine: Vec3, pub foregrip: Vec3, pub extension: f32 }
+
 impl Build {
     /// Gun-space wrists. The primary wrist sits behind the pistol grip. The
     /// support wrist follows the visible magazine and transfers onto the foregrip.
-    pub fn wrist_contacts(&self) -> [Vec3; 2] {
+    pub fn wrist_contacts(&self) -> Contacts {
         let bottom = -self.parts[0].xf.matrix3.y_axis.length() * 0.5;
         let primary = Vec3::new(0.0, bottom - 0.055, GRIP_Z + 0.058);
         // The socket is the wrist, behind the palm and outside the left face.
@@ -216,15 +219,10 @@ impl Build {
             mag_weight += volume;
         }
         let magazine = if mag_weight > 0.0 { mag_center / mag_weight } else { primary };
-        let support = self.parts.iter().find(|p| p.key == 6 * 1024 + 1)
-            .map_or(magazine, |p| {
-                let fraction = p.xf.matrix3.y_axis.length() / FOREGRIP_LENGTH;
-                let take = smoothstep(0.18, 0.92, fraction);
-                let grip = Vec3::from(p.xf.translation) + Vec3::new(-p.xf.matrix3.x_axis.length() - 0.024, -0.012, 0.096);
-                // Clear the near face while transferring between the two holds.
-                magazine.lerp(grip, take) - Vec3::X * (0.035 * 4.0 * take * (1.0 - take))
-            });
-        [primary, support]
+        let (foregrip, extension) = self.parts.iter().find(|p| p.key == 6 * 1024 + 1)
+            .map_or((magazine, 0.0), |p| (Vec3::from(p.xf.translation) + Vec3::new(-p.xf.matrix3.x_axis.length() - 0.024, -0.012, 0.096),
+                (p.xf.matrix3.y_axis.length() / FOREGRIP_LENGTH).clamp(0.0, 1.0)));
+        Contacts { primary, magazine, foregrip, extension }
     }
 
     fn same_shape(&self, other: &Self) -> bool {
@@ -617,8 +615,8 @@ pub struct Rig {
     spin_speed: f32,
     spin: f32,
     previous_pose: Vec<Affine3A>,
-    contacts: [Vec3; 2],
-    previous_contacts: [Vec3; 2],
+    contacts: Contacts,
+    previous_contacts: Contacts,
 }
 
 impl Default for Rig {
@@ -702,8 +700,10 @@ impl Rig {
         self.spin_speed *= (-2.5 * dt).exp();
     }
 
-    pub fn contacts_at(&self, alpha: f32) -> [Vec3; 2] {
-        std::array::from_fn(|i| self.previous_contacts[i].lerp(self.contacts[i], alpha))
+    pub fn contacts_at(&self, alpha: f32) -> Contacts {
+        let (a, b) = (self.previous_contacts, self.contacts);
+        Contacts { primary: a.primary.lerp(b.primary, alpha), magazine: a.magazine.lerp(b.magazine, alpha),
+            foregrip: a.foregrip.lerp(b.foregrip, alpha), extension: lerp(a.extension, b.extension, alpha) }
     }
 
     /// Barrel glow 0 (cold steel) to 1, continuous.

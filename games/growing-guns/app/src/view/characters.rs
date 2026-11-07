@@ -26,6 +26,7 @@ struct LavaTwin { handle: ActorHandle, palette: Vec<Mat4> }
 const RIGID_CELL: f32 = 0.035;
 
 pub struct Characters {
+    animation: crate::hand_animation::HandAnimation,
     models: Vec<Character>,
     actors: Vec<Actor>,
     /// Each actor's `Scene::rigid_models` index, when drawn as rigid pieces.
@@ -54,7 +55,9 @@ mod tests {
             for spread in [Stats::default().spread, 0.0] {
                 let mut rig = Rig::default();
                 rig.set(Stats { spread, ..Stats::default() });
-                let [grip, support] = rig.build.wrist_contacts();
+                let contacts = rig.contacts_at(1.0);
+                let grip = contacts.primary;
+                let (support, _) = crate::hand_animation::HandAnimation::load().unwrap().pose(contacts, 0.0);
                 let offset = body.inverse().transform_vector3(Guns::held_transform(Vec3::ZERO, 0.0, 0.0, grip).transform_vector3(support - grip));
                 let mut palette = model.sample(IDLE, 0.25, true).unwrap();
                 let primary = arms.apply(&mut palette, hand, hand + offset);
@@ -83,7 +86,7 @@ mod tests {
     #[test]
     fn reused_enemy_and_round_reset_release_the_old_skin_rig() {
         let model = Character::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters/knight.json")).unwrap();
-        let mut c = Characters { rigid_meshes: vec![None], pieces: Vec::new(), rigid_frame: Vec::new(), models: vec![model], actors: Vec::new(), lava: Vec::new(), hands: Vec::new() };
+        let mut c = Characters { animation: crate::hand_animation::HandAnimation::load().unwrap(), rigid_meshes: vec![None], pieces: Vec::new(), rigid_frame: Vec::new(), models: vec![model], actors: Vec::new(), lava: Vec::new(), hands: Vec::new() };
         let mut scene = Scene::default();
         c.reserve_actor(&mut scene, 0).unwrap();
         let mut world = World::new(3, &[false, true, true]);
@@ -144,7 +147,7 @@ impl Characters {
             }
         }
         println!("characters: original knight, paladin, ch10 with idle/run/jump ({})", dir.display());
-        Ok(Self { rigid_meshes: models.iter().map(|_| None).collect(), pieces: Vec::new(), rigid_frame: Vec::new(), models, actors: Vec::new(), lava: Vec::new(), hands: Vec::new() })
+        Ok(Self { animation: crate::hand_animation::HandAnimation::load()?, rigid_meshes: models.iter().map(|_| None).collect(), pieces: Vec::new(), rigid_frame: Vec::new(), models, actors: Vec::new(), lava: Vec::new(), hands: Vec::new() })
     }
 
     pub fn models(&self) -> &[Character] { &self.models }
@@ -305,9 +308,11 @@ impl Characters {
             let drawn = crate::view::pose(world, i, prev, alpha);
             let body = model_transform(drawn.pos, drawn.yaw);
             let hand = body.transform_point3(socket.w_axis.truncate());
-            self.hands[i] = Some(if let (Some(arms), Some(target)) = (&actor.arms, guns.and_then(|g| g.support_target(i, hand, drawn.yaw, drawn.pitch, alpha))) {
+            self.hands[i] = Some(if let (Some(arms), Some(contacts)) = (&actor.arms, guns.and_then(|g| g.contacts(i, alpha))) {
+                let (support, roll) = self.animation.pose(contacts, (world.tick as f32 + alpha) * DT);
+                let target = super::guns::Guns::held_transform(hand, drawn.yaw, drawn.pitch, contacts.primary).transform_point3(support);
                 let wrist = arms.apply(&mut actor.palette, socket.w_axis.truncate(), body.inverse().transform_point3(target));
-                arms.orient_support(&mut actor.palette, grip_rotation(drawn.pitch));
+                arms.orient_support(&mut actor.palette, grip_rotation(drawn.pitch) * Quat::from_rotation_x(roll));
                 body.transform_point3(wrist)
             } else { hand });
         }
