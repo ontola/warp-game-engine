@@ -144,6 +144,7 @@ pub struct Beam {
     pub rail: bool,
 }
 pub struct Race {
+    pub player_handling: crate::handling::HandlingGains,
     pub rules: crate::rules::Rules,
     pub balance: crate::rules::Balance,
     pub combat: crate::combat::Config,
@@ -276,6 +277,7 @@ impl Race {
             }
         }
         Ok(Self {
+            player_handling: Default::default(),
             world,
             combat,
             environment,
@@ -604,13 +606,14 @@ impl Race {
             d.checkpoint.flash = (d.checkpoint.flash - DT).max(0.);
             d.bump.begin(p, input[i].left, input[i].right, DT, 0.);
             p.bump_velocity = d.bump.velocity();
+            let gains = if d.bot || p.finished { Default::default() } else { self.player_handling };
             if warping {
                 // Dedicated ribbon autopilot has already integrated this tick.
             } else if p.airborne {
                 d.motion.step_air(
                     p,
                     &self.world.track,
-                    input[i].drive,
+                    Input { steer: input[i].drive.steer * gains.steering, ..input[i].drive },
                     DT,
                     &self.biome,
                     -180.,
@@ -618,7 +621,7 @@ impl Race {
                 );
             } else {
                 let n = self.world.track.sample(p.distance);
-                let launch = p.ground_step(input[i].drive, n.surface(), DT);
+                let launch = p.ground_step_tuned(input[i].drive, n.surface(), DT, gains);
                 let n = self.world.track.sample(p.distance);
                 p.constrain(n.surface());
                 d.motion.landing_blend = (d.motion.landing_blend - DT * 4.).max(0.);
