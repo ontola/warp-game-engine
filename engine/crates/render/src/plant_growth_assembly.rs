@@ -68,7 +68,7 @@ fn stem(id: u64, sides: u32, taper: f32) -> PartGeometry {
 
 /// A closed unit ball: knuckles where stem runs meet and, stretched, the\n/// collar where a branch leaves its parent.
 fn collar(id: u64) -> PartGeometry {
-    let (rings, sides) = (8u32, 16u32);
+    let (rings, sides) = (6u32, 12u32);
     let mut vertices = vec![Vertex { pos: [0.0, -1.0, 0.0], normal: [0.0, -1.0, 0.0], uv: [0.5, 0.0] }];
     for r in 1..rings {
         let a = r as f32 / rings as f32 * std::f32::consts::PI;
@@ -188,7 +188,7 @@ impl Default for Look {
 
 impl Look {
     pub fn jeffrey_pine() -> Self {
-        Self { wood: [0.24, 0.12, 0.07], needles: [0.11, 0.21, 0.09], brush_needles: 140, needle_length: 0.22, brush_spread: 1.7, brush_reach: 0.2 }
+        Self { wood: [0.24, 0.12, 0.07], needles: [0.11, 0.21, 0.09], brush_needles: 50, needle_length: 0.22, brush_spread: 1.7, brush_reach: 0.2 }
     }
 }
 
@@ -305,8 +305,13 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     };
     // Rounded joints: a ball where one run of an axis meets the next and at
     // the end of a thick stem, a stretched ball where a branch leaves its
-    // parent. Thin twigs' seams are too small to see and keep the budget.
-    const JOINT_RADIUS: f32 = 0.012;
+    // parent. Twigs under 2.5 cm get none: their seams are too small to see,
+    // and they are most of the stems.
+    const JOINT_RADIUS: f32 = 0.025;
+    // Bark by stem size: plates about as wide as a quarter of the stem's
+    // radius up to 15 cm ridges on an old trunk, smooth young twigs
+    // (materials 0, 2, 3 and 4; 1 is the needles).
+    let wood = |radius: f32| if radius >= 0.25 { 0 } else if radius >= 0.08 { 2 } else if radius >= 0.02 { 3 } else { 4 };
     let taper_of = |radius: f32, end: f32| {
         let wanted = (end / radius.max(1e-6)).clamp(0.6, 1.0);
         (0..4).min_by(|&a, &c| (TAPERS[a] - wanted).abs().total_cmp(&(TAPERS[c] - wanted).abs())).unwrap_or(0)
@@ -314,7 +319,7 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     let continues = |i: usize| stems.get(i + 1).is_some_and(|r| !r.5);
     let collars: usize = (0..stems.len()).map(|i| {
         let r = stems[i];
-        usize::from((r.5 && plant.segments[r.0 as usize].order > 0) || (!r.5 && r.3 > JOINT_RADIUS)) + usize::from(!continues(i) && r.4 > JOINT_RADIUS)
+        usize::from(r.3 > JOINT_RADIUS && (r.5 && plant.segments[r.0 as usize].order > 0 || !r.5)) + usize::from(!continues(i) && r.4 > JOINT_RADIUS)
     }).sum();
     let room = limits.max_instances.saturating_sub(stems.len() + collars);
     let keep = (room as f32 / plant.tufts.len().max(1) as f32).min(1.0);
@@ -326,17 +331,20 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
         let world = Mat4::from_scale_rotation_translation(Vec3::new(radius, length, radius), along(from, to), from);
         let taper = taper_of(radius, end);
         let part = taper as u32 + if radius > 0.03 { 4 } else { 0 };
-        instances.push(PartInstance { id: seed ^ (0x5354 << 40) ^ i as u64, part, branch: b, rest: affine(inverse[b as usize] * world), material: 0 });
+        let bark = wood(radius);
+        instances.push(PartInstance { id: seed ^ (0x5354 << 40) ^ i as u64, part, branch: b, rest: affine(inverse[b as usize] * world), material: bark });
         let mut joint = |tag: u64, scale: Vec3, centre: Vec3| {
             let world = Mat4::from_scale_rotation_translation(scale, along(from, to), centre);
-            instances.push(PartInstance { id: seed ^ (tag << 40) ^ i as u64, part: 8, branch: b, rest: affine(inverse[b as usize] * world), material: 0 });
+            instances.push(PartInstance { id: seed ^ (tag << 40) ^ i as u64, part: 8, branch: b, rest: affine(inverse[b as usize] * world), material: bark });
         };
         let axis = (to - from).normalize_or(Vec3::Y);
-        if first && plant.segments[segment as usize].order > 0 {
+        if radius <= JOINT_RADIUS {
+            // A twig: no joints.
+        } else if first && plant.segments[segment as usize].order > 0 {
             // A branch collar: a swelling around the base, embedded in the
             // parent and easing into the branch over a few of its radii.
             joint(0x434c, Vec3::new(radius * 1.45, radius * 2.6, radius * 1.45), from + axis * radius * 0.8);
-        } else if !first && radius > JOINT_RADIUS {
+        } else if !first {
             // A knuckle as wide as the wider of the two meeting rings hides
             // the step and the crack where the axis bends.
             let before = stems[i - 1];
@@ -365,19 +373,21 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
         placed += 1;
     }
     let counts = Counts { bones: branches.len(), stems: stems.len() + collars, tufts: placed, tufts_dropped: plant.tufts.len() - placed };
-    let material = |tint, foliage: bool| Material {
-        tint,
-        layer: if foliage { -1 } else { crate::scene::BARK_LAYER },
-        roughness: if foliage { 0.8 } else { 0.96 },
-        flags: if foliage { THIN_FOLIAGE | TWO_SIDED } else { 0 },
-        // Wood: procedural bark plates about 12 cm across (shade.wgsl
-        // bark_surface). The tint stays the plates' and furrows' mean, for voxels.
-        scale: if foliage { 1.0 } else { 0.12 },
+    // Wood: procedural bark (shade.wgsl bark_surface) with ridges `plate`
+    // metres wide; the tint stays the plates' and furrows' mean, for voxels.
+    // Twigs (plate 0) are plain smooth grey-brown wood.
+    let bark = |plate: f32| Material {
+        tint: if plate > 0.0 { look.wood } else { [look.wood[0] * 0.85, look.wood[1] * 0.85, look.wood[2] * 0.9] },
+        layer: if plate > 0.0 { crate::scene::BARK_LAYER } else { -1 },
+        roughness: 0.96,
+        flags: 0,
+        scale: if plate > 0.0 { plate } else { 1.0 },
         metal: 0.0,
     };
+    let needles = Material { tint: look.needles, layer: -1, roughness: 0.8, flags: THIN_FOLIAGE | TWO_SIDED, scale: 1.0, metal: 0.0 };
     let geometry = parts.stems.iter().chain(std::iter::once(&parts.collar)).chain(&parts.tufts).cloned().collect();
     let parameters = Parameters { seed, archetype: Archetype::ConiferTwig, growth: 1.0, season: 0.5, density: placed.max(1) as u32 };
-    let assembly = Assembly::from_parts(parameters, geometry, branches, instances, vec![material(look.wood, false), material(look.needles, true)], limits)?;
+    let assembly = Assembly::from_parts(parameters, geometry, branches, instances, vec![bark(0.15), needles, bark(0.06), bark(0.025), bark(0.0)], limits)?;
     Ok((assembly, counts))
 }
 

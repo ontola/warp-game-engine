@@ -2047,10 +2047,8 @@ fn bark_noise(p: vec3<f32>) -> f32 {
     return mix(a, b, u.z);
 }
 
-/// Jeffrey pine bark: irregular plates (cells of a 3D Voronoi pattern, taller
-/// than wide along world up, as on a trunk) split by deep furrows, with flaky
-/// scales on each plate. x: height, 1 on a plate and 0 deep in a furrow;
-/// y: a per-plate random for colour.
+/// Distance to the nearest cell edge of a 3D Voronoi pattern (x) and a
+/// per-cell random (y).
 fn bark_cells(q: vec3<f32>) -> vec2<f32> {
     let c = vec3<i32>(floor(q));
     var f1 = 1e9;
@@ -2075,31 +2073,40 @@ fn bark_cells(q: vec3<f32>) -> vec2<f32> {
     return vec2<f32>(f2 - f1, id);
 }
 
-fn bark_height(q: vec3<f32>) -> vec2<f32> {
-    let cell = bark_cells(q + (vec3<f32>(bark_noise(q * 2.1), bark_noise(q * 2.1 + 7.3), bark_noise(q * 2.1 + 3.1)) - 0.5) * 0.25);
-    let plate = smoothstep(0.012, 0.075, cell.x);
-    let flakes = bark_noise(q * 6.0) * 0.6 + bark_noise(q * 13.0) * 0.4;
-    return vec2<f32>(plate * (0.78 + 0.22 * flakes), cell.y);
+/// Jeffrey pine bark in plate units: long vertical ridges (Voronoi cells
+/// three times taller than wide) split by deep furrows, each ridge broken
+/// into jigsaw subplates by finer cracks. x: height (1 on a plate, 0 deep in
+/// a furrow); y: per-ridge random; z: the furrow (1 deep in it).
+fn bark_height(q: vec3<f32>) -> vec3<f32> {
+    let warp = vec3<f32>(bark_noise(q * 1.7), bark_noise(q * 1.7 + 7.3), bark_noise(q * 1.7 + 3.1)) - 0.5;
+    let ridge = bark_cells(q * vec3<f32>(1.0, 0.33, 1.0) + warp * 0.3);
+    let furrow = 1.0 - smoothstep(0.015, 0.075, ridge.x);
+    // Subplates: ridged noise makes thin, wandering cracks across each ridge.
+    let s = q * vec3<f32>(2.6, 1.6, 2.6) + warp * 0.8;
+    let crack = 1.0 - smoothstep(0.0, 0.1, abs(2.0 * bark_noise(s) - 1.0));
+    let flakes = bark_noise(q * vec3<f32>(9.0, 5.0, 9.0));
+    let plate = (1.0 - furrow) * (0.8 + 0.12 * flakes - 0.3 * crack);
+    return vec3<f32>(plate, ridge.y, furrow);
 }
 
-/// Cinnamon-orange plates between near-black furrows, relief from the height
-/// field; the furrows are darker, rougher and occluded.
+/// Cinnamon to salmon plates, grey-pink where weathered, between near-black
+/// furrows full of orange-brown fibres; relief from the height field.
 fn bark_surface(p: vec3<f32>, n: vec3<f32>, plate: f32) -> Bark {
-    let q = p / max(plate, 0.02) * vec3<f32>(1.0, 0.55, 1.0);
+    let q = p / max(plate, 0.01);
     let h = bark_height(q);
-    let e = 0.03;
-    let hx = bark_height(q + vec3<f32>(e, 0.0, 0.0)).x - h.x;
-    let hy = bark_height(q + vec3<f32>(0.0, e, 0.0)).x - h.x;
-    let hz = bark_height(q + vec3<f32>(0.0, 0.0, e)).x - h.x;
-    let g = vec3<f32>(hx, hy, hz) / e;
-    let slope = g - n * dot(g, n);
-    let plates = smoothstep(0.2, 0.6, h.x);
-    let tone = 0.75 + 0.5 * h.y;
-    let orange = vec3<f32>(0.25, 0.105, 0.045) * tone * (0.85 + 0.3 * bark_noise(q * 3.0));
-    let furrow = vec3<f32>(0.03, 0.022, 0.018);
-    let albedo = mix(furrow, orange, plates);
-    let normal = normalize(n - slope * 0.06);
-    return Bark(albedo, normal, mix(0.98, 0.85, plates), mix(0.35, 1.0, plates));
+    let t1 = normalize(cross(n, vec3<f32>(0.0, 1.0, 0.0)) + vec3<f32>(1e-4, 0.0, 0.0));
+    let t2 = cross(n, t1);
+    let e = 0.04;
+    let d1 = (bark_height(q + t1 * e).x - h.x) / e;
+    let d2 = (bark_height(q + t2 * e).x - h.x) / e;
+    let weathered = smoothstep(0.35, 0.8, bark_noise(q * 0.45 + vec3<f32>(3.0, 1.0, 7.0)));
+    let cinnamon = mix(vec3<f32>(0.30, 0.12, 0.06), vec3<f32>(0.40, 0.20, 0.14), h.y);
+    let plates = mix(cinnamon, vec3<f32>(0.30, 0.22, 0.20), weathered * 0.6) * (0.85 + 0.3 * bark_noise(q * 4.0));
+    let fibre = smoothstep(0.5, 0.85, bark_noise(q * vec3<f32>(16.0, 1.5, 16.0)));
+    let furrow = mix(vec3<f32>(0.022, 0.016, 0.013), vec3<f32>(0.15, 0.065, 0.03), fibre * 0.7);
+    let albedo = mix(plates, furrow, smoothstep(0.25, 0.75, h.z));
+    let normal = normalize(n - (t1 * d1 + t2 * d2) * 0.05);
+    return Bark(albedo, normal, mix(0.86, 0.98, h.z), mix(1.0, 0.3, h.z));
 }
 fn hash2(p: vec2<f32>) -> f32 {
     return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);

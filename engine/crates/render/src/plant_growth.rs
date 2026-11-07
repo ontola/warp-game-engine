@@ -63,8 +63,8 @@ impl Species {
     /// tufts at the shoot ends; a cone young, a clear trunk and an open crown old.
     pub fn jeffrey_pine() -> Self {
         Self {
-            height: 46.0, pace: 62.0, shape: 1.75, first_whorl: 3, whorl: [3, 5], laterals: 1.0, max_order: 4,
-            limb_step: 0.30, side_length: 0.6, limb_life: [60, 150], crowding: 16, angle: [1.05, 1.4], rise: 0.05, droop: 0.012,
+            height: 46.0, pace: 45.0, shape: 1.75, first_whorl: 3, whorl: [3, 5], laterals: 1.0, max_order: 4,
+            limb_step: 0.22, side_length: 0.6, limb_life: [60, 150], crowding: 8, angle: [1.05, 1.4], rise: 0.05, droop: 0.012,
             needle_years: 5, shade: 0.025, min_light: 0.3, tip_radius: 0.005, wood: 0.0035, limb_wood: 0.62, dead_years: 18,
             plumes: 2.0,
         }
@@ -193,20 +193,36 @@ pub fn grow(species: &Species, age: u32, seed: u64) -> Plant {
                 *crowd.entry((k.x as i32, k.y as i32, k.z as i32)).or_default() += 1;
             }
         }
+        // The crown's reach in each height band: tips near it see side light.
+        let mut reach: HashMap<i32, f32> = HashMap::new();
+        for a in &apices {
+            let r = reach.entry((a.at.y / SHADE_CELL).floor() as i32).or_default();
+            *r = r.max(Vec3::new(a.at.x, 0.0, a.at.z).length());
+        }
         let leader_step = leader_height(s, year as f32) - leader_height(s, year as f32 - 1.0);
         let maturity = (year as f32 / 120.0).min(1.0);
         let mut next = Vec::with_capacity(apices.len() * 2);
         for (index, apex) in apices.iter().enumerate() {
-            let light = (-s.shade * foliage_above(&map, apex.at)).exp();
+            // Light from above, through the foliage over this cell, plus side
+            // light for tips near the crown's edge: an open-grown pine stays
+            // green low down.
+            let top = (-s.shade * foliage_above(&map, apex.at)).exp();
+            let edge = reach.get(&((apex.at.y / SHADE_CELL).floor() as i32)).copied().unwrap_or(0.0);
+            let side = if edge > 0.5 { (Vec3::new(apex.at.x, 0.0, apex.at.z).length() / edge).clamp(0.0, 1.0).powi(2) } else { 1.0 };
+            let light = top + (1.0 - top) * side * 0.5;
             let id = (year as u64) << 32 | index as u64;
             if apex.order > 0 {
                 let k = (apex.at / SHADE_CELL).floor();
                 let crowd = *crowd.get(&(k.x as i32, k.y as i32, k.z as i32)).unwrap_or(&0);
-                let crowded = crowd > s.crowding && hash(seed, id, 70) < 1.0 - s.crowding as f32 / crowd as f32;
-                // Past its span a limb only lives on where its shoots still reach good light:
-                // dominant lower limbs of an old pine keep going, shaded ones do not.
-                let spent = year - apex.limb[0] > apex.limb[1] && light < 0.75;
-                if light < s.min_light || crowded || spent {
+                // Crowding prunes twigs, never a limb's own leader: a limb
+                // whose leader dies stops making wood and is shed.
+                let crowded = apex.order > 1 && crowd > s.crowding && hash(seed, id, 70) < 1.0 - s.crowding as f32 / crowd as f32;
+                // Past its span a limb only lives on where its shoots still reach good light
+                // from above: dominant lower limbs of an old pine keep going, shaded ones do not.
+                let spent = year - apex.limb[0] > apex.limb[1] && top < 0.75;
+                // A limb leader holds on until it is truly dark.
+                let dark = light < if apex.order == 1 { s.min_light * 0.4 } else { s.min_light };
+                if dark || crowded || spent {
                     continue;
                 }
             }
