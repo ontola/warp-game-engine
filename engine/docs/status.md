@@ -11,7 +11,7 @@ Growing Guns layers two-bone wrist contacts over its third-person clips using th
 
 ## Developer captures
 
-Sideways F12 captures support [fixed-tick driving comparisons and pixel inspection](warp-cli.md#sideways-feedback). Growing Guns feedback includes recent desktop inputs and live edits.
+Sideways F12 captures support [fixed-tick driving comparisons, pixel inspection and single-effect lighting comparisons](warp-cli.md#sideways-feedback). Growing Guns feedback includes recent desktop inputs and live edits.
 
 ## Target
 

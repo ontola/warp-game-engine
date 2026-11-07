@@ -37,7 +37,8 @@ const USAGE: &str = "warp: run a game made of Luau scripts, synth patches and as
       render and measure sound patches (as warp-audio)
   warp compare F12.json [--baseline main] [--out DIR] [--state-only]
   warp inspect F12.json [--pixel X Y | --preview]
-      compare Sideways driving or inspect a captured pixel (developer checkout, Python and Pillow)
+  warp relight F12.json --without CONTROL [--pixel X Y] [--reference X Y] [--out DIR]
+      compare Sideways driving, inspect a captured pixel or isolate a lighting effect (developer checkout, Python and Pillow)
   warp new DIR [--title TITLE]
       write a starter game (warp new GAME.luau: the same game in one file)
 
@@ -85,7 +86,7 @@ fn dir(args: &[String]) -> Result<PathBuf, String> {
 
 fn run(args: Vec<String>) -> Result<(), String> {
     match args.first().map(String::as_str) {
-        Some("compare" | "inspect") => {
+        Some("compare" | "inspect" | "relight") => {
             let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/drive-capture.py");
             let python = std::env::var_os("WARP_PYTHON").unwrap_or_else(|| if cfg!(windows) { "python".into() } else { "python3".into() });
             let status = std::process::Command::new(python).arg(script).args(&args).status()

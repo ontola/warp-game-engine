@@ -503,7 +503,7 @@ fn prepare_sky(capture:&Value,light:&mut Lighting)->Result<Option<ReplaySky>,Str
     Ok(Some(ReplaySky {baked,metadata}))
 }
 
-fn context(capture:&Value)->Result<(sideways::stage::Stage,Camera,Lighting,render::wind::WindState,Option<ReplaySky>),String> {
+fn context(capture:&Value,view_index:usize)->Result<(sideways::stage::Stage,Camera,Lighting,render::wind::WindState,Option<ReplaySky>),String> {
     let seed=capture["seed"].as_u64().ok_or("missing seed")?;
     let km=capture["state"]["active_settings"]["stage_km"].as_f64().ok_or("missing stage length")?;
     if !km.is_finite() || !(0.1..=8.0).contains(&km){return Err("invalid captured stage length".into());}
@@ -538,7 +538,7 @@ fn context(capture:&Value)->Result<(sideways::stage::Stage,Camera,Lighting,rende
     stage.vegetation=sideways::vegetation::Vegetation::new(
         plant["seed"].as_u64().ok_or("missing vegetation seed")?,number(&plant["growth"])?,
         plant["season"].as_str().ok_or("missing season")?.parse()?)?;
-    let c=&capture["views"][0]["camera"];
+    let c=&capture["views"][view_index]["camera"];
     let camera=Camera {pos:vector(&c["position"])?,target:vector(&c["target"])?,
         fov_y:number(&c["fov_y"])?,near:number(&c["near"])?};
     if camera.near<=0.0 || !(0.05..3.0).contains(&camera.fov_y)
@@ -562,24 +562,49 @@ fn context(capture:&Value)->Result<(sideways::stage::Stage,Camera,Lighting,rende
     Ok((stage,camera,light,wind,sky))
 }
 
-fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[String],yaw_degrees:f32,shadow_probe:bool,approach:Option<&[f32]>,world_terrain_probe:bool,sun_focus:Option<Vec3>,paged_foliage_probe:bool,no_meadow:bool,requested_picks:&[(u32,u32)])->Result<(),String> {
+fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[String],yaw_degrees:f32,shadow_probe:bool,approach:Option<&[f32]>,world_terrain_probe:bool,sun_focus:Option<Vec3>,paged_foliage_probe:bool,no_meadow:bool,requested_picks:&[(u32,u32)],without:&[String],view_index:usize)->Result<(),String> {
     validate_probes(shadow_probe,world_terrain_probe,paged_foliage_probe)?;
     let paged_foliage_enabled=std::env::var("KERN_PAGED_FOLIAGE_SUN").as_deref()==Ok("1");
     let capture:Value=serde_json::from_slice(&std::fs::read(capture_path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-    let [width,height]=replay_size(&capture)?;
+    let paired=!without.is_empty();
+    if paired && (cpu_only || lit_only || !overrides.is_empty() || yaw_degrees!=0.0 || shadow_probe || approach.is_some() || world_terrain_probe || sun_focus.is_some() || paged_foliage_probe || no_meadow) {
+        return Err("paired lighting replay accepts only --view, --pick and --without".into());
+    }
+    let [width,height]=if paired {
+        let rect=&capture["visibility"]["views"][view_index]["rect"];
+        let dimension=|i:usize|rect[i].as_u64().filter(|n|(1..=8192).contains(n)).map(|n|n as u32).ok_or("missing or invalid captured viewport");
+        [dimension(2)?,dimension(3)?]
+    }else{replay_size(&capture)?};
     let picks=replay_picks(requested_picks,[width,height])?;
-    let (stage,mut camera,mut light,wind,sky)=context(&capture)?;
+    let (stage,mut camera,mut light,wind,sky)=context(&capture,view_index)?;
     let movement_axis=if approach.is_some(){approach_axis(&camera)?}else{Vec3::ZERO};
     if !yaw_degrees.is_finite(){return Err("nonfinite camera yaw override".into());}
     if yaw_degrees!=0.0 {
         camera.target=camera.pos+glam::Quat::from_rotation_y(yaw_degrees.to_radians())*(camera.target-camera.pos);
     }
-    let player=capture["state"]["view_order"][0].as_u64().ok_or("missing captured view order")? as usize;
-    let focus=vector(&capture["state"]["players"][player]["position"])?;
+    let seat=capture["state"]["view_order"][view_index].as_u64().ok_or("missing captured view order")?;
+    let players=capture["state"]["players"].as_array().ok_or("missing captured players")?;
+    let player=players.iter().find(|p| p["seat"].as_u64()==Some(seat))
+        .or_else(|| players.get(seat as usize).filter(|p| p["seat"].is_null()))
+        .ok_or("no captured player for selected seat")?;
+    let focus=vector(&player["position"])?;
     let headlights=captured_headlights(&capture)?;
     let local_lights=captured_local_lights(&capture)?;
     let controls=captured_controls(&capture)?;
     let effective_options=replay_options(controls.options,no_meadow);
+    if paired {
+        if capture["drive"]["biome"].as_str().is_some(){return Err("static replay does not reconstruct biome stages".into());}
+        if capture["render"]["debug"].as_f64().unwrap_or(0.0)!=0.0 {return Err("paired lighting needs a normally shaded capture".into());}
+        if let Some(value)=capture["render"]["render_lighting"].get("shadow_strength") {light.shadow_strength=number(value)?;}
+        for effect in without {
+            let value=match effect.as_str() {
+                "contact_occlusion"=>light.contact_occlusion,"shadow_strength"=>light.shadow_strength,
+                "near_shadows"=>light.near_shadows,"gi"=>light.gi,"reflection_occlusion"=>light.reflection_occlusion,
+                _=>return Err(format!("unsupported lighting control {effect}")),
+            };
+            if value==0.0{return Err(format!("{effect} was already disabled in the captured lighting"));}
+        }
+    }
     for setting in overrides {light.set(setting)?;}
     if cpu_only {println!("stage/camera/sky verified: noise={}, detail={}, camera={:?}, procedural={}, exposure={}, fog={:?}",
         stage.noise_seed,stage.detail_seed,camera.pos,sky.is_some(),light.ev100,[light.fog_start,light.fog_end,light.fog_density]);
@@ -617,7 +642,11 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
     renderer.set_debug_options(effective_options)?;
     renderer.set_headlights(&headlights)?;
     renderer.set_local_lights(&local_lights)?;
-    renderer.set_lighting_focus(&[focus])?;
+    let captured_focus = if paired {
+        capture["render"]["lighting_focus"].as_array()
+            .map(|points| points.iter().map(vector).collect::<Result<Vec<_>, _>>()).transpose()?
+    } else { None };
+    renderer.set_lighting_focus(captured_focus.as_deref().unwrap_or(&[focus]))?;
     // Diagnostic raster-shadow placement only. The shared canopy/lighting
     // focus still follows the captured player; this stays fixed on approach.
     if let Some(point)=sun_focus {renderer.set_sun_shadow_focus(&[point])?;}
@@ -628,7 +657,12 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
     let mut terrain_source_queries=Vec::new();
     let selected_debug=light.debug;
     let original_near=light.near_shadows;
-    let cases=if paged_foliage_probe {vec![("lit",selected_debug,original_near),("foliage-pages",25.0,original_near)]}
+    let captured_light=light.clone();
+    let cases=if paired {
+        let mut cases=vec![("lit",selected_debug,original_near)];
+        cases.extend(without.iter().map(|name|(name.as_str(),selected_debug,original_near)));
+        cases.push(("repeat",selected_debug,original_near));cases
+    }else if paged_foliage_probe {vec![("lit",selected_debug,original_near),("foliage-pages",25.0,original_near)]}
         else if world_terrain_probe {vec![("lit",selected_debug,original_near),
         ("terrain-visibility",23.0,original_near),("terrain-work",24.0,original_near)]}else if shadow_probe {vec![
         ("lit",selected_debug,original_near),("shadow",9.0,original_near),
@@ -647,12 +681,18 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
       let moved_camera=Camera {pos:camera.pos+movement,target:camera.target+movement,..camera};
       let moved_focus=focus+movement;
       let views=[ViewRect {cam:moved_camera,x:0,y:0,w:width,h:height}];
-      renderer.set_lighting_focus(&[moved_focus])?;
+      renderer.set_lighting_focus(captured_focus.as_deref().unwrap_or(&[moved_focus]))?;
       if approach.is_some(){renderer.reset_history();}
       for &(name,debug,near) in &cases {
         if lit_only && !shadow_probe && !world_terrain_probe && !paged_foliage_probe && name!="lit" {continue;}
-        light.debug=debug;
-        light.near_shadows=near;
+        if paired {
+            renderer.reset_history();
+            light=captured_light.clone();
+            if name!="lit" && name!="repeat" {light.set(&format!("{name}=0"))?;}
+        } else {
+            light.debug=debug;
+            light.near_shadows=near;
+        }
         let mut warmup_gpu_ms=Vec::new();
         let mut warmup_far_sun=Vec::new();
         let mut warmup_foliage_pages=Vec::new();
@@ -694,7 +734,7 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
                     "camera":{"position":moved_camera.pos.to_array(),"target":moved_camera.target.to_array()},"queries":queries}));
             }
         }
-        let mut row=json!({"name":name,"image":path,"debug":debug,"near_shadows":near,"gpu_ms":stats.gpu_ms,"warmup_gpu_ms":warmup_gpu_ms,"picks":selection,
+        let mut row=json!({"name":name,"image":path,"debug":debug,"near_shadows":light.near_shadows,"gpu_ms":stats.gpu_ms,"warmup_gpu_ms":warmup_gpu_ms,"picks":selection,
             "approach_m":distance,"movement_axis":movement_axis.to_array(),"movement":movement.to_array(),
             "camera":{"position":moved_camera.pos.to_array(),"target":moved_camera.target.to_array(),"fov_y":moved_camera.fov_y,"near":moved_camera.near},
             "lighting_focus":moved_focus.to_array(),
@@ -750,6 +790,11 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
             "source recipe settings are checked where recorded; external render flags/shader versions still require the captured environment, not inferred from saved defaults",
             "stage-only round history verified against both recorded stage seeds, with exact camera, applied sky, sun, exposure, fog and wind phase",
             "held-camera diagnostic timings are not gameplay FPS"]);
+    if paired {
+        report["view_index"]=json!(view_index);
+        report["source_camera"]=capture["views"][view_index]["camera"].clone();
+        report["baseline_controls"]=json!({"shadow_strength":captured_light.shadow_strength,"near_shadows":captured_light.near_shadows,"contact_occlusion":captured_light.contact_occlusion,"gi":captured_light.gi,"reflection_occlusion":captured_light.reflection_occlusion});
+    }
     report["local_lights_replay"]=json!({"captured":capture["render"]["local_lights"],"restored_count":local_lights.len(),
         "origin":if capture["render"].get("local_lights").is_some(){"captured emitters"}else{"historical absent; no emitters invented"}});
     report["vegetation_replay"]=json!({"trees":tree_replay,"captured_options":options_metadata(controls.options),
@@ -771,19 +816,21 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
 fn main() {
     let args:Vec<_>=std::env::args().skip(1).collect();
     let result=(|| {
-        let path=args.first().ok_or("usage: capture_replay F12.json FRESH_DIR [--cpu-only] [--lit-only] [--no-meadow] [--pick x,y ...]")?;
+        let path=args.first().ok_or("usage: capture_replay F12.json FRESH_DIR [--cpu-only] [--lit-only] [--no-meadow] [--pick x,y ...] [--view INDEX --without CONTROL ...]")?;
         let out=args.get(1).ok_or("missing fresh output directory")?;
-        let mut settings=Vec::new();let mut yaw=0.0f32;let mut approach=None;let mut sun_focus=None;let mut requested_picks=Vec::new();let mut i=2;
+        let mut without=Vec::new();let mut view_index=0;let mut settings=Vec::new();let mut yaw=0.0f32;let mut approach=None;let mut sun_focus=None;let mut requested_picks=Vec::new();let mut i=2;
         while i<args.len() {match args[i].as_str() {
             "--cpu-only"|"--lit-only"|"--shadow-probe"|"--world-terrain-probe"|"--paged-foliage-probe"|"--no-meadow"=>{},
             "--yaw-deg"=>{i+=1;yaw=args.get(i).ok_or("--yaw-deg needs an angle")?.parse().map_err(|_|"invalid yaw angle")?;},
+            "--without"=>{i+=1;let name=args.get(i).ok_or("--without needs a lighting control")?.clone();if without.contains(&name){return Err("duplicate lighting control".into());}without.push(name);},
+            "--view"=>{i+=1;view_index=args.get(i).ok_or("--view needs an index")?.parse().map_err(|_|"invalid view index")?;},
             "--set"=>{i+=1;settings.push(args.get(i).ok_or("--set needs key=value")?.clone());},
             "--approach-m"=>{if approach.is_some(){return Err("--approach-m may only be supplied once".into());}i+=1;approach=Some(approach_distances(args.get(i).ok_or("--approach-m needs comma-separated metres")?)?);},
             "--sun-focus"=>{if sun_focus.is_some(){return Err("--sun-focus may only be supplied once".into());}i+=1;sun_focus=Some(sun_focus_point(args.get(i).ok_or("--sun-focus needs x,y,z")?)?);},
             "--pick"=>{i+=1;push_requested_pick(&mut requested_picks,args.get(i).ok_or("--pick needs x,y")?)?;},
             _=>return Err("unknown replay arguments".into()),
         }i+=1;}
-        run(&PathBuf::from(path),&PathBuf::from(out),args.iter().any(|s|s=="--cpu-only"),args.iter().any(|s|s=="--lit-only"),&settings,yaw,args.iter().any(|s|s=="--shadow-probe"),approach.as_deref(),args.iter().any(|s|s=="--world-terrain-probe"),sun_focus,args.iter().any(|s|s=="--paged-foliage-probe"),args.iter().any(|s|s=="--no-meadow"),&requested_picks)
+        run(&PathBuf::from(path),&PathBuf::from(out),args.iter().any(|s|s=="--cpu-only"),args.iter().any(|s|s=="--lit-only"),&settings,yaw,args.iter().any(|s|s=="--shadow-probe"),approach.as_deref(),args.iter().any(|s|s=="--world-terrain-probe"),sun_focus,args.iter().any(|s|s=="--paged-foliage-probe"),args.iter().any(|s|s=="--no-meadow"),&requested_picks,&without,view_index)
     })();
     if let Err(e)=result {eprintln!("capture replay: {e}");std::process::exit(1);}
 }
