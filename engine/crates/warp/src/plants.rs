@@ -64,7 +64,7 @@ struct Preview {
 
 fn preview(species: &Species, look: Look, age: u32, seed: u64) -> Result<Preview, String> {
     let plant = render::plant_growth::grow(species, age, seed);
-    let (assembly, _) = render::plant_growth_assembly::assemble(&plant, parts(&look), look, seed, render::plant_growth_assembly::limits())?;
+    let (assembly, _) = render::plant_growth_assembly::assemble(&plant, parts(&look), look, seed, preview_limits())?;
     let branches = assembly.branch_transforms()?;
     let mut index: HashMap<(u32, u32), usize> = HashMap::new();
     let mut out = Preview { meshes: Vec::new(), instances: Vec::with_capacity(assembly.instances.len()), triangles: 0 };
@@ -115,6 +115,12 @@ pub struct Plants {
     pub dirty: bool,
     /// Log lines for the game's log (cooks finished, failures).
     pub log: Vec<String>,
+}
+
+/// The preview draws plain instances, so it has no placement budget: every
+/// stem and brush of any rule set shows (the full cook keeps the grown limits).
+fn preview_limits() -> render::foliage_assembly::Limits {
+    render::foliage_assembly::Limits { max_instances: 1 << 20, max_vertices: u32::MAX as usize / 4, max_indices: u32::MAX as usize / 4, max_source_bytes: usize::MAX / 4, ..render::plant_growth_assembly::limits() }
 }
 
 /// The parts for a look's brushes, made once per needle count and length.
@@ -279,5 +285,18 @@ mod tests {
         assert!(meshes >= 2 && scene.instances.len() > meshes, "{meshes} meshes, {} instances", scene.instances.len());
         assert!(scene.gpu_forest.is_none());
         assert!(plants.log.iter().any(|l| l.contains("preview")), "{:?}", plants.log);
+    }
+}
+
+#[cfg(test)]
+mod limits {
+    use super::*;
+
+    #[test]
+    fn a_crowded_preview_has_no_placement_budget() {
+        let species = Species { crowding: 60, needle_years: 7, ..Species::jeffrey_pine() };
+        let started = std::time::Instant::now();
+        let p = preview(&species, Look::jeffrey_pine(), 31, 4).unwrap();
+        println!("crowded 31 y: {} placed, {} triangles, {} ms", p.instances.len(), p.triangles, started.elapsed().as_millis());
     }
 }
