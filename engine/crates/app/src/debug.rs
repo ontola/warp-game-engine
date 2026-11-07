@@ -199,9 +199,6 @@ impl EngineDebug {
         (r.consumed, r.action.and_then(|a| self.apply(a)))
     }
 
-    pub fn scene_page_open(&self)->bool{self.ui.open && self.ui.current_menu()==Some(crate::editor::scene_tuning::PAGE)}
-    pub fn scene_shortcut(&mut self,active:bool){self.ui.scene_shortcut=active.then_some((crate::editor::scene_tuning::PAGE,12));}
-    pub fn toggle_scene_page(&mut self){self.ui.toggle_page(&self.model,crate::editor::scene_tuning::PAGE);}
     pub fn set_visible(&mut self,open:bool) { self.ui.open=open; self.ui.cancel_interaction(); }
     pub fn pointer_move(&mut self, cursor: [f32; 2]) { self.ui.pointer_move(cursor); }
     pub fn pointer_down(&mut self, size: [u32; 2]) -> (bool, Option<DebugAction>) {

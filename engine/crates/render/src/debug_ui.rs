@@ -5,6 +5,7 @@
 use crate::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 
 pub const WINDOW_ID: u64 = 0x4442_4755_4900_0000;
+#[cfg(test)]
 const TEXT_ID: u64 = WINDOW_ID;
 use crate::editor_style::{EditorButton, FG, MUTED};
 
@@ -93,7 +94,7 @@ pub struct DebugResponse {
 
 #[derive(Clone, Debug, Default)]
 pub struct DebugUi {
-    pub scene_shortcut: Option<(u32,u8)>,
+    identity: Option<(u64,u8,&'static str)>,
     original_values: std::collections::HashMap<u32, DebugValue>,
     pub open: bool,
     pub advanced_open: bool,
@@ -271,7 +272,9 @@ impl DebugUi {
             self.menu=None;self.navigation.clear();self.selected=None;self.scroll=0.0;self.cancel_interaction();
         }
         let layout=Layout::new(size,model,self.advanced_open,self.menu);
-        let rect=self.window.frame(size,layout.panel,layout.minimum(),layout.scale).rect;
+        let mut initial=layout.panel;
+        if self.identity.is_some() { initial[0]=16.0*layout.scale; }
+        let rect=self.window.frame(size,initial,layout.minimum(),layout.scale).rect;
         let layout=layout.placed(rect);
         let rows=visible_rows(model,self.advanced_open,self.menu);
         self.normalize(layout,&rows);
@@ -284,10 +287,8 @@ impl DebugUi {
         if top+layout.row_h > self.scroll+layout.body[3] { self.scroll=top+layout.row_h-layout.body[3]; }
         self.normalize(layout,rows);
     }
-    pub fn toggle_page(&mut self,model:&DebugModel,id:u32){
-        if self.open && self.menu==Some(id){self.open=false; self.cancel_interaction(); return;}
-        self.menu=None;self.navigation.clear();self.open=true;
-        self.enter_menu(model,id);
+    pub fn for_window(id: u64, key: u8, title: &'static str) -> Self {
+        Self { identity: Some((id,key,title)), ..Self::default() }
     }
     fn enter_menu(&mut self, model:&DebugModel, id:u32) {
         if !model.menus.iter().any(|m|m.id==id&&m.parent==self.menu)||menu_path(model,Some(id)).is_none(){return;}
@@ -463,10 +464,8 @@ impl DebugUi {
         if !self.open || list.size.contains(&0) {return;}
         let first_text=list.text.len();
         let s=layout.scale; let p=layout.panel; let clip=p;
-        let (key,title)=self.scene_shortcut.filter(|(id,_)|Some(*id)==self.menu)
-            .and_then(|(id,key)|model.menus.iter().find(|m|m.id==id).map(|m|(key,m.label.as_str())))
-            .unwrap_or((2,"Graphics settings"));
-        crate::editor_window::WindowFrame { rect:p, scale:s }.draw(list,WINDOW_ID,key,title);
+        let (window_id,key,title)=self.identity.unwrap_or((WINDOW_ID,2,"Graphics settings"));
+        crate::editor_window::WindowFrame { rect:p, scale:s }.draw(list,window_id,key,title);
         let x=p[0]+16.0*s; let w=p[2]-32.0*s; let mut y=p[1]+5.0*s;
         y+=29.0*s;
         let path=menu_path(model,self.menu).unwrap_or_default();
@@ -474,7 +473,7 @@ impl DebugUi {
             let names:Vec<_>=path.iter().rev().take(2).rev().map(|m|m.label.as_str()).collect();
             format!("{}{}",if path.len()>2{"... / "}else{""},names.join(" / "))
         };
-        text(list,22,&caption,[x,y,w,28.0*s],clip,22.0*s,FG,TextAlign::Left);
+        text(list,window_id,22,&caption,[x,y,w,28.0*s],clip,22.0*s,FG,TextAlign::Left);
         let first=(self.scroll/layout.row_h).floor() as usize;
         let last=((self.scroll+layout.body[3])/layout.row_h).ceil() as usize;
         for i in first..=last.min(rows.len()-1) {
@@ -483,7 +482,7 @@ impl DebugUi {
             let selected=Some(rows[i])==self.selected;
             let face = EditorButton([row[0], row[1]+s, row[2], row[3]-2.*s]);
             let button = |list: &mut HudDrawList, id, label: &str, enabled| {
-                face.draw(list,TEXT_ID+id,label,row_clip,22.*s,selected || contains(row,self.cursor),enabled);
+                face.draw(list,window_id+id,label,row_clip,22.*s,selected || contains(row,self.cursor),enabled);
             };
             match rows[i] {
                 Row::Reset => { button(list,604,if self.menu.is_some() {"Reset all defaults"} else {"Reset defaults"},true); continue; }
@@ -514,26 +513,26 @@ impl DebugUi {
             }
             list.rect(face.0,if selected{[0.075,0.15,0.19,0.98]}else{[0.034,0.048,0.065,0.8]},row_clip);
             let reserved=if matches!(&control.value,DebugValue::Choice{..}){262.0}else{170.0};
-            text(list,id,&control.label,[row[0]+10.0*s,row[1]+5.0*s,row[2]-reserved*s,29.0*s],row_clip,23.0*s,color,TextAlign::Left);
+            text(list,window_id,id,&control.label,[row[0]+10.0*s,row[1]+5.0*s,row[2]-reserved*s,29.0*s],row_clip,23.0*s,color,TextAlign::Left);
             match &control.value {
                 DebugValue::Toggle(value)=>{
                     let button=[row[0]+row[2]-105.0*s,row[1]+5.0*s,95.0*s,28.0*s];
-                    EditorButton(button).draw(list,TEXT_ID+id+1,if *value{"On"}else{"Off"},row_clip,22.*s,*value || contains(button,self.cursor),enabled);
+                    EditorButton(button).draw(list,window_id+id+1,if *value{"On"}else{"Off"},row_clip,22.*s,*value || contains(button,self.cursor),enabled);
                 }
                 DebugValue::Number {value,decimals,unit,..}=>{
                     let (minus,plus)=layout.buttons(row);
                     for (offset,rect,label) in [(1,minus,"-"),(2,plus,"+")] {
-                        EditorButton(rect).draw(list,TEXT_ID+id+offset,label,row_clip,22.*s,contains(rect,self.cursor),enabled);
+                        EditorButton(rect).draw(list,window_id+id+offset,label,row_clip,22.*s,contains(rect,self.cursor),enabled);
                     }
                     let shown=if control_valid(control){format!("{:.*}{}",(*decimals).min(6) as usize,value,unit)}else{"invalid".into()};
-                    text(list,id+3,&shown,[minus[0]+minus[2],row[1]+6.0*s,plus[0]-minus[0]-minus[2],28.0*s],row_clip,21.0*s,color,TextAlign::Center);
+                    text(list,window_id,id+3,&shown,[minus[0]+minus[2],row[1]+6.0*s,plus[0]-minus[0]-minus[2],28.0*s],row_clip,21.0*s,color,TextAlign::Center);
                 }
                 DebugValue::Choice {index,labels}=>{
                     let (previous,next)=layout.choice_buttons(row);
                     for (offset,rect,label) in [(1,previous,"<"),(2,next,">")] {
-                        EditorButton(rect).draw(list,TEXT_ID+id+offset,label,row_clip,22.*s,contains(rect,self.cursor),enabled);
+                        EditorButton(rect).draw(list,window_id+id+offset,label,row_clip,22.*s,contains(rect,self.cursor),enabled);
                     }
-                    text(list,id+3,labels.get(*index).map_or("invalid",String::as_str),layout.choice_value(row),row_clip,21.0*s,color,TextAlign::Center);
+                    text(list,window_id,id+3,labels.get(*index).map_or("invalid",String::as_str),layout.choice_value(row),row_clip,21.0*s,color,TextAlign::Center);
                 }
                 DebugValue::Button=>{},
             }
@@ -552,20 +551,21 @@ impl DebugUi {
             Some(Row::Menu(id))=>model.menus.iter().find(|m|m.id==id).map_or("",|m|m.help.as_str()),
             Some(Row::Back)=>"Return to the previous settings menu. Esc also goes back.",
             Some(Row::Advanced)=>"Show or hide specialized rendering controls.",
+            _ if self.identity.is_some()=>"Restore this window's default values.",
             _=>"Restore all of the host's default render settings.",
         };
         for (i,line) in [help,model.status.as_deref().unwrap_or("CPU excludes other threads; wall includes waiting."),
-                        "F2 close | Esc back | Arrows | Enter open/toggle", "Drag values | Hold +/- | Wheel scroll"].into_iter().enumerate() {
-            text(list,500+i as u64,line,[x,layout.footer_y+(8.0+i as f32*21.0)*s,w,22.0*s],footer_clip,17.5*s,if i==0{FG}else{MUTED},TextAlign::Left);
+                        &format!("F{key} close | Esc back | Arrows | Enter open/toggle"), "Drag values | Hold +/- | Wheel scroll"].into_iter().enumerate() {
+            text(list,window_id,500+i as u64,line,[x,layout.footer_y+(8.0+i as f32*21.0)*s,w,22.0*s],footer_clip,17.5*s,if i==0{FG}else{MUTED},TextAlign::Left);
         }
         crate::editor_style::style_text(list, first_text);
     }
 }
 
-fn text(list: &mut HudDrawList, id: u64, value: &str, rect: [f32; 4], clip: [f32; 4], size: f32, color: [u8; 4], align: TextAlign) {
+fn text(list: &mut HudDrawList, window_id:u64, id: u64, value: &str, rect: [f32; 4], clip: [f32; 4], size: f32, color: [u8; 4], align: TextAlign) {
     let bounds=intersection(rect,clip);
     if bounds[2]<=0.0 || bounds[3]<=0.0 {return;}
-    list.text.push(TextRun{id:TEXT_ID+id,text:value.chars().take(240).collect(),position:[rect[0],rect[1]],bounds,
+    list.text.push(TextRun{id:window_id+id,text:value.chars().take(240).collect(),position:[rect[0],rect[1]],bounds,
         font_size:size.clamp(1.0,512.0),color,font:FontFace::Body,align,width:rect[2].max(0.0)});
 }
 

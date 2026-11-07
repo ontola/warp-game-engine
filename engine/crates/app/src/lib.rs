@@ -154,11 +154,19 @@ pub trait Game {
     /// Whether any game-owned editor window is visible in this scene.
     fn scene_tuning(&self) -> Option<&editor::SceneTuning> { None }
     fn scene_tuning_mut(&mut self) -> Option<&mut editor::SceneTuning> { None }
-    fn editor_shortcut(&self, _key: u8) -> Option<(&'static str, bool)> { None }
-    fn editor_windows_open(&self) -> bool { false }
-    fn set_editor_windows_open(&mut self, _open: bool) {}
+    fn editor_shortcut(&self, key: u8) -> Option<(&'static str, bool)> {
+        if key == 12 { self.scene_tuning().map(|t| (t.title, t.ui.open)) } else { None }
+    }
+    fn editor_windows_open(&self) -> bool { self.scene_tuning().is_some_and(|t|t.ui.open) }
+    fn set_editor_windows_open(&mut self, open: bool) { if let Some(t)=self.scene_tuning_mut() { t.set_visible(open); } }
     /// Handle game shortcuts from F12 down through F5.
-    fn function_key(&mut self, _n: u8) -> bool { false }
+    fn function_key(&mut self, n: u8) -> bool {
+        if n == 12 && let Some(tuning) = self.scene_tuning_mut() {
+            tuning.set_visible(!tuning.ui.open);
+            return true;
+        }
+        false
+    }
     /// Lines (label, value) for the F3 stats overlay's Game section: what
     /// the game streams, builds or simulates. Asked for a few times a second
     /// while the overlay is open, never otherwise.
@@ -167,10 +175,10 @@ pub trait Game {
     fn quit(&self) -> bool { false }
     /// Extra menus and controls for the F2 debug menu, with ids from
     /// [`debug::GAME_IDS`] up (a control's `menu` may name an engine menu).
-    fn debug(&self) -> (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>) { self.scene_tuning().map_or_else(Default::default,|t|t.menu()) }
+    fn debug(&self) -> (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>) { Default::default() }
     /// One of the game's debug controls changed, or the menu was reset
     /// (`ResetDefaults`).
-    fn debug_action(&mut self, action: render::debug_ui::DebugAction) {if let Some(t)=self.scene_tuning_mut(){t.apply(action);}}
+    fn debug_action(&mut self, _action: render::debug_ui::DebugAction) {}
     /// Adjust input tuning (look sensitivity) from the game's settings;
     /// called before every frame's ticks.
     fn tuning(&self, _tuning: &mut Tuning) {}
@@ -863,6 +871,7 @@ impl Shell<'_> {
             let pointer = self.devices.pointer();
             let target=self.pointer_owner.unwrap_or_else(||self.windows.hit(pointer.position,size));
             let owned=match target {
+                Some(editor::scene_tuning::WINDOW_ID) => self.game.scene_tuning().is_some_and(|t|t.ui.open),
                 Some(render::debug_ui::WINDOW_ID) => self.debug.open(),
                 Some(stats::WINDOW_ID) if self.stats.open() => { self.stats.pointer(pointer,size); true }
                 _ => false,
@@ -935,7 +944,7 @@ impl Shell<'_> {
             self.stats.memory(&live.gpu);
             if self.stats.wants_info() { self.stats.set_info(render_info(&live.gpu, renderer, size)); }
         }
-        self.debug.scene_shortcut(self.game.scene_tuning().is_some());
+        if let Some(t)=self.game.scene_tuning_mut().filter(|t|t.ui.open) { t.tick(f64::from(dt),size); }
         if self.debug.open() {
             let quality_label = self.quality.as_ref().map(|q| q.label());
             self.debug.refresh(self.game.debug(), self.cfg.max_render_height, self.fps, quality_label.as_deref());
@@ -1029,9 +1038,10 @@ impl Shell<'_> {
         }
         if self.stats.open() { let game = &*self.game; self.stats.draw(&mut draw.hud, || game.debug_stats()); }
         if self.debug.open() { self.debug.draw(&mut draw.hud); }
+        if let Some(t)=self.game.scene_tuning_mut().filter(|t|t.ui.open) { t.draw(&mut draw.hud); }
         if self.hidden_layout.is_none() { self.windows.sync(&mut draw.hud); }
         if self.dev_mode {
-            self.dev_bar.draw(&mut draw.hud,self.game,self.stats.open(),self.debug.open(),self.debug.scene_page_open());
+            self.dev_bar.draw(&mut draw.hud,self.game,self.stats.open(),self.debug.open());
         }
         // Nothing to show on a window without pixels; the game keeps ticking.
         if self.zero_size || live.is_lost() { return Ok(()); }
@@ -1173,9 +1183,11 @@ impl Shell<'_> {
     /// navigation keys. True when the key was used.
     fn debug_key(&mut self, code: KeyCode, repeat: bool) -> bool {
         use render::debug_ui::DebugKey;
+        let scene = code != KeyCode::F2 && self.game.scene_tuning().is_some_and(|t|t.ui.open)
+            && (!self.debug.open() || self.windows.frontmost_of(render::debug_ui::WINDOW_ID,editor::scene_tuning::WINDOW_ID)==Some(editor::scene_tuning::WINDOW_ID));
         let key = match code {
             KeyCode::F2 if !repeat => DebugKey::Toggle,
-            _ if !self.debug.open() => return false,
+            _ if !self.debug.open() && !scene => return false,
             KeyCode::Escape if !repeat => DebugKey::Close,
             KeyCode::ArrowUp => DebugKey::Up,
             KeyCode::ArrowDown => DebugKey::Down,
@@ -1186,6 +1198,10 @@ impl Shell<'_> {
             KeyCode::PageDown => DebugKey::PageDown,
             _ => return false,
         };
+        if scene {
+            let size=self.size();
+            return self.game.scene_tuning_mut().is_some_and(|t| t.key(key,size));
+        }
         let was_open = self.debug.open();
         let quality_label = self.quality.as_ref().map(|q| q.label());
         self.debug.refresh(self.game.debug(), self.cfg.max_render_height, self.fps, quality_label.as_deref());
@@ -1229,14 +1245,6 @@ impl Shell<'_> {
                 self.stats.set_visible(stats);
                 self.game.set_editor_windows_open(game);
             }
-        }
-        if code==KeyCode::F12 && self.game.scene_tuning().is_some() {
-            if state==ElementState::Pressed && !repeat {
-                self.debug.refresh(self.game.debug(),self.cfg.max_render_height,self.fps,None);
-                self.debug.toggle_scene_page();
-                self.sync_capture();
-            }
-            return true;
         }
         match route_function_key(self.game, code, state, repeat, shift) {
             KeyRoute::Engine(action) => {
@@ -1392,7 +1400,7 @@ impl ApplicationHandler for Shell<'_> {
             }
             WindowEvent::Focused(focused) => {
                 self.focused = focused;
-                if !focused { self.bar_press=false; self.pointer_owner=None; self.pressed_mouse_buttons=0; self.cursor_position=None; self.devices.reset_mouse(); self.debug.cancel_interaction(); self.capture_mouse(false); self.devices.cursor(None); }
+                if !focused { self.bar_press=false; self.pointer_owner=None; self.pressed_mouse_buttons=0; self.cursor_position=None; self.devices.reset_mouse(); self.debug.cancel_interaction(); if let Some(t)=self.game.scene_tuning_mut(){t.ui.cancel_interaction();} self.capture_mouse(false); self.devices.cursor(None); }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_events = self.cursor_events.saturating_add(1);
@@ -1400,6 +1408,7 @@ impl ApplicationHandler for Shell<'_> {
                 if let Some(crop) = &mut self.crop { crop.cursor = p; return; }
                 self.cursor_position=Some(p);
                 self.debug.pointer_move(p);
+                if let Some(t)=self.game.scene_tuning_mut().filter(|t|t.ui.open) {t.ui.pointer_move(p);}
                 self.devices.cursor(Some(p));
             }
             WindowEvent::CursorLeft { .. } => {self.cursor_position=None; self.devices.cursor(None);},
@@ -1408,6 +1417,9 @@ impl ApplicationHandler for Shell<'_> {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                 };
+                let size=self.size();
+                if self.windows.hit(self.cursor_position,size)==Some(editor::scene_tuning::WINDOW_ID)
+                    && let Some(t)=self.game.scene_tuning_mut().filter(|t|t.ui.open) {t.scroll(lines,size); return;}
                 if self.debug.open() && self.windows.hit(self.cursor_position,self.size())==Some(render::debug_ui::WINDOW_ID) { self.debug.scroll(lines, self.size()); return; }
                 self.devices.wheel(lines);
             }
@@ -1435,6 +1447,11 @@ impl ApplicationHandler for Shell<'_> {
                 let target=self.pointer_owner.unwrap_or(hit);
                 if state==ElementState::Pressed {self.pressed_mouse_buttons|=mask;}
                 else {self.pressed_mouse_buttons &= !mask;}
+                let size=self.size();
+                if target==Some(editor::scene_tuning::WINDOW_ID) && let Some(t)=self.game.scene_tuning_mut().filter(|t|t.ui.open) {
+                    if button==MouseButton::Left { t.press(state==ElementState::Pressed,size); }
+                    return;
+                }
                 if target==Some(render::debug_ui::WINDOW_ID) && self.debug.open() {
                     if button != MouseButton::Left {return;}
                     let action = if state == ElementState::Pressed { self.debug.pointer_down(self.size()).1 } else { self.debug.pointer_up() };
