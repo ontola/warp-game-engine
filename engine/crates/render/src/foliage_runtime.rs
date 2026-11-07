@@ -272,9 +272,17 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
         if population.slots[i].is_none(){let owner=&mut scene.instances[proxies[i].meta[0]as usize];owner.flags=PART_WIND;owner.sphere[3]=-1.;}
         Instance {rows:rows(m),scale:[(row*col).sqrt(),0.,templates[t.variant].proxy_work,templates[t.variant].proxy_work],info:[root_nodes[t.variant],population.generations[i],handles[t.variant].pose_range.start as u32,u32::from(population.slots[i].is_none())]}
     }).collect();
-    let raster_budget=forest.instances.iter().map(|v|work[v.meta[1]as usize]as u64).sum::<u64>().clamp(1,8<<20)as u32;
+    // Every tree at its coarsest proxy, plus room for nearer trees to refine:
+    // without it the far forest alone fills the splats and the shared camera
+    // cut coarsens the near trees too (Joep's 13 px voxels in the forest).
+    let env=|name:&str,default:u64|std::env::var(name).ok().and_then(|v|v.parse::<u64>().ok()).unwrap_or(default);
+    let raster_budget=forest.instances.iter().map(|v|work[v.meta[1]as usize]as u64).sum::<u64>()
+        .max(env("KERN_RASTER_FLOOR",8<<20)).clamp(1,16<<20)as u32;
+    // Source clusters bound the camera cut as well: unbounded, a forest
+    // floor reserved 6.7M clusters and culling them took most of a 106 ms frame.
+    let source_cluster_budget=env("KERN_SOURCE_CLUSTERS",2<<20).clamp(1,crate::foliage_select::DEFAULT_SOURCE_CLUSTER_BUDGET as u64)as u32;
     scene.voxel_forest=Some(forest);scene.voxel_proxies=trees.len()as u32*2;
-    scene.gpu_forest=Some(Spec {page_budget:Default::default(),source_budget:Default::default(),nodes,roots,branches,representations,proxies,templates,population,first_owner,slots,raster_budget,source_cluster_budget:crate::foliage_select::DEFAULT_SOURCE_CLUSTER_BUDGET,error:policy.max_error_pixels.max(0.25)});
+    scene.gpu_forest=Some(Spec {page_budget:Default::default(),source_budget:Default::default(),nodes,roots,branches,representations,proxies,templates,population,first_owner,slots,raster_budget,source_cluster_budget,error:policy.max_error_pixels.max(0.25)});
     Ok(())
 }
 
