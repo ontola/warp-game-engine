@@ -22,3 +22,5 @@ cargo run -p growing-guns-app -- gun-review --grip --model knight --card sniper 
 ```
 
 Inspect `clip.png` and `grip.png`. Other roster models are `paladin` and `ch10`. Omit the card for the base gun. Change time to sample the clip in seconds and pitch to aim in degrees. Wrist orientation, finger closure and a timed reach-to-pick-up action remain separate authoring tasks.
+
+Add `--growth --card sniper` to the grip review to capture 25 frames over the two-second weapon morph. The camera stays fixed relative to the character, and clip time stays fixed so the images isolate the grip response.
