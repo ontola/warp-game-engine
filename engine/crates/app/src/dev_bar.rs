@@ -52,10 +52,10 @@ impl DevBar {
             let (name, on) = match n {
                 1 => ("Warp Dev Mode", true),
                 2 => ("Graphics", graphics),
+                3 => ("Profiler", stats),
                 4 => ("Screenshot", false),
                 _ => match game.editor_shortcut(n) {
                     Some(item) => item,
-                    None if n == 3 => ("Profiler", stats),
                     None => continue,
                 },
             };

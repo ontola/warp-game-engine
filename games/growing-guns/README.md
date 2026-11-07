@@ -55,9 +55,9 @@ missing.
 | Wave survival (coop) | Done | `--coop`: grunts, snipers, grenadiers, fraggers, bombers, revives |
 | Combat audio | Added | Explosions louder than weapon reports, with bass reserved for explosive impacts; headroom for stacked weapons, one synth per report with a room send, bounded overlapping reports/bass and size-dependent brown-noise rumbles up to 3.2 seconds, preserving the deep Godot-style aftershock. Own shots bypass loudness culling. Offline spam regression covers uzi ×2 + bazooka ×2; receiver/headset listening remains a playtest check |
 | Music | Done | Godot's stems, following the match |
-| Engine controls | Done | Windows launches without a terminal, with an icon during loading; fullscreen by default (`--windowed` opts out). Always-reserved F2 render/debug panel, F5 fullscreen and F4 feedback capture, ahead of game menus, typing and replay. F3 remains game debug; F11 replay |
+| Engine controls | Done | Windows launches without a terminal, with an icon during loading; fullscreen by default (`--windowed` opts out). Always-reserved F2 render/debug panel, Alt+Enter fullscreen and F4 feedback capture, ahead of game menus, typing and replay. F3 profiler, F10 match tools, F11 replay, F12 explosion tuning |
 | Gamepad Party | Done | Party settings, the next round's modifier, live knobs, each player's own stick sensitivity, the session assistant (MCP), loading and pause |
-| Debug card editing | Done | F3: LMB adds; RMB removes one owned copy and updates stats. Start/pause menus include RESTART MATCH. |
+| Debug card editing | Done | F10: LMB adds; RMB removes one owned copy and updates stats. Start/pause menus include RESTART MATCH. |
 | Menu backdrop | Not yet | Godot's cinematic lava fort behind the start menu |
 | After elimination | Done | After the card pick, humans receive a random howitzer or giant crossbow at a seeded audience seat; ballistic shells (4.5 s reload, 10 m blast) or fast lethal bolts (3 s reload, no blast). Replaces roaming ghosts/mines. |
 
@@ -92,7 +92,7 @@ cargo run --release -p growing-guns-app -- play --join TICKET
 
 Keyboard and mouse: WASD, mouse, Space jump, left mouse fire,
 right mouse special, R reload. Pad: sticks, A/LB jump, RT fire,
-LT/B special, X reload. F2 always opens the engine render/debug panel, F5 toggles fullscreen, and F4 saves a screenshot plus recent gameplay; F11 opens its replay. F3 (Back + Start on a pad)
+LT/B special, X reload. F2 always opens the engine render/debug panel, Alt+Enter toggles fullscreen, and F4 saves a screenshot plus recent gameplay; F11 opens its replay. F10 (Back + Start on a pad)
 opens the debug overlay: give cards, set specials, drop pickups, pick the
 sky, force a modifier, start the lava leak, next round, pause the bots.
 
@@ -359,7 +359,7 @@ network, hardware-controller, Quest or performance benchmark was run for this
 change. Tuning uses 0.8 N s per damage point, capped at 40 N s per contact.
 
 Start and pause menus offer RESTART MATCH (host/offline only), clearing scores
-and cards. In the F3 CARDS tab, left-click adds a card and right-click removes
+and cards. In the F10 CARDS tab, left-click adds a card and right-click removes
 one copy from the selected player, rebuilding stats immediately.
 
 Lava death tint clears after the card pick when playing as a ghost. Large
@@ -501,3 +501,10 @@ Airstrike visual tuning: rocket length increased65% without increasing diameter;
 Rocket exhaust: soft warm/white engine bloom replaces hard flare bars; large lens ghosts reduced. Engine/plume bloom has deterministic smooth random24Hz intensity surges. Lit world-space smoke persists3s behind the flight path, at most4 active trails and3 billows per2 simulation ticks per trail, under the shared puff cap. Inbound rumble increased6dB and audible distance scale58m to80m; existing master limiting retained.
 
 Ground blast dust: small lit smoke billows sweep outward along nearby solid ground, rapidly decelerate and fade in about a second. Ground/wall checks skip lava, drops and obstructions; up to 100 irregularly scattered puffs per large blast and 384 live dust puffs. Motion is GPU-driven and shares the existing smoke lighting, with six proxy vertices and six density samples per dust puff.
+
+### Live explosion editing
+
+F12 opens Explosions. F10 opens Match tools (also Back + Start on a controller). F11 opens Replay. F3 opens Warp's profiler.
+With `play --live`, the live `command` tool accepts `fx` to read the sliders and `fx fireball_size 1.5` to change the next conventional blast during the match.
+Slider and command edits are session-local. **Save changes for LLM** exports the diff. Edit
+`mods/base/explosion_editor.luau` to persist defaults or expose new sliders and map them to the effect. The running game reloads the file.

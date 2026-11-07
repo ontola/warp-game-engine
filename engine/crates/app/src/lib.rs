@@ -276,6 +276,16 @@ pub fn engine_shortcut(code: KeyCode) -> Option<EngineShortcut> {
 #[derive(Debug, PartialEq, Eq)]
 enum KeyRoute { Engine(EngineShortcut), Stats { shift: bool }, Consumed, Other }
 
+fn restored_panel_open(code: KeyCode, graphics: bool, profiler: bool, game_open: impl Fn(u8) -> bool) -> bool {
+    use KeyCode::*;
+    match code {
+        F2 => graphics,
+        F3 => profiler,
+        _ => [F5,F6,F7,F8,F9,F10,F11,F12].iter().position(|&key| key == code)
+            .is_some_and(|i|game_open(i as u8 + 5)),
+    }
+}
+
 /// Route every function-key edge before either the game or text/navigation handlers.
 fn route_function_key(game: &mut dyn Game, code: KeyCode, state: ElementState, repeat: bool, shift: bool) -> KeyRoute {
     let press = state == ElementState::Pressed && !repeat;
@@ -730,7 +740,7 @@ struct Shell<'g> {
     // Some(None) captures a drag begun on the scene, even across a window.
     pointer_owner: Option<Option<u64>>,
     pressed_mouse_buttons: u8,
-    hidden_layout: Option<[bool;3]>,
+    hidden_layout: Option<[bool;4]>,
     dev_mode: bool,
     dev_bar: dev_bar::DevBar,
     bar_press: bool,
@@ -1240,27 +1250,34 @@ impl Shell<'_> {
     fn shortcut(&mut self, code:KeyCode, state:ElementState, repeat:bool, shift:bool) -> bool {
         if state==ElementState::Pressed && !repeat && matches!(code,KeyCode::F2|KeyCode::F3|KeyCode::F5|KeyCode::F6|KeyCode::F7|KeyCode::F8|KeyCode::F9|KeyCode::F10|KeyCode::F11|KeyCode::F12) {
             self.dev_mode=true;
-            if let Some([debug,stats,game])=self.hidden_layout.take() {
+            if let Some([debug,stats,game,scene])=self.hidden_layout.take() {
                 self.debug.set_visible(debug);
                 self.stats.set_visible(stats);
                 self.game.set_editor_windows_open(game);
+                if let Some(t)=self.game.scene_tuning_mut() { t.set_visible(scene); }
+                // A shortcut from hidden Dev Mode is a request to show that window.
+                if restored_panel_open(code, debug, stats, |key| self.game.editor_shortcut(key).is_some_and(|(_,open)|open)) {
+                    self.sync_capture();
+                    return true;
+                }
             }
         }
         match route_function_key(self.game, code, state, repeat, shift) {
             KeyRoute::Engine(action) => {
                 match action {
                     EngineShortcut::AllMenus => {
-                        let visible=[self.debug.open(),self.stats.open(),self.game.editor_windows_open()];
+                        let visible=[self.debug.open(),self.stats.open(),self.game.editor_windows_open(),self.game.scene_tuning().is_some_and(|t|t.is_open())];
                         let restore=if self.dev_mode {
                             self.hidden_layout=Some(visible);
-                            [false;3]
+                            [false;4]
                         } else {
-                            self.hidden_layout.take().unwrap_or([false;3])
+                            self.hidden_layout.take().unwrap_or([false;4])
                         };
                         self.dev_mode=!self.dev_mode;
                         self.debug.set_visible(restore[0]);
                         self.stats.set_visible(restore[1]);
                         self.game.set_editor_windows_open(restore[2]);
+                        if let Some(t)=self.game.scene_tuning_mut() { t.set_visible(restore[3]); }
                         self.pointer_owner=None;
                         self.pressed_mouse_buttons=0;
                         self.devices.reset_mouse();
@@ -1493,6 +1510,12 @@ impl ApplicationHandler for Shell<'_> {
                     let ev = match code {
                         KeyCode::Escape if !event.repeat => Some(TextEvent::Escape),
                         KeyCode::Enter | KeyCode::NumpadEnter if !event.repeat => Some(TextEvent::Enter),
+                        KeyCode::KeyA if cmd => Some(TextEvent::SelectAll),
+                        KeyCode::KeyX if cmd && !event.repeat => Some(TextEvent::Cut),
+                        KeyCode::ArrowLeft if shift => Some(TextEvent::SelectLeft),
+                        KeyCode::ArrowRight if shift => Some(TextEvent::SelectRight),
+                        KeyCode::Home if shift => Some(TextEvent::SelectHome),
+                        KeyCode::End if shift => Some(TextEvent::SelectEnd),
                         KeyCode::Backspace => Some(TextEvent::Backspace),
                         KeyCode::Delete => Some(TextEvent::Delete),
                         KeyCode::ArrowLeft => Some(TextEvent::Left),
@@ -1556,6 +1579,13 @@ mod shortcut_tests {
         fn draw(&mut self, _: &mut Frame) -> Result<Draw, String> { unreachable!() }
         fn text_input(&self) -> bool { self.typing }
         fn function_key(&mut self, n: u8) -> bool { self.received.push(n); true }
+    }
+    #[test]
+    fn hidden_shortcut_reveals_an_already_open_panel() {
+        assert!(restored_panel_open(KeyCode::F3, false, true, |_|false));
+        assert!(!restored_panel_open(KeyCode::F3, true, false, |_|true));
+        assert!(restored_panel_open(KeyCode::F12, false, false, |k|k==12));
+        assert!(!restored_panel_open(KeyCode::F10, false, false, |k|k==12));
     }
     #[test]
     fn slow_render_leaves_time_to_drain_mouse_backlog() {

@@ -10,8 +10,8 @@ pub(crate) const WINDOW_ID: u64 = 0x5343_454e_4500_0000;
 const SAVE: u32 = crate::debug::GAME_IDS + 1;
 const FIRST: u32 = crate::debug::GAME_IDS + 2;
 
-pub struct SceneControl {
-    pub label: &'static str,
+pub struct SceneControl<L = &'static str> {
+    pub label: L,
     pub default: f64,
     pub min: f64,
     pub max: f64,
@@ -20,7 +20,7 @@ pub struct SceneControl {
 pub struct SceneTuning {
     game: &'static str,
     pub title: &'static str,
-    specs: &'static [SceneControl],
+    specs: Vec<SceneControl<String>>,
     values: Vec<f64>,
     notice: String,
     pub(crate) ui: DebugUi,
@@ -28,13 +28,33 @@ pub struct SceneTuning {
 }
 impl SceneTuning {
     pub fn new(game: &'static str, title: &'static str, specs: &'static [SceneControl]) -> Self {
+        Self::from_controls(
+            game,
+            title,
+            specs
+                .iter()
+                .map(|s| SceneControl {
+                    label: s.label.to_owned(),
+                    default: s.default,
+                    min: s.min,
+                    max: s.max,
+                    step: s.step,
+                })
+                .collect(),
+        )
+    }
+    pub fn from_controls(
+        game: &'static str,
+        title: &'static str,
+        specs: Vec<SceneControl<String>>,
+    ) -> Self {
         let mut tuning = Self {
             model: Default::default(),
             ui: DebugUi::for_window(WINDOW_ID, 12, title),
             game,
             title,
-            specs,
             values: specs.iter().map(|p| p.default).collect(),
+            specs,
             notice: String::new(),
         };
         tuning.refresh();
@@ -43,7 +63,24 @@ impl SceneTuning {
     pub fn value(&self, index: usize) -> f64 {
         self.values[index]
     }
-    pub(crate) fn set_visible(&mut self, open: bool) {
+    pub fn is_open(&self) -> bool {
+        self.ui.open
+    }
+    pub fn replace_controls(&mut self, specs: Vec<SceneControl<String>>, values: Vec<f64>) {
+        assert_eq!(specs.len(), values.len());
+        self.ui.cancel_interaction();
+        self.specs = specs;
+        self.values = values;
+        self.notice.clear();
+        self.refresh();
+    }
+    pub fn set_value(&mut self, index: usize, value: f64) {
+        self.apply(DebugAction::SetNumber {
+            id: FIRST + index as u32,
+            value,
+        });
+    }
+    pub fn set_visible(&mut self, open: bool) {
         self.ui.open = open;
         self.ui.cancel_interaction();
     }
@@ -82,7 +119,7 @@ impl SceneTuning {
             let label = if (value - spec.default).abs() > 1e-8 {
                 format!("* {} (was {:.2})", spec.label, spec.default)
             } else {
-                spec.label.into()
+                spec.label.clone()
             };
             controls.push(DebugControl {
                 id: FIRST + i as u32,
@@ -127,7 +164,7 @@ impl SceneTuning {
                 }
             }
             DebugAction::ResetDefaults => {
-                for (v, spec) in self.values.iter_mut().zip(self.specs) {
+                for (v, spec) in self.values.iter_mut().zip(&self.specs) {
                     *v = spec.default;
                 }
                 self.notice.clear();

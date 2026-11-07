@@ -13,7 +13,7 @@ pub enum TextEvent {
     /// Ctrl/Cmd+V: the clipboard's text.
     Paste(String),
     /// Ctrl/Cmd+C.
-    Copy,
+    Copy, Cut, SelectAll, SelectLeft, SelectRight, SelectHome, SelectEnd,
     Backspace,
     Delete,
     Left,
@@ -37,6 +37,8 @@ impl TextEvent {
             "end" => TextEvent::End,
             "enter" | "return" => TextEvent::Enter,
             "escape" | "esc" => TextEvent::Escape,
+            "selectall" => TextEvent::SelectAll,
+            "cut" => TextEvent::Cut,
             "copy" => TextEvent::Copy,
             "paste" => TextEvent::Paste(crate::clipboard::get()),
             other => return Err(format!("unknown text key {other}")),
@@ -55,6 +57,9 @@ pub struct TextField {
     text: String,
     /// Byte offset of the caret, on a char boundary.
     caret: usize,
+    anchor: usize,
+    last_click: Option<(std::time::Instant,[f32;2])>,
+    layout: std::cell::Cell<Option<(f32,FontFace,f32)>>,
     /// Most characters kept (0: no limit).
     pub max_chars: usize,
     /// Seconds since the last edit, for the caret blink.
@@ -68,6 +73,8 @@ impl TextField {
     pub fn set(&mut self, text: &str) {
         self.text.clear();
         self.caret = 0;
+        self.anchor = 0;
+        self.last_click = None;
         self.insert(text);
         self.blink = 0.0;
     }
@@ -75,8 +82,9 @@ impl TextField {
     pub fn is_empty(&self) -> bool { self.text.is_empty() }
 
     fn insert(&mut self, s: &str) -> bool {
+        if s.is_empty() { return false; }
+        let mut changed = self.delete_selection();
         let mut n = self.text.chars().count();
-        let mut changed = false;
         for ch in s.chars() {
             if self.max_chars > 0 && n >= self.max_chars { break; }
             let ch = if ch.is_control() { ' ' } else { ch };
@@ -85,26 +93,81 @@ impl TextField {
             n += 1;
             changed = true;
         }
+        self.anchor = self.caret;
         changed
     }
 
     fn prev(&self) -> Option<usize> { self.text[..self.caret].char_indices().next_back().map(|(i, _)| i) }
     fn next(&self) -> Option<usize> { self.text[self.caret..].chars().next().map(|c| self.caret + c.len_utf8()) }
 
+    fn selection(&self) -> std::ops::Range<usize> {
+        self.anchor.min(self.caret)..self.anchor.max(self.caret)
+    }
+    fn delete_selection(&mut self) -> bool {
+        let range=self.selection();
+        if range.is_empty() { return false; }
+        self.caret=range.start;
+        self.anchor=range.start;
+        self.text.replace_range(range,"");
+        true
+    }
+    /// Place or extend the selection using the last drawn font and scroll offset.
+    pub fn pointer_select(&mut self, xy:[f32;2], pressed:bool) {
+        let Some((left,font,size))=self.layout.get() else {return;};
+        self.blink=0.;
+        if pressed {
+            let now=std::time::Instant::now();
+            if self.last_click.is_some_and(|(at,p)| now.duration_since(at).as_millis()<=500
+                && (p[0]-xy[0]).abs()<=5. && (p[1]-xy[1]).abs()<=5.) {
+                self.last_click=None;
+                self.apply(&TextEvent::SelectAll);
+                return;
+            }
+            self.last_click=Some((now,xy));
+        }
+        let x=xy[0]-left;
+        let indices:Vec<_>=self.text.char_indices().map(|(i,_)|i).chain(std::iter::once(self.text.len())).collect();
+        let i=indices.partition_point(|&end|width_with_spaces(&self.text[..end],font,size)<x);
+        let end=indices[i.min(indices.len()-1)];
+        let start=indices[i.saturating_sub(1)];
+        let middle=0.5*(width_with_spaces(&self.text[..start],font,size)+width_with_spaces(&self.text[..end],font,size));
+        self.caret=if x<middle {start} else {end};
+        if pressed { self.anchor=self.caret; }
+    }
+
     /// Apply one event.
     pub fn apply(&mut self, ev: &TextEvent) -> FieldEvent {
         self.blink = 0.0;
         let changed = match ev {
             TextEvent::Insert(s) | TextEvent::Paste(s) => self.insert(s),
-            TextEvent::Backspace => match self.prev() { Some(i) => { self.text.replace_range(i..self.caret, ""); self.caret = i; true } None => false },
-            TextEvent::Delete => match self.next() { Some(j) => { self.text.replace_range(self.caret..j, ""); true } None => false },
-            TextEvent::Left => { if let Some(i) = self.prev() { self.caret = i; } false }
-            TextEvent::Right => { if let Some(j) = self.next() { self.caret = j; } false }
-            TextEvent::Home => { self.caret = 0; false }
-            TextEvent::End => { self.caret = self.text.len(); false }
+            TextEvent::Delete | TextEvent::Backspace => {
+                if self.anchor==self.caret {
+                    self.anchor=if matches!(ev,TextEvent::Backspace) {self.prev()} else {self.next()}.unwrap_or(self.caret);
+                }
+                self.delete_selection()
+            }
+            TextEvent::SelectAll => {self.anchor=0;self.caret=self.text.len();false}
+            TextEvent::Left | TextEvent::Right | TextEvent::Home | TextEvent::End |
+            TextEvent::SelectLeft | TextEvent::SelectRight | TextEvent::SelectHome | TextEvent::SelectEnd => {
+                self.caret=match ev {
+                    TextEvent::Left if self.anchor!=self.caret => self.selection().start,
+                    TextEvent::Right if self.anchor!=self.caret => self.selection().end,
+                    TextEvent::Left|TextEvent::SelectLeft => self.prev().unwrap_or(0),
+                    TextEvent::Right|TextEvent::SelectRight => self.next().unwrap_or(self.text.len()),
+                    TextEvent::Home|TextEvent::SelectHome => 0,
+                    _=>self.text.len()
+                };
+                if matches!(ev,TextEvent::Left|TextEvent::Right|TextEvent::Home|TextEvent::End){self.anchor=self.caret;}
+                false
+            }
+            TextEvent::Cut => {
+                if self.anchor!=self.caret { crate::clipboard::set(&self.text[self.selection()]); }
+                self.delete_selection()
+            }
             TextEvent::Enter => return FieldEvent::Submit,
             TextEvent::Escape => return FieldEvent::Cancel,
-            TextEvent::Copy => { crate::clipboard::set(&self.text); return FieldEvent::Copied; }
+            TextEvent::Copy => { let range=self.selection();
+                crate::clipboard::set(if range.is_empty(){&self.text}else{&self.text[range]}); return FieldEvent::Copied; }
         };
         if changed { FieldEvent::Changed } else { FieldEvent::None }
     }
@@ -122,6 +185,14 @@ impl TextField {
         let top = rect[1] + (rect[3] - size * 1.2) * 0.5 - size * 0.04;
         let cx = self.caret_x(font, size);
         let scroll = (cx - rect[2] + size * 0.3).max(0.0);
+        let left=rect[0]-scroll;
+        self.layout.set(Some((left,font,size)));
+        let sel=self.selection();
+        if caret.is_some() && !sel.is_empty() {
+            let x=width_with_spaces(&self.text[..sel.start],font,size);
+            let end=width_with_spaces(&self.text[..sel.end],font,size);
+            d.rect([left+x,rect[1]+rect[3]*0.12,end-x,rect[3]*0.76],[0.10,0.38,0.57,0.9],rect);
+        }
         let (text, c) = if self.text.is_empty() { (placeholder.0, placeholder.1) } else { (self.text.as_str(), color) };
         if !text.is_empty() {
             d.text.push(TextRun { id, text: text.into(), position: [rect[0] - scroll, top], bounds: rect, font_size: size, color: c, font, align: TextAlign::Left,
@@ -168,6 +239,24 @@ mod tests {
         assert_eq!(f.apply(&TextEvent::Left), FieldEvent::None);
         assert_eq!(f.apply(&TextEvent::Enter), FieldEvent::Submit);
         assert_eq!(f.apply(&TextEvent::Escape), FieldEvent::Cancel);
+    }
+
+    #[test]
+    fn double_click_and_keyboard_selections_replace_whole_characters() {
+        let mut f=TextField::new(3);
+        f.set("a日é");
+        f.apply(&TextEvent::SelectLeft);
+        assert_eq!(&f.text[f.selection()],"é");
+        f.apply(&TextEvent::Paste("x".into()));
+        assert_eq!(f.text(),"a日x");
+        f.layout.set(Some((0., FontFace::Body, 16.)));
+        f.pointer_select([8.,4.],true);
+        f.pointer_select([8.,4.],true);
+        assert_eq!(&f.text[f.selection()],"a日x");
+        f.apply(&ins("b"));
+        f.apply(&TextEvent::SelectAll);
+        f.apply(&TextEvent::Delete);
+        assert!(f.is_empty());
     }
 
     #[test]
