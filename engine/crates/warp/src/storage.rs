@@ -30,13 +30,101 @@ pub struct Document {
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, Error>;
 
+// GameNight publishes a document with one object definition. A JSON Schema
+// validator only applies that definition when the root references it.
+fn read_schema(path: &Path, kind: &str) -> Result<Json> {
+    let mut schema: Json =
+        serde_json::from_slice(&fs::read(path)?).map_err(|e| format!("{}: {e}", path.display()))?;
+    if kind == "save"
+        && let Some(root) = schema.as_object_mut()
+    {
+        if let Some(defs) = root.get("$defs").and_then(Json::as_object)
+            && defs.len() == 1
+            && root.keys().all(|key| {
+                matches!(
+                    key.as_str(),
+                    "$schema" | "$id" | "$comment" | "$defs" | "title" | "description" | "examples"
+                ) || key.starts_with("x-")
+                    || (key == "type" && root[key] == "object")
+            })
+            && let Some((name, def)) = defs.iter().next()
+            && def.get("type").is_none_or(|ty| ty == "object")
+            && def.get("properties").is_some()
+        {
+            // A local anchor expressed as a URI fragment of a JSON Pointer.
+            let token = name.replace('~', "~0").replace('/', "~1");
+            let fragment: String = token
+                .bytes()
+                .map(|b| match b {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                        char::from(b).to_string()
+                    }
+                    _ => format!("%{b:02X}"),
+                })
+                .collect();
+            root.insert("type".into(), "object".into());
+            root.insert("$ref".into(), format!("#/$defs/{fragment}").into());
+        }
+    }
+    Ok(schema)
+}
+
+fn schema_documents(dir: &Path) -> Result<BTreeMap<String, Vec<Json>>> {
+    let mut documents = BTreeMap::new();
+    for kind in ["save", "settings", "profile"] {
+        let current = dir.join(format!("{kind}-schema.json"));
+        if !current.try_exists()? {
+            continue;
+        }
+        let history = dir.join("schema-history").join(kind);
+        let mut versions = Vec::new();
+        if history.try_exists()? {
+            let mut numbered = BTreeMap::new();
+            for entry in fs::read_dir(history)? {
+                let path = entry?.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                let version: usize = path
+                    .file_stem()
+                    .and_then(|n| n.to_str())
+                    .and_then(|n| n.parse().ok())
+                    .ok_or_else(|| format!("expected a numbered schema: {}", path.display()))?;
+                if numbered.insert(version, path).is_some() {
+                    return Err(format!("duplicate {kind} v{version}").into());
+                }
+            }
+            for (version, path) in numbered {
+                if version != versions.len() + 1 {
+                    return Err(
+                        format!("gap in {kind} schema history at v{}", versions.len() + 1).into(),
+                    );
+                }
+                versions.push(read_schema(&path, kind)?);
+            }
+        }
+        versions.push(read_schema(&current, kind)?);
+        documents.insert(kind.to_owned(), versions);
+    }
+    let legacy = dir.join("storage.json");
+    if legacy.try_exists()? {
+        if !documents.is_empty() {
+            return Err("remove storage.json after moving its schemas to standalone files".into());
+        }
+        return Ok(serde_json::from_slice(&fs::read(legacy)?)?);
+    }
+    if documents.is_empty() {
+        return Err("storage enabled without a save-schema.json, settings-schema.json or profile-schema.json".into());
+    }
+    Ok(documents)
+}
+
 impl Storage {
     pub fn open(dir: &Path, game: &str, location: Location<'_>) -> Result<Self> {
         if game.is_empty() {
             return Err("persistent storage needs a stable id in game.toml".into());
         }
-        let manifest: BTreeMap<String, Vec<Json>> =
-            serde_json::from_slice(&fs::read(dir.join("storage.json"))?)?;
+        let manifest = schema_documents(dir)?;
         let mut schemas = BTreeMap::new();
         for (kind, versions) in manifest {
             if !matches!(kind.as_str(), "save" | "profile" | "settings") || versions.is_empty() {

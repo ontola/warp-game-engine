@@ -246,7 +246,7 @@ declare state: { [any]: any }
 
 
 -- Versioned local JSON documents. Enable storage in game.toml and declare the
--- schema versions in storage.json. Use revision 0 for an unused slot.
+-- schema in save-schema.json (settings-schema.json or profile-schema.json for those kinds). Use revision 0 for an unused slot.
 export type StorageKind = "save" | "settings" | "profile"
 declare storage: {
     read: (kind: StorageKind, slot: string) -> {version: number, revision: number, data: any}?,
