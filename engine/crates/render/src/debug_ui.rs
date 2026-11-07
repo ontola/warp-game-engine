@@ -99,9 +99,7 @@ pub struct DebugUi {
     scroll: f32,
     size: [u32; 2],
     interaction: Option<Interaction>,
-    // Fractions of the output keep the window reachable when moving between displays.
-    window: Option<[f32; 4]>,
-    window_drag: Option<WindowDrag>,
+    window: crate::editor_window::EditorWindow,
     menu: Option<u32>,
     navigation: Vec<Navigation>,
 }
@@ -119,14 +117,6 @@ struct NumberSpec { min: f64, max: f64, step: f64 }
 enum Interaction {
     Hold { id:u32, direction:i32, origin:f64, last:f64, elapsed:f64, spec:NumberSpec },
     Drag { id:u32, origin:f64, last:f64, start_x:f32, spec:NumberSpec },
-}
-
-#[derive(Clone, Copy, Debug)]
-struct WindowDrag {
-    origin: [f32; 2],
-    rect: [f32; 4],
-    resize: bool,
-    minimum: [f32; 2],
 }
 
 const HOLD_DELAY: f64 = 0.35;
@@ -216,25 +206,17 @@ impl Layout {
     fn minimum(self) -> [f32; 2] {
         [450.*self.scale,self.body[1]-self.panel[1]+100.*self.scale+2.*self.row_h]
     }
-    fn placed(mut self, relative: [f32; 4], size: [u32; 2]) -> Self {
-        let [sw,sh] = size.map(|v| v as f32);
-        let [min_w,min_h] = self.minimum();
-        let w = (relative[2]*sw).clamp(min_w.min(sw),sw);
-        let h = (relative[3]*sh).clamp(min_h.min(sh),sh);
-        let x = (relative[0]*sw).clamp(0.,sw-w);
-        let y = (relative[1]*sh).clamp(0.,sh-h);
+    fn placed(mut self, rect:[f32;4]) -> Self {
+        let [x,y,w,h]=rect;
         let header = self.body[1]-self.panel[1];
         self.panel = [x,y,w,h];
         self.body = [x+12.*self.scale,y+header,(w-24.*self.scale).max(0.),(h-header-100.*self.scale).max(0.)];
         self.footer_y = self.body[1]+self.body[3];
         self
     }
-    fn grip(self) -> [f32;4] {
-        let [x,y,w,h] = self.panel;
-        let g = 22.*self.scale;
-        [x+w-g,y+h-g,g,g]
-    }
-    fn close(self) -> [f32; 4] { [self.panel[0]+self.panel[2]-38.0*self.scale,self.panel[1]+5.0*self.scale,28.0*self.scale,28.0*self.scale] }
+    #[cfg(test)]
+    fn grip(self) -> [f32;4] { crate::editor_window::WindowFrame {rect:self.panel,scale:self.scale}.grip().0 }
+
     fn row(self, index: usize, scroll: f32) -> [f32; 4] {
         [self.body[0],self.body[1]+index as f32*self.row_h-scroll,self.body[2],self.row_h]
     }
@@ -264,26 +246,15 @@ impl DebugUi {
     pub fn pointer_move(&mut self, cursor: [f32; 2]) {
         if !cursor.iter().all(|v|v.is_finite()) { return; }
         self.cursor=cursor;
-        if let Some(drag)=self.window_drag {
-            let [sw,sh]=self.size.map(|v|v.max(1) as f32);
-            let [x,y,w,h]=drag.rect;
-            let dx=cursor[0]-drag.origin[0];
-            let dy=cursor[1]-drag.origin[1];
-            let rect=if drag.resize {
-                [x,y,(w+dx).clamp(drag.minimum[0].min(sw-x),sw-x),(h+dy).clamp(drag.minimum[1].min(sh-y),sh-y)]
-            } else {
-                [(x+dx).clamp(0.,(sw-w).max(0.)),(y+dy).clamp(0.,(sh-h).max(0.)),w,h]
-            };
-            self.window=Some([rect[0]/sw,rect[1]/sh,rect[2]/sw,rect[3]/sh]);
-        }
+        self.window.move_to(cursor);
     }
 
     /// Cancel capture on focus loss, stage/UI replacement or platform pointer
     /// cancellation. No queued repeat or drag action survives this call.
-    pub fn cancel_interaction(&mut self) { self.interaction=None; self.window_drag=None; }
+    pub fn cancel_interaction(&mut self) { self.interaction=None; self.window.cancel(); }
 
     pub fn pointer_up(&mut self) -> DebugResponse {
-        let captured=self.interaction.is_some() || self.window_drag.is_some();
+        let captured=self.interaction.is_some() || self.window.dragging();
         self.cancel_interaction();
         DebugResponse{consumed:captured||self.open,action:None}
     }
@@ -303,7 +274,8 @@ impl DebugUi {
             self.menu=None;self.navigation.clear();self.selected=None;self.scroll=0.0;self.cancel_interaction();
         }
         let layout=Layout::new(size,model,self.advanced_open,self.menu);
-        let layout=self.window.map_or(layout,|rect|layout.placed(rect,size));
+        let rect=self.window.frame(size,layout.panel,layout.minimum(),layout.scale).rect;
+        let layout=layout.placed(rect);
         let rows=visible_rows(model,self.advanced_open,self.menu);
         self.normalize(layout,&rows);
         (layout,rows)
@@ -409,15 +381,11 @@ impl DebugUi {
         self.cancel_interaction();
         let (layout,rows)=self.sync(size,model);
         if !self.open || !contains(layout.panel,self.cursor) { return DebugResponse::default(); }
-        if contains(layout.close(),self.cursor) {
-            self.open=false;
-            return DebugResponse{consumed:true,action:None};
-        }
-        let [x,y,w,_]=layout.panel;
-        let resize=contains(layout.grip(),self.cursor);
-        if resize || contains([x,y,w,34.*layout.scale],self.cursor) {
-            self.window_drag=Some(WindowDrag {origin:self.cursor,rect:layout.panel,resize,minimum:layout.minimum()});
-            return DebugResponse {consumed:true,action:None};
+        let frame=crate::editor_window::WindowFrame{rect:layout.panel,scale:layout.scale};
+        match self.window.pointer(size,frame,layout.minimum(),Some(self.cursor),true,true) {
+            crate::editor_window::WindowEvent::Close => { self.open=false;return DebugResponse{consumed:true,action:None}; }
+            crate::editor_window::WindowEvent::Handled => return DebugResponse{consumed:true,action:None},
+            _=>{}
         }
         let mut action=None;
         if contains(layout.body,self.cursor) {
@@ -491,15 +459,9 @@ impl DebugUi {
     pub fn draw(&mut self, list: &mut HudDrawList, model: &DebugModel) {
         let (layout,rows)=self.sync(list.size,model);
         if !self.open || list.size.contains(&0) {return;}
-        list.begin_overlay();
         let s=layout.scale; let p=layout.panel; let clip=p;
-        // This is an input-owning overlay: underlying menu text must not show
-        // through even when linear-light alpha blending makes it conspicuous.
-        crate::editor_style::panel(list, p, s, clip);
+        crate::editor_window::WindowFrame { rect:p, scale:s }.draw(list,TEXT_ID,10,"Warp editor");
         let x=p[0]+16.0*s; let w=p[2]-32.0*s; let mut y=p[1]+5.0*s;
-        list.rect([p[0]+3.*s,p[1],p[2]-3.*s,32.*s],[0.05,0.09,0.12,1.],clip);
-        text(list,0,"Warp editor",[x,y,w-40.0*s,30.0*s],clip,27.0*s,FG,TextAlign::Left);
-        EditorButton(layout.close()).draw(list,TEXT_ID+1,"x",clip,22.*s,contains(layout.close(),self.cursor),true);
         y+=29.0*s;
         for (i,label,value) in [(0,"GPU measured intervals",model.gpu_active_ms),(1,"GPU render interval",model.gpu_interval_ms)] {
             text(list,10+i*2,label,[x,y,w*0.7,27.0*s],clip,23.0*s,FG,TextAlign::Left);
@@ -602,8 +564,6 @@ impl DebugUi {
             let offset=self.scroll/layout.max_scroll(rows.len())*(layout.body[3]-height);
             list.rect([p[0]+p[2]-6.0*s,layout.body[1]+offset,3.0*s,height],[0.25,0.50,0.52,0.9],clip);
         }
-        let [gx,gy,gw,gh]=layout.grip();
-        for offset in [5.,11.] {list.line([gx+gw-offset*s,gy+gh-3.*s],[gx+gw-3.*s,gy+gh-offset*s],2.*s,crate::editor_style::HIGHLIGHT,clip);}
         let footer=[x,layout.footer_y,w,p[1]+p[3]-layout.footer_y];
         let footer_clip=intersection(footer,clip);
         list.line([x,layout.footer_y+2.0*s],[x+w,layout.footer_y+2.0*s],1.0*s,[0.2,0.28,0.33,0.9],footer_clip);

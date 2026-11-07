@@ -174,6 +174,7 @@ impl Tape {
 }
 
 pub struct Viewer {
+    window: render::editor_window::EditorWindow,
     tape: Tape,
     path: PathBuf,
     game: Gg,
@@ -195,6 +196,12 @@ pub struct Viewer {
     rewind_reuses: usize,
 }
 impl Viewer {
+    fn layout(&self,size:[u32;2])->render::editor_window::WindowFrame {
+        let [w,h]=size.map(|n|n as f32);
+        let s=(h/900.).min(w/760.).max(0.01);
+        self.window.frame(size,[8.*s,h-174.*s,w-16.*s,168.*s],[720.*s,150.*s],s)
+    }
+
     pub fn new(tape: Tape, path: PathBuf) -> Result<Self, String> {
         tape.validate()?;
         let game = Self::game(&tape)?;
@@ -204,7 +211,7 @@ impl Viewer {
         } else { Vec::new() };
         for m in &marks { tape.validate_mark(*m)?; }
         let target = marks.last().copied().unwrap_or(tape.mark);
-        Ok(Self { tape, path, game, current: None, target, paused: true, marks, message: None, overlay: true, exit: false, dragging: false, scrub_changed: None, clock: None, sounds: None, music: None, music_db: -9.0, crowd: None, audio_running: false, rewind_reuses: 0 })
+        Ok(Self { window: Default::default(), tape, path, game, current: None, target, paused: true, marks, message: None, overlay: true, exit: false, dragging: false, scrub_changed: None, clock: None, sounds: None, music: None, music_db: -9.0, crowd: None, audio_running: false, rewind_reuses: 0 })
     }
     fn game(tape: &Tape) -> Result<Gg, String> {
         let first = tape.sample(0)?;
@@ -320,17 +327,29 @@ impl Game for Viewer {
 
     }
     fn pointer(&mut self, p: Pointer, size: [u32; 2]) {
+        if !self.overlay {return;}
+        let frame=self.layout(size);
+        if !self.dragging {
+            match self.window.pointer(size,frame,[720.*frame.scale,150.*frame.scale],p.position,p.pressed,p.held) {
+                render::editor_window::WindowEvent::Close=>{self.exit=true;return;},
+                render::editor_window::WindowEvent::Handled=>return,
+                _=>{}
+            }
+            if !p.position.is_some_and(|xy|render::editor_style::EditorButton(frame.body()).contains(xy)){return;}
+        }
+        let [bx,by,w,h]=frame.body();
         let releasing = self.dragging && !p.held;
         let was_dragging = self.dragging;
         if releasing { self.dragging = false; self.scrub_changed = None; }
         let Some([x, y]) = p.position.filter(|_| p.pressed || was_dragging) else { return };
-        let s = size[1] as f32 / 900.0;
-        if !was_dragging && y < size[1] as f32 - 118.0 * s { return; }
-        if was_dragging || y > size[1] as f32 - 48.0 * s {
+        let (x,y)=(x-bx,y-by);
+        let s=frame.scale.min(w/760.).min(h/124.);
+        if !was_dragging && y < h - 118.0 * s { return; }
+        if was_dragging || y > h - 48.0 * s {
             self.dragging = p.held;
-            let t = ((x - 32.0 * s) / (size[0] as f32 - 64.0 * s)).clamp(0.0, 1.0);
+            let t = ((x - 32.0 * s) / (w - 64.0 * s)).clamp(0.0, 1.0);
             let mark = self.marks.iter().chain(std::iter::once(&self.tape.mark)).copied().find(|m| {
-                let mx = 32.0 * s + (size[0] as f32 - 64.0 * s) * m.frame as f32 / (self.tape.len() - 1).max(1) as f32;
+                let mx = 32.0 * s + (w - 64.0 * s) * m.frame as f32 / (self.tape.len() - 1).max(1) as f32;
                 (mx - x).abs() <= 8.0 * s
             }).unwrap_or(Mark { frame: (t * (self.tape.len() - 1) as f32).round() as usize, alpha: 1.0 });
             if mark != self.target {
@@ -387,21 +406,21 @@ impl Game for Viewer {
         frame.alpha = alpha;
         if self.overlay {
             use crate::hud::style::{Label, BODY};
-            let [w, h] = frame.size.map(|n| n as f32);
-            let s = h / 900.0;
-            let clip = [0.0, 0.0, w, h];
-            draw.hud.begin_overlay();
-            draw.hud.rect([0.0, h - 124.0 * s, w, 124.0 * s], [0.025, 0.035, 0.055, 0.96], clip);
+            let window=self.layout(frame.size);
+            window.draw(&mut draw.hud,0x6767_5230,9,"Replay");
+            let [bx,by,w,h]=window.body();
+            let s=window.scale.min(w/760.).min(h/124.);
+            let clip=window.body();
             let state = if self.dragging { "SCRUBBING" } else if !self.ready() { "RESTORING EFFECTS" } else if self.paused { "PAUSED" } else { "PLAYING" };
             let n = self.current.unwrap_or(0);
             let label = format!("REPLAY  /  {state}     frame {n} / {}     {:.2}s     tick {}", self.tape.len() - 1, n as f32 * DT, self.game.world.tick);
-            Label::new(BODY, 20.0 * s, [0.78, 0.86, 0.95, 1.0]).draw(&mut draw.hud, &label, 32.0 * s, h - 103.0 * s, clip);
+            Label::new(BODY, 20.0 * s, [0.78, 0.86, 0.95, 1.0]).draw(&mut draw.hud, &label, bx+32.0 * s, by+h - 103.0 * s, clip);
             for (left, right, text) in [(20.0, 150.0, if self.paused { "PLAY [SPACE]" } else { "PAUSE [SPACE]" }), (151.0, 245.0, "< FRAME"), (246.0, 340.0, "FRAME >"), (341.0, 520.0, "SAVE FRAME [R]"), (521.0, 700.0, "F12 MOMENT")] {
-                draw.hud.rect([left * s, h - 88.0 * s, (right - left - 5.0) * s, 36.0 * s], [0.12, 0.18, 0.26, 1.0], clip);
-                Label::new(BODY, 20.0 * s, [1.0; 4]).center().draw(&mut draw.hud, text, (left + right - 5.0) * 0.5 * s, h - 69.0 * s, clip);
+                draw.hud.rect([bx+left * s, by+h - 88.0 * s, (right - left - 5.0) * s, 36.0 * s], [0.12, 0.18, 0.26, 1.0], clip);
+                Label::new(BODY, 20.0 * s, [1.0; 4]).center().draw(&mut draw.hud, text, bx+(left + right - 5.0) * 0.5 * s, by+h - 69.0 * s, clip);
             }
-            Label::new(BODY, 17.0 * s, [0.6, 0.72, 0.84, 1.0]).right().draw(&mut draw.hud, self.message.as_deref().unwrap_or("Drag timeline to seek   |   F9 / Esc closes replay"), w - 32.0 * s, h - 69.0 * s, clip);
-            let bar = [32.0 * s, h - 30.0 * s, w - 64.0 * s, 5.0 * s];
+            Label::new(BODY, 17.0 * s, [0.6, 0.72, 0.84, 1.0]).right().draw(&mut draw.hud, self.message.as_deref().unwrap_or("Drag timeline to seek   |   F9 / Esc closes replay"), bx+w - 32.0 * s, by+h - 44.0 * s, clip);
+            let bar = [bx+32.0 * s, by+h - 30.0 * s, w - 64.0 * s, 5.0 * s];
             draw.hud.rect(bar, [0.18, 0.23, 0.3, 1.0], clip);
             let x = |m: Mark| bar[0] + bar[2] * m.frame as f32 / (self.tape.len() - 1).max(1) as f32;
             for m in self.marks.iter().chain(std::iter::once(&self.tape.mark)) { draw.hud.rect([x(*m) - 2.0 * s, bar[1] - 5.0 * s, 4.0 * s, 15.0 * s], [1.0, 0.72, 0.24, 1.0], clip); }

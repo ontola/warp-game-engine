@@ -4,6 +4,7 @@ mod skeleton;
 use body::pose_editor::PoseEditor;
 use glam::{Mat4, Quat, Vec3};
 pub use menus::EditorMenus;
+use render::editor_window::{EditorWindow, WindowEvent, WindowFrame};
 use render::{
     Camera, editor_style as style,
     hud::{FontFace, HudDrawList, TextAlign, TextRun},
@@ -17,6 +18,9 @@ pub struct PoseViewport<const N: usize> {
     pub bones: SkeletonOverlay,
     rows: [(&'static str, f32, &'static str); N],
     home: Camera,
+    windows: [EditorWindow; 2],
+    controls_open: bool,
+    active_window: usize,
     yaw: f32,
     pitch: f32,
     zoom: f32,
@@ -45,6 +49,9 @@ impl<const N: usize> PoseViewport<N> {
             bones: SkeletonOverlay::new(editor)?,
             rows,
             home,
+            windows: Default::default(),
+            controls_open: true,
+            active_window: 1,
             yaw: 0.,
             pitch: 0.,
             zoom: 0.,
@@ -57,12 +64,20 @@ impl<const N: usize> PoseViewport<N> {
             orbit: None,
         })
     }
-    /// Forward the shell's function keys here; F2 toggles the skeleton overlay.
+    /// F2 toggles joints, and F4 toggles the host-supplied pose controls.
     pub fn function_key(&mut self, n: u8) -> bool {
-        if n != 2 {
-            return false;
+        let i = match n {
+            2 => 0,
+            4 => 1,
+            _ => return false,
+        };
+        if i == 0 {
+            self.bones.shown = !self.bones.shown;
+        } else {
+            self.controls_open = !self.controls_open;
         }
-        self.bones.shown = !self.bones.shown;
+        self.windows[i].cancel();
+        self.active_window = i;
         true
     }
 
@@ -84,12 +99,13 @@ impl<const N: usize> PoseViewport<N> {
     pub fn draw(&mut self, size: [u32; 2], model_to_scene: Mat4, status: &str) -> HudDrawList {
         let scale = ui_scale(size);
         let mut hud = HudDrawList::new(size.map(|v| (v as f32 / scale).round() as u32));
-        self.bones.draw(&mut hud, &self.camera(), model_to_scene);
-        self.hud(&mut hud);
+        self.bones
+            .draw_rig(&mut hud, &self.camera(), model_to_scene);
+
         hud.text.push(TextRun {
             id: 1,
             text: format!(
-                "L drag: move   R: rotate / orbit   M: pan   Wheel: zoom   F2: bones   {status}"
+                "L: move   R: rotate/orbit   M: pan   Wheel: zoom   F2: joints   F4: controls   {status}"
             ),
             position: [14.0, 12.0],
             bounds: [0.0, 0.0, hud.size[0] as f32, hud.size[1] as f32],
@@ -99,6 +115,38 @@ impl<const N: usize> PoseViewport<N> {
             align: TextAlign::Left,
             width: hud.size[0] as f32 - 28.0,
         });
+        for i in [1 - self.active_window, self.active_window] {
+            if !self.window_open(i) {
+                continue;
+            }
+            let (frame, local) = self.layout(i, hud.size);
+            frame.draw(
+                &mut hud,
+                500 + i as u64 * 2,
+                if i == 0 { 2 } else { 4 },
+                if i == 0 { "Joints" } else { "Pose controls" },
+            );
+            let v = hud.vertices.len();
+            let t = hud.text.len();
+            if i == 0 {
+                self.bones.panel(&mut hud);
+            } else {
+                self.hud(&mut hud);
+            }
+            let (k, offset) = content_transform(frame, local);
+            let transform = |p: [f32; 2]| [p[0] * k + offset[0], p[1] * k + offset[1]];
+            let clip = frame.body();
+            for vertex in &mut hud.vertices[v..] {
+                vertex.position = transform(vertex.position);
+                vertex.clip = clip;
+            }
+            for run in &mut hud.text[t..] {
+                run.position = transform(run.position);
+                run.bounds = clip;
+                run.font_size *= k;
+                run.width *= k;
+            }
+        }
         for v in &mut hud.vertices {
             v.position = v.position.map(|x| x * scale);
             v.clip = v.clip.map(|x| x * scale);
@@ -115,18 +163,83 @@ impl<const N: usize> PoseViewport<N> {
     fn top(height: u32) -> f32 {
         (height as f32 - ROW * (N + 1) as f32 - 10.0).max(0.0)
     }
+    fn window_open(&self, i: usize) -> bool {
+        if i == 0 {
+            self.bones.shown
+        } else {
+            self.controls_open
+        }
+    }
+    fn layout(&self, i: usize, size: [u32; 2]) -> (WindowFrame, [f32; 4]) {
+        let local = if i == 0 {
+            [8., 40., 242., 156.]
+        } else {
+            [8., Self::top(size[1]), WIDTH - 8., ROW * (N + 1) as f32]
+        };
+        let height = local[3] + 27.;
+        let y = if i == 0 {
+            32.
+        } else {
+            (size[1] as f32 - height - 5.).max(0.)
+        };
+        (
+            self.windows[i].frame(size, [8., y, local[2] + 6., height], [140., 80.], 0.72),
+            local,
+        )
+    }
     pub fn pointer(&mut self, mut p: crate::Pointer, size: [u32; 2]) {
         let scale = ui_scale(size);
         let size = size.map(|v| (v as f32 / scale).round() as u32);
         p.position = p.position.map(|xy| xy.map(|v| v / scale));
-        self.cursor = p.position;
-        let controls = p.position.is_some_and(|[x, y]| {
-            (8.0..WIDTH).contains(&x)
-                && (Self::top(size[1])..Self::top(size[1]) + ROW * (N + 1) as f32).contains(&y)
-        });
-        if (self.bones.manipulating()
-            || (!controls && self.slider.is_none() && self.orbit.is_none()))
-            && self.bones.pointer(p)
+        let mut owner = None;
+        if !self.bones.manipulating() && self.orbit.is_none() {
+            for i in [self.active_window, 1 - self.active_window] {
+                if !self.window_open(i) {
+                    continue;
+                }
+                let (frame, local) = self.layout(i, size);
+                let hit = p
+                    .position
+                    .is_some_and(|xy| style::EditorButton(frame.rect).contains(xy));
+                if !hit
+                    && !self.windows[i].dragging()
+                    && !(i == 1 && self.slider.is_some())
+                    && !(i == 0 && self.bones.slider_held())
+                {
+                    continue;
+                }
+                if p.pressed || p.right_pressed {
+                    self.active_window = i;
+                }
+                match self.windows[i].pointer(
+                    size,
+                    frame,
+                    [140., 80.],
+                    p.position,
+                    p.pressed,
+                    p.held,
+                ) {
+                    WindowEvent::Close => {
+                        self.function_key(if i == 0 { 2 } else { 4 });
+                        return;
+                    }
+                    WindowEvent::Handled => return,
+                    WindowEvent::Content => {}
+                }
+                let (k, offset) = content_transform(frame, local);
+                p.position = p
+                    .position
+                    .map(|xy| [(xy[0] - offset[0]) / k, (xy[1] - offset[1]) / k]);
+                owner = Some(i);
+                break;
+            }
+        }
+        self.cursor = if owner == Some(1) { p.position } else { None };
+        let controls = owner == Some(1);
+        if !controls
+            && self.slider.is_none()
+            && self.orbit.is_none()
+            && self.bones.pointer_at(p, owner == Some(0))
         {
             if self.bones.manipulating() {
                 self.paused = true;
@@ -144,7 +257,7 @@ impl<const N: usize> PoseViewport<N> {
             return;
         };
         let row = (y - Self::top(size[1])) / ROW;
-        let panel = (8.0..WIDTH).contains(&x) && (0.0..(N + 1) as f32).contains(&row);
+        let panel = controls;
         if !panel {
             self.zoom = (self.zoom - p.wheel * 0.12).clamp(-1.6, 1.3);
         }
@@ -169,6 +282,9 @@ impl<const N: usize> PoseViewport<N> {
             self.slider = None;
             self.orbit = None;
             if panel {
+                if row < 0. || row >= (N + 1) as f32 {
+                    return;
+                }
                 let index = row as usize;
                 if index < N {
                     self.slider = Some(index);
@@ -209,12 +325,6 @@ impl<const N: usize> PoseViewport<N> {
     fn hud(&self, hud: &mut HudDrawList) {
         let clip = [0.0, 0.0, hud.size[0] as f32, hud.size[1] as f32];
         let top = Self::top(hud.size[1]);
-        style::panel(
-            hud,
-            [8.0, top, WIDTH - 8.0, ROW * (N + 1) as f32],
-            1.0,
-            clip,
-        );
         for (i, (name, limit, unit)) in self.rows.iter().enumerate() {
             let y = top + i as f32 * ROW;
             let value = self.values[i];
@@ -264,6 +374,11 @@ impl<const N: usize> PoseViewport<N> {
         ]
     }
 }
+fn content_transform(frame: WindowFrame, local: [f32; 4]) -> (f32, [f32; 2]) {
+    let [x, y, w, h] = frame.body();
+    let k = (w / local[2]).min(h / local[3]);
+    (k, [x - local[0] * k, y - local[1] * k])
+}
 fn ui_scale(size: [u32; 2]) -> f32 {
     (size[1] as f32 / 410.)
         .min(size[0] as f32 / 570.)
@@ -288,6 +403,39 @@ fn label(hud: &mut HudDrawList, id: u64, position: [f32; 2], text: String) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn pose_panels_reopen_at_their_moved_positions_with_shortcuts() {
+        let size = [900, 600];
+        let rig = PoseEditor::bind([("Root", Mat4::IDENTITY)].into_iter(), |_| None).unwrap();
+        let camera = Camera {
+            pos: Vec3::Z * 3.,
+            target: Vec3::ZERO,
+            fov_y: 1.,
+            near: 0.02,
+        };
+        let mut view = PoseViewport::new(rig, camera, [("Weight", 1., "")]).unwrap();
+        for (i, key, name) in [(0, 2, "F2   Joints"), (1, 4, "F4   Pose controls")] {
+            let hud = view.draw(size, Mat4::IDENTITY, "");
+            let header = hud.text.iter().find(|r| r.text == name).unwrap().position;
+            let mut p = crate::Pointer {
+                position: Some(header),
+                pressed: true,
+                held: true,
+                ..Default::default()
+            };
+            view.pointer(p, size);
+            p.pressed = false;
+            p.position = Some([header[0] + 60., header[1]]);
+            view.pointer(p, size);
+            p.held = false;
+            view.pointer(p, size);
+            assert!(view.function_key(key) && !view.window_open(i));
+            assert!(view.function_key(key));
+            let hud = view.draw(size, Mat4::IDENTITY, "");
+            let moved = hud.text.iter().find(|r| r.text == name).unwrap().position;
+            assert!((moved[0] - header[0] - 60.).abs() < 1., "{name}: {moved:?}");
+        }
+    }
     #[test]
     fn arbitrary_rig_can_be_picked_moved_and_exported_at_two_window_sizes() {
         for size in [[800, 600], [1920, 1080]] {

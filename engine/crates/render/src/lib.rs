@@ -54,6 +54,7 @@ mod grass_lighting;
 pub mod far_grass;
 pub mod hud;
 pub mod editor_style;
+pub mod editor_window;
 mod hud_optics;
 pub mod picture;
 pub mod screen;

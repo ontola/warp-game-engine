@@ -844,7 +844,8 @@ impl Shell<'_> {
             steps += 1;
             let size = self.live.as_ref().map_or(self.cfg.size, |l| [l.config.width, l.config.height]);
             let pointer = self.devices.pointer();
-            self.game.pointer(if self.debug.open() { Pointer::default() } else { pointer }, size);
+            let owned = self.debug.open() || (self.stats.open() && self.stats.pointer(pointer,size));
+            self.game.pointer(if owned { Pointer::default() } else { pointer }, size);
             let devices = self.devices.device_controls(step);
             let controls = seat_controls(self.game, &devices);
             if frame_log::enabled() { input_look.push(controls.iter().map(|c| c.look).collect::<Vec<_>>()); }
@@ -922,7 +923,7 @@ impl Shell<'_> {
         }
         // The hint is for a developer at a desk: never on a GameNight TV,
         // nor once a controller is plugged in.
-        if !self.debug.open() && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() && !under_host() && self.devices.pad_count() == 0 {
+        if !self.debug.open() && !self.stats.open() && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() && !under_host() && self.devices.pad_count() == 0 {
             let s = (size[1] as f32 / 1080.0).max(0.5);
             draw.hud.text.push(render::hud::TextRun { id: u64::MAX - 1, text: "click to capture the mouse, Esc releases".into(), position: [16.0 * s, size[1] as f32 - 34.0 * s],
                 bounds: [0.0, 0.0, size[0] as f32, size[1] as f32], font_size: 18.0 * s, color: [220, 220, 215, 200], font: render::hud::FontFace::Body,
@@ -1198,7 +1199,8 @@ impl Shell<'_> {
 
     fn sync_capture(&mut self) {
         if self.crop.is_some() { return; }
-        let capture = if self.debug.open() { Some(false) } else { self.game.mouse_capture() };
+        self.devices.pointer_enabled = self.cfg.pointer || self.stats.open();
+        let capture = if self.debug.open() || self.stats.open() { Some(false) } else { self.game.mouse_capture() };
         if let Some(want) = capture {
             let want = want && self.cfg.keyboard && self.focused && self.screen != Screen::Hidden;
             if want != self.devices.mouse_captured { self.capture_mouse(want); }
@@ -1334,7 +1336,7 @@ impl ApplicationHandler for Shell<'_> {
                     if let Some(a) = action { self.game.debug_action(a); }
                     return;
                 }
-                if button == MouseButton::Left && state == ElementState::Pressed && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() {
+                if !self.stats.open() && button == MouseButton::Left && state == ElementState::Pressed && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() {
                     self.capture_mouse(true);
                     return;
                 }
@@ -1374,6 +1376,7 @@ impl ApplicationHandler for Shell<'_> {
                     }
                     KeyRoute::Stats { shift } => {
                         if shift { self.stats.cycle_detail() } else { self.stats.toggle() }
+                        if self.stats.open() {self.capture_mouse(false);} self.sync_capture();
                         return;
                     }
                     KeyRoute::Consumed => { self.sync_capture(); return; }
