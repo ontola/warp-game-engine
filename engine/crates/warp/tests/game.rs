@@ -664,3 +664,31 @@ fn save_slots_survive_restart_migration_conflicts_and_aborted_writes() {
     LuaGame::load(&dir, &Overrides::default(), None).unwrap()
         .command_line("lua assert(storage.read('save','one')==nil)").unwrap();
 }
+
+#[test]
+fn gamenight_schema_validates_the_local_save_and_preserves_old_versions() {
+    use warp::storage::{Location, Storage};
+    let dir = folder("gamenight-schema");
+    let user = folder("gamenight-schema-user");
+    let open = || Storage::open(&dir, "score", Location::Directory(&user)).unwrap();
+    let current = dir.join("save-schema.json");
+    let v1 = json!({"$schema":"https://json-schema.org/draft/2020-12/schema",
+        "$defs":{"Progress":{"type":"object","properties":{"wins":{"type":"integer"}},"required":["wins"]}}});
+    write(&current, &v1.to_string());
+    let mut store = open();
+    assert!(store.write("save","one",0,json!({"wins":"wrong type"})).is_err());
+    assert_eq!(store.write("save","one",0,json!({"wins":2})).unwrap(),1);
+    drop(store);
+    let history = dir.join("schema-history/save");
+    std::fs::create_dir_all(&history).unwrap();
+    std::fs::rename(&current,history.join("1.json")).unwrap();
+    let v2 = json!({"$defs":{"Progress":{"type":"object","properties":{"victories":{"type":"integer"}},"required":["victories"]}},
+        "x-gamenight-lenses":[{"from":"wins","to":"victories","op":"rename"}]});
+    write(&current,&v2.to_string());
+    let mut store = open();
+    let old = store.read("save","one").unwrap().unwrap();
+    assert_eq!(old.version,1);
+    assert!(store.write("save","one",old.revision,old.data.clone()).is_err());
+    store.write("save","one",old.revision,json!({"victories":old.data["wins"]})).unwrap();
+    assert_eq!(store.read("save","one").unwrap().unwrap().version,2);
+}
