@@ -2076,17 +2076,24 @@ fn bark_cells(q: vec3<f32>) -> vec2<f32> {
 /// Jeffrey pine bark in plate units: long vertical ridges (Voronoi cells
 /// three times taller than wide) split by deep furrows, each ridge broken
 /// into jigsaw subplates by finer cracks. x: height (1 on a plate, 0 deep in
-/// a furrow); y: per-ridge random; z: the furrow (1 deep in it).
-fn bark_height(q: vec3<f32>) -> vec3<f32> {
+/// a furrow); y: per-ridge random; z: the furrow (1 deep in it); w: the
+/// rim of a peeling flake (1 on it).
+fn bark_height(q: vec3<f32>) -> vec4<f32> {
     let warp = vec3<f32>(bark_noise(q * 1.7), bark_noise(q * 1.7 + 7.3), bark_noise(q * 1.7 + 3.1)) - 0.5;
     let ridge = bark_cells(q * vec3<f32>(1.0, 0.33, 1.0) + warp * 0.3);
-    let furrow = 1.0 - smoothstep(0.015, 0.075, ridge.x);
-    // Subplates: ridged noise makes thin, wandering cracks across each ridge.
+    // Wide, ragged furrows: the edge distance wobbles with fine noise.
+    let ragged = ridge.x + (bark_noise(q * vec3<f32>(11.0, 4.0, 11.0)) - 0.5) * 0.06;
+    let furrow = 1.0 - smoothstep(0.03, 0.12, ragged);
+    // Subplates: ridged noise makes wandering cracks across each ridge.
     let s = q * vec3<f32>(2.6, 1.6, 2.6) + warp * 0.8;
-    let crack = 1.0 - smoothstep(0.0, 0.1, abs(2.0 * bark_noise(s) - 1.0));
-    let flakes = bark_noise(q * vec3<f32>(9.0, 5.0, 9.0));
-    let plate = (1.0 - furrow) * (0.8 + 0.12 * flakes - 0.3 * crack);
-    return vec3<f32>(plate, ridge.y, furrow);
+    let crack = 1.0 - smoothstep(0.0, 0.07, abs(2.0 * bark_noise(s) - 1.0));
+    // Layered flakes: contour terraces of a warped field give rounded,
+    // puzzle-like lobes, each a thin step above the one below.
+    let lobes = bark_noise(q * vec3<f32>(3.2, 2.2, 3.2) + warp * 1.4) * 4.0;
+    let layer = fract(lobes);
+    let rim = 1.0 - smoothstep(0.0, 0.1, layer);
+    let plate = (1.0 - furrow) * (0.72 + 0.1 * layer + 0.06 * bark_noise(q * vec3<f32>(9.0, 5.0, 9.0)) - 0.15 * crack);
+    return vec4<f32>(plate, ridge.y, furrow, rim * (1.0 - furrow));
 }
 
 /// Cinnamon to salmon plates, grey-pink where weathered, between near-black
@@ -2099,14 +2106,17 @@ fn bark_surface(p: vec3<f32>, n: vec3<f32>, plate: f32) -> Bark {
     let e = 0.04;
     let d1 = (bark_height(q + t1 * e).x - h.x) / e;
     let d2 = (bark_height(q + t2 * e).x - h.x) / e;
-    let weathered = smoothstep(0.35, 0.8, bark_noise(q * 0.45 + vec3<f32>(3.0, 1.0, 7.0)));
-    let cinnamon = mix(vec3<f32>(0.30, 0.12, 0.06), vec3<f32>(0.40, 0.20, 0.14), h.y);
-    let plates = mix(cinnamon, vec3<f32>(0.30, 0.22, 0.20), weathered * 0.6) * (0.85 + 0.3 * bark_noise(q * 4.0));
-    let fibre = smoothstep(0.5, 0.85, bark_noise(q * vec3<f32>(16.0, 1.5, 16.0)));
-    let furrow = mix(vec3<f32>(0.022, 0.016, 0.013), vec3<f32>(0.15, 0.065, 0.03), fibre * 0.7);
-    let albedo = mix(plates, furrow, smoothstep(0.25, 0.75, h.z));
-    let normal = normalize(n - (t1 * d1 + t2 * d2) * 0.05);
-    return Bark(albedo, normal, mix(0.86, 0.98, h.z), mix(1.0, 0.3, h.z));
+    // Reddish-brown to orange plates, some lobes weathered grey-pink, pale
+    // peeling rims; furrows of black and orange-brown fibres.
+    let weathered = smoothstep(0.45, 0.8, bark_noise(q * vec3<f32>(1.6, 1.0, 1.6) + vec3<f32>(3.0, 1.0, 7.0)));
+    let cinnamon = mix(vec3<f32>(0.26, 0.10, 0.05), vec3<f32>(0.36, 0.15, 0.08), h.y);
+    var plates = mix(cinnamon, vec3<f32>(0.34, 0.25, 0.22), weathered * 0.55) * (0.85 + 0.3 * bark_noise(q * 4.0));
+    plates = mix(plates, vec3<f32>(0.52, 0.44, 0.40), h.w * 0.7);
+    let fibre = smoothstep(0.35, 0.8, bark_noise(q * vec3<f32>(14.0, 2.0, 14.0)));
+    let furrow = mix(vec3<f32>(0.02, 0.015, 0.012), vec3<f32>(0.22, 0.10, 0.04), fibre);
+    let albedo = mix(plates, furrow, smoothstep(0.2, 0.7, h.z));
+    let normal = normalize(n - (t1 * d1 + t2 * d2) * 0.07);
+    return Bark(albedo, normal, mix(0.86, 0.98, h.z), mix(1.0, 0.35, h.z));
 }
 fn hash2(p: vec2<f32>) -> f32 {
     return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
