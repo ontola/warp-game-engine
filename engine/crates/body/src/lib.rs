@@ -516,3 +516,4 @@ mod tests {
         assert!(m[Head as usize].transform_point3(Vec3::new(0.0, 1.7, 0.0)).y > 1.2);
     }
 }
+pub mod pose_editor;
