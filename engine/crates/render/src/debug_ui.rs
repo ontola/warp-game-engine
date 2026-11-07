@@ -5,9 +5,7 @@
 use crate::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 
 const TEXT_ID: u64 = 0x4442_4755_4900_0000;
-const FG: [u8; 4] = [237, 242, 248, 255];
-const MUTED: [u8; 4] = [164, 180, 196, 255];
-const ACCENT: [u8; 4] = [118, 221, 208, 255];
+use crate::editor_style::{FG, MUTED, ACCENT};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum DebugValue {
@@ -442,8 +440,7 @@ impl DebugUi {
         let s=layout.scale; let p=layout.panel; let clip=p;
         // This is an input-owning overlay: underlying menu text must not show
         // through even when linear-light alpha blending makes it conspicuous.
-        list.rect(p,[0.019,0.027,0.041,1.0],clip);
-        list.rect([p[0],p[1],3.0*s,p[3]],[0.12,0.64,0.55,0.95],clip);
+        crate::editor_style::panel(list, p, s, clip);
         let x=p[0]+16.0*s; let w=p[2]-32.0*s; let mut y=p[1]+5.0*s;
         text(list,0,"Render debug",[x,y,w-40.0*s,30.0*s],clip,27.0*s,FG,TextAlign::Left);
         text(list,1,"x",layout.close(),clip,24.0*s,MUTED,TextAlign::Center);

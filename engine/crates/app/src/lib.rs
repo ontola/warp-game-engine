@@ -19,6 +19,7 @@
 //! let a spare pad join mid-match.
 pub mod clipboard;
 pub mod debug;
+pub mod editor;
 pub mod stats;
 pub mod input;
 pub mod text;

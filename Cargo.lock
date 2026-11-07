@@ -173,6 +173,7 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "audio",
+ "body",
  "cpal",
  "gilrs",
  "glam 0.31.1",
