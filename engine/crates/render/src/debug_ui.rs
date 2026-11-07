@@ -4,8 +4,9 @@
 //! never pauses simulation. This module performs no GPU queries or readbacks.
 use crate::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 
-const TEXT_ID: u64 = 0x4442_4755_4900_0000;
-use crate::editor_style::{EditorButton, FG, MUTED, ACCENT};
+pub const WINDOW_ID: u64 = 0x4442_4755_4900_0000;
+const TEXT_ID: u64 = WINDOW_ID;
+use crate::editor_style::{EditorButton, FG, MUTED};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum DebugValue {
@@ -130,7 +131,7 @@ struct Layout {
     footer_y: f32,
     row_h: f32,
     scale: f32,
-    passes: usize,
+
 }
 
 fn contains(rect: [f32; 4], p: [f32; 2]) -> bool {
@@ -140,10 +141,7 @@ fn intersection(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     let x=a[0].max(b[0]); let y=a[1].max(b[1]);
     [x,y,(a[0]+a[2]-x).min(b[0]+b[2]-x).max(0.0),(a[1]+a[3]-y).min(b[1]+b[3]-y).max(0.0)]
 }
-fn valid_ms(value: f64) -> bool { value.is_finite() && value >= 0.0 }
-fn metric(value: Option<f64>) -> String {
-    value.filter(|v|valid_ms(*v)).map_or_else(||"--".into(),|v|format!("{v:.2} ms"))
-}
+
 fn control_valid(control: &DebugControl) -> bool {
     match &control.value {
         DebugValue::Toggle(_) | DebugValue::Button => true,
@@ -190,10 +188,7 @@ impl Layout {
         let scale=(h/1080.0).clamp(0.85,2.5).min(w/600.0).min(h/720.0).max(0.01);
         let margin=16.0*scale;
         let width=(550.0*scale).min((w-2.0*margin).max(0.0));
-        // Reserve timing slots even when unavailable, invalid or resetting.
-        // A changing GPU sample must never move the controls under the cursor.
-        let passes=if size[1] < 900 {4}else{6};
-        let header=(34.0+81.0+22.0+27.0+passes as f32*23.0+28.0)*scale;
+        let header=62.0*scale;
         let footer=100.0*scale;
         let row_h=38.0*scale;
         let height=(header+footer+visible_rows(model,advanced_open,current).len() as f32*row_h)
@@ -201,7 +196,7 @@ impl Layout {
         let body_h=(height-header-footer).max(0.0);
         let x = (w-margin-width).max(0.);
         Self { panel:[x,margin,width,height], body:[x+12.0*scale,margin+header,width-24.0*scale,body_h],
-            footer_y:margin+header+body_h,row_h,scale,passes }
+            footer_y:margin+header+body_h,row_h,scale }
     }
     fn minimum(self) -> [f32; 2] {
         [450.*self.scale,self.body[1]-self.panel[1]+100.*self.scale+2.*self.row_h]
@@ -461,41 +456,9 @@ impl DebugUi {
         if !self.open || list.size.contains(&0) {return;}
         let first_text=list.text.len();
         let s=layout.scale; let p=layout.panel; let clip=p;
-        crate::editor_window::WindowFrame { rect:p, scale:s }.draw(list,TEXT_ID,10,"Warp editor");
+        crate::editor_window::WindowFrame { rect:p, scale:s }.draw(list,WINDOW_ID,10,"Graphics settings");
         let x=p[0]+16.0*s; let w=p[2]-32.0*s; let mut y=p[1]+5.0*s;
         y+=29.0*s;
-        for (i,label,value) in [(0,"GPU measured intervals",model.gpu_active_ms),(1,"GPU render interval",model.gpu_interval_ms)] {
-            text(list,10+i*2,label,[x,y,w*0.7,27.0*s],clip,23.0*s,FG,TextAlign::Left);
-            text(list,11+i*2,&metric(value),[x+w*0.7,y,w*0.3,27.0*s],clip,23.0*s,ACCENT,TextAlign::Right);
-            y+=27.0*s;
-        }
-        // One fixed-height row keeps every existing control hitbox stationary.
-        // Execution excludes blocked time; wall includes it. Neither includes
-        // execution on the renderer's other CPU workers.
-        text(list,14,"CPU main thread",[x,y,w*0.31,27.0*s],clip,20.0*s,FG,TextAlign::Left);
-        text(list,15,&metric(model.cpu_execution_ms),[x+w*0.31,y,w*0.18,27.0*s],clip,20.0*s,ACCENT,TextAlign::Right);
-        text(list,16,"Frame wall",[x+w*0.54,y,w*0.23,27.0*s],clip,20.0*s,FG,TextAlign::Left);
-        text(list,17,&metric(model.cpu_frame_ms),[x+w*0.77,y,w*0.23,27.0*s],clip,20.0*s,MUTED,TextAlign::Right);
-        y+=27.0*s;
-        let age=match model.gpu_age_frames {
-            Some(0)=>"GPU: latest completed sample".into(),
-            Some(n)=>format!("GPU: {n} rendered frames old{}",if n>8{" (stale)"}else{""}),
-            None=>"GPU: unavailable / awaiting a completed sample".into(),
-        };
-        text(list,20,&age,[x,y,w,22.0*s],clip,18.0*s,MUTED,TextAlign::Left); y+=22.0*s;
-        text(list,21,"Largest GPU passes  |  independent intervals",[x,y,w,27.0*s],clip,19.0*s,MUTED,TextAlign::Left);y+=27.0*s;
-        let mut passes:Vec<_>=model.gpu_passes.iter().filter(|p|valid_ms(p.ms)).collect();
-        passes.sort_by(|a,b|b.ms.total_cmp(&a.ms)); passes.truncate(layout.passes);
-        let max=passes.first().map_or(1.0,|p|p.ms.max(0.01));
-        for i in 0..layout.passes {
-            let pass=passes.get(i);
-            let bar=pass.map_or(0.0,|p|w*0.62*(p.ms/max).clamp(0.0,1.0) as f32);
-            list.rect([x,y+4.0*s,bar,18.0*s],[0.08,0.20,0.24,0.8],clip);
-            let label=pass.map_or(if i==0{"Awaiting GPU passes"}else{"--"},|p|p.label.as_str());
-            text(list,100+i as u64*2,label,[x+4.0*s,y,w*0.76,23.0*s],clip,20.0*s,FG,TextAlign::Left);
-            text(list,101+i as u64*2,&metric(pass.map(|p|p.ms)),[x+w*0.76,y,w*0.24,23.0*s],clip,20.0*s,MUTED,TextAlign::Right);
-            y+=23.0*s;
-        }
         let path=menu_path(model,self.menu).unwrap_or_default();
         let caption=if path.is_empty(){"Live controls".into()}else{
             let names:Vec<_>=path.iter().rev().take(2).rev().map(|m|m.label.as_str()).collect();
@@ -693,7 +656,7 @@ mod tests {
         let mut list=HudDrawList::new(size);ui.draw(&mut list,&m);assert!(list.text.iter().any(|t|t.text=="invalid"));
     }
     #[test]
-    fn draw_is_finite_bounded_and_reports_real_timing_scopes() {
+    fn graphics_settings_are_bounded_and_leave_timings_to_the_profiler() {
         for size in [[1280,720],[1920,1080],[3840,2160]] {
             let mut ui=DebugUi{open:true,..Default::default()};let mut m=model(80);
             m.gpu_passes.push(DebugPass{label:"bad".into(),ms:f64::NAN});
@@ -706,15 +669,8 @@ mod tests {
                 assert!(t.bounds[0]+t.bounds[2]<=size[0] as f32+0.01);
                 assert!(t.bounds[1]+t.bounds[3]<=size[1] as f32+0.01);
             }
-            assert!(list.text.iter().any(|t|t.text=="3.00 ms"));
-            assert!(list.text.iter().any(|t|t.text=="4.50 ms"));
-            assert!(list.text.iter().any(|t|t.text=="CPU main thread"));
-            assert!(list.text.iter().any(|t|t.text=="Frame wall"));
-            assert!(list.text.iter().any(|t|t.text=="0.75 ms"));
-            assert!(!list.text.iter().any(|t|t.text=="3.70 ms")); // no sum of pass durations
-            m.gpu_interval_ms=None;m.gpu_active_ms=None;m.gpu_age_frames=Some(20);
-            let mut stale=HudDrawList::new(size);ui.draw(&mut stale,&m);
-            assert!(stale.text.iter().any(|t|t.text.contains("stale")));
+            assert!(list.text.iter().any(|t|t.text.contains("Graphics settings")));
+            assert!(!list.text.iter().any(|t|t.text=="CPU main thread"));
         }
     }
     #[test]

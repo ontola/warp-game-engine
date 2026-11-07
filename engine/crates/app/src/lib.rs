@@ -713,6 +713,12 @@ struct Shell<'g> {
     mouse_delta: [f64; 2],
     mouse_peak: f64,
     cursor_events: u32,
+    windows: render::editor_window::WindowStack,
+    cursor_position: Option<[f32;2]>,
+    // Some(None) captures a drag begun on the scene, even across a window.
+    pointer_owner: Option<Option<u64>>,
+    pressed_mouse_buttons: u8,
+    hidden_layout: Option<[bool;3]>,
     started: Instant,
     frames: u64,
     screenshot: bool,
@@ -770,7 +776,7 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
         println!("{}: adaptive quality enabled, {}", cfg.title, q.label());
     }
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { stats: stats::Stats::from_env(), devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), probe: None, probed: None, emulator: Default::default(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
+    let mut shell = Shell { stats: stats::Stats::from_env(), devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, windows: Default::default(), cursor_position:None, pointer_owner:None, pressed_mouse_buttons:0, hidden_layout:None, started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), probe: None, probed: None, emulator: Default::default(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -846,8 +852,14 @@ impl Shell<'_> {
             steps += 1;
             let size = self.live.as_ref().map_or(self.cfg.size, |l| [l.config.width, l.config.height]);
             let pointer = self.devices.pointer();
-            let owned = self.debug.open() || (self.stats.open() && self.stats.pointer(pointer,size));
+            let target=self.pointer_owner.unwrap_or_else(||self.windows.hit(pointer.position,size));
+            let owned=match target {
+                Some(render::debug_ui::WINDOW_ID) => self.debug.open(),
+                Some(stats::WINDOW_ID) if self.stats.open() => { self.stats.pointer(pointer,size); true }
+                _ => false,
+            };
             self.game.pointer(if owned { Pointer::default() } else { pointer }, size);
+            if self.pressed_mouse_buttons==0 { self.pointer_owner=None; }
             let devices = self.devices.device_controls(step);
             let controls = seat_controls(self.game, &devices);
             if frame_log::enabled() { input_look.push(controls.iter().map(|c| c.look).collect::<Vec<_>>()); }
@@ -911,7 +923,7 @@ impl Shell<'_> {
         };
         self.debug.sync_options(renderer, debug_options);
         let profile_started = Instant::now();
-        let samples = self.debug.profile(&live.gpu, renderer, self.debug.open() || self.stats.open() || self.cfg.frames > 0 || frame_log::enabled() || self.probe.is_some() || emulate::active());
+        let samples = self.debug.profile(&live.gpu, renderer, self.stats.open() || self.cfg.frames > 0 || frame_log::enabled() || self.probe.is_some() || emulate::active());
         let profile_ms = profile_started.elapsed().as_secs_f64() * 1000.0;
         if self.stats.open() {
             self.stats.gpu(&samples);
@@ -1011,6 +1023,7 @@ impl Shell<'_> {
         }
         if self.stats.open() { let game = &*self.game; self.stats.draw(&mut draw.hud, || game.debug_stats()); }
         if self.debug.open() { self.debug.draw(&mut draw.hud); }
+        if self.hidden_layout.is_none() { self.windows.sync(&mut draw.hud); }
         // Nothing to show on a window without pixels; the game keeps ticking.
         if self.zero_size || live.is_lost() { return Ok(()); }
         let present_started=Instant::now();
@@ -1201,8 +1214,8 @@ impl Shell<'_> {
 
     fn sync_capture(&mut self) {
         if self.crop.is_some() { return; }
-        self.devices.pointer_enabled = self.cfg.pointer || self.stats.open();
-        let capture = if self.debug.open() || self.stats.open() { Some(false) } else { self.game.mouse_capture() };
+        self.devices.pointer_enabled = self.cfg.pointer || self.stats.open() || self.game.editor_windows_open();
+        let capture = if self.debug.open() || self.stats.open() || self.game.editor_windows_open() { Some(false) } else { self.game.mouse_capture() };
         if let Some(want) = capture {
             let want = want && self.cfg.keyboard && self.focused && self.screen != Screen::Hidden;
             if want != self.devices.mouse_captured { self.capture_mouse(want); }
@@ -1309,22 +1322,23 @@ impl ApplicationHandler for Shell<'_> {
             }
             WindowEvent::Focused(focused) => {
                 self.focused = focused;
-                if !focused { self.debug.cancel_interaction(); self.capture_mouse(false); self.devices.cursor(None); }
+                if !focused { self.pointer_owner=None; self.pressed_mouse_buttons=0; self.cursor_position=None; self.devices.reset_mouse(); self.debug.cancel_interaction(); self.capture_mouse(false); self.devices.cursor(None); }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_events = self.cursor_events.saturating_add(1);
                 let p = [position.x as f32, position.y as f32];
                 if let Some(crop) = &mut self.crop { crop.cursor = p; return; }
+                self.cursor_position=Some(p);
                 self.debug.pointer_move(p);
                 self.devices.cursor(Some(p));
             }
-            WindowEvent::CursorLeft { .. } => self.devices.cursor(None),
+            WindowEvent::CursorLeft { .. } => {self.cursor_position=None; self.devices.cursor(None);},
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                 };
-                if self.debug.open() { self.debug.scroll(lines, self.size()); return; }
+                if self.debug.open() && self.windows.hit(self.cursor_position,self.size())==Some(render::debug_ui::WINDOW_ID) { self.debug.scroll(lines, self.size()); return; }
                 self.devices.wheel(lines);
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -1332,13 +1346,22 @@ impl ApplicationHandler for Shell<'_> {
                     if button == MouseButton::Left { self.crop_drag(state); }
                     return;
                 }
-                if self.debug.open() {
-                    if button != MouseButton::Left { return; }
+                let hit=if self.hidden_layout.is_some() {None} else {self.windows.hit(self.cursor_position,self.size())};
+                let mask=match button { MouseButton::Left=>1, MouseButton::Right=>2, MouseButton::Middle=>4, _=>0 };
+                if state==ElementState::Pressed && mask!=0 && self.pressed_mouse_buttons==0 {
+                    if let Some(id)=hit {self.windows.raise(id);}
+                    self.pointer_owner=Some(hit);
+                }
+                let target=self.pointer_owner.unwrap_or(hit);
+                if state==ElementState::Pressed {self.pressed_mouse_buttons|=mask;}
+                else {self.pressed_mouse_buttons &= !mask;}
+                if target==Some(render::debug_ui::WINDOW_ID) && self.debug.open() {
+                    if button != MouseButton::Left {return;}
                     let action = if state == ElementState::Pressed { self.debug.pointer_down(self.size()).1 } else { self.debug.pointer_up() };
                     if let Some(a) = action { self.game.debug_action(a); }
                     return;
                 }
-                if !self.stats.open() && button == MouseButton::Left && state == ElementState::Pressed && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() {
+                if !self.debug.open() && !self.stats.open() && !self.game.editor_windows_open() && button == MouseButton::Left && state == ElementState::Pressed && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() {
                     self.capture_mouse(true);
                     return;
                 }
@@ -1358,14 +1381,28 @@ impl ApplicationHandler for Shell<'_> {
                     return;
                 }
                 let shift = self.modifiers.shift_key() || self.shift_down;
+                if event.state==ElementState::Pressed && !event.repeat && matches!(code,KeyCode::F2|KeyCode::F3|KeyCode::F4|KeyCode::F9|KeyCode::F10) {
+                    if let Some([debug,stats,game])=self.hidden_layout.take() {
+                        self.debug.set_visible(debug);
+                        self.stats.set_visible(stats);
+                        self.game.set_editor_windows_open(game);
+                    }
+                }
                 match route_function_key(self.game, code, event.state, event.repeat, shift) {
                     KeyRoute::Engine(action) => {
                         match action {
                             EngineShortcut::AllMenus => {
-                                let open = !(self.debug.open() || self.stats.open() || self.game.editor_windows_open());
-                                self.game.set_editor_windows_open(open);
-                                if self.stats.open() != open { self.stats.toggle(); }
-                                if self.debug.open() != open { self.debug_key(KeyCode::F10, false); }
+                                let visible=[self.debug.open(),self.stats.open(),self.game.editor_windows_open()];
+                                let restore=self.hidden_layout.take().unwrap_or_else(|| {
+                                    self.hidden_layout=Some(visible);
+                                    [false;3]
+                                });
+                                self.debug.set_visible(restore[0]);
+                                self.stats.set_visible(restore[1]);
+                                self.game.set_editor_windows_open(restore[2]);
+                                self.pointer_owner=None;
+                                self.pressed_mouse_buttons=0;
+                                self.devices.reset_mouse();
                             }
                             EngineShortcut::DebugMenu => { self.debug_key(KeyCode::F10, false); }
                             EngineShortcut::Fullscreen => if let Some(w) = &self.window {

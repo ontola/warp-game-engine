@@ -202,6 +202,7 @@ impl EngineDebug {
         (r.consumed, r.action.and_then(|a| self.apply(a)))
     }
 
+    pub fn set_visible(&mut self,open:bool) { self.ui.open=open; self.ui.cancel_interaction(); }
     pub fn pointer_move(&mut self, cursor: [f32; 2]) { self.ui.pointer_move(cursor); }
     pub fn pointer_down(&mut self, size: [u32; 2]) -> (bool, Option<DebugAction>) {
         let r = self.ui.on_pointer_down(size, &self.model);
