@@ -16,7 +16,7 @@ use std::f32::consts::TAU;
 /// (radius 1, height 1); a tuft grows from its origin along +Y.
 #[derive(Clone, Debug)]
 pub struct Parts {
-    /// Stems that narrow to 1.0, 0.85, 0.7 and 0.55 of their base radius,
+    /// Stems that narrow to 1.0, 0.94, 0.86 and 0.72 of their base radius,
     /// eight-sided then sixteen-sided: a run picks the taper nearest its own,
     /// so consecutive runs meet at nearly the same ring.
     pub stems: [PartGeometry; 8],
@@ -25,7 +25,7 @@ pub struct Parts {
     pub tufts: Vec<PartGeometry>,
 }
 
-const TAPERS: [f32; 4] = [1.0, 0.85, 0.7, 0.55];
+const TAPERS: [f32; 4] = [1.0, 0.94, 0.86, 0.72];
 
 fn stem(id: u64, sides: u32, taper: f32) -> PartGeometry {
     let mut vertices = Vec::new();
@@ -284,7 +284,7 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     // parent. Thin twigs' seams are too small to see and keep the budget.
     const JOINT_RADIUS: f32 = 0.012;
     let taper_of = |radius: f32, end: f32| {
-        let wanted = (end / radius.max(1e-6)).clamp(0.4, 1.0);
+        let wanted = (end / radius.max(1e-6)).clamp(0.6, 1.0);
         (0..4).min_by(|&a, &c| (TAPERS[a] - wanted).abs().total_cmp(&(TAPERS[c] - wanted).abs())).unwrap_or(0)
     };
     let continues = |i: usize| stems.get(i + 1).is_some_and(|r| !r.5);
