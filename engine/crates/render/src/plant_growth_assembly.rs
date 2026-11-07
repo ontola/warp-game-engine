@@ -105,8 +105,8 @@ fn tuft(id: u64, variant: u64, needles: u32, length: f32) -> PartGeometry {
     let mut indices = Vec::new();
     for i in 0..needles {
         let v = i as u64;
-        // Mostly forward and outward; a few fall back past the stem.
-        let polar = (unit(variant, v, 1) * 1.0).sqrt() * 2.1;
+        // All round: a ball, a little thinner behind the shoot tip.
+        let polar = (1.0 - 1.9 * unit(variant, v, 1)).clamp(-1.0, 1.0).acos();
         let around = unit(variant, v, 2) * TAU;
         let axis = Vec3::new(polar.sin() * around.cos(), polar.cos(), polar.sin() * around.sin());
         let side = axis.cross(if axis.y.abs() < 0.9 { Vec3::Y } else { Vec3::X }).normalize();
@@ -120,7 +120,7 @@ fn tuft(id: u64, variant: u64, needles: u32, length: f32) -> PartGeometry {
         for k in 0..3 {
             let a = k as f32 / 3.0 * TAU;
             let out = side * a.cos() + up * a.sin();
-            vertices.push(Vertex { pos: (root + out * 0.005).to_array(), normal: out.to_array(), uv: [k as f32 / 3.0, 0.0] });
+            vertices.push(Vertex { pos: (root + out * 0.0025).to_array(), normal: out.to_array(), uv: [k as f32 / 3.0, 0.0] });
         }
         vertices.push(Vertex { pos: tip.to_array(), normal: (tip - root).normalize().to_array(), uv: [0.5, 1.0] });
         indices.extend_from_slice(&[b, b + 2, b + 1, b, b + 1, b + 3, b + 1, b + 2, b + 3, b + 2, b, b + 3]);
@@ -151,7 +151,7 @@ pub struct Look {
 
 impl Look {
     pub fn jeffrey_pine() -> Self {
-        Self { wood: [0.36, 0.19, 0.11], needles: [0.11, 0.21, 0.09] }
+        Self { wood: [0.24, 0.12, 0.07], needles: [0.11, 0.21, 0.09] }
     }
 }
 
@@ -280,9 +280,11 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
         let part = taper as u32 + if radius > 0.03 { 4 } else { 0 };
         instances.push(PartInstance { id: seed ^ (0x5354 << 40) ^ i as u64, part, branch: b, rest: affine(inverse[b as usize] * world), material: 0 });
         if first && plant.segments[segment as usize].order > 0 {
-            // A branch grows out of its parent: a flared collar at the joint.
-            let world = Mat4::from_scale_rotation_translation(Vec3::new(radius * 1.6, radius * 1.3, radius * 1.6), along(from, to), from);
-            instances.push(PartInstance { id: seed ^ (0x434c << 40) ^ i as u64, part: 8, branch: b, rest: affine(inverse[b as usize] * world), material: 0 });
+            // A branch grows out of its parent: a short flare, wide at the
+            // joint and narrowing into the branch over a few of its radii.
+            let world = Mat4::from_scale_rotation_translation(Vec3::new(radius * 1.8, radius * 3.0, radius * 1.8), along(from, to), from);
+            let flare = if radius > 0.03 { 7 } else { 3 };
+            instances.push(PartInstance { id: seed ^ (0x434c << 40) ^ i as u64, part: flare, branch: b, rest: affine(inverse[b as usize] * world), material: 0 });
         }
     }
     let mut placed = 0;
@@ -302,10 +304,12 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     let counts = Counts { bones: branches.len(), stems: stems.len() + collars, tufts: placed, tufts_dropped: plant.tufts.len() - placed };
     let material = |tint, foliage: bool| Material {
         tint,
-        layer: -1,
+        layer: if foliage { -1 } else { crate::scene::BARK_LAYER },
         roughness: if foliage { 0.8 } else { 0.96 },
         flags: if foliage { THIN_FOLIAGE | TWO_SIDED } else { 0 },
-        scale: 1.0,
+        // Wood: procedural bark plates about 12 cm across (shade.wgsl
+        // bark_surface). The tint stays the plates' and furrows' mean, for voxels.
+        scale: if foliage { 1.0 } else { 0.12 },
         metal: 0.0,
     };
     let geometry = parts.stems.iter().chain(std::iter::once(&parts.collar)).chain(&parts.tufts).cloned().collect();
