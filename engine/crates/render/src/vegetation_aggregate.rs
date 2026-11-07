@@ -644,17 +644,26 @@ fn axis_image(level: &VoxelLevel, origin: DVec3, axis: usize, lo: DVec3, cell: f
     let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
     let [da, db] = [level.dimensions[a] as usize, level.dimensions[b] as usize];
     // Front to back along +axis: voxels in depth order into dense columns.
-    let mut order: Vec<u32> = (0..level.voxels.len() as u32).collect();
-    order.sort_unstable_by_key(|&i| level.voxels[i as usize].coord[axis]);
+    // Counting sort by depth: linear in voxels, and stable.
+    let depth = (level.dimensions[axis] as usize).max(1);
+    let mut start = vec![0u32; depth + 1];
+    for v in &level.voxels { start[(v.coord[axis] as usize).min(depth - 1) + 1] += 1; }
+    for d in 0..depth { start[d + 1] += start[d]; }
+    let mut order = vec![0u32; level.voxels.len()];
+    for (i, v) in level.voxels.iter().enumerate() {
+        let d = (v.coord[axis] as usize).min(depth - 1);
+        order[start[d] as usize] = i as u32; start[d] += 1;
+    }
     let mut columns = vec![[1.0f64, 0.0, 0.0, 0.0]; da * db];
     let c = f64::from(level.cell_size);
     for i in order {
         let v = &level.voxels[i as usize];
         let column = &mut columns[v.coord[a] as usize + da * v.coord[b] as usize];
         let tau = f64::from(v.directional_area[axis]) / (c * c);
-        let absorbed = column[0] * -(-tau).exp_m1();
+        let lost = (-tau).exp_m1();
+        let absorbed = -column[0] * lost;
         for k in 0..3 { column[1 + k] += absorbed * f64::from(v.albedo[k]); }
-        column[0] *= (-tau).exp();
+        column[0] *= 1.0 + lost;
     }
     let mut image = vec![[0.0f64; 4]; size[0] * size[1]];
     let span = (c / cell).round().max(1.0) as i64;
@@ -1072,14 +1081,17 @@ impl Lattice {
     fn window(&self, cooker: &Cooker<'_>, origin: Vec3, dimensions: [u32; 3], stats: &mut Stats) -> Result<Cells, String> {
         if self.cell != cooker.config.reference_cell_size { return Err("lattice cell differs from the cook's".into()); }
         let shift = (origin / self.cell).round().as_ivec3() + glam::IVec3::splat(LATTICE_OFFSET as i32);
-        let mut out = Cells::new();
+        // A shift keeps lexicographic key order, so the map is bulk built
+        // from an ordered run instead of by one insert per cell.
+        let mut run = Vec::with_capacity(self.cells.len());
         for (k, m) in &self.cells {
             let local = glam::IVec3::new(k[0] as i32, k[1] as i32, k[2] as i32) - shift;
             if local.min_element() < 0 || (0..3).any(|a| local[a] as u32 >= dimensions[a]) {
                 return Err("lattice cell outside the group's reference grid".into());
             }
-            out.insert(local.to_array().map(|x| x as u32), m.clone());
+            run.push((local.to_array().map(|x| x as u32), m.clone()));
         }
+        let out: Cells = run.into_iter().collect();
         check_memory(cooker.config, out.len(), stats)?;
         Ok(out)
     }
