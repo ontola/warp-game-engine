@@ -193,7 +193,11 @@ fn grip(args: &crate::Args) -> Result<(), String> {
     let light = render::Lighting { sun_dir: Vec3::new(-0.6, 0.9, -0.6).normalize(),
         sky_lux: 4500.0, sun_lux: 9000.0, ev100: 12.0, taa: 0.0, fog_density: 0.0, ..Default::default() };
     for frame in 0..if growth { 25 } else { 2 } {
-        if growth && frame > 0 { rig.update(crate::gun::GROW_SECONDS / 24.0); }
+        if growth && frame > 0 {
+            // Rig limits each update to 50 ms. Advance five simulation ticks per image.
+            for _ in 0..5 { rig.update(crate::gun::GROW_SECONDS / 120.0); }
+            if frame == 24 && rig.is_growing() { rig.update(1e-5); }
+        }
         let apply = growth || frame == 1;
         let label = if growth { format!("frame-{frame:03}") } else if apply { "grip".into() } else { "clip".into() };
         let [primary, support] = rig.build.wrist_contacts();
@@ -203,7 +207,11 @@ fn grip(args: &crate::Args) -> Result<(), String> {
         let guns = Guns::reserve(&mut scene, 1);
         guns.review_pose(&mut scene, &rig);
         let mut pose = palette.clone();
-        let primary_hand = if apply { arms.apply(&mut pose, hand, target) } else { hand };
+        let primary_hand = if apply {
+            let wrist = arms.apply(&mut pose, hand, target);
+            arms.orient_support(&mut pose, crate::view::characters::grip_rotation(pitch));
+            wrist
+        } else { hand };
         let model_to_gun = Guns::held_transform(body.transform_point3(primary_hand), 0.0, pitch, primary).inverse() * body;
         for (material, vertices, indices, _) in model.posed_surfaces(&mut scene, &pose, model_to_gun) {
             let mesh = scene.add_mesh(&render::primitives::Primitive { material, vertices, indices }.mesh());

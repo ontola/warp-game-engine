@@ -122,16 +122,40 @@ impl TwoHandHold {
         })
     }
 
+    /// Orient a support palm after solving the wrists. The rotation maps the
+    /// model's bind-space hand to the desired grip in posed model space.
+    pub fn orient_support(&self, pose: &mut [Mat4], bind_to_grip: Quat) {
+        let (i, rest) = self.left.pivots[2];
+        let wrist = pose[i].transform_point3(rest);
+        let turn = bind_to_grip
+            * pose[i]
+                .to_scale_rotation_translation()
+                .1
+                .normalize()
+                .inverse();
+        let around = Mat4::from_rotation_translation(turn, wrist - turn * wrist);
+        for &(index, part) in &self.left.members {
+            if part == LimbPart::End {
+                pose[index] = around * pose[index];
+            }
+        }
+    }
+
     /// Primary and secondary are wrist sockets in model space. Place the prop
     /// at the returned primary wrist, preserving its requested orientation.
     pub fn apply(&self, pose: &mut [Mat4], primary: Vec3, secondary: Vec3) -> Vec3 {
         let spacing = secondary - primary;
-        let correction = self.left.closest_target(pose, secondary) - secondary;
-        // Preserve the authored carry pose for props longer than this arm span.
-        let allowance = self.right.span(pose) * 0.10;
-        let primary = self
-            .right
-            .closest_target(pose, primary + correction.clamp_length_max(allowance));
+        // Find a weapon translation that both arms can reach, keeping the
+        // closest placement to the sampled primary hand when it already fits.
+        let mut primary = primary;
+        for _ in 0..8 {
+            let wanted = primary + spacing;
+            let miss = self.left.closest_target(pose, wanted) - wanted;
+            if miss.length_squared() < 1e-10 {
+                break;
+            }
+            primary = self.right.closest_target(pose, primary + miss);
+        }
         self.right.apply(pose, primary, Vec3::NEG_X, 1.0);
         self.left.apply(pose, primary + spacing, Vec3::X, 1.0);
         primary
