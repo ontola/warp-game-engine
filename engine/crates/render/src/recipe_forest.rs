@@ -117,7 +117,7 @@ pub fn cook_grown(variants: &[(crate::plant_growth::Species, u32, u64)], parts: 
                 Some(dir) => {
                     // The growth and assembly code is part of the cook code key.
                     let what = format!("grown {species:?} {age} {seed} {look:?} {:?} {config:?} {proxy:?} {PROXY_LEVELS} {limits:?}",
-                        parts.stems.iter().chain(&parts.tufts).map(|p| (p.id, p.vertices.len(), p.indices.len())).collect::<Vec<_>>());
+                        parts.stems.iter().chain(std::iter::once(&parts.collar)).chain(&parts.tufts).map(|p| (p.id, p.vertices.len(), p.indices.len())).collect::<Vec<_>>());
                     CookedPlant::cached(dir, &what, cook)?
                 }
                 None => (cook()?, false),

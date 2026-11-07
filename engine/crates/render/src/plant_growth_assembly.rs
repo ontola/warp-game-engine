@@ -16,12 +16,18 @@ use std::f32::consts::TAU;
 /// (radius 1, height 1); a tuft grows from its origin along +Y.
 #[derive(Clone, Debug)]
 pub struct Parts {
-    /// Thin, medium and thick stems: fewer sides where they cover fewer pixels.
-    pub stems: [PartGeometry; 3],
+    /// Stems that narrow to 1.0, 0.85, 0.7 and 0.55 of their base radius,
+    /// six-sided then twelve-sided: a run picks the taper nearest its own,
+    /// so consecutive runs meet at nearly the same ring.
+    pub stems: [PartGeometry; 8],
+    /// A rounded collar where a branch leaves its parent (unit radius).
+    pub collar: PartGeometry,
     pub tufts: Vec<PartGeometry>,
 }
 
-fn stem(id: u64, sides: u32) -> PartGeometry {
+const TAPERS: [f32; 4] = [1.0, 0.85, 0.7, 0.55];
+
+fn stem(id: u64, sides: u32, taper: f32) -> PartGeometry {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     // Closed (capped) and with the seam on exactly the first ring's positions:
@@ -33,7 +39,10 @@ fn stem(id: u64, sides: u32) -> PartGeometry {
     for i in 0..=sides {
         let (c, s) = ring(i);
         for y in [0.0, 1.0] {
-            vertices.push(Vertex { pos: [c, y, s], normal: [c, 0.0, s], uv: [i as f32 / sides as f32, y] });
+            let r = 1.0 + (taper - 1.0) * y;
+            let slope = 1.0 - taper;
+            let n = Vec3::new(c, slope, s).normalize();
+            vertices.push(Vertex { pos: [c * r, y, s * r], normal: n.to_array(), uv: [i as f32 / sides as f32, y] });
         }
     }
     for i in 0..sides {
@@ -46,11 +55,38 @@ fn stem(id: u64, sides: u32) -> PartGeometry {
         let first = vertices.len() as u32;
         for i in 0..sides {
             let (c, s) = ring(i);
-            vertices.push(Vertex { pos: [c, y, s], normal: [0.0, normal, 0.0], uv: [0.5 + 0.5 * c, 0.5 + 0.5 * s] });
+            let r = 1.0 + (taper - 1.0) * y;
+            vertices.push(Vertex { pos: [c * r, y, s * r], normal: [0.0, normal, 0.0], uv: [0.5 + 0.5 * c, 0.5 + 0.5 * s] });
         }
         for i in 0..sides {
             let (a, b) = (first + i, first + (i + 1) % sides);
             indices.extend_from_slice(&if normal < 0.0 { [centre, a, b] } else { [centre, b, a] });
+        }
+    }
+    PartGeometry { id, vertices, indices }
+}
+
+/// A closed, slightly flattened ball for branch collars.
+fn collar(id: u64) -> PartGeometry {
+    let (rings, sides) = (5u32, 10u32);
+    let mut vertices = vec![Vertex { pos: [0.0, -1.0, 0.0], normal: [0.0, -1.0, 0.0], uv: [0.5, 0.0] }];
+    for r in 1..rings {
+        let a = r as f32 / rings as f32 * std::f32::consts::PI;
+        for i in 0..sides {
+            let b = i as f32 / sides as f32 * TAU;
+            let n = Vec3::new(a.sin() * b.cos(), -a.cos(), a.sin() * b.sin());
+            vertices.push(Vertex { pos: n.to_array(), normal: n.to_array(), uv: [i as f32 / sides as f32, r as f32 / rings as f32] });
+        }
+    }
+    vertices.push(Vertex { pos: [0.0, 1.0, 0.0], normal: [0.0, 1.0, 0.0], uv: [0.5, 1.0] });
+    let top = vertices.len() as u32 - 1;
+    let at = |r: u32, i: u32| 1 + (r - 1) * sides + i % sides;
+    let mut indices = Vec::new();
+    for i in 0..sides {
+        indices.extend_from_slice(&[0, at(1, i), at(1, i + 1)]);
+        indices.extend_from_slice(&[top, at(rings - 1, i + 1), at(rings - 1, i)]);
+        for r in 1..rings - 1 {
+            indices.extend_from_slice(&[at(r, i), at(r + 1, i), at(r + 1, i + 1), at(r, i), at(r + 1, i + 1), at(r, i + 1)]);
         }
     }
     PartGeometry { id, vertices, indices }
@@ -84,7 +120,7 @@ fn tuft(id: u64, variant: u64, needles: u32, length: f32) -> PartGeometry {
         for k in 0..3 {
             let a = k as f32 / 3.0 * TAU;
             let out = side * a.cos() + up * a.sin();
-            vertices.push(Vertex { pos: (root + out * 0.0016).to_array(), normal: out.to_array(), uv: [k as f32 / 3.0, 0.0] });
+            vertices.push(Vertex { pos: (root + out * 0.005).to_array(), normal: out.to_array(), uv: [k as f32 / 3.0, 0.0] });
         }
         vertices.push(Vertex { pos: tip.to_array(), normal: (tip - root).normalize().to_array(), uv: [0.5, 1.0] });
         indices.extend_from_slice(&[b, b + 2, b + 1, b, b + 1, b + 3, b + 1, b + 2, b + 3, b + 2, b, b + 3]);
@@ -98,8 +134,10 @@ impl Parts {
         const STEM: u64 = 0x5047_5354_0000_0000;
         const TUFT: u64 = 0x5047_5446_0000_0000;
         Self {
-            stems: [stem(STEM + 1, 4), stem(STEM + 2, 6), stem(STEM + 3, 12)],
-            tufts: (0..3).map(|v| tuft(TUFT + v, v, 28, 0.22)).collect(),
+            stems: std::array::from_fn(|k| stem(STEM + 1 + k as u64, if k < 4 { 6 } else { 12 }, TAPERS[k % 4])),
+            collar: collar(STEM + 16),
+            // A full bottlebrush: 140 needles 20-30 cm long.
+            tufts: (0..3).map(|v| tuft(TUFT + v, v, 140, 0.25)).collect(),
         }
     }
 }
@@ -142,7 +180,7 @@ fn along(from: Vec3, to: Vec3) -> Quat {
 
 /// Long stem runs from year segments: consecutive shoots of one axis merge
 /// until `reach` metres, so a tree is tens of trunk pieces, not one a year.
-fn runs(plant: &Plant, reach: f32) -> Vec<(u32, Vec3, Vec3, f32)> {
+fn runs(plant: &Plant, reach: f32) -> Vec<(u32, Vec3, Vec3, f32, f32, bool)> {
     let n = plant.segments.len();
     let mut next = vec![None; n];
     for (i, s) in plant.segments.iter().enumerate() {
@@ -162,7 +200,7 @@ fn runs(plant: &Plant, reach: f32) -> Vec<(u32, Vec3, Vec3, f32)> {
         while let Some(n) = next[at] {
             at = n;
             if plant.segments[at].to.distance(start) >= reach {
-                out.push((last as u32, start, plant.segments[at].to, radius));
+                out.push((last as u32, start, plant.segments[at].to, radius, plant.segments[at].radius[1], last == i));
                 start = plant.segments[at].to;
                 radius = plant.segments[at].radius[0];
                 last = at;
@@ -170,7 +208,7 @@ fn runs(plant: &Plant, reach: f32) -> Vec<(u32, Vec3, Vec3, f32)> {
         }
         let end = plant.segments[at].to;
         if end.distance(start) > 1e-3 {
-            out.push((last as u32, start, end, radius));
+            out.push((last as u32, start, end, radius, plant.segments[at].radius[1], last == i));
         }
     }
     out
@@ -220,20 +258,29 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     let mut reach = 0.6;
     let stems = loop {
         let r = runs(plant, reach);
-        if r.len() * 2 <= limits.max_instances || reach > 16.0 {
+        if r.len() * 3 <= limits.max_instances || reach > 16.0 {
             break r;
         }
         reach *= 1.5;
     };
-    let room = limits.max_instances.saturating_sub(stems.len());
+    let collars = stems.iter().filter(|r| r.5 && plant.segments[r.0 as usize].order > 0).count();
+    let room = limits.max_instances.saturating_sub(stems.len() + collars);
     let keep = (room as f32 / plant.tufts.len().max(1) as f32).min(1.0);
     let mut instances = Vec::with_capacity(limits.max_instances);
-    for (i, (segment, from, to, radius)) in stems.iter().enumerate() {
-        let (from, to) = (*from, *to);
-        let b = bone_of(*segment);
-        let world = Mat4::from_scale_rotation_translation(Vec3::new(*radius, from.distance(to), *radius), along(from, to), from);
-        let part = if *radius > 0.06 { 2 } else if *radius > 0.015 { 1 } else { 0 };
+    for (i, &(segment, from, to, radius, end, first)) in stems.iter().enumerate() {
+        let b = bone_of(segment);
+        // Overlap the next run a little so the rings meet without a seam.
+        let length = from.distance(to) + radius.min(0.05);
+        let world = Mat4::from_scale_rotation_translation(Vec3::new(radius, length, radius), along(from, to), from);
+        let wanted = (end / radius.max(1e-6)).clamp(0.4, 1.0);
+        let taper = (0..4).min_by(|&a, &c| (TAPERS[a] - wanted).abs().total_cmp(&(TAPERS[c] - wanted).abs())).unwrap_or(0);
+        let part = taper as u32 + if radius > 0.03 { 4 } else { 0 };
         instances.push(PartInstance { id: seed ^ (0x5354 << 40) ^ i as u64, part, branch: b, rest: affine(inverse[b as usize] * world), material: 0 });
+        if first && plant.segments[segment as usize].order > 0 {
+            // A branch grows out of its parent: a flared collar at the joint.
+            let world = Mat4::from_scale_rotation_translation(Vec3::new(radius * 1.6, radius * 1.3, radius * 1.6), along(from, to), from);
+            instances.push(PartInstance { id: seed ^ (0x434c << 40) ^ i as u64, part: 8, branch: b, rest: affine(inverse[b as usize] * world), material: 0 });
+        }
     }
     let mut placed = 0;
     for (i, t) in plant.tufts.iter().enumerate() {
@@ -245,11 +292,11 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
         let size = (0.75 + 0.45 * t.fullness) / keep.sqrt();
         let twist = Quat::from_axis_angle(Vec3::Y, unit(seed, i as u64, 10) * TAU);
         let world = Mat4::from_scale_rotation_translation(Vec3::splat(size), along(Vec3::ZERO, t.axis) * twist, t.at);
-        let part = 3 + (unit(seed, i as u64, 11) * parts.tufts.len() as f32) as u32 % parts.tufts.len().max(1) as u32;
+        let part = 9 + (unit(seed, i as u64, 11) * parts.tufts.len() as f32) as u32 % parts.tufts.len().max(1) as u32;
         instances.push(PartInstance { id: seed ^ (0x5446 << 40) ^ i as u64, part, branch: b, rest: affine(inverse[b as usize] * world), material: 1 });
         placed += 1;
     }
-    let counts = Counts { bones: branches.len(), stems: stems.len(), tufts: placed, tufts_dropped: plant.tufts.len() - placed };
+    let counts = Counts { bones: branches.len(), stems: stems.len() + collars, tufts: placed, tufts_dropped: plant.tufts.len() - placed };
     let material = |tint, foliage: bool| Material {
         tint,
         layer: -1,
@@ -258,7 +305,7 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
         scale: 1.0,
         metal: 0.0,
     };
-    let geometry = parts.stems.iter().chain(&parts.tufts).cloned().collect();
+    let geometry = parts.stems.iter().chain(std::iter::once(&parts.collar)).chain(&parts.tufts).cloned().collect();
     let parameters = Parameters { seed, archetype: Archetype::ConiferTwig, growth: 1.0, season: 0.5, density: placed.max(1) as u32 };
     let assembly = Assembly::from_parts(parameters, geometry, branches, instances, vec![material(look.wood, false), material(look.needles, true)], limits)?;
     Ok((assembly, counts))
@@ -283,7 +330,7 @@ mod tests {
     #[test]
     fn parts_are_closed_with_outward_volume() {
         let parts = Parts::long_needle_pine();
-        for part in parts.stems.iter().chain(&parts.tufts) {
+        for part in parts.stems.iter().chain(std::iter::once(&parts.collar)).chain(&parts.tufts) {
             let mut edges = std::collections::BTreeMap::new();
             let mut volume = 0.0f64;
             for tri in part.indices.chunks_exact(3) {
