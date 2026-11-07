@@ -217,6 +217,16 @@ impl Plants {
             roots.push(WorldRoot { id: u64::from(id), placement: RootPlacement { pos: p.pos, yaw: p.yaw, scale: 1.0, variant, up: Vec3::Y } });
         }
         if roots.is_empty() { return Ok(shown); }
+        // Workaround: a single-branch plant (a seedling) as a GPU forest
+        // variant hides every variant after it (seen on lavapipe and an RTX
+        // 5070 Ti; cause not found yet). Order the variants by branch count,
+        // most first, so single-branch ones come last.
+        let mut order: Vec<usize> = (0..variants.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(variants[i].1.stats().branches));
+        let mut new_index = vec![0; variants.len()];
+        for (to, &from) in order.iter().enumerate() { new_index[from] = to; }
+        let variants: Vec<_> = order.iter().map(|&i| variants[i].clone()).collect();
+        for r in &mut roots { r.placement.variant = new_index[r.placement.variant]; }
         let species: Vec<_> = variants.iter().map(|(_, plant)| render::foliage_runtime::Species {
             plant: plant.as_ref(), category: render::scene::GeometryCategory::Trees, deformation: render::foliage_runtime::Deformation::Rigid,
         }).collect();

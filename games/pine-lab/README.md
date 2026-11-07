@@ -16,5 +16,6 @@ into `Species::jeffrey_pine()` (engine/crates/render/src/plant_growth.rs).
 The rows of the panel come from `PARAMS` in main.luau: add one line there
 to tune another field.
 
-Known: with the full cook, only the first age of a mixed row shows (seen on
-lavapipe; a single age shows). The preview is not affected.
+The full cook orders its ages so single-branch seedlings come last: as the
+first variant of a GPU forest, a seedling hides every variant after it
+(cause still open, see plants.rs).
