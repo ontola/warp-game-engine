@@ -69,8 +69,10 @@ fn sun_degrees(env: &render::biome::Environment) -> (f32, f32) {
     if std::env::args().any(|a| a == "--hour") { env.sun_degrees() } else { (28.0, 135.0) }
 }
 /// Grass is a field of roots around one point; it is rebuilt around the
-/// camera once the camera is this far (metres, horizontally) from it.
-const GRASS_RECENTRE: f32 = 60.0;
+/// camera once the camera is this far (metres, horizontally) from it. At 60 m
+/// a whole strip of cells appeared at once every 60 m of travel (pop-in, Joep);
+/// the rebuild runs on a background thread, so small steps cost no frame time.
+const GRASS_RECENTRE: f32 = 15.0;
 /// Loaded forest cells recenter independently of ground and shadow streaming.
 const TREES_RECENTRE: f32 = 300.0;
 /// Mountain shadows past the shadow maps come from a heightfield this many

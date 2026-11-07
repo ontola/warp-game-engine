@@ -23,9 +23,25 @@ pub const PROXY_LEVELS: u32 = 6;
 
 /// The aggregate cook every recipe tree uses: each branch group also gets
 /// voxel levels.
+/// KERN_BRANCH_CELL_M (experiment) sets the finest branch voxel cell: each
+/// halving below the default 7.5 cm adds a level (so the coarsest stays) and
+/// four times the total brick and voxel caps, so the cut can stay on voxels
+/// closer in before it falls back to the source mesh. A group still keeps 128
+/// bricks per level (GPU cluster), so only groups small enough get the finer
+/// cells; larger ones start coarser, as before.
 pub fn aggregate_config() -> Config {
-    Config { max_placements: 8192, max_source_triangles: 40_000_000, max_samples: 150_000_000, triangle_refinements: true,
-        max_reference_voxels: 262_144, max_diagnostic_steps: 80_000_000, ..Default::default() }
+    let base = Config { max_placements: 8192, max_source_triangles: 40_000_000, max_samples: 150_000_000, triangle_refinements: true,
+        max_reference_voxels: 262_144, max_diagnostic_steps: 80_000_000, ..Default::default() };
+    let cell = std::env::var("KERN_BRANCH_CELL_M").ok().and_then(|v| v.parse::<f32>().ok())
+        .filter(|c| (0.01..base.reference_cell_size).contains(c));
+    let Some(cell) = cell else { return base };
+    let extra = (base.reference_cell_size / cell).log2().ceil().max(0.0) as u32;
+    let area = 4usize.pow(extra);
+    Config { reference_cell_size: cell, levels: base.levels + extra,
+        max_total_bricks: base.max_total_bricks * area,
+        max_reference_voxels: base.max_reference_voxels * area * 2, max_output_voxels: base.max_output_voxels * area,
+        max_samples: base.max_samples * area as u64, max_diagnostic_steps: base.max_diagnostic_steps * area as u64,
+        max_scratch_bytes: base.max_scratch_bytes * area, max_build_bytes: base.max_build_bytes * 2, ..base }
 }
 
 /// The whole-plant proxy cook: 10 cm reference cells.
