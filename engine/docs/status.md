@@ -118,6 +118,8 @@ Owned by the foliage work; its working checklist is
 
 ## Games
 
+Native Luau games can opt into [versioned, schema-validated local storage](storage.md).
+
 Luau folder games support local library imports and dependency-aware hot reload ([guide](warp-cli.md#local-libraries)).
 
 Luau entities can follow a parent, and native games can resolve named model sockets ([parenting](parenting.md)).

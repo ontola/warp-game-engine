@@ -20,3 +20,5 @@ pub mod surface;
 pub mod world;
 
 pub use game::{LuaGame, Overrides};
+
+pub mod storage;

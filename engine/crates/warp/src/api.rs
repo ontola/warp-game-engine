@@ -144,6 +144,7 @@ impl Rng {
 }
 
 pub struct Core {
+    pub(crate) storage: Option<crate::storage::Storage>,
     pub world: World,
     pub sounds: SoundOut,
     /// Every player, people first in view order, then bots.
@@ -418,7 +419,7 @@ fn filter(opts: Option<Table>) -> mlua::Result<Filter> {
     Ok(f)
 }
 
-fn sim(c: &Core, what: &str) -> mlua::Result<()> {
+pub(crate) fn sim(c: &Core, what: &str) -> mlua::Result<()> {
     if c.phase == Phase::Draw { return Err(rt(format!("{what} changes the game, so it belongs in init or tick, not in draw (draw runs a varying number of times per tick)"))); }
     Ok(())
 }
@@ -464,6 +465,7 @@ pub fn player_table(lua: &Lua, p: &Player) -> mlua::Result<Table> {
 
 /// Add the API tables to a module base (`Host::new`'s `api`).
 pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
+    crate::storage::register(lua, api, core.clone())?;
     let table = |name: &str, fns: Vec<(&str, mlua::Function)>| -> mlua::Result<()> {
         let t = lua.create_table()?;
         for (k, f) in fns { t.raw_set(k, f)?; }
