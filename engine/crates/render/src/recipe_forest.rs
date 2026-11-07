@@ -41,7 +41,7 @@ pub fn aggregate_config() -> Config {
         max_total_bricks: base.max_total_bricks * area,
         max_reference_voxels: base.max_reference_voxels * area * 2, max_output_voxels: base.max_output_voxels * area,
         max_samples: base.max_samples * area as u64, max_diagnostic_steps: base.max_diagnostic_steps * area as u64,
-        max_scratch_bytes: base.max_scratch_bytes * area, max_build_bytes: base.max_build_bytes * 2, ..base }
+        max_scratch_bytes: base.max_scratch_bytes * area, max_build_bytes: base.max_build_bytes * area * 2, ..base }
 }
 
 /// The whole-plant proxy cook: 10 cm reference cells.
