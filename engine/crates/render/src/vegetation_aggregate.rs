@@ -18,7 +18,22 @@ use crate::{
     scene::{Material, THIN_FOLIAGE, TWO_SIDED},
 };
 use glam::{DVec3, Mat3, Mat4, Vec3, Vec4};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+/// A cheap deterministic hash for voxel coordinates (lookups only; nothing
+/// iterates these maps, so output order never depends on it).
+#[derive(Default, Clone, Copy)]
+struct CoordHash(u64);
+impl std::hash::Hasher for CoordHash {
+    fn finish(&self) -> u64 { self.0 }
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) { let mut w = [0u8; 8]; w[..chunk.len()].copy_from_slice(chunk); self.write_u64(u64::from_le_bytes(w)); }
+    }
+    fn write_u32(&mut self, x: u32) { self.write_u64(u64::from(x)); }
+    fn write_u64(&mut self, x: u64) { self.0 = (self.0.rotate_left(5) ^ x).wrapping_mul(0x51_7cc1_b727_220a_95); }
+    fn write_usize(&mut self, x: usize) { self.write_u64(x as u64); }
+}
+type CoordMap<V> = HashMap<[u32; 3], V, std::hash::BuildHasherDefault<CoordHash>>;
 
 pub const BRICK_WIDTH: u32 = 4;
 pub const EMPTY_CELL: u32 = u32::MAX;
@@ -172,11 +187,21 @@ impl Mass {
         for i in 0..6 { self.normal[i] += b.normal[i];
             for j in 0..3 { self.vectors[i][j] += b.vectors[i][j]; } }
     }
-    fn sample(&mut self, area: f64, directional: [f64; 13], normal: DVec3, material: &Material, projection_scale: f64) {
+    /// The parts of `sample` that do not depend on the normal, for `area` of
+    /// samples on one triangle at once.
+    fn flat(&mut self, area: f64, directional: [f64; 13], material: &Material, projection_scale: f64) {
         self.area += area; self.roughness += area * f64::from(material.roughness);
         if material.flags & THIN_FOLIAGE != 0 { self.leaf += area; }
         for i in 0..13 { self.directional[i] += area * directional[i] * projection_scale; }
         for i in 0..3 { self.color[i] += area * f64::from(material.tint[i]); }
+    }
+    #[cfg(test)]
+    fn sample(&mut self, area: f64, directional: [f64; 13], normal: DVec3, material: &Material, projection_scale: f64) {
+        self.flat(area, directional, material, projection_scale);
+        self.lobes(area, normal, material);
+    }
+    /// The normal lobes of one sample.
+    fn lobes(&mut self, area: f64, normal: DVec3, material: &Material) {
         for k in 0..3 {
             let weight = area * normal[k] * normal[k];
             if material.flags & TWO_SIDED != 0 {
@@ -274,28 +299,54 @@ fn triangle(cells: &mut Cells, vertices: [Vertex; 3], material: &Material, origi
     }
     stats.quadrature_samples += count;
     let sample_area = area / count as f64;
-    let mut sample = |u: f64, v: f64| -> Result<(), String> {
+    let scale = match measure { ProjectionMeasure::ClosedSurfaceEntries => 0.5, ProjectionMeasure::SheetCrossings => 1.0 };
+    let inv_cell = 1.0 / f64::from(c.reference_cell_size);
+    // Neighbouring samples mostly land in the same cell: gather a run of them
+    // in one Mass and add it to the map once, instead of a map lookup per sample.
+    let mut run: Option<([u32; 3], Mass, u32)> = None;
+    let finish = |(coord, mut mass, count): ([u32; 3], Mass, u32)| {
+        mass.flat(sample_area * f64::from(count), directions, material, scale);
+        (coord, mass)
+    };
+    let mut sample = |u: f64, v: f64, cells: &mut Cells, stats: &mut Stats| -> Result<(), String> {
         let w = 1.0-u-v;
         let point = p[0]*w+p[1]*u+p[2]*v;
-        let q = ((point-origin)/f64::from(c.reference_cell_size)).floor();
+        let q = ((point-origin)*inv_cell).floor();
         if q.min_element() < 0.0 || (0..3).any(|k| q[k] >= f64::from(dimensions[k])) {
             return Err("aggregate candidate escaped the common reference grid".into());
         }
         let coord = q.to_array().map(|x| x as u32);
-        if !cells.contains_key(&coord) {
-            if cells.len() >= c.max_reference_voxels { return Err("aggregate reference cell budget exceeded".into()); }
-            check_memory(c, cells.len()+1, stats)?;
+        if run.as_ref().is_none_or(|r| r.0 != coord) {
+            if let Some(done) = run.take() { add_run(cells, finish(done), c, stats)?; }
+            run = Some((coord, Mass::default(), 0));
         }
         let normal = (normals[0]*w+normals[1]*u+normals[2]*v).try_normalize().unwrap_or(geometric);
-        cells.entry(coord).or_default().sample(sample_area, directions, normal, material, match measure {
-            ProjectionMeasure::ClosedSurfaceEntries => 0.5, ProjectionMeasure::SheetCrossings => 1.0 });
+        let r = run.as_mut().unwrap();
+        r.1.lobes(sample_area, normal, material);
+        r.2 += 1;
         Ok(())
     };
+    let nf = f64::from(n);
     for row in 0..n { for column in 0..n-row {
-        sample((f64::from(row)+1.0/3.0)/f64::from(n), (f64::from(column)+1.0/3.0)/f64::from(n))?;
-        if row+column+1<n { sample((f64::from(row)+2.0/3.0)/f64::from(n),
-            (f64::from(column)+2.0/3.0)/f64::from(n))?; }
+        sample((f64::from(row)+1.0/3.0)/nf, (f64::from(column)+1.0/3.0)/nf, cells, stats)?;
+        if row+column+1<n { sample((f64::from(row)+2.0/3.0)/nf,
+            (f64::from(column)+2.0/3.0)/nf, cells, stats)?; }
     }}
+    if let Some(done) = run.take() { add_run(cells, finish(done), c, stats)?; }
+    Ok(())
+}
+
+/// Add a run of samples that fell in one cell, minding the cell budget.
+fn add_run(cells: &mut Cells, (coord, mass): ([u32; 3], Mass), c: Config, stats: &mut Stats) -> Result<(), String> {
+    let len = cells.len();
+    match cells.entry(coord) {
+        std::collections::btree_map::Entry::Occupied(mut e) => e.get_mut().add(&mass),
+        std::collections::btree_map::Entry::Vacant(e) => {
+            if len >= c.max_reference_voxels { return Err("aggregate reference cell budget exceeded".into()); }
+            check_memory(c, len+1, stats)?;
+            e.insert(mass);
+        }
+    }
     Ok(())
 }
 
@@ -323,10 +374,32 @@ fn bricks(level: &VoxelLevel) -> Vec<Brick> {
     bricks.into_values().collect()
 }
 
-struct Grid<'a> { level: &'a VoxelLevel, origin: DVec3, lookup: BTreeMap<[u32;3],usize> }
+/// Voxel index by cell: a dense table when the grid is small enough, else a map.
+enum Lookup { Dense(Vec<u32>), Sparse(CoordMap<usize>) }
+const DENSE_LOOKUP_CELLS: u64 = 1 << 23;
+struct Grid<'a> { level: &'a VoxelLevel, origin: DVec3, lookup: Lookup }
 impl<'a> Grid<'a> {
     fn new(level: &'a VoxelLevel, origin: DVec3) -> Self {
-        Self { level, origin, lookup: level.voxels.iter().enumerate().map(|(i,v)|(v.coord,i)).collect() }
+        let [x,y,z]=level.dimensions.map(u64::from);
+        let lookup=if x*y*z<=DENSE_LOOKUP_CELLS && level.voxels.len()<u32::MAX as usize {
+            let mut table=vec![u32::MAX;(x*y*z) as usize];
+            for (i,v) in level.voxels.iter().enumerate() {
+                let [a,b,c]=v.coord.map(u64::from);
+                table[(a+x*(b+y*c)) as usize]=i as u32;
+            }
+            Lookup::Dense(table)
+        } else { Lookup::Sparse(level.voxels.iter().enumerate().map(|(i,v)|(v.coord,i)).collect()) };
+        Self { level, origin, lookup }
+    }
+    /// The voxel at an in-grid cell.
+    fn get(&self, coord: [u32;3]) -> Option<usize> {
+        match &self.lookup {
+            Lookup::Dense(table) => {
+                let [x,y,_]=self.level.dimensions.map(u64::from);let [a,b,c]=coord.map(u64::from);
+                table.get((a+x*(b+y*c)) as usize).copied().filter(|&i|i!=u32::MAX).map(|i|i as usize)
+            }
+            Lookup::Sparse(map) => map.get(&coord).copied(),
+        }
     }
     fn upper(&self) -> DVec3 {
         self.origin+DVec3::from(self.level.dimensions.map(f64::from))*f64::from(self.level.cell_size)
@@ -365,7 +438,7 @@ fn ray(grid: &Grid<'_>, start: DVec3, direction: DVec3, direction_index: usize,
         });
         let end=boundaries.into_iter().fold(exit,f64::min);
         if end<t-1e-8*cell { return Err("aggregate diagnostic DDA did not progress".into()); }
-        if let Some(&index)=grid.lookup.get(&coord.map(|v|v as u32)) {
+        if let Some(index)=grid.get(coord.map(|v|v as u32)) {
             let v=&grid.level.voxels[index];
             let tau=f64::from(v.directional_area[direction_index])/cell.powi(3)*(end-t).max(0.0);
             let absorption=transmittance*(-(-tau).exp_m1());
@@ -671,24 +744,39 @@ fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_asse
         current=reduce(current);downsample*=2;level_dimensions=level_dimensions.map(|v|v.div_ceil(2));
     }
     stats.first_level_downsample=downsample;
-    let triangle_alternate=|cut_error:f32,stats:&mut Stats|->Result<(VoxelLevel,u64),String> {
+    // Each placement's cut voxelized on its own and kept while its cut stays
+    // the same: locked needles never simplify, so most placements are
+    // voxelized once for every level instead of once per level.
+    let mut cuts:Vec<Option<(Vec<u32>,Cells,u64)>>=(0..memberships.len()).map(|_|None).collect();
+    let mut triangle_alternate=|cut_error:f32,stats:&mut Stats|->Result<(VoxelLevel,u64),String> {
         let mut scratch=Vec::new();let mut alternate=Cells::new();let mut triangle_count=0u64;
-        for (&index,&matrix) in memberships.iter().zip(&matrices) {
+        for (slot,(&index,&matrix)) in memberships.iter().zip(&matrices).enumerate() {
             let instance=&source.instances[index as usize];
             let material=&source.materials[instance.material as usize];
             let mesh=&cooked[&(instance.part as usize,material.flags&THIN_FOLIAGE!=0)];
-            transformed(&mesh.vertices,matrix,&mut scratch,config,stats)?;
             let threshold=cut_error/scale_bound(matrix);
-            for cluster in mesh.clusters.iter().filter(|c|c.own_error<=threshold && c.parent_error>threshold) {
-                for &packed in &mesh.tris[cluster.first_tri as usize..(cluster.first_tri+cluster.tri_count)as usize] {
-                    let vertices=[packed&255,(packed>>8)&255,(packed>>16)&255].map(|i|
-                        scratch[mesh.cluster_verts[(cluster.first_vert+i)as usize]as usize]);
-                    triangle(&mut alternate,vertices,&source.materials[instance.material as usize],
-                        origin64,dimensions,config,source.projection_measure(),stats)?;
-                    triangle_count+=1;
+            let signature:Vec<u32>=mesh.clusters.iter().enumerate()
+                .filter(|(_,c)|c.own_error<=threshold && c.parent_error>threshold).map(|(i,_)|i as u32).collect();
+            if cuts[slot].as_ref().is_none_or(|c|c.0!=signature) {
+                transformed(&mesh.vertices,matrix,&mut scratch,config,stats)?;
+                let mut own=Cells::new();let mut count=0u64;
+                for &cluster in &signature {
+                    let cluster=&mesh.clusters[cluster as usize];
+                    for &packed in &mesh.tris[cluster.first_tri as usize..(cluster.first_tri+cluster.tri_count)as usize] {
+                        let vertices=[packed&255,(packed>>8)&255,(packed>>16)&255].map(|i|
+                            scratch[mesh.cluster_verts[(cluster.first_vert+i)as usize]as usize]);
+                        triangle(&mut own,vertices,material,origin64,dimensions,config,source.projection_measure(),stats)?;
+                        count+=1;
+                    }
                 }
+                cuts[slot]=Some((signature,own,count));
             }
+            let (_,own,count)=cuts[slot].as_ref().unwrap();
+            for (&coord,mass) in own { alternate.entry(coord).or_default().add(mass); }
+            triangle_count+=count;
         }
+        if alternate.len()>config.max_reference_voxels {return Err("aggregate reference cell budget exceeded".into());}
+        check_memory(config,alternate.len(),stats)?;
         Ok((level(&alternate,dimensions,cell),triangle_count))
     };
     let mut levels=Vec::new();let mut metadata=Vec::new();
@@ -956,10 +1044,12 @@ mod tests {
                 assert_eq!(fine.rays,coarse.rays);assert_eq!(fine.sample_spacing_m,coarse.sample_spacing_m);
             }
         }
-        assert!(refined.stats.quadrature_samples>ordinary.stats.quadrature_samples);
+        // The irreducible cut is the same at every refinement, so it is
+        // voxelized once and reused: no extra quadrature, but extra rays.
+        assert_eq!(refined.stats.quadrature_samples,ordinary.stats.quadrature_samples);
         assert!(refined.stats.diagnostic_steps>ordinary.stats.diagnostic_steps);
         let error=cook(&source,&[0],Mat4::IDENTITY,Config {triangle_refinements:true,
-            max_samples:ordinary.stats.quadrature_samples,..config()}).unwrap_err();
+            max_samples:ordinary.stats.quadrature_samples-1,..config()}).unwrap_err();
         assert!(error.contains("quadrature budget"),"{error}");
     }
 }
