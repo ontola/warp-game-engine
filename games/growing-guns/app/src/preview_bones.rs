@@ -48,6 +48,10 @@ pub(super) struct Bones {
     pub shown: bool,
     projected: Vec<Option<Vec2>>,
     drag: Option<usize>,
+    direct: Option<(bool, Vec2)>,
+    inv_vp: Mat4,
+    vp: Mat4,
+    size: Vec2,
 }
 
 impl Bones {
@@ -64,6 +68,10 @@ impl Bones {
             selected,
             shown: true,
             drag: None,
+            direct: None,
+            inv_vp: Mat4::IDENTITY,
+            vp: Mat4::IDENTITY,
+            size: Vec2::ONE,
         })
     }
 
@@ -72,14 +80,53 @@ impl Bones {
             self.drag = None;
         }
         if !self.shown {
+            self.direct = None;
             return false;
         }
         let Some([x, y]) = p.position else {
             return false;
         };
         let panel = (8.0..250.0).contains(&x) && (40.0..196.0).contains(&y);
-        if p.pressed {
+        let cursor = Vec2::new(x, y);
+        if let Some((rotate, last)) = self.direct {
+            if if rotate { p.right_held } else { p.held } {
+                let joint = &mut self.editor.joints[self.selected];
+                let ndc = self.vp.project_point3(joint.position);
+                let unproject = |at: Vec2| {
+                    self.inv_vp.project_point3(Vec3::new(
+                        2. * at.x / self.size.x - 1.,
+                        1. - 2. * at.y / self.size.y,
+                        ndc.z,
+                    ))
+                };
+                if rotate {
+                    let right = (unproject(last + Vec2::X) - unproject(last)).normalize_or(Vec3::X);
+                    let up = (unproject(last - Vec2::Y) - unproject(last)).normalize_or(Vec3::Y);
+                    let d = cursor - last;
+                    let turn = glam::Quat::from_axis_angle(up, d.x * 0.012)
+                        * glam::Quat::from_axis_angle(right, d.y * 0.012);
+                    let r = joint.degrees * (std::f32::consts::PI / 180.);
+                    let q = joint.basis.inverse()
+                        * turn
+                        * joint.basis
+                        * glam::Quat::from_euler(glam::EulerRot::XYZ, r.x, r.y, r.z);
+                    let (a, b, c) = q.to_euler(glam::EulerRot::XYZ);
+                    joint.degrees = Vec3::new(a, b, c) * (180. / std::f32::consts::PI);
+                } else {
+                    joint.local_offset +=
+                        joint.basis.inverse() * (unproject(cursor) - unproject(last));
+                }
+                self.direct = Some((rotate, cursor));
+                return true;
+            } else {
+                self.direct = None;
+            }
+        }
+        if p.pressed || p.right_pressed {
             if panel {
+                if !p.pressed {
+                    return true;
+                }
                 if y < 67.0 {
                     let n = self.editor.joints.len();
                     self.selected = (self.selected + if x < 129.0 { n - 1 } else { 1 }) % n;
@@ -87,6 +134,7 @@ impl Bones {
                     self.drag = Some(((y - 94.0) / 25.0) as usize);
                 } else if y >= 169.0 {
                     self.editor.joints[self.selected].degrees = Vec3::ZERO;
+                    self.editor.joints[self.selected].local_offset = Vec3::ZERO;
                 }
             } else if let Some((i, _)) = self
                 .projected
@@ -97,6 +145,7 @@ impl Bones {
                 .min_by(|a, b| a.1.total_cmp(&b.1))
             {
                 self.selected = i;
+                self.direct = Some((p.right_pressed, cursor));
                 return true;
             }
         }
@@ -108,6 +157,9 @@ impl Bones {
         panel && (p.held || p.pressed)
     }
 
+    pub fn manipulating(&self) -> bool {
+        self.direct.is_some()
+    }
     pub fn draw(&mut self, hud: &mut HudDrawList, cam: &Camera, model: Mat4) {
         if !self.shown {
             return;
@@ -116,6 +168,9 @@ impl Bones {
         let vp = Mat4::perspective_rh(cam.fov_y, w / h, cam.near, 1000.0)
             * Mat4::look_at_rh(cam.pos, cam.target, Vec3::Y)
             * model;
+        self.size = Vec2::new(w, h);
+        self.vp = vp;
+        self.inv_vp = vp.inverse();
         let clip = [0., 0., w, h];
         for (j, pos) in self.editor.joints.iter().zip(&mut self.projected) {
             let p = vp * j.position.extend(1.0);
@@ -134,7 +189,7 @@ impl Bones {
             if let Some(prev) = j.parent.and_then(|p| self.projected[p]) {
                 hud.line(prev.to_array(), pos.to_array(), 2.0, c, clip);
             }
-            hud.rect([pos.x - 3., pos.y - 3., 6., 6.], c, clip);
+            hud.rect([pos.x - 4., pos.y - 4., 8., 8.], c, clip);
         }
         hud.rect([8., 40., 242., 156.], [0.04, 0.05, 0.07, 0.94], clip);
         let j = &self.editor.joints[self.selected];

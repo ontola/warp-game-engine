@@ -1,6 +1,36 @@
 //! A positional contact layered over an animated skin palette.
 //! Bind once per skeleton. Target and bend hint use the sampled model's space.
-use glam::{Mat4, Quat, Vec3};
+use glam::{Affine3A, Mat4, Quat, Vec3};
+
+/// Rigid prop attachment calibrated against one reference pose. The socket
+/// follows the final skin palette, including edits inherited from parent bones.
+pub struct JointMount {
+    index: usize,
+    bind: Mat4,
+    reference_inverse: Quat,
+}
+
+impl JointMount {
+    pub fn new(index: usize, bind: Mat4, reference: &[Mat4]) -> Self {
+        let reference_inverse = (reference[index] * bind)
+            .to_scale_rotation_translation()
+            .1
+            .normalize()
+            .inverse();
+        Self {
+            index,
+            bind,
+            reference_inverse,
+        }
+    }
+
+    /// Place the prop-local contact at this joint, in character model space.
+    pub fn place(&self, pose: &[Mat4], reference_orientation: Quat, contact: Vec3) -> Affine3A {
+        let (_, hand, wrist) = (pose[self.index] * self.bind).to_scale_rotation_translation();
+        let rotation = hand.normalize() * self.reference_inverse * reference_orientation;
+        Affine3A::from_rotation_translation(rotation, wrist - rotation * contact)
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LimbPart {
@@ -189,6 +219,25 @@ impl TwoHandHold {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joint_mount_tracks_rotated_and_translated_hand_at_each_grip_size() {
+        let bind = Mat4::from_translation(Vec3::Y);
+        let reference = [Mat4::from_rotation_y(0.6)];
+        let mount = JointMount::new(0, bind, &reference);
+        let aim = Quat::from_rotation_x(0.2);
+        let turn = Quat::from_rotation_z(1.1);
+        let edited = [Mat4::from_rotation_translation(turn, Vec3::X) * reference[0]];
+        for grip in [Vec3::ZERO, Vec3::new(0.0, -0.1, 0.2)] {
+            let xf = mount.place(&edited, aim, grip);
+            assert!(
+                xf.transform_point3(grip)
+                    .distance(edited[0].transform_point3(Vec3::Y))
+                    < 1e-5
+            );
+            assert!(xf.transform_vector3(Vec3::Z).distance(turn * aim * Vec3::Z) < 1e-5);
+        }
+    }
 
     #[test]
     fn different_arm_lengths_follow_the_contact_without_stretch() {
