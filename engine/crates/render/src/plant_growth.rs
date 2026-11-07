@@ -303,8 +303,9 @@ fn finish(s: &Species, age: u32, seed: u64, mut segments: Vec<Segment>) -> Plant
         let dead_for = age.saturating_sub(newest[i]);
         segments[i].alive = dead_for <= s.needle_years;
         if segments[i].order > 0 && dead_for > s.needle_years {
-            // Dead wood falls from the tips in, leaving a stub on the parent.
-            let stands = s.dead_years.saturating_sub(segments[i].order * 4);
+            // Dead wood falls from the tips in, leaving a stub on the parent:
+            // each finer order stands half as long (twigs go in a few years).
+            let stands = s.dead_years >> segments[i].order.min(31);
             let parent_alive = segments[i].parent.is_some_and(|p| age.saturating_sub(newest[p as usize]) <= s.needle_years);
             keep[i] = dead_for < stands || (parent_alive && segments[i].order == 1 && hash(seed, i as u64, 90) < 0.55);
         }
