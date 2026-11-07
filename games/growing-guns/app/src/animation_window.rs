@@ -120,6 +120,7 @@ impl Game for Preview {
     fn pointer(&mut self, p: app::Pointer, size: [u32; 2]) {
         self.inspector.pointer(p, size);
     }
+    fn editor_shortcut(&self,key:u8)->Option<(&'static str,bool)> { (key==12).then(||("Pose",self.inspector.windows_open())) }
     fn editor_windows_open(&self) -> bool { self.inspector.windows_open() }
     fn set_editor_windows_open(&mut self, open: bool) { self.inspector.set_windows_open(open); }
     fn function_key(&mut self, n: u8) -> bool {

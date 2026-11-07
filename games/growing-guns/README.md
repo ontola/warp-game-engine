@@ -44,10 +44,10 @@ missing.
 | Arenas | Done | Walled, hole, open and lava island (18 %), mirrored layouts; destructible stone chunks with wear, bullet dents and debris; stadium footings extend into lava, with cached orange lava illumination |
 | Stadium | Done | Colosseum masonry, 8,363 animated spectators, crowd sound, four live TV screens |
 | Bots | Done | Aim, reaction, strafing, jumps, pickups and specials; they keep to lava islands. Versus reserves eight visual seats so adding/removing bots keeps the renderer |
-| Characters | Close | Knight, paladin and zombie with textures and clips, longer upper arms and forearms on the knight in held poses, a live-editable Luau support-hand pose that transfers from magazine to foregrip (windowed `animation-preview` with the shared Warp pose viewport, F2 joint and pose controls and animation settings under F10 Graphics settings, saved knight foregrip pose and F12 pose export), GPU skinning, 11-body ragdolls with approximate angular limits, progressive end-range resistance and weak damped neutral-pose springs; bullet hits wake and push the struck limb at the contact point, with blood feedback; model-derived head/body gibs. Cuts use cached model geometry; animated skin-aware dismemberment, aim and strafe layers remain incomplete |
+| Characters | Close | Knight, paladin and zombie with textures and clips, longer upper arms and forearms on the knight in held poses, a live-editable Luau support-hand pose that transfers from magazine to foregrip (windowed `animation-preview` with the shared Warp pose viewport, F12 joint and pose controls and animation settings under F2 Graphics settings, saved knight foregrip pose and F4 pose export), GPU skinning, 11-body ragdolls with approximate angular limits, progressive end-range resistance and weak damped neutral-pose springs; bullet hits wake and push the struck limb at the contact point, with blood feedback; model-derived head/body gibs. Cuts use cached model geometry; animated skin-aware dismemberment, aim and strafe layers remain incomplete |
 | Effects | Done | Muzzle flash and shot light, bullet streaks, blasts with a short, smoothly fading fireball light (no expanding light ring), experimental baked volumetric smoke, adaptive per-view quality and a gradual tail up to 4.6 seconds on full desktop quality (64 active plumes plus up to 32 fading out; low/minimum retain billows), sparks, chips, scorch and blood, air strike rocket and white-out; ion cannon charges as one depth-clipped luminous volume (including from inside and when looking up/down), with wide bloom and bright ground illumination, with a dense field of bright soft blue dots across the impact disc that appear on live solid ground, lift like glowing sand with independent delays, varied speeds and acceleration, then suddenly become upward streaks from their exact positions at impact and nearly vertical rubble lift/fall |
 | Sky and light | Done | Random time of day and weather by default; fixed presets or a day cycle; persistent stadium sun shadows beyond the camera maps; visible sun and GPU lens flare with per-view occlusion; floodlights with shadows at night |
-| Gameplay replay | Added | F12 saves a screenshot plus a bounded state replay; F9 review, pause/step/seek, saved frames and headless re-render after code edits. Local/host recording; see below for visual-history limits |
+| Gameplay replay | Added | F4 saves a screenshot plus a bounded state replay; F11 review, pause/step/seek, saved frames and headless re-render after code edits. Local/host recording; see below for visual-history limits |
 | HUD and menus | Done | Godot's layout, fonts (Anton, Barlow) and timing; mouse, keyboard and pads; see [docs/ui-parity.md](docs/ui-parity.md) |
 | Standalone Quest VR | Experimental | Native Android/OpenXR APK uses this same app and Warp renderer, all 49 cards and tracked growing gun. Shared minimum graphics profile removes stadium/crowd/TVs and GPU rubble; simple blocks, primitive characters and vertex lighting keep the full eye resolution. Draws directly into runtime eye attachments; measured near 120 fps at 1440×1584 per eye with short dips before restoring gameplay FX. Bullet tracers use a round, eye-facing glow and a short soft wake without bloom, including minimum graphics. Muzzle flashes use the current tracked barrel position. Minimum lava has animated glowing cracks and dark crust from a small baked texture field. Explosions and ion warning columns now have an in-place minimum path; full-field VR flashes use a projection layer. Wider cube joints improve separation without adding triangles; distant unfiltered edges can still alias. Cage bars retain their small authored mesh on PC and VR; a long chain no longer lets coarse LODs erase them. Audio starts after headset focus so a sleeping headset cannot abort launch. The previous lava/effects APK was installed; its active 64-sample Quest run averaged 107 fps (median 118, lowest one-second sample 46) at full eye resolution and 120 Hz, so stable 120 fps is not yet achieved. Detailed profiling identifies repeated HUD glyph warmup/atlas work and large FX as hitch sources; the earlier lava added about 2.67 ms GPU time in a controlled paired Quest probe; the new single-read colour bake reduced that isolated cost to about 0.23 ms before the latest main integration. [Cost investigation and limits](../../engine/docs/log/quest-profile-2026-10-31.md). The new label cache, bounded explosion coverage and round tracers build into a signed APK; the integrated version is installed and launched, with an active-headset playtest still required. [Optimization measurements](../../engine/docs/log/quest-optimization-2026-11-01.md). Low and full profiles remain available on PC. Local bots, stereo, snap turn and original menus; desktop replay recording excludes VR poses. [Build, controls and validation limits](../../engine/docs/quest-native.md). The earlier simplified WebXR demo remains separate. |
 | Split screen | Done | 1 to 4 local players, hot-join with X, own audio flat on your side of the screen. Join/leave reuses visual slots and clears unused screen regions |
@@ -55,7 +55,7 @@ missing.
 | Wave survival (coop) | Done | `--coop`: grunts, snipers, grenadiers, fraggers, bombers, revives |
 | Combat audio | Added | Explosions louder than weapon reports, with bass reserved for explosive impacts; headroom for stacked weapons, one synth per report with a room send, bounded overlapping reports/bass and size-dependent brown-noise rumbles up to 3.2 seconds, preserving the deep Godot-style aftershock. Own shots bypass loudness culling. Offline spam regression covers uzi ×2 + bazooka ×2; receiver/headset listening remains a playtest check |
 | Music | Done | Godot's stems, following the match |
-| Engine controls | Done | Windows launches without a terminal, with an icon during loading; fullscreen by default (`--windowed` opts out). Always-reserved F10 render/debug panel, F11 fullscreen and F12 feedback capture, ahead of game menus, typing and replay. F3 remains game debug; F9 replay |
+| Engine controls | Done | Windows launches without a terminal, with an icon during loading; fullscreen by default (`--windowed` opts out). Always-reserved F2 render/debug panel, F5 fullscreen and F4 feedback capture, ahead of game menus, typing and replay. F3 remains game debug; F11 replay |
 | Gamepad Party | Done | Party settings, the next round's modifier, live knobs, each player's own stick sensitivity, the session assistant (MCP), loading and pause |
 | Debug card editing | Done | F3: LMB adds; RMB removes one owned copy and updates stats. Start/pause menus include RESTART MATCH. |
 | Menu backdrop | Not yet | Godot's cinematic lava fort behind the start menu |
@@ -92,7 +92,7 @@ cargo run --release -p growing-guns-app -- play --join TICKET
 
 Keyboard and mouse: WASD, mouse, Space jump, left mouse fire,
 right mouse special, R reload. Pad: sticks, A/LB jump, RT fire,
-LT/B special, X reload. F10 always opens the engine render/debug panel, F11 toggles fullscreen, and F12 saves a screenshot plus recent gameplay; F9 opens its replay. F3 (Back + Start on a pad)
+LT/B special, X reload. F2 always opens the engine render/debug panel, F5 toggles fullscreen, and F4 saves a screenshot plus recent gameplay; F11 opens its replay. F3 (Back + Start on a pad)
 opens the debug overlay: give cards, set specials, drop pickups, pick the
 sky, force a modifier, start the lava leak, next round, pause the bots.
 
@@ -107,7 +107,7 @@ smooth) and keeps FULL unless it cannot hold 60 fps at the lowest resolution; th
 cached per chip, build and screen size (`graphics-probe.json`); probe numbers and adaptive decisions go to
 `quality.log` (Application Support on macOS).
 To feel a slower machine: `--emulate m1pro` or `WARP_EMULATE=m1pro` (also m1, m1max, m2, m3, m4, steamdeck, or `x2.5`
-for a free GPU factor), or F10, Render, Emulate hardware (`engine/crates/app/src/emulate.rs`; a guess, not a measurement).
+for a free GPU factor), or F2, Render, Emulate hardware (`engine/crates/app/src/emulate.rs`; a guess, not a measurement).
 In a macOS app bundle the game reads its files from Contents/Resources and writes screenshots, replays and
 its pipeline cache to `~/Library/Application Support/Growing Guns`; `tools/package-mac.sh` builds the app and DMG.
 Both profiles automatically select low-poly guns: plain full-size boxes, a 16-sided drum,
@@ -155,28 +155,28 @@ wait until the next round to animate.
 
 ## Replay a moment while editing graphics
 
-For agent analysis of a desktop host/local capture, open the F12 JSON beside
+For agent analysis of a desktop host/local capture, open the F4 JSON beside
 the PNG and read `replay.input_history`. Each `rows_after_step_tick_seed_inputs`
 row holds the tick after the step, arena seed and player inputs. `live_edits`
 records recent gameplay calls with their arguments and tick. Check
 `omitted_edits_since_start` when investigating missing history.
 [Live control and recording limits](../../engine/docs/live-control.md).
 
-During local play, press **F12** to save the screenshot and the preceding
+During local play, press **F4** to save the screenshot and the preceding
 35–40 seconds of gameplay (less near startup or after frequent arena resets).
-**F9** opens that saved clip, paused at the screenshot's exact sub-tick moment.
-The live local match waits while reviewing; **F9** or **Esc** returns to it.
+**F11** opens that saved clip, paused at the screenshot's exact sub-tick moment.
+The live local match waits while reviewing; **F11** or **Esc** returns to it.
 Online hosts can save, but must open the replay separately; clients currently
 save screenshots only. Recording stores game events, not an audio track, menus or private names. Playback rebuilds effects, sampled sounds, crowd reactions and music through the normal audio mixer; their exact waveforms/music position are not recorded. Pausing and seeking silence playback.
 
 - **Space / Enter** or the Play button: play/pause. Playing from the end restarts.
 - **Left / Right**: one simulation frame (1/60 s). Click or drag the timeline to seek, including dragging outside its bounds. Rapid drag updates are coalesced until the pointer briefly settles or is released.
-- **R / Save frame**: bookmark this frame. **F12** in review also takes a screenshot
+- **R / Save frame**: bookmark this frame. **F4** in review also takes a screenshot
   and bookmarks the current moment. Gold ticks mark saved frames; click one to restore its exact sub-tick phase,
   or use its frame number when rendering from the command line.
-- **F12 moment** returns to the original screenshot's moment.
+- **F4 moment** returns to the original screenshot's moment.
 
-After editing rendering code, rebuild and press **F9** again: it also opens the
+After editing rendering code, rebuild and press **F11** again: it also opens the
 latest saved replay after a restart. You can open a specific file below. The most recently
 saved bookmark opens automatically; the recording's gameplay stays fixed while
 the new code draws its particles, lighting, meshes and effects:
@@ -189,7 +189,7 @@ cargo run --release -p growing-guns-app -- replay build/screenshots/NAME.ggrepla
 ```
 
 Files stay local in `build/screenshots` (`WARP_SCREENSHOTS` overrides this): PNG,
-screenshot JSON, compressed `.ggreplay`, and `.marks.json` bookmarks. F12 keeps
+screenshot JSON, compressed `.ggreplay`, and `.marks.json` bookmarks. F4 keeps
 its existing clipboard behavior. Recording stores binary state/events and arena
 destruction, without rendering/encoding video. Its rolling buffer is capped at
 64 MiB; compression and atomic file publication happen on a worker. The toast
@@ -402,7 +402,7 @@ shader on lava contact and sinks slowly. Detection, motion and shading stay on
 the GPU; rocks do not each allocate extra flame particles or require readback.
 
 Normal play now defaults to randomized time of day and clear/haze/mist per arena.
-The arena seed keeps multiplayer views and F12 replays consistent. `sky random`
+The arena seed keeps multiplayer views and F4 replays consistent. `sky random`
 restores this mode after choosing a fixed preset. Blackout always forces night,
 including with a fixed daytime preset or a running day cycle, preserving weather.
 Local playtests launch with `--fullscreen` and standard starting equipment; do not preload double Uzi + double bazooka.
@@ -411,7 +411,7 @@ Stadium walls, tiers and roof use an explicit 4096-square static sun cache. It i
 
 World lava pools keep their molten emission in shade and reflect a modest amount of direct sunlight on the cooler crust, so stadium and block shadows remain visible. Small gun cores, burning bodies and molten GPU debris retain their emission-only treatment. `scripts/lava-shadows.json` captures the pool with sun shadows on/off at identical simulation time.
 
-Night floodlights use their shadow maps without the old five unshadowed fill lights. Those synthetic bounce lights illuminated the inside of walls regardless of the floodlight position. `GG_BOUNCE` now defaults to zero and remains a diagnostic opt-in; physical floodlight bounce against destructible arena geometry is not implemented. Lava emission and the existing cached lava illumination remain. Verified against F12 capture `growing-guns---warp-1793542197843` by replaying the same camera/frame with only flood bounce changed.
+Night floodlights use their shadow maps without the old five unshadowed fill lights. Those synthetic bounce lights illuminated the inside of walls regardless of the floodlight position. `GG_BOUNCE` now defaults to zero and remains a diagnostic opt-in; physical floodlight bounce against destructible arena geometry is not implemented. Lava emission and the existing cached lava illumination remain. Verified against F4 capture `growing-guns---warp-1793542197843` by replaying the same camera/frame with only flood bounce changed.
 
 
 SDF stone prototype is enabled by default: a cached palette of noise-rounded masonry meshes. Four seeds persist through intact/cracked/crumbling stages; the collision boxes and destruction rules are unchanged. Broad faces stay flat, while localized rounding removes uneven pieces of edges. The meshes use the ordinary cluster LOD and shadow passes; no per-pixel SDF march or per-round mesh cooking is added. `GG_STONE_SHAPE=quarried` retains the angular shape for comparison. Reduced/minimum graphics still use their cheaper shapes.
@@ -435,7 +435,7 @@ mouse delta totals/peaks, per-tick look input and rendered camera direction.
 Sunlit fog now integrates shadow visibility with density/transmission weighting:
 eight temporally stratified samples during TAA, 32 deterministic samples without
 TAA. This replaces four fixed samples that produced pale vertical bands beside
-occluders. Verified against the saved F12 replay at frame 2320, alpha 0.5979115
+occluders. Verified against the saved F4 replay at frame 2320, alpha 0.5979115
 (afternoon mist); live temporal quality and mouse snapping remain under review.
 
 The forced Windows redraw also reserves a 1 ms input-dispatch slice after each

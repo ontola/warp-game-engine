@@ -127,6 +127,8 @@ pub struct HudDrawList {
     pub size: [u32; 2],
     pub vertices: Vec<HudVertex>,
     pub text: Vec<TextRun>,
+    screen_space: Option<(usize,usize)>,
+    foreground: Option<(usize,usize)>,
     overlay_boundaries: Vec<(usize, usize)>,
     // Layer origin, stable window ID, normalized rectangle in its drawing viewport.
     pub(crate) editor_windows: Vec<((usize,usize), u64, [f32;4])>,
@@ -144,7 +146,7 @@ pub struct HudDrawList {
 struct HudLayer { vertices: Range<u32>, text: Range<usize> }
 
 impl HudDrawList {
-    pub fn new(size: [u32; 2]) -> Self { Self { cached_text:false,size, optics: Vec::new(), vision_tints: Vec::new(), vision_background_tints:Vec::new(), vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new(), editor_windows: Vec::new(), window_order: Vec::new(), image_runs: Vec::new(), pictures: Vec::new(), outlines: HashMap::new() } }
+    pub fn new(size: [u32; 2]) -> Self { Self { cached_text:false,size, optics: Vec::new(), vision_tints: Vec::new(), vision_background_tints:Vec::new(), vertices: Vec::new(), text: Vec::new(), screen_space:None, foreground: None, overlay_boundaries: Vec::new(), editor_windows: Vec::new(), window_order: Vec::new(), image_runs: Vec::new(), pictures: Vec::new(), outlines: HashMap::new() } }
 
     /// Draw text run `id` with a real stroke of `width` pixels around its
     /// letters (under the fill), for text over busy scenes.
@@ -207,6 +209,39 @@ impl HudDrawList {
         }
     }
 
+    /// The game HUD can use lens effects; developer controls use display coordinates.
+    pub fn begin_screen_space(&mut self) {
+        self.begin_overlay();
+        self.screen_space.get_or_insert((self.vertices.len(),self.text.len()));
+    }
+
+    pub(crate) fn take_screen_space(&mut self)->Option<Self> {
+        let cut=self.screen_space.take()?;
+        if cut==(self.vertices.len(),self.text.len()) {return None;}
+        let mut flat=Self::new(self.size);
+        flat.vertices=self.vertices.split_off(cut.0);
+        flat.text=self.text.split_off(cut.1);
+        let rebase=|(v,t):(usize,usize)|(v-cut.0,t-cut.1);
+        let start=self.overlay_boundaries.partition_point(|p|*p<=cut);
+        flat.overlay_boundaries.extend(self.overlay_boundaries.drain(start..).map(rebase));
+        flat.editor_windows.extend(self.editor_windows.drain(..).map(|(p,id,r)|(rebase(p),id,r)));
+        flat.foreground=self.foreground.take().map(rebase);
+        flat.window_order=std::mem::take(&mut self.window_order);
+        flat.pictures.clone_from(&self.pictures);
+        flat.outlines.clone_from(&self.outlines);
+        let v=cut.0 as u32;
+        let start=self.image_runs.partition_point(|(i,_)|*i<v);
+        let previous=start.checked_sub(1).and_then(|i|self.image_runs[i].1);
+        flat.bind(previous);
+        flat.image_runs.extend(self.image_runs.drain(start..).map(|(i,image)|(i-v,image)));
+        Some(flat)
+    }
+
+    /// Pin subsequent overlays above floating windows.
+    pub fn begin_foreground(&mut self) {
+        self.begin_screen_space();
+        self.foreground.get_or_insert((self.vertices.len(),self.text.len()));
+    }
     fn layer_ranges(&self) -> Result<Vec<HudLayer>, String> {
         if self.overlay_boundaries.len() > MAX_LAYERS {
             return Err("HUD draw list exceeds layer capacity".into());
@@ -231,6 +266,7 @@ impl HudDrawList {
         if !self.window_order.is_empty() {
             result.sort_by_key(|layer| {
                 let origin=(layer.vertices.start as usize,layer.text.start);
+                if self.foreground.is_some_and(|start|origin>=start) {return usize::MAX;}
                 self.editor_windows.iter().rev().find(|(start,_,_)| *start <= origin)
                     .and_then(|(_,id,_)| self.window_order.iter().position(|known| known==id))
                     .map_or(0,|index|index+1)
@@ -508,10 +544,25 @@ impl HudRenderer {
         if !list.optics.is_empty() {
             if list.optics.len()>4 || list.size.contains(&0) || list.size.iter().any(|v|*v>16384) || list.optics.iter().any(|v|v.rect.iter().any(|x|!x.is_finite()) || v.rect[0]<0. || v.rect[1]<0. || v.rect[2]<=0. || v.rect[3]<=0. || v.rect[0]+v.rect[2]>list.size[0] as f32+0.01 || v.rect[1]+v.rect[3]>list.size[1] as f32+0.01 || !v.curvature.is_finite() || v.curvature.abs()>0.1 || !v.glow.is_finite() || !(0.0..=2.0).contains(&v.glow)) {return Err("invalid HUD optics viewport".into());}
             if self.optics.as_ref().is_none_or(|p|p.size()!=list.size) {self.optics=Some(Box::new(crate::hud_optics::Pass::new(gpu,list.size,self.format)?));}
-            let stats=self.optics.as_mut().unwrap().prepare(gpu,list,self.srgb)?;
+            let (mut stats,flat)=self.optics.as_mut().unwrap().prepare(gpu,list,self.srgb)?;
+            self.layers.clear();
+            self.spans.clear();
+            if let Some(flat)=flat {
+                let ui=self.prepare_flat(gpu,&flat)?;
+                stats.vertices+=ui.vertices;
+                stats.text_runs+=ui.text_runs;
+                stats.glyphs+=ui.glyphs;
+                stats.reshaped+=ui.reshaped;
+                stats.prepare_ms+=ui.prepare_ms;
+                for (total,extra) in stats.phase_ms.iter_mut().zip(ui.phase_ms){*total+=extra;}
+            }
             self.optics_active=true;
             return Ok(stats);
         }
+        self.prepare_flat(gpu,list)
+    }
+
+    fn prepare_flat(&mut self,gpu:&Gpu,list:&HudDrawList)->Result<HudStats,String>{
         let begin=Instant::now();
         self.layers.clear(); self.spans.clear();
         if list.text.len()>MAX_RUNS {return Err("HUD draw list exceeds bounded capacity".into());}
@@ -660,7 +711,7 @@ impl HudRenderer {
     }
 
     pub fn render(&self,pass:&mut wgpu::RenderPass<'_>)->Result<(),String> {
-        if self.optics_active {self.optics.as_ref().unwrap().render(pass);return Ok(());}
+        if self.optics_active {self.optics.as_ref().unwrap().render(pass);}
         for ((layer, renderer), spans) in self.layers.iter().zip(&self.renderers).zip(&self.spans) {
             if !layer.vertices.is_empty() {
                 // Glyph rendering changes pipeline/bindings/vertex buffer.
@@ -735,8 +786,17 @@ mod tests {
         let out=presenter.capture_rgba(&gpu,&background,format,Some(&hud)).unwrap();
         assert!(out[(32*128+32)*4]>150,"sharp red core survives projection");
         assert_eq!(&out[(32*128+70)*4..(32*128+70)*4+3],&[10,10,10],"no glow or smoked film in the other view");
+        list.begin_screen_space();
+        let clip=[0.,0.,128.,64.];
+        list.rect([6.,5.,100.,4.],[0.,1.,0.,1.],clip);
+        hud.prepare(&gpu,&list).unwrap();
+        let with_bar=presenter.capture_rgba(&gpu,&background,format,Some(&hud)).unwrap();
         list.optics.clear();hud.prepare(&gpu,&list).unwrap();
         let flat=presenter.capture_rgba(&gpu,&background,format,Some(&hud)).unwrap();
+        for y in 5..9 {
+            let row=(128*y+6)*4..(128*y+106)*4;
+            assert_eq!(&with_bar[row.clone()],&flat[row],"flat toolbar crosses the optics boundary at its original pixels");
+        }
         assert_eq!(&flat[(32*128+32)*4..(32*128+32)*4+3],&[255,0,0],"menu exits optics path");
         list.optics.push(Optics{rect:[0.,0.,129.,64.],curvature:0.,glow:1.,quiet:false});
         assert!(hud.prepare(&gpu,&list).is_err());

@@ -1001,7 +1001,7 @@ impl app::Game for Gg {
 
     fn tick(&mut self, controls: &[Controls]) {
         if let Some(result) = self.recorder.completion() {
-            let message = match result { Ok(_) => "Replay saved. F9 to review.".into(), Err(e) => format!("Replay save failed: {e}") };
+            let message = match result { Ok(_) => "Replay saved. F11 to review.".into(), Err(e) => format!("Replay save failed: {e}") };
             self.hud.announce(message, 4.0, 0.0);
         }
         if let Some(r) = &mut self.replay { app::Game::tick(&mut **r, controls); return; }
@@ -1310,10 +1310,11 @@ impl app::Game for Gg {
     fn quit(&self) -> bool { self.quit }
 
     /// F3: the debug overlay.
+    fn editor_shortcut(&self,key:u8)->Option<(&'static str,bool)> { match key {12 if self.replay.is_none()=>Some(("Match tools",self.debug.open)),11=>Some(("Replay",self.replay.is_some())),_=>None} }
     fn editor_windows_open(&self) -> bool { self.replay.as_ref().map_or(self.debug.open, |r| r.editor_windows_open()) }
     fn set_editor_windows_open(&mut self, open: bool) { if let Some(r) = &mut self.replay { r.set_editor_windows_open(open); } else { self.debug.set_open(open); } }
     fn function_key(&mut self, n: u8) -> bool {
-        if n == 9 {
+        if n == 11 {
             if self.close_replay() { return true; }
             if !matches!(self.session, Session::Local) || self.party.is_some() {
                 self.hud.announce("Open the saved replay separately during online play.", 4.0, 0.0);
@@ -1332,7 +1333,7 @@ impl app::Game for Gg {
             return true;
         }
         if self.replay.is_some() { return true; }
-        if n != 3 { return false; }
+        if n != 12 { return false; }
         self.debug.toggle();
         true
     }

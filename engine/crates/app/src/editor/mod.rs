@@ -1,5 +1,7 @@
 //! Interactive tools for inspecting an animated model in a Warp game window.
 mod menus;
+pub mod scene_tuning;
+pub use scene_tuning::{SceneControl,SceneTuning};
 mod skeleton;
 use body::pose_editor::PoseEditor;
 use glam::{Mat4, Quat, Vec3};
@@ -61,7 +63,7 @@ impl<const N: usize> PoseViewport<N> {
         })
     }
     pub fn function_key(&mut self, n: u8) -> bool {
-        if n != 2 {
+        if n != 12 {
             return false;
         }
         self.set_windows_open(!self.windows_open());
@@ -101,7 +103,7 @@ impl<const N: usize> PoseViewport<N> {
         hud.text.push(TextRun {
             id: 1,
             text: format!(
-                "L: move   R: rotate/orbit   M: pan   Wheel: zoom   F2: pose editor   {status}"
+                "L: move   R: rotate/orbit   M: pan   Wheel: zoom   F12: pose editor   {status}"
             ),
             position: [14.0, 12.0],
             bounds: [0.0, 0.0, hud.size[0] as f32, hud.size[1] as f32],
@@ -113,7 +115,7 @@ impl<const N: usize> PoseViewport<N> {
         });
         if self.windows_open() {
             let (frame, local) = self.layout(hud.size);
-            frame.draw(&mut hud, 500, 2, "Pose editor");
+            frame.draw(&mut hud, 500, 12, "Pose editor");
             let v = hud.vertices.len();
             let t = hud.text.len();
             self.bones.panel(&mut hud);
@@ -376,12 +378,12 @@ mod tests {
         };
         let mut view = PoseViewport::new(rig, camera, [("Weight", 1., "")]).unwrap();
         {
-            let name = "F2   Pose editor";
+            let name = "F12   Pose editor";
             let hud = view.draw(size, Mat4::IDENTITY, "");
             let header = hud
                 .text
                 .iter()
-                .find(|r| r.text == format!("{name}    |    F1 all"))
+                .find(|r| r.text == format!("{name}    |    F1 Dev Mode"))
                 .unwrap()
                 .position;
             let mut p = crate::Pointer {
@@ -396,13 +398,13 @@ mod tests {
             view.pointer(p, size);
             p.held = false;
             view.pointer(p, size);
-            assert!(view.function_key(2) && !view.windows_open());
-            assert!(view.function_key(2));
+            assert!(view.function_key(12) && !view.windows_open());
+            assert!(view.function_key(12));
             let hud = view.draw(size, Mat4::IDENTITY, "");
             let moved = hud
                 .text
                 .iter()
-                .find(|r| r.text == format!("{name}    |    F1 all"))
+                .find(|r| r.text == format!("{name}    |    F1 Dev Mode"))
                 .unwrap()
                 .position;
             assert!((moved[0] - header[0] - 60.).abs() < 1., "{name}: {moved:?}");
@@ -456,7 +458,7 @@ mod tests {
                     > 0.01
             );
             assert!(viewport.paused);
-            assert!(viewport.function_key(2) && !viewport.bones.shown);
+            assert!(viewport.function_key(12) && !viewport.bones.shown);
             assert!(!viewport.function_key(10));
         }
     }

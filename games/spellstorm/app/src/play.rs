@@ -207,6 +207,8 @@ impl Spellstorm {
 }
 
 impl app::Game for Spellstorm {
+    fn scene_tuning(&self)->Option<&app::editor::SceneTuning>{Some(&self.view.spell_effects)}
+    fn scene_tuning_mut(&mut self)->Option<&mut app::editor::SceneTuning>{Some(&mut self.view.spell_effects)}
     fn local_players(&self) -> usize {
         if self.party.is_some() { 0 } else { self.humans }
     }

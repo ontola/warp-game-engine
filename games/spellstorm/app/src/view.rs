@@ -115,6 +115,7 @@ pub struct Lamp {
 }
 
 pub struct View {
+    pub spell_effects:app::editor::SceneTuning,
     pub kits: Kits,
     look: Look,
     pub scene: Scene,
@@ -183,6 +184,10 @@ impl View {
         let scene = Scene::default();
         let look = Look::empty();
         View {
+            spell_effects:app::editor::SceneTuning::new("spellstorm","Spell VFX",&[
+                app::editor::SceneControl{label:"Particle size",default:1.,min:0.25,max:3.,step:0.05},
+                app::editor::SceneControl{label:"Spell light intensity",default:1.,min:0.,max:3.,step:0.05},
+            ]),
             kits,
             look,
             scene,
@@ -771,6 +776,7 @@ impl View {
         near.sort_by(|a, b| a.1.pos.distance_squared(mid).total_cmp(&b.1.pos.distance_squared(mid)));
         // Spell lights first, the level's lamps after.
         let mut locals: Vec<LocalLight> = self.fx.lights();
+        for light in &mut locals {light.intensity_cd*=self.spell_effects.value(1) as f32;}
         locals.sort_by(|a, b| b.intensity_cd.max_element().total_cmp(&a.intensity_cd.max_element()));
         locals.truncate(12);
         // Every wizard's staff light, always.
@@ -811,7 +817,8 @@ impl View {
                 sp.facing = render::sprites::Facing::Fixed { right: face.x_axis, up: face.y_axis };
             }
         }
-        sprites.extend(self.fx.sprites(&self.camera));
+        let size=self.spell_effects.value(0) as f32;
+        sprites.extend(self.fx.sprites(&self.camera).into_iter().map(|mut s|{s.size=s.size.map(|v|v*size);s}));
         sprites.truncate(render::sprites::MAX_SPRITES);
         crate::effects::sync(gpu);
         crate::effects::tag(&mut sprites, self.fx.time);

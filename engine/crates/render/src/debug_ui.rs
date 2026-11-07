@@ -93,6 +93,8 @@ pub struct DebugResponse {
 
 #[derive(Clone, Debug, Default)]
 pub struct DebugUi {
+    pub scene_shortcut: Option<(u32,u8)>,
+    original_values: std::collections::HashMap<u32, DebugValue>,
     pub open: bool,
     pub advanced_open: bool,
     selected: Option<Row>,
@@ -282,6 +284,11 @@ impl DebugUi {
         if top+layout.row_h > self.scroll+layout.body[3] { self.scroll=top+layout.row_h-layout.body[3]; }
         self.normalize(layout,rows);
     }
+    pub fn toggle_page(&mut self,model:&DebugModel,id:u32){
+        if self.open && self.menu==Some(id){self.open=false; self.cancel_interaction(); return;}
+        self.menu=None;self.navigation.clear();self.open=true;
+        self.enter_menu(model,id);
+    }
     fn enter_menu(&mut self, model:&DebugModel, id:u32) {
         if !model.menus.iter().any(|m|m.id==id&&m.parent==self.menu)||menu_path(model,Some(id)).is_none(){return;}
         self.cancel_interaction();
@@ -456,7 +463,10 @@ impl DebugUi {
         if !self.open || list.size.contains(&0) {return;}
         let first_text=list.text.len();
         let s=layout.scale; let p=layout.panel; let clip=p;
-        crate::editor_window::WindowFrame { rect:p, scale:s }.draw(list,WINDOW_ID,10,"Graphics settings");
+        let (key,title)=self.scene_shortcut.filter(|(id,_)|Some(*id)==self.menu)
+            .and_then(|(id,key)|model.menus.iter().find(|m|m.id==id).map(|m|(key,m.label.as_str())))
+            .unwrap_or((2,"Graphics settings"));
+        crate::editor_window::WindowFrame { rect:p, scale:s }.draw(list,WINDOW_ID,key,title);
         let x=p[0]+16.0*s; let w=p[2]-32.0*s; let mut y=p[1]+5.0*s;
         y+=29.0*s;
         let path=menu_path(model,self.menu).unwrap_or_default();
@@ -489,6 +499,12 @@ impl DebugUi {
             }
             let Row::Control(control_id)=rows[i] else {continue};
             let Some(control)=model.controls.iter().find(|c|c.id==control_id) else {continue;};
+            if !matches!(control.value,DebugValue::Button) {
+                let baseline=self.original_values.entry(control.id).or_insert_with(||control.value.clone());
+                if baseline!=&control.value {
+                    list.rect([row[0]+2.*s,row[1]+5.*s,3.*s,row[3]-10.*s],crate::editor_style::HIGHLIGHT,row_clip);
+                }
+            }
             let id=4096+control.id as u64*4;
             let enabled=control.enabled&&control_valid(control);
             let color=if enabled{FG}else{MUTED};
@@ -539,7 +555,7 @@ impl DebugUi {
             _=>"Restore all of the host's default render settings.",
         };
         for (i,line) in [help,model.status.as_deref().unwrap_or("CPU excludes other threads; wall includes waiting."),
-                        "F10 close | Esc back | Arrows | Enter open/toggle", "Drag values | Hold +/- | Wheel scroll"].into_iter().enumerate() {
+                        "F2 close | Esc back | Arrows | Enter open/toggle", "Drag values | Hold +/- | Wheel scroll"].into_iter().enumerate() {
             text(list,500+i as u64,line,[x,layout.footer_y+(8.0+i as f32*21.0)*s,w,22.0*s],footer_clip,17.5*s,if i==0{FG}else{MUTED},TextAlign::Left);
         }
         crate::editor_style::style_text(list, first_text);
