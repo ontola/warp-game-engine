@@ -1236,7 +1236,7 @@ mod pointer_tests {
         assert!(!has(&c));
         c.client = false;
         c.party = Some((vec![], String::new()));
-        assert!(!items(Screen::Pause, &c).iter().any(|i| matches!(i, Item::Button("SPLITSCREEN", ..))), "GameNight's menu has none");
+        assert!(!items(Screen::Pause, &c).iter().any(|i| matches!(i, Item::Button("SPLITSCREEN", ..))), "Gamepad Party's menu has none");
     }
 
     #[test]

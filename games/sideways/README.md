@@ -1,9 +1,9 @@
 # Sideways
 
-A gravel rally game for GameNight, running on [Warp](../../engine/README.md).
+A gravel rally game for Gamepad Party, running on [Warp](../../engine/README.md).
 Up to four players share a 4K output. The 120 FPS target is not yet reached.
 
-`app/` contains the native application, HUD, visuals and GameNight adapter.
+`app/` contains the native application, HUD, visuals and Gamepad Party adapter.
 `sim/` contains stages, physics, AI and race state. `determinism/` retains
 stable RNG/noise/math behavior without a Godot runtime. Existing Cargo package
 names are retained for script compatibility.
@@ -23,7 +23,7 @@ successful build. Logs and executable manifests live in this game's
 `build/dev-runs/`. F12 captures the displayed frame and camera/state metadata.
 Old `engine/build/` runs remain historical evidence.
 
-For a managed GameNight preview, register the package with the graphics profile
+For a managed Gamepad Party preview, register the package with the graphics profile
 from a recorded developer playtest. Copying only the executable is insufficient:
 `SIDEWAYS_PROCEDURAL_GRASS=field` selects the new GPU meadow; without it the
 legacy photographed grass is constructed. `KERN_MEADOW_AGGREGATE=1` alone does
@@ -75,8 +75,8 @@ games/sideways/tools/test-register-gamenight.ps1
 The package must include its verified executable, game assets and DLSS runtime.
 The helper copies the complete preview graphics profile, remaps packaged asset
 paths, preserves other games and backs up registration changes. `-ValidateOnly`
-reviews without writing. It does not launch or stop GameNight. Its default is
-4K output with DLSS Performance; GameNight supplies the actual player count.
+reviews without writing. It does not launch or stop Gamepad Party. Its default is
+4K output with DLSS Performance; Gamepad Party supplies the actual player count.
 These flags remain scoped to the registered preview, not engine defaults.
 After launch verify the log identifies `GPU meadow`, `full terrain field` and
 `no photographed grass or CPU tuft pool`; process startup alone is insufficient.
@@ -191,7 +191,7 @@ The [r60 handling trial](docs/history/handling-grip-r60.md) selects
 of [`data/cars.toml`](data/cars.toml), for more grip and earlier lateral bite.
 Both accept finite values from 0.5 to 1.5; `1.0/1.0` restores the original
 tuning. With an r60-capable executable, edit the game's data copy and relaunch
-through GameNight to apply changes; New Stage does not reload the file.
+through Gamepad Party to apply changes; New Stage does not reload the file.
 Flat-gravel tests show about 10% less sideways travel, with subjective driving
 acceptance still pending. Physics remains 120 Hz with four substeps.
 
@@ -232,5 +232,5 @@ games/sideways/tools/test-play-dev.ps1
 ```
 
 See the [diagnostics guide](../../engine/tools/frame-budget.md) for measurement
-contracts. GameNight acceptance tools are in `tools/`. The Godot implementation,
+contracts. Gamepad Party acceptance tools are in `tools/`. The Godot implementation,
 oracle comparison and export pipeline are removed.

@@ -24,7 +24,7 @@ grows their gun. Gameplay follows Godot commit `3daf27e` (`player.gd`,
 `weapon.gd`, `bullet.gd`, `blast.gd`, `grenade.gd`, `game.gd`,
 `round_modifiers.gd`), checked tick for tick in `sim/src/tests.rs`.
 
-This is the version GameNight plays on the ManCave. The status below is
+This is the version Gamepad Party plays on the ManCave. The status below is
 kept current: see [Keeping this README current](#keeping-this-readme-current).
 
 ## Status against Godot
@@ -56,7 +56,7 @@ missing.
 | Combat audio | Added | Explosions louder than weapon reports, with bass reserved for explosive impacts; headroom for stacked weapons, one synth per report with a room send, bounded overlapping reports/bass and size-dependent brown-noise rumbles up to 3.2 seconds, preserving the deep Godot-style aftershock. Own shots bypass loudness culling. Offline spam regression covers uzi ×2 + bazooka ×2; receiver/headset listening remains a playtest check |
 | Music | Done | Godot's stems, following the match |
 | Engine controls | Done | Windows launches without a terminal, with an icon during loading; fullscreen by default (`--windowed` opts out). Always-reserved F10 render/debug panel, F11 fullscreen and F12 feedback capture, ahead of game menus, typing and replay. F3 remains game debug; F9 replay |
-| GameNight | Done | Party settings, the next round's modifier, live knobs, each player's own stick sensitivity, the session assistant (MCP), loading and pause |
+| Gamepad Party | Done | Party settings, the next round's modifier, live knobs, each player's own stick sensitivity, the session assistant (MCP), loading and pause |
 | Debug card editing | Done | F3: LMB adds; RMB removes one owned copy and updates stats. Start/pause menus include RESTART MATCH. |
 | Menu backdrop | Not yet | Godot's cinematic lava fort behind the start menu |
 | After elimination | Done | After the card pick, humans receive a random howitzer or giant crossbow at a seeded audience seat; ballistic shells (4.5 s reload, 10 m blast) or fast lethal bolts (3 s reload, no blast). Replaces roaming ghosts/mines. |
@@ -203,7 +203,7 @@ take a moment; reconstruction has a per-paint time budget and the UI shows progr
 
 ## Change it while it runs
 
-- **GameNight app**: the party settings (rounds to win, modifiers (how
+- **Gamepad Party app**: the party settings (rounds to win, modifiers (how
   often), card time, gravity, bullet drop, body shot damage, random pickup
   rate), a "Next
   round" modifier pick, the live knobs, and each player's stick sensitivity
@@ -214,13 +214,13 @@ take a moment; reconstruction has a per-paint time budget and the UI shows progr
 - **Mods**: cards and rules are Luau in [`mods/`](mods/API.md), hot-reloaded
   within a quarter second, run inside the host's sim tick so matches still
   replay. `growing-guns mods-api` regenerates `mods/API.md`.
-- **Live control (MCP)**: `play --live [PORT]` or, under GameNight, always on
+- **Live control (MCP)**: `play --live [PORT]` or, under Gamepad Party, always on
   a free port for the session assistant: match state, cards, weapons, bots,
   rounds, mods, knobs, screenshots. See `app/src/live.rs`.
 - **Console** (`help`): `give`, `special`, `modifier`, `round`, `arena SEED`,
   `arena island`, `lava`, `sky`, `light`, `lua`, `mods`, `knob` and more.
 - **Environment**: `GG_HITCH=MS` logs slow steps (12 ms by default under
-  GameNight), `GG_FLASHLIGHT`, `GG_BLACKOUT_EV`, `GG_FLOOD_SHADOWS=0`,
+  Gamepad Party), `GG_FLASHLIGHT`, `GG_BLACKOUT_EV`, `GG_FLOOD_SHADOWS=0`,
   `GG_BOUNCE`, `GG_CHARACTERS=off`, `GG_MODS=DIR`, `GG_SKY`.
 
 ## Test and measure
@@ -242,7 +242,7 @@ on a CPU rasteriser. Results and their scope: [docs/measurements.md](docs/measur
 - `sim/`: the deterministic 60 Hz game (arena generator, collision, weapons,
   rounds, bots, coop). `World` implements `kern::Sim`; no rendering.
 - `app/`: the game on Warp (`app::Game`): view, HUD, sound, music, sessions,
-  GameNight party, live control, `shot`, `script`, `bench`.
+  Gamepad Party party, live control, `shot`, `script`, `bench`.
 - `mods/`: the Luau cards, rules and knobs.
 - `docs/`: [UI parity](docs/ui-parity.md), [lava parity](docs/lava-parity.md),
   [measurements](docs/measurements.md), playtest notes.
@@ -255,7 +255,7 @@ snapshots are positional postcard, so older builds cannot join.
 Every commit that adds, finishes or removes something a player would notice
 updates the status tables above in the same commit (AGENTS.md says so too).
 `cargo test -p growing-guns-app readme` fails when the README misses a round
-modifier, a GameNight setting, a live knob or the card count, or stops
+modifier, a Gamepad Party setting, a live knob or the card count, or stops
 linking the Godot repository.
 
 ### Arena and menu details

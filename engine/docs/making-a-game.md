@@ -122,7 +122,7 @@ complete example with split screen, bots and online play.
 Windows games open fullscreen by default, after their first complete frame.
 Use `--windowed` or F11 for a window. During startup a minimized taskbar marker
 shows the game icon without taking focus; there is no terminal or white loading
-window. GameNight warm launches stay invisible until the host requests them.
+window. Gamepad Party warm launches stay invisible until the host requests them.
 Sideways keeps its initial stage preparation hidden too; subsequent in-game
 stage changes retain their loading presentation.
 
