@@ -71,3 +71,7 @@ each child, preserves slot flags, and returns the number written. Reserve
 enough slots and hide any unused tail. Call again when the pose changes.
 Sideways uses this for the suspended wheels and body. Growing Guns supplies
 the same rig under distinct first- and third-person poses.
+
+For a Sideways F12 capture, a pixel hit on a car returns its car index and
+placed part name; rigid vegetation hits can carry a pose-to-root chain.
+[Inspect a player-marked pixel](warp-cli.md#sideways-feedback).

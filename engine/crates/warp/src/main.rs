@@ -34,7 +34,7 @@ const USAGE: &str = "warp: run a game made of Luau scripts, synth patches and as
   warp audio render FILE.luau [...] | check FILES | units
       render and measure sound patches (as warp-audio)
   warp compare F12.json [--baseline main] [--out DIR] [--state-only]
-  warp inspect F12.json [--pixel X Y]
+  warp inspect F12.json [--pixel X Y | --preview]
       compare Sideways driving or inspect a captured pixel (developer checkout, Python and Pillow)
   warp new DIR [--title TITLE]
       write a starter game (warp new GAME.luau: the same game in one file)

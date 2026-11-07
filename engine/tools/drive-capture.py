@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -30,11 +30,19 @@ class Inspector:
     def __init__(self, path):
         self.path = path
         meta = read(path)
+        self.point = meta.get("player_point")
+        size = meta.get("capture", {}).get("size")
+        if self.point is not None and not (
+            isinstance(self.point, list) and len(self.point) == 2 and
+            isinstance(size, list) and len(size) == 2 and
+            all(type(p) is int and type(n) is int and 0 <= p < n for p, n in zip(self.point, size))
+        ):
+            raise ValueError("invalid player_point in capture JSON")
         self.visibility = meta.get("visibility") or {}
-        if not self.visibility.get("views"):
+        if not self.visibility.get("views") and self.point is None:
             raise ValueError("no source visibility on this capture or graphics profile")
         self.views = []
-        for v in self.visibility["views"]:
+        for v in self.visibility.get("views", []):
             with Image.open(sibling(path, v["ids"])) as image:
                 if image.mode != "RGBA" or list(image.size) != v["size"]:
                     raise ValueError("visibility image format or dimensions differ from capture")
@@ -42,6 +50,8 @@ class Inspector:
             self.views.append((v["rect"], ids, sibling(path, v["pairs"]).read_bytes()))
 
     def pick(self, x, y):
+        if not self.views:
+            return {"source": "no source visibility on this capture or graphics profile"}
         for (left, top, w, h), ids, pairs in self.views:
             if left <= x < left + w and top <= y < top + h:
                 pixel = ids.getpixel(((x-left)*ids.width//w, (y-top)*ids.height//h))
@@ -62,6 +72,9 @@ def inspect(args):
     if args.pixel is not None:
         print(json.dumps(viewer.pick(*args.pixel), indent=2))
         return
+    if viewer.point is not None and not args.preview:
+        print(json.dumps({"player_point": viewer.point, **viewer.pick(*viewer.point)}, indent=2))
+        return
     import tkinter as tk
     from PIL import ImageTk
     root = tk.Tk()
@@ -70,10 +83,18 @@ def inspect(args):
         original = source.size
         preview = source.convert("RGB")
     preview.thumbnail((root.winfo_screenwidth()*3//4, root.winfo_screenheight()*2//3))
+    if viewer.point is not None:
+        x, y = [(p + 0.5) * n / original[i] for i, (p, n) in enumerate(zip(viewer.point, preview.size))]
+        pen = ImageDraw.Draw(preview)
+        for radius, color in [(9, "black"), (8, "white")]:
+            pen.ellipse((x-radius, y-radius, x+radius, y+radius), outline=color)
     photo = ImageTk.PhotoImage(preview)
     picture = tk.Label(root, image=photo, borderwidth=0, highlightthickness=0)
     picture.pack()
-    info = tk.StringVar(value="Click a pixel to inspect its opaque source geometry.")
+    initial = "Click a pixel to inspect its opaque source geometry."
+    if viewer.point is not None:
+        initial = f"Player point {tuple(viewer.point)}  " + json.dumps(viewer.pick(*viewer.point), ensure_ascii=False)
+    info = tk.StringVar(value=initial)
     tk.Label(root, textvariable=info, justify="left", wraplength=preview.width).pack()
 
     def clicked(event):
@@ -187,7 +208,9 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("inspect")
     p.add_argument("capture", type=Path)
-    p.add_argument("--pixel", type=int, nargs=2, metavar=("X", "Y"))
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--preview", action="store_true", help="open the image with the player point circled")
+    mode.add_argument("--pixel", type=int, nargs=2, metavar=("X", "Y"))
     p = sub.add_parser("compare")
     p.add_argument("capture", type=Path)
     group = p.add_mutually_exclusive_group()
