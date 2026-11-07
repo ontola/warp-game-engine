@@ -13,6 +13,7 @@ pub mod game;
 pub use live::knobs;
 pub mod luajson;
 pub mod party;
+pub mod plants;
 pub mod sky;
 pub mod sounds;
 pub mod starter;

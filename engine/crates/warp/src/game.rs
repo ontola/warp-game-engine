@@ -124,6 +124,7 @@ impl LuaGame {
         let lines = bank.scan();
         let core: Shared = Arc::new(Mutex::new(Core {
             world: World::new(dir, cfg.max_entities),
+            plants: Default::default(),
             sounds: SoundOut::new(bank, sound),
             roster: Vec::new(),
             hud: Vec::new(),
@@ -236,6 +237,7 @@ impl LuaGame {
         {
             let mut c = self.core();
             c.world.clear();
+            c.plants.clear();
             c.sounds.stop_all();
             c.rng = Rng(self.seed);
             c.tick = 0;
@@ -618,6 +620,33 @@ impl LuaGame {
         Ok(all)
     }
 
+    /// Grown plants that changed or finished cooking go into a fresh scene
+    /// (vegetation is attached last and cannot be taken out again), and the
+    /// sky is applied to it again.
+    fn attach_plants(&mut self) {
+        let mut lines = Vec::new();
+        let mut sky_again = false;
+        {
+            let mut c = api::lock(&self.core);
+            c.plants.poll();
+            lines.append(&mut c.plants.log);
+            let has_plants = !c.plants.plants.is_empty();
+            if c.plants.dirty || (c.world.rebuild && has_plants && c.world.scene.gpu_forest.is_some()) {
+                c.plants.dirty = false;
+                let c = &mut *c;
+                let started = std::time::Instant::now();
+                let shown = c.world.fresh_scene().and_then(|_| c.plants.attach(&mut c.world.scene));
+                match shown {
+                    Ok(n) => lines.push(format!("plants: {n} attached in {:.0} ms", started.elapsed().as_secs_f64() * 1000.0)),
+                    Err(e) => lines.push(format!("plants: not shown: {e}")),
+                }
+                sky_again = true;
+            }
+        }
+        if sky_again { self.applied_sky = None; }
+        for l in lines { self.say(l); }
+    }
+
     /// The sky the scripts asked for, applied to the scene and the light.
     fn update_sky(&mut self) {
         let want = self.core().sky;
@@ -877,6 +906,7 @@ impl Game for LuaGame {
         }
         self.hook("draw", || Ok(mlua::MultiValue::new()));
         self.core().phase = Phase::Sim;
+        self.attach_plants();
         self.update_sky();
         let light = self.lighting();
         let mut c = api::lock(&self.core);
