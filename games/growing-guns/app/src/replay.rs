@@ -314,6 +314,8 @@ fn mark_at_phase(phase: f64, frames: usize) -> Mark {
 
 impl Game for Viewer {
     fn quit(&self) -> bool { self.exit }
+    fn editor_windows_open(&self) -> bool { self.overlay }
+    fn set_editor_windows_open(&mut self, open: bool) { self.overlay = open; self.dragging = false; self.scrub_changed = None; self.window.cancel(); }
     fn function_key(&mut self, n: u8) -> bool { if n == 9 { self.exit = true; true } else { false } }
     fn fixed_quality(&self) -> bool { self.paused && !self.dragging }
     fn local_players(&self) -> usize { 1 }
@@ -407,24 +409,26 @@ impl Game for Viewer {
         if self.overlay {
             use crate::hud::style::{Label, BODY};
             let window=self.layout(frame.size);
-            window.draw(&mut draw.hud,0x6767_5230,9,"Replay");
+            let first_text=draw.hud.text.len();
+        window.draw(&mut draw.hud,0x6767_5230,9,"Replay");
             let [bx,by,w,h]=window.body();
             let s=window.scale.min(w/760.).min(h/124.);
             let clip=window.body();
             let state = if self.dragging { "SCRUBBING" } else if !self.ready() { "RESTORING EFFECTS" } else if self.paused { "PAUSED" } else { "PLAYING" };
             let n = self.current.unwrap_or(0);
             let label = format!("REPLAY  /  {state}     frame {n} / {}     {:.2}s     tick {}", self.tape.len() - 1, n as f32 * DT, self.game.world.tick);
-            Label::new(BODY, 20.0 * s, [0.78, 0.86, 0.95, 1.0]).draw(&mut draw.hud, &label, bx+32.0 * s, by+h - 103.0 * s, clip);
+            Label::new(BODY, render::editor_style::font_size(draw.hud.size), [0.78, 0.86, 0.95, 1.0]).draw(&mut draw.hud, &label, bx+32.0 * s, by+h - 103.0 * s, clip);
             for (left, right, text) in [(20.0, 150.0, if self.paused { "PLAY [SPACE]" } else { "PAUSE [SPACE]" }), (151.0, 245.0, "< FRAME"), (246.0, 340.0, "FRAME >"), (341.0, 520.0, "SAVE FRAME [R]"), (521.0, 700.0, "F12 MOMENT")] {
                 draw.hud.rect([bx+left * s, by+h - 88.0 * s, (right - left - 5.0) * s, 36.0 * s], [0.12, 0.18, 0.26, 1.0], clip);
-                Label::new(BODY, 20.0 * s, [1.0; 4]).center().draw(&mut draw.hud, text, bx+(left + right - 5.0) * 0.5 * s, by+h - 69.0 * s, clip);
+                Label::new(BODY, render::editor_style::font_size(draw.hud.size), [1.0; 4]).center().draw(&mut draw.hud, text, bx+(left + right - 5.0) * 0.5 * s, by+h - 69.0 * s, clip);
             }
-            Label::new(BODY, 17.0 * s, [0.6, 0.72, 0.84, 1.0]).right().draw(&mut draw.hud, self.message.as_deref().unwrap_or("Drag timeline to seek   |   F9 / Esc closes replay"), bx+w - 32.0 * s, by+h - 44.0 * s, clip);
+            Label::new(BODY, render::editor_style::font_size(draw.hud.size), [0.6, 0.72, 0.84, 1.0]).right().draw(&mut draw.hud, self.message.as_deref().unwrap_or("Drag timeline to seek   |   F9 / Esc closes replay"), bx+w - 32.0 * s, by+h - 44.0 * s, clip);
             let bar = [bx+32.0 * s, by+h - 30.0 * s, w - 64.0 * s, 5.0 * s];
             draw.hud.rect(bar, [0.18, 0.23, 0.3, 1.0], clip);
             let x = |m: Mark| bar[0] + bar[2] * m.frame as f32 / (self.tape.len() - 1).max(1) as f32;
             for m in self.marks.iter().chain(std::iter::once(&self.tape.mark)) { draw.hud.rect([x(*m) - 2.0 * s, bar[1] - 5.0 * s, 4.0 * s, 15.0 * s], [1.0, 0.72, 0.24, 1.0], clip); }
             draw.hud.rect([x(self.target) - 4.0 * s, bar[1] - 7.0 * s, 8.0 * s, 19.0 * s], [0.3, 0.78, 1.0, 1.0], clip);
+        render::editor_style::style_text(&mut draw.hud, first_text);
         }
         Ok(draw)
     }

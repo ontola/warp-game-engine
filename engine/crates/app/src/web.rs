@@ -274,6 +274,14 @@ impl ApplicationHandler for Shell {
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
                 use KeyCode::*;
+                if code == F1 {
+                    if event.state == ElementState::Pressed && !event.repeat {
+                        let open = !self.game.editor_windows_open();
+                        self.game.set_editor_windows_open(open);
+                        if open { self.capture_mouse(false); }
+                    }
+                    return;
+                }
                 if let Some(n) = [F1, F2, F3, F4, F5, F6, F7, F8, F9].iter().position(|&k| k == code) {
                     if event.state == ElementState::Pressed && !event.repeat { self.game.function_key(n as u8 + 1); }
                     return;

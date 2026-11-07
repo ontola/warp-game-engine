@@ -375,6 +375,7 @@ impl DebugMenu {
         d.begin_overlay();
         let [w, h] = d.size.map(|v| v as f32);
         let frame=self.layout(d.size);
+        let first_text=d.text.len();
         frame.draw(d,0x6767_5220,3,"Match tools");
         let u=frame.scale;
         let panel=frame.body();
@@ -382,7 +383,7 @@ impl DebugMenu {
         let x0 = panel[0] + 18.0 * u;
         let iw = panel[2] - 30.0 * u;
 
-        Label::new(BODY, 11.0 * u, BONE_DIM).right().draw(d, "F3 / ESC close  ·  Q E tabs  ·  type to search", panel[0] + panel[2] - 12.0 * u, panel[1] + 26.0 * u, clip);
+        Label::new(BODY, render::editor_style::font_size(d.size), BONE_DIM).right().draw(d, "F3 / ESC close  ·  Q E tabs  ·  type to search", panel[0] + panel[2] - 12.0 * u, panel[1] + 26.0 * u, clip);
         let rows = self.rows(ctx);
         let focus = self.focused(&rows);
         let rh = 30.0 * u;
@@ -420,20 +421,21 @@ impl DebugMenu {
         if let Some((t, ok)) = &self.notice {
             let c = if *ok { GOOD } else { BAD };
             let ny = panel[1] + panel[3] - notice_h * 0.5;
-            Label::new(BODY, fit(t, BODY, 12.0 * u, iw), c).draw(d, t, x0, ny, clip);
+            Label::new(BODY, render::editor_style::font_size(d.size), c).draw(d, t, x0, ny, clip);
         }
         if let Some(p) = &self.picker {
             let st = app::ui::Style { panel: [0.06, 0.03, 0.035, 1.0], item: [0.13, 0.11, 0.10, 0.98], focus: RED, text: bytes(BONE), muted: bytes(BONE_DIM), scale: u * 0.75 };
             p.draw(d, 0x6767_5100, [0.0, h * 0.42, w, h * 0.58], &st);
         }
+        render::editor_style::style_text(d, first_text);
     }
 
     fn row(&self, d: &mut HudDrawList, row: &Row, k: usize, r: [f32; 4], focus: Option<(usize, usize)>, u: f32, clip: [f32; 4]) {
         let mid = r[1] + r[3] * 0.5;
         match row {
             Row::Head(t) => {
-                let s = fit(t, bold(), 15.0 * u, r[2]);
-                Label::new(bold(), s, GOLD).draw(d, t, r[0], r[1] + 12.0 * u, clip);
+
+                Label::new(bold(), render::editor_style::font_size(d.size), GOLD).draw(d, t, r[0], r[1] + 12.0 * u, clip);
             }
             Row::Search => {
                 let fr = [r[0], r[1], r[2], r[3]];
@@ -448,7 +450,7 @@ impl DebugMenu {
                 let lw = if label.is_empty() { 0.0 } else { 100.0 * u };
                 if !label.is_empty() {
                     let c = if focus.is_some_and(|f| f.0 == k) { BONE } else { BONE_DIM };
-                    Label::new(bold(), fit(label, bold(), 16.0 * u, lw - 6.0 * u), c).draw(d, label, r[0], mid, clip);
+                    Label::new(bold(), render::editor_style::font_size(d.size), c).draw(d, label, r[0], mid, clip);
                 }
                 let n = entries.len().max(1) as f32;
                 let gap = 6.0 * u;
@@ -478,16 +480,16 @@ fn entry(d: &mut HudDrawList, r: [f32; 4], e: &Entry, focused: bool, u: f32, cli
     let inner = [r[0], r[1], r[2], r[3]];
     let clip = intersect(clip, inner);
     if e.sub.is_empty() || e.color.is_none() {
-        let room = r[2] - 12.0 * u;
-        let size = fit(&e.text, bold(), 16.0 * u, room - if e.sub.is_empty() { 0.0 } else { 26.0 * u });
-        if e.color.is_some() { Label::new(bold(), size, tc).draw(d, &e.text, x, r[1] + r[3] * 0.5, clip); }
-        else { Label::new(bold(), size, tc).center().draw(d, &e.text, r[0] + r[2] * 0.5, r[1] + r[3] * 0.5, clip); }
-        if !e.sub.is_empty() { Label::new(BODY, 10.0 * u, with_alpha(tc, 0.7)).right().draw(d, &e.sub, r[0] + r[2] - 5.0 * u, r[1] + r[3] - 7.0 * u, clip); }
+
+
+        if e.color.is_some() { Label::new(bold(), render::editor_style::font_size(d.size), tc).draw(d, &e.text, x, r[1] + r[3] * 0.5, clip); }
+        else { Label::new(bold(), render::editor_style::font_size(d.size), tc).center().draw(d, &e.text, r[0] + r[2] * 0.5, r[1] + r[3] * 0.5, clip); }
+        if !e.sub.is_empty() { Label::new(BODY, render::editor_style::font_size(d.size), with_alpha(tc, 0.7)).right().draw(d, &e.sub, r[0] + r[2] - 5.0 * u, r[1] + r[3] - 7.0 * u, clip); }
     } else {
         // Cards: the name, the id under it.
-        let size = fit(&e.text, bold(), 15.0 * u, r[2] - 16.0 * u);
-        Label::new(bold(), size, tc).draw(d, &e.text, x, r[1] + r[3] * 0.36, clip);
-        Label::new(BODY, 10.0 * u, with_alpha(tc, 0.65)).draw(d, &e.sub, x, r[1] + r[3] * 0.78, clip);
+
+        Label::new(bold(), render::editor_style::font_size(d.size), tc).draw(d, &e.text, x, r[1] + r[3] * 0.36, clip);
+        Label::new(BODY, render::editor_style::font_size(d.size), with_alpha(tc, 0.65)).draw(d, &e.sub, x, r[1] + r[3] * 0.78, clip);
     }
 }
 

@@ -8,7 +8,7 @@
 //! fullscreen, F12 saves a feedback screenshot (PNG, JSON and the clipboard;
 //! see [`screenshot`]); Shift+F12, or F12 twice, then a dragged rectangle
 //! saves a crop of it. These reserved keys run before game/menu/text input.
-//! F1 to F9 belong to [`Game::function_key`]; F3 that the game leaves
+//! F1 toggles all editor windows. F2 to F9 belong to [`Game::function_key`]; F3 that the game leaves
 //! unused opens the engine's stats overlay ([`stats`], Shift+F3 for depth).
 //!
 //! Text entry: while [`Game::text_input`] is true the keyboard types
@@ -151,9 +151,10 @@ pub trait Game {
     /// waking up): GPU resources the game made itself are invalid. The
     /// renderer is gone too, so the next [`Game::draw`] sets the scene again.
     fn gpu_reset(&mut self) {}
-    /// Function key F`n` (1..=9) was pressed, also while typing: return
-    /// true when the game used it. F10, F11 and F12 stay the shell's; F3
-    /// the game does not use opens the engine's stats overlay.
+    /// Whether any game-owned editor window is visible in this scene.
+    fn editor_windows_open(&self) -> bool { false }
+    fn set_editor_windows_open(&mut self, _open: bool) {}
+    /// Handle F2 through F9. Unclaimed F3 opens the engine profiler.
     fn function_key(&mut self, _n: u8) -> bool { false }
     /// Lines (label, value) for the F3 stats overlay's Game section: what
     /// the game streams, builds or simulates. Asked for a few times a second
@@ -249,11 +250,12 @@ const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Engine-owned keys, shared with alternate presentation shells such as Sideways.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EngineShortcut { DebugMenu, Fullscreen, Screenshot }
+pub enum EngineShortcut { AllMenus, DebugMenu, Fullscreen, Screenshot }
 
 /// Reserved even when the game is paused, reviewing a replay or accepting text.
 pub fn engine_shortcut(code: KeyCode) -> Option<EngineShortcut> {
     match code {
+        KeyCode::F1 => Some(EngineShortcut::AllMenus),
         KeyCode::F10 => Some(EngineShortcut::DebugMenu),
         KeyCode::F11 => Some(EngineShortcut::Fullscreen),
         KeyCode::F12 => Some(EngineShortcut::Screenshot),
@@ -1359,6 +1361,12 @@ impl ApplicationHandler for Shell<'_> {
                 match route_function_key(self.game, code, event.state, event.repeat, shift) {
                     KeyRoute::Engine(action) => {
                         match action {
+                            EngineShortcut::AllMenus => {
+                                let open = !(self.debug.open() || self.stats.open() || self.game.editor_windows_open());
+                                self.game.set_editor_windows_open(open);
+                                if self.stats.open() != open { self.stats.toggle(); }
+                                if self.debug.open() != open { self.debug_key(KeyCode::F10, false); }
+                            }
                             EngineShortcut::DebugMenu => { self.debug_key(KeyCode::F10, false); }
                             EngineShortcut::Fullscreen => if let Some(w) = &self.window {
                                 w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) });
@@ -1472,7 +1480,7 @@ mod shortcut_tests {
     fn engine_shortcuts_cannot_be_claimed_by_games_or_text_fields() {
         for typing in [false, true] {
             let mut game = ClaimsAllKeys { typing, ..Default::default() };
-            for (code, action) in [(KeyCode::F10, EngineShortcut::DebugMenu), (KeyCode::F11, EngineShortcut::Fullscreen), (KeyCode::F12, EngineShortcut::Screenshot)] {
+            for (code, action) in [(KeyCode::F1, EngineShortcut::AllMenus), (KeyCode::F10, EngineShortcut::DebugMenu), (KeyCode::F11, EngineShortcut::Fullscreen), (KeyCode::F12, EngineShortcut::Screenshot)] {
                 assert_eq!(route_function_key(&mut game, code, ElementState::Pressed, false, false), KeyRoute::Engine(action));
                 assert_eq!(route_function_key(&mut game, code, ElementState::Pressed, true, false), KeyRoute::Consumed);
                 assert_eq!(route_function_key(&mut game, code, ElementState::Released, false, false), KeyRoute::Consumed);

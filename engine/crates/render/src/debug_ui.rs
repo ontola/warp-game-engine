@@ -459,6 +459,7 @@ impl DebugUi {
     pub fn draw(&mut self, list: &mut HudDrawList, model: &DebugModel) {
         let (layout,rows)=self.sync(list.size,model);
         if !self.open || list.size.contains(&0) {return;}
+        let first_text=list.text.len();
         let s=layout.scale; let p=layout.panel; let clip=p;
         crate::editor_window::WindowFrame { rect:p, scale:s }.draw(list,TEXT_ID,10,"Warp editor");
         let x=p[0]+16.0*s; let w=p[2]-32.0*s; let mut y=p[1]+5.0*s;
@@ -578,6 +579,7 @@ impl DebugUi {
                         "F10 close | Esc back | Arrows | Enter open/toggle", "Drag values | Hold +/- | Wheel scroll"].into_iter().enumerate() {
             text(list,500+i as u64,line,[x,layout.footer_y+(8.0+i as f32*21.0)*s,w,22.0*s],footer_clip,17.5*s,if i==0{FG}else{MUTED},TextAlign::Left);
         }
+        crate::editor_style::style_text(list, first_text);
     }
 }
 

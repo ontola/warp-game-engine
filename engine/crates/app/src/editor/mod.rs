@@ -18,9 +18,7 @@ pub struct PoseViewport<const N: usize> {
     pub bones: SkeletonOverlay,
     rows: [(&'static str, f32, &'static str); N],
     home: Camera,
-    windows: [EditorWindow; 2],
-    controls_open: bool,
-    active_window: usize,
+    window: EditorWindow,
     yaw: f32,
     pitch: f32,
     zoom: f32,
@@ -49,9 +47,7 @@ impl<const N: usize> PoseViewport<N> {
             bones: SkeletonOverlay::new(editor)?,
             rows,
             home,
-            windows: Default::default(),
-            controls_open: true,
-            active_window: 1,
+            window: Default::default(),
             yaw: 0.,
             pitch: 0.,
             zoom: 0.,
@@ -64,21 +60,21 @@ impl<const N: usize> PoseViewport<N> {
             orbit: None,
         })
     }
-    /// F2 toggles joints, and F4 toggles the host-supplied pose controls.
     pub fn function_key(&mut self, n: u8) -> bool {
-        let i = match n {
-            2 => 0,
-            4 => 1,
-            _ => return false,
-        };
-        if i == 0 {
-            self.bones.shown = !self.bones.shown;
-        } else {
-            self.controls_open = !self.controls_open;
+        if n != 2 {
+            return false;
         }
-        self.windows[i].cancel();
-        self.active_window = i;
+        self.set_windows_open(!self.windows_open());
         true
+    }
+    pub fn windows_open(&self) -> bool {
+        self.bones.shown
+    }
+    pub fn set_windows_open(&mut self, open: bool) {
+        self.bones.shown = open;
+        self.window.cancel();
+        self.slider = None;
+        self.orbit = None;
     }
 
     pub fn camera(&self) -> Camera {
@@ -105,7 +101,7 @@ impl<const N: usize> PoseViewport<N> {
         hud.text.push(TextRun {
             id: 1,
             text: format!(
-                "L: move   R: rotate/orbit   M: pan   Wheel: zoom   F2: joints   F4: controls   {status}"
+                "L: move   R: rotate/orbit   M: pan   Wheel: zoom   F2: pose editor   {status}"
             ),
             position: [14.0, 12.0],
             bounds: [0.0, 0.0, hud.size[0] as f32, hud.size[1] as f32],
@@ -115,24 +111,13 @@ impl<const N: usize> PoseViewport<N> {
             align: TextAlign::Left,
             width: hud.size[0] as f32 - 28.0,
         });
-        for i in [1 - self.active_window, self.active_window] {
-            if !self.window_open(i) {
-                continue;
-            }
-            let (frame, local) = self.layout(i, hud.size);
-            frame.draw(
-                &mut hud,
-                500 + i as u64 * 2,
-                if i == 0 { 2 } else { 4 },
-                if i == 0 { "Joints" } else { "Pose controls" },
-            );
+        if self.windows_open() {
+            let (frame, local) = self.layout(hud.size);
+            frame.draw(&mut hud, 500, 2, "Pose editor");
             let v = hud.vertices.len();
             let t = hud.text.len();
-            if i == 0 {
-                self.bones.panel(&mut hud);
-            } else {
-                self.hud(&mut hud);
-            }
+            self.bones.panel(&mut hud);
+            self.hud(&mut hud);
             let (k, offset) = content_transform(frame, local);
             let transform = |p: [f32; 2]| [p[0] * k + offset[0], p[1] * k + offset[1]];
             let clip = frame.body();
@@ -158,69 +143,43 @@ impl<const N: usize> PoseViewport<N> {
             t.width *= scale;
         }
         hud.size = size;
+        style::style_text(&mut hud, 0);
         hud
     }
-    fn top(height: u32) -> f32 {
-        (height as f32 - ROW * (N + 1) as f32 - 10.0).max(0.0)
-    }
-    fn window_open(&self, i: usize) -> bool {
-        if i == 0 {
-            self.bones.shown
-        } else {
-            self.controls_open
-        }
-    }
-    fn layout(&self, i: usize, size: [u32; 2]) -> (WindowFrame, [f32; 4]) {
-        let local = if i == 0 {
-            [8., 40., 242., 156.]
-        } else {
-            [8., Self::top(size[1]), WIDTH - 8., ROW * (N + 1) as f32]
-        };
-        let height = local[3] + 27.;
-        let y = if i == 0 {
-            32.
-        } else {
-            (size[1] as f32 - height - 5.).max(0.)
-        };
-        (
-            self.windows[i].frame(size, [8., y, local[2] + 6., height], [140., 80.], 0.72),
-            local,
-        )
+    // Joint rows start at y=40 and occupy 156 logical units.
+    const CONTROLS_TOP: f32 = 204.;
+    fn layout(&self, size: [u32; 2]) -> (WindowFrame, [f32; 4]) {
+        let local = [
+            8.,
+            40.,
+            242.,
+            Self::CONTROLS_TOP - 40. + ROW * (N + 1) as f32,
+        ];
+        let frame = self.window.frame(
+            size,
+            [8., 32., local[2] + 6., local[3] + 32.],
+            [160., 160.],
+            0.72,
+        );
+        (frame, local)
     }
     pub fn pointer(&mut self, mut p: crate::Pointer, size: [u32; 2]) {
         let scale = ui_scale(size);
         let size = size.map(|v| (v as f32 / scale).round() as u32);
         p.position = p.position.map(|xy| xy.map(|v| v / scale));
         let mut owner = None;
-        if !self.bones.manipulating() && self.orbit.is_none() {
-            for i in [self.active_window, 1 - self.active_window] {
-                if !self.window_open(i) {
-                    continue;
-                }
-                let (frame, local) = self.layout(i, size);
-                let hit = p
-                    .position
-                    .is_some_and(|xy| style::EditorButton(frame.rect).contains(xy));
-                if !hit
-                    && !self.windows[i].dragging()
-                    && !(i == 1 && self.slider.is_some())
-                    && !(i == 0 && self.bones.slider_held())
+        if self.windows_open() && !self.bones.manipulating() && self.orbit.is_none() {
+            let (frame, local) = self.layout(size);
+            let hit = p
+                .position
+                .is_some_and(|xy| style::EditorButton(frame.rect).contains(xy));
+            if hit || self.window.dragging() || self.slider.is_some() || self.bones.slider_held() {
+                match self
+                    .window
+                    .pointer(size, frame, [160., 160.], p.position, p.pressed, p.held)
                 {
-                    continue;
-                }
-                if p.pressed || p.right_pressed {
-                    self.active_window = i;
-                }
-                match self.windows[i].pointer(
-                    size,
-                    frame,
-                    [140., 80.],
-                    p.position,
-                    p.pressed,
-                    p.held,
-                ) {
                     WindowEvent::Close => {
-                        self.function_key(if i == 0 { 2 } else { 4 });
+                        self.set_windows_open(false);
                         return;
                     }
                     WindowEvent::Handled => return,
@@ -230,8 +189,10 @@ impl<const N: usize> PoseViewport<N> {
                 p.position = p
                     .position
                     .map(|xy| [(xy[0] - offset[0]) / k, (xy[1] - offset[1]) / k]);
-                owner = Some(i);
-                break;
+                let controls = self.slider.is_some()
+                    || (!self.bones.slider_held()
+                        && p.position.is_some_and(|xy| xy[1] >= Self::CONTROLS_TOP));
+                owner = Some(if controls { 1 } else { 0 });
             }
         }
         self.cursor = if owner == Some(1) { p.position } else { None };
@@ -256,7 +217,7 @@ impl<const N: usize> PoseViewport<N> {
             self.orbit = None;
             return;
         };
-        let row = (y - Self::top(size[1])) / ROW;
+        let row = (y - Self::CONTROLS_TOP) / ROW;
         let panel = controls;
         if !panel {
             self.zoom = (self.zoom - p.wheel * 0.12).clamp(-1.6, 1.3);
@@ -288,10 +249,10 @@ impl<const N: usize> PoseViewport<N> {
                 let index = row as usize;
                 if index < N {
                     self.slider = Some(index);
-                } else if Self::buttons(size[1])[0].contains([x, y]) {
+                } else if Self::buttons()[0].contains([x, y]) {
                     self.paused = !self.paused;
                 } else {
-                    if !Self::buttons(size[1])[1].contains([x, y]) {
+                    if !Self::buttons()[1].contains([x, y]) {
                         return;
                     }
                     self.pan = Vec3::ZERO;
@@ -324,7 +285,7 @@ impl<const N: usize> PoseViewport<N> {
     }
     fn hud(&self, hud: &mut HudDrawList) {
         let clip = [0.0, 0.0, hud.size[0] as f32, hud.size[1] as f32];
-        let top = Self::top(hud.size[1]);
+        let top = Self::CONTROLS_TOP;
         for (i, (name, limit, unit)) in self.rows.iter().enumerate() {
             let y = top + i as f32 * ROW;
             let value = self.values[i];
@@ -347,7 +308,7 @@ impl<const N: usize> PoseViewport<N> {
                 format!("{name}  {value:.0} {unit}"),
             );
         }
-        for (i, button) in Self::buttons(hud.size[1]).into_iter().enumerate() {
+        for (i, button) in Self::buttons().into_iter().enumerate() {
             let name = if i == 1 {
                 "Reset"
             } else if self.paused {
@@ -366,8 +327,8 @@ impl<const N: usize> PoseViewport<N> {
             );
         }
     }
-    fn buttons(height: u32) -> [style::EditorButton; 2] {
-        let y = Self::top(height) + ROW * N as f32 + 2.;
+    fn buttons() -> [style::EditorButton; 2] {
+        let y = Self::CONTROLS_TOP + ROW * N as f32 + 2.;
         [
             style::EditorButton([12., y, 110., ROW - 4.]),
             style::EditorButton([126., y, 112., ROW - 4.]),
@@ -414,9 +375,15 @@ mod tests {
             near: 0.02,
         };
         let mut view = PoseViewport::new(rig, camera, [("Weight", 1., "")]).unwrap();
-        for (i, key, name) in [(0, 2, "F2   Joints"), (1, 4, "F4   Pose controls")] {
+        {
+            let name = "F2   Pose editor";
             let hud = view.draw(size, Mat4::IDENTITY, "");
-            let header = hud.text.iter().find(|r| r.text == name).unwrap().position;
+            let header = hud
+                .text
+                .iter()
+                .find(|r| r.text == format!("{name}    |    F1 all"))
+                .unwrap()
+                .position;
             let mut p = crate::Pointer {
                 position: Some(header),
                 pressed: true,
@@ -429,10 +396,15 @@ mod tests {
             view.pointer(p, size);
             p.held = false;
             view.pointer(p, size);
-            assert!(view.function_key(key) && !view.window_open(i));
-            assert!(view.function_key(key));
+            assert!(view.function_key(2) && !view.windows_open());
+            assert!(view.function_key(2));
             let hud = view.draw(size, Mat4::IDENTITY, "");
-            let moved = hud.text.iter().find(|r| r.text == name).unwrap().position;
+            let moved = hud
+                .text
+                .iter()
+                .find(|r| r.text == format!("{name}    |    F1 all"))
+                .unwrap()
+                .position;
             assert!((moved[0] - header[0] - 60.).abs() < 1., "{name}: {moved:?}");
         }
     }

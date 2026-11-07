@@ -17,7 +17,7 @@
 //!
 //! Mouse or right stick looks, WASD or left stick flies, Space or A climbs,
 //! Q or LB sinks, Shift/E or RB goes fast, the wheel or arrows up/down set
-//! the speed. F1 default, F2 lowland, F4 alpine (F10 opens the debug
+//! the speed. F9 default, F2 lowland, F4 alpine (F10 opens the debug
 //! overlay), F5 the next seed, F6 jumps somewhere new, F7 hugs the ground,
 //! F12 saves a screenshot with its position and terrain stats for feedback,
 //! F10 opens the debug menu (engine render/light switches plus trees, grass
@@ -50,7 +50,7 @@ use std::sync::mpsc::{Receiver, channel};
 // (procedural_terrain build_budget).
 const POOL: u32 = 24576;
 const TICK_HZ: f32 = 60.0;
-/// The biomes (render::biome), as F1/F2/F4 and F8 step through them.
+/// The biomes (render::biome), as F9/F2/F4 and F8 step through them.
 const STYLES: [&str; 6] = ["default", "lowland", "alpine", "polder", "tundra", "desert"];
 
 /// The season and hour from --season (spring|summer|autumn|winter|0..1)
@@ -381,7 +381,7 @@ impl Game for Fly {
     }
 
     fn function_key(&mut self, n: u8) -> bool {
-        let style = match n { 1 => Some(0), 2 => Some(1), 4 => Some(2), 8 => Some((self.style + 1) % STYLES.len()), _ => None };
+        let style = match n { 9 => Some(0), 2 => Some(1), 4 => Some(2), 8 => Some((self.style + 1) % STYLES.len()), _ => None };
         let result = match n {
             1 | 2 | 4 | 8 => { self.style = style.unwrap(); self.rebuild() }
             5 => { self.seed += 1; self.rebuild() }
@@ -496,7 +496,7 @@ impl Game for Fly {
                 format!(" - building {} seed {}: {:.0} s (takes 30-50 s){}", STYLES[self.building_for.1], self.building_for.0,
                     self.building_started.elapsed().as_secs_f32(), if self.stale { ", then the latest request" } else { "" })
             } else { String::new() }),
-            "F1 default  F2 lowland  F3 stats  F4 alpine  F8 next biome  F5 seed  F6 jump  F7 hug  wheel speed  F12 screenshot".to_string(),
+            "F9 default  F2 lowland  F3 stats  F4 alpine  F8 next biome  F5 seed  F6 jump  F7 hug  wheel speed  F12 screenshot".to_string(),
         ];
         let mut hud = HudDrawList::new(frame.size);
         // --no-hud: captures that are compared pixel by pixel.

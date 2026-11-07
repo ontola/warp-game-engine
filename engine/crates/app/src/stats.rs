@@ -333,6 +333,7 @@ impl Stats {
         let frame=self.layout(hud.size);
         let s=frame.scale;
         let (row,font)=(21.*s,16.*s);
+        let first_text=hud.text.len();
         frame.draw(hud,TEXT_ID+12_000,3,"Profiler");
         let [x,top,width,height]=frame.body();
         let fits=((height/row).floor() as usize).saturating_sub(1);
@@ -367,6 +368,7 @@ impl Stats {
             hud.text.push(TextRun { id: TEXT_ID + 10_000, text: format!("Rows {}-{} of {}   |   Wheel to scroll", self.scroll+1,self.scroll+shown,self.lines.len()), position: [inner, y],
                 bounds: [inner, y, right - inner, row], font_size: font * 0.9, color: MUTED, font: FontFace::Body, align: TextAlign::Left, width: right - inner });
         }
+        render::editor_style::style_text(hud, first_text);
         // Own cost: this draw plus the sampling earlier this frame.
         let own = std::mem::take(&mut self.own_frame_ms) + started.elapsed().as_secs_f64() * 1000.0;
         smooth(&mut self.own_ms, own);

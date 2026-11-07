@@ -52,7 +52,7 @@ impl WindowFrame {
         let width = (r[2] - 51. * s).max(1.);
         hud.text.push(TextRun {
             id,
-            text: format!("F{key}   {title}"),
+            text: format!("F{key}   {title}    |    F1 all"),
             position: [r[0] + 8. * s, r[1] + 3. * s],
             bounds: [r[0] + 8. * s, r[1], width, 32. * s],
             width,

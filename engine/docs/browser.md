@@ -19,7 +19,7 @@ Then open http://localhost:8790 in Chrome or Edge (WebGPU needs localhost or
 HTTPS). `?style=alpine` and `?seed=2` pick the world; trees are off unless
 `?trees=1` (cooking them freezes the page for minutes, see Open). Hosts
 that pass only a fragment get the same from words in it: `#alpine-trees`.
-Click to capture the mouse; WASD and the mouse fly, F1 to F9 work as
+Click to capture the mouse; WASD and the mouse fly, F2 to F9 work as
 natively, Esc releases the mouse.
 
 The page shows a progress bar until the first frame: the wasm download

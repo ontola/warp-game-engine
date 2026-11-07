@@ -5,6 +5,16 @@ pub const ACCENT: [u8; 4] = [118, 221, 208, 255];
 pub const PANEL: [f32; 4] = [0.019, 0.027, 0.041, 1.0];
 pub const HIGHLIGHT: [f32; 4] = [0.12, 0.64, 0.55, 0.95];
 
+pub fn font_size(viewport: [u32; 2]) -> f32 {
+    18. * (viewport[1] as f32 / 900.).clamp(0.8, 2.5).min(viewport[0] as f32 / 500.)
+}
+
+/// Apply after local layout transforms when the HUD uses output pixels.
+pub fn style_text(hud: &mut crate::hud::HudDrawList, first: usize) {
+    let size = font_size(hud.size);
+    for run in &mut hud.text[first..] { run.font_size = size; }
+}
+
 /// Draw the panel and its left focus rail in the overlay's coordinate system.
 pub fn panel(hud: &mut crate::hud::HudDrawList, rect: [f32; 4], scale: f32, clip: [f32; 4]) {
     hud.rect(rect, PANEL, clip);
