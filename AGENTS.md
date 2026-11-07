@@ -60,6 +60,16 @@ newest captures, image and JSON together. `terrain_fly --from <that.json>`
 puts the camera back where it was. F10 opens the engine debug menu (render and
 light switches, LOD, render height, GPU pass times; games add their own).
 
+For a Sideways F12 bug report, call MCP `feedback` with `diagnostics: false`
+to locate the PNG, then use the JSON beside it. Choose the command by task:
+
+- Identify a tree, car or material under a pixel: `warp inspect F12.json --pixel X Y` returns JSON. Use original PNG coordinates.
+- Reproduce handling or check a physics change: `warp compare F12.json --baseline main --state-only`. Read `comparison.json` for baseline agreement and the first differing tick in the captured window.
+- Compare the rendered drive and per-pass timings: omit `--state-only`. The output includes synchronized before/after clips.
+
+[Capture files, prerequisites and headless examples](engine/docs/warp-cli.md#sideways-feedback).
+For Growing Guns, inspect `replay.input_history` in the F12 JSON for inputs and tick-stamped live edits. [Growing Guns replay workflow](games/growing-guns/README.md#replay-a-moment-while-editing-graphics).
+
 Procedural terrain has one height function in two copies that must stay
 line for line identical: `render/src/terrain_field.rs` (CPU: LOD error,
 collision, baking) and `render/src/shaders/terrain_field.wgsl` (GPU patches).

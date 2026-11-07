@@ -11,7 +11,7 @@ pub fn index() -> PathBuf { crate::token_dir().join("feedback.jsonl") }
 
 /// The tool's MCP listing.
 pub fn tool() -> Value {
-    json!({ "name": "feedback", "description": "The newest F12 feedback captures from any Warp game: the frame as the player saw it (with HUD) and its diagnostics JSON (game state, camera, GPU, fps). Press F12 in a game, then call this.",
+    json!({ "name": "feedback", "description": "The newest F12 feedback captures from any Warp game: the frame as the player saw it (with HUD) and its diagnostics JSON (game state, camera, GPU, fps). For Sideways, use the JSON beside the PNG with warp inspect F12.json --pixel X Y (original PNG coordinates) or warp compare F12.json --baseline main (replay the drive against a baseline). Growing Guns desktop captures include replay.input_history for inputs and live edits. Set diagnostics=false to locate the files without returning their JSON.",
         "inputSchema": { "type": "object", "properties": {
             "count": { "type": "integer", "description": "how many, newest first (default 1, at most 5)" },
             "max_width": { "type": "integer", "description": "downscale images to this width (default 1280)" },

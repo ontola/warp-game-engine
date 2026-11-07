@@ -155,6 +155,13 @@ wait until the next round to animate.
 
 ## Replay a moment while editing graphics
 
+For agent analysis of a desktop host/local capture, open the F12 JSON beside
+the PNG and read `replay.input_history`. Each `rows_after_step_tick_seed_inputs`
+row holds the tick after the step, arena seed and player inputs. `live_edits`
+records recent gameplay calls with their arguments and tick. Check
+`omitted_edits_since_start` when investigating missing history.
+[Live control and recording limits](../../engine/docs/live-control.md).
+
 During local play, press **F12** to save the screenshot and the preceding
 35–40 seconds of gameplay (less near startup or after frequent arena resets).
 **F9** opens that saved clip, paused at the screenshot's exact sub-tick moment.

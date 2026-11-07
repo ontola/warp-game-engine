@@ -521,6 +521,25 @@ warp inspect sideways-123.json --pixel 320 180
 warp compare sideways-123.json --baseline main --out build/drift-review
 ```
 
+For an agent with the live MCP bridge, call `feedback` with
+`{"diagnostics": false}` to get the latest PNG path and a preview. Open the
+same-basename JSON on disk. Use pixel coordinates from the original PNG;
+the MCP preview may be smaller. For headless inspection, `--pixel` prints JSON.
+With only the JSON, replay and comparison work when `drive.version` is 1.
+Inspection also needs the view attachments named in `visibility.views`.
+
+To replay a single build without comparing Git revisions, run from the repo root:
+
+```sh
+cargo run --locked -p cli --bin sideways -- replay-drive sideways-123.json build/drive-run --state-only
+```
+
+Use a fresh output path. In `drive.json`, `matches_capture` checks the final
+physics digest. For two builds, read `baseline_matches_recording` first in
+`comparison.json`. A false value means the baseline itself diverged from the
+recorded endpoint. `first_difference_in_window` is null when the samples agree
+through the comparison window.
+
 Click the PNG in the inspector, or pass output-pixel coordinates from its top
 left. The inspector maps the point through the captured split viewport and
 internal resolution. For source triangles it reports the instance, mesh,

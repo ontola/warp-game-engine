@@ -25,6 +25,7 @@ and session notes are in the [development log](log/README.md).
 
 | Guide | What it covers |
 | --- | --- |
+| [Playtester F12 captures](warp-cli.md#sideways-feedback) | Replay Sideways driver input, inspect a pixel by coordinate, or compare physics, clips and GPU timings across revisions. [Growing Guns input and live-edit history](../../games/growing-guns/README.md#replay-a-moment-while-editing-graphics). |
 | [Procedural character contacts](animation.md) | Layer a reachable prop socket over an animated arm and render a repeatable grip preview. |
 | [What Warp is](overview.md) | Design goals: deterministic sim, fast iteration, headless runs, physical units, live tweaking by an AI as a direction. |
 | [Status](status.md) | What is the default, what is opt-in and what is open, per area. |
