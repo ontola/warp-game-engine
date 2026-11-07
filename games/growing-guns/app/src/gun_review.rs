@@ -183,7 +183,7 @@ fn grip(args: &crate::Args) -> Result<(), String> {
     let mut rig = crate::gun::Rig::default();
     rig.set(if growth { base } else { stats });
     let body = crate::view::characters::model_transform(Vec3::ZERO, 0.0);
-    let camera_anchor = Guns::held_transform(body.transform_point3(hand), 0.0, pitch, rig.build.wrist_contacts()[0]);
+    let camera_anchor = Guns::held_transform(body.transform_point3(hand), 0.0, pitch, rig.contacts_at(1.0).primary);
     if growth { rig.grow_to(stats); }
     let out = Path::new(args.value("--out").unwrap_or("build/grip-review"));
     std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
@@ -192,6 +192,7 @@ fn grip(args: &crate::Args) -> Result<(), String> {
     let gpu = Gpu::new()?;
     let light = render::Lighting { sun_dir: Vec3::new(-0.6, 0.9, -0.6).normalize(),
         sky_lux: 4500.0, sun_lux: 9000.0, ev100: 12.0, taa: 0.0, fog_density: 0.0, ..Default::default() };
+    let mut animation = crate::hand_animation::HandAnimation::load()?;
     for frame in 0..if growth { 25 } else { 2 } {
         if growth && frame > 0 {
             // Rig limits each update to 50 ms. Advance five simulation ticks per image.
@@ -200,7 +201,9 @@ fn grip(args: &crate::Args) -> Result<(), String> {
         }
         let apply = growth || frame == 1;
         let label = if growth { format!("frame-{frame:03}") } else if apply { "grip".into() } else { "clip".into() };
-        let [primary, support] = rig.build.wrist_contacts();
+        let contacts = rig.contacts_at(1.0);
+        let primary = contacts.primary;
+        let (support, roll) = animation.pose(contacts, time + if growth { frame as f32 / 12.0 } else { 0.0 });
         let held = Guns::held_transform(body.transform_point3(hand), 0.0, pitch, primary);
         let target = body.inverse().transform_point3(held.transform_point3(support));
         let mut scene = render::Scene::default();
@@ -209,7 +212,7 @@ fn grip(args: &crate::Args) -> Result<(), String> {
         let mut pose = palette.clone();
         let primary_hand = if apply {
             let wrist = arms.apply(&mut pose, hand, target);
-            arms.orient_support(&mut pose, crate::view::characters::grip_rotation(pitch));
+            arms.orient_support(&mut pose, crate::view::characters::grip_rotation(pitch) * Quat::from_rotation_x(roll));
             wrist
         } else { hand };
         let model_to_gun = Guns::held_transform(body.transform_point3(primary_hand), 0.0, pitch, primary).inverse() * body;

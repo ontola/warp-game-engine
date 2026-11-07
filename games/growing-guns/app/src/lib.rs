@@ -26,6 +26,8 @@ mod sounds;
 mod crowd_sound;
 mod gun;
 mod gun_review;
+mod hand_animation;
+mod animation_window;
 mod knobs;
 mod scripts;
 mod sky;
@@ -101,6 +103,7 @@ pub fn desktop_main() {
     let result = match cmd.as_str() {
         "play" => play::run(&args),
         "shot" => shot(&args),
+        "animation-preview" => animation_window::run(&args),
         "gun-review" => gun_review::run(&args),
         "replay" => replay::run(&args),
         "xr-shot" => xr::shot(&args),
