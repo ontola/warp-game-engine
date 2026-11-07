@@ -340,7 +340,9 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     }
     let mut placed = 0;
     for (i, t) in plant.tufts.iter().enumerate() {
-        if unit(seed, i as u64, 9) >= keep {
+        // Kept at random to spread the thinning; the draw can overshoot the
+        // room by chance, so stop at the limit instead of failing the plant.
+        if unit(seed, i as u64, 9) >= keep || instances.len() >= limits.max_instances {
             continue;
         }
         let b = bone_of(t.segment);
@@ -373,6 +375,21 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
 mod tests {
     use super::*;
     use crate::plant_growth::{grow, Species};
+
+    #[test]
+    fn a_crowded_crown_thins_its_brushes_instead_of_failing() {
+        // Pine-lab tuning that once failed at 31 years: more brushes than room,
+        // and the random thinning drew a few too many.
+        let species = Species { crowding: 60, height: 52.0, laterals: 1.1, needle_years: 7, plumes: 6.0, ..Species::jeffrey_pine() };
+        let parts = Parts::long_needle_pine();
+        for age in [31, 55] {
+            for seed in 1..6 {
+                let (assembly, counts) = assemble(&grow(&species, age, seed), &parts, Look::jeffrey_pine(), seed, limits()).unwrap();
+                assert!(assembly.instances.len() <= limits().max_instances);
+                assert!(counts.tufts_dropped > 0);
+            }
+        }
+    }
 
     #[test]
     fn every_life_stage_fits_the_grown_limits() {
