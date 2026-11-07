@@ -85,6 +85,38 @@ pub fn cook_variants(variants: &[(WoodyRecipe, u64)], cache: Option<&Path>) -> R
     })
 }
 
+/// Cook grown plants: each (species, age, seed) grows by its rules and is
+/// assembled from `parts`, then cooked like any recipe tree. Age changes the
+/// counts and placement of parts, never their geometry.
+pub fn cook_grown(variants: &[(crate::plant_growth::Species, u32, u64)], parts: &crate::plant_growth_assembly::Parts,
+    look: crate::plant_growth_assembly::Look, cache: Option<&Path>) -> Result<Vec<Cooked>, String> {
+    let (config, proxy) = (aggregate_config(), proxy_config());
+    let limits = plant_recipe::recipe_limits();
+    crate::par::scope(|scope| {
+        let jobs: Vec<_> = variants.iter().map(|&(species, age, seed)| scope.spawn(move || -> Result<Cooked, String> {
+            let started = web_time::Instant::now();
+            let cook = || {
+                let plant = crate::plant_growth::grow(&species, age, seed);
+                let (assembly, _) = crate::plant_growth_assembly::assemble(&plant, parts, look, seed, limits)?;
+                let mut cooked = CookedPlant::cook_aggregate(&assembly, config)?;
+                cooked.cook_proxy(&assembly, proxy, PROXY_LEVELS)?;
+                Ok(cooked)
+            };
+            let (plant, loaded) = match cache {
+                Some(dir) => {
+                    // The growth and assembly code is part of the cook code key.
+                    let what = format!("grown {species:?} {age} {seed} {look:?} {:?} {config:?} {proxy:?} {PROXY_LEVELS} {limits:?}",
+                        parts.stems.iter().chain(&parts.tufts).map(|p| (p.id, p.vertices.len(), p.indices.len())).collect::<Vec<_>>());
+                    CookedPlant::cached(dir, &what, cook)?
+                }
+                None => (cook()?, false),
+            };
+            Ok(Cooked { plant, loaded, millis: started.elapsed().as_secs_f64() * 1000.0 })
+        })).collect();
+        jobs.into_iter().map(|job| job.join().map_err(|_| "grown plant cook panicked".to_string())?).collect()
+    })
+}
+
 /// Cook grass into the same shared source/voxel/articulated asset contract as
 /// woody species. No runtime meadow buffers or grass-only residency are created.
 /// Geometry is explicit ribbon blades; voxel optics derive from those surfaces.

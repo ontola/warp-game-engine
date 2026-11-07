@@ -752,7 +752,29 @@ fn renderer_for(gpu: &render::Gpu, scene: &Scene, light: &Lighting, pool: proced
 }
 
 /// Shared recipes are cooked once per set of biomes, independently of world population.
+/// --pine-ages: the forest is replaced by one Jeffrey pine per age, in a row
+/// north of the start, grown by render::plant_growth.
+const PINE_AGES: [u32; 9] = [3, 6, 12, 25, 50, 80, 120, 200, 300];
+fn pine_ages() -> bool { std::env::args().any(|a| a == "--pine-ages") }
+
+/// How many tree and shrub variants the forest uses (grass follows them).
+fn flora_count(lands: &render::biome::Lands) -> usize { if pine_ages() { PINE_AGES.len() } else { lands.species().len() } }
+
 fn cooked_flora(lands: &render::biome::Lands) -> Result<&'static Vec<CookedPlant>, String> {
+    if pine_ages() {
+        static GROWN: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
+        let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
+        return GROWN.get_or_init(|| {
+            let species = render::plant_growth::Species::jeffrey_pine();
+            let variants: Vec<_> = PINE_AGES.iter().map(|&age| (species, age, 1)).collect();
+            let cooked = recipe_forest::cook_grown(&variants, &render::plant_growth_assembly::Parts::long_needle_pine(),
+                render::plant_growth_assembly::Look::jeffrey_pine(), Some(&cache))?;
+            for (c, age) in cooked.iter().zip(PINE_AGES) {
+                eprintln!("jeffrey pine age {age}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
+            }
+            Ok(cooked.into_iter().map(|c| c.plant).collect())
+        }).as_ref().map_err(|e| e.clone());
+    }
     type Flora = Vec<CookedPlant>;
     static COOKED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, &'static Flora>>> = std::sync::OnceLock::new();
     let mut map = COOKED.get_or_init(Default::default).lock().unwrap();
@@ -859,8 +881,16 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
         .filter(|t| edits.is_some_and(|o|o.edits.contains_key(&t.id)) || render::forest_field::handover_keep(t.pos, c, start, end))
         .chain(edited(placement::place(&shrubs, &land, c, world.tree_radius.min(SHRUB_RADIUS)),&shrubs,world.tree_radius.min(SHRUB_RADIUS)))
         .map(|t|WorldRoot {id:t.id,placement:RootPlacement {up:Vec3::Y,pos:t.pos,yaw:t.yaw,scale:t.scale.y,variant:t.variant as usize}}).collect()} else {Vec::new()};
+    // One pine per age in a row 30 m north of the start, spaced by size.
+    let woody:Vec<WorldRoot>=if world.trees && pine_ages() {
+        let mut x=c.x-60.;
+        PINE_AGES.iter().enumerate().map(|(i,&age)|{
+            let gap=2.+0.06*age as f32;x+=gap;let at=Vec2::new(x,c.y+30.);x+=gap;
+            WorldRoot {id:render::placement::instance_id(2000,i as i32,0),placement:RootPlacement {up:Vec3::Y,pos:placement::World::ground(&land,at.x,at.y).pos,yaw:0.,scale:1.,variant:i}}
+        }).collect()
+    } else {woody};
     if !world.grass {return woody;}
-    let offset=if world.trees {lands.species().len()} else {0};
+    let offset=if world.trees {flora_count(lands)} else {0};
     let mut roots=woody;
     let started=web_time::Instant::now();
     let cells=grass_cells(seed,&land,|x,z|land.style_at(x,z).grass,c,offset,GRASS_RADIUS);
