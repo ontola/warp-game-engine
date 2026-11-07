@@ -133,29 +133,43 @@ fn tuft(id: u64, variant: u64, needles: u32, length: f32) -> PartGeometry {
 impl Parts {
     /// Placeholder parts for a long-needled pine.
     pub fn long_needle_pine() -> Self {
+        let look = Look::jeffrey_pine();
+        Self::needle_brushes(look.brush_needles, look.needle_length)
+    }
+
+    /// Pine parts whose bottlebrushes carry `needles` needles about `length`
+    /// metres long (Look::brush_needles and needle_length).
+    pub fn needle_brushes(needles: u32, length: f32) -> Self {
         const STEM: u64 = 0x5047_5354_0000_0000;
         const TUFT: u64 = 0x5047_5446_0000_0000;
+        let (needles, length) = (needles.clamp(1, 2000), length.clamp(0.01, 1.0));
+        // The brush's needles and length are part of its identity (and so of every cook key).
+        let tuft_id = TUFT ^ (u64::from(needles) << 8) ^ (u64::from(length.to_bits()) << 20);
         Self {
             stems: std::array::from_fn(|k| stem(STEM + 1 + k as u64, if k < 4 { 8 } else { 16 }, TAPERS[k % 4])),
             collar: collar(STEM + 16),
-            // A bottlebrush: 220 needles 15-26 cm long.
-            tufts: (0..3).map(|v| tuft(TUFT + v, v, 220, 0.22)).collect(),
+            tufts: (0..3).map(|v| tuft(tuft_id + v, v, needles, length)).collect(),
         }
     }
 }
 
 /// Limits for a grown plant: the recipe limits with room for an old pine's
-/// ~4k stems and ~5k needle brushes.
+/// ~5k stems and ~10k needle brushes.
 pub fn limits() -> Limits {
-    Limits { max_instances: 16384, ..crate::plant_recipe::recipe_limits() }
+    Limits { max_instances: 24576, ..crate::plant_recipe::recipe_limits() }
 }
 
-/// Colours of the wood and the needles.
+/// Colours of the wood and the needles, and the needle brushes
+/// (Parts::needle_brushes takes the brush fields).
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Look {
     pub wood: [f32; 3],
     pub needles: [f32; 3],
+    /// Needles in one bottlebrush.
+    pub brush_needles: u32,
+    /// Typical needle length, metres.
+    pub needle_length: f32,
 }
 
 impl Default for Look {
@@ -164,7 +178,7 @@ impl Default for Look {
 
 impl Look {
     pub fn jeffrey_pine() -> Self {
-        Self { wood: [0.24, 0.12, 0.07], needles: [0.11, 0.21, 0.09] }
+        Self { wood: [0.24, 0.12, 0.07], needles: [0.11, 0.21, 0.09], brush_needles: 140, needle_length: 0.22 }
     }
 }
 

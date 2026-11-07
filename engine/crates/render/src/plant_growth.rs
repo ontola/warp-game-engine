@@ -49,6 +49,9 @@ pub struct Species {
     pub wood: f32,
     pub limb_wood: f32,
     pub dead_years: u32,
+    /// Needle brushes on each young side shoot: 1 at its tip; more sit along the
+    /// shoot and splay outward (a fraction is a chance of one more).
+    pub plumes: f32,
 }
 
 impl Default for Species {
@@ -63,6 +66,7 @@ impl Species {
             height: 46.0, pace: 62.0, shape: 1.75, first_whorl: 3, whorl: [3, 5], laterals: 1.0, max_order: 4,
             limb_step: 0.30, side_length: 0.6, limb_life: [60, 150], crowding: 16, angle: [1.05, 1.4], rise: 0.05, droop: 0.012,
             needle_years: 5, shade: 0.025, min_light: 0.3, tip_radius: 0.005, wood: 0.0035, limb_wood: 0.62, dead_years: 18,
+            plumes: 2.0,
         }
     }
 }
@@ -298,6 +302,17 @@ fn finish(s: &Species, age: u32, seed: u64, mut segments: Vec<Segment>) -> Plant
             let axis = (seg.to - seg.from).normalize_or_zero();
             let fullness = 1.0 - years as f32 / s.needle_years as f32 * 0.65;
             tufts.push(Tuft { at: seg.to, axis, fullness, segment: i as u32 });
+            // More brushes along side shoots, each turned outward a little
+            // (the leader keeps one: a seedling stays a few tufts).
+            let extra = if seg.order == 0 { 0.0 } else { (s.plumes - 1.0).max(0.0) };
+            let count = extra.floor() as u32 + u32::from(hash(seed, i as u64, 91) < extra.fract());
+            let (u, v) = frame(if axis == Vec3::ZERO { Vec3::Y } else { axis });
+            for k in 0..count {
+                let f = 1.0 - (k + 1) as f32 / (count + 1) as f32;
+                let a = hash(seed, i as u64, 92 + k as u64) * std::f32::consts::TAU;
+                let out = (axis + (u * a.cos() + v * a.sin()) * 0.6).normalize_or_zero();
+                tufts.push(Tuft { at: seg.from.lerp(seg.to, f), axis: out, fullness: fullness * 0.85, segment: i as u32 });
+            }
         }
     }
     let mut map = vec![u32::MAX; n];

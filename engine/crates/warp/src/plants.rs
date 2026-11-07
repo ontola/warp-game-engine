@@ -64,7 +64,7 @@ struct Preview {
 
 fn preview(species: &Species, look: Look, age: u32, seed: u64) -> Result<Preview, String> {
     let plant = render::plant_growth::grow(species, age, seed);
-    let (assembly, _) = render::plant_growth_assembly::assemble(&plant, parts(), look, seed, render::plant_growth_assembly::limits())?;
+    let (assembly, _) = render::plant_growth_assembly::assemble(&plant, parts(&look), look, seed, render::plant_growth_assembly::limits())?;
     let branches = assembly.branch_transforms()?;
     let mut index: HashMap<(u32, u32), usize> = HashMap::new();
     let mut out = Preview { meshes: Vec::new(), instances: Vec::with_capacity(assembly.instances.len()), triangles: 0 };
@@ -98,7 +98,7 @@ fn cook(species: Species, look: Look, age: u32, seed: u64, full: bool) -> Done {
         return Ok((Cooked::Preview(Arc::new(p)), false, started.elapsed().as_secs_f64() * 1000.0, what));
     }
     let cache = cache_dir();
-    let c = render::recipe_forest::cook_grown(&[(species, age, seed)], parts(), look, Some(&cache))?.pop().ok_or("nothing cooked")?;
+    let c = render::recipe_forest::cook_grown(&[(species, age, seed)], parts(&look), look, Some(&cache))?.pop().ok_or("nothing cooked")?;
     let s = c.plant.stats();
     let what = format!("{} branches, {} placements", s.branches, s.placements);
     Ok((Cooked::Full(Arc::new(c.plant)), c.loaded, c.millis, what))
@@ -117,9 +117,12 @@ pub struct Plants {
     pub log: Vec<String>,
 }
 
-fn parts() -> &'static Parts {
-    static PARTS: OnceLock<Parts> = OnceLock::new();
-    PARTS.get_or_init(Parts::long_needle_pine)
+/// The parts for a look's brushes, made once per needle count and length.
+fn parts(look: &Look) -> &'static Parts {
+    static PARTS: OnceLock<std::sync::Mutex<HashMap<(u32, u32), &'static Parts>>> = OnceLock::new();
+    let mut map = PARTS.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
+    *map.entry((look.brush_needles, look.needle_length.to_bits()))
+        .or_insert_with(|| Box::leak(Box::new(Parts::needle_brushes(look.brush_needles, look.needle_length))))
 }
 
 fn cache_dir() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache") }
