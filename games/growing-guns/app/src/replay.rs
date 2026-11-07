@@ -10,7 +10,7 @@ use std::{collections::VecDeque, io::{Read, Write}, path::{Path, PathBuf}, sync:
 // a time budget, not 120 arbitrarily expensive ticks in a single UI frame.
 const SEEK_BUDGET: std::time::Duration = std::time::Duration::from_millis(6);
 const SCRUB_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(80);
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const CHUNK_TICKS: usize = 300;
 const MAX_CHUNKS: usize = 64; // Guard against rapid arena-reset commands.
 const MAX_TICKS: usize = 2400; // 35–40 seconds, including visual warmup.

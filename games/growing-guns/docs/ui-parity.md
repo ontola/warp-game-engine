@@ -74,12 +74,12 @@ the clipboard (the in-process one).
 
 | Element | Godot | Shows, when | Rust |
 |---|---|---|---|
-| Round banner | `RoundBanner`, `_announce` | X died / X is down / X joined / X left / AIR STRIKE INCOMING / ION CANNON INCOMING / LAVA LEAK / WAVE n (enemy list) / WAVE n CLEARED | done; party names in place of P1..P4 |
+| Round banner | `RoundBanner`, `_announce` | X died / X is down / X joined / X left / AIR STRIKE INCOMING / ION CANNON INCOMING / LAVA LEAK / WAVE n (enemy list) / WAVE n CLEARED | party names in place of P1..P4; eliminations use the shared kill feed |
 | Match-over banner | `_match_over`, `_animate_match_win_banner` | YOU'RE THE WINNER / NAME WINS THE MATCH / WAVE n FAILED at 92, pop from 0.4 with back-out over 0.55 s, then breathing 1.05 | done |
 | Match-over buttons | `_build_rematch_overlay` | REMATCH, 5 MORE ROUNDS, EXIT GAME (coop: TRY AGAIN FROM WAVE 1) 260 x 46, fade in at 1.4 s, unlocked at 2.4 s with focus on 5 MORE ROUNDS | done; mouse too. One local vote (Godot's per-peer vote tally is not ported) |
-| Kill feed | `_show_kill_feed` | top right from y 96, "A => B", 3+ humans, 3 s then fade, 6 lines | done |
+| Kill feed | `_show_kill_feed` | top right from y 96, "A => B", 3+ humans, 3 s then fade, 6 lines | one shared upper-left notice across all player counts; shows the killer and victim or the environmental death, with successive kills shown in order |
 | Coop kill count | `Scoreboard` label | KILLED n/m top right in coop | done |
-| Tab scoreboard | `_build_tab_overlay` | SCOREBOARD / CO-OP WAVE n, rounds per player, ping or BOT, card pills | done; ping shows "-- ms" (no ping measurement yet) |
+| Tab scoreboard | `_build_tab_overlay` | SCOREBOARD / CO-OP WAVE n, rounds per player, ping or BOT, card pills | includes match kills per player; ping shows "-- ms" (no ping measurement yet) |
 | Explosion flash | `trigger_explosion_sidechain` | warm white wash, reach max(6 r, 12) m, alpha up to 0.96, layer 50 | close: per view from each player's distance (Godot: the primary player's); the exposure duck is not ported |
 | Round flash | `_round_start_flash` | full white 0.25 s then 0.45 s sine fade, over everything, every round and match start | done |
 | Ion flash | `ion_cannon.gd` | brief per-view white at detonation | done (`view::ion`) |

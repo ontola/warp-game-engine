@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 // Version 2 adds the cage countdown to positional postcard snapshots, 3 the
-// players' recoil lift, 4 headset view and gun in inputs and players. Reject
+// players' recoil lift, 4 headset poses, 5 per-player match kills. Reject
 // older peers during connection setup, before decoding any state.
-pub const ALPN: &[u8] = b"warp/growing-guns/4";
+pub const ALPN: &[u8] = b"warp/growing-guns/5";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ToHost {

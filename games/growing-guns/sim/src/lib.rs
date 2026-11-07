@@ -171,6 +171,8 @@ pub struct Player {
     pub bloom: f32,
     /// Round wins.
     pub score: u32,
+    #[serde(default)]
+    pub kills: u32,
     pub bot: bool,
     /// Seconds since the last shot, for the gun kick animation.
     pub since_shot: f32,
@@ -223,7 +225,7 @@ impl Player {
             pos: Vec3::ZERO, vel: Vec3::ZERO, yaw: 0.0, pitch: 0.0, recoil_pitch: 0.0, on_floor: false, wall_normal: None,
             jumps_left: 2, wall_jump_cd: 0.0, dash_timer: 0.0, dash_dir: Vec3::ZERO,
             dash_charges: 0, dash_recharge: 0.0, health: MAX_HEALTH, alive: true, ghost: false, howitzer: None, siege_crossbow: false,
-            ammo: weapon::BASE_MAG_SIZE as u32, reloading: false, rifle_cd: 0.0, bloom: 0.0, score: 0, bot, since_shot: 9.0,
+            ammo: weapon::BASE_MAG_SIZE as u32, reloading: false, rifle_cd: 0.0, bloom: 0.0, score: 0, kills: 0, bot, since_shot: 9.0,
             cards: Vec::new(), weapon: Weapon::default(), offer: None, offer_age: 0.0,
             iframes: 0.0, slow_mult: 1.0, slow_timer: 0.0, poison_left: 0.0, poison_dps: 0.0, poison_accum: 0.0, poison_from: None,
             phoenix_charges: 0, phoenix: None, launching: None, frozen: false, lava_accum: 0.0,
@@ -753,6 +755,7 @@ impl World {
             for v in [p.pos.x, p.pos.y, p.pos.z, p.vel.x, p.vel.y, p.vel.z, p.yaw, p.pitch] { mix(v.to_bits()); }
             mix(p.health as u32);
             mix(p.score);
+            mix(p.kills);
             mix(p.ammo);
             mix(p.cards.len() as u32);
         }
