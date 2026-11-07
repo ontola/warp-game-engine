@@ -236,7 +236,7 @@ impl SkeletonOverlay {
                 clip,
             );
         }
-        label(hud, 49, [126., 171.], "F12 saves pose".into());
+        label(hud, 49, [126., 171.], "F4 saves pose".into());
     }
 
     const PREV: style::EditorButton = style::EditorButton([12., 42., 28., 23.]);

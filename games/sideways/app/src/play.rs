@@ -359,6 +359,7 @@ struct StartupGpu {
 struct App {
     debug:crate::engine_debug::EngineDebug,
     hidden_editor:Option<bool>,
+    alt_down:bool,
     upscale_error: Option<String>,
     gpu_profile: Option<std::io::BufWriter<std::fs::File>>,
     frame_profile:Option<frame_profile::Profiler>,
@@ -1667,7 +1668,7 @@ impl ApplicationHandler for App {
         }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && let PhysicalKey::Code(code) = event.physical_key
-            && let Some(action) = app::engine_shortcut(code) {
+            && let Some(action) = (if self.alt_down && code==KeyCode::Enter {Some(app::EngineShortcut::Fullscreen)} else {app::engine_shortcut(code)}) {
             if event.state == ElementState::Pressed && !event.repeat {
                 match action {
                     app::EngineShortcut::AllMenus => {
@@ -1690,6 +1691,7 @@ impl ApplicationHandler for App {
             }
             return;
         }
+        if let WindowEvent::ModifiersChanged(m)=&event {self.alt_down=m.state().alt_key();}
         if self.tree_loading.is_some() && matches!(&event,WindowEvent::KeyboardInput{..}|WindowEvent::CursorMoved{..}|WindowEvent::MouseInput{..}|WindowEvent::MouseWheel{..}) {
             self.debug.cancel_interaction();self.input.clear_keys();return;
         }
@@ -1855,7 +1857,7 @@ pub fn run(raw:&[String])->i32{
     let mut exhaust=crate::exhaust_fx::ExhaustFx::new(a.seed);exhaust.step(&race);
     let mut wheel_effects=crate::wheel_effects::WheelEffects::new(a.seed);wheel_effects.step(&race);
     let start_paused=a.start_paused;
-    let mut app=App{debug,hidden_editor:None,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,manners:Default::default(),hud_stats:serde_json::Value::Null,hud_samples:vec![],recorder:Default::default(),point_picker:None,point_requested:false,shift_down:false,cursor:None,screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,outputs:[None,None],deferred_host:vec![],ready_due:None,smoke_stage_requested:false,quality:None};
+    let mut app=App{debug,hidden_editor:None,alt_down:false,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,manners:Default::default(),hud_stats:serde_json::Value::Null,hud_samples:vec![],recorder:Default::default(),point_picker:None,point_requested:false,shift_down:false,cursor:None,screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,outputs:[None,None],deferred_host:vec![],ready_due:None,smoke_stage_requested:false,quality:None};
     app.startup_timing.mark("host_input_application_setup");
     let events=match EventLoop::new(){Ok(e)=>e,Err(e)=>{eprintln!("play event loop: {e}");return 1;}};
     app.startup_timing.mark("event_loop_creation");

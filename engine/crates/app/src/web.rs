@@ -283,8 +283,8 @@ impl ApplicationHandler for Shell {
                     }
                     return;
                 }
-                if let Some(n) = [F1, F2, F3, F4, F5, F6, F7, F8, F9].iter().position(|&k| k == code) {
-                    if event.state == ElementState::Pressed && !event.repeat { self.hidden_editor=None; self.game.function_key(n as u8 + 1); }
+                if let Some(n) = [F5,F6,F7,F8,F9,F10,F11,F12].iter().position(|&k| k == code) {
+                    if event.state == ElementState::Pressed && !event.repeat { self.hidden_editor=None; self.game.function_key(n as u8 + 5); }
                     return;
                 }
                 if code == Escape && event.state == ElementState::Pressed && !event.repeat {

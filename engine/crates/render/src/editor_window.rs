@@ -42,7 +42,7 @@ impl WindowFrame {
     pub fn draw(self, hud: &mut HudDrawList, id: u64, key: u8, title: &str) {
         let r = self.rect;
         let s = self.scale;
-        hud.begin_overlay();
+        hud.begin_screen_space();
         let [w,h]=hud.size.map(|n|n.max(1) as f32);
         hud.editor_windows.push(((hud.vertices.len(),hud.text.len()),id,[r[0]/w,r[1]/h,r[2]/w,r[3]/h]));
         editor_style::panel(hud, r, s, r);
@@ -54,7 +54,7 @@ impl WindowFrame {
         let width = (r[2] - 51. * s).max(1.);
         hud.text.push(TextRun {
             id,
-            text: format!("F{key}   {title}    |    F1 all"),
+            text: format!("F{key}   {title}    |    F1 Dev Mode"),
             position: [r[0] + 8. * s, r[1] + 3. * s],
             bounds: [r[0] + 8. * s, r[1], width, 32. * s],
             width,

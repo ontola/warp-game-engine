@@ -156,7 +156,7 @@ impl Pass {
         gpu: &Gpu,
         list: &HudDrawList,
         srgb: bool,
-    ) -> Result<HudStats, String> {
+    ) -> Result<(HudStats, Option<HudDrawList>), String> {
         let mut data = [[0f32; 4]; 9];
         data[0] = [
             list.size[0] as f32,
@@ -171,6 +171,7 @@ impl Pass {
         gpu.queue
             .write_buffer(&self.uniform, 0, bytemuck::cast_slice(&data));
         let mut flat = list.clone();
+        let screen_space=flat.take_screen_space();
         flat.optics.clear();
         let stats = self.hud.prepare(gpu, &flat)?;
         let view = self.target.create_view(&Default::default());
@@ -199,7 +200,7 @@ impl Pass {
             self.hud.render(&mut pass)?;
         }
         gpu.queue.submit([encoder.finish()]);
-        Ok(stats)
+        Ok((stats,screen_space))
     }
     pub fn render(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(&self.pipeline);

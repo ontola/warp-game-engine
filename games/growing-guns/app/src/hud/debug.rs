@@ -1,4 +1,4 @@
-//! The F3 debug overlay: a panel down the right over the running match
+//! The F12 debug overlay: a panel down the right over the running match
 //! (it is no pause) with four tabs. CARDS gives any card to the target
 //! player (type to filter), ITEMS sets the special, drops pickups and refills
 //! health and ammo, SKY picks the time of day and weather, MODES forces a
@@ -7,7 +7,7 @@
 //! Every entry runs the game's own debug commands (`play.rs`, `help`), so the
 //! overlay adds no game logic of its own.
 //!
-//! Keys: F3 (or Back + Start on a pad) opens and closes it, Esc or B closes
+//! Keys: F12 (or Back + Start on a pad) opens and closes it, Esc or B closes
 //! it. Up and down move, left and right move within a row and pick the
 //! target player on the TARGET row, Q/E or LB/RB change the tab, Space,
 //! Enter or A take. On the CARDS search field the keyboard types (Enter gives
@@ -306,7 +306,7 @@ impl DebugMenu {
             match self.menu.focus { 0 => self.set_tab(self.col), 1 => self.player = self.col, _ => {} }
             return Vec::new();
         }
-        // Only B (and Esc, F3) closes: Back is half of the pad's open chord.
+        // Only B (and Esc, F12) closes: Back is half of the pad's open chord.
         let strip = Buttons::LEFT | Buttons::RIGHT | Buttons::SELECT;
         let before = self.menu.focus;
         let ev = self.menu.update(&Controls { mv: [0.0, c.mv[1]], held: Buttons(c.held.0 & !strip), pressed: Buttons(c.pressed.0 & !strip), ..*c }, foci.len(), 1, dt);
@@ -376,14 +376,14 @@ impl DebugMenu {
         let [w, h] = d.size.map(|v| v as f32);
         let frame=self.layout(d.size);
         let first_text=d.text.len();
-        frame.draw(d,0x6767_5220,3,"Match tools");
+        frame.draw(d,0x6767_5220,12,"Match tools");
         let u=frame.scale;
         let panel=frame.body();
         let clip=panel;
         let x0 = panel[0] + 18.0 * u;
         let iw = panel[2] - 30.0 * u;
 
-        Label::new(BODY, render::editor_style::font_size(d.size), BONE_DIM).right().draw(d, "F3 / ESC close  ·  Q E tabs  ·  type to search", panel[0] + panel[2] - 12.0 * u, panel[1] + 26.0 * u, clip);
+        Label::new(BODY, render::editor_style::font_size(d.size), BONE_DIM).right().draw(d, "F12 / ESC close  ·  Q E tabs  ·  type to search", panel[0] + panel[2] - 12.0 * u, panel[1] + 26.0 * u, clip);
         let rows = self.rows(ctx);
         let focus = self.focused(&rows);
         let rh = 30.0 * u;

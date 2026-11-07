@@ -17,10 +17,10 @@
 //!
 //! Mouse or right stick looks, WASD or left stick flies, Space or A climbs,
 //! Q or LB sinks, Shift/E or RB goes fast, the wheel or arrows up/down set
-//! the speed. F9 default, F2 lowland, F4 alpine (F10 opens the debug
-//! overlay), F5 the next seed, F6 jumps somewhere new, F7 hugs the ground,
-//! F12 saves a screenshot with its position and terrain stats for feedback,
-//! F10 opens the debug menu (engine render/light switches plus trees, grass
+//! the speed. F12 default, F11 lowland, F10 alpine (F2 opens the debug
+//! overlay), F9 the next seed, F8 jumps somewhere new, F7 hugs the ground,
+//! F4 saves a screenshot with its position and terrain stats for feedback,
+//! F2 opens the debug menu (engine render/light switches plus trees, grass
 //! and terrain LOD under "Terrain fly").
 //!
 //! Grass cells and biome trees share GPU selection, poses and paging across a
@@ -50,7 +50,7 @@ use std::sync::mpsc::{Receiver, channel};
 // (procedural_terrain build_budget).
 const POOL: u32 = 24576;
 const TICK_HZ: f32 = 60.0;
-/// The biomes (render::biome), as F9/F2/F4 and F8 step through them.
+/// The biomes (render::biome), as F12/F11/F10 and F6 step through them.
 const STYLES: [&str; 6] = ["default", "lowland", "alpine", "polder", "tundra", "desert"];
 
 /// The season and hour from --season (spring|summer|autumn|winter|0..1)
@@ -133,7 +133,7 @@ struct Fly {
     /// Seed and style the scene in `building` is for, and when it started.
     building_for: (u32, usize), building_started: web_time::Instant,
     /// Seed and style of the scene on screen. The camera follows its ground
-    /// until a new scene swaps in (F1-F8 take 30-50 s to build).
+    /// until a new scene swaps in (F1-F6 take 30-50 s to build).
     shown: (u32, usize),
     /// Lift the camera above the new ground once the requested scene shows.
     lift_on_swap: bool,
@@ -184,7 +184,7 @@ impl Fly {
         if let Some((start, yaw)) = fly.track_start() { fly.pos = start; fly.yaw = yaw; fly.pitch = -0.05; }
         if fly.track_start().is_none() { fly.pos = Vec3::new(0.0, fly.ground(0.0, 0.0) + 60.0, 0.0); }
         fly.prev = fly.pos;
-        // --from: a JSON written by F12 (or just its "state"), to stand where the playtester stood.
+        // --from: a JSON written by F4 (or just its "state"), to stand where the playtester stood.
         if let Some(path) = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--from").map(|w| w[1].clone()) {
             let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?).map_err(|e| format!("{path}: {e}"))?;
             let st = v.get("state").unwrap_or(&v);
@@ -380,26 +380,29 @@ impl Game for Fly {
         }
     }
 
+    fn editor_shortcut(&self,key:u8)->Option<(&'static str,bool)> {
+        Some(match key {11=>("Lowland",self.style==1),10=>("Alpine",self.style==2),9=>("Seed",false),8=>("Jump",false),7=>("Hug",self.hug.is_some()),6=>("Biome",false),12=>("Default",self.style==0),_=>return None})
+    }
     fn function_key(&mut self, n: u8) -> bool {
-        let style = match n { 9 => Some(0), 2 => Some(1), 4 => Some(2), 8 => Some((self.style + 1) % STYLES.len()), _ => None };
+        let style = match n { 12 => Some(0), 11 => Some(1), 10 => Some(2), 6 => Some((self.style + 1) % STYLES.len()), _ => None };
         let result = match n {
-            1 | 2 | 4 | 8 => { self.style = style.unwrap(); self.rebuild() }
-            5 => { self.seed += 1; self.rebuild() }
-            6 => { self.jump(); Ok(()) }
+            12 | 11 | 10 | 6 => { self.style = style.unwrap(); self.rebuild() }
+            9 => { self.seed += 1; self.rebuild() }
+            8 => { self.jump(); Ok(()) }
             7 => { self.hug = match self.hug { Some(_) => None, None => Some(1.7) }; Ok(()) }
             _ => return false,
         };
         self.last_action = match n {
-            1 | 2 | 4 | 8 => format!("F{n}: {} requested", STYLES[self.style]),
-            5 => format!("F5: seed {} requested", self.seed),
-            6 => format!("F6: jumped to x {:.0}, z {:.0}", self.pos.x, self.pos.z),
+            12 | 11 | 10 | 6 => format!("F{n}: {} requested", STYLES[self.style]),
+            9 => format!("F9: seed {} requested", self.seed),
+            8 => format!("F8: jumped to x {:.0}, z {:.0}", self.pos.x, self.pos.z),
             7 => format!("F7: ground hug {}", if self.hug.is_some() { "on" } else { "off" }),
             _ => unreachable!(),
         };
         if let Err(e) = result { self.last_action = format!("F{n}: {e}"); }
         println!("terrain input: {}", self.last_action);
         // Rise above the new ground only once it shows (lift_on_swap).
-        if matches!(n, 1 | 2 | 4 | 5 | 8) { self.lift_on_swap = true; }
+        if matches!(n,12|11|10|9|6) { self.lift_on_swap = true; }
         true
     }
 
@@ -496,7 +499,7 @@ impl Game for Fly {
                 format!(" - building {} seed {}: {:.0} s (takes 30-50 s){}", STYLES[self.building_for.1], self.building_for.0,
                     self.building_started.elapsed().as_secs_f32(), if self.stale { ", then the latest request" } else { "" })
             } else { String::new() }),
-            "F9 default  F2 lowland  F3 stats  F4 alpine  F8 next biome  F5 seed  F6 jump  F7 hug  wheel speed  F12 screenshot".to_string(),
+            "F12 default  F11 lowland  F3 stats  F10 alpine  F6 next biome  F9 seed  F8 jump  F7 hug  wheel speed  F4 screenshot".to_string(),
         ];
         let mut hud = HudDrawList::new(frame.size);
         // --no-hud: captures that are compared pixel by pixel.

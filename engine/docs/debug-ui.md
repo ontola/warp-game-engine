@@ -1,8 +1,8 @@
 # Live render debug panel
 
-The engine reserves **F10** for this panel, **F11** for fullscreen and **F12** for a feedback screenshot in every build. Games receive F1–F9; F3 a game leaves unused opens the [stats overlay](stats-overlay.md). The engine keys run before game menus, replay and text-entry handlers.
+The engine reserves **F2** for this panel, **Alt+Enter** for fullscreen and **F4** for a feedback screenshot in every build. Games receive F1–F9; F3 a game leaves unused opens the [stats overlay](stats-overlay.md). The engine keys run before game menus, replay and text-entry handlers.
 
-Press **F10** during a Sideways playtest to open or close the panel. Opening it
+Press **F2** during a Sideways playtest to open or close the panel. Opening it
 does not pause the race. To start with it open:
 
 ```powershell
@@ -25,7 +25,7 @@ context, not proof that the prepared executable contains current source changes.
 The panel is a top HUD layer above the pause/start menu, game HUD and screenshot
 toast. Underlying menu navigation is suspended while it is open. Controller
 Start closes the debug panel first without also resuming the underlying menu.
-Keyboard driving can continue outside the pause menu; F11/F12 remain available.
+Keyboard driving can continue outside the pause menu; Alt+Enter/F4 remain available.
 
 The root links to **Vegetation**, **Advanced rendering**, **Weather / daytime**
 and **Lighting / shadows**.
@@ -47,7 +47,7 @@ Release, focus loss, resize or closing the panel cancels the interaction.
 select a control, **Left / Right** adjust it, and **Enter** toggles the selected
 switch or activates **Reset defaults**. Scroll the mouse wheel over the panel
 to reach more controls; **Page Up / Page Down** also move the selection.
-**F10**, the top-right **x**, or Esc at the root closes the panel. Changes are
+**F2**, the top-right **x**, or Esc at the root closes the panel. Changes are
 process-local and never rewrite assets or saved defaults.
 
 Grass size (50–200%), patch count (0–100%) and red/green/blue albedo multipliers
@@ -85,15 +85,15 @@ tree size/count edits do update the native trunks.
 | Grass draw distance | Scales the existing source/distant transitions and outer fade from 25–100%. **Density and allocation do not change.** At the current 80/180 m configuration, 50% gives 40/90 m endpoints. |
 | Geometry LOD error | Changes the cluster-mesh error threshold from 0.5–4 pixels; larger values permit simpler trees, rocks and other meshes. Meadow source LOD is separate. |
 | Exposure offset | Adjusts the current time-of-day exposure by −3 to +3 EV. Positive EV darkens, negative EV brightens. |
-| Auto exposure | Engine F10 menu: meters each view and adapts like an eye, overriding the game's choice; its help line shows the current and metered EV. The exposure offset still applies. |
-| HDR output, HDR peak | Engine F10 menu: HDR output on an HDR screen (switches the surface live) and the highlight headroom; greyed out when the screen offers no HDR surface. |
+| Auto exposure | Engine F2 menu: meters each view and adapts like an eye, overriding the game's choice; its help line shows the current and metered EV. The exposure offset still applies. |
+| HDR output, HDR peak | Engine F2 menu: HDR output on an HDR screen (switches the surface live) and the highlight headroom; greyed out when the screen offers no HDR surface. |
 | Distance fog | Toggles distance extinction and its visibility culling; keeps the procedural sky. |
 
 Enabling a renderer feature does not create assets or buffers absent from the
 scene. Reset restores the debug overrides, including 100% grass distance and
 zero exposure offset, while retaining the chosen time of day and atmosphere.
 
-The F10 Graphics settings window contains controls. For CPU and GPU timings, use the engine profiler where available, or a frame log.
+The F2 Graphics settings window contains controls. For CPU and GPU timings, use the engine profiler where available, or a frame log.
 
 The reusable engine UI is `render::debug_ui`, using existing `HudDrawList` and
 `TextRun` objects. It consumes a caller-supplied model and emits typed actions;

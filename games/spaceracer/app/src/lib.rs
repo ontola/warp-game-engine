@@ -34,6 +34,7 @@ use spaceracer::{
 use std::path::PathBuf;
 
 struct Racer {
+    handling:app::editor::SceneTuning,
     race: Race,
     visuals: visuals::Visuals,
     root: PathBuf,
@@ -160,6 +161,10 @@ impl Racer {
             devices: vec![],
             party,
             preferences,
+            handling:app::editor::SceneTuning::new("spaceracer","Handling",&[
+                app::editor::SceneControl{label:"Steering gain",default:1.,min:0.25,max:2.,step:0.05},
+                app::editor::SceneControl{label:"Airbrake gain",default:1.,min:0.25,max:2.,step:0.05},
+            ]),
             live_settings,
             fatal: None,
             ready: false,
@@ -405,6 +410,8 @@ impl Racer {
     }
 }
 impl Game for Racer {
+    fn scene_tuning(&self)->Option<&app::editor::SceneTuning>{Some(&self.handling)}
+    fn scene_tuning_mut(&mut self)->Option<&mut app::editor::SceneTuning>{Some(&mut self.handling)}
     fn local_players(&self) -> usize {
         self.players
     }
@@ -589,6 +596,8 @@ impl Game for Racer {
             }
         }
         for (i,input) in inputs.iter_mut().enumerate() {
+            input.drive.steer=(input.drive.steer*self.handling.value(0)).clamp(-1.,1.);
+            input.drive.brake=(input.drive.brake*self.handling.value(1)).clamp(0.,1.);
             if let Some(c)=self.cameras.get(i) {
                 input.rail_aim=Some(spaceracer::railgun::Aim::camera(c.position,c.forward(),c.up(),(c.fov as f32).to_radians(),self.race.combat.rail_guide_radius));
             }
@@ -889,7 +898,7 @@ fn install_shaders(no_reflections: bool) {
     let mut surface = include_str!("../shaders/surfaces.wgsl").to_owned();
     // Diagnostic omission only; never persisted as a player quality setting.
     if no_reflections {
-        surface = surface.replace("if arrayLength(&aux)<8u", "if true || arrayLength(&aux)<8u");
+        surface = surface.replace("if aux_len()<8u", "if true || aux_len()<8u");
     }
     render::set_game_surface(&format!("{}\n{}",include_str!("../shaders/vehicle_data.wgsl"),surface));
     render::set_game_mask(&format!("{}\n{}",include_str!("../shaders/vehicle_data.wgsl"),include_str!("../shaders/vehicle_mask.wgsl")));

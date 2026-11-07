@@ -1,4 +1,4 @@
-//! The engine's debug menu (F10), for every game on the shell: switch render
+//! The engine's debug menu (F2), for every game on the shell: switch render
 //! features and light effects off, change LOD and render resolution, and
 //! whatever the game adds with [`crate::Game::debug`]. Built on render's
 //! [`DebugUi`]; nothing here changes the scene or the simulation.
@@ -97,9 +97,6 @@ pub struct EngineDebug {
     pub covered: Vec<f64>,
     /// The newest one, for hardware emulation.
     pub last_gpu_ms: Option<f64>,
-    /// When a setting last changed, so the shell can re-render the scene
-    /// soon after instead of every frame while the menu is used.
-    pub changed: Option<web_time::Instant>,
     /// The game's light had automatic exposure on (before this menu).
     game_auto_exposure: bool,
     /// The newest exposure and meter reading of view 0 (EV100).
@@ -188,8 +185,8 @@ impl EngineDebug {
         let gpu_passes = self.passes.iter().map(|&(label, ms)| render::debug_ui::DebugPass { label: label.into(), ms }).collect();
         let gpu_active_ms = (!self.passes.is_empty()).then(|| self.passes.iter().map(|p| p.1).sum());
         let status = match quality_label {
-            Some(lbl) => format!("{fps:.0} fps  |  {lbl}  |  F10 closes, arrows change, Enter selects"),
-            None => format!("{fps:.0} fps  |  F10 closes, arrows change, Enter selects"),
+            Some(lbl) => format!("{fps:.0} fps  |  {lbl}  |  F2 closes, arrows change, Enter selects"),
+            None => format!("{fps:.0} fps  |  F2 closes, arrows change, Enter selects"),
         };
         self.model = DebugModel { controls, menus, gpu_passes, gpu_active_ms, cpu_frame_ms: (fps > 0.0).then(|| 1000.0 / f64::from(fps)),
             status: Some(status), ..Default::default() };
@@ -202,6 +199,9 @@ impl EngineDebug {
         (r.consumed, r.action.and_then(|a| self.apply(a)))
     }
 
+    pub fn scene_page_open(&self)->bool{self.ui.open && self.ui.current_menu()==Some(crate::editor::scene_tuning::PAGE)}
+    pub fn scene_shortcut(&mut self,active:bool){self.ui.scene_shortcut=active.then_some((crate::editor::scene_tuning::PAGE,12));}
+    pub fn toggle_scene_page(&mut self){self.ui.toggle_page(&self.model,crate::editor::scene_tuning::PAGE);}
     pub fn set_visible(&mut self,open:bool) { self.ui.open=open; self.ui.cancel_interaction(); }
     pub fn pointer_move(&mut self, cursor: [f32; 2]) { self.ui.pointer_move(cursor); }
     pub fn pointer_down(&mut self, size: [u32; 2]) -> (bool, Option<DebugAction>) {
@@ -217,7 +217,6 @@ impl EngineDebug {
     /// Apply an engine action; a game's action (or a reset, which the game
     /// should also see) is returned for [`crate::Game::debug_action`].
     fn apply(&mut self, action: DebugAction) -> Option<DebugAction> {
-        self.changed = Some(web_time::Instant::now());
         let s = &mut self.s;
         let pct = |v: f64, lo: f64, hi: f64| (v / 100.0).clamp(lo, hi) as f32;
         match action {
