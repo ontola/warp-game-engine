@@ -39,6 +39,12 @@ pub struct Saved { pub line: String, pub png: PathBuf, pub metadata: Value }
 /// As [`save_with`], also returning where the frame went and its metadata
 /// (for a crop of it).
 pub fn save_full(shot: Shot, replay: impl FnOnce(&std::path::Path) -> Result<Option<Value>, String>) -> Result<Saved, String> {
+    save_annotated(shot, replay, |_, _| Ok(()))
+}
+
+/// Add optional diagnostics after the PNG has a final path. Failure keeps the screenshot.
+pub fn save_annotated(shot: Shot, replay: impl FnOnce(&std::path::Path) -> Result<Option<Value>, String>,
+    annotate: impl FnOnce(&std::path::Path, &mut Value) -> Result<(), String>) -> Result<Saved, String> {
     let [w, h] = shot.size;
     if w == 0 || h == 0 || shot.rgba.len() != (w * h * 4) as usize { return Err("bad screenshot size".into()); }
     let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis();
@@ -61,12 +67,15 @@ pub fn save_full(shot: Shot, replay: impl FnOnce(&std::path::Path) -> Result<Opt
         Ok(None) => "",
         Err(e) => { eprintln!("replay: {e}"); metadata["replay_error"] = Value::String(e); "  (replay unavailable)" }
     };
+    let attachment_error = annotate(&png, &mut metadata).err();
+    if let Some(e) = &attachment_error { metadata["attachment_error"] = json!(e); }
     let json_path = png.with_extension("json");
     let wrote = serde_json::to_vec_pretty(&metadata).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&json_path, b).map_err(|e| e.to_string()));
     if let Err(e) = &wrote { eprintln!("screenshot metadata: {e}"); }
     note(shot.title, &png, wrote.is_ok().then_some(&json_path), ms);
     println!("screenshot: {}", png.display());
     let line = format!("{name}.png{replay_note}{}{}", if copied { "  copied, paste with Cmd/Ctrl+V" } else { "  saved" }, if wrote.is_err() { "  (no metadata)" } else { "" });
+    let line = if attachment_error.is_some() {format!("{line} (capture attachment failed)")} else {line};
     Ok(Saved { line, png, metadata })
 }
 

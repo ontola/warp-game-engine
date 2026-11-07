@@ -30,7 +30,7 @@ const NAMES: [&str; 8] = ["Red", "Blue", "Yellow", "Green", "Purple", "Orange", 
 /// `step_with_inputs` leaves the existing AI in control; an explicit neutral
 /// value must be supplied for a disconnected human seat. Shift/recover are
 /// edges, not held buttons. Camera/menu input belongs to the presentation layer.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, serde::Deserialize)]
 pub struct Control {
     pub throttle: f64,
     pub brake: f64,
@@ -49,7 +49,7 @@ impl Control {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, serde::Deserialize)]
 pub struct Settings {
     pub vegetation: crate::vegetation::Vegetation,
     pub stage_km: f64,
@@ -61,6 +61,7 @@ pub struct Settings {
     /// Metres along the stage where the cars start (`--at`).
     pub start_at: f64,
     /// The ground stages are laid on; None is Sideways' own noise.
+    #[serde(skip)]
     pub land: Option<crate::stage::Land>,
 }
 
@@ -97,6 +98,7 @@ pub struct Stats {
 }
 
 pub struct Race {
+    pub stage_origin: Option<(Pcg, Settings, u64)>,
     pub settings: Settings,
     pub rng: Pcg,
     pub cars: Cars,
@@ -162,11 +164,15 @@ pub fn build_colliders(stage: &Stage) -> (Physics, usize, usize) {
 
 impl Race {
     pub fn new(seed: u64, settings: Settings, cars: Cars) -> Race {
-        let mut rng = Pcg::new(seed);
+        Self::from_stage_stream(Pcg::new(seed), settings, cars, 0, 0)
+    }
+
+    pub fn from_stage_stream(rng: Pcg, settings: Settings, cars: Cars, frame: u64, previous_round: u32) -> Race {
         let empty = Stage::generate(&mut Pcg::new(0), 10.0);
         let mut race = Race {
             settings,
-            rng: Pcg::new(0),
+            rng,
+            stage_origin: None,
             cars,
             stage: empty,
             phys: Physics::new(),
@@ -177,12 +183,11 @@ impl Race {
             clock: 0.0,
             results: 0.0,
             first_finish: -1.0,
-            round: 0,
-            frame: 0,
+            round: previous_round,
+            frame,
             stats: Stats::default(),
             events: vec![],
         };
-        std::mem::swap(&mut race.rng, &mut rng);
         race.new_stage(&mut Timings::default());
         race
     }
@@ -192,6 +197,7 @@ impl Race {
     }
 
     pub fn new_stage(&mut self, timings: &mut Timings) {
+        self.stage_origin = Some((self.rng, self.settings.clone(), self.frame));
         self.round += 1;
         self.stats.stages += 1;
         let (w, wet) = WEATHERS[(self.rng.next_u32() % 4) as usize];

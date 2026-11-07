@@ -45,7 +45,7 @@ impl std::str::FromStr for Season {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Vegetation {
     /// Independent phenotype seed; never advances the stage layout RNG.
     pub seed: u64,

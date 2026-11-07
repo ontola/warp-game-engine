@@ -1153,7 +1153,7 @@ impl app::Game for Gg {
         hitch("session.publish", t);
         // Desktop replays do not capture headset/controller poses.
         let t = std::time::Instant::now();
-        if !self.xr_stereo { self.recorder.push(&self.world, &self.slots, &self.sky.choice.name(), self.ui.tilt); }
+        if !self.xr_stereo { self.recorder.inputs(self.world.tick,self.world.arena.seed,&inputs); self.recorder.push(&self.world, &self.slots, &self.sky.choice.name(), self.ui.tilt); }
         hitch("replay.record", t);
     }
 

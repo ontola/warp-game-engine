@@ -40,6 +40,10 @@ pub struct Tape {
 
 #[derive(Default)]
 pub struct Recorder {
+    inputs: VecDeque<(u64, u64, Vec<growing_guns::Input>)>,
+    edits: VecDeque<(u64, serde_json::Value)>,
+    recorded_steps: u64,
+    dropped_edits: u64,
     chunks: VecDeque<Arc<Chunk>>,
     bytes: usize,
     frames: usize,
@@ -50,6 +54,26 @@ pub struct Recorder {
     pub error: Option<String>,
 }
 impl Recorder {
+    pub fn inputs(&mut self, tick: u64, seed: u64, inputs: &[growing_guns::Input]) {
+        if self.disabled {return;}
+        self.recorded_steps += 1;
+        self.inputs.push_back((tick, seed, inputs.to_vec()));
+        if self.inputs.len() > 5 * TICK_HZ as usize {self.inputs.pop_front();}
+        while self.edits.front().is_some_and(|(at,_)|self.recorded_steps - at > 5 * TICK_HZ as u64) {
+            self.edits.pop_front();
+        }
+    }
+
+    pub fn edit(&mut self, tick:u64, seed:u64, tool:&str, args:&serde_json::Value) {
+        if self.disabled {return;}
+        if self.edits.len()==128 {self.edits.pop_front(); self.dropped_edits+=1;}
+        let args=if args.to_string().len() <= 8192 {args.clone()} else {
+            self.dropped_edits+=1;
+            serde_json::json!({"omitted":"arguments exceeded 8 KiB"})
+        };
+        self.edits.push_back((self.recorded_steps, serde_json::json!({"after_tick":tick,"arena_seed":seed,"tool":tool,"arguments":args})));
+    }
+
     pub fn barrier(&mut self) { self.barrier = true; }
     pub fn push(&mut self, world: &World, slots: &[usize], sky: &str, tilt: bool) {
         if self.disabled || self.error.is_some() { return; }
@@ -93,7 +117,9 @@ impl Recorder {
         let count = tape.len();
         *result.lock().unwrap() = None;
         std::thread::spawn(move || { let saved = tape.write(&output).map(|_| output); *result.lock().unwrap() = Some(saved); });
-        Ok(serde_json::json!({ "file": path, "frames": count, "seconds": count as f32 * DT, "alpha": alpha, "status": "saving in background", "open": "F9" }))
+        Ok(serde_json::json!({ "file": path, "frames": count, "seconds": count as f32 * DT, "alpha": alpha, "status": "saving in background", "open": "F9",
+            "input_history":{"hz":TICK_HZ,"rows_after_step_tick_seed_inputs":self.inputs,
+            "live_edits":self.edits.iter().map(|(_,v)|v).collect::<Vec<_>>(),"omitted_edits_since_start":self.dropped_edits} }))
     }
     pub fn completion(&mut self) -> Option<Result<PathBuf, String>> { self.saving.lock().unwrap().take() }
 }

@@ -605,6 +605,7 @@ dependencies = [
  "image",
  "kern",
  "render",
+ "serde",
  "serde_json",
  "sideways",
  "toml",
