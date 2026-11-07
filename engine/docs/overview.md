@@ -100,7 +100,9 @@ game's own tools while you play. See [live control](live-control.md).
 
 ### Gameplay attachments to feedback screenshots
 
-The app shell calls `Game::feedback_replay` with the F12 PNG path and its
+The Warp desktop game shell opens the feedback overlay on F4. Click or tap to store `player_point` in original PNG pixels, or press Esc. Shift+F4 opens the crop tool directly. A second F4 while pointing switches the same capture to cropping. Custom render loops can use `app::feedback::Picker` and `Writer` with a game-specific attachment callback. The worker saves the PNG, JSON and clipboard image.
+
+The shell calls `Game::feedback_replay` with the destination PNG path and its
 interpolation phase. A game may attach a replay using the same basename; its
 metadata or error is included beside the screenshot. Growing Guns implements
 a bounded state recorder and review UI (see its README). Games without this

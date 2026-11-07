@@ -1,17 +1,17 @@
-//! F12 feedback for Claude: every Warp game saves the frame as shown plus a
-//! JSON file of diagnostics on F12 (`app::screenshot`) and notes it in
+//! Desktop feedback for agents: every Warp game saves the frame as shown plus a
+//! JSON file of diagnostics on capture (`app::screenshot`) and notes it in
 //! `<token dir>/feedback.jsonl`. The `feedback` tool reads the newest ones
 //! back, image and diagnostics together, from any game or none running.
 use crate::{Content, Reply};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// One line per F12 capture, newest last.
+/// One line per feedback capture, newest last.
 pub fn index() -> PathBuf { crate::token_dir().join("feedback.jsonl") }
 
 /// The tool's MCP listing.
 pub fn tool() -> Value {
-    json!({ "name": "feedback", "description": "The newest F12 feedback captures from any Warp game: the frame as the player saw it (with HUD) and its diagnostics JSON (game state, camera, GPU, fps). For Sideways, warp inspect F12.json reads the point selected by the player in the F12 overlay. Use warp inspect F12.json --pixel X Y for another original PNG pixel or warp compare F12.json --baseline main (replay the drive against a baseline). Growing Guns desktop captures include replay.input_history for inputs and live edits. Set diagnostics=false to locate the files without returning their JSON.",
+    json!({ "name": "feedback", "description": "The newest desktop feedback captures (F4 in Warp, also F12 in Sideways): the frame as the player saw it (with HUD) and its diagnostics JSON (game state, camera, GPU, fps). For Sideways, warp inspect F12.json reads the point selected by the player in the feedback overlay. Use warp inspect F12.json --pixel X Y for another original PNG pixel or warp compare F12.json --baseline main (replay the drive against a baseline). Growing Guns desktop captures include replay.input_history for inputs and live edits. Set diagnostics=false to locate the files without returning their JSON.",
         "inputSchema": { "type": "object", "properties": {
             "count": { "type": "integer", "description": "how many, newest first (default 1, at most 5)" },
             "max_width": { "type": "integer", "description": "downscale images to this width (default 1280)" },
@@ -44,7 +44,7 @@ pub fn reply(args: &Value) -> Reply {
         }
         if diagnostics && let Some(json) = e["json"].as_str() {
             let mut t = metadata.unwrap_or_else(|| format!("diagnostics unavailable: {json}"));
-            if t.len() > 60_000 { t.truncate(t.floor_char_boundary(60_000)); t.push_str("\n… (cut; read the file for the rest)"); }
+            if t.len() > 60_000 { t.truncate(t.floor_char_boundary(60_000)); t.push_str("\nÃ¢â‚¬Â¦ (cut; read the file for the rest)"); }
             out.push(Content::Text(t));
         }
     }

@@ -20,7 +20,7 @@ cargo run --release -p cli -- sim --ticks 45000 --seed 1 --km 2
 
 The launcher builds while an owned playtest runs, then restarts it after a
 successful build. Logs and executable manifests live in this game's
-`build/dev-runs/`. F12 opens the point overlay on a frozen frame and captures its source geometry and driving inputs. Click or tap the problem, or press Esc to resume without a point. Use `warp inspect` for pixel picking and `warp compare` to repeat a drive after a physics or rendering change. [Sideways feedback guide](../../engine/docs/warp-cli.md#sideways-feedback).
+`build/dev-runs/`. F4 or F12 opens Warp’s point overlay on a frozen frame and captures its source geometry and driving inputs. Click or tap the problem, or press Esc to resume without a point. Use `warp inspect` for pixel picking and `warp compare` to repeat a drive after a physics or rendering change. [Sideways feedback guide](../../engine/docs/warp-cli.md#sideways-feedback).
 Old `engine/build/` runs remain historical evidence.
 
 For a managed Gamepad Party preview, register the package with the graphics profile
@@ -31,9 +31,9 @@ not select the meadow.
 
 The GPU meadow defaults to `SIDEWAYS_MEADOW_PROFILE=windswept`: curved blades,
 yellow-green tips and travelling noise wind. Six segments smoothly morph into
-one triangle over growth-scaled 3–6 m; the cooked three-segment cut is unused.
+one triangle over growth-scaled 3â€“6 m; the cooked three-segment cut is unused.
 Current r63e code defaults to source geometry through 250 m, fading over
-200–250 m. `SIDEWAYS_MEADOW_WINDSWEPT_RADIUS` accepts 60–256 m and ignores
+200â€“250 m. `SIDEWAYS_MEADOW_WINDSWEPT_RADIUS` accepts 60â€“256 m and ignores
 classic source-band/radius flags. This is an interim source comparison; a
 source-derived, terrain-following far layer is proposed but not implemented.
 Windswept forces the aggregate off and rejects group cache. Use
@@ -62,7 +62,7 @@ poses completed; user acceptance is pending.
 
 For the matched r64 preview, pass
 `-DebugUiScript games/sideways/scenarios/windswept-grass-edge-settings.json`
-to `play-dev-windows.ps1` with one native 3840×2160 view. The launcher copies
+to `play-dev-windows.ps1` with one native 3840Ã—2160 view. The launcher copies
 and hashes this script. It sets session grass size 1.6/density 1.0 through the
 debug UI and closes the panel; the saved size 2.0/density 0.55 baseline stays
 unchanged. Verify the resolved values in capture metadata after launch.
@@ -113,7 +113,7 @@ aggregate target dimensions, ratios and allocated target bytes for every view.
 
 `KERN_MEADOW_AGGREGATE_SAMPLE_PRUNE=1` is a separate full-resolution experiment:
 skip zero-weight directional reads and fetch the selected surface payload once.
-It reduces aggregate time 15–21% in the [r58 comparison](../../engine/docs/log/meadow-sampling-r58.md),
+It reduces aggregate time 15â€“21% in the [r58 comparison](../../engine/docs/log/meadow-sampling-r58.md),
 with exact captured depth/motion and coverage masks and no newly observed blur.
 It stays off by default and is incompatible with the experimental group cache.
 `KERN_MEADOW_CAPTURE_RAW=1` saves pre-DLSS layers alongside scenario captures;
@@ -204,8 +204,8 @@ See [r51 evidence and limits](../../engine/docs/log/local-lights-and-vegetation-
 
 For the explicit classic profile, developer playtests also enable distant grass
 (`-MeadowAggregate`). Detailed
-grass blends into a source-derived surface cache over60–80m; it fades into
-matching terrain colour over160–180m. This is a directional surface atlas,
+grass blends into a source-derived surface cache over60â€“80m; it fades into
+matching terrain colour over160â€“180m. This is a directional surface atlas,
 not voxel rendering. Use `-MeadowAggregate:$false` for the source-only reference.
 An explicit switch overrides inherited `KERN_MEADOW_AGGREGATE`, then the launcher
 default applies. `SIDEWAYS_MEADOW_SOURCE_RADIUS=100` retains the previous source
@@ -213,8 +213,8 @@ range for comparisons; valid values are60..100m. Captures report actual settings
 For an opt-in earlier handoff, `SIDEWAYS_MEADOW_SOURCE_BAND=40,50` sets independent
 start/end metres and takes precedence over an inherited source-radius override.
 It requires the aggregate, accepts finite `0 <= start < end` with `10 <= end <= 100`,
-and leaves the 160–180 m outer fade unchanged. Unset it to restore the existing
-radius-override/default behavior (normally 60–80 m). Captures record the authored pair and its origin; the live grass
+and leaves the 160â€“180 m outer fade unchanged. Unset it to restore the existing
+radius-override/default behavior (normally 60â€“80 m). Captures record the authored pair and its origin; the live grass
 distance control still scales both the source band and outer fade together.
 This comparison setting has no visual or performance acceptance yet.
 The current iteration improves coverage but retains a faint grid pattern on
