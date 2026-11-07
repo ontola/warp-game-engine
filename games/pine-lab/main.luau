@@ -108,7 +108,11 @@ local function init()
 	local saved = plants.load("tuning")
 	state.tune = copy(state.defaults)
 	if type(saved) == "table" then
-		for _, group in { "species", "look", "scene" } do
+		-- tuning.json holds only what differs from the defaults, so new
+		-- defaults in the engine still come through (an older file without
+		-- `version` kept every rule: only its scene is used).
+		local groups = if saved.version == 2 then { "species", "look", "scene" } else { "scene" }
+		for _, group in groups do
 			for k, v in (saved[group] or {}) do
 				if state.tune[group][k] ~= nil then state.tune[group][k] = v end
 			end
@@ -122,6 +126,25 @@ local function init()
 	grow_row()
 	local mid = state.row_end * 0.5
 	state.cam = { pos = vector.create(mid, 8, state.row_end * 0.7 + 10), yaw = 0, pitch = -0.15 }
+end
+
+local function same(a, b)
+	if type(a) ~= "table" or type(b) ~= "table" then return a == b end
+	for k, v in a do if not same(v, b[k]) then return false end end
+	for k in b do if a[k] == nil then return false end end
+	return true
+end
+
+-- The rules that differ from the defaults, for tuning.json.
+local function changes()
+	local out = { version = 2 }
+	for _, group in { "species", "look", "scene" } do
+		out[group] = {}
+		for k, v in state.tune[group] do
+			if not same(v, state.defaults[group][k]) then out[group][k] = v end
+		end
+	end
+	return out
 end
 
 local function step_param(dir)
@@ -156,11 +179,11 @@ local function tick(dt, input)
 	if pressed.select then state.panel = not state.panel end
 	state.status = plants.status()
 	if state.dirty_at and game.time() - state.dirty_at >= KNOBS.settle then
-		plants.save("tuning", state.tune)
+		plants.save("tuning", changes())
 		grow_row()
 	end
 
-	-- A fly camera: mouse looks, WASD moves, Q / E go down and up.
+	-- A fly camera: mouse looks, WASD moves, Shift or E up, Ctrl or Q down.
 	local c = state.cam
 	c.yaw -= i.look_x
 	c.pitch = math.clamp(c.pitch + i.look_y, -1.5, 1.5)

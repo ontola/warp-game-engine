@@ -105,7 +105,7 @@ pub fn cook_grown(variants: &[(crate::plant_growth::Species, u32, u64)], parts: 
     // A grown limb carries far more parts than a recipe branch: give each
     // group the proxy's working memory.
     let (config, proxy) = (grown_config(aggregate_config()), grown_config(proxy_config()));
-    let limits = plant_recipe::recipe_limits();
+    let limits = crate::plant_growth_assembly::limits();
     crate::par::scope(|scope| {
         let _ = scope;
         variants.iter().map(|&(species, age, seed)| (|| -> Result<Cooked, String> {

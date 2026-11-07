@@ -64,7 +64,7 @@ struct Preview {
 
 fn preview(species: &Species, look: Look, age: u32, seed: u64) -> Result<Preview, String> {
     let plant = render::plant_growth::grow(species, age, seed);
-    let (assembly, _) = render::plant_growth_assembly::assemble(&plant, parts(), look, seed, render::plant_recipe::recipe_limits())?;
+    let (assembly, _) = render::plant_growth_assembly::assemble(&plant, parts(), look, seed, render::plant_growth_assembly::limits())?;
     let branches = assembly.branch_transforms()?;
     let mut index: HashMap<(u32, u32), usize> = HashMap::new();
     let mut out = Preview { meshes: Vec::new(), instances: Vec::with_capacity(assembly.instances.len()), triangles: 0 };
