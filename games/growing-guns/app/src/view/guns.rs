@@ -85,6 +85,18 @@ impl Guns {
         pose.transform_point3(self.rigs[player].build.muzzle)
     }
 
+    // Both the weapon mesh and the support wrist use the same placement.
+    pub(crate) fn held_transform(hand: Vec3, yaw: f32, pitch: f32, primary: Vec3) -> Affine3A {
+        let rotation = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+        Affine3A::from_rotation_translation(rotation, hand - rotation * primary)
+    }
+
+    pub(super) fn support_target(&self, player: usize, hand: Vec3, yaw: f32, pitch: f32) -> Option<Vec3> {
+        let build = &self.rigs.get(player)?.build;
+        let [primary, support] = build.wrist_contacts();
+        Some(Self::held_transform(hand, yaw, pitch, primary).transform_point3(support))
+    }
+
     /// A card pick: the gun grows into the new stats.
     pub fn grow(&mut self, player: usize, p: &Player) { if let Some(r) = self.rigs.get_mut(player) { r.grow_to(Stats::of(p)); } }
 
@@ -173,10 +185,12 @@ impl Guns {
             let fp = self.tracked[i].unwrap_or(fp);
             let drawn = crate::view::pose(world, i, prev, alpha);
             let (pos, rot) = (drawn.pos, Quat::from_rotation_y(drawn.yaw));
-            let hand = hands.get(i).copied().flatten().map_or(
-                pos + Vec3::Y * 0.05 + rot * Vec3::new(0.45, 0.0, -0.12),
-                |hand| hand + rot * Vec3::new(0.0, 0.085, -0.143));
-            let tp = Affine3A::from_rotation_translation(rot * Quat::from_rotation_x(drawn.pitch), hand);
+            let tp = if let Some(hand) = hands.get(i).copied().flatten() {
+                Self::held_transform(hand, drawn.yaw, drawn.pitch, rig.build.wrist_contacts()[0])
+            } else {
+                Affine3A::from_rotation_translation(rot * Quat::from_rotation_x(drawn.pitch),
+                    pos + Vec3::Y * 0.05 + rot * Vec3::new(0.45, 0.0, -0.12))
+            };
             let visible = p.alive && (!self.tracking[i] || self.tracked[i].is_some());
             self.muzzles[i] = visible.then(|| [fp.transform_point3(rig.build.muzzle), tp.transform_point3(rig.build.muzzle)]);
             for (first, xf, drop) in [(self.fp[i], fp, mag_drop), (self.tp[i], tp, 0.0)] {

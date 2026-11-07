@@ -441,8 +441,8 @@ impl PlayersView {
     }
 
     /// Players (interpolated by `alpha` from `prev`) and tracers.
-    pub fn pose(&mut self, scene: &mut Scene, world: &World, prev: &[crate::view::Pose], alpha: f32) {
-        if let Some(characters) = &mut self.characters { characters.pose(world, prev, alpha); }
+    pub fn pose(&mut self, scene: &mut Scene, world: &World, prev: &[crate::view::Pose], alpha: f32, guns: &super::guns::Guns) {
+        if let Some(characters) = &mut self.characters { characters.pose(world, prev, alpha, Some(guns)); }
         let mut slot = self.first;
         for (i, m) in self.meshes.iter().enumerate() {
             let Some(_p) = world.players.get(i).filter(|p| p.alive) else {
