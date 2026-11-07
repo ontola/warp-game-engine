@@ -527,6 +527,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let (placed, shown, cooking, failed) = c.plants.status();
             let t = lua.create_table()?;
             t.raw_set("placed", placed)?; t.raw_set("shown", shown)?; t.raw_set("cooking", cooking)?; t.raw_set("failed", failed)?;
+            t.raw_set("upgrading", c.plants.upgrading())?;
             if let Some(e) = c.plants.error() { t.raw_set("error", e)?; }
             Ok(t)
         })),

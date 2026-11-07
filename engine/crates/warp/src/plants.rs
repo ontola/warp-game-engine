@@ -35,7 +35,8 @@ pub struct Plant {
     pub seed: u64,
     pub pos: Vec3,
     pub yaw: f32,
-    /// Cook voxels and proxies too, not only the source meshes.
+    /// Cook voxels and proxies too, not only the source meshes. The preview
+    /// shows until the full cook is done, then the plant swaps to it.
     pub full: bool,
 }
 
@@ -43,6 +44,39 @@ impl Plant {
     fn key(&self) -> String {
         serde_json::json!({ "species": self.species, "look": self.look, "age": self.age, "seed": self.seed, "full": self.full }).to_string()
     }
+
+    /// The preview variant: what shows at once, and stands in for a full cook.
+    fn preview_key(&self) -> String {
+        Plant { full: false, ..self.clone() }.key()
+    }
+}
+
+/// Full cooks take seconds to minutes and gigabytes each, so they run one at
+/// a time on one worker, oldest request first; a request whose plant is gone
+/// by its turn is skipped.
+struct FullJob { key: String, species: Species, look: Look, age: u32, seed: u64, done: std::sync::mpsc::Sender<Done> }
+
+/// What the full-cook worker sends for a request it skipped.
+const SKIPPED: &str = "skipped: no longer placed";
+
+fn wanted() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static WANTED: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    WANTED.get_or_init(Default::default)
+}
+
+fn full_worker() -> &'static std::sync::Mutex<std::sync::mpsc::Sender<FullJob>> {
+    static WORKER: OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<FullJob>>> = OnceLock::new();
+    WORKER.get_or_init(|| {
+        let (tx, rx) = channel::<FullJob>();
+        std::thread::spawn(move || {
+            for job in rx {
+                let still = wanted().lock().unwrap_or_else(|p| p.into_inner()).contains(&job.key);
+                let done = if still { cook(job.species, job.look, job.age, job.seed, true) } else { Err(SKIPPED.into()) };
+                let _ = job.done.send(done);
+            }
+        });
+        std::sync::Mutex::new(tx)
+    })
 }
 
 /// A cooked variant.
@@ -136,27 +170,47 @@ fn cache_dir() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.
 impl Plants {
     pub fn grow(&mut self, p: Plant) -> u32 {
         self.next += 1;
-        let key = p.key();
+        // The preview always: it shows at once (and stands in for a full cook).
+        let key = p.preview_key();
         if !self.cooked.contains_key(&key) && !self.pending.contains_key(&key) && !self.failed.contains_key(&key) {
             let (tx, rx) = channel();
-            let (species, look, age, seed, full) = (p.species, p.look, p.age, p.seed, p.full);
-            std::thread::spawn(move || { let _ = tx.send(cook(species, look, age, seed, full)); });
+            let (species, look, age, seed) = (p.species, p.look, p.age, p.seed);
+            std::thread::spawn(move || { let _ = tx.send(cook(species, look, age, seed, false)); });
             self.pending.insert(key, rx);
+        }
+        if p.full {
+            let key = p.key();
+            wanted().lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone());
+            if !self.cooked.contains_key(&key) && !self.pending.contains_key(&key) && !self.failed.contains_key(&key) {
+                let (tx, rx) = channel();
+                let job = FullJob { key: key.clone(), species: p.species, look: p.look, age: p.age, seed: p.seed, done: tx };
+                let _ = full_worker().lock().unwrap_or_else(|e| e.into_inner()).send(job);
+                self.pending.insert(key, rx);
+            }
         }
         self.plants.insert(self.next, p);
         self.dirty = true;
         self.next
     }
 
+    /// Full cooks still wanted: those of placed plants.
+    fn rewant(&self) {
+        let mut w = wanted().lock().unwrap_or_else(|e| e.into_inner());
+        w.clear();
+        w.extend(self.plants.values().filter(|p| p.full).map(Plant::key));
+    }
+
     pub fn remove(&mut self, id: u32) -> bool {
         let gone = self.plants.remove(&id).is_some();
         self.dirty |= gone;
+        self.rewant();
         gone
     }
 
     pub fn clear(&mut self) {
         self.dirty |= !self.plants.is_empty();
         self.plants.clear();
+        self.rewant();
     }
 
     /// Collect finished cooks. True when one of them is in use.
@@ -170,8 +224,9 @@ impl Plants {
                 Err(_) => Err("the cook thread stopped".into()),
             };
             self.pending.remove(&key);
-            let age = self.plants.values().find(|p| p.key() == key).map(|p| p.age);
+            let age = self.plants.values().find(|p| p.key() == key || p.preview_key() == key).map(|p| p.age);
             match got {
+                Err(e) if e == SKIPPED => continue,
                 Ok((plant, loaded, ms, what)) => {
                     let kind = if matches!(plant, Cooked::Full(_)) { "full" } else { "preview" };
                     self.log.push(format!("plant age {} ({kind}): {} in {ms:.0} ms, {what}", age.map_or("?".into(), |a| a.to_string()), if loaded { "loaded" } else { "cooked" }));
@@ -184,24 +239,34 @@ impl Plants {
         self.dirty |= landed;
         // Keep memory to what is placed and a little history.
         if self.cooked.len() > 256 {
-            let live: std::collections::HashSet<String> = self.plants.values().map(Plant::key).collect();
+            let live: std::collections::HashSet<String> = self.plants.values().flat_map(|p| [p.key(), p.preview_key()]).collect();
             self.cooked.retain(|k, _| live.contains(k));
         }
         landed
     }
 
-    /// (placed, cooked and shown, still cooking, failed).
+    /// (placed, shown, still cooking with nothing to show, failed). A full
+    /// plant shows as its preview until its full cook is done.
     pub fn status(&self) -> (usize, usize, usize, usize) {
         let mut out = (self.plants.len(), 0, 0, 0);
         for p in self.plants.values() {
-            let k = p.key();
-            if self.cooked.contains_key(&k) { out.1 += 1; } else if self.pending.contains_key(&k) { out.2 += 1; } else { out.3 += 1; }
+            let (k, v) = (p.key(), p.preview_key());
+            if self.cooked.contains_key(&k) || self.cooked.contains_key(&v) { out.1 += 1; }
+            else if self.pending.contains_key(&k) || self.pending.contains_key(&v) { out.2 += 1; }
+            else { out.3 += 1; }
         }
         out
     }
 
+    /// Full plants still showing their preview while the full cook runs.
+    pub fn upgrading(&self) -> usize {
+        self.plants.values().filter(|p| p.full && !self.cooked.contains_key(&p.key()) && self.pending.contains_key(&p.key())).count()
+    }
+
     /// The last failure, if any placed plant failed to cook.
-    pub fn error(&self) -> Option<&str> { self.plants.values().find_map(|p| self.failed.get(&p.key()).map(String::as_str)) }
+    pub fn error(&self) -> Option<&str> {
+        self.plants.values().find_map(|p| self.failed.get(&p.key()).or_else(|| self.failed.get(&p.preview_key())).map(String::as_str))
+    }
 
     /// Attach every cooked placed plant to `scene` (a fresh scene with no
     /// vegetation yet): previews as plain meshes, full cooks as one GPU forest.
@@ -211,7 +276,9 @@ impl Plants {
         let mut meshes: HashMap<(u64, Vec<u8>), usize> = HashMap::new();
         let mut materials: HashMap<Vec<u8>, u32> = HashMap::new();
         for p in self.plants.values() {
-            let Some(Cooked::Preview(v)) = self.cooked.get(&p.key()) else { continue };
+            // A full plant shows as its preview until its full cook lands.
+            if p.full && matches!(self.cooked.get(&p.key()), Some(Cooked::Full(_))) { continue; }
+            let Some(Cooked::Preview(v)) = self.cooked.get(&p.preview_key()) else { continue };
             let ids: Vec<usize> = v.meshes.iter().map(|(part, material, mesh)| {
                 let bytes = bytemuck::bytes_of(material).to_vec();
                 if let Some(&id) = meshes.get(&(*part, bytes.clone())) { return id; }

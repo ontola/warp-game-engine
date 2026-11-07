@@ -20,10 +20,11 @@ pub(crate) struct Refiner {
 /// frames encode that plus a margin. A frame that used every encoded round may
 /// have been cut short: its drain publishes the current complete cut (coarser,
 /// never missing), and the next frames go back to the full bound.
-/// Default floor of the camera error-cut scale: about where a full forest's
-/// budget puts it at 1600x900, so a lone tree turns to voxels at the same
-/// distance. KERN_CAMERA_CUT_FLOOR overrides it (1 disables it).
-pub const CAMERA_CUT_FLOOR: f32 = 16.0;
+/// Default floor of the camera error-cut scale, so a lone tree turns to
+/// voxels sooner than its own tiny budget would. 16 (a full forest's scale at
+/// 1600x900) picked coarse per-branch levels that showed as smooth balls on
+/// grown pines at 10-30 m. KERN_CAMERA_CUT_FLOOR overrides it (1 disables it).
+pub const CAMERA_CUT_FLOOR: f32 = 4.0;
 
 fn refine_source() -> String {
     let floor = std::env::var("KERN_CAMERA_CUT_FLOOR").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite() && *v >= 1.0).unwrap_or(CAMERA_CUT_FLOOR);

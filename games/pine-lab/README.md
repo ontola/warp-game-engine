@@ -6,8 +6,10 @@ changes. Run it with `warp run games/pine-lab`.
 - **Mouse and WASD** fly the camera, **Shift** (or E) goes up, **Ctrl** (or Q) down.
 - **Arrow up / down** pick a parameter, **arrow left / right** change it
   (a step at a time; hold to keep going), **R** resets it to the default.
-- **F** switches between the fast preview (source meshes, a fraction of a
-  second) and the full cook (voxel levels and proxies, minutes for old trees).
+- Every tree shows its source meshes at once (a fraction of a second) and
+  swaps to its full cook (voxel levels and proxies, as in a forest) when that
+  is done; full cooks run one at a time in the background and are cached in
+  build/cook-cache. **F** switches to previews only and back.
 - **Tab** hides the panel.
 
 Every rule you change is saved in `tuning.json` beside this file (only what

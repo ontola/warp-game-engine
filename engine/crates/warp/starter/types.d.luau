@@ -214,8 +214,10 @@ declare plants: {
 	grow: (opts: { age: number, seed: number?, pos: Vec?, yaw: number?, full: boolean?, species: { [string]: any }?, look: { [string]: any }? }) -> number,
 	remove: (id: number) -> boolean,
 	clear: () -> (),
-	-- Plants placed, shown, still cooking, failed (and the last error).
-	status: () -> { placed: number, shown: number, cooking: number, failed: number, error: string? },
+	-- Plants placed, shown, still cooking with nothing to show, failed (and the
+	-- last error); upgrading: full plants showing their preview until their
+	-- full (voxel) cook is done.
+	status: () -> { placed: number, shown: number, cooking: number, failed: number, upgrading: number, error: string? },
 	-- The default growth rules and colours, with what each field is in render::plant_growth::Species.
 	defaults: () -> { species: { [string]: any }, look: { [string]: any } },
 	-- A JSON file NAME.json in the game folder: save a table, load it back (nil when missing).
