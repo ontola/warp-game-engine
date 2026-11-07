@@ -17,10 +17,10 @@ use std::f32::consts::TAU;
 #[derive(Clone, Debug)]
 pub struct Parts {
     /// Stems that narrow to 1.0, 0.85, 0.7 and 0.55 of their base radius,
-    /// six-sided then twelve-sided: a run picks the taper nearest its own,
+    /// eight-sided then sixteen-sided: a run picks the taper nearest its own,
     /// so consecutive runs meet at nearly the same ring.
     pub stems: [PartGeometry; 8],
-    /// A rounded collar where a branch leaves its parent (unit radius).
+    /// A unit ball for joints and branch collars.
     pub collar: PartGeometry,
     pub tufts: Vec<PartGeometry>,
 }
@@ -66,9 +66,9 @@ fn stem(id: u64, sides: u32, taper: f32) -> PartGeometry {
     PartGeometry { id, vertices, indices }
 }
 
-/// A closed, slightly flattened ball for branch collars.
+/// A closed unit ball: knuckles where stem runs meet and, stretched, the\n/// collar where a branch leaves its parent.
 fn collar(id: u64) -> PartGeometry {
-    let (rings, sides) = (5u32, 10u32);
+    let (rings, sides) = (8u32, 16u32);
     let mut vertices = vec![Vertex { pos: [0.0, -1.0, 0.0], normal: [0.0, -1.0, 0.0], uv: [0.5, 0.0] }];
     for r in 1..rings {
         let a = r as f32 / rings as f32 * std::f32::consts::PI;
@@ -136,9 +136,9 @@ impl Parts {
         const STEM: u64 = 0x5047_5354_0000_0000;
         const TUFT: u64 = 0x5047_5446_0000_0000;
         Self {
-            stems: std::array::from_fn(|k| stem(STEM + 1 + k as u64, if k < 4 { 6 } else { 12 }, TAPERS[k % 4])),
+            stems: std::array::from_fn(|k| stem(STEM + 1 + k as u64, if k < 4 { 8 } else { 16 }, TAPERS[k % 4])),
             collar: collar(STEM + 16),
-            // A bottlebrush: 220 needles 20-30 cm long.
+            // A bottlebrush: 220 needles 15-26 cm long.
             tufts: (0..3).map(|v| tuft(TUFT + v, v, 220, 0.22)).collect(),
         }
     }
@@ -279,7 +279,19 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
         }
         reach *= 1.5;
     };
-    let collars = stems.iter().filter(|r| r.5 && plant.segments[r.0 as usize].order > 0).count();
+    // Rounded joints: a ball where one run of an axis meets the next and at
+    // the end of a thick stem, a stretched ball where a branch leaves its
+    // parent. Thin twigs' seams are too small to see and keep the budget.
+    const JOINT_RADIUS: f32 = 0.012;
+    let taper_of = |radius: f32, end: f32| {
+        let wanted = (end / radius.max(1e-6)).clamp(0.4, 1.0);
+        (0..4).min_by(|&a, &c| (TAPERS[a] - wanted).abs().total_cmp(&(TAPERS[c] - wanted).abs())).unwrap_or(0)
+    };
+    let continues = |i: usize| stems.get(i + 1).is_some_and(|r| !r.5);
+    let collars: usize = (0..stems.len()).map(|i| {
+        let r = stems[i];
+        usize::from((r.5 && plant.segments[r.0 as usize].order > 0) || (!r.5 && r.3 > JOINT_RADIUS)) + usize::from(!continues(i) && r.4 > JOINT_RADIUS)
+    }).sum();
     let room = limits.max_instances.saturating_sub(stems.len() + collars);
     let keep = (room as f32 / plant.tufts.len().max(1) as f32).min(1.0);
     let mut instances = Vec::with_capacity(limits.max_instances);
@@ -288,16 +300,28 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
         // Overlap the next run a little so the rings meet without a seam.
         let length = from.distance(to) + radius.min(0.05);
         let world = Mat4::from_scale_rotation_translation(Vec3::new(radius, length, radius), along(from, to), from);
-        let wanted = (end / radius.max(1e-6)).clamp(0.4, 1.0);
-        let taper = (0..4).min_by(|&a, &c| (TAPERS[a] - wanted).abs().total_cmp(&(TAPERS[c] - wanted).abs())).unwrap_or(0);
+        let taper = taper_of(radius, end);
         let part = taper as u32 + if radius > 0.03 { 4 } else { 0 };
         instances.push(PartInstance { id: seed ^ (0x5354 << 40) ^ i as u64, part, branch: b, rest: affine(inverse[b as usize] * world), material: 0 });
+        let mut joint = |tag: u64, scale: Vec3, centre: Vec3| {
+            let world = Mat4::from_scale_rotation_translation(scale, along(from, to), centre);
+            instances.push(PartInstance { id: seed ^ (tag << 40) ^ i as u64, part: 8, branch: b, rest: affine(inverse[b as usize] * world), material: 0 });
+        };
+        let axis = (to - from).normalize_or(Vec3::Y);
         if first && plant.segments[segment as usize].order > 0 {
-            // A branch grows out of its parent: a short flare, wide at the
-            // joint and narrowing into the branch over a few of its radii.
-            let world = Mat4::from_scale_rotation_translation(Vec3::new(radius * 1.8, radius * 3.0, radius * 1.8), along(from, to), from);
-            let flare = if radius > 0.03 { 7 } else { 3 };
-            instances.push(PartInstance { id: seed ^ (0x434c << 40) ^ i as u64, part: flare, branch: b, rest: affine(inverse[b as usize] * world), material: 0 });
+            // A branch collar: a swelling around the base, embedded in the
+            // parent and easing into the branch over a few of its radii.
+            joint(0x434c, Vec3::new(radius * 1.45, radius * 2.6, radius * 1.45), from + axis * radius * 0.8);
+        } else if !first && radius > JOINT_RADIUS {
+            // A knuckle as wide as the wider of the two meeting rings hides
+            // the step and the crack where the axis bends.
+            let before = stems[i - 1];
+            let ring = (before.3 * TAPERS[taper_of(before.3, before.4)]).max(radius) * 1.03;
+            joint(0x4b4e, Vec3::splat(ring), from);
+        }
+        if !continues(i) && end > JOINT_RADIUS {
+            // A rounded end instead of a flat cap.
+            joint(0x454e, Vec3::splat(radius * TAPERS[taper]), from + axis * length);
         }
     }
     let mut placed = 0;

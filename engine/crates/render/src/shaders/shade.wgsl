@@ -2047,40 +2047,60 @@ fn bark_noise(p: vec3<f32>) -> f32 {
     return mix(a, b, u.z);
 }
 
-/// Pine bark height: ridged fractal octaves, stretched along the stem so the
-/// plates run lengthwise; 1 on a plate, 0 deep in a furrow.
-fn bark_height(q: vec3<f32>, along: vec3<f32>) -> f32 {
-    let s = q - along * dot(q, along) * 0.72;
-    var h = 0.0;
-    var amp = 0.55;
-    var x = s;
-    for (var o = 0; o < 5; o++) {
-        h += amp * (1.0 - abs(2.0 * bark_noise(x) - 1.0));
-        x = x * 2.03 + vec3<f32>(17.1, 3.7, 9.3);
-        amp *= 0.5;
+/// Jeffrey pine bark: irregular plates (cells of a 3D Voronoi pattern, taller
+/// than wide along world up, as on a trunk) split by deep furrows, with flaky
+/// scales on each plate. x: height, 1 on a plate and 0 deep in a furrow;
+/// y: a per-plate random for colour.
+fn bark_cells(q: vec3<f32>) -> vec2<f32> {
+    let c = vec3<i32>(floor(q));
+    var f1 = 1e9;
+    var f2 = 1e9;
+    var id = 0.0;
+    for (var z = -1; z <= 1; z++) {
+        for (var y = -1; y <= 1; y++) {
+            for (var x = -1; x <= 1; x++) {
+                let k = c + vec3<i32>(x, y, z);
+                let o = vec3<f32>(bark_hash(k), bark_hash(k + vec3<i32>(71, 13, 5)), bark_hash(k + vec3<i32>(9, 57, 33)));
+                let d = length(vec3<f32>(k) + 0.15 + 0.7 * o - q);
+                if d < f1 {
+                    f2 = f1;
+                    f1 = d;
+                    id = o.x;
+                } else if d < f2 {
+                    f2 = d;
+                }
+            }
+        }
     }
-    return clamp(h, 0.0, 1.0);
+    return vec2<f32>(f2 - f1, id);
 }
 
-/// Orange-red plates between dark furrows, relief from the height field;
-/// the furrows are darker, rougher and occluded.
+fn bark_height(q: vec3<f32>) -> vec2<f32> {
+    let cell = bark_cells(q + (vec3<f32>(bark_noise(q * 2.1), bark_noise(q * 2.1 + 7.3), bark_noise(q * 2.1 + 3.1)) - 0.5) * 0.25);
+    let plate = smoothstep(0.012, 0.075, cell.x);
+    let flakes = bark_noise(q * 6.0) * 0.6 + bark_noise(q * 13.0) * 0.4;
+    return vec2<f32>(plate * (0.78 + 0.22 * flakes), cell.y);
+}
+
+/// Cinnamon-orange plates between near-black furrows, relief from the height
+/// field; the furrows are darker, rougher and occluded.
 fn bark_surface(p: vec3<f32>, n: vec3<f32>, plate: f32) -> Bark {
-    let along = normalize(vec3<f32>(0.0, 1.0, 0.0) - n * n.y + vec3<f32>(1e-4, 0.0, 0.0));
-    let side = normalize(cross(n, along));
-    let q = p / max(plate, 0.02);
-    let h = bark_height(q, along);
-    let e = 0.04;
-    let du = (bark_height(q + side * e, along) - h) / e;
-    let dv = (bark_height(q + along * e, along) - h) / e;
-    let plates = smoothstep(0.45, 0.62, h);
-    let tone = bark_noise(q * 0.37 + vec3<f32>(5.0, 1.0, 3.0));
-    let orange = vec3<f32>(0.40, 0.17, 0.08) * (0.8 + 0.45 * tone);
-    let furrow = vec3<f32>(0.075, 0.058, 0.05);
+    let q = p / max(plate, 0.02) * vec3<f32>(1.0, 0.55, 1.0);
+    let h = bark_height(q);
+    let e = 0.03;
+    let hx = bark_height(q + vec3<f32>(e, 0.0, 0.0)).x - h.x;
+    let hy = bark_height(q + vec3<f32>(0.0, e, 0.0)).x - h.x;
+    let hz = bark_height(q + vec3<f32>(0.0, 0.0, e)).x - h.x;
+    let g = vec3<f32>(hx, hy, hz) / e;
+    let slope = g - n * dot(g, n);
+    let plates = smoothstep(0.2, 0.6, h.x);
+    let tone = 0.75 + 0.5 * h.y;
+    let orange = vec3<f32>(0.25, 0.105, 0.045) * tone * (0.85 + 0.3 * bark_noise(q * 3.0));
+    let furrow = vec3<f32>(0.03, 0.022, 0.018);
     let albedo = mix(furrow, orange, plates);
-    let normal = normalize(n - (side * du + along * dv) * 0.05);
-    return Bark(albedo, normal, mix(0.98, 0.82, plates), mix(0.45, 1.0, plates));
+    let normal = normalize(n - slope * 0.06);
+    return Bark(albedo, normal, mix(0.98, 0.85, plates), mix(0.35, 1.0, plates));
 }
-
 fn hash2(p: vec2<f32>) -> f32 {
     return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
 }
