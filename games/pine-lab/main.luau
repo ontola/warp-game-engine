@@ -19,6 +19,8 @@ local PARAMS = {
 	{ "species", "plumes", nil, 0.25, 1, 6, "needle brushes per side shoot" },
 	{ "look", "brush_needles", nil, 10, 10, 600, "needles in one brush" },
 	{ "look", "needle_length", nil, 0.01, 0.05, 0.5, "needle length, m" },
+	{ "look", "brush_spread", nil, 0.05, 0.2, 3, "needle splay at a brush's back, rad" },
+	{ "look", "brush_reach", nil, 0.02, 0.02, 1, "shoot length carrying needles, m" },
 	{ "species", "height", nil, 1, 2, 80, "height the leader approaches, m" },
 	{ "species", "pace", nil, 2, 5, 300, "years to reach most of that height" },
 	{ "species", "shape", nil, 0.05, 0.5, 4, "height curve exponent" },

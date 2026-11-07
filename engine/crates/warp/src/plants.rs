@@ -125,10 +125,10 @@ fn preview_limits() -> render::foliage_assembly::Limits {
 
 /// The parts for a look's brushes, made once per needle count and length.
 fn parts(look: &Look) -> &'static Parts {
-    static PARTS: OnceLock<std::sync::Mutex<HashMap<(u32, u32), &'static Parts>>> = OnceLock::new();
+    static PARTS: OnceLock<std::sync::Mutex<HashMap<[u32; 4], &'static Parts>>> = OnceLock::new();
     let mut map = PARTS.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
-    *map.entry((look.brush_needles, look.needle_length.to_bits()))
-        .or_insert_with(|| Box::leak(Box::new(Parts::needle_brushes(look.brush_needles, look.needle_length))))
+    *map.entry([look.brush_needles, look.needle_length.to_bits(), look.brush_spread.to_bits(), look.brush_reach.to_bits()])
+        .or_insert_with(|| Box::leak(Box::new(Parts::for_look(look))))
 }
 
 fn cache_dir() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache") }
