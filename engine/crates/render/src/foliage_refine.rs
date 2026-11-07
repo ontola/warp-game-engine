@@ -20,6 +20,15 @@ pub(crate) struct Refiner {
 /// frames encode that plus a margin. A frame that used every encoded round may
 /// have been cut short: its drain publishes the current complete cut (coarser,
 /// never missing), and the next frames go back to the full bound.
+/// Default floor of the camera error-cut scale: about where a full forest's
+/// budget puts it at 1600x900, so a lone tree turns to voxels at the same
+/// distance. KERN_CAMERA_CUT_FLOOR overrides it (1 disables it).
+pub const CAMERA_CUT_FLOOR: f32 = 16.0;
+
+fn refine_source() -> String {
+    let floor = std::env::var("KERN_CAMERA_CUT_FLOOR").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite() && *v >= 1.0).unwrap_or(CAMERA_CUT_FLOOR);
+    format!("const CAMERA_CUT_FLOOR: f32 = {floor:?};\n{}", include_str!("shaders/foliage_refine.wgsl"))
+}
 struct Rounds {cameras:Vec<(glam::Vec3,glam::Vec3,f32)>,stale:u64,full:bool,used:Option<u32>,hint:Option<u32>,encoded:u32,frame:u64,newest:u64,slots:Vec<RoundSlot>}
 struct RoundSlot {buffer:wgpu::Buffer,encoded:u32,frame:u64,pending:Option<std::sync::mpsc::Receiver<Result<(),wgpu::BufferAsyncError>>>}
 impl Rounds {
@@ -47,7 +56,7 @@ impl Refiner {
             ty:wgpu::BindingType::Buffer {ty:if binding==0 {wgpu::BufferBindingType::Uniform} else {wgpu::BufferBindingType::Storage {read_only:binding==1||binding==2||binding==16}},has_dynamic_offset:false,min_binding_size:None}}).collect::<Vec<_>>();
         let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("foliage complete-cut refinement"),entries:&entries});
         let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
-        let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage incremental admission"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_refine.wgsl").into())});
+        let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage incremental admission"),source:wgpu::ShaderSource::Wgsl(refine_source().into())});
         let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit","wake_count","wake_prefix","wake_scatter","seed_scatter","fast_begin","fast_round","fast_advance","fast_adapt","fast_mode"].into_iter().map(|entry|
             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()})).collect();
         Self {capacity,proposals:storage("foliage active proposals",capacity as u64*96),parked:storage("foliage dormant proposals",capacity as u64*112),
@@ -308,7 +317,7 @@ impl Refiner {
         }
     }
     #[test] fn refinement_shader_validates() {
-        let src=include_str!("shaders/foliage_refine.wgsl");
+        let src=&super::refine_source();
         let module=naga::front::wgsl::parse_str(src).unwrap_or_else(|e|panic!("{}",e.emit_to_string(src)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|e|panic!("{}",e.emit_to_string(src)));
     }

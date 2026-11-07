@@ -612,7 +612,14 @@ fn audit_node(tree:u32,node:u32,roles:u32) {
 // Camera and shadow consumers adapt separately (state[79] camera, [78] shadow):
 // a full shadow reservation must not coarsen what the camera sees.
 fn fast_scale_word(word:u32)->f32 {let s=bitcast<f32>(atomicLoad(&state[word]));return select(1.0,s,s>=1.0 && s<1e6);}
-fn fast_scale(roles:u32)->f32 {return fast_scale_word(select(78u,79u,(roles&256u)!=0u));}
+// The camera never goes below CAMERA_CUT_FLOOR (foliage_refine.rs, from
+// KERN_CAMERA_CUT_FLOOR): with few trees the caps never bind, the scale sat
+// at 1 and exact source won out to 300 m, so where voxels start depended on
+// how many trees there were. The floor keeps it near where a forest puts it.
+fn fast_scale(roles:u32)->f32 {
+ if (roles&256u)!=0u {return max(fast_scale_word(79u),CAMERA_CUT_FLOOR);}
+ return fast_scale_word(78u);
+}
 // Shadow consumers may hold at most a quarter of the branch slots (state[81]
 // counts theirs): grass shadows otherwise took 78% of slots from the camera.
 fn fast_shadow_slots()->u32 {return limits().x/4u;}
@@ -727,7 +734,7 @@ fn fast_set_args(count:u32) {
   let word=79u-c;var s=fast_scale_word(word);
   let blocked=atomicLoad(&state[76u-c])!=0u;
   if blocked || fills[c]>0.92 {s=s*1.06;}
-  else if fills[c]<0.85 {s=max(1.0,s/1.02);}
+  else if fills[c]<0.85 {s=max(select(1.0,CAMERA_CUT_FLOOR,c==0u),s/1.02);}
   atomicStore(&state[word],bitcast<u32>(min(s,1e5)));
  }
  atomicStore(&state[74],bitcast<u32>(fills.x));atomicStore(&state[77],bitcast<u32>(fills.y));
