@@ -283,7 +283,9 @@ impl LiveGame for Ctx<'_> {
     }
 
     fn call(&mut self, tool: &str, args: &Value) -> Reply {
-        match tool {
+        let tick=self.gg.world.tick;
+        let seed=self.gg.world.arena.seed;
+        let reply=match tool {
             "match_state" => self.match_state(args),
             "list_cards" => Ok(vec![Content::Json(json!({ "cards": self.gg.world.cards.enabled().map(|(_, d)| json!({
                 "id": d.id, "name": d.name, "desc": d.desc, "rare": d.rare, "firepower": d.firepower })).collect::<Vec<_>>() }))]),
@@ -313,18 +315,30 @@ impl LiveGame for Ctx<'_> {
                 self.command(line)
             }
             other => Err(format!("no tool {other}")),
+        };
+        if reply.is_ok() && !matches!(tool,"match_state"|"list_cards"|"knobs") {
+            self.gg.recorder.edit(tick,seed,tool,args);
         }
+        reply
     }
 
     fn luau(&mut self, code: &str) -> Result<String, String> {
         let note = if self.gg.session().is_client() { "(client: the host's next snapshot overwrites changes)\n" } else { "" };
         let s = self.gg.scripts.clone().ok_or("no mods loaded")?;
-        s.console(&mut self.gg.world, code).map(|r| format!("{note}{r}"))
+        let tick=self.gg.world.tick;
+        let seed=self.gg.world.arena.seed;
+        let result=s.console(&mut self.gg.world, code);
+        self.gg.recorder.edit(tick,seed,"run_luau",&json!({"code":code,"ok":result.is_ok()}));
+        result.map(|r| format!("{note}{r}"))
     }
 
     fn file_written(&mut self, root: &str, path: &str) -> Option<String> {
         match root {
-            "mods" if path.ends_with(".luau") => Some(self.reload_mod(path)),
+            "mods" if path.ends_with(".luau") => {
+                let result=self.reload_mod(path);
+                self.gg.recorder.edit(self.gg.world.tick,self.gg.world.arena.seed,"reload_mod",&json!({"path":path,"result":result}));
+                Some(result)
+            },
             "sounds" => {
                 let lines = self.bank().scan();
                 for l in &lines { eprintln!("sfx: {l}"); }

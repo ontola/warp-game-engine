@@ -92,7 +92,7 @@ pub(crate) fn cull_source_with(receiver_demand: bool) -> String {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Readback { None, Metrics, ImageAndMetrics }
+enum Readback { None, Metrics, ImageAndMetrics, Visibility }
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -532,6 +532,15 @@ impl Default for Lighting {
     }
 }
 
+/// Source visibility before HUD, transparency and reconstruction, per split viewport.
+#[derive(Debug, Clone)]
+pub struct VisibilityCapture {
+    pub rect: [u32; 4],
+    pub size: [u32; 2],
+    pub ids: Vec<u8>,
+    pub visible: Vec<[u32; 2]>,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct FrameStats {
     /// Experimental exact static/dynamic partition of the shared sun map.
@@ -619,6 +628,7 @@ pub struct FrameStats {
     pub gpu_ms: Vec<(&'static str, f64)>,
     /// For each requested composite-output pixel: (instance, cluster, triangle)
     /// or None for sky, a split-screen gap, or a point outside all views.
+    pub visibility: Vec<VisibilityCapture>,
     pub picks: Vec<Option<(u32, u32, u32)>>,
 }
 
@@ -3227,6 +3237,11 @@ impl Renderer {
         Ok((texture,stats))
     }
 
+    pub fn capture_visibility(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, w: u32, h: u32) -> Result<(wgpu::Texture, FrameStats), String> {
+        let (texture, _, stats) = self.frame_output(gpu, views, light, w, h, &[], Readback::Visibility)?;
+        Ok((texture, stats))
+    }
+
     /// Replace the ENTIRE meadow only in an explicit bounded test scene.
     /// The caller supplies an enclosed source field and validates current GPU
     /// publication after every diagnostic render. No interactive game enables
@@ -5256,14 +5271,14 @@ impl Renderer {
             camera_sun_visibility,
             ..split_stats
         };
-        if !picks.is_empty() {
+        if !picks.is_empty() || readback == Readback::Visibility {
             stats.picks.resize(picks.len(), None);
             for (view, (main, vis, ..)) in views.iter().zip(&keep) {
                 let requested: Vec<_> = picks.iter().enumerate().filter_map(|(i, &(x,y))|
                     view.local_pixel(x,y).map(|(x,y)| (i,
                         ((x as u64 * vis.width() as u64) / view.w as u64) as u32,
                         ((y as u64 * vis.height() as u64) / view.h as u64) as u32))).collect();
-                if requested.is_empty() { continue; }
+                if requested.is_empty() && readback != Readback::Visibility { continue; }
                 let ids = gpu.read_rgba8(vis);
                 let vis_list = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: MAX_VISIBLE as u64 * 8, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
                 let mut pick_encoder = gpu.device.create_command_encoder(&Default::default());
@@ -5274,6 +5289,18 @@ impl Renderer {
                 {
                     let mapped = vis_list.slice(..).get_mapped_range().expect("visible list");
                     let list: &[u32] = bytemuck::cast_slice(&mapped);
+                    if readback == Readback::Visibility {
+                        let count = ids.chunks_exact(4).map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                            .filter(|id| id & 0x80000000 == 0).max().map_or(0, |id| (id >> 7) as usize + 1);
+                        let entries = list.get(..count * 2).ok_or("capture visibility index outside visible list")?;
+                        stats.visibility.push(VisibilityCapture {
+                            rect: [view.x, view.y, view.w, view.h], size: [vis.width(), vis.height()],
+                            ids, visible: entries.chunks_exact(2).map(|e| [e[0], e[1]]).collect(),
+                        });
+                        drop(mapped);
+                        vis_list.unmap();
+                        continue;
+                    }
                     for (i,x,y) in requested {
                         let k = ((y * vis.width() + x) * 4) as usize;
                         let id = u32::from_le_bytes(ids[k..k + 4].try_into().unwrap());

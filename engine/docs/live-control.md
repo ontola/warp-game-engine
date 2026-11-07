@@ -268,9 +268,12 @@ So the rules are:
   joined clients' views were built for the old player count.
 - Mods run on the host only, inside the sim tick (World hooks). Clients
   need the same card files, for the names in their menus.
-- Replays: a match with the same seed and mods replays exactly, but live
-  edits are not recorded. The `logs` tool lists every tool call with its
-  arguments, so you can repeat them.
+- Replays: a match with the same seed and mods replays exactly, and desktop F12 feedback includes five seconds of host/local input
+  (tick, arena seed and inputs in seat order) beside the snapshot replay.
+  The JSON records recent gameplay tool calls and Luau console evaluations with
+  their tick and arguments. A mod file reload records its path and result.
+  The journal keeps up to 128 edits and marks omitted arguments over 8 KiB.
+  The snapshot player shows the recorded outcome without executing the journal.
 
 ## Adding live control to a game
 

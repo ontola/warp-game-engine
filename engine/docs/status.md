@@ -9,6 +9,10 @@ to. Dated measurements and the reasoning behind decisions are in the
 
 Growing Guns layers two-bone wrist contacts over its third-person clips using the shared body crate. The headless grip review renders the authored and adjusted poses. Finger closure and pickup transitions are open. [Authoring and preview](animation.md)
 
+## Developer captures
+
+Sideways F12 captures support [fixed-tick driving comparisons and pixel inspection](warp-cli.md#sideways-feedback). Growing Guns feedback includes recent desktop inputs and live edits.
+
 ## Target
 
 One 3840 × 2160 output, four players, 120 FPS (8.33 ms per frame). **Not

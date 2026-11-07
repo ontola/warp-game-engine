@@ -508,3 +508,43 @@ mask is fixed for a renderer lifetime (not a Luau API or hot-reloaded shader).
 Reserve game-owned data in `Scene::aux` before engine reservations; update only
 that range with `Renderer::update_aux_words`. Writes are bounds checked. This is
 for opaque reconstruction/clipping, not forward transparency or ray-query masks.
+
+## Sideways feedback
+
+During a Sideways drive, press F12. Keep the PNG, JSON and same-basename
+view attachments together. In a developer checkout with Python 3 and Pillow,
+run the following commands. Set `WARP_PYTHON` to an interpreter path if needed.
+
+```sh
+warp inspect sideways-123.json
+warp inspect sideways-123.json --pixel 320 180
+warp compare sideways-123.json --baseline main --out build/drift-review
+```
+
+Click the PNG in the inspector, or pass output-pixel coordinates from its top
+left. The inspector maps the point through the captured split viewport and
+internal resolution. For source triangles it reports the instance, mesh,
+cluster LOD depth, material, shading path and triangle. It reads the opaque
+visibility buffer of the capture frame. Transparent effects, HUD and temporal
+reconstruction may cover that source. Sky, voxels, gaps and profiles without
+source visibility have explicit results. Older PNG/JSON pairs lack this buffer.
+
+Comparison builds Sideways in the baseline revision and working checkout and
+runs them sequentially with identical stage-generation RNG state, biome,
+settings and per-tick driver input. Both revisions need the replay reader.
+It restores recorded gear mode and tree collider edits at their simulation
+ticks. Input runs begin at stage creation; the final 600 ticks (five seconds)
+supply the trace. Recording is bounded to one hour and 32,768 input runs per
+stage. An incomplete history is marked unavailable.
+
+The output contains synchronized 640 × 360 chase-camera WebP clips (15 fps),
+the final pixel difference, and `comparison.json` with the first differing
+physics digest in the window, player values and whether each run reached the
+recorded end digest. These diagnostic cameras and lighting are independent
+of the play camera and HUD. Frame timing includes synchronous render/readback;
+per-pass GPU timings and adapter are in each `drive.json`. The timing summary
+excludes the first render. `--state-only` skips GPU work.
+Use a fresh output directory. For prebuilt runners use `--baseline-exe`
+and `--candidate-exe` with matching bundled assets. The same commands run via
+`python engine/tools/drive-capture.py`. To generate a fixture without a visible
+window, run `sideways play --smoke-render 76 --feedback --capture build/drift.png`.
