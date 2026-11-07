@@ -48,6 +48,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_VIRTUAL_MEMBERS` | The game's `set_virtual_members` choice for recipe forests. |
 | `KERN_SUN_SCENE_DEPTH` | On with a GPU forest. |
 | `KERN_VOXEL_RASTER` | On when there are far voxel trees or proxies. |
+| `KERN_CAMERA_CUT_FLOOR` | 16 | Lowest camera error-cut scale: voxels start about where a full forest's budget puts them, however few trees there are. 1 disables it. |
 | `KERN_FOLIAGE_CUT=budget` | Default: the error-driven foliage cut (each root refines by error alone; the GPU loosens the camera and shadow targets when a cap binds). `budget` restores the budgeted collective admission for A/B. |
 | `KERN_FOLIAGE_OCCLUDERS=terrain` | Default: any rigid opaque geometry hides the GPU forest. `terrain` restores land-only occlusion (`terrain_fly --no-building-occlusion`). |
 

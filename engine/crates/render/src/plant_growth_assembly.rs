@@ -98,20 +98,22 @@ fn unit(variant: u64, index: u64, tag: u64) -> f32 {
     ((x ^ (x >> 32)) >> 40) as f32 / (1u64 << 24) as f32
 }
 
-/// A ball of long needles, thin two-triangle blades fanning out from the shoot
-/// tip: a stand-in until a proper tuft mesh replaces it.
+/// A bottlebrush of long needles along the last 30 cm of a shoot (+Y, ending
+/// at the origin), splaying out and forward; a stand-in until a proper mesh
+/// replaces it.
 fn tuft(id: u64, variant: u64, needles: u32, length: f32) -> PartGeometry {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     for i in 0..needles {
         let v = i as u64;
-        // All round: a ball, a little thinner behind the shoot tip.
-        let polar = (1.0 - 1.9 * unit(variant, v, 1)).clamp(-1.0, 1.0).acos();
+        // Fascicles along the shoot, denser and more upright near the tip.
+        let along = -0.3 * unit(variant, v, 5).powf(1.4);
+        let tilt = 0.45 + 0.75 * (-along / 0.3) + 0.25 * unit(variant, v, 1);
         let around = unit(variant, v, 2) * TAU;
-        let axis = Vec3::new(polar.sin() * around.cos(), polar.cos(), polar.sin() * around.sin());
+        let axis = Vec3::new(tilt.sin() * around.cos(), tilt.cos(), tilt.sin() * around.sin());
         let side = axis.cross(if axis.y.abs() < 0.9 { Vec3::Y } else { Vec3::X }).normalize();
         let up = axis.cross(side).normalize();
-        let root = axis * 0.012;
+        let root = Vec3::Y * along + axis * 0.006;
         let long = length * (0.7 + 0.5 * unit(variant, v, 3));
         let tip = axis * long - Vec3::Y * 0.12 * long * unit(variant, v, 4);
         // A closed sliver (three-sided base, one tip): foliage optics need
@@ -125,16 +127,6 @@ fn tuft(id: u64, variant: u64, needles: u32, length: f32) -> PartGeometry {
         vertices.push(Vertex { pos: tip.to_array(), normal: (tip - root).normalize().to_array(), uv: [0.5, 1.0] });
         indices.extend_from_slice(&[b, b + 2, b + 1, b, b + 1, b + 3, b + 1, b + 2, b + 3, b + 2, b, b + 3]);
     }
-    // A dense core of needles seen end-on: a closed ball 40 % of the needle
-    // length, so a tuft keeps its cover when the needles go sub-pixel.
-    let core = collar(0);
-    let first = vertices.len() as u32;
-    let radius = 0.4 * length;
-    for v in &core.vertices {
-        let p = Vec3::from(v.pos) * Vec3::new(radius, radius * 0.9, radius) + Vec3::Y * 0.03;
-        vertices.push(Vertex { pos: p.to_array(), normal: v.normal, uv: v.uv });
-    }
-    indices.extend(core.indices.iter().map(|i| first + i));
     PartGeometry { id, vertices, indices }
 }
 
@@ -147,7 +139,7 @@ impl Parts {
             stems: std::array::from_fn(|k| stem(STEM + 1 + k as u64, if k < 4 { 6 } else { 12 }, TAPERS[k % 4])),
             collar: collar(STEM + 16),
             // A full bottlebrush: 140 needles 20-30 cm long.
-            tufts: (0..3).map(|v| tuft(TUFT + v, v, 240, 0.25)).collect(),
+            tufts: (0..3).map(|v| tuft(TUFT + v, v, 300, 0.22)).collect(),
         }
     }
 }

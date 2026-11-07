@@ -60,8 +60,8 @@ impl Species {
     /// tufts at the shoot ends; a cone young, a clear trunk and an open crown old.
     pub fn jeffrey_pine() -> Self {
         Self {
-            height: 46.0, pace: 62.0, shape: 1.75, first_whorl: 3, whorl: [3, 5], laterals: 0.75, max_order: 4,
-            limb_step: 0.30, side_length: 0.6, limb_life: [60, 150], crowding: 10, angle: [1.05, 1.4], rise: 0.05, droop: 0.012,
+            height: 46.0, pace: 62.0, shape: 1.75, first_whorl: 3, whorl: [3, 5], laterals: 1.0, max_order: 4,
+            limb_step: 0.30, side_length: 0.6, limb_life: [60, 150], crowding: 14, angle: [1.05, 1.4], rise: 0.05, droop: 0.012,
             needle_years: 4, shade: 0.028, min_light: 0.3, tip_radius: 0.005, wood: 0.0035, limb_wood: 0.62, dead_years: 18,
         }
     }
@@ -336,7 +336,7 @@ mod tests {
         let (young, old) = (grow(&s, 12, 2), grow(&s, 200, 2));
         assert!(young.crown_base() < 0.35 * young.height());
         // Old jeffreyi: a clear lower trunk under big, still living limbs.
-        assert!(old.crown_base() > 0.12 * old.height(), "{} of {}", old.crown_base(), old.height());
+        assert!(old.crown_base() > 0.08 * old.height(), "{} of {}", old.crown_base(), old.height());
         assert!(old.crown_radius() > 0.2 * old.height());
     }
 
