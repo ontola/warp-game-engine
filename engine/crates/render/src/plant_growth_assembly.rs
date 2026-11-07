@@ -331,6 +331,7 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     let collars: usize = (0..stems.len()).map(|i| {
         let r = stems[i];
         usize::from(r.3 > JOINT_RADIUS && (r.5 && plant.segments[r.0 as usize].order > 0 || !r.5)) + usize::from(!continues(i) && r.4 > JOINT_RADIUS)
+            + usize::from(r.5 && plant.segments[r.0 as usize].order == 0 && r.3 > JOINT_RADIUS)
     }).sum();
     let room = limits.max_instances.saturating_sub(stems.len() + collars);
     let keep = (room as f32 / plant.tufts.len().max(1) as f32).min(1.0);
@@ -349,6 +350,10 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
             instances.push(PartInstance { id: seed ^ (tag << 40) ^ i as u64, part: 8, branch: b, rest: affine(inverse[b as usize] * world), material: bark });
         };
         let axis = (to - from).normalize_or(Vec3::Y);
+        if first && plant.segments[segment as usize].order == 0 && radius > JOINT_RADIUS {
+            // Root flare: the trunk swells into the ground.
+            joint(0x5246, Vec3::new(radius * 1.7, radius * 2.2, radius * 1.7), from);
+        }
         if radius <= JOINT_RADIUS {
             // A twig: no joints.
         } else if first && plant.segments[segment as usize].order > 0 {

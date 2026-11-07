@@ -2074,13 +2074,13 @@ fn bark_cells(q: vec3<f32>) -> vec2<f32> {
 }
 
 /// Jeffrey pine bark in plate units: long vertical ridges (Voronoi cells
-/// three times taller than wide) split by deep furrows, each ridge broken
+/// six times taller than wide) split by deep furrows, each ridge broken
 /// into jigsaw subplates by finer cracks. x: height (1 on a plate, 0 deep in
 /// a furrow); y: per-ridge random; z: the furrow (1 deep in it); w: the
 /// rim of a peeling flake (1 on it).
 fn bark_height(q: vec3<f32>) -> vec4<f32> {
     let warp = vec3<f32>(bark_noise(q * 1.7), bark_noise(q * 1.7 + 7.3), bark_noise(q * 1.7 + 3.1)) - 0.5;
-    let ridge = bark_cells(q * vec3<f32>(1.0, 0.33, 1.0) + warp * 0.3);
+    let ridge = bark_cells(q * vec3<f32>(1.0, 0.16, 1.0) + warp * vec3<f32>(0.35, 0.1, 0.35));
     // Wide, ragged furrows: the edge distance wobbles with fine noise.
     let ragged = ridge.x + (bark_noise(q * vec3<f32>(11.0, 4.0, 11.0)) - 0.5) * 0.06;
     let furrow = 1.0 - smoothstep(0.03, 0.12, ragged);
@@ -2108,9 +2108,10 @@ fn bark_surface(p: vec3<f32>, n: vec3<f32>, plate: f32) -> Bark {
     let d2 = (bark_height(q + t2 * e).x - h.x) / e;
     // Reddish-brown to orange plates, some lobes weathered grey-pink, pale
     // peeling rims; furrows of black and orange-brown fibres.
-    let weathered = smoothstep(0.45, 0.8, bark_noise(q * vec3<f32>(1.6, 1.0, 1.6) + vec3<f32>(3.0, 1.0, 7.0)));
-    let cinnamon = mix(vec3<f32>(0.26, 0.10, 0.05), vec3<f32>(0.36, 0.15, 0.08), h.y);
-    var plates = mix(cinnamon, vec3<f32>(0.34, 0.25, 0.22), weathered * 0.55) * (0.85 + 0.3 * bark_noise(q * 4.0));
+    // Mostly weathered grey-mauve, with salmon where outer flakes have shed.
+    let fresh = smoothstep(0.5, 0.7, bark_noise(q * vec3<f32>(2.4, 1.5, 2.4) + vec3<f32>(3.0, 1.0, 7.0)));
+    let cinnamon = mix(vec3<f32>(0.30, 0.13, 0.07), vec3<f32>(0.42, 0.21, 0.13), h.y);
+    var plates = mix(vec3<f32>(0.30, 0.25, 0.25), cinnamon, fresh) * (0.85 + 0.3 * bark_noise(q * 4.0));
     plates = mix(plates, vec3<f32>(0.52, 0.44, 0.40), h.w * 0.7);
     let fibre = smoothstep(0.35, 0.8, bark_noise(q * vec3<f32>(14.0, 2.0, 14.0)));
     let furrow = mix(vec3<f32>(0.02, 0.015, 0.012), vec3<f32>(0.22, 0.10, 0.04), fibre);
