@@ -125,9 +125,9 @@ fn preview_limits() -> render::foliage_assembly::Limits {
 
 /// The parts for a look's brushes, made once per needle count and length.
 fn parts(look: &Look) -> &'static Parts {
-    static PARTS: OnceLock<std::sync::Mutex<HashMap<[u32; 4], &'static Parts>>> = OnceLock::new();
+    static PARTS: OnceLock<std::sync::Mutex<HashMap<[u32; 6], &'static Parts>>> = OnceLock::new();
     let mut map = PARTS.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
-    *map.entry([look.brush_needles, look.needle_length.to_bits(), look.brush_spread.to_bits(), look.brush_reach.to_bits()])
+    *map.entry([look.brush_needles, look.needle_length.to_bits(), look.brush_spread.to_bits(), look.brush_reach.to_bits(), look.needle_width.to_bits(), look.brush_round.to_bits()])
         .or_insert_with(|| Box::leak(Box::new(Parts::for_look(look))))
 }
 

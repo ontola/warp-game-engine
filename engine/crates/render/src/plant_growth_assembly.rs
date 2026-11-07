@@ -106,6 +106,7 @@ fn tuft(id: u64, variant: u64, b: &Look) -> PartGeometry {
     let mut indices = Vec::new();
     let (needles, length, reach) = (b.brush_needles.clamp(1, 2000), b.needle_length.clamp(0.01, 1.0), b.brush_reach.clamp(0.01, 1.0));
     let spread = b.brush_spread.clamp(0.2, 3.0);
+    let (width, round) = (b.needle_width.clamp(0.0005, 0.02), b.brush_round.clamp(0.0, 1.0));
     for i in 0..needles {
         let v = i as u64;
         // Fascicles along the last `reach` of the shoot, denser near the tip:
@@ -123,13 +124,17 @@ fn tuft(id: u64, variant: u64, b: &Look) -> PartGeometry {
         let tip = axis * long - Vec3::Y * 0.12 * long * unit(variant, v, 4);
         // A closed sliver (three-sided base, one tip): foliage optics need
         // every edge shared by two faces.
+        // Normals lean toward the brush's outward direction (a ball round the
+        // shoot's tip), so a brush shades as one mass instead of per needle.
+        let ball = (tip - Vec3::Y * 0.5 * reach).normalize();
+        let bend = |n: Vec3| (n * (1.0 - round) + ball * round).normalize_or(ball);
         let b = vertices.len() as u32;
         for k in 0..3 {
             let a = k as f32 / 3.0 * TAU;
             let out = side * a.cos() + up * a.sin();
-            vertices.push(Vertex { pos: (root + out * 0.0025).to_array(), normal: out.to_array(), uv: [k as f32 / 3.0, 0.0] });
+            vertices.push(Vertex { pos: (root + out * width).to_array(), normal: bend(out).to_array(), uv: [k as f32 / 3.0, 0.0] });
         }
-        vertices.push(Vertex { pos: tip.to_array(), normal: (tip - root).normalize().to_array(), uv: [0.5, 1.0] });
+        vertices.push(Vertex { pos: tip.to_array(), normal: bend((tip - root).normalize()).to_array(), uv: [0.5, 1.0] });
         indices.extend_from_slice(&[b, b + 2, b + 1, b, b + 1, b + 3, b + 1, b + 2, b + 3, b + 2, b, b + 3]);
     }
     PartGeometry { id, vertices, indices }
@@ -146,7 +151,7 @@ impl Parts {
         const TUFT: u64 = 0x5047_5446_0000_0000;
         // The brush's shape is part of its identity (and so of every cook key).
         let mut h = TUFT;
-        for x in [u64::from(look.brush_needles), u64::from(look.needle_length.to_bits()), u64::from(look.brush_spread.to_bits()), u64::from(look.brush_reach.to_bits())] {
+        for x in [u64::from(look.brush_needles), u64::from(look.needle_length.to_bits()), u64::from(look.brush_spread.to_bits()), u64::from(look.brush_reach.to_bits()), u64::from(look.needle_width.to_bits()), u64::from(look.brush_round.to_bits())] {
             h = (h ^ x).wrapping_mul(0x100_0000_01b3).rotate_left(17);
         }
         let tuft_id = (h & !0xff) | (TUFT & 0xff);
@@ -180,6 +185,12 @@ pub struct Look {
     pub brush_spread: f32,
     /// Length of shoot the needles sit on behind its tip, metres.
     pub brush_reach: f32,
+    /// Needle radius at its base, metres.
+    pub needle_width: f32,
+    /// How far needle normals bend toward the brush's outward direction, 0 to
+    /// 1: 0 shades each needle on its own (speckles from afar), 1 shades the
+    /// brush as one soft ball.
+    pub brush_round: f32,
 }
 
 impl Default for Look {
@@ -188,7 +199,7 @@ impl Default for Look {
 
 impl Look {
     pub fn jeffrey_pine() -> Self {
-        Self { wood: [0.24, 0.12, 0.07], needles: [0.11, 0.21, 0.09], brush_needles: 50, needle_length: 0.22, brush_spread: 1.7, brush_reach: 0.2 }
+        Self { wood: [0.24, 0.12, 0.07], needles: [0.11, 0.21, 0.09], brush_needles: 50, needle_length: 0.22, brush_spread: 1.7, brush_reach: 0.2, needle_width: 0.0025, brush_round: 0.7 }
     }
 }
 

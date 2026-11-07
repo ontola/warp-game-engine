@@ -52,6 +52,11 @@ pub struct Species {
     /// Needle brushes on each young side shoot: 1 at its tip; more sit along the
     /// shoot and splay outward (a fraction is a chance of one more).
     pub plumes: f32,
+    /// Share of the tree's height, from the top, that keeps living limbs once
+    /// it is `lift_years` old (1 keeps them all): an old pine sheds its lower
+    /// limbs and stands on a clear trunk. The crown lifts gradually from year 10.
+    pub live_crown: f32,
+    pub lift_years: f32,
 }
 
 impl Default for Species {
@@ -66,7 +71,7 @@ impl Species {
             height: 46.0, pace: 45.0, shape: 1.75, first_whorl: 3, whorl: [3, 5], laterals: 1.0, max_order: 4,
             limb_step: 0.22, side_length: 0.6, limb_life: [60, 150], crowding: 8, angle: [1.05, 1.4], rise: 0.05, droop: 0.012,
             needle_years: 5, shade: 0.025, min_light: 0.3, tip_radius: 0.005, wood: 0.0035, limb_wood: 0.62, dead_years: 18,
-            plumes: 2.0,
+            plumes: 2.0, live_crown: 0.55, lift_years: 60.0,
         }
     }
 }
@@ -222,7 +227,13 @@ pub fn grow(species: &Species, age: u32, seed: u64) -> Plant {
                 let spent = year - apex.limb[0] > apex.limb[1] && top < 0.75;
                 // A limb leader holds on until it is truly dark.
                 let dark = light < if apex.order == 1 { s.min_light * 0.4 } else { s.min_light };
-                if dark || crowded || spent {
+                // Crown lift: a limb set low on the trunk dies once the crown has
+                // lifted past where it springs from, the whole limb at once.
+                let lift = ((year as f32 - 10.0) / (s.lift_years - 10.0).max(1.0)).clamp(0.0, 1.0);
+                let floor = leader_height(s, year as f32) * (1.0 - s.live_crown.clamp(0.0, 1.0)) * lift;
+                let base = leader_height(s, apex.limb[0] as f32);
+                let lifted = base < floor * (0.85 + 0.3 * hash(seed, apex.limb[0] as u64 * 7919 + apex.limb[1] as u64, 71));
+                if dark || crowded || spent || lifted {
                     continue;
                 }
             }
@@ -370,6 +381,18 @@ mod tests {
         assert!(old.crown_base() > 0.08 * old.height(), "{} of {}", old.crown_base(), old.height());
         // About a fifth: denser crowns (crowding 16, 5 needle years) land at 0.195.
         assert!(old.crown_radius() > 0.18 * old.height(), "radius {} of {}", old.crown_radius(), old.height());
+    }
+
+    #[test]
+    fn an_old_pine_sheds_its_lower_limbs_even_when_crowding_spares_them() {
+        // Joep's tuning: crowding never prunes, many limbs per whorl.
+        let s = Species { crowding: 60, whorl: [2, 12], laterals: 2.0, height: 52.0, ..Species::jeffrey_pine() };
+        for (age, share) in [(50, 0.25), (120, 0.35)] {
+            let tree = grow(&s, age, 1);
+            assert!(tree.crown_base() > share * tree.height(), "age {age}: crown base {} of {}", tree.crown_base(), tree.height());
+        }
+        let open = grow(&Species { live_crown: 1.0, ..s }, 120, 1);
+        assert!(open.crown_base() < 0.2 * open.height(), "live_crown 1 keeps low limbs: {}", open.crown_base());
     }
 
     #[test]
