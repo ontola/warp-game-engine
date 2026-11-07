@@ -550,6 +550,41 @@ the MCP preview may be smaller. For headless inspection, `--pixel` prints JSON.
 With only the JSON, replay and comparison work when `drive.version` is 1.
 Inspection also needs the view attachments named in `visibility.views`.
 
+### Isolate a lighting effect on a Sideways surface
+
+Run a paired lighting comparison on a marked F12 capture with its PNG and
+visibility attachments. Supply original PNG coordinates for older unmarked
+captures. Add a nearby reference pixel to measure contrast across a stripe.
+
+```sh
+warp relight sideways-123.json --without gi --without shadow_strength
+warp relight sideways-123.json --pixel 2300 540 --reference 2300 385 --radius 180 --without gi --out build/rock-light
+```
+
+Each `--without` produces a separate render with that control set to zero.
+Choices are `gi`, `shadow_strength`, `near_shadows`, `contact_occlusion` and
+`reflection_occlusion`. The tool needs Cargo, a render-capable GPU and the
+developer checkout. Use a fresh output directory or use the path it prints.
+
+Open `comparison.png` to see the original, the native baseline and each variant.
+Orange marks the selected pixel and blue marks the optional reference when
+there is room to draw the rings. Individual crops have no overlays.
+In `lighting.json` check `source_triangle_matches_baseline` for each pixel,
+`replay_triangle_stable` for each variant, and `repeat_crop_identical` for drift
+when the baseline is rendered again. Compare the original and baseline
+appearance before attributing an artifact to a control. Each sample includes
+RGB, relative luminance in linearized display sRGB, and its delta from baseline.
+With a reference, `reference_minus_point` measures the signed contrast.
+Captured picks include hierarchy metadata when available. Full frames, camera,
+surface hits and reconstruction details are in `native/`.
+
+The replay reconstructs the selected viewport of a static stage at native
+resolution with the captured camera, sun and wind. Gameplay upscaling, cars,
+HUD and transient particles can change the original pixel. Biome stages
+are currently unsupported.
+
+### Replay a recorded drive
+
 To replay a single build without comparing Git revisions, run from the repo root:
 
 ```sh

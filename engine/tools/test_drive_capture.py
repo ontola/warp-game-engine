@@ -61,5 +61,49 @@ class PixelInspection(unittest.TestCase):
             self.assertEqual(viewer.pick(5, 0)["source"], "outside captured viewports")
 
 
+class LightingComparison(unittest.TestCase):
+    def test_mark_in_second_view_and_repeat_drift(self):
+        from argparse import Namespace
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            Image.new("RGB", (8, 4)).save(root / "feedback.png")
+            Image.new("RGBA", (4, 4), (0, 0, 0, 0)).save(root / "ids.png")
+            (root / "pairs").write_bytes(struct.pack("<II", 7, 9))
+            views = [{"rect": [x, 0, 4, 4], "size": [4, 4], "ids": "ids.png", "pairs": "pairs"} for x in (0, 4)]
+            path = root / "feedback.json"
+            path.write_text(json.dumps({"capture": {"size": [8, 4]}, "player_point": [6, 1],
+                                        "visibility": {"views": views, "owners": {"7": {"mesh": "rock"}},
+                                                       "clusters": {"9": {"material": 0}}}}))
+            args = Namespace(capture=path, pixel=None, reference=[5, 3], radius=1, without=["gi"], out=root/"result")
+
+            def render(cmd, **kwargs):
+                self.assertEqual(cmd[-8:], ["--view", "1", "--pick", "2,1", "--pick", "1,3", "--without", "gi"])
+                native = args.out / "native"
+                native.mkdir()
+                rows = []
+                for name, rgb in (("lit", "black"), ("gi", "white"), ("repeat", "gray")):
+                    Image.new("RGB", (4, 4), rgb).save(native / (name+".png"))
+                    picks = [{"pixel": xy, "owner": 7, "cluster": 9, "triangle": 0, "mesh": "rock", "material": 0}
+                             for xy in ([2, 1], [1, 3])]
+                    rows.append({"name": name, "picks": picks})
+                (native/"report.json").write_text(json.dumps({"view_index": 1, "baseline_controls": {"gi": 1},
+                                                              "limitations": [], "rows": rows}))
+                return capture.subprocess.CompletedProcess(cmd, 0)
+
+            with patch.object(capture.subprocess, "run", side_effect=render), contextlib.redirect_stdout(io.StringIO()):
+                capture.relight(args)
+            report = capture.read(args.out/"lighting.json")
+            self.assertEqual(report["crop_box_in_original"], [5, 0, 8, 3])
+            self.assertEqual(report["source_triangle_matches_baseline"], [True, True])
+            self.assertFalse(report["repeat_crop_identical"])
+            self.assertAlmostEqual(report["cases"]["gi"]["samples"][0]["delta_from_lit"], 1.0)
+            self.assertTrue((args.out/"comparison.png").is_file())
+            args.reference = [1, 2]
+            with self.assertRaisesRegex(ValueError, "same viewport"):
+                capture.relight(args)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,7 @@
 Run from the repository root. Python tools require Python 3.11+.
 Use a fresh output directory for each run and run GPU workloads serially.
 
-- `drive-capture.py inspect` identifies source geometry at a Sideways F12 pixel. `drive-capture.py compare` replays the recorded input against another revision. [Arguments and output files](../docs/warp-cli.md#sideways-feedback).
+- `drive-capture.py inspect` identifies source geometry at a Sideways F12 pixel. `drive-capture.py relight` compares the marked surface with individual lighting controls disabled. `drive-capture.py compare` replays the recorded input against another revision. [Arguments and output files](../docs/warp-cli.md#sideways-feedback).
 - `render-suite.py`: one fixed world from fixed cameras: per-pass GPU times, counters,
   memory and pictures, with diffs between runs. See
   [render suite](../docs/render-suite.md).

@@ -1,4 +1,4 @@
-"""Inspect Sideways F12 source geometry or compare the last five seconds of driving."""
+"""Inspect Sideways F12 geometry, isolate lighting effects, or compare recorded driving."""
 import argparse
 from collections import defaultdict
 from contextlib import contextmanager
@@ -203,6 +203,133 @@ def compare(args):
     print(json.dumps(summary, indent=2))
 
 
+LIGHT_CONTROLS = ("contact_occlusion", "shadow_strength", "near_shadows", "gi", "reflection_occlusion")
+
+
+def luminance(rgb):
+    # Relative luminance of the displayed sRGB pixel after tone mapping.
+    values = [channel / 255 for channel in rgb]
+    linear = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4 for v in values]
+    return sum(value * weight for value, weight in zip(linear, (0.2126, 0.7152, 0.0722)))
+
+
+def viewport(views, point):
+    x, y = point
+    for i, view in enumerate(views):
+        left, top, width, height = view["rect"]
+        if left <= x < left + width and top <= y < top + height:
+            return i, view["rect"]
+    raise ValueError(f"pixel {point} lies outside the captured visibility viewports")
+
+
+def crop_sample(path, size, crop_box, points):
+    with Image.open(path) as img:
+        if img.size != tuple(size):
+            raise ValueError(f"unexpected dimensions for {path}")
+        crop = img.crop(crop_box).convert("RGB")
+        samples = []
+        for x, y in points:
+            rgb = img.crop((x, y, x+1, y+1)).convert("RGB").getpixel((0, 0))
+            samples.append({"rgb": rgb, "luminance": luminance(rgb)})
+    return crop, samples
+
+
+def lighting_report(capture, meta, out, view_rect, points, radius, inspector):
+    report = read(out / "native" / "report.json")
+    left, top, width, height = view_rect
+    local = [(x-left, y-top) for x, y in points]
+    x, y = local[0]
+    box = (max(x-radius, 0), max(y-radius, 0), min(x+radius+1, width), min(y+radius+1, height))
+    source_box = (box[0]+left, box[1]+top, box[2]+left, box[3]+top)
+    source_crop, samples = crop_sample(capture.with_suffix(".png"), meta["capture"]["size"], source_box, points)
+    source_hits = [inspector.pick(*p) for p in points]
+    cases = {"capture": {"samples": samples, "picks": source_hits}}
+    crops = {"capture": source_crop}
+    for row in report["rows"]:
+        name = row["name"]
+        crop, samples = crop_sample(out / "native" / (name+".png"), (width, height), box, local)
+        crops[name] = crop
+        if [p["pixel"] for p in row["picks"]] != [list(p) for p in local]:
+            raise ValueError("renderer returned different pick coordinates")
+        cases[name] = {"samples": samples, "picks": row["picks"]}
+    baseline = cases["lit"]
+    for name, case in cases.items():
+        for i, sample in enumerate(case["samples"]):
+            sample["delta_from_lit"] = sample["luminance"] - baseline["samples"][i]["luminance"]
+        if len(points) == 2:
+            case["reference_minus_point"] = case["samples"][1]["luminance"] - case["samples"][0]["luminance"]
+        crops[name].save(out / (name+"-crop.png"))
+    panels = [name for name in crops if name != "repeat"]
+    w, h = source_crop.size
+    cell_w = max(w, 170)
+    sheet = Image.new("RGB", (2*cell_w, ((len(panels)+1)//2)*(h+24)), "#202020")
+    draw = ImageDraw.Draw(sheet)
+    for i, name in enumerate(panels):
+        ox, oy = (i % 2)*cell_w, (i // 2)*(h+24)
+        label = {"lit": "Baseline", "capture": "Original F12"}.get(name, name+" off")
+        draw.text((ox+5, oy+4), label, fill="white")
+        sheet.paste(crops[name], (ox, oy+24))
+        for (px, py), color in zip(local, ("#ffbc58", "#59cefb")):
+            if box[0]+4 <= px < box[2]-4 and box[1]+4 <= py < box[3]-4:
+                cx, cy = ox+px-box[0], oy+24+py-box[1]
+                draw.ellipse((cx-4, cy-4, cx+4, cy+4), outline=color)
+    sheet.save(out / "comparison.png")
+    def same_triangle(source, replay, owner_key):
+        keys = (owner_key, "cluster", "triangle", "mesh", "material")
+        return (all(source.get(k) is not None for k in keys)
+                and all(source[k] == replay.get("owner" if k == owner_key else k) for k in keys))
+    summary = {"schema": 1, "capture": str(capture), "view": report["view_index"], "points": points,
+               "crop_box_in_original": source_box, "baseline_controls": report["baseline_controls"],
+               "source_triangle_matches_baseline": [same_triangle(a, b, "instance") for a, b in zip(source_hits, baseline["picks"])],
+               "replay_triangle_stable": {name: [same_triangle(a, b, "owner") for a, b in zip(baseline["picks"], case["picks"])]
+                                          for name, case in cases.items() if name not in ("capture", "lit")},
+               "repeat_crop_identical": ImageChops.difference(crops["lit"], crops["repeat"]).getbbox() is None,
+               "units": "display-referred relative luminance, linearized sRGB, range 0..1",
+               "cases": cases, "limitations": report["limitations"]}
+    (out / "lighting.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+
+def relight(args):
+    capture = args.capture.resolve()
+    meta = read(capture)
+    inspector = Inspector(capture)
+    point = args.pixel or inspector.point
+    if point is None:
+        raise ValueError("capture has no player_point; pass --pixel X Y")
+    views = inspector.visibility.get("views") or []
+    if not views:
+        raise ValueError("relight needs the source visibility attachments for viewport and surface checks")
+    view, rect = viewport(views, point)
+    points = [point]
+    if args.reference:
+        if viewport(views, args.reference)[0] != view:
+            raise ValueError("reference must be in the same viewport as the selected pixel")
+        points.append(args.reference)
+    if not 1 <= args.radius <= 1024:
+        raise ValueError("--radius must be in 1..1024")
+    if len(set(args.without)) != len(args.without):
+        raise ValueError("each --without control must be unique")
+    if args.out:
+        out = args.out.resolve()
+        out.mkdir(parents=True, exist_ok=False)
+    else:
+        out = Path(tempfile.mkdtemp(prefix="warp-relight-"))
+    cmd = ["cargo", "run", "--locked", "-p", "cli", "--example", "capture_replay", "--",
+           capture, out / "native", "--view", str(view)]
+    for x, y in points:
+        cmd.extend(["--pick", f"{x-rect[0]},{y-rect[1]}"])
+    for effect in args.without:
+        cmd.extend(["--without", effect])
+    log = out / "render.log"
+    with log.open("wb") as stream:
+        result = subprocess.run(cmd, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT)
+    if result.returncode:
+        tail = log.read_text(encoding="utf-8", errors="replace").splitlines()[-3:]
+        raise ValueError(f"lighting replay failed; see {log}\n" + "\n".join(tail))
+    lighting_report(capture, meta, out, rect, points, args.radius, inspector)
+    print(json.dumps({"report": str(out / "lighting.json"), "image": str(out / "comparison.png")}))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -211,6 +338,13 @@ def main():
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--preview", action="store_true", help="open the image with the player point circled")
     mode.add_argument("--pixel", type=int, nargs=2, metavar=("X", "Y"))
+    p = sub.add_parser("relight", help="rerender a marked static surface with one lighting control disabled per image")
+    p.add_argument("capture", type=Path)
+    p.add_argument("--without", choices=LIGHT_CONTROLS, action="append", required=True)
+    p.add_argument("--pixel", type=int, nargs=2, metavar=("X", "Y"), help="override the saved player_point")
+    p.add_argument("--reference", type=int, nargs=2, metavar=("X", "Y"), help="also measure a nearby reference pixel")
+    p.add_argument("--radius", type=int, default=128, help="crop radius around the selected pixel")
+    p.add_argument("--out", type=Path, help="fresh output directory")
     p = sub.add_parser("compare")
     p.add_argument("capture", type=Path)
     group = p.add_mutually_exclusive_group()
@@ -220,7 +354,7 @@ def main():
     p.add_argument("--out", type=Path)
     p.add_argument("--state-only", action="store_true")
     args = parser.parse_args()
-    (inspect if args.command == "inspect" else compare)(args)
+    {"inspect": inspect, "compare": compare, "relight": relight}[args.command](args)
 
 
 if __name__ == "__main__":
