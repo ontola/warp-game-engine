@@ -91,9 +91,8 @@ impl Guns {
         Affine3A::from_rotation_translation(rotation, hand - rotation * primary)
     }
 
-    pub(super) fn support_target(&self, player: usize, hand: Vec3, yaw: f32, pitch: f32) -> Option<Vec3> {
-        let build = &self.rigs.get(player)?.build;
-        let [primary, support] = build.wrist_contacts();
+    pub(super) fn support_target(&self, player: usize, hand: Vec3, yaw: f32, pitch: f32, alpha: f32) -> Option<Vec3> {
+        let [primary, support] = self.rigs.get(player)?.contacts_at(alpha);
         Some(Self::held_transform(hand, yaw, pitch, primary).transform_point3(support))
     }
 
@@ -186,7 +185,7 @@ impl Guns {
             let drawn = crate::view::pose(world, i, prev, alpha);
             let (pos, rot) = (drawn.pos, Quat::from_rotation_y(drawn.yaw));
             let tp = if let Some(hand) = hands.get(i).copied().flatten() {
-                Self::held_transform(hand, drawn.yaw, drawn.pitch, rig.build.wrist_contacts()[0])
+                Self::held_transform(hand, drawn.yaw, drawn.pitch, rig.contacts_at(alpha)[0])
             } else {
                 Affine3A::from_rotation_translation(rot * Quat::from_rotation_x(drawn.pitch),
                     pos + Vec3::Y * 0.05 + rot * Vec3::new(0.45, 0.0, -0.12))

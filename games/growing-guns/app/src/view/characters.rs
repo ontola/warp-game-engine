@@ -41,6 +41,31 @@ pub struct Characters {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn support_wrist_reaches_magazine_and_sniper_contacts() {
+        use crate::gun::{Rig, Stats};
+        use super::super::guns::Guns;
+        for name in ROSTER {
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters").join(format!("{name}.json"));
+            let model = Character::load(&path).unwrap();
+            let arms = body::reach::TwoHandHold::bind(model.joints()).unwrap();
+            let wrist = model.joints().find(|(n, _)| n.ends_with("LeftHand")).unwrap().0;
+            let hand = model.sample_socket(IDLE, "RightHand", 0.25, true).unwrap().w_axis.truncate();
+            let body = model_transform(Vec3::ZERO, 0.0);
+            for spread in [Stats::default().spread, 0.0] {
+                let mut rig = Rig::default();
+                rig.set(Stats { spread, ..Stats::default() });
+                let [grip, support] = rig.build.wrist_contacts();
+                let offset = body.inverse().transform_vector3(Guns::held_transform(Vec3::ZERO, 0.0, 0.0, grip).transform_vector3(support - grip));
+                let mut palette = model.sample(IDLE, 0.25, true).unwrap();
+                let primary = arms.apply(&mut palette, hand, hand + offset);
+                let error = model.joint_position(wrist, &palette).unwrap().distance(primary + offset);
+                eprintln!("{name} spread {spread} support error {error:.4}m");
+                assert!(error < 0.015, "{name} wrist missed contact by {error}m");
+            }
+        }
+    }
+
+    #[test]
     fn rigid_pieces_are_a_fraction_of_the_model_and_follow_real_joints() {
         for name in super::ROSTER {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/characters").join(format!("{name}.json"));
@@ -86,6 +111,12 @@ mod tests {
 pub fn model_transform(pos: Vec3, yaw: f32) -> Affine3A {
     Affine3A::from_rotation_translation(
         Quat::from_rotation_y(yaw + std::f32::consts::PI), pos - Vec3::Y * 0.9)
+}
+
+// Roster bind pose: left fingers extend along +X, the back of the
+// hand faces +Y. Turn the palm inward against the side of the attachment.
+pub(crate) fn grip_rotation(pitch: f32) -> Quat {
+    Quat::from_rotation_x(-pitch) * Quat::from_mat3(&glam::Mat3::from_cols(Vec3::Z, Vec3::X, Vec3::Y))
 }
 
 fn mix(a: Mat4, b: Mat4, t: f32) -> Mat4 {
@@ -274,8 +305,9 @@ impl Characters {
             let drawn = crate::view::pose(world, i, prev, alpha);
             let body = model_transform(drawn.pos, drawn.yaw);
             let hand = body.transform_point3(socket.w_axis.truncate());
-            self.hands[i] = Some(if let (Some(arms), Some(target)) = (&actor.arms, guns.and_then(|g| g.support_target(i, hand, drawn.yaw, drawn.pitch))) {
+            self.hands[i] = Some(if let (Some(arms), Some(target)) = (&actor.arms, guns.and_then(|g| g.support_target(i, hand, drawn.yaw, drawn.pitch, alpha))) {
                 let wrist = arms.apply(&mut actor.palette, socket.w_axis.truncate(), body.inverse().transform_point3(target));
+                arms.orient_support(&mut actor.palette, grip_rotation(drawn.pitch));
                 body.transform_point3(wrist)
             } else { hand });
         }

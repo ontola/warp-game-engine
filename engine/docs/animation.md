@@ -15,12 +15,12 @@ Each solve measures the upper and lower segment lengths in the current pose. It 
 
 For a right-handed prop use `TwoHandHold::bind(model.joints())` once and `hold.apply(palette, primary, secondary)` after sampling. Place the prop at the returned primary wrist. The secondary hand reaches as far as the current skeleton allows.
 
-Growing Guns anchors the weapon to the animated right wrist, pitches around the grip and uses the left arm to support the receiver or growing foregrip. Its first-person view still shows only the weapon. For an identical-camera comparison of the sampled clip and corrected grip, run from the repository root:
+Growing Guns anchors the weapon to the animated right wrist, pitches around the grip and uses the left arm to hold the magazine and transfer onto the growing foregrip. Its first-person view still shows only the weapon. For an identical-camera comparison of the sampled clip and corrected grip, run from the repository root:
 
 ```sh
 cargo run -p growing-guns-app -- gun-review --grip --model knight --card sniper --clip pistol_run --time 0.24 --pitch 12 --out build/grip-review
 ```
 
-Inspect `clip.png` and `grip.png`. Other roster models are `paladin` and `ch10`. Omit the card for the base gun. Change time to sample the clip in seconds and pitch to aim in degrees. Wrist orientation, finger closure and a timed reach-to-pick-up action remain separate authoring tasks.
+Inspect `clip.png` and `grip.png`. Other roster models are `paladin` and `ch10`. Omit the card for the base gun. Change time to sample the clip in seconds and pitch to aim in degrees. The support palm turns inward against the attachment. Individual finger closure and a timed reach-to-pick-up action remain separate authoring tasks.
 
 Add `--growth --card sniper` to the grip review to capture 25 frames over the two-second weapon morph. The camera stays fixed relative to the character, and clip time stays fixed so the images isolate the grip response.
