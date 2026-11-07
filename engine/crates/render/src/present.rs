@@ -220,16 +220,45 @@ impl Presenter {
     pub fn present(&self, gpu: &Gpu, picture: &wgpu::Texture, target: &wgpu::TextureView,
         hud: Option<&crate::hud::HudRenderer>, profile: Option<&mut crate::hud_profile::HudProfiler>) -> Result<(), String> {
         if self.hdr.is_some() { return self.present_hdr(gpu, picture, None, target, hud, profile); }
-        let bind = {
-            let mut source = self.source.lock().unwrap();
-            let view = source.view.get(picture);
-            source.bind.get(gpu, &self.layout, "cached live frame", &[
-                (0, wgpu::BindingResource::TextureView(&view)),
-                (1, wgpu::BindingResource::Sampler(&self.sampler)),
-                (2, self.uniform.as_entire_binding()),
-            ])
-        };
-        self.present_bind(gpu,&bind,target,hud,profile)
+        let bind = self.picture_bind(gpu, picture);
+        self.present_bind(gpu,&bind,target,hud,profile,None)
+    }
+
+    fn picture_bind(&self, gpu: &Gpu, picture: &wgpu::Texture) -> wgpu::BindGroup {
+        let mut source = self.source.lock().unwrap();
+        let view = source.view.get(picture);
+        source.bind.get(gpu, &self.layout, "cached live frame", &[
+            (0, wgpu::BindingResource::TextureView(&view)),
+            (1, wgpu::BindingResource::Sampler(&self.sampler)),
+            (2, self.uniform.as_entire_binding()),
+        ])
+    }
+
+    /// Compose a screenshot once on the GPU. The attachment view uses the surface's
+    /// transfer function. Sampling the UNORM texture later gives encoded PNG bytes.
+    pub fn freeze_sdr(&self, gpu: &Gpu, picture: &wgpu::Texture, size: [u32;2], format: wgpu::TextureFormat,
+        hud: Option<&crate::hud::HudRenderer>) -> Result<wgpu::Texture, String> {
+        let encoded = format.remove_srgb_suffix();
+        if self.hdr.is_some() || !matches!(encoded, wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm) {
+            return Err(format!("unsupported SDR capture format {format:?}"));
+        }
+        let formats = [format];
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("frozen feedback frame"), size: wgpu::Extent3d {width:size[0], height:size[1], depth_or_array_layers:1}, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format: encoded,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: if format == encoded { &[] } else { &formats },
+        });
+        let target = texture.create_view(&wgpu::TextureViewDescriptor {format: Some(format), ..Default::default()});
+        self.present(gpu, picture, &target, hud, None)?;
+        Ok(texture)
+    }
+
+    /// Letterbox an encoded SDR image and draw the HUD in full window coordinates.
+    pub fn present_region(&self, gpu: &Gpu, picture: &wgpu::Texture, rect: [f32; 4],
+        target: &wgpu::TextureView, hud: &crate::hud::HudRenderer) -> Result<(), String> {
+        let bind = self.picture_bind(gpu, picture);
+        self.present_bind(gpu, &bind, target, Some(hud), None, Some(rect))
     }
 
     pub fn resource_cache_stats(&self) -> crate::frame::ResourceCacheStats {
@@ -251,11 +280,11 @@ impl Presenter {
                 wgpu::BindGroupEntry { binding: 2, resource: self.uniform.as_entire_binding() },
             ],
         });
-        self.present_bind(gpu,&bind,target,hud,profile)
+        self.present_bind(gpu,&bind,target,hud,profile,None)
     }
 
     fn present_bind(&self, gpu: &Gpu, bind: &wgpu::BindGroup, target: &wgpu::TextureView,
-        hud: Option<&crate::hud::HudRenderer>, mut profile: Option<&mut crate::hud_profile::HudProfiler>) -> Result<(), String> {
+        hud: Option<&crate::hud::HudRenderer>, mut profile: Option<&mut crate::hud_profile::HudProfiler>, rect: Option<[f32; 4]>) -> Result<(), String> {
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -264,6 +293,7 @@ impl Presenter {
                 depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
                 multiview_mask: None,
             });
+            if let Some([x,y,w,h]) = rect { pass.set_viewport(x,y,w,h,0.,1.); }
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, bind, &[]);
             pass.draw(0..3, 0..1);
