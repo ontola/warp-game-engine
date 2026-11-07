@@ -37,7 +37,67 @@ const ROWS: [(&str, f32, &str); 5] = [
     ("Palm roll", 180.0, "deg"),
     ("Aim pitch", 70.0, "deg"),
 ];
+const ANIMATION_MENU: u32 = app::debug::GAME_IDS;
+const PAUSED: u32 = ANIMATION_MENU + 1;
+const BONES: u32 = ANIMATION_MENU + 2;
+const CLEAR_OFFSETS: u32 = ANIMATION_MENU + 3;
+
 impl Game for Preview {
+    fn debug(
+        &self,
+    ) -> (
+        Vec<render::debug_ui::DebugMenu>,
+        Vec<render::debug_ui::DebugControl>,
+    ) {
+        use render::debug_ui::DebugValue;
+        let mut menus = app::editor::EditorMenus::default();
+        menus.page(
+            ANIMATION_MENU,
+            None,
+            "Animation preview",
+            "Inspect and adjust the current pose.",
+        );
+        menus.control(
+            ANIMATION_MENU,
+            PAUSED,
+            "Pause playback",
+            DebugValue::Toggle(self.inspector.paused),
+            "Freeze the animation while editing.",
+        );
+        menus.control(
+            ANIMATION_MENU,
+            BONES,
+            "Show skeleton",
+            DebugValue::Toggle(self.inspector.bones.shown),
+            "Display the editable joints.",
+        );
+        menus
+            .control(
+                ANIMATION_MENU,
+                CLEAR_OFFSETS,
+                "Reset grip sliders",
+                DebugValue::Button,
+                "Clear wrist, palm and aim offsets.",
+            )
+            .enabled = self.inspector.values.iter().any(|&v| v != 0.);
+        menus.finish()
+    }
+
+    fn debug_action(&mut self, action: render::debug_ui::DebugAction) {
+        use render::debug_ui::DebugAction::*;
+        match action {
+            SetToggle { id: PAUSED, value } => self.inspector.paused = value,
+            SetToggle { id: BONES, value } => self.inspector.bones.shown = value,
+            Activate { id: CLEAR_OFFSETS } => self.inspector.values.fill(0.),
+            ResetDefaults => {
+                self.inspector.paused = false;
+                self.inspector.bones.shown = true;
+                self.inspector.values.fill(0.);
+            }
+            _ => {}
+        }
+    }
+
     fn local_players(&self) -> usize {
         1
     }

@@ -22,3 +22,27 @@ The shared viewport owns scaled logical hit regions, joint picking, drag control
 Use the existing F10 controls for settings, choices and commands. Use direct viewport interaction for spatial edits. In the pose viewport, left-drag moves a joint in the view plane, right-drag rotates a joint or orbits empty space, middle-drag pans and the wheel zooms. F2 toggles bones. Reserve F10�F12 for shell controls.
 
 The pose viewport, F3 profiler and F10 inspector use `render::editor_style` for panel backgrounds, accent rails and text colours, and render through Warp's native HUD. Gameplay menus retain their game-specific styling. The [debug UI guide](debug-ui.md) covers input priority, held buttons and slider behaviour.
+
+## Game-owned editor menus
+
+In the Growing Guns animation preview, open **F10 → Animation preview** to pause playback, show the skeleton, or reset the grip sliders. The toggle values reflect changes made directly in the viewport. Reset grip sliders becomes available after an offset changes.
+
+Rust games implement `Game::debug` to build the current menu model. Start with `app::editor::EditorMenus::default()`, add a `page(id, parent, label, help)`, add each `control(page, id, label, value, help)`, and return `menus.finish()`. A control accepts a button, toggle, numeric range or choice. To disable it while keeping it visible, set the returned control's `enabled` field. Handle changes by stable ID in `Game::debug_action`. Give game pages and actions unique IDs in their respective namespaces starting at `app::debug::GAME_IDS` (1000). The shell supplies nesting, keyboard navigation, pointer handling and labels.
+
+Luau games can export pages of action buttons from their entry module. Declare parents first. Page definitions and callbacks reload with the script. This example adds **F10 → Character → Pose → Reset stance**.
+
+```lua
+return {
+    editor_pages = {
+        { id = 1000, label = "Character" },
+        { id = 1001, parent = 1000, label = "Pose", buttons = {
+            { id = 1002, label = "Reset stance", help = "Restore the default stance." },
+        }},
+    },
+    editor_action = function(id)
+        if id == 1002 then state.stance = "idle" end
+    end,
+}
+```
+
+Use `render::editor_style::EditorButton` for buttons drawn directly in an editor viewport. Use the same rectangle for drawing and hit testing. F10 uses this widget for action buttons, navigation, toggles and steppers; it supplies the enabled and highlighted states.

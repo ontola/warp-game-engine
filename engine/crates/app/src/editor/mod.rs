@@ -1,7 +1,9 @@
 //! Interactive tools for inspecting an animated model in a Warp game window.
+mod menus;
 mod skeleton;
 use body::pose_editor::PoseEditor;
 use glam::{Mat4, Quat, Vec3};
+pub use menus::EditorMenus;
 use render::{
     Camera, editor_style as style,
     hud::{FontFace, HudDrawList, TextAlign, TextRun},
@@ -22,6 +24,7 @@ pub struct PoseViewport<const N: usize> {
     pan_start: Option<[f32; 2]>,
     pub values: [f32; N],
     pub paused: bool,
+    cursor: Option<[f32; 2]>,
     slider: Option<usize>,
     orbit: Option<[f32; 2]>,
 }
@@ -49,6 +52,7 @@ impl<const N: usize> PoseViewport<N> {
             pan_start: None,
             values: [0.; N],
             paused: false,
+            cursor: None,
             slider: None,
             orbit: None,
         })
@@ -115,6 +119,7 @@ impl<const N: usize> PoseViewport<N> {
         let scale = ui_scale(size);
         let size = size.map(|v| (v as f32 / scale).round() as u32);
         p.position = p.position.map(|xy| xy.map(|v| v / scale));
+        self.cursor = p.position;
         let controls = p.position.is_some_and(|[x, y]| {
             (8.0..WIDTH).contains(&x)
                 && (Self::top(size[1])..Self::top(size[1]) + ROW * (N + 1) as f32).contains(&y)
@@ -167,9 +172,12 @@ impl<const N: usize> PoseViewport<N> {
                 let index = row as usize;
                 if index < N {
                     self.slider = Some(index);
-                } else if x < WIDTH * 0.5 {
+                } else if Self::buttons(size[1])[0].contains([x, y]) {
                     self.paused = !self.paused;
                 } else {
+                    if !Self::buttons(size[1])[1].contains([x, y]) {
+                        return;
+                    }
                     self.pan = Vec3::ZERO;
                     self.yaw = 0.;
                     self.pitch = 0.;
@@ -229,13 +237,31 @@ impl<const N: usize> PoseViewport<N> {
                 format!("{name}  {value:.0} {unit}"),
             );
         }
-        label(
-            hud,
-            20,
-            [16.0, top + ROW * N as f32 + 3.0],
-            if self.paused { "Resume" } else { "Pause" }.into(),
-        );
-        label(hud, 21, [TRACK, top + ROW * N as f32 + 3.0], "Reset".into());
+        for (i, button) in Self::buttons(hud.size[1]).into_iter().enumerate() {
+            let name = if i == 1 {
+                "Reset"
+            } else if self.paused {
+                "Resume"
+            } else {
+                "Pause"
+            };
+            button.draw(
+                hud,
+                20 + i as u64,
+                name,
+                clip,
+                15.,
+                self.cursor.is_some_and(|p| button.contains(p)),
+                true,
+            );
+        }
+    }
+    fn buttons(height: u32) -> [style::EditorButton; 2] {
+        let y = Self::top(height) + ROW * N as f32 + 2.;
+        [
+            style::EditorButton([12., y, 110., ROW - 4.]),
+            style::EditorButton([126., y, 112., ROW - 4.]),
+        ]
     }
 }
 fn ui_scale(size: [u32; 2]) -> f32 {
