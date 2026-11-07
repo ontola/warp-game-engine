@@ -3,6 +3,8 @@
 
 #[path="stage_loading.rs"]
 mod stage_loading;
+#[path="feedback_point.rs"]
+mod feedback_point;
 #[path="frame_profile.rs"]
 mod frame_profile;
 #[path="scenario.rs"]
@@ -380,6 +382,10 @@ struct App {
     manners: app::manners::Manners,
     hud_stats: serde_json::Value, hud_samples: Vec<serde_json::Value>,
     recorder: crate::drive_capture::Recorder,
+    point_picker: Option<feedback_point::Picker>,
+    point_requested: bool,
+    shift_down: bool,
+    cursor: Option<[f64;2]>,
     screenshot_pending: bool, screenshot_toast: Option<(String, Instant)>,
     sound: Option<crate::audio_out::Sound>, sound_failed: bool,
     exhaust: crate::exhaust_fx::ExhaustFx,
@@ -950,6 +956,9 @@ impl App {
             vec![]
         } else {self.host.as_mut().map(|h|h.poll()).unwrap_or_default()};
         for command in commands {
+            if self.point_picker.is_some() && matches!(&command, Command::Prepare{..}|Command::Pause{..}|Command::Dispose{..}|Command::Action{..}) {
+                self.end_point_picker("Screenshot saved".into());
+            }
             if (self.loading.is_some() || self.tree_loading.is_some()) && matches!(&command,Command::Prepare{..}|Command::Setting{..}|Command::Roster{..}|Command::PlayersUpdated{..}|Command::Action{..}) {
                 if matches!(&command,Command::Prepare{..}) {if let Some(loading)=&self.loading {loading.cancel();}}
                 self.deferred_host.push(command);continue;
@@ -1102,6 +1111,11 @@ impl App {
         if self.tree_loading.is_some(){
             if !self.poll_host(event_loop)? {return Ok(());}
             frame_profile::phase(trace,"vegetation_loading");frame_profile::section(trace,"vegetation_loading");return self.tree_loading_frame();
+        }
+        if self.point_picker.is_some() {
+            if !self.poll_host(event_loop)? || self.point_picker.is_none() {return Ok(());}
+            frame_profile::phase(trace,"feedback_selection");
+            return self.draw_point_picker();
         }
         let scenario_section_changed=self.apply_scenario_section()?;
         if !self.poll_host(event_loop)?{return Ok(());}
@@ -1548,8 +1562,20 @@ impl App {
                     "half_extent_m":s.far_sun_extent_m,"texel_m":s.far_sun_texel_m,"clusters":s.far_sun_clusters,
                     "triangles":s.far_sun_triangles,"submitted_vertices":s.far_sun_submitted_vertices});
             }
+            let mark=std::mem::take(&mut self.point_requested);
             let saved=g.presenter.capture_rgba(&g.gpu,&image,g.config.format,g.hud.as_ref().filter(|_|draw_list.is_some()))
-                .and_then(|rgba|app::screenshot::save_annotated(app::screenshot::Shot{title:"Sideways",size:[size.width,size.height],rgba:&rgba,metadata}, |_| Ok(None), |png, meta| crate::drive_capture::save_visibility(png,meta,capture_stats.as_ref().unwrap(),&self.built)).map(|saved|saved.line));
+                .and_then(|rgba|{
+                    let saved=app::screenshot::save_annotated(app::screenshot::Shot{title:"Sideways",size:[size.width,size.height],rgba:&rgba,metadata}, |_| Ok(None), |png, meta| crate::drive_capture::save_visibility(png,meta,capture_stats.as_ref().unwrap(),&self.built))?;
+                    let line=saved.line.clone();
+                    if mark {
+                        self.point_picker=Some(feedback_point::Picker::new(saved,size.width,size.height,rgba)?);
+                        self.input.clear_keys();self.input_edges=[(0,false);4];
+                        self.window.as_ref().unwrap().set_cursor(winit::window::CursorIcon::Crosshair);
+                        if let Some(sound)=&self.sound {sound.pause(true);}
+                        self.window.as_ref().unwrap().request_redraw();
+                    }
+                    Ok(line)
+                });
             let message=match saved{Ok(message)=>message,Err(error)=>{eprintln!("screenshot failed: {error}");format!("Screenshot failed: {error}")}};
             self.window.as_ref().unwrap().set_title(&format!("Sideways | {message}"));
             self.screenshot_toast=Some((message,Instant::now()+Duration::from_secs(4)));
@@ -1560,7 +1586,7 @@ impl App {
             let player = &self.race.players[0];
             let body = &self.race.phys.world.bodies[player.car.body];
             let speed = body.linvel().length() * 3.6;
-            self.window.as_ref().unwrap().set_title(&format!("Sideways | {:.0} km/h | gear {} | {} {:.1}s{} | RT/W gas, LT/S brake, A/Space handbrake, X/R reset, Start/Esc pause, N next stage, F12 screenshot{}", speed, player.car.gear, self.race.phase, self.race.clock, if self.paused { " PAUSED" } else { "" }, self.screenshot_toast.as_ref().map(|(text,_)|format!(" | {text}")).unwrap_or_default()));
+            self.window.as_ref().unwrap().set_title(&format!("Sideways | {:.0} km/h | gear {} | {} {:.1}s{} | RT/W gas, LT/S brake, A/Space handbrake, X/R reset, Start/Esc pause, N next stage, F12 screenshot, Shift+F12 mark{}", speed, player.car.gear, self.race.phase, self.race.clock, if self.paused { " PAUSED" } else { "" }, self.screenshot_toast.as_ref().map(|(text,_)|format!(" | {text}")).unwrap_or_default()));
         }
         self.trace(false);
         Ok(())
@@ -1615,6 +1641,29 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self,event_loop:&ActiveEventLoop,_id:WindowId,event:WindowEvent) {
+        match &event {
+            WindowEvent::ModifiersChanged(m)=>self.shift_down=m.state().shift_key(),
+            WindowEvent::CursorMoved{position,..}=>self.cursor=Some([position.x,position.y]),
+            WindowEvent::CursorLeft{..}=>self.cursor=None,
+            WindowEvent::Focused(false)=>{self.shift_down=false; self.cursor=None;}
+            _=>{}
+        }
+        if self.point_picker.is_some() {
+            match &event {
+                WindowEvent::KeyboardInput{event,..}=>{
+                    if event.physical_key==PhysicalKey::Code(KeyCode::Escape) && event.state==ElementState::Pressed && !event.repeat {
+                        self.end_point_picker("Screenshot saved without a point".into());
+                    }
+                    return;
+                }
+                WindowEvent::MouseInput{button:MouseButton::Left,state:ElementState::Pressed,..}=>{
+                    self.select_feedback_point();return;
+                }
+                WindowEvent::Occluded(false)=>{self.window.as_ref().unwrap().request_redraw();}
+                WindowEvent::MouseInput{..}|WindowEvent::CursorMoved{..}|WindowEvent::MouseWheel{..}=>return,
+                _=>{}
+            }
+        }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && let PhysicalKey::Code(code) = event.physical_key
             && let Some(action) = app::engine_shortcut(code) {
@@ -1628,7 +1677,7 @@ impl ApplicationHandler for App {
                     app::EngineShortcut::Fullscreen => if let Some(w) = &self.window {
                         w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) });
                     },
-                    app::EngineShortcut::Screenshot => self.screenshot_pending = true,
+                    app::EngineShortcut::Screenshot => {self.screenshot_pending=true; self.point_requested=self.shift_down;}
                 }
             }
             return;
@@ -1662,7 +1711,7 @@ impl ApplicationHandler for App {
                 self.sync_debug_focus(before);
             },
             WindowEvent::MouseWheel{delta,..}=>{let lines=match delta {MouseScrollDelta::LineDelta(_,y)=>-y,MouseScrollDelta::PixelDelta(p)=>-p.y as f32/40.0};self.debug.scroll(lines,[self.args.size.0,self.args.size.1]);},
-            WindowEvent::Resized(size)=>{self.debug.cancel_interaction();if size.width>0&&size.height>0{self.args.size=(size.width,size.height);if let Some(g)=&mut self.graphics{g.config.width=size.width;g.config.height=size.height;g.surface.configure(&g.gpu.device,&g.config);g.renderer.reset_history();}}},
+            WindowEvent::Resized(size)=>{if let Some(p)=&mut self.point_picker{p.resized();self.window.as_ref().unwrap().request_redraw();}self.debug.cancel_interaction();if size.width>0&&size.height>0{self.args.size=(size.width,size.height);if let Some(g)=&mut self.graphics{g.config.width=size.width;g.config.height=size.height;g.surface.configure(&g.gpu.device,&g.config);g.renderer.reset_history();}}},
             WindowEvent::RedrawRequested=>if !self.invisible() && !event_loop.exiting(){
                 if let Err(e)=self.frame(event_loop){eprintln!("play: {e}");self.error=Some(e);self.finish(event_loop,"frame_error");}
             },
@@ -1678,6 +1727,20 @@ impl ApplicationHandler for App {
         if self.host.is_some() && self.args.smoke_frames==0 {
             let fullscreen=self.resume_fullscreen.is_some()||self.host.as_ref().is_some_and(|h|h.launched_by_daemon);
             if let Some(window)=&self.window {self.manners.step(window,self.focused,fullscreen);}
+        }
+        if self.point_picker.is_some() {
+            if self.host.is_none() {
+                event_loop.set_control_flow(ControlFlow::Wait);
+            } else {
+                let next=self.last_frame+Duration::from_millis(33);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+                if Instant::now()>=next {
+                    self.last_frame=Instant::now();
+                    if self.invisible(){if let Err(e)=self.frame(event_loop){self.error=Some(e);self.finish(event_loop,"frame_error");}}
+                    else {self.window.as_ref().unwrap().request_redraw();}
+                }
+            }
+            return;
         }
         if self.invisible() {
             if let Err(e)=self.frame(event_loop){eprintln!("play: {e}");self.error=Some(e);self.finish(event_loop,"frame_error");}
@@ -1784,7 +1847,7 @@ pub fn run(raw:&[String])->i32{
     let mut exhaust=crate::exhaust_fx::ExhaustFx::new(a.seed);exhaust.step(&race);
     let mut wheel_effects=crate::wheel_effects::WheelEffects::new(a.seed);wheel_effects.step(&race);
     let start_paused=a.start_paused;
-    let mut app=App{debug,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,manners:Default::default(),hud_stats:serde_json::Value::Null,hud_samples:vec![],recorder:Default::default(),screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,outputs:[None,None],deferred_host:vec![],ready_due:None,smoke_stage_requested:false,quality:None};
+    let mut app=App{debug,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,manners:Default::default(),hud_stats:serde_json::Value::Null,hud_samples:vec![],recorder:Default::default(),point_picker:None,point_requested:false,shift_down:false,cursor:None,screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,outputs:[None,None],deferred_host:vec![],ready_due:None,smoke_stage_requested:false,quality:None};
     app.startup_timing.mark("host_input_application_setup");
     let events=match EventLoop::new(){Ok(e)=>e,Err(e)=>{eprintln!("play event loop: {e}");return 1;}};
     app.startup_timing.mark("event_loop_creation");

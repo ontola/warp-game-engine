@@ -311,23 +311,26 @@ pub fn curvature(parts: &[(&[Vertex], &[u32])]) -> Vec<Vec<[f32; 2]>> {
 }
 
 /// Body first, followed by the wheels that the model contains, in suspension order.
-fn parts<'a>(m: &'a CarMeshes, ride: f32, wheels: &'a [Wheel]) -> impl Iterator<Item = (usize, Affine3A)> + 'a {
-    let body = (m.body, Affine3A::from_translation(Vec3::Y * ride));
-    std::iter::once(body).chain(m.wheels.iter().zip(wheels).filter_map(|(&mesh, w)| {
+fn parts<'a>(m: &'a CarMeshes, ride: f32, wheels: &'a [Wheel]) -> impl Iterator<Item = (&'static str, usize, Affine3A)> + 'a {
+    let body = ("body", m.body, Affine3A::from_translation(Vec3::Y * ride));
+    std::iter::once(body).chain(["wheel_FL","wheel_FR","wheel_RL","wheel_RR"].into_iter().zip(m.wheels.iter().zip(wheels)).filter_map(|(name,(&mesh, w))| {
         let rotation = Quat::from_rotation_y(w.steer) * Quat::from_rotation_x(-w.spin);
-        Some((mesh?, Affine3A::from_rotation_translation(rotation, w.anchor + Vec3::Y * w.compression)))
+        Some((name, mesh?, Affine3A::from_rotation_translation(rotation, w.anchor + Vec3::Y * w.compression)))
     }))
 }
 
-pub fn place(scene: &mut Scene, m: &CarMeshes, pose: Affine3A, ride: f32, wheels: &[Wheel]) {
-    for (i, (mesh, local)) in parts(m, ride, wheels).enumerate() {
+pub fn place(scene: &mut Scene, m: &CarMeshes, pose: Affine3A, ride: f32, wheels: &[Wheel]) -> Vec<&'static str> {
+    let mut names=Vec::with_capacity(5);
+    for (i, (name, mesh, local)) in parts(m, ride, wheels).enumerate() {
         scene.add_instance(mesh, pose * local);
+        names.push(name);
         if i == 0 { scene.mark_solid(); }
     }
+    names
 }
 
 pub fn update(scene: &mut Scene, first: usize, m: &CarMeshes, pose: Affine3A, ride: f32, wheels: &[Wheel]) {
-    scene.update_children(first, pose, parts(m, ride, wheels));
+    scene.update_children(first, pose, parts(m, ride, wheels).map(|(_,mesh,local)|(mesh,local)));
 }
 
 #[cfg(test)]
@@ -343,7 +346,7 @@ mod tests {
             anchor: Vec3::new(f, 0.5, -f), compression: f * 0.1, steer: f, spin: f * 2.0,
         });
         let root = Affine3A::from_rotation_translation(Quat::from_rotation_z(0.4), Vec3::new(11.0, 2.0, -5.0));
-        place(&mut scene, &car, root, 0.12, &wheels);
+        assert_eq!(place(&mut scene, &car, root, 0.12, &wheels), ["body","wheel_FL","wheel_RL","wheel_RR"]);
         for pose in [root, root * root] {
             if pose != root { update(&mut scene, 0, &car, pose, 0.12, &wheels); }
             let mut expected = vec![pose * Affine3A::from_translation(Vec3::Y * 0.12)];

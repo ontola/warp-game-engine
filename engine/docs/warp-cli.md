@@ -532,7 +532,7 @@ for opaque reconstruction/clipping, not forward transparency or ray-query masks.
 
 ## Sideways feedback
 
-During a Sideways drive, press F12. Keep the PNG, JSON and same-basename
+During a Sideways drive, press F12 to capture. Press **Shift+F12** to capture and point out a problem. Click the frozen image or press Esc to keep the capture without a point. A click saves `player_point: [x, y]` in original PNG pixels. The MCP feedback preview circles it. On a marked capture, `warp inspect F12.json` prints the point and its surface as JSON. Use `--preview` to view the ring or `--pixel X Y` to inspect another spot. Keep the PNG, JSON and same-basename
 view attachments together. In a developer checkout with Python 3 and Pillow,
 run the following commands. Set `WARP_PYTHON` to an interpreter path if needed.
 
@@ -564,7 +564,11 @@ through the comparison window.
 Click the PNG in the inspector, or pass output-pixel coordinates from its top
 left. The inspector maps the point through the captured split viewport and
 internal resolution. For source triangles it reports the instance, mesh,
-cluster LOD depth, material, shading path and triangle. It reads the opaque
+cluster LOD depth, material, shading path and triangle. New Sideways captures
+also report `hierarchy` for a car body or wheel (car index, model, named part
+and body instance), a rigid plant part (pose indices from the hit to its root),
+or a baked animated part (actor and bone indices). These IDs belong to that
+capture. Terrain chunks and other ungrouped meshes have no hierarchy field. It reads the opaque
 visibility buffer of the capture frame. Transparent effects, HUD and temporal
 reconstruction may cover that source. Sky, voxels, gaps and profiles without
 source visibility have explicit results. Older PNG/JSON pairs lack this buffer.

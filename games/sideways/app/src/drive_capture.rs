@@ -291,6 +291,24 @@ pub fn save_visibility(
         .zip(&built.mesh_names)
         .map(|(m, n)| (m.first_cluster, n))
         .collect();
+    // Owner indices come from this frame's visibility buffer. Model slot labels
+    // come from allocation order, including glTFs with absent wheel nodes.
+    let mut car_parts = BTreeMap::new();
+    for (car_index, car) in built.cars.iter().enumerate() {
+        for (offset, name) in car.part_names.iter().enumerate() {
+            car_parts.insert((car.first + offset) as u32, json!({"kind":"car",
+                "car_index":car_index,"model":car.model,"part":name,"body_instance":car.first}));
+        }
+    }
+    let mut poses = BTreeMap::new();
+    for (index, part) in built.scene.part_wind.iter().enumerate() {
+        if let Some(owner)=part.owner {poses.insert(owner,index as u32);}
+    }
+    for attachment in &built.scene.part_attachments {poses.insert(attachment.owner,attachment.pose);}
+    let mut actor_parts = BTreeMap::new();
+    if let Some(animation)=&built.scene.baked_animations {
+        for part in &animation.parts {actor_parts.insert(part.owner,(part.actor,part.bone));}
+    }
     for (index, v) in stats.visibility.iter().enumerate() {
         let ids = png.with_extension(format!("view{index}.ids.png"));
         let table = png.with_extension(format!("view{index}.pairs"));
@@ -303,8 +321,17 @@ pub fn save_visibility(
             }
             if let Some(i) = built.scene.instances.get(owner as usize) {
                 owners.entry(owner).or_insert_with(|| {
-                    json!({"mesh":meshes.get(&i.first_cluster),
-                    "category":format!("{:?}",i.category()),"transform":i.rows})
+                    let mut info=json!({"mesh":meshes.get(&i.first_cluster),
+                        "category":format!("{:?}",i.category()),"transform":i.rows});
+                    if let Some(car)=car_parts.get(&owner) {
+                        info["hierarchy"]=car.clone();
+                    } else if let Some(&pose)=poses.get(&owner) {
+                        let path:Vec<_>=kern::parenting::ancestors(pose,|p|built.scene.part_wind[p as usize].parent).collect();
+                        info["hierarchy"]=json!({"kind":"plant","pose_to_root":path,"root_pose":path.last()});
+                    } else if let Some(&(actor,bone))=actor_parts.get(&owner) {
+                        info["hierarchy"]=json!({"kind":"animated_actor","actor":actor,"bone":bone});
+                    }
+                    info
                 });
             }
             if let Some(c) = built.scene.clusters.get(cluster as usize) {

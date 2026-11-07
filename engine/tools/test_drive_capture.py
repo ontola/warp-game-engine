@@ -27,6 +27,21 @@ class RunnerIsolation(unittest.TestCase):
 
 
 class PixelInspection(unittest.TestCase):
+    def test_marked_capture_uses_original_pixel_without_opening_window(self):
+        from argparse import Namespace
+        from io import StringIO
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "marked.json"
+            path.write_text(json.dumps({"capture": {"size": [100, 50]}, "player_point": [70, 30]}))
+            args = Namespace(capture=path, pixel=None, preview=False)
+            with patch("sys.stdout", new_callable=StringIO) as out:
+                capture.inspect(args)
+                self.assertEqual(json.loads(out.getvalue())["player_point"], [70, 30])
+            args.pixel = [10, 10]
+            with patch("sys.stdout", new_callable=StringIO) as out:
+                capture.inspect(args)
+                self.assertNotIn("player_point", json.loads(out.getvalue()))
+
     def test_internal_resolution_and_split_view_origin(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
