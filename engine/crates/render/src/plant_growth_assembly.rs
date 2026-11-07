@@ -219,7 +219,8 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
             continue;
         }
         let b = bone_of(t.segment);
-        let size = 0.75 + 0.45 * t.fullness;
+        // Kept tufts grow to cover for the ones the placement limit leaves out.
+        let size = (0.75 + 0.45 * t.fullness) / keep.sqrt();
         let twist = Quat::from_axis_angle(Vec3::Y, unit(seed, i as u64, 10) * TAU);
         let world = Mat4::from_scale_rotation_translation(Vec3::splat(size), along(Vec3::ZERO, t.axis) * twist, t.at);
         let part = 3 + (unit(seed, i as u64, 11) * parts.tufts.len() as f32) as u32 % parts.tufts.len().max(1) as u32;

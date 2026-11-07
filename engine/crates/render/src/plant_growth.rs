@@ -57,7 +57,7 @@ impl Species {
         Self {
             height: 46.0, pace: 62.0, shape: 1.75, first_whorl: 3, whorl: [3, 5], laterals: 0.42, max_order: 3,
             limb_step: 0.30, side_length: 0.6, limb_life: [60, 150], crowding: 7, angle: [1.05, 1.4], rise: 0.05, droop: 0.012,
-            needle_years: 4, shade: 0.028, min_light: 0.3, tip_radius: 0.005, wood: 0.0035, limb_wood: 0.5, dead_years: 18,
+            needle_years: 4, shade: 0.028, min_light: 0.3, tip_radius: 0.005, wood: 0.0035, limb_wood: 0.62, dead_years: 18,
         }
     }
 }
@@ -194,7 +194,10 @@ pub fn grow(species: &Species, age: u32, seed: u64) -> Plant {
                 let k = (apex.at / SHADE_CELL).floor();
                 let crowd = *crowd.get(&(k.x as i32, k.y as i32, k.z as i32)).unwrap_or(&0);
                 let crowded = crowd > s.crowding && hash(seed, id, 70) < 1.0 - s.crowding as f32 / crowd as f32;
-                if light < s.min_light || crowded || year - apex.limb[0] > apex.limb[1] {
+                // Past its span a limb only lives on where its shoots still reach good light:
+                // dominant lower limbs of an old pine keep going, shaded ones do not.
+                let spent = year - apex.limb[0] > apex.limb[1] && light < 0.75;
+                if light < s.min_light || crowded || spent {
                     continue;
                 }
             }
@@ -202,7 +205,7 @@ pub fn grow(species: &Species, age: u32, seed: u64) -> Plant {
             let length = if apex.order == 0 {
                 leader_step.max(0.03)
             } else {
-                let slowing = 1.0 / (1.0 + (year - apex.limb[0]) as f32 / 40.0);
+                let slowing = 1.0 / (1.0 + (year - apex.limb[0]) as f32 / 80.0);
                 (s.limb_step * s.side_length.powi(apex.order as i32 - 1) * slowing * apex.vigour * light.sqrt() * (0.7 + 0.6 * hash(seed, id, 3))).max(0.02)
             };
             let axis = if apex.order == 0 {
@@ -327,7 +330,9 @@ mod tests {
         let s = Species::jeffrey_pine();
         let (young, old) = (grow(&s, 12, 2), grow(&s, 200, 2));
         assert!(young.crown_base() < 0.35 * young.height());
-        assert!(old.crown_base() > 0.35 * old.height(), "{} of {}", old.crown_base(), old.height());
+        // Old jeffreyi: a clear lower trunk under big, still living limbs.
+        assert!(old.crown_base() > 0.2 * old.height(), "{} of {}", old.crown_base(), old.height());
+        assert!(old.crown_radius() > 0.2 * old.height());
     }
 
     #[test]
