@@ -92,9 +92,30 @@ const GROWN_ASSEMBLY_VERSION: u32 = 11;
 /// A grown limb holds many more parts than a recipe branch: sixteen times
 /// the reference cells, scratch and samples, and 4 GiB of build memory per group.
 fn grown_config(base: Config) -> Config {
-    Config { max_reference_voxels: base.max_reference_voxels * 16, max_scratch_bytes: base.max_scratch_bytes * 16,
+    // The root's whole-subtree cook takes every placement: room for all a
+    // grown plant may have.
+    Config { max_placements: base.max_placements.max(crate::plant_growth_assembly::limits().max_instances),
+        max_reference_voxels: base.max_reference_voxels * 16, max_scratch_bytes: base.max_scratch_bytes * 16,
         max_samples: base.max_samples * 16, max_source_triangles: base.max_source_triangles * 4,
         max_diagnostic_steps: base.max_diagnostic_steps * 16, max_build_bytes: base.max_build_bytes.max(4 << 30), ..base }
+}
+
+/// One grown plant without the cache, and the milliseconds of each stage:
+/// grow, assemble, cook_aggregate (source + voxel levels per branch and
+/// geometry group) and cook_proxy (the whole-plant voxel pyramid).
+pub fn cook_grown_stages(species: crate::plant_growth::Species, age: u32, seed: u64, parts: &crate::plant_growth_assembly::Parts,
+    look: crate::plant_growth_assembly::Look) -> Result<(CookedPlant, [f64; 4]), String> {
+    let (config, proxy) = (grown_config(aggregate_config()), grown_config(proxy_config()));
+    let mut at = web_time::Instant::now();
+    let mut lap = || { let ms = at.elapsed().as_secs_f64() * 1000.0; at = web_time::Instant::now(); ms };
+    let plant = crate::plant_growth::grow(&species, age, seed);
+    let grown = lap();
+    let (assembly, _) = crate::plant_growth_assembly::assemble(&plant, parts, look, seed, crate::plant_growth_assembly::limits())?;
+    let assembled = lap();
+    let mut cooked = CookedPlant::cook_aggregate(&assembly, config)?;
+    let aggregated = lap();
+    cooked.cook_proxy(&assembly, proxy, PROXY_LEVELS)?;
+    Ok((cooked, [grown, assembled, aggregated, lap()]))
 }
 
 /// Cook grown plants: each (species, age, seed) grows by its rules and is
@@ -110,13 +131,7 @@ pub fn cook_grown(variants: &[(crate::plant_growth::Species, u32, u64)], parts: 
         let _ = scope;
         variants.iter().map(|&(species, age, seed)| (|| -> Result<Cooked, String> {
             let started = web_time::Instant::now();
-            let cook = || {
-                let plant = crate::plant_growth::grow(&species, age, seed);
-                let (assembly, _) = crate::plant_growth_assembly::assemble(&plant, parts, look, seed, limits)?;
-                let mut cooked = CookedPlant::cook_aggregate(&assembly, config)?;
-                cooked.cook_proxy(&assembly, proxy, PROXY_LEVELS)?;
-                Ok(cooked)
-            };
+            let cook = || cook_grown_stages(species, age, seed, parts, look).map(|(c, _)| c);
             let (plant, loaded) = match cache {
                 Some(dir) => {
                     // The growth and assembly code is part of the cook code key.

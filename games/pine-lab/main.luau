@@ -1,6 +1,7 @@
 -- Pine lab: a row of Jeffrey pines from seedling to old tree, regrown from
--- the rules in the panel. Arrows pick and change a rule, F toggles the full
--- (voxel) cook, R resets a rule, Tab hides the panel. Changes are saved in
+-- the rules in the panel. Each tree shows its source meshes at once and
+-- swaps to its full (voxel) cook when that is done; F toggles previews only.
+-- R resets a rule, Tab hides the panel. Changes are saved in
 -- tuning.json. Rules are render::plant_growth::Species and Look fields.
 
 -- @knobs
@@ -128,7 +129,7 @@ local function init()
 		end
 	end
 	state.pick = 1
-	state.full = false
+	state.full = true
 	state.panel = true
 	state.repeat_at = 0
 	world.spawn("cube", { pos = vector.create(0, -0.5, 0), size = vector.create(2000, 1, 2000), color = "#7b8f5a", roughness = 0.95, tag = "floor" })
@@ -218,8 +219,9 @@ local function draw()
 		if x then hud.text(t.age .. " y", x - 60 * s, y, { size = 26 * s, align = "center", width = 120 * s }) end
 	end
 	local st = plants.status()
-	local status = string.format("%s   %d of %d shown%s%s", if state.full then "full cook (F)" else "preview (F)", st.shown, st.placed,
+	local status = string.format("%s   %d of %d shown%s%s%s", if state.full then "voxels when cooked (F)" else "previews only (F)", st.shown, st.placed,
 		if st.cooking > 0 then string.format(", %d cooking", st.cooking) else "",
+		if (st.upgrading or 0) > 0 then string.format(", %d cooking voxels", st.upgrading) else "",
 		if state.dirty_at then ", waiting for changes to settle" else "")
 	hud.text(status, 24 * s, h - 48 * s, { size = 26 * s })
 	if st.error then hud.text("cook failed: " .. st.error, 24 * s, h - 84 * s, { size = 24 * s, color = "#ff8080" }) end
