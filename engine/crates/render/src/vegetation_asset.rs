@@ -278,11 +278,15 @@ impl CookedPlant {
         // assemblies). Its aggregate still covers every descendant; exact
         // source leaves are emitted only for branches with actual members.
         let cooker = crate::vegetation_aggregate::Cooker::new(source,config)?;
-        for branch in 0..plant.branches.len() {
+        // Branches cook independently: in parallel, applied in order.
+        let assets = crate::par::map(plant.branches.len(), |branch| {
             let members: Vec<u32> = plant.placements.iter().enumerate().filter(|(_,p)|p.branch==branch).map(|(i,_)|i as u32).collect();
-            if members.is_empty() { continue; }
-            let asset = cooker.cook(&members,plant.branches[branch].assembly_rest)
-                .map_err(|e|format!("aggregate branch {branch}: {e}"))?;
+            if members.is_empty() { return Ok(None); }
+            cooker.cook(&members,plant.branches[branch].assembly_rest).map(Some)
+                .map_err(|e|format!("aggregate branch {branch}: {e}"))
+        });
+        for (branch, asset) in assets.into_iter().enumerate() {
+            let Some(asset) = asset? else { continue };
             plant.branches[branch].aggregate = aggregate_candidates(&asset,0.0);
             plant.branches[branch].volume = Some(asset.volume);
         }

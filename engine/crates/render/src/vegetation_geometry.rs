@@ -78,12 +78,17 @@ pub(super) fn build(plant: &CookedPlant) -> Result<Vec<GeometryGroup>, String> {
 
 pub(super) fn cook(plant: &mut CookedPlant, source: &Assembly, config: crate::vegetation_aggregate::Config) -> Result<(), String> {
     let cooker=crate::vegetation_aggregate::Cooker::new(source,config)?;
-    for index in 1..plant.geometry.len() {
+    // Groups cook independently: in parallel, applied in order.
+    let assets=crate::par::map(plant.geometry.len(),|index| {
         let group=&plant.geometry[index];
-        if group.children.is_none() {continue;}
-        let frame=group.frame_branch as usize;
-        let asset=cooker.cook_static_subtree(&group.members,group.frame_branch,plant.branches[frame].assembly_rest)
-            .map_err(|e|format!("geometry group {index}: {e}"))?;
+        if index==0 || group.children.is_none() {return Ok(None);}
+        cooker.cook_static_subtree(&group.members,group.frame_branch,plant.branches[group.frame_branch as usize].assembly_rest)
+            .map(Some).map_err(|e|format!("geometry group {index}: {e}"))
+    });
+    for (index,asset) in assets.into_iter().enumerate() {
+        let Some(asset)=asset? else {continue};
+        let frame=plant.geometry[index].frame_branch as usize;
+        let group=&plant.geometry[index];
         let mut motion=0.0f32;
         for &member in &group.members {
             let p=&plant.placements[member as usize];
