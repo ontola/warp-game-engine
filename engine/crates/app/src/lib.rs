@@ -5,7 +5,7 @@
 //!
 //! Built-in keys: click captures the mouse, Esc releases it (or quits when
 //! released). F2 always opens the engine debug menu ([`debug`]), Alt+Enter toggles
-//! fullscreen, F4 saves a feedback screenshot (PNG, JSON and the clipboard;
+//! fullscreen, F4 opens point selection on a feedback screenshot (PNG, JSON and the clipboard;
 //! see [`screenshot`]); Shift+F4, or F4 twice, then a dragged rectangle
 //! saves a crop of it. These reserved keys run before game/menu/text input.
 //! F1 toggles all editor windows. F5 through F12 belong to games. F3 opens the engine's stats overlay ([`stats`], Shift+F3 for depth).
@@ -30,6 +30,7 @@ pub mod ui;
 pub mod manners;
 pub mod startup;
 pub mod screenshot;
+pub mod feedback;
 pub mod quality;
 pub mod emulate;
 mod frame_log;
@@ -364,6 +365,18 @@ impl Output {
     /// new HUD (a debug menu stays responsive when the scene is slow).
     #[allow(clippy::too_many_arguments)]
     fn draw_with(&mut self, gpu: &Gpu, renderer: &Renderer, draw: &Draw, size: [u32; 2], split: render::SplitLayout, target: &wgpu::TextureView, max_height: Option<u32>, scene: bool) -> Result<(), String> {
+        self.prepare(gpu, renderer, draw, size, split, max_height, scene)?;
+        let picture = self.picture.as_ref().unwrap();
+        let started = Instant::now();
+        // An HDR surface shows the renderer's HDR copy when it matches this picture.
+        let hdr = if self.presenter.is_hdr() { renderer.hdr_output().filter(|t| t.size() == picture.size()) } else { None };
+        self.presenter.present_hdr(gpu, picture, hdr.as_ref(), target, Some(&self.hud), None)?;
+        self.timings.present_ms = started.elapsed().as_secs_f64() * 1000.;
+        Ok(())
+    }
+
+    fn prepare(&mut self, gpu: &Gpu, renderer: &Renderer, draw: &Draw, size: [u32; 2],
+        split: render::SplitLayout, max_height: Option<u32>, scene: bool) -> Result<(), String> {
         let size = match max_height { Some(m) if m > 0 && size[1] > m => [(size[0] as u64 * m as u64 / size[1] as u64).max(1) as u32, m], _ => size };
         let rects = render::split_rects_with(draw.cameras.len(), size[0], size[1], split);
         let views: Vec<ViewRect> = draw.cameras.iter().zip(&rects).map(|(&cam, &(x, y, w, h))| ViewRect { cam, x, y, w, h }).collect();
@@ -383,13 +396,9 @@ impl Output {
         self.hud.prepare(gpu, &draw.hud)?;
         self.timings.hud_ms = started.elapsed().as_secs_f64() * 1000.;
         (self.timings.hud_vertices, self.timings.hud_text_runs) = (draw.hud.vertices.len(), draw.hud.text.len());
-        let started = Instant::now();
-        // An HDR surface shows the renderer's HDR copy when it matches this picture.
-        let hdr = if self.presenter.is_hdr() { renderer.hdr_output().filter(|t| t.size() == picture.size()) } else { None };
-        self.presenter.present_hdr(gpu, picture, hdr.as_ref(), target, Some(&self.hud), None)?;
-        self.timings.present_ms = started.elapsed().as_secs_f64() * 1000.;
         Ok(())
     }
+
 }
 
 /// What the F3 stats overlay shows about the renderer.
@@ -621,6 +630,8 @@ pub fn run_headless(cfg: &Config, game: &mut dyn Game, gpu: &Gpu, seconds: f32) 
 }
 
 struct Live {
+    instance: wgpu::Instance,
+    feedback_hud: Option<HudRenderer>,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     adapter: wgpu::Adapter,
@@ -649,9 +660,9 @@ impl Live {
             let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
             let surfaced = t.elapsed().as_millis();
             let (gpu, config, adapter) = Gpu::for_surface_with_adapter(&instance, &surface, size.width.max(1), size.height.max(1))?;
-            Ok((surface, gpu, config, adapter, surfaced))
+            Ok((instance, surface, gpu, config, adapter, surfaced))
         };
-        let (surface, gpu, config, adapter, surfaced) = match render::gpu::window_instance().map(&open) {
+        let (instance, surface, gpu, config, adapter, surfaced) = match render::gpu::window_instance().map(&open) {
             Some(Ok(v)) => v,
             Some(Err(e)) => { println!("{} Vulkan: {e}; trying the other backends", manners::stamp()); open(render::gpu::instance())? }
             None => open(render::gpu::instance())?,
@@ -660,7 +671,7 @@ impl Live {
         surface.configure(&gpu.device, &config);
         let out = Output::new(&gpu, config.format)?;
         let lost = watch(&gpu);
-        Ok((Live { surface, config, adapter, hdr: false, hdr_supported: false, display: Default::default(), display_at: None, hdr_refused: false, gpu, out, renderer: None, lost }, [surfaced, devised]))
+        Ok((Live { instance, feedback_hud:None, surface, config, adapter, hdr: false, hdr_supported: false, display: Default::default(), display_at: None, hdr_refused: false, gpu, out, renderer: None, lost }, [surfaced, devised]))
     }
 
     fn is_lost(&self) -> bool { self.lost.load(std::sync::atomic::Ordering::Relaxed) }
@@ -688,6 +699,7 @@ impl Live {
         self.surface.configure(&self.gpu.device, &self.config);
         // Presenter and HUD pipelines are made for the surface's format.
         self.out = Output::new(&self.gpu, self.config.format)?;
+        self.feedback_hud=None;
         Ok(Some(if self.hdr { format!("HDR output on ({:?}, {})", self.config.format, self.display.describe()) } else { "HDR output off".into() }))
     }
 }
@@ -750,8 +762,8 @@ struct Shell<'g> {
     /// Shift+F4: after the frame is saved, drag a rectangle of it.
     crop_requested: bool,
     crop: Option<Crop>,
-    /// The last F4 frame: a second F4 soon after crops it (no modifier).
-    last_shot: Option<(Instant, Crop)>,
+    picker: Option<feedback::Picker>,
+    feedback_writer: Option<feedback::Writer>,
     /// Shift as seen by key events: ModifiersChanged alone missed it on macOS.
     shift_down: bool,
     /// The last screenshot's line and until when it shows.
@@ -803,7 +815,7 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
     let stats=stats::Stats::from_env();
     let dev_mode=debug.open() || stats.open() || game.editor_windows_open();
-    let mut shell = Shell { stats, dev_mode, dev_bar:Default::default(), bar_press:false, devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, windows: Default::default(), cursor_position:None, pointer_owner:None, pressed_mouse_buttons:0, hidden_layout:None, started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), probe: None, probed: None, emulator: Default::default(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
+    let mut shell = Shell { stats, dev_mode, dev_bar:Default::default(), bar_press:false, devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, windows: Default::default(), cursor_position:None, pointer_owner:None, pressed_mouse_buttons:0, hidden_layout:None, started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, picker: None, feedback_writer: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), probe: None, probed: None, emulator: Default::default(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -811,6 +823,27 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
 
 impl Shell<'_> {
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(picker) = &mut self.picker {
+            if let (Some(l), Some(w)) = (&mut self.live, &self.window) {
+                if l.is_lost() {
+                    self.end_picker("Feedback device lost".into());
+                } else if let Err(e) = picker.show(
+                    w,
+                    &l.gpu,
+                    &l.out.presenter,
+                    &mut l.feedback_hud,
+                    &mut l.surface,
+                    &l.instance,
+                    &l.config,
+                ) {
+                    self.end_picker(e);
+                }
+            }
+            return;
+        }
+        if let Some(e) = self.feedback_writer.as_ref().and_then(|w| w.error()) {
+            self.toast = Some((e, Instant::now() + std::time::Duration::from_secs(4)));
+        }
         if let Err(e) = self.frame() { startup::note_exit(&format!("frame error: {e}")); self.error = Some(e); event_loop.exit(); return; }
         if self.game.quit() { startup::note_exit("the game quit"); event_loop.exit(); return; }
         self.frames += 1;
@@ -822,7 +855,7 @@ impl Shell<'_> {
             event_loop.exit();
             return;
         }
-        if let Some(w) = &self.window { w.request_redraw(); }
+        if self.picker.is_none() && let Some(w) = &self.window { w.request_redraw(); }
     }
 
     fn frame(&mut self) -> Result<(), String> {
@@ -992,50 +1025,76 @@ impl Shell<'_> {
             (self.scene_frames, self.loop_frames, self.stats_at) = (0, 0, Instant::now());
         }
         let (to_file, to_game) = (std::mem::take(&mut self.screenshot), self.game.wants_capture());
-        if to_file || to_game {
+        let feedback_metadata = |game: &dyn Game, debug: &debug::EngineDebug| {
+            let state = game.state().map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s)));
+            let mut metadata = serde_json::json!({
+                "schema": 1, "game": self.cfg.title, "title": game.title(), "state": state,
+                "cameras": draw.cameras.iter().map(|c| serde_json::json!({"position": c.pos.to_array(), "target": c.target.to_array(), "fov_y_deg": c.fov_y.to_degrees(), "near": c.near})).collect::<Vec<_>>(),
+                "debug": debug.metadata(), "render": {"adapter": live.gpu.info.name, "backend": format!("{:?}", live.gpu.info.backend), "driver": live.gpu.info.driver, "size": size, "fps": self.fps, "frame": self.frames, "uptime_s": self.started.elapsed().as_secs_f32()},
+            });
+            if let Some(q) = &self.quality {
+                metadata["render"]["adaptive_quality"] = q.metadata();
+            }
+                metadata
+            };
+        let crop_requested = std::mem::take(&mut self.crop_requested);
+        if (to_game && !to_file) || crop_requested {
             let target = offscreen(&live.gpu, size, wgpu::TextureFormat::Rgba8UnormSrgb);
-            Output::new(&live.gpu, wgpu::TextureFormat::Rgba8UnormSrgb)?.draw(&live.gpu, renderer, &draw, size, split, &target.create_view(&Default::default()), render_height)?;
+            Output::new(&live.gpu, wgpu::TextureFormat::Rgba8UnormSrgb)?.draw(
+                &live.gpu,
+                renderer,
+                &draw,
+                size,
+                split,
+                &target.create_view(&Default::default()),
+                render_height,
+            )?;
             let rgba = live.gpu.read_rgba8(&target);
-            if to_file {
-                let state = self.game.state().map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s)));
-                let mut metadata = serde_json::json!({
-                    "schema": 1, "game": self.cfg.title, "title": self.game.title(), "state": state,
-                    "cameras": draw.cameras.iter().map(|c| serde_json::json!({"position": c.pos.to_array(), "target": c.target.to_array(), "fov_y_deg": c.fov_y.to_degrees(), "near": c.near})).collect::<Vec<_>>(),
-                    "debug": self.debug.metadata(), "render": {"adapter": live.gpu.info.name, "backend": format!("{:?}", live.gpu.info.backend), "driver": live.gpu.info.driver, "size": size, "fps": self.fps, "frame": self.frames, "uptime_s": self.started.elapsed().as_secs_f32()},
-                });
-                if let Some(q) = &self.quality {
-                    metadata["render"]["adaptive_quality"] = q.metadata();
-                }
-                let saved = screenshot::save_full(screenshot::Shot { title: &self.cfg.title, size, rgba: &rgba, metadata }, |path| self.game.feedback_replay(path, (self.acc / step).clamp(0.0, 1.0)));
-                let line = match saved {
+            if crop_requested {
+                let saved = screenshot::save_full(
+                    screenshot::Shot {
+                        title: &self.cfg.title,
+                        size,
+                        rgba: &rgba,
+                        metadata: feedback_metadata(self.game,&self.debug),
+                    },
+                    |path| {
+                        self.game
+                            .feedback_replay(path, (self.acc / step).clamp(0., 1.))
+                    },
+                );
+                match saved {
                     Ok(saved) => {
-                        let line = saved.line.clone();
-                        let crop = render::picture::Picture::new(size[0], size[1], rgba.clone()).ok()
-                            .map(|picture| Crop { saved, size, picture: Arc::new(picture), start: None, cursor: [0.0; 2] });
-                        match (crop, std::mem::take(&mut self.crop_requested)) {
-                          (Some(crop), true) => {
-                            self.crop = Some(crop);
-                            // capture_mouse(false), field by field: `live` is borrowed.
-                            self.devices.reset_mouse();
-                            self.devices.mouse_captured = false;
-                            if let Some(w) = &self.window {
-                                let _ = w.set_cursor_grab(CursorGrabMode::None);
-                                w.set_cursor_visible(true);
-                                w.set_cursor(winit::window::CursorIcon::Crosshair);
-                            }
-                            line
-                          }
-                          (crop, _) => {
-                            if let Some(crop) = crop { self.last_shot = Some((Instant::now(), crop)); }
-                            format!("{line}  (F4 again: crop)")
-                          }
+                        self.crop = Some(Crop {
+                            saved,
+                            size,
+                            picture: Arc::new(render::picture::Picture::new(
+                                size[0],
+                                size[1],
+                                rgba.clone(),
+                            )?),
+                            start: None,
+                            cursor: [0.; 2],
+                        });
+                        self.devices.reset_mouse();
+                        self.devices.mouse_captured = false;
+                        if let Some(w) = &self.window {
+                            let _ = w.set_cursor_grab(CursorGrabMode::None);
+                            w.set_cursor_visible(true);
+                            w.set_cursor(winit::window::CursorIcon::Crosshair);
                         }
                     }
-                    Err(e) => { eprintln!("screenshot failed: {e}"); format!("screenshot failed: {e}") }
-                };
-                self.toast = Some((line, Instant::now() + std::time::Duration::from_secs(4)));
+                    Err(e) => {
+                        self.toast = Some((
+                            format!("Screenshot failed: {e}"),
+                            Instant::now() + std::time::Duration::from_secs(4),
+                        ))
+                    }
+                }
             }
-            if to_game { self.game.captured(size, rgba); }
+            if to_game {
+                self.game.captured(size, rgba);
+            }
         }
         if self.toast.as_ref().is_some_and(|(_, until)| Instant::now() > *until) { self.toast = None; }
         if let Some(crop) = &self.crop { draw.hud.begin_overlay(); crop.draw(&mut draw.hud); }
@@ -1055,6 +1114,82 @@ impl Shell<'_> {
         }
         // Nothing to show on a window without pixels; the game keeps ticking.
         if self.zero_size || live.is_lost() { return Ok(()); }
+        if to_file && !crop_requested {
+            live.out.prepare(
+                &live.gpu,
+                renderer,
+                &draw,
+                size,
+                split,
+                render_height,
+                scene,
+            )?;
+            let picture = live.out.picture.as_ref().unwrap();
+            let mut picker = if live.hdr {
+                let format = render::present::HDR_HUD_FORMAT;
+                let sdr = Presenter::new(&live.gpu, format);
+                feedback::Picker::new(sdr.freeze_sdr(
+                    &live.gpu,
+                    picture,
+                    size,
+                    format,
+                    Some(&live.out.hud),
+                )?)
+            } else {
+                feedback::Picker::new(live.out.presenter.freeze_sdr(
+                    &live.gpu,
+                    picture,
+                    size,
+                    live.config.format,
+                    Some(&live.out.hud),
+                )?)
+            };
+            let w = self.window.as_ref().unwrap();
+            self.devices.reset_keyboard();
+            self.devices.reset_mouse();
+            self.devices.mouse_captured = false;
+            self.pointer_owner = None;
+            self.pressed_mouse_buttons = 0;
+            self.bar_press = false;
+            self.shift_down = false;
+            let _ = w.set_cursor_grab(CursorGrabMode::None);
+            w.set_cursor_visible(true);
+            w.set_cursor(winit::window::CursorIcon::Crosshair);
+            picker.show(
+                w,
+                &live.gpu,
+                &live.out.presenter,
+                &mut live.feedback_hud,
+                &mut live.surface,
+                &live.instance,
+                &live.config,
+            )?;
+            if to_game {
+                self.game.captured(size, picker.read_rgba(&live.gpu));
+            }
+            let metadata=feedback_metadata(self.game,&self.debug);
+            let queued = (|| {
+                if self.feedback_writer.is_none() {
+                    self.feedback_writer = Some(feedback::Writer::new()?);
+                }
+                self.feedback_writer.as_ref().unwrap().submit(
+                    &mut picker,
+                    &live.gpu,
+                    &self.cfg.title,
+                    metadata,
+                    |path| {
+                        self.game
+                            .feedback_replay(path, (self.acc / step).clamp(0., 1.))
+                    },
+                    |_, _, _| Ok(()),
+                )
+            })();
+            match queued {
+                Ok(()) => self.picker = Some(picker),
+                Err(error) => self.end_picker(format!("Feedback save failed: {error}")),
+            }
+            return Ok(());
+        }
         let present_started=Instant::now();
         match live.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) | wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
@@ -1222,6 +1357,14 @@ impl Shell<'_> {
         used
     }
 
+    fn end_picker(&mut self, line:String) {
+        self.picker=None;
+        self.acc=0.; self.last=Instant::now(); self.last_scene=self.last;
+        if let Some(w)=&self.window {w.set_cursor(winit::window::CursorIcon::Default); w.request_redraw();}
+        self.toast=Some((line,self.last+std::time::Duration::from_secs(4)));
+        self.sync_capture();
+    }
+
     fn start_crop(&mut self, crop: Crop) {
         self.crop = Some(crop);
         self.capture_mouse(false);
@@ -1288,10 +1431,8 @@ impl Shell<'_> {
                     },
                     EngineShortcut::Screenshot => if self.crop.is_none() {
                         let shift = self.modifiers.shift_key() || self.shift_down;
-                        let again = self.last_shot.take().filter(|(at, _)| at.elapsed().as_secs_f32() < 1.5);
-                        println!("F4: shift {shift}, again {}", again.is_some());
-                        if let Some((_, crop)) = again { self.start_crop(crop); }
-                        else { self.screenshot = true; self.crop_requested = shift; }
+                        self.screenshot = true;
+                        self.crop_requested = shift;
                     },
                 }
                 self.sync_capture();
@@ -1308,7 +1449,7 @@ impl Shell<'_> {
     }
 
     fn sync_capture(&mut self) {
-        if self.crop.is_some() { return; }
+        if self.crop.is_some() || self.picker.is_some() { return; }
         self.devices.pointer_enabled = self.cfg.pointer || self.dev_mode || self.stats.open() || self.game.editor_windows_open();
         let capture = if self.dev_mode || self.debug.open() || self.stats.open() || self.game.editor_windows_open() { Some(false) } else { self.game.mouse_capture() };
         if let Some(want) = capture {
@@ -1370,6 +1511,7 @@ impl ApplicationHandler for Shell<'_> {
     }
 
     fn device_event(&mut self, event_loop: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
+        if self.picker.is_some() {return;}
         if let DeviceEvent::MouseMotion { delta } = event {
             self.mouse_events = self.mouse_events.saturating_add(1);
             self.mouse_delta[0] += delta.0;
@@ -1405,6 +1547,54 @@ impl ApplicationHandler for Shell<'_> {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        if self.picker.is_some() {
+            let size = self.size();
+            match &event {
+                WindowEvent::Focused(false) | WindowEvent::Occluded(true) => {
+                    self.end_picker("Screenshot without a point".into())
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.physical_key == PhysicalKey::Code(KeyCode::F4)
+                        && event.state == ElementState::Pressed
+                        && !event.repeat =>
+                {
+                    let picker = self.picker.take().unwrap();
+                    match picker.into_crop(&self.live.as_ref().unwrap().gpu) {
+                        Ok(crop) => {
+                            self.start_crop(crop);
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                        }
+                        Err(e) => self.end_picker(e),
+                    }
+                    return;
+                }
+                _ => {
+                    if let WindowEvent::CursorMoved { position, .. } = &event {
+                        self.cursor_position = Some([position.x as f32, position.y as f32]);
+                    }
+                    if let WindowEvent::Resized(_) = &event {
+                        self.picker.as_mut().unwrap().resized();
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                    }
+                    match self.picker.as_mut().unwrap().input(
+                        &event,
+                        self.cursor_position.map(|p| p.map(f64::from)),
+                        size,
+                    ) {
+                        feedback::Input::Pass => {}
+                        feedback::Input::Consumed => return,
+                        feedback::Input::Close(line) => {
+                            self.end_picker(line);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
         match event {
             WindowEvent::CloseRequested => { startup::note_exit("window close requested"); event_loop.exit() }
             WindowEvent::Resized(size) => {
@@ -1501,7 +1691,10 @@ impl ApplicationHandler for Shell<'_> {
                     return;
                 }
                 let shift = self.modifiers.shift_key() || self.shift_down;
-                if self.shortcut(code,event.state,event.repeat,shift) { return; }
+                if self.shortcut(code,event.state,event.repeat,shift) {
+                    if self.screenshot && !self.crop_requested && !self.zero_size && !self.manners.offscreen() { self.redraw(event_loop); }
+                    return;
+                }
                 if event.state == ElementState::Pressed && self.debug_key(code, event.repeat) { return; }
                 if self.game.text_input() && event.state == ElementState::Pressed {
                     // Text entry: editing keys and typed text go to the game;
@@ -1560,6 +1753,7 @@ impl ApplicationHandler for Shell<'_> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.picker.is_some() {event_loop.set_control_flow(ControlFlow::Wait);return;}
         event_loop.set_control_flow(ControlFlow::Poll);
         // Invisible and minimised windows may get no redraw events (Win32),
         // yet a warm or paused game must keep answering its host, and a new

@@ -10,7 +10,6 @@ use sideways::{
 use std::{
     collections::BTreeMap,
     fs,
-    io::{BufWriter, Write},
     path::Path,
 };
 
@@ -388,25 +387,7 @@ pub fn write_visibility(
     captures: &[render::frame::VisibilityCapture],
     source: &VisibilitySource,
 ) -> Result<(), String> {
-    let mut source = source.describe(captures);
-    let mut views = Vec::new();
-    for (index, v) in captures.iter().enumerate() {
-        let ids = png.with_extension(format!("view{index}.ids.png"));
-        let table = png.with_extension(format!("view{index}.pairs"));
-        render::write_png(&ids, v.size[0], v.size[1], &v.ids)?;
-        let mut file = BufWriter::new(fs::File::create(&table).map_err(|e| e.to_string())?);
-        for &[owner, cluster] in &v.visible {
-            for word in [owner, cluster] {
-                file.write_all(&word.to_le_bytes())
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-        file.flush().map_err(|e| e.to_string())?;
-        views.push(json!({"rect":v.rect,"size":v.size,"ids":ids.file_name().and_then(|n|n.to_str()),"pairs":table.file_name().and_then(|n|n.to_str())}));
-    }
-    source["views"] = json!(views);
-    meta["visibility"] = source;
-    Ok(())
+    app::feedback::write_visibility(png,meta,captures,source.describe(captures))
 }
 
 #[cfg(test)]

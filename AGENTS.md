@@ -50,7 +50,7 @@ cargo run --release -p cli --bin sideways                             # the rall
 cargo run --release -p warp -- run games/hello-warp                   # a Luau game
 ```
 
-Feedback loop with a playtester: F12 writes `build/screenshots/<game>-<ms>.png`
+Feedback loop with a playtester: F4 opens Warp’s feedback overlay. Click or tap a point, or press Esc. The capture writer saves `build/screenshots/<game>-<ms>.png`
 plus a `.json` with the game's state, camera, GPU, fps and debug-menu settings,
 and copies the image to the clipboard, for every game on the `app` shell
 (Sideways included). Each capture is also noted in
@@ -61,7 +61,7 @@ puts the camera back where it was. F10 opens the engine debug menu (render and
 light switches, LOD, render height, GPU pass times; games add their own).
 
 For a Sideways F12 bug report, call MCP `feedback` with `diagnostics: false`
-to locate the PNG, then use the JSON beside it. In Sideways, F12 opens a frozen overlay. The player clicks or taps the problem, or presses Esc to skip marking. If the JSON has `player_point`, run `warp inspect F12.json` to inspect that point directly. Choose the command by task:
+to locate the PNG, then use the JSON beside it. Sideways also accepts F12 for the shared F4 overlay. The player clicks or taps the problem, or presses Esc to skip marking. If the JSON has `player_point`, run `warp inspect F12.json` to inspect that point directly. Choose the command by task:
 
 - Identify a tree, car or material under a pixel: `warp inspect F12.json --pixel X Y` returns JSON. Use original PNG coordinates.
 - Isolate a lighting artifact on a static surface: `warp relight F12.json --without gi --without shadow_strength` uses the player point or `--pixel X Y`. Read `lighting.json` for source-triangle agreement, repeat stability and brightness. Open `comparison.png` for the crops.

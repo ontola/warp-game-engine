@@ -261,6 +261,11 @@ impl Devices {
         if self.mouse_captured { Pointer { wheel: p.wheel, ..Pointer::default() } } else { p }
     }
 
+    pub(crate) fn reset_keyboard(&mut self) {
+        self.kb.keys.clear();
+        self.kb.pressed=0;
+    }
+
     /// Capture transitions must not carry a menu click or old look delta into play.
     pub fn reset_mouse(&mut self) {
         self.kb.mouse = 0;

@@ -11,11 +11,11 @@ Growing Guns layers two-bone wrist contacts over its third-person clips using th
 
 ## Developer captures
 
-Sideways F12 opens a point-selection overlay. Its captures support [fixed-tick driving comparisons, pixel inspection and single-effect lighting comparisons](warp-cli.md#sideways-feedback). Growing Guns feedback includes recent desktop inputs and live edits.
+The Warp desktop game shell opens a point-selection overlay on F4. Sideways uses the same overlay and also binds F12. Its captures support [fixed-tick driving comparisons, pixel inspection and single-effect lighting comparisons](warp-cli.md#sideways-feedback). Growing Guns feedback includes recent desktop inputs and live edits.
 
 ## Target
 
-One 3840 × 2160 output, four players, 120 FPS (8.33 ms per frame). **Not
+One 3840 Ã— 2160 output, four players, 120 FPS (8.33 ms per frame). **Not
 reached.** The latest controlled four-view, 4K-output Sideways route measured
 about 38 to 44.5 ms of GPU time with DLSS Quality. Smaller scenes such as
 Growing Guns' arena are much cheaper (see its README). Always report the real

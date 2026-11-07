@@ -3,8 +3,7 @@
 
 #[path="stage_loading.rs"]
 mod stage_loading;
-#[path="feedback_point.rs"]
-mod feedback_point;
+use app::feedback;
 #[path="frame_profile.rs"]
 mod frame_profile;
 #[path="scenario.rs"]
@@ -384,8 +383,8 @@ struct App {
     manners: app::manners::Manners,
     hud_stats: serde_json::Value, hud_samples: Vec<serde_json::Value>,
     recorder: crate::drive_capture::Recorder,
-    point_picker: Option<feedback_point::Picker>,
-    feedback_writer: Option<feedback_point::Writer>,
+    point_picker: Option<feedback::Picker>,
+    feedback_writer: Option<feedback::Writer>,
     feedback_requested_at: Option<Instant>,
     cursor: Option<[f64;2]>,
     screenshot_pending: bool, screenshot_toast: Option<(String, Instant)>,
@@ -949,6 +948,33 @@ impl App {
         self.trace(false);Ok(())
     }
 
+    fn end_point_picker(&mut self, line: String) {
+        self.point_picker = None;
+        self.last_frame = Instant::now();
+        self.accumulator = 0.;
+        self.screenshot_toast = Some((line, Instant::now() + Duration::from_secs(4)));
+        if let Some(w) = &self.window {
+            w.set_cursor(winit::window::CursorIcon::Default);
+            w.request_redraw();
+        }
+    }
+
+    fn draw_point_picker(&mut self) -> Result<(), String> {
+        if self.invisible() {
+            return Ok(());
+        }
+        let g = self.graphics.as_mut().unwrap();
+        self.point_picker.as_mut().unwrap().show(
+            self.window.as_ref().unwrap(),
+            &g.gpu,
+            &g.presenter,
+            &mut g.hud,
+            &mut g.surface,
+            &g.instance,
+            &g.config,
+        )
+    }
+
     fn poll_host(&mut self,event_loop:&ActiveEventLoop)->Result<bool,String>{
         // Preserve Client::poll's transaction boundary: do not advance host
         // state past a deferred Prepare before its ready acknowledgement.
@@ -1351,10 +1377,10 @@ impl App {
                 let window=self.window.as_ref().unwrap();
                 let (image,stats,pending)=g.renderer.capture_visibility_submitted(&g.gpu,&views,&render_light,render_w,render_h,&mut |image| {
                     let frozen=g.presenter.freeze_sdr(&g.gpu,image,[size.width,size.height],g.config.format,g.hud.as_ref().filter(|_|draw_list.is_some()))?;
-                    let mut picker=feedback_point::Picker::new(frozen);
+                    let mut picker=feedback::Picker::new(frozen);
                     window.set_cursor(winit::window::CursorIcon::Crosshair);
                     picker.show(window,&g.gpu,&g.presenter,&mut g.hud,&mut g.surface,&g.instance,&g.config)?;
-                    if picker.displayed.is_some() {
+                    if picker.displayed() {
                         overlay_ms=self.feedback_requested_at.map(|t|t.elapsed().as_secs_f64()*1000.);
                     }
                     self.point_picker=Some(picker);
@@ -1409,7 +1435,7 @@ impl App {
         if self.rendered==1 { println!("play: first scene frame submitted"); }
         frame_profile::section(trace,"present_acquire");
         if interactive_capture {
-            ready_now=self.point_picker.as_ref().is_some_and(|p|p.displayed.is_some());
+            ready_now=self.point_picker.as_ref().is_some_and(|p|p.displayed());
             if ready_now {self.presented+=1;}
         } else if invisible {
             // Win32 does not guarantee redraw events or an acquirable swapchain
@@ -1594,9 +1620,12 @@ impl App {
             let source=crate::drive_capture::VisibilitySource::snapshot(&self.built);
             metadata["feedback_timing"]=serde_json::json!({"request_to_overlay_submit_ms":overlay_ms,
                 "request_to_input_ready_ms":self.feedback_requested_at.take().map(|t|t.elapsed().as_secs_f64()*1000.)});
-            if self.feedback_writer.is_none() {self.feedback_writer=Some(feedback_point::Writer::new()?);}
-            self.feedback_writer.as_ref().unwrap().submit(self.point_picker.as_mut().unwrap(),&g.gpu,metadata,
-                visibility_readback,[render_w,render_h],source)?;
+            if self.feedback_writer.is_none() {self.feedback_writer=Some(feedback::Writer::new()?);}
+            self.feedback_writer.as_ref().unwrap().submit(self.point_picker.as_mut().unwrap(),&g.gpu,"Sideways",metadata,
+                |_|Ok(None),move |gpu,path,meta| {
+                    let views=feedback::read_visibility(gpu,visibility_readback,[render_w,render_h],[size.width,size.height])?;
+                    crate::drive_capture::write_visibility(path,meta,&views,&source)
+                })?;
             self.input.clear_keys();self.input_edges=[(0,false);4];
             if let Some(sound)=&self.sound {sound.pause(true);}
 
@@ -1669,31 +1698,18 @@ impl ApplicationHandler for App {
             _=>{}
         }
         if self.point_picker.is_some() {
-            match &event {
-                WindowEvent::KeyboardInput{event,..}=>{
-                    if event.physical_key==PhysicalKey::Code(KeyCode::Escape) && event.state==ElementState::Pressed && !event.repeat {
-                        self.end_point_picker("Screenshot saved without a point".into());
-                    }
-                    return;
-                }
-                WindowEvent::MouseInput{button:MouseButton::Left,state:ElementState::Pressed,..}=>{
-                    self.select_feedback_point();return;
-                }
-                WindowEvent::Touch(touch)=>{
-                    if touch.phase==winit::event::TouchPhase::Started {
-                        self.cursor=Some([touch.location.x,touch.location.y]);
-                        self.select_feedback_point();
-                    }
-                    return;
-                }
-                WindowEvent::Occluded(false)=>{self.window.as_ref().unwrap().request_redraw();}
-                WindowEvent::MouseInput{..}|WindowEvent::CursorMoved{..}|WindowEvent::MouseWheel{..}=>return,
-                _=>{}
+            let window=self.window.as_ref().unwrap();
+            let size=window.inner_size();
+            if matches!(&event,WindowEvent::Occluded(false)) {window.request_redraw();}
+            match self.point_picker.as_mut().unwrap().input(&event,self.cursor,[size.width,size.height]) {
+                feedback::Input::Consumed=>return,
+                feedback::Input::Close(message)=>{self.end_point_picker(message);return;},
+                feedback::Input::Pass=>{}
             }
         }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && let PhysicalKey::Code(code) = event.physical_key
-            && let Some(action) = (if self.alt_down && code==KeyCode::Enter {Some(app::EngineShortcut::Fullscreen)} else {app::engine_shortcut(code)}) {
+            && let Some(action) = (if self.alt_down && code==KeyCode::Enter {Some(app::EngineShortcut::Fullscreen)} else if code==KeyCode::F12 {Some(app::EngineShortcut::Screenshot)} else {app::engine_shortcut(code)}) {
             if event.state == ElementState::Pressed && !event.repeat {
                 match action {
                     app::EngineShortcut::AllMenus => {

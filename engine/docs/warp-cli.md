@@ -10,7 +10,7 @@ iteration with an AI over MCP.
 The crate is `engine/crates/warp`. The example is
 [games/hello-warp](../../games/hello-warp/README.md), the starter that
 `warp new` writes. [games/neon-trails](../../games/neon-trails/README.md)
-and [games/neon-siege](../../games/neon-siege/README.md) are LÖVE party
+and [games/neon-siege](../../games/neon-siege/README.md) are LÃ–VE party
 games ported to Luau, with one shared view; Neon Siege is a co-op
 twin-stick shooter with hundreds of shots, bursts and rings at once.
 
@@ -365,7 +365,7 @@ that file (it holds the `SurfaceIn` and `SurfaceOut` structs) and fill in
 the normal, the view direction, the entity's colour (`tint`, linear),
 roughness and metal, `time` in seconds and `kind`; it returns the albedo,
 normal, roughness, metal and an emission in nits. `scale` holds the
-entity's `emissive` in nits (emissive × 4000), so a Luau knob can set the
+entity's `emissive` in nits (emissive Ã— 4000), so a Luau knob can set the
 brightness. Prefix your own functions (`bd_noise`), because the file is
 compiled together with the engine's shading code.
 
@@ -535,7 +535,7 @@ for opaque reconstruction/clipping, not forward transparency or ray-query masks.
 
 ## Sideways feedback
 
-During a Sideways drive, press **F12** to freeze the image and open the point overlay. Click or tap the problem to resume driving. Esc resumes with an unmarked capture. The overlay uses the GPU frame with the original HUD. The writer reads the frozen pixels and source geometry, encodes the PNG and updates the clipboard on a background thread. Normal play keeps its existing resolution and render path. The JSON records request-to-overlay submission and input-ready timings in `feedback_timing`. A click saves `player_point: [x, y]` in original PNG pixels. The MCP feedback preview circles it. On a marked capture, `warp inspect F12.json` prints the point and its surface as JSON. Use `--preview` to view the ring or `--pixel X Y` to inspect another spot. Keep the PNG, JSON and same-basename
+In Warp desktop games, press **F4** for feedback. Sideways also accepts **F12** to freeze the image and open the point overlay. Click or tap the problem to resume driving. Esc resumes with an unmarked capture. The overlay uses the GPU frame with the original HUD. The writer reads the frozen pixels and source geometry, encodes the PNG and updates the clipboard on a background thread. Normal play keeps its existing resolution and render path. The JSON records request-to-overlay submission and input-ready timings in `feedback_timing`. A click saves `player_point: [x, y]` in original PNG pixels. The MCP feedback preview circles it. On a marked capture, `warp inspect F12.json` prints the point and its surface as JSON. Use `--preview` to view the ring or `--pixel X Y` to inspect another spot. Keep the PNG, JSON and same-basename
 view attachments together. In a developer checkout with Python 3 and Pillow,
 run the following commands. Set `WARP_PYTHON` to an interpreter path if needed.
 
@@ -619,7 +619,7 @@ ticks. Input runs begin at stage creation; the final 600 ticks (five seconds)
 supply the trace. Recording is bounded to one hour and 32,768 input runs per
 stage. An incomplete history is marked unavailable.
 
-The output contains synchronized 640 × 360 chase-camera WebP clips (15 fps),
+The output contains synchronized 640 Ã— 360 chase-camera WebP clips (15 fps),
 the final pixel difference, and `comparison.json` with the first differing
 physics digest in the window, player values and whether each run reached the
 recorded end digest. These diagnostic cameras and lighting are independent
