@@ -789,7 +789,7 @@ impl<'a> SceneVegetation<'a> {
                     }
                     let count = self.scene.instances.len() - start;
                     if start >= 1 << 20 || count >= 1 << 12 {
-                        return Err("virtual member templates exceed their id range".into());
+                        return Err(format!("virtual member templates exceed their id range: branch {b} of {} starts at instance {start} with {count} members (limits {} and {})", plant.branches.len(), 1 << 20, 1 << 12));
                     }
                     ranges.push((start as u32, count as u32));
                 }

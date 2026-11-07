@@ -175,6 +175,10 @@ impl Parts {
     }
 }
 
+/// Members one branch may carry: virtual member ids hold 12 bits
+/// (vegetation_asset), with a little headroom.
+const MAX_BRANCH_MEMBERS: usize = 4000;
+
 /// Limits for a grown plant: the recipe limits with room for an old pine's
 /// ~5k stems and ~10k needle brushes.
 pub fn limits() -> Limits {
@@ -384,16 +388,29 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
             joint(0x454e, Vec3::splat(radius * TAPERS[taper]), from + axis * length);
         }
     }
+    // A branch draws its members as virtual instances with 12-bit member ids
+    // (vegetation_asset): crowded rules (many limbs riding the trunk's bone,
+    // many plumes) thin that branch's brushes to fit, the kept ones larger.
+    let mut on_branch = vec![0usize; branches.len()];
+    for inst in &instances { on_branch[inst.branch as usize] += 1; }
+    let mut wanted = vec![0usize; branches.len()];
+    for t in &plant.tufts { wanted[bone_of(t.segment) as usize] += 1; }
+    let branch_keep: Vec<f32> = (0..branches.len()).map(|b| {
+        let room = MAX_BRANCH_MEMBERS.saturating_sub(on_branch[b]) as f32;
+        (room / (wanted[b] as f32 * keep).max(1.0)).min(1.0)
+    }).collect();
     let mut placed = 0;
     for (i, t) in plant.tufts.iter().enumerate() {
+        let b = bone_of(t.segment);
+        let kept = keep * branch_keep[b as usize];
         // Kept at random to spread the thinning; the draw can overshoot the
-        // room by chance, so stop at the limit instead of failing the plant.
-        if unit(seed, i as u64, 9) >= keep || instances.len() >= limits.max_instances {
+        // room by chance, so stop at the limits instead of failing the plant.
+        if unit(seed, i as u64, 9) >= kept || instances.len() >= limits.max_instances || on_branch[b as usize] >= MAX_BRANCH_MEMBERS {
             continue;
         }
-        let b = bone_of(t.segment);
-        // Kept tufts grow to cover for the ones the placement limit leaves out.
-        let size = (0.75 + 0.45 * t.fullness) / keep.sqrt();
+        on_branch[b as usize] += 1;
+        // Kept tufts grow to cover for the ones the limits leave out.
+        let size = (0.75 + 0.45 * t.fullness) / kept.sqrt();
         let twist = Quat::from_axis_angle(Vec3::Y, unit(seed, i as u64, 10) * TAU);
         let world = Mat4::from_scale_rotation_translation(Vec3::splat(size), along(Vec3::ZERO, t.axis) * twist, t.at);
         let part = 9 + (unit(seed, i as u64, 11) * parts.tufts.len() as f32) as u32 % parts.tufts.len().max(1) as u32;
@@ -441,13 +458,17 @@ mod tests {
     fn a_crowded_crown_thins_its_brushes_instead_of_failing() {
         // Pine-lab tuning that once failed at 31 years: more brushes than room,
         // and the random thinning drew a few too many.
-        let species = Species { crowding: 60, height: 52.0, laterals: 1.1, needle_years: 7, plumes: 6.0, ..Species::jeffrey_pine() };
+        let species = Species { crowding: 60, height: 52.0, laterals: 2.0, whorl: [2, 12], needle_years: 7, plumes: 6.0, ..Species::jeffrey_pine() };
         let parts = Parts::long_needle_pine();
         for age in [31, 55] {
             for seed in 1..6 {
                 let (assembly, counts) = assemble(&grow(&species, age, seed), &parts, Look::jeffrey_pine(), seed, limits()).unwrap();
                 assert!(assembly.instances.len() <= limits().max_instances);
                 assert!(counts.tufts_dropped > 0);
+                // Virtual member ids: every branch fits 12 bits.
+                let mut per = vec![0usize; assembly.branches.len()];
+                for inst in &assembly.instances { per[inst.branch as usize] += 1; }
+                assert!(per.iter().all(|&n| n <= MAX_BRANCH_MEMBERS), "{per:?}");
             }
         }
     }

@@ -757,10 +757,47 @@ fn renderer_for(gpu: &render::Gpu, scene: &Scene, light: &Lighting, pool: proced
 const PINE_AGES: [u32; 9] = [3, 6, 12, 25, 50, 80, 120, 200, 300];
 fn pine_ages() -> bool { std::env::args().any(|a| a == "--pine-ages") }
 
+/// --pine-forest [TUNING.json]: every forest tree is a grown Jeffrey pine,
+/// one of these ages, from pine-lab's tuning file (default
+/// games/pine-lab/tuning.json; missing rules keep the defaults).
+const FOREST_AGES: [u32; 8] = [5, 9, 14, 20, 28, 38, 48, 55];
+fn pine_forest() -> Option<PathBuf> {
+    let args: Vec<String> = std::env::args().collect();
+    let at = args.iter().position(|a| a == "--pine-forest")?;
+    Some(args.get(at + 1).filter(|a| !a.starts_with("--")).map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/pine-lab/tuning.json")))
+}
+
 /// How many tree and shrub variants the forest uses (grass follows them).
-fn flora_count(lands: &render::biome::Lands) -> usize { if pine_ages() { PINE_AGES.len() } else { lands.species().len() } }
+fn flora_count(lands: &render::biome::Lands) -> usize {
+    if pine_ages() { PINE_AGES.len() } else if pine_forest().is_some() { FOREST_AGES.len() } else { lands.species().len() }
+}
 
 fn cooked_flora(lands: &render::biome::Lands) -> Result<&'static Vec<CookedPlant>, String> {
+    if let Some(path) = pine_forest() {
+        static FOREST: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
+        let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
+        return FOREST.get_or_init(|| {
+            let (mut species, mut look) = (render::plant_growth::Species::jeffrey_pine(), render::plant_growth_assembly::Look::jeffrey_pine());
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+                    if let Some(s) = v.get("species") { species = serde_json::from_value(s.clone()).map_err(|e| e.to_string())?; }
+                    if let Some(l) = v.get("look") { look = serde_json::from_value(l.clone()).map_err(|e| e.to_string())?; }
+                    eprintln!("pine forest: rules from {}", path.display());
+                }
+                Err(e) => eprintln!("pine forest: {} ({e}); default rules", path.display()),
+            }
+            let variants: Vec<_> = FOREST_AGES.iter().map(|&age| (species, age, 1)).collect();
+            let started = web_time::Instant::now();
+            let cooked = recipe_forest::cook_grown(&variants, &render::plant_growth_assembly::Parts::for_look(&look), look, Some(&cache))?;
+            for (c, age) in cooked.iter().zip(FOREST_AGES) {
+                eprintln!("pine forest age {age}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
+            }
+            eprintln!("pine forest: {} variants in {:.1} s", cooked.len(), started.elapsed().as_secs_f64());
+            Ok(cooked.into_iter().map(|c| c.plant).collect())
+        }).as_ref().map_err(|e| e.clone());
+    }
     if pine_ages() {
         static GROWN: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
         let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
@@ -894,6 +931,13 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
         PINE_AGES.iter().enumerate().map(|(i,&age)|{
             let gap=2.+0.06*age as f32;x+=gap;let at=Vec2::new(x,c.y+30.);x+=gap;
             WorldRoot {id:render::placement::instance_id(2000,i as i32,0),placement:RootPlacement {up:Vec3::Y,pos:placement::World::ground(&land,at.x,at.y).pos,yaw:0.,scale:1.,variant:i}}
+        }).collect()
+    } else {woody};
+    // Every tree and shrub becomes a grown pine of a stable random age.
+    let woody:Vec<WorldRoot>=if world.trees && pine_forest().is_some() {
+        woody.into_iter().map(|mut r|{
+            let h=r.id.wrapping_mul(0x9e37_79b9_7f4a_7c15)>>40;
+            r.placement.variant=(h as usize)%FOREST_AGES.len();r.placement.scale=1.;r
         }).collect()
     } else {woody};
     if !world.grass {return woody;}
