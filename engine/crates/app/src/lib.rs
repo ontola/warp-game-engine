@@ -843,7 +843,8 @@ impl Shell<'_> {
             self.acc -= step;
             steps += 1;
             let size = self.live.as_ref().map_or(self.cfg.size, |l| [l.config.width, l.config.height]);
-            self.game.pointer(self.devices.pointer(), size);
+            let pointer = self.devices.pointer();
+            self.game.pointer(if self.debug.open() { Pointer::default() } else { pointer }, size);
             let devices = self.devices.device_controls(step);
             let controls = seat_controls(self.game, &devices);
             if frame_log::enabled() { input_look.push(controls.iter().map(|c| c.look).collect::<Vec<_>>()); }
@@ -921,7 +922,7 @@ impl Shell<'_> {
         }
         // The hint is for a developer at a desk: never on a GameNight TV,
         // nor once a controller is plugged in.
-        if !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() && !under_host() && self.devices.pad_count() == 0 {
+        if !self.debug.open() && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() && !under_host() && self.devices.pad_count() == 0 {
             let s = (size[1] as f32 / 1080.0).max(0.5);
             draw.hud.text.push(render::hud::TextRun { id: u64::MAX - 1, text: "click to capture the mouse, Esc releases".into(), position: [16.0 * s, size[1] as f32 - 34.0 * s],
                 bounds: [0.0, 0.0, size[0] as f32, size[1] as f32], font_size: 18.0 * s, color: [220, 220, 215, 200], font: render::hud::FontFace::Body,
@@ -1304,7 +1305,7 @@ impl ApplicationHandler for Shell<'_> {
             }
             WindowEvent::Focused(focused) => {
                 self.focused = focused;
-                if !focused { self.capture_mouse(false); self.devices.cursor(None); }
+                if !focused { self.debug.cancel_interaction(); self.capture_mouse(false); self.devices.cursor(None); }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_events = self.cursor_events.saturating_add(1);
@@ -1319,7 +1320,7 @@ impl ApplicationHandler for Shell<'_> {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                 };
-                if self.debug.open() && self.debug.scroll(lines, self.size()) { return; }
+                if self.debug.open() { self.debug.scroll(lines, self.size()); return; }
                 self.devices.wheel(lines);
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -1327,7 +1328,8 @@ impl ApplicationHandler for Shell<'_> {
                     if button == MouseButton::Left { self.crop_drag(state); }
                     return;
                 }
-                if self.debug.open() && button == MouseButton::Left {
+                if self.debug.open() {
+                    if button != MouseButton::Left { return; }
                     let action = if state == ElementState::Pressed { self.debug.pointer_down(self.size()).1 } else { self.debug.pointer_up() };
                     if let Some(a) = action { self.game.debug_action(a); }
                     return;
