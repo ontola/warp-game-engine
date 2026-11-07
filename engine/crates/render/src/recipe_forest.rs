@@ -85,6 +85,10 @@ pub fn cook_variants(variants: &[(WoodyRecipe, u64)], cache: Option<&Path>) -> R
     })
 }
 
+/// Bump when plant_growth or plant_growth_assembly change what they build:
+/// the cook cache key holds their inputs, not their code.
+const GROWN_ASSEMBLY_VERSION: u32 = 2;
+
 /// A grown limb holds many more parts than a recipe branch: sixteen times
 /// the reference cells, scratch and samples, and 4 GiB of build memory per group.
 fn grown_config(base: Config) -> Config {
@@ -116,7 +120,7 @@ pub fn cook_grown(variants: &[(crate::plant_growth::Species, u32, u64)], parts: 
             let (plant, loaded) = match cache {
                 Some(dir) => {
                     // The growth and assembly code is part of the cook code key.
-                    let what = format!("grown {species:?} {age} {seed} {look:?} {:?} {config:?} {proxy:?} {PROXY_LEVELS} {limits:?}",
+                    let what = format!("grown v{GROWN_ASSEMBLY_VERSION} {species:?} {age} {seed} {look:?} {:?} {config:?} {proxy:?} {PROXY_LEVELS} {limits:?}",
                         parts.stems.iter().chain(std::iter::once(&parts.collar)).chain(&parts.tufts).map(|p| (p.id, p.vertices.len(), p.indices.len())).collect::<Vec<_>>());
                     CookedPlant::cached(dir, &what, cook)?
                 }
