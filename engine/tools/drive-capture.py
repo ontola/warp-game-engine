@@ -101,7 +101,11 @@ def replay(root, exe, capture, dest, state_only):
     env = dict(os.environ)
     if not exe:
         env["SIDEWAYS_GAME_ROOT"] = str(root / "games/sideways")
-    env.setdefault("CARGO_TARGET_DIR", str(ROOT / "target"))
+    target = Path(env.get("CARGO_TARGET_DIR", "target"))
+    if not target.is_absolute():
+        target = ROOT / target
+    # A baseline must never replace an explicitly selected candidate executable.
+    env["CARGO_TARGET_DIR"] = str(target if root == ROOT else target / "warp-compare-baseline")
     cmd = [exe] if exe else ["cargo", "run", "--locked", "-p", "cli", "--bin", "sideways", "--"]
     subprocess.run([*cmd, "replay-drive", capture, dest, *(["--state-only"] if state_only else [])],
                    cwd=root, env=env, check=True)
