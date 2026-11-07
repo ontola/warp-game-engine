@@ -1,7 +1,7 @@
 # Warp documentation
 
 Warp is a Rust game engine designed for fast iteration with AI. Everything
-is code and text, there is no visual editor, every run replays bit for bit,
+is code and text, visual [editor tools](editor-tools.md) run inside games, every run replays bit for bit,
 and a running game can be inspected and changed by an AI over MCP. It is
 made for couch games with up to four players on one screen. Its focus so
 far is procedural outdoor worlds, with headless rendering, scripted

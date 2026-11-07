@@ -1,10 +1,11 @@
-//! Growing Guns' palette uses Mixamo names without exported parent indices.
-use super::{Character, HudDrawList, Mat4, Vec3, label};
+use super::label;
 use body::pose_editor::PoseEditor;
 use glam::Vec2;
+use glam::{Mat4, Vec3};
 use render::Camera;
+use render::{editor_style as style, hud::HudDrawList};
 
-pub(super) struct Bones {
+pub struct SkeletonOverlay {
     pub editor: PoseEditor,
     pub selected: usize,
     pub shown: bool,
@@ -16,14 +17,12 @@ pub(super) struct Bones {
     size: Vec2,
 }
 
-impl Bones {
-    pub fn new(model: &Character) -> Result<Self, String> {
-        let editor = PoseEditor::bind(model.joints(), crate::foregrip_pose::parent)?;
-        let selected = editor
-            .joints
-            .iter()
-            .position(|j| j.name.ends_with("LeftArm"))
-            .unwrap_or(0);
+impl SkeletonOverlay {
+    pub fn new(editor: PoseEditor) -> Result<Self, String> {
+        if editor.joints.is_empty() {
+            return Err("pose viewport needs at least one joint".into());
+        }
+        let selected = 0;
         Ok(Self {
             projected: vec![None; editor.joints.len()],
             editor,
@@ -37,12 +36,13 @@ impl Bones {
         })
     }
 
-    pub fn pointer(&mut self, p: app::Pointer) -> bool {
+    pub fn pointer(&mut self, p: crate::Pointer) -> bool {
         if !p.held && !p.pressed {
             self.drag = None;
         }
         if !self.shown {
             self.direct = None;
+            self.drag = None;
             return false;
         }
         let Some([x, y]) = p.position else {
@@ -153,7 +153,7 @@ impl Bones {
             }
             hud.rect([pos.x - 4., pos.y - 4., 8., 8.], c, clip);
         }
-        hud.rect([8., 40., 242., 156.], [0.04, 0.05, 0.07, 0.94], clip);
+        style::panel(hud, [8., 40., 242., 156.], 1., clip);
         let j = &self.editor.joints[self.selected];
         label(
             hud,
@@ -193,7 +193,7 @@ impl Bones {
             hud.rect([134., y + 10., 100., 3.], [0.45, 0.48, 0.5, 1.], clip);
             hud.rect(
                 [131. + (value / 180. + 1.) * 50., y + 5., 6., 14.],
-                [0.37, 0.85, 0.72, 1.],
+                style::HIGHLIGHT,
                 clip,
             );
         }

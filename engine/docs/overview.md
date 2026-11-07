@@ -9,7 +9,7 @@ the engine.
 
 Its focus is realistic, performant procedural outdoor worlds (terrain,
 trees, grass, sky), vehicle physics and short iteration loops for people
-and for coding agents. It is young: a human editor UI, complete indoor
+and for coding agents. It is young: a general scene editor, complete indoor
 rendering, water, buildings, people and general animation are missing.
 Priorities can change.
 
@@ -92,7 +92,7 @@ game's own tools while you play. See [live control](live-control.md).
 
 ## Not goals (for now)
 
-- An editor. Games are code and data files.
+- A general scene editor. Games are code and data files with focused [visual editing tools](editor-tools.md).
 - Comparing against Godot. The Godot versions are retired as references.
 - Claiming the frame-rate target before it is measured. The Sideways target
   is four players on one 4K output at 120 FPS (8.33 ms per frame); it is

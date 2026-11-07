@@ -37,9 +37,7 @@ const WINDOW: usize = 120;
 /// Tree rows below this many milliseconds fold into one "smaller" row.
 const TINY_MS: f64 = 0.02;
 
-const FG: [u8; 4] = [237, 242, 248, 255];
-const MUTED: [u8; 4] = [160, 176, 192, 255];
-const ACCENT: [u8; 4] = [118, 221, 208, 255];
+use render::editor_style::{FG, MUTED, ACCENT};
 const WARN: [u8; 4] = [255, 190, 90, 255];
 const HOT: [u8; 4] = [255, 110, 90, 255];
 
@@ -323,8 +321,7 @@ impl Stats {
         let clip = [0.0, 0.0, w, h];
         hud.begin_overlay();
         let panel = [x, top, width, (shown as f32 + 0.6 + f32::from(shown < self.lines.len())) * row];
-        hud.rect(panel, [0.012, 0.018, 0.028, 0.86], clip);
-        hud.rect([x, top, 3.0 * s, panel[3]], [0.12, 0.64, 0.55, 0.95], clip);
+        render::editor_style::panel(hud, panel, s, clip);
         let inner = x + 12.0 * s;
         let right = x + width - 12.0 * s;
         for (n, line) in self.lines.iter().take(shown).enumerate() {
