@@ -5,7 +5,7 @@
 use crate::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 
 const TEXT_ID: u64 = 0x4442_4755_4900_0000;
-use crate::editor_style::{FG, MUTED, ACCENT};
+use crate::editor_style::{EditorButton, FG, MUTED, ACCENT};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum DebugValue {
@@ -133,7 +133,7 @@ struct Layout {
 }
 
 fn contains(rect: [f32; 4], p: [f32; 2]) -> bool {
-    p[0] >= rect[0] && p[1] >= rect[1] && p[0] < rect[0]+rect[2] && p[1] < rect[1]+rect[3]
+    EditorButton(rect).contains(p)
 }
 fn intersection(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     let x=a[0].max(b[0]); let y=a[1].max(b[1]);
@@ -443,7 +443,7 @@ impl DebugUi {
         crate::editor_style::panel(list, p, s, clip);
         let x=p[0]+16.0*s; let w=p[2]-32.0*s; let mut y=p[1]+5.0*s;
         text(list,0,"Render debug",[x,y,w-40.0*s,30.0*s],clip,27.0*s,FG,TextAlign::Left);
-        text(list,1,"x",layout.close(),clip,24.0*s,MUTED,TextAlign::Center);
+        EditorButton(layout.close()).draw(list,TEXT_ID+1,"x",clip,22.*s,contains(layout.close(),self.cursor),true);
         y+=29.0*s;
         for (i,label,value) in [(0,"GPU measured intervals",model.gpu_active_ms),(1,"GPU render interval",model.gpu_interval_ms)] {
             text(list,10+i*2,label,[x,y,w*0.7,27.0*s],clip,23.0*s,FG,TextAlign::Left);
@@ -489,59 +489,52 @@ impl DebugUi {
             let row=layout.row(i,self.scroll); let row_clip=intersection(row,layout.body);
             if row_clip[3]<=0.0 {continue;}
             let selected=Some(rows[i])==self.selected;
-            list.rect([row[0],row[1]+1.0*s,row[2],row[3]-2.0*s],if selected{[0.075,0.15,0.19,0.98]}else{[0.034,0.048,0.065,0.8]},row_clip);
-            if rows[i]==Row::Reset {
-                text(list,604,if self.menu.is_some(){"Reset all defaults"}else{"Reset defaults"},
-                    [row[0]+10.0*s,row[1]+5.0*s,row[2]-20.0*s,29.0*s],row_clip,23.0*s,ACCENT,TextAlign::Left);
-                continue;
-            }
-            if rows[i]==Row::Back {
-                text(list,608,"< Back",[row[0]+10.0*s,row[1]+5.0*s,row[2]-20.0*s,29.0*s],row_clip,23.0*s,ACCENT,TextAlign::Left);
-                continue;
-            }
-            if let Row::Menu(id)=rows[i] {
-                if let Some(menu)=model.menus.iter().find(|m|m.id==id) {
-                    text(list,(1u64<<36)+id as u64*4,&format!("{} >",menu.label),
-                        [row[0]+10.0*s,row[1]+5.0*s,row[2]-20.0*s,29.0*s],row_clip,23.0*s,ACCENT,TextAlign::Left);
+            let face = EditorButton([row[0], row[1]+s, row[2], row[3]-2.*s]);
+            let button = |list: &mut HudDrawList, id, label: &str, enabled| {
+                face.draw(list,TEXT_ID+id,label,row_clip,22.*s,selected || contains(row,self.cursor),enabled);
+            };
+            match rows[i] {
+                Row::Reset => { button(list,604,if self.menu.is_some() {"Reset all defaults"} else {"Reset defaults"},true); continue; }
+                Row::Back => { button(list,608,"< Back",true); continue; }
+                Row::Advanced => { button(list,600,if self.advanced_open {"- Advanced rendering"} else {"+ Advanced rendering"},true); continue; }
+                Row::Menu(id) => {
+                    if let Some(menu)=model.menus.iter().find(|m| m.id==id) {
+                        button(list,(1u64<<36)+id as u64*4,&format!("{} >",menu.label),true);
+                    }
+                    continue;
                 }
-                continue;
+                Row::Control(_) => {}
             }
-            if rows[i]==Row::Advanced {
-                text(list,600,if self.advanced_open{"- Advanced rendering"}else{"+ Advanced rendering"},
-                    [row[0]+10.0*s,row[1]+5.0*s,row[2]-20.0*s,29.0*s],row_clip,23.0*s,ACCENT,TextAlign::Left);
-                continue;
-            }
-            let Row::Control(control_id)=rows[i] else {continue;};
+            let Row::Control(control_id)=rows[i] else {continue};
             let Some(control)=model.controls.iter().find(|c|c.id==control_id) else {continue;};
             let id=4096+control.id as u64*4;
             let enabled=control.enabled&&control_valid(control);
             let color=if enabled{FG}else{MUTED};
             if matches!(&control.value,DebugValue::Button) {
-                text(list,id,&control.label,[row[0]+10.0*s,row[1]+5.0*s,row[2]-20.0*s,29.0*s],row_clip,23.0*s,
-                    if enabled{ACCENT}else{MUTED},TextAlign::Left);
+                button(list,id,&control.label,enabled);
                 continue;
             }
+            list.rect(face.0,if selected{[0.075,0.15,0.19,0.98]}else{[0.034,0.048,0.065,0.8]},row_clip);
             let reserved=if matches!(&control.value,DebugValue::Choice{..}){262.0}else{170.0};
             text(list,id,&control.label,[row[0]+10.0*s,row[1]+5.0*s,row[2]-reserved*s,29.0*s],row_clip,23.0*s,color,TextAlign::Left);
             match &control.value {
                 DebugValue::Toggle(value)=>{
                     let button=[row[0]+row[2]-105.0*s,row[1]+5.0*s,95.0*s,28.0*s];
-                    list.rect(button,if *value&&enabled{[0.08,0.29,0.24,0.95]}else{[0.10,0.12,0.15,0.95]},row_clip);
-                    text(list,id+1,if *value{"On"}else{"Off"},button,row_clip,22.0*s,color,TextAlign::Center);
+                    EditorButton(button).draw(list,TEXT_ID+id+1,if *value{"On"}else{"Off"},row_clip,22.*s,*value || contains(button,self.cursor),enabled);
                 }
                 DebugValue::Number {value,decimals,unit,..}=>{
                     let (minus,plus)=layout.buttons(row);
-                    for rect in [minus,plus] {list.rect(rect,[0.10,0.15,0.19,0.95],row_clip);}
-                    text(list,id+1,"-",minus,row_clip,25.0*s,color,TextAlign::Center);
-                    text(list,id+2,"+",plus,row_clip,25.0*s,color,TextAlign::Center);
+                    for (offset,rect,label) in [(1,minus,"-"),(2,plus,"+")] {
+                        EditorButton(rect).draw(list,TEXT_ID+id+offset,label,row_clip,22.*s,contains(rect,self.cursor),enabled);
+                    }
                     let shown=if control_valid(control){format!("{:.*}{}",(*decimals).min(6) as usize,value,unit)}else{"invalid".into()};
                     text(list,id+3,&shown,[minus[0]+minus[2],row[1]+6.0*s,plus[0]-minus[0]-minus[2],28.0*s],row_clip,21.0*s,color,TextAlign::Center);
                 }
                 DebugValue::Choice {index,labels}=>{
                     let (previous,next)=layout.choice_buttons(row);
-                    for rect in [previous,next]{list.rect(rect,[0.10,0.15,0.19,0.95],row_clip);}
-                    text(list,id+1,"<",previous,row_clip,25.0*s,color,TextAlign::Center);
-                    text(list,id+2,">",next,row_clip,25.0*s,color,TextAlign::Center);
+                    for (offset,rect,label) in [(1,previous,"<"),(2,next,">")] {
+                        EditorButton(rect).draw(list,TEXT_ID+id+offset,label,row_clip,22.*s,contains(rect,self.cursor),enabled);
+                    }
                     text(list,id+3,labels.get(*index).map_or("invalid",String::as_str),layout.choice_value(row),row_clip,21.0*s,color,TextAlign::Center);
                 }
                 DebugValue::Button=>{},

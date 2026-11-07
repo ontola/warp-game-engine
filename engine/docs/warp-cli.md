@@ -445,6 +445,8 @@ Warp's own tools:
 
 ### Knobs
 
+For clickable development commands, export [game-owned F10 editor menus](editor-tools.md#game-owned-editor-menus) from the entry module.
+
 Tuning values a player wants to tweak while playing go in one block in
 main.luau, one per line, between `-- @knobs` and `-- @end`:
 

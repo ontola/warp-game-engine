@@ -692,3 +692,30 @@ fn gamenight_schema_validates_the_local_save_and_preserves_old_versions() {
     store.write("save","one",old.revision,json!({"victories":old.data["wins"]})).unwrap();
     assert_eq!(store.read("save","one").unwrap().unwrap().version,2);
 }
+
+#[test]
+fn luau_game_registers_nested_editor_pages_and_reloads_its_action() {
+    use render::debug_ui::DebugAction;
+    let dir = folder("editor-pages");
+    let path = dir.join("main.luau");
+    let src = r#"return {
+        editor_pages = {
+            { id = 1000, label = "Character" },
+            { id = 1001, parent = 1000, label = "Grip", buttons = {{ id = 1002, label = "Apply" }} }
+        },
+        editor_action = function(id) state.last = id end
+    }"#;
+    write(&path, src);
+    let mut g = game(&dir);
+    let (pages, buttons) = g.debug();
+    assert_eq!(pages[1].parent, Some(1000));
+    assert_eq!(buttons[0].menu, Some(1001));
+    g.debug_action(DebugAction::Activate { id: 1002 });
+    assert_eq!(state(&g)["state"]["last"], 1002);
+    write(&path, &src.replace("1002", "1003"));
+    g.reload();
+    g.debug_action(DebugAction::Activate { id: 1002 });
+    assert_eq!(state(&g)["state"]["last"], 1002);
+    g.debug_action(DebugAction::Activate { id: 1003 });
+    assert_eq!(state(&g)["state"]["last"], 1003);
+}

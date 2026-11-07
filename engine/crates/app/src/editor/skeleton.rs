@@ -9,6 +9,7 @@ pub struct SkeletonOverlay {
     pub editor: PoseEditor,
     pub selected: usize,
     pub shown: bool,
+    cursor: Option<[f32; 2]>,
     projected: Vec<Option<Vec2>>,
     drag: Option<usize>,
     direct: Option<(bool, Vec2)>,
@@ -24,6 +25,7 @@ impl SkeletonOverlay {
         }
         let selected = 0;
         Ok(Self {
+            cursor: None,
             projected: vec![None; editor.joints.len()],
             editor,
             selected,
@@ -37,6 +39,7 @@ impl SkeletonOverlay {
     }
 
     pub fn pointer(&mut self, p: crate::Pointer) -> bool {
+        self.cursor = p.position;
         if !p.held && !p.pressed {
             self.drag = None;
         }
@@ -89,12 +92,18 @@ impl SkeletonOverlay {
                 if !p.pressed {
                     return true;
                 }
-                if y < 67.0 {
+                if Self::PREV.contains([x, y]) || Self::NEXT.contains([x, y]) {
                     let n = self.editor.joints.len();
-                    self.selected = (self.selected + if x < 129.0 { n - 1 } else { 1 }) % n;
+                    self.selected = (self.selected
+                        + if Self::PREV.contains([x, y]) {
+                            n - 1
+                        } else {
+                            1
+                        })
+                        % n;
                 } else if (94.0..169.0).contains(&y) {
                     self.drag = Some(((y - 94.0) / 25.0) as usize);
-                } else if y >= 169.0 {
+                } else if Self::RESET.contains([x, y]) {
                     self.editor.joints[self.selected].degrees = Vec3::ZERO;
                     self.editor.joints[self.selected].local_offset = Vec3::ZERO;
                 }
@@ -155,14 +164,26 @@ impl SkeletonOverlay {
         }
         style::panel(hud, [8., 40., 242., 156.], 1., clip);
         let j = &self.editor.joints[self.selected];
+        for (id, button, text) in [
+            (47, Self::PREV, "<"),
+            (48, Self::NEXT, ">"),
+            (46, Self::RESET, "Reset joint"),
+        ] {
+            button.draw(
+                hud,
+                id,
+                text,
+                clip,
+                15.,
+                self.cursor.is_some_and(|p| button.contains(p)),
+                true,
+            );
+        }
         label(
             hud,
             40,
-            [14., 43.],
-            format!(
-                "<   {}   >",
-                j.name.rsplit([':', '_']).next().unwrap_or(&j.name)
-            ),
+            [45., 43.],
+            j.name.rsplit([':', '_']).next().unwrap_or(&j.name).into(),
         );
         let segment = self
             .editor
@@ -197,11 +218,10 @@ impl SkeletonOverlay {
                 clip,
             );
         }
-        label(
-            hud,
-            46,
-            [14., 171.],
-            "Reset joint     F12 saves pose".into(),
-        );
+        label(hud, 49, [126., 171.], "F12 saves pose".into());
     }
+
+    const PREV: style::EditorButton = style::EditorButton([12., 42., 28., 23.]);
+    const NEXT: style::EditorButton = style::EditorButton([216., 42., 28., 23.]);
+    const RESET: style::EditorButton = style::EditorButton([12., 170., 110., 23.]);
 }
