@@ -6,7 +6,7 @@
 -- @knobs
 local KNOBS = {
 	speed = 12, -- camera speed, m/s
-	settle = 0.35, -- seconds without changes before the row regrows
+	settle = 0.15, -- seconds without changes before the row regrows
 }
 -- @end
 
