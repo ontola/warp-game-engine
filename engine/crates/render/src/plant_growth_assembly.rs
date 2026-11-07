@@ -101,14 +101,19 @@ fn unit(variant: u64, index: u64, tag: u64) -> f32 {
 /// A bottlebrush of long needles along the last 30 cm of a shoot (+Y, ending
 /// at the origin), splaying out and forward; a stand-in until a proper mesh
 /// replaces it.
-fn tuft(id: u64, variant: u64, needles: u32, length: f32) -> PartGeometry {
+fn tuft(id: u64, variant: u64, b: &Look) -> PartGeometry {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
+    let (needles, length, reach) = (b.brush_needles.clamp(1, 2000), b.needle_length.clamp(0.01, 1.0), b.brush_reach.clamp(0.01, 1.0));
+    let spread = b.brush_spread.clamp(0.2, 3.0);
     for i in 0..needles {
         let v = i as u64;
-        // Fascicles along the shoot, denser and more upright near the tip.
-        let along = -0.3 * unit(variant, v, 5).powf(1.4);
-        let tilt = 0.45 + 0.75 * (-along / 0.3) + 0.25 * unit(variant, v, 1);
+        // Fascicles along the last `reach` of the shoot, denser near the tip:
+        // forward at the tip, splaying out to `spread` from the shoot further
+        // back, a starburst round the bud as on a Jeffrey pine.
+        let along = -reach * unit(variant, v, 5).powf(1.4);
+        let t = -along / reach;
+        let tilt = (0.3 + (spread - 0.3) * t.sqrt() + 0.3 * (unit(variant, v, 1) - 0.5)).max(0.05);
         let around = unit(variant, v, 2) * TAU;
         let axis = Vec3::new(tilt.sin() * around.cos(), tilt.cos(), tilt.sin() * around.sin());
         let side = axis.cross(if axis.y.abs() < 0.9 { Vec3::Y } else { Vec3::X }).normalize();
@@ -132,23 +137,23 @@ fn tuft(id: u64, variant: u64, needles: u32, length: f32) -> PartGeometry {
 
 impl Parts {
     /// Placeholder parts for a long-needled pine.
-    pub fn long_needle_pine() -> Self {
-        let look = Look::jeffrey_pine();
-        Self::needle_brushes(look.brush_needles, look.needle_length)
-    }
+    pub fn long_needle_pine() -> Self { Self::for_look(&Look::jeffrey_pine()) }
 
-    /// Pine parts whose bottlebrushes carry `needles` needles about `length`
-    /// metres long (Look::brush_needles and needle_length).
-    pub fn needle_brushes(needles: u32, length: f32) -> Self {
+    /// Pine parts with the look's needle brushes (brush_needles,
+    /// needle_length, brush_spread, brush_reach).
+    pub fn for_look(look: &Look) -> Self {
         const STEM: u64 = 0x5047_5354_0000_0000;
         const TUFT: u64 = 0x5047_5446_0000_0000;
-        let (needles, length) = (needles.clamp(1, 2000), length.clamp(0.01, 1.0));
-        // The brush's needles and length are part of its identity (and so of every cook key).
-        let tuft_id = TUFT ^ (u64::from(needles) << 8) ^ (u64::from(length.to_bits()) << 20);
+        // The brush's shape is part of its identity (and so of every cook key).
+        let mut h = TUFT;
+        for x in [u64::from(look.brush_needles), u64::from(look.needle_length.to_bits()), u64::from(look.brush_spread.to_bits()), u64::from(look.brush_reach.to_bits())] {
+            h = (h ^ x).wrapping_mul(0x100_0000_01b3).rotate_left(17);
+        }
+        let tuft_id = (h & !0xff) | (TUFT & 0xff);
         Self {
             stems: std::array::from_fn(|k| stem(STEM + 1 + k as u64, if k < 4 { 8 } else { 16 }, TAPERS[k % 4])),
             collar: collar(STEM + 16),
-            tufts: (0..3).map(|v| tuft(tuft_id + v, v, needles, length)).collect(),
+            tufts: (0..3).map(|v| tuft(tuft_id + v, v, look)).collect(),
         }
     }
 }
@@ -170,6 +175,11 @@ pub struct Look {
     pub brush_needles: u32,
     /// Typical needle length, metres.
     pub needle_length: f32,
+    /// How far needles splay from the shoot at the back of a brush, radians
+    /// (forward at the tip; 1.6 is sideways, more points back).
+    pub brush_spread: f32,
+    /// Length of shoot the needles sit on behind its tip, metres.
+    pub brush_reach: f32,
 }
 
 impl Default for Look {
@@ -178,7 +188,7 @@ impl Default for Look {
 
 impl Look {
     pub fn jeffrey_pine() -> Self {
-        Self { wood: [0.24, 0.12, 0.07], needles: [0.11, 0.21, 0.09], brush_needles: 140, needle_length: 0.22 }
+        Self { wood: [0.24, 0.12, 0.07], needles: [0.11, 0.21, 0.09], brush_needles: 140, needle_length: 0.22, brush_spread: 1.7, brush_reach: 0.2 }
     }
 }
 
