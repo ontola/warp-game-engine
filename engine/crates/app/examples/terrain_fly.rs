@@ -933,8 +933,16 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
             WorldRoot {id:render::placement::instance_id(2000,i as i32,0),placement:RootPlacement {up:Vec3::Y,pos:placement::World::ground(&land,at.x,at.y).pos,yaw:0.,scale:1.,variant:i}}
         }).collect()
     } else {woody};
+    // --pine-solo V[,X,Z]: only one grown pine, variant V (FOREST_AGES), at
+    // X,Z (default 0,0): its forest counters are that tree's representation.
+    let solo=std::env::args().skip_while(|a|a!="--pine-solo").nth(1);
+    let woody:Vec<WorldRoot>=if let (true,Some(s))=(world.trees && pine_forest().is_some(),solo) {
+        let n:Vec<f32>=s.split(',').filter_map(|v|v.parse().ok()).collect();
+        let (v,x,z)=(n.first().copied().unwrap_or(0.) as usize,n.get(1).copied().unwrap_or(0.),n.get(2).copied().unwrap_or(0.));
+        vec![WorldRoot {id:render::placement::instance_id(3000,v as i32,0),placement:RootPlacement {up:Vec3::Y,pos:placement::World::ground(&land,x,z).pos,yaw:0.,scale:1.,variant:v.min(FOREST_AGES.len()-1)}}]
+    } else {woody};
     // Every tree and shrub becomes a grown pine of a stable random age.
-    let woody:Vec<WorldRoot>=if world.trees && pine_forest().is_some() {
+    let woody:Vec<WorldRoot>=if world.trees && pine_forest().is_some() && !std::env::args().any(|a|a=="--pine-solo") {
         woody.into_iter().map(|mut r|{
             let h=r.id.wrapping_mul(0x9e37_79b9_7f4a_7c15)>>40;
             r.placement.variant=(h as usize)%FOREST_AGES.len();r.placement.scale=1.;r
