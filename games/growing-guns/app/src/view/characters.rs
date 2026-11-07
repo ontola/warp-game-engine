@@ -48,7 +48,7 @@ mod tests {
         for name in ROSTER {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters").join(format!("{name}.json"));
             let model = Character::load(&path).unwrap();
-            let arms = body::reach::TwoHandHold::bind(model.joints()).unwrap();
+            let arms = grip_arms(&model).unwrap();
             let wrist = model.joints().find(|(n, _)| n.ends_with("LeftHand")).unwrap().0;
             let hand = model.sample_socket(IDLE, "RightHand", 0.25, true).unwrap().w_axis.truncate();
             let body = model_transform(Vec3::ZERO, 0.0);
@@ -60,7 +60,16 @@ mod tests {
                 let (support, _) = crate::hand_animation::HandAnimation::load().unwrap().pose(contacts, 0.0);
                 let offset = body.inverse().transform_vector3(Guns::held_transform(Vec3::ZERO, 0.0, 0.0, grip).transform_vector3(support - grip));
                 let mut palette = model.sample(IDLE, 0.25, true).unwrap();
+                let upper_length = |pose: &[Mat4]| {
+                    let pos = |suffix: &str| model.joints().find(|(n, _)| n.ends_with(suffix))
+                        .and_then(|(n, _)| model.joint_position(n, pose)).unwrap();
+                    pos("LeftArm").distance(pos("LeftForeArm"))
+                };
+                let original = upper_length(&palette);
                 let primary = arms.apply(&mut palette, hand, hand + offset);
+                let length = upper_length(&palette);
+                eprintln!("{name} upper arm {original:.3} -> {length:.3} m");
+                assert!((length - original * if name == "knight" { 1.24 } else { 1.0 }).abs() < 0.001);
                 let error = model.joint_position(wrist, &palette).unwrap().distance(primary + offset);
                 eprintln!("{name} spread {spread} support error {error:.4}m");
                 assert!(error < 0.015, "{name} wrist missed contact by {error}m");
@@ -109,6 +118,11 @@ mod tests {
         assert_eq!(physics.world.impulse_joints.len(), 0);
         assert_eq!(scene.skinning.actors.len(), 1, "reusing a player never aliases or allocates another skin");
     }
+}
+
+pub(crate) fn grip_arms(model: &Character) -> Option<body::reach::TwoHandHold> {
+    let arms = body::reach::TwoHandHold::bind(model.joints())?;
+    Some(if model.name == "knight" { arms.with_arm_proportions(1.24, 1.20) } else { arms })
 }
 
 pub fn model_transform(pos: Vec3, yaw: f32) -> Affine3A {
@@ -160,7 +174,7 @@ impl Characters {
         let palette = model.sample(IDLE, 0.0, true)?;
         let mesh = handle.mesh;
         let run_palette = vec![Mat4::IDENTITY; palette.len()];
-        self.actors.push(Actor { arms: body::reach::TwoHandHold::bind(model.joints()), handle, palette, run_palette, motion: Motion::default(),
+        self.actors.push(Actor { arms: grip_arms(model), handle, palette, run_palette, motion: Motion::default(),
             corpse: None, corpse_transform: None, velocity: Vec3::ZERO });
         self.hands.push(None);
         Ok(mesh)
@@ -185,7 +199,7 @@ impl Characters {
         let palette = model.sample(IDLE, 0.0, true)?;
         let run_palette = vec![Mat4::IDENTITY; palette.len()];
         let handle = ActorHandle { actor: 0, instance: 0, mesh: 0 };
-        self.actors.push(Actor { arms: body::reach::TwoHandHold::bind(model.joints()), handle, palette, run_palette, motion: Motion::default(), corpse: None, corpse_transform: None, velocity: Vec3::ZERO });
+        self.actors.push(Actor { arms: grip_arms(model), handle, palette, run_palette, motion: Motion::default(), corpse: None, corpse_transform: None, velocity: Vec3::ZERO });
         self.pieces.push(self.rigid_meshes[k].unwrap());
         self.hands.push(None);
         Ok(())

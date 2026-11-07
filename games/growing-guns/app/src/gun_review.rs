@@ -155,7 +155,6 @@ fn apply_graphics(scene: &mut render::Scene) {
 fn grip(args: &crate::Args) -> Result<(), String> {
     use crate::view::guns::Guns;
     use assets::skinned::Character;
-    use body::reach::TwoHandHold;
     use std::path::Path;
 
     let name = args.value("--model").unwrap_or("knight");
@@ -169,7 +168,7 @@ fn grip(args: &crate::Args) -> Result<(), String> {
     let looped = clip != "pistol_jump";
     let palette = model.sample(clip, time, looped)?;
     let hand = model.sample_socket(clip, "RightHand", time, looped)?.w_axis.truncate();
-    let arms = TwoHandHold::bind(model.joints()).ok_or("model needs two complete arms")?;
+    let arms = crate::view::characters::grip_arms(&model).ok_or("model needs two complete arms")?;
     let mut world = growing_guns::World::new(3, &[false]);
     let _scripts = crate::scripts::attach(&mut world)?;
     let base = crate::gun::Stats::of(&world.players[0]);

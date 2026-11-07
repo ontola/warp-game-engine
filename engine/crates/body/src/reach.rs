@@ -10,6 +10,7 @@ pub enum LimbPart {
 }
 
 pub struct Reach {
+    length_scale: [f32; 2],
     pivots: [(usize, Vec3); 3],
     members: Vec<(usize, LimbPart)>,
 }
@@ -48,6 +49,7 @@ impl Reach {
             }
         }
         Some(Self {
+            length_scale: [1.0; 2],
             pivots: [pivots[0]?, pivots[1]?, pivots[2]?],
             members,
         })
@@ -56,14 +58,14 @@ impl Reach {
     /// Current upper and lower segment lengths combined, in model units.
     pub fn span(&self, pose: &[Mat4]) -> f32 {
         let [a, b, c] = self.pivots.map(|(i, rest)| pose[i].transform_point3(rest));
-        a.distance(b) + b.distance(c)
+        a.distance(b) * self.length_scale[0] + b.distance(c) * self.length_scale[1]
     }
 
     /// Nearest reachable wrist position. Useful when two limbs constrain a shared prop.
     pub fn closest_target(&self, pose: &[Mat4], target: Vec3) -> Vec3 {
         let [root, joint, end] = self.pivots.map(|(i, rest)| pose[i].transform_point3(rest));
-        let a = root.distance(joint);
-        let b = joint.distance(end);
+        let a = root.distance(joint) * self.length_scale[0];
+        let b = joint.distance(end) * self.length_scale[1];
         let delta = target - root;
         root + delta.normalize_or((end - root).normalize_or(Vec3::Y))
             * delta.length().clamp((a - b).abs(), a + b)
@@ -79,12 +81,15 @@ impl Reach {
         let [root, joint, end] = self.pivots.map(|(i, rest)| pose[i].transform_point3(rest));
         let upper = joint - root;
         let lower = end - joint;
-        let (a, b) = (upper.length(), lower.length());
+        let (a, b) = (
+            upper.length() * self.length_scale[0],
+            lower.length() * self.length_scale[1],
+        );
         if a.min(b) < 1e-6 {
             return;
         }
         let goal = end.lerp(target, weight) - root;
-        let axis = goal.normalize_or((end - root).normalize_or(upper / a));
+        let axis = goal.normalize_or((end - root).normalize_or(upper.normalize()));
         let dist = goal.length().clamp((a - b).abs().max(1e-6), a + b);
         let along = ((a * a - b * b + dist * dist) / (2.0 * dist)).clamp(-a, a);
         let project = |v: Vec3| v - axis * axis.dot(v);
@@ -93,13 +98,24 @@ impl Reach {
             .unwrap_or_else(|| project(bend_hint).normalize_or(axis.any_orthonormal_vector()));
         let elbow = root + axis * along + bend * (a * a - along * along).max(0.0).sqrt();
         let wrist = root + axis * dist;
-        let move_segment = |from: Vec3, to: Vec3, old: Vec3, new: Vec3| {
+        let move_segment = |from: Vec3, to: Vec3, old: Vec3, new: Vec3, scale: f32| {
             let turn = Quat::from_rotation_arc(old.normalize(), new.normalize());
-            Mat4::from_rotation_translation(turn, to - turn * from)
+            if scale == 1.0 {
+                return Mat4::from_rotation_translation(turn, to - turn * from);
+            }
+            // Stretch only along the bone axis, around its proximal joint.
+            let axis = old.normalize();
+            let stretch = |v: Vec3| turn * (v + axis * (axis.dot(v) * (scale - 1.0)));
+            Mat4::from_cols(
+                stretch(Vec3::X).extend(0.0),
+                stretch(Vec3::Y).extend(0.0),
+                stretch(Vec3::Z).extend(0.0),
+                (to - stretch(from)).extend(1.0),
+            )
         };
         let transforms = [
-            move_segment(root, root, upper, elbow - root),
-            move_segment(joint, elbow, lower, wrist - elbow),
+            move_segment(root, root, upper, elbow - root, self.length_scale[0]),
+            move_segment(joint, elbow, lower, wrist - elbow, self.length_scale[1]),
             Mat4::from_translation(wrist - end),
         ];
         for &(index, part) in &self.members {
@@ -120,6 +136,14 @@ impl TwoHandHold {
             left: Reach::arm(joints.clone(), true)?,
             right: Reach::arm(joints, false)?,
         })
+    }
+
+    /// Retarget a held pose to different segment proportions on both arms.
+    pub fn with_arm_proportions(mut self, upper: f32, forearm: f32) -> Self {
+        assert!(upper.is_finite() && upper > 0.0 && forearm.is_finite() && forearm > 0.0);
+        self.left.length_scale = [upper, forearm];
+        self.right.length_scale = [upper, forearm];
+        self
     }
 
     /// Orient a support palm after solving the wrists. The rotation maps the
