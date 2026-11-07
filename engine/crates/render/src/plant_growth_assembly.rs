@@ -249,7 +249,10 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
             id: seed ^ 0x4252_414e_4348 ^ ((*l as u64 + 1) << 20),
             parent: Some(0),
             rest: Mat4::from_rotation_translation(along(s.from, s.to), s.from),
-            stiffness: 0.6,
+            // Wind sway bounds every voxel level's error by angle x limb length:
+            // at 0.6 a 10 m limb added ~0.9 m, so the camera never left the
+            // source mesh and its splats filled the budget. Stiff, long limbs.
+            stiffness: 0.92,
         });
     }
     let inverse: Vec<Mat4> = branches.iter().map(|b| b.rest.inverse()).collect();
