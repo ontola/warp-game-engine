@@ -258,6 +258,33 @@ impl World {
 
     pub fn capacity(&self) -> usize { self.slots.capacity() }
 
+    /// The game folder.
+    pub fn dir(&self) -> &Path { &self.dir }
+
+    /// Build the scene again from the entities alone: what attaching
+    /// vegetation needs (it must come last, and a scene cannot drop it).
+    /// Ids, effects and every entity stay; the renderer is rebuilt.
+    pub fn fresh_scene(&mut self) -> Result<(), String> {
+        let mut w = World::new(&self.dir, self.slots.capacity());
+        for (&id, e) in &self.entities {
+            let (mesh, _) = w.mesh(&e.shape, &e.look)?;
+            let mut e = e.clone();
+            e.mesh = mesh;
+            e.slot = None;
+            e.edge_slots.clear();
+            show(&mut w.slots, &mut w.scene, &mut e);
+            w.entities.insert(id, e);
+        }
+        self.entities = std::mem::take(&mut w.entities);
+        self.scene = w.scene;
+        self.slots = w.slots;
+        self.materials = w.materials;
+        self.meshes = w.meshes;
+        self.models = w.models;
+        self.rebuild = true;
+        Ok(())
+    }
+
     fn material(&mut self, look: &Look) -> u32 {
         if let Some(&m) = self.materials.get(&look.key()) { return m; }
         let m = self.scene.add_material(material(look));

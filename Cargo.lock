@@ -6245,6 +6245,7 @@ dependencies = [
  "app",
  "assets",
  "audio",
+ "bytemuck",
  "gamenight",
  "glam 0.31.1",
  "image",

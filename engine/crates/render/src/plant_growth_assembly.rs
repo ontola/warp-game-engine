@@ -153,10 +153,15 @@ impl Parts {
 }
 
 /// Colours of the wood and the needles.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Look {
     pub wood: [f32; 3],
     pub needles: [f32; 3],
+}
+
+impl Default for Look {
+    fn default() -> Self { Self::jeffrey_pine() }
 }
 
 impl Look {

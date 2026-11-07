@@ -11,7 +11,8 @@ use glam::Vec3;
 use std::collections::HashMap;
 
 /// Growth rules of one species. Lengths in metres, times in years.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Species {
     /// Height the leader approaches, and how fast: h(t) = height (1 - e^-(t/pace))^shape.
     pub height: f32,
@@ -48,6 +49,10 @@ pub struct Species {
     pub wood: f32,
     pub limb_wood: f32,
     pub dead_years: u32,
+}
+
+impl Default for Species {
+    fn default() -> Self { Self::jeffrey_pine() }
 }
 
 impl Species {
