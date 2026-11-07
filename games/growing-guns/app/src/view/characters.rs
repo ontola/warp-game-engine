@@ -15,7 +15,7 @@ const JUMP: &str = "pistol_jump";
 
 #[derive(Default)]
 struct Motion { idle: f32, run: f32, blend: f32, jump: Option<f32> }
-struct Actor { handle: ActorHandle, palette: Vec<Mat4>, run_palette: Vec<Mat4>, motion: Motion,
+struct Actor { arms: Option<body::reach::TwoHandHold>, handle: ActorHandle, palette: Vec<Mat4>, run_palette: Vec<Mat4>, motion: Motion,
     corpse: Option<Corpse>, corpse_transform: Option<Affine3A>, velocity: Vec3 }
 
 /// A player's body turned to lava (Godot `_apply_lava_body`): the same
@@ -66,12 +66,12 @@ mod tests {
         world.players[0].alive = false;
         c.kill(&mut physics, 0, &world.players[0], Vec3::X, false).unwrap();
         physics.step(); c.follow_physics(&physics);
-        c.pose(&world, &[], 1.0);
+        c.pose(&world, &[], 1.0, None);
         assert!(c.corpse_transform(0).is_some());
         assert_eq!(physics.body_count(), 11);
         world.players[0].alive = true;
         c.tick(&world, &mut physics);
-        c.pose(&world, &[], 1.0);
+        c.pose(&world, &[], 1.0, None);
         assert_eq!(physics.body_count(), 0);
         assert!(c.corpse_transform(0).is_none() && c.hands[0].is_some());
         world.players[0].alive = false;
@@ -126,7 +126,7 @@ impl Characters {
         let palette = model.sample(IDLE, 0.0, true)?;
         let mesh = handle.mesh;
         let run_palette = vec![Mat4::IDENTITY; palette.len()];
-        self.actors.push(Actor { handle, palette, run_palette, motion: Motion::default(),
+        self.actors.push(Actor { arms: body::reach::TwoHandHold::bind(model.joints()), handle, palette, run_palette, motion: Motion::default(),
             corpse: None, corpse_transform: None, velocity: Vec3::ZERO });
         self.hands.push(None);
         Ok(mesh)
@@ -151,7 +151,7 @@ impl Characters {
         let palette = model.sample(IDLE, 0.0, true)?;
         let run_palette = vec![Mat4::IDENTITY; palette.len()];
         let handle = ActorHandle { actor: 0, instance: 0, mesh: 0 };
-        self.actors.push(Actor { handle, palette, run_palette, motion: Motion::default(), corpse: None, corpse_transform: None, velocity: Vec3::ZERO });
+        self.actors.push(Actor { arms: body::reach::TwoHandHold::bind(model.joints()), handle, palette, run_palette, motion: Motion::default(), corpse: None, corpse_transform: None, velocity: Vec3::ZERO });
         self.pieces.push(self.rigid_meshes[k].unwrap());
         self.hands.push(None);
         Ok(())
@@ -244,7 +244,7 @@ impl Characters {
         }
     }
 
-    pub fn pose(&mut self, world: &World, prev: &[crate::view::Pose], alpha: f32) {
+    pub fn pose(&mut self, world: &World, prev: &[crate::view::Pose], alpha: f32, guns: Option<&super::guns::Guns>) {
         for (i, actor) in self.actors.iter_mut().enumerate() {
             let Some(p) = world.players.get(i) else {
                 actor.corpse_transform = None;
@@ -272,7 +272,12 @@ impl Characters {
                     model.sample_socket(RUN, "RightHand", m.run, true).expect("validated run socket"), m.blend)
             };
             let drawn = crate::view::pose(world, i, prev, alpha);
-            self.hands[i] = Some(model_transform(drawn.pos, drawn.yaw).transform_point3(socket.w_axis.truncate()));
+            let body = model_transform(drawn.pos, drawn.yaw);
+            let hand = body.transform_point3(socket.w_axis.truncate());
+            self.hands[i] = Some(if let (Some(arms), Some(target)) = (&actor.arms, guns.and_then(|g| g.support_target(i, hand, drawn.yaw, drawn.pitch))) {
+                let wrist = arms.apply(&mut actor.palette, socket.w_axis.truncate(), body.inverse().transform_point3(target));
+                body.transform_point3(wrist)
+            } else { hand });
         }
     }
 

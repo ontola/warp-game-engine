@@ -25,6 +25,7 @@ and session notes are in the [development log](log/README.md).
 
 | Guide | What it covers |
 | --- | --- |
+| [Procedural character contacts](animation.md) | Layer a reachable prop socket over an animated arm and render a repeatable grip preview. |
 | [What Warp is](overview.md) | Design goals: deterministic sim, fast iteration, headless runs, physical units, live tweaking by an AI as a direction. |
 | [Status](status.md) | What is the default, what is opt-in and what is open, per area. |
 | [Workspace and crates](workspace.md) | The repository layout, the engine crates, the game packages and the build profiles. |

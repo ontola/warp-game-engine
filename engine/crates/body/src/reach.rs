@@ -1,0 +1,177 @@
+//! A positional contact layered over an animated skin palette.
+//! Bind once per skeleton. Target and bend hint use the sampled model's space.
+use glam::{Mat4, Quat, Vec3};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LimbPart {
+    Upper,
+    Lower,
+    End,
+}
+
+pub struct Reach {
+    pivots: [(usize, Vec3); 3],
+    members: Vec<(usize, LimbPart)>,
+}
+
+impl Reach {
+    /// Standard arm names (LeftArm, LeftForeArm, LeftHand and finger joints),
+    /// including Mixamo namespace prefixes.
+    pub fn arm<'a>(joints: impl Iterator<Item = (&'a str, Mat4)>, left: bool) -> Option<Self> {
+        let side = if left { "Left" } else { "Right" };
+        Self::bind(joints, |name| {
+            let bone = name.rsplit([':', '_']).next()?.strip_prefix(side)?;
+            match bone {
+                "Arm" => Some((LimbPart::Upper, true)),
+                "ForeArm" => Some((LimbPart::Lower, true)),
+                "Hand" => Some((LimbPart::End, true)),
+                finger if finger.starts_with("Hand") => Some((LimbPart::End, false)),
+                _ => None,
+            }
+        })
+    }
+
+    /// Classify every affected skin entry, including duplicate binds and fingers.
+    /// The bool identifies a pivot (shoulder, elbow, wrist for an arm).
+    pub fn bind<'a>(
+        joints: impl Iterator<Item = (&'a str, Mat4)>,
+        classify: impl Fn(&str) -> Option<(LimbPart, bool)>,
+    ) -> Option<Self> {
+        let mut pivots = [None; 3];
+        let mut members = Vec::new();
+        for (i, (name, rest)) in joints.enumerate() {
+            if let Some((part, pivot)) = classify(name) {
+                members.push((i, part));
+                if pivot {
+                    pivots[part as usize].get_or_insert((i, rest.transform_point3(Vec3::ZERO)));
+                }
+            }
+        }
+        Some(Self {
+            pivots: [pivots[0]?, pivots[1]?, pivots[2]?],
+            members,
+        })
+    }
+
+    /// Current upper and lower segment lengths combined, in model units.
+    pub fn span(&self, pose: &[Mat4]) -> f32 {
+        let [a, b, c] = self.pivots.map(|(i, rest)| pose[i].transform_point3(rest));
+        a.distance(b) + b.distance(c)
+    }
+
+    /// Nearest reachable wrist position. Useful when two limbs constrain a shared prop.
+    pub fn closest_target(&self, pose: &[Mat4], target: Vec3) -> Vec3 {
+        let [root, joint, end] = self.pivots.map(|(i, rest)| pose[i].transform_point3(rest));
+        let a = root.distance(joint);
+        let b = joint.distance(end);
+        let delta = target - root;
+        root + delta.normalize_or((end - root).normalize_or(Vec3::Y))
+            * delta.length().clamp((a - b).abs(), a + b)
+    }
+
+    /// Keep the sampled wrist orientation and finger pose. Unreachable targets
+    /// stop at the arm's reach. Weight zero preserves the exact input palette.
+    pub fn apply(&self, pose: &mut [Mat4], target: Vec3, bend_hint: Vec3, weight: f32) {
+        let weight = weight.clamp(0.0, 1.0);
+        if weight == 0.0 {
+            return;
+        }
+        let [root, joint, end] = self.pivots.map(|(i, rest)| pose[i].transform_point3(rest));
+        let upper = joint - root;
+        let lower = end - joint;
+        let (a, b) = (upper.length(), lower.length());
+        if a.min(b) < 1e-6 {
+            return;
+        }
+        let goal = end.lerp(target, weight) - root;
+        let axis = goal.normalize_or((end - root).normalize_or(upper / a));
+        let dist = goal.length().clamp((a - b).abs().max(1e-6), a + b);
+        let along = ((a * a - b * b + dist * dist) / (2.0 * dist)).clamp(-a, a);
+        let project = |v: Vec3| v - axis * axis.dot(v);
+        let bend = project(upper)
+            .try_normalize()
+            .unwrap_or_else(|| project(bend_hint).normalize_or(axis.any_orthonormal_vector()));
+        let elbow = root + axis * along + bend * (a * a - along * along).max(0.0).sqrt();
+        let wrist = root + axis * dist;
+        let move_segment = |from: Vec3, to: Vec3, old: Vec3, new: Vec3| {
+            let turn = Quat::from_rotation_arc(old.normalize(), new.normalize());
+            Mat4::from_rotation_translation(turn, to - turn * from)
+        };
+        let transforms = [
+            move_segment(root, root, upper, elbow - root),
+            move_segment(joint, elbow, lower, wrist - elbow),
+            Mat4::from_translation(wrist - end),
+        ];
+        for &(index, part) in &self.members {
+            pose[index] = transforms[part as usize] * pose[index];
+        }
+    }
+}
+
+/// Right-handed two-point prop contact over a sampled humanoid pose.
+pub struct TwoHandHold {
+    left: Reach,
+    right: Reach,
+}
+
+impl TwoHandHold {
+    pub fn bind<'a>(joints: impl Iterator<Item = (&'a str, Mat4)> + Clone) -> Option<Self> {
+        Some(Self {
+            left: Reach::arm(joints.clone(), true)?,
+            right: Reach::arm(joints, false)?,
+        })
+    }
+
+    /// Primary and secondary are wrist sockets in model space. Place the prop
+    /// at the returned primary wrist, preserving its requested orientation.
+    pub fn apply(&self, pose: &mut [Mat4], primary: Vec3, secondary: Vec3) -> Vec3 {
+        let spacing = secondary - primary;
+        let correction = self.left.closest_target(pose, secondary) - secondary;
+        // Preserve the authored carry pose for props longer than this arm span.
+        let allowance = self.right.span(pose) * 0.10;
+        let primary = self
+            .right
+            .closest_target(pose, primary + correction.clamp_length_max(allowance));
+        self.right.apply(pose, primary, Vec3::NEG_X, 1.0);
+        self.left.apply(pose, primary + spacing, Vec3::X, 1.0);
+        primary
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn different_arm_lengths_follow_the_contact_without_stretch() {
+        for size in [0.5, 1.0, 1.8] {
+            let bind = [
+                ("LeftArm", Vec3::ZERO),
+                ("LeftForeArm", Vec3::X * size),
+                ("LeftHand", Vec3::new(size, size * 0.8, 0.0)),
+                ("LeftHandMiddle1", Vec3::new(size, size, 0.0)),
+                ("Chest", Vec3::Y),
+            ];
+            let reach = Reach::arm(
+                bind.iter().map(|(n, p)| (*n, Mat4::from_translation(*p))),
+                true,
+            )
+            .unwrap();
+            for goal in [Vec3::new(0.7, 0.2, 0.1) * size, Vec3::Y * 10.0, Vec3::ZERO] {
+                let mut palette = [Mat4::IDENTITY; 5];
+                reach.apply(&mut palette, goal, Vec3::Z, 1.0);
+                let pos = |i: usize| palette[i].transform_point3(bind[i].1);
+                assert!((pos(0).distance(pos(1)) - size).abs() < 1e-4);
+                assert!((pos(1).distance(pos(2)) - size * 0.8).abs() < 1e-4);
+                assert!(
+                    (pos(2).length() - goal.length().clamp(size * 0.2, size * 1.8)).abs() < 1e-4
+                );
+                if goal.length() < size && goal != Vec3::ZERO {
+                    assert!(pos(2).distance(goal) < 1e-4);
+                }
+                assert!(palette[2].abs_diff_eq(palette[3], 1e-6));
+                assert_eq!(palette[4], Mat4::IDENTITY);
+            }
+        }
+    }
+}

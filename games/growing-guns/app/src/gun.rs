@@ -199,6 +199,20 @@ impl Look {
 pub struct Build { pub parts: Vec<Part>, pub bolt_travel: f32, pub minigun: bool, pub barrel_length: f32, /** Gun-space barrel exit. */ pub muzzle: Vec3 }
 
 impl Build {
+    /// Gun-space wrists. The primary wrist sits behind the pistol grip. The
+    /// other hand cups it on short guns and follows the foregrip as it grows.
+    pub fn wrist_contacts(&self) -> [Vec3; 2] {
+        let bottom = -self.parts[0].xf.matrix3.y_axis.length() * 0.5;
+        let primary = Vec3::new(0.0, bottom - 0.055, GRIP_Z + 0.058);
+        let cup = primary + Vec3::new(-0.055, -0.025, -0.040);
+        let support = self.parts.iter().find(|p| p.key == 6 * 1024 + 1)
+            .map_or(cup, |p| {
+                let weight = (p.xf.matrix3.y_axis.length() / FOREGRIP_LENGTH).clamp(0.0, 1.0);
+                cup.lerp(Vec3::from(p.xf.translation) + Vec3::new(-0.045, -0.025, 0.035), weight)
+            });
+        [primary, support]
+    }
+
     fn same_shape(&self, other: &Self) -> bool {
         self.parts.len() == other.parts.len() && self.parts.iter().zip(&other.parts).all(|(a, b)| {
             a.key == b.key && a.shape == b.shape && a.mat == b.mat && a.motion == b.motion &&

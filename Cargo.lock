@@ -1862,6 +1862,7 @@ dependencies = [
  "app",
  "assets",
  "audio",
+ "body",
  "fastnoise-lite",
  "flate2",
  "gamenight",

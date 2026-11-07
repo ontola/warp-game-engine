@@ -7,7 +7,7 @@
 mod dust;
 mod arena;
 mod cages;
-mod characters;
+pub(crate) mod characters;
 mod character_ragdoll;
 mod effects;
 mod gore;
@@ -345,7 +345,7 @@ impl Visuals {
     pub fn pose(&mut self, world: &World, prev: &[Pose], alpha: f32, dt: f32) {
         self.clock = (world.tick as f32 - 1.0 + alpha) * growing_guns::DT;
         self.fx.update(world, self.clock, dt);
-        self.players.pose(&mut self.scene, world, prev, alpha);
+        self.players.pose(&mut self.scene, world, prev, alpha, &self.guns);
         self.cages.pose(&mut self.scene, world, prev, alpha, self.clock);
         self.guns.pose(&mut self.scene, world, prev, alpha, &self.fx, self.players.hands());
         self.things.pose(&mut self.scene, world, self.clock);
