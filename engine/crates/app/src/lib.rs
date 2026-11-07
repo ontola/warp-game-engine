@@ -473,6 +473,11 @@ pub struct Headless<'g> {
 }
 
 impl<'g> Headless<'g> {
+    /// The GPU forest's last selection counters, when the scene has one.
+    pub fn forest_diagnostics(&self) -> Result<Option<render::foliage_runtime::Diagnostics>, String> {
+        match &self.renderer { Some(r) => r.gpu_forest_diagnostics(self.gpu), None => Ok(None) }
+    }
+
     pub fn new(gpu: &'g Gpu, size: [u32; 2], tick_hz: f32) -> Result<Self, String> {
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
         Ok(Self { gpu, size, tick_hz, audio: None, recorded: Vec::new(), max_height: None, renderer: None, out: Output::new(gpu, format)?, target: offscreen(gpu, size, format), last_draw_timings: Default::default(), emulator: Default::default(), profiling: false, stats: stats::Stats::from_env(), last_render: None })
