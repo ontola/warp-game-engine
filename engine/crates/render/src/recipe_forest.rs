@@ -93,11 +93,13 @@ const GROWN_ASSEMBLY_VERSION: u32 = 11;
 /// the reference cells, scratch and samples, and 4 GiB of build memory per group.
 fn grown_config(base: Config) -> Config {
     // The root's whole-subtree cook takes every placement: room for all a
-    // grown plant may have.
+    // grown plant may have. Errors are estimated (KERN_MEASURED_ERRORS=1
+    // measures them with rays, minutes for an old tree).
     Config { max_placements: base.max_placements.max(crate::plant_growth_assembly::limits().max_instances),
         max_reference_voxels: base.max_reference_voxels * 16, max_scratch_bytes: base.max_scratch_bytes * 16,
         max_samples: base.max_samples * 16, max_source_triangles: base.max_source_triangles * 4,
-        max_diagnostic_steps: base.max_diagnostic_steps * 16, max_build_bytes: base.max_build_bytes.max(4 << 30), ..base }
+        max_diagnostic_steps: base.max_diagnostic_steps * 16, max_build_bytes: base.max_build_bytes.max(4 << 30),
+        estimated_errors: std::env::var("KERN_MEASURED_ERRORS").map_or(true, |v| v == "0"), ..base }
 }
 
 /// One grown plant without the cache, and the milliseconds of each stage:

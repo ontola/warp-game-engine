@@ -49,6 +49,10 @@ pub struct Config {
     pub levels: u32,
     pub samples_per_cell: u32,
     pub diagnostic_resolution: u32,
+    /// Estimate errors instead of measuring them with rays: voxel levels
+    /// against the reference by projections along the three axes, triangle
+    /// cuts from each part's own cut error, measured once per part.
+    pub estimated_errors: bool,
     pub max_bricks_per_level: usize,
     pub max_total_bricks: usize,
     pub max_reference_voxels: usize,
@@ -68,7 +72,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self { reference_cell_size: 0.075, triangle_refinements: false, levels: 3, samples_per_cell: 1,
-            diagnostic_resolution: 16, max_bricks_per_level: 128,
+            diagnostic_resolution: 16, estimated_errors: false, max_bricks_per_level: 128,
             max_total_bricks: 384, max_reference_voxels: 65_536,
             max_output_voxels: 24_576, max_axis_cells: 1024,
             max_placements: 4096, max_source_triangles: 4_000_000,
@@ -634,6 +638,101 @@ fn optical_filter_cancels_subpixel_rearrangement_but_retains_bias() {
     }
 }
 
+/// Opacity and premultiplied albedo of a level seen along +axis, per column
+/// of reference cells (`cell` wide) over the window starting at `lo`.
+fn axis_image(level: &VoxelLevel, origin: DVec3, axis: usize, lo: DVec3, cell: f64, size: [usize; 2]) -> Vec<[f64; 4]> {
+    let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
+    let [da, db] = [level.dimensions[a] as usize, level.dimensions[b] as usize];
+    // Front to back along +axis: voxels in depth order into dense columns.
+    let mut order: Vec<u32> = (0..level.voxels.len() as u32).collect();
+    order.sort_unstable_by_key(|&i| level.voxels[i as usize].coord[axis]);
+    let mut columns = vec![[1.0f64, 0.0, 0.0, 0.0]; da * db];
+    let c = f64::from(level.cell_size);
+    for i in order {
+        let v = &level.voxels[i as usize];
+        let column = &mut columns[v.coord[a] as usize + da * v.coord[b] as usize];
+        let tau = f64::from(v.directional_area[axis]) / (c * c);
+        let absorbed = column[0] * -(-tau).exp_m1();
+        for k in 0..3 { column[1 + k] += absorbed * f64::from(v.albedo[k]); }
+        column[0] *= (-tau).exp();
+    }
+    let mut image = vec![[0.0f64; 4]; size[0] * size[1]];
+    let span = (c / cell).round().max(1.0) as i64;
+    for y in 0..db { for x in 0..da {
+        let column = columns[x + da * y];
+        if column[0] >= 1.0 { continue; }
+        let value = [1.0 - column[0], column[1], column[2], column[3]];
+        // Cover every reference column under this cell.
+        let x0 = ((origin[a] + x as f64 * c - lo[a]) / cell).round() as i64;
+        let y0 = ((origin[b] + y as f64 * c - lo[b]) / cell).round() as i64;
+        for py in y0.max(0)..(y0 + span).min(size[1] as i64) { for px in x0.max(0)..(x0 + span).min(size[0] as i64) {
+            image[py as usize * size[0] + px as usize] = value;
+        }}
+    }}
+    image
+}
+
+/// compare() estimated from projections along the three axes, binned to the
+/// same diagnostic resolution and filtered the same way.
+fn compare_axes(reference: &Grid<'_>, candidate: &Grid<'_>, comparison_hi: DVec3, config: Config,
+    cache: &mut BTreeMap<(usize, [usize; 2]), Vec<[f64; 4]>>) -> SampledError {
+    let lo = reference.origin;
+    let cell = f64::from(reference.level.cell_size);
+    // One window for every level of a cook (padded by the coarsest cell a
+    // level can have), so the reference's images are made once.
+    let pad = cell * f64::from(1u32 << config.levels.min(16));
+    let hi = (reference.upper() + DVec3::splat(pad)).max(candidate.upper()).max(comparison_hi);
+    let mut result = SampledError::default();
+    let n = config.diagnostic_resolution.max(1);
+    for axis in 0..3 {
+        let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
+        let size = [((hi[a] - lo[a]) / cell).ceil().max(1.0) as usize, ((hi[b] - lo[b]) / cell).ceil().max(1.0) as usize];
+        // The reference's image is the same for every candidate of one cook.
+        let ra = cache.entry((axis, size)).or_insert_with(|| axis_image(reference.level, reference.origin, axis, lo, cell, size));
+        let ca = axis_image(candidate.level, candidate.origin, axis, lo, cell, size);
+        // Mean over each of n x n bins, as one diagnostic ray per bin would see it.
+        let mut differences = vec![[0f64; 4]; (n * n) as usize];
+        let mut counts = vec![0f64; (n * n) as usize];
+        for y in 0..size[1] { for x in 0..size[0] {
+            let bin = ((y * n as usize / size[1]) * n as usize + x * n as usize / size[0]) as usize;
+            let (r, c) = (ra[y * size[0] + x], ca[y * size[0] + x]);
+            for k in 0..4 { differences[bin][k] += c[k] - r[k]; }
+            counts[bin] += 1.0;
+        }}
+        let mut error = DirectionError { direction: PROJECTION_DIRECTIONS[axis], rays: n * n,
+            sample_spacing_m: [(hi[a] - lo[a]) / f64::from(n), (hi[b] - lo[b]) / f64::from(n)], ..Default::default() };
+        for (d, &k) in differences.iter_mut().zip(&counts) {
+            if k > 0.0 { for x in d.iter_mut() { *x /= k; } }
+            let delta = d[0];
+            error.mean_abs_opacity += delta.abs(); error.rms_opacity += delta * delta;
+            error.max_abs_opacity = error.max_abs_opacity.max(delta.abs()); error.opacity_bias += delta;
+            for k in 1..4 { error.premultiplied_albedo_rmse += d[k] * d[k] / 3.0; }
+        }
+        for (index, factor) in [2u32, 4, 8, 16].into_iter().enumerate() {
+            if factor > n || n % factor != 0 { continue; }
+            let squared = filtered_squared(&differences, n, factor); let side = n / factor;
+            let f = &mut result.filtered[index];
+            if axis == 0 { f.coverage_error = 0.; f.color_error = 0.; }
+            f.footprint_m = f.footprint_m.max((error.sample_spacing_m[0].max(error.sample_spacing_m[1]) * f64::from(factor)) as f32);
+            f.coverage_error += (squared[0] / f64::from(side * side) / 3.) as f32;
+            f.color_error += (squared[1] / f64::from(side * side) / 3.) as f32;
+        }
+        let rays = f64::from(error.rays);
+        error.mean_abs_opacity /= rays; error.rms_opacity = (error.rms_opacity / rays).sqrt();
+        error.opacity_bias /= rays; error.premultiplied_albedo_rmse = (error.premultiplied_albedo_rmse / rays).sqrt();
+        result.mean_abs_opacity += error.mean_abs_opacity / 3.0;
+        result.rms_opacity += error.rms_opacity.powi(2) / 3.0;
+        result.max_abs_opacity = result.max_abs_opacity.max(error.max_abs_opacity);
+        result.opacity_bias += error.opacity_bias / 3.0;
+        result.premultiplied_albedo_rmse += error.premultiplied_albedo_rmse.powi(2) / 3.0;
+        result.directions.push(error);
+    }
+    for f in &mut result.filtered { f.coverage_error = f.coverage_error.sqrt(); f.color_error = f.color_error.sqrt(); }
+    result.rms_opacity = result.rms_opacity.sqrt();
+    result.premultiplied_albedo_rmse = result.premultiplied_albedo_rmse.sqrt();
+    result
+}
+
 fn compare(reference: &Grid<'_>, candidate: &Grid<'_>, comparison_hi: DVec3,
     config: Config, stats: &mut Stats) -> Result<SampledError,String>
 {
@@ -712,8 +811,58 @@ pub struct Cooker<'a> {
     clod_bytes: usize,
     /// Needle parts voxelized once in their own frame, by (part, material).
     stamps: std::sync::Mutex<BTreeMap<(u32, u32), std::sync::Arc<Stamp>>>,
+    /// Each part's own triangle-cut error, by (part, material, log2 cut, log2 cell).
+    cut_errors: std::sync::Mutex<BTreeMap<(u32, u32, i32, i32), std::sync::Arc<(SampledError, f64)>>>,
 }
 impl<'a> Cooker<'a> {
+    /// A part's cut at `threshold` against its full triangles, both sampled
+    /// in its own frame at `cell` (both rounded to powers of two), and the
+    /// part's projected bounding area there. Measured once per part.
+    fn cut_error(&self, part: u32, material: u32, threshold: f32, cell: f32) -> Result<std::sync::Arc<(SampledError, f64)>, String> {
+        // At most PART_ERROR_CELLS cells across the part: a long stem scaled
+        // to metres would otherwise be sampled at a sliver of a millimetre.
+        let reach = self.part_extent(part).max_element().max(1e-6);
+        let cell = cell.max(reach / PART_ERROR_CELLS);
+        let (tq, cq) = (threshold.max(1e-6).log2().round() as i32, cell.log2().round() as i32);
+        let key = (part, material, tq, cq);
+        if let Some(e) = self.cut_errors.lock().unwrap_or_else(|e| e.into_inner()).get(&key) { return Ok(e.clone()); }
+        let (threshold, cell) = (2f32.powi(tq), 2f32.powi(cq));
+        let materials = &self.source.materials;
+        let thin = materials[material as usize].flags & THIN_FOLIAGE != 0;
+        let mesh = &self.meshes[&(part as usize, thin)];
+        let c = Config { reference_cell_size: cell, max_samples: u64::MAX, max_reference_voxels: usize::MAX / 2, max_build_bytes: usize::MAX / 4, ..self.config };
+        let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+        for v in &mesh.vertices { lo = lo.min(Vec3::from(v.pos)); hi = hi.max(Vec3::from(v.pos)); }
+        let origin = ((lo / cell).floor() - Vec3::ONE) * cell;
+        let dimensions = (((hi - origin) / cell).floor() + Vec3::splat(2.0)).to_array().map(|v| v as u32);
+        let mut stats = Stats::default();
+        let voxelize = |cut: &[u32], stats: &mut Stats| -> Result<VoxelLevel, String> {
+            let mut cells = Cells::new();
+            for &cluster in cut {
+                let cluster = &mesh.clusters[cluster as usize];
+                for &packed in &mesh.tris[cluster.first_tri as usize..(cluster.first_tri + cluster.tri_count) as usize] {
+                    let v = [packed & 255, (packed >> 8) & 255, (packed >> 16) & 255].map(|i| mesh.vertices[mesh.cluster_verts[(cluster.first_vert + i) as usize] as usize]);
+                    triangle(&mut cells, v, &materials[material as usize], origin.as_dvec3(), dimensions, c, self.source.projection_measure(), stats)?;
+                }
+            }
+            Ok(level(&cells, dimensions, cell))
+        };
+        let cut_of = |t: f32| -> Vec<u32> { mesh.clusters.iter().enumerate().filter(|(_, c)| c.own_error <= t && c.parent_error > t).map(|(i, _)| i as u32).collect() };
+        let full = voxelize(&cut_of(0.0), &mut stats)?;
+        let cut = voxelize(&cut_of(threshold), &mut stats)?;
+        let (a, b) = (Grid::new(&full, origin.as_dvec3()), Grid::new(&cut, origin.as_dvec3()));
+        let error = compare_axes(&a, &b, a.upper(), c, &mut BTreeMap::new());
+        let extent = hi - lo;
+        let area = f64::from((extent.x * extent.y + extent.y * extent.z + extent.z * extent.x) / 3.0);
+        let entry = std::sync::Arc::new((error, area));
+        self.cut_errors.lock().unwrap_or_else(|e| e.into_inner()).insert(key, entry.clone());
+        Ok(entry)
+    }
+    fn part_extent(&self, part: u32) -> Vec3 {
+        let g = &self.source.parts[part as usize];
+        let (lo, hi) = g.vertices.iter().fold((Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)), |(lo, hi), v| (lo.min(Vec3::from(v.pos)), hi.max(Vec3::from(v.pos))));
+        hi - lo
+    }
     /// The stamp of a placement's source triangles, made on first use.
     fn stamp(&self, part: u32, material: u32, stats: &mut Stats) -> Result<std::sync::Arc<Stamp>, String> {
         if let Some(s) = self.stamps.lock().unwrap_or_else(|e| e.into_inner()).get(&(part, material)) { return Ok(s.clone()); }
@@ -757,20 +906,43 @@ impl<'a> Cooker<'a> {
             if clod_bytes>config.max_build_bytes {return Err("aggregate shared CLOD budget exceeded".into());}
             meshes.insert((part_index,thin),mesh);
         }
-        Ok(Self {source,config,poses,meshes,components,clod_bytes,stamps:Default::default()})
+        Ok(Self {source,config,poses,meshes,components,clod_bytes,stamps:Default::default(),cut_errors:Default::default()})
     }
     pub fn cook(&self, placement_indices: &[u32], cluster_to_assembly: Mat4) -> Result<ClusterAsset,String> {
-        cook_prepared(self,placement_indices,cluster_to_assembly,None)
+        cook_prepared(self,placement_indices,cluster_to_assembly,None,None)
     }
     /// Cook root_branch and/or descendants in their common rest-pose frame.
     /// Membership may be a subset, but must contain only descendants of this
     /// root. This explicitly loses relative descendant animation; the returned
     /// flag requires an external displacement bound before runtime selection.
     /// Use a coarser reference grid and explicit work limits for whole plants.
+    /// cook_static_subtree whose reference grid comes from `lattice`, which
+    /// must hold exactly these members in root_branch's frame.
+    pub fn cook_static_subtree_from(&self, placement_indices: &[u32], root_branch: u32,
+        cluster_to_assembly: Mat4, lattice: &Lattice) -> Result<ClusterAsset,String>
+    {
+        if lattice.frame!=root_branch || lattice.members!=placement_indices.len() {return Err("lattice holds other members".into());}
+        cook_prepared(self,placement_indices,cluster_to_assembly,Some(root_branch),Some(lattice))
+    }
+    /// Members of one branch sampled into `frame_branch`'s lattice.
+    pub fn lattice(&self, placement_indices: &[u32], frame_branch: u32) -> Result<Lattice,String> {
+        let frame=*self.poses.get(frame_branch as usize).ok_or("lattice frame out of range")?;
+        let inverse=frame.inverse();
+        let matrices:Vec<Mat4>=placement_indices.iter().map(|&i|{
+            let instance=&self.source.instances[i as usize];inverse*self.poses[instance.branch as usize]*instance.rest}).collect();
+        let cell=self.config.reference_cell_size;
+        let origin=-(LATTICE_OFFSET as f64)*f64::from(cell);
+        let mut cells=Cells::new();let mut stats=Stats::default();
+        let mut sorted=placement_indices.to_vec();sorted.sort_unstable();
+        let order:Vec<usize>={let mut o:Vec<usize>=(0..placement_indices.len()).collect();o.sort_by_key(|&i|placement_indices[i]);o};
+        let matrices:Vec<Mat4>=order.iter().map(|&i|matrices[i]).collect();
+        voxelize_members(self,&sorted,&matrices,DVec3::splat(origin),[2*LATTICE_OFFSET;3],&mut cells,&mut stats)?;
+        Ok(Lattice {cell,frame:frame_branch,cells,members:placement_indices.len()})
+    }
     pub fn cook_static_subtree(&self, placement_indices: &[u32], root_branch: u32,
         cluster_to_assembly: Mat4) -> Result<ClusterAsset,String>
     {
-        cook_prepared(self,placement_indices,cluster_to_assembly,Some(root_branch))
+        cook_prepared(self,placement_indices,cluster_to_assembly,Some(root_branch),None)
     }
 }
 
@@ -791,7 +963,7 @@ struct Reference {
 }
 
 fn reference_cells(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_assembly: Mat4,
-    subtree_root: Option<u32>) -> Result<Reference,String>
+    subtree_root: Option<u32>, lattice: Option<&Lattice>) -> Result<Reference,String>
 {
     let source=cooker.source;let config=cooker.config;
     if placement_indices.is_empty() || placement_indices.len()>config.max_placements || !rigid(cluster_to_assembly) {
@@ -842,26 +1014,75 @@ fn reference_cells(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_as
     stats.unique_parts_validated=used.len();
     stats.closed_components_validated=used.iter().map(|i|cooker.components[i]).sum();
     stats.clod_bytes=cooker.clod_bytes;check_memory(config,0,&mut stats)?;
-    let mut fine=Cells::new();let mut scratch=Vec::new();
-    let stamps=stamps_enabled();
-    for (&index,&matrix) in memberships.iter().zip(&matrices) {
-        let instance=&source.instances[index as usize];let part=&source.parts[instance.part as usize];
-        let material=&source.materials[instance.material as usize];
-        if stamps && material.flags&THIN_FOLIAGE!=0 && similarity(matrix).is_some() {
-            let stamp=cooker.stamp(instance.part,instance.material,&mut stats)?;
-            stats.peak_transformed_vertices=stats.peak_transformed_vertices.max(part.vertices.len());
-            stamp.apply(&mut fine,matrix,material,origin64,dimensions,config,source.projection_measure(),&mut stats)?;
-            continue;
+    let fine=match lattice {
+        None => {
+            let mut fine=Cells::new();
+            voxelize_members(cooker,&memberships,&matrices,origin64,dimensions,&mut fine,&mut stats)?;
+            fine
         }
-        transformed(&part.vertices,matrix,&mut scratch,config,&mut stats)?;
-        for tri in part.indices.chunks_exact(3) {
-            triangle(&mut fine,[scratch[tri[0]as usize],scratch[tri[1]as usize],scratch[tri[2]as usize]],
-                &source.materials[instance.material as usize],origin64,dimensions,config,source.projection_measure(),&mut stats)?;
-        }
-    }
+        Some(lattice) => lattice.window(cooker,origin,dimensions,&mut stats)?,
+    };
     if fine.is_empty() {return Err("aggregate has no covered source cells".into());}
     stats.reference_voxels=fine.len();stats.reference_dimensions=dimensions;stats.reference_cell_size=cell;
     Ok(Reference {memberships,matrices,source_branches,branch,lo,hi,origin,dimensions,fine,stats})
+}
+
+/// Every member placement sampled into `cells` (stamps for needle brushes).
+fn voxelize_members(cooker: &Cooker<'_>, memberships: &[u32], matrices: &[Mat4], origin64: DVec3, dimensions: [u32; 3],
+    cells: &mut Cells, stats: &mut Stats) -> Result<(), String>
+{
+    let (source,config)=(cooker.source,cooker.config);
+    let mut scratch=Vec::new();
+    let stamps=stamps_enabled();
+    for (&index,&matrix) in memberships.iter().zip(matrices) {
+        let instance=&source.instances[index as usize];let part=&source.parts[instance.part as usize];
+        let material=&source.materials[instance.material as usize];
+        if stamps && material.flags&THIN_FOLIAGE!=0 && similarity(matrix).is_some() {
+            let stamp=cooker.stamp(instance.part,instance.material,stats)?;
+            stats.peak_transformed_vertices=stats.peak_transformed_vertices.max(part.vertices.len());
+            stamp.apply(cells,matrix,material,origin64,dimensions,config,source.projection_measure(),stats)?;
+            continue;
+        }
+        transformed(&part.vertices,matrix,&mut scratch,config,stats)?;
+        for tri in part.indices.chunks_exact(3) {
+            triangle(cells,[scratch[tri[0]as usize],scratch[tri[1]as usize],scratch[tri[2]as usize]],
+                material,origin64,dimensions,config,source.projection_measure(),stats)?;
+        }
+    }
+    Ok(())
+}
+
+/// Placements sampled once into one frame's unbounded cell lattice (cells at
+/// multiples of the reference size from the frame origin), so a group's
+/// reference grid is the sum of its children's lattices instead of a fresh
+/// sampling of every member. Cell keys are offset by LATTICE_OFFSET.
+pub struct Lattice { cell: f32, frame: u32, cells: Cells, members: usize }
+const LATTICE_OFFSET: u32 = 1 << 20;
+/// Cells across a part when its own cut error is measured.
+const PART_ERROR_CELLS: f32 = 32.0;
+impl Lattice {
+    /// Two lattices of one frame and cell size added together.
+    pub fn merge(mut self, other: Lattice) -> Result<Lattice, String> {
+        if self.frame != other.frame || self.cell != other.cell { return Err("lattices of different frames".into()); }
+        let (mut big, small) = if self.cells.len() >= other.cells.len() { (std::mem::take(&mut self.cells), other.cells) } else { (other.cells, std::mem::take(&mut self.cells)) };
+        for (k, m) in small { big.entry(k).or_default().add(&m); }
+        Ok(Lattice { cell: self.cell, frame: self.frame, cells: big, members: self.members + other.members })
+    }
+    /// The lattice's cells inside a reference grid, in that grid's coordinates.
+    fn window(&self, cooker: &Cooker<'_>, origin: Vec3, dimensions: [u32; 3], stats: &mut Stats) -> Result<Cells, String> {
+        if self.cell != cooker.config.reference_cell_size { return Err("lattice cell differs from the cook's".into()); }
+        let shift = (origin / self.cell).round().as_ivec3() + glam::IVec3::splat(LATTICE_OFFSET as i32);
+        let mut out = Cells::new();
+        for (k, m) in &self.cells {
+            let local = glam::IVec3::new(k[0] as i32, k[1] as i32, k[2] as i32) - shift;
+            if local.min_element() < 0 || (0..3).any(|a| local[a] as u32 >= dimensions[a]) {
+                return Err("lattice cell outside the group's reference grid".into());
+            }
+            out.insert(local.to_array().map(|x| x as u32), m.clone());
+        }
+        check_memory(cooker.config, out.len(), stats)?;
+        Ok(out)
+    }
 }
 
 /// The whole plant at rest as one voxel pyramid in the root branch frame: no
@@ -871,7 +1092,7 @@ pub(crate) fn cook_whole(cooker: &Cooker<'_>, levels: u32) -> Result<VoxelAsset,
     if !(1..=16).contains(&levels) {return Err("whole-plant voxels need 1..16 levels".into());}
     let all:Vec<u32>=(0..cooker.source.instances.len() as u32).collect();
     let frame=*cooker.poses.first().ok_or("whole-plant voxels need a root branch")?;
-    let reference=reference_cells(cooker,&all,frame,Some(0))?;
+    let reference=reference_cells(cooker,&all,frame,Some(0),None)?;
     let mut current=reference.fine;let mut dimensions=reference.dimensions;
     let mut cell=cooker.config.reference_cell_size;let mut out=Vec::new();
     for _ in 0..levels {
@@ -887,12 +1108,12 @@ pub(crate) fn cook_whole(cooker: &Cooker<'_>, levels: u32) -> Result<VoxelAsset,
 }
 
 fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_assembly: Mat4,
-    subtree_root: Option<u32>)
+    subtree_root: Option<u32>, lattice: Option<&Lattice>)
     -> Result<ClusterAsset,String>
 {
     let source=cooker.source;let config=cooker.config;
     let Reference {memberships,matrices,source_branches,branch,lo,hi,origin,dimensions,fine,mut stats}=
-        reference_cells(cooker,placement_indices,cluster_to_assembly,subtree_root)?;
+        reference_cells(cooker,placement_indices,cluster_to_assembly,subtree_root,lattice)?;
     let cell=config.reference_cell_size;let origin64=origin.as_dvec3();
     let cooked=&cooker.meshes;
     let reference_level=level(&fine,dimensions,cell);let reference=Grid::new(&reference_level,origin64);
@@ -955,6 +1176,31 @@ fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_asse
         check_memory(config,alternate.len(),stats)?;
         Ok((level(&alternate,dimensions,cell),triangle_count))
     };
+    // Estimated triangle-cut error: each member's part error at its own cut,
+    // weighted by the part's share of the group's projected area (errors in
+    // separate places add in squares over the group's window).
+    let window={let e=(Vec3::from(hi)-Vec3::from(lo)).max(Vec3::splat(cell));f64::from((e.x*e.y+e.y*e.z+e.z*e.x)/3.0)};
+    let estimate_cut=|cut_error:f32,voxel:&SampledError,_stats:&mut Stats|->Result<(SampledError,u64),String> {
+        let (mut rms,mut albedo,mut filtered,mut count)=(0f64,0f64,[0f64;8],0u64);
+        for (&index,&matrix) in memberships.iter().zip(&matrices) {
+            let instance=&source.instances[index as usize];
+            let material=&source.materials[instance.material as usize];
+            let mesh=&cooked[&(instance.part as usize,material.flags&THIN_FOLIAGE!=0)];
+            let scale=scale_bound(matrix);
+            let threshold=cut_error/scale;
+            count+=mesh.clusters.iter().filter(|c|c.own_error<=threshold && c.parent_error>threshold).map(|c|u64::from(c.tri_count)).sum::<u64>();
+            let part=cooker.cut_error(instance.part,instance.material,threshold,cell/scale)?;
+            let w=(part.1*f64::from(scale*scale)/window).min(1.0);
+            rms+=w*part.0.rms_opacity.powi(2);albedo+=w*part.0.premultiplied_albedo_rmse.powi(2);
+            for k in 0..4 {filtered[2*k]+=w*f64::from(part.0.filtered[k].coverage_error).powi(2);filtered[2*k+1]+=w*f64::from(part.0.filtered[k].color_error).powi(2);}
+        }
+        let mut out=SampledError {rms_opacity:rms.min(1.0).sqrt(),premultiplied_albedo_rmse:albedo.min(1.0).sqrt(),..Default::default()};
+        out.mean_abs_opacity=out.rms_opacity;out.max_abs_opacity=out.rms_opacity;
+        for k in 0..4 {out.filtered[k]=crate::aggregate_lod::FilteredOptics {footprint_m:voxel.filtered[k].footprint_m,
+            coverage_error:filtered[2*k].min(1.0).sqrt() as f32,color_error:filtered[2*k+1].min(1.0).sqrt() as f32};}
+        Ok((out,count))
+    };
+    let mut reference_images=BTreeMap::new();
     let mut levels=Vec::new();let mut metadata=Vec::new();
     for level_index in 0..config.levels {
         let cell_size=cell*downsample as f32;
@@ -966,10 +1212,16 @@ fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_asse
         }
         check_memory(config,stats.reference_voxels,&mut stats)?;
         let candidate=Grid::new(&output,origin64);let comparison_hi=candidate.upper();
-        let sampled_error=compare(&reference,&candidate,comparison_hi,config,&mut stats)?;
-        let (alternate_level,triangle_count)=triangle_alternate(cell_size,&mut stats)?;
-        let alternate_grid=Grid::new(&alternate_level,origin64);
-        let triangle_sampled_error=compare(&reference,&alternate_grid,comparison_hi,config,&mut stats)?;
+        let (sampled_error,triangle_sampled_error,triangle_count)=if config.estimated_errors {
+            let voxel=compare_axes(&reference,&candidate,comparison_hi,config,&mut reference_images);
+            let (triangle,count)=estimate_cut(cell_size,&voxel,&mut stats)?;
+            (voxel,triangle,count)
+        } else {
+            let sampled_error=compare(&reference,&candidate,comparison_hi,config,&mut stats)?;
+            let (alternate_level,triangle_count)=triangle_alternate(cell_size,&mut stats)?;
+            let alternate_grid=Grid::new(&alternate_level,origin64);
+            (sampled_error,compare(&reference,&alternate_grid,comparison_hi,config,&mut stats)?,triangle_count)
+        };
         let mass_error=(0..13).map(|k| {
             let total=output.voxels.iter().map(|v|f64::from(v.directional_area[k])).sum::<f64>();
             (total-reference_mass[k]).abs()/reference_mass[k].max(1e-20)
@@ -985,8 +1237,12 @@ fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_asse
         let comparison_hi=Grid::new(&levels[0],origin64).upper();
         for fraction in [1.0/64.0,1.0/16.0,1.0/4.0] {
             let cut_error_m=levels[0].cell_size*fraction;
-            let (alternate,triangles)=triangle_alternate(cut_error_m,&mut stats)?;
-            let sampled_error=compare(&reference,&Grid::new(&alternate,origin64),comparison_hi,config,&mut stats)?;
+            let (sampled_error,triangles)=if config.estimated_errors {
+                estimate_cut(cut_error_m,&metadata[0].sampled_error,&mut stats)?
+            } else {
+                let (alternate,triangles)=triangle_alternate(cut_error_m,&mut stats)?;
+                (compare(&reference,&Grid::new(&alternate,origin64),comparison_hi,config,&mut stats)?,triangles)
+            };
             triangle_refinements.push(TriangleRefinement {cut_error_m,triangles,sampled_error});
         }
     }
@@ -1030,6 +1286,25 @@ mod tests {
     }
     fn directional(level: &VoxelLevel) -> [f64;13] {
         std::array::from_fn(|i|level.voxels.iter().map(|v|f64::from(v.directional_area[i])).sum())
+    }
+
+    #[test]
+    fn estimated_errors_follow_the_measured_ones() {
+        // Axis projections: zero for the reference itself, and the coarser a
+        // level the larger its error, like the ray-measured error.
+        let source=fixture(3,Mat4::IDENTITY);
+        let measured=Cooker::new(&source,config()).unwrap().cook(&[0,1,2],Mat4::IDENTITY).unwrap();
+        let estimated=Cooker::new(&source,Config {estimated_errors:true,..config()}).unwrap().cook(&[0,1,2],Mat4::IDENTITY).unwrap();
+        assert_eq!(measured.volume,estimated.volume,"estimates never change the voxels");
+        let origin=DVec3::from(Vec3::from(estimated.volume.origin).as_dvec3());
+        let reference=Grid::new(&estimated.volume.levels[0],origin);
+        assert_eq!(compare_axes(&reference,&reference,reference.upper(),config(),&mut BTreeMap::new()).rms_opacity,0.0);
+        let errors:Vec<f64>=estimated.levels.iter().map(|l|l.sampled_error.rms_opacity).collect();
+        assert!(errors.windows(2).all(|w|w[1]>=w[0]),"{errors:?}");
+        for (m,e) in measured.levels.iter().zip(&estimated.levels).skip(1) {
+            let (m,e)=(m.sampled_error.rms_opacity,e.sampled_error.rms_opacity);
+            assert!(e>0.2*m && e<5.0*m,"estimated {e} measured {m}");
+        }
     }
 
     #[test]
