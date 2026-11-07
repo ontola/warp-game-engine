@@ -61,7 +61,7 @@ puts the camera back where it was. F10 opens the engine debug menu (render and
 light switches, LOD, render height, GPU pass times; games add their own).
 
 For a Sideways F12 bug report, call MCP `feedback` with `diagnostics: false`
-to locate the PNG, then use the JSON beside it. With Shift+F12 the player can click the problem in the frozen frame. If the JSON has `player_point`, run `warp inspect F12.json` to inspect that point directly. Choose the command by task:
+to locate the PNG, then use the JSON beside it. In Sideways, F12 opens a frozen overlay. The player clicks or taps the problem, or presses Esc to skip marking. If the JSON has `player_point`, run `warp inspect F12.json` to inspect that point directly. Choose the command by task:
 
 - Identify a tree, car or material under a pixel: `warp inspect F12.json --pixel X Y` returns JSON. Use original PNG coordinates.
 - Isolate a lighting artifact on a static surface: `warp relight F12.json --without gi --without shadow_strength` uses the player point or `--pixel X Y`. Read `lighting.json` for source-triangle agreement, repeat stability and brightness. Open `comparison.png` for the crops.

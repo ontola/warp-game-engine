@@ -535,7 +535,7 @@ for opaque reconstruction/clipping, not forward transparency or ray-query masks.
 
 ## Sideways feedback
 
-During a Sideways drive, press F12 to capture. Press **Shift+F12** to capture and point out a problem. Click the frozen image or press Esc to keep the capture without a point. A click saves `player_point: [x, y]` in original PNG pixels. The MCP feedback preview circles it. On a marked capture, `warp inspect F12.json` prints the point and its surface as JSON. Use `--preview` to view the ring or `--pixel X Y` to inspect another spot. Keep the PNG, JSON and same-basename
+During a Sideways drive, press **F12** to freeze the image and open the point overlay. Click or tap the problem to resume driving. Esc resumes with an unmarked capture. The overlay uses the GPU frame with the original HUD. The writer reads the frozen pixels and source geometry, encodes the PNG and updates the clipboard on a background thread. Normal play keeps its existing resolution and render path. The JSON records request-to-overlay submission and input-ready timings in `feedback_timing`. A click saves `player_point: [x, y]` in original PNG pixels. The MCP feedback preview circles it. On a marked capture, `warp inspect F12.json` prints the point and its surface as JSON. Use `--preview` to view the ring or `--pixel X Y` to inspect another spot. Keep the PNG, JSON and same-basename
 view attachments together. In a developer checkout with Python 3 and Pillow,
 run the following commands. Set `WARP_PYTHON` to an interpreter path if needed.
 

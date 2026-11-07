@@ -20,7 +20,7 @@ cargo run --release -p cli -- sim --ticks 45000 --seed 1 --km 2
 
 The launcher builds while an owned playtest runs, then restarts it after a
 successful build. Logs and executable manifests live in this game's
-`build/dev-runs/`. F12 captures the displayed frame, its source geometry and the driving inputs. Shift+F12 lets the player click the problem on the frozen image. Use `warp inspect` for pixel picking and `warp compare` to repeat a drive after a physics or rendering change. [Sideways feedback guide](../../engine/docs/warp-cli.md#sideways-feedback).
+`build/dev-runs/`. F12 opens the point overlay on a frozen frame and captures its source geometry and driving inputs. Click or tap the problem, or press Esc to resume without a point. Use `warp inspect` for pixel picking and `warp compare` to repeat a drive after a physics or rendering change. [Sideways feedback guide](../../engine/docs/warp-cli.md#sideways-feedback).
 Old `engine/build/` runs remain historical evidence.
 
 For a managed Gamepad Party preview, register the package with the graphics profile

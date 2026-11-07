@@ -281,35 +281,116 @@ pub fn save_visibility(
     stats: &render::FrameStats,
     built: &visuals::Built,
 ) -> Result<(), String> {
-    let mut views = Vec::new();
-    let mut owners = BTreeMap::new();
-    let mut clusters = BTreeMap::new();
-    let meshes: BTreeMap<_, _> = built
-        .scene
-        .meshes
-        .iter()
-        .zip(&built.mesh_names)
-        .map(|(m, n)| (m.first_cluster, n))
-        .collect();
-    // Owner indices come from this frame's visibility buffer. Model slot labels
-    // come from allocation order, including glTFs with absent wheel nodes.
-    let mut car_parts = BTreeMap::new();
-    for (car_index, car) in built.cars.iter().enumerate() {
-        for (offset, name) in car.part_names.iter().enumerate() {
-            car_parts.insert((car.first + offset) as u32, json!({"kind":"car",
-                "car_index":car_index,"model":car.model,"part":name,"body_instance":car.first}));
+    let source = VisibilitySource::snapshot(built);
+    write_visibility(png, meta, &stats.visibility, &source)
+}
+
+/// Raw frame-owned data for a queued F12. Only the writer expands visible
+/// owners and triangles into JSON, after the GPU copy has completed.
+pub struct VisibilitySource {
+    meshes: BTreeMap<u32, String>,
+    instances: Vec<render::scene::GpuInstance>,
+    clusters: Vec<render::cluster::GpuCluster>,
+    flags: Vec<u32>,
+    car_parts: BTreeMap<u32, Value>,
+    poses: BTreeMap<u32, u32>,
+    parents: Vec<Option<u32>>,
+    actor_parts: BTreeMap<u32, (u32, u32)>,
+}
+
+impl VisibilitySource {
+    pub fn snapshot(built: &visuals::Built) -> Self {
+        let meshes: BTreeMap<_, _> = built
+            .scene
+            .meshes
+            .iter()
+            .zip(&built.mesh_names)
+            .map(|(m, n)| (m.first_cluster, n.clone()))
+            .collect();
+        // Owner indices come from this frame's visibility buffer. Model slot labels
+        // come from allocation order, including glTFs with absent wheel nodes.
+        let mut car_parts = BTreeMap::new();
+        for (car_index, car) in built.cars.iter().enumerate() {
+            for (offset, name) in car.part_names.iter().enumerate() {
+                car_parts.insert(
+                    (car.first + offset) as u32,
+                    json!({"kind":"car",
+                "car_index":car_index,"model":car.model,"part":name,"body_instance":car.first}),
+                );
+            }
+        }
+        let mut poses = BTreeMap::new();
+        for (index, part) in built.scene.part_wind.iter().enumerate() {
+            if let Some(owner) = part.owner {
+                poses.insert(owner, index as u32);
+            }
+        }
+        for attachment in &built.scene.part_attachments {
+            poses.insert(attachment.owner, attachment.pose);
+        }
+        let mut actor_parts = BTreeMap::new();
+        if let Some(animation) = &built.scene.baked_animations {
+            for part in &animation.parts {
+                actor_parts.insert(part.owner, (part.actor, part.bone));
+            }
+        }
+        Self {
+            meshes,
+            car_parts,
+            poses,
+            actor_parts,
+            parents: built.scene.part_wind.iter().map(|p| p.parent).collect(),
+            instances: built.scene.instances.clone(),
+            clusters: built.scene.clusters.clone(),
+            flags: built.scene.materials.iter().map(|m| m.flags).collect(),
         }
     }
-    let mut poses = BTreeMap::new();
-    for (index, part) in built.scene.part_wind.iter().enumerate() {
-        if let Some(owner)=part.owner {poses.insert(owner,index as u32);}
+
+    fn describe(&self, captures: &[render::frame::VisibilityCapture]) -> Value {
+        let mut owners = BTreeMap::new();
+        let mut clusters = BTreeMap::new();
+        for v in captures {
+            for &[owner, cluster] in &v.visible {
+                if let Some(i) = self.instances.get(owner as usize) {
+                    owners.entry(owner).or_insert_with(|| {
+                        let mut info = json!({"mesh":self.meshes.get(&i.first_cluster),
+                        "category":format!("{:?}",i.category()),"transform":i.rows});
+                        if let Some(car) = self.car_parts.get(&owner) {
+                            info["hierarchy"] = car.clone();
+                        } else if let Some(&pose) = self.poses.get(&owner) {
+                            let path: Vec<_> =
+                                kern::parenting::ancestors(pose, |p| self.parents[p as usize])
+                                    .collect();
+                            info["hierarchy"] =
+                                json!({"kind":"plant","pose_to_root":path,"root_pose":path.last()});
+                        } else if let Some(&(actor, bone)) = self.actor_parts.get(&owner) {
+                            info["hierarchy"] =
+                                json!({"kind":"animated_actor","actor":actor,"bone":bone});
+                        }
+                        info
+                    });
+                }
+                if let Some(c) = self.clusters.get(cluster as usize) {
+                    clusters.entry(cluster).or_insert_with(|| {
+                        json!({"lod_depth":c.depth,"material":c.material,"error":c.own_error,
+                    "flags":self.flags.get(c.material as usize),"shader":"shade.wgsl"})
+                    });
+                }
+            }
+        }
+        json!({"version":1,"owners":owners,"clusters":clusters})
     }
-    for attachment in &built.scene.part_attachments {poses.insert(attachment.owner,attachment.pose);}
-    let mut actor_parts = BTreeMap::new();
-    if let Some(animation)=&built.scene.baked_animations {
-        for part in &animation.parts {actor_parts.insert(part.owner,(part.actor,part.bone));}
-    }
-    for (index, v) in stats.visibility.iter().enumerate() {
+}
+
+pub fn write_visibility(
+    png: &Path,
+    meta: &mut Value,
+    captures: &[render::frame::VisibilityCapture],
+    source: &VisibilitySource,
+) -> Result<(), String> {
+    let mut source = source.describe(captures);
+    let mut views = Vec::new();
+    for (index, v) in captures.iter().enumerate() {
         let ids = png.with_extension(format!("view{index}.ids.png"));
         let table = png.with_extension(format!("view{index}.pairs"));
         render::write_png(&ids, v.size[0], v.size[1], &v.ids)?;
@@ -319,30 +400,12 @@ pub fn save_visibility(
                 file.write_all(&word.to_le_bytes())
                     .map_err(|e| e.to_string())?;
             }
-            if let Some(i) = built.scene.instances.get(owner as usize) {
-                owners.entry(owner).or_insert_with(|| {
-                    let mut info=json!({"mesh":meshes.get(&i.first_cluster),
-                        "category":format!("{:?}",i.category()),"transform":i.rows});
-                    if let Some(car)=car_parts.get(&owner) {
-                        info["hierarchy"]=car.clone();
-                    } else if let Some(&pose)=poses.get(&owner) {
-                        let path:Vec<_>=kern::parenting::ancestors(pose,|p|built.scene.part_wind[p as usize].parent).collect();
-                        info["hierarchy"]=json!({"kind":"plant","pose_to_root":path,"root_pose":path.last()});
-                    } else if let Some(&(actor,bone))=actor_parts.get(&owner) {
-                        info["hierarchy"]=json!({"kind":"animated_actor","actor":actor,"bone":bone});
-                    }
-                    info
-                });
-            }
-            if let Some(c) = built.scene.clusters.get(cluster as usize) {
-                clusters.entry(cluster).or_insert_with(||json!({"lod_depth":c.depth,"material":c.material,"error":c.own_error,
-                    "flags":built.scene.materials.get(c.material as usize).map(|m|m.flags),"shader":"shade.wgsl"}));
-            }
         }
         file.flush().map_err(|e| e.to_string())?;
         views.push(json!({"rect":v.rect,"size":v.size,"ids":ids.file_name().and_then(|n|n.to_str()),"pairs":table.file_name().and_then(|n|n.to_str())}));
     }
-    meta["visibility"] = json!({"version":1,"views":views,"owners":owners,"clusters":clusters});
+    source["views"] = json!(views);
+    meta["visibility"] = source;
     Ok(())
 }
 
