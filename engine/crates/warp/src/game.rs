@@ -733,7 +733,10 @@ impl LuaGame {
             "entities" => {
                 let c = self.core();
                 let lines: Vec<String> = c.world.entities.iter().filter(|(_, e)| rest.is_empty() || e.tag == rest)
-                    .map(|(id, e)| format!("{id} {} {} pos {:.2} {:.2} {:.2}", e.shape.name(), if e.tag.is_empty() { "-" } else { &e.tag }, e.pos.x, e.pos.y, e.pos.z)).collect();
+                    .map(|(id, e)| {
+                        let pos = e.world_pose().1;
+                        format!("{id} {} {} pos {:.2} {:.2} {:.2}", e.shape.name(), if e.tag.is_empty() { "-" } else { &e.tag }, pos.x, pos.y, pos.z)
+                    }).collect();
                 Ok(if lines.is_empty() { "no entities".into() } else { lines.join("\n") })
             }
             "logs" => Ok(self.logs().join("\n")),

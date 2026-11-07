@@ -50,7 +50,6 @@ pub struct TextureD {
 #[derive(Clone, Debug)]
 pub struct Node {
     pub name: String,
-    pub parent: Option<usize>,
     pub xf: Mat4,
     pub visible: bool,
     pub mesh: Option<usize>,
@@ -73,7 +72,7 @@ pub struct Light {
 #[derive(Clone, Debug, Default)]
 pub struct Kit {
     pub nodes: Vec<Node>,
-    pub named: HashMap<String, usize>,
+    pub tree: kern::parenting::ModelHierarchy,
     pub eyes: Vec<usize>,
     pub base_scale: f32,
 }
@@ -81,25 +80,11 @@ pub struct Kit {
 impl Kit {
     /// Node `i` in the kit's own space (the root's transform left out).
     pub fn model_xf(&self, i: usize) -> Mat4 {
-        let mut m = self.nodes[i].xf;
-        let mut p = self.nodes[i].parent;
-        while let Some(j) = p {
-            m = self.nodes[j].xf * m;
-            p = self.nodes[j].parent;
-        }
-        m
+        self.tree.model_transform(i, |j| self.nodes[j].xf)
     }
 
-    /// Hidden somewhere up the tree.
     pub fn shown(&self, i: usize) -> bool {
-        let mut p = Some(i);
-        while let Some(j) = p {
-            if !self.nodes[j].visible {
-                return false;
-            }
-            p = self.nodes[j].parent;
-        }
-        true
+        self.tree.ancestors(i).all(|j| self.nodes[j].visible)
     }
 }
 
@@ -135,11 +120,11 @@ impl Kits {
         let mut kits = HashMap::new();
         for (name, v) in &file.kits {
             let Some(nodes) = v["nodes"].as_array() else { continue };
+            let parents = nodes.iter().map(|n| index(&n["parent"])).collect();
             let nodes: Vec<Node> = nodes
                 .iter()
                 .map(|n| Node {
                     name: n["name"].as_str().unwrap_or("").to_string(),
-                    parent: index(&n["parent"]),
                     xf: mat4(&n["xf"]),
                     visible: n["visible"].as_bool().unwrap_or(true),
                     mesh: index(&n["mesh"]),
@@ -156,6 +141,8 @@ impl Kits {
                 })
                 .collect();
             let named = v["named"].as_object().map(|o| o.iter().filter_map(|(k, i)| Some((k.clone(), index(i)?))).collect()).unwrap_or_default();
+            let tree = kern::parenting::ModelHierarchy::new(parents, named)
+                .map_err(|err| format!("kit {name}: {err}"))?;
             let eyes = v["eyes"].as_array().map(|a| a.iter().filter_map(index).collect()).unwrap_or_default();
             let base_scale = v["base_scale"].as_f64().unwrap_or(1.0) as f32;
             let mut nodes = nodes;
@@ -164,7 +151,7 @@ impl Kits {
             if name.starts_with("enemy/") && let Some(root) = nodes.first_mut() {
                 root.visible = true;
             }
-            kits.insert(name.clone(), Kit { nodes, named, eyes, base_scale });
+            kits.insert(name.clone(), Kit { nodes, tree, eyes, base_scale });
         }
         Ok(Kits { dir, file, bin, kits })
     }

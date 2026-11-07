@@ -28,13 +28,7 @@ pub type Pose = HashMap<usize, Mat4>;
 /// Node `i`'s transform in the kit's space under `pose`.
 pub fn posed(kit: &Kit, pose: &Pose, i: usize) -> Mat4 {
     let local = |j: usize| pose.get(&j).copied().unwrap_or(kit.nodes[j].xf);
-    let mut m = local(i);
-    let mut p = kit.nodes[i].parent;
-    while let Some(j) = p {
-        m = local(j) * m;
-        p = kit.nodes[j].parent;
-    }
-    m
+    kit.tree.model_transform(i, local)
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
@@ -67,7 +61,7 @@ impl Default for WizardAnim {
 impl WizardAnim {
     /// The wizard's pose this frame (Wizard._visuals and _limbs).
     pub fn pose(&mut self, kit: &Kit, a: &Actor, w: &Wizard, dt: f32) -> Pose {
-        let node = |k: &str| kit.named.get(k).copied();
+        let node = |k: &str| kit.tree.node(k);
         let mut pose = Pose::new();
         let moving = a.vel.length() > 0.5;
         self.walk += dt * if moving { 9.0 } else { 0.0 };

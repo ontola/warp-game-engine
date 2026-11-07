@@ -118,6 +118,8 @@ Owned by the foliage work; its working checklist is
 
 ## Games
 
+Luau entities can follow a parent, and native games can resolve named model sockets ([parenting](parenting.md)).
+
 - **Sideways** (rally): playable; the main performance scene.
 - **Growing Guns** (arena shooter): a port of the Godot game; its README's
   status tables say how far the port is. Native Quest build (OpenXR) is

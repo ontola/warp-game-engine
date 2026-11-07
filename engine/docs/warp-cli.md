@@ -161,7 +161,7 @@ keyboard mapping is in `app::input`.
 
 | Table | Functions |
 | --- | --- |
-| `world` | `spawn(shape, opts) -> id`, `set(id, opts)`, `place(id, pos, yaw?)`, `warm(shape, look)`, `get(id) -> entity or nil`, `exists(id)`, `remove(id)`, `clear()`, `find(tag) -> ids`, `count()`, `raycast(origin, dir, max?, query?) -> hit or nil`, `overlap(center, radius, query?) -> ids`, `move(id, vel, dt, query?) -> vel, grounded` |
+| `world` | `spawn(shape, opts, parent?) -> id`, `set_parent(id, parent?)`, `set(id, opts)`, `place(id, pos, yaw?)`, `warm(shape, look)`, `get(id) -> entity or nil`, `exists(id)`, `remove(id)`, `clear()`, `find(tag) -> ids`, `count()`, `raycast(origin, dir, max?, query?) -> hit or nil`, `overlap(center, radius, query?) -> ids`, `move(id, vel, dt, query?) -> vel, grounded` |
 | `fx` | `burst(pos, {color, emissive, shape, count, speed, life, size, stretch, gravity, flat})`, `ring(pos, {color, emissive, radius, life, width, segments})`, `count() -> particles, rings` |
 | `players` | `list() -> players`, `get(id) -> player or nil`, `count()`, `rumble(id, strength, seconds?)` |
 | `camera` | `set(player, {pos, target, fov})`, `get(player)` |
@@ -174,6 +174,7 @@ keyboard mapping is in `app::input`.
 | `random` | `float()`, `range(lo, hi)`, `int(lo, hi)`, `chance(p)`, `seed(n)` |
 | `game` | `tick()`, `time()`, `dt()`, `players()`, `title()`, `finish()`, `log(text)` |
 
+- **Parenting**: pass a parent ID as the third argument of `world.spawn`. Move a subtree with `world.place`, change its parent with `world.set_parent` and read `world.get(id).world_pos`. See [parenting](parenting.md) for coordinates, collisions and lifetime.
 - **Entities**: `world.spawn` takes a shape (`"cube"`, `"sphere"`,
   `"capsule"`, an outline such as `"outline6"` or `"outline4:0.05"`, or a
   glTF path inside the game folder such as `"assets/crate.glb"`) and
@@ -493,7 +494,6 @@ KERN_ADAPTER=software warp script games/hello-warp games/hello-warp/scripts/smok
 - No online play. The determinism rules are meant to make lockstep or
   host-authoritative play possible later.
 - `game.toml` and assets do not hot-reload.
-- No interpolation between ticks: entities move at the tick rate.
 - Gamepad Party party settings (`declare_settings`), phone buttons
   (`declare_actions`) and per-player settings are not exposed to Luau yet.
 
