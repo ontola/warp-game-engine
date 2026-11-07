@@ -246,6 +246,14 @@ fn rigid(m: Mat4) -> bool {
         && (r.transpose()*r).abs_diff_eq(Mat3::IDENTITY, 1e-4)
 }
 
+/// The uniform scale of a rotation-scale-translation matrix, if it is one.
+fn similarity(m: Mat4) -> Option<f32> {
+    let r = Mat3::from_mat4(m);
+    let s = r.determinant().cbrt();
+    (m.is_finite() && m.row(3).abs_diff_eq(Vec4::W, 1e-5) && s > 1e-6
+        && (r.transpose()*r).abs_diff_eq(Mat3::IDENTITY * (s*s), 1e-4 * s * s)).then_some(s)
+}
+
 fn check_memory(c: Config, cells: usize, stats: &mut Stats) -> Result<(), String> {
     // Old/new sparse mass maps, fine/candidate Voxel arrays and lookups may
     // coexist. Eighty bytes/cell is an explicit conservative map-node allowance.
@@ -278,34 +286,72 @@ fn transformed(vertices: &[Vertex], matrix: Mat4, scratch: &mut Vec<Vertex>, c: 
     Ok(())
 }
 
+/// Where a triangle is sampled: equal-area points, each `sample_area`.
+struct Quadrature { p: [DVec3; 3], normals: [DVec3; 3], geometric: DVec3, sample_area: f64, n: u32, sliver: Option<usize> }
+impl Quadrature {
+    /// None for a degenerate triangle.
+    fn new(vertices: [Vertex; 3], c: Config, stats: &mut Stats) -> Result<Option<Self>, String> {
+        let p = vertices.map(|v| Vec3::from(v.pos).as_dvec3());
+        let normals = vertices.map(|v| Vec3::from(v.normal).as_dvec3());
+        let cross = (p[1]-p[0]).cross(p[2]-p[0]);
+        let area = cross.length() * 0.5;
+        if !area.is_finite() { return Err("aggregate triangle area overflow".into()); }
+        if area <= 1e-18 { return Ok(None); }
+        let edge = p[0].distance(p[1]).max(p[1].distance(p[2])).max(p[2].distance(p[0]));
+        let n = (edge / f64::from(c.reference_cell_size) * f64::from(c.samples_per_cell)).ceil().max(1.0);
+        if n > 65_536.0 { return Err("aggregate triangle quadrature dimension exceeded".into()); }
+        let n = n as u32;
+        // A sliver (a needle face) narrower than half a cell needs samples only
+        // along its length: 2n strata of equal area from its apex, instead of an
+        // n x n grid across a width that never leaves one cell.
+        let sides = [p[1].distance(p[2]), p[2].distance(p[0]), p[0].distance(p[1])];
+        let apex = (0..3).min_by(|&a, &b| sides[a].total_cmp(&sides[b])).unwrap_or(0);
+        let sliver = (n > 1 && 2.0 * area / edge < 0.5 * f64::from(c.reference_cell_size) / f64::from(c.samples_per_cell)).then_some(apex);
+        let count = if sliver.is_some() { 2 * u64::from(n) } else { u64::from(n) * u64::from(n) };
+        if count > c.max_samples.saturating_sub(stats.quadrature_samples) {
+            return Err("aggregate source/candidate quadrature budget exceeded".into());
+        }
+        stats.quadrature_samples += count;
+        Ok(Some(Self { p, normals, geometric: cross.normalize(), sample_area: area / count as f64, n, sliver }))
+    }
+    /// Every sample point and its shading normal, in a fixed order.
+    fn each(&self, mut f: impl FnMut(DVec3, DVec3) -> Result<(), String>) -> Result<(), String> {
+        let mut at = |w: [f64; 3]| {
+            let point = self.p[0]*w[0]+self.p[1]*w[1]+self.p[2]*w[2];
+            let normal = (self.normals[0]*w[0]+self.normals[1]*w[1]+self.normals[2]*w[2]).try_normalize().unwrap_or(self.geometric);
+            f(point, normal)
+        };
+        let nf = f64::from(self.n);
+        if let Some(apex) = self.sliver {
+            for i in 0..2 * self.n {
+                let t = ((f64::from(i) + 0.5) / (2.0 * nf)).sqrt();
+                let mut w = [t * 0.5; 3]; w[apex] = 1.0 - t;
+                at(w)?;
+            }
+            return Ok(());
+        }
+        for row in 0..self.n { for column in 0..self.n-row {
+            let (u, v) = ((f64::from(row)+1.0/3.0)/nf, (f64::from(column)+1.0/3.0)/nf);
+            at([1.0-u-v, u, v])?;
+            if row+column+1<self.n {
+                let (u, v) = ((f64::from(row)+2.0/3.0)/nf, (f64::from(column)+2.0/3.0)/nf);
+                at([1.0-u-v, u, v])?;
+            }
+        }}
+        Ok(())
+    }
+}
+
+fn projection_scale(measure: ProjectionMeasure) -> f64 {
+    match measure { ProjectionMeasure::ClosedSurfaceEntries => 0.5, ProjectionMeasure::SheetCrossings => 1.0 }
+}
+
 fn triangle(cells: &mut Cells, vertices: [Vertex; 3], material: &Material, origin: DVec3,
     dimensions: [u32; 3], c: Config, measure: ProjectionMeasure, stats: &mut Stats) -> Result<(), String>
 {
-    let p = vertices.map(|v| Vec3::from(v.pos).as_dvec3());
-    let normals = vertices.map(|v| Vec3::from(v.normal).as_dvec3());
-    let cross = (p[1]-p[0]).cross(p[2]-p[0]);
-    let area = cross.length() * 0.5;
-    if !area.is_finite() { return Err("aggregate triangle area overflow".into()); }
-    if area <= 1e-18 { return Ok(()); }
-    let geometric = cross.normalize();
-    let directions = PROJECTION_DIRECTIONS.map(|d| geometric.dot(Vec3::from(d).as_dvec3()).abs());
-    let edge = p[0].distance(p[1]).max(p[1].distance(p[2])).max(p[2].distance(p[0]));
-    let n = (edge / f64::from(c.reference_cell_size) * f64::from(c.samples_per_cell)).ceil().max(1.0);
-    if n > 65_536.0 { return Err("aggregate triangle quadrature dimension exceeded".into()); }
-    let n = n as u32;
-    // A sliver (a needle face) narrower than half a cell needs samples only
-    // along its length: 2n strata of equal area from its apex, instead of an
-    // n x n grid across a width that never leaves one cell.
-    let sides = [p[1].distance(p[2]), p[2].distance(p[0]), p[0].distance(p[1])];
-    let apex = (0..3).min_by(|&a, &b| sides[a].total_cmp(&sides[b])).unwrap_or(0);
-    let sliver = n > 1 && 2.0 * area / edge < 0.5 * f64::from(c.reference_cell_size) / f64::from(c.samples_per_cell);
-    let count = if sliver { 2 * u64::from(n) } else { u64::from(n) * u64::from(n) };
-    if count > c.max_samples.saturating_sub(stats.quadrature_samples) {
-        return Err("aggregate source/candidate quadrature budget exceeded".into());
-    }
-    stats.quadrature_samples += count;
-    let sample_area = area / count as f64;
-    let scale = match measure { ProjectionMeasure::ClosedSurfaceEntries => 0.5, ProjectionMeasure::SheetCrossings => 1.0 };
+    let Some(q) = Quadrature::new(vertices, c, stats)? else { return Ok(()) };
+    let directions = PROJECTION_DIRECTIONS.map(|d| q.geometric.dot(Vec3::from(d).as_dvec3()).abs());
+    let (sample_area, scale) = (q.sample_area, projection_scale(measure));
     let inv_cell = 1.0 / f64::from(c.reference_cell_size);
     // Neighbouring samples mostly land in the same cell: gather a run of them
     // in one Mass and add it to the map once, instead of a map lookup per sample.
@@ -314,41 +360,126 @@ fn triangle(cells: &mut Cells, vertices: [Vertex; 3], material: &Material, origi
         mass.flat(sample_area * f64::from(count), directions, material, scale);
         (coord, mass)
     };
-    let mut sample = |u: f64, v: f64, cells: &mut Cells, stats: &mut Stats| -> Result<(), String> {
-        let w = 1.0-u-v;
-        let point = p[0]*w+p[1]*u+p[2]*v;
-        let q = ((point-origin)*inv_cell).floor();
-        if q.min_element() < 0.0 || (0..3).any(|k| q[k] >= f64::from(dimensions[k])) {
+    q.each(|point, normal| {
+        let at = ((point-origin)*inv_cell).floor();
+        if at.min_element() < 0.0 || (0..3).any(|k| at[k] >= f64::from(dimensions[k])) {
             return Err("aggregate candidate escaped the common reference grid".into());
         }
-        let coord = q.to_array().map(|x| x as u32);
+        let coord = at.to_array().map(|x| x as u32);
         if run.as_ref().is_none_or(|r| r.0 != coord) {
             if let Some(done) = run.take() { add_run(cells, finish(done), c, stats)?; }
             run = Some((coord, Mass::default(), 0));
         }
-        let normal = (normals[0]*w+normals[1]*u+normals[2]*v).try_normalize().unwrap_or(geometric);
         let r = run.as_mut().unwrap();
         r.1.lobes(sample_area, normal, material);
         r.2 += 1;
         Ok(())
-    };
-    let nf = f64::from(n);
-    if sliver {
-        for i in 0..2 * n {
-            let t = ((f64::from(i) + 0.5) / (2.0 * nf)).sqrt();
-            let mut weight = [t * 0.5; 3]; weight[apex] = 1.0 - t;
-            sample(weight[1], weight[2], cells, stats)?;
-        }
-        if let Some(done) = run.take() { add_run(cells, finish(done), c, stats)?; }
-        return Ok(());
-    }
-    for row in 0..n { for column in 0..n-row {
-        sample((f64::from(row)+1.0/3.0)/nf, (f64::from(column)+1.0/3.0)/nf, cells, stats)?;
-        if row+column+1<n { sample((f64::from(row)+2.0/3.0)/nf,
-            (f64::from(column)+2.0/3.0)/nf, cells, stats)?; }
-    }}
+    })?;
     if let Some(done) = run.take() { add_run(cells, finish(done), c, stats)?; }
     Ok(())
+}
+
+/// Voxel stamps (KERN_VOXEL_STAMPS=0 turns them off).
+fn stamps_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KERN_VOXEL_STAMPS").map_or(true, |v| v != "0"))
+}
+
+/// The surface of one stamp cell as rotation-ready moments: area-weighted
+/// position, the second moments of the face and shading normals, and the
+/// shading normals' mean.
+#[derive(Clone, Default)]
+struct StampCell { area: f64, centroid: DVec3, faces: [f64; 6], shading: [f64; 6], mean: DVec3, exact: Vec<(DVec3, f64)>, mixed: bool }
+/// Face normals a stamp cell keeps exactly before it falls back to moments.
+const STAMP_FACES: usize = 8;
+
+fn sym_add(m: &mut [f64; 6], v: DVec3, w: f64) {
+    m[0] += w*v.x*v.x; m[1] += w*v.y*v.y; m[2] += w*v.z*v.z; m[3] += w*v.x*v.y; m[4] += w*v.x*v.z; m[5] += w*v.y*v.z;
+}
+/// R M R^T for a symmetric M stored as xx yy zz xy xz yz, as a full matrix.
+fn sym_rotate(m: &[f64; 6], r: &glam::DMat3) -> glam::DMat3 {
+    let full = glam::DMat3::from_cols(DVec3::new(m[0], m[3], m[4]), DVec3::new(m[3], m[1], m[5]), DVec3::new(m[4], m[5], m[2]));
+    *r * full * r.transpose()
+}
+
+/// A part's surface sampled once in its own frame into cells of the
+/// reference size (STAMP_CELL). A rigid placement then costs one rotation per stamp cell
+/// instead of re-sampling every triangle: projected areas come from the face
+/// normals' second moments (|g.d| ~ 0.1875 + 0.9375 (g.d)^2, the least-squares
+/// fit over directions), normal lobes from the shading normals' moments.
+struct Stamp { cells: Vec<StampCell> }
+/// Stamp cell size over the reference cell.
+/// Half a cell keeps a needle's footprint.
+const STAMP_CELL: f32 = 0.5;
+impl Stamp {
+    fn new(vertices: &[Vertex], indices: &[u32], c: Config, size: f32, stats: &mut Stats) -> Result<Self, String> {
+        let half = Config { reference_cell_size: c.reference_cell_size * size, ..c };
+        let inv = 1.0 / f64::from(c.reference_cell_size * size);
+        let mut cells: BTreeMap<[i64; 3], StampCell> = BTreeMap::new();
+        for tri in indices.chunks_exact(3) {
+            let v = [vertices[tri[0] as usize], vertices[tri[1] as usize], vertices[tri[2] as usize]];
+            let Some(q) = Quadrature::new(v, half, stats)? else { continue };
+            let (a, g) = (q.sample_area, q.geometric);
+            q.each(|point, normal| {
+                let k = (point * inv).floor();
+                let cell = cells.entry([k.x as i64, k.y as i64, k.z as i64]).or_default();
+                cell.area += a; cell.centroid += point * a; cell.mean += normal * a;
+                if !cell.mixed {
+                    if let Some(face) = cell.exact.iter_mut().find(|(n, _)| *n == g) { face.1 += a; }
+                    else if cell.exact.len() < STAMP_FACES { cell.exact.push((g, a)); }
+                    else { cell.mixed = true; cell.exact = Vec::new(); }
+                }
+                sym_add(&mut cell.faces, g, a); sym_add(&mut cell.shading, normal, a);
+                Ok(())
+            })?;
+        }
+        Ok(Self { cells: cells.into_values().collect() })
+    }
+
+    fn apply(&self, cells: &mut Cells, matrix: Mat4, material: &Material, origin: DVec3, dimensions: [u32; 3],
+        c: Config, measure: ProjectionMeasure, stats: &mut Stats) -> Result<(), String>
+    {
+        let m = matrix.as_dmat4();
+        let size = f64::from(similarity(matrix).ok_or("voxel stamp needs a similarity transform")?);
+        let r = glam::DMat3::from_mat4(m) / size;
+        let s2 = size * size;
+        let (scale, inv_cell) = (projection_scale(measure), 1.0 / f64::from(c.reference_cell_size));
+        let two_sided = material.flags & TWO_SIDED != 0;
+        let directions = PROJECTION_DIRECTIONS.map(|d| Vec3::from(d).as_dvec3());
+        for cell in &self.cells {
+            let a = cell.area * s2;
+            let point = m.transform_point3(cell.centroid / cell.area);
+            let at = ((point - origin) * inv_cell).floor();
+            if at.min_element() < 0.0 || (0..3).any(|k| at[k] >= f64::from(dimensions[k])) {
+                return Err("aggregate candidate escaped the common reference grid".into());
+            }
+            let faces = sym_rotate(&cell.faces, &r) * s2;
+            let shading = sym_rotate(&cell.shading, &r) * s2;
+            let mean = r * cell.mean * s2;
+            let mut mass = Mass::default();
+            // Few faces: their projected areas exactly; many: from the moments.
+            let projected = if cell.mixed {
+                directions.map(|d| (0.1875 * a + 0.9375 * d.dot(faces * d)).max(0.0) / a)
+            } else {
+                directions.map(|d| cell.exact.iter().map(|&(g, w)| w * (r * g).dot(d).abs()).sum::<f64>() / cell.area)
+            };
+            mass.flat(a, projected, material, scale);
+            for k in 0..3 {
+                let weight = shading.col(k)[k];
+                if weight <= 0.0 { continue; }
+                // Mean normal of each lobe: along the k-th row of the moments.
+                let dir = shading.col(k).try_normalize().unwrap_or(DVec3::ZERO);
+                let positive = if two_sided { 0.5 } else { (0.5 + 0.5 * mean[k] / (a * weight).sqrt().max(1e-30)).clamp(0.0, 1.0) };
+                mass.normal[2*k] += weight * positive; mass.normal[2*k+1] += weight * (1.0 - positive);
+                for axis in 0..3 {
+                    mass.vectors[2*k][axis] += dir[axis] * weight * positive;
+                    mass.vectors[2*k+1][axis] -= dir[axis] * weight * (1.0 - positive);
+                }
+            }
+            add_run(cells, (at.to_array().map(|x| x as u32), mass), c, stats)?;
+        }
+        Ok(())
+    }
 }
 
 /// Add a run of samples that fell in one cell, minding the cell budget.
@@ -579,8 +710,18 @@ pub struct Cooker<'a> {
     meshes: BTreeMap<(usize, bool), ClusterMesh>,
     components: BTreeMap<usize, usize>,
     clod_bytes: usize,
+    /// Needle parts voxelized once in their own frame, by (part, material).
+    stamps: std::sync::Mutex<BTreeMap<(u32, u32), std::sync::Arc<Stamp>>>,
 }
 impl<'a> Cooker<'a> {
+    /// The stamp of a placement's source triangles, made on first use.
+    fn stamp(&self, part: u32, material: u32, stats: &mut Stats) -> Result<std::sync::Arc<Stamp>, String> {
+        if let Some(s) = self.stamps.lock().unwrap_or_else(|e| e.into_inner()).get(&(part, material)) { return Ok(s.clone()); }
+        let g = &self.source.parts[part as usize];
+        let stamp = std::sync::Arc::new(Stamp::new(&g.vertices, &g.indices, self.config, STAMP_CELL, stats)?);
+        self.stamps.lock().unwrap_or_else(|e| e.into_inner()).insert((part, material), stamp.clone());
+        Ok(stamp)
+    }
     pub fn new(source: &'a Assembly, config: Config) -> Result<Self,String> {
         validate_config(config)?;source.validate()?;
         let poses=source.branch_transforms()?;
@@ -616,7 +757,7 @@ impl<'a> Cooker<'a> {
             if clod_bytes>config.max_build_bytes {return Err("aggregate shared CLOD budget exceeded".into());}
             meshes.insert((part_index,thin),mesh);
         }
-        Ok(Self {source,config,poses,meshes,components,clod_bytes})
+        Ok(Self {source,config,poses,meshes,components,clod_bytes,stamps:Default::default()})
     }
     pub fn cook(&self, placement_indices: &[u32], cluster_to_assembly: Mat4) -> Result<ClusterAsset,String> {
         cook_prepared(self,placement_indices,cluster_to_assembly,None)
@@ -702,8 +843,16 @@ fn reference_cells(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_as
     stats.closed_components_validated=used.iter().map(|i|cooker.components[i]).sum();
     stats.clod_bytes=cooker.clod_bytes;check_memory(config,0,&mut stats)?;
     let mut fine=Cells::new();let mut scratch=Vec::new();
+    let stamps=stamps_enabled();
     for (&index,&matrix) in memberships.iter().zip(&matrices) {
         let instance=&source.instances[index as usize];let part=&source.parts[instance.part as usize];
+        let material=&source.materials[instance.material as usize];
+        if stamps && material.flags&THIN_FOLIAGE!=0 && similarity(matrix).is_some() {
+            let stamp=cooker.stamp(instance.part,instance.material,&mut stats)?;
+            stats.peak_transformed_vertices=stats.peak_transformed_vertices.max(part.vertices.len());
+            stamp.apply(&mut fine,matrix,material,origin64,dimensions,config,source.projection_measure(),&mut stats)?;
+            continue;
+        }
         transformed(&part.vertices,matrix,&mut scratch,config,&mut stats)?;
         for tri in part.indices.chunks_exact(3) {
             triangle(&mut fine,[scratch[tri[0]as usize],scratch[tri[1]as usize],scratch[tri[2]as usize]],
@@ -763,6 +912,7 @@ fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_asse
     // the same: locked needles never simplify, so most placements are
     // voxelized once for every level instead of once per level.
     let mut cuts:Vec<Option<(Vec<u32>,Cells,u64)>>=(0..memberships.len()).map(|_|None).collect();
+    let stamps=stamps_enabled();
     let mut triangle_alternate=|cut_error:f32,stats:&mut Stats|->Result<(VoxelLevel,u64),String> {
         let mut scratch=Vec::new();let mut alternate=Cells::new();let mut triangle_count=0u64;
         for (slot,(&index,&matrix)) in memberships.iter().zip(&matrices).enumerate() {
@@ -772,6 +922,17 @@ fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_asse
             let threshold=cut_error/scale_bound(matrix);
             let signature:Vec<u32>=mesh.clusters.iter().enumerate()
                 .filter(|(_,c)|c.own_error<=threshold && c.parent_error>threshold).map(|(i,_)|i as u32).collect();
+            // An unsimplified needle cut is the source itself: stamped like
+            // the reference, so it measures exactly against it.
+            let stamped=stamps && material.flags&THIN_FOLIAGE!=0 && similarity(matrix).is_some()
+                && mesh.clusters.iter().enumerate().filter(|(_,c)|c.own_error<=0.0 && c.parent_error>0.0).map(|(i,_)|i as u32).eq(signature.iter().copied());
+            if stamped && cuts[slot].as_ref().is_none_or(|c|c.0!=signature) {
+                let mut own=Cells::new();
+                cooker.stamp(instance.part,instance.material,stats)?
+                    .apply(&mut own,matrix,material,origin64,dimensions,config,source.projection_measure(),stats)?;
+                let count=signature.iter().map(|&i|u64::from(mesh.clusters[i as usize].tri_count)).sum::<u64>();
+                cuts[slot]=Some((signature.clone(),own,count));
+            }
             if cuts[slot].as_ref().is_none_or(|c|c.0!=signature) {
                 transformed(&mesh.vertices,matrix,&mut scratch,config,stats)?;
                 let mut own=Cells::new();let mut count=0u64;
@@ -869,6 +1030,39 @@ mod tests {
     }
     fn directional(level: &VoxelLevel) -> [f64;13] {
         std::array::from_fn(|i|level.voxels.iter().map(|v|f64::from(v.directional_area[i])).sum())
+    }
+
+    #[test]
+    fn a_needle_stamp_matches_sampling_the_brush_in_place() {
+        // A rotated, scaled pine brush: stamped against sampled triangle by triangle.
+        let parts=crate::plant_growth_assembly::Parts::long_needle_pine();
+        let tuft=&parts.tufts[0];
+        let material=Material {tint:[0.1,0.2,0.1],layer:-1,roughness:0.8,flags:THIN_FOLIAGE|TWO_SIDED,scale:1.0,metal:0.0};
+        let c=Config {reference_cell_size:0.075,max_reference_voxels:1<<20,..Config::default()};
+        let matrix=Mat4::from_scale_rotation_translation(Vec3::splat(1.2),Quat::from_euler(glam::EulerRot::XYZ,0.7,-1.1,0.4),Vec3::splat(1.0));
+        let (origin,dimensions)=(DVec3::ZERO,[64;3]);
+        let mut stats=Stats::default();
+        let mut exact=Cells::new();let mut scratch=Vec::new();
+        transformed(&tuft.vertices,matrix,&mut scratch,c,&mut stats).unwrap();
+        for t in tuft.indices.chunks_exact(3) {
+            triangle(&mut exact,[scratch[t[0]as usize],scratch[t[1]as usize],scratch[t[2]as usize]],&material,origin,dimensions,c,ProjectionMeasure::SheetCrossings,&mut stats).unwrap();
+        }
+        let mut stamped=Cells::new();
+        Stamp::new(&tuft.vertices,&tuft.indices,c,STAMP_CELL,&mut stats).unwrap()
+            .apply(&mut stamped,matrix,&material,origin,dimensions,c,ProjectionMeasure::SheetCrossings,&mut stats).unwrap();
+        let total=|cells:&Cells,f:&dyn Fn(&Mass)->f64|cells.values().map(f).sum::<f64>();
+        let area=total(&exact,&|m|m.area);
+        assert!((total(&stamped,&|m|m.area)/area-1.0).abs()<1e-5,"area {} vs {area}",total(&stamped,&|m|m.area));
+        for k in 0..13 {
+            let (a,b)=(total(&exact,&|m|m.directional[k]),total(&stamped,&|m|m.directional[k]));
+            assert!((b/a-1.0).abs()<0.08,"direction {k}: stamped {b} sampled {a}");
+        }
+        // Mass stays where it was: the area-weighted centre moves well under a cell.
+        let centre=|cells:&Cells|cells.iter().map(|(k,m)|DVec3::from(k.map(f64::from))*m.area).sum::<DVec3>()/area;
+        assert!(centre(&exact).distance(centre(&stamped))<0.25,"{} vs {}",centre(&exact),centre(&stamped));
+        // Most occupied cells survive.
+        let shared=stamped.keys().filter(|k|exact.contains_key(*k)).count();
+        assert!(shared as f64>0.6*exact.len() as f64,"{shared} of {} cells",exact.len());
     }
 
     #[test]
