@@ -24,16 +24,34 @@ pub struct Parts {
 fn stem(id: u64, sides: u32) -> PartGeometry {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
+    // Closed (capped) and with the seam on exactly the first ring's positions:
+    // foliage optics need every edge shared by two faces.
+    let ring = |i: u32| {
+        let a = (i % sides) as f32 / sides as f32 * TAU;
+        (a.cos(), a.sin())
+    };
     for i in 0..=sides {
-        let a = i as f32 / sides as f32 * TAU;
-        let normal = [a.cos(), 0.0, a.sin()];
+        let (c, s) = ring(i);
         for y in [0.0, 1.0] {
-            vertices.push(Vertex { pos: [a.cos(), y, a.sin()], normal, uv: [i as f32 / sides as f32, y] });
+            vertices.push(Vertex { pos: [c, y, s], normal: [c, 0.0, s], uv: [i as f32 / sides as f32, y] });
         }
     }
     for i in 0..sides {
         let b = i * 2;
         indices.extend_from_slice(&[b, b + 1, b + 2, b + 2, b + 1, b + 3]);
+    }
+    for (y, normal) in [(0.0f32, -1.0f32), (1.0, 1.0)] {
+        let centre = vertices.len() as u32;
+        vertices.push(Vertex { pos: [0.0, y, 0.0], normal: [0.0, normal, 0.0], uv: [0.5, y] });
+        let first = vertices.len() as u32;
+        for i in 0..sides {
+            let (c, s) = ring(i);
+            vertices.push(Vertex { pos: [c, y, s], normal: [0.0, normal, 0.0], uv: [0.5 + 0.5 * c, 0.5 + 0.5 * s] });
+        }
+        for i in 0..sides {
+            let (a, b) = (first + i, first + (i + 1) % sides);
+            indices.extend_from_slice(&if normal < 0.0 { [centre, a, b] } else { [centre, b, a] });
+        }
     }
     PartGeometry { id, vertices, indices }
 }
@@ -56,16 +74,20 @@ fn tuft(id: u64, variant: u64, needles: u32, length: f32) -> PartGeometry {
         let around = unit(variant, v, 2) * TAU;
         let axis = Vec3::new(polar.sin() * around.cos(), polar.cos(), polar.sin() * around.sin());
         let side = axis.cross(if axis.y.abs() < 0.9 { Vec3::Y } else { Vec3::X }).normalize();
-        let normal = axis.cross(side).normalize();
+        let up = axis.cross(side).normalize();
         let root = axis * 0.012;
         let long = length * (0.7 + 0.5 * unit(variant, v, 3));
         let tip = axis * long - Vec3::Y * 0.12 * long * unit(variant, v, 4);
-        let half = side * 0.0028;
+        // A closed sliver (three-sided base, one tip): foliage optics need
+        // every edge shared by two faces.
         let b = vertices.len() as u32;
-        for (pos, y) in [(root - half, 0.0), (root + half, 0.0), (root * 0.5 + tip * 0.5 - half * 0.7, 0.5), (root * 0.5 + tip * 0.5 + half * 0.7, 0.5), (tip, 1.0)] {
-            vertices.push(Vertex { pos: pos.to_array(), normal: normal.to_array(), uv: [0.5, y] });
+        for k in 0..3 {
+            let a = k as f32 / 3.0 * TAU;
+            let out = side * a.cos() + up * a.sin();
+            vertices.push(Vertex { pos: (root + out * 0.0016).to_array(), normal: out.to_array(), uv: [k as f32 / 3.0, 0.0] });
         }
-        indices.extend_from_slice(&[b, b + 1, b + 2, b + 2, b + 1, b + 3, b + 2, b + 3, b + 4]);
+        vertices.push(Vertex { pos: tip.to_array(), normal: (tip - root).normalize().to_array(), uv: [0.5, 1.0] });
+        indices.extend_from_slice(&[b, b + 2, b + 1, b, b + 1, b + 3, b + 1, b + 2, b + 3, b + 2, b, b + 3]);
     }
     PartGeometry { id, vertices, indices }
 }
@@ -77,7 +99,7 @@ impl Parts {
         const TUFT: u64 = 0x5047_5446_0000_0000;
         Self {
             stems: [stem(STEM + 1, 4), stem(STEM + 2, 6), stem(STEM + 3, 12)],
-            tufts: (0..3).map(|v| tuft(TUFT + v, v, 56, 0.22)).collect(),
+            tufts: (0..3).map(|v| tuft(TUFT + v, v, 28, 0.22)).collect(),
         }
     }
 }
@@ -255,6 +277,28 @@ mod tests {
             let (assembly, counts) = assemble(&plant, &parts, Look::jeffrey_pine(), 1, crate::plant_recipe::recipe_limits()).unwrap();
             assert_eq!(assembly.instances.len(), counts.stems + counts.tufts);
             assert!(counts.bones <= 64);
+        }
+    }
+
+    #[test]
+    fn parts_are_closed_with_outward_volume() {
+        let parts = Parts::long_needle_pine();
+        for part in parts.stems.iter().chain(&parts.tufts) {
+            let mut edges = std::collections::BTreeMap::new();
+            let mut volume = 0.0f64;
+            for tri in part.indices.chunks_exact(3) {
+                let p: [Vec3; 3] = std::array::from_fn(|i| Vec3::from(part.vertices[tri[i] as usize].pos));
+                volume += p[0].as_dvec3().dot(p[1].as_dvec3().cross(p[2].as_dvec3())) / 6.0;
+                for i in 0..3 {
+                    let (a, b) = (p[i].to_array().map(f32::to_bits), p[(i + 1) % 3].to_array().map(f32::to_bits));
+                    let (key, dir) = if a < b { ((a, b), 1i32) } else { ((b, a), -1) };
+                    let e = edges.entry(key).or_insert((0u32, 0i32));
+                    e.0 += 1;
+                    e.1 += dir;
+                }
+            }
+            assert!(volume > 0.0, "part {:x}: volume {volume}", part.id);
+            assert!(edges.values().all(|&e| e == (2, 0)), "part {:x} is not closed", part.id);
         }
     }
 

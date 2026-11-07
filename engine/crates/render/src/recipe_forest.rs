@@ -85,15 +85,26 @@ pub fn cook_variants(variants: &[(WoodyRecipe, u64)], cache: Option<&Path>) -> R
     })
 }
 
+/// A grown limb holds many more parts than a recipe branch: sixteen times
+/// the reference cells, scratch and samples, and 4 GiB of build memory per group.
+fn grown_config(base: Config) -> Config {
+    Config { max_reference_voxels: base.max_reference_voxels * 16, max_scratch_bytes: base.max_scratch_bytes * 16,
+        max_samples: base.max_samples * 16, max_source_triangles: base.max_source_triangles * 4,
+        max_diagnostic_steps: base.max_diagnostic_steps * 16, max_build_bytes: base.max_build_bytes.max(4 << 30), ..base }
+}
+
 /// Cook grown plants: each (species, age, seed) grows by its rules and is
 /// assembled from `parts`, then cooked like any recipe tree. Age changes the
 /// counts and placement of parts, never their geometry.
 pub fn cook_grown(variants: &[(crate::plant_growth::Species, u32, u64)], parts: &crate::plant_growth_assembly::Parts,
     look: crate::plant_growth_assembly::Look, cache: Option<&Path>) -> Result<Vec<Cooked>, String> {
-    let (config, proxy) = (aggregate_config(), proxy_config());
+    // A grown limb carries far more parts than a recipe branch: give each
+    // group the proxy's working memory.
+    let (config, proxy) = (grown_config(aggregate_config()), grown_config(proxy_config()));
     let limits = plant_recipe::recipe_limits();
     crate::par::scope(|scope| {
-        let jobs: Vec<_> = variants.iter().map(|&(species, age, seed)| scope.spawn(move || -> Result<Cooked, String> {
+        let _ = scope;
+        variants.iter().map(|&(species, age, seed)| (|| -> Result<Cooked, String> {
             let started = web_time::Instant::now();
             let cook = || {
                 let plant = crate::plant_growth::grow(&species, age, seed);
@@ -112,8 +123,7 @@ pub fn cook_grown(variants: &[(crate::plant_growth::Species, u32, u64)], parts: 
                 None => (cook()?, false),
             };
             Ok(Cooked { plant, loaded, millis: started.elapsed().as_secs_f64() * 1000.0 })
-        })).collect();
-        jobs.into_iter().map(|job| job.join().map_err(|_| "grown plant cook panicked".to_string())?).collect()
+        })()).collect()
     })
 }
 
