@@ -883,6 +883,13 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
         .map(|t|WorldRoot {id:t.id,placement:RootPlacement {up:Vec3::Y,pos:t.pos,yaw:t.yaw,scale:t.scale.y,variant:t.variant as usize}}).collect()} else {Vec::new()};
     // One pine per age in a row 30 m north of the start, spaced by size.
     let woody:Vec<WorldRoot>=if world.trees && pine_ages() {
+        // Anchored where the first build put it: the forest centre follows the
+        // camera, and a row rebuilt round it walked along with the player.
+        static ROW:std::sync::OnceLock<Vec2>=std::sync::OnceLock::new();
+        // --pine-row X,Z places it in the world instead.
+        let c=*ROW.get_or_init(||std::env::args().skip_while(|a|a!="--pine-row").nth(1)
+            .and_then(|s|s.split_once(',').and_then(|(x,z)|Some(Vec2::new(x.parse().ok()?,z.parse::<f32>().ok()?-30.))))
+            .unwrap_or(c));
         let mut x=c.x-60.;
         PINE_AGES.iter().enumerate().map(|(i,&age)|{
             let gap=2.+0.06*age as f32;x+=gap;let at=Vec2::new(x,c.y+30.);x+=gap;

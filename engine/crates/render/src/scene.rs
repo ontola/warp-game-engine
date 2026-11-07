@@ -61,6 +61,11 @@ pub const SURFACE: u32 = 32768;
 /// `Scene::car_materials`: a procedural car surface (car_material.wgsl).
 pub const CAR_SHIFT: u32 = 16;
 
+/// Material layer of procedural bark (shade.wgsl bark_surface) on wood that
+/// has no texture: `scale` is the plate size in metres, `tint` the plates'
+/// and furrows' mean (what voxels of the wood take).
+pub const BARK_LAYER: i32 = -3;
+
 /// One procedural car surface: paint, or another part of a car, with its
 /// wear and grime. The meaning of each field is in car_material.wgsl; the
 /// CLI fills these from engine/data/car_materials.toml.

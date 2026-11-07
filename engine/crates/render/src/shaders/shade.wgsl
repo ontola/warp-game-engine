@@ -2029,6 +2029,58 @@ fn rock_surface(l: i32, p: vec3<f32>, n: vec3<f32>, tw: vec3<f32>) -> RockSurfac
     return result;
 }
 
+struct Bark { albedo: vec3<f32>, normal: vec3<f32>, rough: f32, ao: f32 }
+
+fn bark_hash(p: vec3<i32>) -> f32 {
+    var x = bitcast<u32>(p.x) * 0x8da6b343u ^ bitcast<u32>(p.y) * 0xd8163841u ^ bitcast<u32>(p.z) * 0xcb1ab31fu;
+    x = (x ^ (x >> 16u)) * 0x7feb352du;
+    x = (x ^ (x >> 15u)) * 0x846ca68bu;
+    return f32(x >> 8u) / 16777216.0;
+}
+
+fn bark_noise(p: vec3<f32>) -> f32 {
+    let i = vec3<i32>(floor(p));
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = mix(mix(bark_hash(i), bark_hash(i + vec3<i32>(1, 0, 0)), u.x), mix(bark_hash(i + vec3<i32>(0, 1, 0)), bark_hash(i + vec3<i32>(1, 1, 0)), u.x), u.y);
+    let b = mix(mix(bark_hash(i + vec3<i32>(0, 0, 1)), bark_hash(i + vec3<i32>(1, 0, 1)), u.x), mix(bark_hash(i + vec3<i32>(0, 1, 1)), bark_hash(i + vec3<i32>(1, 1, 1)), u.x), u.y);
+    return mix(a, b, u.z);
+}
+
+/// Pine bark height: ridged fractal octaves, stretched along the stem so the
+/// plates run lengthwise; 1 on a plate, 0 deep in a furrow.
+fn bark_height(q: vec3<f32>, along: vec3<f32>) -> f32 {
+    let s = q - along * dot(q, along) * 0.72;
+    var h = 0.0;
+    var amp = 0.55;
+    var x = s;
+    for (var o = 0; o < 5; o++) {
+        h += amp * (1.0 - abs(2.0 * bark_noise(x) - 1.0));
+        x = x * 2.03 + vec3<f32>(17.1, 3.7, 9.3);
+        amp *= 0.5;
+    }
+    return clamp(h, 0.0, 1.0);
+}
+
+/// Orange-red plates between dark furrows, relief from the height field;
+/// the furrows are darker, rougher and occluded.
+fn bark_surface(p: vec3<f32>, n: vec3<f32>, plate: f32) -> Bark {
+    let along = normalize(vec3<f32>(0.0, 1.0, 0.0) - n * n.y + vec3<f32>(1e-4, 0.0, 0.0));
+    let side = normalize(cross(n, along));
+    let q = p / max(plate, 0.02);
+    let h = bark_height(q, along);
+    let e = 0.04;
+    let du = (bark_height(q + side * e, along) - h) / e;
+    let dv = (bark_height(q + along * e, along) - h) / e;
+    let plates = smoothstep(0.45, 0.62, h);
+    let tone = bark_noise(q * 0.37 + vec3<f32>(5.0, 1.0, 3.0));
+    let orange = vec3<f32>(0.40, 0.17, 0.08) * (0.8 + 0.45 * tone);
+    let furrow = vec3<f32>(0.075, 0.058, 0.05);
+    let albedo = mix(furrow, orange, plates);
+    let normal = normalize(n - (side * du + along * dv) * 0.05);
+    return Bark(albedo, normal, mix(0.98, 0.82, plates), mix(0.45, 1.0, plates));
+}
+
 fn hash2(p: vec2<f32>) -> f32 {
     return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
 }
@@ -2606,6 +2658,15 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     // 16.. hold 1 + their index in car_materials. Others keep the material.
     let car = m.flags >> 16u;
     var rough_m = m.roughness;
+    // Procedural bark (scene.rs BARK_LAYER): scale is the plate size in metres.
+    var bark_ao = 1.0;
+    if m.layer == -3 && (m.flags & 4608u) == 0u {
+        let b = bark_surface(p, n, m.scale);
+        base = b.albedo;
+        rough_m = b.rough;
+        n = b.normal;
+        bark_ao = b.ao;
+    }
     if FEATURE_TRACKS && (m.flags & 6u)!=0u {
         let tracks=track_material(p);
         // Compacted mineral soil retains its texture and real illumination;
@@ -2692,7 +2753,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let ndl = dot(n, l);
     var sun = max(ndl, 0.0);
     var back = vec3<f32>(0.0);
-    var ao = 1.0;
+    var ao = bark_ao;
     let grass = (m.flags & 64u) != 0u;
     let procedural_leaf = FEATURE_FOLIAGE && (m.flags & 512u) != 0u;
     let needles = procedural_leaf || (FEATURE_FOLIAGE && (m.flags & 9u) == 9u && (inst.flags & 1u) != 0u && !grass);
