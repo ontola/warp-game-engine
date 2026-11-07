@@ -118,6 +118,8 @@ Owned by the foliage work; its working checklist is
 
 ## Games
 
+Luau folder games support local library imports and dependency-aware hot reload ([guide](warp-cli.md#local-libraries)).
+
 Luau entities can follow a parent, and native games can resolve named model sockets ([parenting](parenting.md)).
 
 - **Sideways** (rally): playable; the main performance scene.

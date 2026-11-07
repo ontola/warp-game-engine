@@ -16,6 +16,7 @@
 --   player_joined(p)     GameNight seated someone new mid-game (p: Player)
 --   player_left(p)       a player left mid-game
 --   players_changed()    names, colours or seats changed (after joins and leaves too)
+-- Folder games: local lib = require("lib/name") loads lib/name.module.luau at module load time.
 -- Modules run their hooks in path order. `state` is a table per module that
 -- survives reloads; main.luau's `state` is the game's JSON state (`/state`).
 --

@@ -23,6 +23,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+mod imports;
+use std::collections::BTreeSet;
 pub use mlua;
 
 #[derive(Clone, Copy, Debug)]
@@ -40,6 +42,7 @@ impl Default for Limits {
 pub struct Module {
     /// Path under the root with `/` separators, e.g. `base/cards.luau`.
     pub name: String,
+    dependencies: BTreeSet<String>,
     path: Option<PathBuf>,
     stamp: Option<(SystemTime, u64)>,
     /// What the module returned; `None` until it first loads.
@@ -83,6 +86,7 @@ pub struct Host {
     ignored: Vec<String>,
     /// Load only this module of the root (a one-file game).
     only: Option<String>,
+    libraries: Option<imports::Libraries>,
 }
 
 const BASE: &[&str] = &[
@@ -132,7 +136,7 @@ impl Host {
             Ok(base)
         })().map_err(err)?;
         let console = env(&lua, &base, &lua.create_table().map_err(err)?).map_err(err)?;
-        Ok(Host { lua, root: None, base, console, modules: Vec::new(), steps, limits, log, generation: 0, hooks: Vec::new(), ignored: Vec::new(), only: None })
+        Ok(Host { lua, root: None, base, console, modules: Vec::new(), steps, limits, log, generation: 0, hooks: Vec::new(), ignored: Vec::new(), only: None, libraries: None })
     }
 
     /// Load every `*.luau` under `root` and watch it from now on ([`Host::poll`]).
@@ -140,6 +144,9 @@ impl Host {
         self.root = Some(root.into());
         self.poll()
     }
+
+    /// Enable local *.module.luau libraries for a folder game before watching it.
+    pub fn enable_libraries(&mut self) { self.libraries = Some(Default::default()); }
 
     /// Skip these top-level folders of the root when scanning for modules
     /// (a game folder whose `sounds/` hold synth patches, not modules).
@@ -152,7 +159,7 @@ impl Host {
     /// A module from a string that never reloads (built-in content, tests).
     pub fn add_source(&mut self, name: &str, source: &str) -> Result<(), String> {
         let state = self.lua.create_table().map_err(err)?;
-        self.modules.push(Module { name: name.into(), path: None, stamp: None, exports: None, env: None, state, error: None, broken: false, proven: None, calls: 0 });
+        self.modules.push(Module { dependencies: BTreeSet::new(), name: name.into(), path: None, stamp: None, exports: None, env: None, state, error: None, broken: false, proven: None, calls: 0 });
         let i = self.modules.len() - 1;
         self.load(i, source);
         self.modules[i].error.clone().map_or(Ok(()), Err)
@@ -172,6 +179,7 @@ impl Host {
     /// Load `name` again on the next poll even if its time and size match
     /// (an edit that keeps the length within the file system's clock tick).
     pub fn forget(&mut self, name: &str) {
+        if let Some(libs) = &mut self.libraries { libs.forget(name); }
         if let Some(m) = self.modules.iter_mut().find(|m| m.name == name) { m.stamp = None; }
     }
 
@@ -182,6 +190,7 @@ impl Host {
         found.retain(|(name, _)| !self.ignored.iter().any(|f| name.strip_prefix(f.as_str()).is_some_and(|r| r.starts_with('/'))));
         if let Some(only) = &self.only { found.retain(|(name, _)| name == only); }
         found.sort();
+        let edited = self.libraries.as_mut().map(|libs| libs.refresh(&root, &mut found)).unwrap_or_default();
         let mut changed = Vec::new();
         let before = self.modules.len();
         self.modules.retain(|m| m.path.is_none() || found.iter().any(|(n, _)| *n == m.name));
@@ -189,11 +198,11 @@ impl Host {
         for (name, path) in found {
             let stamp = std::fs::metadata(&path).ok().map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()));
             let i = match self.modules.iter().position(|m| m.name == name) {
-                Some(i) if self.modules[i].stamp == stamp => continue,
+                Some(i) if self.modules[i].stamp == stamp && self.modules[i].dependencies.is_disjoint(&edited) => continue,
                 Some(i) => i,
                 None => {
                     let Ok(state) = self.lua.create_table() else { continue };
-                    self.modules.push(Module { name: name.clone(), path: Some(path.clone()), stamp: None, exports: None, env: None, state, error: None, broken: false, proven: None, calls: 0 });
+                    self.modules.push(Module { dependencies: BTreeSet::new(), name: name.clone(), path: Some(path.clone()), stamp: None, exports: None, env: None, state, error: None, broken: false, proven: None, calls: 0 });
                     self.modules.len() - 1
                 }
             };
@@ -212,9 +221,14 @@ impl Host {
     fn load(&mut self, i: usize, source: &str) {
         let m = &self.modules[i];
         let name = m.name.clone();
+        let mut dependencies = BTreeSet::new();
         let result = env(&self.lua, &self.base, &m.state).and_then(|e| {
             self.steps.store(self.limits.steps, Ordering::Relaxed);
-            self.lua.load(source).set_name(format!("@{name}")).set_environment(e.clone()).eval::<Value>().map(|v| (v, e))
+            let value = match &self.libraries {
+                Some(libs) => libs.eval(&self.lua, &self.base, &e, &name, source, &mut dependencies),
+                None => self.lua.load(source).set_name(format!("@{name}")).set_environment(e.clone()).eval::<Value>(),
+            };
+            value.map(|v| (v, e))
         });
         let m = &mut self.modules[i];
         match result {
@@ -223,6 +237,7 @@ impl Host {
             Ok((v, _)) => m.error = Some(format!("{name}: must return a table of exports, not a {}", v.type_name())),
             Err(e) => m.error = Some(short(&e)),
         }
+        if m.error.is_none() { m.dependencies = dependencies; } else { m.dependencies.extend(dependencies); }
         match &m.error {
             None => { self.generation += 1; self.say(format!("loaded {name}")); }
             Some(e) => { let keep = if m.exports.is_some() { " (keeping the previous version)" } else { "" }; let e = format!("{e}{keep}"); self.say(e); }
