@@ -13,7 +13,7 @@ support_arm.apply(&mut palette, wrist, outward, grip_weight);
 
 Each solve measures the upper and lower segment lengths in the current pose. It keeps the sampled elbow bend plane where possible, preserves hand orientation, carries finger joints along, and clamps unreachable targets. Weight ranges from zero (authored clip) to one (full reach). For a differently named skeleton, use `Reach::bind` to map both pivots and affected descendants once. Use the same palette layout at sampling and binding.
 
-For a right-handed prop use `TwoHandHold::bind(model.joints())` once and `hold.apply(palette, primary, secondary)` after sampling. Place the prop at the returned primary wrist. The secondary hand reaches as far as the current skeleton allows.
+For a right-handed prop use `TwoHandHold::bind(model.joints())` once and `hold.apply(palette, primary, secondary)` after sampling. Use `with_arm_proportions(upper, forearm)` at bind time for a character-specific held-pose correction. Both reach limits and mesh deformation use those factors along the bone axes. Place the prop at the returned primary wrist. The secondary hand reaches as far as the current skeleton allows.
 
 Growing Guns anchors the weapon to the animated right wrist, pitches around the grip and uses the left arm to hold the magazine and transfer onto the growing foregrip. Its first-person view still shows only the weapon. For an identical-camera comparison of the sampled clip and corrected grip, run from the repository root:
 

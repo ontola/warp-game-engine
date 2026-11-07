@@ -274,7 +274,7 @@ pub fn run(args: &crate::Args) -> Result<(), String> {
     let _scripts = crate::scripts::attach(&mut world)?;
     let id = world.cards.find("sniper").ok_or("missing sniper card")?;
     world.give(0, id);
-    let arms = TwoHandHold::bind(model.joints()).ok_or("missing arm joints")?;
+    let arms = crate::view::characters::grip_arms(&model).ok_or("missing arm joints")?;
     let pose = model.sample("pistol_idle", 0.0, true)?;
     let mut game = Preview {
         scene,
