@@ -98,6 +98,15 @@ fn unit(variant: u64, index: u64, tag: u64) -> f32 {
     ((x ^ (x >> 32)) >> 40) as f32 / (1u64 << 24) as f32
 }
 
+/// A needle base vertex's uv: its outward direction octahedron-encoded,
+/// with v shifted by -4 to mark it (raster.wgsl needle_widen widens the
+/// needle to a minimum on-screen width along it). Needles have no texture.
+pub fn needle_base_uv(out: Vec3) -> [f32; 2] {
+    let p = out / (out.x.abs() + out.y.abs() + out.z.abs()).max(1e-12);
+    let xy = if p.z >= 0.0 { [p.x, p.y] } else { [(1.0 - p.y.abs()) * p.x.signum(), (1.0 - p.x.abs()) * p.y.signum()] };
+    [xy[0], xy[1] - 4.0]
+}
+
 /// A bottlebrush of long needles along the last 30 cm of a shoot (+Y, ending
 /// at the origin), splaying out and forward; a stand-in until a proper mesh
 /// replaces it.
@@ -132,7 +141,9 @@ fn tuft(id: u64, variant: u64, b: &Look) -> PartGeometry {
         for k in 0..3 {
             let a = k as f32 / 3.0 * TAU;
             let out = side * a.cos() + up * a.sin();
-            vertices.push(Vertex { pos: (root + out * width).to_array(), normal: bend(out).to_array(), uv: [k as f32 / 3.0, 0.0] });
+            // The uv carries the widening direction for the raster's
+            // minimum needle width (raster.wgsl needle_widen).
+            vertices.push(Vertex { pos: (root + out * width).to_array(), normal: bend(out).to_array(), uv: needle_base_uv(out) });
         }
         vertices.push(Vertex { pos: tip.to_array(), normal: bend((tip - root).normalize()).to_array(), uv: [0.5, 1.0] });
         indices.extend_from_slice(&[b, b + 2, b + 1, b, b + 1, b + 3, b + 1, b + 2, b + 3, b + 2, b, b + 3]);
@@ -150,7 +161,8 @@ impl Parts {
         const STEM: u64 = 0x5047_5354_0000_0000;
         const TUFT: u64 = 0x5047_5446_0000_0000;
         // The brush's shape is part of its identity (and so of every cook key).
-        let mut h = TUFT;
+        // 2: needle base uvs carry the widening direction.
+        let mut h = TUFT ^ 2;
         for x in [u64::from(look.brush_needles), u64::from(look.needle_length.to_bits()), u64::from(look.brush_spread.to_bits()), u64::from(look.brush_reach.to_bits()), u64::from(look.needle_width.to_bits()), u64::from(look.brush_round.to_bits())] {
             h = (h ^ x).wrapping_mul(0x100_0000_01b3).rotate_left(17);
         }
@@ -409,6 +421,19 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn needle_base_uvs_decode_to_their_direction() {
+        // The decode in raster.wgsl needle_widen.
+        for out in [Vec3::X, -Vec3::Y, Vec3::new(0.3, -0.5, -0.8).normalize(), Vec3::new(-0.6, 0.2, 0.77).normalize()] {
+            let [x, y] = needle_base_uv(out);
+            assert!(y < -2.5);
+            let e = (x, y + 4.0);
+            let mut d = Vec3::new(e.0, e.1, 1.0 - e.0.abs() - e.1.abs());
+            if d.z < 0.0 { d = Vec3::new((1.0 - d.y.abs()) * d.x.signum(), (1.0 - d.x.abs()) * d.y.signum(), d.z); }
+            assert!(d.normalize().dot(out) > 0.999, "{out} -> {d}");
+        }
+    }
+
     use super::*;
     use crate::plant_growth::{grow, Species};
 
