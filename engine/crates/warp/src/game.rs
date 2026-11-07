@@ -144,6 +144,7 @@ impl LuaGame {
         let shared = core.clone();
         let mut host = Host::new(Limits { memory: cfg.memory_mb << 20, steps: cfg.steps }, move |lua, base| api::register(lua, base, shared))?;
         host.ignore(NOT_MODULES);
+        if single.is_none() { host.enable_libraries(); }
         let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None,
             log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, surface: GameSurface::new(dir), trial: None };
         g.surface.install();

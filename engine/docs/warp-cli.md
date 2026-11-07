@@ -113,10 +113,32 @@ my-game/
 | `steps` | 200000 | Luau step budget per hook call (see [scripting](scripting.md#limits)). |
 | `memory_mb` | 64 | Luau memory cap. |
 
-Every `*.luau` file outside `sounds/`, `assets/` and `scripts/` is a
-module (`*.d.luau` files are skipped). Most games need only `main.luau`.
-Modules run their hooks in path order. There is no `require`, so modules
-share only the world.
+Regular scripts outside `sounds/`, `assets/` and `scripts/` run their hooks
+in path order. Type definitions (`*.d.luau`) are skipped.
+
+### Local libraries
+
+In a game folder with `main.luau`, use a `.module.luau` file to share
+functions or data. For example, put this in `lib/score.module.luau`:
+
+```lua
+return { winner_points = function(rounds) return rounds * 3 end }
+```
+
+At the top of any hook script or library, write
+`local score = require("lib/score")`. Paths start at the game root and omit
+the suffix. The loader looks up exact names among the discovered libraries.
+Use the returned table in hooks, for example `score.winner_points(2)`.
+A library's exports do not register hooks. The [Neon Trails grid](../../games/neon-trails/grid.module.luau)
+is a working example.
+
+Declare imports while the file loads. Each hook script gets its own cache:
+two imports of a library in that script's dependency tree return the same
+table. Keep persistent match data in the hook script's `state`. Editing a
+library reloads every dependent hook script, including indirect dependents,
+and runs its normal reload hook. A missing library, a cycle or a bad edit
+reports a load error and keeps the last working exports. Fixing the library
+retries the load. One-file games remain self-contained.
 
 ## The Luau API
 
@@ -490,7 +512,6 @@ KERN_ADAPTER=software warp script games/hello-warp games/hello-warp/scripts/smok
 
 - Skinned and animated glTF, local lights, physics bodies
   (the `physics` crate) and terrain are not exposed to Luau yet.
-- No `require`: modules cannot share code.
 - No online play. The determinism rules are meant to make lockstep or
   host-authoritative play possible later.
 - `game.toml` and assets do not hot-reload.

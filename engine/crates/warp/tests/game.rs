@@ -592,3 +592,45 @@ return {init = init}
     assert_eq!(state(&g)["errors"], json!([]));
     assert_eq!(state(&g)["state"]["ok"], true);
 }
+
+#[test]
+fn nested_local_libraries_reload_their_consumers_and_keep_the_last_good_version() {
+    let dir = folder("local-libraries");
+    std::fs::create_dir(dir.join("lib")).unwrap();
+    let leaf = dir.join("lib/value.module.luau");
+    write(&leaf, "return { n = 2 }");
+    write(&dir.join("outer.module.luau"), r#"
+        local value = require("lib/value")
+        assert(value == require("lib/value"))
+        return { read = function() return value.n end, tick = function() error("library ran as a hook") end }
+    "#);
+    write(&dir.join("main.luau"), r#"
+        local outer = require("outer")
+        return { tick = function() state.n = outer.read() end,
+                 reload = function() state.reloads = (state.reloads or 0) + 1 end }
+    "#);
+    write(&dir.join("other.luau"), "return { reload = function() error('unrelated module reloaded') end }");
+    let mut g = game(&dir);
+    ticks(&mut g, 1, Controls::default());
+    assert_eq!(state(&g)["state"]["n"], 2);
+    write(&leaf, "return { n = 17 }");
+    g.reload();
+    ticks(&mut g, 1, Controls::default());
+    assert_eq!(state(&g)["errors"], json!([]));
+    assert_eq!(state(&g)["state"]["n"], 17);
+    assert_eq!(state(&g)["state"]["reloads"], 1);
+    write(&leaf, "return require('outer')");
+    g.reload();
+    assert!(state(&g)["errors"].to_string().contains("cyclic require"));
+    std::fs::remove_file(&leaf).unwrap();
+    g.reload();
+    assert!(state(&g)["errors"].to_string().contains("unknown local library"));
+    ticks(&mut g, 1, Controls::default());
+    assert_eq!(state(&g)["state"]["n"], 17);
+    write(&leaf, "return { n = 35 }");
+    g.reload();
+    ticks(&mut g, 1, Controls::default());
+    assert_eq!(state(&g)["errors"], json!([]));
+    assert_eq!(state(&g)["state"]["n"], 35);
+    assert_eq!(state(&g)["state"]["reloads"], 2);
+}

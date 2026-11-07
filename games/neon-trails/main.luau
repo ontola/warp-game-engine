@@ -7,7 +7,8 @@
 -- grid, step time, start positions, collisions, scoring and bot. The arena
 -- is 3D here: glowing trail blocks on a dark floor under a night sky.
 
-local W, H = 48, 26 -- cells
+local grid = require("grid")
+local W, H, key, at = grid.width, grid.height, grid.key, grid.at
 local STEP = 0.105 -- seconds per cell at 100 % speed
 local SPEED = 100 -- percent
 local ROUND_PAUSE = 1.4 -- seconds between rounds
@@ -26,15 +27,6 @@ local GLOW_WIDTH = 0.22
 local TRAIL_Y = 0.3
 local CORE_GLOW = 0.09
 local LINE_GLOW = 0.05
-
-local function key(x, y)
-	return y * W + x
-end
-
--- A cell's centre in the world: 1 m cells, the arena centred on the origin.
-local function at(x, y, height)
-	return vector.create(x - (W - 1) / 2, height, y - (H - 1) / 2)
-end
 
 local function dim(c)
 	return c * 0.35

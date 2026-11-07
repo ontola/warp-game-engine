@@ -51,8 +51,9 @@ for line in host.drain_log() { println!("{line}"); }
 
 The rules keep scripts safe to run inside a deterministic simulation:
 
-- No clock, no files: there is no `os`, `io`, `require`, `loadstring` or
-  `getfenv`. The libraries are `math`, `string`, `table`, `utf8`,
+- No clock, no files: there is no `os`, `io`, `loadstring` or
+  `getfenv`. Folder games opt into [local library imports](warp-cli.md#local-libraries)
+  through `Host::enable_libraries`. Other hosts have no `require`. The libraries are `math`, `string`, `table`, `utf8`,
   `bit32`, `buffer` and `vector`, plus the basic functions (`pairs`,
   `pcall`, `setmetatable` and so on).
 - No `math.random` or `math.randomseed`. The game hands out seeded random
