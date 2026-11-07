@@ -14,7 +14,11 @@ use render::{
 };
 use std::path::Path;
 
+#[path = "preview_bones.rs"]
+mod bones;
+
 struct Preview {
+    bones: bones::Bones,
     scene: Scene,
     rig: Rig,
     guns: Guns,
@@ -171,10 +175,22 @@ impl Game for Preview {
     }
 
     fn pointer(&mut self, p: app::Pointer, size: [u32; 2]) {
-        self.inspector.pointer(p, size);
+        if !self.bones.pointer(p) {
+            self.inspector.pointer(p, size);
+        } else {
+            self.inspector.slider = None;
+            self.inspector.orbit = None;
+        }
+    }
+    fn function_key(&mut self, n: u8) -> bool {
+        if n != 2 {
+            return false;
+        }
+        self.bones.shown = !self.bones.shown;
+        true
     }
     fn state(&self) -> Option<String> {
-        Some(serde_json::json!({"tick":self.tick,"paused":self.inspector.paused,"yaw":self.inspector.yaw,"pitch":self.inspector.pitch,"zoom":self.inspector.zoom,"pose_offsets":self.inspector.values}).to_string())
+        Some(serde_json::json!({"tick":self.tick,"paused":self.inspector.paused,"yaw":self.inspector.yaw,"pitch":self.inspector.pitch,"zoom":self.inspector.zoom,"pose_offsets":self.inspector.values,"model":self.model.name,"selected_joint":self.bones.editor.joints[self.bones.selected].name,"joints":self.bones.editor.snapshot()}).to_string())
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
@@ -202,6 +218,7 @@ impl Game for Preview {
             &mut self.pose,
             characters::grip_rotation(pitch) * Quat::from_rotation_x(roll + palm.to_radians()),
         );
+        self.bones.editor.apply(&mut self.pose);
         let gun =
             Guns::held_transform(body.transform_point3(primary), 0.0, pitch, contacts.primary);
         self.guns.review_pose(&mut self.scene, &self.rig);
@@ -232,11 +249,13 @@ impl Game for Preview {
             fov_y: 38f32.to_radians(),
         };
         let mut hud = HudDrawList::new(frame.size);
+        self.bones
+            .draw(&mut hud, &camera, Mat4::from(gun.inverse() * body));
         self.inspector.hud(&mut hud);
         hud.text.push(TextRun {
             id: 1,
             text: format!(
-                "Drag to orbit   |   Scroll to zoom   |   Foregrip {:.0}%    {}",
+                "F2 bones   |   Drag to orbit   |   Scroll to zoom   |   Foregrip {:.0}%    {}",
                 contacts.extension * 100.0,
                 self.script.status
             ),
@@ -277,6 +296,7 @@ pub fn run(args: &crate::Args) -> Result<(), String> {
     let arms = crate::view::characters::grip_arms(&model).ok_or("missing arm joints")?;
     let pose = model.sample("pistol_idle", 0.0, true)?;
     let mut game = Preview {
+        bones: bones::Bones::new(&model)?,
         scene,
         rig,
         guns,
