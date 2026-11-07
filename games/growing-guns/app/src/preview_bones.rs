@@ -4,44 +4,6 @@ use body::pose_editor::PoseEditor;
 use glam::Vec2;
 use render::Camera;
 
-fn parent(name: &str) -> Option<String> {
-    let core = name.rsplit([':', '_']).next()?;
-    let prefix = &name[..name.len() - core.len()];
-    let center = match core {
-        "Spine" => "Hips",
-        "Spine1" => "Spine",
-        "Spine2" => "Spine1",
-        "Neck" => "Spine2",
-        "Head" => "Neck",
-        _ => "",
-    };
-    if !center.is_empty() {
-        return Some(format!("{prefix}{center}"));
-    }
-    let side = ["Left", "Right"]
-        .into_iter()
-        .find(|s| core.starts_with(s))?;
-    let limb = &core[side.len()..];
-    let base = match limb {
-        "Shoulder" => return Some(format!("{prefix}Spine2")),
-        "Arm" => "Shoulder",
-        "ForeArm" => "Arm",
-        "Hand" => "ForeArm",
-        "UpLeg" => return Some(format!("{prefix}Hips")),
-        "Leg" => "UpLeg",
-        "Foot" => "Leg",
-        "ToeBase" => "Foot",
-        "Eye" => return Some(format!("{prefix}Head")),
-        n if n.starts_with("Hand") && n.ends_with('1') => "Hand",
-        n if n.starts_with("Hand") => {
-            let digit = n.chars().last()?.to_digit(10)?.checked_sub(1)?;
-            return Some(format!("{prefix}{side}{}{digit}", &n[..n.len() - 1]));
-        }
-        _ => return None,
-    };
-    Some(format!("{prefix}{side}{base}"))
-}
-
 pub(super) struct Bones {
     pub editor: PoseEditor,
     pub selected: usize,
@@ -56,7 +18,7 @@ pub(super) struct Bones {
 
 impl Bones {
     pub fn new(model: &Character) -> Result<Self, String> {
-        let editor = PoseEditor::bind(model.joints(), parent)?;
+        let editor = PoseEditor::bind(model.joints(), crate::foregrip_pose::parent)?;
         let selected = editor
             .joints
             .iter()

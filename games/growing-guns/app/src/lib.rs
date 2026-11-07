@@ -27,6 +27,7 @@ mod crowd_sound;
 mod gun;
 mod gun_review;
 mod hand_animation;
+mod foregrip_pose;
 mod animation_window;
 mod knobs;
 mod scripts;
