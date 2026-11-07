@@ -19,6 +19,8 @@ The shared viewport owns scaled logical hit regions, joint picking, drag control
 
 ## GUI conventions
 
+F10 opens a floating editor window on the right and releases the cursor. Drag the title bar to move it or drag the bottom-right grip to resize. Window geometry carries across editor pages and reopening during the session. The shell keeps pointer and wheel input inside the editor while it is open.
+
 Use the existing F10 controls for settings, choices and commands. Use direct viewport interaction for spatial edits. In the pose viewport, left-drag moves a joint in the view plane, right-drag rotates a joint or orbits empty space, middle-drag pans and the wheel zooms. F2 toggles bones. Reserve F10–F12 for shell controls.
 
 The pose viewport, F3 profiler and F10 inspector use `render::editor_style` for panel backgrounds, accent rails and text colours, and render through Warp's native HUD. Gameplay menus retain their game-specific styling. The [debug UI guide](debug-ui.md) covers input priority, held buttons and slider behaviour.

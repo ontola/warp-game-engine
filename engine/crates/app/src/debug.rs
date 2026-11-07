@@ -207,6 +207,7 @@ impl EngineDebug {
         let r = self.ui.on_pointer_down(size, &self.model);
         (r.consumed, r.action.and_then(|a| self.apply(a)))
     }
+    pub fn cancel_interaction(&mut self) { self.ui.cancel_interaction(); }
     pub fn pointer_up(&mut self) -> Option<DebugAction> { self.ui.pointer_up().action.and_then(|a| self.apply(a)) }
     pub fn scroll(&mut self, lines: f32, size: [u32; 2]) -> bool { self.ui.on_scroll(lines, size, &self.model) }
     pub fn tick(&mut self, dt: f64, size: [u32; 2]) -> Option<DebugAction> { self.ui.tick(dt, size, &self.model).action.and_then(|a| self.apply(a)) }
