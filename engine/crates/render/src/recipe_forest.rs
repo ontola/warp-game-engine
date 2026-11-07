@@ -87,7 +87,7 @@ pub fn cook_variants(variants: &[(WoodyRecipe, u64)], cache: Option<&Path>) -> R
 
 /// Bump when plant_growth or plant_growth_assembly change what they build:
 /// the cook cache key holds their inputs, not their code.
-const GROWN_ASSEMBLY_VERSION: u32 = 4;
+const GROWN_ASSEMBLY_VERSION: u32 = 6;
 
 /// A grown limb holds many more parts than a recipe branch: sixteen times
 /// the reference cells, scratch and samples, and 4 GiB of build memory per group.

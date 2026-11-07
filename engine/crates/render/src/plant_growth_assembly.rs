@@ -125,6 +125,16 @@ fn tuft(id: u64, variant: u64, needles: u32, length: f32) -> PartGeometry {
         vertices.push(Vertex { pos: tip.to_array(), normal: (tip - root).normalize().to_array(), uv: [0.5, 1.0] });
         indices.extend_from_slice(&[b, b + 2, b + 1, b, b + 1, b + 3, b + 1, b + 2, b + 3, b + 2, b, b + 3]);
     }
+    // A dense core of needles seen end-on: a closed ball 40 % of the needle
+    // length, so a tuft keeps its cover when the needles go sub-pixel.
+    let core = collar(0);
+    let first = vertices.len() as u32;
+    let radius = 0.4 * length;
+    for v in &core.vertices {
+        let p = Vec3::from(v.pos) * Vec3::new(radius, radius * 0.9, radius) + Vec3::Y * 0.03;
+        vertices.push(Vertex { pos: p.to_array(), normal: v.normal, uv: v.uv });
+    }
+    indices.extend(core.indices.iter().map(|i| first + i));
     PartGeometry { id, vertices, indices }
 }
 
@@ -137,7 +147,7 @@ impl Parts {
             stems: std::array::from_fn(|k| stem(STEM + 1 + k as u64, if k < 4 { 6 } else { 12 }, TAPERS[k % 4])),
             collar: collar(STEM + 16),
             // A full bottlebrush: 140 needles 20-30 cm long.
-            tufts: (0..3).map(|v| tuft(TUFT + v, v, 140, 0.25)).collect(),
+            tufts: (0..3).map(|v| tuft(TUFT + v, v, 240, 0.25)).collect(),
         }
     }
 }
