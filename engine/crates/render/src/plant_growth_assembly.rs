@@ -138,10 +138,16 @@ impl Parts {
         Self {
             stems: std::array::from_fn(|k| stem(STEM + 1 + k as u64, if k < 4 { 6 } else { 12 }, TAPERS[k % 4])),
             collar: collar(STEM + 16),
-            // A full bottlebrush: 140 needles 20-30 cm long.
-            tufts: (0..3).map(|v| tuft(TUFT + v, v, 300, 0.22)).collect(),
+            // A bottlebrush: 220 needles 20-30 cm long.
+            tufts: (0..3).map(|v| tuft(TUFT + v, v, 220, 0.22)).collect(),
         }
     }
+}
+
+/// Limits for a grown plant: the recipe limits with room for an old pine's
+/// ~4k stems and ~5k needle brushes.
+pub fn limits() -> Limits {
+    Limits { max_instances: 16384, ..crate::plant_recipe::recipe_limits() }
 }
 
 /// Colours of the wood and the needles.
@@ -268,7 +274,7 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     let mut reach = 0.6;
     let stems = loop {
         let r = runs(plant, reach);
-        if r.len() * 3 <= limits.max_instances || reach > 16.0 {
+        if r.len() * 3 <= limits.max_instances || reach > 64.0 {
             break r;
         }
         reach *= 1.5;
@@ -331,11 +337,11 @@ mod tests {
     use crate::plant_growth::{grow, Species};
 
     #[test]
-    fn every_life_stage_fits_the_recipe_limits() {
+    fn every_life_stage_fits_the_grown_limits() {
         let (species, parts) = (Species::jeffrey_pine(), Parts::long_needle_pine());
         for age in [1, 3, 6, 12, 25, 50, 80, 120, 200, 300] {
             let plant = grow(&species, age, 1);
-            let (assembly, counts) = assemble(&plant, &parts, Look::jeffrey_pine(), 1, crate::plant_recipe::recipe_limits()).unwrap();
+            let (assembly, counts) = assemble(&plant, &parts, Look::jeffrey_pine(), 1, limits()).unwrap();
             assert_eq!(assembly.instances.len(), counts.stems + counts.tufts);
             assert!(counts.bones <= 64);
         }
@@ -366,7 +372,7 @@ mod tests {
     #[test]
     fn an_older_tree_is_more_parts_not_bigger_parts() {
         let (species, parts) = (Species::jeffrey_pine(), Parts::long_needle_pine());
-        let limits = crate::plant_recipe::recipe_limits();
+        let limits = limits();
         let (young, _) = assemble(&grow(&species, 6, 1), &parts, Look::jeffrey_pine(), 1, limits).unwrap();
         let (old, _) = assemble(&grow(&species, 80, 1), &parts, Look::jeffrey_pine(), 1, limits).unwrap();
         assert_eq!(young.parts.len(), old.parts.len());

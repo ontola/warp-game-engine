@@ -100,7 +100,7 @@ fn key_button(k: KeyCode) -> u32 {
         KeyCode::ShiftLeft | KeyCode::ShiftRight => Buttons::RIGHT_SHOULDER,
         KeyCode::KeyR => Buttons::WEST,
         KeyCode::KeyF => Buttons::NORTH,
-        KeyCode::KeyQ => Buttons::LEFT_SHOULDER,
+        KeyCode::KeyQ | KeyCode::ControlLeft | KeyCode::ControlRight => Buttons::LEFT_SHOULDER,
         KeyCode::KeyE => Buttons::RIGHT_SHOULDER,
         KeyCode::Tab => Buttons::SELECT,
         KeyCode::Enter => Buttons::START,
