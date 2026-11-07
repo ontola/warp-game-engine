@@ -39,6 +39,8 @@ current defaults, in [renderer switches](../renderer-switches.md).
 
 ## Performance and tooling
 
+- [Parenting in four games, 7 November](2026-11-07-parenting.md)
+
 - [Iteration speed, 24 October](iteration-speed-2026-10-24.md)
 - [Colour-geometry category costs, 24 October](render-categories-2026-10-24.md)
 - [Engine efficiency changes, 28 October](engine-efficiency-20261028.md)

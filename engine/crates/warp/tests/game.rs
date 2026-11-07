@@ -551,3 +551,44 @@ fn exposure_can_be_automatic_and_tuned_or_fixed_again() {
     let light = g.core().light;
     assert_eq!((light.auto, light.ev100), (None, Some(11.0)), "a number fixes the exposure again");
 }
+
+#[test]
+fn parented_entities_follow_rotate_collide_reparent_and_remove() {
+    let dir = folder("parenting");
+    std::fs::write(dir.join("main.luau"), r#"
+local v = vector.create
+local function near(a, b) assert(vector.magnitude(a - b) < 0.0001) end
+local function init()
+    local root = world.spawn("cube", {pos = v(9, 1, 5), size = 8, solid = false})
+    local arm = world.spawn("cube", {pos = v(2, 0, 0), solid = false}, root)
+    local tip = world.spawn("sphere", {pos = v(0, 0, 1), tag = "tip"}, arm)
+    world.place(root, v(4, 2, 0), math.pi / 2)
+    local at = v(5, 2, -2)
+    near(world.get(tip).world_pos, at)
+    assert(world.get(arm).parent == root)
+    assert(world.overlap(at, 0.01, {tag = "tip"})[1] == tip)
+    assert(world.raycast(at + v(0, 2, 0), v(0, -1, 0), 4).id == tip)
+    assert(not pcall(world.set, root, {pos = v(999, 0, 0), shape = "missing.glb"}))
+    near(world.get(root).pos, v(4, 2, 0))
+    near(world.get(tip).world_pos, at)
+    world.move(tip, v(1, 0, 0), 0.1)
+    near(world.get(tip).world_pos, at + v(0.1, 0, 0))
+    assert(not pcall(world.set_parent, root, tip))
+    assert(not pcall(world.set_parent, tip, tip))
+    assert(not pcall(world.set_parent, tip, 9999))
+    assert(not pcall(world.spawn, "cube", {}, 9999))
+    assert(world.get(tip).parent == arm and world.count() == 3)
+    world.set_parent(arm, nil)
+    near(world.get(arm).world_pos, v(2, 0, 0))
+    world.remove(root)
+    assert(world.exists(tip))
+    world.remove(arm)
+    assert(world.count() == 0)
+    state.ok = true
+end
+return {init = init}
+"#).unwrap();
+    let g = game(&dir);
+    assert_eq!(state(&g)["errors"], json!([]));
+    assert_eq!(state(&g)["state"]["ok"], true);
+}

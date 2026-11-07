@@ -385,6 +385,8 @@ fn entity_table(lua: &Lua, id: u32, e: &Entity) -> mlua::Result<Table> {
     t.raw_set("id", id)?;
     t.raw_set("shape", e.shape.name())?;
     t.raw_set("pos", vector(e.pos))?;
+    t.raw_set("parent", e.parent())?;
+    t.raw_set("world_pos", vector(e.world_pose().1))?;
     t.raw_set("rot", vector(e.rot))?;
     t.raw_set("size", vector(e.size))?;
     t.raw_set("color", Value::Vector(Vector::new(e.look.color[0], e.look.color[1], e.look.color[2])))?;
@@ -473,8 +475,8 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     }
 
     table("world", vec![
-        ("spawn", f!(core, move |_, (name, opts): (String, Option<Table>)| {
-            let mut s = Spawn { shape: shape(&name)?, ..Default::default() };
+        ("spawn", f!(core, move |_, (name, opts, parent): (String, Option<Table>, Option<u32>)| {
+            let mut s = Spawn { parent, shape: shape(&name)?, ..Default::default() };
             if let Some(t) = opts {
                 let o = options(&t, &ENTITY_KEYS[1..], "world.spawn")?;
                 apply(&o, &mut s.shape, &mut s.look, &mut s.pos, &mut s.rot, &mut s.size, &mut s.solid, &mut s.visible, &mut s.tag)?;
@@ -489,9 +491,15 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let o = options(&opts, ENTITY_KEYS, "world.set")?;
             let mut c = lock(&core);
             sim(&c, "world.set")?;
-            let mut result = Ok(());
-            c.world.update(id, |e| result = apply(&o, &mut e.shape, &mut e.look, &mut e.pos, &mut e.rot, &mut e.size, &mut e.solid, &mut e.visible, &mut e.tag).and_then(|_| apply_wire(&o, &mut e.wire))).map_err(rt)?;
-            result
+            c.world.try_update(id, |e| {
+                apply(&o, &mut e.shape, &mut e.look, &mut e.pos, &mut e.rot, &mut e.size, &mut e.solid, &mut e.visible, &mut e.tag)
+                    .and_then(|_| apply_wire(&o, &mut e.wire)).map_err(|err| err.to_string())
+            }).map_err(rt)
+        })),
+        ("set_parent", f!(core, move |_, (id, parent): (u32, Option<u32>)| {
+            let mut c = lock(&core);
+            sim(&c, "world.set_parent")?;
+            c.world.set_parent(id, parent).map_err(rt)
         })),
         ("place", f!(core, move |_, (id, pos, yaw): (u32, Value, Option<f32>)| {
             let p = vec3(&pos, "world.place position")?;
@@ -552,8 +560,8 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let b = e.bounds();
             let (radius, height) = (b.half.x.min(b.half.z), b.half.y * 2.0);
             let (center, vel, grounded) = c.world.move_body(b.center, v, dt, radius, height, &f);
-            let shift = center - b.center;
-            c.world.update(id, |e| e.pos += shift).map_err(rt)?;
+            let pos = e.pos + e.local_delta(center - b.center);
+            c.world.place(id, pos, None).map_err(rt)?;
             Ok((vector(vel), grounded))
         })),
     ])?;

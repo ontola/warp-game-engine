@@ -194,13 +194,9 @@ impl Guns {
             let visible = p.alive && (!self.tracking[i] || self.tracked[i].is_some());
             self.muzzles[i] = visible.then(|| [fp.transform_point3(rig.build.muzzle), tp.transform_point3(rig.build.muzzle)]);
             for (first, xf, drop) in [(self.fp[i], fp, mag_drop), (self.tp[i], tp, 0.0)] {
-                let mut n = 0;
-                if visible {
-                    for (part, local) in rig.pose_at(drop, alpha).take(self.parts) {
-                        scene.update_instance(first + n, self.mesh(part.shape, part.mat, i), xf * local);
-                        n += 1;
-                    }
-                }
+                let children = rig.pose_at(drop, alpha).take(if visible { self.parts } else { 0 })
+                    .map(|(part, local)| (self.mesh(part.shape, part.mat, i), local));
+                let n = scene.update_children(first, xf, children);
                 empty(scene, first, n, self.parts);
             }
         }

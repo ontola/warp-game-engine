@@ -376,15 +376,10 @@ impl View {
             // The staff's head casts no shadow: its prongs sit right by the
             // gem's light and threw big claws over the floor (Joep).
             if let Some(kit) = self.kits.kit("wizard") {
-                let staff = kit.named.get("staff").copied();
+                let staff = kit.tree.node("staff");
                 for p in &mut pieces {
-                    let mut n = Some(p.node);
-                    while let Some(j) = n {
-                        if Some(j) == staff {
-                            p.shadow = false;
-                            break;
-                        }
-                        n = kit.nodes[j].parent;
+                    if kit.tree.ancestors(p.node).any(|j| Some(j) == staff) {
+                        p.shadow = false;
                     }
                 }
             }
@@ -507,7 +502,8 @@ impl View {
             let len = &mut self.blade_len[i];
             *len += (want - *len) * (1.0 - (-10.0 * dt).exp());
             let stretch = *len / STEEL_LEN;
-            let steel = kit.named.get("steel").copied();
+            let gem = kit.tree.node("gem");
+            let steel = kit.tree.node("steel");
             let from = out.len();
             let mut steel_xf = None;
             for (j, p) in pieces.iter().enumerate() {
@@ -517,6 +513,7 @@ impl View {
                     xf *= Mat4::from_scale(Vec3::new(1.0, stretch, 1.0));
                     steel_xf = Some(xf);
                 }
+                if Some(p.node) == gem { gems[i] = Some(xf.w_axis.truncate()); }
                 out.push((p.mesh, look::affine(xf), p.shadow));
             }
             // The element runs off the enchanted blade along its whole
@@ -548,13 +545,10 @@ impl View {
                 self.fx.spurt(a.pos + Vec3::Y * 1.1, a.hurt_dir);
             }
             self.wizard_hurt[i] = a.hurt_t;
-            if let Some(&g) = kit.named.get("gem") {
-                let piece = pieces.iter().position(|p| p.node == g).and_then(|j| out.get(from + j));
-                gems[i] = Some(piece.map(|o| Vec3::from(o.1.translation)).unwrap_or_else(|| (at * anim::posed(kit, &pose, g)).w_axis.truncate()));
+            if gems[i].is_none() {
+                gems[i] = gem.map(|g| (at * anim::posed(kit, &pose, g)).w_axis.truncate());
             }
         }
-        self.marks.gems = gems.clone();
-        self.shrines.gems = gems;
         let mut seen = Vec::new();
         let enemy_alpha = self.enemy_dolls.step(dt);
         for &id in w.enemies.iter().chain(&w.corpses) {
@@ -709,7 +703,7 @@ impl View {
         for d in &self.debris {
             d.push(&mut out);
         }
-        self.shrines.update(w, time, &mut out);
+        self.shrines.update(w, &gems, time, &mut out);
         let first = self.pool_first;
         for i in 0..POOL {
             let slot = first + i;
@@ -757,7 +751,7 @@ impl View {
         }
         self.follow(w, dt);
         self.fx.update(w, dt);
-        self.marks.update(w, self.fx.time, dt);
+        self.marks.update(w, &gems, self.fx.time, dt);
         self.marks.torches(&w.level.torches, self.camera.target, self.fx.time);
         let shake = self.fx.shake_offset();
         self.camera.pos += shake;

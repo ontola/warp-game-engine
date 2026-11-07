@@ -97,6 +97,10 @@ pub struct Entity {
     pub tag: String,
     /// Shape::Wire: its points and edges.
     pub wire: Option<Wire>,
+    parent: Option<u32>,
+    children: Vec<u32>,
+    // The parent's resolved rotation and position. Size is a mesh dimension in metres.
+    frame: Option<(Quat, Vec3)>,
     slot: Option<SlotId>,
     /// A wire's slots, one per edge.
     edge_slots: Vec<SlotId>,
@@ -109,18 +113,41 @@ impl Entity {
     /// The collision box: rotated about Y only (pitch and roll are ignored).
     pub fn bounds(&self) -> YawBox {
         let (offset, half) = self.local;
-        let center = self.pos + Quat::from_rotation_y(self.rot.y) * (offset * self.size);
-        YawBox { center, half: half * self.size.abs(), yaw: self.rot.y }
+        let (pos, yaw) = match self.frame {
+            None => (self.pos, self.rot.y),
+            Some(_) => {
+                let (rot, pos) = self.world_pose();
+                (pos, rot.to_euler(EulerRot::YXZ).0)
+            }
+        };
+        let center = pos + Quat::from_rotation_y(yaw) * (offset * self.size);
+        YawBox { center, half: half * self.size.abs(), yaw }
+    }
+
+    pub fn parent(&self) -> Option<u32> { self.parent }
+
+    pub fn world_pose(&self) -> (Quat, Vec3) {
+        let local = Quat::from_euler(EulerRot::YXZ, self.rot.y, self.rot.x, self.rot.z);
+        match self.frame {
+            Some((rot, pos)) => ((rot * local).normalize(), pos + rot * self.pos),
+            None => (local, self.pos),
+        }
+    }
+
+    pub fn local_delta(&self, world: Vec3) -> Vec3 {
+        self.frame.map_or(world, |(rot, _)| rot.conjugate() * world)
     }
 
     fn transform(&self) -> Affine3A {
-        Affine3A::from_scale_rotation_translation(self.size, Quat::from_euler(EulerRot::YXZ, self.rot.y, self.rot.x, self.rot.z), self.pos)
+        let (rotation, position) = self.world_pose();
+        Affine3A::from_scale_rotation_translation(self.size, rotation, position)
     }
 }
 
 /// What `world.spawn` asks for.
 #[derive(Clone, Debug)]
 pub struct Spawn {
+    pub parent: Option<u32>,
     pub shape: Shape,
     pub look: Look,
     pub pos: Vec3,
@@ -133,7 +160,7 @@ pub struct Spawn {
 }
 
 impl Default for Spawn {
-    fn default() -> Self { Spawn { shape: Shape::Cube, look: Look::default(), pos: Vec3::ZERO, rot: Vec3::ZERO, size: Vec3::ONE, solid: true, visible: true, tag: String::new(), wire: None } }
+    fn default() -> Self { Spawn { parent: None, shape: Shape::Cube, look: Look::default(), pos: Vec3::ZERO, rot: Vec3::ZERO, size: Vec3::ONE, solid: true, visible: true, tag: String::new(), wire: None } }
 }
 
 /// Put an entity's slots where it is: one for a shape, one per edge for a
@@ -321,12 +348,15 @@ impl World {
     pub fn spawn(&mut self, s: Spawn) -> Result<u32, String> {
         if self.entities.len() >= self.slots.capacity() { return Err(format!("too many entities: {} at most (max_entities in game.toml)", self.slots.capacity())); }
         if s.shape == Shape::Wire && s.wire.is_none() { return Err("wire: needs points and edges".into()); }
+        let frame = s.parent.map(|id| self.entities.get(&id).map(Entity::world_pose)
+            .ok_or_else(|| format!("no parent entity {id}"))).transpose()?;
         let (mesh, mut local) = self.mesh(&s.shape, &s.look)?;
         if let Some(w) = &s.wire { local = w.bounds(); }
         let id = self.next;
         self.next += 1;
-        let mut e = Entity { shape: s.shape, look: s.look, pos: s.pos, rot: s.rot, size: s.size, solid: s.solid, visible: s.visible, tag: s.tag, wire: s.wire, slot: None, edge_slots: Vec::new(), mesh, local };
+        let mut e = Entity { parent: s.parent, frame, children: Vec::new(), shape: s.shape, look: s.look, pos: s.pos, rot: s.rot, size: s.size, solid: s.solid, visible: s.visible, tag: s.tag, wire: s.wire, slot: None, edge_slots: Vec::new(), mesh, local };
         show(&mut self.slots, &mut self.scene, &mut e);
+        if let Some(parent) = s.parent { self.entities.get_mut(&parent).unwrap().children.push(id); }
         self.entities.insert(id, e);
         Ok(id)
     }
@@ -335,30 +365,76 @@ impl World {
 
     /// Change an entity; `f` edits it, then its mesh and slot follow.
     pub fn update(&mut self, id: u32, f: impl FnOnce(&mut Entity)) -> Result<(), String> {
-        let mut e = self.entities.remove(&id).ok_or_else(|| format!("no entity {id} (removed, or never spawned)"))?;
-        let (shape, look) = (e.shape.clone(), e.look);
-        f(&mut e);
-        if (e.shape == Shape::Wire) != (shape == Shape::Wire) {
-            e.shape = shape;
-            self.entities.insert(id, e);
+        self.try_update(id, |e| { f(e); Ok(()) })
+    }
+
+    /// Stage fallible edits before publishing a changed transform to its children.
+    pub fn try_update(&mut self, id: u32, f: impl FnOnce(&mut Entity) -> Result<(), String>) -> Result<(), String> {
+        let old = self.entities.get(&id).ok_or_else(|| format!("no entity {id} (removed, or never spawned)"))?;
+        let mut e = old.clone();
+        f(&mut e)?;
+        if (e.shape == Shape::Wire) != (old.shape == Shape::Wire) {
             return Err("shape: a wire stays a wire, and other shapes cannot become one (spawn a new entity)".into());
         }
-        if e.shape != shape || e.look != look {
-            match self.mesh(&e.shape, &e.look) {
-                Ok((mesh, local)) => { e.mesh = mesh; e.local = local; }
-                Err(err) => { e.shape = shape; e.look = look; self.entities.insert(id, e); return Err(err); }
-            }
+        let moved_children = !e.children.is_empty() && (e.pos != old.pos || e.rot != old.rot);
+        if e.shape != old.shape || e.look != old.look {
+            (e.mesh, e.local) = self.mesh(&e.shape, &e.look)?;
         }
         if let Some(w) = &e.wire { e.local = w.bounds(); }
         show(&mut self.slots, &mut self.scene, &mut e);
         self.entities.insert(id, e);
+        if moved_children { self.refresh_children(id); }
         Ok(())
     }
 
+    /// Keep local position and rotation when changing parent. Pass None to detach.
+    pub fn set_parent(&mut self, id: u32, parent: Option<u32>) -> Result<(), String> {
+        let old = self.entities.get(&id).ok_or_else(|| format!("no entity {id}"))?.parent;
+        if old == parent { return Ok(()); }
+        let frame = if let Some(p) = parent {
+            let e = self.entities.get(&p).ok_or_else(|| format!("no parent entity {p}"))?;
+            if kern::parenting::ancestors(p, |i| self.entities[&i].parent).any(|i| i == id) {
+                return Err("an entity cannot parent itself or an ancestor".into());
+            }
+            Some(e.world_pose())
+        } else { None };
+        if let Some(p) = old { self.entities.get_mut(&p).unwrap().children.retain(|&i| i != id); }
+        if let Some(p) = parent { self.entities.get_mut(&p).unwrap().children.push(id); }
+        let e = self.entities.get_mut(&id).unwrap();
+        e.parent = parent;
+        e.frame = frame;
+        show(&mut self.slots, &mut self.scene, e);
+        if !e.children.is_empty() { self.refresh_children(id); }
+        Ok(())
+    }
+
+    fn refresh_children(&mut self, id: u32) {
+        let mut pending = vec![id];
+        while let Some(i) = pending.pop() {
+            let e = &self.entities[&i];
+            if e.children.is_empty() { continue; }
+            let frame = e.world_pose();
+            let start = pending.len();
+            pending.extend_from_slice(&e.children);
+            for child in &pending[start..] {
+                let e = self.entities.get_mut(child).unwrap();
+                e.frame = Some(frame);
+                show(&mut self.slots, &mut self.scene, e);
+            }
+        }
+    }
+
     pub fn remove(&mut self, id: u32) -> bool {
-        let Some(e) = self.entities.remove(&id) else { return false };
-        if let Some(slot) = e.slot { self.slots.remove(&mut self.scene, slot); }
-        for slot in e.edge_slots { self.slots.remove(&mut self.scene, slot); }
+        let Some(root) = self.entities.remove(&id) else { return false };
+        if let Some(p) = root.parent { self.entities.get_mut(&p).unwrap().children.retain(|&i| i != id); }
+        let mut pending = Vec::new();
+        let mut next = Some(root);
+        while let Some(e) = next {
+            pending.extend(e.children);
+            if let Some(slot) = e.slot { self.slots.remove(&mut self.scene, slot); }
+            for slot in e.edge_slots { self.slots.remove(&mut self.scene, slot); }
+            next = pending.pop().and_then(|i| self.entities.remove(&i));
+        }
         true
     }
 
@@ -383,6 +459,7 @@ impl World {
         f(e);
         if e.wire.is_some() { show(&mut self.slots, &mut self.scene, e); }
         else if let Some(slot) = e.slot { let (mesh, t) = (e.mesh, e.transform()); self.slots.set(&mut self.scene, slot, mesh, t); }
+        if !e.children.is_empty() { self.refresh_children(id); }
         Ok(())
     }
 

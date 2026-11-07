@@ -646,6 +646,18 @@ impl Scene {
         self.instances[index] = Self::instance(&self.meshes[mesh], xf, flags);
     }
 
+    /// Pose consecutive, already allocated child instances under a common parent.
+    /// Each pair supplies a mesh and its local transform. Returns the number written.
+    /// The caller owns the block and must supply at most its reserved length.
+    pub fn update_children(&mut self, first: usize, parent: Affine3A, children: impl IntoIterator<Item = (usize, Affine3A)>) -> usize {
+        let mut written = 0;
+        for (mesh, local) in children {
+            self.update_instance(first + written, mesh, parent * local);
+            written += 1;
+        }
+        written
+    }
+
     fn instance(m: &MeshRef, xf: Affine3A, flags: u32) -> GpuInstance {
         let c = xf.transform_point3(Vec3::from_slice(&m.sphere[..3]));
         let cols = xf.matrix3;

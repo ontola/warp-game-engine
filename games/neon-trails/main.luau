@@ -87,8 +87,13 @@ local function show_bike(r)
 	local pos = glide(r)
 	local dx, dy = r.next_dx or r.dx, r.next_dy or r.dy
 	local yaw = math.atan2(-dx, -dy)
+	-- First pose also adopts a shell left by a live reload of an older round.
+	if r.shell then
+		world.set_parent(r.shell, r.head)
+		world.set(r.shell, {pos = vector.create(0, -0.03, 0), rot = vector.create(0, 0, 0)})
+		r.shell = nil
+	end
 	world.place(r.head, pos + vector.create(0, 0.08, 0), yaw)
-	world.place(r.shell, pos + vector.create(0, 0.05, 0), yaw)
 	local pts, edges = trail_points(r)
 	world.set(r.glow, { points = pts, edges = edges })
 	world.set(r.core, { points = pts, edges = edges })
@@ -124,7 +129,7 @@ local function new_round()
 		}
 		table.insert(r.corners, { r.x, r.y })
 		r.head = world.spawn("cube", { pos = at(r.x, r.y, TRAIL_Y), size = vector.create(0.22, 0.2, 0.7), color = "#ffffff", emissive = CORE_GLOW, solid = false, tag = "head" })
-		r.shell = world.spawn("cube", { pos = at(r.x, r.y, TRAIL_Y), size = vector.create(0.42, 0.28, 0.95), color = r.color, emissive = 0.06, solid = false, tag = "head" })
+		r.shell = world.spawn("cube", { pos = vector.create(0, 0, 0), size = vector.create(0.42, 0.28, 0.95), color = r.color, emissive = 0.06, solid = false, tag = "head" }, r.head)
 		local pts, edges = trail_points(r)
 		r.glow = world.spawn("wire", { points = pts, edges = edges, width = GLOW_WIDTH, color = r.color, emissive = LINE_GLOW, solid = false, tag = "trail" })
 		r.core = world.spawn("wire", { points = pts, edges = edges, width = CORE_WIDTH, color = "#ffffff", emissive = CORE_GLOW, solid = false, tag = "trail" })
@@ -223,8 +228,8 @@ end
 local function crash(r)
 	r.alive = false
 	world.remove(r.head)
-	if r.shell then
-		world.remove(r.shell)
+	if r.shell then world.remove(r.shell) end
+	if r.glow then
 		-- The wall goes dark: the glow dims and the white core goes out.
 		world.set(r.glow, { color = dim(r.color), emissive = 0.004 })
 		world.set(r.core, { visible = false })
