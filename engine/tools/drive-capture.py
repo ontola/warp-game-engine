@@ -151,7 +151,7 @@ def compare(args):
     for left, right in zip(a["samples"], b["samples"], strict=True):
         if left["tick"] != right["tick"]:
             raise ValueError("tick mismatch between replay traces")
-        if diff is None and left["digest"] != right["digest"]:
+        if diff is None and left != right:
             diff = {"tick": left["tick"], "baseline": left, "candidate": right}
     summary = {"baseline": ref, "baseline_matches_recording": a["matches_capture"],
                "candidate_matches_recording": b["matches_capture"], "first_difference_in_window": diff,
