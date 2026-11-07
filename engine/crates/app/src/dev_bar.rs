@@ -38,7 +38,6 @@ impl DevBar {
         game: &dyn Game,
         stats: bool,
         graphics: bool,
-        scene_page: bool,
     ) {
         hud.begin_foreground();
         self.buttons.clear();
@@ -52,9 +51,6 @@ impl DevBar {
             let n = index as u8 + 1;
             let (name, on) = match n {
                 1 => ("Warp Dev Mode", true),
-                12 if game.scene_tuning().is_some() => {
-                    (game.scene_tuning().unwrap().title, scene_page)
-                }
                 2 => ("Graphics", graphics),
                 4 => ("Screenshot", false),
                 _ => match game.editor_shortcut(n) {

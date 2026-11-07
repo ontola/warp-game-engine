@@ -187,6 +187,9 @@ impl WindowStack {
         let p=[x/size[0].max(1) as f32,y/size[1].max(1) as f32];
         self.windows.iter().rev().find(|(_,rect)| EditorButton(*rect).contains(p)).map(|(id,_)|*id)
     }
+    pub fn frontmost_of(&self, a:u64, b:u64) -> Option<u64> {
+        self.windows.iter().rev().map(|(id,_)|*id).find(|id|*id==a || *id==b)
+    }
     pub fn raise(&mut self,id:u64) {
         if let Some(i)=self.windows.iter().position(|(known,_)|*known==id) {
             self.windows[i..].rotate_left(1);
