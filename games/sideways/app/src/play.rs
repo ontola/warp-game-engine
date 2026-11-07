@@ -1669,7 +1669,7 @@ impl ApplicationHandler for App {
             && let Some(action) = app::engine_shortcut(code) {
             if event.state == ElementState::Pressed && !event.repeat {
                 match action {
-                    app::EngineShortcut::DebugMenu => {
+                    app::EngineShortcut::AllMenus | app::EngineShortcut::DebugMenu => {
                         let before = self.debug.ui.open;
                         self.debug.key(DebugKey::Toggle, [self.args.size.0, self.args.size.1]);
                         self.sync_debug_focus(before);

@@ -1310,6 +1310,8 @@ impl app::Game for Gg {
     fn quit(&self) -> bool { self.quit }
 
     /// F3: the debug overlay.
+    fn editor_windows_open(&self) -> bool { self.replay.as_ref().map_or(self.debug.open, |r| r.editor_windows_open()) }
+    fn set_editor_windows_open(&mut self, open: bool) { if let Some(r) = &mut self.replay { r.set_editor_windows_open(open); } else { self.debug.set_open(open); } }
     fn function_key(&mut self, n: u8) -> bool {
         if n == 9 {
             if self.close_replay() { return true; }

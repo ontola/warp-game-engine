@@ -19,7 +19,9 @@ The shared viewport owns scaled logical hit regions, joint picking, drag control
 
 ## GUI conventions
 
-Editor windows display their toggle key in the title bar. Drag the title to move, drag the bottom-right grip to resize, and click x to close. F2 opens Joints, F4 opens Pose controls, and F10 opens Warp editor, including every game-owned settings page. F3 opens the engine profiler or Growing Guns match tools, depending on the game. F9 opens the Growing Guns replay window. Pose windows keep their layout when toggled during a preview. The profiler releases the mouse and supports wheel scrolling.
+F1 closes all editor windows if any are visible and opens the available windows together from a clean screen. Each header shows the F1 shortcut. Debug text uses one viewport-relative size across panels. Game hosts expose their panels through `Game::editor_windows_open` and `Game::set_editor_windows_open`.
+
+Editor windows display their toggle key in the title bar. Drag the title to move, drag the bottom-right grip to resize, and click x to close. F2 opens the Pose editor with joint and pose controls, and F10 opens Warp editor, including every game-owned settings page. F3 opens the engine profiler or Growing Guns match tools, depending on the game. F9 opens the Growing Guns replay window. Pose windows keep their layout when toggled during a preview. The profiler releases the mouse and supports wheel scrolling.
 
 Use the existing F10 controls for settings, choices and commands. Use direct viewport interaction for spatial edits. In the pose viewport, left-drag moves a joint in the view plane, right-drag rotates a joint or orbits empty space, middle-drag pans and the wheel zooms. F2 toggles bones. Reserve F10–F12 for shell controls.
 
