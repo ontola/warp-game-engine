@@ -31,6 +31,8 @@ const USAGE: &str = "warp: run a game made of Luau scripts, synth patches and as
       headless in real time with live control (default port 7878)
   warp check DIR [--ticks N]
       load, init and tick without a GPU; print errors and the state
+  --storage-dir DIR (run, script, serve, check)
+      use this local save directory; headless commands otherwise use fresh in-memory storage
   warp audio render FILE.luau [...] | check FILES | units
       render and measure sound patches (as warp-audio)
   warp compare F12.json [--baseline main] [--out DIR] [--state-only]
@@ -118,6 +120,20 @@ fn bundled() -> Option<PathBuf> {
     is_game(&game).then_some(game)
 }
 
+fn load_game(dir: &Path, args: &[String], sound: Option<audio::synth::SoundSender>, interactive: bool) -> Result<LuaGame, String> {
+    use warp::storage::Location;
+    let path = value(args, "--storage-dir");
+    if args.iter().any(|s| s == "--storage-dir") && path.as_ref().is_none_or(|s| s.is_empty() || s.starts_with("--")) {
+        return Err("--storage-dir requires a directory".into());
+    }
+    let location = match &path {
+        Some(dir) => Location::Directory(Path::new(dir)),
+        None if interactive => Location::User,
+        None => Location::Memory,
+    };
+    LuaGame::load_with_storage(dir, &overrides(args)?, sound, location)
+}
+
 fn play(args: &[String]) -> Result<(), String> {
     println!("{} warp: starting", app::manners::stamp());
     let dir = dir(args)?;
@@ -131,7 +147,7 @@ fn play(args: &[String]) -> Result<(), String> {
     });
     if let Err(e) = &speaker { eprintln!("sound off: {e}"); }
     println!("{} warp: sound open", app::manners::stamp());
-    let mut game = LuaGame::load(&dir, &overrides(args)?, sender)?;
+    let mut game = load_game(&dir, args, sender, true)?;
     if game.connect_party() { println!("{} warp: connected to the party host", app::manners::stamp()); }
     if let Some(cfg) = live::Config::from_args(&game.live_name(), args)? { game.start_live(cfg)?; }
     else if game.party.is_some() && std::env::var("WARP_LIVE").as_deref() != Ok("0") {
@@ -156,7 +172,7 @@ fn script(args: &[String]) -> Result<(), String> {
     let file = args.get(2).filter(|a| !a.starts_with("--")).ok_or("warp script DIR FILE.json --out OUT")?;
     let out = value(args, "--out").ok_or("warp script: --out OUT (a folder for frames and state dumps)")?;
     let (tx, mix) = warp::sounds::offline();
-    let mut game = LuaGame::load(&dir, &overrides(args)?, Some(tx))?;
+    let mut game = load_game(&dir, args, Some(tx), false)?;
     let gpu = render::Gpu::new()?;
     let hz = game.cfg.tick_rate;
     let failed = app::script::run_file(&mut game, &gpu, hz, Path::new(file), Path::new(&out), Some(Box::new(mix)))?;
@@ -169,7 +185,7 @@ fn serve(args: &[String]) -> Result<(), String> {
     // Sound goes into a mixer that is never rendered: plays and handles work, silently.
     let (tx, mix) = warp::sounds::offline();
     drop(mix);
-    let mut game = LuaGame::load(&dir, &overrides(args)?, Some(tx))?;
+    let mut game = load_game(&dir, args, Some(tx), false)?;
     let mut with_live: Vec<String> = args.to_vec();
     if !with_live.iter().any(|a| a == "--live") { with_live.push("--live".into()); }
     let cfg = live::Config::from_args(&game.live_name(), &with_live)?.expect("--live is set");
@@ -181,7 +197,7 @@ fn serve(args: &[String]) -> Result<(), String> {
 
 fn check(args: &[String]) -> Result<(), String> {
     let dir = dir(args)?;
-    let mut game = LuaGame::load(&dir, &overrides(args)?, None)?;
+    let mut game = load_game(&dir, args, None, false)?;
     let ticks: u32 = parse(args, "--ticks")?.unwrap_or(120);
     let players = app::Game::local_players(&game);
     for _ in 0..ticks { app::Game::tick(&mut game, &vec![app::Controls::default(); players]); }

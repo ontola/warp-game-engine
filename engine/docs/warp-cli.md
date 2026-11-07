@@ -101,6 +101,7 @@ my-game/
 | --- | --- | --- |
 | `title` | the folder name | The window title. |
 | `tick_rate` | 60 | Ticks per second; `tick(dt, input)` gets `dt = 1 / tick_rate`. |
+| `storage` | false | Enable [versioned local saves, settings and profiles](storage.md). Requires an explicit game ID and `storage.json`. |
 | `id` | the folder name | The Gamepad Party game id (lowercase letters, digits, dashes). A host's `GAMENIGHT_GAME_ID` wins. |
 | `players` | 1 | People without a party host, 1 to 4, in split screen. `--players` overrides it. |
 | `split` | true | One split-screen view per person; false gives one shared view (every `camera.set` moves that camera), as in an arena game. |

@@ -243,3 +243,14 @@ declare game: {
 
 -- Per module, kept across reloads; main.luau's is the game's JSON state.
 declare state: { [any]: any }
+
+
+-- Versioned local JSON documents. Enable storage in game.toml and declare the
+-- schema versions in storage.json. Use revision 0 for an unused slot.
+export type StorageKind = "save" | "settings" | "profile"
+declare storage: {
+    read: (kind: StorageKind, slot: string) -> {version: number, revision: number, data: any}?,
+    write: (kind: StorageKind, slot: string, expectedRevision: number, data: any) -> number,
+    array: () -> {any},
+    null: any,
+}

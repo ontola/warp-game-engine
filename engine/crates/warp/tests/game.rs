@@ -634,3 +634,33 @@ fn nested_local_libraries_reload_their_consumers_and_keep_the_last_good_version(
     assert_eq!(state(&g)["state"]["n"], 35);
     assert_eq!(state(&g)["state"]["reloads"], 2);
 }
+
+#[test]
+fn save_slots_survive_restart_migration_conflicts_and_aborted_writes() {
+    use warp::storage::Location;
+    let dir = folder("storage-game");
+    let user = folder("storage-user");
+    let load = || LuaGame::load_with_storage(&dir, &Overrides::default(), None, Location::Directory(&user)).unwrap();
+    write(&dir.join("main.luau"), "return {}");
+    write(&dir.join("game.toml"), "storage=true\nid='storage-test'");
+    let schema = dir.join("storage.json");
+    write(&schema, r#"{"save":[{"type":"integer"}],"settings":[{"type":"object"}],"profile":[{"type":"object"}]}"#);
+    let mut old = load();
+    old.command_line("lua assert(storage.read('save','one') == nil); assert(storage.write('save','one',0,3) == 1)").unwrap();
+    old.command_line("lua storage.write('settings','local',0,{xs=storage.array(),x=storage.null}); local d=storage.read('settings','local').data; assert(d.x==storage.null and #d.xs==0)").unwrap();
+    old.command_line("lua assert(storage.write('profile','one',0,{name='Ana'})==1); assert(storage.read('profile','one').data.name=='Ana'); assert(storage.read('save','one').data==3)").unwrap();
+    write(&schema, r#"{"save":[{"type":"integer"},{"type":"object","required":["points"],"properties":{"points":{"type":"integer","minimum":0}}}]}"#);
+    let mut game = load();
+    game.command_line("lua local d=storage.read('save','one'); assert(d.version==1 and d.data==3); assert(not pcall(storage.write,'save','one',d.revision,{points=-1})); assert(storage.write('save','one',d.revision,{points=d.data})==2)").unwrap();
+    old.command_line("lua assert(not pcall(storage.write,'save','one',1,4)); assert(not pcall(storage.write,'save','one',2,4))").unwrap();
+    let db = rusqlite::Connection::open(user.join("storage.sqlite3")).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_update AFTER UPDATE ON documents BEGIN SELECT RAISE(ABORT,'injected write failure'); END;").unwrap();
+    game.command_line("lua assert(not pcall(storage.write,'save','one',2,{points=7}))").unwrap();
+    drop(game);
+    write(&dir.join("game.toml"), "storage=true\nid='other-game'");
+    load().command_line("lua assert(storage.read('save','one')==nil)").unwrap();
+    write(&dir.join("game.toml"), "storage=true\nid='storage-test'");
+    load().command_line("lua local d=storage.read('save','one'); assert(d.version==2 and d.revision==2 and d.data.points==3)").unwrap();
+    LuaGame::load(&dir, &Overrides::default(), None).unwrap()
+        .command_line("lua assert(storage.read('save','one')==nil)").unwrap();
+}

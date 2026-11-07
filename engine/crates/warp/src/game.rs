@@ -102,6 +102,10 @@ impl LuaGame {
     /// `sound` is where sounds go (the speakers, an offline mixer, or None
     /// for silence).
     pub fn load(path: &Path, over: &Overrides, sound: Option<SoundSender>) -> Result<Self, String> {
+        Self::load_with_storage(path, over, sound, crate::storage::Location::Memory)
+    }
+
+    pub fn load_with_storage(path: &Path, over: &Overrides, sound: Option<SoundSender>, location: crate::storage::Location<'_>) -> Result<Self, String> {
         // A folder whose only script is its game (`my-game/my-game.luau`).
         let found = if path.is_dir() { crate::config::one_file_in(path) } else { None };
         let path = found.as_deref().unwrap_or(path);
@@ -123,6 +127,7 @@ impl LuaGame {
         let mut bank = Bank::new(sounds_dir.is_dir().then_some(sounds_dir));
         let lines = bank.scan();
         let core: Shared = Arc::new(Mutex::new(Core {
+            storage: if cfg.storage { Some(crate::storage::Storage::open(dir, &cfg.id, location).map_err(|e| format!("storage: {e}"))?) } else { None },
             world: World::new(dir, cfg.max_entities),
             sounds: SoundOut::new(bank, sound),
             roster: Vec::new(),
