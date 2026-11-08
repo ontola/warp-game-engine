@@ -51,6 +51,14 @@ resolution, reconstruction mode, sample count and scene with a number.
   real GPU (a depth copy, a front-depth draw and an HDR copy per view with
   refracting glass), only the nearest refracting surface bends, no caustics
   or coloured shadows.
+- **GPU particles** (8 November): `render::gpu_particles` births, simulates
+  and draws tens of thousands of sparks, embers and dust on the GPU (compute
+  spawn and fixed-step simulation, heightfield ground collision, indirect
+  billboard draw after temporal reconstruction; [guide](gpu-particles.md)).
+  Growing Guns and Spellstorm blasts use it. **Opt-in** with
+  `KERN_GPU_PARTICLES=1`. **Open:** not timed on a real GPU yet (Mancave);
+  unsorted, so covering particles must stay faint; no shadows or local
+  lights on particles; not in the minimal forward renderer or the browser.
 - **Open:** fixed per-frame work for unused features; `frame.rs` still refers
   to Sideways features; new meshes or materials need a new renderer;
   animated pixels reject TAA history (no deformation motion vectors).
@@ -66,6 +74,11 @@ resolution, reconstruction mode, sample count and scene with a number.
   (step 2), [world overrides](world-overrides.md) (step 3, CPU only).
 - Ditches, streams and rivers keep their share of water at every LOD
   (`Sample::film`); ditches are also drawn per pixel up close.
+- [Water optics](water.md) (8 November): opt-in refraction (bed through
+  absorbing water, Fresnel, caustics) on top of the traced reflections
+  (`Lighting::water`, `KERN_WATER=1`, F10 Light menu). **Open:** checked on
+  lavapipe only; not timed or checked on the Mac or the RTX 5070 Ti before
+  it can become the default; water colour is not a style setting yet.
 - `terrain_fly --town` builds buildings (`GeometryCategory::Structures`) on
   zoned plots.
 - **Next:** step 4, hierarchical GPU placement (with a GPU id table for
