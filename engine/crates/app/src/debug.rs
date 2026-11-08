@@ -41,6 +41,7 @@ const HDR_OUTPUT: u32 = 34;
 const HDR_HEADROOM: u32 = 35;
 const AUTO_EXPOSURE: u32 = 36;
 const CLOUDS: u32 = 37;
+const WATER: u32 = 38;
 
 /// Render heights offered, tallest first; 0 is native.
 const HEIGHTS: [u32; 6] = [0, 2160, 1800, 1440, 1080, 720];
@@ -69,6 +70,8 @@ struct Settings {
     reflection: bool,
     /// None: the game's own choice.
     auto_exposure: Option<bool>,
+    /// Water optics (Lighting::water). None: the game's choice.
+    water: Option<bool>,
     /// None: the game's choice or `WARP_HDR`.
     hdr: Option<bool>,
     /// None: what the display reports (or `WARP_HDR_HEADROOM`).
@@ -78,7 +81,7 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings { options: DebugRenderOptions::default(), fog: true, clouds: true, taa: true, adaptive_quality: true, fps_target: None, lod_pixels: None, exposure: 0.0, render_height: None,
-            sun: 1.0, shadows: 1.0, near_shadows: true, contact: true, gi: true, reflection: true, auto_exposure: None, hdr: None, hdr_headroom: None }
+            sun: 1.0, shadows: 1.0, near_shadows: true, contact: true, gi: true, reflection: true, auto_exposure: None, water: None, hdr: None, hdr_headroom: None }
     }
 }
 
@@ -101,6 +104,8 @@ pub struct EngineDebug {
     pub last_gpu_ms: Option<f64>,
     /// The game's light had automatic exposure on (before this menu).
     game_auto_exposure: bool,
+    /// The game's light had water optics on (before this menu).
+    game_water: bool,
     /// The newest exposure and meter reading of view 0 (EV100).
     exposure: (Option<f32>, Option<f32>),
     display: DisplayStatus,
@@ -129,6 +134,7 @@ impl EngineDebug {
         toggle(CONTACT, LIGHT_MENU, "Contact occlusion", s.contact, "Small-scale darkening where surfaces meet.");
         toggle(GI, LIGHT_MENU, "Global illumination", s.gi, "Bounced light; off leaves sun and sky only.");
         toggle(REFLECTION, LIGHT_MENU, "Reflection occlusion", s.reflection, "Darkens sky reflections in creases.");
+        toggle(WATER, LIGHT_MENU, "Water optics", s.water.unwrap_or(self.game_water), "Terrain water: the bed seen through it, with absorption, Fresnel and caustics.");
         let auto_help = match self.exposure {
             (Some(ev), Some(metered)) => format!("Meters each view and adapts like an eye. Now EV {ev:.1}; the scene meters EV {metered:.1}."),
             _ => "Meters each view and adapts like an eye. Off: the game's fixed exposure.".into(),
@@ -234,6 +240,7 @@ impl EngineDebug {
                 GI => s.gi = value,
                 REFLECTION => s.reflection = value,
                 AUTO_EXPOSURE => s.auto_exposure = Some(value),
+                WATER => s.water = Some(value),
                 HDR_OUTPUT => s.hdr = Some(value),
                 _ => {}
             },
@@ -267,6 +274,8 @@ impl EngineDebug {
         let s = &self.s;
         if let Some(px) = s.lod_pixels { l.lod_pixels = px; }
         self.game_auto_exposure = l.auto_exposure.is_some();
+        self.game_water = l.water;
+        if let Some(on) = s.water { l.water = on; }
         match s.auto_exposure {
             Some(true) => { l.auto_exposure.get_or_insert_with(Default::default); }
             Some(false) => l.auto_exposure = None,
@@ -384,7 +393,7 @@ impl EngineDebug {
             "sun_scale": s.sun, "shadow_scale": s.shadows, "near_shadows": s.near_shadows, "contact_occlusion": s.contact, "gi": s.gi,
             "reflection_occlusion": s.reflection, "grass_distance": o.meadow_distance_scale, "grass_size": o.meadow_size_scale,
             "grass_count": o.meadow_density, "grass_lod_pixels": o.meadow_lod_pixels,
-            "auto_exposure": s.auto_exposure.unwrap_or(self.game_auto_exposure), "exposure_ev100": self.exposure.0, "metered_ev100": self.exposure.1,
+            "auto_exposure": s.auto_exposure.unwrap_or(self.game_auto_exposure), "water": s.water.unwrap_or(self.game_water), "exposure_ev100": self.exposure.0, "metered_ev100": self.exposure.1,
             "hdr_output": self.display.on, "hdr_headroom": self.display.headroom, "hdr_display": self.display.line,
             "gpu_pass_ms": self.passes.iter().map(|(n, ms)| (n.to_string(), serde_json::json!(ms))).collect::<serde_json::Map<_, _>>(),
         })

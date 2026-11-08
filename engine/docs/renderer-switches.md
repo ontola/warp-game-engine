@@ -88,6 +88,7 @@ note linked says why. They are candidates for removal from the code.
 | --- | --- | --- |
 | `KERN_GPU_PARTICLES` | GPU particle pools take emitters (sparks, embers, grit in Growing Guns and Spellstorm blasts). Opt-in until timed on a real GPU; read by `GpuParticles::new`, so a running game needs a restart | [GPU particles](gpu-particles.md) |
 | `KERN_INSTANCE_GROUPS`, `KERN_SUN_INSTANCE_GROUPS`, `KERN_HEADLIGHT_INSTANCE_GROUPS` | GPU hierarchy of spatial instance groups | [r45](log/instance-hierarchy-r45.md) |
+| `KERN_WATER` | Water optics on terrain water (the bed through refracting, absorbing water) as the `Lighting` default; read whenever a `Lighting` is made | [water](water.md) |
 | `KERN_CLUSTER_TRAVERSAL` | Top-down cluster traversal (`terrain_fly` turns it on unless set) | [r46](log/cluster-traversal-r46.md) |
 | `KERN_INSTANCE_BROADPHASE` | Compact colour-view instance selection | [broadphase](log/instance-broadphase.md) |
 | `KERN_STATIC_SUN_CACHE` | Static/dynamic split sun cache | [r45](log/static-sun-cache-r45.md) |
