@@ -140,6 +140,7 @@ pub mod crowd;
 pub mod motion;
 pub mod motion_blur;
 pub mod dlss;
+pub mod temporal_upscale;
 pub mod upscale;
 mod stability;
 mod far_sun;

@@ -2,6 +2,9 @@ struct MotionUniform {
     inverse_current: mat4x4<f32>, current: mat4x4<f32>, previous: mat4x4<f32>,
     camera: vec4<f32>, size: vec4<f32>, flags: vec4<u32>,
     grass: vec4<f32>,
+    // Skin table start (vec4s into previous_wind), cluster-vertex and
+    // triangle region starts (words into topology), skinned actor count.
+    skin: vec4<u32>,
 };
 struct Instance {
     r0: vec4<f32>, r1: vec4<f32>, r2: vec4<f32>, sphere: vec4<f32>,
@@ -23,7 +26,10 @@ fn previous_at(id: u32) -> Instance {
     return compose_member(owner, previous_instances[member_template(owner,id)]);
 }
 @group(0) @binding(3) var<storage,read> current_wind: array<vec4<f32>>;
-@group(0) @binding(4) var<storage,read> previous_wind: array<vec4<f32>>;
+// Previous wind per slot, then the skin table (count, then per actor:
+// owner, first vertex, vertex count, vec4 offset of its previous vertices),
+// then last frame's skinned vertices (two vec4s each, Vertex layout).
+@group(0) @binding(4) var<storage,read> previous_wind: array<vec4<u32>>;
 @group(0) @binding(5) var<storage,read> visible: array<vec2<u32>>;
 @group(0) @binding(6) var visibility: texture_2d<u32>;
 @group(0) @binding(7) var opaque_depth: texture_depth_2d;
@@ -35,6 +41,13 @@ fn previous_at(id: u32) -> Instance {
 @group(0) @binding(13) var voxel_reprojection: texture_2d<f32>;
 @group(0) @binding(14) var meadow_color: texture_2d<f32>;
 @group(0) @binding(15) var meadow_reprojection: texture_2d<f32>;
+struct Cluster {
+    cull: vec4<f32>, parent: vec4<f32>, own: vec4<f32>,
+    parent_error: f32, own_error: f32,
+    first_tri: u32, tri_count: u32, first_vert: u32, material: u32, depth: u32, pad: u32,
+};
+@group(0) @binding(16) var<storage,read> topology: array<u32>;
+@group(0) @binding(17) var<storage,read> clusters: array<Cluster>;
 struct MotionOut { @location(0) vector: vec2<f32>, @location(1) depth: f32, @location(2) bias: f32 };
 @vertex fn motion_vs(@builtin(vertex_index) index:u32)->@builtin(position) vec4<f32> {
     return vec4<f32>(array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0))[index],0.0,1.0);
@@ -51,14 +64,41 @@ fn deform(p:vec3<f32>,root_y:f32,shear:vec2<f32>)->vec3<f32> {return p+vec3<f32>
 // previous_instances contains those same rows from the last rendered frame.
 // A branch pivot moving in world space is motion, not recycled-slot identity.
 // Only LIVE_GRASS's camera-resident pool uses its root as the slot identity.
-fn previous_source_point(owner:u32,world:vec3<f32>)->vec4<f32> {
+// A skinned surface point: its barycentric position on the current skinned
+// triangle (object space), taken on the same triangle of last frame's
+// skinned vertices. Zero (reject history) when the triangle is unknown.
+fn previous_skinned_local(owner:u32,local:vec3<f32>,cluster:u32,tri:u32)->vec4<f32> {
+    let table=motion.skin.x;
+    var actor=vec4<u32>(0xffffffffu);
+    for (var i=0u;i<motion.skin.w;i++) {
+        let a=previous_wind[table+1u+i];
+        if a.x==owner {actor=a;break;}
+    }
+    if actor.x!=owner || cluster>=arrayLength(&clusters) {return vec4<f32>(0.0);}
+    let cl=clusters[cluster];
+    if tri>=cl.tri_count {return vec4<f32>(0.0);}
+    let packed=topology[motion.skin.z+cl.first_tri+tri];
+    var now:array<vec3<f32>,3>;var old:array<vec3<f32>,3>;
+    for (var k=0u;k<3u;k++) {
+        let v=topology[motion.skin.y+cl.first_vert+((packed>>(8u*k))&0xffu)];
+        if v<actor.y || v-actor.y>=actor.z {return vec4<f32>(0.0);}
+        now[k]=vec3<f32>(bitcast<f32>(topology[v*8u]),bitcast<f32>(topology[v*8u+1u]),bitcast<f32>(topology[v*8u+2u]));
+        old[k]=bitcast<vec4<f32>>(previous_wind[actor.w+(v-actor.y)*2u]).xyz;
+    }
+    let e1=now[1]-now[0];let e2=now[2]-now[0];let d=local-now[0];
+    let d00=dot(e1,e1);let d01=dot(e1,e2);let d11=dot(e2,e2);
+    let den=d00*d11-d01*d01;
+    if !(abs(den)>1e-24) {return vec4<f32>(0.0);}
+    let b1=(d11*dot(d,e1)-d01*dot(d,e2))/den;
+    let b2=(d00*dot(d,e2)-d01*dot(d,e1))/den;
+    return vec4<f32>(old[0]*(1.0-b1-b2)+old[1]*b1+old[2]*b2,1.0);
+}
+
+fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f32> {
     let slot=member_slot(owner);
     if slot>=arrayLength(&current_instances) || slot>=arrayLength(&previous_instances)
         || slot>=arrayLength(&current_wind) || slot>=arrayLength(&previous_wind) {return vec4<f32>(0.0);}
     let now=current_at(owner);let old=previous_at(owner);
-    // Skinned vertices change object-space shape. Rigid root reprojection
-    // cannot recover that deformation; reject history on this surface.
-    if (now.flags&64u)!=0u {return vec4<f32>(0.0);}
     if old.cluster_count==0u || now.first_cluster!=old.first_cluster || now.cluster_count!=old.cluster_count
         // Category provenance cannot change geometry or motion history.
         || ((now.flags^old.flags)&~(7u<<24u))!=0u
@@ -71,7 +111,14 @@ fn previous_source_point(owner:u32,world:vec3<f32>)->vec4<f32> {
     let determinant=dot(now.r0.xyz,co0);
     if !(abs(determinant)>1e-12 && abs(determinant)<1e20) {return vec4<f32>(0.0);}
     let local=(co0*rest.x+co1*rest.y+co2*rest.z)/determinant;
-    return vec4<f32>(deform(transform(old,local),old.r1.w,previous_wind[slot].xy),1.0);
+    // Skinned vertices change object-space shape: follow the triangle.
+    if (now.flags&64u)!=0u {
+        if cluster==0xffffffffu {return vec4<f32>(0.0);}
+        let before=previous_skinned_local(owner,local,cluster,tri);
+        if before.w==0.0 {return before;}
+        return vec4<f32>(transform(old,before.xyz),1.0);
+    }
+    return vec4<f32>(deform(transform(old,local),old.r1.w,bitcast<vec4<f32>>(previous_wind[slot]).xy),1.0);
 }
 
 @fragment fn motion_fs(@builtin(position) position:vec4<f32>)->MotionOut {
@@ -79,6 +126,8 @@ fn previous_source_point(owner:u32,world:vec3<f32>)->vec4<f32> {
     let ndc=vec2<f32>(position.x*motion.size.z*2.0-1.0,1.0-position.y*motion.size.w*2.0);
     var out:MotionOut;out.vector=vec2<f32>(0.0);out.depth=textureLoad(opaque_depth,pixel,0);out.bias=0.0;
     var owner=0xffffffffu;
+    // The opaque surface's cluster and triangle, while it owns the motion.
+    var cluster=0xffffffffu;var tri=0u;
     // A rasterized voxel (bit 31 of the visibility id, shade.wgsl
     // VOXEL_SURFACE): far trees whose wind is frozen, reprojected as still
     // world points.
@@ -89,7 +138,7 @@ fn previous_source_point(owner:u32,world:vec3<f32>)->vec4<f32> {
         let slot=id>>7u;
         if !voxel {
             if slot>=arrayLength(&visible) {out.bias=1.0;return out;}
-            owner=visible[slot].x;
+            owner=visible[slot].x;cluster=visible[slot].y;tri=id&127u;
         }
     }
     var grass=vec2<u32>(0u);var glass=vec2<u32>(0u);
@@ -106,11 +155,11 @@ fn previous_source_point(owner:u32,world:vec3<f32>)->vec4<f32> {
     out.bias=max(4.0*grass_alpha*(1.0-grass_alpha)*(1.0-meadow_alpha),4.0*glass_alpha*(1.0-glass_alpha));
     if grass_alpha*underlying_transmission>=0.5 {
         let d=bitcast<f32>(grass.y);
-        if d>=opaque && d<=1.0 {owner=(grass.x>>8u)-1u;out.depth=d;}
+        if d>=opaque && d<=1.0 {owner=(grass.x>>8u)-1u;cluster=0xffffffffu;out.depth=d;}
     }
     if glass_alpha>=0.5 {
         let d=bitcast<f32>(glass.y);
-        if d>=opaque && d<=1.0 {owner=(glass.x>>8u)-1u;out.depth=d;}
+        if d>=opaque && d<=1.0 {owner=(glass.x>>8u)-1u;cluster=0xffffffffu;out.depth=d;}
     }
     // Statistical distant grass has no tracked individual surface. Use its
     // optical centroid only when dominant and bias history by its coverage;
@@ -196,7 +245,7 @@ fn previous_source_point(owner:u32,world:vec3<f32>)->vec4<f32> {
         if !finite4(current) || abs(current.w)<1e-10 {out.bias=1.0;return out;}
         current=vec4<f32>(current.xyz/current.w,1.0);
         if voxel {previous=current;} else {
-            previous=previous_source_point(owner,current.xyz);
+            previous=previous_source_point(owner,current.xyz,cluster,tri);
             if previous.w==0.0 {out.bias=1.0;return out;}
         }
     }
