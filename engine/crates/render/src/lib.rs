@@ -139,6 +139,7 @@ pub mod fx;
 pub mod crowd;
 pub mod motion;
 pub mod motion_blur;
+pub mod depth_of_field;
 pub mod dlss;
 pub mod upscale;
 mod stability;

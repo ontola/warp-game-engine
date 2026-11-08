@@ -194,6 +194,47 @@ pub struct Viewer {
     crowd: Option<(audio::sfx::SfxSender, crate::crowd_sound::Samples)>,
     audio_running: bool,
     rewind_reuses: usize,
+    pub lens: Lens,
+}
+
+/// Photo-style depth of field for frame review (off by default): F toggles,
+/// right-click focuses on that point, Q / E open and close the aperture.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct Lens {
+    pub on: bool,
+    pub f_stop: f32,
+    /// Autofocus point as a fraction of the window, or `focus_m` if above zero.
+    pub focus: [f32; 2],
+    pub focus_m: f32,
+}
+impl Default for Lens {
+    fn default() -> Self { Self { on: false, f_stop: 2.8, focus: [0.5, 0.5], focus_m: 0.0 } }
+}
+const FILM_MM: f32 = 70.0;
+const STOPS: [f32; 9] = [1.4, 2.0, 2.8, 4.0, 5.6, 8.0, 11.0, 16.0, 22.0];
+impl Lens {
+    /// One full stop wider (negative) or narrower (positive).
+    fn stop(&mut self, by: isize) {
+        let i = STOPS.iter().position(|&f| f >= self.f_stop - 0.05).unwrap_or(STOPS.len() - 1);
+        self.f_stop = STOPS[(i as isize + by).clamp(0, STOPS.len() as isize - 1) as usize];
+    }
+    /// One lens per view. With several views each focuses on its own centre.
+    fn settings(&self, views: usize) -> Vec<render::depth_of_field::Settings> {
+        (0..views).map(|_| render::depth_of_field::Settings {
+            f_stop: if self.on { self.f_stop } else { 0.0 },
+            focus_m: self.focus_m,
+            focus_point: if views == 1 { self.focus } else { [0.5, 0.5] },
+            // The game's wide field of view on 24 mm film keeps nearly
+            // everything sharp; medium-format film gives a photo-mode look.
+            sensor_mm: FILM_MM,
+            ..Default::default()
+        }).collect()
+    }
+    fn label(&self) -> String {
+        if !self.on { return "F lens".into(); }
+        let focus = if self.focus_m > 0.0 { format!("{:.1} m", self.focus_m) } else { "right-click focus".into() };
+        format!("LENS f/{}  Q/E aperture  {focus}  F off", self.f_stop)
+    }
 }
 impl Viewer {
     fn layout(&self,size:[u32;2])->render::editor_window::WindowFrame {
@@ -211,7 +252,7 @@ impl Viewer {
         } else { Vec::new() };
         for m in &marks { tape.validate_mark(*m)?; }
         let target = marks.last().copied().unwrap_or(tape.mark);
-        Ok(Self { window: Default::default(), tape, path, game, current: None, target, paused: true, marks, message: None, overlay: true, exit: false, dragging: false, scrub_changed: None, clock: None, sounds: None, music: None, music_db: -9.0, crowd: None, audio_running: false, rewind_reuses: 0 })
+        Ok(Self { window: Default::default(), tape, path, game, current: None, target, paused: true, marks, message: None, overlay: true, exit: false, dragging: false, scrub_changed: None, clock: None, sounds: None, music: None, music_db: -9.0, crowd: None, audio_running: false, rewind_reuses: 0, lens: Lens::default() })
     }
     fn game(tape: &Tape) -> Result<Gg, String> {
         let first = tape.sample(0)?;
@@ -327,11 +368,19 @@ impl Game for Viewer {
         if c.pressed.has(Buttons::LEFT) { self.step(-1); }
         if c.pressed.has(Buttons::RIGHT) { self.step(1); }
         if c.pressed.has(Buttons::WEST) { let _ = self.bookmark(); }
+        if c.pressed.has(Buttons::NORTH) { self.lens.on = !self.lens.on; }
+        if c.pressed.has(Buttons::LEFT_SHOULDER) { self.lens.stop(-1); }
+        if c.pressed.has(Buttons::RIGHT_SHOULDER) { self.lens.stop(1); }
 
     }
     fn pointer(&mut self, p: Pointer, size: [u32; 2]) {
-        if !self.overlay {return;}
         let frame=self.layout(size);
+        // Right-click the scene (not the replay window) to focus the lens there.
+        if let Some([x, y]) = p.position.filter(|_| p.right_pressed)
+            && !(self.overlay && render::editor_style::EditorButton(frame.rect).contains([x, y])) {
+            self.lens = Lens { on: true, focus: [x / size[0].max(1) as f32, y / size[1].max(1) as f32], focus_m: 0.0, ..self.lens };
+        }
+        if !self.overlay {return;}
         if !self.dragging {
             match self.window.pointer(size,frame,[720.*frame.scale,150.*frame.scale],p.position,p.pressed,p.held) {
                 render::editor_window::WindowEvent::Close=>{self.exit=true;return;},
@@ -405,6 +454,7 @@ impl Game for Viewer {
         if self.paused && self.audio_running { self.silence(); }
         frame.alpha = if self.ready() { self.target.alpha } else { 1.0 };
         let mut draw = self.game.draw(frame)?;
+        if let Some(renderer) = frame.renderer() { renderer.set_depth_of_field(frame.gpu, &self.lens.settings(draw.cameras.len())); }
         frame.dt = dt;
         frame.alpha = alpha;
         if self.overlay {
@@ -423,7 +473,7 @@ impl Game for Viewer {
                 draw.hud.rect([bx+left * s, by+h - 88.0 * s, (right - left - 5.0) * s, 36.0 * s], [0.12, 0.18, 0.26, 1.0], clip);
                 Label::new(BODY, render::editor_style::font_size(draw.hud.size), [1.0; 4]).center().draw(&mut draw.hud, text, bx+(left + right - 5.0) * 0.5 * s, by+h - 69.0 * s, clip);
             }
-            Label::new(BODY, render::editor_style::font_size(draw.hud.size), [0.6, 0.72, 0.84, 1.0]).right().draw(&mut draw.hud, self.message.as_deref().unwrap_or("Drag timeline to seek   |   F11 / Esc closes replay"), bx+w - 32.0 * s, by+h - 44.0 * s, clip);
+            Label::new(BODY, render::editor_style::font_size(draw.hud.size), [0.6, 0.72, 0.84, 1.0]).right().draw(&mut draw.hud, self.message.as_deref().unwrap_or(&format!("Drag timeline to seek   |   {}   |   F11 / Esc closes replay", self.lens.label())), bx+w - 32.0 * s, by+h - 44.0 * s, clip);
             let bar = [bx+32.0 * s, by+h - 30.0 * s, w - 64.0 * s, 5.0 * s];
             draw.hud.rect(bar, [0.18, 0.23, 0.3, 1.0], clip);
             let x = |m: Mark| bar[0] + bar[2] * m.frame as f32 / (self.tape.len() - 1).max(1) as f32;
@@ -437,7 +487,7 @@ impl Game for Viewer {
     fn state(&self) -> Option<String> {
         let mut value: serde_json::Value = serde_json::from_str(&self.game.state()?).ok()?;
         value["replay"] = serde_json::json!({"frame": self.current, "target": self.target.frame, "alpha": self.target.alpha,
-            "paused": self.paused, "ready": self.ready(), "dragging": self.dragging, "rewind_reuses": self.rewind_reuses});
+            "paused": self.paused, "ready": self.ready(), "dragging": self.dragging, "rewind_reuses": self.rewind_reuses, "lens": self.lens});
         Some(value.to_string())
     }
     fn feedback_replay(&mut self, _path: &Path, _alpha: f32) -> Result<Option<serde_json::Value>, String> {
@@ -464,6 +514,15 @@ pub fn run(args: &Args) -> Result<(), String> {
     let mut viewer = Viewer::new(tape, path)?;
     if let Some(n) = args.value("--frame") {
         viewer.seek(Mark { frame: n.parse().map_err(|_| "--frame must be an integer")?, alpha: args.num("--alpha", 1.0) })?;
+    }
+    if let Some(f) = args.value("--lens") {
+        let f_stop: f32 = f.parse().map_err(|_| "--lens takes an f-number, such as 2.8")?;
+        let focus = match args.value("--focus") {
+            Some(v) => { let (x, y) = v.split_once(',').ok_or("--focus takes X,Y fractions, such as 0.5,0.4")?;
+                [x.parse().map_err(|_| "--focus X must be a number")?, y.parse().map_err(|_| "--focus Y must be a number")?] }
+            None => [0.5, 0.5],
+        };
+        viewer.lens = Lens { on: f_stop > 0.0, f_stop, focus, focus_m: args.num("--focus-m", 0.0) };
     }
     let (w, h) = args.size(default_size);
     if w == 0 || h == 0 || w > 8192 || h > 8192 { return Err("Size must be between 1 and 8192".into()); }
@@ -608,6 +667,53 @@ mod tests {
         let pixels = a.chunks_exact(4).zip(b.chunks_exact(4)).filter(|(a, b)| a != b).count();
         let error: usize = a.iter().zip(b).map(|(a, b)| a.abs_diff(*b) as usize).sum();
         assert!(pixels <= 24 && error <= 256, "{label}: {pixels} pixels differ, total channel error {error}");
+    }
+
+    #[test]
+    fn lens_stops_and_settings() {
+        let mut lens = Lens::default();
+        assert!(lens.settings(1).iter().all(|s| !s.active()), "off by default");
+        lens.on = true;
+        lens.stop(-1); assert_eq!(lens.f_stop, 2.0);
+        for _ in 0..20 { lens.stop(1); }
+        assert_eq!(lens.f_stop, 22.0);
+        lens.focus = [0.25, 0.75];
+        assert_eq!(lens.settings(1)[0].focus_point, [0.25, 0.75]);
+        assert_eq!(lens.settings(2)[1].focus_point, [0.5, 0.5]);
+    }
+
+    /// Review lens on a recorded frame: off is bit-identical before and after,
+    /// on blurs away from focus. Writes build/depth-of-field/*.png.
+    #[test]
+    #[ignore = "GPU; run serially without another game rendering"]
+    fn lens_gpu_review() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/depth-of-field");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut game = Gg::new(World::new(3, &[false, true, true, true]), Session::Local, vec![0]);
+        for cmd in ["bots pause", "health 0 50000"] { game.command(cmd).unwrap(); }
+        for _ in 0..90 { game.tick(&[Controls::default()]); }
+        let size = [1280, 720];
+        let tape = game.recorder.tape(1.0, size).unwrap();
+        let mut viewer = Viewer::new(tape, root.join("lens.ggreplay")).unwrap();
+        viewer.overlay = false;
+        let gpu = render::Gpu::new().unwrap();
+        let mut headless = app::Headless::new(&gpu, size, TICK_HZ as f32).unwrap();
+        let mut ready = |v: &mut Viewer| loop { let rgba = headless.frame(v).unwrap(); if v.ready() { break rgba; } };
+        let sharp = ready(&mut viewer);
+        let sharp = ready(&mut viewer).iter().zip(&sharp).all(|(a, b)| a == b).then_some(sharp).expect("paused frame stable");
+        render::write_png(&root.join("off.png"), size[0], size[1], &sharp).unwrap();
+        let focus = std::env::var("GG_LENS_FOCUS").ok().and_then(|v| { let (x, y) = v.split_once(',')?; Some([x.parse().ok()?, y.parse().ok()?]) }).unwrap_or([0.5, 0.55]);
+        for f_stop in [1.4, 4.0] {
+            viewer.lens = Lens { on: true, f_stop, focus, focus_m: 0.0 };
+            let soft = ready(&mut viewer);
+            render::write_png(&root.join(format!("f{f_stop}.png")), size[0], size[1], &soft).unwrap();
+            let changed = soft.chunks(4).zip(sharp.chunks(4)).filter(|(a, b)| a.iter().zip(*b).any(|(x, y)| x.abs_diff(*y) > 8)).count();
+            println!("f/{f_stop}: {changed} pixels changed");
+            assert!(changed > 1000, "lens at f/{f_stop} changed only {changed} pixels");
+        }
+        viewer.lens.on = false;
+        let off_again = ready(&mut viewer);
+        assert_same_image(&sharp, &off_again, "lens off must restore the sharp frame");
     }
 
     /// Serial Metal fixture: exercises F4's screenshot/replay hook, rewinds,
