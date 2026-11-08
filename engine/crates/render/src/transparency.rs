@@ -4,6 +4,11 @@
 //! the opaque renderer's geometry, materials and live instance transforms,
 //! and sort by camera-space triangle depth per view. There is no stochastic
 //! coverage, opaque depth write, shadow-map draw or ambient proxy for glass.
+//!
+//! Materials with a [`crate::scene::Refraction`] bend the opaque scene behind
+//! them when refraction is on (`Graphics::refraction`, `KERN_REFRACTION=1`):
+//! the view's HDR is copied before this pass and read, with the opaque depth,
+//! through an optional fourth bind group without storage buffers.
 
 use crate::Gpu;
 use crate::frame::Camera;
@@ -21,13 +26,55 @@ struct Triangle {
     owner: u32,
     material: u32,
     alpha: f32,
-    double_sided: u32,
-    additive: u32,
+    /// Bit 0 double sided, 1 additive, 2 refracts (as transparency.wgsl).
+    flags: u32,
+    optics: u32,
+}
+
+const DOUBLE_SIDED: u32 = 1;
+const ADDITIVE: u32 = 2;
+const REFRACTS: u32 = 4;
+
+/// Index of refraction and thickness in 16 bits each (see transparency.wgsl).
+fn pack_optics(refraction: crate::scene::Refraction) -> u32 {
+    let ior = (((refraction.ior.clamp(1.0, 3.0) - 1.0) / 2.0) * 65535.0).round() as u32;
+    let thickness = if refraction.thickness.is_nan() { 65535 } else {
+        (refraction.thickness.max(0.0) * 1e4).round().min(65535.0) as u32
+    };
+    ior | (thickness << 16)
 }
 
 struct SortTriangle {
     owner: u32,
     center: Vec3,
+    refracts: bool,
+}
+
+struct Refraction {
+    layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    /// Groups 0..2 only: the front-depth pass writes what group 3 reads.
+    front_layout: wgpu::PipelineLayout,
+    // Per view: the HDR copy read by refracting glass and the depth of the
+    // nearest refracting surface (or opaque, where there is none).
+    targets: Mutex<Vec<Option<RefractionTargets>>>,
+}
+
+struct RefractionTargets {
+    color: wgpu::Texture,
+    front: wgpu::Texture,
+    bind: wgpu::BindGroup,
+}
+
+/// Draw phases, in the top two bits of each order entry (transparency.wgsl).
+const PHASE_BEHIND: u32 = 0;
+const PHASE_FRONT: u32 = 1;
+const PHASE_NEARER: u32 = 2;
+const PHASE_ALL: u32 = 3;
+
+/// Whether the renderer draws refraction for this scene.
+pub(crate) fn refraction_requested(scene: &Scene) -> bool {
+    scene.graphics.refraction || std::env::var("KERN_REFRACTION").is_ok_and(|v| v == "1")
 }
 
 struct OrderBuffer {
@@ -36,7 +83,7 @@ struct OrderBuffer {
 }
 
 pub(crate) struct Transparency {
-    pipelines: [wgpu::RenderPipeline; 2],
+    pipelines: Pipelines,
     /// Kept to rebuild both native and DLSS pipelines when source changes.
     layout: wgpu::PipelineLayout,
     source: String,
@@ -50,10 +97,17 @@ pub(crate) struct Transparency {
     // indices before its commands execute at the shared queue submission.
     orders: Mutex<Vec<OrderBuffer>>,
     motion_targets: Mutex<Vec<Option<wgpu::TextureView>>>,
+    refraction: Option<Refraction>,
+}
+
+struct Pipelines {
+    draw: [wgpu::RenderPipeline; 2],
+    /// Depth only: the nearest refracting surface per pixel.
+    front: Option<wgpu::RenderPipeline>,
 }
 
 pub(crate) struct Reload {
-    pipelines: [wgpu::RenderPipeline; 2],
+    pipelines: Pipelines,
     source: String,
 }
 
@@ -68,13 +122,44 @@ pub(crate) fn shader_source() -> String {
     )
 }
 
+/// The forward source with the refraction group, or with its stub.
+pub(crate) fn with_refraction(source: &str, refraction: bool) -> String {
+    format!("{source}\n{}", if refraction {
+        include_str!("shaders/transparency_refraction.wgsl")
+    } else {
+        include_str!("shaders/transparency_refraction_off.wgsl")
+    })
+}
+
 /// Native glass and glass with DLSS motion metadata from one composed source.
-fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> [wgpu::RenderPipeline; 2] {
+fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, front: Option<&wgpu::PipelineLayout>) -> Pipelines {
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("transparent car surfaces"),
-        source: wgpu::ShaderSource::Wgsl(source.into()),
+        source: wgpu::ShaderSource::Wgsl(with_refraction(source, front.is_some()).into()),
     });
-    [false, true].map(|motion| {
+    let front = front.map(|front_layout| gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("refracting glass front depth"),
+        layout: Some(front_layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("transparent_vs"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Greater),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        fragment: None,
+        multiview_mask: None,
+        cache: gpu.pipeline_cache(),
+    }));
+    let draw = [false, true].map(|motion| {
         let mut targets = vec![Some(wgpu::ColorTargetState {
             format: wgpu::TextureFormat::Rgba16Float,
             blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
@@ -118,7 +203,8 @@ fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> [wgpu::R
             multiview_mask: None,
             cache: gpu.pipeline_cache(),
         })
-    })
+    });
+    Pipelines { draw, front }
 }
 
 fn source_triangles(
@@ -150,17 +236,22 @@ fn source_triangles(
                     .map(|&index| Vec3::from(scene.vertices[index as usize].pos))
                     .sum::<Vec3>()
                     / 3.0;
+                let emissive = scene.materials[cluster.material as usize].flags & crate::scene::EMISSIVE != 0;
+                let refraction = blend.refraction.filter(|_| !blend.additive && !emissive);
                 triangles.push(Triangle {
                     vertices: indices,
                     owner: owner as u32,
                     material: cluster.material,
                     alpha: blend.alpha,
-                    double_sided: u32::from(blend.double_sided),
-                    additive: u32::from(blend.additive),
+                    flags: u32::from(blend.double_sided) * DOUBLE_SIDED
+                        | u32::from(blend.additive) * ADDITIVE
+                        | u32::from(refraction.is_some()) * REFRACTS,
+                    optics: refraction.map_or(0, pack_optics),
                 });
                 sorting.push(SortTriangle {
                     owner: owner as u32,
                     center: if blend.object_sort { Vec3::ZERO } else { center },
+                    refracts: refraction.is_some(),
                 });
                 owners.insert(owner as u32, *instance);
             }
@@ -308,19 +399,42 @@ impl Transparency {
                         count: None,
                     }),
                 });
+        let refraction = (refraction_requested(scene) && sort_triangles.iter().any(|t| t.refracts)).then(|| {
+            let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("transparent refraction"),
+                entries: &[
+                    (0, texture(wgpu::TextureSampleType::Float { filterable: true }, wgpu::TextureViewDimension::D2)),
+                    (1, texture(wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2)),
+                    (2, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+                    (3, texture(wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2)),
+                ].map(|(binding, ty)| wgpu::BindGroupLayoutEntry {
+                    binding, visibility: wgpu::ShaderStages::FRAGMENT, ty, count: None,
+                }),
+            });
+            let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("transparent refraction"),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            });
+            let front_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("refracting glass front depth"),
+                bind_group_layouts: &[Some(scene_layout), Some(&view_layout), Some(&geometry_layout)],
+                immediate_size: 0,
+            });
+            Refraction { layout, sampler, front_layout, targets: Mutex::new(Vec::new()) }
+        });
+        let mut groups = vec![Some(scene_layout), Some(&view_layout), Some(&geometry_layout)];
+        if let Some(refraction) = &refraction { groups.push(Some(&refraction.layout)); }
         let layout = gpu
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("transparent car surfaces"),
-                bind_group_layouts: &[
-                    Some(scene_layout),
-                    Some(&view_layout),
-                    Some(&geometry_layout),
-                ],
+                bind_group_layouts: &groups,
                 immediate_size: 0,
             });
         let source = shader_source();
-        let pipelines = pipelines(gpu, &layout, &source);
+        let pipelines = pipelines(gpu, &layout, &source, refraction.as_ref().map(|r| &r.front_layout));
         let triangles = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -339,6 +453,7 @@ impl Transparency {
             owners: Mutex::new(owners),
             orders: Mutex::new(Vec::new()),
             motion_targets: Mutex::new(Vec::new()),
+            refraction,
         })
     }
 
@@ -348,7 +463,7 @@ impl Transparency {
         if source == self.source {
             return Ok(None);
         }
-        let pipelines = crate::shaders::checked(gpu, || pipelines(gpu, &self.layout, &source))?;
+        let pipelines = crate::shaders::checked(gpu, || pipelines(gpu, &self.layout, &source, self.refraction.as_ref().map(|r| &r.front_layout)))?;
         Ok(Some(Reload { pipelines, source }))
     }
     pub(crate) fn commit_reload(&mut self, reload: Reload) {
@@ -388,7 +503,8 @@ impl Transparency {
         while orders.len() <= view_index {
             let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("transparent view order"),
-                size: (self.sort_triangles.len() as u64 * 4).max(4),
+                // Refraction draws the list up to three times (see PHASE_*).
+                size: (self.sort_triangles.len() as u64 * 4 * if self.refraction.is_some() { 3 } else { 1 }).max(4),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -409,7 +525,48 @@ impl Transparency {
             orders.push(OrderBuffer { buffer, bind });
         }
         let order = &orders[view_index];
-        if !indices.is_empty() {gpu.queue.write_buffer(&order.buffer, 0, bytemuck::cast_slice(&indices));}
+        // Only a view that shows refracting glass pays for the copies and the
+        // extra passes: glass behind the nearest refracting surface first,
+        // then a copy of the HDR, then that surface bent over the copy, then
+        // glass nearer than it.
+        let refracting: Vec<u32> = self.refraction.as_ref().map_or_else(Vec::new, |_| {
+            indices.iter().copied().filter(|&i| self.sort_triangles[i as usize].refracts).collect()
+        });
+        let entries: Vec<u32> = if refracting.is_empty() {
+            indices.iter().map(|&i| i | PHASE_ALL << 30).collect()
+        } else {
+            let tag = |list: &[u32], phase: u32| list.iter().map(|&i| i | phase << 30).collect::<Vec<_>>();
+            [tag(&indices, PHASE_BEHIND), tag(&refracting, PHASE_FRONT), tag(&indices, PHASE_NEARER)].concat()
+        };
+        if !entries.is_empty() { gpu.queue.write_buffer(&order.buffer, 0, bytemuck::cast_slice(&entries)); }
+        let refraction_bind = self.refraction.as_ref().map(|refraction| {
+            let size = hdr.texture().size();
+            let mut targets = refraction.targets.lock().unwrap();
+            while targets.len() <= view_index { targets.push(None); }
+            if targets[view_index].as_ref().is_none_or(|t| t.color.size() != size) {
+                let make = |label, format, usage| gpu.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label), size, mip_level_count: 1, sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2, format, usage: usage | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let color = make("refraction background", hdr.texture().format(), wgpu::TextureUsages::COPY_DST);
+                let front = make("refraction front depth", wgpu::TextureFormat::Depth32Float,
+                    wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT);
+                let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("transparent refraction"),
+                    layout: &refraction.layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&color.create_view(&Default::default())) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&refraction.sampler) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&front.create_view(&Default::default())) },
+                    ],
+                });
+                targets[view_index] = Some(RefractionTargets { color, front, bind });
+            }
+            let t = targets[view_index].as_ref().unwrap();
+            (t.color.clone(), t.front.clone(), t.bind.clone())
+        });
         let view_bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("transparent view"),
             layout: &self.view_layout,
@@ -430,33 +587,80 @@ impl Transparency {
                 usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]});
             motion_targets[view_index]=Some(tex.create_view(&Default::default()));
         }
-        let mut attachments=vec![Some(wgpu::RenderPassColorAttachment {
-            view:hdr,resolve_target:None,depth_slice:None,ops:wgpu::Operations {load:wgpu::LoadOp::Load,store:wgpu::StoreOp::Store},
-        })];
-        if motion {attachments.push(Some(wgpu::RenderPassColorAttachment {
-            view:motion_targets[view_index].as_ref().unwrap(),resolve_target:None,depth_slice:None,
-            ops:wgpu::Operations {load:wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),store:wgpu::StoreOp::Store},
-        }));}
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("transparency"),
-            color_attachments: &attachments,
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: timestamps,
-            occlusion_query_set: None,
-            multiview_mask: None,
+        let (query_set, begin, end) = match &timestamps {
+            Some(t) => (Some(t.query_set), t.beginning_of_pass_write_index, t.end_of_pass_write_index),
+            None => (None, None, None),
+        };
+        let stamp = |first: bool, last: bool| query_set.map(|query_set| wgpu::RenderPassTimestampWrites {
+            query_set,
+            beginning_of_pass_write_index: begin.filter(|_| first),
+            end_of_pass_write_index: end.filter(|_| last),
         });
-        pass.set_pipeline(&self.pipelines[usize::from(motion)]);
-        pass.set_bind_group(0, scene_bind, &[]);
-        pass.set_bind_group(1, &view_bind, &[]);
-        pass.set_bind_group(2, &order.bind, &[]);
-        pass.draw(0..3, 0..indices.len() as u32);
+        let n = indices.len() as u32;
+        let r = refracting.len() as u32;
+        let split = r > 0;
+        if let (true, Some((_, front, _))) = (split, &refraction_bind) {
+            // The nearest refracting surface, over the opaque depth.
+            encoder.copy_texture_to_texture(depth.texture().as_image_copy(), front.as_image_copy(), size);
+            let front_view = front.create_view(&Default::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("refracting glass front depth"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &front_view,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: stamp(true, false),
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(self.pipelines.front.as_ref().unwrap());
+            pass.set_bind_group(0, scene_bind, &[]);
+            pass.set_bind_group(1, &view_bind, &[]);
+            pass.set_bind_group(2, &order.bind, &[]);
+            pass.draw(0..3, n..n + r);
+        }
+        let draw_pass = |encoder: &mut wgpu::CommandEncoder, first_pass: bool, instances: std::ops::Range<u32>,
+            timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>| {
+            let mut attachments=vec![Some(wgpu::RenderPassColorAttachment {
+                view:hdr,resolve_target:None,depth_slice:None,ops:wgpu::Operations {load:wgpu::LoadOp::Load,store:wgpu::StoreOp::Store},
+            })];
+            if motion {attachments.push(Some(wgpu::RenderPassColorAttachment {
+                view:motion_targets[view_index].as_ref().unwrap(),resolve_target:None,depth_slice:None,
+                ops:wgpu::Operations {load:if first_pass {wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)} else {wgpu::LoadOp::Load},store:wgpu::StoreOp::Store},
+            }));}
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("transparency"),
+                color_attachments: &attachments,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth,
+                    // Read-only while refraction also samples it (no glass writes depth).
+                    depth_ops: self.refraction.is_none().then_some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pipelines.draw[usize::from(motion)]);
+            pass.set_bind_group(0, scene_bind, &[]);
+            pass.set_bind_group(1, &view_bind, &[]);
+            pass.set_bind_group(2, &order.bind, &[]);
+            if let Some((_, _, bind)) = &refraction_bind { pass.set_bind_group(3, bind, &[]); }
+            pass.draw(0..3, instances);
+        };
+        if !split {
+            draw_pass(encoder, true, 0..n, stamp(true, true));
+            return;
+        }
+        draw_pass(encoder, true, 0..n, None);
+        let (color, _, _) = refraction_bind.as_ref().unwrap();
+        encoder.copy_texture_to_texture(hdr.texture().as_image_copy(), color.as_image_copy(), size);
+        draw_pass(encoder, false, n..2 * n + r, stamp(false, true));
     }
 
     pub(crate) fn motion_layer(&self,view:usize)->Option<wgpu::TextureView> {
@@ -480,14 +684,17 @@ mod tests {
             SortTriangle {
                 owner: 7,
                 center: Vec3::new(0.0, 0.0, -2.0),
+                refracts: false,
             },
             SortTriangle {
                 owner: 3,
                 center: Vec3::new(0.0, 0.0, -4.0),
+                refracts: false,
             },
             SortTriangle {
                 owner: 3,
                 center: Vec3::new(0.0, 0.0, -4.0),
+                refracts: false,
             },
         ];
         let identity = GpuInstance {
@@ -511,7 +718,7 @@ mod tests {
     #[test]
     fn ordering_omits_empty_collapsed_hidden_and_excluded_owners() {
         let camera = Camera { pos: Vec3::ZERO, target: Vec3::NEG_Z, fov_y: 1.0, near: 0.1 };
-        let triangles = [SortTriangle { owner: 0, center: Vec3::ZERO }];
+        let triangles = [SortTriangle { owner: 0, center: Vec3::ZERO, refracts: false }];
         let instance = GpuInstance { cluster_count: 1, scale: 1.0, ..GpuInstance::zeroed() };
         let mut owners = HashMap::from([(0, instance)]);
         let visible = |owners: &HashMap<u32, GpuInstance>, view, categories| {
@@ -531,6 +738,40 @@ mod tests {
         assert!(visible(&owners, 0, crate::scene::GeometryCategory::Cars.exclusion_bit()).is_empty());
         owners.get_mut(&0).unwrap().hide_in_views(0);
         assert_eq!(visible(&owners, 1, 0), vec![0]);
+    }
+
+    #[test]
+    fn refraction_packs_into_one_word_and_skips_additive_and_emissive_glass() {
+        use crate::scene::Refraction;
+        assert_eq!(pack_optics(Refraction::WINDOW), 0 | (40 << 16) | 16384);
+        assert_eq!(pack_optics(Refraction { ior: 1.0, thickness: Refraction::SOLID }) >> 16, 65535);
+        assert_eq!(pack_optics(Refraction { ior: 9.0, thickness: -1.0 }), 65535);
+        use crate::cluster::{ClusterMesh, GpuCluster, Vertex};
+        use crate::scene::{EMISSIVE, Material};
+        let mut scene = Scene::default();
+        let plain = Material { tint: [1.0; 3], layer: -1, roughness: 0.1, flags: 0, scale: 1.0, metal: 0.0 };
+        let glass = scene.add_material(plain);
+        let added = scene.add_material(plain);
+        let sign = scene.add_material(Material { flags: EMISSIVE, ..plain });
+        scene.set_material_blend(glass, 0.2, true);
+        scene.set_material_refraction(glass, Refraction::WINDOW);
+        // Blending again keeps the refraction.
+        scene.set_material_blend(glass, 0.3, true);
+        scene.set_material_additive(added, 0.5, false);
+        scene.set_material_refraction(added, Refraction::WINDOW);
+        scene.set_material_blend(sign, 0.5, false);
+        scene.set_material_refraction(sign, Refraction::WINDOW);
+        let vertices = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+            .map(|pos| Vertex { pos, normal: [0.0, 0.0, 1.0], uv: [0.0; 2] }).to_vec();
+        let clusters = [glass, added, sign].map(|material| GpuCluster { tri_count: 1, material, ..GpuCluster::zeroed() }).to_vec();
+        let mesh = scene.add_mesh(&ClusterMesh { vertices, cluster_verts: vec![0, 1, 2],
+            tris: vec![0 | (1 << 8) | (2 << 16)], clusters, sphere: [0.0, 0.0, 0.0, 2.0], levels: 1 });
+        scene.add_instance(mesh, glam::Affine3A::IDENTITY);
+        let (triangles, sorting, _) = source_triangles(&scene);
+        assert_eq!(triangles.iter().map(|t| t.flags & REFRACTS != 0).collect::<Vec<_>>(), [true, false, false]);
+        assert_eq!(sorting.iter().map(|t| t.refracts).collect::<Vec<_>>(), [true, false, false]);
+        assert_eq!(triangles[0].optics, pack_optics(Refraction::WINDOW));
+        assert_eq!(triangles[0].alpha, 0.3);
     }
 
     #[test]
@@ -589,16 +830,16 @@ mod tests {
         assert_eq!(owners.len(), 2);
         for group in triangles.chunks_exact(3) {
             assert_eq!(
-                (group[0].material, group[0].alpha, group[0].double_sided, group[0].additive),
-                (glass, 0.8, 1, 0)
+                (group[0].material, group[0].alpha, group[0].flags),
+                (glass, 0.8, DOUBLE_SIDED)
             );
             assert_eq!(
-                (group[1].material, group[1].alpha, group[1].double_sided, group[1].additive),
-                (badge, 1.0, 0, 0)
+                (group[1].material, group[1].alpha, group[1].flags),
+                (badge, 1.0, 0)
             );
             assert_eq!(
-                (group[2].material, group[2].alpha, group[2].double_sided, group[2].additive),
-                (energy, 0.2, 1, 1)
+                (group[2].material, group[2].alpha, group[2].flags),
+                (energy, 0.2, DOUBLE_SIDED | ADDITIVE)
             );
         }
         assert_eq!(
