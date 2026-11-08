@@ -60,7 +60,7 @@ on; `None` (the default) adds no pass and changes nothing.
 `sky_volume=0|1`, `sky_aerial=0|1`, `sky_aerial_far=<m>`, `clouds=0|1`,
 `cloud_coverage` (0..1, default 0.45), `cloud_base` (m, 1800),
 `cloud_thickness` (m, 1800), `cloud_density` (per m, 0.03), `cloud_wind_x`,
-`cloud_wind_z` (m/s, 8 and 3), `cloud_shadow` (0..1, 0.85), `cloud_steps`
+`cloud_wind_z` (m/s, 4 and 1.5; 0 for still clouds), `cloud_shadow` (0..1, 0.85), `cloud_steps`
 (16..128), `cloud_light_steps` (2..8), `cloud_far` (m, 60000). The debug
 menu's Light → Clouds removes the clouds; Render → Distance fog off removes
 the aerial perspective as well. Without a procedural sky the passes bake the
