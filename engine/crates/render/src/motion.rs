@@ -8,6 +8,9 @@
 //! GPU snapshots are advanced
 //! once after ALL views; a recycled grass slot never inherits its old owner's
 //! history. Partial layers use a dominant surface plus a bias-current mask.
+//! Skinned meshes keep a copy of last frame's skinned vertices (taken after
+//! all views); a skinned pixel finds its point on the current triangle and
+//! takes the same barycentric point on the previous one.
 use crate::Gpu;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2, Vec3, Vec4};
@@ -65,6 +68,17 @@ struct Uniform {
     size: [f32;4],
     flags: [u32;4],
     grass: [f32;4],
+    /// Skin table start (vec4s into the previous arena), cluster-vertex and
+    /// triangle region starts (words into topology), skinned actor count.
+    skin: [u32;4],
+}
+/// Scene geometry for skinned motion: the shared topology (vertices,
+/// cluster vertices, triangles), the cluster table and each skinned actor's
+/// (owner instance, first vertex, vertex count).
+pub(crate) struct Geometry<'a> {
+    pub topology: &'a crate::topology::Topology,
+    pub clusters: &'a wgpu::Buffer,
+    pub skinned: &'a [[u32;3]],
 }
 struct ViewHistory {
     key: u64,
@@ -85,9 +99,16 @@ pub struct MotionRenderer {
     current_instances: wgpu::Buffer,
     current_wind: wgpu::Buffer,
     previous_instances: wgpu::Buffer,
+    /// Previous wind, then the skin table, then previous skinned vertices.
     previous_wind: wgpu::Buffer,
     instance_bytes: u64,
     wind_bytes: u64,
+    topology: wgpu::Buffer,
+    clusters: wgpu::Buffer,
+    topology_starts: [u32;2],
+    /// (source byte offset in topology, destination byte offset, bytes).
+    skin_copies: Vec<(u64,u64,u64)>,
+    skin_actors: u32,
     empty_metadata: wgpu::TextureView,
     empty_color: wgpu::TextureView,
     empty_distance: wgpu::TextureView,
@@ -110,6 +131,10 @@ fn empty(gpu:&Gpu,format:wgpu::TextureFormat,bytes:usize)->wgpu::TextureView {
 }
 impl MotionRenderer {
     pub fn new(gpu:&Gpu,instances:&wgpu::Buffer,wind:&wgpu::Buffer,instance_count:usize)->Result<Self,String> {
+        Self::with_geometry(gpu,instances,wind,instance_count,None)
+    }
+
+    pub(crate) fn with_geometry(gpu:&Gpu,instances:&wgpu::Buffer,wind:&wgpu::Buffer,instance_count:usize,geometry:Option<Geometry<'_>>)->Result<Self,String> {
         if instance_count >= 0x00ff_ffff {return Err("motion owner metadata supports fewer than 16777215 instances".into());}
         let instance_bytes=instance_count as u64*80;
         let wind_bytes=instance_count as u64*16;
@@ -121,11 +146,33 @@ impl MotionRenderer {
         let previous=|label,size:u64|gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label:Some(label),size:size.max(80),usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false,
         });
+        // Skin table and previous skinned vertices after the previous wind.
+        // Bounded by the binding limit; past it skinned pixels reject history.
+        let skinned=geometry.as_ref().map_or(&[][..],|g|g.skinned);
+        let table_vec4=wind_bytes/16;
+        let vertex_vec4=table_vec4+1+skinned.len() as u64;
+        let skin_bytes=skinned.iter().map(|a|a[2] as u64*32).sum::<u64>();
+        let fits=!skinned.is_empty() && (vertex_vec4*16+skin_bytes)<=gpu.limits.max_storage_buffer_binding_size as u64
+            && geometry.as_ref().is_some_and(|g|g.topology.buffer.usage().contains(wgpu::BufferUsages::COPY_SRC));
+        if !skinned.is_empty() && !fits {eprintln!("skinned motion history off: exceeds the storage binding limit");}
+        let mut table=vec![[0u32;4]];
+        let mut skin_copies=Vec::new();
+        let mut at=vertex_vec4;
+        if fits {
+            let vertices=geometry.as_ref().unwrap().topology.regions[0].0;
+            for &[owner,first,count] in skinned {
+                table.push([owner,first,count,at as u32]);
+                skin_copies.push((vertices+first as u64*32,at*16,count as u64*32));
+                at+=count as u64*2;
+            }
+            table[0][0]=skinned.len() as u32;
+        }
+        let arena_bytes=if fits {at*16}else{wind_bytes+16};
         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("surface motion"),source:wgpu::ShaderSource::Wgsl(shader_source().into())});
-        let entries=(0..16).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::FRAGMENT,count:None,
+        let entries=(0..18).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::FRAGMENT,count:None,
             ty:match binding {
                 0=>wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None},
-                1..=5=>wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Storage {read_only:true},has_dynamic_offset:false,min_binding_size:None},
+                1..=5|16|17=>wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Storage {read_only:true},has_dynamic_offset:false,min_binding_size:None},
                 _=>wgpu::BindingType::Texture {sample_type:match binding {
                     6|8|9=>wgpu::TextureSampleType::Uint,7=>wgpu::TextureSampleType::Depth,
                     _=>wgpu::TextureSampleType::Float {filterable:false}},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},
@@ -142,9 +189,16 @@ impl MotionRenderer {
                 targets:&[wgpu::TextureFormat::Rg16Float,wgpu::TextureFormat::R32Float,wgpu::TextureFormat::R32Float].map(|format|Some(wgpu::ColorTargetState {format,blend:None,write_mask:wgpu::ColorWrites::ALL}))}),
             multiview_mask:None,cache: gpu.pipeline_cache(),
         });
+        let previous_wind=previous("previous plant wind and skinned vertices",arena_bytes);
+        if fits {gpu.queue.write_buffer(&previous_wind,table_vec4*16,bytemuck::cast_slice(&table));}
+        let placeholder=|label|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some(label),size:256,usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false});
+        let (topology,clusters,topology_starts)=match &geometry {
+            Some(g) if fits=>(g.topology.buffer.clone(),g.clusters.clone(),g.topology.starts()),
+            _=>(placeholder("no skinned motion topology"),placeholder("no skinned motion clusters"),[0,0]),
+        };
         Ok(Self {pipeline,current_instances:instances.clone(),current_wind:wind.clone(),
-            previous_instances:previous("previous motion instances",instance_bytes),previous_wind:previous("previous plant wind",wind_bytes),
-            instance_bytes,wind_bytes,empty_metadata:empty(gpu,wgpu::TextureFormat::Rg32Uint,8),
+            previous_instances:previous("previous motion instances",instance_bytes),previous_wind,
+            instance_bytes,wind_bytes,topology,clusters,topology_starts,skin_actors:if fits {skinned.len() as u32}else{0},skin_copies,empty_metadata:empty(gpu,wgpu::TextureFormat::Rg32Uint,8),
             empty_color:empty(gpu,wgpu::TextureFormat::Rgba16Float,8),empty_distance:empty(gpu,wgpu::TextureFormat::R32Float,4),
             empty_reprojection:empty(gpu,wgpu::TextureFormat::Rgba32Float,16),
             history:Mutex::new(History {frame:0,snapshot_valid:false,views:Vec::new()})})
@@ -222,7 +276,8 @@ impl MotionRenderer {
             previous:previous.to_cols_array_2d(),camera:view.camera.extend(u32::from(view.split) as f32).to_array(),
             size:[view.size.0 as f32,view.size.1 as f32,1.0/view.size.0 as f32,1.0/view.size.1 as f32],
             flags:[u32::from(reset),u32::from(inputs.grass.is_some()),u32::from(inputs.transparency.is_some()),u32::from(inputs.far_grass.is_some())],
-            grass:[grass_band.fade_start,grass_band.fade_end,u32::from(inputs.voxel.is_some()) as f32,u32::from(inputs.meadow.is_some()) as f32]};
+            grass:[grass_band.fade_start,grass_band.fade_end,u32::from(inputs.voxel.is_some()) as f32,u32::from(inputs.meadow.is_some()) as f32],
+            skin:[(self.wind_bytes/16) as u32,self.topology_starts[0],self.topology_starts[1],self.skin_actors]};
         let uniform=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("motion view"),contents:bytemuck::bytes_of(&uniform),usage:wgpu::BufferUsages::UNIFORM});
         let entries=[
             (0,uniform.as_entire_binding()),(1,self.current_instances.as_entire_binding()),(2,self.previous_instances.as_entire_binding()),
@@ -236,6 +291,7 @@ impl MotionRenderer {
             (13,wgpu::BindingResource::TextureView(inputs.voxel.map_or(&self.empty_reprojection,|v|v.1))),
             (14,wgpu::BindingResource::TextureView(inputs.meadow.map_or(&self.empty_color,|v|v.0))),
             (15,wgpu::BindingResource::TextureView(inputs.meadow.map_or(&self.empty_reprojection,|v|v.1))),
+            (16,self.topology.as_entire_binding()),(17,self.clusters.as_entire_binding()),
         ];
         let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("surface motion"),layout:&self.pipeline.get_bind_group_layout(0),
             entries:&entries.into_iter().map(|(binding,resource)|wgpu::BindGroupEntry {binding,resource}).collect::<Vec<_>>()});
@@ -254,6 +310,7 @@ impl MotionRenderer {
     pub fn finish_frame(&self,encoder:&mut wgpu::CommandEncoder) {
         if self.instance_bytes>0 {encoder.copy_buffer_to_buffer(&self.current_instances,0,&self.previous_instances,0,self.instance_bytes);}
         if self.wind_bytes>0 {encoder.copy_buffer_to_buffer(&self.current_wind,0,&self.previous_wind,0,self.wind_bytes);}
+        for &(from,to,bytes) in &self.skin_copies {encoder.copy_buffer_to_buffer(&self.topology,from,&self.previous_wind,to,bytes);}
         let mut history=self.history.lock().unwrap();
         history.snapshot_valid=true;history.frame=history.frame.wrapping_add(1);
     }
@@ -291,7 +348,7 @@ mod tests {
         let rest=xf.transform_point3(local);let current=rest+Vec3::new(shear.x,0.0,shear.y)*(rest.y-xf.translation.y);
         let unsheared=current-Vec3::new(shear.x,0.0,shear.y)*(current.y-xf.translation.y);
         assert!((xf.inverse().transform_point3(unsheared)-local).length()<1e-5);
-        assert_eq!(std::mem::size_of::<Uniform>(),256);
+        assert_eq!(std::mem::size_of::<Uniform>(),272);
     }
     #[test] fn shared_branch_attachment_round_trip_retains_source_motion_in_four_views() {
         use crate::part_wind::{PartWind,sample_poses};
@@ -336,17 +393,80 @@ mod tests {
         }
         assert!(moved,"fixture must contain real animated source displacement");
     }
+    /// cargo test -p render --lib motion::tests::skinned -- --ignored
+    /// A skinned triangle that shrinks to half its size between two frames:
+    /// each pixel's vector points to the same barycentric point of the old
+    /// triangle (twice as far from the centre), not to a rigid reprojection.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn skinned_triangle_motion_follows_the_old_vertices() {
+        let gpu=Gpu::new().unwrap();
+        const N:u32=64;
+        let instance=crate::scene::GpuInstance {rows:[[1.,0.,0.,0.],[0.,1.,0.,0.],[0.,0.,1.,0.]],sphere:[0.,0.,-10.,100.],
+            first_cluster:0,cluster_count:1,scale:1.,flags:crate::scene::SKINNED};
+        let usage=wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::COPY_SRC;
+        let instances=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:None,contents:bytemuck::bytes_of(&instance),usage});
+        let wind=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:None,contents:&[0u8;16],usage});
+        let visible=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:None,contents:bytemuck::cast_slice(&[0u32,0]),usage});
+        let triangle=|scale:f32|[[-50.,-50.],[50.,-50.],[0.,50.]].map(|[x,y]:[f32;2]|[x*scale,y*scale,-10.,0.,0.,1.,0.,0.]);
+        let topology=crate::topology::Topology::with(&gpu,"skinned motion fixture",bytemuck::cast_slice(&triangle(1.0)),
+            bytemuck::cast_slice(&[0u32,1,2]),bytemuck::cast_slice(&[1u32<<8|2<<16]),wgpu::BufferUsages::COPY_SRC);
+        let mut cluster=[0u32;20];cluster[15]=1;
+        let clusters=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:None,contents:bytemuck::cast_slice(&cluster),usage});
+        let motion=MotionRenderer::with_geometry(&gpu,&instances,&wind,1,Some(Geometry {topology:&topology,clusters:&clusters,skinned:&[[0,0,3]]})).unwrap();
+        let texture=|format,usage|gpu.device.create_texture(&wgpu::TextureDescriptor {label:None,size:wgpu::Extent3d {width:N,height:N,depth_or_array_layers:1},
+            mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format,usage,view_formats:&[]});
+        let depth=texture(wgpu::TextureFormat::Depth32Float,wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default());
+        let vis=texture(wgpu::TextureFormat::R32Uint,wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST).create_view(&Default::default());
+        let projection=Mat4::perspective_infinite_reverse_rh(std::f32::consts::FRAC_PI_2,1.0,0.1);
+        let view=MotionView {key:1,size:(N,N),inverse_jittered_view_proj:projection.inverse(),view_proj:projection,camera:Vec3::ZERO,
+            split:false,grass_detail:Default::default(),reset:false};
+        let mut frame=|clear:bool|{
+            let mut encoder=gpu.device.create_command_encoder(&Default::default());
+            if clear {let _pass=encoder.begin_render_pass(&wgpu::RenderPassDescriptor {label:None,color_attachments:&[],
+                depth_stencil_attachment:Some(wgpu::RenderPassDepthStencilAttachment {view:&depth,depth_ops:Some(wgpu::Operations {load:wgpu::LoadOp::Clear(0.01),store:wgpu::StoreOp::Store}),stencil_ops:None}),
+                timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});}
+            let out=motion.render(&gpu,&mut encoder,0,view,MotionInputs {opaque_depth:&depth,visibility:&vis,visible:&visible,
+                grass:None,transparency:None,far_grass:None,voxel:None,meadow:None},None).unwrap();
+            motion.finish_frame(&mut encoder);gpu.queue.submit([encoder.finish()]);out
+        };
+        frame(true);
+        topology.write(&gpu,0,0,bytemuck::cast_slice(&triangle(0.5)));
+        let out=frame(false);
+        let read=|tex:&wgpu::Texture,bytes:u32|{
+            let row=(N*bytes).div_ceil(256)*256;
+            let buf=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:None,size:(row*N) as u64,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+            let mut enc=gpu.device.create_command_encoder(&Default::default());
+            enc.copy_texture_to_buffer(tex.as_image_copy(),wgpu::TexelCopyBufferInfo {buffer:&buf,layout:wgpu::TexelCopyBufferLayout {offset:0,bytes_per_row:Some(row),rows_per_image:Some(N)}},tex.size());
+            gpu.queue.submit([enc.finish()]);buf.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
+            let data=buf.slice(..).get_mapped_range().unwrap();
+            (0..N).flat_map(|y|{let d=&data;(0..N).map(move |x|d[(y*row+x*bytes) as usize..(y*row+(x+1)*bytes) as usize].to_vec())}).collect::<Vec<_>>()
+        };
+        let half=|b:&[u8]|{let bits=u16::from_le_bytes([b[0],b[1]]);let e=((bits>>10)&31) as i32;let m=(bits&1023) as f32;
+            let v=if e==0 {m*2f32.powi(-24)}else{(1.+m/1024.)*2f32.powi(e-15)};if bits&0x8000!=0 {-v}else{v}};
+        let vectors=read(&out.vectors,4);let bias=read(&out.bias,4);
+        let mut checked=0;
+        for y in 20..44u32 { for x in 20..44u32 {
+            let i=(y*N+x) as usize;
+            assert_eq!(f32::from_le_bytes(bias[i][..4].try_into().unwrap()),0.0,"skinned pixel ({x},{y}) must keep history");
+            let v=Vec2::new(half(&vectors[i][0..2]),half(&vectors[i][2..4]));
+            let expected=Vec2::new(x as f32+0.5-32.0,y as f32+0.5-32.0);
+            assert!(v.distance(expected)<0.05,"pixel ({x},{y}): {v} vs {expected}");
+            checked+=1;
+        }}
+        assert_eq!(checked,24*24);
+    }
     #[test] fn shader_validates() {
         let source=shader_source();
         let module=naga::front::wgsl::parse_str(&source).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));
         let mut bindings=module.global_variables.iter().filter_map(|(_,v)|v.binding.as_ref().map(|b|(b.group,b.binding))).collect::<Vec<_>>();
         bindings.sort_unstable();
-        assert_eq!(bindings,(0..16).map(|binding|(0,binding)).collect::<Vec<_>>());
-        assert_eq!(module.global_variables.iter().filter(|(_,v)|matches!(v.space,naga::AddressSpace::Storage {..})).count(),5,
-            "branch motion must reuse existing instance snapshots, not add per-view pose buffers");
+        assert_eq!(bindings,(0..18).map(|binding|(0,binding)).collect::<Vec<_>>());
+        assert_eq!(module.global_variables.iter().filter(|(_,v)|matches!(v.space,naga::AddressSpace::Storage {..})).count(),7,
+            "branch motion must reuse existing instance snapshots, not add per-view pose buffers; at most 8 per stage (browser.md)");
         assert_eq!(module.global_variables.iter().filter(|(_,v)|matches!(module.types[v.ty].inner,naga::TypeInner::Image {..})).count(),10,
             "opaque, grass, voxel and meadow motion inputs must remain below the portable16 sampled-texture budget");
-        assert_eq!(std::mem::size_of::<Uniform>(),256);
+        assert_eq!(std::mem::size_of::<Uniform>(),272);
     }
 }

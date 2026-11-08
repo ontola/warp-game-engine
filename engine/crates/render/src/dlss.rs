@@ -24,7 +24,7 @@ fn quality(mode: UpscaleMode) -> Result<u32, String> {
         UpscaleMode::DlssQuality => Ok(2),
         UpscaleMode::DlssBalanced => Ok(1),
         UpscaleMode::DlssPerformance => Ok(0),
-        UpscaleMode::Native => Err("native is not an NGX reconstruction mode".into()),
+        _ => Err(format!("{} is not an NGX reconstruction mode", mode.as_str())),
     }
 }
 
