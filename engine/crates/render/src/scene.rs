@@ -57,9 +57,25 @@ pub const LIVE_SCREEN: u32 = 16384;
 /// normal, roughness, metalness and emission. `layer` holds -2 - kind.
 pub const SURFACE: u32 = 32768;
 
-/// Material flags from this bit up hold 1 + an index into
-/// `Scene::car_materials`: a procedural car surface (car_material.wgsl).
+/// Material flags 16..29 hold 1 + an index into `Scene::car_materials`: a
+/// procedural car surface (car_material.wgsl). Read them with [`car_tag`].
 pub const CAR_SHIFT: u32 = 16;
+pub const CAR_MASK: u32 = 0x3fff << CAR_SHIFT;
+
+/// Skin: wrapped, red-shifted diffuse (light scattering under the skin),
+/// sunlight shining through thin parts such as ears and fingers (thickness
+/// from the sun shadow map), and a two-lobe skin specular. With HAIR as
+/// well, the albedo texture's alpha says per texel: 0 hair, 0.5 skin, 1
+/// neither (the material's plain lighting), linear between. See
+/// docs/skin-and-hair.md.
+pub const SKIN: u32 = 1 << 30;
+/// Hair: two shifted highlights along the strands (Kajiya-Kay/Marschner
+/// style) and light scattered through the hair. Strands run along the
+/// instance's up axis over the surface. Alone, the whole material is hair.
+pub const HAIR: u32 = 1 << 31;
+
+/// Which car surface material `flags` select: 0 none, else 1 + index.
+pub const fn car_tag(flags: u32) -> u32 { (flags & CAR_MASK) >> CAR_SHIFT }
 
 /// Material layer of procedural bark (shade.wgsl bark_surface) on wood that
 /// has no texture: `scale` is the plate size in metres, `tint` the plates'
@@ -740,6 +756,7 @@ impl Scene {
     /// select it (or them into `Material::flags`).
     pub fn add_car_material(&mut self, c: GpuCarMaterial) -> u32 {
         self.car_materials.push(c);
+        assert!(self.car_materials.len() < 1 << 14, "too many car materials");
         (self.car_materials.len() as u32) << CAR_SHIFT
     }
 
