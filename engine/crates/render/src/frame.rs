@@ -272,6 +272,10 @@ struct LightUniform {
     near_levels_view_proj: [[[f32; 4]; 4]; NEAR_LEVELS_MAX - 1],
     /// x: levels drawn (0 when the near maps are off).
     near_levels: [f32; 4],
+    /// Cloud layer for cloud shadows (cloud_weather.wgsl): coverage, base m,
+    /// thickness m, extinction per m; then wind offset xz m, shadow, enabled.
+    clouds: [f32; 4],
+    cloud_motion: [f32; 4],
 }
 
 /// Traced reflections: surfaces at least this rough keep the environment
@@ -471,6 +475,10 @@ pub struct Lighting {
     /// Opt-in in-scattering from local lights with a scatter weight
     /// (`Renderer::set_local_lights_scattering`); `None` adds no pass.
     pub volumetric: Option<crate::volumetric::Volumetric>,
+    /// Opt-in aerial perspective and volumetric clouds (`sky_volume`): the
+    /// air integrated with the sky bake's atmosphere instead of the shade
+    /// pass's distance fog, a cumulus layer and its shadows. `None` adds no pass.
+    pub sky_volume: Option<crate::sky_volume::SkyVolume>,
 }
 
 impl Lighting {
@@ -527,6 +535,14 @@ impl Lighting {
             // `volumetric=0` turns it off, `volumetric=1` on with defaults.
             "volumetric" if f == 0.0 || f == 1.0 => self.volumetric = (f == 1.0).then(|| self.volumetric.unwrap_or_default()),
             k if k.starts_with("vol_") => self.volumetric.get_or_insert_with(Default::default).set(k, f)?,
+            // `sky_volume=0|1` (aerial perspective and clouds), `clouds=0|1`,
+            // `sky_aerial=0|1`, `cloud_*` (sky_volume::SkyVolume::set).
+            "sky_volume" if f == 0.0 || f == 1.0 => self.sky_volume = (f == 1.0).then(|| self.sky_volume.unwrap_or_default()),
+            k if k == "clouds" || k.starts_with("cloud_") || k.starts_with("sky_aerial") => {
+                let mut next = self.sky_volume.unwrap_or(crate::sky_volume::SkyVolume { clouds: None, ..Default::default() });
+                next.set(k, f)?;
+                self.sky_volume = Some(next);
+            }
             "sun_elevation" | "sun_azimuth" => {
                 let el = if k == "sun_elevation" { f } else { self.sun_dir.y.asin().to_degrees() };
                 let az = if k == "sun_azimuth" { f } else { self.sun_dir.x.atan2(-self.sun_dir.z).to_degrees() };
@@ -589,6 +605,7 @@ impl Default for Lighting {
             grain: 0.0,
             aberration: 0.0,
             volumetric: None,
+            sky_volume: None,
         }
     }
 }
@@ -959,6 +976,7 @@ pub struct Renderer {
     crowd: Option<crate::crowd::CrowdRenderer>,
     fx: crate::fx::FxSlot,
     volumetric: crate::volumetric::VolumetricSlot,
+    sky_volume: crate::sky_volume::SkyVolumeSlot,
     sprites: crate::sprites::SpriteSlot,
     transparency: Option<crate::transparency::Transparency>,
     grass: Option<crate::grass::GrassRenderer>,
@@ -2288,6 +2306,7 @@ impl Renderer {
             crowd,
             fx: Default::default(),
             volumetric: Default::default(),
+            sky_volume: { let slot = crate::sky_volume::SkyVolumeSlot::default(); slot.set_tables(scene.atmosphere.clone()); slot },
             sprites: Default::default(),
             transparency,
             grass,
@@ -3035,6 +3054,7 @@ impl Renderer {
         self.sky_scale=1.0;
         self.sky_rotation=0.0;
         self.sky_limit=sky.pixels.iter().flat_map(|p|p[..3].iter().copied()).fold(0.0,f32::max);
+        self.sky_volume.set_tables(Some(sky.tables.clone()));
         sky.apply_lighting(light);
         self.invalidate_dynamic_shadow();
         self.reset_history();
@@ -4336,13 +4356,19 @@ impl Renderer {
         }
         let mut sh = self.sky_sh;
         sh.iter_mut().for_each(|c| c[3] = 0.0);
+        let sky_volume = light.sky_volume.and_then(|s| s.validated().ok());
+        let aerial_on = sky_volume.is_some_and(|s| s.aerial);
+        let cloud_uniforms = sky_volume.map_or(([0.0; 4], [0.0; 4]), |s| s.shade_uniforms(light.time));
         let lu = LightUniform {
             sun_dir: [light.sun_dir.x, light.sun_dir.y, light.sun_dir.z, light.sun_lux],
             sun_color: [light.sun_color.x, light.sun_color.y, light.sun_color.z, light.shadow_strength],
             shadow_view_proj: svp.to_cols_array_2d(),
             sky: [self.sky_scale, self.sky_rotation, light.debug, texel],
             fog_color: [self.sky_horizon.x, self.sky_horizon.y, self.sky_horizon.z, light.fog_start],
-            fog: [light.fog_end, light.fog_density, light.fog_height_m, 0.0],
+            // Aerial perspective (sky_volume) replaces the distance fog: the
+            // physical fog path with zero extinction returns surfaces unchanged.
+            fog: if aerial_on { [light.fog_end, 0.0, light.fog_height_m.max(1.0), 0.0] }
+                else { [light.fog_end, light.fog_density, light.fog_height_m, 0.0] },
             fog_scattering: [light.fog_scattering_albedo.x, light.fog_scattering_albedo.y,
                 light.fog_scattering_albedo.z, light.fog_phase_g],
             sh,
@@ -4354,6 +4380,8 @@ impl Renderer {
             fog_sampling: [((frame % 16) * 7 % 16) as f32 / 16.0, if taa_on { 1.0 } else { 0.0 }, light.indirect_fill_lux.max(0.0), 0.0],
             near_levels_view_proj: [Mat4::IDENTITY.to_cols_array_2d(); NEAR_LEVELS_MAX - 1],
             near_levels: [0.0; 4],
+            clouds: cloud_uniforms.0,
+            cloud_motion: cloud_uniforms.1,
         };
         let exposure = 1.0 / (1.2 * 2f32.powf(light.ev100));
 
@@ -5316,6 +5344,18 @@ impl Renderer {
                 }
             };
             let resolved = fx_output.unwrap_or(resolved);
+            // Opt-in aerial perspective and clouds, into a separate output.
+            let resolved = match sky_volume.as_ref() {
+                Some(settings) => {
+                    let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("sky volume"); (qs, timestamp_pair(&mut ts)) });
+                    if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
+                    let out = self.sky_volume.render(gpu, &mut enc, settings, crate::sky_volume::ViewInput { index: vi, input: &resolved,
+                        depth: &depth_v, depth_size: (w, h), camera: cam.pos, depth_vp: vp, light, reset: layout_changed })?;
+                    if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
+                    out
+                }
+                None => resolved,
+            };
             // Opt-in in-scattering from local lights, into a separate output.
             let resolved = match light.volumetric.as_ref() {
                 Some(medium) => {
@@ -6310,9 +6350,10 @@ mod layout_tests {
     #[test]
     fn near_light_uniform_and_projection_cover_each_separated_car() {
         use glam::Vec3;
-        assert_eq!(std::mem::size_of::<LightUniform>(), 640);
+        assert_eq!(std::mem::size_of::<LightUniform>(), 672);
         assert_eq!(std::mem::offset_of!(LightUniform, near_levels_view_proj), 432);
         assert_eq!(std::mem::offset_of!(LightUniform, near_levels), 624);
+        assert_eq!(std::mem::offset_of!(LightUniform, clouds), 640);
         assert_eq!(std::mem::offset_of!(LightUniform, fog_sampling), 416);
         assert_eq!(std::mem::offset_of!(LightUniform, anim), 400);
         assert_eq!(std::mem::offset_of!(LightUniform, fog_scattering), 144);
@@ -6336,7 +6377,7 @@ mod layout_tests {
 fn camera_fog_cull(light: &Lighting) -> [f32; 4] {
     // Physical extinction is asymptotic and height dependent. A camera-wide
     // radial cutoff would erase still-visible geometry, including clear air.
-    if light.fog_height_m > 0.0 || !light.fog_culling || light.debug != 0.0 || ![light.fog_start, light.fog_end, light.fog_density]
+    if light.fog_height_m > 0.0 || light.sky_volume.is_some_and(|s| s.aerial) || !light.fog_culling || light.debug != 0.0 || ![light.fog_start, light.fog_end, light.fog_density]
         .iter().all(|v| v.is_finite() && *v >= 0.0) {
         return [0.0; 4];
     }

@@ -64,7 +64,7 @@ fn optical_sky(light: &Lighting) -> Result<render::atmosphere::BakedSky, String>
         fog_phase_g:0.0, fog_scattering_albedo:Vec3::ONE, fog_height_m:1000.0,
         night_ambient_rgb_lux:night_ambient,
         night:render::atmosphere::NightSky { ambient_rgb_lux:night_ambient.as_dvec3(), star_radiance:0.0, ..Default::default() },
-        night_stars:[0.0;4], solar,
+        night_stars:[0.0;4], solar, tables:render::sky_volume::default_tables(),
         quality:render::atmosphere::BakeQuality { sky_width:16, sky_height:8, ..Default::default() },
     };
     sky.validate()?;

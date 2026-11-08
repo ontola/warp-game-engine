@@ -542,6 +542,10 @@ pub struct Scene {
     /// Absolute, sun-disc-free radiance with its solar state supplied by the
     /// atmosphere bake. Bypass HDRI brightest-pixel rotation and lux rescaling.
     pub sky_physical: bool,
+    /// The baked atmosphere's GPU tables (`BakedSky::apply`), for aerial
+    /// perspective and clouds (`Lighting::sky_volume`). Without them those
+    /// passes bake the default atmosphere once.
+    pub atmosphere: Option<std::sync::Arc<crate::atmosphere::AtmosphereTables>>,
 }
 
 impl Scene {

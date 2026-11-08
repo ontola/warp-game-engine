@@ -3,8 +3,11 @@
 //! Rayleigh + aerosol Mie single scattering and ozone absorption, on a
 //! spherical planet. A shared transmittance LUT accelerates sky integration;
 //! the resulting sun-free radiance supplies BOTH the background and SH9.
-//! This is a foundation, not Hillaire's complete multiple-scattering/aerial
-//! perspective implementation. A configurable artistic night environment and
+//! Multiple scattering follows Hillaire (2020): a small LUT of the infinite
+//! isotropic multi-scattering series per height and sun angle, added to the
+//! single-scattering source (`Atmosphere::multiple_scattering`). The same
+//! tables go to the GPU (`AtmosphereTables`) for aerial perspective and
+//! clouds (`sky_volume`). A configurable artistic night environment and
 //! procedural background stars are artistic additions, not a moon model or GI.
 //! No clouds or moon. The renderer adds the visible solar disc and GPU lens flare.
 //!
@@ -68,6 +71,9 @@ pub struct Atmosphere {
     /// RGB illuminance on a sun-facing surface above the atmosphere.
     pub solar_rgb_lux: DVec3,
     pub night: NightSky,
+    /// Add Hillaire's multiple-scattering approximation (brighter, bluer
+    /// shadowed sky and twilight). False is the earlier single scattering.
+    pub multiple_scattering: bool,
 }
 impl Default for Atmosphere {
     fn default() -> Self {
@@ -75,7 +81,7 @@ impl Default for Atmosphere {
             rayleigh_per_km:DVec3::new(0.005802,0.013558,0.033100),rayleigh_height_km:8.0,
             mie_scattering_per_km:0.003996,mie_absorption_per_km:0.000444,mie_height_km:1.2,mie_g:0.8,
             ozone_per_km:DVec3::new(0.000650,0.001881,0.000085),
-            ground_albedo:DVec3::splat(0.15),solar_rgb_lux:DVec3::splat(127_500.0),night:NightSky::default() }
+            ground_albedo:DVec3::splat(0.15),solar_rgb_lux:DVec3::splat(127_500.0),night:NightSky::default(),multiple_scattering:true }
     }
 }
 impl Atmosphere {
@@ -162,6 +168,8 @@ pub struct BakedSky {
     /// Faded stellar peak, zenith optical depth, reserved zero, numeric seed.
     pub night_stars:[f32;4],
     pub quality:BakeQuality,pub solar:SolarState,
+    /// The same atmosphere for the GPU: aerial perspective and clouds.
+    pub tables:Arc<AtmosphereTables>,
 }
 impl BakedSky {
     /// The same solar state drives direct light and the environment texture.
@@ -209,6 +217,7 @@ impl BakedSky {
     pub fn apply(&self,scene:&mut crate::Scene,light:&mut crate::Lighting) {
         scene.sky=Some((self.width,self.height,self.pixels.clone()));
         scene.sky_physical=true;
+        scene.atmosphere=Some(self.tables.clone());
         self.apply_lighting(light);
     }
 }
@@ -229,12 +238,14 @@ impl AtmosphereCache {
         if !self.lut.as_ref().is_some_and(|lut|lut.model==*model&&lut.key==key) {
             self.lut=Some(TransmittanceLut::new(*model,key));self.transmittance_bakes+=1;
         }
+        let lut=self.lut.as_mut().unwrap();
+        if model.multiple_scattering && lut.multi.is_none() {lut.multi=Some(MultiScatterLut::new(lut));}
         let result=Arc::new(bake_sky(model,solar,quality,self.lut.as_ref().unwrap())?);
         self.sky_bakes+=1;self.baked=Some((*model,solar,quality,result.clone()));Ok(result)
     }
 }
 
-struct TransmittanceLut {model:Atmosphere,key:(u32,u32,u32),values:Vec<DVec3>}
+struct TransmittanceLut {model:Atmosphere,key:(u32,u32,u32),values:Vec<DVec3>,multi:Option<MultiScatterLut>}
 fn top_distance(model:&Atmosphere,p:DVec3,d:DVec3)->f64 {
     let b=p.dot(d);let top=model.planet_radius_km+model.height_km;
     (-b+(b*b+top*top-p.length_squared()).max(0.0).sqrt()).max(0.0)
@@ -270,7 +281,7 @@ impl TransmittanceLut {
             let mu=if distance<=1e-10 {1.0}else{((top*top-radius*radius-distance*distance)/(2.0*radius*distance)).clamp(-1.0,1.0)};
             values.push(integrate_transmittance(&model,DVec3::Y*radius,DVec3::new((1.0-mu*mu).sqrt(),mu,0.0),steps));
         }}
-        Self {model,key,values}
+        Self {model,key,values,multi:None}
     }
     fn sample(&self,p:DVec3,d:DVec3)->DVec3 {
         if ground_distance(&self.model,p,d).is_some() {return DVec3::ZERO;}
@@ -285,6 +296,102 @@ impl TransmittanceLut {
         let x0=x.floor()as u32;let y0=y.floor()as u32;
         let get=|xx:u32,yy:u32|self.values[(yy.min(h-1)*w+xx.min(w-1))as usize];
         get(x0,y0).lerp(get(x0+1,y0),x.fract()).lerp(get(x0,y0+1).lerp(get(x0+1,y0+1),x.fract()),y.fract())
+    }
+}
+
+/// Hillaire's multiple-scattering LUT: per height and cosine of the sun's
+/// zenith angle, the radiance psi of all scattering orders past the first
+/// for unit solar illuminance and unit scattering, assuming isotropic phase
+/// beyond the first order. The source term adds `psi * sigma_s * E_sun`.
+pub const MULTI_SCATTER_SIZE: u32 = 32;
+const MULTI_SCATTER_DIRECTIONS: u32 = 64;
+const MULTI_SCATTER_STEPS: u32 = 20;
+struct MultiScatterLut {values:Vec<DVec3>}
+impl MultiScatterLut {
+    fn new(lut:&TransmittanceLut)->Self {
+        let model=&lut.model;let n=MULTI_SCATTER_SIZE;
+        let mut values=Vec::with_capacity((n*n)as usize);
+        // A fixed spherical Fibonacci set: deterministic and well spread.
+        let golden=PI*(3.0-5f64.sqrt());
+        let dirs:Vec<DVec3>=(0..MULTI_SCATTER_DIRECTIONS).map(|i| {
+            let y=1.0-(i as f64+0.5)*2.0/MULTI_SCATTER_DIRECTIONS as f64;let r=(1.0-y*y).max(0.0).sqrt();
+            let a=golden*i as f64;DVec3::new(a.cos()*r,y,a.sin()*r)
+        }).collect();
+        let isotropic=1.0/(4.0*PI);
+        for y in 0..n {for x in 0..n {
+            let mu=x as f64/(n-1)as f64*2.0-1.0;
+            let height=(y as f64/(n-1)as f64*model.height_km).clamp(0.0,model.height_km-1e-6);
+            let origin=DVec3::Y*(model.planet_radius_km+height.max(1e-4));
+            let sun=DVec3::new((1.0-mu*mu).max(0.0).sqrt(),mu,0.0);
+            let (mut second,mut transfer)=(DVec3::ZERO,DVec3::ZERO);
+            for d in &dirs {
+                let ground=ground_distance(model,origin,*d);
+                let distance=ground.unwrap_or_else(||top_distance(model,origin,*d));
+                let (mut t,mut l,mut f)=(DVec3::ONE,DVec3::ZERO,DVec3::ZERO);
+                let ds=distance/MULTI_SCATTER_STEPS as f64;
+                for i in 0..MULTI_SCATTER_STEPS {
+                    let p=origin+*d*((i as f64+0.5)*ds);
+                    let (ray,mie,extinction)=model.medium(p.length()-model.planet_radius_km);
+                    let scattering=ray+mie;let step=exp_neg(extinction*ds);
+                    let integral=DVec3::new(
+                        if extinction.x>1e-12 {(1.0-step.x)/extinction.x}else{ds},
+                        if extinction.y>1e-12 {(1.0-step.y)/extinction.y}else{ds},
+                        if extinction.z>1e-12 {(1.0-step.z)/extinction.z}else{ds});
+                    l+=t*scattering*lut.sample(p,sun)*isotropic*integral;
+                    f+=t*scattering*integral;
+                    t*=step;
+                }
+                if let Some(g)=ground {
+                    let p=origin+*d*g;let up=p.normalize();
+                    l+=t*lut.sample(p+up*1e-4,sun)*up.dot(sun).max(0.0)*model.ground_albedo/PI;
+                }
+                second+=l;transfer+=f;
+            }
+            // Uniform sphere average (solid angle 4 pi / N) times the
+            // isotropic phase 1/(4 pi): a plain mean over the directions.
+            let count=MULTI_SCATTER_DIRECTIONS as f64;
+            let second=second/count;let transfer=transfer/count;
+            let series=DVec3::ONE/(DVec3::ONE-transfer).max(DVec3::splat(1e-3));
+            values.push(second*series);
+        }}
+        Self {values}
+    }
+    fn sample(&self,model:&Atmosphere,p:DVec3,sun:DVec3)->DVec3 {
+        let n=MULTI_SCATTER_SIZE;let radius=p.length();
+        let mu=(p.dot(sun)/radius.max(1e-9)).clamp(-1.0,1.0);
+        let x=((mu*0.5+0.5)*(n-1)as f64).clamp(0.0,(n-1)as f64);
+        let y=((radius-model.planet_radius_km)/model.height_km*(n-1)as f64).clamp(0.0,(n-1)as f64);
+        let (x0,y0)=(x.floor()as u32,y.floor()as u32);
+        let get=|xx:u32,yy:u32|self.values[(yy.min(n-1)*n+xx.min(n-1))as usize];
+        get(x0,y0).lerp(get(x0+1,y0),x.fract()).lerp(get(x0,y0+1).lerp(get(x0+1,y0+1),x.fract()),y.fract())
+    }
+}
+
+/// The atmosphere as the GPU passes see it (`sky_volume`): the medium, the
+/// transmittance and multiple-scattering LUTs of the same bake, and the
+/// diffuse light above and below. Kilometres, like the CPU model.
+#[derive(Clone, Debug)]
+pub struct AtmosphereTables {
+    pub model:Atmosphere,
+    pub transmittance_size:(u32,u32),
+    /// RGB transmittance in the CPU LUT's horizon-aware coordinates, alpha 1.
+    pub transmittance:Vec<[f32;4]>,
+    /// MULTI_SCATTER_SIZE squared psi values (x: sun cosine, y: height), alpha 1.
+    pub multi_scatter:Vec<[f32;4]>,
+    /// Mean sky radiance over the upper hemisphere (horizontal lux / pi).
+    pub sky_radiance_above:Vec3,
+    /// Radiance of the lit ground below (Lambertian bounce).
+    pub ground_radiance:Vec3,
+}
+impl AtmosphereTables {
+    fn new(lut:&TransmittanceLut,sky_horizontal:DVec3,direct:DVec3,sun:DVec3)->Self {
+        let rgba=|v:&DVec3|[v.x as f32,v.y as f32,v.z as f32,1.0];
+        let multi=lut.multi.as_ref().map(|m|m.values.iter().map(rgba).collect())
+            .unwrap_or_else(||vec![[0.0,0.0,0.0,1.0];(MULTI_SCATTER_SIZE*MULTI_SCATTER_SIZE)as usize]);
+        Self {model:lut.model,transmittance_size:(lut.key.0,lut.key.1),
+            transmittance:lut.values.iter().map(rgba).collect(),multi_scatter:multi,
+            sky_radiance_above:(sky_horizontal/PI).as_vec3(),
+            ground_radiance:(lut.model.ground_albedo*(sky_horizontal+direct*sun.y.max(0.0))/PI).as_vec3()}
     }
 }
 
@@ -309,7 +416,8 @@ fn trace_sky(model:&Atmosphere,lut:&TransmittanceLut,sun:DVec3,d:DVec3,steps:u32
         let p=origin+d*((a+b)*0.5);
         let (ray,mie,extinction)=model.medium(p.length()-model.planet_radius_km);
         let transmission=exp_neg(extinction*ds);
-        let source=(ray*phase_ray+mie*phase_mie)*lut.sample(p,sun)*model.solar_rgb_lux;
+        let mut source=(ray*phase_ray+mie*phase_mie)*lut.sample(p,sun)*model.solar_rgb_lux;
+        if let Some(multi)=&lut.multi {source+=(ray+mie)*multi.sample(model,p,sun)*model.solar_rgb_lux;}
         let segment=DVec3::new(
             if extinction.x>1e-12 {(1.0-transmission.x)/extinction.x}else{ds},
             if extinction.y>1e-12 {(1.0-transmission.y)/extinction.y}else{ds},
@@ -362,7 +470,8 @@ fn bake_sky(model:&Atmosphere,solar:SolarState,q:BakeQuality,lut:&TransmittanceL
         sky_horizontal_rgb_lux:sky_horizontal.as_vec3(),sh,horizon,quality:q,solar,
         fog_phase_g:model.mie_g as f32,fog_scattering_albedo:Vec3::splat(aerosol_albedo as f32),fog_height_m:(model.mie_height_km*1000.0)as f32,
         night_ambient_rgb_lux:night_ambient.as_vec3(),night:model.night,
-        night_stars:[model.night.star_radiance*night as f32,star_depth as f32,0.0,model.night.star_seed as f32]})
+        night_stars:[model.night.star_radiance*night as f32,star_depth as f32,0.0,model.night.star_seed as f32],
+        tables:Arc::new(AtmosphereTables::new(lut,sky_horizontal,direct,sun))})
 }
 
 #[cfg(test)]
@@ -409,6 +518,25 @@ mod tests {
         let repeat=cache.get_or_bake(&model,night.solar,small()).unwrap();assert!(Arc::ptr_eq(&repeat,&night));assert_eq!(cache.sky_bakes,3);
     }
 
+    #[test]
+    fn multiple_scattering_brightens_the_sky_within_physical_bounds() {
+        let multi=Atmosphere::default();let single=Atmosphere {multiple_scattering:false,..multi};
+        let mut cache=AtmosphereCache::default();
+        for elevation in [60.0,10.0,2.0,-3.0] {
+            let solar=SolarState::from_degrees(elevation,125.0).unwrap();
+            let a=cache.get_or_bake(&multi,solar,small()).unwrap();let b=cache.get_or_bake(&single,solar,small()).unwrap();
+            a.validate().unwrap();
+            assert_eq!(a.sun_rgb_lux,b.sun_rgb_lux,"multiple scattering never changes the direct sun");
+            let ratio=a.sky_horizontal_rgb_lux/b.sky_horizontal_rgb_lux.max(Vec3::splat(1e-6));
+            eprintln!("elevation {elevation}: sky lux {} -> {} (x{ratio})",b.sky_horizontal_rgb_lux,a.sky_horizontal_rgb_lux);
+            assert!(ratio.min_element()>=1.0,"higher orders only add light: {ratio}");
+            if elevation>0.0 {assert!(ratio.max_element()<2.5,"higher orders stay a fraction of the first at day: {ratio}");}
+            assert!(a.tables.multi_scatter.iter().all(|p|p.iter().all(|v|v.is_finite()&&*v>=0.0)));
+            assert_eq!(a.tables.transmittance.len() as u32,a.tables.transmittance_size.0*a.tables.transmittance_size.1);
+        }
+        let noon=cache.get_or_bake(&single,SolarState::from_degrees(60.0,125.0).unwrap(),small()).unwrap();
+        assert!(noon.tables.multi_scatter.iter().all(|p|p[..3]==[0.0;3]),"single scattering hands the GPU an empty series");
+    }
     #[test]
     fn night_floor_is_shared_by_background_sh_and_irradiance_without_changing_day() {
         let enabled=Atmosphere::default();
