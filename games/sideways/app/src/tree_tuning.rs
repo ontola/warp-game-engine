@@ -8,7 +8,7 @@ use render::scene::{Scene, GpuInstance, Material, GeometryCategory, FOLIAGE, ALP
 use sideways::physics::{Physics, TreeColliderSource, TreeColliderBaseline};
 use std::collections::BTreeSet;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     pub size_scale: f32,
     /// Stable subset of the existing forest; 1 means all authored roots.

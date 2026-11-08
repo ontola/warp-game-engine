@@ -16,6 +16,7 @@
 --   player_joined(p)     GameNight seated someone new mid-game (p: Player)
 --   player_left(p)       a player left mid-game
 --   players_changed()    names, colours or seats changed (after joins and leaves too)
+-- Folder games: local lib = require("lib/name") loads lib/name.module.luau at module load time.
 -- Modules run their hooks in path order. `state` is a table per module that
 -- survives reloads; main.luau's `state` is the game's JSON state (`/state`).
 --
@@ -84,7 +85,7 @@ export type Player = {
 }
 
 export type Entity = {
-	id: number, shape: string, pos: Vec, rot: Vec, size: Vec, color: Vec,
+	id: number, parent: number?, world_pos: Vec, shape: string, pos: Vec, rot: Vec, size: Vec, color: Vec,
 	emissive: number, roughness: number, metal: number, surface: number?, solid: boolean, visible: boolean, tag: string,
 }
 
@@ -101,7 +102,9 @@ declare world: {
 	-- "outline<sides>[:<width>]" (a flat hollow polygon, "outline6"), or a
 	-- glTF model in the game folder ("assets/crate.glb"). A new shape and look
 	-- adds a mesh: free in init, a short stall later.
-	spawn: (shape: string, opts: EntityOptions?) -> number,
+	spawn: (shape: string, opts: EntityOptions?, parent: number?) -> number,
+	-- Keep pos/rot local to the new parent (nil detaches). Removing a parent removes its subtree.
+	set_parent: (id: number, parent: number?) -> (),
 	-- Change any options of an entity.
 	set: (id: number, opts: EntityOptions) -> (),
 	-- Only move (and turn, yaw in radians) an entity: the cheap call for
@@ -262,3 +265,14 @@ declare game: {
 
 -- Per module, kept across reloads; main.luau's is the game's JSON state.
 declare state: { [any]: any }
+
+
+-- Versioned local JSON documents. Enable storage in game.toml and declare the
+-- schema in save-schema.json (settings-schema.json or profile-schema.json for those kinds). Use revision 0 for an unused slot.
+export type StorageKind = "save" | "settings" | "profile"
+declare storage: {
+    read: (kind: StorageKind, slot: string) -> {version: number, revision: number, data: any}?,
+    write: (kind: StorageKind, slot: string, expectedRevision: number, data: any) -> number,
+    array: () -> {any},
+    null: any,
+}

@@ -29,5 +29,5 @@ warp script . scripts/smoke.json --out /tmp/siege --bots 3
 
 Not ported yet: the party settings (difficulty, starting wave, lives and
 gravity are constants at the top of main.luau until Luau games can declare
-GameNight settings), the nebula sky and the warped grid around the black
+Gamepad Party settings), the nebula sky and the warped grid around the black
 hole.

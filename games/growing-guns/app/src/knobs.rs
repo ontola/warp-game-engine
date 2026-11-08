@@ -65,7 +65,7 @@ pub fn settings() -> Vec<Setting> {
 }
 
 /// "..., 0.25 to 3" in a knob's help.
-fn range(about: &str) -> Option<(f64, f64)> {
+pub(crate) fn range(about: &str) -> Option<(f64, f64)> {
     let words: Vec<&str> = about.split(|c: char| c.is_whitespace() || c == ',').filter(|w| !w.is_empty()).collect();
     let k = words.iter().position(|w| *w == "to")?;
     let (a, b) = (words.get(k.checked_sub(1)?)?.parse().ok()?, words.get(k + 1)?.parse().ok()?);

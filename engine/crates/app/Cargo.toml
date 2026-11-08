@@ -6,6 +6,7 @@ license.workspace = true
 description = "Warp game shell: window, fixed tick, local player input, split-screen frames, headless capture"
 
 [dependencies]
+body = { path = "../body" }
 # std::time::Instant panics in a browser (wasm32); this is std's on native.
 web-time = "1.1"
 render = { path = "../render" }

@@ -34,6 +34,19 @@ pub struct Input {
     pub brake: f64,
     pub boost: bool,
 }
+#[derive(Clone, Copy, Debug)]
+pub struct HandlingGains {
+    pub steering: f64,
+    pub thrust: f64,
+    pub lateral_grip: f64,
+    pub yaw_assist: f64,
+    pub strafe: f64,
+}
+impl Default for HandlingGains {
+    fn default() -> Self {
+        Self { steering: 1., thrust: 1., lateral_grip: 1., yaw_assist: 1., strafe: 1. }
+    }
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Zone {
     #[default]
@@ -179,6 +192,9 @@ impl Pilot {
     /// Updates ground motion, returning the source's magnetic-release request.
     /// Caller handles route sampling, collisions, checkpoints and flight transition.
     pub fn ground_step(&mut self, c: Input, n: Surface, dt: f64) -> bool {
+        self.ground_step_tuned(c, n, dt, HandlingGains::default())
+    }
+    pub fn ground_step_tuned(&mut self, c: Input, n: Surface, dt: f64, gains: HandlingGains) -> bool {
         self.flash = (self.flash - dt).max(0.0);
         self.launch_cooldown = (self.launch_cooldown - dt).max(0.0);
         let steer = c.steer.clamp(-1.0, 1.0);
@@ -246,7 +262,7 @@ impl Pilot {
         let target = target + loose * 60.0 - planted * 35.0;
         let drag = 1.0 - self.slipstream * if fast { 0.12 } else { 0.26 };
         let mut accel =
-            throttle * (1.0 - brake * 0.9) * 160.0 * (1.0 - (self.speed / target).powi(2) * drag);
+            throttle * (1.0 - brake * 0.9) * 160.0 * gains.thrust * (1.0 - (self.speed / target).powi(2) * drag);
         if fast {
             accel += (target - self.speed).max(0.0) * if stacked { 4.2 } else { 3.0 };
         }
@@ -259,12 +275,12 @@ impl Pilot {
         self.acceleration = accel.max(0.0);
         self.speed = (self.speed + accel * dt).clamp(0.0, MAX_SPEED);
         let instability = smooth(435.0, 605.0, self.speed) * (1.0 - planted.clamp(0.0, 1.0) * 0.72);
-        let yaw = steer * lerp(1.65, 3.8, self.slide) * (1.0 + instability * 0.22);
-        let assistance = smooth(35.0, 130.0, self.speed)
+        let yaw = steer * gains.steering * lerp(1.65, 3.8, self.slide) * (1.0 + instability * 0.22);
+        let assistance = gains.yaw_assist * smooth(35.0, 130.0, self.speed)
             * lerp(3.5, 0.8, self.slide)
             * (1.0 - instability * 0.45);
         let facing = wrap(self.heading);
-        let side = strafe * 46.0 + self.bump_velocity;
+        let side = strafe * 46.0 * gains.strafe + self.bump_velocity;
         let advance = self.speed * facing.cos() - side * facing.sin();
         self.heading = wrap(facing + (yaw - n.curve * advance - facing.sin() * assistance) * dt);
         let lateral = self.heading.sin() * self.speed + side * self.heading.cos();
@@ -275,7 +291,7 @@ impl Pilot {
             * lerp(0.25, 1.0, self.slide)
             * (1.0 + instability * 0.5)
             * dt;
-        let grip = lerp(14.0, 1.8, self.slide)
+        let grip = gains.lateral_grip * lerp(14.0, 1.8, self.slide)
             * (1.0 + planted * 0.75 - loose * 0.48)
             * (1.0 - self.unload * 0.35)
             * (1.0 - instability * 0.58);
@@ -353,6 +369,16 @@ impl Pilot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn steering_gain_multiplies_turn_rate_even_at_full_input() {
+        let mut normal = Pilot::default();
+        let mut tuned = normal.clone();
+        let input = Input { steer: 1., ..Input::default() };
+        normal.ground_step(input, Surface::default(), DT);
+        tuned.ground_step_tuned(input, Surface::default(), DT,
+            HandlingGains { steering: 6., ..HandlingGains::default() });
+        assert!((tuned.heading - 6. * normal.heading).abs() < 1e-12);
+    }
     #[test]
     fn original_godot_control_traces() {
         let raw = crate::oracle("handling");

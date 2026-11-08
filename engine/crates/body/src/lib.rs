@@ -11,6 +11,7 @@
 //! turned from its rest pose (the T-pose with the arms let down), and the
 //! joints follow down the chain. Bones a rig leaves out ride on their parent,
 //! so a one-piece arm swings from the shoulder alone.
+pub mod reach;
 use glam::{Mat4, Quat, Vec3};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -515,3 +516,4 @@ mod tests {
         assert!(m[Head as usize].transform_point3(Vec3::new(0.0, 1.7, 0.0)).y > 1.2);
     }
 }
+pub mod pose_editor;

@@ -3,6 +3,7 @@
 Run from the repository root. Python tools require Python 3.11+.
 Use a fresh output directory for each run and run GPU workloads serially.
 
+- `drive-capture.py inspect` identifies source geometry at a Sideways F12 pixel. `drive-capture.py relight` compares the marked surface with individual lighting controls disabled. `drive-capture.py compare` replays the recorded input against another revision. [Arguments and output files](../docs/warp-cli.md#sideways-feedback).
 - `render-suite.py`: one fixed world from fixed cameras: per-pass GPU times, counters,
   memory and pictures, with diffs between runs. See
   [render suite](../docs/render-suite.md).
@@ -17,7 +18,7 @@ Use a fresh output directory for each run and run GPU workloads serially.
   [native profiling](../docs/native-profiling.md) for capture commands and limits.
 
 See [frame-budget.md](frame-budget.md) for contracts and limitations.
-Sideways launchers and GameNight acceptance tools live in
+Sideways launchers and Gamepad Party acceptance tools live in
 [`games/sideways/tools`](../../games/sideways/tools/).
 Scene definitions live in `games/sideways/scenarios/`.
 

@@ -85,6 +85,16 @@ impl Guns {
         pose.transform_point3(self.rigs[player].build.muzzle)
     }
 
+    // Both the weapon mesh and the support wrist use the same placement.
+    pub(crate) fn held_transform(hand: Vec3, yaw: f32, pitch: f32, primary: Vec3) -> Affine3A {
+        let rotation = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+        Affine3A::from_rotation_translation(rotation, hand - rotation * primary)
+    }
+
+    pub(super) fn contacts(&self, player: usize, alpha: f32) -> Option<gun::Contacts> {
+        Some(self.rigs.get(player)?.contacts_at(alpha))
+    }
+
     /// A card pick: the gun grows into the new stats.
     pub fn grow(&mut self, player: usize, p: &Player) { if let Some(r) = self.rigs.get_mut(player) { r.grow_to(Stats::of(p)); } }
 
@@ -142,7 +152,7 @@ impl Guns {
 
     /// Every rig into its two blocks: first person from the (punched)
     /// camera, third person in the right hand, aimed with the head.
-    pub fn pose(&mut self, scene: &mut Scene, world: &World, prev: &[crate::view::Pose], alpha: f32, fx: &EffectsView, hands: &[Option<Vec3>]) {
+    pub fn pose(&mut self, scene: &mut Scene, world: &World, prev: &[crate::view::Pose], alpha: f32, fx: &EffectsView, hands: &[Option<Affine3A>]) {
         for i in 0..self.rigs.len() {
             // Slots past the players (a coop wave's enemies gone): empty.
             let Some(p) = world.players.get(i) else {
@@ -173,20 +183,18 @@ impl Guns {
             let fp = self.tracked[i].unwrap_or(fp);
             let drawn = crate::view::pose(world, i, prev, alpha);
             let (pos, rot) = (drawn.pos, Quat::from_rotation_y(drawn.yaw));
-            let hand = hands.get(i).copied().flatten().map_or(
-                pos + Vec3::Y * 0.05 + rot * Vec3::new(0.45, 0.0, -0.12),
-                |hand| hand + rot * Vec3::new(0.0, 0.085, -0.143));
-            let tp = Affine3A::from_rotation_translation(rot * Quat::from_rotation_x(drawn.pitch), hand);
+            let tp = if let Some(mount) = hands.get(i).copied().flatten() {
+                mount
+            } else {
+                Affine3A::from_rotation_translation(rot * Quat::from_rotation_x(drawn.pitch),
+                    pos + Vec3::Y * 0.05 + rot * Vec3::new(0.45, 0.0, -0.12))
+            };
             let visible = p.alive && (!self.tracking[i] || self.tracked[i].is_some());
             self.muzzles[i] = visible.then(|| [fp.transform_point3(rig.build.muzzle), tp.transform_point3(rig.build.muzzle)]);
             for (first, xf, drop) in [(self.fp[i], fp, mag_drop), (self.tp[i], tp, 0.0)] {
-                let mut n = 0;
-                if visible {
-                    for (part, local) in rig.pose_at(drop, alpha).take(self.parts) {
-                        scene.update_instance(first + n, self.mesh(part.shape, part.mat, i), xf * local);
-                        n += 1;
-                    }
-                }
+                let children = rig.pose_at(drop, alpha).take(if visible { self.parts } else { 0 })
+                    .map(|(part, local)| (self.mesh(part.shape, part.mat, i), local));
+                let n = scene.update_children(first, xf, children);
                 empty(scene, first, n, self.parts);
             }
         }
@@ -240,10 +248,14 @@ impl Guns {
 
     /// Headless growth review uses the same reserved slots and rig poses.
     pub(crate) fn review_pose(&self, scene: &mut Scene, rig: &Rig) {
+        self.review_mounted(scene, rig, Affine3A::IDENTITY);
+    }
+
+    pub(crate) fn review_mounted(&self, scene: &mut Scene, rig: &Rig, mount: Affine3A) {
         let mut n = 0;
         for (part, xf) in rig.pose(0.0) {
             assert!(n < self.parts, "gun morph exceeds reserved visual capacity");
-            scene.update_instance(self.tp[0] + n, self.mesh(part.shape, part.mat, 0), xf);
+            scene.update_instance(self.tp[0] + n, self.mesh(part.shape, part.mat, 0), mount * xf);
             n += 1;
         }
         empty(scene, self.tp[0], n, self.parts);

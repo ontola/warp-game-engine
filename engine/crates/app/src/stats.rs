@@ -27,6 +27,7 @@ use std::collections::{HashMap, VecDeque};
 use web_time::Instant;
 
 /// HUD text ids from here up are this overlay's.
+pub const WINDOW_ID:u64=TEXT_ID+12_000;
 const TEXT_ID: u64 = u64::MAX - 20_000;
 /// Exponential smoothing per sample: about the last ten frames.
 const SMOOTH: f64 = 0.1;
@@ -37,9 +38,7 @@ const WINDOW: usize = 120;
 /// Tree rows below this many milliseconds fold into one "smaller" row.
 const TINY_MS: f64 = 0.02;
 
-const FG: [u8; 4] = [237, 242, 248, 255];
-const MUTED: [u8; 4] = [160, 176, 192, 255];
-const ACCENT: [u8; 4] = [118, 221, 208, 255];
+use render::editor_style::{FG, MUTED, ACCENT};
 const WARN: [u8; 4] = [255, 190, 90, 255];
 const HOT: [u8; 4] = [255, 110, 90, 255];
 
@@ -115,6 +114,8 @@ pub struct RenderInfo {
 
 #[derive(Default)]
 pub struct Stats {
+    window: render::editor_window::EditorWindow,
+    scroll: usize,
     open: bool,
     /// Tree depth shown: 1 groups, 2 passes, 3 authored scopes.
     detail: usize,
@@ -161,9 +162,11 @@ impl Stats {
 
     /// F3: open or close. Closing forgets the measurements, so reopening
     /// never shows a stale frame.
+    pub fn set_visible(&mut self, open:bool) { self.open=open; self.window.cancel(); }
     pub fn toggle(&mut self) {
+        self.window.cancel();
         let detail = self.detail.max(1);
-        *self = Stats { open: !self.open, detail, ..Default::default() };
+        *self = Stats { open: !self.open, detail, window: self.window, ..Default::default() };
     }
 
     /// Shift+F3: one level deeper, back to groups after scopes. Opens a
@@ -306,28 +309,42 @@ impl Stats {
         self.refreshed = Some(Instant::now());
     }
 
+    fn layout(&self,size:[u32;2]) -> render::editor_window::WindowFrame {
+        let [w,h]=size.map(|n|n as f32);
+        let s=(h/1080.).clamp(0.6,2.).min(w/420.).max(0.01);
+        self.window.frame(size,[12.*s,12.*s,560.*s,(h-24.*s).min((80.+21.*self.lines.len().max(6) as f32)*s)], [330.*s,135.*s],s)
+    }
+    pub fn pointer(&mut self,p:crate::Pointer,size:[u32;2])->bool {
+        let f=self.layout(size);
+        match self.window.pointer(size,f,[330.*f.scale,135.*f.scale],p.position,p.pressed,p.held) {
+            render::editor_window::WindowEvent::Close=>{self.toggle();return true;},
+            render::editor_window::WindowEvent::Handled=>return true,
+            _=>{}
+        }
+        if p.position.is_some_and(|xy|render::editor_style::EditorButton(f.rect).contains(xy)) {
+            self.scroll=self.scroll.saturating_add_signed((-p.wheel*3.).round() as isize);
+            true
+        } else {false}
+    }
     /// Draw over everything else in `hud`. `game` is
     /// [`crate::Game::debug_stats`], asked for only at a refresh.
     pub fn draw(&mut self, hud: &mut HudDrawList, game: impl FnOnce() -> Vec<(String, String)>) {
         if !self.open || hud.size.contains(&0) { return; }
         let started = Instant::now();
         if self.refreshed.is_none_or(|t| t.elapsed().as_secs_f32() >= REFRESH) { self.refresh(&game()); }
-        let [w, h] = hud.size.map(|v| v as f32);
-        let s = (h / 1080.0).clamp(0.6, 2.0);
-        let (row, font) = (21.0 * s, 16.0 * s);
-        let width = (560.0 * s).min(w - 24.0 * s);
-        let x = w - width - 12.0 * s;
-        let top = 12.0 * s;
-        let fits = (((h - 2.0 * top) / row).floor() as usize).saturating_sub(1);
-        let shown = self.lines.len().min(fits);
-        let clip = [0.0, 0.0, w, h];
-        hud.begin_overlay();
-        let panel = [x, top, width, (shown as f32 + 0.6 + f32::from(shown < self.lines.len())) * row];
-        hud.rect(panel, [0.012, 0.018, 0.028, 0.86], clip);
-        hud.rect([x, top, 3.0 * s, panel[3]], [0.12, 0.64, 0.55, 0.95], clip);
-        let inner = x + 12.0 * s;
-        let right = x + width - 12.0 * s;
-        for (n, line) in self.lines.iter().take(shown).enumerate() {
+        let frame=self.layout(hud.size);
+        let s=frame.scale;
+        let (row,font)=(21.*s,16.*s);
+        let first_text=hud.text.len();
+        frame.draw(hud,WINDOW_ID,3,"Profiler");
+        let [x,top,width,height]=frame.body();
+        let fits=((height/row).floor() as usize).saturating_sub(1);
+        let shown=self.lines.len().min(fits);
+        self.scroll=self.scroll.min(self.lines.len()-shown);
+        let clip=frame.body();
+        let inner=x+8.*s;
+        let right=x+width-8.*s;
+        for (n,line) in self.lines.iter().skip(self.scroll).take(shown).enumerate() {
             let y = top + 0.3 * row + n as f32 * row;
             let indent = line.depth as f32 * 14.0 * s;
             if line.bar > 0.0 {
@@ -350,9 +367,10 @@ impl Stats {
         }
         if shown < self.lines.len() {
             let y = top + 0.3 * row + shown as f32 * row;
-            hud.text.push(TextRun { id: TEXT_ID + 10_000, text: format!("{} more lines below the screen", self.lines.len() - shown), position: [inner, y],
+            hud.text.push(TextRun { id: TEXT_ID + 10_000, text: format!("Rows {}-{} of {}   |   Wheel to scroll", self.scroll+1,self.scroll+shown,self.lines.len()), position: [inner, y],
                 bounds: [inner, y, right - inner, row], font_size: font * 0.9, color: MUTED, font: FontFace::Body, align: TextAlign::Left, width: right - inner });
         }
+        render::editor_style::style_text(hud, first_text);
         // Own cost: this draw plus the sampling earlier this frame.
         let own = std::mem::take(&mut self.own_frame_ms) + started.elapsed().as_secs_f64() * 1000.0;
         smooth(&mut self.own_ms, own);

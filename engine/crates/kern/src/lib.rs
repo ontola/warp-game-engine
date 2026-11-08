@@ -8,6 +8,7 @@
 //! difference, not dumps.
 
 pub mod collide;
+pub mod parenting;
 
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};

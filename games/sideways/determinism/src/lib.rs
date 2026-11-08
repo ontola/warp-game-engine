@@ -28,6 +28,10 @@ impl Pcg {
         p
     }
 
+    pub fn stream_state(self) -> u64 { self.state }
+
+    pub fn from_stream_state(state: u64) -> Self { Self { state, inc: (DEFAULT_INC << 1) | 1 } }
+
     /// `seed(s)` / `rng.seed = s`.
     pub fn seed(&mut self, seed: u64) {
         self.state = 0;

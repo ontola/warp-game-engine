@@ -4,12 +4,11 @@
 //! benchmarks. A game implements [`Game`]; the shell owns the GPU.
 //!
 //! Built-in keys: click captures the mouse, Esc releases it (or quits when
-//! released). F10 always opens the engine debug menu ([`debug`]), F11 toggles
-//! fullscreen, F12 saves a feedback screenshot (PNG, JSON and the clipboard;
-//! see [`screenshot`]); Shift+F12, or F12 twice, then a dragged rectangle
+//! released). F2 always opens the engine debug menu ([`debug`]), Alt+Enter toggles
+//! fullscreen, F4 opens point selection on a feedback screenshot (PNG, JSON and the clipboard;
+//! see [`screenshot`]); Shift+F4, or F4 twice, then a dragged rectangle
 //! saves a crop of it. These reserved keys run before game/menu/text input.
-//! F1 to F9 belong to [`Game::function_key`]; F3 that the game leaves
-//! unused opens the engine's stats overlay ([`stats`], Shift+F3 for depth).
+//! F1 toggles all editor windows. F5 through F12 belong to games. F3 opens the engine's stats overlay ([`stats`], Shift+F3 for depth).
 //!
 //! Text entry: while [`Game::text_input`] is true the keyboard types
 //! ([`Game::text`] gets characters, IME commits, editing keys and
@@ -19,6 +18,8 @@
 //! let a spare pad join mid-match.
 pub mod clipboard;
 pub mod debug;
+pub mod editor;
+mod dev_bar;
 pub mod stats;
 pub mod input;
 pub mod text;
@@ -29,6 +30,7 @@ pub mod ui;
 pub mod manners;
 pub mod startup;
 pub mod screenshot;
+pub mod feedback;
 pub mod quality;
 pub mod emulate;
 mod frame_log;
@@ -133,7 +135,7 @@ pub trait Game {
     fn wants_capture(&self) -> bool { false }
     /// The frame asked for by [`Game::wants_capture`], RGBA8, top row first.
     fn captured(&mut self, size: [u32; 2], rgba: Vec<u8>) { let _ = (size, rgba); }
-    /// Attach a gameplay replay beside an F12 screenshot. Called only on
+    /// Attach a gameplay replay beside an F4 screenshot. Called only on
     /// explicit capture, with its path and the interpolation phase shown.
     fn feedback_replay(&mut self, _path: &std::path::Path, _alpha: f32) -> Result<Option<serde_json::Value>, String> { Ok(None) }
     /// How two views share the screen.
@@ -150,19 +152,31 @@ pub trait Game {
     /// waking up): GPU resources the game made itself are invalid. The
     /// renderer is gone too, so the next [`Game::draw`] sets the scene again.
     fn gpu_reset(&mut self) {}
-    /// Function key F`n` (1..=9) was pressed, also while typing: return
-    /// true when the game used it. F10, F11 and F12 stay the shell's; F3
-    /// the game does not use opens the engine's stats overlay.
-    fn function_key(&mut self, _n: u8) -> bool { false }
+    /// Whether any game-owned editor window is visible in this scene.
+    fn scene_tuning(&self) -> Option<&editor::SceneTuning> { None }
+    fn scene_tuning_mut(&mut self) -> Option<&mut editor::SceneTuning> { None }
+    fn editor_shortcut(&self, key: u8) -> Option<(&'static str, bool)> {
+        if key == 12 { self.scene_tuning().map(|t| (t.title, t.ui.open)) } else { None }
+    }
+    fn editor_windows_open(&self) -> bool { self.scene_tuning().is_some_and(|t|t.ui.open) }
+    fn set_editor_windows_open(&mut self, open: bool) { if let Some(t)=self.scene_tuning_mut() { t.set_visible(open); } }
+    /// Handle game shortcuts from F12 down through F5.
+    fn function_key(&mut self, n: u8) -> bool {
+        if n == 12 && let Some(tuning) = self.scene_tuning_mut() {
+            tuning.set_visible(!tuning.ui.open);
+            return true;
+        }
+        false
+    }
     /// Lines (label, value) for the F3 stats overlay's Game section: what
     /// the game streams, builds or simulates. Asked for a few times a second
     /// while the overlay is open, never otherwise.
     fn debug_stats(&self) -> Vec<(String, String)> { Vec::new() }
     /// The game asks the shell to close (an Exit menu item).
     fn quit(&self) -> bool { false }
-    /// Extra menus and controls for the F10 debug menu, with ids from
+    /// Extra menus and controls for the F2 debug menu, with ids from
     /// [`debug::GAME_IDS`] up (a control's `menu` may name an engine menu).
-    fn debug(&self) -> (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>) { (Vec::new(), Vec::new()) }
+    fn debug(&self) -> (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>) { Default::default() }
     /// One of the game's debug controls changed, or the menu was reset
     /// (`ResetDefaults`).
     fn debug_action(&mut self, _action: render::debug_ui::DebugAction) {}
@@ -201,7 +215,7 @@ pub trait Game {
     fn target_fps(&self) -> Option<f32> { None }
     /// HDR output on an HDR screen, as the game's own settings say: Some(true)
     /// asks for it, Some(false) refuses it, None follows `WARP_HDR` (off when
-    /// unset). The F10 menu overrides both. It needs a screen and driver that
+    /// unset). The F2 menu overrides both. It needs a screen and driver that
     /// offer an HDR surface (Windows with HDR on, macOS EDR, some Vulkan);
     /// elsewhere it stays SDR. Screenshots and captures are always SDR.
     fn hdr(&self) -> Option<bool> { None }
@@ -248,20 +262,30 @@ const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Engine-owned keys, shared with alternate presentation shells such as Sideways.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EngineShortcut { DebugMenu, Fullscreen, Screenshot }
+pub enum EngineShortcut { AllMenus, DebugMenu, Fullscreen, Screenshot }
 
 /// Reserved even when the game is paused, reviewing a replay or accepting text.
 pub fn engine_shortcut(code: KeyCode) -> Option<EngineShortcut> {
     match code {
-        KeyCode::F10 => Some(EngineShortcut::DebugMenu),
-        KeyCode::F11 => Some(EngineShortcut::Fullscreen),
-        KeyCode::F12 => Some(EngineShortcut::Screenshot),
+        KeyCode::F1 => Some(EngineShortcut::AllMenus),
+        KeyCode::F2 => Some(EngineShortcut::DebugMenu),
+        KeyCode::F4 => Some(EngineShortcut::Screenshot),
         _ => None,
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum KeyRoute { Engine(EngineShortcut), Stats { shift: bool }, Consumed, Other }
+
+fn restored_panel_open(code: KeyCode, graphics: bool, profiler: bool, game_open: impl Fn(u8) -> bool) -> bool {
+    use KeyCode::*;
+    match code {
+        F2 => graphics,
+        F3 => profiler,
+        _ => [F5,F6,F7,F8,F9,F10,F11,F12].iter().position(|&key| key == code)
+            .is_some_and(|i|game_open(i as u8 + 5)),
+    }
+}
 
 /// Route every function-key edge before either the game or text/navigation handlers.
 fn route_function_key(game: &mut dyn Game, code: KeyCode, state: ElementState, repeat: bool, shift: bool) -> KeyRoute {
@@ -270,9 +294,11 @@ fn route_function_key(game: &mut dyn Game, code: KeyCode, state: ElementState, r
         return if press { KeyRoute::Engine(action) } else { KeyRoute::Consumed };
     }
     use KeyCode::*;
-    if let Some(n) = [F1, F2, F3, F4, F5, F6, F7, F8, F9].iter().position(|&k| k == code) {
-        // F3 the game leaves alone is the engine's stats overlay.
-        if press && !game.function_key(n as u8 + 1) && code == F3 { return KeyRoute::Stats { shift }; }
+    if code == F3 {
+        return if press { KeyRoute::Stats { shift } } else { KeyRoute::Consumed };
+    }
+    if let Some(n) = [F5,F6,F7,F8,F9,F10,F11,F12].iter().position(|&k| k==code) {
+        if press { game.function_key(n as u8+5); }
         KeyRoute::Consumed
     } else { KeyRoute::Other }
 }
@@ -339,6 +365,18 @@ impl Output {
     /// new HUD (a debug menu stays responsive when the scene is slow).
     #[allow(clippy::too_many_arguments)]
     fn draw_with(&mut self, gpu: &Gpu, renderer: &Renderer, draw: &Draw, size: [u32; 2], split: render::SplitLayout, target: &wgpu::TextureView, max_height: Option<u32>, scene: bool) -> Result<(), String> {
+        self.prepare(gpu, renderer, draw, size, split, max_height, scene)?;
+        let picture = self.picture.as_ref().unwrap();
+        let started = Instant::now();
+        // An HDR surface shows the renderer's HDR copy when it matches this picture.
+        let hdr = if self.presenter.is_hdr() { renderer.hdr_output().filter(|t| t.size() == picture.size()) } else { None };
+        self.presenter.present_hdr(gpu, picture, hdr.as_ref(), target, Some(&self.hud), None)?;
+        self.timings.present_ms = started.elapsed().as_secs_f64() * 1000.;
+        Ok(())
+    }
+
+    fn prepare(&mut self, gpu: &Gpu, renderer: &Renderer, draw: &Draw, size: [u32; 2],
+        split: render::SplitLayout, max_height: Option<u32>, scene: bool) -> Result<(), String> {
         let size = match max_height { Some(m) if m > 0 && size[1] > m => [(size[0] as u64 * m as u64 / size[1] as u64).max(1) as u32, m], _ => size };
         let rects = render::split_rects_with(draw.cameras.len(), size[0], size[1], split);
         let views: Vec<ViewRect> = draw.cameras.iter().zip(&rects).map(|(&cam, &(x, y, w, h))| ViewRect { cam, x, y, w, h }).collect();
@@ -358,13 +396,9 @@ impl Output {
         self.hud.prepare(gpu, &draw.hud)?;
         self.timings.hud_ms = started.elapsed().as_secs_f64() * 1000.;
         (self.timings.hud_vertices, self.timings.hud_text_runs) = (draw.hud.vertices.len(), draw.hud.text.len());
-        let started = Instant::now();
-        // An HDR surface shows the renderer's HDR copy when it matches this picture.
-        let hdr = if self.presenter.is_hdr() { renderer.hdr_output().filter(|t| t.size() == picture.size()) } else { None };
-        self.presenter.present_hdr(gpu, picture, hdr.as_ref(), target, Some(&self.hud), None)?;
-        self.timings.present_ms = started.elapsed().as_secs_f64() * 1000.;
         Ok(())
     }
+
 }
 
 /// What the F3 stats overlay shows about the renderer.
@@ -381,7 +415,7 @@ fn render_info(gpu: &Gpu, renderer: &Renderer, output: [u32; 2]) -> stats::Rende
 }
 
 /// A screenshot's line along the bottom of the screen.
-/// A frozen frame waiting for its crop rectangle (Shift+F12): shown dimmed
+/// A frozen frame waiting for its crop rectangle (Shift+F4): shown dimmed
 /// outside the rectangle while the mouse drags it; Esc cancels.
 struct Crop {
     saved: screenshot::Saved,
@@ -601,6 +635,8 @@ pub fn run_headless(cfg: &Config, game: &mut dyn Game, gpu: &Gpu, seconds: f32) 
 }
 
 struct Live {
+    instance: wgpu::Instance,
+    feedback_hud: Option<HudRenderer>,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     adapter: wgpu::Adapter,
@@ -629,9 +665,9 @@ impl Live {
             let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
             let surfaced = t.elapsed().as_millis();
             let (gpu, config, adapter) = Gpu::for_surface_with_adapter(&instance, &surface, size.width.max(1), size.height.max(1))?;
-            Ok((surface, gpu, config, adapter, surfaced))
+            Ok((instance, surface, gpu, config, adapter, surfaced))
         };
-        let (surface, gpu, config, adapter, surfaced) = match render::gpu::window_instance().map(&open) {
+        let (instance, surface, gpu, config, adapter, surfaced) = match render::gpu::window_instance().map(&open) {
             Some(Ok(v)) => v,
             Some(Err(e)) => { println!("{} Vulkan: {e}; trying the other backends", manners::stamp()); open(render::gpu::instance())? }
             None => open(render::gpu::instance())?,
@@ -640,7 +676,7 @@ impl Live {
         surface.configure(&gpu.device, &config);
         let out = Output::new(&gpu, config.format)?;
         let lost = watch(&gpu);
-        Ok((Live { surface, config, adapter, hdr: false, hdr_supported: false, display: Default::default(), display_at: None, hdr_refused: false, gpu, out, renderer: None, lost }, [surfaced, devised]))
+        Ok((Live { instance, feedback_hud:None, surface, config, adapter, hdr: false, hdr_supported: false, display: Default::default(), display_at: None, hdr_refused: false, gpu, out, renderer: None, lost }, [surfaced, devised]))
     }
 
     fn is_lost(&self) -> bool { self.lost.load(std::sync::atomic::Ordering::Relaxed) }
@@ -668,6 +704,7 @@ impl Live {
         self.surface.configure(&self.gpu.device, &self.config);
         // Presenter and HUD pipelines are made for the surface's format.
         self.out = Output::new(&self.gpu, self.config.format)?;
+        self.feedback_hud=None;
         Ok(Some(if self.hdr { format!("HDR output on ({:?}, {})", self.config.format, self.display.describe()) } else { "HDR output off".into() }))
     }
 }
@@ -715,14 +752,23 @@ struct Shell<'g> {
     mouse_delta: [f64; 2],
     mouse_peak: f64,
     cursor_events: u32,
+    windows: render::editor_window::WindowStack,
+    cursor_position: Option<[f32;2]>,
+    // Some(None) captures a drag begun on the scene, even across a window.
+    pointer_owner: Option<Option<u64>>,
+    pressed_mouse_buttons: u8,
+    hidden_layout: Option<[bool;4]>,
+    dev_mode: bool,
+    dev_bar: dev_bar::DevBar,
+    bar_press: bool,
     started: Instant,
     frames: u64,
     screenshot: bool,
-    /// Shift+F12: after the frame is saved, drag a rectangle of it.
+    /// Shift+F4: after the frame is saved, drag a rectangle of it.
     crop_requested: bool,
     crop: Option<Crop>,
-    /// The last F12 frame: a second F12 soon after crops it (no modifier).
-    last_shot: Option<(Instant, Crop)>,
+    picker: Option<feedback::Picker>,
+    feedback_writer: Option<feedback::Writer>,
     /// Shift as seen by key events: ModifiersChanged alone missed it on macOS.
     shift_down: bool,
     /// The last screenshot's line and until when it shows.
@@ -772,7 +818,9 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
         println!("{}: adaptive quality enabled, {}", cfg.title, q.label());
     }
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { stats: stats::Stats::from_env(), devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), probe: None, probed: None, emulator: Default::default(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
+    let stats=stats::Stats::from_env();
+    let dev_mode=debug.open() || stats.open() || game.editor_windows_open();
+    let mut shell = Shell { stats, dev_mode, dev_bar:Default::default(), bar_press:false, devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, windows: Default::default(), cursor_position:None, pointer_owner:None, pressed_mouse_buttons:0, hidden_layout:None, started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, picker: None, feedback_writer: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), probe: None, probed: None, emulator: Default::default(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -780,6 +828,27 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
 
 impl Shell<'_> {
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(picker) = &mut self.picker {
+            if let (Some(l), Some(w)) = (&mut self.live, &self.window) {
+                if l.is_lost() {
+                    self.end_picker("Feedback device lost".into());
+                } else if let Err(e) = picker.show(
+                    w,
+                    &l.gpu,
+                    &l.out.presenter,
+                    &mut l.feedback_hud,
+                    &mut l.surface,
+                    &l.instance,
+                    &l.config,
+                ) {
+                    self.end_picker(e);
+                }
+            }
+            return;
+        }
+        if let Some(e) = self.feedback_writer.as_ref().and_then(|w| w.error()) {
+            self.toast = Some((e, Instant::now() + std::time::Duration::from_secs(4)));
+        }
         if let Err(e) = self.frame() { startup::note_exit(&format!("frame error: {e}")); self.error = Some(e); event_loop.exit(); return; }
         if self.game.quit() { startup::note_exit("the game quit"); event_loop.exit(); return; }
         self.frames += 1;
@@ -791,7 +860,7 @@ impl Shell<'_> {
             event_loop.exit();
             return;
         }
-        if let Some(w) = &self.window { w.request_redraw(); }
+        if self.picker.is_none() && let Some(w) = &self.window { w.request_redraw(); }
     }
 
     fn frame(&mut self) -> Result<(), String> {
@@ -847,7 +916,16 @@ impl Shell<'_> {
             self.acc -= step;
             steps += 1;
             let size = self.live.as_ref().map_or(self.cfg.size, |l| [l.config.width, l.config.height]);
-            self.game.pointer(self.devices.pointer(), size);
+            let pointer = self.devices.pointer();
+            let target=self.pointer_owner.unwrap_or_else(||self.windows.hit(pointer.position,size));
+            let owned=match target {
+                Some(editor::scene_tuning::WINDOW_ID) => self.game.scene_tuning().is_some_and(|t|t.ui.open),
+                Some(render::debug_ui::WINDOW_ID) => self.debug.open(),
+                Some(stats::WINDOW_ID) if self.stats.open() => { self.stats.pointer(pointer,size); true }
+                _ => false,
+            };
+            self.game.pointer(if owned { Pointer::default() } else { pointer }, size);
+            if self.pressed_mouse_buttons==0 { self.pointer_owner=None; }
             let devices = self.devices.device_controls(step);
             let controls = seat_controls(self.game, &devices);
             if frame_log::enabled() { input_look.push(controls.iter().map(|c| c.look).collect::<Vec<_>>()); }
@@ -866,20 +944,15 @@ impl Shell<'_> {
         }
         if self.live.as_ref().is_some_and(Live::is_lost) && !self.recover() { return Ok(()); }
         let Some(live) = &mut self.live else { return Ok(()) };
-        // HDR output: F10 first, then the game's settings, then WARP_HDR.
+        // HDR output: F2 first, then the game's settings, then WARP_HDR.
         let want_hdr = self.debug.hdr().or(self.game.hdr()).or_else(hdr_from_env).unwrap_or(false);
         if let Some(line) = live.sync_hdr(want_hdr)? { println!("{} {line}", manners::stamp()); }
         let size = [live.config.width, live.config.height];
         let split = self.game.split();
         if live.renderer.is_none() { self.game.loading(75, "building the scene"); }
-        // While the debug menu is open the scene renders about once a second
-        // and shortly after a change; frames in between only redraw the HUD,
-        // so the menu answers clicks even when the scene takes 500 ms.
-        let scene = !self.debug.open() || self.last_scene.elapsed().as_secs_f32() >= 1.0
-            || self.debug.changed.is_some_and(|t| t > self.last_scene && t.elapsed().as_secs_f32() >= 0.25);
         // A probe draws the scene every other frame: the HUD (a start menu)
         // keeps its rate while GPU timestamps measure the scene.
-        let scene = scene && (self.probe.is_none() || self.loop_frames % 2 == 0);
+        let scene = self.probe.is_none() || self.loop_frames % 2 == 0;
         // The fps shown counts scene frames only, not HUD-only redraws.
         if scene {
             // Mean scene frame time, not mean of 1/dt: that read 100+ fps
@@ -893,6 +966,7 @@ impl Shell<'_> {
         let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, scene_fps: self.fps, scene_worst_ms: self.rate.worst_ms(), renderer: &mut live.renderer };
         let draw_started=Instant::now();
         let mut draw = self.game.draw(&mut frame)?;
+        draw.hud.begin_screen_space();
         let draw_ms=draw_started.elapsed().as_secs_f64()*1000.0;
         let Some(renderer) = &live.renderer else { return Err("the game drew without a scene".into()) };
         let headroom = if live.hdr { self.debug.hdr_headroom().or_else(hdr_headroom_from_env).or(live.display.headroom).unwrap_or(1.0) } else { 1.0 };
@@ -911,13 +985,14 @@ impl Shell<'_> {
         };
         self.debug.sync_options(renderer, debug_options);
         let profile_started = Instant::now();
-        let samples = self.debug.profile(&live.gpu, renderer, self.debug.open() || self.stats.open() || self.cfg.frames > 0 || frame_log::enabled() || self.probe.is_some() || emulate::active());
+        let samples = self.debug.profile(&live.gpu, renderer, self.stats.open() || self.cfg.frames > 0 || frame_log::enabled() || self.probe.is_some() || emulate::active());
         let profile_ms = profile_started.elapsed().as_secs_f64() * 1000.0;
         if self.stats.open() {
             self.stats.gpu(&samples);
             self.stats.memory(&live.gpu);
             if self.stats.wants_info() { self.stats.set_info(render_info(&live.gpu, renderer, size)); }
         }
+        if let Some(t)=self.game.scene_tuning_mut().filter(|t|t.ui.open) { t.tick(f64::from(dt),size); }
         if self.debug.open() {
             let quality_label = self.quality.as_ref().map(|q| q.label());
             self.debug.refresh(self.game.debug(), self.cfg.max_render_height, self.fps, quality_label.as_deref());
@@ -925,7 +1000,7 @@ impl Shell<'_> {
         }
         // The hint is for a developer at a desk: never on a GameNight TV,
         // nor once a controller is plugged in.
-        if !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() && !under_host() && self.devices.pad_count() == 0 {
+        if !self.debug.open() && !self.stats.open() && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() && !under_host() && self.devices.pad_count() == 0 {
             let s = (size[1] as f32 / 1080.0).max(0.5);
             draw.hud.text.push(render::hud::TextRun { id: u64::MAX - 1, text: "click to capture the mouse, Esc releases".into(), position: [16.0 * s, size[1] as f32 - 34.0 * s],
                 bounds: [0.0, 0.0, size[0] as f32, size[1] as f32], font_size: 18.0 * s, color: [220, 220, 215, 200], font: render::hud::FontFace::Body,
@@ -955,50 +1030,76 @@ impl Shell<'_> {
             (self.scene_frames, self.loop_frames, self.stats_at) = (0, 0, Instant::now());
         }
         let (to_file, to_game) = (std::mem::take(&mut self.screenshot), self.game.wants_capture());
-        if to_file || to_game {
+        let feedback_metadata = |game: &dyn Game, debug: &debug::EngineDebug| {
+            let state = game.state().map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s)));
+            let mut metadata = serde_json::json!({
+                "schema": 1, "game": self.cfg.title, "title": game.title(), "state": state,
+                "cameras": draw.cameras.iter().map(|c| serde_json::json!({"position": c.pos.to_array(), "target": c.target.to_array(), "fov_y_deg": c.fov_y.to_degrees(), "near": c.near})).collect::<Vec<_>>(),
+                "debug": debug.metadata(), "render": {"adapter": live.gpu.info.name, "backend": format!("{:?}", live.gpu.info.backend), "driver": live.gpu.info.driver, "size": size, "fps": self.fps, "frame": self.frames, "uptime_s": self.started.elapsed().as_secs_f32()},
+            });
+            if let Some(q) = &self.quality {
+                metadata["render"]["adaptive_quality"] = q.metadata();
+            }
+                metadata
+            };
+        let crop_requested = std::mem::take(&mut self.crop_requested);
+        if (to_game && !to_file) || crop_requested {
             let target = offscreen(&live.gpu, size, wgpu::TextureFormat::Rgba8UnormSrgb);
-            Output::new(&live.gpu, wgpu::TextureFormat::Rgba8UnormSrgb)?.draw(&live.gpu, renderer, &draw, size, split, &target.create_view(&Default::default()), render_height)?;
+            Output::new(&live.gpu, wgpu::TextureFormat::Rgba8UnormSrgb)?.draw(
+                &live.gpu,
+                renderer,
+                &draw,
+                size,
+                split,
+                &target.create_view(&Default::default()),
+                render_height,
+            )?;
             let rgba = live.gpu.read_rgba8(&target);
-            if to_file {
-                let state = self.game.state().map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s)));
-                let mut metadata = serde_json::json!({
-                    "schema": 1, "game": self.cfg.title, "title": self.game.title(), "state": state,
-                    "cameras": draw.cameras.iter().map(|c| serde_json::json!({"position": c.pos.to_array(), "target": c.target.to_array(), "fov_y_deg": c.fov_y.to_degrees(), "near": c.near})).collect::<Vec<_>>(),
-                    "debug": self.debug.metadata(), "render": {"adapter": live.gpu.info.name, "backend": format!("{:?}", live.gpu.info.backend), "driver": live.gpu.info.driver, "size": size, "fps": self.fps, "frame": self.frames, "uptime_s": self.started.elapsed().as_secs_f32()},
-                });
-                if let Some(q) = &self.quality {
-                    metadata["render"]["adaptive_quality"] = q.metadata();
-                }
-                let saved = screenshot::save_full(screenshot::Shot { title: &self.cfg.title, size, rgba: &rgba, metadata }, |path| self.game.feedback_replay(path, (self.acc / step).clamp(0.0, 1.0)));
-                let line = match saved {
+            if crop_requested {
+                let saved = screenshot::save_full(
+                    screenshot::Shot {
+                        title: &self.cfg.title,
+                        size,
+                        rgba: &rgba,
+                        metadata: feedback_metadata(self.game,&self.debug),
+                    },
+                    |path| {
+                        self.game
+                            .feedback_replay(path, (self.acc / step).clamp(0., 1.))
+                    },
+                );
+                match saved {
                     Ok(saved) => {
-                        let line = saved.line.clone();
-                        let crop = render::picture::Picture::new(size[0], size[1], rgba.clone()).ok()
-                            .map(|picture| Crop { saved, size, picture: Arc::new(picture), start: None, cursor: [0.0; 2] });
-                        match (crop, std::mem::take(&mut self.crop_requested)) {
-                          (Some(crop), true) => {
-                            self.crop = Some(crop);
-                            // capture_mouse(false), field by field: `live` is borrowed.
-                            self.devices.reset_mouse();
-                            self.devices.mouse_captured = false;
-                            if let Some(w) = &self.window {
-                                let _ = w.set_cursor_grab(CursorGrabMode::None);
-                                w.set_cursor_visible(true);
-                                w.set_cursor(winit::window::CursorIcon::Crosshair);
-                            }
-                            line
-                          }
-                          (crop, _) => {
-                            if let Some(crop) = crop { self.last_shot = Some((Instant::now(), crop)); }
-                            format!("{line}  (F12 again: crop)")
-                          }
+                        self.crop = Some(Crop {
+                            saved,
+                            size,
+                            picture: Arc::new(render::picture::Picture::new(
+                                size[0],
+                                size[1],
+                                rgba.clone(),
+                            )?),
+                            start: None,
+                            cursor: [0.; 2],
+                        });
+                        self.devices.reset_mouse();
+                        self.devices.mouse_captured = false;
+                        if let Some(w) = &self.window {
+                            let _ = w.set_cursor_grab(CursorGrabMode::None);
+                            w.set_cursor_visible(true);
+                            w.set_cursor(winit::window::CursorIcon::Crosshair);
                         }
                     }
-                    Err(e) => { eprintln!("screenshot failed: {e}"); format!("screenshot failed: {e}") }
-                };
-                self.toast = Some((line, Instant::now() + std::time::Duration::from_secs(4)));
+                    Err(e) => {
+                        self.toast = Some((
+                            format!("Screenshot failed: {e}"),
+                            Instant::now() + std::time::Duration::from_secs(4),
+                        ))
+                    }
+                }
             }
-            if to_game { self.game.captured(size, rgba); }
+            if to_game {
+                self.game.captured(size, rgba);
+            }
         }
         if self.toast.as_ref().is_some_and(|(_, until)| Instant::now() > *until) { self.toast = None; }
         if let Some(crop) = &self.crop { draw.hud.begin_overlay(); crop.draw(&mut draw.hud); }
@@ -1011,8 +1112,89 @@ impl Shell<'_> {
         }
         if self.stats.open() { let game = &*self.game; self.stats.draw(&mut draw.hud, || game.debug_stats()); }
         if self.debug.open() { self.debug.draw(&mut draw.hud); }
+        if let Some(t)=self.game.scene_tuning_mut().filter(|t|t.ui.open) { t.draw(&mut draw.hud); }
+        if self.hidden_layout.is_none() { self.windows.sync(&mut draw.hud); }
+        if self.dev_mode {
+            self.dev_bar.draw(&mut draw.hud,self.game,self.stats.open(),self.debug.open());
+        }
         // Nothing to show on a window without pixels; the game keeps ticking.
         if self.zero_size || live.is_lost() { return Ok(()); }
+        if to_file && !crop_requested {
+            live.out.prepare(
+                &live.gpu,
+                renderer,
+                &draw,
+                size,
+                split,
+                render_height,
+                scene,
+            )?;
+            let picture = live.out.picture.as_ref().unwrap();
+            let mut picker = if live.hdr {
+                let format = render::present::HDR_HUD_FORMAT;
+                let sdr = Presenter::new(&live.gpu, format);
+                feedback::Picker::new(sdr.freeze_sdr(
+                    &live.gpu,
+                    picture,
+                    size,
+                    format,
+                    Some(&live.out.hud),
+                )?)
+            } else {
+                feedback::Picker::new(live.out.presenter.freeze_sdr(
+                    &live.gpu,
+                    picture,
+                    size,
+                    live.config.format,
+                    Some(&live.out.hud),
+                )?)
+            };
+            let w = self.window.as_ref().unwrap();
+            self.devices.reset_keyboard();
+            self.devices.reset_mouse();
+            self.devices.mouse_captured = false;
+            self.pointer_owner = None;
+            self.pressed_mouse_buttons = 0;
+            self.bar_press = false;
+            self.shift_down = false;
+            let _ = w.set_cursor_grab(CursorGrabMode::None);
+            w.set_cursor_visible(true);
+            w.set_cursor(winit::window::CursorIcon::Crosshair);
+            picker.show(
+                w,
+                &live.gpu,
+                &live.out.presenter,
+                &mut live.feedback_hud,
+                &mut live.surface,
+                &live.instance,
+                &live.config,
+            )?;
+            if to_game {
+                self.game.captured(size, picker.read_rgba(&live.gpu));
+            }
+            let metadata=feedback_metadata(self.game,&self.debug);
+            let queued = (|| {
+                if self.feedback_writer.is_none() {
+                    self.feedback_writer = Some(feedback::Writer::new()?);
+                }
+                self.feedback_writer.as_ref().unwrap().submit(
+                    &mut picker,
+                    &live.gpu,
+                    &self.cfg.title,
+                    metadata,
+                    |path| {
+                        self.game
+                            .feedback_replay(path, (self.acc / step).clamp(0., 1.))
+                    },
+                    |_, _, _| Ok(()),
+                )
+            })();
+            match queued {
+                Ok(()) => self.picker = Some(picker),
+                Err(error) => self.end_picker(format!("Feedback save failed: {error}")),
+            }
+            return Ok(());
+        }
         let present_started=Instant::now();
         match live.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) | wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
@@ -1147,13 +1329,15 @@ impl Shell<'_> {
 
     fn size(&self) -> [u32; 2] { self.live.as_ref().map_or(self.cfg.size, |l| [l.config.width, l.config.height]) }
 
-    /// F10 opens and closes the debug menu; while it is open it takes the
+    /// F2 opens and closes the debug menu; while it is open it takes the
     /// navigation keys. True when the key was used.
     fn debug_key(&mut self, code: KeyCode, repeat: bool) -> bool {
         use render::debug_ui::DebugKey;
+        let scene = code != KeyCode::F2 && self.game.scene_tuning().is_some_and(|t|t.ui.open)
+            && (!self.debug.open() || self.windows.frontmost_of(render::debug_ui::WINDOW_ID,editor::scene_tuning::WINDOW_ID)==Some(editor::scene_tuning::WINDOW_ID));
         let key = match code {
-            KeyCode::F10 if !repeat => DebugKey::Toggle,
-            _ if !self.debug.open() => return false,
+            KeyCode::F2 if !repeat => DebugKey::Toggle,
+            _ if !self.debug.open() && !scene => return false,
             KeyCode::Escape if !repeat => DebugKey::Close,
             KeyCode::ArrowUp => DebugKey::Up,
             KeyCode::ArrowDown => DebugKey::Down,
@@ -1164,6 +1348,10 @@ impl Shell<'_> {
             KeyCode::PageDown => DebugKey::PageDown,
             _ => return false,
         };
+        if scene {
+            let size=self.size();
+            return self.game.scene_tuning_mut().is_some_and(|t| t.key(key,size));
+        }
         let was_open = self.debug.open();
         let quality_label = self.quality.as_ref().map(|q| q.label());
         self.debug.refresh(self.game.debug(), self.cfg.max_render_height, self.fps, quality_label.as_deref());
@@ -1172,6 +1360,14 @@ impl Shell<'_> {
         // The pointer works the menu while it is open.
         if !was_open && self.debug.open() { self.capture_mouse(false); }
         used
+    }
+
+    fn end_picker(&mut self, line:String) {
+        self.picker=None;
+        self.acc=0.; self.last=Instant::now(); self.last_scene=self.last;
+        if let Some(w)=&self.window {w.set_cursor(winit::window::CursorIcon::Default); w.request_redraw();}
+        self.toast=Some((line,self.last+std::time::Duration::from_secs(4)));
+        self.sync_capture();
     }
 
     fn start_crop(&mut self, crop: Crop) {
@@ -1199,9 +1395,68 @@ impl Shell<'_> {
         self.sync_capture();
     }
 
+    fn shortcut(&mut self, code:KeyCode, state:ElementState, repeat:bool, shift:bool) -> bool {
+        if state==ElementState::Pressed && !repeat && matches!(code,KeyCode::F2|KeyCode::F3|KeyCode::F5|KeyCode::F6|KeyCode::F7|KeyCode::F8|KeyCode::F9|KeyCode::F10|KeyCode::F11|KeyCode::F12) {
+            self.dev_mode=true;
+            if let Some([debug,stats,game,scene])=self.hidden_layout.take() {
+                self.debug.set_visible(debug);
+                self.stats.set_visible(stats);
+                self.game.set_editor_windows_open(game);
+                if let Some(t)=self.game.scene_tuning_mut() { t.set_visible(scene); }
+                // A shortcut from hidden Dev Mode is a request to show that window.
+                if restored_panel_open(code, debug, stats, |key| self.game.editor_shortcut(key).is_some_and(|(_,open)|open)) {
+                    self.sync_capture();
+                    return true;
+                }
+            }
+        }
+        match route_function_key(self.game, code, state, repeat, shift) {
+            KeyRoute::Engine(action) => {
+                match action {
+                    EngineShortcut::AllMenus => {
+                        let visible=[self.debug.open(),self.stats.open(),self.game.editor_windows_open(),self.game.scene_tuning().is_some_and(|t|t.is_open())];
+                        let restore=if self.dev_mode {
+                            self.hidden_layout=Some(visible);
+                            [false;4]
+                        } else {
+                            self.hidden_layout.take().unwrap_or([false;4])
+                        };
+                        self.dev_mode=!self.dev_mode;
+                        self.debug.set_visible(restore[0]);
+                        self.stats.set_visible(restore[1]);
+                        self.game.set_editor_windows_open(restore[2]);
+                        if let Some(t)=self.game.scene_tuning_mut() { t.set_visible(restore[3]); }
+                        self.pointer_owner=None;
+                        self.pressed_mouse_buttons=0;
+                        self.devices.reset_mouse();
+                    }
+                    EngineShortcut::DebugMenu => { self.debug_key(KeyCode::F2, false); }
+                    EngineShortcut::Fullscreen => if let Some(w) = &self.window {
+                        w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) });
+                    },
+                    EngineShortcut::Screenshot => if self.crop.is_none() {
+                        let shift = self.modifiers.shift_key() || self.shift_down;
+                        self.screenshot = true;
+                        self.crop_requested = shift;
+                    },
+                }
+                self.sync_capture();
+                return true;
+            }
+            KeyRoute::Stats { shift } => {
+                if shift { self.stats.cycle_detail() } else { self.stats.toggle() }
+                if self.stats.open() {self.capture_mouse(false);} self.sync_capture();
+                return true;
+            }
+            KeyRoute::Consumed => { self.sync_capture(); return true; }
+            KeyRoute::Other => return false,
+        }
+    }
+
     fn sync_capture(&mut self) {
-        if self.crop.is_some() { return; }
-        let capture = if self.debug.open() { Some(false) } else { self.game.mouse_capture() };
+        if self.crop.is_some() || self.picker.is_some() { return; }
+        self.devices.pointer_enabled = self.cfg.pointer || self.dev_mode || self.stats.open() || self.game.editor_windows_open();
+        let capture = if self.dev_mode || self.debug.open() || self.stats.open() || self.game.editor_windows_open() { Some(false) } else { self.game.mouse_capture() };
         if let Some(want) = capture {
             let want = want && self.cfg.keyboard && self.focused && self.screen != Screen::Hidden;
             if want != self.devices.mouse_captured { self.capture_mouse(want); }
@@ -1261,6 +1516,7 @@ impl ApplicationHandler for Shell<'_> {
     }
 
     fn device_event(&mut self, event_loop: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
+        if self.picker.is_some() {return;}
         if let DeviceEvent::MouseMotion { delta } = event {
             self.mouse_events = self.mouse_events.saturating_add(1);
             self.mouse_delta[0] += delta.0;
@@ -1296,6 +1552,54 @@ impl ApplicationHandler for Shell<'_> {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        if self.picker.is_some() {
+            let size = self.size();
+            match &event {
+                WindowEvent::Focused(false) | WindowEvent::Occluded(true) => {
+                    self.end_picker("Screenshot without a point".into())
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.physical_key == PhysicalKey::Code(KeyCode::F4)
+                        && event.state == ElementState::Pressed
+                        && !event.repeat =>
+                {
+                    let picker = self.picker.take().unwrap();
+                    match picker.into_crop(&self.live.as_ref().unwrap().gpu) {
+                        Ok(crop) => {
+                            self.start_crop(crop);
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                        }
+                        Err(e) => self.end_picker(e),
+                    }
+                    return;
+                }
+                _ => {
+                    if let WindowEvent::CursorMoved { position, .. } = &event {
+                        self.cursor_position = Some([position.x as f32, position.y as f32]);
+                    }
+                    if let WindowEvent::Resized(_) = &event {
+                        self.picker.as_mut().unwrap().resized();
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                    }
+                    match self.picker.as_mut().unwrap().input(
+                        &event,
+                        self.cursor_position.map(|p| p.map(f64::from)),
+                        size,
+                    ) {
+                        feedback::Input::Pass => {}
+                        feedback::Input::Consumed => return,
+                        feedback::Input::Close(line) => {
+                            self.end_picker(line);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
         match event {
             WindowEvent::CloseRequested => { startup::note_exit("window close requested"); event_loop.exit() }
             WindowEvent::Resized(size) => {
@@ -1308,22 +1612,27 @@ impl ApplicationHandler for Shell<'_> {
             }
             WindowEvent::Focused(focused) => {
                 self.focused = focused;
-                if !focused { self.capture_mouse(false); self.devices.cursor(None); }
+                if !focused { self.bar_press=false; self.pointer_owner=None; self.pressed_mouse_buttons=0; self.cursor_position=None; self.devices.reset_mouse(); self.debug.cancel_interaction(); if let Some(t)=self.game.scene_tuning_mut(){t.ui.cancel_interaction();} self.capture_mouse(false); self.devices.cursor(None); }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_events = self.cursor_events.saturating_add(1);
                 let p = [position.x as f32, position.y as f32];
                 if let Some(crop) = &mut self.crop { crop.cursor = p; return; }
+                self.cursor_position=Some(p);
                 self.debug.pointer_move(p);
+                if let Some(t)=self.game.scene_tuning_mut().filter(|t|t.ui.open) {t.ui.pointer_move(p);}
                 self.devices.cursor(Some(p));
             }
-            WindowEvent::CursorLeft { .. } => self.devices.cursor(None),
+            WindowEvent::CursorLeft { .. } => {self.cursor_position=None; self.devices.cursor(None);},
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                 };
-                if self.debug.open() && self.debug.scroll(lines, self.size()) { return; }
+                let size=self.size();
+                if self.windows.hit(self.cursor_position,size)==Some(editor::scene_tuning::WINDOW_ID)
+                    && let Some(t)=self.game.scene_tuning_mut().filter(|t|t.ui.open) {t.scroll(lines,size); return;}
+                if self.debug.open() && self.windows.hit(self.cursor_position,self.size())==Some(render::debug_ui::WINDOW_ID) { self.debug.scroll(lines, self.size()); return; }
                 self.devices.wheel(lines);
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -1331,12 +1640,37 @@ impl ApplicationHandler for Shell<'_> {
                     if button == MouseButton::Left { self.crop_drag(state); }
                     return;
                 }
-                if self.debug.open() && button == MouseButton::Left {
+                if button==MouseButton::Left && state==ElementState::Released && self.bar_press {
+                    self.bar_press=false;
+                    return;
+                }
+                if self.dev_mode && button==MouseButton::Left && state==ElementState::Pressed
+                    && let Some(key)=self.dev_bar.hit(self.cursor_position) {
+                    self.bar_press=true;
+                    self.shortcut(key,state,false,false);
+                    return;
+                }
+                let hit=if self.hidden_layout.is_some() {None} else {self.windows.hit(self.cursor_position,self.size())};
+                let mask=match button { MouseButton::Left=>1, MouseButton::Right=>2, MouseButton::Middle=>4, _=>0 };
+                if state==ElementState::Pressed && mask!=0 && self.pressed_mouse_buttons==0 {
+                    if let Some(id)=hit {self.windows.raise(id);}
+                    self.pointer_owner=Some(hit);
+                }
+                let target=self.pointer_owner.unwrap_or(hit);
+                if state==ElementState::Pressed {self.pressed_mouse_buttons|=mask;}
+                else {self.pressed_mouse_buttons &= !mask;}
+                let size=self.size();
+                if target==Some(editor::scene_tuning::WINDOW_ID) && let Some(t)=self.game.scene_tuning_mut().filter(|t|t.ui.open) {
+                    if button==MouseButton::Left { t.press(state==ElementState::Pressed,size); }
+                    return;
+                }
+                if target==Some(render::debug_ui::WINDOW_ID) && self.debug.open() {
+                    if button != MouseButton::Left {return;}
                     let action = if state == ElementState::Pressed { self.debug.pointer_down(self.size()).1 } else { self.debug.pointer_up() };
                     if let Some(a) = action { self.game.debug_action(a); }
                     return;
                 }
-                if button == MouseButton::Left && state == ElementState::Pressed && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() {
+                if !self.dev_mode && !self.debug.open() && !self.stats.open() && !self.game.editor_windows_open() && button == MouseButton::Left && state == ElementState::Pressed && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() {
                     self.capture_mouse(true);
                     return;
                 }
@@ -1355,31 +1689,16 @@ impl ApplicationHandler for Shell<'_> {
                     if code == KeyCode::Escape && event.state == ElementState::Pressed { self.end_crop("crop cancelled".into()); }
                     return;
                 }
+                if code==KeyCode::Enter && self.modifiers.alt_key() {
+                    if event.state==ElementState::Pressed && !event.repeat && let Some(w)=&self.window {
+                        w.set_fullscreen(if w.fullscreen().is_some(){None}else{Some(Fullscreen::Borderless(None))});
+                    }
+                    return;
+                }
                 let shift = self.modifiers.shift_key() || self.shift_down;
-                match route_function_key(self.game, code, event.state, event.repeat, shift) {
-                    KeyRoute::Engine(action) => {
-                        match action {
-                            EngineShortcut::DebugMenu => { self.debug_key(KeyCode::F10, false); }
-                            EngineShortcut::Fullscreen => if let Some(w) = &self.window {
-                                w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) });
-                            },
-                            EngineShortcut::Screenshot => if self.crop.is_none() {
-                                let shift = self.modifiers.shift_key() || self.shift_down;
-                                let again = self.last_shot.take().filter(|(at, _)| at.elapsed().as_secs_f32() < 1.5);
-                                println!("F12: shift {shift}, again {}", again.is_some());
-                                if let Some((_, crop)) = again { self.start_crop(crop); }
-                                else { self.screenshot = true; self.crop_requested = shift; }
-                            },
-                        }
-                        self.sync_capture();
-                        return;
-                    }
-                    KeyRoute::Stats { shift } => {
-                        if shift { self.stats.cycle_detail() } else { self.stats.toggle() }
-                        return;
-                    }
-                    KeyRoute::Consumed => { self.sync_capture(); return; }
-                    KeyRoute::Other => {}
+                if self.shortcut(code,event.state,event.repeat,shift) {
+                    if self.screenshot && !self.crop_requested && !self.zero_size && !self.manners.offscreen() { self.redraw(event_loop); }
+                    return;
                 }
                 if event.state == ElementState::Pressed && self.debug_key(code, event.repeat) { return; }
                 if self.game.text_input() && event.state == ElementState::Pressed {
@@ -1389,6 +1708,12 @@ impl ApplicationHandler for Shell<'_> {
                     let ev = match code {
                         KeyCode::Escape if !event.repeat => Some(TextEvent::Escape),
                         KeyCode::Enter | KeyCode::NumpadEnter if !event.repeat => Some(TextEvent::Enter),
+                        KeyCode::KeyA if cmd => Some(TextEvent::SelectAll),
+                        KeyCode::KeyX if cmd && !event.repeat => Some(TextEvent::Cut),
+                        KeyCode::ArrowLeft if shift => Some(TextEvent::SelectLeft),
+                        KeyCode::ArrowRight if shift => Some(TextEvent::SelectRight),
+                        KeyCode::Home if shift => Some(TextEvent::SelectHome),
+                        KeyCode::End if shift => Some(TextEvent::SelectEnd),
                         KeyCode::Backspace => Some(TextEvent::Backspace),
                         KeyCode::Delete => Some(TextEvent::Delete),
                         KeyCode::ArrowLeft => Some(TextEvent::Left),
@@ -1433,6 +1758,7 @@ impl ApplicationHandler for Shell<'_> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.picker.is_some() {event_loop.set_control_flow(ControlFlow::Wait);return;}
         event_loop.set_control_flow(ControlFlow::Poll);
         // Invisible and minimised windows may get no redraw events (Win32),
         // yet a warm or paused game must keep answering its host, and a new
@@ -1454,6 +1780,13 @@ mod shortcut_tests {
         fn function_key(&mut self, n: u8) -> bool { self.received.push(n); true }
     }
     #[test]
+    fn hidden_shortcut_reveals_an_already_open_panel() {
+        assert!(restored_panel_open(KeyCode::F3, false, true, |_|false));
+        assert!(!restored_panel_open(KeyCode::F3, true, false, |_|true));
+        assert!(restored_panel_open(KeyCode::F12, false, false, |k|k==12));
+        assert!(!restored_panel_open(KeyCode::F10, false, false, |k|k==12));
+    }
+    #[test]
     fn slow_render_leaves_time_to_drain_mouse_backlog() {
         use std::time::Duration;
         // A 12 ms draw missed 120 Hz. All 100 already-queued packets in a
@@ -1471,18 +1804,18 @@ mod shortcut_tests {
     fn engine_shortcuts_cannot_be_claimed_by_games_or_text_fields() {
         for typing in [false, true] {
             let mut game = ClaimsAllKeys { typing, ..Default::default() };
-            for (code, action) in [(KeyCode::F10, EngineShortcut::DebugMenu), (KeyCode::F11, EngineShortcut::Fullscreen), (KeyCode::F12, EngineShortcut::Screenshot)] {
+            for (code, action) in [(KeyCode::F1, EngineShortcut::AllMenus), (KeyCode::F2, EngineShortcut::DebugMenu), (KeyCode::F4, EngineShortcut::Screenshot)] {
                 assert_eq!(route_function_key(&mut game, code, ElementState::Pressed, false, false), KeyRoute::Engine(action));
                 assert_eq!(route_function_key(&mut game, code, ElementState::Pressed, true, false), KeyRoute::Consumed);
                 assert_eq!(route_function_key(&mut game, code, ElementState::Released, false, false), KeyRoute::Consumed);
             }
             assert!(game.received.is_empty());
-            for code in [KeyCode::F3, KeyCode::F9] {
+            for code in [KeyCode::F12, KeyCode::F11] {
                 assert_eq!(route_function_key(&mut game, code, ElementState::Pressed, false, false), KeyRoute::Consumed);
                 route_function_key(&mut game, code, ElementState::Pressed, true, false);
                 route_function_key(&mut game, code, ElementState::Released, false, false);
             }
-            assert_eq!(game.received, [3, 9]);
+            assert_eq!(game.received, [12, 11]);
             assert_eq!(route_function_key(&mut game, KeyCode::KeyW, ElementState::Pressed, false, false), KeyRoute::Other);
         }
     }
@@ -1500,6 +1833,6 @@ mod shortcut_tests {
         assert_eq!(route_function_key(&mut NoKeys, KeyCode::F3, ElementState::Pressed, false, true), KeyRoute::Stats { shift: true });
         assert_eq!(route_function_key(&mut NoKeys, KeyCode::F3, ElementState::Pressed, true, false), KeyRoute::Consumed);
         assert_eq!(route_function_key(&mut NoKeys, KeyCode::F3, ElementState::Released, false, false), KeyRoute::Consumed);
-        assert_eq!(route_function_key(&mut NoKeys, KeyCode::F4, ElementState::Pressed, false, false), KeyRoute::Consumed);
+        assert_eq!(route_function_key(&mut NoKeys, KeyCode::F6, ElementState::Pressed, false, false), KeyRoute::Consumed);
     }
 }

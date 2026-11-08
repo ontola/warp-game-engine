@@ -20,7 +20,7 @@ impl Seed {
     fn shell(self)->Race {
         // A tiny placeholder uses its own RNG. The real stream is preserved
         // bit-for-bit and new_stage consumes it once, just as the old path did.
-        Race {settings:self.settings,rng:self.rng,cars:self.cars,
+        Race {stage_origin:None,settings:self.settings,rng:self.rng,cars:self.cars,
             stage:Stage::generate(&mut Pcg::new(0),10.0),phys:Physics::new(),surfaces:Surfaces::default(),
             weather:"clear",players:vec![],phase:"results",clock:0.0,results:0.0,first_finish:-1.0,
             round:self.round,frame:self.frame,stats:self.stats,events:self.events}

@@ -1,7 +1,7 @@
 # Warp documentation
 
 Warp is a Rust game engine designed for fast iteration with AI. Everything
-is code and text, there is no visual editor, every run replays bit for bit,
+is code and text, visual [editor tools](editor-tools.md) run inside games, every run replays bit for bit,
 and a running game can be inspected and changed by an AI over MCP. It is
 made for couch games with up to four players on one screen. Its focus so
 far is procedural outdoor worlds, with headless rendering, scripted
@@ -11,7 +11,7 @@ Games on it: [Sideways](../../games/sideways/README.md), a gravel rally
 game, and [Growing Guns](../../games/growing-guns/README.md), an arena
 shooter. [SpaceRacer](../../games/spaceracer/README.md) has a playable native
 development port with Luau rules. Spellstorm, a co-op wizard roguelite, and
-GameNight's Game Room lobby are being ported. The `warp` executable runs
+Gamepad Party's Game Room lobby are being ported. The `warp` executable runs
 games made only of Luau scripts and sound patches, such as
 [Hello Warp](../../games/hello-warp/README.md), with no Rust.
 
@@ -25,11 +25,14 @@ and session notes are in the [development log](log/README.md).
 
 | Guide | What it covers |
 | --- | --- |
+| [Playtester F12 captures](warp-cli.md#sideways-feedback) | Replay Sideways driver input, inspect a pixel by coordinate, or compare physics, clips and GPU timings across revisions. [Growing Guns input and live-edit history](../../games/growing-guns/README.md#replay-a-moment-while-editing-graphics). |
+| [Procedural character contacts](animation.md) | Layer a reachable prop socket over an animated arm and render a repeatable grip preview. |
 | [What Warp is](overview.md) | Design goals: deterministic sim, fast iteration, headless runs, physical units, live tweaking by an AI as a direction. |
 | [Status](status.md) | What is the default, what is opt-in and what is open, per area. |
 | [Workspace and crates](workspace.md) | The repository layout, the engine crates, the game packages and the build profiles. |
 | [Building and running](building-and-running.md) | Checks and tests, running the games, software rendering, scripted playtests, golden images, environment variables. |
 | [Running in a browser](browser.md) | terrain_fly built for wasm32 and WebGPU: building it, what a browser needs, how that build differs, what is open. |
+| [Parenting and attachment points](parenting.md) | Luau entities, native model sockets and posed instance groups. |
 | [Making a game](making-a-game.md) | The `app::Game` trait, the loop, building a scene, costs and gotchas. Starts from the `hello` example. |
 | [Games in Luau: the warp executable](warp-cli.md) | `warp new`, `run`, `script`, `serve`, `check`: a game of Luau scripts, sound patches and glTF assets with hot reload and live MCP control. The Luau game API. |
 | [Scripting and modding](scripting.md) | The Luau host: sandbox, hot reload, step budget. Growing Guns' mod API as the worked example. |

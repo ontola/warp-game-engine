@@ -7,7 +7,7 @@ the depth) starts with it open; headless captures (`terrain_fly --fly N
 --fly-shot out.png`) draw it too.
 
 F3 is the game's first: a game whose `Game::function_key(3)` returns true
-keeps the key (Growing Guns opens its cheat menu there). F10 stays the
+keeps the key (Growing Guns opens its cheat menu there). F2 stays the
 render debug panel ([debug-ui.md](debug-ui.md)) for switching things;
 F3 only shows numbers and takes no input.
 
@@ -41,7 +41,7 @@ F3 only shows numbers and takes no input.
 
 ## Cost
 
-Closed, the overlay does nothing and GPU timestamps stay off (unless F10, a
+Closed, the overlay does nothing and GPU timestamps stay off (unless F2, a
 frame log or a probe turned them on). Open:
 
 - Each timed pass writes two GPU timestamps. They resolve into a four-slot

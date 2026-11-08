@@ -226,7 +226,7 @@ impl State {
             && (self.session.is_empty() || session != self.session) { return vec![]; }
         match kind.as_str() {
             "welcome" => {
-                if msg["protocol_version"].as_u64() != Some(1) { return vec![Command::Error("Unsupported or missing GameNight protocol_version".into())]; }
+                if msg["protocol_version"].as_u64() != Some(1) { return vec![Command::Error("Unsupported or missing Gamepad Party protocol_version".into())]; }
                 self.connected = true;
                 self.host_sdk = msg["godot_sdk"].as_u64();
                 self.party = msg.get("party").cloned().unwrap_or_else(|| json!({}));
@@ -310,14 +310,14 @@ impl Client {
     pub fn connect_from_env(game_id: &str) -> Result<Option<Self>, String> { Config::from_env(game_id)?.map(Self::connect).transpose() }
 
     pub fn connect(config: Config) -> Result<Self, String> {
-        if !config.url.starts_with("ws://") { return Err("GameNight requires a ws:// host address".into()); }
+        if !config.url.starts_with("ws://") { return Err("Gamepad Party requires a ws:// host address".into()); }
         let (outgoing, send_rx) = mpsc::channel();
         let (recv_tx, incoming) = mpsc::channel();
         let state = State::new(config.game_id.clone());
         let launched_by_daemon = config.launched_by_daemon;
         std::thread::Builder::new().name("gamenight".into()).spawn(move || {
             if let Err(error) = transport(config, send_rx, &recv_tx) { let _ = recv_tx.send(Incoming::Disconnected(error)); }
-        }).map_err(|e| format!("Cannot start GameNight connection thread: {e}"))?;
+        }).map_err(|e| format!("Cannot start Gamepad Party connection thread: {e}"))?;
         Ok(Self { state, launched_by_daemon, rumble_quiet: BTreeMap::new(), outgoing, incoming, held: Default::default(), loading_session: None })
     }
 
@@ -359,11 +359,11 @@ impl Client {
         if let Some(session) = session { let _ = self.notify_progress(&session, percent, text); }
     }
 
-    pub fn send_json(&self, value: Value) -> Result<(), String> { self.outgoing.send(value).map_err(|_| "GameNight is disconnected".into()) }
+    pub fn send_json(&self, value: Value) -> Result<(), String> { self.outgoing.send(value).map_err(|_| "Gamepad Party is disconnected".into()) }
     pub fn declare_settings(&self, settings: Value) -> Result<(), String> { self.send_json(json!({"type":"declare_settings", "settings":settings})) }
     pub fn declare_actions(&self, actions: Value) -> Result<(), String> {
         if !self.state.has_sdk6_options() {
-            eprintln!("GameNight: host SDK {:?} does not advertise SDK6; optional menu actions are unavailable", self.state.host_sdk);
+            eprintln!("Gamepad Party: host SDK {:?} does not advertise SDK6; optional menu actions are unavailable", self.state.host_sdk);
             return Ok(());
         }
         self.send_json(json!({"type":"declare_actions", "actions":actions}))
@@ -378,7 +378,7 @@ impl Client {
     }
     pub fn notify_participation(&self, session: &str, instant_join: bool) -> Result<(), String> { self.send_json(json!({"type":"participation", "session":session, "instant_join":instant_join})) }
     pub fn notify_ready(&mut self, session: &str) -> Result<(), String> {
-        if !self.state.ready(session) { return Err("Ready does not match a preparing GameNight session".into()); }
+        if !self.state.ready(session) { return Err("Ready does not match a preparing Gamepad Party session".into()); }
         self.send_json(json!({"type":"ready", "session":session}))
     }
     /// Loading progress shown in the lobby while a session prepares.
@@ -431,7 +431,7 @@ fn transport_with(url: &str, hello: Value, outgoing: Receiver<Value>, incoming: 
         .map_err(|error| diagnostics.failure("connect", websocket_error(&error)))?;
     match socket.get_mut() {
         MaybeTlsStream::Plain(stream) => configure_stream(stream)?,
-        _ => return Err("Unexpected GameNight transport".into()),
+        _ => return Err("Unexpected Gamepad Party transport".into()),
     }
     match socket.send(Message::Text(hello.to_string().into())) {
         Err(error) if !would_block(&error) => return Err(diagnostics.failure("hello", websocket_error(&error))),
@@ -500,7 +500,7 @@ impl TransportDiagnostics {
 
     fn failure(&self, operation: &str, cause: String) -> String {
         let last_received_ms = self.last_received.map(|at| at.elapsed().as_millis().to_string()).unwrap_or_else(|| "none".into());
-        format!("GameNight transport {operation} failed: {cause}; elapsed_ms={}, received_frames={}, sent_messages={}, last_received_ms={last_received_ms}",
+        format!("Gamepad Party transport {operation} failed: {cause}; elapsed_ms={}, received_frames={}, sent_messages={}, last_received_ms={last_received_ms}",
             self.started.elapsed().as_millis(), self.received_frames, self.sent_messages)
     }
 }
@@ -546,8 +546,8 @@ fn websocket_error(error: &tungstenite::Error) -> String {
 /// Non-blocking, not a read timeout: on Windows a timed-out blocking read
 /// leaves the socket in an undefined state (and surfaced as error 997).
 fn configure_stream(stream: &TcpStream) -> Result<(), String> {
-    stream.set_nonblocking(true).map_err(|e| format!("GameNight set_nonblocking failed: {}", io_error(&e)))?;
-    stream.set_nodelay(true).map_err(|e| format!("GameNight set_nodelay failed: {}", io_error(&e)))
+    stream.set_nonblocking(true).map_err(|e| format!("Gamepad Party set_nonblocking failed: {}", io_error(&e)))?;
+    stream.set_nodelay(true).map_err(|e| format!("Gamepad Party set_nodelay failed: {}", io_error(&e)))
 }
 
 #[cfg(test)]

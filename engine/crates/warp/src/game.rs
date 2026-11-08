@@ -83,6 +83,7 @@ pub struct LuaGame {
     surface: GameSurface,
     /// main.luau as it runs after temporary knob changes (not saved yet).
     trial: Option<String>,
+    editor_pages: (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>),
 }
 
 /// The start menu's items: Joep's convention for every GameNight game
@@ -102,6 +103,10 @@ impl LuaGame {
     /// `sound` is where sounds go (the speakers, an offline mixer, or None
     /// for silence).
     pub fn load(path: &Path, over: &Overrides, sound: Option<SoundSender>) -> Result<Self, String> {
+        Self::load_with_storage(path, over, sound, crate::storage::Location::Memory)
+    }
+
+    pub fn load_with_storage(path: &Path, over: &Overrides, sound: Option<SoundSender>, location: crate::storage::Location<'_>) -> Result<Self, String> {
         // A folder whose only script is its game (`my-game/my-game.luau`).
         let found = if path.is_dir() { crate::config::one_file_in(path) } else { None };
         let path = found.as_deref().unwrap_or(path);
@@ -123,6 +128,7 @@ impl LuaGame {
         let mut bank = Bank::new(sounds_dir.is_dir().then_some(sounds_dir));
         let lines = bank.scan();
         let core: Shared = Arc::new(Mutex::new(Core {
+            storage: if cfg.storage { Some(crate::storage::Storage::open(dir, &cfg.id, location).map_err(|e| format!("storage: {e}"))?) } else { None },
             world: World::new(dir, cfg.max_entities),
             plants: Default::default(),
             sounds: SoundOut::new(bank, sound),
@@ -145,8 +151,9 @@ impl LuaGame {
         let shared = core.clone();
         let mut host = Host::new(Limits { memory: cfg.memory_mb << 20, steps: cfg.steps }, move |lua, base| api::register(lua, base, shared))?;
         host.ignore(NOT_MODULES);
+        if single.is_none() { host.enable_libraries(); }
         let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None,
-            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, surface: GameSurface::new(dir), trial: None };
+            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, surface: GameSurface::new(dir), trial: None, editor_pages: Default::default() };
         g.surface.install();
         let people: Vec<SeatInfo> = (0..g.cfg.players).map(|i| SeatInfo { seat: i, name: format!("Player {}", i + 1), color: None, bot: false, couch: None })
             .chain((0..g.cfg.bots).map(|i| SeatInfo { seat: 100 + i, name: format!("Bot {}", i + 1), color: None, bot: true, couch: None })).collect();
@@ -157,6 +164,7 @@ impl LuaGame {
         g.flush_log();
         g.inline_sounds();
         g.start_new();
+        g.load_editor_pages();
         Ok(g)
     }
 
@@ -224,6 +232,7 @@ impl LuaGame {
         }
         self.inited.retain(|n| self.host.modules().iter().any(|m| &m.name == n));
         self.start_new();
+        if changed.iter().any(|n| *n == self.main_name()) { self.load_editor_pages(); }
         lines.extend(changed.iter().map(|n| match self.host.modules().iter().find(|m| &m.name == n) {
             Some(m) => match &m.error { Some(e) => format!("{n}: {e}"), None => format!("{n}: reloaded") },
             None => format!("{n}"),
@@ -504,6 +513,22 @@ impl LuaGame {
         Ok(if vals.is_empty() { "ok".into() } else { vals.iter().map(luajson::show).collect::<Vec<_>>().join("\t") })
     }
 
+    fn load_editor_pages(&mut self) {
+        use mlua::LuaSerdeExt;
+        let name = self.main_name();
+        let result = (|| {
+            let Some(exports) = self.host.modules().iter().find(|m| m.name == name).and_then(|m| m.exports.as_ref()) else { return Ok(Default::default()); };
+            let value = exports.raw_get::<mlua::Value>("editor_pages").map_err(|e| e.to_string())?;
+            if value.is_nil() { return Ok(Default::default()); }
+            let pages: Vec<crate::editor_menus::Page> = self.host.lua().from_value(value).map_err(|e| e.to_string())?;
+            if exports.raw_get::<Option<Function>>("editor_action").map_err(|e|e.to_string())?.is_none() {
+                return Err("export an editor_action(id) handler alongside editor_pages".into());
+            }
+            crate::editor_menus::build(pages)
+        })();
+        self.editor_pages = result.unwrap_or_else(|e| { self.say(format!("editor_pages: {e}")); Default::default() });
+    }
+
     /// The main script file (a one-file game's own file).
     fn main_file(&self) -> PathBuf { self.dir.join(self.single.as_deref().unwrap_or("main.luau")) }
 
@@ -547,6 +572,7 @@ impl LuaGame {
             self.flush_log();
             self.trial = Some(after);
             self.reloaded(&main);
+            self.load_editor_pages();
             let broken = self.errors();
             return Ok(format!("{name} = {} (temporary: the game runs it, {main} is unchanged; `keep` saves, `revert` undoes){}", value.trim(), if broken.is_empty() { String::new() } else { format!("; {}", broken.join("; ")) }));
         }
@@ -765,7 +791,10 @@ impl LuaGame {
             "entities" => {
                 let c = self.core();
                 let lines: Vec<String> = c.world.entities.iter().filter(|(_, e)| rest.is_empty() || e.tag == rest)
-                    .map(|(id, e)| format!("{id} {} {} pos {:.2} {:.2} {:.2}", e.shape.name(), if e.tag.is_empty() { "-" } else { &e.tag }, e.pos.x, e.pos.y, e.pos.z)).collect();
+                    .map(|(id, e)| {
+                        let pos = e.world_pose().1;
+                        format!("{id} {} {} pos {:.2} {:.2} {:.2}", e.shape.name(), if e.tag.is_empty() { "-" } else { &e.tag }, pos.x, pos.y, pos.z)
+                    }).collect();
                 Ok(if lines.is_empty() { "no entities".into() } else { lines.join("\n") })
             }
             "logs" => Ok(self.logs().join("\n")),
@@ -846,6 +875,19 @@ fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp]) -> Result<(), 
 }
 
 impl Game for LuaGame {
+    fn debug(&self) -> (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>) {
+        self.editor_pages.clone()
+    }
+
+    fn debug_action(&mut self, action: render::debug_ui::DebugAction) {
+        let render::debug_ui::DebugAction::Activate { id } = action else { return };
+        if !self.editor_pages.1.iter().any(|b| b.id == id && b.enabled) { return; }
+        let name = self.main_name();
+        if let Some((i, f)) = self.host.each("editor_action").into_iter().find(|(i,_)| self.host.modules()[*i].name == name) {
+            self.call_one(i, "editor_action", &f, &|| Ok(mlua::MultiValue::from_vec(vec![Value::Number(id as f64)])));
+        }
+    }
+
     /// The people; bots need no controls.
     fn local_players(&self) -> usize { self.core().roster.iter().filter(|p| !p.bot).count().max(1) }
 

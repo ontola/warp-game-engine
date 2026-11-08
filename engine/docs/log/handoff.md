@@ -1767,7 +1767,7 @@ confirmed on consecutive 4K boost captures. `scenarios/city-playtest.json` and
 limits and one 1080p GPU-pass sample. Fourteen app tests including hierarchy
 coverage and all-light validation. No Android build.
 
-## SpaceRacer native GameNight integration - 31 October 2026
+## SpaceRacer native Gamepad Party integration - 31 October 2026
 
 Shared client adds read-only `State::player(id)` for renderer profile access.
 SpaceRacer caches one avatar/skin atlas and projects it onto original nacelle
@@ -1782,7 +1782,7 @@ Undo, pause/resume, seat re-prepare and SDK6 new-race action. Reproduce with
 `games/spaceracer/tools/test-gamenight.py`; screenshots/report are under
 `build/spaceracer-gamenight-final`. This does not test physical pads or desktop
 foreground transitions. `register-local.ps1` points only local SpaceRacer at
-`build/spaceracer-native`; restart GameNight to reload. No catalog release or
+`build/spaceracer-native`; restart Gamepad Party to reload. No catalog release or
 Android build was produced. Public canonical integration docs were regenerated.
 
 ## SpaceRacer motion blur and crash debris - 31 October 2026
@@ -1810,7 +1810,7 @@ rendered. Full visual fidelity and scene reflections are still incomplete.
 
 SpaceRacer now has `games/spaceracer/app` (`spaceracer-app`, binary `spaceracer`).
 Pulled main through ae0b1c8 before this work. Read its README and port-status.json:
-it is playable, **not a visual/content-parity replacement**. Existing GameNight
+it is playable, **not a visual/content-parity replacement**. Existing Gamepad Party
 catalog and releases remain unchanged. No Godot runtime or export tooling used.
 
 `games/spaceracer/rules/game.luau` owns track recipes/design ranges, AI decisions,
@@ -1818,7 +1818,7 @@ rank-weighted items, weapon activation, balance, menu and biome parameters.
 Rust retains geometry, handling/flight, queries, projectile integration,
 bookkeeping and rendering. Rules hot reload; geometry applies next race.
 Analog triggers were added to `app::Controls`, and seat merging now preserves
-the right stick. Shared GameNight adapters carry trigger pressures too.
+the right stick. Shared Gamepad Party adapters carry trigger pressures too.
 
 Validation: workspace all-target check; 18 sim + 2 native app + 21 app tests;
 1207-tick native two-controller flow with captures; five biome renders; a
@@ -1831,7 +1831,7 @@ Windows: `games/spaceracer/tools/build-native.ps1` builds/packages only;
 Local test cache used `C:/dev/warp-spaceracer-target`; captures/logs are in
 `build/spaceracer-review`. Final captures expose the provisional scenery and
 lighting: preserve this honesty, do not advertise it as finished or switch
-GameNight's released game without completing the remaining port.
+Gamepad Party's released game without completing the remaining port.
 
 ## Main integration and next-agent entry point - 29 October 2026
 
@@ -2152,9 +2152,9 @@ aggregate geometric shadow bias still uses its approximate shading normal.
 Evidence and frozen native executables:
 `C:/dev/perf/warp-sideways-20261028/r62-rounded-grass/`.
 Both bounded scene runs exited. No interactive playtest was started or left
-running. GameNight still uses its earlier registered package and profile.
+running. Gamepad Party still uses its earlier registered package and profile.
 
-## Previous status — r61 frame hitch fix, opt-in GameNight preview
+## Previous status — r61 frame hitch fix, opt-in Gamepad Party preview
 
 Current branch: `codex/fourview-budget-20261026`. Read
 [the r61 report](frame-hitches-r61.md). Foliage shadow page updates were
@@ -2178,7 +2178,7 @@ sampled visual review found no missing shadows, not raw/motion equivalence.
 New `engine/tools/frame-hitches.py` reports cadence tails and preceding CPU
 work with real-frame-ID GPU joins. 27 Python fixture tests, 12 focused render
 tests and two transport tests passed; DLSS release built and six visible
-3,600-frame runs completed. GameNight transport failures now report structural
+3,600-frame runs completed. Gamepad Party transport failures now report structural
 causes and timing without tokens/payloads; a prior disconnect is not yet
 explained or claimed fixed.
 
@@ -2186,21 +2186,21 @@ Package `games/sideways/build/gamenight-r61/` and frozen test binary SHA256:
 `3ae3e74087829185873f13862a1d526aa3ec90d24ab0cecf52061bacb31f8a3c`.
 Local registration enables the async preview while retaining GPU meadow,
 120 blades, 25–35 m band, tree fullness 1.25, AO off and the r60 grip change.
-At 2026-10-27 13:40 UTC GameNight session
+At 2026-10-27 13:40 UTC Gamepad Party session
 `c49511ad-d234-416d-8ada-015df3d2ec40` was running this exact executable;
 PID 201308, seat 0 occupied, controller `ordinal:1`. The game logged a visible
 3840x2160 scene frame. No physical controller-input/scanout proof. Do not run
 GPU fixtures while this playtest is active. Evidence and managed launch proof:
 `C:/dev/perf/warp-sideways-20261027/r61-hitch-investigation/`.
 
-GameNight can overwrite an explicit local launch with a cloud CI preview;
+Gamepad Party can overwrite an explicit local launch with a cloud CI preview;
 that previously selected an old Godot executable. Process-scoped
 `GAMENIGHT_OFFLINE=1` was used when starting the host for this investigation;
 check live executable paths after any later host restart. Do not change or
 delete old cached packages as a workaround. The host priority issue is not
 fixed here. Use `active_session`/`warm_session` in live party state.
 
-## Previous status — r60 handling trial in GameNight
+## Previous status — r60 handling trial in Gamepad Party
 
 The user requested more grip after feedback that the car feels like a boat.
 Read [the r60 report](../../../games/sideways/docs/history/handling-grip-r60.md). Game-owned
@@ -2217,16 +2217,16 @@ contains the updated executable AND cars.toml; SHA256:
 `672d2380424687c1342e3857d3dcf80ecccfb06a0358426b554aa148f1ce1099`.
 The managed registration retains the complete procedural-grass preview profile
 from r58, with AO off. Runtime confirms the GPU meadow, no photographed grass,
-and a visible 3840x2160 scene submission. GameNight session
+and a visible 3840x2160 scene submission. Gamepad Party session
 `92154014-f51e-42e5-a621-6a8f5bf2fcc3` was confirmed running with two occupied
 seats and the prior controller ordinal bindings. This is not physical-input or
 display-scanout verification. Do not run GPU benchmarks during the playtest.
 Live host state uses `active_session`/`warm_session`, NOT `active`/`warm`.
 Registration is loaded on host launch; avoid redundant next/relaunch commands.
 
-## Previous status — managed GameNight preview profile repaired
+## Previous status — managed Gamepad Party preview profile repaired
 
-The user requested a GameNight session. The first r59 registration pointed to
+The user requested a Gamepad Party session. The first r59 registration pointed to
 the correct new executable but omitted the developer graphics environment.
 Actual logs confirmed legacy photographed grass, tree fullness 1.0 and the
 old sky selection. This was a launch-profile regression, not a source rollback.
@@ -2238,7 +2238,7 @@ Managed runtime now confirms GPU meadow with 120 opaque ribbon blades/patch,
 25–35 m transition, no photographed grass/CPU tuft pool, tree fullness 1.25,
 and a visible 3840×2160 scene frame. New registration helper and isolated
 tests preserve the profile, unrelated games, backups and disabled experiments.
-Tests pass on PowerShell 7 and Windows PowerShell 5.1. GameNight's controller
+Tests pass on PowerShell 7 and Windows PowerShell 5.1. Gamepad Party's controller
 seats and settings remain host-owned; check live party state before transitions.
 
 Local package: `games/sideways/build/gamenight-r59/`; registration proof is
@@ -4337,7 +4337,7 @@ The four-view scene sample total was 36.954 ms excluding HUD/presentation/CPU;
 
 Read `WINDOWS_VALIDATION.md` for measured results, evidence and limitations.
 The `play` command now provides a Windows driving loop, native XInput,
-GameNight lifecycle/controller transport and one to four rendered views.
+Gamepad Party lifecycle/controller transport and one to four rendered views.
 Only explicit `play` opens a window. Managed preparation stays invisible;
 automated GPU validation uses `play --smoke-render N` and reports zero
 visible presented frames. It is not a substitute for a visible playtest.
@@ -4345,7 +4345,7 @@ visible presented frames. It is not a substitute for a visible playtest.
 Windows uses gilrs's XInput backend. The attached 8BitDo Ultimate is named
 "Xbox Controller" by that backend. A physical input probe recorded both
 sticks, full throttle/brake, handbrake, recovery, camera and Start.
-The installed GameNight Preview daemon speaks protocol 1 / SDK 5, so
+The installed Gamepad Party Preview daemon speaks protocol 1 / SDK 5, so
 SDK 6-only actions and room logs must be capability-gated.
 
 The photographed grass uses shared world cells and terrain-triangle roots.
@@ -4394,7 +4394,7 @@ As of the late 23 October session, Joep no longer wants Godot comparisons:
 evaluate current Kern mesh and voxel versions against each other. He is done
 playtesting tonight but subsequently asked to watch gameplay remotely. An
 explicit `play --autoplay` uses the existing race AI and keeps driving without
-focus; it does not override managed GameNight inputs. Show occasional actual
+focus; it does not override managed Gamepad Party inputs. Show occasional actual
 images in chat. Stop the visible demo before GPU measurements and restart it
 afterwards; do not mix its GPU load into comparison timings.
 Joep requested quick build/restart rounds with his live visual feedback. Do
@@ -4519,7 +4519,7 @@ Original design, first step now implemented in `cli/src/ground_cover.rs`:
   reprojected now, so moving cars would smear. Shade knows the instance;
   keep a previous-transform buffer and write velocity.
 - **Complete the playable loop.** Moving instances, shadow invalidation,
-  native input, GameNight and explicit window presentation now exist. Next
+  native input, Gamepad Party and explicit window presentation now exist. Next
   are audio, settings, additional small vegetation and scene performance work.
 - **Visual differences with Godot that remain:**
   - distant forest denser and darker than Godot's (Godot uses mid meshes

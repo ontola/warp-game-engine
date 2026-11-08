@@ -182,9 +182,9 @@ impl World {
             let pick = pick_spawn(&spots, &used);
             used.push(pick);
             let p = &mut self.players[i];
-            let keep = (p.score, std::mem::take(&mut p.cards), p.weapon.clone(), p.bot, p.air_strike_charges, p.offer.take());
-            *p = crate::Player::new(keep.3);
-            (p.score, p.cards, p.weapon, p.air_strike_charges, p.offer) = (keep.0, keep.1, keep.2, keep.4, keep.5);
+            let keep = (p.score, p.kills, std::mem::take(&mut p.cards), p.weapon.clone(), p.air_strike_charges, p.offer.take());
+            *p = crate::Player::new(p.bot);
+            (p.score, p.kills, p.cards, p.weapon, p.air_strike_charges, p.offer) = keep;
             p.health = p.max_health();
             p.ammo = p.mag_size();
             p.phoenix_charges = p.weapon.phoenix_revives;
@@ -201,14 +201,20 @@ impl World {
     pub(crate) fn report_kill(&mut self, victim: usize) {
         if self.phase != Phase::Playing || self.flow.eliminated.contains(&victim) { return; }
         self.flow.eliminated.push(victim);
-        if self.players.len() >= 3 && !(self.coop && self.players[victim].bot) { self.players[victim].ghost = true; }
-        if self.coop { self.coop_kill(victim); return; }
+        if self.coop {
+            self.players[victim].ghost = self.players.len() >= 3 && !self.players[victim].bot;
+            self.coop_kill(victim);
+            return;
+        }
+        // Park eliminated bots for the remainder of a group round.
+        self.players[victim].ghost = self.players[victim].bot && self.players.len() >= 3;
         if self.flow.round_ending { return; }
         let alive: Vec<usize> = (0..self.players.len()).filter(|i| !self.flow.eliminated.contains(i)).collect();
         if alive.len() <= 1 {
             let winner = alive.first().copied().or_else(|| (0..self.players.len()).find(|&k| k != victim));
             self.end_round(winner);
         } else {
+            self.players[victim].ghost = true;
             self.begin_pick(victim);
         }
     }
@@ -227,7 +233,9 @@ impl World {
             }
         }
         self.events.push(Event::RoundOver { winner });
-        if winner.is_some() { self.flow.end_timer = Some(ROUND_WIN_TO_PICK); } else { self.start_picking(); }
+        // Resolve all hits from this tick before opening the group picks.
+        let group_picks = self.players.len() > 2 && self.cards.enabled().next().is_some();
+        self.flow.end_timer = Some(if winner.is_some() && !group_picks { ROUND_WIN_TO_PICK } else { 0.0 });
     }
 
     fn start_picking(&mut self) {
@@ -528,7 +536,7 @@ impl World {
 
     /// Start over: scores and cards cleared (Godot `_restart_match`).
     pub fn restart_match(&mut self) {
-        for p in &mut self.players { p.score = 0; p.cards.clear(); p.offer = None; p.air_strike_charges = 0; }
+        for p in &mut self.players { p.score = 0; p.kills = 0; p.cards.clear(); p.offer = None; p.air_strike_charges = 0; }
         self.round = 1;
         if self.coop { self.coop_restart(); }
         self.start_round();
@@ -629,9 +637,9 @@ impl World {
             self.flow.completed.retain(|&x| x != i);
             self.waves.downed.retain(|d| d.player != i);
             let p = &mut self.players[i];
-            let keep = (p.score, std::mem::take(&mut p.cards), p.weapon.clone(), p.air_strike_charges);
+            let keep = (p.score, p.kills, std::mem::take(&mut p.cards), p.weapon.clone(), p.air_strike_charges);
             *p = crate::Player::new(false);
-            (p.score, p.cards, p.weapon, p.air_strike_charges) = keep;
+            (p.score, p.kills, p.cards, p.weapon, p.air_strike_charges) = keep;
             p.health = p.max_health();
             p.ammo = p.mag_size();
             p.phoenix_charges = p.weapon.phoenix_revives;

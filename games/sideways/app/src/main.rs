@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 //! Sideways: native play, deterministic simulation, captures and sound tools.
 
+mod drive_capture;
 mod audio_out;
 mod biome_land;
 mod sound;
@@ -48,6 +49,7 @@ fn main() {
     let code = match args.first().map(|s| s.as_str()) {
         Some("play") | None => play::run(&args),
         Some(arg) if arg.starts_with("--") && arg!="--help" && arg!="--version" => play::run(&args),
+        Some("replay-drive") => match drive_capture::run(&args[1..]) { Ok(()) => 0, Err(e) => { eprintln!("replay-drive: {e}"); 1 } },
         Some("sound") => sound::run(&args),
         Some("bench") => bench(&opt("--car", "rally2"), args.iter().position(|a| a == "--cars").map(|i| args[i + 1].as_str())),
         Some("sim") => sim(&args),

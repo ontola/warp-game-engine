@@ -83,7 +83,7 @@ impl Lobby {
         let mut hello = json!({"type":"hello", "role":"lobby", "game":self.config.lobby_id});
         if !self.config.token.is_empty() { hello["token"] = json!(self.config.token); }
         let spawned = std::thread::Builder::new().name("gamenight-lobby".into()).spawn(move || {
-            if !url.starts_with("ws://") { let _ = recv_tx.send(Incoming::Disconnected("GameNight requires a ws:// host address".into())); return; }
+            if !url.starts_with("ws://") { let _ = recv_tx.send(Incoming::Disconnected("Gamepad Party requires a ws:// host address".into())); return; }
             match transport_with(&url, hello, send_rx, &recv_tx) {
                 Err(error) => { let _ = recv_tx.send(Incoming::Disconnected(error)); }
                 Ok(()) => {}
@@ -139,7 +139,7 @@ impl Lobby {
 
     /// A host command. Err (with a message to show) while reconnecting.
     pub fn command(&self, mut message: Value) -> Result<(), String> {
-        if !self.connected { return Err("Reconnecting to GameNight. Please try again when connected.".into()); }
+        if !self.connected { return Err("Reconnecting to Gamepad Party. Please try again when connected.".into()); }
         // The queue commands echo the host's integer cursor and length.
         if let Some(expected) = message.get_mut("expected").and_then(Value::as_object_mut) {
             for key in ["current", "queued"] {
@@ -147,7 +147,7 @@ impl Lobby {
             }
         }
         if matches!(message["type"].as_str(), Some("next" | "play_next" | "close_overlay")) { allow_game_foreground(); }
-        if self.send(message) { Ok(()) } else { Err("GameNight is disconnected".into()) }
+        if self.send(message) { Ok(()) } else { Err("Gamepad Party is disconnected".into()) }
     }
 
     pub fn join_guest(&self, name: &str) -> Result<(), String> { self.command(json!({"type":"join_party", "name":name})) }
@@ -217,8 +217,8 @@ fn allow_game_foreground() {
 /// A tiny HTTP/1.1 client for the host's loopback web port (3 s timeout).
 /// Blocking: call from a worker thread if a frame must not wait.
 pub fn http(base: &str, method: &str, path: &str, headers: &[&str]) -> Result<Vec<u8>, String> {
-    let host = base.strip_prefix("http://").filter(|h| h.starts_with("127.0.0.1:")).ok_or("GameNight links are unavailable")?;
-    let addr: std::net::SocketAddr = host.parse().map_err(|_| "Bad GameNight links address".to_string())?;
+    let host = base.strip_prefix("http://").filter(|h| h.starts_with("127.0.0.1:")).ok_or("Gamepad Party links are unavailable")?;
+    let addr: std::net::SocketAddr = host.parse().map_err(|_| "Bad Gamepad Party links address".to_string())?;
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3)).map_err(|e| format!("links connect: {:?}", e.kind()))?;
     stream.set_read_timeout(Some(Duration::from_secs(3))).ok();
     stream.set_write_timeout(Some(Duration::from_secs(3))).ok();

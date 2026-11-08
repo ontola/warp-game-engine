@@ -695,7 +695,7 @@ impl Game for Lobby {
     /// Escape is the mouse's Start: the room never closes on it.
     fn escape(&mut self) -> bool { self.mouse_escape(); true }
 
-    fn title(&self) -> Option<String> { Some("GameNight Game Room".into()) }
+    fn title(&self) -> Option<String> { Some("Gamepad Party Game Room".into()) }
 
     fn screen(&self) -> app::Screen {
         if self.client.is_none() { return app::Screen::Normal; }
