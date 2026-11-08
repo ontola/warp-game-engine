@@ -199,6 +199,12 @@ override FEATURE_FOLIAGE_PAGES: bool = true;
 override FEATURE_MEADOW: bool = true;
 override FEATURE_TERRAIN: bool = true;
 override FEATURE_FOLIAGE: bool = true;
+// Sun that reaches a source needle through its own brush, on average. The sun
+// maps resolve a voxel crown cell, not the needles of one brush, so source
+// brushes went unshaded and read ~1.55x brighter than the same crown as
+// voxels, which carry (1-exp(-tau))/tau per cell (Joep, 8 November: near
+// crowns pale, darker as trees switch to voxels).
+override NEEDLE_BRUSH_OWN: f32 = 0.6;
 // Spot and local lights (Renderer::set_headlights, set_local_lights). A frame
 // with none uses a pipeline without their loop: fewer registers per pixel.
 override FEATURE_LOCAL_LIGHTS: bool = true;
@@ -2839,6 +2845,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let sky_vis = sky_visibility(p, visibility_n);
     var meadow_edge=vec2<f32>(1.0);
     if FEATURE_MEADOW && (m.flags&6u)!=0u {meadow_edge=meadow_edge_visibility(p,surface_n,l);}
+    if procedural_leaf {shadow*=NEEDLE_BRUSH_OWN;}
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow * meadow_edge.y * field_sun;
     let refl = reflect(dir, n);
     let ssao = screen_space_ao(px, size, p, visibility_n, dist);
@@ -2852,7 +2859,10 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     var indirect:vec3<f32>;
     var specular:vec3<f32>;
     if procedural_leaf {
-        let back_sky_vis=sky_visibility(p,-visibility_n);
+        // Sky through the brush too, as voxels' crown_sky.
+        let brush_sky=0.25+0.75*sqrt(NEEDLE_BRUSH_OWN);
+        let sky_vis=sky_vis*brush_sky;
+        let back_sky_vis=sky_visibility(p,-visibility_n)*brush_sky;
         let front_ambient=(sky_irradiance(n)*sky_vis+bounce*(1.0-sky_vis))*contact.x;
         let back_ambient=(sky_irradiance(-n)*back_sky_vis+bounce*(1.0-back_sky_vis))*contact.x;
         let spec_contact=mix(contact.y,contact.x,smoothstep(0.08,0.6,rough));
