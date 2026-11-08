@@ -47,6 +47,43 @@ pub struct ForestStyle {
     pub crown: [f32; 4],
 }
 
+impl ForestStyle {
+    /// This style with its crowns measured from the plants the forest is
+    /// drawn with (their whole-plant voxel proxies, at unit scale, each as
+    /// common as the others): sunlit albedo, crown top height and the crown
+    /// area seen from straight above. The painted far forest then has the
+    /// near trees' cover and colour instead of a generic closed canopy
+    /// (Joep, 8 November: far grown pines were flat green patches).
+    pub fn measured(self, proxies: &[&crate::foliage_voxel::VoxelAsset]) -> Self {
+        let (mut area, mut height, mut albedo, mut weight, mut n) = (0.0f64, 0.0f64, [0.0f64; 3], 0.0f64, 0usize);
+        for asset in proxies {
+            let Some(level) = asset.levels.first() else { continue };
+            let c = f64::from(level.cell_size);
+            let mut columns: std::collections::HashMap<(u32, u32), f64> = std::collections::HashMap::new();
+            for v in &level.voxels {
+                // Optical depth straight down through the cell (axis_image).
+                let tau = f64::from(v.directional_area[1]) / (c * c);
+                *columns.entry((v.coord[0], v.coord[2])).or_insert(0.0) += tau;
+                let w = 1.0 - (-tau).exp();
+                for k in 0..3 { albedo[k] += w * f64::from(v.albedo[k]); }
+                weight += w;
+            }
+            area += columns.values().map(|&tau| (1.0 - (-tau).exp()) * c * c).sum::<f64>();
+            height += f64::from(asset.source_bounds[1][1] - asset.source_bounds[0][1]);
+            n += 1;
+        }
+        if n == 0 || weight <= 0.0 { return self; }
+        let (area, height) = (area / n as f64, height / n as f64);
+        let a = albedo.map(|x| (x / weight) as f32);
+        let mut style = self;
+        style.needles = [a[0], a[1], a[2], self.needles[3]];
+        style.far[3] = height as f32;
+        style.crown[0] = (area / std::f64::consts::PI).sqrt() as f32;
+        style.crown[1] = (area / f64::from(CELL * CELL)) as f32;
+        style
+    }
+}
+
 impl Default for ForestStyle {
     fn default() -> Self {
         ForestStyle {
@@ -113,16 +150,21 @@ pub fn site(up: f32, wet: f32) -> f32 {
 }
 
 /// Hedgerows: stretches of the edges of 110 by 80 m fields (on a grid
-/// turned by the seed), about a tree wide, 0..1.
+/// turned by the seed), about a tree wide, 0..1. The edges meander up to
+/// ~12 m and fewer carry a hedge: ruler-straight rows of trees read as
+/// planted (Joep, 8 November).
 fn hedgerow(x: f32, z: f32, seed: u32) -> f32 {
     let a = hash(0, 0, 10, seed) * 1.5;
-    let (u, v) = (x * a.cos() + z * a.sin(), z * a.cos() - x * a.sin());
+    let p = Vec2::new(x, z);
+    let wu = 12.0 * terrain_field::noised(p / 90.0 + Vec2::new(5.3, 2.9), seed.wrapping_add(83)).x;
+    let wv = 12.0 * terrain_field::noised(p / 90.0 + Vec2::new(1.7, 9.1), seed.wrapping_add(84)).x;
+    let (u, v) = (x * a.cos() + z * a.sin() + wu, z * a.cos() - x * a.sin() + wv);
     let (fu, fv) = (u / 110.0, v / 80.0);
     let (iu, iv) = (fu.round(), fv.round());
     // Distance to the nearest field edge across u and across v (metres), and
     // whether that stretch of edge carries a hedge.
-    let du = if hash(iu as i32, fv.floor() as i32, 11, seed) < 0.45 { (fu - iu).abs() * 110.0 } else { 1e3 };
-    let dv = if hash(fu.floor() as i32, iv as i32, 12, seed) < 0.45 { (fv - iv).abs() * 80.0 } else { 1e3 };
+    let du = if hash(iu as i32, fv.floor() as i32, 11, seed) < 0.3 { (fu - iu).abs() * 110.0 } else { 1e3 };
+    let dv = if hash(fu.floor() as i32, iv as i32, 12, seed) < 0.3 { (fv - iv).abs() * 80.0 } else { 1e3 };
     (1.0 - du.min(dv) / 4.0).clamp(0.0, 1.0)
 }
 
@@ -329,6 +371,27 @@ mod tests {
     use super::*;
     use bytemuck::{Pod, Zeroable};
     use wgpu::util::DeviceExt;
+
+    #[test]
+    fn measured_style_takes_the_plants_crowns() {
+        let parts = crate::plant_growth_assembly::Parts::for_look(&crate::plant_growth_assembly::Look::jeffrey_pine());
+        let (plant, _) = crate::recipe_forest::cook_grown_stages(crate::plant_growth::Species::jeffrey_pine(), 15, 1, &parts,
+            crate::plant_growth_assembly::Look::jeffrey_pine()).unwrap();
+        let proxy = plant.proxy().unwrap();
+        let base = ForestStyle::default();
+        let m = base.measured(&[proxy]);
+        let tall = proxy.source_bounds[1][1] - proxy.source_bounds[0][1];
+        assert!((m.far[3] - tall).abs() < 1e-3, "height {} vs {tall}", m.far[3]);
+        // A young pine's crown seen from above: a few square metres, under its
+        // bounding box's footprint.
+        let box_area = (proxy.source_bounds[1][0] - proxy.source_bounds[0][0]) * (proxy.source_bounds[1][2] - proxy.source_bounds[0][2]);
+        let area = m.crown[1] * CELL * CELL;
+        assert!(area > 0.5 && area < box_area, "crown area {area}, box {box_area}");
+        assert!((m.crown[0] - (area / std::f32::consts::PI).sqrt()).abs() < 1e-3);
+        assert!(m.needles[..3].iter().all(|&c| c > 0.0 && c < 1.0), "{:?}", m.needles);
+        assert_eq!(m.needles[3], base.needles[3]);
+        assert_eq!(base.measured(&[]), base);
+    }
 
     #[test]
     fn trees_shun_rock_and_follow_stands_and_density() {
