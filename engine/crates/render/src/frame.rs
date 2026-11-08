@@ -203,9 +203,6 @@ struct Upscaling {
     motion: Option<crate::motion::MotionRenderer>,
     status: crate::upscale::UpscaleStatus,
     layout: Vec<(u32, u32, u32, u32)>,
-    /// Bounded per-view temporal guard. A source/volume or selected-mip change
-    /// resets that whole view initially, not a claim of mature streaming history.
-    foliage_selection: Vec<Vec<u32>>,
 }
 
 impl Upscaling {
@@ -219,10 +216,6 @@ impl Upscaling {
     }
 }
 
-fn update_foliage_history(previous:&mut Vec<u32>,current:&[u32])->bool {
-    if previous.as_slice()==current {return false;}
-    previous.clear();previous.extend_from_slice(current);true
-}
 
 fn timestamp_pair(next: &mut u32) -> u32 {
     assert!(*next <= TIMESTAMP_CAPACITY - 2, "frame exceeds timestamp query capacity");
@@ -3248,8 +3241,8 @@ impl Renderer {
         self.foliage_planners.lock().unwrap().clear();
         let mut up = self.upscaling.lock().unwrap();
         if let Some(motion) = &up.motion { motion.reset(); }
+        if let Some(portable) = &mut up.portable { portable.reset(); }
         up.layout.clear();
-        up.foliage_selection.clear();
     }
 
     /// Restart subpixel sampling for a deterministic stationary A/B capture.
@@ -3290,7 +3283,7 @@ impl Renderer {
             let motion = self.motion_renderer(gpu)?;
             if let Some(forest)=&self.voxel_forest {forest.prepare_temporal(gpu)?;}
             *up = Upscaling { mode, backend, portable, motion: Some(motion),
-                status: crate::upscale::UpscaleStatus { mode, views: Vec::new() }, layout: Vec::new(),foliage_selection:Vec::new() };
+                status: crate::upscale::UpscaleStatus { mode, views: Vec::new() }, layout: Vec::new() };
         }
         if let Some(forest)=&self.voxel_forest {forest.reset_targets();}
         drop(up);
@@ -4031,9 +4024,7 @@ impl Renderer {
         if layout_changed {
             if let Some(motion) = &up.motion { motion.reset(); }
             if let Some(portable) = &mut up.portable { portable.reset(); }
-            up.foliage_selection.clear();
         }
-        up.foliage_selection.resize_with(views.len(),Vec::new);
         let mut upscale_views = Vec::with_capacity(views.len());
         // TAA: this frame's sub-pixel offset and alpha-test threshold.
         let frame = self.frame.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -4773,7 +4764,6 @@ impl Renderer {
             jittered.z_axis.y += jy * 2.0 / h as f32;
             let main = self.view_targets(gpu, "view", vi + 1);
             if let Some((forest,_))=&self.gpu_forest {enc.copy_buffer_to_buffer(&forest.choices,0,&main.foliage_selection,0,forest.choice_table_bytes());}
-            let mut foliage_changed=false;
             if let Some(selector)=&self.aggregate_lod {
                 let time=self.query.as_ref().map(|(q,_,_)|(q,timestamp_pair(&mut ts)));
                 if time.is_some(){names.push("aggregate error selection");}
@@ -4793,7 +4783,6 @@ impl Renderer {
                     });
                 }
                 gpu.queue.write_buffer(&main.foliage_selection, 0, bytemuck::cast_slice(&selection));
-                if dlss_on {foliage_changed=update_foliage_history(&mut up.foliage_selection[vi],&selection);}
             }
             // Preserve geometry error in output pixels even at lower shading resolution.
             let px_scale = proj.y_axis.y * 0.5 * view.h as f32;
@@ -5194,16 +5183,18 @@ impl Renderer {
                 let motion_time = self.query.as_ref().map(|(qs, _, _)| {
                     names.push("motion vectors"); (qs, timestamp_pair(&mut ts))
                 });
+                let voxel_splats = self.voxel_forest.as_ref().filter(|_| self.voxel_surface).and_then(|forest| forest.splat_records(vi));
                 let motion = up.motion.as_ref().unwrap().render(gpu, &mut enc, vi,
                     crate::motion::MotionView { key: vi as u64, size: (w, h),
                         inverse_jittered_view_proj: vp.inverse(), view_proj: proj * view_m,
-                        camera: cam.pos, reset: layout_changed || foliage_changed, split: views.len() > 1,
+                        camera: cam.pos, reset: layout_changed, split: views.len() > 1,
                         grass_detail: self.grass_detail },
                     crate::motion::MotionInputs { opaque_depth: &depth_v, visibility: &vis_v,
                         visible: &main.visible, grass: grass_motion.as_ref(), transparency: glass_motion.as_ref(),
                         far_grass: far_motion_layer.as_ref().map(|layer| (&layer.color, &layer.distance)),
                         voxel:voxel_motion.as_ref().map(|(color,reprojection)|(color,reprojection)),
-                        meadow:meadow_motion.as_ref().map(|(color,reprojection)|(color,reprojection)) }, motion_time)?;
+                        meadow:meadow_motion.as_ref().map(|(color,reprojection)|(color,reprojection)),
+                        voxel_splats: voxel_splats.as_ref() }, motion_time)?;
                 Some(motion)
             } else {None};
             // TAA after the motion vectors it reprojects with.
@@ -5793,21 +5784,6 @@ mod sky_tests {
 
 #[cfg(test)]
 mod layout_tests {
-    #[test]
-    fn foliage_handoffs_reset_only_changed_views_and_not_stable_frames() {
-        let mut views=[Vec::new(),Vec::new()];
-        let pack=|s:[[u32;4];2]|s.map(crate::voxel_forest::selection_pack);
-        let source=pack([[0,0,0,0],[0,0,0,0]]);
-        let volume=pack([[1,2,0,0],[0,0,0,0]]);
-        assert!(super::update_foliage_history(&mut views[0],&source));
-        assert!(super::update_foliage_history(&mut views[1],&volume));
-        assert!(!super::update_foliage_history(&mut views[0],&source));
-        assert!(!super::update_foliage_history(&mut views[1],&volume));
-        assert!(super::update_foliage_history(&mut views[0],&volume));
-        assert!(!super::update_foliage_history(&mut views[1],&volume));
-        let coarser=pack([[1,3,0,0],[0,0,0,0]]);
-        assert!(super::update_foliage_history(&mut views[0],&coarser));
-    }
     use super::{split_rects, split_rects_with, SplitLayout, timestamp_pair, LightUniform, NEAR_SHADOW_EXTENT, NEAR_SHADOW_SIZE, TIMESTAMP_CAPACITY};
     #[test]
     fn sun_visibility_fast_path_preserves_diagnostics_and_invalid_inputs() {

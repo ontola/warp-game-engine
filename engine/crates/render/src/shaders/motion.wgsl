@@ -48,7 +48,30 @@ struct Cluster {
 };
 @group(0) @binding(16) var<storage,read> topology: array<u32>;
 @group(0) @binding(17) var<storage,read> clusters: array<Cluster>;
-struct MotionOut { @location(0) vector: vec2<f32>, @location(1) depth: f32, @location(2) bias: f32 };
+// Last frame's surface ids (location 3 below) of this view.
+@group(0) @binding(18) var previous_ids: texture_2d<u32>;
+// This view's voxel splat records (voxel_forest.wgsl volume_splats): a
+// voxel pixel's splat id leads to its tree and that tree's owner instance.
+@group(0) @binding(19) var<storage,read> voxel_splats: array<vec4<u32>>;
+fn voxel_owner(splat:u32)->u32 {
+    let count=arrayLength(&voxel_splats);
+    if splat==0u || count<12u {return 0xffffffffu;}
+    let at=12u+voxel_splats[11].x*5u+splat-1u;
+    if at>=count {return 0xffffffffu;}
+    let tree=12u+voxel_splats[at].x*5u+4u;
+    if tree>=count {return 0xffffffffu;}
+    return voxel_splats[tree].x;
+}
+// Which surface a pixel shows: its owner instance and whether as mesh or
+// voxels, hashed. A pixel whose reprojected 2x2 footprint showed none of
+// it last frame (a representation swap, a recycled slot, disocclusion)
+// rejects its history there, instead of resetting the whole view.
+struct MotionOut { @location(0) vector: vec2<f32>, @location(1) depth: f32, @location(2) bias: f32, @location(3) id: u32 };
+fn surface_hash(x:u32)->u32 {
+    var h=x*747796405u+2891336453u;
+    h=((h>>((h>>28u)+4u))^h)*277803737u;
+    return (h>>22u)^h;
+}
 @vertex fn motion_vs(@builtin(vertex_index) index:u32)->@builtin(position) vec4<f32> {
     return vec4<f32>(array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0))[index],0.0,1.0);
 }
@@ -94,6 +117,20 @@ fn previous_skinned_local(owner:u32,local:vec3<f32>,cluster:u32,tri:u32)->vec4<f
     return vec4<f32>(old[0]*(1.0-b1-b2)+old[1]*b1+old[2]*b2,1.0);
 }
 
+// Rasterized voxels (voxel_splat_raster.wgsl) are drawn in their owner
+// instance's current pose without wind shear: a branch voxel sways with
+// its frame, a whole-tree proxy stays put.
+fn previous_voxel_point(owner:u32,world:vec3<f32>)->vec4<f32> {
+    if owner>=arrayLength(&current_instances) || owner>=arrayLength(&previous_instances) {return vec4<f32>(0.0);}
+    let now=current_instances[owner];let old=previous_instances[owner];
+    if ((now.flags^old.flags)&~(7u<<24u))!=0u {return vec4<f32>(0.0);}
+    let rest=world-rest_root(now);
+    let co0=cross(now.r1.xyz,now.r2.xyz);let co1=cross(now.r2.xyz,now.r0.xyz);let co2=cross(now.r0.xyz,now.r1.xyz);
+    let determinant=dot(now.r0.xyz,co0);
+    if !(abs(determinant)>1e-12 && abs(determinant)<1e20) {return vec4<f32>(0.0);}
+    return vec4<f32>(transform(old,(co0*rest.x+co1*rest.y+co2*rest.z)/determinant),1.0);
+}
+
 fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f32> {
     let slot=member_slot(owner);
     if slot>=arrayLength(&current_instances) || slot>=arrayLength(&previous_instances)
@@ -129,14 +166,14 @@ fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f3
     // The opaque surface's cluster and triangle, while it owns the motion.
     var cluster=0xffffffffu;var tri=0u;
     // A rasterized voxel (bit 31 of the visibility id, shade.wgsl
-    // VOXEL_SURFACE): far trees whose wind is frozen, reprojected as still
-    // world points.
+    // VOXEL_SURFACE); the low bits are its splat (voxel_owner).
     var voxel=false;
     if out.depth>0.0 {
         let id=textureLoad(visibility,pixel,0).r;
         voxel=(id&0x80000000u)!=0u;
         let slot=id>>7u;
-        if !voxel {
+        if voxel {owner=voxel_owner(id&0x7fffffffu);}
+        else {
             if slot>=arrayLength(&visible) {out.bias=1.0;return out;}
             owner=visible[slot].x;cluster=visible[slot].y;tri=id&127u;
         }
@@ -155,11 +192,11 @@ fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f3
     out.bias=max(4.0*grass_alpha*(1.0-grass_alpha)*(1.0-meadow_alpha),4.0*glass_alpha*(1.0-glass_alpha));
     if grass_alpha*underlying_transmission>=0.5 {
         let d=bitcast<f32>(grass.y);
-        if d>=opaque && d<=1.0 {owner=(grass.x>>8u)-1u;cluster=0xffffffffu;out.depth=d;}
+        if d>=opaque && d<=1.0 {owner=(grass.x>>8u)-1u;cluster=0xffffffffu;voxel=false;out.depth=d;}
     }
     if glass_alpha>=0.5 {
         let d=bitcast<f32>(glass.y);
-        if d>=opaque && d<=1.0 {owner=(glass.x>>8u)-1u;cluster=0xffffffffu;out.depth=d;}
+        if d>=opaque && d<=1.0 {owner=(glass.x>>8u)-1u;cluster=0xffffffffu;voxel=false;out.depth=d;}
     }
     // Statistical distant grass has no tracked individual surface. Use its
     // optical centroid only when dominant and bias history by its coverage;
@@ -235,6 +272,9 @@ fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f3
             } else {out.bias=1.0;}
         }
     }
+    if layer_current.w!=0.0 {out.id=0xfffffffdu;}
+    else if out.depth<=0.0 {out.id=0xfffffffeu;}
+    else {out.id=surface_hash(owner)^select(0u,0x9e3779b9u,voxel);}
     // Reset rejects correspondence, not the current frame's selected depth.
     if motion.flags.x!=0u {out.bias=1.0;return out;}
     var current=motion.inverse_current*vec4<f32>(ndc,out.depth,1.0);
@@ -244,7 +284,10 @@ fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f3
     else {
         if !finite4(current) || abs(current.w)<1e-10 {out.bias=1.0;return out;}
         current=vec4<f32>(current.xyz/current.w,1.0);
-        if voxel {previous=current;} else {
+        if voxel {
+            previous=previous_voxel_point(owner,current.xyz);
+            if previous.w==0.0 {out.bias=1.0;return out;}
+        } else {
             previous=previous_source_point(owner,current.xyz,cluster,tri);
             if previous.w==0.0 {out.bias=1.0;return out;}
         }
@@ -256,5 +299,15 @@ fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f3
     if !all(abs(vector)<vec2<f32>(32752.0)) {out.bias=1.0;return out;}
     out.vector=vector;
     if any(abs(prev_ndc)>vec2<f32>(1.0)) {out.bias=1.0;}
+    else if out.bias<1.0 {
+        let base=vec2<i32>(floor(position.xy+vector-0.5));
+        let top=vec2<i32>(textureDimensions(previous_ids))-1;
+        var seen=false;
+        for (var k=0;k<4;k++) {
+            let q=clamp(base+vec2<i32>(k&1,k>>1u),vec2<i32>(0),top);
+            seen=seen || textureLoad(previous_ids,q,0).r==out.id;
+        }
+        if !seen {out.bias=1.0;}
+    }
     return out;
 }
