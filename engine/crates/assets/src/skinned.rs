@@ -6,7 +6,7 @@
 use glam::{Affine3A, Mat4, Vec3, Vec4};
 use render::{
     cluster::{ClusterMesh, Part, Vertex},
-    scene::{ALPHA_TEST, Material, SKINNED, Scene, TWO_SIDED},
+    scene::{ALPHA_TEST, HAIR, Material, SKIN, SKINNED, Scene, TWO_SIDED},
     skinning::{self, Influence},
 };
 use serde::Deserialize;
@@ -92,6 +92,20 @@ struct Surface {
     material: MaterialFile,
     texture: Option<(String, image::RgbaImage)>,
     normal: Option<image::RgbaImage>,
+    skin_hair: Option<SkinHair>,
+}
+
+/// Which parts of a surface are skin or hair (render::scene::SKIN, HAIR).
+#[derive(Clone, Debug)]
+pub enum SkinHair {
+    /// The whole surface is skin.
+    Skin,
+    /// The whole surface is hair.
+    Hair,
+    /// Per texel of the albedo texture: 0 hair, 128 skin, 255 neither
+    /// (keeps the surface's own material), linear between. Becomes the
+    /// albedo alpha; resized to the texture if its size differs.
+    Mask(image::GrayImage),
 }
 fn one() -> f32 {
     1.0
@@ -356,6 +370,7 @@ impl Character {
                 material: source.material,
                 texture,
                 normal,
+                skin_hair: None,
             });
             next_vertex = end_vertex;
             next_index = end_index;
@@ -598,13 +613,40 @@ impl Character {
         out
     }
 
+    /// Light `surface` (in manifest order) as skin and/or hair. Call before
+    /// adding actors; a mask needs a textured surface.
+    pub fn set_skin_hair(&mut self, surface: usize, kind: SkinHair) -> Result<(), String> {
+        let count = self.surfaces.len();
+        let target = self.surfaces.get_mut(surface)
+            .ok_or_else(|| format!("{}: no surface {surface} (of {count})", self.name))?;
+        let kind = match kind {
+            SkinHair::Mask(mask) => {
+                let Some((_, image)) = &target.texture else {
+                    return Err(format!("{}: skin mask on untextured surface {surface}", self.name));
+                };
+                if target.material.alpha_mode == "MASK" {
+                    return Err(format!("{}: surface {surface} uses its alpha for cutouts", self.name));
+                }
+                let (w, h) = image.dimensions();
+                SkinHair::Mask(if mask.dimensions() == (w, h) { mask } else {
+                    image::imageops::resize(&mask, w, h, image::imageops::FilterType::Triangle)
+                })
+            }
+            other => other,
+        };
+        target.skin_hair = Some(kind);
+        Ok(())
+    }
+
     pub fn surface_materials(&self, scene: &mut Scene) -> Vec<u32> {
         let mut material_ids = Vec::with_capacity(self.surfaces.len());
         for surface in &self.surfaces {
+            let mask = match &surface.skin_hair { Some(SkinHair::Mask(mask)) => Some(mask), _ => None };
             let layer = if let Some((name, image)) = &surface.texture {
                 let key = format!(
-                    "{name}#normal={:?}:{}",
-                    surface.material.normal_texture, surface.material.normal_scale
+                    "{name}#normal={:?}:{}{}",
+                    surface.material.normal_texture, surface.material.normal_scale,
+                    if mask.is_some() { "#skin_hair" } else { "" }
                 );
                 scene
                     .textures
@@ -612,7 +654,11 @@ impl Character {
                     .position(|t| t.name == key)
                     .map(|i| i as i32)
                     .unwrap_or_else(|| {
-                        let layer = scene.add_image(&key, image.clone());
+                        let mut image = image.clone();
+                        if let Some(mask) = mask {
+                            for (pixel, m) in image.pixels_mut().zip(mask.pixels()) { pixel[3] = m[0]; }
+                        }
+                        let layer = scene.add_image(&key, image);
                         scene.textures[layer as usize].normal = surface.normal.clone();
                         layer
                     })
@@ -636,6 +682,12 @@ impl Character {
                         ALPHA_TEST
                     } else {
                         0
+                    }
+                    | match surface.skin_hair {
+                        None => 0,
+                        Some(SkinHair::Skin) => SKIN,
+                        Some(SkinHair::Hair) => HAIR,
+                        Some(SkinHair::Mask(_)) => SKIN | HAIR,
                     },
                 scale: 1.0,
                 metal: source.metallic,
@@ -815,6 +867,7 @@ mod tests {
                 },
                 texture: None,
                 normal: None,
+                skin_hair: None,
             }],
             joints: vec![
                 ("Root".into(), Mat4::from_translation(Vec3::Y)),
@@ -822,6 +875,23 @@ mod tests {
                 ("Root".into(), Mat4::from_translation(Vec3::Z)),
             ],
         }
+    }
+
+    #[test]
+    fn skin_and_hair_set_material_flags() {
+        let mut character = pose_bounds_character();
+        assert!(character.set_skin_hair(0, SkinHair::Mask(image::GrayImage::new(4, 4))).is_err(), "mask needs a texture");
+        assert!(character.set_skin_hair(1, SkinHair::Skin).is_err());
+        let mut scene = Scene::default();
+        let plain = character.surface_materials(&mut scene)[0];
+        assert_eq!(scene.materials[plain as usize].flags & (SKIN | HAIR), 0);
+        character.set_skin_hair(0, SkinHair::Skin).unwrap();
+        let skin = character.surface_materials(&mut scene)[0];
+        assert_eq!(scene.materials[skin as usize].flags & (SKIN | HAIR), SKIN);
+        character.set_skin_hair(0, SkinHair::Hair).unwrap();
+        let hair = character.surface_materials(&mut scene)[0];
+        assert_eq!(scene.materials[hair as usize].flags & (SKIN | HAIR), HAIR);
+        assert_eq!(render::scene::car_tag(scene.materials[hair as usize].flags), 0);
     }
 
     #[test]

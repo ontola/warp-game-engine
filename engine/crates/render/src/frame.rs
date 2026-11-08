@@ -2137,7 +2137,7 @@ impl Renderer {
             .chain([("SHADE_CLASS", 1.0)]).collect();
         // The rest class drops the terrain branch unless a car part carries
         // the TERRAIN bit (car materials keep their index in bits 16..).
-        let car_terrain = scene.materials.iter().any(|m| m.flags & crate::scene::TERRAIN != 0 && m.flags >> 16 != 0);
+        let car_terrain = scene.materials.iter().any(|m| m.flags & crate::scene::TERRAIN != 0 && crate::scene::car_tag(m.flags) != 0);
         if shade_classes && !car_terrain {
             for c in shade_constants.iter_mut() { if c.0 == "FEATURE_TERRAIN" { c.1 = 0.0; } }
         }
