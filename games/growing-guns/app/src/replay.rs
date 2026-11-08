@@ -699,8 +699,10 @@ mod tests {
         let gpu = render::Gpu::new().unwrap();
         let mut headless = app::Headless::new(&gpu, size, TICK_HZ as f32).unwrap();
         let mut ready = |v: &mut Viewer| loop { let rgba = headless.frame(v).unwrap(); if v.ready() { break rgba; } };
+        // Warm up history-based lighting before comparing paused frames.
+        for _ in 0..8 { ready(&mut viewer); }
         let sharp = ready(&mut viewer);
-        let sharp = ready(&mut viewer).iter().zip(&sharp).all(|(a, b)| a == b).then_some(sharp).expect("paused frame stable");
+        assert_same_image(&sharp, &ready(&mut viewer), "paused frame animated");
         render::write_png(&root.join("off.png"), size[0], size[1], &sharp).unwrap();
         let focus = std::env::var("GG_LENS_FOCUS").ok().and_then(|v| { let (x, y) = v.split_once(',')?; Some([x.parse().ok()?, y.parse().ok()?]) }).unwrap_or([0.5, 0.55]);
         for f_stop in [1.4, 4.0] {
