@@ -146,6 +146,7 @@ pub mod motion;
 pub mod motion_blur;
 pub mod depth_of_field;
 pub mod dlss;
+pub mod temporal_upscale;
 pub mod upscale;
 mod stability;
 mod far_sun;
