@@ -86,6 +86,7 @@ note linked says why. They are candidates for removal from the code.
 
 | Variable | Experiment | Note |
 | --- | --- | --- |
+| `KERN_REFRACTION` | Screen-space refraction for materials with a `Refraction` (same as `Scene::graphics.refraction`); default once checked on a real GPU | [refraction](log/2026-11-08-refraction.md) |
 | `KERN_GPU_PARTICLES` | GPU particle pools take emitters (sparks, embers, grit in Growing Guns and Spellstorm blasts). Opt-in until timed on a real GPU; read by `GpuParticles::new`, so a running game needs a restart | [GPU particles](gpu-particles.md) |
 | `KERN_INSTANCE_GROUPS`, `KERN_SUN_INSTANCE_GROUPS`, `KERN_HEADLIGHT_INSTANCE_GROUPS` | GPU hierarchy of spatial instance groups | [r45](log/instance-hierarchy-r45.md) |
 | `KERN_WATER` | Water optics on terrain water (the bed through refracting, absorbing water) as the `Lighting` default; read whenever a `Lighting` is made | [water](water.md) |

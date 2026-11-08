@@ -27,6 +27,8 @@ struct Authored {
     material: Material,
     /// glTF alpha blend: (alpha, double sided).
     blend: Option<(f32, bool)>,
+    /// A glass material (windows, lamp covers), not a plate or badge decal.
+    glass: bool,
     part: String,
     kind: Kind,
     /// Colour, roughness and metalness factors.
@@ -120,7 +122,7 @@ pub fn load(scene: &mut Scene, path: &std::path::Path, car: usize, game_colour: 
         let layer = if kind == Kind::Paint { -1 } else { layer };
         let tint = if kind != Kind::Textured && layer < 0 { [1.0; 3] } else { [f[0], f[1], f[2]] };
         let material = Material { tint, layer, roughness: pbr.roughness_factor(), flags, scale: 1.0, metal: pbr.metallic_factor() };
-        authored.push(Authored { material, blend, part, kind, factors: [f[0], f[1], f[2], pbr.roughness_factor(), pbr.metallic_factor()] });
+        authored.push(Authored { material, blend, glass: name.contains("Glass"), part, kind, factors: [f[0], f[1], f[2], pbr.roughness_factor(), pbr.metallic_factor()] });
     }
     // Geometry first: the body's bounds and the wheel positions tell the
     // shader where grime collects.
@@ -218,6 +220,12 @@ pub fn load(scene: &mut Scene, path: &std::path::Path, car: usize, game_colour: 
                     let id = scene.add_material(material);
                     if let Some((alpha, two_sided)) = a.blend {
                         scene.set_material_blend(id, alpha, two_sided);
+                        // Windows bend what is behind them (drawn when the
+                        // renderer has refraction on). Lamp lenses keep
+                        // their own emissive look.
+                        if a.glass && a.kind != Kind::Lamp {
+                            scene.set_material_refraction(id, render::scene::Refraction::WINDOW);
+                        }
                     }
                     made.insert((*gi, wheel), id);
                     id
