@@ -89,11 +89,15 @@ impl Mesh {
             .chunks_exact(12)
             .map(|v| {
                 let f = |i| f32::from_le_bytes(v[i..i + 4].try_into().unwrap());
-                Vec3::new(
-                    f(0) * 0.06 * (0.48 + 0.52 * ((f(4) - 5.55) / 0.55).clamp(0., 1.)),
-                    0.824 + (f(4) - 5.55) * 0.058,
-                    (f(8) - 0.35) * 0.06,
-                )
+                let y = 0.824 + (f(4) - 5.55) * 0.058;
+                let x = f(0) * 0.06;
+                let z = (f(8) - 0.35) * 0.06;
+                // The reference crop includes part of the shoulders. Tuck the
+                // lower rings inside the pullover and keep the jaw unmodified.
+                let radius = (x / 0.029).hypot(z / 0.026).max(1.);
+                let neck = ((y - 0.844) / 0.025).clamp(0., 1.);
+                let scale = 1. / radius + neck * (1. - 1. / radius);
+                Vec3::new(x * scale, y, z * scale)
             })
             .collect();
         let mut normals = vec![Vec3::ZERO; count];
