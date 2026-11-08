@@ -67,9 +67,15 @@ resolution, reconstruction mode, sample count and scene with a number.
   phones/Quest; streaming is by time, not visibility (no feedback-driven
   residency or eviction); grass, meadow and voxel trees ignore weather;
   terrain, road and rock paths ignore material maps.
+- **Portable temporal upscaler** (8 November): `temporal-quality`,
+  `-balanced` and `-performance` render at 2/3, 0.58 and 1/2 resolution and
+  rebuild the output on every GPU, WebGPU included; motion vectors now cover
+  skinned meshes, and a foliage selection change no longer resets the
+  whole view's history
+  ([guide](temporal-upscaling.md)). **Open:** swaying branch voxels have no
+  motion yet; no sharpening; not yet timed on a real GPU.
 - **Open:** fixed per-frame work for unused features; `frame.rs` still refers
-  to Sideways features; new meshes need a new renderer;
-  animated pixels reject TAA history (no deformation motion vectors).
+  to Sideways features; new meshes need a new renderer.
 - Many experiments remain behind default-off switches; see
   [renderer switches](renderer-switches.md). They are candidates for removal.
 
