@@ -847,6 +847,7 @@ impl View {
         renderer.set_sprites(gpu, &sprites)?;
         let t = self.fx.time;
         self.fx.blasts.flush(gpu, renderer, t)?;
+        self.fx.sparks.flush(gpu, renderer, t)?;
         Ok(())
     }
 

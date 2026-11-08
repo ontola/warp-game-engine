@@ -176,6 +176,11 @@ impl ArenaView {
         let occ = fx.debris.occupancy_mut();
         occ.clear();
         for c in a.chunks.iter().filter(|c| c.alive) { occ.fill_box(c.center, c.half, c.yaw, true); }
+        let (lo, hi) = a.chunks.iter().fold((Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)), |(lo, hi), c| {
+            let r = c.shape().reach();
+            (lo.min(Vec2::new(c.center.x - r, c.center.z - r)), hi.max(Vec2::new(c.center.x + r, c.center.z + r)))
+        });
+        if lo.x <= hi.x { fx.ground_rebuilt(lo, hi, world.arena.lava_surface()); }
         if let Some((offset, grid)) = scene.dfao {
             if let Ok(words) = render::dfao::bake_from_occupancy(&grid, fx.debris.occupancy()) {
                 scene.aux[offset..offset + words.len()].copy_from_slice(&words);
@@ -290,6 +295,11 @@ impl ArenaView {
             if self.dents.len() != before { self.dents_changed = true; self.next_dent = 0; }
         }
         self.occupancy_repair.apply(fx.debris.occupancy_mut(), &world.arena, &b.removed);
+        let (lo, hi) = b.removed.iter().filter_map(|&i| world.arena.chunks.get(i as usize)).fold((Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)), |(lo, hi), c| {
+            let r = c.shape().reach() + OCC_VOXEL;
+            (lo.min(Vec2::new(c.center.x - r, c.center.z - r)), hi.max(Vec2::new(c.center.x + r, c.center.z + r)))
+        });
+        if lo.x <= hi.x { fx.ground_broken(lo, hi); }
         // Rubble from each blast (Godot `request_burst`): 70 shards per
         // broken chunk, 128 to 900, thrown from the blast centre.
         for burst in &b.bursts {

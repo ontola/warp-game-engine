@@ -145,6 +145,8 @@ fn run() -> Result<(), String> {
             for t in 0..ticks * if until_swing { 20 } else { 1 } {
                 if lua_at == Some(t) && let Some(code) = arg("--lua") {
                     eprintln!("lua: {}", spellstorm::rules::console(&mut game.world, &code)?);
+                    // Its events (a nova, a burst) show: the next tick clears them.
+                    game.view.fx.absorb(&game.world);
                 }
                 game.step(&[]);
                 if until_swing && t >= ticks && game.world.wizards.iter().any(|&id| { let s = game.world.wiz(id).swing_t; let at: f64 = std::env::var("SPELLSTORM_SWING").ok().and_then(|v| v.parse().ok()).unwrap_or(0.15); s > at - 0.017 && s <= at }) {
@@ -170,6 +172,7 @@ fn run() -> Result<(), String> {
             }
             if let Some(code) = arg("--lua").filter(|_| lua_at.is_none()) {
                 eprintln!("lua: {}", spellstorm::rules::console(&mut game.world, &code)?);
+                game.view.fx.absorb(&game.world);
                 game.step(&[]);
             }
             if flag("--menu") {

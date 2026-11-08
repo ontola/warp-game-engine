@@ -43,6 +43,14 @@ resolution, reconstruction mode, sample count and scene with a number.
   is now timed. **Open:** no async cluster/triangle counters yet (they need
   a non-blocking counter readback); not in the browser shell or Sideways'
   own shell; overlay cost not measured on a real GPU yet.
+- **GPU particles** (8 November): `render::gpu_particles` births, simulates
+  and draws tens of thousands of sparks, embers and dust on the GPU (compute
+  spawn and fixed-step simulation, heightfield ground collision, indirect
+  billboard draw after temporal reconstruction; [guide](gpu-particles.md)).
+  Growing Guns and Spellstorm blasts use it. **Opt-in** with
+  `KERN_GPU_PARTICLES=1`. **Open:** not timed on a real GPU yet (Mancave);
+  unsorted, so covering particles must stay faint; no shadows or local
+  lights on particles; not in the minimal forward renderer or the browser.
 - **Open:** fixed per-frame work for unused features; `frame.rs` still refers
   to Sideways features; new meshes or materials need a new renderer;
   animated pixels reject TAA history (no deformation motion vectors).
