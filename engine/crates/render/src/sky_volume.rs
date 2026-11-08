@@ -155,6 +155,7 @@ impl SkyVolume {
 struct Uniform {
     inv_vp: [[f32; 4]; 4],
     prev_vp: [[f32; 4]; 4],
+    inv_depth_vp: [[f32; 4]; 4],
     camera: [f32; 4],
     sizes: [f32; 4],
     output: [f32; 4],
@@ -274,6 +275,9 @@ pub(crate) struct ViewInput<'a> {
     pub depth_size: (u32, u32),
     pub camera: Vec3,
     pub depth_vp: Mat4,
+    /// The same view without the TAA/DLSS sub-pixel jitter: rays and
+    /// reprojection use it, so the clouds do not hop with the jitter.
+    pub view_proj: Mat4,
     pub light: &'a crate::Lighting,
     /// Restart temporal accumulation (camera cut, resize).
     pub reset: bool,
@@ -335,8 +339,9 @@ impl SkyVolumeSlot {
         let model = &tables.model;
         let history_valid = !view.reset && t.prev_vp.is_some();
         let mut u = Uniform::zeroed();
-        u.inv_vp = view.depth_vp.inverse().to_cols_array_2d();
-        u.prev_vp = t.prev_vp.unwrap_or(view.depth_vp).to_cols_array_2d();
+        u.inv_vp = view.view_proj.inverse().to_cols_array_2d();
+        u.prev_vp = t.prev_vp.unwrap_or(view.view_proj).to_cols_array_2d();
+        u.inv_depth_vp = view.depth_vp.inverse().to_cols_array_2d();
         u.camera = view.camera.extend(t.frame as f32).to_array();
         u.sizes = [dw as f32, dh as f32, half.0 as f32, half.1 as f32];
         u.output = [size.0 as f32, size.1 as f32, if history_valid { 1.0 } else { 0.0 }, if settings.aerial { 1.0 } else { 0.0 }];
@@ -352,7 +357,7 @@ impl SkyVolumeSlot {
         (u.cloud, u.cloud_motion) = settings.shade_uniforms(light.time);
         u.cloud_shape = [3500.0, 900.0, clouds.steps as f32, clouds.light_steps as f32];
         gpu.queue.write_buffer(&t.uniform, 0, bytemuck::bytes_of(&u));
-        t.prev_vp = Some(view.depth_vp);
+        t.prev_vp = Some(view.view_proj);
         t.frame = t.frame.wrapping_add(1);
         let (cur, prev) = ((t.frame & 1) as usize, 1 - (t.frame & 1) as usize);
 
