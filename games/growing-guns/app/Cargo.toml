@@ -9,6 +9,7 @@ name = "growing-guns"
 path = "src/main.rs"
 
 [dependencies]
+body = { path = "../../../engine/crates/body" }
 growing-guns.workspace = true
 kern.workspace = true
 render = { path = "../../../engine/crates/render" }

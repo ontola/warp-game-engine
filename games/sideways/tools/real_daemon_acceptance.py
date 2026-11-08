@@ -290,11 +290,11 @@ def main():
     p.add_argument("--exe",required=True)
     p.add_argument("--out",required=True)
     p.add_argument("--cwd",default=str(GAME_ROOT))
-    p.add_argument("--daemon",default=DEFAULT_DAEMON,help="Installed GameNight daemon executable; defaults to the current user's Preview install")
+    p.add_argument("--daemon",default=DEFAULT_DAEMON,help="Installed Gamepad Party daemon executable; defaults to the current user's Preview install")
     p.add_argument("--size",default="640x360")
     args=p.parse_args()
     if os.name != "nt": p.error("This fixture requires Windows")
-    if not args.daemon or not Path(args.daemon).is_file(): p.error("Installed GameNight daemon not found; provide --daemon <absolute executable path>")
+    if not args.daemon or not Path(args.daemon).is_file(): p.error("Installed Gamepad Party daemon not found; provide --daemon <absolute executable path>")
     return asyncio.run(RealProbe(args).run_real())
 
 

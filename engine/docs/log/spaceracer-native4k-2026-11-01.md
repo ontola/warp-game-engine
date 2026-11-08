@@ -88,7 +88,7 @@ need separate tests. The user explicitly requested no playtest afterwards.
 
 Background programs remained running. With no game/build active, a three-second
 CPU delta sample showed approximately 4.2 cores used by Windows' Now Playing
-Session Manager (`NPSMSvc_1fb17c3`), 1.3 by GameNight's daemon, 1.2 by
+Session Manager (`NPSMSvc_1fb17c3`), 1.3 by Gamepad Party's daemon, 1.2 by
 CrossDeviceService, 1.7 across two Spotify processes and 0.5 by the browser.
 Here 100% means one logical core, not the whole machine. This is material
 contention and can contribute to CPU frame-time tails. No unrelated process or

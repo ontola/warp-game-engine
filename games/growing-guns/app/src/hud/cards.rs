@@ -174,14 +174,15 @@ pub(super) fn pick(d: &mut HudDrawList, world: &World, i: usize, l: &Layout, f: 
     let n = cards.len().max(1) as f32;
     let (vw, vh) = (l.rect[2] / u, l.rect[3] / u);
     let total = BASE_W * n + SEP * (n - 1.0);
-    let scale = ((vw * 0.92) / total).min((vh - 100.0).max(0.0) / BASE_H).clamp(0.7, 1.5);
+    // Leave the shared kill notice above the cards, including in a four-way split.
+    let header = 48.0;
+    let scale = ((vw * 0.92) / total).min((vh - header - 72.0).max(1.0) / BASE_H).min(1.5);
     let (slot_w, slot_h, sep) = (BASE_W * scale * u, BASE_H * scale * u, (SEP * scale).round().max(6.0) * u);
     let row_w = slot_w * n + sep * (n - 1.0);
-    // The same headline as the banner it follows ("P1 DIED", size::L),
-    // smaller only when the cards have to shrink.
+    // Keep the pick title legible as the cards scale down.
     let title_size = (size::L * scale.min(1.0)).round().max(24.0) * u;
     let block_h = title_size * 1.2 + 12.0 * u + slot_h;
-    let top = l.rect[1] + (l.rect[3] - block_h) * 0.5;
+    let top = l.rect[1] + (header * u + l.rect[3] - block_h) * 0.5;
     let x0 = l.rect[0] + (l.rect[2] - row_w) * 0.5;
     // Title: fades 0.12 s after a pick (and lifts as the overlay closes).
     // It fades in once the banner it replaces has faded out (0.15 s).

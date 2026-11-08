@@ -41,9 +41,8 @@ impl Default for Dolls {
 /// Which part a node rides: its nearest named ancestor among PARTS; the
 /// staff goes with the right hand, the sword with the left.
 fn part_of(kit: &Kit, node: usize) -> usize {
-    let named = |name: &str| kit.named.get(name).copied();
-    let mut n = Some(node);
-    while let Some(j) = n {
+    let named = |name: &str| kit.tree.node(name);
+    for j in kit.tree.ancestors(node) {
         if named("staff") == Some(j) {
             return 3;
         }
@@ -53,7 +52,6 @@ fn part_of(kit: &Kit, node: usize) -> usize {
         if let Some(p) = PARTS.iter().position(|&x| named(x) == Some(j)) {
             return p;
         }
-        n = kit.nodes[j].parent;
     }
     0
 }
@@ -97,13 +95,13 @@ impl Dolls {
         }
         let parts: Vec<usize> = pieces.iter().map(|p| part_of(kit, p.node)).collect();
         // Each part's pivot (its node) and how far its pieces reach from it.
-        let pivot = |k: usize| kit.named.get(PARTS[k]).map(|&n| node(n).w_axis.truncate()).unwrap_or(xfs[0].w_axis.truncate());
+        let pivot = |k: usize| kit.tree.node(PARTS[k]).map(|n| node(n).w_axis.truncate()).unwrap_or(xfs[0].w_axis.truncate());
         let mut lo = [Vec3::splat(f32::INFINITY); 6];
         let mut hi = [Vec3::splat(f32::NEG_INFINITY); 6];
         for ((p, x), &k) in pieces.iter().zip(xfs).zip(&parts) {
             let Some(m) = meshes.get(p.mesh) else { continue };
             let c = x.transform_point3(Vec3::new(m.sphere[0], m.sphere[1], m.sphere[2]));
-            if k == 3 && kit.named.get("staff").is_some_and(|&s| is_under(kit, p.node, s)) {
+            if k == 3 && kit.tree.node("staff").is_some_and(|s| kit.tree.ancestors(p.node).any(|j| j == s)) {
                 continue;
             }
             lo[k] = lo[k].min(c);
@@ -157,15 +155,4 @@ impl Dolls {
         let d = self.dolls.get(i)?.as_ref()?;
         Some(d.rig.delta(*d.parts.get(j)?, alpha) * *d.initial.get(j)?)
     }
-}
-
-fn is_under(kit: &Kit, node: usize, top: usize) -> bool {
-    let mut n = Some(node);
-    while let Some(j) = n {
-        if j == top {
-            return true;
-        }
-        n = kit.nodes[j].parent;
-    }
-    false
 }

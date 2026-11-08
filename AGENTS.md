@@ -22,7 +22,7 @@ One Rust workspace, with Cargo.toml and Cargo.lock at the repository root.
 | `engine/crates/body` | Bodies that move without hand animation: a standard skeleton, built-in motion-captured clips (CC0), `Gait` (what to blend from what a body does, pace from leg length), rigs of rigid pieces. |
 | `engine/crates/assets` | Asset import for scenes. |
 | `engine/crates/net` | Online play over iroh (QUIC). |
-| `engine/crates/gamenight` | Native GameNight client (party host, seats, wire contract). |
+| `engine/crates/gamenight` | Native Gamepad Party client (party host, seats, wire contract). |
 | `engine/crates/script` | Luau scripting host with hot reload. |
 | `engine/crates/live` | Live control of a running game over MCP. |
 | `engine/crates/warp` | The `warp` executable: runs games made only of Luau scripts, synth patches and assets. |
@@ -32,7 +32,7 @@ One Rust workspace, with Cargo.toml and Cargo.lock at the repository root.
 | `games/sideways/` | The rally game: `sim` (simulation), `app` (renderer integration, the `cli` package builds the `sideways` executable), `determinism` (`gdcompat`: deterministic math/RNG, not Godot), assets, scenarios, tools. |
 | `games/growing-guns/`, `games/spellstorm/` | Rust games with `sim` and `app` crates. Growing Guns is a port of the Godot game (github.com/ontola/growing-guns); its README's status tables say how far the port is: update them in the same commit as any change a player would notice (a test checks modifiers, settings, knobs and the card count). |
 | `games/hello-warp/`, `neon-siege/`, `neon-trails/` | Luau games run by `warp run games/NAME` (no Rust). |
-| `lobbies/game-room/` | GameNight's lobby game. |
+| `lobbies/game-room/` | Gamepad Party's lobby game. |
 | `website/` | Static site generator for the engine's site. |
 | `build/` | Ignored output: screenshots (`build/screenshots`), captures, caches. |
 
@@ -50,7 +50,7 @@ cargo run --release -p cli --bin sideways                             # the rall
 cargo run --release -p warp -- run games/hello-warp                   # a Luau game
 ```
 
-Feedback loop with a playtester: F12 writes `build/screenshots/<game>-<ms>.png`
+Feedback loop with a playtester: F4 opens Warp’s feedback overlay. Click or tap a point, or press Esc. The capture writer saves `build/screenshots/<game>-<ms>.png`
 plus a `.json` with the game's state, camera, GPU, fps and debug-menu settings,
 and copies the image to the clipboard, for every game on the `app` shell
 (Sideways included). Each capture is also noted in
@@ -59,6 +59,17 @@ and copies the image to the clipboard, for every game on the `app` shell
 newest captures, image and JSON together. `terrain_fly --from <that.json>`
 puts the camera back where it was. F10 opens the engine debug menu (render and
 light switches, LOD, render height, GPU pass times; games add their own).
+
+For a Sideways F12 bug report, call MCP `feedback` with `diagnostics: false`
+to locate the PNG, then use the JSON beside it. Sideways also accepts F12 for the shared F4 overlay. The player clicks or taps the problem, or presses Esc to skip marking. If the JSON has `player_point`, run `warp inspect F12.json` to inspect that point directly. Choose the command by task:
+
+- Identify a tree, car or material under a pixel: `warp inspect F12.json --pixel X Y` returns JSON. Use original PNG coordinates.
+- Isolate a lighting artifact on a static surface: `warp relight F12.json --without gi --without shadow_strength` uses the player point or `--pixel X Y`. Read `lighting.json` for source-triangle agreement, repeat stability and brightness. Open `comparison.png` for the crops.
+- Reproduce handling or check a physics change: `warp compare F12.json --baseline main --state-only`. Read `comparison.json` for baseline agreement and the first differing tick in the captured window.
+- Compare the rendered drive and per-pass timings: omit `--state-only`. The output includes synchronized before/after clips.
+
+[Capture files, prerequisites and headless examples](engine/docs/warp-cli.md#sideways-feedback).
+For Growing Guns, inspect `replay.input_history` in the F12 JSON for inputs and tick-stamped live edits. [Growing Guns replay workflow](games/growing-guns/README.md#replay-a-moment-while-editing-graphics).
 
 Procedural terrain has one height function in two copies that must stay
 line for line identical: `render/src/terrain_field.rs` (CPU: LOD error,

@@ -349,6 +349,14 @@ impl Menus {
         self.menu.focus = focus;
         self.col = entries.iter().position(|&j| j == hit.entry).unwrap_or(0);
         let item = list[hit.item];
+        if matches!(item,Item::Field(Field::Join | Field::Name)) && hit.entry==0 {
+            if p.pressed {self.drag=p.held.then_some(hit);}
+            if p.pressed || p.held && self.drag.is_some() {
+                let field=if matches!(item,Item::Field(Field::Join)) { &mut self.join } else { &mut self.name };
+                field.pointer_select(pos,p.pressed);
+            }
+            return Action::None;
+        }
         let sliding = matches!(item, Item::Slider(_) | Item::Party(_));
         if p.pressed && sliding { self.drag = p.held.then_some(hit); }
         if !(p.pressed || sliding && p.held && self.drag.is_some()) { return Action::None; }
@@ -978,7 +986,10 @@ fn scoreboard(d: &mut HudDrawList, world: &World, hud: &Hud, u: f32, clip: [f32;
     for i in rows {
         if y > pr[1] + pr[3] - 30.0 * u { break; }
         let p = &world.players[i];
-        Label::new(BODY, 20.0 * u, [1.0, 1.0, 1.0, 1.0]).draw(d, hud.name(i), x0, y + 12.0 * u, clip);
+        let name_size = fit(hud.name(i), BODY, 20.0 * u, x1 - x0 - 310.0 * u);
+        Label::new(BODY, name_size, BONE).draw(d, hud.name(i), x0, y + 12.0 * u, clip);
+        let kills = format!("{} {}", p.kills, if p.kills == 1 { "KILL" } else { "KILLS" });
+        Label::new(BODY, 18.0 * u, BONE).right().draw(d, &kills, x1 - 205.0 * u, y + 12.0 * u, clip);
         let score = if world.coop { if world.waves.is_enemy(i) { "ENEMY".into() } else { "ALLY".into() } } else { format!("{} / {}", p.score, world.rounds_to_win) };
         Label::new(BODY, 20.0 * u, [1.0, 0.85, 0.4, 1.0]).right().draw(d, &score, x1 - 92.0 * u, y + 12.0 * u, clip);
         let (ping, pc) = if p.bot { ("BOT", [0.55, 0.55, 0.65, 1.0]) } else { ("-- ms", [0.65, 0.65, 0.75, 1.0]) };
@@ -1236,7 +1247,7 @@ mod pointer_tests {
         assert!(!has(&c));
         c.client = false;
         c.party = Some((vec![], String::new()));
-        assert!(!items(Screen::Pause, &c).iter().any(|i| matches!(i, Item::Button("SPLITSCREEN", ..))), "GameNight's menu has none");
+        assert!(!items(Screen::Pause, &c).iter().any(|i| matches!(i, Item::Button("SPLITSCREEN", ..))), "Gamepad Party's menu has none");
     }
 
     #[test]

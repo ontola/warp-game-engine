@@ -263,7 +263,6 @@ impl Transparency {
                 ),
             ),
             (11, uniform),
-            (12, read_buffer),
             (
                 13,
                 texture(

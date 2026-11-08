@@ -30,7 +30,7 @@ complete example with split screen, bots and online play.
 - `app::run(Config, &mut game)` opens the window: fixed tick with
   interpolation (`frame.alpha`), keyboard, mouse and gamepads as
   `Controls` (one per local player), split screen for several cameras,
-  F10 engine debug panel, F11 fullscreen, F12 screenshot. These reserved keys run before game input, including menus and text fields. Games receive F1–F9; F3 a game does not use opens the engine stats overlay, and `Game::debug_stats` adds the game's own lines to it. `app::Headless` and `app::capture`
+  F2 engine debug panel, Alt+Enter fullscreen, F4 screenshot. These reserved keys run before game input, including menus and text fields. Games receive F1–F9; F3 a game does not use opens the engine stats overlay, and `Game::debug_stats` adds the game's own lines to it. `app::Headless` and `app::capture`
   render the same frames to memory; `app::script` drives a game from JSON.
 - Keep the simulation in its own crate without rendering. Deterministic
   ticks make scripted tests and online play straightforward.
@@ -120,9 +120,9 @@ complete example with split screen, bots and online play.
 ## Desktop launch policy
 
 Windows games open fullscreen by default, after their first complete frame.
-Use `--windowed` or F11 for a window. During startup a minimized taskbar marker
+Use `--windowed` or Alt+Enter for a window. During startup a minimized taskbar marker
 shows the game icon without taking focus; there is no terminal or white loading
-window. GameNight warm launches stay invisible until the host requests them.
+window. Gamepad Party warm launches stay invisible until the host requests them.
 Sideways keeps its initial stage preparation hidden too; subsequent in-game
 stage changes retain their loading presentation.
 

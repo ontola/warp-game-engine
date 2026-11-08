@@ -9,7 +9,7 @@ Sideways selects the experiment with
 `SIDEWAYS_PROCEDURAL_GRASS=field` and
 `SIDEWAYS_MEADOW_BLADE_SHADING=rounded`. Unset or `flat` retains the existing
 source. Invalid values fail construction. This is an opt-in visual change;
-the saved vegetation preset and GameNight registration are not changed.
+the saved vegetation preset and Gamepad Party registration are not changed.
 
 Warp cooks the normals from the source ribbon frame, after selecting each
 geometric cut. Shared source positions receive the same normal at every LOD.
@@ -85,5 +85,5 @@ To reproduce the diagnostic from the workspace root:
 cargo run --release --locked -p render --example meadow_shading_gpu -- --out C:/temp/new-rounded-grass --aggregate
 ```
 
-The experiment remains opt-in. GameNight registration and graphics defaults
+The experiment remains opt-in. Gamepad Party registration and graphics defaults
 have not been promoted on the strength of these still-image checks.

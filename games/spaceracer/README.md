@@ -171,7 +171,7 @@ The packaged executable resolves its adjacent `spaceracer/rules` and
 `spaceracer/assets`. Development runs fall back to the source directory;
 `--game-dir PATH` overrides both. Seeds are 1–99999. Worlds: `city`, `forest`,
 `cell`, `desert`, `ocean`; difficulty: `easy`, `normal`, `hard`.
-The existing GameNight catalog/release is deliberately not switched to this
+The existing Gamepad Party catalog/release is deliberately not switched to this
 incomplete port.
 
 Controller: RT throttle, LT brake/slide, left X steer/yaw, right X strafe/roll,
@@ -258,7 +258,7 @@ cell/rock proxies are approximate. Vehicle contact is simplified rather than
 the original complete rotated hull solver. Weapon tuning and AI behavior need
 controller playtesting. No Android or Steam Deck build/hardware claim is made.
 
-GameNight uses the shared native client: prepare/ready/start/pause/resume/dispose,
+Gamepad Party uses the shared native client: prepare/ready/start/pause/resume/dispose,
 exact seat tokens, names, host overlay, finished notification and the optional
 SDK6 new-race action. Ready follows scene upload/draw. Faces (including hats),
 skin and paint colours update live, including while paused. One cached atlas is
@@ -282,7 +282,7 @@ Register the packaged native build locally on Windows:
 ```
 
 Registration backs up `local-games.json` and `shelf.json`, updates only SpaceRacer,
-and keeps a stable path for subsequent builds. **Restart GameNight once** to reload
+and keeps a stable path for subsequent builds. **Restart Gamepad Party once** to reload
 its library; the script does not interrupt existing sessions. Published catalog
 artifacts are unchanged.
 
@@ -386,7 +386,7 @@ New tests also check all five stage component sets, scenery/terrain clearance,
 triangle-consistent ground heights and swept flight across a terrain ridge.
 New tests cover deterministic full-race replay, three AI race completions,
 EMP/recovery, swept obstacle contact, script reload/validation, changing road
-width without rebuilding, analog bindings and a real loopback GameNight
+width without rebuilding, analog bindings and a real loopback Gamepad Party
 WebSocket with sparse seat IDs and pause/resume/dispose. The committed headless
 scenario checks two independent controllers, partial throttle, right stick,
 paused time, EMP owner exemption and screenshots. This does not prove real

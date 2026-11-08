@@ -7,7 +7,7 @@
 mod dust;
 mod arena;
 mod cages;
-mod characters;
+pub(crate) mod characters;
 mod character_ragdoll;
 mod effects;
 mod gore;
@@ -95,6 +95,7 @@ pub struct Visuals {
     phys: Physics,
     arena: ArenaView,
     fx: EffectsView,
+    pub(crate) blast_look: crate::explosion_editor::BlastLook,
     players: PlayersView,
     cages: cages::Cages,
     guns: Guns,
@@ -150,7 +151,7 @@ impl Visuals {
                 origin: Vec3::new(-192.0, -6.0, -192.0), cell: 6.0, dims: [65, 13, 65],
             }).expect("stadium sky grid");
         }
-        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, cages, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, blackout: false, sprite_images: false, air_targets: Vec::new(), air_impact: f32::NEG_INFINITY, artillery_seats: Vec::new(), sprites: Vec::new() };
+        let mut v = Visuals { blast_look:Default::default(), scene, first_dynamic, phys, arena, fx, players, cages, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, blackout: false, sprite_images: false, air_targets: Vec::new(), air_impact: f32::NEG_INFINITY, artillery_seats: Vec::new(), sprites: Vec::new() };
         v.set_arena(world);
         v
     }
@@ -269,11 +270,11 @@ impl Visuals {
                     } else {
                         // An air strike's rocket hit (its blast is 10 cm over the target).
                         if self.air_targets.iter().any(|t| t.distance(pos - Vec3::Y * 0.1) < 0.05) { self.air_impact = now; }
-                        self.fx.blasts.explosion(now, pos, radius, BLAST_TINT);
-                        dust::emit(&mut self.fx.blasts,world,now,pos,radius);
+                        self.fx.blasts.explosion(now, pos, radius * self.blast_look.size, Vec3::new(1.,self.blast_look.green,self.blast_look.blue));
+                        dust::emit(&mut self.fx.blasts,world,now,pos,radius * self.blast_look.dust);
                     }
                     self.fx.blast_punch(world, now, pos, radius);
-                    if kind != ExplosionKind::Ion { self.phys.blast(pos, radius, 9.0); }
+                    if kind != ExplosionKind::Ion { self.phys.blast(pos, radius, 9.0 * self.blast_look.impulse); }
                 }
                 Event::Hit { victim, attacker, pos, head, .. } => {
                     let dir = (world.players[victim].pos - world.players[attacker].pos).normalize_or(Vec3::Y);
@@ -345,7 +346,7 @@ impl Visuals {
     pub fn pose(&mut self, world: &World, prev: &[Pose], alpha: f32, dt: f32) {
         self.clock = (world.tick as f32 - 1.0 + alpha) * growing_guns::DT;
         self.fx.update(world, self.clock, dt);
-        self.players.pose(&mut self.scene, world, prev, alpha);
+        self.players.pose(&mut self.scene, world, prev, alpha, &self.guns);
         self.cages.pose(&mut self.scene, world, prev, alpha, self.clock);
         self.guns.pose(&mut self.scene, world, prev, alpha, &self.fx, self.players.hands());
         self.things.pose(&mut self.scene, world, self.clock);

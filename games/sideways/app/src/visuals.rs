@@ -29,6 +29,8 @@ pub struct Built {
 }
 
 pub struct DynamicCar {
+    pub model: String,
+    pub part_names: Vec<&'static str>,
     pub first: usize,
     meshes: crate::car_model::CarMeshes,
     fallback: bool,
@@ -788,15 +790,15 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
             for k in before..scene.meshes.len() {
                 mesh_names.push(format!("car {rel} part {}", k - before));
             }
-            crate::car_model::place(&mut scene, &meshes, pose, car.ride, &car.wheels);
-            dynamic_cars.push(DynamicCar { first, meshes, fallback: false });
+            let part_names=crate::car_model::place(&mut scene, &meshes, pose, car.ride, &car.wheels);
+            dynamic_cars.push(DynamicCar { first, meshes, model:car.model.clone(), part_names, fallback: false });
             log.push(format!("car {rel}: {:.0} ms", t.elapsed().as_secs_f64() * 1e3));
         } else {
             let mat = scene.add_material(m(car.color.to_array(), -1, 0, 1.0));
             let id = scene.add_mesh(&car_mesh(&car.boxes, mat));
             mesh_names.push("car box".into());
             scene.add_instance(id, pose);
-            dynamic_cars.push(DynamicCar { first, meshes: crate::car_model::CarMeshes { body: id, wheels: [None; 4] }, fallback: true });
+            dynamic_cars.push(DynamicCar { first, model:car.model.clone(), part_names:vec!["body"], meshes: crate::car_model::CarMeshes { body: id, wheels: [None; 4] }, fallback: true });
         }
         // Label every body, glass and wheel instance, including the fallback car.
         scene.set_instance_categories(first..scene.instances.len(), GeometryCategory::Cars);

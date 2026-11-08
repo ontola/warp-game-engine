@@ -499,7 +499,7 @@ impl Character {
     /// Names may repeat for joints with distinct inverse binds; every palette
     /// entry is retained. A skin matrix multiplied by its rest transform yields
     /// that joint's animated model-space transform.
-    pub fn joints(&self) -> impl ExactSizeIterator<Item = (&str, Mat4)> + '_ {
+    pub fn joints(&self) -> impl ExactSizeIterator<Item = (&str, Mat4)> + Clone + '_ {
         self.joints.iter().map(|(name, rest)| (name.as_str(), *rest))
     }
 

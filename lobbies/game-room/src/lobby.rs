@@ -84,7 +84,7 @@ impl Lobby {
             if !(active.is_object() && get(active, "game", "") == *game) { self.host.quitting = None; }
         }
         if was_ready.is_empty() && !self.host.update_ready().is_empty() {
-            self.toast("New GameNight version ready. It installs when the room is quiet, or press Start.", GREEN);
+            self.toast("New Gamepad Party version ready. It installs when the room is quiet, or press Start.", GREEN);
         }
         self.profiles = self.host.party["players"].as_array().map(|a| a.iter().map(Profile::from_player).collect()).unwrap_or_default();
         self.apply_claims();
@@ -393,11 +393,11 @@ impl Lobby {
         let mut items = vec![MenuItem::new("Close menu", "close"), MenuItem::new("Leave the party", "leave")];
         // Hosts that predate couch positions don't send them.
         if self.profile(id).is_some_and(|p| p.couch.is_some()) { items.insert(1, MenuItem::new("Couch position", "couch")); }
-        if !self.host.update_ready().is_empty() { items.insert(0, MenuItem::new("Update GameNight now", "update")); }
+        if !self.host.update_ready().is_empty() { items.insert(0, MenuItem::new("Update Gamepad Party now", "update")); }
         if self.host.links["linked"].get(id).is_some() { items.insert(1, MenuItem::new("Unlink my phone profile", "unlink")); }
         if self.profiles.len() > 1 { items.push(MenuItem::new("Remove a player", "remove_page")); }
         if self.host.party["lobbies"].as_array().is_some_and(|l| l.len() > 1) { items.push(MenuItem::new("Switch lobby", "lobbies")); }
-        items.push(MenuItem::new("Quit GameNight", "quit"));
+        items.push(MenuItem::new("Quit Gamepad Party", "quit"));
         items
     }
 
@@ -417,9 +417,9 @@ impl Lobby {
     /// The mouse's menu: nobody's, so only what the room itself can do.
     fn mouse_items(&self) -> Vec<MenuItem> {
         let mut items = vec![MenuItem::new("Close menu", "close")];
-        if !self.host.update_ready().is_empty() { items.push(MenuItem::new("Update GameNight now", "update")); }
+        if !self.host.update_ready().is_empty() { items.push(MenuItem::new("Update Gamepad Party now", "update")); }
         if self.host.party["lobbies"].as_array().is_some_and(|l| l.len() > 1) { items.push(MenuItem::new("Switch lobby", "lobbies")); }
-        items.push(MenuItem::new("Quit GameNight", "quit"));
+        items.push(MenuItem::new("Quit Gamepad Party", "quit"));
         items
     }
 
@@ -500,7 +500,7 @@ impl Lobby {
             },
             "update" => {
                 self.menus.remove(id);
-                self.toast("Updating GameNight… everyone stays in the party.", GREEN);
+                self.toast("Updating Gamepad Party… everyone stays in the party.", GREEN);
                 self.command(json!({"type": "apply_update"}));
             }
             "leave" => { self.menus.remove(id); self.command(json!({"type": "leave_party", "player_id": id})); }

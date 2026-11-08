@@ -41,7 +41,7 @@ fn run() -> Result<(), String> {
         let options = game_room::stage::Options::from_args(numf, flag, |k| arg(k).is_some());
         let mut lobby = game_room::live::Lobby::connect(options)?;
         // Controllers come from the host as frames; the mouse points and clicks but is nobody.
-        let cfg = app::Config { title: "GameNight Game Room".into(), size: [1600, 900], fullscreen: !flag("--windowed"), keyboard: false, pointer: true, frames: numf("--frames", 0.0) as u64,
+        let cfg = app::Config { title: "Gamepad Party Game Room".into(), size: [1600, 900], fullscreen: !flag("--windowed"), keyboard: false, pointer: true, frames: numf("--frames", 0.0) as u64,
             // From native resolution: the room is text and pixel art, soft when
             // upscaled from 1440p. Adaptive quality still chases the display's
             // rate (a fixed 4K ran at 20-40 fps on the Mancave), down to 2/3.
@@ -56,7 +56,7 @@ fn run() -> Result<(), String> {
         let bots = numf("--bots", 3.0) as usize;
         let mut lobby = if flag("--host") { game_room::live::Lobby::connect(options)? } else { game_room::live::Lobby::new(options, local, bots)? };
         if args[1] == "play" {
-            let cfg = app::Config { title: "GameNight Game Room".into(), size: [1600, 900], fullscreen: !flag("--windowed"), frames: numf("--frames", 0.0) as u64, ..Default::default() };
+            let cfg = app::Config { title: "Gamepad Party Game Room".into(), size: [1600, 900], fullscreen: !flag("--windowed"), frames: numf("--frames", 0.0) as u64, ..Default::default() };
             return app::run(cfg, &mut lobby);
         }
         let out = arg("--out").ok_or("--out FILE required")?;

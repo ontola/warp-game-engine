@@ -122,7 +122,7 @@ pub(crate) fn cull_source_with(receiver_demand: bool) -> String {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Readback { None, Metrics, ImageAndMetrics }
+enum Readback { None, Metrics, ImageAndMetrics, Visibility }
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -577,6 +577,124 @@ impl Default for Lighting {
     }
 }
 
+/// Source visibility before HUD, transparency and reconstruction, per split viewport.
+#[derive(Debug, Clone)]
+pub struct VisibilityCapture {
+    pub rect: [u32; 4],
+    pub size: [u32; 2],
+    pub ids: Vec<u8>,
+    pub visible: Vec<[u32; 2]>,
+}
+
+impl VisibilityCapture {
+    fn used_entries(ids: &[u8], entries: &[[u32;2]]) -> Result<Vec<[u32;2]>, String> {
+        let count = ids.chunks_exact(4).map(|b|u32::from_le_bytes(b.try_into().unwrap()))
+            .filter(|id|id & 0x80000000 == 0).max().map_or(0,|id|(id >> 7) as usize+1);
+        Ok(entries.get(..count).ok_or("capture visibility index outside visible list")?.to_vec())
+    }
+}
+
+/// Immutable GPU copies from one submitted frame. Only explicit feedback
+/// captures allocate these buffers. Later frames may reuse all render targets.
+pub struct PendingVisibility {
+    rect: [u32; 4],
+    size: [u32; 2],
+    ids: wgpu::Buffer,
+    visible: wgpu::Buffer,
+    stride: u32,
+}
+
+impl PendingVisibility {
+    fn stage(
+        gpu: &Gpu,
+        enc: &mut wgpu::CommandEncoder,
+        view: &ViewRect,
+        ids: &wgpu::Texture,
+        visible: &wgpu::Buffer,
+    ) -> Self {
+        let stride = (ids.width() * 4).div_ceil(256) * 256;
+        let buffer = |size| {
+            gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("queued feedback readback"),
+                size,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        let pixels = buffer(u64::from(stride) * u64::from(ids.height()));
+        enc.copy_texture_to_buffer(
+            ids.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &pixels,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(stride),
+                    rows_per_image: Some(ids.height()),
+                },
+            },
+            ids.size(),
+        );
+        let list = buffer(visible.size());
+        enc.copy_buffer_to_buffer(visible, 0, &list, 0, list.size());
+        Self {
+            rect: [view.x, view.y, view.w, view.h],
+            size: [ids.width(), ids.height()],
+            ids: pixels,
+            visible: list,
+            stride,
+        }
+    }
+
+    pub fn read(self, gpu: &Gpu) -> Result<VisibilityCapture, String> {
+        let (send, recv) = std::sync::mpsc::channel();
+        for buffer in [&self.ids, &self.visible] {
+            let send = send.clone();
+            buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+                let _ = send.send(r);
+            });
+        }
+        drop(send);
+        gpu.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e|e.to_string())?;
+        for _ in 0..2 {
+            recv.recv()
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+        }
+        let pixels = self
+            .ids
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|e| e.to_string())?;
+        let row = self.size[0] as usize * 4;
+        let mut ids = Vec::with_capacity(row * self.size[1] as usize);
+        for line in pixels.chunks_exact(self.stride as usize) {
+            ids.extend_from_slice(&line[..row]);
+        }
+        drop(pixels);
+        self.ids.unmap();
+        let mapped = self
+            .visible
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|e| e.to_string())?;
+        let entries: &[[u32; 2]] = bytemuck::cast_slice(&mapped);
+        let visible = VisibilityCapture::used_entries(&ids, entries)?;
+        drop(mapped);
+        self.visible.unmap();
+        Ok(VisibilityCapture {
+            rect: self.rect,
+            size: self.size,
+            ids,
+            visible,
+        })
+    }
+}
+
+struct FeedbackSubmission<'a> {
+    show: &'a mut dyn FnMut(&wgpu::Texture) -> Result<(), String>,
+    views: &'a mut Vec<PendingVisibility>,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct FrameStats {
     /// Experimental exact static/dynamic partition of the shared sun map.
@@ -664,6 +782,7 @@ pub struct FrameStats {
     pub gpu_ms: Vec<(&'static str, f64)>,
     /// For each requested composite-output pixel: (instance, cluster, triangle)
     /// or None for sky, a split-screen gap, or a point outside all views.
+    pub visibility: Vec<VisibilityCapture>,
     pub picks: Vec<Option<(u32, u32, u32)>>,
 }
 
@@ -3253,7 +3372,7 @@ impl Renderer {
     /// `output_texture`), so a game loop allocates no output per frame.
     /// The texture is overwritten; present or copy it before the next call.
     pub fn try_render_into(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, target: &wgpu::Texture) -> Result<(), String> {
-        self.frame_output_into(gpu, views, light, target.width(), target.height(), &[], Readback::None, Some(target)).map(|_| ())
+        self.frame_output_into(gpu, views, light, target.width(), target.height(), &[], Readback::None, Some(target), None).map(|_| ())
     }
 
     pub fn try_render_texture(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32) -> Result<wgpu::Texture, String> {
@@ -3270,6 +3389,22 @@ impl Renderer {
     pub fn try_render_texture_profiled(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32) -> Result<(wgpu::Texture, FrameStats), String> {
         let (texture, _, stats)=self.frame_output(gpu, views, light, out_w, out_h, &[], Readback::Metrics)?;
         Ok((texture,stats))
+    }
+
+    pub fn capture_visibility(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, w: u32, h: u32) -> Result<(wgpu::Texture, FrameStats), String> {
+        let (texture, _, stats) = self.frame_output(gpu, views, light, w, h, &[], Readback::Visibility)?;
+        Ok((texture, stats))
+    }
+
+    /// Present a submitted capture before the diagnostic CPU readbacks. The callback
+    /// may enqueue more GPU work but must not re-enter the renderer.
+    pub fn capture_visibility_submitted(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting,
+        w: u32, h: u32, submitted: &mut dyn FnMut(&wgpu::Texture) -> Result<(), String>,
+    ) -> Result<(wgpu::Texture, FrameStats, Vec<PendingVisibility>), String> {
+        let mut pending=Vec::new();
+        let (texture, _, stats) = self.frame_output_into(gpu, views, light, w, h, &[],
+            Readback::Metrics, None, Some(FeedbackSubmission {show:submitted,views:&mut pending}))?;
+        Ok((texture, stats, pending))
     }
 
     /// Replace the ENTIRE meadow only in an explicit bounded test scene.
@@ -3712,11 +3847,11 @@ impl Renderer {
 
     pub fn foliage_page_stats(&self)->Option<crate::foliage_pages::cache::Stats>{self.voxel_forest.as_ref().and_then(|v|v.page_stats())}
     fn frame_output(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: Readback) -> Result<(wgpu::Texture, Vec<u8>, FrameStats), String> {
-        self.frame_output_into(gpu, views, light, out_w, out_h, picks, readback, None)
+        self.frame_output_into(gpu, views, light, out_w, out_h, picks, readback, None, None)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn frame_output_into(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: Readback, target: Option<&wgpu::Texture>) -> Result<(wgpu::Texture, Vec<u8>, FrameStats), String> {
+    fn frame_output_into(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: Readback, target: Option<&wgpu::Texture>, submitted: Option<FeedbackSubmission<'_>>) -> Result<(wgpu::Texture, Vec<u8>, FrameStats), String> {
         if let Some(portable)=&self.portable {
             let output=target.cloned().unwrap_or_else(||Self::output_texture(gpu,out_w,out_h));
             let axes=self.camera_up_axes.lock().unwrap();let projections=self.camera_projections.lock().unwrap();
@@ -3725,6 +3860,7 @@ impl Renderer {
             let mut enc=gpu.device.create_command_encoder(&Default::default());
             if let Some(terrain)=&self.procedural_terrain {terrain.encode(gpu,&mut enc,None);}
             let stats=portable.lock().unwrap().render(gpu,enc,views,&matrices,light,self.sky_horizon,&output);
+            if let Some(submission)=submitted {(submission.show)(&output)?;}
             let pixels=if readback==Readback::ImageAndMetrics {gpu.read_rgba8(&output)}else{Vec::new()};
             return Ok((output,pixels,stats));
         }
@@ -3742,6 +3878,7 @@ impl Renderer {
             let matrices:Vec<_>=views.iter().enumerate().map(|(vi,v)|projections.get(vi).copied().unwrap_or_else(||
                 Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near))*camera_view(v.cam,axes.get(vi).copied())).collect();
             let stats=forward.lock().unwrap().render(gpu,views,&matrices,&camera_views,&self.sprites,&self.fx,light,&self.headlight_state.lock().unwrap(),Some(&output),None)?;
+            if let Some(submission)=submitted {(submission.show)(&output)?;}
             let pixels=if readback==Readback::ImageAndMetrics {gpu.read_rgba8(&output)}else{Vec::new()};
             return Ok((output,pixels,stats));
         }
@@ -5306,6 +5443,14 @@ impl Renderer {
         color_diagnostics.submitted(profile_context, views, &keep,self.geometry_diagnostics.owners());
         if let Some(ticket) = async_ticket { ticket.submitted(); }
         if far_updated {self.far_sun.submitted();}
+        if let Some(submission)=submitted {
+            (submission.show)(&ldr)?;
+            let mut enc=gpu.device.create_command_encoder(&Default::default());
+            for (view,(target,ids,..)) in views.iter().zip(&keep) {
+                submission.views.push(PendingVisibility::stage(gpu,&mut enc,view,ids,&target.visible));
+            }
+            gpu.queue.submit([enc.finish()]);
+        }
         let pixels = if readback==Readback::ImageAndMetrics { gpu.read_rgba8(&ldr) } else { Vec::new() };
         let mut stats = FrameStats {
             world_terrain_visibility:self.world_visibility.enabled,
@@ -5335,14 +5480,14 @@ impl Renderer {
             camera_sun_visibility,
             ..split_stats
         };
-        if !picks.is_empty() {
+        if !picks.is_empty() || readback == Readback::Visibility {
             stats.picks.resize(picks.len(), None);
             for (view, (main, vis, ..)) in views.iter().zip(&keep) {
                 let requested: Vec<_> = picks.iter().enumerate().filter_map(|(i, &(x,y))|
                     view.local_pixel(x,y).map(|(x,y)| (i,
                         ((x as u64 * vis.width() as u64) / view.w as u64) as u32,
                         ((y as u64 * vis.height() as u64) / view.h as u64) as u32))).collect();
-                if requested.is_empty() { continue; }
+                if requested.is_empty() && readback != Readback::Visibility { continue; }
                 let ids = gpu.read_rgba8(vis);
                 let vis_list = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: MAX_VISIBLE as u64 * 8, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
                 let mut pick_encoder = gpu.device.create_command_encoder(&Default::default());
@@ -5353,6 +5498,15 @@ impl Renderer {
                 {
                     let mapped = vis_list.slice(..).get_mapped_range().expect("visible list");
                     let list: &[u32] = bytemuck::cast_slice(&mapped);
+                    if readback == Readback::Visibility {
+                        let visible = VisibilityCapture::used_entries(&ids, bytemuck::cast_slice(&mapped))?;
+                        stats.visibility.push(VisibilityCapture {
+                            rect: [view.x, view.y, view.w, view.h], size: [vis.width(), vis.height()], ids, visible,
+                        });
+                        drop(mapped);
+                        vis_list.unmap();
+                        continue;
+                    }
                     for (i,x,y) in requested {
                         let k = ((y * vis.width() + x) * 4) as usize;
                         let id = u32::from_le_bytes(ids[k..k + 4].try_into().unwrap());

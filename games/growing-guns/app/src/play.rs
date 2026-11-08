@@ -14,7 +14,7 @@ use crate::session::Session;
 use crate::{hud, view, Args};
 use app::{Buttons, Controls, Device, Draw, Frame};
 use glam::Vec3;
-use growing_guns::{Event, Input, World, DT, TICK_HZ};
+use growing_guns::{Event, Input, Phase, World, DT, TICK_HZ};
 use render::hud::HudDrawList;
 use render::Lighting;
 
@@ -136,8 +136,9 @@ pub struct Gg {
     probe_tries: Vec<&'static str>,
     /// Menu joins skip relays (`--lan`, tests).
     pub lan: bool,
-    /// The F3 debug overlay (hud/debug.rs): it runs the commands below.
+    /// The F10 match tools (hud/debug.rs): it runs the commands below.
     pub debug: hud::debug::DebugMenu,
+    explosions: crate::explosion_editor::ExplosionEditor,
 }
 
 impl Gg {
@@ -148,7 +149,7 @@ impl Gg {
         Gg { recorder: Default::default(), replay: None, replay_size: [1600, 900], replay_alpha: 1.0, prev: view::Pose::all(&world), stepped: true, xr_gun: None, xr_aim: None, xr_stereo: false, vis, light: view::lighting(),
             hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, environment_dirty: false, split_hint_left: 0.0, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), aim_synced: Vec::new(), live: None,
             sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, before_blackout: None, light_overrides: Vec::new(), scatter: Default::default(),
-            split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), probe_tries: Vec::new(), lan: false, lan_hosts: None, lan_beacon: None, xr_head: None, debug: Default::default() }
+            split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), probe_tries: Vec::new(), lan: false, lan_hosts: None, lan_beacon: None, xr_head: None, explosions:crate::explosion_editor::ExplosionEditor::new(), debug: Default::default() }
             .with_split()
     }
 
@@ -1001,7 +1002,7 @@ impl app::Game for Gg {
 
     fn tick(&mut self, controls: &[Controls]) {
         if let Some(result) = self.recorder.completion() {
-            let message = match result { Ok(_) => "Replay saved. F9 to review.".into(), Err(e) => format!("Replay save failed: {e}") };
+            let message = match result { Ok(_) => "Replay saved. F11 to review.".into(), Err(e) => format!("Replay save failed: {e}") };
             self.hud.announce(message, 4.0, 0.0);
         }
         if let Some(r) = &mut self.replay { app::Game::tick(&mut **r, controls); return; }
@@ -1009,6 +1010,8 @@ impl app::Game for Gg {
         let (pointer, pointer_size) = std::mem::take(&mut self.pointer);
         // Live-control requests, between ticks (also while a party is paused).
         crate::live::tick(self);
+        self.explosions.update();
+        self.vis.blast_look = self.explosions.look;
         self.poll_join();
         if self.ui.player_name != self.saved_name { self.saved_name = self.ui.player_name.clone(); self.save_settings(); }
         let audible = self.party.as_ref().is_none_or(|p| p.running());
@@ -1153,7 +1156,7 @@ impl app::Game for Gg {
         hitch("session.publish", t);
         // Desktop replays do not capture headset/controller poses.
         let t = std::time::Instant::now();
-        if !self.xr_stereo { self.recorder.push(&self.world, &self.slots, &self.sky.choice.name(), self.ui.tilt); }
+        if !self.xr_stereo { self.recorder.inputs(self.world.tick,self.world.arena.seed,&inputs); self.recorder.push(&self.world, &self.slots, &self.sky.choice.name(), self.ui.tilt); }
         hitch("replay.record", t);
     }
 
@@ -1257,7 +1260,9 @@ impl app::Game for Gg {
             let error = self.session.error().or_else(|| self.ui.error.clone());
             self.hud.global(&mut list, &self.world, error.as_deref());
             // Splitscreen: the join prompt while seats are open, else the hint.
-            if self.can_join() && self.slots.len() < 4 { hud::menus::join_prompt(&mut list); } else if self.hint_visible() { hud::menus::splitscreen_hint(&mut list); }
+            if self.hud.feed.is_empty() && self.world.phase == Phase::Playing && !self.world.round_over() {
+                if self.can_join() && self.slots.len() < 4 { hud::menus::join_prompt(&mut list); } else if self.hint_visible() { hud::menus::splitscreen_hint(&mut list); }
+            }
             if let Some((k, m)) = &self.player_menu && let Some(&s) = self.slots.get(*k) { hud::menus::player_menu(&mut list, self.hud.name(s), m.focus); }
             self.slots.iter().map(|&s| self.vis.punched(&self.world, s, view::camera(&self.world, s, &self.prev, alpha))).collect()
         };
@@ -1310,8 +1315,13 @@ impl app::Game for Gg {
     fn quit(&self) -> bool { self.quit }
 
     /// F3: the debug overlay.
+    fn scene_tuning(&self)->Option<&app::editor::SceneTuning> { self.replay.is_none().then_some(&self.explosions.panel) }
+    fn scene_tuning_mut(&mut self)->Option<&mut app::editor::SceneTuning> { self.replay.is_none().then_some(&mut self.explosions.panel) }
+    fn editor_shortcut(&self,key:u8)->Option<(&'static str,bool)> { match key {12 if self.replay.is_none()=>Some(("Explosions",self.explosions.panel.is_open())),10 if self.replay.is_none()=>Some(("Match tools",self.debug.open)),11=>Some(("Replay",self.replay.is_some())),_=>None} }
+    fn editor_windows_open(&self) -> bool { self.replay.as_ref().map_or(self.debug.open, |r| r.editor_windows_open()) }
+    fn set_editor_windows_open(&mut self, open: bool) { if let Some(r) = &mut self.replay { r.set_editor_windows_open(open); } else { self.debug.set_open(open); } }
     fn function_key(&mut self, n: u8) -> bool {
-        if n == 9 {
+        if n == 11 {
             if self.close_replay() { return true; }
             if !matches!(self.session, Session::Local) || self.party.is_some() {
                 self.hud.announce("Open the saved replay separately during online play.", 4.0, 0.0);
@@ -1330,7 +1340,8 @@ impl app::Game for Gg {
             return true;
         }
         if self.replay.is_some() { return true; }
-        if n != 3 { return false; }
+        if n == 12 { self.explosions.panel.set_visible(!self.explosions.panel.is_open()); return true; }
+        if n != 10 { return false; }
         self.debug.toggle();
         true
     }
@@ -1393,7 +1404,7 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | debug [on|off] | debug tab cards|items|sky|modes | debug player P | debug focus search|N | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | remove P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | knobs | knob NAME VALUE | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | lan host|join | graphics auto|full|low|minimum | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | debug [on|off] | debug tab cards|items|sky|modes | debug player P | debug focus search|N | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | remove P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | knobs | knob NAME VALUE | fx [NAME VALUE] | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | lan host|join | graphics auto|full|low|minimum | cage | rematch | extend".into()),
             // The keyboard focus on a text field of the open menu.
             "focus" => {
                 use hud::menus::Field;
@@ -1474,6 +1485,7 @@ impl app::Game for Gg {
                 Ok(format!("sky {}", self.sky.choice.name()))
             }
             "light" => self.light_command(&w[1..]),
+            "fx" => self.explosions.command(&w[1..]),
             "knobs" => Ok(crate::knobs::list()),
             "knob" => {
                 let (name, value) = cmd.trim_start().strip_prefix("knob").unwrap_or("").trim().split_once(' ').ok_or("knob NAME VALUE")?;

@@ -551,3 +551,171 @@ fn exposure_can_be_automatic_and_tuned_or_fixed_again() {
     let light = g.core().light;
     assert_eq!((light.auto, light.ev100), (None, Some(11.0)), "a number fixes the exposure again");
 }
+
+#[test]
+fn parented_entities_follow_rotate_collide_reparent_and_remove() {
+    let dir = folder("parenting");
+    std::fs::write(dir.join("main.luau"), r#"
+local v = vector.create
+local function near(a, b) assert(vector.magnitude(a - b) < 0.0001) end
+local function init()
+    local root = world.spawn("cube", {pos = v(9, 1, 5), size = 8, solid = false})
+    local arm = world.spawn("cube", {pos = v(2, 0, 0), solid = false}, root)
+    local tip = world.spawn("sphere", {pos = v(0, 0, 1), tag = "tip"}, arm)
+    world.place(root, v(4, 2, 0), math.pi / 2)
+    local at = v(5, 2, -2)
+    near(world.get(tip).world_pos, at)
+    assert(world.get(arm).parent == root)
+    assert(world.overlap(at, 0.01, {tag = "tip"})[1] == tip)
+    assert(world.raycast(at + v(0, 2, 0), v(0, -1, 0), 4).id == tip)
+    assert(not pcall(world.set, root, {pos = v(999, 0, 0), shape = "missing.glb"}))
+    near(world.get(root).pos, v(4, 2, 0))
+    near(world.get(tip).world_pos, at)
+    world.move(tip, v(1, 0, 0), 0.1)
+    near(world.get(tip).world_pos, at + v(0.1, 0, 0))
+    assert(not pcall(world.set_parent, root, tip))
+    assert(not pcall(world.set_parent, tip, tip))
+    assert(not pcall(world.set_parent, tip, 9999))
+    assert(not pcall(world.spawn, "cube", {}, 9999))
+    assert(world.get(tip).parent == arm and world.count() == 3)
+    world.set_parent(arm, nil)
+    near(world.get(arm).world_pos, v(2, 0, 0))
+    world.remove(root)
+    assert(world.exists(tip))
+    world.remove(arm)
+    assert(world.count() == 0)
+    state.ok = true
+end
+return {init = init}
+"#).unwrap();
+    let g = game(&dir);
+    assert_eq!(state(&g)["errors"], json!([]));
+    assert_eq!(state(&g)["state"]["ok"], true);
+}
+
+#[test]
+fn nested_local_libraries_reload_their_consumers_and_keep_the_last_good_version() {
+    let dir = folder("local-libraries");
+    std::fs::create_dir(dir.join("lib")).unwrap();
+    let leaf = dir.join("lib/value.module.luau");
+    write(&leaf, "return { n = 2 }");
+    write(&dir.join("outer.module.luau"), r#"
+        local value = require("lib/value")
+        assert(value == require("lib/value"))
+        return { read = function() return value.n end, tick = function() error("library ran as a hook") end }
+    "#);
+    write(&dir.join("main.luau"), r#"
+        local outer = require("outer")
+        return { tick = function() state.n = outer.read() end,
+                 reload = function() state.reloads = (state.reloads or 0) + 1 end }
+    "#);
+    write(&dir.join("other.luau"), "return { reload = function() error('unrelated module reloaded') end }");
+    let mut g = game(&dir);
+    ticks(&mut g, 1, Controls::default());
+    assert_eq!(state(&g)["state"]["n"], 2);
+    write(&leaf, "return { n = 17 }");
+    g.reload();
+    ticks(&mut g, 1, Controls::default());
+    assert_eq!(state(&g)["errors"], json!([]));
+    assert_eq!(state(&g)["state"]["n"], 17);
+    assert_eq!(state(&g)["state"]["reloads"], 1);
+    write(&leaf, "return require('outer')");
+    g.reload();
+    assert!(state(&g)["errors"].to_string().contains("cyclic require"));
+    std::fs::remove_file(&leaf).unwrap();
+    g.reload();
+    assert!(state(&g)["errors"].to_string().contains("unknown local library"));
+    ticks(&mut g, 1, Controls::default());
+    assert_eq!(state(&g)["state"]["n"], 17);
+    write(&leaf, "return { n = 35 }");
+    g.reload();
+    ticks(&mut g, 1, Controls::default());
+    assert_eq!(state(&g)["errors"], json!([]));
+    assert_eq!(state(&g)["state"]["n"], 35);
+    assert_eq!(state(&g)["state"]["reloads"], 2);
+}
+
+#[test]
+fn save_slots_survive_restart_migration_conflicts_and_aborted_writes() {
+    use warp::storage::Location;
+    let dir = folder("storage-game");
+    let user = folder("storage-user");
+    let load = || LuaGame::load_with_storage(&dir, &Overrides::default(), None, Location::Directory(&user)).unwrap();
+    write(&dir.join("main.luau"), "return {}");
+    write(&dir.join("game.toml"), "storage=true\nid='storage-test'");
+    let schema = dir.join("storage.json");
+    write(&schema, r#"{"save":[{"type":"integer"}],"settings":[{"type":"object"}],"profile":[{"type":"object"}]}"#);
+    let mut old = load();
+    old.command_line("lua assert(storage.read('save','one') == nil); assert(storage.write('save','one',0,3) == 1)").unwrap();
+    old.command_line("lua storage.write('settings','local',0,{xs=storage.array(),x=storage.null}); local d=storage.read('settings','local').data; assert(d.x==storage.null and #d.xs==0)").unwrap();
+    old.command_line("lua assert(storage.write('profile','one',0,{name='Ana'})==1); assert(storage.read('profile','one').data.name=='Ana'); assert(storage.read('save','one').data==3)").unwrap();
+    write(&schema, r#"{"save":[{"type":"integer"},{"type":"object","required":["points"],"properties":{"points":{"type":"integer","minimum":0}}}]}"#);
+    let mut game = load();
+    game.command_line("lua local d=storage.read('save','one'); assert(d.version==1 and d.data==3); assert(not pcall(storage.write,'save','one',d.revision,{points=-1})); assert(storage.write('save','one',d.revision,{points=d.data})==2)").unwrap();
+    old.command_line("lua assert(not pcall(storage.write,'save','one',1,4)); assert(not pcall(storage.write,'save','one',2,4))").unwrap();
+    let db = rusqlite::Connection::open(user.join("storage.sqlite3")).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_update AFTER UPDATE ON documents BEGIN SELECT RAISE(ABORT,'injected write failure'); END;").unwrap();
+    game.command_line("lua assert(not pcall(storage.write,'save','one',2,{points=7}))").unwrap();
+    drop(game);
+    write(&dir.join("game.toml"), "storage=true\nid='other-game'");
+    load().command_line("lua assert(storage.read('save','one')==nil)").unwrap();
+    write(&dir.join("game.toml"), "storage=true\nid='storage-test'");
+    load().command_line("lua local d=storage.read('save','one'); assert(d.version==2 and d.revision==2 and d.data.points==3)").unwrap();
+    LuaGame::load(&dir, &Overrides::default(), None).unwrap()
+        .command_line("lua assert(storage.read('save','one')==nil)").unwrap();
+}
+
+#[test]
+fn gamenight_schema_validates_the_local_save_and_preserves_old_versions() {
+    use warp::storage::{Location, Storage};
+    let dir = folder("gamenight-schema");
+    let user = folder("gamenight-schema-user");
+    let open = || Storage::open(&dir, "score", Location::Directory(&user)).unwrap();
+    let current = dir.join("save-schema.json");
+    let v1 = json!({"$schema":"https://json-schema.org/draft/2020-12/schema",
+        "$defs":{"Progress":{"type":"object","properties":{"wins":{"type":"integer"}},"required":["wins"]}}});
+    write(&current, &v1.to_string());
+    let mut store = open();
+    assert!(store.write("save","one",0,json!({"wins":"wrong type"})).is_err());
+    assert_eq!(store.write("save","one",0,json!({"wins":2})).unwrap(),1);
+    drop(store);
+    let history = dir.join("schema-history/save");
+    std::fs::create_dir_all(&history).unwrap();
+    std::fs::rename(&current,history.join("1.json")).unwrap();
+    let v2 = json!({"$defs":{"Progress":{"type":"object","properties":{"victories":{"type":"integer"}},"required":["victories"]}},
+        "x-gamenight-lenses":[{"from":"wins","to":"victories","op":"rename"}]});
+    write(&current,&v2.to_string());
+    let mut store = open();
+    let old = store.read("save","one").unwrap().unwrap();
+    assert_eq!(old.version,1);
+    assert!(store.write("save","one",old.revision,old.data.clone()).is_err());
+    store.write("save","one",old.revision,json!({"victories":old.data["wins"]})).unwrap();
+    assert_eq!(store.read("save","one").unwrap().unwrap().version,2);
+}
+
+#[test]
+fn luau_game_registers_nested_editor_pages_and_reloads_its_action() {
+    use render::debug_ui::DebugAction;
+    let dir = folder("editor-pages");
+    let path = dir.join("main.luau");
+    let src = r#"return {
+        editor_pages = {
+            { id = 1000, label = "Character" },
+            { id = 1001, parent = 1000, label = "Grip", buttons = {{ id = 1002, label = "Apply" }} }
+        },
+        editor_action = function(id) state.last = id end
+    }"#;
+    write(&path, src);
+    let mut g = game(&dir);
+    let (pages, buttons) = g.debug();
+    assert_eq!(pages[1].parent, Some(1000));
+    assert_eq!(buttons[0].menu, Some(1001));
+    g.debug_action(DebugAction::Activate { id: 1002 });
+    assert_eq!(state(&g)["state"]["last"], 1002);
+    write(&path, &src.replace("1002", "1003"));
+    g.reload();
+    g.debug_action(DebugAction::Activate { id: 1002 });
+    assert_eq!(state(&g)["state"]["last"], 1002);
+    g.debug_action(DebugAction::Activate { id: 1003 });
+    assert_eq!(state(&g)["state"]["last"], 1003);
+}

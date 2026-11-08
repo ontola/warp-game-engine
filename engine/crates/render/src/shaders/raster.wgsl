@@ -57,6 +57,14 @@ struct Material {
 // cluster vertex indices and triangles from scene table vec4 1.z and 1.w.
 @group(0) @binding(0) var<storage, read> topology: array<u32>;
 fn vertex_f32(i: u32) -> f32 { return bitcast<f32>(topology[i]); }
+// Scene aux words (Scene::aux) live after the tables; vec4 1.x is their start,
+// 1.y their count.
+fn aux_word(i: u32) -> u32 {
+    let v = scene_tables[scene_tables[1].x + (i >> 2u)];
+    return v[i & 3u];
+}
+fn aux_len() -> u32 { return scene_tables[1].y; }
+
 fn cluster_vert(i: u32) -> u32 { return topology[scene_tables[1].z + i]; }
 fn tri_word(i: u32) -> u32 { return topology[scene_tables[1].w + i]; }
 @group(0) @binding(3) var<storage, read> clusters: array<Cluster>;

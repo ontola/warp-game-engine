@@ -310,35 +310,59 @@ pub fn curvature(parts: &[(&[Vertex], &[u32])]) -> Vec<Vec<[f32; 2]>> {
     ids.iter().map(|id| id.iter().map(|&w| [sharp[w as usize], broad[w as usize]]).collect()).collect()
 }
 
-/// Instances for one car at `pose`: the body raised by `ride`, the wheels
-/// where the suspension holds them, steered and rolled.
-pub fn place(scene: &mut Scene, m: &CarMeshes, pose: Affine3A, ride: f32, wheels: &[Wheel]) {
-    scene.add_instance(m.body, pose * Affine3A::from_translation(Vec3::Y * ride));
-    scene.mark_solid();
-    for (k, w) in wheels.iter().enumerate().take(4) {
-        if let Some(mesh) = m.wheels[k] {
-            let local = Affine3A::from_rotation_translation(Quat::from_rotation_y(w.steer) * Quat::from_rotation_x(-w.spin), w.anchor + Vec3::Y * w.compression);
-            scene.add_instance(mesh, pose * local);
-        }
-    }
+/// Body first, followed by the wheels that the model contains, in suspension order.
+fn parts<'a>(m: &'a CarMeshes, ride: f32, wheels: &'a [Wheel]) -> impl Iterator<Item = (&'static str, usize, Affine3A)> + 'a {
+    let body = ("body", m.body, Affine3A::from_translation(Vec3::Y * ride));
+    std::iter::once(body).chain(["wheel_FL","wheel_FR","wheel_RL","wheel_RR"].into_iter().zip(m.wheels.iter().zip(wheels)).filter_map(|(name,(&mesh, w))| {
+        let rotation = Quat::from_rotation_y(w.steer) * Quat::from_rotation_x(-w.spin);
+        Some((name, mesh?, Affine3A::from_rotation_translation(rotation, w.anchor + Vec3::Y * w.compression)))
+    }))
 }
 
-/// Update the same body/wheel slots that `place` allocated at scene creation.
-pub fn update(scene: &mut Scene, first: usize, m: &CarMeshes, pose: Affine3A, ride: f32, wheels: &[Wheel]) {
-    scene.update_instance(first, m.body, pose * Affine3A::from_translation(Vec3::Y * ride));
-    let mut index = first + 1;
-    for (k, w) in wheels.iter().enumerate().take(4) {
-        if let Some(mesh) = m.wheels[k] {
-            let local = Affine3A::from_rotation_translation(Quat::from_rotation_y(w.steer) * Quat::from_rotation_x(-w.spin), w.anchor + Vec3::Y * w.compression);
-            scene.update_instance(index, mesh, pose * local);
-            index += 1;
-        }
+pub fn place(scene: &mut Scene, m: &CarMeshes, pose: Affine3A, ride: f32, wheels: &[Wheel]) -> Vec<&'static str> {
+    let mut names=Vec::with_capacity(5);
+    for (i, (name, mesh, local)) in parts(m, ride, wheels).enumerate() {
+        scene.add_instance(mesh, pose * local);
+        names.push(name);
+        if i == 0 { scene.mark_solid(); }
     }
+    names
+}
+
+pub fn update(scene: &mut Scene, first: usize, m: &CarMeshes, pose: Affine3A, ride: f32, wheels: &[Wheel]) {
+    scene.update_children(first, pose, parts(m, ride, wheels).map(|(_,mesh,local)|(mesh,local)));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suspension_pose_matches_the_original_slots_with_a_missing_wheel() {
+        let mut scene = Scene::default();
+        let mesh = scene.add_mesh(&render::primitives::cube(0).mesh());
+        let car = CarMeshes { body: mesh, wheels: [Some(mesh), None, Some(mesh), Some(mesh)] };
+        let wheels = [0.2, 0.6, 1.3, -0.1].map(|f| Wheel {
+            anchor: Vec3::new(f, 0.5, -f), compression: f * 0.1, steer: f, spin: f * 2.0,
+        });
+        let root = Affine3A::from_rotation_translation(Quat::from_rotation_z(0.4), Vec3::new(11.0, 2.0, -5.0));
+        assert_eq!(place(&mut scene, &car, root, 0.12, &wheels), ["body","wheel_FL","wheel_RL","wheel_RR"]);
+        for pose in [root, root * root] {
+            if pose != root { update(&mut scene, 0, &car, pose, 0.12, &wheels); }
+            let mut expected = vec![pose * Affine3A::from_translation(Vec3::Y * 0.12)];
+            for i in [0, 2, 3] {
+                let w = &wheels[i];
+                expected.push(pose * Affine3A::from_rotation_translation(
+                    Quat::from_rotation_y(w.steer) * Quat::from_rotation_x(-w.spin), w.anchor + Vec3::Y * w.compression));
+            }
+            assert_eq!(scene.instances.len(), expected.len());
+            for (i, xf) in expected.into_iter().enumerate() {
+                let rows = glam::Mat4::from(xf).transpose();
+                assert_eq!(scene.instances[i].rows, [rows.x_axis.to_array(), rows.y_axis.to_array(), rows.z_axis.to_array()]);
+                assert_eq!(scene.instances[i].flags & render::scene::SOLID != 0, i == 0);
+            }
+        }
+    }
 
     #[test]
     fn rear_lenses_are_original_triangles_and_do_not_include_windows_or_fronts() {

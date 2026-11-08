@@ -4,6 +4,7 @@ use glam::{Affine3A, Quat, Vec3};
 use render::{Camera, Gpu, Renderer};
 
 pub fn run(args: &crate::Args) -> Result<(), String> {
+    if args.flag("--grip") { return grip(args); }
     if args.flag("--growth") { return growth(args); }
     let out = std::path::Path::new(args.value("--out").unwrap_or("build/gun-review"));
     std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
@@ -150,4 +151,81 @@ fn apply_graphics(scene: &mut render::Scene) {
     scene.graphics.minimal_forward = g.minimal_forward;
     scene.graphics.simple_lighting = g.simple_lighting;
     scene.graphics.simple_mesh_culling = g.simple_blocks;
+}
+fn grip(args: &crate::Args) -> Result<(), String> {
+    use crate::view::guns::Guns;
+    use assets::skinned::Character;
+    use std::path::Path;
+
+    let name = args.value("--model").unwrap_or("knight");
+    if !["knight", "paladin", "ch10"].contains(&name) { return Err("unknown roster model".into()); }
+    let model = Character::load(&Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../assets/characters").join(format!("{name}.json")))?;
+    let clip = args.value("--clip").unwrap_or("pistol_idle");
+    let time = args.num("--time", 0.25f32);
+    let pitch = args.num("--pitch", 0.0f32).to_radians();
+    if !pitch.is_finite() || !time.is_finite() { return Err("expected finite pitch and time".into()); }
+    let looped = clip != "pistol_jump";
+    let palette = model.sample(clip, time, looped)?;
+    let hand = model.sample_socket(clip, "RightHand", time, looped)?.w_axis.truncate();
+    let arms = crate::view::characters::grip_arms(&model).ok_or("model needs two complete arms")?;
+    let mut world = growing_guns::World::new(3, &[false]);
+    let _scripts = crate::scripts::attach(&mut world)?;
+    let base = crate::gun::Stats::of(&world.players[0]);
+    let growth = args.flag("--growth");
+    if growth && args.value("--card").is_none() { return Err("--grip --growth requires --card".into()); }
+    if let Some(card) = args.value("--card") {
+        let id = world.cards.find(card).ok_or_else(|| format!("unknown card {card}"))?;
+        world.give(0, id);
+    }
+    let stats = crate::gun::Stats::of(&world.players[0]);
+    let mut rig = crate::gun::Rig::default();
+    rig.set(if growth { base } else { stats });
+    let body = crate::view::characters::model_transform(Vec3::ZERO, 0.0);
+    let camera_anchor = Guns::held_transform(body.transform_point3(hand), 0.0, pitch, rig.contacts_at(1.0).primary);
+    if growth { rig.grow_to(stats); }
+    let out = Path::new(args.value("--out").unwrap_or("build/grip-review"));
+    std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
+    let (w, h) = args.size((768, 640));
+    if !(64..=4096).contains(&w) || !(64..=4096).contains(&h) { return Err("invalid preview size".into()); }
+    let gpu = Gpu::new()?;
+    let light = render::Lighting { sun_dir: Vec3::new(-0.6, 0.9, -0.6).normalize(),
+        sky_lux: 4500.0, sun_lux: 9000.0, ev100: 12.0, taa: 0.0, fog_density: 0.0, ..Default::default() };
+    let mut animation = crate::hand_animation::HandAnimation::load()?;
+    for frame in 0..if growth { 25 } else { 2 } {
+        if growth && frame > 0 {
+            // Rig limits each update to 50 ms. Advance five simulation ticks per image.
+            for _ in 0..5 { rig.update(crate::gun::GROW_SECONDS / 120.0); }
+            if frame == 24 && rig.is_growing() { rig.update(1e-5); }
+        }
+        let apply = growth || frame == 1;
+        let label = if growth { format!("frame-{frame:03}") } else if apply { "grip".into() } else { "clip".into() };
+        let contacts = rig.contacts_at(1.0);
+        let primary = contacts.primary;
+        let (support, roll) = animation.pose(contacts, time + if growth { frame as f32 / 12.0 } else { 0.0 });
+        let held = Guns::held_transform(body.transform_point3(hand), 0.0, pitch, primary);
+        let target = body.inverse().transform_point3(held.transform_point3(support));
+        let mut scene = render::Scene::default();
+        let guns = Guns::reserve(&mut scene, 1);
+        guns.review_pose(&mut scene, &rig);
+        let mut pose = palette.clone();
+        let primary_hand = if apply {
+            let wrist = arms.apply(&mut pose, hand, target);
+            arms.orient_support(&mut pose, crate::view::characters::grip_rotation(pitch) * Quat::from_rotation_x(roll));
+            wrist
+        } else { hand };
+        let model_to_gun = Guns::held_transform(body.transform_point3(primary_hand), 0.0, pitch, primary).inverse() * body;
+        for (material, vertices, indices, _) in model.posed_surfaces(&mut scene, &pose, model_to_gun) {
+            let mesh = scene.add_mesh(&render::primitives::Primitive { material, vertices, indices }.mesh());
+            scene.add_instance(mesh, Affine3A::IDENTITY);
+        }
+        let camera_space = if growth { model_to_gun * body.inverse() * camera_anchor } else { Affine3A::IDENTITY };
+        let camera = Camera { pos: camera_space.transform_point3(Vec3::new(-1.65, 0.56, -0.95)),
+            target: camera_space.transform_point3(Vec3::new(0.0, 0.0, -0.12)),
+            near: 0.02, fov_y: 38f32.to_radians() };
+        let renderer = Renderer::new(&gpu, &scene, &light);
+        let (rgba, _) = renderer.try_render_views(&gpu, &[render::ViewRect { cam: camera, x: 0, y: 0, w, h }], &light, w, h, &[])?;
+        render::write_png(&out.join(format!("{label}.png")), w, h, &rgba)?;
+    }
+    Ok(())
 }

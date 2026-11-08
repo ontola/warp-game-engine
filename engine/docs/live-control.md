@@ -3,7 +3,7 @@
 A running Warp game can serve the
 [Model Context Protocol](https://modelcontextprotocol.io) (MCP), so you
 can change it while you play, together with Claude (Claude Desktop, Claude
-Code), ChatGPT, or GameNight's session assistant (see below). Ask "make the
+Code), ChatGPT, or Gamepad Party's session assistant (see below). Ask "make the
 shotgun spread wider and let me hear the new shot", and the assistant
 reads the match, edits a Weapon field or a Luau card, renders the sound
 patch, reloads a shader and takes a screenshot to check the result.
@@ -123,16 +123,16 @@ endpoint.
   away, so the client lists the tools again.
 - Both must use the same `WARP_LIVE_DIR`, if you set one.
 
-## The GameNight session assistant
+## The Gamepad Party session assistant
 
-A Luau game that GameNight launches (`warp run`, `GAMENIGHT=1`) turns live
+A Luau game that Gamepad Party launches (`warp run`, `GAMENIGHT=1`) turns live
 control on by itself, on a free local port (`WARP_LIVE=0` turns that off;
 `--live` still picks the port). It tells the party host the path of its
-token file in `declare_commands` (`mcp`, see GameNight's `docs/protocol.md`).
-When an allow-listed player then asks the assistant in the GameNight app
+token file in `declare_commands` (`mcp`, see Gamepad Party's `docs/protocol.md`).
+When an allow-listed player then asks the assistant in the Gamepad Party app
 "make the enemies slower" or "give my ship a red trail", the host reads the
 token file, lists these same tools, and carries out the request with them,
-one model step at a time from the GameNight cloud. The token stays on the
+one model step at a time from the Gamepad Party cloud. The token stays on the
 host, the cloud only sees tool results, and the player hears back what was
 changed. Nothing here is GameNight-specific: it is the same MCP server and
 the same tools that Claude Code uses.
@@ -268,9 +268,12 @@ So the rules are:
   joined clients' views were built for the old player count.
 - Mods run on the host only, inside the sim tick (World hooks). Clients
   need the same card files, for the names in their menus.
-- Replays: a match with the same seed and mods replays exactly, but live
-  edits are not recorded. The `logs` tool lists every tool call with its
-  arguments, so you can repeat them.
+- Replays: a match with the same seed and mods replays exactly, and desktop F12 feedback includes five seconds of host/local input
+  (tick, arena seed and inputs in seat order) beside the snapshot replay.
+  The JSON records recent gameplay tool calls and Luau console evaluations with
+  their tick and arguments. A mod file reload records its path and result.
+  The journal keeps up to 128 edits and marks omitted arguments over 8 KiB.
+  The snapshot player shows the recorded outcome without executing the journal.
 
 ## Adding live control to a game
 

@@ -5,9 +5,17 @@ what is still open. This page is rewritten as things change, not appended
 to. Dated measurements and the reasoning behind decisions are in the
 [development log](log/README.md). Last reviewed 5 November 2026.
 
+## Character animation
+
+Growing Guns layers two-bone wrist contacts over its third-person clips using the shared body crate. The headless grip review renders the authored and adjusted poses. Finger closure and pickup transitions are open. [Authoring and preview](animation.md)
+
+## Developer captures
+
+The Warp desktop game shell opens a point-selection overlay on F4. Sideways uses the same overlay and also binds F12. Its captures support [fixed-tick driving comparisons, pixel inspection and single-effect lighting comparisons](warp-cli.md#sideways-feedback). Growing Guns feedback includes recent desktop inputs and live edits.
+
 ## Target
 
-One 3840 × 2160 output, four players, 120 FPS (8.33 ms per frame). **Not
+One 3840 Ã— 2160 output, four players, 120 FPS (8.33 ms per frame). **Not
 reached.** The latest controlled four-view, 4K-output Sideways route measured
 about 38 to 44.5 ms of GPU time with DLSS Quality. Smaller scenes such as
 Growing Guns' arena are much cheaper (see its README). Always report the real
@@ -110,6 +118,12 @@ Owned by the foliage work; its working checklist is
 
 ## Games
 
+Native Luau games can opt into [versioned, schema-validated local storage](storage.md).
+
+Luau folder games support local library imports and dependency-aware hot reload ([guide](warp-cli.md#local-libraries)).
+
+Luau entities can follow a parent, and native games can resolve named model sockets ([parenting](parenting.md)).
+
 - **Sideways** (rally): playable; the main performance scene.
 - **Growing Guns** (arena shooter): a port of the Godot game; its README's
   status tables say how far the port is. Native Quest build (OpenXR) is
@@ -117,7 +131,7 @@ Owned by the foliage work; its working checklist is
   stable 120 ([native Quest](quest-native.md)).
 - **SpaceRacer:** playable native development port with Luau rules; visual
   and content parity in progress.
-- **Spellstorm** and GameNight's **Game Room** lobby: being ported.
+- **Spellstorm** and Gamepad Party's **Game Room** lobby: being ported.
 - Luau-only games (`hello-warp`, `neon-siege`, `neon-trails`) run with the
   [`warp` executable](warp-cli.md).
 

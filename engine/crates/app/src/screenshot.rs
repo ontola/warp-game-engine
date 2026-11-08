@@ -1,7 +1,7 @@
-//! F12 feedback screenshots: the frame as shown (HUD included) as a PNG, a
+//! Engine feedback screenshots: the frame as shown (HUD included) as a PNG, a
 //! JSON file next to it with what was on screen (the game's
 //! [`crate::Game::state`], camera, GPU, fps), and the image on the clipboard
-//! so it can be pasted straight into a chat. Shift+F12 then takes a crop of
+//! so it can be pasted straight into a chat. Shift+F4 then takes a crop of
 //! that frame ([`save_crop`]): a dragged rectangle as `<name>-crop.png`.
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -39,14 +39,39 @@ pub struct Saved { pub line: String, pub png: PathBuf, pub metadata: Value }
 /// As [`save_with`], also returning where the frame went and its metadata
 /// (for a crop of it).
 pub fn save_full(shot: Shot, replay: impl FnOnce(&std::path::Path) -> Result<Option<Value>, String>) -> Result<Saved, String> {
+    save_annotated(shot, replay, |_, _| Ok(()))
+}
+
+/// Add optional diagnostics after the PNG has a final path. Failure keeps the screenshot.
+pub fn save_annotated(shot: Shot, replay: impl FnOnce(&std::path::Path) -> Result<Option<Value>, String>,
+    annotate: impl FnOnce(&std::path::Path, &mut Value) -> Result<(), String>) -> Result<Saved, String> {
+    let destination = Destination::new(shot.title)?;
+    save_at(destination, shot, replay, annotate)
+}
+
+pub(crate) struct Destination {
+    pub png: PathBuf,
+    name: String,
+    ms: u128,
+}
+
+impl Destination {
+    pub fn new(title: &str) -> Result<Self, String> {
+        let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis();
+        let slug: String = title.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+        let name = format!("{}-{ms}", slug.trim_matches('-'));
+        let dir = directory();
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let png = std::fs::canonicalize(&dir).unwrap_or(dir).join(format!("{name}.png"));
+        Ok(Self { png, name, ms })
+    }
+}
+
+pub(crate) fn save_at(destination: Destination, shot: Shot, replay: impl FnOnce(&std::path::Path) -> Result<Option<Value>, String>,
+    annotate: impl FnOnce(&std::path::Path, &mut Value) -> Result<(), String>) -> Result<Saved, String> {
+    let Destination { png, name, ms } = destination;
     let [w, h] = shot.size;
     if w == 0 || h == 0 || shot.rgba.len() != (w * h * 4) as usize { return Err("bad screenshot size".into()); }
-    let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis();
-    let slug: String = shot.title.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
-    let name = format!("{}-{ms}", slug.trim_matches('-'));
-    let dir = directory();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let png = dir.join(format!("{name}.png"));
     render::write_png(&png, w, h, shot.rgba)?;
     let png = std::fs::canonicalize(&png).unwrap_or(png);
     let copied = crate::clipboard::set_image(w, h, shot.rgba);
@@ -61,12 +86,15 @@ pub fn save_full(shot: Shot, replay: impl FnOnce(&std::path::Path) -> Result<Opt
         Ok(None) => "",
         Err(e) => { eprintln!("replay: {e}"); metadata["replay_error"] = Value::String(e); "  (replay unavailable)" }
     };
+    let attachment_error = annotate(&png, &mut metadata).err();
+    if let Some(e) = &attachment_error { metadata["attachment_error"] = json!(e); }
     let json_path = png.with_extension("json");
     let wrote = serde_json::to_vec_pretty(&metadata).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&json_path, b).map_err(|e| e.to_string()));
     if let Err(e) = &wrote { eprintln!("screenshot metadata: {e}"); }
     note(shot.title, &png, wrote.is_ok().then_some(&json_path), ms);
     println!("screenshot: {}", png.display());
     let line = format!("{name}.png{replay_note}{}{}", if copied { "  copied, paste with Cmd/Ctrl+V" } else { "  saved" }, if wrote.is_err() { "  (no metadata)" } else { "" });
+    let line = if attachment_error.is_some() {format!("{line} (capture attachment failed)")} else {line};
     Ok(Saved { line, png, metadata })
 }
 

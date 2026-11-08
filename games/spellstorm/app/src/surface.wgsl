@@ -38,7 +38,7 @@ struct SurfaceOut {
     emission: vec3<f32>,
 };
 
-fn ss_f(i: u32) -> f32 { return bitcast<f32>(aux[i]); }
+fn ss_f(i: u32) -> f32 { return bitcast<f32>(aux_word(i)); }
 fn ss_v3(i: u32) -> vec3<f32> { return vec3<f32>(ss_f(i), ss_f(i + 1u), ss_f(i + 2u)); }
 
 fn ss_unpack(uv: vec2<f32>) -> vec4<f32> {
@@ -120,7 +120,7 @@ fn ss_bump_normal(tile: u32, uv: vec2<f32>, strength: f32, gx: vec2<f32>, gy: ve
 }
 
 fn ss_ramp(o: u32, g: f32) -> vec3<f32> {
-    let n = aux[o];
+    let n = aux_word(o);
     var prev_t = ss_f(o + 1u);
     var prev_c = ss_v3(o + 2u);
     if g <= prev_t { return prev_c; }
@@ -137,8 +137,8 @@ fn ss_ramp(o: u32, g: f32) -> vec3<f32> {
 fn ss_noise(s: SurfaceIn, o: u32) -> SurfaceOut {
     // aux: albedo tile, bump tile, bump strength, uv scale, normal scale,
     // then the ramp (count, then offset + sRGB colour per point).
-    let a_tile = aux[o];
-    let b_tile = aux[o + 1u];
+    let a_tile = aux_word(o);
+    let b_tile = aux_word(o + 1u);
     let strength = ss_f(o + 2u);
     let scale = ss_f(o + 3u);
     let depth = ss_f(o + 4u);
@@ -373,7 +373,7 @@ fn ss_bounds_tex(l: u32, i: vec2<i32>) -> f32 {
     let w = i32(ss_f(l + FL_BOUNDS + 2u));
     let h = i32(ss_f(l + FL_BOUNDS + 3u));
     let c = clamp(i, vec2<i32>(0), vec2<i32>(w - 1, h - 1));
-    return ss_f(aux[l + FL_SDF] + u32(c.y * w + c.x));
+    return ss_f(aux_word(l + FL_SDF) + u32(c.y * w + c.x));
 }
 
 // Bilinear like Godot's filter_linear over texel centres, at uv in 0..1.
@@ -414,10 +414,10 @@ struct FloorAt { col: vec3<f32>, h: f32, rough: f32, glow: vec3<f32> };
 
 fn ss_floor_at(p: vec2<f32>, o: u32, time: f32) -> FloorAt {
     // The chunk: level record offset, then counts and the lists.
-    let l = aux[o];
-    let seg_n = aux[o + 1u];
-    let isle_n = aux[o + 2u];
-    let plaza_n = aux[o + 3u];
+    let l = aux_word(o);
+    let seg_n = aux_word(o + 1u);
+    let isle_n = aux_word(o + 2u);
+    let plaza_n = aux_word(o + 3u);
     let segs = o + 4u;
     let isles = segs + seg_n * 5u;
     let plazas = isles + isle_n * 4u;
@@ -431,7 +431,7 @@ fn ss_floor_at(p: vec2<f32>, o: u32, time: f32) -> FloorAt {
     let path_a = ss_v3(l + FL_PATH_A);
     let path_b = ss_v3(l + FL_PATH_B);
     let zone_z = vec2<f32>(ss_f(l + FL_ZONE_Z), ss_f(l + FL_ZONE_Z + 1u));
-    let flags = aux[l + FL_FLAGS];
+    let flags = aux_word(l + FL_FLAGS);
     let water = (flags & 1u) != 0u;
     let bounded = (flags & 2u) != 0u;
     let square_plazas = (flags & 4u) != 0u;

@@ -11,6 +11,7 @@ pub struct GameToml {
     /// The GameNight game id (lowercase letters, digits and dashes). Default:
     /// the folder name. A party host's GAMENIGHT_GAME_ID wins.
     pub id: String,
+    pub storage: bool,
     /// Simulation ticks per second; `tick(dt, input)` gets `dt = 1 / tick_rate`.
     pub tick_rate: f32,
     /// People playing without a party host (split screen), 1 to 4.
@@ -40,7 +41,7 @@ pub struct GameToml {
 
 impl Default for GameToml {
     fn default() -> Self {
-        GameToml { title: "Warp game".into(), id: String::new(), tick_rate: 60.0, players: 1, split: true, bots: 0, min_players: 1, seed: 1, max_entities: 1024, size: [1280, 720], sky: "gradient".into(), steps: 200_000, memory_mb: 64 }
+        GameToml { title: "Warp game".into(), id: String::new(), storage: false, tick_rate: 60.0, players: 1, split: true, bots: 0, min_players: 1, seed: 1, max_entities: 1024, size: [1280, 720], sky: "gradient".into(), steps: 200_000, memory_mb: 64 }
     }
 }
 

@@ -10,7 +10,7 @@ iteration with an AI over MCP.
 The crate is `engine/crates/warp`. The example is
 [games/hello-warp](../../games/hello-warp/README.md), the starter that
 `warp new` writes. [games/neon-trails](../../games/neon-trails/README.md)
-and [games/neon-siege](../../games/neon-siege/README.md) are LÖVE party
+and [games/neon-siege](../../games/neon-siege/README.md) are LÃ–VE party
 games ported to Luau, with one shared view; Neon Siege is a co-op
 twin-stick shooter with hundreds of shots, bursts and rings at once.
 
@@ -25,8 +25,8 @@ warp run my-game --live                # ... and let Claude change it over MCP
 
 | Command | What it does |
 | --- | --- |
-| `warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]` | Play fullscreen, with sound (`--windowed` opts out). `--live` serves MCP ([live control](live-control.md); all its `--live-*` flags work). `--frames N` quits after N frames (a smoke test). Launched by a GameNight party host, the host's seats decide the players (see [GameNight](#gamenight)). |
-| `warp DIR` | The same as `warp run DIR`. This is how a GameNight host starts an installed game: the runtime gets the game folder. |
+| `warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]` | Play fullscreen, with sound (`--windowed` opts out). `--live` serves MCP ([live control](live-control.md); all its `--live-*` flags work). `--frames N` quits after N frames (a smoke test). Launched by a Gamepad Party party host, the host's seats decide the players (see [Gamepad Party](#gamenight)). |
+| `warp DIR` | The same as `warp run DIR`. This is how a Gamepad Party host starts an installed game: the runtime gets the game folder. |
 | `warp script DIR FILE.json --out OUT [--players N] [--sky SKY] [--seed N]` | A headless playtest in the [`app::script` format](building-and-running.md): ticks with controls, `cmd` lines, `expect` and `until` checks, `capture` (PNG), `state` (JSON) and `audio` (WAV). Exits with status 1 when a check fails. |
 | `warp serve DIR [--live [PORT]] [--seconds T] [--size WxH]` | Headless in real time with live control on (port 7878 by default). Renders a frame only for a screenshot. Sound plays into a mixer that is never heard. |
 | `warp check DIR [--ticks N]` | Load, run `init` and N idle ticks (default 120) without a GPU, then print the state. Exits with status 1 on any script or patch error. The fastest check of an edit. |
@@ -101,7 +101,8 @@ my-game/
 | --- | --- | --- |
 | `title` | the folder name | The window title. |
 | `tick_rate` | 60 | Ticks per second; `tick(dt, input)` gets `dt = 1 / tick_rate`. |
-| `id` | the folder name | The GameNight game id (lowercase letters, digits, dashes). A host's `GAMENIGHT_GAME_ID` wins. |
+| `storage` | false | Enable [versioned local saves, settings and profiles](storage.md). Requires an explicit game ID and a schema such as `save-schema.json`. |
+| `id` | the folder name | The Gamepad Party game id (lowercase letters, digits, dashes). A host's `GAMENIGHT_GAME_ID` wins. |
 | `players` | 1 | People without a party host, 1 to 4, in split screen. `--players` overrides it. |
 | `split` | true | One split-screen view per person; false gives one shared view (every `camera.set` moves that camera), as in an arena game. |
 | `bots` | 0 | Bots without a party host, 0 to 7. `--bots` overrides it. |
@@ -113,10 +114,32 @@ my-game/
 | `steps` | 200000 | Luau step budget per hook call (see [scripting](scripting.md#limits)). |
 | `memory_mb` | 64 | Luau memory cap. |
 
-Every `*.luau` file outside `sounds/`, `assets/` and `scripts/` is a
-module (`*.d.luau` files are skipped). Most games need only `main.luau`.
-Modules run their hooks in path order. There is no `require`, so modules
-share only the world.
+Regular scripts outside `sounds/`, `assets/` and `scripts/` run their hooks
+in path order. Type definitions (`*.d.luau`) are skipped.
+
+### Local libraries
+
+In a game folder with `main.luau`, use a `.module.luau` file to share
+functions or data. For example, put this in `lib/score.module.luau`:
+
+```lua
+return { winner_points = function(rounds) return rounds * 3 end }
+```
+
+At the top of any hook script or library, write
+`local score = require("lib/score")`. Paths start at the game root and omit
+the suffix. The loader looks up exact names among the discovered libraries.
+Use the returned table in hooks, for example `score.winner_points(2)`.
+A library's exports do not register hooks. The [Neon Trails grid](../../games/neon-trails/grid.module.luau)
+is a working example.
+
+Declare imports while the file loads. Each hook script gets its own cache:
+two imports of a library in that script's dependency tree return the same
+table. Keep persistent match data in the hook script's `state`. Editing a
+library reloads every dependent hook script, including indirect dependents,
+and runs its normal reload hook. A missing library, a cycle or a bad edit
+reports a load error and keeps the last working exports. Fixing the library
+retries the load. One-file games remain self-contained.
 
 ## The Luau API
 
@@ -141,7 +164,7 @@ A module returns a table of hooks. All of them are optional.
 | `tick(dt, input)` | Every tick, at `tick_rate`. `input[1]` is player 1's input. |
 | `draw()` | Every displayed frame. For the HUD (and cameras). |
 | `reload()` | After a saved edit has reloaded the module. |
-| `player_joined(p)` | A GameNight seat was added mid-game (`p` is a player table). |
+| `player_joined(p)` | A Gamepad Party seat was added mid-game (`p` is a player table). |
 | `player_left(p)` | A player left mid-game. |
 | `players_changed()` | Names, colours or seats changed, after any join or leave too. |
 
@@ -161,7 +184,7 @@ keyboard mapping is in `app::input`.
 
 | Table | Functions |
 | --- | --- |
-| `world` | `spawn(shape, opts) -> id`, `set(id, opts)`, `place(id, pos, yaw?)`, `warm(shape, look)`, `get(id) -> entity or nil`, `exists(id)`, `remove(id)`, `clear()`, `find(tag) -> ids`, `count()`, `raycast(origin, dir, max?, query?) -> hit or nil`, `overlap(center, radius, query?) -> ids`, `move(id, vel, dt, query?) -> vel, grounded` |
+| `world` | `spawn(shape, opts, parent?) -> id`, `set_parent(id, parent?)`, `set(id, opts)`, `place(id, pos, yaw?)`, `warm(shape, look)`, `get(id) -> entity or nil`, `exists(id)`, `remove(id)`, `clear()`, `find(tag) -> ids`, `count()`, `raycast(origin, dir, max?, query?) -> hit or nil`, `overlap(center, radius, query?) -> ids`, `move(id, vel, dt, query?) -> vel, grounded` |
 | `fx` | `burst(pos, {color, emissive, shape, count, speed, life, size, stretch, gravity, flat})`, `ring(pos, {color, emissive, radius, life, width, segments})`, `count() -> particles, rings` |
 | `players` | `list() -> players`, `get(id) -> player or nil`, `count()`, `rumble(id, strength, seconds?)` |
 | `camera` | `set(player, {pos, target, fov})`, `get(player)` |
@@ -174,6 +197,7 @@ keyboard mapping is in `app::input`.
 | `random` | `float()`, `range(lo, hi)`, `int(lo, hi)`, `chance(p)`, `seed(n)` |
 | `game` | `tick()`, `time()`, `dt()`, `players()`, `title()`, `finish()`, `log(text)` |
 
+- **Parenting**: pass a parent ID as the third argument of `world.spawn`. Move a subtree with `world.place`, change its parent with `world.set_parent` and read `world.get(id).world_pos`. See [parenting](parenting.md) for coordinates, collisions and lifetime.
 - **Entities**: `world.spawn` takes a shape (`"cube"`, `"sphere"`,
   `"capsule"`, an outline such as `"outline6"` or `"outline4:0.05"`, or a
   glTF path inside the game folder such as `"assets/crate.glb"`) and
@@ -270,14 +294,14 @@ Without a party host the players come from `game.toml` (`players`,
 ### The start menu
 
 Start on a controller (Enter or Escape on the keyboard) opens the menu
-every GameNight game has: the game's title, Resume and New round (and Quit
-without a party host; under GameNight the host's own overlay leaves the
+every Gamepad Party game has: the game's title, Resume and New round (and Quit
+without a party host; under Gamepad Party the host's own overlay leaves the
 game). No button hints. While it is open the game is frozen: `tick` does not
 run. New round runs `restart`. Up and down (or the stick) choose, A
 confirms, B or Start closes. Scripts and agents use the console:
 `menu`, `menu new round`, `menu resume`, `menu close`.
 
-### GameNight
+### Gamepad Party
 
 `warp run` and `warp DIR` connect to a party host when one launched them
 (`GAMENIGHT=1`) or `GAMENIGHT_ADDR` points at one, using the
@@ -341,7 +365,7 @@ that file (it holds the `SurfaceIn` and `SurfaceOut` structs) and fill in
 the normal, the view direction, the entity's colour (`tint`, linear),
 roughness and metal, `time` in seconds and `kind`; it returns the albedo,
 normal, roughness, metal and an emission in nits. `scale` holds the
-entity's `emissive` in nits (emissive × 4000), so a Luau knob can set the
+entity's `emissive` in nits (emissive Ã— 4000), so a Luau knob can set the
 brightness. Prefix your own functions (`bd_noise`), because the file is
 compiled together with the engine's shading code.
 
@@ -421,6 +445,8 @@ Warp's own tools:
 
 ### Knobs
 
+For clickable development commands, export [game-owned F10 editor menus](editor-tools.md#game-owned-editor-menus) from the entry module.
+
 Tuning values a player wants to tweak while playing go in one block in
 main.luau, one per line, between `-- @knobs` and `-- @end`:
 
@@ -435,7 +461,7 @@ local KNOBS = {
 
 `knobs` lists them and `set_knob` changes the value in the file itself,
 so the change is saved and reviewable in git. A player trying values
-from the GameNight app gets temporary changes instead (`persist: false`):
+from the Gamepad Party app gets temporary changes instead (`persist: false`):
 the game runs the edited source while the file stays as it was, until
 `keep` saves them or `revert` (or an edit of the file on disk) drops them. The game reloads at once;
 values that feed things `init` built only show when `reload()` rebuilds
@@ -469,7 +495,7 @@ The same commands work in scripts, as `cmd` steps:
   split screen (replaying exactly), `min_players`, the start menu, effects
   (bursts and rings spent after their life, `world.place`, `aim_x`), Neon
   Siege with bots clearing waves and replaying exactly, and a
-  fake GameNight host on loopback (prepare, ready, start, a seat's
+  fake Gamepad Party host on loopback (prepare, ready, start, a seat's
   controller, a live rename, a seat joining mid-game, the room log and
   `finished`);
 - `tests/headless.rs`, as child processes on `KERN_ADAPTER=software` (no
@@ -489,12 +515,10 @@ KERN_ADAPTER=software warp script games/hello-warp games/hello-warp/scripts/smok
 
 - Skinned and animated glTF, local lights, physics bodies
   (the `physics` crate) and terrain are not exposed to Luau yet.
-- No `require`: modules cannot share code.
 - No online play. The determinism rules are meant to make lockstep or
   host-authoritative play possible later.
 - `game.toml` and assets do not hot-reload.
-- No interpolation between ticks: entities move at the tick rate.
-- GameNight party settings (`declare_settings`), phone buttons
+- Gamepad Party party settings (`declare_settings`), phone buttons
   (`declare_actions`) and per-player settings are not exposed to Luau yet.
 
 ### Native game visibility masks
@@ -508,3 +532,101 @@ mask is fixed for a renderer lifetime (not a Luau API or hot-reloaded shader).
 Reserve game-owned data in `Scene::aux` before engine reservations; update only
 that range with `Renderer::update_aux_words`. Writes are bounds checked. This is
 for opaque reconstruction/clipping, not forward transparency or ray-query masks.
+
+## Sideways feedback
+
+In Warp desktop games, press **F4** for feedback. Sideways also accepts **F12** to freeze the image and open the point overlay. Click or tap the problem to resume driving. Esc resumes with an unmarked capture. The overlay uses the GPU frame with the original HUD. The writer reads the frozen pixels and source geometry, encodes the PNG and updates the clipboard on a background thread. Normal play keeps its existing resolution and render path. The JSON records request-to-overlay submission and input-ready timings in `feedback_timing`. A click saves `player_point: [x, y]` in original PNG pixels. The MCP feedback preview circles it. On a marked capture, `warp inspect F12.json` prints the point and its surface as JSON. Use `--preview` to view the ring or `--pixel X Y` to inspect another spot. Keep the PNG, JSON and same-basename
+view attachments together. In a developer checkout with Python 3 and Pillow,
+run the following commands. Set `WARP_PYTHON` to an interpreter path if needed.
+
+```sh
+warp inspect sideways-123.json
+warp inspect sideways-123.json --pixel 320 180
+warp compare sideways-123.json --baseline main --out build/drift-review
+```
+
+For an agent with the live MCP bridge, call `feedback` with
+`{"diagnostics": false}` to get the latest PNG path and a preview. Open the
+same-basename JSON on disk. Use pixel coordinates from the original PNG;
+the MCP preview may be smaller. For headless inspection, `--pixel` prints JSON.
+With only the JSON, replay and comparison work when `drive.version` is 1.
+Inspection also needs the view attachments named in `visibility.views`.
+
+### Isolate a lighting effect on a Sideways surface
+
+Run a paired lighting comparison on a marked F12 capture with its PNG and
+visibility attachments. Supply original PNG coordinates for older unmarked
+captures. Add a nearby reference pixel to measure contrast across a stripe.
+
+```sh
+warp relight sideways-123.json --without gi --without shadow_strength
+warp relight sideways-123.json --pixel 2300 540 --reference 2300 385 --radius 180 --without gi --out build/rock-light
+```
+
+Each `--without` produces a separate render with that control set to zero.
+Choices are `gi`, `shadow_strength`, `near_shadows`, `contact_occlusion` and
+`reflection_occlusion`. The tool needs Cargo, a render-capable GPU and the
+developer checkout. Use a fresh output directory or use the path it prints.
+
+Open `comparison.png` to see the original, the native baseline and each variant.
+Orange marks the selected pixel and blue marks the optional reference when
+there is room to draw the rings. Individual crops have no overlays.
+In `lighting.json` check `source_triangle_matches_baseline` for each pixel,
+`replay_triangle_stable` for each variant, and `repeat_crop_identical` for drift
+when the baseline is rendered again. Compare the original and baseline
+appearance before attributing an artifact to a control. Each sample includes
+RGB, relative luminance in linearized display sRGB, and its delta from baseline.
+With a reference, `reference_minus_point` measures the signed contrast.
+Captured picks include hierarchy metadata when available. Full frames, camera,
+surface hits and reconstruction details are in `native/`.
+
+The replay reconstructs the selected viewport of a static stage at native
+resolution with the captured camera, sun and wind. Gameplay upscaling, cars,
+HUD and transient particles can change the original pixel. Biome stages
+are currently unsupported.
+
+### Replay a recorded drive
+
+To replay a single build without comparing Git revisions, run from the repo root:
+
+```sh
+cargo run --locked -p cli --bin sideways -- replay-drive sideways-123.json build/drive-run --state-only
+```
+
+Use a fresh output path. In `drive.json`, `matches_capture` checks the final
+physics digest. For two builds, read `baseline_matches_recording` first in
+`comparison.json`. A false value means the baseline itself diverged from the
+recorded endpoint. `first_difference_in_window` is null when the samples agree
+through the comparison window.
+
+Click the PNG in the inspector, or pass output-pixel coordinates from its top
+left. The inspector maps the point through the captured split viewport and
+internal resolution. For source triangles it reports the instance, mesh,
+cluster LOD depth, material, shading path and triangle. New Sideways captures
+also report `hierarchy` for a car body or wheel (car index, model, named part
+and body instance), a rigid plant part (pose indices from the hit to its root),
+or a baked animated part (actor and bone indices). These IDs belong to that
+capture. Terrain chunks and other ungrouped meshes have no hierarchy field. It reads the opaque
+visibility buffer of the capture frame. Transparent effects, HUD and temporal
+reconstruction may cover that source. Sky, voxels, gaps and profiles without
+source visibility have explicit results. Older PNG/JSON pairs lack this buffer.
+
+Comparison builds Sideways in the baseline revision and working checkout and
+runs them sequentially with identical stage-generation RNG state, biome,
+settings and per-tick driver input. Both revisions need the replay reader.
+It restores recorded gear mode and tree collider edits at their simulation
+ticks. Input runs begin at stage creation; the final 600 ticks (five seconds)
+supply the trace. Recording is bounded to one hour and 32,768 input runs per
+stage. An incomplete history is marked unavailable.
+
+The output contains synchronized 640 Ã— 360 chase-camera WebP clips (15 fps),
+the final pixel difference, and `comparison.json` with the first differing
+physics digest in the window, player values and whether each run reached the
+recorded end digest. These diagnostic cameras and lighting are independent
+of the play camera and HUD. Frame timing includes synchronous render/readback;
+per-pass GPU timings and adapter are in each `drive.json`. The timing summary
+excludes the first render. `--state-only` skips GPU work.
+Use a fresh output directory. For prebuilt runners use `--baseline-exe`
+and `--candidate-exe` with matching bundled assets. The same commands run via
+`python engine/tools/drive-capture.py`. To generate a fixture without a visible
+window, run `sideways play --smoke-render 76 --feedback --capture build/drift.png`.

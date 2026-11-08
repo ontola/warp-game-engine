@@ -80,7 +80,7 @@ fn tools() -> Vec<ToolSpec> {
         ToolSpec::new("match_state", "Players (bot, alive, health, score, cards, special, changed weapon fields), round, phase, modifier. With player: that player's whole Weapon; with fields: the names and kinds of every Weapon field.",
             obj(json!({ "player": player, "fields": { "type": "boolean" } }), &[])).read_only(),
         ToolSpec::new("knobs", "The match's tweakable values (`-- @knobs` blocks in the mods: damage, fire_rate, move_speed, bullet_speed, explosions, health, as multipliers of what the cards give) with their values and ranges.", obj(json!({}), &[])).read_only(),
-        ToolSpec::new("set_knob", "Set one knob for every player at once, mid-round too; saved in its mod file (ready to commit) and hot-reloaded. The GameNight app's settings show it.",
+        ToolSpec::new("set_knob", "Set one knob for every player at once, mid-round too; saved in its mod file (ready to commit) and hot-reloaded. The Gamepad Party app's settings show it.",
             obj(json!({ "name": { "type": "string" }, "value": { "type": "string", "description": "one Luau value, such as 1.5" } }), &["name", "value"])),
         ToolSpec::new("list_cards", "Every card on offer: id, name, description, rarity.", obj(json!({}), &[])).read_only(),
         ToolSpec::new("give_card", "Give a player a card now (its stats, pick hook and the gun's growth), as if picked.",
@@ -93,7 +93,7 @@ fn tools() -> Vec<ToolSpec> {
         ToolSpec::new("restart_match", "Start the match over: scores and cards cleared.", obj(json!({}), &[])),
         ToolSpec::new("load_mod", "Add or replace a Luau module in mods/ (cards and rule hooks, see mods/API.md) and load it now; returns its status or load error. A load error keeps the previous version.",
             obj(json!({ "name": { "type": "string", "description": "module path without .luau, e.g. live/low_gravity" }, "source": { "type": "string" } }), &["name", "source"])),
-        ToolSpec::new("command", "A debug console line (`help` lists them): teleport P X Y Z, health P N, ammo P N, special P NAME, modifier ID, bots pause|resume, boom X Y Z R, arena SEED, cage, extend...",
+        ToolSpec::new("command", "A debug console line (`help` lists them): fx [knob value] reads or edits the live F12 explosion sliders; teleport P X Y Z, health P N, ammo P N, special P NAME, modifier ID, bots pause|resume, boom X Y Z R, arena SEED, cage, extend...",
             obj(json!({ "line": { "type": "string" } }), &["line"])),
     ]
 }
@@ -283,7 +283,9 @@ impl LiveGame for Ctx<'_> {
     }
 
     fn call(&mut self, tool: &str, args: &Value) -> Reply {
-        match tool {
+        let tick=self.gg.world.tick;
+        let seed=self.gg.world.arena.seed;
+        let reply=match tool {
             "match_state" => self.match_state(args),
             "list_cards" => Ok(vec![Content::Json(json!({ "cards": self.gg.world.cards.enabled().map(|(_, d)| json!({
                 "id": d.id, "name": d.name, "desc": d.desc, "rare": d.rare, "firepower": d.firepower })).collect::<Vec<_>>() }))]),
@@ -313,18 +315,30 @@ impl LiveGame for Ctx<'_> {
                 self.command(line)
             }
             other => Err(format!("no tool {other}")),
+        };
+        if reply.is_ok() && !matches!(tool,"match_state"|"list_cards"|"knobs") {
+            self.gg.recorder.edit(tick,seed,tool,args);
         }
+        reply
     }
 
     fn luau(&mut self, code: &str) -> Result<String, String> {
         let note = if self.gg.session().is_client() { "(client: the host's next snapshot overwrites changes)\n" } else { "" };
         let s = self.gg.scripts.clone().ok_or("no mods loaded")?;
-        s.console(&mut self.gg.world, code).map(|r| format!("{note}{r}"))
+        let tick=self.gg.world.tick;
+        let seed=self.gg.world.arena.seed;
+        let result=s.console(&mut self.gg.world, code);
+        self.gg.recorder.edit(tick,seed,"run_luau",&json!({"code":code,"ok":result.is_ok()}));
+        result.map(|r| format!("{note}{r}"))
     }
 
     fn file_written(&mut self, root: &str, path: &str) -> Option<String> {
         match root {
-            "mods" if path.ends_with(".luau") => Some(self.reload_mod(path)),
+            "mods" if path.ends_with(".luau") => {
+                let result=self.reload_mod(path);
+                self.gg.recorder.edit(self.gg.world.tick,self.gg.world.arena.seed,"reload_mod",&json!({"path":path,"result":result}));
+                Some(result)
+            },
             "sounds" => {
                 let lines = self.bank().scan();
                 for l in &lines { eprintln!("sfx: {l}"); }

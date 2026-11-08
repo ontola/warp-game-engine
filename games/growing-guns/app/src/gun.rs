@@ -139,7 +139,7 @@ pub const GRIP_SECTIONS: [(f32, f32, f32, f32); 7] = [
 ];
 const FOREGRIP_LENGTH: f32 = 0.12;
 const FOREGRIP_RADIUS: f32 = 0.022;
-const FOREGRIP_OFFSET_Z: f32 = 0.26;
+const FOREGRIP_OFFSET_Z: f32 = 0.18;
 const HANDGUARD_HEIGHT: f32 = 0.025;
 const RAIL_HEIGHT: f32 = 0.02;
 const SIGHT_POST: f32 = 0.04;
@@ -198,7 +198,33 @@ impl Look {
 #[derive(Clone, Debug, Default)]
 pub struct Build { pub parts: Vec<Part>, pub bolt_travel: f32, pub minigun: bool, pub barrel_length: f32, /** Gun-space barrel exit. */ pub muzzle: Vec3 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct Contacts { pub primary: Vec3, pub magazine: Vec3, pub foregrip: Vec3, pub extension: f32 }
+
 impl Build {
+    /// Gun-space wrists. The primary wrist sits behind the pistol grip. The
+    /// support wrist follows the visible magazine and transfers onto the foregrip.
+    pub fn wrist_contacts(&self) -> Contacts {
+        let bottom = -self.parts[0].xf.matrix3.y_axis.length() * 0.5;
+        let primary = Vec3::new(0.0, bottom - 0.055, GRIP_Z + 0.058);
+        // The socket is the wrist, behind the palm and outside the left face.
+        // During a box-to-drum morph both pieces may coexist.
+        let mut mag_center = Vec3::ZERO;
+        let mut mag_weight = 0.0;
+        for part in self.parts.iter().filter(|p| p.motion == Motion::Mag && (p.mat == Mat::Polymer || p.shape == Shape::Drum)) {
+            let size = part.xf.matrix3;
+            let radius = size.x_axis.length() * if part.shape == Shape::Drum { 1.0 } else { 0.5 };
+            let volume = size.determinant().abs();
+            mag_center += (Vec3::from(part.xf.translation) + Vec3::new(-radius - 0.024, 0.0, 0.096)) * volume;
+            mag_weight += volume;
+        }
+        let magazine = if mag_weight > 0.0 { mag_center / mag_weight } else { primary };
+        let (foregrip, extension) = self.parts.iter().find(|p| p.key == 6 * 1024 + 1)
+            .map_or((magazine, 0.0), |p| (Vec3::from(p.xf.translation) + Vec3::new(-p.xf.matrix3.x_axis.length() - 0.024, -0.012, 0.096),
+                (p.xf.matrix3.y_axis.length() / FOREGRIP_LENGTH).clamp(0.0, 1.0)));
+        Contacts { primary, magazine, foregrip, extension }
+    }
+
     fn same_shape(&self, other: &Self) -> bool {
         self.parts.len() == other.parts.len() && self.parts.iter().zip(&other.parts).all(|(a, b)| {
             a.key == b.key && a.shape == b.shape && a.mat == b.mat && a.motion == b.motion &&
@@ -589,6 +615,8 @@ pub struct Rig {
     spin_speed: f32,
     spin: f32,
     previous_pose: Vec<Affine3A>,
+    contacts: Contacts,
+    previous_contacts: Contacts,
 }
 
 impl Default for Rig {
@@ -600,14 +628,17 @@ pub const GROW_SECONDS: f32 = 2.0;
 impl Rig {
     pub fn with_detail(detail: Detail) -> Self {
         let s = Stats::default();
-        Rig { detail, shown: s, build: build_with_detail(&Look::of(&s), detail), grow: None,
+        let build = build_with_detail(&Look::of(&s), detail);
+        let contacts = build.wrist_contacts();
+        Rig { detail, shown: s, build, contacts, previous_contacts: contacts, grow: None,
             heat: 0.0, bolt_back: 0.0, bolt_cycle: 0.08, spin_speed: 0.0, spin: 0.0, previous_pose: Vec::new() }
     }
     /// Snap to these stats (a new round, a respawn).
     pub fn set(&mut self, s: Stats) {
         let interrupted = self.grow.take().is_some();
         self.previous_pose.clear();
-        if interrupted || s != self.shown { self.shown = s; self.build = build_with_detail(&Look::of(&s), self.detail); }
+        if interrupted || s != self.shown { self.shown = s; self.build = build_with_detail(&Look::of(&s), self.detail); self.contacts = self.build.wrist_contacts(); }
+        self.previous_contacts = self.contacts;
     }
 
     /// Morph from the currently visible model, including an interrupted morph.
@@ -648,6 +679,7 @@ impl Rig {
     }
 
     pub fn update(&mut self, dt: f32) {
+        self.previous_contacts = self.contacts;
         let previous = self.grow.as_ref().map(|_| self.build.parts.iter().map(|p| ((p.key, p.shape, p.mat), p.xf)).collect::<std::collections::HashMap<_, _>>());
         if let Some(g) = &mut self.grow {
             g.elapsed += dt.min(0.05);
@@ -658,6 +690,7 @@ impl Rig {
         }
         self.previous_pose.clear();
         if let Some(previous) = previous {
+            self.contacts = self.build.wrist_contacts();
             self.previous_pose.extend(self.build.parts.iter().map(|p| previous.get(&(p.key, p.shape, p.mat)).copied().unwrap_or(p.xf)));
         }
         self.heat *= (-0.3 * dt).exp();
@@ -665,6 +698,12 @@ impl Rig {
         if self.bolt_back > 0.0 { self.bolt_back = (self.bolt_back - self.build.bolt_travel / self.bolt_cycle.max(0.001) * dt).max(0.0); }
         self.spin += self.spin_speed * dt;
         self.spin_speed *= (-2.5 * dt).exp();
+    }
+
+    pub fn contacts_at(&self, alpha: f32) -> Contacts {
+        let (a, b) = (self.previous_contacts, self.contacts);
+        Contacts { primary: a.primary.lerp(b.primary, alpha), magazine: a.magazine.lerp(b.magazine, alpha),
+            foregrip: a.foregrip.lerp(b.foregrip, alpha), extension: lerp(a.extension, b.extension, alpha) }
     }
 
     /// Barrel glow 0 (cold steel) to 1, continuous.

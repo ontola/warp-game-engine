@@ -63,6 +63,9 @@ pub struct Pointer {
     pub pressed: bool,
     /// Secondary mouse button pressed since the previous tick.
     pub right_pressed: bool,
+    pub right_held: bool,
+    pub middle_pressed: bool,
+    pub middle_held: bool,
     pub held: bool,
     /// Wheel lines scrolled since the last tick, positive away from the user (up).
     pub wheel: f32,
@@ -74,6 +77,7 @@ impl Pointer {
         self.moved = false;
         self.pressed = false;
         self.right_pressed = false;
+        self.middle_pressed = false;
         self.wheel = 0.0;
         sample
     }
@@ -224,7 +228,12 @@ impl Devices {
             self.pointer.pressed |= self.pointer.held;
         }
         if button == MouseButton::Right && !self.mouse_captured && (self.keyboard_enabled || self.pointer_enabled) {
-            self.pointer.right_pressed |= state == ElementState::Pressed;
+            self.pointer.right_held = state == ElementState::Pressed;
+            self.pointer.right_pressed |= self.pointer.right_held;
+        }
+        if button == MouseButton::Middle && !self.mouse_captured && (self.keyboard_enabled || self.pointer_enabled) {
+            self.pointer.middle_held = state == ElementState::Pressed;
+            self.pointer.middle_pressed |= self.pointer.middle_held;
         }
         let b = match button { MouseButton::Left => Buttons::RIGHT_TRIGGER, MouseButton::Right => Buttons::LEFT_TRIGGER, _ => 0 };
         if state == ElementState::Pressed && self.mouse_captured { self.kb.mouse |= b; self.kb.pressed |= b; } else { self.kb.mouse &= !b; }
@@ -252,6 +261,11 @@ impl Devices {
         if self.mouse_captured { Pointer { wheel: p.wheel, ..Pointer::default() } } else { p }
     }
 
+    pub(crate) fn reset_keyboard(&mut self) {
+        self.kb.keys.clear();
+        self.kb.pressed=0;
+    }
+
     /// Capture transitions must not carry a menu click or old look delta into play.
     pub fn reset_mouse(&mut self) {
         self.kb.mouse = 0;
@@ -259,6 +273,10 @@ impl Devices {
         self.kb.look = [0.0; 2];
         self.pointer.pressed = false;
         self.pointer.held = false;
+        self.pointer.right_pressed = false;
+        self.pointer.right_held = false;
+        self.pointer.middle_pressed = false;
+        self.pointer.middle_held = false;
         self.pointer.moved = false;
         self.pointer.wheel = 0.0;
     }

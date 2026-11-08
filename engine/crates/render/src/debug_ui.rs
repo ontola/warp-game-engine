@@ -4,10 +4,10 @@
 //! never pauses simulation. This module performs no GPU queries or readbacks.
 use crate::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 
-const TEXT_ID: u64 = 0x4442_4755_4900_0000;
-const FG: [u8; 4] = [237, 242, 248, 255];
-const MUTED: [u8; 4] = [164, 180, 196, 255];
-const ACCENT: [u8; 4] = [118, 221, 208, 255];
+pub const WINDOW_ID: u64 = 0x4442_4755_4900_0000;
+#[cfg(test)]
+const TEXT_ID: u64 = WINDOW_ID;
+use crate::editor_style::{EditorButton, FG, MUTED};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum DebugValue {
@@ -94,6 +94,8 @@ pub struct DebugResponse {
 
 #[derive(Clone, Debug, Default)]
 pub struct DebugUi {
+    identity: Option<(u64,u8,&'static str)>,
+    original_values: std::collections::HashMap<u32, DebugValue>,
     pub open: bool,
     pub advanced_open: bool,
     selected: Option<Row>,
@@ -101,6 +103,7 @@ pub struct DebugUi {
     scroll: f32,
     size: [u32; 2],
     interaction: Option<Interaction>,
+    window: crate::editor_window::EditorWindow,
     menu: Option<u32>,
     navigation: Vec<Navigation>,
 }
@@ -131,20 +134,17 @@ struct Layout {
     footer_y: f32,
     row_h: f32,
     scale: f32,
-    passes: usize,
+
 }
 
 fn contains(rect: [f32; 4], p: [f32; 2]) -> bool {
-    p[0] >= rect[0] && p[1] >= rect[1] && p[0] < rect[0]+rect[2] && p[1] < rect[1]+rect[3]
+    EditorButton(rect).contains(p)
 }
 fn intersection(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     let x=a[0].max(b[0]); let y=a[1].max(b[1]);
     [x,y,(a[0]+a[2]-x).min(b[0]+b[2]-x).max(0.0),(a[1]+a[3]-y).min(b[1]+b[3]-y).max(0.0)]
 }
-fn valid_ms(value: f64) -> bool { value.is_finite() && value >= 0.0 }
-fn metric(value: Option<f64>) -> String {
-    value.filter(|v|valid_ms(*v)).map_or_else(||"--".into(),|v|format!("{v:.2} ms"))
-}
+
 fn control_valid(control: &DebugControl) -> bool {
     match &control.value {
         DebugValue::Toggle(_) | DebugValue::Button => true,
@@ -191,19 +191,30 @@ impl Layout {
         let scale=(h/1080.0).clamp(0.85,2.5).min(w/600.0).min(h/720.0).max(0.01);
         let margin=16.0*scale;
         let width=(550.0*scale).min((w-2.0*margin).max(0.0));
-        // Reserve timing slots even when unavailable, invalid or resetting.
-        // A changing GPU sample must never move the controls under the cursor.
-        let passes=if size[1] < 900 {4}else{6};
-        let header=(34.0+81.0+22.0+27.0+passes as f32*23.0+28.0)*scale;
+        let header=62.0*scale;
         let footer=100.0*scale;
         let row_h=38.0*scale;
         let height=(header+footer+visible_rows(model,advanced_open,current).len() as f32*row_h)
             .min((h-2.0*margin).max(0.0));
         let body_h=(height-header-footer).max(0.0);
-        Self { panel:[margin,margin,width,height], body:[margin+12.0*scale,margin+header,width-24.0*scale,body_h],
-            footer_y:margin+header+body_h,row_h,scale,passes }
+        let x = (w-margin-width).max(0.);
+        Self { panel:[x,margin,width,height], body:[x+12.0*scale,margin+header,width-24.0*scale,body_h],
+            footer_y:margin+header+body_h,row_h,scale }
     }
-    fn close(self) -> [f32; 4] { [self.panel[0]+self.panel[2]-38.0*self.scale,self.panel[1]+5.0*self.scale,28.0*self.scale,28.0*self.scale] }
+    fn minimum(self) -> [f32; 2] {
+        [450.*self.scale,self.body[1]-self.panel[1]+100.*self.scale+2.*self.row_h]
+    }
+    fn placed(mut self, rect:[f32;4]) -> Self {
+        let [x,y,w,h]=rect;
+        let header = self.body[1]-self.panel[1];
+        self.panel = [x,y,w,h];
+        self.body = [x+12.*self.scale,y+header,(w-24.*self.scale).max(0.),(h-header-100.*self.scale).max(0.)];
+        self.footer_y = self.body[1]+self.body[3];
+        self
+    }
+    #[cfg(test)]
+    fn grip(self) -> [f32;4] { crate::editor_window::WindowFrame {rect:self.panel,scale:self.scale}.grip().0 }
+
     fn row(self, index: usize, scroll: f32) -> [f32; 4] {
         [self.body[0],self.body[1]+index as f32*self.row_h-scroll,self.body[2],self.row_h]
     }
@@ -231,15 +242,18 @@ impl DebugUi {
 
     /// Physical-pixel cursor position, the same coordinates as HudDrawList.
     pub fn pointer_move(&mut self, cursor: [f32; 2]) {
-        if cursor.iter().all(|v|v.is_finite()) { self.cursor=cursor; }
+        if !cursor.iter().all(|v|v.is_finite()) { return; }
+        self.cursor=cursor;
+        self.window.move_to(cursor);
     }
 
     /// Cancel capture on focus loss, stage/UI replacement or platform pointer
     /// cancellation. No queued repeat or drag action survives this call.
-    pub fn cancel_interaction(&mut self) { self.interaction=None; }
+    pub fn cancel_interaction(&mut self) { self.interaction=None; self.window.cancel(); }
 
     pub fn pointer_up(&mut self) -> DebugResponse {
-        let captured=self.interaction.take().is_some();
+        let captured=self.interaction.is_some() || self.window.dragging();
+        self.cancel_interaction();
         DebugResponse{consumed:captured||self.open,action:None}
     }
 
@@ -258,6 +272,10 @@ impl DebugUi {
             self.menu=None;self.navigation.clear();self.selected=None;self.scroll=0.0;self.cancel_interaction();
         }
         let layout=Layout::new(size,model,self.advanced_open,self.menu);
+        let mut initial=layout.panel;
+        if self.identity.is_some() { initial[0]=16.0*layout.scale; }
+        let rect=self.window.frame(size,initial,layout.minimum(),layout.scale).rect;
+        let layout=layout.placed(rect);
         let rows=visible_rows(model,self.advanced_open,self.menu);
         self.normalize(layout,&rows);
         (layout,rows)
@@ -268,6 +286,9 @@ impl DebugUi {
         if top < self.scroll { self.scroll=top; }
         if top+layout.row_h > self.scroll+layout.body[3] { self.scroll=top+layout.row_h-layout.body[3]; }
         self.normalize(layout,rows);
+    }
+    pub fn for_window(id: u64, key: u8, title: &'static str) -> Self {
+        Self { identity: Some((id,key,title)), ..Self::default() }
     }
     fn enter_menu(&mut self, model:&DebugModel, id:u32) {
         if !model.menus.iter().any(|m|m.id==id&&m.parent==self.menu)||menu_path(model,Some(id)).is_none(){return;}
@@ -363,9 +384,11 @@ impl DebugUi {
         self.cancel_interaction();
         let (layout,rows)=self.sync(size,model);
         if !self.open || !contains(layout.panel,self.cursor) { return DebugResponse::default(); }
-        if contains(layout.close(),self.cursor) {
-            self.open=false;
-            return DebugResponse{consumed:true,action:None};
+        let frame=crate::editor_window::WindowFrame{rect:layout.panel,scale:layout.scale};
+        match self.window.pointer(size,frame,layout.minimum(),Some(self.cursor),true,true) {
+            crate::editor_window::WindowEvent::Close => { self.open=false;return DebugResponse{consumed:true,action:None}; }
+            crate::editor_window::WindowEvent::Handled => return DebugResponse{consumed:true,action:None},
+            _=>{}
         }
         let mut action=None;
         if contains(layout.body,self.cursor) {
@@ -439,113 +462,77 @@ impl DebugUi {
     pub fn draw(&mut self, list: &mut HudDrawList, model: &DebugModel) {
         let (layout,rows)=self.sync(list.size,model);
         if !self.open || list.size.contains(&0) {return;}
+        let first_text=list.text.len();
         let s=layout.scale; let p=layout.panel; let clip=p;
-        // This is an input-owning overlay: underlying menu text must not show
-        // through even when linear-light alpha blending makes it conspicuous.
-        list.rect(p,[0.019,0.027,0.041,1.0],clip);
-        list.rect([p[0],p[1],3.0*s,p[3]],[0.12,0.64,0.55,0.95],clip);
+        let (window_id,key,title)=self.identity.unwrap_or((WINDOW_ID,2,"Graphics settings"));
+        crate::editor_window::WindowFrame { rect:p, scale:s }.draw(list,window_id,key,title);
         let x=p[0]+16.0*s; let w=p[2]-32.0*s; let mut y=p[1]+5.0*s;
-        text(list,0,"Render debug",[x,y,w-40.0*s,30.0*s],clip,27.0*s,FG,TextAlign::Left);
-        text(list,1,"x",layout.close(),clip,24.0*s,MUTED,TextAlign::Center);
         y+=29.0*s;
-        for (i,label,value) in [(0,"GPU measured intervals",model.gpu_active_ms),(1,"GPU render interval",model.gpu_interval_ms)] {
-            text(list,10+i*2,label,[x,y,w*0.7,27.0*s],clip,23.0*s,FG,TextAlign::Left);
-            text(list,11+i*2,&metric(value),[x+w*0.7,y,w*0.3,27.0*s],clip,23.0*s,ACCENT,TextAlign::Right);
-            y+=27.0*s;
-        }
-        // One fixed-height row keeps every existing control hitbox stationary.
-        // Execution excludes blocked time; wall includes it. Neither includes
-        // execution on the renderer's other CPU workers.
-        text(list,14,"CPU main thread",[x,y,w*0.31,27.0*s],clip,20.0*s,FG,TextAlign::Left);
-        text(list,15,&metric(model.cpu_execution_ms),[x+w*0.31,y,w*0.18,27.0*s],clip,20.0*s,ACCENT,TextAlign::Right);
-        text(list,16,"Frame wall",[x+w*0.54,y,w*0.23,27.0*s],clip,20.0*s,FG,TextAlign::Left);
-        text(list,17,&metric(model.cpu_frame_ms),[x+w*0.77,y,w*0.23,27.0*s],clip,20.0*s,MUTED,TextAlign::Right);
-        y+=27.0*s;
-        let age=match model.gpu_age_frames {
-            Some(0)=>"GPU: latest completed sample".into(),
-            Some(n)=>format!("GPU: {n} rendered frames old{}",if n>8{" (stale)"}else{""}),
-            None=>"GPU: unavailable / awaiting a completed sample".into(),
-        };
-        text(list,20,&age,[x,y,w,22.0*s],clip,18.0*s,MUTED,TextAlign::Left); y+=22.0*s;
-        text(list,21,"Largest GPU passes  |  independent intervals",[x,y,w,27.0*s],clip,19.0*s,MUTED,TextAlign::Left);y+=27.0*s;
-        let mut passes:Vec<_>=model.gpu_passes.iter().filter(|p|valid_ms(p.ms)).collect();
-        passes.sort_by(|a,b|b.ms.total_cmp(&a.ms)); passes.truncate(layout.passes);
-        let max=passes.first().map_or(1.0,|p|p.ms.max(0.01));
-        for i in 0..layout.passes {
-            let pass=passes.get(i);
-            let bar=pass.map_or(0.0,|p|w*0.62*(p.ms/max).clamp(0.0,1.0) as f32);
-            list.rect([x,y+4.0*s,bar,18.0*s],[0.08,0.20,0.24,0.8],clip);
-            let label=pass.map_or(if i==0{"Awaiting GPU passes"}else{"--"},|p|p.label.as_str());
-            text(list,100+i as u64*2,label,[x+4.0*s,y,w*0.76,23.0*s],clip,20.0*s,FG,TextAlign::Left);
-            text(list,101+i as u64*2,&metric(pass.map(|p|p.ms)),[x+w*0.76,y,w*0.24,23.0*s],clip,20.0*s,MUTED,TextAlign::Right);
-            y+=23.0*s;
-        }
         let path=menu_path(model,self.menu).unwrap_or_default();
         let caption=if path.is_empty(){"Live controls".into()}else{
             let names:Vec<_>=path.iter().rev().take(2).rev().map(|m|m.label.as_str()).collect();
             format!("{}{}",if path.len()>2{"... / "}else{""},names.join(" / "))
         };
-        text(list,22,&caption,[x,y,w,28.0*s],clip,22.0*s,FG,TextAlign::Left);
+        text(list,window_id,22,&caption,[x,y,w,28.0*s],clip,22.0*s,FG,TextAlign::Left);
         let first=(self.scroll/layout.row_h).floor() as usize;
         let last=((self.scroll+layout.body[3])/layout.row_h).ceil() as usize;
         for i in first..=last.min(rows.len()-1) {
             let row=layout.row(i,self.scroll); let row_clip=intersection(row,layout.body);
             if row_clip[3]<=0.0 {continue;}
             let selected=Some(rows[i])==self.selected;
-            list.rect([row[0],row[1]+1.0*s,row[2],row[3]-2.0*s],if selected{[0.075,0.15,0.19,0.98]}else{[0.034,0.048,0.065,0.8]},row_clip);
-            if rows[i]==Row::Reset {
-                text(list,604,if self.menu.is_some(){"Reset all defaults"}else{"Reset defaults"},
-                    [row[0]+10.0*s,row[1]+5.0*s,row[2]-20.0*s,29.0*s],row_clip,23.0*s,ACCENT,TextAlign::Left);
-                continue;
-            }
-            if rows[i]==Row::Back {
-                text(list,608,"< Back",[row[0]+10.0*s,row[1]+5.0*s,row[2]-20.0*s,29.0*s],row_clip,23.0*s,ACCENT,TextAlign::Left);
-                continue;
-            }
-            if let Row::Menu(id)=rows[i] {
-                if let Some(menu)=model.menus.iter().find(|m|m.id==id) {
-                    text(list,(1u64<<36)+id as u64*4,&format!("{} >",menu.label),
-                        [row[0]+10.0*s,row[1]+5.0*s,row[2]-20.0*s,29.0*s],row_clip,23.0*s,ACCENT,TextAlign::Left);
+            let face = EditorButton([row[0], row[1]+s, row[2], row[3]-2.*s]);
+            let button = |list: &mut HudDrawList, id, label: &str, enabled| {
+                face.draw(list,window_id+id,label,row_clip,22.*s,selected || contains(row,self.cursor),enabled);
+            };
+            match rows[i] {
+                Row::Reset => { button(list,604,if self.menu.is_some() {"Reset all defaults"} else {"Reset defaults"},true); continue; }
+                Row::Back => { button(list,608,"< Back",true); continue; }
+                Row::Advanced => { button(list,600,if self.advanced_open {"- Advanced rendering"} else {"+ Advanced rendering"},true); continue; }
+                Row::Menu(id) => {
+                    if let Some(menu)=model.menus.iter().find(|m| m.id==id) {
+                        button(list,(1u64<<36)+id as u64*4,&format!("{} >",menu.label),true);
+                    }
+                    continue;
                 }
-                continue;
+                Row::Control(_) => {}
             }
-            if rows[i]==Row::Advanced {
-                text(list,600,if self.advanced_open{"- Advanced rendering"}else{"+ Advanced rendering"},
-                    [row[0]+10.0*s,row[1]+5.0*s,row[2]-20.0*s,29.0*s],row_clip,23.0*s,ACCENT,TextAlign::Left);
-                continue;
-            }
-            let Row::Control(control_id)=rows[i] else {continue;};
+            let Row::Control(control_id)=rows[i] else {continue};
             let Some(control)=model.controls.iter().find(|c|c.id==control_id) else {continue;};
+            if !matches!(control.value,DebugValue::Button) {
+                let baseline=self.original_values.entry(control.id).or_insert_with(||control.value.clone());
+                if baseline!=&control.value {
+                    list.rect([row[0]+2.*s,row[1]+5.*s,3.*s,row[3]-10.*s],crate::editor_style::HIGHLIGHT,row_clip);
+                }
+            }
             let id=4096+control.id as u64*4;
             let enabled=control.enabled&&control_valid(control);
             let color=if enabled{FG}else{MUTED};
             if matches!(&control.value,DebugValue::Button) {
-                text(list,id,&control.label,[row[0]+10.0*s,row[1]+5.0*s,row[2]-20.0*s,29.0*s],row_clip,23.0*s,
-                    if enabled{ACCENT}else{MUTED},TextAlign::Left);
+                button(list,id,&control.label,enabled);
                 continue;
             }
+            list.rect(face.0,if selected{[0.075,0.15,0.19,0.98]}else{[0.034,0.048,0.065,0.8]},row_clip);
             let reserved=if matches!(&control.value,DebugValue::Choice{..}){262.0}else{170.0};
-            text(list,id,&control.label,[row[0]+10.0*s,row[1]+5.0*s,row[2]-reserved*s,29.0*s],row_clip,23.0*s,color,TextAlign::Left);
+            text(list,window_id,id,&control.label,[row[0]+10.0*s,row[1]+5.0*s,row[2]-reserved*s,29.0*s],row_clip,23.0*s,color,TextAlign::Left);
             match &control.value {
                 DebugValue::Toggle(value)=>{
                     let button=[row[0]+row[2]-105.0*s,row[1]+5.0*s,95.0*s,28.0*s];
-                    list.rect(button,if *value&&enabled{[0.08,0.29,0.24,0.95]}else{[0.10,0.12,0.15,0.95]},row_clip);
-                    text(list,id+1,if *value{"On"}else{"Off"},button,row_clip,22.0*s,color,TextAlign::Center);
+                    EditorButton(button).draw(list,window_id+id+1,if *value{"On"}else{"Off"},row_clip,22.*s,*value || contains(button,self.cursor),enabled);
                 }
                 DebugValue::Number {value,decimals,unit,..}=>{
                     let (minus,plus)=layout.buttons(row);
-                    for rect in [minus,plus] {list.rect(rect,[0.10,0.15,0.19,0.95],row_clip);}
-                    text(list,id+1,"-",minus,row_clip,25.0*s,color,TextAlign::Center);
-                    text(list,id+2,"+",plus,row_clip,25.0*s,color,TextAlign::Center);
+                    for (offset,rect,label) in [(1,minus,"-"),(2,plus,"+")] {
+                        EditorButton(rect).draw(list,window_id+id+offset,label,row_clip,22.*s,contains(rect,self.cursor),enabled);
+                    }
                     let shown=if control_valid(control){format!("{:.*}{}",(*decimals).min(6) as usize,value,unit)}else{"invalid".into()};
-                    text(list,id+3,&shown,[minus[0]+minus[2],row[1]+6.0*s,plus[0]-minus[0]-minus[2],28.0*s],row_clip,21.0*s,color,TextAlign::Center);
+                    text(list,window_id,id+3,&shown,[minus[0]+minus[2],row[1]+6.0*s,plus[0]-minus[0]-minus[2],28.0*s],row_clip,21.0*s,color,TextAlign::Center);
                 }
                 DebugValue::Choice {index,labels}=>{
                     let (previous,next)=layout.choice_buttons(row);
-                    for rect in [previous,next]{list.rect(rect,[0.10,0.15,0.19,0.95],row_clip);}
-                    text(list,id+1,"<",previous,row_clip,25.0*s,color,TextAlign::Center);
-                    text(list,id+2,">",next,row_clip,25.0*s,color,TextAlign::Center);
-                    text(list,id+3,labels.get(*index).map_or("invalid",String::as_str),layout.choice_value(row),row_clip,21.0*s,color,TextAlign::Center);
+                    for (offset,rect,label) in [(1,previous,"<"),(2,next,">")] {
+                        EditorButton(rect).draw(list,window_id+id+offset,label,row_clip,22.*s,contains(rect,self.cursor),enabled);
+                    }
+                    text(list,window_id,id+3,labels.get(*index).map_or("invalid",String::as_str),layout.choice_value(row),row_clip,21.0*s,color,TextAlign::Center);
                 }
                 DebugValue::Button=>{},
             }
@@ -564,19 +551,21 @@ impl DebugUi {
             Some(Row::Menu(id))=>model.menus.iter().find(|m|m.id==id).map_or("",|m|m.help.as_str()),
             Some(Row::Back)=>"Return to the previous settings menu. Esc also goes back.",
             Some(Row::Advanced)=>"Show or hide specialized rendering controls.",
+            _ if self.identity.is_some()=>"Restore this window's default values.",
             _=>"Restore all of the host's default render settings.",
         };
         for (i,line) in [help,model.status.as_deref().unwrap_or("CPU excludes other threads; wall includes waiting."),
-                        "F10 close | Esc back | Arrows | Enter open/toggle", "Drag values | Hold +/- | Wheel scroll"].into_iter().enumerate() {
-            text(list,500+i as u64,line,[x,layout.footer_y+(8.0+i as f32*21.0)*s,w,22.0*s],footer_clip,17.5*s,if i==0{FG}else{MUTED},TextAlign::Left);
+                        &format!("F{key} close | Esc back | Arrows | Enter open/toggle"), "Drag values | Hold +/- | Wheel scroll"].into_iter().enumerate() {
+            text(list,window_id,500+i as u64,line,[x,layout.footer_y+(8.0+i as f32*21.0)*s,w,22.0*s],footer_clip,17.5*s,if i==0{FG}else{MUTED},TextAlign::Left);
         }
+        crate::editor_style::style_text(list, first_text);
     }
 }
 
-fn text(list: &mut HudDrawList, id: u64, value: &str, rect: [f32; 4], clip: [f32; 4], size: f32, color: [u8; 4], align: TextAlign) {
+fn text(list: &mut HudDrawList, window_id:u64, id: u64, value: &str, rect: [f32; 4], clip: [f32; 4], size: f32, color: [u8; 4], align: TextAlign) {
     let bounds=intersection(rect,clip);
     if bounds[2]<=0.0 || bounds[3]<=0.0 {return;}
-    list.text.push(TextRun{id:TEXT_ID+id,text:value.chars().take(240).collect(),position:[rect[0],rect[1]],bounds,
+    list.text.push(TextRun{id:window_id+id,text:value.chars().take(240).collect(),position:[rect[0],rect[1]],bounds,
         font_size:size.clamp(1.0,512.0),color,font:FontFace::Body,align,width:rect[2].max(0.0)});
 }
 
@@ -590,6 +579,39 @@ mod tests {
             gpu_passes:vec![DebugPass{label:"shade".into(),ms:2.5},DebugPass{label:"raster".into(),ms:1.2}],
             gpu_active_ms:Some(3.0),gpu_interval_ms:Some(4.5),cpu_frame_ms:Some(2.0),cpu_execution_ms:Some(0.75),gpu_age_frames:Some(2),status:None }
     }
+    #[test]
+    fn floating_window_keeps_controls_attached_and_stays_reachable() {
+        let size=[1280,800];
+        let model=model(8);
+        let mut ui=DebugUi {open:true,..Default::default()};
+        let first=ui.sync(size,&model).0;
+        assert!(first.panel[0]>size[0] as f32*0.5);
+        let start=[first.panel[0]+36.,first.panel[1]+12.];
+        ui.pointer_move(start);
+        assert!(ui.on_pointer_down(size,&model).consumed);
+        ui.pointer_move([start[0]-220.,start[1]+40.]);
+        ui.pointer_up();
+        let moved=ui.sync(size,&model).0;
+        assert!((moved.body[0]-(first.body[0]-220.)).abs()<0.01);
+        let grip=moved.grip();
+        let corner=[grip[0]+6.,grip[1]+6.];
+        ui.pointer_move(corner);
+        ui.on_pointer_down(size,&model);
+        ui.pointer_move([corner[0]+100.,corner[1]-70.]);
+        ui.pointer_up();
+        let resized=ui.sync(size,&model).0;
+        assert!((resized.panel[2]-moved.panel[2]-100.).abs()<0.01);
+        assert!(resized.body[3]<moved.body[3]);
+        let row=resized.row(0,0.);
+        ui.pointer_move([row[0]+8.,row[1]+8.]);
+        assert_eq!(ui.on_pointer_down(size,&model).action,Some(DebugAction::SetToggle{id:100,value:false}));
+        ui.on_key(DebugKey::Toggle,size,&model);
+        ui.on_key(DebugKey::Toggle,size,&model);
+        assert_eq!(resized.panel,ui.sync(size,&model).0.panel);
+        let small=ui.sync([480,320],&model).0;
+        assert!(small.panel[0]>=0. && small.panel[1]>=0. && small.panel[0]+small.panel[2]<=480.01 && small.panel[1]+small.panel[3]<=320.01);
+    }
+
     #[test]
     fn closed_panel_does_not_draw_or_consume_game_controls() {
         let mut ui=DebugUi::default();let m=model(2);let mut list=HudDrawList::new([1280,720]);
@@ -650,7 +672,7 @@ mod tests {
         let mut list=HudDrawList::new(size);ui.draw(&mut list,&m);assert!(list.text.iter().any(|t|t.text=="invalid"));
     }
     #[test]
-    fn draw_is_finite_bounded_and_reports_real_timing_scopes() {
+    fn graphics_settings_are_bounded_and_leave_timings_to_the_profiler() {
         for size in [[1280,720],[1920,1080],[3840,2160]] {
             let mut ui=DebugUi{open:true,..Default::default()};let mut m=model(80);
             m.gpu_passes.push(DebugPass{label:"bad".into(),ms:f64::NAN});
@@ -663,15 +685,8 @@ mod tests {
                 assert!(t.bounds[0]+t.bounds[2]<=size[0] as f32+0.01);
                 assert!(t.bounds[1]+t.bounds[3]<=size[1] as f32+0.01);
             }
-            assert!(list.text.iter().any(|t|t.text=="3.00 ms"));
-            assert!(list.text.iter().any(|t|t.text=="4.50 ms"));
-            assert!(list.text.iter().any(|t|t.text=="CPU main thread"));
-            assert!(list.text.iter().any(|t|t.text=="Frame wall"));
-            assert!(list.text.iter().any(|t|t.text=="0.75 ms"));
-            assert!(!list.text.iter().any(|t|t.text=="3.70 ms")); // no sum of pass durations
-            m.gpu_interval_ms=None;m.gpu_active_ms=None;m.gpu_age_frames=Some(20);
-            let mut stale=HudDrawList::new(size);ui.draw(&mut stale,&m);
-            assert!(stale.text.iter().any(|t|t.text.contains("stale")));
+            assert!(list.text.iter().any(|t|t.text.contains("Graphics settings")));
+            assert!(!list.text.iter().any(|t|t.text=="CPU main thread"));
         }
     }
     #[test]

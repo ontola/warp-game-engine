@@ -74,52 +74,52 @@ fn sr_facade(p:vec3<f32>,n:vec3<f32>,tint:vec3<f32>,fp:f32)->SurfaceOut {
     let paint=mix(vec3<f32>(0.075,0.09,0.115),tex*0.52*mix(vec3<f32>(0.65,0.78,0.88),vec3<f32>(1.0,0.87,0.74),tint.b)*structure,wall);
     return SurfaceOut(paint,n,0.5,0.3,tex*tone*room*occupancy*58.0);
 }
-fn sr_aux3(i:u32)->vec3<f32>{return vec3<f32>(bitcast<f32>(aux[i]),bitcast<f32>(aux[i+1u]),bitcast<f32>(aux[i+2u]));}
+fn sr_aux3(i:u32)->vec3<f32>{return vec3<f32>(bitcast<f32>(aux_word(i)),bitcast<f32>(aux_word(i+1u)),bitcast<f32>(aux_word(i+2u)));}
 fn sr_ray_bounds(p:vec3<f32>,inv:vec3<f32>,lo:vec3<f32>,hi:vec3<f32>)->f32 {
     let a=(lo-p)*inv;let b=(hi-p)*inv;let near=min(a,b);let far=max(a,b);
     let enter=max(max(near.x,near.y),near.z);let leave=min(min(far.x,far.y),far.z);
     return select(1e20,max(enter,0.0),leave>=max(enter,0.0));
 }
 fn sr_reflections(p:vec3<f32>,n:vec3<f32>,dir:vec3<f32>,fp:f32)->vec3<f32>{
-    if arrayLength(&aux)<8u || aux[0]!=0x53524143u || aux[7]==0u {return vec3<f32>(0);}
+    if aux_len()<8u || aux_word(0)!=0x53524143u || aux_word(7)==0u {return vec3<f32>(0);}
     let ray=reflect(dir,n);let inv=1.0/select(vec3<f32>(0.00001),ray,abs(ray)>vec3<f32>(0.00001));
     var nearest=1600.0;var hit=0xffffffffu;
     var node=0u;
     // Threaded surface-area BVH. Each node stores its subtree's escape index:
     // no per-pixel stack, no repeated child tests, no arbitrary hit truncation.
-    for(var step=0u;step<aux[7] && node<aux[7];step++) {
-        let current=node;let b=aux[6]+current*8u;node=aux[b+3u];
+    for(var step=0u;step<aux_word(7) && node<aux_word(7);step++) {
+        let current=node;let b=aux_word(6)+current*8u;node=aux_word(b+3u);
         let enter=sr_ray_bounds(p,inv,sr_aux3(b),sr_aux3(b+4u));
         if enter>=nearest {continue;}
-        let payload=aux[b+7u];
+        let payload=aux_word(b+7u);
         if payload==0xffffffffu {
             node=current+1u;
         } else if (payload&0x80000000u)!=0u {
-            let sign=aux[3]+(payload&0x7fffffffu)*16u;
+            let sign=aux_word(3)+(payload&0x7fffffffu)*16u;
             let normal=sr_aux3(sign+12u);let facing=dot(ray,normal);
             if facing>=-0.001 {continue;}
             let distance=dot(sr_aux3(sign)-p,normal)/facing;
             if distance<=0.0 || distance>=nearest {continue;}
             let at=p+ray*distance-sr_aux3(sign);
-            let uv=vec2<f32>(dot(at,sr_aux3(sign+4u))/bitcast<f32>(aux[sign+3u])+0.5,0.5-dot(at,sr_aux3(sign+8u))/bitcast<f32>(aux[sign+7u]));
+            let uv=vec2<f32>(dot(at,sr_aux3(sign+4u))/bitcast<f32>(aux_word(sign+3u))+0.5,0.5-dot(at,sr_aux3(sign+8u))/bitcast<f32>(aux_word(sign+7u)));
             if min(uv.x,uv.y)>=0.0 && max(uv.x,uv.y)<=1.0 {nearest=distance;hit=payload;}
         } else if enter>0.0 {nearest=enter;hit=payload;}
     }
     if hit==0xffffffffu {return vec3<f32>(0);}
     let fresnel=pow(1.0-max(dot(n,-dir),0.0),3.0);
     if (hit&0x80000000u)==0u {
-        let b=aux[4]+hit*12u;let lo=sr_aux3(b);let hi=sr_aux3(b+4u);
+        let b=aux_word(4)+hit*12u;let lo=sr_aux3(b);let hi=sr_aux3(b+4u);
         let at=p+ray*nearest;let rel=(at-(lo+hi)*0.5)/(hi-lo);
         var normal=select(vec3<f32>(0,0,sign(rel.z)),vec3<f32>(sign(rel.x),0,0),abs(rel.x)>abs(rel.z));
         if abs(rel.y)>max(abs(rel.x),abs(rel.z)){normal=vec3<f32>(0,sign(rel.y),0);}
         let facade=sr_facade(at,normal,sr_aux3(b+8u),fp+nearest*0.0005);
         return (facade.emission+facade.albedo*2.0)*mix(0.08,0.65,fresnel)*exp(-nearest*0.0015);
     }
-    let b=aux[3]+(hit&0x7fffffffu)*16u;let at=p+ray*nearest-sr_aux3(b);
-    let width=bitcast<f32>(aux[b+3u]);let height=bitcast<f32>(aux[b+7u]);
+    let b=aux_word(3)+(hit&0x7fffffffu)*16u;let at=p+ray*nearest-sr_aux3(b);
+    let width=bitcast<f32>(aux_word(b+3u));let height=bitcast<f32>(aux_word(b+7u));
     var uv=vec2<f32>(dot(at,sr_aux3(b+4u))/width+0.5,0.5-dot(at,sr_aux3(b+8u))/height);
     uv.x=clamp(uv.x+(sr_noise(p.xz*1.5)-0.5)*0.012,0.003,0.997);
-    let tile=u32(bitcast<f32>(aux[b+11u]));var layer=1;var atlas=(uv+vec2<f32>(f32(tile%3u),f32(tile/3u)))/vec2<f32>(3,2);
+    let tile=u32(bitcast<f32>(aux_word(b+11u)));var layer=1;var atlas=(uv+vec2<f32>(f32(tile%3u),f32(tile/3u)))/vec2<f32>(3,2);
     if tile>=6u {layer=2;atlas=(uv+vec2<f32>(f32(tile-6u),0))/vec2<f32>(4,1);}
     let mip=max(0.0,log2(max(fp+nearest*0.0003,0.001)*f32(textureDimensions(albedo).x)/width/3.0));
     return textureSampleLevel(albedo,samp,atlas,layer,mip).rgb*145.0*mix(0.18,0.8,fresnel)*exp(-nearest*0.0015);
@@ -211,11 +211,11 @@ fn game_surface(s:SurfaceIn)->SurfaceOut {
         o.rough=mix(0.19,0.27,finish)+seam*0.15;o.metal=0.52;
         let vehicle=sr_vehicle(s.instance);
         if vehicle!=0u {
-            let amount=bitcast<f32>(aux[vehicle+2u]);
+            let amount=bitcast<f32>(aux_word(vehicle+2u));
             let obj=instances[s.instance];
             let local_n=normalize(vec3<f32>(dot(s.n,vec3<f32>(obj.r0.x,obj.r1.x,obj.r2.x)),dot(s.n,vec3<f32>(obj.r0.y,obj.r1.y,obj.r2.y)),dot(s.n,vec3<f32>(obj.r0.z,obj.r1.z,obj.r2.z))));
             var weights=pow(abs(local_n),vec3<f32>(6.));weights/=max(.001,weights.x+weights.y+weights.z);
-            let at=p*.38;let layer=i32(aux[aux[5]]);
+            let at=p*.38;let layer=i32(aux_word(aux_word(5)));
             let lod=max(0.,log2(max(fp,.001)*.38*f32(textureDimensions(albedo).x)));
             var mask=textureSampleLevel(albedo,samp,at.yz,layer,lod).rgb*weights.x
                 +textureSampleLevel(albedo,samp,at.xz,layer,lod).rgb*weights.y
@@ -345,7 +345,7 @@ fn game_surface(s:SurfaceIn)->SurfaceOut {
     if (s.kind>=10u && s.kind<=14u) || s.kind==17u {
         let b=sr_vehicle(s.instance);
         if b!=0u {
-            let progress=bitcast<f32>(aux[b+3u]);
+            let progress=bitcast<f32>(aux_word(b+3u));
             if progress<1.0 {
                 let q=sr_hull(s.p,b);let front=mix(-1.,2.6,min(1.,progress*1.4));
                 let band=1.-smoothstep(.035,.23,abs(q.y-front));
@@ -354,7 +354,7 @@ fn game_surface(s:SurfaceIn)->SurfaceOut {
                 let lattice=max(line.y,max(line.x,line.z)*.55);
                 let fade=1.-smoothstep(.60,1.,progress);
                 o.emission+=mix(vec3<f32>(.12,.65,1.),vec3<f32>(.8,1.,1.),band)*
-                    (band*2.6+.08+.18*lattice)*fade*bitcast<f32>(aux[b+20u]);
+                    (band*2.6+.08+.18*lattice)*fade*bitcast<f32>(aux_word(b+20u));
             }
         }
     }

@@ -1,4 +1,4 @@
-//! The F3 debug overlay: a panel down the right over the running match
+//! The F10 debug overlay: a panel down the right over the running match
 //! (it is no pause) with four tabs. CARDS gives any card to the target
 //! player (type to filter), ITEMS sets the special, drops pickups and refills
 //! health and ammo, SKY picks the time of day and weather, MODES forces a
@@ -7,7 +7,7 @@
 //! Every entry runs the game's own debug commands (`play.rs`, `help`), so the
 //! overlay adds no game logic of its own.
 //!
-//! Keys: F3 (or Back + Start on a pad) opens and closes it, Esc or B closes
+//! Keys: F10 (or Back + Start on a pad) opens and closes it, Esc or B closes
 //! it. Up and down move, left and right move within a row and pick the
 //! target player on the TARGET row, Q/E or LB/RB change the tab, Space,
 //! Enter or A take. On the CARDS search field the keyboard types (Enter gives
@@ -66,11 +66,13 @@ struct Hit { rect: [f32; 4], row: usize, entry: usize }
 
 #[derive(Clone, Debug)]
 pub struct DebugMenu {
+    window: render::editor_window::EditorWindow,
     pub open: bool,
     pub tab: usize,
     /// The player the cards, specials and pickups go to.
     pub player: usize,
     pub search: TextField,
+    selecting_search: bool,
     /// A pad typing into the search field.
     pub picker: Option<app::ui::CharPicker>,
     menu: app::ui::Menu,
@@ -89,7 +91,7 @@ pub struct DebugMenu {
 
 impl Default for DebugMenu {
     fn default() -> Self {
-        DebugMenu { open: false, tab: 0, player: 0, search: TextField::new(32), picker: None, menu: Default::default(), col: 0, held_x: 0, repeat: 0.0,
+        DebugMenu { window:Default::default(),open: false, tab: 0, player: 0, search: TextField::new(32), selecting_search:false, picker: None, menu: Default::default(), col: 0, held_x: 0, repeat: 0.0,
             scroll: Cell::new(0.0), follow: Cell::new(false), hits: Default::default(), hit_size: Cell::new([0; 2]), notice: None, notice_age: 0.0 }
     }
 }
@@ -107,6 +109,7 @@ fn chunked(entries: Vec<Entry>, n: usize) -> Vec<Row> {
 impl DebugMenu {
     pub fn set_open(&mut self, on: bool) {
         self.open = on;
+        self.window.cancel();
         self.picker = None;
         self.follow.set(true);
     }
@@ -304,7 +307,7 @@ impl DebugMenu {
             match self.menu.focus { 0 => self.set_tab(self.col), 1 => self.player = self.col, _ => {} }
             return Vec::new();
         }
-        // Only B (and Esc, F3) closes: Back is half of the pad's open chord.
+        // Only B (and Esc, F10) closes: Back is half of the pad's open chord.
         let strip = Buttons::LEFT | Buttons::RIGHT | Buttons::SELECT;
         let before = self.menu.focus;
         let ev = self.menu.update(&Controls { mv: [0.0, c.mv[1]], held: Buttons(c.held.0 & !strip), pressed: Buttons(c.pressed.0 & !strip), ..*c }, foci.len(), 1, dt);
@@ -322,9 +325,28 @@ impl DebugMenu {
         }
     }
 
+    fn layout(&self,size:[u32;2])->render::editor_window::WindowFrame {
+        let [w,h]=size.map(|n|n as f32);
+        let u=(h/DESIGN_H).min(w/410.).max(0.01);
+        self.window.frame(size,[w-478.*u,8.*u,470.*u,h-16.*u],[390.*u,240.*u],u)
+    }
     /// Mouse: hover focuses, a click takes, the wheel scrolls. Targets are
     /// the last drawn frame's.
     pub fn pointer(&mut self, p: app::Pointer, size: [u32; 2], ctx: &Ctx) -> Vec<String> {
+        if !p.held {self.selecting_search=false;}
+        if self.selecting_search && p.held && !p.pressed {
+            if p.moved && let Some(pos)=p.position {self.search.pointer_select(pos,false);}
+            return Vec::new();
+        }
+        let frame=self.layout(size);
+        if self.picker.is_none() {
+            match self.window.pointer(size,frame,[390.*frame.scale,240.*frame.scale],p.position,p.pressed,p.held) {
+                render::editor_window::WindowEvent::Close=>{self.set_open(false);return Vec::new();},
+                render::editor_window::WindowEvent::Handled=>return Vec::new(),
+                _=>{}
+            }
+            if !p.position.is_some_and(|xy|app::ui::contains(frame.body(),xy)) {return Vec::new();}
+        }
         if self.hit_size.get() != size { return Vec::new(); }
         if p.wheel != 0.0 { self.scroll.set((self.scroll.get() - p.wheel * 60.0).max(0.0)); }
         if !p.moved && !p.pressed && !p.right_pressed { return Vec::new(); }
@@ -347,7 +369,7 @@ impl DebugMenu {
         if !p.pressed { return Vec::new(); }
         match &rows[hit.row] {
             Row::Line(_, e) => e.get(hit.entry).map_or(Vec::new(), |e| { let a = e.act.clone(); self.activate(a, ctx) }),
-            // A click on the field: the keyboard types (the focus is enough).
+            Row::Search => { self.search.pointer_select(pos,true);self.selecting_search=p.held;Vec::new() }
             _ => Vec::new(),
         }
     }
@@ -358,16 +380,16 @@ impl DebugMenu {
         if !self.open { return; }
         d.begin_overlay();
         let [w, h] = d.size.map(|v| v as f32);
-        let u = h / DESIGN_H;
-        let clip = [0.0, 0.0, w, h];
-        let pw = (470.0 * u).min(w - 16.0 * u);
-        let panel = [w - pw - 8.0 * u, 8.0 * u, pw, h - 16.0 * u];
-        menu_panel(d, panel, u, clip);
-        frame_rect(d, panel, u.max(1.0), with_alpha(RED, 0.6), clip);
+        let frame=self.layout(d.size);
+        let first_text=d.text.len();
+        frame.draw(d,0x6767_5220,10,"Match tools");
+        let u=frame.scale;
+        let panel=frame.body();
+        let clip=panel;
         let x0 = panel[0] + 18.0 * u;
         let iw = panel[2] - 30.0 * u;
-        Label::poster(26.0 * u).draw(d, "DEBUG", x0, panel[1] + 24.0 * u, clip);
-        Label::new(BODY, 11.0 * u, BONE_DIM).right().draw(d, "F3 / ESC close  ·  Q E tabs  ·  type to search", panel[0] + panel[2] - 12.0 * u, panel[1] + 26.0 * u, clip);
+
+        Label::new(BODY, render::editor_style::font_size(d.size), BONE_DIM).right().draw(d, "F10 / ESC close  ·  Q E tabs  ·  type to search", panel[0] + panel[2] - 12.0 * u, panel[1] + 26.0 * u, clip);
         let rows = self.rows(ctx);
         let focus = self.focused(&rows);
         let rh = 30.0 * u;
@@ -405,20 +427,21 @@ impl DebugMenu {
         if let Some((t, ok)) = &self.notice {
             let c = if *ok { GOOD } else { BAD };
             let ny = panel[1] + panel[3] - notice_h * 0.5;
-            Label::new(BODY, fit(t, BODY, 12.0 * u, iw), c).draw(d, t, x0, ny, clip);
+            Label::new(BODY, render::editor_style::font_size(d.size), c).draw(d, t, x0, ny, clip);
         }
         if let Some(p) = &self.picker {
             let st = app::ui::Style { panel: [0.06, 0.03, 0.035, 1.0], item: [0.13, 0.11, 0.10, 0.98], focus: RED, text: bytes(BONE), muted: bytes(BONE_DIM), scale: u * 0.75 };
             p.draw(d, 0x6767_5100, [0.0, h * 0.42, w, h * 0.58], &st);
         }
+        render::editor_style::style_text(d, first_text);
     }
 
     fn row(&self, d: &mut HudDrawList, row: &Row, k: usize, r: [f32; 4], focus: Option<(usize, usize)>, u: f32, clip: [f32; 4]) {
         let mid = r[1] + r[3] * 0.5;
         match row {
             Row::Head(t) => {
-                let s = fit(t, bold(), 15.0 * u, r[2]);
-                Label::new(bold(), s, GOLD).draw(d, t, r[0], r[1] + 12.0 * u, clip);
+
+                Label::new(bold(), render::editor_style::font_size(d.size), GOLD).draw(d, t, r[0], r[1] + 12.0 * u, clip);
             }
             Row::Search => {
                 let fr = [r[0], r[1], r[2], r[3]];
@@ -433,7 +456,7 @@ impl DebugMenu {
                 let lw = if label.is_empty() { 0.0 } else { 100.0 * u };
                 if !label.is_empty() {
                     let c = if focus.is_some_and(|f| f.0 == k) { BONE } else { BONE_DIM };
-                    Label::new(bold(), fit(label, bold(), 16.0 * u, lw - 6.0 * u), c).draw(d, label, r[0], mid, clip);
+                    Label::new(bold(), render::editor_style::font_size(d.size), c).draw(d, label, r[0], mid, clip);
                 }
                 let n = entries.len().max(1) as f32;
                 let gap = 6.0 * u;
@@ -463,16 +486,16 @@ fn entry(d: &mut HudDrawList, r: [f32; 4], e: &Entry, focused: bool, u: f32, cli
     let inner = [r[0], r[1], r[2], r[3]];
     let clip = intersect(clip, inner);
     if e.sub.is_empty() || e.color.is_none() {
-        let room = r[2] - 12.0 * u;
-        let size = fit(&e.text, bold(), 16.0 * u, room - if e.sub.is_empty() { 0.0 } else { 26.0 * u });
-        if e.color.is_some() { Label::new(bold(), size, tc).draw(d, &e.text, x, r[1] + r[3] * 0.5, clip); }
-        else { Label::new(bold(), size, tc).center().draw(d, &e.text, r[0] + r[2] * 0.5, r[1] + r[3] * 0.5, clip); }
-        if !e.sub.is_empty() { Label::new(BODY, 10.0 * u, with_alpha(tc, 0.7)).right().draw(d, &e.sub, r[0] + r[2] - 5.0 * u, r[1] + r[3] - 7.0 * u, clip); }
+
+
+        if e.color.is_some() { Label::new(bold(), render::editor_style::font_size(d.size), tc).draw(d, &e.text, x, r[1] + r[3] * 0.5, clip); }
+        else { Label::new(bold(), render::editor_style::font_size(d.size), tc).center().draw(d, &e.text, r[0] + r[2] * 0.5, r[1] + r[3] * 0.5, clip); }
+        if !e.sub.is_empty() { Label::new(BODY, render::editor_style::font_size(d.size), with_alpha(tc, 0.7)).right().draw(d, &e.sub, r[0] + r[2] - 5.0 * u, r[1] + r[3] - 7.0 * u, clip); }
     } else {
         // Cards: the name, the id under it.
-        let size = fit(&e.text, bold(), 15.0 * u, r[2] - 16.0 * u);
-        Label::new(bold(), size, tc).draw(d, &e.text, x, r[1] + r[3] * 0.36, clip);
-        Label::new(BODY, 10.0 * u, with_alpha(tc, 0.65)).draw(d, &e.sub, x, r[1] + r[3] * 0.78, clip);
+
+        Label::new(bold(), render::editor_style::font_size(d.size), tc).draw(d, &e.text, x, r[1] + r[3] * 0.36, clip);
+        Label::new(BODY, render::editor_style::font_size(d.size), with_alpha(tc, 0.65)).draw(d, &e.sub, x, r[1] + r[3] * 0.78, clip);
     }
 }
 

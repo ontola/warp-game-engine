@@ -9,7 +9,7 @@ the engine.
 
 Its focus is realistic, performant procedural outdoor worlds (terrain,
 trees, grass, sky), vehicle physics and short iteration loops for people
-and for coding agents. It is young: a human editor UI, complete indoor
+and for coding agents. It is young: a general scene editor, complete indoor
 rendering, water, buildings, people and general animation are missing.
 Priorities can change.
 
@@ -92,7 +92,7 @@ game's own tools while you play. See [live control](live-control.md).
 
 ## Not goals (for now)
 
-- An editor. Games are code and data files.
+- A general scene editor. Games are code and data files with focused [visual editing tools](editor-tools.md).
 - Comparing against Godot. The Godot versions are retired as references.
 - Claiming the frame-rate target before it is measured. The Sideways target
   is four players on one 4K output at 120 FPS (8.33 ms per frame); it is
@@ -100,7 +100,9 @@ game's own tools while you play. See [live control](live-control.md).
 
 ### Gameplay attachments to feedback screenshots
 
-The app shell calls `Game::feedback_replay` with the F12 PNG path and its
+The Warp desktop game shell opens the feedback overlay on F4. Click or tap to store `player_point` in original PNG pixels, or press Esc. Shift+F4 opens the crop tool directly. A second F4 while pointing switches the same capture to cropping. Custom render loops can use `app::feedback::Picker` and `Writer` with a game-specific attachment callback. The worker saves the PNG, JSON and clipboard image.
+
+The shell calls `Game::feedback_replay` with the destination PNG path and its
 interpolation phase. A game may attach a replay using the same basename; its
 metadata or error is included beside the screenshot. Growing Guns implements
 a bounded state recorder and review UI (see its README). Games without this

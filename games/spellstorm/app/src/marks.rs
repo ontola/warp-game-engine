@@ -31,8 +31,6 @@ pub struct Marks {
     /// 1.3 rad) and an unshadowed rest for everything outside that cone.
     pub spots: Vec<SpotLight>,
     pub spill: Vec<LocalLight>,
-    /// Each wizard's gem on the posed staff (by wizard index), from the view.
-    pub gems: Vec<Option<Vec3>>,
 }
 
 /// The shadowed cone under each gem: full inside INNER, gone past OUTER,
@@ -59,7 +57,7 @@ fn noise(x: f32) -> f32 {
 }
 
 impl Marks {
-    pub fn update(&mut self, w: &World, time: f32, dt: f32) {
+    pub fn update(&mut self, w: &World, gems: &[Option<Vec3>], time: f32, dt: f32) {
         self.sprites.clear();
         self.lights.clear();
         self.spots.clear();
@@ -67,7 +65,7 @@ impl Marks {
         for (i, &id) in w.wizards.iter().enumerate() {
             let Some(a) = w.actor(id) else { continue };
             let wz = w.wiz(id);
-            let tip = self.gems.get(i).copied().flatten().unwrap_or_else(|| wizard::staff_tip(a.pos, &wz));
+            let tip = gems.get(i).copied().flatten().unwrap_or_else(|| wizard::staff_tip(a.pos, &wz));
             if a.alive {
                 self.staff(&wz, a.hp as f32 / a.max_hp.max(1.0) as f32, tip, time, dt);
                 self.cast_mark(&wz, time);
