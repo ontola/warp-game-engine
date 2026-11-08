@@ -107,9 +107,13 @@ Owned by the foliage work; its working checklist is
 
 ## Shadows and lighting
 
-- Physical units (lux, EV100, nits), procedural atmosphere, height fog with a
-  finite-distance aerosol layer, irradiance volumes for interiors, opt-in
-  [volumetric light](volumetric-light.md).
+- Physical units (lux, EV100, nits), procedural atmosphere with multiple
+  scattering, height fog with a finite-distance aerosol layer, irradiance
+  volumes for interiors, opt-in [volumetric light](volumetric-light.md).
+- Opt-in [aerial perspective and volumetric clouds](atmosphere.md#aerial-perspective-and-clouds-lightingsky_volume)
+  (`Lighting::sky_volume`, on in `terrain_fly`): froxel aerial perspective
+  from the sky bake's LUTs, one raymarched cumulus layer with cloud shadows.
+  Open: sky from altitude, clouds in skylight and reflections, real-GPU cost.
 - [Traced reflections](dynamic-gi.md) (default on, needs TAA): glossy
   surfaces reflect what the frame shows, traced through the depth buffer
   and lit by last frame's image. Open: off-screen hits (terrain surface

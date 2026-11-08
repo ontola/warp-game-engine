@@ -135,13 +135,47 @@ unless the scene also opts in; paged foliage sun is a mutually exclusive mode. S
 (`terrain_fly`) get a camera-anchored far map by default, and the forest has
 its own shadow tile cache that only redraws tiles whose casters changed.
 
+### Clustered local lights
+
+Opt-in with `Graphics::clustered_lights` or `KERN_CLUSTERED_LIGHTS=1`
+(off by default until checked on more GPUs). `Renderer::set_clustered_lights`
+takes up to 1024 lights a frame, each a `LocalLight` (the same model as
+`set_local_lights`) with an optional `LightShadow { id, exclude }`. They add
+to the headlights and local lights, which still work.
+
+- Binning: a compute pass sorts the lights into a world-space grid of at
+  most 16384 roughly cubic cells, fitted around the lights and clipped to
+  600 m around the cameras. Each cell keeps its first 62 lights in the
+  order given, so put the important ones first. Shade loops over its
+  pixel's cell only.
+- Shadows: 256-texel tiles in extra layers of the headlights' shadow array
+  (`KERN_CLUSTERED_SHADOW_LAYERS`, 4 layers, 64 tiles by default). A spot
+  light up to a 120 degree cone takes one tile, anything wider six (a cube).
+  The lights nearest a camera, relative to their range, get tiles; the rest
+  stay unshadowed (`clustered_light_stats().dropped_shadows`). A tile keeps
+  its depth while its light keeps its `id` and does not move: moved lights
+  redraw first, then the oldest tiles, at most
+  `KERN_CLUSTERED_SHADOW_FACES` (12) a frame, so a caster that moves past a
+  still lamp is a few frames late. `exclude` names the lamp's own
+  instances. 4-tap filtered, no soft penumbra yet.
+- Cost: the light records, shadow faces and cells live in the scene tables
+  buffer (shade stays at 8 storage buffers); a uniform in bind group 2 holds
+  the grid. Off, shade compiles none of it. Grass and opaque surfaces get
+  the lights; transparency, volumetric light and the forward renderer do
+  not yet.
+- Probe: `cargo run --release -p render --example clustered_lights_probe --
+  --out DIR` (400 lamps over a plaza of pillars, 24 shadowed).
+- Spellstorm uses it with `KERN_CLUSTERED_LIGHTS=1`: every lamp, staff,
+  shrine and spell light, lamps shadowed.
+
 ### Everything else
 
 - Physical units: sun and sky in lux, exposure in EV100, emissive
   materials in nits. `Lighting::default()` is a sunny day.
 - Sun shadows, plus shadowed spot lights for headlights; up to 32
   unshadowed point or spot lights per frame (`set_local_lights`), with a
-  `falloff` exponent.
+  `falloff` exponent. Opt-in: up to 1024 clustered lights, some shadowed
+  (below).
 - A procedural atmosphere bake: Rayleigh and aerosol Mie single scattering
   with ozone absorption on a spherical planet, supplying both the
   background and SH9 sky lighting. No clouds, moon or visible sun disc.

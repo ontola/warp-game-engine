@@ -6,7 +6,8 @@
 //! triangles start in the topology buffer, topology.rs; where the copied
 //! terrain hierarchy, foliage sun page table and voxel crown replacement
 //! words start), then each table packed as its GPU struct, then
-//! `Scene::aux`, the voxel crown replacement words, then the copies. Read in WGSL through `material(i)`, `car_material(i)`,
+//! `Scene::aux`, the voxel crown replacement words, then the copies, then the
+//! clustered light arena. Read in WGSL through `material(i)`, `car_material(i)`,
 //! `solid_occluder(i)` and `aux_word(i)` (shade.wgsl, car_material.wgsl).
 use crate::scene::{GpuCarMaterial, GpuSolidOccluder, Material};
 use crate::Gpu;
@@ -24,10 +25,13 @@ pub(crate) struct SceneTables {
     /// Byte offsets of the copied terrain hierarchy and foliage sun page table.
     pub terrain: u64,
     pub sun: u64,
+    /// Byte offset of the clustered light arena (clustered_lights.rs),
+    /// written each frame by the light upload and the bin pass.
+    pub clustered: u64,
 }
 
 impl SceneTables {
-    pub fn new(gpu: &Gpu, materials: &[Material], cars: &[GpuCarMaterial], solids: &[GpuSolidOccluder], aux: &[u32], replacement: &[u32], topology: [u32; 2], copies: [u64; 2]) -> Self {
+    pub fn new(gpu: &Gpu, materials: &[Material], cars: &[GpuCarMaterial], solids: &[GpuSolidOccluder], aux: &[u32], replacement: &[u32], topology: [u32; 2], copies: [u64; 3]) -> Self {
         let vec4s = |bytes: usize| (bytes / 16) as u32;
         let m = vec4s(std::mem::size_of_val(materials)).max(2);
         let c = vec4s(std::mem::size_of_val(cars));
@@ -37,7 +41,8 @@ impl SceneTables {
         let replacement_at = aux_at + aux_vec4s;
         let terrain_at = replacement_at + (replacement.len() as u32).div_ceil(4).max(1);
         let sun_at = terrain_at + (copies[0].div_ceil(16) as u32);
-        let end = sun_at + (copies[1].div_ceil(16) as u32);
+        let clustered_at = sun_at + (copies[1].div_ceil(16) as u32);
+        let end = clustered_at + (copies[2].div_ceil(16) as u32);
         let header = [HEADER, HEADER + m, HEADER + m + c, solids.len() as u32, aux_at, aux.len() as u32, topology[0], topology[1], terrain_at, sun_at, replacement_at, 0];
         let mut bytes: Vec<u8> = bytemuck::cast_slice(&header).to_vec();
         bytes.extend_from_slice(bytemuck::cast_slice(materials));
@@ -54,7 +59,7 @@ impl SceneTables {
         let buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("scene tables"), contents: &bytes,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST });
         SceneTables { buffer, materials: 16 * u64::from(HEADER), cars: 16 * u64::from(HEADER + m), aux: 16 * u64::from(aux_at), aux_words: aux.len(),
-            terrain: 16 * u64::from(terrain_at), sun: 16 * u64::from(sun_at) }
+            terrain: 16 * u64::from(terrain_at), sun: 16 * u64::from(sun_at), clustered: 16 * u64::from(clustered_at) }
     }
 
     pub fn write_materials(&self, gpu: &Gpu, first: usize, materials: &[Material]) {
