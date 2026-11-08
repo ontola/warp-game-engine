@@ -29,7 +29,7 @@ struct Light {
     anim: vec4<f32>,        // x: seconds for animated procedural materials, y: emission scale, z: radiance shown as white
     fog_sampling: vec4<f32>, // x: sequence phase, y: temporal accumulation enabled, z: diffuse room return (lux), w: water optics (Lighting::water)
     near_levels_view_proj: array<mat4x4<f32>, 7>, // sun clipmap levels 1..7 (frame.rs near_levels)
-    near_levels: vec4<f32>, // x: levels drawn, y: one clipmap (the shared map is its outermost level)
+    near_levels: vec4<f32>, // x: levels drawn, y: one clipmap (the shared map is its outermost level), z: first level (clipmap_base)
     clouds: vec4<f32>,       // cloud layer (cloud_weather.wgsl): coverage, base m, thickness m, extinction per m
     cloud_motion: vec4<f32>, // wind offset xz m, shadow strength, enabled
 };
@@ -1781,7 +1781,9 @@ fn sun_voxel_cell(p: vec3<f32>) -> f32 {
     let levels = select(0, i32(light.near_levels.x), light.near_shadow.z > 0.5);
     for (var k = 0; k < levels; k++) {
         if near_level_weight(k, p) > 0.5 {
-            return 0.25 * pow(1.41421356, f32(k)) * select(1.0, 1.42, k >= 3);
+            // near_levels.z: the clipmap's first level (frame.rs clipmap_base).
+            let level = k + i32(light.near_levels.z);
+            return 0.25 * pow(1.41421356, f32(level)) * select(1.0, 1.42, level >= 3);
         }
     }
     return 0.5;
