@@ -72,3 +72,12 @@ default wind is 4 m/s along x and 1.5 m/s along z, the per-pixel jitter
 advances by the golden ratio each frame instead of being new white noise,
 and the march towards the sun is jittered too (fixed sample points can band
 the self-shadow under a large cloud into steps).
+
+Joep then reported that the clouds jumped up and down (Mancave, DLSS,
+about 26 fps). The pass traced its rays with the jittered projection the
+depth buffer was drawn with, but it runs after TAA/DLSS have removed that
+jitter, so the clouds hopped by the sub-pixel jitter every frame (by
+several output pixels under DLSS). Rays and the cloud history now use the
+unjittered view-projection; only depth reconstruction uses the jittered
+one. Same dump with still clouds (native TAA, lavapipe): mean change per
+frame in the sky 0.153 → 0.054 of 255.
