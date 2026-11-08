@@ -367,9 +367,10 @@ impl Transparency {
             ),
             (
                 15,
+                // The near sun clipmap levels (shade.wgsl near_shadow_tex).
                 texture(
                     wgpu::TextureSampleType::Depth,
-                    wgpu::TextureViewDimension::D2,
+                    wgpu::TextureViewDimension::D2Array,
                 ),
             ),
         ];
