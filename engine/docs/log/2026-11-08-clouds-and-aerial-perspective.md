@@ -108,3 +108,13 @@ frame and clips history to mean ± 1.25σ of the neighbourhood, blend 0.1.
 rows: frame-to-frame jerk 1.16 → 0.77 of 255. The band was the bake's ground
 between elevation 0 and the true horizon (1.4° lower from 1.9 km); the
 background now takes the horizon sky down to the true horizon.
+
+Joep then saw the clouds break into blocks, worse the farther he flew from
+the start. The view rays came from a world-space inverse view-projection
+(near-plane point minus the camera): 120 km out, f32 rounding of those two
+large numbers quantised the ray direction into steps of several pixels.
+The three matrices are now camera-relative and built in f64 on the CPU.
+`--at -18802,122313,10,0.6,0.45` showed the blocks on lavapipe and is clean
+with the fix. The bake's ground below the true horizon (seen from a few km
+up) is now hazed towards the horizon sky in shade.wgsl by the distance to
+the planet, instead of by the 80 km aerial-perspective volume.
