@@ -95,6 +95,7 @@ pub mod radiance_cache_gpu;
 pub mod headlights;
 pub mod clustered_lights;
 pub mod volumetric;
+pub mod sky_volume;
 pub mod exhaust;
 pub mod wheel_particles;
 pub mod tracks;

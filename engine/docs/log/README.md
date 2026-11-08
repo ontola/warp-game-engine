@@ -52,6 +52,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [terrain_fly in a browser (wasm, WebGPU): feasibility, 5 November](2026-11-05-browser-feasibility.md)
 - [Shading without local lights, 5 November](2026-11-05-shade-without-local-lights.md)
 - [Land shading costs, 6 November](2026-11-06-land-shading-costs.md)
+- [Clouds, multiple scattering and aerial perspective, 8 November](2026-11-08-clouds-and-aerial-perspective.md)
 
 ## Traversal and work avoidance
 

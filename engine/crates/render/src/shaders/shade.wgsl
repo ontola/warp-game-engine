@@ -30,6 +30,8 @@ struct Light {
     fog_sampling: vec4<f32>, // x: sequence phase, y: temporal accumulation enabled, z: diffuse room return (lux)
     near_levels_view_proj: array<mat4x4<f32>, 3>, // sun clipmap levels 1..3 (frame.rs near_levels)
     near_levels: vec4<f32>, // x: levels drawn
+    clouds: vec4<f32>,       // cloud layer (cloud_weather.wgsl): coverage, base m, thickness m, extinction per m
+    cloud_motion: vec4<f32>, // wind offset xz m, shadow strength, enabled
 };
 
 struct Cluster {
@@ -372,6 +374,7 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     // a texel of bias they barely shade a crown) voxel crowns caught ~1.4x
     // the sun of the same tree as a mesh (Mancave tree series, 6 November).
     var shadow = mix(1.0, others * mix(own, own * own, outside), light.sun_color.w);
+    shadow *= cloud_sun_transmittance(p, l, light.clouds, light.cloud_motion);
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow;
     // Sky reaches a cell through its own crown too. sky_visibility only sees
     // what lies past the lift, so inner cells lit as if under open sky and
@@ -2937,6 +2940,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         shadow = mix(1.0, s_map, light.sun_color.w);
     }
     if FEATURE_GRASS_SHADE && shadow > 0.0 && (m.flags & 70u) != 0u {shadow*=mix(1.0,grass_sun_transmittance_receiver(p,l,(m.flags & 2u)!=0u),light.sun_color.w);}
+    // Cloud shadows (sky_volume): the same weather field the clouds are drawn from.
+    shadow *= cloud_sun_transmittance(p, l, light.clouds, light.cloud_motion);
     // Base layer: Lambert plus GGX, metals tint their reflection.
     let v = -dir;
     let ndv = max(dot(n, v), 1e-4);
