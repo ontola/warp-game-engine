@@ -620,6 +620,12 @@ fn fast_scale(roles:u32)->f32 {
  if (roles&256u)!=0u {return max(fast_scale_word(79u),CAMERA_CUT_FLOOR);}
  return fast_scale_word(78u);
 }
+// The camera's step from voxels to source leaves has its own scale
+// (state[85], kept across encodes), never finer than the voxel cut: when
+// source clusters bind, only that step coarsens and the voxel levels stay
+// at the voxel cut (one shared scale gave the whole forest ~13 px voxels
+// to keep about 25 trees in source, Joep 7 November).
+fn fast_source_scale()->f32 {return max(fast_scale_word(85u),fast_scale(256u));}
 // Shadow consumers may hold at most a quarter of the branch slots (state[81]
 // counts theirs): grass shadows otherwise took 78% of slots from the camera.
 fn fast_shadow_slots()->u32 {return limits().x/4u;}
@@ -687,12 +693,17 @@ fn fast_set_args(count:u32) {
  }
  // Missing pages keep the complete parent; ready() has requested them.
  if !resident {atomicAdd(&state[73],1u);publish(task);return;}
+ // Into source leaves only past the coarser source cut.
+ if (task.z&256u)!=0u && source_leaves && task.y!=NONE && (n.links.w&1u)==0u && scale.x<1e29 {
+  let s=fast_source_scale();
+  if scale.x*n.error.x<=view.pixels.z*s && scale.x*n.error.y<=s {publish(task);return;}
+ }
  // Shadows stay voxel: source leaves in shadow maps cost hundreds of
  // millions of triangles (hill view) that no slot or splat cap measures.
  if (task.z&256u)==0u && source_leaves {publish(task);return;}
  let old=work(task.x,task.y,task.z);
  let shadow=(task.z&256u)==0u;
- if !fast_reserve(replacement-min(replacement,old),shadow) {atomicAdd(&state[17],1u);atomicAdd(&state[select(75u,76u,(task.z&256u)!=0u)],1u);publish(task);return;}
+ if !fast_reserve(replacement-min(replacement,old),shadow) {atomicAdd(&state[17],1u);atomicAdd(&state[select(select(75u,76u,(task.z&256u)!=0u),86u,!shadow && source_leaves)],1u);publish(task);return;}
  let offset=atomicAdd(&state[7],branching);let capacity=arrayLength(&next);
  if offset>capacity || branching>capacity-offset {
   // Queue overflow: keep the parent and blank the claimed in-range entries.
@@ -729,13 +740,20 @@ fn fast_set_args(count:u32) {
  let f=vec4<f32>(used)/vec4<f32>(cap);
  // Slots and source work are shared; splats are per class (y camera, z shadow).
  let shadow_slots=f32(atomicLoad(&state[81]))/f32(max(fast_shadow_slots(),1u));
- let fills=vec2<f32>(max(max(f.x,f.y),f.w),max(max(shadow_slots,f.z),f.w));
+ // Source clusters drive the camera's source scale alone (state[85]).
+ let fills=vec2<f32>(max(f.x,f.y),max(max(shadow_slots,f.z),f.w));
  for(var c=0u;c<2u;c++) {
   let word=79u-c;var s=fast_scale_word(word);
   let blocked=atomicLoad(&state[76u-c])!=0u;
   if blocked || fills[c]>0.92 {s=s*1.06;}
   else if fills[c]<0.85 {s=max(select(1.0,CAMERA_CUT_FLOOR,c==0u),s/1.02);}
   atomicStore(&state[word],bitcast<u32>(min(s,1e5)));
+ }
+ {
+  var s=fast_scale_word(85u);let floor=fast_scale(256u);
+  if atomicLoad(&state[86])!=0u || f.w>0.92 {s=max(s,floor)*1.06;}
+  else if f.w<0.85 {s=s/1.02;}
+  atomicStore(&state[85],bitcast<u32>(clamp(s,floor,1e5)));
  }
  atomicStore(&state[74],bitcast<u32>(fills.x));atomicStore(&state[77],bitcast<u32>(fills.y));
 }
