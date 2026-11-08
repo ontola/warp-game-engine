@@ -236,18 +236,24 @@ struct NearShadow {
 struct Upscaling {
     mode: crate::upscale::UpscaleMode,
     backend: Option<crate::dlss::DlssContext>,
+    /// The portable upscaler, for the `temporal-*` modes.
+    portable: Option<crate::temporal_upscale::TemporalUpscaler>,
     motion: Option<crate::motion::MotionRenderer>,
     status: crate::upscale::UpscaleStatus,
     layout: Vec<(u32, u32, u32, u32)>,
-    /// Bounded per-view temporal guard. A source/volume or selected-mip change
-    /// resets that whole view initially, not a claim of mature streaming history.
-    foliage_selection: Vec<Vec<u32>>,
 }
 
-fn update_foliage_history(previous:&mut Vec<u32>,current:&[u32])->bool {
-    if previous.as_slice()==current {return false;}
-    previous.clear();previous.extend_from_slice(current);true
+impl Upscaling {
+    /// Render size of one view with this output size.
+    fn render_size(&mut self, output: (u32, u32)) -> Result<(u32, u32), String> {
+        if let Some(size) = self.mode.portable_size(output) { return Ok(size); }
+        match &mut self.backend {
+            Some(backend) => backend.optimal_size(self.mode, output),
+            None => Ok(output),
+        }
+    }
 }
+
 
 fn timestamp_pair(next: &mut u32) -> u32 {
     assert!(*next <= TIMESTAMP_CAPACITY - 2, "frame exceeds timestamp query capacity");
@@ -1030,6 +1036,8 @@ pub struct Renderer {
     aggregate_lod_enabled: std::sync::atomic::AtomicBool,
     baked_animations: Option<crate::baked_animation::AnimationRenderer>,
     skinning: Option<crate::skinning::SkinningRenderer>,
+    /// Topology, cluster table and skinned actor ranges for skinned motion.
+    motion_geometry: (crate::topology::Topology, wgpu::Buffer, Vec<[u32; 3]>),
     debris: Option<crate::debris::DebrisRenderer>,
     procedural_terrain: Option<crate::procedural_terrain::TerrainRenderer>,
     crowd: Option<crate::crowd::CrowdRenderer>,
@@ -2430,6 +2438,8 @@ impl Renderer {
             aggregate_lod_enabled: std::sync::atomic::AtomicBool::new(true),
             baked_animations,
             skinning,
+            motion_geometry: (topology.clone(), clusters.clone(),
+                scene.skinning.actors.iter().map(|a| [a.owner, a.first_vertex, a.vertex_count]).collect()),
             debris,
             procedural_terrain,
             crowd,
@@ -3424,8 +3434,8 @@ impl Renderer {
         self.foliage_planners.lock().unwrap().clear();
         let mut up = self.upscaling.lock().unwrap();
         if let Some(motion) = &up.motion { motion.reset(); }
+        if let Some(portable) = &mut up.portable { portable.reset(); }
         up.layout.clear();
-        up.foliage_selection.clear();
     }
 
     /// Restart subpixel sampling for a deterministic stationary A/B capture.
@@ -3468,17 +3478,27 @@ impl Renderer {
             *up = Upscaling::default();
         } else {
             // Initialize everything before committing a requested mode.
-            let backend = crate::dlss::DlssContext::new(gpu)?;
-            let motion = crate::motion::MotionRenderer::new(gpu, &self.instance_buffer, self.wind.buffer(), self.instances as usize)?;
+            let (backend, portable) = if mode.is_dlss() {
+                (Some(crate::dlss::DlssContext::new(gpu)?), None)
+            } else {
+                (None, Some(crate::temporal_upscale::TemporalUpscaler::new(gpu)?))
+            };
+            let motion = self.motion_renderer(gpu)?;
             if let Some(forest)=&self.voxel_forest {forest.prepare_temporal(gpu)?;}
-            *up = Upscaling { mode, backend: Some(backend), motion: Some(motion),
-                status: crate::upscale::UpscaleStatus { mode, views: Vec::new() }, layout: Vec::new(),foliage_selection:Vec::new() };
+            *up = Upscaling { mode, backend, portable, motion: Some(motion),
+                status: crate::upscale::UpscaleStatus { mode, views: Vec::new() }, layout: Vec::new() };
         }
         if let Some(forest)=&self.voxel_forest {forest.reset_targets();}
         drop(up);
         self.history.lock().unwrap().clear();
         gpu.persist_pipeline_cache();
         Ok(())
+    }
+
+    fn motion_renderer(&self, gpu: &Gpu) -> Result<crate::motion::MotionRenderer, String> {
+        let (topology, clusters, skinned) = &self.motion_geometry;
+        crate::motion::MotionRenderer::with_geometry(gpu, &self.instance_buffer, self.wind.buffer(), self.instances as usize,
+            Some(crate::motion::Geometry { topology, clusters, skinned }))
     }
 
     pub fn upscale_status(&self) -> crate::upscale::UpscaleStatus {
@@ -4194,7 +4214,7 @@ impl Renderer {
         // TAA reprojects with these per-pixel vectors too: wind-blown trees
         // otherwise lose their history every frame and shimmer.
         if (blur.is_some() || (light.taa > 0.5 && !dlss_on)) && up.motion.is_none() {
-            up.motion=Some(crate::motion::MotionRenderer::new(gpu,&self.instance_buffer,self.wind.buffer(),self.instances as usize)?);
+            up.motion=Some(self.motion_renderer(gpu)?);
             // Voxel trees write their motion layer from here on (as for DLSS).
             // Where the device's binding limits allow its temporal pipelines;
             // otherwise voxel pixels reproject with the surface behind them.
@@ -4213,9 +4233,8 @@ impl Renderer {
         let layout_changed = up.layout != view_layout;
         if layout_changed {
             if let Some(motion) = &up.motion { motion.reset(); }
-            up.foliage_selection.clear();
+            if let Some(portable) = &mut up.portable { portable.reset(); }
         }
-        up.foliage_selection.resize_with(views.len(),Vec::new);
         let mut upscale_views = Vec::with_capacity(views.len());
         // TAA: this frame's sub-pixel offset and alpha-test threshold.
         let frame = self.frame.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -4305,8 +4324,7 @@ impl Renderer {
         if (self.part_wind_lod && self.part_wind.is_some()) || self.gpu_forest.is_some() {
             use crate::part_wind::AnimationView;
             for (vi,view) in views.iter().enumerate() {
-                let (w,h)=if let Some(backend)=&mut up.backend {backend.optimal_size(mode,(view.w,view.h))?}
-                    else {(view.w,view.h)};
+                let (w,h)=up.render_size((view.w,view.h))?;
                 let mut projection=camera_projections.get(vi).copied().unwrap_or_else(|| Mat4::perspective_infinite_reverse_rh(view.cam.fov_y,view.w as f32/view.h as f32,view.cam.near));
                 projection.z_axis.x+=jx*2.0/w as f32;projection.z_axis.y+=jy*2.0/h as f32;
                 part_animation_views.push(AnimationView {
@@ -4606,7 +4624,7 @@ impl Renderer {
             let seed=self.foliage_seed_depth.as_ref().unwrap();
             let mut seed_targets=seed.targets.lock().unwrap();
             for (vi,v) in views.iter().enumerate() {
-                let size=if let Some(backend)=&mut up.backend {backend.optimal_size(mode,(v.w,v.h))?}else{(v.w,v.h)};
+                let size=up.render_size((v.w,v.h))?;
                 if seed_targets.len()<=vi || seed_targets[vi].pyramid.size!=size {
                     let texture=|format|gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("foliage current terrain seed"),size:wgpu::Extent3d {width:size.0,height:size.1,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]}).create_view(&Default::default());
                     let t=FoliageSeedTarget {targets:self.view_targets_capacity(gpu,"foliage seed view",8192,true,false),depth:texture(wgpu::TextureFormat::Depth32Float),color:texture(wgpu::TextureFormat::R32Uint),pyramid:seed.pyramid.target(gpu,size)};
@@ -4676,7 +4694,7 @@ impl Renderer {
             }}
             let mut cameras=Vec::new();let mut extra=Vec::new();
             for (vi,v) in views.iter().enumerate() {
-                let (w,h)=if let Some(backend)=&mut up.backend {backend.optimal_size(mode,(v.w,v.h))?}else{(v.w,v.h)};
+                let (w,h)=up.render_size((v.w,v.h))?;
                 let mut proj=camera_projections.get(vi).copied().unwrap_or_else(|| Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near));
                 proj.z_axis.x+=jx*2.0/w as f32;proj.z_axis.y+=jy*2.0/h as f32;
                 let vp=proj*camera_view(v.cam,camera_up_axes.get(vi).copied());
@@ -4885,9 +4903,7 @@ impl Renderer {
         for (vi, view) in views.iter().enumerate() {
             let resources = &mut frame_resources[vi];
             let timing_start = names.len();
-            let (w, h) = if let Some(backend) = &mut up.backend {
-                backend.optimal_size(mode, (view.w, view.h))?
-            } else { (view.w, view.h) };
+            let (w, h) = up.render_size((view.w, view.h))?;
             let cam = &view.cam;
             upscale_views.push(crate::upscale::UpscaleViewStatus { input: [w, h], output: [view.w, view.h] });
             let receivers = if self.legacy_light_lookahead { vec![cam.pos,cam.target,ahead(cam)] }
@@ -5055,7 +5071,6 @@ impl Renderer {
             jittered.z_axis.y += jy * 2.0 / h as f32;
             let main = self.view_targets(gpu, "view", vi + 1);
             if let Some((forest,_))=&self.gpu_forest {enc.copy_buffer_to_buffer(&forest.choices,0,&main.foliage_selection,0,forest.choice_table_bytes());}
-            let mut foliage_changed=false;
             if let Some(selector)=&self.aggregate_lod {
                 let time=self.query.as_ref().map(|(q,_,_)|(q,timestamp_pair(&mut ts)));
                 if time.is_some(){names.push("aggregate error selection");}
@@ -5075,7 +5090,6 @@ impl Renderer {
                     });
                 }
                 gpu.queue.write_buffer(&main.foliage_selection, 0, bytemuck::cast_slice(&selection));
-                if dlss_on {foliage_changed=update_foliage_history(&mut up.foliage_selection[vi],&selection);}
             }
             // Preserve geometry error in output pixels even at lower shading resolution.
             let px_scale = proj.y_axis.y * 0.5 * view.h as f32;
@@ -5480,7 +5494,7 @@ impl Renderer {
                 let motion = up.motion.as_ref().unwrap().render(gpu, &mut enc, vi,
                     crate::motion::MotionView { key: vi as u64, size: (w, h),
                         inverse_jittered_view_proj: vp.inverse(), view_proj: proj * view_m,
-                        camera: cam.pos, reset: layout_changed || foliage_changed, split: views.len() > 1,
+                        camera: cam.pos, reset: layout_changed, split: views.len() > 1,
                         grass_detail: self.grass_detail },
                     crate::motion::MotionInputs { opaque_depth: &depth_v, visibility: &vis_v,
                         visible: &main.visible, grass: grass_motion.as_ref(), transparency: glass_motion.as_ref(),
@@ -5510,7 +5524,17 @@ impl Renderer {
                 pass.set_pipeline(&self.taa);
                 pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
             }
-            let resolved = if dlss_on {
+            let resolved = if let Some(portable) = up.portable.as_mut() {
+                let motion=motion_output.as_ref().unwrap();
+                let time = self.query.as_ref().map(|(qs, _, _)| { names.push("temporal upscale"); (qs, timestamp_pair(&mut ts)) });
+                // Same jitter as DLSS; the shader takes where each render
+                // pixel sampled, which is opposite to how far geometry moved.
+                let exposure_state = auto_exposure.and_then(|_| self.auto_exposure.previous_state(vi));
+                portable.evaluate(gpu, &mut enc, vi, (w, h), (view.w, view.h), crate::temporal_upscale::Inputs {
+                    color: &hdr, depth: &motion.depth, motion: &motion.vectors, bias: &motion.bias,
+                    jitter: [jx, -jy], reset: motion.reset, exposure, min_blend: light.taa_blend, clip_gamma: light.taa_gamma,
+                    exposure_state: exposure_state.as_ref() }, time)?
+            } else if dlss_on {
                 let motion=motion_output.as_ref().unwrap();
                 let dlss_time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| {
                     names.push("dlss"); (qs, timestamp_pair(&mut ts))
@@ -6102,21 +6126,6 @@ mod sky_tests {
 
 #[cfg(test)]
 mod layout_tests {
-    #[test]
-    fn foliage_handoffs_reset_only_changed_views_and_not_stable_frames() {
-        let mut views=[Vec::new(),Vec::new()];
-        let pack=|s:[[u32;4];2]|s.map(crate::voxel_forest::selection_pack);
-        let source=pack([[0,0,0,0],[0,0,0,0]]);
-        let volume=pack([[1,2,0,0],[0,0,0,0]]);
-        assert!(super::update_foliage_history(&mut views[0],&source));
-        assert!(super::update_foliage_history(&mut views[1],&volume));
-        assert!(!super::update_foliage_history(&mut views[0],&source));
-        assert!(!super::update_foliage_history(&mut views[1],&volume));
-        assert!(super::update_foliage_history(&mut views[0],&volume));
-        assert!(!super::update_foliage_history(&mut views[1],&volume));
-        let coarser=pack([[1,3,0,0],[0,0,0,0]]);
-        assert!(super::update_foliage_history(&mut views[0],&coarser));
-    }
     use super::{split_rects, split_rects_with, SplitLayout, timestamp_pair, LightUniform, NEAR_SHADOW_EXTENT, NEAR_SHADOW_SIZE, TIMESTAMP_CAPACITY};
     #[test]
     fn sun_visibility_fast_path_preserves_diagnostics_and_invalid_inputs() {

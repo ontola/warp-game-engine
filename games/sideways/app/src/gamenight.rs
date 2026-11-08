@@ -470,7 +470,7 @@ pub fn settings() -> Value {
         {"key":"weather","label":"Road weather (next stage)","kind":"choice","default":"random","options":["random","clear","overcast","mist","wet"]},
         {"key":"sky_time","label":"Time of day (live)","kind":"choice","default":"noon","options":["current","sunrise","morning","noon","afternoon","sunset","night"]},
         {"key":"sky_weather","label":"Atmosphere (live)","kind":"choice","default":"clear","options":["clear","haze","mist"]},
-        {"key":"upscale","label":"Upscaling (DLSS requires supported GPU/runtime)","kind":"choice","default":"native","options":["native","dlss-quality","dlss-balanced","dlss-performance"]}
+        {"key":"upscale","label":"Upscaling (temporal works on every GPU; DLSS needs an NVIDIA GPU and runtime)","kind":"choice","default":"native","options":["native","temporal-quality","temporal-balanced","temporal-performance","dlss-quality","dlss-balanced","dlss-performance"]}
     ])
 }
 
@@ -555,7 +555,7 @@ mod tests {
         let settings=settings();
         let item=settings.as_array().unwrap().iter().find(|s|s["key"]=="upscale").unwrap();
         assert_eq!(item["kind"],"choice");assert_eq!(item["default"],"native");
-        assert_eq!(item["options"].as_array().unwrap().len(),4);
+        assert_eq!(item["options"].as_array().unwrap().len(),render::upscale::UpscaleMode::ALL.len());
         for option in item["options"].as_array().unwrap() {assert!(option.as_str().unwrap().parse::<render::upscale::UpscaleMode>().is_ok());}
     }
 
