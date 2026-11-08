@@ -296,47 +296,58 @@ fn noise(@builtin(global_invocation_id) id: vec3<u32>) {
 
 // ---- Clouds ----
 
-// Near and far ray distances (m) inside the cloud shell, first segment only.
-fn shell_segment(o: vec3<f32>, d: vec3<f32>) -> vec2<f32> {
-    let r = planet_radius() * 1000.0;
-    let inner = r + u.cloud.y;
-    let outer = inner + u.cloud.z;
-    let b = dot(o, d);
-    let c2 = dot(o, o);
-    let disc_outer = b * b - (c2 - outer * outer);
-    if disc_outer < 0.0 { return vec2<f32>(-1.0); }
-    let so = sqrt(disc_outer);
-    var t0 = max(-b - so, 0.0);
-    var t1 = -b + so;
+// Altitude (m above the datum) along a view ray, on a sphere of the
+// planet's radius: h0 + t mu + t^2 (1 - mu^2) / 2R. Kept in this form
+// (instead of |o + t d| - R with o six million metres from the centre) so
+// f32 rounding does not move the cloud layer as the camera climbs.
+fn curvature(mu: f32) -> f32 { return (1.0 - mu * mu) / (2.0 * planet_radius() * 1000.0); }
+fn altitude_along(h0: f32, mu: f32, t: f32) -> f32 { return h0 + t * (mu + t * curvature(mu)); }
+
+// Ray distances where the altitude equals h, sorted; x > y when never.
+fn altitude_roots(h0: f32, mu: f32, h: f32) -> vec2<f32> {
+    let k = curvature(mu);
+    let c = h0 - h;
+    let disc = mu * mu - 4.0 * k * c;
+    if disc < 0.0 { return vec2<f32>(1.0, -1.0); }
+    // Numerically stable quadratic roots.
+    let q = -0.5 * (mu + select(-1.0, 1.0, mu >= 0.0) * sqrt(disc));
+    if abs(q) < 1e-12 { return vec2<f32>(1.0, -1.0); }
+    let a = c / q;
+    // Straight up or down the curvature term vanishes: one crossing.
+    let b = select(-1e30 * sign(mu), q / k, k > 1e-12);
+    return vec2<f32>(min(a, b), max(a, b));
+}
+
+// Near and far ray distances (m) inside the cloud layer, first piece only.
+fn shell_segment(h0: f32, mu: f32) -> vec2<f32> {
+    let base = u.cloud.y;
+    let top = base + u.cloud.z;
+    // Below the top: between the two crossings of the top altitude.
+    let below_top = altitude_roots(h0, mu, top);
+    if below_top.x > below_top.y { return vec2<f32>(-1.0); }
+    var t0 = max(below_top.x, 0.0);
+    var t1 = below_top.y;
     if t1 <= 0.0 { return vec2<f32>(-1.0); }
-    let disc_inner = b * b - (c2 - inner * inner);
-    let radius = sqrt(c2);
-    if disc_inner >= 0.0 {
-        let si = sqrt(disc_inner);
-        let i0 = -b - si;
-        let i1 = -b + si;
-        if radius < inner {
-            // Below the layer: from leaving the inner sphere to the outer one.
-            t0 = max(i1, 0.0);
-        } else if i0 > 0.0 {
-            // In or above the layer, looking down through it: stop at the base.
-            t1 = min(t1, i0);
-        }
+    // Above the base: outside the two crossings of the base altitude.
+    let below_base = altitude_roots(h0, mu, base);
+    if below_base.x <= below_base.y {
+        if below_base.x > t0 { t1 = min(t1, below_base.x); }
+        else { t0 = max(t0, below_base.y); }
     }
     // The planet hides what is below the horizon.
-    let disc_ground = b * b - (c2 - r * r);
-    if disc_ground >= 0.0 && -b - sqrt(disc_ground) > 0.0 { t1 = min(t1, -b - sqrt(disc_ground)); }
+    let ground = altitude_roots(h0, mu, 0.0);
+    if ground.x <= ground.y && ground.x > 0.0 { t1 = min(t1, ground.x); }
     if t1 <= t0 { return vec2<f32>(-1.0); }
     return vec2<f32>(t0, t1);
 }
 
-fn height_fraction(p: vec3<f32>) -> f32 {
-    return clamp((length(p) - planet_radius() * 1000.0 - u.cloud.y) / u.cloud.z, 0.0, 1.0);
+fn height_fraction(altitude: f32) -> f32 {
+    return clamp((altitude - u.cloud.y) / u.cloud.z, 0.0, 1.0);
 }
 
-// Extinction per m at planet position p (m), world position world (m).
-fn cloud_density(p: vec3<f32>, world: vec3<f32>, cheap: bool) -> f32 {
-    let h = height_fraction(p);
+// Extinction per m at `altitude` (m), world position world (m).
+fn cloud_density(altitude: f32, world: vec3<f32>, cheap: bool) -> f32 {
+    let h = height_fraction(altitude);
     let w = cloud_weather(world.xz + u.cloud_motion.xy, u.cloud.x);
     if w <= 0.0 { return 0.0; }
     // Cumulus-like profile: a flat-ish base, rounded tops that reach higher
@@ -386,8 +397,8 @@ fn clouds(@builtin(global_invocation_id) id: vec3<u32>) {
     let d = view_ray(uv);
     var tmax = u.extent.z * 1000.0;
     if depth > 0.0 { tmax = min(tmax, scene_distance(uv, depth)); }
-    let o = vec3<f32>(0.0, planet_radius() * 1000.0 + u.camera.y, 0.0);
-    let seg = shell_segment(o, d);
+    let h0 = u.camera.y;
+    let seg = shell_segment(h0, d.y);
     var result = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     var front = NO_CLOUD_KM;
     if seg.y > 0.0 && seg.x < tmax {
@@ -408,9 +419,9 @@ fn clouds(@builtin(global_invocation_id) id: vec3<u32>) {
         for (var i = 0u; i < steps; i++) {
             if transmittance < 0.01 { break; }
             let t = t0 + (f32(i) + jitter) * dt;
-            let p = o + d * t;
+            let altitude = altitude_along(h0, d.y, t);
             let world = u.camera.xyz + d * t;
-            let sigma = cloud_density(p, world, false);
+            let sigma = cloud_density(altitude, world, false);
             if sigma <= 0.0 { continue; }
             // Sun through the cloud: growing steps towards the sun.
             var tau = 0.0;
@@ -420,12 +431,12 @@ fn clouds(@builtin(global_invocation_id) id: vec3<u32>) {
                 // Jittered like the view march: fixed sample points band the
                 // self-shadow into steps under a big cloud.
                 let q = reach + step_len * jitter;
-                tau += cloud_density(p + l * q, world + l * q, true) * step_len;
+                tau += cloud_density(altitude_along(altitude, l.y, q), world + l * q, true) * step_len;
                 reach += step_len;
                 step_len *= 2.0;
             }
-            let h = height_fraction(p);
-            let pk = p * 0.001;
+            let h = height_fraction(altitude);
+            let pk = vec3<f32>(0.0, planet_radius() + max(altitude, 1.0) * 0.001, 0.0);
             let sun = u.solar.rgb * transmittance_to_sun(pk, l);
             // Octaves of multiple scattering (Wrenninge): each less
             // attenuated and less forward than the last.
@@ -489,7 +500,7 @@ fn cloud_resolve(@builtin(global_invocation_id) id: vec3<u32>) {
             let prev = vec2<f32>(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
             if all(prev >= vec2<f32>(0.0)) && all(prev <= vec2<f32>(1.0)) {
                 let history = clamp(textureSampleLevel(history_in, clamp_samp, prev, 0.0), lo, hi);
-                out = mix(history, current, 0.12);
+                out = mix(history, current, 0.06);
             }
         }
     }
