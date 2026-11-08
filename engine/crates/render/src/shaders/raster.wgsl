@@ -89,6 +89,30 @@ fn material(i: u32) -> Material {
 @group(0) @binding(6) var albedo: texture_2d_array<f32>;
 @group(0) @binding(7) var samp: sampler;
 @group(0) @binding(10) var plant_samp: sampler;
+
+// Material extension in the scene tables from vec4 2.w (material_maps.rs):
+// a header (layer maps at, material layers at, their counts), per texture
+// layer x: 1 + its material map layer in normal_tex (0: none), y/z: least
+// resident albedo/normal LOD while textures stream; per material x: wet,
+// snow, moss and porosity as bytes.
+fn layer_map(layer: i32) -> vec4<u32> {
+    let h = scene_tables[scene_tables[2].w];
+    if layer < 0 || u32(layer) >= h.z { return vec4<u32>(0u); }
+    return scene_tables[h.x + u32(layer)];
+}
+fn albedo_lod_floor(layer: i32) -> f32 { return bitcast<f32>(layer_map(layer).y); }
+fn normal_lod_floor(layer: i32) -> f32 { return bitcast<f32>(layer_map(layer).z); }
+// Scale for texture gradients so a sample never reads below LOD `floor`
+// (mips that have not streamed in): measured on the shorter gradient,
+// which bounds the LOD anisotropic filtering picks from below.
+fn lod_floor_scale(gx: vec2<f32>, gy: vec2<f32>, size: f32, floor: f32) -> f32 {
+    if floor <= 0.0 { return 1.0; }
+    let minor = max(min(length(gx), length(gy)) * size, 1e-8);
+    return exp2(max(floor - log2(minor), 0.0));
+}
+fn albedo_grad(layer: i32, gx: vec2<f32>, gy: vec2<f32>) -> f32 {
+    return lod_floor_scale(gx, gy, f32(textureDimensions(albedo).x), albedo_lod_floor(layer));
+}
 // Voxel crown replacement words in the scene tables, from vec4 2.z.
 fn voxel_replacement_at(i: u32) -> u32 {
     let v = scene_tables[scene_tables[2].z + (i >> 2u)];
@@ -209,9 +233,11 @@ fn alpha_cut(in: VOut) -> bool {
         let dy = dy * sharp;
         var a: f32;
         if (m.flags & 64u) != 0u {
-            a = textureSampleGrad(albedo, plant_samp, in.uv, m.layer, dx, dy).a;
+            let k = albedo_grad(m.layer, dx, dy);
+            a = textureSampleGrad(albedo, plant_samp, in.uv, m.layer, dx * k, dy * k).a;
         } else {
-            a = textureSampleGrad(albedo, samp, in.uv, m.layer, dx, dy).a;
+            let k = albedo_grad(m.layer, dx, dy);
+            a = textureSampleGrad(albedo, samp, in.uv, m.layer, dx * k, dy * k).a;
         }
         // Grass density is a world-cell decision, not screen-space noise.
         // Keep its photo silhouette threshold fixed while TAA jitters geometry.

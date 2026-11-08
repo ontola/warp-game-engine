@@ -41,6 +41,7 @@ and session notes are in the [development log](log/README.md).
 | [Networking](networking.md) | Host and clients over iroh, and Growing Guns' host-authoritative play. |
 | [Physics](physics.md) | `kern::collide` for characters and levels, the Rapier-based `physics` crate. |
 | [Rendering overview](rendering.md) | Clusters, occlusion, visibility buffer, lighting, content systems, and where performance stands. |
+| [Materials and textures](materials.md) | Material maps, wet/snow/moss weathering, a game's own surfaces, BC7 compression and texture streaming. |
 | [Renderer switches](renderer-switches.md) | Every `KERN_*` variable the renderer reads, its default, and which are experiments. |
 | [Procedural terrain](terrain.md) | The height function and its GPU copy, LOD patches, water, constraints, forest field and placement. |
 | [Terrain regions](terrain-regions.md) | Several kinds of land in one world. |

@@ -36,7 +36,14 @@ impl Settings {
 pub(crate) struct Key([u8;32]);
 impl Key {
     fn filename(self)->String {self.0.iter().map(|b|format!("{b:02x}")).collect::<String>()+".mips"}
+    /// A key for data derived from this entry's mips (compressed blocks),
+    /// told apart by `tag` (the encoding and its settings).
+    pub fn derived(self,tag:&[u8])->Key {
+        let mut h=Sha256::new();h.update(b"warp-derived-texture");h.update(self.0);h.update(tag);Key(h.finalize().into())
+    }
 }
+
+const BLOCKS_MAGIC:&[u8;8]=b"WRPBLK01";
 
 pub(crate) struct Cache { directory:Option<PathBuf> }
 impl Cache {
@@ -82,6 +89,39 @@ impl Cache {
         let result=write_entry(directory,key,settings,chain,profile,stats);
         stats.write_cpu_ms+=(elapsed(start)-(stats.hash_cpu_ms-hash_before)).max(0.);
         if result.is_err(){stats.write_errors+=1;}
+    }
+}
+
+impl Cache {
+    /// Compressed blocks stored under a derived key: exactly `bytes` long,
+    /// checked like a mip entry. Any failure is a miss.
+    pub fn load_blocks(&self,key:Key,bytes:usize)->Option<Vec<u8>> {
+        let directory=self.directory.as_ref()?;
+        let mut file=File::open(directory.join(key.filename())).ok()?;
+        if file.metadata().ok()?.len()!=HEADER_BYTES+bytes as u64 {return None;}
+        let mut header=[0u8;HEADER_BYTES as usize];file.read_exact(&mut header).ok()?;
+        if &header[..8]!=BLOCKS_MAGIC || header[8..40]!=key.0 || u64::from_le_bytes(header[40..48].try_into().unwrap())!=bytes as u64 {return None;}
+        let mut data=vec![0u8;bytes];file.read_exact(&mut data).ok()?;
+        let actual:[u8;32]=Sha256::digest(&data).into();
+        (header[48..80]==actual).then_some(data)
+    }
+
+    pub fn store_blocks(&self,key:Key,data:&[u8]) {
+        let Some(directory)=self.directory.as_ref() else{return;};
+        let _=(||->io::Result<()> {
+            fs::create_dir_all(directory)?;
+            let serial=TEMP_SERIAL.fetch_add(1,Ordering::Relaxed);
+            let time=SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+            let temporary=directory.join(format!(".{}.{}.{}.{}.tmp",key.filename(),std::process::id(),time,serial));
+            let result=(||{
+                let mut writer=BufWriter::new(OpenOptions::new().write(true).create_new(true).open(&temporary)?);
+                writer.write_all(BLOCKS_MAGIC)?;writer.write_all(&key.0)?;writer.write_all(&(data.len()as u64).to_le_bytes())?;
+                writer.write_all(&<[u8;32]>::from(Sha256::digest(data)))?;writer.write_all(data)?;writer.flush()?;drop(writer);
+                fs::rename(&temporary,directory.join(key.filename()))
+            })();
+            if result.is_err(){let _=fs::remove_file(&temporary);}
+            result
+        })();
     }
 }
 
@@ -220,6 +260,17 @@ mod tests {
         std::thread::scope(|scope| {for _ in 0..8 {scope.spawn(|| {let mut stats=TextureCacheProfile::default();cache.store(key,settings,&chain,false,&mut stats);assert_eq!(stats.write_errors,0);});}});
         let mut stats=TextureCacheProfile::default();assert_eq!(cache.load(Some(&src),settings,false,&mut stats).0.unwrap(),chain);
         assert_eq!(fs::read_dir(&dir.0).unwrap().count(),1);
+    }
+    #[test]
+    fn texture_cache_blocks_round_trip_and_reject_damage() {
+        let dir=TestDir::new();let cache=Cache{directory:Some(dir.0.clone())};
+        let key=key(Some(&source()),settings(),algorithm_fingerprint()).derived(b"bc7");
+        assert!(cache.load_blocks(key,64).is_none());
+        let data:Vec<u8>=(0..64).collect();cache.store_blocks(key,&data);
+        assert_eq!(cache.load_blocks(key,64).unwrap(),data);assert!(cache.load_blocks(key,48).is_none());
+        let path=dir.0.join(key.filename());let mut bytes=fs::read(&path).unwrap();bytes[100]^=1;fs::write(&path,bytes).unwrap();
+        assert!(cache.load_blocks(key,64).is_none());
+        assert_ne!(key,key.derived(b"other"));
     }
     #[test]
     fn texture_cache_disabled_or_unwritable_does_not_require_cached_data() {

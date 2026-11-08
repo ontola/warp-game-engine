@@ -219,7 +219,7 @@ mod tests {
         let part=[Part{vertices:&vertices,indices:&[0,1,2,1,3,2],material:0}];
         let mat=[Material{flags:ALPHA_TEST|GRASS,tint:[1.0;3],layer:0,roughness:1.0,scale:1.0,metal:0.0}];
         let mut mask=image::RgbaImage::from_pixel(2,2,image::Rgba([255,255,255,255]));for y in 0..2{mask.put_pixel(0,y,image::Rgba([0,0,0,0]));}
-        let texture=[TextureSource{name:"half clear".into(),rgba:mask,normal:None}];
+        let texture=[TextureSource{name:"half clear".into(),rgba:mask,normal:None,orm:None}];
         let one=[SurfaceInstance{parts:&part,transform:Mat4::IDENTITY}];
         let two=[SurfaceInstance{parts:&part,transform:Mat4::IDENTITY},SurfaceInstance{parts:&part,transform:Mat4::from_translation(Vec3::new(0.0,0.0,-0.5))}];
         let a=bake_surfaces(layout(),&one,&mat,&texture,4,0.5).unwrap();let b=bake_surfaces(layout(),&two,&mat,&texture,4,0.5).unwrap();
@@ -248,7 +248,7 @@ mod tests {
         let source=crate::cluster::read_kmesh(&std::fs::read(fixtures.join("fir_a_near.kmesh")).unwrap()).unwrap();
         let (name,vertices,indices)=source.iter().find(|(name,_,_)|name.is_empty()).unwrap();
         assert!(name.is_empty());
-        let texture=[TextureSource{name:"authored pine source".into(),rgba:image::open(fixtures.join("foliage-shadow-fixture/authored_pine_albedo.png")).unwrap().to_rgba8(),normal:None}];
+        let texture=[TextureSource{name:"authored pine source".into(),rgba:image::open(fixtures.join("foliage-shadow-fixture/authored_pine_albedo.png")).unwrap().to_rgba8(),normal:None,orm:None}];
         let materials=[Material{flags:ALPHA_TEST,tint:[1.0;3],layer:0,roughness:1.0,scale:1.0,metal:0.0}];
         let parts=[Part{vertices,indices,material:0}];
         let instances=[SurfaceInstance{parts:&parts,transform:Mat4::IDENTITY}];

@@ -252,6 +252,8 @@ fn build(request:Request,gpu:Gpu,progress:Arc<Mutex<Progress>>,cancel:Arc<Atomic
     let mut order:Vec<_>=(0..request.seats.len()).collect();order.sort_by_key(|i|(request.seats[*i].couch.unwrap_or(1000),request.seats[*i].index));
     let positions:Vec<_>=order.iter().filter_map(|i|cams.get(*i).map(|c|c.pos)).take(request.views).collect();
     let mut built=visuals::build_live(&race.stage,&poses,&positions,&request.looks)?;
+    // The next stage is played in a window: stream its textures.
+    built.scene.texture_streaming=true;
     let tree_baseline=crate::tree_tuning::Baseline::prepare_optional_stage(&mut built.scene,&mut race.phys,request.tree_settings)?;
     record("tree_settings",crate::tree_tuning::Baseline::stage_metadata(tree_baseline.as_ref(),request.tree_settings));
     record("visuals_ms",(at.elapsed().as_secs_f64()*1000.0).into());record("visuals_breakdown",serde_json::json!(built.log));

@@ -19,6 +19,8 @@ glam = { version = "0.31", features = ["bytemuck", "serde"] }
 postcard = { version = "1", features = ["alloc"] }
 serde.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "hdr", "webp"] }
+# BC7 block compression of the texture arrays (pure Rust, CPU; texture_stream.rs).
+block_compression = { version = "0.11", default-features = false, features = ["bc7"] }
 sha2.workspace = true
 glyphon = "0.12"
 # Stroked glyph outlines for HUD text outlines (the version glyphon uses).
