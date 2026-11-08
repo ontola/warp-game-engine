@@ -60,6 +60,8 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_SHADOW_REACH` | 180 | Metres of dynamic sun shadow. |
 | `KERN_NEAR_SHADOW_LOD` | 1.0 | Scale on near shadow cluster error. |
 | `KERN_SUN_VOXEL_M` | per scene | Voxel cell size in the sun map. |
+| `KERN_SUN_LEVELS` | 4, or 7 with `KERN_SUN_CLIPMAP` | Sun clipmap levels round each camera (1 to 8; level k covers 24 m times 2^k). |
+| `KERN_SUN_STAGGER` | on | `0` redraws every clipmap level every frame. By default level 1 redraws every other frame, level 2 every fourth and the rest every eighth; with `KERN_SUN_CLIPMAP` a level also redraws when it moves. |
 | `KERN_SUN_CACHE_GUARD_METRES` | 0 | Guard band around the cached sun map (0 to 128 m). |
 | `KERN_FOLIAGE_SUN_LOD`, `KERN_FOLIAGE_SUN_PAGE_METRES` | 0.5, fine pages | Paged foliage sun (only with `KERN_PAGED_FOLIAGE_SUN=1`). |
 | `KERN_VOXEL_SELF_SHADOW_COARSER` | unset | Coarser voxel self-shadow mip. |
@@ -70,6 +72,7 @@ Use these to compare against the old path. All of them are the normal route.
 | --- | --- |
 | `KERN_CPU_SPANS=1`, `KERN_STARTUP_PROFILE=1` | CPU time per frame phase; renderer construction profile. |
 | `KERN_DIAGNOSTIC_HIDE` | Hide geometry categories in captures. |
+| `KERN_SUN_DAMAGE_REPORT=1` | Prints, every frame, how many of the 4096 tiles of each cached sun map were marked changed, and how many casters changed by snapshot row (blocking readback). |
 | `KERN_MEADOW_CAPTURE_RAW=1` | Sideways: raw meadow buffers in the capture JSON. |
 | `KERN_PORTABLE=1` | Draw with the portable renderer (`render::portable`: procedural terrain, sky and haze, three storage buffers per stage) as a device below 10 storage buffers or 20 sampled textures per stage does (`render::portable::needed`). Default off; such a device always uses it. See [Running in a browser](browser.md). |
 | `KERN_WEBGPU_LIMITS=spec`, `=browser`, `=mac` | Native device with only what a browser's WebGPU gives: the timestamp and first-instance features, and the spec's default limits (`spec`), what about 80 % of WebGPU devices offer (`browser`: 16 storage buffers and 32 sampled textures per stage, 1 GiB buffers) or `browser` with the 10 storage buffers most Macs offer (`mac`), never above the adapter. GPU errors are printed once each and do not stop the run, so one run lists every layout over the limits. For checking a [browser build](log/2026-11-05-browser-feasibility.md) without a browser. |
@@ -85,6 +88,7 @@ note linked says why. They are candidates for removal from the code.
 | `KERN_INSTANCE_GROUPS`, `KERN_SUN_INSTANCE_GROUPS`, `KERN_HEADLIGHT_INSTANCE_GROUPS` | GPU hierarchy of spatial instance groups | [r45](log/instance-hierarchy-r45.md) |
 | `KERN_CLUSTER_TRAVERSAL` | Top-down cluster traversal (`terrain_fly` turns it on unless set) | [r46](log/cluster-traversal-r46.md) |
 | `KERN_INSTANCE_BROADPHASE` | Compact colour-view instance selection | [broadphase](log/instance-broadphase.md) |
+| `KERN_SUN_CLIPMAP` | One sun shadow system for streamed GPU-forest worlds: seven cached, scrolling clipmap levels per view (24 m to 1.5 km) replace the shared map and the anchored far map ([sun shadows](rendering.md#sun-shadows)). Needs the default sun cache (not `KERN_STATIC_SUN_CACHE`). Waiting for a measurement on a real GPU. | [clipmap log](log/2026-11-08-sun-clipmap.md) |
 | `KERN_STATIC_SUN_CACHE` | Static/dynamic split sun cache | [r45](log/static-sun-cache-r45.md) |
 | `KERN_RECEIVER_SHADOW_DEMAND` | Receiver-driven shadow tiles | [r49](log/lod-shadow-demand-r49.md) |
 | `KERN_PAGED_FOLIAGE_SUN` | Paged foliage sun map (excludes the far sun map) | [world lighting](log/world-lighting.md), [distant tree light](log/distant-tree-lighting.md) |

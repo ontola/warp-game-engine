@@ -112,9 +112,13 @@ Owned by the foliage work; its working checklist is
   opt-in. **Open:** a visual check on a Windows HDR and a macOS EDR screen
   before turning them on by default; Sideways' own presenter is SDR only; no
   HDR10/PQ metadata.
-- **Open:** the edge of the near sun shadow map shows as a square from the
-  air; far shadows should be drawn once per tile rather than every frame (one
-  cached, paged sun shadow system).
+- **Opt-in one sun shadow system** (`KERN_SUN_CLIPMAP=1`, 8 November): seven
+  cached, scrolling clipmap levels per view (24 m to 1.5 km) replace the
+  shared and far maps in GPU-forest worlds; one caster history marks damaged
+  tiles in every level. **Open:** a measurement on a real GPU before it
+  becomes the default; Sideways (stage scenes, `far_sun`) and the paged
+  foliage sun still use their own maps; the GPU forest's voxel slot churn
+  dirties about half of every cached map each frame.
 
 ## Games
 
