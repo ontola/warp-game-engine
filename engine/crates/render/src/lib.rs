@@ -138,6 +138,7 @@ pub mod skinning;
 pub mod debris;
 mod direct_draw;
 pub mod fx;
+pub mod gpu_particles;
 pub mod crowd;
 pub mod motion;
 pub mod motion_blur;

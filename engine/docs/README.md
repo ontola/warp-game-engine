@@ -86,6 +86,7 @@ Vehicles and effects:
 - [Persistent tyre material marks](persistent-tyre-marks.md)
 - [Baked explosion smoke](baked-explosion-smoke.md)
 - [Adaptive explosion smoke](adaptive-explosion-smoke.md)
+- [GPU particles](gpu-particles.md)
 - [Roadside crowds prototype](roadside-crowds.md)
 
 Materials:

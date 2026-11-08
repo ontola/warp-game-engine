@@ -132,5 +132,6 @@ current defaults, in [renderer switches](../renderer-switches.md).
 
 ## Effects and content
 
+- [GPU particles first pass, 8 November](2026-11-08-gpu-particles.md)
 - [Baked smoke scalability baseline, 31 October](baked-smoke-scaling.md)
 - [Growing Guns crowd silhouettes, 29 October](growing-guns-crowd.md)

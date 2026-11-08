@@ -7,6 +7,7 @@ use glam::{Quat, Vec2, Vec3};
 use growing_guns::World;
 use render::debris::{Debris, Occupancy};
 use render::fx::Effects;
+use render::gpu_particles::{Emitter, GpuParticles, Ground};
 use render::headlights::LocalLight;
 use render::particles::Particles;
 use render::scene::Material;
@@ -60,6 +61,10 @@ pub struct EffectsView {
     pub debris: Debris,
     /// Explosions: fire, smoke, embers, heat shell, lights.
     pub blasts: Effects,
+    /// GPU sparks, embers and grit from blasts (opt-in: KERN_GPU_PARTICLES=1).
+    pub sparks: GpuParticles,
+    /// The tops of the arena's columns the sparks land on.
+    ground: Option<Ground>,
     flashes: Vec<Flash>,
     /// The effects clock at the last `update`.
     clock: f32,
@@ -86,13 +91,56 @@ impl EffectsView {
         // This diagnostic override makes repeatable before/after captures possible.
         blasts.set_baked_smoke(!crate::graphics::get().simple_lighting
             && std::env::var("GG_BAKED_SMOKE").as_deref() != Ok("0"));
-        EffectsView { particles, meshes, debris, blasts, flashes: Vec::new(), clock: 0.0, punch: Vec::new(), pending_punch: Vec::new() }
+        let g = crate::graphics::get();
+        let capacity = if g.simple_lighting { 16_384 } else { 65_536 };
+        // The minimal forward renderer draws no GPU particles.
+        let sparks = if g.minimal_forward { GpuParticles::forced(capacity, false) } else { GpuParticles::new(capacity) };
+        EffectsView { particles, meshes, debris, blasts, sparks, ground: None, flashes: Vec::new(), clock: 0.0, punch: Vec::new(), pending_punch: Vec::new() }
     }
 
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, scene: &Scene, clock: f32) -> Result<(), String> {
         self.debris.flush(gpu, renderer)?;
         self.blasts.flush(gpu, renderer, clock)?;
+        self.sparks.flush(gpu, renderer, clock)?;
         self.particles.flush(gpu, renderer, scene)
+    }
+
+    /// A new arena: sparks land on the tops of its columns over `min..max`
+    /// (x, z) and on the lava below. Call after filling the debris grid.
+    pub fn ground_rebuilt(&mut self, min: Vec2, max: Vec2, floor: f32) {
+        self.sparks.clear();
+        if !self.sparks.enabled() { return; }
+        let g = Ground::from_occupancy_area(self.debris.occupancy(), min, max);
+        self.sparks.set_floor(floor);
+        self.sparks.set_ground(Some(g.clone()));
+        self.ground = Some(g);
+    }
+
+    /// Pieces broke over `min..max`: the sparks' ground follows the debris grid.
+    pub fn ground_broken(&mut self, min: Vec2, max: Vec2) {
+        let Some(g) = self.ground.as_mut() else { return };
+        g.refresh(self.debris.occupancy(), min, max);
+        self.sparks.set_ground(Some(g.clone()));
+    }
+
+    /// A blast's GPU particles: white-hot sparks that skitter over the
+    /// blocks, embers riding the fireball up, and lit grit thrown out low.
+    /// `radius` is the blast's, `tint` its fire colour.
+    pub fn blast_particles(&mut self, now: f32, pos: Vec3, radius: f32, tint: Vec3) {
+        if !self.sparks.enabled() { return; }
+        let r = radius.clamp(0.5, 30.0);
+        // Saturated: the tone curve whitens anything this bright anyway.
+        let hot = tint * Vec3::new(1.0, 0.8, 0.5);
+        let cool = tint * Vec3::new(1.0, 0.25, 0.05);
+        self.sparks.emit(now, &Emitter { position: pos, radius: 0.15 * r, spread: 1.6, speed: [1.2 * r, 4.0 * r],
+            count: (r * 260.0) as u32, life: [0.35, 1.5], size: [0.05, 0.025], glow: 60_000.0,
+            color: [hot.extend(1.0), cool.extend(0.0)], ..Emitter::sparks() });
+        self.sparks.emit(now, &Emitter { position: pos + Vec3::Y * 0.2 * r, radius: 0.45 * r, speed: [0.3, 0.6 * r],
+            count: (r * 80.0) as u32, duration: 0.5, life: [1.2, 3.2], size: [0.08, 0.04], glow: 40_000.0,
+            color: [(tint * Vec3::new(1.0, 0.45, 0.1)).extend(1.0), (tint * Vec3::new(0.7, 0.12, 0.02)).extend(0.0)], ..Emitter::embers() });
+        self.sparks.emit(now, &Emitter { position: pos, radius: 0.3 * r, spread: 1.4, speed: [0.5 * r, 1.8 * r],
+            count: (r * 90.0) as u32, life: [1.0, 2.6], size: [0.06, 0.14],
+            color: [Vec3::new(0.26, 0.23, 0.19).extend(0.85), Vec3::new(0.3, 0.28, 0.25).extend(0.0)], ..Emitter::dust() });
     }
 
     /// A shot's flash at the barrel exit `at` along `dir`; `scale` the
