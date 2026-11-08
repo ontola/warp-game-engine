@@ -66,7 +66,7 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
     let refract_here = REFRACTION_ENABLED && in.phase == 1u;
     if REFRACTION_ENABLED && in.phase != 3u && !refraction_phase_keeps(in.phase, in.position.xy, in.position.z) { discard; }
     var sample = vec4<f32>(1.0);
-    if m.layer >= 0 { sample = textureSampleGrad(albedo, samp, in.uv, m.layer, dx, dy); }
+    if m.layer >= 0 { let k = albedo_grad(m.layer, dx, dy); sample = textureSampleGrad(albedo, samp, in.uv, m.layer, dx * k, dy * k); }
     let alpha = clamp(sample.a * tri.alpha, 0.0, 1.0);
     if alpha <= 0.0 { discard; }
     if (m.flags & 1024u) != 0u {

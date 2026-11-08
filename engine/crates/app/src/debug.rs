@@ -42,6 +42,8 @@ const HDR_HEADROOM: u32 = 35;
 const AUTO_EXPOSURE: u32 = 36;
 const CLOUDS: u32 = 37;
 const WATER: u32 = 38;
+const WETNESS: u32 = 39;
+const SNOW: u32 = 40;
 
 /// Render heights offered, tallest first; 0 is native.
 const HEIGHTS: [u32; 6] = [0, 2160, 1800, 1440, 1080, 720];
@@ -76,12 +78,15 @@ struct Settings {
     hdr: Option<bool>,
     /// None: what the display reports (or `WARP_HDR_HEADROOM`).
     hdr_headroom: Option<f32>,
+    /// None: the game's own weather (`Lighting::wetness`, `Lighting::snow`).
+    wetness: Option<f32>,
+    snow: Option<f32>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Settings { options: DebugRenderOptions::default(), fog: true, clouds: true, taa: true, adaptive_quality: true, fps_target: None, lod_pixels: None, exposure: 0.0, render_height: None,
-            sun: 1.0, shadows: 1.0, near_shadows: true, contact: true, gi: true, reflection: true, auto_exposure: None, water: None, hdr: None, hdr_headroom: None }
+            sun: 1.0, shadows: 1.0, near_shadows: true, contact: true, gi: true, reflection: true, auto_exposure: None, water: None, hdr: None, hdr_headroom: None, wetness: None, snow: None }
     }
 }
 
@@ -151,6 +156,8 @@ impl EngineDebug {
         number(EXPOSURE, RENDER_MENU, "Exposure offset", f64::from(s.exposure), (-3.0, 3.0, 0.25, 2), "EV", "Positive darkens, negative brightens (also with auto exposure).");
         number(SUN, LIGHT_MENU, "Sun", f64::from(s.sun) * 100.0, (0.0, 200.0, 10.0, 0), "%", "Sun illuminance.");
         number(SHADOWS, LIGHT_MENU, "Shadow strength", f64::from(s.shadows) * 100.0, (0.0, 100.0, 10.0, 0), "%", "0% leaves the sun unshadowed.");
+        number(WETNESS, LIGHT_MENU, "Rain wetness", f64::from(s.wetness.unwrap_or(0.0)) * 100.0, (0.0, 100.0, 5.0, 0), "%", "Wet surfaces: darker where porous, glossy, pools on flat ground. Untouched: the game's weather.");
+        number(SNOW, LIGHT_MENU, "Snow cover", f64::from(s.snow.unwrap_or(0.0)) * 100.0, (0.0, 100.0, 5.0, 0), "%", "Snow on upward faces. Untouched: the game's weather.");
         number(GRASS_DISTANCE, GRASS_MENU, "Grass draw distance", f64::from(s.options.meadow_distance_scale) * 100.0, (10.0, 100.0, 5.0, 0), "%", "Shrinks the blade radius; past it the ground is shaded as grass. Density unchanged.");
         number(GRASS_SIZE, GRASS_MENU, "Grass size", f64::from(s.options.meadow_size_scale) * 100.0, (50.0, 200.0, 5.0, 0), "%", "Blade size around fixed roots.");
         number(GRASS_COUNT, GRASS_MENU, "Grass patch count", f64::from(s.options.meadow_density) * 100.0, (0.0, 100.0, 5.0, 0), "%", "Share of grass patches drawn.");
@@ -250,6 +257,8 @@ impl EngineDebug {
                 EXPOSURE => s.exposure = value.clamp(-3.0, 3.0) as f32,
                 SUN => s.sun = pct(value, 0.0, 2.0),
                 SHADOWS => s.shadows = pct(value, 0.0, 1.0),
+                WETNESS => s.wetness = Some(pct(value, 0.0, 1.0)),
+                SNOW => s.snow = Some(pct(value, 0.0, 1.0)),
                 GRASS_DISTANCE => s.options.meadow_distance_scale = pct(value, f64::from(render::debug_settings::MEADOW_DISTANCE_SCALE_MIN), 1.0),
                 GRASS_SIZE => s.options.meadow_size_scale = pct(value, 0.5, 2.0),
                 GRASS_COUNT => s.options.meadow_density = pct(value, 0.0, 1.0),
@@ -293,6 +302,8 @@ impl EngineDebug {
         if !s.taa { l.taa = 0.0; }
         l.sun_lux *= s.sun;
         l.shadow_strength *= s.shadows;
+        if let Some(w) = s.wetness { l.wetness = w; }
+        if let Some(w) = s.snow { l.snow = w; }
         if !s.near_shadows { l.near_shadows = 0.0; }
         if !s.contact { l.contact_occlusion = 0.0; }
         if !s.gi { l.gi = 0.0; }
