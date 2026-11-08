@@ -17,7 +17,8 @@ code (`FEATURE_SKIN_HAIR`, [shade_features.rs](../crates/render/src/shade_featur
 - Sun shadow edges let red through first (the penumbra is widened per
   channel).
 - Sunlight passes through thin parts such as ears, nostrils and fingers. The
-  thickness comes from the sun shadow map (receiver depth minus the first
+  thickness comes from the finest sun clipmap level covering the point, else
+  the shared sun map (receiver depth minus the first
   occluder's depth), plus one and a half shadow texels because that depth is
   only accurate to about a texel. Transmission falls off with Jensen's
   measured mean free paths for skin (3.67, 1.37, 0.68 mm), lengthened four
