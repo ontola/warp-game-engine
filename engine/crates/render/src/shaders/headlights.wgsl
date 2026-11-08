@@ -21,8 +21,12 @@ fn incident_light_position(index:u32)->vec3<f32> {
     return headlights.local[index-shadowed].position_range.xyz;
 }
 fn local_light_sample(index:u32,p:vec3<f32>)->HeadlightSample {
+    return local_light_at(headlights.local[index],p);
+}
+// One light's irradiance at p, unshadowed (also clustered_lights.wgsl's).
+fn local_light_at(lamp:LocalLight,p:vec3<f32>)->HeadlightSample {
     var result:HeadlightSample;
-    let lamp=headlights.local[index];let offset=p-lamp.position_range.xyz;
+    let offset=p-lamp.position_range.xyz;
     let d2=dot(offset,offset);let range=lamp.position_range.w;
     if d2>=range*range || d2<1e-10 {return result;}
     let outward=offset*inverseSqrt(d2);

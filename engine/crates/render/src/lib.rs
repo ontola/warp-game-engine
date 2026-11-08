@@ -93,6 +93,7 @@ pub mod sky;
 pub mod radiance_cache;
 pub mod radiance_cache_gpu;
 pub mod headlights;
+pub mod clustered_lights;
 pub mod volumetric;
 pub mod exhaust;
 pub mod wheel_particles;
