@@ -67,6 +67,7 @@ Narrower notes on single features.
 Lighting and terrain:
 
 - [Shared terrain visibility](terrain-world-visibility.md)
+- [Dynamic GI and reflections](dynamic-gi.md): traced reflections, open stages
 - [Shared world-space diffuse radiance cache](radiance-cache.md)
 - [Camera terrain occlusion of solar haze](camera-sun-fog.md)
 - [Finite-distance aerosol layer](finite-distance-fog.md)

@@ -102,6 +102,10 @@ Owned by the foliage work; its working checklist is
 - Physical units (lux, EV100, nits), procedural atmosphere, height fog with a
   finite-distance aerosol layer, irradiance volumes for interiors, opt-in
   [volumetric light](volumetric-light.md).
+- [Traced reflections](dynamic-gi.md) (default on, needs TAA): glossy
+  surfaces reflect what the frame shows, traced through the depth buffer
+  and lit by last frame's image. Open: off-screen hits (terrain surface
+  cache), dynamic diffuse bounce (world probes), trees in the trace.
 - **Opt-in static/dynamic sun split:** retains GPU source and voxel tree
   casters; exact split/full depth oracle covers still, wind, removal and
   restoration. Does not yet skip forest cull/splat work on unchanged pages.
@@ -147,7 +151,7 @@ Luau entities can follow a parent, and native games can resolve named model sock
   is not confirmed yet. No threads, gamepads, F10 menu or
   HDR; trees are opt-in (`?trees=1`) because they are cooked at every load
   ([Running in a browser](browser.md)). Without trees the full renderer
-  fits the engine rule of 8 storage buffers per shader stage but needs 20
+  fits the engine rule of 8 storage buffers per shader stage but needs 21
   sampled textures (spec minimum 16); trees still need 16 storage buffers.
   Below that a portable renderer draws terrain and sky only
   (`render::portable`).

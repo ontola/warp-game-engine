@@ -27,6 +27,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_TERRAIN_COARSE` | Turns off the coarse terrain footprint in shading. `KERN_COARSE_FOOTPRINT_M=<m>` sets its size. |
 | `KERN_TILED_POST` | Untiled tone mapping and post (same image). |
 | `KERN_SKY_VIS_CACHE` | No cached sky transmittance through the canopy. |
+| `KERN_TRACED_REFLECTIONS` | No traced reflections: glossy surfaces reflect only the sky and the heuristic ground bounce ([dynamic-gi.md](dynamic-gi.md)). |
 | `KERN_CAMERA_SUN_OCCLUSION` | Solar haze ignores terrain between camera and sun ([camera sun fog](camera-sun-fog.md)). |
 | `KERN_CUTOUT_LINEAR_RGB` | Alpha-cutout textures mip in sRGB instead of linear RGB. |
 | `KERN_GRASS_LEAF_BRDF`, `KERN_GRASS_SUN_OCCLUSION` | Plain grass lighting, no grass self-shadow from the sun. |
@@ -71,7 +72,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_CPU_SPANS=1`, `KERN_STARTUP_PROFILE=1` | CPU time per frame phase; renderer construction profile. |
 | `KERN_DIAGNOSTIC_HIDE` | Hide geometry categories in captures. |
 | `KERN_MEADOW_CAPTURE_RAW=1` | Sideways: raw meadow buffers in the capture JSON. |
-| `KERN_PORTABLE=1` | Draw with the portable renderer (`render::portable`: procedural terrain, sky and haze, three storage buffers per stage) as a device below 10 storage buffers or 20 sampled textures per stage does (`render::portable::needed`). Default off; such a device always uses it. See [Running in a browser](browser.md). |
+| `KERN_PORTABLE=1` | Draw with the portable renderer (`render::portable`: procedural terrain, sky and haze, three storage buffers per stage) as a device below 10 storage buffers or 21 sampled textures per stage does (`render::portable::needed`). Default off; such a device always uses it. See [Running in a browser](browser.md). |
 | `KERN_WEBGPU_LIMITS=spec`, `=browser`, `=mac` | Native device with only what a browser's WebGPU gives: the timestamp and first-instance features, and the spec's default limits (`spec`), what about 80 % of WebGPU devices offer (`browser`: 16 storage buffers and 32 sampled textures per stage, 1 GiB buffers) or `browser` with the 10 storage buffers most Macs offer (`mac`), never above the adapter. GPU errors are printed once each and do not stop the run, so one run lists every layout over the limits. For checking a [browser build](log/2026-11-05-browser-feasibility.md) without a browser. |
 | `KERN_DLSS_RUNTIME_DIR` | Where to find `nvngx_dlss.dll` ([DLSS](../crates/render/native/DLSS.md)). |
 
