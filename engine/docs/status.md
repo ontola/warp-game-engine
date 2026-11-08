@@ -59,8 +59,16 @@ resolution, reconstruction mode, sample count and scene with a number.
   `KERN_GPU_PARTICLES=1`. **Open:** not timed on a real GPU yet (Mancave);
   unsorted, so covering particles must stay faint; no shadows or local
   lights on particles; not in the minimal forward renderer or the browser.
+- **Materials and textures** (8 November): per-texture material maps
+  (occlusion, roughness, metalness from `_arm`/`_rough` siblings and glTF),
+  wet/snow/moss weathering layers per material driven by `Lighting::wetness`
+  and `Lighting::snow`, BC7 texture arrays where the device has BC, and
+  opt-in texture streaming ([guide](materials.md)). **Open:** no ASTC for
+  phones/Quest; streaming is by time, not visibility (no feedback-driven
+  residency or eviction); grass, meadow and voxel trees ignore weather;
+  terrain, road and rock paths ignore material maps.
 - **Open:** fixed per-frame work for unused features; `frame.rs` still refers
-  to Sideways features; new meshes or materials need a new renderer;
+  to Sideways features; new meshes need a new renderer;
   animated pixels reject TAA history (no deformation motion vectors).
 - Many experiments remain behind default-off switches; see
   [renderer switches](renderer-switches.md). They are candidates for removal.

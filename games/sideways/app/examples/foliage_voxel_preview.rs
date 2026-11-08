@@ -307,7 +307,7 @@ fn run(a: Args) -> Result<(), String> {
         let base = vertices.len() as u32; indices.extend(idx.into_iter().map(|i| i + base)); vertices.extend(verts);
     }
     if indices.is_empty() { return Err("retained mesh contains no crown surfaces".into()); }
-    let texture = TextureSource { name: texture_path.display().to_string(), rgba: image::load_from_memory(&texture_bytes).map_err(|e| e.to_string())?.to_rgba8(), normal: None };
+    let texture = TextureSource { name: texture_path.display().to_string(), rgba: image::load_from_memory(&texture_bytes).map_err(|e| e.to_string())?.to_rgba8(), normal: None, orm: None };
     let material = Material { tint: [0.62,0.66,0.55], layer: 0, roughness: 0.9, flags: ALPHA_TEST | TWO_SIDED, scale: 1.0, metal: 0.0 };
     let config = BakeConfig { cell_size: a.cell, levels: 3, ..Default::default() };
     let begin = Instant::now();

@@ -40,7 +40,8 @@ fn grass_sample(in: GrassVertex) -> vec4<f32> {
     let dx = dpdx(in.uv) * mip_scale;
     let dy = dpdy(in.uv) * mip_scale;
     let m = material(grass_range.indices.z);
-    return textureSampleGrad(albedo, plant_samp, in.uv, m.layer, dx, dy);
+    let k = albedo_grad(m.layer, dx, dy);
+    return textureSampleGrad(albedo, plant_samp, in.uv, m.layer, dx * k, dy * k);
 }
 @fragment fn grass_depth_fs(in: GrassVertex) {
     if grass_sample(in).a < 0.5 || in.opacity <= 0.0 { discard; }
