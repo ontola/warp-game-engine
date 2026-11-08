@@ -48,11 +48,9 @@ struct Cluster {
 };
 @group(0) @binding(16) var<storage,read> topology: array<u32>;
 @group(0) @binding(17) var<storage,read> clusters: array<Cluster>;
-// Last frame's surface ids (location 3 below) of this view.
-@group(0) @binding(18) var previous_ids: texture_2d<u32>;
 // This view's voxel splat records (voxel_forest.wgsl volume_splats): a
 // voxel pixel's splat id leads to its tree and that tree's owner instance.
-@group(0) @binding(19) var<storage,read> voxel_splats: array<vec4<u32>>;
+@group(0) @binding(18) var<storage,read> voxel_splats: array<vec4<u32>>;
 fn voxel_owner(splat:u32)->u32 {
     let count=arrayLength(&voxel_splats);
     if splat==0u || count<12u {return 0xffffffffu;}
@@ -62,16 +60,7 @@ fn voxel_owner(splat:u32)->u32 {
     if tree>=count {return 0xffffffffu;}
     return voxel_splats[tree].x;
 }
-// Which surface a pixel shows: its owner instance and whether as mesh or
-// voxels, hashed. A pixel whose reprojected 2x2 footprint showed none of
-// it last frame (a representation swap, a recycled slot, disocclusion)
-// rejects its history there, instead of resetting the whole view.
-struct MotionOut { @location(0) vector: vec2<f32>, @location(1) depth: f32, @location(2) bias: f32, @location(3) id: u32 };
-fn surface_hash(x:u32)->u32 {
-    var h=x*747796405u+2891336453u;
-    h=((h>>((h>>28u)+4u))^h)*277803737u;
-    return (h>>22u)^h;
-}
+struct MotionOut { @location(0) vector: vec2<f32>, @location(1) depth: f32, @location(2) bias: f32 };
 @vertex fn motion_vs(@builtin(vertex_index) index:u32)->@builtin(position) vec4<f32> {
     return vec4<f32>(array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0))[index],0.0,1.0);
 }
@@ -272,9 +261,6 @@ fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f3
             } else {out.bias=1.0;}
         }
     }
-    if layer_current.w!=0.0 {out.id=0xfffffffdu;}
-    else if out.depth<=0.0 {out.id=0xfffffffeu;}
-    else {out.id=surface_hash(owner)^select(0u,0x9e3779b9u,voxel);}
     // Reset rejects correspondence, not the current frame's selected depth.
     if motion.flags.x!=0u {out.bias=1.0;return out;}
     var current=motion.inverse_current*vec4<f32>(ndc,out.depth,1.0);
@@ -299,15 +285,5 @@ fn previous_source_point(owner:u32,world:vec3<f32>,cluster:u32,tri:u32)->vec4<f3
     if !all(abs(vector)<vec2<f32>(32752.0)) {out.bias=1.0;return out;}
     out.vector=vector;
     if any(abs(prev_ndc)>vec2<f32>(1.0)) {out.bias=1.0;}
-    else if out.bias<1.0 {
-        let base=vec2<i32>(floor(position.xy+vector-0.5));
-        let top=vec2<i32>(textureDimensions(previous_ids))-1;
-        var seen=false;
-        for (var k=0;k<4;k++) {
-            let q=clamp(base+vec2<i32>(k&1,k>>1u),vec2<i32>(0),top);
-            seen=seen || textureLoad(previous_ids,q,0).r==out.id;
-        }
-        if !seen {out.bias=1.0;}
-    }
     return out;
 }

@@ -50,7 +50,7 @@ and session notes are in the [development log](log/README.md).
 | [Atmosphere](atmosphere.md) | The procedural sky bake: Rayleigh and Mie scattering, ozone, sky lighting. |
 | [Live sky: time of day and weather](live-sky-controls.md) | `render::sky`: presets, the background bake, Sideways' pause menu and Growing Guns' `--sky` and `sky` command. |
 | [Exposure and HDR output](hdr-and-exposure.md) | Automatic exposure and HDR output on HDR screens: when to use them, how to turn them on, authoring for HDR. |
-| [Temporal upscaling](temporal-upscaling.md) | The portable upscaler and DLSS modes, motion vectors for skinning, wind and voxels, per-pixel history rejection. |
+| [Temporal upscaling](temporal-upscaling.md) | The portable upscaler and DLSS modes, motion vectors for skinning, wind and swaying voxels. |
 | [Motion blur](motion-blur.md) | Opt-in per-view motion vectors, fixed shutter, split-screen isolation and limitations. |
 | [Volumetric light](volumetric-light.md) | Opt-in in-scattering from local lights. |
 | [Live render debug panel](debug-ui.md) | F10: render and light switches, LOD, GPU pass times. |

@@ -91,11 +91,6 @@ struct ViewHistory {
     direction: Vec3,
     frame: u64,
     outputs: MotionOutput,
-    /// Each pixel's surface identity (owner and representation), this
-    /// frame's and last frame's alternately: a pixel whose reprojected
-    /// footprint held another surface rejects its history.
-    ids: [wgpu::Texture;2],
-    id_cur: usize,
 }
 struct History {
     frame: u64,
@@ -178,12 +173,12 @@ impl MotionRenderer {
         }
         let arena_bytes=if fits {at*16}else{wind_bytes+16};
         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("surface motion"),source:wgpu::ShaderSource::Wgsl(shader_source().into())});
-        let entries=(0..20).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::FRAGMENT,count:None,
+        let entries=(0..19).map(|binding|wgpu::BindGroupLayoutEntry {binding,visibility:wgpu::ShaderStages::FRAGMENT,count:None,
             ty:match binding {
                 0=>wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None},
-                1..=5|16|17|19=>wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Storage {read_only:true},has_dynamic_offset:false,min_binding_size:None},
+                1..=5|16|17|18=>wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Storage {read_only:true},has_dynamic_offset:false,min_binding_size:None},
                 _=>wgpu::BindingType::Texture {sample_type:match binding {
-                    6|8|9|18=>wgpu::TextureSampleType::Uint,7=>wgpu::TextureSampleType::Depth,
+                    6|8|9=>wgpu::TextureSampleType::Uint,7=>wgpu::TextureSampleType::Depth,
                     _=>wgpu::TextureSampleType::Float {filterable:false}},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},
             }}).collect::<Vec<_>>();
         let bind_layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("motion typed inputs"),entries:&entries});
@@ -195,7 +190,7 @@ impl MotionRenderer {
             vertex:wgpu::VertexState {module:&module,entry_point:Some("motion_vs"),compilation_options:Default::default(),buffers:&[]},
             primitive:Default::default(),depth_stencil:None,multisample:Default::default(),
             fragment:Some(wgpu::FragmentState {module:&module,entry_point:Some("motion_fs"),compilation_options:Default::default(),
-                targets:&[wgpu::TextureFormat::Rg16Float,wgpu::TextureFormat::R32Float,wgpu::TextureFormat::R32Float,wgpu::TextureFormat::R32Uint].map(|format|Some(wgpu::ColorTargetState {format,blend:None,write_mask:wgpu::ColorWrites::ALL}))}),
+                targets:&[wgpu::TextureFormat::Rg16Float,wgpu::TextureFormat::R32Float,wgpu::TextureFormat::R32Float].map(|format|Some(wgpu::ColorTargetState {format,blend:None,write_mask:wgpu::ColorWrites::ALL}))}),
             multiview_mask:None,cache: gpu.pipeline_cache(),
         });
         let previous_wind=previous("previous plant wind and skinned vertices",arena_bytes);
@@ -277,8 +272,7 @@ impl MotionRenderer {
             let outputs=MotionOutput {vectors:texture(gpu,"DLSS pixel motion",view.size,wgpu::TextureFormat::Rg16Float),
                 depth:texture(gpu,"DLSS dominant depth",view.size,wgpu::TextureFormat::R32Float),
                 bias:texture(gpu,"DLSS bias current color",view.size,wgpu::TextureFormat::R32Float),reset:true};
-            let ids=[texture(gpu,"motion surface ids a",view.size,wgpu::TextureFormat::R32Uint),texture(gpu,"motion surface ids b",view.size,wgpu::TextureFormat::R32Uint)];
-            history.views[index]=Some(ViewHistory {key:view.key,size:view.size,previous:view.view_proj,camera:view.camera,direction,frame,outputs,ids,id_cur:0});
+            history.views[index]=Some(ViewHistory {key:view.key,size:view.size,previous:view.view_proj,camera:view.camera,direction,frame,outputs});
         }
         let target=history.views[index].as_mut().unwrap();
         target.key=view.key;target.previous=view.view_proj;target.camera=view.camera;target.direction=direction;target.frame=frame;target.outputs.reset=reset;
@@ -290,7 +284,6 @@ impl MotionRenderer {
             grass:[grass_band.fade_start,grass_band.fade_end,u32::from(inputs.voxel.is_some()) as f32,u32::from(inputs.meadow.is_some()) as f32],
             skin:[(self.wind_bytes/16) as u32,self.topology_starts[0],self.topology_starts[1],self.skin_actors]};
         let uniform=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("motion view"),contents:bytemuck::bytes_of(&uniform),usage:wgpu::BufferUsages::UNIFORM});
-        let previous_ids=target.ids[target.id_cur].create_view(&Default::default());
         let entries=[
             (0,uniform.as_entire_binding()),(1,self.current_instances.as_entire_binding()),(2,self.previous_instances.as_entire_binding()),
             (3,self.current_wind.as_entire_binding()),(4,self.previous_wind.as_entire_binding()),(5,inputs.visible.as_entire_binding()),
@@ -304,13 +297,11 @@ impl MotionRenderer {
             (14,wgpu::BindingResource::TextureView(inputs.meadow.map_or(&self.empty_color,|v|v.0))),
             (15,wgpu::BindingResource::TextureView(inputs.meadow.map_or(&self.empty_reprojection,|v|v.1))),
             (16,self.topology.as_entire_binding()),(17,self.clusters.as_entire_binding()),
-            (18,wgpu::BindingResource::TextureView(&previous_ids)),
-            (19,inputs.voxel_splats.unwrap_or(&self.no_splats).as_entire_binding()),
+            (18,inputs.voxel_splats.unwrap_or(&self.no_splats).as_entire_binding()),
         ];
         let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("surface motion"),layout:&self.pipeline.get_bind_group_layout(0),
             entries:&entries.into_iter().map(|(binding,resource)|wgpu::BindGroupEntry {binding,resource}).collect::<Vec<_>>()});
-        let views=[&target.outputs.vectors,&target.outputs.depth,&target.outputs.bias,&target.ids[1-target.id_cur]].map(|t|t.create_view(&Default::default()));
-        target.id_cur=1-target.id_cur;
+        let views=[&target.outputs.vectors,&target.outputs.depth,&target.outputs.bias].map(|t|t.create_view(&Default::default()));
         let attachments=views.iter().map(|v|Some(wgpu::RenderPassColorAttachment {view:v,depth_slice:None,resolve_target:None,
             ops:wgpu::Operations {load:wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),store:wgpu::StoreOp::Store}})).collect::<Vec<_>>();
         let mut pass=encoder.begin_render_pass(&wgpu::RenderPassDescriptor {label:Some("surface motion"),color_attachments:&attachments,
@@ -473,14 +464,12 @@ mod tests {
             checked+=1;
         }}
         assert_eq!(checked,24*24);
-        // The same owner now drawn as voxels: another representation, so
-        // history is rejected per pixel; a frame later it is kept again.
+        // The same owner now drawn as voxels: they move with its pose.
         let vis_texture=vis.texture();
         let voxel=[0x8000_0001u32;(N*N) as usize];
         gpu.queue.write_texture(vis_texture.as_image_copy(),bytemuck::cast_slice(&voxel),
             wgpu::TexelCopyBufferLayout {offset:0,bytes_per_row:Some(N*4),rows_per_image:None},vis_texture.size());
         let bias_at=|out:&MotionOutput|{let b=read(&out.bias,4);f32::from_le_bytes(b[(32*N+32) as usize][..4].try_into().unwrap())};
-        assert_eq!(bias_at(&frame(false)),1.0,"representation swap must reject history");
         let out=frame(false);
         assert_eq!(bias_at(&out),0.0,"a steady voxel surface keeps history");
         let v=&read(&out.vectors,4)[(32*N+32) as usize];
@@ -492,11 +481,11 @@ mod tests {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));
         let mut bindings=module.global_variables.iter().filter_map(|(_,v)|v.binding.as_ref().map(|b|(b.group,b.binding))).collect::<Vec<_>>();
         bindings.sort_unstable();
-        assert_eq!(bindings,(0..20).map(|binding|(0,binding)).collect::<Vec<_>>());
+        assert_eq!(bindings,(0..19).map(|binding|(0,binding)).collect::<Vec<_>>());
         assert_eq!(module.global_variables.iter().filter(|(_,v)|matches!(v.space,naga::AddressSpace::Storage {..})).count(),8,
             "branch motion must reuse existing instance snapshots, not add per-view pose buffers; at most 8 per stage (browser.md)");
-        assert_eq!(module.global_variables.iter().filter(|(_,v)|matches!(module.types[v.ty].inner,naga::TypeInner::Image {..})).count(),11,
-            "opaque, grass, voxel, meadow and previous-id motion inputs must remain below the portable16 sampled-texture budget");
+        assert_eq!(module.global_variables.iter().filter(|(_,v)|matches!(module.types[v.ty].inner,naga::TypeInner::Image {..})).count(),10,
+            "opaque, grass, voxel and meadow motion inputs must remain below the portable16 sampled-texture budget");
         assert_eq!(std::mem::size_of::<Uniform>(),272);
     }
 }
