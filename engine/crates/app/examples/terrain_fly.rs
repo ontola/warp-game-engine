@@ -1203,10 +1203,23 @@ fn main() -> Result<(), String> {
         let forward = Controls { mv: [0.0, if stationary {0.0}else{1.0}], ..Default::default() };
         let frames = n.parse::<u32>().map_err(|_| "--fly N")?;
         if frames <= 5 { return Err("--fly needs at least six frames".into()); }
+        // --fly-yaws Y1,Y2,..: hold each yaw for an equal share of the
+        // frames; at each share's end save PREFIX-N.png (--fly-shot PREFIX)
+        // and print that frame's GPU forest counters.
+        let yaws:Vec<f32>=arg("--fly-yaws").map(|s|s.split(',').filter_map(|v|v.parse().ok()).collect()).unwrap_or_default();
         for i in 0..frames {
             let t = web_time::Instant::now();
+            let segment=(i as usize*yaws.len())/frames as usize;
+            if let Some(&yaw)=yaws.get(segment) {game.yaw=yaw;}
             game.tick(&[forward]);
             let rgba = headless.frame(&mut game)?;
+            let next=((i as usize+1)*yaws.len())/(frames as usize);
+            if !yaws.is_empty() && next>segment {
+                if let Some(prefix)=arg("--fly-shot") {render::write_png(std::path::Path::new(&format!("{prefix}-{segment}.png")),w,h,&rgba)?;}
+                if let Some(renderer)=headless.renderer() {
+                    println!("fly segment {segment} yaw {} frame {i}: {}",yaws[segment],serde_json::to_string(&renderer.gpu_forest_diagnostics(&gpu)?).map_err(|e|e.to_string())?);
+                }
+            }
             if i >= 5 {
                 times.push(t.elapsed().as_secs_f64() * 1e3);
                 cpu_times.push(serde_json::json!({"frame":i,"draw":headless.last_draw_timings(),"terrain_ms":game.last_updates[0],"tree_pool_ms":game.last_updates[1],
