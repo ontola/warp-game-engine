@@ -27,7 +27,7 @@ struct Light {
     near_shadow: vec4<f32>, // world texel size, blend-start radius, enabled
     night_stars: vec4<f32>, // peak radiance, zenith optical depth, zero-sun fast path, seed
     anim: vec4<f32>,        // x: seconds for animated procedural materials, y: emission scale, z: radiance shown as white
-    fog_sampling: vec4<f32>, // x: sequence phase, y: temporal accumulation enabled, z: diffuse room return (lux)
+    fog_sampling: vec4<f32>, // x: sequence phase, y: temporal accumulation enabled, z: diffuse room return (lux), w: water optics (Lighting::water)
     near_levels_view_proj: array<mat4x4<f32>, 3>, // sun clipmap levels 1..3 (frame.rs near_levels)
     near_levels: vec4<f32>, // x: levels drawn
     clouds: vec4<f32>,       // cloud layer (cloud_weather.wgsl): coverage, base m, thickness m, extinction per m
@@ -911,6 +911,18 @@ fn trace_jitter(r: vec3<f32>, rough: f32, xi: vec2<f32>) -> vec3<f32> {
     return normalize(r * c + (t1 * cos(phi) + t2 * sin(phi)) * s);
 }
 
+// Water optics (Lighting::water, terrain_surface.wgsl water_body).
+fn water_optics_on() -> bool { return light.fog_sampling.w > 0.5; }
+
+// The depth a reflection ray is tested against: the opaque depth and, in
+// front of it, the rasterized voxel trees when they keep their own depth
+// (VOXEL_OCCLUSION), so far forests show in water and glossy paint.
+fn trace_depth(c: vec2<i32>) -> f32 {
+    var d = textureLoad(depth_tex, c, 0);
+    if VOXEL_OCCLUSION { d = max(d, textureLoad(voxel_depth, c, 0)); }
+    return d;
+}
+
 fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, px: vec2<i32>, size: vec2<u32>, dist: f32) -> vec4<f32> {
     if gi.trace.x < 0.5 || rough >= gi.trace.y { return vec4<f32>(0.0); }
     var r = mirror;
@@ -933,7 +945,7 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
         let ndc = c.xyz / c.w;
         if abs(ndc.x) >= 1.0 || abs(ndc.y) >= 1.0 { break; }
         let sp = vec2<i32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize);
-        let d = textureLoad(depth_tex, sp, 0);
+        let d = trace_depth(sp);
         // Reversed infinite Z: depth is near / view depth, so the scene is in
         // front of the ray point when d > ndc.z; how far behind it, in metres:
         if d > ndc.z {
@@ -952,12 +964,12 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
         let c = view.view_proj * vec4<f32>(o + r * mid, 1.0);
         let ndc = c.xyz / c.w;
         let sp = vec2<i32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize);
-        if textureLoad(depth_tex, sp, 0) > ndc.z { hi = mid; } else { lo = mid; }
+        if trace_depth(sp) > ndc.z { hi = mid; } else { lo = mid; }
     }
     let c = view.view_proj * vec4<f32>(o + r * hi, 1.0);
     let ndc = c.xyz / c.w;
     let sp = clamp(vec2<i32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize), vec2<i32>(0), vec2<i32>(size) - 1);
-    let d = textureLoad(depth_tex, sp, 0);
+    let d = trace_depth(sp);
     if d <= 0.0 { return vec4<f32>(0.0); }
     // The surface the ray reached, as this frame's depth buffer places it.
     let pc = (vec2<f32>(sp) + 0.5) / fsize;

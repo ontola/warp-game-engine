@@ -479,6 +479,11 @@ pub struct Lighting {
     /// air integrated with the sky bake's atmosphere instead of the shade
     /// pass's distance fog, a cumulus layer and its shadows. `None` adds no pass.
     pub sky_volume: Option<crate::sky_volume::SkyVolume>,
+    /// Water optics on terrain water: the bed seen through refracting,
+    /// absorbing water, with Fresnel and caustics (engine/docs/water.md).
+    /// Its reflections are the traced reflections every glossy surface
+    /// gets. Opt-in until it has been checked on real hardware.
+    pub water: bool,
 }
 
 impl Lighting {
@@ -533,6 +538,7 @@ impl Lighting {
             "grain" if (0.0..=1.0).contains(&f) => self.grain = f,
             "aberration" if (0.0..=16.0).contains(&f) => self.aberration = f,
             // `volumetric=0` turns it off, `volumetric=1` on with defaults.
+            "water" if f == 0.0 || f == 1.0 => self.water = f == 1.0,
             "volumetric" if f == 0.0 || f == 1.0 => self.volumetric = (f == 1.0).then(|| self.volumetric.unwrap_or_default()),
             k if k.starts_with("vol_") => self.volumetric.get_or_insert_with(Default::default).set(k, f)?,
             // `sky_volume=0|1` (aerial perspective and clouds), `clouds=0|1`,
@@ -606,6 +612,7 @@ impl Default for Lighting {
             aberration: 0.0,
             volumetric: None,
             sky_volume: None,
+            water: std::env::var("KERN_WATER").as_deref() == Ok("1"),
         }
     }
 }
@@ -4377,7 +4384,7 @@ impl Renderer {
             night_stars: [light.night_stars[0], light.night_stars[1],
                 if self.zero_sun_fast_path {1.0} else {0.0}, light.night_stars[3]],
             anim: [light.time, light.emissive_scale(), 1.2 * 2f32.powf(light.ev100), if light.sun_disc {light.sun_radius} else {0.0}],
-            fog_sampling: [((frame % 16) * 7 % 16) as f32 / 16.0, if taa_on { 1.0 } else { 0.0 }, light.indirect_fill_lux.max(0.0), 0.0],
+            fog_sampling: [((frame % 16) * 7 % 16) as f32 / 16.0, if taa_on { 1.0 } else { 0.0 }, light.indirect_fill_lux.max(0.0), if light.water { 1.0 } else { 0.0 }],
             near_levels_view_proj: [Mat4::IDENTITY.to_cols_array_2d(); NEAR_LEVELS_MAX - 1],
             near_levels: [0.0; 4],
             clouds: cloud_uniforms.0,
