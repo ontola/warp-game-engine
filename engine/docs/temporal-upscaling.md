@@ -57,10 +57,8 @@ frame, a depth, and a bias (1 where history must not be used). Covered:
   (copied after all views, in the same buffer as the previous wind) and
   takes each pixel's barycentric point on the same triangle of the old
   vertices;
-- rasterized foliage voxels: the visibility id (bit 31 marks a voxel)
-  holds the splat; the view's splat records name its tree, whose fifth
-  record is the owner instance, and the pass moves the point with that
-  instance's previous pose, so branch voxels that sway keep their history;
+- rasterized foliage voxels are reprojected as still world points (see
+  Open);
 - grass, meadow and the voxel composite through their own reprojection
   layers.
 
@@ -71,11 +69,16 @@ TAA always did. A per-pixel owner/representation id test was tried and
 dropped: leaves, branches and voxels interleave per pixel and flicker
 between owners under jitter, so it left tree crowns unresolved.
 
-The pass uses 8 storage buffers (the engine's limit per stage) and 11
-sampled textures.
+The pass uses 7 storage buffers and 10 sampled textures.
 
 ## Open
 
+- Swaying branch voxels have no motion of their own. Moving each voxel
+  with its owner instance's previous pose (found through a fifth splat
+  record per tree) was built and tried: in terrain_fly it left crowns
+  speckled and darker than zero motion, so the instance's previous pose is
+  probably not the pose those voxels were drawn with (slots reassigned
+  between frames). Needs the GPU forest's own previous branch pose.
 - No sharpening pass after the upscaler.
 - Measured only on lavapipe (software Vulkan) so far; GPU timing on real
   hardware is still to do.

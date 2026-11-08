@@ -40,7 +40,7 @@ and the measurements and dead ends are in the [development log](log/README.md).
 - **Reconstruction and output.** Temporal anti-aliasing, or upscaling from a
   lower render resolution: Warp's portable temporal upscaler on every GPU
   (`temporal-*` modes) or DLSS (the `dlss` cargo feature), both fed by
-  motion vectors that cover skinning, wind and swaying voxels
+  motion vectors that cover skinning and wind
   ([temporal upscaling](temporal-upscaling.md)). Then subtle bloom and AgX
   tone mapping. A requested mode never falls back silently to another path.
 - **Split screen.** `render::split_rects` lays out up to four views; one

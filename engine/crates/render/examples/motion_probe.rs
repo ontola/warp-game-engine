@@ -94,7 +94,7 @@ impl Inputs {
         Self {depth,visibility:vis.create_view(&Default::default()),grass:metadata(layers.grass),glass:metadata(layers.glass),far,voxel:centroid(layers.voxel),meadow:centroid(layers.meadow)}
     }
     fn bindings<'a>(&'a self,visible:&'a wgpu::Buffer)->MotionInputs<'a> {MotionInputs {opaque_depth:&self.depth,visibility:&self.visibility,visible,
-        grass:self.grass.as_ref(),transparency:self.glass.as_ref(),far_grass:self.far.as_ref().map(|(c,d)|(c,d)),voxel:self.voxel.as_ref().map(|(c,r)|(c,r)),meadow:self.meadow.as_ref().map(|(c,r)|(c,r)),voxel_splats:None}}
+        grass:self.grass.as_ref(),transparency:self.glass.as_ref(),far_grass:self.far.as_ref().map(|(c,d)|(c,d)),voxel:self.voxel.as_ref().map(|(c,r)|(c,r)),meadow:self.meadow.as_ref().map(|(c,r)|(c,r))}}
 }
 struct Fixture {instances:wgpu::Buffer,wind:wgpu::Buffer,visible:wgpu::Buffer,motion:MotionRenderer}
 impl Fixture {
