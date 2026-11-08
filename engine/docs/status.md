@@ -5,6 +5,10 @@ what is still open. This page is rewritten as things change, not appended
 to. Dated measurements and the reasoning behind decisions are in the
 [development log](log/README.md). Last reviewed 5 November 2026.
 
+## Warp Humans
+
+The [stadium review](warp-humans.md) compares three distant crowd representations with per-view GPU selection and one on-demand anatomical head mesh. Gameplay integration, facial animation and multi-page eviction remain open.
+
 ## Character animation
 
 Growing Guns layers two-bone wrist contacts over its third-person clips using the shared body crate. The headless grip review renders the authored and adjusted poses. Finger closure and pickup transitions are open. [Authoring and preview](animation.md)

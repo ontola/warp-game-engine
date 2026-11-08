@@ -1,0 +1,422 @@
+//! Seeded crowd rendering probe. One immutable instance table serves every view.
+//! The GPU buckets visible people by projected height and writes indirect draws.
+mod geometry;
+
+use crate::{Camera, Gpu};
+use bytemuck::{Pod, Zeroable};
+use glam::{Mat4, Vec3};
+use wgpu::util::DeviceExt;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Far {
+    Cells,
+    Mesh,
+    Impostor,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct Instance {
+    pos_yaw: [f32; 4],
+    size_phase: [f32; 4],
+    color: [f32; 4],
+    identity: [f32; 4],
+}
+
+fn sample(seed: u64, channel: u64) -> f32 {
+    let mut v = seed.wrapping_add(channel.wrapping_mul(0x9e3779b97f4a7c15));
+    v = (v ^ (v >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    v = (v ^ (v >> 27)).wrapping_mul(0x94d049bb133111eb);
+    ((v ^ (v >> 31)) >> 40) as f32 / 16777216.
+}
+
+#[derive(Default)]
+pub struct Constraints {
+    pub height_m: Option<f32>,
+    pub shirt: Option<[f32; 3]>,
+}
+impl Instance {
+    pub fn person(seed: u64, position: Vec3, yaw: f32, rules: &Constraints) -> Self {
+        let height = rules
+            .height_m
+            .unwrap_or_else(|| 1.53 + 0.47 * sample(seed, 1));
+        let palette = [
+            [0.65, 0.21, 0.16],
+            [0.20, 0.36, 0.56],
+            [0.19, 0.40, 0.32],
+            [0.75, 0.63, 0.36],
+            [0.49, 0.35, 0.48],
+            [0.73, 0.72, 0.68],
+            [0.21, 0.23, 0.26],
+            [0.46, 0.52, 0.60],
+        ];
+        let shirt = rules
+            .shirt
+            .unwrap_or(palette[(sample(seed, 2) * 8.) as usize]);
+        Self {
+            pos_yaw: position.extend(yaw).into(),
+            size_phase: [
+                height * (0.84 + 0.31 * sample(seed, 3)),
+                height,
+                sample(seed, 4),
+                sample(seed, 5),
+            ],
+            color: [shirt[0], shirt[1], shirt[2], 1.],
+            identity: std::array::from_fn(|i| sample(seed, 6 + i as u64)),
+        }
+    }
+    pub fn stand(pos: Vec3, yaw: f32, size: Vec3, color: [f32; 3]) -> Self {
+        Self {
+            pos_yaw: pos.extend(yaw).into(),
+            size_phase: size.extend(0.).into(),
+            color: [color[0], color[1], color[2], 0.],
+            identity: [0.; 4],
+        }
+    }
+}
+struct Geometry {
+    vertex: wgpu::Buffer,
+    index: wgpu::Buffer,
+    count: u32,
+}
+impl Geometry {
+    fn upload(gpu: &Gpu, m: geometry::Mesh) -> Self {
+        let buf = |data, usage| {
+            gpu.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("human geometry"),
+                    contents: data,
+                    usage,
+                })
+        };
+        Self {
+            vertex: buf(
+                bytemuck::cast_slice(&m.vertices),
+                wgpu::BufferUsages::VERTEX,
+            ),
+            index: buf(bytemuck::cast_slice(&m.indices), wgpu::BufferUsages::INDEX),
+            count: m.indices.len() as u32,
+        }
+    }
+    fn bytes(&self) -> u64 {
+        self.vertex.size() + self.index.size()
+    }
+}
+
+pub struct ReviewRenderer {
+    compute: wgpu::ComputePipeline,
+    render: wgpu::RenderPipeline,
+    selection: wgpu::BindGroup,
+    drawing: wgpu::BindGroup,
+    camera: wgpu::Buffer,
+    args: wgpu::Buffer,
+    read: wgpu::Buffer,
+    timer: Option<(wgpu::QuerySet, wgpu::Buffer)>,
+    meshes: Vec<Geometry>,
+    count: u32,
+    far: Far,
+    pub detail_ready: bool,
+    pub resident_buffer_bytes: u64,
+}
+pub struct ViewSample {
+    pub counts: [u32; 3],
+    pub gpu_ms: Option<f64>,
+}
+impl ReviewRenderer {
+    pub fn new(gpu: &Gpu, actors: &[Instance], far: Far) -> Result<Self, String> {
+        let count = u32::try_from(actors.len()).map_err(|_| "too many instances")?;
+        if count == 0
+            || u64::from(count) * 64 > u64::from(gpu.limits.max_storage_buffer_binding_size)
+        {
+            return Err("invalid human instance count".into());
+        }
+        use wgpu::BufferUsages as U;
+        let buffer = |size, usage| {
+            gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("human review"),
+                size,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        let camera = buffer(112, U::UNIFORM | U::COPY_DST);
+        let actors = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("crowd identities"),
+                contents: bytemuck::cast_slice(actors),
+                usage: U::STORAGE,
+            });
+        let ids = buffer(u64::from(count) * 5 * 4, U::STORAGE);
+        let args = buffer(100, U::STORAGE | U::COPY_DST | U::COPY_SRC | U::INDIRECT);
+        let read = buffer(120, U::MAP_READ | U::COPY_DST);
+        let timer = gpu
+            .features
+            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
+            .then(|| {
+                (
+                    gpu.device.create_query_set(&wgpu::QuerySetDescriptor {
+                        label: None,
+                        ty: wgpu::QueryType::Timestamp,
+                        count: 2,
+                    }),
+                    buffer(16, U::QUERY_RESOLVE | U::COPY_SRC),
+                )
+            });
+        let shader = gpu
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("warp humans"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("humans.wgsl").into()),
+            });
+        let compute = gpu
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: None,
+                module: &shader,
+                entry_point: Some("select_lod"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+        let attrs = wgpu::vertex_attr_array![0=>Float32x3,1=>Uint32,2=>Float32x3,3=>Float32,4=>Float32x3,5=>Uint32];
+        let render = gpu
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("warp humans"),
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: 48,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &attrs,
+                    })],
+                },
+                primitive: Default::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+        fn entry(binding: u32, b: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: b.as_entire_binding(),
+            }
+        }
+        let selection = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &compute.get_bind_group_layout(0),
+            entries: &[
+                entry(0, &camera),
+                entry(1, &actors),
+                entry(2, &ids),
+                entry(3, &args),
+            ],
+        });
+        let drawing = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &render.get_bind_group_layout(0),
+            entries: &[entry(0, &camera), entry(1, &actors), entry(4, &ids)],
+        });
+        let meshes: Vec<_> = [
+            geometry::stand(),
+            geometry::person(1, far, false),
+            geometry::person(2, far, false),
+            geometry::person(4, far, false),
+        ]
+        .into_iter()
+        .map(|m| Geometry::upload(gpu, m))
+        .collect();
+        let resident_buffer_bytes = meshes.iter().map(Geometry::bytes).sum::<u64>()
+            + actors.size()
+            + ids.size()
+            + args.size()
+            + camera.size()
+            + read.size()
+            + timer.as_ref().map_or(0, |t| t.1.size());
+        Ok(Self {
+            compute,
+            render,
+            selection,
+            drawing,
+            camera,
+            args,
+            read,
+            timer,
+            meshes,
+            count,
+            far,
+            detail_ready: false,
+            resident_buffer_bytes,
+        })
+    }
+
+    /// Called once on first close demand from any view. The medium mesh covers the requesting frame.
+    pub fn load_detail(&mut self, gpu: &Gpu) {
+        if self.detail_ready {
+            return;
+        }
+        let head = Geometry::upload(gpu, geometry::person(4, self.far, true));
+        self.resident_buffer_bytes =
+            self.resident_buffer_bytes - self.meshes[3].bytes() + head.bytes();
+        self.meshes[3] = head;
+        self.detail_ready = true;
+    }
+    pub fn draw(
+        &self,
+        gpu: &Gpu,
+        cam: &Camera,
+        time: f32,
+        color: &wgpu::Texture,
+        depth: &wgpu::Texture,
+    ) -> Result<ViewSample, String> {
+        let (w, h) = (color.width(), color.height());
+        let look = (cam.target - cam.pos).normalize();
+        let right = look.cross(Vec3::Y).normalize();
+        let up = right.cross(look);
+        let vp = Mat4::perspective_rh(cam.fov_y, w as f32 / h as f32, cam.near, 2000.)
+            * Mat4::look_at_rh(cam.pos, cam.target, Vec3::Y);
+        let mut u = [0f32; 28];
+        u[..16].copy_from_slice(&vp.to_cols_array());
+        u[16..19].copy_from_slice(&right.to_array());
+        u[20..23].copy_from_slice(&up.to_array());
+        u[24..].copy_from_slice(&[
+            time,
+            h as f32 / (2. * (cam.fov_y * 0.5).tan()),
+            self.far as u32 as f32,
+            self.count as f32,
+        ]);
+        gpu.queue
+            .write_buffer(&self.camera, 0, bytemuck::cast_slice(&u));
+        let mut commands = [0u32; 25];
+        for (mesh, bin) in self.meshes.iter().zip([0, 1, 2, 4]) {
+            commands[bin * 5] = mesh.count;
+        }
+        gpu.queue
+            .write_buffer(&self.args, 0, bytemuck::cast_slice(&commands));
+        let mut enc = gpu.device.create_command_encoder(&Default::default());
+        if let Some((q, _)) = &self.timer {
+            enc.write_timestamp(q, 0);
+        }
+        {
+            let mut pass = enc.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&self.compute);
+            pass.set_bind_group(0, &self.selection, &[]);
+            pass.dispatch_workgroups(self.count.div_ceil(64), 1, 1);
+        }
+        {
+            let cv = color.create_view(&Default::default());
+            let dv = depth.create_view(&Default::default());
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("human review"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &cv,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.66,
+                            g: 0.77,
+                            b: 0.86,
+                            a: 1.,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &dv,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.render);
+            pass.set_bind_group(0, &self.drawing, &[]);
+            for (mesh, bin) in self.meshes.iter().zip([0, 1, 2, 4]) {
+                pass.set_vertex_buffer(0, mesh.vertex.slice(..));
+                pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed_indirect(&self.args, bin * 20);
+            }
+        }
+        if let Some((q, b)) = &self.timer {
+            enc.write_timestamp(q, 1);
+            enc.resolve_query_set(q, 0..2, b, 0);
+            enc.copy_buffer_to_buffer(b, 0, &self.read, 104, 16);
+        }
+        enc.copy_buffer_to_buffer(&self.args, 0, &self.read, 0, 100);
+        gpu.queue.submit([enc.finish()]);
+        self.read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        gpu.wait();
+        let data = self
+            .read
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|e| e.to_string())?;
+        let counts = [1, 2, 4].map(|bin| {
+            let i = bin * 20 + 4;
+            u32::from_le_bytes(data[i..i + 4].try_into().unwrap())
+        });
+        let gpu_ms = self.timer.as_ref().map(|_| {
+            let ts = |i| u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+            ts(112).wrapping_sub(ts(104)) as f64 * f64::from(gpu.queue.get_timestamp_period()) / 1e6
+        });
+        drop(data);
+        self.read.unmap();
+        Ok(ViewSample { counts, gpu_ms })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overrides_preserve_other_identity_channels() {
+        let seed = 52;
+        let raw = Instance::person(seed, Vec3::ZERO, 0.0, &Constraints::default());
+        let same = Instance::person(seed, Vec3::ZERO, 0.0, &Constraints::default());
+        assert_eq!(bytemuck::bytes_of(&raw), bytemuck::bytes_of(&same));
+        let red = Instance::person(
+            seed,
+            Vec3::ZERO,
+            0.0,
+            &Constraints {
+                height_m: Some(1.76),
+                shirt: Some([0.8, 0.1, 0.2]),
+            },
+        );
+        assert_eq!(raw.identity, red.identity);
+        assert_eq!(raw.size_phase[2..], red.size_phase[2..]);
+        assert_eq!(red.size_phase[1], 1.76);
+        assert_eq!(red.color[..3], [0.8, 0.1, 0.2]);
+        assert_ne!(
+            raw.identity,
+            Instance::person(seed + 1, Vec3::ZERO, 0.0, &Constraints::default()).identity
+        );
+    }
+}
