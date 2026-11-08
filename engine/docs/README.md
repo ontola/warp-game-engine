@@ -47,7 +47,7 @@ and session notes are in the [development log](log/README.md).
 | [Zones and footprints](terrain-zones.md) | What each place is for, flat plots, buildings in `terrain_fly --town`. |
 | [World overrides](world-overrides.md) | Artist edits on top of rule placement, keyed on stable object ids. |
 | [Vegetation checklist](vegetation-architecture.md) | The GPU forest and grass route: architecture contract, gates and current measurements (a working checklist). |
-| [Atmosphere](atmosphere.md) | The procedural sky bake: Rayleigh and Mie scattering, ozone, sky lighting. |
+| [Atmosphere](atmosphere.md) | The procedural sky bake (Rayleigh and Mie, multiple scattering, ozone, sky lighting), aerial perspective and volumetric clouds. |
 | [Live sky: time of day and weather](live-sky-controls.md) | `render::sky`: presets, the background bake, Sideways' pause menu and Growing Guns' `--sky` and `sky` command. |
 | [Exposure and HDR output](hdr-and-exposure.md) | Automatic exposure and HDR output on HDR screens: when to use them, how to turn them on, authoring for HDR. |
 | [Motion blur](motion-blur.md) | Opt-in per-view motion vectors, fixed shutter, split-screen isolation and limitations. |
