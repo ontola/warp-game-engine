@@ -60,3 +60,15 @@ grey-white.
 `terrain_fly --bench 20 --size 1280x720` on lavapipe: `sky volume` 102 ms,
 `shade` 128 ms, `shade terrain` 134 ms (whole frame about 5 s). Software
 rendering only says the pass costs a little less than one shade pass.
+
+## Follow-up: clouds moving while standing still
+
+Joep (Mancave, terrain_fly) saw the clouds move with the camera still.
+`--dump 24` at 640×360 looking up, wind off: frames 12 to 23 change by 0.13
+of 255 on average in the sky, so the march and its history are stable; the
+motion was the wind drift (8 m/s) plus the detail noise drifting 1.5 times
+faster, which made the edges boil. Now the detail moves with the cloud, the
+default wind is 4 m/s along x and 1.5 m/s along z, the per-pixel jitter
+advances by the golden ratio each frame instead of being new white noise,
+and the march towards the sun is jittered too (fixed sample points can band
+the self-shadow under a large cloud into steps).
