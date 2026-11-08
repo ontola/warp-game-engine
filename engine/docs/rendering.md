@@ -237,8 +237,8 @@ This is not a complete Nanite or virtual shadow map implementation.
 - The default look is pale without tuning (AgX, physical units).
 - Animated pixels reject temporal history until deformation motion vectors
   exist.
-- Water is a surface in the terrain only (no simulated or reflective
-  water). Buildings are plain opaque geometry. Indoor light is a baked probe
+- Water is a surface in the terrain only (no simulated water); seeing the
+  bed through it is opt-in ([water optics](water.md)). Buildings are plain opaque geometry. Indoor light is a baked probe
   grid: no dynamic GI, light leaks through walls thinner than a cell.
 
 ## Further reading
