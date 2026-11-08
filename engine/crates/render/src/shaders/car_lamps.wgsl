@@ -6,7 +6,7 @@
 // body-local core centres; wear.xy are their radii, wear.z the texture's bright
 // reference. No model names, world-space light or exposure compensation here.
 fn car_lamp_emission(flags:u32, source_base:vec3<f32>, inst:Instance, p:vec3<f32>)->vec3<f32> {
-    let tag=flags>>16u;
+    let tag=(flags>>16u)&0x3fffu;
     if tag==0u {return vec3<f32>(0.0);}
     let cm=car_material(tag-1u);
     if u32(cm.colour.w+0.5)!=7u {return vec3<f32>(0.0);}

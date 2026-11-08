@@ -128,6 +128,11 @@ Owned by the foliage work; its working checklist is
   opt-in. **Open:** a visual check on a Windows HDR and a macOS EDR screen
   before turning them on by default; Sideways' own presenter is SDR only; no
   HDR10/PQ metadata.
+- [Skin and hair](skin-and-hair.md) (8 November): `SKIN` and `HAIR` material
+  flags in the shade pass (wrapped red-shifted diffuse, light through thin
+  parts from the sun shadow map, two-lobe skin specular; strand highlights
+  for hair). Opt-in in Growing Guns (`GG_SKIN_HAIR=1`). **Open:** a check on
+  a real GPU, hair geometry, screen-space skin diffusion.
 - **Open:** the edge of the near sun shadow map shows as a square from the
   air; far shadows should be drawn once per tile rather than every frame (one
   cached, paged sun shadow system).

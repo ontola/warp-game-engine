@@ -8,7 +8,7 @@
 //! construction. A disabled feature is exactly the path the shader would
 //! have taken anyway, so images do not change. `KERN_SHADE_FEATURES=all`
 //! restores the unspecialised pipeline for comparisons.
-use crate::scene::{Scene, ALPHA_TEST, CAR_SHIFT, GRASS, LAVA, ROAD, ROCK, SURFACE, TERRAIN, THIN_FOLIAGE};
+use crate::scene::{Scene, ALPHA_TEST, CAR_MASK, GRASS, HAIR, SKIN, LAVA, ROAD, ROCK, SURFACE, TERRAIN, THIN_FOLIAGE};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShadeFeatures {
@@ -41,6 +41,8 @@ pub struct ShadeFeatures {
     /// Roads drawn into the procedural terrain's pixels
     /// (procedural_terrain::road_surface).
     pub field_roads: bool,
+    /// Skin and hair lighting (SKIN or HAIR materials).
+    pub skin_hair: bool,
 }
 
 /// The style blocks of the procedural terrain materials (TERRAIN | SURFACE
@@ -60,13 +62,13 @@ pub const REGION_WORD: usize = 6;
 pub const ROAD_WORD: usize = 2;
 
 impl ShadeFeatures {
-    pub const ALL: Self = Self { cars: true, grass: true, grass_shade: true, tracks: true, world_terrain: true, foliage_pages: true, meadow: true, terrain: true, foliage: true, procedural: true, irradiance: true, field_regions: true, field_roads: true };
+    pub const ALL: Self = Self { cars: true, grass: true, grass_shade: true, tracks: true, world_terrain: true, foliage_pages: true, meadow: true, terrain: true, foliage: true, procedural: true, irradiance: true, field_regions: true, field_roads: true, skin_hair: true };
 
     pub fn for_scene(scene: &Scene, world_terrain: bool, foliage_pages: bool, meadow: bool) -> Self {
         if std::env::var("KERN_SHADE_FEATURES").as_deref() == Ok("all") { return Self::ALL; }
         let any = |mask: u32| scene.materials.iter().any(|m| m.flags & mask != 0);
         Self {
-            cars: !scene.car_materials.is_empty() || any(!0u32 << CAR_SHIFT),
+            cars: !scene.car_materials.is_empty() || any(CAR_MASK),
             grass: any(GRASS),
             grass_shade: any(GRASS | TERRAIN | ROAD) && scene.far_grass.is_some(),
             tracks: any(TERRAIN | ROAD),
@@ -79,6 +81,7 @@ impl ShadeFeatures {
             irradiance: scene.irradiance_volume.is_some(),
             field_regions: field_style_blocks(scene).iter().any(|&b| scene.materials.get(b + REGION_WORD).is_some_and(|m| m.roughness >= 0.5)),
             field_roads: field_style_blocks(scene).iter().any(|&b| scene.materials.get(b + ROAD_WORD).is_some_and(|m| m.metal >= 0.5)),
+            skin_hair: any(SKIN | HAIR),
         }
     }
 
@@ -101,6 +104,7 @@ impl ShadeFeatures {
             ("FEATURE_IRRADIANCE", b(self.irradiance)),
             ("FEATURE_FIELD_REGIONS", b(self.field_regions)),
             ("FEATURE_FIELD_ROADS", b(self.field_roads)),
+            ("FEATURE_SKIN_HAIR", b(self.skin_hair)),
         ]
     }
 }
@@ -122,7 +126,12 @@ mod tests {
         assert!(!f.grass && !f.grass_shade && f.tracks && !f.cars && f.meadow);
         scene.add_material(Material { tint: [0.5; 3], layer: -1, roughness: 0.8, flags: GRASS, scale: 1.0, metal: 0.0 });
         assert!(ShadeFeatures::for_scene(&scene, false, false, true).grass);
-        assert_eq!(ShadeFeatures::ALL.constants(false, false).len(), 15);
+        assert_eq!(ShadeFeatures::ALL.constants(false, false).len(), 16);
+        assert!(!ShadeFeatures::for_scene(&scene, false, false, true).skin_hair);
+        scene.add_material(Material { tint: [0.5; 3], layer: -1, roughness: 0.8, flags: crate::scene::SKIN, scale: 1.0, metal: 0.0 });
+        let f = ShadeFeatures::for_scene(&scene, false, false, true);
+        // Skin bits sit above the car tag: no car shading is compiled for them.
+        assert!(f.skin_hair && !f.cars);
     }
 
     #[test]
