@@ -43,8 +43,32 @@ resolution, reconstruction mode, sample count and scene with a number.
   is now timed. **Open:** no async cluster/triangle counters yet (they need
   a non-blocking counter readback); not in the browser shell or Sideways'
   own shell; overlay cost not measured on a real GPU yet.
+- **Refraction** (8 November): blended materials with a `Refraction`
+  bend the opaque scene behind them in screen space; Sideways car windows
+  have one ([rendering overview](rendering.md)). **Opt-in** with
+  `KERN_REFRACTION=1` or `Scene::graphics.refraction` until checked on
+  Mancave; checked on lavapipe only (`refraction_probe`). **Open:** cost on a
+  real GPU (a depth copy, a front-depth draw and an HDR copy per view with
+  refracting glass), only the nearest refracting surface bends, no caustics
+  or coloured shadows.
+- **GPU particles** (8 November): `render::gpu_particles` births, simulates
+  and draws tens of thousands of sparks, embers and dust on the GPU (compute
+  spawn and fixed-step simulation, heightfield ground collision, indirect
+  billboard draw after temporal reconstruction; [guide](gpu-particles.md)).
+  Growing Guns and Spellstorm blasts use it. **Opt-in** with
+  `KERN_GPU_PARTICLES=1`. **Open:** not timed on a real GPU yet (Mancave);
+  unsorted, so covering particles must stay faint; no shadows or local
+  lights on particles; not in the minimal forward renderer or the browser.
+- **Materials and textures** (8 November): per-texture material maps
+  (occlusion, roughness, metalness from `_arm`/`_rough` siblings and glTF),
+  wet/snow/moss weathering layers per material driven by `Lighting::wetness`
+  and `Lighting::snow`, BC7 texture arrays where the device has BC, and
+  opt-in texture streaming ([guide](materials.md)). **Open:** no ASTC for
+  phones/Quest; streaming is by time, not visibility (no feedback-driven
+  residency or eviction); grass, meadow and voxel trees ignore weather;
+  terrain, road and rock paths ignore material maps.
 - **Open:** fixed per-frame work for unused features; `frame.rs` still refers
-  to Sideways features; new meshes or materials need a new renderer;
+  to Sideways features; new meshes need a new renderer;
   animated pixels reject TAA history (no deformation motion vectors).
 - Many experiments remain behind default-off switches; see
   [renderer switches](renderer-switches.md). They are candidates for removal.
@@ -58,6 +82,11 @@ resolution, reconstruction mode, sample count and scene with a number.
   (step 2), [world overrides](world-overrides.md) (step 3, CPU only).
 - Ditches, streams and rivers keep their share of water at every LOD
   (`Sample::film`); ditches are also drawn per pixel up close.
+- [Water optics](water.md) (8 November): opt-in refraction (bed through
+  absorbing water, Fresnel, caustics) on top of the traced reflections
+  (`Lighting::water`, `KERN_WATER=1`, F10 Light menu). **Open:** checked on
+  lavapipe only; not timed or checked on the Mac or the RTX 5070 Ti before
+  it can become the default; water colour is not a style setting yet.
 - `terrain_fly --town` builds buildings (`GeometryCategory::Structures`) on
   zoned plots.
 - **Next:** step 4, hierarchical GPU placement (with a GPU id table for
@@ -99,9 +128,17 @@ Owned by the foliage work; its working checklist is
 
 ## Shadows and lighting
 
-- Physical units (lux, EV100, nits), procedural atmosphere, height fog with a
-  finite-distance aerosol layer, irradiance volumes for interiors, opt-in
-  [volumetric light](volumetric-light.md).
+- Physical units (lux, EV100, nits), procedural atmosphere with multiple
+  scattering, height fog with a finite-distance aerosol layer, irradiance
+  volumes for interiors, opt-in [volumetric light](volumetric-light.md).
+- Opt-in [aerial perspective and volumetric clouds](atmosphere.md#aerial-perspective-and-clouds-lightingsky_volume)
+  (`Lighting::sky_volume`, on in `terrain_fly`): froxel aerial perspective
+  from the sky bake's LUTs, one raymarched cumulus layer with cloud shadows.
+  Open: sky from altitude, clouds in skylight and reflections, real-GPU cost.
+- [Traced reflections](dynamic-gi.md) (default on, needs TAA): glossy
+  surfaces reflect what the frame shows, traced through the depth buffer
+  and lit by last frame's image. Open: off-screen hits (terrain surface
+  cache), dynamic diffuse bounce (world probes), trees in the trace.
 - **Opt-in static/dynamic sun split:** retains GPU source and voxel tree
   casters; exact split/full depth oracle covers still, wind, removal and
   restoration. Does not yet skip forest cull/splat work on unchanged pages.
@@ -119,6 +156,11 @@ Owned by the foliage work; its working checklist is
   becomes the default; Sideways (stage scenes, `far_sun`) and the paged
   foliage sun still use their own maps; the GPU forest's voxel slot churn
   dirties about half of every cached map each frame.
+- [Skin and hair](skin-and-hair.md) (8 November): `SKIN` and `HAIR` material
+  flags in the shade pass (wrapped red-shifted diffuse, light through thin
+  parts from the sun shadow map, two-lobe skin specular; strand highlights
+  for hair). Opt-in in Growing Guns (`GG_SKIN_HAIR=1`). **Open:** a check on
+  a real GPU, hair geometry, screen-space skin diffusion.
 
 ## Games
 
@@ -151,7 +193,7 @@ Luau entities can follow a parent, and native games can resolve named model sock
   is not confirmed yet. No threads, gamepads, F10 menu or
   HDR; trees are opt-in (`?trees=1`) because they are cooked at every load
   ([Running in a browser](browser.md)). Without trees the full renderer
-  fits the engine rule of 8 storage buffers per shader stage but needs 20
+  fits the engine rule of 8 storage buffers per shader stage but needs 21
   sampled textures (spec minimum 16); trees still need 16 storage buffers.
   Below that a portable renderer draws terrain and sky only
   (`render::portable`).

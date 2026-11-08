@@ -473,6 +473,7 @@ fn sky(light: &Lighting) -> Result<render::atmosphere::BakedSky, String> {
         night_ambient_rgb_lux: Vec3::ZERO,
         night: Default::default(),
         night_stars: [0.; 4],
+        tables: render::sky_volume::default_tables(),
         solar,
         quality: render::atmosphere::BakeQuality {
             sky_width: 16,

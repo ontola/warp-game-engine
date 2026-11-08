@@ -74,6 +74,33 @@ and the measurements and dead ends are in the [development log](log/README.md).
   electrical arcs and tracers; it also leaves exhaust/particle composition sharp.
   The default order is unchanged for other games.
 
+- **Blended surfaces and refraction.** Materials given
+  `Scene::set_material_blend` (glass, decals) or `set_material_additive`
+  skip the visibility buffer and draw afterwards in a small forward pass
+  (`transparency.rs`, `shaders/transparency.wgsl`), sorted back to front per
+  view, lit with the same sun, sky and shadow code as opaque pixels.
+  `Scene::set_material_refraction` adds a `Refraction` (index of
+  refraction and thickness: `Refraction::WINDOW` for a 4 mm pane,
+  `Refraction::SOLID` for a solid reaching the background). With refraction
+  on (`Scene::graphics.refraction` or `KERN_REFRACTION=1`, off by default
+  until checked on a real GPU), a view with refracting glass first finds
+  the nearest refracting surface per pixel (a depth-only draw over a copy
+  of the opaque depth), draws the glass behind it, copies the HDR, then
+  draws that surface over the copy, bent, and finally the glass in front.
+  The copies, the opaque depth (a read-only attachment) and the front depth
+  are an optional fourth bind group with no storage buffers; the phase is
+  in the top bits of each sorted entry, so it stays one pipeline. A pane
+  bends the ray through its thickness and lets it out parallel; a solid
+  bends it once to the background (its inside faces are not drawn). Light
+  through the glass loses its Fresnel reflection, takes the glass's hue and
+  blurs with roughness; the reflection is kept whole. Only the nearest
+  refracting surface bends: glass behind it moves with the background but
+  does not bend again. A view without refracting glass draws in one pass.
+  Not refracted: whatever lies beyond the screen edge (clamped) and anything
+  in front of the glass (falls back to the straight view).
+  `refraction_probe` renders a glass ball, slab and pane, also split screen,
+  with it off and on.
+
 ## Light
 
 ### Sun shadows
@@ -140,13 +167,47 @@ unless the scene also opts in; paged foliage sun is a mutually exclusive mode. S
 (`terrain_fly`) get a camera-anchored far map by default, and the forest has
 its own shadow tile cache that only redraws tiles whose casters changed.
 
+### Clustered local lights
+
+Opt-in with `Graphics::clustered_lights` or `KERN_CLUSTERED_LIGHTS=1`
+(off by default until checked on more GPUs). `Renderer::set_clustered_lights`
+takes up to 1024 lights a frame, each a `LocalLight` (the same model as
+`set_local_lights`) with an optional `LightShadow { id, exclude }`. They add
+to the headlights and local lights, which still work.
+
+- Binning: a compute pass sorts the lights into a world-space grid of at
+  most 16384 roughly cubic cells, fitted around the lights and clipped to
+  600 m around the cameras. Each cell keeps its first 62 lights in the
+  order given, so put the important ones first. Shade loops over its
+  pixel's cell only.
+- Shadows: 256-texel tiles in extra layers of the headlights' shadow array
+  (`KERN_CLUSTERED_SHADOW_LAYERS`, 4 layers, 64 tiles by default). A spot
+  light up to a 120 degree cone takes one tile, anything wider six (a cube).
+  The lights nearest a camera, relative to their range, get tiles; the rest
+  stay unshadowed (`clustered_light_stats().dropped_shadows`). A tile keeps
+  its depth while its light keeps its `id` and does not move: moved lights
+  redraw first, then the oldest tiles, at most
+  `KERN_CLUSTERED_SHADOW_FACES` (12) a frame, so a caster that moves past a
+  still lamp is a few frames late. `exclude` names the lamp's own
+  instances. 4-tap filtered, no soft penumbra yet.
+- Cost: the light records, shadow faces and cells live in the scene tables
+  buffer (shade stays at 8 storage buffers); a uniform in bind group 2 holds
+  the grid. Off, shade compiles none of it. Grass and opaque surfaces get
+  the lights; transparency, volumetric light and the forward renderer do
+  not yet.
+- Probe: `cargo run --release -p render --example clustered_lights_probe --
+  --out DIR` (400 lamps over a plaza of pillars, 24 shadowed).
+- Spellstorm uses it with `KERN_CLUSTERED_LIGHTS=1`: every lamp, staff,
+  shrine and spell light, lamps shadowed.
+
 ### Everything else
 
 - Physical units: sun and sky in lux, exposure in EV100, emissive
   materials in nits. `Lighting::default()` is a sunny day.
 - Sun shadows, plus shadowed spot lights for headlights; up to 32
   unshadowed point or spot lights per frame (`set_local_lights`), with a
-  `falloff` exponent.
+  `falloff` exponent. Opt-in: up to 1024 clustered lights, some shadowed
+  (below).
 - A procedural atmosphere bake: Rayleigh and aerosol Mie single scattering
   with ozone absorption on a spherical planet, supplying both the
   background and SH9 sky lighting. No clouds, moon or visible sun disc.
@@ -235,8 +296,8 @@ This is not a complete Nanite or virtual shadow map implementation.
 - The default look is pale without tuning (AgX, physical units).
 - Animated pixels reject temporal history until deformation motion vectors
   exist.
-- Water is a surface in the terrain only (no simulated or reflective
-  water). Buildings are plain opaque geometry. Indoor light is a baked probe
+- Water is a surface in the terrain only (no simulated water); seeing the
+  bed through it is opt-in ([water optics](water.md)). Buildings are plain opaque geometry. Indoor light is a baked probe
   grid: no dynamic GI, light leaks through walls thinner than a cell.
 
 ## Further reading

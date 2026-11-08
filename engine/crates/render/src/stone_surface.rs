@@ -27,6 +27,7 @@ pub fn texture() -> TextureSource {
         name: source.name.clone(),
         rgba: source.rgba.clone(),
         normal: source.normal.clone(),
+        orm: None,
     }
 }
 
@@ -249,6 +250,7 @@ fn cook() -> TextureSource {
         name: NAME.to_owned(),
         rgba,
         normal: Some(normals),
+        orm: None,
     }
 }
 
@@ -449,6 +451,7 @@ mod tests {
             name: "unrelated-material".to_owned(),
             rgba: RgbaImage::new(1, 1),
             normal: None,
+            orm: None,
         });
         let first = add_to_scene(&mut scene);
         let second = add_to_scene(&mut scene);

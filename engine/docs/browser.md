@@ -45,7 +45,7 @@ host serves it.
   (trees) still needs 16 storage buffers. Storage buffers on macOS: 94 %
   offer 10 or more, 29 % 16; Firefox (Zen) gives 9, Chrome's software
   adapter (SwiftShader) 10 with 16 textures.
-- With fewer than 8 storage buffers or 20 sampled textures
+- With fewer than 8 storage buffers or 21 sampled textures
   (`render::portable::needed`) the renderer switches to its portable path
   (`render::portable`, `KERN_PORTABLE=1` forces it natively): the
   procedural terrain drawn straight from its patch pool, textured with a

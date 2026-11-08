@@ -27,6 +27,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_TERRAIN_COARSE` | Turns off the coarse terrain footprint in shading. `KERN_COARSE_FOOTPRINT_M=<m>` sets its size. |
 | `KERN_TILED_POST` | Untiled tone mapping and post (same image). |
 | `KERN_SKY_VIS_CACHE` | No cached sky transmittance through the canopy. |
+| `KERN_TRACED_REFLECTIONS` | No traced reflections: glossy surfaces reflect only the sky and the heuristic ground bounce ([dynamic-gi.md](dynamic-gi.md)). |
 | `KERN_CAMERA_SUN_OCCLUSION` | Solar haze ignores terrain between camera and sun ([camera sun fog](camera-sun-fog.md)). |
 | `KERN_CUTOUT_LINEAR_RGB` | Alpha-cutout textures mip in sRGB instead of linear RGB. |
 | `KERN_GRASS_LEAF_BRDF`, `KERN_GRASS_SUN_OCCLUSION` | Plain grass lighting, no grass self-shadow from the sun. |
@@ -35,6 +36,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_VOXEL_SURFACE`, `KERN_VOXEL_PASS`, `KERN_VOXEL_EMPTY_CEILING` | Voxel forest without its surface pass, separate voxel shade pass, or empty-space ceiling. |
 | `KERN_REUSE_SUN_TEXTURE`, `KERN_ZERO_SUN_FAST_PATH` | Recreate the sun texture; shade a sunless scene the long way. |
 | `KERN_WIND_FREEZE` | Trees keep moving in the wind at every distance (`off` works too). Default: frozen to the rest pose between 60 and 90 m, so distant crowns match cached sun shadows; `start,end` in metres sets the band. |
+| `KERN_TEXTURE_COMPRESSION` | Albedo, normal and material map arrays stay RGBA8 instead of BC7 ([materials](materials.md#compression)). |
 | `KERN_PIPELINE_CACHE`, `KERN_TEXTURE_CACHE` | No pipeline cache / no processed texture cache ([texture cache](processed-texture-cache.md)). `KERN_PIPELINE_CACHE_DIR` and `KERN_TEXTURE_CACHE_DIR` move them. |
 
 ## Chosen by the scene, forced either way
@@ -44,6 +46,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_FAR_SUN_SHADOW` | On for `Scene::stage_sun` scenes and (camera-anchored) for streamed GPU-forest worlds; `0` off, `1` forces the older foliage-oriented fit. `KERN_FAR_SUN_LOD`, `KERN_FAR_SUN_REACH` (m, default 1024) tune it. |
 | `KERN_WORLD_TERRAIN_VISIBILITY` | `Scene::world_terrain_visibility`. `KERN_TERRAIN_NODE_BUDGET` caps its traversal. |
 | `KERN_SIMPLE_LIGHTING`, `KERN_SIMPLE_CULL` | The scene's graphics settings (`terrain_fly` turns simple lighting on). |
+| `KERN_CLUSTERED_LIGHTS` | `Graphics::clustered_lights` (off): clustered local lights, hundreds per frame, some shadowed ([rendering](rendering.md#clustered-local-lights)). `1` turns them on, `0` off. |
 | `KERN_BOUNDED_DRAWS` | On for Adreno (Quest) with simple culling. |
 | `KERN_VIRTUAL_MEMBERS` | The game's `set_virtual_members` choice for recipe forests. |
 | `KERN_SUN_SCENE_DEPTH` | On with a GPU forest. |
@@ -51,6 +54,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_CAMERA_CUT_FLOOR` | 4 | Lowest camera error-cut scale: voxels start sooner than a few trees' budget alone would put them. 1 disables it; 16 (the old default) picks coarse per-branch voxel levels that show as smooth balls on grown pines at 10-30 m. |
 | `KERN_COOK_THREADS` | machine threads | Worker threads for voxel cooks (`render::par`). A plant's branches and geometry groups cook in parallel; nested and concurrent cooks share the count. |
 | `KERN_FOLIAGE_CUT=budget` | Default: the error-driven foliage cut (each root refines by error alone; the GPU loosens the camera and shadow targets when a cap binds). `budget` restores the budgeted collective admission for A/B. |
+| `KERN_TEXTURE_STREAMING` | `Scene::texture_streaming` (Sideways: on for played windows); `1` streams, `0` uploads every mip at creation ([materials](materials.md#streaming)). |
 | `KERN_FOLIAGE_OCCLUDERS=terrain` | Default: any rigid opaque geometry hides the GPU forest. `terrain` restores land-only occlusion (`terrain_fly --no-building-occlusion`). |
 
 ## Tuning values
@@ -58,6 +62,8 @@ Use these to compare against the old path. All of them are the normal route.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `KERN_SHADOW_REACH` | 180 | Metres of dynamic sun shadow. |
+| `KERN_CLUSTERED_SHADOW_LAYERS` | 4 | 1024-texel layers of 256-texel shadow tiles for clustered lights (16 tiles, 4 MiB each; at most 16). A point light takes 6 tiles, a spot 1. |
+| `KERN_CLUSTERED_SHADOW_FACES` | 12 | Clustered shadow tiles redrawn per frame at most (moved lights first, then the oldest). |
 | `KERN_NEAR_SHADOW_LOD` | 1.0 | Scale on near shadow cluster error. |
 | `KERN_SUN_VOXEL_M` | per scene | Voxel cell size in the sun map. |
 | `KERN_SUN_LEVELS` | 4, or 7 with `KERN_SUN_CLIPMAP` | Sun clipmap levels round each camera (1 to 8; level k covers 24 m times 2^k). |
@@ -74,7 +80,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_DIAGNOSTIC_HIDE` | Hide geometry categories in captures. |
 | `KERN_SUN_DAMAGE_REPORT=1` | Prints, every frame, how many of the 4096 tiles of each cached sun map were marked changed, and how many casters changed by snapshot row (blocking readback). |
 | `KERN_MEADOW_CAPTURE_RAW=1` | Sideways: raw meadow buffers in the capture JSON. |
-| `KERN_PORTABLE=1` | Draw with the portable renderer (`render::portable`: procedural terrain, sky and haze, three storage buffers per stage) as a device below 10 storage buffers or 20 sampled textures per stage does (`render::portable::needed`). Default off; such a device always uses it. See [Running in a browser](browser.md). |
+| `KERN_PORTABLE=1` | Draw with the portable renderer (`render::portable`: procedural terrain, sky and haze, three storage buffers per stage) as a device below 10 storage buffers or 21 sampled textures per stage does (`render::portable::needed`). Default off; such a device always uses it. See [Running in a browser](browser.md). |
 | `KERN_WEBGPU_LIMITS=spec`, `=browser`, `=mac` | Native device with only what a browser's WebGPU gives: the timestamp and first-instance features, and the spec's default limits (`spec`), what about 80 % of WebGPU devices offer (`browser`: 16 storage buffers and 32 sampled textures per stage, 1 GiB buffers) or `browser` with the 10 storage buffers most Macs offer (`mac`), never above the adapter. GPU errors are printed once each and do not stop the run, so one run lists every layout over the limits. For checking a [browser build](log/2026-11-05-browser-feasibility.md) without a browser. |
 | `KERN_DLSS_RUNTIME_DIR` | Where to find `nvngx_dlss.dll` ([DLSS](../crates/render/native/DLSS.md)). |
 
@@ -85,7 +91,10 @@ note linked says why. They are candidates for removal from the code.
 
 | Variable | Experiment | Note |
 | --- | --- | --- |
+| `KERN_REFRACTION` | Screen-space refraction for materials with a `Refraction` (same as `Scene::graphics.refraction`); default once checked on a real GPU | [refraction](log/2026-11-08-refraction.md) |
+| `KERN_GPU_PARTICLES` | GPU particle pools take emitters (sparks, embers, grit in Growing Guns and Spellstorm blasts). Opt-in until timed on a real GPU; read by `GpuParticles::new`, so a running game needs a restart | [GPU particles](gpu-particles.md) |
 | `KERN_INSTANCE_GROUPS`, `KERN_SUN_INSTANCE_GROUPS`, `KERN_HEADLIGHT_INSTANCE_GROUPS` | GPU hierarchy of spatial instance groups | [r45](log/instance-hierarchy-r45.md) |
+| `KERN_WATER` | Water optics on terrain water (the bed through refracting, absorbing water) as the `Lighting` default; read whenever a `Lighting` is made | [water](water.md) |
 | `KERN_CLUSTER_TRAVERSAL` | Top-down cluster traversal (`terrain_fly` turns it on unless set) | [r46](log/cluster-traversal-r46.md) |
 | `KERN_INSTANCE_BROADPHASE` | Compact colour-view instance selection | [broadphase](log/instance-broadphase.md) |
 | `KERN_SUN_CLIPMAP` | One sun shadow system for streamed GPU-forest worlds: seven cached, scrolling clipmap levels per view (24 m to 1.5 km) replace the shared map and the anchored far map ([sun shadows](rendering.md#sun-shadows)). Needs the default sun cache (not `KERN_STATIC_SUN_CACHE`). Waiting for a measurement on a real GPU. | [clipmap log](log/2026-11-08-sun-clipmap.md) |

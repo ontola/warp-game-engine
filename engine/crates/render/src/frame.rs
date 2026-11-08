@@ -310,7 +310,17 @@ struct LightUniform {
     near_levels_view_proj: [[[f32; 4]; 4]; NEAR_LEVELS_MAX - 1],
     /// x: levels drawn (0 when the near maps are off).
     near_levels: [f32; 4],
+    /// Cloud layer for cloud shadows (cloud_weather.wgsl): coverage, base m,
+    /// thickness m, extinction per m; then wind offset xz m, shadow, enabled.
+    clouds: [f32; 4],
+    cloud_motion: [f32; 4],
 }
+
+/// Traced reflections: surfaces at least this rough keep the environment
+/// (their lobe is wider than one jittered ray per frame can average).
+const TRACE_ROUGHNESS_CUT: f32 = 0.45;
+/// How far a reflected ray marches through the depth buffer, in metres.
+const TRACE_REACH_M: f32 = 250.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -322,6 +332,10 @@ struct GiUniform {
     hf_dims: [u32; 4],
     bounce: [f32; 4],
     params: [f32; 4],
+    /// Traced reflections: last frame's unjittered view-projection.
+    prev_view_proj: [[f32; 4]; 4],
+    /// x: on with a valid history, y: roughness cut, z: reach (m).
+    trace: [f32; 4],
 }
 
 #[repr(C)]
@@ -467,6 +481,10 @@ pub struct Lighting {
     pub contact_occlusion: f32,
     /// Visibility along the glossy reflected direction.
     pub reflection_occlusion: f32,
+    /// Traced reflections (dynamic-gi.md): glossy surfaces show the scene
+    /// around them, traced through the depth buffer and lit by last frame's
+    /// image. 1 on, 0 off. Needs TAA (its history); off under DLSS.
+    pub traced_reflections: f32,
     /// Per-view high-resolution sun detail; set 0 for an isolated cost check.
     pub near_shadows: f32,
     /// Debug: 1 sky visibility, 2 albedo, 3 direct, 4 diffuse indirect,
@@ -492,9 +510,24 @@ pub struct Lighting {
     pub grain: f32,
     /// Chromatic aberration towards the corners, in pixels at the corner (0 off).
     pub aberration: f32,
+    /// Rain: how wet surfaces are, 0..1. Materials take it by their
+    /// `MaterialLayers::wet` (darker where porous, glossier everywhere);
+    /// roads and verges use their own wet look.
+    pub wetness: f32,
+    /// Snow cover on upward faces, 0..1, by each material's `MaterialLayers::snow`.
+    pub snow: f32,
     /// Opt-in in-scattering from local lights with a scatter weight
     /// (`Renderer::set_local_lights_scattering`); `None` adds no pass.
     pub volumetric: Option<crate::volumetric::Volumetric>,
+    /// Opt-in aerial perspective and volumetric clouds (`sky_volume`): the
+    /// air integrated with the sky bake's atmosphere instead of the shade
+    /// pass's distance fog, a cumulus layer and its shadows. `None` adds no pass.
+    pub sky_volume: Option<crate::sky_volume::SkyVolume>,
+    /// Water optics on terrain water: the bed seen through refracting,
+    /// absorbing water, with Fresnel and caustics (engine/docs/water.md).
+    /// Its reflections are the traced reflections every glossy surface
+    /// gets. Opt-in until it has been checked on real hardware.
+    pub water: bool,
 }
 
 impl Lighting {
@@ -536,6 +569,7 @@ impl Lighting {
             "indirect_fill_lux" if f.is_finite() && f >= 0.0 => self.indirect_fill_lux = f,
             "contact_occlusion" => self.contact_occlusion = f,
             "reflection_occlusion" => self.reflection_occlusion = f,
+            "traced_reflections" => self.traced_reflections = f,
             "near_shadows" => self.near_shadows = f,
             "debug" => self.debug = f,
             "taa" => self.taa = f,
@@ -547,9 +581,20 @@ impl Lighting {
             "vignette" if (0.0..=1.0).contains(&f) => self.vignette = f,
             "grain" if (0.0..=1.0).contains(&f) => self.grain = f,
             "aberration" if (0.0..=16.0).contains(&f) => self.aberration = f,
+            "wetness" if (0.0..=1.0).contains(&f) => self.wetness = f,
+            "snow" if (0.0..=1.0).contains(&f) => self.snow = f,
             // `volumetric=0` turns it off, `volumetric=1` on with defaults.
+            "water" if f == 0.0 || f == 1.0 => self.water = f == 1.0,
             "volumetric" if f == 0.0 || f == 1.0 => self.volumetric = (f == 1.0).then(|| self.volumetric.unwrap_or_default()),
             k if k.starts_with("vol_") => self.volumetric.get_or_insert_with(Default::default).set(k, f)?,
+            // `sky_volume=0|1` (aerial perspective and clouds), `clouds=0|1`,
+            // `sky_aerial=0|1`, `cloud_*` (sky_volume::SkyVolume::set).
+            "sky_volume" if f == 0.0 || f == 1.0 => self.sky_volume = (f == 1.0).then(|| self.sky_volume.unwrap_or_default()),
+            k if k == "clouds" || k.starts_with("cloud_") || k.starts_with("sky_aerial") => {
+                let mut next = self.sky_volume.unwrap_or(crate::sky_volume::SkyVolume { clouds: None, ..Default::default() });
+                next.set(k, f)?;
+                self.sky_volume = Some(next);
+            }
             "sun_elevation" | "sun_azimuth" => {
                 let el = if k == "sun_elevation" { f } else { self.sun_dir.y.asin().to_degrees() };
                 let az = if k == "sun_azimuth" { f } else { self.sun_dir.x.atan2(-self.sun_dir.z).to_degrees() };
@@ -599,6 +644,7 @@ impl Default for Lighting {
             indirect_fill_lux: 0.0,
             contact_occlusion: 1.0,
             reflection_occlusion: 1.0,
+            traced_reflections: 1.0,
             near_shadows: 1.0,
             debug: 0.0,
             taa: 1.0,
@@ -610,7 +656,11 @@ impl Default for Lighting {
             vignette: 0.0,
             grain: 0.0,
             aberration: 0.0,
+            wetness: 0.0,
+            snow: 0.0,
             volumetric: None,
+            sky_volume: None,
+            water: std::env::var("KERN_WATER").as_deref() == Ok("1"),
         }
     }
 }
@@ -921,6 +971,10 @@ pub struct Renderer {
     camera_projections: std::sync::Mutex<Vec<Mat4>>,
     resource_device: wgpu::Device,
     albedo_array: wgpu::Texture,
+    /// Normal maps, then material maps (`material_maps`).
+    normal_array: wgpu::Texture,
+    /// Full texture chains still on their way (`Scene::texture_streaming`).
+    texture_stream: Option<crate::texture_stream::Stream>,
     live_screens: Option<std::sync::Mutex<crate::screen_feed::LiveScreens>>,
     dents: Option<(usize, usize)>,
     dfao: Option<(usize, crate::dfao::Grid)>,
@@ -931,6 +985,7 @@ pub struct Renderer {
     debug_options: std::sync::Mutex<crate::debug_settings::DebugRenderOptions>,
     upscaling: std::sync::Mutex<Upscaling>,
     motion_blur: std::sync::Mutex<Option<crate::motion_blur::Resources>>,
+    depth_of_field: std::sync::Mutex<Option<crate::depth_of_field::Resources>>,
     frame_time_ms: std::sync::atomic::AtomicU32,
     scene_bind: wgpu::BindGroup,
     cull_scene_bind: wgpu::BindGroup,
@@ -955,6 +1010,8 @@ pub struct Renderer {
     headlight_state: std::sync::Mutex<Vec<crate::headlights::SpotLight>>,
     headlight_exclusions: std::sync::Mutex<Vec<(u32,u32)>>,
     local_light_state: std::sync::Mutex<Vec<crate::headlights::LocalLight>>,
+    clustered: crate::clustered_lights::Resources,
+    clustered_targets: std::sync::Mutex<Vec<ViewTargets>>,
     spot_falloff: std::sync::Mutex<Vec<f32>>,
     spot_softness: std::sync::Mutex<f32>,
     lighting_focus: std::sync::Mutex<Vec<Vec3>>,
@@ -978,7 +1035,9 @@ pub struct Renderer {
     crowd: Option<crate::crowd::CrowdRenderer>,
     fx: crate::fx::FxSlot,
     volumetric: crate::volumetric::VolumetricSlot,
+    sky_volume: crate::sky_volume::SkyVolumeSlot,
     sprites: crate::sprites::SpriteSlot,
+    gpu_particles: crate::gpu_particles::ParticleSlot,
     transparency: Option<crate::transparency::Transparency>,
     grass: Option<crate::grass::GrassRenderer>,
     meadow: Option<crate::meadow::MeadowRenderer>,
@@ -1074,6 +1133,10 @@ pub struct Renderer {
     /// lights them from their surface (binding 20); stand-in without.
     voxel_surface: bool,
     voxel_surface_fallback: wgpu::TextureView,
+    /// Bound as the reflection history when there is none (traced reflections off).
+    history_fallback: wgpu::TextureView,
+    /// KERN_TRACED_REFLECTIONS=0 turns traced reflections off.
+    traced_reflections: bool,
     /// shade_voxels (KERN_VOXEL_PASS=1): voxel pixels in their own pass.
     voxel_pass: Option<wgpu::ComputePipeline>,
     /// shade for procedural terrain pixels only (SHADE_CLASS 1); `shade`
@@ -1178,6 +1241,11 @@ pub struct Renderer {
 #[derive(Clone, Copy)]
 enum RasterPass { Color, Sun, SunStatic(u32), SunDynamic(u32), FarSun, FoliagePage, Headlight }
 
+/// A shadow raster into one tile of a layer (clustered light shadows):
+/// texel rectangle (x, y, size), and whether its passes are timed.
+#[derive(Clone, Copy)]
+struct RasterTile { rect: [u32; 3], timed: bool }
+
 /// Cull draw records: four opaque (or all) draws and their starts, then
 /// four masked draws and their starts (cull.wgsl `args`).
 const ARGS_BYTES: u64 = 40 * 4;
@@ -1248,27 +1316,34 @@ fn bind(gpu: &Gpu, layout: &wgpu::BindGroupLayout, entries: &[(u32, wgpu::Bindin
 
 /// Textures as one array with mips, all resized to `size`. Layers without
 /// an image get `fill`. Cut-out albedo keeps its alpha-test coverage per mip.
-/// Mips are built on all cores.
-fn texture_array(gpu: &Gpu, label: &'static str, images: &[Option<&image::RgbaImage>], size: u32, format: wgpu::TextureFormat, fill: [u8; 4], cutout_layers: &[bool], profile: &mut crate::startup_profile::Trace) -> wgpu::Texture {
+/// Mips are built on all cores, then encoded (texture_stream.rs). Layers
+/// marked in `tail` get only their mips from `texture_stream::TAIL` down;
+/// the stream fills the rest later.
+fn texture_array(gpu: &Gpu, label: &'static str, images: &[Option<&image::RgbaImage>], size: u32, format: wgpu::TextureFormat, encoding: crate::texture_stream::Encoding, fill: [u8; 4], cutout_layers: &[bool], tail: &[bool], profile: &mut crate::startup_profile::Trace) -> wgpu::Texture {
     let enabled=profile.enabled();
     let allocation_start=enabled.then(web_time::Instant::now);
     let linear_cutout_rgb = std::env::var("KERN_CUTOUT_LINEAR_RGB").as_deref() != Ok("0");
     let layers = images.len().max(1) as u32;
     let mips = size.ilog2() + 1;
+    let compressed = encoding != crate::texture_stream::Encoding::Rgba8;
     let tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: layers },
         mip_level_count: mips,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format,
-        // RENDER_ATTACHMENT: `screen::Screen` redraws live layers on the GPU.
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: crate::texture_stream::gpu_format(format, encoding),
+        // RENDER_ATTACHMENT: `screen::Screen` redraws live layers on the GPU
+        // (never compressed: a scene with screen layers keeps RGBA8).
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST
+            | if compressed { wgpu::TextureUsages::empty() } else { wgpu::TextureUsages::RENDER_ATTACHMENT },
         view_formats: &[],
     });
     let allocation_cpu_ms=crate::startup_profile::elapsed(allocation_start);
     let cache=crate::texture_cache::Cache::from_env();
     let chain = |src: Option<&image::RgbaImage>, preserve_alpha: bool, layer:usize| {
+        let tail_only = tail.get(layer).copied().unwrap_or(false);
+        let size = if tail_only { crate::texture_stream::TAIL.min(size) } else { size };
         let settings=crate::texture_cache::Settings{size,format,fill,preserve_alpha,linear_cutout_rgb};
         let total=enabled.then(web_time::Instant::now);
         let mut cache_profile=crate::startup_profile::TextureCacheProfile::default();
@@ -1280,7 +1355,8 @@ fn texture_array(gpu: &Gpu, label: &'static str, images: &[Option<&image::RgbaIm
             if let Some(key)=key {cache.store(key,settings,&out,enabled,&mut cache_profile);}
             (out,timing)
         };
-        timing.output_bytes=out.iter().map(|i|i.as_raw().len()as u64).sum();
+        let out=crate::texture_stream::encode(out,encoding,key,&cache);
+        timing.output_bytes=out.iter().map(|i|i.len()as u64).sum();
         timing.total_cpu_ms=crate::startup_profile::elapsed(total);
         timing.cache=cache_profile;
         (out,timing)
@@ -1290,23 +1366,16 @@ fn texture_array(gpu: &Gpu, label: &'static str, images: &[Option<&image::RgbaIm
     // Bound transient CPU memory while building large cutout colour arrays.
     let threads = if format == wgpu::TextureFormat::Rgba8UnormSrgb { threads.min(4) } else { threads };
     let build_start=enabled.then(web_time::Instant::now);
-    let chains: Vec<(Vec<image::RgbaImage>,crate::startup_profile::TextureLayerProfile)> = crate::par::scope(|sc| {
+    let chains: Vec<(Vec<Vec<u8>>,crate::startup_profile::TextureLayerProfile)> = crate::par::scope(|sc| {
         let per = images.len().div_ceil(threads).max(1);
         let handles: Vec<_> = images.chunks(per).enumerate().map(|(chunk, part)| sc.spawn(move || part.iter().enumerate().map(|(index, i)| chain(*i, cutout_layers.get(chunk * per + index).copied().unwrap_or(false),chunk*per+index)).collect::<Vec<_>>())).collect();
         handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
     });
     let build_wall_ms=crate::startup_profile::elapsed(build_start);
     let upload_start=enabled.then(web_time::Instant::now);
-    for (layer, (mips,_)) in chains.iter().enumerate() {
-        for (mip, img) in mips.iter().enumerate() {
-            let s = img.width();
-            gpu.queue.write_texture(
-                wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: mip as u32, origin: wgpu::Origin3d { x: 0, y: 0, z: layer as u32 }, aspect: wgpu::TextureAspect::All },
-                img,
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * s), rows_per_image: Some(s) },
-                wgpu::Extent3d { width: s, height: s, depth_or_array_layers: 1 },
-            );
-        }
+    for (layer, (levels,_)) in chains.iter().enumerate() {
+        let first = if tail.get(layer).copied().unwrap_or(false) { mips - crate::texture_stream::TAIL.min(size).ilog2() - 1 } else { 0 };
+        crate::texture_stream::upload(gpu, &tex, layer as u32, first, levels, encoding);
     }
     let upload_cpu_ms=crate::startup_profile::elapsed(upload_start);
     let layers=if enabled {chains.iter().map(|(_,p)|p.clone()).collect()}else{Vec::new()};
@@ -1483,6 +1552,28 @@ impl Renderer {
     /// layers are redrawn through `screen::Screen`; do not resize it.
     pub fn albedo_array(&self) -> &wgpu::Texture { &self.albedo_array }
 
+    /// Texture layers still streaming in (`Scene::texture_streaming`); 0
+    /// once every layer has its full mip chain.
+    pub fn textures_streaming(&self) -> usize { self.texture_stream.as_ref().map_or(0, |s| s.remaining()) }
+
+    /// Block until every streamed texture layer is uploaded (captures).
+    pub fn finish_texture_streaming(&self, gpu: &Gpu) {
+        if let Some(stream) = &self.texture_stream { stream.pump(gpu, &self.albedo_array, &self.normal_array, &self.scene_tables, true); }
+    }
+
+    /// Debug: pretend texture layer `layer` has only mips from LOD `albedo`
+    /// (albedo array) and `normal` (normal and material map array) resident,
+    /// as while it streams. A later streamed upload resets it.
+    #[doc(hidden)]
+    pub fn debug_texture_lod_floor(&self, gpu: &Gpu, layer: u32, albedo: f32, normal: f32, material_map: Option<u32>) {
+        self.scene_tables.write_layer_map(gpu, layer as usize, crate::material_maps::layer_word(material_map, albedo, normal));
+    }
+
+    /// Change how material `material` takes wet, snow and moss (material_maps.rs).
+    pub fn set_material_layers(&self, gpu: &Gpu, material: u32, layers: crate::material_maps::MaterialLayers) {
+        self.scene_tables.write_material_layers(gpu, material as usize, &[layers.word()]);
+    }
+
     /// Update a game-owned range reserved in `Scene::aux` before construction.
     /// The caller owns the range; engine reservations must not be overwritten.
     pub fn update_aux_words(&self, gpu: &Gpu, offset: usize, words: &[u32]) -> Result<(), String> {
@@ -1622,12 +1713,49 @@ impl Renderer {
             let layer = scene.materials[material as usize].layer;
             if layer >= 0 { cutout_layers[layer as usize] = false; }
         }
-        let albedo = texture_array(gpu, "albedo", &albedo_src, TEXTURE_SIZE, wgpu::TextureFormat::Rgba8UnormSrgb, [255; 4], &cutout_layers, &mut startup);
+        // BC7 where the device has it; screen layers are drawn into (RGBA8).
+        let encoding = crate::texture_stream::compression(gpu);
+        let albedo_encoding = if scene.screen_layers.is_empty() { encoding } else { crate::texture_stream::Encoding::Rgba8 };
+        // Streamed layers start with their small mips (texture_stream.rs).
+        // Not with the portable renderer: its shader has no LOD floor.
+        // KERN_TEXTURE_STREAMING=0/1 overrides the scene's choice.
+        let streaming = match std::env::var("KERN_TEXTURE_STREAMING").as_deref() { Ok("0") => false, Ok("1") => true, _ => scene.texture_streaming }
+            && !cfg!(target_arch = "wasm32")
+            && !(scene.procedural_terrain.is_some() && crate::portable::wanted(gpu));
+        let streamed: Vec<bool> = (0..scene.textures.len()).map(|l| streaming && !scene.screen_layers.contains(&(l as u32))).collect();
+        let albedo = texture_array(gpu, "albedo", &albedo_src, TEXTURE_SIZE, wgpu::TextureFormat::Rgba8UnormSrgb, albedo_encoding, [255; 4], &cutout_layers, &streamed, &mut startup);
         let albedo_view = albedo.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
         startup.mark("albedo_array");
-        // Normal maps, same layers; flat where a texture has none.
-        let normal_src: Vec<Option<&image::RgbaImage>> = scene.textures.iter().map(|t| t.normal.as_ref()).collect();
-        let normals = texture_array(gpu, "normals", &normal_src, NORMAL_SIZE, wgpu::TextureFormat::Rgba8Unorm, [128, 128, 255, 255], &[], &mut startup);
+        // Normal maps, same layers; flat where a texture has none. Material
+        // maps (occlusion, roughness, metalness) follow as extra layers.
+        let mut normal_src: Vec<Option<&image::RgbaImage>> = scene.textures.iter().map(|t| t.normal.as_ref()).collect();
+        let mut normal_streamed = streamed.clone();
+        let mut material_maps = vec![None; scene.textures.len()];
+        for (layer, t) in scene.textures.iter().enumerate() {
+            if let Some(orm) = &t.orm {
+                material_maps[layer] = Some(normal_src.len() as u32);
+                normal_src.push(Some(orm));
+                normal_streamed.push(streamed[layer]);
+            }
+        }
+        let normals = texture_array(gpu, "normals", &normal_src, NORMAL_SIZE, wgpu::TextureFormat::Rgba8Unorm, encoding, [128, 128, 255, 255], &[], &normal_streamed, &mut startup);
+        let floor = |size: u32, streamed: bool| if streamed { (size.ilog2() - crate::texture_stream::TAIL.min(size).ilog2()) as f32 } else { 0.0 };
+        let layer_maps: Vec<[u32; 4]> = (0..scene.textures.len()).map(|l| crate::material_maps::layer_word(material_maps[l],
+            floor(TEXTURE_SIZE, streamed[l]), floor(NORMAL_SIZE, streamed[l]))).collect();
+        let texture_stream = streaming.then(|| {
+            let linear_cutout_rgb = std::env::var("KERN_CUTOUT_LINEAR_RGB").as_deref() != Ok("0");
+            let settings = |size, format, fill, preserve_alpha| crate::texture_cache::Settings { size, format, fill, preserve_alpha, linear_cutout_rgb };
+            let jobs = (0..scene.textures.len()).filter(|&l| streamed[l]).map(|l| {
+                let t = &scene.textures[l];
+                let job = |source: Option<&image::RgbaImage>, array_layer: u32, settings| crate::texture_stream::Job {
+                    source: source.map(|s| std::sync::Arc::new(s.clone())), array_layer, settings };
+                let mut normal = vec![job(t.normal.as_ref(), l as u32, settings(NORMAL_SIZE, wgpu::TextureFormat::Rgba8Unorm, [128, 128, 255, 255], false))];
+                if let Some(at) = material_maps[l] { normal.push(job(t.orm.as_ref(), at, settings(NORMAL_SIZE, wgpu::TextureFormat::Rgba8Unorm, [128, 128, 255, 255], false))); }
+                crate::texture_stream::LayerJobs { layer: l as u32, normal,
+                    albedo: job(Some(&t.rgba), l as u32, settings(TEXTURE_SIZE, wgpu::TextureFormat::Rgba8UnormSrgb, [255; 4], cutout_layers[l])) }
+            }).collect();
+            crate::texture_stream::Stream::start(jobs, [albedo_encoding, encoding], material_maps.clone())
+        });
         let normals_view = normals.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
         startup.mark("normal_array");
         let samp = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1746,7 +1874,12 @@ impl Renderer {
         startup.mark("part_wind_animation_resources");
         let grass_lighting=crate::grass_lighting::Resources::new(gpu,scene.far_grass.as_ref().zip(far_grass.as_ref()),scene.terrain_visual_offset_m);
         startup.mark("grass_lighting_resources");
-        let headlights=crate::headlights::Resources::new(gpu);
+        // Clustered lights (opt-in) keep their shadow tiles in extra layers
+        // of the spot shadow array, so shade binds no further texture.
+        let clustered_on=crate::clustered_lights::enabled(scene.graphics.clustered_lights)
+            && std::env::var("KERN_SIMPLE_LIGHTING").map_or(!scene.graphics.simple_lighting,|v|v!="1");
+        let clustered_budget=crate::clustered_lights::budget(clustered_on);
+        let headlights=crate::headlights::Resources::with_layers(gpu,clustered_budget.layers);
         let tracks=crate::tracks::Resources::new(gpu);
         startup.mark("headlight_track_resources");
         let hf = scene.heightfield.clone();
@@ -1780,8 +1913,10 @@ impl Renderer {
         let foliage_sun_pages=crate::foliage_sun_pages::Resources::new(gpu,scene).expect("foliage sun pages");
         // The terrain hierarchy is built once; the sun page table is copied in
         // again each frame it can change (frame_output_into).
-        let scene_tables = crate::scene_tables::SceneTables::new(gpu, &scene.materials, &car_list, &solids, &scene.aux, &replacement_words, topology.starts(),
-            [world_visibility.buffer.size(), foliage_sun_pages.metadata.size()]);
+        let scene_tables = crate::scene_tables::SceneTables::new(gpu, &scene.materials, &car_list, &solids, &scene.aux, &replacement_words,
+            &crate::material_maps::Extension::new(layer_maps, scene), topology.starts(),
+            [world_visibility.buffer.size(), foliage_sun_pages.metadata.size(), crate::clustered_lights::arena_bytes(clustered_on,clustered_budget)]);
+        let clustered=crate::clustered_lights::Resources::new(gpu,clustered_on,clustered_budget,&scene_tables.buffer,scene_tables.clustered);
         if scene_tables.buffer.size() > gpu.limits.max_storage_buffer_binding_size as u64 {
             panic!("scene tables need {} bytes, over the device's {} byte storage binding", scene_tables.buffer.size(), gpu.limits.max_storage_buffer_binding_size);
         }
@@ -1917,6 +2052,7 @@ impl Renderer {
                 (18, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (19, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (20, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (21, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
             ],
         );
         let canopy = crate::canopy::CanopyClipmap::new(gpu, scene, &scene_layout)
@@ -2093,13 +2229,14 @@ impl Renderer {
         let sun_guard_bounds=(sun_cache_guard_m>0.0)
             .then(||std::sync::Mutex::new(crate::stability::SunSceneBounds::from_scene(scene)));
         startup.mark("sun_scene_bounds");
-        let shade_pl = pl(&[&scene_layout, &shade_layout]);
+        let shade_pl = pl(&[&scene_layout, &shade_layout, &clustered.layout]);
         let rock_variation=std::env::var("KERN_ROCK_VARIATION").as_deref()==Ok("1");
         let skip_hidden_meadow=meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled());
         let meadow_edge_enabled=meadow.as_ref().is_some_and(|m|m.edge_shadow_stats().is_some_and(|s|s.enabled));
         let shade_features=crate::shade_features::ShadeFeatures::for_scene(scene,world_visibility.enabled,foliage_sun_pages.enabled,meadow_substrate_settings.control[0]!=0 || meadow_edge_enabled);
         let sky_tiles=!simple_lighting && std::env::var("KERN_SKY_TILES").as_deref()==Ok("1");
         let mut shade_constants=shade_features.constants(rock_variation,skip_hidden_meadow);
+        shade_constants.push(("FEATURE_CLUSTERED_LIGHTS", if clustered.enabled {1.0} else {0.0}));
         shade_constants.push(("SKY_TILES", if sky_tiles {1.0} else {0.0}));
         shade_constants.push(("WORLD_TERRAIN_BAKED", if world_visibility.baked {1.0} else {0.0}));
         // KERN_VOXEL_SURFACE=0: rasterized voxels keep their own lighting
@@ -2126,7 +2263,7 @@ impl Renderer {
             .chain([("SHADE_CLASS", 1.0)]).collect();
         // The rest class drops the terrain branch unless a car part carries
         // the TERRAIN bit (car materials keep their index in bits 16..).
-        let car_terrain = scene.materials.iter().any(|m| m.flags & crate::scene::TERRAIN != 0 && m.flags >> 16 != 0);
+        let car_terrain = scene.materials.iter().any(|m| m.flags & crate::scene::TERRAIN != 0 && crate::scene::car_tag(m.flags) != 0);
         if shade_classes && !car_terrain {
             for c in shade_constants.iter_mut() { if c.0 == "FEATURE_TERRAIN" { c.1 = 0.0; } }
         }
@@ -2230,6 +2367,8 @@ impl Renderer {
         let mut renderer=Renderer {
             resource_device: gpu.device.clone(),
             albedo_array: albedo.clone(),
+            normal_array: normals.clone(),
+            texture_stream,
             live_screens: (!scene.live_screen_feeds.is_empty()).then(|| std::sync::Mutex::new(crate::screen_feed::LiveScreens::new(gpu, &albedo, &scene.live_screen_feeds))),
             irradiance_volume: scene.irradiance_volume,
             dents: scene.dents,
@@ -2238,6 +2377,7 @@ impl Renderer {
             debug_options: Default::default(),
             upscaling: Default::default(),
             motion_blur: Default::default(),
+            depth_of_field: Default::default(),
             async_gpu_profile,
             profile_sequence: std::sync::atomic::AtomicU64::new(0),
             profile_frame_id: std::sync::atomic::AtomicU64::new(u64::MAX),
@@ -2271,6 +2411,8 @@ impl Renderer {
             camera_up_axes: Default::default(),
             camera_projections: Default::default(),
             local_light_state: Default::default(),
+            clustered,
+            clustered_targets: Default::default(),
             spot_falloff: Default::default(),
             spot_softness: Default::default(),
             lighting_focus: Default::default(),
@@ -2293,7 +2435,9 @@ impl Renderer {
             crowd,
             fx: Default::default(),
             volumetric: Default::default(),
+            sky_volume: { let slot = crate::sky_volume::SkyVolumeSlot::default(); slot.set_tables(scene.atmosphere.clone()); slot },
             sprites: Default::default(),
+            gpu_particles: Default::default(),
             transparency,
             grass,
             meadow,
@@ -2370,6 +2514,11 @@ impl Renderer {
             shade_diagnostic: std::sync::OnceLock::new(),
             field_features: (crate::shade_features::field_style_blocks(scene), shade_features.field_regions, shade_features.field_roads),
             shade_unlit: std::sync::Mutex::new(None),
+            history_fallback: gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no reflection history"),
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+                dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }).create_view(&Default::default()),
+            traced_reflections: std::env::var("KERN_TRACED_REFLECTIONS").as_deref() != Ok("0"),
             voxel_surface_fallback: gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no voxel surface"),
                 size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
                 dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Uint,
@@ -2654,10 +2803,10 @@ impl Renderer {
     }
 
     fn cull_and_raster(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass) {
-        self.cull_and_raster_pass(enc,gpu,v,color,depth,ts,names,name,kind,None,false,None);
+        self.cull_and_raster_pass(enc,gpu,v,color,depth,ts,names,name,kind,None,false,None,None);
     }
 
-    fn cull_and_raster_pass(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass, phase_bind:Option<&wgpu::BindGroup>, append:bool,damage:Option<&wgpu::BindGroup>) {
+    fn cull_and_raster_pass(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass, phase_bind:Option<&wgpu::BindGroup>, append:bool,damage:Option<&wgpu::BindGroup>,tile:Option<RasterTile>) {
         if !append && matches!(kind,RasterPass::Color) {enc.clear_buffer(&v.counter,crate::cluster_traversal::COUNTER_OFFSET,Some(crate::cluster_traversal::COUNTER_BYTES));}
         let scene_bind=match kind {RasterPass::Color=>&self.scene_bind,RasterPass::FarSun=>&self.far_sun_scene_bind,RasterPass::FoliagePage=>&self.foliage_sun_scene_bind,_=>&self.shadow_scene_bind};
         let cull_scene_bind=match kind {RasterPass::FarSun=>&self.far_cull_scene_bind,RasterPass::FoliagePage=>&self.foliage_cull_scene_bind,_=>&self.cull_scene_bind};
@@ -2668,8 +2817,9 @@ impl Renderer {
             enc.clear_buffer(&v.counter, crate::occlusion::SPLIT_COUNTER_OFFSET, Some(crate::occlusion::SPLIT_COUNTER_BYTES));
         }
         let cull_bind=phase_bind.unwrap_or(&v.cull_bind);
+        let timed=tile.is_none_or(|t|t.timed);
         let tw = |ts: &mut u32| {
-            self.query.as_ref().map(|(qs, _, _)| {
+            self.query.as_ref().filter(|_|timed).map(|(qs, _, _)| {
                 let i = timestamp_pair(ts);
                 (qs, i)
             })
@@ -2758,6 +2908,7 @@ impl Renderer {
         if t.is_some() {
             names.push(if name=="occluder cull" {"occluder raster"} else if name=="remaining cull" {"remaining raster"} else if color.is_some() { "raster" } else if name == "near shadow cull" { "near shadow raster" }
                 else if name=="headlight shadow cull" {"headlight shadow raster"}
+                else if name=="clustered shadow cull" {"clustered shadow raster"}
                 else if matches!(kind,RasterPass::SunStatic(_)) {"static sun raster"}
                 else if matches!(kind,RasterPass::SunDynamic(_)) {"dynamic sun raster"}
                 else if name=="far sun cull" {"far sun raster"} else if name=="foliage page cull" {"foliage page raster"} else { "shadow raster" });
@@ -2785,7 +2936,7 @@ impl Renderer {
             color_attachments: if color.is_some() { &attachments } else { &[] },
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth,
-                depth_ops: Some(wgpu::Operations { load: if damage.is_some() || append || matches!(kind,RasterPass::SunDynamic(_)) {wgpu::LoadOp::Load} else {wgpu::LoadOp::Clear(if color.is_some() { 0.0 } else { 1.0 })}, store: wgpu::StoreOp::Store }),
+                depth_ops: Some(wgpu::Operations { load: if tile.is_some() || damage.is_some() || append || matches!(kind,RasterPass::SunDynamic(_)) {wgpu::LoadOp::Load} else {wgpu::LoadOp::Clear(if color.is_some() { 0.0 } else { 1.0 })}, store: wgpu::StoreOp::Store }),
                 stencil_ops: None,
             }),
             timestamp_writes: t.map(|(qs, i)| wgpu::RenderPassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
@@ -2807,6 +2958,14 @@ impl Renderer {
             RasterPass::FarSun | RasterPass::FoliagePage => p[3].as_ref(),
             RasterPass::Headlight => p[1].as_ref(),
         }}.unwrap_or(masked));
+        // A shadow tile: clear only its rectangle, then draw into it.
+        if let Some(t)=tile {
+            let [x,y,size]=t.rect;
+            pass.set_viewport(x as f32,y as f32,size as f32,size as f32,0.0,1.0);
+            pass.set_scissor_rect(x,y,size,size);
+            pass.set_pipeline(self.clustered.clear_tile.as_ref().expect("clustered shadow tiles"));
+            pass.draw(0..3,0..1);
+        }
         let halves:&[(u64,&wgpu::RenderPipeline)]=&match opaque {Some(o)=>vec![(0,o),(1,masked)],None=>vec![(0,masked)]};
         if let Some(mask)=damage {pass.set_bind_group(2,mask,&[]);}
         pass.set_bind_group(0, scene_bind, &[]);
@@ -2929,6 +3088,21 @@ impl Renderer {
     /// Short-range direct spill, independently bounded from shadowed lights.
     /// No shadow target allocation or culling/raster pass is added. Call with
     /// an empty set when emitters expire; invalid sets leave the old set intact.
+    /// Replace this frame's clustered lights (up to 1024, some shadowed;
+    /// clustered_lights.rs). Needs `Graphics::clustered_lights` or
+    /// `KERN_CLUSTERED_LIGHTS=1`; otherwise an error, and the caller keeps
+    /// using `set_local_lights`. Independent of the headlights and local
+    /// lights, which still apply.
+    pub fn set_clustered_lights(&self,lights:&[crate::clustered_lights::ClusteredLight])->Result<(),String> {
+        if !self.clustered.enabled {return Err("clustered lights are off for this scene (Graphics::clustered_lights or KERN_CLUSTERED_LIGHTS=1)".into());}
+        let validated=crate::clustered_lights::validate(lights)?;
+        *self.clustered.lights.lock().unwrap()=validated;Ok(())
+    }
+    /// Whether `set_clustered_lights` is available.
+    pub fn clustered_lights_enabled(&self)->bool {self.clustered.enabled}
+    /// Last frame's clustered light numbers.
+    pub fn clustered_light_stats(&self)->crate::clustered_lights::Stats {*self.clustered.stats.lock().unwrap()}
+
     pub fn set_local_lights(&self,lights:&[crate::headlights::LocalLight])->Result<(),String> {
         self.set_local_lights_scattering(lights,&[])
     }
@@ -3010,6 +3184,7 @@ impl Renderer {
         self.sky_scale=1.0;
         self.sky_rotation=0.0;
         self.sky_limit=sky.pixels.iter().flat_map(|p|p[..3].iter().copied()).fold(0.0,f32::max);
+        self.sky_volume.set_tables(Some(sky.tables.clone()));
         sky.apply_lighting(light);
         self.invalidate_dynamic_shadow();
         self.reset_history();
@@ -3268,6 +3443,16 @@ impl Renderer {
             *blur=Some(crate::motion_blur::Resources::new(gpu));
         }
         if let Some(blur)=blur.as_mut() {blur.settings=settings.to_vec();}
+    }
+
+    /// Opt-in thin-lens depth of field, one lens per view in view order.
+    /// Empty or `f_stop <= 0` skips it; resources exist only once opted in.
+    pub fn set_depth_of_field(&self, gpu: &Gpu, settings: &[crate::depth_of_field::Settings]) {
+        let mut dof=self.depth_of_field.lock().unwrap();
+        if dof.is_none() && settings.iter().any(|s|s.active()) {
+            *dof=Some(crate::depth_of_field::Resources::new(gpu));
+        }
+        if let Some(dof)=dof.as_mut() {dof.settings=settings.to_vec();}
     }
 
     /// Select an explicit reconstruction mode. Failure keeps the prior mode.
@@ -3603,10 +3788,10 @@ impl Renderer {
             (6,self.occlusion.phases[phase].as_entire_binding()),(7,wgpu::BindingResource::TextureView(&target.view)),
             (8,self.cull_tables.buffer.as_entire_binding()),(10,v.spatial_owners.as_entire_binding()),
             (14,self.receiver_demand.buffer().as_entire_binding()),(15,history.as_entire_binding())])));
-        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"occluder cull",RasterPass::Color,Some(&phases[0]),false,None);
+        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"occluder cull",RasterPass::Color,Some(&phases[0]),false,None,None);
         let time=self.query.as_ref().map(|(qs,_,_)|{names.push("occlusion pyramid");(qs,timestamp_pair(ts))});
         pyramid.encode(gpu,enc,depth,target,time);
-        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"remaining cull",RasterPass::Color,Some(&phases[1]),true,None);
+        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"remaining cull",RasterPass::Color,Some(&phases[1]),true,None,None);
         let time=self.query.as_ref().filter(|_|self.occlusion.history_first).map(|(qs,_,_)|{names.push("visibility history");(qs,timestamp_pair(ts))});
         self.occlusion.capture_history(gpu,enc,&history,color,&v.visible,size,time);
         if self.occlusion.history_first {enc.copy_buffer_to_buffer(&v.counter,18*4,&history,32772,4);}
@@ -3667,6 +3852,11 @@ impl Renderer {
 
     /// Compile effect pipelines during loading instead of the first explosion.
     pub fn prepare_effects(&self, gpu: &Gpu) { self.fx.prepare(gpu); }
+
+    /// Emitters and clock for the GPU particle pool (`gpu_particles::GpuParticles::flush`).
+    pub fn update_gpu_particles(&self, gpu: &Gpu, update: crate::gpu_particles::Update) -> Result<(), String> {
+        self.gpu_particles.update(gpu, update)
+    }
 
     pub fn set_effects(&self, gpu: &Gpu, time: f32, puffs: Option<&[crate::fx::Puff]>) -> Result<(), String> {
         self.fx.set(gpu, time, puffs);
@@ -3896,6 +4086,7 @@ impl Renderer {
 
     #[allow(clippy::too_many_arguments)]
     fn frame_output_into(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: Readback, target: Option<&wgpu::Texture>, submitted: Option<FeedbackSubmission<'_>>) -> Result<(wgpu::Texture, Vec<u8>, FrameStats), String> {
+        if let Some(stream)=&self.texture_stream { stream.pump(gpu, &self.albedo_array, &self.normal_array, &self.scene_tables, false); }
         if let Some(portable)=&self.portable {
             let output=target.cloned().unwrap_or_else(||Self::output_texture(gpu,out_w,out_h));
             let axes=self.camera_up_axes.lock().unwrap();let projections=self.camera_projections.lock().unwrap();
@@ -3999,6 +4190,7 @@ impl Renderer {
         let mut up = self.upscaling.lock().unwrap();
         let dlss_on = up.mode != crate::upscale::UpscaleMode::Native;
         let blur=self.motion_blur.lock().unwrap();
+        let dof=self.depth_of_field.lock().unwrap();
         // TAA reprojects with these per-pixel vectors too: wind-blown trees
         // otherwise lose their history every frame and shimmer.
         if (blur.is_some() || (light.taa > 0.5 && !dlss_on)) && up.motion.is_none() {
@@ -4306,13 +4498,21 @@ impl Renderer {
         }
         let mut sh = self.sky_sh;
         sh.iter_mut().for_each(|c| c[3] = 0.0);
+        // The SH's spare w carries snow cover (shade.wgsl material weathering).
+        sh[0][3] = light.snow.clamp(0.0, 1.0);
+        let sky_volume = light.sky_volume.and_then(|s| s.validated().ok());
+        let aerial_on = sky_volume.is_some_and(|s| s.aerial);
+        let cloud_uniforms = sky_volume.map_or(([0.0; 4], [0.0; 4]), |s| s.shade_uniforms(light.time));
         let lu = LightUniform {
             sun_dir: [light.sun_dir.x, light.sun_dir.y, light.sun_dir.z, light.sun_lux],
             sun_color: [light.sun_color.x, light.sun_color.y, light.sun_color.z, light.shadow_strength],
             shadow_view_proj: svp.to_cols_array_2d(),
             sky: [self.sky_scale, self.sky_rotation, light.debug, texel],
             fog_color: [self.sky_horizon.x, self.sky_horizon.y, self.sky_horizon.z, light.fog_start],
-            fog: [light.fog_end, light.fog_density, light.fog_height_m, 0.0],
+            // Aerial perspective (sky_volume) replaces the distance fog: the
+            // physical fog path with zero extinction returns surfaces unchanged.
+            fog: if aerial_on { [light.fog_end, 0.0, light.fog_height_m.max(1.0), light.wetness.clamp(0.0, 1.0)] }
+                else { [light.fog_end, light.fog_density, light.fog_height_m, light.wetness.clamp(0.0, 1.0)] },
             fog_scattering: [light.fog_scattering_albedo.x, light.fog_scattering_albedo.y,
                 light.fog_scattering_albedo.z, light.fog_phase_g],
             sh,
@@ -4321,9 +4521,11 @@ impl Renderer {
             night_stars: [light.night_stars[0], light.night_stars[1],
                 if self.zero_sun_fast_path {1.0} else {0.0}, light.night_stars[3]],
             anim: [light.time, light.emissive_scale(), 1.2 * 2f32.powf(light.ev100), if light.sun_disc {light.sun_radius} else {0.0}],
-            fog_sampling: [((frame % 16) * 7 % 16) as f32 / 16.0, if taa_on { 1.0 } else { 0.0 }, light.indirect_fill_lux.max(0.0), 0.0],
+            fog_sampling: [((frame % 16) * 7 % 16) as f32 / 16.0, if taa_on { 1.0 } else { 0.0 }, light.indirect_fill_lux.max(0.0), if light.water { 1.0 } else { 0.0 }],
             near_levels_view_proj: [Mat4::IDENTITY.to_cols_array_2d(); NEAR_LEVELS_MAX - 1],
             near_levels: [0.0; 4],
+            clouds: cloud_uniforms.0,
+            cloud_motion: cloud_uniforms.1,
         };
         let exposure = 1.0 / (1.2 * 2f32.powf(light.ev100));
 
@@ -4388,6 +4590,13 @@ impl Renderer {
             if debris.encode(gpu, &mut enc, times) && times.is_some() {
                 timestamp_pair(&mut ts);
                 names.push("debris");
+            }
+        }
+        if let Some(particles) = self.gpu_particles.0.lock().unwrap().as_mut() {
+            let times = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
+            if particles.encode(gpu, &mut enc, times) && times.is_some() {
+                timestamp_pair(&mut ts);
+                names.push("gpu particles sim");
             }
         }
         if let Some((forest,first_owner))=&self.gpu_forest {
@@ -4514,6 +4723,27 @@ impl Renderer {
             let layer=self.headlights.layer(index as u32);
             self.cull_and_raster(&mut enc,gpu,target,None,&layer,&mut ts,&mut names,"headlight shadow cull",RasterPass::Headlight);
         }
+        // Clustered lights: bin them, then redraw this frame's shadow tiles.
+        let clustered_draws=self.clustered.prepare(gpu,&mut enc,&cameras);
+        let mut clustered_targets=self.clustered_targets.lock().unwrap();
+        while clustered_targets.len()<clustered_draws.len() {
+            clustered_targets.push(self.view_targets_capacity(gpu,"clustered shadow",self.shadow_capacity,false,self.instance_groups.headlight_enabled));
+        }
+        for (draw,target) in clustered_draws.iter().zip(clustered_targets.iter()) {
+            let size=crate::clustered_lights::TILE as f32;
+            let mut vu=view_uniform(draw.face.view_proj,draw.position,draw.face.focal,
+                [light.lod_pixels,draw.face.near,0.0,self.shadow_capacity as f32],[size;4],light.alpha_cut);
+            // A perspective shadow pass, as the headlights' (extra[1] 2).
+            vu.extra[1]=2.0;
+            if let Some((start,count))=draw.exclude {vu.grass[2]=start as f32;vu.grass[3]=count as f32;}
+            gpu.queue.write_buffer(&target.uniform,0,bytemuck::bytes_of(&vu));
+            let layer=self.headlights.layer(draw.layer());
+            // Timestamps only while the frame's query set has room.
+            let timed=ts+8<TIMESTAMP_CAPACITY-128;
+            self.cull_and_raster_pass(&mut enc,gpu,target,None,&layer,&mut ts,&mut names,"clustered shadow cull",RasterPass::Headlight,None,false,None,
+                Some(RasterTile {rect:draw.rect(),timed}));
+        }
+        drop(clustered_targets);
         let mut canopies = self.canopies.lock().unwrap();
         while canopies.len() < views.len() {
             let next = canopies[0].fork_view(gpu);
@@ -4606,7 +4836,7 @@ impl Renderer {
                 self.cull_and_raster(&mut enc,gpu,&shadow_t,None,&shadow_v,
                     &mut ts,&mut names,"dynamic sun cull",RasterPass::SunDynamic(static_counts.dynamic_casters));
             } else {
-                self.cull_and_raster_pass(&mut enc, gpu, &shadow_t, None, &shadow_v, &mut ts, &mut names, "shadow cull",RasterPass::Sun,None,false,damage_bind.as_ref());
+                self.cull_and_raster_pass(&mut enc, gpu, &shadow_t, None, &shadow_v, &mut ts, &mut names, "shadow cull",RasterPass::Sun,None,false,damage_bind.as_ref(),None);
             }
             if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.casts_sun()) {
                 let times=["voxel sun splats","voxel sun splat raster"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
@@ -4675,6 +4905,10 @@ impl Renderer {
             canopy_updated_levels.push(canopy.updated_levels);
             canopy_pitch_m.push(canopy.origins.map(|origin| origin[3]));
             let density_view = canopy.view;
+            // Traced reflections read last frame's TAA history: on only with
+            // one of this view's size (a fresh history holds no image yet).
+            let trace_prev = (taa_on && self.traced_reflections && light.traced_reflections > 0.5 && !self.simple_lighting)
+                .then(|| histories[vi].as_ref().filter(|hh| hh.size == (w, h)).map(|hh| hh.prev_view_proj)).flatten();
             let gi_u = GiUniform {
                 vol_origins: canopy.origins,
                 vol_anchors: canopy.anchors,
@@ -4687,6 +4921,8 @@ impl Renderer {
                 bounce: [0.12 * 0.85, 0.12, 0.12 * 0.7, light.sky_lux],
                 params: [light.contact_occlusion, light.reflection_occlusion, self.sky_limit,
                     if light.gi > 0.0 { self.irradiance_volume.map_or(0.0, |(offset, _)| offset as f32) } else { 0.0 }],
+                prev_view_proj: trace_prev.unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
+                trace: [if trace_prev.is_some() { 1.0 } else { 0.0 }, TRACE_ROUGHNESS_CUT, TRACE_REACH_M, 0.0],
             };
             let gi_buf = self.view_uniform(gpu, vi, 0, "gi", bytemuck::bytes_of(&gi_u));
             // A rebuilt canopy level gets its sky transmittance baked now,
@@ -4757,7 +4993,7 @@ impl Renderer {
                     }
                     if let Some((forest,_))=&self.gpu_forest {enc.copy_buffer_to_buffer(&forest.choices,forest.choice_table_bytes(),&targets.foliage_selection,0,forest.choice_table_bytes());}
                     let label = if k == 0 { "near shadow cull" } else { "sun clipmap cull" };
-                    self.cull_and_raster_pass(&mut enc, gpu, targets, None, &texture_view, &mut ts, &mut names, label,RasterPass::Sun,None,false,level_damage.as_ref());
+                    self.cull_and_raster_pass(&mut enc, gpu, targets, None, &texture_view, &mut ts, &mut names, label,RasterPass::Sun,None,false,level_damage.as_ref(),None);
                     // Whole-plant proxies have no source to cast here.
                     if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.has_proxies()||voxel_casters) {
                         let times=(if k == 0 {["voxel near sun splats","voxel near sun splat raster"]} else {["voxel sun clipmap splats","voxel sun clipmap splat raster"]})
@@ -4892,6 +5128,7 @@ impl Renderer {
             } else {
                 None
             };
+            let reflection_history = taa_pass.as_ref().filter(|_| trace_prev.is_some()).map(|(src, _, _)| src.clone());
             let bloom_strength=(debug_options.bloom_strength*light.bloom_boost.clamp(0.0,32.0)).min(2.0);
             let bloom_on=crate::bloom::active(debug_options.bloom_enabled,bloom_strength);
             let solar = solar_projection(cam, view_m, view.w as f32 / view.h as f32, light, sun_visibility);
@@ -5026,6 +5263,7 @@ impl Renderer {
                     (18, wgpu::BindingResource::TextureView(voxel_depth.as_ref().unwrap_or(&self.voxel_depth_fallback))),
                     (19, wgpu::BindingResource::TextureView(coarse)),
                     (20, wgpu::BindingResource::TextureView(voxel_surface.as_ref().unwrap_or(&self.voxel_surface_fallback))),
+                    (21, wgpu::BindingResource::TextureView(reflection_history.as_ref().unwrap_or(&self.history_fallback))),
                 ],
             );
             let shade_bind = shade_bind_with(resources, coarse_target.as_ref().map_or(&self.terrain_coarse_fallback, |t| &t.1));
@@ -5046,12 +5284,13 @@ impl Renderer {
                 (make(&self.diagnostic_constants), self.terrain_shade.as_ref().map(|_| make(&terrain)))
             }));
             // No spot or local light this frame: the pipelines without them.
-            let lights=!self.headlight_state.lock().unwrap().is_empty() || !self.local_light_state.lock().unwrap().is_empty();
+            let lights=!self.headlight_state.lock().unwrap().is_empty() || !self.local_light_state.lock().unwrap().is_empty()
+                || !self.clustered.lights.lock().unwrap().is_empty();
             let unlit_cell=(!lights && !self.simple_lighting && std::env::var("KERN_SHADE_UNLIT").as_deref()!=Ok("0")).then(|| self.shade_unlit.lock().unwrap().get_or_insert_with(|| {
                 let cell = std::sync::Arc::new(std::sync::OnceLock::new());
-                let unlit=[("SHADE_DIAGNOSTICS",0.0),("FEATURE_LOCAL_LIGHTS",0.0)];
-                let rest: Vec<(&'static str, f64)> = self.diagnostic_constants.iter().copied().chain(unlit).collect();
-                let terrain: Vec<(&'static str, f64)> = self.diagnostic_constants.iter().map(|&(k, v)| match k {
+                let unlit=[("SHADE_DIAGNOSTICS",0.0),("FEATURE_LOCAL_LIGHTS",0.0),("FEATURE_CLUSTERED_LIGHTS",0.0)];
+                let rest: Vec<(&'static str, f64)> = self.diagnostic_constants.iter().copied().filter(|c|c.0!="FEATURE_CLUSTERED_LIGHTS").chain(unlit).collect();
+                let terrain: Vec<(&'static str, f64)> = self.diagnostic_constants.iter().filter(|c|c.0!="FEATURE_CLUSTERED_LIGHTS").map(|&(k, v)| match k {
                     "FEATURE_CARS" | "FEATURE_FOLIAGE" | "FEATURE_PROCEDURAL" | "FEATURE_GRASS" => (k, 0.0), "FEATURE_TERRAIN" => (k, 1.0),
                     "SHADE_CLASS" => (k, 1.0), _ => (k, v) }).chain(unlit).collect();
                 let (device, layout, cache, text, with_terrain, out) = (gpu.device.clone(), self.shade_pl.clone(), gpu.pipeline_cache().cloned(),
@@ -5076,10 +5315,10 @@ impl Renderer {
             // Terrain and voxels first: glossy surfaces in the main pass
             // reflect the already lit frame around them.
             if let Some(terrain) = &self.terrain_shade {
-                passes.push(("shade terrain", diagnostic.and_then(|d| d.1.as_ref()).or(unlit.and_then(|u| u.1.as_ref())).unwrap_or(terrain), vec![&self.scene_bind, &shade_bind]));
+                passes.push(("shade terrain", diagnostic.and_then(|d| d.1.as_ref()).or(unlit.and_then(|u| u.1.as_ref())).unwrap_or(terrain), vec![&self.scene_bind, &shade_bind, &self.clustered.bind]));
             }
-            if let Some(voxels) = &self.voxel_pass { passes.push(("shade voxels", voxels, vec![&self.scene_bind, &shade_bind])); }
-            passes.push(("shade", diagnostic.map(|d| &d.0).or(unlit.map(|u| &u.0)).unwrap_or(&self.shade), vec![&self.scene_bind, &shade_bind]));
+            if let Some(voxels) = &self.voxel_pass { passes.push(("shade voxels", voxels, vec![&self.scene_bind, &shade_bind, &self.clustered.bind])); }
+            passes.push(("shade", diagnostic.map(|d| &d.0).or(unlit.map(|u| &u.0)).unwrap_or(&self.shade), vec![&self.scene_bind, &shade_bind, &self.clustered.bind]));
             let mut far_motion_layer = None;
             for (label, pipe, bindings) in passes {
                 let t = self.query.as_ref().map(|(qs, _, _)| {
@@ -5309,6 +5548,18 @@ impl Renderer {
                 }
             };
             let resolved = fx_output.unwrap_or(resolved);
+            // Opt-in aerial perspective and clouds, into a separate output.
+            let resolved = match sky_volume.as_ref() {
+                Some(settings) => {
+                    let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("sky volume"); (qs, timestamp_pair(&mut ts)) });
+                    if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
+                    let out = self.sky_volume.render(gpu, &mut enc, settings, crate::sky_volume::ViewInput { index: vi, input: &resolved,
+                        depth: &depth_v, depth_size: (w, h), camera: cam.pos, depth_vp: vp, view_proj: proj * view_m, light, reset: layout_changed })?;
+                    if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
+                    out
+                }
+                None => resolved,
+            };
             // Opt-in in-scattering from local lights, into a separate output.
             let resolved = match light.volumetric.as_ref() {
                 Some(medium) => {
@@ -5349,7 +5600,24 @@ impl Renderer {
                     None => None,
                 }
             };
+            // GPU particles (sparks, embers, dust): into the sprites' disposable
+            // output when there is one, otherwise into their own copy.
+            let reusable = sprite_output.is_some();
             let resolved = sprite_output.unwrap_or(resolved);
+            let particle_draw = {
+                let mut particles = self.gpu_particles.0.lock().unwrap();
+                match particles.as_mut() {
+                    Some(particles) => {
+                        let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("gpu particles"); (qs, timestamp_pair(&mut ts)) });
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
+                        let out = particles.render(gpu, &mut enc, vi, &resolved, reusable, &depth_v, *cam, proj * view_m, vp, light)?;
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
+                        out
+                    }
+                    None => None,
+                }
+            };
+            let resolved = particle_draw.unwrap_or(resolved);
             let exhaust_output = if debug_options.exhaust_enabled {
                 let exhaust_time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| {
                     names.push("exhaust"); (qs, timestamp_pair(&mut ts))
@@ -5389,6 +5657,13 @@ impl Renderer {
                 _=>None,
             };
             let result=blurred.as_ref().unwrap_or(result);
+            // Opt-in lens blur from this view's depth, before metering and bloom
+            // so out-of-focus highlights bloom as soft discs.
+            let focused=dof.as_ref().filter(|d|d.active(vi)).and_then(|d|{
+                let times=self.query.as_ref().map(|(qs,_,_)|{names.push("depth of field");(qs,timestamp_pair(&mut ts))});
+                d.render(gpu,&mut enc,vi,result,&depth_v,cam,times)
+            });
+            let result=focused.as_ref().unwrap_or(result);
 
             // Extract the actual final HDR, including lens emission and exhaust,
             // after temporal reconstruction. Every view owns separate targets.
@@ -6296,9 +6571,10 @@ mod layout_tests {
     #[test]
     fn near_light_uniform_and_projection_cover_each_separated_car() {
         use glam::Vec3;
-        assert_eq!(std::mem::size_of::<LightUniform>(), 896);
+        assert_eq!(std::mem::size_of::<LightUniform>(), 928);
         assert_eq!(std::mem::offset_of!(LightUniform, near_levels_view_proj), 432);
         assert_eq!(std::mem::offset_of!(LightUniform, near_levels), 880);
+        assert_eq!(std::mem::offset_of!(LightUniform, clouds), 896);
         assert_eq!(std::mem::offset_of!(LightUniform, fog_sampling), 416);
         assert_eq!(std::mem::offset_of!(LightUniform, anim), 400);
         assert_eq!(std::mem::offset_of!(LightUniform, fog_scattering), 144);
@@ -6322,7 +6598,7 @@ mod layout_tests {
 fn camera_fog_cull(light: &Lighting) -> [f32; 4] {
     // Physical extinction is asymptotic and height dependent. A camera-wide
     // radial cutoff would erase still-visible geometry, including clear air.
-    if light.fog_height_m > 0.0 || !light.fog_culling || light.debug != 0.0 || ![light.fog_start, light.fog_end, light.fog_density]
+    if light.fog_height_m > 0.0 || light.sky_volume.is_some_and(|s| s.aerial) || !light.fog_culling || light.debug != 0.0 || ![light.fog_start, light.fog_end, light.fog_density]
         .iter().all(|v| v.is_finite() && *v >= 0.0) {
         return [0.0; 4];
     }

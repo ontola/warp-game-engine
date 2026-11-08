@@ -12,6 +12,7 @@ mod web;
 pub mod par;
 pub mod files;
 pub mod dents;
+pub mod material_maps;
 pub mod dfao;
 pub mod frame;
 pub mod static_sun;
@@ -28,6 +29,7 @@ pub mod gpu_profile;
 pub mod geometry_diagnostics;
 pub mod startup_profile;
 mod texture_cache;
+mod texture_stream;
 mod pipeline_cache;
 pub mod grass;
 pub mod meadow;
@@ -93,7 +95,9 @@ pub mod sky;
 pub mod radiance_cache;
 pub mod radiance_cache_gpu;
 pub mod headlights;
+pub mod clustered_lights;
 pub mod volumetric;
+pub mod sky_volume;
 pub mod exhaust;
 pub mod wheel_particles;
 pub mod tracks;
@@ -136,9 +140,11 @@ pub mod skinning;
 pub mod debris;
 mod direct_draw;
 pub mod fx;
+pub mod gpu_particles;
 pub mod crowd;
 pub mod motion;
 pub mod motion_blur;
+pub mod depth_of_field;
 pub mod dlss;
 pub mod upscale;
 mod stability;
@@ -162,6 +168,7 @@ pub use frame::{Camera, FrameStats, Lighting, Renderer, SplitLayout, ViewRect, s
 pub use gpu::{Gpu, Stopwatch, write_png};
 pub use auto_exposure::AutoExposure;
 pub use scene::Scene;
+pub use material_maps::MaterialLayers;
 pub use shaders::{checked as validated, set_game_surface, set_game_mask};
 /// A test frame: a compute shader fills an RGBA8 image with a gradient.
 /// Proves the device, compute, readback and PNG path end to end.
@@ -268,10 +275,12 @@ mod shader_tests {
 
     #[test]
     fn composed_transparency_shader_validates() {
-        let src = crate::transparency::shader_source();
-        let module = naga::front::wgsl::parse_str(&src).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
-        let mut validator = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all());
-        validator.validate(&module).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
+        for refraction in [false, true] {
+            let src = crate::transparency::with_refraction(&crate::transparency::shader_source(), refraction);
+            let module = naga::front::wgsl::parse_str(&src).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
+            let mut validator = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all());
+            validator.validate(&module).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
+        }
     }
 }
 
