@@ -1,6 +1,7 @@
 // Reproject only exact integer XY translations with unchanged depth mapping.
-struct State {vp:mat4x4<f32>,counts:vec4<u32>,control:vec4<u32>};
-@group(0) @binding(0) var<uniform> state:State;
+// control: force, size, shift x, shift y (i32), one uniform per map slot.
+struct Scroll {control:vec4<u32>};
+@group(0) @binding(0) var<uniform> state:Scroll;
 @group(0) @binding(1) var previous:texture_depth_2d;
 @vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32> {
     let p=array<vec2<f32>,3>(vec2<f32>(-1.,-1.),vec2<f32>(3.,-1.),vec2<f32>(-1.,3.));

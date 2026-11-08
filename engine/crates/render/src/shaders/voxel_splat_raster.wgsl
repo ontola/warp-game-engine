@@ -92,11 +92,10 @@ struct MainOut { @location(0) visibility: u32, @location(1) splat: u32 };
     if !kept(in) { discard; }
 }
 
-override SHADOW_TILE_PIXELS:u32=64u;
-// Shared sun tile cache only; ordinary/near/headlamp entry points stay independent.
+// Cached sun maps: 64x64 tiles of the map size in header row 11.y.
 @group(1) @binding(0) var<uniform> shadow_damage_mask:array<vec4<u32>,32>;
 @fragment fn fs_cached_depth(in:Out) {
- let xy=vec2<u32>(in.position.xy)/SHADOW_TILE_PIXELS;let tile=xy.y*64u+xy.x;
+ let xy=vec2<u32>(in.position.xy)/max(splats[11].y/64u,1u);let tile=xy.y*64u+xy.x;
  let word=shadow_damage_mask[tile>>7u][(tile>>5u)&3u];
  if (word&(1u<<(tile&31u)))==0u {discard;}
  if !kept(in) {discard;}
