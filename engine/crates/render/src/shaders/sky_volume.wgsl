@@ -374,11 +374,13 @@ fn cloud_density(altitude: f32, world: vec3<f32>, cheap: bool) -> f32 {
     return d * u.cloud.w;
 }
 
-// A fixed random offset per pixel, advanced by the golden ratio each frame
-// (an R1 sequence): stratified over time, so the history converges in a few
-// frames instead of shimmering, and no structure to beat against the steps.
+// Interleaved gradient noise (Jimenez), shifted each frame: every 3x3
+// block of pixels holds an even spread of offsets, so the resolve's 3x3
+// filter averages the march noise away in one frame instead of leaving
+// per-pixel speckle for the history to chase.
 fn interleaved_noise(p: vec2<f32>, frame: f32) -> f32 {
-    return fract(pcg3(vec3<u32>(vec2<u32>(p), 0u)).x + (frame % 1024.0) * 0.61803398875);
+    let q = p + 5.588238 * (frame % 64.0);
+    return fract(52.9829189 * fract(dot(q, vec2<f32>(0.06711056, 0.00583715))));
 }
 
 @compute @workgroup_size(8, 8)
@@ -405,7 +407,12 @@ fn clouds(@builtin(global_invocation_id) id: vec3<u32>) {
         let t0 = seg.x;
         let t1 = min(seg.y, tmax);
         let steps = u32(u.cloud_shape.z);
-        let dt = (t1 - t0) / f32(steps);
+        let span = t1 - t0;
+        // Steps grow with distance (t = t0 + span x^2): looking along the
+        // layer from inside it the segment runs tens of km, and even steps a
+        // km long make every near sample all-or-nothing, a speckle the
+        // history cannot average away.
+        let inv_steps = 1.0 / f32(steps);
         let l = u.sun.xyz;
         let mu = dot(d, l);
         // Two-lobe phase: a strong forward silver lining and a soft back lobe.
@@ -418,7 +425,9 @@ fn clouds(@builtin(global_invocation_id) id: vec3<u32>) {
         let light_steps = u32(u.cloud_shape.w);
         for (var i = 0u; i < steps; i++) {
             if transmittance < 0.01 { break; }
-            let t = t0 + (f32(i) + jitter) * dt;
+            let x = (f32(i) + jitter) * inv_steps;
+            let t = t0 + span * x * x;
+            let dt = span * 2.0 * x * inv_steps;
             let altitude = altitude_along(h0, d.y, t);
             let world = u.camera.xyz + d * t;
             let sigma = cloud_density(altitude, world, false);
@@ -478,17 +487,27 @@ fn cloud_resolve(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = vec2<u32>(u.sizes.zw);
     if any(id.xy >= size) { return; }
     let p = vec2<i32>(id.xy);
-    let current = textureLoad(cloud_in, p, 0);
-    var lo = current;
-    var hi = current;
     let last = vec2<i32>(size) - 1;
+    // A tent filter over the 3x3 neighbourhood is the new frame (the march
+    // noise is per pixel; this takes it down by more than half), and the
+    // neighbourhood's mean and spread bound the history: tighter than its
+    // min and max, so stale cloud does not trail behind moving edges.
+    var current = vec4<f32>(0.0);
+    var m1 = vec4<f32>(0.0);
+    var m2 = vec4<f32>(0.0);
     for (var k = 0; k < 9; k++) {
-        if k == 4 { continue; }
-        let q = clamp(p + vec2<i32>(k % 3 - 1, k / 3 - 1), vec2<i32>(0), last);
+        let o = vec2<i32>(k % 3 - 1, k / 3 - 1);
+        let q = clamp(p + o, vec2<i32>(0), last);
         let s = textureLoad(cloud_in, q, 0);
-        lo = min(lo, s);
-        hi = max(hi, s);
+        let w = f32((2 - abs(o.x)) * (2 - abs(o.y))) / 16.0;
+        current += s * w;
+        m1 += s;
+        m2 += s * s;
     }
+    m1 /= 9.0;
+    let sigma = sqrt(max(m2 / 9.0 - m1 * m1, vec4<f32>(0.0)));
+    let lo = m1 - 1.25 * sigma;
+    let hi = m1 + 1.25 * sigma;
     var out = current;
     if u.output.z > 0.5 {
         let uv = (vec2<f32>(id.xy) + 0.5) / u.sizes.zw;
@@ -500,7 +519,7 @@ fn cloud_resolve(@builtin(global_invocation_id) id: vec3<u32>) {
             let prev = vec2<f32>(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
             if all(prev >= vec2<f32>(0.0)) && all(prev <= vec2<f32>(1.0)) {
                 let history = clamp(textureSampleLevel(history_in, clamp_samp, prev, 0.0), lo, hi);
-                out = mix(history, current, 0.06);
+                out = mix(history, current, 0.1);
             }
         }
     }

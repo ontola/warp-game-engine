@@ -1201,10 +1201,26 @@ fn attenuate_background(direction: vec3<f32>, sky: vec3<f32>) -> vec3<f32> {
     return fog_segment(sky, source, light.fog.y * column);
 }
 
+// The sky bake is seen from the ground, its horizon at elevation 0. From
+// altitude h the true horizon dips by about sqrt(2h/R): between the two the
+// bake would show its ground as a tan band above the far terrain. Rays down to
+// the true horizon take the horizon sky; rays below it the bake's ground
+// (the sky volume fades that with the air up to the planet).
+fn background_direction(direction: vec3<f32>) -> vec3<f32> {
+    if direction.y >= 0.0 { return direction; }
+    let dip = sqrt(2.0 * max(view.cam.y, 0.0) / 6360000.0);
+    // Just above the bake's horizon row: that row already blends in ground.
+    var y = direction.y + dip;
+    if y >= 0.0 { y = 0.02; }
+    let across = max(length(direction.xz), 1e-6);
+    let side = sqrt(max(1.0 - y * y, 0.0));
+    return vec3<f32>(direction.x / across * side, y, direction.z / across * side);
+}
+
 fn background_radiance(direction: vec3<f32>) -> vec3<f32> {
     // Surface fog must remain star-free: stars are behind opaque geometry,
     // not bright flecks painted onto fully fogged distant mountains.
-    return attenuate_background(direction, sky_radiance(direction));
+    return attenuate_background(direction, sky_radiance(background_direction(direction)));
 }
 
 // Background only: opaque geometry naturally hides the solar disc. The
@@ -1221,7 +1237,7 @@ fn solar_disc(direction: vec3<f32>) -> vec3<f32> {
 }
 
 fn visible_background_radiance(direction: vec3<f32>) -> vec3<f32> {
-    return attenuate_background(direction, min(sky_radiance(direction) + night_star_radiance(direction) + solar_disc(direction), vec3<f32>(65504.0)));
+    return attenuate_background(direction, min(sky_radiance(background_direction(direction)) + night_star_radiance(direction) + solar_disc(direction), vec3<f32>(65504.0)));
 }
 
 fn distance_fog_amount(distance: f32) -> f32 {
