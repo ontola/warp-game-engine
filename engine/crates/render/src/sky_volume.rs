@@ -62,7 +62,7 @@ pub struct Clouds {
 
 impl Default for Clouds {
     fn default() -> Self {
-        Self { coverage: 0.45, base_m: 1800.0, thickness_m: 1800.0, density: 0.03, wind: Vec2::new(8.0, 3.0),
+        Self { coverage: 0.45, base_m: 1800.0, thickness_m: 1800.0, density: 0.03, wind: Vec2::new(4.0, 1.5),
             shadow: 0.85, steps: 64, light_steps: 6, far_m: 60_000.0 }
     }
 }
@@ -441,7 +441,7 @@ mod tests {
         assert!(light.set("cloud_steps=12").is_err());
         let (cloud, motion) = SkyVolume::default().shade_uniforms(10.0);
         assert_eq!(cloud, [0.45, 1800.0, 1800.0, 0.03]);
-        assert_eq!(motion, [80.0, 30.0, 0.85, 1.0]);
+        assert_eq!(motion, [40.0, 15.0, 0.85, 1.0]);
     }
 
     /// `cloud_sun_transmittance` on the CPU (cloud_weather.wgsl, line for line).
