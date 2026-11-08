@@ -1,0 +1,14 @@
+{ "size": [960, 540],
+  "steps": [
+    { "ticks": 2, "note": "the row starts cooking" },
+    { "expect": "/errors", "equals": [] },
+    { "until": "/state/status/shown", "equals": 6, "max_ticks": 20000, "note": "every preview cooked and attached" },
+    { "ticks": 5 },
+    { "capture": "row.png", "note": "the row of ages" },
+    { "press": ["right"], "ticks": 1, "note": "oldest +5 years" },
+    { "ticks": 30 },
+    { "expect": "/state/tune/scene/oldest", "equals": 55 },
+    { "until": "/state/status/shown", "equals": 6, "max_ticks": 20000 },
+    { "expect": "/errors", "equals": [] }
+  ]
+}

@@ -206,6 +206,28 @@ declare lights: {
 	clear: () -> (),
 }
 
+declare plants: {
+	-- A grown plant (a Jeffrey pine unless `species` changes its rules): its
+	-- age in years sets how many shoots, limbs and needle brushes it has, not
+	-- its scale. It cooks on a background thread and appears when done.
+	-- `species` and `look` override fields of plants.defaults() (unknown
+	-- names are an error). `full` also cooks the voxel levels and proxies
+	-- (LOD and far views; minutes for an old tree); without it a preview of
+	-- the source meshes takes a fraction of a second. Returns the plant's id.
+	grow: (opts: { age: number, seed: number?, pos: Vec?, yaw: number?, full: boolean?, species: { [string]: any }?, look: { [string]: any }? }) -> number,
+	remove: (id: number) -> boolean,
+	clear: () -> (),
+	-- Plants placed, shown, still cooking with nothing to show, failed (and the
+	-- last error); upgrading: full plants showing their preview until their
+	-- full (voxel) cook is done.
+	status: () -> { placed: number, shown: number, cooking: number, failed: number, upgrading: number, error: string? },
+	-- The default growth rules and colours, with what each field is in render::plant_growth::Species.
+	defaults: () -> { species: { [string]: any }, look: { [string]: any } },
+	-- A JSON file NAME.json in the game folder: save a table, load it back (nil when missing).
+	save: (name: string, value: any) -> (),
+	load: (name: string) -> any,
+}
+
 declare sky: {
 	-- "gradient" or TIME[:WEATHER]: sunrise, morning, noon, afternoon, sunset,
 	-- night; clear, haze, mist ("sunset:haze"). A preset bakes in about 0.2 s.

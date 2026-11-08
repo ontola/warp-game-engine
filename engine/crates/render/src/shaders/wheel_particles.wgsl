@@ -26,7 +26,7 @@ fn particle_sun(p:vec3<f32>)->f32 {
     var s=particle_shadow(far_shadow,fx.shadow_vp,fx.shadow.x,p);
     if fx.shadow.z>0.5 {
         let c=fx.near_vp*vec4<f32>(p,1.0);
-        if c.z>=0.0&&c.z<=1.0{let weight=1.0-smoothstep(0.8,1.0,max(abs(c.x),abs(c.y)));
+        if c.z>=0.0&&c.z<=1.0{let weight=1.0-smoothstep(0.45,0.95,length(c.xy));
             if weight>0.0{s=mix(s,particle_shadow(near_shadow,fx.near_vp,fx.shadow.y,p),weight);}}
     }
     return mix(1.0,s,fx.sun_dir.w);

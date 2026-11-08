@@ -69,8 +69,10 @@ fn sun_degrees(env: &render::biome::Environment) -> (f32, f32) {
     if std::env::args().any(|a| a == "--hour") { env.sun_degrees() } else { (28.0, 135.0) }
 }
 /// Grass is a field of roots around one point; it is rebuilt around the
-/// camera once the camera is this far (metres, horizontally) from it.
-const GRASS_RECENTRE: f32 = 60.0;
+/// camera once the camera is this far (metres, horizontally) from it. At 60 m
+/// a whole strip of cells appeared at once every 60 m of travel (pop-in, Joep);
+/// the rebuild runs on a background thread, so small steps cost no frame time.
+const GRASS_RECENTRE: f32 = 15.0;
 /// Loaded forest cells recenter independently of ground and shadow streaming.
 const TREES_RECENTRE: f32 = 300.0;
 /// Mountain shadows past the shadow maps come from a heightfield this many
@@ -81,6 +83,10 @@ const SHADOW_CELL: f32 = 20.0;
 const SHADOW_RECENTRE: f32 = 4000.0;
 /// Loaded grass-cell domain, not source LOD distance. GPU chooses all cuts.
 const GRASS_RADIUS: f32 = 240.0;
+/// Grass cells tile their 1.5 m step exactly. At 1.15 (against bare seams
+/// of the old 3x3 lattice) the overlap doubled the blades along every seam:
+/// lines from the air. Jittered patches (cook_meadow_cells) cover the seams.
+const GRASS_CELL_OVERLAP: f32 = 1.0;
 
 type Built = Result<(Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>), String>;
 /// A scene from the builder thread, with its renderer when the thread had
@@ -477,6 +483,12 @@ impl Game for Fly {
             let above=(pos.y-self.ground(pos.x,pos.z)).max(0.0);
             let steps=(2.0*(4.0*above/180.0).max(1.0).log2()).ceil();
             renderer.set_shadow_reach((180.0*2f32.powf(steps/2.0)).min(self.world.tree_radius.min(SHADOW_REACH_MAX).max(180.0)));
+            // Centre the sun maps on the ground under the camera, not on the
+            // camera: seen from the sun, a map round the eye lands height /
+            // tan(sun elevation) downsun on the ground, so 16 m up the sharp
+            // near map missed the ground below and the closest shadows blurred.
+            let foot=Vec3::new(pos.x,pos.y-above,pos.z);
+            let _=renderer.set_lighting_focus(&[foot]);
         }
         if let (Some(terrain), Some(renderer)) = (self.terrain.as_mut(), frame.renderer()) {
             let started=web_time::Instant::now();
@@ -603,7 +615,9 @@ impl Game for Fly {
 }
 
 impl Default for World {
-    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, branch_slots: 49152 } }
+    // 32768 slots (6 November, settled pages): forest 25.2 -> 22.2 ms, near 21.0 -> 17.3,
+    // mostly voxel splat walk and occluder cull; 541 of 2.2M splats over 2 px.
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, branch_slots: 32768 } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
@@ -687,6 +701,14 @@ fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &rend
         let (start, end) = handover_band(world);
         procedural_terrain::far_forest_handover(&mut scene, material, [centre.x, centre.z], start, end, world.tree_density, &palette.forest);
     }
+    // Past the grass disc the ground takes the blades' mean colour (measured
+    // against the bare ground at the disc edge; KERN_GRASS_PROXY=r,g,b to tune).
+    if world.grass {
+        let tint=std::env::var("KERN_GRASS_PROXY").ok().and_then(|v|{
+            let p:Vec<f32>=v.split(',').filter_map(|x|x.trim().parse().ok()).collect();
+            (p.len()==3).then(||[p[0],p[1],p[2]])}).unwrap_or([0.6,0.85,0.5]);
+        procedural_terrain::grass_proxy(&mut scene, material, GRASS_RADIUS, tint);
+    }
     // The --track road: the land bends to it, and its pixels draw gravel.
     if let Some(w) = track.clone() {
         if !std::env::args().any(|a| a == "--no-buildings") { buildings(&mut scene, &w, seed, &style); }
@@ -733,7 +755,66 @@ fn renderer_for(gpu: &render::Gpu, scene: &Scene, light: &Lighting, pool: proced
 }
 
 /// Shared recipes are cooked once per set of biomes, independently of world population.
+/// --pine-ages: the forest is replaced by one Jeffrey pine per age, in a row
+/// north of the start, grown by render::plant_growth.
+const PINE_AGES: [u32; 9] = [3, 6, 12, 25, 50, 80, 120, 200, 300];
+fn pine_ages() -> bool { std::env::args().any(|a| a == "--pine-ages") }
+
+/// --pine-forest [TUNING.json]: every forest tree is a grown Jeffrey pine,
+/// one of these ages, from pine-lab's tuning file (default
+/// games/pine-lab/tuning.json; missing rules keep the defaults).
+const FOREST_AGES: [u32; 8] = [5, 9, 14, 20, 28, 38, 48, 55];
+fn pine_forest() -> Option<PathBuf> {
+    let args: Vec<String> = std::env::args().collect();
+    let at = args.iter().position(|a| a == "--pine-forest")?;
+    Some(args.get(at + 1).filter(|a| !a.starts_with("--")).map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/pine-lab/tuning.json")))
+}
+
+/// How many tree and shrub variants the forest uses (grass follows them).
+fn flora_count(lands: &render::biome::Lands) -> usize {
+    if pine_ages() { PINE_AGES.len() } else if pine_forest().is_some() { FOREST_AGES.len() } else { lands.species().len() }
+}
+
 fn cooked_flora(lands: &render::biome::Lands) -> Result<&'static Vec<CookedPlant>, String> {
+    if let Some(path) = pine_forest() {
+        static FOREST: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
+        let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
+        return FOREST.get_or_init(|| {
+            let (mut species, mut look) = (render::plant_growth::Species::jeffrey_pine(), render::plant_growth_assembly::Look::jeffrey_pine());
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+                    if let Some(s) = v.get("species") { species = serde_json::from_value(s.clone()).map_err(|e| e.to_string())?; }
+                    if let Some(l) = v.get("look") { look = serde_json::from_value(l.clone()).map_err(|e| e.to_string())?; }
+                    eprintln!("pine forest: rules from {}", path.display());
+                }
+                Err(e) => eprintln!("pine forest: {} ({e}); default rules", path.display()),
+            }
+            let variants: Vec<_> = FOREST_AGES.iter().map(|&age| (species, age, 1)).collect();
+            let started = web_time::Instant::now();
+            let cooked = recipe_forest::cook_grown(&variants, &render::plant_growth_assembly::Parts::for_look(&look), look, Some(&cache))?;
+            for (c, age) in cooked.iter().zip(FOREST_AGES) {
+                eprintln!("pine forest age {age}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
+            }
+            eprintln!("pine forest: {} variants in {:.1} s", cooked.len(), started.elapsed().as_secs_f64());
+            Ok(cooked.into_iter().map(|c| c.plant).collect())
+        }).as_ref().map_err(|e| e.clone());
+    }
+    if pine_ages() {
+        static GROWN: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
+        let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
+        return GROWN.get_or_init(|| {
+            let species = render::plant_growth::Species::jeffrey_pine();
+            let variants: Vec<_> = PINE_AGES.iter().map(|&age| (species, age, 1)).collect();
+            let cooked = recipe_forest::cook_grown(&variants, &render::plant_growth_assembly::Parts::long_needle_pine(),
+                render::plant_growth_assembly::Look::jeffrey_pine(), Some(&cache))?;
+            for (c, age) in cooked.iter().zip(PINE_AGES) {
+                eprintln!("jeffrey pine age {age}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
+            }
+            Ok(cooked.into_iter().map(|c| c.plant).collect())
+        }).as_ref().map_err(|e| e.clone());
+    }
     type Flora = Vec<CookedPlant>;
     static COOKED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, &'static Flora>>> = std::sync::OnceLock::new();
     let mut map = COOKED.get_or_init(Default::default).lock().unwrap();
@@ -760,7 +841,7 @@ fn vegetation_quality_policy()->render::aggregate_lod::Policy {
 fn recipe_spruces(scene:&mut Scene,lands:&render::biome::Lands,season:f32,world:World,roots:&[WorldRoot],branch_slots:u32)->Result<(),String> {
     let cooked=if world.trees {Some(cooked_flora(lands)?)} else {None};
     let cache=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
-    let grass=if world.grass {recipe_forest::cook_meadow_cells(&[(47,season),(83,season)],Some(&cache))?} else {Vec::new()};
+    let grass=if world.grass {recipe_forest::cook_meadow_cells(&GRASS_VARIANT_SEEDS.map(|seed|(seed,season)),Some(&cache))?} else {Vec::new()};
     for (i,c) in grass.iter().enumerate() {
         eprintln!("grass cell {i}: {} in {:.1} ms, {} placements, {} branches, {} mesh bindings",if c.loaded {"loaded"} else {"cooked"},c.millis,c.plant.stats().placements,c.plant.stats().branches,c.plant.stats().primitive_meshes);
     }
@@ -840,8 +921,38 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
         .filter(|t| edits.is_some_and(|o|o.edits.contains_key(&t.id)) || render::forest_field::handover_keep(t.pos, c, start, end))
         .chain(edited(placement::place(&shrubs, &land, c, world.tree_radius.min(SHRUB_RADIUS)),&shrubs,world.tree_radius.min(SHRUB_RADIUS)))
         .map(|t|WorldRoot {id:t.id,placement:RootPlacement {up:Vec3::Y,pos:t.pos,yaw:t.yaw,scale:t.scale.y,variant:t.variant as usize}}).collect()} else {Vec::new()};
+    // One pine per age in a row 30 m north of the start, spaced by size.
+    let woody:Vec<WorldRoot>=if world.trees && pine_ages() {
+        // Anchored where the first build put it: the forest centre follows the
+        // camera, and a row rebuilt round it walked along with the player.
+        static ROW:std::sync::OnceLock<Vec2>=std::sync::OnceLock::new();
+        // --pine-row X,Z places it in the world instead.
+        let c=*ROW.get_or_init(||std::env::args().skip_while(|a|a!="--pine-row").nth(1)
+            .and_then(|s|s.split_once(',').and_then(|(x,z)|Some(Vec2::new(x.parse().ok()?,z.parse::<f32>().ok()?-30.))))
+            .unwrap_or(c));
+        let mut x=c.x-60.;
+        PINE_AGES.iter().enumerate().map(|(i,&age)|{
+            let gap=2.+0.06*age as f32;x+=gap;let at=Vec2::new(x,c.y+30.);x+=gap;
+            WorldRoot {id:render::placement::instance_id(2000,i as i32,0),placement:RootPlacement {up:Vec3::Y,pos:placement::World::ground(&land,at.x,at.y).pos,yaw:0.,scale:1.,variant:i}}
+        }).collect()
+    } else {woody};
+    // --pine-solo V[,X,Z]: only one grown pine, variant V (FOREST_AGES), at
+    // X,Z (default 0,0): its forest counters are that tree's representation.
+    let solo=std::env::args().skip_while(|a|a!="--pine-solo").nth(1);
+    let woody:Vec<WorldRoot>=if let (true,Some(s))=(world.trees && pine_forest().is_some(),solo) {
+        let n:Vec<f32>=s.split(',').filter_map(|v|v.parse().ok()).collect();
+        let (v,x,z)=(n.first().copied().unwrap_or(0.) as usize,n.get(1).copied().unwrap_or(0.),n.get(2).copied().unwrap_or(0.));
+        vec![WorldRoot {id:render::placement::instance_id(3000,v as i32,0),placement:RootPlacement {up:Vec3::Y,pos:placement::World::ground(&land,x,z).pos,yaw:0.,scale:1.,variant:v.min(FOREST_AGES.len()-1)}}]
+    } else {woody};
+    // Every tree and shrub becomes a grown pine of a stable random age.
+    let woody:Vec<WorldRoot>=if world.trees && pine_forest().is_some() && !std::env::args().any(|a|a=="--pine-solo") {
+        woody.into_iter().map(|mut r|{
+            let h=r.id.wrapping_mul(0x9e37_79b9_7f4a_7c15)>>40;
+            r.placement.variant=(h as usize)%FOREST_AGES.len();r.placement.scale=1.;r
+        }).collect()
+    } else {woody};
     if !world.grass {return woody;}
-    let offset=if world.trees {lands.species().len()} else {0};
+    let offset=if world.trees {flora_count(lands)} else {0};
     let mut roots=woody;
     let started=web_time::Instant::now();
     let cells=grass_cells(seed,&land,|x,z|land.style_at(x,z).grass,c,offset,GRASS_RADIUS);
@@ -867,24 +978,61 @@ fn handover_band(world: World) -> (f32, f32) {
 
 /// Stable world cells share two cooked assemblies. Terrain sampling happens
 /// only on world streaming; no CPU visibility or near-source shortlist.
+/// Seeds of the cooked meadow cell variants (recipe_forest::cook_meadow_cells).
+const GRASS_VARIANT_SEEDS: [u64; 4] = [47, 83, 131, 197];
+
 fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f32)->f32,centre:Vec2,variant_offset:usize,radius:f32)->Vec<WorldRoot> {
-    use render::placement::World as _;
+    use render::placement::Cell;
     let cell=recipe_forest::MEADOW_CELL_SIZE;
     let lo=((centre-Vec2::splat(radius))/cell).floor().as_ivec2();
     let hi=((centre+Vec2::splat(radius))/cell).ceil().as_ivec2();
     let mut roots=Vec::new();
-    for j in lo.y..=hi.y {for i in lo.x..=hi.x {
-        let x=(i as f32+0.5)*cell;let z=(j as f32+0.5)*cell;
-        if Vec2::new(x,z).distance_squared(centre)>radius*radius {continue;}
+    for j in lo.y..=hi.y {
+    // Each row slides along x by its own fraction of a cell: cells still tile
+    // the row, but the seams and the 0.5 m patch lattice of one row no longer
+    // line up with the next, so the field shows no square grid from above.
+    let shift=Cell::new(0,j,seed).hash(79)*cell;
+    for i in lo.x-1..=hi.x {
+        let x=(i as f32+0.5)*cell+shift;let z=(j as f32+0.5)*cell;
+        let d=Vec2::new(x,z).distance(centre);
+        if d>radius {continue;}
+        // The outer 30 % thins out cell by cell while the ground proxy
+        // (terrain_surface.wgsl grass_proxy) fades in over the same band:
+        // no line where the blades end.
+        if Cell::new(i,j,seed).hash(81)<((d-0.7*radius)/(0.3*radius)).clamp(0.,1.) {continue;}
         let s=land.ground(x,z);
         let sparse=0.5+0.8*terrain_field::noised(Vec2::new(x,z)/40.,seed.wrapping_add(31)).x>grass(x,z);
-        if sparse || s.rock>0.5 || s.scree>0.8 || s.water>0.02 || s.snow>0.3 || land.clearance(x,z)<cell {continue;}
+        if sparse || s.scree>0.8 || s.water>0.02 || land.clearance(x,z)<cell {continue;}
         let dx=land.ground(x+0.5,z).pos.y-land.ground(x-0.5,z).pos.y;
         let dz=land.ground(x,z+0.5).pos.y-land.ground(x,z-0.5).pos.y;
+        // The cell tilts with the ground, so along the fall line it covers
+        // only cos(slope) of the grid step: a bare strip per row on a slope
+        // (Mancave, 28 degrees: 0.18 m). Scaled by 1/up.y it meets the next row.
         let up=Vec3::new(-dx,1.,-dz).normalize();
-        let hash=render::placement::Cell::new(i,j,seed).hash(77);
+        // Rock and snow thin the grass out by a per-cell hash, not at one value.
+        // (Letting grass onto mossy, up-facing rock put it over outcrops.)
+        let smooth=|v:f32,a:f32,b:f32|((v-a)/(b-a)).clamp(0.,1.);
+        let cut=Cell::new(i,j,seed).hash(78);
+        if cut<smooth(s.rock,0.2,0.6) || cut<smooth(s.snow,0.15,0.45) {continue;}
+        let hash=Cell::new(i,j,seed).hash(77);
+        // A cell is a 3x3 block of patches that tiles the 1.5 m square: turn
+        // it by quarter turns only. Any yaw left its corners bare, a dark hole
+        // at every grid corner (Joep's regular black circles).
+        let quarter=(hash*8.).floor() as u32%4;
+        // Cells tile exactly: no growth, shift or free turn. Any overlap
+        // doubled the blades along every seam, which read as lines from the
+        // air (Joep, playtest 4); the cell's own patches are jittered at cook
+        // time (recipe_forest::cook_meadow_cells), so seams look like the
+        // inside of a cell.
+        let turn=0.0;
+        let shift=Vec2::ZERO;
+        if land.clearance(x+shift.x,z+shift.y)<cell {continue;}
+        // Four cooked variants, picked independently of the turn: two
+        // repeated every few cells and read as a grid from above.
+        let variant=((Cell::new(i,j,seed).hash(80)*GRASS_VARIANT_SEEDS.len() as f32) as usize).min(GRASS_VARIANT_SEEDS.len()-1);
         roots.push(WorldRoot {id:render::placement::instance_id(1000,i,j),placement:RootPlacement {
-            pos:Vec3::new(x,s.pos.y-0.015,z),up,yaw:hash*std::f32::consts::TAU,scale:1.,variant:variant_offset+usize::from(hash>=0.5)}});
+            pos:Vec3::new(x+shift.x,land.ground(x+shift.x,z+shift.y).pos.y-0.015,z+shift.y),up,yaw:quarter as f32*std::f32::consts::FRAC_PI_2+turn,
+            scale:GRASS_CELL_OVERLAP/up.y.max(0.7),variant:variant_offset+variant}});
     }}
     roots
 }
@@ -1058,10 +1206,23 @@ fn main() -> Result<(), String> {
         let forward = Controls { mv: [0.0, if stationary {0.0}else{1.0}], ..Default::default() };
         let frames = n.parse::<u32>().map_err(|_| "--fly N")?;
         if frames <= 5 { return Err("--fly needs at least six frames".into()); }
+        // --fly-yaws Y1,Y2,..: hold each yaw for an equal share of the
+        // frames; at each share's end save PREFIX-N.png (--fly-shot PREFIX)
+        // and print that frame's GPU forest counters.
+        let yaws:Vec<f32>=arg("--fly-yaws").map(|s|s.split(',').filter_map(|v|v.parse().ok()).collect()).unwrap_or_default();
         for i in 0..frames {
             let t = web_time::Instant::now();
+            let segment=(i as usize*yaws.len())/frames as usize;
+            if let Some(&yaw)=yaws.get(segment) {game.yaw=yaw;}
             game.tick(&[forward]);
             let rgba = headless.frame(&mut game)?;
+            let next=((i as usize+1)*yaws.len())/(frames as usize);
+            if !yaws.is_empty() && next>segment {
+                if let Some(prefix)=arg("--fly-shot") {render::write_png(std::path::Path::new(&format!("{prefix}-{segment}.png")),w,h,&rgba)?;}
+                if let Some(renderer)=headless.renderer() {
+                    println!("fly segment {segment} yaw {} frame {i}: {}",yaws[segment],serde_json::to_string(&renderer.gpu_forest_diagnostics(&gpu)?).map_err(|e|e.to_string())?);
+                }
+            }
             if i >= 5 {
                 times.push(t.elapsed().as_secs_f64() * 1e3);
                 cpu_times.push(serde_json::json!({"frame":i,"draw":headless.last_draw_timings(),"terrain_ms":game.last_updates[0],"tree_pool_ms":game.last_updates[1],
@@ -1156,10 +1317,16 @@ fn main() -> Result<(), String> {
         let mut headless = app::Headless::new(&gpu, [w, h], TICK_HZ)?;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let pan = arg("--pan").and_then(|d| d.parse::<f32>().ok()).unwrap_or(0.0).to_radians();
+        // Clips: --dump-warm N still frames first (pages stream in), then fly
+        // forward (--dump-forward) keeping every --dump-every th frame.
+        let warm = arg("--dump-warm").and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
+        let every = arg("--dump-every").and_then(|n| n.parse::<u32>().ok()).unwrap_or(1).max(1);
+        let forward = if args.iter().any(|a| a == "--dump-forward") { 1.0 } else { 0.0 };
+        for _ in 0..warm { game.tick(&[Controls::default()]); headless.frame(&mut game)?; }
         for i in 0..n.parse::<u32>().map_err(|_| "--dump N DIR")? {
-            game.tick(&[Controls { look: [pan, 0.0], ..Default::default() }]);
+            game.tick(&[Controls { look: [pan, 0.0], mv: [0.0, forward], ..Default::default() }]);
             let rgba = headless.frame(&mut game)?;
-            render::write_png(&PathBuf::from(&dir).join(format!("{i:03}.png")), w, h, &rgba)?;
+            if i % every == 0 { render::write_png(&PathBuf::from(&dir).join(format!("{:03}.png", i / every)), w, h, &rgba)?; }
         }
         return Ok(());
     }
@@ -1203,7 +1370,7 @@ mod vegetation_tests {
             let p=root.placement;
             assert!((p.pos.y-(0.2*p.pos.x-0.1*p.pos.z-0.015)).abs()<1e-5);
             assert!(p.up.abs_diff_eq(Vec3::new(-0.2,1.,0.1).normalize(),1e-5));
-            assert!(!(2.0..4.0).contains(&p.pos.x));assert!((7..9).contains(&p.variant));
+            assert!(!(2.0..4.0).contains(&p.pos.x));assert!((7..7+GRASS_VARIANT_SEEDS.len()).contains(&p.variant));
             if let Some(next)=b.iter().find(|r|r.id==root.id) {assert_eq!(root,next);overlap+=1;}
         }
         assert!(overlap>a.len()/3);

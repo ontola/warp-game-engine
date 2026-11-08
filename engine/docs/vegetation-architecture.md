@@ -25,7 +25,7 @@ Measured on the RTX 5070 Ti (Vulkan) after each round; numbers are GPU ms.
   never moved. The first view's stored count is copied to refiner state[82];
   `fast_adapt` keeps a smoothed booked/stored ratio (state[83], 1..8, 15%
   margin) that scales the camera splat limit. Branch slots now bind: 65536
-  gave scale 15 -> 11 for +4..6 ms, the default is 49152 (about half that).
+  gave scale 15 -> 11 for +4..6 ms, the default was 49152; with pages settled 32768 saves ~3 ms in forest and near for 541 of 2.2M splats over 2 px, so it is now 32768.
 - **Urgent streaming:** pages were uploaded in id order, so recipe 2360's
   finer pages came last and near bushes stayed 31 px balls for ~290 frames
   (every earlier "largest cell" in near/forest was measured mid-streaming).

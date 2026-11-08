@@ -146,6 +146,8 @@ impl Rng {
 pub struct Core {
     pub(crate) storage: Option<crate::storage::Storage>,
     pub world: World,
+    /// Grown plants (`plants.grow`), attached to the scene on the next frame.
+    pub plants: crate::plants::Plants,
     pub sounds: SoundOut,
     /// Every player, people first in view order, then bots.
     pub roster: Vec<Player>,
@@ -464,6 +466,31 @@ pub fn player_table(lua: &Lua, p: &Player) -> mlua::Result<Table> {
 }
 
 /// Add the API tables to a module base (`Host::new`'s `api`).
+/// `base` with the fields a Luau table sets (unknown names are an error).
+/// A struct as JSON with its f32 fields printed short (0.3, not 0.30000001).
+fn short_json<T: serde::Serialize>(v: &T) -> mlua::Result<serde_json::Value> {
+    serde_json::from_str(&serde_json::to_string(v).map_err(rt)?).map_err(rt)
+}
+
+fn merged<T: serde::Serialize + serde::de::DeserializeOwned>(base: &T, over: &Value, what: &str) -> mlua::Result<T> {
+    let mut j = short_json(base)?;
+    if !over.is_nil() {
+        let serde_json::Value::Object(o) = crate::luajson::to_json(over) else { return Err(rt(format!("{what}: expected a table of fields"))) };
+        let m = j.as_object_mut().expect("a struct");
+        for (k, v) in o {
+            if !m.contains_key(&k) { return Err(rt(format!("{what}: unknown field {k:?} (fields: {})", m.keys().cloned().collect::<Vec<_>>().join(", ")))); }
+            m.insert(k, v);
+        }
+    }
+    serde_json::from_value(j).map_err(|e| rt(format!("{what}: {e}")))
+}
+
+/// A data file name inside the game folder: letters, digits, `-` and `_`.
+fn data_file(c: &Core, name: &str) -> mlua::Result<std::path::PathBuf> {
+    if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') { return Err(rt(format!("{name:?}: a name of letters, digits, - and _"))); }
+    Ok(c.world.dir().join(format!("{name}.json")))
+}
+
 pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     crate::storage::register(lua, api, core.clone())?;
     let table = |name: &str, fns: Vec<(&str, mlua::Function)>| -> mlua::Result<()> {
@@ -475,6 +502,58 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     macro_rules! f {
         ($core:ident, $body:expr) => {{ let $core = core.clone(); lua.create_function($body)? }};
     }
+
+    table("plants", vec![
+        ("grow", f!(core, move |_, opts: Table| {
+            let o = options(&opts, &["age", "seed", "pos", "yaw", "full", "species", "look"], "plants.grow")?;
+            let get = |k: &str| o.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap_or(Value::Nil);
+            let age = num(&get("age")).ok_or_else(|| rt("plants.grow: needs age (years)"))?;
+            if !(0.0..=2000.0).contains(&age) { return Err(rt("plants.grow: age 0 to 2000 years")); }
+            let pos = match get("pos") { Value::Nil => Vec3::ZERO, v => vec3(&v, "plants.grow pos")? };
+            let p = crate::plants::Plant {
+                species: merged(&render::plant_growth::Species::jeffrey_pine(), &get("species"), "plants.grow species")?,
+                look: merged(&render::plant_growth_assembly::Look::jeffrey_pine(), &get("look"), "plants.grow look")?,
+                age: age.round() as u32,
+                seed: num(&get("seed")).map_or(1, |s| s.max(0.0) as u64),
+                pos,
+                yaw: num(&get("yaw")).unwrap_or(0.0),
+                full: matches!(get("full"), Value::Boolean(true)),
+            };
+            let mut c = lock(&core);
+            sim(&c, "plants.grow")?;
+            Ok(c.plants.grow(p))
+        })),
+        ("remove", f!(core, move |_, id: u32| { let mut c = lock(&core); sim(&c, "plants.remove")?; Ok(c.plants.remove(id)) })),
+        ("clear", f!(core, move |_, ()| { let mut c = lock(&core); sim(&c, "plants.clear")?; c.plants.clear(); Ok(()) })),
+        ("status", f!(core, move |lua, ()| {
+            let mut c = lock(&core);
+            c.plants.poll();
+            let (placed, shown, cooking, failed) = c.plants.status();
+            let t = lua.create_table()?;
+            t.raw_set("placed", placed)?; t.raw_set("shown", shown)?; t.raw_set("cooking", cooking)?; t.raw_set("failed", failed)?;
+            t.raw_set("upgrading", c.plants.upgrading())?;
+            if let Some(e) = c.plants.error() { t.raw_set("error", e)?; }
+            Ok(t)
+        })),
+        ("defaults", f!(core, move |lua, ()| {
+            let _ = &core;
+            let t = lua.create_table()?;
+            t.raw_set("species", crate::luajson::from_json(lua, &short_json(&render::plant_growth::Species::jeffrey_pine())?)?)?;
+            t.raw_set("look", crate::luajson::from_json(lua, &short_json(&render::plant_growth_assembly::Look::jeffrey_pine())?)?)?;
+            Ok(t)
+        })),
+        ("save", f!(core, move |_, (name, value): (String, Value)| {
+            let file = data_file(&lock(&core), &name)?;
+            let text = serde_json::to_string_pretty(&crate::luajson::to_json(&value)).map_err(rt)?;
+            std::fs::write(&file, text + "\n").map_err(|e| rt(format!("{}: {e}", file.display())))
+        })),
+        ("load", f!(core, move |lua, name: String| {
+            let file = data_file(&lock(&core), &name)?;
+            let Ok(text) = std::fs::read_to_string(&file) else { return Ok(Value::Nil) };
+            let j: serde_json::Value = serde_json::from_str(&text).map_err(|e| rt(format!("{}: {e}", file.display())))?;
+            crate::luajson::from_json(lua, &j)
+        })),
+    ])?;
 
     table("world", vec![
         ("spawn", f!(core, move |_, (name, opts, parent): (String, Option<Table>, Option<u32>)| {

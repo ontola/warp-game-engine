@@ -417,6 +417,37 @@ fn field_ground(s: SurfaceIn) -> FieldGround {
     return g;
 }
 
+// Grass proxy (style block material 7, procedural_terrain.rs grass_proxy):
+// tint.y the drawn grass radius round the camera (0: off), roughness,
+// scale, metal the colour the blades multiply the ground by. Fades in over
+// the outer 30 % of the disc, where the cells thin out, on ground where
+// grass_cells would plant them (rock, scree, water, snow excluded).
+fn grass_proxy_hash(q: vec2<i32>) -> f32 {
+    var h = u32(q.x) * 0x8da6b343u ^ u32(q.y) * 0xd8163841u;
+    h = (h ^ (h >> 15u)) * 0x2c1b3c6du;
+    h = (h ^ (h >> 12u)) * 0x297a2d39u;
+    return f32((h ^ (h >> 15u)) & 0xffffu) / 65535.0;
+}
+fn grass_proxy(c: vec3<f32>, s: SurfaceIn, f: FieldAttr, meadow_w: f32, footprint: f32) -> vec3<f32> {
+    if s.scale >= 0.0 { return c; }
+    let m = material(u32(-s.scale - 0.5) + 7u);
+    let radius = m.tint.y;
+    if radius <= 0.0 { return c; }
+    let d = distance(s.p.xz, view.cam.xz);
+    // Only past the blades: the tint darkens (it is the blades' mean, lit
+    // darker than bare ground), and inside the disc it made the ground
+    // between them near black (Joep playtest 5).
+    let w = smoothstep(0.7 * radius, radius, d) * meadow_w
+        * (1.0 - smoothstep(0.3, 0.8, f.rock)) * (1.0 - smoothstep(0.6, 0.8, f.scree))
+        * (1.0 - smoothstep(0.0, 0.02, f.water)) * (1.0 - smoothstep(0.15, 0.45, f.snow));
+    // The blades read speckled down to a pixel, a flat tint smooth: tufts
+    // of light and dark 0.3 m across, fading out as a pixel covers several
+    // (Mancave: the edge is now a texture jump more than a colour one).
+    let tuft = grass_proxy_hash(vec2<i32>(floor(s.p.xz / 0.3)));
+    let speckle = 1.0 + 0.5 * (tuft - 0.5) * clamp(1.0 - footprint / 0.6, 0.0, 1.0);
+    return mix(c, c * vec3<f32>(m.roughness, m.scale, m.metal) * speckle, w);
+}
+
 // Ditches drawn into the pixels: the terrain's ditch amount (style block
 // material 7, procedural_terrain.rs reserve) on flat ground, and the
 // distance (metres) to the nearest ditch line on terrain_field's grid.
@@ -549,9 +580,12 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     c *= 0.82 + 0.3 * broad;
 
     // Past the meadow's blades the ground reads as a grass canopy.
-    let canopy = meadow_canopy(c, nn, n, s.dir, wuv, footprint, s.time, u32(s.metal + 0.5),
-        (1.0 - m_soil) * (1.0 - 0.5 * m_moor) * smoothstep(0.75, 0.9, f.up));
+    let meadow_w = (1.0 - m_soil) * (1.0 - 0.5 * m_moor) * smoothstep(0.75, 0.9, f.up);
+    let canopy = meadow_canopy(c, nn, n, s.dir, wuv, footprint, s.time, u32(s.metal + 0.5), meadow_w);
     c = canopy.albedo;
+    // Past the drawn grass cells (a disc round the camera) the ground takes
+    // the blades' mean colour, so no green circle shows from the air.
+    c = grass_proxy(c, s, f, meadow_w, footprint);
     nn = canopy.normal;
 
     // Past the trees the forest is part of the ground (forest_field).
