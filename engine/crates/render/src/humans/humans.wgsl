@@ -108,8 +108,8 @@ fn scalp(p:vec3<f32>, id:vec4<f32>) -> f32 {
 
         let forehead=smoothstep(0.932,0.947,p.y)*(1.-smoothstep(0.954,0.963,p.y))*front;
         let age=smoothstep(0.48,0.90,id.x);
-        let crease=pow(0.5+0.5*cos(p.y*2300.+4.*cos(p.x*69.)),8.);
-        color*=1.-0.075*crease*forehead*age;
+        let crease=pow(0.5+0.5*cos(p.y*1730.+4.*cos(p.x*69.)+2.*sin(p.x*117.+p.y*61.)),8.);
+        color*=1.-0.04*crease*forehead*age*(1.-smoothstep(0.019,0.047,abs(p.x)));
         let crop=scalp(p,id);
         color=mix(color,hair*(0.94+0.06*sin(p.x*1160.+16.*sin(p.z*48.)+p.y*380.)),crop);
     }
