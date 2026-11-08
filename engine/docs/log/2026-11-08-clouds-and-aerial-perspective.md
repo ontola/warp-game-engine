@@ -118,3 +118,10 @@ The three matrices are now camera-relative and built in f64 on the CPU.
 with the fix. The bake's ground below the true horizon (seen from a few km
 up) is now hazed towards the horizon sky in shade.wgsl by the distance to
 the planet, instead of by the 80 km aerial-perspective volume.
+
+Cloud shadows on the ground were a km soft: they used the plain weather
+ramp (±0.08), which is much wider than the edge of the raymarched cloud.
+Shadows now use `cloud_shadow_cover`: the weather plus two finer octaves
+(~400 m and ~190 m), a ±0.02 edge, shifted 0.03 inwards to where the 3D
+shape clears. Checked at `--at 0,0,1500,0.6,-0.6` and at Joep's far-forest
+spot (`-15165,123528,480`).
