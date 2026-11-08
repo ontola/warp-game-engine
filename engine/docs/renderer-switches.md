@@ -83,6 +83,7 @@ note linked says why. They are candidates for removal from the code.
 
 | Variable | Experiment | Note |
 | --- | --- | --- |
+| `KERN_REFRACTION` | Screen-space refraction for materials with a `Refraction` (same as `Scene::graphics.refraction`); default once checked on a real GPU | [refraction](log/2026-11-08-refraction.md) |
 | `KERN_INSTANCE_GROUPS`, `KERN_SUN_INSTANCE_GROUPS`, `KERN_HEADLIGHT_INSTANCE_GROUPS` | GPU hierarchy of spatial instance groups | [r45](log/instance-hierarchy-r45.md) |
 | `KERN_CLUSTER_TRAVERSAL` | Top-down cluster traversal (`terrain_fly` turns it on unless set) | [r46](log/cluster-traversal-r46.md) |
 | `KERN_INSTANCE_BROADPHASE` | Compact colour-view instance selection | [broadphase](log/instance-broadphase.md) |

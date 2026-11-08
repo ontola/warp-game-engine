@@ -43,6 +43,14 @@ resolution, reconstruction mode, sample count and scene with a number.
   is now timed. **Open:** no async cluster/triangle counters yet (they need
   a non-blocking counter readback); not in the browser shell or Sideways'
   own shell; overlay cost not measured on a real GPU yet.
+- **Refraction** (8 November): blended materials with a `Refraction`
+  bend the opaque scene behind them in screen space; Sideways car windows
+  have one ([rendering overview](rendering.md)). **Opt-in** with
+  `KERN_REFRACTION=1` or `Scene::graphics.refraction` until checked on
+  Mancave; checked on lavapipe only (`refraction_probe`). **Open:** cost on a
+  real GPU (a depth copy, a front-depth draw and an HDR copy per view with
+  refracting glass), only the nearest refracting surface bends, no caustics
+  or coloured shadows.
 - **Open:** fixed per-frame work for unused features; `frame.rs` still refers
   to Sideways features; new meshes or materials need a new renderer;
   animated pixels reject TAA history (no deformation motion vectors).

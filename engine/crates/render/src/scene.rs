@@ -102,6 +102,27 @@ pub struct BlendMaterial {
     /// Sort by the instance origin instead of per triangle (like Godot):
     /// nested shells at one centre draw in instance order.
     pub object_sort: bool,
+    /// Bend the opaque scene seen through this surface (screen-space
+    /// refraction). Drawn only when the renderer has refraction enabled.
+    pub refraction: Option<Refraction>,
+}
+
+/// Screen-space refraction of a blended surface. The background is the
+/// opaque scene behind it (layers of glass behind keep their unbent light).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Refraction {
+    /// Index of refraction, 1..3 (window glass 1.5, water 1.33).
+    pub ior: f32,
+    /// Metres light travels inside before leaving parallel to where it came
+    /// in (a pane, 0..6.5 m). [`Refraction::SOLID`] (or more) treats the
+    /// surface as the front of a solid that reaches the background.
+    pub thickness: f32,
+}
+
+impl Refraction {
+    pub const SOLID: f32 = f32::INFINITY;
+    /// 4 mm window glass.
+    pub const WINDOW: Refraction = Refraction { ior: 1.5, thickness: 0.004 };
 }
 
 #[repr(C)]
@@ -410,6 +431,9 @@ pub struct Graphics {
     /// angle in radians as seen from the camera (0: draw all). Drops distant
     /// small detail that covers a pixel or two.
     pub minimal_min_angle: f32,
+    /// Screen-space refraction for materials given a [`Refraction`]
+    /// (`KERN_REFRACTION=1` also turns it on). Off: they blend as before.
+    pub refraction: bool,
 }
 
 #[derive(Default)]
@@ -716,7 +740,16 @@ impl Scene {
     /// The same material is excluded from both depth/shadow and solid proxies.
     pub fn set_material_blend(&mut self, material: u32, alpha: f32, double_sided: bool) {
         self.materials[material as usize].flags |= BLEND | NO_AMBIENT_OCCLUSION;
-        self.blended_materials.insert(material, BlendMaterial { alpha: alpha.clamp(0.0, 1.0), double_sided, additive: false, object_sort: false });
+        let refraction = self.blended_materials.get(&material).and_then(|blend| blend.refraction);
+        self.blended_materials.insert(material, BlendMaterial { alpha: alpha.clamp(0.0, 1.0), double_sided, additive: false, object_sort: false, refraction });
+    }
+
+    /// Refract the opaque scene behind this blended material (see
+    /// [`Refraction`]). Call after [`Scene::set_material_blend`]. Additive
+    /// and emissive materials never refract. Opt-in per renderer:
+    /// `Graphics::refraction` or `KERN_REFRACTION=1`.
+    pub fn set_material_refraction(&mut self, material: u32, refraction: Refraction) {
+        if let Some(blend) = self.blended_materials.get_mut(&material) { blend.refraction = Some(refraction); }
     }
 
     /// Sort this blended material's triangles by their instance origin.
