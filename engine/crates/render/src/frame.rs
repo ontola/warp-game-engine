@@ -5370,8 +5370,12 @@ impl Renderer {
                 Some(settings) => {
                     let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("sky volume"); (qs, timestamp_pair(&mut ts)) });
                     if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
+                    // Unjittered: the clouds are composited over the TAA-resolved
+                    // (unjittered) colour and keep their own history, so the
+                    // camera's sub-pixel jitter made them wobble in its 16-frame
+                    // cycle (Joep, 8 November: clouds stutter while standing still).
                     let out = self.sky_volume.render(gpu, &mut enc, settings, crate::sky_volume::ViewInput { index: vi, input: &resolved,
-                        depth: &depth_v, depth_size: (w, h), camera: cam.pos, depth_vp: vp, light, reset: layout_changed })?;
+                        depth: &depth_v, depth_size: (w, h), camera: cam.pos, depth_vp: proj * view_m, light, reset: layout_changed })?;
                     if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
                     out
                 }
