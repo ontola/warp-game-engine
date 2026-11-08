@@ -434,6 +434,10 @@ pub struct Graphics {
     /// Screen-space refraction for materials given a [`Refraction`]
     /// (`KERN_REFRACTION=1` also turns it on). Off: they blend as before.
     pub refraction: bool,
+    /// Clustered local lights (`Renderer::set_clustered_lights`): hundreds
+    /// per frame, some shadowed. Off by default; `KERN_CLUSTERED_LIGHTS`
+    /// (1 or 0) overrides.
+    pub clustered_lights: bool,
 }
 
 #[derive(Default)]
@@ -562,6 +566,10 @@ pub struct Scene {
     /// Absolute, sun-disc-free radiance with its solar state supplied by the
     /// atmosphere bake. Bypass HDRI brightest-pixel rotation and lux rescaling.
     pub sky_physical: bool,
+    /// The baked atmosphere's GPU tables (`BakedSky::apply`), for aerial
+    /// perspective and clouds (`Lighting::sky_volume`). Without them those
+    /// passes bake the default atmosphere once.
+    pub atmosphere: Option<std::sync::Arc<crate::atmosphere::AtmosphereTables>>,
 }
 
 impl Scene {

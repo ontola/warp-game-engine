@@ -112,6 +112,8 @@ pub fn wizard_cloth(robe: [f32; 3]) -> HashMap<u32, Vec3> {
 pub struct Lamp {
     pub pos: Vec3,
     pub light: LocalLight,
+    /// Its kit's instances (start, count): they cast no shadow from it.
+    pub owner: (u32, u32),
 }
 
 pub struct View {
@@ -436,6 +438,7 @@ impl View {
         let pieces = look.pieces(&self.kits, scene, name);
         let Some(kit) = self.kits.kit(name) else { return };
         let at = Mat4::from(at);
+        let first = scene.instances.len() as u32;
         for p in &pieces {
             let xf = at * kit.model_xf(p.node);
             scene.add_instance(p.mesh, look::affine(xf));
@@ -450,7 +453,7 @@ impl View {
         for (i, n) in kit.nodes.iter().enumerate() {
             if let Some(l) = n.light {
                 let pos = (at * kit.model_xf(i)).w_axis.truncate();
-                self.lamps.push(Lamp { pos, light: omni(pos, l) });
+                self.lamps.push(Lamp { pos, light: omni(pos, l), owner: (first, scene.instances.len() as u32 - first) });
             }
         }
     }
@@ -789,7 +792,26 @@ impl View {
             let k = 0.85 + 0.1 * (t * 9.0 + i * 1.7).sin() + 0.05 * (t * 23.0 + i).sin();
             LocalLight { intensity_cd: l.light.intensity_cd * k, ..l.light }
         }));
-        renderer.set_local_lights(&locals)?;
+        if renderer.clustered_lights_enabled() {
+            // Clustered lights (KERN_CLUSTERED_LIGHTS=1): every staff, shrine
+            // and spell light, and every lamp, the lamps shadowed (the
+            // renderer shadows the ones nearest the cameras within budget).
+            use render::clustered_lights::{ClusteredLight, LightShadow};
+            let mut spells = self.fx.lights();
+            for light in &mut spells { light.intensity_cd *= self.spell_effects.value(1) as f32; }
+            let mut all: Vec<ClusteredLight> = self.marks.spill.iter().chain(&self.shrines.lights).chain(&spells)
+                .map(|l| ClusteredLight::unshadowed(*l)).collect();
+            all.extend(self.lamps.iter().enumerate().map(|(i, l)| {
+                let k = 0.85 + 0.1 * (t * 9.0 + i as f32 * 1.7).sin() + 0.05 * (t * 23.0 + i as f32).sin();
+                ClusteredLight { light: LocalLight { intensity_cd: l.light.intensity_cd * k, ..l.light },
+                    shadow: Some(LightShadow { id: i as u64, exclude: Some(l.owner) }) }
+            }));
+            all.truncate(render::clustered_lights::MAX_CLUSTERED_LIGHTS);
+            renderer.set_clustered_lights(&all)?;
+            renderer.set_local_lights(&[])?;
+        } else {
+            renderer.set_local_lights(&locals)?;
+        }
         // Blood is lit by these next frame, as the floor is (Fx::lit_at).
         self.fx.env_lights = locals.clone();
         self.fx.env_light = self.ambient + self.light.sun_color * self.light.sun_lux * self.light.sun_dir.y.max(0.0);

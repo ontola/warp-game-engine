@@ -40,6 +40,7 @@ const GRASS_LOD: u32 = 33;
 const HDR_OUTPUT: u32 = 34;
 const HDR_HEADROOM: u32 = 35;
 const AUTO_EXPOSURE: u32 = 36;
+const CLOUDS: u32 = 37;
 
 /// Render heights offered, tallest first; 0 is native.
 const HEIGHTS: [u32; 6] = [0, 2160, 1800, 1440, 1080, 720];
@@ -51,6 +52,7 @@ const FPS_TARGETS: [u32; 6] = [0, 60, 90, 120, 144, 240];
 struct Settings {
     options: DebugRenderOptions,
     fog: bool,
+    clouds: bool,
     /// Temporal AA as the game set it (false switches it off).
     taa: bool,
     adaptive_quality: bool,
@@ -75,7 +77,7 @@ struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { options: DebugRenderOptions::default(), fog: true, taa: true, adaptive_quality: true, fps_target: None, lod_pixels: None, exposure: 0.0, render_height: None,
+        Settings { options: DebugRenderOptions::default(), fog: true, clouds: true, taa: true, adaptive_quality: true, fps_target: None, lod_pixels: None, exposure: 0.0, render_height: None,
             sun: 1.0, shadows: 1.0, near_shadows: true, contact: true, gi: true, reflection: true, auto_exposure: None, hdr: None, hdr_headroom: None }
     }
 }
@@ -120,7 +122,8 @@ impl EngineDebug {
         toggle(GRASS, GRASS_MENU, "Grass", s.options.meadow_enabled, "Skips grass rendering (when the scene has grass).");
         toggle(GLASS, RENDER_MENU, "Transparency", s.options.transparency_enabled, "Skips the transparent-material pass.");
         toggle(BLOOM, RENDER_MENU, "Highlight bloom", s.options.bloom_enabled, "Screen-space halo around bright highlights.");
-        toggle(FOG, RENDER_MENU, "Distance fog", s.fog, "Off: no distance extinction and no fog culling.");
+        toggle(FOG, RENDER_MENU, "Distance fog", s.fog, "Off: no distance extinction and no fog culling (and no aerial perspective).");
+        toggle(CLOUDS, LIGHT_MENU, "Clouds", s.clouds, "Volumetric clouds and their shadows, if the game has them (Lighting::sky_volume).");
         toggle(TAA, RENDER_MENU, "Temporal AA", s.taa, "Off disables temporal anti-aliasing if the game uses it (it cannot switch it on).");
         toggle(NEAR_SHADOWS, LIGHT_MENU, "Near shadows", s.near_shadows, "The detailed shadow map close to the camera.");
         toggle(CONTACT, LIGHT_MENU, "Contact occlusion", s.contact, "Small-scale darkening where surfaces meet.");
@@ -223,6 +226,7 @@ impl EngineDebug {
                 GLASS => s.options.transparency_enabled = value,
                 BLOOM => s.options.bloom_enabled = value,
                 FOG => s.fog = value,
+                CLOUDS => s.clouds = value,
                 TAA => s.taa = value,
                 ADAPTIVE_QUALITY => s.adaptive_quality = value,
                 NEAR_SHADOWS => s.near_shadows = value,
@@ -272,6 +276,11 @@ impl EngineDebug {
         // Positive darkens: one stop less compensation per EV of offset.
         if let Some(a) = &mut l.auto_exposure { a.compensation -= s.exposure; }
         if !s.fog { l.fog_density = 0.0; l.fog_culling = false; }
+        if let Some(v) = &mut l.sky_volume {
+            if !s.fog { v.aerial = false; }
+            if !s.clouds { v.clouds = None; }
+            if !v.aerial && v.clouds.is_none() { l.sky_volume = None; }
+        }
         if !s.taa { l.taa = 0.0; }
         l.sun_lux *= s.sun;
         l.shadow_strength *= s.shadows;
@@ -371,7 +380,7 @@ impl EngineDebug {
             "dynamic_quality": s.adaptive_quality,
             "fps_target": s.fps_target,
             "grass": o.meadow_enabled, "transparency": o.transparency_enabled, "bloom": o.bloom_enabled, "bloom_strength": o.bloom_strength,
-            "fog": s.fog, "taa": s.taa, "lod_pixels": s.lod_pixels, "exposure_offset_ev": s.exposure, "render_height": s.render_height,
+            "fog": s.fog, "clouds": s.clouds, "taa": s.taa, "lod_pixels": s.lod_pixels, "exposure_offset_ev": s.exposure, "render_height": s.render_height,
             "sun_scale": s.sun, "shadow_scale": s.shadows, "near_shadows": s.near_shadows, "contact_occlusion": s.contact, "gi": s.gi,
             "reflection_occlusion": s.reflection, "grass_distance": o.meadow_distance_scale, "grass_size": o.meadow_size_scale,
             "grass_count": o.meadow_density, "grass_lod_pixels": o.meadow_lod_pixels,

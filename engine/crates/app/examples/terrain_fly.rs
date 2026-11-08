@@ -10,6 +10,7 @@
 //!   cargo run --release -p app --example terrain_fly -- --town --no-buildings   (the bare plots)
 //!   cargo run --release -p app --example terrain_fly -- --town --at 40,120,1.7,0.6,0   (start at x,z, metres above ground, yaw, pitch)
 //!   cargo run --release -p app --example terrain_fly -- --shot fly.png
+//!   cargo run --release -p app --example terrain_fly -- --light cloud_coverage=0.8   (more cloud; --no-clouds for none)
 //!   cargo run --release -p app --example terrain_fly -- --fullscreen --frames 600   # fps benchmark
 //!   ... --validate-world --grass   (normal CPU scene build, no GPU/window)
 //!   ... --grass --branch-slots 4096   (bounded GPU vegetation residency)
@@ -166,6 +167,8 @@ struct Fly {
     jumps: u32,
     fps: f32,
     worst_ms: f32,
+    /// Ticks since start: the clock clouds drift on (Lighting::time).
+    ticks: u64,
     /// --track: a winding gravel road the land is bent to (render::world_constraints),
     /// baked for the seed and style it was made for.
     track: bool,
@@ -181,7 +184,7 @@ struct Fly {
 impl Fly {
     fn new(seed: u32, style: usize, world: World) -> Result<Self, String> {
         let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, turn: (0.0, 0.0), speed: 40.0, last_action: "Ready".into(), hug: None, wheel: 0.0,
-            building: None, building_for: (seed, style), building_started: web_time::Instant::now(), shown: (seed, style), lift_on_swap: false, gpu: None, stale: false, world, built_world: world, world_at: None, sun_building:None, forest_at:None, forest_building:None, forest_material:None, terrain_settings: Settings::default(), terrain: None, light: Lighting::default(), stats: Stats::default(), last_updates: [0.0;2], jumps: 0, fps: 0.0, worst_ms: 0.0,
+            building: None, building_for: (seed, style), building_started: web_time::Instant::now(), shown: (seed, style), lift_on_swap: false, gpu: None, stale: false, world, built_world: world, world_at: None, sun_building:None, forest_at:None, forest_building:None, forest_material:None, terrain_settings: Settings::default(), terrain: None, light: Lighting::default(), stats: Stats::default(), last_updates: [0.0;2], jumps: 0, fps: 0.0, worst_ms: 0.0, ticks: 0,
             track: std::env::args().any(|a| a == "--track"), regions: None, town: std::env::args().any(|a| a == "--town"), constraints: None };
         if let Some(name) = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--regions").map(|w| w[1].clone()) {
             fly.regions = Some(STYLES.iter().position(|n| *n == name).ok_or_else(|| format!("unknown biome {name}; one of {}", STYLES.join(", ")))?);
@@ -367,6 +370,7 @@ impl Game for Fly {
     fn tick(&mut self, c: &[Controls]) {
         let dt = 1.0 / TICK_HZ;
         let c: Controls = c[0];
+        self.ticks += 1;
         self.prev = self.pos;
         let pitch = (self.pitch + c.look[1]).clamp(-1.5, 1.5);
         self.turn = (-c.look[0], pitch - self.pitch);
@@ -520,7 +524,9 @@ impl Game for Fly {
             hud.text.push(TextRun { id: i as u64 + 1, text, position: [20.0, 16.0 + 26.0 * i as f32], bounds: [0.0, 0.0, w as f32, h as f32],
                 font_size: 20.0, color: [255, 255, 255, 230], font: FontFace::Body, align: TextAlign::Left, width: w as f32 });
         }
-        Ok(Draw { cameras: vec![cam], light: self.light.clone(), hud })
+        let mut light = self.light.clone();
+        light.time = (self.ticks as f32 - 1.0 + frame.alpha) / TICK_HZ;
+        Ok(Draw { cameras: vec![cam], light, hud })
     }
 
     fn debug(&self) -> (Vec<DebugMenu>, Vec<DebugControl>) {
@@ -728,8 +734,15 @@ fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &rend
     scene.world_terrain_visibility = true;
     // A light summer haze (~60 km visibility): distant lee slopes
     // and forests fade towards the sky instead of staying near black.
+    // With the sky volume (the default) aerial perspective integrates the
+    // same atmosphere as the sky instead; this fog is then off.
     light.fog_density = 0.00005;
     light.fog_end = 60000.0;
+    // Fair-weather cumulus with their shadows, drifting with the clock, and
+    // aerial perspective. --no-clouds keeps only the aerial perspective,
+    // --light sky_volume=0 the earlier distance fog.
+    light.sky_volume = Some(render::sky_volume::SkyVolume {
+        clouds: (!std::env::args().any(|a| a == "--no-clouds")).then(Default::default), ..Default::default() });
     // TAA reprojects with per-pixel motion vectors (wind and parts too):
     // turning the camera, foliage shimmers about 75 % less than without it
     // (motion pan test, playtest cameras 3 and 4). Its history converges
