@@ -255,25 +255,35 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     let gap = floor * (1.0 - (1.0 - params.style.floor.w) * min(crowd * 1.25, 1.0) * grows * fade);
     // Drawn needles keep NEEDLE_BRUSH_OWN of the sun and 0.25 + 0.75 x its
     // root of the sky (shade.wgsl): their crowns shade themselves inside.
-    // The albedo takes the sky's share, field_sun the rest of the sun's.
-    let sky_own = 0.25 + 0.75 * sqrt(FAR_CROWN_OWN);
+    // In a stand the neighbours take more: a crown's flanks lie in the
+    // shadow of the crowns towards the sun, and the sky over a crown is
+    // partly crowns (the canopy volume's job for drawn trees). Dense stands
+    // read darker than their scattered edges, as in the reference.
+    let sun_grow = ff_crown_growth(sun, params.style);
+    let sun_shade = 1.0 - exp(-crowd * params.style.crown.y * sun_grow * sun_grow);
+    let packed = 1.0 - exp(-crowd * params.style.crown.y);
+    let sky_own = (0.25 + 0.75 * sqrt(FAR_CROWN_OWN)) * (1.0 - FAR_CROWN_SKY_LOSS * packed);
+    let sun_own = FAR_CROWN_OWN * (1.0 - FAR_CROWN_SUN_LOSS * sun_shade);
     let c = mix(gap, crowns.rgb * sky_own, cover);
     // Sun: of the ground between crowns, the share no crown shades from the
     // sun, except where the view sits behind the sun and the crowns hide
     // their own shadows.
-    let sun_grow = ff_crown_growth(sun, params.style);
     let hidden = clamp(dot(eye, sun), 0.0, 1.0);
-    let sun_cover = (1.0 - exp(-crowd * params.style.crown.y * sun_grow * sun_grow)) * grows * fade * (1.0 - hidden);
+    let sun_cover = sun_shade * grows * fade * (1.0 - hidden);
     let lum = vec3<f32>(0.3, 0.59, 0.11);
     let lit_c = dot(crowns.rgb, lum) * sky_own * cover;
     let lit_g = dot(gap, lum) * (1.0 - cover);
-    field_sun = (lit_c * FAR_CROWN_OWN / sky_own + lit_g * (1.0 - sun_cover)) / max(lit_c + lit_g, 1e-4);
+    field_sun = (lit_c * sun_own / sky_own + lit_g * (1.0 - sun_cover)) / max(lit_c + lit_g, 1e-4);
     let up = normalize(n + vec3<f32>(0.0, 1.0, 0.0));
     return MeadowCanopy(c, normalize(mix(nn, up, cover)));
 }
 
 // The sun a drawn needle crown keeps (shade.wgsl NEEDLE_BRUSH_OWN).
 const FAR_CROWN_OWN: f32 = 0.42;
+// How much of that the neighbours in a closed stand take from a crown's
+// sun and sky.
+const FAR_CROWN_SUN_LOSS: f32 = 0.7;
+const FAR_CROWN_SKY_LOSS: f32 = 0.5;
 
 // Crowns seen from `eye` at q, for a pixel `footprint` metres across: rgb
 // their colour with self-shade, w the share of the pixel they cover. Each
