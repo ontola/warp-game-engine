@@ -66,6 +66,11 @@ resolution, reconstruction mode, sample count and scene with a number.
   (step 2), [world overrides](world-overrides.md) (step 3, CPU only).
 - Ditches, streams and rivers keep their share of water at every LOD
   (`Sample::film`); ditches are also drawn per pixel up close.
+- [Water optics](water.md) (8 November): opt-in refraction (bed through
+  absorbing water, Fresnel, caustics) on top of the traced reflections
+  (`Lighting::water`, `KERN_WATER=1`, F10 Light menu). **Open:** checked on
+  lavapipe only; not timed or checked on the Mac or the RTX 5070 Ti before
+  it can become the default; water colour is not a style setting yet.
 - `terrain_fly --town` builds buildings (`GeometryCategory::Structures`) on
   zoned plots.
 - **Next:** step 4, hierarchical GPU placement (with a GPU id table for
