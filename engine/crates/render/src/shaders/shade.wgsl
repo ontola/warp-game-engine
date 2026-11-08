@@ -28,8 +28,8 @@ struct Light {
     night_stars: vec4<f32>, // peak radiance, zenith optical depth, zero-sun fast path, seed
     anim: vec4<f32>,        // x: seconds for animated procedural materials, y: emission scale, z: radiance shown as white
     fog_sampling: vec4<f32>, // x: sequence phase, y: temporal accumulation enabled, z: diffuse room return (lux), w: water optics (Lighting::water)
-    near_levels_view_proj: array<mat4x4<f32>, 3>, // sun clipmap levels 1..3 (frame.rs near_levels)
-    near_levels: vec4<f32>, // x: levels drawn
+    near_levels_view_proj: array<mat4x4<f32>, 7>, // sun clipmap levels 1..7 (frame.rs near_levels)
+    near_levels: vec4<f32>, // x: levels drawn, y: one clipmap (the shared map is its outermost level)
     clouds: vec4<f32>,       // cloud layer (cloud_weather.wgsl): coverage, base m, thickness m, extinction per m
     cloud_motion: vec4<f32>, // wind offset xz m, shadow strength, enabled
 };
@@ -1201,10 +1201,26 @@ fn attenuate_background(direction: vec3<f32>, sky: vec3<f32>) -> vec3<f32> {
     return fog_segment(sky, source, light.fog.y * column);
 }
 
+// The sky bake is seen from the ground, its horizon at elevation 0. From
+// altitude h the true horizon dips by about sqrt(2h/R): between the two the
+// bake would show its ground as a tan band above the far terrain. Rays down to
+// the true horizon take the horizon sky; rays below it the bake's ground
+// (the sky volume fades that with the air up to the planet).
+fn background_direction(direction: vec3<f32>) -> vec3<f32> {
+    if direction.y >= 0.0 { return direction; }
+    let dip = sqrt(2.0 * max(view.cam.y, 0.0) / 6360000.0);
+    // Just above the bake's horizon row: that row already blends in ground.
+    var y = direction.y + dip;
+    if y >= 0.0 { y = 0.02; }
+    let across = max(length(direction.xz), 1e-6);
+    let side = sqrt(max(1.0 - y * y, 0.0));
+    return vec3<f32>(direction.x / across * side, y, direction.z / across * side);
+}
+
 fn background_radiance(direction: vec3<f32>) -> vec3<f32> {
     // Surface fog must remain star-free: stars are behind opaque geometry,
     // not bright flecks painted onto fully fogged distant mountains.
-    return attenuate_background(direction, sky_radiance(direction));
+    return attenuate_background(direction, sky_radiance(background_direction(direction)));
 }
 
 // Background only: opaque geometry naturally hides the solar disc. The
@@ -1221,7 +1237,7 @@ fn solar_disc(direction: vec3<f32>) -> vec3<f32> {
 }
 
 fn visible_background_radiance(direction: vec3<f32>) -> vec3<f32> {
-    return attenuate_background(direction, min(sky_radiance(direction) + night_star_radiance(direction) + solar_disc(direction), vec3<f32>(65504.0)));
+    return attenuate_background(direction, min(sky_radiance(background_direction(direction)) + night_star_radiance(direction) + solar_disc(direction), vec3<f32>(65504.0)));
 }
 
 fn distance_fog_amount(distance: f32) -> f32 {
@@ -1782,7 +1798,7 @@ fn shadow_detail_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
     // matter outside it.
     let levels = select(0, i32(light.near_levels.x), light.near_shadow.z > 0.5);
     var full = levels;
-    var weights = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
+    var weights = array<f32, 8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     for (var k = 0; k < levels; k++) {
         weights[k] = near_level_weight(k, p);
         if weights[k] >= 1.0 { full = k; break; }
@@ -1794,8 +1810,12 @@ fn shadow_detail_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
         // full sun (Mancave sky test, Joep playtest 5). The shared map holds
         // those; read it 3 m up the ray so its coarse copy of this very
         // crown does not shade it again.
-        vis = min(near_level_visibility(full, p, n, plane_n),
-            shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p + light.sun_dir.xyz * 3.0, n, plane_n));
+        // One clipmap (near_levels.y): every level spans the scene's full
+        // sun depth, so the covering level already holds those casters.
+        vis = near_level_visibility(full, p, n, plane_n);
+        if light.near_levels.y < 0.5 {
+            vis = min(vis, shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p + light.sun_dir.xyz * 3.0, n, plane_n));
+        }
     } else {
         vis = shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p, n, plane_n);
         // The outer map uses actual alpha-tested tree geometry, not the coarse

@@ -20,6 +20,8 @@
 //! Q or LB sinks, Shift/E or RB goes fast, the wheel or arrows up/down set
 //! the speed. F12 default, F11 lowland, F10 alpine (F2 opens the debug
 //! overlay), F9 the next seed, F8 jumps somewhere new, F7 hugs the ground,
+//! F5 cycles upscaling (native, then Warp's portable temporal upscaler at
+//! quality, balanced and performance; --upscale MODE picks one at start),
 //! F4 saves a screenshot with its position and terrain stats for feedback,
 //! F2 opens the debug menu (engine render/light switches plus trees, grass
 //! and terrain LOD under "Terrain fly").
@@ -179,13 +181,16 @@ struct Fly {
     /// of buildings on plots the land is levelled to, and no forest in it.
     town: bool,
     constraints: Option<(u32, usize, Arc<Constraints>)>,
+    /// --upscale MODE, F5 cycles native and the portable temporal modes.
+    upscale: render::upscale::UpscaleMode,
 }
 
 impl Fly {
     fn new(seed: u32, style: usize, world: World) -> Result<Self, String> {
         let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, turn: (0.0, 0.0), speed: 40.0, last_action: "Ready".into(), hug: None, wheel: 0.0,
             building: None, building_for: (seed, style), building_started: web_time::Instant::now(), shown: (seed, style), lift_on_swap: false, gpu: None, stale: false, world, built_world: world, world_at: None, sun_building:None, forest_at:None, forest_building:None, forest_material:None, terrain_settings: Settings::default(), terrain: None, light: Lighting::default(), stats: Stats::default(), last_updates: [0.0;2], jumps: 0, fps: 0.0, worst_ms: 0.0, ticks: 0,
-            track: std::env::args().any(|a| a == "--track"), regions: None, town: std::env::args().any(|a| a == "--town"), constraints: None };
+            track: std::env::args().any(|a| a == "--track"), regions: None, town: std::env::args().any(|a| a == "--town"), constraints: None,
+            upscale: Default::default() };
         if let Some(name) = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--regions").map(|w| w[1].clone()) {
             fly.regions = Some(STYLES.iter().position(|n| *n == name).ok_or_else(|| format!("unknown biome {name}; one of {}", STYLES.join(", ")))?);
         }
@@ -400,6 +405,12 @@ impl Game for Fly {
             9 => { self.seed += 1; self.rebuild() }
             8 => { self.jump(); Ok(()) }
             7 => { self.hug = match self.hug { Some(_) => None, None => Some(1.7) }; Ok(()) }
+            5 => {
+                use render::upscale::UpscaleMode as M;
+                self.upscale = match self.upscale { M::Native => M::TemporalQuality, M::TemporalQuality => M::TemporalBalanced,
+                    M::TemporalBalanced => M::TemporalPerformance, _ => M::Native };
+                Ok(())
+            }
             _ => return false,
         };
         self.last_action = match n {
@@ -407,6 +418,7 @@ impl Game for Fly {
             9 => format!("F9: seed {} requested", self.seed),
             8 => format!("F8: jumped to x {:.0}, z {:.0}", self.pos.x, self.pos.z),
             7 => format!("F7: ground hug {}", if self.hug.is_some() { "on" } else { "off" }),
+            5 => format!("F5: upscaling {}", self.upscale.as_str()),
             _ => unreachable!(),
         };
         if let Err(e) = result { self.last_action = format!("F{n}: {e}"); }
@@ -484,6 +496,11 @@ impl Game for Fly {
         // ground, in steps of sqrt(2) (each step resizes the map), at most out
         // to the trees: from 600 m up its edge read as a ring in the forest.
         if let Some(renderer)=frame.renderer() {
+            // A rebuilt renderer starts native: apply the mode to each one.
+            if let Err(e)=renderer.set_upscale(frame.gpu,self.upscale) {
+                self.last_action=format!("upscaling {} unavailable: {e}",self.upscale.as_str());
+                self.upscale=render::upscale::UpscaleMode::Native;
+            }
             let above=(pos.y-self.ground(pos.x,pos.z)).max(0.0);
             let steps=(2.0*(4.0*above/180.0).max(1.0).log2()).ceil();
             renderer.set_shadow_reach((180.0*2f32.powf(steps/2.0)).min(self.world.tree_radius.min(SHADOW_REACH_MAX).max(180.0)));
@@ -515,7 +532,7 @@ impl Game for Fly {
                 format!(" - building {} seed {}: {:.0} s (takes 30-50 s){}", STYLES[self.building_for.1], self.building_for.0,
                     self.building_started.elapsed().as_secs_f32(), if self.stale { ", then the latest request" } else { "" })
             } else { String::new() }),
-            "F12 default  F11 lowland  F3 stats  F10 alpine  F6 next biome  F9 seed  F8 jump  F7 hug  wheel speed  F4 screenshot".to_string(),
+            "F12 default  F11 lowland  F3 stats  F10 alpine  F6 next biome  F9 seed  F8 jump  F7 hug  F5 upscaling  wheel speed  F4 screenshot".to_string(),
         ];
         let mut hud = HudDrawList::new(frame.size);
         // --no-hud: captures that are compared pixel by pixel.
@@ -1164,6 +1181,7 @@ fn main() -> Result<(), String> {
         tree_radius: arg("--tree-radius").map(|n| n.parse().map_err(|_| "--tree-radius M")).transpose()?.unwrap_or(World::default().tree_radius),
         branch_slots: arg("--branch-slots").map(|n|n.parse().map_err(|_|"--branch-slots N")).transpose()?.unwrap_or(if low {512}else{World::default().branch_slots}), ..World::default() };
     let mut game = Fly::new(seed, style, world)?;
+    game.upscale = arg("--upscale").unwrap_or_else(|| "native".into()).parse()?;
     if let Some(at) = arg("--at") {
         let at = at.split(',').map(|n| n.parse::<f32>().map_err(|_| "--at X,Z,ABOVE,YAW,PITCH")).collect::<Result<Vec<_>, _>>()?;
         let &[x, z, above, yaw, pitch] = at.as_slice() else { return Err("--at X,Z,ABOVE,YAW,PITCH".into()); };
@@ -1337,7 +1355,9 @@ fn main() -> Result<(), String> {
         let forward = if args.iter().any(|a| a == "--dump-forward") { 1.0 } else { 0.0 };
         for _ in 0..warm { game.tick(&[Controls::default()]); headless.frame(&mut game)?; }
         for i in 0..n.parse::<u32>().map_err(|_| "--dump N DIR")? {
-            game.tick(&[Controls { look: [pan, 0.0], mv: [0.0, forward], ..Default::default() }]);
+            // --climb holds climb: cloud and parallax checks while rising.
+            let held = if args.iter().any(|a| a == "--climb") { Buttons(Buttons::SOUTH) } else { Buttons::default() };
+            game.tick(&[Controls { look: [pan, 0.0], mv: [0.0, forward], held, ..Default::default() }]);
             let rgba = headless.frame(&mut game)?;
             if i % every == 0 { render::write_png(&PathBuf::from(&dir).join(format!("{:03}.png", i / every)), w, h, &rgba)?; }
         }

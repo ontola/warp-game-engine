@@ -112,7 +112,8 @@ impl Resources {
         let paged=std::env::var("KERN_PAGED_FOLIAGE_SUN").as_deref()==Ok("1");
         let setting=std::env::var("KERN_FAR_SUN_SHADOW");
         // A streamed GPU forest world gets a camera-anchored map by default.
-        let anchored=!stage && scene.gpu_forest.is_some() && !paged && setting.as_deref()!=Ok("0");
+        // KERN_SUN_CLIPMAP: the clipmap's outer levels cover this reach.
+        let anchored=!stage && scene.gpu_forest.is_some() && !paged && setting.as_deref()!=Ok("0") && !crate::frame::sun_clipmap_requested();
         let enabled=anchored || match setting.as_deref(){Ok("0")=>false,Ok("1")=>true,_=>stage && !paged};
         let reach=std::env::var("KERN_FAR_SUN_REACH").ok().and_then(|v|v.parse::<f32>().ok()).filter(|v|v.is_finite()&&*v>=256.).unwrap_or(1024.);
         let lod_pixels=configured_lod(std::env::var("KERN_FAR_SUN_LOD").ok().as_deref());

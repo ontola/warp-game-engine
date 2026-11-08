@@ -37,10 +37,12 @@ and the measurements and dead ends are in the [development log](log/README.md).
   scene's materials and resources can reach (`shade_features.rs`); images
   are pixel-identical to compiling everything. A pipeline cache shortens
   later starts.
-- **Reconstruction and output.** Temporal anti-aliasing, optional DLSS
-  (the `dlss` cargo feature; quality, balanced and performance modes),
-  subtle bloom, then AgX tone mapping. A requested DLSS mode never falls
-  back silently to another path.
+- **Reconstruction and output.** Temporal anti-aliasing, or upscaling from a
+  lower render resolution: Warp's portable temporal upscaler on every GPU
+  (`temporal-*` modes) or DLSS (the `dlss` cargo feature), both fed by
+  motion vectors that cover skinning and wind
+  ([temporal upscaling](temporal-upscaling.md)). Then subtle bloom and AgX
+  tone mapping. A requested mode never falls back silently to another path.
 - **Split screen.** `render::split_rects` lays out up to four views; one
   call renders all of them into one output, sharing work such as skinning
   and wind.
@@ -104,6 +106,38 @@ and the measurements and dead ends are in the [development log](log/README.md).
 ## Light
 
 ### Sun shadows
+
+The sun is shadowed by depth maps that every representation (source
+geometry, voxel splats, proxies) casts into:
+
+- **Clipmap levels** around each camera (`KERN_SUN_LEVELS`, 4 by default):
+  2048-texel maps in one depth array, level k covering 24 m times 2^k, so a
+  texel spans about the same share of the screen at every distance. Shading
+  takes the finest level that covers a point and blends finer partial levels
+  over it. Outer levels redraw on a stagger (`KERN_SUN_STAGGER`).
+- **The shared map** (4096 texels, about 180 m around the focus), behind the
+  levels. In streamed GPU-forest worlds it is cached: its projection snaps to
+  whole texels, so camera movement scrolls the retained depth, and
+  `shadow_damage.rs` keeps one history of every caster (source instances and
+  voxel trees) and marks the 64 x 64 tiles whose casters changed. Only those
+  tiles are cleared and redrawn.
+- Past it, a far map (below) or the coarse canopy transmittance.
+
+**One clipmap (`KERN_SUN_CLIPMAP=1`, opt-in, GPU-forest worlds).** Seven
+levels per view (24 m to 1536 m) replace the shared map and the anchored far
+map. Every level is cached like the shared map: the same caster history marks
+damaged tiles in every level (one pass for all maps, `shadow_damage::MAX_MAPS`
+slots), projections scroll, and only damaged tiles redraw. Level 0 redraws
+every frame; outer levels keep collecting damage between their staggered
+redraws and redraw at once when they move. Their centres snap to whole tiles
+(32 texels: 3 m at level 1, 96 m at level 6), so that happens rarely. The
+outermost level stands in for the shared map in shading (binding 5,
+`shadow_view_proj`); past 1.5 km the coarse transmittance applies as past the
+far map. Levels span the scene's whole sun depth, so shading reads only the
+covering level (no extra shared-map tap up the sun ray). While the camera is
+still, the GPU forest still reassigns thousands of voxel slots per frame,
+which marks about half of every map's tiles (the shared map's too); that work,
+not the maps, sets the cost. `KERN_SUN_DAMAGE_REPORT=1` prints the counts.
 
 The optional static/dynamic split (`KERN_STATIC_SUN_CACHE=1`) includes both
 GPU-published source branches and voxel casters. Reserved branch slots stay
@@ -262,8 +296,6 @@ This is not a complete Nanite or virtual shadow map implementation.
 - Fixed per-frame work remains for features a scene does not use.
 - `frame.rs` still refers to Sideways features in many places.
 - The default look is pale without tuning (AgX, physical units).
-- Animated pixels reject temporal history until deformation motion vectors
-  exist.
 - Water is a surface in the terrain only (no simulated water); seeing the
   bed through it is opt-in ([water optics](water.md)). Buildings are plain opaque geometry. Indoor light is a baked probe
   grid: no dynamic GI, light leaks through walls thinner than a cell.
