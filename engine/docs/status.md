@@ -43,9 +43,15 @@ resolution, reconstruction mode, sample count and scene with a number.
   is now timed. **Open:** no async cluster/triangle counters yet (they need
   a non-blocking counter readback); not in the browser shell or Sideways'
   own shell; overlay cost not measured on a real GPU yet.
+- **Portable temporal upscaler** (8 November): `temporal-quality`,
+  `-balanced` and `-performance` render at 2/3, 0.58 and 1/2 resolution and
+  rebuild the output on every GPU, WebGPU included; motion vectors now cover
+  skinned meshes and swaying branch voxels, and history is rejected per
+  pixel on a representation swap instead of per view
+  ([guide](temporal-upscaling.md)). **Open:** no sharpening; not yet timed
+  on a real GPU.
 - **Open:** fixed per-frame work for unused features; `frame.rs` still refers
-  to Sideways features; new meshes or materials need a new renderer;
-  animated pixels reject TAA history (no deformation motion vectors).
+  to Sideways features; new meshes or materials need a new renderer.
 - Many experiments remain behind default-off switches; see
   [renderer switches](renderer-switches.md). They are candidates for removal.
 

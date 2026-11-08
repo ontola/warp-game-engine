@@ -37,10 +37,12 @@ and the measurements and dead ends are in the [development log](log/README.md).
   scene's materials and resources can reach (`shade_features.rs`); images
   are pixel-identical to compiling everything. A pipeline cache shortens
   later starts.
-- **Reconstruction and output.** Temporal anti-aliasing, optional DLSS
-  (the `dlss` cargo feature; quality, balanced and performance modes),
-  subtle bloom, then AgX tone mapping. A requested DLSS mode never falls
-  back silently to another path.
+- **Reconstruction and output.** Temporal anti-aliasing, or upscaling from a
+  lower render resolution: Warp's portable temporal upscaler on every GPU
+  (`temporal-*` modes) or DLSS (the `dlss` cargo feature), both fed by
+  motion vectors that cover skinning, wind and swaying voxels
+  ([temporal upscaling](temporal-upscaling.md)). Then subtle bloom and AgX
+  tone mapping. A requested mode never falls back silently to another path.
 - **Split screen.** `render::split_rects` lays out up to four views; one
   call renders all of them into one output, sharing work such as skinning
   and wind.
@@ -201,8 +203,6 @@ This is not a complete Nanite or virtual shadow map implementation.
 - Fixed per-frame work remains for features a scene does not use.
 - `frame.rs` still refers to Sideways features in many places.
 - The default look is pale without tuning (AgX, physical units).
-- Animated pixels reject temporal history until deformation motion vectors
-  exist.
 - Water is a surface in the terrain only (no simulated or reflective
   water). Buildings are plain opaque geometry. Indoor light is a baked probe
   grid: no dynamic GI, light leaks through walls thinner than a cell.
