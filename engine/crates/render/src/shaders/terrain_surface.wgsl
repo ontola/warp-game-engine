@@ -233,90 +233,78 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
         * (1.0 - smoothstep(0.01 - e * 0.2, 0.01 + e * 0.2, f.water)) * (1.0 - smoothstep(0.05 - e * 0.5, 0.05 + e * 0.5, f.snow))
         * smoothstep(0.82 - e, 0.82 + e, f.up);
     let seed = u32(s.metal + 0.5);
-    let edge_w = max(0.04, footprint / 150.0);
-    // forest_field's terrain-aware stands: forest on slopes, meadow on flat
-    // and damp ground (the shadow taps assume this pixel's ground).
     let site = ff_site(f.up, f.wet);
-    let stand = far_forest_stand(s.p.xz, seed, site, footprint, edge_w);
-    // A stand is a wall of crowns: towards the sun from a clearing, any
-    // stand closer than its height over the sun's slope shades this ground.
     let sun = light.sun_dir.xyz;
-    let sun_xz = length(sun.xz);
-    var shade = 0.0;
-    if sun.y > 0.02 && sun_xz > 1e-3 && stand < 1.0 {
-        let reach = min(params.style.far.w * 1.3 * sun_xz / sun.y, 160.0);
-        let toward = sun.xz / sun_xz;
-        // Each tap is a copy of the stand edge shifted by reach/8; filtered
-        // at that spacing the copies blend instead of stacking into steps
-        // (the staircase seen from the air).
-        let tap_fp = max(footprint, reach * 0.125);
-        let tap_w = max(edge_w, tap_fp / 150.0);
-        // Crowns differ in height, so the shadow fades out over the last
-        // part of its reach instead of ending in steps one tap apart.
-        for (var k = 1; k <= 8; k++) {
-            let t = f32(k) * 0.125;
-            let tall = 1.0 - smoothstep(0.5, 1.0, t);
-            // tall only falls with k and a stand is at most 1: no later tap
-            // can raise the maximum any more.
-            if shade >= tall { break; }
-            shade = max(shade, tall * far_forest_stand(s.p.xz + toward * reach * t, seed, site, tap_fp, tap_w));
-        }
-    }
-    let shaded = ground * mix(1.0, 0.45, shade * (1.0 - stand) * fade);
-    if grows <= 0.0 { return MeadowCanopy(shaded, nn); }
-    // The canopy stands a tree height above the ground: the view ray meets
-    // the crown tops before this ground point, at q. From q on towards p it
-    // runs under the crowns, so a stand it crosses on the way is the wall
-    // of its edge (hiding the clearing behind it), and the tops shift with
-    // their height (parallax). Looking down steeply q is p.
+    // The crown tops stand a tree height above the ground: the view ray
+    // meets them before this ground point, at q (parallax). Looking down
+    // steeply q is p. Their sides, seen at a glancing view, widen each crown
+    // (ff_crown_growth) instead of a wall of its own.
     let eye = normalize(view.cam.xyz - s.p);
     let rise = max(dot(eye, n), 0.0);
     let height = params.style.far.w;
-    let reach = min(height * length(eye - n * dot(eye, n)) / max(rise, 0.05), 250.0);
+    let reach = min(height * 0.6 * length(eye - n * dot(eye, n)) / max(rise, 0.05), 120.0);
     let back = normalize(eye.xz + vec2<f32>(1e-6, 0.0));
     let q = s.p.xz + back * reach;
-    var seen = 1.0;
-    var top = 0.0;
-    var wall = 0.0;
-    let taps = select(1, 6, reach > footprint);
-    // Wall taps sit reach/5 apart: filter them at that spacing, as above.
-    let wall_fp = max(footprint, reach / 5.0);
-    let wall_w = max(edge_w, wall_fp / 150.0);
-    for (var k = 0; k < taps; k++) {
-        // Behind a solid stand nothing more is seen: the rest adds nothing.
-        if seen <= 0.0 { break; }
-        let t = select(0.0, f32(k) / f32(taps - 1), taps > 1);
-        var a = 0.0;
-        if k == 0 { a = far_forest_stand(q, seed, site, footprint, edge_w); }
-        else { a = far_forest_stand(mix(q, s.p.xz, t), seed, site, wall_fp, wall_w); }
-        if k == 0 { top = seen * a; } else { wall += seen * a; }
-        seen *= 1.0 - a;
-    }
-    let w_top = grows * fade * top;
-    let w_wall = grows * fade * wall;
-    if w_top + w_wall <= 0.0 { return MeadowCanopy(shaded, nn); }
-    let canopy = forest_canopy(q.x, q.y, footprint, sun, eye, seed, params.density, site, params.style);
-    let crowns = canopy.albedo * canopy.occlusion;
-    // The wall: crowns' flanks over shaded trunks, facing the viewer.
-    let wall_n = normalize(vec3<f32>(eye.x, 0.15, eye.z));
-    let flank = mix(params.style.floor.rgb, canopy.albedo, 0.5) * 0.55;
-    var c = mix(shaded, crowns, w_top);
-    c = mix(c, flank, w_wall / max(1.0 - w_top, 1e-3));
-    let nrm = normalize(mix(mix(nn, canopy.normal, w_top), wall_n, w_wall));
+    let crowns = far_crowns(q, footprint, eye, sun, seed, site, params.density, params.style);
+    let cover = crowns.w * grows * fade;
+    if cover <= 0.0 { return MeadowCanopy(ground, nn); }
+    // Ground between crowns: the forest floor's shade where the stand is
+    // dense, as forest_canopy's gaps.
     let crowd = ff_share(q.x, q.y, seed, site, footprint) * params.density;
+    let floor = mix(ground, params.style.floor.rgb, 0.5 * min(crowd * 1.25, 1.0));
+    let gap = floor * (1.0 - (1.0 - params.style.floor.w) * min(crowd * 1.25, 1.0) * grows * fade);
+    let c = mix(gap, crowns.rgb, cover);
+    // Sun: crowns take it (their self-shade is in crowns.rgb); of the ground
+    // between them, the share no crown shades from the sun, except where the
+    // view sits behind the sun and the crowns hide their own shadows.
     let sun_grow = ff_crown_growth(sun, params.style);
-    // Seen from the sun's side the crowns hide their own shadows (the hot
-    // spot); against the sun every shadow shows.
     let hidden = clamp(dot(eye, sun), 0.0, 1.0);
-    field_sun = mix(1.0, exp(-crowd * params.style.crown.y * sun_grow * sun_grow), min(w_top + w_wall, 1.0) * (1.0 - hidden));
-    return MeadowCanopy(c, nrm);
+    let sun_cover = (1.0 - exp(-crowd * params.style.crown.y * sun_grow * sun_grow)) * grows * fade * (1.0 - hidden);
+    let lum = vec3<f32>(0.3, 0.59, 0.11);
+    let lit_c = dot(crowns.rgb, lum) * cover;
+    let lit_g = dot(gap, lum) * (1.0 - cover);
+    field_sun = (lit_c + lit_g * (1.0 - sun_cover)) / max(lit_c + lit_g, 1e-4);
+    let up = normalize(n + vec3<f32>(0.0, 1.0, 0.0));
+    return MeadowCanopy(c, normalize(mix(nn, up, cover)));
 }
 
-// Whether (x, z) lies in a stand or hedgerow on ground of `site`, 0..1
-// with a crisp edge `edge_w` wide; the clearings between stands keep their
-// ground (their loose trees are too sparse to draw).
-fn far_forest_stand(xz: vec2<f32>, seed: u32, site: f32, footprint: f32, edge_w: f32) -> f32 {
-    return smoothstep(0.25 - edge_w, 0.25 + edge_w, ff_share(xz.x, xz.y, seed, site, footprint));
+// Crowns seen from `eye` at q, for a pixel `footprint` metres across: rgb
+// their colour with self-shade, w the share of the pixel they cover. Each
+// crown is its own soft disc while it spans a few pixels or more (the grain
+// a real forest shows kilometres out), their mean coverage
+// (forest_canopy's overlap model) once the cells are subpixel.
+fn far_crowns(q: vec2<f32>, footprint: f32, eye: vec3<f32>, sun: vec3<f32>, seed: u32, site: f32, density: f32, fs: ForestStyle) -> vec4<f32> {
+    let needles = mix(fs.needles.rgb, fs.far.rgb, ff_patch(q.x, q.y, seed, fs.crown.w));
+    let crowd = ff_share(q.x, q.y, seed, site, footprint) * density;
+    if crowd <= 0.0 { return vec4<f32>(needles, 0.0); }
+    let grow = ff_crown_growth(eye, fs);
+    let mean_cover = 1.0 - exp(-crowd * fs.crown.y * grow * grow);
+    // Lit tops and shaded flanks: sun from above lights more of each crown.
+    let tops = FF_CROWN_OCCLUSION * (0.85 + 0.3 * max(sun.y, 0.0));
+    let far = smoothstep(FF_CELL * 0.6, FF_CELL * 1.2, footprint);
+    if far >= 1.0 { return vec4<f32>(needles * tops, mean_cover); }
+    let ci = i32(floor(q.x / FF_CELL));
+    let cj = i32(floor(q.y / FF_CELL));
+    var open = 1.0;
+    var tint = 0.0;
+    var weight = 0.0;
+    for (var dj = -1; dj <= 1; dj++) {
+        for (var di = -1; di <= 1; di++) {
+            let sp = ff_spot(ci + di, cj + dj, seed, crowd, fs.needles.w);
+            if sp.w < 0.0 { continue; }
+            let d = q - sp.xy;
+            let radius = fs.crown.x * grow * sp.z;
+            // Coverage of a disc edge filtered over the pixel.
+            let a = clamp(0.5 + (radius - length(d)) / max(footprint, 0.05), 0.0, 1.0);
+            open *= 1.0 - a;
+            tint += a * sp.w;
+            weight += a;
+        }
+    }
+    let near_cover = 1.0 - open;
+    let near_tint = select(1.0, tint / weight, weight > 0.0);
+    let cover = mix(near_cover, mean_cover, far);
+    return vec4<f32>(needles * tops * mix(near_tint, 1.0, far), cover);
 }
 
 // The ground's palette (vegetation_style.rs GroundStyle): tint rgb, and per
