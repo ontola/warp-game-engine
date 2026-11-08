@@ -19,8 +19,9 @@
 // cloud_weather.wgsl is prepended (shared with shade.wgsl).
 
 struct U {
-    inv_vp: mat4x4<f32>,
-    prev_vp: mat4x4<f32>,
+    inv_vp: mat4x4<f32>,       // unjittered: view rays
+    prev_vp: mat4x4<f32>,      // unjittered, last frame: cloud history
+    inv_depth_vp: mat4x4<f32>, // jittered, as the depth buffer was drawn
     camera: vec4<f32>,      // xyz world (m); w frame index
     sizes: vec4<f32>,       // depth w,h; cloud w,h
     output: vec4<f32>,      // output w,h; history valid; aerial on surfaces
@@ -141,7 +142,7 @@ fn view_ray(uv: vec2<f32>) -> vec3<f32> {
 
 fn scene_distance(uv: vec2<f32>, depth: f32) -> f32 {
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-    let hit = u.inv_vp * vec4<f32>(ndc, depth, 1.0);
+    let hit = u.inv_depth_vp * vec4<f32>(ndc, depth, 1.0);
     return length(hit.xyz / hit.w - u.camera.xyz);
 }
 
