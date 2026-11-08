@@ -271,6 +271,7 @@ impl Visuals {
                         // An air strike's rocket hit (its blast is 10 cm over the target).
                         if self.air_targets.iter().any(|t| t.distance(pos - Vec3::Y * 0.1) < 0.05) { self.air_impact = now; }
                         self.fx.blasts.explosion(now, pos, radius * self.blast_look.size, Vec3::new(1.,self.blast_look.green,self.blast_look.blue));
+                        self.fx.blast_particles(now, pos, radius * self.blast_look.size, Vec3::new(1.,self.blast_look.green,self.blast_look.blue));
                         dust::emit(&mut self.fx.blasts,world,now,pos,radius * self.blast_look.dust);
                     }
                     self.fx.blast_punch(world, now, pos, radius);

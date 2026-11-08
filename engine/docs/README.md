@@ -53,6 +53,7 @@ and session notes are in the [development log](log/README.md).
 | [Motion blur](motion-blur.md) | Opt-in per-view motion vectors, fixed shutter, split-screen isolation and limitations. |
 | [Depth of field](depth-of-field.md) | Opt-in thin-lens blur per view: f-number, fixed or GPU autofocus, cost and limits. |
 | [Volumetric light](volumetric-light.md) | Opt-in in-scattering from local lights. |
+| [Water optics](water.md) | Opt-in refraction and screen-space reflections on terrain water. |
 | [Live render debug panel](debug-ui.md) | F10: render and light switches, LOD, GPU pass times. |
 | [Stats overlay](stats-overlay.md) | F3: frame cost while playing, a nested GPU tree, CPU spans, memory, game lines. |
 | [Render suite](render-suite.md) | One fixed world from fixed cameras: per-pass GPU times, counters, memory and pictures, with diffs between runs. |
@@ -86,6 +87,7 @@ Vehicles and effects:
 - [Persistent tyre material marks](persistent-tyre-marks.md)
 - [Baked explosion smoke](baked-explosion-smoke.md)
 - [Adaptive explosion smoke](adaptive-explosion-smoke.md)
+- [GPU particles](gpu-particles.md)
 - [Roadside crowds prototype](roadside-crowds.md)
 
 Materials:

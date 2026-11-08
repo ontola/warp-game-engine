@@ -479,6 +479,11 @@ pub struct Lighting {
     /// air integrated with the sky bake's atmosphere instead of the shade
     /// pass's distance fog, a cumulus layer and its shadows. `None` adds no pass.
     pub sky_volume: Option<crate::sky_volume::SkyVolume>,
+    /// Water optics on terrain water: the bed seen through refracting,
+    /// absorbing water, with Fresnel and caustics (engine/docs/water.md).
+    /// Its reflections are the traced reflections every glossy surface
+    /// gets. Opt-in until it has been checked on real hardware.
+    pub water: bool,
 }
 
 impl Lighting {
@@ -533,6 +538,7 @@ impl Lighting {
             "grain" if (0.0..=1.0).contains(&f) => self.grain = f,
             "aberration" if (0.0..=16.0).contains(&f) => self.aberration = f,
             // `volumetric=0` turns it off, `volumetric=1` on with defaults.
+            "water" if f == 0.0 || f == 1.0 => self.water = f == 1.0,
             "volumetric" if f == 0.0 || f == 1.0 => self.volumetric = (f == 1.0).then(|| self.volumetric.unwrap_or_default()),
             k if k.starts_with("vol_") => self.volumetric.get_or_insert_with(Default::default).set(k, f)?,
             // `sky_volume=0|1` (aerial perspective and clouds), `clouds=0|1`,
@@ -606,6 +612,7 @@ impl Default for Lighting {
             aberration: 0.0,
             volumetric: None,
             sky_volume: None,
+            water: std::env::var("KERN_WATER").as_deref() == Ok("1"),
         }
     }
 }
@@ -978,6 +985,7 @@ pub struct Renderer {
     volumetric: crate::volumetric::VolumetricSlot,
     sky_volume: crate::sky_volume::SkyVolumeSlot,
     sprites: crate::sprites::SpriteSlot,
+    gpu_particles: crate::gpu_particles::ParticleSlot,
     transparency: Option<crate::transparency::Transparency>,
     grass: Option<crate::grass::GrassRenderer>,
     meadow: Option<crate::meadow::MeadowRenderer>,
@@ -2308,6 +2316,7 @@ impl Renderer {
             volumetric: Default::default(),
             sky_volume: { let slot = crate::sky_volume::SkyVolumeSlot::default(); slot.set_tables(scene.atmosphere.clone()); slot },
             sprites: Default::default(),
+            gpu_particles: Default::default(),
             transparency,
             grass,
             meadow,
@@ -3723,6 +3732,11 @@ impl Renderer {
     /// Compile effect pipelines during loading instead of the first explosion.
     pub fn prepare_effects(&self, gpu: &Gpu) { self.fx.prepare(gpu); }
 
+    /// Emitters and clock for the GPU particle pool (`gpu_particles::GpuParticles::flush`).
+    pub fn update_gpu_particles(&self, gpu: &Gpu, update: crate::gpu_particles::Update) -> Result<(), String> {
+        self.gpu_particles.update(gpu, update)
+    }
+
     pub fn set_effects(&self, gpu: &Gpu, time: f32, puffs: Option<&[crate::fx::Puff]>) -> Result<(), String> {
         self.fx.set(gpu, time, puffs);
         Ok(())
@@ -4377,7 +4391,7 @@ impl Renderer {
             night_stars: [light.night_stars[0], light.night_stars[1],
                 if self.zero_sun_fast_path {1.0} else {0.0}, light.night_stars[3]],
             anim: [light.time, light.emissive_scale(), 1.2 * 2f32.powf(light.ev100), if light.sun_disc {light.sun_radius} else {0.0}],
-            fog_sampling: [((frame % 16) * 7 % 16) as f32 / 16.0, if taa_on { 1.0 } else { 0.0 }, light.indirect_fill_lux.max(0.0), 0.0],
+            fog_sampling: [((frame % 16) * 7 % 16) as f32 / 16.0, if taa_on { 1.0 } else { 0.0 }, light.indirect_fill_lux.max(0.0), if light.water { 1.0 } else { 0.0 }],
             near_levels_view_proj: [Mat4::IDENTITY.to_cols_array_2d(); NEAR_LEVELS_MAX - 1],
             near_levels: [0.0; 4],
             clouds: cloud_uniforms.0,
@@ -4446,6 +4460,13 @@ impl Renderer {
             if debris.encode(gpu, &mut enc, times) && times.is_some() {
                 timestamp_pair(&mut ts);
                 names.push("debris");
+            }
+        }
+        if let Some(particles) = self.gpu_particles.0.lock().unwrap().as_mut() {
+            let times = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
+            if particles.encode(gpu, &mut enc, times) && times.is_some() {
+                timestamp_pair(&mut ts);
+                names.push("gpu particles sim");
             }
         }
         if let Some((forest,first_owner))=&self.gpu_forest {
@@ -5396,7 +5417,24 @@ impl Renderer {
                     None => None,
                 }
             };
+            // GPU particles (sparks, embers, dust): into the sprites' disposable
+            // output when there is one, otherwise into their own copy.
+            let reusable = sprite_output.is_some();
             let resolved = sprite_output.unwrap_or(resolved);
+            let particle_draw = {
+                let mut particles = self.gpu_particles.0.lock().unwrap();
+                match particles.as_mut() {
+                    Some(particles) => {
+                        let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("gpu particles"); (qs, timestamp_pair(&mut ts)) });
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
+                        let out = particles.render(gpu, &mut enc, vi, &resolved, reusable, &depth_v, *cam, proj * view_m, vp, light)?;
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
+                        out
+                    }
+                    None => None,
+                }
+            };
+            let resolved = particle_draw.unwrap_or(resolved);
             let exhaust_output = if debug_options.exhaust_enabled {
                 let exhaust_time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| {
                     names.push("exhaust"); (qs, timestamp_pair(&mut ts))
