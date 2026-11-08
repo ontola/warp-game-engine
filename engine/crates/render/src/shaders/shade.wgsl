@@ -28,8 +28,8 @@ struct Light {
     night_stars: vec4<f32>, // peak radiance, zenith optical depth, zero-sun fast path, seed
     anim: vec4<f32>,        // x: seconds for animated procedural materials, y: emission scale, z: radiance shown as white
     fog_sampling: vec4<f32>, // x: sequence phase, y: temporal accumulation enabled, z: diffuse room return (lux)
-    near_levels_view_proj: array<mat4x4<f32>, 3>, // sun clipmap levels 1..3 (frame.rs near_levels)
-    near_levels: vec4<f32>, // x: levels drawn
+    near_levels_view_proj: array<mat4x4<f32>, 7>, // sun clipmap levels 1..7 (frame.rs near_levels)
+    near_levels: vec4<f32>, // x: levels drawn, y: one clipmap (the shared map is its outermost level)
 };
 
 struct Cluster {
@@ -1621,7 +1621,7 @@ fn shadow_detail_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
     // matter outside it.
     let levels = select(0, i32(light.near_levels.x), light.near_shadow.z > 0.5);
     var full = levels;
-    var weights = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
+    var weights = array<f32, 8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     for (var k = 0; k < levels; k++) {
         weights[k] = near_level_weight(k, p);
         if weights[k] >= 1.0 { full = k; break; }
@@ -1633,8 +1633,12 @@ fn shadow_detail_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
         // full sun (Mancave sky test, Joep playtest 5). The shared map holds
         // those; read it 3 m up the ray so its coarse copy of this very
         // crown does not shade it again.
-        vis = min(near_level_visibility(full, p, n, plane_n),
-            shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p + light.sun_dir.xyz * 3.0, n, plane_n));
+        // One clipmap (near_levels.y): every level spans the scene's full
+        // sun depth, so the covering level already holds those casters.
+        vis = near_level_visibility(full, p, n, plane_n);
+        if light.near_levels.y < 0.5 {
+            vis = min(vis, shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p + light.sun_dir.xyz * 3.0, n, plane_n));
+        }
     } else {
         vis = shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p, n, plane_n);
         // The outer map uses actual alpha-tested tree geometry, not the coarse
