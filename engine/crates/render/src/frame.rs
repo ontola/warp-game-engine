@@ -909,6 +909,7 @@ pub struct Renderer {
     debug_options: std::sync::Mutex<crate::debug_settings::DebugRenderOptions>,
     upscaling: std::sync::Mutex<Upscaling>,
     motion_blur: std::sync::Mutex<Option<crate::motion_blur::Resources>>,
+    depth_of_field: std::sync::Mutex<Option<crate::depth_of_field::Resources>>,
     frame_time_ms: std::sync::atomic::AtomicU32,
     scene_bind: wgpu::BindGroup,
     cull_scene_bind: wgpu::BindGroup,
@@ -2215,6 +2216,7 @@ impl Renderer {
             debug_options: Default::default(),
             upscaling: Default::default(),
             motion_blur: Default::default(),
+            depth_of_field: Default::default(),
             async_gpu_profile,
             profile_sequence: std::sync::atomic::AtomicU64::new(0),
             profile_frame_id: std::sync::atomic::AtomicU64::new(u64::MAX),
@@ -3252,6 +3254,16 @@ impl Renderer {
         if let Some(blur)=blur.as_mut() {blur.settings=settings.to_vec();}
     }
 
+    /// Opt-in thin-lens depth of field, one lens per view in view order.
+    /// Empty or `f_stop <= 0` skips it; resources exist only once opted in.
+    pub fn set_depth_of_field(&self, gpu: &Gpu, settings: &[crate::depth_of_field::Settings]) {
+        let mut dof=self.depth_of_field.lock().unwrap();
+        if dof.is_none() && settings.iter().any(|s|s.active()) {
+            *dof=Some(crate::depth_of_field::Resources::new(gpu));
+        }
+        if let Some(dof)=dof.as_mut() {dof.settings=settings.to_vec();}
+    }
+
     /// Select an explicit reconstruction mode. Failure keeps the prior mode.
     /// Native allocates no DLSS feature; motion history is optional for blur.
     pub fn set_upscale(&self, gpu: &Gpu, mode: crate::upscale::UpscaleMode) -> Result<(), String> {
@@ -3981,6 +3993,7 @@ impl Renderer {
         let mut up = self.upscaling.lock().unwrap();
         let dlss_on = up.mode != crate::upscale::UpscaleMode::Native;
         let blur=self.motion_blur.lock().unwrap();
+        let dof=self.depth_of_field.lock().unwrap();
         // TAA reprojects with these per-pixel vectors too: wind-blown trees
         // otherwise lose their history every frame and shimmer.
         if (blur.is_some() || (light.taa > 0.5 && !dlss_on)) && up.motion.is_none() {
@@ -5320,6 +5333,13 @@ impl Renderer {
                 _=>None,
             };
             let result=blurred.as_ref().unwrap_or(result);
+            // Opt-in lens blur from this view's depth, before metering and bloom
+            // so out-of-focus highlights bloom as soft discs.
+            let focused=dof.as_ref().filter(|d|d.active(vi)).and_then(|d|{
+                let times=self.query.as_ref().map(|(qs,_,_)|{names.push("depth of field");(qs,timestamp_pair(&mut ts))});
+                d.render(gpu,&mut enc,vi,result,&depth_v,cam,times)
+            });
+            let result=focused.as_ref().unwrap_or(result);
 
             // Extract the actual final HDR, including lens emission and exhaust,
             // after temporal reconstruction. Every view owns separate targets.

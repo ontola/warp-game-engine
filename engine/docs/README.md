@@ -51,6 +51,7 @@ and session notes are in the [development log](log/README.md).
 | [Live sky: time of day and weather](live-sky-controls.md) | `render::sky`: presets, the background bake, Sideways' pause menu and Growing Guns' `--sky` and `sky` command. |
 | [Exposure and HDR output](hdr-and-exposure.md) | Automatic exposure and HDR output on HDR screens: when to use them, how to turn them on, authoring for HDR. |
 | [Motion blur](motion-blur.md) | Opt-in per-view motion vectors, fixed shutter, split-screen isolation and limitations. |
+| [Depth of field](depth-of-field.md) | Opt-in thin-lens blur per view: f-number, fixed or GPU autofocus, cost and limits. |
 | [Volumetric light](volumetric-light.md) | Opt-in in-scattering from local lights. |
 | [Live render debug panel](debug-ui.md) | F10: render and light switches, LOD, GPU pass times. |
 | [Stats overlay](stats-overlay.md) | F3: frame cost while playing, a nested GPU tree, CPU spans, memory, game lines. |
