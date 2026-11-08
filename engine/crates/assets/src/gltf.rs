@@ -87,6 +87,17 @@ pub fn load(scene: &mut Scene, path: &Path) -> Result<Model, String> {
                         if let Some(n) = m.normal_texture().and_then(|n| n.texture().source()).map(|s| s.index()) {
                             if let Ok(nrm) = image(n) { scene.textures[l as usize].normal = Some(nrm); }
                         }
+                        // So does the material map: glTF's metallic-roughness
+                        // (G roughness, B metalness) and occlusion (R) textures,
+                        // often one packed image.
+                        let mr = pbr.metallic_roughness_texture().and_then(|t| t.texture().source()).map(|s| s.index());
+                        let ao = m.occlusion_texture().and_then(|t| t.texture().source()).map(|s| s.index());
+                        if mr.is_some() || ao.is_some() {
+                            let mr = mr.and_then(|i| image(i).ok());
+                            let ao = ao.and_then(|i| image(i).ok());
+                            let channel = |img: &Option<image::RgbaImage>, c: usize| img.as_ref().map(|i| image::GrayImage::from_fn(i.width(), i.height(), |x, y| image::Luma([i.get_pixel(x, y)[c]])));
+                            scene.textures[l as usize].orm = Some(render::scene::pack_material_map(vec![channel(&ao, 0), channel(&mr, 1), channel(&mr, 2)]));
+                        }
                         l
                     }
                 };

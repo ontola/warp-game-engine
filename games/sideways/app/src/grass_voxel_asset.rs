@@ -154,7 +154,7 @@ fn bake_photo(photo: RgbaImage, cell_size: f32) -> Result<ClumpAsset, String> {
     let materials = [Material { tint: [1.0; 3], layer: 0, roughness: 0.85,
         flags: ALPHA_TEST | TWO_SIDED | GRASS, scale: 1.0, metal: 0.0 }];
     let textures = [TextureSource { name: "Poly Haven grass_medium_01 selected CC0 clump".into(),
-        rgba: photo, normal: None }];
+        rgba: photo, normal: None, orm: None }];
     let volume = foliage_voxel::bake(&[Part { vertices: &vertices, indices: &indices, material: 0 }],
         &materials, &textures, BakeConfig { cell_size, levels: 7, samples_per_cell: 4, alpha_cut: 0.5,
             max_samples: 4_000_000, max_voxels: 65_536, max_texture_texels: 262_144,

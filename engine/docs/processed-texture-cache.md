@@ -25,6 +25,11 @@ startup. Image decoding happens in scene construction before this constructor.
 - Entries are reconstructible and may be removed while the game is closed.
   There is currently no automatic disk-size eviction policy.
 
+When the texture arrays are BC7 ([materials](materials.md#compression)),
+the encoded blocks of a layer are a second entry (`WRPBLK01` header, same
+length and checksum checks) under a key derived from its mips' key and the
+encoder settings, so a warm start reads blocks instead of encoding them.
+
 A SHA-256 key includes decoded source pixels and dimensions (or explicit missing
 source), output size, UNORM versus sRGB, fallback colour, cutout alpha policy,
 linear-cutout-RGB mode, and an algorithm fingerprint. The fingerprint includes

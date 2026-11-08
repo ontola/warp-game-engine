@@ -305,7 +305,7 @@ pub(crate) fn lighting(weather: &str) -> Lighting {
     match weather {
         "overcast" => { light.sun_lux = 25_000.0; light.sky_lux = 14_000.0; light.ev100 = 12.5; light.shadow_strength = 0.6; }
         "mist" => { light.sun_lux = 30_000.0; light.sky_lux = 15_000.0; light.ev100 = 12.7; light.fog_density = 0.011; }
-        "wet" => { light.sun_lux = 20_000.0; light.sky_lux = 12_000.0; light.ev100 = 12.2; light.shadow_strength = 0.5; }
+        "wet" => { light.sun_lux = 20_000.0; light.sky_lux = 12_000.0; light.ev100 = 12.2; light.shadow_strength = 0.5; light.wetness = 0.85; }
         _ => {}
     }
     light
@@ -566,6 +566,7 @@ impl App {
         let ordered:Vec<_>=self.view_order.iter().filter_map(|i|cams.get(*i)).take(self.args.views).collect();
         let positions:Vec<_>=if ordered.is_empty(){cams.iter().take(self.args.views).map(|c|c.pos).collect()}else{ordered.iter().map(|c|c.pos).collect()};
         self.built = visuals::build_live(&self.race.stage, &poses, &positions, self.live_edit.looks())?;
+        self.built.scene.texture_streaming = self.args.capture.is_none() && self.args.smoke_frames == 0;
         let tree_settings=self.debug.applied_tree_settings();
         let baseline=crate::tree_tuning::Baseline::prepare_optional_stage(&mut self.built.scene,&mut self.race.phys,tree_settings)?;
         let tree_report=crate::tree_tuning::Baseline::stage_metadata(baseline.as_ref(),tree_settings);self.tree_baseline=baseline;
@@ -1879,6 +1880,9 @@ pub fn run(raw:&[String])->i32{
     let looks=match crate::car_look::Looks::load(None,vec![]){Ok(l)=>l,Err(e)=>{eprintln!("play: {e}");return 2;}};
     startup_timing.mark("initial_camera_and_materials");
     let mut built=match visuals::build_live(&race.stage,&poses,&cams.iter().take(a.views).map(|c|c.pos).collect::<Vec<_>>(),&looks){Ok(b)=>b,Err(e)=>{eprintln!("play scene: {e}");return 1;}};
+    // Stream textures in a played window: the stage appears before every
+    // texture has its full mips. Captures and smoke runs keep them complete.
+    built.scene.texture_streaming=a.capture.is_none() && a.smoke_frames==0;
     let tree_settings=debug.applied_tree_settings();
     let tree_baseline=match crate::tree_tuning::Baseline::prepare_optional_stage(&mut built.scene,&mut race.phys,tree_settings) {
         Ok(baseline)=>baseline,Err(error)=>{eprintln!("play tree baseline: {error}");return 1;}

@@ -547,7 +547,7 @@ mod tests {
             Vertex { pos: [x, y, 0.0], normal: [0.0, 0.0, 1.0], uv: [x, y] } }), [0, 1, 2, 2, 1, 3])
     }
     fn material() -> Material { Material { tint: [1.0; 3], layer: 0, roughness: 0.8, flags: ALPHA_TEST | TWO_SIDED, scale: 1.0, metal: 0.0 } }
-    fn texture(pixels: &[[u8; 4]]) -> TextureSource { TextureSource { name: "test".into(), rgba: image::RgbaImage::from_fn(pixels.len() as u32, 1, |x, _| image::Rgba(pixels[x as usize])), normal: None } }
+    fn texture(pixels: &[[u8; 4]]) -> TextureSource { TextureSource { name: "test".into(), rgba: image::RgbaImage::from_fn(pixels.len() as u32, 1, |x, _| image::Rgba(pixels[x as usize])), normal: None, orm: None } }
     fn run(source: TextureSource, config: BakeConfig) -> VoxelAsset {
         let (vertices, indices) = card();
         bake(&[Part { vertices: &vertices, indices: &indices, material: 0 }], &[material()], &[source], config).unwrap()
