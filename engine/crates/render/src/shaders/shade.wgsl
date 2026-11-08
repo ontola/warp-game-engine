@@ -3045,6 +3045,11 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     } else if FEATURE_LOCAL_LIGHTS {
         direct += contact_headlight_radiance(p,n,visibility_n,v,diffuse,rough,f0,size,dist);
     }
+    if FEATURE_CLUSTERED_LIGHTS && FEATURE_GRASS && grass {
+        direct += clustered_grass_radiance(p,v,base,rough);
+    } else if FEATURE_CLUSTERED_LIGHTS {
+        direct += clustered_radiance(p,n,v,diffuse,rough,f0);
+    }
     var rad = direct + indirect + specular;
     // Emission is scaled by Lighting::emissive_scale (exposure compensation).
     let emit = light.anim.y;

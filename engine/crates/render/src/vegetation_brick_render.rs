@@ -684,7 +684,9 @@ mod tests {
         let source=format!("{shared}\n{}",include_str!("shaders/vegetation_bricks.wgsl"));
         let module=naga::front::wgsl::parse_str(&source).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));
         let info=naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();
-        let group2:Vec<_>=module.global_variables.iter().filter_map(|(_,v)|v.binding.as_ref().filter(|b|b.group==2).map(|b|b.binding)).collect();
+        let group2:Vec<_>=module.global_variables.iter().filter_map(|(_,v)|v.binding.as_ref().filter(|b|b.group==2).map(|b|b.binding))
+            // 48: shade's clustered light grid (clustered_lights.wgsl), unused here.
+            .filter(|&b|b!=48).collect();
         assert_eq!(group2,vec![0,1,2,3,4,5,6]);
         assert_eq!(module.entry_points.iter().filter(|e|e.name.starts_with("vegetation_brick_")).count(),2);
         assert!(!include_str!("shaders/vegetation_bricks.wgsl").contains("previous_world"));

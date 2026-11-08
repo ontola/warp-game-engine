@@ -934,6 +934,8 @@ pub struct Renderer {
     headlight_state: std::sync::Mutex<Vec<crate::headlights::SpotLight>>,
     headlight_exclusions: std::sync::Mutex<Vec<(u32,u32)>>,
     local_light_state: std::sync::Mutex<Vec<crate::headlights::LocalLight>>,
+    clustered: crate::clustered_lights::Resources,
+    clustered_targets: std::sync::Mutex<Vec<ViewTargets>>,
     spot_falloff: std::sync::Mutex<Vec<f32>>,
     spot_softness: std::sync::Mutex<f32>,
     lighting_focus: std::sync::Mutex<Vec<Vec3>>,
@@ -1156,6 +1158,11 @@ pub struct Renderer {
 
 #[derive(Clone, Copy)]
 enum RasterPass { Color, Sun, SunStatic(u32), SunDynamic(u32), FarSun, FoliagePage, Headlight }
+
+/// A shadow raster into one tile of a layer (clustered light shadows):
+/// texel rectangle (x, y, size), and whether its passes are timed.
+#[derive(Clone, Copy)]
+struct RasterTile { rect: [u32; 3], timed: bool }
 
 /// Cull draw records: four opaque (or all) draws and their starts, then
 /// four masked draws and their starts (cull.wgsl `args`).
@@ -1723,7 +1730,12 @@ impl Renderer {
         startup.mark("part_wind_animation_resources");
         let grass_lighting=crate::grass_lighting::Resources::new(gpu,scene.far_grass.as_ref().zip(far_grass.as_ref()),scene.terrain_visual_offset_m);
         startup.mark("grass_lighting_resources");
-        let headlights=crate::headlights::Resources::new(gpu);
+        // Clustered lights (opt-in) keep their shadow tiles in extra layers
+        // of the spot shadow array, so shade binds no further texture.
+        let clustered_on=crate::clustered_lights::enabled(scene.graphics.clustered_lights)
+            && std::env::var("KERN_SIMPLE_LIGHTING").map_or(!scene.graphics.simple_lighting,|v|v!="1");
+        let clustered_budget=crate::clustered_lights::budget(clustered_on);
+        let headlights=crate::headlights::Resources::with_layers(gpu,clustered_budget.layers);
         let tracks=crate::tracks::Resources::new(gpu);
         startup.mark("headlight_track_resources");
         let hf = scene.heightfield.clone();
@@ -1758,7 +1770,8 @@ impl Renderer {
         // The terrain hierarchy is built once; the sun page table is copied in
         // again each frame it can change (frame_output_into).
         let scene_tables = crate::scene_tables::SceneTables::new(gpu, &scene.materials, &car_list, &solids, &scene.aux, &replacement_words, topology.starts(),
-            [world_visibility.buffer.size(), foliage_sun_pages.metadata.size()]);
+            [world_visibility.buffer.size(), foliage_sun_pages.metadata.size(), crate::clustered_lights::arena_bytes(clustered_on,clustered_budget)]);
+        let clustered=crate::clustered_lights::Resources::new(gpu,clustered_on,clustered_budget,&scene_tables.buffer,scene_tables.clustered);
         if scene_tables.buffer.size() > gpu.limits.max_storage_buffer_binding_size as u64 {
             panic!("scene tables need {} bytes, over the device's {} byte storage binding", scene_tables.buffer.size(), gpu.limits.max_storage_buffer_binding_size);
         }
@@ -2071,13 +2084,14 @@ impl Renderer {
         let sun_guard_bounds=(sun_cache_guard_m>0.0)
             .then(||std::sync::Mutex::new(crate::stability::SunSceneBounds::from_scene(scene)));
         startup.mark("sun_scene_bounds");
-        let shade_pl = pl(&[&scene_layout, &shade_layout]);
+        let shade_pl = pl(&[&scene_layout, &shade_layout, &clustered.layout]);
         let rock_variation=std::env::var("KERN_ROCK_VARIATION").as_deref()==Ok("1");
         let skip_hidden_meadow=meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled());
         let meadow_edge_enabled=meadow.as_ref().is_some_and(|m|m.edge_shadow_stats().is_some_and(|s|s.enabled));
         let shade_features=crate::shade_features::ShadeFeatures::for_scene(scene,world_visibility.enabled,foliage_sun_pages.enabled,meadow_substrate_settings.control[0]!=0 || meadow_edge_enabled);
         let sky_tiles=!simple_lighting && std::env::var("KERN_SKY_TILES").as_deref()==Ok("1");
         let mut shade_constants=shade_features.constants(rock_variation,skip_hidden_meadow);
+        shade_constants.push(("FEATURE_CLUSTERED_LIGHTS", if clustered.enabled {1.0} else {0.0}));
         shade_constants.push(("SKY_TILES", if sky_tiles {1.0} else {0.0}));
         shade_constants.push(("WORLD_TERRAIN_BAKED", if world_visibility.baked {1.0} else {0.0}));
         // KERN_VOXEL_SURFACE=0: rasterized voxels keep their own lighting
@@ -2250,6 +2264,8 @@ impl Renderer {
             camera_up_axes: Default::default(),
             camera_projections: Default::default(),
             local_light_state: Default::default(),
+            clustered,
+            clustered_targets: Default::default(),
             spot_falloff: Default::default(),
             spot_softness: Default::default(),
             lighting_focus: Default::default(),
@@ -2638,10 +2654,10 @@ impl Renderer {
     }
 
     fn cull_and_raster(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass) {
-        self.cull_and_raster_pass(enc,gpu,v,color,depth,ts,names,name,kind,None,false,None);
+        self.cull_and_raster_pass(enc,gpu,v,color,depth,ts,names,name,kind,None,false,None,None);
     }
 
-    fn cull_and_raster_pass(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass, phase_bind:Option<&wgpu::BindGroup>, append:bool,damage:Option<&wgpu::BindGroup>) {
+    fn cull_and_raster_pass(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass, phase_bind:Option<&wgpu::BindGroup>, append:bool,damage:Option<&wgpu::BindGroup>,tile:Option<RasterTile>) {
         if !append && matches!(kind,RasterPass::Color) {enc.clear_buffer(&v.counter,crate::cluster_traversal::COUNTER_OFFSET,Some(crate::cluster_traversal::COUNTER_BYTES));}
         let scene_bind=match kind {RasterPass::Color=>&self.scene_bind,RasterPass::FarSun=>&self.far_sun_scene_bind,RasterPass::FoliagePage=>&self.foliage_sun_scene_bind,_=>&self.shadow_scene_bind};
         let cull_scene_bind=match kind {RasterPass::FarSun=>&self.far_cull_scene_bind,RasterPass::FoliagePage=>&self.foliage_cull_scene_bind,_=>&self.cull_scene_bind};
@@ -2652,8 +2668,9 @@ impl Renderer {
             enc.clear_buffer(&v.counter, crate::occlusion::SPLIT_COUNTER_OFFSET, Some(crate::occlusion::SPLIT_COUNTER_BYTES));
         }
         let cull_bind=phase_bind.unwrap_or(&v.cull_bind);
+        let timed=tile.is_none_or(|t|t.timed);
         let tw = |ts: &mut u32| {
-            self.query.as_ref().map(|(qs, _, _)| {
+            self.query.as_ref().filter(|_|timed).map(|(qs, _, _)| {
                 let i = timestamp_pair(ts);
                 (qs, i)
             })
@@ -2742,6 +2759,7 @@ impl Renderer {
         if t.is_some() {
             names.push(if name=="occluder cull" {"occluder raster"} else if name=="remaining cull" {"remaining raster"} else if color.is_some() { "raster" } else if name == "near shadow cull" { "near shadow raster" }
                 else if name=="headlight shadow cull" {"headlight shadow raster"}
+                else if name=="clustered shadow cull" {"clustered shadow raster"}
                 else if matches!(kind,RasterPass::SunStatic(_)) {"static sun raster"}
                 else if matches!(kind,RasterPass::SunDynamic(_)) {"dynamic sun raster"}
                 else if name=="far sun cull" {"far sun raster"} else if name=="foliage page cull" {"foliage page raster"} else { "shadow raster" });
@@ -2769,7 +2787,7 @@ impl Renderer {
             color_attachments: if color.is_some() { &attachments } else { &[] },
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth,
-                depth_ops: Some(wgpu::Operations { load: if damage.is_some() || append || matches!(kind,RasterPass::SunDynamic(_)) {wgpu::LoadOp::Load} else {wgpu::LoadOp::Clear(if color.is_some() { 0.0 } else { 1.0 })}, store: wgpu::StoreOp::Store }),
+                depth_ops: Some(wgpu::Operations { load: if tile.is_some() || damage.is_some() || append || matches!(kind,RasterPass::SunDynamic(_)) {wgpu::LoadOp::Load} else {wgpu::LoadOp::Clear(if color.is_some() { 0.0 } else { 1.0 })}, store: wgpu::StoreOp::Store }),
                 stencil_ops: None,
             }),
             timestamp_writes: t.map(|(qs, i)| wgpu::RenderPassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
@@ -2791,6 +2809,14 @@ impl Renderer {
             RasterPass::FarSun | RasterPass::FoliagePage => p[3].as_ref(),
             RasterPass::Headlight => p[1].as_ref(),
         }}.unwrap_or(masked));
+        // A shadow tile: clear only its rectangle, then draw into it.
+        if let Some(t)=tile {
+            let [x,y,size]=t.rect;
+            pass.set_viewport(x as f32,y as f32,size as f32,size as f32,0.0,1.0);
+            pass.set_scissor_rect(x,y,size,size);
+            pass.set_pipeline(self.clustered.clear_tile.as_ref().expect("clustered shadow tiles"));
+            pass.draw(0..3,0..1);
+        }
         let halves:&[(u64,&wgpu::RenderPipeline)]=&match opaque {Some(o)=>vec![(0,o),(1,masked)],None=>vec![(0,masked)]};
         if let Some(mask)=damage {pass.set_bind_group(2,mask,&[]);}
         pass.set_bind_group(0, scene_bind, &[]);
@@ -2913,6 +2939,21 @@ impl Renderer {
     /// Short-range direct spill, independently bounded from shadowed lights.
     /// No shadow target allocation or culling/raster pass is added. Call with
     /// an empty set when emitters expire; invalid sets leave the old set intact.
+    /// Replace this frame's clustered lights (up to 1024, some shadowed;
+    /// clustered_lights.rs). Needs `Graphics::clustered_lights` or
+    /// `KERN_CLUSTERED_LIGHTS=1`; otherwise an error, and the caller keeps
+    /// using `set_local_lights`. Independent of the headlights and local
+    /// lights, which still apply.
+    pub fn set_clustered_lights(&self,lights:&[crate::clustered_lights::ClusteredLight])->Result<(),String> {
+        if !self.clustered.enabled {return Err("clustered lights are off for this scene (Graphics::clustered_lights or KERN_CLUSTERED_LIGHTS=1)".into());}
+        let validated=crate::clustered_lights::validate(lights)?;
+        *self.clustered.lights.lock().unwrap()=validated;Ok(())
+    }
+    /// Whether `set_clustered_lights` is available.
+    pub fn clustered_lights_enabled(&self)->bool {self.clustered.enabled}
+    /// Last frame's clustered light numbers.
+    pub fn clustered_light_stats(&self)->crate::clustered_lights::Stats {*self.clustered.stats.lock().unwrap()}
+
     pub fn set_local_lights(&self,lights:&[crate::headlights::LocalLight])->Result<(),String> {
         self.set_local_lights_scattering(lights,&[])
     }
@@ -3597,10 +3638,10 @@ impl Renderer {
             (6,self.occlusion.phases[phase].as_entire_binding()),(7,wgpu::BindingResource::TextureView(&target.view)),
             (8,self.cull_tables.buffer.as_entire_binding()),(10,v.spatial_owners.as_entire_binding()),
             (14,self.receiver_demand.buffer().as_entire_binding()),(15,history.as_entire_binding())])));
-        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"occluder cull",RasterPass::Color,Some(&phases[0]),false,None);
+        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"occluder cull",RasterPass::Color,Some(&phases[0]),false,None,None);
         let time=self.query.as_ref().map(|(qs,_,_)|{names.push("occlusion pyramid");(qs,timestamp_pair(ts))});
         pyramid.encode(gpu,enc,depth,target,time);
-        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"remaining cull",RasterPass::Color,Some(&phases[1]),true,None);
+        self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"remaining cull",RasterPass::Color,Some(&phases[1]),true,None,None);
         let time=self.query.as_ref().filter(|_|self.occlusion.history_first).map(|(qs,_,_)|{names.push("visibility history");(qs,timestamp_pair(ts))});
         self.occlusion.capture_history(gpu,enc,&history,color,&v.visible,size,time);
         if self.occlusion.history_first {enc.copy_buffer_to_buffer(&v.counter,18*4,&history,32772,4);}
@@ -4503,6 +4544,27 @@ impl Renderer {
             let layer=self.headlights.layer(index as u32);
             self.cull_and_raster(&mut enc,gpu,target,None,&layer,&mut ts,&mut names,"headlight shadow cull",RasterPass::Headlight);
         }
+        // Clustered lights: bin them, then redraw this frame's shadow tiles.
+        let clustered_draws=self.clustered.prepare(gpu,&mut enc,&cameras);
+        let mut clustered_targets=self.clustered_targets.lock().unwrap();
+        while clustered_targets.len()<clustered_draws.len() {
+            clustered_targets.push(self.view_targets_capacity(gpu,"clustered shadow",self.shadow_capacity,false,self.instance_groups.headlight_enabled));
+        }
+        for (draw,target) in clustered_draws.iter().zip(clustered_targets.iter()) {
+            let size=crate::clustered_lights::TILE as f32;
+            let mut vu=view_uniform(draw.face.view_proj,draw.position,draw.face.focal,
+                [light.lod_pixels,draw.face.near,0.0,self.shadow_capacity as f32],[size;4],light.alpha_cut);
+            // A perspective shadow pass, as the headlights' (extra[1] 2).
+            vu.extra[1]=2.0;
+            if let Some((start,count))=draw.exclude {vu.grass[2]=start as f32;vu.grass[3]=count as f32;}
+            gpu.queue.write_buffer(&target.uniform,0,bytemuck::bytes_of(&vu));
+            let layer=self.headlights.layer(draw.layer());
+            // Timestamps only while the frame's query set has room.
+            let timed=ts+8<TIMESTAMP_CAPACITY-128;
+            self.cull_and_raster_pass(&mut enc,gpu,target,None,&layer,&mut ts,&mut names,"clustered shadow cull",RasterPass::Headlight,None,false,None,
+                Some(RasterTile {rect:draw.rect(),timed}));
+        }
+        drop(clustered_targets);
         let mut canopies = self.canopies.lock().unwrap();
         while canopies.len() < views.len() {
             let next = canopies[0].fork_view(gpu);
@@ -4537,7 +4599,7 @@ impl Renderer {
                 self.cull_and_raster(&mut enc,gpu,&shadow_t,None,&shadow_v,
                     &mut ts,&mut names,"dynamic sun cull",RasterPass::SunDynamic(static_counts.dynamic_casters));
             } else {
-                self.cull_and_raster_pass(&mut enc, gpu, &shadow_t, None, &shadow_v, &mut ts, &mut names, "shadow cull",RasterPass::Sun,None,false,damage_bind.as_ref());
+                self.cull_and_raster_pass(&mut enc, gpu, &shadow_t, None, &shadow_v, &mut ts, &mut names, "shadow cull",RasterPass::Sun,None,false,damage_bind.as_ref(),None);
             }
             if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.casts_sun()) {
                 let times=["voxel sun splats","voxel sun splat raster"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
@@ -4990,12 +5052,13 @@ impl Renderer {
                 (make(&self.diagnostic_constants), self.terrain_shade.as_ref().map(|_| make(&terrain)))
             }));
             // No spot or local light this frame: the pipelines without them.
-            let lights=!self.headlight_state.lock().unwrap().is_empty() || !self.local_light_state.lock().unwrap().is_empty();
+            let lights=!self.headlight_state.lock().unwrap().is_empty() || !self.local_light_state.lock().unwrap().is_empty()
+                || !self.clustered.lights.lock().unwrap().is_empty();
             let unlit_cell=(!lights && !self.simple_lighting && std::env::var("KERN_SHADE_UNLIT").as_deref()!=Ok("0")).then(|| self.shade_unlit.lock().unwrap().get_or_insert_with(|| {
                 let cell = std::sync::Arc::new(std::sync::OnceLock::new());
-                let unlit=[("SHADE_DIAGNOSTICS",0.0),("FEATURE_LOCAL_LIGHTS",0.0)];
-                let rest: Vec<(&'static str, f64)> = self.diagnostic_constants.iter().copied().chain(unlit).collect();
-                let terrain: Vec<(&'static str, f64)> = self.diagnostic_constants.iter().map(|&(k, v)| match k {
+                let unlit=[("SHADE_DIAGNOSTICS",0.0),("FEATURE_LOCAL_LIGHTS",0.0),("FEATURE_CLUSTERED_LIGHTS",0.0)];
+                let rest: Vec<(&'static str, f64)> = self.diagnostic_constants.iter().copied().filter(|c|c.0!="FEATURE_CLUSTERED_LIGHTS").chain(unlit).collect();
+                let terrain: Vec<(&'static str, f64)> = self.diagnostic_constants.iter().filter(|c|c.0!="FEATURE_CLUSTERED_LIGHTS").map(|&(k, v)| match k {
                     "FEATURE_CARS" | "FEATURE_FOLIAGE" | "FEATURE_PROCEDURAL" | "FEATURE_GRASS" => (k, 0.0), "FEATURE_TERRAIN" => (k, 1.0),
                     "SHADE_CLASS" => (k, 1.0), _ => (k, v) }).chain(unlit).collect();
                 let (device, layout, cache, text, with_terrain, out) = (gpu.device.clone(), self.shade_pl.clone(), gpu.pipeline_cache().cloned(),
@@ -5020,10 +5083,10 @@ impl Renderer {
             // Terrain and voxels first: glossy surfaces in the main pass
             // reflect the already lit frame around them.
             if let Some(terrain) = &self.terrain_shade {
-                passes.push(("shade terrain", diagnostic.and_then(|d| d.1.as_ref()).or(unlit.and_then(|u| u.1.as_ref())).unwrap_or(terrain), vec![&self.scene_bind, &shade_bind]));
+                passes.push(("shade terrain", diagnostic.and_then(|d| d.1.as_ref()).or(unlit.and_then(|u| u.1.as_ref())).unwrap_or(terrain), vec![&self.scene_bind, &shade_bind, &self.clustered.bind]));
             }
-            if let Some(voxels) = &self.voxel_pass { passes.push(("shade voxels", voxels, vec![&self.scene_bind, &shade_bind])); }
-            passes.push(("shade", diagnostic.map(|d| &d.0).or(unlit.map(|u| &u.0)).unwrap_or(&self.shade), vec![&self.scene_bind, &shade_bind]));
+            if let Some(voxels) = &self.voxel_pass { passes.push(("shade voxels", voxels, vec![&self.scene_bind, &shade_bind, &self.clustered.bind])); }
+            passes.push(("shade", diagnostic.map(|d| &d.0).or(unlit.map(|u| &u.0)).unwrap_or(&self.shade), vec![&self.scene_bind, &shade_bind, &self.clustered.bind]));
             let mut far_motion_layer = None;
             for (label, pipe, bindings) in passes {
                 let t = self.query.as_ref().map(|(qs, _, _)| {

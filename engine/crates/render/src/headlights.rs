@@ -132,9 +132,11 @@ pub(crate) struct Resources {
     pub empty:wgpu::TextureView,
 }
 impl Resources {
-    pub fn new(gpu:&Gpu)->Self {
+    /// With `extra` layers after the headlights' for clustered light
+    /// shadow tiles (clustered_lights.rs).
+    pub fn with_layers(gpu:&Gpu,extra:u32)->Self {
         let texture=|label,size|gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some(label),
-            size:wgpu::Extent3d {width:size,height:size,depth_or_array_layers:MAX_LIGHTS as u32},
+            size:wgpu::Extent3d {width:size,height:size,depth_or_array_layers:if size==1 {MAX_LIGHTS as u32} else {MAX_LIGHTS as u32+extra}},
             mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Depth32Float,
             usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_SRC,view_formats:&[]});
         let tex=texture("headlight shadows",SHADOW_SIZE);

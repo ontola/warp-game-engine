@@ -410,6 +410,10 @@ pub struct Graphics {
     /// angle in radians as seen from the camera (0: draw all). Drops distant
     /// small detail that covers a pixel or two.
     pub minimal_min_angle: f32,
+    /// Clustered local lights (`Renderer::set_clustered_lights`): hundreds
+    /// per frame, some shadowed. Off by default; `KERN_CLUSTERED_LIGHTS`
+    /// (1 or 0) overrides.
+    pub clustered_lights: bool,
 }
 
 #[derive(Default)]
