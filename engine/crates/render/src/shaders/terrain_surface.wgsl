@@ -253,20 +253,27 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     let crowd = ff_share(q.x, q.y, seed, site, footprint) * params.density;
     let floor = mix(ground, params.style.floor.rgb, 0.5 * min(crowd * 1.25, 1.0));
     let gap = floor * (1.0 - (1.0 - params.style.floor.w) * min(crowd * 1.25, 1.0) * grows * fade);
-    let c = mix(gap, crowns.rgb, cover);
-    // Sun: crowns take it (their self-shade is in crowns.rgb); of the ground
-    // between them, the share no crown shades from the sun, except where the
-    // view sits behind the sun and the crowns hide their own shadows.
+    // Drawn needles keep NEEDLE_BRUSH_OWN of the sun and 0.25 + 0.75 x its
+    // root of the sky (shade.wgsl): their crowns shade themselves inside.
+    // The albedo takes the sky's share, field_sun the rest of the sun's.
+    let sky_own = 0.25 + 0.75 * sqrt(FAR_CROWN_OWN);
+    let c = mix(gap, crowns.rgb * sky_own, cover);
+    // Sun: of the ground between crowns, the share no crown shades from the
+    // sun, except where the view sits behind the sun and the crowns hide
+    // their own shadows.
     let sun_grow = ff_crown_growth(sun, params.style);
     let hidden = clamp(dot(eye, sun), 0.0, 1.0);
     let sun_cover = (1.0 - exp(-crowd * params.style.crown.y * sun_grow * sun_grow)) * grows * fade * (1.0 - hidden);
     let lum = vec3<f32>(0.3, 0.59, 0.11);
-    let lit_c = dot(crowns.rgb, lum) * cover;
+    let lit_c = dot(crowns.rgb, lum) * sky_own * cover;
     let lit_g = dot(gap, lum) * (1.0 - cover);
-    field_sun = (lit_c + lit_g * (1.0 - sun_cover)) / max(lit_c + lit_g, 1e-4);
+    field_sun = (lit_c * FAR_CROWN_OWN / sky_own + lit_g * (1.0 - sun_cover)) / max(lit_c + lit_g, 1e-4);
     let up = normalize(n + vec3<f32>(0.0, 1.0, 0.0));
     return MeadowCanopy(c, normalize(mix(nn, up, cover)));
 }
+
+// The sun a drawn needle crown keeps (shade.wgsl NEEDLE_BRUSH_OWN).
+const FAR_CROWN_OWN: f32 = 0.42;
 
 // Crowns seen from `eye` at q, for a pixel `footprint` metres across: rgb
 // their colour with self-shade, w the share of the pixel they cover. Each
@@ -279,8 +286,8 @@ fn far_crowns(q: vec2<f32>, footprint: f32, eye: vec3<f32>, sun: vec3<f32>, seed
     if crowd <= 0.0 { return vec4<f32>(needles, 0.0); }
     let grow = ff_crown_growth(eye, fs);
     let mean_cover = 1.0 - exp(-crowd * fs.crown.y * grow * grow);
-    // Lit tops and shaded flanks: sun from above lights more of each crown.
-    let tops = FF_CROWN_OCCLUSION * (0.85 + 0.3 * max(sun.y, 0.0));
+    // Sun from above lights a little more of each crown.
+    let tops = 0.9 + 0.1 * max(sun.y, 0.0);
     let far = smoothstep(FF_CELL * 0.6, FF_CELL * 1.2, footprint);
     if far >= 1.0 { return vec4<f32>(needles * tops, mean_cover); }
     let ci = i32(floor(q.x / FF_CELL));
