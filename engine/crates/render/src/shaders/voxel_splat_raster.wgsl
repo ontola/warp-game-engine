@@ -4,8 +4,7 @@
 // from voxel_splats in voxel_forest.wgsl, which documents the layout.
 @group(0) @binding(0) var<storage,read> splats: array<vec4<u32>>;
 const HEADER: u32 = 12u;
-const TREE_RECORDS: u32 = 5u;
-fn tree(index: u32, row: u32) -> vec4<f32> { return bitcast<vec4<f32>>(splats[HEADER + index * TREE_RECORDS + row]); }
+fn tree(index: u32, row: u32) -> vec4<f32> { return bitcast<vec4<f32>>(splats[HEADER + index * 4u + row]); }
 struct Out {
     @builtin(position) position: vec4<f32>,
     @location(0) @interpolate(flat) splat: u32,
@@ -21,7 +20,7 @@ fn hash(x: u32) -> u32 {
 }
 @vertex fn vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Out {
     var out: Out;
-    let first = HEADER + splats[11].x * TREE_RECORDS;
+    let first = HEADER + splats[11].x * 4u;
     if first + instance >= arrayLength(&splats) { out.position = vec4<f32>(0.0, 0.0, -1.0, 1.0); return out; }
     let record = splats[first + instance];
     let r0 = tree(record.x, 0u);
@@ -81,9 +80,8 @@ fn kept(in: Out) -> bool {
     if !kept(in) { discard; }
     return in.splat;
 }
-// Into the scene's own visibility buffer (bit 31 marks a voxel; shade.wgsl;
-// the GPU forest reads the splat id in the low bits) and the splat id
-// target the surface pass reads.
+// Into the scene's own visibility buffer (bit 31 marks a voxel; shade.wgsl)
+// and the splat id target the surface pass reads.
 struct MainOut { @location(0) visibility: u32, @location(1) splat: u32 };
 @fragment fn fs_main(in: Out) -> MainOut {
     if !kept(in) { discard; }

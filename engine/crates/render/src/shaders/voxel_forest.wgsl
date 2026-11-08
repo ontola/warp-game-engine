@@ -1058,9 +1058,8 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
 @group(2) @binding(14) var<storage,read> volume_splat_cells: array<vec2<u32>>;
 // Header (VOLUME_SPLAT_HEADER records: view-projection columns; for the sun
 // also six frustum planes and direction+texel, as f32 bits; record 11 x the
-// tree count), then five records per tree drawn this view (owner rows,
-// level origin and cell, as f32 bits; the owner instance index, for motion),
-// then one record per splat: tree, cell
+// tree count), then four records per tree drawn this view (owner rows,
+// level origin and cell, as f32 bits), then one record per splat: tree, cell
 // index, packed coord, 16-bit alpha | faces << 16 | appearance seed << 19.
 @group(2) @binding(15) var<storage,read_write> volume_splats: array<vec4<u32>>;
 // Indirect draw arguments: vertex count, instance count, first vertex, first instance.
@@ -1074,8 +1073,6 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
 // only where the visibility id says voxel.
 @group(2) @binding(19) var volume_gbuffer: texture_storage_2d<rgba32uint,write>;
 const VOLUME_SPLAT_HEADER: u32 = 12u;
-// Records per tree after the header (voxel_forest.rs SPLAT_TREE_RECORDS).
-const VOLUME_SPLAT_TREE_RECORDS: u32 = 5u;
 const VOLUME_SPLAT_NONE: u32 = 0xffffffffu;
 // One quad per splat (voxel_splat_raster.wgsl).
 const VOLUME_SPLAT_VERTICES: u32 = 6u;
@@ -1154,16 +1151,13 @@ fn volume_tree_outside(index:u32,plane:vec4<f32>)->bool {
 fn volume_splat_tree(index:u32,level:u32) {
     let tree=volume_trees[index];
     let owner=instances[tree.identity.x];
-    let base=VOLUME_SPLAT_HEADER+index*VOLUME_SPLAT_TREE_RECORDS;
+    let base=VOLUME_SPLAT_HEADER+index*4u;
     volume_splats[base]=bitcast<vec4<u32>>(owner.r0);
     volume_splats[base+1u]=bitcast<vec4<u32>>(owner.r1);
     volume_splats[base+2u]=bitcast<vec4<u32>>(owner.r2);
     volume_splats[base+3u]=bitcast<vec4<u32>>(volume_levels[tree.identity.y+level].origin_cell);
-    // Whose pose this is: motion.wgsl reprojects the voxel with its
-    // previous transform (branch voxels sway with their frame).
-    volume_splats[base+4u]=vec4<u32>(tree.identity.x,0u,0u,0u);
 }
-fn volume_splat_first()->u32 {return VOLUME_SPLAT_HEADER+volume_config.size_count.w*VOLUME_SPLAT_TREE_RECORDS;}
+fn volume_splat_first()->u32 {return VOLUME_SPLAT_HEADER+volume_config.size_count.w*4u;}
 
 struct VolumeSplatCell { local:vec3<f32>,centre:vec3<f32>,radius:f32,size:f32 };
 fn volume_splat_cell(index:u32,level:u32,coord_bits:u32)->VolumeSplatCell {
@@ -1484,7 +1478,7 @@ fn voxel_splat_gbuffer(@builtin(global_invocation_id) id:vec3<u32>) {
     // and radius): half the cell's normal, half a sphere's, so a cell reads
     // as a clump of leaves rather than one flat square.
     {
-        let base=VOLUME_SPLAT_HEADER+record.x*VOLUME_SPLAT_TREE_RECORDS;
+        let base=VOLUME_SPLAT_HEADER+record.x*4u;
         let r0=bitcast<vec4<f32>>(volume_splats[base]);
         let r1=bitcast<vec4<f32>>(volume_splats[base+1u]);
         let r2=bitcast<vec4<f32>>(volume_splats[base+2u]);
@@ -1506,7 +1500,7 @@ fn voxel_splat_gbuffer(@builtin(global_invocation_id) id:vec3<u32>) {
     // The tree shades itself along the sun through its own cells; the sun
     // maps (which hold this tree too, at their own texel) are read where the
     // ray leaves its box, for everything else. As the resolve did.
-    let grid=bitcast<vec4<f32>>(volume_splats[VOLUME_SPLAT_HEADER+record.x*VOLUME_SPLAT_TREE_RECORDS+3u]);
+    let grid=bitcast<vec4<f32>>(volume_splats[VOLUME_SPLAT_HEADER+record.x*4u+3u]);
     let sun=light.sun_dir.xyz;
     // Only a whole plant (a proxy): a branch volume's own cells hold one
     // branch, and the sun maps carry its neighbours at this very point.
@@ -1581,7 +1575,7 @@ fn voxel_splat_resolve(@builtin(global_invocation_id) id:vec3<u32>) {
     // up inside the crown made whole crowns shadow themselves black. Its own
     // cells shade it along the sun instead; the maps add everything else
     // from just outside its box.
-    let grid=bitcast<vec4<f32>>(volume_splats[VOLUME_SPLAT_HEADER+record.x*VOLUME_SPLAT_TREE_RECORDS+3u]);
+    let grid=bitcast<vec4<f32>>(volume_splats[VOLUME_SPLAT_HEADER+record.x*4u+3u]);
     let sun=light.sun_dir.xyz;
     let exit=max(volume_interval(tree,p,sun,1e4).y,0.0);
     let others=shadow_at(p+sun*(exit+volume_sun_texel(p)*2.0),up);

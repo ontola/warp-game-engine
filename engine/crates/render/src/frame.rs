@@ -5183,7 +5183,6 @@ impl Renderer {
                 let motion_time = self.query.as_ref().map(|(qs, _, _)| {
                     names.push("motion vectors"); (qs, timestamp_pair(&mut ts))
                 });
-                let voxel_splats = self.voxel_forest.as_ref().filter(|_| self.voxel_surface).and_then(|forest| forest.splat_records(vi));
                 let motion = up.motion.as_ref().unwrap().render(gpu, &mut enc, vi,
                     crate::motion::MotionView { key: vi as u64, size: (w, h),
                         inverse_jittered_view_proj: vp.inverse(), view_proj: proj * view_m,
@@ -5193,8 +5192,7 @@ impl Renderer {
                         visible: &main.visible, grass: grass_motion.as_ref(), transparency: glass_motion.as_ref(),
                         far_grass: far_motion_layer.as_ref().map(|layer| (&layer.color, &layer.distance)),
                         voxel:voxel_motion.as_ref().map(|(color,reprojection)|(color,reprojection)),
-                        meadow:meadow_motion.as_ref().map(|(color,reprojection)|(color,reprojection)),
-                        voxel_splats: voxel_splats.as_ref() }, motion_time)?;
+                        meadow:meadow_motion.as_ref().map(|(color,reprojection)|(color,reprojection)) }, motion_time)?;
                 Some(motion)
             } else {None};
             // TAA after the motion vectors it reprojects with.

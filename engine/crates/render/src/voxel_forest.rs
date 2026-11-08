@@ -324,11 +324,8 @@ fn splat_capacity(forest: &crate::foliage_volume_data::GpuForest, cells: &[[u32;
 }
 /// Shared selector/raster capacity after per-tree record headers. The selector
 /// must never reserve more records than a target can actually store.
-/// Splat buffer records per tree after the 12-record header: owner rows,
-/// level grid, owner instance (VOLUME_SPLAT_TREE_RECORDS in voxel_forest.wgsl).
-pub(crate) const SPLAT_TREE_RECORDS: u64 = 5;
 pub(crate) fn bounded_splat_capacity(requested:u64,trees:u64,byte_limit:u64)->u64 {
-    requested.min((byte_limit/16).saturating_sub(12u64.saturating_add(trees.saturating_mul(SPLAT_TREE_RECORDS))))
+    requested.min((byte_limit/16).saturating_sub(12u64.saturating_add(trees.saturating_mul(4))))
 }
 struct Targets {
     hzb: Option<crate::depth_pyramid::PyramidTarget>,
@@ -1185,7 +1182,7 @@ impl VoxelRenderer {
         let splat_depth = texture("voxel splat depth", wgpu::TextureFormat::Depth32Float);
         let splat_capacity = self.raster.as_ref().map_or(0, |r| bounded_splat_capacity(r.capacity,u64::from(self.count),u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size)));
         let splat_records = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("voxel splats"), size: (12 + SPLAT_TREE_RECORDS * u64::from(self.count) + splat_capacity) * 16,
+            label: Some("voxel splats"), size: (12 + 4 * u64::from(self.count) + splat_capacity) * 16,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let splat_draw = counters.clone();
         let stand_in;
@@ -1242,11 +1239,6 @@ impl VoxelRenderer {
     /// into the scene's targets.
     pub(crate) fn surface(&self, index: usize) -> Option<wgpu::TextureView> {
         self.targets.lock().unwrap().get(index)?.as_ref()?.splat.as_ref().map(|s| s.gbuffer.clone())
-    }
-    /// The view's splat records (header, five records per tree, splats),
-    /// for motion vectors of voxel pixels.
-    pub(crate) fn splat_records(&self, index: usize) -> Option<wgpu::Buffer> {
-        self.targets.lock().unwrap().get(index)?.as_ref()?.splat.as_ref().map(|s| s.records.clone())
     }
     /// The view's rastered splat depth (reversed Z, 0 where none), once
     /// Stage::Splats has run for it.
@@ -1542,7 +1534,7 @@ impl VoxelRenderer {
         for (target,d) in targets.iter().filter_map(Option::as_ref).zip(diagnostics) {
             let Some(splat)=&target.splat else {continue;};
             let count=u64::from(d.raster_splats).min(d.raster_capacity);
-            let words=12+SPLAT_TREE_RECORDS*u64::from(self.count)+count;let size=words*16;
+            let words=12+4*u64::from(self.count)+count;let size=words*16;
             let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("offline splat profile"),size,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
             let mut enc=gpu.device.create_command_encoder(&Default::default());enc.copy_buffer_to_buffer(&splat.records,0,&read,0,size);gpu.queue.submit([enc.finish()]);
             read.slice(..).map_async(wgpu::MapMode::Read,|r|r.unwrap());gpu.wait();
@@ -1551,10 +1543,10 @@ impl VoxelRenderer {
             let vp=glam::Mat4::from_cols_array_2d(&[data[0].map(f32::from_bits),data[1].map(f32::from_bits),data[2].map(f32::from_bits),data[3].map(f32::from_bits)]);
             let right=vp.row(0).truncate().normalize();let up=vp.row(1).truncate().normalize();
             let mut bins=[[0u64;10];2];let mut largest:Vec<(f32,serde_json::Value)>=Vec::new();let mut behind=0u64;let mut unique=std::collections::HashSet::new();
-            let first=12+SPLAT_TREE_RECORDS as usize*self.count as usize;
+            let first=12+4*self.count as usize;
             for record in &data[first..first+count as usize] {
                 let index=record[0]as usize;if index>=self.count as usize{return Err("splat profile invalid tree index".into());}
-                unique.insert(index);let start=12+index*SPLAT_TREE_RECORDS as usize;
+                unique.insert(index);let start=12+index*4;
                 let rows=[glam::Vec4::from_array(data[start].map(f32::from_bits)),glam::Vec4::from_array(data[start+1].map(f32::from_bits)),glam::Vec4::from_array(data[start+2].map(f32::from_bits))];
                 let grid=glam::Vec4::from_array(data[start+3].map(f32::from_bits));
                 let coord=glam::Vec3::new((record[2]&1023)as f32,((record[2]>>10)&1023)as f32,(record[2]>>20)as f32);
@@ -1659,7 +1651,7 @@ impl VoxelRenderer {
                         interval_stream_records:value(23),
                         raster_splats:value((COUNTER_BYTES/4+3)as usize),
                         raster_vertices:u64::from(value((COUNTER_BYTES/4+2)as usize))*u64::from(value((COUNTER_BYTES/4+3)as usize)),
-                        raster_capacity:targets[target_index].splat.as_ref().map_or(0,|s|s.records.size()/16-12-SPLAT_TREE_RECORDS*u64::from(self.count)),
+                        raster_capacity:targets[target_index].splat.as_ref().map_or(0,|s|s.records.size()/16-12-4*u64::from(self.count)),
                     }
                 })
                 .collect()
@@ -2107,8 +2099,8 @@ mod tests {
     fn raster_budget_accounts_for_headers_and_device_capacity() {
         let cap=super::bounded_splat_capacity;
         assert_eq!(cap(4<<20,100,128<<20),4<<20);
-        assert_eq!(cap(16<<20,32768,128<<20),(128<<20)/16-12-super::SPLAT_TREE_RECORDS*32768);
-        assert_eq!(cap(10,100,16*(12+super::SPLAT_TREE_RECORDS*100)),0);
+        assert_eq!(cap(16<<20,32768,128<<20),(128<<20)/16-12-4*32768);
+        assert_eq!(cap(10,100,16*(12+4*100)),0);
         assert_eq!(cap(10,u64::MAX,u64::MAX),0);
         assert_eq!(cap(0,0,128<<20),0);
     }
