@@ -354,7 +354,7 @@ fn cloud_density(p: vec3<f32>, world: vec3<f32>, cheap: bool) -> f32 {
     var d = clamp(remap(base * profile, mix(1.0, 0.6, w), 1.0, 0.0, 1.0), 0.0, 1.0);
     if d <= 0.0 { return 0.0; }
     if !cheap {
-        let detail = textureSampleLevel(noise_detail, repeat_samp, (world + drift * 1.5) / u.cloud_shape.y, 0.0).a;
+        let detail = textureSampleLevel(noise_detail, repeat_samp, (world + drift) / u.cloud_shape.y, 0.0).a;
         // Wispy at the base, billowy at the top.
         let erode = mix(detail, 1.0 - detail, clamp(h * 4.0, 0.0, 1.0));
         d = clamp(remap(d, erode * 0.4, 1.0, 0.0, 1.0), 0.0, 1.0);
@@ -362,10 +362,11 @@ fn cloud_density(p: vec3<f32>, world: vec3<f32>, cheap: bool) -> f32 {
     return d * u.cloud.w;
 }
 
-// White noise per pixel and frame: structured sequences beat against the
-// raymarch steps into visible ribs at the horizon.
+// A fixed random offset per pixel, advanced by the golden ratio each frame
+// (an R1 sequence): stratified over time, so the history converges in a few
+// frames instead of shimmering, and no structure to beat against the steps.
 fn interleaved_noise(p: vec2<f32>, frame: f32) -> f32 {
-    return pcg3(vec3<u32>(vec2<u32>(p), u32(frame))).x;
+    return fract(pcg3(vec3<u32>(vec2<u32>(p), 0u)).x + (frame % 1024.0) * 0.61803398875);
 }
 
 @compute @workgroup_size(8, 8)
@@ -415,7 +416,9 @@ fn clouds(@builtin(global_invocation_id) id: vec3<u32>) {
             var reach = 0.0;
             var step_len = u.cloud.z / f32(1u << light_steps) * 2.0;
             for (var j = 0u; j < light_steps; j++) {
-                let q = reach + step_len * 0.5;
+                // Jittered like the view march: fixed sample points band the
+                // self-shadow into steps under a big cloud.
+                let q = reach + step_len * jitter;
                 tau += cloud_density(p + l * q, world + l * q, true) * step_len;
                 reach += step_len;
                 step_len *= 2.0;
