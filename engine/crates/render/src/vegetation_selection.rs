@@ -37,6 +37,11 @@ pub struct SelectionEvidence {
     pub geometry_groups:usize,pub geometry_volume_assets:usize,
     pub voxel_candidates:usize,pub admitted_voxel_candidates:usize,
     pub root_errors:Vec<[f32;3]>,
+    /// Geometry groups (the runtime voxel chain under the root): voxel
+    /// candidates, admitted ones, groups left with none admitted, and the
+    /// worst [coverage, colour] error among rejected candidates.
+    pub group_voxel_candidates:usize,pub admitted_group_candidates:usize,
+    pub groups_without_admitted:usize,pub worst_rejected_group_errors:[f32;2],
 }
 pub(super) fn admission_footprint(c:&crate::aggregate_lod::Candidate,p:crate::aggregate_lod::Policy)->Option<f32> {
     if !p.allow_sampled_optics || c.source_only {return None;}
@@ -55,6 +60,11 @@ impl CookedPlant {
             voxel_candidates:self.branches.iter().flat_map(|b|&b.aggregate).filter(|c|!c.source_only).count(),
             admitted_voxel_candidates:self.branches.iter().flat_map(|b|&b.aggregate).filter(|c|admitted(c,policy)).count(),
             root_errors:root.iter().filter(|c|!c.source_only).map(|c|[c.spatial_error,c.voxel_coverage_error,c.voxel_color_error]).collect(),
+            group_voxel_candidates:self.geometry.iter().flat_map(|g|&g.aggregate).filter(|c|!c.source_only).count(),
+            admitted_group_candidates:self.geometry.iter().flat_map(|g|&g.aggregate).filter(|c|admitted(c,policy)).count(),
+            groups_without_admitted:self.geometry.iter().filter(|g|g.volume.is_some()&&!g.aggregate.iter().any(|c|admitted(c,policy))).count(),
+            worst_rejected_group_errors:self.geometry.iter().flat_map(|g|&g.aggregate).filter(|c|!admitted(c,policy))
+                .fold([0f32;2],|w,c|[w[0].max(c.voxel_coverage_error),w[1].max(c.voxel_color_error)]),
         }
     }
     /// Build once per species/recipe. No world placements, camera or near-tree

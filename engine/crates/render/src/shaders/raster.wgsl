@@ -113,6 +113,23 @@ fn selection_unpack(w:u32)->vec4<u32> {
 }
 
 
+// Needles thinner than a pixel speckle and shimmer: a needle base vertex
+// (uv v below -2.5, plant_growth_assembly::needle_base_uv) moves out along
+// its octahedron-encoded direction by NEEDLE_MIN_PX of a pixel at its depth
+// (view.cam.w is pixels per metre at distance 1, or per metre for
+// orthographic sun views, where clip w is 1). Shading clamps its barycentrics
+// to the unwidened triangle.
+override NEEDLE_MIN_PX: f32 = 0.6;
+fn needle_widen(w: vec3<f32>, uv: vec2<f32>, inst: Instance) -> vec3<f32> {
+    if uv.y > -2.5 || view.cam.w <= 0.0 || NEEDLE_MIN_PX <= 0.0 { return w; }
+    let e = vec2<f32>(uv.x, uv.y + 4.0);
+    var d = vec3<f32>(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    if d.z < 0.0 { d = vec3<f32>((1.0 - abs(d.y)) * sign(d.x), (1.0 - abs(d.x)) * sign(d.y), d.z); }
+    let out = vec3<f32>(dot(inst.r0.xyz, d), dot(inst.r1.xyz, d), dot(inst.r2.xyz, d));
+    let clip_w = max((view.view_proj * vec4<f32>(w, 1.0)).w, 1e-4);
+    return w + normalize(out) * NEEDLE_MIN_PX * clip_w / view.cam.w;
+}
+
 struct VOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) @interpolate(flat) id: u32,
@@ -147,7 +164,8 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     let v = cluster_vert(cl.first_vert + local) * 8u;
     let p = vec4<f32>(vertex_f32(v), vertex_f32(v + 1u), vertex_f32(v + 2u), 1.0);
     let rest = vec3<f32>(dot(inst.r0, p), dot(inst.r1, p), dot(inst.r2, p));
-    let w = wind_position(member_slot(vis.x), inst.r1.w, rest);
+    var w = wind_position(member_slot(vis.x), inst.r1.w, rest);
+    w = needle_widen(w, vec2<f32>(vertex_f32(v + 6u), vertex_f32(v + 7u)), inst);
     o.pos = view.view_proj * vec4<f32>(w, 1.0);
     o.world = w; o.instance = vis.x;
     o.id = (slot << 7u) | tri;

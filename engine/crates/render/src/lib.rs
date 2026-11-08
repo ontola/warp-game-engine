@@ -73,6 +73,8 @@ pub mod world_constraints;
 pub mod regions;
 pub mod zones;
 pub mod procedural_terrain;
+pub mod plant_growth;
+pub mod plant_growth_assembly;
 pub mod plant_mesh_lod;
 pub mod vegetation_style;
 pub mod biome;

@@ -79,3 +79,38 @@ with a missing effect is not a win.
 
 Times from different machines or backends are not comparable; shadow passes that
 cost 4.7 ms on an M5 Pro take well under 1 ms on the RTX 5070 Ti.
+
+## Look suite
+
+`engine/tools/look-suite.json` is a second suite for how things look rather than
+what they cost: the places playtests found problems, a few angles each, named
+`scenario.angle`. Each view can carry its own `"world"` (lowland or alpine, with
+grass).
+
+| Scenario | What to look at |
+| --- | --- |
+| `tree` | One tree from 10 to 200 m: mesh and voxel brightness must agree |
+| `ring` | 150 m up: the edge of the grass disc |
+| `shadow` | Sharp shadow under the camera at 8, 16 and 30 m up |
+| `boulder` | Walking at a rock: height must not pop |
+| `stripes` | Grass bands along an alpine slope |
+| `circle` | Dark spots on the 1.5 m grass grid |
+| `edge` | Shadow map handover on the ground |
+| `grassedge` | Voxel grass against shaded ground |
+| `far` | Slopes 300 to 2000 m away under a low sun |
+| `load` | Bushes 60 and 120 frames after arriving |
+| `fly` | In motion, at 40 m/s |
+
+```sh
+python3 engine/tools/render-suite.py run --suite engine/tools/look-suite.json --label after --arg=--voxel-raster-profile
+python3 engine/tools/look-report.py after --base before --out build/look-reports/after
+```
+
+`look-report.py` prints per view the mean linear crown colour inside the view's
+`crown` box with its ratio to the nearest tree view, the strength of the grass
+grid (autocorrelation of dark pixels near the view's `grid_px`, about 1.5 m on
+screen) and the largest voxel cell. With `--out` it writes `report.json`, with
+GPU time per pass group and counters, and a 960 px JPEG per view and per base
+view, for a page to show side by side. Run `look-clips.py LABEL --exe EXE` first to
+add the suite's `clips`: terrain_fly `--dump` with `--dump-warm`, `--dump-every` and
+`--dump-forward`, encoded with ffmpeg.

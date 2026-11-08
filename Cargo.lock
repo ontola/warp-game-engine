@@ -6585,6 +6585,7 @@ dependencies = [
  "app",
  "assets",
  "audio",
+ "bytemuck",
  "directories",
  "gamenight",
  "glam 0.31.1",

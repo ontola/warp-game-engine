@@ -618,7 +618,8 @@ impl Assembly {
             return Err("expanded foliage source exceeds explicit geometry/memory limits".into());
         }
         for material in &self.materials {
-            if material.layer != -1 || material.flags & !(TWO_SIDED | THIN_FOLIAGE) != 0 || material.metal != 0.0
+            let bark = material.layer == crate::scene::BARK_LAYER && material.flags & THIN_FOLIAGE == 0;
+            if (material.layer != -1 && !bark) || material.flags & !(TWO_SIDED | THIN_FOLIAGE) != 0 || material.metal != 0.0
                 || !material.roughness.is_finite() || !(0.0..=1.0).contains(&material.roughness)
                 || material.tint.iter().any(|x| !x.is_finite() || !(0.0..=1.0).contains(x)) {
                 return Err("procedural foliage requires finite opaque untextured materials".into());

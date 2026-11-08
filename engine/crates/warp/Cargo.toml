@@ -19,6 +19,7 @@ gamenight = { path = "../gamenight" }
 assets = { path = "../assets" }
 kern.workspace = true
 glam = "0.31"
+bytemuck = "1"
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

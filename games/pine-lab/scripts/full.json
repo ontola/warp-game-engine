@@ -1,0 +1,11 @@
+{ "size": [960, 540],
+  "steps": [
+    { "cmd": "lua state.tune.scene.count = 2; state.tune.scene.oldest = 5", "ticks": 1 },
+    { "press": ["north"], "ticks": 1, "note": "F: full cook" },
+    { "expect": "/state/full", "equals": true },
+    { "until": "/state/status/shown", "equals": 2, "max_ticks": 2000000, "note": "voxel cooks done" },
+    { "cmd": "lua state.cam.pos = vector.create(4, 1.2, 5); state.cam.pitch = -0.1; state.cam.yaw = 0", "ticks": 60 },
+    { "capture": "full.png" },
+    { "expect": "/errors", "equals": [] }
+  ]
+}

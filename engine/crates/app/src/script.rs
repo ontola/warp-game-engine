@@ -282,6 +282,8 @@ fn run_steps(game: &mut dyn Game, mut headless: Option<&mut Headless>, script: &
             let [game_ms, render_ms, hud_ms, present_ms, wait_ms, wall_ms] = &mut cols;
             line["bench"] = json!({ "frames": n, "max_height": step.bench_height, "game_ms": stat(game_ms), "render_ms": stat(render_ms), "hud_ms": stat(hud_ms),
                 "present_ms": stat(present_ms), "gpu_wait_ms": stat(wait_ms), "wall_ms": stat(wall_ms), "hud_vertices": vertices.0, "hud_text_runs": vertices.1 });
+            // What the GPU forest selected in the last frame (slots, cut scale, limits).
+            if let Ok(Some(d)) = headless.forest_diagnostics() { line["bench"]["forest"] = serde_json::to_value(&d).unwrap_or_default(); }
         }
         if let Some(name) = &step.capture {
             let headless = headless.as_deref_mut().ok_or("capture needs a renderer")?;

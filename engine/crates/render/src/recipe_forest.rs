@@ -23,9 +23,25 @@ pub const PROXY_LEVELS: u32 = 6;
 
 /// The aggregate cook every recipe tree uses: each branch group also gets
 /// voxel levels.
+/// KERN_BRANCH_CELL_M (experiment) sets the finest branch voxel cell: each
+/// halving below the default 7.5 cm adds a level (so the coarsest stays) and
+/// four times the total brick and voxel caps, so the cut can stay on voxels
+/// closer in before it falls back to the source mesh. A group still keeps 128
+/// bricks per level (GPU cluster), so only groups small enough get the finer
+/// cells; larger ones start coarser, as before.
 pub fn aggregate_config() -> Config {
-    Config { max_placements: 8192, max_source_triangles: 40_000_000, max_samples: 150_000_000, triangle_refinements: true,
-        max_reference_voxels: 262_144, max_diagnostic_steps: 80_000_000, ..Default::default() }
+    let base = Config { max_placements: 8192, max_source_triangles: 40_000_000, max_samples: 150_000_000, triangle_refinements: true,
+        max_reference_voxels: 262_144, max_diagnostic_steps: 80_000_000, ..Default::default() };
+    let cell = std::env::var("KERN_BRANCH_CELL_M").ok().and_then(|v| v.parse::<f32>().ok())
+        .filter(|c| (0.01..base.reference_cell_size).contains(c));
+    let Some(cell) = cell else { return base };
+    let extra = (base.reference_cell_size / cell).log2().ceil().max(0.0) as u32;
+    let area = 4usize.pow(extra);
+    Config { reference_cell_size: cell, levels: base.levels + extra,
+        max_total_bricks: base.max_total_bricks * area,
+        max_reference_voxels: base.max_reference_voxels * area * 2, max_output_voxels: base.max_output_voxels * area,
+        max_samples: base.max_samples * area as u64, max_diagnostic_steps: base.max_diagnostic_steps * area as u64,
+        max_scratch_bytes: base.max_scratch_bytes * area, max_build_bytes: base.max_build_bytes * area * 2, ..base }
 }
 
 /// The whole-plant proxy cook: 10 cm reference cells.
@@ -69,6 +85,69 @@ pub fn cook_variants(variants: &[(WoodyRecipe, u64)], cache: Option<&Path>) -> R
     })
 }
 
+/// Bump when plant_growth or plant_growth_assembly change what they build:
+/// the cook cache key holds their inputs, not their code.
+const GROWN_ASSEMBLY_VERSION: u32 = 13;
+
+/// A grown limb holds many more parts than a recipe branch: sixteen times
+/// the reference cells, scratch and samples, and 4 GiB of build memory per group.
+fn grown_config(base: Config) -> Config {
+    // The root's whole-subtree cook takes every placement: room for all a
+    // grown plant may have. Errors are estimated (KERN_MEASURED_ERRORS=1
+    // measures them with rays, minutes for an old tree).
+    Config { max_placements: base.max_placements.max(crate::plant_growth_assembly::limits().max_instances),
+        max_reference_voxels: base.max_reference_voxels * 16, max_scratch_bytes: base.max_scratch_bytes * 16,
+        max_samples: base.max_samples * 16, max_source_triangles: base.max_source_triangles * 4,
+        max_diagnostic_steps: base.max_diagnostic_steps * 16, max_build_bytes: base.max_build_bytes.max(4 << 30),
+        estimated_errors: std::env::var("KERN_MEASURED_ERRORS").map_or(true, |v| v == "0"), ..base }
+}
+
+/// One grown plant without the cache, and the milliseconds of each stage:
+/// grow, assemble, cook_aggregate (source + voxel levels per branch and
+/// geometry group) and cook_proxy (the whole-plant voxel pyramid).
+pub fn cook_grown_stages(species: crate::plant_growth::Species, age: u32, seed: u64, parts: &crate::plant_growth_assembly::Parts,
+    look: crate::plant_growth_assembly::Look) -> Result<(CookedPlant, [f64; 4]), String> {
+    let (config, proxy) = (grown_config(aggregate_config()), grown_config(proxy_config()));
+    let mut at = web_time::Instant::now();
+    let mut lap = || { let ms = at.elapsed().as_secs_f64() * 1000.0; at = web_time::Instant::now(); ms };
+    let plant = crate::plant_growth::grow(&species, age, seed);
+    let grown = lap();
+    let (assembly, _) = crate::plant_growth_assembly::assemble(&plant, parts, look, seed, crate::plant_growth_assembly::limits())?;
+    let assembled = lap();
+    let mut cooked = CookedPlant::cook_aggregate(&assembly, config)?;
+    let aggregated = lap();
+    cooked.cook_proxy(&assembly, proxy, PROXY_LEVELS)?;
+    Ok((cooked, [grown, assembled, aggregated, lap()]))
+}
+
+/// Cook grown plants: each (species, age, seed) grows by its rules and is
+/// assembled from `parts`, then cooked like any recipe tree. Age changes the
+/// counts and placement of parts, never their geometry.
+pub fn cook_grown(variants: &[(crate::plant_growth::Species, u32, u64)], parts: &crate::plant_growth_assembly::Parts,
+    look: crate::plant_growth_assembly::Look, cache: Option<&Path>) -> Result<Vec<Cooked>, String> {
+    // A grown limb carries far more parts than a recipe branch: give each
+    // group the proxy's working memory.
+    let (config, proxy) = (grown_config(aggregate_config()), grown_config(proxy_config()));
+    let limits = crate::plant_growth_assembly::limits();
+    crate::par::scope(|scope| {
+        let _ = scope;
+        variants.iter().map(|&(species, age, seed)| (|| -> Result<Cooked, String> {
+            let started = web_time::Instant::now();
+            let cook = || cook_grown_stages(species, age, seed, parts, look).map(|(c, _)| c);
+            let (plant, loaded) = match cache {
+                Some(dir) => {
+                    // The growth and assembly code is part of the cook code key.
+                    let what = format!("grown v{GROWN_ASSEMBLY_VERSION} {species:?} {age} {seed} {look:?} {:?} {config:?} {proxy:?} {PROXY_LEVELS} {limits:?}",
+                        parts.stems.iter().chain(std::iter::once(&parts.collar)).chain(&parts.tufts).map(|p| (p.id, p.vertices.len(), p.indices.len())).collect::<Vec<_>>());
+                    CookedPlant::cached(dir, &what, cook)?
+                }
+                None => (cook()?, false),
+            };
+            Ok(Cooked { plant, loaded, millis: started.elapsed().as_secs_f64() * 1000.0 })
+        })()).collect()
+    })
+}
+
 /// Cook grass into the same shared source/voxel/articulated asset contract as
 /// woody species. No runtime meadow buffers or grass-only residency are created.
 /// Geometry is explicit ribbon blades; voxel optics derive from those surfaces.
@@ -103,15 +182,26 @@ pub fn cook_meadow_cells(variants:&[(u64,f32)],cache:Option<&Path>)->Result<Vec<
         let mut parameters=Parameters::meadow_patch(seed);parameters.season=season;
         let cook=|| {
             let source=foliage_assembly::generate_meadow_patch_budget(parameters,MeadowBladeBudget::Blades120,Limits::meadow_patch())?;
+            // Patches sit jittered within their third of the cell, each at
+            // its own turn: on the bare 0.5 m lattice the patches' feathered
+            // edges lined up into stripes across the whole field from above
+            // (Joep, playtest 4). Each patch is uniform over its whole third
+            // (+-0.25 m): a uniform jitter as wide as the 0.5 m spacing cancels
+            // that lattice's frequency and its harmonics exactly, where the
+            // earlier +-0.15 m left half of it (measured lattice at 4-7x noise
+            // with variants and turns on).
+            let unit=|i:u64,k:u64|{let mut z=seed^(i<<32)^k.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+                z=(z^(z>>30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);z=(z^(z>>27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                ((z^(z>>31))>>40) as f32/16_777_216.0};
             let members=(0..9).map(|i|crate::vegetation_cell::Placement {id:i+1,
-                rest:Mat4::from_rotation_translation(glam::Quat::from_rotation_y(i as f32*2.399963),
-                    Vec3::new((i%3)as f32*0.5-0.5,0.,(i/3)as f32*0.5-0.5))}).collect::<Vec<_>>();
+                rest:Mat4::from_rotation_translation(glam::Quat::from_rotation_y(unit(i,1)*std::f32::consts::TAU),
+                    Vec3::new((i%3)as f32*0.5-0.5+(unit(i,2)-0.5)*0.5,0.,(i/3)as f32*0.5-0.5+(unit(i,3)-0.5)*0.5))}).collect::<Vec<_>>();
             let cell=crate::vegetation_cell::compose(seed,&source,&members,Limits {max_branches:64,max_instances:1080,..Limits::default()})?;
             let mut plant=CookedPlant::cook_aggregate(&cell,config)?;
             plant.cook_proxy(&cell,config,7)?;Ok(plant)
         };
         let (plant,loaded)=match cache {
-            Some(path)=>CookedPlant::cached(path,&format!("meadow cell 3x3 {parameters:?} {config:?} levels7"),cook)?,
+            Some(path)=>CookedPlant::cached(path,&format!("meadow cell 3x3 stratified {parameters:?} {config:?} levels7"),cook)?,
             None=>(cook()?,false),
         };
         Ok(Cooked {plant,loaded,millis:started.elapsed().as_secs_f64()*1000.})

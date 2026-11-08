@@ -28,6 +28,8 @@ struct Light {
     night_stars: vec4<f32>, // peak radiance, zenith optical depth, zero-sun fast path, seed
     anim: vec4<f32>,        // x: seconds for animated procedural materials, y: emission scale, z: radiance shown as white
     fog_sampling: vec4<f32>, // x: sequence phase, y: temporal accumulation enabled, z: diffuse room return (lux)
+    near_levels_view_proj: array<mat4x4<f32>, 3>, // sun clipmap levels 1..3 (frame.rs near_levels)
+    near_levels: vec4<f32>, // x: levels drawn
 };
 
 struct Cluster {
@@ -169,7 +171,7 @@ fn sun_pages_counts() -> vec4<u32> { return scene_tables[scene_tables[2].y + 5u]
 fn sun_page_entry(i: u32) -> vec4<i32> { return bitcast<vec4<i32>>(scene_tables[scene_tables[2].y + 6u + i]); }
 @group(1) @binding(13) var canopy_tex: texture_3d<f32>;
 @group(1) @binding(14) var canopy_sampler: sampler;
-@group(1) @binding(15) var near_shadow_tex: texture_depth_2d;
+@group(1) @binding(15) var near_shadow_tex: texture_depth_2d_array;
 // The shade pass's one read-write buffer (shade_scratch.rs). The texture
 // binding budget is already full, so certified meadow source IDs are copied
 // into `words` (two words per pixel, rows of row_pairs) and the opaque
@@ -197,6 +199,12 @@ override FEATURE_FOLIAGE_PAGES: bool = true;
 override FEATURE_MEADOW: bool = true;
 override FEATURE_TERRAIN: bool = true;
 override FEATURE_FOLIAGE: bool = true;
+// Sun that reaches a source needle through its own brush, on average. The sun
+// maps resolve a voxel crown cell, not the needles of one brush, so source
+// brushes went unshaded and read ~1.55x brighter than the same crown as
+// voxels, which carry (1-exp(-tau))/tau per cell (Joep, 8 November: near
+// crowns pale, darker as trees switch to voxels).
+override NEEDLE_BRUSH_OWN: f32 = 0.42;
 // Spot and local lights (Renderer::set_headlights, set_local_lights). A frame
 // with none uses a pipeline without their loop: fewer registers per pixel.
 override FEATURE_LOCAL_LIGHTS: bool = true;
@@ -240,6 +248,61 @@ const VOXEL_SKY_LIFT: f32 = 1.0;
 // A voxel pixel: the same sun, sky, contact and fog terms as a procedural
 // leaf in `shade`, from the voxel's albedo, picked normal lobe and leaf
 // fraction instead of a triangle's.
+// How deep a point lies inside the canopy along the sun, from the first
+// caster a sun map holds above it: metres between that depth and the
+// point's own (the map is orthographic, so depth is linear along the sun).
+// Branch voxel volumes carry no crown of their own (only whole-plant
+// proxies march one), so at 25-200 m crowns lit as if every leaf faced the
+// sun: ~2x the same tree as a mesh (Mancave tree series, 6 November).
+// Off: wherever this estimate applied, a sun map (clipmap or shared) holds
+// the crown's own voxels too and already shades it from inside, so the two
+// counted its depth twice: a dark band of trees between the clipmap and the
+// shared map's edge (Joep playtest 5; Mancave band spot 0.62 of far trees at
+// 0.35). Mesh and voxel crowns now take one lighting source, the maps.
+const CROWN_EXTINCTION_PER_M: f32 = 0.0;
+fn crown_depth_in(map: texture_depth_2d, projection: mat4x4<f32>, p: vec3<f32>) -> f32 {
+    let c = projection * vec4<f32>(p, 1.0);
+    let uv = vec2<f32>(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
+    if any(uv <= vec2<f32>(0.0)) || any(uv >= vec2<f32>(1.0)) || c.z < 0.0 || c.z > 1.0 { return -1.0; }
+    let rate = abs(dot(vec3<f32>(projection[0].z, projection[1].z, projection[2].z), light.sun_dir.xyz));
+    if rate <= 1e-9 { return -1.0; }
+    let size = vec2<f32>(textureDimensions(map));
+    // A 3x3 grid of taps 0.6 m apart, bilinear in between: the casters are
+    // voxel cells half a metre wide, and one texel per point printed them
+    // as squares across the crown that flickered as the camera moved
+    // (Joep, playtest 3).
+    let texel_m = 2.0 / max(length(vec3<f32>(projection[0].x, projection[1].x, projection[2].x)) * size.x, 1e-9);
+    let step = 0.6 / texel_m;
+    let f = uv * size - 0.5;
+    let base = floor(f);
+    let frac = f - base;
+    var sum = 0.0;
+    var weight = 0.0;
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let w = (2.0 - abs(f32(x))) * (2.0 - abs(f32(y)));
+            let o = vec2<f32>(f32(x), f32(y)) * step;
+            let t = clamp(base + o, vec2<f32>(0.0), size - 2.0);
+            let i = vec2<i32>(t);
+            let d00 = textureLoad(map, i, 0);
+            let d10 = textureLoad(map, i + vec2<i32>(1, 0), 0);
+            let d01 = textureLoad(map, i + vec2<i32>(0, 1), 0);
+            let d11 = textureLoad(map, i + vec2<i32>(1, 1), 0);
+            let d = mix(mix(d00, d10, frac.x), mix(d01, d11, frac.x), frac.y);
+            sum += w * abs(c.z - d) / rate;
+            weight += w;
+        }
+    }
+    return sum / weight;
+}
+// Metres below the first caster along the sun (0 where no map covers p).
+// The shared map only: switching to the near map at a radius round the
+// camera made a crown's darkness jump as you walked.
+fn crown_depth(p: vec3<f32>) -> f32 {
+    let depth = crown_depth_in(shadow_tex, light.shadow_view_proj, p);
+    return max(depth - 0.25, 0.0);
+}
+
 fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     let ndc = vec2<f32>((f32(px.x) + 0.5) / view.size.x * 2.0 - 1.0, 1.0 - (f32(px.y) + 0.5) / view.size.y * 2.0);
     let hit = view.inv_view_proj * vec4<f32>(ndc, depth, 1.0);
@@ -253,7 +316,19 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     var n = normalize(vec3<f32>(unpack2x16float(g.z), unpack2x16float(g.w & 0xffffu).x));
     let rough = clamp(f32((g.y >> 16u) & 255u) / 255.0, 0.04, 1.0);
     let leaf = f32(g.y >> 24u) / 255.0;
-    let own = f32((g.w >> 16u) & 255u) / 255.0;
+    // A proxy's own march, or for branch volumes (own 1) the canopy depth
+    // the sun maps see above this point; the smaller of the two. The sky
+    // term counts at most 1.5 m of it: grass under a tree is metres below
+    // the crown, and lost its sky fill too (shadows went nearly black).
+    let marched = f32((g.w >> 16u) & 255u) / 255.0;
+    let canopy = select(crown_depth(p), 0.0, (g.w >> 24u) == 255u);
+    // Inside the sun clipmap the maps hold every caster (mesh leaves and
+    // voxel cells) at a fine texel, so the crown shades itself through
+    // shadow_at_surface exactly as a mesh tree does: one lighting source at
+    // every distance. The canopy estimate only covers the gap beyond it.
+    let estimate = 1.0 - sun_clipmap_cover(p);
+    let own = min(marched, exp(-CROWN_EXTINCTION_PER_M * canopy * estimate));
+    let own_sky = min(marched, exp(-CROWN_EXTINCTION_PER_M * min(canopy, 1.5) * estimate));
     let exit = f32(g.w >> 24u) / 4.0;
     let l = light.sun_dir.xyz;
     let v = -dir;
@@ -271,18 +346,40 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     // neighbours past the shared map too: crowns keep the maps' pairing.
     let anchored = far_sun.params.z > 0.5 && far_sun.params.w < 0.5;
     if sun_coverage_fade(light.shadow_view_proj, p, 0.45) < 1.0 || anchored {
-        others = shadow_at_surface(p, n * sign(dot(n, l) + 1e-4), vec3<f32>(0.0), 0.0);
+        // Lift the receiver toward the sun by most of a sun-map voxel cell:
+        // the pixel lies on its own cell's splat, which the map holds at
+        // the same depth, so every crown half-shadowed itself. With cells
+        // growing per clipmap level that darkened mid-distance trees most
+        // (Joep, playtest 5).
+        others = shadow_at_surface(p + l * 0.75 * sun_voxel_cell(p), n * sign(dot(n, l) + 1e-4), vec3<f32>(0.0), 0.0);
     } else if FEATURE_WORLD_TERRAIN && sun_visibility_required() {
         others = world_terrain_sun_visibility(p, n, 0.0);
+    } else if far_sun.params.z > 0.5 && far_sun.params.w < 0.5 && sun_coverage_fade(far_sun.view_proj, p, far_sun.params.y) < 1.0 {
+        // Past the shared map the ground reads the far map; the crowns on it
+        // did not, and caught full sun on a mountain's shadow side, ~3x the
+        // ground beneath them (Mancave sky test, Joep playtest 5). One
+        // compare tap, lifted a few metres up the ray past the crown's own
+        // coarse copy; no march.
+        let c = far_sun.view_proj * vec4<f32>(p + l * 3.0, 1.0);
+        others = textureSampleCompareLevel(far_sun_tex, shadow_samp, c.xy * vec2<f32>(0.5, -0.5) + 0.5, 0, c.z);
     }
     // Out there its neighbours' shade is folded into its own: the plant's
     // full transmittance instead of the square root the maps pair with.
     var outside = sun_coverage_fade(light.shadow_view_proj, p, 0.45);
     if anchored {outside *= sun_coverage_fade(far_sun.view_proj, p, far_sun.params.y);}
-    var shadow = mix(1.0, others * mix(sqrt(own), own * own, outside), light.sun_color.w);
+    // Inside the maps the crown's own transmittance counts in full: with
+    // sqrt(own) (the maps were meant to supply the rest, but at 1 m cells and
+    // a texel of bias they barely shade a crown) voxel crowns caught ~1.4x
+    // the sun of the same tree as a mesh (Mancave tree series, 6 November).
+    var shadow = mix(1.0, others * mix(own, own * own, outside), light.sun_color.w);
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow;
-    let sky_vis = sky_visibility(p + n * VOXEL_SKY_LIFT, n);
-    let back_sky_vis = sky_visibility(p - n * VOXEL_SKY_LIFT, -n);
+    // Sky reaches a cell through its own crown too. sky_visibility only sees
+    // what lies past the lift, so inner cells lit as if under open sky and
+    // a voxel crown read ~3.5x brighter than the same tree as a mesh (Joep,
+    // 6 November). The crown's sun transmittance stands in for the sky's.
+    let crown_sky = 0.25 + 0.75 * sqrt(own_sky);
+    let sky_vis = sky_visibility(p + n * VOXEL_SKY_LIFT, n) * crown_sky;
+    let back_sky_vis = sky_visibility(p - n * VOXEL_SKY_LIFT, -n) * crown_sky;
     let refl = reflect(dir, n);
     // No screen-space AO: a voxel's blocky depth darkened its own crown to
     // 60 % of the leaves' sky light (forest_ladder, sun_lux=0).
@@ -1307,6 +1404,85 @@ fn shadow_filter(map: texture_depth_2d, projection: mat4x4<f32>, world_texel: f3
     return lit / 9.0;
 }
 
+// The same on a sun clipmap level (near_shadow_tex layer `layer`).
+fn shadow_filter_plane_layer(map: texture_depth_2d_array, layer: i32, projection: mat4x4<f32>, world_texel: f32, p: vec3<f32>, plane_n: vec3<f32>) -> f32 {
+    let c = projection * vec4<f32>(p, 1.0);
+    let uv = c.xy * vec2<f32>(0.5, -0.5) + 0.5;
+    if !all(abs(c) < vec4<f32>(1e20)) || any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || c.z < 0.0 || c.z > 1.0 { return 1.0; }
+    let size = vec2<i32>(textureDimensions(map));
+    let q = uv * vec2<f32>(size) - 0.5;
+    let base = vec2<i32>(floor(q));
+    let f = fract(q);
+    let wx = vec4<f32>(1.0-f.x, 1.0, 1.0, f.x) / 3.0;
+    let wy = vec4<f32>(1.0-f.y, 1.0, 1.0, f.y) / 3.0;
+    let row_x = vec3<f32>(projection[0].x, projection[1].x, projection[2].x);
+    let row_y = vec3<f32>(projection[0].y, projection[1].y, projection[2].y);
+    let row_z = vec3<f32>(projection[0].z, projection[1].z, projection[2].z);
+    let denominator = dot(plane_n, -normalize(row_z));
+    var gradient = vec2<f32>(0.0);
+    // Zero means no actual triangle plane was supplied (volume/transparency).
+    // A nearly sun-parallel plane has no stable depth function; use a centred
+    // comparison, never an arbitrary metre-scale bias or unsafe division.
+    if all(abs(plane_n) < vec3<f32>(1e10)) && dot(plane_n,plane_n) > 1e-12
+        && abs(denominator) > 1e-4 && dot(row_x,row_x) > 1e-20 && dot(row_y,row_y) > 1e-20 {
+        gradient = vec2<f32>(dot(plane_n,normalize(row_x)), -dot(plane_n,normalize(row_y)))
+            * (world_texel * length(row_z) / denominator);
+    }
+    // f32 projection roundoff, in normalized depth. Unlike slope bias this
+    // grows only with arithmetic precision, not the receiving/casting slope.
+    let epsilon = 4.7683716e-7 * (dot(abs(row_z),abs(p)) + abs(projection[3].z) + 1.0);
+    let clipped = sun_receiver_tri_set && dot(plane_n,plane_n)>1e-12;
+    var triangle:array<vec2<f32>,3>;
+    var orientation=0.0;
+    if clipped {
+        for(var i=0;i<3;i++) {
+            let vertex=projection*vec4<f32>(sun_receiver_tri[i],1.0);
+            triangle[i]=(vertex.xy*vec2<f32>(0.5,-0.5)+0.5)*vec2<f32>(size)-0.5;
+        }
+        orientation=sign(shadow_cross2(triangle[1]-triangle[0],triangle[2]-triangle[0]));
+    }
+    var lit = 0.0;
+    var total = 0.0;
+    for (var y=0; y<4; y++) { for (var x=0; x<4; x++) {
+        let pixel = clamp(base + vec2<i32>(x-1,y-1), vec2<i32>(0), size-1);
+        // A plane is valid only inside its actual triangle. Extrapolating it
+        // into a neighbouring concave face creates false triangle-wire shadow
+        // even with identical source geometry and infinite numeric precision.
+        if clipped && (orientation==0.0 || !shadow_triangle_contains(vec2<f32>(pixel),triangle[0],triangle[1],triangle[2],orientation)) { continue; }
+        let delta = vec2<f32>(pixel) - q;
+        let reference = c.z + dot(gradient,delta) - epsilon;
+        let depth = textureLoad(map,pixel,layer,0);
+        let weight=wx[x]*wy[y];
+        lit += weight * select(0.0,1.0,reference <= depth);
+        total += weight;
+    }}
+    if total>1e-8 {return lit/total;}
+    // Subtexel / edge-on triangles may contain no shadow-map sample centre.
+    // Fall back to ONE nearest depth sample at the actual receiver depth.
+    // This has <=half-texel quantization per axis and may alias; it cannot
+    // invent an arbitrarily extrapolated plane or force an unoccluded result.
+    let nearest=clamp(vec2<i32>(floor(q+0.5)),vec2<i32>(0),size-1);
+    return select(0.0,1.0,c.z-epsilon<=textureLoad(map,nearest,layer,0));
+}
+
+fn shadow_filter_layer(map: texture_depth_2d_array, layer: i32, projection: mat4x4<f32>, world_texel: f32, p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
+    if light.near_shadow.w > 0.5 { return shadow_filter_plane_layer(map,layer,projection,world_texel,p,plane_n); }
+    let biased = p + n * world_texel * 1.5 + light.sun_dir.xyz * world_texel;
+    let c = projection * vec4<f32>(biased, 1.0);
+    let uv = vec2<f32>(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
+    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || c.z < 0.0 || c.z > 1.0 {
+        return 1.0;
+    }
+    let texel = 1.0 / vec2<f32>(textureDimensions(map));
+    var lit = 0.0;
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            lit += textureSampleCompareLevel(map, shadow_samp, uv + vec2<f32>(f32(x), f32(y)) * texel, layer, c.z);
+        }
+    }
+    return lit / 9.0;
+}
+
 fn sun_coverage_fade(projection: mat4x4<f32>, p: vec3<f32>, blend_start: f32) -> f32 {
     let c = projection * vec4<f32>(p, 1.0);
     let edge = max(abs(c.x), abs(c.y));
@@ -1404,29 +1580,77 @@ fn distant_sun_visibility(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
 // Detail follows each camera but its texels remain fixed in world space.
 // Blend the shared maps before adding the near detail, so a camera
 // near the shared-map edge cannot overwrite a valid car shadow with foliage.
-fn shadow_detail_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
-    var weight = 0.0;
-    if light.near_shadow.z > 0.5 {
-        let c = light.near_shadow_view_proj * vec4<f32>(p, 1.0);
-        if c.z >= 0.0 && c.z <= 1.0 {
-            weight = 1.0 - smoothstep(light.near_shadow.y, 1.0, max(abs(c.x), abs(c.y)));
+fn near_level_projection(k: i32) -> mat4x4<f32> {
+    if k == 0 { return light.near_shadow_view_proj; }
+    return light.near_levels_view_proj[k - 1];
+}
+// How much sun clipmap level k covers p: round, wide fade (light-space
+// radius, 0.45 to 0.95 of the half extent): a square edge 20 % wide showed
+// the map's outline on the ground where sharp voxel shadows met the soft
+// shared map.
+fn near_level_weight(k: i32, p: vec3<f32>) -> f32 {
+    let c = near_level_projection(k) * vec4<f32>(p, 1.0);
+    if c.z < 0.0 || c.z > 1.0 { return 0.0; }
+    return 1.0 - smoothstep(light.near_shadow.y, 0.95, length(c.xy));
+}
+fn near_level_visibility(k: i32, p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
+    let texel = light.near_shadow.x * f32(1 << u32(k));
+    return shadow_filter_layer(near_shadow_tex, k, near_level_projection(k), texel, p, n, plane_n);
+}
+// Voxel cell size the sun map that shades p splats (frame.rs
+// near_level_voxel_m, SHARED_SUN_VOXEL_M): the finest clipmap level that
+// covers p, else the shared map's.
+fn sun_voxel_cell(p: vec3<f32>) -> f32 {
+    let levels = select(0, i32(light.near_levels.x), light.near_shadow.z > 0.5);
+    for (var k = 0; k < levels; k++) {
+        if near_level_weight(k, p) > 0.5 {
+            return 0.25 * pow(1.41421356, f32(k)) * select(1.0, 1.42, k >= 3);
         }
     }
-    if weight >= 1.0 {
-        return shadow_filter(near_shadow_tex, light.near_shadow_view_proj, light.near_shadow.x, p, n, plane_n);
+    return 0.5;
+}
+// How fully the sun clipmap's levels cover p (0 when near maps are off).
+fn sun_clipmap_cover(p: vec3<f32>) -> f32 {
+    let levels = select(0, i32(light.near_levels.x), light.near_shadow.z > 0.5);
+    var cover = 0.0;
+    for (var k = 0; k < levels; k++) { cover = max(cover, near_level_weight(k, p)); }
+    return cover;
+}
+fn shadow_detail_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
+    // The finest clipmap level that covers p in full; coarser ones only
+    // matter outside it.
+    let levels = select(0, i32(light.near_levels.x), light.near_shadow.z > 0.5);
+    var full = levels;
+    var weights = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
+    for (var k = 0; k < levels; k++) {
+        weights[k] = near_level_weight(k, p);
+        if weights[k] >= 1.0 { full = k; break; }
     }
-    var far = shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p, n, plane_n);
-    // The outer map uses actual alpha-tested tree geometry, not the coarse
-    // density field that wrongly buried sunlit crowns in their own shadow.
-    // Over the outer 55 % of the map: sharp tree shadows thin out into the
-    // coarse distant field instead of meeting it at a line.
-    let coverage_fade = sun_coverage_fade(light.shadow_view_proj, p, 0.45);
-    if coverage_fade > 0.0 && (far_sun.params.z > 0.5 || sun_pages_counts().z != 0u || gi.vol_dims.w != 0u) {
-        far = mix(far, distant_sun_visibility(p,n,plane_n), coverage_fade);
+    var vis = 1.0;
+    if full < levels {
+        // The clipmap's sun box is shallow: a ridge or forest far up the sun
+        // ray lies outside it, so trees on a mountain's shadow side caught
+        // full sun (Mancave sky test, Joep playtest 5). The shared map holds
+        // those; read it 3 m up the ray so its coarse copy of this very
+        // crown does not shade it again.
+        vis = min(near_level_visibility(full, p, n, plane_n),
+            shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p + light.sun_dir.xyz * 3.0, n, plane_n));
+    } else {
+        vis = shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p, n, plane_n);
+        // The outer map uses actual alpha-tested tree geometry, not the coarse
+        // density field that wrongly buried sunlit crowns in their own shadow.
+        // Over the outer 55 % of the map: sharp tree shadows thin out into the
+        // coarse distant field instead of meeting it at a line.
+        let coverage_fade = sun_coverage_fade(light.shadow_view_proj, p, 0.45);
+        if coverage_fade > 0.0 && (far_sun.params.z > 0.5 || sun_pages_counts().z != 0u || gi.vol_dims.w != 0u) {
+            vis = mix(vis, distant_sun_visibility(p,n,plane_n), coverage_fade);
+        }
     }
-    if weight <= 0.0 { return far; }
-    let detail = shadow_filter(near_shadow_tex, light.near_shadow_view_proj, light.near_shadow.x, p, n, plane_n);
-    return mix(far, detail, weight);
+    // Finer levels that cover p in part, coarsest first.
+    for (var k = min(full, levels) - 1; k >= 0; k--) {
+        if weights[k] > 0.0 { vis = mix(vis, near_level_visibility(k, p, n, plane_n), weights[k]); }
+    }
+    return vis;
 }
 
 // The renderer reserves night_stars.z for this execution policy. Diagnostics
@@ -1811,6 +2035,98 @@ fn rock_surface(l: i32, p: vec3<f32>, n: vec3<f32>, tw: vec3<f32>) -> RockSurfac
     return result;
 }
 
+struct Bark { albedo: vec3<f32>, normal: vec3<f32>, rough: f32, ao: f32 }
+
+fn bark_hash(p: vec3<i32>) -> f32 {
+    var x = bitcast<u32>(p.x) * 0x8da6b343u ^ bitcast<u32>(p.y) * 0xd8163841u ^ bitcast<u32>(p.z) * 0xcb1ab31fu;
+    x = (x ^ (x >> 16u)) * 0x7feb352du;
+    x = (x ^ (x >> 15u)) * 0x846ca68bu;
+    return f32(x >> 8u) / 16777216.0;
+}
+
+fn bark_noise(p: vec3<f32>) -> f32 {
+    let i = vec3<i32>(floor(p));
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = mix(mix(bark_hash(i), bark_hash(i + vec3<i32>(1, 0, 0)), u.x), mix(bark_hash(i + vec3<i32>(0, 1, 0)), bark_hash(i + vec3<i32>(1, 1, 0)), u.x), u.y);
+    let b = mix(mix(bark_hash(i + vec3<i32>(0, 0, 1)), bark_hash(i + vec3<i32>(1, 0, 1)), u.x), mix(bark_hash(i + vec3<i32>(0, 1, 1)), bark_hash(i + vec3<i32>(1, 1, 1)), u.x), u.y);
+    return mix(a, b, u.z);
+}
+
+/// Distance to the nearest cell edge of a 3D Voronoi pattern (x) and a
+/// per-cell random (y).
+fn bark_cells(q: vec3<f32>) -> vec2<f32> {
+    let c = vec3<i32>(floor(q));
+    var f1 = 1e9;
+    var f2 = 1e9;
+    var id = 0.0;
+    for (var z = -1; z <= 1; z++) {
+        for (var y = -1; y <= 1; y++) {
+            for (var x = -1; x <= 1; x++) {
+                let k = c + vec3<i32>(x, y, z);
+                let o = vec3<f32>(bark_hash(k), bark_hash(k + vec3<i32>(71, 13, 5)), bark_hash(k + vec3<i32>(9, 57, 33)));
+                let d = length(vec3<f32>(k) + 0.15 + 0.7 * o - q);
+                if d < f1 {
+                    f2 = f1;
+                    f1 = d;
+                    id = o.x;
+                } else if d < f2 {
+                    f2 = d;
+                }
+            }
+        }
+    }
+    return vec2<f32>(f2 - f1, id);
+}
+
+/// Jeffrey pine bark in plate units: long vertical ridges (Voronoi cells
+/// six times taller than wide) split by deep furrows, each ridge broken
+/// into jigsaw subplates by finer cracks. x: height (1 on a plate, 0 deep in
+/// a furrow); y: per-ridge random; z: the furrow (1 deep in it); w: the
+/// rim of a peeling flake (1 on it).
+fn bark_height(q: vec3<f32>) -> vec4<f32> {
+    let warp = vec3<f32>(bark_noise(q * 1.7), bark_noise(q * 1.7 + 7.3), bark_noise(q * 1.7 + 3.1)) - 0.5;
+    let ridge = bark_cells(q * vec3<f32>(1.0, 0.16, 1.0) + warp * vec3<f32>(0.35, 0.1, 0.35));
+    // Wide, ragged furrows: the edge distance wobbles with fine noise.
+    let ragged = ridge.x + (bark_noise(q * vec3<f32>(11.0, 4.0, 11.0)) - 0.5) * 0.06;
+    let furrow = 1.0 - smoothstep(0.03, 0.12, ragged);
+    // Subplates: ridged noise makes wandering cracks across each ridge.
+    let s = q * vec3<f32>(2.6, 1.6, 2.6) + warp * 0.8;
+    let crack = 1.0 - smoothstep(0.0, 0.07, abs(2.0 * bark_noise(s) - 1.0));
+    // Layered flakes: contour terraces of a warped field give rounded,
+    // puzzle-like lobes, each a thin step above the one below.
+    let lobes = bark_noise(q * vec3<f32>(3.2, 2.2, 3.2) + warp * 1.4) * 4.0;
+    let layer = fract(lobes);
+    let rim = 1.0 - smoothstep(0.0, 0.1, layer);
+    let plate = (1.0 - furrow) * (0.72 + 0.1 * layer + 0.06 * bark_noise(q * vec3<f32>(9.0, 5.0, 9.0)) - 0.15 * crack);
+    return vec4<f32>(plate, ridge.y, furrow, rim * (1.0 - furrow));
+}
+
+/// Cinnamon to salmon plates, grey-pink where weathered, between near-black
+/// furrows full of orange-brown fibres; relief from the height field.
+fn bark_surface(p: vec3<f32>, n: vec3<f32>, plate: f32) -> Bark {
+    let q = p / max(plate, 0.01);
+    let h = bark_height(q);
+    let t1 = normalize(cross(n, vec3<f32>(0.0, 1.0, 0.0)) + vec3<f32>(1e-4, 0.0, 0.0));
+    let t2 = cross(n, t1);
+    let e = 0.04;
+    let d1 = (bark_height(q + t1 * e).x - h.x) / e;
+    let d2 = (bark_height(q + t2 * e).x - h.x) / e;
+    // Reddish-brown to orange plates, some lobes weathered grey-pink, pale
+    // peeling rims; furrows of black and orange-brown fibres.
+    // Mostly weathered grey-mauve, with salmon where outer flakes have shed.
+    // Darker and even: plates vary a little per ridge and with a few fresh
+    // cinnamon patches, so a trunk reads as one bark, not a patchwork.
+    let fresh = smoothstep(0.55, 0.75, bark_noise(q * vec3<f32>(2.4, 1.5, 2.4) + vec3<f32>(3.0, 1.0, 7.0))) * 0.6;
+    let cinnamon = mix(vec3<f32>(0.16, 0.07, 0.04), vec3<f32>(0.20, 0.09, 0.05), h.y);
+    var plates = mix(vec3<f32>(0.12, 0.085, 0.07), cinnamon, fresh) * (0.92 + 0.16 * bark_noise(q * 4.0));
+    plates = mix(plates, vec3<f32>(0.20, 0.16, 0.14), h.w * 0.5);
+    let fibre = smoothstep(0.35, 0.8, bark_noise(q * vec3<f32>(14.0, 2.0, 14.0)));
+    let furrow = mix(vec3<f32>(0.02, 0.015, 0.012), vec3<f32>(0.12, 0.06, 0.03), fibre);
+    let albedo = mix(plates, furrow, smoothstep(0.2, 0.7, h.z));
+    let normal = normalize(n - (t1 * d1 + t2 * d2) * 0.07);
+    return Bark(albedo, normal, mix(0.86, 0.98, h.z), mix(1.0, 0.35, h.z));
+}
 fn hash2(p: vec2<f32>) -> f32 {
     return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
 }
@@ -1836,7 +2152,14 @@ fn thin_foliage_response(base:vec3<f32>,n:vec3<f32>,v:vec3<f32>,rough:f32,leaf_f
     let reflection=1.0-transmission;
     let ndl=dot(n,light.sun_dir.xyz);
     var result:ThinFoliageResponse;
-    result.direct=budget*sun_e*(reflection*max(ndl,0.0)+transmission*max(-ndl,0.0))
+    // Light through a leaf comes out deeper and more saturated than light
+    // off it (it crossed the chlorophyll once more), and most of it keeps
+    // going forward: looking toward the sun through a crown it glows
+    // (Unreal's two-sided foliage, as Joep asked). A few ALU ops, no pass;
+    // the sun's shadow at the leaf already gates it.
+    let deep=budget*clamp(base/max(max(base.r,max(base.g,base.b)),1e-4),vec3<f32>(0.0),vec3<f32>(1.0));
+    let forward=1.0+3.0*pow(max(dot(-v,light.sun_dir.xyz),0.0),6.0);
+    result.direct=sun_e*(budget*reflection*max(ndl,0.0)+deep*transmission*forward*max(-ndl,0.0))
         +sun_e*ggx(n,v,light.sun_dir.xyz,rough,f0);
     result.indirect=budget*(reflection*front_irradiance+transmission*back_irradiance);
     result.specular=env*specular_weight;
@@ -2381,6 +2704,15 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     // 16.. hold 1 + their index in car_materials. Others keep the material.
     let car = m.flags >> 16u;
     var rough_m = m.roughness;
+    // Procedural bark (scene.rs BARK_LAYER): scale is the plate size in metres.
+    var bark_ao = 1.0;
+    if m.layer == -3 && (m.flags & 4608u) == 0u {
+        let b = bark_surface(p, n, m.scale);
+        base = b.albedo;
+        rough_m = b.rough;
+        n = b.normal;
+        bark_ao = b.ao;
+    }
     if FEATURE_TRACKS && (m.flags & 6u)!=0u {
         let tracks=track_material(p);
         // Compacted mineral soil retains its texture and real illumination;
@@ -2467,7 +2799,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let ndl = dot(n, l);
     var sun = max(ndl, 0.0);
     var back = vec3<f32>(0.0);
-    var ao = 1.0;
+    var ao = bark_ao;
     let grass = (m.flags & 64u) != 0u;
     let procedural_leaf = FEATURE_FOLIAGE && (m.flags & 512u) != 0u;
     let needles = procedural_leaf || (FEATURE_FOLIAGE && (m.flags & 9u) == 9u && (inst.flags & 1u) != 0u && !grass);
@@ -2513,6 +2845,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let sky_vis = sky_visibility(p, visibility_n);
     var meadow_edge=vec2<f32>(1.0);
     if FEATURE_MEADOW && (m.flags&6u)!=0u {meadow_edge=meadow_edge_visibility(p,surface_n,l);}
+    if procedural_leaf {shadow*=NEEDLE_BRUSH_OWN;}
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow * meadow_edge.y * field_sun;
     let refl = reflect(dir, n);
     let ssao = screen_space_ao(px, size, p, visibility_n, dist);
@@ -2526,7 +2859,10 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     var indirect:vec3<f32>;
     var specular:vec3<f32>;
     if procedural_leaf {
-        let back_sky_vis=sky_visibility(p,-visibility_n);
+        // Sky through the brush too, as voxels' crown_sky.
+        let brush_sky=0.25+0.75*sqrt(NEEDLE_BRUSH_OWN);
+        let sky_vis=sky_vis*brush_sky;
+        let back_sky_vis=sky_visibility(p,-visibility_n)*brush_sky;
         let front_ambient=(sky_irradiance(n)*sky_vis+bounce*(1.0-sky_vis))*contact.x;
         let back_ambient=(sky_irradiance(-n)*back_sky_vis+bounce*(1.0-back_sky_vis))*contact.x;
         let spec_contact=mix(contact.y,contact.x,smoothstep(0.08,0.6,rough));
@@ -2665,13 +3001,13 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     } else if light.sky.z > 13.5 && light.sky.z < 14.5 {
         rad = vec3<f32>(max(dot(surface_n,l),0.0)) * 6000.0;
     } else if light.sky.z > 14.5 && light.sky.z < 15.5 {
-        rad = vec3<f32>(shadow_filter(near_shadow_tex,light.near_shadow_view_proj,light.near_shadow.x,p,surface_n*sign(dot(surface_n,l)+1e-4),geo_n)) * 6000.0;
+        rad = vec3<f32>(shadow_filter_layer(near_shadow_tex,0,light.near_shadow_view_proj,light.near_shadow.x,p,surface_n*sign(dot(surface_n,l)+1e-4),geo_n)) * 6000.0;
     } else if light.sky.z > 15.5 && light.sky.z < 16.5 {
         rad = vec3<f32>(shadow_filter(shadow_tex,light.shadow_view_proj,light.sky.w,p,surface_n*sign(dot(surface_n,l)+1e-4),geo_n)) * 6000.0;
     } else if light.sky.z > 16.5 && light.sky.z < 17.5 {
         let clip=light.near_shadow_view_proj*vec4<f32>(p,1.0);
         let valid=light.near_shadow.z>0.5 && clip.z>=0.0 && clip.z<=1.0;
-        rad=vec3<f32>(select(0.0,1.0-smoothstep(light.near_shadow.y,1.0,max(abs(clip.x),abs(clip.y))),valid))*6000.0;
+        rad=vec3<f32>(select(0.0,1.0-smoothstep(light.near_shadow.y,0.95,length(clip.xy)),valid))*6000.0;
     } else if light.sky.z > 19.5 && light.sky.z < 22.5 {
         rad = car_debug * 6000.0;
     } else if light.sky.z > 22.5 && light.sky.z < 24.5 {

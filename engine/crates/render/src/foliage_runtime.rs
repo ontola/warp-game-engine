@@ -272,9 +272,17 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
         if population.slots[i].is_none(){let owner=&mut scene.instances[proxies[i].meta[0]as usize];owner.flags=PART_WIND;owner.sphere[3]=-1.;}
         Instance {rows:rows(m),scale:[(row*col).sqrt(),0.,templates[t.variant].proxy_work,templates[t.variant].proxy_work],info:[root_nodes[t.variant],population.generations[i],handles[t.variant].pose_range.start as u32,u32::from(population.slots[i].is_none())]}
     }).collect();
-    let raster_budget=forest.instances.iter().map(|v|work[v.meta[1]as usize]as u64).sum::<u64>().clamp(1,8<<20)as u32;
+    // Every tree at its coarsest proxy, plus room for nearer trees to refine:
+    // without it the far forest alone fills the splats and the shared camera
+    // cut coarsens the near trees too (Joep's 13 px voxels in the forest).
+    let env=|name:&str,default:u64|std::env::var(name).ok().and_then(|v|v.parse::<u64>().ok()).unwrap_or(default);
+    let raster_budget=forest.instances.iter().map(|v|work[v.meta[1]as usize]as u64).sum::<u64>()
+        .max(env("KERN_RASTER_FLOOR",8<<20)).clamp(1,16<<20)as u32;
+    // Source clusters bound the camera cut as well: unbounded, a forest
+    // floor reserved 6.7M clusters and culling them took most of a 106 ms frame.
+    let source_cluster_budget=env("KERN_SOURCE_CLUSTERS",2<<20).clamp(1,crate::foliage_select::DEFAULT_SOURCE_CLUSTER_BUDGET as u64)as u32;
     scene.voxel_forest=Some(forest);scene.voxel_proxies=trees.len()as u32*2;
-    scene.gpu_forest=Some(Spec {page_budget:Default::default(),source_budget:Default::default(),nodes,roots,branches,representations,proxies,templates,population,first_owner,slots,raster_budget,source_cluster_budget:crate::foliage_select::DEFAULT_SOURCE_CLUSTER_BUDGET,error:policy.max_error_pixels.max(0.25)});
+    scene.gpu_forest=Some(Spec {page_budget:Default::default(),source_budget:Default::default(),nodes,roots,branches,representations,proxies,templates,population,first_owner,slots,raster_budget,source_cluster_budget,error:policy.max_error_pixels.max(0.25)});
     Ok(())
 }
 
@@ -304,7 +312,7 @@ pub struct Diagnostics {
     pub frontier_overflow_requests:u32,pub peak_frontier_requests:u32,
     pub reserved_source_clusters:u32,pub source_cluster_budget_stops:u32,pub reserved_raster_splats:[u32;2],pub refinement_budget_stops:u32,pub refinement_faults:u32,
     /// Error-driven cut: target multipliers (1 = exact pixel target) and highest cap fill, camera then shadow; page-blocked refinements.
-    pub error_cut_scale:[f32;2],pub error_cut_fill:[f32;2],pub error_cut_page_blocked:u32,pub reused_refinement_proposals:u32,
+    pub error_cut_scale:[f32;2],pub source_cut_scale:f32,pub error_cut_fill:[f32;2],pub error_cut_page_blocked:u32,pub reused_refinement_proposals:u32,
     pub dormant_records:u32,pub dormant_wakes:u32,pub dormant_wake_passes:u32,pub dormant_park_events:u32,pub dormant_overflows:u32,
     /// Selected-cut maxima: [all consumers, camera consumers], excluding unknown proxies.
     pub selected_spatial_error_pixels:[f32;2],pub selected_error_target_ratio:[f32;2],
@@ -545,7 +553,7 @@ impl Runtime {
     /// Bytes in one consumer-class choice table; camera then shadow.
     pub(crate) fn choice_table_bytes(&self)->u64 {u64::from(self.slots)*4}
     pub fn diagnostics(&self,gpu:&Gpu)->Result<Diagnostics,String> {
-        let inputs=[(&self.selector.counters,64u64),(&self.residency.counters,32),(&self.selector.fallback,self.trees as u64*4),(&self.choices,self.choices.size()),(&self.pose_work,268),(&self.selector.demand,self.trees as u64*32),(&self.selector.refiner.state,320)];
+        let inputs=[(&self.selector.counters,64u64),(&self.residency.counters,32),(&self.selector.fallback,self.trees as u64*4),(&self.choices,self.choices.size()),(&self.pose_work,268),(&self.selector.demand,self.trees as u64*32),(&self.selector.refiner.state,384)];
         let size=inputs.iter().map(|(_,n)|n).sum();
         let output=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("forest diagnostic snapshot"),size,usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
         let mut enc=gpu.device.create_command_encoder(&Default::default());let mut offset=0;
@@ -571,7 +579,7 @@ impl Runtime {
         let voxels=choices[..self.slots as usize].iter().filter(|w|**w&3==1).count()as u32;
         let shadow_voxel_slots=choices[self.slots as usize..2*self.slots as usize].iter().filter(|w|**w&3==1).count()as u32;
         let camera_disabled=choices[..self.slots as usize].iter().filter(|w|**w&3==3).count()as u32;
-        Ok(Diagnostics {reserved_source_clusters:refinement[69],source_cluster_budget_stops:refinement[72],camera_refinement_limits:CameraRefinementLimits {over_target:refinement[48],branch_slots:refinement[49],camera_splats:refinement[50],shadow_splats:refinement[51],missing_pages:refinement[52],no_children:refinement[53],affordable_resident:refinement[54]},selected_source_consumers:ConsumerCounts::from_words(&refinement[32..36]),selected_voxel_consumers:ConsumerCounts::from_words(&refinement[36..40]),selected_direct_consumers:ConsumerCounts::from_words(&refinement[40..44]),selected_spatial_error_pixels:[f32::from_bits(refinement[19]),f32::from_bits(refinement[20])],selected_error_target_ratio:[f32::from_bits(refinement[21]),f32::from_bits(refinement[22])],selected_over_target:[refinement[23],refinement[24]],error_unknown_proxies:refinement[25],error_unmatched_direct:refinement[26],error_forced_nodes:refinement[27],reserved_raster_splats:[refinement[1],refinement[2]],refinement_budget_stops:refinement[17],refinement_faults:refinement[15],error_cut_scale:[79,78].map(|w|{let v=f32::from_bits(refinement[w]);if v>=1. {v} else {1.}}),error_cut_fill:[f32::from_bits(refinement[74]),f32::from_bits(refinement[77])],error_cut_page_blocked:refinement[73],reused_refinement_proposals:refinement[28],dormant_records:refinement[29],dormant_wakes:refinement[60],dormant_wake_passes:refinement[62],dormant_park_events:refinement[61],dormant_overflows:refinement[63],camera_roots,shadow_only_roots,camera_fallback_roots,shadow_only_fallback_roots,camera_published_branches,shadow_only_published_branches,trees:self.trees,active_roots:self.population.lock().unwrap().active(),branch_capacity:self.slots,selected_records:c[0],tested_nodes:c[4],source_slots:r[6].saturating_sub(voxels+camera_disabled),voxel_slots:voxels,shadow_voxel_slots,direct_roots:c[7],
+        Ok(Diagnostics {reserved_source_clusters:refinement[69],source_cluster_budget_stops:refinement[72],camera_refinement_limits:CameraRefinementLimits {over_target:refinement[48],branch_slots:refinement[49],camera_splats:refinement[50],shadow_splats:refinement[51],missing_pages:refinement[52],no_children:refinement[53],affordable_resident:refinement[54]},selected_source_consumers:ConsumerCounts::from_words(&refinement[32..36]),selected_voxel_consumers:ConsumerCounts::from_words(&refinement[36..40]),selected_direct_consumers:ConsumerCounts::from_words(&refinement[40..44]),selected_spatial_error_pixels:[f32::from_bits(refinement[19]),f32::from_bits(refinement[20])],selected_error_target_ratio:[f32::from_bits(refinement[21]),f32::from_bits(refinement[22])],selected_over_target:[refinement[23],refinement[24]],error_unknown_proxies:refinement[25],error_unmatched_direct:refinement[26],error_forced_nodes:refinement[27],reserved_raster_splats:[refinement[1],refinement[2]],refinement_budget_stops:refinement[17],refinement_faults:refinement[15],error_cut_scale:[79,78].map(|w|{let v=f32::from_bits(refinement[w]);if v>=1. {v} else {1.}}),source_cut_scale:{let v=f32::from_bits(refinement[85]);if v>=1. {v} else {1.}},error_cut_fill:[f32::from_bits(refinement[74]),f32::from_bits(refinement[77])],error_cut_page_blocked:refinement[73],reused_refinement_proposals:refinement[28],dormant_records:refinement[29],dormant_wakes:refinement[60],dormant_wake_passes:refinement[62],dormant_park_events:refinement[61],dormant_overflows:refinement[63],camera_roots,shadow_only_roots,camera_fallback_roots,shadow_only_fallback_roots,camera_published_branches,shadow_only_published_branches,trees:self.trees,active_roots:self.population.lock().unwrap().active(),branch_capacity:self.slots,selected_records:c[0],tested_nodes:c[4],source_slots:r[6].saturating_sub(voxels+camera_disabled),voxel_slots:voxels,shadow_voxel_slots,direct_roots:c[7],
             fallback_trees:fallback.iter().filter(|f|**f!=0).count()as u32,retained:r[2],assigned:r[3],slot_failures:r[4],hash_failures:r[5],frontier_overflow_requests:c[11],peak_frontier_requests:c[15],pose_hash_failures:poses[64],pose_requests:poses[65],evaluated_shared_poses:poses[66]})
     }
     pub fn encode(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::part_wind::AnimationView],first_owner:u32)->Result<(),String> {

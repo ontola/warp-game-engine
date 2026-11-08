@@ -1508,11 +1508,39 @@ fn voxel_splat_gbuffer(@builtin(global_invocation_id) id:vec3<u32>) {
     if volume_proxy(record.x) {
         exit=clamp(max(volume_interval(tree,p,sun,1e4).y,0.0)+volume_sun_texel(p)*2.0,0.0,63.0);
         own=clamp(volume_self_transmittance(tree,grid,p,sun),0.0,1.0);
+    } else {
+        // Ground cover (a volume under 1.2 m tall, e.g. a meadow cell):
+        // exit 63.75 tells shade_voxel to skip the canopy-depth crown term,
+        // which counted the tree above as its own crown.
+        let per_m=length(vec3<f32>(tree.inverse[0].y,tree.inverse[1].y,tree.inverse[2].y));
+        if (tree.bounds_max.y-tree.bounds_min.y)/max(per_m,1e-6)<1.2 {exit=63.75;}
+        // The sun maps resolve a cell, not the leaves inside it: a mesh
+        // crown shows its needles shading each other, a disc only its lit
+        // mean (voxels read brighter than the mesh, Joep playtest 5). The
+        // leaves of a cell see the sun through the cell itself on average
+        // (1-exp(-tau))/tau, tau its optical depth along the sun.
+        let ls=normalize(vec3<f32>(dot(tree.inverse[0].xyz,sun),dot(tree.inverse[1].xyz,sun),dot(tree.inverse[2].xyz,sun)));
+        let tau=max(volume_sigma(cell,volume_direction(ls)),0.0)*grid.w;
+        // Not ground cover: grass voxels already matched their blades.
+        if exit<63.0 {own=select(1.0,(1.0-exp(-tau))/tau,tau>1e-4);}
+    }
+    // A mesh crown shows dark inner branches and gaps between its needles;
+    // a disc shows the cell's mean colour. Darken discs toward the trunk and
+    // the crown's foot, so a crown has shape under sky light alone (Joep,
+    // playtest 5: voxel crowns flat and lighter than the mesh). Not ground
+    // cover.
+    var albedo=sample.albedo;
+    if exit<63.0 && !volume_proxy(record.x) {
+        let mid=0.5*(tree.bounds_min.xyz+tree.bounds_max.xyz);
+        let half=max(0.5*(tree.bounds_max.xyz-tree.bounds_min.xyz),vec3<f32>(1e-3));
+        let inner=1.0-clamp(length((p.xz-mid.xz)/half.xz),0.0,1.0);
+        let low=1.0-clamp((p.y-tree.bounds_min.y)/(2.0*half.y),0.0,1.0);
+        albedo*=1.0-0.45*clamp(0.6*inner+0.5*low,0.0,1.0);
     }
     let rough_leaf=u32(round(clamp(sample.roughness,0.0,1.0)*255.0))|(u32(round(clamp(sample.leaf_fraction,0.0,1.0)*255.0))<<8u);
     let own_exit=u32(round(own*255.0))|(u32(round(exit*4.0))<<8u);
-    textureStore(volume_gbuffer,px,vec4<u32>(pack2x16float(sample.albedo.rg),
-        (pack2x16float(vec2<f32>(sample.albedo.b,0.0))&0xffffu)|(rough_leaf<<16u),
+    textureStore(volume_gbuffer,px,vec4<u32>(pack2x16float(albedo.rg),
+        (pack2x16float(vec2<f32>(albedo.b,0.0))&0xffffu)|(rough_leaf<<16u),
         pack2x16float(n.xy),(pack2x16float(vec2<f32>(n.z,0.0))&0xffffu)|(own_exit<<16u)));
 }
 
@@ -1553,7 +1581,11 @@ fn voxel_splat_resolve(@builtin(global_invocation_id) id:vec3<u32>) {
     let others=shadow_at(p+sun*(exit+volume_sun_texel(p)*2.0),up);
     let shadow=mix(1.0,others*volume_self_transmittance(tree,grid,p,sun),light.sun_color.w);
     let cell_m=grid.w/max(length(vec3<f32>(tree.inverse[0].x,tree.inverse[1].x,tree.inverse[2].x)),1e-6);
-    let rad=volume_radiance(sample,tree,p,-direction,shadow,sky_visibility(p+up*cell_m,up));
+    // Sky light reaches a cell through the crown above it too. The sky term
+    // alone lit inner cells as if they faced open sky, so a voxel crown read
+    // pale and blue next to the same tree as a mesh (Joep, 6 November).
+    let crown_sky=0.2+0.8*volume_self_transmittance(tree,grid,p,up);
+    let rad=volume_radiance(sample,tree,p,-direction,shadow,sky_visibility(p+up*cell_m,up)*crown_sky);
     textureStore(volume_output,px,vec4<f32>(rad,1.0));
 }
 

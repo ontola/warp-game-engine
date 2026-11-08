@@ -78,12 +78,37 @@ pub(super) fn build(plant: &CookedPlant) -> Result<Vec<GeometryGroup>, String> {
 
 pub(super) fn cook(plant: &mut CookedPlant, source: &Assembly, config: crate::vegetation_aggregate::Config) -> Result<(), String> {
     let cooker=crate::vegetation_aggregate::Cooker::new(source,config)?;
-    for index in 1..plant.geometry.len() {
+    // Bottom up: each placement is sampled once into its group frame's
+    // lattice, and a group's reference is the sum of its children's, so
+    // members are not re-sampled at every level of the hierarchy. Sibling
+    // subtrees cook in parallel; assets are applied in order below.
+    let slots:Vec<std::sync::Mutex<Option<Result<crate::vegetation_aggregate::ClusterAsset,String>>>>=
+        (0..plant.geometry.len()).map(|_|std::sync::Mutex::new(None)).collect();
+    fn build(plant:&CookedPlant,cooker:&crate::vegetation_aggregate::Cooker<'_>,index:usize,frame:u32,
+        slots:&[std::sync::Mutex<Option<Result<crate::vegetation_aggregate::ClusterAsset,String>>>])
+        -> Result<crate::vegetation_aggregate::Lattice,String>
+    {
         let group=&plant.geometry[index];
-        if group.children.is_none() {continue;}
-        let frame=group.frame_branch as usize;
-        let asset=cooker.cook_static_subtree(&group.members,group.frame_branch,plant.branches[frame].assembly_rest)
-            .map_err(|e|format!("geometry group {index}: {e}"))?;
+        let Some(children)=group.children else {return cooker.lattice(&group.members,frame)};
+        let own=group.frame_branch;
+        let mut parts=crate::par::map(2,|k|build(plant,cooker,children[k] as usize,own,slots)).into_iter();
+        let lattice=parts.next().unwrap()?.merge(parts.next().unwrap()?)?;
+        if index!=0 {
+            let asset=cooker.cook_static_subtree_from(&group.members,own,plant.branches[own as usize].assembly_rest,&lattice)
+                .map_err(|e|format!("geometry group {index}: {e}"));
+            *slots[index].lock().unwrap_or_else(|e|e.into_inner())=Some(asset);
+        }
+        if own==frame {Ok(lattice)} else {cooker.lattice(&group.members,frame)}
+    }
+    if plant.geometry.first().is_some_and(|g|g.children.is_some()) {
+        build(plant,&cooker,0,plant.geometry[0].frame_branch,&slots)?;
+    }
+    let assets:Vec<Result<Option<crate::vegetation_aggregate::ClusterAsset>,String>>=slots.into_iter()
+        .map(|s|s.into_inner().unwrap_or_else(|e|e.into_inner()).transpose()).collect();
+    for (index,asset) in assets.into_iter().enumerate() {
+        let Some(asset)=asset? else {continue};
+        let frame=plant.geometry[index].frame_branch as usize;
+        let group=&plant.geometry[index];
         let mut motion=0.0f32;
         for &member in &group.members {
             let p=&plant.placements[member as usize];

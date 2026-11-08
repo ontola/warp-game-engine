@@ -19,7 +19,7 @@ pub use resource_cache::CacheStats as ResourceCacheStats;
 #[derive(Default)]
 struct FrameResources {
     targets: [resource_cache::TextureViews<1>; 3],
-    near_shadow: resource_cache::TextureViews<1>,
+    near_shadow_off: resource_cache::TextureViews<1>,
     history: resource_cache::TextureViews<2>,
     result: resource_cache::TextureViews<2>,
     shade: resource_cache::BindGroups<2>,
@@ -31,7 +31,7 @@ impl FrameResources {
     fn stats(&self) -> ResourceCacheStats {
         let mut stats = ResourceCacheStats::default();
         for target in &self.targets { stats.add(target.stats()); }
-        for other in [self.near_shadow.stats(), self.history.stats(), self.result.stats(),
+        for other in [self.near_shadow_off.stats(), self.history.stats(), self.result.stats(),
             self.shade.stats(), self.taa.stats(), self.tone.stats(), self.volume.stats()] { stats.add(other); }
         stats
     }
@@ -48,7 +48,9 @@ pub const TEXTURE_SIZE: u32 = if cfg!(target_os = "android") { 512 } else { 2048
 const NORMAL_SIZE: u32 = if cfg!(target_os = "android") { 512 } else { 1024 };
 pub(crate) const SHADOW_SIZE: u32 = if cfg!(target_os = "android") { 2048 } else { 4096 };
 const NEAR_SHADOW_SIZE: u32 = if cfg!(target_os = "android") { 1024 } else { 2048 };
-const NEAR_SHADOW_EXTENT: f32 = 16.0;
+/// Half side of the near sun map. 24 m (2.3 cm texels): with the round fade
+/// in shade.wgsl, full detail reaches ~11 m and fades out by ~23 m.
+const NEAR_SHADOW_EXTENT: f32 = 24.0;
 /// The near shadow's cluster LOD error, in multiples of the camera's
 /// (KERN_NEAR_SHADOW_LOD, for A/B runs). Its 1.6 cm texels pick full detail:
 /// a full spruce assembly casts for ~2.5 ms (low2, 8 trees: 18 ms; 2x: 9.5,
@@ -64,8 +66,10 @@ const NEAR_SHADOW_EXTENT: f32 = 16.0;
 /// 6 November: 0.5 m near cells printed leopard spots (round blobs) on the
 /// ground and trunks under a crown; 0.25 m makes them leaf-sized for +0.14 ms
 /// (lowland, both maps at 0.25; 0.125 adds another 0.45 ms for little gain).
+/// The shared map's 1 m cells drew tree shadows past the near map as metre
+/// squares (Joep, playtest 3, 22 m up): 0.5 m.
 const NEAR_SUN_VOXEL_M: f32 = 0.25;
-const SHARED_SUN_VOXEL_M: f32 = 1.0;
+const SHARED_SUN_VOXEL_M: f32 = 0.5;
 fn sun_voxel_m(texel: f32, cell: f32) -> f32 {
     static CELL: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     CELL.get_or_init(|| std::env::var("KERN_SUN_VOXEL_M").ok().and_then(|v| v.parse().ok())).unwrap_or(cell).max(texel)
@@ -74,6 +78,32 @@ fn near_sun_source() -> bool {
     static SOURCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *SOURCE.get_or_init(|| std::env::var("KERN_NEAR_SUN_SOURCE").as_deref() == Ok("1"))
 }
+/// Sun clipmap levels round each camera (KERN_SUN_LEVELS, 1 to 4): level k
+/// covers NEAR_SHADOW_EXTENT * 2^k at the same resolution, so a texel spans
+/// about the same share of the screen at every distance (as Unreal's virtual
+/// shadow maps do) and mesh and voxel trees take their shadows, their own
+/// crowns included, from the same maps. 1 is the single near map.
+pub(crate) const NEAR_LEVELS_MAX: usize = 4;
+fn near_levels() -> usize {
+    static LEVELS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *LEVELS.get_or_init(|| std::env::var("KERN_SUN_LEVELS").ok().and_then(|v| v.parse().ok()).unwrap_or(NEAR_LEVELS_MAX).clamp(1, NEAR_LEVELS_MAX))
+}
+/// Half extent of clipmap level `k` (metres).
+fn near_level_extent(k: usize) -> f32 { NEAR_SHADOW_EXTENT * (1u32 << k) as f32 }
+/// Finest voxel cell level `k` splats: half a pixel's growth per level.
+/// Level 0 redraws every frame, level 1 every other frame, level 2 every
+/// fourth and level 3 every eighth (on different frames): at most two levels
+/// per frame. All
+/// four every frame cost ~6.5 ms at 4K-class settings (Mancave, f5af817).
+/// KERN_SUN_STAGGER=0 redraws every level every frame.
+fn near_level_due(k: usize, frame: u64) -> bool {
+    static STAGGER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if k == 0 || !*STAGGER.get_or_init(|| std::env::var("KERN_SUN_STAGGER").as_deref() != Ok("0")) { return true; }
+    match k { 1 => frame % 2 == 0, 2 => frame % 4 == 1, _ => frame % 8 == 3 }
+}
+// The outermost level (96-192 m) splats a voxel LOD coarser: walking its
+// cells was a fixed ~1 ms whatever reached the raster (Mancave, bbf410b).
+fn near_level_voxel_m(k: usize) -> f32 { NEAR_SUN_VOXEL_M * std::f32::consts::SQRT_2.powi(k as i32) * if k >= 3 { 1.42 } else { 1.0 } }
 fn near_shadow_lod() -> f32 {
     static SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *SCALE.get_or_init(|| std::env::var("KERN_NEAR_SHADOW_LOD").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0))
@@ -149,8 +179,19 @@ fn sun_visibility_required(fast_path: bool, sun_lux: f32, debug: f32) -> bool {
 
 /// Per-camera sun detail, retained across frames rather than reallocating.
 struct NearShadow {
+    /// One layer per clipmap level (near_levels()), level 0 the finest.
     tex: wgpu::Texture,
     targets: ViewTargets,
+    /// Culling targets of levels 1.. (level 0 uses `targets`).
+    outer: Vec<ViewTargets>,
+    /// Stable per-layer and whole-array views. Caches downstream (voxel sun
+    /// splat targets, bind groups) key on view identity, so a fresh view per
+    /// frame would allocate a new full splat target every frame.
+    layers: Vec<wgpu::TextureView>,
+    array: wgpu::TextureView,
+    /// The projection each level was last drawn with: outer levels redraw
+    /// on alternate frames (near_level_due) and keep shading with it.
+    drawn: [std::cell::Cell<Option<Mat4>>; NEAR_LEVELS_MAX],
 }
 
 #[derive(Default)]
@@ -227,6 +268,10 @@ struct LightUniform {
     anim: [f32; 4],
     /// Fog integration sequence phase and temporal accumulation enabled.
     fog_sampling: [f32; 4],
+    /// Sun clipmap levels 1.. (level 0 is near_shadow_view_proj).
+    near_levels_view_proj: [[[f32; 4]; 4]; NEAR_LEVELS_MAX - 1],
+    /// x: levels drawn (0 when the near maps are off).
+    near_levels: [f32; 4],
 }
 
 #[repr(C)]
@@ -1823,7 +1868,7 @@ impl Renderer {
                 (11, uniform()),
                 (13, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false }),
                 (14, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
-                (15, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (15, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false }),
                 (16, storage(false)),
                 (18, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (19, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
@@ -4035,10 +4080,14 @@ impl Renderer {
                 for (vi,view) in views.iter().enumerate() {
                     let center=if !diagnostic_sun.is_empty(){anchors[vi]}
                         else if self.legacy_light_lookahead{view.cam.target}else{focus[vi]};
-                    part_animation_views.push(AnimationView {
-                        view_projection:sun_projection(center,NEAR_SHADOW_EXTENT,NEAR_SHADOW_SIZE),
-                        viewport:[NEAR_SHADOW_SIZE;2],
-                    });
+                    // Every clipmap level is a shadow consumer: its casters
+                    // need the same wind poses and LOD cut as level 0.
+                    for k in 0..near_levels() {
+                        part_animation_views.push(AnimationView {
+                            view_projection:sun_projection(center,near_level_extent(k),NEAR_SHADOW_SIZE),
+                            viewport:[NEAR_SHADOW_SIZE;2],
+                        });
+                    }
                 }
             }
             for lamp in &headlights {part_animation_views.push(AnimationView {
@@ -4218,11 +4267,13 @@ impl Renderer {
                 light.fog_scattering_albedo.z, light.fog_phase_g],
             sh,
             near_shadow_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
-            near_shadow: [2.0 * NEAR_SHADOW_EXTENT / NEAR_SHADOW_SIZE as f32, 0.8, 0.0, if self.raster_sun_depth.is_some() {1.0} else {0.0}],
+            near_shadow: [2.0 * NEAR_SHADOW_EXTENT / NEAR_SHADOW_SIZE as f32, 0.45, 0.0, if self.raster_sun_depth.is_some() {1.0} else {0.0}],
             night_stars: [light.night_stars[0], light.night_stars[1],
                 if self.zero_sun_fast_path {1.0} else {0.0}, light.night_stars[3]],
             anim: [light.time, light.emissive_scale(), 1.2 * 2f32.powf(light.ev100), if light.sun_disc {light.sun_radius} else {0.0}],
             fog_sampling: [((frame % 16) * 7 % 16) as f32 / 16.0, if taa_on { 1.0 } else { 0.0 }, light.indirect_fill_lux.max(0.0), 0.0],
+            near_levels_view_proj: [Mat4::IDENTITY.to_cols_array_2d(); NEAR_LEVELS_MAX - 1],
+            near_levels: [0.0; 4],
         };
         let exposure = 1.0 / (1.2 * 2f32.powf(light.ev100));
 
@@ -4481,10 +4532,21 @@ impl Renderer {
         let mut near_shadows = self.near_shadows.lock().unwrap();
         if near_enabled {
             while near_shadows.len() < views.len() {
+                let tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("near sun shadow"),
+                        size: wgpu::Extent3d { width: NEAR_SHADOW_SIZE, height: NEAR_SHADOW_SIZE, depth_or_array_layers: near_levels() as u32 },
+                        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Depth32Float,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                        view_formats: &[] });
+                let layers = (0..near_levels()).map(|k| tex.create_view(&wgpu::TextureViewDescriptor { label: Some("sun clipmap level"),
+                    dimension: Some(wgpu::TextureViewDimension::D2), base_array_layer: k as u32, array_layer_count: Some(1), ..Default::default() })).collect();
+                let array = tex.create_view(&wgpu::TextureViewDescriptor { label: Some("sun clipmap"),
+                    dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
                 near_shadows.push(NearShadow {
-                    tex: tex2d("near sun shadow", NEAR_SHADOW_SIZE, NEAR_SHADOW_SIZE, wgpu::TextureFormat::Depth32Float,
-                        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC),
+                    tex, layers, array, drawn: Default::default(),
                     targets: self.view_targets_capacity(gpu, "near sun view", self.shadow_capacity,false,self.instance_groups.sun_enabled),
+                    outer: (1..near_levels()).map(|_| self.view_targets_capacity(gpu, "sun clipmap view", self.shadow_capacity,false,self.instance_groups.sun_enabled)).collect(),
                 });
             }
         }
@@ -4570,44 +4632,61 @@ impl Renderer {
                 }
             }
             let mut view_light = lu;
-            let near_view = if near_enabled {
+            let (near_view, near_layer0) = if near_enabled {
                 let near = &near_shadows[vi];
                 let near_centre=if !diagnostic_sun.is_empty() {anchors[vi]}
                     else if self.legacy_light_lookahead {cam.target} else {focus[vi]};
-                let near_vp = sun_projection(near_centre, NEAR_SHADOW_EXTENT, NEAR_SHADOW_SIZE);
-                let mut near_uniform=view_uniform(
-                    near_vp, sun_eye(near_centre), NEAR_SHADOW_SIZE as f32 / (2.0 * NEAR_SHADOW_EXTENT),
-                    [light.lod_pixels * near_shadow_lod(), 1.0, 1.0, self.shadow_capacity as f32], [NEAR_SHADOW_SIZE as f32; 4], light.alpha_cut);
-                configure_sun_terrain_error(&mut near_uniform,self.sun_terrain_error);
-                near_uniform.fog_cull[3]=if self.sun_surface_source{1.0}else{0.0};
-                if self.receiver_demand.enabled() {near_uniform.extra[2]=-((vi+2)as f32);}
-                gpu.queue.write_buffer(&near.targets.uniform, 0, bytemuck::bytes_of(&near_uniform));
-                let texture_view = resources.near_shadow.get(&near.tex);
                 // Branch groups with voxels cast them here too, not their
                 // source sprays: a full spruce's sprays cost ~2.5 ms each in
                 // this 1.6 cm map, its voxels a fraction, at the same coverage
                 // (a coarser source cut thins it). KERN_NEAR_SUN_SOURCE=1
                 // keeps the source, for A/B runs.
                 let voxel_casters=self.voxel_forest.as_ref().is_some_and(|f|f.casts_sun())&&!near_sun_source();
-                if voxel_casters {
-                    gpu.queue.write_buffer(&near.targets.foliage_selection,0,bytemuck::cast_slice(&crate::voxel_forest::VoxelRenderer::sun_selection()));
+                let mut layer0 = None;
+                for k in 0..near_levels() {
+                    let extent = near_level_extent(k);
+                    let targets = if k == 0 { &near.targets } else { &near.outer[k - 1] };
+                    if let Some(vp) = near.drawn[k].get().filter(|_| !near_level_due(k, render_sequence)) {
+                        view_light.near_levels_view_proj[k - 1] = vp.to_cols_array_2d();
+                        continue;
+                    }
+                    let near_vp = sun_projection(near_centre, extent, NEAR_SHADOW_SIZE);
+                    near.drawn[k].set(Some(near_vp));
+                    let mut near_uniform=view_uniform(
+                        near_vp, sun_eye(near_centre), NEAR_SHADOW_SIZE as f32 / (2.0 * extent),
+                        [light.lod_pixels * near_shadow_lod(), 1.0, 1.0, self.shadow_capacity as f32], [NEAR_SHADOW_SIZE as f32; 4], light.alpha_cut);
+                    configure_sun_terrain_error(&mut near_uniform,self.sun_terrain_error);
+                    near_uniform.fog_cull[3]=if self.sun_surface_source{1.0}else{0.0};
+                    if self.receiver_demand.enabled() && k == 0 {near_uniform.extra[2]=-((vi+2)as f32);}
+                    gpu.queue.write_buffer(&targets.uniform, 0, bytemuck::bytes_of(&near_uniform));
+                    let texture_view = near.layers[k].clone();
+                    if voxel_casters {
+                        gpu.queue.write_buffer(&targets.foliage_selection,0,bytemuck::cast_slice(&crate::voxel_forest::VoxelRenderer::sun_selection()));
+                    }
+                    if let Some((forest,_))=&self.gpu_forest {enc.copy_buffer_to_buffer(&forest.choices,forest.choice_table_bytes(),&targets.foliage_selection,0,forest.choice_table_bytes());}
+                    let label = if k == 0 { "near shadow cull" } else { "sun clipmap cull" };
+                    self.cull_and_raster(&mut enc, gpu, targets, None, &texture_view, &mut ts, &mut names, label,RasterPass::Sun);
+                    // Whole-plant proxies have no source to cast here.
+                    if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.has_proxies()||voxel_casters) {
+                        let times=(if k == 0 {["voxel near sun splats","voxel near sun splat raster"]} else {["voxel sun clipmap splats","voxel sun clipmap splat raster"]})
+                            .map(|name|self.query.as_ref().map(|(qs,_,_)|{let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
+                        forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&targets.foliage_selection,crate::voxel_forest::SunSplatView {
+                            damage:None,depth:&texture_view,view_proj:near_vp,planes:near_uniform.planes,direction:light.sun_dir,
+                            texel_m:sun_voxel_m(2.0*extent/NEAR_SHADOW_SIZE as f32,near_level_voxel_m(k))},times)?;
+                    }
+                    if k == 0 {
+                        view_light.near_shadow_view_proj = near_vp.to_cols_array_2d();
+                        view_light.near_shadow[2] = 1.0;
+                        layer0 = Some(texture_view);
+                    } else {
+                        view_light.near_levels_view_proj[k - 1] = near_vp.to_cols_array_2d();
+                    }
                 }
-                if let Some((forest,_))=&self.gpu_forest {enc.copy_buffer_to_buffer(&forest.choices,forest.choice_table_bytes(),&near.targets.foliage_selection,0,forest.choice_table_bytes());}
-                self.cull_and_raster(&mut enc, gpu, &near.targets, None, &texture_view, &mut ts, &mut names, "near shadow cull",RasterPass::Sun);
-                // Whole-plant proxies have no source to cast here.
-                if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.has_proxies()||voxel_casters) {
-                    let times=["voxel near sun splats","voxel near sun splat raster"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
-                        let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
-                    forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&near.targets.foliage_selection,crate::voxel_forest::SunSplatView {
-                        damage:None,depth:&texture_view,view_proj:near_vp,planes:near_uniform.planes,direction:light.sun_dir,
-                        texel_m:sun_voxel_m(2.0*NEAR_SHADOW_EXTENT/NEAR_SHADOW_SIZE as f32,NEAR_SUN_VOXEL_M)},times)?;
-                }
-                view_light.near_shadow_view_proj = near_vp.to_cols_array_2d();
-                view_light.near_shadow[2] = 1.0;
-                texture_view
+                view_light.near_levels[0] = near_levels() as f32;
+                (near.array.clone(), layer0.unwrap())
             } else {
                 // Valid but unused binding when the feature is disabled.
-                shadow_v.clone()
+                (resources.near_shadow_off.get_array(&cache.as_ref().unwrap().tex), shadow_v.clone())
             };
             let light_buf = self.view_uniform(gpu, vi, 1, "view light", bytemuck::bytes_of(&view_light));
             // Per-view targets live across frames while the view keeps its size:
@@ -5188,7 +5267,7 @@ impl Renderer {
                 let output = self.wheel_particles.render(gpu, &mut enc, vi,
                     exhaust_output.as_ref().unwrap_or(&resolved), exhaust_output.is_some(),
                     &depth_v, *cam, proj * view_m, vp, light, crate::wheel_particles::Shadows {
-                        far: &shadow_v, near: &near_view, sampler: &self.shadow_samp,
+                        far: &shadow_v, near: &near_layer0, sampler: &self.shadow_samp,
                         far_vp: Mat4::from_cols_array_2d(&view_light.shadow_view_proj),
                         near_vp: Mat4::from_cols_array_2d(&view_light.near_shadow_view_proj),
                         far_texel: view_light.sky[3], near_texel: view_light.near_shadow[0],
@@ -5946,12 +6025,12 @@ mod layout_tests {
     fn sun_terrain_error_cap_is_equal_in_world_units_without_changing_other_view_settings() {
         let make=|scale,threshold|super::view_uniform(glam::Mat4::IDENTITY,glam::Vec3::ZERO,scale,
             [threshold,1.0,1.0,1024.0],[2048.0;4],0.5);
-        let mut far=make(4096.0/192.0,2.0);let mut near=make(2048.0/32.0,1.0);
+        let mut far=make(4096.0/192.0,2.0);let mut near=make(super::NEAR_SHADOW_SIZE as f32/(2.0*super::NEAR_SHADOW_EXTENT),1.0);
         let old_far=far;let old_near=near;
         super::configure_sun_terrain_error(&mut far,true);
         super::configure_sun_terrain_error(&mut near,true);
         assert_eq!(far.params,old_far.params);assert_eq!(near.params,old_near.params);
-        assert_eq!(far.fog_cull,[0.0,0.0,0.015625,0.0]);assert_eq!(near.fog_cull,far.fog_cull);
+        assert_eq!(far.fog_cull,[0.0,0.0,2.0*super::NEAR_SHADOW_EXTENT/super::NEAR_SHADOW_SIZE as f32,0.0]);assert_eq!(near.fog_cull,far.fog_cull);
         let threshold=|v:&super::ViewUniform|v.params[0].min(v.fog_cull[2]*v.cam[3]);
         assert_eq!(threshold(&far)/far.cam[3],threshold(&near)/near.cam[3]);
         // A representative parent/child hierarchy gets the identical cut at
@@ -6114,7 +6193,9 @@ mod layout_tests {
     #[test]
     fn near_light_uniform_and_projection_cover_each_separated_car() {
         use glam::Vec3;
-        assert_eq!(std::mem::size_of::<LightUniform>(), 432);
+        assert_eq!(std::mem::size_of::<LightUniform>(), 640);
+        assert_eq!(std::mem::offset_of!(LightUniform, near_levels_view_proj), 432);
+        assert_eq!(std::mem::offset_of!(LightUniform, near_levels), 624);
         assert_eq!(std::mem::offset_of!(LightUniform, fog_sampling), 416);
         assert_eq!(std::mem::offset_of!(LightUniform, anim), 400);
         assert_eq!(std::mem::offset_of!(LightUniform, fog_scattering), 144);
