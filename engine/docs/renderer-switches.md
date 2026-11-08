@@ -36,6 +36,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_VOXEL_SURFACE`, `KERN_VOXEL_PASS`, `KERN_VOXEL_EMPTY_CEILING` | Voxel forest without its surface pass, separate voxel shade pass, or empty-space ceiling. |
 | `KERN_REUSE_SUN_TEXTURE`, `KERN_ZERO_SUN_FAST_PATH` | Recreate the sun texture; shade a sunless scene the long way. |
 | `KERN_WIND_FREEZE` | Trees keep moving in the wind at every distance (`off` works too). Default: frozen to the rest pose between 60 and 90 m, so distant crowns match cached sun shadows; `start,end` in metres sets the band. |
+| `KERN_TEXTURE_COMPRESSION` | Albedo, normal and material map arrays stay RGBA8 instead of BC7 ([materials](materials.md#compression)). |
 | `KERN_PIPELINE_CACHE`, `KERN_TEXTURE_CACHE` | No pipeline cache / no processed texture cache ([texture cache](processed-texture-cache.md)). `KERN_PIPELINE_CACHE_DIR` and `KERN_TEXTURE_CACHE_DIR` move them. |
 
 ## Chosen by the scene, forced either way
@@ -53,6 +54,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_CAMERA_CUT_FLOOR` | 4 | Lowest camera error-cut scale: voxels start sooner than a few trees' budget alone would put them. 1 disables it; 16 (the old default) picks coarse per-branch voxel levels that show as smooth balls on grown pines at 10-30 m. |
 | `KERN_COOK_THREADS` | machine threads | Worker threads for voxel cooks (`render::par`). A plant's branches and geometry groups cook in parallel; nested and concurrent cooks share the count. |
 | `KERN_FOLIAGE_CUT=budget` | Default: the error-driven foliage cut (each root refines by error alone; the GPU loosens the camera and shadow targets when a cap binds). `budget` restores the budgeted collective admission for A/B. |
+| `KERN_TEXTURE_STREAMING` | `Scene::texture_streaming` (Sideways: on for played windows); `1` streams, `0` uploads every mip at creation ([materials](materials.md#streaming)). |
 | `KERN_FOLIAGE_OCCLUDERS=terrain` | Default: any rigid opaque geometry hides the GPU forest. `terrain` restores land-only occlusion (`terrain_fly --no-building-occlusion`). |
 
 ## Tuning values
@@ -86,6 +88,7 @@ note linked says why. They are candidates for removal from the code.
 
 | Variable | Experiment | Note |
 | --- | --- | --- |
+| `KERN_REFRACTION` | Screen-space refraction for materials with a `Refraction` (same as `Scene::graphics.refraction`); default once checked on a real GPU | [refraction](log/2026-11-08-refraction.md) |
 | `KERN_GPU_PARTICLES` | GPU particle pools take emitters (sparks, embers, grit in Growing Guns and Spellstorm blasts). Opt-in until timed on a real GPU; read by `GpuParticles::new`, so a running game needs a restart | [GPU particles](gpu-particles.md) |
 | `KERN_INSTANCE_GROUPS`, `KERN_SUN_INSTANCE_GROUPS`, `KERN_HEADLIGHT_INSTANCE_GROUPS` | GPU hierarchy of spatial instance groups | [r45](log/instance-hierarchy-r45.md) |
 | `KERN_WATER` | Water optics on terrain water (the bed through refracting, absorbing water) as the `Lighting` default; read whenever a `Lighting` is made | [water](water.md) |

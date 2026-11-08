@@ -124,7 +124,9 @@ impl Gpu {
         .await
         .map_err(|e| format!("no GPU adapter: {e}"))?;
         let info = adapter.get_info();
-        let optional = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS | wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::PIPELINE_CACHE | wgpu::Features::PRIMITIVE_INDEX;
+        let optional = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS | wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::PIPELINE_CACHE | wgpu::Features::PRIMITIVE_INDEX
+            // BC7 albedo, normal and material arrays (texture_stream.rs).
+            | wgpu::Features::TEXTURE_COMPRESSION_BC;
         let features = adapter.features() & optional;
         let mut limits = wgpu::Limits::default().using_resolution(adapter.limits());
         let al = adapter.limits();
@@ -140,7 +142,7 @@ impl Gpu {
         if let Some(side) = TEST_MAX_TEXTURE.with(|c| c.get()) { limits.max_texture_dimension_2d = side; }
         // KERN_WEBGPU_LIMITS: render natively with what a browser gives, to
         // find what a browser build would hit. Both keep only WebGPU's
-        // optional timestamp and first-instance features. `spec` is the
+        // optional timestamp, first-instance and BC compression features. `spec` is the
         // spec's default limits (every browser); `browser` is what about
         // 80 % of WebGPU devices offer (web3dsurvey.com, 2026-11): 16
         // storage buffers per stage, 32 sampled textures, 1 GiB buffers;
@@ -156,7 +158,7 @@ impl Gpu {
                     web.max_buffer_size = 1 << 30;
                 }
                 // Never above what this adapter allows.
-                (features & (wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::INDIRECT_FIRST_INSTANCE), web.or_worse_values_from(&al))
+                (features & (wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::TEXTURE_COMPRESSION_BC), web.or_worse_values_from(&al))
             }
             _ => (features, limits),
         };

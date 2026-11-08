@@ -547,7 +547,7 @@ fn context(capture:&Value,view_index:usize)->Result<(sideways::stage::Stage,Came
     let mut light=Lighting {taa:0.0,..Default::default()};
     match capture["weather"].as_str().ok_or("missing weather")? {
         "clear"=>{},"overcast"=>light.shadow_strength=0.6,
-        "mist"=>light.fog_density=0.011,"wet"=>light.shadow_strength=0.5,
+        "mist"=>light.fog_density=0.011,"wet"=>{light.shadow_strength=0.5;light.wetness=0.85;}
         _=>return Err("unknown capture weather".into()),
     }
     light.sun_dir=vector(&r["sun_direction"])?;
