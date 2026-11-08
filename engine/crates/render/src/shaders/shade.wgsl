@@ -2311,27 +2311,37 @@ fn skin_hair_shares(flags: u32, alpha: f32) -> vec2<f32> {
 
 // Metres of material between p and the sun, from the sun shadow map's
 // nearest texel (orthographic: depth is linear along the light). Large
-// when the map does not cover p.
-// Shadow-map depth is only accurate to about a texel (`world_texel`), which
-// is added so that silhouette texels never glow.
-fn sun_map_thickness(map: texture_depth_2d, projection: mat4x4<f32>, world_texel: f32, p: vec3<f32>) -> f32 {
+// when the map does not cover p. Shadow-map depth is only accurate to about
+// a texel, which is added so that silhouette texels never glow. The maps are
+// read directly (not passed as arguments): shaders that include this file
+// declare them differently.
+fn sun_thickness(p: vec3<f32>) -> f32 {
+    var projection = light.shadow_view_proj;
+    var world_texel = light.sky.w;
+    // The finest sun clipmap level that covers p, else the shared map.
+    var level = -1;
+    let levels = select(0, i32(light.near_levels.x), light.near_shadow.z > 0.5);
+    for (var k = 0; k < levels; k++) {
+        if near_level_weight(k, p) > 0.5 {
+            level = k;
+            projection = near_level_projection(k);
+            world_texel = light.near_shadow.x * f32(1 << u32(k));
+            break;
+        }
+    }
     let c = projection * vec4<f32>(p, 1.0);
     let uv = c.xy * vec2<f32>(0.5, -0.5) + 0.5;
     if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || c.z < 0.0 || c.z > 1.0 { return 1e3; }
-    let size = vec2<i32>(textureDimensions(map));
-    let texel = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1);
-    let occluder = textureLoad(map, texel, 0);
+    var occluder: f32;
+    if level >= 0 {
+        let size = vec2<i32>(textureDimensions(near_shadow_tex));
+        occluder = textureLoad(near_shadow_tex, clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1), level, 0);
+    } else {
+        let size = vec2<i32>(textureDimensions(shadow_tex));
+        occluder = textureLoad(shadow_tex, clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1), 0);
+    }
     let row_z = vec3<f32>(projection[0].z, projection[1].z, projection[2].z);
     return max(c.z - occluder, 0.0) / max(length(row_z), 1e-12) + world_texel * 1.5;
-}
-fn sun_thickness(p: vec3<f32>) -> f32 {
-    if light.near_shadow.z > 0.5 {
-        let c = light.near_shadow_view_proj * vec4<f32>(p, 1.0);
-        if max(abs(c.x), abs(c.y)) < 0.98 && c.z >= 0.0 && c.z <= 1.0 {
-            return sun_map_thickness(near_shadow_tex, light.near_shadow_view_proj, light.near_shadow.x, p);
-        }
-    }
-    return sun_map_thickness(shadow_tex, light.shadow_view_proj, light.sky.w, p);
 }
 
 // Kajiya-Kay strand highlight around tangent t, normalised so that its
