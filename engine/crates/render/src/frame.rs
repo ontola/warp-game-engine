@@ -274,6 +274,12 @@ struct LightUniform {
     near_levels: [f32; 4],
 }
 
+/// Traced reflections: surfaces at least this rough keep the environment
+/// (their lobe is wider than one jittered ray per frame can average).
+const TRACE_ROUGHNESS_CUT: f32 = 0.45;
+/// How far a reflected ray marches through the depth buffer, in metres.
+const TRACE_REACH_M: f32 = 250.0;
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct GiUniform {
@@ -284,6 +290,10 @@ struct GiUniform {
     hf_dims: [u32; 4],
     bounce: [f32; 4],
     params: [f32; 4],
+    /// Traced reflections: last frame's unjittered view-projection.
+    prev_view_proj: [[f32; 4]; 4],
+    /// x: on with a valid history, y: roughness cut, z: reach (m).
+    trace: [f32; 4],
 }
 
 #[repr(C)]
@@ -429,6 +439,10 @@ pub struct Lighting {
     pub contact_occlusion: f32,
     /// Visibility along the glossy reflected direction.
     pub reflection_occlusion: f32,
+    /// Traced reflections (dynamic-gi.md): glossy surfaces show the scene
+    /// around them, traced through the depth buffer and lit by last frame's
+    /// image. 1 on, 0 off. Needs TAA (its history); off under DLSS.
+    pub traced_reflections: f32,
     /// Per-view high-resolution sun detail; set 0 for an isolated cost check.
     pub near_shadows: f32,
     /// Debug: 1 sky visibility, 2 albedo, 3 direct, 4 diffuse indirect,
@@ -498,6 +512,7 @@ impl Lighting {
             "indirect_fill_lux" if f.is_finite() && f >= 0.0 => self.indirect_fill_lux = f,
             "contact_occlusion" => self.contact_occlusion = f,
             "reflection_occlusion" => self.reflection_occlusion = f,
+            "traced_reflections" => self.traced_reflections = f,
             "near_shadows" => self.near_shadows = f,
             "debug" => self.debug = f,
             "taa" => self.taa = f,
@@ -561,6 +576,7 @@ impl Default for Lighting {
             indirect_fill_lux: 0.0,
             contact_occlusion: 1.0,
             reflection_occlusion: 1.0,
+            traced_reflections: 1.0,
             near_shadows: 1.0,
             debug: 0.0,
             taa: 1.0,
@@ -1032,6 +1048,10 @@ pub struct Renderer {
     /// lights them from their surface (binding 20); stand-in without.
     voxel_surface: bool,
     voxel_surface_fallback: wgpu::TextureView,
+    /// Bound as the reflection history when there is none (traced reflections off).
+    history_fallback: wgpu::TextureView,
+    /// KERN_TRACED_REFLECTIONS=0 turns traced reflections off.
+    traced_reflections: bool,
     /// shade_voxels (KERN_VOXEL_PASS=1): voxel pixels in their own pass.
     voxel_pass: Option<wgpu::ComputePipeline>,
     /// shade for procedural terrain pixels only (SHADE_CLASS 1); `shade`
@@ -1873,6 +1893,7 @@ impl Renderer {
                 (18, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (19, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (20, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (21, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
             ],
         );
         let canopy = crate::canopy::CanopyClipmap::new(gpu, scene, &scene_layout)
@@ -2326,6 +2347,11 @@ impl Renderer {
             shade_diagnostic: std::sync::OnceLock::new(),
             field_features: (crate::shade_features::field_style_blocks(scene), shade_features.field_regions, shade_features.field_roads),
             shade_unlit: std::sync::Mutex::new(None),
+            history_fallback: gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no reflection history"),
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+                dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }).create_view(&Default::default()),
+            traced_reflections: std::env::var("KERN_TRACED_REFLECTIONS").as_deref() != Ok("0"),
             voxel_surface_fallback: gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no voxel surface"),
                 size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
                 dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Uint,
@@ -4589,6 +4615,10 @@ impl Renderer {
             canopy_updated_levels.push(canopy.updated_levels);
             canopy_pitch_m.push(canopy.origins.map(|origin| origin[3]));
             let density_view = canopy.view;
+            // Traced reflections read last frame's TAA history: on only with
+            // one of this view's size (a fresh history holds no image yet).
+            let trace_prev = (taa_on && self.traced_reflections && light.traced_reflections > 0.5 && !self.simple_lighting)
+                .then(|| histories[vi].as_ref().filter(|hh| hh.size == (w, h)).map(|hh| hh.prev_view_proj)).flatten();
             let gi_u = GiUniform {
                 vol_origins: canopy.origins,
                 vol_anchors: canopy.anchors,
@@ -4601,6 +4631,8 @@ impl Renderer {
                 bounce: [0.12 * 0.85, 0.12, 0.12 * 0.7, light.sky_lux],
                 params: [light.contact_occlusion, light.reflection_occlusion, self.sky_limit,
                     if light.gi > 0.0 { self.irradiance_volume.map_or(0.0, |(offset, _)| offset as f32) } else { 0.0 }],
+                prev_view_proj: trace_prev.unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
+                trace: [if trace_prev.is_some() { 1.0 } else { 0.0 }, TRACE_ROUGHNESS_CUT, TRACE_REACH_M, 0.0],
             };
             let gi_buf = self.view_uniform(gpu, vi, 0, "gi", bytemuck::bytes_of(&gi_u));
             // A rebuilt canopy level gets its sky transmittance baked now,
@@ -4789,6 +4821,7 @@ impl Renderer {
             } else {
                 None
             };
+            let reflection_history = taa_pass.as_ref().filter(|_| trace_prev.is_some()).map(|(src, _, _)| src.clone());
             let bloom_strength=(debug_options.bloom_strength*light.bloom_boost.clamp(0.0,32.0)).min(2.0);
             let bloom_on=crate::bloom::active(debug_options.bloom_enabled,bloom_strength);
             let solar = solar_projection(cam, view_m, view.w as f32 / view.h as f32, light, sun_visibility);
@@ -4923,6 +4956,7 @@ impl Renderer {
                     (18, wgpu::BindingResource::TextureView(voxel_depth.as_ref().unwrap_or(&self.voxel_depth_fallback))),
                     (19, wgpu::BindingResource::TextureView(coarse)),
                     (20, wgpu::BindingResource::TextureView(voxel_surface.as_ref().unwrap_or(&self.voxel_surface_fallback))),
+                    (21, wgpu::BindingResource::TextureView(reflection_history.as_ref().unwrap_or(&self.history_fallback))),
                 ],
             );
             let shade_bind = shade_bind_with(resources, coarse_target.as_ref().map_or(&self.terrain_coarse_fallback, |t| &t.1));

@@ -112,6 +112,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 
 ## Shadows and lighting
 
+- [Traced reflections, stage 1, 8 November](2026-11-08-traced-reflections.md)
 - [Low-sun shadow diagnostics, 24 October](sun-shadow-diagnostics.md)
 - [World visibility and cached lighting, 24 October](world-lighting.md)
 - [Next live diffuse-bounce step (design only)](live-terrain-bounce-plan.md)

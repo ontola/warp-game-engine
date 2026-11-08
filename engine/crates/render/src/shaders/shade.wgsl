@@ -419,7 +419,13 @@ struct Gi {
     hf_dims: vec4<u32>,
     bounce: vec4<f32>,
     params: vec4<f32>, // contact on, reflection on, sun-free sky cap, irradiance volume aux offset (0: none)
+    // Traced reflections (dynamic-gi.md): last frame's unjittered camera,
+    // and x: on (a valid history this frame), y: roughness cut, z: reach (m).
+    prev_view_proj: mat4x4<f32>,
+    trace: vec4<f32>,
 };
+// Last frame's resolved radiance (the TAA history), for traced reflections.
+@group(1) @binding(21) var reflection_history: texture_2d<f32>;
 
 fn meadow_edge_covers(p:vec3<f32>,normal:vec3<f32>,sun_query:vec2<f32>,
     block:u32,origin:vec2<i32>,dimension:u32,radius:f32)->vec2<f32> {
@@ -868,6 +874,109 @@ fn environment(r: vec3<f32>, rough: f32, bounce: vec3<f32>) -> vec3<f32> {
         sky = mix(min(sky_radiance(r), vec3<f32>(gi.params.z)), sky_irradiance(r) / PI, smoothstep(0.05, 0.55, rough));
     }
     return mix(ground, sky, sky_weight);
+}
+
+// Traced reflections, stage 1 of dynamic GI (dynamic-gi.md). The reflected
+// ray marches this frame's depth buffer with steps that grow with distance;
+// where it passes behind a surface by less than the step it hit it, and the
+// hit's radiance is read from last frame's resolved image at the hit's
+// reprojected position: whatever the frame shows, lit by everything, trees
+// and cars included. A ray that leaves the screen (it cannot come back: the
+// frustum is convex) returns confidence 0 and keeps the environment and its
+// heightfield occlusion. Rough surfaces jitter the ray by GGX, one sample
+// per pixel and frame, and TAA averages them. rgb: radiance, a: confidence.
+fn trace_hash(px: vec2<i32>, salt: f32) -> vec2<f32> {
+    // Interleaved gradient noise, shifted by the frame sequence.
+    let q = vec2<f32>(px) + salt * vec2<f32>(5.588238, 5.588238);
+    let a = fract(52.9829189 * fract(dot(q, vec2<f32>(0.06711056, 0.00583715))));
+    let b = fract(52.9829189 * fract(dot(q + vec2<f32>(47.0, 17.0), vec2<f32>(0.00583715, 0.06711056))));
+    return vec2<f32>(a, b);
+}
+
+fn trace_jitter(r: vec3<f32>, rough: f32, xi: vec2<f32>) -> vec3<f32> {
+    // A GGX lobe around the mirror direction (an approximation that treats
+    // the reflection as the lobe axis; exact enough under the TAA average).
+    let a = rough * rough;
+    let cos_t = sqrt((1.0 - xi.x) / (1.0 + (a * a - 1.0) * xi.x));
+    let sin_t = sqrt(max(1.0 - cos_t * cos_t, 0.0));
+    let phi = 2.0 * PI * xi.y;
+    let t1 = normalize(select(cross(r, vec3<f32>(0.0, 0.0, 1.0)), cross(r, vec3<f32>(1.0, 0.0, 0.0)), abs(r.x) < 0.9));
+    let t2 = cross(r, t1);
+    // The half-vector spread doubles in the reflected direction.
+    let s = sin_t * 2.0 * cos_t;
+    let c = cos_t * cos_t * 2.0 - 1.0;
+    return normalize(r * c + (t1 * cos(phi) + t2 * sin(phi)) * s);
+}
+
+fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, px: vec2<i32>, size: vec2<u32>, dist: f32) -> vec4<f32> {
+    if gi.trace.x < 0.5 || rough >= gi.trace.y { return vec4<f32>(0.0); }
+    var r = mirror;
+    if rough > 0.06 {
+        let jittered = trace_jitter(mirror, rough, trace_hash(px, light.fog_sampling.x * 16.0));
+        if dot(jittered, n) > 0.02 { r = jittered; }
+    }
+    if dot(r, n) <= 0.0 { return vec4<f32>(0.0); }
+    let fsize = vec2<f32>(size);
+    // Leave the surface by its depth precision and pixel footprint.
+    let o = p + n * (0.02 + dist * 0.002);
+    let reach = gi.trace.z;
+    let jitter = trace_hash(px.yx, light.fog_sampling.x * 16.0 + 3.0).x;
+    var lo = 0.0;
+    var t = max(0.06, dist * 0.003) * (0.75 + 0.5 * jitter);
+    var found = false;
+    for (var k = 0; k < 40; k++) {
+        let c = view.view_proj * vec4<f32>(o + r * t, 1.0);
+        if c.w <= 1e-4 { break; }
+        let ndc = c.xyz / c.w;
+        if abs(ndc.x) >= 1.0 || abs(ndc.y) >= 1.0 { break; }
+        let sp = vec2<i32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize);
+        let d = textureLoad(depth_tex, sp, 0);
+        // Reversed infinite Z: depth is near / view depth, so the scene is in
+        // front of the ray point when d > ndc.z; how far behind it, in metres:
+        if d > ndc.z {
+            let behind = c.w * (1.0 - ndc.z / d);
+            if behind < max(0.25, (t - lo) * 2.0 + c.w * 0.01) { found = true; break; }
+        }
+        lo = t;
+        t += max(0.08, t * 0.2);
+        if t > reach { break; }
+    }
+    if !found { return vec4<f32>(0.0); }
+    // Bisect to the crossing.
+    var hi = t;
+    for (var k = 0; k < 5; k++) {
+        let mid = 0.5 * (lo + hi);
+        let c = view.view_proj * vec4<f32>(o + r * mid, 1.0);
+        let ndc = c.xyz / c.w;
+        let sp = vec2<i32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize);
+        if textureLoad(depth_tex, sp, 0) > ndc.z { hi = mid; } else { lo = mid; }
+    }
+    let c = view.view_proj * vec4<f32>(o + r * hi, 1.0);
+    let ndc = c.xyz / c.w;
+    let sp = clamp(vec2<i32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize), vec2<i32>(0), vec2<i32>(size) - 1);
+    let d = textureLoad(depth_tex, sp, 0);
+    if d <= 0.0 { return vec4<f32>(0.0); }
+    // The surface the ray reached, as this frame's depth buffer places it.
+    let pc = (vec2<f32>(sp) + 0.5) / fsize;
+    let world = view.inv_view_proj * vec4<f32>(pc.x * 2.0 - 1.0, 1.0 - pc.y * 2.0, d, 1.0);
+    let hit = world.xyz / world.w;
+    // A hit facing away from the ray (seen from behind) has no radiance here.
+    let back = c.w * (1.0 - ndc.z / d);
+    if back > max(0.6, hi * 0.06) { return vec4<f32>(0.0); }
+    let prev = gi.prev_view_proj * vec4<f32>(hit, 1.0);
+    if prev.w <= 1e-4 { return vec4<f32>(0.0); }
+    let prev_ndc = prev.xy / prev.w;
+    let edge = max(abs(prev_ndc.x), abs(prev_ndc.y));
+    if edge >= 1.0 { return vec4<f32>(0.0); }
+    let uv = vec2<f32>(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5);
+    let radiance = textureSampleLevel(reflection_history, canopy_sampler, uv, 0.0).rgb;
+    if any(radiance != radiance) { return vec4<f32>(0.0); }
+    // Fade at the screen's edges, near the reach and towards the roughness cut.
+    let ndc_edge = max(abs(ndc.x), abs(ndc.y));
+    var confidence = 1.0 - smoothstep(0.82, 1.0, max(edge, ndc_edge));
+    confidence *= 1.0 - smoothstep(reach * 0.7, reach, hi);
+    confidence *= 1.0 - smoothstep(gi.trace.y * 0.6, gi.trace.y, rough);
+    return vec4<f32>(min(radiance, vec3<f32>(65504.0)), confidence);
 }
 
 fn vtx(i: u32) -> u32 {
@@ -2899,6 +3008,12 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             env=mix(env,irradiance_volume(p+visibility_n*0.05,refl).rgb/PI*spec_contact,room.w);
           }
         }
+        // Traced reflections replace the environment where they hit. Under
+        // a clear coat only the coat traces (below): it shows the reflection.
+        if coat <= 0.0 && rough < gi.trace.y {
+            let traced = traced_reflection(p, visibility_n, refl, rough, px, size, dist);
+            env = mix(env, traced.rgb, traced.a);
+        }
         direct=diffuse*sun_e*sun+sun_e*back/PI+sun_e*ggx(n,v,l,rough,f0);
         // Authored diffuse room return; retain crevice and contact occlusion.
         // z is irradiance in lux, independent of exposure and direct shadow bias.
@@ -2920,7 +3035,10 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // smaller than roughness 0.05 does.
         direct = direct * (1.0 - fc) + sun_e * ggx(coat_n, v, l, max(coat_rough, 0.05), vec3<f32>(0.04)) * coat;
         indirect *= 1.0 - fc;
-        specular = specular * (1.0 - fc) + mix(bounce / PI, environment(coat_refl, coat_rough, bounce), reflection_vis) * coat_contact * fc;
+        var coat_env = mix(bounce / PI, environment(coat_refl, coat_rough, bounce), reflection_vis) * coat_contact;
+        let traced = traced_reflection(p, visibility_n, coat_refl, coat_rough, px, size, dist);
+        coat_env = mix(coat_env, traced.rgb, traced.a);
+        specular = specular * (1.0 - fc) + coat_env * fc;
     }
     if FEATURE_LOCAL_LIGHTS && FEATURE_GRASS && grass {
         direct += headlight_grass_radiance(p,v,base,rough);
