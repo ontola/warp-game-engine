@@ -1,0 +1,72 @@
+{
+  "seed": 52,
+  "population": 8353,
+  "device": "NVIDIA GeForce RTX 5070 Ti",
+  "backend": "Vulkan",
+  "per_view_size": [
+    960,
+    540
+  ],
+  "runs_per_variant": 3,
+  "frames_per_run": 121,
+  "target_bytes": 4147200,
+  "results": [
+    {
+      "mode": "cells",
+      "stationary_wide_view_gpu_ms": 0.285,
+      "both_views_gpu_ms": 0.418,
+      "both_views_p95_gpu_ms": 0.599,
+      "close_pair_gpu_ms": 0.437,
+      "resident_far_bytes": 925620,
+      "resident_near_bytes": 1475892,
+      "first_request_frames": [
+        33,
+        33,
+        33
+      ],
+      "cold_wall_ms": [
+        1.43,
+        1.42,
+        1.38
+      ]
+    },
+    {
+      "mode": "mesh",
+      "stationary_wide_view_gpu_ms": 0.183,
+      "both_views_gpu_ms": 0.303,
+      "both_views_p95_gpu_ms": 0.38,
+      "close_pair_gpu_ms": 0.328,
+      "resident_far_bytes": 920940,
+      "resident_near_bytes": 1471212,
+      "first_request_frames": [
+        33,
+        33,
+        33
+      ],
+      "cold_wall_ms": [
+        1.26,
+        1.21,
+        1.29
+      ]
+    },
+    {
+      "mode": "impostor",
+      "stationary_wide_view_gpu_ms": 0.112,
+      "both_views_gpu_ms": 0.213,
+      "both_views_p95_gpu_ms": 0.251,
+      "close_pair_gpu_ms": 0.251,
+      "resident_far_bytes": 909420,
+      "resident_near_bytes": 1459692,
+      "first_request_frames": [
+        33,
+        33,
+        33
+      ],
+      "cold_wall_ms": [
+        1.49,
+        1.44,
+        1.27
+      ]
+    }
+  ]
+}
