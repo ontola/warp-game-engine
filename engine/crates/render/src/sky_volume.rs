@@ -25,7 +25,7 @@ use crate::Gpu;
 use crate::atmosphere::{AtmosphereTables, MULTI_SCATTER_SIZE};
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
-use glam::{Mat4, Vec2, Vec3};
+use glam::{DMat4, Mat4, Vec2, Vec3};
 use std::sync::{Arc, Mutex};
 
 pub fn shader_source() -> String {
@@ -339,9 +339,15 @@ impl SkyVolumeSlot {
         let model = &tables.model;
         let history_valid = !view.reset && t.prev_vp.is_some();
         let mut u = Uniform::zeroed();
-        u.inv_vp = view.view_proj.inverse().to_cols_array_2d();
-        u.prev_vp = t.prev_vp.unwrap_or(view.view_proj).to_cols_array_2d();
-        u.inv_depth_vp = view.depth_vp.inverse().to_cols_array_2d();
+        // Camera-relative matrices, built in f64: far from the origin a
+        // world-space inverse loses the ray direction to f32 rounding (the
+        // near-plane point minus a camera 100 km out), which tore the clouds
+        // into blocks.
+        let at = DMat4::from_translation(view.camera.as_dvec3());
+        let relative = |m: Mat4| m.as_dmat4() * at;
+        u.inv_vp = relative(view.view_proj).inverse().as_mat4().to_cols_array_2d();
+        u.prev_vp = relative(t.prev_vp.unwrap_or(view.view_proj)).as_mat4().to_cols_array_2d();
+        u.inv_depth_vp = relative(view.depth_vp).inverse().as_mat4().to_cols_array_2d();
         u.camera = view.camera.extend(t.frame as f32).to_array();
         u.sizes = [dw as f32, dh as f32, half.0 as f32, half.1 as f32];
         u.output = [size.0 as f32, size.1 as f32, if history_valid { 1.0 } else { 0.0 }, if settings.aerial { 1.0 } else { 0.0 }];
