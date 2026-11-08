@@ -555,7 +555,7 @@ mod tests {
         let settings=settings();
         let item=settings.as_array().unwrap().iter().find(|s|s["key"]=="upscale").unwrap();
         assert_eq!(item["kind"],"choice");assert_eq!(item["default"],"native");
-        assert_eq!(item["options"].as_array().unwrap().len(),4);
+        assert_eq!(item["options"].as_array().unwrap().len(),render::upscale::UpscaleMode::ALL.len());
         for option in item["options"].as_array().unwrap() {assert!(option.as_str().unwrap().parse::<render::upscale::UpscaleMode>().is_ok());}
     }
 
