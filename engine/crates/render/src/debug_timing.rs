@@ -275,7 +275,7 @@ pub fn pass_group(name: &str) -> &'static str {
         || name.contains("foliage") || name.contains("forest") || name.contains("tree") || name.contains("branch") { "Vegetation" }
     else if name.contains("cull") || name.contains("raster") || name.contains("broadphase")
         || name.contains("occlusion pyramid") || name.contains("visibility") || name.contains("refit") { "Geometry" }
-    else if matches!(name, "taa" | "dlss" | "tonemap" | "auto exposure" | "motion vectors" | "motion blur" | "bloom") { "Post-processing" }
+    else if matches!(name, "taa" | "dlss" | "tonemap" | "auto exposure" | "motion vectors" | "motion blur" | "depth of field" | "bloom") { "Post-processing" }
     else if name.contains("particles") || name.contains("exhaust") || name.contains("transparency")
         || name.contains("animation") || name.contains("skinning") || name.contains("crowd") || name.contains("debris")
         || matches!(name, "fx" | "sprites") { "Effects" }
