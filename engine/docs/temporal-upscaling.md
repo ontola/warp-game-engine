@@ -64,11 +64,12 @@ frame, a depth, and a bias (1 where history must not be used). Covered:
 - grass, meadow and the voxel composite through their own reprojection
   layers.
 
-Every pixel also gets a surface id (its owner instance, mesh or voxel). A
-pixel whose reprojected 2x2 footprint held none of its id last frame (a
-representation swap, a recycled slot, something uncovered) rejects history
-there. This replaced the old whole-view reset on any foliage selection
-change, which threw away all history every frame while pages streamed.
+Foliage selection changes (a source/voxel swap, a new mip) no longer reset
+a whole view's history; that threw away all history every frame while
+pages streamed. Swaps are handled per pixel by colour clipping, as native
+TAA always did. A per-pixel owner/representation id test was tried and
+dropped: leaves, branches and voxels interleave per pixel and flicker
+between owners under jitter, so it left tree crowns unresolved.
 
 The pass uses 8 storage buffers (the engine's limit per stage) and 11
 sampled textures.

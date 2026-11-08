@@ -46,8 +46,8 @@ resolution, reconstruction mode, sample count and scene with a number.
 - **Portable temporal upscaler** (8 November): `temporal-quality`,
   `-balanced` and `-performance` render at 2/3, 0.58 and 1/2 resolution and
   rebuild the output on every GPU, WebGPU included; motion vectors now cover
-  skinned meshes and swaying branch voxels, and history is rejected per
-  pixel on a representation swap instead of per view
+  skinned meshes and swaying branch voxels, and a foliage selection change
+  no longer resets the whole view's history
   ([guide](temporal-upscaling.md)). **Open:** no sharpening; not yet timed
   on a real GPU.
 - **Open:** fixed per-frame work for unused features; `frame.rs` still refers
