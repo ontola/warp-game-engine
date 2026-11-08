@@ -74,6 +74,33 @@ and the measurements and dead ends are in the [development log](log/README.md).
   electrical arcs and tracers; it also leaves exhaust/particle composition sharp.
   The default order is unchanged for other games.
 
+- **Blended surfaces and refraction.** Materials given
+  `Scene::set_material_blend` (glass, decals) or `set_material_additive`
+  skip the visibility buffer and draw afterwards in a small forward pass
+  (`transparency.rs`, `shaders/transparency.wgsl`), sorted back to front per
+  view, lit with the same sun, sky and shadow code as opaque pixels.
+  `Scene::set_material_refraction` adds a `Refraction` (index of
+  refraction and thickness: `Refraction::WINDOW` for a 4 mm pane,
+  `Refraction::SOLID` for a solid reaching the background). With refraction
+  on (`Scene::graphics.refraction` or `KERN_REFRACTION=1`, off by default
+  until checked on a real GPU), a view with refracting glass first finds
+  the nearest refracting surface per pixel (a depth-only draw over a copy
+  of the opaque depth), draws the glass behind it, copies the HDR, then
+  draws that surface over the copy, bent, and finally the glass in front.
+  The copies, the opaque depth (a read-only attachment) and the front depth
+  are an optional fourth bind group with no storage buffers; the phase is
+  in the top bits of each sorted entry, so it stays one pipeline. A pane
+  bends the ray through its thickness and lets it out parallel; a solid
+  bends it once to the background (its inside faces are not drawn). Light
+  through the glass loses its Fresnel reflection, takes the glass's hue and
+  blurs with roughness; the reflection is kept whole. Only the nearest
+  refracting surface bends: glass behind it moves with the background but
+  does not bend again. A view without refracting glass draws in one pass.
+  Not refracted: whatever lies beyond the screen edge (clamped) and anything
+  in front of the glass (falls back to the straight view).
+  `refraction_probe` renders a glass ball, slab and pane, also split screen,
+  with it off and on.
+
 ## Light
 
 ### Sun shadows
