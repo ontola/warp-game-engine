@@ -1337,7 +1337,9 @@ fn main() -> Result<(), String> {
         let forward = if args.iter().any(|a| a == "--dump-forward") { 1.0 } else { 0.0 };
         for _ in 0..warm { game.tick(&[Controls::default()]); headless.frame(&mut game)?; }
         for i in 0..n.parse::<u32>().map_err(|_| "--dump N DIR")? {
-            game.tick(&[Controls { look: [pan, 0.0], mv: [0.0, forward], ..Default::default() }]);
+            // --climb holds climb: cloud and parallax checks while rising.
+            let held = if args.iter().any(|a| a == "--climb") { Buttons(Buttons::SOUTH) } else { Buttons::default() };
+            game.tick(&[Controls { look: [pan, 0.0], mv: [0.0, forward], held, ..Default::default() }]);
             let rgba = headless.frame(&mut game)?;
             if i % every == 0 { render::write_png(&PathBuf::from(&dir).join(format!("{:03}.png", i / every)), w, h, &rgba)?; }
         }
