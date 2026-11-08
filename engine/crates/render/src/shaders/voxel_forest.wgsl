@@ -1369,7 +1369,8 @@ fn volume_sun_splats_impl(index:u32,lane:u32,damaged:bool) {
     let sun=volume_splat_header(10u);
     if lane==0u {
         if index==0u {
-            volume_splats[11]=vec4<u32>(volume_config.size_count.w,0u,0u,0u);
+            // Keep y: the cached map size every workgroup reads.
+            volume_splats[11]=vec4<u32>(volume_config.size_count.w,volume_splats[11].y,0u,0u);
             atomicStore(&volume_stats[VOLUME_DRAW_WORD+0],VOLUME_SPLAT_VERTICES);
         }
         var level=VOLUME_SPLAT_NONE;
@@ -1594,7 +1595,7 @@ fn voxel_sun_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invoca
     volume_sun_splats_impl(volume_shadow_index(group.x+group.y*65535u),lane,true);
 }
 @group(3) @binding(0) var<uniform> shadow_damage_words:array<vec4<u32>,32>;
-override SHADOW_DAMAGE_MAP_SIZE:f32=4096.;
+// The cached map's size rides in header row 11.y (render_sun).
 @compute @workgroup_size(64)
 fn voxel_cached_sun_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
     let index=volume_shadow_index(group.x+group.y*65535u);
@@ -1602,7 +1603,7 @@ fn voxel_cached_sun_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local
     if lane==0u && index<volume_config.size_count.w {
         let tree=volume_trees[index];
         let vp=mat4x4<f32>(volume_splat_header(0u),volume_splat_header(1u),volume_splat_header(2u),volume_splat_header(3u));
-        damaged=shadow_damage_bounds(vp,SHADOW_DAMAGE_MAP_SIZE,tree.bounds_min.xyz,tree.bounds_max.xyz);
+        damaged=shadow_damage_bounds(vp,f32(max(volume_splats[11].y,64u)),tree.bounds_min.xyz,tree.bounds_max.xyz);
     }
     // Only lane zero consumes this predicate; all lanes still participate in
     // the shared level load, including clean owners and the indirect reset.

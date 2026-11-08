@@ -254,6 +254,8 @@ pub(crate) struct SunSplatView<'a> {
     /// Towards the sun.
     pub direction: glam::Vec3,
     pub texel_m: f32,
+    /// Side of the depth map in texels (tile size of a cached map).
+    pub map_size: u32,
 }
 /// Which part of `render` to run. With rasterized voxels the splats are
 /// rastered before the opaque shade (Splats), which then skips the pixels
@@ -467,7 +469,7 @@ fn sun_splat_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, ca
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("voxel sun splats"), source: wgpu::ShaderSource::Wgsl(source.into()) });
     gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("voxel_sun_splats"), layout: Some(layout),
-        module: &module, entry_point: Some(if cached {"voxel_cached_sun_splats"}else{"voxel_sun_splats"}), compilation_options: wgpu::PipelineCompilationOptions {constants:if cached {&[("SHADOW_DAMAGE_MAP_SIZE",crate::frame::SHADOW_SIZE as f64)]}else{&[]},..Default::default()}, cache: gpu.pipeline_cache() })
+        module: &module, entry_point: Some(if cached {"voxel_cached_sun_splats"}else{"voxel_sun_splats"}), compilation_options: Default::default(), cache: gpu.pipeline_cache() })
 }
 fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgpu::BindGroupLayout, data_layout: &wgpu::BindGroupLayout, source: &str, cells_override:Option<&wgpu::Buffer>) -> SplatRaster {
     let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxel splat raster"),
@@ -524,7 +526,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
             depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(),
             bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 } }),
         multisample: Default::default(),
-        fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs_cached_depth"), compilation_options: wgpu::PipelineCompilationOptions {constants:&[("SHADOW_TILE_PIXELS",(crate::frame::SHADOW_SIZE/64)as f64)],..Default::default()}, targets: &[] }),
+        fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs_cached_depth"), compilation_options: Default::default(), targets: &[] }),
         multiview_mask: None, cache: gpu.pipeline_cache(),
     });
     let empty_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxel sun splats"), entries: &[] });
@@ -1496,6 +1498,7 @@ impl VoxelRenderer {
         header[..4].copy_from_slice(&sun.view_proj.to_cols_array_2d());
         header[4..10].copy_from_slice(&sun.planes);
         header[10] = [sun.direction.x, sun.direction.y, sun.direction.z, sun.texel_m];
+        header[11][1] = f32::from_bits(sun.map_size);
         gpu.queue.write_buffer(&splat.records, 0, bytemuck::cast_slice(&header));
         encoder.clear_buffer(&splat.draw, DRAW_OFFSET, Some(16));
         {
