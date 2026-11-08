@@ -262,8 +262,9 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     let sun_grow = ff_crown_growth(sun, params.style);
     let sun_shade = 1.0 - exp(-crowd * params.style.crown.y * sun_grow * sun_grow);
     let packed = 1.0 - exp(-crowd * params.style.crown.y);
-    let sky_own = (0.25 + 0.75 * sqrt(FAR_CROWN_OWN)) * (1.0 - FAR_CROWN_SKY_LOSS * packed);
-    let sun_own = FAR_CROWN_OWN * (1.0 - FAR_CROWN_SUN_LOSS * sun_shade);
+    // Squared: thin cover keeps its light, closed cores lose most of it.
+    let sky_own = (0.25 + 0.75 * sqrt(FAR_CROWN_OWN)) * (1.0 - FAR_CROWN_SKY_LOSS * packed * packed);
+    let sun_own = FAR_CROWN_OWN * (1.0 - FAR_CROWN_SUN_LOSS * sun_shade * sun_shade);
     let c = mix(gap, crowns.rgb * sky_own, cover);
     // Sun: of the ground between crowns, the share no crown shades from the
     // sun, except where the view sits behind the sun and the crowns hide
@@ -282,8 +283,8 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
 const FAR_CROWN_OWN: f32 = 0.42;
 // How much of that the neighbours in a closed stand take from a crown's
 // sun and sky.
-const FAR_CROWN_SUN_LOSS: f32 = 0.7;
-const FAR_CROWN_SKY_LOSS: f32 = 0.5;
+const FAR_CROWN_SUN_LOSS: f32 = 0.95;
+const FAR_CROWN_SKY_LOSS: f32 = 0.8;
 
 // Crowns seen from `eye` at q, for a pixel `footprint` metres across: rgb
 // their colour with self-shade, w the share of the pixel they cover. Each
@@ -302,6 +303,11 @@ fn far_crowns(q: vec2<f32>, footprint: f32, eye: vec3<f32>, sun: vec3<f32>, seed
     if far >= 1.0 { return vec4<f32>(needles * tops, mean_cover); }
     let ci = i32(floor(q.x / FF_CELL));
     let cj = i32(floor(q.y / FF_CELL));
+    // A crown seen at a glancing angle is its width across the view and
+    // its height along it: an ellipse of the same area as the grown disc
+    // (so the cover still matches the mean), not a wider disc.
+    let along = normalize(eye.xz + vec2<f32>(1e-6, 0.0));
+    let across = vec2<f32>(-along.y, along.x);
     var open = 1.0;
     var tint = 0.0;
     var weight = 0.0;
@@ -310,9 +316,16 @@ fn far_crowns(q: vec2<f32>, footprint: f32, eye: vec3<f32>, sun: vec3<f32>, seed
             let sp = ff_spot(ci + di, cj + dj, seed, crowd, fs.needles.w);
             if sp.w < 0.0 { continue; }
             let d = q - sp.xy;
-            let radius = fs.crown.x * grow * sp.z;
-            // Coverage of a disc edge filtered over the pixel.
-            let a = clamp(0.5 + (radius - length(d)) / max(footprint, 0.05), 0.0, 1.0);
+            // Along the view at most a cell long (the 3x3 spots end there);
+            // the rest of the area goes across.
+            let r = fs.crown.x * sp.z;
+            let long = min(r * grow * grow, FF_CELL);
+            let wide = r * r * grow * grow / long;
+            let radius = wide;
+            let e = vec2<f32>(dot(d, across), dot(d, along) * wide / long);
+            // Coverage of the ellipse's edge filtered over the pixel (its
+            // distance in the narrow axis's metres).
+            let a = clamp(0.5 + (radius - length(e)) / max(footprint, 0.05), 0.0, 1.0);
             open *= 1.0 - a;
             tint += a * sp.w;
             weight += a;
