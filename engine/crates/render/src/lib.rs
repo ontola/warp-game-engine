@@ -142,6 +142,7 @@ mod direct_draw;
 pub mod fx;
 pub mod gpu_particles;
 pub mod crowd;
+pub mod humans;
 pub mod motion;
 pub mod motion_blur;
 pub mod depth_of_field;
