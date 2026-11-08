@@ -40,6 +40,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 ## Performance and tooling
 
 - [Parenting in four games, 7 November](2026-11-07-parenting.md)
+- [One sun clipmap: cached levels replace the shared and far maps, 8 November](2026-11-08-sun-clipmap.md)
 - [Screen-space refraction, 8 November](2026-11-08-refraction.md)
 - [Material maps, weathering, BC7 and texture streaming, 8 November](2026-11-08-materials-and-texture-streaming.md)
 
