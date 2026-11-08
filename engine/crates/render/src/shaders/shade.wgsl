@@ -27,9 +27,11 @@ struct Light {
     near_shadow: vec4<f32>, // world texel size, blend-start radius, enabled
     night_stars: vec4<f32>, // peak radiance, zenith optical depth, zero-sun fast path, seed
     anim: vec4<f32>,        // x: seconds for animated procedural materials, y: emission scale, z: radiance shown as white
-    fog_sampling: vec4<f32>, // x: sequence phase, y: temporal accumulation enabled, z: diffuse room return (lux)
+    fog_sampling: vec4<f32>, // x: sequence phase, y: temporal accumulation enabled, z: diffuse room return (lux), w: water optics (Lighting::water)
     near_levels_view_proj: array<mat4x4<f32>, 7>, // sun clipmap levels 1..7 (frame.rs near_levels)
     near_levels: vec4<f32>, // x: levels drawn, y: one clipmap (the shared map is its outermost level)
+    clouds: vec4<f32>,       // cloud layer (cloud_weather.wgsl): coverage, base m, thickness m, extinction per m
+    cloud_motion: vec4<f32>, // wind offset xz m, shadow strength, enabled
 };
 
 struct Cluster {
@@ -101,6 +103,40 @@ fn aux_word(i: u32) -> u32 {
 }
 fn aux_len() -> u32 { return scene_tables[1].y; }
 @group(0) @binding(9) var normal_tex: texture_2d_array<f32>;
+
+// Material extension in the scene tables from vec4 2.w (material_maps.rs):
+// a header (layer maps at, material layers at, their counts), per texture
+// layer x: 1 + its material map layer in normal_tex (0: none), y/z: least
+// resident albedo/normal LOD while textures stream; per material x: wet,
+// snow, moss and porosity as bytes.
+fn layer_map(layer: i32) -> vec4<u32> {
+    let h = scene_tables[scene_tables[2].w];
+    if layer < 0 || u32(layer) >= h.z { return vec4<u32>(0u); }
+    return scene_tables[h.x + u32(layer)];
+}
+fn albedo_lod_floor(layer: i32) -> f32 { return bitcast<f32>(layer_map(layer).y); }
+fn normal_lod_floor(layer: i32) -> f32 { return bitcast<f32>(layer_map(layer).z); }
+// Scale for texture gradients so a sample never reads below LOD `floor`
+// (mips that have not streamed in): measured on the shorter gradient,
+// which bounds the LOD anisotropic filtering picks from below.
+fn lod_floor_scale(gx: vec2<f32>, gy: vec2<f32>, size: f32, floor: f32) -> f32 {
+    if floor <= 0.0 { return 1.0; }
+    let minor = max(min(length(gx), length(gy)) * size, 1e-8);
+    return exp2(max(floor - log2(minor), 0.0));
+}
+fn albedo_grad(layer: i32, gx: vec2<f32>, gy: vec2<f32>) -> f32 {
+    return lod_floor_scale(gx, gy, f32(textureDimensions(albedo).x), albedo_lod_floor(layer));
+}
+fn material_weather(i: u32) -> vec4<f32> {
+    let h = scene_tables[scene_tables[2].w];
+    if i >= h.w { return vec4<f32>(1.0, 1.0, 0.0, 0.5); }
+    return unpack4x8unorm(scene_tables[h.y + i].x);
+}
+// The same for a normal_tex layer of texture layer `layer` (its normal map
+// or its material map).
+fn normal_grad(layer: i32, gx: vec2<f32>, gy: vec2<f32>) -> f32 {
+    return lod_floor_scale(gx, gy, f32(textureDimensions(normal_tex).x), normal_lod_floor(layer));
+}
 @group(0) @binding(10) var plant_samp: sampler;
 // Sparse persistent tyre material data: no geometry, emission or extra lights.
 @group(0) @binding(20) var track_atlas: texture_2d<f32>;
@@ -217,6 +253,9 @@ override FEATURE_IRRADIANCE: bool = true;
 // but cost registers: about 0.3-0.5 and 0.2 ms of land shading on an M5 Pro.
 override FEATURE_FIELD_REGIONS: bool = true;
 override FEATURE_FIELD_ROADS: bool = true;
+// SKIN and HAIR materials (scene.rs, skin_hair below). Off unless a scene
+// has one, so other scenes compile none of it.
+override FEATURE_SKIN_HAIR: bool = true;
 override SKIP_HIDDEN_MEADOW:bool=false;
 var<workgroup> hidden_meadow_count:atomic<u32>;
 // Sky tiles: `classify` writes the sky of 8x8 tiles without geometry and
@@ -372,6 +411,7 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     // a texel of bias they barely shade a crown) voxel crowns caught ~1.4x
     // the sun of the same tree as a mesh (Mancave tree series, 6 November).
     var shadow = mix(1.0, others * mix(own, own * own, outside), light.sun_color.w);
+    shadow *= cloud_sun_transmittance(p, l, light.clouds, light.cloud_motion);
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow;
     // Sky reaches a cell through its own crown too. sky_visibility only sees
     // what lies past the lift, so inner cells lit as if under open sky and
@@ -419,7 +459,13 @@ struct Gi {
     hf_dims: vec4<u32>,
     bounce: vec4<f32>,
     params: vec4<f32>, // contact on, reflection on, sun-free sky cap, irradiance volume aux offset (0: none)
+    // Traced reflections (dynamic-gi.md): last frame's unjittered camera,
+    // and x: on (a valid history this frame), y: roughness cut, z: reach (m).
+    prev_view_proj: mat4x4<f32>,
+    trace: vec4<f32>,
 };
+// Last frame's resolved radiance (the TAA history), for traced reflections.
+@group(1) @binding(21) var reflection_history: texture_2d<f32>;
 
 fn meadow_edge_covers(p:vec3<f32>,normal:vec3<f32>,sun_query:vec2<f32>,
     block:u32,origin:vec2<i32>,dimension:u32,radius:f32)->vec2<f32> {
@@ -868,6 +914,121 @@ fn environment(r: vec3<f32>, rough: f32, bounce: vec3<f32>) -> vec3<f32> {
         sky = mix(min(sky_radiance(r), vec3<f32>(gi.params.z)), sky_irradiance(r) / PI, smoothstep(0.05, 0.55, rough));
     }
     return mix(ground, sky, sky_weight);
+}
+
+// Traced reflections, stage 1 of dynamic GI (dynamic-gi.md). The reflected
+// ray marches this frame's depth buffer with steps that grow with distance;
+// where it passes behind a surface by less than the step it hit it, and the
+// hit's radiance is read from last frame's resolved image at the hit's
+// reprojected position: whatever the frame shows, lit by everything, trees
+// and cars included. A ray that leaves the screen (it cannot come back: the
+// frustum is convex) returns confidence 0 and keeps the environment and its
+// heightfield occlusion. Rough surfaces jitter the ray by GGX, one sample
+// per pixel and frame, and TAA averages them. rgb: radiance, a: confidence.
+fn trace_hash(px: vec2<i32>, salt: f32) -> vec2<f32> {
+    // Interleaved gradient noise, shifted by the frame sequence.
+    let q = vec2<f32>(px) + salt * vec2<f32>(5.588238, 5.588238);
+    let a = fract(52.9829189 * fract(dot(q, vec2<f32>(0.06711056, 0.00583715))));
+    let b = fract(52.9829189 * fract(dot(q + vec2<f32>(47.0, 17.0), vec2<f32>(0.00583715, 0.06711056))));
+    return vec2<f32>(a, b);
+}
+
+fn trace_jitter(r: vec3<f32>, rough: f32, xi: vec2<f32>) -> vec3<f32> {
+    // A GGX lobe around the mirror direction (an approximation that treats
+    // the reflection as the lobe axis; exact enough under the TAA average).
+    let a = rough * rough;
+    let cos_t = sqrt((1.0 - xi.x) / (1.0 + (a * a - 1.0) * xi.x));
+    let sin_t = sqrt(max(1.0 - cos_t * cos_t, 0.0));
+    let phi = 2.0 * PI * xi.y;
+    let t1 = normalize(select(cross(r, vec3<f32>(0.0, 0.0, 1.0)), cross(r, vec3<f32>(1.0, 0.0, 0.0)), abs(r.x) < 0.9));
+    let t2 = cross(r, t1);
+    // The half-vector spread doubles in the reflected direction.
+    let s = sin_t * 2.0 * cos_t;
+    let c = cos_t * cos_t * 2.0 - 1.0;
+    return normalize(r * c + (t1 * cos(phi) + t2 * sin(phi)) * s);
+}
+
+// Water optics (Lighting::water, terrain_surface.wgsl water_body).
+fn water_optics_on() -> bool { return light.fog_sampling.w > 0.5; }
+
+// The depth a reflection ray is tested against: the opaque depth and, in
+// front of it, the rasterized voxel trees when they keep their own depth
+// (VOXEL_OCCLUSION), so far forests show in water and glossy paint.
+fn trace_depth(c: vec2<i32>) -> f32 {
+    var d = textureLoad(depth_tex, c, 0);
+    if VOXEL_OCCLUSION { d = max(d, textureLoad(voxel_depth, c, 0)); }
+    return d;
+}
+
+fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, px: vec2<i32>, size: vec2<u32>, dist: f32) -> vec4<f32> {
+    if gi.trace.x < 0.5 || rough >= gi.trace.y { return vec4<f32>(0.0); }
+    var r = mirror;
+    if rough > 0.06 {
+        let jittered = trace_jitter(mirror, rough, trace_hash(px, light.fog_sampling.x * 16.0));
+        if dot(jittered, n) > 0.02 { r = jittered; }
+    }
+    if dot(r, n) <= 0.0 { return vec4<f32>(0.0); }
+    let fsize = vec2<f32>(size);
+    // Leave the surface by its depth precision and pixel footprint.
+    let o = p + n * (0.02 + dist * 0.002);
+    let reach = gi.trace.z;
+    let jitter = trace_hash(px.yx, light.fog_sampling.x * 16.0 + 3.0).x;
+    var lo = 0.0;
+    var t = max(0.06, dist * 0.003) * (0.75 + 0.5 * jitter);
+    var found = false;
+    for (var k = 0; k < 40; k++) {
+        let c = view.view_proj * vec4<f32>(o + r * t, 1.0);
+        if c.w <= 1e-4 { break; }
+        let ndc = c.xyz / c.w;
+        if abs(ndc.x) >= 1.0 || abs(ndc.y) >= 1.0 { break; }
+        let sp = vec2<i32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize);
+        let d = trace_depth(sp);
+        // Reversed infinite Z: depth is near / view depth, so the scene is in
+        // front of the ray point when d > ndc.z; how far behind it, in metres:
+        if d > ndc.z {
+            let behind = c.w * (1.0 - ndc.z / d);
+            if behind < max(0.25, (t - lo) * 2.0 + c.w * 0.01) { found = true; break; }
+        }
+        lo = t;
+        t += max(0.08, t * 0.2);
+        if t > reach { break; }
+    }
+    if !found { return vec4<f32>(0.0); }
+    // Bisect to the crossing.
+    var hi = t;
+    for (var k = 0; k < 5; k++) {
+        let mid = 0.5 * (lo + hi);
+        let c = view.view_proj * vec4<f32>(o + r * mid, 1.0);
+        let ndc = c.xyz / c.w;
+        let sp = vec2<i32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize);
+        if trace_depth(sp) > ndc.z { hi = mid; } else { lo = mid; }
+    }
+    let c = view.view_proj * vec4<f32>(o + r * hi, 1.0);
+    let ndc = c.xyz / c.w;
+    let sp = clamp(vec2<i32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize), vec2<i32>(0), vec2<i32>(size) - 1);
+    let d = trace_depth(sp);
+    if d <= 0.0 { return vec4<f32>(0.0); }
+    // The surface the ray reached, as this frame's depth buffer places it.
+    let pc = (vec2<f32>(sp) + 0.5) / fsize;
+    let world = view.inv_view_proj * vec4<f32>(pc.x * 2.0 - 1.0, 1.0 - pc.y * 2.0, d, 1.0);
+    let hit = world.xyz / world.w;
+    // A hit facing away from the ray (seen from behind) has no radiance here.
+    let back = c.w * (1.0 - ndc.z / d);
+    if back > max(0.6, hi * 0.06) { return vec4<f32>(0.0); }
+    let prev = gi.prev_view_proj * vec4<f32>(hit, 1.0);
+    if prev.w <= 1e-4 { return vec4<f32>(0.0); }
+    let prev_ndc = prev.xy / prev.w;
+    let edge = max(abs(prev_ndc.x), abs(prev_ndc.y));
+    if edge >= 1.0 { return vec4<f32>(0.0); }
+    let uv = vec2<f32>(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5);
+    let radiance = textureSampleLevel(reflection_history, canopy_sampler, uv, 0.0).rgb;
+    if any(radiance != radiance) { return vec4<f32>(0.0); }
+    // Fade at the screen's edges, near the reach and towards the roughness cut.
+    let ndc_edge = max(abs(ndc.x), abs(ndc.y));
+    var confidence = 1.0 - smoothstep(0.82, 1.0, max(edge, ndc_edge));
+    confidence *= 1.0 - smoothstep(reach * 0.7, reach, hi);
+    confidence *= 1.0 - smoothstep(gi.trace.y * 0.6, gi.trace.y, rough);
+    return vec4<f32>(min(radiance, vec3<f32>(65504.0)), confidence);
 }
 
 fn vtx(i: u32) -> u32 {
@@ -1690,7 +1851,7 @@ fn shadow_at_plane(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
 }
 
 fn tex(layer: i32, uv: vec2<f32>, lod: f32) -> vec4<f32> {
-    return textureSampleLevel(albedo, samp, uv, layer, lod);
+    return textureSampleLevel(albedo, samp, uv, layer, max(lod, albedo_lod_floor(layer)));
 }
 
 // The surface's footprint across one pixel, from ray differentials: the
@@ -1743,7 +1904,8 @@ fn track_material(p:vec3<f32>)->vec2<f32> {
 // Sample with the true texture-space gradients (anisotropic filtering):
 // uv = (world position projected on `ax`, `ay`) / scale.
 fn tex_w(layer: i32, uv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> vec4<f32> {
-    return textureSampleGrad(albedo, samp, uv, layer, gx, gy);
+    let k = albedo_grad(layer, gx, gy);
+    return textureSampleGrad(albedo, samp, uv, layer, gx * k, gy * k);
 }
 
 fn tex_xz(layer: i32, uv: vec2<f32>, scale: f32) -> vec4<f32> {
@@ -1752,7 +1914,25 @@ fn tex_xz(layer: i32, uv: vec2<f32>, scale: f32) -> vec4<f32> {
 
 // Tangent-space normal (xy in -1..1) of layer l, sampled like the albedo.
 fn nrm(l: i32, uv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> vec2<f32> {
-    return textureSampleGrad(normal_tex, samp, uv, l, gx, gy).xy * 2.0 - 1.0;
+    let k = normal_grad(l, gx, gy);
+    return textureSampleGrad(normal_tex, samp, uv, l, gx * k, gy * k).xy * 2.0 - 1.0;
+}
+
+// Occlusion, roughness and metalness factors of layer l's material map
+// (glTF packing), sampled like the albedo; white when it has none.
+fn orm_w(l: i32, uv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> vec3<f32> {
+    let at = layer_map(l).x;
+    if at == 0u { return vec3<f32>(1.0); }
+    let k = normal_grad(l, gx, gy);
+    return textureSampleGrad(normal_tex, samp, uv, i32(at - 1u), gx * k, gy * k).rgb;
+}
+
+// The material map in a triplanar mapping (`triplanar` below, unrotated).
+fn triplanar_orm(l: i32, p: vec3<f32>, tw: vec3<f32>, scale: f32) -> vec3<f32> {
+    if layer_map(l).x == 0u { return vec3<f32>(1.0); }
+    let k = 1.0 / scale;
+    return orm_w(l, p.zy * k, fp.dx.zy * k, fp.dy.zy * k) * tw.x + orm_w(l, p.xz * k, fp.dx.xz * k, fp.dy.xz * k) * tw.y
+        + orm_w(l, p.xy * k, fp.dx.xy * k, fp.dy.xy * k) * tw.z;
 }
 
 fn nrm_xz(l: i32, uv: vec2<f32>, scale: f32) -> vec2<f32> {
@@ -2170,6 +2350,130 @@ fn thin_foliage_response(base:vec3<f32>,n:vec3<f32>,v:vec3<f32>,rough:f32,leaf_f
     return result;
 }
 
+// Skin and hair (material flags SKIN 1<<30 and HAIR 1<<31, scene.rs).
+// Physically motivated approximations sized for a deferred compute pass:
+// no extra textures, buffers or passes. docs/skin-and-hair.md.
+const SKIN_ROUGHNESS: f32 = 0.7;
+const HAIR_ROUGHNESS: f32 = 0.6;
+// How far the diffuse term wraps past the terminator per channel: red light
+// travels furthest under skin (pre-integrated skin, approximated).
+const SKIN_WRAP: vec3<f32> = vec3<f32>(0.42, 0.16, 0.09);
+// Mean free path of light in skin per channel, metres (Jensen et al. 2001,
+// skin1: 3.67, 1.37, 0.68 mm), for light passing through thin parts.
+const SKIN_PATH: vec3<f32> = vec3<f32>(0.00367, 0.00137, 0.00068);
+// Light diffuses sideways as it passes, so a thin part transmits more than
+// the straight path suggests: paths are this many mean free paths long.
+const SKIN_SPREAD: f32 = 4.0;
+
+// x: skin share, y: hair share. SKIN alone: all skin; HAIR alone: all hair.
+// SKIN|HAIR: the albedo alpha says per texel, 0 hair, 0.5 skin, 1 neither
+// (the plain material), linear between (scene.rs SKIN).
+fn skin_hair_shares(flags: u32, alpha: f32) -> vec2<f32> {
+    let is_skin = (flags & 0x40000000u) != 0u;
+    let is_hair = (flags & 0x80000000u) != 0u;
+    if is_skin && is_hair {
+        let a = clamp(alpha, 0.0, 1.0);
+        return vec2<f32>(1.0 - abs(2.0 * a - 1.0), max(1.0 - 2.0 * a, 0.0));
+    }
+    return vec2<f32>(select(0.0, 1.0, is_skin), select(0.0, 1.0, is_hair));
+}
+
+// Metres of material between p and the sun, from the sun shadow map's
+// nearest texel (orthographic: depth is linear along the light). Large
+// when the map does not cover p. Shadow-map depth is only accurate to about
+// a texel, which is added so that silhouette texels never glow. The maps are
+// read directly (not passed as arguments): shaders that include this file
+// declare them differently.
+fn sun_thickness(p: vec3<f32>) -> f32 {
+    var projection = light.shadow_view_proj;
+    var world_texel = light.sky.w;
+    // The finest sun clipmap level that covers p, else the shared map.
+    var level = -1;
+    let levels = select(0, i32(light.near_levels.x), light.near_shadow.z > 0.5);
+    for (var k = 0; k < levels; k++) {
+        if near_level_weight(k, p) > 0.5 {
+            level = k;
+            projection = near_level_projection(k);
+            world_texel = light.near_shadow.x * f32(1 << u32(k));
+            break;
+        }
+    }
+    let c = projection * vec4<f32>(p, 1.0);
+    let uv = c.xy * vec2<f32>(0.5, -0.5) + 0.5;
+    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || c.z < 0.0 || c.z > 1.0 { return 1e3; }
+    var occluder: f32;
+    if level >= 0 {
+        let size = vec2<i32>(textureDimensions(near_shadow_tex));
+        occluder = textureLoad(near_shadow_tex, clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1), level, 0);
+    } else {
+        let size = vec2<i32>(textureDimensions(shadow_tex));
+        occluder = textureLoad(shadow_tex, clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1), 0);
+    }
+    let row_z = vec3<f32>(projection[0].z, projection[1].z, projection[2].z);
+    return max(c.z - occluder, 0.0) / max(length(row_z), 1e-12) + world_texel * 1.5;
+}
+
+// Kajiya-Kay strand highlight around tangent t, normalised so that its
+// peak follows the exponent like a microfacet lobe.
+fn strand_lobe(t: vec3<f32>, h: vec3<f32>, exponent: f32) -> f32 {
+    let th = dot(t, h);
+    let sin_th = sqrt(max(1.0 - th * th, 0.0));
+    return pow(sin_th, exponent) * smoothstep(-1.0, 0.0, th) * (exponent + 2.0) / (2.0 * PI);
+}
+
+// Sun radiance off skin and hair, already weighted by their shares; the
+// caller keeps (1 - skin - hair) of the plain response. `shadow` is the
+// sun's visibility, `sun_open` the sun's illuminance without it.
+fn skin_hair_direct(albedo: vec3<f32>, n: vec3<f32>, surface_n: vec3<f32>, v: vec3<f32>, l: vec3<f32>,
+    p: vec3<f32>, uv: vec2<f32>, up: vec3<f32>, ahead: vec3<f32>, shadow: f32, sun_open: vec3<f32>,
+    skin: f32, hair: f32) -> vec3<f32> {
+    let ndl = dot(n, l);
+    var out = vec3<f32>(0.0);
+    if skin > 0.0 {
+        // Diffuse: per-channel wrap, and a penumbra that lets red through
+        // first (the shadow's own edge scatters under the skin too).
+        let wrapped = clamp((vec3<f32>(ndl) + SKIN_WRAP) / (1.0 + SKIN_WRAP), vec3<f32>(0.0), vec3<f32>(1.0));
+        let soft = pow(vec3<f32>(clamp(shadow, 0.0, 1.0)), vec3<f32>(0.5, 0.85, 1.0));
+        var rad = albedo / PI * sun_open * soft * wrapped * wrapped;
+        // Transmission: light entering the sunlit side of thin parts (ears,
+        // nostrils, fingers) leaves through the far side, reddened by the
+        // path through the skin. Thickness from the sun shadow map.
+        let back = clamp(-dot(surface_n, l), 0.0, 1.0);
+        if back > 0.0 {
+            let through = exp(-vec3<f32>(sun_thickness(p)) / (SKIN_PATH * SKIN_SPREAD));
+            rad += albedo / PI * sun_open * through * back * 0.6;
+        }
+        // Two specular lobes: a thin oily sheen over the broader skin.
+        let f0 = vec3<f32>(0.028);
+        let spec = mix(ggx(n, v, l, min(SKIN_ROUGHNESS * 1.3, 1.0), f0), ggx(n, v, l, SKIN_ROUGHNESS * 0.6, f0), 0.3);
+        rad += sun_open * shadow * spec;
+        out += rad * skin;
+    }
+    if hair > 0.0 {
+        // Strands lie over the surface along the body's up axis.
+        var t = up - n * dot(up, n);
+        if dot(t, t) < 1e-4 { t = ahead - n * dot(ahead, n); }
+        t = normalize(t);
+        // Per-strand variation: hash across the strands (uv texel scale).
+        let cell = floor(uv * 1024.0);
+        let jitter = fract(sin(dot(cell, vec2<f32>(12.9898, 78.233))) * 43758.5453) - 0.5;
+        let h = normalize(l + v);
+        // R: the white cuticle reflection, shifted towards the tip. TRT:
+        // light that entered the strand, tinted by it, shifted to the root.
+        let r = strand_lobe(normalize(t + n * (-0.08 + jitter * 0.12)), h, 90.0);
+        let trt = strand_lobe(normalize(t + n * (0.12 + jitter * 0.2)), h, 24.0)
+            * (0.75 + jitter);
+        let lit = sun_open * shadow;
+        let facing = clamp(ndl + 0.25, 0.0, 1.25) / 1.25;
+        var rad = lit * facing * (0.0025 * r + 0.02 * albedo * trt);
+        // Diffuse: hair scatters light around the strands; wrap generously.
+        let diffuse_wrap = clamp((ndl + 0.35) / 1.35, 0.0, 1.0);
+        rad += albedo / PI * lit * diffuse_wrap;
+        out += rad * hair;
+    }
+    return out;
+}
+
 // Octahedral unit vectors, for the coarse normal.
 fn oct_encode(n: vec3<f32>) -> vec2<f32> {
     let m = n / (abs(n.x) + abs(n.y) + abs(n.z));
@@ -2237,7 +2541,7 @@ fn terrain_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
         let candidate = textureLoad(vis_tex, c, 0).r;
         if (candidate & 0x80000000u) != 0u { continue; }
         let flags = material(clusters[visible[candidate >> 7u].y].material).flags;
-        if (flags & 2u) != 0u && (flags >> 16u) == 0u { px = c; id = candidate; rep = k; break; }
+        if (flags & 2u) != 0u && ((flags >> 16u) & 0x3fffu) == 0u { px = c; id = candidate; rep = k; break; }
     }
     if px.x < 0 { textureStore(terrain_coarse_out, cx, invalid); return; }
     let vis = visible[id >> 7u];
@@ -2447,7 +2751,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let cl = clusters[vis.y];
     // Terrain: a TERRAIN material that is not a car part (car materials keep
     // their index in bits 16.. and may carry low flag bits of their own).
-    let terrain_class = (material(cl.material).flags & 2u) != 0u && (material(cl.material).flags >> 16u) == 0u;
+    let terrain_class = (material(cl.material).flags & 2u) != 0u && ((material(cl.material).flags >> 16u) & 0x3fffu) == 0u;
     if SHADE_CLASS != 0u && terrain_class != (SHADE_CLASS == 1u) { return; }
     let inst = instance_at(vis.x);
     let packed = tri_word(cl.first_tri + tri);
@@ -2514,7 +2818,11 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let duv_x = uv_at(fp.dx, e1, e2, vi) ;
     let duv_y = uv_at(fp.dy, e1, e2, vi);
     var base = m.tint;
+    // Albedo alpha of an opaque textured material: SKIN|HAIR reads it as
+    // the texel's skin and hair shares (skin_hair_shares).
+    var tex_alpha = 1.0;
     var nn = n; // the normal after normal maps
+    var orm = vec3<f32>(1.0); // material map: occlusion, roughness, metalness
     var meadow_ground_sky = 1.0;
     field_sun = 1.0;
     if FEATURE_TERRAIN && (m.flags & 2u) != 0u && (m.flags & 32768u) == 0u {
@@ -2678,7 +2986,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // grass_cards.gdshader: the photograph supplies blade colour, the
         // authored upward normal stays the same on both card sides.
         let height = clamp((p.y - inst.r1.w) / max(inst.scale * 0.5, 1e-4), 0.0, 1.0);
-        base = textureSampleGrad(albedo, plant_samp, uv, m.layer, duv_x, duv_y).rgb * m.tint;
+        let k = albedo_grad(m.layer, duv_x, duv_y);
+        base = textureSampleGrad(albedo, plant_samp, uv, m.layer, duv_x * k, duv_y * k).rgb * m.tint;
         base *= mix(0.8, 1.0, height) * 1.25 * (1.0 - light.fog.w * 0.25);
         nn = vec3<f32>(0.0, 1.0, 0.0);
     } else if (m.flags & 16u) != 0u && m.layer >= 0 {
@@ -2686,6 +2995,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         tw /= tw.x + tw.y + tw.z;
         base = triplanar(m.layer, p, tw, m.scale, mat2x2<f32>(1.0, 0.0, 0.0, 1.0), 0.0) * m.tint;
         nn = triplanar_n(m.layer, p, n, tw, m.scale, mat2x2<f32>(1.0, 0.0, 0.0, 1.0), 0.0);
+        orm = triplanar_orm(m.layer, p, tw, m.scale);
     } else if m.layer >= 0 && (m.flags & 16384u) != 0u {
         // LIVE_SCREEN writes mip 2 (512 square) and below. Never sample the
         // uninitialized higher-resolution levels or the unrelated normal map.
@@ -2694,7 +3004,10 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     } else if m.layer >= 0 && (m.flags & 2048u) == 0u {
         // PIXEL_ART samples the top mip: hard source pixels, no blur.
         let sharp = select(1.0, 0.0, (m.flags & 8192u) != 0u);
-        base = tex_w(m.layer, uv, duv_x * sharp, duv_y * sharp).rgb * m.tint;
+        let texel = tex_w(m.layer, uv, duv_x * sharp, duv_y * sharp);
+        base = texel.rgb * m.tint;
+        tex_alpha = texel.a;
+        orm = orm_w(m.layer, uv, duv_x * sharp, duv_y * sharp);
         var frame = uv_frame(e1, e2, vi);
         if dot(geo_n, n) < 0.0 {
             // The far side of a two-sided card: its relief is the mirror image.
@@ -2706,8 +3019,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     n = nn;
     // Car parts get a procedural surface (car_material.wgsl): flags bits
     // 16.. hold 1 + their index in car_materials. Others keep the material.
-    let car = m.flags >> 16u;
-    var rough_m = m.roughness;
+    let car = (m.flags >> 16u) & 0x3fffu;
+    var rough_m = m.roughness * orm.y;
     // Procedural bark (scene.rs BARK_LAYER): scale is the plate size in metres.
     var bark_ao = 1.0;
     if m.layer == -3 && (m.flags & 4608u) == 0u {
@@ -2744,7 +3057,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             n = dent.xyz;
         }
     }
-    var metal = m.metal;
+    var metal = m.metal * orm.z;
     var coat = select(0.0, 1.0, (m.flags & 32u) != 0u);
     var coat_rough = 0.04;
     var coat_n = n;
@@ -2799,11 +3112,63 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         rough_m = mix(rough_m, 0.3, stain);
         metal = mix(metal, 0.0, stain);
     }
+    // Weathering layers (material_maps.rs): moss always, wet and snow by
+    // Lighting::wetness and Lighting::snow. Roads and verges keep their own wet look;
+    // cars, skin, hair, lava and emissive surfaces take none.
+    if (m.flags & (4u | 1024u | 4096u | 0xc0000000u)) == 0u && car == 0u {
+        let wx = material_weather(cl.material);
+        // The road-side terrain (TERRAIN without SURFACE) has its own wet look.
+        let wet = select(light.fog.w * wx.x, 0.0, (m.flags & 32770u) == 2u);
+        let snow = light.sh[0].w * wx.y;
+        if wx.z > 0.0 || wet > 0.0 || snow > 0.0 {
+            let up = surface_n.y;
+            let grain = vnoise(p.xz * 2.3 + vec2<f32>(p.y * 1.7, 0.0)) * 0.65 + vnoise(p.xz * 9.1 - vec2<f32>(0.0, p.y * 5.3)) * 0.35;
+            // Moss: upward and sheltered faces, broken up by the grain.
+            let moss = wx.z * smoothstep(0.1, 0.6, up + (grain - 0.5) * 0.9) * smoothstep(0.0, 0.35, orm.x);
+            if moss > 0.0 {
+                let moss_col = mix(vec3<f32>(0.035, 0.06, 0.012), vec3<f32>(0.10, 0.13, 0.03), grain);
+                base = mix(base, moss_col, moss);
+                rough_m = mix(rough_m, 0.9, moss);
+                metal *= 1.0 - moss;
+                n = safe_normalize(mix(n, surface_n, moss * 0.4));
+            }
+            // Wet: porous surfaces soak up water and darken; every surface
+            // gets a glossy film, and flat ground pools to a mirror.
+            if wet > 0.0 {
+                base *= mix(1.0, mix(0.82, 0.45, wx.w), wet);
+                let pool = smoothstep(0.4, 1.0, wet) * smoothstep(0.85, 0.98, up) * smoothstep(0.58, 0.72, 1.0 - grain);
+                rough_m = mix(rough_m, mix(0.28, 0.05, pool), wet * mix(0.55, 1.0, max(up, 0.0)));
+                n = safe_normalize(mix(n, surface_n, pool));
+            }
+            // Snow settles on upward faces first, more of them as it grows.
+            if snow > 0.0 {
+                let reach = 0.95 - 0.75 * snow;
+                let cover = smoothstep(reach, reach + 0.18, up + (grain - 0.5) * 0.3) * smoothstep(0.0, 0.3, snow);
+                base = mix(base, vec3<f32>(0.82, 0.85, 0.9), cover);
+                rough_m = mix(rough_m, 0.62, cover);
+                metal *= 1.0 - cover;
+                coat *= 1.0 - cover;
+                n = safe_normalize(mix(n, surface_n, cover * 0.85));
+            }
+        }
+    }
+    // Skin and hair shares of this point (SKIN 1<<30, HAIR 1<<31).
+    var skin = 0.0;
+    var hair = 0.0;
+    if FEATURE_SKIN_HAIR && (m.flags & 0xc0000000u) != 0u {
+        let shares = skin_hair_shares(m.flags, tex_alpha);
+        skin = shares.x;
+        hair = shares.y;
+        // Skin is a moist dielectric (IOR 1.4); hair a rough cuticle.
+        rough_m = mix(rough_m, SKIN_ROUGHNESS, skin);
+        rough_m = mix(rough_m, HAIR_ROUGHNESS, hair);
+        metal *= 1.0 - skin - hair;
+    }
     let l = light.sun_dir.xyz;
     let ndl = dot(n, l);
     var sun = max(ndl, 0.0);
     var back = vec3<f32>(0.0);
-    var ao = bark_ao;
+    var ao = bark_ao * orm.x;
     let grass = (m.flags & 64u) != 0u;
     let procedural_leaf = FEATURE_FOLIAGE && (m.flags & 512u) != 0u;
     let needles = procedural_leaf || (FEATURE_FOLIAGE && (m.flags & 9u) == 9u && (inst.flags & 1u) != 0u && !grass);
@@ -2827,11 +3192,13 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     }
     let terrain_error=select(0.0,world_visibility.params.z,(m.flags&6u)!=0u);
     var shadow = 1.0;
-    if sun > 0.0 || needles || (gi.vol_dims.w != 0u && (gi.vol_dims.w & 4u) == 0u) || coat > 0.0 || rough_m < 0.55 {
+    if sun > 0.0 || needles || (gi.vol_dims.w != 0u && (gi.vol_dims.w & 4u) == 0u) || coat > 0.0 || rough_m < 0.55 || skin + hair > 0.0 {
         let s_map = shadow_at_surface(p, surface_n * sign(dot(surface_n, l) + 1e-4), geo_n, terrain_error);
         shadow = mix(1.0, s_map, light.sun_color.w);
     }
     if FEATURE_GRASS_SHADE && shadow > 0.0 && (m.flags & 70u) != 0u {shadow*=mix(1.0,grass_sun_transmittance_receiver(p,l,(m.flags & 2u)!=0u),light.sun_color.w);}
+    // Cloud shadows (sky_volume): the same weather field the clouds are drawn from.
+    shadow *= cloud_sun_transmittance(p, l, light.clouds, light.cloud_motion);
     // Base layer: Lambert plus GGX, metals tint their reflection.
     let v = -dir;
     let ndv = max(dot(n, v), 1e-4);
@@ -2842,6 +3209,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     } else if grass {
         f0 = vec3<f32>(0.016); // grass_cards.gdshader: SPECULAR 0.2
     }
+    f0 = mix(f0, vec3<f32>(0.028), skin);
+    f0 = mix(f0, vec3<f32>(0.046), hair);
     let diffuse = base * (1.0 - metal) / PI;
     // Use the continuous surface hemisphere, unaffected by texture grain.
     // The triangle normal is only for intersection and texture derivatives.
@@ -2903,7 +3272,22 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             env=mix(env,irradiance_volume(p+visibility_n*0.05,refl).rgb/PI*spec_contact,room.w);
           }
         }
+        // Traced reflections replace the environment where they hit. Under
+        // a clear coat only the coat traces (below): it shows the reflection.
+        if coat <= 0.0 && rough < gi.trace.y {
+            let traced = traced_reflection(p, visibility_n, refl, rough, px, size, dist);
+            env = mix(env, traced.rgb, traced.a);
+        }
         direct=diffuse*sun_e*sun+sun_e*back/PI+sun_e*ggx(n,v,l,rough,f0);
+        if FEATURE_SKIN_HAIR && skin + hair > 0.0 {
+            // Unshadowed sun: skin bleeds red into the shadow's edge and
+            // light passes through ears; the shadow is applied inside.
+            let sun_open=light.sun_color.rgb*light.sun_dir.w*meadow_edge.y*field_sun;
+            let up=normalize(vec3<f32>(inst.r0.y,inst.r1.y,inst.r2.y));
+            let ahead=normalize(vec3<f32>(inst.r0.z,inst.r1.z,inst.r2.z));
+            let sh=skin_hair_direct(base*(1.0-metal),n,surface_n,v,l,p,uv,up,ahead,shadow,sun_open,skin,hair);
+            direct=direct*(1.0-skin-hair)+sh;
+        }
         // Authored diffuse room return; retain crevice and contact occlusion.
         // z is irradiance in lux, independent of exposure and direct shadow bias.
         ambient += vec3<f32>(1.0,0.97,0.92)*light.fog_sampling.z*ao*contact.x;
@@ -2924,12 +3308,20 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // smaller than roughness 0.05 does.
         direct = direct * (1.0 - fc) + sun_e * ggx(coat_n, v, l, max(coat_rough, 0.05), vec3<f32>(0.04)) * coat;
         indirect *= 1.0 - fc;
-        specular = specular * (1.0 - fc) + mix(bounce / PI, environment(coat_refl, coat_rough, bounce), reflection_vis) * coat_contact * fc;
+        var coat_env = mix(bounce / PI, environment(coat_refl, coat_rough, bounce), reflection_vis) * coat_contact;
+        let traced = traced_reflection(p, visibility_n, coat_refl, coat_rough, px, size, dist);
+        coat_env = mix(coat_env, traced.rgb, traced.a);
+        specular = specular * (1.0 - fc) + coat_env * fc;
     }
     if FEATURE_LOCAL_LIGHTS && FEATURE_GRASS && grass {
         direct += headlight_grass_radiance(p,v,base,rough);
     } else if FEATURE_LOCAL_LIGHTS {
         direct += contact_headlight_radiance(p,n,visibility_n,v,diffuse,rough,f0,size,dist);
+    }
+    if FEATURE_CLUSTERED_LIGHTS && FEATURE_GRASS && grass {
+        direct += clustered_grass_radiance(p,v,base,rough);
+    } else if FEATURE_CLUSTERED_LIGHTS {
+        direct += clustered_radiance(p,n,v,diffuse,rough,f0);
     }
     var rad = direct + indirect + specular;
     // Emission is scaled by Lighting::emissive_scale (exposure compensation).
@@ -3084,7 +3476,7 @@ fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
     if dot(n,dir)>0.0 {n=-n;}
     let m=material(cl.material);var base=m.tint;
     if m.layer>=0 {let uv=uvs[0]*b0+uvs[1]*b1+uvs[2]*b2;
-        base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(distance(p,view.cam.xyz)*0.03,1.0)),0.0)).rgb;}
+        base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(distance(p,view.cam.xyz)*0.03,1.0)),albedo_lod_floor(m.layer))).rgb;}
     let ambient=sky_irradiance(n);
     var rad=base*(ambient+light.sun_color.rgb*light.sun_dir.w*max(dot(n,light.sun_dir.xyz),0.0))/3.14159265;
     for(var index=0u;index<incident_light_count(p);index++) {

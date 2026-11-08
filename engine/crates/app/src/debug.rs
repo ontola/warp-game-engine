@@ -40,6 +40,10 @@ const GRASS_LOD: u32 = 33;
 const HDR_OUTPUT: u32 = 34;
 const HDR_HEADROOM: u32 = 35;
 const AUTO_EXPOSURE: u32 = 36;
+const CLOUDS: u32 = 37;
+const WATER: u32 = 38;
+const WETNESS: u32 = 39;
+const SNOW: u32 = 40;
 
 /// Render heights offered, tallest first; 0 is native.
 const HEIGHTS: [u32; 6] = [0, 2160, 1800, 1440, 1080, 720];
@@ -51,6 +55,7 @@ const FPS_TARGETS: [u32; 6] = [0, 60, 90, 120, 144, 240];
 struct Settings {
     options: DebugRenderOptions,
     fog: bool,
+    clouds: bool,
     /// Temporal AA as the game set it (false switches it off).
     taa: bool,
     adaptive_quality: bool,
@@ -67,16 +72,21 @@ struct Settings {
     reflection: bool,
     /// None: the game's own choice.
     auto_exposure: Option<bool>,
+    /// Water optics (Lighting::water). None: the game's choice.
+    water: Option<bool>,
     /// None: the game's choice or `WARP_HDR`.
     hdr: Option<bool>,
     /// None: what the display reports (or `WARP_HDR_HEADROOM`).
     hdr_headroom: Option<f32>,
+    /// None: the game's own weather (`Lighting::wetness`, `Lighting::snow`).
+    wetness: Option<f32>,
+    snow: Option<f32>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { options: DebugRenderOptions::default(), fog: true, taa: true, adaptive_quality: true, fps_target: None, lod_pixels: None, exposure: 0.0, render_height: None,
-            sun: 1.0, shadows: 1.0, near_shadows: true, contact: true, gi: true, reflection: true, auto_exposure: None, hdr: None, hdr_headroom: None }
+        Settings { options: DebugRenderOptions::default(), fog: true, clouds: true, taa: true, adaptive_quality: true, fps_target: None, lod_pixels: None, exposure: 0.0, render_height: None,
+            sun: 1.0, shadows: 1.0, near_shadows: true, contact: true, gi: true, reflection: true, auto_exposure: None, water: None, hdr: None, hdr_headroom: None, wetness: None, snow: None }
     }
 }
 
@@ -99,6 +109,8 @@ pub struct EngineDebug {
     pub last_gpu_ms: Option<f64>,
     /// The game's light had automatic exposure on (before this menu).
     game_auto_exposure: bool,
+    /// The game's light had water optics on (before this menu).
+    game_water: bool,
     /// The newest exposure and meter reading of view 0 (EV100).
     exposure: (Option<f32>, Option<f32>),
     display: DisplayStatus,
@@ -120,12 +132,14 @@ impl EngineDebug {
         toggle(GRASS, GRASS_MENU, "Grass", s.options.meadow_enabled, "Skips grass rendering (when the scene has grass).");
         toggle(GLASS, RENDER_MENU, "Transparency", s.options.transparency_enabled, "Skips the transparent-material pass.");
         toggle(BLOOM, RENDER_MENU, "Highlight bloom", s.options.bloom_enabled, "Screen-space halo around bright highlights.");
-        toggle(FOG, RENDER_MENU, "Distance fog", s.fog, "Off: no distance extinction and no fog culling.");
+        toggle(FOG, RENDER_MENU, "Distance fog", s.fog, "Off: no distance extinction and no fog culling (and no aerial perspective).");
+        toggle(CLOUDS, LIGHT_MENU, "Clouds", s.clouds, "Volumetric clouds and their shadows, if the game has them (Lighting::sky_volume).");
         toggle(TAA, RENDER_MENU, "Temporal AA", s.taa, "Off disables temporal anti-aliasing if the game uses it (it cannot switch it on).");
         toggle(NEAR_SHADOWS, LIGHT_MENU, "Near shadows", s.near_shadows, "The detailed shadow map close to the camera.");
         toggle(CONTACT, LIGHT_MENU, "Contact occlusion", s.contact, "Small-scale darkening where surfaces meet.");
         toggle(GI, LIGHT_MENU, "Global illumination", s.gi, "Bounced light; off leaves sun and sky only.");
         toggle(REFLECTION, LIGHT_MENU, "Reflection occlusion", s.reflection, "Darkens sky reflections in creases.");
+        toggle(WATER, LIGHT_MENU, "Water optics", s.water.unwrap_or(self.game_water), "Terrain water: the bed seen through it, with absorption, Fresnel and caustics.");
         let auto_help = match self.exposure {
             (Some(ev), Some(metered)) => format!("Meters each view and adapts like an eye. Now EV {ev:.1}; the scene meters EV {metered:.1}."),
             _ => "Meters each view and adapts like an eye. Off: the game's fixed exposure.".into(),
@@ -142,6 +156,8 @@ impl EngineDebug {
         number(EXPOSURE, RENDER_MENU, "Exposure offset", f64::from(s.exposure), (-3.0, 3.0, 0.25, 2), "EV", "Positive darkens, negative brightens (also with auto exposure).");
         number(SUN, LIGHT_MENU, "Sun", f64::from(s.sun) * 100.0, (0.0, 200.0, 10.0, 0), "%", "Sun illuminance.");
         number(SHADOWS, LIGHT_MENU, "Shadow strength", f64::from(s.shadows) * 100.0, (0.0, 100.0, 10.0, 0), "%", "0% leaves the sun unshadowed.");
+        number(WETNESS, LIGHT_MENU, "Rain wetness", f64::from(s.wetness.unwrap_or(0.0)) * 100.0, (0.0, 100.0, 5.0, 0), "%", "Wet surfaces: darker where porous, glossy, pools on flat ground. Untouched: the game's weather.");
+        number(SNOW, LIGHT_MENU, "Snow cover", f64::from(s.snow.unwrap_or(0.0)) * 100.0, (0.0, 100.0, 5.0, 0), "%", "Snow on upward faces. Untouched: the game's weather.");
         number(GRASS_DISTANCE, GRASS_MENU, "Grass draw distance", f64::from(s.options.meadow_distance_scale) * 100.0, (10.0, 100.0, 5.0, 0), "%", "Shrinks the blade radius; past it the ground is shaded as grass. Density unchanged.");
         number(GRASS_SIZE, GRASS_MENU, "Grass size", f64::from(s.options.meadow_size_scale) * 100.0, (50.0, 200.0, 5.0, 0), "%", "Blade size around fixed roots.");
         number(GRASS_COUNT, GRASS_MENU, "Grass patch count", f64::from(s.options.meadow_density) * 100.0, (0.0, 100.0, 5.0, 0), "%", "Share of grass patches drawn.");
@@ -223,6 +239,7 @@ impl EngineDebug {
                 GLASS => s.options.transparency_enabled = value,
                 BLOOM => s.options.bloom_enabled = value,
                 FOG => s.fog = value,
+                CLOUDS => s.clouds = value,
                 TAA => s.taa = value,
                 ADAPTIVE_QUALITY => s.adaptive_quality = value,
                 NEAR_SHADOWS => s.near_shadows = value,
@@ -230,6 +247,7 @@ impl EngineDebug {
                 GI => s.gi = value,
                 REFLECTION => s.reflection = value,
                 AUTO_EXPOSURE => s.auto_exposure = Some(value),
+                WATER => s.water = Some(value),
                 HDR_OUTPUT => s.hdr = Some(value),
                 _ => {}
             },
@@ -239,6 +257,8 @@ impl EngineDebug {
                 EXPOSURE => s.exposure = value.clamp(-3.0, 3.0) as f32,
                 SUN => s.sun = pct(value, 0.0, 2.0),
                 SHADOWS => s.shadows = pct(value, 0.0, 1.0),
+                WETNESS => s.wetness = Some(pct(value, 0.0, 1.0)),
+                SNOW => s.snow = Some(pct(value, 0.0, 1.0)),
                 GRASS_DISTANCE => s.options.meadow_distance_scale = pct(value, f64::from(render::debug_settings::MEADOW_DISTANCE_SCALE_MIN), 1.0),
                 GRASS_SIZE => s.options.meadow_size_scale = pct(value, 0.5, 2.0),
                 GRASS_COUNT => s.options.meadow_density = pct(value, 0.0, 1.0),
@@ -263,6 +283,8 @@ impl EngineDebug {
         let s = &self.s;
         if let Some(px) = s.lod_pixels { l.lod_pixels = px; }
         self.game_auto_exposure = l.auto_exposure.is_some();
+        self.game_water = l.water;
+        if let Some(on) = s.water { l.water = on; }
         match s.auto_exposure {
             Some(true) => { l.auto_exposure.get_or_insert_with(Default::default); }
             Some(false) => l.auto_exposure = None,
@@ -272,9 +294,16 @@ impl EngineDebug {
         // Positive darkens: one stop less compensation per EV of offset.
         if let Some(a) = &mut l.auto_exposure { a.compensation -= s.exposure; }
         if !s.fog { l.fog_density = 0.0; l.fog_culling = false; }
+        if let Some(v) = &mut l.sky_volume {
+            if !s.fog { v.aerial = false; }
+            if !s.clouds { v.clouds = None; }
+            if !v.aerial && v.clouds.is_none() { l.sky_volume = None; }
+        }
         if !s.taa { l.taa = 0.0; }
         l.sun_lux *= s.sun;
         l.shadow_strength *= s.shadows;
+        if let Some(w) = s.wetness { l.wetness = w; }
+        if let Some(w) = s.snow { l.snow = w; }
         if !s.near_shadows { l.near_shadows = 0.0; }
         if !s.contact { l.contact_occlusion = 0.0; }
         if !s.gi { l.gi = 0.0; }
@@ -371,11 +400,11 @@ impl EngineDebug {
             "dynamic_quality": s.adaptive_quality,
             "fps_target": s.fps_target,
             "grass": o.meadow_enabled, "transparency": o.transparency_enabled, "bloom": o.bloom_enabled, "bloom_strength": o.bloom_strength,
-            "fog": s.fog, "taa": s.taa, "lod_pixels": s.lod_pixels, "exposure_offset_ev": s.exposure, "render_height": s.render_height,
+            "fog": s.fog, "clouds": s.clouds, "taa": s.taa, "lod_pixels": s.lod_pixels, "exposure_offset_ev": s.exposure, "render_height": s.render_height,
             "sun_scale": s.sun, "shadow_scale": s.shadows, "near_shadows": s.near_shadows, "contact_occlusion": s.contact, "gi": s.gi,
             "reflection_occlusion": s.reflection, "grass_distance": o.meadow_distance_scale, "grass_size": o.meadow_size_scale,
             "grass_count": o.meadow_density, "grass_lod_pixels": o.meadow_lod_pixels,
-            "auto_exposure": s.auto_exposure.unwrap_or(self.game_auto_exposure), "exposure_ev100": self.exposure.0, "metered_ev100": self.exposure.1,
+            "auto_exposure": s.auto_exposure.unwrap_or(self.game_auto_exposure), "water": s.water.unwrap_or(self.game_water), "exposure_ev100": self.exposure.0, "metered_ev100": self.exposure.1,
             "hdr_output": self.display.on, "hdr_headroom": self.display.headroom, "hdr_display": self.display.line,
             "gpu_pass_ms": self.passes.iter().map(|(n, ms)| (n.to_string(), serde_json::json!(ms))).collect::<serde_json::Map<_, _>>(),
         })

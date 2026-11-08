@@ -33,10 +33,10 @@ pub(crate) struct Portable {
 }
 
 /// Storage buffers per stage and sampled textures per stage the full
-/// renderer needs without trees (every pass fits 8, shade needs 20
+/// renderer needs without trees (every pass fits 8, shade needs 21
 /// textures; browser.md). The GPU forest still needs 16 storage buffers.
 pub const FULL_STORAGE_BUFFERS: u32 = 8;
-pub const FULL_SAMPLED_TEXTURES: u32 = 20;
+pub const FULL_SAMPLED_TEXTURES: u32 = 21;
 
 /// Whether a device with these limits needs the portable renderer.
 pub fn needed(limits: &wgpu::Limits) -> bool {

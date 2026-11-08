@@ -187,6 +187,29 @@ pub(crate) fn grip_rotation(pitch: f32) -> Quat {
     Quat::from_rotation_x(-pitch) * Quat::from_mat3(&glam::Mat3::from_cols(Vec3::Z, Vec3::X, Vec3::Y))
 }
 
+/// Skin and hair lighting on the characters: opt-in (`GG_SKIN_HAIR=1`)
+/// until it has been checked on a real GPU.
+pub fn skin_hair_enabled() -> bool {
+    std::env::var("GG_SKIN_HAIR").is_ok_and(|v| v == "1")
+}
+
+/// Which surfaces are skin or hair: the paladin's face, scalp and ears by
+/// `paladin_skin.png` (tools/skin-masks.py), the zombie's bare body.
+pub fn apply_skin_hair(model: &mut Character, dir: &std::path::Path) -> Result<(), String> {
+    use assets::skinned::SkinHair;
+    match model.name.as_str() {
+        "paladin" => {
+            let path = dir.join("paladin_skin.png");
+            let mask = image::open(&path).map_err(|e| format!("{}: {e}", path.display()))?.into_luma8();
+            // Both surfaces share the atlas: the mask leaves the armour plain.
+            for surface in 0..2 { model.set_skin_hair(surface, SkinHair::Mask(mask.clone()))?; }
+        }
+        "ch10" => model.set_skin_hair(0, SkinHair::Skin)?,
+        _ => {}
+    }
+    Ok(())
+}
+
 fn mix(a: Mat4, b: Mat4, t: f32) -> Mat4 {
     let a = a.to_cols_array(); let b = b.to_cols_array();
     Mat4::from_cols_array(&std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t))
@@ -202,8 +225,11 @@ impl Characters {
             beside.filter(|p| p.join("knight.json").is_file())
                 .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters"))
         };
-        let models = ROSTER.iter().map(|name| Character::load(&dir.join(format!("{name}.json"))))
+        let mut models = ROSTER.iter().map(|name| Character::load(&dir.join(format!("{name}.json"))))
             .collect::<Result<Vec<_>, _>>()?;
+        if skin_hair_enabled() {
+            for model in &mut models { apply_skin_hair(model, &dir)?; }
+        }
         // Fail before reserving scene slots if a required clip/socket is absent.
         for model in &models {
             for clip in [IDLE, RUN, JUMP] {

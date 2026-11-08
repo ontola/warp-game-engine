@@ -57,9 +57,25 @@ pub const LIVE_SCREEN: u32 = 16384;
 /// normal, roughness, metalness and emission. `layer` holds -2 - kind.
 pub const SURFACE: u32 = 32768;
 
-/// Material flags from this bit up hold 1 + an index into
-/// `Scene::car_materials`: a procedural car surface (car_material.wgsl).
+/// Material flags 16..29 hold 1 + an index into `Scene::car_materials`: a
+/// procedural car surface (car_material.wgsl). Read them with [`car_tag`].
 pub const CAR_SHIFT: u32 = 16;
+pub const CAR_MASK: u32 = 0x3fff << CAR_SHIFT;
+
+/// Skin: wrapped, red-shifted diffuse (light scattering under the skin),
+/// sunlight shining through thin parts such as ears and fingers (thickness
+/// from the sun shadow map), and a two-lobe skin specular. With HAIR as
+/// well, the albedo texture's alpha says per texel: 0 hair, 0.5 skin, 1
+/// neither (the material's plain lighting), linear between. See
+/// docs/skin-and-hair.md.
+pub const SKIN: u32 = 1 << 30;
+/// Hair: two shifted highlights along the strands (Kajiya-Kay/Marschner
+/// style) and light scattered through the hair. Strands run along the
+/// instance's up axis over the surface. Alone, the whole material is hair.
+pub const HAIR: u32 = 1 << 31;
+
+/// Which car surface material `flags` select: 0 none, else 1 + index.
+pub const fn car_tag(flags: u32) -> u32 { (flags & CAR_MASK) >> CAR_SHIFT }
 
 /// Material layer of procedural bark (shade.wgsl bark_surface) on wood that
 /// has no texture: `scale` is the plate size in metres, `tint` the plates'
@@ -102,6 +118,27 @@ pub struct BlendMaterial {
     /// Sort by the instance origin instead of per triangle (like Godot):
     /// nested shells at one centre draw in instance order.
     pub object_sort: bool,
+    /// Bend the opaque scene seen through this surface (screen-space
+    /// refraction). Drawn only when the renderer has refraction enabled.
+    pub refraction: Option<Refraction>,
+}
+
+/// Screen-space refraction of a blended surface. The background is the
+/// opaque scene behind it (layers of glass behind keep their unbent light).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Refraction {
+    /// Index of refraction, 1..3 (window glass 1.5, water 1.33).
+    pub ior: f32,
+    /// Metres light travels inside before leaving parallel to where it came
+    /// in (a pane, 0..6.5 m). [`Refraction::SOLID`] (or more) treats the
+    /// surface as the front of a solid that reaches the background.
+    pub thickness: f32,
+}
+
+impl Refraction {
+    pub const SOLID: f32 = f32::INFINITY;
+    /// 4 mm window glass.
+    pub const WINDOW: Refraction = Refraction { ior: 1.5, thickness: 0.004 };
 }
 
 #[repr(C)]
@@ -376,6 +413,56 @@ pub struct TextureSource {
     /// Tangent-space normal map in linear UNORM (OpenGL convention), if any.
     /// Source transfer encoding has already been removed before GPU mipmaps.
     pub normal: Option<image::RgbaImage>,
+    /// Material map in linear UNORM, glTF's packing: R ambient occlusion,
+    /// G roughness, B metalness. Each multiplies the material's value
+    /// (`Material::roughness`, `Material::metal`), so 255 keeps it. Sampled
+    /// with the albedo's uv by uv-mapped and TRIPLANAR materials.
+    pub orm: Option<image::RgbaImage>,
+}
+
+impl TextureSource {
+    pub fn new(name: impl Into<String>, rgba: image::RgbaImage) -> Self {
+        TextureSource { name: name.into(), rgba, normal: None, orm: None }
+    }
+}
+
+/// A texture's sibling map: `x_albedo.jpg` has `x_KIND.jpg` (or .png),
+/// and Poly Haven's `x_diff_1k.jpg` has `x_KIND_1k.jpg`. The first of
+/// `kinds` that exists.
+pub fn sibling_map(albedo: &std::path::Path, kinds: &[&str]) -> Option<std::path::PathBuf> {
+    let stem = albedo.file_stem()?.to_str()?;
+    let (prefix, suffix) = ["_albedo", "_diff", "_diffuse", "_basecolor", "_color"].iter().find_map(|token| {
+        let at = stem.rfind(token)?;
+        let rest = &stem[at + token.len()..];
+        (rest.is_empty() || rest.starts_with('_')).then(|| (&stem[..at], rest))
+    })?;
+    kinds.iter().flat_map(|k| ["jpg", "png"].map(|e| albedo.with_file_name(format!("{prefix}_{k}{suffix}.{e}")))).find(|p| p.exists())
+}
+
+/// The material map beside an albedo (`sibling_map`): `orm` or `arm`
+/// (packed occlusion, roughness, metalness), else whichever of `ao`,
+/// `rough` and `metal` exist, packed into one (a missing one is white,
+/// keeping the material's own value). Poly Haven ships `arm` and `rough`.
+pub fn material_map_beside(albedo: &std::path::Path) -> Result<Option<image::RgbaImage>, String> {
+    let open = |p: &std::path::Path| crate::files::open_image(p).map_err(|e| format!("{}: {e}", p.display()));
+    if let Some(packed) = sibling_map(albedo, &["orm", "arm"]) { return Ok(Some(open(&packed)?.to_rgba8())); }
+    let channels = [sibling_map(albedo, &["ao", "occlusion"]), sibling_map(albedo, &["rough", "roughness"]),
+        sibling_map(albedo, &["metal", "metallic", "metalness"])];
+    if channels.iter().all(Option::is_none) { return Ok(None); }
+    let images = channels.iter().map(|c| c.as_ref().map(|p| open(p).map(|i| i.to_luma8())).transpose()).collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(pack_material_map(images)))
+}
+
+/// Pack separate occlusion, roughness and metalness images (any sizes; a
+/// missing one is white) into one RGB material map of the largest size.
+pub fn pack_material_map(images: Vec<Option<image::GrayImage>>) -> image::RgbaImage {
+    let (w, h) = images.iter().flatten().map(|i| i.dimensions()).max().unwrap_or((1, 1));
+    let images: Vec<Option<image::GrayImage>> = images.into_iter().map(|i| i.map(|i| if i.dimensions() == (w, h) { i }
+        else { image::imageops::resize(&i, w, h, image::imageops::FilterType::Triangle) })).collect();
+    image::RgbaImage::from_fn(w, h, |x, y| {
+        let c = |k: usize| images.get(k).and_then(|i| i.as_ref()).map_or(255, |i| i.get_pixel(x, y)[0]);
+        image::Rgba([c(0), c(1), c(2), 255])
+    })
 }
 
 /// A character for the minimum renderer: one draw, each vertex following one
@@ -410,6 +497,13 @@ pub struct Graphics {
     /// angle in radians as seen from the camera (0: draw all). Drops distant
     /// small detail that covers a pixel or two.
     pub minimal_min_angle: f32,
+    /// Screen-space refraction for materials given a [`Refraction`]
+    /// (`KERN_REFRACTION=1` also turns it on). Off: they blend as before.
+    pub refraction: bool,
+    /// Clustered local lights (`Renderer::set_clustered_lights`): hundreds
+    /// per frame, some shadowed. Off by default; `KERN_CLUSTERED_LIGHTS`
+    /// (1 or 0) overrides.
+    pub clustered_lights: bool,
 }
 
 #[derive(Default)]
@@ -512,6 +606,17 @@ pub struct Scene {
     /// A GPU-posed crowd (`crowd::Crowd::reserve`).
     pub crowd: Option<crate::crowd::CrowdSpec>,
     pub textures: Vec<TextureSource>,
+    /// Albedo layers drawn at runtime (`add_screen_texture`): they keep the
+    /// albedo array uncompressed, since a compressed one cannot be drawn to.
+    pub screen_layers: Vec<u32>,
+    /// Weathering per material index (`set_material_layers`); materials
+    /// past its end take `MaterialLayers::default()`.
+    pub material_layers: Vec<crate::material_maps::MaterialLayers>,
+    /// Stream textures (texture_stream.rs): the renderer starts with each
+    /// layer's small mips and uploads the full chains as worker threads make
+    /// them, without blocking frames. Off: every mip is ready at creation,
+    /// as headless captures and tests expect.
+    pub texture_streaming: bool,
     pub live_screen_feeds: Vec<crate::screen_feed::Feed>,
     pub heightfield: Heightfield,
     /// Explicit declaration that heightfield sentinel holes and outside its
@@ -538,6 +643,10 @@ pub struct Scene {
     /// Absolute, sun-disc-free radiance with its solar state supplied by the
     /// atmosphere bake. Bypass HDRI brightest-pixel rotation and lux rescaling.
     pub sky_physical: bool,
+    /// The baked atmosphere's GPU tables (`BakedSky::apply`), for aerial
+    /// perspective and clouds (`Lighting::sky_volume`). Without them those
+    /// passes bake the default atmosphere once.
+    pub atmosphere: Option<std::sync::Arc<crate::atmosphere::AtmosphereTables>>,
 }
 
 impl Scene {
@@ -699,6 +808,13 @@ impl Scene {
         }
     }
 
+    /// Set how material `material` takes wet, snow and moss (material_maps.rs).
+    pub fn set_material_layers(&mut self, material: u32, layers: crate::material_maps::MaterialLayers) {
+        let i = material as usize;
+        if self.material_layers.len() <= i { self.material_layers.resize(i + 1, Default::default()); }
+        self.material_layers[i] = layers;
+    }
+
     pub fn add_material(&mut self, m: Material) -> u32 {
         self.materials.push(m);
         (self.materials.len() - 1) as u32
@@ -708,6 +824,7 @@ impl Scene {
     /// select it (or them into `Material::flags`).
     pub fn add_car_material(&mut self, c: GpuCarMaterial) -> u32 {
         self.car_materials.push(c);
+        assert!(self.car_materials.len() < 1 << 14, "too many car materials");
         (self.car_materials.len() as u32) << CAR_SHIFT
     }
 
@@ -716,7 +833,16 @@ impl Scene {
     /// The same material is excluded from both depth/shadow and solid proxies.
     pub fn set_material_blend(&mut self, material: u32, alpha: f32, double_sided: bool) {
         self.materials[material as usize].flags |= BLEND | NO_AMBIENT_OCCLUSION;
-        self.blended_materials.insert(material, BlendMaterial { alpha: alpha.clamp(0.0, 1.0), double_sided, additive: false, object_sort: false });
+        let refraction = self.blended_materials.get(&material).and_then(|blend| blend.refraction);
+        self.blended_materials.insert(material, BlendMaterial { alpha: alpha.clamp(0.0, 1.0), double_sided, additive: false, object_sort: false, refraction });
+    }
+
+    /// Refract the opaque scene behind this blended material (see
+    /// [`Refraction`]). Call after [`Scene::set_material_blend`]. Additive
+    /// and emissive materials never refract. Opt-in per renderer:
+    /// `Graphics::refraction` or `KERN_REFRACTION=1`.
+    pub fn set_material_refraction(&mut self, material: u32, refraction: Refraction) {
+        if let Some(blend) = self.blended_materials.get_mut(&material) { blend.refraction = Some(refraction); }
     }
 
     /// Sort this blended material's triangles by their instance origin.
@@ -737,24 +863,24 @@ impl Scene {
         self.add_texture_with_normal_encoding(path, NormalEncoding::LinearUnorm)
     }
 
-    /// Load an albedo and its sibling normal map with explicit source encoding.
+    /// Load an albedo and its sibling normal and material maps
+    /// (`sibling_map`, `material_map_beside`) with explicit normal encoding.
     /// Only the normal RGB is decoded; albedo and normal alpha stay untouched.
     pub fn add_texture_with_normal_encoding(&mut self, path: &std::path::Path, encoding: NormalEncoding) -> Result<i32, String> {
-        // The normal map sits beside the albedo: x_albedo.jpg, x_normal.jpg (or .png).
-        let normal_path = path.file_name().and_then(|f| f.to_str()).filter(|f| f.contains("_albedo.")).and_then(|f| {
-            let stem = f.split("_albedo.").next().unwrap_or(f);
-            ["jpg", "png"].iter().map(|e| path.with_file_name(format!("{stem}_normal.{e}"))).find(|p| p.exists())
-        });
-        let (img, normal) = crate::par::scope(|s| {
+        // The normal map sits beside the albedo: x_albedo.jpg, x_normal.jpg
+        // (or .png), or Poly Haven's x_diff_1k.jpg, x_nor_gl_1k.jpg.
+        let normal_path = sibling_map(path, &["normal", "nor_gl"]);
+        let (img, normal, orm) = crate::par::scope(|s| {
             let n = s.spawn(|| normal_path.and_then(|p| crate::files::open_image(p).ok()).map(|i| {
                 let mut normal = i.to_rgba8();
                 encoding.decode(&mut normal);
                 normal
             }));
-            (crate::files::open_image(path), n.join().unwrap())
+            let orm = s.spawn(|| material_map_beside(path));
+            (crate::files::open_image(path), n.join().unwrap(), orm.join().unwrap())
         });
         let img = img.map_err(|e| format!("{}: {e}", path.display()))?.to_rgba8();
-        self.textures.push(TextureSource { name: path.display().to_string(), rgba: img, normal });
+        self.textures.push(TextureSource { name: path.display().to_string(), rgba: img, normal, orm: orm? });
         Ok((self.textures.len() - 1) as i32)
     }
 
@@ -801,6 +927,7 @@ impl Scene {
     /// signs, covers that arrive later). Black until the first draw. Pair it
     /// with an EMISSIVE material for a glowing screen.
     pub fn add_screen_texture(&mut self, name: &str) -> i32 {
+        self.screen_layers.push(self.textures.len() as u32);
         self.add_image(name, image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 255])))
     }
 
@@ -815,7 +942,7 @@ impl Scene {
     }
 
     pub fn add_image(&mut self, name: &str, rgba: image::RgbaImage) -> i32 {
-        self.textures.push(TextureSource { name: name.to_string(), rgba, normal: None });
+        self.textures.push(TextureSource::new(name, rgba));
         (self.textures.len() - 1) as i32
     }
 
@@ -1059,3 +1186,29 @@ mod molten_tests {
     }
 }
 
+
+#[cfg(test)]
+mod material_map_tests {
+    use super::*;
+
+    #[test]
+    fn finds_sibling_maps_in_both_naming_schemes() {
+        let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../games/sideways/assets");
+        let rock = assets.join("textures/mossy_rock_albedo.jpg");
+        assert_eq!(sibling_map(&rock, &["normal", "nor_gl"]), Some(assets.join("textures/mossy_rock_normal.jpg")));
+        assert_eq!(sibling_map(&rock, &["rough"]), Some(assets.join("textures/mossy_rock_rough.jpg")));
+        let stump = assets.join("props/tree_stump_01/textures/tree_stump_01_diff_1k.jpg");
+        assert_eq!(sibling_map(&stump, &["orm", "arm"]), Some(assets.join("props/tree_stump_01/textures/tree_stump_01_arm_1k.jpg")));
+        assert_eq!(sibling_map(&stump, &["normal", "nor_gl"]), Some(assets.join("props/tree_stump_01/textures/tree_stump_01_nor_gl_1k.jpg")));
+        assert_eq!(sibling_map(&assets.join("textures/stone_wall_04_albedo.jpg"), &["rough"]), None);
+        assert_eq!(sibling_map(std::path::Path::new("plain.png"), &["normal"]), None);
+    }
+
+    #[test]
+    fn packs_missing_channels_white() {
+        let rough = image::GrayImage::from_pixel(2, 2, image::Luma([90]));
+        let packed = pack_material_map(vec![None, Some(rough), None]);
+        assert_eq!(packed.dimensions(), (2, 2));
+        assert_eq!(packed.get_pixel(1, 1).0, [255, 90, 255, 255]);
+    }
+}

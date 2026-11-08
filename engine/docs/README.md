@@ -41,17 +41,21 @@ and session notes are in the [development log](log/README.md).
 | [Networking](networking.md) | Host and clients over iroh, and Growing Guns' host-authoritative play. |
 | [Physics](physics.md) | `kern::collide` for characters and levels, the Rapier-based `physics` crate. |
 | [Rendering overview](rendering.md) | Clusters, occlusion, visibility buffer, lighting, content systems, and where performance stands. |
+| [Materials and textures](materials.md) | Material maps, wet/snow/moss weathering, a game's own surfaces, BC7 compression and texture streaming. |
 | [Renderer switches](renderer-switches.md) | Every `KERN_*` variable the renderer reads, its default, and which are experiments. |
 | [Procedural terrain](terrain.md) | The height function and its GPU copy, LOD patches, water, constraints, forest field and placement. |
 | [Terrain regions](terrain-regions.md) | Several kinds of land in one world. |
 | [Zones and footprints](terrain-zones.md) | What each place is for, flat plots, buildings in `terrain_fly --town`. |
 | [World overrides](world-overrides.md) | Artist edits on top of rule placement, keyed on stable object ids. |
 | [Vegetation checklist](vegetation-architecture.md) | The GPU forest and grass route: architecture contract, gates and current measurements (a working checklist). |
-| [Atmosphere](atmosphere.md) | The procedural sky bake: Rayleigh and Mie scattering, ozone, sky lighting. |
+| [Atmosphere](atmosphere.md) | The procedural sky bake (Rayleigh and Mie, multiple scattering, ozone, sky lighting), aerial perspective and volumetric clouds. |
 | [Live sky: time of day and weather](live-sky-controls.md) | `render::sky`: presets, the background bake, Sideways' pause menu and Growing Guns' `--sky` and `sky` command. |
 | [Exposure and HDR output](hdr-and-exposure.md) | Automatic exposure and HDR output on HDR screens: when to use them, how to turn them on, authoring for HDR. |
+| [Skin and hair](skin-and-hair.md) | Skin and hair lighting for characters: what the SKIN and HAIR materials do, masking a character, the Growing Guns review. |
 | [Motion blur](motion-blur.md) | Opt-in per-view motion vectors, fixed shutter, split-screen isolation and limitations. |
+| [Depth of field](depth-of-field.md) | Opt-in thin-lens blur per view: f-number, fixed or GPU autofocus, cost and limits. |
 | [Volumetric light](volumetric-light.md) | Opt-in in-scattering from local lights. |
+| [Water optics](water.md) | Opt-in refraction and screen-space reflections on terrain water. |
 | [Live render debug panel](debug-ui.md) | F10: render and light switches, LOD, GPU pass times. |
 | [Stats overlay](stats-overlay.md) | F3: frame cost while playing, a nested GPU tree, CPU spans, memory, game lines. |
 | [Render suite](render-suite.md) | One fixed world from fixed cameras: per-pass GPU times, counters, memory and pictures, with diffs between runs. |
@@ -67,6 +71,7 @@ Narrower notes on single features.
 Lighting and terrain:
 
 - [Shared terrain visibility](terrain-world-visibility.md)
+- [Dynamic GI and reflections](dynamic-gi.md): traced reflections, open stages
 - [Shared world-space diffuse radiance cache](radiance-cache.md)
 - [Camera terrain occlusion of solar haze](camera-sun-fog.md)
 - [Finite-distance aerosol layer](finite-distance-fog.md)
@@ -84,6 +89,7 @@ Vehicles and effects:
 - [Persistent tyre material marks](persistent-tyre-marks.md)
 - [Baked explosion smoke](baked-explosion-smoke.md)
 - [Adaptive explosion smoke](adaptive-explosion-smoke.md)
+- [GPU particles](gpu-particles.md)
 - [Roadside crowds prototype](roadside-crowds.md)
 
 Materials:

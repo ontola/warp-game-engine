@@ -434,7 +434,7 @@ fn sky_spec(capture:&Value)->Result<Option<(Atmosphere,SolarState,BakeQuality,Op
         mie_scattering_per_km:0.003996*scale,mie_absorption_per_km:0.000444*scale,
         mie_height_km:height,mie_g:0.8,ozone_per_km:DVec3::new(0.000650,0.001881,0.000085),
         ground_albedo:DVec3::splat(0.15),solar_rgb_lux:DVec3::splat(127_500.0),
-        night};
+        night,multiple_scattering:true};
     let quality=BakeQuality {transmittance_width:128,transmittance_height:64,transmittance_steps:96,
         sky_width:256,sky_height:128,sky_steps:48};
     if s["sky_lut"]!=json!([256,128])
@@ -547,7 +547,7 @@ fn context(capture:&Value,view_index:usize)->Result<(sideways::stage::Stage,Came
     let mut light=Lighting {taa:0.0,..Default::default()};
     match capture["weather"].as_str().ok_or("missing weather")? {
         "clear"=>{},"overcast"=>light.shadow_strength=0.6,
-        "mist"=>light.fog_density=0.011,"wet"=>light.shadow_strength=0.5,
+        "mist"=>light.fog_density=0.011,"wet"=>{light.shadow_strength=0.5;light.wetness=0.85;}
         _=>return Err("unknown capture weather".into()),
     }
     light.sun_dir=vector(&r["sun_direction"])?;

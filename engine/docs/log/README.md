@@ -41,6 +41,8 @@ current defaults, in [renderer switches](../renderer-switches.md).
 
 - [Parenting in four games, 7 November](2026-11-07-parenting.md)
 - [One sun clipmap: cached levels replace the shared and far maps, 8 November](2026-11-08-sun-clipmap.md)
+- [Screen-space refraction, 8 November](2026-11-08-refraction.md)
+- [Material maps, weathering, BC7 and texture streaming, 8 November](2026-11-08-materials-and-texture-streaming.md)
 
 - [Iteration speed, 24 October](iteration-speed-2026-10-24.md)
 - [Colour-geometry category costs, 24 October](render-categories-2026-10-24.md)
@@ -53,6 +55,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [terrain_fly in a browser (wasm, WebGPU): feasibility, 5 November](2026-11-05-browser-feasibility.md)
 - [Shading without local lights, 5 November](2026-11-05-shade-without-local-lights.md)
 - [Land shading costs, 6 November](2026-11-06-land-shading-costs.md)
+- [Clouds, multiple scattering and aerial perspective, 8 November](2026-11-08-clouds-and-aerial-perspective.md)
 
 ## Traversal and work avoidance
 
@@ -113,6 +116,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 
 ## Shadows and lighting
 
+- [Traced reflections, stage 1, 8 November](2026-11-08-traced-reflections.md)
 - [Low-sun shadow diagnostics, 24 October](sun-shadow-diagnostics.md)
 - [World visibility and cached lighting, 24 October](world-lighting.md)
 - [Next live diffuse-bounce step (design only)](live-terrain-bounce-plan.md)
@@ -131,5 +135,6 @@ current defaults, in [renderer switches](../renderer-switches.md).
 
 ## Effects and content
 
+- [GPU particles first pass, 8 November](2026-11-08-gpu-particles.md)
 - [Baked smoke scalability baseline, 31 October](baked-smoke-scaling.md)
 - [Growing Guns crowd silhouettes, 29 October](growing-guns-crowd.md)

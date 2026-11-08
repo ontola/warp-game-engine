@@ -750,9 +750,58 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     if w > 0.0 {
         let ripple = vec2<f32>(field_fbm(wuv * 1.7 + vec2<f32>(s.time * 0.31, 0.0), footprint * 1.7), field_fbm(wuv * 1.7 + vec2<f32>(5.0, s.time * 0.27), footprint * 1.7)) - 0.5;
         let wn = normalize(vec3<f32>(ripple.x * 0.12, 1.0, ripple.y * 0.12));
-        c = mix(c, mix(c * 0.45, vec3<f32>(0.018, 0.03, 0.028), depth), w);
+        if water_optics_on() {
+            // Depth in metres: the carved depth, or what the film stands for.
+            let body = water_body(c, max(f.water, depth * 0.8), s.dir, wn, wuv, s.time, footprint);
+            c = mix(c, body, w);
+        } else {
+            c = mix(c, mix(c * 0.45, vec3<f32>(0.018, 0.03, 0.028), depth), w);
+        }
         nn = normalize(mix(nn, wn, w));
         rough = mix(rough, 0.04, w);
     }
     return SurfaceOut(c * s.tint, nn, rough, 0.0, vec3<f32>(0.0));
+}
+
+// Water optics (Lighting::water, shade.wgsl WaterView): what the eye sees
+// through the surface, as the albedo the lighting then treats like ground.
+// The surface is the terrain at water level, so the bed is not drawn: it is
+// the ground colour `bed` lying `depth` metres down. The view ray refracts
+// at the rippled surface (Snell, n = 1.333) and travels to the bed, the sun
+// refracts down to it; along both paths the water absorbs, red first, and
+// scatters its own dark green back (Beer-Lambert, single scattering). What
+// the surface reflects (Fresnel) it does not let through: the reflection
+// itself is shade.wgsl's specular (sky, or the screen-space reflection).
+// Sunlight focused by the ripples draws moving caustics on shallow beds,
+// where the refracted ray lands, so they shift with the view like the bed.
+fn water_body(bed: vec3<f32>, depth: f32, dir: vec3<f32>, wn: vec3<f32>, wuv: vec2<f32>, time: f32, footprint: f32) -> vec3<f32> {
+    let eta = 1.0 / 1.333;
+    let cos_i = clamp(dot(wn, -dir), 0.02, 1.0);
+    let t = refract(dir, wn, eta);
+    let cos_t = max(-t.y, 0.05);
+    let l = light.sun_dir.xyz;
+    let cos_l = sqrt(max(1.0 - eta * eta * (1.0 - clamp(l.y, 0.0, 1.0) * clamp(l.y, 0.0, 1.0)), 0.0));
+    // Path down along the view, and the light's path down to the bed.
+    let path = depth * (1.0 / cos_t + 1.0 / max(cos_l, 0.2));
+    // Extinction per metre: lowland fresh water with algae, tannin and
+    // silt (red goes first, then blue), scattering back an olive green.
+    let sigma = vec3<f32>(0.95, 0.5, 0.62);
+    let tr = exp(-sigma * path);
+    let deep = vec3<f32>(0.024, 0.036, 0.024);
+    // Caustics at the refracted landing point, fading with depth and once
+    // a pixel covers several ripple cells (they would only alias).
+    let land = wuv + t.xz / cos_t * depth;
+    let near = (1.0 - smoothstep(0.015, 0.06, footprint)) * (1.0 - smoothstep(0.3, 1.5, depth)) * smoothstep(0.0, 0.08, l.y);
+    var caustic = 1.0;
+    if near > 0.0 {
+        let a = field_fbm(land * 2.3 + vec2<f32>(time * 0.41, time * 0.23), footprint * 2.3);
+        let b = field_fbm(land * 2.9 - vec2<f32>(time * 0.19, time * 0.37) + 13.0, footprint * 2.9);
+        // Bright lines where the two moving fields cross (a - b = 0).
+        let ridge = 1.0 - smoothstep(0.0, 0.07, abs(a - b));
+        caustic = 1.0 + near * (1.0 * ridge - 0.3);
+    }
+    // Grass does not grow under standing water: silt settles on the bed.
+    let settled = mix(bed, vec3<f32>(0.15, 0.125, 0.09), smoothstep(0.1, 0.6, depth) * 0.7);
+    let fresnel = 0.02 + 0.98 * pow(1.0 - cos_i, 5.0);
+    return (settled * caustic * tr + deep * (1.0 - tr)) * (1.0 - fresnel);
 }
