@@ -35,3 +35,9 @@ Readback serializes views for reproducibility. PNG encoding and readback can
 increase cold wall time. The fixture uses simple directional lighting and the
 stadium geometry; gameplay, shadowing and the normal frame compositor are
 outside its timing scope.
+
+For the plant analogue, see [vegetation selection and paging](vegetation-architecture.md).
+The face source is attributed in [the asset notes](../assets/humans/README.md).
+For comparison with production crowd animation and perceived repetition, see
+[NVIDIA's animated crowd rendering chapter](https://developer.nvidia.com/gpugems/gpugems3/part-i-geometry/chapter-2-animated-crowd-rendering)
+and [McDonnell et al., Clone Attack!](https://www.scss.tcd.ie/Rachel.McDonnell/papers/oldSiggraph08.pdf).
