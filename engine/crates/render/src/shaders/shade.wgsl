@@ -204,7 +204,7 @@ override FEATURE_FOLIAGE: bool = true;
 // brushes went unshaded and read ~1.55x brighter than the same crown as
 // voxels, which carry (1-exp(-tau))/tau per cell (Joep, 8 November: near
 // crowns pale, darker as trees switch to voxels).
-override NEEDLE_BRUSH_OWN: f32 = 0.6;
+override NEEDLE_BRUSH_OWN: f32 = 0.42;
 // Spot and local lights (Renderer::set_headlights, set_local_lights). A frame
 // with none uses a pipeline without their loop: fewer registers per pixel.
 override FEATURE_LOCAL_LIGHTS: bool = true;

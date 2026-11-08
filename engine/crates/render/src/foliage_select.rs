@@ -363,7 +363,7 @@ mod tests {
   };
   let (camera,shadow,scale)=cut(8);
   assert_eq!(camera,vec![1,2],"camera over its error target refines to the leaves");
-  assert!(shadow,"the one-pixel shadow consumer keeps the root");assert!(scale<=1.,"slack caps leave the exact target");
+  assert!(shadow,"the one-pixel shadow consumer keeps the root");assert!(scale<=crate::foliage_refine::CAMERA_CUT_FLOOR,"slack caps leave the target at the camera floor: {scale}");
   // One slot cannot hold both leaves: keep the complete parent, never half a cut,
   // and loosen the target for the next frames instead of auctioning.
   let (camera,_,scale)=cut(1);
