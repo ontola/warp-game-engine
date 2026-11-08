@@ -81,3 +81,18 @@ several output pixels under DLSS). Rays and the cloud history now use the
 unjittered view-projection; only depth reconstruction uses the jittered
 one. Same dump with still clouds (native TAA, lavapipe): mean change per
 frame in the sky 0.153 → 0.054 of 255.
+
+Joep still saw motion, mostly when flying up. The march worked in planet
+coordinates (camera at 6360 km from the centre, f32), so the altitude of
+every sample was a difference of two large numbers and rounded differently
+each frame as the camera rose. The shell intersection and the density now
+use the altitude along the ray directly (h0 + t·(mu + t·(1-mu²)/2R)), and
+the cloud history blends 0.06 instead of 0.12 of the new frame.
+`terrain_fly --dump 24 --climb` (new: holds climb), 640×360, wind off,
+mean change / mean frame-to-frame jerk in the sky, of 255:
+
+| Case | Before | After |
+| --- | --- | --- |
+| Standing | 0.055 / 0.111 | 0.029 / 0.058 |
+| Climbing from 30 m | 0.061 / 0.117 | 0.037 / 0.068 |
+| Climbing from 1200 m | 0.083 / 0.130 | 0.071 / 0.111 |
