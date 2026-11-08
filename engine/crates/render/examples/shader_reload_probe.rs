@@ -23,7 +23,7 @@ fn fixture()->Result<Scene,String> {
     let glass=scene.add_material(Material{flags:TWO_SIDED|BLEND,roughness:0.1,..base});
     scene.blended_materials.insert(glass,BlendMaterial{alpha:0.7,double_sided:true,additive:false,object_sort:false,refraction:None});
     quad(&mut scene,glass,Vec3::new(-8.0,0.0,0.0),2.5,2.0);
-    scene.textures.push(TextureSource{name:"reload synthetic grass".into(),rgba:image::RgbaImage::from_pixel(4,4,image::Rgba([70,150,45,255])),normal:None});
+    scene.textures.push(TextureSource{name:"reload synthetic grass".into(),rgba:image::RgbaImage::from_pixel(4,4,image::Rgba([70,150,45,255])),normal:None,orm:None});
     let grass=scene.add_material(Material{layer:0,flags:GRASS|ALPHA_TEST|TWO_SIDED,..base});
     let first=quad(&mut scene,grass,Vec3::ZERO,2.0,0.5);
     scene.instances[first as usize].flags|=LIVE_GRASS;

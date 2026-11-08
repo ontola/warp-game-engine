@@ -92,12 +92,13 @@ fn rock_parallax(uv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>, layer: i32,
     let steps = mix(20.0, 8.0, clamp(facing, 0.0, 1.0));
     let step_depth = 1.0 / steps;
     var depth = 0.0;
-    var height = textureSampleGrad(normal_tex, samp, uv, layer, gx, gy).b;
+    let nk = normal_grad(layer, gx, gy);
+    var height = textureSampleGrad(normal_tex, samp, uv, layer, gx * nk, gy * nk).b;
     var previous_gap = 1.0 - height;
     if previous_gap <= 0.001 { return uv; }
     for (var i = 0u; i < 20u; i++) {
         depth += step_depth;
-        height = textureSampleGrad(normal_tex, samp, uv - travel * depth, layer, gx, gy).b;
+        height = textureSampleGrad(normal_tex, samp, uv - travel * depth, layer, gx * nk, gy * nk).b;
         let gap = 1.0 - height - depth;
         if gap <= 0.0 {
             let fraction = previous_gap / max(previous_gap - gap, 1e-5);
@@ -137,7 +138,8 @@ fn textured_rock(inst: Instance, instance_id: u32, p: vec3<f32>, n: vec3<f32>,
     let gx = vec2<f32>(dot(dx, gu), dot(dx, gv)) / repeat_m;
     let gy = vec2<f32>(dot(dy, gu), dot(dy, gv)) / repeat_m;
     uv = rock_parallax(uv, gx, gy, layer, p, n, gu, gv);
-    let sampled = textureSampleGrad(albedo, samp, uv, layer, gx, gy);
+    let ak = albedo_grad(layer, gx, gy);
+    let sampled = textureSampleGrad(albedo, samp, uv, layer, gx * ak, gy * ak);
     let footprint_m = max(length(gx), length(gy)) * repeat_m;
     // Fade unresolved millimetre relief continuously; beyond this band only
     // one albedo mip sample remains. No distance switch or per-stone CPU LOD.
@@ -145,7 +147,8 @@ fn textured_rock(inst: Instance, instance_id: u32, p: vec3<f32>, n: vec3<f32>,
     var normal = n;
     var grain_roughness = 0.93;
     if relief > 0.0 {
-        let packed = textureSampleGrad(normal_tex, samp, uv, layer, gx, gy);
+        let nk = normal_grad(layer, gx, gy);
+        let packed = textureSampleGrad(normal_tex, samp, uv, layer, gx * nk, gy * nk);
         let dressing = mix(0.65, 1.0, f32((h >> 22u) & 255u) / 255.0);
         let xy = (packed.xy * 2.0 - 1.0) * (relief * dressing);
         // Preserve the metric UV Jacobian on sloped fracture/bevel faces;

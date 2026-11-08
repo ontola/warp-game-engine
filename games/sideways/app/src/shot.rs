@@ -196,6 +196,7 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
             light.ev100 = 12.2;
             light.fog_start = 30.0;
             light.fog_end = 320.0;
+            light.wetness = 0.85;
         }
         _ => {}
     }
