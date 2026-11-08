@@ -575,6 +575,8 @@ pub struct Fx {
     rng: u64,
     pub shake: f32,
     pub blasts: render::fx::Effects,
+    /// GPU sparks and embers for eruptions and bombs (opt-in: KERN_GPU_PARTICLES=1).
+    pub sparks: render::gpu_particles::GpuParticles,
     /// Props broken this tick: where the blow came from and how hard, for
     /// the view to throw their chunks.
     pub prop_hits: HashMap<usize, (Vec3, f32)>,
@@ -620,6 +622,9 @@ impl Default for Fx {
         let mut blasts = render::fx::Effects::with_explosion_budget(render::fx::ExplosionBudget::FULL);
         blasts.set_baked_smoke(std::env::var("SPELLSTORM_BAKED_SMOKE").as_deref() != Ok("0"));
         blasts.light_scale = LIGHT;
+        let mut sparks = render::gpu_particles::GpuParticles::new(65_536);
+        // The floor of every level is at 0.
+        sparks.set_floor(0.0);
         Fx {
             ems: vec![],
             em_index: HashMap::new(),
@@ -633,6 +638,7 @@ impl Default for Fx {
             rng: 0x9e37_79b9_7f4a_7c15,
             shake: 0.0,
             blasts,
+            sparks,
             prop_hits: HashMap::new(),
             env_lights: Vec::new(),
             env_light: Vec3::ZERO,
@@ -830,6 +836,28 @@ impl Fx {
         self.pops.push(Pop { at: at + Vec3::Y, c: [1.0, 0.62, 0.22], energy: 4.0 + r, range: 4.0 + r * 2.5, age: 0.0, time: 0.45 });
     }
 
+    /// Thousands of GPU sparks off a blast at `at`, `r` across, in the
+    /// colour `c` (linear): streaks that skid over the floor, embers that
+    /// swirl up on the heat. `grit`: lit dust thrown out low as well.
+    fn gpu_burst(&mut self, at: Vec3, r: f32, c: Vec3, grit: bool) {
+        use render::gpu_particles::Emitter;
+        if !self.sparks.enabled() { return; }
+        let r = r.clamp(0.5, 12.0);
+        // Saturated: the tone curve whitens anything this bright anyway.
+        let hot = c * Vec3::new(1.0, 0.8, 0.5);
+        let t = self.time;
+        self.sparks.emit(t, &Emitter { position: at + Vec3::Y * 0.3, radius: 0.2 * r, spread: 1.5, speed: [2.0 * r, 5.5 * r],
+            count: (r * 500.0) as u32, life: [0.3, 1.2], size: [0.05, 0.02], glow: 5.0 * LIGHT,
+            color: [hot.extend(1.0), (c * Vec3::new(1.0, 0.4, 0.15)).extend(0.0)], ..Emitter::sparks() });
+        self.sparks.emit(t, &Emitter { position: at + Vec3::Y * 0.5, radius: 0.5 * r, speed: [0.3, 0.8 * r],
+            count: (r * 160.0) as u32, duration: 0.6, life: [1.2, 3.0], size: [0.06, 0.025], glow: 4.0 * LIGHT,
+            color: [c.extend(1.0), (c * Vec3::new(0.8, 0.25, 0.08)).extend(0.0)], ..Emitter::embers() });
+        if grit {
+            self.sparks.emit(t, &Emitter { position: at + Vec3::Y * 0.2, radius: 0.3 * r, spread: 1.4, speed: [0.6 * r, 2.0 * r],
+                count: (r * 120.0) as u32, life: [1.0, 2.5], size: [0.05, 0.12], ..Emitter::dust() });
+        }
+    }
+
     /// Growing Guns' volumetric smoke (render::fx::smoke_cloud): `tint` its
     /// linear albedo, `density` 0.3 a wisp .. 1.5 thick.
     fn smoke(&mut self, at: Vec3, r: f32, tint: [f32; 3], density: f32) {
@@ -927,6 +955,7 @@ impl Fx {
                 // An eruption: a blast out of the ground, burning gobs flung
                 // high, black smoke over it.
                 self.blasts.explosion(self.time, at + Vec3::Y * 0.2, (r * 0.75 * k).max(0.8), Vec3::new(1.0, 0.45, 0.1));
+                self.gpu_burst(at, r * 0.6 * k, Vec3::new(1.0, 0.42, 0.08), false);
                 self.chunks(at, r * k, El::Magma, n(26.0 + r * 4.0), 0.22);
                 self.fire_burst(at, r * 0.4 * k);
                 self.smoke(at, r * 0.6 * k + 0.6, [0.1, 0.09, 0.08], 0.8);
@@ -1154,6 +1183,7 @@ impl Fx {
                 self.fire_burst(at, r);
                 if r >= 1.0 {
                     self.blasts.explosion(self.time, at + Vec3::Y * 0.3, r * 1.2, Vec3::new(1.0, 0.6, 0.2));
+                    self.gpu_burst(at, r, Vec3::new(1.0, 0.6, 0.2), true);
                 } else {
                     self.smoke(at + Vec3::Y * 0.2, 0.6 + r, [0.16, 0.15, 0.14], 0.5);
                 }

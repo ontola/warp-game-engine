@@ -960,6 +960,7 @@ pub struct Renderer {
     fx: crate::fx::FxSlot,
     volumetric: crate::volumetric::VolumetricSlot,
     sprites: crate::sprites::SpriteSlot,
+    gpu_particles: crate::gpu_particles::ParticleSlot,
     transparency: Option<crate::transparency::Transparency>,
     grass: Option<crate::grass::GrassRenderer>,
     meadow: Option<crate::meadow::MeadowRenderer>,
@@ -2289,6 +2290,7 @@ impl Renderer {
             fx: Default::default(),
             volumetric: Default::default(),
             sprites: Default::default(),
+            gpu_particles: Default::default(),
             transparency,
             grass,
             meadow,
@@ -3703,6 +3705,11 @@ impl Renderer {
     /// Compile effect pipelines during loading instead of the first explosion.
     pub fn prepare_effects(&self, gpu: &Gpu) { self.fx.prepare(gpu); }
 
+    /// Emitters and clock for the GPU particle pool (`gpu_particles::GpuParticles::flush`).
+    pub fn update_gpu_particles(&self, gpu: &Gpu, update: crate::gpu_particles::Update) -> Result<(), String> {
+        self.gpu_particles.update(gpu, update)
+    }
+
     pub fn set_effects(&self, gpu: &Gpu, time: f32, puffs: Option<&[crate::fx::Puff]>) -> Result<(), String> {
         self.fx.set(gpu, time, puffs);
         Ok(())
@@ -4418,6 +4425,13 @@ impl Renderer {
             if debris.encode(gpu, &mut enc, times) && times.is_some() {
                 timestamp_pair(&mut ts);
                 names.push("debris");
+            }
+        }
+        if let Some(particles) = self.gpu_particles.0.lock().unwrap().as_mut() {
+            let times = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
+            if particles.encode(gpu, &mut enc, times) && times.is_some() {
+                timestamp_pair(&mut ts);
+                names.push("gpu particles sim");
             }
         }
         if let Some((forest,first_owner))=&self.gpu_forest {
@@ -5356,7 +5370,24 @@ impl Renderer {
                     None => None,
                 }
             };
+            // GPU particles (sparks, embers, dust): into the sprites' disposable
+            // output when there is one, otherwise into their own copy.
+            let reusable = sprite_output.is_some();
             let resolved = sprite_output.unwrap_or(resolved);
+            let particle_draw = {
+                let mut particles = self.gpu_particles.0.lock().unwrap();
+                match particles.as_mut() {
+                    Some(particles) => {
+                        let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("gpu particles"); (qs, timestamp_pair(&mut ts)) });
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
+                        let out = particles.render(gpu, &mut enc, vi, &resolved, reusable, &depth_v, *cam, proj * view_m, vp, light)?;
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
+                        out
+                    }
+                    None => None,
+                }
+            };
+            let resolved = particle_draw.unwrap_or(resolved);
             let exhaust_output = if debug_options.exhaust_enabled {
                 let exhaust_time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| {
                     names.push("exhaust"); (qs, timestamp_pair(&mut ts))
