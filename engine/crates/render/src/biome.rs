@@ -69,10 +69,11 @@ impl Biome {
             // clear stands with loose trees between, rugged grey rock and
             // snow above, the peaks in the clouds (Biome::clouds). The grass
             // texture is brown (linear 0.16, 0.12, 0.05), so the tints lean
-            // hard to green: lush pasture comes out near (0.06, 0.13, 0.03).
+            // hard to green: lush pasture comes out near (0.07, 0.15, 0.03), dry patches
+            // yellower, so the pasture is not one flat green.
             "swiss" => Biome { name: "swiss", terrain: Style::swiss(),
                 vegetation: VegetationStyle {
-                    ground: GroundStyle { grass_dry: [0.46, 0.98, 0.48, 0.3], grass_lush: [0.36, 1.1, 0.6, 0.0],
+                    ground: GroundStyle { grass_dry: [0.62, 1.12, 0.42, 0.3], grass_lush: [0.42, 1.25, 0.6, 0.0],
                         soil: [0.75, 0.72, 0.62, 0.35], gravel: [0.92, 0.96, 1.02, 0.35], rock: [0.96, 1.0, 1.06, 0.25], ..base.ground },
                     forest: ForestStyle { needles: [0.035, 0.075, 0.03, 0.4], far: [0.06, 0.09, 0.035, 22.0], crown: [2.6, 0.42, 1.9, 0.08], ..base.forest },
                     meadow_dry_season: 0.0 },
@@ -128,11 +129,14 @@ impl Biome {
 
 impl Biome {
     /// The cloud layer this biome's sky holds (sky_volume::Clouds), when
-    /// it is part of its look: in the swiss valleys a thin layer round the
-    /// upper slopes, so the peaks stand in and above the clouds.
+    /// it is part of its look: in the swiss valleys broken cumulus round the
+    /// summits.
     pub fn clouds(&self) -> Option<crate::sky_volume::Clouds> {
         match self.name {
-            "swiss" => Some(crate::sky_volume::Clouds { coverage: 0.55, base_m: self.terrain.snow_line - 350.0, thickness_m: 700.0,
+            // Broken cumulus from the snow line up: the summits stand in
+            // them and the valleys keep blue sky (a 0.55 deck at 1400 m
+            // closed the sky over the valleys).
+            "swiss" => Some(crate::sky_volume::Clouds { coverage: 0.35, base_m: self.terrain.snow_line, thickness_m: 1000.0,
                 ..Default::default() }),
             _ => None,
         }
@@ -362,7 +366,7 @@ mod tests {
         fn field(&self, name: &str, x: f32, z: f32, g: &crate::terrain_field::Sample) -> f32 {
             let grows = crate::forest_field::grows(g, &self.0.terrain);
             match name {
-                "forest" if grows => crate::forest_field::share(x, z, 1, crate::forest_field::site(g.up, g.wet), 0.0),
+                "forest" if grows => crate::forest_field::share(x, z, 1, crate::forest_field::site(g.up, g.wet, self.0.terrain.forest_slopes), 0.0),
                 "grows" => f32::from(u8::from(grows)),
                 _ => 0.0,
             }
