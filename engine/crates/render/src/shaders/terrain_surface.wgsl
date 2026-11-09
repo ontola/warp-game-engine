@@ -226,6 +226,33 @@ fn far_forest_full_res(s: SurfaceIn) -> bool {
     let origin = select(view.cam.xz, params.centre, params.centred);
     return distance(s.p.xz, origin) > params.start;
 }
+// How much of this ground's sun the drawn trees standing towards the sun
+// take, from their silhouettes (far_strip along the sun, as the painted
+// ones shade their gaps): a tree or a gap of sunlight per pixel. shade.wgsl
+// uses it where no sharp sun map reaches, instead of the coarse maps whose
+// stand shadows merged into large dark blobs. -1 where no forest stands.
+fn far_tree_cast(s: SurfaceIn) -> f32 {
+    if s.scale >= 0.0 { return -1.0; }
+    let params = far_forest_params(u32(-s.scale - 0.5));
+    if params.density <= 0.0 { return -1.0; }
+    let origin = select(view.cam.xz, params.centre, params.centred);
+    // Past the drawn trees the painted ones shade their own ground.
+    let drawn = 1.0 - smoothstep(params.start, params.end, distance(s.p.xz, origin));
+    if drawn <= 0.0 { return -1.0; }
+    let sun = light.sun_dir.xyz;
+    let sun_xz = length(sun.xz);
+    if sun.y <= 0.02 || sun_xz <= 1e-3 { return 0.0; }
+    let f = field_attr(s);
+    let seed = u32(s.metal + 0.5);
+    let site = ff_site(f.up, f.wet);
+    let footprint = sqrt(length(s.dx) * length(s.dy));
+    let crowd = ff_share(s.p.x, s.p.z, seed, site, footprint) * params.density;
+    if crowd <= 0.0 { return 0.0; }
+    let r0 = params.style.crown.x * FAR_CROWN_SIZE;
+    let len0 = max(params.style.far.w * min(sun_xz / sun.y, FAR_TREE_COT_MAX), 2.0 * r0);
+    let fw = max(footprint * 0.5, 0.05);
+    return (1.0 - far_strip(s.p.xz, sun.xz / sun_xz, len0, r0, fw, fw, crowd, seed, params.style).x) * drawn;
+}
 fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: FieldAttr, footprint: f32) -> MeadowCanopy {
     if s.scale >= 0.0 { return MeadowCanopy(ground, nn); }
     let params = far_forest_params(u32(-s.scale - 0.5));
