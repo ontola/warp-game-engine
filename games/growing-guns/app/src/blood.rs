@@ -123,10 +123,15 @@ impl Splats {
                 [1.; 3]
             },
             layer,
-            roughness: 0.39,
+            // Pigment on porous masonry scatters the stadium lamps broadly.
+            roughness: 0.92,
             metal: 0.,
             scale: 1.,
             flags: if simple { 0 } else { render::scene::ALPHA_TEST },
+        });
+        scene.set_material_layers(material, render::MaterialLayers {
+            wet: 0.0,
+            ..Default::default()
         });
         Self(std::array::from_fn(|i| {
             let m = if simple {
