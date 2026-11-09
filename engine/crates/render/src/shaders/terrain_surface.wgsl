@@ -216,6 +216,16 @@ fn far_forest_params(at: u32) -> FarForest {
         vec4<f32>(b.tint, bitcast<f32>(b.layer)), vec4<f32>(b.roughness, bitcast<f32>(b.flags), b.scale, b.metal));
     return FarForest(fs, c.tint.x, c.tint.y, c.scale, vec2<f32>(c.tint.z, c.roughness), (c.flags & 1u) != 0u);
 }
+// Whether this ground lies past the drawn trees where the painted ones
+// stand: those are shaded per pixel, not by the 2x2 coarse material
+// (shade.wgsl), which smeared each tree over 3-6 pixels.
+fn far_forest_full_res(s: SurfaceIn) -> bool {
+    if s.scale >= 0.0 { return false; }
+    let params = far_forest_params(u32(-s.scale - 0.5));
+    if params.density <= 0.0 { return false; }
+    let origin = select(view.cam.xz, params.centre, params.centred);
+    return distance(s.p.xz, origin) > params.start;
+}
 fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: FieldAttr, footprint: f32) -> MeadowCanopy {
     if s.scale >= 0.0 { return MeadowCanopy(ground, nn); }
     let params = far_forest_params(u32(-s.scale - 0.5));
