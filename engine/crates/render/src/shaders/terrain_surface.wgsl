@@ -245,7 +245,7 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     let reach = min(height * 0.6 * length(eye - n * dot(eye, n)) / max(rise, 0.05), 120.0);
     let back = normalize(eye.xz + vec2<f32>(1e-6, 0.0));
     let q = s.p.xz + back * reach;
-    let crowns = far_crowns(q, footprint, s.dx, s.dy, eye, sun, seed, site, params.density, params.style);
+    let crowns = far_crowns(s.p.xz, footprint, s.dx, s.dy, eye, sun, seed, site, params.density, params.style);
     let cover = crowns.w * grows * fade;
     if cover <= 0.0 { return MeadowCanopy(ground, nn); }
     // Ground between crowns: the forest floor's shade where the stand is
@@ -297,11 +297,16 @@ override FAR_CROWN_BASE: f32 = 0.4;
 // A pine crown is open: the share of what is behind it one crown hides.
 // Stacked crowns still leave gaps, so closed stands keep their grain
 // (the reference's) instead of a solid cover.
-override FAR_CROWN_OPACITY: f32 = 0.6;
+override FAR_CROWN_OPACITY: f32 = 0.8;
 // The share of a pixel a crown's edge is filtered over.
-override FAR_CROWN_FILTER: f32 = 0.3;
+override FAR_CROWN_FILTER: f32 = 1.0;
 // Ambient shade of the ground between crowns in a closed stand.
 override FAR_GAP_SHADE: f32 = 0.4;
+// Crown half-width relative to the style's (its top-down cover radius,
+// which counts the open branch tips).
+override FAR_CROWN_SIZE: f32 = 0.6;
+// Steepest glancing view a silhouette stretches for (cot of elevation).
+const FAR_TREE_COT_MAX: f32 = 8.0;
 // KERN_FAR_CROWN_DEBUG: red the averaged share, green single-crown cover.
 override FAR_CROWN_DEBUG: bool = false;
 // The sun a drawn needle crown keeps (shade.wgsl NEEDLE_BRUSH_OWN).
@@ -311,78 +316,94 @@ const FAR_CROWN_OWN: f32 = 0.42;
 override FAR_CROWN_SUN_LOSS: f32 = 0.8;
 override FAR_CROWN_SKY_LOSS: f32 = 0.45;
 
-// Crowns seen from `eye` at q, for a pixel `footprint` metres across: rgb
-// their colour with self-shade, w the share of the pixel they cover. Each
-// crown is its own soft disc while it spans a few pixels or more (the grain
-// a real forest shows kilometres out), their mean coverage
-// (forest_canopy's overlap model) once the cells are subpixel.
+// Trees seen from `eye` past the drawn ones, standing on q's ground, for
+// a pixel whose world derivatives are dx, dy: rgb their colour with
+// self-shade, w the share of the pixel they cover.
+//
+// A tree seen at a glancing angle is a silhouette, not a disc on the
+// ground: its crown, a crown wide across the view, stretches from its base
+// away from the camera by its height x cot(elevation) (a 13 m pine at 3 km
+// from 500 m up is 2 px wide and 7 px tall). The ground point q is covered
+// by the trees standing on the strip between q and that far towards the
+// camera, each a cone from 0.3 of its height up. Drawn trees give a crown
+// or a gap per pixel; these do too, so the grain stays, until a pixel is
+// wider than a cell, where they become their mean.
 fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: vec3<f32>, sun: vec3<f32>, seed: u32, site: f32, density: f32, fs: ForestStyle) -> vec4<f32> {
     let needles = mix(fs.needles.rgb, fs.far.rgb, ff_patch(q.x, q.y, seed, fs.crown.w));
     let crowd = ff_share(q.x, q.y, seed, site, footprint) * density;
     if crowd <= 0.0 { return vec4<f32>(needles, 0.0); }
-    let area = far_view_area(eye, fs);
-    let mean_cover = 1.0 - exp(-crowd * fs.crown.y * area * FAR_CROWN_OPACITY);
-    // Sun from above lights a little more of each crown.
-    let tops = 0.9 + 0.1 * max(sun.y, 0.0);
-    // A crown seen at a glancing angle is its width across the view and
-    // its height along it: an ellipse of the same area as the grown disc
-    // (so the cover still matches the mean), not a wider disc. A pixel is
-    // long along the view too: in the ellipse's own (across) metres, its
-    // width is about the same both ways, so crowns stay single grains far
-    // past where the pixel's mean width would have smoothed them.
     let along = normalize(eye.xz + vec2<f32>(1e-6, 0.0));
     let across = vec2<f32>(-along.y, along.x);
-    let fa = max(abs(dot(dx.xz, across)), abs(dot(dy.xz, across)));
-    let fl = max(abs(dot(dx.xz, along)), abs(dot(dy.xz, along)));
-    let r0 = fs.crown.x;
-    let long0 = min(r0 * area, FF_CELL);
-    let squash0 = r0 * r0 * area / (long0 * long0);
-    let w0 = max(max(fa, fl * squash0), 0.05);
-    // Each crown is filtered to its coverage share of the pixel, so the
-    // grain (how many crowns a pixel happens to hold) lasts until a pixel
-    // spans the spots searched: 3x3 cells while it is under a cell, 5x5 out
-    // to ~2.5 cells (the reference's grain stays to the horizon; the mean
-    // from ~3 km on had none).
-    let far = smoothstep(FF_CELL * 2.0, FF_CELL * 3.0, w0);
+    let cot = min(length(eye.xz) / max(eye.y, 1e-3), FAR_TREE_COT_MAX);
+    let r0 = fs.crown.x * FAR_CROWN_SIZE;
+    // Silhouette length on the ground (at least the crown seen from above).
+    let len0 = max(fs.far.w * cot, 2.0 * r0);
+    // The cone (0.3..1 of the height, half-width r at 0.3) covers 0.7 r len.
+    let mean_cover = 1.0 - exp(-crowd * 0.7 * r0 * len0 / (FF_CELL * FF_CELL) * FAR_CROWN_OPACITY);
+    // Sun from above lights a little more of each crown.
+    let tops = 0.9 + 0.1 * max(sun.y, 0.0);
+    let fa = max(max(abs(dot(dx.xz, across)), abs(dot(dy.xz, across))) * FAR_CROWN_FILTER, 0.02);
+    let fl = max(max(abs(dot(dx.xz, along)), abs(dot(dy.xz, along))) * FAR_CROWN_FILTER, 0.02);
+    let far = smoothstep(FF_CELL * 0.4, FF_CELL * 0.8, fa / FAR_CROWN_FILTER);
     if far >= 1.0 {
         if FAR_CROWN_DEBUG { return vec4<f32>(1.0, 0.0, 0.0, 1.0); }
         return vec4<f32>(needles * tops, mean_cover);
     }
-    let ci = i32(floor(q.x / FF_CELL));
-    let cj = i32(floor(q.y / FF_CELL));
+    // The cells under the strip from q towards the camera, len0 x 1.25
+    // long (the tallest trees) and a widest crown to each side, each once:
+    // column by column along the strip's major grid axis.
+    let reach = len0 * 1.25;
+    let hw = r0 * 1.25;
+    let q1 = q + along * reach;
+    let major_x = abs(along.x) >= abs(along.y);
+    let a0 = select(q.y, q.x, major_x);
+    let a1 = select(q1.y, q1.x, major_x);
+    let b0 = select(q.x, q.y, major_x);
+    let slope = select(along.x / along.y, along.y / along.x, major_x);
+    let half = hw / max(select(abs(along.y), abs(along.x), major_x), 0.7);
+    let c_lo = i32(floor((min(a0, a1) - hw) / FF_CELL));
+    let c_hi = i32(floor((max(a0, a1) + hw) / FF_CELL));
     var open = 1.0;
     var tint = 0.0;
     var weight = 0.0;
-    let k = select(1, 2, w0 > FF_CELL * 0.75);
-    for (var dj = -k; dj <= k; dj++) {
-        for (var di = -k; di <= k; di++) {
-            let sp = ff_spot(ci + di, cj + dj, seed, crowd, fs.needles.w);
+    var visits = 0;
+    for (var c = c_lo; c <= c_hi; c++) {
+        // The strip's other coordinate over this column (clipped to it).
+        let x_lo = max(f32(c) * FF_CELL, min(a0, a1) - hw);
+        let x_hi = min(f32(c + 1) * FF_CELL, max(a0, a1) + hw);
+        let y_a = b0 + (clamp(x_lo, min(a0, a1), max(a0, a1)) - a0) * slope;
+        let y_b = b0 + (clamp(x_hi, min(a0, a1), max(a0, a1)) - a0) * slope;
+        let r_lo = i32(floor((min(y_a, y_b) - half) / FF_CELL));
+        let r_hi = i32(floor((max(y_a, y_b) + half) / FF_CELL));
+        for (var rr = r_lo; rr <= r_hi; rr++) {
+            visits++;
+            if visits > 40 { break; }
+            let ci = select(rr, c, major_x);
+            let cj = select(c, rr, major_x);
+            let sp = ff_spot(ci, cj, seed, crowd, fs.needles.w);
             if sp.w < 0.0 { continue; }
-            let d = q - sp.xy;
-            // Along the view at most a cell long (the 3x3 spots end there);
-            // the rest of the area goes across.
-            let r = fs.crown.x * sp.z;
-            let long = min(r * area, FF_CELL);
-            let wide = r * r * area / long;
-            let e = vec2<f32>(dot(d, across), dot(d, along) * wide / long);
-            // The ellipse (in across metres) filtered over the pixel: past
-            // a pixel's size it is spread as its area's share over the box.
-            // Filtered over a part of the pixel only: drawn trees are point
-            // sampled, a crown or a gap per pixel, and that speckle (which
-            // temporal AA only halves) is the grain of a forest kilometres
-            // out. A full pixel's filter gave its smooth mean.
-            let w = max(max(fa, fl * wide / long) * FAR_CROWN_FILTER, 0.05);
-            let spread = max(wide, 0.5 * w);
-            let a = (wide / spread) * (wide / spread) * clamp(0.5 + (spread - length(e)) / w, 0.0, 1.0);
+            let d = sp.xy - q;
+            // How far towards the camera the tree stands (0 at q), and
+            // aside of the view line through q.
+            let s = dot(d, along);
+            let x = abs(dot(d, across));
+            let len = len0 * (0.85 + 0.3 * fract(sp.w * 13.7));
+            let t = s / len;
+            if t < 0.25 || t > 1.05 { continue; }
+            // Half-width of the cone at this height, its edges filtered over
+            // the pixel across, its ends along.
+            let r = r0 * sp.z;
+            let width = r * clamp((1.0 - t) / 0.7, 0.0, 1.0);
+            let a_x = clamp(0.5 + (width - x) / fa, 0.0, 1.0);
+            let a_t = clamp(0.5 + (s - 0.3 * len) / fl, 0.0, 1.0) * clamp(0.5 + (len - s) / fl, 0.0, 1.0);
+            let a = a_x * a_t;
+            if a <= 0.0 { continue; }
             open *= 1.0 - a * FAR_CROWN_OPACITY;
-            // Inside a closed stand the grain is light and shade, not gaps:
-            // a crown's lit top (away from the camera along the view) over
-            // its shaded base, the crowns nearer the camera in front. The
-            // shade averages 1 over a crown, so the mean is unchanged.
-            let top = clamp(0.5 - dot(d, along) / (2.0 * long), 0.0, 1.0);
-            let lit = (FAR_CROWN_BASE + (2.0 - 2.0 * FAR_CROWN_BASE) * top) * sp.w;
-            // Nearly a z-order: a metre nearer counts e times more.
-            let front = a * exp(dot(sp.xy - q, along));
+            // A lit top over a shaded base (averaging 1 over the crown),
+            // trees nearer the camera in front.
+            let u = clamp((t - 0.3) / 0.7, 0.0, 1.0);
+            let lit = (FAR_CROWN_BASE + (2.0 - 2.0 * FAR_CROWN_BASE) * u) * sp.w;
+            let front = a * exp(min(s - reach, 0.0));
             tint += front * lit;
             weight += front;
         }
