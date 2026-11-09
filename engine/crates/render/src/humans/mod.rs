@@ -33,6 +33,15 @@ fn sample(seed: u64, channel: u64) -> f32 {
     ((v ^ (v >> 31)) >> 40) as f32 / 16777216.
 }
 
+// A float carries an exact 24-bit RGB value. The instance stays 64 bytes.
+fn pack_color(rgb: [f32; 3]) -> f32 {
+    let [r,g,b] = rgb.map(|c| (c.clamp(0.,1.)*255.).round() as u32);
+    (r | (g<<8) | (b<<16)) as f32
+}
+fn unpack_color(word: f32) -> [f32; 3] {
+    [0,8,16].map(|shift| ((word as u32 >> shift) & 255) as f32 / 255.)
+}
+
 #[derive(Default)]
 pub struct Constraints {
     pub height_m: Option<f32>,
@@ -40,7 +49,11 @@ pub struct Constraints {
 }
 impl Instance {
     pub fn face_tile(&self) -> usize { (self.identity[3] * 3.) as usize }
-    pub fn shirt_color(&self) -> [f32; 3] { [self.color[0], self.color[1], self.color[2]] }
+    pub fn shirt_color(&self) -> [f32; 3] { unpack_color(self.color[0]) }
+    pub fn trouser_color(&self) -> [f32; 3] { unpack_color(self.color[1]) }
+    pub fn shoe_color(&self) -> [f32; 3] { unpack_color(self.color[2]) }
+    pub fn outfit(&self) -> usize { (self.color[3] as usize).saturating_sub(1) & 3 }
+    pub fn chest_print(&self) -> usize { (self.color[3] as usize).saturating_sub(1) >> 2 }
     pub fn hair_color(&self) -> Vec3 {
         Vec3::new(0.046, 0.030, 0.025).lerp(Vec3::new(0.39, 0.28, 0.16), self.identity[3].powi(2))
     }
@@ -70,6 +83,18 @@ impl Instance {
         let shirt = rules
             .shirt
             .unwrap_or(palette[(sample(seed, 2) * 8.) as usize]);
+        let trousers = [[0.20,0.29,0.39],[0.42,0.55,0.64],[0.23,0.24,0.25],[0.53,0.49,0.36],
+            [0.34,0.40,0.28],[0.38,0.27,0.21],[0.29,0.34,0.39],[0.64,0.61,0.53]];
+        let shoes = [[0.17,0.17,0.19],[0.72,0.71,0.66],[0.41,0.29,0.20],[0.27,0.34,0.42],
+            [0.47,0.22,0.19],[0.35,0.37,0.32]];
+        let outfit = (sample(seed,10)*3.) as u32;
+        let print = if sample(seed, 13) < 0.58 {
+            0
+        } else if sample(seed, 15) < 0.5 {
+            1 + (sample(seed, 14) * 100.) as u32
+        } else {
+            101 + (sample(seed, 14) * 6.) as u32
+        };
         Self {
             pos_yaw: position.extend(yaw).into(),
             size_phase: [
@@ -78,7 +103,8 @@ impl Instance {
                 sample(seed, 4),
                 sample(seed, 5),
             ],
-            color: [shirt[0], shirt[1], shirt[2], 1.],
+            color: [pack_color(shirt), pack_color(trousers[(sample(seed,11)*8.) as usize]),
+                pack_color(shoes[(sample(seed,12)*6.) as usize]), (1+outfit+4*print) as f32],
             identity: std::array::from_fn(|i| sample(seed, 6 + i as u64)),
         }
     }
@@ -98,7 +124,7 @@ impl Instance {
         Self {
             pos_yaw: pos.extend(yaw).into(),
             size_phase: size.extend(0.).into(),
-            color: [color[0], color[1], color[2], 0.],
+            color: [pack_color(color), 0., 0., 0.],
             identity: [0.; 4],
         }
     }
@@ -118,12 +144,14 @@ impl Geometry {
                     usage,
                 })
         };
+        let vertices:Vec<_> = m.vertices.iter().map(geometry::Vertex::packed).collect();
+        let indices:Vec<_> = m.indices.iter().map(|&i| u16::try_from(i).expect("crowd mesh exceeds 16-bit indices")).collect();
         Self {
             vertex: buf(
-                bytemuck::cast_slice(&m.vertices),
+                bytemuck::cast_slice(&vertices),
                 wgpu::BufferUsages::VERTEX,
             ),
-            index: buf(bytemuck::cast_slice(&m.indices), wgpu::BufferUsages::INDEX),
+            index: buf(bytemuck::cast_slice(&indices), wgpu::BufferUsages::INDEX),
             count: m.indices.len() as u32,
         }
     }
@@ -316,7 +344,7 @@ impl ReviewRenderer {
                 compilation_options: Default::default(),
                 cache: None,
             });
-        let attrs = wgpu::vertex_attr_array![0=>Float32x3,1=>Uint32,2=>Float32x3,3=>Float32,4=>Float32x3,5=>Uint32,6=>Unorm8x4,7=>Snorm8x4,8=>Snorm8x4,9=>Snorm8x4,10=>Snorm8x4];
+        let attrs = wgpu::vertex_attr_array![0=>Snorm16x4,1=>Snorm8x4,2=>Snorm16x4,3=>Uint8x4,4=>Unorm8x4,5=>Snorm8x4,6=>Snorm8x4,7=>Snorm8x4,8=>Snorm8x4];
         let render = gpu
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -327,7 +355,7 @@ impl ReviewRenderer {
                     entry_point: Some("vs"),
                     compilation_options: Default::default(),
                     buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<geometry::Vertex>() as u64,
+                        array_stride: std::mem::size_of::<geometry::PackedVertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &attrs,
                     })],
@@ -605,7 +633,7 @@ impl ReviewRenderer {
             }
             for (mesh, bin) in self.meshes.iter().zip([0, 1, 2, 4]) {
                 pass.set_vertex_buffer(0, mesh.vertex.slice(..));
-                pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint16);
                 pass.draw_indexed_indirect(&self.args, bin * 20);
             }
         }
@@ -723,7 +751,7 @@ mod tests {
         assert_eq!(raw.identity, red.identity);
         assert_eq!(raw.size_phase[2..], red.size_phase[2..]);
         assert_eq!(red.size_phase[1], 1.76);
-        assert_eq!(red.color[..3], [0.8, 0.1, 0.2]);
+        assert!((Vec3::from(red.shirt_color())-Vec3::new(0.8,0.1,0.2)).abs().max_element() <= 0.5/255.);
         assert_ne!(
             raw.identity,
             Instance::person(seed + 1, Vec3::ZERO, 0.0, &Constraints::default()).identity

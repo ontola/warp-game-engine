@@ -71,39 +71,41 @@ fn spectator_joints(a:Actor, time:f32, excitement:f32, fear:f32)->vec4<u32> {
 fn pack_leg(hip:f32,knee:f32,roll:f32,drop:f32)->vec2<u32> {
     return vec2<u32>(pack2x16float(vec2<f32>(hip,knee)),pack2x16float(vec2<f32>(roll,drop)));
 }
-fn leg_to(x:f32,lift:f32,drop:f32)->vec2<u32> {
+fn leg_to(x:f32,forward:f32,lift:f32,drop:f32)->vec2<u32> {
     let thigh=0.258;
     let shin=0.223;
     let down=thigh+shin-drop-lift;
-    let knee=acos(clamp((down*down+x*x-thigh*thigh-shin*shin)/(2.*thigh*shin),-1.,1.));
-    let hip=-atan2(shin*sin(knee),thigh+shin*cos(knee));
+    let plane=sqrt(down*down+x*x);
+    let knee=acos(clamp((plane*plane+forward*forward-thigh*thigh-shin*shin)/(2.*thigh*shin),-1.,1.));
+    let hip=-atan2(forward,plane)-atan2(shin*sin(knee),thigh+shin*cos(knee));
     return pack_leg(hip,knee,atan2(x,down),drop);
 }
-fn stepping_leg(cycle:f32, stride:f32, weight:f32, drop:f32, swing_start:f32)->vec2<u32> {
+fn stepping_leg(cycle:f32, stride:f32, weight:f32, drop:f32, swing_start:f32, shift:f32, forward:f32)->vec2<u32> {
     let phase=fract(cycle);
     let swing=smoothstep(swing_start,swing_start+0.42,phase);
     // During stance, adding the moving root back to x gives a fixed footfall.
     let x=(swing-phase)*stride*weight;
     let lift=0.074*weight*4.*swing*(1.-swing);
-    return leg_to(x,lift,drop);
+    return leg_to(x-shift,forward,lift,drop);
 }
-fn spectator_legs(a:Actor,time:f32,shoulders:u32,travel:f32,speed:f32,crouch:f32)->vec4<u32> {
-    let arm=unpack2x16float(shoulders);
+fn spectator_legs(a:Actor,time:f32,joints:vec4<u32>,travel:f32,speed:f32,crouch:f32)->vec4<u32> {
+    let arm=unpack2x16float(joints.x);
+    let shift=0.42*unpack2x16float(joints.z).x;
+    let stagger=(a.size_phase.z-0.5)*0.065;
     let activity=smoothstep(0.20,1.6,-min(arm.x,arm.y));
     let phase=time*(2.+a.size_phase.w)+6.2832*a.size_phase.z;
     let bend=0.12+0.24*activity*(0.5+0.5*sin(phase));
-    let drop=0.481*(1.-cos(bend));
+    let drop=0.004+0.481*(1.-cos(bend));
     if speed<=0.015 {
-        let idle=leg_to(0.,0.,drop+crouch);
-        return vec4<u32>(idle,idle);
+        return vec4<u32>(leg_to(-shift,stagger,0.,drop+crouch),leg_to(-shift,-stagger,0.,drop+crouch));
     }
     let weight=smoothstep(0.015,0.65,speed);
     let stride=0.32+0.05*a.size_phase.w;
     let cycle=travel/stride;
     // Lower the hips enough to reach the planted foot as the other one swings.
     let pelvis=mix(drop,0.051,weight)+crouch;
-    let left=stepping_leg(cycle,stride,weight,pelvis,0.54);
-    let right=stepping_leg(cycle,stride,weight,pelvis,0.04);
+    let left=stepping_leg(cycle,stride,weight,pelvis,0.54,shift,stagger);
+    let right=stepping_leg(cycle,stride,weight,pelvis,0.04,shift,-stagger);
     return vec4<u32>(left,right);
 }
 struct Actor { pos_yaw:vec4<f32>, size_phase:vec4<f32>, color:vec4<f32>, identity:vec4<f32> }
@@ -147,7 +149,7 @@ fn select_lod(@builtin(global_invocation_id) gid:vec3<u32>) {
     let slot=reserve_slot(a);
     if slot!=0xffffffffu {
         let joints=spectator_joints(a,camera.settings.x,0.45,0.);
-        visible[slot]=SeatLight(gid.x,0u,0u,0u,joints,spectator_legs(a,camera.settings.x,joints.x,0.,0.,0.));
+        visible[slot]=SeatLight(gid.x,0u,0u,0u,joints,spectator_legs(a,camera.settings.x,joints,0.,0.,0.));
     }
 }
 
@@ -197,8 +199,14 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
     let right=vec2<f32>(cos(a.pos_yaw.w),-sin(a.pos_yaw.w));
     let travel=dot(a.pos_yaw.xz-actors[gid.x].pos_yaw.xz,right)/a.size_phase.x;
     let alarm=gesture_fear(crowd_mood.z,offset);
-    let joints=spectator_joints(a,crowd_mood.x,crowd_mood.y,alarm);
-    let legs=spectator_legs(a,crowd_mood.x,joints.x,travel,speed,crouch);
+    var joints=spectator_joints(a,crowd_mood.x,crowd_mood.y,alarm);
+    let step_weight=smoothstep(0.12,0.75,speed);
+    if step_weight>0. {
+        let counter=sin(travel*2.*PI/(0.32+0.05*a.size_phase.w))*step_weight;
+        joints.x=pack2x16float(unpack2x16float(joints.x)+vec2<f32>(0.15,-0.15)*counter);
+        joints.z=pack2x16float(unpack2x16float(joints.z)+vec2<f32>(0.025,0.09)*counter);
+    }
+    let legs=spectator_legs(a,crowd_mood.x,joints,travel,speed,crouch);
     visible[slot]=SeatLight(gid.x,pack2x16float(energy.rg),pack2x16float(vec2<f32>(energy.b,blast_turn_at(escape,crowd_mood.x))),
         pack4x8snorm(vec4<f32>(direction,sun)),joints,legs);
 }
@@ -208,7 +216,7 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
 struct V { @builtin(position) pos:vec4<f32>, @location(0) n:vec3<f32>, @location(1) local:vec3<f32>,
     @location(2) color:vec3<f32>, @location(3) @interpolate(flat) mat:u32,
     @location(4) identity:vec4<f32>, @location(5) disc:vec2<f32>, @location(6) uv:vec2<f32>, @location(7) @interpolate(flat) lamps:vec3<f32>,
-    @location(8) @interpolate(flat) direction_sun:vec4<f32>, @location(9) world:vec3<f32> }
+    @location(8) @interpolate(flat) direction_sun:vec4<f32>, @location(9) world:vec3<f32>, @location(10) @interpolate(flat) wardrobe:u32 }
 fn rotate(angle:f32) -> mat2x2<f32> {
     return mat2x2<f32>(cos(angle),sin(angle),-sin(angle),cos(angle));
 }
@@ -221,16 +229,22 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     let local=clamp(uv,vec2<f32>(0.001),vec2<f32>(0.999));
     return textureSampleLevel(atlas,atlas_sampler,(origin+local)/vec2<f32>(4.,2.),0.);
 }
-@vertex fn vs(@location(0) rest:vec3<f32>,@location(1) mat:u32,@location(2) normal:vec3<f32>,
-    @location(3) arm:f32,@location(4) center:vec3<f32>,@location(5) bin:u32,
-    @location(6) bones:vec4<f32>, @location(7) nose:vec4<f32>, @location(8) mouth:vec4<f32>,
-    @location(9) brow:vec4<f32>, @location(10) adult:vec4<f32>, @builtin(instance_index) idx:u32)->V {
+@vertex fn vs(@location(0) position:vec4<f32>,@location(1) direction:vec4<f32>,@location(2) pivot:vec4<f32>,
+    @location(3) tags:vec4<u32>,@location(4) bones:vec4<f32>,@location(5) nose:vec4<f32>,
+    @location(6) mouth:vec4<f32>,@location(7) brow:vec4<f32>,@location(8) adult:vec4<f32>,
+    @builtin(instance_index) idx:u32)->V {
+    let rest=position.xyz*1.2; let normal=direction.xyz; let center=pivot.xyz;
+    let tagged_mat=tags.x; let arm=f32(tags.y)-1.; let bin=tags.z;
     let seat=draw_ids[bin*u32(camera.settings.w)+idx];
     let a=actor(seat.index);
     var p=rest; var n=normal; var anchor=center;
     let anatomical=bin==4u && center.z< -0.9;
     var o:V;
-    if mat>=20u && mat!=20u+u32(a.identity.z*3.) {
+    let mat=tagged_mat & 31u;
+    let mask=tagged_mat >> 5u;
+    let wardrobe=u32(max(0.,a.color.w-1.));
+    let outfit=wardrobe & 3u;
+    if (mask!=0u && (mask & (1u<<outfit))==0u) || (mat>=20u && mat!=20u+u32(a.identity.z*3.)) {
         o.pos=vec4<f32>(2.,2.,2.,1.);
         return o;
     }
@@ -240,6 +254,9 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
         let right_arm=select(arm>0.,rest.x>0.,anatomical);
         let angle=select(shoulders.x,shoulders.y,right_arm);
         let elbow_angle=select(elbows.x,elbows.y,right_arm);
+        let zones=1.-clamp(abs(vec3<f32>(rest.y)-vec3<f32>(0.78,0.57,0.48))/vec3<f32>(0.12,0.13,0.11),vec3<f32>(0.),vec3<f32>(1.));
+        let width=1.+dot(zones*zones*(3.-2.*zones),vec3<f32>(0.13,0.12,0.10)*(2.*vec3<f32>(a.size_phase.zw,a.identity.x)-1.));
+        p.x*=width; n.x/=width; anchor.x*=width;
         if anatomical {
             let weights=a.identity*2.-1.;
             p+=0.055*(nose.xyz*weights.x+mouth.xyz*weights.z+brow.xyz*weights.y+adult.xyz*weights.w);
@@ -318,6 +335,8 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
             n=vec3<f32>(n.x,hip_pitch*(knee_pitch*(foot_pitch*n.yz)));
             n=vec3<f32>(hip_roll*n.xy,n.z);
         }
+        let pelvis_shift=0.42*unpack2x16float(seat.joints.z).x;
+        p.x+=pelvis_shift; anchor.x+=pelvis_shift;
         p.y-=drop; anchor.y-=drop;
         if (anatomical && rest.y>0.83) || mat==7u || (mat==4u && rest.y>0.84) {
             let jaw=1.+(a.identity.w-0.5)*0.28*(1.-smoothstep(0.87,0.92,p.y));
@@ -372,7 +391,11 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     o.lamps=vec3<f32>(unpack2x16float(seat.rg),unpack2x16float(seat.blue_turn).x);
     o.direction_sun=unpack4x8snorm(seat.direction_sun);
     o.world=world; o.uv=center.xy; o.pos=camera.vp*vec4<f32>(world,1); o.n=rot*(n/scale); o.local=rest;
-    o.color=a.color.rgb; o.mat=mat; o.identity=a.identity; o.disc=disc; return o;
+    var dye=a.color.x;
+    if mat==2u || mat==14u {dye=a.color.y;}
+    if mat==3u {dye=a.color.z;}
+    o.color=unpack4x8unorm(u32(dye)).rgb;
+    o.wardrobe=wardrobe; o.mat=select(mat,1u,!anatomical && arm!=0. && mat==4u && outfit!=1u && rest.y>0.558); o.identity=a.identity; o.disc=disc; return o;
 }
 fn human_color(v:V)->vec4<f32>{
     if dot(v.disc,v.disc)>1. {discard;}
@@ -386,9 +409,7 @@ fn human_color(v:V)->vec4<f32>{
     let hair=mix(vec3<f32>(0.046,0.030,0.025),vec3<f32>(0.39,0.28,0.16),id.w*id.w);
     var color=v.color;
     switch v.mat {
-    case 1u: {let stripe=step(0.56,id.z)*step(0.54,p.y)*step(p.y,0.68)*step(0.,sin(p.y*276.)); color*=1.-0.24*stripe;}
-    case 2u: {color=vec3<f32>(0.16,0.185,0.21)*(0.65+0.5*id.z);}
-    case 3u: {color=vec3<f32>(0.105,0.083,0.073);}
+    case 3u: {color*=mix(0.71,1.,smoothstep(0.012,0.020,p.y));}
     case 4u: {color=skin;}
     case 11u: {
 
@@ -396,11 +417,24 @@ fn human_color(v:V)->vec4<f32>{
 
         color=mix(skin,clamp(skin*tex/cheeks[tile],vec3<f32>(0.),vec3<f32>(1.)),smoothstep(0.862,0.895,p.y));
     }
-    case 12u: {
-        let cloth=artifact_sample(6u,v.uv).rgb;
-        let detail=dot(cloth,vec3<f32>(0.25,0.5,0.25));
-        let upper=smoothstep(0.51,0.526,p.y);
-        color=mix(cloth,v.color*(0.25+detail*2.5),upper);
+    case 12u,14u: {
+        var outfit=v.wardrobe & 3u;
+        if v.mat==14u && outfit>0u {outfit=1u;}
+        color*=artifact_sample(6u,v.uv)[outfit];
+        let print=v.wardrobe>>2u;
+        let chest=vec2<f32>(p.x/0.19+0.5,(0.738-p.y)/0.14+0.5);
+        if v.mat==12u && print!=0u && p.z>0.02 && all(chest>vec2<f32>(0.)) && all(chest<vec2<f32>(1.)) {
+            var glyph=print-91u;
+            var local=chest;
+            if print<=100u {
+                let number=print-1u;
+                glyph=select(number/10u,number%10u,chest.x>=0.5);
+                local.x=fract(2.*chest.x);
+            }
+            let uv=(vec2<f32>(f32(glyph%4u),f32(glyph/4u))+local)*0.25;
+            let ink=select(0.88,0.14,dot(v.color,vec3<f32>(0.3,0.6,0.1))>0.58);
+            color=mix(color,vec3<f32>(ink),0.89*artifact_sample(6u,uv).a);
+        }
     }
     case 13u,20u,21u,22u: {
         let tile=select(7u,v.mat-20u+3u,v.mat>=20u);

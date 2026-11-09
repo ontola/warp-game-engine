@@ -9,7 +9,8 @@ identify Data Collection AB, Joel Palmius and Jonas Hauquier.
 
 The cooker uses base.obj, default_weights.mhw and the targets listed in
 `engine/tools/cook-humans.py`. Place the weight and target files together.
-Extract male_casualsuit01, shoes02, eyebrow001, short01, bob02, afro01 and the
+Extract male_casualsuit01 (pullover), male_casualsuit06 (short sleeves),
+male_casualsuit05 (jacket), shoes02, eyebrow001, short01, bob02, afro01 and the
 three listed skin materials into the system pack's original directory layout.
 The cooker fits clothing and groom vertices from the mhclo barycentric bindings
 and transfers their skin weights and facial displacements from the same body.
@@ -19,7 +20,6 @@ python engine/tools/cook-humans.py base.obj source-files/ system-pack/ engine/as
 ```
 
 person.bin contains two little-endian u32 counts, 38-byte bind-pose vertices
-and u32 triangle indices. Each vertex stores position and normal (six i16),
+and u16 triangle indices. Each vertex stores position and normal (six i16),
 UV (two u16), four cumulative joint weights (four u8), four signed XYZ morphs
-padded to four bytes each, and a material identifier (u16). appearance.png
-contains skin, cutout hair, clothing and brow tiles.
+padded to four bytes each, and a material identifier (u16). Its low five bits select the surface. The upper bits select the outfits that expose the triangle, with zero shared by all. The short-sleeved and jacket outfits share their trousers. The cooker stores the three neutral cloth maps in the RGB channels of one existing atlas tile. Its alpha contains digits and six wordmarks. The renderer combines digits into shirt numbers. Rebuilding the prints uses Pillow 10.1 or newer.

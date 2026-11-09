@@ -22,6 +22,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [handoff.md](handoff.md) is the running log of 23 October to 5 November
   2026, newest first.
 
+- [Shared wardrobe, body proportions and planted motion](2026-11-09-warp-humans-wardrobe.md)
 - [Seeded match players and spectator debris](2026-11-09-warp-humans-players-and-gibs.md)
 - [Blood stains under stadium lights](2026-11-09-growing-guns-blood-reflections.md)
 - [Turning away from a blast](2026-11-09-warp-humans-blast-turn.md)

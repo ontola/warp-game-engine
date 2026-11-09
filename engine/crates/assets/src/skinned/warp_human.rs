@@ -147,16 +147,22 @@ impl Character {
         let mut groups = BTreeMap::<u32, Vec<u32>>::new();
         for tri in indices.chunks_exact(3) {
             let a = &body[tri[0] as usize];
-            let shirt = a.material == 12
-                && tri
-                    .iter()
-                    .map(|&i| body[i as usize].position.y)
-                    .sum::<f32>()
-                    > 3. * 0.52;
-            groups
-                .entry(if shirt { 1 } else { a.material })
-                .or_default()
-                .extend(tri);
+            groups.entry(a.material).or_default().extend(tri);
+            // Reuse the shirt's skin weights for the small area carrying the print.
+            if a.material == 12 && person.chest_print() != 0 {
+                let points = [0, 1, 2].map(|k| body[tri[k] as usize].position);
+                let lo = points[0].min(points[1]).min(points[2]);
+                let hi = points[0].max(points[1]).max(points[2]);
+                if hi.x > -0.095 && lo.x < 0.095 && hi.y > 0.668 && lo.y < 0.808 && lo.z > 0.02 {
+                    let number = person.chest_print() <= 100;
+                    if !number || lo.x < 0. {
+                        groups.entry(15).or_default().extend(tri);
+                    }
+                    if number && hi.x > 0. {
+                        groups.entry(16).or_default().extend(tri);
+                    }
+                }
+            }
         }
         let skinned: Vec<_> = body.iter().map(skin).collect();
         let surfaces = groups
@@ -168,7 +174,29 @@ impl Character {
                     let source = *index as usize;
                     if remap[source] == u32::MAX {
                         remap[source] = surface.vertices.len() as u32;
-                        surface.vertices.push(skinned[source].0);
+                        let mut vertex = skinned[source].0;
+                        if matches!(tag, 15 | 16) {
+                            let p = body[source].position;
+                            let print = person.chest_print();
+                            let x = 0.5 + p.x / 0.19;
+                            let (slot, u) = if print > 100 {
+                                (print - 91, x)
+                            } else if tag == 15 {
+                                ((print - 1) / 10, x * 2.)
+                            } else {
+                                ((print - 1) % 10, x * 2. - 1.)
+                            };
+                            let u = u.clamp(0.01, 0.99);
+                            let v = (0.5 + (0.738 - p.y) / 0.14).clamp(0.01, 0.99);
+                            vertex.uv = [
+                                (slot as f32 % 4. + u) * 0.25,
+                                ((slot / 4) as f32 + v) * 0.25,
+                            ];
+                            vertex.pos = (Vec3::from(vertex.pos)
+                                + Vec3::from(vertex.normal) * 0.0015)
+                                .into();
+                        }
+                        surface.vertices.push(vertex);
                         surface.influences.push(skinned[source].1);
                     }
                     *index = remap[source];
@@ -205,23 +233,32 @@ fn surface(person: &Instance, tag: u32) -> Surface {
         Vec3::new(0.353, 0.224, 0.149),
     ][face];
     let (tint, tile) = match tag {
-        1 => (Vec3::from(person.shirt_color()), Some(6)),
-        3 => (Vec3::new(0.15, 0.12, 0.10), None),
+        12 => (Vec3::from(person.shirt_color()), Some(8 + person.outfit())),
+        14 => (
+            Vec3::from(person.trouser_color()),
+            Some(8 + usize::from(person.outfit() != 0)),
+        ),
+        15 | 16 => {
+            let light = Vec3::from(person.shirt_color()).dot(Vec3::new(0.3, 0.6, 0.1));
+            (
+                Vec3::splat(if light > 0.58 { 0.14 } else { 0.88 }),
+                Some(6),
+            )
+        }
+        3 => (Vec3::from(person.shoe_color()), None),
         4 => (skin, None),
         11 => (skin / cheek, Some(face)),
-        12 => (Vec3::ONE, Some(6)),
         13 => (person.hair_color(), Some(7)),
         20..=22 => (person.hair_color(), Some((tag - 20 + 3) as usize)),
         _ => (Vec3::ONE, None),
     };
-    // Slots 0..7 are the atlas tiles; 8 is the tintable shirt and 9 the eyes.
+    // Three neutral fabrics, one shared print sheet and the eye texture follow the atlas tiles.
     let slot = match tag {
-        1 => Some(8),
-        6 => Some(9),
+        6 => Some(11),
         _ => tile,
     };
     let texture = slot.map(|i| (format!("warp-human-tile-{i}"), shared_tiles()[i].clone()));
-    let cutout = tag == 13 || tag >= 20;
+    let cutout = matches!(tag, 13 | 15 | 16) || tag >= 20;
     Surface {
         vertices: Vec::new(),
         indices: Vec::new(),
@@ -244,15 +281,15 @@ fn surface(person: &Instance, tag: u32) -> Surface {
     }
 }
 
-fn shared_tiles() -> &'static [std::sync::Arc<image::RgbaImage>; 10] {
-    static TILES: OnceLock<[std::sync::Arc<image::RgbaImage>; 10]> = OnceLock::new();
+fn shared_tiles() -> &'static [std::sync::Arc<image::RgbaImage>; 12] {
+    static TILES: OnceLock<[std::sync::Arc<image::RgbaImage>; 12]> = OnceLock::new();
     TILES.get_or_init(|| {
         let atlas = image::load_from_memory(APPEARANCE_ATLAS)
             .expect("Warp Humans atlas")
             .into_rgba8();
         let (w, h) = (atlas.width() / 4, atlas.height() / 2);
         std::array::from_fn(|i| {
-            if i == 9 {
+            if i == 11 {
                 return image::RgbaImage::from_fn(64, 64, |x, y| {
                     let r = (x as f32 - 31.5).hypot(y as f32 - 31.5);
                     image::Rgba(if r < 4. {
@@ -265,14 +302,30 @@ fn shared_tiles() -> &'static [std::sync::Arc<image::RgbaImage>; 10] {
                 })
                 .into();
             }
-            let tile = if i == 8 { 6 } else { i as u32 };
+            let tile = if i >= 8 { 6 } else { i as u32 };
             let mut image =
                 image::imageops::crop_imm(&atlas, tile % 4 * w, tile / 4 * h, w, h).to_image();
-            if i == 8 {
+            if (8..=10).contains(&i) {
+                // Extract one monochrome fabric for the standard skinned material.
+                image = image::imageops::resize(
+                    &image,
+                    256,
+                    256,
+                    image::imageops::FilterType::Triangle,
+                );
                 for p in image.pixels_mut() {
-                    let light =
-                        (0.25 + (p[0] as f32 + 2. * p[1] as f32 + p[2] as f32) / 510.).min(1.);
-                    p.0[..3].fill((255. * light) as u8);
+                    let light = p[i - 8];
+                    *p = image::Rgba([light, light, light, 255]);
+                }
+            } else if i == 6 {
+                image = image::imageops::resize(
+                    &image,
+                    256,
+                    256,
+                    image::imageops::FilterType::Triangle,
+                );
+                for p in image.pixels_mut() {
+                    *p = image::Rgba([255, 255, 255, p[3]]);
                 }
             } else if matches!(i, 3..=5 | 7) {
                 for p in image.pixels_mut() {
