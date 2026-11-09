@@ -6735,7 +6735,7 @@ mod raster_split_tests {
 /// Look tuning for the painted far forest (terrain_surface.wgsl far_crowns),
 /// A/B only: KERN_FAR_CROWN="base,area,sun_loss,sky_loss,opacity,filter,gap,size"
 /// (any may be left empty) and KERN_FAR_CROWN_DEBUG=1 (red: averaged share, green: crown
-/// cover from single crowns).
+/// cover from single crowns) or 2 (white noise in 2 m world cells).
 fn far_crown_constants() -> Vec<(&'static str, f64)> {
     let mut out = Vec::new();
     if let Ok(v) = std::env::var("KERN_FAR_CROWN") {
@@ -6744,6 +6744,6 @@ fn far_crown_constants() -> Vec<(&'static str, f64)> {
             if let Ok(x) = part.trim().parse::<f64>() { out.push((*name, x)); }
         }
     }
-    if std::env::var("KERN_FAR_CROWN_DEBUG").as_deref() == Ok("1") { out.push(("FAR_CROWN_DEBUG", 1.0)); }
+    if let Some(d) = std::env::var("KERN_FAR_CROWN_DEBUG").ok().and_then(|v| v.parse::<f64>().ok()) { out.push(("FAR_CROWN_DEBUG", d)); }
     out
 }
