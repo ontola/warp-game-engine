@@ -111,6 +111,9 @@ pub struct CrowdSound {
 }
 
 impl CrowdSound {
+    /// The panic envelope advances every tick, including when audio is muted.
+    pub fn smoothed_fear(&self) -> f32 { self.gains[2] }
+
     /// Replays share the already decoded clips and existing ambience beds.
     pub(crate) fn audio_bank(&self) -> Option<(SfxSender, Samples)> {
         self.tx.as_ref().map(|tx| (tx.clone(), self.s.clone()))

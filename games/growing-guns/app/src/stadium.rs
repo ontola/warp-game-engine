@@ -653,7 +653,8 @@ impl StadiumVisuals {
         }
         let at = self.geo.ring_point_toward(Vec3::new(self.rng.range(-1.0, 1.0), 0.0, self.rng.range(-1.0, 1.0)));
         self.sound.update(dt, Some((at.to_array(), ears)));
-        self.crowd.mood(self.sound.enthusiasm, self.sound.fear);
+        let fear = if self.crowd.uses_humans() { self.sound.smoothed_fear() } else { self.sound.fear };
+        self.crowd.mood(self.sound.enthusiasm, fear);
     }
 
     fn trace(&mut self, from: Vec3, to: Vec3, id: u64, now: f32) {

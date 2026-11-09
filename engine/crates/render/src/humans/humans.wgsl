@@ -17,6 +17,23 @@ struct Camera {
 // vertices of this spectator. Angles stay continuous when LOD changes.
 struct SeatLight { index:u32, rg:u32, blue:u32, direction_sun:u32, joints:vec4<u32>, legs:vec4<u32> }
 
+// A smooth reach, a brief hold, then release. Each interval gets its own
+// height and timing; both ends meet at zero even when the next pulse differs.
+fn alarm_pulse(clock:f32, salt:u32)->f32 {
+    var bits=u32(floor(clock))^salt;
+    bits=(bits^(bits>>16u))*0x7feb352du;
+    bits=(bits^(bits>>15u))*0x846ca68bu;
+    bits=bits^(bits>>16u);
+    let phase=fract(clock);
+    let attack=0.22+0.17*f32(bits & 255u)/255.;
+    let strength=0.18+0.82*f32((bits>>8u) & 255u)/255.;
+    return strength*smoothstep(0.,attack,phase)*(1.-smoothstep(attack+0.10,0.90,phase));
+}
+
+fn gesture_fear(mood:f32, row_offset:f32)->f32 {
+    return max(mood,0.78*smoothstep(0.015,0.40,abs(row_offset)));
+}
+
 fn spectator_joints(a:Actor, time:f32, excitement:f32, fear:f32)->vec4<u32> {
     let seed=a.size_phase.z;
     let beat=time*(2.0+1.4*a.size_phase.w)+6.2832*seed;
@@ -28,12 +45,26 @@ fn spectator_joints(a:Actor, time:f32, excitement:f32, fear:f32)->vec4<u32> {
     let lead=step(0.5,seed);
     let sides=mix(vec2<f32>(1.,0.30),vec2<f32>(0.30,1.),lead);
     let wave=sin(vec2<f32>(beat,beat+1.2+seed));
-    let shoulders=vec2<f32>(-0.10)-sides*cheer*(1.80+0.43*wave)
+    var shoulders=vec2<f32>(-0.10)-sides*cheer*(1.80+0.43*wave)
         +0.065*wave-vec2<f32>(0.57*fear);
-    let elbows=vec2<f32>(-0.25)-0.13*(wave+1.)-cheer*sides*(0.56-0.30*wave)-0.72*fear;
-    let spine=vec2<f32>(0.042*shift+0.02*cheer*breath,0.10*shift+0.13*cheer*(2.*lead-1.));
+    var elbows=vec2<f32>(-0.25)-0.13*(wave+1.)-cheer*sides*(0.56-0.30*wave)-0.72*fear;
+    var spine=vec2<f32>(0.042*shift+0.02*cheer*breath,0.10*shift+0.13*cheer*(2.*lead-1.));
     let glance=sin(beat*0.31+seed*12.0);
-    let neck=vec2<f32>(0.30*glance+0.08*sin(beat*0.64),0.035*breath+0.10*cheer*sin(beat-0.45)+0.16*fear);
+    var neck=vec2<f32>(0.30*glance+0.08*sin(beat*0.64),0.035*breath+0.10*cheer*sin(beat-0.45)+0.16*fear);
+    let alarm=smoothstep(0.08+0.12*seed,0.57+0.16*seed,fear);
+    if alarm>0. {
+        let salt=u32(seed*16777216.);
+        let clock=time*(1.55+0.75*a.size_phase.w)+seed*19.;
+        let reach=vec2<f32>(alarm_pulse(clock,salt),
+            alarm_pulse(clock*(0.89+0.19*a.identity.z)+0.37,salt^0x9e3779b9u));
+        let other_arm=0.34+0.66*smoothstep(0.18,0.72,a.size_phase.w);
+        let lift=mix(vec2<f32>(other_arm,1.),vec2<f32>(1.,other_arm),lead);
+        shoulders=mix(shoulders,-0.72-lift*(1.45+0.72*reach),alarm);
+        elbows=mix(elbows,-1.28+lift*(0.28+0.65*reach),alarm);
+        let twist=(reach.x-reach.y)*alarm;
+        spine+=vec2<f32>(0.050,0.095)*twist;
+        neck+=vec2<f32>(0.15*twist,-0.075*alarm*max(reach.x,reach.y));
+    }
     return vec4<u32>(pack2x16float(shoulders),pack2x16float(elbows),pack2x16float(spine),pack2x16float(neck));
 }
 // Pack hip pitch, knee flexion, hip roll and pelvis drop once per visible leg.
@@ -161,10 +192,12 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
     let direction=moment/max(dot(energy,vec3<f32>(0.2126,0.7152,0.0722)),1e-5);
     energy=min(energy,vec3<f32>(65504.));
     let escape=escapes[gid.x];
-    let speed=abs(displacement(escape,crowd_mood.x+1./120.)-displacement(escape,crowd_mood.x))*120.;
+    let offset=displacement(escape,crowd_mood.x);
+    let speed=abs(displacement(escape,crowd_mood.x+1./120.)-offset)*120.;
     let right=vec2<f32>(cos(a.pos_yaw.w),-sin(a.pos_yaw.w));
     let travel=dot(a.pos_yaw.xz-actors[gid.x].pos_yaw.xz,right)/a.size_phase.x;
-    let joints=spectator_joints(a,crowd_mood.x,crowd_mood.y,crowd_mood.z);
+    let alarm=gesture_fear(crowd_mood.z,offset);
+    let joints=spectator_joints(a,crowd_mood.x,crowd_mood.y,alarm);
     let legs=spectator_legs(a,crowd_mood.x,joints.x,travel,speed,crouch);
     visible[slot]=SeatLight(gid.x,pack2x16float(energy.rg),pack2x16float(vec2<f32>(energy.b,0.)),
         pack4x8snorm(vec4<f32>(direction,sun)),joints,legs);
