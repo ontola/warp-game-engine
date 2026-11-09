@@ -225,6 +225,14 @@ pub fn far_forest(scene: &mut Scene, material: u32, start_m: f32, density: f32, 
         layer: -1, roughness: 0.0, flags: 0, scale: start_m.max(0.0), metal: 0.0 };
 }
 
+/// The far forest's `terrain_field::Style::forest_slopes` (after far_forest
+/// or far_forest_handover), so the painted forest and the ground's colour
+/// keep to the same slopes as the placed trees. (The params' layer, -1 for 0.)
+pub fn far_forest_slopes(scene: &mut Scene, material: u32, slopes: f32) {
+    let first = style_block(scene, material);
+    scene.materials[first + 2].layer = slopes.to_bits() as i32;
+}
+
 /// far_forest for trees placed around `centre` (x, z) and handed over in the
 /// band `start_m..end_m` (forest_field::handover_keep drops the objects the
 /// layer takes over), so drawn and painted forest sum to one share at every
@@ -236,7 +244,7 @@ pub fn far_forest_handover(scene: &mut Scene, material: u32, centre: [f32; 2], s
     let forest: [Material; 2] = bytemuck::cast(*style);
     scene.materials[first..first + 2].copy_from_slice(&forest);
     scene.materials[first + 2] = Material { tint: [start_m.max(0.0), density.clamp(0.0, 1.0), centre[0]],
-        layer: -1, roughness: centre[1], flags: 1, scale: end_m.max(start_m + 1e-3), metal: scene.materials[first + 2].metal };
+        layer: scene.materials[first + 2].layer, roughness: centre[1], flags: 1, scale: end_m.max(start_m + 1e-3), metal: scene.materials[first + 2].metal };
 }
 
 /// Draw `world`'s roads into the terrain's pixels: gravel with two worn

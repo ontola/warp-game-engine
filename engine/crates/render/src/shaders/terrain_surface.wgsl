@@ -209,12 +209,13 @@ fn field_detail_slope(xz: vec2<f32>, seed: u32, footprint: f32, rock: f32, up: f
 // scale >= 0 means no forest (and the default ground, field_ground).
 // start..end: the handover band from drawn trees to the layer, measured
 // from `centre` (where the trees were placed) when `centred`, else the camera.
-struct FarForest { style: ForestStyle, start: f32, density: f32, end: f32, centre: vec2<f32>, centred: bool };
+// slopes: terrain_field Style::forest_slopes (forest_field ff_site).
+struct FarForest { style: ForestStyle, start: f32, density: f32, end: f32, centre: vec2<f32>, centred: bool, slopes: f32 };
 fn far_forest_params(at: u32) -> FarForest {
     let a = material(at); let b = material(at + 1u); let c = material(at + 2u);
     let fs = ForestStyle(vec4<f32>(a.tint, bitcast<f32>(a.layer)), vec4<f32>(a.roughness, bitcast<f32>(a.flags), a.scale, a.metal),
         vec4<f32>(b.tint, bitcast<f32>(b.layer)), vec4<f32>(b.roughness, bitcast<f32>(b.flags), b.scale, b.metal));
-    return FarForest(fs, c.tint.x, c.tint.y, c.scale, vec2<f32>(c.tint.z, c.roughness), (c.flags & 1u) != 0u);
+    return FarForest(fs, c.tint.x, c.tint.y, c.scale, vec2<f32>(c.tint.z, c.roughness), (c.flags & 1u) != 0u, select(bitcast<f32>(c.layer), 0.0, c.layer == -1));
 }
 // Whether this ground lies past the drawn trees where the painted ones
 // stand: those are shaded per pixel, not by the 2x2 coarse material
@@ -225,6 +226,46 @@ fn far_forest_full_res(s: SurfaceIn) -> bool {
     if params.density <= 0.0 { return false; }
     let origin = select(view.cam.xz, params.centre, params.centred);
     return distance(s.p.xz, origin) > params.start;
+}
+// The forest's stand field (forest_field ff_stand) for this ground, or -2
+// where no forest is placed: > -0.05 inside a stand.
+fn forest_ground(s: SurfaceIn, f: FieldAttr, footprint: f32) -> f32 {
+    if s.scale >= 0.0 { return -2.0; }
+    let params = far_forest_params(u32(-s.scale - 0.5));
+    if params.density <= 0.0 { return -2.0; }
+    return ff_stand(s.p.x, s.p.z, u32(s.metal + 0.5), ff_site(f.up, f.wet, params.slopes), footprint);
+}
+// How far the ground's lushness follows the stands (1: only them).
+const FOREST_GROUND_LUSH: f32 = 0.7;
+// How dark the ground inside a stand is (0: pasture, 1: litter).
+override FOREST_FLOOR_DARK: f32 = 0.85;
+
+// How much of this ground's sun the drawn trees standing towards the sun
+// take, from their silhouettes (far_strip along the sun, as the painted
+// ones shade their gaps): a tree or a gap of sunlight per pixel. shade.wgsl
+// uses it where no sharp sun map reaches, instead of the coarse maps whose
+// stand shadows merged into large dark blobs. -1 where no forest stands.
+fn far_tree_cast(s: SurfaceIn) -> f32 {
+    if s.scale >= 0.0 { return -1.0; }
+    let params = far_forest_params(u32(-s.scale - 0.5));
+    if params.density <= 0.0 { return -1.0; }
+    let origin = select(view.cam.xz, params.centre, params.centred);
+    // Past the drawn trees the painted ones shade their own ground.
+    let drawn = 1.0 - smoothstep(params.start, params.end, distance(s.p.xz, origin));
+    if drawn <= 0.0 { return -1.0; }
+    let sun = light.sun_dir.xyz;
+    let sun_xz = length(sun.xz);
+    if sun.y <= 0.02 || sun_xz <= 1e-3 { return 0.0; }
+    let f = field_attr(s);
+    let seed = u32(s.metal + 0.5);
+    let site = ff_site(f.up, f.wet, params.slopes);
+    let footprint = sqrt(length(s.dx) * length(s.dy));
+    let crowd = ff_share(s.p.x, s.p.z, seed, site, footprint) * params.density;
+    if crowd <= 0.0 { return 0.0; }
+    let r0 = params.style.crown.x * FAR_CROWN_SIZE;
+    let len0 = max(params.style.far.w * min(sun_xz / sun.y, FAR_TREE_COT_MAX), 2.0 * r0);
+    let fw = max(footprint * 0.5, 0.05);
+    return (1.0 - far_strip(s.p.xz, sun.xz / sun_xz, len0, r0 * FAR_SHADOW_SIZE, fw, fw, crowd, seed, params.style, FAR_SHADOW_OPACITY).x) * drawn;
 }
 fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: FieldAttr, footprint: f32) -> MeadowCanopy {
     if s.scale >= 0.0 { return MeadowCanopy(ground, nn); }
@@ -243,17 +284,17 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
         * (1.0 - smoothstep(0.01 - e * 0.2, 0.01 + e * 0.2, f.water)) * (1.0 - smoothstep(0.05 - e * 0.5, 0.05 + e * 0.5, f.snow))
         * smoothstep(0.82 - e, 0.82 + e, f.up);
     let seed = u32(s.metal + 0.5);
-    let site = ff_site(f.up, f.wet);
+    let site = ff_site(f.up, f.wet, params.slopes);
     let sun = light.sun_dir.xyz;
     // The trees stand on this ground and rise towards the viewer (their
     // silhouettes, far_crowns).
     let eye = normalize(view.cam.xyz - s.p);
-    let crowns = far_crowns(s.p.xz, footprint, s.dx, s.dy, eye, sun, seed, site, params.density, params.style);
+    // Ground between crowns: the forest floor's shade where the stand is
+    // dense, as forest_canopy's gaps. (One stand lookup for the crowns too.)
+    let crowd = ff_share(s.p.x, s.p.z, seed, site, footprint) * params.density;
+    let crowns = far_crowns(s.p.xz, footprint, s.dx, s.dy, eye, sun, seed, crowd, params.style);
     let cover = crowns.w * grows * fade;
     if cover <= 0.0 { return MeadowCanopy(ground, nn); }
-    // Ground between crowns: the forest floor's shade where the stand is
-    // dense, as forest_canopy's gaps.
-    let crowd = ff_share(s.p.x, s.p.z, seed, site, footprint) * params.density;
     // Not forest_canopy's floor, nearly black under a closed canopy: the
     // reference's gaps between open pines show lit ground.
     let floor = mix(ground, params.style.floor.rgb, 0.25 * min(crowd * 1.25, 1.0));
@@ -287,7 +328,7 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
         let r0 = params.style.crown.x * FAR_CROWN_SIZE;
         let len0 = max(params.style.far.w * min(sun_xz / sun.y, FAR_TREE_COT_MAX), 2.0 * r0);
         let fw = max(footprint * 0.5, 0.05);
-        let cast_sh = 1.0 - far_strip(s.p.xz, sun.xz / sun_xz, len0, r0, fw, fw, crowd, seed, params.style).x;
+        let cast_sh = 1.0 - far_strip(s.p.xz, sun.xz / sun_xz, len0, r0 * FAR_SHADOW_SIZE, fw, fw, crowd, seed, params.style, FAR_SHADOW_OPACITY).x;
         shadow = mix(cast_sh, shadow, far_crown_far);
     }
     let sun_cover = shadow * grows * fade;
@@ -322,9 +363,15 @@ override FAR_GAP_SHADE: f32 = 0.0;
 // Crown half-width relative to the style's (its top-down cover radius,
 // which counts the open branch tips).
 override FAR_CROWN_SIZE: f32 = 1.0;
+// A pine's shadow on the ground: sun through its open crown, and narrower
+// than its silhouette's full width (Mancave from 1200 m: full-strength,
+// full-width shadows read as dark dashes 2-3x the crowns).
+override FAR_SHADOW_OPACITY: f32 = 0.7;
+override FAR_SHADOW_SIZE: f32 = 0.8;
 // Steepest glancing view a silhouette stretches for (cot of elevation).
 const FAR_TREE_COT_MAX: f32 = 8.0;
-// KERN_FAR_CROWN_DEBUG: red the averaged share, green single-crown cover.
+// KERN_FAR_CROWN_DEBUG: red the averaged share, green single-crown cover
+// (1); 2 m white noise (2); the ground's stand field and lushness (3).
 override FAR_CROWN_DEBUG: f32 = 0.0;
 // The sun a drawn needle crown keeps (shade.wgsl NEEDLE_BRUSH_OWN).
 const FAR_CROWN_OWN: f32 = 0.42;
@@ -345,7 +392,7 @@ override FAR_CROWN_SKY_LOSS: f32 = 0.7;
 // camera, each a cone from 0.3 of its height up. Drawn trees give a crown
 // or a gap per pixel; these do too, so the grain stays, until a pixel is
 // wider than a cell, where they become their mean.
-fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: vec3<f32>, sun: vec3<f32>, seed: u32, site: f32, density: f32, fs: ForestStyle) -> vec4<f32> {
+fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: vec3<f32>, sun: vec3<f32>, seed: u32, crowd: f32, fs: ForestStyle) -> vec4<f32> {
     let needles = mix(fs.needles.rgb, fs.far.rgb, ff_patch(q.x, q.y, seed, fs.crown.w));
     far_crown_far = 1.0;
     // KERN_FAR_CROWN_DEBUG=2: white noise in 2 m world cells, to see how
@@ -354,7 +401,6 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
         let h = fract(sin(dot(floor(q / 2.0), vec2<f32>(12.9898, 78.233))) * 43758.5453);
         return vec4<f32>(vec3<f32>(step(0.5, h)), 1.0);
     }
-    let crowd = ff_share(q.x, q.y, seed, site, footprint) * density;
     if crowd <= 0.0 { return vec4<f32>(needles, 0.0); }
     let along = normalize(eye.xz + vec2<f32>(1e-6, 0.0));
     let across = vec2<f32>(-along.y, along.x);
@@ -374,7 +420,7 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
         if FAR_CROWN_DEBUG == 1.0 { return vec4<f32>(1.0, 0.0, 0.0, 1.0); }
         return vec4<f32>(needles * tops, mean_cover);
     }
-    let strip = far_strip(q, along, len0, r0, fa, fl, crowd, seed, fs);
+    let strip = far_strip(q, along, len0, r0, fa, fl, crowd, seed, fs, FAR_CROWN_OPACITY);
     let near_cover = 1.0 - strip.x;
     let near_tint = select(1.0, strip.y / strip.z, strip.z > 0.0);
     let cover = mix(near_cover, mean_cover, far);
@@ -392,15 +438,18 @@ var<private> far_crown_far: f32 = 1.0;
 // (nearer ones in front). Walks the cells under the strip once each,
 // column by column along its major grid axis. fa, fl: the pixel's
 // filter across and along `dir`.
-fn far_strip(q: vec2<f32>, dir: vec2<f32>, len0: f32, r0: f32, fa: f32, fl: f32, crowd: f32, seed: u32, fs: ForestStyle) -> vec3<f32> {
+fn far_strip(q: vec2<f32>, dir: vec2<f32>, len0: f32, r0: f32, fa: f32, fl: f32, crowd: f32, seed: u32, fs: ForestStyle, opacity: f32) -> vec3<f32> {
     let side = vec2<f32>(-dir.y, dir.x);
     let reach = len0 * 1.25;
     let hw = r0 * 1.25;
     let q1 = q + dir * reach;
+    // No tree standing nearer q than 0.2 of a silhouette covers it (cones
+    // start at 0.25 of the shortest): the walk starts there.
+    let qs = q + dir * (0.2 * len0);
     let major_x = abs(dir.x) >= abs(dir.y);
-    let a0 = select(q.y, q.x, major_x);
+    let a0 = select(qs.y, qs.x, major_x);
     let a1 = select(q1.y, q1.x, major_x);
-    let b0 = select(q.x, q.y, major_x);
+    let b0 = select(qs.x, qs.y, major_x);
     let slope = select(dir.x / dir.y, dir.y / dir.x, major_x);
     let half = hw / max(select(abs(dir.y), abs(dir.x), major_x), 0.7);
     let c_lo = i32(floor((min(a0, a1) - hw) / FF_CELL));
@@ -409,7 +458,13 @@ fn far_strip(q: vec2<f32>, dir: vec2<f32>, len0: f32, r0: f32, fa: f32, fl: f32,
     var tint = 0.0;
     var weight = 0.0;
     var visits = 0;
-    for (var c = c_lo; c <= c_hi; c++) {
+    // From the far end (the viewer's or the sun's side) back towards q:
+    // the front trees come first, and once they cover q the ones behind
+    // can't show, so the walk stops (dense stands visit a few cells).
+    let backwards = a1 >= a0;
+    for (var k = 0; k <= c_hi - c_lo; k++) {
+        if open < 0.02 || visits > 40 { break; }
+        let c = select(c_lo + k, c_hi - k, backwards);
         // The strip's other coordinate over this column (clipped to it).
         let x_lo = max(f32(c) * FF_CELL, min(a0, a1) - hw);
         let x_hi = min(f32(c + 1) * FF_CELL, max(a0, a1) + hw);
@@ -439,7 +494,7 @@ fn far_strip(q: vec2<f32>, dir: vec2<f32>, len0: f32, r0: f32, fa: f32, fl: f32,
             let a_t = clamp(0.5 + (s - 0.3 * len) / fl, 0.0, 1.0) * clamp(0.5 + (len - s) / fl, 0.0, 1.0);
             let a = a_x * a_t;
             if a <= 0.0 { continue; }
-            open *= 1.0 - a * FAR_CROWN_OPACITY;
+            open *= 1.0 - a * opacity;
             // A lit top over a shaded base (averaging 1 over the crown).
             let u = clamp((t - 0.3) / 0.7, 0.0, 1.0);
             let lit = (FAR_CROWN_BASE + (2.0 - 2.0 * FAR_CROWN_BASE) * u) * sp.w;
@@ -683,10 +738,18 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     // Ground cover on gentle soil: grass, with moss and heather on moor.
     // The grass texture is dry; tint it to wet upland pasture, lusher in
     // hollows and near water, paler on dry patches.
-    let lush = clamp(0.5 + (broad - 0.5) * 1.2 + 0.4 * f.wet, 0.0, 1.0);
+    var lush = clamp(0.5 + (broad - 0.5) * 1.2 + 0.4 * f.wet, 0.0, 1.0);
+    // Where a forest grows the ground is green, and it dries out away from
+    // the stands: the trees and the ground's colour read one field.
+    let stands = forest_ground(s, f, footprint);
+    if stands > -1.0 { lush = clamp(mix(lush, smoothstep(-0.45, 0.15, stands), FOREST_GROUND_LUSH), 0.0, 1.0); }
     // Darker than a lawn: seen from afar a meadow is mostly blade shadow,
     // so the ground matches the grass where the blades fade out.
-    let grass = steep_layer(layer, p, n, 2.6, mapping) * mix(g.grass_dry.rgb, g.grass_lush.rgb, lush);
+    var grass = steep_layer(layer, p, n, 2.6, mapping) * mix(g.grass_dry.rgb, g.grass_lush.rgb, lush);
+    // Inside a stand no pasture grows: dark needle litter in the crowns'
+    // shade, so the gaps of a closed stand read dark, not as lit lawn
+    // (Joep's swiss reference), with a hard edge where the stand ends.
+    if stands > -1.0 { grass = mix(grass, grass * vec3<f32>(0.32, 0.27, 0.3), FOREST_FLOOR_DARK * smoothstep(-0.06, 0.04, stands)); }
     // Layers a pixel holds none of are not sampled (moor, soil, gravel):
     // their weights come first.
     let m_moor = smoothstep(0.25, 0.8, clamp(f.moor + (broad - 0.5) * 0.7 + (mottle - 0.5) * 0.3, 0.0, 1.0));
@@ -891,6 +954,12 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         }
         nn = normalize(mix(nn, wn, w));
         rough = mix(rough, 0.04, w);
+    }
+    // KERN_FAR_CROWN_DEBUG=3: red where the stand field reaches this ground,
+    // green its lushness, blue the stand value (0 at -1, 1 at +1).
+    if FAR_CROWN_DEBUG > 2.5 {
+        let has = select(0.0, 0.6, stands > -1.0);
+        return SurfaceOut(vec3<f32>(has, lush, clamp(0.5 + 0.5 * stands, 0.0, 1.0) * 0.6), n, 1.0, 0.0, vec3<f32>(0.0));
     }
     return SurfaceOut(c * s.tint, nn, rough, 0.0, vec3<f32>(0.0));
 }

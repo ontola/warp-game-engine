@@ -60,8 +60,11 @@ fn ff_band(scale: f32, footprint: f32) -> f32 {
 
 // The ground's own leaning towards forest: slopes and ridges carry it,
 // flat and damp ground is meadow.
-fn ff_site(up: f32, wet: f32) -> f32 {
-    return 0.45 - 0.4 * ff_smooth(0.975, 0.998, up) - 0.8 * wet;
+fn ff_site(up: f32, wet: f32, slopes: f32) -> f32 {
+    let steep = 1.0 - ff_smooth(0.86, 0.97, up);
+    // slopes 1: the valley sides carry the forest, the gentle ground is pasture.
+    let slope = mix(-0.7 * steep, 0.1 * steep - 0.5 * ff_smooth(0.96, 0.995, up), slopes);
+    return 0.05 + 0.6 * wet - 1.6 * max(wet - 0.75, 0.0) + slope;
 }
 
 // Hedgerows: stretches of the edges of 110 by 80 m fields (on a grid
@@ -126,7 +129,7 @@ fn ff_patch(x: f32, z: f32, seed: u32, amount: f32) -> f32 {
 // The forest at (x, z).
 fn forest_at(x: f32, z: f32, seed: u32, st: TerrainStyle, density: f32, fs: ForestStyle) -> ForestSample {
     let s = terrain_eval(x, z, FF_CUT, seed, st);
-    let site = select(FF_NO_FOREST, ff_site(s.up, s.wet), ff_grows(s, st));
+    let site = select(FF_NO_FOREST, ff_site(s.up, s.wet, st.forest_slopes), ff_grows(s, st));
     let cover = ff_share(x, z, seed, site, 0.0) * density;
     let tone = clamp(ff_stand(x, z, seed, max(site, -1.0), 0.0) * 0.5 + 0.5, 0.0, 1.0);
     let colour = mix(fs.needles.rgb, fs.far.rgb, ff_patch(x, z, seed, fs.crown.w));
@@ -146,7 +149,7 @@ fn forest_tree(i: i32, j: i32, seed: u32, st: TerrainStyle, density: f32) -> For
     let z = (f32(j) + ff_hash(i, j, 2u, seed)) * FF_CELL;
     let s = terrain_eval(x, z, FF_CUT, seed, st);
     if !ff_grows(s, st) { return t; }
-    if roll >= ff_share(x, z, seed, ff_site(s.up, s.wet), 0.0) * density { return t; }
+    if roll >= ff_share(x, z, seed, ff_site(s.up, s.wet, st.forest_slopes), 0.0) * density { return t; }
     let width = 0.75 + 0.5 * ff_hash(i, j, 4u, seed);
     let height = width * (0.9 + 0.25 * ff_hash(i, j, 5u, seed));
     t.pos = vec3<f32>(x, s.pos.y - 0.2, z);

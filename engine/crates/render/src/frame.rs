@@ -6782,17 +6782,21 @@ mod raster_split_tests {
 }
 
 /// Look tuning for the painted far forest (terrain_surface.wgsl far_crowns),
-/// A/B only: KERN_FAR_CROWN="base,area,sun_loss,sky_loss,opacity,filter,gap,size"
+/// A/B only: KERN_FAR_CROWN="base,area,sun_loss,sky_loss,opacity,filter,gap,size,shadow_opacity,shadow_size"
 /// (any may be left empty) and KERN_FAR_CROWN_DEBUG=1 (red: averaged share, green: crown
 /// cover from single crowns) or 2 (white noise in 2 m world cells).
 fn far_crown_constants() -> Vec<(&'static str, f64)> {
     let mut out = Vec::new();
     if let Ok(v) = std::env::var("KERN_FAR_CROWN") {
-        let names = ["FAR_CROWN_BASE", "FAR_VIEW_AREA_MAX", "FAR_CROWN_SUN_LOSS", "FAR_CROWN_SKY_LOSS", "FAR_CROWN_OPACITY", "FAR_CROWN_FILTER", "FAR_GAP_SHADE", "FAR_CROWN_SIZE"];
+        let names = ["FAR_CROWN_BASE", "FAR_VIEW_AREA_MAX", "FAR_CROWN_SUN_LOSS", "FAR_CROWN_SKY_LOSS", "FAR_CROWN_OPACITY", "FAR_CROWN_FILTER", "FAR_GAP_SHADE", "FAR_CROWN_SIZE", "FAR_SHADOW_OPACITY", "FAR_SHADOW_SIZE"];
         for (name, part) in names.iter().zip(v.split(',')) {
             if let Ok(x) = part.trim().parse::<f64>() { out.push((*name, x)); }
         }
     }
+    if std::env::var("KERN_FAR_TREE_SHADOWS").as_deref() == Ok("0") { out.push(("FAR_TREE_SHADOWS", 0.0)); }
+    if let Some(x) = std::env::var("KERN_FAR_TREE_SHADOW_FROM").ok().and_then(|v| v.parse::<f64>().ok()) { out.push(("FAR_TREE_SHADOW_FROM", x)); }
+    if let Some(x) = std::env::var("KERN_FOREST_FLOOR_DARK").ok().and_then(|v| v.parse::<f64>().ok()) { out.push(("FOREST_FLOOR_DARK", x)); }
+    if let Some(x) = std::env::var("KERN_FAR_TREE_SHADOW_MIN_M").ok().and_then(|v| v.parse::<f64>().ok()) { out.push(("FAR_TREE_SHADOW_MIN_M", x)); }
     if let Some(d) = std::env::var("KERN_FAR_CROWN_DEBUG").ok().and_then(|v| v.parse::<f64>().ok()) { out.push(("FAR_CROWN_DEBUG", d)); }
     out
 }

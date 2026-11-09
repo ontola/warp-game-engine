@@ -133,7 +133,7 @@ impl World for TerrainWorld<'_> {
         match name {
             // Share of tree spots that grow a tree here, 0 where none can.
             "forest" => if forest_field::grows(ground, &self.style_at(x, z)) {
-                forest_field::share(x, z, self.seed, forest_field::site(ground.up, ground.wet), 0.0)
+                forest_field::share(x, z, self.seed, forest_field::site(ground.up, ground.wet, self.style_at(x, z).forest_slopes), 0.0)
             } else { 0.0 },
             "grows" => f32::from(u8::from(forest_field::grows(ground, &self.style_at(x, z)))),
             "snow_line" => self.style_at(x, z).snow_line,
