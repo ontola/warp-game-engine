@@ -54,7 +54,9 @@ use std::sync::mpsc::{Receiver, channel};
 const POOL: u32 = 24576;
 const TICK_HZ: f32 = 60.0;
 /// The biomes (render::biome), as F12/F11/F10 and F6 step through them.
-const STYLES: [&str; 6] = ["default", "lowland", "alpine", "polder", "tundra", "desert"];
+/// Swiss (last, so the F keys keep their biomes) is the default look.
+const STYLES: [&str; 7] = ["default", "lowland", "alpine", "polder", "tundra", "desert", "swiss"];
+const DEFAULT_STYLE: usize = 6;
 
 /// The season and hour from --season (spring|summer|autumn|winter|0..1)
 /// and --hour (0..24); without --hour the sun stands as it always did.
@@ -774,7 +776,7 @@ fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &rend
     // aerial perspective. --no-clouds keeps only the aerial perspective,
     // --light sky_volume=0 the earlier distance fog.
     light.sky_volume = Some(render::sky_volume::SkyVolume {
-        clouds: (!std::env::args().any(|a| a == "--no-clouds")).then(Default::default), ..Default::default() });
+        clouds: (!std::env::args().any(|a| a == "--no-clouds")).then(|| env.biome.clouds().unwrap_or_default()), ..Default::default() });
     // TAA reprojects with per-pixel motion vectors (wind and parts too):
     // turning the camera, foliage shimmers about 75 % less than without it
     // (motion pan test, playtest cameras 3 and 4). Its history converges
@@ -809,12 +811,16 @@ fn pine_ages() -> bool { std::env::args().any(|a| a == "--pine-ages") }
 /// one of these ages, from pine-lab's tuning file (default
 /// games/pine-lab/tuning.json; missing rules keep the defaults).
 const FOREST_AGES: [u32; 8] = [5, 9, 14, 20, 28, 38, 48, 55];
+/// --spruce-forest [TUNING.json]: the same with grown Norway spruce
+/// (plant_growth::Species::norway_spruce), the swiss forest; without a file
+/// the spruce's own rules.
 fn pine_forest() -> Option<PathBuf> {
     let args: Vec<String> = std::env::args().collect();
-    let at = args.iter().position(|a| a == "--pine-forest")?;
+    let at = args.iter().position(|a| a == "--pine-forest" || a == "--spruce-forest")?;
     Some(args.get(at + 1).filter(|a| !a.starts_with("--")).map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/pine-lab/tuning.json")))
+        .unwrap_or_else(|| if spruce_forest() { PathBuf::new() } else { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/pine-lab/tuning.json") }))
 }
+fn spruce_forest() -> bool { std::env::args().any(|a| a == "--spruce-forest") }
 
 /// How many tree and shrub variants the forest uses (grass follows them).
 fn flora_count(lands: &render::biome::Lands) -> usize {
@@ -826,8 +832,12 @@ fn cooked_flora(lands: &render::biome::Lands) -> Result<&'static Vec<CookedPlant
         static FOREST: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
         let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
         return FOREST.get_or_init(|| {
-            let (mut species, mut look) = (render::plant_growth::Species::jeffrey_pine(), render::plant_growth_assembly::Look::jeffrey_pine());
-            match std::fs::read_to_string(&path) {
+            let (mut species, mut look) = if spruce_forest() {
+                (render::plant_growth::Species::norway_spruce(), render::plant_growth_assembly::Look::norway_spruce())
+            } else {
+                (render::plant_growth::Species::jeffrey_pine(), render::plant_growth_assembly::Look::jeffrey_pine())
+            };
+            if path.as_os_str().is_empty() { eprintln!("spruce forest: default rules"); } else { match std::fs::read_to_string(&path) {
                 Ok(text) => {
                     let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
                     if let Some(s) = v.get("species") { species = serde_json::from_value(s.clone()).map_err(|e| e.to_string())?; }
@@ -835,7 +845,7 @@ fn cooked_flora(lands: &render::biome::Lands) -> Result<&'static Vec<CookedPlant
                     eprintln!("pine forest: rules from {}", path.display());
                 }
                 Err(e) => eprintln!("pine forest: {} ({e}); default rules", path.display()),
-            }
+            } }
             let variants: Vec<_> = FOREST_AGES.iter().map(|&age| (species, age, 1)).collect();
             let started = web_time::Instant::now();
             let cooked = recipe_forest::cook_grown(&variants, &render::plant_growth_assembly::Parts::for_look(&look), look, Some(&cache))?;
@@ -1144,7 +1154,7 @@ fn main() {
         let words: Vec<&str> = hash.trim_start_matches('#').split('-').collect();
         let seed = param("seed").and_then(|s| s.parse().ok()).unwrap_or(1);
         let style = param("style").or_else(|| words.iter().find(|w| STYLES.contains(w)).map(|w| w.to_string()))
-            .and_then(|s| STYLES.iter().position(|n| *n == s)).unwrap_or(0);
+            .and_then(|s| STYLES.iter().position(|n| *n == s)).unwrap_or(DEFAULT_STYLE);
         // Trees are opt-in here: without threads or the native cook cache,
         // preparing them blocks the page for minutes.
         let trees = param("trees").as_deref() == Some("1") || words.contains(&"trees");
@@ -1191,7 +1201,7 @@ fn main() -> Result<(), String> {
         if std::env::var_os("WARP_RENDER_HEIGHT").is_none() { unsafe { std::env::set_var("WARP_RENDER_HEIGHT", "720"); } }
     }
     let seed = arg("--seed").map(|s| s.parse().map_err(|_| "--seed N")).transpose()?.unwrap_or(1);
-    let style = arg("--style").map(|s| STYLES.iter().position(|n| *n == s).ok_or("--style default|lowland|alpine|polder|tundra|desert")).transpose()?.unwrap_or(0);
+    let style = arg("--style").map(|s| STYLES.iter().position(|n| *n == s).ok_or("--style swiss|default|lowland|alpine|polder|tundra|desert")).transpose()?.unwrap_or(DEFAULT_STYLE);
     let world = World { trees: !args.iter().any(|a| a == "--no-trees"), grass: args.iter().any(|a| a == "--grass"),
         tree_radius: arg("--tree-radius").map(|n| n.parse().map_err(|_| "--tree-radius M")).transpose()?.unwrap_or(World::default().tree_radius),
         branch_slots: arg("--branch-slots").map(|n|n.parse().map_err(|_|"--branch-slots N")).transpose()?.unwrap_or(if low {512}else{World::default().branch_slots}), ..World::default() };
