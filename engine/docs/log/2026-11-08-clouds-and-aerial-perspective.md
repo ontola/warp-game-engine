@@ -118,3 +118,21 @@ The three matrices are now camera-relative and built in f64 on the CPU.
 with the fix. The bake's ground below the true horizon (seen from a few km
 up) is now hazed towards the horizon sky in shade.wgsl by the distance to
 the planet, instead of by the 80 km aerial-perspective volume.
+
+Cloud shadows on the ground were a km soft: they used the plain weather
+ramp (±0.08), which is much wider than the edge of the raymarched cloud.
+Shadows now use `cloud_shadow_cover`: the weather plus two finer octaves
+(~400 m and ~190 m), a ±0.02 edge, shifted 0.03 inwards to where the 3D
+shape clears. Checked at `--at 0,0,1500,0.6,-0.6` and at Joep's far-forest
+spot (`-15165,123528,480`).
+
+9 November: the clouds still flashed every frame in a Mancave flyby that
+started 123 km from the origin. It reproduces on lavapipe at the same start
+(`--at -15165.3,123527.9,1200,-0.621,-0.436 --speed 120 --dump-forward`):
+sky change per frame ~10 of 255, at the origin 0.5. The camera-relative
+matrix still carries the f32 rounding of the world-space view matrix (about
+1 cm out there); `view_ray` unprojected the 5 cm near plane, so that cm
+turned the ray by degrees. It now unprojects a point 500 m out. terrain_fly
+also put its look-at target 1 m ahead, which rounds to ~8 mm out there and
+turned the whole view by up to half a degree per frame; the target is now
+10 km ahead. Sky change per frame 10 → 0.2.

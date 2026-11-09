@@ -338,6 +338,12 @@ impl SkyVolumeSlot {
         let light = view.light;
         let model = &tables.model;
         let history_valid = !view.reset && t.prev_vp.is_some();
+        // WARP_SKY_VOLUME_LOG=1: one line per view and frame, for checking the
+        // cloud history on a machine we cannot watch (flashing clouds report).
+        if std::env::var_os("WARP_SKY_VOLUME_LOG").is_some() {
+            eprintln!("sky volume: view {} frame {} output {:?} depth {:?} half {:?} history_valid {} reset {} camera {:?}",
+                view.index, t.frame, size, view.depth_size, half, history_valid, view.reset, view.camera);
+        }
         let mut u = Uniform::zeroed();
         // Camera-relative matrices, built in f64: far from the origin a
         // world-space inverse loses the ray direction to f32 rounding (the

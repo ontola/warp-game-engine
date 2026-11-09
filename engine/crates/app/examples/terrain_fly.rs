@@ -346,7 +346,10 @@ impl Fly {
     fn camera(&self, pos: Vec3, alpha: f32) -> Camera {
         let back = 1.0 - alpha;
         let forward = look(self.yaw - self.turn.0 * back, self.pitch - self.turn.1 * back);
-        Camera { pos, target: pos + forward, fov_y: 65f32.to_radians(), near: 0.05 }
+        // The target a long way out: 100 km from the origin pos + forward
+        // rounds to ~8 mm in f32, which turned the view by up to half a
+        // degree at random every frame (flashing clouds, shaking horizon).
+        Camera { pos, target: pos + forward * 1.0e4, fov_y: 65f32.to_radians(), near: 0.05 }
     }
 
     fn forward(&self) -> Vec3 { look(self.yaw, self.pitch) }
