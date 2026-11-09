@@ -812,6 +812,9 @@ fn pine_ages() -> bool { std::env::args().any(|a| a == "--pine-ages") }
 /// one of these ages, from pine-lab's tuning file (default
 /// games/pine-lab/tuning.json; missing rules keep the defaults).
 const FOREST_AGES: [u32; 8] = [5, 9, 14, 20, 28, 38, 48, 55];
+/// A closed spruce stand is mostly grown trees: fewer saplings.
+const SPRUCE_AGES: [u32; 8] = [12, 18, 24, 30, 36, 42, 48, 55];
+fn forest_ages() -> [u32; 8] { if spruce_forest() { SPRUCE_AGES } else { FOREST_AGES } }
 /// --spruce-forest [TUNING.json]: the same with grown Norway spruce
 /// (plant_growth::Species::norway_spruce), the swiss forest; without a file
 /// the spruce's own rules.
@@ -847,10 +850,10 @@ fn cooked_flora(lands: &render::biome::Lands) -> Result<&'static Vec<CookedPlant
                 }
                 Err(e) => eprintln!("pine forest: {} ({e}); default rules", path.display()),
             } }
-            let variants: Vec<_> = FOREST_AGES.iter().map(|&age| (species, age, 1)).collect();
+            let variants: Vec<_> = forest_ages().iter().map(|&age| (species, age, 1)).collect();
             let started = web_time::Instant::now();
             let cooked = recipe_forest::cook_grown(&variants, &render::plant_growth_assembly::Parts::for_look(&look), look, Some(&cache))?;
-            for (c, age) in cooked.iter().zip(FOREST_AGES) {
+            for (c, age) in cooked.iter().zip(forest_ages()) {
                 eprintln!("pine forest age {age}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
             }
             eprintln!("pine forest: {} variants in {:.1} s", cooked.len(), started.elapsed().as_secs_f64());
