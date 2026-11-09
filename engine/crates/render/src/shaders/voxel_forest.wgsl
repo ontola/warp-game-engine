@@ -40,7 +40,7 @@ fn selection_unpack(w:u32)->vec4<u32> {
 // Deduplication words follow the 22 diagnostic words in volume_stats.
 // Sharing this allocation keeps the temporal pipeline within 16 storage bindings.
 const VOLUME_DRAW_WORD: u32 = 22u;
-const VOLUME_MASK_WORD: u32 = 26u;
+const VOLUME_MASK_WORD: u32 = 36u;
 const VOLUME_BRICK_VISIBILITY: bool = false;
 const VOLUME_TILE: u32 = 16u;
 const VOLUME_CANDIDATES: u32 = 64u;
@@ -1063,7 +1063,8 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
 // index, packed coord, 16-bit alpha | faces << 16 | appearance seed << 19.
 @group(2) @binding(15) var<storage,read_write> volume_splats: array<vec4<u32>>;
 // Indirect draw arguments: vertex count, instance count, first vertex, first instance.
-// Draw arguments share volume_stats[22..26], leaving a binding for choices.
+// Draw arguments share volume_stats[22..26] (brick culling's second draw
+// 26..30), leaving a binding for choices.
 @group(2) @binding(17) var volume_splat_id: texture_2d<u32>;
 @group(2) @binding(18) var volume_splat_depth: texture_depth_2d;
 // Splats drawn into the main visibility buffer (voxel_forest Stage::Splats
@@ -1229,18 +1230,41 @@ fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:
     }
     let faces=select(0u,1u,toward.x>0.0)|select(0u,2u,toward.y>0.0)|select(0u,4u,toward.z>0.0);
     let slot=volume_splat_first()+atomicAdd(&volume_stats[VOLUME_DRAW_WORD+1],1u);
-    if slot>=arrayLength(&volume_splats) {return;}
+    if slot>=volume_splat_limit() {return;}
     volume_splats[slot]=vec4<u32>(index,cell_ref.x,cell_ref.y,u32(min(kept_alpha/VOLUME_SPLAT_ALPHA_RANGE,1.0)*65535.0+0.5)|(faces<<16u)|((volume_splat_hash(appearance)&8191u)<<19u));
 }
 
-// Experimental current-frame, two-phase brick culling. Seed trees are drawn
-// first; the opaque scene plus their depth occludes the remaining bricks.
-// No previous-frame depth is trusted, so disocclusion needs no history delay.
-override VOXEL_CULL_PHASE: u32 = 0u;
+// Brick occlusion culling (KERN_SPLAT_BRICK_HZB=1), two passes as in Nanite.
+// Only ~8-17% of the camera splats won a pixel (Mancave, 9 November): the
+// rest hid behind other needles. Pass 1 (voxel_splats) tests every 4x4x4
+// brick against the depth pyramid of the previous frame, at the
+// view-projection it was built with; visible bricks splat, hidden ones are
+// queued at the end of volume_splats. Once pass 1 rasters, the pyramid is
+// rebuilt from this frame's depth and pass 2 (voxel_splat_retest) splats the
+// queued bricks it does not hide. Stale history only costs the retest; a
+// full queue splats the brick in pass 1. No brick is lost.
+// The camera target's header records 4-7 keep that view-projection and
+// record 8.x is 1 once a pyramid exists (only sun targets put planes there).
+override VOXEL_BRICK_CULL: bool = false;
 override VOXEL_COMPACT: bool = false;
 @group(2) @binding(20) var volume_brick_hzb: texture_2d<f32>;
+// volume_stats words: 26-29 pass 2 draw arguments, 30 queued bricks,
+// 31 pass 1 splat count, 32-34 pass 2 dispatch.
+const VOLUME_CULL_WORD: u32 = 26u;
+const VOLUME_HZB_VIEW: u32 = 4u;
+// An eighth of the record space holds the queue (one record per brick).
+fn volume_cull_queue_capacity()->u32 {
+    if !VOXEL_BRICK_CULL {return 0u;}
+    let total=arrayLength(&volume_splats);let first=volume_splat_first();
+    return select(0u,(total-first)/8u,total>first);
+}
+fn volume_splat_limit()->u32 {return arrayLength(&volume_splats)-volume_cull_queue_capacity();}
+fn volume_hzb_view()->mat4x4<f32> {
+    return mat4x4<f32>(bitcast<vec4<f32>>(volume_splats[VOLUME_HZB_VIEW]),bitcast<vec4<f32>>(volume_splats[VOLUME_HZB_VIEW+1u]),
+        bitcast<vec4<f32>>(volume_splats[VOLUME_HZB_VIEW+2u]),bitcast<vec4<f32>>(volume_splats[VOLUME_HZB_VIEW+3u]));
+}
 
-fn volume_brick_hidden(index:u32, level:u32, packed:u32)->bool {
+fn volume_brick_hidden(index:u32, level:u32, packed:u32, view_proj:mat4x4<f32>)->bool {
     let tree=volume_trees[index];
     let grid=volume_levels[tree.identity.y+level].origin_cell;
     let coord=vec3<f32>(f32(packed&1023u),f32((packed>>10u)&1023u),f32(packed>>20u));
@@ -1249,14 +1273,15 @@ fn volume_brick_hidden(index:u32, level:u32, packed:u32)->bool {
     let owner=instances[tree.identity.x];
     let centre=vec4<f32>(grid.xyz+(coord+2.0)*grid.w,1.0);
     let world_centre=vec3<f32>(dot(owner.r0,centre),dot(owner.r1,centre),dot(owner.r2,centre));
-    // Raster half-width <= .688 cells, jitter <= .25 per screen axis:
-    // sqrt(2)*(.688+.25) < 1.5, using the raster's first-column scale.
-    let padding=1.5*grid.w*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x));
+    // Raster half-width <= 1.15*.688 cells up to alpha 1, jitter <= .25
+    // per screen axis: sqrt(2)*(.79+.25) < 2. Thinned sub-pixel splats grow
+    // past that but stay under a pixel, inside the pyramid's 2-texel margin.
+    let padding=2.0*grid.w*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x));
     let half=1.5*grid.w*vec3<f32>(dot(abs(owner.r0.xyz),vec3<f32>(1.0)),dot(abs(owner.r1.xyz),vec3<f32>(1.0)),dot(abs(owner.r2.xyz),vec3<f32>(1.0)))+padding;
     var ndc_min=vec2<f32>(1e30);var ndc_max=vec2<f32>(-1e30);var nearest=0.0;
     for(var i=0u;i<8u;i++) {
         let world=vec4<f32>(world_centre+select(-half,half,vec3<bool>((i&1u)!=0u,(i&2u)!=0u,(i&4u)!=0u)),1.0);
-        let clip=view.view_proj*world;
+        let clip=view_proj*world;
         // Near-plane crossings and degenerate projections are always visible.
         if clip.w<=0.0001 || clip.z>=clip.w {return false;}
         let ndc=clip.xyz/clip.w;
@@ -1285,11 +1310,6 @@ fn volume_splat_wanted(index:u32)->bool {
     if volume_config.march.y<=0.0 && !volume_proxy(index) {wanted=volume_selection_at(index).x==1u;}
     if volume_proxy(index) {wanted=volume_proxy_shown(index);}
     for(var i=0u;i<6u;i++) {wanted=wanted&&!volume_tree_outside(index,view.planes[i]);}
-    if VOXEL_CULL_PHASE!=0u {
-        let centre=0.5*(volume_trees[index].bounds_min.xyz+volume_trees[index].bounds_max.xyz);
-        let seed=distance(centre,view.cam.xyz)<150.0;
-        wanted=wanted && select(!seed,seed,VOXEL_CULL_PHASE==1u);
-    }
     return wanted;
 }
 @compute @workgroup_size(64)
@@ -1306,6 +1326,22 @@ fn voxel_splat_tree_list(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_i
     atomicMax(&volume_tiles[2],1u);
 }
 
+fn volume_splat_eye(index:u32)->vec3<f32> {
+    let tree=volume_trees[index];
+    let eye=vec4<f32>(view.cam.xyz,1.0);
+    return vec3<f32>(dot(tree.inverse[0],eye),dot(tree.inverse[1],eye),dot(tree.inverse[2],eye));
+}
+// Cells first..first+count of the splat catalog that pass the frustum.
+fn volume_splat_range(index:u32,level:u32,range:vec2<u32>,eye_local:vec3<f32>,first:u32,step:u32) {
+    for(var i=first;i<range.y;i+=step) {
+        let cell_ref=volume_splat_cells[range.x+i];
+        let cell=volume_splat_cell(index,level,cell_ref.y);
+        var inside=true;
+        for(var p=0u;p<6u;p++) {inside=inside&&!volume_splat_outside(cell,view.planes[p]);}
+        if inside {volume_splat_append(index,cell_ref,cell,normalize(eye_local-cell.local),volume_camera_texel(cell.centre));}
+    }
+}
+
 @compute @workgroup_size(64)
 fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
     let work=group.x+group.y*65535u;
@@ -1320,7 +1356,8 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
     if lane==0u {
         if work==0u {
             for(var c=0u;c<4u;c++) {volume_splats[c]=bitcast<vec4<u32>>(view.view_proj[c]);}
-            volume_splats[11]=vec4<u32>(volume_config.size_count.w,0u,0u,0u);
+            // w: the first queue record, which the raster never reads as a splat.
+            volume_splats[11]=vec4<u32>(volume_config.size_count.w,0u,0u,select(0u,volume_splat_limit(),VOXEL_BRICK_CULL));
             atomicStore(&volume_stats[VOLUME_DRAW_WORD+0],VOLUME_SPLAT_VERTICES);
         }
         var level=VOLUME_SPLAT_NONE;
@@ -1333,32 +1370,60 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
     let level=workgroupUniformLoad(&volume_splat_level_shared);
     if level==VOLUME_SPLAT_NONE {return;}
     let tree=volume_trees[index];
-    let eye=vec4<f32>(view.cam.xyz,1.0);
-    let eye_local=vec3<f32>(dot(tree.inverse[0],eye),dot(tree.inverse[1],eye),dot(tree.inverse[2],eye));
-    if VOXEL_CULL_PHASE==2u {
+    let eye_local=volume_splat_eye(index);
+    if VOXEL_BRICK_CULL {
         let bricks=volume_splat_cells[arrayLength(&volume_levels)+tree.identity.y+level];
+        let history=volume_splats[VOLUME_HZB_VIEW+4u].x==1u;
+        let previous=volume_hzb_view();
         for(var b=lane;b<bricks.y;b+=64u) {
             let range=volume_splat_cells[bricks.x+b*2u];
             let packed=volume_splat_cells[bricks.x+b*2u+1u].x;
-            if volume_brick_hidden(index,level,packed) {continue;}
-            for(var c=0u;c<range.y;c++) {
-                let cell_ref=volume_splat_cells[range.x+c];
-                let cell=volume_splat_cell(index,level,cell_ref.y);
-                var inside=true;
-                for(var p=0u;p<6u;p++) {inside=inside&&!volume_splat_outside(cell,view.planes[p]);}
-                if inside {volume_splat_append(index,cell_ref,cell,normalize(eye_local-cell.local),volume_camera_texel(cell.centre));}
+            if history && volume_brick_hidden(index,level,packed,previous) {
+                let queued=atomicAdd(&volume_stats[VOLUME_CULL_WORD+4u],1u);
+                if queued<volume_cull_queue_capacity() {volume_splats[volume_splat_limit()+queued]=vec4<u32>(index,level,b,0u);continue;}
             }
+            volume_splat_range(index,level,range,eye_local,0u,1u);
         }
         return;
     }
-    let range=volume_splat_cells[tree.identity.y+level];
-    for(var i=lane;i<range.y;i+=64u) {
-        let cell_ref=volume_splat_cells[range.x+i];
-        let cell=volume_splat_cell(index,level,cell_ref.y);
-        var inside=true;
-        for(var p=0u;p<6u;p++) {inside=inside&&!volume_splat_outside(cell,view.planes[p]);}
-        if inside {volume_splat_append(index,cell_ref,cell,normalize(eye_local-cell.local),volume_camera_texel(cell.centre));}
-    }
+    volume_splat_range(index,level,volume_splat_cells[tree.identity.y+level],eye_local,lane,64u);
+}
+// Between the passes, one thread: pass 2's records start after pass 1's
+// (header 11.z, read by the raster) and its dispatch covers the queue.
+@compute @workgroup_size(1)
+fn voxel_splat_cull_base() {
+    let splats=atomicLoad(&volume_stats[VOLUME_DRAW_WORD+1u]);
+    atomicStore(&volume_stats[VOLUME_CULL_WORD+5u],splats);
+    volume_splats[11].z=splats;
+    let groups=(min(atomicLoad(&volume_stats[VOLUME_CULL_WORD+4u]),volume_cull_queue_capacity())+63u)/64u;
+    atomicStore(&volume_stats[VOLUME_CULL_WORD+6u],min(groups,65535u));
+    atomicStore(&volume_stats[VOLUME_CULL_WORD+7u],(groups+65534u)/65535u);
+    atomicStore(&volume_stats[VOLUME_CULL_WORD+8u],1u);
+}
+// Pass 2: one thread per queued brick, against this frame's pyramid.
+@compute @workgroup_size(64)
+fn voxel_splat_retest(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+    let i=(group.x+group.y*65535u)*64u+lane;
+    if i>=min(atomicLoad(&volume_stats[VOLUME_CULL_WORD+4u]),volume_cull_queue_capacity()) {return;}
+    let queued=volume_splats[volume_splat_limit()+i];
+    let index=queued.x;let level=queued.y;
+    let bricks=volume_splat_cells[arrayLength(&volume_levels)+volume_trees[index].identity.y+level];
+    let packed=volume_splat_cells[bricks.x+queued.z*2u+1u].x;
+    if volume_brick_hidden(index,level,packed,view.view_proj) {return;}
+    volume_splat_range(index,level,volume_splat_cells[bricks.x+queued.z*2u],volume_splat_eye(index),0u,1u);
+}
+// After pass 2, one thread: its draw arguments, and this frame's
+// view-projection for the pyramid next frame tests against.
+@compute @workgroup_size(1)
+fn voxel_splat_cull_rest() {
+    let base=atomicLoad(&volume_stats[VOLUME_CULL_WORD+5u]);
+    let total=atomicLoad(&volume_stats[VOLUME_DRAW_WORD+1u]);
+    atomicStore(&volume_stats[VOLUME_CULL_WORD],VOLUME_SPLAT_VERTICES);
+    atomicStore(&volume_stats[VOLUME_CULL_WORD+1u],total-base);
+    atomicStore(&volume_stats[VOLUME_CULL_WORD+2u],0u);
+    atomicStore(&volume_stats[VOLUME_CULL_WORD+3u],0u);
+    for(var c=0u;c<4u;c++) {volume_splats[VOLUME_HZB_VIEW+c]=volume_splats[c];}
+    volume_splats[VOLUME_HZB_VIEW+4u]=vec4<u32>(1u,0u,0u,0u);
 }
 
 fn volume_splat_header(index:u32)->vec4<f32> {return bitcast<vec4<f32>>(volume_splats[index]);}

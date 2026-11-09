@@ -15,7 +15,10 @@ const CANDIDATES: u32 = 64;
 // Four exact 64-bit aggregate counters follow the fourteen original u32s.
 // WGSL uses atomic low words plus carry; no optional GPU u64 feature is needed.
 const DRAW_OFFSET: u64 = 88;
-const COUNTER_BYTES: u64 = DRAW_OFFSET + 16;
+// Then brick culling's words (voxel_forest.wgsl VOLUME_CULL_WORD): second
+// draw arguments, queue length, first-pass splats, second-pass dispatch.
+const CULL_OFFSET: u64 = DRAW_OFFSET + 16;
+const COUNTER_BYTES: u64 = CULL_OFFSET + 40;
 // Additional opt-in scratch, per view, beyond the existing tile worklist.
 const INTERVAL_STREAM_BYTES:u64=32*1024*1024;
 const INTERVAL_STREAM_PIXEL_SLOTS:u32=262_144;
@@ -350,7 +353,7 @@ pub(crate) struct TemporalInputs<'a> {
 }
 struct TemporalPipelines {
     gbuffer: wgpu::ComputePipeline,
-    selection: Option<[wgpu::ComputePipeline; 2]>,
+    selection: Option<[wgpu::ComputePipeline; 3]>,
     second: Option<wgpu::ComputePipeline>,
     data_layout: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
@@ -368,7 +371,7 @@ pub(crate) struct VoxelRenderer {
     /// voxel_splat_gbuffer: the splats' surface where they won the scene's
     /// visibility buffer.
     gbuffer:wgpu::ComputePipeline,
-    selection: Option<[wgpu::ComputePipeline; 2]>,
+    selection: Option<[wgpu::ComputePipeline; 3]>,
     second: Option<wgpu::ComputePipeline>,
     brick_hzb: Option<crate::depth_pyramid::DepthPyramid>,
     raster:Option<SplatRaster>,
@@ -403,7 +406,7 @@ pub(crate) struct VoxelRenderer {
     owner_index: Vec<usize>,
     targets: Mutex<Vec<Option<Targets>>>,
 }
-pub(crate) struct Reload { pipelines: [wgpu::ComputePipeline; 8], surface: wgpu::ComputePipeline, selection: Option<[wgpu::ComputePipeline;2]>, second: Option<wgpu::ComputePipeline>, temporal: Option<([wgpu::ComputePipeline;8], wgpu::ComputePipeline, Option<wgpu::ComputePipeline>, Option<[wgpu::ComputePipeline;2]>)>, sun: Option<(wgpu::ComputePipeline,wgpu::ComputePipeline)>, source: String }
+pub(crate) struct Reload { pipelines: [wgpu::ComputePipeline; 8], surface: wgpu::ComputePipeline, selection: Option<[wgpu::ComputePipeline;3]>, second: Option<wgpu::ComputePipeline>, temporal: Option<([wgpu::ComputePipeline;8], wgpu::ComputePipeline, Option<wgpu::ComputePipeline>, Option<[wgpu::ComputePipeline;3]>)>, sun: Option<(wgpu::ComputePipeline,wgpu::ComputePipeline)>, source: String }
 /// Native generation contains neither temporal resources nor per-sample work.
 /// Explicit blocks keep shader reload transactional for both pipeline sets.
 fn temporal_source(source:&str,enabled:bool)->Result<String,String> {
@@ -438,13 +441,15 @@ fn create_data_layout(gpu:&Gpu,temporal:bool)->wgpu::BindGroupLayout {
     gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("voxel data"),
         entries:&entries.into_iter().map(|(binding,ty)|wgpu::BindGroupLayoutEntry {binding,ty,visibility:wgpu::ShaderStages::COMPUTE,count:None}).collect::<Vec<_>>()})
 }
-fn splat_selection_pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> Option<[wgpu::ComputePipeline;2]> {
-    if !brick_hzb_enabled() {return None;}
+/// Brick culling's helpers: the visible tree list, the step between its two
+/// passes and the one after (voxel_forest.wgsl VOXEL_BRICK_CULL).
+fn splat_selection_pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, cull: bool) -> Option<[wgpu::ComputePipeline;3]> {
+    if !cull {return None;}
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label:Some("voxel visible tree list"),source:wgpu::ShaderSource::Wgsl(source.into()) });
-    Some([1.0,2.0].map(|phase|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label:Some("voxel visible tree list"),layout:Some(layout),module:&module,entry_point:Some("voxel_splat_tree_list"),
-        compilation_options:wgpu::PipelineCompilationOptions {constants:&[("VOXEL_CULL_PHASE",phase)],..Default::default()},cache:gpu.pipeline_cache()
+        label:Some("voxel brick culling"),source:wgpu::ShaderSource::Wgsl(source.into()) });
+    Some(["voxel_splat_tree_list","voxel_splat_cull_base","voxel_splat_cull_rest"].map(|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label:Some(entry),layout:Some(layout),module:&module,entry_point:Some(entry),
+        compilation_options:wgpu::PipelineCompilationOptions {constants:&[("VOXEL_BRICK_CULL",1.0)],..Default::default()},cache:gpu.pipeline_cache()
     })))
 }
 fn second_splat_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> wgpu::ComputePipeline {
@@ -452,8 +457,8 @@ fn second_splat_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str)
         label: Some("voxel brick culling"), source: wgpu::ShaderSource::Wgsl(source.into()) });
     gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("voxel brick second pass"), layout: Some(layout), module: &module,
-        entry_point: Some("voxel_splats"), compilation_options: wgpu::PipelineCompilationOptions {
-            constants: &[("VOXEL_CULL_PHASE", 2.0),("VOXEL_COMPACT",1.0)], ..Default::default() }, cache: gpu.pipeline_cache() })
+        entry_point: Some("voxel_splat_retest"), compilation_options: wgpu::PipelineCompilationOptions {
+            constants: &[("VOXEL_BRICK_CULL", 1.0)], ..Default::default() }, cache: gpu.pipeline_cache() })
 }
 fn surface_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> wgpu::ComputePipeline {
     let coarser: Vec<(&str, f64)> = std::env::var("KERN_VOXEL_SELF_SHADOW_COARSER").ok().and_then(|v| v.parse().ok())
@@ -541,7 +546,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
     SplatRaster { main_pipeline, cells: cells_buffer, capacity, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_cached_layout, sun_cached_splats, sun_raster, sun_cached_raster,
         sun_target: Mutex::new(Vec::new()) }
 }
-fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool,global_intervals:bool) -> [wgpu::ComputePipeline; 8] {
+fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool,global_intervals:bool,cull:bool) -> [wgpu::ComputePipeline; 8] {
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("voxel forest"), source: wgpu::ShaderSource::Wgsl(source.into()),
     });
@@ -552,7 +557,7 @@ fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tile
         .map(|entry| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some(entry), layout: Some(layout), module: &module, entry_point: Some(entry),
             compilation_options: wgpu::PipelineCompilationOptions {
-                constants: if entry == "voxel_splats" && brick_hzb_enabled() { &[("VOXEL_CULL_PHASE", 1.0),("VOXEL_COMPACT",1.0)] } else { &[] },
+                constants: if entry == "voxel_splats" && cull { &[("VOXEL_BRICK_CULL", 1.0),("VOXEL_COMPACT",1.0)] } else { &[] },
                 ..Default::default() }, cache: gpu.pipeline_cache(),
         }))
 }
@@ -840,10 +845,12 @@ impl VoxelRenderer {
         integrator_options.antipodal_normals &= antipodal_eligible;
         let specialized_source = integrator_options.specialize(&temporal_source(&source,false).expect("invalid voxel temporal blocks"))
             .expect("invalid voxel integrator option shader");
-        let [bins, tiles, clear, integrate,intervals,scatter,splats,resolve] = pipelines(gpu, &pipeline_layout, &specialized_source, scene.voxel_active_tiles,integrator_options.global_intervals);
-        let gbuffer = surface_pipeline(gpu, &pipeline_layout, &specialized_source);
+        // Brick culling reads the bricked splat catalog, which paged assets lack.
         let brick_hzb = (page_cache.is_none() && brick_hzb_enabled()).then(|| crate::depth_pyramid::DepthPyramid::new(gpu));
-        let selection = splat_selection_pipelines(gpu, &pipeline_layout, &specialized_source);
+        let cull = brick_hzb.is_some();
+        let [bins, tiles, clear, integrate,intervals,scatter,splats,resolve] = pipelines(gpu, &pipeline_layout, &specialized_source, scene.voxel_active_tiles,integrator_options.global_intervals,cull);
+        let gbuffer = surface_pipeline(gpu, &pipeline_layout, &specialized_source);
+        let selection = splat_selection_pipelines(gpu, &pipeline_layout, &specialized_source, cull);
         let second = brick_hzb.as_ref().map(|_| second_splat_pipeline(gpu, &pipeline_layout, &specialized_source));
         eprintln!("voxel integrator: interval_capacity=64 active_capacity=16 empty_ceiling={} (accepted skip fix; bounded prototype, complete scan on cache overflow)",
             integrator_options.empty_ceiling);
@@ -1002,9 +1009,9 @@ impl VoxelRenderer {
             let data_layout=create_data_layout(gpu,true);
             let layout=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label:Some("temporal voxel forest"),bind_group_layouts:&[Some(&self.scene_layout),Some(&self.view_layout),Some(&data_layout)],immediate_size:0});
-            let pipelines=pipelines(gpu,&layout,&source,self.active_tiles,self.integrator_options.global_intervals);
+            let pipelines=pipelines(gpu,&layout,&source,self.active_tiles,self.integrator_options.global_intervals,self.brick_hzb.is_some());
             let gbuffer = surface_pipeline(gpu, &layout, &source);
-            TemporalPipelines {selection: splat_selection_pipelines(gpu, &layout, &source),second: self.brick_hzb.as_ref().map(|_| second_splat_pipeline(gpu, &layout, &source)),data_layout,layout,pipelines,gbuffer}
+            TemporalPipelines {selection: splat_selection_pipelines(gpu, &layout, &source, self.brick_hzb.is_some()),second: self.brick_hzb.as_ref().map(|_| second_splat_pipeline(gpu, &layout, &source)),data_layout,layout,pipelines,gbuffer}
         })?;
         *temporal=Some(prepared);Ok(())
     }
@@ -1014,19 +1021,19 @@ impl VoxelRenderer {
     pub(crate) fn prepare_reload(&self, gpu: &Gpu, source: String) -> Result<Option<Reload>, String> {
         if source == self.source { return Ok(None); }
         let specialized_source = self.integrator_options.specialize(&temporal_source(&source,false)?)?;
-        let pipelines = crate::shaders::checked(gpu, || pipelines(gpu, &self.pipeline_layout, &specialized_source, self.active_tiles,self.integrator_options.global_intervals))?;
+        let pipelines = crate::shaders::checked(gpu, || pipelines(gpu, &self.pipeline_layout, &specialized_source, self.active_tiles,self.integrator_options.global_intervals,self.brick_hzb.is_some()))?;
         let temporal=if let Some(temporal)=self.temporal.lock().unwrap().as_ref() {
             let specialized=self.integrator_options.specialize(&temporal_source(&source,true)?)?;
             Some(crate::shaders::checked(gpu,||(
-                self::pipelines(gpu,&temporal.layout,&specialized,self.active_tiles,self.integrator_options.global_intervals),
+                self::pipelines(gpu,&temporal.layout,&specialized,self.active_tiles,self.integrator_options.global_intervals,self.brick_hzb.is_some()),
                 surface_pipeline(gpu,&temporal.layout,&specialized),
                 self.brick_hzb.as_ref().map(|_|second_splat_pipeline(gpu,&temporal.layout,&specialized)),
-                splat_selection_pipelines(gpu,&temporal.layout,&specialized)))?)
+                splat_selection_pipelines(gpu,&temporal.layout,&specialized,self.brick_hzb.is_some())))?)
         } else {None};
         let sun=self.raster.as_ref().map(|r|crate::shaders::checked(gpu,||(sun_splat_pipeline(gpu,&r.sun_layout,&specialized_source,false),sun_splat_pipeline(gpu,&r.sun_cached_layout,&specialized_source,true)))).transpose()?;
         let surface=crate::shaders::checked(gpu,||surface_pipeline(gpu,&self.pipeline_layout,&specialized_source))?;
         let second=self.brick_hzb.as_ref().map(|_|crate::shaders::checked(gpu,||second_splat_pipeline(gpu,&self.pipeline_layout,&specialized_source))).transpose()?;
-        let selection=crate::shaders::checked(gpu,||splat_selection_pipelines(gpu,&self.pipeline_layout,&specialized_source))?;
+        let selection=crate::shaders::checked(gpu,||splat_selection_pipelines(gpu,&self.pipeline_layout,&specialized_source,self.brick_hzb.is_some()))?;
         Ok(Some(Reload { pipelines, surface, selection, second, temporal, sun, source }))
     }
     pub(crate) fn commit_reload(&mut self, reload: Reload) {
@@ -1338,19 +1345,29 @@ impl VoxelRenderer {
                 if selection.is_some() {pass.dispatch_workgroups_indirect(&target.indirect,0);}
                 else {let count=self.count-self.consumer_roots;pass.dispatch_workgroups(count.min(65535), count.div_ceil(65535).max(1), 1);}
             }
+            // Brick culling (voxel_forest.wgsl VOXEL_BRICK_CULL): the first
+            // raster's depth becomes this frame's pyramid (and next frame's
+            // history), then the queued bricks it does not hide draw second.
             for phase in 0..if self.brick_hzb.is_some() { 2 } else { 1 } {
                 if phase == 1 {
                     let pyramid = self.brick_hzb.as_ref().unwrap();
+                    let helpers = selection.unwrap();
                     pyramid.encode(gpu, encoder, scene_targets.map_or(&splat.depth, |(_, d)| d), target.hzb.as_ref().unwrap(), times[5]);
                     if let Some((q, i)) = times[5].filter(|_|encoder_times) { encoder.write_timestamp(q, i + 1); }
                     if let Some((q,i))=times[6].filter(|_|encoder_times) {encoder.write_timestamp(q,i);}
-                    self.select_splat_trees(encoder,target,scene,view,&selection.unwrap()[1]);
+                    {
+                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("voxel brick cull base"),timestamp_writes:None});
+                        pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind, &[]);
+                        pass.set_pipeline(&helpers[1]); pass.dispatch_workgroups(1, 1, 1);
+                    }
+                    encoder.copy_buffer_to_buffer(&target.counters, CULL_OFFSET + 24, &target.indirect, 0, 12);
                     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                         label: Some("voxel brick second pass"), timestamp_writes: times[6].map(|(query_set,i)| wgpu::ComputePassTimestampWrites {
                             query_set, beginning_of_pass_write_index:(!encoder_times).then_some(i),end_of_pass_write_index:Some(i+1) }) });
                     pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind, &[]);
                     pass.set_pipeline(temporal_pipelines.and_then(|p|p.second.as_ref()).or(self.second.as_ref()).unwrap());
                     pass.dispatch_workgroups_indirect(&target.indirect,0);
+                    pass.set_pipeline(&helpers[2]); pass.dispatch_workgroups(1, 1, 1);
                 }
             {
                 let id = wgpu::RenderPassColorAttachment { view: &splat.id, depth_slice: None, resolve_target: None,
@@ -1373,7 +1390,7 @@ impl VoxelRenderer {
                 });
                 pass.set_pipeline(if scene_targets.is_some() { &raster.main_pipeline } else { &raster.pipeline });
                 pass.set_bind_group(0, &splat.bind, &[]);
-                pass.draw_indirect(&splat.draw, DRAW_OFFSET);
+                pass.draw_indirect(&splat.draw, if phase == 0 { DRAW_OFFSET } else { CULL_OFFSET });
             }
             }
             }
@@ -2115,8 +2132,27 @@ mod tests {
             // Reduced scene: instances, wind, terrain hierarchy, foliage pages.
             assert_eq!(count + 4, if temporal { 16 } else { 15 });
         }
-        assert!(super::shader_source().contains("const VOLUME_MASK_WORD: u32 = 26u;"));
-        assert_eq!(super::COUNTER_BYTES / 4, 26);
+        assert!(super::shader_source().contains("const VOLUME_MASK_WORD: u32 = 36u;"));
+        assert!(super::shader_source().contains("const VOLUME_CULL_WORD: u32 = 26u;"));
+        assert_eq!(super::CULL_OFFSET / 4, 26);
+        assert_eq!(super::COUNTER_BYTES / 4, 36);
+    }
+
+    #[test]
+    fn brick_cull_variant_validates_and_raster_reads_both_draws() {
+        for temporal in [false,true] {
+            let source=super::IntegratorOptions::default().specialize(&super::temporal_source(&super::shader_source(),temporal).unwrap()).unwrap()
+                .replace("override VOXEL_BRICK_CULL: bool = false;","override VOXEL_BRICK_CULL: bool = true;")
+                .replace("override VOXEL_COMPACT: bool = false;","override VOXEL_COMPACT: bool = true;");
+            let module=naga::front::wgsl::parse_str(&source).unwrap();
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();
+            for entry in ["voxel_splats","voxel_splat_retest","voxel_splat_cull_base","voxel_splat_cull_rest","voxel_splat_tree_list"] {
+                assert!(module.entry_points.iter().any(|e|e.name==entry),"{entry}");
+            }
+        }
+        let raster=include_str!("shaders/voxel_splat_raster.wgsl");
+        assert!(raster.contains("let splat = instance + splats[11].z;"));
+        assert!(raster.contains("out.splat = splat + 1u;"));
     }
 
     #[test]
@@ -2469,7 +2505,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<super::Config>(), 64);
         assert_eq!(std::mem::offset_of!(super::Config, proxy), 48);
         assert_eq!(std::mem::offset_of!(super::Config, dispatch), 32);
-        assert_eq!(super::COUNTER_BYTES, (14 + 4 * 2 + 4) * 4);
+        assert_eq!(super::COUNTER_BYTES, (14 + 4 * 2 + 4 + 10) * 4);
         assert_eq!(3840u64 * 2160 * 8, 66_355_200);
         let candidates = 3840u64.div_ceil(16) * 2160u64.div_ceil(16) * 65 * 4;
         assert_eq!(candidates, 8_424_000);

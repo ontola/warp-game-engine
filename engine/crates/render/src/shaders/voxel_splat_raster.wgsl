@@ -21,8 +21,12 @@ fn hash(x: u32) -> u32 {
 @vertex fn vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Out {
     var out: Out;
     let first = HEADER + splats[11].x * 4u;
-    if first + instance >= arrayLength(&splats) { out.position = vec4<f32>(0.0, 0.0, -1.0, 1.0); return out; }
-    let record = splats[first + instance];
+    // Brick culling's second draw continues after the first (11.z); its
+    // queue starts at 11.w (voxel_forest.wgsl VOXEL_BRICK_CULL).
+    let splat = instance + splats[11].z;
+    let limit = select(arrayLength(&splats), splats[11].w, splats[11].w != 0u);
+    if first + splat >= limit { out.position = vec4<f32>(0.0, 0.0, -1.0, 1.0); return out; }
+    let record = splats[first + splat];
     let r0 = tree(record.x, 0u);
     let r1 = tree(record.x, 1u);
     let r2 = tree(record.x, 2u);
@@ -60,7 +64,7 @@ fn hash(x: u32) -> u32 {
     let shift = (right * jitter.x + up * jitter.y) * 0.5 * grid.w * scale;
     let p = centre + shift + (right * corner.x + up * corner.y) * half;
     out.position = view_proj * vec4<f32>(p, 1.0);
-    out.splat = instance + 1u;
+    out.splat = splat + 1u;
     out.alpha = min(alpha, 1.0) / solid;
     out.disc = corner;
     return out;
