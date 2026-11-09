@@ -8,6 +8,10 @@ cargo run --release -p growing-guns-app --bin growing-guns -- play --warp-humans
 
 In this mode each player slot and bot gets a Warp Human from the arena seed. The game fixes standing height at 1.80 m and assigns the slot's shirt colour. Faces, hair, skin, shoulder breadth, waist and hips vary. The wardrobe selects a pullover, a short-sleeved T-shirt or a jacket, then colours trousers and shoes independently. A chest can be plain, have a two-digit number or carry a wordmark. The match binds the fitted body and clothing to the player skeleton at load time, so ordinary movement, hand sockets and ragdolls use the same model across respawns.
 
+Warp Human players use Quaternius' walk, jog, sprint, jump start and landing clips from the engine's [body animation library](../crates/body/src/lib.rs). At roster load the game measures the supporting toe's backward travel on the actual player skeleton and aligns the three ground cycles at midstance. Each tick advances the blended cycle by the horizontal metres the capsule moved after collision. The legs follow the direction of travel and reverse their cycle when backing up. The upper body keeps the weapon pose and hand attachments. Render frames interpolate between tick phases.
+
+Rising velocity drives the change from toe-off to tucked knees. As the player descends the feet extend toward contact. Ground contact starts the landing bend. A moving player blends back into the supporting stride immediately, while a stationary landing absorbs the impact with both legs.
+
 Add `--start-in-stands` to begin the match on a tread facing a neighbour at eye level. A standard player is 1.80 m tall with the camera at 1.60 m. Seeded spectators range from 1.55 to 1.95 m. The game grounds them on the same stepped geometry used for walking.
 
 Warp Humans matches default to packed seating with eight radial aisles. The generator spreads up to 15,000 seats over the whole bowl. Use `--crowd-density standard` for the earlier spacing. The stadium viewer and headless review accept both explicit settings and default to standard when launched without `--warp-humans`.
