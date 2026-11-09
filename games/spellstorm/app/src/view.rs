@@ -239,6 +239,10 @@ impl View {
     /// Build the scene for the world's level.
     pub fn build(&mut self, w: &World) -> Result<(), String> {
         let mut scene = Scene::default();
+        // Every lamp shadowed, every spell light lit (checked on an RTX 5070
+        // Ti, 2026-11-09: chapel frame 5.94 -> 5.54 ms). KERN_CLUSTERED_LIGHTS=0
+        // goes back to the 32 nearest lights.
+        scene.graphics.clustered_lights = true;
         scene.sky = Some((4, 2, vec![[0.0, 0.0, 0.0, 1.0]; 8]));
         let mut look = Look::new(&self.kits, &mut scene)?;
         let l = &w.level;
@@ -793,7 +797,7 @@ impl View {
             LocalLight { intensity_cd: l.light.intensity_cd * k, ..l.light }
         }));
         if renderer.clustered_lights_enabled() {
-            // Clustered lights (KERN_CLUSTERED_LIGHTS=1): every staff, shrine
+            // Clustered lights (KERN_CLUSTERED_LIGHTS=0 turns them off): every staff, shrine
             // and spell light, and every lamp, the lamps shadowed (the
             // renderer shadows the ones nearest the cameras within budget).
             use render::clustered_lights::{ClusteredLight, LightShadow};
