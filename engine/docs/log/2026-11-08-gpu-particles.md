@@ -58,3 +58,13 @@ checked on other drivers; the flag form is kept.
   `gpu particles sim` and `gpu particles` passes in the F3 overlay with a
   Growing Guns airstrike or a bench with many blasts.
 - Sorting for covering particles; shadows and local lights on particles.
+
+## 9 November: burning embers with trails
+
+Joep asked for more blast embers, with physics and trails. Added
+`Shape::Trail` and `Emitter::burning()`; both games' blasts throw a few
+hundred to a thousand burning chunks that arc, bounce and roll, trailing
+fire. The first captures showed embers frozen mid-air with metres-long
+trails: headless captures render only now and then, and a frame simulated at
+most 0.1 s. A frame now simulates up to one second, and trails are capped at
+twelve widths. Lavapipe captures only; Mancave timing still open.

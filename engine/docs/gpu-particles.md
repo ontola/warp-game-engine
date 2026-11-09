@@ -38,9 +38,13 @@ An `Emitter` is a burst from a ball (`position`, `radius`) into a cone
 (`direction`, `spread`), with speed, life, size and colour ranges, a `glow`
 in nits (0: lit by sun and sky instead), `additive` (1 adds light, 0 covers),
 gravity, drag towards the wind, a swirl (`turbulence`), floor `bounce`
-(negative: dies where it lands) and `stretch` (a velocity streak). Births can
+(negative: dies where it lands) and `stretch` (a velocity streak; with
+`Shape::Trail`, a round head trailing where it was that many seconds ago,
+at most twelve widths long). Births can
 be spread over `duration` seconds without further CPU work. The presets
-`Emitter::sparks()`, `embers()` and `dust()` are starting points; override
+`Emitter::sparks()`, `embers()`, `burning()` (thrown chunks that arc,
+bounce, roll to a stop and glow on as they cool, with trails) and `dust()`
+are starting points; override
 fields with struct update syntax.
 
 Particles land on a horizontal floor (`set_floor`) and, optionally, on a
@@ -60,7 +64,8 @@ goes back, the pool starts over.
   birth prefix sums and writes a 64-byte particle into its ring slot. Colours
   are packed to 8 bits per channel, sizes and physics to half floats.
 - **Simulate** (compute): one thread per slot runs the frame's fixed steps of
-  1/120 s (at most 12; a longer gap ages particles without moving them), then
+  1/120 s (at most 120, one second; a longer gap ages particles without
+  moving them), then
   appends live particles to a list with an atomic counter that is also the
   instance count of an indirect draw.
 - **Draw** (per view): after temporal reconstruction, fx and sprites, into
@@ -88,10 +93,10 @@ and two in the vertex stage, within the WebGPU minimum of eight
 ## Where it is used
 
 - Growing Guns: every blast (`EffectsView::blast_particles`) throws sparks that
-  bounce over the arena's blocks (ground from the debris occupancy grid), embers
-  and lit grit. 64k particles on full, 16k on low, none on minimum.
-- Spellstorm: eruptions (magma novas) and bombs (`Fx::gpu_burst`) on the
-  level floor.
+  bounce over the arena's blocks (ground from the debris occupancy grid),
+  burning chunks with trails, floating embers and lit grit. 64k particles on full, 16k on low, none on minimum.
+- Spellstorm: eruptions (magma novas) and bombs (`Fx::gpu_burst`): sparks,
+  burning gobs with trails and embers on the level floor.
 
 Headless captures: `games/growing-guns/scripts/gpu-particles.json` (run with
 and without the switch), and `spellstorm shot` with a `--lua` nova (see the

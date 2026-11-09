@@ -32,8 +32,9 @@ use std::sync::Mutex;
 
 /// Fixed simulation step (seconds).
 pub const STEP: f32 = 1.0 / 120.0;
-/// Most steps one frame runs (0.1 s); longer gaps age particles without moving them.
-pub const MAX_STEPS: u32 = 12;
+/// Most steps one frame runs (1 s, for hitches and headless captures that
+/// render now and then); longer gaps age particles without moving them.
+pub const MAX_STEPS: u32 = 120;
 /// Emitters one frame uploads; more in one frame: the newest win.
 pub const MAX_EMITTERS: usize = 1024;
 pub const MAX_CAPACITY: u32 = 1 << 20;
@@ -47,6 +48,8 @@ pub enum Shape {
     Spark = 1,
     /// A small hard dot that flickers (with `glow`).
     Ember = 2,
+    /// A round head with a fading trail of where it was `stretch` seconds ago.
+    Trail = 3,
 }
 
 /// A burst of particles from one place. Metres, seconds, linear colour.
@@ -82,7 +85,8 @@ pub struct Emitter {
     pub turbulence: f32,
     /// Restitution on the floor; negative: the particle dies there.
     pub bounce: f32,
-    /// Streak length per m/s of speed, in widths (0: round).
+    /// Streak length per m/s of speed, in widths (0: round); for
+    /// `Shape::Trail` the trail's length in seconds of travel.
     pub stretch: f32,
     pub shape: Shape,
 }
@@ -102,6 +106,14 @@ impl Emitter {
             speed: [0.5, 3.0], count: 400, duration: 0.6, life: [1.5, 3.5], size: [0.045, 0.02],
             color: [Vec4::new(1.0, 0.55, 0.15, 1.0), Vec4::new(0.8, 0.12, 0.02, 0.0)], glow: 12_000.0, additive: 1.0,
             gravity: -1.0, drag: 1.2, turbulence: 3.0, bounce: 0.05, stretch: 0.0, shape: Shape::Ember }
+    }
+    /// Burning chunks thrown out of a blast: they arc, fall, bounce and roll,
+    /// trailing fire, and glow on where they come to rest as they cool.
+    pub fn burning() -> Self {
+        Emitter { position: Vec3::ZERO, radius: 0.4, direction: Vec3::Y, spread: 1.2, velocity: Vec3::ZERO,
+            speed: [3.0, 14.0], count: 300, duration: 0.0, life: [2.0, 5.0], size: [0.07, 0.035],
+            color: [Vec4::new(1.0, 0.55, 0.12, 1.0), Vec4::new(0.6, 0.08, 0.01, 0.0)], glow: 30_000.0, additive: 1.0,
+            gravity: 9.8, drag: 0.35, turbulence: 0.6, bounce: 0.35, stretch: 0.04, shape: Shape::Trail }
     }
     /// Lit grit and dust thrown out low that hangs and settles.
     pub fn dust() -> Self {
@@ -641,7 +653,7 @@ mod tests {
         assert!(u.commands[1].extra[2] < 0.0, "born after the first step: negative age");
         assert!(u.active);
         // A long stall ages without simulating more than MAX_STEPS.
-        let u = p.prepare(2.0);
+        let u = p.prepare(3.0);
         assert_eq!(u.steps, MAX_STEPS);
         assert!(u.skip > 0.8);
         // Long after the last death nothing runs.
