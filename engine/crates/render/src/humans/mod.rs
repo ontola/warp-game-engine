@@ -103,11 +103,66 @@ impl Geometry {
     }
 }
 
+// Allocate the shared appearance atlas on first close demand.
+fn appearance(
+    gpu: &Gpu,
+    render: &wgpu::RenderPipeline,
+    image: &image::RgbaImage,
+) -> wgpu::BindGroup {
+    let extent = wgpu::Extent3d {
+        width: image.width(),
+        height: image.height(),
+        depth_or_array_layers: 1,
+    };
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("human appearance"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    gpu.queue.write_texture(
+        texture.as_image_copy(),
+        image.as_raw(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(extent.width * 4),
+            rows_per_image: None,
+        },
+        extent,
+    );
+    let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+        min_filter: wgpu::FilterMode::Linear,
+        mag_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("human appearance"),
+        layout: &render.get_bind_group_layout(1),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(
+                    &texture.create_view(&Default::default()),
+                ),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    })
+}
+
 pub struct ReviewRenderer {
     compute: wgpu::ComputePipeline,
     render: wgpu::RenderPipeline,
     selection: wgpu::BindGroup,
     drawing: wgpu::BindGroup,
+    appearance: wgpu::BindGroup,
     camera: wgpu::Buffer,
     args: wgpu::Buffer,
     read: wgpu::Buffer,
@@ -115,6 +170,8 @@ pub struct ReviewRenderer {
     meshes: Vec<Geometry>,
     count: u32,
     far: Far,
+    pending: Option<std::sync::mpsc::Receiver<(geometry::Mesh, image::RgbaImage)>>,
+    pub appearance_bytes: u64,
     pub detail_ready: bool,
     pub resident_buffer_bytes: u64,
 }
@@ -179,7 +236,7 @@ impl ReviewRenderer {
                 compilation_options: Default::default(),
                 cache: None,
             });
-        let attrs = wgpu::vertex_attr_array![0=>Float32x3,1=>Uint32,2=>Float32x3,3=>Float32,4=>Float32x3,5=>Uint32];
+        let attrs = wgpu::vertex_attr_array![0=>Float32x3,1=>Uint32,2=>Float32x3,3=>Float32,4=>Float32x3,5=>Uint32,6=>Unorm8x4,7=>Snorm8x4,8=>Snorm8x4,9=>Snorm8x4,10=>Snorm8x4];
         let render = gpu
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -190,7 +247,7 @@ impl ReviewRenderer {
                     entry_point: Some("vs"),
                     compilation_options: Default::default(),
                     buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: 48,
+                        array_stride: std::mem::size_of::<geometry::Vertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &attrs,
                     })],
@@ -254,7 +311,13 @@ impl ReviewRenderer {
             + camera.size()
             + read.size()
             + timer.as_ref().map_or(0, |t| t.1.size());
+        let appearance = appearance(
+            gpu,
+            &render,
+            &image::RgbaImage::from_pixel(1, 1, image::Rgba([255; 4])),
+        );
         Ok(Self {
+            appearance,
             compute,
             render,
             selection,
@@ -266,20 +329,51 @@ impl ReviewRenderer {
             meshes,
             count,
             far,
+            pending: None,
+            appearance_bytes: 4,
             detail_ready: false,
             resident_buffer_bytes,
         })
     }
 
-    /// Called once on first close demand from any view. The medium mesh covers the requesting frame.
+    /// Decode the shared CPU page while intermediate detail is visible.
+    pub fn prepare_detail(&mut self) {
+        if self.detail_ready || self.pending.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pending = Some(rx);
+        let far = self.far;
+        let prepare = move || {
+            let mesh = geometry::person(4, far, true);
+            let image =
+                image::load_from_memory(include_bytes!("../../../../assets/humans/appearance.png"))
+                    .expect("cooked human atlas")
+                    .into_rgba8();
+            let _ = tx.send((mesh, image));
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        std::thread::spawn(prepare);
+        #[cfg(target_arch = "wasm32")]
+        prepare();
+    }
+
+    /// Keep the fallback until both geometry and surface data are ready.
     pub fn load_detail(&mut self, gpu: &Gpu) {
         if self.detail_ready {
             return;
         }
-        let head = Geometry::upload(gpu, geometry::person(4, self.far, true));
+        self.prepare_detail();
+        let Ok((mesh, image)) = self.pending.as_ref().unwrap().try_recv() else {
+            return;
+        };
+        self.pending = None;
+        let head = Geometry::upload(gpu, mesh);
         self.resident_buffer_bytes =
             self.resident_buffer_bytes - self.meshes[3].bytes() + head.bytes();
         self.meshes[3] = head;
+        self.appearance_bytes = image.as_raw().len() as u64;
+        self.appearance = appearance(gpu, &self.render, &image);
         self.detail_ready = true;
     }
     pub fn draw(
@@ -357,6 +451,7 @@ impl ReviewRenderer {
             });
             pass.set_pipeline(&self.render);
             pass.set_bind_group(0, &self.drawing, &[]);
+            pass.set_bind_group(1, &self.appearance, &[]);
             for (mesh, bin) in self.meshes.iter().zip([0, 1, 2, 4]) {
                 pass.set_vertex_buffer(0, mesh.vertex.slice(..));
                 pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint32);

@@ -163,6 +163,9 @@ impl Live {
         let sample = self
             .renderer
             .draw(&self.gpu, &cam, self.time, &self.color, &self.depth)?;
+        if sample.counts[1] > 0 {
+            self.renderer.prepare_detail();
+        }
         if sample.counts[2] > 0 && !self.renderer.detail_ready {
             self.renderer.load_detail(&self.gpu);
         }

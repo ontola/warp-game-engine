@@ -7,7 +7,7 @@ to. Dated measurements and the reasoning behind decisions are in the
 
 ## Warp Humans
 
-The [stadium review](warp-humans.md) compares three distant crowd representations with per-view GPU selection and one on-demand anatomical head mesh. Gameplay integration, facial animation and multi-page eviction remain open.
+The [interactive stadium playtest and review](warp-humans.md) use per-view GPU selection, a weighted full-body mesh, facial morphs and three textured hair meshes. A shared close page is prepared as the camera approaches. Gameplay integration, facial animation and multi-page eviction remain open.
 
 ## Character animation
 
