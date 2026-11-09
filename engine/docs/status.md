@@ -163,8 +163,9 @@ Owned by the foliage work; its working checklist is
   cached, scrolling clipmap levels per view (24 m to 3 km; first level
   grows with height) replace the
   shared and far maps in GPU-forest worlds; one caster history marks damaged
-  tiles in every level. **Open:** a timing on a real GPU (only lavapipe
-  so far); Sideways (stage scenes, `far_sun`) and the paged
+  tiles in every level. **Open:** at 516 m up the clipmap's voxel splats
+  cost about 1 ms more than the old maps and hit a refinement limit
+  (Mancave, [log](log/2026-11-08-sun-clipmap.md)); Sideways (stage scenes, `far_sun`) and the paged
   foliage sun still use their own maps; the GPU forest's voxel slot churn
   dirties about half of every cached map each frame.
 - [Skin and hair](skin-and-hair.md) (8 November): `SKIN` and `HAIR` material

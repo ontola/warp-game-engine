@@ -98,3 +98,24 @@ the clipmap gives sharper near shadows and shadows in that band. The
 clipmap is now the default in streamed GPU-forest worlds;
 `KERN_SUN_CLIPMAP=0` brings back the separate maps. It still needs a timing
 on a real GPU (lavapipe: the same sun pass cost as the separate maps).
+
+## Mancave timings (9 November)
+
+RTX 5070 Ti, Vulkan, bb36255, 1920x1080, `--bench 240`, 60 warm-up frames,
+runs alternated A1 B1 A2 B2. A is `KERN_SUN_CLIPMAP=0`, B the default
+clipmap. "Shadow" sums every pass named sun, shadow, clipmap or damage
+(passes under about 0.05 ms are not printed). Report: look-reports
+f1bca116, `reports/sun-clipmap-1108/`.
+
+| View | A mean (ms) | B mean (ms) | A shadow (ms) | B shadow (ms) |
+| --- | --- | --- | --- | --- |
+| Ground | 36.1, 33.4 | 33.3, 33.2 | 2.85, 2.82 | 2.09, 2.08 |
+| 516 m up | 35.1, 37.7 | 30.1, 30.3 | 2.45, 2.38 | 3.45, 3.42 |
+
+At 516 m the extra cost is the voxel sun clipmap splats (0.34 to 1.21 ms)
+and their raster (0.14 to 0.91 ms); the frame is still faster in B. Forest
+selection residency is 0.2 to 0.5 ms higher in B. B at 516 m hits a
+refinement limit (camera_splats 13,605, missing_pages 1,283; A: 0 and 16).
+No validation messages. Images: at 1200 m A shows the camera-following dark
+patch (also with `--no-clouds`), B does not; at 516 m B's tree shadows reach
+further.
