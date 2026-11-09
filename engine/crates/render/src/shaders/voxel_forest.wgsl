@@ -1247,6 +1247,9 @@ fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:
 // record 8.x is 1 once a pyramid exists (only sun targets put planes there).
 override VOXEL_BRICK_CULL: bool = false;
 override VOXEL_COMPACT: bool = false;
+// Paged assets (foliage_page_cache.rs) keep the same brick table after the
+// level headers, but it points at four-word descriptors in volume_indices.
+override VOXEL_PAGED_BRICKS: bool = false;
 @group(2) @binding(20) var volume_brick_hzb: texture_2d<f32>;
 // volume_stats words: 26-29 pass 2 draw arguments, 30 queued bricks,
 // 31 pass 1 splat count, 32-34 pass 2 dispatch.
@@ -1259,6 +1262,19 @@ fn volume_cull_queue_capacity()->u32 {
     return select(0u,(total-first)/8u,total>first);
 }
 fn volume_splat_limit()->u32 {return arrayLength(&volume_splats)-volume_cull_queue_capacity();}
+fn volume_splat_brick_table(index:u32,level:u32)->vec2<u32> {
+    return volume_splat_cells[arrayLength(&volume_levels)+volume_trees[index].identity.y+level];
+}
+// Brick b of a table: its cells (first, count in volume_splat_cells) and its
+// packed origin coordinate.
+fn volume_splat_brick(table:vec2<u32>,b:u32)->vec3<u32> {
+    if VOXEL_PAGED_BRICKS {
+        let at=table.x+b*4u;
+        return vec3<u32>(volume_indices[at],volume_indices[at+1u],volume_indices[at+2u]);
+    }
+    let range=volume_splat_cells[table.x+b*2u];
+    return vec3<u32>(range.x,range.y,volume_splat_cells[table.x+b*2u+1u].x);
+}
 fn volume_hzb_view()->mat4x4<f32> {
     return mat4x4<f32>(bitcast<vec4<f32>>(volume_splats[VOLUME_HZB_VIEW]),bitcast<vec4<f32>>(volume_splats[VOLUME_HZB_VIEW+1u]),
         bitcast<vec4<f32>>(volume_splats[VOLUME_HZB_VIEW+2u]),bitcast<vec4<f32>>(volume_splats[VOLUME_HZB_VIEW+3u]));
@@ -1372,12 +1388,12 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
     let tree=volume_trees[index];
     let eye_local=volume_splat_eye(index);
     if VOXEL_BRICK_CULL {
-        let bricks=volume_splat_cells[arrayLength(&volume_levels)+tree.identity.y+level];
+        let bricks=volume_splat_brick_table(index,level);
         let history=volume_splats[VOLUME_HZB_VIEW+4u].x==1u;
         let previous=volume_hzb_view();
         for(var b=lane;b<bricks.y;b+=64u) {
-            let range=volume_splat_cells[bricks.x+b*2u];
-            let packed=volume_splat_cells[bricks.x+b*2u+1u].x;
+            let brick=volume_splat_brick(bricks,b);
+            let range=brick.xy;let packed=brick.z;
             if history && volume_brick_hidden(index,level,packed,previous) {
                 let queued=atomicAdd(&volume_stats[VOLUME_CULL_WORD+4u],1u);
                 if queued<volume_cull_queue_capacity() {volume_splats[volume_splat_limit()+queued]=vec4<u32>(index,level,b,0u);continue;}
@@ -1407,10 +1423,9 @@ fn voxel_splat_retest(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invo
     if i>=min(atomicLoad(&volume_stats[VOLUME_CULL_WORD+4u]),volume_cull_queue_capacity()) {return;}
     let queued=volume_splats[volume_splat_limit()+i];
     let index=queued.x;let level=queued.y;
-    let bricks=volume_splat_cells[arrayLength(&volume_levels)+volume_trees[index].identity.y+level];
-    let packed=volume_splat_cells[bricks.x+queued.z*2u+1u].x;
-    if volume_brick_hidden(index,level,packed,view.view_proj) {return;}
-    volume_splat_range(index,level,volume_splat_cells[bricks.x+queued.z*2u],volume_splat_eye(index),0u,1u);
+    let brick=volume_splat_brick(volume_splat_brick_table(index,level),queued.z);
+    if volume_brick_hidden(index,level,brick.z,view.view_proj) {return;}
+    volume_splat_range(index,level,brick.xy,volume_splat_eye(index),0u,1u);
 }
 // After pass 2, one thread: its draw arguments, and this frame's
 // view-projection for the pyramid next frame tests against.
