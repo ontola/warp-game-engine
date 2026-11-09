@@ -119,11 +119,12 @@ fn tuft(id: u64, variant: u64, b: &Look) -> PartGeometry {
     for i in 0..needles {
         let v = i as u64;
         // Fascicles along the last `reach` of the shoot, denser near the tip:
-        // forward at the tip, splaying out to `spread` from the shoot further
-        // back, a starburst round the bud as on a Jeffrey pine.
+        // `tip_spread` from the shoot at the tip, splaying out to `spread`
+        // further back, a starburst round the bud as on a Jeffrey pine.
         let along = -reach * unit(variant, v, 5).powf(1.4);
         let t = -along / reach;
-        let tilt = (0.3 + (spread - 0.3) * t.sqrt() + 0.3 * (unit(variant, v, 1) - 0.5)).max(0.05);
+        let tip_spread = b.tip_spread.clamp(0.05, spread);
+        let tilt = (tip_spread + (spread - tip_spread) * t.sqrt() + 0.3 * (unit(variant, v, 1) - 0.5)).max(0.05);
         let around = unit(variant, v, 2) * TAU;
         let axis = Vec3::new(tilt.sin() * around.cos(), tilt.cos(), tilt.sin() * around.sin());
         let side = axis.cross(if axis.y.abs() < 0.9 { Vec3::Y } else { Vec3::X }).normalize();
@@ -163,7 +164,7 @@ impl Parts {
         // The brush's shape is part of its identity (and so of every cook key).
         // 2: needle base uvs carry the widening direction.
         let mut h = TUFT ^ 2;
-        for x in [u64::from(look.brush_needles), u64::from(look.needle_length.to_bits()), u64::from(look.brush_spread.to_bits()), u64::from(look.brush_reach.to_bits()), u64::from(look.needle_width.to_bits()), u64::from(look.brush_round.to_bits())] {
+        for x in [u64::from(look.brush_needles), u64::from(look.needle_length.to_bits()), u64::from(look.brush_spread.to_bits()), u64::from(look.brush_reach.to_bits()), u64::from(look.needle_width.to_bits()), u64::from(look.brush_round.to_bits()), u64::from(look.tip_spread.to_bits())] {
             h = (h ^ x).wrapping_mul(0x100_0000_01b3).rotate_left(17);
         }
         let tuft_id = (h & !0xff) | (TUFT & 0xff);
@@ -207,6 +208,10 @@ pub struct Look {
     /// 1: 0 shades each needle on its own (speckles from afar), 1 shades the
     /// brush as one soft ball.
     pub brush_round: f32,
+    /// How far needles splay from the shoot at the brush's tip, radians: 0.3
+    /// closes the brush to a forward point (pine), ~1 radiates it (spruce;
+    /// Joep, 9 November: the plumes read convergent).
+    pub tip_spread: f32,
 }
 
 impl Default for Look {
@@ -215,13 +220,13 @@ impl Default for Look {
 
 impl Look {
     pub fn jeffrey_pine() -> Self {
-        Self { wood: [0.11, 0.065, 0.045], needles: [0.11, 0.21, 0.09], brush_needles: 50, needle_length: 0.22, brush_spread: 1.7, brush_reach: 0.2, needle_width: 0.0025, brush_round: 0.7 }
+        Self { wood: [0.11, 0.065, 0.045], needles: [0.11, 0.21, 0.09], brush_needles: 50, needle_length: 0.22, brush_spread: 1.7, brush_reach: 0.2, needle_width: 0.0025, brush_round: 0.7, tip_spread: 0.3 }
     }
     /// Norway spruce: dark needles set all along the shoot, splayed sideways,
     /// so a brush reads as a soft dark bottlebrush. Needles are drawn ~3x
     /// their 2.5 cm: true length left the limbs and trunk showing (9 November).
     pub fn norway_spruce() -> Self {
-        Self { wood: [0.09, 0.06, 0.045], needles: [0.05, 0.1, 0.045], brush_needles: 110, needle_length: 0.08, brush_spread: 1.5, brush_reach: 0.6, needle_width: 0.0012, brush_round: 0.8 }
+        Self { wood: [0.09, 0.06, 0.045], needles: [0.05, 0.1, 0.045], brush_needles: 110, needle_length: 0.08, brush_spread: 1.5, brush_reach: 0.6, needle_width: 0.0012, brush_round: 0.8, tip_spread: 1.0 }
     }
 }
 
