@@ -14,3 +14,10 @@ lighting and binds no scene atmosphere resources.
 
 Thirteen targeted renderer tests passed, including both human fragment
 entry points, zero and full fog, finite-height scattering and split views.
+
+Compared the baseline and `09cf38a7` from the same seat at tick 30, seed
+52, full graphics, one view, 960 × 540 and `--sky noon:mist`. The opposite
+upper rows fade into the grey air under the roof. Individual shirts remain
+visible on the lower rows and the neighbouring white shirt retains its
+contrast. A regular arena-spawn round ran on the updated build. This was
+an image comparison. Incremental GPU time was not measured.
