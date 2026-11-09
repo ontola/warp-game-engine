@@ -53,7 +53,7 @@ impl Flora {
 }
 
 /// Every preset, for menus and tests.
-pub const NAMES: [&str; 6] = ["temperate", "alpine", "lowland", "polder", "tundra", "desert"];
+pub const NAMES: [&str; 7] = ["swiss", "temperate", "alpine", "lowland", "polder", "tundra", "desert"];
 
 impl Biome {
     /// A preset: temperate (the engine's default), alpine, lowland, polder,
@@ -64,6 +64,21 @@ impl Biome {
         Some(match name {
             "temperate" | "default" => Biome { name: "temperate", terrain, vegetation: base, tree_density: 0.6, deciduous: 0.2,
                 flora: Flora::TEMPERATE },
+            // Swiss valleys (Joep, 9 November, a Grindelwald photo): fresh
+            // green pasture on rolling low ground, dense dark spruce in
+            // clear stands with loose trees between, rugged grey rock and
+            // snow above, the peaks in the clouds (Biome::clouds). The grass
+            // texture is brown (linear 0.16, 0.12, 0.05), so the tints lean
+            // hard to green: lush pasture comes out near (0.06, 0.13, 0.03).
+            "swiss" => Biome { name: "swiss", terrain: Style::swiss(),
+                vegetation: VegetationStyle {
+                    ground: GroundStyle { grass_dry: [0.46, 0.98, 0.48, 0.3], grass_lush: [0.36, 1.1, 0.6, 0.0],
+                        soil: [0.75, 0.72, 0.62, 0.35], gravel: [0.92, 0.96, 1.02, 0.35], rock: [0.96, 1.0, 1.06, 0.25], ..base.ground },
+                    forest: ForestStyle { needles: [0.035, 0.075, 0.03, 0.4], far: [0.06, 0.09, 0.035, 22.0], crown: [2.6, 0.42, 1.9, 0.08], ..base.forest },
+                    meadow_dry_season: 0.0 },
+                tree_density: 0.8, deciduous: 0.08,
+                flora: Flora { trees: [("spruce", 0.85), ("pine", 0.07), ("broadleaf", 0.08), NONE], shrubs: [("juniper", 0.5), ("shrub", 0.5)],
+                    shrub_density: 0.02, ..Flora::TEMPERATE } },
             "alpine" => Biome { name: "alpine", terrain: Style::alpine(), vegetation: VegetationStyle::named("alpine")?,
                 tree_density: 0.6, deciduous: 0.1,
                 flora: Flora { trees: [("spruce", 0.75), ("pine", 0.25), NONE, NONE], shrubs: [("juniper", 1.0), NONE], ..Flora::TEMPERATE } },
@@ -108,6 +123,19 @@ impl Biome {
                 flora: Flora { trees: [NONE; 4], shrubs: [("desert_shrub", 1.0), NONE], shrub_density: 0.04, ..Flora::TEMPERATE } },
             _ => return None,
         })
+    }
+}
+
+impl Biome {
+    /// The cloud layer this biome's sky holds (sky_volume::Clouds), when
+    /// it is part of its look: in the swiss valleys a thin layer round the
+    /// upper slopes, so the peaks stand in and above the clouds.
+    pub fn clouds(&self) -> Option<crate::sky_volume::Clouds> {
+        match self.name {
+            "swiss" => Some(crate::sky_volume::Clouds { coverage: 0.55, base_m: self.terrain.snow_line - 350.0, thickness_m: 700.0,
+                ..Default::default() }),
+            _ => None,
+        }
     }
 }
 

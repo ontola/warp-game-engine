@@ -74,6 +74,19 @@ impl Species {
             plumes: 2.0, live_crown: 0.55, lift_years: 60.0,
         }
     }
+
+    /// Picea abies, the Norway spruce of Swiss valleys: a slim dark cone with
+    /// limbs down most of the trunk, level to drooping with the tips turned
+    /// up, many short side shoots between the whorls, and short needles all
+    /// round the shoots for seven years, so the crown reads dense and dark.
+    pub fn norway_spruce() -> Self {
+        Self {
+            height: 42.0, pace: 40.0, shape: 1.5, first_whorl: 2, whorl: [4, 6], laterals: 1.5, max_order: 4,
+            limb_step: 0.15, side_length: 0.45, limb_life: [80, 200], crowding: 10, angle: [1.2, 1.6], rise: 0.04, droop: 0.025,
+            needle_years: 7, shade: 0.035, min_light: 0.25, tip_radius: 0.004, wood: 0.0065, limb_wood: 0.5, dead_years: 25,
+            plumes: 2.0, live_crown: 0.75, lift_years: 90.0,
+        }
+    }
 }
 
 /// One year's length of shoot.
@@ -362,6 +375,18 @@ fn finish(s: &Species, age: u32, seed: u64, mut segments: Vec<Segment>) -> Plant
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_spruce_is_a_slim_dense_cone_beside_a_pine() {
+        let (pine, spruce) = (grow(&Species::jeffrey_pine(), 50, 3), grow(&Species::norway_spruce(), 50, 3));
+        let slim = |p: &Plant| p.crown_radius() / p.height();
+        let low = |p: &Plant| p.crown_base() / p.height();
+        eprintln!("pine h {:.1} r {:.1} base {:.1} tufts {}; spruce h {:.1} r {:.1} base {:.1} tufts {}", pine.height(), pine.crown_radius(), pine.crown_base(),
+            pine.tufts.len(), spruce.height(), spruce.crown_radius(), spruce.crown_base(), spruce.tufts.len());
+        assert!(slim(&spruce) < slim(&pine), "a spruce crown is slimmer");
+        assert!(low(&spruce) < low(&pine), "a spruce keeps limbs lower down");
+        assert!(spruce.tufts.len() > pine.tufts.len(), "a spruce carries more foliage");
+    }
 
     #[test]
     fn age_changes_counts_not_just_size() {

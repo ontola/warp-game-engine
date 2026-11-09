@@ -103,9 +103,14 @@ impl Style {
     pub fn lowland() -> Self { Style { mountains: 0.0, peaks: 0.0, hills: 1.2, rivers: 0.8, rocks: 0.2, moor: 0.3, ..Style::default() } }
     /// High snowy massifs over green valleys.
     pub fn alpine() -> Self { Style { mountains: 0.8, peaks: 1.0, snow_line: 1500.0, rocks: 0.8, moor: 0.2, ..Style::default() } }
-    /// A style by name: default, lowland or alpine.
+    /// Swiss valleys: rolling green pasture low down, rugged rock and snow
+    /// high up, with the peaks reaching into the clouds.
+    pub fn swiss() -> Self {
+        Style { mountains: 0.6, peaks: 1.0, snow_line: 1750.0, hills: 1.3, rivers: 0.5, streams: 0.8, rocks: 0.9, moor: 0.05, ..Style::default() }
+    }
+    /// A style by name: default, lowland, alpine or swiss.
     pub fn named(name: &str) -> Option<Self> {
-        match name { "default" => Some(Style::default()), "lowland" => Some(Style::lowland()), "alpine" => Some(Style::alpine()), _ => None }
+        match name { "default" => Some(Style::default()), "lowland" => Some(Style::lowland()), "alpine" => Some(Style::alpine()), "swiss" => Some(Style::swiss()), _ => None }
     }
 }
 
