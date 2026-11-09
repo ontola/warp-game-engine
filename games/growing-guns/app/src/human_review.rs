@@ -3,7 +3,7 @@ use crate::{Args, stadium};
 use glam::Vec3;
 use render::{
     Camera, Gpu,
-    humans::{Constraints, Far, Instance, ReviewRenderer},
+    humans::{Far, Instance, ReviewRenderer},
 };
 use std::{path::Path, time::Instant};
 
@@ -154,16 +154,7 @@ pub(crate) fn population(
         ));
     }
     for (i, s) in seats.iter().enumerate() {
-        let rules = Constraints {
-            height_m: Some(s.scale),
-            shirt: None,
-        };
-        instances.push(Instance::person(
-            seed.wrapping_mul(0x9e3779b97f4a7c15) ^ i as u64,
-            s.pos,
-            s.yaw,
-            &rules,
-        ));
+        instances.push(Instance::spectator(seed, i, s));
     }
     Ok((instances, seats, world.arena.stadium.wall_r()))
 }
