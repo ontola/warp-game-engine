@@ -137,8 +137,12 @@ fn camera_planet() -> vec3<f32> {
 
 fn view_ray(uv: vec2<f32>) -> vec3<f32> {
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-    let near = u.inv_vp * vec4<f32>(ndc, 1.0, 1.0);
-    return normalize(near.xyz / near.w);
+    // A point well past the near plane (reversed Z: depth near/distance):
+    // the camera-relative matrix still carries the f32 rounding of the
+    // world-space view matrix (~1 cm 100 km out), which against a 5 cm near
+    // plane turned the ray by degrees and made the clouds flash.
+    let far = u.inv_vp * vec4<f32>(ndc, 1e-4, 1.0);
+    return normalize(far.xyz / far.w);
 }
 
 fn scene_distance(uv: vec2<f32>, depth: f32) -> f32 {
