@@ -363,8 +363,8 @@ override FAR_CROWN_SIZE: f32 = 1.0;
 // A pine's shadow on the ground: sun through its open crown, and narrower
 // than its silhouette's full width (Mancave from 1200 m: full-strength,
 // full-width shadows read as dark dashes 2-3x the crowns).
-override FAR_SHADOW_OPACITY: f32 = 0.55;
-override FAR_SHADOW_SIZE: f32 = 0.7;
+override FAR_SHADOW_OPACITY: f32 = 0.7;
+override FAR_SHADOW_SIZE: f32 = 0.8;
 // Steepest glancing view a silhouette stretches for (cot of elevation).
 const FAR_TREE_COT_MAX: f32 = 8.0;
 // KERN_FAR_CROWN_DEBUG: red the averaged share, green single-crown cover.
