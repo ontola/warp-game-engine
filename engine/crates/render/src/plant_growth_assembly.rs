@@ -123,11 +123,32 @@ fn tuft(id: u64, variant: u64, b: &Look) -> PartGeometry {
     let twigs = b.twigs.min(8) as usize;
     let mut shoots = vec![(Vec3::Y * -reach, Vec3::Y, reach)];
     for k in 0..twigs {
-        let from = -reach * (0.25 + 0.55 * (k as f32 + 0.5) / twigs as f32);
+        let from = -reach * (0.2 + 0.45 * (k as f32 + 0.5) / twigs as f32);
         let around = (k as f32 / twigs as f32 + 0.15 * unit(variant, k as u64, 6)) * TAU;
-        let lean = 0.7 + 0.25 * unit(variant, k as u64, 7);
+        let lean = 0.55 + 0.3 * unit(variant, k as u64, 7);
         let dir = Vec3::new(lean.sin() * around.cos(), lean.cos(), lean.sin() * around.sin());
         shoots.push((Vec3::Y * from, dir, -from * 0.75));
+    }
+    // Side twigs carry their balls on a thin stalk (Joep, 9 November: the
+    // plumes hang on twigs off a larger branch): a closed three-sided prism
+    // in the needle material, so it needs no second material per brush.
+    for &(start, dir, len) in shoots.iter().skip(1) {
+        let r = width * 2.5;
+        let s0 = dir.cross(if dir.y.abs() < 0.9 { Vec3::Y } else { Vec3::X }).normalize();
+        let u0 = dir.cross(s0).normalize();
+        let base = vertices.len() as u32;
+        for end in [start, start + dir * len] {
+            for k in 0..3 {
+                let a = k as f32 / 3.0 * TAU;
+                let out = s0 * a.cos() + u0 * a.sin();
+                vertices.push(Vertex { pos: (end + out * r * if end == start { 1.0 } else { 0.6 }).to_array(), normal: out.to_array(), uv: needle_base_uv(out) });
+            }
+        }
+        for k in 0..3u32 {
+            let (a, b) = (base + k, base + (k + 1) % 3);
+            indices.extend_from_slice(&[a, b, b + 3, a, b + 3, a + 3]);
+        }
+        indices.extend_from_slice(&[base, base + 2, base + 1, base + 3, base + 4, base + 5]);
     }
     let total: f32 = shoots.iter().map(|s| s.2).sum();
     for i in 0..needles {
@@ -138,7 +159,7 @@ fn tuft(id: u64, variant: u64, b: &Look) -> PartGeometry {
         // Fascicles along the shoot, denser near its tip:
         // `tip_spread` from the shoot at the tip, splaying out to `spread`
         // further back, a starburst round the bud as on a Jeffrey pine.
-        let back = len * unit(variant, v, 5).powf(1.4);
+        let back = len * unit(variant, v, 5).powf(b.ball.clamp(0.5, 8.0));
         let t = back / len;
         let along = -back;
         let tip_spread = b.tip_spread.clamp(0.05, spread);
@@ -184,7 +205,7 @@ impl Parts {
         // The brush's shape is part of its identity (and so of every cook key).
         // 2: needle base uvs carry the widening direction.
         let mut h = TUFT ^ 2;
-        for x in [u64::from(look.brush_needles), u64::from(look.needle_length.to_bits()), u64::from(look.brush_spread.to_bits()), u64::from(look.brush_reach.to_bits()), u64::from(look.needle_width.to_bits()), u64::from(look.brush_round.to_bits()), u64::from(look.tip_spread.to_bits()), u64::from(look.twigs)] {
+        for x in [u64::from(look.brush_needles), u64::from(look.needle_length.to_bits()), u64::from(look.brush_spread.to_bits()), u64::from(look.brush_reach.to_bits()), u64::from(look.needle_width.to_bits()), u64::from(look.brush_round.to_bits()), u64::from(look.tip_spread.to_bits()), u64::from(look.twigs), u64::from(look.ball.to_bits())] {
             h = (h ^ x).wrapping_mul(0x100_0000_01b3).rotate_left(17);
         }
         let tuft_id = (h & !0xff) | (TUFT & 0xff);
@@ -235,6 +256,11 @@ pub struct Look {
     /// Side twigs in each brush, leaving the shoot forward and outward with
     /// needles of their own (spruce sprays); 0 for a single shoot (pine).
     pub twigs: u32,
+    /// How tightly needles crowd toward each shoot's tip: the exponent on
+    /// their spread along it. 1.4 spreads them along the shoot; 3 and up
+    /// gathers them into a ball at the tip, a pompom per twig (Joep, 9
+    /// November: 'deze bomen zijn vooral bolletjes-gebaseerd').
+    pub ball: f32,
 }
 
 impl Default for Look {
@@ -243,13 +269,14 @@ impl Default for Look {
 
 impl Look {
     pub fn jeffrey_pine() -> Self {
-        Self { wood: [0.11, 0.065, 0.045], needles: [0.11, 0.21, 0.09], brush_needles: 50, needle_length: 0.22, brush_spread: 1.7, brush_reach: 0.2, needle_width: 0.0025, brush_round: 0.7, tip_spread: 0.3, twigs: 0 }
+        Self { wood: [0.11, 0.065, 0.045], needles: [0.11, 0.21, 0.09], brush_needles: 50, needle_length: 0.22, brush_spread: 1.7, brush_reach: 0.2, needle_width: 0.0025, brush_round: 0.7, tip_spread: 0.3, twigs: 0, ball: 1.4 }
     }
-    /// Norway spruce: dark needles set all along the shoot, splayed sideways,
-    /// so a brush reads as a soft dark bottlebrush. Needles are drawn ~3x
-    /// their 2.5 cm: true length left the limbs and trunk showing (9 November).
+    /// The swiss conifer: each brush a shoot forking into two short twigs, all
+    /// three ending in a dense ball of needles radiating from the tip, the
+    /// way Joep's references show pine branch ends (9 November). Needles are
+    /// drawn long: true spruce length left the limbs and trunk showing.
     pub fn norway_spruce() -> Self {
-        Self { wood: [0.09, 0.06, 0.045], needles: [0.05, 0.1, 0.045], brush_needles: 110, needle_length: 0.08, brush_spread: 1.5, brush_reach: 0.6, needle_width: 0.0012, brush_round: 0.8, tip_spread: 1.0, twigs: 3 }
+        Self { wood: [0.09, 0.06, 0.045], needles: [0.05, 0.1, 0.045], brush_needles: 220, needle_length: 0.15, brush_spread: 1.9, brush_reach: 0.3, needle_width: 0.0012, brush_round: 0.8, tip_spread: 0.45, twigs: 2, ball: 3.5 }
     }
 }
 
