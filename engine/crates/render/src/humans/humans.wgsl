@@ -13,7 +13,29 @@ struct Camera {
     settings: vec4<f32>, // time, focal length in pixels, far mode, actor count
     shadow_vp:mat4x4<f32>,
 }
-struct SeatLight { index:u32, rg:u32, blue:u32, direction_sun:u32 }
+// Four packed pairs of joint angles follow the light sample, shared by all
+// vertices of this spectator. Angles stay continuous when LOD changes.
+struct SeatLight { index:u32, rg:u32, blue:u32, direction_sun:u32, joints:vec4<u32> }
+
+fn spectator_joints(a:Actor, time:f32, excitement:f32, fear:f32)->vec4<u32> {
+    let seed=a.size_phase.z;
+    let beat=time*(2.0+1.4*a.size_phase.w)+6.2832*seed;
+    let breath=sin(beat*0.54);
+    let shift=sin(beat*0.23+5.0*seed);
+    // Bouts of cheering separated by quiet watching; either hand can lead.
+    let bout=smoothstep(-0.18,0.65,sin(beat*0.29+4.0*seed));
+    let cheer=bout*(0.18+0.82*excitement)*(1.0-fear);
+    let lead=step(0.5,seed);
+    let sides=mix(vec2<f32>(1.,0.30),vec2<f32>(0.30,1.),lead);
+    let wave=sin(vec2<f32>(beat,beat+1.2+seed));
+    let shoulders=vec2<f32>(-0.10)-sides*cheer*(1.80+0.43*wave)
+        +0.065*wave-vec2<f32>(0.57*fear);
+    let elbows=vec2<f32>(-0.25)-0.13*(wave+1.)-cheer*sides*(0.56-0.30*wave)-0.72*fear;
+    let spine=vec2<f32>(0.042*shift+0.02*cheer*breath,0.10*shift+0.13*cheer*(2.*lead-1.));
+    let glance=sin(beat*0.31+seed*12.0);
+    let neck=vec2<f32>(0.30*glance+0.08*sin(beat*0.64),0.035*breath+0.10*cheer*sin(beat-0.45)+0.16*fear);
+    return vec4<u32>(pack2x16float(shoulders),pack2x16float(elbows),pack2x16float(spine),pack2x16float(neck));
+}
 struct Actor { pos_yaw:vec4<f32>, size_phase:vec4<f32>, color:vec4<f32>, identity:vec4<f32> }
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<storage,read> actors:array<Actor>;
@@ -52,14 +74,19 @@ fn reserve_slot(a:Actor)->u32 {
 @compute @workgroup_size(64)
 fn select_lod(@builtin(global_invocation_id) gid:vec3<u32>) {
     if gid.x>=u32(camera.settings.w) {return;}
-    let slot=reserve_slot(actor(gid.x));
-    if slot!=0xffffffffu {visible[slot]=SeatLight(gid.x,0u,0u,0u);}
+    let a=actor(gid.x);
+    let slot=reserve_slot(a);
+    if slot!=0xffffffffu {
+        visible[slot]=SeatLight(gid.x,0u,0u,0u,spectator_joints(a,camera.settings.x,0.45,0.));
+    }
 }
 
 // A single receiver at upper torso height shares the scene's maps across all LODs.
 @group(1) @binding(5) var sun_depth:texture_depth_2d;
 @group(1) @binding(6) var seat_shadow_sampler:sampler_comparison;
 @group(1) @binding(17) var<uniform> headlights:Headlights;
+// First vec4 of the existing crowd pose uniform: time, excitement, fear, pivot.
+@group(1) @binding(19) var<uniform> crowd_mood:vec4<f32>;
 @group(1) @binding(18) var headlight_depth:texture_depth_2d_array;
 
 fn spot_visibility(index:u32,uv:vec2<f32>,z:f32,lamp:Headlight,slope:vec2<f32>,world_p:vec3<f32>)->f32 {
@@ -91,7 +118,7 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
     let direction=moment/max(dot(energy,vec3<f32>(0.2126,0.7152,0.0722)),1e-5);
     energy=min(energy,vec3<f32>(65504.));
     visible[slot]=SeatLight(gid.x,pack2x16float(energy.rg),pack2x16float(vec2<f32>(energy.b,0.)),
-        pack4x8snorm(vec4<f32>(direction,sun)));
+        pack4x8snorm(vec4<f32>(direction,sun)),spectator_joints(a,crowd_mood.x,crowd_mood.y,crowd_mood.z));
 }
 @group(0) @binding(4) var<storage,read> draw_ids:array<SeatLight>;
 @group(1) @binding(0) var atlas:texture_2d<f32>;
@@ -102,6 +129,10 @@ struct V { @builtin(position) pos:vec4<f32>, @location(0) n:vec3<f32>, @location
     @location(8) @interpolate(flat) direction_sun:vec4<f32>, @location(9) world:vec3<f32> }
 fn rotate(angle:f32) -> mat2x2<f32> {
     return mat2x2<f32>(cos(angle),sin(angle),-sin(angle),cos(angle));
+}
+fn turn_xz(v:vec3<f32>,rotation:mat2x2<f32>)->vec3<f32> {
+    let xz=rotation*v.xz;
+    return vec3<f32>(xz.x,v.y,xz.y);
 }
 fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     let origin=vec2<f32>(f32(tile%4u),f32(tile/4u));
@@ -124,21 +155,24 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     }
     if bin!=0u {
         let motion=sin(phase);
-        let activity=smoothstep(0.18,0.54,a.size_phase.z);
-        let wave=mix(-0.24,-1.85-0.75*motion,activity);
-        let angle=select(0.13*sin(phase*0.67),wave,arm>0.);
+        let shoulders=unpack2x16float(seat.joints.x);
+        let elbows=unpack2x16float(seat.joints.y);
+        let right_arm=select(arm>0.,rest.x>0.,anatomical);
+        let angle=select(shoulders.x,shoulders.y,right_arm);
+        let elbow_angle=select(elbows.x,elbows.y,right_arm);
+        let activity=smoothstep(0.20,1.6,-min(shoulders.x,shoulders.y));
         if anatomical {
             let weights=a.identity*2.-1.;
             p+=0.055*(nose.xyz*weights.x+mouth.xyz*weights.z+brow.xyz*weights.y+adult.xyz*weights.w);
             let side=sign(rest.x);
             let shoulder=vec3<f32>(side*0.1008,0.805,-0.012);
             let elbow=vec3<f32>(side*0.1878,0.6994,-0.0132);
-            let lower=rotate(-0.28-0.48*activity);
+            let lower=rotate(elbow_angle);
             p=vec3<f32>(p.x,mix(p.yz,elbow.yz+lower*(p.yz-elbow.yz),bones.y));
             n=vec3<f32>(n.x,mix(n.yz,lower*n.yz,bones.y));
             let relax=rotate(-0.61*side);
             let rest_arm=vec3<f32>(shoulder.xy+relax*(p.xy-shoulder.xy),p.z);
-            let swing=rotate(select(0.11*sin(phase*0.67),wave,side>0.));
+            let swing=rotate(angle);
             p=mix(p,vec3<f32>(rest_arm.x,shoulder.yz+swing*(rest_arm.yz-shoulder.yz)),bones.x);
             let arm_normal=vec3<f32>(relax*n.xy,n.z);
             n=mix(n,vec3<f32>(arm_normal.x,swing*arm_normal.yz),bones.x);
@@ -147,8 +181,7 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
             let rot=mat2x2<f32>(cos(angle),sin(angle),-sin(angle),cos(angle));
             if center.y<0.65 {
                 let elbow=vec3<f32>(arm*0.13,0.646,0.008);
-                let bend=-0.30-0.55*activity;
-                let forearm=mat2x2<f32>(cos(bend),sin(bend),-sin(bend),cos(bend));
+                let forearm=rotate(elbow_angle);
                 var e=p-elbow; p=elbow+vec3<f32>(e.x,forearm*e.yz);
                 e=anchor-elbow; anchor=elbow+vec3<f32>(e.x,forearm*e.yz);
                 n=vec3<f32>(n.x,forearm*n.yz);
@@ -156,6 +189,16 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
             var d=p-pivot; p=pivot+vec3<f32>(d.x,rot*d.yz);
             d=anchor-pivot; anchor=pivot+vec3<f32>(d.x,rot*d.yz);
             n=vec3<f32>(n.x,rot*n.yz);
+        }
+        // Lift the collarbone with the raising arm about its inner end.
+        let arm_weight=select(f32(arm!=0.),bones.x,anatomical);
+        if arm_weight>0. {
+            let side=select(-1.,1.,right_arm);
+            let collar=vec2<f32>(0.025*side,0.79);
+            let lift=rotate(side*0.14*smoothstep(0.4,2.0,-angle)*arm_weight);
+            p=vec3<f32>(collar+lift*(p.xy-collar),p.z);
+            n=vec3<f32>(lift*n.xy,n.z);
+            anchor=vec3<f32>(collar+lift*(anchor.xy-collar),anchor.z);
         }
         // Hierarchical hip, knee and ankle. Counter-rotate the ankle to
         // plant the shoe and lower the pelvis as the two leg segments flex.
@@ -173,14 +216,41 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
         p=vec3<f32>(p.x,mix(p.yz,at_hip,leg))-vec3<f32>(0.,drop,0.);
         n=vec3<f32>(n.x,rotate(bend*(2.*shin-foot-leg))*n.yz);
         anchor.y-=drop;
-        let sway=0.013*sin(phase*0.65);
-        p.x+=p.y*sway; anchor.x+=anchor.y*sway;
         if (anatomical && rest.y>0.83) || mat==7u || (mat==4u && rest.y>0.84) {
             let jaw=1.+(a.identity.w-0.5)*0.28*(1.-smoothstep(0.87,0.92,p.y));
             let cheek=(0.87+0.22*a.identity.x)*jaw;
             p.x*=cheek; n.x/=cheek;
             let depth=0.92+0.18*a.identity.z;
             p.z*=depth; n.z/=depth;
+        }
+        // Neck first, then the spine parent. Skin, eyes and hair share the
+        // same head motion; the upper body carries both shoulder joints.
+        let spine=unpack2x16float(seat.joints.z);
+        let neck=unpack2x16float(seat.joints.w);
+        let rest_height=select(rest.y,center.y,bin==1u);
+        let head_weight=smoothstep(0.81,0.87,rest_height);
+        let chest_weight=max(smoothstep(0.46,0.70,rest_height),arm_weight);
+        if head_weight>0. {
+            let nod=rotate(neck.y*head_weight);
+            let turn=rotate(neck.x*head_weight);
+            let pivot=vec3<f32>(0.,0.835-drop,0.);
+            p=vec3<f32>(p.x,pivot.yz+nod*(p.yz-pivot.yz));
+            p=turn_xz(p,turn);
+            n=vec3<f32>(n.x,nod*n.yz);
+            n=turn_xz(n,turn);
+            anchor=vec3<f32>(anchor.x,pivot.yz+nod*(anchor.yz-pivot.yz));
+            anchor=turn_xz(anchor,turn);
+        }
+        if chest_weight>0. {
+            let twist=rotate(spine.y*chest_weight);
+            let lean=rotate(spine.x*chest_weight);
+            let waist=vec2<f32>(0.,0.49-drop);
+            p=turn_xz(p,twist);
+            p=vec3<f32>(waist+lean*(p.xy-waist),p.z);
+            n=turn_xz(n,twist);
+            n=vec3<f32>(lean*n.xy,n.z);
+            anchor=turn_xz(anchor,twist);
+            anchor=vec3<f32>(waist+lean*(anchor.xy-waist),anchor.z);
         }
     }
     let scale=select(a.size_phase.xyz,vec3<f32>(a.size_phase.x,a.size_phase.y,a.size_phase.x),bin!=0u);

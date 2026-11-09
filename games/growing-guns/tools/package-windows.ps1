@@ -1,7 +1,6 @@
 # Growing Guns as a folder to copy to another Windows machine:
 #   growing-guns.exe, assets/characters, mods, sounds (the patches) and audio
-#   (the Godot project's recordings and the crowd samples, taken from a Godot
-#   checkout because they are not in this repository).
+#   (optional external recordings). The stadium samples are embedded in the executable.
 #
 #   cargo build --release -p growing-guns-app
 #   games/growing-guns/tools/package-windows.ps1 -Executable target/release/growing-guns.exe `
@@ -36,7 +35,7 @@ if ($GodotProject -ne '') {
 $manifest = @{
     executable_sha256 = (Get-FileHash -LiteralPath $sourceExe -Algorithm SHA256).Hash.ToLowerInvariant()
     recordings_from = $recordings
-    scope = 'Native game bundle. Without -GodotProject the footsteps, hurts, deaths and crowd are silent; the synthesised sounds play. Packaging is not proof of GPU acceptance.'
+    scope = 'Native game bundle. Without -GodotProject the footsteps, hurts and deaths are silent; the synthesised sounds play. Packaging is not proof of GPU acceptance.'
 }
 $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $destination 'package.json') -Encoding utf8
 Write-Output $destination

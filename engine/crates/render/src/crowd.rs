@@ -295,6 +295,8 @@ impl CrowdRenderer {
         CrowdRenderer { reactions, first: spec.first, count: spec.capacity, pipeline, bind, uniform, alive, seats, pending: Mutex::new(false) }
     }
 
+    pub(crate) fn pose_uniform(&self) -> &wgpu::Buffer { &self.uniform }
+
     pub fn contains_owner_range(&self, first: usize, count: usize) -> bool {
         let (a, b) = (self.first as usize, (self.first + self.count * 2) as usize);
         first < b && first.saturating_add(count) > a
