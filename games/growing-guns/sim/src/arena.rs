@@ -20,6 +20,11 @@ use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use std::f32::consts::{PI, TAU};
 
+/// Linear scale of authored architecture in newly generated matches.
+pub const LEVEL_SCALE: f32 = 0.8;
+pub const STANDARD_SIZE: (f32, f32) = (44.0, 76.0);
+pub const SNIPER_SIZE: (f32, f32) = (88.0, 96.0);
+
 const TOWER_FOOTPRINT: f32 = 7.5;
 const TOWER_LIFT: f32 = 3.5;
 const PARAPET_OVERHANG: f32 = 1.15;
@@ -95,8 +100,7 @@ impl Placer {
 
 fn mirror(p: Vec3) -> Vec3 { Vec3::new(-p.x, p.y, -p.z) }
 
-/// Room for every chunk and light of any arena: the sniper-fight arenas
-/// (110..120 m) reach about 14 600, the default range about 9 700.
+/// Fixed view pool for the chunks and lights of standard and sniper arenas.
 pub const MAX_PIECES: usize = 16_384;
 
 impl Arena {
@@ -105,15 +109,15 @@ impl Arena {
         Arena { seed: 0, size: 55.0, variant: Variant::Open, blocks: Vec::new(), chunks: Vec::new(), grid: BoxGrid::default(), stadium: crate::stadium::Stadium::new(55.0, false, WALL_HEIGHT), spawns: vec![Vec3::new(0.0, 1.0, 0.0)], lights: Vec::new(), hole: None, islands: Vec::new(), links: Vec::new() }
     }
 
-    /// Godot's default size range (55..95 m).
-    pub fn generate(seed: u64) -> Self { Self::generate_sized(seed, 55.0, 95.0) }
+    /// Standard match size in world metres.
+    pub fn generate(seed: u64) -> Self { Self::generate_sized(seed, STANDARD_SIZE.0, STANDARD_SIZE.1) }
 
     pub fn generate_sized(seed: u64, lo: f32, hi: f32) -> Self { Self::generate_with(seed, lo, hi, false) }
 
     /// `island`: always the island layout (Godot `force_all_floor_lava`).
     pub fn generate_with(seed: u64, lo: f32, hi: f32, island: bool) -> Self {
         let mut rng = Rng::new(seed);
-        let size = rng.range(lo, hi).round();
+        let size = rng.range(lo / LEVEL_SCALE, hi / LEVEL_SCALE).round().clamp(lo / LEVEL_SCALE, hi / LEVEL_SCALE);
         // One roll picks the variant (Godot `variant_roll`): 18% islands,
         // 24% open, 16% hole, 42% walled. Nothing else is drawn here, so the
         // other variants draw the same stream whether or not islands exist.
@@ -127,7 +131,7 @@ impl Arena {
             // Walls and corner towers, no floor: lava at 0.04 m instead.
             a.build_walls(half, &mut placer);
             a.island_layout(&mut rng, &mut placer, half - 3.0);
-            a.build_chunks();
+            a.finish_layout();
             return a;
         }
         if variant == Variant::Hole {
@@ -243,11 +247,33 @@ impl Arena {
         for (x, z) in [(-c, -c), (c, c), (-c, c), (c, -c)] {
             a.spawns.push(Vec3::new(x, 1.0, z));
         }
-        a.build_chunks();
+        a.finish_layout();
         if let Some((hc, side)) = a.hole {
             a.spawns.retain(|s| (s.x - hc.x).abs() > side * 0.5 + 1.0 || (s.z - hc.y).abs() > side * 0.5 + 1.0);
         }
         a
+    }
+
+    /// Convert the complete authored layout once, before cutting chunks or building collision.
+    /// Spawn markers sit one metre above their support, independently of the architecture.
+    fn finish_layout(&mut self) {
+        let scale = LEVEL_SCALE;
+        self.size *= scale;
+        for b in &mut self.blocks {
+            b.center *= scale;
+            b.half *= scale;
+        }
+        for pos in &mut self.spawns { *pos = (*pos - Vec3::Y) * scale + Vec3::Y; }
+        for (pos, _) in &mut self.lights { *pos *= scale; }
+        for (top, radius) in &mut self.islands { *top *= scale; *radius *= scale; }
+        for (a, b) in &mut self.links { *a *= scale; *b *= scale; }
+        if let Some((center, side)) = &mut self.hole { *center *= scale; *side *= scale; }
+        if self.variant == Variant::Island {
+            let spots = std::mem::take(&mut self.spawns);
+            self.spawns = spots.into_iter().filter(|p| self.spawn_safe(*p)).collect();
+        }
+        self.stadium = crate::stadium::Stadium::for_arena(self.size, self.variant != Variant::Open, scale);
+        self.build_chunks();
     }
 
     fn build_floor(&mut self) {
@@ -468,7 +494,7 @@ mod tests {
             let b = Arena::generate(seed);
             assert_eq!(a.blocks, b.blocks);
             assert!(a.spawns.len() >= 4, "seed {seed}");
-            assert!((55.0..=95.0).contains(&a.size));
+            assert!((STANDARD_SIZE.0..=STANDARD_SIZE.1).contains(&a.size));
             // Every non-floor block has a mirror twin (island planks and
             // cover are not mirrored, as in Godot).
             for blk in a.blocks.iter().filter(|b| b.kind != Kind::Floor && b.kind != Kind::Wall && b.kind != Kind::Island) {
@@ -485,12 +511,12 @@ mod tests {
     fn the_largest_arenas_fit_the_view_pool() {
         let mut worst = 0;
         for seed in 0..120u64 {
-            for (lo, hi) in [(55.0, 95.0), (110.0, 120.0)] {
+            for (lo, hi) in [STANDARD_SIZE, SNIPER_SIZE] {
                 let a = Arena::generate_sized(seed.wrapping_mul(2654435761) & 0xffff_ffff, lo, hi);
                 worst = worst.max(a.chunks.len() + a.lights.len());
             }
         }
-        assert!(worst > 12_000, "the sniper arenas are the big ones ({worst})");
+        assert!(worst > 6_000, "the sniper arenas are the big ones ({worst})");
         assert!(worst < MAX_PIECES * 9 / 10, "{worst} pieces leave too little headroom");
     }
 
@@ -520,7 +546,7 @@ mod tests {
             while let Some(i) = todo.pop() { for &j in &adj[i] { if !seen[j] { seen[j] = true; todo.push(j); } } }
             assert!(seen.iter().all(|&s| s), "seed {seed}: islands not all reachable");
             assert!(a.spawns.len() >= 4 && a.spawns.iter().all(|&s| a.spawn_safe(s) && a.on_island(glam::Vec2::new(s.x, s.z))), "seed {seed}");
-            assert!(a.islands.iter().all(|&(t, r)| t.x.abs() + r <= a.size * 0.5 - 3.0 + 1e-3 && t.z.abs() + r <= a.size * 0.5 - 3.0 + 1e-3));
+            assert!(a.islands.iter().all(|&(t, r)| t.x.abs() + r <= a.size * 0.5 - 3.0 * LEVEL_SCALE + 1e-3 && t.z.abs() + r <= a.size * 0.5 - 3.0 * LEVEL_SCALE + 1e-3));
             assert_eq!(a.lava_surface(), LAVA_FLOOR_Y);
         }
         assert!((25..=50).contains(&islands), "{islands} of 200 arenas are islands (Godot 18%)");

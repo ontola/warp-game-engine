@@ -130,7 +130,7 @@ impl World {
         self.modifier = if self.coop { None } else if let Some(m) = self.next_modifier.take() { m } else if self.forced_modifier.is_some() { self.forced_modifier } else if self.rng.f() < self.modifier_chance {
             Some(MODIFIERS[self.rng.below(MODIFIERS.len() as u32) as usize].0)
         } else { None };
-        let (lo, hi) = if self.modifier == Some(Modifier::SniperFight) { (110.0, 120.0) } else { (55.0, 95.0) };
+        let (lo, hi) = if self.modifier == Some(Modifier::SniperFight) { crate::arena::SNIPER_SIZE } else { crate::arena::STANDARD_SIZE };
         self.arena = Arena::generate_with(arena_seed, lo, hi, self.force_island);
         self.carves.clear();
         self.breakage = crate::Breakage::default();
@@ -497,7 +497,7 @@ impl World {
         let l = self.lava.clone();
         let (half, inset, surface, wall_t) = (l.half, l.inset(), l.surface(), l.wall_t());
         let floor_active = (l.elapsed - l.wall_s()) > 0.0 || !l.has_walls || wall_t >= 1.0;
-        let wall_h = crate::arena::WALL_HEIGHT;
+        let wall_h = crate::arena::WALL_HEIGHT * self.arena.stadium.scale;
         for i in 0..self.players.len() {
             let p = &self.players[i];
             if !p.alive || p.ghost { continue; }

@@ -169,7 +169,7 @@ impl Things {
                 }
             }
             if l.has_walls {
-                let top = growing_guns::arena::WALL_HEIGHT;
+                let top = growing_guns::arena::WALL_HEIGHT * world.arena.stadium.scale;
                 let h = 0.05 + (top - 0.05) * l.wall_t();
                 for (c, s) in wall_sheets(half) { put(scene, self.lava, at(Vec3::new(c.x, top - h * 0.5, c.y), Vec3::new(s.x, h, s.y)), false); }
             }
