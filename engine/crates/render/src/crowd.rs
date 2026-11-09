@@ -136,6 +136,16 @@ impl Crowd {
     pub fn is_empty(&self) -> bool { self.count == 0 }
     pub fn alive(&self) -> usize { self.alive.iter().filter(|&&a| a != 0).count() }
     pub fn position(&self, i: usize) -> Vec3 { self.positions[i] }
+    pub fn body_scale(&self, i: usize) -> Vec3 {
+        if let Some(person) = self.human(i) {
+            return person.body_scale();
+        }
+        let seat = self.seats[i];
+        seat.params[0] * Vec3::new(seat.shape[0], 1., seat.shape[0])
+    }
+    pub fn human(&self, i: usize) -> Option<&crate::humans::Instance> {
+        self.human_identities.as_ref()?.get(i)
+    }
     pub fn is_alive(&self, i: usize) -> bool { self.alive[i] != 0 }
 
     /// Body language: 0..1 each (the crowd sound's enthusiasm and fear).

@@ -86,7 +86,7 @@ impl Mesh {
             }
         }
     }
-    fn anatomical() -> Self {
+    pub(super) fn anatomical() -> Self {
         let bytes = include_bytes!("../../../../assets/humans/person.bin");
         let u32_at = |i| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
         let count = u32_at(0);
@@ -116,6 +116,39 @@ impl Mesh {
             .collect::<Vec<_>>();
         assert_eq!(indices.len(), u32_at(4));
         Self { vertices, indices }
+    }
+}
+
+/// Bind-pose geometry for a full-size actor using the same face morphs and
+/// selected hair as the crowd. Arm/leg masks are cumulative along each limb.
+pub struct BodyVertex {
+    pub position: Vec3,
+    pub normal: Vec3,
+    pub uv: [f32; 2],
+    pub limb_weights: [f32; 4],
+    pub material: u32,
+}
+
+impl super::Instance {
+    pub fn body_mesh(&self) -> (Vec<BodyVertex>, Vec<u32>) {
+        static BODY: std::sync::OnceLock<Mesh> = std::sync::OnceLock::new();
+        let mesh = BODY.get_or_init(Mesh::anatomical);
+        let hair = 20 + (self.identity[2] * 3.0) as u32;
+        let mut vertices = Vec::new();
+        let mut remap = vec![u32::MAX; mesh.vertices.len()];
+        for (i, v) in mesh.vertices.iter().enumerate() {
+            if v.material >= 20 && v.material != hair { continue; }
+            let mut p = Vec3::from(v.pos);
+            for (morph, weight) in v.morphs.iter().zip(self.identity) {
+                let d = Vec3::new(morph[0] as f32, morph[1] as f32, morph[2] as f32);
+                p += d * (0.055 / 127.0 * (2.0 * weight - 1.0));
+            }
+            remap[i] = vertices.len() as u32;
+            vertices.push(BodyVertex { position: p, normal: v.normal.into(), uv: [v.center[0], v.center[1]],
+                limb_weights: v.bones.map(|w| w as f32 / 255.0), material: v.material });
+        }
+        let indices = mesh.indices.iter().map(|&i| remap[i as usize]).filter(|&i| i != u32::MAX).collect();
+        (vertices, indices)
     }
 }
 

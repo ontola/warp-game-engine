@@ -56,6 +56,32 @@ pub struct Characters {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn warp_players_keep_their_identity_and_animation_rig() {
+        use render::humans::{Constraints, Instance};
+        let rig = Character::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters/knight.json")).unwrap();
+        let pose = rig.sample(RUN, 0.18, true).unwrap();
+        let geometry = |seed| {
+            let person = Instance::person(seed, Vec3::ZERO, 0., &Constraints { height_m: Some(1.8), shirt: None });
+            let model = rig.warp_human(&person).unwrap();
+            let mut scene = Scene::default();
+            model.add_actor(&mut scene, Affine3A::IDENTITY).unwrap();
+            for influence in &scene.skinning.actors[0].influences {
+                assert!((influence.weights.iter().sum::<f32>() - 1.).abs() < 0.0001);
+                assert!(influence.weights.iter().all(|&w| w >= 0.));
+            }
+            assert_eq!(model.sample_socket(RUN, "RightHand", 0.18, true).unwrap(),
+                       rig.sample_socket(RUN, "RightHand", 0.18, true).unwrap());
+            let vertices: Vec<_> = model.posed_surfaces(&mut scene, &pose, Affine3A::IDENTITY)
+                .into_iter().flat_map(|(_, vertices, _, _)| vertices.into_iter().map(|v| v.pos)).collect();
+            assert!(vertices.iter().all(|p| Vec3::from(*p).is_finite()));
+            vertices
+        };
+        let first = geometry(600);
+        assert_eq!(first, geometry(600));
+        assert!(first != geometry(601));
+    }
+
+    #[test]
     fn knight_extended_pose_reproduces_saved_arm_positions() {
         use crate::gun::{Rig, Stats};
         let model = Character::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters/knight.json")).unwrap();
@@ -216,7 +242,12 @@ fn mix(a: Mat4, b: Mat4, t: f32) -> Mat4 {
 }
 
 impl Characters {
+    #[cfg(test)]
     pub fn load() -> Result<Self, String> {
+        Self::load_roster(None)
+    }
+
+    pub fn load_roster(humans: Option<(u64, usize)>) -> Result<Self, String> {
         let dir = if let Some(path) = std::env::var_os("GG_CHARACTERS") {
             if path == "off" { return Err("GG_CHARACTERS=off: explicit primitive roster".into()); }
             PathBuf::from(path)
@@ -225,8 +256,23 @@ impl Characters {
             beside.filter(|p| p.join("knight.json").is_file())
                 .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters"))
         };
-        let mut models = ROSTER.iter().map(|name| Character::load(&dir.join(format!("{name}.json"))))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut models = if let Some((seed, count)) = humans {
+            use render::humans::{Constraints, Instance};
+            let rig = Character::load(&dir.join("knight.json"))?;
+            let models = (0..count).map(|slot| {
+                let identity = seed.wrapping_mul(0x9e3779b97f4a7c15) ^ slot as u64;
+                let person = Instance::person(identity, Vec3::ZERO, 0., &Constraints {
+                    shirt: Some(super::PLAYER_COLORS[slot % super::PLAYER_COLORS.len()]),
+                    height_m: Some(1.80),
+                });
+                rig.warp_human(&person)
+            }).collect::<Result<Vec<_>, _>>()?;
+            println!("characters: {} seeded Warp Humans, roster seed {seed}", models.len());
+            models
+        } else {
+            println!("characters: original knight, paladin, ch10 with idle/run/jump ({})", dir.display());
+            ROSTER.iter().map(|name| Character::load(&dir.join(format!("{name}.json")))).collect::<Result<Vec<_>, _>>()?
+        };
         if skin_hair_enabled() {
             for model in &mut models { apply_skin_hair(model, &dir)?; }
         }
@@ -237,7 +283,6 @@ impl Characters {
                 model.sample_socket(clip, "RightHand", 0.0, clip != JUMP)?;
             }
         }
-        println!("characters: original knight, paladin, ch10 with idle/run/jump ({})", dir.display());
         Ok(Self { animation: crate::hand_animation::HandAnimation::load()?, rigid_meshes: models.iter().map(|_| None).collect(), pieces: Vec::new(), rigid_frame: Vec::new(), models, actors: Vec::new(), lava: Vec::new(), hands: Vec::new() })
     }
 

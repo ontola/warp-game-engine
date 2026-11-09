@@ -140,7 +140,7 @@ impl Visuals {
         // Coop waves add players as they come; versus reserves all 8 seats up front
         // so players joining or bot counts changing never rebuild the GPU renderer.
         let drawn = world.players.len().max(if world.coop { COOP_VIEW_PLAYERS } else { 8 });
-        players.reserve_dynamic(&mut scene, drawn);
+        players.reserve_dynamic(&mut scene, drawn, world.arena.seed);
         let cages = cages::Cages::reserve(&mut scene, drawn);
         let guns = Guns::reserve(&mut scene, drawn);
         let things = things::Things::reserve(&mut scene);
