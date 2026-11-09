@@ -63,7 +63,7 @@ fn ff_band(scale: f32, footprint: f32) -> f32 {
 fn ff_site(up: f32, wet: f32, slopes: f32) -> f32 {
     let steep = 1.0 - ff_smooth(0.86, 0.97, up);
     // slopes 1: the valley sides carry the forest, the gentle ground is pasture.
-    let slope = mix(-0.7 * steep, 0.35 * steep - 0.5 * ff_smooth(0.96, 0.995, up), slopes);
+    let slope = mix(-0.7 * steep, 0.1 * steep - 0.5 * ff_smooth(0.96, 0.995, up), slopes);
     return 0.05 + 0.6 * wet - 1.6 * max(wet - 0.75, 0.0) + slope;
 }
 

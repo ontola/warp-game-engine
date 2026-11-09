@@ -77,7 +77,7 @@ impl Biome {
                         soil: [0.75, 0.72, 0.62, 0.35], gravel: [0.92, 0.96, 1.02, 0.35], rock: [0.96, 1.0, 1.06, 0.25], ..base.ground },
                     forest: ForestStyle { needles: [0.035, 0.075, 0.03, 0.4], far: [0.06, 0.09, 0.035, 22.0], crown: [2.6, 0.42, 1.9, 0.08], ..base.forest },
                     meadow_dry_season: 0.0 },
-                tree_density: 0.8, deciduous: 0.08,
+                tree_density: 1.0, deciduous: 0.08,
                 flora: Flora { trees: [("spruce", 0.85), ("pine", 0.07), ("broadleaf", 0.08), NONE], shrubs: [("juniper", 0.5), ("shrub", 0.5)],
                     shrub_density: 0.02, ..Flora::TEMPERATE } },
             "alpine" => Biome { name: "alpine", terrain: Style::alpine(), vegetation: VegetationStyle::named("alpine")?,

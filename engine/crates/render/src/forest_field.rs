@@ -152,7 +152,7 @@ fn band(scale: f32, footprint: f32) -> f32 {
 /// steep valley sides and leaves gentle ground to pasture (swiss).
 pub fn site(up: f32, wet: f32, slopes: f32) -> f32 {
     let steep = 1.0 - smooth(0.86, 0.97, up);
-    let slope = -0.7 * steep + (0.35 * steep - 0.5 * smooth(0.96, 0.995, up) + 0.7 * steep) * slopes;
+    let slope = -0.7 * steep + (0.1 * steep - 0.5 * smooth(0.96, 0.995, up) + 0.7 * steep) * slopes;
     0.05 + 0.6 * wet - 1.6 * (wet - 0.75).max(0.0) + slope
 }
 
