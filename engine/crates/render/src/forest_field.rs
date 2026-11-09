@@ -124,11 +124,15 @@ pub struct Tree {
 
 /// A uniform 0..1 number for grid cell (i, j), channel k.
 pub(crate) fn hash(i: i32, j: i32, k: u32, seed: u32) -> f32 {
-    let mut h = (i as u32).wrapping_mul(0x8da6b343) ^ (j as u32).wrapping_mul(0xd8163841) ^ seed.wrapping_mul(0xcb1ab31f) ^ k.wrapping_mul(0x165667b1);
-    h ^= h >> 15;
-    h = h.wrapping_mul(0x2c1b3c6d);
-    h ^= h >> 12;
-    (h & 0xffffff) as f32 / 16777216.0
+    // Each input mixed in turn (forest_field.wgsl ff_hash matches). The old
+    // one xored the scaled inputs before one mix: the jittered tree sites
+    // showed lattice rows from the air (Joep, 9 November; its spectrum
+    // peaked 2.2x a true random's).
+    fn mix(mut x: u32) -> u32 {
+        x ^= x >> 16; x = x.wrapping_mul(0x7feb352d); x ^= x >> 15; x = x.wrapping_mul(0x846ca68b); x ^ (x >> 16)
+    }
+    let h = mix(mix(mix(seed.wrapping_mul(0x9e3779b9) ^ i as u32) ^ j as u32) ^ k);
+    (h >> 8) as f32 / 16777216.0
 }
 
 fn smooth(a: f32, b: f32, x: f32) -> f32 {
