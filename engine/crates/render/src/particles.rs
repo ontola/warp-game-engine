@@ -114,6 +114,14 @@ impl Particles {
     /// the segment is blocked (the particle stops there, then sticks or
     /// bounces); pass `|_, _| None` for no collision.
     pub fn update(&mut self, scene: &mut Scene, dt: f32, mut hit: impl FnMut(Vec3, Vec3) -> Option<(Vec3, Vec3)>) {
+        self.update_with_contacts(scene,dt,|a,b|hit(a,b).map(|(p,n)|(p,n,())),|_,_,_,_,_,_|false);
+    }
+
+    /// The receiver can replace a particle with a surface effect on its actual contact.
+    /// Returning true recycles that particle immediately.
+    pub fn update_with_contacts<T>(&mut self,scene:&mut Scene,dt:f32,
+        mut hit:impl FnMut(Vec3,Vec3)->Option<(Vec3,Vec3,T)>,
+        mut consume:impl FnMut(&mut Scene,usize,Vec3,Vec3,Vec3,T)->bool) {
         let slots = &mut self.slots;
         self.live.retain_mut(|p| {
             p.age += dt;
@@ -123,7 +131,8 @@ impl Particles {
                 p.vel *= (1.0 - p.drag * dt).max(0.0);
                 let next = p.pos + p.vel * dt;
                 match hit(p.pos, next) {
-                    Some((at, n)) => {
+                    Some((at, n, surface)) => {
+                        if consume(scene,p.mesh,at,n,p.vel,surface) {slots.remove(scene,p.slot);return false;}
                         p.pos = at + n * 0.01;
                         if p.bounce > 0.0 && p.vel.length() > 1.0 {
                             p.vel = (p.vel - 2.0 * p.vel.dot(n) * n) * p.bounce;
@@ -192,6 +201,26 @@ mod tests {
         assert_eq!(a.2, 0, "all expired");
         assert!(a.3, "slots emptied");
         assert_eq!(a, run(), "deterministic");
+    }
+
+    #[test]
+    fn a_consumed_contact_frees_its_slot_and_is_reported_only_once() {
+        let (mut scene, mesh) = scene();
+        let mut fx = Particles::reserve(&mut scene, 1, 13);
+        fx.burst(&mut scene, Vec3::Y*0.1, Vec3::NEG_Y,
+            &Burst {mesh,count:1,spread:0.,speed:[2.;2],..Burst::drops()});
+        let mut marks = 0;
+        for _ in 0..60 {
+            fx.update_with_contacts(&mut scene,1./60.,|a,b|{
+                (a.y>=0. && b.y<0.).then_some((Vec3::ZERO,Vec3::Y,7u32))
+            },|_, id,at,n,velocity,owner| {
+                assert_eq!((id,at,n,owner),(mesh,Vec3::ZERO,Vec3::Y,7));
+                assert!(velocity.y<0.);
+                marks+=1;
+                true
+            });
+        }
+        assert_eq!((marks,fx.len()),(1,0));
     }
 
     #[test]

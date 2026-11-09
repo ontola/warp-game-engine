@@ -1,0 +1,21 @@
+{
+  "size": [960, 540],
+  "steps": [
+    {"ticks": 8, "capture": "before.png", "state": "before.json"},
+    {"expect": "/stadium/alive", "equals": 10700},
+    {"hold": ["RIGHT_TRIGGER"], "ticks": 1},
+    {"ticks": 6, "capture": "shot1.png"},
+    {"ticks": 1, "capture": "shot1-fx.png", "state": "shot1.json"},
+    {"expect": "/stadium/alive", "equals": 10699},
+    {"ticks": 18},
+    {"hold": ["RIGHT_TRIGGER"], "ticks": 1},
+    {"ticks": 8, "capture": "shot2.png"},
+    {"ticks": 4, "capture": "shot2-fx.png", "state": "shot2.json"},
+    {"expect": "/stadium/alive", "equals": 10698},
+    {"hold": ["LEFT_TRIGGER"], "ticks": 1},
+    {"ticks": 140, "capture": "blast.png"},
+    {"ticks": 1, "capture": "blast-fx.png", "state": "blast.json"},
+    {"expect": "/stadium/alive", "max": 10696},
+    {"ticks": 40, "capture": "after.png", "state": "after.json"}
+  ]
+}

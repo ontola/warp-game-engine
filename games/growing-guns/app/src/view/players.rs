@@ -166,17 +166,20 @@ impl PlayersView {
     }
 
     /// Player and tracer instances, rewritten every frame.
-    pub fn reserve_dynamic(&mut self, scene: &mut Scene, players: usize) {
+    pub(crate) fn reserve_dynamic(&mut self, scene: &mut Scene, players: usize, seed: u64, colors: &[crate::party::PlayerColors]) {
         let rigid = crate::graphics::get().rigid_characters;
-        self.characters = if !crate::graphics::get().characters && !rigid {None}else{match Characters::load() {
+        let procedural = !colors.is_empty() || !rigid && std::env::args_os().any(|arg| arg == "--warp-humans");
+        self.characters = if !crate::graphics::get().characters && !rigid {None}else{match Characters::load_roster(procedural.then_some((seed, players, colors))) {
             Ok(characters) => Some(characters),
             Err(error) => { eprintln!("characters: using primitive fallback: {error}"); None }
         }};
         self.first = scene.instances.len();
         let eye_m = material(scene, [0.05, 0.05, 0.06], 0.3);
         for i in 0..players {
-            let body_m = material(scene, PLAYER_COLORS[i % 4], 0.55);
-            let prims = if crate::graphics::get().minimal_forward {[primitives::sphere(body_m,4,6),primitives::sphere(body_m,4,6),primitives::sphere(eye_m,3,4)]}else{[primitives::sphere(body_m, 10, 16), primitives::sphere(body_m, 8, 14), primitives::sphere(eye_m, 6, 8)]};
+            let profile = colors.get(i).copied().unwrap_or_default();
+            let body_m = material(scene, profile.shirt.unwrap_or(PLAYER_COLORS[i % 4]), 0.55);
+            let head_m = profile.skin.map_or(body_m, |skin| material(scene, skin, 0.55));
+            let prims = if crate::graphics::get().minimal_forward {[primitives::sphere(body_m,4,6),primitives::sphere(head_m,4,6),primitives::sphere(eye_m,3,4)]}else{[primitives::sphere(body_m, 10, 16), primitives::sphere(head_m, 8, 14), primitives::sphere(eye_m, 6, 8)]};
             let [proxy_body, head, eyes] = std::array::from_fn(|k| scene.add_mesh(&prims[k].mesh()));
             let actor = if rigid { None } else { self.characters.as_mut().and_then(|c| c.reserve_actor(scene, i).ok()) };
             // Rigid pieces share the skinned path but for how they are drawn.
@@ -265,11 +268,11 @@ impl PlayersView {
         let blood = fx.meshes.blood;
         // Past the view's player capacity (a big coop wave): blood only.
         let Some(skinned) = self.meshes.get(victim).map(|m| m.skinned) else {
-            fx.particles.burst(scene, v.pos, Vec3::Y, &Burst { mesh: blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..Burst::drops() });
+            fx.particles.burst(scene, v.pos, Vec3::Y, &Burst { mesh: blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..crate::blood::spray() });
             return;
         };
         let Some(a) = attacker else {
-            fx.particles.burst(scene, v.pos, Vec3::Y, &Burst { mesh: blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..Burst::drops() });
+            fx.particles.burst(scene, v.pos, Vec3::Y, &Burst { mesh: blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..crate::blood::spray() });
             return;
         };
         let push = if dir.length_squared() > 1e-4 { dir } else { (v.pos - world.players[a].pos).with_y(0.0).normalize_or(Vec3::Y) };
@@ -287,8 +290,8 @@ impl PlayersView {
                 self.gore().burst(scene, phys, victim, &[gore::Part::Head, gore::Part::Eyes], v.pos, v.yaw, v.vel, push, 0.5, now);
             }
             fx.blasts.gib_mist(now, v.pos + Vec3::Y * 0.3, 0.8);
-            fx.particles.burst(scene, v.pos, push + Vec3::Y * 0.5, &Burst { mesh: blood, count: 28, spread: 1.6, speed: [2.0, 8.0], ..Burst::drops() });
-            blood_splats(scene, arena, world, v.pos, 4, 1.3);
+            fx.particles.burst(scene, v.pos, push + Vec3::Y * 0.5, &Burst { mesh: blood, count: 28, spread: 1.6, speed: [2.0, 8.0], ..crate::blood::spray() });
+            blood_splats(scene, arena, world, v.pos, push, 4, 1.3);
             return;
         }
         match gib {
@@ -298,19 +301,19 @@ impl PlayersView {
                 let chaos = (severity * if blast { 0.75 } else { 0.82 }).clamp(0.35, 1.1);
                 self.gore().burst(scene, phys, victim, &[gore::Part::Body, gore::Part::Head, gore::Part::Eyes], v.pos, v.yaw, v.vel, push, chaos, now);
                 fx.blasts.gib_mist(now, v.pos + Vec3::Y * 0.2, 1.0 + chaos * 1.5);
-                fx.particles.burst(scene, v.pos, push + Vec3::Y * 0.5, &Burst { mesh: blood, count: 28, spread: 1.8, speed: [3.0, 10.0], ..Burst::drops() });
-                blood_splats(scene, arena, world, v.pos, (6.0 + chaos * 8.0) as usize, 1.6 + chaos * 1.4);
+                fx.particles.burst(scene, v.pos, push + Vec3::Y * 0.5, &Burst { mesh: blood, count: 28, spread: 1.8, speed: [3.0, 10.0], ..crate::blood::spray() });
+                blood_splats(scene, arena, world, v.pos, push, (6.0 + chaos * 8.0) as usize, 1.6 + chaos * 1.4);
             }
             Gib::Head => {
                 self.gore().burst(scene, phys, victim, &[gore::Part::Head, gore::Part::Eyes], v.pos, v.yaw, v.vel, push, 0.5, now);
                 fx.blasts.gib_mist(now, v.pos + Vec3::Y * 0.6, 0.8);
-                fx.particles.burst(scene, v.pos + Vec3::Y * 0.55, push + Vec3::Y * 0.4, &Burst { mesh: blood, count: 20, spread: 1.4, speed: [2.0, 8.0], ..Burst::drops() });
+                fx.particles.burst(scene, v.pos + Vec3::Y * 0.55, push + Vec3::Y * 0.4, &Burst { mesh: blood, count: 20, spread: 1.4, speed: [2.0, 8.0], ..crate::blood::spray() });
                 self.ragdoll(scene, phys, victim, v, push, false);
-                blood_splats(scene, arena, world, v.pos, 3, 1.2);
+                blood_splats(scene, arena, world, v.pos, push, 3, 1.2);
             }
             Gib::Lava { .. } => unreachable!("handled above"),
             Gib::Ragdoll => {
-                fx.particles.burst(scene, v.pos, Vec3::Y, &Burst { mesh: blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..Burst::drops() });
+                fx.particles.burst(scene, v.pos, Vec3::Y, &Burst { mesh: blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..crate::blood::spray() });
                 self.ragdoll(scene, phys, victim, v, push, true);
             }
         }
@@ -428,8 +431,8 @@ impl PlayersView {
     }
 
     /// One tick after the physics step: corpses and gore follow their bodies.
-    pub fn follow_physics(&mut self, scene: &mut Scene, phys: &mut Physics, now: f32) {
-        self.gore().update(scene, phys, now);
+    pub fn follow_physics(&mut self, scene: &mut Scene, phys: &mut Physics, now: f32, splat:impl FnMut(&mut Scene,Vec3,Vec3,Vec3)) {
+        self.gore().update(scene, phys, now,splat);
         if let Some(characters) = &mut self.characters { characters.follow_physics(phys); }
         for r in &self.ragdolls {
             for &(body, slot, mesh, local) in &r.parts {
@@ -557,16 +560,42 @@ impl PlayersView {
 
 /// Blood splats on the ground around a burst body (Godot
 /// `spawn_overkill_blood_splats_after_destruction`).
-fn blood_splats(scene: &mut Scene, arena: &mut ArenaView, world: &World, at: Vec3, n: usize, reach: f32) {
+fn blood_splats(
+    scene: &mut Scene,
+    arena: &mut ArenaView,
+    world: &World,
+    at: Vec3,
+    travel: Vec3,
+    n: usize,
+    reach: f32,
+) {
+    let mut bits = (world.tick as u32) ^ at.x.to_bits().rotate_left(7) ^ at.z.to_bits();
+    let mut unit = || {
+        bits = bits.wrapping_mul(1664525).wrapping_add(1013904223);
+        (bits >> 8) as f32 / 16777216.
+    };
+    let axis = travel.normalize_or(Vec3::Y);
     for k in 0..n {
-        let a = k as f32 * 2.399 + at.x * 1.7 + world.tick as f32 * 0.37;
-        let r = reach * ((k as f32 + 0.5) / n as f32).sqrt();
-        let from = at + Vec3::new(a.cos() * r, 0.6, a.sin() * r);
-        let Some((t, normal, c)) = growing_guns::shape::raycast(&world.arena.grid, from, Vec3::NEG_Y, 6.0) else { continue };
-        let size = 0.25 + 0.35 * (1.0 - r / reach.max(0.01));
-        let rot = Quat::from_rotation_arc(Vec3::Y, normal) * Quat::from_rotation_y(a * 3.1);
-        let xf = Affine3A::from_scale_rotation_translation(Vec3::new(size, 0.02, size * 0.8), rot, from + Vec3::NEG_Y * t);
-        arena.blood(scene, xf, c as u32);
+        let angle = unit() * std::f32::consts::TAU;
+        let scatter = Vec3::new(angle.cos(), 0., angle.sin()) * unit();
+        let direction =
+            (axis * unit() + scatter - Vec3::Y * (0.22 + 1.4 * unit())).normalize_or(Vec3::NEG_Y);
+        let from = at + Vec3::Y * 0.15;
+        let Some((t, normal, c)) =
+            growing_guns::shape::raycast(&world.arena.grid, from, direction, reach + 3.)
+        else {
+            continue;
+        };
+        let size = (0.18 + 0.48 * unit()) * if k == 0 { 1.45 } else { 1. };
+        arena.blood(
+            scene,
+            &world.arena.grid.boxes[c],
+            from + direction * t,
+            normal,
+            direction,
+            size,
+            c as u32,
+        );
     }
 }
 

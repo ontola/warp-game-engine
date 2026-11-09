@@ -190,6 +190,24 @@ impl Physics {
         self.world.bodies.get(b.0).map(|rb| (from(rb.translation()), from_q(*rb.rotation())))
     }
 
+    /// A touching static surface and its outward normal from the last physics step.
+    pub fn static_contact(&self, body: Body) -> Option<(Vec3, Vec3)> {
+        for &own in self.world.bodies.get(body.0)?.colliders() {
+            for pair in self.world.contact_pairs_with(own) {
+                let first = pair.collider1 == own;
+                let other = self.world.colliders.get(if first { pair.collider2 } else { pair.collider1 })?;
+                if other.parent().is_some() { continue; }
+                let Some((manifold,contact)) = pair.find_deepest_contact() else {continue;};
+                if contact.dist > 0.002 {continue;}
+                let local = if first {contact.local_p2} else {contact.local_p1};
+                let point = other.position() * local;
+                let normal = manifold.data.normal * if first {-1.} else {1.};
+                return Some((from(point),from(normal)));
+            }
+        }
+        None
+    }
+
     pub fn velocity(&self, b: Body) -> Option<Vec3> { self.world.bodies.get(b.0).map(|rb| from(rb.linvel())) }
 
     pub fn sleeping(&self, b: Body) -> bool { self.world.bodies.get(b.0).is_none_or(|rb| rb.is_sleeping()) }
@@ -236,6 +254,16 @@ mod tests {
 
     fn floor() -> YawBox { YawBox::new(Vec3::new(0.0, -0.5, 0.0), Vec3::new(40.0, 1.0, 40.0), 0.0) }
 
+    #[test]
+    fn resting_gib_reports_the_static_surface_outward_normal() {
+        let mut phys=Physics::new(Vec3::new(0.,-9.8,0.),60.);
+        phys.add_static(&floor());
+        let body=phys.add(&BodyDesc::new(Shape::Sphere(0.1),Vec3::Y));
+        assert!(phys.static_contact(body).is_none());
+        for _ in 0..120 {phys.step();}
+        let (at,n)=phys.static_contact(body).unwrap();
+        assert!(at.y.abs()<0.01 && n.y>0.99);
+    }
     #[test]
     fn selected_body_shots_clip_skip_inside_and_wake_with_contact_torque() {
         let mut p = Physics::new(Vec3::ZERO, 60.0);

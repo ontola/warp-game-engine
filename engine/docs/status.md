@@ -7,11 +7,11 @@ to. Dated measurements and the reasoning behind decisions are in the
 
 ## Warp Humans
 
-The [interactive stadium playtest and review](warp-humans.md) use per-view GPU selection, a weighted full-body mesh, facial morphs and three textured hair meshes. A shared close page is prepared as the camera approaches. Growing Guns supports the same crowd in desktop matches with `--warp-humans`. Facial animation, local stadium lighting on the figures and multi-page eviction remain open.
+The [interactive stadium playtest and review](warp-humans.md) use per-view GPU selection, a weighted full-body mesh, facial morphs and three textured hair meshes. A shared close page is prepared as the camera approaches. Growing Guns uses packed seating in desktop matches launched with `--warp-humans`. The earlier spacing is available with `--crowd-density standard`. Spectators receive the roof shadow and local stadium lighting across all detail levels. Shots and explosions act on shared GPU spectator state across views. Facial animation and multi-page eviction remain open.
 
 ## Character animation
 
-Growing Guns layers two-bone wrist contacts over its third-person clips using the shared body crate. The headless grip review renders the authored and adjusted poses. Finger closure and pickup transitions are open. [Authoring and preview](animation.md)
+GameNight sessions select Warp Humans for seated players and use their profile shirt and skin colours. Growing Guns layers two-bone wrist contacts over its third-person clips using the shared body crate. The headless grip review renders the authored and adjusted poses. Finger closure and pickup transitions are open. [Authoring and preview](animation.md)
 
 ## Developer captures
 
@@ -48,8 +48,10 @@ resolution, reconstruction mode, sample count and scene with a number.
   a non-blocking counter readback); not in the browser shell or Sideways'
   own shell; overlay cost not measured on a real GPU yet.
 - **Refraction** (8 November): blended materials with a `Refraction`
-  bend the opaque scene behind them in screen space; Sideways car windows
-  have one ([rendering overview](rendering.md)). **Opt-in** with
+  bend the opaque scene behind them in screen space
+  ([rendering overview](rendering.md)). Meant for thick or solid glass:
+  Sideways car windows had it and dropped it, since 4 mm panes barely bend
+  light. **Opt-in** with
   `KERN_REFRACTION=1` or `Scene::graphics.refraction` until checked on
   Mancave; checked on lavapipe only (`refraction_probe`). **Open:** cost on a
   real GPU (a depth copy, a front-depth draw and an HDR copy per view with
@@ -163,8 +165,9 @@ Owned by the foliage work; its working checklist is
   cached, scrolling clipmap levels per view (24 m to 3 km; first level
   grows with height) replace the
   shared and far maps in GPU-forest worlds; one caster history marks damaged
-  tiles in every level. **Open:** a timing on a real GPU (only lavapipe
-  so far); Sideways (stage scenes, `far_sun`) and the paged
+  tiles in every level. **Open:** at 516 m up the clipmap's voxel splats
+  cost about 1 ms more than the old maps and hit a refinement limit
+  (Mancave, [log](log/2026-11-08-sun-clipmap.md)); Sideways (stage scenes, `far_sun`) and the paged
   foliage sun still use their own maps; the GPU forest's voxel slot churn
   dirties about half of every cached map each frame.
 - [Skin and hair](skin-and-hair.md) (8 November): `SKIN` and `HAIR` material

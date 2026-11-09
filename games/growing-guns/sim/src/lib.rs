@@ -282,6 +282,8 @@ pub fn look_dir(yaw: f32, pitch: f32) -> Vec3 {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Bullet {
+    #[serde(skip)]
+    pub(crate) presentation_id:u64,
     pub pos: Vec3,
     pub vel: Vec3,
     pub owner: usize,
@@ -391,6 +393,8 @@ pub enum Event {
     /// Append-only presentation event: a collision-checked bullet path, clipped
     /// at its first gameplay hit. Corpses react locally without becoming cover.
     BulletPath { from: Vec3, to: Vec3, damage: f32 },
+    /// Stable projectile identity across clipped segments. Keep BulletPath for recorded frames.
+    TrackedBulletPath { id:u64, from:Vec3, to:Vec3, damage:f32 },
 }
 
 /// Presentation identity, independent of damage radius. Older recordings
@@ -467,6 +471,7 @@ pub(crate) enum Delayed {
 
 #[derive(Clone, Debug)]
 pub struct World {
+    next_bullet_id:u64,
     pub arena: Arena,
     pub players: Vec<Player>,
     pub bullets: Vec<Bullet>,
@@ -530,6 +535,7 @@ impl World {
         let players = bots.iter().map(|&b| Player::new(b)).collect();
         let brains = (0..bots.len()).map(|i| bot::Brain::new(seed ^ ((i as u64 + 1) * 0x9E37))).collect();
         let mut w = World {
+            next_bullet_id:1,
             arena: Arena::empty(), players, bullets: Vec::new(), projectiles: Vec::new(), strikes: Vec::new(), pickups: Vec::new(),
             tick: 0, round: 1, phase: Phase::Playing, rounds_to_win: flow::ROUNDS_TO_WIN, modifier: None, modifier_chance: flow::MODIFIER_CHANCE,
             rules: Rules::default(), card_pick_seconds: flow::CARD_PICK_TIMEOUT,

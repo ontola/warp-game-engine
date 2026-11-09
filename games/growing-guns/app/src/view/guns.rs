@@ -166,9 +166,7 @@ impl Guns {
             let rig = &self.rigs[i];
             self.barrels[i] = barrel_material(rig.heat_glow_t());
             let f = &self.feel[i];
-            let (r_off, r_tilt, mag_drop) = if p.reloading() {
-                gun::reload_pose(p.reload_progress())
-            } else { (Vec3::ZERO, 0.0, 0.0) };
+            let reload = gun::Reload::sample(p, alpha);
             // Long barrels pull the gun back against the shoulder.
             let pull = ((rig.build.barrel_length - 0.5) * 0.3).clamp(0.0, 0.3);
             let cam = fx.punched(world, i, camera(world, i, prev, alpha));
@@ -176,9 +174,9 @@ impl Guns {
             let right = fwd.cross(Vec3::Y).normalize_or(Vec3::X);
             let up = right.cross(fwd);
             let view = Affine3A::from_cols(right.into(), up.into(), (-fwd).into(), cam.pos.into());
-            let muzzle = Vec3::new(0.3 + (f.phase * 0.5).sin() * 0.007 * f.bob, -0.3 + f.phase.sin() * 0.012 * f.bob - f.bump, -0.8 + f.kick + pull) + r_off;
+            let muzzle = Vec3::new(0.3 + (f.phase * 0.5).sin() * 0.007 * f.bob, -0.3 + f.phase.sin() * 0.012 * f.bob - f.bump, -0.8 + f.kick + pull) + reload.lift;
             let s = f.previous_inspect + (f.inspect - f.previous_inspect) * alpha;
-            let fp = view * Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, 0.0, r_tilt, f.tilt), muzzle)
+            let fp = view * Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, 0.0, reload.tilt, f.tilt), muzzle)
                 * Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, s, 0.12 * s, 0.08 * s), Vec3::new(-0.14, 0.04, 0.14) * s);
             let fp = self.tracked[i].unwrap_or(fp);
             let drawn = crate::view::pose(world, i, prev, alpha);
@@ -191,7 +189,7 @@ impl Guns {
             };
             let visible = p.alive && (!self.tracking[i] || self.tracked[i].is_some());
             self.muzzles[i] = visible.then(|| [fp.transform_point3(rig.build.muzzle), tp.transform_point3(rig.build.muzzle)]);
-            for (first, xf, drop) in [(self.fp[i], fp, mag_drop), (self.tp[i], tp, 0.0)] {
+            for (first, xf, drop) in [(self.fp[i], fp, reload.view_drop), (self.tp[i], tp, reload.hand_drop)] {
                 let children = rig.pose_at(drop, alpha).take(if visible { self.parts } else { 0 })
                     .map(|(part, local)| (self.mesh(part.shape, part.mat, i), local));
                 let n = scene.update_children(first, xf, children);

@@ -762,6 +762,28 @@ pub fn reload_pose(u: f32) -> (Vec3, f32, f32) {
     (off, tilt, drop.max(0.0))
 }
 
+/// The third-person magazine travels a hand's breadth. The support hand arrives
+/// before extraction and returns to its normal grip after insertion.
+#[derive(Default)]
+pub(crate) struct Reload {
+    pub lift: Vec3,
+    pub tilt: f32,
+    pub view_drop: f32,
+    pub hand_drop: f32,
+    pub reach: f32,
+}
+impl Reload {
+    pub fn sample(p: &Player, alpha: f32) -> Self {
+        if !p.reloading() { return Self::default(); }
+        let tick = growing_guns::DT / p.weapon.reload_time().max(0.001) as f32;
+        let u = (p.reload_progress() - (1. - alpha.clamp(0., 1.)) * tick).clamp(0., 1.);
+        let smooth = |x: f32| { let t = x.clamp(0., 1.); t * t * (3. - 2. * t) };
+        let reach = smooth(u / 0.12) * (1. - smooth((u - 0.72) / 0.20));
+        let (lift, tilt, view_drop) = reload_pose(u);
+        Self { lift, tilt, view_drop, hand_drop: view_drop * 0.19, reach }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

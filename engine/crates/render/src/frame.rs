@@ -1058,7 +1058,7 @@ pub struct Renderer {
     motion_geometry: (crate::topology::Topology, wgpu::Buffer, Vec<[u32; 3]>),
     debris: Option<crate::debris::DebrisRenderer>,
     procedural_terrain: Option<crate::procedural_terrain::TerrainRenderer>,
-    crowd: Option<crate::crowd::CrowdRenderer>,
+    pub(crate) crowd: Option<crate::crowd::CrowdRenderer>,
     humans: std::sync::Mutex<Option<crate::humans::ReviewRenderer>>,
     fx: crate::fx::FxSlot,
     volumetric: crate::volumetric::VolumetricSlot,
@@ -5511,7 +5511,21 @@ impl Renderer {
                             .filter(|_| gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS))
                             .map(|(qs, _, _)| { names.push("warp humans"); (qs, timestamp_pair(&mut ts)) });
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
-                        humans.draw_match(gpu, &mut enc, cam, vp, view_m, px_scale, light, &hdr_v, &depth_v);
+                        let crowd = self.crowd.as_ref().expect("human crowd");
+                        humans.draw_match(gpu, &mut enc, cam, vp, view_m, px_scale, light, &view_light.shadow_view_proj, &[
+                            (5, wgpu::BindingResource::TextureView(&shadow_v)),
+                            (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
+                            (17, self.headlights.uniform.as_entire_binding()),
+                            (18, wgpu::BindingResource::TextureView(&self.headlights.sampled)),
+                            (19, crowd.pose_uniform().as_entire_binding()),
+                            (20, crowd.reaction_state().as_entire_binding()),
+                        ], &[
+                            (0, main.uniform.as_entire_binding()),
+                            (2, light_buf.as_entire_binding()),
+                            (5, wgpu::BindingResource::TextureView(&shadow_v)),
+                            (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
+                            (7, wgpu::BindingResource::TextureView(&self.sky_view)),
+                        ], &hdr_v, &depth_v);
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
                     }
                     if let Some(transparency) = self.transparency.as_ref().filter(|_|debug_options.transparency_enabled) {
@@ -6357,7 +6371,7 @@ mod layout_tests {
         }
         // All consumers share the appended field; no existing grass/alpha
         // parameter slot was repurposed for a camera-only optimisation.
-        for source in [include_str!("shaders/cull.wgsl"),include_str!("shaders/raster.wgsl"),include_str!("shaders/shade.wgsl")] {
+        for source in [include_str!("shaders/cull.wgsl"),include_str!("shaders/raster.wgsl"),include_str!("shaders/surface_fog.wgsl")] {
             // The full composed shaders are separately validated. Here the
             // declaration itself is checked without their imported helpers.
             let view_source=source.split("struct View {").nth(1).unwrap().split("};").next().unwrap();
