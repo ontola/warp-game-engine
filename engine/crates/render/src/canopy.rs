@@ -268,6 +268,7 @@ fn choose_layout(receivers: &[Vec3], foliage_y: [f32; 2], previous_pitch: f32) -
 /// height span, and the scene's crown count, mass and mass scale after it.
 pub(crate) struct ProxyBudget {
     edits: Vec<(usize, Option<[f64;2]>, Option<[f32;2]>)>, scale: f32,
+    count: usize, mass: f64,
 }
 
 impl CanopyClipmap {
@@ -378,11 +379,14 @@ impl CanopyClipmap {
     pub(crate) fn prepare_proxy_edits<'a>(&self, edits:impl IntoIterator<Item=(usize,&'a GpuInstance)>)->Result<ProxyBudget,String> {
         let (mut count,mut mass)=(self.crown_count as i64,self.crown_mass);
         let mut out:Vec<(usize,Option<[f64;2]>,Option<[f32;2]>)>=Vec::new();
-        let mut seen=std::collections::HashSet::new();
+        // Streamed edits arrive in owner order; only unordered ones need a sort
+        // to reject repeats (a HashSet cost ms on the 86k-root first load).
+        let (mut last,mut ordered)=(None::<usize>,true);
         for (i,instance) in edits {
             if i>=self.initial_crowns.len(){return Err("canopy proxy range exceeds reserved scene".into());}
             if instance.cluster_count!=0 || self.source_crowns.ids.get(i).copied().unwrap_or(0)!=0 {return Err("canopy relocation only supports geometry-free proxies".into());}
-            if !seen.insert(i) {return Err("canopy proxy edit repeats an instance".into());}
+            if last.is_some_and(|l|i<=l) {ordered=false;}
+            last=Some(i);
             if let Some(old)=self.initial_crowns[i] {count-=1;mass-=old[1];}
             if instance.flags & FOLIAGE == 0 {out.push((i,None,None));continue;}
             let (c,r)=legacy_crown(instance);
@@ -393,26 +397,38 @@ impl CanopyClipmap {
             let m=crown_mass(r);count+=1;mass+=m;
             out.push((i,Some([instance.sphere[3] as f64,m]),Some([c.y-r.y,c.y+r.y])));
         }
-        if count as usize>MAX_FOLIAGE {return Err("streamed canopy exceeds crown budget".into());}
-        // A float sum kept across edits; commit_proxy_update resums it exactly.
+        if !ordered {
+            let mut ids:Vec<usize>=out.iter().map(|e|e.0).collect();ids.sort_unstable();
+            if ids.windows(2).any(|w|w[0]==w[1]) {return Err("canopy proxy edit repeats an instance".into());}
+        }
+        if count<0 || count as usize>MAX_FOLIAGE {return Err("streamed canopy exceeds crown budget".into());}
+        // A float sum kept across edits; the 1e-9 margin covers its rounding.
         let budget=(u32::MAX as f64*0.5-count as f64)/(mass*(1.0+1e-9)).max(1.0);
         let scale=2.0f64.powf(budget.log2().floor()).min(65_536.0) as f32;
         if !scale.is_finite() || scale<=0.0 {return Err("streamed canopy mass budget is not representable".into());}
-        Ok(ProxyBudget {edits:out,scale})
+        Ok(ProxyBudget {edits:out,scale,count:count as usize,mass:mass.max(0.0)})
     }
-    pub(crate) fn commit_proxy_update(&mut self, budget: &ProxyBudget) {
-        let crowns=Arc::make_mut(&mut self.initial_crowns);
-        let heights=Arc::make_mut(&mut self.initial_heights);
-        for &(i,crown,height) in &budget.edits {crowns[i]=crown;heights[i]=height;}
-        // One walk without allocating: the exact count, mass and height span.
-        let (mut count,mut mass)=(0usize,0.0f64);
-        for c in crowns.iter().flatten() {count+=1;mass+=c[1];}
+    /// Applies a checked edit to every view at once. The views share one crown
+    /// table, so it is edited in place once instead of copied per view (each
+    /// copy of the whole table cost about a millisecond per forest recentre).
+    pub(crate) fn commit_proxy_update_all(views: &mut [Self], budget: &ProxyBudget) {
+        let Some(first)=views.first_mut() else {return};
+        let mut crowns=std::mem::take(&mut first.initial_crowns);
+        let mut heights=std::mem::take(&mut first.initial_heights);
+        for view in views.iter_mut().skip(1) {view.initial_crowns=Arc::default();view.initial_heights=Arc::default();}
+        {
+            let c=Arc::make_mut(&mut crowns);let h=Arc::make_mut(&mut heights);
+            for &(i,crown,height) in &budget.edits {c[i]=crown;h[i]=height;}
+        }
         let mut y=[f32::INFINITY,f32::NEG_INFINITY];
-        for h in heights.iter().flatten() {y[0]=y[0].min(h[0]);y[1]=y[1].max(h[1]);}
-        if count==0 {y=[0.0,0.0];}
-        self.crown_count=count;self.crown_mass=mass;
-        self.foliage_y=y;self.mass_scale=budget.scale;
-        *self.cache.lock().unwrap()=Cache::default();
+        for s in heights.iter().flatten() {y[0]=y[0].min(s[0]);y[1]=y[1].max(s[1]);}
+        if budget.count==0 {y=[0.0,0.0];}
+        for view in views.iter_mut() {
+            view.initial_crowns=Arc::clone(&crowns);view.initial_heights=Arc::clone(&heights);
+            view.crown_count=budget.count;view.crown_mass=budget.mass;
+            view.foliage_y=y;view.mass_scale=budget.scale;
+            *view.cache.lock().unwrap()=Cache::default();
+        }
     }
 
     /// Call before changing the shared instance buffer. Rigid motion is valid;
