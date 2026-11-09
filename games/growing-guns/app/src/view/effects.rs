@@ -2,7 +2,7 @@
 //! casings), GPU debris (chips and rubble colliding with the arena's
 //! occupancy grid), explosions (render::fx), muzzle flashes and the
 //! explosion view punch.
-use super::{cube, glow, material, omni, sphere, Camera};
+use super::{cube, glow, material, omni, Camera};
 use glam::{Quat, Vec2, Vec3};
 use growing_guns::World;
 use render::debris::{Debris, Occupancy};
@@ -78,7 +78,7 @@ impl EffectsView {
     pub fn reserve(scene: &mut Scene, seed: u64) -> Self {
         let meshes = FxMeshes {
             spark: { let m = glow(scene, [1.0, 0.6, 0.2], 20000.0); cube(scene, m) },
-            blood: { let m = material(scene, [0.45, 0.02, 0.02], 0.35); sphere(scene, m, 4, 6) },
+            blood: { let m = material(scene, [0.45, 0.02, 0.02], 0.35); scene.add_mesh(&crate::blood::drop_mesh(m).mesh()) },
             casing: { let m = scene.add_material(Material { tint: [0.75, 0.55, 0.2], layer: -1, roughness: 0.35, flags: 0, scale: 1.0, metal: 1.0 }); cube(scene, m) },
         };
         let particles = Particles::reserve(scene, crate::graphics::get().particles, seed | 1);
