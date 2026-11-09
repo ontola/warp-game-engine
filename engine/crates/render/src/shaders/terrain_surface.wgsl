@@ -280,12 +280,14 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     return MeadowCanopy(c, normalize(mix(nn, up, cover)));
 }
 
+// A crown's shaded base relative to its mean (its lit top is 2 - this).
+const FAR_CROWN_BASE: f32 = 0.55;
 // The sun a drawn needle crown keeps (shade.wgsl NEEDLE_BRUSH_OWN).
 const FAR_CROWN_OWN: f32 = 0.42;
 // How much of that the neighbours in a closed stand take from a crown's
 // sun and sky.
-const FAR_CROWN_SUN_LOSS: f32 = 0.8;
-const FAR_CROWN_SKY_LOSS: f32 = 0.6;
+const FAR_CROWN_SUN_LOSS: f32 = 0.65;
+const FAR_CROWN_SKY_LOSS: f32 = 0.45;
 
 // Crowns seen from `eye` at q, for a pixel `footprint` metres across: rgb
 // their colour with self-shade, w the share of the pixel they cover. Each
@@ -341,8 +343,15 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
             let spread = max(wide, 0.5 * w);
             let a = (wide / spread) * (wide / spread) * clamp(0.5 + (spread - length(e)) / w, 0.0, 1.0);
             open *= 1.0 - a;
-            tint += a * sp.w;
-            weight += a;
+            // Inside a closed stand the grain is light and shade, not gaps:
+            // a crown's lit top (away from the camera along the view) over
+            // its shaded base, the crowns nearer the camera in front. The
+            // shade averages 1 over a crown, so the mean is unchanged.
+            let top = clamp(0.5 - dot(d, along) / (2.0 * long), 0.0, 1.0);
+            let lit = (FAR_CROWN_BASE + (2.0 - 2.0 * FAR_CROWN_BASE) * top) * sp.w;
+            let front = a * exp(dot(sp.xy - q, along) / FF_CELL);
+            tint += front * lit;
+            weight += front;
         }
     }
     let near_cover = 1.0 - open;
