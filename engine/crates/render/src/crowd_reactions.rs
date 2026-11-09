@@ -4,6 +4,8 @@ use glam::Vec3;
 use std::sync::mpsc;
 use wgpu::util::DeviceExt;
 
+pub(super) const REACTION_BYTES: u32 = 40;
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(super) struct Stimulus {
@@ -112,7 +114,7 @@ impl Reactions {
     ) -> Self {
         let state = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("crowd reaction state"),
-            size: capacity.max(1) as u64 * 32,
+            size: capacity.max(1) as u64 * u64::from(REACTION_BYTES),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });

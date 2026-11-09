@@ -64,9 +64,11 @@ fn repeated_gunfire_preserves_positions_and_deaths_across_draws() {
             .filter_map(|(i, a)| (a == 0).then_some(i))
             .collect::<Vec<_>>()
     };
-    let pose = |t| {
+    let draw_pose = |t, rigged| {
+        let mut u = uniform(t);
+        u.counts[2] = rigged;
         crowd
-            .update(&gpu, bytemuck::bytes_of(&uniform(t)), None, None)
+            .update(&gpu, bytemuck::bytes_of(&u), None, None)
             .unwrap();
         let read = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -85,6 +87,7 @@ fn repeated_gunfire_preserves_positions_and_deaths_across_draws() {
         let all: Vec<GpuInstance> = bytemuck::pod_collect_to_vec(&bytes);
         all.into_iter().step_by(2).collect::<Vec<_>>()
     };
+    let pose = |t| draw_pose(t, 1);
     let shot =
         |from: Vec3, to: Vec3, time, id| Stimulus::new(1, from, to, 0., time, id, [0.; 2], 2.8);
     let a = Vec3::new(25., 0.9, 0.);
@@ -153,4 +156,18 @@ fn repeated_gunfire_preserves_positions_and_deaths_across_draws() {
         (pose(25.)[0].rows[2][3] - returning).abs() < 1e-5,
         "unrelated gunfire does not evict a runner"
     );
+
+    // The rigid draw exposes the shared blast turn in the body's forward axis.
+    let blast_at = |x, t| {
+        let at = Vec3::new(x, 0.9, 0.);
+        Stimulus::new(2, at, at, 0.2, t, 0, [0.; 2], 7.)
+    };
+    run(&[blast_at(31., 30.)], true);
+    let before = draw_pose(30.32, 0);
+    assert!(before[0].rows[0][2] < -0.5 && before[1].rows[0][2] > 0.5);
+    run(&[blast_at(35., 30.32)], false);
+    let after = draw_pose(30.32, 0);
+    assert_eq!(before[1].rows, after[1].rows);
+    assert!(draw_pose(31.2, 0)[1].rows[0][2] < -0.5);
+    assert_eq!(draw_pose(33., 0)[1].rows[0][2], 0.);
 }

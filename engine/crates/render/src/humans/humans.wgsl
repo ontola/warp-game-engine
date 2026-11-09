@@ -15,7 +15,7 @@ struct Camera {
 }
 // Four packed pairs of joint angles follow the light sample, shared by all
 // vertices of this spectator. Angles stay continuous when LOD changes.
-struct SeatLight { index:u32, rg:u32, blue:u32, direction_sun:u32, joints:vec4<u32>, legs:vec4<u32> }
+struct SeatLight { index:u32, rg:u32, blue_turn:u32, direction_sun:u32, joints:vec4<u32>, legs:vec4<u32> }
 
 // A smooth reach, a brief hold, then release. Each interval gets its own
 // height and timing; both ends meet at zero even when the next pulse differs.
@@ -199,7 +199,7 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
     let alarm=gesture_fear(crowd_mood.z,offset);
     let joints=spectator_joints(a,crowd_mood.x,crowd_mood.y,alarm);
     let legs=spectator_legs(a,crowd_mood.x,joints.x,travel,speed,crouch);
-    visible[slot]=SeatLight(gid.x,pack2x16float(energy.rg),pack2x16float(vec2<f32>(energy.b,0.)),
+    visible[slot]=SeatLight(gid.x,pack2x16float(energy.rg),pack2x16float(vec2<f32>(energy.b,blast_turn_at(escape,crowd_mood.x))),
         pack4x8snorm(vec4<f32>(direction,sun)),joints,legs);
 }
 @group(0) @binding(4) var<storage,read> draw_ids:array<SeatLight>;
@@ -330,12 +330,13 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
         // same head motion; the upper body carries both shoulder joints.
         let spine=unpack2x16float(seat.joints.z);
         let neck=unpack2x16float(seat.joints.w);
+        let blast_turn=unpack2x16float(seat.blue_turn).y;
         let rest_height=select(rest.y,center.y,bin==1u);
         let head_weight=smoothstep(0.81,0.87,rest_height);
         let chest_weight=max(smoothstep(0.46,0.70,rest_height),arm_weight);
         if head_weight>0. {
             let nod=rotate(neck.y*head_weight);
-            let turn=rotate(neck.x*head_weight);
+            let turn=rotate((neck.x+0.23*blast_turn)*head_weight);
             let pivot=vec3<f32>(0.,0.835-drop,0.);
             p=vec3<f32>(p.x,pivot.yz+nod*(p.yz-pivot.yz));
             p=turn_xz(p,turn);
@@ -344,8 +345,11 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
             anchor=vec3<f32>(anchor.x,pivot.yz+nod*(anchor.yz-pivot.yz));
             anchor=turn_xz(anchor,turn);
         }
-        if chest_weight>0. {
-            let twist=rotate(spine.y*chest_weight);
+        // Feet keep their row heading; the pelvis pivots over the legs and
+        // the shoulders and neck carry the rest of the turn.
+        let hip_weight=max(smoothstep(0.08,0.46,rest_height),arm_weight);
+        if chest_weight>0. || (blast_turn!=0. && hip_weight>0.) {
+            let twist=rotate(spine.y*chest_weight+blast_turn*(0.34*hip_weight+0.43*chest_weight));
             let lean=rotate(spine.x*chest_weight);
             let waist=vec2<f32>(0.,0.49-drop);
             p=turn_xz(p,twist);
@@ -365,7 +369,7 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
         world=a.pos_yaw.xyz+rot*(scale*anchor)+camera.right.xyz*d.x+camera.up.xyz*d.y;
         disc=sign(rest.xy-center.xy);
     }
-    o.lamps=vec3<f32>(unpack2x16float(seat.rg),unpack2x16float(seat.blue).x);
+    o.lamps=vec3<f32>(unpack2x16float(seat.rg),unpack2x16float(seat.blue_turn).x);
     o.direction_sun=unpack4x8snorm(seat.direction_sun);
     o.world=world; o.uv=center.xy; o.pos=camera.vp*vec4<f32>(world,1); o.n=rot*(n/scale); o.local=rest;
     o.color=a.color.rgb; o.mat=mat; o.identity=a.identity; o.disc=disc; return o;
