@@ -19,6 +19,7 @@
 // cloud_weather.wgsl is prepended (shared with shade.wgsl).
 
 struct U {
+    // All three camera-relative (world position minus this frame's camera).
     inv_vp: mat4x4<f32>,       // unjittered: view rays
     prev_vp: mat4x4<f32>,      // unjittered, last frame: cloud history
     inv_depth_vp: mat4x4<f32>, // jittered, as the depth buffer was drawn
@@ -136,14 +137,18 @@ fn camera_planet() -> vec3<f32> {
 
 fn view_ray(uv: vec2<f32>) -> vec3<f32> {
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-    let near = u.inv_vp * vec4<f32>(ndc, 1.0, 1.0);
-    return normalize(near.xyz / near.w - u.camera.xyz);
+    // A point well past the near plane (reversed Z: depth near/distance):
+    // the camera-relative matrix still carries the f32 rounding of the
+    // world-space view matrix (~1 cm 100 km out), which against a 5 cm near
+    // plane turned the ray by degrees and made the clouds flash.
+    let far = u.inv_vp * vec4<f32>(ndc, 1e-4, 1.0);
+    return normalize(far.xyz / far.w);
 }
 
 fn scene_distance(uv: vec2<f32>, depth: f32) -> f32 {
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     let hit = u.inv_depth_vp * vec4<f32>(ndc, depth, 1.0);
-    return length(hit.xyz / hit.w - u.camera.xyz);
+    return length(hit.xyz / hit.w);
 }
 
 fn clouds_on() -> bool { return u.cloud_motion.w > 0.5; }
@@ -514,7 +519,7 @@ fn cloud_resolve(@builtin(global_invocation_id) id: vec3<u32>) {
         let d = view_ray(uv);
         let front = textureLoad(cloud_depth_in, p, 0).r;
         let reach = min(front, u.extent.z) * 1000.0;
-        let clip = u.prev_vp * vec4<f32>(u.camera.xyz + d * reach, 1.0);
+        let clip = u.prev_vp * vec4<f32>(d * reach, 1.0);
         if clip.w > 0.0 {
             let prev = vec2<f32>(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
             if all(prev >= vec2<f32>(0.0)) && all(prev <= vec2<f32>(1.0)) {
@@ -537,20 +542,8 @@ fn composite(@builtin(global_invocation_id) id: vec3<u32>) {
     let depth = textureLoad(scene_depth, dp, 0);
     let sky = depth <= 0.0;
     var distance_km = 1e9;
-    if sky && u.output.w > 0.5 {
-        // Below the horizon the background is the bake's ground seen from
-        // ground level: past the end of the terrain, from altitude, fade it
-        // with the air up to where the ray meets the planet.
-        let d = view_ray(uv);
-        let o = camera_planet();
-        let b = dot(o, d);
-        let r = planet_radius();
-        let disc = b * b - (dot(o, o) - r * r);
-        if b < 0.0 && disc >= 0.0 {
-            let ap = aerial(uv, -b - sqrt(disc));
-            colour = vec4<f32>(colour.rgb * ap.a + ap.rgb, colour.a);
-        }
-    }
+    // Below the horizon the background already carries its haze (shade.wgsl
+    // background_sky).
     if !sky {
         distance_km = scene_distance((vec2<f32>(dp) + 0.5) / u.sizes.xy, depth) * 0.001;
         if u.output.w > 0.5 {

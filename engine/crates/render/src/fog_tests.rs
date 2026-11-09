@@ -201,7 +201,7 @@ fn opaque_transparent_and_volume_fog_share_visible_background() {
         let (background, surface_background) = function(&module, "background_radiance");
         let (visible_background, visible) = function(&module, "visible_background_radiance");
         let (attenuate, _) = function(&module, "attenuate_background");
-        let (sky, _) = function(&module, "sky_radiance");
+        let (sky, _) = function(&module, "background_sky");
         let (stars, _) = function(&module, "night_star_radiance");
         // The underlying sky and atmospheric transmission remain shared.
         // Only an empty depth pixel may add stars; surface fog must not
