@@ -39,7 +39,7 @@ fn write(index: u32, x: vec3<f32>, y: vec3<f32>, z: vec3<f32>, t: vec3<f32>, fir
     inst.r2 = vec4<f32>(x.z, y.z, z.z, t.z);
     inst.sphere = vec4<f32>(t + y * 0.5, radius);
     inst.first_cluster = first;
-    inst.cluster_count = count;
+    inst.cluster_count = select(count, 0u, u.counts.z != 0u);
     inst.scale = scale;
     instances[index] = inst;
 }

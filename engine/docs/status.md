@@ -7,7 +7,7 @@ to. Dated measurements and the reasoning behind decisions are in the
 
 ## Warp Humans
 
-The [stadium review](warp-humans.md) compares three distant crowd representations with per-view GPU selection and one on-demand anatomical head mesh. Gameplay integration, facial animation and multi-page eviction remain open.
+The [interactive stadium playtest and review](warp-humans.md) use per-view GPU selection, a weighted full-body mesh, facial morphs and three textured hair meshes. A shared close page is prepared as the camera approaches. Growing Guns supports the same crowd in desktop matches with `--warp-humans`. Facial animation, local stadium lighting on the figures and multi-page eviction remain open.
 
 ## Character animation
 
@@ -159,12 +159,12 @@ Owned by the foliage work; its working checklist is
   opt-in. **Open:** a visual check on a Windows HDR and a macOS EDR screen
   before turning them on by default; Sideways' own presenter is SDR only; no
   HDR10/PQ metadata.
-- **Opt-in one sun shadow system** (`KERN_SUN_CLIPMAP=1`, 8 November): eight
+- **One sun shadow system** (on by default since 9 November, `KERN_SUN_CLIPMAP=0` for the old maps): eight
   cached, scrolling clipmap levels per view (24 m to 3 km; first level
   grows with height) replace the
   shared and far maps in GPU-forest worlds; one caster history marks damaged
-  tiles in every level. **Open:** a measurement on a real GPU before it
-  becomes the default; Sideways (stage scenes, `far_sun`) and the paged
+  tiles in every level. **Open:** a timing on a real GPU (only lavapipe
+  so far); Sideways (stage scenes, `far_sun`) and the paged
   foliage sun still use their own maps; the GPU forest's voxel slot churn
   dirties about half of every cached map each frame.
 - [Skin and hair](skin-and-hair.md) (8 November): `SKIN` and `HAIR` material

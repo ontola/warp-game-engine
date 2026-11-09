@@ -28,6 +28,8 @@ mod gun;
 mod gun_review;
 mod character_review;
 mod human_review;
+#[cfg(not(any(target_os="android",target_arch="wasm32")))]
+mod human_play;
 mod hand_animation;
 mod foregrip_pose;
 mod animation_window;
@@ -108,6 +110,8 @@ pub fn desktop_main() {
         "play" => play::run(&args),
         "shot" => shot(&args),
         "animation-preview" => animation_window::run(&args),
+        #[cfg(not(any(target_os="android",target_arch="wasm32")))]
+        "human-play" => human_play::run(&args),
         "human-review" => human_review::run(&args),
         "gun-review" => gun_review::run(&args),
         "character-review" => character_review::run(&args),
@@ -182,6 +186,8 @@ fn shot(args: &Args) -> Result<(), String> {
     let seconds = args.num("--seconds", 4.0f32);
     let (w, h) = args.size((1600, 900));
     let world = World::new_with(seed, &[true; 4], |w| play::match_options(args, w, false));
+    let mut world = world;
+    if args.flag("--start-in-stands") { stadium::start_in_stands(&mut world)?; }
     let mut game = play::Gg::new(world, session::Session::Local, (0..views).collect());
     game.world.release_cage();
     game.set_sky(sky::Sky::from_args(args.value("--sky"))?)?;

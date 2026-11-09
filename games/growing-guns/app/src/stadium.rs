@@ -62,17 +62,17 @@ fn ring_mesh(material: u32, inner_ratio: f32, drop: f32, thickness: f32) -> Prim
     }
     mesh
 }
-fn roof_radius(geo: Stadium) -> f32 {geo.inner_r+ROWS as f32*ROW_DEPTH+1.0}
+fn roof_radius(geo: Stadium) -> f32 {geo.inner_r+ROWS as f32*geo.row_depth()+geo.scale}
 fn roof_proxies(geo: Stadium) -> Vec<Affine3A> {
     let radius=roof_radius(geo);
     (0..ROOF_STEPS).map(|i| {
         let a=TAU*(i as f32+0.5)/ROOF_STEPS as f32;
-        let outer=roof_point(a,false)*Vec3::new(radius,1.0,radius)+Vec3::Y*(geo.wall_h()+0.6);
-        let inner=roof_point(a,true)*Vec3::new(radius,1.0,radius)+Vec3::Y*(geo.wall_h()+0.6);
+        let outer=roof_point(a,false)*Vec3::new(radius,geo.scale,radius)+Vec3::Y*(geo.wall_h()+0.6*geo.scale);
+        let inner=roof_point(a,true)*Vec3::new(radius,geo.scale,radius)+Vec3::Y*(geo.wall_h()+0.6*geo.scale);
         let radial=outer-inner;
-        let tangent=(roof_point(a+TAU/ROOF_STEPS as f32*0.5,false)-roof_point(a-TAU/ROOF_STEPS as f32*0.5,false))*Vec3::new(radius,1.0,radius);
+        let tangent=(roof_point(a+TAU/ROOF_STEPS as f32*0.5,false)-roof_point(a-TAU/ROOF_STEPS as f32*0.5,false))*Vec3::new(radius,geo.scale,radius);
         // Thin conservative static-light proxy follows the same roof curve.
-        Affine3A::from_cols(tangent.into(),(Vec3::Y*0.5).into(),radial.into(),((outer+inner)*0.5).into())
+        Affine3A::from_cols(tangent.into(),(Vec3::Y*0.5*geo.scale).into(),radial.into(),((outer+inner)*0.5).into())
     }).collect()
 }
 const MARKS: usize = 768;
@@ -100,18 +100,18 @@ fn glow(scene: &mut Scene, c: [f32; 3], nits: f32) -> u32 { scene.add_material(M
 fn tv_pose(geo: Stadium, index: usize) -> (Vec3, Quat) {
     let angle = TAU * index as f32 / TV_COUNT as f32;
     let dir = Vec3::new(angle.cos(), 0.0, angle.sin());
-    let radius = geo.wall_r() - 1.35;
-    let half_height = TV_HEIGHT * 0.5;
+    let radius = geo.wall_r() - 1.35 * geo.scale;
+    let half_height = TV_HEIGHT * 0.5 * geo.scale;
     // Merely clearing the rim in world Y leaves the lower picture hidden by
     // the canopy's inner lip. Solve the eye-to-bottom-corner sightline over
     // the actual tilted roof's upper inner edge, with one metre of clearance.
     // sq(angle) >= 1, so the side-midpoint lip is the nearest possible roof.
     let lip_r=roof_radius(geo)*ROOF_INNER;
-    let lip_y=geo.wall_h()+0.6-ROOF_DROP+0.25;
-    let bottom_r = (radius + half_height * TV_TILT.sin()).hypot(TV_WIDTH * 0.5);
+    let lip_y=geo.wall_h()+(0.6-ROOF_DROP+0.25)*geo.scale;
+    let bottom_r = (radius + half_height * TV_TILT.sin()).hypot(TV_WIDTH * 0.5 * geo.scale);
     let min_bottom_y = TV_OBSERVER_HEIGHT
         + (lip_y + TV_CANOPY_CLEARANCE - TV_OBSERVER_HEIGHT) * bottom_r / lip_r;
-    let height = (geo.wall_h() + TV_HEIGHT * 0.62).max(min_bottom_y + half_height * TV_TILT.cos());
+    let height = (geo.wall_h() + TV_HEIGHT * 0.62 * geo.scale).max(min_bottom_y + half_height * TV_TILT.cos());
     let position = dir * radius + Vec3::Y * height;
     let rotation = Quat::from_rotation_y(-angle - PI * 0.5) * Quat::from_rotation_x(TV_TILT);
     (position, rotation)
@@ -290,21 +290,34 @@ fn stadium_rng(seed: u64) -> (Rng, usize) {
 }
 
 // One figure per occupied seat, preserving the game RNG draw order.
-fn seat_layout(rng: &mut Rng, base: f32, inner: f32, looks: &[(usize,usize)]) -> Vec<Seat> {
+fn seat_layout(rng: &mut Rng, geo: Stadium, looks: &[(usize,usize)]) -> Vec<Seat> {
     let seg = Stadium::seg_ang();
     let mut seats = Vec::new();
+    use growing_guns::shape::{BoxGrid, Boxes, YawBox};
+    let treads = geo.pieces().into_iter().filter(|p| p.kind == PieceKind::Step)
+        .map(|p| YawBox::new(p.center, p.size, p.yaw)).collect();
+    let grid = BoxGrid::new(treads, 4.0);
     'all: for i in 0..SEGMENTS {
         let ang = seg * (i as f32 + 0.5);
         for row in 0..ROWS {
-            let y = base + row as f32 * ROW_RISE;
-            let row_r = inner + (row as f32 + 0.45) * ROW_DEPTH;
+            let y = geo.base_y + row as f32 * geo.row_rise();
+            let row_r = geo.inner_r + (row as f32 + 0.5) * geo.row_depth();
             let count = (row_r * sq(ang) * seg / CROWD_SPACING) as usize;
             for k in 0..count {
                 if rng.f() < CROWD_SKIP_CHANCE { continue; }
-                let mut a = ang + (k as f32 + 0.5) / count as f32 * seg - seg * 0.5;
-                a += rng.range(-0.15, 0.15) / row_r.max(1.0);
-                let r = row_r * sq(a);
-                let pos = Vec3::new(a.cos() * r + rng.range(-0.15, 0.15), y, a.sin() * r + rng.range(-0.25, 0.25));
+                // The tread is a straight box. Keep each foot on its actual tread,
+                // including at corners where the curved seat ring crossed adjacent steps.
+                let offset = ((k as f32 + 0.5) / count as f32 - 0.5) * seg;
+                let a = ang + offset + rng.range(-0.15, 0.15) / row_r.max(1.0);
+                let radial = Vec3::new(ang.cos(), 0.0, ang.sin());
+                let tangent = Vec3::new(-ang.sin(), 0.0, ang.cos());
+                let mid = row_r * sq(ang);
+                let along = mid * (a-ang).tan() + rng.range(-0.15, 0.15);
+                let mut pos = radial * (mid + rng.range(-0.25, 0.25)) + tangent * along + Vec3::Y * y;
+                let above = geo.wall_h() + 1.0;
+                if let Some((distance, _, _)) = grid.ray(pos.with_y(above), Vec3::NEG_Y, above - geo.base_y + 1.0) {
+                    pos.y = above - distance;
+                }
                 let colour = if rng.f() < 0.08 { CROWD_COLORS.len() + rng.below(CROWD_ACCENTS.len()) } else { rng.below(CROWD_COLORS.len()) };
                 let look = looks[colour * SHADES.len() + rng.below(SHADES.len())];
                 let hop = if rng.f() < 0.3 { 0.0 } else { rng.range(0.15, 0.42) };
@@ -320,7 +333,26 @@ pub(crate) fn review_seats(world: &World) -> Vec<Seat> {
     let (mut rng, _) = stadium_rng(world.arena.seed);
     let geo = world.arena.stadium;
     let looks = [(0,0); (CROWD_COLORS.len()+CROWD_ACCENTS.len())*SHADES.len()];
-    seat_layout(&mut rng, geo.base_y, geo.inner_r, &looks)
+    seat_layout(&mut rng, geo, &looks)
+}
+
+/// A local scale playtest starts in an empty space between two neighbours on one tread.
+pub(crate) fn start_in_stands(world: &mut World) -> Result<(), String> {
+    let seats = review_seats(world);
+    let pair = seats.windows(2).find(|s| {
+        let gap = s[0].pos.distance(s[1].pos);
+        (2.4..4.0).contains(&gap) && (s[0].pos.y - s[1].pos.y).abs() < 0.01
+            && (s[0].yaw - s[1].yaw).abs() < 0.08
+    }).ok_or("no open space on a stadium tread")?;
+    let feet = (pair[0].pos + pair[1].pos) * 0.5;
+    world.release_cage();
+    let player = &mut world.players[0];
+    player.pos = feet + Vec3::Y * growing_guns::HALF_HEIGHT;
+    player.vel = Vec3::ZERO;
+    let toward = pair[0].pos - feet;
+    player.yaw = (-toward.x).atan2(-toward.z);
+    player.pitch = 0.0;
+    Ok(())
 }
 
 impl StadiumVisuals {
@@ -447,8 +479,9 @@ impl StadiumVisuals {
             }).unwrap_or(self.stone[quarry]);
             if !matches!(p.kind, PieceKind::Wall) { self.stands.add(scene, mesh, box_xf(p.center, p.size, p.yaw)); }
         }
-        let wall_outer=self.geo.wall_r()+1.1;
-        let wall_top = self.geo.wall_h() + 0.6;
+        let scale = self.geo.scale;
+        let wall_outer=self.geo.wall_r()+1.1*scale;
+        let wall_top = self.geo.wall_h() + 0.6 * scale;
         let wall_height = wall_top - FOUNDATION_Y;
         let wall_mid = (wall_top + FOUNDATION_Y) * 0.5;
         self.stands.add(scene,self.wall_stone[quarry],Affine3A::from_scale_rotation_translation(Vec3::new(wall_outer,wall_height,wall_outer),Quat::IDENTITY,Vec3::Y*wall_mid));
@@ -463,12 +496,12 @@ impl StadiumVisuals {
         let (inner, base) = (self.geo.inner_r, self.geo.base_y);
         let wall_h=self.geo.wall_h();
         let radius=roof_radius(self.geo);
-        self.roof.add(scene,self.roof_stone[quarry],Affine3A::from_scale_rotation_translation(Vec3::new(radius,1.0,radius),Quat::IDENTITY,Vec3::Y*(wall_h+0.6)));
+        self.roof.add(scene,self.roof_stone[quarry],Affine3A::from_scale_rotation_translation(Vec3::new(radius,scale,radius),Quat::IDENTITY,Vec3::Y*(wall_h+0.6*scale)));
         sky_boxes.extend(roof_proxies(self.geo));
         for i in (0..SEGMENTS).step_by(2) {
             let ang=Stadium::seg_ang()*(i as f32+0.5);
-            let at=roof_point(ang,true)*Vec3::new(radius,1.0,radius)+Vec3::Y*(wall_h+0.6-0.7);
-            self.stands.add(scene,self.lamp,box_xf(at,Vec3::new(1.6,0.55,0.55),-ang+PI*0.5));
+            let at=roof_point(ang,true)*Vec3::new(radius,scale,radius)+Vec3::Y*(wall_h+(0.6-0.7)*scale);
+            self.stands.add(scene,self.lamp,box_xf(at,Vec3::new(1.6,0.55,0.55)*scale,-ang+PI*0.5));
         }
         if let Some((offset, grid)) = scene.irradiance_volume {
             let mesh=&scene.meshes[self.stone[quarry]];
@@ -494,19 +527,19 @@ impl StadiumVisuals {
         // Floodlight towers on the four corners, banks leaning over the bowl.
         self.lights.clear();
         self.beams.clear();
-        let tower_h = wall_h + 9.0;
+        let tower_h = wall_h + 9.0 * scale;
         for i in 0..4 {
             let ang = TAU * (i as f32 + 0.5) / 4.0;
             let dir = Vec3::new(ang.cos(), 0.0, ang.sin());
-            let r = (inner + ROWS as f32 * ROW_DEPTH * 0.72) * sq(ang);
-            self.stands.add(scene, self.shaft, box_xf(dir * r + Vec3::Y * tower_h * 0.5, Vec3::new(2.0, tower_h, 2.0), 0.0));
-            let at = dir * (r - 2.2) + Vec3::Y * (tower_h + 1.2);
+            let r = (inner + ROWS as f32 * self.geo.row_depth() * 0.72) * sq(ang);
+            self.stands.add(scene, self.shaft, box_xf(dir * r + Vec3::Y * tower_h * 0.5, Vec3::new(2.0 * scale, tower_h, 2.0 * scale), 0.0));
+            let at = dir * (r - 2.2 * scale) + Vec3::Y * (tower_h + 1.2 * scale);
             let aim = Vec3::Y * (base * 0.65);
             let face = Quat::from_rotation_arc(Vec3::Z, (aim - at).normalize());
-            self.stands.add(scene, self.bank, Affine3A::from_scale_rotation_translation(Vec3::new(6.0, 3.2, 0.6), face, at));
+            self.stands.add(scene, self.bank, Affine3A::from_scale_rotation_translation(Vec3::new(6.0, 3.2, 0.6) * scale, face, at));
             // Emit just in front of the bank's 0.6 m thick housing. An
             // emitter at its centre lets that housing occlude its own cone.
-            let emitter = at + face * Vec3::Z * 0.4;
+            let emitter = at + face * Vec3::Z * 0.4 * scale;
             // Cover the opposite bowl, with headroom before the range fade.
             // The old radius + 30 m cut the beam off near midfield.
             let range = ((emitter.length() + self.geo.wall_r() * sq(PI * 0.25)) / 0.70).min(500.0);
@@ -529,24 +562,28 @@ impl StadiumVisuals {
         for i in 0..TV_COUNT {
             let (at, rot) = tv_pose(self.geo, i);
             self.tv.add(scene, self.tv_mesh[0], Affine3A::from_scale_rotation_translation(
-                Vec3::new(TV_WIDTH, TV_HEIGHT, 1.0), rot, at));
+                Vec3::new(TV_WIDTH, TV_HEIGHT, 1.0) * scale, rot, at));
             self.tv.add(scene, self.tv_mesh[1], Affine3A::from_scale_rotation_translation(
-                Vec3::new(TV_WIDTH + 1.2, TV_HEIGHT + 5.0, 0.8), rot,
-                at + rot * Vec3::new(0.0, -1.9, -0.45)));
+                Vec3::new(TV_WIDTH + 1.2, TV_HEIGHT + 5.0, 0.8) * scale, rot,
+                at + rot * Vec3::new(0.0, -1.9, -0.45) * scale));
             let dir = Vec3::new(at.x, 0.0, at.z).normalize();
             let tangent = Vec3::new(-dir.z, 0.0, dir.x);
-            let leg_top = at.y - TV_HEIGHT * 0.5 - 0.4;
+            let leg_top = at.y - (TV_HEIGHT * 0.5 + 0.4) * scale;
             // Keep the original anchored foot when sightline clearance raises
             // the board; the extra span belongs to the narrow support legs.
-            let leg_height = 16.0 + at.y - (self.geo.wall_h() + TV_HEIGHT * 0.62);
+            let leg_height = 16.0 * scale + at.y - (self.geo.wall_h() + TV_HEIGHT * 0.62 * self.geo.scale);
             for side in [-1.0, 1.0] {
-                let leg = dir * (self.geo.wall_r() - 1.05) + tangent * (side * TV_WIDTH * 0.3)
+                let leg = dir * (self.geo.wall_r() - 1.05 * scale) + tangent * (side * TV_WIDTH * 0.3 * scale)
                     + Vec3::Y * (leg_top - leg_height * 0.5);
                 self.tv.add(scene, self.tv_mesh[1], box_xf(leg, Vec3::new(0.9, leg_height, 0.9), 0.0));
             }
         }
-        let seats = seat_layout(&mut self.rng, base, inner, &self.looks);
+        let seats = seat_layout(&mut self.rng, self.geo, &self.looks);
         self.crowd.set_seats(scene, &seats, Vec2::ZERO);
+        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+        if std::env::args_os().any(|arg| arg == "--warp-humans") {
+            self.crowd.set_humans(a.seed, &seats);
+        }
         self.sound.kickoff();
     }
 
@@ -725,6 +762,10 @@ impl StadiumVisuals {
 
     /// For state dumps.
     pub fn geometry_counts(&self, scene: &Scene) -> serde_json::Value {
+        if self.crowd.uses_humans() {
+            return serde_json::json!({"renderer": "warp humans", "seated": self.crowd.len(),
+                "alive": self.crowd.alive(), "detail_selection": "per view"});
+        }
         let (mut source, mut root, mut clusters) = (0usize, 0usize, 0usize);
         for &(body, arms) in &self.looks {
             let mut counts = [0usize; 3];
@@ -756,6 +797,26 @@ impl StadiumVisuals {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scale_playtest_stands_at_eye_level_on_a_real_tread() {
+        use growing_guns::shape::Boxes;
+        let mut world = World::new(52, &[false, true, true, true]);
+        start_in_stands(&mut world).unwrap();
+        let player = &world.players[0];
+        let feet = player.pos.y - growing_guns::HALF_HEIGHT;
+        let (down, _, _) = world.arena.grid.ray(player.pos, Vec3::NEG_Y, 2.0).unwrap();
+        assert!((player.pos.y - down - feet).abs() < 0.01);
+        assert!((player.eye().y - feet - 1.60).abs() < 0.01);
+        let seats = review_seats(&world);
+        let neighbour = seats.iter().find(|s| {
+            let delta = s.pos - player.pos;
+            let ahead = growing_guns::look_dir(player.yaw, 0.0);
+            delta.dot(ahead) > 1.0 && delta.dot(ahead) < 2.1
+                && delta.cross(ahead).y.abs() < 0.05 && (s.pos.y - feet).abs() < 0.01
+        }).unwrap();
+        assert!((1.55..=1.95).contains(&neighbour.scale));
+    }
 
     #[test]
     fn canopy_is_closed_with_no_overlapping_internal_faces() {

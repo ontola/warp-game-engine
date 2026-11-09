@@ -1,0 +1,133 @@
+{
+  "adapter": "NVIDIA GeForce RTX 5070 Ti",
+  "backend": "Vulkan",
+  "seed": 52,
+  "stadium": {
+    "old_revision": "8cf8cbfd",
+    "new_revision": "c39078b6",
+    "width_per_view": 960,
+    "height_per_view": 540,
+    "views": 2,
+    "samples_per_run": 121,
+    "close_frames_inclusive": [
+      54,
+      66
+    ],
+    "frame_60": [
+      {
+        "close": 41,
+        "far": 435,
+        "gpu_ms": 0.459744,
+        "medium": 406
+      },
+      {
+        "close": 0,
+        "far": 8353,
+        "gpu_ms": 0.115264,
+        "medium": 0
+      }
+    ],
+    "results": {
+      "base": {
+        "runs": 3,
+        "population": 8353,
+        "both_gpu_ms": 0.214,
+        "wide_gpu_ms": 0.112,
+        "near_pair_ms": 0.251,
+        "request_to_visible": [
+          {
+            "first_detailed_frame": 34,
+            "frames": 1,
+            "requested_frame": 33,
+            "wall_ms": 2.6981
+          },
+          {
+            "first_detailed_frame": 34,
+            "frames": 1,
+            "requested_frame": 33,
+            "wall_ms": 1.9027
+          },
+          {
+            "first_detailed_frame": 34,
+            "frames": 1,
+            "requested_frame": 33,
+            "wall_ms": 1.8759
+          }
+        ],
+        "gpu_buffer_bytes": 1459692,
+        "appearance_texture_bytes": 0
+      },
+      "final": {
+        "runs": 3,
+        "population": 8353,
+        "both_gpu_ms": 0.23,
+        "wide_gpu_ms": 0.115,
+        "near_pair_ms": 0.572,
+        "request_to_visible": [
+          {
+            "first_detailed_frame": 34,
+            "frames": 1,
+            "requested_frame": 33,
+            "wall_ms": 2.3346
+          },
+          {
+            "first_detailed_frame": 34,
+            "frames": 1,
+            "requested_frame": 33,
+            "wall_ms": 2.9691
+          },
+          {
+            "first_detailed_frame": 34,
+            "frames": 1,
+            "requested_frame": 33,
+            "wall_ms": 2.6004
+          }
+        ],
+        "gpu_buffer_bytes": 3220600,
+        "appearance_texture_bytes": 8388608
+      }
+    }
+  },
+  "match": {
+    "width": 3840,
+    "height": 2160,
+    "views": 4,
+    "samples_per_run": 120,
+    "stock_crowd": true,
+    "comparison": "Before and after first rig build, before final face and hand corrections",
+    "runs": [
+      {
+        "build": "old",
+        "serialized_fps": 50.0,
+        "wall_ms": 20.01,
+        "wall_p95_ms": 25.11,
+        "gpu_ms": 8.83,
+        "gpu_p95_ms": 9.89
+      },
+      {
+        "build": "new",
+        "serialized_fps": 48.8,
+        "wall_ms": 20.51,
+        "wall_p95_ms": 24.24,
+        "gpu_ms": 8.75,
+        "gpu_p95_ms": 9.97
+      },
+      {
+        "build": "new",
+        "serialized_fps": 48.9,
+        "wall_ms": 20.47,
+        "wall_p95_ms": 24.87,
+        "gpu_ms": 8.77,
+        "gpu_p95_ms": 10.15
+      },
+      {
+        "build": "old",
+        "serialized_fps": 49.0,
+        "wall_ms": 20.41,
+        "wall_p95_ms": 23.78,
+        "gpu_ms": 8.95,
+        "gpu_p95_ms": 10.08
+      }
+    ]
+  }
+}

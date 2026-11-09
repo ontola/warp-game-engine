@@ -123,18 +123,20 @@ fn near_level_due(k: usize, frame: u64) -> bool {
     if k == 0 || !*STAGGER.get_or_init(|| std::env::var("KERN_SUN_STAGGER").as_deref() != Ok("0")) { return true; }
     match k { 1 => frame % 2 == 0, 2 => frame % 4 == 1, _ => frame % 8 == 3 }
 }
-/// One sun shadow system (KERN_SUN_CLIPMAP=1, opt-in, streamed GPU-forest
-/// worlds without the static split): CLIPMAP_LEVELS levels per view from
-/// 24 m to 1536 m replace the shared map and the anchored far map. Every
+/// One sun shadow system (on by default since 9 November, KERN_SUN_CLIPMAP=0
+/// for the separate maps; streamed GPU-forest worlds without the static split,
+/// KERN_STATIC_SUN_CACHE=1): CLIPMAP_LEVELS levels per view from 24 m to
+/// 3 km (clipmap_base raises the first one from high up) replace the shared
+/// map and the anchored far map. Every
 /// level keeps its depth across frames: projections snap to whole texels,
 /// so camera movement scrolls the retained depth, and one caster history
 /// (shadow_damage.rs) marks the tiles whose casters changed in every level.
-/// Only those tiles redraw, every frame (no stagger). The outermost level
+/// Only those tiles redraw; outer levels on a stagger or when they move. The outermost level
 /// takes the shared map's place in shading; past it the coarse transmittance
 /// fallback applies as before past the far map.
 pub(crate) fn sun_clipmap_requested() -> bool {
-    static CLIPMAP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CLIPMAP.get_or_init(|| std::env::var("KERN_SUN_CLIPMAP").as_deref() == Ok("1"))
+    std::env::var("KERN_SUN_CLIPMAP").as_deref() != Ok("0")
+        && std::env::var("KERN_STATIC_SUN_CACHE").as_deref() != Ok("1")
 }
 /// Clipmap redraw schedule: level 0 every frame, 1 every other frame, 2
 /// every fourth, 3 and up every eighth on different frames (at most three
@@ -1057,6 +1059,7 @@ pub struct Renderer {
     debris: Option<crate::debris::DebrisRenderer>,
     procedural_terrain: Option<crate::procedural_terrain::TerrainRenderer>,
     crowd: Option<crate::crowd::CrowdRenderer>,
+    humans: std::sync::Mutex<Option<crate::humans::ReviewRenderer>>,
     fx: crate::fx::FxSlot,
     volumetric: crate::volumetric::VolumetricSlot,
     sky_volume: crate::sky_volume::SkyVolumeSlot,
@@ -2462,6 +2465,7 @@ impl Renderer {
             debris,
             procedural_terrain,
             crowd,
+            humans: std::sync::Mutex::new(None),
             fx: Default::default(),
             volumetric: Default::default(),
             sky_volume: { let slot = crate::sky_volume::SkyVolumeSlot::default(); slot.set_tables(scene.atmosphere.clone()); slot },
@@ -3900,6 +3904,12 @@ impl Renderer {
 
     pub fn set_effects(&self, gpu: &Gpu, time: f32, puffs: Option<&[crate::fx::Puff]>) -> Result<(), String> {
         self.fx.set(gpu, time, puffs);
+        Ok(())
+    }
+
+    pub(crate) fn set_crowd_humans(&self, gpu: &Gpu, actors: Option<&[crate::humans::Instance]>, first: u32) -> Result<(), String> {
+        *self.humans.lock().unwrap() = actors.filter(|a| !a.is_empty()).map(|a|
+            crate::humans::ReviewRenderer::for_match(gpu, a, &self.instance_buffer, first)).transpose()?;
         Ok(())
     }
 
@@ -5495,6 +5505,14 @@ impl Renderer {
                             });
                         }
                         meadow.render(gpu, &mut enc, vi, (w,h), &self.scene_bind, &meadow_bindings, &hdr_v, &depth, times, dlss_on, debug_options)?;
+                    }
+                    if let Some(humans) = self.humans.lock().unwrap().as_mut() {
+                        let time = self.query.as_ref()
+                            .filter(|_| gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS))
+                            .map(|(qs, _, _)| { names.push("warp humans"); (qs, timestamp_pair(&mut ts)) });
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
+                        humans.draw_match(gpu, &mut enc, cam, vp, view_m, px_scale, light, &hdr_v, &depth_v);
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
                     }
                     if let Some(transparency) = self.transparency.as_ref().filter(|_|debug_options.transparency_enabled) {
                         let t = self.query.as_ref().map(|(qs, _, _)| { let i = timestamp_pair(&mut ts); (qs, i) });

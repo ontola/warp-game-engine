@@ -12,6 +12,8 @@ pub(super) struct Vertex {
     arm: f32,
     center: [f32; 3],
     bin: u32,
+    bones: [u8; 4],
+    morphs: [[i8; 4]; 4],
 }
 
 #[derive(Default)]
@@ -37,6 +39,7 @@ impl Mesh {
             arm,
             center: center.into(),
             bin,
+            ..Vertex::zeroed()
         }));
         self.indices.extend(shape.indices.iter().map(|i| start + i));
     }
@@ -72,6 +75,7 @@ impl Mesh {
                     material: 1,
                     arm: 0.,
                     bin,
+                    ..Vertex::zeroed()
                 });
                 if j > 0 {
                     let a = first + (j as u32 - 1) * sides + k;
@@ -82,45 +86,36 @@ impl Mesh {
             }
         }
     }
-    fn head(&mut self) {
-        let data = include_bytes!("../../../../assets/humans/head.bin");
-        let count = u32::from_le_bytes(data[..4].try_into().unwrap()) as usize;
-        let positions: Vec<Vec3> = data[8..8 + 12 * count]
-            .chunks_exact(12)
-            .map(|v| {
-                let f = |i| f32::from_le_bytes(v[i..i + 4].try_into().unwrap());
-                let y = 0.824 + (f(4) - 5.55) * 0.058;
-                let x = f(0) * 0.06;
-                let z = (f(8) - 0.35) * 0.06;
-                // The reference crop includes part of the shoulders. Tuck the
-                // lower rings inside the pullover and keep the jaw unmodified.
-                let radius = (x / 0.029).hypot(z / 0.026).max(1.);
-                let neck = ((y - 0.844) / 0.025).clamp(0., 1.);
-                let scale = 1. / radius + neck * (1. - 1. / radius);
-                Vec3::new(x * scale, y, z * scale)
+    fn anatomical() -> Self {
+        let bytes = include_bytes!("../../../../assets/humans/person.bin");
+        let u32_at = |i| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
+        let count = u32_at(0);
+        let split = 8 + count * 38;
+        let vertices = bytes[8..split]
+            .chunks_exact(38)
+            .map(|s| {
+                let signed = |i| i16::from_le_bytes([s[i], s[i + 1]]) as f32 / 32767.;
+                let word = |i| u16::from_le_bytes([s[i], s[i + 1]]);
+                Vertex {
+                    pos: [0, 2, 4].map(|i| signed(i) * 1.2),
+                    normal: [6, 8, 10].map(signed),
+                    center: [word(12) as f32 / 65535., word(14) as f32 / 65535., -1.],
+                    bones: s[16..20].try_into().unwrap(),
+                    morphs: std::array::from_fn(|m| {
+                        std::array::from_fn(|c| s[20 + m * 4 + c] as i8)
+                    }),
+                    bin: 4,
+                    material: word(36) as u32,
+                    arm: 0.,
+                }
             })
             .collect();
-        let mut normals = vec![Vec3::ZERO; count];
-        let mut eyes = vec![false; count];
-        let start = self.vertices.len() as u32;
-        for tri in data[8 + 12 * count..].chunks_exact(8) {
-            let id = |i| u16::from_le_bytes([tri[i], tri[i + 1]]) as usize;
-            let [a, b, c] = [id(0), id(2), id(4)];
-            let n = (positions[b] - positions[a]).cross(positions[c] - positions[a]);
-            for i in [a, b, c] {
-                normals[i] += n;
-                eyes[i] = id(6) != 0;
-                self.indices.push(start + i as u32);
-            }
-        }
-        self.vertices.extend((0..count).map(|i| Vertex {
-            pos: positions[i].into(),
-            normal: normals[i].normalize_or_zero().into(),
-            material: if eyes[i] { 6 } else { 5 },
-            center: [0., 0.91, 0.],
-            arm: 0.,
-            bin: 4,
-        }));
+        let indices = bytes[split..]
+            .chunks_exact(4)
+            .map(|v| u32::from_le_bytes(v.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(indices.len(), u32_at(4));
+        Self { vertices, indices }
     }
 }
 
@@ -133,19 +128,15 @@ pub(super) fn stand() -> Mesh {
 // The same part centres drive the silhouette, hand path and colour assignment at every level.
 pub(super) fn person(bin: u32, far: Far, detailed: bool) -> Mesh {
     let mut m = Mesh::default();
+    if detailed {
+        return Mesh::anatomical();
+    }
     let mut part = |center: [f32; 3], radius: [f32; 3], material, arm| {
         let (shape, mult) = match (bin, far) {
             (1, Far::Cells) => (primitives::cube(0), 2.),
             (1, Far::Impostor) => (primitives::quad(0), 2.),
             (1, Far::Mesh) => (primitives::sphere(0, 2, 5), 1.),
-            _ => (
-                primitives::sphere(
-                    0,
-                    if detailed { 10 } else { 4 },
-                    if detailed { 16 } else { 8 },
-                ),
-                1.,
-            ),
+            _ => (primitives::sphere(0, 4, 8), 1.),
         };
         m.part(
             shape,
@@ -159,7 +150,12 @@ pub(super) fn person(bin: u32, far: Far, detailed: bool) -> Mesh {
     // Shoes, trousers and pullover overlap slightly at their seams.
     for s in [-1., 1.] {
         part([s * 0.055, 0.035, 0.018], [0.037, 0.031, 0.073], 3, 0.);
-        part([s * 0.055, 0.246, 0.], [0.045, 0.225, 0.05], 2, 0.);
+        if bin == 1 {
+            part([s * 0.055, 0.246, 0.], [0.045, 0.225, 0.05], 2, 0.);
+        } else {
+            part([s * 0.062, 0.365, 0.], [0.050, 0.139, 0.055], 2, 0.);
+            part([s * 0.065, 0.144, 0.], [0.035, 0.114, 0.041], 2, 0.);
+        }
     }
     part([0., 0.457, 0.], [0.104, 0.085, 0.067], 2, 0.);
     if bin == 1 {
@@ -169,27 +165,46 @@ pub(super) fn person(bin: u32, far: Far, detailed: bool) -> Mesh {
         part([s * 0.118, 0.719, 0.], [0.043, 0.094, 0.045], 1, s);
         part([s * 0.130, 0.592, 0.012], [0.030, 0.085, 0.034], 4, s);
         part([s * 0.133, 0.502, 0.019], [0.024, 0.036, 0.015], 4, s);
-        if detailed {
-            for finger in 0..4 {
-                part(
-                    [s * (0.117 + 0.010 * finger as f32), 0.472, 0.019],
-                    [0.006, 0.025 - (finger as f32 - 1.).abs() * 0.004, 0.007],
-                    4,
-                    s,
-                );
-            }
-            part([s * 0.109, 0.505, 0.023], [0.009, 0.024, 0.010], 4, s);
-        }
     }
-    if !detailed {
-        part([0., 0.832, 0.], [0.038, 0.047, 0.035], 4, 0.);
-        part([0., 0.919, 0.012], [0.062, 0.082, 0.059], 4, 0.);
-        part([0., 0.963, 0.], [0.064, 0.043, 0.060], 7, 0.);
-    } else {
-        m.head();
-    }
+    part([0., 0.832, 0.], [0.038, 0.047, 0.035], 4, 0.);
+    part([0., 0.919, 0.012], [0.062, 0.082, 0.059], 4, 0.);
+    part([0., 0.963, 0.], [0.064, 0.043, 0.060], 7, 0.);
     if bin != 1 {
         m.pullover(bin);
     }
     m
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cooked_body_retains_eyes_and_follows_the_limbs() {
+        let mesh = Mesh::anatomical();
+        assert!(
+            mesh.indices
+                .iter()
+                .all(|&i| (i as usize) < mesh.vertices.len())
+        );
+        let eyes: Vec<_> = mesh.vertices.iter().filter(|v| v.material == 6).collect();
+        for side in [-1., 1.] {
+            assert!(eyes.iter().any(|v| v.pos[0] * side > 0.012));
+            let sleeve: Vec<_> = mesh
+                .vertices
+                .iter()
+                .filter(|v| v.material == 12 && v.pos[0] * side > 0.24 && v.pos[1] > 0.55)
+                .collect();
+            assert!(!sleeve.is_empty());
+            assert!(sleeve.iter().all(|v| v.bones[0] > 216 && v.bones[1] > 216));
+        }
+        assert!(
+            mesh.vertices
+                .iter()
+                .any(|v| v.material == 12 && v.pos[1] < 0.2 && v.bones[3] > 240)
+        );
+        for material in [13, 20, 21, 22] {
+            assert!(mesh.vertices.iter().any(|v| v.material == material));
+        }
+    }
 }
