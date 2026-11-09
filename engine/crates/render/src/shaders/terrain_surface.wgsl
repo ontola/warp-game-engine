@@ -251,7 +251,7 @@ fn far_tree_cast(s: SurfaceIn) -> f32 {
     let r0 = params.style.crown.x * FAR_CROWN_SIZE;
     let len0 = max(params.style.far.w * min(sun_xz / sun.y, FAR_TREE_COT_MAX), 2.0 * r0);
     let fw = max(footprint * 0.5, 0.05);
-    return (1.0 - far_strip(s.p.xz, sun.xz / sun_xz, len0, r0, fw, fw, crowd, seed, params.style).x) * drawn;
+    return (1.0 - far_strip(s.p.xz, sun.xz / sun_xz, len0, r0 * FAR_SHADOW_SIZE, fw, fw, crowd, seed, params.style, FAR_SHADOW_OPACITY).x) * drawn;
 }
 fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: FieldAttr, footprint: f32) -> MeadowCanopy {
     if s.scale >= 0.0 { return MeadowCanopy(ground, nn); }
@@ -314,7 +314,7 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
         let r0 = params.style.crown.x * FAR_CROWN_SIZE;
         let len0 = max(params.style.far.w * min(sun_xz / sun.y, FAR_TREE_COT_MAX), 2.0 * r0);
         let fw = max(footprint * 0.5, 0.05);
-        let cast_sh = 1.0 - far_strip(s.p.xz, sun.xz / sun_xz, len0, r0, fw, fw, crowd, seed, params.style).x;
+        let cast_sh = 1.0 - far_strip(s.p.xz, sun.xz / sun_xz, len0, r0 * FAR_SHADOW_SIZE, fw, fw, crowd, seed, params.style, FAR_SHADOW_OPACITY).x;
         shadow = mix(cast_sh, shadow, far_crown_far);
     }
     let sun_cover = shadow * grows * fade;
@@ -349,6 +349,11 @@ override FAR_GAP_SHADE: f32 = 0.0;
 // Crown half-width relative to the style's (its top-down cover radius,
 // which counts the open branch tips).
 override FAR_CROWN_SIZE: f32 = 1.0;
+// A pine's shadow on the ground: sun through its open crown, and narrower
+// than its silhouette's full width (Mancave from 1200 m: full-strength,
+// full-width shadows read as dark dashes 2-3x the crowns).
+override FAR_SHADOW_OPACITY: f32 = 0.55;
+override FAR_SHADOW_SIZE: f32 = 0.7;
 // Steepest glancing view a silhouette stretches for (cot of elevation).
 const FAR_TREE_COT_MAX: f32 = 8.0;
 // KERN_FAR_CROWN_DEBUG: red the averaged share, green single-crown cover.
@@ -401,7 +406,7 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
         if FAR_CROWN_DEBUG == 1.0 { return vec4<f32>(1.0, 0.0, 0.0, 1.0); }
         return vec4<f32>(needles * tops, mean_cover);
     }
-    let strip = far_strip(q, along, len0, r0, fa, fl, crowd, seed, fs);
+    let strip = far_strip(q, along, len0, r0, fa, fl, crowd, seed, fs, FAR_CROWN_OPACITY);
     let near_cover = 1.0 - strip.x;
     let near_tint = select(1.0, strip.y / strip.z, strip.z > 0.0);
     let cover = mix(near_cover, mean_cover, far);
@@ -419,7 +424,7 @@ var<private> far_crown_far: f32 = 1.0;
 // (nearer ones in front). Walks the cells under the strip once each,
 // column by column along its major grid axis. fa, fl: the pixel's
 // filter across and along `dir`.
-fn far_strip(q: vec2<f32>, dir: vec2<f32>, len0: f32, r0: f32, fa: f32, fl: f32, crowd: f32, seed: u32, fs: ForestStyle) -> vec3<f32> {
+fn far_strip(q: vec2<f32>, dir: vec2<f32>, len0: f32, r0: f32, fa: f32, fl: f32, crowd: f32, seed: u32, fs: ForestStyle, opacity: f32) -> vec3<f32> {
     let side = vec2<f32>(-dir.y, dir.x);
     let reach = len0 * 1.25;
     let hw = r0 * 1.25;
@@ -466,7 +471,7 @@ fn far_strip(q: vec2<f32>, dir: vec2<f32>, len0: f32, r0: f32, fa: f32, fl: f32,
             let a_t = clamp(0.5 + (s - 0.3 * len) / fl, 0.0, 1.0) * clamp(0.5 + (len - s) / fl, 0.0, 1.0);
             let a = a_x * a_t;
             if a <= 0.0 { continue; }
-            open *= 1.0 - a * FAR_CROWN_OPACITY;
+            open *= 1.0 - a * opacity;
             // A lit top over a shaded base (averaging 1 over the crown).
             let u = clamp((t - 0.3) / 0.7, 0.0, 1.0);
             let lit = (FAR_CROWN_BASE + (2.0 - 2.0 * FAR_CROWN_BASE) * u) * sp.w;
