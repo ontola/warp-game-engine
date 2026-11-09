@@ -5,6 +5,8 @@ use glam::{Affine3A, Mat4, Quat, Vec3};
 use growing_guns::{Event, World, DT, WALK_SPEED};
 use render::{Gpu, Renderer, Scene};
 use std::path::PathBuf;
+mod locomotion;
+use locomotion::{Locomotion, Stride};
 use super::character_ragdoll::Corpse;
 use physics::Physics;
 
@@ -14,7 +16,39 @@ const RUN: &str = "pistol_run";
 const JUMP: &str = "pistol_jump";
 
 #[derive(Default)]
-struct Motion { idle: f32, run: f32, blend: f32, jump: Option<f32> }
+struct Motion { idle: f32, run: f32, blend: f32, jump: Option<f32>, stride: Stride }
+impl Motion {
+    fn sample(
+        &self,
+        locomotion: Option<&Locomotion>,
+        model: &Character,
+        alpha: f32,
+        palette: &mut [Mat4],
+        scratch: &mut [Mat4],
+    ) -> Result<Mat4, String> {
+        let alpha = alpha.clamp(0., 1.);
+        let interpolate = (alpha - 1.) * DT;
+        let idle = (self.idle + interpolate).max(0.);
+        if let Some(rig) = locomotion {
+            return rig.pose(model, &self.stride, alpha, idle, palette);
+        }
+        if let Some(age) = self.jump {
+            let t = (age + interpolate).max(0.);
+            model.sample_into(JUMP, t, false, palette)?;
+            return model.sample_socket(JUMP, "RightHand", t, false);
+        }
+        model.sample_into(IDLE, idle, true, palette)?;
+        model.sample_into(RUN, self.run, true, scratch)?;
+        for (a, b) in palette.iter_mut().zip(scratch) {
+            *a = mix(*a, *b, self.blend);
+        }
+        Ok(mix(
+            model.sample_socket(IDLE, "RightHand", idle, true)?,
+            model.sample_socket(RUN, "RightHand", self.run, true)?,
+            self.blend,
+        ))
+    }
+}
 struct KnightHold {
     editor: body::pose_editor::PoseEditor,
     authored: crate::foregrip_pose::ForegripPose,
@@ -40,6 +74,7 @@ struct LavaTwin { handle: ActorHandle, palette: Vec<Mat4> }
 const RIGID_CELL: f32 = 0.035;
 
 pub struct Characters {
+    locomotion: Option<Locomotion>,
     animation: crate::hand_animation::HandAnimation,
     models: Vec<Character>,
     actors: Vec<Actor>,
@@ -172,7 +207,7 @@ mod tests {
     #[test]
     fn reused_enemy_and_round_reset_release_the_old_skin_rig() {
         let model = Character::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters/knight.json")).unwrap();
-        let mut c = Characters { animation: crate::hand_animation::HandAnimation::load().unwrap(), rigid_meshes: vec![None], pieces: Vec::new(), rigid_frame: Vec::new(), models: vec![model], actors: Vec::new(), lava: Vec::new(), hands: Vec::new() };
+        let mut c = Characters { locomotion: None, animation: crate::hand_animation::HandAnimation::load().unwrap(), rigid_meshes: vec![None], pieces: Vec::new(), rigid_frame: Vec::new(), models: vec![model], actors: Vec::new(), lava: Vec::new(), hands: Vec::new() };
         let mut scene = Scene::default();
         c.reserve_actor(&mut scene, 0).unwrap();
         let mut world = World::new(3, &[false, true, true]);
@@ -283,7 +318,8 @@ impl Characters {
                 model.sample_socket(clip, "RightHand", 0.0, clip != JUMP)?;
             }
         }
-        Ok(Self { animation: crate::hand_animation::HandAnimation::load()?, rigid_meshes: models.iter().map(|_| None).collect(), pieces: Vec::new(), rigid_frame: Vec::new(), models, actors: Vec::new(), lava: Vec::new(), hands: Vec::new() })
+        let locomotion = humans.map(|_| Locomotion::bind(&models[0])).transpose()?;
+        Ok(Self { locomotion, animation: crate::hand_animation::HandAnimation::load()?, rigid_meshes: models.iter().map(|_| None).collect(), pieces: Vec::new(), rigid_frame: Vec::new(), models, actors: Vec::new(), lava: Vec::new(), hands: Vec::new() })
     }
 
     pub fn models(&self) -> &[Character] { &self.models }
@@ -357,19 +393,13 @@ impl Characters {
     /// Returns the twin's instance and mesh (to place), None without room
     /// for one.
     pub fn lava_twin(&mut self, i: usize) -> Option<(usize, usize)> {
-        let actor = self.actors.get(i)?;
+        let actor = self.actors.get_mut(i)?;
         let twin = self.lava.get_mut(i)?.as_mut()?;
         // The pose of the current simulated animation (as `kill`), even
         // when no frame was drawn since the last tick.
         let model = &self.models[i % self.models.len()];
         let m = &actor.motion;
-        if let Some(age) = m.jump {
-            model.sample_into(JUMP, age, false, &mut twin.palette).ok()?;
-        } else {
-            model.sample_into(IDLE, m.idle, true, &mut twin.palette).ok()?;
-            let run = model.sample(RUN, m.run, true).ok()?;
-            for (idle, run) in twin.palette.iter_mut().zip(run) { *idle = mix(*idle, run, m.blend); }
-        }
+        m.sample(self.locomotion.as_ref(), model, 1., &mut twin.palette, &mut actor.run_palette).ok()?;
         self.hands[i] = None;
         Some((twin.handle.instance, twin.handle.mesh))
     }
@@ -399,14 +429,19 @@ impl Characters {
             }
             actor.velocity = p.vel;
             let m = &mut actor.motion;
+            m.idle += DT;
+            let jumped = world.events.iter().any(|e| matches!(e, Event::Jump { player } if *player == i));
+            if let Some(locomotion) = &self.locomotion {
+                locomotion.advance(&mut m.stride, p.pos, p.yaw, p.vel.y, p.on_floor, jumped);
+                continue;
+            }
             let speed = Vec3::new(p.vel.x, 0.0, p.vel.z).length();
             let local = Quat::from_rotation_y(-p.yaw) * p.vel;
             let direction = if local.z > speed * 0.2 { -1.0 } else { 1.0 };
-            m.idle += DT;
             m.run += DT * (speed / WALK_SPEED).clamp(0.75, 1.5) * direction;
             let target = if p.on_floor { (speed / WALK_SPEED).clamp(0.0, 1.0) } else { 0.0 };
             m.blend += (target - m.blend) * (DT * 10.0).min(1.0);
-            if world.events.iter().any(|e| matches!(e, Event::Jump { player } if *player == i)) {
+            if jumped {
                 m.jump = Some(0.0);
             } else if p.on_floor {
                 m.jump = None;
@@ -428,19 +463,8 @@ impl Characters {
             }
             let model = &self.models[i % self.models.len()];
             let m = &actor.motion;
-            let interpolate = (alpha.clamp(0.0, 1.0) - 1.0) * DT;
-            let socket = if let Some(age) = m.jump {
-                let time = (age + interpolate).max(0.0);
-                model.sample_into(JUMP, time, false, &mut actor.palette).expect("validated jump clip");
-                model.sample_socket(JUMP, "RightHand", time, false).expect("validated jump socket")
-            } else {
-                let idle_time = (m.idle + interpolate).max(0.0);
-                model.sample_into(IDLE, idle_time, true, &mut actor.palette).expect("validated idle clip");
-                model.sample_into(RUN, m.run, true, &mut actor.run_palette).expect("validated run clip");
-                for (idle, run) in actor.palette.iter_mut().zip(&actor.run_palette) { *idle = mix(*idle, *run, m.blend); }
-                mix(model.sample_socket(IDLE, "RightHand", idle_time, true).expect("validated idle socket"),
-                    model.sample_socket(RUN, "RightHand", m.run, true).expect("validated run socket"), m.blend)
-            };
+            let socket = m.sample(self.locomotion.as_ref(), model, alpha, &mut actor.palette, &mut actor.run_palette)
+                .expect("validated locomotion and hand socket");
             let drawn = crate::view::pose(world, i, prev, alpha);
             let body = model_transform(drawn.pos, drawn.yaw);
             let hand = body.transform_point3(socket.w_axis.truncate());
@@ -467,13 +491,7 @@ impl Characters {
         let model = &self.models[player % self.models.len()];
         // Use the current simulated animation even if no frame was drawn since
         // the last tick (headless runs and multiple simulation ticks per draw).
-        if let Some(age) = actor.motion.jump {
-            model.sample_into(JUMP, age, false, &mut actor.palette)?;
-        } else {
-            model.sample_into(IDLE, actor.motion.idle, true, &mut actor.palette)?;
-            model.sample_into(RUN, actor.motion.run, true, &mut actor.run_palette)?;
-            for (idle, run) in actor.palette.iter_mut().zip(&actor.run_palette) { *idle = mix(*idle, *run, actor.motion.blend); }
-        }
+        actor.motion.sample(self.locomotion.as_ref(), model, 1., &mut actor.palette, &mut actor.run_palette)?;
         actor.corpse = Some(Corpse::spawn(model, &actor.palette, model_transform(p.pos, p.yaw), actor.velocity, direction, player, headless, physics)?);
         self.hands[player] = None;
         Ok(())
