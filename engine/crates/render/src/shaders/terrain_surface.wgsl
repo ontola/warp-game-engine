@@ -330,8 +330,10 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
     let w0 = max(max(fa, fl * squash0), 0.05);
     // Each crown is filtered to its coverage share of the pixel, so the
     // grain (how many crowns a pixel happens to hold) lasts until a pixel
-    // spans the 3x3 spots.
-    let far = smoothstep(FF_CELL * 0.75, FF_CELL * 1.5, w0);
+    // spans the spots searched: 3x3 cells while it is under a cell, 5x5 out
+    // to ~2.5 cells (the reference's grain stays to the horizon; the mean
+    // from ~3 km on had none).
+    let far = smoothstep(FF_CELL * 2.0, FF_CELL * 3.0, w0);
     if far >= 1.0 {
         if FAR_CROWN_DEBUG { return vec4<f32>(1.0, 0.0, 0.0, 1.0); }
         return vec4<f32>(needles * tops, mean_cover);
@@ -341,8 +343,9 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
     var open = 1.0;
     var tint = 0.0;
     var weight = 0.0;
-    for (var dj = -1; dj <= 1; dj++) {
-        for (var di = -1; di <= 1; di++) {
+    let k = select(1, 2, w0 > FF_CELL * 0.75);
+    for (var dj = -k; dj <= k; dj++) {
+        for (var di = -k; di <= k; di++) {
             let sp = ff_spot(ci + di, cj + dj, seed, crowd, fs.needles.w);
             if sp.w < 0.0 { continue; }
             let d = q - sp.xy;
