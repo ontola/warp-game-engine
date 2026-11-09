@@ -2263,6 +2263,7 @@ impl Renderer {
         let terrain_coarse_on = !simple_lighting && shade_features.terrain && std::env::var("KERN_TERRAIN_COARSE").as_deref() != Ok("0");
         shade_constants.push(("TERRAIN_COARSE", if terrain_coarse_on {1.0} else {0.0}));
         if let Some(m) = std::env::var("KERN_COARSE_FOOTPRINT_M").ok().and_then(|v| v.parse::<f64>().ok()) { shade_constants.push(("COARSE_FOOTPRINT_M", m)); }
+        shade_constants.extend(far_crown_constants());
         // KERN_SHADE_CLASSES=0: one shade pipeline for terrain and the rest.
         let shade_classes = !simple_lighting && shade_features.terrain && std::env::var("KERN_SHADE_CLASSES").as_deref() != Ok("0");
         // The terrain class keeps every feature terrain pixels can reach.
@@ -3348,6 +3349,7 @@ impl Renderer {
                 constants.push(("SHADE_DIAGNOSTICS", 0.0));
                 constants.push(("TERRAIN_COARSE", if self.terrain_coarse.is_some() {1.0} else {0.0}));
                 if let Some(m) = std::env::var("KERN_COARSE_FOOTPRINT_M").ok().and_then(|v| v.parse::<f64>().ok()) { constants.push(("COARSE_FOOTPRINT_M", m)); }
+                constants.extend(far_crown_constants());
                 let make = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some(entry),
                     layout: Some(&self.shade_pl),
@@ -6728,4 +6730,20 @@ mod raster_split_tests {
         let differ=split.iter().zip(&single).filter(|(a,b)|a!=b).count();
         assert_eq!(differ,0,"split and single pipelines must give the same owners");
     }
+}
+
+/// Look tuning for the painted far forest (terrain_surface.wgsl far_crowns),
+/// A/B only: KERN_FAR_CROWN="base,area,sun_loss,sky_loss" (any may be left
+/// empty) and KERN_FAR_CROWN_DEBUG=1 (red: averaged share, green: crown
+/// cover from single crowns).
+fn far_crown_constants() -> Vec<(&'static str, f64)> {
+    let mut out = Vec::new();
+    if let Ok(v) = std::env::var("KERN_FAR_CROWN") {
+        let names = ["FAR_CROWN_BASE", "FAR_VIEW_AREA_MAX", "FAR_CROWN_SUN_LOSS", "FAR_CROWN_SKY_LOSS"];
+        for (name, part) in names.iter().zip(v.split(',')) {
+            if let Ok(x) = part.trim().parse::<f64>() { out.push((*name, x)); }
+        }
+    }
+    if std::env::var("KERN_FAR_CROWN_DEBUG").as_deref() == Ok("1") { out.push(("FAR_CROWN_DEBUG", 1.0)); }
+    out
 }
