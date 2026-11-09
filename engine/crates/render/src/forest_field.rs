@@ -142,11 +142,14 @@ fn band(scale: f32, footprint: f32) -> f32 {
     (scale / footprint.max(1e-3) * 0.5 - 1.0).clamp(0.0, 1.0)
 }
 
-/// The ground's own leaning towards forest: forest is the rule, on slopes
-/// and ridges most of all; damp valley floors and some flat ground are meadow. From
-/// the terrain's `up` and `wet` (Sample, or the terrain's vertex attributes).
+/// The ground's own leaning towards forest, from the terrain's `up` and
+/// `wet` (Sample, or the terrain's vertex attributes): trees follow water,
+/// thin out on steep slopes and stop in standing wet. The ground's colour
+/// follows the same stands (terrain_surface.wgsl), so forest grows on green
+/// ground and the dry, sandy ground stays open (Joep, 9 November: it was
+/// the other way round, forest on dry slopes and meadow in damp hollows).
 pub fn site(up: f32, wet: f32) -> f32 {
-    0.45 - 0.4 * smooth(0.975, 0.998, up) - 0.8 * wet
+    0.05 + 0.6 * wet - 1.6 * (wet - 0.75).max(0.0) - 0.7 * (1.0 - smooth(0.86, 0.97, up))
 }
 
 /// Hedgerows: stretches of the edges of 110 by 80 m fields (on a grid
