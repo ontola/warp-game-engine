@@ -263,7 +263,7 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     let sun_shade = 1.0 - exp(-crowd * params.style.crown.y * sun_grow * sun_grow);
     // How closed the stand looks from here: crowns stacked behind crowns,
     // each in the others' shade.
-    let packed = 1.0 - exp(-crowd * params.style.crown.y * ff_crown_growth(eye, params.style) * ff_crown_growth(eye, params.style));
+    let packed = 1.0 - exp(-crowd * params.style.crown.y * far_view_area(eye, params.style));
     let sky_own = (0.25 + 0.75 * sqrt(FAR_CROWN_OWN)) * (1.0 - FAR_CROWN_SKY_LOSS * packed);
     let sun_own = FAR_CROWN_OWN * (1.0 - FAR_CROWN_SUN_LOSS * max(packed, sun_shade));
     let c = mix(gap, crowns.rgb * sky_own, cover);
@@ -280,14 +280,26 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     return MeadowCanopy(c, normalize(mix(nn, up, cover)));
 }
 
+// How much more ground a crown hides seen from `eye` than from above
+// (ff_crown_growth squared), capped: the reference's pines, drawn, are open
+// and narrow enough that gaps between them show kilometres out, where the
+// solid-cone growth had closed every stand.
+override FAR_VIEW_AREA_MAX: f32 = 2.5;
+fn far_view_area(eye: vec3<f32>, fs: ForestStyle) -> f32 {
+    let g = ff_crown_growth(eye, fs);
+    return min(g * g, FAR_VIEW_AREA_MAX);
+}
+
 // A crown's shaded base relative to its mean (its lit top is 2 - this).
-const FAR_CROWN_BASE: f32 = 0.55;
+override FAR_CROWN_BASE: f32 = 0.4;
+// KERN_FAR_CROWN_DEBUG: red the averaged share, green single-crown cover.
+override FAR_CROWN_DEBUG: bool = false;
 // The sun a drawn needle crown keeps (shade.wgsl NEEDLE_BRUSH_OWN).
 const FAR_CROWN_OWN: f32 = 0.42;
 // How much of that the neighbours in a closed stand take from a crown's
 // sun and sky.
-const FAR_CROWN_SUN_LOSS: f32 = 0.65;
-const FAR_CROWN_SKY_LOSS: f32 = 0.45;
+override FAR_CROWN_SUN_LOSS: f32 = 0.8;
+override FAR_CROWN_SKY_LOSS: f32 = 0.45;
 
 // Crowns seen from `eye` at q, for a pixel `footprint` metres across: rgb
 // their colour with self-shade, w the share of the pixel they cover. Each
@@ -298,8 +310,8 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
     let needles = mix(fs.needles.rgb, fs.far.rgb, ff_patch(q.x, q.y, seed, fs.crown.w));
     let crowd = ff_share(q.x, q.y, seed, site, footprint) * density;
     if crowd <= 0.0 { return vec4<f32>(needles, 0.0); }
-    let grow = ff_crown_growth(eye, fs);
-    let mean_cover = 1.0 - exp(-crowd * fs.crown.y * grow * grow);
+    let area = far_view_area(eye, fs);
+    let mean_cover = 1.0 - exp(-crowd * fs.crown.y * area);
     // Sun from above lights a little more of each crown.
     let tops = 0.9 + 0.1 * max(sun.y, 0.0);
     // A crown seen at a glancing angle is its width across the view and
@@ -313,14 +325,17 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
     let fa = max(abs(dot(dx.xz, across)), abs(dot(dy.xz, across)));
     let fl = max(abs(dot(dx.xz, along)), abs(dot(dy.xz, along)));
     let r0 = fs.crown.x;
-    let long0 = min(r0 * grow * grow, FF_CELL);
-    let squash0 = r0 * r0 * grow * grow / (long0 * long0);
+    let long0 = min(r0 * area, FF_CELL);
+    let squash0 = r0 * r0 * area / (long0 * long0);
     let w0 = max(max(fa, fl * squash0), 0.05);
     // Each crown is filtered to its coverage share of the pixel, so the
     // grain (how many crowns a pixel happens to hold) lasts until a pixel
     // spans the 3x3 spots.
     let far = smoothstep(FF_CELL * 0.75, FF_CELL * 1.5, w0);
-    if far >= 1.0 { return vec4<f32>(needles * tops, mean_cover); }
+    if far >= 1.0 {
+        if FAR_CROWN_DEBUG { return vec4<f32>(1.0, 0.0, 0.0, 1.0); }
+        return vec4<f32>(needles * tops, mean_cover);
+    }
     let ci = i32(floor(q.x / FF_CELL));
     let cj = i32(floor(q.y / FF_CELL));
     var open = 1.0;
@@ -334,8 +349,8 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
             // Along the view at most a cell long (the 3x3 spots end there);
             // the rest of the area goes across.
             let r = fs.crown.x * sp.z;
-            let long = min(r * grow * grow, FF_CELL);
-            let wide = r * r * grow * grow / long;
+            let long = min(r * area, FF_CELL);
+            let wide = r * r * area / long;
             let e = vec2<f32>(dot(d, across), dot(d, along) * wide / long);
             // The ellipse (in across metres) filtered over the pixel: past
             // a pixel's size it is spread as its area's share over the box.
@@ -349,7 +364,8 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
             // shade averages 1 over a crown, so the mean is unchanged.
             let top = clamp(0.5 - dot(d, along) / (2.0 * long), 0.0, 1.0);
             let lit = (FAR_CROWN_BASE + (2.0 - 2.0 * FAR_CROWN_BASE) * top) * sp.w;
-            let front = a * exp(dot(sp.xy - q, along) / FF_CELL);
+            // Nearly a z-order: a metre nearer counts e times more.
+            let front = a * exp(dot(sp.xy - q, along));
             tint += front * lit;
             weight += front;
         }
@@ -357,6 +373,7 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
     let near_cover = 1.0 - open;
     let near_tint = select(1.0, tint / weight, weight > 0.0);
     let cover = mix(near_cover, mean_cover, far);
+    if FAR_CROWN_DEBUG { return vec4<f32>(far, near_cover * (1.0 - far), 0.0, 1.0); }
     return vec4<f32>(needles * tops * mix(near_tint, 1.0, far), cover);
 }
 
