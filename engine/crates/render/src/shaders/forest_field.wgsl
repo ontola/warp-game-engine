@@ -68,16 +68,20 @@ fn ff_site(up: f32, wet: f32) -> f32 {
 // turned by the seed), about a tree wide, 0..1.
 fn ff_hedgerow(x: f32, z: f32, seed: u32) -> f32 {
     let a = ff_hash(0, 0, 10u, seed) * 1.5;
-    let u = x * cos(a) + z * sin(a);
-    let v = z * cos(a) - x * sin(a);
+    // Meandering edges, as forest_field.rs.
+    let p = vec2<f32>(x, z);
+    let wu = 12.0 * tf_noised(p / 90.0 + vec2<f32>(5.3, 2.9), seed + 83u).x;
+    let wv = 12.0 * tf_noised(p / 90.0 + vec2<f32>(1.7, 9.1), seed + 84u).x;
+    let u = x * cos(a) + z * sin(a) + wu;
+    let v = z * cos(a) - x * sin(a) + wv;
     let fu = u / 110.0;
     let fv = v / 80.0;
     let iu = round(fu);
     let iv = round(fv);
     // Distance to the nearest field edge across u and across v (metres), and
     // whether that stretch of edge carries a hedge.
-    let du = select(1e3, abs(fu - iu) * 110.0, ff_hash(i32(iu), i32(floor(fv)), 11u, seed) < 0.45);
-    let dv = select(1e3, abs(fv - iv) * 80.0, ff_hash(i32(floor(fu)), i32(iv), 12u, seed) < 0.45);
+    let du = select(1e3, abs(fu - iu) * 110.0, ff_hash(i32(iu), i32(floor(fv)), 11u, seed) < 0.3);
+    let dv = select(1e3, abs(fv - iv) * 80.0, ff_hash(i32(floor(fu)), i32(iv), 12u, seed) < 0.3);
     return clamp(1.0 - min(du, dv) / 4.0, 0.0, 1.0);
 }
 
