@@ -16,7 +16,7 @@ Shots use the simulated bullet path up to its first gameplay obstruction. The GP
 
 Confirmed contacts return asynchronously for directional blood spray, GPU debris and mist. A shared atlas supplies 16 blood footprints. The fan at the hit and the falling droplets sample actual steps and walls. Selected rigid gibs stamp their first static contact. All decals reuse the stadium and arena mark pools. The game's ordinary frame loop never waits for these notifications. The CPU's reported number alive can lag the visible deaths. Run the in-stands scenario with `script games/growing-guns/scripts/crowd-reactions.json --out build/crowd-reactions --start-in-stands --warp-humans --seed 52 --graphics full --sky noon --players 1`.
 The people render into the arena's HDR colour and depth buffers before transparency and post-processing.
-Each visible spectator receives the scene's sun shadow, floodlights and local lights at torso height during GPU detail selection. All detail levels share that sample; surface normals shape the response on faces, hair and clothing. The crowd does not cast individual shadows.
+Each visible spectator receives the scene's sun shadow, floodlights and local lights at torso height during GPU detail selection. All detail levels share that sample; surface normals shape the response on faces, hair and clothing. Each visible surface samples the stadium's distance fog using its animated world position and the current camera. Shirts, faces and distant impostors take on the same atmospheric colour as adjacent masonry, including shadowed mist. The crowd does not cast individual shadows.
 The normal crowd is the default. The minimum graphics profile omits the stadium.
 Use the same flag with `shot` or `bench` for a repeatable match comparison.
 

@@ -5516,6 +5516,12 @@ impl Renderer {
                             (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
                             (17, self.headlights.uniform.as_entire_binding()),
                             (18, wgpu::BindingResource::TextureView(&self.headlights.sampled)),
+                        ], &[
+                            (0, main.uniform.as_entire_binding()),
+                            (2, light_buf.as_entire_binding()),
+                            (5, wgpu::BindingResource::TextureView(&shadow_v)),
+                            (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
+                            (7, wgpu::BindingResource::TextureView(&self.sky_view)),
                         ], &hdr_v, &depth_v);
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
                     }
@@ -6362,7 +6368,7 @@ mod layout_tests {
         }
         // All consumers share the appended field; no existing grass/alpha
         // parameter slot was repurposed for a camera-only optimisation.
-        for source in [include_str!("shaders/cull.wgsl"),include_str!("shaders/raster.wgsl"),include_str!("shaders/shade.wgsl")] {
+        for source in [include_str!("shaders/cull.wgsl"),include_str!("shaders/raster.wgsl"),include_str!("shaders/surface_fog.wgsl")] {
             // The full composed shaders are separately validated. Here the
             // declaration itself is checked without their imported helpers.
             let view_source=source.split("struct View {").nth(1).unwrap().split("};").next().unwrap();
