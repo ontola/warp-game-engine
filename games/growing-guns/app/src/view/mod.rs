@@ -195,6 +195,7 @@ impl Visuals {
         self.arena.flush(gpu, renderer, &self.scene)?;
         self.players.flush(gpu, renderer, &self.scene)?;
         self.guns.flush(gpu, renderer)?;
+        self.stadium.apply_hits(&mut self.scene,&mut self.fx.debris,&mut self.fx.blasts,self.clock)?;
         self.stadium.poll_sky(&mut self.scene);
         self.stadium.flush(gpu, renderer, &self.scene, self.clock, light)?;
         self.fx.flush(gpu, renderer, &self.scene, self.clock)
@@ -203,6 +204,11 @@ impl Visuals {
     /// Reconstructing a recording needs collision/spawn ordering on the GPU,
     /// but static lighting, materials and ordinary instances only at paint time.
     pub fn flush_replay_debris(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> {
+        if self.stadium.crowd.has_pending_events() {
+            self.stadium.crowd.flush(gpu, renderer, self.clock)?;
+            gpu.wait();
+            self.stadium.apply_hits(&mut self.scene, &mut self.fx.debris, &mut self.fx.blasts, self.clock)?;
+        }
         self.fx.debris.flush(gpu, renderer)
     }
 
@@ -236,7 +242,7 @@ impl Visuals {
         let m = self.fx.meshes;
         for e in &world.events {
             match *e {
-                Event::BulletPath { from, to, damage } => {
+                Event::BulletPath { from, to, damage } | Event::TrackedBulletPath { from,to,damage,.. } => {
                     if let Some((pos, normal)) = self.players.shoot_corpses(&mut self.phys, from, to, damage) {
                         self.fx.particles.burst(s, pos + normal * 0.02, normal + Vec3::Y * 0.2,
                             &Burst { mesh: m.blood, count: 6, ..Burst::drops() });
@@ -328,7 +334,7 @@ impl Visuals {
             }
         }
         self.air_targets = world.strikes.iter().filter(|s| s.kind == growing_guns::StrikeKind::AirStrike).map(|s| s.target).collect();
-        self.stadium.absorb(s, &mut self.fx.particles, &mut self.fx.blasts, world, ears, now, growing_guns::DT);
+        self.stadium.absorb(s, world, ears, now, growing_guns::DT);
         self.guns.tick(world, growing_guns::DT);
         self.players.tick(world, &mut self.phys);
         self.players.burn_lava_bodies(world, &mut self.fx.blasts, now);

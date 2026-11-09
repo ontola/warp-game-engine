@@ -210,6 +210,8 @@ fn script(args: &Args) -> Result<(), String> {
     let humans = args.num("--players", 1usize).clamp(1, 4);
     let bots: Vec<bool> = (0..4).map(|i| i >= humans).collect();
     let world = World::new_with(args.num("--seed", 3u64), &bots, |w| play::match_options(args, w, false));
+    let mut world = world;
+    if args.flag("--start-in-stands") { stadium::start_in_stands(&mut world)?; }
     let mut game = play::Gg::new(world, session::Session::Local, (0..humans).collect());
     // Scripts start in play; `--cage` keeps Godot's spawn cage.
     if !args.flag("--cage") { game.world.release_cage(); }
