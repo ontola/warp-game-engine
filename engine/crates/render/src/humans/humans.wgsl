@@ -15,7 +15,7 @@ struct Camera {
 }
 // Four packed pairs of joint angles follow the light sample, shared by all
 // vertices of this spectator. Angles stay continuous when LOD changes.
-struct SeatLight { index:u32, rg:u32, blue:u32, direction_sun:u32, joints:vec4<u32> }
+struct SeatLight { index:u32, rg:u32, blue:u32, direction_sun:u32, joints:vec4<u32>, legs:vec4<u32> }
 
 fn spectator_joints(a:Actor, time:f32, excitement:f32, fear:f32)->vec4<u32> {
     let seed=a.size_phase.z;
@@ -36,6 +36,45 @@ fn spectator_joints(a:Actor, time:f32, excitement:f32, fear:f32)->vec4<u32> {
     let neck=vec2<f32>(0.30*glance+0.08*sin(beat*0.64),0.035*breath+0.10*cheer*sin(beat-0.45)+0.16*fear);
     return vec4<u32>(pack2x16float(shoulders),pack2x16float(elbows),pack2x16float(spine),pack2x16float(neck));
 }
+// Pack hip pitch, knee flexion, hip roll and pelvis drop once per visible leg.
+fn pack_leg(hip:f32,knee:f32,roll:f32,drop:f32)->vec2<u32> {
+    return vec2<u32>(pack2x16float(vec2<f32>(hip,knee)),pack2x16float(vec2<f32>(roll,drop)));
+}
+fn leg_to(x:f32,lift:f32,drop:f32)->vec2<u32> {
+    let thigh=0.258;
+    let shin=0.223;
+    let down=thigh+shin-drop-lift;
+    let knee=acos(clamp((down*down+x*x-thigh*thigh-shin*shin)/(2.*thigh*shin),-1.,1.));
+    let hip=-atan2(shin*sin(knee),thigh+shin*cos(knee));
+    return pack_leg(hip,knee,atan2(x,down),drop);
+}
+fn stepping_leg(cycle:f32, stride:f32, weight:f32, drop:f32, swing_start:f32)->vec2<u32> {
+    let phase=fract(cycle);
+    let swing=smoothstep(swing_start,swing_start+0.42,phase);
+    // During stance, adding the moving root back to x gives a fixed footfall.
+    let x=(swing-phase)*stride*weight;
+    let lift=0.074*weight*4.*swing*(1.-swing);
+    return leg_to(x,lift,drop);
+}
+fn spectator_legs(a:Actor,time:f32,shoulders:u32,travel:f32,speed:f32,crouch:f32)->vec4<u32> {
+    let arm=unpack2x16float(shoulders);
+    let activity=smoothstep(0.20,1.6,-min(arm.x,arm.y));
+    let phase=time*(2.+a.size_phase.w)+6.2832*a.size_phase.z;
+    let bend=0.12+0.24*activity*(0.5+0.5*sin(phase));
+    let drop=0.481*(1.-cos(bend));
+    if speed<=0.015 {
+        let idle=leg_to(0.,0.,drop+crouch);
+        return vec4<u32>(idle,idle);
+    }
+    let weight=smoothstep(0.015,0.65,speed);
+    let stride=0.32+0.05*a.size_phase.w;
+    let cycle=travel/stride;
+    // Lower the hips enough to reach the planted foot as the other one swings.
+    let pelvis=mix(drop,0.051,weight)+crouch;
+    let left=stepping_leg(cycle,stride,weight,pelvis,0.54);
+    let right=stepping_leg(cycle,stride,weight,pelvis,0.04);
+    return vec4<u32>(left,right);
+}
 struct Actor { pos_yaw:vec4<f32>, size_phase:vec4<f32>, color:vec4<f32>, identity:vec4<f32> }
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<storage,read> actors:array<Actor>;
@@ -50,7 +89,6 @@ fn actor(i:u32)->Actor {
     if camera.game.x>0. {
         let pose=poses[u32(camera.game.y)+2u*i];
         a.pos_yaw=vec4<f32>(pose.x.w,pose.y.w,pose.z.w,a.pos_yaw.w);
-        a.size_phase.y=pose.y.y;
         if pose.sphere.w<=0. {a.color.w=-1.;}
     }
     return a;
@@ -77,7 +115,8 @@ fn select_lod(@builtin(global_invocation_id) gid:vec3<u32>) {
     let a=actor(gid.x);
     let slot=reserve_slot(a);
     if slot!=0xffffffffu {
-        visible[slot]=SeatLight(gid.x,0u,0u,0u,spectator_joints(a,camera.settings.x,0.45,0.));
+        let joints=spectator_joints(a,camera.settings.x,0.45,0.);
+        visible[slot]=SeatLight(gid.x,0u,0u,0u,joints,spectator_legs(a,camera.settings.x,joints.x,0.,0.,0.));
     }
 }
 
@@ -87,6 +126,7 @@ fn select_lod(@builtin(global_invocation_id) gid:vec3<u32>) {
 @group(1) @binding(17) var<uniform> headlights:Headlights;
 // First vec4 of the existing crowd pose uniform: time, excitement, fear, pivot.
 @group(1) @binding(19) var<uniform> crowd_mood:vec4<f32>;
+@group(1) @binding(20) var<storage,read> escapes:array<Reaction>;
 @group(1) @binding(18) var headlight_depth:texture_depth_2d_array;
 
 fn spot_visibility(index:u32,uv:vec2<f32>,z:f32,lamp:Headlight,slope:vec2<f32>,world_p:vec3<f32>)->f32 {
@@ -98,7 +138,10 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
     let a=actor(gid.x);
     let slot=reserve_slot(a);
     if slot==0xffffffffu {return;}
-    let p=a.pos_yaw.xyz+vec3<f32>(0.,0.75*a.size_phase.y,0.);
+    // Match the collision pose's height reduction by bending the legs.
+    // Keep the size of the skull, torso and limb segments throughout.
+    let crouch=0.22*crowd_mood.z;
+    let p=a.pos_yaw.xyz+vec3<f32>(0.,(0.75-crouch)*a.size_phase.y,0.);
     var sun=1.;
     if camera.game.w>0. && camera.sun.w>0. {
         let clip=camera.shadow_vp*vec4<f32>(p+camera.sun.xyz*0.025,1.);
@@ -117,8 +160,14 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
     }
     let direction=moment/max(dot(energy,vec3<f32>(0.2126,0.7152,0.0722)),1e-5);
     energy=min(energy,vec3<f32>(65504.));
+    let escape=escapes[gid.x];
+    let speed=abs(displacement(escape,crowd_mood.x+1./120.)-displacement(escape,crowd_mood.x))*120.;
+    let right=vec2<f32>(cos(a.pos_yaw.w),-sin(a.pos_yaw.w));
+    let travel=dot(a.pos_yaw.xz-actors[gid.x].pos_yaw.xz,right)/a.size_phase.x;
+    let joints=spectator_joints(a,crowd_mood.x,crowd_mood.y,crowd_mood.z);
+    let legs=spectator_legs(a,crowd_mood.x,joints.x,travel,speed,crouch);
     visible[slot]=SeatLight(gid.x,pack2x16float(energy.rg),pack2x16float(vec2<f32>(energy.b,0.)),
-        pack4x8snorm(vec4<f32>(direction,sun)),spectator_joints(a,crowd_mood.x,crowd_mood.y,crowd_mood.z));
+        pack4x8snorm(vec4<f32>(direction,sun)),joints,legs);
 }
 @group(0) @binding(4) var<storage,read> draw_ids:array<SeatLight>;
 @group(1) @binding(0) var atlas:texture_2d<f32>;
@@ -146,7 +195,6 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     let seat=draw_ids[bin*u32(camera.settings.w)+idx];
     let a=actor(seat.index);
     var p=rest; var n=normal; var anchor=center;
-    let phase=camera.settings.x*(2.+a.size_phase.w)+a.size_phase.z*6.283;
     let anatomical=bin==4u && center.z< -0.9;
     var o:V;
     if mat>=20u && mat!=20u+u32(a.identity.z*3.) {
@@ -154,13 +202,11 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
         return o;
     }
     if bin!=0u {
-        let motion=sin(phase);
         let shoulders=unpack2x16float(seat.joints.x);
         let elbows=unpack2x16float(seat.joints.y);
         let right_arm=select(arm>0.,rest.x>0.,anatomical);
         let angle=select(shoulders.x,shoulders.y,right_arm);
         let elbow_angle=select(elbows.x,elbows.y,right_arm);
-        let activity=smoothstep(0.20,1.6,-min(shoulders.x,shoulders.y));
         if anatomical {
             let weights=a.identity*2.-1.;
             p+=0.055*(nose.xyz*weights.x+mouth.xyz*weights.z+brow.xyz*weights.y+adult.xyz*weights.w);
@@ -202,20 +248,44 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
         }
         // Hierarchical hip, knee and ankle. Counter-rotate the ankle to
         // plant the shoe and lower the pelvis as the two leg segments flex.
-        let bend=0.12+0.24*activity*(0.5+0.5*motion);
-        let knee=vec2<f32>(0.269,0.0);
-        let hip=vec2<f32>(0.527,-0.014);
-        let ankle=vec2<f32>(0.046,0.0);
-        let leg=select(select(0.,1.,(mat==2u||mat==3u)&&center.y<0.44),bones.z,anatomical);
-        let shin=select(select(0.,1.,(mat==2u||mat==3u)&&center.y<0.22),bones.w,anatomical);
-        let foot=shin*(1.-smoothstep(0.042,0.084,rest.y));
-        let at_ankle=ankle+rotate(-bend)*(p.yz-ankle);
-        let at_knee=knee+rotate(2.*bend)*(mix(p.yz,at_ankle,foot)-knee);
-        let at_hip=hip+rotate(-bend)*(mix(p.yz,at_knee,shin)-hip);
-        let drop=0.48*(1.-cos(bend));
-        p=vec3<f32>(p.x,mix(p.yz,at_hip,leg))-vec3<f32>(0.,drop,0.);
-        n=vec3<f32>(n.x,rotate(bend*(2.*shin-foot-leg))*n.yz);
-        anchor.y-=drop;
+        let right_leg=select(center.x>0.,rest.x>0.,anatomical);
+        let joints=select(seat.legs.xy,seat.legs.zw,right_leg);
+        let pitch=unpack2x16float(joints.x);
+        let roll_drop=unpack2x16float(joints.y);
+        let drop=roll_drop.y;
+        let hip=vec3<f32>(select(-0.055,0.055,right_leg),0.527,0.);
+        let ankle=vec3<f32>(hip.x,0.046,0.);
+        let knee=vec2<f32>(0.269,0.);
+        let leg=select(f32((mat==2u||mat==3u)&&center.y<0.44),bones.z,anatomical);
+        // The far leg is a single shape. Place its centre on the line from
+        // the planted hip to the solved ankle so it still meets the shoe.
+        let single_leg=bin==1u && mat==2u && center.y<0.44;
+        let shin=select(f32((mat==2u||mat==3u)&&center.y<0.22 || single_leg),bones.w,anatomical);
+        let foot=shin*select(f32(mat==3u),1.-smoothstep(0.042,0.084,rest.y),anatomical);
+        if leg>0. {
+            let foot_roll=rotate(-roll_drop.x*foot);
+            let foot_pitch=rotate(-(pitch.x+pitch.y)*foot);
+            let knee_pitch=rotate(pitch.y*shin);
+            let hip_pitch=rotate(pitch.x*leg);
+            let hip_roll=rotate(roll_drop.x*leg);
+            // For impostors the animated centre moves the entire splat.
+            let impostor=bin==1u && camera.settings.z==2.;
+            let source=select(select(p,anchor,impostor),ankle,single_leg);
+            var point=vec3<f32>(ankle.xy+foot_roll*(source.xy-ankle.xy),source.z);
+            point=vec3<f32>(point.x,ankle.yz+foot_pitch*(point.yz-ankle.yz));
+            point=vec3<f32>(point.x,knee+knee_pitch*(point.yz-knee));
+            point=vec3<f32>(point.x,hip.yz+hip_pitch*(point.yz-hip.yz));
+            point=vec3<f32>(hip.xy+hip_roll*(point.xy-hip.xy),point.z);
+            if single_leg {
+                point=mix(hip,point,(hip.y-center.y)/(hip.y-ankle.y));
+                p=point+(p-center);
+            } else { p=point; }
+            anchor=point;
+            n=vec3<f32>(foot_roll*n.xy,n.z);
+            n=vec3<f32>(n.x,hip_pitch*(knee_pitch*(foot_pitch*n.yz)));
+            n=vec3<f32>(hip_roll*n.xy,n.z);
+        }
+        p.y-=drop; anchor.y-=drop;
         if (anatomical && rest.y>0.83) || mat==7u || (mat==4u && rest.y>0.84) {
             let jaw=1.+(a.identity.w-0.5)*0.28*(1.-smoothstep(0.87,0.92,p.y));
             let cheek=(0.87+0.22*a.identity.x)*jaw;

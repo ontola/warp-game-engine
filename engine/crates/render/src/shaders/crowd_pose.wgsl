@@ -26,21 +26,7 @@ struct Uniform {
 @group(0) @binding(2) var<storage, read> alive: array<u32>;
 @group(0) @binding(3) var<storage, read_write> instances: array<Instance>;
 
-const FLEE_OUT_END: f32 = 1.2;
-const FLEE_RETURN_DUR: f32 = 4.5;
-
-
-// One persistent movement and death record per spectator, shared by all cameras.
-struct Reaction {
-    start: f32, hold_end: f32, initial: f32, goal: f32,
-    dead: u32, bullet_lo: u32, bullet_hi: u32, pad: u32,
-}
 @group(0) @binding(4) var<storage,read_write> reactions:array<Reaction>;
-fn displacement(r:Reaction,time:f32)->f32 {
-    let outward=smoothstep(0.,FLEE_OUT_END,time-r.start);
-    let home=smoothstep(0.,FLEE_RETURN_DUR,time-r.hold_end);
-    return mix(r.initial,r.goal,outward)*(1.-home);
-}
 fn row_direction(s:Seat)->vec2<f32> {
     let v=s.pos_yaw.xz-u.ring.xy;
     return vec2<f32>(-v.y,v.x)/max(length(v),0.001);
@@ -55,7 +41,8 @@ fn body_pose(s:Seat,r:Reaction,time:f32,mood:vec2<f32>)->BodyPose {
     // Rigged spectators shift weight in place while watching. Only a cheer
     // lifts them off the step. The hit test uses this same root position.
     let cheering=select(1.,smoothstep(0.28,0.85,mood.x),u.counts.z!=0u);
-    let lift=(up*hop*cheering*0.4+abs(sin(time*10.5+s.params.y*41.))*0.17*stride)*s.params.x;
+    let legacy_step=abs(sin(time*10.5+s.params.y*41.))*0.17*stride;
+    let lift=select(up*hop*0.4+legacy_step,up*hop*cheering*(1.-stride)*0.4,u.counts.z!=0u)*s.params.x;
     return BodyPose(s.pos_yaw.xyz+vec3<f32>(disp.x,lift,disp.y),up,1.-mood.y*0.22,
         sin(t*0.6)*0.035+mood.y*sin(time*21.+s.params.y*47.)*0.045);
 }
