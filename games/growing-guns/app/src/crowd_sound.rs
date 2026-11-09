@@ -19,9 +19,9 @@ const ENTHUSIASM_DECAY: f32 = 0.38;
 const FEAR_DECAY: f32 = 0.20;
 const LAYER_DYN_RANGE_DB: f32 = 14.0;
 
-// Full layer gains. Keep the quiet stands audible between game effects.
-const MURMUR_DB: f32 = -15.0;
-const CHEER_DB: f32 = -8.0;
+// Mix (dB at full layer gain), as in the addon.
+const MURMUR_DB: f32 = -22.0;
+const CHEER_DB: f32 = -10.0;
 const PANIC_DB: f32 = -9.0;
 const CLAPS_DB: f32 = -12.0;
 const REACTION_DB: f32 = -8.0;
