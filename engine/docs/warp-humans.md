@@ -6,6 +6,8 @@ Play a full desktop Growing Guns match with one local player, three bots and the
 cargo run --release -p growing-guns-app --bin growing-guns -- play --warp-humans --skip-menu --seed 52
 ```
 
+Add `--start-in-stands` to begin the match on a tread facing a neighbour at eye level. A standard player is 1.80 m tall with the camera at 1.60 m. Seeded spectators range from 1.55 to 1.95 m. The game grounds them on the same stepped geometry used for walking.
+
 The match supplies the seat identities, live positions, crowd reactions and per-player camera.
 The people render into the arena's HDR colour and depth buffers before transparency and post-processing.
 Sun and sky illuminate them. Local floodlights and cast shadows on the figures remain open.
