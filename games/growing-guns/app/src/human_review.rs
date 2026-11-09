@@ -22,38 +22,8 @@ pub fn run(args: &Args) -> Result<(), String> {
     if !(128..=4096).contains(&w) || !(128..=4096).contains(&h) || !(9..=3600).contains(&frames) {
         return Err("size per view must be 128..4096, frames 9..3600".into());
     }
-    let world = growing_guns::World::new(seed, &[true; 4]);
-    let seats = stadium::review_seats(&world);
-    let target = seats.first().ok_or("empty stadium")?;
-    let mut instances = Vec::new();
-    let floor = 2.02 * world.arena.stadium.inner_r;
-    instances.push(Instance::stand(
-        Vec3::new(0., -0.4, 0.),
-        0.,
-        Vec3::new(floor, 0.8, floor),
-        [0.32, 0.42, 0.32],
-    ));
-    for (i, p) in world.arena.stadium.pieces().into_iter().enumerate() {
-        let t = (i % 5) as f32 * 0.008;
-        instances.push(Instance::stand(
-            p.center,
-            p.yaw,
-            p.size,
-            [0.45 + t, 0.412 + t, 0.36 + t],
-        ));
-    }
-    for (i, s) in seats.iter().enumerate() {
-        let rules = Constraints {
-            height_m: Some(s.scale),
-            shirt: None,
-        };
-        instances.push(Instance::person(
-            seed.wrapping_mul(0x9e3779b97f4a7c15) ^ i as u64,
-            s.pos,
-            s.yaw,
-            &rules,
-        ));
-    }
+    let (instances, seats, radius) = population(seed)?;
+    let target = &seats[0];
     let gpu = Gpu::new()?;
     let mut renderer = ReviewRenderer::new(&gpu, &instances, far)?;
     let initial_bytes = renderer.resident_buffer_bytes;
@@ -83,7 +53,6 @@ pub fn run(args: &Args) -> Result<(), String> {
     );
     let front = Vec3::new(target.yaw.sin(), 0., target.yaw.cos());
     let face = target.pos + Vec3::Y * target.scale * 0.926;
-    let radius = world.arena.stadium.wall_r();
     let wide = Camera {
         pos: front * (radius * 1.60) + Vec3::Y * (radius * 1.45),
         target: Vec3::Y * 10.,
@@ -154,4 +123,44 @@ pub fn run(args: &Args) -> Result<(), String> {
         serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())
+}
+
+pub(crate) fn population(
+    seed: u64,
+) -> Result<(Vec<Instance>, Vec<render::crowd::Seat>, f32), String> {
+    let world = growing_guns::World::new(seed, &[true; 4]);
+    let seats = stadium::review_seats(&world);
+    if seats.is_empty() {
+        return Err("empty stadium".into());
+    }
+    let mut instances = Vec::new();
+    let floor = 2.02 * world.arena.stadium.inner_r;
+    instances.push(Instance::stand(
+        Vec3::new(0., -0.4, 0.),
+        0.,
+        Vec3::new(floor, 0.8, floor),
+        [0.32, 0.42, 0.32],
+    ));
+    for (i, p) in world.arena.stadium.pieces().into_iter().enumerate() {
+        let t = (i % 5) as f32 * 0.008;
+        instances.push(Instance::stand(
+            p.center,
+            p.yaw,
+            p.size,
+            [0.45 + t, 0.412 + t, 0.36 + t],
+        ));
+    }
+    for (i, s) in seats.iter().enumerate() {
+        let rules = Constraints {
+            height_m: Some(s.scale),
+            shirt: None,
+        };
+        instances.push(Instance::person(
+            seed.wrapping_mul(0x9e3779b97f4a7c15) ^ i as u64,
+            s.pos,
+            s.yaw,
+            &rules,
+        ));
+    }
+    Ok((instances, seats, world.arena.stadium.wall_r()))
 }

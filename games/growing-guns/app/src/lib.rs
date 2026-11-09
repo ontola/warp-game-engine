@@ -28,6 +28,8 @@ mod gun;
 mod gun_review;
 mod character_review;
 mod human_review;
+#[cfg(not(any(target_os="android",target_arch="wasm32")))]
+mod human_play;
 mod hand_animation;
 mod foregrip_pose;
 mod animation_window;
@@ -108,6 +110,8 @@ pub fn desktop_main() {
         "play" => play::run(&args),
         "shot" => shot(&args),
         "animation-preview" => animation_window::run(&args),
+        #[cfg(not(any(target_os="android",target_arch="wasm32")))]
+        "human-play" => human_play::run(&args),
         "human-review" => human_review::run(&args),
         "gun-review" => gun_review::run(&args),
         "character-review" => character_review::run(&args),
