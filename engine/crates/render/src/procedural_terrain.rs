@@ -493,7 +493,8 @@ pub struct ProceduralTerrain {
     lod: f32,
     /// Centre height and geometric error per node: the field never changes,
     /// and evaluating it was most of the per-frame selection time.
-    samples: std::cell::RefCell<HashMap<Node, (f32, f32)>>,
+    /// Node samples: this generation, then the previous one (see sample).
+    samples: std::cell::RefCell<[HashMap<Node, (f32, f32)>; 2]>,
     /// Patches built but not shown yet: slot and the instance that shows it.
     hidden: HashMap<(Node, u32), (u32, GpuInstance)>,
     /// The last selection, its views, patch count and finest level.
@@ -517,8 +518,8 @@ pub struct Plan {
     morph_jobs: Vec<Job>,
 }
 
-/// Cached node samples before the cache starts over.
-const SAMPLE_CACHE: usize = 1 << 20;
+/// Node samples per cache generation before the oldest is dropped.
+const SAMPLE_CACHE: usize = 1 << 19;
 
 /// Share of the pool the selection may fill; the rest absorbs the patches
 /// that balancing and the next frame's movement add.
@@ -536,9 +537,13 @@ impl ProceduralTerrain {
 
     /// A node's centre height and geometric error.
     fn sample(&self, n: Node) -> (f32, f32) {
+        // Two generations, so a full cache never starts over cold: clearing
+        // all 1M samples at once made the next selection sample every node
+        // again (a 270 ms frame skimming a hillside, 9 November).
         let mut cache = self.samples.borrow_mut();
-        if let Some(&s) = cache.get(&n) { return s; }
-        if cache.len() >= SAMPLE_CACHE { cache.clear(); }
+        if let Some(&s) = cache[0].get(&n) { return s; }
+        if let Some(s) = cache[1].remove(&n) { cache[0].insert(n, s); return s; }
+        if cache[0].len() >= SAMPLE_CACHE { cache[1] = std::mem::take(&mut cache[0]); }
         let (size, cell) = (self.size(n.level), self.cell(n.level));
         let (x, z) = ((n.ix as f32 + 0.5) * size, (n.iz as f32 + 0.5) * size);
         let e = self.spec.eval(x, z, cell * CELLS as f32);
@@ -548,7 +553,7 @@ impl ProceduralTerrain {
             if w.clearance(x, z) < size { error = error.max(0.2 * cell); }
         }
         let s = (e.pos.y, error);
-        cache.insert(n, s);
+        cache[0].insert(n, s);
         s
     }
 

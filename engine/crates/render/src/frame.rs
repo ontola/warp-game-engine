@@ -3285,7 +3285,7 @@ impl Renderer {
                 self.write_instances_metadata(gpu,changes[first].proxy.meta[0]as usize,&sources,true,false)?;
                 first=end;
             }
-            for canopy in self.canopies.lock().unwrap().iter_mut(){canopy.commit_proxy_update(&budget);}
+            crate::canopy::CanopyClipmap::commit_proxy_update_all(&mut self.canopies.lock().unwrap(),&budget);
             // Root proxies have zero source clusters, so ordinary instance
             // bounds deliberately skip them. Include the animated hierarchy
             // envelope on population transactions, independently of residency.
@@ -3987,7 +3987,7 @@ impl Renderer {
         }
         let budget = self.canopies.lock().unwrap()[0].prepare_proxy_update(owner, sources)?;
         self.write_instances_inner(gpu, owner, sources, true)?;
-        for canopy in self.canopies.lock().unwrap().iter_mut() {canopy.commit_proxy_update(&budget);}
+        crate::canopy::CanopyClipmap::commit_proxy_update_all(&mut self.canopies.lock().unwrap(),&budget);
         gpu.queue.write_buffer(forest.tree_buffer(), first as u64 * std::mem::size_of::<crate::foliage_volume_data::GpuTree>() as u64, bytemuck::cast_slice(volumes));
         // Relocated volume IDs must not reproject the previous tree's pixels.
         self.reset_history();
@@ -6811,6 +6811,8 @@ fn far_crown_constants() -> Vec<(&'static str, f64)> {
     if let Some(x) = std::env::var("KERN_FAR_TREE_SHADOW_FROM").ok().and_then(|v| v.parse::<f64>().ok()) { out.push(("FAR_TREE_SHADOW_FROM", x)); }
     if let Some(x) = std::env::var("KERN_FOREST_FLOOR_DARK").ok().and_then(|v| v.parse::<f64>().ok()) { out.push(("FOREST_FLOOR_DARK", x)); }
     if let Some(x) = std::env::var("KERN_FAR_TREE_SHADOW_MIN_M").ok().and_then(|v| v.parse::<f64>().ok()) { out.push(("FAR_TREE_SHADOW_MIN_M", x)); }
+    if let Some(x) = std::env::var("KERN_NEEDLE_BRUSH_OWN").ok().and_then(|v| v.parse::<f64>().ok()) { out.push(("NEEDLE_BRUSH_OWN", x)); }
+    if let Some(x) = std::env::var("KERN_VOXEL_OWN_IN_CLIPMAP").ok().and_then(|v| v.parse::<f64>().ok()) { out.push(("VOXEL_OWN_IN_CLIPMAP", x)); }
     if let Some(d) = std::env::var("KERN_FAR_CROWN_DEBUG").ok().and_then(|v| v.parse::<f64>().ok()) { out.push(("FAR_CROWN_DEBUG", d)); }
     out
 }
