@@ -226,6 +226,17 @@ fn far_forest_full_res(s: SurfaceIn) -> bool {
     let origin = select(view.cam.xz, params.centre, params.centred);
     return distance(s.p.xz, origin) > params.start;
 }
+// The forest's stand field (forest_field ff_stand) for this ground, or -2
+// where no forest is placed: > -0.05 inside a stand.
+fn forest_ground(s: SurfaceIn, f: FieldAttr, footprint: f32) -> f32 {
+    if s.scale >= 0.0 { return -2.0; }
+    let params = far_forest_params(u32(-s.scale - 0.5));
+    if params.density <= 0.0 { return -2.0; }
+    return ff_stand(s.p.x, s.p.z, u32(s.metal + 0.5), ff_site(f.up, f.wet), footprint);
+}
+// How far the ground's lushness follows the stands (1: only them).
+const FOREST_GROUND_LUSH: f32 = 0.7;
+
 // How much of this ground's sun the drawn trees standing towards the sun
 // take, from their silhouettes (far_strip along the sun, as the painted
 // ones shade their gaps): a tree or a gap of sunlight per pixel. shade.wgsl
@@ -715,7 +726,11 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     // Ground cover on gentle soil: grass, with moss and heather on moor.
     // The grass texture is dry; tint it to wet upland pasture, lusher in
     // hollows and near water, paler on dry patches.
-    let lush = clamp(0.5 + (broad - 0.5) * 1.2 + 0.4 * f.wet, 0.0, 1.0);
+    var lush = clamp(0.5 + (broad - 0.5) * 1.2 + 0.4 * f.wet, 0.0, 1.0);
+    // Where a forest grows the ground is green, and it dries out away from
+    // the stands: the trees and the ground's colour read one field.
+    let stands = forest_ground(s, f, footprint);
+    if stands > -1.0 { lush = clamp(mix(lush, smoothstep(-0.45, 0.15, stands), FOREST_GROUND_LUSH), 0.0, 1.0); }
     // Darker than a lawn: seen from afar a meadow is mostly blade shadow,
     // so the ground matches the grass where the blades fade out.
     let grass = steep_layer(layer, p, n, 2.6, mapping) * mix(g.grass_dry.rgb, g.grass_lush.rgb, lush);
