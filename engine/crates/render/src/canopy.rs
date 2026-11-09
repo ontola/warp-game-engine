@@ -94,6 +94,10 @@ pub struct CanopyClipmap {
     // Original enclosing radius and integrated source-envelope mass.
     initial_crowns: Arc<Vec<Option<[f64; 2]>>>,
     initial_heights: Arc<Vec<Option<[f32; 2]>>>,
+    /// Crowns in initial_crowns and their summed mass, kept so a streamed
+    /// edit is checked against the budget without walking every instance.
+    crown_count: usize,
+    crown_mass: f64,
     foliage_y: [f32; 2],
     mass_scale: f32,
     source_crowns: Arc<SourceCrowns>,
@@ -260,8 +264,10 @@ fn choose_layout(receivers: &[Vec3], foliage_y: [f32; 2], previous_pitch: f32) -
     Layout { origins, anchors }
 }
 
+/// A checked streamed proxy edit: per edited instance its new crown and
+/// height span, and the scene's crown count, mass and mass scale after it.
 pub(crate) struct ProxyBudget {
-    crowns: Arc<Vec<Option<[f64;2]>>>, heights: Arc<Vec<Option<[f32;2]>>>, y: [f32;2], scale: f32,
+    edits: Vec<(usize, Option<[f64;2]>, Option<[f32;2]>)>, scale: f32,
 }
 
 impl CanopyClipmap {
@@ -340,7 +346,7 @@ impl CanopyClipmap {
         Ok(Self { texture: resources.texture, view: resources.view, scratch: resources.scratch, atomic: resources.atomic,
             uniform: resources.uniform, bind: resources.bind, bind_layout: layout,
             fill, filter, cache: Mutex::new(Cache::default()),
-            initial_crowns: Arc::new(initial_crowns), initial_heights: Arc::new(initial_heights), foliage_y, mass_scale, source_crowns, source_buffer,
+            initial_crowns: Arc::new(initial_crowns), initial_heights: Arc::new(initial_heights), crown_count: count, crown_mass: total_mass, foliage_y, mass_scale, source_crowns, source_buffer,
             compact_support, source_bounds })
     }
 
@@ -353,7 +359,8 @@ impl CanopyClipmap {
         Self { texture: resources.texture, view: resources.view, scratch: resources.scratch, atomic: resources.atomic,
             uniform: resources.uniform, bind: resources.bind, bind_layout: self.bind_layout.clone(),
             fill: self.fill.clone(), filter: self.filter.clone(), cache: Mutex::new(Cache::default()),
-            initial_crowns: Arc::clone(&self.initial_crowns), initial_heights: Arc::clone(&self.initial_heights), foliage_y: self.foliage_y, mass_scale: self.mass_scale,
+            initial_crowns: Arc::clone(&self.initial_crowns), initial_heights: Arc::clone(&self.initial_heights), crown_count: self.crown_count, crown_mass: self.crown_mass,
+            foliage_y: self.foliage_y, mass_scale: self.mass_scale,
             source_crowns: Arc::clone(&self.source_crowns), source_buffer: self.source_buffer.clone(),
             compact_support: self.compact_support, source_bounds: self.source_bounds }
     }
@@ -364,37 +371,47 @@ impl CanopyClipmap {
     pub(crate) fn prepare_proxy_update(&self, first: usize, instances: &[GpuInstance]) -> Result<ProxyBudget, String> {
         self.prepare_proxy_edits(instances.iter().enumerate().map(|(i,s)|(first+i,s)))
     }
+    /// Checks streamed edits against the crown budget from the kept count
+    /// and mass, in time proportional to the edits. (It cloned and walked
+    /// every instance's crown: several ms per forest recentre, Joep's
+    /// playtest, 9 November.)
     pub(crate) fn prepare_proxy_edits<'a>(&self, edits:impl IntoIterator<Item=(usize,&'a GpuInstance)>)->Result<ProxyBudget,String> {
-        let mut crowns=(*self.initial_crowns).clone();
-        let mut heights=(*self.initial_heights).clone();
+        let (mut count,mut mass)=(self.crown_count as i64,self.crown_mass);
+        let mut out:Vec<(usize,Option<[f64;2]>,Option<[f32;2]>)>=Vec::new();
+        let mut seen=std::collections::HashSet::new();
         for (i,instance) in edits {
-            if i>=crowns.len(){return Err("canopy proxy range exceeds reserved scene".into());}
+            if i>=self.initial_crowns.len(){return Err("canopy proxy range exceeds reserved scene".into());}
             if instance.cluster_count!=0 || self.source_crowns.ids.get(i).copied().unwrap_or(0)!=0 {return Err("canopy relocation only supports geometry-free proxies".into());}
-            crowns[i]=None;heights[i]=None;
-            if instance.flags & FOLIAGE == 0 {continue;}
+            if !seen.insert(i) {return Err("canopy proxy edit repeats an instance".into());}
+            if let Some(old)=self.initial_crowns[i] {count-=1;mass-=old[1];}
+            if instance.flags & FOLIAGE == 0 {out.push((i,None,None));continue;}
             let (c,r)=legacy_crown(instance);
             if !c.is_finite() || !r.is_finite() || r.min_element()<=0.0 || c.abs().max_element()>1_000_000.0 ||
                 !instance.scale.is_finite() || instance.scale<=0.0 || footprint_bound(r,1.5)>MAX_CROWN_CELLS {
                 return Err("streamed canopy exceeds finite world/work bounds".into());
             }
-            crowns[i]=Some([instance.sphere[3] as f64,crown_mass(r)]);
-            heights[i]=Some([c.y-r.y,c.y+r.y]);
+            let m=crown_mass(r);count+=1;mass+=m;
+            out.push((i,Some([instance.sphere[3] as f64,m]),Some([c.y-r.y,c.y+r.y])));
         }
-        let count=crowns.iter().flatten().count();
-        if count>MAX_FOLIAGE {return Err("streamed canopy exceeds crown budget".into());}
-        let mass=crowns.iter().flatten().map(|v|v[1]).sum::<f64>();
-        let budget=(u32::MAX as f64*0.5-count as f64)/mass.max(1.0);
+        if count as usize>MAX_FOLIAGE {return Err("streamed canopy exceeds crown budget".into());}
+        // A float sum kept across edits; commit_proxy_update resums it exactly.
+        let budget=(u32::MAX as f64*0.5-count as f64)/(mass*(1.0+1e-9)).max(1.0);
         let scale=2.0f64.powf(budget.log2().floor()).min(65_536.0) as f32;
         if !scale.is_finite() || scale<=0.0 {return Err("streamed canopy mass budget is not representable".into());}
+        Ok(ProxyBudget {edits:out,scale})
+    }
+    pub(crate) fn commit_proxy_update(&mut self, budget: &ProxyBudget) {
+        let crowns=Arc::make_mut(&mut self.initial_crowns);
+        let heights=Arc::make_mut(&mut self.initial_heights);
+        for &(i,crown,height) in &budget.edits {crowns[i]=crown;heights[i]=height;}
+        // One walk without allocating: the exact count, mass and height span.
+        let (mut count,mut mass)=(0usize,0.0f64);
+        for c in crowns.iter().flatten() {count+=1;mass+=c[1];}
         let mut y=[f32::INFINITY,f32::NEG_INFINITY];
         for h in heights.iter().flatten() {y[0]=y[0].min(h[0]);y[1]=y[1].max(h[1]);}
         if count==0 {y=[0.0,0.0];}
-        Ok(ProxyBudget {crowns:Arc::new(crowns),heights:Arc::new(heights),y,scale})
-    }
-    pub(crate) fn commit_proxy_update(&mut self, budget: &ProxyBudget) {
-        self.initial_crowns=Arc::clone(&budget.crowns);
-        self.initial_heights=Arc::clone(&budget.heights);
-        self.foliage_y=budget.y;self.mass_scale=budget.scale;
+        self.crown_count=count;self.crown_mass=mass;
+        self.foliage_y=y;self.mass_scale=budget.scale;
         *self.cache.lock().unwrap()=Cache::default();
     }
 
