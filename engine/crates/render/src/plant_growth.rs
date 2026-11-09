@@ -49,6 +49,11 @@ pub struct Species {
     pub wood: f32,
     pub limb_wood: f32,
     pub dead_years: u32,
+    /// Wood per order 1-4 as a share of the trunk's, where set (> 0); else
+    /// `limb_wood` to the power of the order. Lets a limb stay slim beside a
+    /// thick trunk (Joep, 9 November: 1 m trunk, 5 cm limbs, 2 cm branches,
+    /// 0.5 cm twigs carrying the plumes at 40 years).
+    pub order_wood: [f32; 4],
     /// Needle brushes on each young side shoot: 1 at its tip; more sit along the
     /// shoot and splay outward (a fraction is a chance of one more).
     pub plumes: f32,
@@ -70,7 +75,7 @@ impl Species {
         Self {
             height: 46.0, pace: 45.0, shape: 1.75, first_whorl: 3, whorl: [3, 5], laterals: 1.0, max_order: 4,
             limb_step: 0.22, side_length: 0.6, limb_life: [60, 150], crowding: 8, angle: [1.05, 1.4], rise: 0.05, droop: 0.012,
-            needle_years: 5, shade: 0.025, min_light: 0.3, tip_radius: 0.005, wood: 0.006, limb_wood: 0.62, dead_years: 18,
+            needle_years: 5, shade: 0.025, min_light: 0.3, tip_radius: 0.005, wood: 0.006, limb_wood: 0.62, dead_years: 18, order_wood: [0.0; 4],
             plumes: 2.0, live_crown: 0.55, lift_years: 60.0,
         }
     }
@@ -81,9 +86,12 @@ impl Species {
     /// round the shoots for seven years, so the crown reads dense and dark.
     pub fn norway_spruce() -> Self {
         Self {
-            height: 42.0, pace: 40.0, shape: 1.5, first_whorl: 2, whorl: [4, 6], laterals: 1.5, max_order: 4,
+            height: 42.0, pace: 40.0, shape: 1.5, first_whorl: 2, whorl: [4, 6], laterals: 1.5, max_order: 3,
             limb_step: 0.2, side_length: 0.5, limb_life: [80, 200], crowding: 10, angle: [1.2, 1.6], rise: 0.04, droop: 0.025,
-            needle_years: 9, shade: 0.035, min_light: 0.25, tip_radius: 0.004, wood: 0.0065, limb_wood: 0.5, dead_years: 25,
+            needle_years: 9, shade: 0.035, min_light: 0.25, tip_radius: 0.002, wood: 0.01625, limb_wood: 0.5, dead_years: 25,
+            // Joep's 40-year tree (9 November): trunk 1 m at the base, limbs
+            // 5 cm, branches 2 cm, twigs with plumes 0.5 cm.
+            order_wood: [0.055, 0.029, 0.0021, 0.0],
             plumes: 1.5, live_crown: 0.75, lift_years: 90.0,
         }
     }
@@ -336,7 +344,8 @@ fn finish(s: &Species, age: u32, seed: u64, mut segments: Vec<Segment>) -> Plant
         // towards its young end by itself.
         let years = age.saturating_sub(seg.born);
         let grew = newest[i].saturating_sub(seg.born) as f32;
-        let wood = s.wood * if seg.order == 0 { 1.0 } else { s.limb_wood.powi(seg.order as i32) };
+        let share = s.order_wood.get(seg.order.wrapping_sub(1) as usize).copied().filter(|&w| w > 0.0);
+        let wood = s.wood * if seg.order == 0 { 1.0 } else { share.unwrap_or_else(|| s.limb_wood.powi(seg.order as i32)) };
         let r = s.tip_radius + wood * grew.powf(0.93);
         segments[i].radius = [r, r * 0.97];
         if years < s.needle_years {
@@ -375,6 +384,18 @@ fn finish(s: &Species, age: u32, seed: u64, mut segments: Vec<Segment>) -> Plant
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "prints the spruce's wood per order; run with --ignored --nocapture"]
+    fn spruce_wood_by_order() {
+        for age in [24, 40, 55] {
+            let p = grow(&Species::norway_spruce(), age, 7);
+            let mut by = [(0.0f32, 0usize, 0.0f32); 5];
+            for seg in &p.segments { let o = seg.order.min(4) as usize; by[o].0 = by[o].0.max(seg.radius[0]); by[o].1 += 1; by[o].2 = by[o].2.max(seg.to.y); }
+            eprintln!("age {age}: tufts {} height {:.1}", p.tufts.len(), by[0].2);
+            for (o, b) in by.iter().enumerate() { eprintln!("  order {o}: max diameter {:.3} m, segments {}", b.0 * 2.0, b.1); }
+        }
+    }
 
     #[test]
     fn a_spruce_is_a_slim_dense_cone_beside_a_pine() {

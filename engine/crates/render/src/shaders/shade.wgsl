@@ -378,7 +378,12 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     // sqrt(own) (the maps were meant to supply the rest, but at 1 m cells and
     // a texel of bias they barely shade a crown) voxel crowns caught ~1.4x
     // the sun of the same tree as a mesh (Mancave tree series, 6 November).
-    var shadow = mix(1.0, others * mix(own, own * own, outside), light.sun_color.w);
+    // Where the sun clipmap covers the cell it already holds this tree's own
+    // cells and leaves: its own march on top shaded it twice, and a voxel
+    // trunk read 1.64x darker than the same trunk as a mesh (Joep, 9
+    // November). VOXEL_OWN_IN_CLIPMAP keeps that share of the march (1 = old).
+    let own_sun = mix(own, 1.0, sun_clipmap_cover(p) * (1.0 - VOXEL_OWN_IN_CLIPMAP));
+    var shadow = mix(1.0, others * mix(own_sun, own_sun * own_sun, outside), light.sun_color.w);
     shadow *= cloud_sun_transmittance(p, l, light.clouds, light.cloud_motion);
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow;
     // Sky reaches a cell through its own crown too. sky_visibility only sees
@@ -1622,6 +1627,9 @@ override FAR_TREE_SHADOWS: bool = true;
 override FAR_TREE_SHADOW_FROM: f32 = 0.35;
 // Metres from the camera within which per-tree ground shadows never draw.
 override FAR_TREE_SHADOW_MIN_M: f32 = 800.0;
+// Share of a voxel cell's own sun march kept where the sun clipmap covers it
+// (shade_voxel; KERN_VOXEL_OWN_IN_CLIPMAP).
+override VOXEL_OWN_IN_CLIPMAP: f32 = 0.0;
 // far_tree_cast for this pixel's terrain (-1: none, or not evaluated).
 var<private> far_tree_shadow: f32 = -1.0;
 

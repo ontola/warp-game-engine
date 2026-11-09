@@ -79,7 +79,7 @@ fn sun_degrees(env: &render::biome::Environment) -> (f32, f32) {
 /// the rebuild runs on a background thread, so small steps cost no frame time.
 const GRASS_RECENTRE: f32 = 15.0;
 /// Loaded forest cells recenter independently of ground and shadow streaming.
-const TREES_RECENTRE: f32 = 300.0;
+const TREES_RECENTRE: f32 = 150.0;
 /// Mountain shadows past the shadow maps come from a heightfield this many
 /// metres square at this spacing, rebuilt once the camera has moved
 /// `SHADOW_RECENTRE` from its centre.
@@ -645,7 +645,11 @@ impl Game for Fly {
 impl Default for World {
     // 32768 slots (6 November, settled pages): forest 25.2 -> 22.2 ms, near 21.0 -> 17.3,
     // mostly voxel splat walk and occluder cull; 541 of 2.2M splats over 2 px.
-    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, branch_slots: 32768 } }
+    // 65536 (9 November, swiss spruce forest): 32768 refused ~43k refinements a
+    // frame and left 15-40 px voxel discs at 40-100 m (Joep: 'te grote
+    // balletjes'); doubling makes them ~1.8x smaller for ~2 ms GPU at 1440p,
+    // ~3 at 4K. The 2^24 splat store binds next.
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, branch_slots: 65536 } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
@@ -978,7 +982,11 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
     let edited=|placed:Vec<placement::Instance>,rules:&[placement::Rule],radius:f32|match edits {Some(o)=>o.apply(placed,rules,&land,c,radius),None=>placed};
     let woody=if world.trees {edited(placement::place(&trees, &land, c, world.tree_radius),&trees,world.tree_radius).into_iter()
         .filter(|t| edits.is_some_and(|o|o.edits.contains_key(&t.id)) || render::forest_field::handover_keep(t.pos, c, start, end))
-        .chain(edited(placement::place(&shrubs, &land, c, world.tree_radius.min(SHRUB_RADIUS)),&shrubs,world.tree_radius.min(SHRUB_RADIUS)))
+        // A grown forest (--pine-forest, --spruce-forest) makes every root a
+        // full tree, so no shrubs: as trees they stood only within
+        // SHRUB_RADIUS of the forest centre, and each recentre popped whole
+        // trees in and out at 250-550 m (Joep's playtest, 9 November).
+        .chain(if pine_forest().is_some() {Vec::new()} else {edited(placement::place(&shrubs, &land, c, world.tree_radius.min(SHRUB_RADIUS)),&shrubs,world.tree_radius.min(SHRUB_RADIUS))})
         .map(|t|WorldRoot {id:t.id,placement:RootPlacement {up:Vec3::Y,pos:t.pos,yaw:t.yaw,scale:t.scale.y,variant:t.variant as usize}}).collect()} else {Vec::new()};
     // One pine per age in a row 30 m north of the start, spaced by size.
     let woody:Vec<WorldRoot>=if world.trees && pine_ages() {
