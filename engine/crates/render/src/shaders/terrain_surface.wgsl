@@ -245,7 +245,7 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     let reach = min(height * 0.6 * length(eye - n * dot(eye, n)) / max(rise, 0.05), 120.0);
     let back = normalize(eye.xz + vec2<f32>(1e-6, 0.0));
     let q = s.p.xz + back * reach;
-    let crowns = far_crowns(q, footprint, eye, sun, seed, site, params.density, params.style);
+    let crowns = far_crowns(q, footprint, s.dx, s.dy, eye, sun, seed, site, params.density, params.style);
     let cover = crowns.w * grows * fade;
     if cover <= 0.0 { return MeadowCanopy(ground, nn); }
     // Ground between crowns: the forest floor's shade where the stand is
@@ -261,10 +261,11 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     // read darker than their scattered edges, as in the reference.
     let sun_grow = ff_crown_growth(sun, params.style);
     let sun_shade = 1.0 - exp(-crowd * params.style.crown.y * sun_grow * sun_grow);
-    let packed = 1.0 - exp(-crowd * params.style.crown.y);
-    // Squared: thin cover keeps its light, closed cores lose most of it.
-    let sky_own = (0.25 + 0.75 * sqrt(FAR_CROWN_OWN)) * (1.0 - FAR_CROWN_SKY_LOSS * packed * packed);
-    let sun_own = FAR_CROWN_OWN * (1.0 - FAR_CROWN_SUN_LOSS * sun_shade * sun_shade);
+    // How closed the stand looks from here: crowns stacked behind crowns,
+    // each in the others' shade.
+    let packed = 1.0 - exp(-crowd * params.style.crown.y * ff_crown_growth(eye, params.style) * ff_crown_growth(eye, params.style));
+    let sky_own = (0.25 + 0.75 * sqrt(FAR_CROWN_OWN)) * (1.0 - FAR_CROWN_SKY_LOSS * packed);
+    let sun_own = FAR_CROWN_OWN * (1.0 - FAR_CROWN_SUN_LOSS * max(packed, sun_shade));
     let c = mix(gap, crowns.rgb * sky_own, cover);
     // Sun: of the ground between crowns, the share no crown shades from the
     // sun, except where the view sits behind the sun and the crowns hide
@@ -283,15 +284,15 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
 const FAR_CROWN_OWN: f32 = 0.42;
 // How much of that the neighbours in a closed stand take from a crown's
 // sun and sky.
-const FAR_CROWN_SUN_LOSS: f32 = 0.95;
-const FAR_CROWN_SKY_LOSS: f32 = 0.8;
+const FAR_CROWN_SUN_LOSS: f32 = 0.8;
+const FAR_CROWN_SKY_LOSS: f32 = 0.6;
 
 // Crowns seen from `eye` at q, for a pixel `footprint` metres across: rgb
 // their colour with self-shade, w the share of the pixel they cover. Each
 // crown is its own soft disc while it spans a few pixels or more (the grain
 // a real forest shows kilometres out), their mean coverage
 // (forest_canopy's overlap model) once the cells are subpixel.
-fn far_crowns(q: vec2<f32>, footprint: f32, eye: vec3<f32>, sun: vec3<f32>, seed: u32, site: f32, density: f32, fs: ForestStyle) -> vec4<f32> {
+fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: vec3<f32>, sun: vec3<f32>, seed: u32, site: f32, density: f32, fs: ForestStyle) -> vec4<f32> {
     let needles = mix(fs.needles.rgb, fs.far.rgb, ff_patch(q.x, q.y, seed, fs.crown.w));
     let crowd = ff_share(q.x, q.y, seed, site, footprint) * density;
     if crowd <= 0.0 { return vec4<f32>(needles, 0.0); }
@@ -299,15 +300,27 @@ fn far_crowns(q: vec2<f32>, footprint: f32, eye: vec3<f32>, sun: vec3<f32>, seed
     let mean_cover = 1.0 - exp(-crowd * fs.crown.y * grow * grow);
     // Sun from above lights a little more of each crown.
     let tops = 0.9 + 0.1 * max(sun.y, 0.0);
-    let far = smoothstep(FF_CELL * 0.6, FF_CELL * 1.2, footprint);
+    // A crown seen at a glancing angle is its width across the view and
+    // its height along it: an ellipse of the same area as the grown disc
+    // (so the cover still matches the mean), not a wider disc. A pixel is
+    // long along the view too: in the ellipse's own (across) metres, its
+    // width is about the same both ways, so crowns stay single grains far
+    // past where the pixel's mean width would have smoothed them.
+    let along = normalize(eye.xz + vec2<f32>(1e-6, 0.0));
+    let across = vec2<f32>(-along.y, along.x);
+    let fa = max(abs(dot(dx.xz, across)), abs(dot(dy.xz, across)));
+    let fl = max(abs(dot(dx.xz, along)), abs(dot(dy.xz, along)));
+    let r0 = fs.crown.x;
+    let long0 = min(r0 * grow * grow, FF_CELL);
+    let squash0 = r0 * r0 * grow * grow / (long0 * long0);
+    let w0 = max(max(fa, fl * squash0), 0.05);
+    // Each crown is filtered to its coverage share of the pixel, so the
+    // grain (how many crowns a pixel happens to hold) lasts until a pixel
+    // spans the 3x3 spots.
+    let far = smoothstep(FF_CELL * 0.75, FF_CELL * 1.5, w0);
     if far >= 1.0 { return vec4<f32>(needles * tops, mean_cover); }
     let ci = i32(floor(q.x / FF_CELL));
     let cj = i32(floor(q.y / FF_CELL));
-    // A crown seen at a glancing angle is its width across the view and
-    // its height along it: an ellipse of the same area as the grown disc
-    // (so the cover still matches the mean), not a wider disc.
-    let along = normalize(eye.xz + vec2<f32>(1e-6, 0.0));
-    let across = vec2<f32>(-along.y, along.x);
     var open = 1.0;
     var tint = 0.0;
     var weight = 0.0;
@@ -321,11 +334,12 @@ fn far_crowns(q: vec2<f32>, footprint: f32, eye: vec3<f32>, sun: vec3<f32>, seed
             let r = fs.crown.x * sp.z;
             let long = min(r * grow * grow, FF_CELL);
             let wide = r * r * grow * grow / long;
-            let radius = wide;
             let e = vec2<f32>(dot(d, across), dot(d, along) * wide / long);
-            // Coverage of the ellipse's edge filtered over the pixel (its
-            // distance in the narrow axis's metres).
-            let a = clamp(0.5 + (radius - length(e)) / max(footprint, 0.05), 0.0, 1.0);
+            // The ellipse (in across metres) filtered over the pixel: past
+            // a pixel's size it is spread as its area's share over the box.
+            let w = max(max(fa, fl * wide / long), 0.05);
+            let spread = max(wide, 0.5 * w);
+            let a = (wide / spread) * (wide / spread) * clamp(0.5 + (spread - length(e)) / w, 0.0, 1.0);
             open *= 1.0 - a;
             tint += a * sp.w;
             weight += a;
