@@ -203,8 +203,9 @@ to the headlights and local lights, which still work.
   not yet.
 - Probe: `cargo run --release -p render --example clustered_lights_probe --
   --out DIR` (400 lamps over a plaza of pillars, 24 shadowed).
-- Spellstorm uses it with `KERN_CLUSTERED_LIGHTS=1`: every lamp, staff,
-  shrine and spell light, lamps shadowed.
+- Spellstorm turns it on: every lamp, staff, shrine and spell light, lamps
+  shadowed. On an RTX 5070 Ti at 2560x1440 the chapel frame went from 5.94
+  to 5.54 ms (shade 5.05 to 4.52, shadow tiles 0.13 ms).
 
 ### Everything else
 
