@@ -1,3 +1,11 @@
+// Match fragments sample the stadium atmosphere at their own depth.
+const PI: f32 = 3.14159265;
+@group(2) @binding(0) var<uniform> view: View;
+@group(2) @binding(2) var<uniform> light: Light;
+@group(2) @binding(5) var shadow_tex: texture_depth_2d;
+@group(2) @binding(6) var shadow_samp: sampler_comparison;
+@group(2) @binding(7) var sky_tex: texture_2d<f32>;
+
 struct Camera {
     vp: mat4x4<f32>, right: vec4<f32>, up: vec4<f32>,
     game: vec4<f32>, // enabled, first scene instance, sky lux, sun lux
@@ -50,12 +58,12 @@ fn select_lod(@builtin(global_invocation_id) gid:vec3<u32>) {
 
 // A single receiver at upper torso height shares the scene's maps across all LODs.
 @group(1) @binding(5) var sun_depth:texture_depth_2d;
-@group(1) @binding(6) var shadow_samp:sampler_comparison;
+@group(1) @binding(6) var seat_shadow_sampler:sampler_comparison;
 @group(1) @binding(17) var<uniform> headlights:Headlights;
 @group(1) @binding(18) var headlight_depth:texture_depth_2d_array;
 
 fn spot_visibility(index:u32,uv:vec2<f32>,z:f32,lamp:Headlight,slope:vec2<f32>,world_p:vec3<f32>)->f32 {
-    return textureSampleCompareLevel(headlight_depth,shadow_samp,uv,i32(index),z);
+    return textureSampleCompareLevel(headlight_depth,seat_shadow_sampler,uv,i32(index),z);
 }
 @compute @workgroup_size(64)
 fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
@@ -70,7 +78,7 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
         let ndc=clip.xyz/clip.w;
         if all(abs(ndc.xy)<=vec2<f32>(1.)) && ndc.z>=0. && ndc.z<=1. {
             let uv=ndc.xy*vec2<f32>(0.5,-0.5)+0.5;
-            sun=mix(1.,textureSampleCompareLevel(sun_depth,shadow_samp,uv,ndc.z),camera.sun.w);
+            sun=mix(1.,textureSampleCompareLevel(sun_depth,seat_shadow_sampler,uv,ndc.z),camera.sun.w);
         }
     }
     var energy=vec3<f32>(0.);
@@ -91,7 +99,7 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
 struct V { @builtin(position) pos:vec4<f32>, @location(0) n:vec3<f32>, @location(1) local:vec3<f32>,
     @location(2) color:vec3<f32>, @location(3) @interpolate(flat) mat:u32,
     @location(4) identity:vec4<f32>, @location(5) disc:vec2<f32>, @location(6) uv:vec2<f32>, @location(7) @interpolate(flat) lamps:vec3<f32>,
-    @location(8) @interpolate(flat) direction_sun:vec4<f32> }
+    @location(8) @interpolate(flat) direction_sun:vec4<f32>, @location(9) world:vec3<f32> }
 fn rotate(angle:f32) -> mat2x2<f32> {
     return mat2x2<f32>(cos(angle),sin(angle),-sin(angle),cos(angle));
 }
@@ -186,10 +194,10 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     }
     o.lamps=vec3<f32>(unpack2x16float(seat.rg),unpack2x16float(seat.blue).x);
     o.direction_sun=unpack4x8snorm(seat.direction_sun);
-    o.uv=center.xy; o.pos=camera.vp*vec4<f32>(world,1); o.n=rot*(n/scale); o.local=rest;
+    o.world=world; o.uv=center.xy; o.pos=camera.vp*vec4<f32>(world,1); o.n=rot*(n/scale); o.local=rest;
     o.color=a.color.rgb; o.mat=mat; o.identity=a.identity; o.disc=disc; return o;
 }
-@fragment fn fs(v:V)->@location(0) vec4<f32>{
+fn human_color(v:V)->vec4<f32>{
     if dot(v.disc,v.disc)>1. {discard;}
     let id=v.identity; let p=v.local; let n=normalize(v.n);
     let pigment=mix(vec3<f32>(0.28,0.125,0.076),vec3<f32>(0.85,0.55,0.409),id.y);
@@ -242,4 +250,15 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     }
     let sun=normalize(vec3<f32>(-0.65,0.85,0.5)); let light=0.68+0.33*max(dot(n,sun),0.)+0.07*n.y;
     return vec4<f32>(clamp(color*light,vec3<f32>(0.),vec3<f32>(1.)),1.);
+}
+
+@fragment fn fs_review(v:V)->@location(0) vec4<f32> {
+    return human_color(v);
+}
+
+@fragment fn fs_match(v:V)->@location(0) vec4<f32> {
+    let radiance = human_color(v).rgb;
+    let ray = v.world - view.cam.xyz;
+    let d = length(ray);
+    return vec4<f32>(apply_distance_fog(radiance, d, ray / max(d, 1e-6)), 1.0);
 }

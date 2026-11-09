@@ -169,11 +169,19 @@ fn appearance(
     })
 }
 
+const HUMAN_SHADER: &str = concat!(
+    include_str!("../shaders/surface_fog.wgsl"), "\n",
+    include_str!("../shaders/incident_lights.wgsl"), "\n",
+    include_str!("humans.wgsl"),
+);
+
 pub struct ReviewRenderer {
     compute: wgpu::ComputePipeline,
     render: wgpu::RenderPipeline,
     selection: wgpu::BindGroup,
     light_groups: crate::frame::resource_cache::BindGroups<8>,
+    fog_groups: crate::frame::resource_cache::BindGroups<8>,
+    fog_layout: Option<wgpu::BindGroupLayout>,
     light_layout: Option<wgpu::BindGroupLayout>,
     drawing: wgpu::BindGroup,
     appearance: wgpu::BindGroup,
@@ -277,7 +285,7 @@ impl ReviewRenderer {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("warp humans"),
-                source: wgpu::ShaderSource::Wgsl(concat!(include_str!("../shaders/incident_lights.wgsl"), "\n", include_str!("humans.wgsl")).into()),
+                source: wgpu::ShaderSource::Wgsl(HUMAN_SHADER.into()),
             });
         let compute = gpu
             .device
@@ -320,7 +328,7 @@ impl ReviewRenderer {
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
-                    entry_point: Some("fs"),
+                    entry_point: Some(if game.is_some() { "fs_match" } else { "fs_review" }),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: if game.is_some() {
@@ -387,6 +395,8 @@ impl ReviewRenderer {
             appearance,
             light_layout: game.map(|_| compute.get_bind_group_layout(1)),
             light_groups: Default::default(),
+            fog_layout: game.map(|_| render.get_bind_group_layout(2)),
+            fog_groups: Default::default(),
             compute,
             render,
             selection,
@@ -461,6 +471,7 @@ impl ReviewRenderer {
         light: &crate::Lighting,
         shadow_vp: &[[f32; 4]; 4],
         lights: &[(u32, wgpu::BindingResource)],
+        atmosphere: &[(u32, wgpu::BindingResource)],
         color: &wgpu::TextureView,
         depth: &wgpu::TextureView,
     ) {
@@ -507,7 +518,8 @@ impl ReviewRenderer {
         enc.copy_buffer_to_buffer(&upload, 0, &self.camera, 0, 224);
         enc.copy_buffer_to_buffer(&upload, 224, &self.args, 0, 100);
         let lamps = self.light_groups.get(gpu, self.light_layout.as_ref().unwrap(), "human scene lights", lights);
-        self.encode_passes(enc, color, depth, Some(&lamps));
+        let fog = self.fog_groups.get(gpu, self.fog_layout.as_ref().unwrap(), "human scene fog", atmosphere);
+        self.encode_passes(enc, color, depth, Some((&lamps, &fog)));
     }
 
     fn encode_passes(
@@ -515,7 +527,7 @@ impl ReviewRenderer {
         enc: &mut wgpu::CommandEncoder,
         cv: &wgpu::TextureView,
         dv: &wgpu::TextureView,
-        lights: Option<&wgpu::BindGroup>,
+        match_groups: Option<(&wgpu::BindGroup, &wgpu::BindGroup)>,
     ) {
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -524,7 +536,7 @@ impl ReviewRenderer {
             });
             pass.set_pipeline(&self.compute);
             pass.set_bind_group(0, &self.selection, &[]);
-            if let Some(lights) = lights {
+            if let Some((lights, _)) = match_groups {
                 pass.set_bind_group(1, lights, &[]);
             }
             pass.dispatch_workgroups(self.count.div_ceil(64), 1, 1);
@@ -569,6 +581,9 @@ impl ReviewRenderer {
             pass.set_pipeline(&self.render);
             pass.set_bind_group(0, &self.drawing, &[]);
             pass.set_bind_group(1, &self.appearance, &[]);
+            if let Some((_, fog)) = match_groups {
+                pass.set_bind_group(2, fog, &[]);
+            }
             for (mesh, bin) in self.meshes.iter().zip([0, 1, 2, 4]) {
                 pass.set_vertex_buffer(0, mesh.vertex.slice(..));
                 pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint32);
@@ -649,6 +664,24 @@ impl ReviewRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn match_fragments_receive_scene_fog_on_every_detail_level() {
+        let module = naga::front::wgsl::parse_str(HUMAN_SHADER)
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(HUMAN_SHADER)));
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all(),
+        ).validate(&module).unwrap();
+        for (name, expected) in [("fs_match", true), ("fs_review", false)] {
+            let i = module.entry_points.iter().position(|e| e.name == name).unwrap();
+            let stage = info.get_entry_point(i);
+            for (handle, var) in module.global_variables.iter() {
+                if var.binding.as_ref().is_some_and(|b| b.group == 2) {
+                    assert_eq!(!stage[handle].is_empty(), expected, "{name} {:?}", var.name);
+                }
+            }
+        }
+    }
 
     #[test]
     fn overrides_preserve_other_identity_channels() {
