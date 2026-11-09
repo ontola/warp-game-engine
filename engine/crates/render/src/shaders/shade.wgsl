@@ -1804,6 +1804,23 @@ fn sun_clipmap_cover(p: vec3<f32>) -> f32 {
     for (var k = 0; k < levels; k++) { cover = max(cover, near_level_weight(k, p)); }
     return cover;
 }
+// How fully the sharp sun maps cover p: the near clipmap levels when on,
+// else the near part of the shared map (inside its coverage fade).
+fn near_sharp_cover(p: vec3<f32>) -> f32 {
+    let levels = select(0, i32(light.near_levels.x), light.near_shadow.z > 0.5);
+    var w = 0.0;
+    for (var k = 0; k < levels; k++) { w = max(w, near_level_weight(k, p)); }
+    if levels > 0 && light.near_levels.y > 0.5 { return w; }
+    return max(w, 1.0 - smoothstep(FAR_TREE_SHADOW_FROM, 1.0, max(abs((light.shadow_view_proj * vec4<f32>(p, 1.0)).x), abs((light.shadow_view_proj * vec4<f32>(p, 1.0)).y))));
+}
+// KERN_FAR_TREE_SHADOWS=0: the coarse maps shade the far forest ground.
+override FAR_TREE_SHADOWS: bool = true;
+// Where in the shared map (its clip-space radius) per-tree ground shadows
+// start to take over.
+override FAR_TREE_SHADOW_FROM: f32 = 0.35;
+// far_tree_cast for this pixel's terrain (-1: none, or not evaluated).
+var<private> far_tree_shadow: f32 = -1.0;
+
 fn shadow_detail_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
     // The finest clipmap level that covers p in full; coarser ones only
     // matter outside it.
@@ -3104,6 +3121,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             var coarse: CoarseSurface;
             if TERRAIN_COARSE && max(length(fp.dx), length(fp.dy)) > COARSE_FOOTPRINT_M && !far_forest_full_res(si) { coarse = coarse_surface(px, depth); }
             if coarse.ok { so = coarse.so; field_sun = coarse.sun; } else { so = field_surface(si, m.layer); }
+            if FAR_TREE_SHADOWS && near_sharp_cover(p) < 1.0 { far_tree_shadow = far_tree_cast(si); }
         } else { so = game_surface(si); }
         base = so.albedo;
         n = so.normal;
@@ -3220,7 +3238,17 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let terrain_error=select(0.0,world_visibility.params.z,(m.flags&6u)!=0u);
     var shadow = 1.0;
     if sun > 0.0 || needles || (gi.vol_dims.w != 0u && (gi.vol_dims.w & 4u) == 0u) || coat > 0.0 || rough_m < 0.55 || skin + hair > 0.0 {
-        let s_map = shadow_at_surface(p, surface_n * sign(dot(surface_n, l) + 1e-4), geo_n, terrain_error);
+        var s_map = shadow_at_surface(p, surface_n * sign(dot(surface_n, l) + 1e-4), geo_n, terrain_error);
+        // Forest ground past the sharp sun maps: each drawn tree's own
+        // shadow (far_tree_cast) instead of the coarse maps' stand blobs.
+        if FAR_TREE_SHADOWS && far_tree_shadow >= 0.0 {
+            let sharp = near_sharp_cover(p);
+            if sharp < 1.0 {
+                var trees = 1.0 - far_tree_shadow;
+                if FEATURE_WORLD_TERRAIN { trees = min(trees, world_terrain_sun_visibility(p, surface_n, terrain_error)); }
+                s_map = mix(trees, s_map, sharp);
+            }
+        }
         shadow = mix(1.0, s_map, light.sun_color.w);
     }
     if FEATURE_GRASS_SHADE && shadow > 0.0 && (m.flags & 70u) != 0u {shadow*=mix(1.0,grass_sun_transmittance_receiver(p,l,(m.flags & 2u)!=0u),light.sun_color.w);}
