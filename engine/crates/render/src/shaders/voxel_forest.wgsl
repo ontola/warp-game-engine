@@ -1089,6 +1089,13 @@ fn volume_splat_hash(x:u32)->u32 {
 // Selection w for the sun map: this group casts as voxels, its source does not.
 const VOLUME_SUN_CASTER: u32 = 2u;
 var<workgroup> volume_splat_level_shared: u32;
+// Brick culling's batch of visible bricks (voxel_splats).
+var<workgroup> volume_brick_table_shared: vec2<u32>;
+var<workgroup> volume_brick_visible: atomic<u32>;
+var<workgroup> volume_brick_ranges: array<vec2<u32>,64>;
+var<workgroup> volume_brick_starts: array<u32,64>;
+var<workgroup> volume_brick_count_shared: u32;
+var<workgroup> volume_brick_cells_shared: u32;
 
 // Far trees (config march.y > 0): owners past this distance from the
 // camera, measured at the instance root exactly like cull.wgsl.
@@ -1388,17 +1395,42 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
     let tree=volume_trees[index];
     let eye_local=volume_splat_eye(index);
     if VOXEL_BRICK_CULL {
-        let bricks=volume_splat_brick_table(index,level);
+        // 64 bricks at a time: each lane tests one, then all lanes share
+        // the visible bricks' cells. A lane per whole brick idled most
+        // lanes of a far tree with a few bricks (valley 4K +2.75 ms).
+        if lane==0u {volume_brick_table_shared=volume_splat_brick_table(index,level);}
+        let bricks=workgroupUniformLoad(&volume_brick_table_shared);
         let history=volume_splats[VOLUME_HZB_VIEW+4u].x==1u;
         let previous=volume_hzb_view();
-        for(var b=lane;b<bricks.y;b+=64u) {
-            let brick=volume_splat_brick(bricks,b);
-            let range=brick.xy;let packed=brick.z;
-            if history && volume_brick_hidden(index,level,packed,previous) {
-                let queued=atomicAdd(&volume_stats[VOLUME_CULL_WORD+4u],1u);
-                if queued<volume_cull_queue_capacity() {volume_splats[volume_splat_limit()+queued]=vec4<u32>(index,level,b,0u);continue;}
+        for(var batch=0u;batch<bricks.y;batch+=64u) {
+            if lane==0u {atomicStore(&volume_brick_visible,0u);}
+            workgroupBarrier();
+            let b=batch+lane;
+            if b<bricks.y {
+                let brick=volume_splat_brick(bricks,b);
+                var draw=true;
+                if history && volume_brick_hidden(index,level,brick.z,previous) {
+                    let queued=atomicAdd(&volume_stats[VOLUME_CULL_WORD+4u],1u);
+                    if queued<volume_cull_queue_capacity() {volume_splats[volume_splat_limit()+queued]=vec4<u32>(index,level,b,0u);draw=false;}
+                }
+                if draw {volume_brick_ranges[atomicAdd(&volume_brick_visible,1u)]=brick.xy;}
             }
-            volume_splat_range(index,level,range,eye_local,0u,1u);
+            workgroupBarrier();
+            if lane==0u {
+                let n=atomicLoad(&volume_brick_visible);var total=0u;
+                for(var k=0u;k<n;k++) {volume_brick_starts[k]=total;total+=volume_brick_ranges[k].y;}
+                volume_brick_count_shared=n;volume_brick_cells_shared=total;
+            }
+            let total=workgroupUniformLoad(&volume_brick_cells_shared);
+            let n=volume_brick_count_shared;
+            for(var j=lane;j<total;j+=64u) {
+                // Last brick starting at or before j.
+                var low=0u;var high=n;
+                while high-low>1u {let mid=(low+high)/2u;if volume_brick_starts[mid]<=j {low=mid;} else {high=mid;}}
+                let range=volume_brick_ranges[low];
+                volume_splat_range(index,level,vec2<u32>(range.x+j-volume_brick_starts[low],1u),eye_local,0u,1u);
+            }
+            workgroupBarrier();
         }
         return;
     }
