@@ -21,3 +21,5 @@ With 6,638 spectators at seed 52, total resident crowd buffers in the two-camera
 A separate offscreen 1920 × 1080 full match with 10,700 spectators, one view and 120 frames returned 23.0 and 24.5 serialized FPS before and 18.1 and 20.9 after. The Warp Humans pass itself measured 0.71–0.95 ms before and 0.52–0.54 ms after. Whole-frame median GPU times overlapped (27.5–30.2 ms before, 27.1–31.5 ms after). Compiler activity and varying CPU submission times limit the interpretation of whole-game throughput on this machine during these runs.
 
 The final match captures exercised three bots, a ragdoll and a separate two-shot and explosion scenario. The latter completed 229 ticks and all spectator-count assertions.
+
+After the six focused tests passed and compilation finished, a reversed new/old/old/new full-match series gave 14.7, 91.3, 22.7 and 25.1 serialized FPS. Even the two consecutive baseline runs differed fourfold. These full-match runs cannot isolate a wardrobe FPS delta on this machine. The allocation counts and the separate two-camera measurements above are repeatable.
