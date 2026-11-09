@@ -251,8 +251,10 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     // Ground between crowns: the forest floor's shade where the stand is
     // dense, as forest_canopy's gaps.
     let crowd = ff_share(q.x, q.y, seed, site, footprint) * params.density;
-    let floor = mix(ground, params.style.floor.rgb, 0.5 * min(crowd * 1.25, 1.0));
-    let gap = floor * (1.0 - (1.0 - params.style.floor.w) * min(crowd * 1.25, 1.0) * grows * fade);
+    // Not forest_canopy's floor, nearly black under a closed canopy: the
+    // reference's gaps between open pines show lit ground.
+    let floor = mix(ground, params.style.floor.rgb, 0.25 * min(crowd * 1.25, 1.0));
+    let gap = floor * (1.0 - FAR_GAP_SHADE * min(crowd * 1.25, 1.0) * grows * fade);
     // Drawn needles keep NEEDLE_BRUSH_OWN of the sun and 0.25 + 0.75 x its
     // root of the sky (shade.wgsl): their crowns shade themselves inside.
     // In a stand the neighbours take more: a crown's flanks lie in the
@@ -296,6 +298,10 @@ override FAR_CROWN_BASE: f32 = 0.4;
 // Stacked crowns still leave gaps, so closed stands keep their grain
 // (the reference's) instead of a solid cover.
 override FAR_CROWN_OPACITY: f32 = 0.6;
+// The share of a pixel a crown's edge is filtered over.
+override FAR_CROWN_FILTER: f32 = 0.3;
+// Ambient shade of the ground between crowns in a closed stand.
+override FAR_GAP_SHADE: f32 = 0.4;
 // KERN_FAR_CROWN_DEBUG: red the averaged share, green single-crown cover.
 override FAR_CROWN_DEBUG: bool = false;
 // The sun a drawn needle crown keeps (shade.wgsl NEEDLE_BRUSH_OWN).
@@ -361,7 +367,11 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
             let e = vec2<f32>(dot(d, across), dot(d, along) * wide / long);
             // The ellipse (in across metres) filtered over the pixel: past
             // a pixel's size it is spread as its area's share over the box.
-            let w = max(max(fa, fl * wide / long), 0.05);
+            // Filtered over a part of the pixel only: drawn trees are point
+            // sampled, a crown or a gap per pixel, and that speckle (which
+            // temporal AA only halves) is the grain of a forest kilometres
+            // out. A full pixel's filter gave its smooth mean.
+            let w = max(max(fa, fl * wide / long) * FAR_CROWN_FILTER, 0.05);
             let spread = max(wide, 0.5 * w);
             let a = (wide / spread) * (wide / spread) * clamp(0.5 + (spread - length(e)) / w, 0.0, 1.0);
             open *= 1.0 - a * FAR_CROWN_OPACITY;
