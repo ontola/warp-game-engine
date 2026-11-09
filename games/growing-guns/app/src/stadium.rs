@@ -283,6 +283,46 @@ pub struct StadiumVisuals {
     rng: Rng,
 }
 
+fn stadium_rng(seed: u64) -> (Rng, usize) {
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    let quarry = if rng.f() < 0.5 { 0 } else { 3 } + rng.below(3);
+    (rng, quarry)
+}
+
+// One figure per occupied seat, preserving the game RNG draw order.
+fn seat_layout(rng: &mut Rng, base: f32, inner: f32, looks: &[(usize,usize)]) -> Vec<Seat> {
+    let seg = Stadium::seg_ang();
+    let mut seats = Vec::new();
+    'all: for i in 0..SEGMENTS {
+        let ang = seg * (i as f32 + 0.5);
+        for row in 0..ROWS {
+            let y = base + row as f32 * ROW_RISE;
+            let row_r = inner + (row as f32 + 0.45) * ROW_DEPTH;
+            let count = (row_r * sq(ang) * seg / CROWD_SPACING) as usize;
+            for k in 0..count {
+                if rng.f() < CROWD_SKIP_CHANCE { continue; }
+                let mut a = ang + (k as f32 + 0.5) / count as f32 * seg - seg * 0.5;
+                a += rng.range(-0.15, 0.15) / row_r.max(1.0);
+                let r = row_r * sq(a);
+                let pos = Vec3::new(a.cos() * r + rng.range(-0.15, 0.15), y, a.sin() * r + rng.range(-0.25, 0.25));
+                let colour = if rng.f() < 0.08 { CROWD_COLORS.len() + rng.below(CROWD_ACCENTS.len()) } else { rng.below(CROWD_COLORS.len()) };
+                let look = looks[colour * SHADES.len() + rng.below(SHADES.len())];
+                let hop = if rng.f() < 0.3 { 0.0 } else { rng.range(0.15, 0.42) };
+                seats.push(Seat { pos, yaw: -a - PI * 0.5, scale: rng.range(1.55, 1.95), width: rng.range(0.72, 0.98), phase: rng.f(), tempo: rng.f(), hop, body: look.0, arms: look.1 });
+                if seats.len() >= CROWD_MAX { break 'all; }
+            }
+        }
+    }
+    seats
+}
+
+pub(crate) fn review_seats(world: &World) -> Vec<Seat> {
+    let (mut rng, _) = stadium_rng(world.arena.seed);
+    let geo = world.arena.stadium;
+    let looks = [(0,0); (CROWD_COLORS.len()+CROWD_ACCENTS.len())*SHADES.len()];
+    seat_layout(&mut rng, geo.base_y, geo.inner_r, &looks)
+}
+
 impl StadiumVisuals {
     /// A sky or sunlight bake is still running (a probe would measure it too).
     pub fn baking(&self) -> bool { self.sky_job.is_some() || self.sun_job.is_some() }
@@ -389,13 +429,13 @@ impl StadiumVisuals {
         let a = &world.arena;
         self.geo = a.stadium;
         self.mark_surfaces = self.geo.pieces().into_iter().filter(|p| matches!(p.kind, PieceKind::Step | PieceKind::Facade | PieceKind::Wall)).collect();
-        self.rng = Rng(a.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        let (rng, quarry) = stadium_rng(a.seed);
+        self.rng = rng;
         self.stands.clear(scene);
         self.roof.clear(scene);
         self.tv.clear(scene);
         self.marks.clear(scene);
         self.mark_ring.clear();
-        let quarry = if self.rng.f() < 0.5 { 0 } else { 3 } + self.rng.below(3);
         let box_xf = |c: Vec3, size: Vec3, yaw: f32| Affine3A::from_scale_rotation_translation(size, Quat::from_rotation_y(yaw), c);
         let mut sky_boxes = Vec::new();
         for p in self.geo.pieces() {
@@ -505,36 +545,9 @@ impl StadiumVisuals {
                 self.tv.add(scene, self.tv_mesh[1], box_xf(leg, Vec3::new(0.9, leg_height, 0.9), 0.0));
             }
         }
-        self.seat(scene, base, inner);
-        self.sound.kickoff();
-    }
-
-    /// Godot `_build_crowd`: one figure per 0.9 m of each row, a few empty
-    /// seats, varied height, tempo and hop; 30% sit still.
-    fn seat(&mut self, scene: &Scene, base: f32, inner: f32) {
-        let seg = Stadium::seg_ang();
-        let mut seats = Vec::new();
-        'all: for i in 0..SEGMENTS {
-            let ang = seg * (i as f32 + 0.5);
-            for row in 0..ROWS {
-                let y = base + row as f32 * ROW_RISE;
-                let row_r = inner + (row as f32 + 0.45) * ROW_DEPTH;
-                let count = (row_r * sq(ang) * seg / CROWD_SPACING) as usize;
-                for k in 0..count {
-                    if self.rng.f() < CROWD_SKIP_CHANCE { continue; }
-                    let mut a = ang + (k as f32 + 0.5) / count as f32 * seg - seg * 0.5;
-                    a += self.rng.range(-0.15, 0.15) / row_r.max(1.0);
-                    let r = row_r * sq(a);
-                    let pos = Vec3::new(a.cos() * r + self.rng.range(-0.15, 0.15), y, a.sin() * r + self.rng.range(-0.25, 0.25));
-                    let colour = if self.rng.f() < 0.08 { CROWD_COLORS.len() + self.rng.below(CROWD_ACCENTS.len()) } else { self.rng.below(CROWD_COLORS.len()) };
-                    let look = self.looks[colour * SHADES.len() + self.rng.below(SHADES.len())];
-                    let hop = if self.rng.f() < 0.3 { 0.0 } else { self.rng.range(0.15, 0.42) };
-                    seats.push(Seat { pos, yaw: -a - PI * 0.5, scale: self.rng.range(1.55, 1.95), width: self.rng.range(0.72, 0.98), phase: self.rng.f(), tempo: self.rng.f(), hop, body: look.0, arms: look.1 });
-                    if seats.len() >= CROWD_MAX { break 'all; }
-                }
-            }
-        }
+        let seats = seat_layout(&mut self.rng, base, inner, &self.looks);
         self.crowd.set_seats(scene, &seats, Vec2::ZERO);
+        self.sound.kickoff();
     }
 
     /// The crowd reacts to this tick's events (Godot CrowdAudio +
