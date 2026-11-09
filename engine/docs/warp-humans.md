@@ -51,3 +51,9 @@ The body, morphs, clothing, skin maps and hair are attributed in [the asset note
 For comparison with production crowd animation and perceived repetition, see
 [NVIDIA's animated crowd rendering chapter](https://developer.nvidia.com/gpugems/gpugems3/part-i-geometry/chapter-2-animated-crowd-rendering)
 and [McDonnell et al., Clone Attack!](https://www.scss.tcd.ie/Rachel.McDonnell/papers/oldSiggraph08.pdf).
+
+Visual references for the updated figures include the [NPHM head scans](https://simongiebenhain.github.io/NPHM/)
+and [Muybridge's locomotion sequence](https://commons.wikimedia.org/wiki/File:Muybridge_human_male_walking_animated.gif).
+Compare the brow ridge, nose projection and distance from the lips to the chin
+at equal camera angle. The current close mesh has one neutral expression;
+eye movement, blinking and expression-driven wrinkles remain open.
