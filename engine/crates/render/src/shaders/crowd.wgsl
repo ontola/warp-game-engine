@@ -26,8 +26,10 @@ fn animate(@builtin(global_invocation_id) id: vec3<u32>) {
     let panic=u.mood.z;
     let scale=s.params.x;
     // Local frame: yaw about Y, scaled by height, narrowed by the shape; figure +Z faces the arena.
-    let c = cos(s.pos_yaw.w);
-    let sn = sin(s.pos_yaw.w);
+    var yaw = s.pos_yaw.w;
+    if u.counts.z == 0u { yaw -= blast_turn_at(reactions[i], u.mood.x); }
+    let c = cos(yaw);
+    let sn = sin(yaw);
     let ex = vec3<f32>(c, 0.0, -sn) * scale * s.shape.x;
     let ey = vec3<f32>(0.0, 1.0, 0.0) * scale;
     let ez = vec3<f32>(sn, 0.0, c) * scale * s.shape.x;

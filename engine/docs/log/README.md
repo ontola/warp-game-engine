@@ -22,6 +22,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [handoff.md](handoff.md) is the running log of 23 October to 5 November
   2026, newest first.
 
+- [Turning away from a blast](2026-11-09-warp-humans-blast-turn.md)
 - [Startled spectator gestures](2026-11-09-warp-humans-startle.md)
 - [Planted steps and crouches on the terraces](2026-11-09-warp-humans-footwork.md)
 - [Stadium voices and spectator gestures](2026-11-09-stadium-voices-and-gestures.md)

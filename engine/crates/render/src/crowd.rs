@@ -341,6 +341,8 @@ mod tests {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap();
         assert_eq!(std::mem::size_of::<GpuSeat>(), 64);
         assert_eq!(std::mem::size_of::<Uniform>(), 48);
+        let reaction = module.types.iter().find(|(_, t)| t.name.as_deref() == Some("Reaction")).unwrap().1;
+        assert!(matches!(&reaction.inner, naga::TypeInner::Struct { span, .. } if *span == reactions::REACTION_BYTES));
     }
 
     #[test]

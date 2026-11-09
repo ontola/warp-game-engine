@@ -33,10 +33,13 @@ fn body_hit(a:vec3<f32>,dir:vec3<f32>,len:f32,base:vec3<f32>,height:f32,radius:f
     }
     return select(MISS,lo,lo<=hi);
 }
-fn scare(i:u32,s:Seat,at:vec3<f32>,pos:vec3<f32>,range:f32,time:f32){
+fn scare(i:u32,s:Seat,at:vec3<f32>,pos:vec3<f32>,range:f32,time:f32,blast:bool){
     let dist=distance(at,pos);
     if dist>=range {return;}
     var r=reactions[i];
+    if blast {
+        r=turn_from_blast(r,time,pos.xz-at.xz,s.pos_yaw.w,s.params.y,1.-dist/range);
+    }
     // A second stimulus extends the same escape, including its direction.
     // Once walking home, start the next escape at the actual current offset.
     if r.goal==0. || time>=r.hold_end {
@@ -85,7 +88,7 @@ fn react(@builtin(local_invocation_index) lane:u32){
             } else if e.tag.x==2u && distance(vec3<f32>(center.x,clamp(at.y,pose.origin.y,pose.origin.y+h),center.z),at)<=e.b.w {
                 die(i,k,center,vec2<u32>(0));continue;
             }
-            if !shot {scare(i,s,at,center,e.mood.z,e.a.w);}
+            if !shot {scare(i,s,at,center,e.mood.z,e.a.w,e.tag.x==2u);}
         }
         distances[lane]=best;ids[lane]=winner;
         workgroupBarrier();
@@ -110,7 +113,7 @@ fn react(@builtin(local_invocation_index) lane:u32){
                 if distance(near,s.pos_yaw.xyz)>e.mood.z+7. {continue;}
                 let pose=body_pose(s,reactions[i],e.a.w,e.mood.xy);
                 let center=pose.origin+vec3<f32>(0.,pose.crouch*s.params.x*0.5,0.);
-                scare(i,s,closest_point(e.a.xyz,end,center),center,e.mood.z,e.a.w);
+                scare(i,s,closest_point(e.a.xyz,end,center),center,e.mood.z,e.a.w,false);
             }
         }
         storageBarrier();workgroupBarrier();
