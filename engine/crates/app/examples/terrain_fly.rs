@@ -645,7 +645,11 @@ impl Game for Fly {
 impl Default for World {
     // 32768 slots (6 November, settled pages): forest 25.2 -> 22.2 ms, near 21.0 -> 17.3,
     // mostly voxel splat walk and occluder cull; 541 of 2.2M splats over 2 px.
-    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, branch_slots: 32768 } }
+    // 65536 (9 November, swiss spruce forest): 32768 refused ~43k refinements a
+    // frame and left 15-40 px voxel discs at 40-100 m (Joep: 'te grote
+    // balletjes'); doubling makes them ~1.8x smaller for ~2 ms GPU at 1440p,
+    // ~3 at 4K. The 2^24 splat store binds next.
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, branch_slots: 65536 } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
