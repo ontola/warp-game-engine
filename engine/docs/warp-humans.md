@@ -1,6 +1,16 @@
 # Warp Humans stadium review
 
-Run from the workspace root on a GPU with compute and indirect drawing.
+Launch the interactive desktop playtest with:
+
+```sh
+cargo run --release -p growing-guns-app --bin growing-guns -- human-play --seed 52
+```
+
+Scroll to zoom, drag with the left mouse button to orbit, and use Left/Right
+to select a neighbour. Home frames the stadium, End frames the face, Space
+pauses the motion and Esc closes the playtest.
+
+Run the repeatable headless review from the workspace root on a GPU with compute and indirect drawing.
 
 ```sh
 cargo run --release -p growing-guns-app --bin growing-guns -- human-review --seed 52 --far cells --size 960x540 --frames 121 --out build/humans/cells
