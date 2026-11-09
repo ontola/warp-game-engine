@@ -85,6 +85,9 @@ pub fn run(args: &Args) -> Result<(), String> {
             args.flag("--sequence") || [0, frames / 4, frames / 2, frames - 1].contains(&i);
         for cam in [view_at(zoom), wide] {
             let s = renderer.draw(&gpu, &cam, t * 5., &col, &depth)?;
+            if s.counts[1] > 0 {
+                renderer.prepare_detail();
+            }
             if s.counts[2] > 0 && !renderer.detail_ready && request.is_none() {
                 request = Some((i, Instant::now()));
             }
@@ -117,7 +120,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     }
     let report = serde_json::json!({"seed":seed,"target_seat":0,"population":seats.len(),"adapter":gpu.info.name,"backend":format!("{:?}",gpu.info.backend),
         "view_size":[w,h],"far":format!("{far:?}"),"initial_buffer_bytes":initial_bytes,"resident_buffer_bytes":renderer.resident_buffer_bytes,
-        "target_bytes":w as u64*h as u64*8,"cold_detail":cold,"samples":samples});
+        "appearance_bytes":renderer.appearance_bytes,"target_bytes":w as u64*h as u64*8,"cold_detail":cold,"samples":samples});
     std::fs::write(
         out.join("report.json"),
         serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
