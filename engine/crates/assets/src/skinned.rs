@@ -84,8 +84,8 @@ pub struct Clip {
     pub looping: bool,
     pub min: Vec3,
     pub max: Vec3,
-    matrices: Vec<Mat4>,
-    sockets: Vec<HashMap<String, Mat4>>,
+    matrices: std::sync::Arc<[Mat4]>,
+    sockets: std::sync::Arc<[HashMap<String, Mat4>]>,
 }
 struct Surface {
     vertices: Vec<Vertex>,
@@ -439,8 +439,8 @@ impl Character {
                 looping: clip.looping,
                 min: clip_min,
                 max: clip_max,
-                matrices,
-                sockets,
+                matrices: matrices.into(),
+                sockets: sockets.into(),
             });
         }
         // A millimetre covers exporter and GPU f32 rounding.
@@ -833,8 +833,8 @@ mod tests {
                 looping: false,
                 min: Vec3::ZERO,
                 max: Vec3::ONE,
-                matrices: vec![Mat4::IDENTITY; 6],
-                sockets: Vec::new(),
+                matrices: vec![Mat4::IDENTITY; 6].into(),
+                sockets: Default::default(),
             }],
             min: Vec3::ZERO,
             max: Vec3::ONE,

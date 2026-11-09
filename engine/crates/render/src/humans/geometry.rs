@@ -16,6 +16,40 @@ pub(super) struct Vertex {
     morphs: [[i8; 4]; 4],
 }
 
+// All crowd tiers share a compact GPU layout. Position covers +/-1.2 body heights.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(super) struct PackedVertex {
+    position: [i16; 4],
+    normal: [i8; 4],
+    center: [i16; 4],
+    tags: [u8; 4],
+    bones: [u8; 4],
+    morphs: [[i8; 4]; 4],
+}
+impl Vertex {
+    pub(super) fn packed(&self) -> PackedVertex {
+        let xyz = |p: [f32; 3], scale: f32| {
+            let [x, y, z] = p.map(|v| ((v / scale).clamp(-1., 1.) * 32767.).round() as i16);
+            [x, y, z, 0]
+        };
+        let [x, y, z] = self.normal.map(|v| (v.clamp(-1., 1.) * 127.).round() as i8);
+        PackedVertex {
+            position: xyz(self.pos, 1.2),
+            normal: [x, y, z, 0],
+            center: xyz(self.center, 1.),
+            tags: [
+                self.material as u8,
+                (self.arm + 1.) as u8,
+                self.bin as u8,
+                0,
+            ],
+            bones: self.bones,
+            morphs: self.morphs,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Mesh {
     pub vertices: Vec<Vertex>,
@@ -111,8 +145,8 @@ impl Mesh {
             })
             .collect();
         let indices = bytes[split..]
-            .chunks_exact(4)
-            .map(|v| u32::from_le_bytes(v.try_into().unwrap()))
+            .chunks_exact(2)
+            .map(|v| u16::from_le_bytes(v.try_into().unwrap()) as u32)
             .collect::<Vec<_>>();
         assert_eq!(indices.len(), u32_at(4));
         Self { vertices, indices }
@@ -130,6 +164,16 @@ pub struct BodyVertex {
 }
 
 impl super::Instance {
+    // Shoulder breadth, waist and hips vary independently of overall height.
+    fn width_at(&self, y: f32) -> f32 {
+        let zone = |center: f32, span: f32| {
+            let t = (1. - (y - center).abs() / span).clamp(0., 1.);
+            t * t * (3. - 2. * t)
+        };
+        1. + 0.13 * (2. * self.size_phase[2] - 1.) * zone(0.78, 0.12)
+            + 0.12 * (2. * self.size_phase[3] - 1.) * zone(0.57, 0.13)
+            + 0.10 * (2. * self.identity[0] - 1.) * zone(0.48, 0.11)
+    }
     pub fn body_mesh(&self) -> (Vec<BodyVertex>, Vec<u32>) {
         static BODY: std::sync::OnceLock<Mesh> = std::sync::OnceLock::new();
         let mesh = BODY.get_or_init(Mesh::anatomical);
@@ -137,17 +181,42 @@ impl super::Instance {
         let mut vertices = Vec::new();
         let mut remap = vec![u32::MAX; mesh.vertices.len()];
         for (i, v) in mesh.vertices.iter().enumerate() {
-            if v.material >= 20 && v.material != hair { continue; }
+            let mask = v.material >> 5;
+            let material = v.material & 31;
+            if (mask != 0 && mask & (1 << self.outfit()) == 0)
+                || (material >= 20 && material != hair)
+            {
+                continue;
+            }
             let mut p = Vec3::from(v.pos);
-            for (morph, weight) in v.morphs.iter().zip(self.identity) {
+            for (morph, weight) in v.morphs.iter().zip([
+                self.identity[0],
+                self.identity[2],
+                self.identity[1],
+                self.identity[3],
+            ]) {
                 let d = Vec3::new(morph[0] as f32, morph[1] as f32, morph[2] as f32);
                 p += d * (0.055 / 127.0 * (2.0 * weight - 1.0));
             }
+            let width = self.width_at(p.y);
+            p.x *= width;
+            let mut n = Vec3::from(v.normal);
+            n.x /= width;
             remap[i] = vertices.len() as u32;
-            vertices.push(BodyVertex { position: p, normal: v.normal.into(), uv: [v.center[0], v.center[1]],
-                limb_weights: v.bones.map(|w| w as f32 / 255.0), material: v.material });
+            vertices.push(BodyVertex {
+                position: p,
+                normal: n.normalize_or(Vec3::Y),
+                uv: [v.center[0], v.center[1]],
+                limb_weights: v.bones.map(|w| w as f32 / 255.0),
+                material,
+            });
         }
-        let indices = mesh.indices.iter().map(|&i| remap[i as usize]).filter(|&i| i != u32::MAX).collect();
+        let indices = mesh
+            .indices
+            .iter()
+            .map(|&i| remap[i as usize])
+            .filter(|&i| i != u32::MAX)
+            .collect();
         (vertices, indices)
     }
 }
@@ -213,6 +282,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn outfits_share_a_body_and_fit_the_crowd_budget() {
+        let mesh = Mesh::anatomical();
+        assert_eq!(std::mem::size_of::<super::super::Instance>(), 64);
+        assert_eq!(std::mem::size_of::<PackedVertex>(), 44);
+        assert!(mesh.vertices.len() <= 65536);
+        let mut tops = [0; 3];
+        for tri in mesh.indices.chunks_exact(3) {
+            let tag = mesh.vertices[tri[0] as usize].material;
+            assert!(
+                tri.iter()
+                    .all(|&i| mesh.vertices[i as usize].material == tag)
+            );
+            if tag & 31 == 12 {
+                let mask = tag >> 5;
+                assert!(matches!(mask, 1 | 2 | 4));
+                tops[mask.trailing_zeros() as usize] += 1;
+            }
+        }
+        assert!(tops.iter().all(|&n| n > 100));
+        assert!(mesh.vertices.iter().any(|v| v.material == 14 + (6 << 5)));
+        assert!(mesh.vertices.iter().any(|v| v.material == 3));
+    }
+
+    #[test]
     fn cooked_body_retains_eyes_and_follows_the_limbs() {
         let mesh = Mesh::anatomical();
         assert!(
@@ -226,7 +319,7 @@ mod tests {
             let sleeve: Vec<_> = mesh
                 .vertices
                 .iter()
-                .filter(|v| v.material == 12 && v.pos[0] * side > 0.24 && v.pos[1] > 0.55)
+                .filter(|v| (v.material & 31) == 12 && v.pos[0] * side > 0.24 && v.pos[1] > 0.55)
                 .collect();
             assert!(!sleeve.is_empty());
             assert!(sleeve.iter().all(|v| v.bones[0] > 216 && v.bones[1] > 216));
@@ -234,7 +327,7 @@ mod tests {
         assert!(
             mesh.vertices
                 .iter()
-                .any(|v| v.material == 12 && v.pos[1] < 0.2 && v.bones[3] > 240)
+                .any(|v| (v.material & 31) == 14 && v.pos[1] < 0.2 && v.bones[3] > 240)
         );
         for material in [13, 20, 21, 22] {
             assert!(mesh.vertices.iter().any(|v| v.material == material));
