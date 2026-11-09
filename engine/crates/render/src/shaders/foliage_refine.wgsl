@@ -124,7 +124,10 @@ var<workgroup> seed_scan:array<vec4<u32>,256>;
   if view.counts.w!=0u && seed_visibility[tree]==0u {consumers&=~256u;}
   demand[tree].bucket=consumers;demand[tree].prefix=0u;
   demand[tree+view.counts.x].bucket=consumers&512u;demand[tree+view.counts.x].prefix=0u;
-  atomicStore(&demand[tree].count,0u);atomicStore(&demand[tree].failed,0u);
+  // demand[tree].failed (camera half) carries last frame's camera record
+  // count into this one: fast_round's hysteresis (CUT_HYSTERESIS).
+  let previous=atomicLoad(&demand[tree].count);
+  atomicStore(&demand[tree].count,0u);atomicStore(&demand[tree].failed,previous);
   atomicStore(&demand[tree+view.counts.x].count,0u);
   if consumers!=0u {let cost=work(tree,NONE,consumers);value=vec4<u32>(countOneBits(consumers),cost.yz,0u);}
  }
@@ -669,6 +672,12 @@ fn fast_set_args(count:u32) {
  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
  let task=current[at];if task.z==0u {return;}
  cut_scale=fast_scale(task.z);
+ // Hysteresis: a tree the camera saw in detail last frame (more than one
+ // record) keeps it down to CUT_HYSTERESIS times less error, so a small
+ // turn or a cut-scale step no longer flips trees between voxels, levels
+ // and mesh (Joep's playtest, 9 November: ~1k flips on a 20 degree turn).
+ let detailed=(task.z&256u)!=0u && atomicLoad(&demand[task.x].failed)>1u;
+ if detailed {cut_scale=cut_scale/CUT_HYSTERESIS;}
  let t=trees[task.x];let node_id=select(task.y,t.info.x,task.y==NONE);let n=nodes[node_id];
  atomicAdd(&counters[4],1u);
  let scale=projected(t,n,task.z);
@@ -695,7 +704,7 @@ fn fast_set_args(count:u32) {
  if !resident {atomicAdd(&state[73],1u);publish(task);return;}
  // Into source leaves only past the coarser source cut.
  if (task.z&256u)!=0u && source_leaves && task.y!=NONE && (n.links.w&1u)==0u && scale.x<1e29 {
-  let s=fast_source_scale();
+  let s=fast_source_scale()/select(1.0,CUT_HYSTERESIS,detailed);
   if scale.x*n.error.x<=view.pixels.z*s && scale.x*n.error.y<=s {publish(task);return;}
  }
  // Shadows stay voxel: source leaves in shadow maps cost hundreds of
