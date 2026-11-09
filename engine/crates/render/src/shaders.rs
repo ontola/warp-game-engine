@@ -13,9 +13,9 @@
 use std::path::PathBuf;
 
 /// The built-in copies of every file that can be read from disk.
-pub(crate) const SHARED_NAMES: [&str; 19] = ["cloud_weather.wgsl", "game_surface.wgsl", "terrain_field.wgsl", "forest_field.wgsl", "terrain_surface.wgsl", "wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "meadow_canopy.wgsl", "foliage_volume.wgsl", "shade.wgsl",
-    "world_visibility.wgsl", "foliage_sun_pages.wgsl", "car_material.wgsl", "grass_lighting.wgsl", "headlights.wgsl", "clustered_lights.wgsl", "car_lamps.wgsl", "procedural_surface.wgsl"];
-const BUILT_IN: [(&str, &str); 23] = [
+pub(crate) const SHARED_NAMES: [&str; 20] = ["cloud_weather.wgsl", "game_surface.wgsl", "terrain_field.wgsl", "forest_field.wgsl", "terrain_surface.wgsl", "wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "meadow_canopy.wgsl", "foliage_volume.wgsl", "shade.wgsl",
+    "world_visibility.wgsl", "foliage_sun_pages.wgsl", "car_material.wgsl", "grass_lighting.wgsl", "incident_lights.wgsl", "headlights.wgsl", "clustered_lights.wgsl", "car_lamps.wgsl", "procedural_surface.wgsl"];
+const BUILT_IN: [(&str, &str); 24] = [
     ("cloud_weather.wgsl", include_str!("shaders/cloud_weather.wgsl")),
     ("terrain_field.wgsl", crate::terrain_field::WGSL),
     ("forest_field.wgsl", crate::forest_field::WGSL),
@@ -33,6 +33,7 @@ const BUILT_IN: [(&str, &str); 23] = [
     ("car_material.wgsl", include_str!("shaders/car_material.wgsl")),
     ("car_lamps.wgsl", include_str!("shaders/car_lamps.wgsl")),
     ("grass_lighting.wgsl", include_str!("shaders/grass_lighting.wgsl")),
+    ("incident_lights.wgsl", include_str!("shaders/incident_lights.wgsl")),
     ("headlights.wgsl", include_str!("shaders/headlights.wgsl")),
     ("clustered_lights.wgsl", include_str!("shaders/clustered_lights.wgsl")),
     ("transparency.wgsl", include_str!("shaders/transparency.wgsl")),
@@ -258,7 +259,7 @@ mod tests {
     fn lighting_snapshot_propagates_every_shared_dependency_to_every_consumer() {
         let original = Snapshot::read(None).unwrap();
         let baseline = original.lighting();
-        for name in ["shade.wgsl", "car_material.wgsl", "car_lamps.wgsl", "grass_lighting.wgsl", "headlights.wgsl", "foliage_volume.wgsl"] {
+        for name in ["shade.wgsl", "car_material.wgsl", "car_lamps.wgsl", "grass_lighting.wgsl", "incident_lights.wgsl", "headlights.wgsl", "foliage_volume.wgsl"] {
             let mut changed = original.clone();
             let index = BUILT_IN.iter().position(|(n, _)| *n == name).unwrap();
             changed.files[index].push_str("\n// reload generation marker\n");

@@ -5511,7 +5511,12 @@ impl Renderer {
                             .filter(|_| gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS))
                             .map(|(qs, _, _)| { names.push("warp humans"); (qs, timestamp_pair(&mut ts)) });
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
-                        humans.draw_match(gpu, &mut enc, cam, vp, view_m, px_scale, light, &hdr_v, &depth_v);
+                        humans.draw_match(gpu, &mut enc, cam, vp, view_m, px_scale, light, &view_light.shadow_view_proj, &[
+                            (5, wgpu::BindingResource::TextureView(&shadow_v)),
+                            (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
+                            (17, self.headlights.uniform.as_entire_binding()),
+                            (18, wgpu::BindingResource::TextureView(&self.headlights.sampled)),
+                        ], &hdr_v, &depth_v);
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
                     }
                     if let Some(transparency) = self.transparency.as_ref().filter(|_|debug_options.transparency_enabled) {

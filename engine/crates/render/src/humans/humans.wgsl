@@ -3,11 +3,13 @@ struct Camera {
     game: vec4<f32>, // enabled, first scene instance, sky lux, sun lux
     sun: vec4<f32>, sun_color: vec4<f32>,
     settings: vec4<f32>, // time, focal length in pixels, far mode, actor count
+    shadow_vp:mat4x4<f32>,
 }
+struct SeatLight { index:u32, rg:u32, blue:u32, direction_sun:u32 }
 struct Actor { pos_yaw:vec4<f32>, size_phase:vec4<f32>, color:vec4<f32>, identity:vec4<f32> }
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<storage,read> actors:array<Actor>;
-@group(0) @binding(2) var<storage,read_write> visible:array<u32>;
+@group(0) @binding(2) var<storage,read_write> visible:array<SeatLight>;
 @group(0) @binding(3) var<storage,read_write> draws:array<atomic<u32>>;
 
 // Same 80-byte scene instance as the stadium animation compute pass.
@@ -24,28 +26,72 @@ fn actor(i:u32)->Actor {
     return a;
 }
 
-@compute @workgroup_size(64)
-fn select_lod(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let i=gid.x; let count=u32(camera.settings.w); if i>=count{return;}
-    let a=actor(i); if a.color.w<0. {return;} let h=a.size_phase.y;
+fn reserve_slot(a:Actor)->u32 {
+    if a.color.w<0. {return 0xffffffffu;} let h=a.size_phase.y;
     let p=camera.vp*vec4<f32>(a.pos_yaw.xyz+vec3<f32>(0,h*0.5,0),1);
     var bin=0u;
     if a.color.w>0.5 {
-        if p.w < -h || abs(p.x)>max(p.w,0.)+h*4. || abs(p.y)>max(p.w,0.)+h*4. { return; }
+        if p.w < -h || abs(p.x)>max(p.w,0.)+h*4. || abs(p.y)>max(p.w,0.)+h*4. { return 0xffffffffu; }
         let pixels=h*camera.settings.y/max(p.w,0.01);
         bin=1u;
         if pixels>32. {bin=2u;}
         if pixels>170. {bin=4u;}
     }
     let slot=atomicAdd(&draws[bin*5u+1u],1u);
-    visible[bin*count+slot]=i;
+    return bin*u32(camera.settings.w)+slot;
 }
-@group(0) @binding(4) var<storage,read> draw_ids:array<u32>;
+
+@compute @workgroup_size(64)
+fn select_lod(@builtin(global_invocation_id) gid:vec3<u32>) {
+    if gid.x>=u32(camera.settings.w) {return;}
+    let slot=reserve_slot(actor(gid.x));
+    if slot!=0xffffffffu {visible[slot]=SeatLight(gid.x,0u,0u,0u);}
+}
+
+// A single receiver at upper torso height shares the scene's maps across all LODs.
+@group(1) @binding(5) var sun_depth:texture_depth_2d;
+@group(1) @binding(6) var shadow_samp:sampler_comparison;
+@group(1) @binding(17) var<uniform> headlights:Headlights;
+@group(1) @binding(18) var headlight_depth:texture_depth_2d_array;
+
+fn spot_visibility(index:u32,uv:vec2<f32>,z:f32,lamp:Headlight,slope:vec2<f32>,world_p:vec3<f32>)->f32 {
+    return textureSampleCompareLevel(headlight_depth,shadow_samp,uv,i32(index),z);
+}
+@compute @workgroup_size(64)
+fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
+    if gid.x>=u32(camera.settings.w) {return;}
+    let a=actor(gid.x);
+    let slot=reserve_slot(a);
+    if slot==0xffffffffu {return;}
+    let p=a.pos_yaw.xyz+vec3<f32>(0.,0.75*a.size_phase.y,0.);
+    var sun=1.;
+    if camera.game.w>0. && camera.sun.w>0. {
+        let clip=camera.shadow_vp*vec4<f32>(p+camera.sun.xyz*0.025,1.);
+        let ndc=clip.xyz/clip.w;
+        if all(abs(ndc.xy)<=vec2<f32>(1.)) && ndc.z>=0. && ndc.z<=1. {
+            let uv=ndc.xy*vec2<f32>(0.5,-0.5)+0.5;
+            sun=mix(1.,textureSampleCompareLevel(sun_depth,shadow_samp,uv,ndc.z),camera.sun.w);
+        }
+    }
+    var energy=vec3<f32>(0.);
+    var moment=vec3<f32>(0.);
+    for(var i=0u;i<incident_light_count(p);i++){
+        let sample=incident_light_sample(i,p,vec3<f32>(0.,1.,0.));
+        energy+=sample.irradiance;
+        moment+=sample.direction*dot(sample.irradiance,vec3<f32>(0.2126,0.7152,0.0722));
+    }
+    let direction=moment/max(dot(energy,vec3<f32>(0.2126,0.7152,0.0722)),1e-5);
+    energy=min(energy,vec3<f32>(65504.));
+    visible[slot]=SeatLight(gid.x,pack2x16float(energy.rg),pack2x16float(vec2<f32>(energy.b,0.)),
+        pack4x8snorm(vec4<f32>(direction,sun)));
+}
+@group(0) @binding(4) var<storage,read> draw_ids:array<SeatLight>;
 @group(1) @binding(0) var atlas:texture_2d<f32>;
 @group(1) @binding(1) var atlas_sampler:sampler;
 struct V { @builtin(position) pos:vec4<f32>, @location(0) n:vec3<f32>, @location(1) local:vec3<f32>,
     @location(2) color:vec3<f32>, @location(3) @interpolate(flat) mat:u32,
-    @location(4) identity:vec4<f32>, @location(5) disc:vec2<f32>, @location(6) uv:vec2<f32> }
+    @location(4) identity:vec4<f32>, @location(5) disc:vec2<f32>, @location(6) uv:vec2<f32>, @location(7) @interpolate(flat) lamps:vec3<f32>,
+    @location(8) @interpolate(flat) direction_sun:vec4<f32> }
 fn rotate(angle:f32) -> mat2x2<f32> {
     return mat2x2<f32>(cos(angle),sin(angle),-sin(angle),cos(angle));
 }
@@ -58,7 +104,8 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     @location(3) arm:f32,@location(4) center:vec3<f32>,@location(5) bin:u32,
     @location(6) bones:vec4<f32>, @location(7) nose:vec4<f32>, @location(8) mouth:vec4<f32>,
     @location(9) brow:vec4<f32>, @location(10) adult:vec4<f32>, @builtin(instance_index) idx:u32)->V {
-    let a=actor(draw_ids[bin*u32(camera.settings.w)+idx]);
+    let seat=draw_ids[bin*u32(camera.settings.w)+idx];
+    let a=actor(seat.index);
     var p=rest; var n=normal; var anchor=center;
     let phase=camera.settings.x*(2.+a.size_phase.w)+a.size_phase.z*6.283;
     let anatomical=bin==4u && center.z< -0.9;
@@ -137,6 +184,8 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
         world=a.pos_yaw.xyz+rot*(scale*anchor)+camera.right.xyz*d.x+camera.up.xyz*d.y;
         disc=sign(rest.xy-center.xy);
     }
+    o.lamps=vec3<f32>(unpack2x16float(seat.rg),unpack2x16float(seat.blue).x);
+    o.direction_sun=unpack4x8snorm(seat.direction_sun);
     o.uv=center.xy; o.pos=camera.vp*vec4<f32>(world,1); o.n=rot*(n/scale); o.local=rest;
     o.color=a.color.rgb; o.mat=mat; o.identity=a.identity; o.disc=disc; return o;
 }
@@ -185,7 +234,10 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     default: {}
     }
     if camera.game.x>0. {
-        let irradiance=camera.game.z*(0.5+0.25*n.y)+camera.sun_color.rgb*camera.game.w*max(dot(n,camera.sun.xyz),0.);
+        let direct=camera.sun_color.rgb*camera.game.w*v.direction_sun.w*max(dot(n,camera.sun.xyz),0.);
+        // Wrapped diffuse retains opposing lamps when their first moments cancel.
+        let local=v.lamps*max(0.,0.25+0.75*dot(n,v.direction_sun.xyz));
+        let irradiance=camera.game.z*(0.5+0.25*n.y)+direct+local;
         return vec4<f32>(pow(max(color,vec3<f32>(0.)),vec3<f32>(2.2))*irradiance/3.14159,1.);
     }
     let sun=normalize(vec3<f32>(-0.65,0.85,0.5)); let light=0.68+0.33*max(dot(n,sun),0.)+0.07*n.y;
