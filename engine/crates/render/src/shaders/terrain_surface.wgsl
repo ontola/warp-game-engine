@@ -292,6 +292,10 @@ fn far_view_area(eye: vec3<f32>, fs: ForestStyle) -> f32 {
 
 // A crown's shaded base relative to its mean (its lit top is 2 - this).
 override FAR_CROWN_BASE: f32 = 0.4;
+// A pine crown is open: the share of what is behind it one crown hides.
+// Stacked crowns still leave gaps, so closed stands keep their grain
+// (the reference's) instead of a solid cover.
+override FAR_CROWN_OPACITY: f32 = 0.6;
 // KERN_FAR_CROWN_DEBUG: red the averaged share, green single-crown cover.
 override FAR_CROWN_DEBUG: bool = false;
 // The sun a drawn needle crown keeps (shade.wgsl NEEDLE_BRUSH_OWN).
@@ -311,7 +315,7 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
     let crowd = ff_share(q.x, q.y, seed, site, footprint) * density;
     if crowd <= 0.0 { return vec4<f32>(needles, 0.0); }
     let area = far_view_area(eye, fs);
-    let mean_cover = 1.0 - exp(-crowd * fs.crown.y * area);
+    let mean_cover = 1.0 - exp(-crowd * fs.crown.y * area * FAR_CROWN_OPACITY);
     // Sun from above lights a little more of each crown.
     let tops = 0.9 + 0.1 * max(sun.y, 0.0);
     // A crown seen at a glancing angle is its width across the view and
@@ -360,7 +364,7 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
             let w = max(max(fa, fl * wide / long), 0.05);
             let spread = max(wide, 0.5 * w);
             let a = (wide / spread) * (wide / spread) * clamp(0.5 + (spread - length(e)) / w, 0.0, 1.0);
-            open *= 1.0 - a;
+            open *= 1.0 - a * FAR_CROWN_OPACITY;
             // Inside a closed stand the grain is light and shade, not gaps:
             // a crown's lit top (away from the camera along the view) over
             // its shaded base, the crowns nearer the camera in front. The
