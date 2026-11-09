@@ -237,6 +237,8 @@ fn forest_ground(s: SurfaceIn, f: FieldAttr, footprint: f32) -> f32 {
 }
 // How far the ground's lushness follows the stands (1: only them).
 const FOREST_GROUND_LUSH: f32 = 0.7;
+// How dark the ground inside a stand is (0: pasture, 1: litter).
+override FOREST_FLOOR_DARK: f32 = 0.85;
 
 // How much of this ground's sun the drawn trees standing towards the sun
 // take, from their silhouettes (far_strip along the sun, as the painted
@@ -743,7 +745,11 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     if stands > -1.0 { lush = clamp(mix(lush, smoothstep(-0.45, 0.15, stands), FOREST_GROUND_LUSH), 0.0, 1.0); }
     // Darker than a lawn: seen from afar a meadow is mostly blade shadow,
     // so the ground matches the grass where the blades fade out.
-    let grass = steep_layer(layer, p, n, 2.6, mapping) * mix(g.grass_dry.rgb, g.grass_lush.rgb, lush);
+    var grass = steep_layer(layer, p, n, 2.6, mapping) * mix(g.grass_dry.rgb, g.grass_lush.rgb, lush);
+    // Inside a stand no pasture grows: dark needle litter in the crowns'
+    // shade, so the gaps of a closed stand read dark, not as lit lawn
+    // (Joep's swiss reference), with a hard edge where the stand ends.
+    if stands > -1.0 { grass = mix(grass, grass * vec3<f32>(0.32, 0.27, 0.3), FOREST_FLOOR_DARK * smoothstep(-0.06, 0.04, stands)); }
     // Layers a pixel holds none of are not sampled (moor, soil, gravel):
     // their weights come first.
     let m_moor = smoothstep(0.25, 0.8, clamp(f.moor + (broad - 0.5) * 0.7 + (mottle - 0.5) * 0.3, 0.0, 1.0));

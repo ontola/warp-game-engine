@@ -6777,6 +6777,8 @@ fn far_crown_constants() -> Vec<(&'static str, f64)> {
     }
     if std::env::var("KERN_FAR_TREE_SHADOWS").as_deref() == Ok("0") { out.push(("FAR_TREE_SHADOWS", 0.0)); }
     if let Some(x) = std::env::var("KERN_FAR_TREE_SHADOW_FROM").ok().and_then(|v| v.parse::<f64>().ok()) { out.push(("FAR_TREE_SHADOW_FROM", x)); }
+    if let Some(x) = std::env::var("KERN_FOREST_FLOOR_DARK").ok().and_then(|v| v.parse::<f64>().ok()) { out.push(("FOREST_FLOOR_DARK", x)); }
+    if let Some(x) = std::env::var("KERN_FAR_TREE_SHADOW_MIN_M").ok().and_then(|v| v.parse::<f64>().ok()) { out.push(("FAR_TREE_SHADOW_MIN_M", x)); }
     if let Some(d) = std::env::var("KERN_FAR_CROWN_DEBUG").ok().and_then(|v| v.parse::<f64>().ok()) { out.push(("FAR_CROWN_DEBUG", d)); }
     out
 }
