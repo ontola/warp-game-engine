@@ -87,3 +87,14 @@ camera's height over its lighting focus (`clipmap_base`, at most 384 m) so
 the levels sit on the visible ground. Near shadows from 480 m match the
 earlier clipmap and the separate maps (mean darkening 26.8, 27.2 and 28.0).
 Still waiting for real GPU timings.
+
+## On by default (9 November)
+
+Joep's playtest from about 300 to 500 m up, on the separate maps: near tree
+shadows blurry, too large and too dark (one shared map stretched to 1.5 km
+by `set_shadow_reach`), then a band of drawn trees with no shadow up to the
+painted forest at 2.1 km. Lavapipe at his spot (300 m, 25 warm-up frames):
+the clipmap gives sharper near shadows and shadows in that band. The
+clipmap is now the default in streamed GPU-forest worlds;
+`KERN_SUN_CLIPMAP=0` brings back the separate maps. It still needs a timing
+on a real GPU (lavapipe: the same sun pass cost as the separate maps).
