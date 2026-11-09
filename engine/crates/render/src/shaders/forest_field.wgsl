@@ -39,12 +39,15 @@ struct ForestTree {
 };
 
 // A uniform 0..1 number for grid cell (i, j), channel k.
+fn ff_mix(v: u32) -> u32 {
+    var x = v;
+    x = x ^ (x >> 16u); x = x * 0x7feb352du; x = x ^ (x >> 15u); x = x * 0x846ca68bu;
+    return x ^ (x >> 16u);
+}
+// forest_field.rs hash: each input mixed in turn.
 fn ff_hash(i: i32, j: i32, k: u32, seed: u32) -> f32 {
-    var h = ((bitcast<u32>(i) * 0x8da6b343u) ^ (bitcast<u32>(j) * 0xd8163841u)) ^ ((seed * 0xcb1ab31fu) ^ (k * 0x165667b1u));
-    h = h ^ (h >> 15u);
-    h = h * 0x2c1b3c6du;
-    h = h ^ (h >> 12u);
-    return f32(h & 0xffffffu) / 16777216.0;
+    let h = ff_mix(ff_mix(ff_mix((seed * 0x9e3779b9u) ^ bitcast<u32>(i)) ^ bitcast<u32>(j)) ^ k);
+    return f32(h >> 8u) / 16777216.0;
 }
 
 fn ff_smooth(a: f32, b: f32, x: f32) -> f32 {
