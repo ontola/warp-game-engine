@@ -120,6 +120,10 @@ pub struct Visuals {
 
 impl Visuals {
     pub fn build(world: &World) -> Self {
+        Self::build_roster(world, world.arena.seed, &[])
+    }
+
+    pub(crate) fn build_roster(world: &World, seed: u64, colors: &[crate::party::PlayerColors]) -> Self {
         let mut scene = Scene::default();
         scene.graphics.minimal_forward=crate::graphics::get().minimal_forward;
         scene.graphics.stone_detail=crate::graphics::get().stone_detail;
@@ -140,7 +144,7 @@ impl Visuals {
         // Coop waves add players as they come; versus reserves all 8 seats up front
         // so players joining or bot counts changing never rebuild the GPU renderer.
         let drawn = world.players.len().max(if world.coop { COOP_VIEW_PLAYERS } else { 8 });
-        players.reserve_dynamic(&mut scene, drawn, world.arena.seed);
+        players.reserve_dynamic(&mut scene, drawn, seed, colors);
         let cages = cages::Cages::reserve(&mut scene, drawn);
         let guns = Guns::reserve(&mut scene, drawn);
         let things = things::Things::reserve(&mut scene);
