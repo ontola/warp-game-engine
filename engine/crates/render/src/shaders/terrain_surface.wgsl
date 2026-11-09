@@ -287,12 +287,12 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     // The trees stand on this ground and rise towards the viewer (their
     // silhouettes, far_crowns).
     let eye = normalize(view.cam.xyz - s.p);
-    let crowns = far_crowns(s.p.xz, footprint, s.dx, s.dy, eye, sun, seed, site, params.density, params.style);
+    // Ground between crowns: the forest floor's shade where the stand is
+    // dense, as forest_canopy's gaps. (One stand lookup for the crowns too.)
+    let crowd = ff_share(s.p.x, s.p.z, seed, site, footprint) * params.density;
+    let crowns = far_crowns(s.p.xz, footprint, s.dx, s.dy, eye, sun, seed, crowd, params.style);
     let cover = crowns.w * grows * fade;
     if cover <= 0.0 { return MeadowCanopy(ground, nn); }
-    // Ground between crowns: the forest floor's shade where the stand is
-    // dense, as forest_canopy's gaps.
-    let crowd = ff_share(s.p.x, s.p.z, seed, site, footprint) * params.density;
     // Not forest_canopy's floor, nearly black under a closed canopy: the
     // reference's gaps between open pines show lit ground.
     let floor = mix(ground, params.style.floor.rgb, 0.25 * min(crowd * 1.25, 1.0));
@@ -390,7 +390,7 @@ override FAR_CROWN_SKY_LOSS: f32 = 0.7;
 // camera, each a cone from 0.3 of its height up. Drawn trees give a crown
 // or a gap per pixel; these do too, so the grain stays, until a pixel is
 // wider than a cell, where they become their mean.
-fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: vec3<f32>, sun: vec3<f32>, seed: u32, site: f32, density: f32, fs: ForestStyle) -> vec4<f32> {
+fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: vec3<f32>, sun: vec3<f32>, seed: u32, crowd: f32, fs: ForestStyle) -> vec4<f32> {
     let needles = mix(fs.needles.rgb, fs.far.rgb, ff_patch(q.x, q.y, seed, fs.crown.w));
     far_crown_far = 1.0;
     // KERN_FAR_CROWN_DEBUG=2: white noise in 2 m world cells, to see how
@@ -399,7 +399,6 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
         let h = fract(sin(dot(floor(q / 2.0), vec2<f32>(12.9898, 78.233))) * 43758.5453);
         return vec4<f32>(vec3<f32>(step(0.5, h)), 1.0);
     }
-    let crowd = ff_share(q.x, q.y, seed, site, footprint) * density;
     if crowd <= 0.0 { return vec4<f32>(needles, 0.0); }
     let along = normalize(eye.xz + vec2<f32>(1e-6, 0.0));
     let across = vec2<f32>(-along.y, along.x);
@@ -442,10 +441,13 @@ fn far_strip(q: vec2<f32>, dir: vec2<f32>, len0: f32, r0: f32, fa: f32, fl: f32,
     let reach = len0 * 1.25;
     let hw = r0 * 1.25;
     let q1 = q + dir * reach;
+    // No tree standing nearer q than 0.2 of a silhouette covers it (cones
+    // start at 0.25 of the shortest): the walk starts there.
+    let qs = q + dir * (0.2 * len0);
     let major_x = abs(dir.x) >= abs(dir.y);
-    let a0 = select(q.y, q.x, major_x);
+    let a0 = select(qs.y, qs.x, major_x);
     let a1 = select(q1.y, q1.x, major_x);
-    let b0 = select(q.x, q.y, major_x);
+    let b0 = select(qs.x, qs.y, major_x);
     let slope = select(dir.x / dir.y, dir.y / dir.x, major_x);
     let half = hw / max(select(abs(dir.y), abs(dir.x), major_x), 0.7);
     let c_lo = i32(floor((min(a0, a1) - hw) / FF_CELL));
@@ -454,7 +456,13 @@ fn far_strip(q: vec2<f32>, dir: vec2<f32>, len0: f32, r0: f32, fa: f32, fl: f32,
     var tint = 0.0;
     var weight = 0.0;
     var visits = 0;
-    for (var c = c_lo; c <= c_hi; c++) {
+    // From the far end (the viewer's or the sun's side) back towards q:
+    // the front trees come first, and once they cover q the ones behind
+    // can't show, so the walk stops (dense stands visit a few cells).
+    let backwards = a1 >= a0;
+    for (var k = 0; k <= c_hi - c_lo; k++) {
+        if open < 0.02 || visits > 40 { break; }
+        let c = select(c_lo + k, c_hi - k, backwards);
         // The strip's other coordinate over this column (clipped to it).
         let x_lo = max(f32(c) * FF_CELL, min(a0, a1) - hw);
         let x_hi = min(f32(c + 1) * FF_CELL, max(a0, a1) + hw);
