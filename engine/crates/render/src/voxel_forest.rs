@@ -320,7 +320,10 @@ fn splat_cells_bricked(forest: &crate::foliage_volume_data::GpuForest) -> Result
     }
     Ok(result)
 }
-fn brick_hzb_enabled() -> bool { std::env::var("KERN_SPLAT_BRICK_HZB").as_deref() == Ok("1") }
+/// Two-pass brick occlusion culling of the camera splats, on by default
+/// (Mancave 9 November: identical image, 1440p voxel forest 8.8 -> 5.8 ms,
+/// valley 4K 11.1 -> 9.8 ms). KERN_SPLAT_BRICK_HZB=0 turns it off.
+fn brick_hzb_enabled() -> bool { std::env::var("KERN_SPLAT_BRICK_HZB").as_deref() != Ok("0") }
 
 /// Splat records one view may hold: every tree at its finest level, capped.
 fn splat_capacity(forest: &crate::foliage_volume_data::GpuForest, cells: &[[u32; 2]]) -> u64 {
