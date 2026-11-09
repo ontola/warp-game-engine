@@ -3104,7 +3104,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         var so: SurfaceOut;
         if SHADE_CLASS != 2u && (m.flags & 2u) != 0u {
             var coarse: CoarseSurface;
-            if TERRAIN_COARSE && max(length(fp.dx), length(fp.dy)) > COARSE_FOOTPRINT_M { coarse = coarse_surface(px, depth); }
+            if TERRAIN_COARSE && max(length(fp.dx), length(fp.dy)) > COARSE_FOOTPRINT_M && !far_forest_full_res(si) { coarse = coarse_surface(px, depth); }
             if coarse.ok { so = coarse.so; field_sun = coarse.sun; } else { so = field_surface(si, m.layer); }
         } else { so = game_surface(si); }
         base = so.albedo;

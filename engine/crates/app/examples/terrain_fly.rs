@@ -696,6 +696,18 @@ fn buildings(scene: &mut Scene, world: &Constraints, seed: u32, style: &Style) {
 }
 
 fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &render::biome::Environment, palette: &VegetationStyle, sun: (f32, f32), centre: Vec3, world: World, track: Option<Arc<Constraints>>) -> Built {
+    // A forest of grown pines paints its far part with their measured crowns
+    // (cover, height, colour) instead of the biome's generic canopy.
+    let measured;
+    let palette = match (pine_forest().is_some() || pine_ages(), cooked_flora(lands)) {
+        (true, Ok(plants)) if std::env::var("KERN_FAR_FOREST_MEASURED").map_or(true, |v| v != "0") => {
+            let proxies: Vec<_> = plants.iter().filter_map(|p| p.proxy()).collect();
+            measured = VegetationStyle { forest: palette.forest.measured(&proxies), ..*palette };
+            eprintln!("far forest from grown pines: {:?}", measured.forest);
+            &measured
+        }
+        _ => palette,
+    };
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/sideways/assets");
     let root = assets.join("textures");
     let mut scene = Scene::default();
