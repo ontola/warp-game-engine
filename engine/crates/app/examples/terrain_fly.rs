@@ -79,7 +79,7 @@ fn sun_degrees(env: &render::biome::Environment) -> (f32, f32) {
 /// the rebuild runs on a background thread, so small steps cost no frame time.
 const GRASS_RECENTRE: f32 = 15.0;
 /// Loaded forest cells recenter independently of ground and shadow streaming.
-const TREES_RECENTRE: f32 = 300.0;
+const TREES_RECENTRE: f32 = 150.0;
 /// Mountain shadows past the shadow maps come from a heightfield this many
 /// metres square at this spacing, rebuilt once the camera has moved
 /// `SHADOW_RECENTRE` from its centre.
