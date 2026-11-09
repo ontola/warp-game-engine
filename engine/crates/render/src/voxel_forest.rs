@@ -443,22 +443,28 @@ fn create_data_layout(gpu:&Gpu,temporal:bool)->wgpu::BindGroupLayout {
 }
 /// Brick culling's helpers: the visible tree list, the step between its two
 /// passes and the one after (voxel_forest.wgsl VOXEL_BRICK_CULL).
-fn splat_selection_pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, cull: bool) -> Option<[wgpu::ComputePipeline;3]> {
-    if !cull {return None;}
+/// `cull`: brick culling is on, Some(true) for paged assets.
+fn brick_cull_constants(cull: Option<bool>) -> Vec<(&'static str, f64)> {
+    cull.map_or_else(Vec::new, |paged| vec![("VOXEL_BRICK_CULL", 1.0), ("VOXEL_PAGED_BRICKS", f64::from(u8::from(paged)))])
+}
+fn splat_selection_pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, cull: Option<bool>) -> Option<[wgpu::ComputePipeline;3]> {
+    cull?;
+    let constants = brick_cull_constants(cull);
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label:Some("voxel brick culling"),source:wgpu::ShaderSource::Wgsl(source.into()) });
     Some(["voxel_splat_tree_list","voxel_splat_cull_base","voxel_splat_cull_rest"].map(|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label:Some(entry),layout:Some(layout),module:&module,entry_point:Some(entry),
-        compilation_options:wgpu::PipelineCompilationOptions {constants:&[("VOXEL_BRICK_CULL",1.0)],..Default::default()},cache:gpu.pipeline_cache()
+        compilation_options:wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()},cache:gpu.pipeline_cache()
     })))
 }
-fn second_splat_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> wgpu::ComputePipeline {
+fn second_splat_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, paged: bool) -> wgpu::ComputePipeline {
+    let constants = brick_cull_constants(Some(paged));
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("voxel brick culling"), source: wgpu::ShaderSource::Wgsl(source.into()) });
     gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("voxel brick second pass"), layout: Some(layout), module: &module,
         entry_point: Some("voxel_splat_retest"), compilation_options: wgpu::PipelineCompilationOptions {
-            constants: &[("VOXEL_BRICK_CULL", 1.0)], ..Default::default() }, cache: gpu.pipeline_cache() })
+            constants: &constants, ..Default::default() }, cache: gpu.pipeline_cache() })
 }
 fn surface_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> wgpu::ComputePipeline {
     let coarser: Vec<(&str, f64)> = std::env::var("KERN_VOXEL_SELF_SHADOW_COARSER").ok().and_then(|v| v.parse().ok())
@@ -546,7 +552,9 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
     SplatRaster { main_pipeline, cells: cells_buffer, capacity, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_cached_layout, sun_cached_splats, sun_raster, sun_cached_raster,
         sun_target: Mutex::new(Vec::new()) }
 }
-fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool,global_intervals:bool,cull:bool) -> [wgpu::ComputePipeline; 8] {
+fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool,global_intervals:bool,cull:Option<bool>) -> [wgpu::ComputePipeline; 8] {
+    let mut splat_constants = brick_cull_constants(cull);
+    if cull.is_some() {splat_constants.push(("VOXEL_COMPACT", 1.0));}
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("voxel forest"), source: wgpu::ShaderSource::Wgsl(source.into()),
     });
@@ -557,7 +565,7 @@ fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tile
         .map(|entry| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some(entry), layout: Some(layout), module: &module, entry_point: Some(entry),
             compilation_options: wgpu::PipelineCompilationOptions {
-                constants: if entry == "voxel_splats" && cull { &[("VOXEL_BRICK_CULL", 1.0),("VOXEL_COMPACT",1.0)] } else { &[] },
+                constants: if entry == "voxel_splats" { &splat_constants } else { &[] },
                 ..Default::default() }, cache: gpu.pipeline_cache(),
         }))
 }
@@ -845,20 +853,22 @@ impl VoxelRenderer {
         integrator_options.antipodal_normals &= antipodal_eligible;
         let specialized_source = integrator_options.specialize(&temporal_source(&source,false).expect("invalid voxel temporal blocks"))
             .expect("invalid voxel integrator option shader");
-        // Brick culling reads the bricked splat catalog, which paged assets lack.
-        let brick_hzb = (page_cache.is_none() && brick_hzb_enabled()).then(|| crate::depth_pyramid::DepthPyramid::new(gpu));
-        let cull = brick_hzb.is_some();
+        // Brick culling reads the bricked splat catalog (paged: the cache's
+        // brick descriptors), behind its levels: at least 176 bytes of them.
+        let paged = page_cache.is_some();
+        let brick_hzb = (brick_hzb_enabled() && (!paged || forest.levels.len() * 32 >= 176)).then(|| crate::depth_pyramid::DepthPyramid::new(gpu));
+        let cull = brick_hzb.as_ref().map(|_| paged);
         let [bins, tiles, clear, integrate,intervals,scatter,splats,resolve] = pipelines(gpu, &pipeline_layout, &specialized_source, scene.voxel_active_tiles,integrator_options.global_intervals,cull);
         let gbuffer = surface_pipeline(gpu, &pipeline_layout, &specialized_source);
         let selection = splat_selection_pipelines(gpu, &pipeline_layout, &specialized_source, cull);
-        let second = brick_hzb.as_ref().map(|_| second_splat_pipeline(gpu, &pipeline_layout, &specialized_source));
+        let second = brick_hzb.as_ref().map(|_| second_splat_pipeline(gpu, &pipeline_layout, &specialized_source, paged));
         eprintln!("voxel integrator: interval_capacity=64 active_capacity=16 empty_ceiling={} (accepted skip fix; bounded prototype, complete scan on cache overflow)",
             integrator_options.empty_ceiling);
         eprintln!("voxel normals: antipodal_requested={antipodal_requested} antipodal_eligible={antipodal_eligible} antipodal_enabled={} normal_lobes={} cell_bytes=128 (experimental; exact pairs, generic fallback)",
             integrator_options.antipodal_normals,if integrator_options.antipodal_normals {3}else{6});
         eprintln!("voxel global intervals: enabled={} stream_bytes_per_view={} maximum_pixel_slots={} (experimental; complete scan on overflow)",
             integrator_options.global_intervals,INTERVAL_STREAM_BYTES,INTERVAL_STREAM_PIXEL_SLOTS);
-        let raster = if integrator_options.raster { match if brick_hzb.is_some() { splat_cells_bricked(forest) } else { splat_cells(forest) } {
+        let raster = if integrator_options.raster { match if brick_hzb.is_some() && !paged { splat_cells_bricked(forest) } else { splat_cells(forest) } {
             Ok(cells) if cells.len() > forest.levels.len() => {
                 let requested=scene.gpu_forest.as_ref().map_or_else(||splat_capacity(forest,&cells),|spec|u64::from(spec.raster_budget));
                 let limits=gpu.device.limits();
@@ -997,6 +1007,8 @@ impl VoxelRenderer {
         }
         Ok(())
     }
+    /// Brick culling on: Some(whether assets are paged).
+    fn brick_cull(&self) -> Option<bool> { self.brick_hzb.as_ref().map(|_| self.page_cache.is_some()) }
     pub(crate) fn contains_owner_range(&self, first: usize, count: usize) -> bool {
         crate::owner_ranges::contains(&self.owner_index,first,count)
     }
@@ -1009,9 +1021,9 @@ impl VoxelRenderer {
             let data_layout=create_data_layout(gpu,true);
             let layout=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label:Some("temporal voxel forest"),bind_group_layouts:&[Some(&self.scene_layout),Some(&self.view_layout),Some(&data_layout)],immediate_size:0});
-            let pipelines=pipelines(gpu,&layout,&source,self.active_tiles,self.integrator_options.global_intervals,self.brick_hzb.is_some());
+            let pipelines=pipelines(gpu,&layout,&source,self.active_tiles,self.integrator_options.global_intervals,self.brick_cull());
             let gbuffer = surface_pipeline(gpu, &layout, &source);
-            TemporalPipelines {selection: splat_selection_pipelines(gpu, &layout, &source, self.brick_hzb.is_some()),second: self.brick_hzb.as_ref().map(|_| second_splat_pipeline(gpu, &layout, &source)),data_layout,layout,pipelines,gbuffer}
+            TemporalPipelines {selection: splat_selection_pipelines(gpu, &layout, &source, self.brick_cull()),second: self.brick_cull().map(|paged| second_splat_pipeline(gpu, &layout, &source, paged)),data_layout,layout,pipelines,gbuffer}
         })?;
         *temporal=Some(prepared);Ok(())
     }
@@ -1021,19 +1033,19 @@ impl VoxelRenderer {
     pub(crate) fn prepare_reload(&self, gpu: &Gpu, source: String) -> Result<Option<Reload>, String> {
         if source == self.source { return Ok(None); }
         let specialized_source = self.integrator_options.specialize(&temporal_source(&source,false)?)?;
-        let pipelines = crate::shaders::checked(gpu, || pipelines(gpu, &self.pipeline_layout, &specialized_source, self.active_tiles,self.integrator_options.global_intervals,self.brick_hzb.is_some()))?;
+        let pipelines = crate::shaders::checked(gpu, || pipelines(gpu, &self.pipeline_layout, &specialized_source, self.active_tiles,self.integrator_options.global_intervals,self.brick_cull()))?;
         let temporal=if let Some(temporal)=self.temporal.lock().unwrap().as_ref() {
             let specialized=self.integrator_options.specialize(&temporal_source(&source,true)?)?;
             Some(crate::shaders::checked(gpu,||(
-                self::pipelines(gpu,&temporal.layout,&specialized,self.active_tiles,self.integrator_options.global_intervals,self.brick_hzb.is_some()),
+                self::pipelines(gpu,&temporal.layout,&specialized,self.active_tiles,self.integrator_options.global_intervals,self.brick_cull()),
                 surface_pipeline(gpu,&temporal.layout,&specialized),
-                self.brick_hzb.as_ref().map(|_|second_splat_pipeline(gpu,&temporal.layout,&specialized)),
-                splat_selection_pipelines(gpu,&temporal.layout,&specialized,self.brick_hzb.is_some())))?)
+                self.brick_cull().map(|paged|second_splat_pipeline(gpu,&temporal.layout,&specialized,paged)),
+                splat_selection_pipelines(gpu,&temporal.layout,&specialized,self.brick_cull())))?)
         } else {None};
         let sun=self.raster.as_ref().map(|r|crate::shaders::checked(gpu,||(sun_splat_pipeline(gpu,&r.sun_layout,&specialized_source,false),sun_splat_pipeline(gpu,&r.sun_cached_layout,&specialized_source,true)))).transpose()?;
         let surface=crate::shaders::checked(gpu,||surface_pipeline(gpu,&self.pipeline_layout,&specialized_source))?;
-        let second=self.brick_hzb.as_ref().map(|_|crate::shaders::checked(gpu,||second_splat_pipeline(gpu,&self.pipeline_layout,&specialized_source))).transpose()?;
-        let selection=crate::shaders::checked(gpu,||splat_selection_pipelines(gpu,&self.pipeline_layout,&specialized_source,self.brick_hzb.is_some()))?;
+        let second=self.brick_cull().map(|paged|crate::shaders::checked(gpu,||second_splat_pipeline(gpu,&self.pipeline_layout,&specialized_source,paged))).transpose()?;
+        let selection=crate::shaders::checked(gpu,||splat_selection_pipelines(gpu,&self.pipeline_layout,&specialized_source,self.brick_cull()))?;
         Ok(Some(Reload { pipelines, surface, selection, second, temporal, sun, source }))
     }
     pub(crate) fn commit_reload(&mut self, reload: Reload) {
@@ -2140,9 +2152,10 @@ mod tests {
 
     #[test]
     fn brick_cull_variant_validates_and_raster_reads_both_draws() {
-        for temporal in [false,true] {
+        for (temporal,paged) in [(false,false),(true,false),(false,true)] {
             let source=super::IntegratorOptions::default().specialize(&super::temporal_source(&super::shader_source(),temporal).unwrap()).unwrap()
                 .replace("override VOXEL_BRICK_CULL: bool = false;","override VOXEL_BRICK_CULL: bool = true;")
+                .replace("override VOXEL_PAGED_BRICKS: bool = false;",&format!("override VOXEL_PAGED_BRICKS: bool = {paged};"))
                 .replace("override VOXEL_COMPACT: bool = false;","override VOXEL_COMPACT: bool = true;");
             let module=naga::front::wgsl::parse_str(&source).unwrap();
             naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();
