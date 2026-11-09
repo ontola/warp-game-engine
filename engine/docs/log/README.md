@@ -22,6 +22,19 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [handoff.md](handoff.md) is the running log of 23 October to 5 November
   2026, newest first.
 
+- [Growing Guns reload grip and GameNight colours](2026-11-09-warp-humans-reload.md)
+- [Distance-matched player locomotion and jump contacts](2026-11-09-warp-humans-player-locomotion.md)
+- [Shared wardrobe, body proportions and planted motion](2026-11-09-warp-humans-wardrobe.md)
+- [Seeded match players and spectator debris](2026-11-09-warp-humans-players-and-gibs.md)
+- [Blood stains under stadium lights](2026-11-09-growing-guns-blood-reflections.md)
+- [Turning away from a blast](2026-11-09-warp-humans-blast-turn.md)
+- [Startled spectator gestures](2026-11-09-warp-humans-startle.md)
+- [Planted steps and crouches on the terraces](2026-11-09-warp-humans-footwork.md)
+- [Stadium voices and spectator gestures](2026-11-09-stadium-voices-and-gestures.md)
+- [Warp Humans in stadium fog](2026-11-09-warp-humans-fog.md)
+- [Growing Guns blood spray and surface contacts](2026-11-09-growing-guns-blood-spray.md)
+- [Repeated crowd shots and blast reactions](2026-11-09-growing-guns-crowd-reactions.md)
+- [Packed seating in the Growing Guns match](2026-11-09-growing-guns-crowd-density.md)
 - [Growing Guns world scale and standing eye height](2026-11-09-growing-guns-scale.md)
 - [Rigged people and Growing Guns frame times](2026-11-09-warp-humans-rig.md)
 - [Seeded stadium crowd from stands to face](2026-11-08-warp-humans.md)

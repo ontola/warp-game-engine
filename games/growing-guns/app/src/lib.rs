@@ -37,6 +37,7 @@ mod knobs;
 mod explosion_editor;
 mod scripts;
 mod sky;
+mod blood;
 mod stadium;
 mod spectators;
 mod music;
@@ -103,6 +104,7 @@ pub fn desktop_main() {
     let list: Vec<String> = std::env::args().skip(1).collect();
     let cmd = command(&list);
     let args = Args { list };
+    if let Err(e) = stadium::configure_density(&args) { eprintln!("{e}"); std::process::exit(1); }
     if let Some(profile) = args.value("--graphics").map(str::to_owned).or_else(|| std::env::var("GG_GRAPHICS").ok()) {
         if let Err(e) = graphics::Graphics::parse(&profile).and_then(graphics::configure) { eprintln!("{e}"); std::process::exit(1); }
     }
@@ -209,6 +211,8 @@ fn script(args: &Args) -> Result<(), String> {
     let humans = args.num("--players", 1usize).clamp(1, 4);
     let bots: Vec<bool> = (0..4).map(|i| i >= humans).collect();
     let world = World::new_with(args.num("--seed", 3u64), &bots, |w| play::match_options(args, w, false));
+    let mut world = world;
+    if args.flag("--start-in-stands") { stadium::start_in_stands(&mut world)?; }
     let mut game = play::Gg::new(world, session::Session::Local, (0..humans).collect());
     // Scripts start in play; `--cage` keeps Godot's spawn cage.
     if !args.flag("--cage") { game.world.release_cage(); }
@@ -217,16 +221,13 @@ fn script(args: &Args) -> Result<(), String> {
     for kv in args.list.windows(2).filter(|w| w[0] == "--set").map(|w| w[1].clone()) { game.light_mut().set(&kv)?; }
     let samples = sounds::find_dir(args.value("--sounds"));
     let patches = sounds::find_patches(args.value("--sfx"));
-    let mixer = (samples.is_some() || patches.is_some()).then(|| {
-        let music = play::music(args, samples.as_deref(), args.num("--seed", 3u64), false);
-        let (mix, tx, crowd) = sounds::offline(music.as_ref());
-        game.set_crowd(args.value("--crowd"), samples.as_deref(), &crowd);
-        game.set_sounds(sounds::Sounds::new(tx, patches, samples.as_deref()));
-        if let Some(m) = music { game.set_music(m); }
-        mix
-    });
+    let music = play::music(args, samples.as_deref(), args.num("--seed", 3u64), false);
+    let (mixer, tx, crowd) = sounds::offline(music.as_ref());
+    game.set_crowd(args.value("--crowd"), samples.as_deref(), &crowd);
+    game.set_sounds(sounds::Sounds::new(tx, patches, samples.as_deref()));
+    if let Some(m) = music { game.set_music(m); }
     let gpu = Gpu::new()?;
-    let failed = app::script::run_file(&mut game, &gpu, TICK_HZ as f32, std::path::Path::new(file), std::path::Path::new(out), mixer)?;
+    let failed = app::script::run_file(&mut game, &gpu, TICK_HZ as f32, std::path::Path::new(file), std::path::Path::new(out), Some(mixer))?;
     if failed > 0 { std::process::exit(1); }
     Ok(())
 }

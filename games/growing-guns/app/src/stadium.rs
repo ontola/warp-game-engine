@@ -7,22 +7,36 @@
 //! sound that follows the match.
 use crate::crowd_sound::CrowdSound;
 use audio::sfx::Listener;
-use glam::{Affine3A, Quat, Vec2, Vec3};
+use glam::{Affine3A, Quat, Vec2, Vec3, Vec3Swizzles};
 use growing_guns::stadium::{sq, Stadium, PieceKind, ROWS, ROW_DEPTH, ROW_RISE, SEGMENTS, FOUNDATION_Y};
 use growing_guns::{Event, World};
 use render::crowd::{Crowd, Seat};
 use render::headlights::LocalLight;
-use render::particles::{Burst, Particles};
 use render::primitives::{self, Primitive};
 use render::cluster::ClusterMesh;
 use render::scene::{Material, EMISSIVE, LIVE_SCREEN, NO_SHADOW};
 use render::slots::{SlotId, Slots};
 use render::Scene;
 use std::f32::consts::{PI, TAU};
+mod gibs;
 
 pub const CROWD_MAX: usize = 15_000;
-const CROWD_SPACING: f32 = 0.9;
-const CROWD_SKIP_CHANCE: f32 = 0.08;
+#[derive(Clone, Copy, PartialEq)]
+enum Density { Standard, Packed }
+
+static DENSITY: std::sync::OnceLock<Density> = std::sync::OnceLock::new();
+
+pub(crate) fn configure_density(args: &crate::Args) -> Result<(), String> {
+    let density = match args.value("--crowd-density") {
+        Some("standard") => Density::Standard,
+        Some("packed") => Density::Packed,
+        Some(_) => return Err("--crowd-density expects standard or packed".into()),
+        None if args.flag("--crowd-density") => return Err("missing --crowd-density value".into()),
+        None if args.flag("--warp-humans") => Density::Packed,
+        None => Density::Standard,
+    };
+    DENSITY.set(density).map_err(|_| "crowd density already configured".into())
+}
 const ROOF_DROP: f32 = 3.0;
 const ROOF_STEPS: usize = 224;
 const ROOF_INNER: f32 = 0.8135;
@@ -272,8 +286,9 @@ pub struct StadiumVisuals {
     mark_ring: Vec<SlotId>,
     mark_next: usize,
     scorch: usize,
-    blood: usize,
-    gore: usize,
+    blood:crate::blood::Splats,
+    blood_grid:growing_guns::shape::BoxGrid,
+    gore: gibs::GibMeshes,
     pub geo: Stadium,
     mark_surfaces: Vec<growing_guns::stadium::Piece>,
     lights: Vec<LocalLight>,
@@ -291,28 +306,48 @@ fn stadium_rng(seed: u64) -> (Rng, usize) {
 
 // One figure per occupied seat, preserving the game RNG draw order.
 fn seat_layout(rng: &mut Rng, geo: Stadium, looks: &[(usize,usize)]) -> Vec<Seat> {
+    seats_at_density(rng, geo, looks, DENSITY.get().copied().unwrap_or(Density::Standard))
+}
+
+fn seats_at_density(rng: &mut Rng, geo: Stadium, looks: &[(usize,usize)], density: Density) -> Vec<Seat> {
     let seg = Stadium::seg_ang();
     let mut seats = Vec::new();
     use growing_guns::shape::{BoxGrid, Boxes, YawBox};
     let treads = geo.pieces().into_iter().filter(|p| p.kind == PieceKind::Step)
         .map(|p| YawBox::new(p.center, p.size, p.yaw)).collect();
     let grid = BoxGrid::new(treads, 4.0);
+    // Each row contributes its full perimeter. Widen the spacing uniformly on a
+    // large arena before placing anyone, so the last sections also get seats.
+    let (spacing, jitter, skip) = match density {
+        Density::Standard => (0.9, 0.15, 0.08),
+        Density::Packed => {
+            let mean_radius = geo.inner_r + ROWS as f32 * geo.row_depth() * 0.5;
+            let ring: f32 = (0..SEGMENTS).map(|i| sq(seg * (i as f32 + 0.5)) * seg).sum();
+            let length = mean_radius * ring * ROWS as f32;
+            ((length / CROWD_MAX as f32).max(0.58), 0.035, 0.025)
+        }
+    };
     'all: for i in 0..SEGMENTS {
         let ang = seg * (i as f32 + 0.5);
         for row in 0..ROWS {
             let y = geo.base_y + row as f32 * geo.row_rise();
             let row_r = geo.inner_r + (row as f32 + 0.5) * geo.row_depth();
-            let count = (row_r * sq(ang) * seg / CROWD_SPACING) as usize;
+            let count = (row_r * sq(ang) * seg / spacing) as usize;
             for k in 0..count {
-                if rng.f() < CROWD_SKIP_CHANCE { continue; }
+                if rng.f() < skip { continue; }
+                // Eight radial access aisles leave room to stand among the crowd.
+                let midpoint = (k as f32 + 0.5) / count as f32 - 0.5;
+                if density == Density::Packed && i % 7 == 0 && (midpoint * row_r * sq(ang) * seg).abs() < 1.15 {
+                    continue;
+                }
                 // The tread is a straight box. Keep each foot on its actual tread,
                 // including at corners where the curved seat ring crossed adjacent steps.
-                let offset = ((k as f32 + 0.5) / count as f32 - 0.5) * seg;
-                let a = ang + offset + rng.range(-0.15, 0.15) / row_r.max(1.0);
+                let offset = midpoint * seg;
+                let a = ang + offset + rng.range(-jitter, jitter) / row_r.max(1.0);
                 let radial = Vec3::new(ang.cos(), 0.0, ang.sin());
                 let tangent = Vec3::new(-ang.sin(), 0.0, ang.cos());
                 let mid = row_r * sq(ang);
-                let along = mid * (a-ang).tan() + rng.range(-0.15, 0.15);
+                let along = mid * (a-ang).tan() + rng.range(-jitter, jitter);
                 let mut pos = radial * (mid + rng.range(-0.25, 0.25)) + tangent * along + Vec3::Y * y;
                 let above = geo.wall_h() + 1.0;
                 if let Some((distance, _, _)) = grid.ray(pos.with_y(above), Vec3::NEG_Y, above - geo.base_y + 1.0) {
@@ -359,7 +394,7 @@ impl StadiumVisuals {
     /// A sky or sunlight bake is still running (a probe would measure it too).
     pub fn baking(&self) -> bool { self.sky_job.is_some() || self.sun_job.is_some() }
     /// Meshes and reserved instances; call before the renderer exists.
-    pub fn reserve(scene: &mut Scene) -> Self {
+    pub fn reserve(scene: &mut Scene,blood:crate::blood::Splats) -> Self {
         if !crate::graphics::get().stadium {
             let crowd = Crowd::reserve(scene, 0);
             scene.crowd = None; // no GPU crowd buffers or dispatch, not merely invisible seats
@@ -368,7 +403,7 @@ impl StadiumVisuals {
                 stands:Slots::reserve(scene,0),roof:Slots::reserve(scene,0),tv:Slots::reserve(scene,0),tv_mesh:[0;2],
                 stone:[0;6],masonry:None,roof_stone:[0;6],wall_stone:[0;6],lamp:0,shaft:0,bank:0,looks:Vec::new(),
                 crowd,sound:CrowdSound::new(None),marks:Slots::reserve(scene,0),mark_ring:Vec::new(),mark_next:0,
-                scorch:0,blood:0,gore:0,geo:Stadium::new(80.0,true,12.0),mark_surfaces:Vec::new(),lights:Vec::new(),beams:Vec::new(),rng:Rng(1) };
+                scorch:0,blood,blood_grid:Default::default(),gore:Default::default(),geo:Stadium::new(80.0,true,12.0),mark_surfaces:Vec::new(),lights:Vec::new(),beams:Vec::new(),rng:Rng(1) };
         }
         let cube = |scene: &mut Scene, m: u32| scene.add_mesh(&primitives::cube(m).mesh());
         let quarry: Vec<[f32; 3]> = SANDSTONE.iter().chain(LIMESTONE.iter()).map(|c| [0, 1, 2].map(|k| c[k] + (ARENA_STONE[k] - c[k]) * 0.22)).collect();
@@ -431,8 +466,7 @@ impl StadiumVisuals {
             }
         }
         let scorch = { let m = mat(scene, [0.04, 0.035, 0.03], 1.0); scene.add_mesh(&stain_mesh(m).mesh()) };
-        let blood = { let m = mat(scene, [0.48, 0.04, 0.03], 0.4); scene.add_mesh(&stain_mesh(m).mesh()) };
-        let gore = { let m = mat(scene, [0.42, 0.03, 0.02], 0.5); scene.add_mesh(&primitives::hewn_block(m, 1, 0.2, 0.2, 9).mesh()) };
+        let gore = gibs::GibMeshes::new(scene);
         let pieces = SEGMENTS * (ROWS + 4) + SEGMENTS / 2 + 16;
         let stands = Slots::reserve(scene, pieces);
         // The colosseum walls and tiers occlude direct sun and atmospheric haze.
@@ -449,7 +483,7 @@ impl StadiumVisuals {
         if detailed { crowd.arm_pivot(0.655); }
         StadiumVisuals { enabled:true, bake_in_background: false, sky_job: None, sun_job: None, sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_emission: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
 
-            scorch, blood, gore, geo: Stadium::new(80.0, true, 12.0), mark_surfaces: Vec::new(), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
+            scorch, blood, blood_grid:Default::default(), gore, geo: Stadium::new(80.0, true, 12.0), mark_surfaces: Vec::new(), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
 
     /// Give the crowd its voice (recordings and a speaker).
@@ -461,6 +495,7 @@ impl StadiumVisuals {
         let a = &world.arena;
         self.geo = a.stadium;
         self.mark_surfaces = self.geo.pieces().into_iter().filter(|p| matches!(p.kind, PieceKind::Step | PieceKind::Facade | PieceKind::Wall)).collect();
+        self.blood_grid=growing_guns::shape::BoxGrid::new(self.geo.collision(),4.);
         let (rng, quarry) = stadium_rng(a.seed);
         self.rng = rng;
         self.stands.clear(scene);
@@ -591,7 +626,7 @@ impl StadiumVisuals {
     /// ColosseumCrowd): kills roar, hurts "ooh", blasts in the arena thrill,
     /// blasts and shots reaching the stands kill and terrify.
     #[allow(clippy::too_many_arguments)]
-    pub fn absorb(&mut self, scene: &mut Scene, fx: &mut Particles, blasts: &mut render::fx::Effects, world: &World, ears: &[Listener], now: f32, dt: f32) {
+    pub fn absorb(&mut self, scene: &mut Scene, world: &World, ears: &[Listener], now: f32, dt: f32) {
         if !self.enabled { return; }
         for e in &world.events {
             match *e {
@@ -604,32 +639,48 @@ impl StadiumVisuals {
                     if d <= reach {
                         let proximity = 1.0 - 0.5 * (d / reach);
                         self.sound.scare((0.3 + radius * 0.03) * proximity, self.geo.ring_point_toward(pos).to_array(), ears, 1.0, 0.45);
-                        let kills = self.blast(scene, fx, blasts, pos, reach * 0.5, now);
-                        self.sound.fear = (self.sound.fear + kills as f32 * 0.01).clamp(0.0, 1.0);
+                        self.blast(scene,pos,reach*0.5,now);
                     } else {
                         self.sound.excite((0.05 + radius * 0.012).clamp(0.0, 0.3));
                     }
                 }
                 Event::Impact { pos, .. } if self.geo.distance_to_crowd(pos) <= 0.5 => {
                     self.sound.scare(0.09, self.geo.ring_point_toward(pos).to_array(), ears, 0.55, 1.0);
-                    self.crowd.flee(pos, 1.2, now);
-                    let dead = self.crowd.kill_near(pos, 1.7, 2);
-                    for &p in &dead { let d = 1.0 + self.rng.f() * 0.5; self.mark(scene, p, d, self.blood); }
-                    if !dead.is_empty() { self.gore(scene, fx, pos, dead.len()); }
                 }
+                Event::TrackedBulletPath { id, from, to, .. } => self.trace(from, to, id, now),
+                Event::BulletPath { from, to, .. } => self.trace(from, to, 0, now),
                 _ => {}
             }
         }
         let at = self.geo.ring_point_toward(Vec3::new(self.rng.range(-1.0, 1.0), 0.0, self.rng.range(-1.0, 1.0)));
         self.sound.update(dt, Some((at.to_array(), ears)));
-        self.crowd.mood(self.sound.enthusiasm, self.sound.fear);
+        let fear = if self.crowd.uses_humans() { self.sound.smoothed_fear() } else { self.sound.fear };
+        self.crowd.mood(self.sound.enthusiasm, fear);
     }
 
-    /// A blast reaching the stands: everyone near bolts, everyone inside
-    /// dies, scorch and blood marks, gore and a red mist.
-    fn blast(&mut self, scene: &mut Scene, fx: &mut Particles, blasts: &mut render::fx::Effects, pos: Vec3, radius: f32, now: f32) -> usize {
-        self.crowd.flee(pos, radius, now);
-        let dead = self.crowd.kill_near(pos, radius, usize::MAX);
+    fn trace(&mut self, from: Vec3, to: Vec3, id: u64, now: f32) {
+        // The whole clipped segment lies in the convex infield or outside the
+        // vertical band. Include head height, near misses and displaced people.
+        let inner = (self.geo.inner_r - 8.).max(0.);
+        let outer = self.geo.wall_r() + 8.;
+        if from.x.min(to.x) > outer
+            || from.x.max(to.x) < -outer
+            || from.z.min(to.z) > outer
+            || from.z.max(to.z) < -outer
+        {
+            return;
+        }
+        if (from.xz().length_squared().max(to.xz().length_squared()) < inner * inner)
+            || from.y.max(to.y) < self.geo.base_y - 4.
+            || from.y.min(to.y) > self.geo.wall_h() + 5.
+        {
+            return;
+        }
+        self.crowd.bullet_path(from, to, id, now);
+    }
+
+    fn blast(&mut self, scene: &mut Scene, pos: Vec3, radius: f32, now: f32) {
+        self.crowd.explosion(pos, radius, now);
         let outward = Vec3::new(pos.x, 0.0, pos.z).normalize_or(Vec3::X);
         let tangent = Vec3::Y.cross(outward);
         let slope = (outward * ROW_DEPTH + Vec3::Y * ROW_RISE).normalize();
@@ -641,18 +692,99 @@ impl StadiumVisuals {
             let diameter = self.rng.range(0.45, 1.1) * (1.0 - 0.3 * r / reach);
             self.mark(scene, p, diameter, self.scorch);
         }
-        if !dead.is_empty() {
-            let mag = (1.0 + dead.len() as f32 * 0.035).clamp(1.0, 2.0);
-            for i in 0..dead.len().min(32) { let p = dead[i * dead.len() / dead.len().min(32)]; let s = self.rng.range(0.28, 0.65) * mag; self.mark(scene, p, s, self.blood); }
-            self.gore(scene, fx, pos, dead.len());
-            blasts.blood_mist(now, pos, (radius * 0.75).max(1.2), dead.len());
-        }
-        dead.len()
     }
 
-    fn gore(&mut self, scene: &mut Scene, fx: &mut Particles, at: Vec3, kills: usize) {
-        let n = (kills * 6).clamp(16, 120) as u32;
-        fx.burst(scene, at, Vec3::Y, &Burst { mesh: self.gore, count: n, spread: 1.3, speed: [3.0, 9.0], size: [0.3, 0.2], life: [2.0, 2.6], ..Burst::debris() });
+    pub fn apply_hits(
+        &mut self,
+        scene: &mut Scene,
+        fx: &mut crate::view::effects::EffectsView,
+        now: f32,
+    ) -> Result<(), String> {
+        use growing_guns::shape::Boxes;
+        use render::particles::Burst;
+        for hit in self.crowd.take_hits()? {
+            let n = hit.positions.len();
+            for i in 0..n.min(32) {
+                let p = hit.positions[i * n / n.min(32)];
+                let travel = if hit.radius > 0. {
+                    (p - hit.origin).normalize_or(Vec3::Y)
+                } else {
+                    hit.direction
+                };
+                // Project a fan from the contact. The same rays can reach several treads or a wall.
+                for j in 0..if n == 1 { 7 } else { 3 } {
+                    let scatter = Vec3::new(self.rng.range(-1., 1.), 0., self.rng.range(-1., 1.));
+                    let dir = (travel * self.rng.range(0.5, 1.4) + scatter * 0.72
+                        - Vec3::Y * if j == 0 { 2.2 } else { self.rng.range(0.25, 1.1) })
+                    .normalize_or(Vec3::NEG_Y);
+                    if let Some((d, normal, c)) = self.blood_grid.ray(p, dir, 6.) {
+                        let size = self.rng.range(0.28, 0.83) * if j == 0 { 1.6 } else { 1. };
+                        let seed = self.rng.below(1 << 24) as u32;
+                        let xf = crate::blood::on_face(&self.blood_grid.boxes[c], p + dir * d, normal, dir, size, seed);
+                        self.place_mark(scene, xf, self.blood.mesh(seed));
+                    }
+                }
+            }
+            // Skip expired transient effects on a replay seek; the persistent deaths and stains remain.
+            if now - hit.time > 2.6 {
+                continue;
+            }
+            let clouds = n.min(8);
+            gibs::emit(scene, &mut fx.debris, &self.gore, &self.crowd, &hit);
+            for i in 0..clouds {
+                let p = hit.positions[i * n / clouds];
+                let travel = if hit.radius > 0. {
+                    (p - hit.origin).normalize_or(Vec3::Y)
+                } else {
+                    hit.direction
+                };
+                let dir = (travel + Vec3::Y * 0.38).normalize_or(Vec3::Y);
+                fx.particles.burst(
+                    scene,
+                    p,
+                    dir,
+                    &Burst {
+                        mesh: self.gore.cut[0],
+                        count: 4,
+                        spread: 0.94,
+                        speed: [2.2, 6.4],
+                        size: [0.072, 0.045],
+                        life: [0.7, 1.35],
+                        gravity: 16.,
+                        stretch: 0.17,
+                        ..Burst::drops()
+                    },
+                );
+                fx.particles.burst(
+                    scene,
+                    p,
+                    dir,
+                    &Burst {
+                        mesh: fx.meshes.blood,
+                        count: 6,
+                        spread: 0.66,
+                        speed: [4., 9.5],
+                        size: [0.045, 0.021],
+                        life: [0.5, 1.1],
+                        gravity: 15.,
+                        stretch: 0.22,
+                        ..Burst::drops()
+                    },
+                );
+            }
+            let center = hit.positions.iter().copied().sum::<Vec3>() / n as f32;
+            if hit.radius > 0. {
+                fx.blasts
+                    .blood_mist(hit.time, center, (hit.radius * 0.75).clamp(0.45, 6.), n);
+            } else {
+                fx.blasts.gib_mist(hit.time, center, 0.6);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn gore_mesh(&self) -> Option<usize> {
+        self.enabled.then_some(self.gore.cut[0])
     }
 
     /// A flat mark on the stands' slope (visible from the arena floor).
@@ -660,6 +792,10 @@ impl StadiumVisuals {
         let Some((at, normal, radius)) = mark_surface(&self.mark_surfaces, p, diameter * 0.5) else { return; };
         let rot = Quat::from_rotation_arc(Vec3::Y, normal) * Quat::from_rotation_y(self.rng.f() * TAU);
         let xf = Affine3A::from_scale_rotation_translation(Vec3::new(radius, 1.0, radius), rot, at);
+        self.place_mark(scene,xf,mesh);
+    }
+
+    fn place_mark(&mut self,scene:&mut Scene,xf:Affine3A,mesh:usize){
         if self.mark_ring.len() < MARKS {
             if let Some(id) = self.marks.add(scene, mesh, xf) { self.mark_ring.push(id); }
         } else {
@@ -797,6 +933,29 @@ impl StadiumVisuals {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packed_crowd_fills_every_sector_within_the_reserved_pool() {
+        let looks = [(0, 0); (CROWD_COLORS.len()+CROWD_ACCENTS.len())*SHADES.len()];
+        for width in [44.0, 72.0, 96.0] {
+            let geo = Stadium::for_arena(width, true, growing_guns::arena::LEVEL_SCALE);
+            let layout = |density| seats_at_density(&mut stadium_rng(52).0, geo, &looks, density);
+            let standard = layout(Density::Standard);
+            let packed = layout(Density::Packed);
+            assert!(packed.len() >= standard.len(), "width {width}: {} vs {}", packed.len(), standard.len());
+            if width == 44.0 {
+                assert!(packed.len() > standard.len() * 7 / 5);
+            }
+            assert!(packed.len() <= CROWD_MAX);
+            let mut sectors = [0; SEGMENTS];
+            for seat in &packed {
+                let angle = seat.pos.z.atan2(seat.pos.x).rem_euclid(TAU);
+                let index = (angle / Stadium::seg_ang()) as usize % SEGMENTS;
+                sectors[index] += 1;
+            }
+            assert!(sectors.iter().all(|n| *n > 50));
+        }
+    }
 
     #[test]
     fn scale_playtest_stands_at_eye_level_on_a_real_tread() {

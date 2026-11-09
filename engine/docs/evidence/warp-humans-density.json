@@ -1,0 +1,254 @@
+{
+  "gpu": "RTX 5070 Ti",
+  "backend": "Vulkan",
+  "seed": 52,
+  "resolution": [
+    3840,
+    2160
+  ],
+  "frames": 120,
+  "runs": [
+    {
+      "views": 1,
+      "order": 1,
+      "mode": "standard",
+      "seats": 6638,
+      "wall_ms": 10.91,
+      "gpu_ms": 6.18,
+      "gpu_p95_ms": 7.01,
+      "crowd_ms": 0.287,
+      "serialized_fps": 91.6
+    },
+    {
+      "views": 1,
+      "order": 2,
+      "mode": "packed",
+      "seats": 10700,
+      "wall_ms": 11.03,
+      "gpu_ms": 6.3,
+      "gpu_p95_ms": 7.29,
+      "crowd_ms": 0.419,
+      "serialized_fps": 90.6
+    },
+    {
+      "views": 4,
+      "order": 1,
+      "mode": "standard",
+      "seats": 6638,
+      "wall_ms": 15.68,
+      "gpu_ms": 8.53,
+      "gpu_p95_ms": 9.53,
+      "crowd_ms": 0.327,
+      "serialized_fps": 63.8
+    },
+    {
+      "views": 4,
+      "order": 2,
+      "mode": "packed",
+      "seats": 10700,
+      "wall_ms": 16.76,
+      "gpu_ms": 8.45,
+      "gpu_p95_ms": 9.62,
+      "crowd_ms": 0.538,
+      "serialized_fps": 59.7
+    },
+    {
+      "views": 4,
+      "order": 3,
+      "mode": "packed",
+      "seats": 10700,
+      "wall_ms": 22.56,
+      "gpu_ms": 8.82,
+      "gpu_p95_ms": 9.74,
+      "crowd_ms": 0.575,
+      "serialized_fps": 44.3
+    },
+    {
+      "views": 4,
+      "order": 4,
+      "mode": "standard",
+      "seats": 6638,
+      "wall_ms": 20.95,
+      "gpu_ms": 8.35,
+      "gpu_p95_ms": 9.31,
+      "crowd_ms": 0.307,
+      "serialized_fps": 47.7
+    },
+    {
+      "views": 4,
+      "order": 5,
+      "mode": "standard",
+      "seats": 6638,
+      "wall_ms": 21.74,
+      "gpu_ms": 8.39,
+      "gpu_p95_ms": 9.32,
+      "crowd_ms": 0.302,
+      "serialized_fps": 46.0
+    },
+    {
+      "views": 4,
+      "order": 6,
+      "mode": "packed",
+      "seats": 10700,
+      "wall_ms": 22.05,
+      "gpu_ms": 8.63,
+      "gpu_p95_ms": 9.74,
+      "crowd_ms": 0.557,
+      "serialized_fps": 45.3
+    }
+  ],
+  "two_view_closeup_960x540": [
+    {
+      "mode": "packed",
+      "run": 1,
+      "population": 10700,
+      "near_ms": 0.97,
+      "close_people": 79
+    },
+    {
+      "mode": "standard",
+      "run": 1,
+      "population": 6638,
+      "near_ms": 0.711,
+      "close_people": 53
+    },
+    {
+      "mode": "packed",
+      "run": 2,
+      "population": 10700,
+      "near_ms": 0.969,
+      "close_people": 79
+    },
+    {
+      "mode": "standard",
+      "run": 2,
+      "population": 6638,
+      "near_ms": 0.711,
+      "close_people": 53
+    },
+    {
+      "mode": "packed",
+      "run": 3,
+      "population": 10700,
+      "near_ms": 0.969,
+      "close_people": 79
+    },
+    {
+      "mode": "standard",
+      "run": 3,
+      "population": 6638,
+      "near_ms": 0.711,
+      "close_people": 53
+    }
+  ],
+  "packed_lighting_comparison": [
+    {
+      "sky": "noon",
+      "lighting": "old",
+      "views": 1,
+      "frames": 75,
+      "crowd_ms": 0.443,
+      "gpu_p50_ms": 6.44,
+      "gpu_p95_ms": 7.47
+    },
+    {
+      "sky": "noon",
+      "lighting": "new",
+      "views": 1,
+      "frames": 75,
+      "crowd_ms": 0.538,
+      "gpu_p50_ms": 6.49,
+      "gpu_p95_ms": 7.62
+    },
+    {
+      "sky": "noon",
+      "lighting": "new",
+      "views": 1,
+      "frames": 75,
+      "crowd_ms": 0.536,
+      "gpu_p50_ms": 6.52,
+      "gpu_p95_ms": 7.6
+    },
+    {
+      "sky": "noon",
+      "lighting": "old",
+      "views": 1,
+      "frames": 75,
+      "crowd_ms": 0.451,
+      "gpu_p50_ms": 6.91,
+      "gpu_p95_ms": 7.97
+    },
+    {
+      "sky": "night",
+      "lighting": "old",
+      "views": 1,
+      "frames": 75,
+      "crowd_ms": 0.443,
+      "gpu_p50_ms": 9.09,
+      "gpu_p95_ms": 10.41
+    },
+    {
+      "sky": "night",
+      "lighting": "new",
+      "views": 1,
+      "frames": 75,
+      "crowd_ms": 0.539,
+      "gpu_p50_ms": 9.19,
+      "gpu_p95_ms": 10.57
+    },
+    {
+      "sky": "night",
+      "lighting": "new",
+      "views": 1,
+      "frames": 75,
+      "crowd_ms": 0.543,
+      "gpu_p50_ms": 9.16,
+      "gpu_p95_ms": 10.6
+    },
+    {
+      "sky": "night",
+      "lighting": "old",
+      "views": 1,
+      "frames": 75,
+      "crowd_ms": 0.443,
+      "gpu_p50_ms": 9.07,
+      "gpu_p95_ms": 10.42
+    },
+    {
+      "sky": "fixed benchmark daylight",
+      "lighting": "old",
+      "views": 4,
+      "frames": 120,
+      "crowd_ms": 0.522,
+      "gpu_p50_ms": 8.39,
+      "gpu_p95_ms": 9.28
+    },
+    {
+      "sky": "fixed benchmark daylight",
+      "lighting": "new",
+      "views": 4,
+      "frames": 120,
+      "crowd_ms": 0.466,
+      "gpu_p50_ms": 8.34,
+      "gpu_p95_ms": 9.22
+    },
+    {
+      "sky": "fixed benchmark daylight",
+      "lighting": "new",
+      "views": 4,
+      "frames": 120,
+      "crowd_ms": 0.466,
+      "gpu_p50_ms": 8.34,
+      "gpu_p95_ms": 9.23
+    },
+    {
+      "sky": "fixed benchmark daylight",
+      "lighting": "old",
+      "views": 4,
+      "frames": 120,
+      "crowd_ms": 0.521,
+      "gpu_p50_ms": 8.39,
+      "gpu_p95_ms": 9.31
+    }
+  ]
+}

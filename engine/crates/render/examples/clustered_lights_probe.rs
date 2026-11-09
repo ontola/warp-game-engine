@@ -147,12 +147,47 @@ fn run() -> Result<(), String> {
     let (lx, ly) = project(Vec3::new(SPACING * 0.5 - 2.4, 0.0, SPACING * 0.5));
     let (shade, lit_side) = (mean(&one, w, sx, sy), mean(&one, w, lx, ly));
     if shade * 3.0 > lit_side { failures.push(format!("pillar shadow too bright: {shade:.1} behind vs {lit_side:.1} in front")); }
+    // The same lamp unshadowed: floor pixels with a clear view of the lamp
+    // (no pillar on the way to the camera or to the lamp) must not darken.
+    // Grazing floor far from the lamp is where receiver bias fails.
+    renderer.set_clustered_lights(&[ClusteredLight::unshadowed(beside)])?;
+    let open = render("05b-one-unshadowed", 2, &renderer)?;
+    let pillars: Vec<Vec3> = (-columns..columns).flat_map(|x| (-columns..columns).map(move |z| Vec3::new((x as f32 + 0.5) * SPACING, 0.0, (z as f32 + 0.5) * SPACING))).collect();
+    let blocked = |a: Vec3, b: Vec3| pillars.iter().any(|c| {
+        // Segment against the box, slab test, with a 5 cm margin.
+        let (lo, hi) = (*c - Vec3::new(0.40, 0.0, 0.40), *c + Vec3::new(0.40, 2.55, 0.40));
+        let d = b - a;
+        let (mut t0, mut t1) = (0.0f32, 1.0f32);
+        for k in 0..3 {
+            if d[k].abs() < 1e-6 { if a[k] < lo[k] || a[k] > hi[k] { return false; } continue; }
+            let (u, v) = ((lo[k] - a[k]) / d[k], (hi[k] - a[k]) / d[k]);
+            t0 = t0.max(u.min(v)); t1 = t1.min(u.max(v));
+        }
+        t0 <= t1
+    });
+    let inv = (glam::Mat4::perspective_infinite_reverse_rh(cam.fov_y, w as f32 / h as f32, cam.near) * glam::Mat4::look_at_rh(cam.pos, cam.target, Vec3::Y)).inverse();
+    let mut false_shadow = 0;
+    let mut open_floor = 0;
+    for y in (0..h).step_by(2) { for x in (0..w).step_by(2) {
+        let ndc = glam::Vec2::new((x as f32 + 0.5) / w as f32 * 2.0 - 1.0, 1.0 - (y as f32 + 0.5) / h as f32 * 2.0);
+        let far = inv.project_point3(ndc.extend(0.5));
+        let dir = (far - cam.pos).normalize();
+        if dir.y >= -1e-3 { continue; }
+        let p = cam.pos + dir * (-cam.pos.y / dir.y);
+        if p.distance(beside.position) > beside.range_m * 0.95 || blocked(cam.pos, p) || blocked(p + Vec3::Y * 0.01, beside.position) { continue; }
+        let i = ((y * w + x) * 4) as usize;
+        let (a, b) = (open[i] as i32 + open[i + 1] as i32 + open[i + 2] as i32, one[i] as i32 + one[i + 1] as i32 + one[i + 2] as i32);
+        if a < 6 { continue; }
+        open_floor += 1;
+        if b * 2 < a { false_shadow += 1; }
+    }}
+    if open_floor < 200 || false_shadow * 100 > open_floor { failures.push(format!("open floor darkened by the shadow in {false_shadow} of {open_floor} samples")); }
     renderer.set_clustered_lights(&[])?;
     let off = render("06-off", 1, &renderer)?;
     let still = off.chunks_exact(4).filter(|p| p[0].max(p[1]).max(p[2]) > 8).count();
     if still > 0 { failures.push(format!("{still} pixels stayed lit with no lights")); }
     let report = json!({"passed": failures.is_empty(), "failures": failures, "size": [w, h], "lights": count, "shadowed": shadowed,
-        "one_light_differing_pixels": differ, "darkened_by_shadows": darker, "pillar_shadow": {"behind": shade, "front": lit_side}, "cases": rows});
+        "one_light_differing_pixels": differ, "open_floor_false_shadow": [false_shadow, open_floor], "darkened_by_shadows": darker, "pillar_shadow": {"behind": shade, "front": lit_side}, "cases": rows});
     std::fs::write(out.join("report.json"), serde_json::to_vec_pretty(&report).unwrap()).map_err(|e| e.to_string())?;
     println!("{}", serde_json::to_string_pretty(&report).unwrap());
     if report["passed"] == true { Ok(()) } else { Err("failed; see report.json".into()) }

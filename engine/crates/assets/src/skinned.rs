@@ -10,6 +10,7 @@ use render::{
     skinning::{self, Influence},
 };
 use serde::Deserialize;
+mod warp_human;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -75,6 +76,7 @@ struct ClipFile {
     sockets: Vec<HashMap<String, [f32; 12]>>,
 }
 
+#[derive(Clone)]
 pub struct Clip {
     pub name: String,
     pub duration: f32,
@@ -82,15 +84,15 @@ pub struct Clip {
     pub looping: bool,
     pub min: Vec3,
     pub max: Vec3,
-    matrices: Vec<Mat4>,
-    sockets: Vec<HashMap<String, Mat4>>,
+    matrices: std::sync::Arc<[Mat4]>,
+    sockets: std::sync::Arc<[HashMap<String, Mat4>]>,
 }
 struct Surface {
     vertices: Vec<Vertex>,
     indices: Vec<u32>,
     influences: Vec<Influence>,
     material: MaterialFile,
-    texture: Option<(String, image::RgbaImage)>,
+    texture: Option<(String, std::sync::Arc<image::RgbaImage>)>,
     normal: Option<image::RgbaImage>,
     skin_hair: Option<SkinHair>,
 }
@@ -329,7 +331,7 @@ impl Character {
                     let image = image::load_from_memory(&read(&path)?)
                         .map_err(|e| format!("{}: {e}", path.display()))?
                         .to_rgba8();
-                    Ok::<_, String>((path.to_string_lossy().into_owned(), image))
+                    Ok::<_, String>((path.to_string_lossy().into_owned(), image.into()))
                 })
                 .transpose()?;
             let normal = material
@@ -437,8 +439,8 @@ impl Character {
                 looping: clip.looping,
                 min: clip_min,
                 max: clip_max,
-                matrices,
-                sockets,
+                matrices: matrices.into(),
+                sockets: sockets.into(),
             });
         }
         // A millimetre covers exporter and GPU f32 rounding.
@@ -654,7 +656,7 @@ impl Character {
                     .position(|t| t.name == key)
                     .map(|i| i as i32)
                     .unwrap_or_else(|| {
-                        let mut image = image.clone();
+                        let mut image = (**image).clone();
                         if let Some(mask) = mask {
                             for (pixel, m) in image.pixels_mut().zip(mask.pixels()) { pixel[3] = m[0]; }
                         }
@@ -831,8 +833,8 @@ mod tests {
                 looping: false,
                 min: Vec3::ZERO,
                 max: Vec3::ONE,
-                matrices: vec![Mat4::IDENTITY; 6],
-                sockets: Vec::new(),
+                matrices: vec![Mat4::IDENTITY; 6].into(),
+                sockets: Default::default(),
             }],
             min: Vec3::ZERO,
             max: Vec3::ONE,

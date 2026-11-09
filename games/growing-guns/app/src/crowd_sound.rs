@@ -58,6 +58,25 @@ impl Samples {
         Samples { cheer: c.clone(), panic: c.clone(), surge: c, roar: Vec::new(), goal: Vec::new(), ooh: Vec::new(), scream: Vec::new(), chant: Vec::new() }
     }
 
+    /// Packed into the game so the arena has a voice in a standalone build.
+    pub fn bundled() -> Result<Self, String> {
+        macro_rules! clip {
+            ($file:literal) => {
+                audio::sfx::decode_ogg(include_bytes!(concat!("../../assets/crowd/", $file, ".ogg")))?
+            };
+        }
+        macro_rules! clips {
+            ($($file:literal),+) => { vec![$(clip!($file)),+] };
+        }
+        Ok(Self {
+            cheer: clip!("cheer_loop"), panic: clip!("panic_loop"), surge: clip!("surge"),
+            roar: clips!("roar_1", "roar_2", "roar_3", "roar_4"),
+            goal: clips!("goal_1", "goal_2", "goal_3", "goal_4"),
+            ooh: clips!("ooh_1"), scream: clips!("scream_1", "scream_2", "scream_3", "scream_4"),
+            chant: clips!("chant_1", "chant_2", "chant_3", "chant_4"),
+        })
+    }
+
     pub fn load(dir: &Path) -> Result<Self, String> {
         let one = |n: &str| audio::sfx::load_clip(&dir.join(format!("{n}.ogg")));
         let set = |p: &str| (1..10).map_while(|i| audio::sfx::load_clip(&dir.join(format!("{p}_{i}.ogg"))).ok()).collect::<Vec<_>>();
@@ -92,6 +111,9 @@ pub struct CrowdSound {
 }
 
 impl CrowdSound {
+    /// The panic envelope advances every tick, including when audio is muted.
+    pub fn smoothed_fear(&self) -> f32 { self.gains[2] }
+
     /// Replays share the already decoded clips and existing ambience beds.
     pub(crate) fn audio_bank(&self) -> Option<(SfxSender, Samples)> {
         self.tx.as_ref().map(|tx| (tx.clone(), self.s.clone()))
@@ -527,16 +549,16 @@ mod tests {
 
     #[test]
     fn mood_moves_the_bed_mix() {
-        let dir = find_dir(None, None);
-        let Some(dir) = dir else { return };
+        let samples = Samples::bundled().unwrap();
         let (tx, mut mix) = audio::sfx::sfx(32, audio::SAMPLE_RATE);
-        let mut c = CrowdSound::new(Some((tx, Samples::load(&dir).unwrap())));
+        let mut c = CrowdSound::new(Some((tx, samples)));
         for _ in 0..60 { c.update(1.0 / 60.0, None); }
         let calm = mix.render_stereo(0.5);
         c.celebrate();
         for _ in 0..60 { c.update(1.0 / 60.0, None); }
         let loud = mix.render_stereo(0.5);
         let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        assert!(rms(&calm) > 0.0001, "quiet stands must still be audible");
         assert!(rms(&loud) > rms(&calm) * 1.5, "{} {}", rms(&calm), rms(&loud));
     }
 }

@@ -9,7 +9,7 @@ mod arena;
 mod cages;
 pub(crate) mod characters;
 mod character_ragdoll;
-mod effects;
+pub(crate) mod effects;
 mod gore;
 pub(crate) mod guns;
 mod ion;
@@ -120,6 +120,10 @@ pub struct Visuals {
 
 impl Visuals {
     pub fn build(world: &World) -> Self {
+        Self::build_roster(world, world.arena.seed, &[])
+    }
+
+    pub(crate) fn build_roster(world: &World, seed: u64, colors: &[crate::party::PlayerColors]) -> Self {
         let mut scene = Scene::default();
         scene.graphics.minimal_forward=crate::graphics::get().minimal_forward;
         scene.graphics.stone_detail=crate::graphics::get().stone_detail;
@@ -130,16 +134,17 @@ impl Visuals {
         scene.noise = Some(render::noise_field::NoiseField { size: lava::NOISE_SIZE, values: lava::noise_texture() });
         // Static range first, then the dynamic one; the order is the scene's
         // instance order.
-        let arena = ArenaView::reserve(&mut scene);
+        let splats=crate::blood::Splats::new(&mut scene);
+        let arena = ArenaView::reserve(&mut scene,splats);
         let fx = EffectsView::reserve(&mut scene, world.arena.seed);
         let mut players = PlayersView::reserve_corpses(&mut scene);
         let phys = Physics::new(Vec3::new(0.0, -20.0, 0.0), growing_guns::TICK_HZ as f32);
-        let stadium = StadiumVisuals::reserve(&mut scene);
+        let stadium = StadiumVisuals::reserve(&mut scene,splats);
         let first_dynamic = scene.instances.len();
         // Coop waves add players as they come; versus reserves all 8 seats up front
         // so players joining or bot counts changing never rebuild the GPU renderer.
         let drawn = world.players.len().max(if world.coop { COOP_VIEW_PLAYERS } else { 8 });
-        players.reserve_dynamic(&mut scene, drawn);
+        players.reserve_dynamic(&mut scene, drawn, seed, colors);
         let cages = cages::Cages::reserve(&mut scene, drawn);
         let guns = Guns::reserve(&mut scene, drawn);
         let things = things::Things::reserve(&mut scene);
@@ -195,6 +200,7 @@ impl Visuals {
         self.arena.flush(gpu, renderer, &self.scene)?;
         self.players.flush(gpu, renderer, &self.scene)?;
         self.guns.flush(gpu, renderer)?;
+        self.stadium.apply_hits(&mut self.scene,&mut self.fx,self.clock)?;
         self.stadium.poll_sky(&mut self.scene);
         self.stadium.flush(gpu, renderer, &self.scene, self.clock, light)?;
         self.fx.flush(gpu, renderer, &self.scene, self.clock)
@@ -203,6 +209,11 @@ impl Visuals {
     /// Reconstructing a recording needs collision/spawn ordering on the GPU,
     /// but static lighting, materials and ordinary instances only at paint time.
     pub fn flush_replay_debris(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> {
+        if self.stadium.crowd.has_pending_events() {
+            self.stadium.crowd.flush(gpu, renderer, self.clock)?;
+            gpu.wait();
+            self.stadium.apply_hits(&mut self.scene, &mut self.fx, self.clock)?;
+        }
         self.fx.debris.flush(gpu, renderer)
     }
 
@@ -236,10 +247,10 @@ impl Visuals {
         let m = self.fx.meshes;
         for e in &world.events {
             match *e {
-                Event::BulletPath { from, to, damage } => {
+                Event::BulletPath { from, to, damage } | Event::TrackedBulletPath { from,to,damage,.. } => {
                     if let Some((pos, normal)) = self.players.shoot_corpses(&mut self.phys, from, to, damage) {
                         self.fx.particles.burst(s, pos + normal * 0.02, normal + Vec3::Y * 0.2,
-                            &Burst { mesh: m.blood, count: 6, ..Burst::drops() });
+                            &Burst { mesh: m.blood, count: 6, ..crate::blood::spray() });
                     }
                 }
                 Event::Impact { pos, normal, damage, strong } => {
@@ -279,7 +290,7 @@ impl Visuals {
                 }
                 Event::Hit { victim, attacker, pos, head, .. } => {
                     let dir = (world.players[victim].pos - world.players[attacker].pos).normalize_or(Vec3::Y);
-                    self.fx.particles.burst(s, pos, dir + Vec3::Y * 0.3, &Burst { mesh: m.blood, count: if head { 22 } else { 12 }, ..Burst::drops() });
+                    self.fx.particles.burst(s, pos, dir + Vec3::Y * 0.3, &Burst { mesh: m.blood, count: if head { 22 } else { 12 }, ..crate::blood::spray() });
                 }
                 Event::Kill { victim, attacker, gib, dir } => {
                     self.players.kill(s, &mut self.phys, &mut self.fx, &mut self.arena, world, victim, attacker, gib, dir, now);
@@ -328,19 +339,44 @@ impl Visuals {
             }
         }
         self.air_targets = world.strikes.iter().filter(|s| s.kind == growing_guns::StrikeKind::AirStrike).map(|s| s.target).collect();
-        self.stadium.absorb(s, &mut self.fx.particles, &mut self.fx.blasts, world, ears, now, growing_guns::DT);
+        self.stadium.absorb(s, world, ears, now, growing_guns::DT);
         self.guns.tick(world, growing_guns::DT);
         self.players.tick(world, &mut self.phys);
         self.players.burn_lava_bodies(world, &mut self.fx.blasts, now);
         self.phys.step();
-        self.players.follow_physics(s, &mut self.phys, now);
         let shapes = &world.arena.grid;
-        self.fx.particles.update(s, growing_guns::DT, |a, b| {
-            let d = b - a;
-            let len = d.length();
-            if len < 1e-6 { return None; }
-            growing_guns::shape::raycast(shapes, a, d / len, len).map(|(t, n, _)| (a + d / len * t, n))
-        });
+        self.players
+            .follow_physics(s, &mut self.phys, now, |scene, at, n, velocity| {
+                let origin = at + n * 0.05;
+                if let Some((d, normal, c)) = growing_guns::shape::raycast(shapes, origin, -n, 0.13) {
+                    let r = (0.18 + 0.035 * velocity.length()).clamp(0.22, 0.65);
+                    self.arena
+                        .blood(scene, &shapes.boxes[c], origin - n * d, normal, velocity, r, c as u32);
+                }
+            });
+        let blood = self.fx.meshes.blood;
+        let gib = self.stadium.gore_mesh();
+        self.fx.particles.update_with_contacts(
+            s,
+            growing_guns::DT,
+            |a, b| {
+                let d = b - a;
+                let len = d.length();
+                if len < 1e-6 {
+                    return None;
+                }
+                growing_guns::shape::raycast(shapes, a, d / len, len).map(|(t, n, c)| (a + d / len * t, n, c))
+            },
+            |scene, mesh, p, n, velocity, c| {
+                if mesh != blood && Some(mesh) != gib {
+                    return false;
+                }
+                let radius = (0.10 + velocity.length() * 0.021).clamp(0.13, 0.43);
+                self.arena
+                    .blood(scene, &shapes.boxes[c], p, n, velocity, radius, c as u32);
+                true
+            },
+        );
     }
 
     /// Rewrite the dynamic instances. `alpha` blends from the previous tick.

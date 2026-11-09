@@ -80,7 +80,7 @@ fn run()->Result<(),String> {
     let overrides=out.join("shader-overrides");std::fs::create_dir(&overrides).map_err(|e|e.to_string())?;
     // This standalone process has no other threads reading environment yet.
     unsafe {std::env::set_var("KERN_SHADER_DIR",&overrides);}
-    let original=include_str!("../src/shaders/shade.wgsl");
+    let original=include_str!("../src/shaders/surface_fog.wgsl");
     let voxel_original=include_str!("../src/shaders/voxel_forest.wgsl");
     let edited=original.replace("fn apply_distance_fog(","fn previous_apply_distance_fog(")+
         "\nfn apply_distance_fog(radiance:vec3<f32>,distance:f32,direction:vec3<f32>)->vec3<f32>{return vec3<f32>(4000.0,40.0,15.0);}\n";
@@ -92,7 +92,7 @@ fn run()->Result<(),String> {
     let baseline=captures(&renderer,&gpu,&light,&out,"baseline")?;
     // Failure in the LAST material consumer follows successful preparation of
     // opaque, glass and both grass paths. Nothing may commit prematurely.
-    std::fs::write(overrides.join("shade.wgsl"),&edited).map_err(|e|e.to_string())?;
+    std::fs::write(overrides.join("surface_fog.wgsl"),&edited).map_err(|e|e.to_string())?;
     std::fs::write(overrides.join("voxel_forest.wgsl"),format!("{voxel_original}\nBROKEN_VOXEL_EDIT")).map_err(|e|e.to_string())?;
     let rejected=renderer.reload_shaders(&gpu).expect_err("invalid final consumer must reject generation");
     if renderer.shader_generation()!=0{return Err("failed reload advanced generation".into());}
@@ -107,9 +107,9 @@ fn run()->Result<(),String> {
     if changes.iter().any(|&n|n<10){return Err(format!("not all consumers visibly exercised: {changes:?}"));}
     if changed!=reference{return Err(format!("reload differs from one coherent fresh generation: {:?}",changed.iter().zip(&reference).map(|(a,b)|difference(a,b)).collect::<Vec<_>>()));}
     // Shared syntax failure must also leave the already-successful generation.
-    std::fs::write(overrides.join("shade.wgsl"),"BROKEN_SHARED_EDIT").map_err(|e|e.to_string())?;
+    std::fs::write(overrides.join("surface_fog.wgsl"),"BROKEN_SHARED_EDIT").map_err(|e|e.to_string())?;
     if renderer.reload_shaders(&gpu).is_ok()||renderer.shader_generation()!=1{return Err("invalid shared source committed".into());}
-    std::fs::write(overrides.join("shade.wgsl"),original).map_err(|e|e.to_string())?;
+    std::fs::write(overrides.join("surface_fog.wgsl"),original).map_err(|e|e.to_string())?;
     if !renderer.reload_shaders(&gpu)?||renderer.shader_generation()!=2{return Err("restoration failed".into());}
     let restored=captures(&renderer,&gpu,&light,&out,"restored")?;
     if baseline!=restored{return Err("restored generation differs from baseline".into());}

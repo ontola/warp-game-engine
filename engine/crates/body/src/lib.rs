@@ -229,8 +229,17 @@ pub struct Bound {
 impl Bound {
     /// Hang pieces on `rig`: each, by where its middle is, on the nearest bone.
     pub fn new(rig: &Rig, pieces: &[Vec3]) -> Bound {
+        Self::bind(rig.joints, rig.grips, pieces)
+    }
+
+    /// Bind skin joints loaded from a model to the same capture skeleton as a piece rig.
+    pub fn from_joints(joints: &[(Bone, [f32; 3])]) -> Self {
+        Self::bind(joints, &[], &[])
+    }
+
+    fn bind(joints: &[(Bone, [f32; 3])], grips: &[([f32; 3], Bone)], pieces: &[Vec3]) -> Self {
         let mut rest = [None; BONES];
-        for &(b, p) in rig.joints {
+        for &(b, p) in joints {
             rest[b as usize] = Some(Vec3::from(p));
         }
         let keep = ALL.map(|b| {
@@ -261,7 +270,7 @@ impl Bound {
             };
             segs.push((a, end, b));
         }
-        for &(p, b) in rig.grips {
+        for &(p, b) in grips {
             segs.push((Vec3::from(p), Vec3::from(p), keep[b as usize]));
         }
         let bone_of = pieces

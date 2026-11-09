@@ -46,6 +46,7 @@ pub struct Seat {
     pub player_id: String,
     pub name: String,
     pub color: String,
+    pub skin_color: String,
     pub controller: String,
     pub ai: bool,
     pub couch: Option<i64>,
@@ -156,7 +157,8 @@ impl State {
             let id = text(&seat["occupant"], "player_id");
             let profile = self.party["players"].as_array().into_iter().flatten().find(|p| text(p, "id") == id && !id.is_empty());
             Some(Seat { index, player_id: id, name: profile.map(|p| text(p, "name")).filter(|s| !s.is_empty()).unwrap_or_else(|| format!("Player {}", index + 1)),
-                color: profile.map(|p| text(p, "color")).unwrap_or_default(), controller: text(seat, "controller"), ai: kind == "ai", couch: profile.and_then(|p| p["couch"].as_i64()) })
+                color: profile.map(|p| text(p, "color")).unwrap_or_default(),
+                skin_color: profile.map(|p| text(p, "skin_color")).unwrap_or_default(), controller: text(seat, "controller"), ai: kind == "ai", couch: profile.and_then(|p| p["couch"].as_i64()) })
         }).collect();
         seats.sort_by_key(|s| (s.couch.unwrap_or(1000), s.index));
         seats.truncate(4);

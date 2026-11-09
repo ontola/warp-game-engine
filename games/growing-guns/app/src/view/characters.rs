@@ -5,6 +5,8 @@ use glam::{Affine3A, Mat4, Quat, Vec3};
 use growing_guns::{Event, World, DT, WALK_SPEED};
 use render::{Gpu, Renderer, Scene};
 use std::path::PathBuf;
+mod locomotion;
+use locomotion::{Locomotion, Stride};
 use super::character_ragdoll::Corpse;
 use physics::Physics;
 
@@ -14,7 +16,39 @@ const RUN: &str = "pistol_run";
 const JUMP: &str = "pistol_jump";
 
 #[derive(Default)]
-struct Motion { idle: f32, run: f32, blend: f32, jump: Option<f32> }
+struct Motion { idle: f32, run: f32, blend: f32, jump: Option<f32>, stride: Stride }
+impl Motion {
+    fn sample(
+        &self,
+        locomotion: Option<&Locomotion>,
+        model: &Character,
+        alpha: f32,
+        palette: &mut [Mat4],
+        scratch: &mut [Mat4],
+    ) -> Result<Mat4, String> {
+        let alpha = alpha.clamp(0., 1.);
+        let interpolate = (alpha - 1.) * DT;
+        let idle = (self.idle + interpolate).max(0.);
+        if let Some(rig) = locomotion {
+            return rig.pose(model, &self.stride, alpha, idle, palette);
+        }
+        if let Some(age) = self.jump {
+            let t = (age + interpolate).max(0.);
+            model.sample_into(JUMP, t, false, palette)?;
+            return model.sample_socket(JUMP, "RightHand", t, false);
+        }
+        model.sample_into(IDLE, idle, true, palette)?;
+        model.sample_into(RUN, self.run, true, scratch)?;
+        for (a, b) in palette.iter_mut().zip(scratch) {
+            *a = mix(*a, *b, self.blend);
+        }
+        Ok(mix(
+            model.sample_socket(IDLE, "RightHand", idle, true)?,
+            model.sample_socket(RUN, "RightHand", self.run, true)?,
+            self.blend,
+        ))
+    }
+}
 struct KnightHold {
     editor: body::pose_editor::PoseEditor,
     authored: crate::foregrip_pose::ForegripPose,
@@ -40,6 +74,7 @@ struct LavaTwin { handle: ActorHandle, palette: Vec<Mat4> }
 const RIGID_CELL: f32 = 0.035;
 
 pub struct Characters {
+    locomotion: Option<Locomotion>,
     animation: crate::hand_animation::HandAnimation,
     models: Vec<Character>,
     actors: Vec<Actor>,
@@ -55,6 +90,71 @@ pub struct Characters {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn warp_players_keep_their_identity_and_animation_rig() {
+        use render::humans::{Constraints, Instance};
+        let rig = Character::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters/knight.json")).unwrap();
+        let pose = rig.sample(RUN, 0.18, true).unwrap();
+        let geometry = |seed| {
+            let person = Instance::person(seed, Vec3::ZERO, 0., &Constraints { height_m: Some(1.8), shirt: None });
+            let model = rig.warp_human(&person).unwrap();
+            let mut scene = Scene::default();
+            model.add_actor(&mut scene, Affine3A::IDENTITY).unwrap();
+            for influence in &scene.skinning.actors[0].influences {
+                assert!((influence.weights.iter().sum::<f32>() - 1.).abs() < 0.0001);
+                assert!(influence.weights.iter().all(|&w| w >= 0.));
+            }
+            assert_eq!(model.sample_socket(RUN, "RightHand", 0.18, true).unwrap(),
+                       rig.sample_socket(RUN, "RightHand", 0.18, true).unwrap());
+            let vertices: Vec<_> = model.posed_surfaces(&mut scene, &pose, Affine3A::IDENTITY)
+                .into_iter().flat_map(|(_, vertices, _, _)| vertices.into_iter().map(|v| v.pos)).collect();
+            assert!(vertices.iter().all(|p| Vec3::from(*p).is_finite()));
+            vertices
+        };
+        let first = geometry(600);
+        assert_eq!(first, geometry(600));
+        assert!(first != geometry(601));
+    }
+
+    #[test]
+    fn profile_tints_and_reload_follow_the_rendered_player() {
+        use crate::party::PlayerColors;
+        use super::super::guns::Guns;
+        let shirt = [0.12, 0.76, 0.22];
+        let skin = [0.56, 0.32, 0.18];
+        let profiles = [PlayerColors { shirt: Some(shirt), skin: Some(skin) }];
+        let mut c = Characters::load_roster(Some((52, 2, &profiles))).unwrap();
+        let mut scene = Scene::default();
+        let materials = c.models[0].surface_materials(&mut scene);
+        let other = c.models[1].surface_materials(&mut scene);
+        let has_color = |ids: &[u32], rgb: [f32; 3]| {
+            let linear = Vec3::from(rgb.map(|x| ((x + 0.055) / 1.055).powf(2.4)));
+            ids.iter().any(|&i| Vec3::from(scene.materials[i as usize].tint).distance(linear) < 0.005)
+        };
+        assert!(has_color(&materials, shirt) && has_color(&materials, skin));
+        assert!(!has_color(&other, skin));
+        c.reserve_actor(&mut scene, 0).unwrap();
+        let mut world = World::new(52, &[false, true]);
+        let mut guns = Guns::reserve(&mut scene, 2);
+        guns.tick(&world, DT);
+        for duration_scale in [1., 2.] {
+            let p = &mut world.players[0];
+            p.reloading = true;
+            p.weapon.reload_mult = duration_scale;
+            p.rifle_cd = p.weapon.reload_time() * 0.6;
+            let reload = crate::gun::Reload::sample(p, 1.);
+            assert!((reload.hand_drop - 0.228).abs() < 0.001);
+            let xf = model_transform(p.pos, p.yaw);
+            c.pose(&world, &[], 1., Some(&guns));
+            let wrist = c.models[0].joint_position("LeftHand", &c.actors[0].palette).unwrap();
+            let mag = guns.contacts(0, 1.).unwrap().magazine - Vec3::Y * reload.hand_drop;
+            let error = xf.transform_point3(wrist).distance(c.hands[0].unwrap().transform_point3(mag));
+            assert!(error < 0.02, "reload wrist missed magazine by {error:.3} m");
+        }
+        world.players[0].reloading = false;
+        assert_eq!(crate::gun::Reload::sample(&world.players[0], 0.5).hand_drop, 0.);
+    }
+
     #[test]
     fn knight_extended_pose_reproduces_saved_arm_positions() {
         use crate::gun::{Rig, Stats};
@@ -146,7 +246,7 @@ mod tests {
     #[test]
     fn reused_enemy_and_round_reset_release_the_old_skin_rig() {
         let model = Character::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters/knight.json")).unwrap();
-        let mut c = Characters { animation: crate::hand_animation::HandAnimation::load().unwrap(), rigid_meshes: vec![None], pieces: Vec::new(), rigid_frame: Vec::new(), models: vec![model], actors: Vec::new(), lava: Vec::new(), hands: Vec::new() };
+        let mut c = Characters { locomotion: None, animation: crate::hand_animation::HandAnimation::load().unwrap(), rigid_meshes: vec![None], pieces: Vec::new(), rigid_frame: Vec::new(), models: vec![model], actors: Vec::new(), lava: Vec::new(), hands: Vec::new() };
         let mut scene = Scene::default();
         c.reserve_actor(&mut scene, 0).unwrap();
         let mut world = World::new(3, &[false, true, true]);
@@ -216,7 +316,12 @@ fn mix(a: Mat4, b: Mat4, t: f32) -> Mat4 {
 }
 
 impl Characters {
+    #[cfg(test)]
     pub fn load() -> Result<Self, String> {
+        Self::load_roster(None)
+    }
+
+    pub(crate) fn load_roster(humans: Option<(u64, usize, &[crate::party::PlayerColors])>) -> Result<Self, String> {
         let dir = if let Some(path) = std::env::var_os("GG_CHARACTERS") {
             if path == "off" { return Err("GG_CHARACTERS=off: explicit primitive roster".into()); }
             PathBuf::from(path)
@@ -225,8 +330,24 @@ impl Characters {
             beside.filter(|p| p.join("knight.json").is_file())
                 .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters"))
         };
-        let mut models = ROSTER.iter().map(|name| Character::load(&dir.join(format!("{name}.json"))))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut models = if let Some((seed, count, colors)) = humans {
+            use render::humans::{Constraints, Instance};
+            let rig = Character::load(&dir.join("knight.json"))?;
+            let models = (0..count).map(|slot| {
+                let identity = seed.wrapping_mul(0x9e3779b97f4a7c15) ^ slot as u64;
+                let profile = colors.get(slot).copied().unwrap_or_default();
+                let person = Instance::person(identity, Vec3::ZERO, 0., &Constraints {
+                    shirt: Some(profile.shirt.unwrap_or(super::PLAYER_COLORS[slot % super::PLAYER_COLORS.len()])),
+                    height_m: Some(1.80),
+                });
+                rig.warp_human_with_skin(&person, profile.skin)
+            }).collect::<Result<Vec<_>, _>>()?;
+            println!("characters: {} seeded Warp Humans, roster seed {seed}", models.len());
+            models
+        } else {
+            println!("characters: original knight, paladin, ch10 with idle/run/jump ({})", dir.display());
+            ROSTER.iter().map(|name| Character::load(&dir.join(format!("{name}.json")))).collect::<Result<Vec<_>, _>>()?
+        };
         if skin_hair_enabled() {
             for model in &mut models { apply_skin_hair(model, &dir)?; }
         }
@@ -237,8 +358,8 @@ impl Characters {
                 model.sample_socket(clip, "RightHand", 0.0, clip != JUMP)?;
             }
         }
-        println!("characters: original knight, paladin, ch10 with idle/run/jump ({})", dir.display());
-        Ok(Self { animation: crate::hand_animation::HandAnimation::load()?, rigid_meshes: models.iter().map(|_| None).collect(), pieces: Vec::new(), rigid_frame: Vec::new(), models, actors: Vec::new(), lava: Vec::new(), hands: Vec::new() })
+        let locomotion = humans.map(|_| Locomotion::bind(&models[0])).transpose()?;
+        Ok(Self { locomotion, animation: crate::hand_animation::HandAnimation::load()?, rigid_meshes: models.iter().map(|_| None).collect(), pieces: Vec::new(), rigid_frame: Vec::new(), models, actors: Vec::new(), lava: Vec::new(), hands: Vec::new() })
     }
 
     pub fn models(&self) -> &[Character] { &self.models }
@@ -312,19 +433,13 @@ impl Characters {
     /// Returns the twin's instance and mesh (to place), None without room
     /// for one.
     pub fn lava_twin(&mut self, i: usize) -> Option<(usize, usize)> {
-        let actor = self.actors.get(i)?;
+        let actor = self.actors.get_mut(i)?;
         let twin = self.lava.get_mut(i)?.as_mut()?;
         // The pose of the current simulated animation (as `kill`), even
         // when no frame was drawn since the last tick.
         let model = &self.models[i % self.models.len()];
         let m = &actor.motion;
-        if let Some(age) = m.jump {
-            model.sample_into(JUMP, age, false, &mut twin.palette).ok()?;
-        } else {
-            model.sample_into(IDLE, m.idle, true, &mut twin.palette).ok()?;
-            let run = model.sample(RUN, m.run, true).ok()?;
-            for (idle, run) in twin.palette.iter_mut().zip(run) { *idle = mix(*idle, run, m.blend); }
-        }
+        m.sample(self.locomotion.as_ref(), model, 1., &mut twin.palette, &mut actor.run_palette).ok()?;
         self.hands[i] = None;
         Some((twin.handle.instance, twin.handle.mesh))
     }
@@ -354,14 +469,19 @@ impl Characters {
             }
             actor.velocity = p.vel;
             let m = &mut actor.motion;
+            m.idle += DT;
+            let jumped = world.events.iter().any(|e| matches!(e, Event::Jump { player } if *player == i));
+            if let Some(locomotion) = &self.locomotion {
+                locomotion.advance(&mut m.stride, p.pos, p.yaw, p.vel.y, p.on_floor, jumped);
+                continue;
+            }
             let speed = Vec3::new(p.vel.x, 0.0, p.vel.z).length();
             let local = Quat::from_rotation_y(-p.yaw) * p.vel;
             let direction = if local.z > speed * 0.2 { -1.0 } else { 1.0 };
-            m.idle += DT;
             m.run += DT * (speed / WALK_SPEED).clamp(0.75, 1.5) * direction;
             let target = if p.on_floor { (speed / WALK_SPEED).clamp(0.0, 1.0) } else { 0.0 };
             m.blend += (target - m.blend) * (DT * 10.0).min(1.0);
-            if world.events.iter().any(|e| matches!(e, Event::Jump { player } if *player == i)) {
+            if jumped {
                 m.jump = Some(0.0);
             } else if p.on_floor {
                 m.jump = None;
@@ -383,35 +503,34 @@ impl Characters {
             }
             let model = &self.models[i % self.models.len()];
             let m = &actor.motion;
-            let interpolate = (alpha.clamp(0.0, 1.0) - 1.0) * DT;
-            let socket = if let Some(age) = m.jump {
-                let time = (age + interpolate).max(0.0);
-                model.sample_into(JUMP, time, false, &mut actor.palette).expect("validated jump clip");
-                model.sample_socket(JUMP, "RightHand", time, false).expect("validated jump socket")
-            } else {
-                let idle_time = (m.idle + interpolate).max(0.0);
-                model.sample_into(IDLE, idle_time, true, &mut actor.palette).expect("validated idle clip");
-                model.sample_into(RUN, m.run, true, &mut actor.run_palette).expect("validated run clip");
-                for (idle, run) in actor.palette.iter_mut().zip(&actor.run_palette) { *idle = mix(*idle, *run, m.blend); }
-                mix(model.sample_socket(IDLE, "RightHand", idle_time, true).expect("validated idle socket"),
-                    model.sample_socket(RUN, "RightHand", m.run, true).expect("validated run socket"), m.blend)
-            };
+            let socket = m.sample(self.locomotion.as_ref(), model, alpha, &mut actor.palette, &mut actor.run_palette)
+                .expect("validated locomotion and hand socket");
             let drawn = crate::view::pose(world, i, prev, alpha);
             let body = model_transform(drawn.pos, drawn.yaw);
             let hand = body.transform_point3(socket.w_axis.truncate());
             self.hands[i] = Some(if let (Some(arms), Some(contacts)) = (&actor.arms, guns.and_then(|g| g.contacts(i, alpha))) {
                 let (support, roll) = self.animation.pose(contacts, (world.tick as f32 + alpha) * DT);
-                let base = super::guns::Guns::held_transform(hand, drawn.yaw, drawn.pitch, contacts.primary);
+                let reload = crate::gun::Reload::sample(p, alpha);
+                let reach = reload.reach;
+                let pitch = drawn.pitch + reload.tilt;
+                let hand = hand + Quat::from_rotation_y(drawn.yaw) * (reload.lift * 0.55);
+                let support = support.lerp(contacts.magazine - Vec3::Y * reload.hand_drop, reach);
+                let base = super::guns::Guns::held_transform(hand, drawn.yaw, pitch, contacts.primary);
                 let aim = (body.inverse() * base).to_scale_rotation_translation().1;
                 let sampled = actor.knight.as_ref().map(|k| k.mount.place(&actor.palette, aim, contacts.primary));
-                let target = sampled.map_or(base.transform_point3(support), |xf| hand + body.transform_vector3(xf.transform_vector3(support - contacts.primary)));
-                let wrist = arms.apply(&mut actor.palette, socket.w_axis.truncate(), body.inverse().transform_point3(target));
-                arms.orient_support(&mut actor.palette, sampled.map_or(Quat::IDENTITY, |xf| xf.to_scale_rotation_translation().1 * aim.inverse()) * grip_rotation(drawn.pitch) * Quat::from_rotation_x(roll));
+                let facing = sampled.map_or(aim, |xf| xf.to_scale_rotation_translation().1.slerp(aim, reach));
+                let primary = body.inverse().transform_point3(hand);
+                let target = primary + facing * (support - contacts.primary);
+                let wrist = arms.apply(&mut actor.palette, primary, target);
+                arms.orient_support(&mut actor.palette, facing * aim.inverse() * grip_rotation(pitch) * Quat::from_rotation_x(roll * (1. - reach)));
                 if let Some(k) = &mut actor.knight {
-                    k.authored.set_extension(&mut k.editor, contacts.extension);
+                    k.authored.set_extension(&mut k.editor, contacts.extension * (1. - reach));
                     k.editor.apply(&mut actor.palette);
-                    body * k.mount.place(&actor.palette, aim, contacts.primary)
-                } else { super::guns::Guns::held_transform(body.transform_point3(wrist), drawn.yaw, drawn.pitch, contacts.primary) }
+                    let mount = k.mount.place(&actor.palette, aim, contacts.primary);
+                    let rotation = mount.to_scale_rotation_translation().1.slerp(aim, reach);
+                    let grip = mount.transform_point3(contacts.primary);
+                    body * Affine3A::from_rotation_translation(rotation, grip - rotation * contacts.primary)
+                } else { super::guns::Guns::held_transform(body.transform_point3(wrist), drawn.yaw, pitch, contacts.primary) }
             } else { super::guns::Guns::held_transform(hand, drawn.yaw, drawn.pitch, guns.and_then(|g| g.contacts(i, alpha)).map_or(Vec3::ZERO, |c| c.primary)) });
         }
     }
@@ -422,13 +541,7 @@ impl Characters {
         let model = &self.models[player % self.models.len()];
         // Use the current simulated animation even if no frame was drawn since
         // the last tick (headless runs and multiple simulation ticks per draw).
-        if let Some(age) = actor.motion.jump {
-            model.sample_into(JUMP, age, false, &mut actor.palette)?;
-        } else {
-            model.sample_into(IDLE, actor.motion.idle, true, &mut actor.palette)?;
-            model.sample_into(RUN, actor.motion.run, true, &mut actor.run_palette)?;
-            for (idle, run) in actor.palette.iter_mut().zip(&actor.run_palette) { *idle = mix(*idle, *run, actor.motion.blend); }
-        }
+        actor.motion.sample(self.locomotion.as_ref(), model, 1., &mut actor.palette, &mut actor.run_palette)?;
         actor.corpse = Some(Corpse::spawn(model, &actor.palette, model_transform(p.pos, p.yaw), actor.velocity, direction, player, headless, physics)?);
         self.hands[player] = None;
         Ok(())

@@ -34,7 +34,7 @@ struct CharacterGore {
     head: Vec<ShardMesh>,
 }
 
-struct Piece { body: Body, slot: SlotId, mesh: usize, scale: Vec3, born: f32 }
+struct Piece { body: Body, slot: SlotId, mesh: usize, scale: Vec3, born: f32, ink:Option<Vec3> }
 
 pub struct Gore {
     /// Per roster character model, anatomical body and head gib pieces.
@@ -81,7 +81,7 @@ impl Gore {
         // Blood and meat blobs (Godot spawn_blood_gib_blobs): dark blood and flesh.
         let blobs = [[0.30, 0.018, 0.012], [0.20, 0.016, 0.012], [0.92, 0.18, 0.12], [0.55, 0.09, 0.07]].map(|c| {
             let m = scene.add_material(Material { tint: c.map(|v: f32| v.powf(2.2)), layer: -1, roughness: 0.4, flags: 0, scale: 1.0, metal: 0.0 });
-            scene.add_mesh(&primitives::sphere(m, 3, 5).mesh())
+            scene.add_mesh(&crate::blood::drop_mesh(m).mesh())
         });
         let slots = Slots::reserve(scene, MAX_PIECES);
         Gore { character_shards, shards, blobs, slots, pieces: Vec::new(), rng: seed | 1 }
@@ -108,7 +108,7 @@ impl Gore {
         let Some(slot) = self.slots.add(scene, mesh, Affine3A::from_scale_rotation_translation(scale, rot, pos)) else { phys.remove(body); return };
         let i = self.slots.instance(slot);
         scene.instances[i].flags |= NO_SHADOW;
-        self.pieces.push(Piece { body, slot, mesh, scale, born: now });
+        self.pieces.push(Piece { body, slot, mesh, scale, born: now, ink:(self.rng%3==0).then_some(vel) });
     }
 
     /// Burst `parts` of player `p` (at `pos`, facing `yaw`). `dir` is the
@@ -171,10 +171,10 @@ impl Gore {
     }
 
     /// Follow the physics; retire pieces past their time.
-    pub fn update(&mut self, scene: &mut Scene, phys: &mut Physics, now: f32) {
+    pub fn update(&mut self, scene: &mut Scene, phys: &mut Physics, now: f32, mut splat:impl FnMut(&mut Scene,Vec3,Vec3,Vec3)) {
         let mut k = 0;
         while k < self.pieces.len() {
-            let pc = &self.pieces[k];
+            let pc = &mut self.pieces[k];
             if now - pc.born > LIFETIME {
                 let pc = self.pieces.remove(k);
                 phys.remove(pc.body);
@@ -182,6 +182,14 @@ impl Gore {
                 continue;
             }
             if let Some((pos, rot)) = phys.pose(pc.body) {
+                if let Some(velocity) = pc.ink {
+                    if let Some((at, normal)) = phys.static_contact(pc.body) {
+                        splat(scene, at, normal, velocity);
+                        pc.ink = None;
+                    } else {
+                        pc.ink = phys.velocity(pc.body);
+                    }
+                }
                 // Shrink away over the last second.
                 let fade = ((LIFETIME - (now - pc.born)) / 1.0).clamp(0.0, 1.0);
                 self.slots.set(scene, pc.slot, pc.mesh, Affine3A::from_scale_rotation_translation(pc.scale * fade.max(0.01), rot, pos));

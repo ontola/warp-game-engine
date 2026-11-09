@@ -852,6 +852,11 @@ impl Fx {
         self.sparks.emit(t, &Emitter { position: at + Vec3::Y * 0.5, radius: 0.5 * r, speed: [0.3, 0.8 * r],
             count: (r * 160.0) as u32, duration: 0.6, life: [1.2, 3.0], size: [0.06, 0.025], glow: 4.0 * LIGHT,
             color: [c.extend(1.0), (c * Vec3::new(0.8, 0.25, 0.08)).extend(0.0)], ..Emitter::embers() });
+        // Burning gobs: thrown out, they arc, bounce and roll, trailing fire,
+        // and glow on the floor as they cool.
+        self.sparks.emit(t, &Emitter { position: at + Vec3::Y * 0.4, radius: 0.3 * r, spread: 1.2, speed: [1.0 * r, 3.5 * r],
+            count: (r * 140.0) as u32, life: [2.0, 5.0], size: [0.08, 0.04], glow: 2.5 * LIGHT,
+            color: [(c * Vec3::new(1.0, 0.7, 0.3)).extend(1.0), (c * Vec3::new(0.6, 0.1, 0.02)).extend(0.0)], ..Emitter::burning() });
         if grit {
             self.sparks.emit(t, &Emitter { position: at + Vec3::Y * 0.2, radius: 0.3 * r, spread: 1.4, speed: [0.6 * r, 2.0 * r],
                 count: (r * 120.0) as u32, life: [1.0, 2.5], size: [0.05, 0.12], ..Emitter::dust() });

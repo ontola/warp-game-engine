@@ -123,7 +123,10 @@ impl World {
     pub(crate) fn spawn_bullet(&mut self, owner: usize, origin: Vec3, dir: Vec3, last_in_mag: bool) {
         let w = &self.players[owner].weapon;
         let speed = w.bullet_speed();
+        let id=self.next_bullet_id;
+        self.next_bullet_id=self.next_bullet_id.wrapping_add(1).max(1);
         let mut b = Bullet {
+            presentation_id:id,
             pos: origin, vel: dir * speed, owner, travelled: 0.0, last_in_mag, ricochet_left: w.ricochet_count, pierce_left: w.world_pierce_count,
             ricochet_hits: 0, body_bounces: 0, query_tick: false, last_query: None, skip_players: vec![owner as u16], skip_volumes: Vec::new(), fresh: true,
         };
@@ -131,7 +134,7 @@ impl World {
         if speed >= HITSCAN_SPEED {
             // One instant ray; no ricochet, drill or pass-through after it.
             let hit = self.ray_all(origin, dir, RANGE, &b.skip_players, &[], true);
-            self.events.push(Event::BulletPath { from: origin,
+            self.events.push(Event::TrackedBulletPath { id, from: origin,
                 to: origin + dir * hit.map_or(RANGE, |h| h.0), damage: w.damage_for_shot(last_in_mag) });
             if let Some((t, hit)) = hit {
                 b.travelled = t;
@@ -174,7 +177,7 @@ impl World {
             hit
         } else { None };
         if b.query_tick {
-            self.events.push(Event::BulletPath { from, to: hit.map_or(b.pos + step, |h| h.0), damage });
+            self.events.push(Event::TrackedBulletPath { id:b.presentation_id, from, to: hit.map_or(b.pos + step, |h| h.0), damage });
         }
         match hit {
             None => {

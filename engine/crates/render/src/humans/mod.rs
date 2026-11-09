@@ -1,6 +1,9 @@
 //! Seeded crowd rendering probe. One immutable instance table serves every view.
 //! The GPU buckets visible people by projected height and writes indirect draws.
 mod geometry;
+pub use geometry::BodyVertex;
+
+pub const APPEARANCE_ATLAS: &[u8] = include_bytes!("../../../../assets/humans/appearance.png");
 
 use crate::{Camera, Gpu};
 use bytemuck::{Pod, Zeroable};
@@ -30,12 +33,39 @@ fn sample(seed: u64, channel: u64) -> f32 {
     ((v ^ (v >> 31)) >> 40) as f32 / 16777216.
 }
 
+// A float carries an exact 24-bit RGB value. The instance stays 64 bytes.
+fn pack_color(rgb: [f32; 3]) -> f32 {
+    let [r,g,b] = rgb.map(|c| (c.clamp(0.,1.)*255.).round() as u32);
+    (r | (g<<8) | (b<<16)) as f32
+}
+fn unpack_color(word: f32) -> [f32; 3] {
+    [0,8,16].map(|shift| ((word as u32 >> shift) & 255) as f32 / 255.)
+}
+
 #[derive(Default)]
 pub struct Constraints {
     pub height_m: Option<f32>,
     pub shirt: Option<[f32; 3]>,
 }
 impl Instance {
+    pub fn face_tile(&self) -> usize { (self.identity[3] * 3.) as usize }
+    pub fn shirt_color(&self) -> [f32; 3] { unpack_color(self.color[0]) }
+    pub fn trouser_color(&self) -> [f32; 3] { unpack_color(self.color[1]) }
+    pub fn shoe_color(&self) -> [f32; 3] { unpack_color(self.color[2]) }
+    pub fn outfit(&self) -> usize { (self.color[3] as usize).saturating_sub(1) & 3 }
+    pub fn chest_print(&self) -> usize { (self.color[3] as usize).saturating_sub(1) >> 2 }
+    pub fn hair_color(&self) -> Vec3 {
+        Vec3::new(0.046, 0.030, 0.025).lerp(Vec3::new(0.39, 0.28, 0.16), self.identity[3].powi(2))
+    }
+    pub fn skin_color(&self) -> Vec3 {
+        let cheeks = [Vec3::new(0.855, 0.659, 0.541), Vec3::new(0.894, 0.741, 0.639), Vec3::new(0.353, 0.224, 0.149)];
+        let pigment = Vec3::new(0.28, 0.125, 0.076).lerp(Vec3::new(0.85, 0.55, 0.409), self.identity[1]);
+        cheeks[self.face_tile()].lerp(pigment, 0.46)
+    }
+    /// Metre scale of the normalized human mesh in its local axes.
+    pub fn body_scale(&self) -> Vec3 {
+        Vec3::new(self.size_phase[0], self.size_phase[1], self.size_phase[0])
+    }
     pub fn person(seed: u64, position: Vec3, yaw: f32, rules: &Constraints) -> Self {
         let height = rules
             .height_m
@@ -53,6 +83,18 @@ impl Instance {
         let shirt = rules
             .shirt
             .unwrap_or(palette[(sample(seed, 2) * 8.) as usize]);
+        let trousers = [[0.20,0.29,0.39],[0.42,0.55,0.64],[0.23,0.24,0.25],[0.53,0.49,0.36],
+            [0.34,0.40,0.28],[0.38,0.27,0.21],[0.29,0.34,0.39],[0.64,0.61,0.53]];
+        let shoes = [[0.17,0.17,0.19],[0.72,0.71,0.66],[0.41,0.29,0.20],[0.27,0.34,0.42],
+            [0.47,0.22,0.19],[0.35,0.37,0.32]];
+        let outfit = (sample(seed,10)*3.) as u32;
+        let print = if sample(seed, 13) < 0.58 {
+            0
+        } else if sample(seed, 15) < 0.5 {
+            1 + (sample(seed, 14) * 100.) as u32
+        } else {
+            101 + (sample(seed, 14) * 6.) as u32
+        };
         Self {
             pos_yaw: position.extend(yaw).into(),
             size_phase: [
@@ -61,7 +103,8 @@ impl Instance {
                 sample(seed, 4),
                 sample(seed, 5),
             ],
-            color: [shirt[0], shirt[1], shirt[2], 1.],
+            color: [pack_color(shirt), pack_color(trousers[(sample(seed,11)*8.) as usize]),
+                pack_color(shoes[(sample(seed,12)*6.) as usize]), (1+outfit+4*print) as f32],
             identity: std::array::from_fn(|i| sample(seed, 6 + i as u64)),
         }
     }
@@ -81,7 +124,7 @@ impl Instance {
         Self {
             pos_yaw: pos.extend(yaw).into(),
             size_phase: size.extend(0.).into(),
-            color: [color[0], color[1], color[2], 0.],
+            color: [pack_color(color), 0., 0., 0.],
             identity: [0.; 4],
         }
     }
@@ -101,12 +144,14 @@ impl Geometry {
                     usage,
                 })
         };
+        let vertices:Vec<_> = m.vertices.iter().map(geometry::Vertex::packed).collect();
+        let indices:Vec<_> = m.indices.iter().map(|&i| u16::try_from(i).expect("crowd mesh exceeds 16-bit indices")).collect();
         Self {
             vertex: buf(
-                bytemuck::cast_slice(&m.vertices),
+                bytemuck::cast_slice(&vertices),
                 wgpu::BufferUsages::VERTEX,
             ),
-            index: buf(bytemuck::cast_slice(&m.indices), wgpu::BufferUsages::INDEX),
+            index: buf(bytemuck::cast_slice(&indices), wgpu::BufferUsages::INDEX),
             count: m.indices.len() as u32,
         }
     }
@@ -169,10 +214,22 @@ fn appearance(
     })
 }
 
+const VISIBLE_SEAT_BYTES: u64 = 48;
+const HUMAN_SHADER: &str = concat!(
+    include_str!("../shaders/crowd_displacement.wgsl"), "\n",
+    include_str!("../shaders/surface_fog.wgsl"), "\n",
+    include_str!("../shaders/incident_lights.wgsl"), "\n",
+    include_str!("humans.wgsl"),
+);
+
 pub struct ReviewRenderer {
     compute: wgpu::ComputePipeline,
     render: wgpu::RenderPipeline,
     selection: wgpu::BindGroup,
+    light_groups: crate::frame::resource_cache::BindGroups<8>,
+    fog_groups: crate::frame::resource_cache::BindGroups<8>,
+    fog_layout: Option<wgpu::BindGroupLayout>,
+    light_layout: Option<wgpu::BindGroupLayout>,
     drawing: wgpu::BindGroup,
     appearance: wgpu::BindGroup,
     camera: wgpu::Buffer,
@@ -232,7 +289,7 @@ impl ReviewRenderer {
         };
         let count = u32::try_from(actors.len()).map_err(|_| "too many instances")?;
         if count == 0
-            || u64::from(count) * 64 > u64::from(gpu.limits.max_storage_buffer_binding_size)
+            || u64::from(count) * 5 * VISIBLE_SEAT_BYTES > u64::from(gpu.limits.max_storage_buffer_binding_size)
         {
             return Err("invalid human instance count".into());
         }
@@ -245,7 +302,7 @@ impl ReviewRenderer {
                 mapped_at_creation: false,
             })
         };
-        let camera = buffer(160, U::UNIFORM | U::COPY_DST);
+        let camera = buffer(224, U::UNIFORM | U::COPY_DST);
         let actors = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -255,7 +312,7 @@ impl ReviewRenderer {
             });
         let dummy = game.is_none().then(|| buffer(80, U::STORAGE));
         let poses = game.map(|(b, _)| b).or(dummy.as_ref()).unwrap();
-        let ids = buffer(u64::from(count) * 5 * 4, U::STORAGE);
+        let ids = buffer(u64::from(count) * 5 * VISIBLE_SEAT_BYTES, U::STORAGE);
         let args = buffer(100, U::STORAGE | U::COPY_DST | U::COPY_SRC | U::INDIRECT);
         let read = buffer(120, U::MAP_READ | U::COPY_DST);
         let timer = gpu
@@ -275,7 +332,7 @@ impl ReviewRenderer {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("warp humans"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("humans.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(HUMAN_SHADER.into()),
             });
         let compute = gpu
             .device
@@ -283,11 +340,11 @@ impl ReviewRenderer {
                 label: None,
                 layout: None,
                 module: &shader,
-                entry_point: Some("select_lod"),
+                entry_point: Some(if game.is_some() { "select_match" } else { "select_lod" }),
                 compilation_options: Default::default(),
                 cache: None,
             });
-        let attrs = wgpu::vertex_attr_array![0=>Float32x3,1=>Uint32,2=>Float32x3,3=>Float32,4=>Float32x3,5=>Uint32,6=>Unorm8x4,7=>Snorm8x4,8=>Snorm8x4,9=>Snorm8x4,10=>Snorm8x4];
+        let attrs = wgpu::vertex_attr_array![0=>Snorm16x4,1=>Snorm8x4,2=>Snorm16x4,3=>Uint8x4,4=>Unorm8x4,5=>Snorm8x4,6=>Snorm8x4,7=>Snorm8x4,8=>Snorm8x4];
         let render = gpu
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -298,7 +355,7 @@ impl ReviewRenderer {
                     entry_point: Some("vs"),
                     compilation_options: Default::default(),
                     buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<geometry::Vertex>() as u64,
+                        array_stride: std::mem::size_of::<geometry::PackedVertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &attrs,
                     })],
@@ -318,7 +375,7 @@ impl ReviewRenderer {
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
-                    entry_point: Some("fs"),
+                    entry_point: Some(if game.is_some() { "fs_match" } else { "fs_review" }),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: if game.is_some() {
@@ -383,6 +440,10 @@ impl ReviewRenderer {
         );
         Ok(Self {
             appearance,
+            light_layout: game.map(|_| compute.get_bind_group_layout(1)),
+            light_groups: Default::default(),
+            fog_layout: game.map(|_| render.get_bind_group_layout(2)),
+            fog_groups: Default::default(),
             compute,
             render,
             selection,
@@ -414,7 +475,7 @@ impl ReviewRenderer {
         let prepare = move || {
             let mesh = geometry::person(4, far, true);
             let image =
-                image::load_from_memory(include_bytes!("../../../../assets/humans/appearance.png"))
+                image::load_from_memory(APPEARANCE_ATLAS)
                     .expect("cooked human atlas")
                     .into_rgba8();
             let _ = tx.send((mesh, image));
@@ -455,6 +516,9 @@ impl ReviewRenderer {
         view: Mat4,
         focal: f32,
         light: &crate::Lighting,
+        shadow_vp: &[[f32; 4]; 4],
+        lights: &[(u32, wgpu::BindingResource)],
+        atmosphere: &[(u32, wgpu::BindingResource)],
         color: &wgpu::TextureView,
         depth: &wgpu::TextureView,
     ) {
@@ -471,8 +535,8 @@ impl ReviewRenderer {
                 self.load_detail(gpu);
             }
         }
-        let mut words = [0u32; 65];
-        let u: &mut [f32] = bytemuck::cast_slice_mut(&mut words[..40]);
+        let mut words = [0u32; 81];
+        let u: &mut [f32] = bytemuck::cast_slice_mut(&mut words[..56]);
         u[..16].copy_from_slice(&vp.to_cols_array());
         let axes = view.transpose();
         u[16..20].copy_from_slice(&axes.x_axis.to_array());
@@ -484,10 +548,12 @@ impl ReviewRenderer {
             light.sun_lux,
         ]);
         u[28..31].copy_from_slice(&light.sun_dir.to_array());
+        u[31] = light.shadow_strength.clamp(0., 1.);
+        u[40..56].copy_from_slice(bytemuck::cast_slice(shadow_vp));
         u[32..35].copy_from_slice(&light.sun_color.to_array());
         u[36..40].copy_from_slice(&[light.time, focal, self.far as u32 as f32, self.count as f32]);
         for (mesh, bin) in self.meshes.iter().zip([0, 1, 2, 4]) {
-            words[40 + 5 * bin] = mesh.count;
+            words[56 + 5 * bin] = mesh.count;
         }
         let upload = gpu
             .device
@@ -496,9 +562,11 @@ impl ReviewRenderer {
                 contents: bytemuck::cast_slice(&words),
                 usage: wgpu::BufferUsages::COPY_SRC,
             });
-        enc.copy_buffer_to_buffer(&upload, 0, &self.camera, 0, 160);
-        enc.copy_buffer_to_buffer(&upload, 160, &self.args, 0, 100);
-        self.encode_passes(enc, color, depth);
+        enc.copy_buffer_to_buffer(&upload, 0, &self.camera, 0, 224);
+        enc.copy_buffer_to_buffer(&upload, 224, &self.args, 0, 100);
+        let lamps = self.light_groups.get(gpu, self.light_layout.as_ref().unwrap(), "human scene lights", lights);
+        let fog = self.fog_groups.get(gpu, self.fog_layout.as_ref().unwrap(), "human scene fog", atmosphere);
+        self.encode_passes(enc, color, depth, Some((&lamps, &fog)));
     }
 
     fn encode_passes(
@@ -506,6 +574,7 @@ impl ReviewRenderer {
         enc: &mut wgpu::CommandEncoder,
         cv: &wgpu::TextureView,
         dv: &wgpu::TextureView,
+        match_groups: Option<(&wgpu::BindGroup, &wgpu::BindGroup)>,
     ) {
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -514,6 +583,9 @@ impl ReviewRenderer {
             });
             pass.set_pipeline(&self.compute);
             pass.set_bind_group(0, &self.selection, &[]);
+            if let Some((lights, _)) = match_groups {
+                pass.set_bind_group(1, lights, &[]);
+            }
             pass.dispatch_workgroups(self.count.div_ceil(64), 1, 1);
         }
         {
@@ -556,9 +628,12 @@ impl ReviewRenderer {
             pass.set_pipeline(&self.render);
             pass.set_bind_group(0, &self.drawing, &[]);
             pass.set_bind_group(1, &self.appearance, &[]);
+            if let Some((_, fog)) = match_groups {
+                pass.set_bind_group(2, fog, &[]);
+            }
             for (mesh, bin) in self.meshes.iter().zip([0, 1, 2, 4]) {
                 pass.set_vertex_buffer(0, mesh.vertex.slice(..));
-                pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint16);
                 pass.draw_indexed_indirect(&self.args, bin * 20);
             }
         }
@@ -603,6 +678,7 @@ impl ReviewRenderer {
             &mut enc,
             &color.create_view(&Default::default()),
             &depth.create_view(&Default::default()),
+            None,
         );
         if let Some((q, b)) = &self.timer {
             enc.write_timestamp(q, 1);
@@ -637,6 +713,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn match_fragments_receive_scene_fog_on_every_detail_level() {
+        let module = naga::front::wgsl::parse_str(HUMAN_SHADER)
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(HUMAN_SHADER)));
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all(),
+        ).validate(&module).unwrap();
+        let seat = module.types.iter().find(|(_, t)| t.name.as_deref() == Some("SeatLight")).unwrap().1;
+        let naga::TypeInner::Struct { span, .. } = seat.inner else { panic!("expected visible spectator record"); };
+        assert_eq!(u64::from(span), VISIBLE_SEAT_BYTES);
+        for (name, expected) in [("fs_match", true), ("fs_review", false)] {
+            let i = module.entry_points.iter().position(|e| e.name == name).unwrap();
+            let stage = info.get_entry_point(i);
+            for (handle, var) in module.global_variables.iter() {
+                if var.binding.as_ref().is_some_and(|b| b.group == 2) {
+                    assert_eq!(!stage[handle].is_empty(), expected, "{name} {:?}", var.name);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn overrides_preserve_other_identity_channels() {
         let seed = 52;
         let raw = Instance::person(seed, Vec3::ZERO, 0.0, &Constraints::default());
@@ -654,7 +751,7 @@ mod tests {
         assert_eq!(raw.identity, red.identity);
         assert_eq!(raw.size_phase[2..], red.size_phase[2..]);
         assert_eq!(red.size_phase[1], 1.76);
-        assert_eq!(red.color[..3], [0.8, 0.1, 0.2]);
+        assert!((Vec3::from(red.shirt_color())-Vec3::new(0.8,0.1,0.2)).abs().max_element() <= 0.5/255.);
         assert_ne!(
             raw.identity,
             Instance::person(seed + 1, Vec3::ZERO, 0.0, &Constraints::default()).identity
