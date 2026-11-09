@@ -138,6 +138,11 @@ impl EffectsView {
         self.sparks.emit(now, &Emitter { position: pos + Vec3::Y * 0.2 * r, radius: 0.45 * r, speed: [0.3, 0.6 * r],
             count: (r * 80.0) as u32, duration: 0.5, life: [1.2, 3.2], size: [0.08, 0.04], glow: 40_000.0,
             color: [(tint * Vec3::new(1.0, 0.45, 0.1)).extend(1.0), (tint * Vec3::new(0.7, 0.12, 0.02)).extend(0.0)], ..Emitter::embers() });
+        // Burning chunks: thrown out, they arc, bounce over the blocks and
+        // roll to a stop, trailing fire, and glow on as they cool.
+        self.sparks.emit(now, &Emitter { position: pos + Vec3::Y * 0.1 * r, radius: 0.25 * r, spread: 1.3, speed: [0.5 * r, 2.4 * r],
+            count: (r * 120.0) as u32, life: [2.0, 5.5], size: [0.09, 0.05], glow: 20_000.0,
+            color: [(tint * Vec3::new(1.0, 0.6, 0.18)).extend(1.0), (tint * Vec3::new(0.55, 0.06, 0.01)).extend(0.0)], ..Emitter::burning() });
         self.sparks.emit(now, &Emitter { position: pos, radius: 0.3 * r, spread: 1.4, speed: [0.5 * r, 1.8 * r],
             count: (r * 90.0) as u32, life: [1.0, 2.6], size: [0.06, 0.14],
             color: [Vec3::new(0.26, 0.23, 0.19).extend(0.85), Vec3::new(0.3, 0.28, 0.25).extend(0.0)], ..Emitter::dust() });

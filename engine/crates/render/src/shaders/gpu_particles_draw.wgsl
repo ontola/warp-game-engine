@@ -32,6 +32,8 @@ struct Out {
     @location(2) world: vec3<f32>,
     @location(3) @interpolate(flat) soft: f32,
     @location(4) @interpolate(flat) shape: u32,
+    // Trail: the head's share of the quad's half length.
+    @location(5) @interpolate(flat) cap: f32,
 };
 
 const PI: f32 = 3.14159265;
@@ -45,6 +47,7 @@ fn particle_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) instance
     out.world = vec3<f32>(0.0);
     out.soft = 1.0;
     out.shape = 0u;
+    out.cap = 1.0;
     let p = particles[alive[instance]];
     let frac = view.right.w;
     let life = p.vel_life.w;
@@ -78,9 +81,27 @@ fn particle_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) instance
             half_len = size * 0.5 * (1.0 + sa.x * length(vel));
         }
     }
+    var center_q = center;
+    var cap = 1.0;
+    if shape == 3u {
+        // Trail: from where it was `stretch` seconds ago (in a straight line)
+        // to where it is, a round head at the front.
+        let across = vel - dot(vel, eye) * eye;
+        // At most twelve widths: a fast chunk is a streak, not a line across the sky.
+        let l = min(length(across) * sa.x, size * 12.0);
+        side = view.right.xyz;
+        axis = view.up.xyz;
+        if l > size * 0.05 {
+            axis = across / length(across);
+            side = normalize(cross(axis, eye));
+        }
+        half_len = size * 0.5 + l * 0.5;
+        center_q = center - axis * (l * 0.5);
+        cap = size * 0.5 / half_len;
+    }
     let q = array<vec2<f32>, 6>(vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
         vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0))[vi % 6u];
-    let world = center + side * (q.x * size * 0.5) + axis * (q.y * half_len);
+    let world = center_q + side * (q.x * size * 0.5) + axis * (q.y * half_len);
     let c = mix(unpack4x8unorm(p.look.x), unpack4x8unorm(p.look.y), t);
     let glow = bitcast<f32>(p.look.w);
     var rgb: vec3<f32>;
@@ -98,6 +119,7 @@ fn particle_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) instance
     out.world = world;
     out.soft = max(size * 0.5, 0.02);
     out.shape = shape;
+    out.cap = cap;
     return out;
 }
 
@@ -117,6 +139,15 @@ fn particle_fs(input: Out) -> @location(0) vec4<f32> {
     switch input.shape {
         // Spark: a streak, hot along its axis.
         case 1u: { a = (1.0 - q.x * q.x) * (1.0 - q.x * q.x) * smoothstep(1.0, 0.6, abs(q.y)); }
+        // Trail: a hot round head fading back along its path.
+        case 3u: {
+            let head_y = 1.0 - input.cap;
+            let dy = max(q.y - head_y, 0.0) / max(input.cap, 1e-4);
+            let head = max(0.0, 1.0 - q.x * q.x - dy * dy);
+            let along = clamp((q.y + 1.0) / max(2.0 - input.cap, 1e-4), 0.0, 1.0);
+            let tail = (1.0 - q.x * q.x) * (1.0 - q.x * q.x) * along * along * select(1.0, 0.0, q.y > head_y);
+            a = max(head * head, 0.55 * tail);
+        }
         // Ember: a small hard dot.
         case 2u: { let k = max(0.0, 1.0 - r2); a = k * k * k; }
         // Soft: a round puff.
