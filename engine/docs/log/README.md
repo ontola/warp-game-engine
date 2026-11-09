@@ -22,6 +22,8 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [handoff.md](handoff.md) is the running log of 23 October to 5 November
   2026, newest first.
 
+- [Seeded stadium crowd from stands to face](2026-11-08-warp-humans.md)
+
 ## Status and plans
 
 - [Vegetation takeover handoff, 6 November 2026](2026-11-06-vegetation-handoff.md)

@@ -29,13 +29,30 @@ fn cloud_value_noise(p: vec2<f32>) -> f32 {
 // How much cloud stands over world point xz (m), 0..1: three octaves of
 // value noise from ~4 km cells, thresholded so that about `coverage` of the
 // sky is cloud. Callers add the wind offset to xz.
+fn cloud_weather_noise(p: vec2<f32>) -> f32 {
+    return 0.55 * cloud_value_noise(p) + 0.3 * cloud_value_noise(p * 2.03 + vec2<f32>(17.1, 3.7))
+        + 0.15 * cloud_value_noise(p * 4.11 + vec2<f32>(5.3, 41.9));
+}
+
 fn cloud_weather(xz: vec2<f32>, coverage: f32) -> f32 {
     if coverage <= 0.0 { return 0.0; }
-    let p = xz / 4000.0;
-    let n = 0.55 * cloud_value_noise(p) + 0.3 * cloud_value_noise(p * 2.03 + vec2<f32>(17.1, 3.7))
-        + 0.15 * cloud_value_noise(p * 4.11 + vec2<f32>(5.3, 41.9));
+    let n = cloud_weather_noise(xz / 4000.0);
     let threshold = 1.0 - coverage;
     return smoothstep(threshold - 0.08, threshold + 0.08, n);
+}
+
+// The cloud's footprint for shadows: the weather with two finer octaves
+// (~400 and ~190 m) and a narrow edge, centred where the raymarched cloud
+// actually starts (its 3D shape only clears the threshold well inside the
+// weather ramp). The plain weather ramp cast a shadow a km soft.
+fn cloud_shadow_cover(xz: vec2<f32>, coverage: f32) -> f32 {
+    if coverage <= 0.0 { return 0.0; }
+    let p = xz / 4000.0;
+    let fine = 0.65 * cloud_value_noise(p * 9.7 + vec2<f32>(31.7, 12.9))
+        + 0.35 * cloud_value_noise(p * 21.3 + vec2<f32>(7.1, 63.3)) - 0.5;
+    let n = cloud_weather_noise(p) + 0.1 * fine;
+    let threshold = 1.0 - coverage + 0.03;
+    return smoothstep(threshold - 0.02, threshold + 0.02, n);
 }
 
 // Mean cloud density along a vertical column, as a share of the full
@@ -50,7 +67,7 @@ fn cloud_sun_transmittance(p: vec3<f32>, l: vec3<f32>, cloud: vec4<f32>, motion:
     let mid = cloud.y + 0.5 * cloud.z;
     if p.y >= cloud.y + cloud.z { return 1.0; }
     let t = max(mid - p.y, 0.0) / l.y;
-    let w = cloud_weather(p.xz + l.xz * t + motion.xy, cloud.x);
+    let w = cloud_shadow_cover(p.xz + l.xz * t + motion.xy, cloud.x);
     // Inside the layer only the part above p shades it.
     let above = clamp((cloud.y + cloud.z - p.y) / max(cloud.z, 1.0), 0.0, 1.0);
     let tau = cloud.w * cloud.z * above * CLOUD_COLUMN_FILL * w / max(l.y, 0.15);
