@@ -1,6 +1,18 @@
 # Warp Humans stadium review
 
-Launch the interactive desktop playtest with:
+Play a full desktop Growing Guns match with one local player, three bots and the procedural spectators:
+
+```sh
+cargo run --release -p growing-guns-app --bin growing-guns -- play --warp-humans --skip-menu --seed 52
+```
+
+The match supplies the seat identities, live positions, crowd reactions and per-player camera.
+The people render into the arena's HDR colour and depth buffers before transparency and post-processing.
+Sun and sky illuminate them. Local floodlights and cast shadows on the figures remain open.
+The normal crowd is the default. The minimum graphics profile omits the stadium.
+Use the same flag with `shot` or `bench` for a repeatable match comparison.
+
+Launch the interactive desktop stadium viewer with:
 
 ```sh
 cargo run --release -p growing-guns-app --bin growing-guns -- human-play --seed 52

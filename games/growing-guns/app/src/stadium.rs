@@ -547,6 +547,10 @@ impl StadiumVisuals {
         }
         let seats = seat_layout(&mut self.rng, base, inner, &self.looks);
         self.crowd.set_seats(scene, &seats, Vec2::ZERO);
+        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+        if std::env::args_os().any(|arg| arg == "--warp-humans") {
+            self.crowd.set_humans(a.seed, &seats);
+        }
         self.sound.kickoff();
     }
 
@@ -725,6 +729,10 @@ impl StadiumVisuals {
 
     /// For state dumps.
     pub fn geometry_counts(&self, scene: &Scene) -> serde_json::Value {
+        if self.crowd.uses_humans() {
+            return serde_json::json!({"renderer": "warp humans", "seated": self.crowd.len(),
+                "alive": self.crowd.alive(), "detail_selection": "per view"});
+        }
         let (mut source, mut root, mut clusters) = (0usize, 0usize, 0usize);
         for &(body, arms) in &self.looks {
             let mut counts = [0usize; 3];

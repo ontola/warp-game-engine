@@ -65,6 +65,18 @@ impl Instance {
             identity: std::array::from_fn(|i| sample(seed, 6 + i as u64)),
         }
     }
+    pub fn spectator(seed: u64, seat_index: usize, seat: &crate::crowd::Seat) -> Self {
+        Self::person(
+            seed.wrapping_mul(0x9e3779b97f4a7c15) ^ seat_index as u64,
+            seat.pos,
+            seat.yaw,
+            &Constraints {
+                height_m: Some(seat.scale),
+                shirt: None,
+            },
+        )
+    }
+
     pub fn stand(pos: Vec3, yaw: f32, size: Vec3, color: [f32; 3]) -> Self {
         Self {
             pos_yaw: pos.extend(yaw).into(),
@@ -170,6 +182,8 @@ pub struct ReviewRenderer {
     meshes: Vec<Geometry>,
     count: u32,
     far: Far,
+    first_pose: Option<u32>,
+    seat_bounds: Vec<(Vec3, Vec3)>,
     pending: Option<std::sync::mpsc::Receiver<(geometry::Mesh, image::RgbaImage)>>,
     pub appearance_bytes: u64,
     pub detail_ready: bool,
@@ -181,6 +195,41 @@ pub struct ViewSample {
 }
 impl ReviewRenderer {
     pub fn new(gpu: &Gpu, actors: &[Instance], far: Far) -> Result<Self, String> {
+        Self::create(gpu, actors, far, None)
+    }
+
+    pub(crate) fn for_match(
+        gpu: &Gpu,
+        actors: &[Instance],
+        poses: &wgpu::Buffer,
+        first: u32,
+    ) -> Result<Self, String> {
+        Self::create(gpu, actors, Far::Impostor, Some((poses, first)))
+    }
+
+    fn create(
+        gpu: &Gpu,
+        actors: &[Instance],
+        far: Far,
+        game: Option<(&wgpu::Buffer, u32)>,
+    ) -> Result<Self, String> {
+        // Rows of neighbouring seats keep first-detail demand cheap to check.
+        let seat_bounds = if game.is_some() {
+            actors
+                .chunks(32)
+                .map(|row| {
+                    row.iter().fold(
+                        (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+                        |(lo, hi), a| {
+                            let p = Vec3::from_slice(&a.pos_yaw);
+                            (lo.min(p), hi.max(p + Vec3::Y * a.size_phase[1]))
+                        },
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let count = u32::try_from(actors.len()).map_err(|_| "too many instances")?;
         if count == 0
             || u64::from(count) * 64 > u64::from(gpu.limits.max_storage_buffer_binding_size)
@@ -196,7 +245,7 @@ impl ReviewRenderer {
                 mapped_at_creation: false,
             })
         };
-        let camera = buffer(112, U::UNIFORM | U::COPY_DST);
+        let camera = buffer(160, U::UNIFORM | U::COPY_DST);
         let actors = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -204,6 +253,8 @@ impl ReviewRenderer {
                 contents: bytemuck::cast_slice(actors),
                 usage: U::STORAGE,
             });
+        let dummy = game.is_none().then(|| buffer(80, U::STORAGE));
+        let poses = game.map(|(b, _)| b).or(dummy.as_ref()).unwrap();
         let ids = buffer(u64::from(count) * 5 * 4, U::STORAGE);
         let args = buffer(100, U::STORAGE | U::COPY_DST | U::COPY_SRC | U::INDIRECT);
         let read = buffer(120, U::MAP_READ | U::COPY_DST);
@@ -256,7 +307,11 @@ impl ReviewRenderer {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
                     depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    depth_compare: Some(if game.is_some() {
+                        wgpu::CompareFunction::Greater
+                    } else {
+                        wgpu::CompareFunction::Less
+                    }),
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
@@ -266,7 +321,11 @@ impl ReviewRenderer {
                     entry_point: Some("fs"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        format: if game.is_some() {
+                            wgpu::TextureFormat::Rgba16Float
+                        } else {
+                            wgpu::TextureFormat::Rgba8Unorm
+                        },
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -288,12 +347,18 @@ impl ReviewRenderer {
                 entry(1, &actors),
                 entry(2, &ids),
                 entry(3, &args),
+                entry(5, poses),
             ],
         });
         let drawing = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &render.get_bind_group_layout(0),
-            entries: &[entry(0, &camera), entry(1, &actors), entry(4, &ids)],
+            entries: &[
+                entry(0, &camera),
+                entry(1, &actors),
+                entry(4, &ids),
+                entry(5, poses),
+            ],
         });
         let meshes: Vec<_> = [
             geometry::stand(),
@@ -329,6 +394,8 @@ impl ReviewRenderer {
             meshes,
             count,
             far,
+            first_pose: game.map(|(_, first)| first),
+            seat_bounds,
             pending: None,
             appearance_bytes: 4,
             detail_ready: false,
@@ -376,6 +443,126 @@ impl ReviewRenderer {
         self.appearance = appearance(gpu, &self.render, &image);
         self.detail_ready = true;
     }
+    // Queue writes to one uniform would make every split-screen draw use the last camera.
+    // Encoder copies keep the uniform and indirect counters ordered with each view.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_match(
+        &mut self,
+        gpu: &Gpu,
+        enc: &mut wgpu::CommandEncoder,
+        cam: &Camera,
+        vp: Mat4,
+        view: Mat4,
+        focal: f32,
+        light: &crate::Lighting,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+    ) {
+        if !self.detail_ready {
+            let nearest = self
+                .seat_bounds
+                .iter()
+                .map(|(lo, hi)| cam.pos.distance_squared(cam.pos.clamp(*lo, *hi)))
+                .fold(f32::INFINITY, f32::min);
+            if nearest < (2.2 * focal / 32. + 8.).powi(2) {
+                self.prepare_detail();
+            }
+            if nearest < (2.2 * focal / 170. + 8.).powi(2) {
+                self.load_detail(gpu);
+            }
+        }
+        let mut words = [0u32; 65];
+        let u: &mut [f32] = bytemuck::cast_slice_mut(&mut words[..40]);
+        u[..16].copy_from_slice(&vp.to_cols_array());
+        let axes = view.transpose();
+        u[16..20].copy_from_slice(&axes.x_axis.to_array());
+        u[20..24].copy_from_slice(&axes.y_axis.to_array());
+        u[24..28].copy_from_slice(&[
+            1.,
+            self.first_pose.unwrap() as f32,
+            light.sky_lux,
+            light.sun_lux,
+        ]);
+        u[28..31].copy_from_slice(&light.sun_dir.to_array());
+        u[32..35].copy_from_slice(&light.sun_color.to_array());
+        u[36..40].copy_from_slice(&[light.time, focal, self.far as u32 as f32, self.count as f32]);
+        for (mesh, bin) in self.meshes.iter().zip([0, 1, 2, 4]) {
+            words[40 + 5 * bin] = mesh.count;
+        }
+        let upload = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("human camera and indirect reset"),
+                contents: bytemuck::cast_slice(&words),
+                usage: wgpu::BufferUsages::COPY_SRC,
+            });
+        enc.copy_buffer_to_buffer(&upload, 0, &self.camera, 0, 160);
+        enc.copy_buffer_to_buffer(&upload, 160, &self.args, 0, 100);
+        self.encode_passes(enc, color, depth);
+    }
+
+    fn encode_passes(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        cv: &wgpu::TextureView,
+        dv: &wgpu::TextureView,
+    ) {
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Warp Humans detail selection"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.compute);
+            pass.set_bind_group(0, &self.selection, &[]);
+            pass.dispatch_workgroups(self.count.div_ceil(64), 1, 1);
+        }
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Warp Humans"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: cv,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: if self.first_pose.is_some() {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.66,
+                                g: 0.77,
+                                b: 0.86,
+                                a: 1.,
+                            })
+                        },
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: dv,
+                    depth_ops: Some(wgpu::Operations {
+                        load: if self.first_pose.is_some() {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(1.)
+                        },
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.render);
+            pass.set_bind_group(0, &self.drawing, &[]);
+            pass.set_bind_group(1, &self.appearance, &[]);
+            for (mesh, bin) in self.meshes.iter().zip([0, 1, 2, 4]) {
+                pass.set_vertex_buffer(0, mesh.vertex.slice(..));
+                pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed_indirect(&self.args, bin * 20);
+            }
+        }
+    }
     pub fn draw(
         &self,
         gpu: &Gpu,
@@ -390,11 +577,11 @@ impl ReviewRenderer {
         let up = right.cross(look);
         let vp = Mat4::perspective_rh(cam.fov_y, w as f32 / h as f32, cam.near, 2000.)
             * Mat4::look_at_rh(cam.pos, cam.target, Vec3::Y);
-        let mut u = [0f32; 28];
+        let mut u = [0f32; 40];
         u[..16].copy_from_slice(&vp.to_cols_array());
         u[16..19].copy_from_slice(&right.to_array());
         u[20..23].copy_from_slice(&up.to_array());
-        u[24..].copy_from_slice(&[
+        u[36..].copy_from_slice(&[
             time,
             h as f32 / (2. * (cam.fov_y * 0.5).tan()),
             self.far as u32 as f32,
@@ -412,52 +599,11 @@ impl ReviewRenderer {
         if let Some((q, _)) = &self.timer {
             enc.write_timestamp(q, 0);
         }
-        {
-            let mut pass = enc.begin_compute_pass(&Default::default());
-            pass.set_pipeline(&self.compute);
-            pass.set_bind_group(0, &self.selection, &[]);
-            pass.dispatch_workgroups(self.count.div_ceil(64), 1, 1);
-        }
-        {
-            let cv = color.create_view(&Default::default());
-            let dv = depth.create_view(&Default::default());
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("human review"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &cv,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.66,
-                            g: 0.77,
-                            b: 0.86,
-                            a: 1.,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &dv,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.),
-                        store: wgpu::StoreOp::Discard,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.render);
-            pass.set_bind_group(0, &self.drawing, &[]);
-            pass.set_bind_group(1, &self.appearance, &[]);
-            for (mesh, bin) in self.meshes.iter().zip([0, 1, 2, 4]) {
-                pass.set_vertex_buffer(0, mesh.vertex.slice(..));
-                pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed_indirect(&self.args, bin * 20);
-            }
-        }
+        self.encode_passes(
+            &mut enc,
+            &color.create_view(&Default::default()),
+            &depth.create_view(&Default::default()),
+        );
         if let Some((q, b)) = &self.timer {
             enc.write_timestamp(q, 1);
             enc.resolve_query_set(q, 0..2, b, 0);

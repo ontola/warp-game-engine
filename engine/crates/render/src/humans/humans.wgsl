@@ -1,5 +1,7 @@
 struct Camera {
     vp: mat4x4<f32>, right: vec4<f32>, up: vec4<f32>,
+    game: vec4<f32>, // enabled, first scene instance, sky lux, sun lux
+    sun: vec4<f32>, sun_color: vec4<f32>,
     settings: vec4<f32>, // time, focal length in pixels, far mode, actor count
 }
 struct Actor { pos_yaw:vec4<f32>, size_phase:vec4<f32>, color:vec4<f32>, identity:vec4<f32> }
@@ -8,10 +10,24 @@ struct Actor { pos_yaw:vec4<f32>, size_phase:vec4<f32>, color:vec4<f32>, identit
 @group(0) @binding(2) var<storage,read_write> visible:array<u32>;
 @group(0) @binding(3) var<storage,read_write> draws:array<atomic<u32>>;
 
+// Same 80-byte scene instance as the stadium animation compute pass.
+struct Pose { x:vec4<f32>, y:vec4<f32>, z:vec4<f32>, sphere:vec4<f32>, mesh_info:vec4<u32> }
+@group(0) @binding(5) var<storage,read> poses:array<Pose>;
+fn actor(i:u32)->Actor {
+    var a=actors[i];
+    if camera.game.x>0. {
+        let pose=poses[u32(camera.game.y)+2u*i];
+        a.pos_yaw=vec4<f32>(pose.x.w,pose.y.w,pose.z.w,a.pos_yaw.w);
+        a.size_phase.y=pose.y.y;
+        if pose.sphere.w<=0. {a.color.w=-1.;}
+    }
+    return a;
+}
+
 @compute @workgroup_size(64)
 fn select_lod(@builtin(global_invocation_id) gid:vec3<u32>) {
     let i=gid.x; let count=u32(camera.settings.w); if i>=count{return;}
-    let a=actors[i]; let h=a.size_phase.y;
+    let a=actor(i); if a.color.w<0. {return;} let h=a.size_phase.y;
     let p=camera.vp*vec4<f32>(a.pos_yaw.xyz+vec3<f32>(0,h*0.5,0),1);
     var bin=0u;
     if a.color.w>0.5 {
@@ -42,7 +58,7 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     @location(3) arm:f32,@location(4) center:vec3<f32>,@location(5) bin:u32,
     @location(6) bones:vec4<f32>, @location(7) nose:vec4<f32>, @location(8) mouth:vec4<f32>,
     @location(9) brow:vec4<f32>, @location(10) adult:vec4<f32>, @builtin(instance_index) idx:u32)->V {
-    let a=actors[draw_ids[bin*u32(camera.settings.w)+idx]];
+    let a=actor(draw_ids[bin*u32(camera.settings.w)+idx]);
     var p=rest; var n=normal; var anchor=center;
     let phase=camera.settings.x*(2.+a.size_phase.w)+a.size_phase.z*6.283;
     let anatomical=bin==4u && center.z< -0.9;
@@ -167,6 +183,10 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     }
     case 7u: {color=hair;}
     default: {}
+    }
+    if camera.game.x>0. {
+        let irradiance=camera.game.z*(0.5+0.25*n.y)+camera.sun_color.rgb*camera.game.w*max(dot(n,camera.sun.xyz),0.);
+        return vec4<f32>(pow(max(color,vec3<f32>(0.)),vec3<f32>(2.2))*irradiance/3.14159,1.);
     }
     let sun=normalize(vec3<f32>(-0.65,0.85,0.5)); let light=0.68+0.33*max(dot(n,sun),0.)+0.07*n.y;
     return vec4<f32>(clamp(color*light,vec3<f32>(0.),vec3<f32>(1.)),1.);

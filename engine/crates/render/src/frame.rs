@@ -1059,6 +1059,7 @@ pub struct Renderer {
     debris: Option<crate::debris::DebrisRenderer>,
     procedural_terrain: Option<crate::procedural_terrain::TerrainRenderer>,
     crowd: Option<crate::crowd::CrowdRenderer>,
+    humans: std::sync::Mutex<Option<crate::humans::ReviewRenderer>>,
     fx: crate::fx::FxSlot,
     volumetric: crate::volumetric::VolumetricSlot,
     sky_volume: crate::sky_volume::SkyVolumeSlot,
@@ -2464,6 +2465,7 @@ impl Renderer {
             debris,
             procedural_terrain,
             crowd,
+            humans: std::sync::Mutex::new(None),
             fx: Default::default(),
             volumetric: Default::default(),
             sky_volume: { let slot = crate::sky_volume::SkyVolumeSlot::default(); slot.set_tables(scene.atmosphere.clone()); slot },
@@ -3902,6 +3904,12 @@ impl Renderer {
 
     pub fn set_effects(&self, gpu: &Gpu, time: f32, puffs: Option<&[crate::fx::Puff]>) -> Result<(), String> {
         self.fx.set(gpu, time, puffs);
+        Ok(())
+    }
+
+    pub(crate) fn set_crowd_humans(&self, gpu: &Gpu, actors: Option<&[crate::humans::Instance]>, first: u32) -> Result<(), String> {
+        *self.humans.lock().unwrap() = actors.filter(|a| !a.is_empty()).map(|a|
+            crate::humans::ReviewRenderer::for_match(gpu, a, &self.instance_buffer, first)).transpose()?;
         Ok(())
     }
 
@@ -5497,6 +5505,14 @@ impl Renderer {
                             });
                         }
                         meadow.render(gpu, &mut enc, vi, (w,h), &self.scene_bind, &meadow_bindings, &hdr_v, &depth, times, dlss_on, debug_options)?;
+                    }
+                    if let Some(humans) = self.humans.lock().unwrap().as_mut() {
+                        let time = self.query.as_ref()
+                            .filter(|_| gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS))
+                            .map(|(qs, _, _)| { names.push("warp humans"); (qs, timestamp_pair(&mut ts)) });
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
+                        humans.draw_match(gpu, &mut enc, cam, vp, view_m, px_scale, light, &hdr_v, &depth_v);
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
                     }
                     if let Some(transparency) = self.transparency.as_ref().filter(|_|debug_options.transparency_enabled) {
                         let t = self.query.as_ref().map(|(qs, _, _)| { let i = timestamp_pair(&mut ts); (qs, i) });

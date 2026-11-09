@@ -63,6 +63,7 @@ pub struct Crowd {
     count: usize,
     seats: Vec<GpuSeat>,
     seats_dirty: bool,
+    human_identities: Option<Vec<crate::humans::Instance>>,
     positions: Vec<Vec3>,
     alive: Vec<u32>,
     dirty: Option<(usize, usize)>,
@@ -90,7 +91,7 @@ impl Crowd {
             i.flags |= NO_SHADOW;
         }
         scene.crowd = Some(CrowdSpec { first: first as u32, capacity: capacity as u32 });
-        Crowd { first, capacity, count: 0, seats: Vec::new(), seats_dirty: true, positions: Vec::new(), alive: vec![0; capacity], dirty: Some((0, capacity)),
+        Crowd { first, capacity, count: 0, seats: Vec::new(), seats_dirty: true, human_identities: None, positions: Vec::new(), alive: vec![0; capacity], dirty: Some((0, capacity)),
             excitement: 0.0, panic: 0.0, arm_pivot: 0.0, ring: Vec2::ZERO, flee: [[0.0; 4]; 4], flee_start: [-1e6; 4], flee_hold: [FLEE_HOLD; 4] }
     }
 
@@ -103,6 +104,7 @@ impl Crowd {
             GpuSeat { pos_yaw: s.pos.extend(s.yaw).to_array(), params: [s.scale, s.phase, s.tempo, s.hop],
                 meshes: [b.first_cluster, b.cluster_count, a.first_cluster, a.cluster_count], shape: [s.width, 0.0, 0.0, 0.0] }
         }).collect();
+        self.human_identities = None;
         self.count = seats.len();
         self.positions = seats.iter().map(|s| s.pos).collect();
         self.alive = (0..self.capacity).map(|i| u32::from(i < self.count)).collect();
@@ -111,6 +113,15 @@ impl Crowd {
         self.ring = ring_center;
         self.flee_start = [-1e6; 4];
     }
+
+    /// Use the procedural human renderer for these seats and retain their match reactions.
+    pub fn set_humans(&mut self, seed: u64, seats: &[Seat]) {
+        self.human_identities = Some(seats.iter().take(self.count).enumerate()
+            .map(|(i, seat)| crate::humans::Instance::spectator(seed, i, seat)).collect());
+        self.seats_dirty = true;
+    }
+
+    pub fn uses_humans(&self) -> bool { self.human_identities.is_some() }
 
     pub fn len(&self) -> usize { self.count }
     pub fn is_empty(&self) -> bool { self.count == 0 }
@@ -177,13 +188,16 @@ impl Crowd {
 
     /// Send kills and the mood; schedules this frame's posing.
     pub fn flush(&mut self, gpu: &Gpu, renderer: &crate::Renderer, time: f32) -> Result<(), String> {
+        if self.seats_dirty {
+            renderer.set_crowd_humans(gpu, self.human_identities.as_deref(), self.first as u32)?;
+        }
         let alive = self.dirty.take().map(|(a, b)| (a, &self.alive[a..b]));
         let seats = std::mem::take(&mut self.seats_dirty).then_some(bytemuck::cast_slice::<_, u8>(&self.seats));
         let u = Uniform {
             mood: [time, self.excitement, self.panic, self.arm_pivot],
             ring: [self.ring.x, self.ring.y, 0.0, 0.0],
             // All reserved seats run: unseated ones are dead and empty out.
-            counts: [self.capacity as u32, self.first as u32, 0, 0],
+            counts: [self.capacity as u32, self.first as u32, u32::from(self.human_identities.is_some()), 0],
             flee_blast: self.flee,
             flee_age: std::array::from_fn(|k| time - self.flee_start[k]),
             flee_hold: self.flee_hold,
