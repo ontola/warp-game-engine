@@ -978,7 +978,11 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
     let edited=|placed:Vec<placement::Instance>,rules:&[placement::Rule],radius:f32|match edits {Some(o)=>o.apply(placed,rules,&land,c,radius),None=>placed};
     let woody=if world.trees {edited(placement::place(&trees, &land, c, world.tree_radius),&trees,world.tree_radius).into_iter()
         .filter(|t| edits.is_some_and(|o|o.edits.contains_key(&t.id)) || render::forest_field::handover_keep(t.pos, c, start, end))
-        .chain(edited(placement::place(&shrubs, &land, c, world.tree_radius.min(SHRUB_RADIUS)),&shrubs,world.tree_radius.min(SHRUB_RADIUS)))
+        // A grown forest (--pine-forest, --spruce-forest) makes every root a
+        // full tree, so no shrubs: as trees they stood only within
+        // SHRUB_RADIUS of the forest centre, and each recentre popped whole
+        // trees in and out at 250-550 m (Joep's playtest, 9 November).
+        .chain(if pine_forest().is_some() {Vec::new()} else {edited(placement::place(&shrubs, &land, c, world.tree_radius.min(SHRUB_RADIUS)),&shrubs,world.tree_radius.min(SHRUB_RADIUS))})
         .map(|t|WorldRoot {id:t.id,placement:RootPlacement {up:Vec3::Y,pos:t.pos,yaw:t.yaw,scale:t.scale.y,variant:t.variant as usize}}).collect()} else {Vec::new()};
     // One pine per age in a row 30 m north of the start, spaced by size.
     let woody:Vec<WorldRoot>=if world.trees && pine_ages() {
