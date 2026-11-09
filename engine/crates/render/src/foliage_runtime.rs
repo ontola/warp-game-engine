@@ -329,7 +329,7 @@ pub struct Diagnostics {
 pub struct PopulationStats {pub active:usize,pub capacity:usize,pub changed:usize,pub retained:usize,pub upload_bytes:usize,pub prepare_cpu_ms:f64,pub proxy_cpu_ms:f64,pub root_upload_cpu_ms:f64}
 /// Immutable cheap-to-clone world metadata; safe to prepare on a worker thread.
 pub struct PopulationSeed {base:std::sync::Arc<crate::foliage_population::Population>,templates:std::sync::Arc<Vec<RootTemplate>>,owners:std::sync::Arc<Vec<u32>>}
-pub struct PreparedPopulation {base:std::sync::Arc<crate::foliage_population::Population>,next:std::sync::Arc<crate::foliage_population::Population>,retained:usize,changes:Vec<RootChange>,prepare_cpu_ms:f64,templates:std::sync::Arc<Vec<RootTemplate>>,owners:std::sync::Arc<Vec<u32>>}
+pub struct PreparedPopulation {base:std::sync::Arc<crate::foliage_population::Population>,update:crate::foliage_population::Update,changes:Vec<RootChange>,prepare_cpu_ms:f64}
 impl PopulationSeed {
     pub fn prepare(self,roots:&[crate::foliage_population::WorldRoot])->Result<PreparedPopulation,String> {
         let started=web_time::Instant::now();
@@ -340,37 +340,8 @@ impl PopulationSeed {
             let p=update.next.slots[slot].map(|r|r.placement).unwrap_or(parked);
             let mut change=relocated(self.templates[p.variant],p,self.owners[slot],update.next.generations[slot],update.next.slots[slot].is_none());change.slot=slot as u32;change
         }).collect();
-        let next=std::sync::Arc::new(update.next);
-        Ok(PreparedPopulation {base:self.base,next,retained:update.retained,changes,prepare_cpu_ms:started.elapsed().as_secs_f64()*1000.,templates:self.templates,owners:self.owners})
+        Ok(PreparedPopulation {base:self.base,update,changes,prepare_cpu_ms:started.elapsed().as_secs_f64()*1000.})
     }
-    /// `roots` as a chain of transactions, each changing at most about
-    /// `max_changes` roots, to commit one per frame: a recentre that swaps
-    /// thousands of trees at once costs several ms on the committing thread
-    /// and pops them all in one frame (Joep's playtest, 9 November). Roots
-    /// kept by both sides go in with the first step; additions and removals
-    /// are spread evenly over the steps.
-    pub fn prepare_staged(self,roots:&[crate::foliage_population::WorldRoot],max_changes:usize)->Result<Vec<PreparedPopulation>,String> {
-        let target:std::collections::HashSet<u64>=roots.iter().map(|r|r.id).collect();
-        let current:Vec<crate::foliage_population::WorldRoot>=self.base.slots.iter().flatten().copied().collect();
-        let had:std::collections::HashSet<u64>=current.iter().map(|r|r.id).collect();
-        let removed:Vec<_>=current.iter().filter(|r|!target.contains(&r.id)).copied().collect();
-        let (kept,added):(Vec<_>,Vec<_>)=roots.iter().copied().partition(|r|had.contains(&r.id));
-        let steps=((removed.len()+added.len()).div_ceil(max_changes.max(1))).max(1);
-        let mut out=Vec::with_capacity(steps);let mut seed=self;
-        for k in 1..=steps {
-            let mut stage=kept.clone();
-            stage.extend_from_slice(&added[..added.len()*k/steps]);
-            stage.extend_from_slice(&removed[removed.len()*k/steps..]);
-            let prepared=seed.prepare(&stage)?;
-            seed=prepared.then();
-            out.push(prepared);
-        }
-        Ok(out)
-    }
-}
-impl PreparedPopulation {
-    /// The population after this transaction, to prepare the next one from.
-    pub fn then(&self)->PopulationSeed { PopulationSeed {base:self.next.clone(),templates:self.templates.clone(),owners:self.owners.clone()} }
 }
 #[repr(C)]
 #[derive(Clone,Copy,Pod,Zeroable)]
@@ -489,7 +460,7 @@ impl Runtime {
     pub(crate) fn commit_population(&self,gpu:&Gpu,prepared:PreparedPopulation,apply:impl FnOnce(&[RootChange])->Result<(),String>)->Result<PopulationStats,String> {
         let mut population=self.population.lock().unwrap();
         if !std::sync::Arc::ptr_eq(&population,&prepared.base){return Err("stale GPU forest population transaction".into());}
-        let PreparedPopulation {next,retained,changes,prepare_cpu_ms,..}=prepared;
+        let PreparedPopulation {update,changes,prepare_cpu_ms,..}=prepared;
         let started=web_time::Instant::now();apply(&changes)?;let proxy_cpu_ms=started.elapsed().as_secs_f64()*1000.;
         let started=web_time::Instant::now();
         if !changes.is_empty() {
@@ -504,9 +475,9 @@ impl Runtime {
             }
             gpu.queue.submit(Some(encoder.finish()));
         }
-        let stats=PopulationStats {active:next.active(),capacity:population.slots.len(),changed:changes.len(),retained,
+        let stats=PopulationStats {active:update.next.active(),capacity:population.slots.len(),changed:changes.len(),retained:update.retained,
             upload_bytes:changes.len()*std::mem::size_of::<RootChange>(),prepare_cpu_ms,proxy_cpu_ms,root_upload_cpu_ms:started.elapsed().as_secs_f64()*1000.};
-        *population=next;Ok(stats)
+        *population=std::sync::Arc::new(update.next);Ok(stats)
     }
     /// Explicit synchronous diagnostic only; never called to select or draw.
     /// Explicit offline attribution of submitted cells to the published GPU cut.
@@ -654,24 +625,6 @@ impl Runtime {
 }
 
 #[cfg(test)] mod tests {
-    #[test]
-    fn a_staged_recentre_reaches_the_same_population_in_small_steps() {
-        use crate::foliage_population::{Population,WorldRoot};
-        use super::{RootPlacement,RootTemplate,PopulationSeed};
-        use glam::Vec3;
-        let root=|id:u64,x:f32|WorldRoot {id,placement:RootPlacement {up:Vec3::Y,pos:Vec3::new(x,0.,0.),yaw:0.,scale:1.,variant:0}};
-        let template=RootTemplate {proxy:bytemuck::Zeroable::zeroed(),source:bytemuck::Zeroable::zeroed(),node:0,branch:0,shadow_sphere:[0.;4],proxy_work:0.};
-        let old:Vec<_>=(0..1000).map(|i|root(i,i as f32)).collect();
-        let new:Vec<_>=(400..1500).map(|i|root(i,i as f32)).collect();
-        let seed=|base|PopulationSeed {base:std::sync::Arc::new(base),templates:std::sync::Arc::new(vec![template]),owners:std::sync::Arc::new(vec![0;4096])};
-        let steps=seed(Population::new(&old,4096).unwrap()).prepare_staged(&new,100).unwrap();
-        assert_eq!(steps.len(),9,"400 removed + 500 added in steps of 100");
-        assert!(steps.iter().all(|s|s.changes.len()<=100),"no step swaps more than 100 roots");
-        let last=steps.last().unwrap();
-        let mut ids:Vec<u64>=last.next.slots.iter().flatten().map(|r|r.id).collect();ids.sort();
-        assert_eq!(ids,(400..1500).collect::<Vec<_>>(),"the last step is the target population");
-        for pair in steps.windows(2) {assert!(std::sync::Arc::ptr_eq(&pair[0].next,&pair[1].base),"each step commits on the one before");}
-    }
     #[test]
     fn raster_work_covers_consumer_mip_ranges_and_root_fallbacks() {
         use super::*;
