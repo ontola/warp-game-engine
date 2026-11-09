@@ -200,7 +200,7 @@ impl Arena {
                 volume += 1;
             }
         }
-        self.stadium = crate::stadium::Stadium::new(self.size, self.variant != crate::arena::Variant::Open, crate::arena::WALL_HEIGHT);
+        self.stadium = crate::stadium::Stadium::for_arena(self.size, self.variant != crate::arena::Variant::Open, self.stadium.scale);
         let mut boxes: Vec<YawBox> = chunks.iter().map(Chunk::shape).collect();
         boxes.extend(self.stadium.collision());
         self.grid = BoxGrid::new(boxes, 4.0);
@@ -298,6 +298,26 @@ impl Arena {
     }
 }
 
+// The first four discriminants are the original postcard layout variants.
+// Existing tapes reconstruct their original stands and keep their recorded chunk indices.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+enum WireLayout { Walled, Hole, Open, Island, Scaled(crate::arena::Variant, f32) }
+
+impl WireLayout {
+    fn from_arena(a: &Arena) -> Self {
+        use crate::arena::Variant;
+        if a.stadium.scale != 1.0 { return Self::Scaled(a.variant, a.stadium.scale); }
+        match a.variant { Variant::Walled => Self::Walled, Variant::Hole => Self::Hole,
+            Variant::Open => Self::Open, Variant::Island => Self::Island }
+    }
+    fn dimensions(self) -> (crate::arena::Variant, f32) {
+        use crate::arena::Variant;
+        match self { Self::Walled => (Variant::Walled,1.0), Self::Hole => (Variant::Hole,1.0),
+            Self::Open => (Variant::Open,1.0), Self::Island => (Variant::Island,1.0),
+            Self::Scaled(v,s) => (v, if s.is_finite() && (0.1..=4.0).contains(&s) { s } else { 1.0 }) }
+    }
+}
+
 /// The arena on the wire: generator output plus chunk state, without the
 /// thousands of chunks (the receiver cuts them again; cutting is
 /// deterministic).
@@ -305,7 +325,7 @@ impl Arena {
 pub struct ArenaWire {
     seed: u64,
     size: f32,
-    variant: crate::arena::Variant,
+    variant: WireLayout,
     blocks: Vec<Block>,
     spawns: Vec<Vec3>,
     lights: Vec<(Vec3, [f32; 3])>,
@@ -322,14 +342,15 @@ impl From<Arena> for ArenaWire {
     fn from(a: Arena) -> Self {
         let wear = a.chunks.iter().enumerate().filter(|(_, c)| !c.alive || c.hp < c.max_hp)
             .map(|(i, c)| (i as u32, if c.alive { c.hp } else { 0.0 })).collect();
-        ArenaWire { seed: a.seed, size: a.size, variant: a.variant, blocks: a.blocks, spawns: a.spawns, lights: a.lights, hole: a.hole, wear, islands: a.islands, links: a.links }
+        ArenaWire { seed: a.seed, size: a.size, variant: WireLayout::from_arena(&a), blocks: a.blocks, spawns: a.spawns, lights: a.lights, hole: a.hole, wear, islands: a.islands, links: a.links }
     }
 }
 
 impl From<ArenaWire> for Arena {
     fn from(w: ArenaWire) -> Self {
-        let mut a = Arena { seed: w.seed, size: w.size, variant: w.variant, blocks: w.blocks, chunks: Vec::new(), grid: BoxGrid::default(),
-            stadium: crate::stadium::Stadium::new(w.size, w.variant != crate::arena::Variant::Open, crate::arena::WALL_HEIGHT),
+        let (variant, scale) = w.variant.dimensions();
+        let mut a = Arena { seed: w.seed, size: w.size, variant, blocks: w.blocks, chunks: Vec::new(), grid: BoxGrid::default(),
+            stadium: crate::stadium::Stadium::for_arena(w.size, variant != crate::arena::Variant::Open, scale),
             spawns: w.spawns, lights: w.lights, hole: w.hole, islands: w.islands, links: w.links };
         a.build_chunks();
         let removed = w.wear.iter().filter(|x| x.1 <= 0.0).map(|x| x.0).collect();
@@ -366,7 +387,7 @@ mod tests {
             let half = a.size * 0.5;
             let mut missing = Vec::new();
             for xi in 0..(a.size as i32 * 4 - 8) {
-                for yi in 0..48 {
+                for yi in 0..(crate::arena::WALL_HEIGHT * a.stadium.scale * 4.0) as usize {
                     let p = Vec3::new(-half + 1.0 + xi as f32 * 0.25, 0.1 + yi as f32 * 0.25, -half);
                     if !solid(&a, p) { missing.push(p); }
                 }
@@ -418,6 +439,7 @@ mod tests {
         let json = serde_json::to_string(&a).unwrap();
         let back: Arena = serde_json::from_str(&json).unwrap();
         assert_eq!(back.chunks, a.chunks);
+        assert_eq!(back.stadium, a.stadium);
         assert_eq!(back.alive_chunks(), a.alive_chunks());
         let mut fresh = Arena::generate(9);
         fresh.apply_breakage(&b);

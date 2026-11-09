@@ -28,6 +28,7 @@ pub fn sq(ang: f32) -> f32 {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stadium {
     pub inner_r: f32,
+    pub scale: f32,
     /// Height of the first row.
     pub base_y: f32,
 }
@@ -41,10 +42,17 @@ pub enum PieceKind { Facade, Column, Capital, Step, Wall, Crenel }
 
 impl Stadium {
     pub fn new(arena_size: f32, walls: bool, wall_height: f32) -> Self {
-        Stadium { inner_r: arena_size * 0.82, base_y: if walls { wall_height + BASE_ABOVE_WALLS } else { BASE_NO_WALLS } }
+        Stadium { scale: 1.0, inner_r: arena_size * 0.82, base_y: if walls { wall_height + BASE_ABOVE_WALLS } else { BASE_NO_WALLS } }
     }
 
-    pub fn wall_r(&self) -> f32 { self.inner_r + ROWS as f32 * ROW_DEPTH + 1.4 }
+    pub fn for_arena(size: f32, walls: bool, scale: f32) -> Self {
+        let original = Self::new(size, walls, crate::arena::WALL_HEIGHT);
+        Self { scale, base_y: original.base_y * scale, ..original }
+    }
+
+    pub fn row_depth(self) -> f32 { ROW_DEPTH * self.scale }
+    pub fn row_rise(self) -> f32 { ROW_RISE * self.scale }
+    pub fn wall_r(&self) -> f32 { self.inner_r + (ROWS as f32 * ROW_DEPTH + 1.4) * self.scale }
     /// Outside the rounded-square audience wall, with clearance for wall
     /// thickness, segmented corners and the player's body. No height ceiling.
     pub fn outside(&self, pos: Vec3) -> bool {
@@ -52,13 +60,14 @@ impl Stadium {
         (pos.x / r).powi(4) + (pos.z / r).powi(4) > 1.0
     }
 
-    pub fn wall_h(&self) -> f32 { self.base_y + ROWS as f32 * ROW_RISE + BACK_WALL_EXTRA }
+    pub fn wall_h(&self) -> f32 { self.base_y + (ROWS as f32 * ROW_RISE + BACK_WALL_EXTRA) * self.scale }
     pub fn seg_ang() -> f32 { TAU / SEGMENTS as f32 }
 
     /// Every box of the stands, as Godot builds them.
     pub fn pieces(&self) -> Vec<Piece> {
         let seg = Self::seg_ang();
-        let (inner, base) = (self.inner_r, self.base_y);
+        let (inner, base) = (self.inner_r / self.scale, self.base_y / self.scale);
+        let foundation = FOUNDATION_Y / self.scale;
         let mut out = Vec::new();
         for i in 0..SEGMENTS {
             let ang = seg * (i as f32 + 0.5);
@@ -66,10 +75,10 @@ impl Stadium {
             let dir = Vec3::new(ang.cos(), 0.0, ang.sin());
             let yaw = -ang + PI * 0.5;
             let facade_r = (inner - 0.8) * s;
-            out.push(Piece { center: dir * facade_r + Vec3::Y * (base + FOUNDATION_Y) * 0.5, size: Vec3::new(2.0 * facade_r * (seg * 0.5).tan() + 0.8, base - FOUNDATION_Y, 1.6), yaw, kind: PieceKind::Facade });
+            out.push(Piece { center: dir * facade_r + Vec3::Y * (base + foundation) * 0.5, size: Vec3::new(2.0 * facade_r * (seg * 0.5).tan() + 0.8, base - foundation, 1.6), yaw, kind: PieceKind::Facade });
             if i % 2 == 0 {
                 let col_r = (inner - 2.0) * s;
-                out.push(Piece { center: dir * col_r + Vec3::Y * (base * 1.1 + FOUNDATION_Y) * 0.5, size: Vec3::new(1.5, base * 1.1 - FOUNDATION_Y, 1.5), yaw, kind: PieceKind::Column });
+                out.push(Piece { center: dir * col_r + Vec3::Y * (base * 1.1 + foundation) * 0.5, size: Vec3::new(1.5, base * 1.1 - foundation, 1.5), yaw, kind: PieceKind::Column });
                 out.push(Piece { center: dir * col_r + Vec3::Y * (base * 1.1 + 0.6), size: Vec3::new(2.3, 1.2, 2.3), yaw, kind: PieceKind::Capital });
             }
             for row in 0..ROWS {
@@ -79,14 +88,15 @@ impl Stadium {
                 let h = ROW_RISE + 0.6;
                 out.push(Piece { center: dir * r_mid + Vec3::Y * (top - h * 0.5), size: Vec3::new(len, h, ROW_DEPTH + 0.15), yaw, kind: PieceKind::Step });
             }
-            let wall_r = self.wall_r() * s;
-            let wall_h = self.wall_h();
+            let wall_r = self.wall_r() / self.scale * s;
+            let wall_h = self.wall_h() / self.scale;
             let wall_len = 2.0 * wall_r * (seg * 0.5).tan() + 0.9;
-            out.push(Piece { center: dir * wall_r + Vec3::Y * (wall_h + FOUNDATION_Y) * 0.5, size: Vec3::new(wall_len, wall_h - FOUNDATION_Y, 2.2), yaw, kind: PieceKind::Wall });
+            out.push(Piece { center: dir * wall_r + Vec3::Y * (wall_h + foundation) * 0.5, size: Vec3::new(wall_len, wall_h - foundation, 2.2), yaw, kind: PieceKind::Wall });
             if i % 2 == 0 {
                 out.push(Piece { center: dir * wall_r + Vec3::Y * (wall_h + 1.1), size: Vec3::new(wall_len * 0.55, 2.2, 2.2), yaw, kind: PieceKind::Crenel });
             }
         }
+        for p in &mut out { p.center *= self.scale; p.size *= self.scale; }
         out
     }
 
@@ -100,14 +110,14 @@ impl Stadium {
     pub fn ground(&self, p: Vec3) -> f32 {
         let r = (p.x * p.x + p.z * p.z).sqrt() / sq(p.z.atan2(p.x));
         if r < self.inner_r { return 0.0; }
-        let row = ((r - self.inner_r) / ROW_DEPTH).floor().clamp(0.0, ROWS as f32 - 1.0);
-        self.base_y + row * ROW_RISE
+        let row = ((r - self.inner_r) / self.row_depth()).floor().clamp(0.0, ROWS as f32 - 1.0);
+        self.base_y + row * self.row_rise()
     }
 
     /// Distance from a point to the crowd band (0 inside it).
     pub fn distance_to_crowd(&self, p: Vec3) -> f32 {
         let r = (p.x * p.x + p.z * p.z).sqrt();
-        let (r0, r1) = (self.inner_r, (self.inner_r + ROWS as f32 * ROW_DEPTH + 2.2) * 1.19);
+        let (r0, r1) = (self.inner_r, (self.inner_r + (ROWS as f32 * ROW_DEPTH + 2.2) * self.scale) * 1.19);
         let (y0, y1) = (self.base_y, self.wall_h());
         let dr = (r0 - r).max(r - r1).max(0.0);
         let dy = (y0 - p.y).max(p.y - y1).max(0.0);

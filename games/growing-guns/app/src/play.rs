@@ -1523,7 +1523,8 @@ impl app::Game for Gg {
                 // whatever the seed rolls (Godot `force_all_floor_lava`).
                 let island = w.get(1) == Some(&"island");
                 let seed = w.get(if island { 2 } else { 1 }).copied().unwrap_or("1").parse::<u64>().map_err(|_| "arena seed must be an unsigned integer")?;
-                self.world.arena = growing_guns::Arena::generate_with(seed, 55.0, 95.0, island);
+                let (lo, hi) = growing_guns::arena::STANDARD_SIZE;
+                self.world.arena = growing_guns::Arena::generate_with(seed, lo, hi, island);
                 self.world.lava = Default::default();
                 // On islands everyone moves onto one (anywhere else is lava).
                 if island { self.world.place_on_spawns(); }
@@ -1716,6 +1717,8 @@ pub fn run(args: &Args) -> Result<(), String> {
         }
         (session, World::new_with(seed, &bots, |w| match_options(args, w, true)), (0..humans).collect())
     };
+    let mut world = world;
+    if args.flag("--start-in-stands") && !session.is_client() { crate::stadium::start_in_stands(&mut world)?; }
     println!("seed {seed}, {} local, {} players", slots.len(), world.players.len());
     let mut game = Gg::new(world, session, slots);
     // Round changes must not stall the frame (and the audio) on the sky bake.
