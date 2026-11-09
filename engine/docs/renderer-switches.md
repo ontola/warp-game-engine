@@ -66,7 +66,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_CLUSTERED_SHADOW_FACES` | 12 | Clustered shadow tiles redrawn per frame at most (moved lights first, then the oldest). |
 | `KERN_NEAR_SHADOW_LOD` | 1.0 | Scale on near shadow cluster error. |
 | `KERN_SUN_VOXEL_M` | per scene | Voxel cell size in the sun map. |
-| `KERN_SUN_LEVELS` | 4, or 7 with `KERN_SUN_CLIPMAP` | Sun clipmap levels round each camera (1 to 8; level k covers 24 m times 2^k). |
+| `KERN_SUN_LEVELS` | 4, or 8 with `KERN_SUN_CLIPMAP` | Sun clipmap levels round each camera (1 to 8; level k covers 24 m times 2^k, with `KERN_SUN_CLIPMAP` counted from a first level that grows with height). |
 | `KERN_SUN_STAGGER` | on | `0` redraws every clipmap level every frame. By default level 1 redraws every other frame, level 2 every fourth and the rest every eighth; with `KERN_SUN_CLIPMAP` a level also redraws when it moves. |
 | `KERN_SUN_CACHE_GUARD_METRES` | 0 | Guard band around the cached sun map (0 to 128 m). |
 | `KERN_FOLIAGE_SUN_LOD`, `KERN_FOLIAGE_SUN_PAGE_METRES` | 0.5, fine pages | Paged foliage sun (only with `KERN_PAGED_FOLIAGE_SUN=1`). |
@@ -97,7 +97,7 @@ note linked says why. They are candidates for removal from the code.
 | `KERN_WATER` | Water optics on terrain water (the bed through refracting, absorbing water) as the `Lighting` default; read whenever a `Lighting` is made | [water](water.md) |
 | `KERN_CLUSTER_TRAVERSAL` | Top-down cluster traversal (`terrain_fly` turns it on unless set) | [r46](log/cluster-traversal-r46.md) |
 | `KERN_INSTANCE_BROADPHASE` | Compact colour-view instance selection | [broadphase](log/instance-broadphase.md) |
-| `KERN_SUN_CLIPMAP` | One sun shadow system for streamed GPU-forest worlds: seven cached, scrolling clipmap levels per view (24 m to 1.5 km) replace the shared map and the anchored far map ([sun shadows](rendering.md#sun-shadows)). Needs the default sun cache (not `KERN_STATIC_SUN_CACHE`). Waiting for a measurement on a real GPU. | [clipmap log](log/2026-11-08-sun-clipmap.md) |
+| `KERN_SUN_CLIPMAP` | One sun shadow system for streamed GPU-forest worlds: eight cached, scrolling clipmap levels per view (24 m to 3 km, coarser first level from high up) replace the shared map and the anchored far map ([sun shadows](rendering.md#sun-shadows)). Needs the default sun cache (not `KERN_STATIC_SUN_CACHE`). Waiting for a measurement on a real GPU. | [clipmap log](log/2026-11-08-sun-clipmap.md) |
 | `KERN_STATIC_SUN_CACHE` | Static/dynamic split sun cache | [r45](log/static-sun-cache-r45.md) |
 | `KERN_RECEIVER_SHADOW_DEMAND` | Receiver-driven shadow tiles | [r49](log/lod-shadow-demand-r49.md) |
 | `KERN_PAGED_FOLIAGE_SUN` | Paged foliage sun map (excludes the far sun map) | [world lighting](log/world-lighting.md), [distant tree light](log/distant-tree-lighting.md) |
