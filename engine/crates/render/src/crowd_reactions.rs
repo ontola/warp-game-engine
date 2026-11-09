@@ -49,6 +49,8 @@ pub struct CrowdHits {
     pub origin: Vec3,
     pub direction: Vec3,
     pub positions: Vec<Vec3>,
+    /// Seat index for each contact position, in the same order.
+    pub seats: Vec<u32>,
 }
 pub(super) struct Receipt {
     buffer: wgpu::Buffer,
@@ -79,10 +81,12 @@ impl Receipt {
                 origin:Vec3::from_slice(&e.a),
                 direction:(Vec3::from_slice(&e.b)-Vec3::from_slice(&e.a)).normalize_or_zero(),
                 positions: Vec::new(),
+                seats: Vec::new(),
             })
             .collect();
         for h in hits {
             alive[h.seat as usize] = 0;
+            groups[h.event as usize].seats.push(h.seat);
             groups[h.event as usize]
                 .positions
                 .push(Vec3::from_slice(&h.position));

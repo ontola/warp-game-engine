@@ -18,6 +18,7 @@ use render::scene::{Material, EMISSIVE, LIVE_SCREEN, NO_SHADOW};
 use render::slots::{SlotId, Slots};
 use render::Scene;
 use std::f32::consts::{PI, TAU};
+mod gibs;
 
 pub const CROWD_MAX: usize = 15_000;
 #[derive(Clone, Copy, PartialEq)]
@@ -287,7 +288,7 @@ pub struct StadiumVisuals {
     scorch: usize,
     blood:crate::blood::Splats,
     blood_grid:growing_guns::shape::BoxGrid,
-    gore: usize,
+    gore: gibs::GibMeshes,
     pub geo: Stadium,
     mark_surfaces: Vec<growing_guns::stadium::Piece>,
     lights: Vec<LocalLight>,
@@ -402,7 +403,7 @@ impl StadiumVisuals {
                 stands:Slots::reserve(scene,0),roof:Slots::reserve(scene,0),tv:Slots::reserve(scene,0),tv_mesh:[0;2],
                 stone:[0;6],masonry:None,roof_stone:[0;6],wall_stone:[0;6],lamp:0,shaft:0,bank:0,looks:Vec::new(),
                 crowd,sound:CrowdSound::new(None),marks:Slots::reserve(scene,0),mark_ring:Vec::new(),mark_next:0,
-                scorch:0,blood,blood_grid:Default::default(),gore:0,geo:Stadium::new(80.0,true,12.0),mark_surfaces:Vec::new(),lights:Vec::new(),beams:Vec::new(),rng:Rng(1) };
+                scorch:0,blood,blood_grid:Default::default(),gore:Default::default(),geo:Stadium::new(80.0,true,12.0),mark_surfaces:Vec::new(),lights:Vec::new(),beams:Vec::new(),rng:Rng(1) };
         }
         let cube = |scene: &mut Scene, m: u32| scene.add_mesh(&primitives::cube(m).mesh());
         let quarry: Vec<[f32; 3]> = SANDSTONE.iter().chain(LIMESTONE.iter()).map(|c| [0, 1, 2].map(|k| c[k] + (ARENA_STONE[k] - c[k]) * 0.22)).collect();
@@ -465,7 +466,7 @@ impl StadiumVisuals {
             }
         }
         let scorch = { let m = mat(scene, [0.04, 0.035, 0.03], 1.0); scene.add_mesh(&stain_mesh(m).mesh()) };
-        let gore = { let m = mat(scene, [0.42, 0.03, 0.02], 0.5); scene.add_mesh(&primitives::hewn_block(m, 1, 0.2, 0.2, 9).mesh()) };
+        let gore = gibs::GibMeshes::new(scene);
         let pieces = SEGMENTS * (ROWS + 4) + SEGMENTS / 2 + 16;
         let stands = Slots::reserve(scene, pieces);
         // The colosseum walls and tiers occlude direct sun and atmospheric haze.
@@ -729,6 +730,7 @@ impl StadiumVisuals {
                 continue;
             }
             let clouds = n.min(8);
+            gibs::emit(scene, &mut fx.debris, &self.gore, &self.crowd, &hit);
             for i in 0..clouds {
                 let p = hit.positions[i * n / clouds];
                 let travel = if hit.radius > 0. {
@@ -742,7 +744,7 @@ impl StadiumVisuals {
                     p,
                     dir,
                     &Burst {
-                        mesh: self.gore,
+                        mesh: self.gore.cut[0],
                         count: 4,
                         spread: 0.94,
                         speed: [2.2, 6.4],
@@ -769,18 +771,6 @@ impl StadiumVisuals {
                         ..Burst::drops()
                     },
                 );
-                fx.debris.burst(
-                    scene,
-                    &render::debris::BurstSpec {
-                        center: p,
-                        radius: 0.12,
-                        count: (n * 4).clamp(5, 48) as u32 / clouds as u32,
-                        meshes: &[self.gore],
-                        size: 0.073,
-                        speed: 6.5,
-                        life: 2.6,
-                    },
-                );
             }
             let center = hit.positions.iter().copied().sum::<Vec3>() / n as f32;
             if hit.radius > 0. {
@@ -794,7 +784,7 @@ impl StadiumVisuals {
     }
 
     pub fn gore_mesh(&self) -> Option<usize> {
-        self.enabled.then_some(self.gore)
+        self.enabled.then_some(self.gore.cut[0])
     }
 
     /// A flat mark on the stands' slope (visible from the arena floor).

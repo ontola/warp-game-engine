@@ -1,6 +1,9 @@
 //! Seeded crowd rendering probe. One immutable instance table serves every view.
 //! The GPU buckets visible people by projected height and writes indirect draws.
 mod geometry;
+pub use geometry::BodyVertex;
+
+pub const APPEARANCE_ATLAS: &[u8] = include_bytes!("../../../../assets/humans/appearance.png");
 
 use crate::{Camera, Gpu};
 use bytemuck::{Pod, Zeroable};
@@ -36,6 +39,20 @@ pub struct Constraints {
     pub shirt: Option<[f32; 3]>,
 }
 impl Instance {
+    pub fn face_tile(&self) -> usize { (self.identity[3] * 3.) as usize }
+    pub fn shirt_color(&self) -> [f32; 3] { [self.color[0], self.color[1], self.color[2]] }
+    pub fn hair_color(&self) -> Vec3 {
+        Vec3::new(0.046, 0.030, 0.025).lerp(Vec3::new(0.39, 0.28, 0.16), self.identity[3].powi(2))
+    }
+    pub fn skin_color(&self) -> Vec3 {
+        let cheeks = [Vec3::new(0.855, 0.659, 0.541), Vec3::new(0.894, 0.741, 0.639), Vec3::new(0.353, 0.224, 0.149)];
+        let pigment = Vec3::new(0.28, 0.125, 0.076).lerp(Vec3::new(0.85, 0.55, 0.409), self.identity[1]);
+        cheeks[self.face_tile()].lerp(pigment, 0.46)
+    }
+    /// Metre scale of the normalized human mesh in its local axes.
+    pub fn body_scale(&self) -> Vec3 {
+        Vec3::new(self.size_phase[0], self.size_phase[1], self.size_phase[0])
+    }
     pub fn person(seed: u64, position: Vec3, yaw: f32, rules: &Constraints) -> Self {
         let height = rules
             .height_m
@@ -430,7 +447,7 @@ impl ReviewRenderer {
         let prepare = move || {
             let mesh = geometry::person(4, far, true);
             let image =
-                image::load_from_memory(include_bytes!("../../../../assets/humans/appearance.png"))
+                image::load_from_memory(APPEARANCE_ATLAS)
                     .expect("cooked human atlas")
                     .into_rgba8();
             let _ = tx.send((mesh, image));
