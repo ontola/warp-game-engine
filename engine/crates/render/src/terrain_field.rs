@@ -88,13 +88,17 @@ pub struct Style {
     pub ditches: f32,
     /// Shallow ponds in flat hollows (tundra).
     pub ponds: f32,
-    pub _pad: [f32; 3],
+    /// Where forest grows on slopes: 0 keeps it off them (stands on the
+    /// gentle ground), 1 puts it on the steep valley sides and leaves the
+    /// gentle ground to pasture (swiss). forest_field::site reads it.
+    pub forest_slopes: f32,
+    pub _pad: [f32; 2],
 }
 
 impl Default for Style {
     fn default() -> Self {
         Style { mountains: 0.5, peaks: 0.5, snow_line: 1500.0, hills: 1.0, rivers: 0.5, streams: 0.5, rocks: 0.5, boulders: 1.0, moor: 0.5, grass: 1.0,
-            dunes: 0.0, ditches: 0.0, ponds: 0.0, _pad: [0.0; 3] }
+            dunes: 0.0, ditches: 0.0, ponds: 0.0, forest_slopes: 0.0, _pad: [0.0; 2] }
     }
 }
 
@@ -103,9 +107,14 @@ impl Style {
     pub fn lowland() -> Self { Style { mountains: 0.0, peaks: 0.0, hills: 1.2, rivers: 0.8, rocks: 0.2, moor: 0.3, ..Style::default() } }
     /// High snowy massifs over green valleys.
     pub fn alpine() -> Self { Style { mountains: 0.8, peaks: 1.0, snow_line: 1500.0, rocks: 0.8, moor: 0.2, ..Style::default() } }
-    /// A style by name: default, lowland or alpine.
+    /// Swiss valleys: rolling green pasture low down, rugged rock and snow
+    /// high up, with the peaks reaching into the clouds.
+    pub fn swiss() -> Self {
+        Style { mountains: 0.6, peaks: 1.0, snow_line: 1750.0, hills: 1.3, rivers: 0.5, streams: 0.8, rocks: 0.9, moor: 0.05, forest_slopes: 1.0, ..Style::default() }
+    }
+    /// A style by name: default, lowland, alpine or swiss.
     pub fn named(name: &str) -> Option<Self> {
-        match name { "default" => Some(Style::default()), "lowland" => Some(Style::lowland()), "alpine" => Some(Style::alpine()), _ => None }
+        match name { "default" => Some(Style::default()), "lowland" => Some(Style::lowland()), "alpine" => Some(Style::alpine()), "swiss" => Some(Style::swiss()), _ => None }
     }
 }
 

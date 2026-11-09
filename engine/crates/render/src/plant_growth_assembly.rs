@@ -217,6 +217,12 @@ impl Look {
     pub fn jeffrey_pine() -> Self {
         Self { wood: [0.11, 0.065, 0.045], needles: [0.11, 0.21, 0.09], brush_needles: 50, needle_length: 0.22, brush_spread: 1.7, brush_reach: 0.2, needle_width: 0.0025, brush_round: 0.7 }
     }
+    /// Norway spruce: dark needles set all along the shoot, splayed sideways,
+    /// so a brush reads as a soft dark bottlebrush. Needles are drawn ~3x
+    /// their 2.5 cm: true length left the limbs and trunk showing (9 November).
+    pub fn norway_spruce() -> Self {
+        Self { wood: [0.09, 0.06, 0.045], needles: [0.05, 0.1, 0.045], brush_needles: 110, needle_length: 0.08, brush_spread: 1.5, brush_reach: 0.6, needle_width: 0.0012, brush_round: 0.8 }
+    }
 }
 
 /// What an assembled plant came to.
@@ -338,7 +344,8 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     // One bark for every stem from 3 cm up (bands where a trunk crossed a
     // size class showed as seams), smooth young twigs below (materials 0 and
     // 2; 1 is the needles).
-    let wood = |radius: f32| if radius >= 0.03 { 0 } else { 2 };
+    let wood = |radius: f32| if radius >= 0.03 { 0 } else { 2 };
+
     let taper_of = |radius: f32, end: f32| {
         let wanted = (end / radius.max(1e-6)).clamp(0.6, 1.0);
         (0..4).min_by(|&a, &c| (TAPERS[a] - wanted).abs().total_cmp(&(TAPERS[c] - wanted).abs())).unwrap_or(0)
