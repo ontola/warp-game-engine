@@ -740,6 +740,7 @@ fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &rend
     if world.trees {
         let (start, end) = handover_band(world);
         procedural_terrain::far_forest_handover(&mut scene, material, [centre.x, centre.z], start, end, world.tree_density, &palette.forest);
+        procedural_terrain::far_forest_slopes(&mut scene, material, style.forest_slopes);
     }
     // Past the grass disc the ground takes the blades' mean colour (measured
     // against the bare ground at the disc edge; KERN_GRASS_PROXY=r,g,b to tune).

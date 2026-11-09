@@ -46,7 +46,7 @@ struct TerrainStyle {
     dunes: f32,
     ditches: f32,
     ponds: f32,
-    pad0: f32,
+    forest_slopes: f32,
     pad1: f32,
     pad2: f32,
 };

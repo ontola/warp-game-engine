@@ -83,7 +83,7 @@ impl Species {
         Self {
             height: 42.0, pace: 40.0, shape: 1.5, first_whorl: 2, whorl: [4, 6], laterals: 1.5, max_order: 4,
             limb_step: 0.15, side_length: 0.45, limb_life: [80, 200], crowding: 10, angle: [1.2, 1.6], rise: 0.04, droop: 0.025,
-            needle_years: 7, shade: 0.035, min_light: 0.25, tip_radius: 0.004, wood: 0.0065, limb_wood: 0.5, dead_years: 25,
+            needle_years: 9, shade: 0.035, min_light: 0.25, tip_radius: 0.004, wood: 0.0065, limb_wood: 0.5, dead_years: 25,
             plumes: 2.0, live_crown: 0.75, lift_years: 90.0,
         }
     }

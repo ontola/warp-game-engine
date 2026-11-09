@@ -217,10 +217,11 @@ impl Look {
     pub fn jeffrey_pine() -> Self {
         Self { wood: [0.11, 0.065, 0.045], needles: [0.11, 0.21, 0.09], brush_needles: 50, needle_length: 0.22, brush_spread: 1.7, brush_reach: 0.2, needle_width: 0.0025, brush_round: 0.7 }
     }
-    /// Norway spruce: short dark needles set all along the shoot, splayed
-    /// sideways, so a brush reads as a soft dark bottlebrush.
+    /// Norway spruce: dark needles set all along the shoot, splayed sideways,
+    /// so a brush reads as a soft dark bottlebrush. Needles are drawn ~2x
+    /// their 2.5 cm: true length left the limbs looking bare (9 November).
     pub fn norway_spruce() -> Self {
-        Self { wood: [0.09, 0.06, 0.045], needles: [0.05, 0.1, 0.045], brush_needles: 70, needle_length: 0.02, brush_spread: 1.3, brush_reach: 0.3, needle_width: 0.0008, brush_round: 0.8 }
+        Self { wood: [0.09, 0.06, 0.045], needles: [0.05, 0.1, 0.045], brush_needles: 90, needle_length: 0.05, brush_spread: 1.5, brush_reach: 0.45, needle_width: 0.001, brush_round: 0.8 }
     }
 }
 

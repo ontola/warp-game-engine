@@ -148,8 +148,12 @@ fn band(scale: f32, footprint: f32) -> f32 {
 /// follows the same stands (terrain_surface.wgsl), so forest grows on green
 /// ground and the dry, sandy ground stays open (Joep, 9 November: it was
 /// the other way round, forest on dry slopes and meadow in damp hollows).
-pub fn site(up: f32, wet: f32) -> f32 {
-    0.05 + 0.6 * wet - 1.6 * (wet - 0.75).max(0.0) - 0.7 * (1.0 - smooth(0.86, 0.97, up))
+/// `slopes` (terrain_field::Style::forest_slopes): 1 puts the forest on the
+/// steep valley sides and leaves gentle ground to pasture (swiss).
+pub fn site(up: f32, wet: f32, slopes: f32) -> f32 {
+    let steep = 1.0 - smooth(0.86, 0.97, up);
+    let slope = -0.7 * steep + (0.35 * steep - 0.5 * smooth(0.96, 0.995, up) + 0.7 * steep) * slopes;
+    0.05 + 0.6 * wet - 1.6 * (wet - 0.75).max(0.0) + slope
 }
 
 /// Hedgerows: stretches of the edges of 110 by 80 m fields (on a grid
@@ -212,7 +216,7 @@ fn patch(x: f32, z: f32, seed: u32, amount: f32) -> f32 {
 /// The forest at (x, z).
 pub fn forest(x: f32, z: f32, seed: u32, style: &Style, density: f32, fs: &ForestStyle) -> Forest {
     let s = terrain_field::eval(x, z, CUT, seed, style);
-    let site = if grows(&s, style) { site(s.up, s.wet) } else { NO_FOREST };
+    let site = if grows(&s, style) { site(s.up, s.wet, style.forest_slopes) } else { NO_FOREST };
     let cover = share(x, z, seed, site, 0.0) * density;
     let tone = (stand(x, z, seed, site.max(-1.0), 0.0) * 0.5 + 0.5).clamp(0.0, 1.0);
     let colour = Vec3::from_slice(&fs.needles[..3]).lerp(Vec3::from_slice(&fs.far[..3]), patch(x, z, seed, fs.crown[3]));
@@ -230,7 +234,7 @@ pub fn tree(i: i32, j: i32, seed: u32, style: &Style, density: f32) -> Option<Tr
     let (x, z) = ((i as f32 + hash(i, j, 1, seed)) * CELL, (j as f32 + hash(i, j, 2, seed)) * CELL);
     let s = terrain_field::eval(x, z, CUT, seed, style);
     if !grows(&s, style) { return None; }
-    if roll >= share(x, z, seed, site(s.up, s.wet), 0.0) * density { return None; }
+    if roll >= share(x, z, seed, site(s.up, s.wet, style.forest_slopes), 0.0) * density { return None; }
     let width = 0.75 + 0.5 * hash(i, j, 4, seed);
     let height = width * (0.9 + 0.25 * hash(i, j, 5, seed));
     Some(Tree {

@@ -209,12 +209,13 @@ fn field_detail_slope(xz: vec2<f32>, seed: u32, footprint: f32, rock: f32, up: f
 // scale >= 0 means no forest (and the default ground, field_ground).
 // start..end: the handover band from drawn trees to the layer, measured
 // from `centre` (where the trees were placed) when `centred`, else the camera.
-struct FarForest { style: ForestStyle, start: f32, density: f32, end: f32, centre: vec2<f32>, centred: bool };
+// slopes: terrain_field Style::forest_slopes (forest_field ff_site).
+struct FarForest { style: ForestStyle, start: f32, density: f32, end: f32, centre: vec2<f32>, centred: bool, slopes: f32 };
 fn far_forest_params(at: u32) -> FarForest {
     let a = material(at); let b = material(at + 1u); let c = material(at + 2u);
     let fs = ForestStyle(vec4<f32>(a.tint, bitcast<f32>(a.layer)), vec4<f32>(a.roughness, bitcast<f32>(a.flags), a.scale, a.metal),
         vec4<f32>(b.tint, bitcast<f32>(b.layer)), vec4<f32>(b.roughness, bitcast<f32>(b.flags), b.scale, b.metal));
-    return FarForest(fs, c.tint.x, c.tint.y, c.scale, vec2<f32>(c.tint.z, c.roughness), (c.flags & 1u) != 0u);
+    return FarForest(fs, c.tint.x, c.tint.y, c.scale, vec2<f32>(c.tint.z, c.roughness), (c.flags & 1u) != 0u, select(bitcast<f32>(c.layer), 0.0, c.layer == -1));
 }
 // Whether this ground lies past the drawn trees where the painted ones
 // stand: those are shaded per pixel, not by the 2x2 coarse material
@@ -232,7 +233,7 @@ fn forest_ground(s: SurfaceIn, f: FieldAttr, footprint: f32) -> f32 {
     if s.scale >= 0.0 { return -2.0; }
     let params = far_forest_params(u32(-s.scale - 0.5));
     if params.density <= 0.0 { return -2.0; }
-    return ff_stand(s.p.x, s.p.z, u32(s.metal + 0.5), ff_site(f.up, f.wet), footprint);
+    return ff_stand(s.p.x, s.p.z, u32(s.metal + 0.5), ff_site(f.up, f.wet, params.slopes), footprint);
 }
 // How far the ground's lushness follows the stands (1: only them).
 const FOREST_GROUND_LUSH: f32 = 0.7;
@@ -255,7 +256,7 @@ fn far_tree_cast(s: SurfaceIn) -> f32 {
     if sun.y <= 0.02 || sun_xz <= 1e-3 { return 0.0; }
     let f = field_attr(s);
     let seed = u32(s.metal + 0.5);
-    let site = ff_site(f.up, f.wet);
+    let site = ff_site(f.up, f.wet, params.slopes);
     let footprint = sqrt(length(s.dx) * length(s.dy));
     let crowd = ff_share(s.p.x, s.p.z, seed, site, footprint) * params.density;
     if crowd <= 0.0 { return 0.0; }
@@ -281,7 +282,7 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
         * (1.0 - smoothstep(0.01 - e * 0.2, 0.01 + e * 0.2, f.water)) * (1.0 - smoothstep(0.05 - e * 0.5, 0.05 + e * 0.5, f.snow))
         * smoothstep(0.82 - e, 0.82 + e, f.up);
     let seed = u32(s.metal + 0.5);
-    let site = ff_site(f.up, f.wet);
+    let site = ff_site(f.up, f.wet, params.slopes);
     let sun = light.sun_dir.xyz;
     // The trees stand on this ground and rise towards the viewer (their
     // silhouettes, far_crowns).
