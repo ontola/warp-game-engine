@@ -123,7 +123,7 @@ geometry, voxel splats, proxies) casts into:
   tiles are cleared and redrawn.
 - Past it, a far map (below) or the coarse canopy transmittance.
 
-**One clipmap (`KERN_SUN_CLIPMAP=1`, opt-in, GPU-forest worlds).** Eight
+**One clipmap (default in GPU-forest worlds since 9 November; `KERN_SUN_CLIPMAP=0` restores the separate maps).** Eight
 levels per view (24 m to 3072 m from the ground) replace the shared map and
 the anchored far map. From high up the first level grows with the camera's
 height over its lighting focus (`frame.rs` `clipmap_base`: half extent at

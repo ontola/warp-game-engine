@@ -123,18 +123,20 @@ fn near_level_due(k: usize, frame: u64) -> bool {
     if k == 0 || !*STAGGER.get_or_init(|| std::env::var("KERN_SUN_STAGGER").as_deref() != Ok("0")) { return true; }
     match k { 1 => frame % 2 == 0, 2 => frame % 4 == 1, _ => frame % 8 == 3 }
 }
-/// One sun shadow system (KERN_SUN_CLIPMAP=1, opt-in, streamed GPU-forest
-/// worlds without the static split): CLIPMAP_LEVELS levels per view from
-/// 24 m to 1536 m replace the shared map and the anchored far map. Every
+/// One sun shadow system (on by default since 9 November, KERN_SUN_CLIPMAP=0
+/// for the separate maps; streamed GPU-forest worlds without the static split,
+/// KERN_STATIC_SUN_CACHE=1): CLIPMAP_LEVELS levels per view from 24 m to
+/// 3 km (clipmap_base raises the first one from high up) replace the shared
+/// map and the anchored far map. Every
 /// level keeps its depth across frames: projections snap to whole texels,
 /// so camera movement scrolls the retained depth, and one caster history
 /// (shadow_damage.rs) marks the tiles whose casters changed in every level.
-/// Only those tiles redraw, every frame (no stagger). The outermost level
+/// Only those tiles redraw; outer levels on a stagger or when they move. The outermost level
 /// takes the shared map's place in shading; past it the coarse transmittance
 /// fallback applies as before past the far map.
 pub(crate) fn sun_clipmap_requested() -> bool {
-    static CLIPMAP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CLIPMAP.get_or_init(|| std::env::var("KERN_SUN_CLIPMAP").as_deref() == Ok("1"))
+    std::env::var("KERN_SUN_CLIPMAP").as_deref() != Ok("0")
+        && std::env::var("KERN_STATIC_SUN_CACHE").as_deref() != Ok("1")
 }
 /// Clipmap redraw schedule: level 0 every frame, 1 every other frame, 2
 /// every fourth, 3 and up every eighth on different frames (at most three
