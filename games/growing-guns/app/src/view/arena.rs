@@ -79,7 +79,7 @@ impl KindMeshes {
 
 /// Scorch and blood marks: a ring of slots, oldest reused first; each knows
 /// the chunk it sits on and goes when that chunk breaks.
-struct Marks { slots: Slots, ring: Vec<(SlotId, u32)>, next: usize, scorch: usize, blood: usize }
+struct Marks { slots: Slots, ring: Vec<(SlotId, u32)>, next: usize, scorch: usize, blood: crate::blood::Splats, serial:u32 }
 
 pub struct ArenaView {
     slots: Slots,
@@ -122,7 +122,7 @@ pub fn lava_material(scene: &mut Scene) -> u32 {
 
 impl ArenaView {
     /// Brick meshes, the lava sheet, the arena slots and the marks.
-    pub fn reserve(scene: &mut Scene) -> Self {
+    pub fn reserve(scene: &mut Scene,blood:crate::blood::Splats) -> Self {
         let set = |scene: &mut Scene, tint: fn([f32; 3]) -> [f32; 3]| KindMeshes {
             floor: stone(scene, tint(palette::FLOOR), 0.9),
             wall: stone(scene, tint(palette::WALL), 0.85),
@@ -144,10 +144,9 @@ impl ArenaView {
         // The arena lives in slots: a new round refills them, no rebuild.
         let slots = Slots::reserve(scene, ARENA_SLOTS);
         let scorch_m = material(scene, [0.06, 0.055, 0.05], 0.95);
-        let blood_m = material(scene, [0.36, 0.02, 0.015], 0.35);
         let mut mark_slots = Slots::reserve(scene, MARKS);
         mark_slots.mark_no_shadow(scene);
-        let marks = Marks { slots: mark_slots, ring: Vec::new(), next: 0, scorch: super::sphere(scene, scorch_m, 4, 8), blood: super::sphere(scene, blood_m, 4, 10) };
+        let marks = Marks { slots: mark_slots, ring: Vec::new(), next: 0, scorch: super::sphere(scene, scorch_m, 4, 8), blood,serial:0 };
         if let Err(e) = scene.reserve_dents(DENTS) { eprintln!("growing-guns: no bullet dents: {e}"); }
         let dfao_grid = render::dfao::Grid { origin: Vec3::new(-52.0, -4.0, -52.0), voxel: 2.0, dims: [52, 18, 52], max_distance: 10.0 };
         if crate::graphics::get().sky_occlusion && let Err(e) = scene.reserve_dfao(dfao_grid) { eprintln!("growing-guns: no dfao: {e}"); }
@@ -160,6 +159,7 @@ impl ArenaView {
         self.slots.clear(scene);
         self.marks.slots.clear(scene);
         self.marks.ring.clear();
+        self.marks.serial=0;
         if !self.dents.is_empty() { self.dents.clear(); self.dents_changed = true; }
         let a = &world.arena;
         self.island = a.variant == growing_guns::arena::Variant::Island;
@@ -242,7 +242,25 @@ impl ArenaView {
     }
 
     /// A blood splat on the stone.
-    pub fn blood(&mut self, scene: &mut Scene, xf: Affine3A, chunk: u32) { self.marks.place(scene, self.marks.blood, xf, chunk) }
+    pub fn blood(
+        &mut self,
+        scene: &mut Scene,
+        surface: &growing_guns::shape::YawBox,
+        p: Vec3,
+        n: Vec3,
+        travel: Vec3,
+        radius: f32,
+        chunk: u32,
+    ) {
+        let seed = self.marks.serial.wrapping_mul(2654435761) ^ p.x.to_bits().rotate_left(9) ^ p.z.to_bits();
+        self.marks.serial = self.marks.serial.wrapping_add(1);
+        self.marks.place(
+            scene,
+            self.marks.blood.mesh(seed),
+            crate::blood::on_face(surface, p, n, travel, radius, seed),
+            chunk,
+        );
+    }
 
     /// Mesh and transform for a chunk at a wear level.
     fn chunk_look(&self, c: &growing_guns::Chunk, wear: u8) -> (usize, Affine3A) {

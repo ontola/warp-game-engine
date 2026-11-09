@@ -44,6 +44,8 @@ struct Contact {
 pub struct CrowdHits {
     pub time: f32,
     pub radius: f32,
+    pub origin: Vec3,
+    pub direction: Vec3,
     pub positions: Vec<Vec3>,
 }
 pub(super) struct Receipt {
@@ -72,6 +74,8 @@ impl Receipt {
             .map(|e| CrowdHits {
                 time: e.a[3],
                 radius: e.b[3],
+                origin:Vec3::from_slice(&e.a),
+                direction:(Vec3::from_slice(&e.b)-Vec3::from_slice(&e.a)).normalize_or_zero(),
                 positions: Vec::new(),
             })
             .collect();

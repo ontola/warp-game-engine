@@ -37,6 +37,7 @@ mod knobs;
 mod explosion_editor;
 mod scripts;
 mod sky;
+mod blood;
 mod stadium;
 mod spectators;
 mod music;
