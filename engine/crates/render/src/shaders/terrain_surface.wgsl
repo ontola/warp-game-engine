@@ -310,18 +310,18 @@ fn far_view_area(eye: vec3<f32>, fs: ForestStyle) -> f32 {
 }
 
 // A crown's shaded base relative to its mean (its lit top is 2 - this).
-override FAR_CROWN_BASE: f32 = 0.4;
+override FAR_CROWN_BASE: f32 = 0.25;
 // A pine crown is open: the share of what is behind it one crown hides.
 // Stacked crowns still leave gaps, so closed stands keep their grain
 // (the reference's) instead of a solid cover.
-override FAR_CROWN_OPACITY: f32 = 0.8;
+override FAR_CROWN_OPACITY: f32 = 1.0;
 // The share of a pixel a crown's edge is filtered over.
-override FAR_CROWN_FILTER: f32 = 1.0;
+override FAR_CROWN_FILTER: f32 = 0.3;
 // Ambient shade of the ground between crowns in a closed stand.
-override FAR_GAP_SHADE: f32 = 0.4;
+override FAR_GAP_SHADE: f32 = 0.0;
 // Crown half-width relative to the style's (its top-down cover radius,
 // which counts the open branch tips).
-override FAR_CROWN_SIZE: f32 = 0.6;
+override FAR_CROWN_SIZE: f32 = 1.0;
 // Steepest glancing view a silhouette stretches for (cot of elevation).
 const FAR_TREE_COT_MAX: f32 = 8.0;
 // KERN_FAR_CROWN_DEBUG: red the averaged share, green single-crown cover.
@@ -330,8 +330,8 @@ override FAR_CROWN_DEBUG: f32 = 0.0;
 const FAR_CROWN_OWN: f32 = 0.42;
 // How much of that the neighbours in a closed stand take from a crown's
 // sun and sky.
-override FAR_CROWN_SUN_LOSS: f32 = 0.8;
-override FAR_CROWN_SKY_LOSS: f32 = 0.45;
+override FAR_CROWN_SUN_LOSS: f32 = 0.95;
+override FAR_CROWN_SKY_LOSS: f32 = 0.7;
 
 // Trees seen from `eye` past the drawn ones, standing on q's ground, for
 // a pixel whose world derivatives are dx, dy: rgb their colour with
