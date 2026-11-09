@@ -315,7 +315,7 @@ override FAR_CROWN_SIZE: f32 = 0.6;
 // Steepest glancing view a silhouette stretches for (cot of elevation).
 const FAR_TREE_COT_MAX: f32 = 8.0;
 // KERN_FAR_CROWN_DEBUG: red the averaged share, green single-crown cover.
-override FAR_CROWN_DEBUG: bool = false;
+override FAR_CROWN_DEBUG: f32 = 0.0;
 // The sun a drawn needle crown keeps (shade.wgsl NEEDLE_BRUSH_OWN).
 const FAR_CROWN_OWN: f32 = 0.42;
 // How much of that the neighbours in a closed stand take from a crown's
@@ -338,6 +338,12 @@ override FAR_CROWN_SKY_LOSS: f32 = 0.45;
 fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: vec3<f32>, sun: vec3<f32>, seed: u32, site: f32, density: f32, fs: ForestStyle) -> vec4<f32> {
     let needles = mix(fs.needles.rgb, fs.far.rgb, ff_patch(q.x, q.y, seed, fs.crown.w));
     far_crown_far = 1.0;
+    // KERN_FAR_CROWN_DEBUG=2: white noise in 2 m world cells, to see how
+    // sharp the ground's shading reaches the screen out here.
+    if FAR_CROWN_DEBUG == 2.0 {
+        let h = fract(sin(dot(floor(q / 2.0), vec2<f32>(12.9898, 78.233))) * 43758.5453);
+        return vec4<f32>(vec3<f32>(step(0.5, h)), 1.0);
+    }
     let crowd = ff_share(q.x, q.y, seed, site, footprint) * density;
     if crowd <= 0.0 { return vec4<f32>(needles, 0.0); }
     let along = normalize(eye.xz + vec2<f32>(1e-6, 0.0));
@@ -355,14 +361,14 @@ fn far_crowns(q: vec2<f32>, footprint: f32, dx: vec3<f32>, dy: vec3<f32>, eye: v
     let far = smoothstep(FF_CELL * 0.4, FF_CELL * 0.8, fa / FAR_CROWN_FILTER);
     far_crown_far = far;
     if far >= 1.0 {
-        if FAR_CROWN_DEBUG { return vec4<f32>(1.0, 0.0, 0.0, 1.0); }
+        if FAR_CROWN_DEBUG == 1.0 { return vec4<f32>(1.0, 0.0, 0.0, 1.0); }
         return vec4<f32>(needles * tops, mean_cover);
     }
     let strip = far_strip(q, along, len0, r0, fa, fl, crowd, seed, fs);
     let near_cover = 1.0 - strip.x;
     let near_tint = select(1.0, strip.y / strip.z, strip.z > 0.0);
     let cover = mix(near_cover, mean_cover, far);
-    if FAR_CROWN_DEBUG { return vec4<f32>(far, near_cover * (1.0 - far), 0.0, 1.0); }
+    if FAR_CROWN_DEBUG == 1.0 { return vec4<f32>(far, near_cover * (1.0 - far), 0.0, 1.0); }
     return vec4<f32>(needles * tops * mix(near_tint, 1.0, far), cover);
 }
 
