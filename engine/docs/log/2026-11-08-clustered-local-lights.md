@@ -54,3 +54,16 @@ turning it on by default.
 - Soft shadows (the headlights' PCSS) for clustered tiles.
 - Transparency, volumetric light and the forward renderer ignore clustered
   lights.
+
+## Mancave, 9 November 2026
+
+RTX 5070 Ti, driver 621.14, 2560x1440. Probe passes (0 pixels differ for
+one light; 400 lights 0.58 ms shade, with 24 shadowed 0.61 ms plus 0.06 ms
+of shadow tiles). Spellstorm chapel, median of 3 interleaved runs: frame
+5.94 -> 5.54 ms, shade 5.05 -> 4.52 ms (fewer lights per pixel than the old
+flat 32-light loop), clustered shadow cull 0.09 and raster 0.05 ms. Images:
+only darker where lamp light used to pass through walls; no acne, seams or
+missing lamps. A hard edge reported in the probe's one-lamp image is a
+pillar's unlit face (identical without the shadow); the probe now checks
+that open floor is not darkened by the shadow. Spellstorm turns clustered
+lights on from here.
