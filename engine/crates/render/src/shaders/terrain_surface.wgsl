@@ -367,7 +367,8 @@ override FAR_SHADOW_OPACITY: f32 = 0.7;
 override FAR_SHADOW_SIZE: f32 = 0.8;
 // Steepest glancing view a silhouette stretches for (cot of elevation).
 const FAR_TREE_COT_MAX: f32 = 8.0;
-// KERN_FAR_CROWN_DEBUG: red the averaged share, green single-crown cover.
+// KERN_FAR_CROWN_DEBUG: red the averaged share, green single-crown cover
+// (1); 2 m white noise (2); the ground's stand field and lushness (3).
 override FAR_CROWN_DEBUG: f32 = 0.0;
 // The sun a drawn needle crown keeps (shade.wgsl NEEDLE_BRUSH_OWN).
 const FAR_CROWN_OWN: f32 = 0.42;
@@ -938,6 +939,12 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         }
         nn = normalize(mix(nn, wn, w));
         rough = mix(rough, 0.04, w);
+    }
+    // KERN_FAR_CROWN_DEBUG=3: red where the stand field reaches this ground,
+    // green its lushness, blue the stand value (0 at -1, 1 at +1).
+    if FAR_CROWN_DEBUG > 2.5 {
+        let has = select(0.0, 0.6, stands > -1.0);
+        return SurfaceOut(vec3<f32>(has, lush, clamp(0.5 + 0.5 * stands, 0.0, 1.0) * 0.6), n, 1.0, 0.0, vec3<f32>(0.0));
     }
     return SurfaceOut(c * s.tint, nn, rough, 0.0, vec3<f32>(0.0));
 }
