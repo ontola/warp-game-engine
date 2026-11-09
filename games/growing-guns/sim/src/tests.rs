@@ -770,10 +770,10 @@ fn corpse_paths_follow_flight_and_stop_at_gameplay_hits() {
         w.events.clear();
         w.spawn_bullet(0,origin,Vec3::NEG_Y,false);
         if !hitscan {
-            assert!(!w.events.iter().any(|e| matches!(e,Event::BulletPath{..})), "projectiles must travel before hitting a corpse");
+            assert!(!w.events.iter().any(|e| matches!(e,Event::TrackedBulletPath{..})), "projectiles must travel before hitting a corpse");
             for _ in 0..60 { w.step_bullets(); if w.bullets.is_empty() {break;} }
         }
-        let paths:Vec<_>=w.events.iter().filter_map(|e| if let Event::BulletPath{from,to,damage}=e {Some((*from,*to,*damage))} else {None}).collect();
+        let paths:Vec<_>=w.events.iter().filter_map(|e| if let Event::TrackedBulletPath{from,to,damage,..}=e {Some((*from,*to,*damage))} else {None}).collect();
         assert!(!paths.is_empty());
         assert!(paths.iter().all(|(a,b,d)| a.is_finite() && b.is_finite() && b.y>=-0.001 && *d>0.0), "a shot must not reach corpses below its floor hit");
         assert!(paths.last().unwrap().1.y.abs()<0.001);

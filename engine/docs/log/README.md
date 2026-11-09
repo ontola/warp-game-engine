@@ -22,6 +22,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [handoff.md](handoff.md) is the running log of 23 October to 5 November
   2026, newest first.
 
+- [Repeated crowd shots and blast reactions](2026-11-09-growing-guns-crowd-reactions.md)
 - [Packed seating in the Growing Guns match](2026-11-09-growing-guns-crowd-density.md)
 - [Growing Guns world scale and standing eye height](2026-11-09-growing-guns-scale.md)
 - [Rigged people and Growing Guns frame times](2026-11-09-warp-humans-rig.md)

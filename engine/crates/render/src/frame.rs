@@ -1058,7 +1058,7 @@ pub struct Renderer {
     motion_geometry: (crate::topology::Topology, wgpu::Buffer, Vec<[u32; 3]>),
     debris: Option<crate::debris::DebrisRenderer>,
     procedural_terrain: Option<crate::procedural_terrain::TerrainRenderer>,
-    crowd: Option<crate::crowd::CrowdRenderer>,
+    pub(crate) crowd: Option<crate::crowd::CrowdRenderer>,
     humans: std::sync::Mutex<Option<crate::humans::ReviewRenderer>>,
     fx: crate::fx::FxSlot,
     volumetric: crate::volumetric::VolumetricSlot,

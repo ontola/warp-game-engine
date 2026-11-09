@@ -11,6 +11,10 @@ Add `--start-in-stands` to begin the match on a tread facing a neighbour at eye 
 Warp Humans matches default to packed seating with eight radial aisles. The generator spreads up to 15,000 seats over the whole bowl. Use `--crowd-density standard` for the earlier spacing. The stadium viewer and headless review accept both explicit settings and default to standard when launched without `--warp-humans`.
 
 The match supplies the seat identities, live positions, crowd reactions and per-player camera.
+
+Shots use the simulated bullet path up to its first gameplay obstruction. The GPU tests a body-sized cylinder at the spectator's animated position. One bullet id can remove one living spectator across its segments. Nearby survivors have individual escape and return trajectories. Repeat gunfire extends an active escape or starts from the person's current displacement during the return. An explosion removes everyone in its lethal radius and scatters the surrounding survivors. Death persists across cameras and detail levels until the crowd is reset.
+
+Confirmed contacts return asynchronously for blood marks, GPU debris and mist. The game's ordinary frame loop never waits for these notifications. The CPU's reported number alive can lag the visible deaths. Run the in-stands scenario with `script games/growing-guns/scripts/crowd-reactions.json --out build/crowd-reactions --start-in-stands --warp-humans --seed 52 --graphics full --sky noon --players 1`.
 The people render into the arena's HDR colour and depth buffers before transparency and post-processing.
 Each visible spectator receives the scene's sun shadow, floodlights and local lights at torso height during GPU detail selection. All detail levels share that sample; surface normals shape the response on faces, hair and clothing. The crowd does not cast individual shadows.
 The normal crowd is the default. The minimum graphics profile omits the stadium.

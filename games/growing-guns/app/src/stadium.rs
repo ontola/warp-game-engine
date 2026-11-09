@@ -7,12 +7,11 @@
 //! sound that follows the match.
 use crate::crowd_sound::CrowdSound;
 use audio::sfx::Listener;
-use glam::{Affine3A, Quat, Vec2, Vec3};
+use glam::{Affine3A, Quat, Vec2, Vec3, Vec3Swizzles};
 use growing_guns::stadium::{sq, Stadium, PieceKind, ROWS, ROW_DEPTH, ROW_RISE, SEGMENTS, FOUNDATION_Y};
 use growing_guns::{Event, World};
 use render::crowd::{Crowd, Seat};
 use render::headlights::LocalLight;
-use render::particles::{Burst, Particles};
 use render::primitives::{self, Primitive};
 use render::cluster::ClusterMesh;
 use render::scene::{Material, EMISSIVE, LIVE_SCREEN, NO_SHADOW};
@@ -625,7 +624,7 @@ impl StadiumVisuals {
     /// ColosseumCrowd): kills roar, hurts "ooh", blasts in the arena thrill,
     /// blasts and shots reaching the stands kill and terrify.
     #[allow(clippy::too_many_arguments)]
-    pub fn absorb(&mut self, scene: &mut Scene, fx: &mut Particles, blasts: &mut render::fx::Effects, world: &World, ears: &[Listener], now: f32, dt: f32) {
+    pub fn absorb(&mut self, scene: &mut Scene, world: &World, ears: &[Listener], now: f32, dt: f32) {
         if !self.enabled { return; }
         for e in &world.events {
             match *e {
@@ -638,19 +637,16 @@ impl StadiumVisuals {
                     if d <= reach {
                         let proximity = 1.0 - 0.5 * (d / reach);
                         self.sound.scare((0.3 + radius * 0.03) * proximity, self.geo.ring_point_toward(pos).to_array(), ears, 1.0, 0.45);
-                        let kills = self.blast(scene, fx, blasts, pos, reach * 0.5, now);
-                        self.sound.fear = (self.sound.fear + kills as f32 * 0.01).clamp(0.0, 1.0);
+                        self.blast(scene,pos,reach*0.5,now);
                     } else {
                         self.sound.excite((0.05 + radius * 0.012).clamp(0.0, 0.3));
                     }
                 }
                 Event::Impact { pos, .. } if self.geo.distance_to_crowd(pos) <= 0.5 => {
                     self.sound.scare(0.09, self.geo.ring_point_toward(pos).to_array(), ears, 0.55, 1.0);
-                    self.crowd.flee(pos, 1.2, now);
-                    let dead = self.crowd.kill_near(pos, 1.7, 2);
-                    for &p in &dead { let d = 1.0 + self.rng.f() * 0.5; self.mark(scene, p, d, self.blood); }
-                    if !dead.is_empty() { self.gore(scene, fx, pos, dead.len()); }
                 }
+                Event::TrackedBulletPath { id, from, to, .. } => self.trace(from, to, id, now),
+                Event::BulletPath { from, to, .. } => self.trace(from, to, 0, now),
                 _ => {}
             }
         }
@@ -659,11 +655,29 @@ impl StadiumVisuals {
         self.crowd.mood(self.sound.enthusiasm, self.sound.fear);
     }
 
-    /// A blast reaching the stands: everyone near bolts, everyone inside
-    /// dies, scorch and blood marks, gore and a red mist.
-    fn blast(&mut self, scene: &mut Scene, fx: &mut Particles, blasts: &mut render::fx::Effects, pos: Vec3, radius: f32, now: f32) -> usize {
-        self.crowd.flee(pos, radius, now);
-        let dead = self.crowd.kill_near(pos, radius, usize::MAX);
+    fn trace(&mut self, from: Vec3, to: Vec3, id: u64, now: f32) {
+        // The whole clipped segment lies in the convex infield or outside the
+        // vertical band. Include head height, near misses and displaced people.
+        let inner = (self.geo.inner_r - 8.).max(0.);
+        let outer = self.geo.wall_r() + 8.;
+        if from.x.min(to.x) > outer
+            || from.x.max(to.x) < -outer
+            || from.z.min(to.z) > outer
+            || from.z.max(to.z) < -outer
+        {
+            return;
+        }
+        if (from.xz().length_squared().max(to.xz().length_squared()) < inner * inner)
+            || from.y.max(to.y) < self.geo.base_y - 4.
+            || from.y.min(to.y) > self.geo.wall_h() + 5.
+        {
+            return;
+        }
+        self.crowd.bullet_path(from, to, id, now);
+    }
+
+    fn blast(&mut self, scene: &mut Scene, pos: Vec3, radius: f32, now: f32) {
+        self.crowd.explosion(pos, radius, now);
         let outward = Vec3::new(pos.x, 0.0, pos.z).normalize_or(Vec3::X);
         let tangent = Vec3::Y.cross(outward);
         let slope = (outward * ROW_DEPTH + Vec3::Y * ROW_RISE).normalize();
@@ -675,18 +689,50 @@ impl StadiumVisuals {
             let diameter = self.rng.range(0.45, 1.1) * (1.0 - 0.3 * r / reach);
             self.mark(scene, p, diameter, self.scorch);
         }
-        if !dead.is_empty() {
-            let mag = (1.0 + dead.len() as f32 * 0.035).clamp(1.0, 2.0);
-            for i in 0..dead.len().min(32) { let p = dead[i * dead.len() / dead.len().min(32)]; let s = self.rng.range(0.28, 0.65) * mag; self.mark(scene, p, s, self.blood); }
-            self.gore(scene, fx, pos, dead.len());
-            blasts.blood_mist(now, pos, (radius * 0.75).max(1.2), dead.len());
-        }
-        dead.len()
     }
 
-    fn gore(&mut self, scene: &mut Scene, fx: &mut Particles, at: Vec3, kills: usize) {
-        let n = (kills * 6).clamp(16, 120) as u32;
-        fx.burst(scene, at, Vec3::Y, &Burst { mesh: self.gore, count: n, spread: 1.3, speed: [3.0, 9.0], size: [0.3, 0.2], life: [2.0, 2.6], ..Burst::debris() });
+    pub fn apply_hits(
+        &mut self,
+        scene: &mut Scene,
+        debris: &mut render::debris::Debris,
+        fx: &mut render::fx::Effects,
+        now: f32,
+    ) -> Result<(), String> {
+        for hit in self.crowd.take_hits()? {
+            let n = hit.positions.len();
+            for i in 0..n.min(32) {
+                let p = hit.positions[i * n / n.min(32)];
+                let size = self.rng.range(0.42, 0.82);
+                self.mark(scene, p, size, self.blood);
+            }
+            // Skip expired transient effects on a replay seek; the persistent deaths and stains remain.
+            if now - hit.time > 2.6 {
+                continue;
+            }
+            let clouds = n.min(8);
+            for i in 0..clouds {
+                let p = hit.positions[i * n / clouds];
+                debris.burst(
+                    scene,
+                    &render::debris::BurstSpec {
+                        center: p,
+                        radius: 0.12,
+                        count: (n * 6).clamp(16, 120) as u32 / clouds as u32,
+                        meshes: &[self.gore],
+                        size: 0.12,
+                        speed: 6.5,
+                        life: 2.6,
+                    },
+                );
+            }
+            let center = hit.positions.iter().copied().sum::<Vec3>() / n as f32;
+            if hit.radius > 0. {
+                fx.blood_mist(hit.time, center, (hit.radius * 0.75).clamp(0.45, 6.), n);
+            } else {
+                fx.gib_mist(hit.time, center, 0.6);
+            }
+        }
+        Ok(())
     }
 
     /// A flat mark on the stands' slope (visible from the arena floor).
