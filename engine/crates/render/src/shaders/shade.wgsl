@@ -1809,6 +1809,14 @@ fn sun_clipmap_cover(p: vec3<f32>) -> f32 {
 // How fully the sharp sun maps cover p: the near clipmap levels when on,
 // else the near part of the shared map (inside its coverage fade).
 fn near_sharp_cover(p: vec3<f32>) -> f32 {
+    // Within FAR_TREE_SHADOW_MIN_M the sun maps keep the trees' shadows:
+    // the per-tree cones up close read as stepped triangles on the grass
+    // (Joep, 9 November, 150-500 m from the camera).
+    let near = 1.0 - smoothstep(FAR_TREE_SHADOW_MIN_M, FAR_TREE_SHADOW_MIN_M * 1.3, distance(p.xz, view.cam.xz));
+    if near >= 1.0 { return 1.0; }
+    return max(near, near_sharp_cover_maps(p));
+}
+fn near_sharp_cover_maps(p: vec3<f32>) -> f32 {
     let levels = select(0, i32(light.near_levels.x), light.near_shadow.z > 0.5);
     var w = 0.0;
     for (var k = 0; k < levels; k++) { w = max(w, near_level_weight(k, p)); }
@@ -1820,6 +1828,8 @@ override FAR_TREE_SHADOWS: bool = true;
 // Where in the shared map (its clip-space radius) per-tree ground shadows
 // start to take over.
 override FAR_TREE_SHADOW_FROM: f32 = 0.35;
+// Metres from the camera within which per-tree ground shadows never draw.
+override FAR_TREE_SHADOW_MIN_M: f32 = 800.0;
 // far_tree_cast for this pixel's terrain (-1: none, or not evaluated).
 var<private> far_tree_shadow: f32 = -1.0;
 
