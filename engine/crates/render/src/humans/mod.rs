@@ -169,6 +169,7 @@ fn appearance(
     })
 }
 
+const VISIBLE_SEAT_BYTES: u64 = 32;
 const HUMAN_SHADER: &str = concat!(
     include_str!("../shaders/surface_fog.wgsl"), "\n",
     include_str!("../shaders/incident_lights.wgsl"), "\n",
@@ -242,7 +243,7 @@ impl ReviewRenderer {
         };
         let count = u32::try_from(actors.len()).map_err(|_| "too many instances")?;
         if count == 0
-            || u64::from(count) * 80 > u64::from(gpu.limits.max_storage_buffer_binding_size)
+            || u64::from(count) * 5 * VISIBLE_SEAT_BYTES > u64::from(gpu.limits.max_storage_buffer_binding_size)
         {
             return Err("invalid human instance count".into());
         }
@@ -265,7 +266,7 @@ impl ReviewRenderer {
             });
         let dummy = game.is_none().then(|| buffer(80, U::STORAGE));
         let poses = game.map(|(b, _)| b).or(dummy.as_ref()).unwrap();
-        let ids = buffer(u64::from(count) * 5 * 16, U::STORAGE);
+        let ids = buffer(u64::from(count) * 5 * VISIBLE_SEAT_BYTES, U::STORAGE);
         let args = buffer(100, U::STORAGE | U::COPY_DST | U::COPY_SRC | U::INDIRECT);
         let read = buffer(120, U::MAP_READ | U::COPY_DST);
         let timer = gpu
@@ -672,6 +673,9 @@ mod tests {
         let info = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all(),
         ).validate(&module).unwrap();
+        let seat = module.types.iter().find(|(_, t)| t.name.as_deref() == Some("SeatLight")).unwrap().1;
+        let naga::TypeInner::Struct { span, .. } = seat.inner else { panic!("expected visible spectator record"); };
+        assert_eq!(u64::from(span), VISIBLE_SEAT_BYTES);
         for (name, expected) in [("fs_match", true), ("fs_review", false)] {
             let i = module.entry_points.iter().position(|e| e.name == name).unwrap();
             let stage = info.get_entry_point(i);

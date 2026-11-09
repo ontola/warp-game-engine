@@ -52,7 +52,10 @@ fn body_pose(s:Seat,r:Reaction,time:f32,mood:vec2<f32>)->BodyPose {
     let hop=(s.params.w+mood.x*0.22)*(1.+mood.x*0.8)*(1.-mood.y);
     let disp=row_direction(s)*displacement(r,time);
     let stride=min(abs(displacement(r,time+0.016)-displacement(r,time))*24.,1.);
-    let lift=(up*hop*0.4+abs(sin(time*10.5+s.params.y*41.))*0.17*stride)*s.params.x;
+    // Rigged spectators shift weight in place while watching. Only a cheer
+    // lifts them off the step. The hit test uses this same root position.
+    let cheering=select(1.,smoothstep(0.28,0.85,mood.x),u.counts.z!=0u);
+    let lift=(up*hop*cheering*0.4+abs(sin(time*10.5+s.params.y*41.))*0.17*stride)*s.params.x;
     return BodyPose(s.pos_yaw.xyz+vec3<f32>(disp.x,lift,disp.y),up,1.-mood.y*0.22,
         sin(t*0.6)*0.035+mood.y*sin(time*21.+s.params.y*47.)*0.045);
 }

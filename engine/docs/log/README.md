@@ -22,6 +22,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [handoff.md](handoff.md) is the running log of 23 October to 5 November
   2026, newest first.
 
+- [Stadium voices and spectator gestures](2026-11-09-stadium-voices-and-gestures.md)
 - [Warp Humans in stadium fog](2026-11-09-warp-humans-fog.md)
 - [Growing Guns blood spray and surface contacts](2026-11-09-growing-guns-blood-spray.md)
 - [Repeated crowd shots and blast reactions](2026-11-09-growing-guns-crowd-reactions.md)

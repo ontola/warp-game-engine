@@ -19,9 +19,9 @@ const ENTHUSIASM_DECAY: f32 = 0.38;
 const FEAR_DECAY: f32 = 0.20;
 const LAYER_DYN_RANGE_DB: f32 = 14.0;
 
-// Mix (dB at full layer gain), as in the addon.
-const MURMUR_DB: f32 = -22.0;
-const CHEER_DB: f32 = -10.0;
+// Full layer gains. Keep the quiet stands audible between game effects.
+const MURMUR_DB: f32 = -15.0;
+const CHEER_DB: f32 = -8.0;
 const PANIC_DB: f32 = -9.0;
 const CLAPS_DB: f32 = -12.0;
 const REACTION_DB: f32 = -8.0;
@@ -56,6 +56,25 @@ impl Samples {
     fn silent() -> Self {
         let c = Clip(Vec::new().into());
         Samples { cheer: c.clone(), panic: c.clone(), surge: c, roar: Vec::new(), goal: Vec::new(), ooh: Vec::new(), scream: Vec::new(), chant: Vec::new() }
+    }
+
+    /// Packed into the game so the arena has a voice in a standalone build.
+    pub fn bundled() -> Result<Self, String> {
+        macro_rules! clip {
+            ($file:literal) => {
+                audio::sfx::decode_ogg(include_bytes!(concat!("../../assets/crowd/", $file, ".ogg")))?
+            };
+        }
+        macro_rules! clips {
+            ($($file:literal),+) => { vec![$(clip!($file)),+] };
+        }
+        Ok(Self {
+            cheer: clip!("cheer_loop"), panic: clip!("panic_loop"), surge: clip!("surge"),
+            roar: clips!("roar_1", "roar_2", "roar_3", "roar_4"),
+            goal: clips!("goal_1", "goal_2", "goal_3", "goal_4"),
+            ooh: clips!("ooh_1"), scream: clips!("scream_1", "scream_2", "scream_3", "scream_4"),
+            chant: clips!("chant_1", "chant_2", "chant_3", "chant_4"),
+        })
     }
 
     pub fn load(dir: &Path) -> Result<Self, String> {
@@ -527,16 +546,16 @@ mod tests {
 
     #[test]
     fn mood_moves_the_bed_mix() {
-        let dir = find_dir(None, None);
-        let Some(dir) = dir else { return };
+        let samples = Samples::bundled().unwrap();
         let (tx, mut mix) = audio::sfx::sfx(32, audio::SAMPLE_RATE);
-        let mut c = CrowdSound::new(Some((tx, Samples::load(&dir).unwrap())));
+        let mut c = CrowdSound::new(Some((tx, samples)));
         for _ in 0..60 { c.update(1.0 / 60.0, None); }
         let calm = mix.render_stereo(0.5);
         c.celebrate();
         for _ in 0..60 { c.update(1.0 / 60.0, None); }
         let loud = mix.render_stereo(0.5);
         let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        assert!(rms(&calm) > 0.0001, "quiet stands must still be audible");
         assert!(rms(&loud) > rms(&calm) * 1.5, "{} {}", rms(&calm), rms(&loud));
     }
 }

@@ -82,7 +82,7 @@ iconutil -c icns "$iconset" -o "$resources/AppIcon.icns"
 
 cat > "$resources/package.json" <<EOF
 {"executable_sha256": "$(shasum -a 256 "$executable" | cut -d' ' -f1)", "commit": "$commit", "recordings_from": "$recordings",
- "scope": "Native macOS app bundle. Without a Godot project the footsteps, hurts, deaths, crowd and music are silent. Packaging is not proof of GPU acceptance."}
+ "scope": "Native macOS app bundle. Without a Godot project the footsteps, hurts, deaths and music are silent. Packaging is not proof of GPU acceptance."}
 EOF
 
 # Copied files carry Finder/provenance attributes that codesign rejects.

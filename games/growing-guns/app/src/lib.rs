@@ -221,16 +221,13 @@ fn script(args: &Args) -> Result<(), String> {
     for kv in args.list.windows(2).filter(|w| w[0] == "--set").map(|w| w[1].clone()) { game.light_mut().set(&kv)?; }
     let samples = sounds::find_dir(args.value("--sounds"));
     let patches = sounds::find_patches(args.value("--sfx"));
-    let mixer = (samples.is_some() || patches.is_some()).then(|| {
-        let music = play::music(args, samples.as_deref(), args.num("--seed", 3u64), false);
-        let (mix, tx, crowd) = sounds::offline(music.as_ref());
-        game.set_crowd(args.value("--crowd"), samples.as_deref(), &crowd);
-        game.set_sounds(sounds::Sounds::new(tx, patches, samples.as_deref()));
-        if let Some(m) = music { game.set_music(m); }
-        mix
-    });
+    let music = play::music(args, samples.as_deref(), args.num("--seed", 3u64), false);
+    let (mixer, tx, crowd) = sounds::offline(music.as_ref());
+    game.set_crowd(args.value("--crowd"), samples.as_deref(), &crowd);
+    game.set_sounds(sounds::Sounds::new(tx, patches, samples.as_deref()));
+    if let Some(m) = music { game.set_music(m); }
     let gpu = Gpu::new()?;
-    let failed = app::script::run_file(&mut game, &gpu, TICK_HZ as f32, std::path::Path::new(file), std::path::Path::new(out), mixer)?;
+    let failed = app::script::run_file(&mut game, &gpu, TICK_HZ as f32, std::path::Path::new(file), std::path::Path::new(out), Some(mixer))?;
     if failed > 0 { std::process::exit(1); }
     Ok(())
 }

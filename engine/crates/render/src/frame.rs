@@ -5516,6 +5516,7 @@ impl Renderer {
                             (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
                             (17, self.headlights.uniform.as_entire_binding()),
                             (18, wgpu::BindingResource::TextureView(&self.headlights.sampled)),
+                            (19, self.crowd.as_ref().expect("human crowd").pose_uniform().as_entire_binding()),
                         ], &[
                             (0, main.uniform.as_entire_binding()),
                             (2, light_buf.as_entire_binding()),

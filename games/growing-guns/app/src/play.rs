@@ -347,12 +347,14 @@ impl Gg {
         self.music = Some((m, Default::default()));
     }
 
-    /// The crowd's recordings (`--crowd DIR`, GG_CROWD, or found beside the
-    /// sound folder); without them the crowd still reacts, silently.
+    /// Prefer an installed or custom recording set, then the game's own stadium recordings.
     pub fn set_crowd(&mut self, arg: Option<&str>, sounds: Option<&std::path::Path>, tx: &audio::sfx::SfxSender) {
-        let Some(dir) = crate::crowd_sound::find_dir(arg, sounds) else { eprintln!("silent crowd: no crowd_sound samples (--crowd DIR or GG_CROWD)"); return };
-        eprintln!("crowd: samples from {}", dir.display());
-        match crate::crowd_sound::Samples::load(&dir) {
+        use crate::crowd_sound::{find_dir, Samples};
+        let external = find_dir(arg, sounds).and_then(|dir| match Samples::load(&dir) {
+            Ok(bank) => { eprintln!("crowd: samples from {}", dir.display()); Some(bank) }
+            Err(e) => { eprintln!("crowd: {e}, using bundled samples"); None }
+        });
+        match external.map_or_else(Samples::bundled, Ok) {
             Ok(s) => {
                 let mut c = crate::crowd_sound::CrowdSound::new(Some((tx.clone(), s)));
                 c.kickoff();
