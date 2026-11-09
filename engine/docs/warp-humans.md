@@ -8,9 +8,11 @@ cargo run --release -p growing-guns-app --bin growing-guns -- play --warp-humans
 
 Add `--start-in-stands` to begin the match on a tread facing a neighbour at eye level. A standard player is 1.80 m tall with the camera at 1.60 m. Seeded spectators range from 1.55 to 1.95 m. The game grounds them on the same stepped geometry used for walking.
 
+Warp Humans matches default to packed seating with eight radial aisles. The generator spreads up to 15,000 seats over the whole bowl. Use `--crowd-density standard` for the earlier spacing. The stadium viewer and headless review accept both explicit settings and default to standard when launched without `--warp-humans`.
+
 The match supplies the seat identities, live positions, crowd reactions and per-player camera.
 The people render into the arena's HDR colour and depth buffers before transparency and post-processing.
-Sun and sky illuminate them. Local floodlights and cast shadows on the figures remain open.
+Each visible spectator receives the scene's sun shadow, floodlights and local lights at torso height during GPU detail selection. All detail levels share that sample; surface normals shape the response on faces, hair and clothing. The crowd does not cast individual shadows.
 The normal crowd is the default. The minimum graphics profile omits the stadium.
 Use the same flag with `shot` or `bench` for a repeatable match comparison.
 

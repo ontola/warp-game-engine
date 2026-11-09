@@ -21,8 +21,22 @@ use render::Scene;
 use std::f32::consts::{PI, TAU};
 
 pub const CROWD_MAX: usize = 15_000;
-const CROWD_SPACING: f32 = 0.9;
-const CROWD_SKIP_CHANCE: f32 = 0.08;
+#[derive(Clone, Copy, PartialEq)]
+enum Density { Standard, Packed }
+
+static DENSITY: std::sync::OnceLock<Density> = std::sync::OnceLock::new();
+
+pub(crate) fn configure_density(args: &crate::Args) -> Result<(), String> {
+    let density = match args.value("--crowd-density") {
+        Some("standard") => Density::Standard,
+        Some("packed") => Density::Packed,
+        Some(_) => return Err("--crowd-density expects standard or packed".into()),
+        None if args.flag("--crowd-density") => return Err("missing --crowd-density value".into()),
+        None if args.flag("--warp-humans") => Density::Packed,
+        None => Density::Standard,
+    };
+    DENSITY.set(density).map_err(|_| "crowd density already configured".into())
+}
 const ROOF_DROP: f32 = 3.0;
 const ROOF_STEPS: usize = 224;
 const ROOF_INNER: f32 = 0.8135;
@@ -291,28 +305,48 @@ fn stadium_rng(seed: u64) -> (Rng, usize) {
 
 // One figure per occupied seat, preserving the game RNG draw order.
 fn seat_layout(rng: &mut Rng, geo: Stadium, looks: &[(usize,usize)]) -> Vec<Seat> {
+    seats_at_density(rng, geo, looks, DENSITY.get().copied().unwrap_or(Density::Standard))
+}
+
+fn seats_at_density(rng: &mut Rng, geo: Stadium, looks: &[(usize,usize)], density: Density) -> Vec<Seat> {
     let seg = Stadium::seg_ang();
     let mut seats = Vec::new();
     use growing_guns::shape::{BoxGrid, Boxes, YawBox};
     let treads = geo.pieces().into_iter().filter(|p| p.kind == PieceKind::Step)
         .map(|p| YawBox::new(p.center, p.size, p.yaw)).collect();
     let grid = BoxGrid::new(treads, 4.0);
+    // Each row contributes its full perimeter. Widen the spacing uniformly on a
+    // large arena before placing anyone, so the last sections also get seats.
+    let (spacing, jitter, skip) = match density {
+        Density::Standard => (0.9, 0.15, 0.08),
+        Density::Packed => {
+            let mean_radius = geo.inner_r + ROWS as f32 * geo.row_depth() * 0.5;
+            let ring: f32 = (0..SEGMENTS).map(|i| sq(seg * (i as f32 + 0.5)) * seg).sum();
+            let length = mean_radius * ring * ROWS as f32;
+            ((length / CROWD_MAX as f32).max(0.58), 0.035, 0.025)
+        }
+    };
     'all: for i in 0..SEGMENTS {
         let ang = seg * (i as f32 + 0.5);
         for row in 0..ROWS {
             let y = geo.base_y + row as f32 * geo.row_rise();
             let row_r = geo.inner_r + (row as f32 + 0.5) * geo.row_depth();
-            let count = (row_r * sq(ang) * seg / CROWD_SPACING) as usize;
+            let count = (row_r * sq(ang) * seg / spacing) as usize;
             for k in 0..count {
-                if rng.f() < CROWD_SKIP_CHANCE { continue; }
+                if rng.f() < skip { continue; }
+                // Eight radial access aisles leave room to stand among the crowd.
+                let midpoint = (k as f32 + 0.5) / count as f32 - 0.5;
+                if density == Density::Packed && i % 7 == 0 && (midpoint * row_r * sq(ang) * seg).abs() < 1.15 {
+                    continue;
+                }
                 // The tread is a straight box. Keep each foot on its actual tread,
                 // including at corners where the curved seat ring crossed adjacent steps.
-                let offset = ((k as f32 + 0.5) / count as f32 - 0.5) * seg;
-                let a = ang + offset + rng.range(-0.15, 0.15) / row_r.max(1.0);
+                let offset = midpoint * seg;
+                let a = ang + offset + rng.range(-jitter, jitter) / row_r.max(1.0);
                 let radial = Vec3::new(ang.cos(), 0.0, ang.sin());
                 let tangent = Vec3::new(-ang.sin(), 0.0, ang.cos());
                 let mid = row_r * sq(ang);
-                let along = mid * (a-ang).tan() + rng.range(-0.15, 0.15);
+                let along = mid * (a-ang).tan() + rng.range(-jitter, jitter);
                 let mut pos = radial * (mid + rng.range(-0.25, 0.25)) + tangent * along + Vec3::Y * y;
                 let above = geo.wall_h() + 1.0;
                 if let Some((distance, _, _)) = grid.ray(pos.with_y(above), Vec3::NEG_Y, above - geo.base_y + 1.0) {
@@ -797,6 +831,29 @@ impl StadiumVisuals {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packed_crowd_fills_every_sector_within_the_reserved_pool() {
+        let looks = [(0, 0); (CROWD_COLORS.len()+CROWD_ACCENTS.len())*SHADES.len()];
+        for width in [44.0, 72.0, 96.0] {
+            let geo = Stadium::for_arena(width, true, growing_guns::arena::LEVEL_SCALE);
+            let layout = |density| seats_at_density(&mut stadium_rng(52).0, geo, &looks, density);
+            let standard = layout(Density::Standard);
+            let packed = layout(Density::Packed);
+            assert!(packed.len() >= standard.len(), "width {width}: {} vs {}", packed.len(), standard.len());
+            if width == 44.0 {
+                assert!(packed.len() > standard.len() * 7 / 5);
+            }
+            assert!(packed.len() <= CROWD_MAX);
+            let mut sectors = [0; SEGMENTS];
+            for seat in &packed {
+                let angle = seat.pos.z.atan2(seat.pos.x).rem_euclid(TAU);
+                let index = (angle / Stadium::seg_ang()) as usize % SEGMENTS;
+                sectors[index] += 1;
+            }
+            assert!(sectors.iter().all(|n| *n > 50));
+        }
+    }
 
     #[test]
     fn scale_playtest_stands_at_eye_level_on_a_real_tread() {

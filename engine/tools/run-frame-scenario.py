@@ -22,7 +22,7 @@ SHADER_OVERRIDE_NAMES = (
     "foliage_volume.wgsl",
     "foliage_sun_pages.wgsl", "terrain_trace.wgsl", "world_visibility.wgsl",
     "wind_common.wgsl", "meadow_field.wgsl", "shade.wgsl", "car_material.wgsl", "car_lamps.wgsl",
-    "grass_lighting.wgsl", "headlights.wgsl", "transparency.wgsl",
+    "grass_lighting.wgsl", "incident_lights.wgsl", "headlights.wgsl", "transparency.wgsl",
     "grass_transition.wgsl", "far_grass.wgsl", "voxel_forest.wgsl",
 )
 SHADER_FILE_LIMIT = 2 * 1024 * 1024

@@ -103,6 +103,7 @@ pub fn desktop_main() {
     let list: Vec<String> = std::env::args().skip(1).collect();
     let cmd = command(&list);
     let args = Args { list };
+    if let Err(e) = stadium::configure_density(&args) { eprintln!("{e}"); std::process::exit(1); }
     if let Some(profile) = args.value("--graphics").map(str::to_owned).or_else(|| std::env::var("GG_GRAPHICS").ok()) {
         if let Err(e) = graphics::Graphics::parse(&profile).and_then(graphics::configure) { eprintln!("{e}"); std::process::exit(1); }
     }

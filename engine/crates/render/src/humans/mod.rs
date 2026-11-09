@@ -173,6 +173,8 @@ pub struct ReviewRenderer {
     compute: wgpu::ComputePipeline,
     render: wgpu::RenderPipeline,
     selection: wgpu::BindGroup,
+    light_groups: crate::frame::resource_cache::BindGroups<8>,
+    light_layout: Option<wgpu::BindGroupLayout>,
     drawing: wgpu::BindGroup,
     appearance: wgpu::BindGroup,
     camera: wgpu::Buffer,
@@ -232,7 +234,7 @@ impl ReviewRenderer {
         };
         let count = u32::try_from(actors.len()).map_err(|_| "too many instances")?;
         if count == 0
-            || u64::from(count) * 64 > u64::from(gpu.limits.max_storage_buffer_binding_size)
+            || u64::from(count) * 80 > u64::from(gpu.limits.max_storage_buffer_binding_size)
         {
             return Err("invalid human instance count".into());
         }
@@ -245,7 +247,7 @@ impl ReviewRenderer {
                 mapped_at_creation: false,
             })
         };
-        let camera = buffer(160, U::UNIFORM | U::COPY_DST);
+        let camera = buffer(224, U::UNIFORM | U::COPY_DST);
         let actors = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -255,7 +257,7 @@ impl ReviewRenderer {
             });
         let dummy = game.is_none().then(|| buffer(80, U::STORAGE));
         let poses = game.map(|(b, _)| b).or(dummy.as_ref()).unwrap();
-        let ids = buffer(u64::from(count) * 5 * 4, U::STORAGE);
+        let ids = buffer(u64::from(count) * 5 * 16, U::STORAGE);
         let args = buffer(100, U::STORAGE | U::COPY_DST | U::COPY_SRC | U::INDIRECT);
         let read = buffer(120, U::MAP_READ | U::COPY_DST);
         let timer = gpu
@@ -275,7 +277,7 @@ impl ReviewRenderer {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("warp humans"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("humans.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(concat!(include_str!("../shaders/incident_lights.wgsl"), "\n", include_str!("humans.wgsl")).into()),
             });
         let compute = gpu
             .device
@@ -283,7 +285,7 @@ impl ReviewRenderer {
                 label: None,
                 layout: None,
                 module: &shader,
-                entry_point: Some("select_lod"),
+                entry_point: Some(if game.is_some() { "select_match" } else { "select_lod" }),
                 compilation_options: Default::default(),
                 cache: None,
             });
@@ -383,6 +385,8 @@ impl ReviewRenderer {
         );
         Ok(Self {
             appearance,
+            light_layout: game.map(|_| compute.get_bind_group_layout(1)),
+            light_groups: Default::default(),
             compute,
             render,
             selection,
@@ -455,6 +459,8 @@ impl ReviewRenderer {
         view: Mat4,
         focal: f32,
         light: &crate::Lighting,
+        shadow_vp: &[[f32; 4]; 4],
+        lights: &[(u32, wgpu::BindingResource)],
         color: &wgpu::TextureView,
         depth: &wgpu::TextureView,
     ) {
@@ -471,8 +477,8 @@ impl ReviewRenderer {
                 self.load_detail(gpu);
             }
         }
-        let mut words = [0u32; 65];
-        let u: &mut [f32] = bytemuck::cast_slice_mut(&mut words[..40]);
+        let mut words = [0u32; 81];
+        let u: &mut [f32] = bytemuck::cast_slice_mut(&mut words[..56]);
         u[..16].copy_from_slice(&vp.to_cols_array());
         let axes = view.transpose();
         u[16..20].copy_from_slice(&axes.x_axis.to_array());
@@ -484,10 +490,12 @@ impl ReviewRenderer {
             light.sun_lux,
         ]);
         u[28..31].copy_from_slice(&light.sun_dir.to_array());
+        u[31] = light.shadow_strength.clamp(0., 1.);
+        u[40..56].copy_from_slice(bytemuck::cast_slice(shadow_vp));
         u[32..35].copy_from_slice(&light.sun_color.to_array());
         u[36..40].copy_from_slice(&[light.time, focal, self.far as u32 as f32, self.count as f32]);
         for (mesh, bin) in self.meshes.iter().zip([0, 1, 2, 4]) {
-            words[40 + 5 * bin] = mesh.count;
+            words[56 + 5 * bin] = mesh.count;
         }
         let upload = gpu
             .device
@@ -496,9 +504,10 @@ impl ReviewRenderer {
                 contents: bytemuck::cast_slice(&words),
                 usage: wgpu::BufferUsages::COPY_SRC,
             });
-        enc.copy_buffer_to_buffer(&upload, 0, &self.camera, 0, 160);
-        enc.copy_buffer_to_buffer(&upload, 160, &self.args, 0, 100);
-        self.encode_passes(enc, color, depth);
+        enc.copy_buffer_to_buffer(&upload, 0, &self.camera, 0, 224);
+        enc.copy_buffer_to_buffer(&upload, 224, &self.args, 0, 100);
+        let lamps = self.light_groups.get(gpu, self.light_layout.as_ref().unwrap(), "human scene lights", lights);
+        self.encode_passes(enc, color, depth, Some(&lamps));
     }
 
     fn encode_passes(
@@ -506,6 +515,7 @@ impl ReviewRenderer {
         enc: &mut wgpu::CommandEncoder,
         cv: &wgpu::TextureView,
         dv: &wgpu::TextureView,
+        lights: Option<&wgpu::BindGroup>,
     ) {
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -514,6 +524,9 @@ impl ReviewRenderer {
             });
             pass.set_pipeline(&self.compute);
             pass.set_bind_group(0, &self.selection, &[]);
+            if let Some(lights) = lights {
+                pass.set_bind_group(1, lights, &[]);
+            }
             pass.dispatch_workgroups(self.count.div_ceil(64), 1, 1);
         }
         {
@@ -603,6 +616,7 @@ impl ReviewRenderer {
             &mut enc,
             &color.create_view(&Default::default()),
             &depth.create_view(&Default::default()),
+            None,
         );
         if let Some((q, b)) = &self.timer {
             enc.write_timestamp(q, 1);
