@@ -70,3 +70,20 @@ shadow consumers (seven levels instead of shared, four levels and far).
   still have their own maps; non-forest scenes have no caster history yet.
 - Local light shadows are a separate thread (clustered shadowed local
   lights).
+
+## From high up (9 November)
+
+Joep's playtest at 500 to 1200 m: a dark soft patch moved with the camera
+over the forest. It is not a cloud shadow (it stays with `--no-clouds`) and
+lives in direct light (`debug=3`, not `4`): forest inside the separate maps'
+reach (about 1.5 km round the ground below) is shadowed, the same forest past
+it is not. In the clipmap mode the patch is gone (lavapipe, 1200 m, x -15165
+z 123528, 25 frames warm-up): tree shadows read the same out to the painted
+forest.
+
+Changes to the clipmap: eight levels (24 m to 3 km) so the outermost reaches
+past the drawn trees (about 2.5 km), and the first level grows with the
+camera's height over its lighting focus (`clipmap_base`, at most 384 m) so
+the levels sit on the visible ground. Near shadows from 480 m match the
+earlier clipmap and the separate maps (mean darkening 26.8, 27.2 and 28.0).
+Still waiting for real GPU timings.
