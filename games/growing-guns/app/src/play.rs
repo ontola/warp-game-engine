@@ -101,6 +101,8 @@ pub struct Gg {
     gn_preview: Option<crate::party::Settings>,
     /// Party names for the seated players, in slot order.
     pub names: Vec<String>,
+    party_colors: Vec<crate::party::PlayerColors>,
+    roster_seed: u64,
     /// `ui.aim` as last sent to or taken from GameNight (players' own setting).
     aim_synced: Vec<(String, f32)>,
     /// Live control (`--live`, live.rs).
@@ -144,10 +146,11 @@ pub struct Gg {
 impl Gg {
     pub fn new(mut world: World, session: Session, slots: Vec<usize>) -> Self {
         let scripts = crate::scripts::attach(&mut world).map_err(|e| eprintln!("mods: {e}")).ok();
+        let roster_seed = world.arena.seed;
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { recorder: Default::default(), replay: None, replay_size: [1600, 900], replay_alpha: 1.0, prev: view::Pose::all(&world), stepped: true, xr_gun: None, xr_aim: None, xr_stereo: false, vis, light: view::lighting(),
-            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, environment_dirty: false, split_hint_left: 0.0, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), aim_synced: Vec::new(), live: None,
+            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, environment_dirty: false, split_hint_left: 0.0, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), party_colors: Vec::new(), roster_seed, aim_synced: Vec::new(), live: None,
             sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, before_blackout: None, light_overrides: Vec::new(), scatter: Default::default(),
             split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), probe_tries: Vec::new(), lan: false, lan_hosts: None, lan_beacon: None, xr_head: None, explosions:crate::explosion_editor::ExplosionEditor::new(), debug: Default::default() }
             .with_split()
@@ -247,7 +250,8 @@ impl Gg {
         let bake = self.vis.stadium.bake_in_background;
         // The crowd's voices outlive the stadium they cheer in.
         let crowd = std::mem::replace(&mut self.vis.stadium.sound, crate::crowd_sound::CrowdSound::new(None));
-        self.vis = view::Visuals::build(&world);
+        self.roster_seed = world.arena.seed;
+        self.vis = view::Visuals::build_roster(&world, self.roster_seed, &self.party_colors);
         self.vis.stadium.bake_in_background = bake;
         self.vis.stadium.set_sound(crowd);
         self.vis.stadium.sound.kickoff();
@@ -286,17 +290,25 @@ impl Gg {
                     let party = self.party.as_mut().expect("party");
                     party.settings.apply_match(&mut world);
                     world.next_modifier = party.next_modifier;
+                    self.party_colors = humans.iter().map(crate::party::PlayerColors::of).collect();
                     self.reset(world, (0..humans.len()).collect());
-                    self.names = humans;
+                    self.names = humans.into_iter().map(|s| s.name).collect();
                     self.party.as_mut().expect("party").ready();
                 }
-                crate::party::Ev::Names(n) => self.names = n,
+                crate::party::Ev::Profiles(seats) => {
+                    let colors: Vec<_> = seats.iter().map(crate::party::PlayerColors::of).collect();
+                    self.names = seats.into_iter().map(|s| s.name).collect();
+                    if colors != self.party_colors {
+                        self.party_colors = colors;
+                        self.refresh_visuals();
+                    }
+                }
                 crate::party::Ev::NextModifier(m) => self.world.next_modifier = m,
                 crate::party::Ev::Sticks(sticks) => {
                     for (k, v) in sticks { if let Some(n) = self.names.get(k).cloned() { self.ui.set_aim(&n, v); } }
                     self.aim_synced.clone_from(&self.ui.aim);
                 }
-                crate::party::Ev::Dispose => {}
+                crate::party::Ev::Dispose => self.party_colors.clear(),
             }
         }
         let party = self.party.as_mut()?;
@@ -725,9 +737,13 @@ impl Gg {
     fn use_graphics(&mut self, want: crate::graphics::Graphics) {
         crate::graphics::switch(want);
         println!("graphics: {}", want.name());
+        self.refresh_visuals();
+    }
+
+    fn refresh_visuals(&mut self) {
         let bake = self.vis.stadium.bake_in_background;
         let crowd = std::mem::replace(&mut self.vis.stadium.sound, crate::crowd_sound::CrowdSound::new(None));
-        self.vis = view::Visuals::build(&self.world);
+        self.vis = view::Visuals::build_roster(&self.world, self.roster_seed, &self.party_colors);
         self.vis.stadium.bake_in_background = bake;
         self.vis.stadium.set_sound(crowd);
         let start = matches!(self.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
@@ -1670,7 +1686,7 @@ pub fn rebuild_views(gg: &mut Gg) {
     }
     let bake = gg.vis.stadium.bake_in_background;
     let sound = std::mem::replace(&mut gg.vis.stadium.sound, crate::crowd_sound::CrowdSound::new(None));
-    gg.vis = view::Visuals::build(&gg.world);
+    gg.vis = view::Visuals::build_roster(&gg.world, gg.roster_seed, &gg.party_colors);
     gg.vis.stadium.bake_in_background = bake;
     gg.vis.hide_own_bodies(if start { &[] } else { &gg.slots });
     gg.vis.stadium.sound = sound;

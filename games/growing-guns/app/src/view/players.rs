@@ -166,18 +166,20 @@ impl PlayersView {
     }
 
     /// Player and tracer instances, rewritten every frame.
-    pub fn reserve_dynamic(&mut self, scene: &mut Scene, players: usize, seed: u64) {
+    pub(crate) fn reserve_dynamic(&mut self, scene: &mut Scene, players: usize, seed: u64, colors: &[crate::party::PlayerColors]) {
         let rigid = crate::graphics::get().rigid_characters;
-        let procedural = !rigid && std::env::args_os().any(|arg| arg == "--warp-humans");
-        self.characters = if !crate::graphics::get().characters && !rigid {None}else{match Characters::load_roster(procedural.then_some((seed, players))) {
+        let procedural = !colors.is_empty() || !rigid && std::env::args_os().any(|arg| arg == "--warp-humans");
+        self.characters = if !crate::graphics::get().characters && !rigid {None}else{match Characters::load_roster(procedural.then_some((seed, players, colors))) {
             Ok(characters) => Some(characters),
             Err(error) => { eprintln!("characters: using primitive fallback: {error}"); None }
         }};
         self.first = scene.instances.len();
         let eye_m = material(scene, [0.05, 0.05, 0.06], 0.3);
         for i in 0..players {
-            let body_m = material(scene, PLAYER_COLORS[i % 4], 0.55);
-            let prims = if crate::graphics::get().minimal_forward {[primitives::sphere(body_m,4,6),primitives::sphere(body_m,4,6),primitives::sphere(eye_m,3,4)]}else{[primitives::sphere(body_m, 10, 16), primitives::sphere(body_m, 8, 14), primitives::sphere(eye_m, 6, 8)]};
+            let profile = colors.get(i).copied().unwrap_or_default();
+            let body_m = material(scene, profile.shirt.unwrap_or(PLAYER_COLORS[i % 4]), 0.55);
+            let head_m = profile.skin.map_or(body_m, |skin| material(scene, skin, 0.55));
+            let prims = if crate::graphics::get().minimal_forward {[primitives::sphere(body_m,4,6),primitives::sphere(head_m,4,6),primitives::sphere(eye_m,3,4)]}else{[primitives::sphere(body_m, 10, 16), primitives::sphere(head_m, 8, 14), primitives::sphere(eye_m, 6, 8)]};
             let [proxy_body, head, eyes] = std::array::from_fn(|k| scene.add_mesh(&prims[k].mesh()));
             let actor = if rigid { None } else { self.characters.as_mut().and_then(|c| c.reserve_actor(scene, i).ok()) };
             // Rigid pieces share the skinned path but for how they are drawn.

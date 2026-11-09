@@ -14,6 +14,11 @@ struct Bone {
 impl Character {
     /// Reuse this character's clips, sockets and joint names with a Warp Human skin.
     pub fn warp_human(&self, person: &Instance) -> Result<Self, String> {
+        self.warp_human_with_skin(person, None)
+    }
+
+    /// Override base skin in sRGB while retaining the seeded face texture.
+    pub fn warp_human_with_skin(&self, person: &Instance, skin: Option<[f32; 3]>) -> Result<Self, String> {
         // Normalized hm08 joint positions, in the same space as the crowd rig.
         let chain = |names: &[&str], points: &[Vec3]| -> Result<Vec<Bone>, String> {
             let joints = names
@@ -91,6 +96,7 @@ impl Character {
             )?;
             limbs.push((arm, leg));
         }
+        let skin_color = skin.map(Vec3::from).unwrap_or_else(|| person.skin_color());
         let (body, indices) = person.body_mesh();
         let skin = |v: &BodyVertex| {
             let p = v.position;
@@ -168,7 +174,7 @@ impl Character {
         let surfaces = groups
             .into_iter()
             .map(|(tag, mut indices)| {
-                let mut surface = surface(person, tag);
+                let mut surface = surface(person, tag, skin_color);
                 let mut remap = vec![u32::MAX; body.len()];
                 for index in &mut indices {
                     let source = *index as usize;
@@ -224,9 +230,8 @@ fn ramp(lo: f32, hi: f32, x: f32) -> f32 {
     t * t * (3. - 2. * t)
 }
 
-fn surface(person: &Instance, tag: u32) -> Surface {
+fn surface(person: &Instance, tag: u32, skin: Vec3) -> Surface {
     let face = person.face_tile();
-    let skin = person.skin_color();
     let cheek = [
         Vec3::new(0.855, 0.659, 0.541),
         Vec3::new(0.894, 0.741, 0.639),

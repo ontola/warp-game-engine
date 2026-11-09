@@ -1,0 +1,5 @@
+# Player reload and GameNight colours
+
+Using the locomotion build at `92d0cbc8` as the baseline, we captured a third-person reload in full graphics on Mancave, Windows, seed 52, arena 13. Two local views shared a 1440 × 860 output. The observing player stood beside the subject. The subject fired once and used the regular reload input. At 30 recorded frames per second the magazine held four rounds before frame 2 and five on frame 38. The support wrist followed the 22.8 cm magazine stroke while the primary hand kept the rifle raised. The scene completed 156 simulation ticks.
+
+The release tests exercised the rendered wrist against the moving magazine socket with ordinary and double reload speed (2 cm tolerance). A loopback GameNight host supplied shirt and skin colours on prepare and changed the shirt during the session. An invalid skin field fell back independently. A separate roster check verified the resulting linear material tints on a seeded player and the fallback for an unprofiled slot.

@@ -101,11 +101,29 @@ impl Settings {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase { Idle, Warm, Running, Paused }
 
+/// Profile colours from GameNight, in sRGB.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct PlayerColors {
+    pub shirt: Option<[f32; 3]>,
+    pub skin: Option<[f32; 3]>,
+}
+impl PlayerColors {
+    pub fn of(seat: &Seat) -> Self {
+        fn rgb(s: &str) -> Option<[f32; 3]> {
+            let s = s.strip_prefix('#')?;
+            if s.len() != 6 || !s.bytes().all(|v| v.is_ascii_hexdigit()) { return None; }
+            let n = u32::from_str_radix(s, 16).ok()?;
+            Some([16, 8, 0].map(|shift| ((n >> shift) & 255u32) as f32 / 255.))
+        }
+        Self { shirt: rgb(&seat.color), skin: rgb(&seat.skin_color) }
+    }
+}
+
 /// What the game should do after a poll.
 pub enum Ev {
     /// Build this match: `humans` seated players (names), `bots` more.
-    Prepare { humans: Vec<String>, bots: usize },
-    Names(Vec<String>),
+    Prepare { humans: Vec<Seat>, bots: usize },
+    Profiles(Vec<Seat>),
     /// Seated players' own stick sensitivity (seat order, multiplier).
     Sticks(Vec<(usize, f32)>),
     /// The app picked the next round's modifier (None: back to random).
@@ -184,7 +202,7 @@ impl Party {
                         // Versus needs two: bots fill the gap (Godot `_configure_meta_from_seats`).
                         let ai = seats.iter().filter(|s| s.ai).count();
                         let bots = ai.max(2usize.saturating_sub(self.seats.len()));
-                        out.push(Ev::Prepare { humans: self.seats.iter().map(|s| s.name.clone()).collect(), bots });
+                        out.push(Ev::Prepare { humans: self.seats.clone(), bots });
                         out.push(self.sticks_ev());
                         self.session = session;
                         self.phase = Phase::Warm;
@@ -202,8 +220,14 @@ impl Party {
                     Command::Roster { seats } | Command::PlayersUpdated { seats } => {
                         // Names and colours follow the lobby; the seats driving the match stay.
                         let named = Self::humans(&seats);
-                        for s in &mut self.seats { if let Some(n) = named.iter().find(|n| n.index == s.index) { s.name = n.name.clone(); s.color = n.color.clone(); } }
-                        out.push(Ev::Names(self.seats.iter().map(|s| s.name.clone()).collect()));
+                        for seat in &mut self.seats {
+                            if let Some(profile) = named.iter().find(|s| s.player_id == seat.player_id) {
+                                seat.name.clone_from(&profile.name);
+                                seat.color.clone_from(&profile.color);
+                                seat.skin_color.clone_from(&profile.skin_color);
+                            }
+                        }
+                        out.push(Ev::Profiles(self.seats.clone()));
                     }
                     Command::Disconnected(e) => { eprintln!("gamenight: {e}"); self.phase = Phase::Idle; }
                     Command::Error(e) => eprintln!("gamenight: {e}"),
@@ -399,10 +423,11 @@ mod tests {
             send(&mut ws, json!({"type":"setting_changed","key":"rounds_to_win","value":4}));
             send(&mut ws, json!({"type":"prepare","game":"growing-guns","session":"s1",
                 "seats":[{"index":0,"controller":"pad-a","occupant":{"kind":"local","player_id":"p1"}},{"index":1,"occupant":{"kind":"ai"}}],
-                "players":[{"id":"p1","name":"Joep","couch":0}]}));
+                "players":[{"id":"p1","name":"Joep","couch":0,"color":"#1a80fe","skin_color":"#925f3d"}]}));
             let mut got = vec![];
             while !got.contains(&"ready".to_string()) { got.push(read(&mut ws)["type"].as_str().unwrap().to_string()); }
             assert!(got.contains(&"progress".to_string()));
+            send(&mut ws, json!({"type":"players_updated","session":"s1","players":[{"id":"p1","name":"Joep","color":"#00ff00","skin_color":"invalid"}]}));
             send(&mut ws, json!({"type":"player_settings","player_id":"p1","values":{"stick_sensitivity":150}}));
             send(&mut ws, json!({"type":"start","session":"s1"}));
             for _ in 0..200 {
@@ -418,12 +443,23 @@ mod tests {
         let client = Client::connect(gamenight::Config { url: format!("ws://{address}"), game_id: "growing-guns".into(), token: String::new(), launched_by_daemon: true }).unwrap();
         let mut party = Party { client, settings: Settings::default(), session: String::new(), phase: Phase::Idle, seats: Vec::new(), finished: false, triggers: Vec::new(), live: None, next_modifier: None, sticks: Default::default() };
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
-        let (mut prepared, mut fired, mut stick) = (None, false, None);
+        let (mut prepared, mut fired, mut stick, mut recolored) = (None, false, None, false);
         assert_eq!(party.screen(), app::Screen::Hidden);
-        while Instant::now() < deadline && !(fired && stick.is_some()) {
+        while Instant::now() < deadline && !(fired && stick.is_some() && recolored) {
             for ev in party.poll() {
                 match ev {
-                    Ev::Prepare { humans, bots } => { prepared = Some((humans, bots)); party.ready(); }
+                    Ev::Prepare { humans, bots } => {
+                        assert_eq!(PlayerColors::of(&humans[0]), PlayerColors {
+                            shirt: Some([26., 128., 254.].map(|x| x / 255.)),
+                            skin: Some([146., 95., 61.].map(|x| x / 255.)),
+                        });
+                        prepared = Some((humans.into_iter().map(|s| s.name).collect::<Vec<_>>(), bots));
+                        party.ready();
+                    }
+                    Ev::Profiles(seats) => {
+                        assert_eq!(PlayerColors::of(&seats[0]), PlayerColors { shirt: Some([0., 1., 0.]), skin: None });
+                        recolored = true;
+                    }
                     Ev::Sticks(s) if !s.is_empty() => stick = Some(s),
                     _ => {}
                 }
@@ -436,6 +472,7 @@ mod tests {
         }
         assert_eq!(prepared, Some((vec!["Joep".to_string()], 1)));
         assert_eq!(party.settings.value("rounds_to_win"), 4);
+        assert!(recolored);
         assert!(fired, "the seat's controller drives the player");
         assert_eq!(stick, Some(vec![(0, 1.5)]));
         party.set_stick(0, 0.8);

@@ -117,6 +117,45 @@ mod tests {
     }
 
     #[test]
+    fn profile_tints_and_reload_follow_the_rendered_player() {
+        use crate::party::PlayerColors;
+        use super::super::guns::Guns;
+        let shirt = [0.12, 0.76, 0.22];
+        let skin = [0.56, 0.32, 0.18];
+        let profiles = [PlayerColors { shirt: Some(shirt), skin: Some(skin) }];
+        let mut c = Characters::load_roster(Some((52, 2, &profiles))).unwrap();
+        let mut scene = Scene::default();
+        let materials = c.models[0].surface_materials(&mut scene);
+        let other = c.models[1].surface_materials(&mut scene);
+        let has_color = |ids: &[u32], rgb: [f32; 3]| {
+            let linear = Vec3::from(rgb.map(|x| ((x + 0.055) / 1.055).powf(2.4)));
+            ids.iter().any(|&i| Vec3::from(scene.materials[i as usize].tint).distance(linear) < 0.005)
+        };
+        assert!(has_color(&materials, shirt) && has_color(&materials, skin));
+        assert!(!has_color(&other, skin));
+        c.reserve_actor(&mut scene, 0).unwrap();
+        let mut world = World::new(52, &[false, true]);
+        let mut guns = Guns::reserve(&mut scene, 2);
+        guns.tick(&world, DT);
+        for duration_scale in [1., 2.] {
+            let p = &mut world.players[0];
+            p.reloading = true;
+            p.weapon.reload_mult = duration_scale;
+            p.rifle_cd = p.weapon.reload_time() * 0.6;
+            let reload = crate::gun::Reload::sample(p, 1.);
+            assert!((reload.hand_drop - 0.228).abs() < 0.001);
+            let xf = model_transform(p.pos, p.yaw);
+            c.pose(&world, &[], 1., Some(&guns));
+            let wrist = c.models[0].joint_position("LeftHand", &c.actors[0].palette).unwrap();
+            let mag = guns.contacts(0, 1.).unwrap().magazine - Vec3::Y * reload.hand_drop;
+            let error = xf.transform_point3(wrist).distance(c.hands[0].unwrap().transform_point3(mag));
+            assert!(error < 0.02, "reload wrist missed magazine by {error:.3} m");
+        }
+        world.players[0].reloading = false;
+        assert_eq!(crate::gun::Reload::sample(&world.players[0], 0.5).hand_drop, 0.);
+    }
+
+    #[test]
     fn knight_extended_pose_reproduces_saved_arm_positions() {
         use crate::gun::{Rig, Stats};
         let model = Character::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters/knight.json")).unwrap();
@@ -282,7 +321,7 @@ impl Characters {
         Self::load_roster(None)
     }
 
-    pub fn load_roster(humans: Option<(u64, usize)>) -> Result<Self, String> {
+    pub(crate) fn load_roster(humans: Option<(u64, usize, &[crate::party::PlayerColors])>) -> Result<Self, String> {
         let dir = if let Some(path) = std::env::var_os("GG_CHARACTERS") {
             if path == "off" { return Err("GG_CHARACTERS=off: explicit primitive roster".into()); }
             PathBuf::from(path)
@@ -291,16 +330,17 @@ impl Characters {
             beside.filter(|p| p.join("knight.json").is_file())
                 .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters"))
         };
-        let mut models = if let Some((seed, count)) = humans {
+        let mut models = if let Some((seed, count, colors)) = humans {
             use render::humans::{Constraints, Instance};
             let rig = Character::load(&dir.join("knight.json"))?;
             let models = (0..count).map(|slot| {
                 let identity = seed.wrapping_mul(0x9e3779b97f4a7c15) ^ slot as u64;
+                let profile = colors.get(slot).copied().unwrap_or_default();
                 let person = Instance::person(identity, Vec3::ZERO, 0., &Constraints {
-                    shirt: Some(super::PLAYER_COLORS[slot % super::PLAYER_COLORS.len()]),
+                    shirt: Some(profile.shirt.unwrap_or(super::PLAYER_COLORS[slot % super::PLAYER_COLORS.len()])),
                     height_m: Some(1.80),
                 });
-                rig.warp_human(&person)
+                rig.warp_human_with_skin(&person, profile.skin)
             }).collect::<Result<Vec<_>, _>>()?;
             println!("characters: {} seeded Warp Humans, roster seed {seed}", models.len());
             models
@@ -470,17 +510,27 @@ impl Characters {
             let hand = body.transform_point3(socket.w_axis.truncate());
             self.hands[i] = Some(if let (Some(arms), Some(contacts)) = (&actor.arms, guns.and_then(|g| g.contacts(i, alpha))) {
                 let (support, roll) = self.animation.pose(contacts, (world.tick as f32 + alpha) * DT);
-                let base = super::guns::Guns::held_transform(hand, drawn.yaw, drawn.pitch, contacts.primary);
+                let reload = crate::gun::Reload::sample(p, alpha);
+                let reach = reload.reach;
+                let pitch = drawn.pitch + reload.tilt;
+                let hand = hand + Quat::from_rotation_y(drawn.yaw) * (reload.lift * 0.55);
+                let support = support.lerp(contacts.magazine - Vec3::Y * reload.hand_drop, reach);
+                let base = super::guns::Guns::held_transform(hand, drawn.yaw, pitch, contacts.primary);
                 let aim = (body.inverse() * base).to_scale_rotation_translation().1;
                 let sampled = actor.knight.as_ref().map(|k| k.mount.place(&actor.palette, aim, contacts.primary));
-                let target = sampled.map_or(base.transform_point3(support), |xf| hand + body.transform_vector3(xf.transform_vector3(support - contacts.primary)));
-                let wrist = arms.apply(&mut actor.palette, socket.w_axis.truncate(), body.inverse().transform_point3(target));
-                arms.orient_support(&mut actor.palette, sampled.map_or(Quat::IDENTITY, |xf| xf.to_scale_rotation_translation().1 * aim.inverse()) * grip_rotation(drawn.pitch) * Quat::from_rotation_x(roll));
+                let facing = sampled.map_or(aim, |xf| xf.to_scale_rotation_translation().1.slerp(aim, reach));
+                let primary = body.inverse().transform_point3(hand);
+                let target = primary + facing * (support - contacts.primary);
+                let wrist = arms.apply(&mut actor.palette, primary, target);
+                arms.orient_support(&mut actor.palette, facing * aim.inverse() * grip_rotation(pitch) * Quat::from_rotation_x(roll * (1. - reach)));
                 if let Some(k) = &mut actor.knight {
-                    k.authored.set_extension(&mut k.editor, contacts.extension);
+                    k.authored.set_extension(&mut k.editor, contacts.extension * (1. - reach));
                     k.editor.apply(&mut actor.palette);
-                    body * k.mount.place(&actor.palette, aim, contacts.primary)
-                } else { super::guns::Guns::held_transform(body.transform_point3(wrist), drawn.yaw, drawn.pitch, contacts.primary) }
+                    let mount = k.mount.place(&actor.palette, aim, contacts.primary);
+                    let rotation = mount.to_scale_rotation_translation().1.slerp(aim, reach);
+                    let grip = mount.transform_point3(contacts.primary);
+                    body * Affine3A::from_rotation_translation(rotation, grip - rotation * contacts.primary)
+                } else { super::guns::Guns::held_transform(body.transform_point3(wrist), drawn.yaw, pitch, contacts.primary) }
             } else { super::guns::Guns::held_transform(hand, drawn.yaw, drawn.pitch, guns.and_then(|g| g.contacts(i, alpha)).map_or(Vec3::ZERO, |c| c.primary)) });
         }
     }
