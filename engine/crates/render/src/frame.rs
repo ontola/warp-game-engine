@@ -87,8 +87,24 @@ pub(crate) const NEAR_LEVELS_MAX: usize = 8;
 /// Levels of the separate-maps mode; the clipmap mode (sun_clipmap) has
 /// CLIPMAP_LEVELS. KERN_SUN_LEVELS overrides either.
 const SEPARATE_LEVELS: usize = 4;
-/// 24 m to 1536 m half extents: the last level covers the old far map's reach.
-const CLIPMAP_LEVELS: usize = 7;
+/// 24 m to 3072 m half extents from the ground: the last level covers the
+/// real trees' reach (terrain_fly draws them to about 2.5 km).
+const CLIPMAP_LEVELS: usize = 8;
+/// Coarsest first clipmap level (clipmap_base): 24 m * 2^4 = 384 m.
+const CLIPMAP_BASE_MAX: usize = 4;
+/// First clipmap level for a camera `above` metres over its lighting focus:
+/// the nearest ground it sees is about that far, so finer levels would hold
+/// only texels far smaller than a pixel there, and the coarse end would stop
+/// short of the visible forest. Level 0 keeps a half extent of at least half
+/// the height. Keeps `prev` within a band so hovering does not flip it (a
+/// change redraws every level).
+fn clipmap_base(above: f32, prev: Option<usize>) -> usize {
+    let target = |h: f32| ((h.max(1.0) / (2.0 * NEAR_SHADOW_EXTENT)).log2().ceil().max(0.0) as usize).min(CLIPMAP_BASE_MAX);
+    match prev {
+        Some(b) if target(above * 1.25) >= b && target(above * 0.8) <= b => b,
+        _ => target(above),
+    }
+}
 fn near_levels_for(clipmap: bool) -> usize {
     static LEVELS: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
     LEVELS.get_or_init(|| std::env::var("KERN_SUN_LEVELS").ok().and_then(|v| v.parse().ok()))
@@ -1115,6 +1131,8 @@ pub struct Renderer {
     sun_clipmap:bool,
     /// Alpha cut and LOD the cached clipmap levels were drawn with.
     clipmap_policy:std::sync::Mutex<Option<(u32,u32)>>,
+    /// First clipmap level per view (clipmap_base), kept between frames.
+    clipmap_bases:std::sync::Mutex<Vec<usize>>,
     /// Coarse cached source maps must not shift steep leaf casters by metres.
     raster_far_sun_depth: Option<wgpu::RenderPipeline>,
     sun_scene_bounds: Option<std::sync::Mutex<crate::stability::SunSceneBounds>>,
@@ -2502,7 +2520,7 @@ impl Renderer {
             raster_depth,
             raster_opaque,
             raster_sun_depth,
-            raster_cached_sun,sun_clipmap:sun_clipmap_requested() && shadow_damage.is_some() && static_sun.is_none(),clipmap_policy:std::sync::Mutex::new(None),shadow_damage:std::sync::Mutex::new(shadow_damage),legacy_shadow_wind,
+            raster_cached_sun,sun_clipmap:sun_clipmap_requested() && shadow_damage.is_some() && static_sun.is_none(),clipmap_policy:std::sync::Mutex::new(None),clipmap_bases:std::sync::Mutex::new(Vec::new()),shadow_damage:std::sync::Mutex::new(shadow_damage),legacy_shadow_wind,
             raster_far_sun_depth,
             sun_scene_bounds,
             sun_guard_bounds,
@@ -4315,6 +4333,16 @@ impl Renderer {
         // level of every view has a damage slot).
         let clipmap_frame = self.sun_clipmap && sun_needed && near_enabled
             && clipmap_slot(views.len().max(1) - 1, self.near_levels() - 1) < crate::shadow_damage::MAX_MAPS;
+        // Level k of view v covers near_level_extent(k + bases[v]).
+        let clipmap_bases: Vec<usize> = {
+            let mut kept = self.clipmap_bases.lock().unwrap();
+            let bases: Vec<usize> = views.iter().enumerate().map(|(vi, view)| {
+                if !clipmap_frame || !diagnostic_sun.is_empty() || self.legacy_light_lookahead {return 0;}
+                clipmap_base(view.cam.pos.y - focus[vi].y, kept.get(vi).copied())
+            }).collect();
+            *kept = bases.clone();
+            bases
+        };
         // Snapshot the same lamps used by the shadow passes below. Animation
         // scheduling must see all consumers before any source transforms move.
         let headlights = if debug_options.headlights_enabled {
@@ -4346,7 +4374,7 @@ impl Renderer {
                     for k in 0..self.near_levels() {
                         let level_grid = clipmap_level_grid(clipmap_frame, k);
                         part_animation_views.push(AnimationView {
-                            view_projection:sun_projection(center,near_level_extent(k),level_grid),
+                            view_projection:sun_projection(center,near_level_extent(k + clipmap_bases[vi]),level_grid),
                             viewport:[NEAR_SHADOW_SIZE;2],
                         });
                     }
@@ -4799,7 +4827,7 @@ impl Renderer {
         // grid every pass below uses.
         let near_vps: Vec<[Mat4; NEAR_LEVELS_MAX]> = views.iter().enumerate().map(|(vi, view)| {
             let centre = if !diagnostic_sun.is_empty() {anchors[vi]} else if self.legacy_light_lookahead {view.cam.target} else {focus[vi]};
-            std::array::from_fn(|k| sun_projection(centre, near_level_extent(k), clipmap_level_grid(clipmap_frame, k)))
+            std::array::from_fn(|k| sun_projection(centre, near_level_extent(k + clipmap_bases[vi]), clipmap_level_grid(clipmap_frame, k)))
         }).collect();
         let near_cached = clipmap_frame;
         // Clipmap levels that redraw their damaged tiles this frame.
@@ -4984,7 +5012,7 @@ impl Renderer {
                 let voxel_casters=self.voxel_forest.as_ref().is_some_and(|f|f.casts_sun())&&!near_sun_source();
                 let mut layer0 = None;
                 for k in 0..self.near_levels() {
-                    let extent = near_level_extent(k);
+                    let extent = near_level_extent(k + clipmap_bases[vi]);
                     let targets = if k == 0 { &near.targets } else { &near.outer[k - 1] };
                     if near_cached && !level_drawn[vi][k] {
                         // Deferred: retained depth, drawn with this projection.
@@ -5018,7 +5046,7 @@ impl Renderer {
                             .map(|name|self.query.as_ref().map(|(qs,_,_)|{let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
                         forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&targets.foliage_selection,crate::voxel_forest::SunSplatView {
                             damage:level_damage.as_ref(),depth:&texture_view,view_proj:near_vp,planes:near_uniform.planes,direction:light.sun_dir,
-                            texel_m:sun_voxel_m(2.0*extent/NEAR_SHADOW_SIZE as f32,near_level_voxel_m(k)),map_size:NEAR_SHADOW_SIZE},times)?;
+                            texel_m:sun_voxel_m(2.0*extent/NEAR_SHADOW_SIZE as f32,near_level_voxel_m(k + clipmap_bases[vi])),map_size:NEAR_SHADOW_SIZE},times)?;
                     }
                     if k == 0 {
                         view_light.near_shadow_view_proj = near_vp.to_cols_array_2d();
@@ -5040,9 +5068,12 @@ impl Renderer {
             let shadow_v = if near_cached {
                 let outer = self.near_levels() - 1;
                 view_light.shadow_view_proj = near_vps[vi][outer].to_cols_array_2d();
-                view_light.sky[3] = 2.0 * near_level_extent(outer) / NEAR_SHADOW_SIZE as f32;
+                view_light.sky[3] = 2.0 * near_level_extent(outer + clipmap_bases[vi]) / NEAR_SHADOW_SIZE as f32;
                 view_light.near_levels[0] = outer as f32;
                 view_light.near_levels[1] = 1.0;
+                // Level 0's texel and the base level (shade.wgsl sun_voxel_cell).
+                view_light.near_shadow[0] *= (1u32 << clipmap_bases[vi]) as f32;
+                view_light.near_levels[2] = clipmap_bases[vi] as f32;
                 near_shadows[vi].layers[outer].clone()
             } else { shadow_v.clone() };
             let light_buf = self.view_uniform(gpu, vi, 1, "view light", bytemuck::bytes_of(&view_light));

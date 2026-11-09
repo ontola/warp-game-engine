@@ -159,8 +159,9 @@ Owned by the foliage work; its working checklist is
   opt-in. **Open:** a visual check on a Windows HDR and a macOS EDR screen
   before turning them on by default; Sideways' own presenter is SDR only; no
   HDR10/PQ metadata.
-- **Opt-in one sun shadow system** (`KERN_SUN_CLIPMAP=1`, 8 November): seven
-  cached, scrolling clipmap levels per view (24 m to 1.5 km) replace the
+- **Opt-in one sun shadow system** (`KERN_SUN_CLIPMAP=1`, 8 November): eight
+  cached, scrolling clipmap levels per view (24 m to 3 km; first level
+  grows with height) replace the
   shared and far maps in GPU-forest worlds; one caster history marks damaged
   tiles in every level. **Open:** a measurement on a real GPU before it
   becomes the default; Sideways (stage scenes, `far_sun`) and the paged

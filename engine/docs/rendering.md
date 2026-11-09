@@ -123,16 +123,20 @@ geometry, voxel splats, proxies) casts into:
   tiles are cleared and redrawn.
 - Past it, a far map (below) or the coarse canopy transmittance.
 
-**One clipmap (`KERN_SUN_CLIPMAP=1`, opt-in, GPU-forest worlds).** Seven
-levels per view (24 m to 1536 m) replace the shared map and the anchored far
-map. Every level is cached like the shared map: the same caster history marks
+**One clipmap (`KERN_SUN_CLIPMAP=1`, opt-in, GPU-forest worlds).** Eight
+levels per view (24 m to 3072 m from the ground) replace the shared map and
+the anchored far map. From high up the first level grows with the camera's
+height over its lighting focus (`frame.rs` `clipmap_base`: half extent at
+least half the height, at most 384 m, kept within a band), so the levels
+cover the visible ground instead of texels far below a pixel, and the
+outermost reaches past the drawn trees. Every level is cached like the shared map: the same caster history marks
 damaged tiles in every level (one pass for all maps, `shadow_damage::MAX_MAPS`
 slots), projections scroll, and only damaged tiles redraw. Level 0 redraws
 every frame; outer levels keep collecting damage between their staggered
 redraws and redraw at once when they move. Their centres snap to whole tiles
 (32 texels: 3 m at level 1, 96 m at level 6), so that happens rarely. The
 outermost level stands in for the shared map in shading (binding 5,
-`shadow_view_proj`); past 1.5 km the coarse transmittance applies as past the
+`shadow_view_proj`); past the outermost level the coarse transmittance applies as past the
 far map. Levels span the scene's whole sun depth, so shading reads only the
 covering level (no extra shared-map tap up the sun ray). While the camera is
 still, the GPU forest still reassigns thousands of voxel slots per frame,
