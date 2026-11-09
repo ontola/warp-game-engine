@@ -48,8 +48,10 @@ resolution, reconstruction mode, sample count and scene with a number.
   a non-blocking counter readback); not in the browser shell or Sideways'
   own shell; overlay cost not measured on a real GPU yet.
 - **Refraction** (8 November): blended materials with a `Refraction`
-  bend the opaque scene behind them in screen space; Sideways car windows
-  have one ([rendering overview](rendering.md)). **Opt-in** with
+  bend the opaque scene behind them in screen space
+  ([rendering overview](rendering.md)). Meant for thick or solid glass:
+  Sideways car windows had it and dropped it, since 4 mm panes barely bend
+  light. **Opt-in** with
   `KERN_REFRACTION=1` or `Scene::graphics.refraction` until checked on
   Mancave; checked on lavapipe only (`refraction_probe`). **Open:** cost on a
   real GPU (a depth copy, a front-depth draw and an HDR copy per view with
