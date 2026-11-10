@@ -377,15 +377,20 @@ pub fn jukebox(c: &mut Canvas, show: &Show) {
 pub fn plaque(c: &mut Canvas, show: &Show) {
     let [w, h] = c.size;
     c.rect([0.0, 0.0, w, h], Color::hex("0c0a16"));
-    let side = 264.0;
-    let qr = [(w - side) / 2.0, 20.0, side, side];
+    // As big as the plaque allows: phones read it from the couch, at an angle.
+    let side = w - 12.0;
+    let qr = [(w - side) / 2.0, 6.0, side, side];
     let cy = qr[1] + side / 2.0;
     if show.qr.is_empty() {
         text(c, "Phone joining", [qr[0], cy - 6.0], 16.0, DIM, side, TextAlign::Center);
         text(c, "starts with Gamepad Party", [qr[0], cy + 18.0], 16.0, DIM, side, TextAlign::Center);
     } else {
-        // White modules on the dark plaque; the wall around is the quiet zone.
-        for m in &show.qr { c.rect([qr[0] + m[0] * side, qr[1] + m[1] * side, m[2] * side, m[3] * side], Color::WHITE); }
+        // Dark modules on a light square, the host's SVG margin as the quiet
+        // zone: Android's scanner (ML Kit) does not read inverted codes at
+        // all. Light grey, not white, so the square does not bloom into the
+        // modules after tone mapping.
+        c.rect(qr, Color::hex("d9d9d9"));
+        for m in &show.qr { c.rect([qr[0] + m[0] * side, qr[1] + m[1] * side, m[2] * side, m[3] * side], Color::hex("0c0a16")); }
     }
     let code = if show.room_code.is_empty() { "· · · ·" } else { &show.room_code };
     c.text(faces().wordmark, [0.0, h - 34.0], code, TextAlign::Center, w, 52.0, TEXT);
