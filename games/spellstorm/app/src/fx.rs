@@ -1548,6 +1548,20 @@ impl Fx {
         match *e {
             Ev::Burst { at, c, n, speed, size, el } => self.burst(at, c, n, speed, size, el),
             Ev::Puff { at, c, size } => self.puff(at, c, size),
+            Ev::Splat { at, el, big } => {
+                // A glob bursts on the floor: drops flung low and out, and a
+                // wet splash left for a moment.
+                let c = el_c(el);
+                let mut p = particles(c, 14, 0.5, 0.12);
+                p.cell = Cell::Drop;
+                p.glow = 1.4;
+                p.dir = Vec3::Y;
+                p.spread = 75.0;
+                p.v = (1.5, 4.0);
+                p.gravity = Vec3::new(0.0, -14.0, 0.0);
+                self.emit(p, at + Vec3::Y * 0.1, if big { 18 } else { 10 });
+                self.waves.push(Wave { at, c, r: if big { 1.4 } else { 0.8 }, age: 0.0, time: 0.4, cell: Cell::Ring, glow: 1.2 });
+            }
             Ev::Shaken { at, ref els, .. } => {
                 // Shaken out: each loaded element spills off the gem as a
                 // shower of its own bits that drop to the floor and die.
@@ -1991,19 +2005,83 @@ impl Fx {
                 self.stream((key, 41), mist, at + Vec3::Y * 0.5, dt);
                 self.light(at + Vec3::Y * 3.0, [0.6, 0.8, 1.0, 1.0], 1.6, 10.0);
             }
-            // A plague: spores rising off the pool, sick clouds now and then.
+            // The venom cannon: a thick jet of green liquid hosed from the
+            // staff, drooping as it goes, spitting drops (the globs that land
+            // are the lobs).
             Some(El::Poison) => {
-                let Some(at) = field else { return };
-                let mut spores = particles(c, 90, 1.5, 0.2);
-                spores.sphere = 4.5;
-                spores.dir = Vec3::Y;
-                spores.spread = 25.0;
-                spores.v = (0.6, 1.8);
-                spores.gravity = Vec3::Y * 0.4;
-                self.stream((key, 40), spores, at + Vec3::Y * 0.3, dt);
-                if (ot * 1.5).fract() < dt * 1.5 {
-                    let a = ot * 2.399;
-                    self.smoke(at + Vec3::new(a.cos() * 2.5, 0.8, a.sin() * 2.5), 2.2, [0.3, 0.55, 0.12], 0.7);
+                let Some(tip) = o.thing else { return };
+                if ot >= spellstorm::spells::VENOM_TIME as f32 {
+                    return;
+                }
+                let dir = o.wave_dir.normalize_or(Vec3::NEG_Z);
+                let on = smooth(0.0, 0.15, ot);
+                let mut jet = particles(c, 260, 0.45, 0.3);
+                jet.cell = Cell::Drop;
+                jet.glow = 1.6;
+                jet.dir = (dir + Vec3::Y * 0.35).normalize();
+                jet.spread = 14.0;
+                jet.v = (9.0, 15.0);
+                jet.gravity = Vec3::new(0.0, -16.0, 0.0);
+                jet.stretch = 0.6;
+                jet.amount = (260.0 * on) as u32;
+                self.stream((key, 40), jet, tip, dt);
+                // A wetter, darker core of bigger blobs.
+                let mut core = particles(rgba(0.25, 0.55, 0.08, 1.0), 90, 0.55, 0.5);
+                core.cell = Cell::Bubble;
+                core.glow = 0.9;
+                core.dir = (dir + Vec3::Y * 0.3).normalize();
+                core.spread = 8.0;
+                core.v = (8.0, 12.0);
+                core.gravity = Vec3::new(0.0, -14.0, 0.0);
+                self.stream((key, 41), core, tip, dt);
+                self.halo(tip, c, 1.4, 0.7 * on);
+                self.light(tip + dir * 2.0, c, 2.2 * on, 8.0);
+            }
+            // The boulder: a great rock over the caster's head, thrown, then
+            // rolling down its lane in a cloud of grit (spells.wgsl `boulder`).
+            Some(El::Earth) => {
+                use spellstorm::spells::{BOULDER_GROW, BOULDER_R, BOULDER_THROW};
+                let Some(at) = o.thing else { return };
+                let dir = o.wave_dir.normalize_or(Vec3::NEG_Z);
+                let grow = smooth(0.0, BOULDER_GROW as f32, ot);
+                let r = BOULDER_R * (0.25 + 0.75 * grow);
+                // How far it has rolled, for its turning.
+                let rolled = ((ot - (BOULDER_GROW + BOULDER_THROW) as f32).max(0.0)) * spellstorm::spells::BOULDER_SPEED;
+                let lit = self.lit_at(at + Vec3::Y);
+                let mut rock = glow_sprite(at, r * 2.0, Cell::Puff, lit * 1.1 + Vec3::splat(0.02)).solid();
+                rock.opacity = 1.0;
+                rock.depth_bias = 0.0;
+                rock.effect = crate::effects::BOULDER;
+                rock.params = [(key % 97) as f32, rolled / r, dir.x, dir.z];
+                self.live.push(rock);
+                if ot < BOULDER_GROW as f32 {
+                    // Stone gathering into it from the floor.
+                    let mut grit = particles(rgba(0.45, 0.38, 0.3, 1.0), 60, 0.5, 0.25);
+                    let _ = style(&mut grit, El::Earth, false);
+                    grit.sphere = 1.5;
+                    grit.dir = Vec3::Y;
+                    grit.v = (4.0, 7.0);
+                    grit.gravity = Vec3::ZERO;
+                    self.stream((key, 40), grit, at - Vec3::Y * 2.8, dt);
+                } else if rolled > 0.0 {
+                    let foot = Vec3::new(at.x, 0.1, at.z);
+                    let mut dust = particles(rgba(0.5, 0.44, 0.36, 1.0), 70, 0.9, 0.9);
+                    dust.cell = Cell::Puff;
+                    dust.glow = 0.0;
+                    dust.lit = true;
+                    dust.ramp = Ramp::new(&[rgba(0.5, 0.44, 0.36, 0.0), rgba(0.5, 0.44, 0.36, 0.4), rgba(0.5, 0.44, 0.36, 0.0)], &[0.0, 0.3, 1.0]);
+                    dust.dir = (Vec3::Y - dir).normalize();
+                    dust.spread = 50.0;
+                    dust.sphere = BOULDER_R * 0.6;
+                    dust.v = (0.5, 2.0);
+                    dust.gravity = Vec3::Y * 0.3;
+                    self.stream((key, 41), dust, foot, dt);
+                    let mut chips = particles(rgba(0.4, 0.34, 0.28, 1.0), 40, 0.6, 0.18);
+                    let _ = style(&mut chips, El::Earth, false);
+                    chips.dir = (Vec3::Y * 1.5 - dir).normalize();
+                    chips.spread = 40.0;
+                    chips.v = (3.0, 6.0);
+                    self.stream((key, 42), chips, foot, dt);
                 }
             }
             _ => {}

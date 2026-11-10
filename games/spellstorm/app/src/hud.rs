@@ -126,7 +126,7 @@ const HINTS: [(u32, &str); 6] = [
     (used::ROLL, "Press LT to dodge"),
     (used::SWING, "Press RB to swing your sword"),
     (used::DEFLECT, "Swing RB into a shot to send it back"),
-    (used::SHAKE, "Click the right stick to shake your staff empty"),
+    (used::SHAKE, "Hold the right stick in to shake your staff empty"),
 ];
 /// Seconds of play before the first hint, and between one done and the next.
 const HINT_WAIT: f32 = 4.0;
@@ -742,7 +742,7 @@ fn unlock_card(p: &mut Painter, u: &Unlock, t: f32, sw: f32) {
             let (name, hint, pad) = match f {
                 Form::Nova => ("Nova", "Hold RB, then let go", "rb_hold"),
                 Form::Plant => ("Plant", "Click the left stick to set it down", "ls"),
-                Form::Enchant => ("Enchant", "Hold the right stick in to enchant your staff", "rs_hold"),
+                Form::Enchant => ("Enchant", "Click the right stick to enchant your staff", "rs"),
                 Form::Cast => ("Cast", "Press RT", "rt"),
             };
             ("New move", name.to_string(), hint.to_string(), CardIcon::Pad(pad))

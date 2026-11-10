@@ -219,16 +219,19 @@ impl Marks {
     fn cast_mark(&mut self, w: &Wizard, time: f32) {
         let (Some(s), Some(at)) = (w.charging.as_ref(), w.mark) else { return };
         let k = (w.charge_t / w.charge_need.max(0.01)).clamp(0.0, 1.0) as f32;
-        if s.shape == spellstorm::Shape::Overload && s.primary == Some(spellstorm::el::El::Water) {
+        let rolls = matches!(s.primary, Some(spellstorm::el::El::Water | spellstorm::el::El::Earth));
+        if s.shape == spellstorm::Shape::Overload && rolls {
             // A spell that rolls forward marks its lane, not a spot
-            // (cast_mark.gdshader mode 1): the strip the wave will sweep.
-            use spellstorm::spells::{WAVE_RUN, WAVE_START, WAVE_WIDTH};
+            // (cast_mark.gdshader mode 1): the strip the wave or the
+            // boulder will sweep.
+            use spellstorm::spells::{BOULDER_R, BOULDER_RUN, WAVE_RUN, WAVE_START, WAVE_WIDTH};
+            let el = s.primary.unwrap();
+            let (width, len, back) = if el == spellstorm::el::El::Water { (WAVE_WIDTH, WAVE_RUN + 2.0, 1.0 - WAVE_START * 0.5) } else { (BOULDER_R * 2.0 + 0.6, BOULDER_RUN, 0.0) };
             let dir = Vec3::new(w.aim_dir.x, 0.0, w.aim_dir.z).normalize_or(Vec3::NEG_Z);
             let side = Vec3::new(-dir.z, 0.0, dir.x);
-            let len = WAVE_RUN + 2.0;
-            let centre = Vec3::new(at.x, 0.05, at.z) + dir * (1.0 - WAVE_START * 0.5);
-            let c = el_c(spellstorm::el::El::Water);
-            let mut m = Sprite::fixed(centre, [WAVE_WIDTH, len], side, dir, IMAGE, uv(Cell::Patch), linear3([c[0], c[1], c[2]]) * 1.6);
+            let centre = Vec3::new(at.x, 0.05, at.z) + dir * back;
+            let c = el_c(el);
+            let mut m = Sprite::fixed(centre, [width, len], side, dir, IMAGE, uv(Cell::Patch), linear3([c[0], c[1], c[2]]) * 1.6);
             m.additive = true;
             m.alpha_cut = 0.0;
             m.depth_bias = 0.2;

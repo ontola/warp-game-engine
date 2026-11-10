@@ -249,6 +249,27 @@ pub const METEOR_FROM: Vec3 = Vec3::new(4.0, 22.0, -4.0);
 pub const STORM_TIME: f64 = 3.2;
 pub const STORM_EVERY: f64 = 0.22;
 
+/// The venom cannon (three poison cast): globs of venom hosed out of the
+/// staff for this long, one every `VENOM_EVERY`, landing between `VENOM_NEAR`
+/// and `VENOM_FAR` ahead, within `VENOM_CONE` radians either side of the aim.
+pub const VENOM_TIME: f64 = 2.4;
+pub const VENOM_EVERY: f64 = 0.05;
+pub const VENOM_NEAR: f32 = 2.5;
+pub const VENOM_FAR: f32 = 10.0;
+pub const VENOM_CONE: f32 = 0.38;
+/// The boulder (three earth cast): it grows over the caster's head, is
+/// thrown, then rolls `BOULDER_SPEED` m/s for `BOULDER_ROLL` seconds,
+/// `BOULDER_R` metres round, crushing what it runs over and shoving the rest
+/// aside.
+pub const BOULDER_GROW: f64 = 0.8;
+pub const BOULDER_THROW: f64 = 0.3;
+pub const BOULDER_ROLL: f64 = 2.2;
+pub const BOULDER_SPEED: f32 = 10.0;
+pub const BOULDER_R: f32 = 1.5;
+/// Where the boulder lands from the caster, and how far it rolls on.
+pub const BOULDER_LAND: f32 = 3.0;
+pub const BOULDER_RUN: f32 = BOULDER_SPEED * BOULDER_ROLL as f32;
+
 /// How far round its spot each cataclysm reaches, for the charge mark.
 pub fn overload_reach(e: Option<El>) -> f32 {
     match e {
@@ -257,7 +278,7 @@ pub fn overload_reach(e: Option<El>) -> f32 {
         Some(El::Lightning) => 5.5,
         Some(El::Earth) => 8.5,
         Some(El::Air) => 2.4,
-        Some(El::Poison) => 5.0,
+        Some(El::Poison) => 4.0,
         Some(El::Void) => 4.5,
         _ => 4.5,
     }
@@ -280,6 +301,9 @@ pub struct Overload {
     /// The thunderstorm's cloud.
     pub cloud: Option<Vec3>,
     end_at: f64,
+    /// The boulder's crushed, each crushed once; the venom's next glob.
+    crushed: Vec<Id>,
+    next_t: f64,
 }
 
 /// What a nova does: radius and strength.
@@ -1459,6 +1483,18 @@ impl World {
             wave_dir: Vec3::NEG_Z,
             cloud: None,
             end_at: f64::INFINITY,
+            crushed: Vec::new(),
+            next_t: 0.0,
+        };
+        // The cannon and the boulder go the way the caster aims, as the
+        // wave does (see Water below).
+        let aim = {
+            let pos = flat(self.pos(caster));
+            let mut dir = flat(target - pos).normalize_or_zero();
+            if dir == Vec3::ZERO {
+                dir = self.ecs.get::<&crate::wizard::Wizard>(caster).map(|w| flat(w.aim_dir).normalize_or_zero()).unwrap_or(Vec3::ZERO);
+            }
+            if dir == Vec3::ZERO { Vec3::NEG_Z } else { dir }
         };
         self.shake(0.5);
         match s.primary {
@@ -1516,32 +1552,10 @@ impl World {
                 self.shake(0.4);
             }
             Some(El::Earth) => {
-                self.nova(
-                    caster,
-                    s,
-                    NovaN {
-                        radius: 8.5,
-                        rate: 1.6,
-                    },
-                    target,
-                    true,
-                    Some(MONSTERS),
-                    1.0,
-                );
-                let caster_team = self.team(caster);
-                for a in self.living() {
-                    let mut ac = self.am(a);
-                    if ac.team != caster_team && ac.pos.distance(target) < 8.5 {
-                        ac.stun = ac.stun.max(2.2);
-                    }
-                }
-                for i in 0..14 {
-                    let p =
-                        target + yaw_rot(Vec3::X, i as f32 * TAU / 14.0) * self.rng.range(3.0, 8.0);
-                    self.burst(p, fx::el_c(El::Earth), 12, 6.0, 0.4, Some(El::Earth));
-                }
-                self.ride(&o, target, 6.0);
-                self.shake(1.0);
+                // A boulder rises over the caster's head (Joep).
+                o.wave_dir = aim;
+                o.thing = Some(self.pos(caster) + Vec3::Y * 3.2);
+                self.burst(self.pos(caster) + Vec3::Y * 0.3, fx::el_c(El::Earth), 16, 3.0, 0.3, Some(El::Earth));
             }
             Some(El::Air) => {
                 let f = self.add_field(target, El::Air, 2.4, 8.0, Some(caster));
@@ -1558,20 +1572,10 @@ impl World {
                 o.field = Some(f);
             }
             Some(El::Poison) => {
-                // Plague: a wide cloud your own side walks through.
-                let f = self.add_field(target, El::Poison, 5.0, 8.0, Some(caster));
-                self.field_mut(f).mix = vec![(El::Poison, 2.0)];
-                self.field_mut(f).keep_mix = true;
-                self.field_mut(f).friendly = true;
-                o.field = Some(f);
-                self.ride(&o, target, 4.5);
-                self.burst(target + Vec3::Y * 0.5, c, 40, 6.0, 0.3, Some(El::Poison));
-                self.ev(Ev::Ring {
-                    at: target,
-                    c,
-                    r: 5.0,
-                    time: 0.6,
-                });
+                // The venom cannon: hosed out of the staff (Joep).
+                o.wave_dir = aim;
+                o.thing = Some(self.staff_tip(caster));
+                let _ = c;
             }
             Some(El::Void) => {
                 o.thing = Some(target + Vec3::Y * 1.2);
@@ -1656,6 +1660,8 @@ impl World {
                 self.storm(&mut o, dt);
                 o.t >= o.end_at
             }
+            Some(El::Earth) => self.boulder(&mut o, dt),
+            Some(El::Poison) => self.venom(&mut o, dt),
             Some(El::Void) => {
                 let caster_team = self.team(caster);
                 for a in self.living() {
@@ -1689,7 +1695,7 @@ impl World {
                     false
                 }
             }
-            Some(El::Frost) | Some(El::Air) | Some(El::Poison) => {
+            Some(El::Frost) | Some(El::Air) => {
                 let mut end = o.t > 9.0;
                 match o.field.filter(|&f| self.ecs.contains(f)) {
                     Some(f) => {
@@ -1732,6 +1738,145 @@ impl World {
             self.gone(id);
         } else {
             self.put(id, o);
+        }
+    }
+
+    /// The boulder's tick: grows over the head, flies, rolls and crushes.
+    /// True once it has stopped.
+    fn boulder(&mut self, o: &mut Overload, dt: f64) -> bool {
+        let caster = o.caster;
+        let dir = o.wave_dir;
+        let alive = self.ecs.contains(caster);
+        if o.t < BOULDER_GROW {
+            if alive {
+                o.thing = Some(self.pos(caster) + Vec3::Y * 3.2);
+                o.target = flat(self.pos(caster));
+            }
+            return false;
+        }
+        let from = o.target + Vec3::Y * 3.2;
+        let land = o.target + dir * BOULDER_LAND + Vec3::Y * BOULDER_R;
+        if o.t < BOULDER_GROW + BOULDER_THROW {
+            let k = ((o.t - BOULDER_GROW) / BOULDER_THROW) as f32;
+            o.thing = Some(from.lerp(land, k) + Vec3::Y * (1.5 * k * (1.0 - k)));
+            return false;
+        }
+        let mut at = o.thing.unwrap_or(land);
+        if o.t - dt < BOULDER_GROW + BOULDER_THROW {
+            at = land;
+            self.shake(0.6);
+            self.burst(flat(at), fx::el_c(El::Earth), 24, 5.0, 0.35, Some(El::Earth));
+        }
+        let next = at + dir * BOULDER_SPEED * dt as f32;
+        let held = self.level.clamp_inside(next);
+        let blocked = flat(held).distance(flat(next)) > 0.05;
+        at = Vec3::new(held.x, BOULDER_R, held.z);
+        o.thing = Some(at);
+        let side = Vec3::new(dir.z, 0.0, -dir.x);
+        let mix = mix_of(&o.spell.counts);
+        let ff = self.ff();
+        let caster_team = if alive { Some(self.team(caster)) } else { None };
+        for a in self.living() {
+            if a == caster || Some(self.team(a)) == caster_team {
+                continue;
+            }
+            let (p, r) = {
+                let ac = self.a(a);
+                (ac.pos, ac.radius)
+            };
+            let d = flat(p - at);
+            if d.length() > BOULDER_R + r + 0.2 {
+                continue;
+            }
+            // Out of its way: shoved to whichever side it was on, a little ahead.
+            let way = if d.dot(side) >= 0.0 { side } else { -side };
+            {
+                let mut ac = self.am(a);
+                ac.push = way * 14.0 + dir * 5.0;
+                ac.stun = ac.stun.max(0.8);
+            }
+            if !o.crushed.contains(&a) {
+                o.crushed.push(a);
+                self.hit(a, &mix, 1.6, Some(caster), dir, ff);
+                self.burst(p + Vec3::Y * 0.6, fx::el_c(El::Earth), 10, 4.0, 0.25, Some(El::Earth));
+            }
+        }
+        if blocked || o.t > BOULDER_GROW + BOULDER_THROW + BOULDER_ROLL {
+            // It breaks up where it stops.
+            let s = o.spell.clone();
+            let end = flat(at);
+            self.nova(caster, &s, NovaN { radius: 3.0, rate: 0.8 }, end, true, Some(MONSTERS), 1.0);
+            for i in 0..8 {
+                let q = end + yaw_rot(Vec3::X, i as f32 * TAU / 8.0) * self.rng.range(0.5, 2.5);
+                self.burst(q, fx::el_c(El::Earth), 10, 5.0, 0.35, Some(El::Earth));
+            }
+            self.ride(o, end, 3.5);
+            self.shake(0.9);
+            return true;
+        }
+        false
+    }
+
+    /// The venom cannon's tick: globs hosed from the staff where it aims.
+    fn venom(&mut self, o: &mut Overload, dt: f64) -> bool {
+        let caster = o.caster;
+        if !self.ecs.contains(caster) || !self.alive(caster) {
+            return true;
+        }
+        // It follows the staff: the caster can sweep it round.
+        let aim = self.ecs.get::<&crate::wizard::Wizard>(caster).map(|w| flat(w.aim_dir).normalize_or_zero()).unwrap_or(Vec3::ZERO);
+        if aim != Vec3::ZERO {
+            o.wave_dir = aim;
+        }
+        let tip = self.staff_tip(caster);
+        o.thing = Some(tip);
+        o.next_t -= dt;
+        while o.next_t <= 0.0 && o.t < VENOM_TIME {
+            o.next_t += VENOM_EVERY;
+            o.strikes += 1;
+            let a = self.rng.range(-VENOM_CONE, VENOM_CONE);
+            let d = VENOM_NEAR + (VENOM_FAR - VENOM_NEAR) * self.rng.f().sqrt();
+            let to = flat(self.level.clamp_inside(flat(tip) + yaw_rot(o.wave_dir, a) * d));
+            let flight = 0.2 + d as f64 * 0.03;
+            self.ev(Ev::Lob { from: tip, to, el: El::Poison, time: flight as f32 });
+            self.later(
+                flight,
+                crate::world::Later::Venom { caster, at: to, spell: Box::new(o.spell.clone()), puddle: o.strikes % 4 == 0 },
+            );
+        }
+        if o.t >= VENOM_TIME && !o.riders.is_empty() && o.ride_t == 0.0 {
+            o.ride_t = 1.0;
+            let mid = flat(tip) + o.wave_dir * (VENOM_NEAR + VENOM_FAR) * 0.5;
+            self.ride(o, mid, 4.0);
+        }
+        o.t >= VENOM_TIME + 0.6
+    }
+
+    /// One glob of the venom cannon lands: it splashes, and every few
+    /// leave a puddle that eats at what walks in it.
+    pub fn venom_splat(&mut self, caster: Id, at: Vec3, s: &Spell, puddle: bool) {
+        let mix = mix_of(&s.counts);
+        let ff = self.ff();
+        let team = if self.ecs.contains(caster) { Some(self.team(caster)) } else { None };
+        for a in self.living() {
+            if a == caster || Some(self.team(a)) == team {
+                continue;
+            }
+            let (p, r) = {
+                let ac = self.a(a);
+                (ac.pos, ac.radius)
+            };
+            let d = flat(p - at);
+            if d.length() < 1.0 + r {
+                self.hit(a, &mix, 0.09, Some(caster), d.normalize_or_zero(), ff);
+            }
+        }
+        self.ev(Ev::Splat { at, el: El::Poison, big: puddle });
+        if puddle {
+            let f = self.add_field(at, El::Poison, 1.5, 7.0, Some(caster));
+            self.field_mut(f).mix = vec![(El::Poison, 1.0)];
+            self.field_mut(f).keep_mix = true;
+            self.field_mut(f).friendly = true;
         }
     }
 

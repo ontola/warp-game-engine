@@ -211,6 +211,13 @@ pub enum Ev {
         kind: &'static str,
         how: Death,
     },
+    /// A glob of liquid `el` hits the floor at `at` and splashes (`big`: it
+    /// leaves a puddle).
+    Splat {
+        at: Vec3,
+        el: El,
+        big: bool,
+    },
     /// A monster's lob, arcing from `from` to `to` over `time`.
     Lob {
         from: Vec3,

@@ -202,9 +202,9 @@ fn overload_noun(e: El) -> &'static str {
         Frost => "Blizzard",
         Water => "Tidal Wave",
         Lightning => "Thunderstorm",
-        Earth => "Earthquake",
+        Earth => "Rolling Boulder",
         Air => "Tornado",
-        Poison => "Plague",
+        Poison => "Venom Cannon",
         Void => "Black Hole",
         _ => "Cataclysm",
     }
