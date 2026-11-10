@@ -671,7 +671,7 @@ impl Jets {
         // sprite pass; no new lights/meshes per frame and no particle cloud dots.
         let alpha = (time * 120. - race.tick.saturating_sub(1) as f32).clamp(0., 1.);
         for p in &race.projectiles {
-            if p.kind == spaceracer::race::Weapon::GlideBomb {
+            if p.kind == spaceracer::race::Weapon::GlideBomb && p.lob.is_none() {
                 let power = 1.
                     - smooth(
                         race.combat.bomb_burn - 0.15,

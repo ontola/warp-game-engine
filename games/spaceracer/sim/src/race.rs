@@ -125,6 +125,8 @@ pub struct Projectile {
     pub velocity: Vec3,
     pub distance: f64,
     pub time: f64,
+    /// Set when a glide bomb was lobbed from the ground (no lock, no motor).
+    pub lob: Option<crate::combat::Lob>,
 }
 #[derive(Clone, Debug)]
 pub struct Blast {
@@ -400,7 +402,7 @@ impl Race {
                 serde_json::json!({"ahead":ahead,"curve":v.curve,"hairpin":v.feature=="hairpin"})
             })
             .collect();
-        let mut args = serde_json::json!({"p":p,"node":{"curve":n.curve,"width":n.geometry.width,"zone":n.zone,"split_gap":n.split_gap,"route":n.preferred_route},"preview":preview,"hard":track.difficulty=="hard","boost_speed":BOOST_SPEED,"line":d.ai_line,"pace":d.ai_pace,"style":d.ai_style,"pickup":pickup,"next_curve":next.curve,"next_route":next.preferred_route,"boost_ready":boost_request,"missed":d.checkpoint.missed,"has_item":d.item.is_some(),"fire_tick":self.tick%120==i as u64*17,
+        let mut args = serde_json::json!({"p":p,"node":{"curve":n.curve,"width":n.geometry.width,"zone":n.zone,"split_gap":n.split_gap,"route":n.preferred_route},"preview":preview,"hard":track.difficulty=="hard","boost_speed":BOOST_SPEED,"line":d.ai_line,"pace":d.ai_pace,"style":d.ai_style,"pickup":pickup,"next_curve":next.curve,"next_route":next.preferred_route,"boost_ready":boost_request,"missed":d.checkpoint.missed,"has_item":d.item.is_some() && (d.item != Some(Weapon::GlideBomb) || self.lob_ready(i)),"fire_tick":self.tick%120==i as u64*17,
             "near_jump":self.world.jump_distances.iter().any(|j|(j[0]-p.distance).rem_euclid(track.length)<500.),"at_jump":self.world.jump_distances.iter().any(|j|(j[0]-p.distance).rem_euclid(track.length)<180.)});
         if p.airborne {
             let (at, _, _) = track.project(d.motion.air.position, p.distance, track.length);
@@ -868,6 +870,7 @@ impl Race {
                         range: f32,
                         damage: f64,
                         speed: f32,
+                        lob: bool,
                     }
                     let p = &self.pilots[i];
                     let activation=self.rules.call::<Activation>("activate",serde_json::json!({"item":kind,"active":self.drivers[i].active.is_some(),"emp":p.emp_time,"airborne":p.airborne,"crashed":p.crashed,"finished":p.finished,"speed":p.speed}));
@@ -933,16 +936,20 @@ impl Race {
                                         self.damage(i, j, a.damage, 25.);
                                     }
                                 }
-                                "projectile" => self.projectiles.push(Projectile {
+                                "projectile" => {
+                                let lob = (kind == Weapon::GlideBomb && a.lob).then(|| self.bomb_lob(i));
+                                self.projectiles.push(Projectile {
                                     owner: i,
-                                    target: if kind == Weapon::GlideBomb {
+                                    target: if lob.is_some() {
+                                        None
+                                    } else if kind == Weapon::GlideBomb {
                                         self.bomb_target(i).map(|v| v.0)
                                     } else {
                                         self.target(i, a.cone, a.range)
                                     },
                                     kind,
-                                    position: pose.origin + pose.basis * Vec3::new(0., 1.15, -1.8),
-                                    previous: pose.origin + pose.basis * Vec3::new(0., 1.15, -1.8),
+                                    position: lob.map_or(pose.origin + pose.basis * Vec3::new(0., 1.15, -1.8), |l| self.lob_point(&l, 0.)),
+                                    previous: lob.map_or(pose.origin + pose.basis * Vec3::new(0., 1.15, -1.8), |l| self.lob_point(&l, 0.)),
                                     trail: std::collections::VecDeque::with_capacity(48),
                                     launch: pose,
                                     launch_speed: self.pilots[i].speed as f32,
@@ -953,14 +960,17 @@ impl Race {
                                     terminal: false,
                                     evaded: false,
                                     x: self.pilots[i].x,
-                                    velocity: if kind == Weapon::GlideBomb {
+                                    velocity: if let Some(l) = lob {
+                                        (self.lob_point(&l, DT) - self.lob_point(&l, 0.)) / DT as f32
+                                    } else if kind == Weapon::GlideBomb {
                                         self.bomb_launch(i).1
                                     } else {
                                         pose.basis.z_axis * a.speed
                                     },
                                     distance: self.pilots[i].distance - 1.8,
                                     time: 0.,
-                                }),
+                                    lob,
+                                })},
                                 _ => {
                                     self.script_error =
                                         Some(format!("unknown weapon effect: {}", a.effect));
@@ -1208,8 +1218,9 @@ mod tests {
         };
         r.drivers[0].item = Some(Weapon::GlideBomb);
         r.step(&[fire]);
-        assert_eq!(r.drivers[0].item, Some(Weapon::GlideBomb));
-        assert!(r.projectiles.is_empty());
+        assert_eq!(r.drivers[0].item, None, "ground fire lobs the glide bomb");
+        assert!(r.projectiles.iter().all(|p| p.kind == Weapon::GlideBomb && p.lob.is_some() && p.target.is_none()));
+        r.projectiles.clear();
         r.drivers[0].item = Some(Weapon::Sentry);
         r.step(&[fire]);
         assert_eq!(r.drivers[0].active, Some(Weapon::Sentry));
