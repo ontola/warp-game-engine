@@ -255,6 +255,17 @@ impl Look {
                         scene.set_material_additive(id, 1.0, true);
                         Mat { id, vcol: false, no_shadow: true, billboard: true, cell: Some(cell) }
                     }
+                    // Godot's cobweb (dressing.gd `_cobweb`) was a shader made in
+                    // code: the kit has it empty. Faint strands, spokes and rings
+                    // from the corner, baked into a card and added over the scene.
+                    "" if p.as_object().is_none_or(|o| o.is_empty()) => {
+                        let cell = self.halo_next;
+                        self.halo_next += 1;
+                        let peak = bake_web(&mut scene.textures[self.halo_layer as usize].rgba, cell);
+                        let id = scene.add_material(Material { tint: [1.0; 3], layer: self.halo_layer, roughness: 1.0, flags: EMISSIVE | TWO_SIDED, scale: peak * 0.05, metal: 0.0 });
+                        scene.set_material_additive(id, 1.0, true);
+                        Mat { id, vcol: false, no_shadow: true, billboard: false, cell: Some(cell) }
+                    }
                     _ => {
                         // element.gdshader and friends: the element's colour, glowing.
                         let base = if p["base"].is_array() { linear(&p["base"]) } else if p["color"].is_array() { linear(&p["color"]) } else { Vec3::ONE };
@@ -441,6 +452,32 @@ fn bake_halo(atlas: &mut image::RgbaImage, cell: u32, color: Vec3, strength: f32
         }
     }
     peak
+}
+
+/// A cobweb into card `cell` (dressing.gd's web shader): spokes out of the
+/// corner (uv 0) and torn rings round it, fading at the rim. Returns its peak.
+fn bake_web(atlas: &mut image::RgbaImage, cell: u32) -> f32 {
+    let size = 256u32;
+    let line = |v: f32, w: f32| 1.0 - ((v - 0.5).fract().abs() - 0.5).abs().min(1.0) / w;
+    let (ox, oy) = ((cell % 8) * size, (cell / 8) * size);
+    for y in 0..size {
+        for x in 0..size {
+            let p = glam::Vec2::new((x as f32 + 0.5) / size as f32, (y as f32 + 0.5) / size as f32);
+            let r = p.length();
+            let a = p.y.atan2(p.x) / std::f32::consts::FRAC_PI_2;
+            let spokes = line(a * 9.0, 0.06).clamp(0.0, 1.0);
+            let rings = line(r * 11.0 + (a * 56.5).sin() * 0.12, 0.07).clamp(0.0, 1.0);
+            let edge = 1.0 - ((r - 0.82) / 0.18).clamp(0.0, 1.0);
+            let h = ((a * 9.0).floor() * 12.9 + (r * 11.0).floor() * 78.2).sin() * 43758.5;
+            let torn = if h.fract().abs() >= 0.25 { 1.0 } else { 0.0 };
+            let w = spokes.max(rings * torn) * edge;
+            let v = (w * 0.9).clamp(0.0, 1.0);
+            let s = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+            let b = (s * 255.0).round() as u8;
+            atlas.put_pixel(ox + x, oy + y, image::Rgba([b, b, (b as f32 * 0.97) as u8, 255]));
+        }
+    }
+    0.9
 }
 
 fn aux_start(scene: &mut Scene) -> usize {
