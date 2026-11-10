@@ -78,13 +78,15 @@ pub struct Frame<'a> {
     pub scene_worst_ms: f32,
     /// How two views share the screen ([`Game::split`]).
     pub split: render::SplitLayout,
+    /// The window has the keyboard focus (another app or game is not in front).
+    pub focused: bool,
     renderer: &'a mut Option<Renderer>,
 }
 
 impl<'a> Frame<'a> {
     /// Frame access for an external presentation shell, including OpenXR.
     pub fn new(gpu: &'a Gpu, renderer: &'a mut Option<Renderer>, size: [u32; 2], dt: f32, alpha: f32) -> Self {
-        Self { gpu, renderer, size, dt, alpha, split: render::SplitLayout::SideBySide, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0 }
+        Self { gpu, renderer, size, dt, alpha, split: render::SplitLayout::SideBySide, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, focused: true }
     }
 
     /// Upload a scene: creates the renderer, or replaces it.
@@ -530,7 +532,7 @@ impl<'g> Headless<'g> {
     pub fn render_at(&mut self, game: &mut dyn Game, alpha: f32) -> Result<profile::DrawTimings, String> {
         if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) { return Err("alpha must be in 0..1".into()); }
         let split = game.split();
-        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha, split, scene_fps: self.tick_hz, scene_worst_ms: 1000.0 / self.tick_hz, renderer: &mut self.renderer };
+        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha, split, scene_fps: self.tick_hz, scene_worst_ms: 1000.0 / self.tick_hz, focused: true, renderer: &mut self.renderer };
         let started = Instant::now();
         let mut draw = game.draw(&mut frame)?;
         let game_ms = started.elapsed().as_secs_f64() * 1000.;
@@ -566,7 +568,7 @@ impl<'g> Headless<'g> {
     /// For developer captures: never count this frame in steady-frame timing.
     pub fn measure(&mut self, game: &mut dyn Game) -> Result<render::FrameStats, String> {
         let split = game.split();
-        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha: 1.0, split, scene_fps: self.tick_hz, scene_worst_ms: 1000.0 / self.tick_hz, renderer: &mut self.renderer };
+        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha: 1.0, split, scene_fps: self.tick_hz, scene_worst_ms: 1000.0 / self.tick_hz, focused: true, renderer: &mut self.renderer };
         let draw = game.draw(&mut frame)?;
         let renderer = self.renderer.as_ref().ok_or("the game drew without a scene")?;
         let rects = render::split_rects_with(draw.cameras.len(), self.size[0], self.size[1], split);
@@ -963,7 +965,7 @@ impl Shell<'_> {
             self.scene_frames += 1;
         }
         self.loop_frames += 1;
-        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, scene_fps: self.fps, scene_worst_ms: self.rate.worst_ms(), renderer: &mut live.renderer };
+        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, scene_fps: self.fps, scene_worst_ms: self.rate.worst_ms(), focused: self.focused, renderer: &mut live.renderer };
         let draw_started=Instant::now();
         let mut draw = self.game.draw(&mut frame)?;
         draw.hud.begin_screen_space();

@@ -639,8 +639,11 @@ impl Game for Lobby {
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
-        // Behind a game: a few frames a second, the GPU is the game's.
-        if self.display_active == Some(false) { std::thread::sleep(std::time::Duration::from_millis(100)); }
+        // Behind a game: a few frames a second, the GPU is the game's. Only
+        // once the game's window is really in front (this one lost focus):
+        // between "Play next" and the game showing, the room is still what
+        // everyone looks at and must not stutter.
+        if self.display_active == Some(false) && !frame.focused { std::thread::sleep(std::time::Duration::from_millis(100)); }
         let delta = frame.dt;
         self.time += delta;
         if !self.uploaded {

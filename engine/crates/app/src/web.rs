@@ -191,7 +191,7 @@ impl Shell {
             progress(Some(0.9), "Uploading the world to the GPU");
             return Ok(());
         }
-        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha, split, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, renderer: &mut live.renderer };
+        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha, split, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, focused: true, renderer: &mut live.renderer };
         let draw: Draw = self.game.draw(&mut frame)?;
         let Some(renderer) = live.renderer.as_ref() else { return Ok(()) };
         let texture = match live.surface.get_current_texture() {
