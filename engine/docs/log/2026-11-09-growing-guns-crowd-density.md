@@ -23,7 +23,7 @@ pass from each run. Whole-frame GPU and serialized FPS use medians within
 each run. Four-view values are medians across runs. Serialized FPS waits
 for GPU completion every frame; it varied from 44.3 to 63.8 over the
 four-player runs. The cameras follow the players on the field. A separate two-view crowd-only
-fixture (960 × 540 per view, one camera among the seats) took 0.711 ms
+fixture (960 Ã— 540 per view, one camera among the seats) took 0.711 ms
 standard and 0.969 ms packed across three runs each. The close camera
 selected 53 and 79 high-detail people respectively.
 
@@ -53,6 +53,6 @@ GPU time per night run ranged from 9.07 to 9.09 ms before and 9.16 to
 9.19 ms after. These timings use one player's camera.
 
 The fixed daylight four-view benchmark above also ran twice per lighting
-version with the packed layout. The spectator pass measured 0.521–0.522
+version with the packed layout. The spectator pass measured 0.521â€“0.522
 ms before and 0.466 ms after, with 8.39 and 8.34 ms median whole-frame GPU
 time respectively. These small differences depend on the camera and pass mix.
