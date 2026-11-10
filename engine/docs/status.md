@@ -192,7 +192,8 @@ Luau entities can follow a parent, and native games can resolve named model sock
 - **SpaceRacer:** playable native development port with Luau rules; visual
   and content parity in progress.
 - **Spellstorm** and Gamepad Party's **Game Room** lobby: being ported.
-- Luau-only games (`hello-warp`, `neon-siege`, `neon-trails`) run with the
+- Luau-only games (`hello-warp`, `neon-siege`, `neon-trails`,
+  `stack-together`) run with the
   [`warp` executable](warp-cli.md).
 
 ## Platforms

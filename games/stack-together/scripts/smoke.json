@@ -1,0 +1,84 @@
+{
+  "size": [
+    1280,
+    720
+  ],
+  "steps": [
+    {
+      "ticks": 2
+    },
+    {
+      "expect": "/errors",
+      "equals": []
+    },
+    {
+      "expect": "/state/phase",
+      "equals": "play"
+    },
+    {
+      "expect": "/state/players/0/lane",
+      "equals": 1,
+      "note": "player 1 builds the left half"
+    },
+    {
+      "expect": "/state/players/1/lane",
+      "equals": 7,
+      "note": "the bot builds the right half"
+    },
+    {
+      "press": [
+        "Y"
+      ],
+      "note": "Y puts the falling piece in the shared slot"
+    },
+    {
+      "ticks": 2
+    },
+    {
+      "expect": "/state/hold_by",
+      "equals": 1
+    },
+    {
+      "expect": "/state/players/0/held",
+      "equals": true
+    },
+    {
+      "press": [
+        "B"
+      ],
+      "note": "B drops the piece"
+    },
+    {
+      "ticks": 300
+    },
+    {
+      "cmd": "trial speed 150",
+      "note": "a knob changes live; play keeps going"
+    },
+    {
+      "ticks": 2
+    },
+    {
+      "expect": "/errors",
+      "equals": []
+    },
+    {
+      "cmd": "reload",
+      "note": "reload() rebuilds the scene from state"
+    },
+    {
+      "ticks": 300
+    },
+    {
+      "expect": "/errors",
+      "equals": []
+    },
+    {
+      "capture": "stack.png",
+      "state": "stack.json"
+    },
+    {
+      "audio": "stack.wav"
+    }
+  ]
+}

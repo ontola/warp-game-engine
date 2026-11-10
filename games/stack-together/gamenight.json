@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ontola/gamepad-party/main/catalog/schema.json",
+  "id": "stack-together",
+  "title": "Stack Together",
+  "tagline": "Two minds, one stack. Build your half and clear rows together.",
+  "developer": "Joep Meindertsma",
+  "players": {
+    "min": 2,
+    "max": 2,
+    "best": 2
+  },
+  "match_minutes": 4,
+  "price": "free",
+  "tags": [
+    "co-op",
+    "puzzle",
+    "falling-blocks",
+    "warp",
+    "luau"
+  ],
+  "integration": {
+    "level": "integrated",
+    "protocol": 1
+  },
+  "links": {}
+}

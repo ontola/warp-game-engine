@@ -1,0 +1,18 @@
+# Stack Together, ported from the LÖVE party pack (gamenight-games
+# love-party/games/coop/stack.lua) to a Luau game on the warp runtime.
+title = "Stack Together"
+# The same id as the LÖVE version: this one replaces it on the shelf.
+id = "stack-together"
+tick_rate = 60
+# One shared well, one shared view.
+split = false
+# Co-op for two: on your own, a bot builds the other half.
+players = 1
+bots = 1
+min_players = 2
+seed = 7
+sky = "night:clear"
+# 216 cells, their dots, the two sides and the bursts.
+max_entities = 2000
+# The bot planner tries every column and rotation when a piece enters.
+steps = 2000000
