@@ -123,10 +123,11 @@ impl Mesh {
     pub(super) fn anatomical() -> Self {
         let bytes = include_bytes!("../../../../assets/humans/person.bin");
         let u32_at = |i| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
-        let count = u32_at(0);
-        let split = 8 + count * 38;
-        let vertices = bytes[8..split]
-            .chunks_exact(38)
+        assert_eq!(&bytes[..4], b"WH02");
+        let count = u32_at(4);
+        let split = 28 + count * 22;
+        let mut vertices: Vec<Vertex> = bytes[28..split]
+            .chunks_exact(22)
             .map(|s| {
                 let signed = |i| i16::from_le_bytes([s[i], s[i + 1]]) as f32 / 32767.;
                 let word = |i| u16::from_le_bytes([s[i], s[i + 1]]);
@@ -135,20 +136,27 @@ impl Mesh {
                     normal: [6, 8, 10].map(signed),
                     center: [word(12) as f32 / 65535., word(14) as f32 / 65535., -1.],
                     bones: s[16..20].try_into().unwrap(),
-                    morphs: std::array::from_fn(|m| {
-                        std::array::from_fn(|c| s[20 + m * 4 + c] as i8)
-                    }),
+                    morphs: [[0; 4]; 4],
                     bin: 4,
-                    material: word(36) as u32,
+                    material: word(20) as u32,
                     arm: 0.,
                 }
             })
             .collect();
-        let indices = bytes[split..]
+        let mut cursor = split + u32_at(8) * 2;
+        let indices = bytes[split..cursor]
             .chunks_exact(2)
             .map(|v| u16::from_le_bytes(v.try_into().unwrap()) as u32)
             .collect::<Vec<_>>();
-        assert_eq!(indices.len(), u32_at(4));
+        for channel in 0..4 {
+            let end = cursor + u32_at(12 + channel * 4) * 5;
+            for entry in bytes[cursor..end].chunks_exact(5) {
+                let index = u16::from_le_bytes([entry[0], entry[1]]) as usize;
+                vertices[index].morphs[channel] = [entry[2] as i8, entry[3] as i8, entry[4] as i8, 0];
+            }
+            cursor = end;
+        }
+        assert_eq!(cursor, bytes.len());
         Self { vertices, indices }
     }
 }
@@ -163,6 +171,32 @@ pub struct BodyVertex {
     pub material: u32,
 }
 
+/// hm08 palm axes: along the fingers, out of the back of the hand, across it.
+pub fn hand_frame(left: bool) -> glam::Quat {
+    let sign = if left { 1. } else { -1. };
+    let along = Vec3::new(sign * 0.011, -0.035, 0.032).normalize();
+    let back = Vec3::new(sign * 0.83, 0.55, 0.11);
+    let back = (back - along * along.dot(back)).normalize();
+    glam::Quat::from_mat3(&glam::Mat3::from_cols(along, back, along.cross(back)))
+}
+
+// Bend the distal fingers around the grip at roster fitting time. The thumb
+// is outside the knuckle band; the trigger finger stays more extended.
+fn curled_hand(p: Vec3, n: Vec3, frame: glam::Quat) -> (Vec3, Vec3) {
+    let sign = p.x.signum();
+    let knuckle = Vec3::new(sign * 0.276, 0.603, 0.128);
+    let local = frame.inverse() * (p - knuckle);
+    let across = sign * local.z;
+    if local.x <= 0. || across > 0.030 { return (p, n); }
+    let radius = if sign < 0. && across > 0.010 { 0.041 } else { 0.022 };
+    let angle = (local.x / radius).min(2.3);
+    let (sin, cos) = angle.sin_cos();
+    let tip = (local.x - radius * angle).max(0.);
+    let bent = Vec3::new((radius + local.y) * sin + tip * cos,
+        (radius + local.y) * cos - radius - tip * sin, local.z);
+    (knuckle + frame * bent, frame * glam::Quat::from_rotation_z(-angle) * frame.inverse() * n)
+}
+
 impl super::Instance {
     // Shoulder breadth, waist and hips vary independently of overall height.
     fn width_at(&self, y: f32) -> f32 {
@@ -175,6 +209,11 @@ impl super::Instance {
             + 0.10 * (2. * self.identity[0] - 1.) * zone(0.48, 0.11)
     }
     pub fn body_mesh(&self) -> (Vec<BodyVertex>, Vec<u32>) {
+        self.fitted_mesh(false)
+    }
+
+    pub fn fitted_mesh(&self, gripping: bool) -> (Vec<BodyVertex>, Vec<u32>) {
+        let hands = [hand_frame(false), hand_frame(true)];
         static BODY: std::sync::OnceLock<Mesh> = std::sync::OnceLock::new();
         let mesh = BODY.get_or_init(Mesh::anatomical);
         let hair = 20 + (self.identity[2] * 3.0) as u32;
@@ -198,9 +237,28 @@ impl super::Instance {
                 let d = Vec3::new(morph[0] as f32, morph[1] as f32, morph[2] as f32);
                 p += d * (0.055 / 127.0 * (2.0 * weight - 1.0));
             }
+            // Local to the mandible, fading out at the ears, neck and lips.
+            let jaw = (1. - ((p.y - 0.882) / 0.036).abs()).clamp(0., 1.);
+            p.x *= 1. + (self.size_phase[3] - 0.5) * 0.30 * jaw * jaw;
+            if material == 14 && p.y < 0.18 {
+                let cuff = (1. - ((p.y - 0.071) / 0.095).abs()).clamp(0., 1.);
+                let axis = p.x.signum() * (0.132 - (p.y - 0.043) * 0.16);
+                p.x += (p.x - axis) * 0.25 * cuff;
+                p.z += (p.z + 0.015) * 0.18 * cuff;
+            }
+            if material == 21 { // Sweep the bob's front fringe clear of the eyes.
+                let front = ((p.z - 0.033) / 0.027).clamp(0., 1.);
+                let center = (1. - ((p.x - 0.006) / 0.052).abs()).clamp(0., 1.);
+                let fringe = front * center * ((0.974 - p.y) / 0.032).clamp(0., 1.);
+                p.y += 0.030 * fringe;
+                p.x -= 0.012 * fringe;
+            }
+            let mut n = Vec3::from(v.normal);
+            if gripping && material == 4 && v.bones[1] > 220 && p.x.abs() > 0.22 {
+                (p, n) = curled_hand(p, n, hands[usize::from(p.x > 0.)]);
+            }
             let width = self.width_at(p.y);
             p.x *= width;
-            let mut n = Vec3::from(v.normal);
             n.x /= width;
             remap[i] = vertices.len() as u32;
             vertices.push(BodyVertex {
@@ -210,6 +268,31 @@ impl super::Instance {
                 limb_weights: v.bones.map(|w| w as f32 / 255.0),
                 material,
             });
+        }
+        // Rotate the artist's smooth normal by the change in surface orientation.
+        // Vertices split for UVs share the same position key at a face seam.
+        let mut normals = std::collections::HashMap::<[i16; 3], [Vec3; 2]>::new();
+        let key = |v: &Vertex| v.pos.map(|p| (p * (32767. / 1.2)).round() as i16);
+        for tri in mesh.indices.chunks_exact(3) {
+            let ids = [tri[0], tri[1], tri[2]].map(|i| i as usize);
+            let v = &mesh.vertices[ids[0]];
+            if v.pos[1] < 0.84 || !matches!(v.material & 31, 4 | 11) || remap[ids[0]] == u32::MAX { continue; }
+            let [a, b, c] = ids.map(|i| Vec3::from(mesh.vertices[i].pos));
+            let [x, y, z] = ids.map(|i| vertices[remap[i] as usize].position);
+            let before = (b-a).cross(c-a);
+            let after = (y-x).cross(z-x);
+            for i in ids {
+                let pair = normals.entry(key(&mesh.vertices[i])).or_default();
+                pair[0] += before;
+                pair[1] += after;
+            }
+        }
+        for (v, &i) in mesh.vertices.iter().zip(&remap) {
+            if i == u32::MAX || v.pos[1] < 0.84 || !matches!(v.material & 31, 4 | 11) { continue; }
+            if let Some([a,b]) = normals.get(&key(v))
+                && let (Some(a), Some(b)) = (a.try_normalize(), b.try_normalize()) {
+                vertices[i as usize].normal = glam::Quat::from_rotation_arc(a,b) * Vec3::from(v.normal);
+            }
         }
         let indices = mesh
             .indices

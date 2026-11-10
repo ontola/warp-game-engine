@@ -19,7 +19,15 @@ and transfers their skin weights and facial displacements from the same body.
 python engine/tools/cook-humans.py base.obj source-files/ system-pack/ engine/assets/humans/
 ```
 
-person.bin contains two little-endian u32 counts, 38-byte bind-pose vertices
-and u16 triangle indices. Each vertex stores position and normal (six i16),
-UV (two u16), four cumulative joint weights (four u8), four signed XYZ morphs
-padded to four bytes each, and a material identifier (u16). Its low five bits select the surface. The upper bits select the outfits that expose the triangle, with zero shared by all. The short-sleeved and jacket outfits share their trousers. The cooker stores the three neutral cloth maps in the RGB channels of one existing atlas tile. Its alpha contains digits and six wordmarks. The renderer combines digits into shirt numbers. Rebuilding the prints uses Pillow 10.1 or newer.
+The neutral eyelids use the six paired MakeHuman targets in
+`makehuman/data/targets/eyes/{l,r}-eye-height{1,2,3}-decr.target`. Keep
+them beside the face targets when cooking.
+
+`person.bin` starts with the magic `WH02` and six little-endian u32 counts
+(vertices, indices, then four sparse morph counts). Each 22-byte vertex holds
+position and normal (six i16), UV (two u16), four cumulative limb weights
+(four u8) and the material (u16). The u16 triangle indices follow the vertices.
+Each morph then lists only changed vertices as a u16 index and three signed
+i8 displacements. The loader expands these once into the crowd's GPU layout.
+
+The material also selects wardrobe visibility. Its low five bits select the surface. The upper bits select the outfits that expose the triangle, with zero shared by all. The short-sleeved and jacket outfits share their trousers. The cooker stores the three neutral cloth maps in the RGB channels of one existing atlas tile. Its alpha contains digits and six wordmarks. The renderer combines digits into shirt numbers. Rebuilding the prints uses Pillow 10.1 or newer.

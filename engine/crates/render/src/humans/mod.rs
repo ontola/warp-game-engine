@@ -1,7 +1,7 @@
 //! Seeded crowd rendering probe. One immutable instance table serves every view.
 //! The GPU buckets visible people by projected height and writes indirect draws.
 mod geometry;
-pub use geometry::BodyVertex;
+pub use geometry::{BodyVertex, hand_frame};
 
 pub const APPEARANCE_ATLAS: &[u8] = include_bytes!("../../../../assets/humans/appearance.png");
 

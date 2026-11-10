@@ -30,7 +30,7 @@ impl Motion {
         let interpolate = (alpha - 1.) * DT;
         let idle = (self.idle + interpolate).max(0.);
         if let Some(rig) = locomotion {
-            return rig.pose(model, &self.stride, alpha, idle, palette);
+            return Ok(rig.pose(&self.stride, alpha, idle, palette));
         }
         if let Some(age) = self.jump {
             let t = (age + interpolate).max(0.);
@@ -124,6 +124,13 @@ mod tests {
         let skin = [0.56, 0.32, 0.18];
         let profiles = [PlayerColors { shirt: Some(shirt), skin: Some(skin) }];
         let mut c = Characters::load_roster(Some((52, 2, &profiles))).unwrap();
+        let model = &c.models[0];
+        let rest = vec![Mat4::IDENTITY; model.joint_count];
+        let point = |n| model.joint_position(n, &rest).unwrap();
+        let shoulder_width = point("LeftArm").distance(point("RightArm"));
+        assert!((0.30..0.44).contains(&shoulder_width), "shoulders {shoulder_width:.3} m");
+        let arm = point("LeftArm").distance(point("LeftForeArm"));
+        let forearm = point("LeftForeArm").distance(point("LeftHand"));
         let mut scene = Scene::default();
         let materials = c.models[0].surface_materials(&mut scene);
         let other = c.models[1].surface_materials(&mut scene);
@@ -146,7 +153,10 @@ mod tests {
             assert!((reload.hand_drop - 0.228).abs() < 0.001);
             let xf = model_transform(p.pos, p.yaw);
             c.pose(&world, &[], 1., Some(&guns));
-            let wrist = c.models[0].joint_position("LeftHand", &c.actors[0].palette).unwrap();
+            let posed = |name| c.models[0].joint_position(name, &c.actors[0].palette).unwrap();
+            let wrist = posed("LeftHand");
+            assert!((posed("LeftArm").distance(posed("LeftForeArm")) - arm).abs() < 0.001);
+            assert!((posed("LeftForeArm").distance(wrist) - forearm).abs() < 0.001);
             let mag = guns.contacts(0, 1.).unwrap().magazine - Vec3::Y * reload.hand_drop;
             let error = xf.transform_point3(wrist).distance(c.hands[0].unwrap().transform_point3(mag));
             assert!(error < 0.02, "reload wrist missed magazine by {error:.3} m");
@@ -340,7 +350,7 @@ impl Characters {
                     shirt: Some(profile.shirt.unwrap_or(super::PLAYER_COLORS[slot % super::PLAYER_COLORS.len()])),
                     height_m: Some(1.80),
                 });
-                rig.warp_human_with_skin(&person, profile.skin)
+                rig.warp_human_player(&person, profile.skin)
             }).collect::<Result<Vec<_>, _>>()?;
             println!("characters: {} seeded Warp Humans, roster seed {seed}", models.len());
             models
@@ -362,6 +372,13 @@ impl Characters {
         Ok(Self { locomotion, animation: crate::hand_animation::HandAnimation::load()?, rigid_meshes: models.iter().map(|_| None).collect(), pieces: Vec::new(), rigid_frame: Vec::new(), models, actors: Vec::new(), lava: Vec::new(), hands: Vec::new() })
     }
 
+    fn hold(&self, model: &Character, palette: &[Mat4]) -> Result<(Option<KnightHold>, Option<body::reach::TwoHandHold>), String> {
+        if self.locomotion.is_some() {
+            return Ok((None, body::reach::TwoHandHold::bind(model.joints())));
+        }
+        Ok((KnightHold::bind(model, palette)?, grip_arms(model)))
+    }
+
     pub fn models(&self) -> &[Character] { &self.models }
 
     pub fn reserve_actor(&mut self, scene: &mut Scene, player: usize) -> Result<usize, String> {
@@ -372,7 +389,8 @@ impl Characters {
         let palette = model.sample(IDLE, 0.0, true)?;
         let mesh = handle.mesh;
         let run_palette = vec![Mat4::IDENTITY; palette.len()];
-        self.actors.push(Actor { knight: KnightHold::bind(model, &palette)?, arms: grip_arms(model), handle, palette, run_palette, motion: Motion::default(),
+        let (knight, arms) = self.hold(model, &palette)?;
+        self.actors.push(Actor { knight, arms, handle, palette, run_palette, motion: Motion::default(),
             corpse: None, corpse_transform: None, velocity: Vec3::ZERO });
         self.hands.push(None);
         Ok(mesh)
@@ -397,7 +415,8 @@ impl Characters {
         let palette = model.sample(IDLE, 0.0, true)?;
         let run_palette = vec![Mat4::IDENTITY; palette.len()];
         let handle = ActorHandle { actor: 0, instance: 0, mesh: 0 };
-        self.actors.push(Actor { knight: KnightHold::bind(model, &palette)?, arms: grip_arms(model), handle, palette, run_palette, motion: Motion::default(), corpse: None, corpse_transform: None, velocity: Vec3::ZERO });
+        let (knight, arms) = self.hold(model, &palette)?;
+        self.actors.push(Actor { knight, arms, handle, palette, run_palette, motion: Motion::default(), corpse: None, corpse_transform: None, velocity: Vec3::ZERO });
         self.pieces.push(self.rigid_meshes[k].unwrap());
         self.hands.push(None);
         Ok(())
@@ -507,6 +526,7 @@ impl Characters {
                 .expect("validated locomotion and hand socket");
             let drawn = crate::view::pose(world, i, prev, alpha);
             let body = model_transform(drawn.pos, drawn.yaw);
+            if let Some(rig) = &self.locomotion { rig.look(&mut actor.palette, drawn.pitch); }
             let hand = body.transform_point3(socket.w_axis.truncate());
             self.hands[i] = Some(if let (Some(arms), Some(contacts)) = (&actor.arms, guns.and_then(|g| g.contacts(i, alpha))) {
                 let (support, roll) = self.animation.pose(contacts, (world.tick as f32 + alpha) * DT);
@@ -522,7 +542,13 @@ impl Characters {
                 let primary = body.inverse().transform_point3(hand);
                 let target = primary + facing * (support - contacts.primary);
                 let wrist = arms.apply(&mut actor.palette, primary, target);
-                arms.orient_support(&mut actor.palette, facing * aim.inverse() * grip_rotation(pitch) * Quat::from_rotation_x(roll * (1. - reach)));
+                let palm = facing * aim.inverse() * grip_rotation(pitch) * Quat::from_rotation_x(roll * (1. - reach));
+                let palm = if let Some(rig) = &self.locomotion {
+                    let aim = Quat::from_rotation_x(-pitch);
+                    arms.orient_primary(&mut actor.palette, aim * rig.palms[0]);
+                    aim * Quat::from_rotation_z(roll * (1. - reach)) * rig.palms[1]
+                } else { palm };
+                arms.orient_support(&mut actor.palette, palm);
                 if let Some(k) = &mut actor.knight {
                     k.authored.set_extension(&mut k.editor, contacts.extension * (1. - reach));
                     k.editor.apply(&mut actor.palette);
@@ -542,6 +568,7 @@ impl Characters {
         // Use the current simulated animation even if no frame was drawn since
         // the last tick (headless runs and multiple simulation ticks per draw).
         actor.motion.sample(self.locomotion.as_ref(), model, 1., &mut actor.palette, &mut actor.run_palette)?;
+        if let Some(rig) = &self.locomotion { rig.look(&mut actor.palette, p.pitch); }
         actor.corpse = Some(Corpse::spawn(model, &actor.palette, model_transform(p.pos, p.yaw), actor.velocity, direction, player, headless, physics)?);
         self.hands[player] = None;
         Ok(())

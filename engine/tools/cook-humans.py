@@ -65,6 +65,11 @@ def hidden(path):
 
 def cook(base_path,src,pack,dest):
     base,uv,faces=obj(base_path)
+    # Narrow the neutral palpebral opening with the paired hm08 eyelid targets.
+    for side in ("l","r"):
+        for section in (1,2,3):
+            delta=np.loadtxt(src/f"{side}-eye-height{section}-decr.target")
+            base[delta[:,0].astype(int)] += 0.85*delta[:,1:4]
     weights=np.zeros((len(base),4))
     totals=np.zeros(len(base))
     for bone,values in json.loads((src/"default_weights.mhw").read_text())["weights"].items():
@@ -128,6 +133,7 @@ def cook(base_path,src,pack,dest):
     put(6,Image.merge("RGBA",(*cloth,prints)))
     put(7,Image.open(pack/"eyebrows/eyebrow001/eyebrow001.png"))
     vertices=bytearray();indices=[]
+    targets=[bytearray() for _ in groups]
     def add(pos,texcoord,triangles,skin,morph,material):
         normals=np.zeros_like(pos)
         for _,f in triangles:
@@ -141,14 +147,17 @@ def cook(base_path,src,pack,dest):
             for i,t in f:
                 key=i,t,mat
                 if key not in seen:
-                    seen[key]=len(vertices)//38
+                    seen[key]=len(vertices)//22
                     xyz=pos[i]*.06+[0,.49,-.021]
                     uvp=texcoord[t] if mat & 31 !=11 else (texcoord[t]-lo)/(hi-lo)
                     signed=lambda x:np.round(np.clip(x,-1,1)*32767).astype(int)
                     blends=np.round(np.clip(morph[i]*.06/.055,-1,1)*127).astype(int)
-                    vertices.extend(struct.pack("<3h3h2H4B16bH",*signed(xyz/1.2),*signed(normals[i]),
+                    for target,delta in zip(targets,blends):
+                        if np.any(delta):
+                            target.extend(struct.pack("<H3b",seen[key],*delta))
+                    vertices.extend(struct.pack("<3h3h2H4BH",*signed(xyz/1.2),*signed(normals[i]),
                         *np.round(np.clip(uvp,0,1)*65535).astype(int),*np.round(np.clip(skin[i],0,1)*255).astype(int),
-                        *np.pad(blends,((0,0),(0,1))).ravel(),mat))
+                        mat))
                 indices.append(seen[key])
     # Bits 5..7 select fitted outfits. Zero marks geometry shared by all.
     def body_material(g,f):
@@ -187,14 +196,15 @@ def cook(base_path,src,pack,dest):
         material=garment_material(fitted,faces,outfits.index(name)) if mat==12 else lambda g,f:mat
         add(fitted,uv,faces,skin,morph,material)
     dest.mkdir(exist_ok=True,parents=True)
-    assert len(vertices)%38==0 and len(vertices)//38 <= 65536
+    assert len(vertices)%22==0 and len(vertices)//22 <= 65536
     model_tmp=dest/"person.bin.tmp"
     atlas_tmp=dest/"appearance.png.tmp"
-    model_tmp.write_bytes(struct.pack("<II",len(vertices)//38,len(indices))+vertices+np.array(indices,dtype="<u2").tobytes())
+    model_tmp.write_bytes(struct.pack("<4s6I",b"WH02",len(vertices)//22,len(indices),*(len(t)//5 for t in targets))
+                          +vertices+np.array(indices,dtype="<u2").tobytes()+b"".join(targets))
     atlas.save(atlas_tmp,format="PNG",optimize=True)
     model_tmp.replace(dest/"person.bin")
     atlas_tmp.replace(dest/"appearance.png")
-    print(len(vertices)//38,"vertices and",len(indices)//3,"triangles")
+    print(len(vertices)//22,"vertices and",len(indices)//3,"triangles")
 
 if __name__=="__main__":
     p=argparse.ArgumentParser(description=__doc__)
