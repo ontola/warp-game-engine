@@ -5,7 +5,9 @@ engine only provides the host: the sandbox, loading and hot reload, and the
 limits. The game decides which hooks exist, what they receive and which
 functions scripts may call. Growing Guns is the worked example: its 52
 cards and its rule hooks are Luau. The [`warp` executable](warp-cli.md)
-goes further: a whole game in Luau, with a game API of its own.
+goes further: a whole game in Luau, with a game API of its own. Which
+code belongs in Luau and which in Rust, and what crossing between them
+costs, is in [Luau or Rust](luau-or-rust.md).
 
 ## The host
 

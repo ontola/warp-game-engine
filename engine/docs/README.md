@@ -36,6 +36,7 @@ and session notes are in the [development log](log/README.md).
 | [Parenting and attachment points](parenting.md) | Luau entities, native model sockets and posed instance groups. |
 | [Making a game](making-a-game.md) | The `app::Game` trait, the loop, building a scene, costs and gotchas. Starts from the `hello` example. |
 | [Games in Luau: the warp executable](warp-cli.md) | `warp new`, `run`, `script`, `serve`, `check`: a game of Luau scripts, sound patches and glTF assets with hot reload and live MCP control. The Luau game API. |
+| [Luau or Rust](luau-or-rust.md) | Where game code goes: rules and content in Luau, loops over many things in Rust, per-pixel and per-instance work on the GPU. What a crossing costs, the patterns to copy, moving code across. |
 | [Scripting and modding](scripting.md) | The Luau host: sandbox, hot reload, step budget. Growing Guns' mod API as the worked example. |
 | [Audio](audio.md) | Engine sound synthesis, effects playback, and the procedural synth with its surround mixer. |
 | [Live control over MCP](live-control.md) | Change a running game with Claude, ChatGPT or an in-game assistant: setup, tools, security. |
