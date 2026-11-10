@@ -31,7 +31,7 @@ One Rust workspace, with Cargo.toml and Cargo.lock at the repository root.
 | `engine/tools/` | Python diagnostics: frame budgets, hitches, scenario replay. |
 | `games/sideways/` | The rally game: `sim` (simulation), `app` (renderer integration, the `cli` package builds the `sideways` executable), `determinism` (`gdcompat`: deterministic math/RNG, not Godot), assets, scenarios, tools. |
 | `games/growing-guns/`, `games/spellstorm/` | Rust games with `sim` and `app` crates. Growing Guns is a port of the Godot game (github.com/ontola/growing-guns); its README's status tables say how far the port is: update them in the same commit as any change a player would notice (a test checks modifiers, settings, knobs and the card count). |
-| `games/hello-warp/`, `neon-siege/`, `neon-trails/` | Luau games run by `warp run games/NAME` (no Rust). |
+| `games/hello-warp/`, `neon-siege/`, `neon-trails/`, `stack-together/` | Luau games run by `warp run games/NAME` (no Rust). |
 | `lobbies/game-room/` | Gamepad Party's lobby game. |
 | `website/` | Static site generator for the engine's site. |
 | `build/` | Ignored output: screenshots (`build/screenshots`), captures, caches. |

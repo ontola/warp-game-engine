@@ -458,6 +458,35 @@ fn neon_trails_plays_rounds_with_bots() {
     assert_eq!(run()["state"], s["state"]);
 }
 
+/// Stack Together, ported from the LÖVE party pack: a person and a bot share
+/// one well (six columns each), the bot builds its own half, Y passes a
+/// piece through the shared slot, and the same seed replays.
+#[test]
+fn stack_together_shares_a_well_with_a_bot() {
+    let run = || {
+        let mut g = LuaGame::load(&repo().join("games/stack-together"), &Overrides::default(), None).unwrap();
+        g.echo = false;
+        g.tick(&[Controls::default()]);
+        let hold = Controls { held: Buttons(Buttons::NORTH), pressed: Buttons(Buttons::NORTH), ..Default::default() };
+        g.tick(&[hold]);
+        let s = state(&g);
+        assert_eq!(s["state"]["hold_by"], s["state"]["players"][0]["id"], "Y puts the person's piece in the shared slot: {}", s["state"]);
+        assert_eq!(s["state"]["players"][0]["held"], json!(true));
+        for _ in 0..1500 { g.tick(&[Controls::default()]); }
+        state(&g)
+    };
+    let s = run();
+    assert_eq!(s["errors"], json!([]), "{s}");
+    assert_eq!(s["cameras"].as_array().unwrap().len(), 1, "one shared view");
+    let lanes: Vec<u64> = s["state"]["players"].as_array().unwrap().iter().map(|p| p["lane"].as_u64().unwrap()).collect();
+    assert_eq!(lanes, vec![1, 7], "two halves of six columns");
+    let board = s["state"]["board"].as_array().unwrap();
+    assert_eq!(board.len(), 12 * 18);
+    let right = board.iter().enumerate().filter(|(i, k)| i % 12 >= 6 && k.as_u64().unwrap() != 0).count();
+    assert!(right >= 8, "the bot stacks pieces in its own half: {right} cells");
+    assert_eq!(run()["state"], s["state"]);
+}
+
 const FX_GAME: &str = r##"
 local function init()
     world.warm("cube", { color = "#ff00ff", emissive = 0.06 })
