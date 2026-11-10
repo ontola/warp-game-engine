@@ -627,8 +627,9 @@ pub fn bits(e: El, k: f32) -> Em {
             p.damp = (0.2, 0.8);
         }
         El::Void => {
-            // Motes falling in: violet streaks that point at the middle.
-            p.size = 0.06 * k;
+            // Motes falling in: violet streaks that point at the middle,
+            // big enough to read as streaks (tinier, they drew as squares).
+            p.size = 0.11 * k;
             p.life = 0.45;
             p.glow = 3.0;
             p.stretch = 0.04;
