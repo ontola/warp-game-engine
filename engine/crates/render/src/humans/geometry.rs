@@ -123,10 +123,10 @@ impl Mesh {
     pub(super) fn anatomical() -> Self {
         let bytes = include_bytes!("../../../../assets/humans/person.bin");
         let u32_at = |i| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
-        assert_eq!(&bytes[..4], b"WH02");
+        assert_eq!(&bytes[..4], b"WH03");
         let count = u32_at(4);
-        let split = 28 + count * 22;
-        let mut vertices: Vec<Vertex> = bytes[28..split]
+        let split = 32 + count * 22;
+        let mut vertices: Vec<Vertex> = bytes[32..split]
             .chunks_exact(22)
             .map(|s| {
                 let signed = |i| i16::from_le_bytes([s[i], s[i + 1]]) as f32 / 32767.;
@@ -156,7 +156,13 @@ impl Mesh {
             }
             cursor = end;
         }
-        assert_eq!(cursor, bytes.len());
+        // Store the closure target in unused components of the four GPU morphs.
+        let end = cursor + u32_at(28) * 5;
+        for entry in bytes[cursor..end].chunks_exact(5) {
+            let v = &mut vertices[u16::from_le_bytes([entry[0], entry[1]]) as usize];
+            for axis in 0..3 { v.morphs[axis][3] = entry[2 + axis] as i8; }
+        }
+        assert_eq!(end, bytes.len());
         Self { vertices, indices }
     }
 }
@@ -168,6 +174,7 @@ pub struct BodyVertex {
     pub normal: Vec3,
     pub uv: [f32; 2],
     pub limb_weights: [f32; 4],
+    pub lid_closure: Vec3,
     pub material: u32,
 }
 
@@ -265,6 +272,7 @@ impl super::Instance {
                 position: p,
                 normal: n.normalize_or(Vec3::Y),
                 uv: [v.center[0], v.center[1]],
+                lid_closure: Vec3::from_array([0, 1, 2].map(|axis| v.morphs[axis][3] as f32 * (0.012 / 127.))),
                 limb_weights: v.bones.map(|w| w as f32 / 255.0),
                 material,
             });

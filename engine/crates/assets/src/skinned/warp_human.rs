@@ -11,7 +11,37 @@ struct Bone {
     normal: Mat3,
 }
 
+// Two eye pivots and six signed translation axes reproduce the sparse lid
+// target through ordinary GPU skinning. All eight inherit the animated head.
+pub(super) struct FaceRig {
+    first: usize,
+    head: usize,
+    eyes: [Vec3; 2],
+    scale: Vec3,
+    phase: f32,
+}
+
+const LID_RANGE: f32 = 0.016;
+
 impl Character {
+    /// Apply after the head pose, using the interpolated presentation clock.
+    pub fn pose_face(&self, palette: &mut [Mat4], seconds: f32) {
+        let Some(face) = &self.face else { return };
+        let head = palette[face.head];
+        let phase = (seconds / (3.1 + 1.8 * face.phase) + face.phase).rem_euclid(1.);
+        let blink = ramp(0., 0.020, phase) * (1. - ramp(0.025, 0.064, phase));
+        let clock = seconds + 17. * face.phase;
+        let yaw = 0.28 * (ramp(0.20, 0.65, (clock * 1.41).sin()) - 0.5);
+        let pitch = -0.13 * (ramp(0.35, 0.76, (clock * 0.92).sin()) - 0.5);
+        let gaze = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+        for (i, pivot) in face.eyes.into_iter().enumerate() {
+            palette[face.first+i] = head * Mat4::from_rotation_translation(gaze, pivot - gaze*pivot);
+        }
+        for (i, axis) in [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z].into_iter().enumerate() {
+            palette[face.first+2+i] = head * Mat4::from_translation(face.scale * axis * (LID_RANGE * blink));
+        }
+    }
+
     /// Reuse this character's clips, sockets and joint names with a Warp Human skin.
     pub fn warp_human(&self, person: &Instance) -> Result<Self, String> {
         self.warp_human_with_skin(person, None)
@@ -167,6 +197,27 @@ impl Character {
         let skin_color = skin.map(Vec3::from).unwrap_or_else(|| person.skin_color());
         let (hair, brows) = person.hair_and_brows(skin_color);
         let (body, indices) = person.fitted_mesh(player);
+        let face = player.then(|| {
+            let first = fitted_joints.len();
+            let eyes = [false, true].map(|positive| {
+                let mut lo = Vec3::splat(f32::INFINITY);
+                let mut hi = Vec3::splat(f32::NEG_INFINITY);
+                for v in body.iter().filter(|v| v.material == 6 && (v.position.x > 0.) == positive) {
+                    lo = lo.min(v.position);
+                    hi = hi.max(v.position);
+                }
+                upper_body.transform_point3((lo + hi) * 0.5)
+            });
+            for (name, pivot) in ["RightEye", "LeftEye"].into_iter().zip(eyes) {
+                fitted_joints.push((name.into(), Mat4::from_translation(pivot)));
+            }
+            let head = core[5].joint;
+            let bind = fitted_joints[head].1;
+            for axis in ["Xp","Xn","Yp","Yn","Zp","Zn"] {
+                fitted_joints.push((format!("Lid{axis}"), bind));
+            }
+            FaceRig { first, head, eyes, scale, phase: person.face_phase() }
+        });
         let skin = |v: &BodyVertex| {
             let p = v.position;
             let (arm, leg) = &limbs[usize::from(p.x > 0.)];
@@ -201,6 +252,22 @@ impl Character {
                 inf.weights[i] = w;
                 pos += bone.transform.transform_point3(p) * w;
                 normal += (bone.normal * v.normal) * w;
+            }
+            if let Some(face) = &face {
+                if v.material == 6 {
+                    inf = Influence { joints: [0;8], weights: [0.;8] };
+                    inf.joints[0] = (face.first + usize::from(p.x > 0.)) as u32;
+                    inf.weights[0] = 1.;
+                } else if v.lid_closure != Vec3::ZERO {
+                    inf = Influence { joints: [0;8], weights: [0.;8] };
+                    for (axis, delta) in v.lid_closure.to_array().into_iter().enumerate() {
+                        inf.joints[axis+1] = (face.first+2+2*axis+usize::from(delta < 0.)) as u32;
+                        inf.weights[axis+1] = delta.abs() / LID_RANGE;
+                    }
+                    inf.joints[0] = face.head as u32;
+                    inf.weights[0] = 1. - inf.weights.iter().sum::<f32>();
+                    debug_assert!(inf.weights[0] >= 0.);
+                }
             }
             let uv = if v.material == 6 {
                 [
@@ -294,7 +361,8 @@ impl Character {
         Ok(Self {
             // Grip corrections are authored for the donor rig by name.
             name: self.name.clone(),
-            joint_count: self.joint_count,
+            joint_count: fitted_joints.len(),
+            face,
             clips: self.clips.clone(),
             joints: fitted_joints,
             min: self.min.min(Vec3::splat(-1.0)),
@@ -348,13 +416,17 @@ fn surface(person: &Instance, tag: u32, skin: Vec3, hair: Vec3, brows: Vec3) -> 
         influences: Vec::new(),
         texture,
         normal: None,
-        skin_hair: None,
+        skin_hair: match tag {
+            4 => Some(SkinHair::Skin),
+            11 => Some(SkinHair::PackedMask),
+            _ => None,
+        },
         material: MaterialFile {
             name: format!("warp-human-{tag}"),
             albedo_texture: None,
             albedo: tint.extend(1.).into(),
             albedo_color_space: "sRGB".into(),
-            roughness: if (20..=22).contains(&tag) { 0.61 } else { 0.82 },
+            roughness: match tag { 6 => 0.23, 11 => 0.46, 4 => 0.61, 20..=22 => 0.70, _ => 0.82 },
             metallic: 0.,
             normal_texture: None,
             normal_scale: 1.,
@@ -379,11 +451,11 @@ fn shared_tiles() -> &'static [std::sync::Arc<image::RgbaImage>; 12] {
                     let r = dx.hypot(dy);
                     let grain = (dx.atan2(dy) * 33.).sin() * 4.;
                     let iris = Vec3::new(82. + grain, 66. + grain, 49.);
-                    let iris = iris.lerp(Vec3::splat(20.), ramp(13., 16., r));
+                    let iris = iris.lerp(Vec3::splat(22.), ramp(10., 13.5, r));
                     let color = Vec3::splat(18.)
                         .lerp(iris, ramp(4.5, 6., r))
-                        .lerp(Vec3::new(187., 176., 165.), ramp(15., 17., r));
-                    let shade = 0.78 + 0.22 * ramp(12., 40., y as f32);
+                        .lerp(Vec3::new(187., 176., 165.), ramp(13., 14.5, r));
+                    let shade = 0.60 + 0.40 * ramp(15., 34., y as f32);
                     let [r, g, b] = (color * shade).to_array().map(|v| v as u8);
                     image::Rgba([r, g, b, 255])
                 })

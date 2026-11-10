@@ -261,6 +261,16 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
         if anatomical {
             let weights=a.identity*2.-1.;
             p+=0.055*(nose.xyz*weights.x+mouth.xyz*weights.z+brow.xyz*weights.y+adult.xyz*weights.w);
+            let closure=vec3<f32>(nose.w,mouth.w,brow.w);
+            if any(closure!=vec3<f32>(0.)) {
+                let phase=fract(camera.settings.x/(3.1+1.8*a.identity.x)+a.identity.x);
+                let blink=smoothstep(0.,0.020,phase)*(1.-smoothstep(0.025,0.064,phase));
+                p+=0.012*closure*blink;
+            }
+            if mat==21u {
+                let fringe=clamp((p.z-0.033)/0.027,0.,1.)*clamp(1.-abs(p.x-0.006)/0.052,0.,1.)*clamp((0.974-p.y)/0.032,0.,1.);
+                p+=vec3<f32>(-0.012,0.030,0.)*fringe;
+            }
             let side=sign(rest.x);
             let shoulder=vec3<f32>(side*0.1008,0.805,-0.012);
             let elbow=vec3<f32>(side*0.1878,0.6994,-0.0132);
@@ -392,13 +402,14 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     o.lamps=vec3<f32>(unpack2x16float(seat.rg),unpack2x16float(seat.blue_turn).x);
     o.direction_sun=unpack4x8snorm(seat.direction_sun);
     o.world=world; o.uv=center.xy; o.pos=camera.vp*vec4<f32>(world,1); o.n=rot*(n/scale); o.local=rest;
+    if mat==6u { o.uv=normal.xy; }
     var dye=a.color.x;
     if mat==2u || mat==14u {dye=a.color.y;}
     if mat==3u {dye=a.color.z;}
     o.color=unpack4x8unorm(u32(dye)).rgb;
     o.appearance=appearance; o.mat=select(mat,1u,!anatomical && arm!=0. && mat==4u && outfit!=1u && rest.y>0.558); o.identity=a.identity; o.disc=disc; return o;
 }
-fn human_color(v:V)->vec4<f32>{
+fn human_color(v:V, eye_dir:vec3<f32>)->vec4<f32>{
     if dot(v.disc,v.disc)>1. {discard;}
     let id=v.identity; let p=v.local; let n=normalize(v.n);
     let pigment=mix(vec3<f32>(0.28,0.125,0.076),vec3<f32>(0.85,0.55,0.409),id.y);
@@ -411,12 +422,18 @@ fn human_color(v:V)->vec4<f32>{
     let hair=vec3<f32>(vec3<u32>(hair_bits>>8u,hair_bits>>4u,hair_bits) & vec3<u32>(15u))/15.;
     let wardrobe=v.appearance & 511u;
     var color=v.color;
+    var specular=0.;
+    var gloss=32.;
     switch v.mat {
     case 3u: {color*=mix(0.71,1.,smoothstep(0.012,0.020,p.y));}
     case 4u: {color=skin;}
     case 11u: {
 
-        let tex=artifact_sample(tile,v.uv).rgb;
+        let face=artifact_sample(tile,v.uv);
+        let tex=face.rgb;
+        let sheen=clamp(2.*face.a-1.,0.,1.);
+        specular=0.045+0.15*sheen;
+        gloss=18.+46.*sheen;
 
         color=mix(skin,clamp(skin*tex/cheeks[tile],vec3<f32>(0.),vec3<f32>(1.)),smoothstep(0.862,0.895,p.y));
     }
@@ -452,33 +469,47 @@ fn human_color(v:V)->vec4<f32>{
         color=select(hair,brow,v.mat==13u)*fibre;
     }
     case 6u: {
-        let eye=length(vec2<f32>(abs(p.x)-0.01846,p.y-0.92704));
-        color=mix(vec3<f32>(0.78,0.74,0.68),vec3<f32>(0.17,0.12+0.11*id.z,0.09),1.-smoothstep(0.0030,0.0036,eye));
-        color=mix(vec3<f32>(0.025),color,smoothstep(0.0011,0.0016,eye));
-        let glint=length(vec2<f32>(abs(p.x)-0.0176,p.y-0.92815));
-        color=mix(color,vec3<f32>(0.92),1.-smoothstep(0.00045,0.00095,glint));
+        let clock=camera.settings.x+17.*id.x;
+        let glance=vec2<f32>(smoothstep(0.20,0.65,sin(clock*1.41)),smoothstep(0.35,0.76,sin(clock*0.92)));
+        let gaze=(glance-0.5)*vec2<f32>(0.28,0.13);
+        let iris=length(v.uv-gaze);
+        let rim=1.-smoothstep(0.43,0.49,iris);
+        let stroma=mix(vec3<f32>(0.26,0.16,0.095),vec3<f32>(0.29,0.34,0.27),id.z);
+        color=mix(vec3<f32>(0.79,0.76,0.72),mix(stroma,stroma*0.44,smoothstep(0.35,0.46,iris)),rim);
+        color=mix(vec3<f32>(0.027,0.024,0.021),color,smoothstep(0.16,0.22,iris));
+        color*=1.-0.42*smoothstep(0.02,0.55,v.uv.y);
+        specular=0.95; gloss=95.;
     }
     case 7u: {color=hair;}
     default: {}
+    }
+    let sun=select(normalize(vec3<f32>(-0.65,0.85,0.5)),camera.sun.xyz,camera.game.x>0.);
+    var sun_glint=0.;
+    var lamp_glint=0.;
+    if specular>0. {
+        sun_glint=specular*pow(max(dot(n,normalize(eye_dir+sun)),0.),gloss)*max(dot(n,sun),0.);
+        let lamp=v.direction_sun.xyz;
+        lamp_glint=specular*pow(max(dot(n,normalize(eye_dir+lamp)),0.),gloss)*max(dot(n,lamp),0.);
     }
     if camera.game.x>0. {
         let direct=camera.sun_color.rgb*camera.game.w*v.direction_sun.w*max(dot(n,camera.sun.xyz),0.);
         // Wrapped diffuse retains opposing lamps when their first moments cancel.
         let local=v.lamps*max(0.,0.25+0.75*dot(n,v.direction_sun.xyz));
         let irradiance=camera.game.z*(0.5+0.25*n.y)+direct+local;
-        return vec4<f32>(pow(max(color,vec3<f32>(0.)),vec3<f32>(2.2))*irradiance/3.14159,1.);
+        return vec4<f32>(pow(max(color,vec3<f32>(0.)),vec3<f32>(2.2))*irradiance/3.14159+
+            (sun_glint*camera.sun_color.rgb*camera.game.w*v.direction_sun.w+lamp_glint*v.lamps)/3.14159,1.);
     }
-    let sun=normalize(vec3<f32>(-0.65,0.85,0.5)); let light=0.68+0.33*max(dot(n,sun),0.)+0.07*n.y;
-    return vec4<f32>(clamp(color*light,vec3<f32>(0.),vec3<f32>(1.)),1.);
+    let light=0.68+0.33*max(dot(n,sun),0.)+0.07*n.y;
+    return vec4<f32>(clamp(color*light+sun_glint,vec3<f32>(0.),vec3<f32>(1.)),1.);
 }
 
 @fragment fn fs_review(v:V)->@location(0) vec4<f32> {
-    return human_color(v);
+    return human_color(v,normalize(cross(camera.right.xyz,camera.up.xyz)));
 }
 
 @fragment fn fs_match(v:V)->@location(0) vec4<f32> {
-    let radiance = human_color(v).rgb;
     let ray = v.world - view.cam.xyz;
+    let radiance = human_color(v,normalize(-ray)).rgb;
     let d = length(ray);
     return vec4<f32>(apply_distance_fog(radiance, d, ray / max(d, 1e-6)), 1.0);
 }

@@ -63,6 +63,100 @@ def hidden(path):
     return result
 
 
+def curl_tile(tile):
+    # A seamless fibre field for the close coiled groom. Preserve the source
+    # highlight calibration (27/255), so every seeded hair tint still applies.
+    from PIL import ImageDraw
+    rng=np.random.default_rng(8108)
+    size=tile//2
+    field=Image.new("L",(size,size),11)
+    draw=ImageDraw.Draw(field)
+    for _ in range(5200):
+        x,y=rng.uniform(0,size,2)
+        rx,ry=rng.uniform(1.2,4.2,2)
+        start=rng.integers(360).item()
+        light=int(rng.integers(4,35))
+        for dx in (-size,0,size):
+            for dy in (-size,0,size):
+                box=(x+dx-rx,y+dy-ry,x+dx+rx,y+dy+ry)
+                if box[2]<0 or box[3]<0 or box[0]>=size or box[1]>=size: continue
+                draw.arc(box,start,start+235,fill=light,width=1)
+    result=Image.new("RGBA",(tile,tile))
+    for x in (0,size):
+        for y in (0,size):result.paste(field.convert("RGBA"),(x,y))
+    return result
+
+
+def groom_edges(fitted,mat,atlas):
+    # Overlap tapered locks along the actual outline of each fitted groom.
+    # Root and tip share their nearest donor's morphs, so they stay attached.
+    xyz=fitted*.06+[0,.49,-.021]
+    angle=np.arctan2(xyz[:,0],xyz[:,2]-.002)
+    rng=np.random.default_rng(mat)
+    verts=[]; uvs=[]; roots=[]; tris=[]
+    for theta in np.linspace(-2.75,2.75,99):
+        nearby=np.where(np.abs(angle-theta)<.075)[0]
+        if not len(nearby): continue
+        i=nearby[np.argmin(xyz[nearby,1])]
+        outward=np.array([np.sin(theta),0,np.cos(theta)])
+        across=np.array([np.cos(theta),0,-np.sin(theta)])
+        root=xyz[i]+outward*.0007
+        width=rng.uniform(.0008,.0025)
+        fall=rng.uniform(.0015,.004) * (0.6 if mat==21 else 1.)
+        tip=root+[0,-fall,0]+across*width*rng.uniform(-1.3,1.3)
+        first=len(verts)
+        for point,tex in [(root+[0,.0045,0]-width*across,(.4,.4)),(root+[0,.0045,0]+width*across,(.6,.4)),(tip,(.51,.58))]:
+            verts.append((point-[0,.49,-.021])/.06);uvs.append(tex);roots.append(i)
+        tris.append(("",[(first,first),(first+2,first+2),(first+1,first+1)]))
+    # A recessed crown blocks the view through stacked cutout cards.
+    # Sample an opaque patch of the same groom so this joins its draw.
+    tile=atlas.height//2
+    atlas_x,atlas_y=(mat-17)%4*tile,(mat-17)//4*tile
+    tex=np.asarray(atlas.crop((atlas_x,atlas_y,atlas_x+tile,atlas_y+tile)))
+    patches=[(u,v) for u in range(20,tile-20,12) for v in range(20,tile-20,12)
+             if tex[v-10:v+11,u-10:u+11,3].min()>245]
+    u,v=min(patches,key=lambda q:abs(tex[q[1],q[0],:3].mean()-{20:25,21:115,22:18}[mat]))
+    start=len(verts)
+    sides,rings=(72,18) if mat==22 else (40,12)
+    top=xyz[:,1].max()
+    radius=np.hypot(xyz[:,0],xyz[:,2]-.002)
+    for k in range(sides+1):
+        theta=k*2*np.pi/sides-np.pi
+        alignment=np.cos(angle-theta)
+        sector=np.flatnonzero(alignment>np.cos(.17))
+        if len(sector)<12: sector=np.argsort(alignment)[-12:]
+        bottom=xyz[sector,1].min()+(.012 if mat==21 else .005)
+        for ring in range(rings):
+            t=ring/rings
+            y=bottom+(top-bottom)*t
+            near=sector[np.argsort(abs(xyz[sector,1]-y))[:8]]
+            r=max(0.,np.quantile(radius[near],.65)-.003)
+            if mat==22:
+                # Close the curl mass under the actual outer silhouette.
+                r=(np.quantile(radius[near],.75)+.001)*(1.+.015*np.sin(9*theta+11*t))
+            pt=np.array([r*np.sin(theta),y,.002+r*np.cos(theta)])
+            verts.append((pt-[0,.49,-.021])/.06)
+            roots.append(near[np.argmin(np.linalg.norm(xyz[near]-pt,axis=1))])
+            if mat==22: uvs.append((k/sides,t))
+            else: uvs.append(((u+5*np.sin(theta))/tile,(v+7*t)/tile))
+    if mat==22:
+        crown=np.array(verts[start:]).reshape(sides+1,rings,3)[:-1].copy()
+        for _ in range(2):
+            crown=.5*crown+.25*(np.roll(crown,1,axis=0)+np.roll(crown,-1,axis=0))
+            crown[:,1:-1]=.6*crown[:,1:-1]+.2*(crown[:,:-2]+crown[:,2:])
+        verts[start:]=list(np.concatenate((crown,crown[:1])).reshape(-1,3))
+    pole=len(verts)
+    verts.append((np.array([0,top-.002,.002])-[0,.49,-.021])/.06)
+    roots.append(np.argmax(xyz[:,1]));uvs.append((u/tile,v/tile))
+    for k in range(sides):
+        a=start+k*rings; b=start+(k+1)*rings
+        for j in range(rings-1):
+            for tri in [(a+j,b+j,b+j+1),(a+j,b+j+1,a+j+1)]:
+                tris.append(("",[(q,q) for q in tri]))
+        tris.append(("",[(q,q) for q in (a+rings-1,b+rings-1,pole)]))
+    return np.array(verts),np.array(uvs),tris,roots
+
+
 def cook(base_path,src,pack,dest):
     base,uv,faces=obj(base_path)
     # Narrow the neutral palpebral opening with the paired hm08 eyelid targets.
@@ -82,9 +176,9 @@ def cook(base_path,src,pack,dest):
     weights/=np.maximum(totals,1e-9)[:,None]
     # Four signed blend shapes with independent seed weights.
     groups=[
-        [("nose-scale-horiz-incr",1.15),("nose-point-down",0.85)],
-        [("mouth-scale-horiz-incr",1.15),("mouth-upperlip-volume-incr",0.85)],
-        [("eyebrows-angle-up",1.3)],
+        [("nose-scale-horiz-incr",1.15),("nose-point-down",0.85),("nose-scale-depth-incr",0.95),("nose-curve-convex",0.7)],
+        [("mouth-scale-horiz-incr",1.15),("mouth-upperlip-volume-incr",0.85),("chin-width-incr",1.15),("chin-prominent-incr",0.85)],
+        [("eyebrows-angle-up",1.3),("forehead-temple-incr",-0.65),("l-cheek-bones-incr",1.2),("r-cheek-bones-incr",1.2)],
         [("caucasian-male-young",0.5),("caucasian-female-young",-0.5)],
     ]
     shapes=np.zeros((len(base),4,3))
@@ -95,6 +189,11 @@ def cook(base_path,src,pack,dest):
                 if w and w[0].isdigit():shapes[int(w[0]),channel]+=np.array(list(map(float,w[1:4])))*strength
     # Macro shape is restricted to the head; clothes retain the fitted body shape.
     shapes[:,3]*=np.clip((base[:,1]-5.45)/0.9,0,1)[:,None]
+    # A sparse fifth field closes the actual lid rings around the eyeball.
+    closure=np.zeros_like(base)
+    for side in ("left","right"):
+        delta=np.loadtxt(src/f"eye-{side}-closure.target")
+        closure[delta[:,0].astype(int)] += delta[:,1:4]*0.85
     outfits=["male_casualsuit01","male_casualsuit06","male_casualsuit05"]; shoes="shoes02"
     outfit=outfits[0]
     shoe_mask=hidden(pack/"clothes"/shoes/(shoes+".mhclo"))
@@ -106,9 +205,27 @@ def cook(base_path,src,pack,dest):
     lo=np.array([0.635,0.115]);hi=np.array([1.,0.89])
     def put(idx,img):
         atlas.paste(img.convert("RGBA").resize((tile,tile),Image.Resampling.LANCZOS),((idx%4)*tile,(idx//4)*tile))
+    # Bake the shinier T-zone and lips into unused face alpha. RGB stays sRGB.
+    from PIL import ImageDraw, ImageFilter
+    face_mask=Image.new("L",(tile,tile),128)
+    brush=ImageDraw.Draw(face_mask)
+    for group,tri in faces:
+        if group != "body": continue
+        ids,tex=zip(*tri)
+        coords=(uv[list(tex)]-lo)/(hi-lo)
+        if np.any(coords < 0) or np.any(coords > 1): continue
+        x,y,z=base[list(ids)].mean(0)*.06+[0,.49,-.021]
+        if z < .04: continue
+        def area(height,width,radius):
+            return np.exp(-((x/width)**2+((y-height)/radius)**2))
+        sheen=max(.82*area(.907,.012,.021),.95*area(.885,.016,.005),.60*area(.950,.030,.020))
+        brush.polygon([tuple(pt) for pt in coords*(tile-1)],fill=128+round(127*sheen))
+    face_mask=face_mask.filter(ImageFilter.GaussianBlur(1.5))
     for idx,name in enumerate(["middleage_caucasian_male","young_caucasian_female","young_african_male"]):
         img=Image.open(next((pack/"skins"/name).glob("*diffuse*.png")))
-        put(idx,img.crop(tuple(np.r_[lo*img.size,hi*img.size].round().astype(int))))
+        face=img.crop(tuple(np.r_[lo*img.size,hi*img.size].round().astype(int))).convert("RGBA").resize((tile,tile),Image.Resampling.LANCZOS)
+        face.putalpha(face_mask)
+        atlas.paste(face,(idx*tile,0))
     for idx,name in enumerate(["short01","bob02","afro01"],3):
         put(idx,Image.open(next((pack/"hair"/name).glob("*diffuse*.png"))))
     # Three grayscale fabric maps and sixteen print glyphs occupy the old outfit tile.
@@ -133,8 +250,8 @@ def cook(base_path,src,pack,dest):
     put(6,Image.merge("RGBA",(*cloth,prints)))
     put(7,Image.open(pack/"eyebrows/eyebrow001/eyebrow001.png"))
     vertices=bytearray();indices=[]
-    targets=[bytearray() for _ in groups]
-    def add(pos,texcoord,triangles,skin,morph,material):
+    targets=[bytearray() for _ in range(5)]
+    def add(pos,texcoord,triangles,skin,morph,material,blink=None):
         normals=np.zeros_like(pos)
         for _,f in triangles:
             a,b,c=[i for i,_ in f]; v=np.cross(pos[b]-pos[a],pos[c]-pos[a])
@@ -155,6 +272,9 @@ def cook(base_path,src,pack,dest):
                     for target,delta in zip(targets,blends):
                         if np.any(delta):
                             target.extend(struct.pack("<H3b",seen[key],*delta))
+                    if blink is not None and np.any(blink[i]):
+                        d=np.round(np.clip(blink[i]*.06/.012,-1,1)*127).astype(int)
+                        if np.any(d): targets[4].extend(struct.pack("<H3b",seen[key],*d))
                     vertices.extend(struct.pack("<3h3h2H4BH",*signed(xyz/1.2),*signed(normals[i]),
                         *np.round(np.clip(uvp,0,1)*65535).astype(int),*np.round(np.clip(skin[i],0,1)*255).astype(int),
                         mat))
@@ -167,7 +287,7 @@ def cook(base_path,src,pack,dest):
         face=min(base[i,1] for i,t in f)>5.35 and all(np.all((uv[t]>=lo)&(uv[t]<=hi)) for i,t in f)
         return (11 if face else 4) | ((visible if visible!=7 else 0)<<5)
     body=[(g,f) for g,f in faces if g in ("helper-l-eye","helper-r-eye","body")]
-    add(base,uv,body,weights,shapes,body_material)
+    add(base,uv,body,weights,shapes,body_material,closure)
     # The independent T-shirt and jacket share the same pair of jeans.
     # Keep their lower garment only once. Connected pieces avoid recolouring a long hem.
     def garment_material(pos,triangles,style):
@@ -194,12 +314,18 @@ def cook(base_path,src,pack,dest):
         skin=(weights[refs]*w[:,:,None]).sum(1)
         morph=(shapes[refs]*w[:,:,None,None]).sum(1)
         material=garment_material(fitted,faces,outfits.index(name)) if mat==12 else lambda g,f:mat
-        add(fitted,uv,faces,skin,morph,material)
+        # The original coiled groom has stacked transparent sheets crossing the
+        # face in the match renderer. Use its fitted outline to build a curl mass.
+        if mat!=22: add(fitted,uv,faces,skin,morph,material)
+        if mat >= 20:
+            locks,lock_uv,triangles,roots=groom_edges(fitted,mat,atlas)
+            add(locks,lock_uv,triangles,skin[roots],morph[roots],material)
+    put(5,curl_tile(tile))
     dest.mkdir(exist_ok=True,parents=True)
     assert len(vertices)%22==0 and len(vertices)//22 <= 65536
     model_tmp=dest/"person.bin.tmp"
     atlas_tmp=dest/"appearance.png.tmp"
-    model_tmp.write_bytes(struct.pack("<4s6I",b"WH02",len(vertices)//22,len(indices),*(len(t)//5 for t in targets))
+    model_tmp.write_bytes(struct.pack("<4s7I",b"WH03",len(vertices)//22,len(indices),*(len(t)//5 for t in targets))
                           +vertices+np.array(indices,dtype="<u2").tobytes()+b"".join(targets))
     atlas.save(atlas_tmp,format="PNG",optimize=True)
     model_tmp.replace(dest/"person.bin")

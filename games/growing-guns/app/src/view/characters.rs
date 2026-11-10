@@ -117,6 +117,40 @@ mod tests {
     }
 
     #[test]
+    fn blink_and_gaze_follow_the_fitted_head() {
+        let person = render::humans::Instance::person(73, Vec3::ZERO, 0., &Default::default());
+        let rig = Character::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters/knight.json")).unwrap();
+        let model = rig.warp_human_player(&person, None).unwrap();
+        let mut pose = model.sample(IDLE, 0.5, true).unwrap();
+        let joint = |name| model.joints().position(|(n, _)| n == name).unwrap();
+        let head = Mat4::from_rotation_translation(Quat::from_rotation_y(0.4), Vec3::new(2., 1., 3.));
+        pose[joint("Head")] = head;
+        let phase = person.face_phase();
+        let period = 3.1 + 1.8 * phase;
+        let open = (1.3 - phase) * period;
+        let closed = (1.023 - phase) * period;
+        model.pose_face(&mut pose, open);
+        assert!(pose[joint("LidYn")].abs_diff_eq(head, 1e-5));
+        model.pose_face(&mut pose, closed);
+        let travel = head.inverse() * pose[joint("LidYn")];
+        assert!(travel.w_axis.y < -0.02);
+        for eye in ["LeftEye","RightEye"] {
+            let i = joint(eye);
+            let pivot = model.joints().nth(i).unwrap().1.w_axis.truncate();
+            assert!(pose[i].transform_point3(pivot).distance(head.transform_point3(pivot)) < 1e-5);
+            assert!(!pose[i].abs_diff_eq(head, 1e-3));
+        }
+        let mut scene = Scene::default();
+        model.add_actor(&mut scene, Affine3A::IDENTITY).unwrap();
+        let influences = &scene.skinning.actors[0].influences;
+        assert!(influences.iter().any(|v| v.joints.iter().zip(v.weights).any(|(&j,w)| j as usize == joint("LidYn") && w > 0.2)));
+        for v in influences {
+            assert!((v.weights.iter().sum::<f32>() - 1.).abs() < 1e-4);
+            assert!(v.weights.iter().all(|&w| w >= 0.));
+        }
+    }
+
+    #[test]
     fn profile_tints_and_reload_follow_the_rendered_player() {
         use crate::party::PlayerColors;
         use super::super::guns::Guns;
@@ -463,6 +497,7 @@ impl Characters {
         let model = &self.models[i % self.models.len()];
         let m = &actor.motion;
         m.sample(self.locomotion.as_ref(), model, 1., &mut twin.palette, &mut actor.run_palette).ok()?;
+        model.pose_face(&mut twin.palette, m.idle);
         self.hands[i] = None;
         Some((twin.handle.instance, twin.handle.mesh))
     }
@@ -531,6 +566,7 @@ impl Characters {
             let drawn = crate::view::pose(world, i, prev, alpha);
             let body = model_transform(drawn.pos, drawn.yaw);
             if let Some(rig) = &self.locomotion { rig.look(&mut actor.palette, drawn.pitch); }
+            model.pose_face(&mut actor.palette, (m.idle + (alpha - 1.) * DT).max(0.));
             let hand = body.transform_point3(socket.w_axis.truncate());
             self.hands[i] = Some(if let (Some(arms), Some(contacts)) = (&actor.arms, guns.and_then(|g| g.contacts(i, alpha))) {
                 let (support, roll) = self.animation.pose(contacts, (world.tick as f32 + alpha) * DT);
@@ -573,6 +609,7 @@ impl Characters {
         // the last tick (headless runs and multiple simulation ticks per draw).
         actor.motion.sample(self.locomotion.as_ref(), model, 1., &mut actor.palette, &mut actor.run_palette)?;
         if let Some(rig) = &self.locomotion { rig.look(&mut actor.palette, p.pitch); }
+        model.pose_face(&mut actor.palette, actor.motion.idle);
         actor.corpse = Some(Corpse::spawn(model, &actor.palette, model_transform(p.pos, p.yaw), actor.velocity, direction, player, headless, physics)?);
         self.hands[player] = None;
         Ok(())

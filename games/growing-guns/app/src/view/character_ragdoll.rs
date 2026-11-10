@@ -58,7 +58,7 @@ pub(super) fn part(name: &str) -> usize {
     let name = canonical(name);
     match name {
         "Hips" => 0,
-        "Neck" | "Head" | "LeftEye" | "RightEye" => 2,
+        "Neck" | "Head" | "LeftEye" | "RightEye" | "LidXp" | "LidXn" | "LidYp" | "LidYn" | "LidZp" | "LidZn" => 2,
         "LeftArm" => 3,
         "LeftForeArm" => 4,
         "RightArm" => 5,

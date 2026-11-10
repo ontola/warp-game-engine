@@ -108,6 +108,8 @@ pub enum SkinHair {
     /// (keeps the surface's own material), linear between. Becomes the
     /// albedo alpha; resized to the texture if its size differs.
     Mask(image::GrayImage),
+    /// The opaque texture already carries the shading mask in its alpha channel.
+    PackedMask,
 }
 fn one() -> f32 {
     1.0
@@ -128,6 +130,7 @@ pub struct Character {
     pub min: Vec3,
     pub max: Vec3,
     pub triangles: usize,
+    face: Option<warp_human::FaceRig>,
     surfaces: Vec<Surface>,
     joints: Vec<(String, Mat4)>,
 }
@@ -447,6 +450,7 @@ impl Character {
         min -= Vec3::splat(0.001);
         max += Vec3::splat(0.001);
         Ok(Self {
+            face: None,
             name: manifest.name,
             joint_count: manifest.joint_count,
             clips,
@@ -475,12 +479,16 @@ impl Character {
             .find(|c| c.name == name)
             .ok_or_else(|| format!("missing character clip {name}"))?;
         let (first, second, t) = frame_pair(clip.frames, clip.duration, seconds, looping);
+        if palette.len() != self.joint_count { return Err("incorrect character palette length".into()); }
+        let source_count = clip.matrices.len() / clip.frames;
         skinning::blend_palette_into(
-            &clip.matrices[first * self.joint_count..(first + 1) * self.joint_count],
-            &clip.matrices[second * self.joint_count..(second + 1) * self.joint_count],
+            &clip.matrices[first * source_count..(first + 1) * source_count],
+            &clip.matrices[second * source_count..(second + 1) * source_count],
             t,
-            palette,
-        )
+            &mut palette[..source_count],
+        )?;
+        self.pose_face(palette, seconds);
+        Ok(())
     }
 
     pub fn sample_socket(
@@ -621,6 +629,9 @@ impl Character {
         let count = self.surfaces.len();
         let target = self.surfaces.get_mut(surface)
             .ok_or_else(|| format!("{}: no surface {surface} (of {count})", self.name))?;
+        if matches!(kind, SkinHair::PackedMask) && (target.texture.is_none() || target.material.alpha_mode == "MASK") {
+            return Err(format!("{}: packed shading mask requires an opaque texture", self.name));
+        }
         let kind = match kind {
             SkinHair::Mask(mask) => {
                 let Some((_, image)) = &target.texture else {
@@ -689,7 +700,7 @@ impl Character {
                         None => 0,
                         Some(SkinHair::Skin) => SKIN,
                         Some(SkinHair::Hair) => HAIR,
-                        Some(SkinHair::Mask(_)) => SKIN | HAIR,
+                        Some(SkinHair::Mask(_) | SkinHair::PackedMask) => SKIN | HAIR,
                     },
                 scale: 1.0,
                 metal: source.metallic,
@@ -824,6 +835,7 @@ mod tests {
 
     fn pose_bounds_character() -> Character {
         Character {
+            face: None,
             name: "pose bounds fixture".into(),
             joint_count: 3,
             clips: vec![Clip {
