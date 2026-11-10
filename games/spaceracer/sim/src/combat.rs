@@ -5,6 +5,13 @@ use crate::{
     race::{Beam, Blast, Projectile, Race, Weapon},
 };
 use glam::{Mat3, Quat, Vec3};
+/// Path of a glide bomb lobbed from the ground, in road coordinates.
+#[derive(Clone, Copy, Debug)]
+pub struct Lob {
+    pub from: f64,
+    pub speed: f64,
+    pub x: f64,
+}
 #[derive(Clone, serde::Deserialize)]
 pub struct Config {
     pub rail_range:f32,pub rail_tangent:f32,pub rail_guide_radius:f32,
@@ -18,6 +25,11 @@ pub struct Config {
     pub bomb_range: f32,
     pub bomb_cone: f32,
     pub bomb_fuse: f32,
+    /// Ground lob: lands this many metres ahead of the shooter after `bomb_lob_time` s,
+    /// peaking `bomb_lob_height` m above the road.
+    pub bomb_lob_distance: f32,
+    pub bomb_lob_time: f32,
+    pub bomb_lob_height: f32,
     pub sentry_ahead: f64,
     pub sentry_range: f32,
     pub sentry_cone: f32,
@@ -36,6 +48,8 @@ impl Config {
             c.bomb_eject,
             c.bomb_range,
             c.bomb_fuse,
+            c.bomb_lob_distance,
+            c.bomb_lob_height,
             c.sentry_range,
             c.sentry_ahead as f32,
             c.sentry_spinup as f32,
@@ -46,6 +60,7 @@ impl Config {
             || !(50.0..=1000.).contains(&c.rail_range) || !(0.02..=0.5).contains(&c.rail_tangent) || !(0.02..=0.25).contains(&c.rail_guide_radius)
             || c.bomb_speed < 80.
             || c.bomb_turn > 4.
+            || !(0.3..=3.0).contains(&c.bomb_lob_time)
             || !(0.0..=1.0).contains(&c.bomb_cone)
             || !(0.0..=1.0).contains(&c.sentry_cone)
         {
@@ -102,6 +117,41 @@ impl Race {
                 + pose.basis.y_axis * 8.)
                 .clamp_length_max(self.combat.bomb_speed),
         )
+    }
+    /// Grounded slingshot throw. The arc is laid over the road itself (track
+    /// distance, lateral offset, height above the surface) so it follows hills and
+    /// curves and lands `bomb_lob_distance` m ahead of where the shooter will be
+    /// after `bomb_lob_time` seconds at their current speed.
+    pub fn bomb_lob(&self, i: usize) -> Lob {
+        let p = &self.pilots[i];
+        let c = &self.combat;
+        Lob {
+            from: p.distance - 1.8,
+            speed: (p.speed * p.heading.cos()).max(0.)
+                + (c.bomb_lob_distance as f64 + 1.8) / c.bomb_lob_time as f64,
+            x: p.x,
+        }
+    }
+    pub fn lob_point(&self, lob: &Lob, t: f64) -> Vec3 {
+        let c = &self.combat;
+        let n = self.world.track.sample(lob.from + lob.speed * t);
+        let edge = (n.geometry.width - 2.).max(0.);
+        let s = (t / c.bomb_lob_time as f64) as f32;
+        n.point(
+            lob.x.clamp(-edge, edge),
+            (1.15 + (0.6 - 1.15) * s + 4. * c.bomb_lob_height * s * (1. - s)) as f64,
+        )
+    }
+    /// AI hint: a grounded lob now would land on a rival a little ahead.
+    pub fn lob_ready(&self, i: usize) -> bool {
+        let me = &self.pilots[i];
+        let length = self.world.track.length;
+        let reach = self.combat.bomb_lob_distance as f64 + self.balance.bomb_radius as f64 * 0.6;
+        (0..self.pilots.len()).any(|j| {
+            let p = &self.pilots[j];
+            let ahead = (p.distance - me.distance + length * 0.5).rem_euclid(length) - length * 0.5;
+            j != i && !p.crashed && !p.finished && p.warp_time <= 0. && ahead > 15. && ahead < reach
+        })
     }
     fn predicted(&self, j: usize, t: f32) -> Vec3 {
         let p = &self.pilots[j];
@@ -175,6 +225,14 @@ impl Race {
     }
     /// Cheap current-tick guide: no full-track searches or speculative scene sweeps.
     pub fn bomb_preview(&self, i: usize) -> (Option<usize>, Vec<Vec3>) {
+        if !self.pilots[i].airborne {
+            let lob = self.bomb_lob(i);
+            let t = self.combat.bomb_lob_time as f64;
+            return (
+                None,
+                (0..=16).map(|k| self.lob_point(&lob, t * k as f64 / 16.)).collect(),
+            );
+        }
         let (mut at, mut velocity) = self.bomb_launch(i);
         let lock = self.bomb_target(i);
         let mut points = vec![at];
@@ -196,7 +254,10 @@ impl Race {
     }
     pub(crate) fn step_bomb(&self, p: &mut Projectile) -> Option<Vec3> {
         let mut goal = None;
-        if let Some(j) = p.target {
+        if let Some(lob) = p.lob {
+            p.position = self.lob_point(&lob, p.time.min(self.combat.bomb_lob_time as f64));
+            p.velocity = (p.position - p.previous) / DT as f32;
+        } else if let Some(j) = p.target {
             let target = &self.pilots[j];
             let offset = self.pose(j).origin - p.position;
             if target.crashed
@@ -212,15 +273,17 @@ impl Race {
                 goal = Some(self.bomb_lead(j, p.position, p.velocity.length()));
             }
         }
-        let next = self.combat.bomb_velocity(
-            p.velocity,
-            p.position,
-            goal,
-            DT as f32,
-            (p.time - DT) as f32,
-        );
-        p.position += (p.velocity + next) * (0.5 * DT as f32);
-        p.velocity = next;
+        if p.lob.is_none() {
+            let next = self.combat.bomb_velocity(
+                p.velocity,
+                p.position,
+                goal,
+                DT as f32,
+                (p.time - DT) as f32,
+            );
+            p.position += (p.velocity + next) * (0.5 * DT as f32);
+            p.velocity = next;
+        }
         let mut hit = self
             .environment
             .trace(&self.obstacles, p.previous, p.position)
@@ -231,7 +294,7 @@ impl Race {
                 .track
                 .project((p.previous + p.position) * 0.5, p.distance, 350.);
         p.distance = distance;
-        if n.supported(x, 0.) {
+        if p.lob.is_none() && n.supported(x, 0.) {
             let surface = n.point(x, 0.);
             let normal = n.frame(x).y_axis;
             let a = (p.previous - surface).dot(normal);
@@ -249,10 +312,11 @@ impl Race {
             }
         }
         let owner = self.pose(p.owner).origin;
-        if p.time >= 0.65 && p.previous.distance(owner) > 20. {
+        // A lob always lands near its shooter, so it never turns on them.
+        if p.lob.is_none() && p.time >= 0.65 && p.previous.distance(owner) > 20. {
             p.owner_clear = true;
         }
-        if p.previous.distance(owner) > self.balance.bomb_radius + 8. {
+        if p.lob.is_none() && p.previous.distance(owner) > self.balance.bomb_radius + 8. {
             p.owner_blast_clear = true;
         }
         for j in 0..self.pilots.len() {
@@ -277,6 +341,10 @@ impl Race {
                 hit = Some(point);
                 best = point.distance_squared(p.previous);
             }
+        }
+        // A lob goes off where it touches down, also over an air gap.
+        if hit.is_none() && p.lob.is_some() && p.time >= self.combat.bomb_lob_time as f64 - 1e-9 {
+            hit = Some(p.position);
         }
         hit
     }
@@ -612,6 +680,45 @@ mod tests {
         assert!(at.distance(r.pose(1).origin) < r.balance.bomb_radius);
         r.bomb_explode(&p, at);
         assert!(r.pilots[1].energy < 50.);
+    }
+    #[test]
+    fn grounded_glide_bomb_lobs_and_lands_ahead_of_moving_shooter() {
+        let mut r = race();
+        r.pilots[1].distance = -900.;
+        r.pilots[0].airborne = false;
+        r.pilots[0].distance = 0.;
+        r.pilots[0].x = 0.;
+        r.pilots[0].speed = 250.;
+        let preview = r.bomb_preview(0);
+        assert_eq!(preview.0, None);
+        fire(&mut r, Weapon::GlideBomb);
+        assert_eq!(r.drivers[0].item, None, "ground fire is allowed now");
+        let mut p = r.projectiles.remove(0);
+        assert!(p.target.is_none() && p.lob.is_some());
+        let start = p.position;
+        let mut peak = 0f32;
+        let mut hit = None;
+        for _ in 0..600 {
+            r.pilots[0].distance += r.pilots[0].speed * DT;
+            p.previous = p.position;
+            p.time += DT;
+            let (_, n, x) = r.world.track.project(p.position, p.distance, 350.);
+            peak = peak.max((p.position - n.point(x, 0.)).dot(n.frame(x).y_axis));
+            hit = r.step_bomb(&mut p);
+            if hit.is_some() {
+                break;
+            }
+        }
+        let at = hit.expect("lob lands on the road");
+        let t = r.combat.bomb_lob_time as f64;
+        assert!((p.time - t).abs() < 0.05, "lands on time: {}", p.time);
+        assert!(peak > 5., "visible arc: {peak}");
+        let (distance, _, _) = r.world.track.project(at, r.pilots[0].distance, 350.);
+        let ahead = distance - r.pilots[0].distance;
+        assert!((ahead - r.combat.bomb_lob_distance as f64).abs() < 6., "lands ~50 m ahead: {ahead}");
+        assert!(at.distance(start) > 200.);
+        r.bomb_explode(&p, at);
+        assert_eq!(r.pilots[0].energy, 100., "own lob never hurts the shooter");
     }
     #[test]
     fn glide_launch_blast_does_not_hit_owner_before_clearance() {

@@ -125,13 +125,15 @@ end
 local function activate(c)
     if c.crashed or c.finished or c.active or c.emp>0 then return {effect="none"} end
     local b=balance(nil)
-    if c.item=="GlideBomb" and not c.airborne then return {effect="none"} end
     if c.item=="Emp" then return {effect="emp",duration=b.emp_seconds,range=b.emp_radius} end
     if c.item=="Warp" and c.airborne then return {effect="none"} end
     if c.item=="Warp" then return {effect="active",duration=b.warp_seconds} end
     if c.item=="Sentry" then return {effect="active",duration=b.sentry_seconds} end
     if c.item=="Railgun" then return {effect="ray",range=650,damage=b.rail_damage} end
-    return {effect="projectile",cone=c.item=="GlideBomb" and .7 or 1,range=1000,speed=c.speed+40}
+    -- On the ground the glide bomb is lobbed like a slingshot: no lock, it arcs
+    -- forward and lands bomb_lob_distance metres ahead of the moving shooter.
+    if c.item=="GlideBomb" then return {effect="projectile",cone=.7,range=1000,speed=c.speed+40,lob=not c.airborne} end
+    return {effect="projectile",cone=1,range=1000,speed=c.speed+40}
 end
 local function environment(c)
     local e={ground=-150,hills=0,spacing=140,skip=.18,height={110,510},sun=24,sky=3,ambient=34,exposure=5.5}
@@ -189,6 +191,7 @@ local function combat(_)
     return {rail_range=650,rail_tangent=.14,rail_guide_radius=.11,
         bomb_speed=360,bomb_accel=200,bomb_burn=1.25,bomb_turn=1.15,bomb_gravity=14,
         bomb_drag=.012,bomb_eject=55,bomb_range=1100,bomb_cone=.573576,bomb_fuse=18,
+        bomb_lob_distance=50,bomb_lob_time=1.1,bomb_lob_height=11,
         sentry_ahead=220,sentry_range=190,sentry_cone=.15,sentry_spinup=.25}
 end
 local function warp(c)

@@ -381,7 +381,6 @@ pub fn draw(
         }
     }
     let preview = if d.item == Some(Weapon::GlideBomb)
-        && p.airborne
         && d.active.is_none()
         && p.emp_time <= 0.
     {
