@@ -156,6 +156,13 @@ pub enum Later {
         caster: Id,
         spell: Box<crate::Spell>,
     },
+    /// A glob of the venom cannon lands.
+    Venom {
+        caster: Id,
+        at: Vec3,
+        spell: Box<crate::Spell>,
+        puddle: bool,
+    },
     /// A toad's glob lands.
     Lob {
         caster: Id,
@@ -871,6 +878,7 @@ impl World {
                     el,
                     dmg,
                 } => self.lob_land(caster, at, el, dmg),
+                Later::Venom { caster, at, spell, puddle } => self.venom_splat(caster, at, &spell, puddle),
                 Later::BlowUp {
                     id,
                     el,

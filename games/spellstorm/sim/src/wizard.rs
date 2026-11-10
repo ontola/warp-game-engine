@@ -43,8 +43,8 @@ pub fn swing_reach() -> f32 {
 }
 pub const SWING_ARC: f32 = 1.3;
 pub const NOVA_HOLD: f64 = 0.45;
-/// R3 held this long enchants the staff; a tap shakes it empty.
-pub const ENCHANT_HOLD: f64 = 0.4;
+/// R3 held this long shakes the staff empty; a tap enchants it.
+pub const SHAKE_HOLD: f64 = 0.4;
 /// How long a shake of the staff takes.
 pub const SHAKE_TIME: f64 = 0.45;
 
@@ -673,20 +673,20 @@ impl World {
         if w.pad.pressed(Pad::LS) && w.form_open(Form::Plant) {
             self.cast(id, w, Form::Plant);
         }
-        // R3: a tap shakes the staff empty; held, it enchants the staff
-        // once Enchant is learned.
+        // R3: a tap enchants the staff (once Enchant is learned); held, it
+        // shakes the staff empty (Joep).
         if w.pad.pressed(Pad::RS) {
             w.rs_t = 0.0;
         } else if w.pad.down(Pad::RS) && w.rs_t >= 0.0 {
             w.rs_t += dt;
-            if w.rs_t >= ENCHANT_HOLD && w.form_open(Form::Enchant) {
+            if w.rs_t >= SHAKE_HOLD {
                 w.rs_t = -1.0;
-                self.cast(id, w, Form::Enchant);
+                self.shake_staff(id, w);
             }
         }
         if w.pad.released(Pad::RS) {
-            if w.rs_t >= 0.0 && (w.rs_t < ENCHANT_HOLD || !w.form_open(Form::Enchant)) {
-                self.shake_staff(id, w);
+            if w.rs_t >= 0.0 && w.form_open(Form::Enchant) {
+                self.cast(id, w, Form::Enchant);
             }
             w.rs_t = -1.0;
         }
@@ -719,7 +719,7 @@ impl World {
         }
     }
 
-    /// R3 tapped: the staff is shaken and what was loaded falls out of it
+    /// R3 held: the staff is shaken and what was loaded falls out of it
     /// as sparks, gone (no mana back).
     fn shake_staff(&mut self, id: Id, w: &mut Wizard) {
         if w.shake_t > 0.0 || w.charging.is_some() {
@@ -1280,6 +1280,11 @@ impl World {
             if s.primary == Some(El::Water) {
                 // The middle of the strip the wave will sweep.
                 return flat(pos + w.aim_dir * (WAVE_START + WAVE_RUN * 0.5));
+            }
+            if s.primary == Some(El::Earth) {
+                // The middle of the lane the boulder will roll.
+                use crate::spells::{BOULDER_LAND, BOULDER_RUN};
+                return flat(pos + w.aim_dir * (BOULDER_LAND + BOULDER_RUN * 0.5));
             }
             return flat(self.level.clamp_inside(pos + w.aim_dir * OVERLOAD_REACH));
         }

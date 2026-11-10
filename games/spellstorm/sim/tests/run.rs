@@ -120,7 +120,9 @@ fn nobody_gets_past_a_shut_wall_and_unlocks_wait_for_it() {
             w.step();
             for wd in w.run.wards.iter().filter(|wd| !wd.opening) {
                 for &id in w.wizards.iter().chain(&w.enemies) {
-                    if !w.alive(id) {
+                    // The arena's door holds the party in, not monsters out
+                    // (World::keep_inside): a straggler may be left outside.
+                    if !w.alive(id) || (wd.back && !w.a(id).wizard) {
                         continue;
                     }
                     let p = w.pos(id);
@@ -296,8 +298,8 @@ fn a_boss_grows_with_the_tomes_the_party_carries() {
 
 #[test]
 fn r3_shakes_the_staff_empty() {
-    // Joep: the right stick's button shakes the staff; what was loaded is
-    // gone and no mana comes back.
+    // Joep: holding the right stick's button shakes the staff; what was
+    // loaded is gone and no mana comes back.
     let mut s = Settings::default();
     s.unlock_all = true;
     let mut w = World::new(&[Seat::player(0, "Ann")], 3, s);
@@ -310,13 +312,15 @@ fn r3_shakes_the_staff_empty() {
         wz.queue.slots = vec![spellstorm::el::El::Poison, spellstorm::el::El::Poison];
     }
     let mana = w.wiz(id).mana;
-    let tap = 1u32 << spellstorm::wizard::Pad::RS;
-    w.wiz_mut(id).input.held = tap;
-    w.step();
+    let r3 = 1u32 << spellstorm::wizard::Pad::RS;
+    w.wiz_mut(id).input.held = r3;
+    for _ in 0..40 {
+        w.step();
+    }
     w.wiz_mut(id).input.held = 0;
     w.step();
     let wz = w.wiz(id);
-    assert!(wz.queue.slots.is_empty(), "a tap of R3 shakes the staff empty");
-    assert!(wz.mana <= mana + 1.0, "shaking gives no mana back");
+    assert!(wz.queue.slots.is_empty(), "holding R3 shakes the staff empty");
+    assert!(wz.mana <= mana + 8.0, "shaking gives no mana back (only the regen while held)");
     assert!(wz.shake_t > 0.0 && wz.used & spellstorm::wizard::used::SHAKE != 0);
 }

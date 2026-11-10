@@ -105,6 +105,35 @@ fn molten(s: GameSprite) -> vec4<f32> {
     return vec4(c, smoothstep(1.0, 0.94, r));
 }
 
+// ---- The rolling boulder ----
+// params: seed, how far it has turned (radians), its roll direction (x, z).
+// A ball of cracked grey-brown stone, lit from above, turning over as it
+// rolls (the camera looks down the level, so the turn reads on screen y).
+
+fn boulder(s: GameSprite) -> vec4<f32> {
+    let q = s.uv * 2.0 - 1.0;
+    let r = length(q);
+    if r > 1.0 {
+        return vec4(0.0);
+    }
+    let pz = sqrt(1.0 - r * r);
+    var n = vec3(q.x, -q.y, pz);
+    // Turn the surface about the axis across the roll.
+    let d = normalize(vec2(s.params.z, -s.params.w) + vec2(1e-4, 0.0));
+    let axis = normalize(vec3(-d.y, d.x, 0.0));
+    let a = s.params.y;
+    let p = n * cos(a) + cross(axis, n) * sin(a) + axis * dot(axis, n) * (1.0 - cos(a));
+    let v = el_cells(p * 2.2 + vec3(s.params.x));
+    let crack = smoothstep(0.0, 0.06, v.x);
+    let grain = sn_fbm(p * 5.0 + vec3(s.params.x));
+    var c = mix(vec3(0.32, 0.29, 0.25), vec3(0.5, 0.45, 0.38), grain);
+    c = c * (0.35 + 0.65 * crack);
+    // Lit from above and a little from the top left; dark underneath.
+    let light = clamp(dot(n, normalize(vec3(-0.4, 0.8, 0.5))), 0.0, 1.0);
+    c = c * (0.18 + 1.1 * light);
+    return vec4(lin(c), smoothstep(1.0, 0.96, r));
+}
+
 // ---- A pool of blood (blood.gdshader) ----
 // params: where the nearest wizard is (x, z from the middle, metres), pull
 // (0..1, fraction) + 1000 x suck (how far it has been drunk), time. The
@@ -260,6 +289,7 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
         case 71u: { return surge(s); }
         case 72u: { return lane(s); }
         case 73u: { return trap(s); }
+        case 74u: { return boulder(s); }
         default: { return fx_sprite(s); }
     }
 }

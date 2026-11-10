@@ -59,7 +59,7 @@ local SENTRY_NOUN = {
 
 local OVERLOAD_NOUN = {
 	fire = "Meteor", frost = "Blizzard", water = "Tidal Wave", lightning = "Thunderstorm",
-	earth = "Earthquake", air = "Tornado", poison = "Plague", void = "Black Hole",
+	earth = "Rolling Boulder", air = "Tornado", poison = "Venom Cannon", void = "Black Hole",
 }
 
 -- A full queue cast ahead, led by the first and ridden by the second.

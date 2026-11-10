@@ -67,8 +67,8 @@ const CONTROLS: [(&str, &str); 14] = [
     ("rb", "Sword swing, knocks bullets back"),
     ("rb_hold", "Hold and let go: burst around you"),
     ("lt", "Dodge roll"),
-    ("rs", "Tap: shake your staff empty"),
-    ("rs_hold", "Hold: enchant your bolts and sword"),
+    ("rs", "Click: enchant your bolts and sword"),
+    ("rs_hold", "Hold: shake your staff empty"),
     ("ls", "Plant it at your feet"),
     ("dpad_up", "Your last spell again"),
     ("dpad_side", "Saved spells (hold to save)"),
@@ -399,7 +399,7 @@ fn controls(w: &World) -> Vec<(&'static str, &'static str)> {
             "lb" => lb,
             "rb_hold" => wz.form_open(Form::Nova),
             "ls" => wz.form_open(Form::Plant),
-            "rs_hold" => wz.form_open(Form::Enchant),
+            "rs" => wz.form_open(Form::Enchant),
             _ => true,
         })
         .copied()

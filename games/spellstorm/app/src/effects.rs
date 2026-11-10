@@ -51,6 +51,8 @@ pub const SURGE: u32 = 71;
 pub const LANE: u32 = 72;
 /// A trap's circle of runes: params (armed, seed, time, 0).
 pub const TRAP: u32 = 73;
+/// The rolling boulder: params (seed, turned in radians, roll dir x, z).
+pub const BOULDER: u32 = 74;
 
 struct State {
     /// The game's app/src, where fx.wgsl and spells.wgsl are.

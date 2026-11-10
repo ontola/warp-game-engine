@@ -57,7 +57,6 @@ enum Phase {
     Cast,
     Hold,
     HoldRb,
-    HoldRs,
     Rest,
 }
 
@@ -289,10 +288,9 @@ impl World {
                     bot.phase = Phase::Idle;
                 }
                 BotForm::Enchant => {
-                    // Held: a tap would shake the staff empty.
+                    // A tap: held, it would shake the staff empty.
                     w.pad.set(Pad::RS, true);
-                    bot.hold_t = crate::wizard::ENCHANT_HOLD + 0.1;
-                    bot.phase = Phase::HoldRs;
+                    bot.phase = Phase::Idle;
                 }
             },
             Phase::Hold => {
@@ -306,13 +304,6 @@ impl World {
             Phase::HoldRb => {
                 bot.hold_t -= dt;
                 w.pad.set(Pad::RB, bot.hold_t > 0.0);
-                if bot.hold_t <= 0.0 {
-                    bot.phase = Phase::Idle;
-                }
-            }
-            Phase::HoldRs => {
-                bot.hold_t -= dt;
-                w.pad.set(Pad::RS, bot.hold_t > 0.0);
                 if bot.hold_t <= 0.0 {
                     bot.phase = Phase::Idle;
                 }
