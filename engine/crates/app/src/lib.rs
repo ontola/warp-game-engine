@@ -108,6 +108,9 @@ impl<'a> Frame<'a> {
     }
 }
 
+/// How often a hidden (warm) game draws a scene; see [`Game::hidden_frame_due`].
+const HIDDEN_DRAW_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
 pub trait Game {
     /// Local players whose controls the shell gathers.
     fn local_players(&self) -> usize;
@@ -199,6 +202,11 @@ pub trait Game {
     fn text(&mut self, _event: TextEvent) {}
     /// Frame review needs fixed quality even when a slow seek misses its budget.
     fn fixed_quality(&self) -> bool { false }
+    /// Hidden behind the lobby or another game (a warm game), the shell draws
+    /// a scene only about once a second, so it leaves the GPU to the game on
+    /// screen. True asks for the next frame anyway: a game that reports ready
+    /// once a frame of its new match is drawn.
+    fn hidden_frame_due(&self) -> bool { false }
     /// Adaptive quality has been on its lowest rung and still missed the
     /// target for [`quality::TOO_HEAVY_AFTER`]: resolution and grass are spent,
     /// so a game with cheaper content (fewer effects, simpler scenery) can
@@ -750,6 +758,8 @@ struct Shell<'g> {
     acc: f32,
     last: Instant,
     last_frame_end: Instant,
+    /// When a hidden window last drew a scene; see [`Game::hidden_frame_due`].
+    hidden_drawn: Option<Instant>,
     mouse_events: u32,
     mouse_delta: [f64; 2],
     mouse_peak: f64,
@@ -822,7 +832,7 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
     let stats=stats::Stats::from_env();
     let dev_mode=debug.open() || stats.open() || game.editor_windows_open();
-    let mut shell = Shell { stats, dev_mode, dev_bar:Default::default(), bar_press:false, devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, windows: Default::default(), cursor_position:None, pointer_owner:None, pressed_mouse_buttons:0, hidden_layout:None, started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, picker: None, feedback_writer: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), probe: None, probed: None, emulator: Default::default(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
+    let mut shell = Shell { stats, dev_mode, dev_bar:Default::default(), bar_press:false, devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), hidden_drawn: None, mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, windows: Default::default(), cursor_position:None, pointer_owner:None, pressed_mouse_buttons:0, hidden_layout:None, started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, picker: None, feedback_writer: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), probe: None, probed: None, emulator: Default::default(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -946,6 +956,15 @@ impl Shell<'_> {
         }
         if self.live.as_ref().is_some_and(Live::is_lost) && !self.recover() { return Ok(()); }
         let Some(live) = &mut self.live else { return Ok(()) };
+        // A warm game keeps ticking (host messages, loading) but must not
+        // render full scenes behind the game being played: one a second.
+        if self.screen == Screen::Hidden && live.renderer.is_some() {
+            if !self.game.hidden_frame_due() && self.hidden_drawn.is_some_and(|t| t.elapsed() < HIDDEN_DRAW_EVERY) {
+                self.last_frame_end = Instant::now();
+                return Ok(());
+            }
+            self.hidden_drawn = Some(Instant::now());
+        } else { self.hidden_drawn = None; }
         // HDR output: F2 first, then the game's settings, then WARP_HDR.
         let want_hdr = self.debug.hdr().or(self.game.hdr()).or_else(hdr_from_env).unwrap_or(false);
         if let Some(line) = live.sync_hdr(want_hdr)? { println!("{} {line}", manners::stamp()); }

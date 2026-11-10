@@ -927,6 +927,8 @@ impl Game for LuaGame {
 
     fn screen(&self) -> app::Screen { self.party.as_ref().map_or(app::Screen::Normal, |p| p.screen()) }
 
+    fn hidden_frame_due(&self) -> bool { self.ready_due }
+
     fn loading(&mut self, percent: u32, step: &str) {
         self.windowed = true;
         if let Some(p) = self.party.as_mut() { p.loading(percent, step); }
