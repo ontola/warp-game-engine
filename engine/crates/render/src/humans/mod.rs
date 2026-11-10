@@ -42,6 +42,37 @@ fn unpack_color(word: f32) -> [f32; 3] {
     [0,8,16].map(|shift| ((word as u32 >> shift) & 255) as f32 / 255.)
 }
 
+// Stored above the nine wardrobe bits: 12-bit sRGB groom and a 3-bit natural
+// brow shade. The final 24-bit integer is exactly representable as f32.
+#[derive(Clone, Copy)]
+struct HairPalette(u32);
+
+impl HairPalette {
+    fn select(entropy: u32, skin: Vec3) -> Self {
+        let light = ((skin.dot(Vec3::new(0.299, 0.587, 0.114)) - 0.20) / 0.58).clamp(0., 1.);
+        let roll = (entropy & 4095) as f32 / 4096.;
+        // Art-directed cumulative odds, interpolated across the effective skin tone.
+        // Near-black, espresso, chestnut, light brown, honey and pale blond.
+        let thresholds = [(0.52, 0.14), (0.87, 0.42), (0.96, 0.66), (0.988, 0.80), (0.997, 0.94)];
+        let shade = thresholds.iter().filter(|&&(dark, fair)| roll >= dark + light * (fair-dark)).count();
+        let natural = [0x211, 0x321, 0x543, 0x764, 0xa86, 0xcb9];
+        let dyed = [0x586, 0x867, 0x659, 0xa65];
+        let groom = if (entropy >> 12) & 255 < 6 {
+            dyed[((entropy >> 20) & 3) as usize]
+        } else { natural[shade] };
+        Self(groom | ((shade as u32) << 12))
+    }
+
+    fn groom(self) -> Vec3 {
+        Vec3::from_array([8, 4, 0].map(|shift| ((self.0 >> shift) & 15u32) as f32 / 15.))
+    }
+
+    fn brows(self, skin: Vec3) -> Vec3 {
+        let light = (self.0 >> 12) as f32 / 5.;
+        Vec3::new(0.09, 0.065, 0.05).lerp(Vec3::new(0.47, 0.36, 0.26), light).lerp(skin, 0.20)
+    }
+}
+
 #[derive(Default)]
 pub struct Constraints {
     pub height_m: Option<f32>,
@@ -53,9 +84,18 @@ impl Instance {
     pub fn trouser_color(&self) -> [f32; 3] { unpack_color(self.color[1]) }
     pub fn shoe_color(&self) -> [f32; 3] { unpack_color(self.color[2]) }
     pub fn outfit(&self) -> usize { (self.color[3] as usize).saturating_sub(1) & 3 }
-    pub fn chest_print(&self) -> usize { (self.color[3] as usize).saturating_sub(1) >> 2 }
+    pub fn chest_print(&self) -> usize { ((self.color[3] as usize & 511).saturating_sub(1)) >> 2 }
     pub fn hair_color(&self) -> Vec3 {
-        Vec3::new(0.046, 0.030, 0.025).lerp(Vec3::new(0.39, 0.28, 0.16), self.identity[3].powi(2))
+        HairPalette((self.color[3] as u32) >> 9).groom()
+    }
+    fn hair_palette(&self, skin: Vec3) -> HairPalette {
+        // Low bits supply independent draws without tying blondness to a face tile.
+        HairPalette::select((self.identity[0] * 16777216.) as u32, skin)
+    }
+    /// Groom and brow tints in sRGB, including a profile's explicit skin colour.
+    pub fn hair_and_brows(&self, skin: Vec3) -> (Vec3, Vec3) {
+        let palette = self.hair_palette(skin);
+        (palette.groom(), palette.brows(skin))
     }
     pub fn skin_color(&self) -> Vec3 {
         let cheeks = [Vec3::new(0.855, 0.659, 0.541), Vec3::new(0.894, 0.741, 0.639), Vec3::new(0.353, 0.224, 0.149)];
@@ -95,7 +135,7 @@ impl Instance {
         } else {
             101 + (sample(seed, 14) * 6.) as u32
         };
-        Self {
+        let mut person = Self {
             pos_yaw: position.extend(yaw).into(),
             size_phase: [
                 height * (0.84 + 0.31 * sample(seed, 3)),
@@ -106,7 +146,10 @@ impl Instance {
             color: [pack_color(shirt), pack_color(trousers[(sample(seed,11)*8.) as usize]),
                 pack_color(shoes[(sample(seed,12)*6.) as usize]), (1+outfit+4*print) as f32],
             identity: std::array::from_fn(|i| sample(seed, 6 + i as u64)),
-        }
+        };
+        let palette = person.hair_palette(person.skin_color());
+        person.color[3] = ((person.color[3] as u32) | (palette.0 << 9)) as f32;
+        person
     }
     pub fn spectator(seed: u64, seat_index: usize, seat: &crate::crowd::Seat) -> Self {
         Self::person(
@@ -731,6 +774,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn fair_hair_odds_and_dye_are_seeded_independently() {
+        let mut blond = [0; 2];
+        let mut dyed = 0;
+        for seed in 0..8192 {
+            let p = Instance::person(seed, Vec3::ZERO, 0., &Constraints::default());
+            let packed = HairPalette((p.color[3] as u32) >> 9);
+            assert_eq!(packed.0, p.hair_palette(p.skin_color()).0);
+            assert_eq!(std::mem::size_of::<Instance>(), 64);
+            assert!(p.outfit() < 3 && p.chest_print() <= 106);
+            let pair = [Vec3::new(0.28, 0.15, 0.09), Vec3::new(0.95, 0.80, 0.70)]
+                .map(|skin| p.hair_palette(skin));
+            // The natural shade can only get lighter for a fixed roll.
+            assert!(pair[0].0 >> 12 <= pair[1].0 >> 12);
+            let is_dye = |h: HairPalette| matches!(h.0 & 0xfff, 0x586 | 0x867 | 0x659 | 0xa65);
+            assert_eq!(is_dye(pair[0]), is_dye(pair[1]));
+            if is_dye(pair[0]) {
+                assert_eq!(pair[0].groom(), pair[1].groom());
+                dyed += 1;
+            } else {
+                for (n, h) in blond.iter_mut().zip(pair) {
+                    *n += usize::from(h.0 >> 12 >= 4);
+                }
+            }
+        }
+        assert!(blond[0] > 0 && blond[1] > blond[0] * 8);
+        assert!((100..300).contains(&dyed));
+        println!("8192 seeds: light hair {blond:?}; dyed {dyed}");
     }
 
     #[test]

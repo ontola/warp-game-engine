@@ -139,6 +139,10 @@ mod tests {
             ids.iter().any(|&i| Vec3::from(scene.materials[i as usize].tint).distance(linear) < 0.005)
         };
         assert!(has_color(&materials, shirt) && has_color(&materials, skin));
+        let identity = 52u64.wrapping_mul(0x9e3779b97f4a7c15);
+        let person = render::humans::Instance::person(identity, Vec3::ZERO, 0., &Default::default());
+        let (hair, brows) = person.hair_and_brows(Vec3::from(skin));
+        assert!(has_color(&materials, hair.to_array()) && has_color(&materials, brows.to_array()));
         assert!(!has_color(&other, skin));
         c.reserve_actor(&mut scene, 0).unwrap();
         let mut world = World::new(52, &[false, true]);

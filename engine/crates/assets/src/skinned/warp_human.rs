@@ -165,6 +165,7 @@ impl Character {
             limbs.push((arm, leg));
         }
         let skin_color = skin.map(Vec3::from).unwrap_or_else(|| person.skin_color());
+        let (hair, brows) = person.hair_and_brows(skin_color);
         let (body, indices) = person.fitted_mesh(player);
         let skin = |v: &BodyVertex| {
             let p = v.position;
@@ -253,7 +254,7 @@ impl Character {
         let surfaces = groups
             .into_iter()
             .map(|(tag, mut indices)| {
-                let mut surface = surface(person, tag, skin_color);
+                let mut surface = surface(person, tag, skin_color, hair, brows);
                 let mut remap = vec![u32::MAX; body.len()];
                 for index in &mut indices {
                     let source = *index as usize;
@@ -309,7 +310,7 @@ fn ramp(lo: f32, hi: f32, x: f32) -> f32 {
     t * t * (3. - 2. * t)
 }
 
-fn surface(person: &Instance, tag: u32, skin: Vec3) -> Surface {
+fn surface(person: &Instance, tag: u32, skin: Vec3, hair: Vec3, brows: Vec3) -> Surface {
     let face = person.face_tile();
     let cheek = [
         Vec3::new(0.855, 0.659, 0.541),
@@ -330,8 +331,8 @@ fn surface(person: &Instance, tag: u32, skin: Vec3) -> Surface {
         17 => (Vec3::from(person.shoe_color()) * 0.48, None),
         4 => (skin, None),
         11 => (skin / cheek, Some(face)),
-        13 => (person.hair_color().lerp(skin, 0.26), Some(7)),
-        20..=22 => (person.hair_color(), Some((tag - 20 + 3) as usize)),
+        13 => (brows, Some(7)),
+        20..=22 => (hair, Some((tag - 20 + 3) as usize)),
         _ => (Vec3::ONE, None),
     };
     // Three neutral fabrics, one shared print sheet and the eye texture follow the atlas tiles.
