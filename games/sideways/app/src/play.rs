@@ -1253,7 +1253,10 @@ impl App {
         // Keep the host socket, neutral input and trace alive while the host
         // owns the screen. A warm/paused managed game must not consume a full
         // render frame or continue presenting behind the GameNight lobby.
-        if !running {if let Some(s)=&self.sound{s.pause(true);}self.trace(false);return Ok(());}
+        // One exception: a prepared session reports ready only after a frame
+        // of its stage is drawn, so that one frame is drawn, offscreen (below).
+        // Skipping it too left every warm Sideways on "Preparing" forever.
+        if !running && self.ready_due.is_none() {if let Some(s)=&self.sound{s.pause(true);}self.trace(false);return Ok(());}
         let graphics_started=Instant::now();
         if let Some(q)=&mut self.quality {
             if !self.paused && self.focused && !rebuilt && q.frame(dt*1000.0,now) {println!("play: adaptive quality, {}",q.label());}
@@ -1263,7 +1266,9 @@ impl App {
         self.built.update_cars(&poses);
         let cams = cameras(&self.race, &poses, &self.yaw, &self.far, &mut self.camera_rest);
         let cams=self.scenario.as_ref().map(|s|s.config.cameras(self.rendered,&cams)).unwrap_or(cams);
-        let invisible = self.invisible();
+        // Not running (a warm prepare frame): never present it, even if the
+        // window has not been minimised yet. The host owns the screen.
+        let invisible = self.invisible() || !running;
         self.update_sound(&cams, dt as f32, invisible);
         let size = self.window.as_ref().unwrap().inner_size();
         if size.width == 0 || size.height == 0 { return Ok(()); }
