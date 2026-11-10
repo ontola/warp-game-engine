@@ -103,13 +103,22 @@ fn flame(s: GameSprite) -> vec4<f32> {
     // flamethrower's nozzle burns white-hot; it cools to orange and dark red.
     let age = s.params.z;
     let r = length(c2);
-    let heat = clamp((1.0 - smoothstep(0.15, 1.0, r + (n - 0.5) * 0.9)) * (0.55 + 0.9 * n) * (1.15 - 0.85 * age), 0.0, 1.0);
-    // Blackbody ramp: ember red, orange, yellow, a white-hot heart.
-    var c = mix(vec3(0.45, 0.06, 0.02), vec3(1.0, 0.45, 0.1), smoothstep(0.05, 0.4, heat));
-    c = mix(c, vec3(1.15, 0.95, 0.45), smoothstep(0.4, 0.75, heat));
-    c = mix(c, vec3(1.5, 1.45, 1.3), smoothstep(0.75, 1.0, heat));
-    let a = smoothstep(0.04, 0.3, heat);
-    return vec4(c * 1.3, a);
+    // Tongues, not balls: the noise eats deep into the edge and leaves
+    // holes, so overlapping particles read as torn flame.
+    // Hot while young, cooling as it burns out: a flame is yellow at the
+    // nozzle, orange in its body and red at its tips.
+    let body = 1.0 - smoothstep(0.08, 1.0, r + (n - 0.5) * 1.15);
+    let heat = clamp(body * (0.2 + 0.85 * n) * (1.15 - 1.0 * age), 0.0, 1.0);
+    // Blackbody, with brightness tied to heat so the hue follows it: dim
+    // gas is deep red, bright gas orange and yellow, only the heart near
+    // white. (The stops are sRGB, made linear: a pale linear yellow shows
+    // as cream, and a bright red saturates in the tone curve into pink.)
+    // (AgX turns a deep linear orange salmon; these lean yellow for it.)
+    var c = mix(lin(vec3(0.55, 0.1, 0.01)), lin(vec3(1.0, 0.56, 0.08)), smoothstep(0.1, 0.45, heat));
+    c = mix(c, lin(vec3(1.0, 0.78, 0.25)), smoothstep(0.45, 0.78, heat));
+    c = mix(c, lin(vec3(1.0, 0.93, 0.7)), smoothstep(0.88, 1.0, heat));
+    let a = smoothstep(0.1, 0.32, heat);
+    return vec4(c * (0.3 + 1.5 * heat), a);
 }
 
 // A soft, ragged puff of smoke that turns as it goes.
@@ -150,6 +159,92 @@ fn halo_in(s: GameSprite) -> vec4<f32> {
     return vec4(vec3(1.0), k);
 }
 
+
+// Distance in metres from this pixel to the quad's spine: a capsule along
+// its up, as wide as the quad. 0..1 along it from the head (top) is in .y.
+fn spine(s: GameSprite) -> vec2<f32> {
+    let half = s.size.x * 0.5;
+    let x = (s.uv.x - 0.5) * s.size.x;
+    let y = s.uv.y * s.size.y;
+    let yc = clamp(y, half, max(s.size.y - half, half));
+    return vec2(length(vec2(x, y - yc)) / max(half, 1e-4), clamp((y - half) / max(s.size.y - 2.0 * half, 1e-4), 0.0, 1.0));
+}
+
+// An ember or a spark: a hard hot point that flickers, or drawn stretched
+// a streak whose head burns brightest and whose tail fades. params.z: age.
+fn ember(s: GameSprite) -> vec4<f32> {
+    let seed = s.params.x;
+    let t = s.params.y;
+    let age = s.params.z;
+    let sp = spine(s);
+    let d = sp.x;
+    let tail = 1.0 - 0.75 * sp.y;
+    let core = exp(-d * d * 9.0);
+    // Faded to nothing at the quad's edge, or a slow one shows a square.
+    let glow = exp(-d * d * 3.5) * 0.35 * (1.0 - smoothstep(0.7, 1.0, d));
+    let flick = 0.65 + 0.35 * sn_noise(vec3(seed * 3.1, t * 14.0 + seed, 0.0));
+    // Hot white at the heart, the sprite's colour round it.
+    let c = mix(vec3(1.0), vec3(1.6, 1.25, 0.9), core * (1.0 - age));
+    return vec4(c, clamp((core + glow) * tail * flick, 0.0, 1.0));
+}
+
+// A crystal of ice along the quad's up (tip at the top): a long diamond
+// with a lit facet and a shadowed one, a bright ridge and rim, inner flaws,
+// and a glint that runs along it as it turns.
+fn shard(s: GameSprite) -> vec4<f32> {
+    let seed = s.params.x;
+    let t = s.params.y;
+    let x = s.uv.x * 2.0 - 1.0;
+    let y = 1.0 - s.uv.y * 2.0;
+    let wide = 0.3;
+    let w = select((y + 1.0) / (1.0 + wide) * 0.92, (1.0 - y) / (1.0 - wide) * 0.92, y > wide);
+    let edge = abs(x) / max(w, 1e-3);
+    let a = 1.0 - smoothstep(0.86, 1.0, edge);
+    // Two facets: one catches the light, the other is the dark of deep ice.
+    let lit = select(0.35, 1.0, x < 0.0);
+    let ridge = 1.0 - smoothstep(0.0, 0.12, abs(x));
+    let rim = smoothstep(0.6, 0.95, edge);
+    let flaw = smoothstep(0.55, 0.8, sn_fbm(vec3(x * 3.0, y * 5.0, seed)));
+    let sweep = fract(t * 0.9 + seed * 0.37) * 3.0 - 1.0;
+    let glint = exp(-pow((y - sweep) * 4.0, 2.0));
+    let lum = lit * (0.45 + 0.25 * flaw) + ridge * 0.6 + rim * 0.5 + glint * 1.4;
+    let c = mix(vec3(0.55, 0.8, 1.0), vec3(1.0), clamp(ridge + glint + rim * 0.5, 0.0, 1.0));
+    return vec4(c * lum, a * (0.55 + 0.45 * max(rim, ridge)));
+}
+
+// A four-pointed star that flashes for a moment as a crystal turns towards
+// the light: mostly dark, now and then a sharp twinkle.
+fn glint(s: GameSprite) -> vec4<f32> {
+    let seed = s.params.x;
+    let t = s.params.y;
+    let p = s.uv * 2.0 - 1.0;
+    let r = length(p);
+    let rays = exp(-abs(p.x) * 26.0) * pow(max(1.0 - abs(p.y), 0.0), 3.0) + exp(-abs(p.y) * 26.0) * pow(max(1.0 - abs(p.x), 0.0), 3.0);
+    let q = vec2(p.x + p.y, p.x - p.y) * 0.7071;
+    let diag = (exp(-abs(q.x) * 30.0) * pow(max(1.0 - abs(q.y) * 1.6, 0.0), 3.0) + exp(-abs(q.y) * 30.0) * pow(max(1.0 - abs(q.x) * 1.6, 0.0), 3.0)) * 0.4;
+    let core = exp(-r * r * 30.0);
+    let tw = pow(0.5 + 0.5 * sin(t * (7.0 + fract(seed * 0.618) * 9.0) + seed * 5.0), 6.0);
+    let k = 0.15 + 0.85 * tw;
+    return vec4(vec3(1.0), clamp((core + (rays + diag) * k) * (0.4 + 0.6 * k), 0.0, 1.0));
+}
+
+// A bubble: a thin rim, a highlight, see-through inside. It swells and, in
+// the last part of its life, pops: the rim tears open and flies apart.
+fn bubble(s: GameSprite) -> vec4<f32> {
+    let seed = s.params.x;
+    let age = s.params.z;
+    let p = s.uv * 2.0 - 1.0;
+    let pop = smoothstep(0.8, 1.0, age);
+    let rr = 0.62 + 0.3 * pop;
+    let r = length(p);
+    let ang = atan2(p.y, p.x);
+    let torn = select(1.0, step(pop * 0.9, sn_noise(vec3(cos(ang) * 3.0 + seed, sin(ang) * 3.0, seed))), pop > 0.0);
+    let rim = exp(-pow((r - rr) / (0.07 + 0.08 * pop), 2.0)) * torn;
+    let hi = exp(-dot(p + vec2(0.28, 0.3), p + vec2(0.28, 0.3)) * 50.0) * (1.0 - pop);
+    let fill = select(0.0, 0.12, r < rr) * (1.0 - pop);
+    return vec4(vec3(1.0) + vec3(hi), clamp(rim * (1.0 - 0.6 * pop) + hi + fill, 0.0, 1.0));
+}
+
 fn cell_look(s: GameSprite) -> vec4<f32> {
     switch s.effect {
         case 2u: { return flame(s); }
@@ -157,6 +252,10 @@ fn cell_look(s: GameSprite) -> vec4<f32> {
         case 8u: { return halo_out(s); }
         case 9u: { return halo_in(s); }
         case 15u: { return wisp(s); }
+        case 19u: { return shard(s); }
+        case 20u: { return glint(s); }
+        case 21u: { return ember(s); }
+        case 22u: { return bubble(s); }
         default: { return atlas(s); }
     }
 }

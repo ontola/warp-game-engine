@@ -3,6 +3,7 @@
 //!
 //!   spellstorm play [--players 1] [--bots 0] [--seed 7] [--fullscreen]
 //!   spellstorm shot --out frame.png [--seed 7] [--bots 3] [--ticks 240] [--size 1920x1080] [--menu]
+//!                   [--cast fire,fire [--cast-at T]] [--bolts frost] [--lua CODE [--lua-at TICK]]
 //!
 //! The sim is games/spellstorm/sim (hecs, the Godot game's rules); the look
 //! comes from the Godot game's own models and materials (assets/kits).
@@ -102,8 +103,11 @@ fn run() -> Result<(), String> {
             }
             // --cast poison,fire,air: the first wizard's spray or beam of
             // that queue, running (a look at a stream).
-            if let Some(list) = arg("--cast") {
-                game.step(&[]);
+            // --cast poison,fire,air [--cast-at TICK]: the first wizard's
+            // spray, beam, strike or throw of that queue (a look at a stream),
+            // at the start or at that tick.
+            let cast_at = arg("--cast-at").and_then(|v| v.parse::<u32>().ok());
+            let cast = |game: &mut play::Spellstorm, list: &str| {
                 let els: Vec<spellstorm::El> = list.split(',').filter_map(|k| spellstorm::el::ALL.iter().copied().find(|e| format!("{e:?}").eq_ignore_ascii_case(k))).collect();
                 let id = game.world.wizards[0];
                 let mods = game.world.a(id).mods.clone();
@@ -119,9 +123,25 @@ fn run() -> Result<(), String> {
                         let c = game.world.start_beam(id, &s, at);
                         game.world.wiz_mut(id).channel = Some(c);
                     }
+                    spellstorm::Shape::Projectile => {
+                        let dir = glam::Vec3::NEG_Z;
+                        game.world.throw(id, &s, dir, at + dir * 0.4);
+                    }
+                    spellstorm::Shape::Strike => {
+                        let p = game.world.pos(id) + glam::Vec3::new(0.0, 0.0, -5.0);
+                        game.world.thunder(id, &s, p);
+                    }
                     _ => {}
                 }
+            };
+            if let Some(list) = arg("--cast").filter(|_| cast_at.is_none()) {
+                game.step(&[]);
+                cast(&mut game, &list);
             }
+            // --bolts fire,fire: the first wizard's staff bolts of that queue,
+            // one every 8 ticks over the last 48 ticks, straight ahead (a
+            // look at bolts in flight and where they land).
+            let bolts: Option<Vec<spellstorm::El>> = arg("--bolts").map(|list| list.split(',').filter_map(|k| spellstorm::el::ALL.iter().copied().find(|e| format!("{e:?}").eq_ignore_ascii_case(k))).collect());
             let ticks = numf("--ticks", 240.0) as u32;
             // --skip: past this level's fights to its last shrine and portal.
             if flag("--skip") {
@@ -143,10 +163,32 @@ fn run() -> Result<(), String> {
             // that tick or else just before the picture.
             let lua_at = arg("--lua-at").and_then(|v| v.parse::<u32>().ok());
             for t in 0..ticks * if until_swing { 20 } else { 1 } {
+                if cast_at == Some(t) && let Some(list) = arg("--cast") {
+                    cast(&mut game, &list);
+                    game.view.fx.absorb(&game.world);
+                }
                 if lua_at == Some(t) && let Some(code) = arg("--lua") {
                     eprintln!("lua: {}", spellstorm::rules::console(&mut game.world, &code)?);
                     // Its events (a nova, a burst) show: the next tick clears them.
                     game.view.fx.absorb(&game.world);
+                }
+                if let Some(els) = bolts.as_ref().filter(|e| !e.is_empty())
+                    && t + 48 >= ticks
+                    && t % 8 == 0
+                {
+                    let id = game.world.wizards[0];
+                    let mut counts: Vec<(spellstorm::El, u8)> = Vec::new();
+                    for &e in els {
+                        match counts.iter_mut().find(|c| c.0 == e) {
+                            Some(c) => c.1 += 1,
+                            None => counts.push((e, 1)),
+                        }
+                    }
+                    let scales = spellstorm::balance::bolt_scales(&counts, els[0], 1.0);
+                    let bs = spellstorm::spells::BoltSpell { counts, primary: Some(els[0]), scales };
+                    let dir = glam::Vec3::NEG_Z;
+                    let at = game.world.staff_tip(id) + dir * 0.1;
+                    game.world.fire_bolt(spellstorm::spells::Bolt::new(id, bs, dir, at, Vec::new(), 1.0, true));
                 }
                 game.step(&[]);
                 if until_swing && t >= ticks && game.world.wizards.iter().any(|&id| { let s = game.world.wiz(id).swing_t; let at: f64 = std::env::var("SPELLSTORM_SWING").ok().and_then(|v| v.parse().ok()).unwrap_or(0.15); s > at - 0.017 && s <= at }) {

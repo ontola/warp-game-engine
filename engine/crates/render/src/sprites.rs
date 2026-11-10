@@ -357,6 +357,12 @@ fn shader_with(game: Option<&str>) -> String {
     format!("{SHADER}\n{}\n", game.unwrap_or(NO_GAME_SPRITE))
 }
 
+/// The whole sprite shader with a game's own looks put in, as
+/// `set_game_sprite` builds it: for tests that check it without a GPU.
+pub fn shader_source_with(game: &str) -> String {
+    shader_with(Some(game))
+}
+
 /// A game's own sprite looks: WGSL with
 /// `fn game_sprite(s: GameSprite) -> vec4<f32>`, run for every sprite whose
 /// `effect` is not 0. `GameSprite` holds `uv` (0..1 across the quad, y

@@ -5762,6 +5762,7 @@ dependencies = [
  "image",
  "kern",
  "live",
+ "naga",
  "physics",
  "render",
  "serde",

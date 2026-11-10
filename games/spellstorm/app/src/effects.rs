@@ -148,3 +148,15 @@ pub fn tag(sprites: &mut [Sprite], time: f32) {
         s.params = [seed, time, if own { s.params[2] } else { 0.0 }, 0.0];
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn built_in_looks_compile() {
+        let full = render::sprites::shader_source_with(&super::builtin());
+        let module = naga::front::wgsl::parse_str(&full).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&full)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&full)));
+    }
+}
