@@ -23,11 +23,11 @@ The neutral eyelids use the six paired MakeHuman targets in
 `makehuman/data/targets/eyes/{l,r}-eye-height{1,2,3}-decr.target`. Keep
 them beside the face targets when cooking.
 
-`person.bin` starts with the magic `WH02` and six little-endian u32 counts
-(vertices, indices, then four sparse morph counts). Each 22-byte vertex holds
+`person.bin` starts with the magic `WH03` and seven little-endian u32 counts
+(vertices, indices, four identity morph counts and a lid closure count). Each 22-byte vertex holds
 position and normal (six i16), UV (two u16), four cumulative limb weights
 (four u8) and the material (u16). The u16 triangle indices follow the vertices.
 Each morph then lists only changed vertices as a u16 index and three signed
-i8 displacements. The loader expands these once into the crowd's GPU layout.
+i8 displacements. The four identity fields use a range of 0.055 body heights. The lid closure uses 0.012 and occupies the spare fourth components of the first three GPU morph attributes. The cooker uses the pinned `targets/expression/units/caucasian/eye-{left,right}-closure.target` pair for the shared lid motion. Identity shapes include cheek, chin, forehead and nose targets from the same archive. The cooker grows tapered hairline triangles and a recessed crown from the fitted groom outline. The coiled style uses that envelope and a tileable procedural curl pattern in the original atlas slot. The facial sheen mask occupies the existing skin tiles’ alpha.
 
 The material also selects wardrobe visibility. Its low five bits select the surface. The upper bits select the outfits that expose the triangle, with zero shared by all. The short-sleeved and jacket outfits share their trousers. The cooker stores the three neutral cloth maps in the RGB channels of one existing atlas tile. Its alpha contains digits and six wordmarks. The renderer combines digits into shirt numbers. Rebuilding the prints uses Pillow 10.1 or newer.

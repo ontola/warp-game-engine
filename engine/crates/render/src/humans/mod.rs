@@ -85,6 +85,9 @@ impl Instance {
     pub fn shoe_color(&self) -> [f32; 3] { unpack_color(self.color[2]) }
     pub fn outfit(&self) -> usize { (self.color[3] as usize).saturating_sub(1) & 3 }
     pub fn chest_print(&self) -> usize { ((self.color[3] as usize & 511).saturating_sub(1)) >> 2 }
+    /// Stable timing channel for the fitted player's lids and gaze.
+    pub fn face_phase(&self) -> f32 { self.identity[0] }
+
     pub fn hair_color(&self) -> Vec3 {
         HairPalette((self.color[3] as u32) >> 9).groom()
     }
