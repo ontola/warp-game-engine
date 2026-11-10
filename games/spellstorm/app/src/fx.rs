@@ -1132,7 +1132,8 @@ impl Fx {
     /// Growing Guns' volumetric smoke (render::fx::smoke_cloud): `tint` its
     /// linear albedo, `density` 0.3 a wisp .. 1.5 thick.
     fn smoke(&mut self, at: Vec3, r: f32, tint: [f32; 3], density: f32) {
-        self.blasts.smoke_cloud(self.time, at, r, Vec3::from(tint), density);
+        // A little see-through: smoke must not wall off the fight (Joep).
+        self.blasts.smoke_cloud(self.time, at, r, Vec3::from(tint), density * 0.65);
     }
 
     /// Chunks of `e` flung up and out from `at` that fall back: rock, mud,
@@ -1906,7 +1907,7 @@ impl Fx {
                 if (ot * 6.0).fract() < dt * 6.0 {
                     let a = ot * 14.4 + key as f32;
                     let r = 1.0 + (ot * 7.3).fract() * 4.0;
-                    self.smoke(low + Vec3::new(a.cos() * r, 0.0, a.sin() * r), 3.4, [0.08, 0.08, 0.12], 1.8);
+                    self.smoke(low + Vec3::new(a.cos() * r, 0.0, a.sin() * r), 3.4, [0.08, 0.08, 0.12], 1.0);
                 }
                 if (t * 9.0 + key as f32).sin() > 0.9 {
                     self.light(low, [0.6, 0.65, 1.0, 1.0], 6.0, 14.0);
@@ -2693,7 +2694,30 @@ impl Fx {
                         s.params = [f.kind.idx() as f32, r, (key % 97) as f32, t];
                         self.live.push(s);
                     }
-                    let mut p = particles(c, (3.0 * r * r) as u32 + 4, 1.1, 0.5);
+                    // Burning ground: volumetric flame tongues (render::fx,
+                    // the blasts' fire) licking up all over it, sparks and
+                    // embers drifting off, a thin smoke rolling up.
+                    let magma = f.kind == El::Magma;
+                    let rate = (7.0 * r * r + 4.0) * fade * if magma { 0.6 } else { 1.0 };
+                    let mut due = rate * dt;
+                    while due > 0.0 {
+                        if due < 1.0 && self.f() >= due {
+                            break;
+                        }
+                        due -= 1.0;
+                        let (a, d) = (self.range(0.0, std::f32::consts::TAU), self.f().sqrt() * r * 0.85);
+                        let foot = at + Vec3::new(a.cos() * d, 0.0, a.sin() * d);
+                        // Taller towards the middle, low licks at the rim.
+                        let mid = 1.0 - 0.5 * d / r.max(0.1);
+                        let (wd, ht) = if magma { (self.range(0.22, 0.4), self.range(0.4, 0.9)) } else { (self.range(0.25, 0.45), self.range(0.8, 1.7)) };
+                        let life = self.range(0.45, 0.75);
+                        self.blasts.flame(self.time, foot, wd, ht * mid, life);
+                    }
+                    if self.f() < dt * (0.5 + 0.12 * r * r) * fade {
+                        let q = at + Vec3::new(self.range(-0.5, 0.5), 0.6, self.range(-0.5, 0.5)) * r;
+                        self.smoke(q + Vec3::Y * 0.6, 0.5 + r * 0.3, [0.16, 0.14, 0.13], 0.35 * fade);
+                    }
+                    let mut p = particles(c, (1.2 * r * r) as u32 + 3, 1.1, 0.5);
                     p.dir = Vec3::Y;
                     p.sphere = r * 0.8;
                     p.v = (0.6, 1.8);
@@ -2705,7 +2729,9 @@ impl Fx {
                     if let Some(sm) = sm {
                         self.stream((key, 1), sm, fl, dt);
                     }
-                    self.light(at + Vec3::Y * 0.8, c, 1.4 * fade, r * 2.5);
+                    // The fire breathes.
+                    let breath = 0.85 + 0.15 * (t * 7.0 + key as f32).sin() * (t * 3.1).sin();
+                    self.light(at + Vec3::Y * 0.8, c, 1.6 * fade * breath, r * 2.5);
                 }
                 El::Lightning | El::Storm => {
                     self.live.push(flat_sprite(at, r, Cell::Patch, c3 * 0.5 * fade));

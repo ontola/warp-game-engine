@@ -445,6 +445,24 @@ impl Effects {
         });
     }
 
+    /// One upright tongue of flame standing on `pos` (its foot), `width`
+    /// metres across and `height` tall, burning for `life` seconds. Spawn
+    /// them at a steady rate over an area for burning ground or a fire.
+    pub fn flame(&mut self, time: f32, pos: Vec3, width: f32, height: f32, life: f32) {
+        if !time.is_finite() || !pos.is_finite() || !width.is_finite() || !height.is_finite() || !life.is_finite() {
+            return;
+        }
+        let seed = self.f();
+        let (w, h) = (width.clamp(0.05, 4.0), height.clamp(0.1, 8.0));
+        self.additive(Puff {
+            center_kind: (pos + Vec3::Y * 0.12).extend(FIRE).to_array(),
+            ax: [w, 0.0, 0.0, seed], ay: [0.0, h, 0.0, 0.0],
+            az: [0.0, 0.0, w, 2.55], body: [1.0, 1.0, 1.0, 0.95],
+            timing: [time, life.clamp(0.1, 4.0), 0.08, 0.0], extra: [1.0, 1.0, 1.0, 1.2],
+            ..Default::default()
+        });
+    }
+
     /// A cloud of smoke or vapour welling up from `pos` (its bottom centre)
     /// and drifting apart over a few seconds, about `radius` metres across
     /// at its widest: the baked volumetric plume when that is on, else soft

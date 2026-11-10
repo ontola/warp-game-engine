@@ -1111,6 +1111,7 @@ pub struct Renderer {
     cluster_buckets: bool,
     simple_lighting: bool,
     sharp_sprites: bool,
+    fx_over_sprites: bool,
     simple_cull: bool,
     small_cluster_vertices:u32,
     minimal_forward: Option<std::sync::Mutex<crate::forward::Forward>>,
@@ -2513,6 +2514,7 @@ impl Renderer {
             cluster_buckets,
             simple_lighting,
             sharp_sprites: scene.graphics.sharp_sprites,
+            fx_over_sprites: scene.graphics.fx_over_sprites,
             simple_cull,
             small_cluster_vertices:small_cluster_triangles*3,
             direct_bounds,
@@ -5620,8 +5622,9 @@ impl Renderer {
             cpu.mark("view temporal");
             // Compose after temporal reconstruction into a separate output.
             // Never write heat/smoke back into TAA or DLSS history.
-            // Blast effects (fire, smoke, embers, heat) over the resolved HDR.
-            let fx_output = {
+            // Blast effects (fire, smoke, embers, heat) over the resolved HDR:
+            // here, or after the sprites and GPU particles (Graphics::fx_over_sprites).
+            macro_rules! blast_fx { ($resolved:expr) => {{ let resolved = $resolved; {
                 let mut fx = self.fx.0.lock().unwrap();
                 match fx.as_mut() {
                     Some(fx) => {
@@ -5635,7 +5638,8 @@ impl Renderer {
                     }
                     None => None,
                 }
-            };
+            } }} }
+            let fx_output = if self.fx_over_sprites { None } else { blast_fx!(&resolved) };
             let resolved = fx_output.unwrap_or(resolved);
             // Opt-in aerial perspective and clouds, into a separate output.
             let resolved = match sky_volume.as_ref() {
@@ -5707,6 +5711,7 @@ impl Renderer {
                 }
             };
             let resolved = particle_draw.unwrap_or(resolved);
+            let resolved = if self.fx_over_sprites { blast_fx!(&resolved).unwrap_or(resolved) } else { resolved };
             let exhaust_output = if debug_options.exhaust_enabled {
                 let exhaust_time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| {
                     names.push("exhaust"); (qs, timestamp_pair(&mut ts))
