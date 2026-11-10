@@ -58,7 +58,7 @@ pub struct Menu {
     standalone: bool,
 }
 
-const CONTROLS: [(&str, &str); 13] = [
+const CONTROLS: [(&str, &str); 14] = [
     ("lstick", "Walk"),
     ("rstick", "Aim and shoot bolts"),
     ("faces", "Load an element"),
@@ -67,7 +67,8 @@ const CONTROLS: [(&str, &str); 13] = [
     ("rb", "Sword swing, knocks bullets back"),
     ("rb_hold", "Hold and let go: burst around you"),
     ("lt", "Dodge roll"),
-    ("rs", "Enchant your bolts and sword"),
+    ("rs", "Tap: shake your staff empty"),
+    ("rs_hold", "Hold: enchant your bolts and sword"),
     ("ls", "Plant it at your feet"),
     ("dpad_up", "Your last spell again"),
     ("dpad_side", "Saved spells (hold to save)"),
@@ -398,7 +399,7 @@ fn controls(w: &World) -> Vec<(&'static str, &'static str)> {
             "lb" => lb,
             "rb_hold" => wz.form_open(Form::Nova),
             "ls" => wz.form_open(Form::Plant),
-            "rs" => wz.form_open(Form::Enchant),
+            "rs_hold" => wz.form_open(Form::Enchant),
             _ => true,
         })
         .copied()
@@ -539,10 +540,10 @@ pub fn unlock_card(d: &mut HudDrawList, s: f32, cx: f32, y: f32, icon: CardIcon,
 fn glyph(p: &mut P, kind: &str, c: Vec2) {
     let f = title();
     match kind {
-        "lstick" | "rstick" | "rs" | "ls" => {
+        "lstick" | "rstick" | "rs" | "rs_hold" | "ls" => {
             p.circle(c, 17.0, PAD_EDGE);
             p.circle(c, 15.0, PAD_DARK);
-            let click = kind == "rs" || kind == "ls";
+            let click = kind == "rs" || kind == "rs_hold" || kind == "ls";
             p.circle(c, 10.0, if click { PAD_LIT } else { [0.32, 0.29, 0.26, 1.0] });
             let l = if kind == "lstick" || kind == "ls" { "L" } else { "R" };
             p.text(l, c.x, c.y, f, 15.0, if click { INK } else { PAD_EDGE }, TextAlign::Center);

@@ -74,7 +74,10 @@ impl WizardAnim {
         // Staff: the sim's pitch and reach.
         if let Some(s) = node("staff") {
             let rest = kit.nodes[s].xf.w_axis.truncate();
-            pose.insert(s, trs(Vec3::new(rest.x, rest.y, w.staff_z), euler(Vec3::new(w.staff_rx, 0.0, 0.0)), Vec3::ONE));
+            // Shaken (R3): it rattles side to side as well.
+            let k = (w.shake_t / spellstorm::wizard::SHAKE_TIME) as f32;
+            let roll = if k > 0.0 { ((1.0 - k) * 9.0 * std::f32::consts::TAU).sin() * 0.45 * k } else { 0.0 };
+            pose.insert(s, trs(Vec3::new(rest.x, rest.y, w.staff_z), euler(Vec3::new(w.staff_rx, 0.0, roll)), Vec3::ONE));
         }
         let k12 = 1.0 - (-12.0 * dt).exp();
         let sweep = if w.swing_t > 0.0 { 1.0 - (w.swing_t / SWING_COOLDOWN) as f32 } else { -1.0 };

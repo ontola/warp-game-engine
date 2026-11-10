@@ -9,7 +9,7 @@ use render::Camera;
 use spellstorm::el::{self, El};
 use spellstorm::fx::{Ev, C};
 use spellstorm::grammar::Form;
-use spellstorm::wizard::Pad;
+use spellstorm::wizard::{used, Pad};
 use spellstorm::World;
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
@@ -105,7 +105,31 @@ pub struct Hud {
     /// Damage and healing numbers floating up: (where, text, colour,
     /// size, age, life).
     numbers: Vec<(Vec3, String, C, f32, f32, f32)>,
+    /// Hints for the moves a player has not used yet (Joep), by player:
+    /// what they ever used, how long they have played since the last hint
+    /// was done, and the hint showing now with how long it has shown.
+    hints: std::collections::HashMap<String, Hints>,
 }
+
+#[derive(Default)]
+struct Hints {
+    used: u32,
+    wait: f32,
+    now: Option<(u32, f32)>,
+}
+
+/// The moves taught by a hint under a wizard until they have been used, in
+/// the order they are taught. Later ones wait for the earlier.
+const HINTS: [(u32, &str); 6] = [
+    (used::BOLT, "Push the right stick to shoot"),
+    (used::CAST, "Load elements with A B X Y, cast with RT"),
+    (used::ROLL, "Press LT to dodge"),
+    (used::SWING, "Press RB to swing your sword"),
+    (used::DEFLECT, "Swing RB into a shot to send it back"),
+    (used::SHAKE, "Click the right stick to shake your staff empty"),
+];
+/// Seconds of play before the first hint, and between one done and the next.
+const HINT_WAIT: f32 = 4.0;
 
 /// Something a wizard just learned, shown briefly mid-screen.
 #[derive(Clone, PartialEq)]
@@ -115,6 +139,9 @@ enum Learned {
     Pairs,
     /// A spell holds this many elements now (a new slot in the queue).
     Slots(usize),
+    /// The staff's bolts on the right stick: open from the start, so shown
+    /// as the very first thing learned (Joep).
+    Bolts,
 }
 
 impl Learned {
@@ -125,6 +152,7 @@ impl Learned {
             Learned::Move(f) => 100 + *f as u32,
             Learned::Pairs => 200,
             Learned::Slots(n) => 300 + *n as u32,
+            Learned::Bolts => 400,
         }
     }
 }
@@ -156,6 +184,7 @@ impl Default for Hud {
             unlocks: vec![],
             unlock_t: 0.0,
             numbers: vec![],
+            hints: Default::default(),
         }
     }
 }
@@ -216,6 +245,46 @@ impl Hud {
             }
         }
         self.watch_unlocks(w);
+        self.watch_hints(w);
+    }
+
+    /// Per human player, the next move they never used, once its moment
+    /// comes: dodging and the sword in a fight, shaking with a staff loaded.
+    fn watch_hints(&mut self, w: &World) {
+        let dt = spellstorm::world::DT as f32;
+        if w.paused {
+            return;
+        }
+        let fight = !w.living_enemies().is_empty();
+        let shots = !w.bullets().is_empty();
+        for &id in &w.wizards {
+            let wz = w.wiz(id);
+            if wz.bot.is_some() || !w.alive(id) {
+                continue;
+            }
+            let key = if wz.player_id.is_empty() { format!("seat{}", wz.seat) } else { wz.player_id.clone() };
+            let h = self.hints.entry(key).or_default();
+            h.used |= wz.used;
+            if let Some((bit, t)) = &mut h.now {
+                *t += dt;
+                if h.used & *bit != 0 {
+                    h.now = None;
+                    h.wait = 0.0;
+                }
+                continue;
+            }
+            h.wait += dt;
+            if h.wait < HINT_WAIT {
+                continue;
+            }
+            let ready = |bit: u32| match bit {
+                used::ROLL | used::SWING => fight,
+                used::DEFLECT => shots && h.used & used::SWING != 0,
+                used::SHAKE => !wz.queue.is_empty() && h.used & used::CAST != 0,
+                _ => true,
+            };
+            h.now = HINTS.iter().map(|&(bit, _)| bit).find(|&bit| h.used & bit == 0 && ready(bit)).map(|bit| (bit, 0.0));
+        }
     }
 
     /// New elements, moves and the LB pairs, as they open for each human
@@ -232,8 +301,12 @@ impl Hud {
             let forms = spellstorm::wizard::STAGE_FORMS[wz.stage.min(spellstorm::wizard::STAGES - 1)].len();
             let slots = spellstorm::wizard::STAGE_SLOTS[wz.stage.min(spellstorm::wizard::STAGES - 1)];
             let now = (forms, wz.lb_open(), wz.learned_t, slots);
-            // A wizard first seen (joining, a new run) shows nothing.
+            // A wizard first seen (joining, a new run) shows nothing, but
+            // for the bolts to someone who never shot.
             let mut new: Vec<Learned> = vec![];
+            if !self.had.contains_key(&wz.seat) && wz.used & used::BOLT == 0 && !w.settings.unlock_all {
+                new.push(Learned::Bolts);
+            }
             if let Some(&(f0, lb0, t0, s0)) = self.had.get(&wz.seat) {
                 // A new element slot is a big step: its own card, first
                 // (Joep).
@@ -356,6 +429,14 @@ impl Hud {
                 let (bw, by) = (96.0, y + 50.0);
                 p.rect([x - bw * 0.5 - 2.0, by - 2.0, bw + 4.0, 11.0], [0.0, 0.0, 0.0, 0.7]);
                 p.rect([x - bw * 0.5, by, bw * k, 7.0], [0.8, 0.12, 0.08, 1.0]);
+            }
+            let key = if wz.player_id.is_empty() { format!("seat{}", wz.seat) } else { wz.player_id.clone() };
+            if let Some((bit, t)) = self.hints.get(&key).and_then(|h| h.now).filter(|_| a.alive && wz.bot.is_none()) {
+                if let Some(&(_, text)) = HINTS.iter().find(|h| h.0 == bit) {
+                    // In softly, then a slow pulse so it is noticed.
+                    let a = (t / 0.4).min(1.0) * (0.8 + 0.2 * (t * 3.0).sin());
+                    p.text(text, x, y + 84.0, body(), 24.0, [1.0, 0.92, 0.7, a], TextAlign::Center, 8.0);
+                }
             }
         }
         tome_labels(&mut p, w, cam, &vp, size);
@@ -661,11 +742,12 @@ fn unlock_card(p: &mut Painter, u: &Unlock, t: f32, sw: f32) {
             let (name, hint, pad) = match f {
                 Form::Nova => ("Nova", "Hold RB, then let go", "rb_hold"),
                 Form::Plant => ("Plant", "Click the left stick to set it down", "ls"),
-                Form::Enchant => ("Enchant", "Click the right stick to enchant your staff", "rs"),
+                Form::Enchant => ("Enchant", "Hold the right stick in to enchant your staff", "rs_hold"),
                 Form::Cast => ("Cast", "Press RT", "rt"),
             };
             ("New move", name.to_string(), hint.to_string(), CardIcon::Pad(pad))
         }
+        Learned::Bolts => ("New move", "Staff Bolts".to_string(), "Push the right stick to shoot".to_string(), CardIcon::Pad("rstick")),
         Learned::Pairs => ("New elements", "Element Pairs".to_string(), "Hold LB: every button gives its other element".to_string(), CardIcon::Pad("lb")),
         Learned::Slots(n) => {
             let name = if n == 2 { "Second element slot" } else { "Third element slot" };
