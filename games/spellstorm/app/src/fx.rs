@@ -525,7 +525,8 @@ pub fn style(p: &mut Em, e: El, smoke: bool) -> Option<Em> {
             p.ramp = Ramp::new(&[rgba(c[0], c[1], c[2], 0.0), rgba(1.0, 0.6, 1.0, 1.0), deep, rgba(0.1, 0.0, 0.15, 0.0)], &[0.0, 0.15, 0.6, 1.0]);
             p.gravity = Vec3::ZERO;
             p.radial = (-8.0, -4.0);
-            p.curve = [1.0, 0.6, 0.1];
+            // Fading out, not shrinking to specks (they read as squares).
+            p.curve = [1.0, 0.85, 0.6];
         }
         El::Air => {
             p.size = size * 0.7;
@@ -637,6 +638,7 @@ pub fn bits(e: El, k: f32) -> Em {
             p.gravity = Vec3::ZERO;
             p.damp = (0.0, 0.0);
             p.radial = (-14.0, -9.0);
+            p.curve = [1.0, 0.9, 0.7];
         }
         El::Air => {
             // Wind lines: long faint streaks.
