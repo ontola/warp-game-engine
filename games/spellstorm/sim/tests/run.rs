@@ -278,3 +278,18 @@ fn tomes_rise_on_the_path_clear_of_props() {
     }
     assert!(total > 10, "only {total} tomes rose");
 }
+
+#[test]
+fn a_boss_grows_with_the_tomes_the_party_carries() {
+    // Joep: the Drowned King went down too easily with a stacked build.
+    let mut w = bots(2, 7);
+    w.step();
+    let bare = w.boss_toughness();
+    for &id in &w.wizards.clone() {
+        let mut wz = w.ecs.get::<&mut spellstorm::wizard::Wizard>(id).unwrap();
+        wz.relics.extend([0usize; 10]);
+    }
+    let stacked = w.boss_toughness();
+    assert!(bare > 1.0, "a boss is tougher than its level makes it ({bare})");
+    assert!(stacked > bare * 2.0, "ten tomes each make a boss much tougher ({bare} -> {stacked})");
+}

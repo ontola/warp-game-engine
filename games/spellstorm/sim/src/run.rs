@@ -455,6 +455,9 @@ impl World {
         let hp_scale =
             (1.0 + 0.35 * (players - 1.0)) * (1.0 + 0.33 * depth) * self.settings.monster_hp * crate::knobs::monster_hp();
         let champ = (self.run.rng.f() as f64) < 0.06 + 0.03 * depth;
+        // A boss must stay a fight however many tomes the party has stacked
+        // (Joep: the Drowned King went down too easily).
+        let hp_scale = if KINDS[k].boss { hp_scale * self.boss_toughness() } else { hp_scale };
         if telegraph {
             self.summon_circle(at);
             *self.run.incoming.entry(tag).or_insert(0) += 1;
@@ -471,6 +474,15 @@ impl World {
             return;
         }
         self.spawned(k, at, tag, hp_scale, champ);
+    }
+
+    /// How much tougher a boss comes in than its level alone makes it: a
+    /// little more to begin with, and more for each tome the wizards carry
+    /// on average.
+    pub fn boss_toughness(&self) -> f64 {
+        let (n, tomes) = self.wizards.iter().filter_map(|&id| self.ecs.get::<&crate::wizard::Wizard>(id).ok().map(|w| w.relics.len())).fold((0usize, 0usize), |(n, t), r| (n + 1, t + r));
+        let each = if n == 0 { 0.0 } else { tomes as f64 / n as f64 };
+        1.3 * (1.0 + 0.15 * each)
     }
 
     /// The summoning is over: in it comes, unless the fight already ended.
