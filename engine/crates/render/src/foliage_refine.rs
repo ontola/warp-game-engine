@@ -63,7 +63,7 @@ impl Refiner {
         let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("foliage complete-cut refinement"),entries:&entries});
         let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage incremental admission"),source:wgpu::ShaderSource::Wgsl(refine_source().into())});
-        let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit","wake_count","wake_prefix","wake_scatter","seed_scatter","fast_begin","fast_round","fast_advance","fast_adapt","fast_mode"].into_iter().map(|entry|
+        let pipelines=["seed","start","prepare","propose","priority_scan","priority_totals","decide","output_scan","output_totals","apply","advance","drain","audit","wake_count","wake_prefix","wake_scatter","seed_scatter","fast_begin","fast_round","fast_advance","fast_adapt","fast_mode","fast_phase"].into_iter().map(|entry|
             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()})).collect();
         Self {capacity,proposals:storage("foliage active proposals",capacity as u64*96),parked:storage("foliage dormant proposals",capacity as u64*112),
             queues:[storage("foliage complete cut A",capacity as u64*16),storage("foliage complete cut B",capacity as u64*16)],
@@ -195,7 +195,11 @@ impl Refiner {
                 let bind=&binds[round as usize%2];
                 enc.copy_buffer_to_buffer(&self.state,32,&self.args,0,12);
                 let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,bind,&[]);
-                pass.set_pipeline(&self.pipelines[18]);pass.dispatch_workgroups_indirect(&self.args,0);
+                // Retained shadow budget first, then the rest (fast_phase).
+                for _ in 0..2 {
+                    pass.set_pipeline(&self.pipelines[18]);pass.dispatch_workgroups_indirect(&self.args,0);
+                    pass.set_pipeline(&self.pipelines[22]);pass.dispatch_workgroups(1,1,1);
+                }
                 pass.set_pipeline(&self.pipelines[19]);pass.dispatch_workgroups(1,1,1);
             }
             let bind=&binds[rounds as usize%2];self.dispatch(enc,bind,11,Some(self.capacity.div_ceil(64)),0);
