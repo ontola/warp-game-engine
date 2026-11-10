@@ -389,7 +389,8 @@ normal, spawning and hit looks, every player's colour and the effects).
 
 Luau runs every tick under a step budget (`steps` in game.toml). Neon
 Siege, with 96 enemies, 600 shots, their hits and the bursts, takes about
-half a millisecond a tick.
+half a millisecond a tick. [Luau or Rust](luau-or-rust.md) has the cost of
+each kind of call and when to move a loop into Rust.
 
 ## Hot reload
 
