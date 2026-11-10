@@ -123,7 +123,10 @@ var<workgroup> seed_scan:array<vec4<u32>,256>;
   if root.info.w==0u {consumers=mask(sphere(root,nodes[root.info.x]));}
   if view.counts.w!=0u && seed_visibility[tree]==0u {consumers&=~256u;}
   demand[tree].bucket=consumers;demand[tree].prefix=0u;
-  demand[tree+view.counts.x].bucket=consumers&512u;demand[tree+view.counts.x].prefix=0u;
+  // Bits 16+: the rounds this tree's shadow reserved last frame (fast_round
+  // writes them into the shadow half's failed word), its priority now.
+  let shadow_rounds=min(atomicLoad(&demand[tree+view.counts.x].failed),255u);
+  demand[tree+view.counts.x].bucket=(consumers&512u)|(shadow_rounds<<16u);demand[tree+view.counts.x].prefix=0u;
   // demand[tree].failed (camera half) carries last frame's camera record
   // count into this one: fast_round's hysteresis (CUT_HYSTERESIS).
   let previous=atomicLoad(&demand[tree].count);
@@ -154,6 +157,7 @@ var<workgroup> seed_scan:array<vec4<u32>,256>;
 @compute @workgroup_size(64) fn seed_scatter(@builtin(global_invocation_id) id:vec3<u32>) {
  let tree=id.x;if tree>=view.counts.x {return;}
  let roles=demand[tree].bucket;var at=blocks[32u+(tree/256u)*32u].y+atomicLoad(&demand[tree+view.counts.x].failed);
+ atomicStore(&demand[tree+view.counts.x].failed,0u);
  if (roles&256u)!=0u {current[at]=vec4<u32>(tree,NONE,256u,0u);at++;}
  if (roles&512u)!=0u {current[at]=vec4<u32>(tree,NONE,512u,0u);}
 }
@@ -668,9 +672,20 @@ fn fast_set_args(count:u32) {
 }
 @compute @workgroup_size(1) fn fast_mode() {atomicStore(&state[80],1u);}
 @compute @workgroup_size(1) fn fast_begin() {fast_set_args(atomicLoad(&state[3]));atomicStore(&state[7],0u);}
+// Each round runs twice (state[88] the phase). First the camera and the
+// shadow tasks of trees whose shadow reserved this deep last frame, then the
+// other shadow tasks. The shadow splat cap is full in a forest (~37k refusals
+// per frame): racing for it re-dealt ~3.5k trees' shadow mips every frame and
+// dirtied the cached sun maps (2-12 ms spikes, Mancave 10 November). Now the
+// trees holding the budget keep it; newcomers get what is left.
+fn fast_shadow_retained(task:vec4<u32>)->bool {
+ return (demand[task.x+view.counts.x].bucket>>16u)>atomicLoad(&state[87]);
+}
 @compute @workgroup_size(64) fn fast_round(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
  let task=current[at];if task.z==0u {return;}
+ let late=task.z==512u && !fast_shadow_retained(task);
+ if late!=(atomicLoad(&state[88])!=0u) {return;}
  cut_scale=fast_scale(task.z);
  // Hysteresis: a tree the camera saw in detail last frame (more than one
  // record) keeps it down to CUT_HYSTERESIS times less error, so a small
@@ -713,6 +728,7 @@ fn fast_set_args(count:u32) {
  let old=work(task.x,task.y,task.z);
  let shadow=(task.z&256u)==0u;
  if !fast_reserve(replacement-min(replacement,old),shadow) {atomicAdd(&state[17],1u);atomicAdd(&state[select(select(75u,76u,(task.z&256u)!=0u),86u,!shadow && source_leaves)],1u);publish(task);return;}
+ if shadow {atomicMax(&demand[task.x+view.counts.x].failed,atomicLoad(&state[87])+1u);}
  let offset=atomicAdd(&state[7],branching);let capacity=arrayLength(&next);
  if offset>capacity || branching>capacity-offset {
   // Queue overflow: keep the parent and blank the claimed in-range entries.
@@ -731,7 +747,9 @@ fn fast_set_args(count:u32) {
   child=nodes[child].links.y;
  }
 }
+@compute @workgroup_size(1) fn fast_phase() {atomicXor(&state[88],1u);}
 @compute @workgroup_size(1) fn fast_advance() {
+ atomicAdd(&state[87],1u);
  let count=min(atomicLoad(&state[7]),arrayLength(&next));atomicStore(&state[7],0u);
  if count!=0u {atomicAdd(&state[68],1u);}
  fast_set_args(count);
