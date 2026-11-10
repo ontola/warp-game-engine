@@ -2004,7 +2004,9 @@ impl World {
             self.add_field(at, el, field, 5.0, None);
         }
         let c = fx::darken(fx::el_c(el), 0.5);
-        self.burst(at + Vec3::Y * 0.8, c, 6, 6.0, 0.08, None);
+        // Soft motes, not specks: a few pixels across they drew as squares
+        // (Joep, the watcher's death).
+        self.burst(at + Vec3::Y * 0.8, c, 6, 6.0, 0.2, None);
     }
 
     /// The dead lie a while for their death to play, then go.
