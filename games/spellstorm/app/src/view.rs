@@ -243,6 +243,8 @@ impl View {
         // Ti, 2026-11-09: chapel frame 5.94 -> 5.54 ms). KERN_CLUSTERED_LIGHTS=0
         // goes back to the 32 nearest lights.
         scene.graphics.clustered_lights = true;
+        // Smoke hides the spells behind it (Joep: lights showed through clouds).
+        scene.graphics.fx_over_sprites = true;
         scene.sky = Some((4, 2, vec![[0.0, 0.0, 0.0, 1.0]; 8]));
         let mut look = Look::new(&self.kits, &mut scene)?;
         let l = &w.level;

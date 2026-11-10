@@ -480,6 +480,11 @@ pub struct Graphics {
     /// Compose sprites after world motion blur. Useful for single-frame arcs,
     /// tracers and screen-facing labels that must not inherit background motion.
     pub sharp_sprites: bool,
+    /// Draw the blasts (render::fx smoke, fire, heat) after the sprites and
+    /// GPU particles instead of before, so smoke hides what is behind it.
+    /// Sprites in front of smoke are then dimmed by it too: for games whose
+    /// effects mostly sit inside or under their clouds.
+    pub fx_over_sprites: bool,
     /// Coarsest mesh LOD, indexed instancing and vertex-lit colour. Requires
     /// plain CPU-owned meshes; no skinning, GPU debris or procedural animation.
     pub minimal_forward: bool,
