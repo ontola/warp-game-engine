@@ -1396,8 +1396,14 @@ impl World {
                 self.ring_shot(id, 3, 6.0, el, dmg, e.spiral_ang, 0.26);
             }
         }
+        // Below half its life it fights harder: patterns and summons come
+        // sooner (Joep: bosses should be harder).
+        let rage = {
+            let a = self.a(id);
+            if a.hp < a.max_hp * 0.5 { 0.65 } else { 1.0 }
+        };
         if e.special <= 0.0 && can {
-            e.special = self.rng.range(4.5, 6.0) as f64;
+            e.special = self.rng.range(4.5, 6.0) as f64 * rage;
             let pattern = BOSS_PATTERNS[e.pattern_i % BOSS_PATTERNS.len()];
             e.pattern_i += 1;
             // Shown first like every attack, in the body: a glint, and it
@@ -1421,7 +1427,7 @@ impl World {
             self.later_shot(id, e, wind, Pending::Boss { pattern, el, dmg });
         }
         if e.summon_t <= 0.0 {
-            e.summon_t = self.rng.range(10.0, 14.0) as f64;
+            e.summon_t = self.rng.range(10.0, 14.0) as f64 * rage;
             let pos = self.pos(id);
             for k in c.summon {
                 let off = Vec3::new(self.rng.range(-3.0, 3.0), 0.0, self.rng.range(-3.0, 3.0));

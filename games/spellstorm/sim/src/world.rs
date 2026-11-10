@@ -932,8 +932,16 @@ impl World {
                 time: 0.8,
             });
         } else if s.resist && !wizard {
-            // Shrugged off: a dull grey glance off it instead of a word.
+            // Shrugged off: a dull grey glance off it, and the word where
+            // the number would be (Joep).
             self.burst(pos + Vec3::Y, fx::rgb(0.6, 0.62, 0.68), 6, 2.5, 0.1, None);
+            self.ev(Ev::Text {
+                at: top + side,
+                text: "RESIST".into(),
+                c: fx::rgb(0.6, 0.62, 0.68),
+                size: 24.0,
+                time: 0.8,
+            });
         }
         if s.heal >= 1.0 {
             let text = format!("+{}", s.heal.round() as i64);
