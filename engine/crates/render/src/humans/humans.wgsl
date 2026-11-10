@@ -216,7 +216,7 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
 struct V { @builtin(position) pos:vec4<f32>, @location(0) n:vec3<f32>, @location(1) local:vec3<f32>,
     @location(2) color:vec3<f32>, @location(3) @interpolate(flat) mat:u32,
     @location(4) identity:vec4<f32>, @location(5) disc:vec2<f32>, @location(6) uv:vec2<f32>, @location(7) @interpolate(flat) lamps:vec3<f32>,
-    @location(8) @interpolate(flat) direction_sun:vec4<f32>, @location(9) world:vec3<f32>, @location(10) @interpolate(flat) wardrobe:u32 }
+    @location(8) @interpolate(flat) direction_sun:vec4<f32>, @location(9) world:vec3<f32>, @location(10) @interpolate(flat) appearance:u32 }
 fn rotate(angle:f32) -> mat2x2<f32> {
     return mat2x2<f32>(cos(angle),sin(angle),-sin(angle),cos(angle));
 }
@@ -242,8 +242,9 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     var o:V;
     let mat=tagged_mat & 31u;
     let mask=tagged_mat >> 5u;
-    let wardrobe=u32(max(0.,a.color.w-1.));
-    let outfit=wardrobe & 3u;
+    // People store wardrobe + 1 in the low nine bits. Zero is a stand.
+    let appearance=u32(max(0.,a.color.w-1.));
+    let outfit=appearance & 3u;
     if (mask!=0u && (mask & (1u<<outfit))==0u) || (mat>=20u && mat!=20u+u32(a.identity.z*3.)) {
         o.pos=vec4<f32>(2.,2.,2.,1.);
         return o;
@@ -395,7 +396,7 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     if mat==2u || mat==14u {dye=a.color.y;}
     if mat==3u {dye=a.color.z;}
     o.color=unpack4x8unorm(u32(dye)).rgb;
-    o.wardrobe=wardrobe; o.mat=select(mat,1u,!anatomical && arm!=0. && mat==4u && outfit!=1u && rest.y>0.558); o.identity=a.identity; o.disc=disc; return o;
+    o.appearance=appearance; o.mat=select(mat,1u,!anatomical && arm!=0. && mat==4u && outfit!=1u && rest.y>0.558); o.identity=a.identity; o.disc=disc; return o;
 }
 fn human_color(v:V)->vec4<f32>{
     if dot(v.disc,v.disc)>1. {discard;}
@@ -406,7 +407,9 @@ fn human_color(v:V)->vec4<f32>{
     // same pigmentation at the collar, wrists and across the detailed face.
     let cheeks=array<vec3<f32>,3>(vec3<f32>(0.855,0.659,0.541),vec3<f32>(0.894,0.741,0.639),vec3<f32>(0.353,0.224,0.149));
     let skin=mix(cheeks[tile],pigment,0.46);
-    let hair=mix(vec3<f32>(0.046,0.030,0.025),vec3<f32>(0.39,0.28,0.16),id.w*id.w);
+    let hair_bits=v.appearance>>9u;
+    let hair=vec3<f32>(vec3<u32>(hair_bits>>8u,hair_bits>>4u,hair_bits) & vec3<u32>(15u))/15.;
+    let wardrobe=v.appearance & 511u;
     var color=v.color;
     switch v.mat {
     case 3u: {color*=mix(0.71,1.,smoothstep(0.012,0.020,p.y));}
@@ -418,10 +421,10 @@ fn human_color(v:V)->vec4<f32>{
         color=mix(skin,clamp(skin*tex/cheeks[tile],vec3<f32>(0.),vec3<f32>(1.)),smoothstep(0.862,0.895,p.y));
     }
     case 12u,14u: {
-        var outfit=v.wardrobe & 3u;
+        var outfit=wardrobe & 3u;
         if v.mat==14u && outfit>0u {outfit=1u;}
         color*=artifact_sample(6u,v.uv)[outfit];
-        let print=v.wardrobe>>2u;
+        let print=wardrobe>>2u;
         let chest=vec2<f32>(p.x/0.19+0.5,(0.738-p.y)/0.14+0.5);
         if v.mat==12u && print!=0u && p.z>0.02 && all(chest>vec2<f32>(0.)) && all(chest<vec2<f32>(1.)) {
             var glyph=print-91u;
@@ -440,7 +443,13 @@ fn human_color(v:V)->vec4<f32>{
         let tile=select(7u,v.mat-20u+3u,v.mat>=20u);
         let strand=artifact_sample(tile,v.uv);
         if strand.a<0.43 {discard;}
-        color=hair*(0.36+2.4*dot(strand.rgb,vec3<f32>(0.3,0.5,0.2)));
+        let brow=mix(mix(vec3<f32>(0.09,0.065,0.05),vec3<f32>(0.47,0.36,0.26),f32(hair_bits>>12u)/5.),skin,0.20);
+        // Use the same source highlights as the fitted player grooms. In
+        // particular the light bob texture must retain a dark selected tint.
+        let highlights=array<f32,5>(45.,222.,27.,1.,24.);
+        let luma=dot(strand.rgb,vec3<f32>(0.3,0.5,0.2));
+        let fibre=0.22+0.72*sqrt(min(1.1,luma*(255./highlights[tile-3u])));
+        color=select(hair,brow,v.mat==13u)*fibre;
     }
     case 6u: {
         let eye=length(vec2<f32>(abs(p.x)-0.01846,p.y-0.92704));
