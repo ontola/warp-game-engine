@@ -85,6 +85,23 @@ impl Reach {
         })
     }
 
+    fn orient_end(&self, pose: &mut [Mat4], bind_to_grip: Quat) {
+        let (i, rest) = self.pivots[2];
+        let wrist = pose[i].transform_point3(rest);
+        let turn = bind_to_grip
+            * pose[i]
+                .to_scale_rotation_translation()
+                .1
+                .normalize()
+                .inverse();
+        let around = Mat4::from_rotation_translation(turn, wrist - turn * wrist);
+        for &(index, part) in &self.members {
+            if part == LimbPart::End {
+                pose[index] = around * pose[index];
+            }
+        }
+    }
+
     /// Current upper and lower segment lengths combined, in model units.
     pub fn span(&self, pose: &[Mat4]) -> f32 {
         let [a, b, c] = self.pivots.map(|(i, rest)| pose[i].transform_point3(rest));
@@ -179,20 +196,12 @@ impl TwoHandHold {
     /// Orient a support palm after solving the wrists. The rotation maps the
     /// model's bind-space hand to the desired grip in posed model space.
     pub fn orient_support(&self, pose: &mut [Mat4], bind_to_grip: Quat) {
-        let (i, rest) = self.left.pivots[2];
-        let wrist = pose[i].transform_point3(rest);
-        let turn = bind_to_grip
-            * pose[i]
-                .to_scale_rotation_translation()
-                .1
-                .normalize()
-                .inverse();
-        let around = Mat4::from_rotation_translation(turn, wrist - turn * wrist);
-        for &(index, part) in &self.left.members {
-            if part == LimbPart::End {
-                pose[index] = around * pose[index];
-            }
-        }
+        self.left.orient_end(pose, bind_to_grip);
+    }
+
+    /// Rotate the primary hand around the solved wrist without moving the gun.
+    pub fn orient_primary(&self, pose: &mut [Mat4], bind_to_grip: Quat) {
+        self.right.orient_end(pose, bind_to_grip);
     }
 
     /// Primary and secondary are wrist sockets in model space. Place the prop

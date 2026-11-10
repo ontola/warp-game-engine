@@ -1,0 +1,9 @@
+# Fitted player stance and sparse body asset
+
+On Mancave (Windows, RTX 5070 Ti), we compared the previous Growing Guns reload build against the player fitting changes based on `75ebf624`. Each headless run used full graphics, two local views at 1440 × 860, seed 52, arena 13 and noon. The first fixture held the player in the same spot for side, front and close-up views. A second 216-tick fixture tracked the same player walking, firing once and reloading. Movie frames sample two simulation ticks at 30 fps.
+
+An intermediate fit narrowed the stance and pointed the gun along the aim, but one shoulder still formed a sharp corner. The final fit puts the torso and arms into one continuous hm08 rest pose and maps the solver's shoulder, elbow and wrist pivots into it. The upper arms and forearms keep their lengths while the hands reach the magazine. The legs continue using the distance-calibrated cycles. The resting ankle target is 0.30 m across, with a two-bone solve preserving foot height.
+
+The cooker read the pinned hm08 body, six paired upper/lower eyelid shaping targets, the four original identity morphs and the original clothing and hair pack. The reference geometry contains 34,852 vertices and 57,116 triangles. The cook changed 976 quantized vertex positions. A byte comparison found the same triangle indices and the same four expanded identity delta fields. The four sparse lists contain 412, 741, 362 and 14,117 entries.
+
+On disk the mesh went from 1,667,080 to 1,187,628 bytes. The shared appearance atlas stayed byte-identical at 2,526,927 bytes. Together they occupy 3,714,555 bytes. The loader expands the sparse fields into the existing GPU vertex format at load time. These measurements cover the two shared art files, and exclude animations, the executable, download compression and GPU allocation.

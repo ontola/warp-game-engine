@@ -78,6 +78,10 @@ pub(super) struct Locomotion {
     rig: Bound,
     joints: [usize; 9],
     cycles: [Cycle; 3],
+    grip: Vec3,
+    pub(super) palms: [Quat; 2],
+    neck: (usize, Vec3),
+    head: (usize, Vec3),
     idle: usize,
     launch: usize,
     land: usize,
@@ -153,7 +157,24 @@ impl Locomotion {
         let cycles =
             ["Walk_Loop", "Jog_Fwd_Loop", "Sprint_Loop"].map(|n| Cycle::fit(&lib, &rig, find(n)?));
         let [walk, jog, sprint] = cycles;
+        let pivot = |name| {
+            model
+                .joints()
+                .enumerate()
+                .find(|(_, (n, _))| *n == name)
+                .map(|(i, (_, bind))| (i, bind.w_axis.truncate()))
+                .ok_or_else(|| format!("missing {name}"))
+        };
+        let grip = pivot("Spine2")?.1 + Vec3::new(-0.10, -0.035, 0.23);
         Ok(Self {
+            grip,
+            palms: [false, true].map(|left| {
+                let back = if left { Vec3::X } else { Vec3::NEG_X };
+                let grip = Quat::from_mat3(&glam::Mat3::from_cols(Vec3::Z, back, Vec3::Z.cross(back)));
+                grip * render::humans::hand_frame(left).inverse()
+            }),
+            neck: pivot("Neck")?,
+            head: pivot("Head")?,
             idle: find("Idle_Loop")?,
             launch: find("Jump_Start")?,
             land: find("Jump_Land")?,
@@ -162,6 +183,22 @@ impl Locomotion {
             rig,
             lib,
         })
+    }
+
+    /// The fitted eyes face forward in head space. Split the pitch between the
+    /// neck and head, using the same interpolated look as the gun.
+    pub(super) fn look(&self, palette: &mut [Mat4], pitch: f32) {
+        let angle = -pitch.clamp(-0.85, 0.85);
+        let about = |p: Vec3, fraction| {
+            let q = Quat::from_rotation_x(angle * fraction);
+            Mat4::from_rotation_translation(q, p - q * p)
+        };
+        let (n, neck) = self.neck;
+        let (h, head) = self.head;
+        let nod = about(palette[n].transform_point3(neck), 0.35);
+        palette[n] = nod * palette[n];
+        palette[h] = nod * palette[h];
+        palette[h] = about(palette[h].transform_point3(head), 0.65) * palette[h];
     }
 
     pub(super) fn advance(
@@ -259,14 +296,7 @@ impl Locomotion {
         s.grounded = ground;
     }
 
-    pub(super) fn pose(
-        &self,
-        model: &Character,
-        s: &Stride,
-        alpha: f32,
-        idle: f32,
-        palette: &mut [Mat4],
-    ) -> Result<Mat4, String> {
+    pub(super) fn pose(&self, s: &Stride, alpha: f32, idle: f32, palette: &mut [Mat4]) -> Mat4 {
         let p = s.from.between(s.to, alpha);
         let ground = (1. - p.air - p.land).max(0.);
         let moving = movement(p.speed);
@@ -299,11 +329,8 @@ impl Locomotion {
             },
         ];
         let pose = self.rig.pose(&self.lib, &layers);
-        model.sample_into(super::IDLE, idle, true, palette)?;
-        let change = pose[Bone::Pelvis as usize] * palette[self.joints[0]].inverse();
-        for joint in palette.iter_mut() {
-            *joint = change * *joint;
-        }
+        let pelvis = pose[Bone::Pelvis as usize];
+        palette.fill(pelvis);
         let turn = Quat::from_rotation_y(p.turn * stride_weight);
         for side in [1, 5] {
             let hip_bone = LEGS[side].0 as usize;
@@ -312,8 +339,52 @@ impl Locomotion {
             for j in side..side + 4 {
                 palette[self.joints[j]] = steer * pose[LEGS[j].0 as usize];
             }
+            let resting = (1. - moving) * ground;
+            if resting > 0. {
+                let at = |j: usize| {
+                    palette[self.joints[j]]
+                        .transform_point3(self.rig.rest[LEGS[j].0 as usize].unwrap())
+                };
+                let knee = at(side + 1);
+                let ankle = at(side + 2);
+                let sign = if side == 1 { 1. } else { -1. };
+                let middle = pelvis.transform_point3(self.rig.rest[Bone::Pelvis as usize].unwrap()).x;
+                let target = ankle.lerp(ankle.with_x(middle + sign * 0.15), resting);
+                // Pull the ankle inward along the floor. Bend the knee forward
+                // to preserve both segment lengths and leave the shoe level.
+                let upper = knee - hip;
+                let lower = ankle - knee;
+                let ray = (target - hip).normalize();
+                let d = target.distance(hip).clamp(
+                    (upper.length() - lower.length()).abs() + 1e-5,
+                    upper.length() + lower.length(),
+                );
+                let foot = hip + ray * d;
+                let along = (upper.length_squared() - lower.length_squared() + d * d) / (2. * d);
+                let natural = upper - ray * upper.dot(ray);
+                let forward = Vec3::Z - ray * ray.z;
+                let bend = natural
+                    .normalize_or(forward)
+                    .lerp(forward, resting)
+                    .normalize_or(Vec3::Z);
+                let joint = hip
+                    + ray * along
+                    + bend * (upper.length_squared() - along * along).max(0.).sqrt();
+                for (j, from, to, a, b) in [
+                    (side, hip, hip, upper, joint - hip),
+                    (side + 1, knee, joint, lower, foot - joint),
+                ] {
+                    let q = Quat::from_rotation_arc(a.normalize(), b.normalize());
+                    palette[self.joints[j]] =
+                        Mat4::from_rotation_translation(q, to - q * from) * palette[self.joints[j]];
+                }
+                let slide = Mat4::from_translation(foot - ankle);
+                for &j in &self.joints[side + 2..side + 4] {
+                    palette[j] = slide * palette[j];
+                }
+            }
         }
-        Ok(change * model.sample_socket(super::IDLE, "RightHand", idle, true)?)
+        pelvis * Mat4::from_translation(self.grip)
     }
 }
 
@@ -327,6 +398,35 @@ mod tests {
         let model = Character::load(&p).unwrap();
         let rig = Locomotion::bind(&model).unwrap();
         (model, rig)
+    }
+
+    #[test]
+    fn idle_stance_keeps_the_soles_down_and_the_knees_bent() {
+        let (model, rig) = setup();
+        let mut palette = vec![Mat4::IDENTITY; model.joint_count];
+        for t in [0., 0.3, 0.8] {
+            rig.pose(&Stride::default(), 1., t, &mut palette);
+            let phase = rig.rig.pose(
+                &rig.lib,
+                &[Layer {
+                    clip: rig.idle,
+                    t,
+                    looped: true,
+                    w: 1.,
+                }],
+            );
+            let joint = |b: usize| {
+                palette[rig.joints[b]].transform_point3(rig.rig.rest[LEGS[b].0 as usize].unwrap())
+            };
+            let spacing = joint(3).x - joint(7).x;
+            assert!((spacing - 0.30).abs() < 0.015, "ankles {spacing} m apart");
+            for side in [1, 5] {
+                let id = LEGS[side + 2].0 as usize;
+                let floor = phase[id].transform_point3(rig.rig.rest[id].unwrap()).y;
+                assert!((joint(side + 2).y - floor).abs() < 0.003);
+                assert!(joint(side + 1).z > joint(side).z.min(joint(side + 2).z));
+            }
+        }
     }
 
     #[test]
@@ -350,7 +450,7 @@ mod tests {
                         ..Default::default()
                     };
                     s.from = s.to;
-                    rig.pose(&model, &s, 1., 0., &mut palette).unwrap();
+                    rig.pose(&s, 1., 0., &mut palette);
                     palette[rig.joints[4]]
                         .transform_point3(rig.rig.rest[Bone::BallL as usize].unwrap())
                 };

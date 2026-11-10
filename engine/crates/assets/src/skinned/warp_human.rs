@@ -18,54 +18,119 @@ impl Character {
     }
 
     /// Override base skin in sRGB while retaining the seeded face texture.
-    pub fn warp_human_with_skin(&self, person: &Instance, skin: Option<[f32; 3]>) -> Result<Self, String> {
+    pub fn warp_human_with_skin(
+        &self,
+        person: &Instance,
+        skin: Option<[f32; 3]>,
+    ) -> Result<Self, String> {
+        self.fit_human(person, skin, false)
+    }
+
+    /// Keep the hm08 upper body in its native relaxed pose for a live two-hand
+    /// solver. The legs use the donor bind for the shared locomotion clips.
+    pub fn warp_human_player(
+        &self,
+        person: &Instance,
+        skin: Option<[f32; 3]>,
+    ) -> Result<Self, String> {
+        self.fit_human(person, skin, true)
+    }
+
+    fn fit_human(
+        &self,
+        person: &Instance,
+        skin: Option<[f32; 3]>,
+        player: bool,
+    ) -> Result<Self, String> {
+        let mut fitted_joints = self.joints.clone();
+        let hips = self
+            .joints
+            .iter()
+            .find(|(n, _)| n == "Hips")
+            .ok_or("missing Hips")?
+            .1
+            .w_axis
+            .truncate();
+        let scale = person.body_scale();
+        let upper_body = Affine3A::from_scale_rotation_translation(
+            scale,
+            Quat::IDENTITY,
+            hips - scale * Vec3::new(0., 0.534, -0.012),
+        );
         // Normalized hm08 joint positions, in the same space as the crowd rig.
-        let chain = |names: &[&str], points: &[Vec3]| -> Result<Vec<Bone>, String> {
-            let joints = names
-                .iter()
-                .map(|name| {
-                    self.joints
+        let mut chain =
+            |names: &[&str], points: &[Vec3], keep_upper: bool| -> Result<Vec<Bone>, String> {
+                let joints = names
+                    .iter()
+                    .map(|name| {
+                        self.joints
+                            .iter()
+                            .enumerate()
+                            .find(|(_, (n, _))| n == name)
+                            .map(|(i, (_, bind))| (i, bind.w_axis.truncate()))
+                            .ok_or_else(|| format!("Warp Human rig missing {name}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if player && keep_upper {
+                    let normal = Mat3::from(upper_body.matrix3).inverse().transpose();
+                    return Ok(joints
                         .iter()
-                        .enumerate()
-                        .find(|(_, (n, _))| n == name)
-                        .map(|(i, (_, bind))| (i, bind.w_axis.truncate()))
-                        .ok_or_else(|| format!("Warp Human rig missing {name}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let scale = person.body_scale();
-            let mut result = Vec::new();
-            let mut previous_rotation = Quat::IDENTITY;
-            for (i, &(joint, at)) in joints.iter().enumerate() {
-                let mut rotation = Quat::IDENTITY;
-                let mut stretch = 1.0;
-                let source = (points[i + 1] - points[i]).normalize();
-                if let Some(&(_, end)) = joints.get(i + 1) {
-                    rotation = Quat::from_rotation_arc(source, (end - at).normalize());
-                    stretch = at.distance(end) / (points[i].distance(points[i + 1]) * scale.y);
-                } else if names[i].ends_with("Hand") {
-                    rotation = previous_rotation;
+                        .zip(points)
+                        .map(|(&(joint, _), &point)| {
+                            fitted_joints[joint].1.w_axis =
+                                upper_body.transform_point3(point).extend(1.);
+                            Bone {
+                                joint,
+                                transform: upper_body,
+                                normal,
+                            }
+                        })
+                        .collect());
                 }
-                previous_rotation = rotation;
-                let along =
-                    Mat3::from_cols(source * source.x, source * source.y, source * source.z);
-                let linear = Mat3::from_quat(rotation)
-                    * (Mat3::IDENTITY * scale.x + along * (scale.y * stretch - scale.x));
-                let transform = Affine3A::from_mat3_translation(linear, at - linear * points[i]);
-                result.push(Bone {
-                    joint,
-                    transform,
-                    normal: linear.inverse().transpose(),
-                });
-            }
-            Ok(result)
-        };
+                let mut result = Vec::new();
+                let mut previous_rotation = Quat::IDENTITY;
+                for (i, &(joint, at)) in joints.iter().enumerate() {
+                    let mut rotation = Quat::IDENTITY;
+                    let mut stretch = 1.0;
+                    let source = (points[i + 1] - points[i]).normalize();
+                    if let Some(&(_, end)) = joints.get(i + 1) {
+                        rotation = Quat::from_rotation_arc(source, (end - at).normalize());
+                        stretch = at.distance(end) / (points[i].distance(points[i + 1]) * scale.y);
+                    } else if names[i].ends_with("Hand") {
+                        rotation = previous_rotation;
+                    }
+                    previous_rotation = rotation;
+                    let along =
+                        Mat3::from_cols(source * source.x, source * source.y, source * source.z);
+                    let linear = Mat3::from_quat(rotation)
+                        * (Mat3::IDENTITY * scale.x + along * (scale.y * stretch - scale.x));
+                    let transform =
+                        Affine3A::from_mat3_translation(linear, at - linear * points[i]);
+                    result.push(Bone {
+                        joint,
+                        transform,
+                        normal: linear.inverse().transpose(),
+                    });
+                }
+                Ok(result)
+            };
         let core = chain(
             &["Hips", "Spine", "Spine1", "Spine2", "Neck", "Head"],
-            &[0.52, 0.60, 0.68, 0.76, 0.838, 0.868, 1.0].map(|y| Vec3::new(0., y, -0.012)),
+            &[
+                [0., 0.534, -0.012],
+                [0., 0.602, -0.012],
+                [0., 0.658, -0.005],
+                [0., 0.750, -0.025],
+                [0., 0.843, -0.017],
+                [0., 0.909, -0.011],
+                [0., 1., -0.011],
+            ]
+            .map(Vec3::from_array),
+            true,
         )?;
         let mut limbs = Vec::new();
         for (side, sign) in [("Right", -1.), ("Left", 1.)] {
-            let limb = |names: &[&str], points: &[[f32; 3]]| {
+            let mut limb = |names: &[&str], points: &[[f32; 3]], keep_upper| {
                 let names: Vec<_> = names.iter().map(|name| format!("{side}{name}")).collect();
                 let points: Vec<_> = points
                     .iter()
@@ -74,6 +139,7 @@ impl Character {
                 chain(
                     &names.iter().map(String::as_str).collect::<Vec<_>>(),
                     &points,
+                    keep_upper,
                 )
             };
             let arm = limb(
@@ -81,23 +147,25 @@ impl Character {
                 &[
                     [0.1008, 0.805, -0.012],
                     [0.1878, 0.6994, -0.0132],
-                    [0.249, 0.633, 0.085],
+                    [0.259, 0.637, 0.084],
                     [0.295, 0.565, 0.14],
                 ],
+                true,
             )?;
             let leg = limb(
                 &["UpLeg", "Leg", "Foot"],
                 &[
-                    [0.055, 0.527, 0.],
-                    [0.061, 0.269, 0.],
-                    [0.061, 0.046, 0.],
-                    [0.061, 0.028, 0.07],
+                    [0.0662, 0.5192, -0.0136],
+                    [0.0949, 0.2683, -0.0018],
+                    [0.1318, 0.0431, -0.0215],
+                    [0.1319, 0.0039, 0.0515],
                 ],
+                false,
             )?;
             limbs.push((arm, leg));
         }
         let skin_color = skin.map(Vec3::from).unwrap_or_else(|| person.skin_color());
-        let (body, indices) = person.body_mesh();
+        let (body, indices) = person.fitted_mesh(player);
         let skin = |v: &BodyVertex| {
             let p = v.position;
             let (arm, leg) = &limbs[usize::from(p.x > 0.)];
@@ -105,7 +173,7 @@ impl Character {
             let wrist = fore * ramp(0.245, 0.265, p.x.abs()).max(ramp(0.085, 0.115, p.z));
             let ankle = shin * (1. - ramp(0.042, 0.084, p.y));
             let rest = (1. - upper - thigh).max(0.);
-            let heights = [0.52, 0.60, 0.68, 0.76, 0.838, 0.868];
+            let heights = [0.534, 0.602, 0.658, 0.750, 0.843, 0.909];
             let k = heights
                 .partition_point(|&y| y < p.y)
                 .saturating_sub(1)
@@ -135,8 +203,8 @@ impl Character {
             }
             let uv = if v.material == 6 {
                 [
-                    (0.5 + (p.x.abs() - 0.01846) * 51.).clamp(0.001, 0.999),
-                    (0.5 + (p.y - 0.92704) * 51.).clamp(0.001, 0.999),
+                    (0.5 + v.normal.x * 0.46).clamp(0.001, 0.999),
+                    (0.5 - v.normal.y * 0.46).clamp(0.001, 0.999),
                 ]
             } else {
                 v.uv
@@ -153,7 +221,18 @@ impl Character {
         let mut groups = BTreeMap::<u32, Vec<u32>>::new();
         for tri in indices.chunks_exact(3) {
             let a = &body[tri[0] as usize];
-            groups.entry(a.material).or_default().extend(tri);
+            let tag = if a.material == 3
+                && tri
+                    .iter()
+                    .map(|&i| body[i as usize].position.y)
+                    .sum::<f32>()
+                    < 3. * 0.012
+            {
+                17 // rubber outsole, sharing the shoe geometry
+            } else {
+                a.material
+            };
+            groups.entry(tag).or_default().extend(tri);
             // Reuse the shirt's skin weights for the small area carrying the print.
             if a.material == 12 && person.chest_print() != 0 {
                 let points = [0, 1, 2].map(|k| body[tri[k] as usize].position);
@@ -216,7 +295,7 @@ impl Character {
             name: self.name.clone(),
             joint_count: self.joint_count,
             clips: self.clips.clone(),
-            joints: self.joints.clone(),
+            joints: fitted_joints,
             min: self.min.min(Vec3::splat(-1.0)),
             max: self.max.max(Vec3::new(1., 2.2, 1.)),
             triangles: indices.len() / 3,
@@ -245,15 +324,13 @@ fn surface(person: &Instance, tag: u32, skin: Vec3) -> Surface {
         ),
         15 | 16 => {
             let light = Vec3::from(person.shirt_color()).dot(Vec3::new(0.3, 0.6, 0.1));
-            (
-                Vec3::splat(if light > 0.58 { 0.14 } else { 0.88 }),
-                Some(6),
-            )
+            (Vec3::splat(if light > 0.58 { 0.14 } else { 0.88 }), Some(6))
         }
         3 => (Vec3::from(person.shoe_color()), None),
+        17 => (Vec3::from(person.shoe_color()) * 0.48, None),
         4 => (skin, None),
         11 => (skin / cheek, Some(face)),
-        13 => (person.hair_color(), Some(7)),
+        13 => (person.hair_color().lerp(skin, 0.26), Some(7)),
         20..=22 => (person.hair_color(), Some((tag - 20 + 3) as usize)),
         _ => (Vec3::ONE, None),
     };
@@ -276,7 +353,7 @@ fn surface(person: &Instance, tag: u32, skin: Vec3) -> Surface {
             albedo_texture: None,
             albedo: tint.extend(1.).into(),
             albedo_color_space: "sRGB".into(),
-            roughness: 0.82,
+            roughness: if (20..=22).contains(&tag) { 0.61 } else { 0.82 },
             metallic: 0.,
             normal_texture: None,
             normal_scale: 1.,
@@ -296,14 +373,18 @@ fn shared_tiles() -> &'static [std::sync::Arc<image::RgbaImage>; 12] {
         std::array::from_fn(|i| {
             if i == 11 {
                 return image::RgbaImage::from_fn(64, 64, |x, y| {
-                    let r = (x as f32 - 31.5).hypot(y as f32 - 31.5);
-                    image::Rgba(if r < 4. {
-                        [22, 16, 14, 255]
-                    } else if r < 12. {
-                        [86, 68, 49, 255]
-                    } else {
-                        [210, 203, 187, 255]
-                    })
+                    let dx = x as f32 - 31.5;
+                    let dy = y as f32 - 31.5;
+                    let r = dx.hypot(dy);
+                    let grain = (dx.atan2(dy) * 33.).sin() * 4.;
+                    let iris = Vec3::new(82. + grain, 66. + grain, 49.);
+                    let iris = iris.lerp(Vec3::splat(20.), ramp(13., 16., r));
+                    let color = Vec3::splat(18.)
+                        .lerp(iris, ramp(4.5, 6., r))
+                        .lerp(Vec3::new(187., 176., 165.), ramp(15., 17., r));
+                    let shade = 0.78 + 0.22 * ramp(12., 40., y as f32);
+                    let [r, g, b] = (color * shade).to_array().map(|v| v as u8);
+                    image::Rgba([r, g, b, 255])
                 })
                 .into();
             }
@@ -334,9 +415,17 @@ fn shared_tiles() -> &'static [std::sync::Arc<image::RgbaImage>; 12] {
                 }
             } else if matches!(i, 3..=5 | 7) {
                 for p in image.pixels_mut() {
-                    let strand = 0.36
-                        + 2.4 * (0.3 * p[0] as f32 + 0.5 * p[1] as f32 + 0.2 * p[2] as f32) / 255.;
-                    p.0[..3].fill((255. * strand.min(1.0)) as u8);
+                    // Reference highlights from the three source grooms and brows.
+                    // A single exposure clips nearly the entire light bob texture.
+                    let highlight = match i {
+                        3 => 45.,
+                        4 => 222.,
+                        5 => 27.,
+                        _ => 24.,
+                    };
+                    let luma = 0.3 * p[0] as f32 + 0.5 * p[1] as f32 + 0.2 * p[2] as f32;
+                    let strand = 0.22 + 0.72 * (luma / highlight).clamp(0., 1.1).sqrt();
+                    p.0[..3].fill((255. * strand) as u8);
                 }
             }
             image.into()

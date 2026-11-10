@@ -22,6 +22,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [handoff.md](handoff.md) is the running log of 23 October to 5 November
   2026, newest first.
 
+- [Fitted player stance, face and sparse body asset](2026-11-10-warp-humans-fit.md)
 - [Luau call costs and Rust rebuild times](2026-11-10-luau-call-cost.md)
 - [Growing Guns reload grip and GameNight colours](2026-11-09-warp-humans-reload.md)
 - [Distance-matched player locomotion and jump contacts](2026-11-09-warp-humans-player-locomotion.md)
