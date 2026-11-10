@@ -1118,9 +1118,12 @@ impl Fx {
                 color: [Vec4::new(0.85, 0.97, 1.0, 1.0), Vec4::new(0.4, 0.75, 1.0, 0.0)], shape: Shape::Ember, ..Emitter::embers() },
             El::Lightning | El::Storm => Emitter { position: at + Vec3::Y * 0.5, radius: 0.2 * r, spread: 1.5, speed: [2.0 * r, 5.0 * r], count: (r * 300.0) as u32,
                 life: [0.2, 0.7], size: [0.03, 0.01], glow: 6.0 * LIGHT, color: [Vec4::new(0.9, 0.9, 1.0, 1.0), Vec4::new(0.5, 0.45, 1.0, 0.0)], ..Emitter::sparks() },
-            El::Void => Emitter { position: at + Vec3::Y * 0.8, radius: 1.0 * r, speed: [0.0, 0.3], count: (r * 160.0) as u32, duration: 0.2,
-                life: [0.4, 1.0], size: [0.04, 0.01], glow: 3.0 * LIGHT, gravity: 0.0, turbulence: 4.0,
-                color: [Vec4::new(0.8, 0.45, 1.0, 1.0), Vec4::new(0.3, 0.05, 0.5, 0.0)], ..Emitter::embers() },
+            // Soft violet motes, fewer and big enough to read round: as
+            // tiny hard embers they showed as little squares (Joep, the
+            // floating eye's death).
+            El::Void => Emitter { position: at + Vec3::Y * 0.8, radius: 1.0 * r, speed: [0.0, 0.3], count: (r * 50.0) as u32, duration: 0.2,
+                life: [0.4, 1.0], size: [0.16, 0.05], glow: 1.6 * LIGHT, gravity: 0.0, turbulence: 4.0,
+                color: [Vec4::new(0.7, 0.35, 1.0, 1.0), Vec4::new(0.25, 0.04, 0.45, 0.0)], shape: Shape::Soft, ..Emitter::embers() },
             _ => return,
         };
         self.sparks.emit(t, &em);
@@ -2392,9 +2395,17 @@ impl Fx {
                 let at = s.pos + Vec3::Y * (0.9 + 0.1 * (t * 4.0 + key as f32).sin());
                 // A small glowing marble: a hard-edged bead with its sheen
                 // (the Drop cell) and a bright heart, the faintest halo (Joep).
+                // Hidden by whoever stands in front of it: up in the air it
+                // needs no depth bias, and glow_sprite's 0.3 m showed it
+                // through a wizard's body (Joep). Its middle decides.
+                let n0 = self.live.len();
                 self.live.push(glow_sprite(at, 0.2, Cell::Drop, linear3([0.35, 0.58, 1.0]) * 1.1));
                 self.live.push(glow_sprite(at, 0.07, Cell::Spark, linear3([0.75, 0.88, 1.0]) * 1.6));
                 self.halo(at, c, 0.4, 0.12);
+                for sp in &mut self.live[n0..] {
+                    sp.depth_bias = 0.0;
+                    sp.depth_test = render::sprites::DepthTest::Source;
+                }
             } else if let Ok(s) = w.ecs.get::<&Spray>(id) {
                 let e = s.spell.primary.unwrap_or(El::Fire);
                 let mut p = particles(el_c(e), 50, 0.45, 0.7);

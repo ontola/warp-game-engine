@@ -248,3 +248,33 @@ fn the_level_setting_goes_straight_there() {
     w.set_option("level", "1");
     assert_eq!(w.run.biome_index, 0);
 }
+
+#[test]
+fn tomes_rise_on_the_path_clear_of_props() {
+    // Joep: a shrine's tomes stood far out in the grass, one inside a
+    // building, and the party took them for missing.
+    let mut total = 0;
+    for b in 0..spellstorm::biome::BIOMES.len() {
+        for seed in 1u64..=std::env::var("TOME_SEEDS").ok().and_then(|v| v.parse().ok()).unwrap_or(12) {
+            let mut w = bots(2, seed * 10 + b as u64);
+            w.step();
+            w.start_at(b as i32);
+            let mut seen = 0;
+            for _ in 0..60 * 100 {
+                w.step();
+                if w.run.biome_index != b {
+                    break;
+                }
+                total += w.run.altars.len().saturating_sub(seen);
+                for a in &w.run.altars[seen.min(w.run.altars.len())..] {
+                    let q = glam::Vec2::new(a.pos.x, a.pos.z);
+                    let on = w.level.point_at(w.level.progress_of(q));
+                    assert!(q.distance(on) < spellstorm::level::PATH_W + 4.0, "biome {b} seed {seed}: tome {} {:.1} m off the path", a.shrine, q.distance(on));
+                    assert!(w.level.statics.push_out(q, 0.6).distance(q) < 0.05, "biome {b} seed {seed}: tome {} inside a prop", a.shrine);
+                }
+                seen = w.run.altars.len();
+            }
+        }
+    }
+    assert!(total > 10, "only {total} tomes rose");
+}

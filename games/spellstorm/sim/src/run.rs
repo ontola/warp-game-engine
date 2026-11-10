@@ -970,11 +970,20 @@ impl World {
         if let Some(wd) = wall.filter(|wd| past(wd)) {
             let n = picks.len().max(2) as f32 - 1.0;
             spacing = spacing.min((wd.hi - wd.lo - 2.0).max(0.0) / n);
-            mid = wd.mid() - wd.n * 2.0;
+            // Centred where the path crosses the wall, not the wall's own
+            // middle: in an open level the wall spans the whole field and
+            // its middle can be far out in the grass (Joep: tomes off the
+            // path, one inside a building).
+            let half = n * 0.5 * spacing;
+            let t = 0.0f32.clamp((wd.lo + 1.0 + half).min(0.0), (wd.hi - 1.0 - half).max(0.0));
+            mid = wd.c + wd.across() * t - wd.n * 2.0;
             across = wd.across();
         }
         for (i, &relic) in picks.iter().enumerate() {
             let p = mid + across * (i as f32 - (picks.len() - 1) as f32 * 0.5) * spacing;
+            // On ground you can walk, clear of props.
+            let q = self.level.clamp_inside(Vec3::new(p.x, 0.0, p.y));
+            let p = self.level.statics.push_out(Vec2::new(q.x, q.z), 0.9);
             let pos = Vec3::new(p.x, 0.0, p.y);
             self.burst(pos + Vec3::Y, fx::rgb(1.0, 0.8, 0.4), 16, 3.0, 0.15, None);
             self.run.altars.push(Altar {
