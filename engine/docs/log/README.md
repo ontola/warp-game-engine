@@ -24,6 +24,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 
 - [Growing Guns reload grip and GameNight colours](2026-11-09-warp-humans-reload.md)
 - [Distance-matched player locomotion and jump contacts](2026-11-09-warp-humans-player-locomotion.md)
+- [Spellstorm spell effects, first design pass](2026-11-09-spellstorm-spell-effects.md)
 - [Shared wardrobe, body proportions and planted motion](2026-11-09-warp-humans-wardrobe.md)
 - [Seeded match players and spectator debris](2026-11-09-warp-humans-players-and-gibs.md)
 - [Blood stains under stadium lights](2026-11-09-growing-guns-blood-reflections.md)

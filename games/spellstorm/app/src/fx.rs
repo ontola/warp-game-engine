@@ -4,7 +4,7 @@
 //! run on the CPU like Godot's CPUParticles3D and are drawn as Warp sprites;
 //! blasts use the engine's fire billows.
 use crate::look::linear3;
-use glam::Vec3;
+use glam::{Vec3, Vec4};
 use render::headlights::LocalLight;
 use render::picture::Picture;
 use render::sprites::{Facing, Sprite, SpriteImage};
@@ -43,9 +43,18 @@ pub(crate) enum Cell {
     Band,
     Pillar,
     Runes,
+    /// A faceted crystal along the quad's up: ice spikes and shards.
+    Shard,
+    /// A four-pointed star that twinkles: frost sparkle, a glint off ice.
+    Glint,
+    /// A hard hot point that flickers and cools: embers, sparks. Drawn
+    /// stretched along its flight it is a streak with a bright head.
+    Ember,
+    /// A thin rim with a highlight that pops at the end of its life.
+    Bubble,
 }
 
-const CELLS: [Cell; 18] = [
+const CELLS: [Cell; 22] = [
     Cell::Dot,
     Cell::Flame,
     Cell::Drop,
@@ -64,6 +73,10 @@ const CELLS: [Cell; 18] = [
     Cell::Band,
     Cell::Pillar,
     Cell::Runes,
+    Cell::Shard,
+    Cell::Glint,
+    Cell::Ember,
+    Cell::Bubble,
 ];
 
 /// The width and height of a whole cell in the atlas, as `uv` gives it.
@@ -206,10 +219,34 @@ fn texel(c: Cell, u: f32, v: f32) -> (f32, f32) {
             let a = (1.0 - smooth(0.1, 0.95, r + lump * r)).powf(1.4) * (1.0 - smooth(0.7, 0.98, r));
             (0.85 + 0.15 * (1.0 - r), a)
         }
+        // A crystal: a long diamond, the tip up, a bright ridge.
+        Cell::Shard => {
+            let y = -v;
+            let w = if y > 0.25 { (1.0 - y) / 0.75 * 0.42 } else { (y + 1.0) / 1.25 * 0.42 };
+            let a = 1.0 - smooth(w - 0.06, w, u.abs());
+            (if u < 0.0 { 1.0 } else { 0.6 } + 0.4 * (1.0 - smooth(0.0, 0.08, u.abs())), a)
+        }
+        Cell::Glint => {
+            let ray = |a: f32, b: f32| (-(a.abs() * 24.0)).exp() * (1.0 - b.abs()).max(0.0).powi(2);
+            let core = (-(r * r) * 40.0).exp();
+            (1.0, (core + ray(u, v) + ray(v, u)).min(1.0))
+        }
+        Cell::Ember => {
+            let core = (-(r * r) * 30.0).exp();
+            (1.0, (core + 0.35 * (-(r * r) * 6.0).exp()).min(1.0))
+        }
+        Cell::Bubble => {
+            let rim = (-((r - 0.8) / 0.09).powi(2)).exp();
+            let hi = (-(((u + 0.35).powi(2) + (v + 0.35).powi(2)) * 60.0)).exp();
+            (1.0, ((rim + hi + if r < 0.8 { 0.08 } else { 0.0 }) * (1.0 - smooth(0.92, 1.0, r))).min(1.0))
+        }
         // A nova's shock: a hot wide front.
+        // A thin bright front with a faint wake behind it, so the wave
+        // reads as a ring running out, not a soft doughnut.
         Cell::Shock => {
-            let band = (-((r - 0.8) / 0.14).powi(2)).exp();
-            (1.0, band * (1.0 - smooth(0.95, 1.0, r)))
+            let band = (-((r - 0.84) / 0.06).powi(2)).exp();
+            let wake = if r < 0.84 { 0.22 * smooth(0.35, 0.84, r).powi(2) } else { 0.0 };
+            (1.0, (band + wake) * (1.0 - smooth(0.95, 1.0, r)))
         }
     }
 }
@@ -332,6 +369,9 @@ pub struct Em {
     pub solid: bool,
     /// Lit by the lights round it like the floor (blood), not a set dim.
     pub lit: bool,
+    /// Drawn as a streak along its flight across the screen: this many
+    /// metres of length per m/s of speed on top of its size (0: round).
+    pub stretch: f32,
 }
 
 /// Fx.particles: soft additive dots in `c`.
@@ -358,6 +398,7 @@ pub fn particles(c: C, amount: u32, life: f32, size: f32) -> Em {
         spin: (0.0, 0.0),
         solid: false,
         lit: false,
+        stretch: 0.0,
     }
 }
 
@@ -401,12 +442,17 @@ pub fn style(p: &mut Em, e: El, smoke: bool) -> Option<Em> {
         El::Fire => {
             p.size = size * 0.9;
             p.cell = Cell::Flame;
-            p.glow = 1.6;
+            // Brightness follows heat, so the hue does too: bright gas is
+            // yellow and orange, only dim gas is red. (Bright red saturates
+            // in the tone curve and turns salmon pink.)
+            // fx.wgsl `flame` gives the hue from the gas's heat; this ramp
+            // only fades it in and out (and cools it a little).
+            p.glow = 0.8;
             p.ramp = Ramp::new(
-                &[rgba(1.0, 0.95, 0.6, 0.0), rgba(1.0, 0.85, 0.35, 1.0), rgba(1.0, 0.45, 0.08, 0.85), rgba(0.85, 0.12, 0.03, 0.5), rgba(0.25, 0.05, 0.02, 0.0)],
-                &[0.0, 0.1, 0.35, 0.7, 1.0],
+                &[rgba(1.0, 1.0, 0.95, 0.0), rgba(1.0, 0.97, 0.9, 1.0), rgba(1.0, 0.92, 0.8, 0.85), rgba(0.95, 0.8, 0.65, 0.4), rgba(0.7, 0.5, 0.4, 0.0)],
+                &[0.0, 0.1, 0.4, 0.72, 1.0],
             );
-            p.tint = (Vec3::ONE, Vec3::new(1.0, 0.75, 0.6));
+            p.tint = (Vec3::ONE, Vec3::new(1.0, 0.94, 0.88));
             p.gravity = Vec3::Y * 3.0;
             p.curve = [1.0, 0.8, 0.2];
             p.angle = (-15.0, 15.0);
@@ -494,6 +540,182 @@ pub fn style(p: &mut Em, e: El, smoke: bool) -> Option<Em> {
     out
 }
 
+/// Element `e`'s secondary pieces (the design's second layer): small and
+/// fast, stretched along their flight so they show where they go. Embers
+/// for fire, glints for frost, drips for poison and water, sparks for
+/// lightning, grit for earth, motes pulled in for void, wind lines for air.
+/// `k` scales their size. Set `dir`, `spread`, `v`, `amount` after.
+pub fn bits(e: El, k: f32) -> Em {
+    let c = el_c(e);
+    let mut p = particles(c, 12, 0.5, 0.1 * k);
+    p.cell = Cell::Ember;
+    p.glow = 3.0;
+    p.damp = (1.5, 3.0);
+    p.curve = [1.0, 0.9, 0.5];
+    match e {
+        El::Fire | El::Magma => {
+            // Sparks off a fire: white-yellow, cooling to orange and red as
+            // they rise and curl on the heat. Magma's are heavier and fall.
+            p.size = 0.07 * k;
+            p.life = 0.75;
+            p.stretch = 0.045;
+            p.ramp = Ramp::new(&[rgba(1.0, 0.95, 0.75, 1.0), rgba(1.0, 0.72, 0.25, 1.0), rgba(1.0, 0.38, 0.06, 0.8), rgba(0.7, 0.12, 0.02, 0.0)], &[0.0, 0.25, 0.65, 1.0]);
+            p.gravity = if e == El::Fire { Vec3::Y * 3.5 } else { Vec3::NEG_Y * 7.0 };
+            p.damp = (1.0, 2.5);
+            p.scale = (0.6, 1.3);
+        }
+        El::Frost | El::Ice => {
+            // Glints: crystals that flash as they turn, hanging and sinking.
+            p.cell = Cell::Glint;
+            p.size = 0.22 * k;
+            p.life = 0.8;
+            p.glow = 2.4;
+            let pale = lerp_c(c, WHITE, 0.55);
+            p.ramp = Ramp::new(&[WHITE, rgba(pale[0], pale[1], pale[2], 1.0), rgba(c[0], c[1], c[2], 0.0)], &[0.0, 0.5, 1.0]);
+            p.gravity = Vec3::NEG_Y * 0.8;
+            p.damp = (3.0, 5.0);
+            p.scale = (0.5, 1.2);
+            p.curve = [0.6, 1.0, 0.7];
+        }
+        El::Water | El::Steam => {
+            // Droplets that stretch as they fall.
+            p.cell = Cell::Drop;
+            p.size = 0.07 * k;
+            p.life = 0.6;
+            p.glow = 0.9;
+            p.stretch = 0.03;
+            p.ramp = Ramp::new(&[rgba(1.0, 1.0, 1.0, 1.0), rgba(0.75, 0.9, 1.0, 0.9), rgba(0.45, 0.7, 1.0, 0.0)], &[0.0, 0.6, 1.0]);
+            p.gravity = Vec3::NEG_Y * 12.0;
+            p.damp = (0.2, 0.6);
+        }
+        El::Lightning | El::Storm => {
+            // Sparks: blinding, fast, short, falling.
+            p.size = 0.05 * k;
+            p.life = 0.3;
+            p.glow = 4.5;
+            p.stretch = 0.03;
+            let hot = lerp_c(c, WHITE, 0.7);
+            p.ramp = Ramp::new(&[WHITE, rgba(hot[0], hot[1], hot[2], 1.0), rgba(c[0], c[1], c[2], 0.0)], &[0.0, 0.35, 1.0]);
+            p.gravity = Vec3::NEG_Y * 9.0;
+            p.damp = (3.0, 6.0);
+        }
+        El::Earth | El::Mud => {
+            // Grit and chips: lit, tumbling, falling fast.
+            p.cell = Cell::Drop;
+            p.size = 0.08 * k;
+            p.life = 0.8;
+            p.glow = 0.0;
+            p.solid = true;
+            p.lit = true;
+            let d = [c[0] * 0.8, c[1] * 0.8, c[2] * 0.8, 1.0];
+            p.ramp = Ramp::new(&[d, d], &[0.0, 1.0]);
+            p.gravity = Vec3::NEG_Y * 15.0;
+            p.damp = (0.0, 0.5);
+            p.scale = (0.5, 1.5);
+            p.angle = (-180.0, 180.0);
+            p.spin = (-720.0, 720.0);
+        }
+        El::Poison => {
+            // Acid drips: they stretch as they fall.
+            p.cell = Cell::Drop;
+            p.size = 0.075 * k;
+            p.life = 0.7;
+            p.glow = 1.3;
+            p.stretch = 0.05;
+            p.ramp = Ramp::new(&[rgba(0.85, 1.0, 0.4, 1.0), rgba(0.5, 0.95, 0.1, 0.95), rgba(0.25, 0.5, 0.05, 0.0)], &[0.0, 0.6, 1.0]);
+            p.gravity = Vec3::NEG_Y * 10.0;
+            p.damp = (0.2, 0.8);
+        }
+        El::Void => {
+            // Motes falling in: violet streaks that point at the middle.
+            p.size = 0.06 * k;
+            p.life = 0.45;
+            p.glow = 3.0;
+            p.stretch = 0.04;
+            p.ramp = Ramp::new(&[rgba(0.5, 0.2, 0.9, 0.0), rgba(0.95, 0.6, 1.0, 1.0), rgba(1.0, 0.9, 1.0, 0.0)], &[0.0, 0.5, 1.0]);
+            p.gravity = Vec3::ZERO;
+            p.damp = (0.0, 0.0);
+            p.radial = (-14.0, -9.0);
+        }
+        El::Air => {
+            // Wind lines: long faint streaks.
+            p.size = 0.05 * k;
+            p.life = 0.4;
+            p.glow = 1.2;
+            p.stretch = 0.09;
+            p.ramp = Ramp::new(&[rgba(0.9, 1.0, 0.95, 0.0), rgba(0.85, 1.0, 0.92, 0.28), rgba(c[0], c[1], c[2], 0.0)], &[0.0, 0.3, 1.0]);
+            p.gravity = Vec3::ZERO;
+            p.damp = (2.0, 4.0);
+        }
+    }
+    p
+}
+
+/// Element `e`'s residue (the design's fourth layer): what hangs after it.
+/// Smoke over fire, cold mist that sinks, toxic gas that hangs low, spray
+/// mist, dust, a dark bloom. None for lightning (its afterimage is the zap).
+pub fn haze(e: El, k: f32) -> Option<Em> {
+    let c = el_c(e);
+    let mut p = particles(c, 6, 1.2, 0.6 * k);
+    p.cell = Cell::Puff;
+    p.glow = 0.0;
+    p.angle = (-180.0, 180.0);
+    p.spin = (-40.0, 40.0);
+    p.curve = [0.5, 1.1, 1.6];
+    p.scale = (0.7, 1.3);
+    let fade = |c: [f32; 3], a: f32| Ramp::new(&[rgba(c[0], c[1], c[2], 0.0), rgba(c[0], c[1], c[2], a), rgba(c[0], c[1], c[2], 0.0)], &[0.0, 0.25, 1.0]);
+    match e {
+        El::Fire | El::Magma => {
+            // Smoke, warm where it leaves the flame, grey above.
+            p.ramp = Ramp::new(&[rgba(0.35, 0.18, 0.1, 0.0), rgba(0.2, 0.16, 0.14, 0.45), rgba(0.25, 0.25, 0.25, 0.0)], &[0.0, 0.25, 1.0]);
+            p.gravity = Vec3::Y * 1.8;
+            p.life = 1.5;
+        }
+        El::Frost | El::Ice => {
+            // Cold mist: pale, faintly lit, sinking and spreading.
+            p.ramp = fade([0.85, 0.95, 1.0], 0.32);
+            p.glow = 0.18;
+            p.gravity = Vec3::NEG_Y * 0.7;
+            p.life = 1.4;
+            p.damp = (1.0, 2.0);
+        }
+        El::Water | El::Steam => {
+            p.ramp = fade([0.92, 0.96, 1.0], if e == El::Steam { 0.45 } else { 0.2 });
+            p.glow = 0.12;
+            p.gravity = if e == El::Steam { Vec3::Y * 1.2 } else { Vec3::NEG_Y * 0.4 };
+            p.life = if e == El::Steam { 1.4 } else { 0.7 };
+        }
+        El::Poison => {
+            // Toxic gas: green, hanging low.
+            p.ramp = fade([0.45, 0.75, 0.2], 0.35);
+            p.glow = 0.15;
+            p.gravity = Vec3::NEG_Y * 0.15;
+            p.life = 1.8;
+            p.damp = (1.0, 2.0);
+        }
+        El::Void => {
+            p.ramp = fade([0.1, 0.02, 0.16], 0.55);
+            p.gravity = Vec3::ZERO;
+            p.life = 0.8;
+            p.curve = [1.2, 0.8, 0.2];
+        }
+        El::Earth | El::Mud => {
+            p.ramp = fade([0.5, 0.44, 0.36], 0.4);
+            p.lit = true;
+            p.gravity = Vec3::NEG_Y * 0.3;
+            p.life = 1.4;
+            p.damp = (1.5, 3.0);
+        }
+        El::Air => {
+            p.ramp = fade([0.75, 0.75, 0.7], 0.18);
+            p.lit = true;
+            p.life = 0.9;
+        }
+        El::Lightning | El::Storm => return None,
+    }
+    Some(p)
+}
+
 struct Part {
     pos: Vec3,
     vel: Vec3,
@@ -558,6 +780,17 @@ struct Lob {
     time: f32,
 }
 
+/// A mark a hit leaves on the floor for a few seconds: scorch, a frost
+/// bloom, a wet patch, a slick (the field looks of fx.wgsl `ground`).
+struct Scar {
+    at: Vec3,
+    kind: El,
+    r: f32,
+    seed: f32,
+    age: f32,
+    time: f32,
+}
+
 /// Continuous emitters: spawn debt per live thing, kept between frames.
 #[derive(Default)]
 struct Debt(HashMap<(u64, u8), f32>);
@@ -571,6 +804,7 @@ pub struct Fx {
     pops: Vec<Pop>,
     zaps: Vec<Bolt>,
     lobs: Vec<Lob>,
+    scars: Vec<Scar>,
     debt: Debt,
     rng: u64,
     pub shake: f32,
@@ -611,6 +845,8 @@ fn em_key(e: &Em) -> u64 {
     e.gravity.to_array().iter().for_each(|&x| f(x));
     e.curve.iter().for_each(|&x| f(x));
     f(if e.solid { 1.0 } else { 0.0 });
+    f(e.stretch);
+    f(if e.lit { 1.0 } else { 0.0 });
     h
 }
 
@@ -634,6 +870,7 @@ impl Default for Fx {
             pops: vec![],
             zaps: vec![],
             lobs: vec![],
+            scars: vec![],
             debt: Debt::default(),
             rng: 0x9e37_79b9_7f4a_7c15,
             shake: 0.0,
@@ -863,6 +1100,32 @@ impl Fx {
         }
     }
 
+    /// Dense extras on the GPU when GPU particles are on (the effects look
+    /// whole without them): hundreds of embers off fire, glitter off frost
+    /// and ice, sparks off lightning, motes round a void crash.
+    fn gpu_extra(&mut self, at: Vec3, r: f32, e: El) {
+        use render::gpu_particles::{Emitter, Shape};
+        if !self.sparks.enabled() {
+            return;
+        }
+        let r = r.clamp(0.5, 8.0);
+        let t = self.time;
+        let em = match e {
+            El::Fire | El::Magma => Emitter { position: at + Vec3::Y * 0.4, radius: 0.4 * r, speed: [0.5, 1.2 * r], count: (r * 180.0) as u32, duration: 0.5,
+                life: [0.8, 2.2], size: [0.05, 0.02], glow: 4.0 * LIGHT, color: [Vec4::new(1.0, 0.55, 0.12, 1.0), Vec4::new(0.8, 0.15, 0.02, 0.0)], ..Emitter::embers() },
+            El::Frost | El::Ice => Emitter { position: at + Vec3::Y * 0.5, radius: 0.6 * r, speed: [0.2, 0.8 * r], count: (r * 220.0) as u32, duration: 0.3,
+                life: [0.8, 2.0], size: [0.035, 0.015], glow: 3.0 * LIGHT, gravity: 0.4, turbulence: 1.5, drag: 2.0,
+                color: [Vec4::new(0.85, 0.97, 1.0, 1.0), Vec4::new(0.4, 0.75, 1.0, 0.0)], shape: Shape::Ember, ..Emitter::embers() },
+            El::Lightning | El::Storm => Emitter { position: at + Vec3::Y * 0.5, radius: 0.2 * r, spread: 1.5, speed: [2.0 * r, 5.0 * r], count: (r * 300.0) as u32,
+                life: [0.2, 0.7], size: [0.03, 0.01], glow: 6.0 * LIGHT, color: [Vec4::new(0.9, 0.9, 1.0, 1.0), Vec4::new(0.5, 0.45, 1.0, 0.0)], ..Emitter::sparks() },
+            El::Void => Emitter { position: at + Vec3::Y * 0.8, radius: 1.0 * r, speed: [0.0, 0.3], count: (r * 160.0) as u32, duration: 0.2,
+                life: [0.4, 1.0], size: [0.04, 0.01], glow: 3.0 * LIGHT, gravity: 0.0, turbulence: 4.0,
+                color: [Vec4::new(0.8, 0.45, 1.0, 1.0), Vec4::new(0.3, 0.05, 0.5, 0.0)], ..Emitter::embers() },
+            _ => return,
+        };
+        self.sparks.emit(t, &em);
+    }
+
     /// Growing Guns' volumetric smoke (render::fx::smoke_cloud): `tint` its
     /// linear albedo, `density` 0.3 a wisp .. 1.5 thick.
     fn smoke(&mut self, at: Vec3, r: f32, tint: [f32; 3], density: f32) {
@@ -908,8 +1171,10 @@ impl Fx {
         }
     }
 
-    /// A bolt ending at `at`: a small splash of its element, never smoke
-    /// or a blast (there are many of them).
+    /// A bolt ending at `at`: a small burst of its element (the design's
+    /// impact: a flash, its secondary thrown back off the spot, a puff of
+    /// its residue, a short mark on the floor). Never a blast: there are
+    /// many of them.
     fn impact(&mut self, at: Vec3, el: Option<El>, size: f32) {
         let k = (0.6 + size * 0.5).clamp(0.5, 1.6);
         let at = if at.y < 0.1 { at + Vec3::Y * 0.1 } else { at };
@@ -918,34 +1183,148 @@ impl Fx {
             return;
         };
         let c = el_c(e);
-        let mut p = particles(c, (10.0 * k) as u32 + 4, 0.4, 0.3 * k);
-        let _ = style(&mut p, e, false);
-        p.dir = Vec3::Y;
-        p.spread = 70.0;
-        p.v = (1.5 * k, 4.0 * k);
+        let low = at.y < 0.6;
+        // Its secondary, thrown out and up off the spot.
+        let mut b = bits(e, k);
+        b.amount = (14.0 * k) as u32 + 4;
+        b.dir = Vec3::Y;
+        b.spread = 75.0;
+        b.v = (2.0 * k, 5.0 * k);
+        b.sphere = 0.1;
         match e {
-            El::Earth | El::Mud | El::Magma | El::Ice => {
-                self.chunks(at, 0.4 * k, e, (6.0 * k) as u32 + 2, 0.12 * k);
-                if e == El::Earth {
-                    self.puff(at, rgba(0.5, 0.45, 0.38, 1.0), 0.4 * k);
+            El::Fire => {
+                let mut p = particles(c, (10.0 * k) as u32 + 4, 0.35, 0.32 * k);
+                style(&mut p, El::Fire, false);
+                p.dir = Vec3::Y;
+                p.spread = 60.0;
+                p.v = (0.8, 2.2 * k);
+                p.gravity = Vec3::Y * 3.0;
+                self.emit(p, at, p.amount);
+                b.amount = (18.0 * k) as u32 + 6;
+                self.emit(b, at, b.amount);
+                if low {
+                    self.scar(at, El::Fire, 0.35 * k, 1.6);
                 }
             }
-            El::Fire => {
-                p.gravity = Vec3::Y * 3.0;
-                p.v = (0.8, 2.2 * k);
-                self.emit(p, at, p.amount);
-                self.puff(at + Vec3::Y * 0.2, rgba(0.2, 0.18, 0.17, 1.0), 0.35 * k);
+            El::Frost | El::Ice => {
+                // It shatters: shards flung out flat, glints, a cold puff,
+                // a frost bloom where it struck.
+                let mut sh = bits(e, k);
+                sh.cell = Cell::Shard;
+                sh.glow = 1.8;
+                sh.size = 0.1 * k * if e == El::Ice { 1.4 } else { 1.0 };
+                sh.stretch = 0.05;
+                sh.life = 0.5;
+                sh.gravity = Vec3::NEG_Y * 10.0;
+                sh.damp = (1.0, 2.0);
+                sh.dir = Vec3::Y;
+                sh.spread = 80.0;
+                sh.v = (2.5 * k, 5.5 * k);
+                sh.amount = (8.0 * k) as u32 + 3;
+                self.emit(sh, at, sh.amount);
+                b.v = (1.0 * k, 3.0 * k);
+                self.emit(b, at, b.amount);
+                if e == El::Ice {
+                    self.chunks(at, 0.4 * k, e, (5.0 * k) as u32 + 2, 0.12 * k);
+                }
+                if low {
+                    self.scar(at, El::Frost, 0.45 * k, 2.4);
+                }
             }
-            El::Steam | El::Air => self.puff(at, if e == El::Steam { rgba(0.95, 0.96, 1.0, 1.0) } else { rgba(0.8, 0.85, 0.8, 1.0) }, 0.5 * k),
+            El::Water | El::Steam => {
+                b.amount = (20.0 * k) as u32 + 6;
+                b.spread = 55.0;
+                b.v = (1.5 * k, 4.0 * k);
+                self.emit(b, at, b.amount);
+                if low {
+                    self.waves.push(Wave { at, c: rgba(0.8, 0.9, 1.0, 0.45), r: 0.6 * k, age: 0.0, time: 0.45, cell: Cell::Ring, glow: 0.0 });
+                    if e == El::Water {
+                        self.scar(at, El::Water, 0.4 * k, 2.0);
+                    }
+                }
+            }
+            El::Lightning | El::Storm => {
+                b.amount = (16.0 * k) as u32 + 6;
+                b.v = (3.0 * k, 8.0 * k);
+                b.spread = 85.0;
+                self.emit(b, at, b.amount);
+                for _ in 0..2 {
+                    let to = at + Vec3::new(self.range(-0.6, 0.6), self.range(-0.1, 0.5), self.range(-0.6, 0.6)) * k;
+                    self.zap(at, to, c, 0.03, 0.12, 0.12, 0.08);
+                }
+            }
+            El::Earth | El::Mud | El::Magma => {
+                self.chunks(at, 0.4 * k, e, (6.0 * k) as u32 + 2, 0.12 * k);
+                b.amount = (10.0 * k) as u32 + 3;
+                self.emit(b, at, b.amount);
+                if e == El::Magma {
+                    let mut f = bits(El::Fire, k);
+                    f.amount = (10.0 * k) as u32;
+                    f.dir = Vec3::Y;
+                    f.spread = 60.0;
+                    f.v = (1.5, 4.0);
+                    self.emit(f, at, f.amount);
+                }
+                if low && e != El::Earth {
+                    self.scar(at, e, 0.4 * k, 2.0);
+                }
+            }
+            El::Poison => {
+                b.amount = (14.0 * k) as u32 + 4;
+                b.v = (1.5 * k, 3.5 * k);
+                self.emit(b, at, b.amount);
+                let mut bub = particles(c, (5.0 * k) as u32 + 2, 0.6, 0.18 * k);
+                bub.cell = Cell::Bubble;
+                bub.glow = 1.6;
+                bub.ramp = Ramp::new(&[rgba(0.8, 1.0, 0.45, 0.0), rgba(0.75, 1.0, 0.35, 1.0), rgba(0.6, 0.9, 0.2, 1.0)], &[0.0, 0.2, 1.0]);
+                bub.sphere = 0.25 * k;
+                bub.dir = Vec3::Y;
+                bub.spread = 30.0;
+                bub.v = (0.3, 1.0);
+                bub.gravity = Vec3::Y * 0.5;
+                self.emit(bub, at, bub.amount);
+                if low {
+                    self.scar(at, El::Poison, 0.4 * k, 2.4);
+                }
+            }
             El::Void => {
-                p.sphere = 0.6 * k;
-                p.v = (0.0, 0.2);
-                p.radial = (-6.0, -4.0);
-                self.emit(p, at, p.amount);
+                // It falls in on itself: motes pulled to the spot, a dark
+                // bloom, a violet ring snapping shut.
+                b.sphere = 0.8 * k;
+                b.spread = 180.0;
+                b.v = (0.0, 0.2);
+                b.radial = (-20.0 * k, -14.0 * k);
+                b.amount = (18.0 * k) as u32 + 4;
+                self.emit(b, at, b.amount);
+                self.waves.push(Wave { at: at - Vec3::Y * (at.y - 0.05).max(0.0), c: rgba(0.85, 0.5, 1.0, 1.0), r: 0.7 * k, age: 0.0, time: 0.25, cell: Cell::Ring, glow: 1.2 });
             }
-            _ => self.emit(p, at, p.amount),
+            El::Air => {
+                b.dir = Vec3::X;
+                b.spread = 180.0;
+                b.flat = 0.85;
+                b.v = (3.0 * k, 5.0 * k);
+                self.emit(b, at, b.amount);
+            }
         }
-        self.flash(at, c, 0.5 * k, 0.12);
+        if let Some(mut h) = haze(e, 0.55 * k) {
+            h.amount = if matches!(e, El::Steam) { 6 } else { 3 };
+            h.dir = Vec3::Y;
+            h.spread = 60.0;
+            h.v = (0.2, 0.8);
+            h.sphere = 0.1;
+            self.emit(h, at + Vec3::Y * 0.1, h.amount);
+        }
+        let flash = if matches!(e, El::Void) { rgba(0.75, 0.35, 1.0, 1.0) } else { lerp_c(c, WHITE, 0.4) };
+        self.flash(at, flash, 0.55 * k, 0.1);
+    }
+
+    /// A mark on the floor at `at`, `r` across, fading over `time` seconds.
+    fn scar(&mut self, at: Vec3, kind: El, r: f32, time: f32) {
+        let seed = self.f() * 97.0;
+        if self.scars.len() >= 48 {
+            self.scars.remove(0);
+        }
+        self.scars.push(Scar { at: Vec3::new(at.x, 0.03, at.z), kind, r, seed, age: 0.0, time });
     }
 
     /// How element `e` crashes out at `at`, `r` across, at `k` of its full
@@ -1020,19 +1399,44 @@ impl Fx {
                 self.smoke(at, r * 0.4 * k + 0.4, [0.12, 0.05, 0.16], 0.6);
             }
             El::Frost | El::Ice => {
-                // Shards and frost thrown out low, a cold mist after.
-                let mut p = particles(el_c(e), n(40.0 + r * 6.0), 0.6, if e == El::Ice { 0.9 } else { 0.6 });
-                style(&mut p, e, false);
-                p.dir = Vec3::X;
-                p.spread = 180.0;
-                p.flat = 0.8;
-                p.v = (r * 2.0, r * 3.2);
-                p.damp = (r * 2.5, r * 3.5);
-                self.emit(p, at + Vec3::Y * 0.4, p.amount);
-                if e == El::Ice {
+                // It shatters outward: shards flung out low point first,
+                // glints hanging in the air, cold mist rolling over the
+                // floor, a frost bloom where it struck.
+                let ice = e == El::Ice;
+                let mut sh = bits(e, 1.0);
+                sh.cell = Cell::Shard;
+                sh.glow = 1.8;
+                sh.size = if ice { 0.2 } else { 0.13 };
+                sh.stretch = 0.045;
+                sh.life = 0.6;
+                sh.gravity = Vec3::NEG_Y * 6.0;
+                sh.dir = Vec3::X;
+                sh.spread = 180.0;
+                sh.flat = 0.75;
+                sh.v = (r * 2.5, r * 4.5);
+                sh.damp = (r * 2.0, r * 3.5);
+                sh.scale = (0.6, 1.4);
+                self.emit(sh, at + Vec3::Y * 0.35, n(36.0 + r * 8.0));
+                let mut g = bits(e, 1.2);
+                g.dir = Vec3::Y;
+                g.spread = 180.0;
+                g.sphere = r * 0.7;
+                g.v = (0.2, 1.2);
+                g.life = 1.1;
+                self.emit(g, at + Vec3::Y * 0.6, n(30.0 + r * 6.0));
+                if let Some(mut m) = haze(e, 1.0 + 0.3 * r) {
+                    m.dir = Vec3::X;
+                    m.spread = 180.0;
+                    m.flat = 0.9;
+                    m.v = (r * 0.6, r * 1.2);
+                    m.life = 1.8;
+                    self.emit(m, at + Vec3::Y * 0.3, n(14.0));
+                }
+                if ice {
                     self.chunks(at, r * 0.6 * k, El::Ice, n(14.0), 0.3);
                 }
                 self.smoke(at, r * 0.7 * k + 0.4, [0.82, 0.9, 0.98], 0.3);
+                self.scar(at, e, r * 0.9 * k.max(0.5), 4.0);
             }
             El::Water => {
                 // A splash: a crown of water thrown up that rains back.
@@ -1077,6 +1481,27 @@ impl Fx {
                 self.emit(p, at + Vec3::Y * 0.5, p.amount);
                 self.sand(at, r * 0.8 * k);
                 self.smoke(at, r * 0.5 * k + 0.4, [0.75, 0.75, 0.72], 0.2);
+            }
+        }
+        if k >= 1.0 {
+            self.gpu_extra(at, r, e);
+        }
+        // Every crash's secondary thrown out over its splash, and the mark
+        // it leaves (the design's layers; frost does its own above).
+        if !matches!(e, El::Frost | El::Ice) {
+            let mut b = bits(e, 1.0 + 0.2 * k);
+            b.dir = Vec3::Y;
+            b.spread = 75.0;
+            b.sphere = r * 0.3;
+            b.v = (1.5 + r * 1.2, 3.5 + r * 2.5);
+            if e == El::Void {
+                b.sphere = r;
+                b.v = (0.0, 0.3);
+                b.radial = (-r * 10.0, -r * 7.0);
+            }
+            self.emit(b, at + Vec3::Y * 0.3, n(30.0 + r * 10.0));
+            if matches!(e, El::Fire | El::Magma | El::Water | El::Poison | El::Mud | El::Void | El::Steam) {
+                self.scar(at, e, r * 0.8 * k.max(0.5), if e == El::Steam { 2.0 } else { 3.5 });
             }
         }
     }
@@ -1174,13 +1599,21 @@ impl Fx {
                     self.ring(at, c, r * (1.0 - 0.12 * i as f32), 0.3 + 0.08 * i as f32);
                 }
                 self.flash(at + Vec3::Y * 0.6, c0, r * 1.2, 0.3);
-                let mut p = particles(c0, 70, 0.55, 0.6);
+                // The front carries the element's pieces out with it,
+                // streaking low over the floor.
+                let mut p = match el {
+                    Some(e) => bits(e, 1.3),
+                    None => particles(c0, 70, 0.55, 0.6),
+                };
                 p.dir = Vec3::X;
                 p.spread = 180.0;
                 p.flat = 0.85;
                 p.v = (r * 2.0, r * 2.8);
                 p.damp = (r * 2.0, r * 3.0);
-                self.shot(p, at + Vec3::Y * 0.5, el, true);
+                p.radial = (0.0, 0.0);
+                p.gravity = p.gravity * 0.3;
+                p.life = p.life.max(0.45);
+                self.emit(p, at + Vec3::Y * 0.4, 70);
                 self.light_pop(at, c0, 3.5, r * 2.5, 0.4);
             }
             Ev::Boom { at, r, .. } => {
@@ -1325,6 +1758,10 @@ impl Fx {
             x.age += dt;
         }
         self.glows.retain(|x| x.age < x.time);
+        for x in &mut self.scars {
+            x.age += dt;
+        }
+        self.scars.retain(|x| x.age < x.time);
         for x in &mut self.pops {
             x.age += dt;
         }
@@ -1552,6 +1989,284 @@ impl Fx {
         }
     }
 
+    /// A staff bolt in flight, its element's own way (the design's bolt):
+    /// a core and a body at its head, its secondary and residue shed
+    /// behind, so it draws its own trail.
+    fn bolt(&mut self, key: u64, el: Option<El>, pos: Vec3, vel: Vec3, size: f32, dt: f32) {
+        let t = self.time;
+        let dir = vel.normalize_or(Vec3::NEG_Z);
+        let back = -dir;
+        let ph = (key % 97) as f32;
+        let Some(e) = el else {
+            // A plain bolt: a warm spark and a short trail.
+            self.halo(pos, rgba(1.0, 0.85, 0.5, 1.0), 0.9 * size + 0.3, 0.4);
+            self.live.push(glow_sprite(pos, 0.35 * size, Cell::Spark, linear3([1.0, 0.95, 0.8]) * 2.4));
+            let mut tr = bits(El::Fire, size);
+            tr.amount = 8;
+            tr.dir = back;
+            tr.spread = 30.0;
+            tr.v = (0.3, 1.0);
+            self.stream((key, 0), tr, pos, dt);
+            return;
+        };
+        let c = el_c(e);
+        let c3 = linear3([c[0], c[1], c[2]]);
+        match e {
+            El::Fire => {
+                // A knot of flame licking back along its path (no glowing
+                // ball, Joep), a hot heart, sparks flying off it and a thin
+                // smoke behind.
+                let mut p = particles(c, (26.0 + 16.0 * size) as u32, 0.3, 0.3 + 0.22 * size);
+                style(&mut p, El::Fire, false);
+                p.dir = back + Vec3::Y * 0.35;
+                p.spread = 26.0;
+                p.sphere = 0.07 + 0.05 * size;
+                p.v = (0.6, 1.8);
+                p.curve = [0.45, 1.1, 1.2];
+                self.stream((key, 0), p, pos, dt);
+                let flick = 0.8 + 0.2 * (t * 31.0 + ph).sin() * (t * 17.0).cos();
+                self.live.push(glow_sprite(pos, 0.22 + 0.12 * size, Cell::Spark, linear3([1.0, 0.85, 0.5]) * 3.0 * flick));
+                let mut sp = bits(El::Fire, 0.9 + 0.3 * size);
+                sp.amount = (10.0 + 6.0 * size) as u32;
+                sp.dir = back + Vec3::Y * 0.6;
+                sp.spread = 55.0;
+                sp.v = (1.0, 3.5);
+                sp.sphere = 0.08;
+                self.stream((key, 1), sp, pos, dt);
+                if let Some(mut sm) = haze(El::Fire, 0.5 + 0.2 * size) {
+                    sm.amount = 3;
+                    sm.dir = Vec3::Y;
+                    sm.v = (0.2, 0.6);
+                    self.stream((key, 2), sm, pos + Vec3::Y * 0.15, dt);
+                }
+                self.light(pos, rgba(1.0, 0.62, 0.22, 1.0), (1.1 + 0.4 * size) * flick, 5.5);
+            }
+            El::Frost | El::Ice => {
+                // An ice spike flying point first: a faceted shard along its
+                // flight, a cold white tip, glints and a sinking mist behind.
+                let ice = e == El::Ice;
+                let len = (0.75 + 0.35 * size) * if ice { 1.35 } else { 1.0 };
+                let mut spike = Sprite::shaft(pos - dir * len * 0.3, [len * 0.32, len], dir, IMAGE, uv(Cell::Shard), linear3([0.75, 0.92, 1.0]) * 2.2);
+                spike.depth_bias = 0.3;
+                self.live.push(spike);
+                self.live.push(glow_sprite(pos + dir * len * 0.15, 0.25 + 0.1 * size, Cell::Spark, linear3([0.9, 0.98, 1.0]) * 2.6));
+                self.halo(pos, c, 0.9 * size + 0.5, 0.22);
+                let mut g = bits(e, 0.8 + 0.25 * size);
+                g.amount = (14.0 + 6.0 * size) as u32;
+                g.dir = back;
+                g.spread = 70.0;
+                g.v = (0.1, 0.7);
+                g.sphere = 0.12;
+                self.stream((key, 1), g, pos - dir * len * 0.3, dt);
+                if let Some(mut m) = haze(e, 0.45 + 0.15 * size) {
+                    m.amount = 5;
+                    m.dir = back;
+                    m.v = (0.1, 0.4);
+                    m.life = 0.9;
+                    self.stream((key, 2), m, pos - dir * len * 0.4, dt);
+                }
+                if ice {
+                    // Chips of ice crumbling off it.
+                    let mut ch = bits(El::Ice, 1.0);
+                    ch.cell = Cell::Shard;
+                    ch.glow = 1.6;
+                    ch.size = 0.09;
+                    ch.stretch = 0.05;
+                    ch.amount = 6;
+                    ch.gravity = Vec3::NEG_Y * 9.0;
+                    ch.dir = back + Vec3::Y * 0.5;
+                    ch.spread = 40.0;
+                    ch.v = (0.5, 2.0);
+                    self.stream((key, 3), ch, pos, dt);
+                }
+                self.light(pos, c, 0.7 + 0.2 * size, 4.0);
+            }
+            El::Water | El::Steam => {
+                // An orb of water: a clear blue body with a white rim and
+                // highlight that wobbles, droplets falling off behind.
+                let r = 0.38 + 0.22 * size;
+                let wob = 1.0 + 0.08 * (t * 19.0 + ph).sin();
+                if e == El::Water {
+                    let body = Sprite { opacity: 0.85, ..glow_sprite(pos, r * wob, Cell::Drop, linear3([0.18, 0.42, 0.85]) * 0.9) };
+                    self.live.push(body.solid());
+                    self.live.push(glow_sprite(pos, r * 1.08 / wob, Cell::Bubble, linear3([0.75, 0.9, 1.0]) * 1.6));
+                    self.halo(pos, c, r * 2.6, 0.18);
+                } else {
+                    self.live.push(glow_sprite(pos, r * 0.6, Cell::Spark, linear3([1.0, 1.0, 1.0]) * 1.6));
+                }
+                let mut d = bits(El::Water, 0.9 + 0.2 * size);
+                d.amount = (10.0 + 5.0 * size) as u32;
+                d.dir = back + Vec3::Y * 0.4;
+                d.spread = 45.0;
+                d.v = (0.4, 1.6);
+                d.sphere = r * 0.3;
+                self.stream((key, 1), d, pos, dt);
+                if let Some(mut m) = haze(e, 0.4 + 0.15 * size) {
+                    m.amount = if e == El::Steam { 10 } else { 3 };
+                    m.dir = back;
+                    m.v = (0.2, 0.8);
+                    self.stream((key, 2), m, pos, dt);
+                }
+                self.light(pos, c, 0.6 + 0.2 * size, 3.5);
+            }
+            El::Poison => {
+                // A gooey acid blob: a glowing green body, bubbles rising
+                // and popping off it, drips stretching down, gas behind.
+                let r = 0.34 + 0.2 * size;
+                let wob = 1.0 + 0.1 * (t * 11.0 + ph).sin();
+                self.halo(pos, c, r * 2.0, 0.15);
+                self.live.push(glow_sprite(pos, r * wob, Cell::Drop, linear3([0.35, 0.8, 0.08]) * 1.2));
+                self.live.push(glow_sprite(pos, r * 1.05, Cell::Bubble, linear3([0.8, 1.0, 0.5]) * 1.2));
+                let mut bub = particles(c, (6.0 + 3.0 * size) as u32, 0.5, 0.14 + 0.05 * size);
+                bub.cell = Cell::Bubble;
+                bub.glow = 1.6;
+                bub.ramp = Ramp::new(&[rgba(0.8, 1.0, 0.45, 0.0), rgba(0.75, 1.0, 0.35, 1.0), rgba(0.6, 0.9, 0.2, 1.0)], &[0.0, 0.2, 1.0]);
+                bub.sphere = r * 0.4;
+                bub.dir = Vec3::Y;
+                bub.spread = 40.0;
+                bub.v = (0.3, 0.9);
+                bub.gravity = Vec3::Y * 0.6;
+                bub.curve = [0.5, 1.0, 1.3];
+                self.stream((key, 1), bub, pos, dt);
+                let mut d = bits(El::Poison, 0.9 + 0.2 * size);
+                d.amount = (8.0 + 4.0 * size) as u32;
+                d.dir = back + Vec3::NEG_Y * 0.4;
+                d.spread = 35.0;
+                d.v = (0.2, 1.0);
+                self.stream((key, 2), d, pos, dt);
+                if let Some(mut m) = haze(El::Poison, 0.45 + 0.15 * size) {
+                    m.amount = 4;
+                    m.dir = back;
+                    m.v = (0.1, 0.4);
+                    self.stream((key, 4), m, pos, dt);
+                }
+                self.light(pos, c, 0.8 + 0.2 * size, 4.0);
+            }
+            El::Void => {
+                // A hole in the light: a black disc inside a thin violet
+                // rim, a dim corona, motes spiralling in.
+                let r = 0.3 + 0.18 * size;
+                let breathe = 1.0 + 0.07 * (t * 9.0 + ph).sin();
+                // Same distance from the eye: drawn in this order, so the
+                // disc covers the corona's middle and the rim lies on it.
+                self.live.push(glow_sprite(pos, r * 3.2, Cell::HaloOut, c3 * 0.6));
+                let disc = Sprite { opacity: 1.0, ..glow_sprite(pos, r * 1.05 * breathe, Cell::Drop, Vec3::splat(0.0)) };
+                self.live.push(disc.solid());
+                self.live.push(glow_sprite(pos, r * 1.25 * breathe, Cell::Ring, linear3([0.95, 0.55, 1.0]) * 3.0));
+                let mut m = bits(El::Void, 1.0 + 0.2 * size);
+                m.amount = (14.0 + 6.0 * size) as u32;
+                m.sphere = r * 2.2;
+                m.dir = Vec3::Y;
+                m.spread = 180.0;
+                m.v = (0.0, 0.5);
+                m.radial = (-26.0, -18.0);
+                m.life = 0.3;
+                self.stream((key, 1), m, pos, dt);
+                if let Some(mut h) = haze(El::Void, 0.3 + 0.1 * size) {
+                    h.amount = 4;
+                    h.dir = back;
+                    h.v = (0.1, 0.3);
+                    self.stream((key, 2), h, pos, dt);
+                }
+                self.light(pos, c, 0.6 + 0.2 * size, 3.5);
+            }
+            El::Earth | El::Mud => {
+                // A rock, or a gob of mud: lit like the floor, grit and dust
+                // falling off it.
+                let lit = self.lit_at(pos) * 0.9 + Vec3::splat(0.02);
+                let k = if e == El::Mud { [0.3, 0.2, 0.11] } else { [0.4, 0.32, 0.24] };
+                let r = 0.45 + 0.3 * size;
+                let rock = Sprite { opacity: 1.0, ..glow_sprite(pos, r, Cell::Drop, linear3(k) * lit) };
+                self.live.push(rock.solid());
+                let mut g = bits(e, 0.9);
+                g.amount = (6.0 + 3.0 * size) as u32;
+                g.dir = back + Vec3::Y * 0.3;
+                g.spread = 50.0;
+                g.v = (0.5, 1.5);
+                self.stream((key, 1), g, pos, dt);
+                if let Some(mut h) = haze(e, 0.4 + 0.15 * size) {
+                    h.amount = 3;
+                    h.dir = back;
+                    h.v = (0.1, 0.4);
+                    self.stream((key, 2), h, pos, dt);
+                }
+            }
+            El::Magma => {
+                // A lump of molten rock: crust with glowing seams (the
+                // meteor's look, small), burning drips and sparks, smoke.
+                let r = 0.5 + 0.28 * size;
+                let mut rock = glow_sprite(pos, r, Cell::Puff, linear3([1.0, 0.75, 0.4]) * 4.0);
+                rock.effect = crate::effects::MOLTEN;
+                rock.params = [ph, t, 0.0, 0.0];
+                self.live.push(rock);
+                self.halo(pos, c, r * 3.0, 0.45);
+                let mut sp = bits(El::Magma, 1.0 + 0.3 * size);
+                sp.amount = (8.0 + 4.0 * size) as u32;
+                sp.dir = back + Vec3::Y * 0.3;
+                sp.spread = 50.0;
+                sp.v = (0.5, 2.0);
+                self.stream((key, 1), sp, pos, dt);
+                let mut up = bits(El::Fire, 0.8);
+                up.amount = 6;
+                up.dir = back + Vec3::Y;
+                up.spread = 50.0;
+                up.v = (0.6, 2.0);
+                self.stream((key, 3), up, pos, dt);
+                if let Some(mut h) = haze(El::Magma, 0.5 + 0.2 * size) {
+                    h.amount = 4;
+                    h.dir = Vec3::Y;
+                    h.v = (0.2, 0.6);
+                    self.stream((key, 2), h, pos, dt);
+                }
+                self.light(pos, rgba(1.0, 0.45, 0.12, 1.0), 1.0 + 0.3 * size, 5.0);
+            }
+            El::Air => {
+                // A spinning knot of wind: a ring turning about its flight,
+                // wind lines peeling off, a little dust.
+                let r = 0.4 + 0.2 * size;
+                let side = dir.cross(Vec3::Y).normalize_or(Vec3::X);
+                let up = side.cross(dir).normalize_or(Vec3::Y);
+                // A vortex ring across its flight, wobbling as it spins,
+                // and a fainter one a little behind.
+                for i in 0..2 {
+                    let a = (t * 9.0 + ph + i as f32 * 1.7).sin() * 0.35;
+                    let ring_up = (up * a.cos() + dir * a.sin()).normalize();
+                    let ring_right = side;
+                    let k = if i == 0 { 0.9 } else { 0.45 };
+                    let mut ring = Sprite::fixed(pos - dir * 0.35 * i as f32, [r * 2.0, r * 2.0], ring_right, ring_up, IMAGE, uv(Cell::Ring), linear3([0.85, 1.0, 0.92]) * k);
+                    ring.additive = true;
+                    ring.alpha_cut = 0.0;
+                    ring.depth_bias = 0.3;
+                    self.live.push(ring);
+                }
+                let mut wl = bits(El::Air, 1.0);
+                wl.amount = (10.0 + 4.0 * size) as u32;
+                wl.sphere = r * 0.8;
+                wl.dir = back;
+                wl.spread = 25.0;
+                wl.v = (1.0, 3.0);
+                self.stream((key, 1), wl, pos, dt);
+            }
+            El::Lightning | El::Storm => {
+                // (Lightning bolts are instant zaps; a slow one crackles.)
+                let flick = if (t * 30.0 + ph).sin() > 0.0 { 1.0 } else { 0.55 };
+                self.live.push(glow_sprite(pos, 0.3 + 0.15 * size, Cell::Spark, Vec3::ONE * 3.0 * flick));
+                self.halo(pos, c, 0.8 * size + 0.5, 0.5 * flick);
+                if self.f() < dt * 25.0 {
+                    let to = pos + Vec3::new(self.range(-1.0, 1.0), self.range(-0.6, 0.6), self.range(-1.0, 1.0)) * (0.5 + 0.3 * size);
+                    self.zap(pos, to, c, 0.03, 0.15, 0.12, 0.06);
+                }
+                let mut sp = bits(e, 1.0);
+                sp.amount = 10;
+                sp.dir = back;
+                sp.spread = 80.0;
+                sp.v = (1.0, 4.0);
+                self.stream((key, 1), sp, pos, dt);
+                self.light(pos, c, 1.2 * flick, 4.0);
+            }
+        }
+    }
+
     fn halo(&mut self, at: Vec3, c: C, size: f32, strength: f32) {
         let c3 = linear3([c[0], c[1], c[2]]);
         let inner = linear3([c[0] + (1.0 - c[0]) * 0.6, c[1] + (1.0 - c[1]) * 0.6, c[2] + (1.0 - c[2]) * 0.6]) * 0.8;
@@ -1602,54 +2317,7 @@ impl Fx {
                     q.v = (0.3, 1.2);
                     self.stream((key, 3 + i as u8), q, b.pos, dt);
                 }
-                if b.el == Some(El::Fire) {
-                    // A fire bolt is a knot of the flamethrower's flames
-                    // licking back along its path, with a little smoke; no
-                    // glowing ball (Joep).
-                    let size = b.size;
-                    let mut p = particles(el_c(El::Fire), (24.0 + 16.0 * size) as u32, 0.32, 0.3 + 0.22 * size);
-                    let smoke = style(&mut p, El::Fire, true);
-                    p.dir = -b.vel.normalize_or(Vec3::Z) + Vec3::Y * 0.4;
-                    p.spread = 30.0;
-                    p.sphere = 0.08 + 0.05 * size;
-                    p.v = (0.5, 1.6);
-                    p.curve = [0.35, 1.1, 1.4];
-                    self.stream((key, 0), p, b.pos, dt);
-                    if let Some(mut s) = smoke {
-                        s.amount = (s.amount / 2).max(3);
-                        self.stream((key, 1), s, b.pos, dt);
-                    }
-                    self.light(b.pos, rgba(1.0, 0.62, 0.22, 1.0), 1.0 + 0.4 * size, 5.0);
-                    continue;
-                }
-                let look = bolt_look(b.el);
-                let size = b.size;
-                let edge = look.edge;
-                let jitter = matches!(b.el, Some(El::Lightning | El::Storm));
-                let bloom = if jitter { 0.5 } else { 1.0 };
-                let pulse = if look.flicker > 0.5 { 1.0 + 0.25 * (t * 13.0 + b.pos.x * 3.0).sin() } else { 1.0 };
-                let hs = (1.1 * size * look.size + 0.3) * if jitter { 0.8 } else { 1.0 };
-                self.halo(b.pos, edge, hs, (0.35 + 0.25 * size) * bloom * pulse);
-                // The body: a hot core in the element's own colours.
-                let flick = 1.0 - look.flicker * 0.25 * (t * look.speed * 2.0 + key as f32).sin().abs();
-                let core = linear3([look.core[0], look.core[1], look.core[2]]);
-                let body = 0.4 * size * look.size;
-                let solid = matches!(b.el, Some(El::Earth | El::Mud));
-                if solid {
-                    self.live.push(Sprite { opacity: 1.0, ..glow_sprite(b.pos, body, Cell::Drop, core * 0.4) }.solid());
-                } else {
-                    self.live.push(glow_sprite(b.pos, body * 1.2, Cell::Spark, core * 2.4 * flick));
-                }
-                let mut tr = particles(look.trail, (3.0 + 6.0 * size) as u32, 0.3 + 0.2 * size, 0.18 * size);
-                tr.sphere = 0.14;
-                tr.dir = Vec3::Y;
-                tr.spread = 180.0;
-                tr.v = (0.2, 0.8);
-                tr.gravity = Vec3::new(0.0, look.rise, 0.0);
-                if let Some(e) = b.el {
-                    style(&mut tr, e, false);
-                }
-                self.stream((key, 0), tr, b.pos, dt);
+                self.bolt(key, b.el, b.pos, b.vel, b.size, dt);
             } else if let Ok(p) = w.ecs.get::<&Projectile>(id) {
                 let e = p.spell.primary.unwrap_or(El::Earth);
                 let c = el_c(e);
@@ -1752,6 +2420,8 @@ impl Fx {
                     p.v = (v * 0.92, v * 1.05);
                     p.curve = [0.35, 1.1, 1.7];
                     p.gravity = Vec3::Y * 1.5;
+                    // Drawn along their flight: tongues, not balls.
+                    p.stretch = 0.04;
                 }
                 if matches!(e, El::Frost | El::Air) {
                     // Breath and gust: dense and as long as they reach, a cold
@@ -1764,9 +2434,41 @@ impl Fx {
                     p.amount = 140;
                     p.spread = 11.0;
                     if e == El::Frost {
-                        p.size = 0.2;
+                        // Fine crystals glinting in the breath, and shards
+                        // of ice flying point first through it.
+                        let base = p;
+                        p = Em { amount: 120, ..bits(El::Frost, 0.9) };
+                        p.dir = base.dir;
+                        p.spread = base.spread;
+                        p.v = base.v;
+                        p.damp = base.damp;
+                        p.life = base.life;
+                        p.gravity = Vec3::NEG_Y * 0.6;
+                        let mut sh = bits(El::Frost, 1.0);
+                        sh.cell = Cell::Shard;
+                        sh.glow = 1.6;
+                        sh.size = 0.1;
+                        sh.stretch = 0.035;
+                        sh.amount = 26;
+                        sh.dir = base.dir;
+                        sh.spread = base.spread * 0.8;
+                        sh.v = base.v;
+                        sh.damp = base.damp;
+                        sh.life = base.life * 0.9;
+                        sh.gravity = Vec3::NEG_Y * 2.0;
+                        self.stream((key, 5), sh, s.at, dt);
+                    } else {
+                        // Wind lines streaming out, curling apart as they slow.
+                        let base = p;
+                        p = Em { amount: 70, ..bits(El::Air, 1.0) };
+                        p.dir = base.dir;
+                        p.spread = base.spread * 1.3;
+                        p.v = base.v;
+                        p.damp = base.damp;
+                        p.life = base.life;
                     }
                     let mut puff = p;
+                    puff.stretch = 0.0;
                     puff.amount = 30;
                     puff.cell = Cell::Puff;
                     puff.size = 0.8;
@@ -1835,12 +2537,13 @@ impl Fx {
                 }
                 let h_light = h;
                 if e == El::Fire {
-                    // A flamethrower floods its surroundings: brighter, wider
-                    // and warmer (orange-yellow) than other sprays, and lit
-                    // along the jet as well as at the staff.
+                    // A flamethrower lights its surroundings warm (orange-
+                    // yellow), along the jet as well as at the staff, but
+                    // less than the flames: a floor lit brighter than the
+                    // fire washed the fire out against it.
                     let warm = rgba(1.0, 0.62, 0.22, 1.0);
-                    self.light(s.at + s.dir * 1.0, warm, 3.2 * h_light, 11.0 + 3.0 * (h_light - 1.0));
-                    self.light(s.at + s.dir * 4.0, warm, 2.4 * h_light, 9.0 + 3.0 * (h_light - 1.0));
+                    self.light(s.at + s.dir * 1.0, warm, 1.1 * h_light, 11.0 + 3.0 * (h_light - 1.0));
+                    self.light(s.at + s.dir * 4.0, warm, 0.85 * h_light, 9.0 + 3.0 * (h_light - 1.0));
                 } else {
                     self.light(s.at + s.dir * 2.0, el_c(e), 1.2 * h_light, 6.0);
                 }
@@ -1851,14 +2554,20 @@ impl Fx {
                 let d = b.to - b.from;
                 let len = d.length();
                 if len > 0.05 {
-                    // Its element crawling along it, not only a thin line.
-                    let mut q = particles(c, 24, 0.35, 0.55);
-                    let _ = style(&mut q, e, false);
+                    // Its element crawling along it, not only a thin line:
+                    // acid dripping off a poison beam, motes falling into a
+                    // void one, sparks off lightning.
+                    let mut q = bits(e, 1.1);
+                    q.amount = 14;
                     q.dir = Vec3::Y;
                     q.spread = 180.0;
                     q.v = (0.3, 1.2);
                     q.sphere = 0.22;
-                    q.gravity = Vec3::ZERO;
+                    if e == El::Void {
+                        q.sphere = 0.7;
+                        q.v = (0.0, 0.2);
+                        q.radial = (-12.0, -8.0);
+                    }
                     for i in 0..6u8 {
                         let k = (i as f32 + 0.5) / 6.0;
                         self.stream((key, 30 + i), q, b.from.lerp(b.to, k), dt);
@@ -1884,7 +2593,15 @@ impl Fx {
                     }
                     let c3 = c3.lerp(mixed / total, 0.6);
                     self.live.push(Sprite::shaft(mid, [0.35 * wob * h, len], dir, IMAGE, uv(Cell::Line), c3 * 2.0 * flick));
-                    self.live.push(Sprite::shaft(mid, [0.1 * h * (0.9 + 0.1 * flick), len], dir, IMAGE, uv(Cell::Line), Vec3::ONE * 3.0 * flick));
+                    if e == El::Void {
+                        // A void beam is a line of nothing inside its glow.
+                        let mut core = Sprite::shaft(mid, [0.16 * h, len], dir, IMAGE, uv(Cell::Line), Vec3::ZERO);
+                        core.additive = false;
+                        core.opacity = 0.9;
+                        self.live.push(core);
+                    } else {
+                        self.live.push(Sprite::shaft(mid, [0.1 * h * (0.9 + 0.1 * flick), len], dir, IMAGE, uv(Cell::Line), Vec3::ONE * 3.0 * flick));
+                    }
                     // Its other elements twist round it and fly off it all
                     // along: a poison beam with fire in it burns green and
                     // orange, flames licking up off it.
@@ -2076,6 +2793,18 @@ impl Fx {
         let face = crate::view::facing(cam);
         let (right, up) = (face.x_axis, face.y_axis);
         let mut out = Vec::with_capacity(self.parts.len() + self.live.len() + 64);
+        for x in &self.scars {
+            // Full for the first third of its time, then fading out.
+            let k = x.age / x.time;
+            // A poison slick's plates are loud; it shows fainter.
+            let fade = (1.0 - smooth(0.3, 1.0, k)) * if x.kind == El::Poison { 0.6 } else { 1.0 };
+            let tint = if matches!(x.kind, El::Fire | El::Magma) { Vec3::splat(1.2) } else { Vec3::splat(LIT * 2.2) };
+            let mut s = flat_sprite(x.at, x.r, Cell::Patch, tint).solid();
+            s.opacity = fade;
+            s.effect = crate::effects::GROUND;
+            s.params = [x.kind.idx() as f32, x.r, x.seed, self.time];
+            out.push(s);
+        }
         for x in &self.waves {
             let k = x.age / x.time;
             let ease = 1.0 - (1.0 - k).powi(3);
@@ -2120,13 +2849,23 @@ impl Fx {
             let c = e.ramp.at(k);
             let s = p.size * curve(&e.curve, k);
             let col = linear3([c[0], c[1], c[2]]) * p.tint;
-            let (r, u) = if p.angle != 0.0 {
-                let (sn, cs) = p.angle.sin_cos();
-                (right * cs + up * sn, up * cs - right * sn)
+            let (vx, vy) = (p.vel.dot(right), p.vel.dot(up));
+            let flat_speed = (vx * vx + vy * vy).sqrt();
+            let mut sp = if e.stretch > 0.0 && flat_speed > 0.05 {
+                // A streak along its flight on screen, its head where it is.
+                let along = (right * vx + up * vy) / flat_speed;
+                let across = (right * vy - up * vx) / flat_speed;
+                let len = s + flat_speed * e.stretch;
+                Sprite::fixed(p.pos - along * (len - s) * 0.5, [s, len], across, along, IMAGE, uv(e.cell), col)
             } else {
-                (right, up)
+                let (r, u) = if p.angle != 0.0 {
+                    let (sn, cs) = p.angle.sin_cos();
+                    (right * cs + up * sn, up * cs - right * sn)
+                } else {
+                    (right, up)
+                };
+                Sprite::fixed(p.pos, [s, s], r, u, IMAGE, uv(e.cell), col)
             };
-            let mut sp = Sprite::fixed(p.pos, [s, s], r, u, IMAGE, uv(e.cell), col);
             sp.alpha_cut = 0.0;
             // fx.wgsl gets a seed that stays with the particle (from its own
             // random life and size, not where it is) and its age 0..1;
@@ -2228,43 +2967,4 @@ fn flat_sprite(at: Vec3, r: f32, cell: Cell, radiance: Vec3) -> Sprite {
     s.alpha_cut = 0.0;
     s.depth_bias = 0.25;
     s
-}
-
-struct BoltLook {
-    core: C,
-    edge: C,
-    flicker: f32,
-    speed: f32,
-    size: f32,
-    trail: C,
-    rise: f32,
-}
-
-/// BoltFx.LOOK.
-fn bolt_look(e: Option<El>) -> BoltLook {
-    let l = |core: [f32; 3], edge: [f32; 3], flicker: f32, speed: f32, size: f32, trail: [f32; 4], rise: f32| BoltLook {
-        core: [core[0], core[1], core[2], 1.0],
-        edge: [edge[0], edge[1], edge[2], 1.0],
-        flicker,
-        speed,
-        size,
-        trail,
-        rise,
-    };
-    match e {
-        Some(El::Fire) => l([1.0, 0.92, 0.55], [1.0, 0.32, 0.04], 1.0, 10.0, 1.0, [1.0, 0.45, 0.08, 1.0], 2.5),
-        Some(El::Frost) => l([0.95, 1.0, 1.0], [0.35, 0.75, 1.0], 0.25, 3.0, 0.8, [0.85, 0.95, 1.0, 1.0], -1.0),
-        Some(El::Water) => l([0.7, 0.9, 1.0], [0.1, 0.35, 0.95], 0.6, 5.0, 1.05, [0.3, 0.55, 1.0, 1.0], -3.0),
-        Some(El::Lightning) => l([1.0, 1.0, 1.0], [0.65, 0.55, 1.0], 1.0, 40.0, 0.75, [0.8, 0.75, 1.0, 1.0], 0.0),
-        Some(El::Earth) => l([0.75, 0.6, 0.4], [0.45, 0.32, 0.18], 0.0, 0.0, 1.15, [0.55, 0.45, 0.32, 1.0], -2.0),
-        Some(El::Air) => l([0.95, 1.0, 0.97], [0.55, 0.85, 0.8], 0.9, 14.0, 1.1, [0.8, 0.95, 0.9, 0.6], 0.5),
-        Some(El::Poison) => l([0.85, 1.0, 0.45], [0.4, 0.8, 0.05], 0.5, 5.0, 0.95, [0.45, 0.75, 0.1, 1.0], -0.5),
-        Some(El::Void) => l([0.25, 0.0, 0.35], [0.75, 0.25, 1.0], 0.7, 6.0, 1.1, [0.55, 0.15, 0.85, 1.0], 0.0),
-        Some(El::Steam) => l([1.0, 1.0, 1.0], [0.75, 0.8, 0.9], 0.9, 7.0, 1.2, [0.9, 0.92, 0.95, 0.6], 2.0),
-        Some(El::Ice) => l([0.95, 1.0, 1.0], [0.45, 0.8, 1.0], 0.15, 2.0, 1.0, [0.75, 0.92, 1.0, 1.0], -1.5),
-        Some(El::Mud) => l([0.5, 0.38, 0.22], [0.3, 0.22, 0.12], 0.0, 0.0, 1.1, [0.4, 0.3, 0.18, 1.0], -4.0),
-        Some(El::Magma) => l([1.0, 0.85, 0.3], [1.0, 0.25, 0.02], 0.8, 5.0, 1.25, [1.0, 0.35, 0.05, 1.0], 1.0),
-        Some(El::Storm) => l([1.0, 1.0, 1.0], [0.45, 0.55, 1.0], 1.0, 35.0, 0.95, [0.6, 0.7, 1.0, 1.0], 0.5),
-        None => l([1.0, 0.95, 0.75], [1.0, 0.75, 0.3], 0.3, 6.0, 0.7, [1.0, 0.85, 0.45, 1.0], 0.5),
-    }
 }
