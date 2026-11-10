@@ -213,7 +213,7 @@ impl GrassRenderer {
                 14,
                 wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             ),
-            (15, depth),
+            (15, tex(wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2Array)),
         ];
         let view_layout = gpu
             .device

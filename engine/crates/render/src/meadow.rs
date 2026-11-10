@@ -784,7 +784,7 @@ impl MeadowRenderer {
                     14,
                     wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 ),
-                (15, texture(wgpu::TextureSampleType::Depth, d2)),
+                (15, texture(wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2Array)),
             ],
             wgpu::ShaderStages::VERTEX_FRAGMENT,
         );
