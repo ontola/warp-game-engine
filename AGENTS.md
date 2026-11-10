@@ -41,6 +41,9 @@ Keep engine APIs independent of Sideways; a game supplies assets and settings.
 Engine examples may read Sideways' asset files (textures, `.kmesh` trees) but
 copy any game-owned data (such as recipe values) instead of depending on it.
 
+New game code starts in Luau and moves to Rust when it loops over many
+things per tick; see [engine/docs/luau-or-rust.md](engine/docs/luau-or-rust.md).
+
 ## Running things
 
 ```sh
