@@ -71,6 +71,12 @@ pub enum Ev {
         size: f32,
         el: Option<El>,
     },
+    /// A wizard shook their staff empty (R3): `els` fell out of it at `at`.
+    Shaken {
+        id: u64,
+        at: Vec3,
+        els: Vec<El>,
+    },
     /// Fx.puff: a soft cloud.
     Puff {
         at: Vec3,

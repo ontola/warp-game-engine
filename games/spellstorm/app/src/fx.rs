@@ -1548,6 +1548,23 @@ impl Fx {
         match *e {
             Ev::Burst { at, c, n, speed, size, el } => self.burst(at, c, n, speed, size, el),
             Ev::Puff { at, c, size } => self.puff(at, c, size),
+            Ev::Shaken { at, ref els, .. } => {
+                // Shaken out: each loaded element spills off the gem as a
+                // shower of its own bits that drop to the floor and die.
+                for (i, &el) in els.iter().enumerate() {
+                    let c = el_c(el);
+                    let mut p = particles(c, 18, 0.7, 0.12);
+                    p.cell = Cell::Drop;
+                    p.glow = 2.2;
+                    p.dir = Vec3::Y;
+                    p.spread = 70.0;
+                    p.v = (2.0, 4.5);
+                    p.gravity = Vec3::new(0.0, -14.0, 0.0);
+                    p.curve = [1.0, 0.8, 0.0];
+                    self.emit(p, at + Vec3::Y * (0.08 * i as f32), 18);
+                    self.halo(at, c, 0.9, 0.3);
+                }
+            }
             Ev::Ring { at, c, r, time } => self.ring(at, c, r, time),
             Ev::Ripple { at, r, time } => self.waves.push(Wave { at, c: rgba(0.75, 0.85, 1.0, 0.35), r, age: 0.0, time, cell: Cell::Ring, glow: 0.0 }),
             Ev::LightPop { at, c, energy, range, time } => self.light_pop(at, c, energy, range, time),

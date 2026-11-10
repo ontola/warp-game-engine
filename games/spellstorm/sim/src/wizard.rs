@@ -43,6 +43,21 @@ pub fn swing_reach() -> f32 {
 }
 pub const SWING_ARC: f32 = 1.3;
 pub const NOVA_HOLD: f64 = 0.45;
+/// R3 held this long enchants the staff; a tap shakes it empty.
+pub const ENCHANT_HOLD: f64 = 0.4;
+/// How long a shake of the staff takes.
+pub const SHAKE_TIME: f64 = 0.45;
+
+/// What a wizard has done at least once (Wizard::used), for the HUD's
+/// hints: a hint shows until its move has been used.
+pub mod used {
+    pub const BOLT: u32 = 1;
+    pub const ROLL: u32 = 2;
+    pub const SWING: u32 = 4;
+    pub const CAST: u32 = 8;
+    pub const SHAKE: u32 = 16;
+    pub const DEFLECT: u32 = 32;
+}
 pub const ROLL_TIME: f64 = 0.5;
 pub const ROLL_SPEED: f64 = 12.5;
 pub const ROLL_IFRAMES: f64 = 0.3;
@@ -188,6 +203,12 @@ pub struct Wizard {
     pub roll_dir: Vec3,
     roll_recover: f64,
     pub rb_t: f64,
+    /// R3 held so far (below 0: not held, or already used).
+    pub rs_t: f64,
+    /// The staff shaking its elements out, seconds left.
+    pub shake_t: f64,
+    /// The moves done at least once (bits of `used`).
+    pub used: u32,
     save_t: [f64; 2],
     pub revive: f64,
     pub swing_t: f64,
@@ -245,6 +266,7 @@ impl Wizard {
             mana: b::MANA_MAX,
             charge_need: 0.5,
             rb_t: -1.0,
+            rs_t: -1.0,
             stage: 3,
             level: ALL_UNLOCKED,
             staff_z: 0.18,
@@ -500,6 +522,7 @@ impl World {
             }
         }
         w.cast_anim = (w.cast_anim - dt).max(0.0);
+        w.shake_t = (w.shake_t - dt).max(0.0);
         w.roll_cd = (w.roll_cd - dt).max(0.0);
         w.no_mana = (w.no_mana - dt).max(0.0);
         if !self.alive(id) {
@@ -581,6 +604,13 @@ impl World {
         let point = if w.charging.is_some() { 1.45 } else { 0.95 };
         w.staff_rx += (point * lift - w.staff_rx) * 12.0 * dt;
         w.staff_z += (0.18 + 0.25 * lift - w.staff_z) * 12.0 * dt;
+        if w.shake_t > 0.0 {
+            // Shaken: the staff jerks up and down, hard at first.
+            let k = (w.shake_t / SHAKE_TIME) as f32;
+            let jerk = ((1.0 - k) * 7.0 * std::f32::consts::TAU).sin() * k;
+            w.staff_rx = 0.7 + 0.55 * jerk;
+            w.staff_z = 0.3 + 0.12 * jerk;
+        }
         if w.swing_t > 0.0 {
             let sweep = 1.0 - (w.swing_t / SWING_COOLDOWN) as f32;
             let e = 1.0 - (1.0 - (sweep * 1.6).min(1.0)).powi(3);
@@ -643,8 +673,22 @@ impl World {
         if w.pad.pressed(Pad::LS) && w.form_open(Form::Plant) {
             self.cast(id, w, Form::Plant);
         }
-        if w.pad.pressed(Pad::RS) && w.form_open(Form::Enchant) {
-            self.cast(id, w, Form::Enchant);
+        // R3: a tap shakes the staff empty; held, it enchants the staff
+        // once Enchant is learned.
+        if w.pad.pressed(Pad::RS) {
+            w.rs_t = 0.0;
+        } else if w.pad.down(Pad::RS) && w.rs_t >= 0.0 {
+            w.rs_t += dt;
+            if w.rs_t >= ENCHANT_HOLD && w.form_open(Form::Enchant) {
+                w.rs_t = -1.0;
+                self.cast(id, w, Form::Enchant);
+            }
+        }
+        if w.pad.released(Pad::RS) {
+            if w.rs_t >= 0.0 && (w.rs_t < ENCHANT_HOLD || !w.form_open(Form::Enchant)) {
+                self.shake_staff(id, w);
+            }
+            w.rs_t = -1.0;
         }
         w.bolt_t -= dt;
         // Swinging the sword stops the bolts for a moment.
@@ -675,12 +719,35 @@ impl World {
         }
     }
 
+    /// R3 tapped: the staff is shaken and what was loaded falls out of it
+    /// as sparks, gone (no mana back).
+    fn shake_staff(&mut self, id: Id, w: &mut Wizard) {
+        if w.shake_t > 0.0 || w.charging.is_some() {
+            return;
+        }
+        w.shake_t = SHAKE_TIME;
+        if w.queue.is_empty() {
+            return;
+        }
+        w.used |= used::SHAKE;
+        let at = staff_tip(self.pos(id), w);
+        let gone = std::mem::take(&mut w.queue.slots);
+        for (i, &e) in gone.iter().enumerate() {
+            self.burst(at + Vec3::Y * (0.1 * i as f32), fx::el_c(e), 14, 3.0, 0.16, Some(e));
+        }
+        self.ev(Ev::Puff { at, c: fx::rgb(0.8, 0.78, 0.74), size: 0.8 });
+        self.ev(Ev::Shaken { id: id.to_bits().get(), at, els: gone });
+        w.ammo = w.full_ammo();
+        self.count("shakes");
+    }
+
     fn muzzle(w: &mut Wizard, c: C) {
         w.flash_c = c;
         w.bloom = 1.0;
     }
 
     fn shoot(&mut self, id: Id, w: &mut Wizard) {
+        w.used |= used::BOLT;
         let dir = yaw_rot(w.aim_dir, self.rng.range(-0.03, 0.03));
         // Fired steadily, the staff stays up instead of bobbing.
         w.cast_anim = w.cast_anim.max(1.0 / w.shot_rate() + 0.1);
@@ -757,6 +824,7 @@ impl World {
             return;
         }
         w.swing_t = SWING_COOLDOWN;
+        w.used |= used::SWING;
         w.swing_cd = SWING_COOLDOWN + crate::knobs::swing_recover() * w.mods().swing;
         self.count("swings");
         let touch = w.bolt_spell();
@@ -850,6 +918,7 @@ impl World {
             w.add_mana(b::MANA_PER_DEFLECT);
             self.count("deflects");
             w.deflected = true;
+            w.used |= used::DEFLECT;
         }
     }
 
@@ -950,6 +1019,7 @@ impl World {
         }
         w.roll_dir = d.normalize();
         w.roll_t = ROLL_TIME;
+        w.used |= used::ROLL;
         w.roll_cd = crate::knobs::roll_cooldown();
         {
             let mut a = self.am(id);
@@ -1055,6 +1125,9 @@ impl World {
         }
         w.mana -= price;
         w.ammo = 0;
+        if form == Form::Cast {
+            w.used |= used::CAST;
+        }
         // What the spell did not use stays loaded, front first.
         let used = s.slots.len();
         let rest: Vec<El> = w.queue.slots[used.min(w.queue.slots.len())..].to_vec();
