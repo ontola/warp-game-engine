@@ -217,6 +217,20 @@ fn sphere(rays: usize) -> Vec<Vec3> {
 
 const AXES: [Vec3; 6] = [Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y, Vec3::Z, Vec3::NEG_Z];
 
+/// A random rotation per probe (fixed by its index): every probe shooting
+/// the same ray set made neighbouring probes miss and hit the same small
+/// bright things (a doorway, a sun patch) together, which showed as blotches
+/// at the probe spacing. Rotated sets turn that into independent noise the
+/// smoothing passes average away.
+fn probe_rotation(i: usize) -> glam::Quat {
+    let mut h = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03;
+    let mut next = || { h ^= h >> 33; h = h.wrapping_mul(0xFF51_AFD7_ED55_8CCD); h ^= h >> 29; (h >> 40) as f32 / (1u64 << 24) as f32 };
+    // Shoemake's uniform random unit quaternion.
+    let (u1, u2, u3) = (next(), next() * std::f32::consts::TAU, next() * std::f32::consts::TAU);
+    let (a, b) = ((1.0 - u1).sqrt(), u1.sqrt());
+    glam::Quat::from_xyzw(a * u2.sin(), a * u2.cos(), b * u3.sin(), b * u3.cos()).normalize()
+}
+
 /// A channel of `probes` at `p` on a surface facing `n`: trilinear over the
 /// valid probes in front of the surface, as the shader samples them.
 fn sample(grid: &Grid, probes: &[Probe], valid: &[bool], p: Vec3, n: Vec3, channel: usize) -> f32 {
@@ -252,6 +266,28 @@ fn each<T: Send>(items: &mut [T], f: impl Fn(usize, &mut T) + Sync) {
             scope.spawn(move || for (local, item) in out.iter_mut().enumerate() { f(group * chunk + local, item) });
         }
     });
+}
+
+/// The 26 neighbours each valid probe sees directly (index, weight), for
+/// smoothing the bounces: never across a wall.
+fn visible_neighbours(grid: &Grid, occluders: &Occluders, valid: &[bool]) -> Vec<Vec<(usize, f32)>> {
+    let mut neighbours: Vec<Vec<(usize, f32)>> = vec![Vec::new(); grid.count()];
+    each(&mut neighbours, |i, list| {
+        if !valid[i] { return; }
+        let [dx, dy, dz] = grid.dims.map(|d| d as i64);
+        let (x, y, z) = (i as i64 % dx, (i as i64 / dx) % dy, i as i64 / (dx * dy));
+        let p = grid.position(i);
+        for ox in -1..=1i64 { for oy in -1..=1i64 { for oz in -1..=1i64 {
+            let (nx, ny, nz) = (x + ox, y + oy, z + oz);
+            if (ox, oy, oz) == (0, 0, 0) || nx < 0 || ny < 0 || nz < 0 || nx >= dx || ny >= dy || nz >= dz { continue; }
+            let j = (nx + ny * dx + nz * dx * dy) as usize;
+            if !valid[j] { continue; }
+            let d = grid.position(j) - p;
+            if occluders.blocked(p, d.normalize(), d.length()) { continue; }
+            list.push((j, 0.5f32.powi((ox.abs() + oy.abs() + oz.abs()) as i32)));
+        }}}
+    });
+    neighbours
 }
 
 /// Average the bounced channels (y, z), and with `sky` also the direct sky
@@ -295,8 +331,10 @@ pub fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, settings: &Settings) 
         let mut both: Vec<(Probe, bool)> = vec![(Probe::default(), true); count];
         each(&mut both, |i, (p, ok)| {
             let origin = grid.position(i);
+            let rot = probe_rotation(i);
             let (mut v, mut denom, mut back) = ([0f32; 6], [0f32; 6], 0usize);
-            for d in &sky_dirs {
+            for d in sky_dirs.iter().map(|d| rot * *d) {
+                let d = &d;
                 let hit = occluders.hit(origin, *d);
                 if hit.is_some_and(|(_, n)| n.dot(*d) > 0.0) { back += 1; }
                 for a in 0..6 {
@@ -311,13 +349,15 @@ pub fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, settings: &Settings) 
         for (i, (p, ok)) in both.into_iter().enumerate() { probes[i] = p; valid[i] = ok; }
     }
     // What each probe's bounce rays hit, with the sun on it: reused by every bounce.
-    let mut denom = [0f32; 6];
-    for d in &bounce_dirs { for a in 0..6 { denom[a] += AXES[a].dot(*d).max(0.); } }
     let mut hits: Vec<Vec<(Vec3, Vec3, f32, [f32; 6])>> = vec![Vec::new(); count];
     each(&mut hits, |i, list| {
         if !valid[i] { return; }
         let origin = grid.position(i);
-        for d in &bounce_dirs {
+        let rot = probe_rotation(i);
+        let dirs: Vec<Vec3> = bounce_dirs.iter().map(|d| rot * *d).collect();
+        let mut denom = [0f32; 6];
+        for d in &dirs { for a in 0..6 { denom[a] += AXES[a].dot(*d).max(0.); } }
+        for d in &dirs {
             if let Some((t, n)) = occluders.hit(origin, *d) {
                 // The side facing the probe.
                 let n = if n.dot(*d) > 0.0 { -n } else { n };
@@ -329,23 +369,7 @@ pub fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, settings: &Settings) 
             }
         }
     });
-    // The 26 neighbours each probe sees directly, for smoothing the bounces.
-    let mut neighbours: Vec<Vec<(usize, f32)>> = vec![Vec::new(); count];
-    each(&mut neighbours, |i, list| {
-        if !valid[i] { return; }
-        let [dx, dy, dz] = grid.dims.map(|d| d as i64);
-        let (x, y, z) = (i as i64 % dx, (i as i64 / dx) % dy, i as i64 / (dx * dy));
-        let p = grid.position(i);
-        for ox in -1..=1i64 { for oy in -1..=1i64 { for oz in -1..=1i64 {
-            let (nx, ny, nz) = (x + ox, y + oy, z + oz);
-            if (ox, oy, oz) == (0, 0, 0) || nx < 0 || ny < 0 || nz < 0 || nx >= dx || ny >= dy || nz >= dz { continue; }
-            let j = (nx + ny * dx + nz * dx * dy) as usize;
-            if !valid[j] { continue; }
-            let d = grid.position(j) - p;
-            if occluders.blocked(p, d.normalize(), d.length()) { continue; }
-            list.push((j, 0.5f32.powi((ox.abs() + oy.abs() + oz.abs()) as i32)));
-        }}}
-    });
+    let neighbours = visible_neighbours(grid, occluders, &valid);
     // Gather: each bounce lights the surfaces with the previous one's probes.
     // y and z hold everything that has arrived so far.
     let mut light = probes;
@@ -402,13 +426,15 @@ pub fn bake_lights(grid: &Grid, occluders: &Occluders, lights: &[crate::headligh
         let back = probe_dirs.iter().filter(|d| occluders.hit(o, **d).is_some_and(|(_, n)| n.dot(**d) > 0.0)).count();
         *ok = back * 4 < probe_dirs.len();
     });
-    let mut denom = [0f32; 6];
-    for d in &dirs { for a in 0..6 { denom[a] += AXES[a].dot(*d).max(0.); } }
     // Hits with each light's direct irradiance there (shadow-tested).
     let mut hits: Vec<Vec<(Vec3, Vec3, Vec<Vec3>, [f32; 6])>> = vec![Vec::new(); count];
     each(&mut hits, |i, list| {
         if !valid[i] { return; }
         let origin = grid.position(i);
+        let rot = probe_rotation(i);
+        let dirs: Vec<Vec3> = dirs.iter().map(|d| rot * *d).collect();
+        let mut denom = [0f32; 6];
+        for d in &dirs { for a in 0..6 { denom[a] += AXES[a].dot(*d).max(0.); } }
         for d in &dirs {
             let Some((t, n)) = occluders.hit(origin, *d) else { continue };
             let n = if n.dot(*d) > 0.0 { -n } else { n };
@@ -445,6 +471,7 @@ pub fn bake_lights(grid: &Grid, occluders: &Occluders, lights: &[crate::headligh
         }
         if weight > 1e-6 { value / weight } else { Vec3::ZERO }
     };
+    let neighbours = visible_neighbours(grid, occluders, &valid);
     let mut out = Vec::with_capacity(lights.len());
     for l in 0..lights.len() {
         let mut probes = vec![Probe::default(); count];
@@ -459,7 +486,10 @@ pub fn bake_lights(grid: &Grid, occluders: &Occluders, lights: &[crate::headligh
                 }
                 p.axes = axes;
             });
+            smooth_bounce(&mut probes, &neighbours, &valid, true);
         }
+        // As in `bake`: two more passes against blotches at the probe spacing.
+        for _ in 0..2 { smooth_bounce(&mut probes, &neighbours, &valid, true); }
         out.push(probes);
     }
     Ok(out)

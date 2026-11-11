@@ -553,6 +553,14 @@ fn main() -> Result<(), String> {
     }
     if args.iter().any(|a| a == "--fog") { game.set_fog(true); }
     if args.iter().any(|a| a == "--flashlight") { game.flashlight = true; game.flash_dir = game.forward(); }
+    if let Some(frames) = arg("--bench").and_then(|f| f.parse::<u32>().ok()) {
+        // GPU time per frame at 4K, headless (`--at`/`--yaw` pick the view).
+        let gpu = render::Gpu::new()?;
+        let (ms, passes) = app::bench(&mut game, &gpu, [3840, 2160], frames, TICK_HZ)?;
+        println!("bench: {ms:.3} ms per frame at 3840x2160 over {frames} frames");
+        for (name, ms) in passes { println!("  {name}: {ms:.3} ms"); }
+        return Ok(());
+    }
     if let Some(out) = arg("--shot") {
         let frames = arg("--frames").and_then(|f| f.parse().ok()).unwrap_or(30);
         // Render every tick, so auto exposure adapts and TAA settles as in play.

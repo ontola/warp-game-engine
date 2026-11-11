@@ -931,9 +931,9 @@ fn environment(r: vec3<f32>, rough: f32, bounce: vec3<f32>) -> vec3<f32> {
 // reprojected position: whatever the frame shows, lit by everything, trees
 // and cars included. A ray that leaves the screen (it cannot come back: the
 // frustum is convex) returns confidence 0 and keeps the environment and its
-// heightfield occlusion. Rough surfaces jitter the ray within a narrowed
-// GGX lobe, one sample per pixel and frame, and TAA averages them; the
-// reflection fades out by roughness. rgb: radiance, a: confidence.
+// heightfield occlusion. The ray is the mirror ray; rough surfaces blur the
+// hit's radiance over the lobe's footprint (rotated taps, TAA-averaged) and
+// the reflection fades out by roughness. rgb: radiance, a: confidence.
 fn trace_hash(px: vec2<i32>, salt: f32) -> vec2<f32> {
     // Interleaved gradient noise, shifted by the frame sequence.
     let q = vec2<f32>(px) + salt * vec2<f32>(5.588238, 5.588238);
@@ -971,16 +971,11 @@ fn trace_depth(c: vec2<i32>) -> f32 {
 
 fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, px: vec2<i32>, size: vec2<u32>, dist: f32) -> vec4<f32> {
     if gi.trace.x < 0.5 || rough >= gi.trace.y { return vec4<f32>(0.0); }
-    var r = mirror;
-    if rough > 0.06 {
-        // A narrowed lobe (a third of the GGX width): one jittered ray per
-        // pixel over the full lobe hits and misses at random from pixel to
-        // pixel, which shows as stipple and sparkle TAA cannot average away.
-        // The narrow lobe keeps neighbours on the same surfaces; the
-        // confidence fade by roughness stands in for the rest of the blur.
-        let jittered = trace_jitter(mirror, rough * 0.35, trace_hash(px, light.fog_sampling.x * 16.0));
-        if dot(jittered, n) > 0.02 { r = jittered; }
-    }
+    // One mirror ray, never jittered: a jittered ray per pixel hits and
+    // misses at random from pixel to pixel (a bright lamp most of all), which
+    // shows as grain TAA cannot average away. The roughness blur is applied
+    // at the hit instead (below), as a cone-traced reflection does.
+    let r = mirror;
     if dot(r, n) <= 0.0 { return vec4<f32>(0.0); }
     let fsize = vec2<f32>(size);
     // Leave the surface by its depth precision and pixel footprint.
@@ -1035,7 +1030,21 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
     let edge = max(abs(prev_ndc.x), abs(prev_ndc.y));
     if edge >= 1.0 { return vec4<f32>(0.0); }
     let uv = vec2<f32>(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5);
-    let radiance = textureSampleLevel(reflection_history, canopy_sampler, uv, 0.0).rgb;
+    // The glossy lobe's footprint at the hit: a cone of about the roughness
+    // (radians) over the ray length, as a diameter in pixels at the hit's
+    // depth. reflection_history is last frame's image with a prefiltered
+    // mip chain (reflection_mips.rs, level 0 full resolution): read the
+    // level whose texels match that footprint, blending the two nearest
+    // (the sampler picks one mip). Mirrors read level 0; no noise anywhere.
+    let footprint = 2.0 * rough * hi / max(c.w, 0.1) * 0.7 * fsize.y;
+    let levels = f32(textureNumLevels(reflection_history));
+    let lod = clamp(log2(max(footprint, 1.0)), 0.0, levels - 1.0);
+    let lo_lod = floor(lod);
+    var radiance = textureSampleLevel(reflection_history, canopy_sampler, uv, lo_lod).rgb;
+    if lod > lo_lod {
+        let next = textureSampleLevel(reflection_history, canopy_sampler, uv, lo_lod + 1.0).rgb;
+        radiance = mix(radiance, next, lod - lo_lod);
+    }
     if any(radiance != radiance) { return vec4<f32>(0.0); }
     // Fade at the screen's edges, near the reach and towards the roughness cut.
     let ndc_edge = max(abs(ndc.x), abs(ndc.y));
@@ -1339,6 +1348,23 @@ fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
 }
 
 fn irradiance_volume(p: vec3<f32>,n: vec3<f32>) -> vec4<f32> { return irradiance_sample(p,n).value; }
+
+// A per-pixel, per-frame offset of the probe lookup in the surface's plane,
+// up to 0.35 of a cell (with TAA only): trilinear interpolation over 0.5 m
+// probes shows the cells as steps and creases where neighbouring probes
+// differ; TAA averages the jittered lookups into a smooth, wider filter at
+// no extra fetches. The offset stays in the plane and well under the wall
+// thickness the probe layout asks for, and the wall tests in
+// irradiance_sample run at the offset point.
+fn irradiance_jitter(px: vec2<i32>, n: vec3<f32>) -> vec3<f32> {
+    let o = u32(gi.params.w);
+    if !FEATURE_IRRADIANCE || o == 0u || light.fog_sampling.y < 0.5 { return vec3<f32>(0.0); }
+    let cell = aux_f32(o + 3u);
+    let xi = trace_hash(px, light.fog_sampling.x * 16.0 + 11.0) * 2.0 - 1.0;
+    let t1 = normalize(select(cross(n, vec3<f32>(0.0, 1.0, 0.0)), cross(n, vec3<f32>(1.0, 0.0, 0.0)), abs(n.y) > 0.9));
+    let t2 = cross(n, t1);
+    return (t1 * xi.x + t2 * xi.y) * (0.35 * cell);
+}
 
 fn sky_irradiance(n: vec3<f32>) -> vec3<f32> {
     let c1 = 0.429043;
@@ -3175,7 +3201,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         let spec_contact=mix(contact.y,contact.x,smoothstep(0.08,0.6,rough));
         var env=mix(bounce/PI,environment(refl,rough,bounce),reflection_vis)*spec_contact;
         // Inside an indoor irradiance volume its probes replace sky and bounce.
-        let cached=irradiance_sample(p+visibility_n*0.05,n);
+        let cached=irradiance_sample(p+visibility_n*0.05+irradiance_jitter(px,visibility_n),n);
         let room=cached.value;
         if FEATURE_IRRADIANCE && room.w>0.0 {
           if aux_word(u32(gi.params.w)+7u) >= 1u {
