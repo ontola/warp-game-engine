@@ -1178,7 +1178,9 @@ fn probe_axis(base: u32, visibility: bool) -> vec3<f32> {
     return vec3<f32>(aux_f32(base),aux_f32(base+1u),aux_f32(base+2u));
 }
 fn unpack_sky_transport(word:u32)->vec3<f32> {
-    return vec3<f32>(f32(word&1023u),f32((word>>10u)&1023u),f32((word>>20u)&1023u))/1023.0;
+    // Square-root encoded (irradiance_volume::pack_transport).
+    let r=vec3<f32>(f32(word&1023u),f32((word>>10u)&1023u),f32((word>>20u)&1023u))/1023.0;
+    return r*r;
 }
 struct IrradianceSample { value: vec4<f32>, emission: vec3<f32> }
 fn unpack_emission(word: u32) -> vec3<f32> {
@@ -1204,40 +1206,34 @@ fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
     let n2 = n * n;
     let axis = vec3<u32>(select(1u, 0u, n.x >= 0.0), select(3u, 2u, n.y >= 0.0), select(5u, 4u, n.z >= 0.0)) * 3u;
     if visibility {
-        // Four-probe tetrahedral interpolation: continuous across cell faces,
-        // half the fetches of trilinear, scalar visibility only.
-        var high=0u; var low=0u;
-        if t.y>t.x { high=1u; } if t.z>t[high] { high=2u; }
-        if t.y<t.x { low=1u; } if t.z<t[low] { low=2u; }
-        // Resolve equal fractions deterministically to distinct axes.
-        if high==low { high=0u; low=2u; }
-        let middle=3u-high-low;
-        var corner=vec3<u32>(0u);
-        let weights=vec4<f32>(1.0-t[high],t[high]-t[middle],t[middle]-t[low],t[low]);
+        // Trilinear over the cell's eight probes. A probe counts only if it
+        // is on the shaded side: in front of the surface (backface weight,
+        // as DDGI does) and, with separation planes, on the same side of its
+        // nearest wall. Without that a point in a room's corner blends in
+        // the probes outside the walls and glows with outdoor light.
         var value=vec3<f32>(0.0);
         var emission=vec3<f32>(0.0);
         var valid_weight=0.0;
-        let trilinear=aux_word(o+7u)==6u;
-        for(var c=0u;c<select(4u,8u,trilinear);c++) {
-            if c==1u { corner[high]=1u; }
-            if c==2u { corner[middle]=1u; }
-            if c==3u { corner[low]=1u; }
-            var blend_weight=weights[min(c,3u)];
-            if trilinear {
-                corner=vec3<u32>(c&1u,(c>>1u)&1u,(c>>2u)&1u);
-                let w3=select(1.0-t,t,corner==vec3<u32>(1u));
-                blend_weight=w3.x*w3.y*w3.z;
-            }
+        let mode=aux_word(o+7u);
+        for(var c=0u;c<8u;c++) {
+            let corner=vec3<u32>(c&1u,(c>>1u)&1u,(c>>2u)&1u);
+            let w3=select(1.0-t,t,corner==vec3<u32>(1u));
             let g=vec3<u32>(cell0)+corner;
+            let to_probe=origin+vec3<f32>(g)*cell-p;
+            let facing=dot(to_probe,n)/max(length(to_probe),1e-4);
+            // Probes just behind the surface still count a little (a wall's
+            // own probes sit in it); far behind it they do not.
+            let backface=clamp(facing*2.0+1.0,0.0,1.0);
+            let blend_weight=w3.x*w3.y*w3.z*(backface*backface+1e-4);
             let base=o+8u+(g.x+g.y*dims.x+g.z*dims.x*dims.y)*18u;
-            if aux_word(o+7u)>=4u {
+            if mode>=4u {
                 var valid=select(1.0,0.0,(aux_word(base)&0x80000000u)!=0u);
-                if aux_word(o+7u)==5u {
+                if mode==5u {
                     let plane=vec4<f32>(aux_f32(base+1u),aux_f32(base+2u),aux_f32(base+4u),aux_f32(base+5u));
                     // Zero plane passes through. Blend over 15 cm to avoid a hard edge.
                     valid*=smoothstep(-0.15,0.0,dot(plane.xyz,p)+plane.w);
                 }
-                if aux_word(o+7u)==7u {
+                if mode==7u {
                     let plane=vec4<f32>(aux_f32(base+2u),aux_f32(base+5u),aux_f32(base+8u),aux_f32(base+11u));
                     valid*=smoothstep(-0.15,0.0,dot(plane.xyz,p)+plane.w);
                     let e=unpack_emission(aux_word(base+axis.x+1u))*n2.x
@@ -3132,8 +3128,15 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
                 +light.sun_color.rgb*light.sun_dir.w*max(room.z,0.0);
             let corrected=(sky_irradiance(n)*sky_vis*meadow_ground_sky*meadow_edge.x*access
                 +bounce*(1.0-sky_vis)+returned+cached.emission*light.anim.y)*ao*contact.x;
+            // Reflections of the sky are as occluded as the diffuse sky:
+            // scale the environment by how much of the open-air ambient
+            // reaches this point (Call of Duty normalises its reflection
+            // probes by the baked lightmap the same way). A room then no
+            // longer mirrors daylight; traced hits below still show the room.
+            let open_air=dot(ambient,vec3<f32>(0.2126,0.7152,0.0722));
+            let reached=dot(corrected,vec3<f32>(0.2126,0.7152,0.0722));
+            env*=mix(1.0,clamp(reached/max(open_air,1e-4),0.0,1.0),room.w);
             ambient=mix(ambient,corrected,room.w);
-            // No blanket suppression of glossy reflections with diffuse AO.
           } else {
             ambient=mix(ambient,room.rgb*ao*contact.x,room.w);
             env=mix(env,irradiance_volume(p+visibility_n*0.05,refl).rgb/PI*spec_contact,room.w);
