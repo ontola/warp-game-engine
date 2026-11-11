@@ -650,7 +650,9 @@ impl View {
                 } else if let Some(anim::Fall::Scatter { power, up, life }) = how {
                     ea.scattered = true;
                     let parts = pieces.iter().map(|p| (p.mesh, at * part(p.node), p.shadow)).collect();
-                    self.debris.push(Debris::new(&self.scene, parts, a.pos, power, up, life, seed));
+                    if !crate::fx::hidden("debris") {
+                        self.debris.push(Debris::new(&self.scene, parts, a.pos, power, up, life, seed));
+                    }
                 }
             }
             // The rest go limp where they stood and fall the way the blow
@@ -834,8 +836,10 @@ impl View {
             renderer.set_volumetric_beams(&beams)?;
         }
         self.light.time = w.time as f32;
-        let mut sprites = self.marks.sprites.clone();
-        sprites.extend_from_slice(&self.shrines.sprites);
+        let mut sprites = if crate::fx::hidden("marks") { vec![] } else { self.marks.sprites.clone() };
+        if !crate::fx::hidden("shrines") {
+            sprites.extend_from_slice(&self.shrines.sprites);
+        }
         // Round glows (the staff's gem) face the camera fully, as Fx's do: a
         // square that keeps world up flattens to an oval from the high
         // camera. Taller sprites (flames) stay standing.
@@ -852,6 +856,9 @@ impl View {
         crate::effects::tag(&mut sprites, self.fx.time);
         renderer.set_sprites(gpu, &sprites)?;
         let t = self.fx.time;
+        if crate::fx::hidden("blasts") {
+            self.fx.blasts.clear();
+        }
         self.fx.blasts.flush(gpu, renderer, t)?;
         self.fx.sparks.flush(gpu, renderer, t)?;
         Ok(())
