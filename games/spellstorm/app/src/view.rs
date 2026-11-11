@@ -752,7 +752,7 @@ impl View {
                 }
                 // Its chunks fly off from the blow, tumble and settle.
                 let chunks = self.prop_chunks.get(i).cloned().unwrap_or_default();
-                if !chunks.is_empty() {
+                if !chunks.is_empty() && !crate::fx::hidden("chunks") {
                     let (from, power) = self.fx.prop_hits.remove(&i).unwrap_or((p.pos - Vec3::Y, 2.0));
                     let from = Vec3::new(from.x, p.pos.y + 0.3, from.z);
                     self.debris.push(Debris::new(&self.scene, chunks, from, 1.5 + power * 0.45, 3.0 + power * 0.25, 5.0, i as u32 * 7919 + 13));
