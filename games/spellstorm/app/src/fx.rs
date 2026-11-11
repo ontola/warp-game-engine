@@ -2929,6 +2929,9 @@ impl Fx {
         let (right, up) = (face.x_axis, face.y_axis);
         let mut out = Vec::with_capacity(self.parts.len() + self.live.len() + 64);
         for x in &self.scars {
+            if hidden("scars") {
+                break;
+            }
             // Full for the first third of its time, then fading out.
             let k = x.age / x.time;
             // A poison slick's plates are loud; it shows fainter.
@@ -2941,6 +2944,9 @@ impl Fx {
             out.push(s);
         }
         for x in &self.waves {
+            if hidden("waves") {
+                break;
+            }
             let k = x.age / x.time;
             let ease = 1.0 - (1.0 - k).powi(3);
             let r = x.r * (0.2 + 0.8 * ease);
@@ -2956,6 +2962,9 @@ impl Fx {
         }
         let flash_k = spellstorm::knobs::flash_brightness() as f32;
         for g in &self.glows {
+            if hidden("glows") {
+                break;
+            }
             let k = g.age / g.time;
             let size = g.size * (1.0 - 0.85 * k * k);
             let c3 = linear3([g.c[0], g.c[1], g.c[2]]);
@@ -2964,6 +2973,9 @@ impl Fx {
             out.push(glow_sprite(g.at, size, Cell::HaloIn, inner * 0.9 * 1.4 * flash_k));
         }
         for z in &self.zaps {
+            if hidden("zaps") {
+                break;
+            }
             let c3 = linear3([z.c[0], z.c[1], z.c[2]]);
             let core = c3.lerp(Vec3::ONE, 0.8);
             for p in z.pts.windows(2) {
@@ -2977,9 +2989,14 @@ impl Fx {
                 out.push(Sprite::shaft(mid, [z.width, len + z.width * 0.5], d / len, IMAGE, uv(Cell::Line), core * 4.0));
             }
         }
-        out.extend(self.live.iter().copied());
+        if !hidden("live") {
+            out.extend(self.live.iter().copied());
+        }
         let min_k = 2.0 * (cam.fov_y * 0.5).tan() / 1080.0 * 5.0;
         for p in &self.parts {
+            if hidden("parts") {
+                break;
+            }
             let e = &self.ems[p.em as usize];
             let k = p.age / p.life;
             let c = e.ramp.at(k);
@@ -3091,6 +3108,14 @@ impl Solid for Sprite {
         self.alpha_cut = 0.0;
         self
     }
+}
+
+/// SPELLSTORM_HIDE=parts,live,...: leave those kinds of effect sprites out
+/// (scars, waves, glows, zaps, live, parts; blasts, marks, shrines, debris in the
+/// view), to find which one draws something.
+pub fn hidden(tag: &str) -> bool {
+    static HIDE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    HIDE.get_or_init(|| std::env::var("SPELLSTORM_HIDE").map(|v| v.split(',').map(|x| x.trim().to_string()).collect()).unwrap_or_default()).iter().any(|x| x == tag)
 }
 
 fn glow_sprite(at: Vec3, size: f32, cell: Cell, radiance: Vec3) -> Sprite {
