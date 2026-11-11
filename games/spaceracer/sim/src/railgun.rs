@@ -3,6 +3,8 @@
 use glam::{Affine3A, Vec2, Vec3};
 use crate::{environment::Obstacle, race::{Race,Weapon}};
 pub const MUZZLE:Vec3=Vec3::new(0.,1.47,1.9);
+/// Metres the road may bulge over the shot line before it blocks it.
+pub const ROAD_CLEARANCE:f32=3.;
 #[derive(Clone,Copy,Debug,serde::Serialize,serde::Deserialize)]
 pub struct Aim {pub eye:[f32;3],pub forward:[f32;3],pub right:[f32;3],pub up:[f32;3],pub radius:f32}
 impl Aim {
@@ -132,7 +134,10 @@ impl Race {
             let wall = self.obstacles.iter()
                 .filter_map(|obstacle| obstacle.trace(from, shot.to).map(|hit| hit.0))
                 .min_by(f32::total_cmp);
-            let road = self.world.track.sweep_road(from, shot.to).map(|hit| hit.t);
+            // The road only blocks when it rises well over the line, so a gentle
+            // crest between two hover racers does not eat a shot inside the circle.
+            let lift = pose.basis.y_axis * ROAD_CLEARANCE;
+            let road = self.world.track.sweep_road(from + lift, shot.to + lift).map(|hit| hit.t);
             if let Some(fraction) = wall.into_iter().chain(road).min_by(f32::total_cmp) {
                 shot.to = from.lerp(shot.to, fraction);
                 shot.target = None;
