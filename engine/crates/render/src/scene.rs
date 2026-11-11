@@ -245,6 +245,28 @@ impl GeometryCategory {
     pub const fn exclusion_bit(self) -> u32 { 1 << self as u32 }
 }
 
+/// Camera views belonging to one player, including both eyes in stereo.
+#[derive(Clone, Copy)]
+pub struct PlayerViews(u8);
+
+impl PlayerViews {
+    pub fn for_player(view_players: &[usize], player: usize) -> Self {
+        let mut mask = 0;
+        for (view, &owner) in view_players.iter().take(u8::BITS as usize).enumerate() {
+            if owner == player {
+                mask |= 1 << view;
+            }
+        }
+        Self(mask)
+    }
+
+    /// Hidden views for first-person geometry.
+    pub fn hide_from_others(self) -> u8 { !self.0 }
+
+    /// Hidden views for the owner's world model.
+    pub fn hide_from_owner(self) -> u8 { self.0 }
+}
+
 impl GpuInstance {
     pub const fn category(&self) -> GeometryCategory {
         match (self.flags & INSTANCE_CATEGORY_MASK) >> INSTANCE_CATEGORY_SHIFT {

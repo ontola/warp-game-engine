@@ -526,13 +526,11 @@ impl PlayersView {
     /// (`slots[k]` is drawn in view k). It still casts its shadow.
     pub fn hide_own(&mut self, scene: &mut Scene, slots: &[usize]) {
         for (i, m) in self.meshes.iter_mut().enumerate() {
-            m.own_views = 0;
-            for part in 0..PARTS { scene.instances[self.first + i * PARTS + part].hide_in_views(0); }
-        }
-        for (k, &s) in slots.iter().enumerate().take(8) {
-            let Some(m) = self.meshes.get_mut(s) else { continue };
-            m.own_views |= 1 << k;
-            for part in 0..PARTS { scene.instances[self.first + s * PARTS + part].hide_in_views(m.own_views); }
+            m.own_views = render::scene::PlayerViews::for_player(slots, i).hide_from_owner();
+            let first = self.first + i * PARTS;
+            for part in &mut scene.instances[first..first + PARTS] {
+                part.hide_in_views(m.own_views);
+            }
         }
     }
 

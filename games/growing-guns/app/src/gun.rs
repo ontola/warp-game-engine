@@ -617,6 +617,7 @@ pub struct Rig {
     previous_pose: Vec<Affine3A>,
     contacts: Contacts,
     previous_contacts: Contacts,
+    previous_muzzle: Vec3,
 }
 
 impl Default for Rig {
@@ -630,7 +631,7 @@ impl Rig {
         let s = Stats::default();
         let build = build_with_detail(&Look::of(&s), detail);
         let contacts = build.wrist_contacts();
-        Rig { detail, shown: s, build, contacts, previous_contacts: contacts, grow: None,
+        Rig { previous_muzzle: build.muzzle, detail, shown: s, build, contacts, previous_contacts: contacts, grow: None,
             heat: 0.0, bolt_back: 0.0, bolt_cycle: 0.08, spin_speed: 0.0, spin: 0.0, previous_pose: Vec::new() }
     }
     /// Snap to these stats (a new round, a respawn).
@@ -639,6 +640,7 @@ impl Rig {
         self.previous_pose.clear();
         if interrupted || s != self.shown { self.shown = s; self.build = build_with_detail(&Look::of(&s), self.detail); self.contacts = self.build.wrist_contacts(); }
         self.previous_contacts = self.contacts;
+        self.previous_muzzle = self.build.muzzle;
     }
 
     /// Morph from the currently visible model, including an interrupted morph.
@@ -680,6 +682,7 @@ impl Rig {
 
     pub fn update(&mut self, dt: f32) {
         self.previous_contacts = self.contacts;
+        self.previous_muzzle = self.build.muzzle;
         let previous = self.grow.as_ref().map(|_| self.build.parts.iter().map(|p| ((p.key, p.shape, p.mat), p.xf)).collect::<std::collections::HashMap<_, _>>());
         if let Some(g) = &mut self.grow {
             g.elapsed += dt.min(0.05);
@@ -698,6 +701,11 @@ impl Rig {
         if self.bolt_back > 0.0 { self.bolt_back = (self.bolt_back - self.build.bolt_travel / self.bolt_cycle.max(0.001) * dt).max(0.0); }
         self.spin += self.spin_speed * dt;
         self.spin_speed *= (-2.5 * dt).exp();
+    }
+
+    /// Barrel exit in gun space at the same render time as the visible parts.
+    pub fn muzzle_at(&self, alpha: f32) -> Vec3 {
+        self.previous_muzzle.lerp(self.build.muzzle, alpha)
     }
 
     pub fn contacts_at(&self, alpha: f32) -> Contacts {
@@ -892,6 +900,21 @@ mod tests {
         assert_eq!(r.bolt_back, 0.0);
         let (_, _, drop) = reload_pose(0.4);
         assert!(drop > 1.0 && reload_pose(1.0).2 == 0.0 && reload_pose(0.0).0 == Vec3::ZERO);
+    }
+
+    #[test]
+    fn growing_muzzle_interpolates_and_resets_with_the_weapon() {
+        let mut rig = Rig::default();
+        let stock = rig.build.muzzle;
+        rig.grow_to(Stats { spread: 0.0, ..Default::default() });
+        for _ in 0..20 { rig.update(0.05); }
+        let previous = rig.build.muzzle;
+        rig.update(0.05);
+        let current = rig.build.muzzle;
+        assert!(current.distance(previous) > 0.001);
+        assert!(rig.muzzle_at(0.5).abs_diff_eq(previous.lerp(current, 0.5), 1e-6));
+        rig.set(Stats::default());
+        assert_eq!(rig.muzzle_at(0.0), stock);
     }
 
     #[test]

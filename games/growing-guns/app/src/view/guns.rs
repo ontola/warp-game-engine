@@ -82,7 +82,7 @@ impl Guns {
     }
     pub fn is_tracked(&self, player: usize) -> bool { self.tracked.get(player).is_some_and(Option::is_some) }
     pub fn tracked_muzzle(&self, player: usize, pose: Affine3A) -> Vec3 {
-        pose.transform_point3(self.rigs[player].build.muzzle)
+        pose.transform_point3(self.rigs[player].muzzle_at(1.0))
     }
 
     // Both the weapon mesh and the support wrist use the same placement.
@@ -156,6 +156,7 @@ impl Guns {
         for i in 0..self.rigs.len() {
             // Slots past the players (a coop wave's enemies gone): empty.
             let Some(p) = world.players.get(i) else {
+                self.muzzles[i] = None;
                 for first in [self.fp[i], self.tp[i]] { empty(scene, first, 0, self.parts); }
                 continue;
             };
@@ -188,7 +189,8 @@ impl Guns {
                     pos + Vec3::Y * 0.05 + rot * Vec3::new(0.45, 0.0, -0.12))
             };
             let visible = p.alive && (!self.tracking[i] || self.tracked[i].is_some());
-            self.muzzles[i] = visible.then(|| [fp.transform_point3(rig.build.muzzle), tp.transform_point3(rig.build.muzzle)]);
+            let exit = rig.muzzle_at(alpha);
+            self.muzzles[i] = visible.then(|| [fp.transform_point3(exit), tp.transform_point3(exit)]);
             for (first, xf, drop) in [(self.fp[i], fp, reload.view_drop), (self.tp[i], tp, reload.hand_drop)] {
                 let children = rig.pose_at(drop, alpha).take(if visible { self.parts } else { 0 })
                     .map(|(part, local)| (self.mesh(part.shape, part.mat, i), local));
@@ -262,20 +264,14 @@ impl Guns {
     /// Each local player sees only their own first-person gun, and not
     /// their own third-person one.
     pub fn hide_own(&mut self, scene: &mut Scene, slots: &[usize]) {
-        self.local.fill(false);
-        for (&tp, &fp) in self.tp.iter().zip(&self.fp) {
-            for n in 0..self.parts {
-                scene.instances[tp + n].hide_in_views(0);
-                scene.instances[fp + n].hide_in_views(0xff);
+        for (player, (&fp, &tp)) in self.fp.iter().zip(&self.tp).enumerate() {
+            let views = render::scene::PlayerViews::for_player(slots, player);
+            self.local[player] = views.hide_from_owner() != 0;
+            for part in &mut scene.instances[fp..fp + self.parts] {
+                part.hide_in_views(views.hide_from_others());
             }
-        }
-        for &s in slots { if let Some(l) = self.local.get_mut(s) { *l = true; } }
-        for &s in slots.iter().take(8) {
-            if s >= self.tp.len() { continue; }
-            for n in 0..self.parts {
-                let mask = slots.iter().enumerate().take(8).filter(|(_, slot)| **slot == s).fold(0u8, |m, (v, _)| m | (1 << v));
-                scene.instances[self.tp[s] + n].hide_in_views(mask);
-                scene.instances[self.fp[s] + n].hide_in_views(!mask);
+            for part in &mut scene.instances[tp..tp + self.parts] {
+                part.hide_in_views(views.hide_from_owner());
             }
         }
     }
@@ -636,6 +632,27 @@ mod xr_tests {
         assert_eq!(hidden(guns.fp[1]) & 3,3);
         assert_eq!(hidden(guns.tp[1]) & 3,0);
     }
+    #[test]
+    fn split_screen_reassignment_updates_every_gun_part() {
+        let mut scene = Scene::default();
+        let mut guns = Guns::reserve_with_detail(&mut scene, 3, gun::Detail::Low);
+        for (slots, owners) in [
+            (&[2, 0][..], [2u8, 0, 1]),
+            (&[1, 1, 0][..], [4, 3, 0]),
+            (&[][..], [0, 0, 0]),
+        ] {
+            guns.hide_own(&mut scene, slots);
+            for (player, mask) in owners.into_iter().enumerate() {
+                assert_eq!(guns.local[player], mask != 0);
+                for (first, hidden) in [(guns.fp[player], !mask), (guns.tp[player], mask)] {
+                    for instance in &scene.instances[first..first + guns.parts] {
+                        assert_eq!((instance.flags >> render::scene::HIDE_IN_VIEW_SHIFT) as u8, hidden);
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn low_guns_reduce_geometry_without_glass_or_mounting_changes() {
         use gun::{Detail, Look, Mat};
