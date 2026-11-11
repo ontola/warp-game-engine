@@ -77,6 +77,15 @@ fn pack_emission(rgb: Vec3) -> u32 {
     q.x | (q.y << 9) | (q.z << 18) | ((exponent as u32) << 27)
 }
 
+/// One axis of sky/sun transport in a word: three 10-bit square-root
+/// encoded fractions (the shader squares them back) and the invalid flag
+/// (z above 1.5) in the top bit. Square roots keep a dark room's 0.1 % sky
+/// access apart from 0.2 %; linear 10 bits would band it.
+pub fn pack_transport(v: Vec3) -> u32 {
+    let q = |x: f32| (x.clamp(0.0, 1.0).sqrt() * 1023.0).round() as u32;
+    q(v.x) | (q(v.y) << 10) | (q(v.z) << 20) | (u32::from(v.z > 1.5) << 31)
+}
+
 /// Mode 7: sky/sun transport plus static RGB emission, in the existing 18
 /// words per probe. Optional planes use the spare third words of four axes.
 pub fn pack_sky_emission(grid: &Grid, sky: &[Probe], emission: &[Probe], planes: &[[f32;4]]) -> Result<Vec<u32>,String> {
@@ -89,8 +98,7 @@ pub fn pack_sky_emission(grid: &Grid, sky: &[Probe], emission: &[Probe], planes:
     for (i,p) in sky.iter().enumerate() {
         for (a,v) in p.axes.iter().enumerate() {
             let at=8+i*18+a*3;
-            let q=|x:f32| (x.clamp(0.0,1.0)*1023.0).round() as u32;
-            words[at]=q(v.x)|(q(v.y)<<10)|(q(v.z)<<20)|(u32::from(v.z>1.5)<<31);
+            words[at]=pack_transport(*v);
             words[at+1]=pack_emission(emission[i].axes[a]);
             words[at+2]=if a<4 && !planes.is_empty() { planes[i][a].to_bits() } else { 0 };
         }

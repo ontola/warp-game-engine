@@ -1662,9 +1662,7 @@ impl Renderer {
             words[7]=if std::env::var("WARP_SKY_TRILINEAR").as_deref()==Ok("1") { 6 } else { 4 };
             for (i,p) in probes.iter().enumerate() {
                 for (a,v) in p.axes.iter().enumerate() {
-                    let invalid=u32::from(v.z>1.5);
-                    let q=|x:f32| (x.clamp(0.0,1.0)*1023.0).round() as u32;
-                    words[8+i*18+a*3]=q(v.x)|(q(v.y)<<10)|(q(v.z)<<20)|(invalid<<31);
+                    words[8+i*18+a*3]=crate::irradiance_volume::pack_transport(*v);
                 }
             }
         }
@@ -1699,8 +1697,7 @@ impl Renderer {
         words[7]=5;
         for (i,p) in probes.iter().enumerate() {
             for (a,v) in p.axes.iter().enumerate() {
-                let q=|x:f32| (x.clamp(0.0,1.0)*1023.0).round() as u32;
-                words[8+i*18+a*3]=q(v.x)|(q(v.y)<<10)|(q(v.z)<<20)|(u32::from(v.z>1.5)<<31);
+                words[8+i*18+a*3]=crate::irradiance_volume::pack_transport(*v);
             }
             for (j,slot) in [1,2,4,5].into_iter().enumerate() { words[8+i*18+slot]=planes[i][j].to_bits(); }
         }
