@@ -19,6 +19,7 @@ pub mod static_sun;
 pub mod debug_settings;
 pub mod bloom;
 pub(crate) mod reflection_mips;
+pub mod light_shapes;
 pub mod auto_exposure;
 pub mod hdr;
 pub mod debug_ui;

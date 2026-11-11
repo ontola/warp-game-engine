@@ -245,14 +245,17 @@ pub fn transmittance(medium: &Volumetric, distance: f32) -> f32 { (-medium.extin
 
 struct Target { size: (u32, u32), half: (u32, u32), scatter: wgpu::Texture, output: wgpu::Texture, uniform: wgpu::Buffer, occluders: wgpu::Buffer }
 
-struct Passes { scatter: wgpu::ComputePipeline, composite: wgpu::ComputePipeline, targets: Vec<Option<Target>> }
+struct Passes { scatter: wgpu::ComputePipeline, composite: wgpu::ComputePipeline, sampler: wgpu::Sampler, targets: Vec<Option<Target>> }
 
 impl Passes {
     fn new(gpu: &Gpu) -> Self {
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("volumetric"), source: wgpu::ShaderSource::Wgsl(shader_source().into()) });
         let pipe = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(entry), layout: None, module: &module,
             entry_point: Some(entry), compilation_options: Default::default(), cache: gpu.pipeline_cache() });
-        Self { scatter: pipe("scatter"), composite: pipe("composite"), targets: Vec::new() }
+        let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor { label: Some("volumetric light shapes"),
+            mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge, ..Default::default() });
+        Self { scatter: pipe("scatter"), composite: pipe("composite"), sampler, targets: Vec::new() }
     }
 }
 
@@ -277,6 +280,8 @@ pub(crate) struct ViewInput<'a> {
     pub depth_vp: Mat4,
     /// The sun: direction towards it and its irradiance (lux, RGB).
     pub sun: (Vec3, Vec3),
+    /// Light cookies and profiles (`light_shapes`).
+    pub light_shapes: &'a wgpu::TextureView,
 }
 
 impl VolumetricSlot {
@@ -288,10 +293,15 @@ impl VolumetricSlot {
     }
 
     /// Replace the scatter-only lights (already validated).
-    pub fn set_beams(&self, beams: &[LocalLight]) {
+    pub fn set_beams(&self, beams: &[LocalLight]) { self.set_beams_shaped(beams, &[]); }
+
+    /// `set_beams` with a cookie and profile per beam (missing: none); the
+    /// bounded, shadowed mode applies them (`light_shapes`).
+    pub fn set_beams_shaped(&self, beams: &[LocalLight], shapes: &[crate::light_shapes::LightShape]) {
         let mut state = self.0.lock().unwrap();
         if beams.is_empty() && state.beams.is_empty() { return; }
         state.beams = scattering_lights(beams, &vec![1.0; beams.len()]);
+        for (light, shape) in state.beams.iter_mut().zip(shapes) { light.source[3] = shape.packed(); }
     }
 
     /// The bounded, shadowed mode: the medium fills only `bounds` (at most
@@ -383,7 +393,8 @@ impl VolumetricSlot {
         let (scatter_v, output_v, input_v) = (view_of(&t.scatter), view_of(&t.output), view_of(input));
         let entry = |binding, resource| wgpu::BindGroupEntry { binding, resource };
         let scatter_bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("volumetric scatter"), layout: &passes.scatter.get_bind_group_layout(0), entries: &[
-            entry(0, t.uniform.as_entire_binding()), entry(1, wgpu::BindingResource::TextureView(view.depth)), entry(2, wgpu::BindingResource::TextureView(&scatter_v)), entry(6, t.occluders.as_entire_binding())] });
+            entry(0, t.uniform.as_entire_binding()), entry(1, wgpu::BindingResource::TextureView(view.depth)), entry(2, wgpu::BindingResource::TextureView(&scatter_v)), entry(6, t.occluders.as_entire_binding()),
+            entry(7, wgpu::BindingResource::TextureView(view.light_shapes)), entry(8, wgpu::BindingResource::Sampler(&passes.sampler))] });
         let composite_bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("volumetric composite"), layout: &passes.composite.get_bind_group_layout(0), entries: &[
             entry(0, t.uniform.as_entire_binding()), entry(1, wgpu::BindingResource::TextureView(view.depth)), entry(3, wgpu::BindingResource::TextureView(&scatter_v)),
             entry(4, wgpu::BindingResource::TextureView(&input_v)), entry(5, wgpu::BindingResource::TextureView(&output_v))] });
@@ -578,7 +589,7 @@ mod tests {
                 ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.25, g: 0.5, b: 1.0, a: 1.0 }), store: wgpu::StoreOp::Store } })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &depth_view, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store }), stencil_ops: None }),
                 timestamp_writes: None, occlusion_query_set: None, multiview_mask: None }));
-            let output = slot.render(&gpu, &mut enc, &medium, ViewInput { index: 0, input: &input, depth: &depth_view, depth_size: (w, h), camera, near: 0.1, depth_vp: vp, sun: (Vec3::Y, Vec3::ZERO) }).unwrap().unwrap();
+            let output = slot.render(&gpu, &mut enc, &medium, ViewInput { index: 0, input: &input, depth: &depth_view, depth_size: (w, h), camera, near: 0.1, depth_vp: vp, sun: (Vec3::Y, Vec3::ZERO), light_shapes: &crate::light_shapes::LightShapes::new(&gpu).view }).unwrap().unwrap();
             gpu.queue.submit([enc.finish()]);
             let half = read_rgba16(&gpu, &slot.0.lock().unwrap().passes.as_ref().unwrap().targets[0].as_ref().unwrap().scatter);
             let full = read_rgba16(&gpu, &output);
@@ -640,7 +651,7 @@ mod tests {
             let camera = Vec3::new(0.0, 8.0, 30.0);
             let vp = Mat4::perspective_infinite_reverse_rh(1.2, w as f32 / h as f32, 0.1) * Mat4::look_at_rh(camera, Vec3::new(0.0, 10.0, 0.0), Vec3::Y);
             let run = || { let mut enc = gpu.device.create_command_encoder(&Default::default());
-                slot.render(&gpu, &mut enc, &medium, ViewInput { index: 0, input: &input, depth: &depth_view, depth_size: (w, h), camera, near: 0.1, depth_vp: vp, sun: (Vec3::Y, Vec3::ZERO) }).unwrap();
+                slot.render(&gpu, &mut enc, &medium, ViewInput { index: 0, input: &input, depth: &depth_view, depth_size: (w, h), camera, near: 0.1, depth_vp: vp, sun: (Vec3::Y, Vec3::ZERO), light_shapes: &crate::light_shapes::LightShapes::new(&gpu).view }).unwrap();
                 gpu.queue.submit([enc.finish()]); gpu.wait(); };
             run();
             let n = 3;
