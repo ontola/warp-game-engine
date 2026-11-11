@@ -3,7 +3,7 @@
 Play a full desktop Growing Guns match with one local player, three bots and the procedural spectators:
 
 ```sh
-cargo run --release -p growing-guns-app --bin growing-guns -- play --warp-humans --skip-menu --seed 52
+cargo run --release -p growing-guns-app --bin growing-guns -- play --skip-menu --seed 52
 ```
 
 In this mode each player slot and bot gets a Warp Human from the arena seed. The game fixes standing height at 1.80 m and assigns the slot's shirt colour. Faces, hair, skin, shoulder breadth, waist and hips vary. The wardrobe selects a pullover, a short-sleeved T-shirt or a jacket, then colours trousers and shoes independently. A chest can be plain, have a two-digit number or carry a wordmark. The match binds the fitted body and clothing to the player skeleton at load time, so ordinary movement, hand sockets and ragdolls use the same model across respawns.
@@ -18,7 +18,7 @@ Rising velocity drives the change from toe-off to tucked knees. As the player de
 
 Add `--start-in-stands` to begin the match on a tread facing a neighbour at eye level. A standard player is 1.80 m tall with the camera at 1.60 m. Seeded spectators range from 1.55 to 1.95 m. The game grounds them on the same stepped geometry used for walking.
 
-Warp Humans matches default to packed seating with eight radial aisles. The generator spreads up to 15,000 seats over the whole bowl. Use `--crowd-density standard` for the earlier spacing. The stadium viewer and headless review accept both explicit settings and default to standard when launched without `--warp-humans`.
+Warp Humans matches default to packed seating with eight radial aisles. The generator spreads up to 15,000 seats over the whole bowl. Use `--crowd-density standard` for the earlier spacing. The stadium viewer and headless review accept both explicit settings and use the same packed default.
 
 The match supplies the seat identities, live positions, crowd reactions and per-player camera.
 
@@ -29,8 +29,7 @@ A single spectator hit emits twelve tumbling pieces from the GPU debris pool. Th
 
 The people render into the arena's HDR colour and depth buffers before transparency and post-processing.
 Each visible spectator receives the scene's sun shadow, floodlights and local lights at torso height during GPU detail selection. All detail levels share that sample; surface normals shape the response on faces, hair and clothing. Each visible surface samples the stadium's distance fog using its animated world position and the current camera. Shirts, faces and distant impostors take on the same atmospheric colour as adjacent masonry, including shadowed mist. The crowd does not cast individual shadows.
-The normal crowd is the default. The minimum graphics profile omits the stadium.
-Use the same flag with `shot` or `bench` for a repeatable match comparison.
+Desktop matches use Warp Humans for spectators, players and bots by default. GameNight profile colours also select the procedural player roster. Use `--no-warp-humans` for the older crowd and the unprofiled desktop roster. The minimum graphics profile omits the stadium.
 
 Launch the interactive desktop stadium viewer with:
 

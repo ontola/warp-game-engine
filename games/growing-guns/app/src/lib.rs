@@ -46,6 +46,10 @@ mod view;
 use growing_guns::{Event, World, TICK_HZ};
 use render::Gpu;
 
+fn warp_humans_enabled() -> bool {
+    !std::env::args_os().any(|arg| arg == "--no-warp-humans")
+}
+
 pub struct Args { pub list: Vec<String> }
 
 impl Args {
