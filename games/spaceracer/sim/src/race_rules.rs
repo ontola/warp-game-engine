@@ -14,10 +14,14 @@ impl Pose {
         self.basis.inverse() * (p - self.origin)
     }
 }
+/// Most roll (radians, ~7°) the craft shows from sliding sideways on the ground.
+pub const LEAN_MAX: f64 = 0.12;
 pub fn ground_pose(p: &Pilot, n: &Node, clock: f64, landing: Option<(Mat3, f32)>) -> Pose {
     let mut basis = n.frame(p.x)
         * Mat3::from_rotation_y(-p.heading as f32)
-        * Mat3::from_rotation_z((-p.slip * 0.004) as f32)
+        // Lean a little into the sideways motion (left when moving left) and
+        // stay mostly flat; saturates so a high steering gain cannot flip it.
+        * Mat3::from_rotation_z((LEAN_MAX * (p.slip / 60.0).tanh()) as f32)
         * Mat3::from_rotation_x((p.trim * if p.trim < 0.0 { 0.32 } else { 0.16 }) as f32);
     basis = basis
         * Mat3::from_rotation_x((-p.unload * 0.08) as f32)
@@ -198,6 +202,19 @@ impl Bump {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ground_lean_goes_into_the_slide_and_stays_small() {
+        let race = crate::race::Race::new(35, "normal", "city", 1, 1);
+        let n = race.world.track.sample(0.);
+        // Track x grows to the right, so negative slip moves the craft left.
+        for slip in [-20.0, -300.0, -5000.0] {
+            let p = Pilot { slip, ..Pilot::default() };
+            let up = ground_pose(&p, &n, 0., None).basis.y_axis;
+            let left = n.frame(0.).x_axis; // right-handed, y up, z forward: +x is left
+            assert!(up.dot(left) > 0., "leans left when sliding left ({slip})");
+            assert!(up.dot(n.frame(0.).y_axis) > (LEAN_MAX as f32).cos() - 1e-4, "stays nearly flat ({slip})");
+        }
+    }
     #[test]
     fn original_drafting_and_side_bump_sequences() {
         let data: serde_json::Value = serde_json::from_str(&crate::oracle("rules")).unwrap();
