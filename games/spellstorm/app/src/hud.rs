@@ -117,7 +117,13 @@ struct Hints {
     used_el: u32,
     wait: f32,
     now: Option<(u32, f32)>,
+    /// The words of the hint showing (they follow what is loaded).
+    text: String,
+    /// A hint just done: its words, ticked off and fading (Joep).
+    gone: Option<(String, f32)>,
 }
+/// Seconds a done hint shows its tick while it fades.
+const HINT_GONE: f32 = 1.2;
 
 /// The moves taught by a hint under a wizard until they have been used, in
 /// the order they are taught, a step at a time (Joep): one element loaded,
@@ -135,12 +141,13 @@ fn new_element(wz: &spellstorm::wizard::Wizard, used_el: u32) -> Option<El> {
     order.iter().chain(spellstorm::wizard::LB_ORDER.iter()).copied().find(|&e| wz.element_open(e) && used_el & (1 << e.idx()) == 0)
 }
 
-/// The button that loads base element `e` ("B"), or with LB held.
+/// The button that loads base element `e` ("{B}"), or with LB held; in
+/// braces, drawn as the pad's own button (hint_line).
 fn button_of(e: El) -> String {
     [(el::PAIR_A, "A"), (el::PAIR_B, "B"), (el::PAIR_X, "X"), (el::PAIR_Y, "Y")]
         .iter()
-        .find_map(|(pair, b)| pair.iter().position(|&x| x == e).map(|i| if i == 1 { format!("LB + {b}") } else { b.to_string() }))
-        .unwrap_or_else(|| "A".into())
+        .find_map(|(pair, b)| pair.iter().position(|&x| x == e).map(|i| if i == 1 { format!("{{lb}} {{{b}}}") } else { format!("{{{b}}}") }))
+        .unwrap_or_else(|| "{A}".into())
 }
 
 /// A hint's words for this wizard: their own first elements and buttons,
@@ -152,30 +159,30 @@ fn hint_text(bit: u32, wz: &spellstorm::wizard::Wizard, mods: &spellstorm::relic
     let name = |els: &[El]| spellstorm::compose(els, Form::Cast, mods).name;
     match bit {
         NEW_ELEMENT => match new_element(wz, used_el | wz.used_el) {
-            Some(n) => format!("New: press {} to load {}", button_of(n), n.name()),
+            Some(n) => format!("New: {} loads {}", button_of(n), n.name()),
             None => String::new(),
         },
-        used::NOVA => "New: hold RB, then let go, to cast a Nova round you".into(),
-        used::PLANT => "New: load elements, then click the left stick to plant them".into(),
-        used::ENCHANT => "New: load elements, then click the right stick to enchant your staff".into(),
-        used::LOAD => format!("Press {} to load {}", button_of(e), e.name()),
-        used::BOLT_EL if wz.queue.is_empty() => format!("Press {} to load {}, then push the right stick to shoot it", button_of(e), e.name()),
-        used::BOLT_EL => format!("Push the right stick to shoot {}", e.name()),
-        used::CAST => format!("Press {} to load {}, then RT to cast {}", button_of(e), e.name(), name(&[e])),
+        used::NOVA => "New: hold {rb_hold} and let go to cast a Nova round you".into(),
+        used::PLANT => "New: load elements, then click {ls} to plant them".into(),
+        used::ENCHANT => "New: load elements, then click {rs} to enchant your staff".into(),
+        used::LOAD => format!("{} loads {}", button_of(e), e.name()),
+        used::BOLT_EL if wz.queue.is_empty() => format!("{} loads {}, then {{rstick}} shoots it", button_of(e), e.name()),
+        used::BOLT_EL => format!("Push {{rstick}} to shoot {}", e.name()),
+        used::CAST => format!("{} loads {}, then {{rt}} casts {}", button_of(e), e.name(), name(&[e])),
         // The same lesson again for the other starting element (Joep).
         used::CAST_PAIR => {
             let e = if wz.used & used::CAST_FIRST == 0 { order[0] } else { order[1] };
-            format!("Press {} to load {}, then RT to cast {}", button_of(e), e.name(), name(&[e]))
+            format!("{} loads {}, then {{rt}} casts {}", button_of(e), e.name(), name(&[e]))
         }
-        used::ROLL => "Press LT to dodge".into(),
-        used::SWING => "Press RB to swing your sword".into(),
-        used::DEFLECT => "Swing RB into a shot to send it back".into(),
+        used::ROLL => "{lt} to dodge".into(),
+        used::SWING => "{rb} to swing your sword".into(),
+        used::DEFLECT => "Swing {rb} into a shot to send it back".into(),
         used::CAST2 => {
             let a = open.first().copied().unwrap_or(order[0]);
             let b = open.get(1).copied().unwrap_or(order[1]);
-            format!("New: load {} ({}) and {} ({}), then RT casts {}", a.name(), button_of(a), b.name(), button_of(b), name(&[a, b]))
+            format!("New: {} {} and {} {}, then {{rt}} casts {}", button_of(a), a.name(), button_of(b), b.name(), name(&[a, b]))
         }
-        used::SHAKE => "Elements loaded? Hold the right stick in to shake them out".into(),
+        used::SHAKE => "Elements loaded? Hold {rs} in to shake them out".into(),
         _ => String::new(),
     }
 }
@@ -315,14 +322,23 @@ impl Hud {
             }
             let key = if wz.player_id.is_empty() { format!("seat{}", wz.seat) } else { wz.player_id.clone() };
             let h = self.hints.entry(key).or_default();
+            if let Some((_, t)) = &mut h.gone {
+                *t += dt;
+                if *t > HINT_GONE {
+                    h.gone = None;
+                }
+            }
             h.used |= wz.used;
             h.used_el |= wz.used_el;
             let done = |bit: u32, used: u32, used_el: u32| if bit == NEW_ELEMENT { new_element(&wz, used_el).is_none() } else { used & bit == bit };
             if let Some((bit, t)) = &mut h.now {
                 *t += dt;
                 if done(*bit, h.used, h.used_el) {
+                    h.gone = Some((std::mem::take(&mut h.text), 0.0));
                     h.now = None;
                     h.wait = 0.0;
+                } else {
+                    h.text = hint_text(*bit, &wz, &w.a(id).mods, h.used_el);
                 }
                 continue;
             }
@@ -348,6 +364,9 @@ impl Hud {
                 _ => true,
             };
             h.now = HINTS.iter().copied().find(|&bit| !done(bit, h.used, h.used_el) && ready(bit)).map(|bit| (bit, 0.0));
+            if let Some((bit, _)) = h.now {
+                h.text = hint_text(bit, &wz, &w.a(id).mods, h.used_el);
+            }
         }
     }
 
@@ -495,12 +514,17 @@ impl Hud {
                 p.rect([x - bw * 0.5, by, bw * k, 7.0], [0.8, 0.12, 0.08, 1.0]);
             }
             let key = if wz.player_id.is_empty() { format!("seat{}", wz.seat) } else { wz.player_id.clone() };
-            if let Some((bit, t, used_el)) = self.hints.get(&key).and_then(|h| h.now.map(|n| (n.0, n.1, h.used_el))).filter(|_| a.alive && wz.bot.is_none()) {
-                let text = hint_text(bit, &wz, &a.mods, used_el);
-                if !text.is_empty() {
+            let shown = self.hints.get(&key).filter(|_| a.alive && wz.bot.is_none());
+            if let Some(h) = shown {
+                if let Some((_, t)) = h.now.filter(|_| !h.text.is_empty()) {
                     // In softly, then a slow pulse so it is noticed.
                     let a = (t / 0.4).min(1.0) * (0.8 + 0.2 * (t * 3.0).sin());
-                    p.text(&text, x, y + 84.0, body(), 24.0, [1.0, 0.92, 0.7, a], TextAlign::Center, 8.0);
+                    hint_line(&mut p, &h.text, x, y + 84.0, a, None);
+                } else if let Some((text, t)) = h.gone.as_ref().filter(|g| !g.0.is_empty()) {
+                    // Done (Joep): a tick in front, then it fades and rises.
+                    let k = (t / HINT_GONE).clamp(0.0, 1.0);
+                    let a = 1.0 - smooth01(((k - 0.35) / 0.65).clamp(0.0, 1.0));
+                    hint_line(&mut p, text, x, y + 84.0 - 10.0 * k * k, a, Some((t / 0.2).min(1.0)));
                 }
             }
         }
@@ -776,12 +800,94 @@ impl Painter<'_> {
             self.d.outline(id, outline * s * 0.5, bytes([0.0, 0.0, 0.0, 0.9 * c[3]]));
         }
     }
+    /// How wide `text` is drawn by `text`, in 1080-high units.
+    fn width(&self, text: &str, font: FontFace, size: f32) -> f32 {
+        let s = self.s;
+        let px = (size * s).max(1.0);
+        let px = if px < 16.0 { px.round() } else { 1.04f32.powf((px.ln() / 1.04f32.ln()).round()) }.min(500.0);
+        (render::hud::measure(text, font, px)[0] + 4.0) / s
+    }
     /// Centred, with a soft shadow below (the level card).
     fn shadow_text(&mut self, text: &str, x: f32, y: f32, font: FontFace, size: f32, c: C) {
         for (k, a) in [(6.0, 0.3), (4.0, 0.5)] {
             self.text(text, x, y + k, font, size, [0.0, 0.0, 0.0, a * c[3]], TextAlign::Center, 12.0);
         }
         self.text(text, x, y, font, size, c, TextAlign::Center, 0.0);
+    }
+}
+
+fn smooth01(t: f32) -> f32 {
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// A hint's line centred on `x`, its `{button}`s drawn as the pad's own
+/// buttons (Joep: icons, not "RT"), at opacity `a`; `tick` (0..1, how far
+/// it has popped in) puts a green tick in front for a hint just done.
+fn hint_line(p: &mut Painter, text: &str, x: f32, y: f32, a: f32, tick: Option<f32>) {
+    const SIZE: f32 = 24.0;
+    const K: f32 = 0.62;
+    if a <= 0.003 {
+        return;
+    }
+    // Words and buttons in turn.
+    let mut parts: Vec<(bool, &str)> = vec![];
+    let mut rest = text;
+    while let Some(i) = rest.find('{') {
+        let Some(j) = rest[i..].find('}') else { break };
+        if i > 0 {
+            parts.push((false, &rest[..i]));
+        }
+        parts.push((true, &rest[i + 1..i + j]));
+        rest = &rest[i + j + 1..];
+    }
+    if !rest.is_empty() {
+        parts.push((false, rest));
+    }
+    let wide = |kind: &str| -> f32 {
+        match kind.to_ascii_lowercase().as_str() {
+            "lb" | "rb" | "lt" | "rt" => 38.0,
+            "rb_hold" => 56.0,
+            "rstick" | "lstick" => 36.0,
+            _ => 30.0,
+        }
+    };
+    let words = |p: &Painter, t: &str| p.width(t, body(), SIZE);
+    let tick_w = if tick.is_some() { 34.0 } else { 0.0 };
+    let total: f32 = tick_w + parts.iter().map(|&(icon, t)| if icon { wide(t) } else { words(p, t) }).sum::<f32>();
+    let mut cx = x - total * 0.5;
+    // The buttons are shapes: drawn first, then faded with the vertices.
+    let v0 = p.d.vertices.len();
+    let t0 = p.d.text.len();
+    if let Some(k) = tick {
+        let c = Vec2::new(cx + 13.0, y);
+        let r = 12.0 * (0.6 + 0.4 * k) * (1.0 + 0.25 * (k * PI).sin());
+        p.circle(c, r + 1.5, [0.02, 0.06, 0.02, 1.0]);
+        p.circle(c, r, [0.3, 0.78, 0.32, 1.0]);
+        let q = |dx: f32, dy: f32| c + Vec2::new(dx, dy) * (r / 12.0);
+        p.line(q(-5.5, 0.5), q(-1.5, 4.5), 3.0, [1.0, 1.0, 1.0, 1.0]);
+        p.line(q(-1.5, 4.5), q(6.0, -4.5), 3.0, [1.0, 1.0, 1.0, 1.0]);
+        cx += tick_w;
+    }
+    let mut runs: Vec<(f32, &str)> = vec![];
+    for &(icon, t) in &parts {
+        if icon {
+            let w = wide(t);
+            crate::menu::pad_icon(p.d, p.s * K, &t.to_ascii_lowercase(), Vec2::new(cx + w * 0.5, y) / K);
+            cx += w;
+        } else {
+            runs.push((cx, t));
+            cx += words(p, t);
+        }
+    }
+    for v in &mut p.d.vertices[v0..] {
+        v.color[3] *= a;
+    }
+    for t in &mut p.d.text[t0..] {
+        t.color[3] = (t.color[3] as f32 * a).round() as u8;
+    }
+    let col = if tick.is_some() { [0.75, 1.0, 0.75, a] } else { [1.0, 0.92, 0.7, a] };
+    for (left, t) in runs {
+        p.text(t, left, y, body(), SIZE, col, TextAlign::Left, 8.0);
     }
 }
 
