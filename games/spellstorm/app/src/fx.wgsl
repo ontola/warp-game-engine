@@ -396,7 +396,7 @@ fn ground(s: GameSprite) -> vec4<f32> {
         let at = vec2(sn_hash(vec3(cell, 1.0)), sn_hash(vec3(cell, 2.0))) * 0.6 + 0.2;
         let d = length(fract(w * 6.0) - at);
         let tw = 0.5 + 0.5 * sin(t * (2.0 + 3.0 * h) + h * 40.0);
-        let star = select(0.0, 1.0, h > 0.97) * exp(-d * d * 260.0) * tw;
+        let star = select(0.0, 1.0, h > 0.97) * exp(-d * d * 30.0) * tw;
         c += vec3(0.9, 0.8, 1.0) * star;
         a *= 0.8;
     } else {
