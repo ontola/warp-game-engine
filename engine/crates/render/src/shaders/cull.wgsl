@@ -30,6 +30,8 @@ struct View {
     extra: vec4<f32>,        // x: alpha test threshold
     grass: vec4<f32>,        // source-grass fade start/end, shared with residency
     fog_cull: vec4<f32>,     // camera: fog distance, cull enable, sun visibility, category exclusion; sun views: z/w caster LOD diagnostics
+    lod_cams: array<vec4<f32>, 4>, // shared sun map: cameras (xyz, radians a pixel spans)
+    lod: vec4<f32>,          // x: camera count (0 = off), y: factor / texel metres
 };
 
 struct Cluster {
@@ -246,7 +248,19 @@ fn to_world(inst: Instance, p: vec3<f32>) -> vec3<f32> {
 // Screen-space size in pixels of `err` metres at the sphere's nearest point.
 fn projected(err: f32, c: vec3<f32>, r: f32) -> f32 {
     if view.params.z > 0.5 {
-        return err * view.cam.w;
+        // Shared sun map with distance LOD: a texel finer than what the
+        // nearest camera's pixel spans there cannot be seen. Evaluated per
+        // sphere like the perspective case, so parent/child cuts agree.
+        var shrink = 1.0;
+        if view.lod.x > 0.5 {
+            var span = 1e30;
+            for (var k = 0u; k < u32(view.lod.x); k++) {
+                let cam = view.lod_cams[k];
+                span = min(span, max(distance(c, cam.xyz) - r, 0.0) * cam.w);
+            }
+            shrink = max(1.0, span * view.lod.y);
+        }
+        return err * view.cam.w / shrink;
     }
     let d = max(distance(c, view.cam.xyz) - r, view.params.y);
     return err / d * view.cam.w;

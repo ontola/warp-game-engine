@@ -22,6 +22,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [handoff.md](handoff.md) is the running log of 23 October to 5 November
   2026, newest first.
 
+- [Sideways GPU cost: LOD error, culling switches, car shading, shadow distance LOD](2026-11-11-sideways-gpu-cost.md)
 - [Hair rendering in games and a scalp-rooted Warp experiment](2026-11-11-warp-humans-hair-research.md)
 - [Keeping seeded facial proportions within adult reference heads](2026-11-11-warp-humans-proportions.md)
 - [Close faces, gaze and eyelids](2026-11-10-warp-humans-close-faces.md)
