@@ -672,20 +672,22 @@ fn fast_set_args(count:u32) {
 }
 @compute @workgroup_size(1) fn fast_mode() {atomicStore(&state[80],1u);}
 @compute @workgroup_size(1) fn fast_begin() {fast_set_args(atomicLoad(&state[3]));atomicStore(&state[7],0u);}
-// Each round runs twice (state[88] the phase). First the camera and the
-// shadow tasks of trees whose shadow reserved this deep last frame, then the
-// other shadow tasks. The shadow splat cap is full in a forest (~37k refusals
+// Each round runs twice (state[88] the phase). First the camera tasks whose
+// error is FAST_URGENT times past the cut and the shadow tasks of trees whose
+// shadow reserved this deep last frame, then all the others. Camera: trees
+// turning into view near the camera stayed coarse balls for ~5 frames when
+// the camera splat cap refused them at random (Mancave, 9 November).
+// Shadows: The shadow splat cap is full in a forest (~37k refusals
 // per frame): racing for it re-dealt ~3.5k trees' shadow mips every frame and
 // dirtied the cached sun maps (2-12 ms spikes, Mancave 10 November). Now the
 // trees holding the budget keep it; newcomers get what is left.
+const FAST_URGENT: f32 = 4.0;
 fn fast_shadow_retained(task:vec4<u32>)->bool {
  return (demand[task.x+view.counts.x].bucket>>16u)>atomicLoad(&state[87]);
 }
 @compute @workgroup_size(64) fn fast_round(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
  let task=current[at];if task.z==0u {return;}
- let late=task.z==512u && !fast_shadow_retained(task);
- if late!=(atomicLoad(&state[88])!=0u) {return;}
  cut_scale=fast_scale(task.z);
  // Hysteresis: a tree the camera saw in detail last frame (more than one
  // record) keeps it down to CUT_HYSTERESIS times less error, so a small
@@ -694,8 +696,11 @@ fn fast_shadow_retained(task:vec4<u32>)->bool {
  let detailed=(task.z&256u)!=0u && atomicLoad(&demand[task.x].failed)>1u;
  if detailed {cut_scale=cut_scale/CUT_HYSTERESIS;}
  let t=trees[task.x];let node_id=select(task.y,t.info.x,task.y==NONE);let n=nodes[node_id];
- atomicAdd(&counters[4],1u);
  let scale=projected(t,n,task.z);
+ var late=task.z==512u && !fast_shadow_retained(task);
+ if task.z!=512u {late=!(task.y==NONE || (n.links.w&1u)!=0u || scale.x>=1e29 || scale.x*n.error.x>view.pixels.z*cut_scale*FAST_URGENT || scale.x*n.error.y>cut_scale*FAST_URGENT);}
+ if late!=(atomicLoad(&state[88])!=0u) {return;}
+ atomicAdd(&counters[4],1u);
  let wanted=task.y==NONE || (n.links.x!=NONE && ((n.links.w&1u)!=0u || scale.x>=1e29 || scale.x*n.error.x>view.pixels.z*cut_scale || scale.x*n.error.y>cut_scale));
  if !wanted {publish(task);return;}
  var first=node_id;var end=node_id+1u;
