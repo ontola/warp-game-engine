@@ -257,6 +257,26 @@ fn fs(in: VOut) -> @location(0) u32 {
     return in.id;
 }
 
+// Low-resolution stadium broadcast. The existing raster vertices include live
+// skinning, moving weapons and the current destructible geometry.
+@fragment fn fs_broadcast(in: VOut) -> @location(0) vec4f {
+    let n = normalize(cross(dpdy(in.world),dpdx(in.world)));
+    if alpha_cut(in) { discard; }
+    let m = material(in.material);
+    var base = m.tint;
+    if m.layer >= 0 && (m.flags & 16384u) == 0u {
+        let uv = select(in.uv, in.world.xz*m.scale, (m.flags & 16u)!=0u);
+        base *= textureSampleLevel(albedo,samp,uv,m.layer,max(2.,albedo_lod_floor(m.layer))).rgb;
+    }
+    let normal = select(-n,n,dot(n,view.cam.xyz-in.world)>=0.);
+    let sky = view.lod_cams[0].w*(0.5+0.25*normal.y);
+    let sun = view.lod_cams[1].rgb*max(dot(normal,view.lod_cams[0].xyz),0.);
+    var lit = base*(0.25+(sky+sun)/3.14159);
+    if (m.flags & 1024u)!=0u { lit = base*max(0.4,m.scale*view.lod_cams[1].w); }
+    if (m.flags & 4096u)!=0u { lit=vec3f(1.8,0.42,0.055); }
+    return vec4f(lit/(1.+lit),1.);
+}
+
 // Opaque clusters (cull.wgsl masked_cluster false): no discard, so the
 // hardware can test and write depth before the fragment runs.
 @fragment
