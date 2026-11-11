@@ -114,6 +114,7 @@ pub struct Hud {
 #[derive(Default)]
 struct Hints {
     used: u32,
+    used_el: u32,
     wait: f32,
     now: Option<(u32, f32)>,
 }
@@ -121,7 +122,16 @@ struct Hints {
 /// The moves taught by a hint under a wizard until they have been used, in
 /// the order they are taught, a step at a time (Joep): one element loaded,
 /// shot, cast; dodging and the sword; two elements together; shaking.
-const HINTS: [u32; 8] = [used::LOAD, used::BOLT_EL, used::CAST, used::ROLL, used::SWING, used::DEFLECT, used::CAST2, used::SHAKE];
+const HINTS: [u32; 12] = [NEW_ELEMENT, used::NOVA, used::PLANT, used::ENCHANT, used::LOAD, used::BOLT_EL, used::CAST, used::ROLL, used::SWING, used::DEFLECT, used::CAST2, used::SHAKE];
+/// Not a move: an element learned and never loaded yet. After a new skill's
+/// card, its hint stays until it has been used (Joep).
+const NEW_ELEMENT: u32 = 1 << 30;
+
+/// The first element open to this wizard that they never loaded.
+fn new_element(wz: &spellstorm::wizard::Wizard, used_el: u32) -> Option<El> {
+    let order = spellstorm::wizard::ELEMENT_ORDER[wz.element_order % spellstorm::wizard::ELEMENT_ORDER.len()];
+    order.iter().chain(spellstorm::wizard::LB_ORDER.iter()).copied().find(|&e| wz.element_open(e) && used_el & (1 << e.idx()) == 0)
+}
 
 /// The button that loads base element `e` ("B"), or with LB held.
 fn button_of(e: El) -> String {
@@ -133,12 +143,19 @@ fn button_of(e: El) -> String {
 
 /// A hint's words for this wizard: their own first elements and buttons,
 /// and the spells those make.
-fn hint_text(bit: u32, wz: &spellstorm::wizard::Wizard, mods: &spellstorm::relics::Mods) -> String {
+fn hint_text(bit: u32, wz: &spellstorm::wizard::Wizard, mods: &spellstorm::relics::Mods, used_el: u32) -> String {
     let order = spellstorm::wizard::ELEMENT_ORDER[wz.element_order % spellstorm::wizard::ELEMENT_ORDER.len()];
     let open: Vec<El> = order.iter().copied().filter(|&e| wz.element_open(e)).collect();
     let e = wz.queue.slots.first().copied().or(open.first().copied()).unwrap_or(order[0]);
     let name = |els: &[El]| spellstorm::compose(els, Form::Cast, mods).name;
     match bit {
+        NEW_ELEMENT => match new_element(wz, used_el | wz.used_el) {
+            Some(n) => format!("New: press {} to load {}", button_of(n), n.name()),
+            None => String::new(),
+        },
+        used::NOVA => "New: hold RB, then let go, to cast a Nova round you".into(),
+        used::PLANT => "New: load elements, then click the left stick to plant them".into(),
+        used::ENCHANT => "New: load elements, then click the right stick to enchant your staff".into(),
         used::LOAD => format!("Press {} to load {}", button_of(e), e.name()),
         used::BOLT_EL if wz.queue.is_empty() => format!("Press {} to load {}, then push the right stick to shoot it", button_of(e), e.name()),
         used::BOLT_EL => format!("Push the right stick to shoot {}", e.name()),
@@ -292,9 +309,11 @@ impl Hud {
             let key = if wz.player_id.is_empty() { format!("seat{}", wz.seat) } else { wz.player_id.clone() };
             let h = self.hints.entry(key).or_default();
             h.used |= wz.used;
+            h.used_el |= wz.used_el;
+            let done = |bit: u32, used: u32, used_el: u32| if bit == NEW_ELEMENT { new_element(&wz, used_el).is_none() } else { used & bit != 0 };
             if let Some((bit, t)) = &mut h.now {
                 *t += dt;
-                if h.used & *bit != 0 {
+                if done(*bit, h.used, h.used_el) {
                     h.now = None;
                     h.wait = 0.0;
                 }
@@ -304,14 +323,22 @@ impl Hud {
             if h.wait < HINT_WAIT {
                 continue;
             }
+            // A new skill's hint waits for its card to go (Joep).
+            let cards = !self.unlocks.is_empty();
             let ready = |bit: u32| match bit {
+                // Only something learned later: the first elements are the
+                // basics' own hints.
+                NEW_ELEMENT => !cards && h.used & used::CAST != 0,
+                used::NOVA => !cards && wz.form_open(Form::Nova),
+                used::PLANT => !cards && wz.form_open(Form::Plant),
+                used::ENCHANT => !cards && wz.form_open(Form::Enchant),
                 used::ROLL | used::SWING => fight,
                 used::DEFLECT => shots && h.used & used::SWING != 0,
                 used::CAST2 => wz.queue.size >= 2 && h.used & used::CAST != 0,
                 used::SHAKE => !wz.queue.is_empty() && h.used & used::CAST != 0,
                 _ => true,
             };
-            h.now = HINTS.iter().copied().find(|&bit| h.used & bit == 0 && ready(bit)).map(|bit| (bit, 0.0));
+            h.now = HINTS.iter().copied().find(|&bit| !done(bit, h.used, h.used_el) && ready(bit)).map(|bit| (bit, 0.0));
         }
     }
 
@@ -459,8 +486,8 @@ impl Hud {
                 p.rect([x - bw * 0.5, by, bw * k, 7.0], [0.8, 0.12, 0.08, 1.0]);
             }
             let key = if wz.player_id.is_empty() { format!("seat{}", wz.seat) } else { wz.player_id.clone() };
-            if let Some((bit, t)) = self.hints.get(&key).and_then(|h| h.now).filter(|_| a.alive && wz.bot.is_none()) {
-                let text = hint_text(bit, &wz, &a.mods);
+            if let Some((bit, t, used_el)) = self.hints.get(&key).and_then(|h| h.now.map(|n| (n.0, n.1, h.used_el))).filter(|_| a.alive && wz.bot.is_none()) {
+                let text = hint_text(bit, &wz, &a.mods, used_el);
                 if !text.is_empty() {
                     // In softly, then a slow pulse so it is noticed.
                     let a = (t / 0.4).min(1.0) * (0.8 + 0.2 * (t * 3.0).sin());
