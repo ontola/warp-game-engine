@@ -7,7 +7,7 @@
 //! practice strip (practice.gd) for wizards who know nothing yet.
 
 use crate::El;
-use crate::enemy::{self, KINDS, Spawn};
+use crate::enemy::{self, Spawn, kinds};
 use crate::fx::{self, C, Ev};
 use crate::level::Level;
 use crate::relics;
@@ -437,10 +437,10 @@ impl World {
         while count > 0 {
             // Some come in packs (hellhounds): the whole pack at once.
             let k = enemy::kind(pool[self.run.rng.pick(pool.len())]);
-            if KINDS[k].solo && self.run.spawn_queue.iter().any(|q| q.0 == k) {
+            if kinds()[k].solo && self.run.spawn_queue.iter().any(|q| q.0 == k) {
                 continue;
             }
-            for _ in 0..KINDS[k].pack {
+            for _ in 0..kinds()[k].pack {
                 self.run.spawn_queue.push((k, self.run.tag));
                 count -= 1;
             }
@@ -457,7 +457,7 @@ impl World {
         let champ = (self.run.rng.f() as f64) < 0.06 + 0.03 * depth;
         // A boss must stay a fight however many tomes the party has stacked
         // (Joep: the Drowned King went down too easily).
-        let hp_scale = if KINDS[k].boss { hp_scale * self.boss_toughness() } else { hp_scale };
+        let hp_scale = if kinds()[k].boss { hp_scale * self.boss_toughness() } else { hp_scale };
         if telegraph {
             self.summon_circle(at);
             *self.run.incoming.entry(tag).or_insert(0) += 1;
@@ -488,7 +488,7 @@ impl World {
     /// The summoning is over: in it comes, unless the fight already ended.
     pub fn summoned(&mut self, k: usize, at: Vec3, tag: i32, hp_scale: f64, champ: bool) {
         *self.run.incoming.entry(tag).or_insert(1) -= 1;
-        if self.run.state != State::Fight && !KINDS[k].boss {
+        if self.run.state != State::Fight && !kinds()[k].boss {
             return;
         }
         self.spawned(k, at, tag, hp_scale, champ);
@@ -496,7 +496,7 @@ impl World {
 
     fn spawned(&mut self, k: usize, at: Vec3, tag: i32, hp_scale: f64, champ: bool) {
         let id = self.add_enemy(k, at, hp_scale, champ, tag);
-        if KINDS[k].boss {
+        if kinds()[k].boss {
             self.run.boss = Some(id);
         }
     }
@@ -755,7 +755,7 @@ impl World {
                     self.spawn_enemy(b, Vec3::new(c.x, 0.0, c.y), false, -1);
                     let sub = self.level.biome().name.to_string();
                     self.ev(Ev::Banner {
-                        title: KINDS[b].name.to_string(),
+                        title: kinds()[b].name.to_string(),
                         sub,
                         c: fx::rgb(1.0, 0.7, 0.3),
                     });
@@ -768,7 +768,7 @@ impl World {
             self.run.spawn_t = 0.35;
             let (k, tag) = self.run.spawn_queue.remove(0);
             let at = self.spawn_spot(k);
-            self.spawn_enemy(k, at, KINDS[k].spawn != Spawn::Under, tag);
+            self.spawn_enemy(k, at, kinds()[k].spawn != Spawn::Under, tag);
         }
         // A shrine rises as soon as its own guards are beaten, whatever
         // packs came after them.
@@ -839,7 +839,7 @@ impl World {
             return self.level.spawn_point(&wz);
         }
         let l = &mut self.level;
-        match KINDS[k].spawn {
+        match kinds()[k].spawn {
             Spawn::Far => l.spawn_ahead(at, 15.0, 22.0, &wz, 0.0),
             Spawn::Under => l.spawn_ahead(at, 4.0, 10.0, &wz, 0.0),
             Spawn::Flank => l.spawn_ahead(at, -12.0, -5.0, &wz, 0.0),
@@ -902,7 +902,7 @@ impl World {
         } else {
             format!(
                 "{} is slain",
-                KINDS[enemy::kind(self.level.biome().boss)].name
+                kinds()[enemy::kind(self.level.biome().boss)].name
             )
         };
         for id in self.wizards.clone() {
@@ -1098,7 +1098,7 @@ impl World {
     }
 
     fn level_cleared(&mut self) {
-        if self.run.biome_index == crate::biome::BIOMES.len() - 1 {
+        if self.run.biome_index == crate::biome::biomes().len() - 1 {
             self.run.state = State::Won;
             self.run.end_t = 12.0;
             let sub = format!(

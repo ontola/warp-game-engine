@@ -321,7 +321,7 @@ mod tests {
         let lib = Library::builtin().unwrap();
         let c = Clips::new(&lib).unwrap();
         let kits = Kits::load(None).unwrap();
-        for k in spellstorm::enemy::KINDS.iter().filter(|k| rig(k.key).is_some()) {
+        for k in spellstorm::enemy::kinds().iter().filter(|k| rig(k.key).is_some()) {
             let kit = kits.kit(&format!("enemy/{}", k.key)).unwrap_or_else(|| panic!("no kit {}", k.key));
             let b = bind(rig(k.key).unwrap(), kit, &kits);
             let m = b.pose(&lib, &[Layer { clip: c.set.idle, t: 0.0, looped: true, w: 1.0 }]);
