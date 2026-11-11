@@ -285,7 +285,16 @@ impl Lobby {
     /// Use `station` for a player, or for the mouse (None), which is nobody:
     /// it never leaves the party or picks up a profile.
     pub(crate) fn use_station_as(&mut self, id: Option<&str>, station: Station, queue: bool) {
-        if !station.enabled || (!queue && station.loading) { return; }
+        if !station.enabled { return; }
+        // Y on a game still loading starts it once it has loaded.
+        if !queue && station.loading && matches!(station.kind.as_str(), "tv" | "queue") && station.action == "next" {
+            if !self.cooldown(format!("{}:wait", station.id)) { return; }
+            self.press_prompt(&station.id, "Y");
+            self.command(json!({"type": "next"}));
+            let title = if station.title.is_empty() { self.host.cabinet_queue().first().map(|e| e.title.clone()).unwrap_or_default() } else { station.title.clone() };
+            self.toast(format!("{} starts as soon as it has loaded.", if title.is_empty() { "The game".into() } else { title }), GREEN);
+            return;
+        }
         if !self.cooldown(format!("{}:{}:{}", station.id, station.action, if queue { "X" } else { "Y" })) { return; }
         self.press_prompt(if station.kind == "music" { "music" } else { &station.id }, if queue { "X" } else { "Y" });
         match station.kind.as_str() {

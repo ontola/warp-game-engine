@@ -296,9 +296,10 @@ impl Host {
         let Some(first) = queue.first() else {
             return Station { label: "No queued games for this party".into(), short: "Play".into(), action: "next".into(), enabled: false, ..Default::default() };
         };
-        // Y waits until the first game has loaded; the TV shows how far it is.
+        // Y while the first game loads is remembered: the host starts it once
+        // it is ready (pending transition); the TV shows how far it is.
         if self.loading_session(&first.game).is_some() {
-            return Station { label: format!("Loading {}", first.title), short: "Play".into(), action: "next".into(), enabled: false, ..Default::default() };
+            return Station { label: format!("Loading {}", first.title), short: "Play".into(), action: "next".into(), enabled: true, loading: true, title: first.title.clone(), ..Default::default() };
         }
         Station { label: format!("Play {}", first.title), short: "Play".into(), action: "next".into(), enabled: true, ..Default::default() }
     }
