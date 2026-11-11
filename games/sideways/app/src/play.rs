@@ -355,6 +355,9 @@ struct StartupGpu {
     build:stage_loading::Startup,
 }
 
+/// Frames drawn hidden after a prepare (the third is close to steady state).
+const WARM_FRAMES: u8 = 3;
+
 struct App {
     debug:crate::engine_debug::EngineDebug,
     hidden_editor:Option<bool>,
@@ -413,6 +416,10 @@ struct App {
     deferred_host: Vec<Command>,
     /// A prepared session to report ready after its first rendered frame.
     ready_due: Option<String>,
+    /// Hidden warm-up frames still owed after a prepare: the first visible
+    /// frames otherwise create DLSS features, size targets and fill caches
+    /// (seconds at 2 views), after the player already pressed Play.
+    warm_frames: u8,
     smoke_stage_requested: bool,
     /// Interactive play only: render scale and grass reach follow the frame rate.
     quality: Option<crate::adaptive_quality::AdaptiveQuality>,
@@ -434,6 +441,19 @@ impl App {
             s.pause(self.paused || invisible);
             s.update(&self.race, &cams[..self.args.views.min(cams.len())], dt);
         }
+    }
+
+    /// The window's size once shown: the monitor when it will be fullscreen
+    /// (a party host always shows it fullscreen), else the window's own.
+    fn shown_size(&self) -> PhysicalSize<u32> {
+        let Some(window)=self.window.as_ref() else {return PhysicalSize::new(self.args.size.0,self.args.size.1);};
+        let fullscreen=window.fullscreen().is_some()||self.resume_fullscreen.is_some()||self.host.as_ref().is_some_and(|h|h.launched_by_daemon);
+        let inner=window.inner_size();
+        if fullscreen && let Some(monitor)=window.current_monitor().or_else(||window.primary_monitor()) {
+            let m=monitor.size();
+            if m.width>0 && m.height>0 {return m;}
+        }
+        if inner.width>0 && inner.height>0 {inner} else {PhysicalSize::new(self.args.size.0,self.args.size.1)}
     }
 
     fn invisible(&self) -> bool {
@@ -1023,6 +1043,7 @@ impl App {
                     // while hidden): the host must not bring the game forward
                     // onto a loading screen; that work belongs behind the lobby.
                     self.ready_due=Some(session);
+                    self.warm_frames=WARM_FRAMES;
                 }
                 Command::Start{..}|Command::Resume{..}=>{self.paused=false;self.input_edges=[(0,false);4];self.accumulator=0.0;self.last_frame=Instant::now();self.managed_screen(true);}
                 Command::Pause{..}=>{self.accumulator=0.0;self.input_edges=[(0,false);4];self.managed_screen(false);}
@@ -1296,7 +1317,7 @@ impl App {
         // One exception: a prepared session reports ready only after a frame
         // of its stage is drawn, so that one frame is drawn, offscreen (below).
         // Skipping it too left every warm Sideways on "Preparing" forever.
-        if !running && self.ready_due.is_none() {if let Some(s)=&self.sound{s.pause(true);}self.trace(false);return Ok(());}
+        if !running && self.ready_due.is_none() && self.warm_frames==0 {if let Some(s)=&self.sound{s.pause(true);}self.trace(false);return Ok(());}
         let graphics_started=Instant::now();
         if let Some(q)=&mut self.quality {
             if !self.paused && self.focused && !rebuilt && q.frame(dt*1000.0,now) {println!("play: adaptive quality, {}",q.label());}
@@ -1310,7 +1331,9 @@ impl App {
         // window has not been minimised yet. The host owns the screen.
         let invisible = self.invisible() || !running;
         self.update_sound(&cams, dt as f32, invisible);
-        let size = self.window.as_ref().unwrap().inner_size();
+        // Hidden frames draw at the size the game will be shown at, so the
+        // first visible frame reuses their DLSS features and targets.
+        let size = if invisible && self.host.is_some() && self.args.smoke_frames==0 {self.shown_size()} else {self.window.as_ref().unwrap().inner_size()};
         if size.width == 0 || size.height == 0 { return Ok(()); }
         let render_light=self.debug.effective_light(&self.light);
         self.ambient_clock.advance(dt, self.race.frame, !invisible, running, self.paused);
@@ -1526,6 +1549,7 @@ impl App {
             if let Some(window)=&self.window {window.set_visible(true);window.request_redraw();}
             app::startup::ready();
         }
+        if ready_now && invisible && !running {self.warm_frames=self.warm_frames.saturating_sub(1);}
         if ready_now && let Some(session)=self.ready_due.take() && let Some(host)=self.host.as_mut() {
             if host.state.session==session {host.notify_ready(&session)?;}
         }
@@ -1976,7 +2000,7 @@ pub fn run(raw:&[String])->i32{
     let mut exhaust=crate::exhaust_fx::ExhaustFx::new(a.seed);exhaust.step(&race);
     let mut wheel_effects=crate::wheel_effects::WheelEffects::new(a.seed);wheel_effects.step(&race);
     let start_paused=a.start_paused;
-    let mut app=App{debug,hidden_editor:None,stats:app::stats::Stats::from_env(),hidden_stats:None,dev_bar:Default::default(),stats_frame_at:None,shift_down:false,alt_down:false,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,manners:Default::default(),hud_stats:serde_json::Value::Null,hud_samples:vec![],recorder:Default::default(),point_picker:None,feedback_writer:None,feedback_requested_at:None,cursor:None,screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,outputs:[None,None],deferred_host:vec![],ready_due:None,smoke_stage_requested:false,quality:None};
+    let mut app=App{debug,hidden_editor:None,stats:app::stats::Stats::from_env(),hidden_stats:None,dev_bar:Default::default(),stats_frame_at:None,shift_down:false,alt_down:false,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,manners:Default::default(),hud_stats:serde_json::Value::Null,hud_samples:vec![],recorder:Default::default(),point_picker:None,feedback_writer:None,feedback_requested_at:None,cursor:None,screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,outputs:[None,None],deferred_host:vec![],ready_due:None,warm_frames:0,smoke_stage_requested:false,quality:None};
     app.startup_timing.mark("host_input_application_setup");
     let events=match EventLoop::new(){Ok(e)=>e,Err(e)=>{eprintln!("play event loop: {e}");return 1;}};
     app.startup_timing.mark("event_loop_creation");
