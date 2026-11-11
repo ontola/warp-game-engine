@@ -160,9 +160,10 @@ fn clipmap_slot(view: usize, k: usize) -> usize { 1 + view * NEAR_LEVELS_MAX + k
 // The outermost level (96-192 m) splats a voxel LOD coarser: walking its
 // cells was a fixed ~1 ms whatever reached the raster (Mancave, bbf410b).
 fn near_level_voxel_m(k: usize) -> f32 { NEAR_SUN_VOXEL_M * std::f32::consts::SQRT_2.powi(k as i32) * if k >= 3 { 1.42 } else { 1.0 } }
-fn shadow_distance_lod() -> Option<f32> {
+fn shadow_distance_lod(light: f32) -> Option<f32> {
     static FACTOR: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
-    *FACTOR.get_or_init(|| std::env::var("KERN_SHADOW_DISTANCE_LOD").ok().and_then(|v| v.parse::<f32>().ok()).filter(|f| f.is_finite() && *f > 0.0))
+    let f = FACTOR.get_or_init(|| std::env::var("KERN_SHADOW_DISTANCE_LOD").ok().and_then(|v| v.parse::<f32>().ok())).unwrap_or(light);
+    (f.is_finite() && f > 0.0).then_some(f)
 }
 fn near_shadow_lod() -> f32 {
     static SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
@@ -507,6 +508,10 @@ pub struct Lighting {
     pub saturation: f32,
     /// Cluster error allowed on screen, in pixels.
     pub lod_pixels: f32,
+    /// Sun shadow casters may grow their LOD error to this many times what
+    /// one screen pixel of the nearest camera spans at their distance. 0 is
+    /// off; `KERN_SHADOW_DISTANCE_LOD=F` overrides (0 turns it off).
+    pub shadow_distance_lod: f32,
     /// 1: sky visibility, canopy sun and bounce from the GI volume; 0: off.
     pub gi: f32,
     /// Low-cost diffuse room return in lux, attenuated by material/contact AO.
@@ -674,6 +679,7 @@ impl Default for Lighting {
             contrast: 1.0,
             saturation: 1.0,
             lod_pixels: 1.0,
+            shadow_distance_lod: 0.0,
             gi: 1.0,
             indirect_fill_lux: 0.0,
             contact_occlusion: 1.0,
@@ -4550,12 +4556,12 @@ impl Renderer {
         let mut shadow_uniform=view_uniform(svp, shared_eye, SHADOW_SIZE as f32 / (2.0 * extent),
             [shadow_lod, 1.0, 1.0, MAX_VISIBLE as f32], [SHADOW_SIZE as f32; 4], light.alpha_cut);
         configure_sun_terrain_error(&mut shadow_uniform,self.sun_terrain_error);
-        // KERN_SHADOW_DISTANCE_LOD=F (off by default): a caster's LOD error
+        // Lighting::shadow_distance_lod / KERN_SHADOW_DISTANCE_LOD=F (off by default): a caster's LOD error
         // may grow to F x what one screen pixel of the nearest camera spans
         // at its distance, in shadow texels. Far trees cast coarser shadows
         // nobody can resolve. The map then depends on the cameras, so not
         // with the static sun cache.
-        if let Some(factor) = shadow_distance_lod().filter(|_| static_sun.is_none()) {
+        if let Some(factor) = shadow_distance_lod(light.shadow_distance_lod).filter(|_| static_sun.is_none()) {
             for (k, v) in views.iter().take(4).enumerate() {
                 let angle = 2.0 * (v.cam.fov_y * 0.5).tan() / v.h.max(1) as f32;
                 shadow_uniform.lod_cams[k] = [v.cam.pos.x, v.cam.pos.y, v.cam.pos.z, angle];
