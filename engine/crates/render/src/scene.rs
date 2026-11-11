@@ -461,6 +461,24 @@ pub fn sibling_map(albedo: &std::path::Path, kinds: &[&str]) -> Option<std::path
     kinds.iter().flat_map(|k| ["jpg", "png"].map(|e| albedo.with_file_name(format!("{prefix}_{k}{suffix}.{e}")))).find(|p| p.exists())
 }
 
+/// Decode an albedo with its sibling normal and material maps.
+fn decode_texture(path: &std::path::Path, encoding: NormalEncoding) -> Result<TextureSource, String> {
+    // The normal map sits beside the albedo: x_albedo.jpg, x_normal.jpg
+    // (or .png), or Poly Haven's x_diff_1k.jpg, x_nor_gl_1k.jpg.
+    let normal_path = sibling_map(path, &["normal", "nor_gl"]);
+    let (img, normal, orm) = crate::par::scope(|s| {
+        let n = s.spawn(|| normal_path.and_then(|p| crate::files::open_image(p).ok()).map(|i| {
+            let mut normal = i.to_rgba8();
+            encoding.decode(&mut normal);
+            normal
+        }));
+        let orm = s.spawn(|| material_map_beside(path));
+        (crate::files::open_image(path), n.join().unwrap(), orm.join().unwrap())
+    });
+    let img = img.map_err(|e| format!("{}: {e}", path.display()))?.to_rgba8();
+    Ok(TextureSource { name: path.display().to_string(), rgba: img, normal, orm: orm? })
+}
+
 /// The material map beside an albedo (`sibling_map`): `orm` or `arm`
 /// (packed occlusion, roughness, metalness), else whichever of `ao`,
 /// `rough` and `metal` exist, packed into one (a missing one is white,
@@ -901,21 +919,18 @@ impl Scene {
     /// (`sibling_map`, `material_map_beside`) with explicit normal encoding.
     /// Only the normal RGB is decoded; albedo and normal alpha stay untouched.
     pub fn add_texture_with_normal_encoding(&mut self, path: &std::path::Path, encoding: NormalEncoding) -> Result<i32, String> {
-        // The normal map sits beside the albedo: x_albedo.jpg, x_normal.jpg
-        // (or .png), or Poly Haven's x_diff_1k.jpg, x_nor_gl_1k.jpg.
-        let normal_path = sibling_map(path, &["normal", "nor_gl"]);
-        let (img, normal, orm) = crate::par::scope(|s| {
-            let n = s.spawn(|| normal_path.and_then(|p| crate::files::open_image(p).ok()).map(|i| {
-                let mut normal = i.to_rgba8();
-                encoding.decode(&mut normal);
-                normal
-            }));
-            let orm = s.spawn(|| material_map_beside(path));
-            (crate::files::open_image(path), n.join().unwrap(), orm.join().unwrap())
-        });
-        let img = img.map_err(|e| format!("{}: {e}", path.display()))?.to_rgba8();
-        self.textures.push(TextureSource { name: path.display().to_string(), rgba: img, normal, orm: orm? });
+        self.textures.push(decode_texture(path, encoding)?);
         Ok((self.textures.len() - 1) as i32)
+    }
+
+    /// `add_texture_with_normal_encoding` for several textures, decoded on
+    /// parallel threads; layers are consecutive, in the order given.
+    pub fn add_textures(&mut self, paths: &[(&std::path::Path, NormalEncoding)]) -> Result<Vec<i32>, String> {
+        let decoded = crate::par::scope(|s| {
+            let jobs: Vec<_> = paths.iter().map(|&(path, encoding)| s.spawn(move || decode_texture(path, encoding))).collect();
+            jobs.into_iter().map(|job| job.join().unwrap()).collect::<Result<Vec<_>, _>>()
+        })?;
+        Ok(decoded.into_iter().map(|texture| { self.textures.push(texture); (self.textures.len() - 1) as i32 }).collect())
     }
 
     /// Add an already decoded image to the texture array; returns its layer.

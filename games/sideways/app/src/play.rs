@@ -266,6 +266,14 @@ fn args(args: &[String]) -> Result<Args, String> {
         sound: crate::audio_out::Mode::parse(&opt("--sound", if smoke_frames > 0 { "off" } else { "pulse" }))? })
 }
 
+/// What a first-round scene depends on besides the fixed seed: the race
+/// settings (stage length, cars, weather, land). Later rounds draw their
+/// stage from the running random stream, so they have no key.
+fn stage_key(race: &Race) -> Option<serde_json::Value> {
+    if race.round != 1 || race.frame != 0 {return None;}
+    serde_json::to_value(&race.settings).ok()
+}
+
 fn race(a: &Args) -> Race {
     let settings = Settings { vegetation:a.nature.vegetation, stage_km: a.km, bots: a.views, rivals: 0, weather: Some(a.weather.clone()), land: a.land.clone(), ..Default::default() };
     Race::new(a.seed, settings, sideways::spec::Cars::load(None).expect("bundled car specifications"))
@@ -359,6 +367,8 @@ struct StartupGpu {
 const WARM_FRAMES: u8 = 3;
 
 struct App {
+    /// `stage_key` of the race `built` was made for.
+    built_for:Option<serde_json::Value>,
     debug:crate::engine_debug::EngineDebug,
     hidden_editor:Option<bool>,
     /// The engine's F3 profiler window and F-key strip, as in other Warp games.
@@ -592,6 +602,7 @@ impl App {
         let ordered:Vec<_>=self.view_order.iter().filter_map(|i|cams.get(*i)).take(self.args.views).collect();
         let positions:Vec<_>=if ordered.is_empty(){cams.iter().take(self.args.views).map(|c|c.pos).collect()}else{ordered.iter().map(|c|c.pos).collect()};
         self.built = visuals::build_live(&self.race.stage, &poses, &positions, self.live_edit.looks())?;
+        self.built_for = stage_key(&self.race);
         self.built.scene.texture_streaming = self.args.capture.is_none() && self.args.smoke_frames == 0;
         let tree_settings=self.debug.applied_tree_settings();
         let baseline=crate::tree_tuning::Baseline::prepare_optional_stage(&mut self.built.scene,&mut self.race.phys,tree_settings)?;
@@ -894,7 +905,7 @@ impl App {
             } else {match result {
                 Ok(loaded)=>{
                     let installing=Instant::now();
-                    self.race=loaded.race;self.built=loaded.built;self.light=loaded.light;self.sky_metadata=loaded.sky;
+                    self.race=loaded.race;self.built=loaded.built;self.built_for=stage_key(&self.race);self.light=loaded.light;self.sky_metadata=loaded.sky;
                     let tree_report=crate::tree_tuning::Baseline::stage_metadata(loaded.tree_baseline.as_ref(),loaded.tree_settings);
                     self.tree_baseline=loaded.tree_baseline;
                     self.debug.tree_committed(loaded.tree_settings,tree_report);
@@ -1032,12 +1043,22 @@ impl App {
                     self.seats=seats;self.args.views=self.seats.len().clamp(1,4);self.race.settings.bots=self.args.views;
                     self.apply_settings();
                     self.recorder=Default::default();
+                    // A preloaded game was built for exactly this stage and car
+                    // count: keep its scene and renderer (rebuilding them was
+                    // ~15 s on the Mancave, CPU scene + renderer + DLSS).
                     self.race=Race::new(self.args.seed,self.race.settings.clone(),sideways::spec::Cars::load(None).map_err(|e|e.to_string())?);
+                    let same_stage=self.graphics.is_some() && self.built_for.is_some() && stage_key(&self.race)==self.built_for;
                     self.exhaust=crate::exhaust_fx::ExhaustFx::new(self.args.seed);self.exhaust.step(&self.race);
                     self.wheel_effects=crate::wheel_effects::WheelEffects::new(self.args.seed);self.wheel_effects.step(&self.race);
                     self.ambient_clock=AmbientClock::new(self.args.smoke_frames>0);
                     let seats=self.seats.clone();self.profiles(&seats);self.paused=false;self.finished_round=0;self.reset_round_input();
-                    self.rebuild()?;
+                    if same_stage {
+                        // The fresh race has fresh physics: re-apply tree edits to it.
+                        if let Some(baseline)=&self.tree_baseline {baseline.apply_physics(&mut self.race.phys,self.debug.applied_tree_settings())?;}
+                        if let Some(g)=&self.graphics {g.renderer.reset_history();}
+                        self.last_frame=Instant::now();self.accumulator=0.0;
+                        eprintln!("prepare: same stage as the preloaded scene, renderer kept");
+                    } else {self.rebuild()?;}
                     let host=self.host.as_mut().unwrap();host.notify_participation(&session,false)?;
                     // Ready once a frame of this stage is rendered (offscreen
                     // while hidden): the host must not bring the game forward
@@ -2000,7 +2021,8 @@ pub fn run(raw:&[String])->i32{
     let mut exhaust=crate::exhaust_fx::ExhaustFx::new(a.seed);exhaust.step(&race);
     let mut wheel_effects=crate::wheel_effects::WheelEffects::new(a.seed);wheel_effects.step(&race);
     let start_paused=a.start_paused;
-    let mut app=App{debug,hidden_editor:None,stats:app::stats::Stats::from_env(),hidden_stats:None,dev_bar:Default::default(),stats_frame_at:None,shift_down:false,alt_down:false,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,manners:Default::default(),hud_stats:serde_json::Value::Null,hud_samples:vec![],recorder:Default::default(),point_picker:None,feedback_writer:None,feedback_requested_at:None,cursor:None,screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,outputs:[None,None],deferred_host:vec![],ready_due:None,warm_frames:0,smoke_stage_requested:false,quality:None};
+    let built_for=stage_key(&race);
+    let mut app=App{built_for,debug,hidden_editor:None,stats:app::stats::Stats::from_env(),hidden_stats:None,dev_bar:Default::default(),stats_frame_at:None,shift_down:false,alt_down:false,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,manners:Default::default(),hud_stats:serde_json::Value::Null,hud_samples:vec![],recorder:Default::default(),point_picker:None,feedback_writer:None,feedback_requested_at:None,cursor:None,screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,outputs:[None,None],deferred_host:vec![],ready_due:None,warm_frames:0,smoke_stage_requested:false,quality:None};
     app.startup_timing.mark("host_input_application_setup");
     let events=match EventLoop::new(){Ok(e)=>e,Err(e)=>{eprintln!("play event loop: {e}");return 1;}};
     app.startup_timing.mark("event_loop_creation");
@@ -2109,5 +2131,18 @@ mod ambient_clock_tests {
                 assert_eq!(metadata["wind"]["time_source"], "fixed");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod stage_key_tests {
+    use super::*;
+    #[test] fn equal_first_rounds_share_a_key_and_later_rounds_have_none() {
+        let settings=Settings{stage_km:2.0,bots:1,rivals:0,..Default::default()};
+        let cars=||sideways::spec::Cars::load(None).unwrap();
+        let a=Race::new(7,settings.clone(),cars());let b=Race::new(7,settings.clone(),cars());
+        assert!(stage_key(&a).is_some());assert_eq!(stage_key(&a),stage_key(&b));
+        let c=Race::new(7,Settings{bots:2,..settings},cars());assert_ne!(stage_key(&a),stage_key(&c));
+        let mut d=a;d.new_stage(&mut Default::default());assert_eq!(stage_key(&d),None);
     }
 }
