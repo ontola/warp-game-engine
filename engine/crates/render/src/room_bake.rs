@@ -254,6 +254,26 @@ fn each<T: Send>(items: &mut [T], f: impl Fn(usize, &mut T) + Sync) {
     });
 }
 
+/// Average the bounced channels (y, z), and with `sky` also the direct sky
+/// (x), of each valid probe with the neighbours it sees directly
+/// (`neighbours`: index and weight).
+fn smooth_bounce(light: &mut [Probe], neighbours: &[Vec<(usize, f32)>], valid: &[bool], sky: bool) {
+    let gathered = light.to_vec();
+    each(light, |i, p| {
+        if !valid[i] { return; }
+        let mut sum = gathered[i].axes;
+        let mut weight = 1.0;
+        for &(j, w) in &neighbours[i] {
+            for a in 0..6 { sum[a] += gathered[j].axes[a] * w; }
+            weight += w;
+        }
+        for a in 0..6 {
+            let s = sum[a] / weight;
+            p.axes[a] = Vec3::new(if sky { s.x } else { p.axes[a].x }, s.y, s.z);
+        }
+    });
+}
+
 /// Bake sky and sun transport for `grid` against `occluders` with the sun
 /// towards `sun`. Rebake when the sun moves or the geometry changes.
 pub fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, settings: &Settings) -> Result<Vec<Probe>, String> {
@@ -344,17 +364,15 @@ pub fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, settings: &Settings) 
         // Bounced light is smooth; a finite gather is not (a sun patch is hit
         // by a few rays more or less from probe to probe). Average with the
         // neighbours each probe sees, never across a wall.
-        let gathered = light.clone();
-        each(&mut light, |i, p| {
-            if !valid[i] { return; }
-            let (mut y, mut z, mut weight) = (gathered[i].axes.map(|v| v.y), gathered[i].axes.map(|v| v.z), 1.0);
-            for &(j, w) in &neighbours[i] {
-                for a in 0..6 { y[a] += gathered[j].axes[a].y * w; z[a] += gathered[j].axes[a].z * w; }
-                weight += w;
-            }
-            for a in 0..6 { p.axes[a].y = y[a] / weight; p.axes[a].z = z[a] / weight; }
-        });
+        smooth_bounce(&mut light, &neighbours, &valid, false);
     }
+    // Two more passes on the result, the direct sky included: sky seen
+    // through a doorway (or two in a row) or bounced off a sun patch next
+    // door reaches a probe along a few rays only. A few probes then stand
+    // out from their neighbours, and trilinear shading draws each as a
+    // square at the probe spacing on the wall opposite the doorway. Real
+    // light through a door is a wide soft patch at that distance anyway.
+    for _ in 0..2 { smooth_bounce(&mut light, &neighbours, &valid, true); }
     for (i, p) in light.iter_mut().enumerate() {
         if !valid[i] { for a in &mut p.axes { *a = Vec3::new(0., 0., 2.); } }
     }
