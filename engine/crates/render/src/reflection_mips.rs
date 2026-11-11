@@ -20,6 +20,7 @@ struct Target {
 pub(crate) struct ReflectionMips {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
+    plain: wgpu::ComputePipeline,
     sampler: wgpu::Sampler,
     views: std::sync::Mutex<Vec<Target>>,
 }
@@ -40,8 +41,7 @@ fn clean(c: vec3<f32>) -> vec3<f32> {
 // bright texel (a bulb) take over whole coarse texels, which a glossy
 // reflection then showed as a bright square around the darker, sharper
 // things in front of the bulb.
-@compute @workgroup_size(8, 8)
-fn down(@builtin(global_invocation_id) id: vec3<u32>) {
+fn reduce(id: vec3<u32>, karis: bool) {
     let size = textureDimensions(dst);
     if id.x >= size.x || id.y >= size.y { return; }
     let src_size = textureDimensions(src);
@@ -59,12 +59,20 @@ fn down(@builtin(global_invocation_id) id: vec3<u32>) {
     var sum = vec3<f32>(0.0);
     var weight = 0.0;
     for (var k = 0; k < 4; k++) {
-        let w = 1.0 / (1.0 + dot(c[k], vec3<f32>(0.2126, 0.7152, 0.0722)) / max(mean, 1e-6));
+        let w = select(1.0, 1.0 / (1.0 + dot(c[k], vec3<f32>(0.2126, 0.7152, 0.0722)) / max(mean, 1e-6)), karis);
         sum += c[k] * w;
         weight += w;
     }
     textureStore(dst, id.xy, vec4<f32>(sum / max(weight, 1e-6), 1.0));
-}";
+}
+
+// The first downsample is Karis-weighted (one very bright texel); below it a
+// plain average keeps the energy: weighted at every level, a bright doorway
+// lost most of its light by the coarse levels a semi-rough floor reads.
+@compute @workgroup_size(8, 8)
+fn down(@builtin(global_invocation_id) id: vec3<u32>) { reduce(id, true); }
+@compute @workgroup_size(8, 8)
+fn down_plain(@builtin(global_invocation_id) id: vec3<u32>) { reduce(id, false); }";
 
 impl ReflectionMips {
     pub fn new(gpu: &Gpu) -> Self {
@@ -80,10 +88,12 @@ impl ReflectionMips {
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("reflection mips"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
         let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("reflection mip"), layout: Some(&pipeline_layout),
             module: &module, entry_point: Some("down"), compilation_options: Default::default(), cache: gpu.pipeline_cache() });
+        let plain = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("reflection mip (plain)"), layout: Some(&pipeline_layout),
+            module: &module, entry_point: Some("down_plain"), compilation_options: Default::default(), cache: gpu.pipeline_cache() });
         let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor { label: Some("reflection mips"),
             mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear,
             address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge, ..Default::default() });
-        Self { layout, pipeline, sampler, views: std::sync::Mutex::new(Vec::new()) }
+        Self { layout, pipeline, plain, sampler, views: std::sync::Mutex::new(Vec::new()) }
     }
 
     pub fn set_view_count(&self, count: usize) { self.views.lock().unwrap().truncate(count); }
@@ -127,6 +137,7 @@ impl ReflectionMips {
         for (l, bind) in binds.iter().enumerate() {
             let w = (target.size[0] >> l).max(1);
             let h = (target.size[1] >> l).max(1);
+            if l == 2 { pass.set_pipeline(&self.plain); }
             pass.set_bind_group(0, bind, &[]);
             pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
         }

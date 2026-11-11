@@ -1063,13 +1063,15 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
     let edge = max(abs(prev_ndc.x), abs(prev_ndc.y));
     if edge >= 1.0 { return vec4<f32>(0.0); }
     let uv = vec2<f32>(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5);
-    // The glossy lobe's footprint at the hit: a cone of about the roughness
+    // The glossy lobe's footprint at the hit: a cone of about roughness^2
     // (radians) over the ray length, as a diameter in pixels at the hit's
     // depth. reflection_history is last frame's image with a prefiltered
     // mip chain (reflection_mips.rs, level 0 full resolution): read the
     // level whose texels match that footprint, blending the two nearest
     // (the sampler picks one mip). Mirrors read level 0; no noise anywhere.
-    let footprint = 2.0 * rough * hi / max(c.w, 0.1) * 0.7 * fsize.y;
+    // GGX: the lobe is about alpha = roughness^2 radians wide, not the
+    // roughness (that blurred a bright doorway into the dark wall round it).
+    let footprint = 2.5 * rough * rough * hi / max(c.w, 0.1) * 0.7 * fsize.y;
     let levels = f32(textureNumLevels(reflection_history));
     let lod = clamp(log2(max(footprint, 1.0)), 0.0, levels - 1.0);
     let lo_lod = floor(lod);
@@ -1083,9 +1085,10 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
     let ndc_edge = max(abs(ndc.x), abs(ndc.y));
     var confidence = 1.0 - smoothstep(0.82, 1.0, max(edge, ndc_edge));
     confidence *= 1.0 - smoothstep(reach * 0.7, reach, hi);
-    // Start fading early: a jittered trace on a semi-rough floor is noisy
-    // per pixel and flickers without a reflection denoiser.
-    confidence *= 1.0 - smoothstep(0.1, gi.trace.y, rough);
+    // Fade out just below the roughness cut: the prefiltered mips keep a
+    // semi-rough reflection noise-free, so it can show at full strength (an
+    // early fade let the darker environment term win over a bright doorway).
+    confidence *= 1.0 - smoothstep(gi.trace.y * 0.75, gi.trace.y, rough);
     return vec4<f32>(min(radiance, vec3<f32>(65504.0)), confidence);
 }
 
@@ -3309,7 +3312,16 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // Traced reflections replace the environment where they hit. Under
         // a clear coat only the coat traces (below): it shows the reflection.
         if coat <= 0.0 && rough < gi.trace.y {
-            let traced = traced_reflection(p, visibility_n, refl, rough, px, size, dist);
+            var traced = traced_reflection(p, visibility_n, refl, rough, px, size, dist);
+            // On a glossy (not mirror) surface a traced hit is capped at 8x
+            // the diffuse light level here: walls, furniture and a doorway's
+            // daylight keep their brightness, but a lamp's emissive panel
+            // (thousands of times brighter) is left to the light's own soft
+            // analytic highlight; traced, it drew the housing's hard outline.
+            let lum = vec3<f32>(0.2126, 0.7152, 0.0722);
+            let cap = 8.0 * max(dot(ambient, lum) / PI, dot(env, lum)) + 1e-4;
+            let bright = dot(traced.rgb, lum);
+            if rough > 0.06 && bright > cap { traced = vec4<f32>(traced.rgb * (cap / bright), traced.a); }
             env = mix(env, traced.rgb, traced.a);
         }
         direct=diffuse*sun_e*sun+sun_e*back/PI+sun_e*ggx(n,v,l,rough,f0);
