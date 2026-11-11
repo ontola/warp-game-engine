@@ -15,10 +15,11 @@ struct Bone {
 // target through ordinary GPU skinning. All eight inherit the animated head.
 pub(super) struct FaceRig {
     first: usize,
-    head: usize,
+    pub(super) head: usize,
     eyes: [Vec3; 2],
     scale: Vec3,
     phase: f32,
+    pub(super) groom: render::humans::Groom,
 }
 
 const LID_RANGE: f32 = 0.016;
@@ -216,7 +217,15 @@ impl Character {
             for axis in ["Xp","Xn","Yp","Yn","Zp","Zn"] {
                 fitted_joints.push((format!("Lid{axis}"), bind));
             }
-            FaceRig { first, head, eyes, scale, phase: person.face_phase() }
+            let skull = scale.y / scale.x;
+            let fit = Mat4::from(upper_body) * Mat4::from_scale(Vec3::new(skull,1.,skull));
+            let groom = render::humans::Groom {
+                fit: fit.to_cols_array_2d(),
+                weights: person.head_weights(),
+                tint: Vec3::from_array(hair.to_array().map(srgb_to_linear)).extend(1.).to_array(),
+                info: [0,0,person.hair_style(),(person.face_phase()*16777216.) as u32],
+            };
+            FaceRig { first, head, eyes, scale, phase: person.face_phase(), groom }
         });
         let skin = |v: &BodyVertex| {
             let p = v.position;

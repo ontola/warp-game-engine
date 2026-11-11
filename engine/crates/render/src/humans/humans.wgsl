@@ -142,6 +142,18 @@ fn reserve_slot(a:Actor)->u32 {
     return bin*u32(camera.settings.w)+slot;
 }
 
+// Bin 3 is a per-view list of heads large enough to resolve individual hairs.
+fn store_seat(slot:u32, seat:SeatLight, a:Actor) {
+    visible[slot]=seat;
+    let count=u32(camera.settings.w);
+    if slot/count!=4u {return;}
+    let head=camera.vp*vec4<f32>(a.pos_yaw.xyz+vec3<f32>(0.,.94*a.size_phase.y,0.),1.);
+    if head.w>.08 && all(abs(head.xy)<vec2<f32>(head.w+.45)) && .22*camera.settings.y/head.w>70. {
+        let index=atomicAdd(&draws[16],1u);
+        visible[3u*count+index]=seat;
+    }
+}
+
 @compute @workgroup_size(64)
 fn select_lod(@builtin(global_invocation_id) gid:vec3<u32>) {
     if gid.x>=u32(camera.settings.w) {return;}
@@ -149,7 +161,7 @@ fn select_lod(@builtin(global_invocation_id) gid:vec3<u32>) {
     let slot=reserve_slot(a);
     if slot!=0xffffffffu {
         let joints=spectator_joints(a,camera.settings.x,0.45,0.);
-        visible[slot]=SeatLight(gid.x,0u,0u,0u,joints,spectator_legs(a,camera.settings.x,joints,0.,0.,0.));
+        store_seat(slot,SeatLight(gid.x,0u,0u,0u,joints,spectator_legs(a,camera.settings.x,joints,0.,0.,0.)),a);
     }
 }
 
@@ -207,8 +219,8 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
         joints.z=pack2x16float(unpack2x16float(joints.z)+vec2<f32>(0.025,0.09)*counter);
     }
     let legs=spectator_legs(a,crowd_mood.x,joints,travel,speed,crouch);
-    visible[slot]=SeatLight(gid.x,pack2x16float(energy.rg),pack2x16float(vec2<f32>(energy.b,blast_turn_at(escape,crowd_mood.x))),
-        pack4x8snorm(vec4<f32>(direction,sun)),joints,legs);
+    store_seat(slot,SeatLight(gid.x,pack2x16float(energy.rg),pack2x16float(vec2<f32>(energy.b,blast_turn_at(escape,crowd_mood.x))),
+        pack4x8snorm(vec4<f32>(direction,sun)),joints,legs),a);
 }
 @group(0) @binding(4) var<storage,read> draw_ids:array<SeatLight>;
 @group(1) @binding(0) var atlas:texture_2d<f32>;
@@ -233,9 +245,12 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     @location(3) tags:vec4<u32>,@location(4) bones:vec4<f32>,@location(5) face0:vec4<f32>,
     @location(6) face1:vec4<f32>,@location(7) face2:vec4<f32>,@location(8) face3:vec4<f32>,
     @builtin(instance_index) idx:u32)->V {
+    return pose_vertex(position,direction,pivot,tags,bones,face0,face1,face2,face3,draw_ids[tags.z*u32(camera.settings.w)+idx]);
+}
+fn pose_vertex(position:vec4<f32>,direction:vec4<f32>,pivot:vec4<f32>,tags:vec4<u32>,bones:vec4<f32>,
+    face0:vec4<f32>,face1:vec4<f32>,face2:vec4<f32>,face3:vec4<f32>,seat:SeatLight)->V {
     let rest=position.xyz*1.2; let normal=direction.xyz; let center=pivot.xyz;
     let tagged_mat=tags.x; let arm=f32(tags.y)-1.; let bin=tags.z;
-    let seat=draw_ids[bin*u32(camera.settings.w)+idx];
     let a=actor(seat.index);
     var p=rest; var n=normal; var anchor=center;
     let anatomical=bin==4u && center.z< -0.9;
@@ -409,6 +424,19 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     o.color=unpack4x8unorm(u32(dye)).rgb;
     o.appearance=appearance; o.mat=select(mat,1u,!anatomical && arm!=0. && mat==4u && outfit!=1u && rest.y>0.558); o.identity=a.identity; o.disc=disc; return o;
 }
+@vertex fn crowd_strand(@builtin(vertex_index) id:u32,@builtin(instance_index) idx:u32)->V {
+    let seat=draw_ids[3u*u32(camera.settings.w)+idx];
+    let a=actor(seat.index); let sq=a.identity*a.identity;
+    let raw=sq*sq+.001; let w=raw/dot(raw,vec4<f32>(1.));
+    let style=u32(a.identity.z*3.);
+    let fibre=grow_strand(id,style,u32(a.identity.x*16777216.),w,camera.settings.x);
+    let zero=vec4<f32>(0.);
+    // Tag 7 applies the common head rig and avoids applying the fringe twice.
+    var v=pose_vertex(vec4<f32>((fibre.p+fibre.across*fibre.side*fibre.radius)/1.2,0.),vec4<f32>(fibre.normal,0.),vec4<f32>(0.,0.,-1.,0.),
+        vec4<u32>(7u,1u,4u,0u),zero,zero,zero,zero,vec4<f32>(0.,0.,0.,1.),seat);
+    v.mat=23u; v.uv.x=fibre.tint;
+    return v;
+}
 fn human_color(v:V, eye_dir:vec3<f32>)->vec4<f32>{
     if dot(v.disc,v.disc)>1. {discard;}
     let id=v.identity; let p=v.local; let n=normalize(v.n);
@@ -481,6 +509,7 @@ fn human_color(v:V, eye_dir:vec3<f32>)->vec4<f32>{
         specular=0.95; gloss=95.;
     }
     case 7u: {color=hair;}
+    case 23u: {color=hair*v.uv.x;}
     default: {}
     }
     let sun=select(normalize(vec3<f32>(-0.65,0.85,0.5)),camera.sun.xyz,camera.game.x>0.);

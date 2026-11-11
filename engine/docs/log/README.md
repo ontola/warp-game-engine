@@ -24,6 +24,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 
 - [Sideways GPU cost: LOD error, culling switches, car shading, shadow distance LOD](2026-11-11-sideways-gpu-cost.md)
 - [Hair rendering in games and a scalp-rooted Warp experiment](2026-11-11-warp-humans-hair-research.md)
+- [Close hair guides and geometric fibres](2026-11-11-warp-humans-hair-guides.md)
 - [Keeping seeded facial proportions within adult reference heads](2026-11-11-warp-humans-proportions.md)
 - [Close faces, gaze and eyelids](2026-11-10-warp-humans-close-faces.md)
 - [Skin tone and seeded hair colour](2026-11-10-warp-humans-hair.md)

@@ -1064,6 +1064,7 @@ pub struct Renderer {
     aggregate_lod_enabled: std::sync::atomic::AtomicBool,
     baked_animations: Option<crate::baked_animation::AnimationRenderer>,
     skinning: Option<crate::skinning::SkinningRenderer>,
+    hair: Option<std::sync::Mutex<crate::humans::PlayerStrands>>,
     /// Topology, cluster table and skinned actor ranges for skinned motion.
     motion_geometry: (crate::topology::Topology, wgpu::Buffer, Vec<[u32; 3]>),
     debris: Option<crate::debris::DebrisRenderer>,
@@ -1905,6 +1906,10 @@ impl Renderer {
             Some(crate::skinning::SkinningRenderer::new(gpu, &scene.skinning, &scene.vertices, &scene.instances, &topology, &instances)
                 .expect("invalid weighted skinning scene"))
         };
+        let hair = skinning.as_ref().filter(|_| !scene.hair_grooms.is_empty()).map(|s| {
+            std::sync::Mutex::new(crate::humans::PlayerStrands::new(gpu, &scene.hair_grooms,
+                &scene.skinning.actors, &instances, s.palette_buffer()))
+        });
         let debris = scene.debris.map(|spec| crate::debris::DebrisRenderer::new(gpu, spec, &instances));
         let procedural_terrain = scene.procedural_terrain.clone().map(|spec| crate::procedural_terrain::TerrainRenderer::new(gpu, spec, &topology, &clusters));
         let crowd = scene.crowd.map(|spec| crate::crowd::CrowdRenderer::new(gpu, &spec, &instances));
@@ -2468,6 +2473,7 @@ impl Renderer {
             aggregate_lod_enabled: std::sync::atomic::AtomicBool::new(true),
             baked_animations,
             skinning,
+            hair,
             motion_geometry: (topology.clone(), clusters.clone(),
                 scene.skinning.actors.iter().map(|a| [a.owner, a.first_vertex, a.vertex_count]).collect()),
             debris,
@@ -5548,6 +5554,17 @@ impl Renderer {
                             (7, wgpu::BindingResource::TextureView(&self.sky_view)),
                         ], &hdr_v, &depth_v);
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
+                    }
+                    if let Some(hair) = &self.hair {
+                        let timer = self.query.as_ref().filter(|_| gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS))
+                            .map(|(qs,_,_)| { names.push("player hair"); (qs,timestamp_pair(&mut ts)) });
+                        if let Some((qs,i))=timer { enc.write_timestamp(qs,i); }
+                        hair.lock().unwrap().draw(gpu,&mut enc,vp,px_scale,vi,light.time,&[
+                            (0, main.uniform.as_entire_binding()), (2, light_buf.as_entire_binding()),
+                            (5, wgpu::BindingResource::TextureView(&shadow_v)), (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
+                            (7, wgpu::BindingResource::TextureView(&self.sky_view)),
+                        ],&hdr_v,&depth_v);
+                        if let Some((qs,i))=timer { enc.write_timestamp(qs,i+1); }
                     }
                     if let Some(transparency) = self.transparency.as_ref().filter(|_|debug_options.transparency_enabled) {
                         let t = self.query.as_ref().map(|(qs, _, _)| { let i = timestamp_pair(&mut ts); (qs, i) });
