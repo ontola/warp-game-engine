@@ -1139,6 +1139,8 @@ pub struct Renderer {
     early_grass_cull: bool,
     raster: wgpu::RenderPipeline,
     raster_depth: wgpu::RenderPipeline,
+    broadcast_raster: Option<wgpu::RenderPipeline>,
+    broadcast_view: std::sync::OnceLock<ViewTargets>,
     /// Opaque twins of the pipelines above (no `discard`), when cull splits
     /// opaque from masked clusters (`RASTER_SPLIT`). Order: colour, depth,
     /// sun receiver plane depth, far sun depth.
@@ -1288,7 +1290,7 @@ pub struct Renderer {
 }
 
 #[derive(Clone, Copy)]
-enum RasterPass { Color, Sun, SunStatic(u32), SunDynamic(u32), FarSun, FoliagePage, Headlight }
+enum RasterPass { Color, Broadcast, Sun, SunStatic(u32), SunDynamic(u32), FarSun, FoliagePage, Headlight }
 
 /// A shadow raster into one tile of a layer (clustered light shadows):
 /// texel rectangle (x, y, size), and whether its passes are timed.
@@ -2239,8 +2241,8 @@ impl Renderer {
         let raster_pl = pl(&[&scene_layout, &view_raster_layout]);
         let shadow_mask_layout=crate::shadow_damage::mask_layout(gpu);
         let cached_raster_pl=pl(&[&scene_layout,&view_raster_layout,&shadow_mask_layout]);
-        let raster_pipe_with = |color: bool, sun_receiver_plane: bool, cached:bool, opaque:bool| {
-            let targets = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Uint, blend: None, write_mask: wgpu::ColorWrites::ALL })];
+        let raster_pipe_with = |color: bool, sun_receiver_plane: bool, cached:bool, opaque:bool, broadcast:bool| {
+            let targets = [Some(wgpu::ColorTargetState { format: if broadcast {wgpu::TextureFormat::Rgba16Float} else {wgpu::TextureFormat::R32Uint}, blend: None, write_mask: wgpu::ColorWrites::ALL })];
             gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(match (color,opaque) {(true,false)=>"raster",(true,true)=>"raster opaque",(false,false)=>"raster depth",(false,true)=>"raster depth opaque"}),
                 layout: Some(if cached {&cached_raster_pl}else{&raster_pl}),
@@ -2258,7 +2260,7 @@ impl Renderer {
                 // Opaque depth needs no fragment stage at all.
                 fragment: (color || !opaque).then(|| wgpu::FragmentState {
                     module: &raster_mod,
-                    entry_point: Some(if color && opaque {"fs_opaque"} else if color { "fs" } else if cached {"fs_cached_depth"} else { "fs_depth" }),
+                    entry_point: Some(if broadcast {"fs_broadcast"} else if color && opaque {"fs_opaque"} else if color { "fs" } else if cached {"fs_cached_depth"} else { "fs_depth" }),
                     compilation_options: Default::default(),
                     targets: if color { &targets } else { &[] },
                 }),
@@ -2266,7 +2268,8 @@ impl Renderer {
                 cache: gpu.pipeline_cache(),
             })
         };
-        let raster_pipe = |color: bool, sun_receiver_plane: bool, cached:bool| raster_pipe_with(color,sun_receiver_plane,cached,false);
+        let raster_pipe = |color: bool, sun_receiver_plane: bool, cached:bool| raster_pipe_with(color,sun_receiver_plane,cached,false,false);
+        let broadcast_raster=(!scene.live_screen_feeds.is_empty()).then(||raster_pipe_with(true,false,false,false,true));
         let raster = raster_pipe(true, false,false);
         let raster_depth = raster_pipe(false, false,false);
         let raster_sun_depth = (std::env::var("KERN_SUN_RECEIVER_PLANE").as_deref() == Ok("1"))
@@ -2274,8 +2277,8 @@ impl Renderer {
         let raster_far_sun_depth=(far_sun.enabled || foliage_sun_pages.enabled).then(||raster_pipe(false,true,false));
         let raster_cached_sun=gpu_forest.as_ref().map(|_|raster_pipe(false,raster_sun_depth.is_some(),true));
         // The cached sun keeps one pipeline: its tile mask discards either way.
-        let raster_opaque=raster_split.then(||[Some(raster_pipe_with(true,false,false,true)),Some(raster_pipe_with(false,false,false,true)),
-            raster_sun_depth.as_ref().map(|_|raster_pipe_with(false,true,false,true)),raster_far_sun_depth.as_ref().map(|_|raster_pipe_with(false,true,false,true))]);
+        let raster_opaque=raster_split.then(||[Some(raster_pipe_with(true,false,false,true,false)),Some(raster_pipe_with(false,false,false,true,false)),
+            raster_sun_depth.as_ref().map(|_|raster_pipe_with(false,true,false,true,false)),raster_far_sun_depth.as_ref().map(|_|raster_pipe_with(false,true,false,true,false))]);
         startup.mark("raster_shadow_pipelines");
         let sun_scene_bounds = (scene.gpu_forest.is_some() || std::env::var("KERN_SUN_SCENE_DEPTH").as_deref() == Ok("1"))
             .then(|| std::sync::Mutex::new(crate::stability::SunSceneBounds::from_scene(scene)));
@@ -2548,7 +2551,7 @@ impl Renderer {
             raster_large_first: std::env::var("KERN_RASTER_LARGE_FIRST").as_deref()==Ok("1"),
             early_grass_cull,
             raster,
-            raster_depth,
+            raster_depth, broadcast_raster, broadcast_view: std::sync::OnceLock::new(),
             raster_opaque,
             raster_sun_depth,
             raster_cached_sun,sun_clipmap:sun_clipmap_requested() && shadow_damage.is_some() && static_sun.is_none(),clipmap_policy:std::sync::Mutex::new(None),clipmap_bases:std::sync::Mutex::new(Vec::new()),shadow_damage:std::sync::Mutex::new(shadow_damage),legacy_shadow_wind,
@@ -2668,7 +2671,7 @@ impl Renderer {
         let mut views = self.cluster_views.lock().unwrap();
         while views.len() <= index {
             let camera= !views.is_empty(); // slot0 shared sun; slots1..N colour views
-            views.push(self.view_targets_capacity(gpu, label, MAX_VISIBLE,camera,!camera&&self.instance_groups.sun_enabled));
+            views.push(self.view_targets_capacity(gpu, label, MAX_VISIBLE,if camera {RasterPass::Color}else{RasterPass::Sun},!camera&&self.instance_groups.sun_enabled));
         }
         views[index].clone()
     }
@@ -2838,7 +2841,8 @@ impl Renderer {
         entries.into_iter().filter(|(binding, _)| *binding != 14 || self.receiver_demand.enabled()).collect()
     }
 
-    fn view_targets_capacity(&self, gpu: &Gpu, label: &str, capacity: u32,camera:bool,light_groups:bool) -> ViewTargets {
+    fn view_targets_capacity(&self, gpu: &Gpu, label: &str, capacity: u32,kind:RasterPass,light_groups:bool) -> ViewTargets {
+        let camera=matches!(kind,RasterPass::Color | RasterPass::Broadcast);
         let mut choices=crate::voxel_forest::default_selection();
         if let Some((forest,_))=&self.gpu_forest {
             choices.resize(((forest.choice_table_bytes()/4) as usize).max(choices.len()),choices[0]);
@@ -2846,7 +2850,7 @@ impl Renderer {
         let foliage_selection = buffer(gpu, "per-view foliage representation", bytemuck::cast_slice(&choices),
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC);
         let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: std::mem::size_of::<ViewUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let visible = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("visible"), size: (capacity as u64 + if camera && self.occlusion.history_first {self.occlusion.deferred_capacity as u64*3}else{0})*8, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let visible = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("visible"), size: (capacity as u64 + if matches!(kind,RasterPass::Color) && self.occlusion.history_first {self.occlusion.deferred_capacity as u64*3}else{0})*8, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let counter = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("cull counters, args and draw map"), size: DRAW_MAP + capacity as u64 * 4, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         // Separate from writable storage args: indirect dispatch cannot alias a
         // storage-write binding in the same compute pass. No CPU readback.
@@ -2869,8 +2873,8 @@ impl Renderer {
     }
 
     fn cull_and_raster_pass(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass, phase_bind:Option<&wgpu::BindGroup>, append:bool,damage:Option<&wgpu::BindGroup>,tile:Option<RasterTile>) {
-        if !append && matches!(kind,RasterPass::Color) {enc.clear_buffer(&v.counter,crate::cluster_traversal::COUNTER_OFFSET,Some(crate::cluster_traversal::COUNTER_BYTES));}
-        let scene_bind=match kind {RasterPass::Color=>&self.scene_bind,RasterPass::FarSun=>&self.far_sun_scene_bind,RasterPass::FoliagePage=>&self.foliage_sun_scene_bind,_=>&self.shadow_scene_bind};
+        if !append && matches!(kind,RasterPass::Color | RasterPass::Broadcast) {enc.clear_buffer(&v.counter,crate::cluster_traversal::COUNTER_OFFSET,Some(crate::cluster_traversal::COUNTER_BYTES));}
+        let scene_bind=match kind {RasterPass::Color | RasterPass::Broadcast=>&self.scene_bind,RasterPass::FarSun=>&self.far_sun_scene_bind,RasterPass::FoliagePage=>&self.foliage_sun_scene_bind,_=>&self.shadow_scene_bind};
         let cull_scene_bind=match kind {RasterPass::FarSun=>&self.far_cull_scene_bind,RasterPass::FoliagePage=>&self.foliage_cull_scene_bind,_=>&self.cull_scene_bind};
         // Reset in command order without allocating upload staging. A tree's
         // appended phase must retain the preceding visible prefix and counters.
@@ -2879,7 +2883,7 @@ impl Renderer {
             enc.clear_buffer(&v.counter, crate::occlusion::SPLIT_COUNTER_OFFSET, Some(crate::occlusion::SPLIT_COUNTER_BYTES));
         }
         let cull_bind=phase_bind.unwrap_or(&v.cull_bind);
-        let timed=tile.is_none_or(|t|t.timed);
+        let timed=tile.is_none_or(|t|t.timed) && !matches!(kind,RasterPass::Broadcast);
         let tw = |ts: &mut u32| {
             self.query.as_ref().filter(|_|timed).map(|(qs, _, _)| {
                 let i = timestamp_pair(ts);
@@ -2890,7 +2894,7 @@ impl Renderer {
         // Cached rest-pose pages and split-cache owners retain flat culling.
         let solar=matches!(kind,RasterPass::Sun)&&self.sun_spatial_cull.is_some();
         let lamp=matches!(kind,RasterPass::Headlight)&&self.headlight_spatial_cull.is_some();
-        let spatial=(matches!(kind,RasterPass::Color)&&self.spatial_cull.is_some())||solar||lamp;
+        let spatial=(matches!(kind,RasterPass::Color | RasterPass::Broadcast)&&self.spatial_cull.is_some())||solar||lamp;
         let recover=append && phase_bind.is_some() && self.occlusion.history_first;
         let compact = if recover {None}else if lamp {self.headlight_spatial_cull.as_ref()} else if solar {self.sun_spatial_cull.as_ref()} else if spatial {self.spatial_cull.as_ref()}
             else if matches!(kind, RasterPass::Color) && phase_bind.is_none() { self.compact_cull.as_ref() } else { None };
@@ -2991,7 +2995,7 @@ impl Renderer {
             depth_slice: None,
             resolve_target: None,
             // Empty pixels read as u32::MAX.
-            ops: wgpu::Operations { load: if append {wgpu::LoadOp::Load} else {wgpu::LoadOp::Clear(wgpu::Color { r: u32::MAX as f64, g: 0.0, b: 0.0, a: 0.0 })}, store: wgpu::StoreOp::Store },
+            ops: wgpu::Operations { load: if append {wgpu::LoadOp::Load} else if matches!(kind,RasterPass::Broadcast) {wgpu::LoadOp::Clear(wgpu::Color {r:0.12,g:0.17,b:0.22,a:1.})} else {wgpu::LoadOp::Clear(wgpu::Color { r: u32::MAX as f64, g: 0.0, b: 0.0, a: 0.0 })}, store: wgpu::StoreOp::Store },
         })];
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("raster"),
@@ -3006,6 +3010,7 @@ impl Renderer {
             multiview_mask: None,
         });
         let masked:&wgpu::RenderPipeline=if damage.is_some(){self.raster_cached_sun.as_ref().expect("GPU forest cached sun pipeline")}else{match kind {
+            RasterPass::Broadcast => self.broadcast_raster.as_ref().unwrap(),
             RasterPass::Color => &self.raster,
             RasterPass::Sun | RasterPass::SunStatic(_) | RasterPass::SunDynamic(_) => self.raster_sun_depth.as_ref().unwrap_or(&self.raster_depth),
             RasterPass::FarSun => self.raster_far_sun_depth.as_ref().expect("enabled far sun pipeline"),
@@ -3015,6 +3020,7 @@ impl Renderer {
         // With RASTER_SPLIT the opaque records (args words 0..19) draw first
         // without `discard`, then the masked ones (words 20..39).
         let opaque=self.raster_opaque.as_ref().map(|p|if damage.is_some() {None} else {match kind {
+            RasterPass::Broadcast => None,
             RasterPass::Color => p[0].as_ref(),
             RasterPass::Sun | RasterPass::SunStatic(_) | RasterPass::SunDynamic(_) => if self.raster_sun_depth.is_some() {p[2].as_ref()} else {p[1].as_ref()},
             RasterPass::FarSun | RasterPass::FoliagePage => p[3].as_ref(),
@@ -3967,6 +3973,10 @@ impl Renderer {
         Ok(())
     }
 
+    pub fn set_screen_broadcast(&self, shot: Option<(u32, std::sync::Arc<crate::screen_feed::BroadcastShot>, u32)>) {
+        if let Some(screens) = &self.live_screens { screens.lock().unwrap().cutaway.shot = shot; }
+    }
+
     pub(crate) fn set_crowd_humans(&self, gpu: &Gpu, actors: Option<&[crate::humans::Instance]>, first: u32) -> Result<(), String> {
         *self.humans.lock().unwrap() = actors.filter(|a| !a.is_empty()).map(|a|
             crate::humans::ReviewRenderer::for_match(gpu, a, &self.instance_buffer, first)).transpose()?;
@@ -4480,9 +4490,9 @@ impl Renderer {
             let capacity=page.capacity.max(1);
             assert!(capacity<=MAX_VISIBLE,"foliage page exceeds bounded cluster capacity");
             if page_targets.len()<=index {
-                page_targets.push((capacity,self.view_targets_capacity(gpu,"foliage sun page",capacity,false,false)));
+                page_targets.push((capacity,self.view_targets_capacity(gpu,"foliage sun page",capacity,RasterPass::Sun,false)));
             } else if page_targets[index].0<capacity {
-                page_targets[index]=(capacity,self.view_targets_capacity(gpu,"foliage sun page",capacity,false,false));
+                page_targets[index]=(capacity,self.view_targets_capacity(gpu,"foliage sun page",capacity,RasterPass::Sun,false));
             }
             let size=crate::foliage_sun_pages::SIZE as f32;
             let vu=view_uniform(page.vp,page.eye,size/(2.0*page.extent),
@@ -4504,7 +4514,7 @@ impl Renderer {
         let far_updated=far_projection.is_some_and(|(_,updated)|updated);
         let mut far_targets=self.far_sun_targets.lock().unwrap();
         if let Some((projection,true))=far_projection {
-            let target=far_targets.get_or_insert_with(||self.view_targets_capacity(gpu,"far static sun",self.far_sun.capacity,false,false));
+            let target=far_targets.get_or_insert_with(||self.view_targets_capacity(gpu,"far static sun",self.far_sun.capacity,RasterPass::Sun,false));
             let size=crate::far_sun::SIZE as f32;
             let mut vu=view_uniform(projection.vp,projection.eye,size/(2.*projection.extent),
                 [far_lod,1.,1.,self.far_sun.capacity as f32],[size;4],light.alpha_cut);
@@ -4619,7 +4629,7 @@ impl Renderer {
             gpu.queue.write_buffer(&shadow_t.foliage_selection,0,bytemuck::cast_slice(&crate::voxel_forest::VoxelRenderer::sun_selection()));
         }
         if draw_static_sun {
-            let target = static_targets.get_or_insert_with(||self.view_targets_capacity(gpu,"static shared sun",self.shadow_capacity,false,false));
+            let target = static_targets.get_or_insert_with(||self.view_targets_capacity(gpu,"static shared sun",self.shadow_capacity,RasterPass::Sun,false));
             gpu.queue.write_buffer(&target.uniform,0,bytemuck::bytes_of(&shadow_uniform));
         }
         if let Some(target)=static_targets.as_ref() {
@@ -4740,7 +4750,7 @@ impl Renderer {
                 let size=up.render_size((v.w,v.h))?;
                 if seed_targets.len()<=vi || seed_targets[vi].pyramid.size!=size {
                     let texture=|format|gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("foliage current terrain seed"),size:wgpu::Extent3d {width:size.0,height:size.1,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]}).create_view(&Default::default());
-                    let t=FoliageSeedTarget {targets:self.view_targets_capacity(gpu,"foliage seed view",8192,true,false),depth:texture(wgpu::TextureFormat::Depth32Float),color:texture(wgpu::TextureFormat::R32Uint),pyramid:seed.pyramid.target(gpu,size)};
+                    let t=FoliageSeedTarget {targets:self.view_targets_capacity(gpu,"foliage seed view",8192,RasterPass::Color,false),depth:texture(wgpu::TextureFormat::Depth32Float),color:texture(wgpu::TextureFormat::R32Uint),pyramid:seed.pyramid.target(gpu,size)};
                     if seed_targets.len()==vi {seed_targets.push(t);}else{seed_targets[vi]=t;}
                 }
                 let t=&seed_targets[vi];
@@ -4836,7 +4846,7 @@ impl Renderer {
         self.headlights.upload(gpu,&headlights,&local_lights,&spot_falloff,softness);
         let mut headlight_targets=self.headlight_targets.lock().unwrap();
         while headlight_targets.len()<headlights.len() {
-            headlight_targets.push(self.view_targets_capacity(gpu,"headlight shadow",self.shadow_capacity,false,self.instance_groups.headlight_enabled));
+            headlight_targets.push(self.view_targets_capacity(gpu,"headlight shadow",self.shadow_capacity,RasterPass::Sun,self.instance_groups.headlight_enabled));
         }
         for (index,lamp) in headlights.iter().enumerate() {
             let target=&headlight_targets[index];let size=crate::headlights::SHADOW_SIZE as f32;
@@ -4858,7 +4868,7 @@ impl Renderer {
         let clustered_draws=self.clustered.prepare(gpu,&mut enc,&cameras);
         let mut clustered_targets=self.clustered_targets.lock().unwrap();
         while clustered_targets.len()<clustered_draws.len() {
-            clustered_targets.push(self.view_targets_capacity(gpu,"clustered shadow",self.shadow_capacity,false,self.instance_groups.headlight_enabled));
+            clustered_targets.push(self.view_targets_capacity(gpu,"clustered shadow",self.shadow_capacity,RasterPass::Sun,self.instance_groups.headlight_enabled));
         }
         for (draw,target) in clustered_draws.iter().zip(clustered_targets.iter()) {
             let size=crate::clustered_lights::TILE as f32;
@@ -4901,8 +4911,8 @@ impl Renderer {
                     dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
                 near_shadows.push(NearShadow {
                     tex, layers, array, drawn: Default::default(),
-                    targets: self.view_targets_capacity(gpu, "near sun view", self.shadow_capacity,false,self.instance_groups.sun_enabled),
-                    outer: (1..self.near_levels()).map(|_| self.view_targets_capacity(gpu, "sun clipmap view", self.shadow_capacity,false,self.instance_groups.sun_enabled)).collect(),
+                    targets: self.view_targets_capacity(gpu, "near sun view", self.shadow_capacity,RasterPass::Sun,self.instance_groups.sun_enabled),
+                    outer: (1..self.near_levels()).map(|_| self.view_targets_capacity(gpu, "sun clipmap view", self.shadow_capacity,RasterPass::Sun,self.instance_groups.sun_enabled)).collect(),
                 });
             }
         }
@@ -5591,21 +5601,64 @@ impl Renderer {
                             .map(|(qs, _, _)| { names.push("warp humans"); (qs, timestamp_pair(&mut ts)) });
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
                         let crowd = self.crowd.as_ref().expect("human crowd");
-                        humans.draw_match(gpu, &mut enc, cam, vp, view_m, px_scale, light, &view_light.shadow_view_proj, &[
+                        let lamps = &[
                             (5, wgpu::BindingResource::TextureView(&shadow_v)),
                             (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
                             (17, self.headlights.uniform.as_entire_binding()),
                             (18, wgpu::BindingResource::TextureView(&self.headlights.sampled)),
                             (19, crowd.pose_uniform().as_entire_binding()),
                             (20, crowd.reaction_state().as_entire_binding()),
-                        ], &[
+                        ];
+                        let atmosphere = &[
                             (0, main.uniform.as_entire_binding()),
                             (2, light_buf.as_entire_binding()),
                             (5, wgpu::BindingResource::TextureView(&shadow_v)),
                             (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
                             (7, wgpu::BindingResource::TextureView(&self.sky_view)),
-                        ], &hdr_v, &depth_v);
+                        ];
+                        humans.draw_match(gpu, &mut enc, cam, vp, view_m, px_scale, light, &view_light.shadow_view_proj,
+                            lamps, atmosphere, &hdr_v, &depth_v, None);
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
+                        if vi == 0 {
+                            if let Some(screens) = &self.live_screens {
+                                let mut screens = screens.lock().unwrap();
+                                if let Some(shot) = screens.cutaway.pending().filter(|s| s.seats.is_some()) {
+                                    let timer = self.query.as_ref()
+                                        .filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS))
+                                        .map(|(qs,_,_)| { names.push("TV audience"); (qs,timestamp_pair(&mut ts)) });
+                                    if let Some((qs,i)) = timer { enc.write_timestamp(qs,i); }
+                                    let (cv,dv) = screens.begin_cutaway(gpu, &mut enc);
+                                    let (vp,view) = shot.matrices();
+                                    let focal = 0.5 * shot.size[1] as f32 / (0.5 * shot.camera.fov_y).tan();
+                                    humans.draw_match(gpu,&mut enc,&shot.camera,vp,view,focal,light,&view_light.shadow_view_proj,
+                                        lamps,atmosphere,cv,dv,shot.seats.as_ref());
+                                    if let Some((qs,i)) = timer { enc.write_timestamp(qs,i+1); }
+                                }
+                            }
+                        }
+                    }
+                    if vi == 0 && let Some(screens) = &self.live_screens {
+                        let mut screens = screens.lock().unwrap();
+                        if let Some(shot) = screens.cutaway.pending().filter(|s| s.seats.is_none()) {
+                            // An ordinary colour camera has per-player visibility masks. The TV sees all players.
+                            const TV_CLUSTERS: u32 = 32768;
+                            let targets = self.broadcast_view.get_or_init(|| self.view_targets_capacity(gpu,"battle camera",TV_CLUSTERS,RasterPass::Broadcast,false));
+                            let (vp,_) = shot.matrices();
+                            let [w,h] = shot.size.map(|n| n as f32);
+                            let focal = 0.5*h/(shot.camera.fov_y*0.5).tan();
+                            let mut uniform = view_uniform(vp,shot.camera.pos,focal,[4.,shot.camera.near,0.,TV_CLUSTERS as f32],[w,h,1./w,1./h],cut);
+                            let exposure = crate::auto_exposure::exposure(light.ev100);
+                            uniform.lod_cams[0] = light.sun_dir.extend(light.sky_lux*exposure).to_array();
+                            uniform.lod_cams[1] = (light.sun_color*light.sun_lux*exposure).extend(exposure).to_array();
+                            gpu.queue.write_buffer(&targets.uniform,0,bytemuck::bytes_of(&uniform));
+                            let timer = self.query.as_ref()
+                                .filter(|_| gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS))
+                                .map(|(qs,_,_)| { names.push("TV battle"); (qs,timestamp_pair(&mut ts)) });
+                            if let Some((qs,i)) = timer { enc.write_timestamp(qs,i); }
+                            let (cv,dv) = screens.begin_cutaway(gpu,&mut enc);
+                            self.cull_and_raster(&mut enc,gpu,targets,Some(cv),dv,&mut ts,&mut names,"TV battle cull",RasterPass::Broadcast);
+                            if let Some((qs,i)) = timer { enc.write_timestamp(qs,i+1); }
+                        }
                     }
                     if let Some(hair) = &self.hair {
                         let timer = self.query.as_ref().filter(|_| gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS))

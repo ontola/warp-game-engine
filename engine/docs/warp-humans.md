@@ -20,7 +20,7 @@ Add `--start-in-stands` to begin the match on a tread facing a neighbour at eye 
 
 Warp Humans matches default to packed seating with eight radial aisles. The generator spreads up to 15,000 seats over the whole bowl. Use `--crowd-density standard` for the earlier spacing. The stadium viewer and headless review accept both explicit settings and use the same packed default.
 
-The match supplies the seat identities, live positions, crowd reactions and per-player camera.
+The match supplies the seat identities, live positions, crowd reactions and per-player camera. At rest the upper arms rotate inward and the elbows straighten slightly so the hands hang beside the thighs. Each arm releases that adjustment as it rises to cheer or react to a blast.
 
 Shots use the simulated bullet path up to its first gameplay obstruction. The GPU tests a body-sized cylinder at the spectator's animated position. One bullet id can remove one living spectator across its segments. Nearby survivors have individual escape and return trajectories. Repeat gunfire extends an active escape or starts from the person's current displacement during the return. An explosion removes everyone in its lethal radius and scatters the surrounding survivors. Their hips, shoulders and head turn briefly away from the blast position, with a smaller turn near the edge of the scare radius. They then face the arena again. Another explosion redirects the turn from the current angle. Death persists across cameras and detail levels until the crowd is reset.
 

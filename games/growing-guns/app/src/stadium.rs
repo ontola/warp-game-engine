@@ -19,6 +19,7 @@ use render::slots::{SlotId, Slots};
 use render::Scene;
 use std::f32::consts::{PI, TAU};
 mod gibs;
+mod broadcast;
 
 pub const CROWD_MAX: usize = 15_000;
 #[derive(Clone, Copy, PartialEq)]
@@ -270,6 +271,7 @@ pub struct StadiumVisuals {
     tv: Slots,
     /// Shared picture quad and dark housing cube, also used for the legs.
     tv_mesh: [usize; 2],
+    broadcast: broadcast::Broadcast,
     /// Stone per quarry (sandstone 0..3, limestone 3..6), roof stone likewise.
     stone: [usize; 6],
     masonry: Option<[[usize; 2]; 6]>,
@@ -400,7 +402,7 @@ impl StadiumVisuals {
             scene.crowd = None; // no GPU crowd buffers or dispatch, not merely invisible seats
             return Self { enabled:false, bake_in_background:false, sky_job:None,sun_job:None,
                 sky_boxes:Vec::new(),sky_planes:Vec::new(),sky_probes:Vec::new(),sky_emission:Vec::new(),sky_dirty:false,sky_reflectance:0.0,sky_sun:None,
-                stands:Slots::reserve(scene,0),roof:Slots::reserve(scene,0),tv:Slots::reserve(scene,0),tv_mesh:[0;2],
+                stands:Slots::reserve(scene,0),roof:Slots::reserve(scene,0),tv:Slots::reserve(scene,0),tv_mesh:[0;2],broadcast:broadcast::Broadcast::new(0),
                 stone:[0;6],masonry:None,roof_stone:[0;6],wall_stone:[0;6],lamp:0,shaft:0,bank:0,looks:Vec::new(),
                 crowd,sound:CrowdSound::new(None),marks:Slots::reserve(scene,0),mark_ring:Vec::new(),mark_next:0,
                 scorch:0,blood,blood_grid:Default::default(),gore:Default::default(),geo:Stadium::new(80.0,true,12.0),mark_surfaces:Vec::new(),lights:Vec::new(),beams:Vec::new(),rng:Rng(1) };
@@ -432,9 +434,8 @@ impl StadiumVisuals {
         let lamp = { let m = glow(scene, [1.0, 0.85, 0.6], 9000.0); cube(scene, m) };
         let shaft = { let m = mat(scene, [0.16, 0.16, 0.18], 0.8); cube(scene, m) };
         let bank = { let m = glow(scene, [1.0, 0.96, 0.85], 11000.0); cube(scene, m) };
-        // All four screens share the primary view before its HUD. The renderer
-        // refreshes this layer after rendering all views, so the picture is
-        // safely sampled on the following frame without another scene render.
+        // The four screens share one layer. The broadcast director can replace
+        // its normal pre-HUD player view with a shot from the stands.
         let tv_layer = scene.add_live_screen_texture("growing-guns-stadium-tv", 0, TV_WIDTH / TV_HEIGHT)
             .expect("the stadium screen uses a valid source view and aspect ratio");
         let tv_material = scene.add_material(Material { tint: [1.0; 3], layer: tv_layer,
@@ -481,7 +482,7 @@ impl StadiumVisuals {
         for i in 0..MARKS { scene.instances[marks.first + i].flags |= NO_SHADOW; }
         let mut crowd = Crowd::reserve(scene, CROWD_MAX);
         if detailed { crowd.arm_pivot(0.655); }
-        StadiumVisuals { enabled:true, bake_in_background: false, sky_job: None, sun_job: None, sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_emission: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
+        StadiumVisuals { enabled:true, bake_in_background: false, sky_job: None, sun_job: None, sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_emission: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], broadcast:broadcast::Broadcast::new(tv_layer as u32), stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
 
             scorch, blood, blood_grid:Default::default(), gore, geo: Stadium::new(80.0, true, 12.0), mark_surfaces: Vec::new(), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
@@ -494,6 +495,7 @@ impl StadiumVisuals {
         if !self.enabled { self.geo=world.arena.stadium; return; }
         let a = &world.arena;
         self.geo = a.stadium;
+        self.broadcast.reset(a.seed);
         self.mark_surfaces = self.geo.pieces().into_iter().filter(|p| matches!(p.kind, PieceKind::Step | PieceKind::Facade | PieceKind::Wall)).collect();
         self.blood_grid=growing_guns::shape::BoxGrid::new(self.geo.collision(),4.);
         let (rng, quarry) = stadium_rng(a.seed);
@@ -628,6 +630,7 @@ impl StadiumVisuals {
     #[allow(clippy::too_many_arguments)]
     pub fn absorb(&mut self, scene: &mut Scene, world: &World, ears: &[Listener], now: f32, dt: f32) {
         if !self.enabled { return; }
+        self.broadcast.track(world);
         for e in &world.events {
             match *e {
                 Event::Hit { .. } => self.sound.hit(),
@@ -849,6 +852,7 @@ impl StadiumVisuals {
 
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, scene: &Scene, now: f32, light: &render::Lighting) -> Result<(), String> {
         if !self.enabled { return Ok(()); }
+        renderer.set_screen_broadcast(self.broadcast.feed(now, &self.crowd, &self.mark_surfaces, light));
         if let Some((_,grid))=scene.irradiance_volume {
             if let Some((sun, rx)) = &self.sun_job {
                 match rx.try_recv() {
@@ -926,7 +930,7 @@ impl StadiumVisuals {
         let tv_positions: [[f32; 3]; TV_COUNT] = std::array::from_fn(|i| tv_pose(self.geo, i).0.to_array());
         serde_json::json!({ "spectators": self.crowd.len(), "alive": self.crowd.alive(), "enthusiasm": self.sound.enthusiasm, "fear": self.sound.fear,
             "inner_r": self.geo.inner_r, "base_y": self.geo.base_y,
-            "tv": { "screens": self.tv.len() / 4, "source_view": 0, "aspect": TV_WIDTH / TV_HEIGHT, "positions": tv_positions } })
+            "tv": { "screens": self.tv.len() / 4, "source_view": 0, "shot": self.broadcast.mode(), "aspect": TV_WIDTH / TV_HEIGHT, "positions": tv_positions } })
     }
 }
 

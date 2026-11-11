@@ -47,7 +47,9 @@ fn spectator_joints(a:Actor, time:f32, excitement:f32, fear:f32)->vec4<u32> {
     let wave=sin(vec2<f32>(beat,beat+1.2+seed));
     var shoulders=vec2<f32>(-0.10)-sides*cheer*(1.80+0.43*wave)
         +0.065*wave-vec2<f32>(0.57*fear);
-    var elbows=vec2<f32>(-0.25)-0.13*(wave+1.)-cheer*sides*(0.56-0.30*wave)-0.72*fear;
+    let lowered=1.-smoothstep(vec2f(0.18),vec2f(0.78),-shoulders);
+    let idle_bend=mix(0.25+0.13*(wave+1.),0.16+0.035*(wave+1.),lowered);
+    var elbows=-idle_bend-cheer*sides*(0.56-0.30*wave)-0.72*fear;
     var spine=vec2<f32>(0.042*shift+0.02*cheer*breath,0.10*shift+0.13*cheer*(2.*lead-1.));
     let glance=sin(beat*0.31+seed*12.0);
     var neck=vec2<f32>(0.30*glance+0.08*sin(beat*0.64),0.035*breath+0.10*cheer*sin(beat-0.45)+0.16*fear);
@@ -146,7 +148,7 @@ fn reserve_slot(a:Actor)->u32 {
 fn store_seat(slot:u32, seat:SeatLight, a:Actor) {
     visible[slot]=seat;
     let count=u32(camera.settings.w);
-    if slot/count!=4u {return;}
+    if slot/count!=4u || camera.game.x==2. {return;}
     let head=camera.vp*vec4<f32>(a.pos_yaw.xyz+vec3<f32>(0.,.94*a.size_phase.y,0.),1.);
     if head.w>.08 && all(abs(head.xy)<vec2<f32>(head.w+.45)) && .22*camera.settings.y/head.w>70. {
         let index=atomicAdd(&draws[16],1u);
@@ -179,8 +181,10 @@ fn spot_visibility(index:u32,uv:vec2<f32>,z:f32,lamp:Headlight,slope:vec2<f32>,w
 }
 @compute @workgroup_size(64)
 fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
-    if gid.x>=u32(camera.settings.w) {return;}
-    let a=actor(gid.x);
+    let seat_id=gid.x+u32(camera.sun_color.w);
+    if camera.game.x==2. && seat_id>=u32(camera.up.w) {return;}
+    if seat_id>=u32(camera.settings.w) {return;}
+    let a=actor(seat_id);
     let slot=reserve_slot(a);
     if slot==0xffffffffu {return;}
     // Match the collision pose's height reduction by bending the legs.
@@ -205,11 +209,11 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
     }
     let direction=moment/max(dot(energy,vec3<f32>(0.2126,0.7152,0.0722)),1e-5);
     energy=min(energy,vec3<f32>(65504.));
-    let escape=escapes[gid.x];
+    let escape=escapes[seat_id];
     let offset=displacement(escape,crowd_mood.x);
     let speed=abs(displacement(escape,crowd_mood.x+1./120.)-offset)*120.;
     let right=vec2<f32>(cos(a.pos_yaw.w),-sin(a.pos_yaw.w));
-    let travel=dot(a.pos_yaw.xz-actors[gid.x].pos_yaw.xz,right)/a.size_phase.x;
+    let travel=dot(a.pos_yaw.xz-actors[seat_id].pos_yaw.xz,right)/a.size_phase.x;
     let alarm=gesture_fear(crowd_mood.z,offset);
     var joints=spectator_joints(a,crowd_mood.x,crowd_mood.y,alarm);
     let step_weight=smoothstep(0.12,0.75,speed);
@@ -219,7 +223,7 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
         joints.z=pack2x16float(unpack2x16float(joints.z)+vec2<f32>(0.025,0.09)*counter);
     }
     let legs=spectator_legs(a,crowd_mood.x,joints,travel,speed,crouch);
-    store_seat(slot,SeatLight(gid.x,pack2x16float(energy.rg),pack2x16float(vec2<f32>(energy.b,blast_turn_at(escape,crowd_mood.x))),
+    store_seat(slot,SeatLight(seat_id,pack2x16float(energy.rg),pack2x16float(vec2<f32>(energy.b,blast_turn_at(escape,crowd_mood.x))),
         pack4x8snorm(vec4<f32>(direction,sun)),joints,legs),a);
 }
 @group(0) @binding(4) var<storage,read> draw_ids:array<SeatLight>;
@@ -270,6 +274,8 @@ fn pose_vertex(position:vec4<f32>,direction:vec4<f32>,pivot:vec4<f32>,tags:vec4<
         let right_arm=select(arm>0.,rest.x>0.,anatomical);
         let angle=select(shoulders.x,shoulders.y,right_arm);
         let elbow_angle=select(elbows.x,elbows.y,right_arm);
+        // As each shoulder lowers, let the wrist settle beside the thigh.
+        let tuck=1.-smoothstep(0.18,0.78,-angle);
         let zones=1.-clamp(abs(vec3<f32>(rest.y)-vec3<f32>(0.78,0.57,0.48))/vec3<f32>(0.12,0.13,0.11),vec3<f32>(0.),vec3<f32>(1.));
         let width=1.+dot(zones*zones*(3.-2.*zones),vec3<f32>(0.13,0.12,0.10)*(2.*vec3<f32>(a.size_phase.zw,a.identity.x)-1.));
         let head=select(smoothstep(0.825,0.860,select(rest.y,center.y,bin==1u)),face3.w,anatomical);
@@ -295,7 +301,7 @@ fn pose_vertex(position:vec4<f32>,direction:vec4<f32>,pivot:vec4<f32>,tags:vec4<
             let lower=rotate(elbow_angle);
             p=vec3<f32>(p.x,mix(p.yz,elbow.yz+lower*(p.yz-elbow.yz),bones.y));
             n=vec3<f32>(n.x,mix(n.yz,lower*n.yz,bones.y));
-            let relax=rotate(-0.61*side);
+            let relax=rotate(-(0.61+0.065*tuck)*side);
             let rest_arm=vec3<f32>(shoulder.xy+relax*(p.xy-shoulder.xy),p.z);
             let swing=rotate(angle);
             p=mix(p,vec3<f32>(rest_arm.x,shoulder.yz+swing*(rest_arm.yz-shoulder.yz)),bones.x);
@@ -311,6 +317,10 @@ fn pose_vertex(position:vec4<f32>,direction:vec4<f32>,pivot:vec4<f32>,tags:vec4<
                 e=anchor-elbow; anchor=elbow+vec3<f32>(e.x,forearm*e.yz);
                 n=vec3<f32>(n.x,forearm*n.yz);
             }
+            let inward=rotate(-0.040*tuck*arm);
+            p=vec3f(pivot.xy+inward*(p.xy-pivot.xy),p.z);
+            anchor=vec3f(pivot.xy+inward*(anchor.xy-pivot.xy),anchor.z);
+            n=vec3f(inward*n.xy,n.z);
             var d=p-pivot; p=pivot+vec3<f32>(d.x,rot*d.yz);
             d=anchor-pivot; anchor=pivot+vec3<f32>(d.x,rot*d.yz);
             n=vec3<f32>(n.x,rot*n.yz);
@@ -533,6 +543,11 @@ fn human_color(v:V, eye_dir:vec3<f32>)->vec4<f32>{
 }
 
 @fragment fn fs_match(v:V)->@location(0) vec4<f32> {
+    if camera.game.x==2. {
+        let radiance=human_color(v,normalize(cross(camera.right.xyz,camera.up.xyz))).rgb;
+        let exposed=max(radiance*camera.right.w,vec3f(0.));
+        return vec4f(exposed/(1.+exposed),1.);
+    }
     let ray = v.world - view.cam.xyz;
     let radiance = human_color(v,normalize(-ray)).rgb;
     let d = length(ray);

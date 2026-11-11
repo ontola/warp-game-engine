@@ -587,6 +587,7 @@ impl ReviewRenderer {
         atmosphere: &[(u32, wgpu::BindingResource)],
         color: &wgpu::TextureView,
         depth: &wgpu::TextureView,
+        broadcast: Option<&std::ops::Range<u32>>,
     ) {
         if !self.detail_ready {
             let nearest = self
@@ -615,13 +616,21 @@ impl ReviewRenderer {
         ]);
         u[28..31].copy_from_slice(&light.sun_dir.to_array());
         u[31] = light.shadow_strength.clamp(0., 1.);
+        let seats = broadcast.cloned().unwrap_or(0..self.count);
+        if broadcast.is_some() {
+            // The TV has its own short lens-to-subject distance and SDR exposure.
+            u[24] = 2.;
+            u[19] = crate::auto_exposure::exposure(light.ev100);
+            u[23] = seats.end as f32;
+            u[35] = seats.start as f32;
+        }
         u[40..56].copy_from_slice(bytemuck::cast_slice(shadow_vp));
         u[32..35].copy_from_slice(&light.sun_color.to_array());
         u[36..40].copy_from_slice(&[light.time, focal, self.far as u32 as f32, self.count as f32]);
         for (mesh, bin) in self.meshes.iter().zip([0, 1, 2, 4]) {
             words[56 + 5 * bin] = mesh.count;
         }
-        words[56+15] = if self.detail_ready { 1536*54 } else { 0 };
+        words[56+15] = if self.detail_ready && broadcast.is_none() { 1536*54 } else { 0 };
         let upload = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -634,7 +643,7 @@ impl ReviewRenderer {
         let lamps = self.light_groups.get(gpu, self.light_layout.as_ref().unwrap(), "human scene lights", lights);
         let fog = self.fog_groups.get(gpu, self.fog_layout.as_ref().unwrap(), "human scene fog", atmosphere);
         let hair_fog=self.strand_fog_groups.get(gpu,self.strand_fog_layout.as_ref().unwrap(),"crowd strand atmosphere",atmosphere);
-        self.encode_passes(enc, color, depth, Some((&lamps, &fog, &hair_fog)));
+        self.encode_passes(enc, color, depth, seats.len() as u32, Some((&lamps, &fog, &hair_fog)));
     }
 
     fn encode_passes(
@@ -642,6 +651,7 @@ impl ReviewRenderer {
         enc: &mut wgpu::CommandEncoder,
         cv: &wgpu::TextureView,
         dv: &wgpu::TextureView,
+        seat_count: u32,
         match_groups: Option<(&wgpu::BindGroup, &wgpu::BindGroup, &wgpu::BindGroup)>,
     ) {
         {
@@ -654,7 +664,7 @@ impl ReviewRenderer {
             if let Some((lights, _, _)) = match_groups {
                 pass.set_bind_group(1, lights, &[]);
             }
-            pass.dispatch_workgroups(self.count.div_ceil(64), 1, 1);
+            pass.dispatch_workgroups(seat_count.div_ceil(64), 1, 1);
         }
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -754,6 +764,7 @@ impl ReviewRenderer {
             &mut enc,
             &color.create_view(&Default::default()),
             &depth.create_view(&Default::default()),
+            self.count,
             None,
         );
         if let Some((q, b)) = &self.timer {
