@@ -1240,6 +1240,7 @@ pub struct Renderer {
     material_count: usize,
     tone: wgpu::ComputePipeline,
     bloom: crate::bloom::Bloom,
+    reflection_mips: crate::reflection_mips::ReflectionMips,
     auto_exposure: crate::auto_exposure::AutoExposureGpu,
     hdr_target: std::sync::Mutex<crate::hdr::HdrTarget>,
     shade_layout: wgpu::BindGroupLayout,
@@ -2144,6 +2145,7 @@ impl Renderer {
         startup.mark("shade_shader_module");
         let tone_mod = module("tonemap", include_str!("shaders/tonemap.wgsl"));
         let bloom=crate::bloom::Bloom::new(gpu);
+        let reflection_mips=crate::reflection_mips::ReflectionMips::new(gpu);
         let auto_exposure=crate::auto_exposure::AutoExposureGpu::new(gpu);
         startup.mark("tone_shader_module");
         let pl = |layouts: &[&wgpu::BindGroupLayout]| {
@@ -2598,6 +2600,7 @@ impl Renderer {
             material_count: scene.materials.len(),
             tone,
             bloom,
+            reflection_mips,
             auto_exposure,
             hdr_target: std::sync::Mutex::new(crate::hdr::HdrTarget::new()),
             shade_layout,
@@ -4225,6 +4228,7 @@ impl Renderer {
         let geometry_diagnostic=self.geometry_diagnostic_config()?;
         let debug_options = self.debug_options();
         self.bloom.set_view_count(views.len());
+        self.reflection_mips.set_view_count(views.len());
         let meadow_substrate_settings = self.meadow_substrate_settings.with_debug(debug_options);
         gpu.queue.write_buffer(&self.meadow_substrate_buffer, 0, bytemuck::bytes_of(&meadow_substrate_settings));
         let render_sequence = self.profile_sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -5218,7 +5222,13 @@ impl Renderer {
             } else {
                 None
             };
-            let reflection_history = taa_pass.as_ref().filter(|_| trace_prev.is_some()).map(|(src, _, _)| src.clone());
+            // Traced reflections read last frame's image prefiltered into mips
+            // (reflection_mips): glossy surfaces pick the mip of their cone.
+            let reflection_history = taa_pass.as_ref().filter(|_| trace_prev.is_some()).and_then(|_| hist.as_ref())
+                .map(|hh| {
+                    let time = self.query.as_ref().map(|(qs, _, _)| { names.push("reflection mips"); (qs, timestamp_pair(&mut ts)) });
+                    self.reflection_mips.build(gpu, &mut enc, vi, &hh.tex[1 - hh.cur], time)
+                });
             let bloom_strength=(debug_options.bloom_strength*light.bloom_boost.clamp(0.0,32.0)).min(2.0);
             let bloom_on=crate::bloom::active(debug_options.bloom_enabled,bloom_strength);
             let solar = solar_projection(cam, view_m, view.w as f32 / view.h as f32, light, sun_visibility);

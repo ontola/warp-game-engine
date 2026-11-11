@@ -78,6 +78,16 @@ Modern Warfare switches light states. The blend and upload of 14,000
 probes is cheap enough for every frame of a swing.
 `app/examples/interior_rooms.rs` does both.
 
+Smoothness: every probe shoots its rays in its own random rotation of the
+ray set, and the result is averaged with the neighbours each probe sees
+(never through a wall) after every bounce and twice more at the end, the
+direct sky included. Light that reaches a room along a few rays only
+(through a doorway, off a sun patch next door) would otherwise show as
+blotches at the probe spacing. In shading (with TAA) the probe lookup is
+offset per pixel and frame by up to 0.35 of a cell in the surface's plane,
+so TAA turns the trilinear cell steps into a smooth filter at no extra
+fetches.
+
 ## Cost
 
 The bake runs on the CPU's cooking threads: 3.2 s for the look scene

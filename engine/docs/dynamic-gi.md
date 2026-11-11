@@ -22,8 +22,14 @@ history) at the hit's reprojected position, so a reflection shows whatever
 the frame showed there: lit terrain, trees, voxel crowns, cars, grass, with
 their shadows and their own reflections (a second bounce, one frame late).
 
-Rays rougher than mirror-like are jittered by GGX around the mirror
-direction, one ray per pixel and frame, and TAA averages them. Confidence
+Every pixel traces its mirror ray, never jittered: one jittered ray per
+pixel hits and misses at random from pixel to pixel, a bright lamp most of
+all, which shows as grain TAA cannot average away. The roughness blur
+is prefiltered instead, as cone-traced reflections do: each frame the
+history is copied into a mip chain (`reflection_mips.rs`, level 0 full
+resolution, 0.10 ms at 4K on an RTX 5070 Ti), and the hit reads the level
+whose texels match the lobe's footprint (roughness times the ray length,
+in pixels at the hit), blending the two nearest. Confidence
 fades towards the screen edge, the reach and the roughness cut; where it is
 below one the old environment term (sky above the horizon, a heuristic
 ground bounce below, heightfield and canopy occlusion along the ray) fills
@@ -35,7 +41,8 @@ Under a clear coat (car paint) only the coat traces; the base layer keeps the
 environment.
 
 Cost: only pixels below the roughness cut trace, at most 45 depth loads and
-one bilinear history fetch each. It needs TAA (the history) and is off under
+one or two bilinear fetches from the history mips each, plus the mip
+build. It needs TAA (the history) and is off under
 DLSS (no history in that path yet), in the simple lighting path and on the
 first frame after a resize.
 
