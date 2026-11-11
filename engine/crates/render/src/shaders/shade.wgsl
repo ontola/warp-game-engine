@@ -603,21 +603,56 @@ fn dfao_visibility(p: vec3<f32>, n: vec3<f32>, refl: vec3<f32>) -> vec2<f32> {
 
 // Fast 4-tap Screen-Space Ambient Occlusion (SSAO) in reversed-Z hardware depth,
 // with thickness rejection so foreground edges never cast dark halos.
+// Horizon-based ambient occlusion (the idea of GTAO, as Call of Duty uses
+// it): along two screen directions, rotated per pixel and frame for TAA to
+// average, four depth samples each way within 0.6 m of p. Each side's
+// horizon is the steepest sample above the surface plane; its elevation
+// occludes. Samples further away than the radius fade out, so a silhouette
+// in front (a wall edge, the gun) does not darken what is behind it, and
+// flat surfaces never occlude themselves. Room corners, the floor under a
+// couch and creases darken; a three-way ceiling corner stays continuous.
 fn screen_space_ao(px: vec2<i32>, size: vec2<u32>, p: vec3<f32>, n: vec3<f32>, dist: f32) -> f32 {
     if gi.params.x < 0.5 || dist >= 48.0 { return 1.0; }
     let d0 = textureLoad(depth_tex, px, 0);
     if d0 <= 0.0001 { return 1.0; }
     let fade = 1.0 - smoothstep(30.0, 48.0, dist);
-    let r = i32(clamp(0.75 * view.cam.w / max(dist, 0.8), 2.0, 14.0));
+    let radius = 0.6;
+    let radius_px = min(radius * view.cam.w / max(dist, 0.3), 64.0);
+    if radius_px < 1.5 { return 1.0; }
     let max_px = vec2<i32>(size) - vec2<i32>(1);
-    let d_r = textureLoad(depth_tex, clamp(px + vec2<i32>(r, 0), vec2<i32>(0), max_px), 0) - d0;
-    let d_l = textureLoad(depth_tex, clamp(px + vec2<i32>(-r, 0), vec2<i32>(0), max_px), 0) - d0;
-    let d_u = textureLoad(depth_tex, clamp(px + vec2<i32>(0, -r), vec2<i32>(0), max_px), 0) - d0;
-    let d_d = textureLoad(depth_tex, clamp(px + vec2<i32>(0, r), vec2<i32>(0), max_px), 0) - d0;
-    let scale = dist * dist * 8.5;
-    let ox = clamp((d_r + d_l) * scale, 0.0, 1.0) * step(abs(d_r - d_l) * scale, 1.6);
-    let oy = clamp((d_u + d_d) * scale, 0.0, 1.0) * step(abs(d_u - d_d) * scale, 1.6);
-    return 1.0 - clamp((ox + oy) * 0.22 * fade, 0.0, 0.48);
+    let xi = trace_hash(px, light.fog_sampling.x * 16.0 + 7.0);
+    var occlusion = 0.0;
+    for (var dir_i = 0u; dir_i < 2u; dir_i++) {
+        let angle = (xi.x + f32(dir_i) * 0.5) * PI;
+        let dir = vec2<f32>(cos(angle), sin(angle));
+        for (var side = 0u; side < 2u; side++) {
+            let sign = select(-1.0, 1.0, side == 0u);
+            var horizon = 0.0;
+            for (var k = 0u; k < 4u; k++) {
+                // Steps jittered along the ray, denser near the pixel.
+                let t = (f32(k) + xi.y) / 4.0;
+                let offset = dir * sign * max(t * t * radius_px, 1.0);
+                let q_px = clamp(px + vec2<i32>(round(offset)), vec2<i32>(0), max_px);
+                let depth = textureLoad(depth_tex, q_px, 0);
+                if depth <= 0.0001 { continue; }
+                let ndc = (vec2<f32>(q_px) + 0.5) / vec2<f32>(size) * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+                let h = view.inv_view_proj * vec4<f32>(ndc, depth, 1.0);
+                let w = h.xyz / h.w - p;
+                let len = length(w);
+                if len < 1e-4 { continue; }
+                // sin of the sample's elevation above the surface plane, less
+                // a small bias against depth precision on flat ground.
+                let elevation = dot(n, w) / len - 0.1;
+                let falloff = clamp(1.0 - (len * len) / (radius * radius), 0.0, 1.0);
+                horizon = max(horizon, elevation * falloff);
+            }
+            occlusion += horizon;
+        }
+    }
+    // Four sides; sin^2 of the horizon is the share of the cosine-weighted
+    // hemisphere it hides, sin alone looks closer to the bake's softness.
+    let ao = 1.0 - clamp(occlusion * 0.25 * 1.1, 0.0, 1.0);
+    return mix(1.0, max(ao, 0.45), fade);
 }
 
 // Short directional contact shadow supplements the finite spotlight map.
