@@ -84,8 +84,10 @@ Other variants (`none`, `vis`, `diffuse`, `sun`, `sep`) show the older
 - The bake is on the CPU and takes seconds; a GPU bake would make it
   interactive and allow larger buildings.
 - No Luau call yet: games written in Luau cannot ask for a room bake.
-- Probes are 0.5 m apart: light changes smoothly, so contact darkening where
-  furniture meets the floor and in corners has to come from a screen-space
-  pass (GTAO in Call of Duty), which Warp does not have in full yet.
+- Probes are 0.5 m apart, so the bake has no contact darkening of its own.
+  Corners, creases and the floor under furniture darken through the
+  horizon-based screen-space AO in `shade.wgsl` (GTAO's idea, as Call of
+  Duty uses it). Like any screen-space AO it misses what the frame does not
+  show (a wall behind a table gets a little less).
 - Local lights (lamps) are not part of this bake; `irradiance_volume::BoxRoom`
   still bakes those for box rooms.

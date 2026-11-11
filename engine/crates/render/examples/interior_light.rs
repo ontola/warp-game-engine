@@ -99,6 +99,7 @@ fn main() {
     let views = [
         ("outside", Camera { pos: Vec3::new(4.0, 1.7, 14.0), target: Vec3::new(0.0, 1.2, 4.0), fov_y: 60f32.to_radians(), near: 0.05 }),
         ("room", Camera { pos: Vec3::new(2.8, 1.6, 2.8), target: Vec3::new(-2.0, 0.8, -3.0), fov_y: 75f32.to_radians(), near: 0.05 }),
+        ("corner", Camera { pos: Vec3::new(0.0, 1.4, 0.5), target: Vec3::new(4.0, 3.0, -4.0), fov_y: 60f32.to_radians(), near: 0.05 }),
         ("door", Camera { pos: Vec3::new(1.8, 1.6, -3.2), target: Vec3::new(-0.2, 1.1, 4.3), fov_y: 75f32.to_radians(), near: 0.05 }),
     ];
     let (w, h) = (640, 360);
