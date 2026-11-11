@@ -160,6 +160,10 @@ fn clipmap_slot(view: usize, k: usize) -> usize { 1 + view * NEAR_LEVELS_MAX + k
 // The outermost level (96-192 m) splats a voxel LOD coarser: walking its
 // cells was a fixed ~1 ms whatever reached the raster (Mancave, bbf410b).
 fn near_level_voxel_m(k: usize) -> f32 { NEAR_SUN_VOXEL_M * std::f32::consts::SQRT_2.powi(k as i32) * if k >= 3 { 1.42 } else { 1.0 } }
+fn shadow_distance_lod() -> Option<f32> {
+    static FACTOR: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *FACTOR.get_or_init(|| std::env::var("KERN_SHADOW_DISTANCE_LOD").ok().and_then(|v| v.parse::<f32>().ok()).filter(|f| f.is_finite() && *f > 0.0))
+}
 fn near_shadow_lod() -> f32 {
     static SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *SCALE.get_or_init(|| std::env::var("KERN_NEAR_SHADOW_LOD").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0))
@@ -308,6 +312,12 @@ struct ViewUniform {
     /// Camera: full-fog distance, cull enabled, terrain sun visibility, diagnostic exclusion mask.
     /// Orthographic sun views instead reserve z/w for caster LOD diagnostics.
     fog_cull: [f32; 4],
+    /// Shared sun map only (KERN_SHADOW_DISTANCE_LOD): the cameras (xyz and
+    /// the radians one of their pixels spans) whose screens the shadow
+    /// serves, and [count, factor / texel metres]. Only cull.wgsl reads it;
+    /// the other shaders' View structs stop before it.
+    lod_cams: [[f32; 4]; 4],
+    lod: [f32; 4],
 }
 
 #[repr(C)]
@@ -4534,6 +4544,18 @@ impl Renderer {
         let mut shadow_uniform=view_uniform(svp, shared_eye, SHADOW_SIZE as f32 / (2.0 * extent),
             [shadow_lod, 1.0, 1.0, MAX_VISIBLE as f32], [SHADOW_SIZE as f32; 4], light.alpha_cut);
         configure_sun_terrain_error(&mut shadow_uniform,self.sun_terrain_error);
+        // KERN_SHADOW_DISTANCE_LOD=F (off by default): a caster's LOD error
+        // may grow to F x what one screen pixel of the nearest camera spans
+        // at its distance, in shadow texels. Far trees cast coarser shadows
+        // nobody can resolve. The map then depends on the cameras, so not
+        // with the static sun cache.
+        if let Some(factor) = shadow_distance_lod().filter(|_| static_sun.is_none()) {
+            for (k, v) in views.iter().take(4).enumerate() {
+                let angle = 2.0 * (v.cam.fov_y * 0.5).tan() / v.h.max(1) as f32;
+                shadow_uniform.lod_cams[k] = [v.cam.pos.x, v.cam.pos.y, v.cam.pos.z, angle];
+            }
+            shadow_uniform.lod = [views.len().min(4) as f32, factor * SHADOW_SIZE as f32 / (2.0 * extent), 0.0, 0.0];
+        }
         shadow_uniform.fog_cull[3]=if self.sun_surface_source{1.0}else{0.0};
         // Positive extra.z is the camera material mip-gradient scale.
         // Reserve negative values for sun demand without changing alpha mips.
@@ -6365,14 +6387,19 @@ mod layout_tests {
     #[test]
     fn explicit_fog_view_layout_leaves_every_shadow_view_disabled() {
         use glam::{Mat4,Vec3};
-        assert_eq!(std::mem::size_of::<super::ViewUniform>(),320);
+        assert_eq!(std::mem::size_of::<super::ViewUniform>(),400);
         assert_eq!(std::mem::offset_of!(super::ViewUniform,fog_cull),304);
+        // cull.wgsl's View appends these; the other shaders stop before them.
+        assert_eq!(std::mem::offset_of!(super::ViewUniform,lod_cams),320);
+        assert_eq!(std::mem::offset_of!(super::ViewUniform,lod),384);
         for orthographic in [0.0,1.0] {
             let view=super::view_uniform(Mat4::IDENTITY,Vec3::ZERO,1.0,[1.0,0.1,orthographic,100.0],[1.0;4],0.5);
             assert_eq!(view.fog_cull,[0.0;4]);
+            assert_eq!(view.lod,[0.0;4],"shadow distance LOD is off unless the shared sun map sets it");
         }
-        // All consumers share the appended field; no existing grass/alpha
-        // parameter slot was repurposed for a camera-only optimisation.
+        // All consumers share the appended fields; no existing grass/alpha
+        // parameter slot was repurposed for a camera-only optimisation, nor
+        // for the shared sun map's distance LOD (lod_cams, lod).
         for source in [include_str!("shaders/cull.wgsl"),include_str!("shaders/raster.wgsl"),include_str!("shaders/surface_fog.wgsl")] {
             // The full composed shaders are separately validated. Here the
             // declaration itself is checked without their imported helpers.
@@ -6381,7 +6408,7 @@ mod layout_tests {
             let module=naga::front::wgsl::parse_str(&isolated).unwrap();
             let view=module.types.iter().find(|(_,t)|t.name.as_deref()==Some("View")).unwrap().1;
             if let naga::TypeInner::Struct {members,span}= &view.inner {
-                assert_eq!(*span,320);assert_eq!(members.last().unwrap().offset,304);
+                assert_eq!(*span,400);assert_eq!(members.last().unwrap().offset,384);
             } else {panic!("View is not a struct");}
         }
     }
@@ -6716,6 +6743,8 @@ fn view_uniform(vp: Mat4, cam: Vec3, px_scale: f32, params: [f32; 4], size: [f32
         extra: [alpha_cut, 0.0, 0.0, 0.0],
         grass: [40.0, 60.0, 0.0, 0.0],
         fog_cull: [0.0; 4],
+        lod_cams: [[0.0; 4]; 4],
+        lod: [0.0; 4],
     }
 }
 

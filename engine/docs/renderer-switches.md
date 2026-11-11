@@ -99,6 +99,7 @@ note linked says why. They are candidates for removal from the code.
 | `KERN_CLUSTER_TRAVERSAL` | Top-down cluster traversal (`terrain_fly` turns it on unless set) | [r46](log/cluster-traversal-r46.md) |
 | `KERN_INSTANCE_BROADPHASE` | Compact colour-view instance selection | [broadphase](log/instance-broadphase.md) |
 | `KERN_STATIC_SUN_CACHE` | Static/dynamic split sun cache | [r45](log/static-sun-cache-r45.md) |
+| `KERN_SHADOW_DISTANCE_LOD` | `=F`: shared sun map casters may be F x coarser than one screen pixel of the nearest camera spans at their distance (2 is the candidate). Not with `KERN_STATIC_SUN_CACHE` | [Sideways GPU cost](log/2026-11-11-sideways-gpu-cost.md) |
 | `KERN_RECEIVER_SHADOW_DEMAND` | Receiver-driven shadow tiles | [r49](log/lod-shadow-demand-r49.md) |
 | `KERN_PAGED_FOLIAGE_SUN` | Paged foliage sun map (excludes the far sun map) | [world lighting](log/world-lighting.md), [distant tree light](log/distant-tree-lighting.md) |
 | `KERN_ASYNC_SHADOW_VALIDATION` | Asynchronous shadow cache validation | [r61](log/frame-hitches-r61.md) |

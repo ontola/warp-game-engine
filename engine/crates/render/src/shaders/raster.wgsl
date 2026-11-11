@@ -17,6 +17,8 @@ struct View {
     extra: vec4<f32>,
     grass: vec4<f32>,
     fog_cull: vec4<f32>,
+    lod_cams: array<vec4<f32>, 4>, // shared sun map distance LOD (cull.wgsl)
+    lod: vec4<f32>,
 };
 
 struct Cluster {
