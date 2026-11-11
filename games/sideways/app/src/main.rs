@@ -71,7 +71,7 @@ fn main() {
                     Some(b) => match biome_land::land(&b) { Ok(l) => Some(l), Err(e) => { eprintln!("shot: {e}"); std::process::exit(2); } },
                     None => None,
                 },
-                lod_pixels: opt("--lod", "1").parse().unwrap(),
+                lod_pixels: opt("--lod", &crate::engine_debug::DEFAULT_LOD_PIXELS.to_string()).parse().unwrap(),
                 picks: args
                     .iter()
                     .enumerate()
