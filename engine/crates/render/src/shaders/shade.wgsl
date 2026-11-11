@@ -931,8 +931,9 @@ fn environment(r: vec3<f32>, rough: f32, bounce: vec3<f32>) -> vec3<f32> {
 // reprojected position: whatever the frame shows, lit by everything, trees
 // and cars included. A ray that leaves the screen (it cannot come back: the
 // frustum is convex) returns confidence 0 and keeps the environment and its
-// heightfield occlusion. Rough surfaces jitter the ray by GGX, one sample
-// per pixel and frame, and TAA averages them. rgb: radiance, a: confidence.
+// heightfield occlusion. Rough surfaces jitter the ray within a narrowed
+// GGX lobe, one sample per pixel and frame, and TAA averages them; the
+// reflection fades out by roughness. rgb: radiance, a: confidence.
 fn trace_hash(px: vec2<i32>, salt: f32) -> vec2<f32> {
     // Interleaved gradient noise, shifted by the frame sequence.
     let q = vec2<f32>(px) + salt * vec2<f32>(5.588238, 5.588238);
@@ -972,7 +973,12 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
     if gi.trace.x < 0.5 || rough >= gi.trace.y { return vec4<f32>(0.0); }
     var r = mirror;
     if rough > 0.06 {
-        let jittered = trace_jitter(mirror, rough, trace_hash(px, light.fog_sampling.x * 16.0));
+        // A narrowed lobe (a third of the GGX width): one jittered ray per
+        // pixel over the full lobe hits and misses at random from pixel to
+        // pixel, which shows as stipple and sparkle TAA cannot average away.
+        // The narrow lobe keeps neighbours on the same surfaces; the
+        // confidence fade by roughness stands in for the rest of the blur.
+        let jittered = trace_jitter(mirror, rough * 0.35, trace_hash(px, light.fog_sampling.x * 16.0));
         if dot(jittered, n) > 0.02 { r = jittered; }
     }
     if dot(r, n) <= 0.0 { return vec4<f32>(0.0); }

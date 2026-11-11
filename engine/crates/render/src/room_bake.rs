@@ -104,9 +104,16 @@ impl Occluders {
 
     pub fn triangles(&self) -> usize { self.tris.len() }
 
+    /// These triangles and `other`'s: a scene with and without a door, say.
+    pub fn merged(&self, other: &Occluders) -> Self {
+        Self::from_triangles(self.tris.iter().chain(&other.tris).copied().collect())
+    }
+
     /// The nearest hit along `d` (unit) from `o`, at least 2 cm out: the
     /// distance and the triangle's normal, facing `d`'s origin side or not.
-    fn hit(&self, o: Vec3, d: Vec3) -> Option<(f32, Vec3)> {
+    /// Also for game logic that aims at the baked geometry (a flashlight's
+    /// spot, say).
+    pub fn hit(&self, o: Vec3, d: Vec3) -> Option<(f32, Vec3)> {
         if self.nodes.is_empty() { return None; }
         let inv = d.recip();
         let mut best: Option<(f32, Vec3)> = None;

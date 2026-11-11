@@ -58,9 +58,25 @@ renderer.set_sky_sun_separated(&gpu, &probes, &room_bake::separation_planes(&gri
 hundredths of the sphere, fewer rays make blotches), `bounce_rays` (512),
 `bounces` (3) and `reflectance` (0.5, the average albedo).
 
-Grid: a cell of 0.5 m against walls of 0.2 to 0.3 m works. The grid must
-cover the room, its walls and a cell outside, and reach below the floor.
-One volume per scene, up to 65,536 probes.
+Grid: a cell of 0.5 m. The grid must cover the room, its walls and a cell
+outside, and reach below the floor. Every wall between differently lit
+spaces (outside and in, a lit room and a dark one) and the ground under
+the floor must hold a probe layer: a probe inside the geometry, which the
+bake marks invalid. A wall thinner than the cell, or placed between two
+layers, does not; surfaces next to it then blend in the probes on its far
+side, and a dark room glows with the daylight or lamps next door. Make
+such walls 0.6 m thick or move them onto a layer, and make the ground slab
+reach below the lowest layer (a probe under a thin ground sees open sky
+below the world). One volume per scene, up to 65,536 probes.
+
+Lamps: `room_bake::bake_lights` bakes each local light's bounce on its own;
+add the sets of the lit lamps into the emission when a switch flips
+(`set_sky_sun_emission`). Light states: bake the whole set twice, with a
+door shut (its box merged into the occluders, `Occluders::merged`) and
+open, and blend the two by how far the door is open while it moves, as
+Modern Warfare switches light states. The blend and upload of 14,000
+probes is cheap enough for every frame of a swing.
+`app/examples/interior_rooms.rs` does both.
 
 ## Cost
 
@@ -89,5 +105,6 @@ Other variants (`none`, `vis`, `diffuse`, `sun`, `sep`) show the older
   horizon-based screen-space AO in `shade.wgsl` (GTAO's idea, as Call of
   Duty uses it). Like any screen-space AO it misses what the frame does not
   show (a wall behind a table gets a little less).
-- Local lights (lamps) are not part of this bake; `irradiance_volume::BoxRoom`
-  still bakes those for box rooms.
+- Moving lights (a swinging pendant, a flashlight) cannot be baked; the
+  example stands in for their bounce with one soft virtual point light
+  where their light lands.
