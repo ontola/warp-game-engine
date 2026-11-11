@@ -997,6 +997,7 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
     var lo = 0.0;
     var t = max(0.06, dist * 0.003) * (0.75 + 0.5 * jitter);
     var found = false;
+    var escape = 0.0;
     for (var k = 0; k < 40; k++) {
         let c = view.view_proj * vec4<f32>(o + r * t, 1.0);
         if c.w <= 1e-4 { break; }
@@ -1004,6 +1005,12 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
         if abs(ndc.x) >= 1.0 || abs(ndc.y) >= 1.0 { break; }
         let sp = vec2<i32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize);
         let d = trace_depth(sp);
+        // The scene here is far beyond the ray (sky, or the field through a
+        // doorway): remember it. A ray that leaves through an opening then
+        // projects onto the wall around it, never hits, and would fall back
+        // to the room's dark environment (a door reflected as a dark
+        // rectangle); it reads what it escaped into instead.
+        if d < ndc.z * 0.66 { escape = t; }
         // Reversed infinite Z: depth is near / view depth, so the scene is in
         // front of the ray point when d > ndc.z; how far behind it, in metres:
         if d > ndc.z {
@@ -1018,28 +1025,38 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
         t += max(0.06, t * 0.2);
         if t > reach { break; }
     }
-    if !found { return vec4<f32>(0.0); }
-    // Bisect to the crossing.
     var hi = t;
-    for (var k = 0; k < 6; k++) {
-        let mid = 0.5 * (lo + hi);
-        let c = view.view_proj * vec4<f32>(o + r * mid, 1.0);
-        let ndc = c.xyz / c.w;
-        let sp = vec2<i32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize);
-        if trace_depth(sp) > ndc.z { hi = mid; } else { lo = mid; }
+    // Escaped: the ray point in front of the far scene stands in for the
+    // hit (it projects onto the same pixel).
+    var hit = o + r * escape;
+    if found {
+        // Bisect to the crossing.
+        for (var k = 0; k < 6; k++) {
+            let mid = 0.5 * (lo + hi);
+            let cm = view.view_proj * vec4<f32>(o + r * mid, 1.0);
+            let nm = cm.xyz / cm.w;
+            let sm = vec2<i32>(vec2<f32>(nm.x * 0.5 + 0.5, 0.5 - nm.y * 0.5) * fsize);
+            if trace_depth(sm) > nm.z { hi = mid; } else { lo = mid; }
+        }
+        let ch = view.view_proj * vec4<f32>(o + r * hi, 1.0);
+        let nh = ch.xyz / ch.w;
+        let sp = clamp(vec2<i32>(vec2<f32>(nh.x * 0.5 + 0.5, 0.5 - nh.y * 0.5) * fsize), vec2<i32>(0), vec2<i32>(size) - 1);
+        let d = trace_depth(sp);
+        if d <= 0.0 { return vec4<f32>(0.0); }
+        // The surface the ray reached, as this frame's depth buffer places it.
+        let pc = (vec2<f32>(sp) + 0.5) / fsize;
+        let world = view.inv_view_proj * vec4<f32>(pc.x * 2.0 - 1.0, 1.0 - pc.y * 2.0, d, 1.0);
+        hit = world.xyz / world.w;
+        // A hit facing away from the ray (seen from behind) has no radiance here.
+        let back = ch.w * (1.0 - nh.z / d);
+        if back > max(0.2, hi * 0.03) { return vec4<f32>(0.0); }
+    } else if escape <= 0.0 {
+        return vec4<f32>(0.0);
+    } else {
+        hi = escape;
     }
     let c = view.view_proj * vec4<f32>(o + r * hi, 1.0);
     let ndc = c.xyz / c.w;
-    let sp = clamp(vec2<i32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize), vec2<i32>(0), vec2<i32>(size) - 1);
-    let d = trace_depth(sp);
-    if d <= 0.0 { return vec4<f32>(0.0); }
-    // The surface the ray reached, as this frame's depth buffer places it.
-    let pc = (vec2<f32>(sp) + 0.5) / fsize;
-    let world = view.inv_view_proj * vec4<f32>(pc.x * 2.0 - 1.0, 1.0 - pc.y * 2.0, d, 1.0);
-    let hit = world.xyz / world.w;
-    // A hit facing away from the ray (seen from behind) has no radiance here.
-    let back = c.w * (1.0 - ndc.z / d);
-    if back > max(0.2, hi * 0.03) { return vec4<f32>(0.0); }
     let prev = gi.prev_view_proj * vec4<f32>(hit, 1.0);
     if prev.w <= 1e-4 { return vec4<f32>(0.0); }
     let prev_ndc = prev.xy / prev.w;
@@ -1389,7 +1406,32 @@ fn irradiance_volume(p: vec3<f32>,n: vec3<f32>) -> vec4<f32> { return irradiance
 // neighbouring wall; tested there, probes on that wall's far side (outdoors,
 // the next room) would pass and the edge showed as a bright dotted line.
 fn jittered_irradiance(p: vec3<f32>, px: vec2<i32>, visibility_n: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
-    let moved = irradiance_sample_at(p + irradiance_jitter(px, visibility_n), p, n);
+    // A move into another probe cell is kept only if none of that cell's
+    // probes is inside geometry; otherwise it stays in the plain point's
+    // cell (the same eight probes, only their weights move). At a corner the
+    // next cell holds the adjoining wall's probes and those beyond it, which
+    // showed as a bright dotted line along every edge of a room; in open
+    // space the move still blurs the cell steps.
+    var q = p + irradiance_jitter(px, visibility_n);
+    let o = u32(gi.params.w);
+    if FEATURE_IRRADIANCE && o != 0u && aux_word(o + 7u) >= 4u {
+        let origin = vec3<f32>(aux_f32(o), aux_f32(o + 1u), aux_f32(o + 2u));
+        let cell = aux_f32(o + 3u);
+        let dims = vec3<u32>(aux_word(o + 4u), aux_word(o + 5u), aux_word(o + 6u));
+        let last = vec3<f32>(dims - vec3<u32>(1u));
+        let c = min(floor(clamp((p - origin) / cell, vec3<f32>(0.0), last)), last - 1.0);
+        let cq = min(floor(clamp((q - origin) / cell, vec3<f32>(0.0), last)), last - 1.0);
+        if any(cq != c) {
+            // Any probe inside geometry in the next cell: stay in this one.
+            var buried = false;
+            for (var k = 0u; k < 8u; k++) {
+                let g = vec3<u32>(cq) + vec3<u32>(k & 1u, (k >> 1u) & 1u, (k >> 2u) & 1u);
+                if (aux_word(o + 8u + (g.x + g.y * dims.x + g.z * dims.x * dims.y) * 18u) & 0x80000000u) != 0u { buried = true; }
+            }
+            if buried { q = origin + clamp((q - origin) / cell, c + 0.001, c + 0.999) * cell; }
+        }
+    }
+    let moved = irradiance_sample_at(q, p, n);
     if moved.value.w < 0.0 { return irradiance_sample(p, n); }
     return moved;
 }

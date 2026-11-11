@@ -29,7 +29,10 @@ is prefiltered instead, as cone-traced reflections do: each frame the
 history is copied into a mip chain (`reflection_mips.rs`, level 0 full
 resolution, 0.10 ms at 4K on an RTX 5070 Ti), and the hit reads the level
 whose texels match the lobe's footprint (roughness times the ray length,
-in pixels at the hit), blending the two nearest. Each level is a
+in pixels at the hit), blending the two nearest. A ray that never hits but passed
+pixels showing something much farther than itself (sky, or the field through
+a doorway) reads the last of those: it escaped through the opening, and a
+door or window reflects bright, not as the room's darker environment. Each level is a
 luminance-weighted (Karis) average of the four texels above it, so one very
 bright pixel (a bulb) does not fill a coarse texel, and a level above the
 first is read with a tent of four taps, so its texels do not show as
