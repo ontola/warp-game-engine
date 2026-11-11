@@ -10,6 +10,8 @@ use crate::Gpu;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 const MAX_PENDING: usize = 4;
+/// Layer label of the legacy far-sun map's counter in a batch.
+pub(crate) const FAR_SUN: u32 = u32::MAX;
 const MAX_PAGES_PER_BATCH: usize = 8;
 const COUNTER_STRIDE: usize = 16;
 
@@ -51,7 +53,8 @@ fn validate(pages: &[(u32, u32)], bytes: &[u8]) -> Result<(), String> {
         // Read bytes directly; mapped buffers need no host alignment assumption.
         let count = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
         if count > capacity {
-            return Err(format!("foliage page {layer} cluster capacity exceeded asynchronously: {count}>{capacity}; submitted cache content is invalid"));
+            let what = if layer == FAR_SUN { "far sun map".to_owned() } else { format!("foliage page {layer}") };
+            return Err(format!("{what} cluster capacity exceeded asynchronously: {count}>{capacity}; submitted cache content is invalid"));
         }
     }
     Ok(())
