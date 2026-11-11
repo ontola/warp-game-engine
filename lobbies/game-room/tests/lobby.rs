@@ -145,3 +145,38 @@ fn the_mouse_is_nobody_but_works_the_room() {
     point(&mut lobby, at, true, 0.0);
     sent(&from_lobby, "quit_party");
 }
+
+#[test]
+fn new_rooms_show_where_to_start_and_where_scanned_profiles_wait() {
+    let party = json!({
+        "players": [],
+        "seats": [],
+        "library": [{"id": "spaceracer", "title": "Space Racer", "color": "#38d6ff"}],
+        "playlist": {"entries": [{"game": "spaceracer", "title": "Space Racer"}], "current": null},
+    });
+    let (url, to_lobby, _from_lobby) = fake_host(party);
+    let config = gamenight::lobby::Config { url, lobby_id: "game-room".into(), token: "secret".into(), links_base: String::new() };
+    let mut lobby = Lobby::connect_with(options(), config).unwrap();
+    run_until(&mut lobby, |l| l.accepts_input());
+    run_until(&mut lobby, |l| l.prompt_active.get("tv").copied().unwrap_or(false));
+    assert!(lobby.nudges.contains("tv"), "before the first game, Play hops at the TV for nobody in particular");
+    assert_eq!(lobby.prompts["tv"].items[0].1, "Play");
+    assert!(!lobby.nudges.iter().any(|n| n.starts_with("door")), "no profile waits yet");
+
+    lobby.set_links(json!({"room": {"pending": [{"id": "w1", "profile": {"display_name": "Sanne"}}]}}));
+    run_until(&mut lobby, |l| l.nudges.contains("door0"));
+    assert!(lobby.prompt_active["door0"] && lobby.prompts["door0"].enabled, "a scanned profile's door shows Pick up");
+
+    // Once a game has run, the TV is no longer nudged.
+    to_lobby.send(json!({"type": "party_state", "party": {"players": [], "seats": [],
+        "library": [{"id": "spaceracer", "title": "Space Racer"}],
+        "active_session": {"game": "spaceracer", "phase": "running"},
+        "playlist": {"entries": [], "current": null}}})).unwrap();
+    run_until(&mut lobby, |l| l.started_once);
+    to_lobby.send(json!({"type": "party_state", "party": {"players": [], "seats": [],
+        "library": [{"id": "spaceracer", "title": "Space Racer"}],
+        "playlist": {"entries": [{"game": "spaceracer", "title": "Space Racer"}], "current": null}}})).unwrap();
+    run_until(&mut lobby, |l| l.host.current_game().is_none());
+    lobby.update(1.0 / 60.0);
+    assert!(!lobby.nudges.contains("tv"));
+}

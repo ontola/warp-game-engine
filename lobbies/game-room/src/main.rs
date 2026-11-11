@@ -3,7 +3,7 @@
 //!
 //!   game-room shot [--dump DIR] --out room.png [--size 1280x720]
 //!   game-room play [--players 1] [--bots 3] [--fullscreen]
-//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu]
+//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu] [--pending NAME] [--queue TITLE]
 //!
 //! For now the room comes from the Godot lobby's export (tools/
 //! warp_export.gd in gamenight/lobbies/game-room), so both engines draw the
@@ -69,6 +69,17 @@ fn run() -> Result<(), String> {
             for (i, k) in [Bomb, Blaster, Popcorn, Minigun, Bazooka, Laser, Saber, Ball].into_iter().enumerate() {
                 lobby.world.spawn_item(k, -7.0 + i as f64 * 2.0, 3.0);
             }
+        }
+        // `--pending NAME`: a profile someone scanned in, waiting at a door.
+        if let Some(name) = arg("--pending") {
+            lobby.set_links(serde_json::json!({"room": {"pending": [{"id": "shot", "profile": {"display_name": name}}]}}));
+        }
+        // `--queue TITLE`: a game waiting in the queue, so the TV offers Play.
+        if let Some(title) = arg("--queue") {
+            let mut party = lobby.host.party.clone();
+            party["library"] = serde_json::json!([{"id": "queued", "title": title}]);
+            party["playlist"] = serde_json::json!({"entries": [{"game": "queued", "title": title}], "current": null});
+            lobby.set_party(party);
         }
         let ticks = numf("--ticks", 180.0) as u32;
         let mut rgba = headless.frame(&mut lobby)?;

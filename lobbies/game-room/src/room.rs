@@ -655,7 +655,7 @@ fn tv(r: &mut RoomBuild) {
     r.box_(Vec3::new(0.9, 0.18, 0.5), Vec3::new(2.45, 0.98, BACK + 0.45), &m(Color::hex("e9e6f5"), 0.3));
     r.box_flat(Vec3::new(0.3, 0.04, 0.02), Vec3::new(2.45, 0.98, BACK + 0.71), &glow(GREEN, 0.3, GREEN, 4.0));
     // A floating button over the console says the TV is something to use.
-    r.prompt("tv", &[("Y", "Start")], Vec3::new(0.0, 5.9, BACK + 0.3));
+    r.prompt("tv", &[("Y", "Play")], Vec3::new(0.0, 5.9, BACK + 0.3));
     r.omni("tv_light", VIOLET, 3.0, 10.0, c + Vec3::new(0.0, -0.4, 1.6), 0.6, false);
     // Speakers either side, sitting on floating shelves.
     for s2 in [-1.0f32, 1.0] {
