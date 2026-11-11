@@ -498,6 +498,55 @@ pub fn bake_lights(grid: &Grid, occluders: &Occluders, lights: &[crate::headligh
 /// For each probe, the plane of the nearest surface it faces (xyz into the
 /// probe's side, w the offset), or zero: the shader then ignores the probe
 /// for points behind that surface, so light does not cross thin walls.
+/// Texels per side of a probe's visibility map (octahedral).
+pub const VISIBILITY_SIDE: usize = 8;
+
+/// The direction at octahedral coordinates `uv` in 0..1 (DDGI's mapping).
+pub fn octahedral_direction(uv: glam::Vec2) -> Vec3 {
+    let f = uv * 2.0 - glam::Vec2::ONE;
+    let mut n = Vec3::new(f.x, f.y, 1.0 - f.x.abs() - f.y.abs());
+    if n.z < 0.0 {
+        let (x, y) = (n.x, n.y);
+        n.x = (1.0 - y.abs()) * x.signum();
+        n.y = (1.0 - x.abs()) * y.signum();
+    }
+    n.normalize()
+}
+
+/// Per probe, DDGI-style visibility: an 8x8 octahedral map of the mean
+/// distance and mean squared distance to the nearest surface (4 rays per
+/// texel, capped at 1.5 cells), as two half floats per texel. The shader
+/// weights each probe by a Chebyshev test of the shaded point's distance
+/// against it, so a probe behind a wall from the point counts for nothing
+/// and the weight changes smoothly, not per cell. Probes inside geometry get
+/// zeros (no weight).
+pub fn bake_visibility(grid: &Grid, occluders: &Occluders) -> Vec<[u32; VISIBILITY_SIDE * VISIBILITY_SIDE]> {
+    let max = grid.cell * 1.5;
+    let side = VISIBILITY_SIDE;
+    let mut out = vec![[0u32; VISIBILITY_SIDE * VISIBILITY_SIDE]; grid.count()];
+    let probe_dirs = sphere(256);
+    each(&mut out, |i, texels| {
+        let o = grid.position(i);
+        let back = probe_dirs.iter().filter(|d| occluders.hit(o, **d).is_some_and(|(_, n)| n.dot(**d) > 0.0)).count();
+        if back * 4 >= probe_dirs.len() { return; }
+        for ty in 0..side {
+            for tx in 0..side {
+                let (mut sum, mut sum2) = (0.0f32, 0.0f32);
+                for s in 0..4 {
+                    let jitter = glam::Vec2::new(0.25 + 0.5 * (s & 1) as f32, 0.25 + 0.5 * (s >> 1) as f32);
+                    let d = octahedral_direction((glam::Vec2::new(tx as f32, ty as f32) + jitter) / side as f32);
+                    let t = occluders.hit(o, d).map_or(max, |(t, _)| t.min(max));
+                    sum += t;
+                    sum2 += t * t;
+                }
+                let pack = |a: f32, b: f32| f16_bits(a) | (f16_bits(b) << 16);
+                texels[ty * side + tx] = pack(sum / 4.0, sum2 / 4.0);
+            }
+        }
+    });
+    out
+}
+
 pub fn separation_planes(grid: &Grid, occluders: &Occluders) -> Vec<[f32; 4]> {
     let dirs: Vec<Vec3> = (-1..=1).flat_map(|x| (-1..=1).flat_map(move |y| (-1..=1).map(move |z| Vec3::new(x as f32, y as f32, z as f32))))
         .filter(|d| d.length_squared() > 0.0).map(|d| d.normalize()).collect();
@@ -578,4 +627,16 @@ mod tests {
             assert!(a.zip(b).is_none_or(|(a, b)| (a - b).abs() < 1e-3) && a.is_some() == b.is_some(), "{d}: {a:?} vs {b:?}");
         }
     }
+}
+
+/// IEEE half-float bits of a finite, non-negative value (what WGSL's
+/// `unpack2x16float` reads), rounded to nearest; tiny values flush to zero.
+fn f16_bits(v: f32) -> u32 {
+    let v = if v.is_finite() { v.clamp(0.0, 65504.0) } else { 0.0 };
+    if v < 6.1e-5 { return 0; }
+    let bits = v.to_bits();
+    let exponent = ((bits >> 23) & 255) as i32 - 127 + 15;
+    let mantissa = (bits & 0x7f_ffff) + 0x1000; // round the 13 dropped bits
+    let (exponent, mantissa) = if mantissa & 0x80_0000 != 0 { (exponent + 1, 0) } else { (exponent, mantissa >> 13) };
+    ((exponent.clamp(1, 30) as u32) << 10) | (mantissa & 0x3ff)
 }

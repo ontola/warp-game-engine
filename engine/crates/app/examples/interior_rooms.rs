@@ -85,9 +85,11 @@ fn colour(c: Vec3, cd: f32) -> Vec3 {
 
 /// Light shapes (`render::light_shapes`): the flashlight's cookie, the
 /// pendant's lampshade profile, the ceiling lamps' downlight profile.
-const FLASH_COOKIE: LightShape = LightShape { cookie: 1, profile: 0 };
-const PENDANT_PROFILE: LightShape = LightShape { cookie: 0, profile: 1 };
-const DOWNLIGHT_PROFILE: LightShape = LightShape { cookie: 0, profile: 2 };
+const FLASH_COOKIE: LightShape = LightShape { cookie: 1, profile: 0, diffuse_only: false };
+const PENDANT_PROFILE: LightShape = LightShape { cookie: 0, profile: 1, diffuse_only: false };
+/// Bounce lights (a lit patch standing in as a light): diffuse only.
+const BOUNCE: LightShape = LightShape { cookie: 0, profile: 0, diffuse_only: true };
+const DOWNLIGHT_PROFILE: LightShape = LightShape { cookie: 0, profile: 2, diffuse_only: false };
 
 fn smooth(e0: f32, e1: f32, x: f32) -> f32 { let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) }
 
@@ -101,10 +103,10 @@ fn flashlight_cookie() -> Vec<f32> {
         let r = (x * x + y * y).sqrt();
         let hot = ((x - 0.04) * (x - 0.04) + (y + 0.03) * (y + 0.03)).sqrt();
         let core = (-(hot / 0.13).powi(2)).exp();
-        let ring = 0.7 * (-((r - 0.33) / 0.06).powi(2)).exp();
+        let ring = 0.45 * (-((r - 0.33) / 0.08).powi(2)).exp();
         let body = 0.45 * (1.0 - smooth(0.2, 0.42, r));
         let spill = 0.22 * (1.0 - smooth(0.5, 1.0, r));
-        let streaks = 1.0 + 0.07 * (r * 110.0).sin() * (1.0 - smooth(0.1, 0.6, r));
+        let streaks = 1.0 + 0.025 * (r * 70.0).sin() * (1.0 - smooth(0.1, 0.6, r));
         ((core + ring + body).min(1.0).max(spill) * streaks).clamp(0.0, 1.0)
     }).collect()
 }
@@ -361,9 +363,8 @@ impl Rooms {
     /// in a cone of `half` (radians) around `dir` lands, averaged over 17
     /// rays (a centre ray and rings at 0.4 and 0.85 of `half`) weighted by
     /// the lamp's cone profile, so the average slides as rays move from a
-    /// table to the floor behind it instead of jumping, pulled `back` metres
-    /// off the surface (and at least 0.6 m from the lamp, so a surface right
-    /// in front of it does not blow up), shining away from it. `flux_sr`:
+    /// table to the floor behind it instead of jumping, `back` metres off the
+    /// surface, shining away from it with a roughly cosine lobe. `flux_sr`:
     /// the solid angle of the lamp's light in the cone. A Lambertian surface
     /// reflecting flux F shines F / pi candela along its normal, falling off
     /// with the angle (a soft cone, not a hemisphere cut off at the surface:
@@ -392,12 +393,11 @@ impl Rooms {
         }
         if hit <= 0.0 { return None; }
         let (at, n) = (at / hit, normal.normalize_or(-dir));
-        let mut position = at + n * back;
-        let off = position - lamp.position;
-        if off.length() < 0.6 { position = lamp.position + off.normalize_or(dir) * 0.6; }
-        Some(LocalLight { position, direction: n,
+        // On the lit surface (a few cm off it), shining out of it with a
+        // roughly cosine lobe; its large source radius keeps it soft.
+        Some(LocalLight { position: at + n * back, direction: n,
             intensity_cd: lamp.intensity_cd * BOUNCE_REFLECTANCE * flux_sr * (hit / total) / std::f32::consts::PI, range_m: 7.0,
-            inner_cos: 0.6, outer_cos: -0.4, source_radius_m: 1.0, falloff: 2.0 })
+            inner_cos: 0.999, outer_cos: 0.0, source_radius_m: 1.0, falloff: 2.0 })
     }
 
     /// Move the flashlight's bounce light towards where the beam lands now:
@@ -407,7 +407,8 @@ impl Rooms {
     fn update_flash_bounce(&mut self, dt: f32) {
         if !self.flashlight { self.flash_bounce = None; return; }
         let flash = self.flashlight_light();
-        let target = self.bounce(&flash, flash.direction, 20f32.to_radians(), 0.74, 0.3);
+        // The beam: 0.74 sr, its cookie averaging about 0.4 of the peak.
+        let target = self.bounce(&flash, flash.direction, 20f32.to_radians(), 0.74 * 0.4, 0.05);
         let k = 1.0 - (-dt.max(0.0) / 0.12).exp();
         self.flash_bounce = match (self.flash_bounce, target) {
             (None, t) => t,
@@ -462,7 +463,8 @@ impl Rooms {
         // Instant radiosity: what the cone lands on (the table, the floor)
         // shines back. Rays inside the cone (30 degrees); the 40 degree
         // outer cone holds 2 pi (1 - cos 40) = 1.47 sr.
-        if let Some(b) = self.bounce(&pendant, pendant.direction, 30f32.to_radians(), 1.47, 0.3) { lights.push(ClusteredLight::shadowed(b, 2)); }
+        // The 40 degree cone: 1.47 sr, its lampshade profile about 0.8 of the peak.
+        if let Some(b) = self.bounce(&pendant, pendant.direction, 30f32.to_radians(), 1.47 * 0.8, 0.05) { lights.push(ClusteredLight::shadowed(b, 2).with_shape(BOUNCE)); }
         for i in 0..4 {
             if self.lamp_on[i] { lights.push(ClusteredLight::shadowed(ceiling_lamp(i), 10 + i as u64).with_shape(DOWNLIGHT_PROFILE)); }
         }
@@ -470,7 +472,7 @@ impl Rooms {
             let flash = self.flashlight_light();
             lights.push(ClusteredLight::shadowed(flash, 20).with_shape(FLASH_COOKIE));
             // The beam's cone (28 degrees half angle) is 0.74 sr.
-            if let Some(b) = self.flash_bounce { lights.push(ClusteredLight::unshadowed(b)); }
+            if let Some(b) = self.flash_bounce { lights.push(ClusteredLight::unshadowed(b).with_shape(BOUNCE)); }
         }
         lights
     }

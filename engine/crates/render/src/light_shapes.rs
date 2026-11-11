@@ -31,12 +31,16 @@ pub struct LightShape {
     pub cookie: u8,
     /// 1..=255: a profile set with `Renderer::set_light_profile`.
     pub profile: u8,
+    /// Light surfaces diffusely only, no specular highlight: for a bounce
+    /// light standing in for a lit patch of wall, which a glossy floor must
+    /// not show as a bright point in mid-air.
+    pub diffuse_only: bool,
 }
 
 impl LightShape {
     /// The bits shaders read from a light's fourth `source` word, above the
     /// shadow face count (0..7).
-    pub fn packed(self) -> f32 { (self.cookie.min(COOKIES) as u32 * 8 + self.profile as u32 * 128) as f32 }
+    pub fn packed(self) -> f32 { (self.cookie.min(COOKIES) as u32 * 8 + self.profile as u32 * 128 + u32::from(self.diffuse_only) * 32768) as f32 }
 }
 
 pub(crate) struct LightShapes {
@@ -81,6 +85,11 @@ impl LightShapes {
     }
 }
 
+/// 8 bits with a fixed per-texel dither of up to half a step, so smooth
+/// gradients (a beam's falloff) do not show as stepped rings.
 fn quantise(values: &[f32]) -> Vec<u8> {
-    values.iter().map(|v| (if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 } * 255.0 + 0.5) as u8).collect()
+    values.iter().enumerate().map(|(i, v)| {
+        let h = ((i as u32).wrapping_mul(2_654_435_761) >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
+        ((if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }) * 255.0 + 0.5 + h).clamp(0.0, 255.0) as u8
+    }).collect()
 }

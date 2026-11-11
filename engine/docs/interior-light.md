@@ -78,6 +78,12 @@ Modern Warfare switches light states. The blend and upload of 14,000
 probes is cheap enough for every frame of a swing.
 `app/examples/interior_rooms.rs` does both.
 
+Precision: each probe axis stores sky and sun transport as three 9-bit
+mantissas with a shared 4-bit exponent (2^-23 to about 2, a constant ~0.2 %
+step). A dark room lit only through a doorway has transport around 1e-5,
+where a fixed-point code steps by tens of percent from probe to probe and
+the walls show the probe cells as blocks once the eye adapts to the dark.
+
 Smoothness: every probe shoots its rays in its own random rotation of the
 ray set, and the result is averaged with the neighbours each probe sees
 (never through a wall) after every bounce and twice more at the end, the
@@ -111,7 +117,9 @@ A lamp is rarely uniform. Clustered lights can carry a shape
 Both multiply the light (0..1: raise the intensity to keep the peak) and
 apply in the bounded volumetric fog too
 (`Renderer::set_volumetric_beams_shaped`), so a flashlight's pattern shows
-in its beam. They live in one 256x256 R8 texture array of 16 layers in the
+in its beam. A shape can also mark a light `diffuse_only` (no specular
+highlight), for a bounce light standing in for a lit patch of wall. They live
+in one 256x256 R8 texture array of 16 layers in the
 scene bind group (binding 30); a light's shape is packed above its shadow
 face count, so the light layout is unchanged. Cost: one or two filtered
 fetches per shaped light per pixel it lights; in `interior_rooms` (four
