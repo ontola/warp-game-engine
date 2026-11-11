@@ -1125,6 +1125,12 @@ impl App {
                 "output_size":output_size,"requested_output_size":self.requested_output_size,"race_frame":self.race.frame,"round":self.race.round,
                 "paused":self.paused,"focused":self.focused,"hidden":self.invisible(),
                 "error":result.as_ref().err()});
+            // KERN_CPU_SPANS=1: the renderer's own CPU phases since the last
+            // read (per frame), to tell renderer work from submit/driver waits.
+            if let Some((spans,frames))=self.graphics.as_ref().and_then(|g|g.renderer.cpu_spans()) {
+                metadata["renderer_spans_ms"]=serde_json::json!(spans.into_iter().collect::<std::collections::BTreeMap<_,_>>());
+                metadata["renderer_span_frames"]=frames.into();
+            }
             if let Some(scenario)=&self.scenario {if let Some(frame)=scenario.config.frame(trace.frame_id.map(|id|id-1).unwrap_or(self.rendered)) {
                 metadata["scenario"]=scenario.config.name.clone().into();metadata["section"]=frame.section.name.clone().into();
                 metadata["section_frame"]=frame.local_frame.into();metadata["warmup"]=frame.warmup.into();metadata["target_tick"]=frame.target_tick.into();
