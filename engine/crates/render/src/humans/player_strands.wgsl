@@ -1,6 +1,6 @@
 const PI:f32=3.14159265;
-const STRAND_LIMIT:u32=6144u;
-const VERTICES_PER_HEAD:u32=6144u*54u;
+const STRAND_LIMIT:u32=16384u;
+const VERTICES_PER_HEAD:u32=STRAND_LIMIT*54u;
 struct Groom { fit:mat4x4<f32>, weights:vec4<f32>, tint:vec4<f32>, info:vec4<u32> }
 struct Rows { x:vec4<f32>, y:vec4<f32>, z:vec4<f32> }
 struct Owner { r:Rows, sphere:vec4<f32>, first:u32, count:u32, scale:f32, flags:u32 }
@@ -26,7 +26,8 @@ fn affine(r:Rows,p:vec4<f32>)->vec4<f32> {
     var count=0u;
     if owner.count>0u && (owner.flags & (256u<<cam.slot))==0u && clip.w>.08 && all(abs(clip.xy)<vec2<f32>(clip.w+.45)) {
         let head_pixels=.24*cam.focal/clip.w;
-        count=u32(f32(STRAND_LIMIT)*smoothstep(24.,142.,head_pixels));
+        let close_bob=select(0.,10240.*smoothstep(130.,280.,head_pixels),g.info.z==1u);
+        count=u32(6144.*smoothstep(24.,142.,head_pixels)+close_bob);
     }
     arguments[i]=vec4<u32>(count*54u,1u,i*VERTICES_PER_HEAD,0u);
 }
@@ -53,12 +54,15 @@ struct StrandOut { @builtin(position) clip:vec4<f32>, @location(0) world:vec3<f3
     if all(abs(q.xy)<vec2<f32>(1.)) && q.z>0. && q.z<1. {
         visibility=mix(1.,textureSampleCompareLevel(shadow_tex,shadow_samp,q.xy*vec2<f32>(.5,-.5)+.5,q.z),light.sun_color.w);
     }
-    let sun=max(0.,dot(n,light.sun_dir.xyz))*light.sun_dir.w*visibility;
+    let tangent=normalize(v.tangent);
+    let longitudinal=dot(tangent,light.sun_dir.xyz);
+    let wrap=(.19+.81*max(0.,dot(n,light.sun_dir.xyz)))*sqrt(max(.03,1.-longitudinal*longitudinal));
+    let sun=wrap*light.sun_dir.w*visibility;
     let ambient=max(light.sh[0].rgb*.282095,vec3<f32>(light.fog_sampling.z));
     let eye=normalize(view.cam.xyz-v.world);
     let half_dir=normalize(light.sun_dir.xyz+eye);
     let along=dot(normalize(v.tangent),half_dir);
-    let sheen=.035*pow(max(0.,1.-along*along),14.);
+    let sheen=.021*pow(max(0.,1.-(along+.09)*(along+.09)),25.);
     let pigment=mix(v.color,vec3<f32>(dot(v.color,vec3<f32>(.3,.59,.11))),.19);
     let radiance=(pigment*ambient+(pigment+sheen)*sun*light.sun_color.rgb)/PI;
     let ray=v.world-view.cam.xyz; let d=length(ray);

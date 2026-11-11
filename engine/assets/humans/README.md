@@ -10,7 +10,7 @@ identify Data Collection AB, Joel Palmius and Jonas Hauquier.
 The cooker uses base.obj, default.mhskel, default_weights.mhw and the targets listed in
 `engine/tools/cook-humans.py`. Place the weight and target files together.
 Extract male_casualsuit01 (pullover), male_casualsuit06 (short sleeves),
-male_casualsuit05 (jacket), shoes02, eyebrow001, short01, bob02, afro01 and the
+male_casualsuit05 (jacket), shoes02, eyebrow001, short01, afro01 and the
 three listed skin materials into the system pack's original directory layout.
 The cooker fits clothing and groom vertices from the mhclo barycentric bindings
 and transfers their skin weights and facial displacements from the same body.
@@ -32,4 +32,4 @@ i8 displacements. The four identity fields use a range of 0.055 body heights. Th
 
 The material also selects wardrobe visibility. Its low five bits select the surface. Bits five through seven select the outfits that expose the triangle, with zero shared by all. The short-sleeved and jacket outfits share their trousers. The cooker stores the three neutral cloth maps in the RGB channels of one existing atlas tile. Its alpha contains digits and six wordmarks. The renderer combines digits into shirt numbers. Rebuilding the prints uses Pillow 10.1 or newer.
 
-`strand-guides.bin` contains three 64-column, 16-row fitted surfaces, ordered short, bob and coiled. Columns wrap around the head and rows run from the hairline to the crown. Each 24-byte sample has a position relative to (0, 0.9, 0), in four signed 16-bit components at a range of 0.25 body heights. Four signed 8-bit vectors then give the identity deltas at the body's 0.055 range. The fourth component of each vector is padding. Strand positions, widths and free-tip motion are evaluated from vertex IDs on the GPU.
+`strand-guides.bin` contains three 64-column, 16-row fitted surfaces, ordered short, bob and coiled. Columns wrap around the head. The short and coiled fields run from hairline to crown. The bob uses two layers of eight points per column, ordered from scalp root to tip. Each half of the bob occupies 32 columns from forehead to nape. Its roots and their four deformation deltas are barycentric samples on the body triangles. An inset interpolated sheet carries the distant silhouette and the longitudinal density texture in groom tile 4. Each 24-byte sample has a position relative to (0, 0.9, 0), in four signed 16-bit components at a range of 0.25 body heights. Four signed 8-bit vectors then give the identity deltas at the body's 0.055 range. The fourth component of each vector is padding. Strand positions, widths and free-tip motion are evaluated from vertex IDs on the GPU.

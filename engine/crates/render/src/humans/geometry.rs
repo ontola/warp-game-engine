@@ -259,13 +259,6 @@ impl super::Instance {
                 p.x += (p.x - axis) * 0.25 * cuff;
                 p.z += (p.z + 0.015) * 0.18 * cuff;
             }
-            if material == 21 { // Sweep the bob's front fringe clear of the eyes.
-                let front = ((p.z - 0.033) / 0.027).clamp(0., 1.);
-                let center = (1. - ((p.x - 0.006) / 0.052).abs()).clamp(0., 1.);
-                let fringe = front * center * ((0.974 - p.y) / 0.032).clamp(0., 1.);
-                p.y += 0.030 * fringe;
-                p.x -= 0.012 * fringe;
-            }
             let mut n = Vec3::from(v.normal);
             if gripping && material == 4 && v.bones[1] > 220 && p.x.abs() > 0.22 {
                 (p, n) = curled_hand(p, n, hands[usize::from(p.x > 0.)]);

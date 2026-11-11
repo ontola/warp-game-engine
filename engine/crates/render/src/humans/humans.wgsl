@@ -289,10 +289,6 @@ fn pose_vertex(position:vec4<f32>,direction:vec4<f32>,pivot:vec4<f32>,tags:vec4<
                 let blink=smoothstep(0.,0.020,phase)*(1.-smoothstep(0.025,0.064,phase));
                 p+=0.012*closure*blink;
             }
-            if mat==21u {
-                let fringe=clamp((p.z-0.033)/0.027,0.,1.)*clamp(1.-abs(p.x-0.006)/0.052,0.,1.)*clamp((0.974-p.y)/0.032,0.,1.);
-                p+=vec3<f32>(-0.012,0.030,0.)*fringe;
-            }
             let side=sign(rest.x);
             let shoulder=vec3<f32>(side*0.1008,0.805,-0.012);
             let elbow=vec3<f32>(side*0.1878,0.6994,-0.0132);
@@ -431,7 +427,7 @@ fn pose_vertex(position:vec4<f32>,direction:vec4<f32>,pivot:vec4<f32>,tags:vec4<
     let style=u32(a.identity.z*3.);
     let fibre=grow_strand(id,style,u32(a.identity.x*16777216.),w,camera.settings.x);
     let zero=vec4<f32>(0.);
-    // Tag 7 applies the common head rig and avoids applying the fringe twice.
+    // Tag 7 applies the common head rig.
     var v=pose_vertex(vec4<f32>((fibre.p+fibre.across*fibre.side*fibre.radius)/1.2,0.),vec4<f32>(fibre.normal,0.),vec4<f32>(0.,0.,-1.,0.),
         vec4<u32>(7u,1u,4u,0u),zero,zero,zero,zero,vec4<f32>(0.,0.,0.,1.),seat);
     v.mat=23u; v.uv.x=fibre.tint;
