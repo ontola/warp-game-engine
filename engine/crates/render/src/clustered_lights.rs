@@ -47,11 +47,15 @@ const CELL_STRIDE: u32 = 8;
 pub struct ClusteredLight {
     pub light: LocalLight,
     pub shadow: Option<LightShadow>,
+    /// Cookie and angular profile (`light_shapes`); none by default.
+    pub shape: crate::light_shapes::LightShape,
 }
 
 impl ClusteredLight {
-    pub fn unshadowed(light: LocalLight) -> Self { Self { light, shadow: None } }
-    pub fn shadowed(light: LocalLight, id: u64) -> Self { Self { light, shadow: Some(LightShadow { id, exclude: None }) } }
+    pub fn unshadowed(light: LocalLight) -> Self { Self { light, shadow: None, shape: Default::default() } }
+    pub fn shadowed(light: LocalLight, id: u64) -> Self { Self { light, shadow: Some(LightShadow { id, exclude: None }), shape: Default::default() } }
+    /// This light with a cookie and/or angular profile.
+    pub fn with_shape(self, shape: crate::light_shapes::LightShape) -> Self { Self { shape, ..self } }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -449,12 +453,14 @@ impl Resources {
         if let Some(grid) = grid {
             let mut words: Vec<[f32; 4]> = Vec::with_capacity(lights.len() * 4 + plan.faces.len() * 6);
             for (l, record) in lights.iter().zip(&plan.records) {
+                let shape = l.shape.packed();
                 let l = &l.light;
                 let (first, count) = record.map_or((0.0, 0.0), |(f, c)| (f as f32 + 1.0, c as f32));
                 words.push(l.position.extend(l.range_m).to_array());
                 words.push(l.direction.extend(l.outer_cos).to_array());
                 words.push(l.intensity_cd.extend(l.inner_cos).to_array());
-                words.push([l.source_radius_m * l.source_radius_m, l.falloff, first, count]);
+                // w: shadow face count (0..7) plus the cookie and profile bits.
+                words.push([l.source_radius_m * l.source_radius_m, l.falloff, first, count + shape]);
             }
             gpu.queue.write_buffer(&self.arena, self.base, bytemuck::cast_slice(&words));
             words.clear();

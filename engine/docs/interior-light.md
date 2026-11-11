@@ -91,6 +91,30 @@ their 15 cm blend) stay at the surface point; where the moved point finds
 no valid probe at all (a corner) the lookup is repeated unmoved, rather
 than falling back to probes that ignore the walls.
 
+## Light shapes: cookies and profiles
+
+A lamp is rarely uniform. Clustered lights can carry a shape
+(`render::light_shapes`, `ClusteredLight::with_shape`):
+
+- A **cookie**: a 256x256 greyscale image projected through a spot's outer
+  cone (`Renderer::set_light_cookie`, index 1..=15). A flashlight's hot
+  centre, reflector ring and spill.
+- An **angular profile**: intensity against the angle from the light's
+  axis, 0 to 180 degrees in 256 steps, an IES-like curve
+  (`Renderer::set_light_profile`, index 1..=255), for spots and omnis. A
+  lampshade's bright rim; a downlight's cut-off that throws scallops on the
+  walls.
+
+Both multiply the light (0..1: raise the intensity to keep the peak) and
+apply in the bounded volumetric fog too
+(`Renderer::set_volumetric_beams_shaped`), so a flashlight's pattern shows
+in its beam. They live in one 256x256 R8 texture array of 16 layers in the
+scene bind group (binding 30); a light's shape is packed above its shadow
+face count, so the light layout is unchanged. Cost: one or two filtered
+fetches per shaped light per pixel it lights; in `interior_rooms` (four
+profiled lamps over a whole view) about 0.3 ms of the shade pass at 4K, on
+an RTX 5070 Ti, within run-to-run noise. Not in Luau yet.
+
 ## Cost
 
 The bake runs on the CPU's cooking threads: 3.2 s for the look scene

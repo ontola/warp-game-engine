@@ -1241,6 +1241,7 @@ pub struct Renderer {
     tone: wgpu::ComputePipeline,
     bloom: crate::bloom::Bloom,
     reflection_mips: crate::reflection_mips::ReflectionMips,
+    light_shapes: crate::light_shapes::LightShapes,
     auto_exposure: crate::auto_exposure::AutoExposureGpu,
     hdr_target: std::sync::Mutex<crate::hdr::HdrTarget>,
     shade_layout: wgpu::BindGroupLayout,
@@ -1848,6 +1849,7 @@ impl Renderer {
                 (27, uniform()),
                 (28, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (29, storage(true)),
+                (30, tex_array),
             ];
         let mut scene_entries = layout_entries(&scene_bindings);
         for entry in &mut scene_entries {
@@ -1998,6 +2000,7 @@ impl Renderer {
         let meadow_edge_buffer = meadow.as_ref().and_then(|m| m.edge_shadow_buffer()).unwrap_or(&meadow_edge_fallback);
         assert!(!(far_sun.enabled && foliage_sun_pages.enabled),"choose paged foliage or legacy experimental far sun map, not both");
         let noise_view = crate::noise_field::texture(gpu, scene.noise.as_ref());
+        let light_shapes = crate::light_shapes::LightShapes::new(gpu);
         let make_scene_bind = |headlight_view:&wgpu::TextureView, far_view:&wgpu::TextureView, instance_data:&wgpu::Buffer, wind_data:&wgpu::Buffer| bind(
             gpu,
             &scene_layout,
@@ -2025,6 +2028,7 @@ impl Renderer {
                 (27, meadow_substrate.as_entire_binding()),
                 (28, wgpu::BindingResource::TextureView(&noise_view)),
                 (29, meadow_edge_buffer.as_entire_binding()),
+                (30, wgpu::BindingResource::TextureView(&light_shapes.view)),
             ],
         );
         let sampled_far=if foliage_sun_pages.enabled {&foliage_sun_pages.sampled}else{&far_sun.view};
@@ -2601,6 +2605,7 @@ impl Renderer {
             tone,
             bloom,
             reflection_mips,
+            light_shapes,
             auto_exposure,
             hdr_target: std::sync::Mutex::new(crate::hdr::HdrTarget::new()),
             shade_layout,
@@ -3173,6 +3178,19 @@ impl Renderer {
         *self.local_light_state.lock().unwrap()=validated;Ok(())
     }
 
+    /// Cookie `index` (1..=15) for clustered spot lights: 256x256 values in
+    /// 0..1, row by row, projected through the spot's outer cone (see
+    /// `light_shapes`). A light uses it with `ClusteredLight::with_shape`.
+    pub fn set_light_cookie(&self, gpu: &Gpu, index: u8, values: &[f32]) -> Result<(), String> {
+        self.light_shapes.set_cookie(gpu, index, values)
+    }
+
+    /// Angular profile `index` (1..=255): 256 values in 0..1 from the
+    /// light's axis to straight behind it (an IES-like curve).
+    pub fn set_light_profile(&self, gpu: &Gpu, index: u8, values: &[f32]) -> Result<(), String> {
+        self.light_shapes.set_profile(gpu, index, values)
+    }
+
     /// Restrict `Lighting::volumetric` to `bounds` (axis-aligned boxes, e.g.
     /// rooms; at most `volumetric::MAX_BOUNDS`) and ray-march it there with
     /// shadows: each scattering light's visibility is tested against
@@ -3187,6 +3205,14 @@ impl Renderer {
     /// surface: for example narrow visible beams inside a wide floodlight
     /// whose surface light is one `set_local_lights` entry. Together with
     /// the weighted local lights at most 32 scatter (local lights first).
+    /// `set_volumetric_beams` with a cookie and profile per beam (the
+    /// bounded, shadowed mode applies them, so a flashlight's pattern shows
+    /// in the fog).
+    pub fn set_volumetric_beams_shaped(&self,beams:&[crate::headlights::LocalLight],shapes:&[crate::light_shapes::LightShape])->Result<(),String> {
+        let validated=crate::headlights::validate_local(beams)?;
+        self.volumetric.set_beams_shaped(&validated,shapes);Ok(())
+    }
+
     pub fn set_volumetric_beams(&self,beams:&[crate::headlights::LocalLight])->Result<(),String> {
         let validated=crate::headlights::validate_local(beams)?;
         self.volumetric.set_beams(&validated);Ok(())
@@ -5722,7 +5748,7 @@ impl Renderer {
                     if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
                     let out = self.volumetric.render(gpu, &mut enc, medium, crate::volumetric::ViewInput { index: vi, input: &resolved,
                         depth: &depth_v, depth_size: (w, h), camera: cam.pos, near: cam.near, depth_vp: vp,
-                        sun: (light.sun_dir, light.sun_color * light.sun_lux) })?;
+                        sun: (light.sun_dir, light.sun_color * light.sun_lux), light_shapes: &self.light_shapes.view })?;
                     if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
                     out.unwrap_or(resolved)
                 }

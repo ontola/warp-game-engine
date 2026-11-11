@@ -43,6 +43,7 @@ use render::clustered_lights::ClusteredLight;
 use render::headlights::LocalLight;
 use render::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 use render::irradiance_volume::{Grid, Probe};
+use render::light_shapes::LightShape;
 use render::room_bake::Occluders;
 use render::scene::{Material, EMISSIVE};
 use render::slots::{SlotId, Slots};
@@ -80,6 +81,38 @@ fn bx(min: [f32; 3], max: [f32; 3]) -> Affine3A {
 fn colour(c: Vec3, cd: f32) -> Vec3 {
     let lum = |v: Vec3| v.dot(Vec3::new(0.2126, 0.7152, 0.0722));
     c * (lum(WARM) / lum(c)) * cd
+}
+
+/// Light shapes (`render::light_shapes`): the flashlight's cookie, the
+/// pendant's lampshade profile, the ceiling lamps' downlight profile.
+const FLASH_COOKIE: LightShape = LightShape { cookie: 1, profile: 0 };
+const PENDANT_PROFILE: LightShape = LightShape { cookie: 0, profile: 1 };
+const DOWNLIGHT_PROFILE: LightShape = LightShape { cookie: 0, profile: 2 };
+
+fn smooth(e0: f32, e1: f32, x: f32) -> f32 { let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) }
+
+/// An LED flashlight's beam through its reflector, as a cookie: a hot
+/// centre a little off the axis, the reflector's bright ring, a darker band,
+/// a soft spill out to the cone's edge and faint concentric streaks.
+fn flashlight_cookie() -> Vec<f32> {
+    let n = render::light_shapes::SIZE as usize;
+    (0..n * n).map(|i| {
+        let (x, y) = ((i % n) as f32 / (n - 1) as f32 * 2.0 - 1.0, (i / n) as f32 / (n - 1) as f32 * 2.0 - 1.0);
+        let r = (x * x + y * y).sqrt();
+        let hot = ((x - 0.04) * (x - 0.04) + (y + 0.03) * (y + 0.03)).sqrt();
+        let core = (-(hot / 0.13).powi(2)).exp();
+        let ring = 0.7 * (-((r - 0.33) / 0.06).powi(2)).exp();
+        let body = 0.45 * (1.0 - smooth(0.2, 0.42, r));
+        let spill = 0.22 * (1.0 - smooth(0.5, 1.0, r));
+        let streaks = 1.0 + 0.07 * (r * 110.0).sin() * (1.0 - smooth(0.1, 0.6, r));
+        ((core + ring + body).min(1.0).max(spill) * streaks).clamp(0.0, 1.0)
+    }).collect()
+}
+
+/// A profile from a function of the angle from the axis in degrees.
+fn profile(f: impl Fn(f32) -> f32) -> Vec<f32> {
+    let n = render::light_shapes::SIZE as usize;
+    (0..n).map(|i| f(i as f32 / (n - 1) as f32 * 180.0).clamp(0.0, 1.0)).collect()
 }
 
 fn ceiling_lamp(i: usize) -> LocalLight {
@@ -396,19 +429,19 @@ impl Rooms {
         let right = f.cross(Vec3::Y).normalize_or_zero();
         let up = right.cross(f);
         LocalLight { position: self.pos + right * 0.22 - up * 0.25, direction: self.flash_dir,
-            intensity_cd: Vec3::new(0.92, 0.96, 1.0) * 2000.0, range_m: 25.0,
-            inner_cos: 12f32.to_radians().cos(), outer_cos: 28f32.to_radians().cos(), source_radius_m: 0.02, falloff: 2.0 }
+            intensity_cd: Vec3::new(0.92, 0.96, 1.0) * 2600.0, range_m: 25.0,
+            inner_cos: 24f32.to_radians().cos(), outer_cos: 28f32.to_radians().cos(), source_radius_m: 0.02, falloff: 2.0 }
     }
 
     /// What scatters in the fog: the pendant, the lit ceiling lamps (their
     /// light through room 4's door) and the flashlight. The fog fills rooms
     /// 2 and 4 only and is ray-marched with every light's visibility tested
     /// against the walls, furniture and the door (`set_volumetric_bounded`).
-    fn beams(&self) -> Vec<LocalLight> {
-        let mut beams = vec![self.pendant()];
-        beams.extend((0..4).filter(|&i| self.lamp_on[i]).map(ceiling_lamp));
-        if self.flashlight { beams.push(self.flashlight_light()); }
-        beams
+    fn beams(&self) -> (Vec<LocalLight>, Vec<LightShape>) {
+        let mut beams = vec![(self.pendant(), PENDANT_PROFILE)];
+        beams.extend((0..4).filter(|&i| self.lamp_on[i]).map(|i| (ceiling_lamp(i), DOWNLIGHT_PROFILE)));
+        if self.flashlight { beams.push((self.flashlight_light(), FLASH_COOKIE)); }
+        beams.into_iter().unzip()
     }
 
     /// The fog's rooms: 2 (the pendant) and 4 (the dark room).
@@ -421,7 +454,7 @@ impl Rooms {
         // The light sits inside its bulb and shade: those and the cord (the
         // first three slots) must not cast its shadow.
         let own = Some((self.objects.instance(self.bulb) as u32, 3));
-        let mut lit = ClusteredLight::shadowed(pendant, 1);
+        let mut lit = ClusteredLight::shadowed(pendant, 1).with_shape(PENDANT_PROFILE);
         if let Some(s) = &mut lit.shadow { s.exclude = own; }
         let mut up = ClusteredLight::shadowed(self.uplight(), 3);
         if let Some(s) = &mut up.shadow { s.exclude = own; }
@@ -431,11 +464,11 @@ impl Rooms {
         // outer cone holds 2 pi (1 - cos 40) = 1.47 sr.
         if let Some(b) = self.bounce(&pendant, pendant.direction, 30f32.to_radians(), 1.47, 0.3) { lights.push(ClusteredLight::shadowed(b, 2)); }
         for i in 0..4 {
-            if self.lamp_on[i] { lights.push(ClusteredLight::shadowed(ceiling_lamp(i), 10 + i as u64)); }
+            if self.lamp_on[i] { lights.push(ClusteredLight::shadowed(ceiling_lamp(i), 10 + i as u64).with_shape(DOWNLIGHT_PROFILE)); }
         }
         if self.flashlight {
             let flash = self.flashlight_light();
-            lights.push(ClusteredLight::shadowed(flash, 20));
+            lights.push(ClusteredLight::shadowed(flash, 20).with_shape(FLASH_COOKIE));
             // The beam's cone (28 degrees half angle) is 0.74 sr.
             if let Some(b) = self.flash_bounce { lights.push(ClusteredLight::unshadowed(b)); }
         }
@@ -553,6 +586,14 @@ impl Game for Rooms {
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
         if !std::mem::replace(&mut self.ready, true) {
             frame.set_scene(&self.scene, &self.light);
+            let renderer = frame.renderer().ok_or("no renderer")?;
+            renderer.set_light_cookie(frame.gpu, FLASH_COOKIE.cookie, &flashlight_cookie())?;
+            // Lampshade: a softer centre, a bright rim towards the cone's edge.
+            renderer.set_light_profile(frame.gpu, PENDANT_PROFILE.profile, &profile(|a| 0.65 + 0.35 * smooth(12.0, 34.0, a)))?;
+            // Downlight: brightest around 40 degrees and cut off at about 65:
+            // the scallops a recessed fitting throws on a wall.
+            renderer.set_light_profile(frame.gpu, DOWNLIGHT_PROFILE.profile,
+                &profile(|a| (0.35 + 0.65 * smooth(8.0, 36.0, a) * (1.0 - smooth(44.0, 54.0, a))) * (1.0 - 0.92 * smooth(54.0, 62.0, a))))?;
             let t = std::time::Instant::now();
             let sun = self.light.sun_dir;
             let (grid, shut_occ, open_occ) = (&self.grid, &self.shut_occluders, &self.open_occluders);
@@ -572,7 +613,8 @@ impl Game for Rooms {
         self.update_flash_bounce(frame.dt);
         let renderer = frame.renderer().ok_or("no renderer")?;
         renderer.set_clustered_lights(&self.lights())?;
-        renderer.set_volumetric_beams(if self.fog { self.beams() } else { Vec::new() }.as_slice())?;
+        let (beams, shapes) = if self.fog { self.beams() } else { (Vec::new(), Vec::new()) };
+        renderer.set_volumetric_beams_shaped(&beams, &shapes)?;
         if self.fog {
             let mut occluders = self.fog_occluders.clone();
             occluders.push(door_xf(self.door_open()));

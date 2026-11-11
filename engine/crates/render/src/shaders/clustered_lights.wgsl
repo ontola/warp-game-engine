@@ -33,11 +33,41 @@ fn clustered_lamp(i: u32) -> LocalLight {
         bitcast<vec4<f32>>(scene_tables[b + 2u]), bitcast<vec4<f32>>(scene_tables[b + 3u]));
 }
 
+// Cookies and angular profiles (light_shapes.rs): layers 0..14 cookies,
+// layer 15 one profile per row. source.w above the face count: cookie
+// (bits 3..6), profile (bits 7..14).
+@group(0) @binding(30) var light_shapes: texture_2d_array<f32>;
+
+// The light's shape towards `outward` (unit, from the lamp): its angular
+// profile times its cookie projected through the outer cone.
+fn light_shape(lamp: LocalLight, outward: vec3<f32>) -> f32 {
+    let packed = u32(lamp.source.w);
+    let cookie = (packed >> 3u) & 15u;
+    let profile = packed >> 7u;
+    let axis = lamp.direction_outer.xyz;
+    let c = dot(outward, axis);
+    var k = 1.0;
+    if profile > 0u {
+        let theta = acos(clamp(c, -1.0, 1.0)) * 0.31830989;
+        k *= textureSampleLevel(light_shapes, plant_samp, vec2<f32>(theta, (f32(profile - 1u) + 0.5) / 256.0), 15, 0.0).r;
+    }
+    if cookie > 0u {
+        let oc = lamp.direction_outer.w;
+        if c <= 0.05 || oc <= 0.05 { return 0.0; }
+        let t1 = normalize(select(cross(axis, vec3<f32>(0.0, 1.0, 0.0)), cross(axis, vec3<f32>(1.0, 0.0, 0.0)), abs(axis.y) > 0.9));
+        let t2 = cross(axis, t1);
+        let tan_outer = sqrt(max(1.0 - oc * oc, 0.0)) / oc;
+        let uv = vec2<f32>(dot(outward, t1), dot(outward, t2)) / (c * tan_outer) * 0.5 + 0.5;
+        k *= textureSampleLevel(light_shapes, plant_samp, uv, i32(cookie - 1u), 0.0).r;
+    }
+    return k;
+}
+
 // Visibility of the light from p through its shadow tile (1: lit).
 fn clustered_shadow(lamp: LocalLight, p: vec3<f32>, n: vec3<f32>) -> f32 {
     let d = p - lamp.position_range.xyz;
     var face = 0u;
-    if lamp.source.w > 1.5 {
+    if (u32(lamp.source.w) & 7u) > 1u {
         let a = abs(d);
         if a.x >= a.y && a.x >= a.z { face = select(1u, 0u, d.x > 0.0); }
         else if a.y >= a.z { face = select(3u, 2u, d.y > 0.0); }
@@ -78,6 +108,7 @@ fn clustered_shadow(lamp: LocalLight, p: vec3<f32>, n: vec3<f32>) -> f32 {
 fn clustered_sample(i: u32, p: vec3<f32>, bias_normal: vec3<f32>) -> HeadlightSample {
     let lamp = clustered_lamp(i);
     var s = local_light_at(lamp, p);
+    if u32(lamp.source.w) >= 8u && any(s.irradiance > vec3<f32>(0.0)) { s.irradiance *= light_shape(lamp, -s.direction); }
     if lamp.source.z > 0.5 && any(s.irradiance > vec3<f32>(0.0)) { s.irradiance *= clustered_shadow(lamp, p, bias_normal); }
     return s;
 }

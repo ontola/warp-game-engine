@@ -49,6 +49,34 @@ struct Occluder { r0: vec4<f32>, r1: vec4<f32>, r2: vec4<f32>, pad: vec4<f32> };
 @group(0) @binding(4) var colour_in: texture_2d<f32>;
 @group(0) @binding(5) var colour_out: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(6) var<storage, read> occluders: array<Occluder>;
+// Light cookies and profiles (light_shapes.rs, as clustered_lights.wgsl).
+@group(0) @binding(7) var light_shapes: texture_2d_array<f32>;
+@group(0) @binding(8) var shape_sampler: sampler;
+
+// A light's cookie and angular profile towards `outward` (source.w: cookie
+// in bits 3..6, profile in bits 7..14).
+fn light_shape(light: ScatterLight, outward: vec3<f32>) -> f32 {
+    let packed = u32(light.source.w);
+    if packed < 8u { return 1.0; }
+    let cookie = (packed >> 3u) & 15u;
+    let profile = packed >> 7u;
+    let axis = light.direction_outer.xyz;
+    let c = dot(outward, axis);
+    var k = 1.0;
+    if profile > 0u {
+        k *= textureSampleLevel(light_shapes, shape_sampler, vec2<f32>(acos(clamp(c, -1.0, 1.0)) * 0.31830989, (f32(profile - 1u) + 0.5) / 256.0), 15, 0.0).r;
+    }
+    if cookie > 0u {
+        let oc = light.direction_outer.w;
+        if c <= 0.05 || oc <= 0.05 { return 0.0; }
+        let t1 = normalize(select(cross(axis, vec3<f32>(0.0, 1.0, 0.0)), cross(axis, vec3<f32>(1.0, 0.0, 0.0)), abs(axis.y) > 0.9));
+        let t2 = cross(axis, t1);
+        let tan_outer = sqrt(max(1.0 - oc * oc, 0.0)) / oc;
+        let uv = vec2<f32>(dot(outward, t1), dot(outward, t2)) / (c * tan_outer) * 0.5 + 0.5;
+        k *= textureSampleLevel(light_shapes, shape_sampler, uv, i32(cookie - 1u), 0.0).r;
+    }
+    return k;
+}
 
 const PI: f32 = 3.14159265;
 const SAMPLES: u32 = 6u;
@@ -240,7 +268,7 @@ fn marched_scatter(o: vec3<f32>, v: vec3<f32>, tmax: f32, jitter: f32) -> vec3<f
             if d2 >= r2 { continue; }
             let dist = sqrt(d2);
             let outward = off / max(dist, 1e-6);
-            let cone = smoothstep(light.direction_outer.w, light.intensity_inner.w, dot(outward, light.direction_outer.xyz));
+            let cone = smoothstep(light.direction_outer.w, light.intensity_inner.w, dot(outward, light.direction_outer.xyz)) * light_shape(light, outward);
             if cone <= 0.0 { continue; }
             let n = d2 / r2;
             let fade = max(0.0, 1.0 - n * n);
