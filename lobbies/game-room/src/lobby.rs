@@ -609,9 +609,16 @@ impl Lobby {
         if let Some(station) = self.mouse_station() {
             if !occupied.contains_key(&station.id) || station.enabled { occupied.insert(station.id.clone(), station); }
         }
+        // Onboarding: until the first game, the TV's Play hops for everyone
+        // to see where a night starts; a profile someone scanned in hops at
+        // its door until it is picked up.
+        self.nudges.clear();
+        if self.host.current_game().is_some() { self.started_once = true; }
         let tv = self.host.tv_station();
         let tv_items: Vec<(&str, &str, bool)> = if tv.quit { vec![("Y", &tv.short, true), ("X", "Quit", true)] } else { vec![("Y", &tv.short, true)] };
-        self.set_prompt("tv", &tv_items, tv.enabled, occupied.contains_key("tv"));
+        let tv_nudge = !self.started_once && tv.enabled && !occupied.contains_key("tv");
+        if tv_nudge { self.nudges.insert("tv".into()); }
+        self.set_prompt("tv", &tv_items, tv.enabled, occupied.contains_key("tv") || tv_nudge);
         let q = self.host.queue_station();
         self.set_prompt("queue", &[("Y", &q.short, !q.loading), ("X", "Skip next", true)], q.enabled, occupied.contains_key("queue"));
         let shelf_live = !self.host.shelf_games().is_empty();
@@ -625,11 +632,14 @@ impl Lobby {
         } else { vec![("Y", "Play", true)] };
         self.set_prompt("music", &music, true, occupied.contains_key("music1"));
         self.set_prompt("exit", &[("Y", "Leave", true)], true, occupied.contains_key("exit"));
+        let waiting = self.host.pending_profiles().len();
         for i in 0..game_room_sim::layout::PROFILE_DOORS.len() {
             let key = format!("door{i}");
-            let enabled = occupied.get(&key).is_some_and(|s| s.enabled);
+            let nudge = i < waiting && !occupied.contains_key(&key);
+            if nudge { self.nudges.insert(key.clone()); }
+            let enabled = nudge || occupied.get(&key).is_some_and(|s| s.enabled);
             let swap = occupied.get(&key).is_some_and(|s| s.hold);
-            self.set_prompt(&key, &[("Y", if swap { "Hold to swap" } else { "Pick up" }, true)], enabled, occupied.contains_key(&key));
+            self.set_prompt(&key, &[("Y", if swap { "Hold to swap" } else { "Pick up" }, true)], enabled, occupied.contains_key(&key) || nudge);
             let charge = self.holds.iter().filter(|(_, h)| h.0 == key).map(|(id, _)| self.hold_charge(id)).fold(0.0, f32::max);
             self.hold_prompt(&key, "Y", charge);
         }

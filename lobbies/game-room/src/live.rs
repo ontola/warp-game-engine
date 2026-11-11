@@ -116,6 +116,12 @@ pub struct Lobby {
     pub show: Show,
     pub prompts: HashMap<String, Prompt>,
     pub prompt_active: HashMap<String, bool>,
+    /// Prompts shown to nobody in particular, to show new players what to
+    /// do (the TV before the first game, doors with a waiting profile):
+    /// they hop instead of bobbing.
+    pub nudges: std::collections::HashSet<String>,
+    /// A game has run since the room opened: the TV stops nudging.
+    pub started_once: bool,
     /// Each prompt's glow, easing towards lit while someone stands there.
     prompt_glow: HashMap<String, f32>,
     pub mood: Mood,
@@ -228,7 +234,7 @@ impl Lobby {
         let (web_tx, web_rx) = std::sync::mpsc::channel();
         let mut lobby = Self {
             build, stage, actors_view: actors_view.expect("actor meshes"), world: World::new(7), host: Host::new(&lobby_id), client, profiles: vec![], actors: HashMap::new(),
-            next_order: 0, sheets_dirty: true, screen: None, show: Show::default(), prompts: HashMap::new(), prompt_active: HashMap::new(), prompt_glow: HashMap::new(),
+            next_order: 0, sheets_dirty: true, screen: None, show: Show::default(), prompts: HashMap::new(), prompt_active: HashMap::new(), nudges: Default::default(), started_once: false, prompt_glow: HashMap::new(),
             mood: Mood::default(), animated, time: 0.0, since_paint: 0.0, screens_dirty: true, local: vec![], bots: HashMap::new(), rng: Pcg::new(42), uploaded: false,
             props: props.expect("props"), board: board.expect("board"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
             bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), holds: HashMap::new(), station_cooldown: HashMap::new(),
@@ -530,6 +536,11 @@ impl Lobby {
         if ids != self.last_queue { self.last_queue = ids; }
     }
 
+    /// How far a prompt floats up now: a slow bob, or a hop while it nudges.
+    pub(crate) fn prompt_bob(&self, name: &str, x: f32) -> f32 {
+        if self.nudges.contains(name) { (self.time * 3.2).sin().abs() * 0.22 } else { (self.time * 2.2 + x).sin() * 0.05 }
+    }
+
     /// Room parts the lobby moves: prompts (shown, bobbing, glowing), the
     /// featured box and the shelf bumpers.
     fn pose_parts(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, delta: f32) -> Result<(), String> {
@@ -538,7 +549,7 @@ impl Lobby {
             let active = self.prompt_active.get(&p.name).copied().unwrap_or(false);
             let screen = self.build.screens.iter().find(|s| s.name == format!("prompt_{}", p.name));
             let stretch = screen.map_or(1.0, |s| PROMPT_WIDTH as f32 / s.size[0] as f32);
-            let bob = Vec3::new(0.0, (self.time * 2.2 + p.pos.x).sin() * 0.05, 0.0);
+            let bob = Vec3::new(0.0, self.prompt_bob(&p.name, p.pos.x), 0.0);
             let at = Affine3A::from_scale_rotation_translation(Vec3::new(stretch, 1.0, 1.0), Quat::IDENTITY, p.pos + bob);
             self.stage.room.dump.instances[p.instance].transform = glam::Mat4::from(at).to_cols_array();
             changed.push((p.instance, active));

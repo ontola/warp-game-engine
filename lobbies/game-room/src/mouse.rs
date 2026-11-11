@@ -155,7 +155,7 @@ impl Lobby {
         let items: Vec<(String, String)> = prompt.items.iter().map(|(k, t, _)| (k.clone(), t.clone())).collect();
         let width = crate::live::PROMPT_WIDTH as f32;
         let mut x = ((width - crate::room::prompt_size(&items)[0] as f32) / 2.0).max(0.0).floor() + 20.0;
-        let center = def.pos + Vec3::new(0.0, (self.time * 2.2 + def.pos.x).sin() * 0.05, 0.0);
+        let center = def.pos + Vec3::new(0.0, self.prompt_bob(name, def.pos.x), 0.0);
         let world = |tx: f32, ty: f32| center + Vec3::new((tx - width / 2.0) * PROMPT_PX, (48.0 - ty) * PROMPT_PX, 0.0);
         for (key, label) in &items {
             let badge = if key == "LB" || key == "RB" { 150.0 } else { 96.0 };
