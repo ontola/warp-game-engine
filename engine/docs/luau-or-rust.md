@@ -214,11 +214,14 @@ Start in Luau. Move when a profile says so, not before.
    advice to copy tuning into `Species::jeffrey_pine()`) lose hot reload
    for everyone after. Prefer the Luau or JSON file as the source and
    `include_str!` it as the built-in default.
-5. **Do not keep two copies of a rule.** Spellstorm's sim has the built-in
-   grammar in Rust and its port in `mods/base/spells.luau`, kept equal by
-   a test. That is double work for every rule change. When a rule lives in
-   Luau, ship the `.luau` file as the built-in default (Spellstorm already
-   embeds it as `BUILTIN`) and let tests run the Luau.
+5. **Do not keep two copies of a rule.** A Rust copy of a Luau rule, kept
+   equal by a test, doubles the work of every change. Ship the `.luau`
+   file as the built-in default with `include_str!` and let tests run it.
+   Spellstorm does this: its grammar, effects, tomes, monster kinds and
+   biomes exist only in `mods/base`, embedded as `BUILTIN` and read when
+   no rules are installed (`spellstorm::rules`). Content that objects
+   alive point into (monster kinds, levels) takes new values at once but
+   a changed list only at the next start.
 
 Going the other way, out of Rust into Luau, is worth it for any constant or
 rule you find yourself rebuilding to tune.
