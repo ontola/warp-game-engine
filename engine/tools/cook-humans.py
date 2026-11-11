@@ -157,6 +157,40 @@ def groom_edges(fitted,mat,atlas):
     return np.array(verts),np.array(uvs),tris,roots
 
 
+def strand_field(fitted,morph):
+    # A periodic guide surface, ordered from hairline to crown. The GPU
+    # interpolates a different path over it for each individual hair.
+    xyz=fitted*.06+[0,.49,-.021]
+    angles=np.arctan2(xyz[:,0],xyz[:,2]-.002)
+    radius=np.hypot(xyz[:,0],xyz[:,2]-.002)
+    field=np.zeros((64,16,5,3))
+    for k in range(64):
+        angle=k*2*np.pi/64-np.pi
+        rank=np.cos(angles-angle)
+        sector=np.flatnonzero(rank>np.cos(.15))
+        if len(sector)<12: sector=np.argsort(rank)[-12:]
+        bottom=np.quantile(xyz[sector,1],.025)
+        top=xyz[:,1].max()
+        for j in range(16):
+            t=j/15
+            y=bottom+(top-bottom)*np.sin(t*np.pi/2)
+            near=sector[np.argsort(abs(xyz[sector,1]-y))[:10]]
+            r=np.quantile(radius[near],.85)*min(1.,(1.-t)*7.)
+            pt=np.array([r*np.sin(angle),y,.002+r*np.cos(angle)])
+            donor=near[np.argmin(np.linalg.norm(xyz[near]-pt,axis=1))]
+            field[k,j,0]=pt
+            field[k,j,1:]=morph[donor]*.06
+    for _ in range(2):
+        field=.5*field+.25*(np.roll(field,1,axis=0)+np.roll(field,-1,axis=0))
+    packed=bytearray()
+    for sample in field.reshape(-1,5,3):
+        pos=np.rint((sample[0]-[0,.9,0])*(32767/.25)).astype(int)
+        packed.extend(struct.pack("<4h",*pos,0))
+        for d in sample[1:]:
+            packed.extend(struct.pack("<4b",*np.rint(np.clip(d/.055,-1,1)*127).astype(int),0))
+    return packed
+
+
 def cook(base_path,src,pack,dest):
     base,uv,faces=obj(base_path)
     # Narrow the neutral palpebral opening with the paired hm08 eyelid targets.
@@ -316,6 +350,7 @@ def cook(base_path,src,pack,dest):
             return (14 if trouser else 12) | (mask<<5)
         return material
     pieces=[("clothes",name,12) for name in outfits]+[("clothes",shoes,3),("eyebrows","eyebrow001",13),("hair","short01",20),("hair","bob02",21),("hair","afro01",22)]
+    strand_fields=bytearray()
     for folder,name,mat in pieces:
         path=pack/folder/name
         _,uv,faces=obj(path/(name+".obj"))
@@ -328,6 +363,7 @@ def cook(base_path,src,pack,dest):
         # face in the match renderer. Use its fitted outline to build a curl mass.
         if mat!=22: add(fitted,uv,faces,skin,morph,material)
         if mat >= 20:
+            strand_fields.extend(strand_field(fitted,morph))
             locks,lock_uv,triangles,roots=groom_edges(fitted,mat,atlas)
             add(locks,lock_uv,triangles,skin[roots],morph[roots],material)
     put(5,curl_tile(tile))
@@ -340,6 +376,7 @@ def cook(base_path,src,pack,dest):
     atlas.save(atlas_tmp,format="PNG",optimize=True)
     model_tmp.replace(dest/"person.bin")
     atlas_tmp.replace(dest/"appearance.png")
+    (dest/"strand-guides.bin").write_bytes(strand_fields)
     print(len(vertices)//22,"vertices and",len(indices)//3,"triangles")
 
 if __name__=="__main__":

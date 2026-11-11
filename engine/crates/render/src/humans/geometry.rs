@@ -212,7 +212,7 @@ fn curled_hand(p: Vec3, n: Vec3, frame: glam::Quat) -> (Vec3, Vec3) {
 impl super::Instance {
     // Nonnegative weights keep every landmark inside the four registered
     // reference heads. Squaring twice still allows distinctive individuals.
-    fn head_weights(&self) -> [f32; 4] {
+    pub fn head_weights(&self) -> [f32; 4] {
         let w = self.identity.map(|x| { let x2 = x * x; x2 * x2 + 0.001 });
         let sum = w.iter().sum::<f32>();
         w.map(|x| x / sum)

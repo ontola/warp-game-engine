@@ -602,6 +602,8 @@ pub struct Scene {
     pub baked_animations: Option<crate::baked_animation::BakedAnimations>,
     /// Independent weighted character meshes, with caller-sampled palettes.
     pub skinning: crate::skinning::Skinning,
+    /// Skinned actor, head joint and fitted procedural strand descriptor.
+    pub hair_grooms: Vec<(usize, usize, crate::humans::Groom)>,
     /// Indoor irradiance probes in `aux` (`reserve_irradiance_volume`): the
     /// word offset of their header and the grid.
     pub irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
