@@ -969,6 +969,18 @@ fn trace_depth(c: vec2<i32>) -> f32 {
     return d;
 }
 
+// One level of the reflection mips at uv: one bilinear tap at level 0, a
+// tent of four bilinear taps half a texel apart above it, so a coarse
+// level's texels do not show as squares.
+fn reflection_level(uv: vec2<f32>, lod: f32) -> vec3<f32> {
+    if lod < 0.5 { return textureSampleLevel(reflection_history, canopy_sampler, uv, 0.0).rgb; }
+    let o = 0.5 / vec2<f32>(textureDimensions(reflection_history, i32(lod)));
+    return 0.25 * (textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(-o.x, -o.y), lod).rgb
+        + textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(o.x, -o.y), lod).rgb
+        + textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(-o.x, o.y), lod).rgb
+        + textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(o.x, o.y), lod).rgb);
+}
+
 fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, px: vec2<i32>, size: vec2<u32>, dist: f32) -> vec4<f32> {
     if gi.trace.x < 0.5 || rough >= gi.trace.y { return vec4<f32>(0.0); }
     // One mirror ray, never jittered: a jittered ray per pixel hits and
@@ -996,16 +1008,20 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
         // front of the ray point when d > ndc.z; how far behind it, in metres:
         if d > ndc.z {
             let behind = c.w * (1.0 - ndc.z / d);
-            if behind < max(0.25, (t - lo) * 2.0 + c.w * 0.01) { found = true; break; }
+            // Thickness: the step just taken plus a little: a looser test
+            // took rays passing behind a thin frame for hits (a door's
+            // reflection smeared into a column with a ragged end).
+            if behind < max(0.1, (t - lo) * 1.2 + c.w * 0.005) { found = true; break; }
         }
         lo = t;
-        t += max(0.08, t * 0.2);
+        // 20 % per step: 40 steps reach past 250 m.
+        t += max(0.06, t * 0.2);
         if t > reach { break; }
     }
     if !found { return vec4<f32>(0.0); }
     // Bisect to the crossing.
     var hi = t;
-    for (var k = 0; k < 5; k++) {
+    for (var k = 0; k < 6; k++) {
         let mid = 0.5 * (lo + hi);
         let c = view.view_proj * vec4<f32>(o + r * mid, 1.0);
         let ndc = c.xyz / c.w;
@@ -1023,7 +1039,7 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
     let hit = world.xyz / world.w;
     // A hit facing away from the ray (seen from behind) has no radiance here.
     let back = c.w * (1.0 - ndc.z / d);
-    if back > max(0.6, hi * 0.06) { return vec4<f32>(0.0); }
+    if back > max(0.2, hi * 0.03) { return vec4<f32>(0.0); }
     let prev = gi.prev_view_proj * vec4<f32>(hit, 1.0);
     if prev.w <= 1e-4 { return vec4<f32>(0.0); }
     let prev_ndc = prev.xy / prev.w;
@@ -1040,9 +1056,9 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
     let levels = f32(textureNumLevels(reflection_history));
     let lod = clamp(log2(max(footprint, 1.0)), 0.0, levels - 1.0);
     let lo_lod = floor(lod);
-    var radiance = textureSampleLevel(reflection_history, canopy_sampler, uv, lo_lod).rgb;
+    var radiance = reflection_level(uv, lo_lod);
     if lod > lo_lod {
-        let next = textureSampleLevel(reflection_history, canopy_sampler, uv, lo_lod + 1.0).rgb;
+        let next = reflection_level(uv, lo_lod + 1.0);
         radiance = mix(radiance, next, lod - lo_lod);
     }
     if any(radiance != radiance) { return vec4<f32>(0.0); }
@@ -1238,7 +1254,16 @@ struct IrradianceSample { value: vec4<f32>, emission: vec3<f32> }
 fn unpack_emission(word: u32) -> vec3<f32> {
     return vec3<f32>(f32(word&511u),f32((word>>9u)&511u),f32((word>>18u)&511u))*exp2(f32(word>>27u)-24.0);
 }
-fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
+fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample { return irradiance_sample_at(p, p, n); }
+
+// `irradiance_sample` with the trilinear weights taken at `p` and the wall
+// tests (backface, separation planes) at `surface`: a lookup point moved
+// along the surface (jitter) must not validate probes behind a wall the
+// move crossed.
+fn irradiance_sample_at(p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
+    // Plane tests blend over 15 cm, but only 2 cm for a moved lookup: its
+    // weights reach probes the blend would let through at a corner.
+    let soft=select(0.15,0.02,any(p!=surface));
     let o = u32(gi.params.w);
     if !FEATURE_IRRADIANCE || o == 0u { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
     let transport = aux_word(o + 7u) >= 2u;
@@ -1276,7 +1301,7 @@ fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
             let corner=vec3<u32>(c&1u,(c>>1u)&1u,(c>>2u)&1u);
             let w3=select(1.0-t,t,corner==vec3<u32>(1u));
             let g=vec3<u32>(cell0)+corner;
-            let to_probe=origin+vec3<f32>(g)*cell-p;
+            let to_probe=origin+vec3<f32>(g)*cell-surface;
             let facing=dot(to_probe,n)/max(length(to_probe),1e-4);
             // Probes just behind the surface still count a little (a wall's
             // own probes sit in it); far behind it they do not.
@@ -1289,11 +1314,11 @@ fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
                 if mode==5u {
                     let plane=vec4<f32>(aux_f32(base+1u),aux_f32(base+2u),aux_f32(base+4u),aux_f32(base+5u));
                     // Zero plane passes through. Blend over 15 cm to avoid a hard edge.
-                    valid*=smoothstep(-0.15,0.0,dot(plane.xyz,p)+plane.w);
+                    valid*=smoothstep(-soft,0.0,dot(plane.xyz,surface)+plane.w);
                 }
                 if mode==7u {
                     let plane=vec4<f32>(aux_f32(base+2u),aux_f32(base+5u),aux_f32(base+8u),aux_f32(base+11u));
-                    valid*=smoothstep(-0.15,0.0,dot(plane.xyz,p)+plane.w);
+                    valid*=smoothstep(-soft,0.0,dot(plane.xyz,surface)+plane.w);
                     let e=unpack_emission(aux_word(base+axis.x+1u))*n2.x
                         +unpack_emission(aux_word(base+axis.y+1u))*n2.y
                         +unpack_emission(aux_word(base+axis.z+1u))*n2.z;
@@ -1327,6 +1352,9 @@ fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
             // Every probe is across a wall: use those merely outside
             // geometry, and if none is, call the point unlit (inside a
             // probe volume dark is the safe guess, open sky the worst).
+            // A moved (jittered) lookup says so instead (weight -1): the
+            // caller looks up the unmoved point, where the walls hold.
+            if any(p!=surface) { return IrradianceSample(vec4<f32>(0.0,0.0,0.0,-1.0),vec3<f32>(0.0)); }
             if loose_weight<1e-5 { return IrradianceSample(vec4<f32>(0.0,0.0,0.0,weight),vec3<f32>(0.0)); }
             value=loose; emission=loose_emission; valid_weight=loose_weight;
         }
@@ -1356,6 +1384,16 @@ fn irradiance_volume(p: vec3<f32>,n: vec3<f32>) -> vec4<f32> { return irradiance
 // no extra fetches. The offset stays in the plane and well under the wall
 // thickness the probe layout asks for, and the wall tests in
 // irradiance_sample run at the offset point.
+// The jittered lookup: trilinear weights at the moved point, the wall tests
+// at the surface point. Near a corner the offset can cross into the
+// neighbouring wall; tested there, probes on that wall's far side (outdoors,
+// the next room) would pass and the edge showed as a bright dotted line.
+fn jittered_irradiance(p: vec3<f32>, px: vec2<i32>, visibility_n: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
+    let moved = irradiance_sample_at(p + irradiance_jitter(px, visibility_n), p, n);
+    if moved.value.w < 0.0 { return irradiance_sample(p, n); }
+    return moved;
+}
+
 fn irradiance_jitter(px: vec2<i32>, n: vec3<f32>) -> vec3<f32> {
     let o = u32(gi.params.w);
     if !FEATURE_IRRADIANCE || o == 0u || light.fog_sampling.y < 0.5 { return vec3<f32>(0.0); }
@@ -3201,7 +3239,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         let spec_contact=mix(contact.y,contact.x,smoothstep(0.08,0.6,rough));
         var env=mix(bounce/PI,environment(refl,rough,bounce),reflection_vis)*spec_contact;
         // Inside an indoor irradiance volume its probes replace sky and bounce.
-        let cached=irradiance_sample(p+visibility_n*0.05+irradiance_jitter(px,visibility_n),n);
+        let cached=jittered_irradiance(p+visibility_n*0.05,px,visibility_n,n);
         let room=cached.value;
         if FEATURE_IRRADIANCE && room.w>0.0 {
           if aux_word(u32(gi.params.w)+7u) >= 1u {

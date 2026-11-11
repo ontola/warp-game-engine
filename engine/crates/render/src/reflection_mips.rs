@@ -28,17 +28,42 @@ const SHADER: &str = "
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var dst: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(2) var samp: sampler;
-// Level 0: a copy (a tap at a texel centre). Below: a 2x2 box, one
-// bilinear tap at the shared corner of four source texels.
+fn clean(c: vec3<f32>) -> vec3<f32> {
+    // Keep NaN and overflow out of every level below.
+    if any(c != c) { return vec3<f32>(0.0); }
+    return min(c, vec3<f32>(65504.0));
+}
+
+// Level 0: a copy. Below: the four source texels, each weighted by
+// 1 / (1 + its luminance over their mean) (Karis' average, made relative:
+// the image is scene-linear, not exposed). A box filter let one small, very
+// bright texel (a bulb) take over whole coarse texels, which a glossy
+// reflection then showed as a bright square around the darker, sharper
+// things in front of the bulb.
 @compute @workgroup_size(8, 8)
 fn down(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = textureDimensions(dst);
     if id.x >= size.x || id.y >= size.y { return; }
-    let uv = (vec2<f32>(id.xy) + 0.5) / vec2<f32>(size);
-    var c = textureSampleLevel(src, samp, uv, 0.0).rgb;
-    // Keep NaN and overflow out of every level below.
-    if any(c != c) { c = vec3<f32>(0.0); }
-    textureStore(dst, id.xy, vec4<f32>(min(c, vec3<f32>(65504.0)), 1.0));
+    let src_size = textureDimensions(src);
+    if all(src_size == size) {
+        textureStore(dst, id.xy, vec4<f32>(clean(textureLoad(src, id.xy, 0).rgb), 1.0));
+        return;
+    }
+    let last = vec2<i32>(src_size) - 1;
+    var c: array<vec3<f32>, 4>;
+    var mean = 0.0;
+    for (var k = 0; k < 4; k++) {
+        c[k] = clean(textureLoad(src, min(vec2<i32>(id.xy) * 2 + vec2<i32>(k & 1, k >> 1u), last), 0).rgb);
+        mean += dot(c[k], vec3<f32>(0.2126, 0.7152, 0.0722)) * 0.25;
+    }
+    var sum = vec3<f32>(0.0);
+    var weight = 0.0;
+    for (var k = 0; k < 4; k++) {
+        let w = 1.0 / (1.0 + dot(c[k], vec3<f32>(0.2126, 0.7152, 0.0722)) / max(mean, 1e-6));
+        sum += c[k] * w;
+        weight += w;
+    }
+    textureStore(dst, id.xy, vec4<f32>(sum / max(weight, 1e-6), 1.0));
 }";
 
 impl ReflectionMips {

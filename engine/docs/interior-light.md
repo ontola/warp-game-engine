@@ -86,7 +86,10 @@ direct sky included. Light that reaches a room along a few rays only
 blotches at the probe spacing. In shading (with TAA) the probe lookup is
 offset per pixel and frame by up to 0.35 of a cell in the surface's plane,
 so TAA turns the trilinear cell steps into a smooth filter at no extra
-fetches.
+fetches. The wall tests (backface, separation planes, the latter without
+their 15 cm blend) stay at the surface point; where the moved point finds
+no valid probe at all (a corner) the lookup is repeated unmoved, rather
+than falling back to probes that ignore the walls.
 
 ## Cost
 

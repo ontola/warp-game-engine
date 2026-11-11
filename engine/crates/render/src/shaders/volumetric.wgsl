@@ -28,7 +28,19 @@ struct Uniform {
     // Ambient in-scatter radiance (converged); w: medium length, 0 unbounded.
     ambient: vec4<f32>,
     lights: array<ScatterLight, 32>,
+    // Bounded, shadowed mode (`Volumetric` with bounds): x occluder boxes,
+    // y bounds (0: the analytic unbounded mode), z steps per light, w unused.
+    march: vec4<f32>,
+    // Sun towards (xyz) and its scattered irradiance (rgb, lux times the
+    // medium's sun weight); w unused.
+    sun_dir: vec4<f32>,
+    sun_e: vec4<f32>,
+    // Up to 8 bounds as (min, max) pairs: the medium fills only these boxes.
+    bounds: array<vec4<f32>, 16>,
 };
+// An occluder: the rows of its world-to-unit-box transform (the box is
+// [-0.5, 0.5]^3 in its own space).
+struct Occluder { r0: vec4<f32>, r1: vec4<f32>, r2: vec4<f32>, pad: vec4<f32> };
 
 @group(0) @binding(0) var<uniform> u: Uniform;
 @group(0) @binding(1) var scene_depth: texture_depth_2d;
@@ -36,6 +48,7 @@ struct Uniform {
 @group(0) @binding(3) var scatter_in: texture_2d<f32>;
 @group(0) @binding(4) var colour_in: texture_2d<f32>;
 @group(0) @binding(5) var colour_out: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(6) var<storage, read> occluders: array<Occluder>;
 
 const PI: f32 = 3.14159265;
 const SAMPLES: u32 = 6u;
@@ -144,6 +157,104 @@ fn light_scatter(o: vec3<f32>, v: vec3<f32>, tmax: f32, light: ScatterLight, sig
     return light.intensity_inner.rgb * (acc * half_width * jacobian);
 }
 
+// ---- Bounded, shadowed mode ----
+// The medium fills a few boxes (rooms); every light is ray-marched through
+// them with a visibility test towards the light against the occluder boxes
+// (walls, furniture, a door), and the sun the same way, so beams, a door's
+// shaft and the shadows in them are real and nothing glows through a wall.
+// The march offsets its steps by a fixed 4x4 Bayer pattern per pixel; the
+// composite gathers 4x4 half-resolution pixels, which averages it away.
+
+// Whether the segment a -> b passes through any occluder of bound `bound`
+// (its list: start and count in the bound's w components).
+fn blocked(a: vec3<f32>, b: vec3<f32>, bound: u32) -> bool {
+    let start = u32(u.bounds[2u * bound].w);
+    let end = start + u32(u.bounds[2u * bound + 1u].w);
+    for (var i = start; i < end; i++) {
+        let o = occluders[i];
+        let la = vec3<f32>(dot(o.r0.xyz, a) + o.r0.w, dot(o.r1.xyz, a) + o.r1.w, dot(o.r2.xyz, a) + o.r2.w);
+        let lb = vec3<f32>(dot(o.r0.xyz, b) + o.r0.w, dot(o.r1.xyz, b) + o.r1.w, dot(o.r2.xyz, b) + o.r2.w);
+        let d = lb - la;
+        let inv = 1.0 / select(d, vec3<f32>(1e-12), abs(d) < vec3<f32>(1e-12));
+        let t0 = (vec3<f32>(-0.5) - la) * inv;
+        let t1 = (vec3<f32>(0.5) - la) * inv;
+        let enter = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), max(min(t0.z, t1.z), 0.0));
+        let exit = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), min(max(t0.z, t1.z), 1.0));
+        if exit > enter { return true; }
+    }
+    return false;
+}
+
+// The bound p is in, or -1.
+fn bound_of(p: vec3<f32>) -> i32 {
+    let count = u32(u.march.y);
+    for (var i = 0u; i < count; i++) {
+        if all(p >= u.bounds[2u * i].xyz) && all(p <= u.bounds[2u * i + 1u].xyz) { return i32(i); }
+    }
+    return -1;
+}
+
+// The view ray's span over all bounds, within [0, tmax].
+fn bounds_span(o: vec3<f32>, v: vec3<f32>, tmax: f32) -> vec2<f32> {
+    let inv = 1.0 / select(v, vec3<f32>(1e-12), abs(v) < vec3<f32>(1e-12));
+    var span = vec2<f32>(1e30, -1e30);
+    let count = u32(u.march.y);
+    for (var i = 0u; i < count; i++) {
+        let t0 = (u.bounds[2u * i].xyz - o) * inv;
+        let t1 = (u.bounds[2u * i + 1u].xyz - o) * inv;
+        let enter = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), max(min(t0.z, t1.z), 0.0));
+        let exit = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), min(max(t0.z, t1.z), tmax));
+        if exit > enter { span = vec2<f32>(min(span.x, enter), max(span.y, exit)); }
+    }
+    return span;
+}
+
+fn bayer4(p: vec2<u32>) -> f32 {
+    let m = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+    return (m[(p.y & 3u) * 4u + (p.x & 3u)] + 0.5) / 16.0;
+}
+
+// In-scattered radiance along the view ray inside the bounds, every light
+// and the sun, occluded; before density, tint and intensity.
+fn marched_scatter(o: vec3<f32>, v: vec3<f32>, tmax: f32, jitter: f32) -> vec3<f32> {
+    let span = bounds_span(o, v, tmax);
+    if span.y <= span.x { return vec3<f32>(0.0); }
+    let sigma = u.medium.x;
+    let g = u.medium.y;
+    let steps = max(u32(u.march.z), 1u);
+    let dt = (span.y - span.x) / f32(steps);
+    let count = min(u32(u.medium.w), 32u);
+    var acc = vec3<f32>(0.0);
+    for (var k = 0u; k < steps; k++) {
+        let t = span.x + (f32(k) + jitter) * dt;
+        let p = o + v * t;
+        let bi = bound_of(p);
+        if bi < 0 { continue; }
+        let bound = u32(bi);
+        let to_camera = exp(-sigma * t);
+        for (var i = 0u; i < count; i++) {
+            let light = u.lights[i];
+            let off = p - light.position_range.xyz;
+            let d2 = dot(off, off);
+            let r2 = light.position_range.w * light.position_range.w;
+            if d2 >= r2 { continue; }
+            let dist = sqrt(d2);
+            let outward = off / max(dist, 1e-6);
+            let cone = smoothstep(light.direction_outer.w, light.intensity_inner.w, dot(outward, light.direction_outer.xyz));
+            if cone <= 0.0 { continue; }
+            let n = d2 / r2;
+            let fade = max(0.0, 1.0 - n * n);
+            let spread = pow(d2 + light.source.x, -0.5 * light.source.y);
+            if blocked(p, light.position_range.xyz + outward * sqrt(light.source.x), bound) { continue; }
+            acc += light.intensity_inner.rgb * (cone * fade * fade * spread * hg_phase(dot(outward, -v), g) * exp(-sigma * dist) * to_camera * dt);
+        }
+        if u.sun_dir.w > 0.5 && !blocked(p, p + u.sun_dir.xyz * 200.0, bound) {
+            acc += u.sun_e.rgb * (hg_phase(dot(u.sun_dir.xyz, -v), g) * to_camera * dt);
+        }
+    }
+    return acc;
+}
+
 fn view_depth(depth: f32) -> f32 {
     if depth <= 0.0 { return SKY_DEPTH; }
     return min(u.camera_near.w / depth, SKY_DEPTH);
@@ -153,6 +264,9 @@ fn view_depth(depth: f32) -> f32 {
 fn scatter(@builtin(global_invocation_id) id: vec3<u32>) {
     let half = vec2<u32>(u.sizes.zw);
     if any(id.xy >= half) { return; }
+    // Bounded mode marches every second pixel each way (quarter
+    // resolution); the composite reads only those.
+    if u.march.y > 0.5 && ((id.x | id.y) & 1u) != 0u { return; }
     let last = vec2<i32>(textureDimensions(scene_depth)) - 1;
     let base = vec2<i32>(id.xy) * 2;
     // Checkerboard of the nearest and farthest depth of each 2x2 footprint,
@@ -178,11 +292,18 @@ fn scatter(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     if u.ambient.w > 0.0 { tmax = min(tmax, u.ambient.w); }
     var sum = vec3<f32>(0.0);
-    let count = min(u32(u.medium.w), 32u);
-    for (var i = 0u; i < count; i++) {
-        sum += light_scatter(origin, v, tmax, u.lights[i], u.medium.x, u.medium.y);
+    var ambient_reach = tmax;
+    if u.march.y > 0.5 {
+        sum = marched_scatter(origin, v, tmax, bayer4(id.xy / 2u));
+        let span = bounds_span(origin, v, tmax);
+        ambient_reach = max(span.y - span.x, 0.0);
+    } else {
+        let count = min(u32(u.medium.w), 32u);
+        for (var i = 0u; i < count; i++) {
+            sum += light_scatter(origin, v, tmax, u.lights[i], u.medium.x, u.medium.y);
+        }
     }
-    let colour = sum * u.tint.rgb * (u.medium.x * u.medium.z) + u.ambient.rgb * (1.0 - exp(-u.medium.x * tmax));
+    let colour = sum * u.tint.rgb * (u.medium.x * u.medium.z) + u.ambient.rgb * (1.0 - exp(-u.medium.x * ambient_reach));
     textureStore(scatter_out, vec2<i32>(id.xy), vec4<f32>(colour, view_depth(best_depth)));
 }
 
@@ -203,11 +324,25 @@ fn composite(@builtin(global_invocation_id) id: vec3<u32>) {
     var weight = 0.0;
     var nearest = vec3<f32>(0.0);
     var nearest_gap = 1e30;
-    for (var k = 0; k < 4; k++) {
-        let o = vec2<i32>(k & 1, k >> 1u);
-        let q = clamp(vec2<i32>(base) + o, vec2<i32>(0), half_last);
+    // Bounded mode: 4x4 of the marched (even) half-resolution pixels, a
+    // tent over the Bayer period of the march; otherwise the 2x2 bilinear
+    // footprint.
+    let wide = u.march.y > 0.5;
+    let taps = select(4, 16, wide);
+    let qp = centre * u.sizes.zw / u.output.xy * 0.5 - 0.5;
+    let qbase = floor(qp);
+    let qf = qp - qbase;
+    for (var k = 0; k < taps; k++) {
+        var o = vec2<i32>(k & 1, k >> 1u);
+        var bilinear = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1);
+        var q = clamp(vec2<i32>(base) + o, vec2<i32>(0), half_last);
+        if wide {
+            o = vec2<i32>(k & 3, k >> 2u) - 1;
+            let d = abs(vec2<f32>(o) - qf);
+            bilinear = max(2.0 - d.x, 0.0) * max(2.0 - d.y, 0.0);
+            q = clamp((vec2<i32>(qbase) + o) * 2, vec2<i32>(0), half_last - (half_last & vec2<i32>(1)));
+        }
         let s = textureLoad(scatter_in, q, 0);
-        let bilinear = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1);
         // Relative depth difference: 5% of the nearer depth is one unit.
         let gap = abs(s.a - z) / max(0.05 * min(s.a, z), 0.05);
         let w = bilinear * exp(-gap * gap);
