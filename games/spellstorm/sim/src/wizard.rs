@@ -61,6 +61,10 @@ pub mod used {
     pub const LOAD: u32 = 64;
     pub const BOLT_EL: u32 = 128;
     pub const CAST2: u32 = 256;
+    /// Cast a nova (hold RB), planted (L3), enchanted (R3).
+    pub const NOVA: u32 = 512;
+    pub const PLANT: u32 = 1024;
+    pub const ENCHANT: u32 = 2048;
 }
 pub const ROLL_TIME: f64 = 0.5;
 pub const ROLL_SPEED: f64 = 12.5;
@@ -211,8 +215,10 @@ pub struct Wizard {
     pub rs_t: f64,
     /// The staff shaking its elements out, seconds left.
     pub shake_t: f64,
-    /// The moves done at least once (bits of `used`).
+    /// The moves done at least once (bits of `used`), and the elements
+    /// loaded at least once (bit El::idx).
     pub used: u32,
+    pub used_el: u32,
     save_t: [f64; 2],
     pub revive: f64,
     pub swing_t: f64,
@@ -1066,6 +1072,7 @@ impl World {
         }
         w.mana -= price;
         w.used |= used::LOAD;
+        w.used_el |= 1 << e.idx();
         let front = w.queue.slots.first().copied();
         let what = w.queue.add(e);
         // A new or changed front element starts with a full charge.
@@ -1135,6 +1142,12 @@ impl World {
         }
         w.mana -= price;
         w.ammo = 0;
+        w.used |= match form {
+            Form::Nova => used::NOVA,
+            Form::Plant => used::PLANT,
+            Form::Enchant => used::ENCHANT,
+            Form::Cast => 0,
+        };
         if form == Form::Cast {
             w.used |= used::CAST;
             if s.slots.len() >= 2 {
