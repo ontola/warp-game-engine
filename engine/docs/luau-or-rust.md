@@ -112,7 +112,13 @@ What the numbers say:
 - **Tables made in Rust are expensive.** A call that answers with a fresh
   table (`world.get`, `world.raycast`, `world.overlap`) costs over a
   microsecond. Ask for what you need once per tick and keep it, rather
-  than asking per entity per frame.
+  than asking per entity per frame. Most of that cost is the memory cap:
+  while it is set, mlua guards every allocating call, which makes building
+  a table from Rust about four times slower. Rust code that converts
+  arguments or results outside a hook (serde `to_value`, a hand-built
+  table) should do it inside `Host::unguarded` (or `script::unguarded`
+  within a `Host::run` closure), which lifts the cap for the conversion
+  only. SpaceRacer's rule calls do this.
 - **Vectors are cheap.** Luau's `vector` is a value type: use it for
   positions and velocities instead of `{x, y, z}` tables.
 - A rule of thumb for a 60 Hz game: **about 10,000 Luau-side operations
@@ -254,6 +260,9 @@ Known gaps, so nobody mistakes them for rules:
 - **The step budget's interrupt costs ~30 ns per loop iteration**
   (measured above). A cheaper counter would make tight Luau loops several
   times faster.
+- **The `warp` API builds its answer tables under the memory cap**
+  (`world.get`, `world.raycast`, `world.overlap`), so Luau games pay the
+  slow path described above on every query.
 - **Few batch calls.** The Luau world API is per entity (`world.move`,
   `world.get`); there is no call that moves or queries many entities at
   once.

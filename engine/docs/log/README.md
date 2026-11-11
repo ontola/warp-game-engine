@@ -22,6 +22,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [handoff.md](handoff.md) is the running log of 23 October to 5 November
   2026, newest first.
 
+- [SpaceRacer rule calls: where a sim tick went](2026-11-11-spaceracer-rule-calls.md)
 - [Sideways GPU cost: LOD error, culling switches, car shading, shadow distance LOD](2026-11-11-sideways-gpu-cost.md)
 - [Hair rendering in games and a scalp-rooted Warp experiment](2026-11-11-warp-humans-hair-research.md)
 - [The side-parted bob in three views](2026-11-11-warp-humans-bob-volume.md)
