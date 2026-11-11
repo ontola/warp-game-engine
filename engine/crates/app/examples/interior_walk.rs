@@ -48,7 +48,7 @@ impl Walk {
         let wood = mat(&mut scene, [0.30, 0.18, 0.10], 0.35);
         let grass = mat(&mut scene, [0.12, 0.25, 0.06], 0.9);
         let cloth = mat(&mut scene, [0.45, 0.10, 0.08], 0.9);
-        scene.add_instance(grass, bx([-150.0, -0.2, -150.0], [150.0, 0.0, 150.0]));
+        scene.add_instance(grass, bx([-150.0, -1.0, -150.0], [150.0, 0.0, 150.0]));
         // 8 x 3 x 8 m inside, 0.3 m walls, a 1.2 x 2.2 m door in the +z wall.
         let walls = [
             bx([-4.3, 0.0, -4.3], [4.3, 3.0, -4.0]),
