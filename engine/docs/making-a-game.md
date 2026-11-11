@@ -74,8 +74,12 @@ complete example with split screen, bots and online play.
   `flush` per frame. Any mesh already in the scene can go in any slot.
   New meshes or materials need a new renderer (`frame.set_scene`), which
   recompiles pipelines (seconds); reserve up front instead.
-- First person: `scene.instances[i].hide_in_views(1 << view)` hides a body
-  from its own camera; it keeps its shadow.
+- For first-person and split-screen models, use
+  `render::scene::PlayerViews::for_player(view_players, player)`, where
+  `view_players[view]` identifies the player at that camera. Pass
+  `views.hide_from_owner()` to the body instance's `hide_in_views` and
+  `views.hide_from_others()` to the first-person weapon. Both eyes of a
+  stereo camera can share a player. Shadow casting is configured separately.
 - Sky: `scene.sky = Some(primitives::gradient_sky(zenith, horizon, ground))`.
 - Explosions: `render::fx::Effects` (Growing Guns' Godot blast: lumpy fire
   and smoke billows, flame tongues, ember streaks, heat shimmer, flash and
