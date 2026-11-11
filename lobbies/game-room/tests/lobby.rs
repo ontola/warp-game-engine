@@ -158,14 +158,32 @@ fn new_rooms_show_where_to_start_and_where_scanned_profiles_wait() {
     let config = gamenight::lobby::Config { url, lobby_id: "game-room".into(), token: "secret".into(), links_base: String::new() };
     let mut lobby = Lobby::connect_with(options(), config).unwrap();
     run_until(&mut lobby, |l| l.accepts_input());
-    run_until(&mut lobby, |l| l.prompt_active.get("tv").copied().unwrap_or(false));
-    assert!(lobby.nudges.contains("tv"), "before the first game, Play hops at the TV for nobody in particular");
-    assert_eq!(lobby.prompts["tv"].items[0].1, "Play");
-    assert!(!lobby.nudges.iter().any(|n| n.starts_with("door")), "no profile waits yet");
-
+    // An empty room nudges nobody, even with a profile waiting.
     lobby.set_links(json!({"room": {"pending": [{"id": "w1", "profile": {"display_name": "Sanne"}}]}}));
-    run_until(&mut lobby, |l| l.nudges.contains("door0"));
+    for _ in 0..10 { lobby.update(1.0 / 60.0); }
+    assert!(lobby.nudges.is_empty() && !lobby.prompt_active["tv"], "nothing hops before someone joins");
+
+    // Someone joins and stands away from the TV and the doors.
+    to_lobby.send(json!({"type": "party_state", "party": {
+        "players": [{"id": "p0", "name": "Joep", "color": "#e36c76", "couch": 0}],
+        "seats": [{"index": 0, "occupant": {"kind": "local", "player_id": "p0"}, "controller": "pad-a"}],
+        "library": [{"id": "spaceracer", "title": "Space Racer", "color": "#38d6ff"}],
+        "playlist": {"entries": [{"game": "spaceracer", "title": "Space Racer"}], "current": null}}})).unwrap();
+    run_until(&mut lobby, |l| l.world.player("p0").is_some());
+    let p = lobby.world.player_mut("p0").unwrap();
+    p.x = -9.0;
+    for _ in 0..30 { tick(&mut lobby); }
+    run_until(&mut lobby, |l| l.nudges.contains("tv") && l.nudges.contains("door0"));
+    assert_eq!(lobby.prompts["tv"].items[0].1, "Play");
+    assert!(lobby.prompt_active["tv"], "before the first game, Play hops at the TV for nobody in particular");
     assert!(lobby.prompt_active["door0"] && lobby.prompts["door0"].enabled, "a scanned profile's door shows Pick up");
+    assert!(!lobby.nudges.contains("door1"), "only doors with a profile waiting");
+    assert_eq!(lobby.prompts["tv"].conceal, 1.0, "from afar the nudge shows only its words");
+
+    // Walking up to the TV pops its button in and stops the hop.
+    lobby.world.player_mut("p0").unwrap().x = 0.0;
+    run_until(&mut lobby, |l| { tick(l); l.prompts["tv"].conceal == 0.0 });
+    assert!(!lobby.nudges.contains("tv") && lobby.prompt_active["tv"]);
 
     // Once a game has run, the TV is no longer nudged.
     to_lobby.send(json!({"type": "party_state", "party": {"players": [], "seats": [],

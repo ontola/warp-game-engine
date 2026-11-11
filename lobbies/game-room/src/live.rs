@@ -616,6 +616,11 @@ impl Lobby {
                 animating = true;
                 if *v == 0.0 { p.pressed = None; }
             }
+            if p.conceal != p.conceal_to {
+                let step = delta / 0.32;
+                p.conceal = if (p.conceal - p.conceal_to).abs() <= step { p.conceal_to } else { p.conceal + (p.conceal_to - p.conceal).signum() * step };
+                animating = true;
+            }
         }
         for v in &mut self.show.bumper_presses { if *v > 0.0 { *v = (*v - delta / 0.36).max(0.0); animating = true; } }
         if animating || !self.holds.is_empty() { self.screens_dirty = true; }
