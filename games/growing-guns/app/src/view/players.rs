@@ -168,7 +168,7 @@ impl PlayersView {
     /// Player and tracer instances, rewritten every frame.
     pub(crate) fn reserve_dynamic(&mut self, scene: &mut Scene, players: usize, seed: u64, colors: &[crate::party::PlayerColors]) {
         let rigid = crate::graphics::get().rigid_characters;
-        let procedural = !colors.is_empty() || !rigid && std::env::args_os().any(|arg| arg == "--warp-humans");
+        let procedural = !colors.is_empty() || !rigid && crate::warp_humans_enabled();
         self.characters = if !crate::graphics::get().characters && !rigid {None}else{match Characters::load_roster(procedural.then_some((seed, players, colors))) {
             Ok(characters) => Some(characters),
             Err(error) => { eprintln!("characters: using primitive fallback: {error}"); None }

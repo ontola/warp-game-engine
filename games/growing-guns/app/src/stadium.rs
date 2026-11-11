@@ -26,17 +26,13 @@ enum Density { Standard, Packed }
 
 static DENSITY: std::sync::OnceLock<Density> = std::sync::OnceLock::new();
 
-/// The stands are filled with Warp Humans unless `--no-warp-humans` asks for
-/// the older spectator models (`--warp-humans` is still accepted).
-fn crowd_humans() -> bool { !std::env::args_os().any(|arg| arg == "--no-warp-humans") }
-
 pub(crate) fn configure_density(args: &crate::Args) -> Result<(), String> {
     let density = match args.value("--crowd-density") {
         Some("standard") => Density::Standard,
         Some("packed") => Density::Packed,
         Some(_) => return Err("--crowd-density expects standard or packed".into()),
         None if args.flag("--crowd-density") => return Err("missing --crowd-density value".into()),
-        None if crowd_humans() => Density::Packed,
+        None if crate::warp_humans_enabled() => Density::Packed,
         None => Density::Standard,
     };
     DENSITY.set(density).map_err(|_| "crowd density already configured".into())
@@ -620,7 +616,7 @@ impl StadiumVisuals {
         let seats = seat_layout(&mut self.rng, self.geo, &self.looks);
         self.crowd.set_seats(scene, &seats, Vec2::ZERO);
         #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
-        if crowd_humans() {
+        if crate::warp_humans_enabled() {
             self.crowd.set_humans(a.seed, &seats);
         }
         self.sound.kickoff();
