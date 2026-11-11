@@ -273,6 +273,11 @@ impl Upscaling {
 }
 
 
+fn split_cull_timing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KERN_SPLIT_CULL_TIMING").as_deref() == Ok("1"))
+}
+
 fn timestamp_pair(next: &mut u32) -> u32 {
     assert!(*next <= TIMESTAMP_CAPACITY - 2, "frame exceeds timestamp query capacity");
     let first = *next;
@@ -2854,6 +2859,8 @@ impl Renderer {
         }
         let cull_bind=phase_bind.unwrap_or(&v.cull_bind);
         let timed=tile.is_none_or(|t|t.timed);
+        // KERN_SPLIT_CULL_TIMING=1 times the camera cull's finalize/scatter separately.
+        let split_timing=timed && matches!(kind,RasterPass::Color) && self.query.is_some() && split_cull_timing();
         let tw = |ts: &mut u32| {
             self.query.as_ref().filter(|_|timed).map(|(qs, _, _)| {
                 let i = timestamp_pair(ts);
@@ -2931,13 +2938,38 @@ impl Renderer {
                 let n=if self.simple_cull {n.div_ceil(64)} else {n};
                 pass.dispatch_workgroups(n.min(65535), n.div_ceil(65535), 1);
             }
-            pass.set_pipeline(&self.finalize);
-            pass.dispatch_workgroups(1, 1, 1);
-            if self.cluster_buckets {
-                pass.set_pipeline(&self.scatter);
-                // Bounded persistent grid: no full-capacity empty scan, no
-                // CPU count readback and no storage/indirect buffer alias.
-                pass.dispatch_workgroups(256, 1, 1);
+            if !split_timing {
+                pass.set_pipeline(&self.finalize);
+                pass.dispatch_workgroups(1, 1, 1);
+                if self.cluster_buckets {
+                    pass.set_pipeline(&self.scatter);
+                    // Bounded persistent grid: no full-capacity empty scan, no
+                    // CPU count readback and no storage/indirect buffer alias.
+                    pass.dispatch_workgroups(256, 1, 1);
+                }
+            }
+        }
+        if split_timing {
+            // Diagnostic: finalize and scatter in their own timed passes so
+            // their cost is not hidden behind the cull pass's end timestamp.
+            let (finalize_name, scatter_name) = match name {
+                "occluder cull" => ("occluder cull finalize", "occluder cluster scatter"),
+                "remaining cull" => ("remaining cull finalize", "remaining cluster scatter"),
+                _ => ("cull finalize", "cluster scatter"),
+            };
+            for (step, label) in [(0u32, finalize_name), (1, scatter_name)] {
+                if step == 1 && !self.cluster_buckets { continue; }
+                let t = tw(ts);
+                if t.is_some() { names.push(label); }
+                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some(label),
+                    timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
+                });
+                if let Some(mask)=damage {pass.set_bind_group(2,mask,&[]);}
+                pass.set_bind_group(0, cull_scene_bind, &[]);
+                pass.set_bind_group(1, cull_bind, &[]);
+                if step == 0 { pass.set_pipeline(&self.finalize); pass.dispatch_workgroups(1, 1, 1); }
+                else { pass.set_pipeline(&self.scatter); pass.dispatch_workgroups(256, 1, 1); }
             }
         }
         let t = tw(ts);
