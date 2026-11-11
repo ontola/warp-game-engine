@@ -442,9 +442,15 @@ pub struct Prompt {
 impl Prompt {
     /// How much of a button shows: (width share, badge scale with overshoot).
     pub fn reveal(&self) -> (f32, f32) {
+        // The word slides aside first, then the button pops into the room
+        // it made (and the other way round when it tucks away), so the two
+        // never overlap.
         let t = (1.0 - self.conceal).clamp(0.0, 1.0);
+        let slide = (t / 0.55).min(1.0);
+        let pop = ((t - 0.45) / 0.55).clamp(0.0, 1.0);
         let (c1, c3) = (1.70158, 2.70158);
-        (t * t * (3.0 - 2.0 * t), (1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2)).max(0.0))
+        let back = if pop > 0.0 { (1.0 + c3 * (pop - 1.0).powi(3) + c1 * (pop - 1.0).powi(2)).max(0.0) } else { 0.0 };
+        (slide * slide * (3.0 - 2.0 * slide), back)
     }
 
     /// Pixels the tucked-away buttons save on this row.
