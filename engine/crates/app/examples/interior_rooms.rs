@@ -7,11 +7,13 @@
 //!
 //! 1. Daylight room (front door and a window): sky and sun only, baked with
 //!    several bounces (`room_bake::bake`), sun shadows live.
-//! 2. Pendant room: one amber lamp swinging on its cord. Direct light and
-//!    its shadow are live (a shadowed clustered light); its bounce cannot be
-//!    baked, so a second, soft light sits over whatever the bulb shines down
-//!    on (found by a ray against the baked geometry) and shines back up (one
-//!    virtual point light, "instant radiosity").
+//! 2. Pendant room: one amber lamp under a shade, swinging on its cord: a
+//!    spot (25/40 degree cone) pointing down the cord, so the cone swings
+//!    with it, plus a dim uplight out of the shade's top. Direct light and
+//!    shadows are live (shadowed clustered lights); its bounce cannot be
+//!    baked, so a soft light sits over what the cone lands on (rays inside
+//!    the cone against the baked geometry) and shines back up (one virtual
+//!    point light, "instant radiosity").
 //! 3. Switch room: four ceiling lamps, warm, red, teal and blue. F toggles
 //!    the one you look at, R all. Direct light live and shadowed; each
 //!    lamp's bounce is baked on its own (`room_bake::bake_lights`) and the
@@ -27,10 +29,11 @@
 //!
 //! Q (or LB) toggles a flashlight: a shadowed spot right of and below the
 //! eye that lags the view a little, with one soft fake bounce light where
-//! its beam lands. Tab (or Select) toggles a light indoor haze
-//! (`Lighting::volumetric`) in which the lamps and the flashlight scatter;
-//! the medium has no occlusion, so their scattering copies reach only about
-//! 3 m, not through the walls. Shift sprints, Space jumps.
+//! its beam lands. Tab (or Select) toggles haze in rooms 2 and 4
+//! (`Lighting::volumetric` in its bounded mode, `set_volumetric_bounded`):
+//! the pendant's cone, the flashlight's beam and the lamp light through room
+//! 4's door show in it, shadowed by the walls, furniture and door.
+//! Shift sprints, Space jumps.
 //!
 //! HDR output is requested (`Game::hdr`): on an HDR screen the sky through
 //! the door and the lamps go above SDR white. The HUD says whether it is on.
@@ -123,9 +126,14 @@ struct Rooms {
     door_mesh: usize,
     lamp_on_mesh: [usize; 4],
     lamp_off_mesh: usize,
+    shade_mesh: usize,
     bulb: SlotId,
     cord: SlotId,
+    shade: SlotId,
     door: SlotId,
+    /// Everything that blocks light in the fog (static boxes; the door is
+    /// added as it stands).
+    fog_occluders: Vec<Affine3A>,
     lamp_slots: Vec<SlotId>,
     lamp_on: [bool; 4],
     /// The static geometry without the door, and with it shut.
@@ -182,6 +190,11 @@ impl Rooms {
         let lamp_on_mesh = LAMP_COLOURS.map(|c| mat(&mut scene, (c / c.max_element()).to_array(), 1.0, EMISSIVE, 25_000.0));
         let lamp_off_mesh = mat(&mut scene, [0.8, 0.8, 0.78], 0.5, 0, 1.0);
         let cord_mesh = dark;
+        // The pendant's shade: an open-looking cone, narrow end up.
+        let shade_mesh = {
+            let m = scene.add_material(Material { tint: [0.08, 0.07, 0.06], layer: -1, roughness: 0.4, flags: 0, scale: 1.0, metal: 0.3 });
+            scene.add_mesh(&render::primitives::cylinder(m, 0.25, 1.0, 20).mesh())
+        };
         scene.add_instance(grass, bx([-150.0, -1.0, -150.0], [150.0, 0.0, 150.0]));
         // Shell: x -4..4 inside, rooms 1-3 one behind the other along -z,
         // room 4 west of room 3 (x -9..-4.3).
@@ -208,8 +221,9 @@ impl Rooms {
             bx([-9.3, 0.0, -10.8], [-4.3, H, -10.2]), bx([-9.3, 0.0, -16.9], [-4.3, H, -16.6]), bx([-9.3, 0.0, -16.9], [-9.0, H, -10.3]),
         ];
         for w in &walls { scene.add_instance(plaster, *w); }
-        scene.add_instance(plaster, bx([-4.3, H, -16.9], [4.3, H + 0.3, 4.3]));
-        scene.add_instance(plaster, bx([-9.3, H, -16.9], [-4.3, H + 0.3, -10.2]));
+        let roofs = [bx([-4.3, H, -16.9], [4.3, H + 0.3, 4.3]), bx([-9.3, H, -16.9], [-4.3, H + 0.3, -10.2])];
+        for r in &roofs { scene.add_instance(plaster, *r); }
+        let mut fog_occluders: Vec<Affine3A> = walls.iter().chain(&roofs).copied().collect();
         // Coloured inner faces: thin panels on room 2 (blue) and 3 (green).
         for (m, b) in [
             (blue, bx([-4.0, 0.0, -10.2], [-3.98, H, -4.3])), (blue, bx([3.98, 0.0, -10.2], [4.0, H, -4.3])),
@@ -235,6 +249,7 @@ impl Rooms {
             (wood, bx([-8.9, 0.0, -13.5], [-8.5, 2.0, -11.0])), (cloth, bx([-6.5, 0.0, -14.8], [-5.5, 0.6, -13.8])),
         ];
         for (m, f) in &furniture { scene.add_instance(*m, *f); }
+        fog_occluders.extend(furniture.iter().map(|f| f.1));
         let footprint = |xf: &Affine3A| {
             let c = Vec3::from(xf.translation);
             let h = Vec3::new(xf.matrix3.x_axis.x, xf.matrix3.y_axis.y, xf.matrix3.z_axis.z) * 0.5;
@@ -253,6 +268,7 @@ impl Rooms {
         let mut objects = Slots::reserve(&mut scene, 16);
         let bulb = objects.add(&mut scene, bulb_mesh, Affine3A::IDENTITY).unwrap();
         let cord = objects.add(&mut scene, cord_mesh, Affine3A::IDENTITY).unwrap();
+        let shade = objects.add(&mut scene, shade_mesh, Affine3A::IDENTITY).unwrap();
         let door = objects.add(&mut scene, door_mesh, door_xf(0.0)).unwrap();
         let lamp_slots = LAMPS.iter().zip(lamp_on_mesh).map(|(p, mesh)| objects.add(&mut scene, mesh,
             Affine3A::from_scale_rotation_translation(Vec3::new(0.5, 0.06, 0.5), Quat::IDENTITY, *p + Vec3::Y * 0.03)).unwrap()).collect();
@@ -265,7 +281,7 @@ impl Rooms {
         // ROOMS_LIGHT="gi=0,taa=0": Lighting::set keys, for checks.
         for kv in std::env::var("ROOMS_LIGHT").unwrap_or_default().split(',').filter(|s| !s.is_empty()) { light.set(kv).expect("ROOMS_LIGHT"); }
         let pos = Vec3::new(1.5, EYE, 12.0);
-        Rooms { scene, grid, solid, objects, bulb_mesh, cord_mesh, door_mesh, lamp_on_mesh, lamp_off_mesh, bulb, cord, door, lamp_slots,
+        Rooms { scene, grid, solid, objects, bulb_mesh, cord_mesh, door_mesh, lamp_on_mesh, lamp_off_mesh, shade_mesh, bulb, cord, shade, door, fog_occluders, lamp_slots,
             lamp_on: [true; 4], open_occluders, shut_occluders, shut: None, open: None, door_wanted: false, door_t: 0.0, hold_door: false, uploaded: None,
             fog: false, flashlight: false, flash_dir: Vec3::NEG_Z, pos, prev: pos, yaw: 0.12, pitch: 0.0, vy: 0.0, t: 0.0, light,
             ready: false, ev: None, hdr: None }
@@ -288,9 +304,21 @@ impl Rooms {
         PIVOT + Vec3::new(a.sin(), -a.cos() * b.cos(), b.sin()) * CORD
     }
 
+    /// Down along the cord: the way the shade points.
+    fn cord_dir(&self) -> Vec3 { (self.bulb_at() - PIVOT).normalize() }
+
+    /// The pendant: a spot under its shade, pointing down the cord, so its
+    /// cone swings with it.
     fn pendant(&self) -> LocalLight {
-        LocalLight { position: self.bulb_at(), direction: Vec3::NEG_Y, intensity_cd: colour(PENDANT, 160.0), range_m: 9.0,
-            inner_cos: -0.9, outer_cos: -1.0, source_radius_m: 0.06, falloff: 2.0 }
+        LocalLight { position: self.bulb_at(), direction: self.cord_dir(), intensity_cd: colour(PENDANT, 700.0), range_m: 9.0,
+            inner_cos: 25f32.to_radians().cos(), outer_cos: 40f32.to_radians().cos(), source_radius_m: 0.04, falloff: 2.0 }
+    }
+
+    /// A little light out of the shade's top, so the ceiling is not black.
+    fn uplight(&self) -> LocalLight {
+        let d = self.cord_dir();
+        LocalLight { position: self.bulb_at() - d * 0.2, direction: -d, intensity_cd: colour(PENDANT, 20.0), range_m: 4.0,
+            inner_cos: 50f32.to_radians().cos(), outer_cos: 85f32.to_radians().cos(), source_radius_m: 0.05, falloff: 2.0 }
     }
 
     /// One virtual point light for `lamp`'s first bounce: where its light
@@ -332,27 +360,36 @@ impl Rooms {
             inner_cos: 12f32.to_radians().cos(), outer_cos: 28f32.to_radians().cos(), source_radius_m: 0.02, falloff: 2.0 }
     }
 
-    /// What scatters in the fog: the pendant, the lit ceiling lamps and the
-    /// flashlight, with a shorter range than their surface light: the
-    /// medium has no occlusion, so a long range would glow through walls.
+    /// What scatters in the fog: the pendant, the lit ceiling lamps (their
+    /// light through room 4's door) and the flashlight. The fog fills rooms
+    /// 2 and 4 only and is ray-marched with every light's visibility tested
+    /// against the walls, furniture and the door (`set_volumetric_bounded`).
     fn beams(&self) -> Vec<LocalLight> {
-        let mut beams = vec![LocalLight { range_m: 3.0, ..self.pendant() }];
-        beams.extend((0..4).filter(|&i| self.lamp_on[i]).map(|i| LocalLight { range_m: 3.2, ..ceiling_lamp(i) }));
-        if self.flashlight { beams.push(LocalLight { range_m: 6.0, ..self.flashlight_light() }); }
+        let mut beams = vec![self.pendant()];
+        beams.extend((0..4).filter(|&i| self.lamp_on[i]).map(ceiling_lamp));
+        if self.flashlight { beams.push(self.flashlight_light()); }
         beams
+    }
+
+    /// The fog's rooms: 2 (the pendant) and 4 (the dark room).
+    fn fog_bounds() -> [(Vec3, Vec3); 2] {
+        [(Vec3::new(-4.0, 0.0, -10.2), Vec3::new(4.0, H, -4.3)), (Vec3::new(-9.0, 0.0, -16.6), Vec3::new(-4.3, H, -10.8))]
     }
 
     fn lights(&self) -> Vec<ClusteredLight> {
         let pendant = self.pendant();
-        // The light sits inside its bulb: the bulb and cord (the first two
-        // slots) must not cast its shadow, or it shadows itself in blotches.
+        // The light sits inside its bulb and shade: those and the cord (the
+        // first three slots) must not cast its shadow.
+        let own = Some((self.objects.instance(self.bulb) as u32, 3));
         let mut lit = ClusteredLight::shadowed(pendant, 1);
-        if let Some(s) = &mut lit.shadow { s.exclude = Some((self.objects.instance(self.bulb) as u32, 2)); }
-        let mut lights = vec![lit];
-        // Instant radiosity: the bulb's brightest reflector is what lies
-        // under it (the table, or the floor). A cone of 35 degrees half
-        // angle straight down (1.1 sr) holds about what the table catches.
-        if let Some(b) = self.bounce(&pendant, Vec3::NEG_Y, 35f32.to_radians(), 1.1, 0.3) { lights.push(ClusteredLight::shadowed(b, 2)); }
+        if let Some(s) = &mut lit.shadow { s.exclude = own; }
+        let mut up = ClusteredLight::shadowed(self.uplight(), 3);
+        if let Some(s) = &mut up.shadow { s.exclude = own; }
+        let mut lights = vec![lit, up];
+        // Instant radiosity: what the cone lands on (the table, the floor)
+        // shines back. Rays inside the cone (30 degrees); the 40 degree
+        // outer cone holds 2 pi (1 - cos 40) = 1.47 sr.
+        if let Some(b) = self.bounce(&pendant, pendant.direction, 30f32.to_radians(), 1.47, 0.3) { lights.push(ClusteredLight::shadowed(b, 2)); }
         for i in 0..4 {
             if self.lamp_on[i] { lights.push(ClusteredLight::shadowed(ceiling_lamp(i), 10 + i as u64)); }
         }
@@ -374,9 +411,10 @@ impl Rooms {
 
     fn set_fog(&mut self, on: bool) {
         self.fog = on;
-        // A light indoor haze: the lamps' cones show, the room stays clear.
-        // It only adds light (no extinction): the distance fog owns that.
-        self.light.volumetric = on.then(|| render::volumetric::Volumetric { density: 0.06, anisotropy: 0.45, intensity: 4.0, ..Default::default() });
+        // Haze in rooms 2 and 4 (`fog_bounds`): the pendant's cone, the
+        // flashlight's beam and the light through room 4's door show. It
+        // only adds light (no extinction).
+        self.light.volumetric = on.then(|| render::volumetric::Volumetric { density: 0.15, anisotropy: 0.5, intensity: 6.0, ..Default::default() });
     }
 
     /// The probes for the door at `open` and the lamps that are on: the two
@@ -465,6 +503,10 @@ impl Game for Rooms {
         let mid = (PIVOT + bulb) * 0.5;
         let rot = Quat::from_rotation_arc(Vec3::Y, (PIVOT - bulb).normalize());
         self.objects.set(&mut self.scene, self.bulb, self.bulb_mesh, Affine3A::from_scale_rotation_translation(Vec3::splat(0.05), Quat::IDENTITY, bulb));
+        // The shade over the bulb, its rim just above the bulb's bottom.
+        let d = self.cord_dir();
+        let shade = Affine3A::from_scale_rotation_translation(Vec3::new(0.22, 0.2, 0.22), Quat::from_rotation_arc(Vec3::Y, -d), bulb - d * 0.14);
+        self.objects.set(&mut self.scene, self.shade, self.shade_mesh, shade);
         self.objects.set(&mut self.scene, self.cord, self.cord_mesh, Affine3A::from_scale_rotation_translation(Vec3::new(0.012, CORD - 0.05, 0.012), rot, mid));
     }
 
@@ -490,6 +532,11 @@ impl Game for Rooms {
         let renderer = frame.renderer().ok_or("no renderer")?;
         renderer.set_clustered_lights(&self.lights())?;
         renderer.set_volumetric_beams(if self.fog { self.beams() } else { Vec::new() }.as_slice())?;
+        if self.fog {
+            let mut occluders = self.fog_occluders.clone();
+            occluders.push(door_xf(self.door_open()));
+            renderer.set_volumetric_bounded(&Self::fog_bounds(), &occluders, 1.0);
+        }
         self.objects.flush(frame.gpu, renderer, &self.scene)?;
         self.ev = renderer.exposure_ev100(0).zip(renderer.metered_ev100(0));
         self.hdr = frame.hdr.map(|d| (d, renderer.hdr_headroom()));

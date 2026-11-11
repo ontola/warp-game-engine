@@ -29,7 +29,13 @@ is prefiltered instead, as cone-traced reflections do: each frame the
 history is copied into a mip chain (`reflection_mips.rs`, level 0 full
 resolution, 0.10 ms at 4K on an RTX 5070 Ti), and the hit reads the level
 whose texels match the lobe's footprint (roughness times the ray length,
-in pixels at the hit), blending the two nearest. Confidence
+in pixels at the hit), blending the two nearest. Each level is a
+luminance-weighted (Karis) average of the four texels above it, so one very
+bright pixel (a bulb) does not fill a coarse texel, and a level above the
+first is read with a tent of four taps, so its texels do not show as
+squares. The hit test allows the step just taken plus 0.5 % of the depth
+(at least 10 cm): a looser one took rays passing behind a thin frame for
+hits. Confidence
 fades towards the screen edge, the reach and the roughness cut; where it is
 below one the old environment term (sky above the horizon, a heuristic
 ground bounce below, heightfield and canopy occlusion along the ray) fills
@@ -41,7 +47,7 @@ Under a clear coat (car paint) only the coat traces; the base layer keeps the
 environment.
 
 Cost: only pixels below the roughness cut trace, at most 45 depth loads and
-one or two bilinear fetches from the history mips each, plus the mip
+up to eight bilinear fetches from the history mips each, plus the mip
 build. It needs TAA (the history) and is off under
 DLSS (no history in that path yet), in the simple lighting path and on the
 first frame after a resize.

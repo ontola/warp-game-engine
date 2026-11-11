@@ -1,4 +1,4 @@
-//! Opt-in volumetric light: single in-scattering from local lights in a
+﻿//! Opt-in volumetric light: single in-scattering from local lights in a
 //! homogeneous medium, so floodlights show their beams and warm lamps a haze
 //! (engine/docs/volumetric-light.md).
 //!
@@ -127,7 +127,16 @@ struct Uniform {
     tint: [f32; 4],
     ambient: [f32; 4],
     lights: [GpuLight; MAX_LOCAL_LIGHTS],
+    march: [f32; 4],
+    sun_dir: [f32; 4],
+    sun_e: [f32; 4],
+    bounds: [[f32; 4]; 2 * MAX_BOUNDS],
 }
+
+/// Bounds (rooms) the medium can be restricted to.
+pub const MAX_BOUNDS: usize = 8;
+/// Steps per view ray in the bounded, shadowed mode.
+pub const MARCH_STEPS: u32 = 12;
 
 // ---- CPU mirror of volumetric.wgsl (tests compare it to quadrature and
 // the GPU example compares it to the shader) ----
@@ -234,7 +243,7 @@ pub fn transmittance(medium: &Volumetric, distance: f32) -> f32 { (-medium.extin
 
 // ---- GPU passes ----
 
-struct Target { size: (u32, u32), half: (u32, u32), scatter: wgpu::Texture, output: wgpu::Texture, uniform: wgpu::Buffer }
+struct Target { size: (u32, u32), half: (u32, u32), scatter: wgpu::Texture, output: wgpu::Texture, uniform: wgpu::Buffer, occluders: wgpu::Buffer }
 
 struct Passes { scatter: wgpu::ComputePipeline, composite: wgpu::ComputePipeline, targets: Vec<Option<Target>> }
 
@@ -248,7 +257,10 @@ impl Passes {
 }
 
 #[derive(Default)]
-struct State { lights: Vec<GpuLight>, beams: Vec<GpuLight>, passes: Option<Passes> }
+struct State { lights: Vec<GpuLight>, beams: Vec<GpuLight>, passes: Option<Passes>,
+    /// Bounded, shadowed mode: occluder boxes (world-to-unit-box rows), the
+    /// bounds and how much of the sun scatters in them.
+    occluders: Vec<[[f32; 4]; 4]>, ranges: Vec<(u32, u32)>, bounds: Vec<(Vec3, Vec3)>, sun: f32 }
 
 /// Per-renderer state: the scattering lights and lazily created passes.
 #[derive(Default)]
@@ -263,6 +275,8 @@ pub(crate) struct ViewInput<'a> {
     pub camera: Vec3,
     pub near: f32,
     pub depth_vp: Mat4,
+    /// The sun: direction towards it and its irradiance (lux, RGB).
+    pub sun: (Vec3, Vec3),
 }
 
 impl VolumetricSlot {
@@ -280,13 +294,47 @@ impl VolumetricSlot {
         state.beams = scattering_lights(beams, &vec![1.0; beams.len()]);
     }
 
+    /// The bounded, shadowed mode: the medium fills only `bounds` (at most
+    /// [`MAX_BOUNDS`]; empty returns to the unbounded analytic mode), every
+    /// scattering light is ray-marched through them with its visibility
+    /// tested against `occluders` (unit boxes under these transforms:
+    /// walls, furniture, a door), and `sun` times the sun's irradiance
+    /// scatters there too, occluded the same way (a door's shaft of day).
+    pub fn set_bounded(&self, bounds: &[(Vec3, Vec3)], occluders: &[glam::Affine3A], sun: f32) {
+        let mut state = self.0.lock().unwrap();
+        state.bounds = bounds.iter().take(MAX_BOUNDS).copied().collect();
+        // One list per bound of the boxes within half a metre of it: a sample
+        // tests only its own bound's list, for every step of every light
+        // (the walls between rooms and a door are in both rooms' lists).
+        let rows = |xf: &glam::Affine3A| {
+            let m = Mat4::from(*xf);
+            // Rows of the inverse: the columns of its transpose.
+            (m.determinant().abs() > 1e-12).then(|| { let r = m.inverse().transpose().to_cols_array_2d(); [r[0], r[1], r[2], [0.0; 4]] })
+        };
+        let mut lists = Vec::new();
+        let mut ranges = Vec::new();
+        for (lo, hi) in &state.bounds {
+            let start = lists.len();
+            for xf in occluders {
+                let c = Vec3::from(xf.translation);
+                let h = Vec3::from(xf.matrix3.x_axis.abs() * 0.5 + xf.matrix3.y_axis.abs() * 0.5 + xf.matrix3.z_axis.abs() * 0.5);
+                if (c + h).cmpge(*lo - 0.5).all() && (c - h).cmple(*hi + 0.5).all() && let Some(r) = rows(xf) { lists.push(r); }
+            }
+            ranges.push((start as u32, (lists.len() - start) as u32));
+        }
+        state.occluders = lists;
+        state.ranges = ranges;
+        state.sun = if sun.is_finite() { sun.max(0.0) } else { 0.0 };
+    }
+
     /// Encode both passes for one view; `None` when nothing scatters.
     pub fn render(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, medium: &Volumetric, view: ViewInput) -> Result<Option<wgpu::Texture>, String> {
         if !medium.active() { return Ok(None); }
         let mut state = self.0.lock().unwrap();
-        if state.lights.is_empty() && state.beams.is_empty() { return Ok(None); }
+        let sun_scatters = !state.bounds.is_empty() && state.sun > 0.0 && view.sun.1.max_element() > 0.0;
+        if state.lights.is_empty() && state.beams.is_empty() && !sun_scatters { return Ok(None); }
         let medium = medium.validated()?;
-        let State { lights, beams, passes } = &mut *state;
+        let State { lights, beams, passes, occluders, ranges, bounds, sun } = &mut *state;
         let lights: Vec<GpuLight> = lights.iter().chain(beams.iter()).take(MAX_LOCAL_LIGHTS).copied().collect();
         let passes = passes.get_or_insert_with(|| Passes::new(gpu));
         let input = view.input;
@@ -294,7 +342,8 @@ impl VolumetricSlot {
         let (dw, dh) = view.depth_size;
         let half = (dw.div_ceil(2).max(1), dh.div_ceil(2).max(1));
         if passes.targets.len() <= view.index { passes.targets.resize_with(view.index + 1, || None); }
-        if passes.targets[view.index].as_ref().is_none_or(|t| t.size != size || t.half != half) {
+        let occluder_bytes = (occluders.len().max(64) * 64) as u64;
+        if passes.targets[view.index].as_ref().is_none_or(|t| t.size != size || t.half != half || t.occluders.size() < occluder_bytes) {
             let texture = |label, (w, h): (u32, u32), usage| gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some(label),
                 size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
                 dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float, usage, view_formats: &[] });
@@ -303,7 +352,9 @@ impl VolumetricSlot {
                 | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT);
             let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("volumetric view"), size: std::mem::size_of::<Uniform>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-            passes.targets[view.index] = Some(Target { size, half, scatter, output, uniform });
+            let occluders = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("volumetric occluders"), size: occluder_bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            passes.targets[view.index] = Some(Target { size, half, scatter, output, uniform, occluders });
         }
         let t = passes.targets[view.index].as_ref().unwrap();
         let mut uniform = Uniform::zeroed();
@@ -315,12 +366,24 @@ impl VolumetricSlot {
         uniform.tint = medium.color.extend(medium.extinction).to_array();
         uniform.ambient = medium.ambient.extend(medium.length).to_array();
         uniform.lights[..lights.len()].copy_from_slice(&lights);
+        if !bounds.is_empty() {
+            uniform.march = [occluders.len() as f32, bounds.len() as f32, MARCH_STEPS as f32, 0.0];
+            for (i, (lo, hi)) in bounds.iter().enumerate() {
+                uniform.bounds[2 * i] = lo.extend(ranges[i].0 as f32).to_array();
+                uniform.bounds[2 * i + 1] = hi.extend(ranges[i].1 as f32).to_array();
+            }
+            if *sun > 0.0 && view.sun.0.y > 0.0 {
+                uniform.sun_dir = view.sun.0.normalize().extend(1.0).to_array();
+                uniform.sun_e = (view.sun.1 * *sun).extend(0.0).to_array();
+            }
+            if !occluders.is_empty() { gpu.queue.write_buffer(&t.occluders, 0, bytemuck::cast_slice(occluders.as_slice())); }
+        }
         gpu.queue.write_buffer(&t.uniform, 0, bytemuck::bytes_of(&uniform));
         let view_of = |tex: &wgpu::Texture| tex.create_view(&Default::default());
         let (scatter_v, output_v, input_v) = (view_of(&t.scatter), view_of(&t.output), view_of(input));
         let entry = |binding, resource| wgpu::BindGroupEntry { binding, resource };
         let scatter_bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("volumetric scatter"), layout: &passes.scatter.get_bind_group_layout(0), entries: &[
-            entry(0, t.uniform.as_entire_binding()), entry(1, wgpu::BindingResource::TextureView(view.depth)), entry(2, wgpu::BindingResource::TextureView(&scatter_v))] });
+            entry(0, t.uniform.as_entire_binding()), entry(1, wgpu::BindingResource::TextureView(view.depth)), entry(2, wgpu::BindingResource::TextureView(&scatter_v)), entry(6, t.occluders.as_entire_binding())] });
         let composite_bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("volumetric composite"), layout: &passes.composite.get_bind_group_layout(0), entries: &[
             entry(0, t.uniform.as_entire_binding()), entry(1, wgpu::BindingResource::TextureView(view.depth)), entry(3, wgpu::BindingResource::TextureView(&scatter_v)),
             entry(4, wgpu::BindingResource::TextureView(&input_v)), entry(5, wgpu::BindingResource::TextureView(&output_v))] });
@@ -515,7 +578,7 @@ mod tests {
                 ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.25, g: 0.5, b: 1.0, a: 1.0 }), store: wgpu::StoreOp::Store } })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &depth_view, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store }), stencil_ops: None }),
                 timestamp_writes: None, occlusion_query_set: None, multiview_mask: None }));
-            let output = slot.render(&gpu, &mut enc, &medium, ViewInput { index: 0, input: &input, depth: &depth_view, depth_size: (w, h), camera, near: 0.1, depth_vp: vp }).unwrap().unwrap();
+            let output = slot.render(&gpu, &mut enc, &medium, ViewInput { index: 0, input: &input, depth: &depth_view, depth_size: (w, h), camera, near: 0.1, depth_vp: vp, sun: (Vec3::Y, Vec3::ZERO) }).unwrap().unwrap();
             gpu.queue.submit([enc.finish()]);
             let half = read_rgba16(&gpu, &slot.0.lock().unwrap().passes.as_ref().unwrap().targets[0].as_ref().unwrap().scatter);
             let full = read_rgba16(&gpu, &output);
@@ -577,7 +640,7 @@ mod tests {
             let camera = Vec3::new(0.0, 8.0, 30.0);
             let vp = Mat4::perspective_infinite_reverse_rh(1.2, w as f32 / h as f32, 0.1) * Mat4::look_at_rh(camera, Vec3::new(0.0, 10.0, 0.0), Vec3::Y);
             let run = || { let mut enc = gpu.device.create_command_encoder(&Default::default());
-                slot.render(&gpu, &mut enc, &medium, ViewInput { index: 0, input: &input, depth: &depth_view, depth_size: (w, h), camera, near: 0.1, depth_vp: vp }).unwrap();
+                slot.render(&gpu, &mut enc, &medium, ViewInput { index: 0, input: &input, depth: &depth_view, depth_size: (w, h), camera, near: 0.1, depth_vp: vp, sun: (Vec3::Y, Vec3::ZERO) }).unwrap();
                 gpu.queue.submit([enc.finish()]); gpu.wait(); };
             run();
             let n = 3;
@@ -609,7 +672,8 @@ mod tests {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(shader_source())));
         assert_eq!(std::mem::size_of::<GpuLight>(), 64);
-        assert_eq!(std::mem::size_of::<Uniform>(), 64 + 6 * 16 + 32 * 64);
+        // Matrix, six vec4s, 32 lights, march + sun_dir + sun_e, 2 * MAX_BOUNDS vec4s.
+        assert_eq!(std::mem::size_of::<Uniform>(), 64 + 6 * 16 + 32 * 64 + 3 * 16 + 2 * MAX_BOUNDS * 16);
         for (name, value) in [("SAMPLES", format!("{SAMPLES}u")), ("SKY_DISTANCE", format!("{SKY_DISTANCE:.1}"))] {
             assert!(shader_source().contains(&format!("const {name}: {} = {value};", if name == "SAMPLES" { "u32" } else { "f32" })), "{name} must match the CPU mirror");
         }

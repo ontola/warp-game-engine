@@ -3173,6 +3173,16 @@ impl Renderer {
         *self.local_light_state.lock().unwrap()=validated;Ok(())
     }
 
+    /// Restrict `Lighting::volumetric` to `bounds` (axis-aligned boxes, e.g.
+    /// rooms; at most `volumetric::MAX_BOUNDS`) and ray-march it there with
+    /// shadows: each scattering light's visibility is tested against
+    /// `occluders` (unit boxes under these transforms: walls, furniture, a
+    /// door), and `sun` times the sun's irradiance scatters in the bounds,
+    /// occluded the same way. Empty `bounds`: the unbounded analytic mode.
+    pub fn set_volumetric_bounded(&self, bounds: &[(Vec3, Vec3)], occluders: &[glam::Affine3A], sun: f32) {
+        self.volumetric.set_bounded(bounds, occluders, sun);
+    }
+
     /// Lights that only scatter in `Lighting::volumetric` and light no
     /// surface: for example narrow visible beams inside a wide floodlight
     /// whose surface light is one `set_local_lights` entry. Together with
@@ -5711,7 +5721,8 @@ impl Renderer {
                     let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("volumetric"); (qs, timestamp_pair(&mut ts)) });
                     if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
                     let out = self.volumetric.render(gpu, &mut enc, medium, crate::volumetric::ViewInput { index: vi, input: &resolved,
-                        depth: &depth_v, depth_size: (w, h), camera: cam.pos, near: cam.near, depth_vp: vp })?;
+                        depth: &depth_v, depth_size: (w, h), camera: cam.pos, near: cam.near, depth_vp: vp,
+                        sun: (light.sun_dir, light.sun_color * light.sun_lux) })?;
                     if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
                     out.unwrap_or(resolved)
                 }
