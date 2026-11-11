@@ -230,8 +230,8 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(atlas,atlas_sampler,(origin+local)/vec2<f32>(4.,2.),0.);
 }
 @vertex fn vs(@location(0) position:vec4<f32>,@location(1) direction:vec4<f32>,@location(2) pivot:vec4<f32>,
-    @location(3) tags:vec4<u32>,@location(4) bones:vec4<f32>,@location(5) nose:vec4<f32>,
-    @location(6) mouth:vec4<f32>,@location(7) brow:vec4<f32>,@location(8) adult:vec4<f32>,
+    @location(3) tags:vec4<u32>,@location(4) bones:vec4<f32>,@location(5) face0:vec4<f32>,
+    @location(6) face1:vec4<f32>,@location(7) face2:vec4<f32>,@location(8) face3:vec4<f32>,
     @builtin(instance_index) idx:u32)->V {
     let rest=position.xyz*1.2; let normal=direction.xyz; let center=pivot.xyz;
     let tagged_mat=tags.x; let arm=f32(tags.y)-1.; let bin=tags.z;
@@ -257,11 +257,18 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
         let elbow_angle=select(elbows.x,elbows.y,right_arm);
         let zones=1.-clamp(abs(vec3<f32>(rest.y)-vec3<f32>(0.78,0.57,0.48))/vec3<f32>(0.12,0.13,0.11),vec3<f32>(0.),vec3<f32>(1.));
         let width=1.+dot(zones*zones*(3.-2.*zones),vec3<f32>(0.13,0.12,0.10)*(2.*vec3<f32>(a.size_phase.zw,a.identity.x)-1.));
-        p.x*=width; n.x/=width; anchor.x*=width;
+        let head=select(smoothstep(0.825,0.860,select(rest.y,center.y,bin==1u)),face3.w,anatomical);
+        let breadth=mix(width,1.,head);
+        let skull=mix(1.,a.size_phase.y/a.size_phase.x,head);
+        p*=vec3<f32>(breadth*skull,1.,skull);
+        n/=vec3<f32>(breadth*skull,1.,skull);
+        anchor*=vec3<f32>(breadth*skull,1.,skull);
         if anatomical {
-            let weights=a.identity*2.-1.;
-            p+=0.055*(nose.xyz*weights.x+mouth.xyz*weights.z+brow.xyz*weights.y+adult.xyz*weights.w);
-            let closure=vec3<f32>(nose.w,mouth.w,brow.w);
+            let squared=a.identity*a.identity;
+            let raw=squared*squared+0.001;
+            let weights=raw/dot(raw,vec4<f32>(1.));
+            p+=vec3<f32>(breadth*skull,1.,skull)*0.055*(face0.xyz*weights.x+face1.xyz*weights.y+face2.xyz*weights.z+face3.xyz*weights.w);
+            let closure=vec3<f32>(face0.w,face1.w,face2.w);
             if any(closure!=vec3<f32>(0.)) {
                 let phase=fract(camera.settings.x/(3.1+1.8*a.identity.x)+a.identity.x);
                 let blink=smoothstep(0.,0.020,phase)*(1.-smoothstep(0.025,0.064,phase));
@@ -349,20 +356,13 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
         let pelvis_shift=0.42*unpack2x16float(seat.joints.z).x;
         p.x+=pelvis_shift; anchor.x+=pelvis_shift;
         p.y-=drop; anchor.y-=drop;
-        if (anatomical && rest.y>0.83) || mat==7u || (mat==4u && rest.y>0.84) {
-            let jaw=1.+(a.identity.w-0.5)*0.28*(1.-smoothstep(0.87,0.92,p.y));
-            let cheek=(0.87+0.22*a.identity.x)*jaw;
-            p.x*=cheek; n.x/=cheek;
-            let depth=0.92+0.18*a.identity.z;
-            p.z*=depth; n.z/=depth;
-        }
         // Neck first, then the spine parent. Skin, eyes and hair share the
         // same head motion; the upper body carries both shoulder joints.
         let spine=unpack2x16float(seat.joints.z);
         let neck=unpack2x16float(seat.joints.w);
         let blast_turn=unpack2x16float(seat.blue_turn).y;
         let rest_height=select(rest.y,center.y,bin==1u);
-        let head_weight=smoothstep(0.81,0.87,rest_height);
+        let head_weight=select(smoothstep(0.81,0.87,rest_height),face3.w,anatomical);
         let chest_weight=max(smoothstep(0.46,0.70,rest_height),arm_weight);
         if head_weight>0. {
             let nod=rotate(neck.y*head_weight);

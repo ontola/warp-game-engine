@@ -230,7 +230,13 @@ impl Character {
                 .partition_point(|&y| y < p.y)
                 .saturating_sub(1)
                 .min(4);
-            let next = ramp(heights[k], heights[k + 1], p.y);
+            // Keep the jaw and facial muscles with the skull when aiming.
+            // Only the actual neck transition blends these two bones.
+            let (k, next) = if k == 4 || v.head_weight > 0. {
+                (4, v.head_weight)
+            } else {
+                (k, ramp(heights[k], heights[k + 1], p.y))
+            };
             let weights = [
                 (&core[k], rest * (1. - next)),
                 (&core[k + 1], rest * next),
