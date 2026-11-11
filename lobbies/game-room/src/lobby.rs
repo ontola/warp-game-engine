@@ -624,6 +624,8 @@ impl Lobby {
         // someone scanned in hops at its door until it is picked up.
         self.nudges.clear();
         let joined = !self.world.players.is_empty();
+        // Pick up only nudges while someone still plays without a profile.
+        let unlinked = self.world.players.iter().any(|p| self.host.links["linked"].get(&p.id).is_none() && !self.claims.contains_key(&p.id));
         if self.host.current_game().is_some() { self.started_once = true; }
         let tv = self.host.tv_station();
         let tv_items: Vec<(&str, &str, bool)> = if tv.quit { vec![("Y", &tv.short, true), ("X", "Quit", true)] } else { vec![("Y", &tv.short, true)] };
@@ -648,7 +650,7 @@ impl Lobby {
         let waiting = self.host.pending_profiles().len();
         for i in 0..game_room_sim::layout::PROFILE_DOORS.len() {
             let key = format!("door{i}");
-            let nudge = joined && i < waiting && !occupied.contains_key(&key);
+            let nudge = unlinked && i < waiting && !occupied.contains_key(&key);
             if nudge { self.nudges.insert(key.clone()); }
             let enabled = nudge || occupied.get(&key).is_some_and(|s| s.enabled);
             let swap = occupied.get(&key).is_some_and(|s| s.hold);

@@ -538,7 +538,8 @@ impl Lobby {
 
     /// How far a prompt floats up now: a slow bob, or a hop while it nudges.
     pub(crate) fn prompt_bob(&self, name: &str, x: f32) -> f32 {
-        if self.nudges.contains(name) { (self.time * 3.2).sin().abs() * 0.22 } else { (self.time * 2.2 + x).sin() * 0.05 }
+        // The doors hop lower than the TV: picking up is a gentler hint.
+        if self.nudges.contains(name) { (self.time * 3.2).sin().abs() * if name == "tv" { 0.22 } else { 0.1 } } else { (self.time * 2.2 + x).sin() * 0.05 }
     }
 
     /// Room parts the lobby moves: prompts (shown, bobbing, glowing), the
@@ -617,7 +618,7 @@ impl Lobby {
                 if *v == 0.0 { p.pressed = None; }
             }
             if p.conceal != p.conceal_to {
-                let step = delta / 0.32;
+                let step = delta / 0.45;
                 p.conceal = if (p.conceal - p.conceal_to).abs() <= step { p.conceal_to } else { p.conceal + (p.conceal_to - p.conceal).signum() * step };
                 animating = true;
             }
