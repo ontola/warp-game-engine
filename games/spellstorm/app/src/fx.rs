@@ -2978,11 +2978,17 @@ impl Fx {
             }
         }
         out.extend(self.live.iter().copied());
+        let min_k = 2.0 * (cam.fov_y * 0.5).tan() / 1080.0 * 5.0;
         for p in &self.parts {
             let e = &self.ems[p.em as usize];
             let k = p.age / p.life;
             let c = e.ramp.at(k);
-            let s = p.size * curve(&e.curve, k);
+            let raw = p.size * curve(&e.curve, k);
+            // Never under about five pixels (of 1080): smaller, a sprite
+            // draws as a hard little square (Joep: the watcher's death).
+            // Widened, it keeps about its light instead of growing brighter.
+            let s = raw.max(p.pos.distance(cam.pos) * min_k);
+            let thin = (raw / s.max(1e-6)).powi(2);
             let col = linear3([c[0], c[1], c[2]]) * p.tint;
             let (vx, vy) = (p.vel.dot(right), p.vel.dot(up));
             let flat_speed = (vx * vx + vy * vy).sqrt();
@@ -3008,17 +3014,17 @@ impl Fx {
             sp.params = [(p.life * 91.7 + p.size * 37.3).fract() * 97.0, 0.0, k, 1.0];
             if e.glow > 0.0 {
                 sp.additive = true;
-                sp.radiance = col * e.glow;
+                sp.radiance = col * e.glow * thin;
                 sp.opacity = c[3];
             } else if e.lit {
                 // Blood: its colour as an albedo under the light round it.
                 sp.radiance = col * self.lit_at(p.pos);
-                sp.opacity = c[3];
+                sp.opacity = c[3] * thin;
             } else {
                 // Unlit and see-through: smoke, drops and chips show their
                 // colour dimmed to the dark of a dungeon.
                 sp.radiance = col * LIT;
-                sp.opacity = c[3];
+                sp.opacity = c[3] * thin;
             }
             out.push(sp);
         }
