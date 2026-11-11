@@ -181,24 +181,44 @@ fn blood(s: GameSprite) -> vec4<f32> {
 }
 
 // ---- A jet of water (the water spray) ----
-// params: time, seed. A shaft along the jet, its top (uv.y 0) the far end.
-// Dense white water, tight at the staff, streaks rushing outward, the edge
-// ragged and widening until it tears into spray at the end.
+// params: time, seed, from, to. A shaft along one piece of the jet, its top
+// (uv.y 0) the far end. Clear blue water round a white core, tight at the
+// staff, swells and streaks rushing outward, the edge ragged and widening
+// until it breaks into drops at the end.
 
 fn jet(s: GameSprite) -> vec4<f32> {
     let t = s.params.x;
-    let a = 1.0 - s.uv.y;
-    let m = a * s.size.y;
+    let seed = s.params.y;
+    // One piece of the hose: params.zw its share of the length (0 to 1 from
+    // the gem), so the noise runs on unbroken from piece to piece.
+    var a0 = s.params.z;
+    var a1 = s.params.w;
+    if (a1 <= a0) {
+        a0 = 0.0;
+        a1 = 1.0;
+    }
+    let span = a1 - a0;
+    let a = a0 + (1.0 - s.uv.y) * span;
+    let m = a * s.size.y / span;
     let x = s.uv.x * 2.0 - 1.0;
-    let n = sn_fbm(vec3(x * 2.5, m * 2.2 - t * 13.0, s.params.y));
-    let w = 0.22 + 0.78 * smoothstep(0.0, 1.0, a);
-    let edge = abs(x) / w + (n - 0.5) * (0.25 + 0.6 * a);
-    let core = 1.0 - smoothstep(0.3, 0.95, edge);
-    let streak = sn_noise(vec3(x * 9.0 / w, m * 1.4 - t * 19.0, s.params.y + 3.1));
-    let tear = 1.0 - smoothstep(0.7, 1.0, a + 0.25 * (n - 0.5));
-    let alpha = core * tear * smoothstep(0.0, 0.05, a) * (0.6 + 0.4 * streak);
-    let c = mix(lin(vec3(0.62, 0.8, 0.95)), vec3(1.0), smoothstep(0.2, 0.8, core) * (0.7 + 0.3 * streak));
-    return vec4(c, clamp(alpha, 0.0, 1.0));
+    // Swells running down it show how fast the water goes.
+    let pulse = 0.85 + 0.15 * sin(m * 4.5 - t * 28.0 + seed);
+    let n = sn_fbm(vec3(x * 2.0, m * 1.8 - t * 14.0, seed));
+    let w = (0.3 + 0.7 * smoothstep(0.0, 0.9, a)) * pulse;
+    let edge = abs(x) / w + (n - 0.5) * (0.15 + 0.7 * a * a);
+    let body = 1.0 - smoothstep(0.55, 1.0, edge);
+    let core = 1.0 - smoothstep(0.0, 0.6, edge);
+    let streak = sn_noise(vec3(x * 8.0 / w, m * 1.2 - t * 22.0, seed + 3.1));
+    // The last third breaks up into drops, then nothing.
+    let brk = smoothstep(0.6, 1.0, a);
+    let drops = smoothstep(0.5, 0.72, sn_noise(vec3(x * 5.0, m * 3.5 - t * 16.0, seed + 7.0)));
+    let end = 1.0 - smoothstep(0.88, 1.0, a + 0.12 * (n - 0.5));
+    let alpha = body * mix(1.0, drops, brk) * end * smoothstep(0.0, 0.03, a);
+    let deep = lin(vec3(0.18, 0.48, 0.88));
+    let pale = lin(vec3(0.72, 0.9, 1.0));
+    var c = mix(deep, pale, clamp(body * 0.6 + 0.4 * streak, 0.0, 1.0));
+    c = mix(c, vec3(1.0), core * (0.5 + 0.5 * streak));
+    return vec4(c, clamp(alpha * (0.7 + 0.3 * core), 0.0, 1.0));
 }
 
 // ---- The water a tidal wave pushes (surge) ----
