@@ -2022,7 +2022,7 @@ impl Renderer {
         let cull_scene_bind=make_cull_bind(&instances,wind.buffer());
         let far_cull_scene_bind=make_cull_bind(&far_sun.instances,&far_sun.wind);
         let foliage_cull_scene_bind=make_cull_bind(&foliage_sun_pages.instances,&foliage_sun_pages.wind);
-        let instance_groups=crate::cull_groups::Resources::new(gpu,&scene.instances,&instances,wind.buffer(),replacement_plan.as_ref())
+        let instance_groups=crate::cull_groups::Resources::new(gpu,&scene.instances,&instances,wind.buffer(),replacement_plan.as_ref(),scene.graphics.instance_groups)
             .expect("invalid spatial instance group resources");
         let receiver_demand=crate::receiver_shadow_demand::Resources::new(gpu,&instances,wind.buffer(),&clusters,scene.instances.len()as u32)
             .expect("invalid receiver shadow demand resources");
