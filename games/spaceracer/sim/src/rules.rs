@@ -252,10 +252,11 @@ impl Rules {
         name: &str,
         input: impl Serialize,
     ) -> Result<T, String> {
+        // Converting outside the memory cap is about four times faster
+        // (script::unguarded); no Luau runs during the conversion.
         let value = self
             .host
-            .lua()
-            .to_value(&input)
+            .unguarded(|lua| lua.to_value(&input))
             .map_err(|e| e.to_string())?;
         let (module, f) = self
             .host
@@ -263,10 +264,11 @@ impl Rules {
             .into_iter()
             .last()
             .ok_or_else(|| format!("missing rule: {name}"))?;
+        let cap = self.host.limits().memory;
         self.host
             .run(module, name, |lua| {
                 let out: script::mlua::Value = f.call(value)?;
-                lua.from_value(out)
+                script::unguarded(lua, cap, |lua| lua.from_value(out))
             })
             .ok_or_else(|| self.host.drain_log().join("\n"))
     }
