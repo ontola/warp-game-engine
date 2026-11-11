@@ -339,6 +339,13 @@ impl Look {
             // Per cell, per surface: its triangles' corners.
             let mut tri: Vec<Vec<Vec<u32>>> = vec![vec![Vec::new(); verts.len()]; cells];
             for (s, (v, ix)) in verts.iter().zip(&idx).enumerate() {
+                // A candle's glow card is no solid: cut up and left flat
+                // (not turned to the camera) its pieces drew as hard little
+                // squares of light (Joep: round the watcher's death). It
+                // just goes out.
+                if mats[s].cell.is_some() || mats[s].billboard {
+                    continue;
+                }
                 for t in ix.chunks_exact(3) {
                     let mid = (Vec3::from(v[t[0] as usize].pos) + Vec3::from(v[t[1] as usize].pos) + Vec3::from(v[t[2] as usize].pos)) / 3.0;
                     tri[cell(mid)][s].extend_from_slice(t);

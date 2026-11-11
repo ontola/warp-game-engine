@@ -3111,7 +3111,8 @@ impl Solid for Sprite {
 }
 
 /// SPELLSTORM_HIDE=parts,live,...: leave those kinds of effect sprites out
-/// (scars, waves, glows, zaps, live, parts; blasts, marks, shrines, debris in the
+/// (scars, waves, glows, zaps, live, parts; blasts, marks, shrines, debris,
+/// chunks in the
 /// view), to find which one draws something.
 pub fn hidden(tag: &str) -> bool {
     static HIDE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
