@@ -98,6 +98,8 @@ pub struct Driver {
     pub last_jink: f64,
     pub rail_preview:Option<crate::railgun::Trace>,
     pub rail_preview_at:f64,
+    /// Rival inside the rail circle, even when scenery blocks the shot.
+    pub rail_candidate:Option<usize>,
 }
 #[derive(Clone, Debug)]
 pub struct Pickup {
@@ -259,7 +261,7 @@ impl Race {
                 ai_style: style,
                 boost_ready: 4. + i as f64 * 0.7,
                 last_jink: -99.,
-                rail_preview:None,rail_preview_at:-1.,
+                rail_preview:None,rail_preview_at:-1.,rail_candidate:None,
             });
         }
         let mut pickups = vec![];
@@ -855,10 +857,11 @@ impl Race {
                 if self.clock>=self.drivers[i].rail_preview_at {
                     let aim=input.get(i).and_then(|c|c.rail_aim);
                     let quick=self.rail_trace(i,aim,false);
+                    self.drivers[i].rail_candidate=quick.target;
                     self.drivers[i].rail_preview=Some(if quick.target.is_some(){self.rail_trace(i,aim,true)}else{quick});
                     self.drivers[i].rail_preview_at=self.clock+0.075;
                 }
-            }else{self.drivers[i].rail_preview=None;self.drivers[i].rail_preview_at=-1.;}
+            }else{self.drivers[i].rail_preview=None;self.drivers[i].rail_preview_at=-1.;self.drivers[i].rail_candidate=None;}
             if self.pilots[i].crashed || self.pilots[i].finished {
                 continue;
             }
