@@ -3060,6 +3060,9 @@ impl Fx {
 
     /// The flashes and burning things this frame, brightest first.
     pub fn lights(&self) -> Vec<LocalLight> {
+        if hidden("lights") {
+            return vec![];
+        }
         let mut out = self.live_lights.clone();
         let light_k = spellstorm::knobs::flash_light() as f32;
         for p in &self.pops {
@@ -3112,7 +3115,7 @@ impl Solid for Sprite {
 
 /// SPELLSTORM_HIDE=parts,live,...: leave those kinds of effect sprites out
 /// (scars, waves, glows, zaps, live, parts; blasts, marks, shrines, debris,
-/// chunks in the
+/// chunks, haze, lights in the
 /// view), to find which one draws something.
 pub fn hidden(tag: &str) -> bool {
     static HIDE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();

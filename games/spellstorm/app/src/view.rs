@@ -1000,7 +1000,7 @@ fn lighting(w: &World, ambient: Vec3) -> Lighting {
         saturation: 0.8,
         taa: 0.0,
         sharpen: 0.3,
-        volumetric: Some(render::volumetric::Volumetric {
+        volumetric: (!crate::fx::hidden("haze")).then_some(render::volumetric::Volumetric {
             density: 0.004 + mist,
             color: albedo,
             anisotropy: 0.4,
