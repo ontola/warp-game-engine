@@ -195,7 +195,12 @@ to the headlights and local lights, which still work.
   redraw first, then the oldest tiles, at most
   `KERN_CLUSTERED_SHADOW_FACES` (12) a frame, so a caster that moves past a
   still lamp is a few frames late. `exclude` names the lamp's own
-  instances. 4-tap filtered, no soft penumbra yet.
+  instances. Lights with a `source_radius_m` of 0.3 m or more (a bounce
+  light standing in for a lit patch of floor) get soft shadows: PCSS, an
+  8-tap blocker search and 16 compare taps over the penumbra (source radius
+  times receiver minus blocker over blocker, at most 24 texels); smaller
+  lights keep a 4-tap filter. Cookies and angular profiles: see
+  `interior-light.md`.
 - Cost: the light records, shadow faces and cells live in the scene tables
   buffer (shade stays at 8 storage buffers); a uniform in bind group 2 holds
   the grid. Off, shade compiles none of it. Grass and opaque surfaces get

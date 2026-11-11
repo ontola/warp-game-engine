@@ -97,12 +97,65 @@ fn clustered_shadow(lamp: LocalLight, p: vec3<f32>, n: vec3<f32>) -> f32 {
     let uv = rect.xy + local * rect.z;
     let o = 0.5 / atlas;
     let layer = i32(rect.w);
+    // A large source (a bounce light standing in for a lit patch of floor)
+    // casts soft shadows: percentage-closer soft shadows when the source
+    // is 30 cm or more across (small lamps keep the cheap 4-tap filter).
+    let radius = sqrt(lamp.source.x);
+    if radius >= 0.3 && radius / max(texel, 1e-5) > 1.5 {
+        return clustered_soft_shadow(uv, ndc.z, layer, rect, tile, atlas, edge, radius, dist, params, lamp.position_range.w, p);
+    }
     var lit = 0.0;
     lit += textureSampleCompareLevel(headlight_depth, shadow_samp, uv + vec2<f32>(-o, -o), layer, ndc.z);
     lit += textureSampleCompareLevel(headlight_depth, shadow_samp, uv + vec2<f32>(o, -o), layer, ndc.z);
     lit += textureSampleCompareLevel(headlight_depth, shadow_samp, uv + vec2<f32>(-o, o), layer, ndc.z);
     lit += textureSampleCompareLevel(headlight_depth, shadow_samp, uv + vec2<f32>(o, o), layer, ndc.z);
     return lit * 0.25;
+}
+
+// Distance from the light for a face's stored depth (perspective, 0 at the
+// near plane, 1 at `far`).
+fn clustered_linear(z: f32, near: f32, far: f32) -> f32 { return far * near / max(far - z * (far - near), 1e-6); }
+
+// PCSS for one shadow face: 8 taps find the average blocker within the
+// widest penumbra the source could cast, the penumbra is the source radius
+// times (receiver - blocker) / blocker, and 16 compare taps on a Vogel disc
+// of that width (turned per position) filter it. Widths are capped at 24
+// texels of the tile (a 256-texel face).
+fn clustered_soft_shadow(uv: vec2<f32>, z: f32, layer: i32, rect: vec4<f32>, tile: f32, atlas: f32, edge: f32,
+        radius: f32, dist: f32, params: vec4<f32>, far: f32, p: vec3<f32>) -> f32 {
+    let near = params.y;
+    let receiver = clustered_linear(z, near, far);
+    // Texels of this face per metre at the receiver.
+    let per_m = 1.0 / max(params.x * receiver, 1e-6);
+    let lo = rect.xy + vec2<f32>(edge * rect.z);
+    let hi = rect.xy + vec2<f32>((1.0 - edge) * rect.z);
+    let turn = fract(sin(dot(p, vec3<f32>(12.9898, 78.233, 37.719))) * 43758.5453) * 6.2831853;
+    // Blocker search over the penumbra a blocker at a quarter of the way
+    // would cast.
+    let search = clamp(radius * 3.0 * per_m, 1.0, 24.0) / atlas;
+    var blockers = 0.0;
+    var count = 0.0;
+    for (var k = 0; k < 8; k++) {
+        let a = turn + f32(k) * 2.3999632;
+        let r = sqrt((f32(k) + 0.5) / 8.0) * search;
+        let tap = clamp(uv + vec2<f32>(cos(a), sin(a)) * r, lo, hi);
+        let stored = textureLoad(headlight_depth, vec2<i32>(tap * atlas), layer, 0);
+        if stored < z {
+            blockers += clustered_linear(stored, near, far);
+            count += 1.0;
+        }
+    }
+    if count < 0.5 { return 1.0; }
+    let blocker = blockers / count;
+    let penumbra = clamp(radius * (receiver - blocker) / max(blocker, 1e-3) * per_m, 1.0, 24.0) / atlas;
+    var lit = 0.0;
+    for (var k = 0; k < 16; k++) {
+        let a = turn + f32(k) * 2.3999632;
+        let r = sqrt((f32(k) + 0.5) / 16.0) * penumbra;
+        let tap = clamp(uv + vec2<f32>(cos(a), sin(a)) * r, lo, hi);
+        lit += textureSampleCompareLevel(headlight_depth, shadow_samp, tap, layer, z);
+    }
+    return lit / 16.0;
 }
 
 fn clustered_sample(i: u32, p: vec3<f32>, bias_normal: vec3<f32>) -> HeadlightSample {

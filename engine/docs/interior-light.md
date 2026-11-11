@@ -89,7 +89,10 @@ so TAA turns the trilinear cell steps into a smooth filter at no extra
 fetches. The wall tests (backface, separation planes, the latter without
 their 15 cm blend) stay at the surface point; where the moved point finds
 no valid probe at all (a corner) the lookup is repeated unmoved, rather
-than falling back to probes that ignore the walls.
+than falling back to probes that ignore the walls. A move into the next
+probe cell is kept only if none of that cell's probes is inside geometry;
+otherwise it stays in the surface point's cell, so at a room's edges it cannot
+reach the probes beyond the adjoining wall.
 
 ## Light shapes: cookies and profiles
 
