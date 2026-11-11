@@ -10,7 +10,7 @@ use std::f32::consts::{PI, TAU};
 
 use glam::{Affine3A, Mat3, Vec2, Vec3, Vec4};
 
-use crate::biome::{BIOMES, Biome, WallStyle};
+use crate::biome::{Biome, WallStyle, biomes};
 use crate::collide::{Shape2, Statics};
 use crate::el::El;
 use crate::rng::{Pcg, Rand};
@@ -219,7 +219,7 @@ fn spill_of(kind: &str) -> Spill {
 
 impl Level {
     pub fn biome(&self) -> &'static Biome {
-        &BIOMES[self.biome_index % BIOMES.len()]
+        &biomes()[self.biome_index % biomes().len()]
     }
 
     pub fn built(&self) -> bool {
@@ -227,9 +227,9 @@ impl Level {
     }
 
     pub fn build(biome_index: usize, seed: u64) -> Level {
-        let biome = &BIOMES[biome_index % BIOMES.len()];
+        let biome = &biomes()[biome_index % biomes().len()];
         let mut l = Level {
-            biome_index: biome_index % BIOMES.len(),
+            biome_index: biome_index % biomes().len(),
             half: LEVEL_HALF,
             rng: Pcg::new(seed),
             path: Vec::new(),

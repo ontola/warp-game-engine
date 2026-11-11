@@ -84,7 +84,7 @@ fn run() -> Result<(), String> {
                 let at = game.world.pos(game.world.wizards[0]);
                 let keys: Vec<&str> = list.split(',').collect();
                 for (i, k) in keys.iter().enumerate() {
-                    let kind = spellstorm::enemy::KINDS.iter().position(|c| c.key == *k).ok_or(format!("no monster {k}"))?;
+                    let kind = spellstorm::enemy::kinds().iter().position(|c| c.key == *k).ok_or(format!("no monster {k}"))?;
                     let x = (i as f32 - (keys.len() as f32 - 1.0) * 0.5) * 2.2;
                     game.world.spawn_enemy(kind, at + glam::Vec3::new(x, 0.0, -5.0), false, -1);
                 }

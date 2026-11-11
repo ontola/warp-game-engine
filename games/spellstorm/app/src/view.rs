@@ -398,7 +398,7 @@ impl View {
             }
             self.wizard_pieces.insert(i, pieces);
         }
-        for k in spellstorm::enemy::KINDS.iter() {
+        for k in spellstorm::enemy::kinds().iter() {
             let name = format!("enemy/{}", k.key);
             look.pieces(&self.kits, &mut scene, &name);
             // What it shatters into, cut now: meshes added during play never
