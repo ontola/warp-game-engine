@@ -354,6 +354,92 @@ pub fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, settings: &Settings) 
     Ok(light)
 }
 
+/// Bounced light of local lights (lamps), one probe set per light: per
+/// probe and axis the RGB irradiance (lux) that reaches it after `bounces`
+/// diffuse bounces, without the light's direct part (the live light draws
+/// that, with its shadow). Lamps that switch on and off then combine at
+/// runtime by adding the sets of the lit ones (the idea of Call of Duty's
+/// UberBake, here per probe), e.g. into the emission of
+/// `irradiance_volume::pack_sky_emission`. Rebake when a lamp moves.
+pub fn bake_lights(grid: &Grid, occluders: &Occluders, lights: &[crate::headlights::LocalLight], settings: &Settings) -> Result<Vec<Vec<Probe>>, String> {
+    grid.validate()?;
+    let Settings { bounce_rays, bounces, reflectance, .. } = *settings;
+    if bounce_rays < 16 || !reflectance.is_finite() || !(0.0..=1.0).contains(&reflectance) {
+        return Err("invalid light bake settings".into());
+    }
+    let count = grid.count();
+    let dirs = sphere(bounce_rays);
+    // Inside-wall probes, as `bake` finds them (fewer rays: only a test).
+    let probe_dirs = sphere(256);
+    let mut valid = vec![true; count];
+    each(&mut valid, |i, ok| {
+        let o = grid.position(i);
+        let back = probe_dirs.iter().filter(|d| occluders.hit(o, **d).is_some_and(|(_, n)| n.dot(**d) > 0.0)).count();
+        *ok = back * 4 < probe_dirs.len();
+    });
+    let mut denom = [0f32; 6];
+    for d in &dirs { for a in 0..6 { denom[a] += AXES[a].dot(*d).max(0.); } }
+    // Hits with each light's direct irradiance there (shadow-tested).
+    let mut hits: Vec<Vec<(Vec3, Vec3, Vec<Vec3>, [f32; 6])>> = vec![Vec::new(); count];
+    each(&mut hits, |i, list| {
+        if !valid[i] { return; }
+        let origin = grid.position(i);
+        for d in &dirs {
+            let Some((t, n)) = occluders.hit(origin, *d) else { continue };
+            let n = if n.dot(*d) > 0.0 { -n } else { n };
+            let at = origin + *d * t;
+            let direct = lights.iter().map(|lamp| {
+                let Some((to, e)) = crate::sprites::light_at(lamp, at) else { return Vec3::ZERO };
+                let cos = n.dot(to);
+                if cos <= 0.0 { return Vec3::ZERO; }
+                let far = lamp.position.distance(at);
+                if occluders.blocked(at + n * 0.03, to, far - lamp.source_radius_m.max(0.05)) { return Vec3::ZERO; }
+                e * cos
+            }).collect();
+            let w: [f32; 6] = std::array::from_fn(|a| AXES[a].dot(*d).max(0.) / denom[a].max(1e-6));
+            list.push((at + n * 0.15, n, direct, w));
+        }
+    });
+    let sample_rgb = |probes: &[Probe], p: Vec3, n: Vec3| -> Vec3 {
+        let max = Vec3::new(grid.dims[0] as f32 - 1., grid.dims[1] as f32 - 1., grid.dims[2] as f32 - 1.);
+        let f = ((p - grid.origin) / grid.cell).clamp(Vec3::ZERO, max);
+        let base = f.floor().min(max - Vec3::ONE);
+        let t = f - base;
+        let (mut value, mut weight) = (Vec3::ZERO, 0.);
+        for c in 0..8 {
+            let o = [c & 1, (c >> 1) & 1, (c >> 2) & 1];
+            let i = base.x as usize + o[0] + (base.y as usize + o[1]) * grid.dims[0] as usize
+                + (base.z as usize + o[2]) * (grid.dims[0] * grid.dims[1]) as usize;
+            if !valid[i] { continue; }
+            let to = grid.position(i) - p;
+            let facing = (to.dot(n) / to.length().max(1e-4) * 2. + 1.).clamp(0., 1.);
+            let w = (if o[0] == 1 { t.x } else { 1. - t.x }) * (if o[1] == 1 { t.y } else { 1. - t.y })
+                * (if o[2] == 1 { t.z } else { 1. - t.z }) * (facing * facing + 1e-4);
+            value += probes[i].irradiance(n) * w;
+            weight += w;
+        }
+        if weight > 1e-6 { value / weight } else { Vec3::ZERO }
+    };
+    let mut out = Vec::with_capacity(lights.len());
+    for l in 0..lights.len() {
+        let mut probes = vec![Probe::default(); count];
+        for _ in 0..bounces.max(1) {
+            let previous = probes.clone();
+            each(&mut probes, |i, p| {
+                if !valid[i] { return; }
+                let mut axes = [Vec3::ZERO; 6];
+                for (at, n, direct, w) in &hits[i] {
+                    let leaving = reflectance * (direct[l] + sample_rgb(&previous, *at, *n));
+                    for a in 0..6 { axes[a] += leaving * w[a]; }
+                }
+                p.axes = axes;
+            });
+        }
+        out.push(probes);
+    }
+    Ok(out)
+}
+
 /// For each probe, the plane of the nearest surface it faces (xyz into the
 /// probe's side, w the offset), or zero: the shader then ignores the probe
 /// for points behind that surface, so light does not cross thin walls.

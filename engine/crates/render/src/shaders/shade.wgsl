@@ -1035,7 +1035,9 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
     let ndc_edge = max(abs(ndc.x), abs(ndc.y));
     var confidence = 1.0 - smoothstep(0.82, 1.0, max(edge, ndc_edge));
     confidence *= 1.0 - smoothstep(reach * 0.7, reach, hi);
-    confidence *= 1.0 - smoothstep(gi.trace.y * 0.6, gi.trace.y, rough);
+    // Start fading early: a jittered trace on a semi-rough floor is noisy
+    // per pixel and flickers without a reflection denoiser.
+    confidence *= 1.0 - smoothstep(0.1, gi.trace.y, rough);
     return vec4<f32>(min(radiance, vec3<f32>(65504.0)), confidence);
 }
 
@@ -1249,6 +1251,11 @@ fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
         var value=vec3<f32>(0.0);
         var emission=vec3<f32>(0.0);
         var valid_weight=0.0;
+        // Without the separation planes, as a fallback: a gap behind
+        // furniture can have every probe across some plane.
+        var loose=vec3<f32>(0.0);
+        var loose_emission=vec3<f32>(0.0);
+        var loose_weight=0.0;
         let mode=aux_word(o+7u);
         for(var c=0u;c<8u;c++) {
             let corner=vec3<u32>(c&1u,(c>>1u)&1u,(c>>2u)&1u);
@@ -1263,6 +1270,7 @@ fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
             let base=o+8u+(g.x+g.y*dims.x+g.z*dims.x*dims.y)*18u;
             if mode>=4u {
                 var valid=select(1.0,0.0,(aux_word(base)&0x80000000u)!=0u);
+                let inside=valid;
                 if mode==5u {
                     let plane=vec4<f32>(aux_f32(base+1u),aux_f32(base+2u),aux_f32(base+4u),aux_f32(base+5u));
                     // Zero plane passes through. Blend over 15 cm to avoid a hard edge.
@@ -1275,12 +1283,15 @@ fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
                         +unpack_emission(aux_word(base+axis.y+1u))*n2.y
                         +unpack_emission(aux_word(base+axis.z+1u))*n2.z;
                     emission+=e*blend_weight*valid;
+                    loose_emission+=e*blend_weight*inside;
                 }
                 let v=unpack_sky_transport(aux_word(base+axis.x))*n2.x
                     +unpack_sky_transport(aux_word(base+axis.y))*n2.y
                     +unpack_sky_transport(aux_word(base+axis.z))*n2.z;
                 value+=v*blend_weight*valid;
                 valid_weight+=blend_weight*valid;
+                loose+=v*blend_weight*inside;
+                loose_weight+=blend_weight*inside;
                 continue;
             }
             let v=vec3<f32>(aux_f32(base+axis.x),aux_f32(base+axis.y),aux_f32(base+axis.z));
@@ -1297,7 +1308,13 @@ fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
             value+=vec3<f32>(dot(v,n2),bounce_value,sun_value)*blend_weight*valid;
             valid_weight+=blend_weight*valid;
         }
-        if valid_weight<1e-5 { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
+        if valid_weight<1e-3*max(loose_weight,1e-5) {
+            // Every probe is across a wall: use those merely outside
+            // geometry, and if none is, call the point unlit (inside a
+            // probe volume dark is the safe guess, open sky the worst).
+            if loose_weight<1e-5 { return IrradianceSample(vec4<f32>(0.0,0.0,0.0,weight),vec3<f32>(0.0)); }
+            value=loose; emission=loose_emission; valid_weight=loose_weight;
+        }
         value/=max(dot(n2,vec3<f32>(1.0)),1e-12)*valid_weight;
         return IrradianceSample(vec4<f32>(value,weight),emission/(max(dot(n2,vec3<f32>(1.0)),1e-12)*valid_weight));
     }
