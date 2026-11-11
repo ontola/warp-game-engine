@@ -121,8 +121,10 @@ struct Hints {
 
 /// The moves taught by a hint under a wizard until they have been used, in
 /// the order they are taught, a step at a time (Joep): one element loaded,
-/// shot, cast; dodging and the sword; two elements together; shaking.
-const HINTS: [u32; 12] = [NEW_ELEMENT, used::NOVA, used::PLANT, used::ENCHANT, used::LOAD, used::BOLT_EL, used::CAST, used::ROLL, used::SWING, used::DEFLECT, used::CAST2, used::SHAKE];
+/// shot, cast, then the same for the other starting element; dodging and
+/// the sword; shaking. New skills first once learned: two elements
+/// together as soon as a second slot opens.
+const HINTS: [u32; 13] = [NEW_ELEMENT, used::CAST2, used::NOVA, used::PLANT, used::ENCHANT, used::LOAD, used::BOLT_EL, used::CAST, used::CAST_PAIR, used::ROLL, used::SWING, used::DEFLECT, used::SHAKE];
 /// Not a move: an element learned and never loaded yet. After a new skill's
 /// card, its hint stays until it has been used (Joep).
 const NEW_ELEMENT: u32 = 1 << 30;
@@ -160,13 +162,18 @@ fn hint_text(bit: u32, wz: &spellstorm::wizard::Wizard, mods: &spellstorm::relic
         used::BOLT_EL if wz.queue.is_empty() => format!("Press {} to load {}, then push the right stick to shoot it", button_of(e), e.name()),
         used::BOLT_EL => format!("Push the right stick to shoot {}", e.name()),
         used::CAST => format!("Press {} to load {}, then RT to cast {}", button_of(e), e.name(), name(&[e])),
+        // The same lesson again for the other starting element (Joep).
+        used::CAST_PAIR => {
+            let e = if wz.used & used::CAST_FIRST == 0 { order[0] } else { order[1] };
+            format!("Press {} to load {}, then RT to cast {}", button_of(e), e.name(), name(&[e]))
+        }
         used::ROLL => "Press LT to dodge".into(),
         used::SWING => "Press RB to swing your sword".into(),
         used::DEFLECT => "Swing RB into a shot to send it back".into(),
         used::CAST2 => {
             let a = open.first().copied().unwrap_or(order[0]);
             let b = open.get(1).copied().unwrap_or(order[1]);
-            format!("Load {} ({}) and {} ({}), then RT casts {}", a.name(), button_of(a), b.name(), button_of(b), name(&[a, b]))
+            format!("New: load {} ({}) and {} ({}), then RT casts {}", a.name(), button_of(a), b.name(), button_of(b), name(&[a, b]))
         }
         used::SHAKE => "Elements loaded? Hold the right stick in to shake them out".into(),
         _ => String::new(),
@@ -310,7 +317,7 @@ impl Hud {
             let h = self.hints.entry(key).or_default();
             h.used |= wz.used;
             h.used_el |= wz.used_el;
-            let done = |bit: u32, used: u32, used_el: u32| if bit == NEW_ELEMENT { new_element(&wz, used_el).is_none() } else { used & bit != 0 };
+            let done = |bit: u32, used: u32, used_el: u32| if bit == NEW_ELEMENT { new_element(&wz, used_el).is_none() } else { used & bit == bit };
             if let Some((bit, t)) = &mut h.now {
                 *t += dt;
                 if done(*bit, h.used, h.used_el) {
@@ -334,7 +341,9 @@ impl Hud {
                 used::ENCHANT => !cards && wz.form_open(Form::Enchant),
                 used::ROLL | used::SWING => fight,
                 used::DEFLECT => shots && h.used & used::SWING != 0,
-                used::CAST2 => wz.queue.size >= 2 && h.used & used::CAST != 0,
+                used::CAST_PAIR => h.used & used::CAST != 0,
+                // Taught as soon as a second slot opens (Joep), after its card.
+                used::CAST2 => !cards && wz.queue.size >= 2 && h.used & used::CAST != 0,
                 used::SHAKE => !wz.queue.is_empty() && h.used & used::CAST != 0,
                 _ => true,
             };

@@ -65,6 +65,11 @@ pub mod used {
     pub const NOVA: u32 = 512;
     pub const PLANT: u32 = 1024;
     pub const ENCHANT: u32 = 2048;
+    /// Cast a spell of only the first, or only the second, starting
+    /// element: both are taught, one after the other (Joep).
+    pub const CAST_FIRST: u32 = 4096;
+    pub const CAST_SECOND: u32 = 8192;
+    pub const CAST_PAIR: u32 = CAST_FIRST | CAST_SECOND;
 }
 pub const ROLL_TIME: f64 = 0.5;
 pub const ROLL_SPEED: f64 = 12.5;
@@ -76,13 +81,14 @@ pub const MAX_TRAPS: usize = 3;
 pub const SWORD_MAX: f32 = 3.0;
 pub const GEM_WARM: C = fx::rgb(1.0, 0.8, 0.55);
 
-/// Each wizard starts with two face elements that do not mix, a different
-/// pair per player, then the other two, then LB and its elements one by one.
+/// Every wizard starts with the same two face elements, Fire and Lightning
+/// (Joep: everyone learns the same lessons), then the other two, then LB
+/// and its elements one by one.
 pub const ELEMENT_ORDER: [[El; 4]; 4] = [
     [El::Fire, El::Lightning, El::Water, El::Poison],
-    [El::Water, El::Poison, El::Lightning, El::Fire],
-    [El::Lightning, El::Water, El::Fire, El::Poison],
-    [El::Poison, El::Fire, El::Water, El::Lightning],
+    [El::Fire, El::Lightning, El::Poison, El::Water],
+    [El::Fire, El::Lightning, El::Water, El::Poison],
+    [El::Fire, El::Lightning, El::Poison, El::Water],
 ];
 pub const LB_ORDER: [El; 4] = [El::Frost, El::Earth, El::Air, El::Void];
 /// The unlock ladder, one step at a level's first shrine and one at its
@@ -1152,6 +1158,14 @@ impl World {
             w.used |= used::CAST;
             if s.slots.len() >= 2 {
                 w.used |= used::CAST2;
+            }
+            let order = ELEMENT_ORDER[w.element_order % ELEMENT_ORDER.len()];
+            if let [e] = w.queue.slots[..s.slots.len().min(w.queue.slots.len())] {
+                if e == order[0] {
+                    w.used |= used::CAST_FIRST;
+                } else if e == order[1] {
+                    w.used |= used::CAST_SECOND;
+                }
             }
         }
         // What the spell did not use stays loaded, front first.
