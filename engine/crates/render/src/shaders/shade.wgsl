@@ -1266,9 +1266,8 @@ fn probe_axis(base: u32, visibility: bool) -> vec3<f32> {
     return vec3<f32>(aux_f32(base),aux_f32(base+1u),aux_f32(base+2u));
 }
 fn unpack_sky_transport(word:u32)->vec3<f32> {
-    // Square-root encoded (irradiance_volume::pack_transport).
-    let r=vec3<f32>(f32(word&1023u),f32((word>>10u)&1023u),f32((word>>20u)&1023u))/1023.0;
-    return r*r;
+    // 9-bit mantissas, shared 4-bit exponent (irradiance_volume::pack_transport).
+    return vec3<f32>(f32(word&511u),f32((word>>9u)&511u),f32((word>>18u)&511u))*exp2(f32((word>>27u)&15u)-23.0);
 }
 struct IrradianceSample { value: vec4<f32>, emission: vec3<f32> }
 fn unpack_emission(word: u32) -> vec3<f32> {

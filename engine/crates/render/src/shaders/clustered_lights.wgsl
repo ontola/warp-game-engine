@@ -43,7 +43,7 @@ fn clustered_lamp(i: u32) -> LocalLight {
 fn light_shape(lamp: LocalLight, outward: vec3<f32>) -> f32 {
     let packed = u32(lamp.source.w);
     let cookie = (packed >> 3u) & 15u;
-    let profile = packed >> 7u;
+    let profile = (packed >> 7u) & 255u;
     let axis = lamp.direction_outer.xyz;
     let c = dot(outward, axis);
     var k = 1.0;
@@ -177,7 +177,11 @@ fn clustered_radiance(p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, diffuse: vec3<f3
         if dot(n, bitcast<vec4<f32>>(scene_tables[light_grid.offsets.w + i * 4u]).xyz - p) <= 0.0 { continue; }
         let s = clustered_sample(i, p, n);
         if all(s.irradiance == vec3<f32>(0.0)) { continue; }
-        result += s.irradiance * (diffuse * max(dot(n, s.direction), 0.0) + ggx(n, v, s.direction, rough, f0));
+        // Bit 15 of source.w: diffuse only (a bounce light; no highlight).
+        let source_w = u32(bitcast<vec4<f32>>(scene_tables[light_grid.offsets.w + i * 4u + 3u]).w);
+        var spec = ggx(n, v, s.direction, rough, f0);
+        if (source_w & 32768u) != 0u { spec = vec3<f32>(0.0); }
+        result += s.irradiance * (diffuse * max(dot(n, s.direction), 0.0) + spec);
     }
     return result;
 }

@@ -59,7 +59,7 @@ fn light_shape(light: ScatterLight, outward: vec3<f32>) -> f32 {
     let packed = u32(light.source.w);
     if packed < 8u { return 1.0; }
     let cookie = (packed >> 3u) & 15u;
-    let profile = packed >> 7u;
+    let profile = (packed >> 7u) & 255u;
     let axis = light.direction_outer.xyz;
     let c = dot(outward, axis);
     var k = 1.0;
