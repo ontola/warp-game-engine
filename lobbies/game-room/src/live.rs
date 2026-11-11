@@ -158,6 +158,8 @@ pub struct Lobby {
     pub(crate) featured_visible: bool,
     pub(crate) bumpers_visible: bool,
     display_active: Option<bool>,
+    /// When the host last handed the screen over or took it back.
+    display_at: std::time::Instant,
     pub(crate) quit: bool,
     pub(crate) web_tx: Sender<Web>,
     web_rx: Receiver<Web>,
@@ -239,7 +241,7 @@ impl Lobby {
             props: props.expect("props"), board: board.expect("board"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
             bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), holds: HashMap::new(), station_cooldown: HashMap::new(),
             pickup_cooldown: 0.0, item_presses: HashMap::new(), pressed_flash: HashMap::new(), claims: HashMap::new(), pop_box: None, featured_visible: false,
-            bumpers_visible: false, display_active: None, quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, hud_size: [1920, 1080], mouse: Default::default(),
+            bumpers_visible: false, display_active: None, display_at: std::time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, hud_size: [1920, 1080], mouse: Default::default(),
         };
         lobby.prompts = lobby.build.prompts.iter().map(|p| (p.name.clone(), Prompt {
             items: p.items.iter().map(|(k, t)| (k.clone(), t.clone(), true)).collect(), enabled: true, ..Default::default() })).collect();
@@ -463,6 +465,7 @@ impl Lobby {
     fn focus_changed(&mut self, active: bool) {
         if self.display_active == Some(active) { return; }
         self.display_active = Some(active);
+        self.display_at = std::time::Instant::now();
         self.suspend_input();
     }
 
@@ -713,7 +716,17 @@ impl Game for Lobby {
     fn pointer(&mut self, pointer: app::Pointer, size: [u32; 2]) { self.mouse_input(pointer, size); }
 
     /// Escape is the mouse's Start: the room never closes on it.
-    fn escape(&mut self) -> bool { self.mouse_escape(); true }
+    /// The game handing the screen back keeps rendering for a moment
+    /// (about 1.6 s before it hides): those frames are not the room's cost.
+    fn hold_quality(&self) -> bool { self.display_active == Some(false) || self.display_at.elapsed().as_secs_f32() < 3.0 }
+
+    fn escape(&mut self) -> bool {
+        // Escape belongs to the game in front; the one that closed it may
+        // still reach the room as it comes back, so ignore it for a moment.
+        let ours = self.display_active != Some(false) && self.display_at.elapsed().as_secs_f32() > 0.75;
+        if ours { self.mouse_escape(); }
+        true
+    }
 
     fn title(&self) -> Option<String> { Some("Gamepad Party Game Room".into()) }
 

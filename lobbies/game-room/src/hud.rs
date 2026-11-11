@@ -181,6 +181,9 @@ fn badge(c: &mut Canvas, at: [f32; 2], k: f32, key: &str, label: &str, color: Co
 
 /// A Start menu's box and its item rows (main.gd `_draw_menu` layout),
 /// standing on `at` (bottom centre).
+const MOUSE_HEADING: &str = "KEYBOARD & MOUSE";
+const MOUSE_FOOTER: &str = "Esc closes · Controllers use their own Start menu";
+
 fn menu_layout(lobby: &Lobby, id: &str, at: [f32; 2], fs: f32, size: [u32; 2]) -> Option<([f32; 4], Vec<[f32; 4]>)> {
     lobby.menus.get(id)?;
     let items = lobby.menu_items(id);
@@ -195,6 +198,8 @@ fn menu_layout(lobby: &Lobby, id: &str, at: [f32; 2], fs: f32, size: [u32; 2]) -
         if item.action == "couch" { mw = mw.max(lobby.profiles.len() as f32 * (block + gap) - gap); extra += row; }
     }
     mw += 80.0;
+    // The keyboard and mouse menu says what it is and how to leave it.
+    if id == crate::mouse::MOUSE { mw = mw.max(width(MOUSE_HEADING, (fs * 0.7).floor()).max(width(MOUSE_FOOTER, (fs * 0.62).floor())) + 48.0); extra += fs + 10.0; }
     let mh = line * items.len() as f32 + extra + 70.0;
     let x = (at[0] - mw / 2.0).clamp(16.0, (size[0] as f32 - mw - 16.0).max(16.0));
     let y0 = (at[1] - mh).max(16.0);
@@ -221,7 +226,7 @@ fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
     c.rect([x, y0, mw, mh], rgba(0.04, 0.035, 0.08, 0.95));
     let edge = VIOLET.with_alpha(0.9);
     for r in [[x, y0, mw, 3.0], [x, y0 + mh - 3.0, mw, 3.0], [x, y0, 3.0, mh], [x + mw - 3.0, y0, 3.0, mh]] { c.rect(r, edge); }
-    let heading = match state.page.as_str() { "lobbies" => "CHOOSE A LOBBY".to_string(), "remove" => "REMOVE A PLAYER".into(), _ if mouse => "GAMENIGHT".into(), _ => lobby.name(id).to_uppercase() };
+    let heading = match state.page.as_str() { "lobbies" => "CHOOSE A LOBBY".to_string(), "remove" => "REMOVE A PLAYER".into(), _ if mouse => MOUSE_HEADING.into(), _ => lobby.name(id).to_uppercase() };
     text(c, &heading, [x + 24.0, y0 + fs + 14.0], (fs * 0.7).floor(), AMBER);
     let mut y = y0 + 50.0;
     for (i, item) in items.iter().enumerate() {
@@ -247,6 +252,7 @@ fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
         }
         y += line;
     }
+    if mouse { text(c, MOUSE_FOOTER, [x + 24.0, y + fs * 0.62 + 4.0], (fs * 0.62).floor(), DIM); }
 }
 
 /// main.gd `_draw_bench`: players without a controller, bottom left.

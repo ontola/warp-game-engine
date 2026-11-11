@@ -136,6 +136,9 @@ fn the_mouse_is_nobody_but_works_the_room() {
     assert_ne!(lobby.host.shelf_offset, offset, "the wheel browses the shelf");
 
     // Escape opens the room's own menu; clicking Quit twice quits GameNight.
+    // (Not in the first moments after taking the screen: that Escape may
+    // be the one that closed the game in front.)
+    std::thread::sleep(Duration::from_millis(800));
     assert!(app::Game::escape(&mut lobby), "Escape never closes the room");
     assert!(lobby.mouse_menu_open());
     let (_, rows) = game_room::hud::mouse_menu_rows(&lobby, size).unwrap();

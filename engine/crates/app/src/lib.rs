@@ -202,6 +202,10 @@ pub trait Game {
     fn text(&mut self, _event: TextEvent) {}
     /// Frame review needs fixed quality even when a slow seek misses its budget.
     fn fixed_quality(&self) -> bool { false }
+    /// True while frame times say nothing about this game's own cost, such
+    /// as the moments a lobby takes the screen back while the game that had
+    /// it still renders: adaptive quality neither drops nor climbs then.
+    fn hold_quality(&self) -> bool { false }
     /// Hidden behind the lobby or another game (a warm game), the shell draws
     /// a scene only about once a second, so it leaves the GPU to the game on
     /// screen. True asks for the next frame anyway: a game that reports ready
@@ -900,7 +904,7 @@ impl Shell<'_> {
             // A hidden or parked window (a warm game behind the lobby) idles
             // at a few frames a second: that says nothing about the GPU, and
             // must not cut its resolution or content before it is shown.
-            let measuring = self.focused && !self.zero_size && !self.manners.offscreen();
+            let measuring = self.focused && !self.zero_size && !self.manners.offscreen() && !self.game.hold_quality();
             if !measuring { q.idle(); }
             if measuring && q.frame(f64::from(dt) * 1000.0, now) {
                 let line = format!("adaptive quality: {}", q.label());
@@ -1703,8 +1707,12 @@ impl ApplicationHandler for Shell<'_> {
                 Ime::Commit(text) => { self.composing = false; if self.game.text_input() && !text.is_empty() { self.game.text(TextEvent::Insert(text)); } }
                 Ime::Enabled | Ime::Disabled => self.composing = false,
             },
-            WindowEvent::KeyboardInput { event, .. } => {
+            WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
+                // Keys still held when the window gains focus arrive as
+                // synthetic presses: the Escape that closed a game in front
+                // must not open this window's menu or quit it.
+                if is_synthetic && event.state == ElementState::Pressed { return; }
                 if matches!(code, KeyCode::ShiftLeft | KeyCode::ShiftRight) { self.shift_down = event.state == ElementState::Pressed; }
                 if self.crop.is_some() {
                     if code == KeyCode::Escape && event.state == ElementState::Pressed { self.end_crop("crop cancelled".into()); }
