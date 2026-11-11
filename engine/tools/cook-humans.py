@@ -164,31 +164,41 @@ def cook(base_path,src,pack,dest):
         for section in (1,2,3):
             delta=np.loadtxt(src/f"{side}-eye-height{section}-decr.target")
             base[delta[:,0].astype(int)] += 0.85*delta[:,1:4]
-    weights=np.zeros((len(base),4))
+    # Include every facial joint below the skull (jaw, lips, lids and eyes).
+    rig=json.loads((src/"default.mhskel").read_text())["bones"]
+    def follows_head(bone):
+        while bone and bone!="head":
+            bone=rig[bone]["parent"]
+        return bone=="head"
+
+    weights=np.zeros((len(base),5))
     totals=np.zeros(len(base))
     for bone,values in json.loads((src/"default_weights.mhw").read_text())["weights"].items():
         fore=bone.startswith(("lowerarm","wrist","hand","finger","metacarpal"))
         shin=bone.startswith(("lowerleg","foot","toe"))
-        mask=[fore or bone.startswith("upperarm"),fore,shin or bone.startswith("upperleg"),shin]
+        mask=[fore or bone.startswith("upperarm"),fore,shin or bone.startswith("upperleg"),shin,follows_head(bone)]
         for i,w in values:
             weights[i]+=np.array(mask)*w
             totals[i]+=w
     weights/=np.maximum(totals,1e-9)[:,None]
-    # Four signed blend shapes with independent seed weights.
-    groups=[
-        [("nose-scale-horiz-incr",1.15),("nose-point-down",0.85),("nose-scale-depth-incr",0.95),("nose-curve-convex",0.7)],
-        [("mouth-scale-horiz-incr",1.15),("mouth-upperlip-volume-incr",0.85),("chin-width-incr",1.15),("chin-prominent-incr",0.85)],
-        [("eyebrows-angle-up",1.3),("forehead-temple-incr",-0.65),("l-cheek-bones-incr",1.2),("r-cheek-bones-incr",1.2)],
-        [("caucasian-male-young",0.5),("caucasian-female-young",-0.5)],
-    ]
-    shapes=np.zeros((len(base),4,3))
-    for channel,targets in enumerate(groups):
-        for name,strength in targets:
-            for line in (src/(name+".target")).read_text().splitlines():
-                w=line.split()
-                if w and w[0].isdigit():shapes[int(w[0]),channel]+=np.array(list(map(float,w[1:4])))*strength
-    # Macro shape is restricted to the head; clothes retain the fitted body shape.
-    shapes[:,3]*=np.clip((base[:,1]-5.45)/0.9,0,1)[:,None]
+    # Register whole authored heads at the eyeballs before fitting clothes,
+    # brows and hair. Macro targets also encode the height of the entire body.
+    eye_vertices=np.unique([i for g,tri in faces if g in ("helper-l-eye","helper-r-eye") for i,_ in tri])
+    neck=np.clip((base[:,1]-5.45)/.66,0.,1.)
+    neck=(neck*neck*(3.-2.*neck))[:,None]
+    def head(name):
+        rows=np.loadtxt(src/(name+"-young.target"))
+        delta=np.zeros_like(base)
+        delta[rows[:,0].astype(int)]=rows[:,1:4]
+        return (delta-delta[eye_vertices].mean(axis=0))*neck
+
+    # Four adult references, blended as whole faces at runtime. The modest
+    # shared component leaves room for variation at each corner of the blend.
+    references=np.stack([head(name) for name in (
+        "caucasian-male","asian-male","caucasian-female","african-female")],axis=1)
+    neutral=references.mean(axis=1)
+    base+=neutral
+    shapes=.85*(references-neutral[:,None,:])
     # A sparse fifth field closes the actual lid rings around the eyeball.
     closure=np.zeros_like(base)
     for side in ("left","right"):
@@ -276,8 +286,8 @@ def cook(base_path,src,pack,dest):
                         d=np.round(np.clip(blink[i]*.06/.012,-1,1)*127).astype(int)
                         if np.any(d): targets[4].extend(struct.pack("<H3b",seen[key],*d))
                     vertices.extend(struct.pack("<3h3h2H4BH",*signed(xyz/1.2),*signed(normals[i]),
-                        *np.round(np.clip(uvp,0,1)*65535).astype(int),*np.round(np.clip(skin[i],0,1)*255).astype(int),
-                        mat))
+                        *np.round(np.clip(uvp,0,1)*65535).astype(int),*np.round(np.clip(skin[i,:4],0,1)*255).astype(int),
+                        mat | (round(np.clip(skin[i,4],0,1)*255)<<8)))
                 indices.append(seen[key])
     # Bits 5..7 select fitted outfits. Zero marks geometry shared by all.
     def body_material(g,f):
@@ -325,7 +335,7 @@ def cook(base_path,src,pack,dest):
     assert len(vertices)%22==0 and len(vertices)//22 <= 65536
     model_tmp=dest/"person.bin.tmp"
     atlas_tmp=dest/"appearance.png.tmp"
-    model_tmp.write_bytes(struct.pack("<4s7I",b"WH03",len(vertices)//22,len(indices),*(len(t)//5 for t in targets))
+    model_tmp.write_bytes(struct.pack("<4s7I",b"WH04",len(vertices)//22,len(indices),*(len(t)//5 for t in targets))
                           +vertices+np.array(indices,dtype="<u2").tobytes()+b"".join(targets))
     atlas.save(atlas_tmp,format="PNG",optimize=True)
     model_tmp.replace(dest/"person.bin")
