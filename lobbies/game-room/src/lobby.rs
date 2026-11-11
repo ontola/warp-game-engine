@@ -582,6 +582,16 @@ impl Lobby {
         }
     }
 
+    /// A nudge from afar shows only its words; the button pops in when
+    /// someone (or the mouse) is there.
+    /// `was_active`: whether it showed before this update; one that just
+    /// appears takes its look at once instead of animating into it.
+    fn tuck_prompt(&mut self, name: &str, tucked: bool, was_active: bool) {
+        let Some(p) = self.prompts.get_mut(name) else { return };
+        p.conceal_to = if tucked { 1.0 } else { 0.0 };
+        if !was_active || !self.prompt_active.get(name).copied().unwrap_or(false) { p.conceal = p.conceal_to; }
+    }
+
     pub fn press_prompt(&mut self, name: &str, key: &str) {
         if let Some(p) = self.prompts.get_mut(name) { p.pressed = Some((key.into(), 1.0)); self.screens_dirty = true; }
         if name == "shelf" && (key == "LB" || key == "RB") { self.show.bumper_presses[(key == "RB") as usize] = 1.0; }
@@ -609,16 +619,19 @@ impl Lobby {
         if let Some(station) = self.mouse_station() {
             if !occupied.contains_key(&station.id) || station.enabled { occupied.insert(station.id.clone(), station); }
         }
-        // Onboarding: until the first game, the TV's Play hops for everyone
-        // to see where a night starts; a profile someone scanned in hops at
-        // its door until it is picked up.
+        // Onboarding, once someone has joined: until the first game, the TV's
+        // Play hops for everyone to see where a night starts; a profile
+        // someone scanned in hops at its door until it is picked up.
         self.nudges.clear();
+        let joined = !self.world.players.is_empty();
         if self.host.current_game().is_some() { self.started_once = true; }
         let tv = self.host.tv_station();
         let tv_items: Vec<(&str, &str, bool)> = if tv.quit { vec![("Y", &tv.short, true), ("X", "Quit", true)] } else { vec![("Y", &tv.short, true)] };
-        let tv_nudge = !self.started_once && tv.enabled && !occupied.contains_key("tv");
+        let tv_nudge = joined && !self.started_once && tv.enabled && !occupied.contains_key("tv");
         if tv_nudge { self.nudges.insert("tv".into()); }
+        let was = self.prompt_active.get("tv").copied().unwrap_or(false);
         self.set_prompt("tv", &tv_items, tv.enabled, occupied.contains_key("tv") || tv_nudge);
+        self.tuck_prompt("tv", tv_nudge, was);
         let q = self.host.queue_station();
         self.set_prompt("queue", &[("Y", &q.short, !q.loading), ("X", "Skip next", true)], q.enabled, occupied.contains_key("queue"));
         let shelf_live = !self.host.shelf_games().is_empty();
@@ -635,11 +648,13 @@ impl Lobby {
         let waiting = self.host.pending_profiles().len();
         for i in 0..game_room_sim::layout::PROFILE_DOORS.len() {
             let key = format!("door{i}");
-            let nudge = i < waiting && !occupied.contains_key(&key);
+            let nudge = joined && i < waiting && !occupied.contains_key(&key);
             if nudge { self.nudges.insert(key.clone()); }
             let enabled = nudge || occupied.get(&key).is_some_and(|s| s.enabled);
             let swap = occupied.get(&key).is_some_and(|s| s.hold);
+            let was = self.prompt_active.get(&key).copied().unwrap_or(false);
             self.set_prompt(&key, &[("Y", if swap { "Hold to swap" } else { "Pick up" }, true)], enabled, occupied.contains_key(&key) || nudge);
+            self.tuck_prompt(&key, nudge, was);
             let charge = self.holds.iter().filter(|(_, h)| h.0 == key).map(|(id, _)| self.hold_charge(id)).fold(0.0, f32::max);
             self.hold_prompt(&key, "Y", charge);
         }
