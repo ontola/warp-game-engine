@@ -766,6 +766,7 @@ impl View {
             self.skins.flush(gpu, renderer)?;
         }
         self.follow(w, dt);
+        self.fx.tips = w.wizards.iter().zip(&gems).filter_map(|(id, g)| g.map(|g| (id.to_bits().get(), g))).collect();
         self.fx.update(w, dt);
         self.marks.update(w, &gems, self.fx.time, dt);
         self.marks.torches(&w.level.torches, self.camera.target, self.fx.time);

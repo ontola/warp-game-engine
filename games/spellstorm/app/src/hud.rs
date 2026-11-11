@@ -119,15 +119,42 @@ struct Hints {
 }
 
 /// The moves taught by a hint under a wizard until they have been used, in
-/// the order they are taught. Later ones wait for the earlier.
-const HINTS: [(u32, &str); 6] = [
-    (used::BOLT, "Push the right stick to shoot"),
-    (used::CAST, "Load elements with A B X Y, cast with RT"),
-    (used::ROLL, "Press LT to dodge"),
-    (used::SWING, "Press RB to swing your sword"),
-    (used::DEFLECT, "Swing RB into a shot to send it back"),
-    (used::SHAKE, "Hold the right stick in to shake your staff empty"),
-];
+/// the order they are taught, a step at a time (Joep): one element loaded,
+/// shot, cast; dodging and the sword; two elements together; shaking.
+const HINTS: [u32; 8] = [used::LOAD, used::BOLT_EL, used::CAST, used::ROLL, used::SWING, used::DEFLECT, used::CAST2, used::SHAKE];
+
+/// The button that loads base element `e` ("B"), or with LB held.
+fn button_of(e: El) -> String {
+    [(el::PAIR_A, "A"), (el::PAIR_B, "B"), (el::PAIR_X, "X"), (el::PAIR_Y, "Y")]
+        .iter()
+        .find_map(|(pair, b)| pair.iter().position(|&x| x == e).map(|i| if i == 1 { format!("LB + {b}") } else { b.to_string() }))
+        .unwrap_or_else(|| "A".into())
+}
+
+/// A hint's words for this wizard: their own first elements and buttons,
+/// and the spells those make.
+fn hint_text(bit: u32, wz: &spellstorm::wizard::Wizard, mods: &spellstorm::relics::Mods) -> String {
+    let order = spellstorm::wizard::ELEMENT_ORDER[wz.element_order % spellstorm::wizard::ELEMENT_ORDER.len()];
+    let open: Vec<El> = order.iter().copied().filter(|&e| wz.element_open(e)).collect();
+    let e = wz.queue.slots.first().copied().or(open.first().copied()).unwrap_or(order[0]);
+    let name = |els: &[El]| spellstorm::compose(els, Form::Cast, mods).name;
+    match bit {
+        used::LOAD => format!("Press {} to load {}", button_of(e), e.name()),
+        used::BOLT_EL if wz.queue.is_empty() => format!("Press {} to load {}, then push the right stick to shoot it", button_of(e), e.name()),
+        used::BOLT_EL => format!("Push the right stick to shoot {}", e.name()),
+        used::CAST => format!("Press {} to load {}, then RT to cast {}", button_of(e), e.name(), name(&[e])),
+        used::ROLL => "Press LT to dodge".into(),
+        used::SWING => "Press RB to swing your sword".into(),
+        used::DEFLECT => "Swing RB into a shot to send it back".into(),
+        used::CAST2 => {
+            let a = open.first().copied().unwrap_or(order[0]);
+            let b = open.get(1).copied().unwrap_or(order[1]);
+            format!("Load {} ({}) and {} ({}), then RT casts {}", a.name(), button_of(a), b.name(), button_of(b), name(&[a, b]))
+        }
+        used::SHAKE => "Elements loaded? Hold the right stick in to shake them out".into(),
+        _ => String::new(),
+    }
+}
 /// Seconds of play before the first hint, and between one done and the next.
 const HINT_WAIT: f32 = 4.0;
 
@@ -280,10 +307,11 @@ impl Hud {
             let ready = |bit: u32| match bit {
                 used::ROLL | used::SWING => fight,
                 used::DEFLECT => shots && h.used & used::SWING != 0,
+                used::CAST2 => wz.queue.size >= 2 && h.used & used::CAST != 0,
                 used::SHAKE => !wz.queue.is_empty() && h.used & used::CAST != 0,
                 _ => true,
             };
-            h.now = HINTS.iter().map(|&(bit, _)| bit).find(|&bit| h.used & bit == 0 && ready(bit)).map(|bit| (bit, 0.0));
+            h.now = HINTS.iter().copied().find(|&bit| h.used & bit == 0 && ready(bit)).map(|bit| (bit, 0.0));
         }
     }
 
@@ -432,10 +460,11 @@ impl Hud {
             }
             let key = if wz.player_id.is_empty() { format!("seat{}", wz.seat) } else { wz.player_id.clone() };
             if let Some((bit, t)) = self.hints.get(&key).and_then(|h| h.now).filter(|_| a.alive && wz.bot.is_none()) {
-                if let Some(&(_, text)) = HINTS.iter().find(|h| h.0 == bit) {
+                let text = hint_text(bit, &wz, &a.mods);
+                if !text.is_empty() {
                     // In softly, then a slow pulse so it is noticed.
                     let a = (t / 0.4).min(1.0) * (0.8 + 0.2 * (t * 3.0).sin());
-                    p.text(text, x, y + 84.0, body(), 24.0, [1.0, 0.92, 0.7, a], TextAlign::Center, 8.0);
+                    p.text(&text, x, y + 84.0, body(), 24.0, [1.0, 0.92, 0.7, a], TextAlign::Center, 8.0);
                 }
             }
         }
