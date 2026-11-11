@@ -137,6 +137,8 @@ struct LightState {
     sky: Vec<Probe>,
     lamps: Vec<Vec<Probe>>,
     planes: Vec<[f32; 4]>,
+    /// DDGI-style probe visibility (`room_bake::bake_visibility`).
+    visibility: Vec<[u32; render::room_bake::VISIBILITY_SIDE * render::room_bake::VISIBILITY_SIDE]>,
 }
 
 impl LightState {
@@ -147,6 +149,7 @@ impl LightState {
             sky: render::room_bake::bake(grid, occluders, sun, &settings)?,
             lamps: render::room_bake::bake_lights(grid, occluders, &lamps, &render::room_bake::Settings { bounces: 2, ..settings })?,
             planes: render::room_bake::separation_planes(grid, occluders),
+            visibility: render::room_bake::bake_visibility(grid, occluders),
         })
     }
 }
@@ -184,6 +187,8 @@ struct Rooms {
     /// `--door`: keep the door where it was put (for captures).
     hold_door: bool,
     uploaded: Option<(f32, [bool; 4])>,
+    /// Which door state's visibility maps are uploaded (true: shut).
+    visibility_shut: Option<bool>,
     /// Indoor fog (`Lighting::volumetric`).
     fog: bool,
     flashlight: bool,
@@ -299,6 +304,7 @@ impl Rooms {
         let solid = walls.iter().chain(furniture.iter().map(|f| &f.1)).filter_map(footprint).collect();
         let grid = Grid { origin: Vec3::new(-9.75, -0.25, -17.75), cell: 0.5, dims: [32, 9, 48] };
         scene.reserve_irradiance_volume(grid).expect("probe grid");
+        if std::env::var_os("ROOMS_NO_DDGI").is_none() { scene.reserve_probe_visibility().expect("probe visibility"); }
         // The static geometry, before the moving pieces join the scene, with
         // and without the shut door.
         let open_occluders = Occluders::from_scene(&scene, |_| true);
@@ -320,7 +326,7 @@ impl Rooms {
         for kv in std::env::var("ROOMS_LIGHT").unwrap_or_default().split(',').filter(|s| !s.is_empty()) { light.set(kv).expect("ROOMS_LIGHT"); }
         let pos = Vec3::new(1.5, EYE, 12.0);
         Rooms { scene, grid, solid, objects, bulb_mesh, cord_mesh, door_mesh, lamp_on_mesh, lamp_off_mesh, shade_mesh, bulb, cord, shade, door, fog_occluders, lamp_slots,
-            lamp_on: [true; 4], open_occluders, shut_occluders, shut: None, open: None, door_wanted: false, door_t: 0.0, hold_door: false, uploaded: None,
+            lamp_on: [true; 4], open_occluders, shut_occluders, shut: None, open: None, door_wanted: false, door_t: 0.0, hold_door: false, uploaded: None, visibility_shut: None,
             fog: false, flashlight: false, flash_dir: Vec3::NEG_Z, flash_bounce: None, pos, prev: pos, yaw: 0.12, pitch: 0.0, vy: 0.0, t: 0.0, light,
             ready: false, ev: None, hdr: None }
     }
@@ -511,6 +517,13 @@ impl Rooms {
         // it is a third of the way open.
         let planes = if k < 0.3 { &shut.planes } else { &open.planes };
         frame.renderer().ok_or("no renderer")?.set_sky_sun_emission(frame.gpu, &sky, &emission, planes)?;
+        // Visibility switches with the planes (the door is a wall until a
+        // third open); 3.5 MB, so only when the state changes.
+        if std::env::var_os("ROOMS_NO_DDGI").is_none() && self.visibility_shut != Some(k < 0.3) {
+            let maps = if k < 0.3 { &shut.visibility } else { &open.visibility };
+            frame.renderer().ok_or("no renderer")?.set_probe_visibility(frame.gpu, maps)?;
+            self.visibility_shut = Some(k < 0.3);
+        }
         self.uploaded = Some((k, self.lamp_on));
         Ok(())
     }

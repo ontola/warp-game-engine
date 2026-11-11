@@ -647,6 +647,9 @@ pub struct Scene {
     /// Indoor irradiance probes in `aux` (`reserve_irradiance_volume`): the
     /// word offset of their header and the grid.
     pub irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
+    /// Per-probe visibility maps in `aux` (`reserve_probe_visibility`): the
+    /// offset of `room_bake::VISIBILITY_SIDE`^2 words per probe.
+    pub probe_visibility: Option<usize>,
     /// Bullet dents in ROCK surfaces (`reserve_dents`): word offset and capacity.
     pub dents: Option<(usize, usize)>,
     /// 3D unsigned Euclidean distance field for DFAO (`reserve_dfao`): word offset and grid.
@@ -969,6 +972,21 @@ impl Scene {
         if self.aux.len() + words.len() >= 1 << 24 { return Err("aux too large for an irradiance volume offset".into()); }
         self.irradiance_volume = Some((self.aux.len(), grid));
         self.aux.extend(words);
+        Ok(())
+    }
+
+    /// Reserve DDGI-style visibility maps for the irradiance volume's probes
+    /// (`room_bake::bake_visibility`, uploaded with
+    /// `Renderer::set_probe_visibility`). Shading then weights each probe by
+    /// whether it can see the shaded point, smoothly, instead of the
+    /// per-cell wall tests. Call after `reserve_irradiance_volume`.
+    pub fn reserve_probe_visibility(&mut self) -> Result<(), String> {
+        let (_, grid) = self.irradiance_volume.ok_or("reserve the irradiance volume first")?;
+        if self.probe_visibility.is_some() { return Err("probe visibility is already reserved".into()); }
+        let words = grid.count() * crate::room_bake::VISIBILITY_SIDE * crate::room_bake::VISIBILITY_SIDE;
+        if self.aux.len() + words >= 1 << 24 { return Err("aux too large for probe visibility".into()); }
+        self.probe_visibility = Some(self.aux.len());
+        self.aux.extend(std::iter::repeat_n(0u32, words));
         Ok(())
     }
 

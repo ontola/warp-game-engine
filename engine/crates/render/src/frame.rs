@@ -1019,6 +1019,8 @@ pub struct Renderer {
     dents: Option<(usize, usize)>,
     dfao: Option<(usize, crate::dfao::Grid)>,
     irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
+    probe_visibility: Option<usize>,
+    visibility_uploaded: std::sync::atomic::AtomicBool,
     sun_diagnostics: std::sync::Mutex<crate::shadow_diagnostics::State>,
     headlight_diagnostics: std::sync::Mutex<crate::shadow_diagnostics::State>,
     geometry_diagnostics: crate::geometry_diagnostics::State,
@@ -1707,6 +1709,18 @@ impl Renderer {
         let (offset,grid)=self.irradiance_volume.ok_or("no reserved probe volume")?;
         let words=crate::irradiance_volume::pack_sky_emission(&grid,probes,emission,planes)?;
         self.scene_tables.write_aux(gpu, offset, &words)?;
+        Ok(())
+    }
+
+    /// Upload the probe visibility maps reserved with
+    /// `Scene::reserve_probe_visibility` (`room_bake::bake_visibility`); from
+    /// then on shading weights probes by them.
+    pub fn set_probe_visibility(&self, gpu: &Gpu, maps: &[[u32; crate::room_bake::VISIBILITY_SIDE * crate::room_bake::VISIBILITY_SIDE]]) -> Result<(), String> {
+        let offset = self.probe_visibility.ok_or("the scene reserved no probe visibility")?;
+        let (_, grid) = self.irradiance_volume.ok_or("no reserved probe volume")?;
+        if maps.len() != grid.count() { return Err("one visibility map per probe".into()); }
+        self.scene_tables.write_aux(gpu, offset, bytemuck::cast_slice(maps))?;
+        self.visibility_uploaded.store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
@@ -2429,6 +2443,8 @@ impl Renderer {
             texture_stream,
             live_screens: (!scene.live_screen_feeds.is_empty()).then(|| std::sync::Mutex::new(crate::screen_feed::LiveScreens::new(gpu, &albedo, &scene.live_screen_feeds))),
             irradiance_volume: scene.irradiance_volume,
+            probe_visibility: scene.probe_visibility,
+            visibility_uploaded: std::sync::atomic::AtomicBool::new(false),
             dents: scene.dents,
             dfao: scene.dfao,
             geometry_diagnostics,
@@ -5061,7 +5077,8 @@ impl Renderer {
                 params: [light.contact_occlusion, light.reflection_occlusion, self.sky_limit,
                     if light.gi > 0.0 { self.irradiance_volume.map_or(0.0, |(offset, _)| offset as f32) } else { 0.0 }],
                 prev_view_proj: trace_prev.unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
-                trace: [if trace_prev.is_some() { 1.0 } else { 0.0 }, TRACE_ROUGHNESS_CUT, TRACE_REACH_M, 0.0],
+                // w: the probe visibility maps' aux offset (0: none).
+                trace: [if trace_prev.is_some() { 1.0 } else { 0.0 }, TRACE_ROUGHNESS_CUT, TRACE_REACH_M, if self.visibility_uploaded.load(std::sync::atomic::Ordering::Relaxed) { self.probe_visibility.map_or(0.0, |o| o as f32) } else { 0.0 }],
             };
             let gi_buf = self.view_uniform(gpu, vi, 0, "gi", bytemuck::bytes_of(&gi_u));
             // A rebuilt canopy level gets its sky transmittance baked now,
