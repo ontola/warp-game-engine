@@ -509,6 +509,11 @@ pub struct Graphics {
     /// per frame, some shadowed. Off by default; `KERN_CLUSTERED_LIGHTS`
     /// (1 or 0) overrides.
     pub clustered_lights: bool,
+    /// Hierarchical instance-group culling (cull_groups) for the camera, sun
+    /// and headlight passes: groups are tested before their instances.
+    /// `KERN_INSTANCE_GROUPS`, `KERN_SUN_INSTANCE_GROUPS` and
+    /// `KERN_HEADLIGHT_INSTANCE_GROUPS` (1 or 0) override per pass.
+    pub instance_groups: bool,
 }
 
 #[derive(Default)]
@@ -659,7 +664,7 @@ impl Scene {
     /// runtime state on the same renderer. This does not compare textures or
     /// dynamic instance/material/auxiliary values; those still need restoring.
     pub fn same_reserved_geometry(&self, other: &Self) -> bool {
-        self.graphics.sharp_sprites == other.graphics.sharp_sprites
+        self.graphics.sharp_sprites == other.graphics.sharp_sprites && self.graphics.instance_groups == other.graphics.instance_groups
             && self.stage_sun == other.stage_sun && self.dynamic_instances == other.dynamic_instances
             && self.instances.len() == other.instances.len() && self.materials.len() == other.materials.len()
             && self.aux.len() == other.aux.len() && self.meshes.len() == other.meshes.len()

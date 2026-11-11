@@ -546,6 +546,10 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     let mut log = Vec::new();
     let t = std::time::Instant::now();
     let mut scene = Scene::default();
+    // Hierarchical instance-group culling: ~268k instances in ~4k groups.
+    // Mancave 4K DLSS-P (cc9e99aa): 2 views 11.9 -> 9.9 ms, 4 views 16.6 -> 12.9 ms,
+    // same image. KERN_*INSTANCE_GROUPS=0 restores flat culling.
+    scene.graphics.instance_groups = true;
     // The receiver escape contract is the SAME bound enforced by surface().
     // Grass and driving ground keep strict native-height occlusion.
     scene.terrain_visual_offset_m=CLIFF_VISUAL_OFFSET;
