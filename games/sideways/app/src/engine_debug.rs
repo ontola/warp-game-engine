@@ -21,6 +21,10 @@ enum ScriptEvent { Key(DebugKey), Pointer([f32;2]), Down, Up }
 /// and 46 % fewer shadow triangles (6.4 M / 17.9 M -> 3.8 M / 9.7 M at
 /// 1440p) for 3-4 ms a frame on an M5 Pro, at 49.5 dB against 1 px.
 pub const DEFAULT_LOD_PIXELS: f32 = 2.0;
+/// Distant sun shadow casters may be as coarse as one camera pixel at their
+/// distance: 2 views 2.31 -> 1.66 ms shadow raster on the Mancave (4K DLSS-P),
+/// image diff limited to faint far shadow edges (2026-11-11).
+pub const SHADOW_DISTANCE_LOD: f32 = 1.0;
 
 pub struct EngineDebug {
     pub ui:DebugUi,
@@ -62,7 +66,7 @@ impl EngineDebug {
             environment:crate::debug_environment::EnvironmentDebug::new(Default::default())})
     }
     pub fn effective_light(&self,base:&Lighting)->Lighting {
-        let mut light=self.environment.effective_light(base);light.lod_pixels=self.lod_pixels;
+        let mut light=self.environment.effective_light(base);light.lod_pixels=self.lod_pixels;light.shadow_distance_lod=SHADOW_DISTANCE_LOD;
         light.ev100=(light.ev100+self.exposure_offset).clamp(-4.0,24.0);
         if !self.fog {light.fog_density=0.0;light.fog_height_m=base.fog_height_m.max(1.0);light.fog_culling=false;}
         light
