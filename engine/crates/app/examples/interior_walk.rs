@@ -5,7 +5,8 @@
 //!   cargo run --release -p app --example interior_walk
 //!   cargo run --release -p app --example interior_walk -- --shot walk.png --at 0,1.6,-2 --yaw 0
 //!
-//! WASD or the left stick walks, the mouse or right stick looks. The HUD
+//! WASD or the left stick walks (Shift sprints, Space jumps), the mouse or
+//! right stick looks. The HUD
 //! shows the exposure the eye is at and what the meter reads.
 use app::{Controls, Draw, Frame, Game};
 use glam::{Affine3A, Quat, Vec2, Vec3};
@@ -30,6 +31,7 @@ struct Walk {
     pos: Vec3,
     yaw: f32,
     pitch: f32,
+    vy: f32,
     light: Lighting,
     ready: bool,
     ev: Option<(f32, f32)>,
@@ -38,7 +40,7 @@ struct Walk {
 impl Walk {
     fn new() -> Self {
         let mut scene = Scene::default();
-        let mut mat = |scene: &mut Scene, tint: [f32; 3], rough: f32| {
+        let mat = |scene: &mut Scene, tint: [f32; 3], rough: f32| {
             let m = scene.add_material(Material { tint, layer: -1, roughness: rough, flags: 0, scale: 1.0, metal: 0.0 });
             scene.add_mesh(&render::primitives::cube(m).mesh())
         };
@@ -79,7 +81,7 @@ impl Walk {
         light.fog_end = 2000.0;
         light.fog_density = 0.0;
         light.auto_exposure = Some(render::AutoExposure { min_ev100: 0.0, max_ev100: 16.0, ..Default::default() });
-        Walk { scene, grid, solid, pos: Vec3::new(1.5, EYE, 12.0), yaw: 0.12, pitch: 0.0, light, ready: false, ev: None }
+        Walk { scene, grid, solid, pos: Vec3::new(1.5, EYE, 12.0), yaw: 0.12, pitch: 0.0, vy: 0.0, light, ready: false, ev: None }
     }
 
     fn forward(&self) -> Vec3 {
@@ -94,10 +96,17 @@ impl Game for Walk {
         let c = c[0];
         let dt = 1.0 / TICK_HZ;
         self.yaw -= c.look[0];
-        self.pitch = (self.pitch - c.look[1]).clamp(-1.4, 1.4);
+        self.pitch = (self.pitch + c.look[1]).clamp(-1.4, 1.4);
         let fwd = Vec3::new(-self.yaw.sin(), 0.0, -self.yaw.cos());
         let right = Vec3::new(self.yaw.cos(), 0.0, -self.yaw.sin());
-        let step = (right * c.mv[0] + fwd * c.mv[1]) * 3.0 * dt;
+        // Shift sprints, space jumps.
+        let speed = if c.held.has(app::Buttons::RIGHT_SHOULDER) { 7.0 } else { 3.0 };
+        let step = (right * c.mv[0] + fwd * c.mv[1]) * speed * dt;
+        let ground = self.pos.y <= EYE + 1e-3;
+        if ground && c.pressed.has(app::Buttons::SOUTH) { self.vy = 4.5; }
+        self.vy -= 12.0 * dt;
+        self.pos.y += self.vy * dt;
+        if self.pos.y < EYE { self.pos.y = EYE; self.vy = 0.0; }
         // Slide along walls and furniture: move per axis, refuse a step
         // that ends within 0.25 m of a footprint.
         for axis in [0, 2] {
