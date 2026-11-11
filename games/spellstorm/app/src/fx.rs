@@ -812,6 +812,9 @@ pub struct Fx {
     rng: u64,
     pub shake: f32,
     pub blasts: render::fx::Effects,
+    /// Each wizard's gem where the animated staff holds it (by id bits):
+    /// streams start there.
+    pub tips: std::collections::HashMap<u64, Vec3>,
     /// GPU sparks and embers for eruptions and bombs (opt-in: KERN_GPU_PARTICLES=1).
     pub sparks: render::gpu_particles::GpuParticles,
     /// Props broken this tick: where the blow came from and how hard, for
@@ -878,6 +881,7 @@ impl Default for Fx {
             rng: 0x9e37_79b9_7f4a_7c15,
             shake: 0.0,
             blasts,
+            tips: Default::default(),
             sparks,
             prop_hits: HashMap::new(),
             env_lights: Vec::new(),
@@ -2506,6 +2510,8 @@ impl Fx {
                     sp.depth_test = render::sprites::DepthTest::Source;
                 }
             } else if let Ok(s) = w.ecs.get::<&Spray>(id) {
+                // From the gem as the staff sways (Joep), not the sim's still pose.
+                let at = self.tips.get(&s.caster.to_bits().get()).copied().unwrap_or(s.at);
                 let e = s.spell.primary.unwrap_or(El::Fire);
                 let mut p = particles(el_c(e), 50, 0.45, 0.7);
                 p.dir = s.dir;
@@ -2566,7 +2572,7 @@ impl Fx {
                         sh.damp = base.damp;
                         sh.life = base.life * 0.9;
                         sh.gravity = Vec3::NEG_Y * 2.0;
-                        self.stream((key, 5), sh, s.at, dt);
+                        self.stream((key, 5), sh, at, dt);
                     } else {
                         // Wind lines streaming out, curling apart as they slow.
                         let base = p;
@@ -2587,7 +2593,7 @@ impl Fx {
                     puff.curve = [0.5, 1.1, 1.8];
                     let k = lerp_c(el_c(e), WHITE, 0.6);
                     puff.ramp = Ramp::new(&[rgba(k[0], k[1], k[2], 0.0), rgba(k[0], k[1], k[2], 0.3), rgba(k[0], k[1], k[2], 0.0)], &[0.0, 0.3, 1.0]);
-                    self.stream((key, 2), puff, s.at, dt);
+                    self.stream((key, 2), puff, at, dt);
                 }
                 if e == El::Water {
                     // A hose: a dense white jet of water that sags a little
@@ -2613,11 +2619,11 @@ impl Fx {
                     mist.spread = 9.0;
                     mist.v = (8.0, 11.0);
                     mist.ramp = Ramp::new(&[rgba(1.0, 1.0, 1.0, 0.0), rgba(0.95, 0.98, 1.0, 0.3), rgba(0.9, 0.95, 1.0, 0.0)], &[0.0, 0.5, 1.0]);
-                    self.stream((key, 2), mist, s.at, dt);
+                    self.stream((key, 2), mist, at, dt);
                     // Its body: spells.wgsl `jet` on a shaft along the spray,
                     // the drops and mist above flying off it.
                     let len = s.spell.n.range as f32;
-                    let mut body = Sprite::shaft(s.at + s.dir * len * 0.5, [0.55, len], s.dir, IMAGE, uv(Cell::Patch), Vec3::splat(0.7));
+                    let mut body = Sprite::shaft(at + s.dir * len * 0.5, [0.55, len], s.dir, IMAGE, uv(Cell::Patch), Vec3::splat(0.7));
                     body.additive = false;
                     body.depth_bias = 0.3;
                     body.effect = crate::effects::JET;
@@ -2638,12 +2644,12 @@ impl Fx {
                     q.spread = p.spread * 1.2;
                     q.v = p.v;
                     q.damp = p.damp;
-                    self.stream((key, 3 + i as u8), q, s.at, dt);
+                    self.stream((key, 3 + i as u8), q, at, dt);
                 }
-                self.stream((key, 0), p, s.at, dt);
+                self.stream((key, 0), p, at, dt);
                 if let Some(mut sm) = smoke {
                     sm.amount = (sm.amount as f32 * h) as u32;
-                    self.stream((key, 1), sm, s.at, dt);
+                    self.stream((key, 1), sm, at, dt);
                 }
                 let h_light = h;
                 if e == El::Fire {
@@ -2652,16 +2658,17 @@ impl Fx {
                     // less than the flames: a floor lit brighter than the
                     // fire washed the fire out against it.
                     let warm = rgba(1.0, 0.62, 0.22, 1.0);
-                    self.light(s.at + s.dir * 1.0, warm, 1.1 * h_light, 11.0 + 3.0 * (h_light - 1.0));
-                    self.light(s.at + s.dir * 4.0, warm, 0.85 * h_light, 9.0 + 3.0 * (h_light - 1.0));
+                    self.light(at + s.dir * 1.0, warm, 1.1 * h_light, 11.0 + 3.0 * (h_light - 1.0));
+                    self.light(at + s.dir * 4.0, warm, 0.85 * h_light, 9.0 + 3.0 * (h_light - 1.0));
                 } else {
-                    self.light(s.at + s.dir * 2.0, el_c(e), 1.2 * h_light, 6.0);
+                    self.light(at + s.dir * 2.0, el_c(e), 1.2 * h_light, 6.0);
                 }
             } else if let Ok(b) = w.ecs.get::<&Beam>(id) {
+                let from = self.tips.get(&b.caster.to_bits().get()).copied().unwrap_or(b.from);
                 let e = b.spell.primary.unwrap_or(El::Lightning);
                 let c = el_c(e);
                 let c3 = linear3([c[0], c[1], c[2]]);
-                let d = b.to - b.from;
+                let d = b.to - from;
                 let len = d.length();
                 if len > 0.05 {
                     // Its element crawling along it, not only a thin line:
@@ -2680,12 +2687,12 @@ impl Fx {
                     }
                     for i in 0..6u8 {
                         let k = (i as f32 + 0.5) / 6.0;
-                        self.stream((key, 30 + i), q, b.from.lerp(b.to, k), dt);
+                        self.stream((key, 30 + i), q, from.lerp(b.to, k), dt);
                     }
                 }
                 let h = heft(&b.spell);
                 if len > 0.05 {
-                    let mid = (b.from + b.to) * 0.5;
+                    let mid = (from + b.to) * 0.5;
                     let dir = d / len;
                     let wob = 1.0 + 0.15 * (t * 30.0).sin();
                     // Joep: a beam's strength trembles, never one steady
@@ -2727,7 +2734,7 @@ impl Fx {
                         q.sphere = 0.16 * h;
                         let pieces = ((len / 1.5) as usize).clamp(1, 8);
                         for j in 0..pieces {
-                            let at = b.from + d * ((j as f32 + 0.5) / pieces as f32);
+                            let at = from + d * ((j as f32 + 0.5) / pieces as f32);
                             self.stream((key, 10 + (i * 8 + j) as u8), q, at, dt);
                         }
                     }

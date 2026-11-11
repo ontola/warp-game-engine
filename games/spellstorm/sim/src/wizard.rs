@@ -46,7 +46,7 @@ pub const NOVA_HOLD: f64 = 0.45;
 /// R3 held this long shakes the staff empty; a tap enchants it.
 pub const SHAKE_HOLD: f64 = 0.4;
 /// How long a shake of the staff takes.
-pub const SHAKE_TIME: f64 = 0.45;
+pub const SHAKE_TIME: f64 = 0.6;
 
 /// What a wizard has done at least once (Wizard::used), for the HUD's
 /// hints: a hint shows until its move has been used.
@@ -57,6 +57,10 @@ pub mod used {
     pub const CAST: u32 = 8;
     pub const SHAKE: u32 = 16;
     pub const DEFLECT: u32 = 32;
+    /// Loaded an element; shot a bolt of one; cast a spell of two or more.
+    pub const LOAD: u32 = 64;
+    pub const BOLT_EL: u32 = 128;
+    pub const CAST2: u32 = 256;
 }
 pub const ROLL_TIME: f64 = 0.5;
 pub const ROLL_SPEED: f64 = 12.5;
@@ -605,11 +609,13 @@ impl World {
         w.staff_rx += (point * lift - w.staff_rx) * 12.0 * dt;
         w.staff_z += (0.18 + 0.25 * lift - w.staff_z) * 12.0 * dt;
         if w.shake_t > 0.0 {
-            // Shaken: the staff jerks up and down, hard at first.
+            // Shaken: a few firm shakes of the staff, easing out (Joep:
+            // calmer, it was frantic).
             let k = (w.shake_t / SHAKE_TIME) as f32;
-            let jerk = ((1.0 - k) * 7.0 * std::f32::consts::TAU).sin() * k;
-            w.staff_rx = 0.7 + 0.55 * jerk;
-            w.staff_z = 0.3 + 0.12 * jerk;
+            let ease = (k * std::f32::consts::PI).sin();
+            let jerk = ((1.0 - k) * 3.0 * std::f32::consts::TAU).sin() * ease;
+            w.staff_rx = 0.55 + 0.3 * jerk;
+            w.staff_z = 0.24 + 0.05 * jerk;
         }
         if w.swing_t > 0.0 {
             let sweep = 1.0 - (w.swing_t / SWING_COOLDOWN) as f32;
@@ -748,6 +754,9 @@ impl World {
 
     fn shoot(&mut self, id: Id, w: &mut Wizard) {
         w.used |= used::BOLT;
+        if !w.queue.is_empty() {
+            w.used |= used::BOLT_EL;
+        }
         let dir = yaw_rot(w.aim_dir, self.rng.range(-0.03, 0.03));
         // Fired steadily, the staff stays up instead of bobbing.
         w.cast_anim = w.cast_anim.max(1.0 / w.shot_rate() + 0.1);
@@ -1056,6 +1065,7 @@ impl World {
             return;
         }
         w.mana -= price;
+        w.used |= used::LOAD;
         let front = w.queue.slots.first().copied();
         let what = w.queue.add(e);
         // A new or changed front element starts with a full charge.
@@ -1127,6 +1137,9 @@ impl World {
         w.ammo = 0;
         if form == Form::Cast {
             w.used |= used::CAST;
+            if s.slots.len() >= 2 {
+                w.used |= used::CAST2;
+            }
         }
         // What the spell did not use stays loaded, front first.
         let used = s.slots.len();

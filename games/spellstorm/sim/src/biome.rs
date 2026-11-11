@@ -110,10 +110,11 @@ pub const BIOMES: [Biome; 6] = [
         props: &["grave", "grave", "grave", "dead_tree", "rock", "candles"],
         enemies: &[
             ("ghoul", 3),
-            ("skeleton", 3),
+            // Skeletons, but no necromancer raising them without end yet:
+            // too much for the first level (Joep); it comes in the catacombs.
+            ("skeleton", 4),
             ("watcher", 2),
             ("bone_archer", 2),
-            ("necromancer", 1),
         ],
         boss: "gravekeeper",
         fields: &[],
