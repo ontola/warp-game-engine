@@ -1025,6 +1025,40 @@ impl Fx {
         self.shot(p, at, el, true);
     }
 
+    /// A monster being made (`k` 0 just begun .. 1 done), `h` tall at
+    /// `at`: a ring of its element's light running up it, motes spiralling
+    /// in onto it, a glow on the floor under it.
+    pub fn materialize(&mut self, key: u64, at: Vec3, h: f32, k: f32, el: El, dt: f32) {
+        let c = el_c(el);
+        let c3 = linear3([c[0], c[1], c[2]]);
+        let fade = 1.0 - smooth(0.75, 1.0, k);
+        let up = 1.0 - (1.0 - k).powi(3);
+        let y = h * up;
+        let r = 0.55 + 0.35 * (1.0 - k);
+        self.live.push(flat_sprite(at + Vec3::Y * y, r, Cell::Ring, (c3 * 1.5 + Vec3::splat(0.6)) * fade));
+        self.live.push(flat_sprite(at + Vec3::Y * 0.04, 0.9, Cell::Patch, c3 * 0.6 * fade));
+        // Motes drawn in from round it to where it is being made.
+        let mut p = particles(c, 60, 0.45, 0.14);
+        p.cell = Cell::Spark;
+        p.glow = 2.2;
+        p.sphere = 1.4;
+        p.dir = Vec3::Y;
+        p.spread = 180.0;
+        p.v = (0.0, 0.3);
+        p.radial = (-9.0, -6.0);
+        p.gravity = Vec3::ZERO;
+        p.stretch = 0.05;
+        // (Emitted here, not streamed: a stream's carry is kept only for
+        // spells and fields.)
+        let due = 60.0 * fade * dt;
+        let n = due as u32 + (self.f() < due.fract()) as u32;
+        let _ = key;
+        if n > 0 {
+            self.emit(p, at + Vec3::Y * y.max(0.3), n);
+        }
+        self.light(at + Vec3::Y * y.max(0.4), c, 1.2 * fade, 4.0);
+    }
+
     /// Fx.puff.
     pub fn puff(&mut self, at: Vec3, c: C, size: f32) {
         let mut p = particles(c, 14, 1.4, size);
@@ -1670,9 +1704,10 @@ impl Fx {
             }
             Ev::Shake(a) => self.shake = self.shake.max(a),
             Ev::Summon { at } => {
+                // The monster itself is made in the view (materialize): only a
+                // ring and a breath of motes here, no ball of light.
                 let c = el_c(El::Void);
                 self.ring(at, c, 1.4, 0.9);
-                self.flash(at + Vec3::Y * 0.3, c, 2.0, 0.6);
                 let mut p = particles(c, 24, 0.9, 0.3);
                 p.dir = Vec3::Y;
                 p.spread = 20.0;
