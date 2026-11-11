@@ -154,6 +154,9 @@ struct Rooms {
     flashlight: bool,
     /// The flashlight's direction, lagging the view (per drawn frame).
     flash_dir: Vec3,
+    /// The flashlight's fake bounce light, smoothed over ~120 ms (per drawn
+    /// frame) so it slides when the beam crosses an edge.
+    flash_bounce: Option<LocalLight>,
     pos: Vec3,
     prev: Vec3,
     yaw: f32,
@@ -283,7 +286,7 @@ impl Rooms {
         let pos = Vec3::new(1.5, EYE, 12.0);
         Rooms { scene, grid, solid, objects, bulb_mesh, cord_mesh, door_mesh, lamp_on_mesh, lamp_off_mesh, shade_mesh, bulb, cord, shade, door, fog_occluders, lamp_slots,
             lamp_on: [true; 4], open_occluders, shut_occluders, shut: None, open: None, door_wanted: false, door_t: 0.0, hold_door: false, uploaded: None,
-            fog: false, flashlight: false, flash_dir: Vec3::NEG_Z, pos, prev: pos, yaw: 0.12, pitch: 0.0, vy: 0.0, t: 0.0, light,
+            fog: false, flashlight: false, flash_dir: Vec3::NEG_Z, flash_bounce: None, pos, prev: pos, yaw: 0.12, pitch: 0.0, vy: 0.0, t: 0.0, light,
             ready: false, ev: None, hdr: None }
     }
 
@@ -322,33 +325,70 @@ impl Rooms {
     }
 
     /// One virtual point light for `lamp`'s first bounce: where its light
-    /// in a cone of `half` (radians) around `dir` lands, averaged over nine
-    /// rays (one ray jumps from a table to the floor as the lamp moves; the
-    /// average slides), pulled `back` metres off the surface, shining away
-    /// from it. `flux_sr`: the solid angle of the lamp's light in the cone.
-    /// A Lambertian surface reflecting flux F shines F / pi candela along
-    /// its normal, falling off with the angle (a soft cone, not a hemisphere
-    /// cut off at the surface: that showed as a blob with a hard edge).
+    /// in a cone of `half` (radians) around `dir` lands, averaged over 17
+    /// rays (a centre ray and rings at 0.4 and 0.85 of `half`) weighted by
+    /// the lamp's cone profile, so the average slides as rays move from a
+    /// table to the floor behind it instead of jumping, pulled `back` metres
+    /// off the surface (and at least 0.6 m from the lamp, so a surface right
+    /// in front of it does not blow up), shining away from it. `flux_sr`:
+    /// the solid angle of the lamp's light in the cone. A Lambertian surface
+    /// reflecting flux F shines F / pi candela along its normal, falling off
+    /// with the angle (a soft cone, not a hemisphere cut off at the surface:
+    /// that showed as a blob with a hard edge).
     fn bounce(&self, lamp: &LocalLight, dir: Vec3, half: f32, flux_sr: f32, back: f32) -> Option<LocalLight> {
         let side = dir.any_orthonormal_vector();
         let up = dir.cross(side);
-        let rays = std::iter::once(dir).chain((0..8).map(|k| {
-            let a = k as f32 * std::f32::consts::TAU / 8.0;
-            let s = (half * 0.6).sin();
-            (dir * (half * 0.6).cos() + (side * a.cos() + up * a.sin()) * s).normalize()
-        }));
-        let (mut at, mut normal, mut hits) = (Vec3::ZERO, Vec3::ZERO, 0);
+        let ring = |count: usize, frac: f32, turn: f32| (0..count).map(move |k| {
+            let a = (k as f32 + turn) * std::f32::consts::TAU / count as f32;
+            let (s, c) = (half * frac).sin_cos();
+            (dir * c + (side * a.cos() + up * a.sin()) * s).normalize()
+        });
+        let rays = std::iter::once(dir).chain(ring(6, 0.4, 0.0)).chain(ring(10, 0.85, 0.5));
+        let profile = |d: Vec3| {
+            let x = ((d.dot(lamp.direction) - lamp.outer_cos) / (lamp.inner_cos - lamp.outer_cos).max(1e-4)).clamp(0.0, 1.0);
+            x * x * (3.0 - 2.0 * x)
+        };
+        let (mut at, mut normal, mut hit, mut total) = (Vec3::ZERO, Vec3::ZERO, 0.0, 0.0);
         for d in rays {
+            let w = profile(d).max(0.05);
+            total += w;
             let Some((t, n)) = self.occluders().hit(lamp.position, d) else { continue };
-            at += lamp.position + d * t;
-            normal += if n.dot(d) > 0.0 { -n } else { n };
-            hits += 1;
+            at += (lamp.position + d * t) * w;
+            normal += (if n.dot(d) > 0.0 { -n } else { n }) * w;
+            hit += w;
         }
-        if hits == 0 { return None; }
-        let (at, n) = (at / hits as f32, normal.normalize_or(-dir));
-        Some(LocalLight { position: at + n * back, direction: n,
-            intensity_cd: lamp.intensity_cd * BOUNCE_REFLECTANCE * flux_sr * (hits as f32 / 9.0) / std::f32::consts::PI, range_m: 7.0,
+        if hit <= 0.0 { return None; }
+        let (at, n) = (at / hit, normal.normalize_or(-dir));
+        let mut position = at + n * back;
+        let off = position - lamp.position;
+        if off.length() < 0.6 { position = lamp.position + off.normalize_or(dir) * 0.6; }
+        Some(LocalLight { position, direction: n,
+            intensity_cd: lamp.intensity_cd * BOUNCE_REFLECTANCE * flux_sr * (hit / total) / std::f32::consts::PI, range_m: 7.0,
             inner_cos: 0.6, outer_cos: -0.4, source_radius_m: 1.0, falloff: 2.0 })
+    }
+
+    /// Move the flashlight's bounce light towards where the beam lands now:
+    /// position, direction and intensity ease over ~120 ms, so crossing an
+    /// edge (a table in front of a wall) slides the light instead of
+    /// snapping it.
+    fn update_flash_bounce(&mut self, dt: f32) {
+        if !self.flashlight { self.flash_bounce = None; return; }
+        let flash = self.flashlight_light();
+        let target = self.bounce(&flash, flash.direction, 20f32.to_radians(), 0.74, 0.3);
+        let k = 1.0 - (-dt.max(0.0) / 0.12).exp();
+        self.flash_bounce = match (self.flash_bounce, target) {
+            (None, t) => t,
+            (Some(cur), None) => {
+                let faded = LocalLight { intensity_cd: cur.intensity_cd * (1.0 - k), ..cur };
+                (faded.intensity_cd.max_element() > 1e-3).then_some(faded)
+            }
+            (Some(cur), Some(t)) => Some(LocalLight {
+                position: cur.position.lerp(t.position, k),
+                direction: cur.direction.lerp(t.direction, k).normalize_or(t.direction),
+                intensity_cd: cur.intensity_cd.lerp(t.intensity_cd, k),
+                ..t
+            }),
+        };
     }
 
     fn flashlight_light(&self) -> LocalLight {
@@ -397,7 +437,7 @@ impl Rooms {
             let flash = self.flashlight_light();
             lights.push(ClusteredLight::shadowed(flash, 20));
             // The beam's cone (28 degrees half angle) is 0.74 sr.
-            if let Some(b) = self.bounce(&flash, flash.direction, 20f32.to_radians(), 0.74, 0.3) { lights.push(ClusteredLight::unshadowed(b)); }
+            if let Some(b) = self.flash_bounce { lights.push(ClusteredLight::unshadowed(b)); }
         }
         lights
     }
@@ -529,6 +569,7 @@ impl Game for Rooms {
         // The flashlight follows the view with a lag of about 80 ms.
         let k = 1.0 - (-frame.dt.max(0.0) / 0.08).exp();
         self.flash_dir = self.flash_dir.lerp(self.forward(), k).normalize_or(self.forward());
+        self.update_flash_bounce(frame.dt);
         let renderer = frame.renderer().ok_or("no renderer")?;
         renderer.set_clustered_lights(&self.lights())?;
         renderer.set_volumetric_beams(if self.fog { self.beams() } else { Vec::new() }.as_slice())?;
@@ -600,6 +641,23 @@ fn main() -> Result<(), String> {
     }
     if args.iter().any(|a| a == "--fog") { game.set_fog(true); }
     if args.iter().any(|a| a == "--flashlight") { game.flashlight = true; game.flash_dir = game.forward(); }
+    if let Some(frames) = arg("--pan").and_then(|f| f.parse::<u32>().ok()) {
+        // A slow pan (0.3 rad/s) at a fixed exposure (EV 5.5), headless:
+        // the mean luminance of every frame, to see light that jumps.
+        game.light.auto_exposure = None;
+        game.light.ev100 = 5.5;
+        let gpu = render::Gpu::new()?;
+        let mut headless = app::Headless::new(&gpu, [480, 270], TICK_HZ)?;
+        for _ in 0..60 { game.tick(&[Controls::default()]); headless.frame(&mut game)?; }
+        for i in 0..frames {
+            game.yaw -= 0.3 / TICK_HZ;
+            game.tick(&[Controls::default()]);
+            let rgba = headless.frame(&mut game)?;
+            let lum: f64 = rgba.chunks(4).map(|p| 0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64).sum::<f64>() / (rgba.len() / 4) as f64;
+            println!("{i},{lum:.3}");
+        }
+        return Ok(());
+    }
     if let Some(frames) = arg("--bench").and_then(|f| f.parse::<u32>().ok()) {
         // GPU time per frame at 4K, headless (`--at`/`--yaw` pick the view).
         let gpu = render::Gpu::new()?;
