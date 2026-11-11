@@ -160,7 +160,14 @@ pub struct EnemyAnim {
     /// Its motion-captured body (rig.rs), and the hurt_t it last saw.
     pub body: body::Gait,
     pub hurt_seen: f64,
+    /// Seconds since it came into the world: it is made before your eyes
+    /// for the first MATERIALIZE of them.
+    pub born: f32,
 }
+
+/// How long a monster takes to be made as it comes in (Joep: its mesh
+/// built up, not a purple ball).
+pub const MATERIALIZE: f32 = 0.9;
 
 /// How a monster's body goes (Enemy._death), by its model.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -216,6 +223,7 @@ impl EnemyAnim {
         if self.scale == 0.0 {
             self.scale = base;
         }
+        self.born += dt;
         let moving = a.vel.length() > 0.4;
         self.walk += dt * if moving { 8.0 } else { 0.0 } * a.speed as f32 / 3.0;
         if !a.alive {
