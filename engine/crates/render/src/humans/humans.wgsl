@@ -298,18 +298,20 @@ fn pose_vertex(position:vec4<f32>,direction:vec4<f32>,pivot:vec4<f32>,tags:vec4<
             let side=sign(rest.x);
             let shoulder=vec3<f32>(side*0.1008,0.805,-0.012);
             let elbow=vec3<f32>(side*0.1878,0.6994,-0.0132);
-            let lower=rotate(elbow_angle);
+            // The anatomical bind already bends the forearm forward. Open that
+            // bend at rest and let the upper arm hang in the plane of the ribs.
+            let lower=rotate(elbow_angle+0.44*tuck);
             p=vec3<f32>(p.x,mix(p.yz,elbow.yz+lower*(p.yz-elbow.yz),bones.y));
             n=vec3<f32>(n.x,mix(n.yz,lower*n.yz,bones.y));
-            let relax=rotate(-(0.61+0.065*tuck)*side);
+            let relax=rotate(-(0.61-0.05*tuck)*side);
             let rest_arm=vec3<f32>(shoulder.xy+relax*(p.xy-shoulder.xy),p.z);
-            let swing=rotate(angle);
+            let swing=rotate(angle+0.27*tuck);
             p=mix(p,vec3<f32>(rest_arm.x,shoulder.yz+swing*(rest_arm.yz-shoulder.yz)),bones.x);
             let arm_normal=vec3<f32>(relax*n.xy,n.z);
             n=mix(n,vec3<f32>(arm_normal.x,swing*arm_normal.yz),bones.x);
         } else if arm!=0. {
             let pivot=vec3<f32>(arm*0.118,0.770,0.);
-            let rot=mat2x2<f32>(cos(angle),sin(angle),-sin(angle),cos(angle));
+            let rot=rotate(angle+0.09*tuck);
             if center.y<0.65 {
                 let elbow=vec3<f32>(arm*0.13,0.646,0.008);
                 let forearm=rotate(elbow_angle);
@@ -327,6 +329,14 @@ fn pose_vertex(position:vec4<f32>,direction:vec4<f32>,pivot:vec4<f32>,tags:vec4<
         }
         // Lift the collarbone with the raising arm about its inner end.
         let arm_weight=select(f32(arm!=0.),bones.x,anatomical);
+        // Settle the shoulder girdle into the upper chest, taking the outer
+        // shirt and sleeve with it. Keep the neck and middle of the collar fixed.
+        let shoulder_point=select(rest,center,bin==1u);
+        let outer_chest=smoothstep(0.032,0.104,abs(shoulder_point.x))
+            *smoothstep(0.70,0.78,shoulder_point.y)*(1.-smoothstep(0.81,0.85,shoulder_point.y));
+        let shoulder_drop=0.012*tuck*max(arm_weight,outer_chest);
+        p.y-=shoulder_drop;
+        anchor.y-=shoulder_drop;
         if arm_weight>0. {
             let side=select(-1.,1.,right_arm);
             let collar=vec2<f32>(0.025*side,0.79);
@@ -374,6 +384,14 @@ fn pose_vertex(position:vec4<f32>,direction:vec4<f32>,pivot:vec4<f32>,tags:vec4<
             n=vec3<f32>(n.x,hip_pitch*(knee_pitch*(foot_pitch*n.yz)));
             n=vec3<f32>(hip_roll*n.xy,n.z);
         }
+        // The fitted mesh has a wide A-stance; the coarse mesh already stands
+        // nearly under the hips. Bring in each leg from hip to ankle, translating
+        // the entire sole equally so the planted shoe stays level.
+        let bind_y=select(rest.y,center.y,bin==1u);
+        let inset=select(0.005,0.036,anatomical)*leg*(1.-smoothstep(ankle.y,hip.y,bind_y));
+        let inward=select(inset,-inset,right_leg);
+        p.x+=inward;
+        anchor.x+=inward;
         let pelvis_shift=0.42*unpack2x16float(seat.joints.z).x;
         p.x+=pelvis_shift; anchor.x+=pelvis_shift;
         p.y-=drop; anchor.y-=drop;
