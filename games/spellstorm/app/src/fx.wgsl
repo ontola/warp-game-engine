@@ -389,7 +389,15 @@ fn ground(s: GameSprite) -> vec4<f32> {
         let sw = atan2(q.y, q.x) + t * 0.8 + r * 3.0;
         let swirl = sn_fbm(vec3(cos(sw) * 2.0, sin(sw) * 2.0, t * 0.3));
         c = mix(vec3(0.01, 0.0, 0.03), vec3(0.45, 0.2, 0.8), smoothstep(0.35, 0.8, swirl) * (0.3 + rim * 1.2));
-        c += vec3(0.9, 0.8, 1.0) * step(0.985, sn_hash(vec3(floor(w * 9.0), floor(t * 0.5))));
+        // Stars: a few cells hold one, a small round point somewhere in the
+        // cell, twinkling (a whole lit cell drew as a square, Joep).
+        let cell = floor(w * 6.0);
+        let h = sn_hash(vec3(cell, 0.0));
+        let at = vec2(sn_hash(vec3(cell, 1.0)), sn_hash(vec3(cell, 2.0))) * 0.6 + 0.2;
+        let d = length(fract(w * 6.0) - at);
+        let tw = 0.5 + 0.5 * sin(t * (2.0 + 3.0 * h) + h * 40.0);
+        let star = select(0.0, 1.0, h > 0.97) * exp(-d * d * 260.0) * tw;
+        c += vec3(0.9, 0.8, 1.0) * star;
         a *= 0.8;
     } else {
         // Any other element: its colour from the sprite, churning.
