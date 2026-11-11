@@ -9,13 +9,11 @@
 //! - `effects`: element name -> { dmg, poison, push, burn, chill, wet, shock, slow };
 //! - `tomes`: the shrines' tomes (mods/base/tomes.luau), replacing the list;
 //! - `monsters`, `biomes`: every monster kind and every level
-//!   (mods/base/monsters.luau, biomes.luau), replacing the lists. These have
-//!   no Rust copy: without installed rules the built-in files are read.
+//!   (mods/base/monsters.luau, biomes.luau), replacing the lists.
 //! - `cast(g, e)`, `hit(g, e)`, `tick(g)`: hooks the sim calls inline.
 //!
-//! Without installed rules (the sim's own tests) the built-in Rust grammar,
-//! effects and tomes stand in; the Luau base files are their exact port and
-//! a test keeps them so.
+//! The base files are the only copy: without installed rules (the sim's own
+//! tests, or inside a hook) the built-in files embedded in BUILTIN answer.
 use crate::el::{self, Effect, El, Kind};
 use crate::biome::Biome;
 use crate::enemy::Kind as Monster;
@@ -71,6 +69,8 @@ struct Rules {
     recent: Vec<String>,
     /// This host installed its monster and biome lists (later ones keep their keys).
     seen_lists: bool,
+    /// The built-in BASE rules: refresh never installs anything from them.
+    base: bool,
 }
 
 static RULES: Mutex<Option<Rules>> = Mutex::new(None);
@@ -113,7 +113,7 @@ pub fn install(dir: Option<&Path>) -> Result<Vec<String>, String> {
             }
         }
     }
-    let mut r = Rules { host, seen: u64::MAX, compose: None, cache: HashMap::new(), recent: vec![], seen_lists: false };
+    let mut r = Rules { host, seen: u64::MAX, compose: None, cache: HashMap::new(), recent: vec![], seen_lists: false, base: false };
     let lines = r.refresh();
     *RULES.lock().unwrap() = Some(r);
     ACTIVE.store(true, Ordering::Relaxed);
@@ -127,7 +127,7 @@ pub fn uninstall() {
     for f in [&HIT, &CAST, &TICK] {
         f.store(false, Ordering::Relaxed);
     }
-    el::set_effects(el::EFFECT);
+    el::set_effects(None);
     crate::relics::set_tomes(None);
     crate::enemy::set_kinds(None);
     crate::biome::set_biomes(None);
@@ -165,7 +165,7 @@ impl Rules {
             self.seen = self.host.generation();
             self.cache.clear();
             self.compose = None;
-            let mut effects = el::EFFECT;
+            let mut effects = builtin_effects();
             let mut tomes: Option<Vec<Tome>> = None;
             let mut monsters: Option<Vec<Monster>> = None;
             let mut biomes: Option<Vec<Biome>> = None;
@@ -200,7 +200,7 @@ impl Rules {
                     }
                 }
             }
-            el::set_effects(effects);
+            el::set_effects(Some(effects));
             if tomes.is_some() {
                 crate::relics::set_tomes(tomes);
             }
@@ -260,41 +260,71 @@ impl Rules {
             let t: Table = f.call((list, form.name(), mods_table(lua, mods)?))?;
             spell_from(&t, slots, form)
         });
-        if r.is_none() {
+        if r.is_none() && !self.base {
             self.refresh();
+        }
+        if r.is_none() && self.base {
+            self.recent.extend(self.host.drain_log());
         }
         r
     }
 }
 
-/// The spell `slots` and `form` make under the Luau rules, fitted like the
-/// built-in grammar; None without rules (or inside a hook), when the
-/// built-in grammar answers.
-pub(crate) fn compose(slots: &[El], form: Form, mods: &Mods) -> Option<Spell> {
-    if !installed() {
-        return None;
-    }
-    let mut g = RULES.try_lock().ok()?;
-    let r = g.as_mut()?;
-    if r.host.generation() != r.seen {
-        r.refresh();
-    }
-    let k = format!("{slots:?}{form:?}{mods:?}");
-    if let Some(s) = r.cache.get(&k) {
-        return s.clone();
-    }
-    let out = r.raw(slots, form, mods).map(|(mut s, fit)| {
-        if fit && s.n.has_rate && crate::balance::measured(&s) {
-            // The factor comes from the spell without tomes, so a tome
-            // still makes you stronger (grammar::numbers).
-            if let Some((mut base, _)) = r.raw(slots, form, &Mods::default()) {
-                s.n.rate *= crate::balance::fit(&mut base);
+/// The spell `slots` and `form` make, with its rate fitted
+/// (crate::balance): the installed rules' grammar, else the built-in
+/// mods/base/spells.luau. Inside a hook the installed host is busy, so the
+/// built-in grammar answers there too.
+pub(crate) fn compose(slots: &[El], form: Form, mods: &Mods) -> Spell {
+    if installed() {
+        if let Ok(mut g) = RULES.try_lock() {
+            if let Some(s) = g.as_mut().and_then(|r| r.compose_fitted(slots, form, mods)) {
+                return s;
             }
         }
-        s
-    });
-    r.cache.insert(k, out.clone());
-    out
+    }
+    let mut g = BASE.lock().unwrap();
+    let r = g.get_or_insert_with(Rules::base);
+    r.compose_fitted(slots, form, mods).unwrap_or_else(|| panic!("mods/base/spells.luau failed to compose {slots:?} {form:?}: {}", r.recent.join(" | ")))
+}
+
+/// The built-in rules (BUILTIN), never watched or installed: the grammar
+/// when no rules are installed and inside hooks.
+static BASE: Mutex<Option<Rules>> = Mutex::new(None);
+
+impl Rules {
+    fn base() -> Rules {
+        let mut host = Host::new(Limits::default(), api).expect("Luau host");
+        for (name, src) in BUILTIN {
+            host.add_source(name, src).unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+        let compose = host.modules().iter().enumerate().find_map(|(i, m)| m.exports.as_ref()?.raw_get::<Option<Function>>("compose").ok().flatten().map(|f| (i, f)));
+        assert!(compose.is_some(), "mods/base/spells.luau exports no compose");
+        Rules { seen: host.generation(), host, compose, cache: HashMap::new(), recent: vec![], seen_lists: true, base: true }
+    }
+
+    /// One composed spell, fitted; cached per generation. None when the
+    /// grammar failed (logged) or there is none.
+    fn compose_fitted(&mut self, slots: &[El], form: Form, mods: &Mods) -> Option<Spell> {
+        if self.host.generation() != self.seen {
+            self.refresh();
+        }
+        let k = format!("{slots:?}{form:?}{mods:?}");
+        if let Some(s) = self.cache.get(&k) {
+            return s.clone();
+        }
+        let out = self.raw(slots, form, mods).map(|(mut s, fit)| {
+            if fit && s.n.has_rate && crate::balance::measured(&s) {
+                // The factor comes from the spell without tomes, so a tome
+                // still makes you stronger.
+                if let Some((mut base, _)) = self.raw(slots, form, &Mods::default()) {
+                    s.n.rate *= crate::balance::fit(&mut base);
+                }
+            }
+            s
+        });
+        self.cache.insert(k, out.clone());
+        out
+    }
 }
 
 /// What the `cast` hooks made of a cast.
@@ -697,7 +727,7 @@ fn api(lua: &Lua, base: &Table) -> mlua::Result<()> {
 
 /// Read `what` from the built-in module `file`, once per process.
 fn builtin<T>(file: &str, what: &str, read: impl FnOnce(&Table) -> mlua::Result<T>) -> T {
-    let mut host = Host::new(Limits::default(), |_, _| Ok(())).expect("Luau host");
+    let mut host = Host::new(Limits::default(), api).expect("Luau host");
     let (name, src) = BUILTIN.iter().find(|(n, _)| *n == file).unwrap();
     host.add_source(name, src).unwrap_or_else(|e| panic!("{name}: {e}"));
     let t: Table = host.modules()[0].exports.as_ref().unwrap().raw_get(what).unwrap_or_else(|e| panic!("{name}: {what}: {e}"));
@@ -714,6 +744,27 @@ pub fn builtin_kinds() -> &'static [Monster] {
         k.push(crate::enemy::none_kind());
         k
     })
+}
+
+/// Every element's effect from the built-in mods/base/spells.luau.
+pub fn builtin_effects() -> [Effect; 13] {
+    static EFFECTS: std::sync::OnceLock<[Effect; 13]> = std::sync::OnceLock::new();
+    *EFFECTS.get_or_init(|| {
+        builtin("base/spells.luau", "effects", |t| {
+            let mut out = [Effect { dmg: f64::NAN, poison: 0.0, push: 0.0, burn: 0.0, chill: 0.0, wet: 0.0, shock: 0.0, slow: 0.0 }; 13];
+            read_effects(t, &mut out)?;
+            match el::ALL.iter().find(|e| out[e.idx()].dmg.is_nan()) {
+                Some(e) => Err(mlua::Error::runtime(format!("no effect for {}", key(*e)))),
+                None => Ok(out),
+            }
+        })
+    })
+}
+
+/// The tomes from the built-in mods/base/tomes.luau.
+pub fn builtin_tomes() -> Vec<Tome> {
+    static TOMES: std::sync::OnceLock<Vec<Tome>> = std::sync::OnceLock::new();
+    TOMES.get_or_init(|| builtin("base/tomes.luau", "tomes", read_tomes)).clone()
 }
 
 /// The biomes from the built-in mods/base/biomes.luau.

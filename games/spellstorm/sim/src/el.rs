@@ -89,81 +89,13 @@ pub struct Effect {
     pub slow: f64,
 }
 
-const fn eff(dmg: f64) -> Effect {
-    Effect {
-        dmg,
-        poison: 0.0,
-        push: 0.0,
-        burn: 0.0,
-        chill: 0.0,
-        wet: 0.0,
-        shock: 0.0,
-        slow: 0.0,
-    }
-}
+static EFFECTS: std::sync::RwLock<Option<[Effect; 13]>> = std::sync::RwLock::new(None);
 
-static EFFECTS: std::sync::RwLock<[Effect; 13]> = std::sync::RwLock::new(EFFECT);
-
-/// Every element's effect from now on (the Luau rules set them).
-pub fn set_effects(e: [Effect; 13]) {
+/// Every element's effect from now on (the Luau rules set them); None goes
+/// back to the built-in mods/base/spells.luau.
+pub fn set_effects(e: Option<[Effect; 13]>) {
     *EFFECTS.write().unwrap() = e;
 }
-
-pub const EFFECT: [Effect; 13] = [
-    Effect {
-        poison: 1.0,
-        ..eff(6.0)
-    },
-    eff(16.0),
-    Effect {
-        burn: 1.0,
-        ..eff(7.0)
-    },
-    Effect {
-        chill: 1.0,
-        ..eff(3.0)
-    },
-    Effect {
-        wet: 1.0,
-        push: 1.5,
-        ..eff(1.0)
-    },
-    Effect {
-        shock: 1.0,
-        ..eff(12.0)
-    },
-    Effect {
-        push: 2.0,
-        ..eff(16.0)
-    },
-    Effect {
-        push: 4.0,
-        ..eff(1.0)
-    },
-    Effect {
-        wet: 0.6,
-        burn: 0.3,
-        ..eff(10.0)
-    },
-    Effect {
-        chill: 1.2,
-        ..eff(12.0)
-    },
-    Effect {
-        slow: 1.0,
-        wet: 0.4,
-        ..eff(5.0)
-    },
-    Effect {
-        burn: 1.2,
-        ..eff(14.0)
-    },
-    Effect {
-        shock: 0.8,
-        push: 2.0,
-        ..eff(9.0)
-    },
-];
 
 impl El {
     pub fn idx(self) -> usize {
@@ -182,9 +114,10 @@ impl El {
         COLOR[self as usize]
     }
 
-    /// What one unit does on a hit: the Luau rules' `effects`, else EFFECT.
+    /// What one unit does on a hit: the Luau rules' `effects`, else the
+    /// built-in ones (mods/base/spells.luau).
     pub fn effect(self) -> Effect {
-        EFFECTS.read().unwrap()[self as usize]
+        EFFECTS.read().unwrap().unwrap_or_else(crate::rules::builtin_effects)[self as usize]
     }
 
     pub fn kind(self) -> Kind {
