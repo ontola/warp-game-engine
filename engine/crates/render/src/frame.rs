@@ -2425,9 +2425,10 @@ impl Renderer {
             far_sun_scene_bind,
             far_sun,
             foliage_sun_pages,
-            // Opt-in comparison: the same executable retains the original
-            // synchronous cache validation unless explicitly requested.
-            async_shadow_validation: (std::env::var("KERN_ASYNC_SHADOW_VALIDATION").as_deref()==Ok("1"))
+            // On by default (10 November): the synchronous check stalled the
+            // CPU on the GPU for every far-sun redraw and foliage page update
+            // (r61). KERN_ASYNC_SHADOW_VALIDATION=0 keeps the explicit wait.
+            async_shadow_validation: (std::env::var("KERN_ASYNC_SHADOW_VALIDATION").as_deref()!=Ok("0"))
                 .then(Default::default),
             foliage_sun_scene_bind,
             foliage_page_targets:Default::default(),
@@ -5849,11 +5850,16 @@ impl Renderer {
         }}
         let lamp_passes=headlight_targets.iter().take(headlights.len()).enumerate()
             .map(|(index,target)|solar_record("headlight",Some(index),target,self.instance_groups.headlight_enabled)).collect();
-        if readback==Readback::None && !far_updated && (page_plan.updates.is_empty() || async_pages) {
+        // A far-sun redraw validates its visible count asynchronously too,
+        // when a validation batch is free (the far map and pages exclude each other).
+        let async_far=far_updated && async_pages && shadow_validation.as_ref().is_some_and(|v|v.available())
+            && page_plan.updates.is_empty() && far_targets.is_some();
+        if readback==Readback::None && (!far_updated || async_far) && (page_plan.updates.is_empty() || async_pages) {
             cpu.mark("diagnostics");
-            let page_validation=if page_plan.updates.is_empty() {None}else{
-                let pages:Vec<_>=page_plan.updates.iter().zip(page_targets.iter())
+            let page_validation=if page_plan.updates.is_empty() && !async_far {None}else{
+                let mut pages:Vec<_>=page_plan.updates.iter().zip(page_targets.iter())
                     .map(|(page,(_,target))|(page.layer,page.capacity,&target.counter)).collect();
+                if async_far {pages.push((crate::shadow_validation::FAR_SUN,self.far_sun.capacity,&far_targets.as_ref().unwrap().counter));}
                 Some(shadow_validation.as_mut().unwrap().encode(gpu,&mut enc,&pages)
                     .ok_or("foliage page validation queue unexpectedly full")?)
             };
@@ -5862,6 +5868,7 @@ impl Renderer {
             if exposure_mirrored { self.auto_exposure.submitted(); }
             cpu.mark("submit");
             if let Some(ticket)=page_validation {shadow_validation.as_mut().unwrap().submitted(ticket);}
+            if far_updated {self.far_sun.submitted();}
             *self.sun_diagnostics.lock().unwrap()=crate::shadow_diagnostics::State {context:Some(profile_context),passes:solar_passes};
             *self.headlight_diagnostics.lock().unwrap()=crate::shadow_diagnostics::State {context:Some(profile_context),passes:lamp_passes};
             if let Some(meadow) = &self.meadow { meadow.group_cache_submitted(); }

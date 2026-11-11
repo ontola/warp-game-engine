@@ -101,7 +101,7 @@ note linked says why. They are candidates for removal from the code.
 | `KERN_STATIC_SUN_CACHE` | Static/dynamic split sun cache | [r45](log/static-sun-cache-r45.md) |
 | `KERN_RECEIVER_SHADOW_DEMAND` | Receiver-driven shadow tiles | [r49](log/lod-shadow-demand-r49.md) |
 | `KERN_PAGED_FOLIAGE_SUN` | Paged foliage sun map (excludes the far sun map) | [world lighting](log/world-lighting.md), [distant tree light](log/distant-tree-lighting.md) |
-| `KERN_ASYNC_SHADOW_VALIDATION` | Asynchronous shadow cache validation | [r61](log/frame-hitches-r61.md) |
+| `KERN_ASYNC_SHADOW_VALIDATION` | Asynchronous shadow cache validation, far-sun redraws included; on by default since 10 November, `=0` restores the explicit wait | [r61](log/frame-hitches-r61.md) |
 | `KERN_SUN_RECEIVER_PLANE`, `KERN_SUN_TERRAIN_ERROR`, `KERN_SUN_SURFACE_SOURCE`, `KERN_ROCK_VARIATION` | Low-sun shadow and rock variants | [sun shadow diagnostics](log/sun-shadow-diagnostics.md) |
 | `KERN_OWNER_RANGE_INDEX` | Indexed owner ranges | [terrain forest streaming](log/terrain-forest-streaming-2026-11-03.md) |
 | `KERN_RASTER_LARGE_FIRST` | Raster large clusters first | [handoff log](log/handoff.md) |
