@@ -1274,6 +1274,36 @@ fn unpack_emission(word: u32) -> vec3<f32> {
     return vec3<f32>(f32(word&511u),f32((word>>9u)&511u),f32((word>>18u)&511u))*exp2(f32(word>>27u)-24.0);
 }
 fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample { return irradiance_sample_at(p, p, n); }
+// DDGI-style probe visibility (room_bake::bake_visibility): per probe an
+// 8x8 octahedral map of the mean and mean squared distance to the nearest
+// surface, in aux at gi.trace.w (0: none). How much probe `index` at `probe`
+// sees the point `x`: 1 in front of the nearest surface along that
+// direction, falling off by Chebyshev's bound behind it (cubed, as DDGI).
+fn probe_sees(index: u32, probe: vec3<f32>, x: vec3<f32>) -> f32 {
+    let d = x - probe;
+    let dist = length(d);
+    if dist < 1e-4 { return 1.0; }
+    let dir = d / dist;
+    var e = dir.xy / (abs(dir.x) + abs(dir.y) + abs(dir.z));
+    if dir.z < 0.0 {
+        e = (1.0 - abs(e.yx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), e >= vec2<f32>(0.0));
+    }
+    // Bilinear over the 8x8 map (texel centres; clamped at its border): a
+    // nearest texel showed its facets as a sawtooth edge on the walls.
+    let st = clamp(e * 4.0 + 3.5, vec2<f32>(0.0), vec2<f32>(7.0));
+    let t0 = vec2<u32>(min(floor(st), vec2<f32>(6.0)));
+    let fr = st - vec2<f32>(t0);
+    let at = u32(gi.trace.w) + index * 64u + t0.y * 8u + t0.x;
+    let m = mix(mix(unpack2x16float(aux_word(at)), unpack2x16float(aux_word(at + 1u)), fr.x),
+        mix(unpack2x16float(aux_word(at + 8u)), unpack2x16float(aux_word(at + 9u)), fr.x), fr.y);
+    if m.x <= 0.0 { return 0.0; }
+    if dist <= m.x { return 1.0; }
+    let variance = abs(m.y - m.x * m.x) + 1e-4;
+    let behind = dist - m.x;
+    let p = variance / (variance + behind * behind);
+    return p * p * p;
+}
+
 
 // `irradiance_sample` with the trilinear weights taken at `p` and the wall
 // tests (backface, separation planes) at `surface`: a lookup point moved
@@ -1283,6 +1313,7 @@ fn irradiance_sample_at(p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> Irrad
     // Plane tests blend over 15 cm, but only 2 cm for a moved lookup: its
     // weights reach probes the blend would let through at a corner.
     let soft=select(0.15,0.02,any(p!=surface));
+    let ddgi=gi.trace.w>0.5;
     let o = u32(gi.params.w);
     if !FEATURE_IRRADIANCE || o == 0u { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
     let transport = aux_word(o + 7u) >= 2u;
@@ -1325,19 +1356,28 @@ fn irradiance_sample_at(p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> Irrad
             // Probes just behind the surface still count a little (a wall's
             // own probes sit in it); far behind it they do not.
             let backface=clamp(facing*2.0+1.0,0.0,1.0);
-            let blend_weight=w3.x*w3.y*w3.z*(backface*backface+1e-4);
+            var blend_weight=w3.x*w3.y*w3.z*(backface*backface+1e-4);
             let base=o+8u+(g.x+g.y*dims.x+g.z*dims.x*dims.y)*18u;
+            let index=g.x+g.y*dims.x+g.z*dims.x*dims.y;
+            if ddgi {
+                // DDGI: a smooth backface weight and the probe's own view of
+                // the (normal-biased) point instead of per-cell wall tests.
+                let wrap=(facing+1.0)*0.5;
+                blend_weight=w3.x*w3.y*w3.z*(wrap*wrap+0.2);
+            }
             if mode>=4u {
                 var valid=select(1.0,0.0,(aux_word(base)&0x80000000u)!=0u);
                 let inside=valid;
-                if mode==5u {
+                if ddgi {
+                    valid*=probe_sees(index,origin+vec3<f32>(g)*cell,surface+n*(0.3*cell));
+                } else if mode==5u {
                     let plane=vec4<f32>(aux_f32(base+1u),aux_f32(base+2u),aux_f32(base+4u),aux_f32(base+5u));
                     // Zero plane passes through. Blend over 15 cm to avoid a hard edge.
                     valid*=smoothstep(-soft,0.0,dot(plane.xyz,surface)+plane.w);
                 }
                 if mode==7u {
                     let plane=vec4<f32>(aux_f32(base+2u),aux_f32(base+5u),aux_f32(base+8u),aux_f32(base+11u));
-                    valid*=smoothstep(-soft,0.0,dot(plane.xyz,surface)+plane.w);
+                    if !ddgi { valid*=smoothstep(-soft,0.0,dot(plane.xyz,surface)+plane.w); }
                     let e=unpack_emission(aux_word(base+axis.x+1u))*n2.x
                         +unpack_emission(aux_word(base+axis.y+1u))*n2.y
                         +unpack_emission(aux_word(base+axis.z+1u))*n2.z;

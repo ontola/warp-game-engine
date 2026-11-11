@@ -100,6 +100,17 @@ probe cell is kept only if none of that cell's probes is inside geometry;
 otherwise it stays in the surface point's cell, so at a room's edges it cannot
 reach the probes beyond the adjoining wall.
 
+Probe visibility (DDGI): `Scene::reserve_probe_visibility` and
+`Renderer::set_probe_visibility` with `room_bake::bake_visibility` give
+every probe an 8x8 octahedral map of the mean and mean squared distance to
+the nearest surface (64 words per probe in aux; 3.5 MB for 13,824 probes).
+Shading then weights each of the eight probes by a Chebyshev test of the
+normal-biased point's distance against that map, read bilinearly, and a
+smooth backface term, instead of the separation planes. Probes behind a wall
+fade out smoothly rather than per cell. Cost in `interior_rooms` at 4K: within
+run-to-run noise of the shade pass (under 0.6 ms). `ROOMS_NO_DDGI=1` turns it
+off there for comparison.
+
 ## Light shapes: cookies and profiles
 
 A lamp is rarely uniform. Clustered lights can carry a shape
