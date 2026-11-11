@@ -19,7 +19,7 @@
 pub mod clipboard;
 pub mod debug;
 pub mod editor;
-mod dev_bar;
+pub mod dev_bar;
 pub mod stats;
 pub mod input;
 pub mod text;
