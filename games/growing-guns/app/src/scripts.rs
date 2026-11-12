@@ -4,6 +4,8 @@
 //! A module returns a table; these keys mean something:
 //! - `cards`: card definitions (see `mods/base/cards.luau`); a card's
 //!   `apply(w)` mutates the player's Weapon (Godot field names);
+//! - `gun`: the rifle before any card (mods/base/gun.luau), World::gun;
+//!   weapons are rebuilt on it, so an edit applies at the next round;
 //! - `hit(g, e)`, `kill(g, e)`, `tick(g)`, `round_start(g)`: hooks the sim
 //!   calls inline (World::hooks), in module path order.
 //!
@@ -122,6 +124,10 @@ impl Scripts {
             st.seen = st.host.generation();
             let (defs, picks, applies, errors) = collect_cards(&st.host);
             world.cards = Arc::new(world.cards.merged(defs));
+            match read_gun(&st.host) {
+                Ok(gun) => world.gun = gun,
+                Err(e) => st.host_log(format!("{e} (keeping the gun from before)")),
+            }
             st.picks = picks;
             st.applies = applies;
             for e in errors { st.host_log(e); }
@@ -220,6 +226,17 @@ impl Hooks for Scripts {
 
 /// Card definitions from every module's `cards`, in module order.
 type Fns = Vec<(String, usize, Function)>;
+
+/// The `gun` a module returns (mods/base/gun.luau; a later module wins),
+/// or the built-in one when none does.
+fn read_gun(host: &Host) -> Result<weapon::Gun, String> {
+    let mut gun = weapon::Gun::default();
+    for module in host.modules() {
+        let Some(v) = module.exports.as_ref().and_then(|e| e.raw_get::<Value>("gun").ok()).filter(|v| !v.is_nil()) else { continue };
+        gun = host.unguarded(|lua| mlua::LuaSerdeExt::from_value(lua, v)).map_err(|e| format!("{}: gun: {}", module.name, script::short(&e)))?;
+    }
+    Ok(gun)
+}
 
 fn collect_cards(host: &Host) -> (Vec<CardDef>, Fns, Fns, Vec<String>) {
     let (mut defs, mut picks, mut applies, mut errors) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -415,6 +432,7 @@ pub fn api_doc() -> String {
     s += "## Module exports\n\nA module returns a table of this type (every key optional):\n\n```luau\n";
     s += &exports_type();
     s += "```\n\n";
+    s += "- `gun`: The rifle before any card, every field required (mods/base/gun.luau; a later module wins). Weapons are rebuilt on it each round, so an edit applies at the next round; a broken one keeps the gun before.\n";
     for (k, _, doc) in HOOKS { s += &format!("- `{k}`: {doc}\n"); }
     s += "\n```luau\ntype Hit = { victim: number, attacker: number, damage: number, head: boolean, explosion: boolean }\ntype Kill = { victim: number, attacker: number? }  -- attacker nil: lava\n```\n\n";
     s += "Dash is retired. The `dash_iframes`, `dash_end_melee` and `dash_spawn_bomb` weapon fields remain readable for old replay compatibility but have no gameplay effect. `dmg_up`, `big_mag` and `rapid_fire` have three times the ordinary draw weight.\n\n";
@@ -430,7 +448,7 @@ pub fn api_doc() -> String {
 }
 
 fn exports_type() -> String {
-    let mut s = String::from("type Exports = {\n\tcards: { Card }?,\n");
+    let mut s = String::from("type Exports = {\n\tcards: { Card }?,\n\tgun: Gun?,\n");
     for (k, sig, _) in HOOKS { s += &format!("\t{k}: ({sig})?,\n"); }
     s + "}\n"
 }
@@ -442,7 +460,7 @@ pub fn api_types() -> String {
         let (args, ret) = sig.split_once("):").map(|(a, r)| (format!("{a})"), r.trim().to_string())).unwrap_or((sig.to_string(), "()".into()));
         s += &format!("\t-- {doc}\n\t{k}: {} -> {ret},\n", args.replacen("self", "self: Game", 1));
     }
-    s += "}\n\nexport type Hit = { victim: number, attacker: number, damage: number, head: boolean, explosion: boolean }\nexport type Kill = { victim: number, attacker: number? }\n";
+    s += "}\n\nexport type Hit = { victim: number, attacker: number, damage: number, head: boolean, explosion: boolean }\nexport type Kill = { victim: number, attacker: number? }\nexport type Gun = { damage: number, fire_interval: number, mag_size: number, reload_time: number, headshot: number, spread: number, recoil: number, bullet_drop: number, bullet_speed: number }\n";
     s += &format!("export {}", exports_type());
     s += "export type Card = { id: string, name: string?, text: string?, color: { number }?, firepower: boolean?, mul: { [string]: number }?, add: { [string]: number }?, pick: ((g: Game, p: number) -> ())? }\n";
     s
@@ -486,6 +504,31 @@ mod tests {
         // Weapons are rebuilt from the cards each round.
         w.rebuild_weapon(1);
         assert_eq!(w.players[1].weapon.special, growing_guns::Special::Zoom);
+    }
+
+    /// mods/base/gun.luau is the sim's built-in gun exactly; an edit applies
+    /// when weapons are next rebuilt, and a broken one keeps the gun before.
+    #[test]
+    fn the_gun_file_is_the_built_in_gun_and_applies_next_round() {
+        let shipped = include_str!("../../mods/base/gun.luau");
+        let dir = std::env::temp_dir().join(format!("gg-gun-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("gun.luau"), shipped).unwrap();
+        let mut w = World::new(3, &[true; 2]);
+        let s = attach_dir(&mut w, Some(dir.clone())).unwrap();
+        assert_eq!(w.gun, weapon::Gun::default());
+        assert!(shipped.contains("damage = 22.0,"));
+        std::fs::write(dir.join("gun.luau"), shipped.replace("damage = 22.0,", "damage = 130.0,")).unwrap();
+        s.poll(&mut w);
+        assert_eq!(w.gun.damage, 130.0);
+        assert_eq!(w.players[0].weapon.damage(), 22.0, "not in the middle of a round");
+        w.rebuild_weapon(0);
+        assert_eq!(w.players[0].weapon.damage(), 130.0);
+        std::fs::write(dir.join("gun.luau"), shipped.replace("damage = 22.0,", "damage = \"lots\",")).unwrap();
+        s.poll(&mut w);
+        assert_eq!(w.gun.damage, 130.0, "a broken edit keeps the gun before");
+        assert!(s.status().contains("keeping the gun from before"), "{}", s.status());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -111,7 +111,7 @@ impl Guns {
         let Some(rig) = self.rigs.get_mut(player) else { return };
         rig.fire(&Stats::of(p));
         let f = &mut self.feel[player];
-        f.kick = f.kick.max(0.08 * (p.weapon.recoil() / growing_guns::weapon::BASE_RECOIL).clamp(0.2, 2.5));
+        f.kick = f.kick.max(0.08 * (p.weapon.recoil() / p.weapon.gun.recoil).clamp(0.2, 2.5));
     }
 
     /// One tick of gun state: rigs follow their stats (morphs, heat, bolt,

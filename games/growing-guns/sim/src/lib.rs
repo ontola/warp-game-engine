@@ -225,7 +225,7 @@ impl Player {
             pos: Vec3::ZERO, vel: Vec3::ZERO, yaw: 0.0, pitch: 0.0, recoil_pitch: 0.0, on_floor: false, wall_normal: None,
             jumps_left: 2, wall_jump_cd: 0.0, dash_timer: 0.0, dash_dir: Vec3::ZERO,
             dash_charges: 0, dash_recharge: 0.0, health: MAX_HEALTH, alive: true, ghost: false, howitzer: None, siege_crossbow: false,
-            ammo: weapon::BASE_MAG_SIZE as u32, reloading: false, rifle_cd: 0.0, bloom: 0.0, score: 0, kills: 0, bot, since_shot: 9.0,
+            ammo: Weapon::default().mag_size(), reloading: false, rifle_cd: 0.0, bloom: 0.0, score: 0, kills: 0, bot, since_shot: 9.0,
             cards: Vec::new(), weapon: Weapon::default(), offer: None, offer_age: 0.0,
             iframes: 0.0, slow_mult: 1.0, slow_timer: 0.0, poison_left: 0.0, poison_dps: 0.0, poison_accum: 0.0, poison_from: None,
             phoenix_charges: 0, phoenix: None, launching: None, frozen: false, lava_accum: 0.0,
@@ -486,6 +486,9 @@ pub struct World {
     pub modifier: Option<Modifier>,
     /// Chance a round rolls a modifier (Godot 0.30).
     pub modifier_chance: f32,
+    /// The rifle before cards (mods/base/gun.luau through the app's mods):
+    /// weapons are rebuilt on it, so a change applies at the next round.
+    pub gun: weapon::Gun,
     /// Party rules on top of the modifier (GameNight settings; 1 is Godot's game).
     pub rules: Rules,
     /// Seconds a picker has before a card is chosen for them (Godot 10).
@@ -537,7 +540,7 @@ impl World {
         let mut w = World {
             next_bullet_id:1,
             arena: Arena::empty(), players, bullets: Vec::new(), projectiles: Vec::new(), strikes: Vec::new(), pickups: Vec::new(),
-            tick: 0, round: 1, phase: Phase::Playing, rounds_to_win: flow::ROUNDS_TO_WIN, modifier: None, modifier_chance: flow::MODIFIER_CHANCE,
+            tick: 0, round: 1, phase: Phase::Playing, rounds_to_win: flow::ROUNDS_TO_WIN, modifier: None, modifier_chance: flow::MODIFIER_CHANCE, gun: weapon::Gun::default(),
             rules: Rules::default(), card_pick_seconds: flow::CARD_PICK_TIMEOUT,
             forced_modifier: None, next_modifier: None, force_island: false, coop: false, waves: coop::Waves::default(), lava: flow::LavaLeak::default(),
             events: Vec::new(), breakage: Breakage::default(), bots_paused: false,
@@ -658,14 +661,14 @@ impl World {
 
     /// The weapon from the owned cards alone (Godot `rebuild_weapon_from_cards`).
     pub fn rebuild_weapon(&mut self, player: usize) {
-        self.players[player].weapon = Weapon::default();
+        self.players[player].weapon = Weapon::with_gun(self.gun);
         for c in self.players[player].cards.clone() { self.apply_card_to(player, c); }
     }
 
     /// Owned loadout without borrowed guns or temporary round modifiers.
     /// Presentation caches this at round boundaries, not once per frame.
     pub fn owned_weapon(&self, player: usize) -> Weapon {
-        let mut weapon = Weapon::default();
+        let mut weapon = Weapon::with_gun(self.gun);
         for &card in &self.players[player].cards {
             let Some(def) = self.cards.get(card) else { continue };
             self.cards.apply(card, &mut weapon);
