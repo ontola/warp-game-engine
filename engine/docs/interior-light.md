@@ -159,6 +159,7 @@ const PANEL: LightFace = LightFace::Rect { width_m: 0.5, depth_m: 0.5 };
 let light = PANEL.apply(LocalLight { /* position on the panel, intensity */ .. });
 let mesh = scene.add_mesh(&PANEL.primitive(scene.add_material(PANEL.material(&light))).mesh());
 // place it with PANEL.transform(&light); exclude it from the light's shadow
+let lamp = ClusteredLight::shadowed(light, id).with_face(PANEL);
 ```
 
 - The face's radiance is the light's intensity over the face's area (a
@@ -166,12 +167,23 @@ let mesh = scene.add_mesh(&PANEL.primitive(scene.add_material(PANEL.material(&li
   axis). A face given its own nits drifts away from its light: the
   `interior_rooms` panels were 14 times brighter than the 450 cd their
   lights send.
-- `apply` sets the light's source radius to the sphere of the face's
-  projected area. Clustered lights use it for their highlight
-  (`sphere_light_specular`, Karis 2013's representative point: the point of
-  the source sphere nearest the mirror ray, the lobe widened by the
-  source's angular size and renormalised), so the highlight of a 0.5 m
-  panel has the panel's size, not a point light's.
+- The highlight is the face's own. A clustered light `with_face` a
+  rectangle or disc integrates its specular over the face with linearly
+  transformed cosines (`face_light_specular`, Heitz et al. 2016): the GGX
+  lobe is approximated by a cosine under a 3x3 transform looked up by
+  roughness and view angle, so the integral over the face polygon (a disc
+  as the octagon of its area) is closed-form, clipped to the horizon. The
+  tables (`src/ltc_ggx.bin`, 64 x 64) are fitted to the engine's own `ggx`
+  by `examples/ltc_fit.rs`; they sit ahead of the lights in the scene
+  tables. Against brute force over a 0.5 m ceiling panel (28 roughness and
+  view cases, `light_face` tests) the energy-weighted error is 1.6 %; the
+  sphere of equal area (Karis 2013's representative point,
+  `sphere_light_specular`, still used for sphere faces and lights without
+  a face) was 21.9 %, about 40 % too bright for the forward highlight at
+  low roughness. The cosine has no backscatter tail, so faint highlights
+  with the face behind the viewer come out low. `apply` sets the light's
+  source radius to the sphere of the face's projected area, for its
+  shadow penumbra.
 - The face's material is marked as a light's face (EMISSIVE with a negative
   `scale`). A reflection ray that reaches such a pixel counts as a miss
   (`light_face_at` in `march_hit`): the light's own specular already
@@ -181,9 +193,10 @@ let mesh = scene.add_mesh(&PANEL.primitive(scene.add_material(PANEL.material(&li
   of the reflections' sparkle (18,431 isolated bright pixels on the room 3
   floor at 4K before, 19 after; 5,235 during a fast turn before, 1 after).
 
-The highlight is that of a sphere; a rectangle's own highlight (stretched
-along the panel, LTC area lights, Heitz 2016) is not done yet. Cost in
-`interior_rooms` at 4K: the shade pass 7.75 to 7.93 ms.
+Cost in `interior_rooms` at 4K (four panels lighting most of the view, RTX
+5070 Ti): the faces and sphere highlights took the shade pass from 7.75 to
+7.93 ms; the LTC highlights another 0.65 ms (8.25 to 8.90). The light
+record is 5 vec4 (the face is the fifth).
 
 ## Cost
 

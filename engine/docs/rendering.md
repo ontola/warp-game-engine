@@ -200,7 +200,9 @@ to the headlights and local lights, which still work.
   8-tap blocker search and 16 compare taps over the penumbra (source radius
   times receiver minus blocker over blocker, at most 24 texels); smaller
   lights keep a 4-tap filter. The source radius also sizes the specular
-  highlight (a sphere light, Karis 2013's representative point). Cookies,
+  highlight (a sphere light, Karis 2013's representative point); a light
+  with a rectangle or disc face integrates it over the face (LTC area
+  light). Cookies,
   angular profiles and light faces (the visible panel or bulb, derived from
   the light): see `interior-light.md`.
 - Cost: the light records, shadow faces and cells live in the scene tables

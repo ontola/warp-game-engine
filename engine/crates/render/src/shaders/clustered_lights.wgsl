@@ -1,7 +1,7 @@
 // Clustered local lights in shade (clustered_lights.rs). Group 2 is theirs
 // alone, the grid uniform; the arena is a region of the scene tables
 // (offsets in vec4s), which holds the lights
-// (4 vec4 each, LocalLight's layout; source.z is the first shadow face + 1,
+// (5 vec4 each: LocalLight's layout, then the face; source.z is the first shadow face + 1,
 // source.w the face count), the shadow faces (6 vec4: view-projection, tile
 // rect and layer, texel size) and the grid cells binned by
 // clustered_bin.wgsl. Binding 48 so no other pass composed with shade's
@@ -28,7 +28,7 @@ fn clustered_index(cell: u32, k: u32) -> u32 {
 }
 
 fn clustered_lamp(i: u32) -> LocalLight {
-    let b = light_grid.offsets.w + i * 4u;
+    let b = light_grid.offsets.w + i * 5u;
     return LocalLight(bitcast<vec4<f32>>(scene_tables[b]), bitcast<vec4<f32>>(scene_tables[b + 1u]),
         bitcast<vec4<f32>>(scene_tables[b + 2u]), bitcast<vec4<f32>>(scene_tables[b + 3u]));
 }
@@ -185,21 +185,145 @@ fn sphere_light_specular(lamp: LocalLight, p: vec3<f32>, n: vec3<f32>, v: vec3<f
     return ggx(n, v, normalize(closest), rough, f0) * norm;
 }
 
+// Area-light specular with linearly transformed cosines (Heitz, Dupuy,
+// Hill, Neubelt 2016). The tables (light_face.rs, fitted to `ggx` by
+// examples/ltc_fit.rs) sit just below the lights in the arena: 64 x 64
+// entries over roughness and sqrt(1 - n.v), two vec4 each (the inverse
+// matrix m00, m02, m20, m22, then the albedo without Fresnel and its
+// Schlick weight).
+const LTC_SIZE: u32 = 64u;
+const LTC_VEC4S: u32 = 8192u;
+
+struct Ltc { minv: mat3x3<f32>, albedo: vec2<f32> }
+
+fn ltc_lookup(rough: f32, ndv: f32) -> Ltc {
+    let f = vec2<f32>(clamp(rough, 0.0, 1.0), sqrt(1.0 - clamp(ndv, 0.0, 1.0))) * f32(LTC_SIZE - 1u);
+    let i0 = min(floor(f), vec2<f32>(f32(LTC_SIZE - 2u)));
+    let t = f - i0;
+    let base = light_grid.offsets.w - LTC_VEC4S;
+    var m = vec4<f32>(0.0);
+    var a = vec2<f32>(0.0);
+    for (var k = 0u; k < 4u; k++) {
+        let c = vec2<u32>(i0) + vec2<u32>(k & 1u, k >> 1u);
+        let w = select(1.0 - t.x, t.x, (k & 1u) != 0u) * select(1.0 - t.y, t.y, (k >> 1u) != 0u);
+        let at = base + (c.x + c.y * LTC_SIZE) * 2u;
+        m += bitcast<vec4<f32>>(scene_tables[at]) * w;
+        a += bitcast<vec4<f32>>(scene_tables[at + 1u]).xy * w;
+    }
+    return Ltc(mat3x3<f32>(vec3<f32>(m.x, 0.0, m.y), vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(m.z, 0.0, m.w)), a);
+}
+
+// The edge's share of the cosine integral over a spherical polygon,
+// theta / sin(theta) by a fit that stays accurate near theta = pi (Heitz's
+// later LTC code).
+fn ltc_edge(a: vec3<f32>, b: vec3<f32>) -> f32 {
+    let x = dot(a, b);
+    let y = abs(x);
+    let u = 0.8543985 + (0.4965155 + 0.0145206 * y) * y;
+    let w = 3.4175940 + (4.1616724 + y) * y;
+    let v = u / w;
+    let theta_over_sin = select(0.5 * inverseSqrt(max(1.0 - x * x, 1e-7)) - v, v, x > 0.0);
+    return cross(a, b).z * theta_over_sin;
+}
+
+// What the LTC needs of the shaded pixel, the same for every light: the
+// matrix into the cosine's space and the Fresnel-weighted albedo.
+struct LtcPixel { m: mat3x3<f32>, albedo: vec3<f32> }
+
+fn ltc_pixel(n: vec3<f32>, v: vec3<f32>, rough: f32, f0: vec3<f32>) -> LtcPixel {
+    let l = ltc_lookup(rough, dot(n, v));
+    let t1 = normalize(v - n * dot(v, n) + select(vec3<f32>(0.0), vec3<f32>(1e-4, 0.0, 0.0), abs(dot(v, n)) > 0.9999));
+    let t2 = cross(n, t1);
+    return LtcPixel(l.minv * transpose(mat3x3<f32>(t1, t2, n)), f0 * l.albedo.x + (1.0 - f0) * l.albedo.y);
+}
+
+// The polygon clipped to the horizon, streamed edge by edge (no arrays):
+// where an edge leaves the upper hemisphere the clipped polygon runs along
+// the horizon to where the next edge enters it.
+struct LtcClip { sum: f32, left: vec3<f32>, open: bool, first_entry: vec3<f32>, entered: bool }
+
+fn ltc_clipped_edge(clip: ptr<function, LtcClip>, a: vec3<f32>, b: vec3<f32>) {
+    if a.z >= 0.0 && b.z >= 0.0 { (*clip).sum += ltc_edge(normalize(a), normalize(b)); return; }
+    if a.z < 0.0 && b.z < 0.0 { return; }
+    let x = normalize(a + (b - a) * (a.z / (a.z - b.z)));
+    if a.z >= 0.0 {
+        (*clip).sum += ltc_edge(normalize(a), x);
+        (*clip).left = x;
+        (*clip).open = true;
+    } else {
+        if (*clip).open { (*clip).sum += ltc_edge((*clip).left, x); (*clip).open = false; }
+        else if !(*clip).entered { (*clip).first_entry = x; }
+        (*clip).entered = true;
+        (*clip).sum += ltc_edge(x, normalize(b));
+    }
+}
+
+// A face light's specular per unit of its sample's irradiance: the face
+// radiance (intensity over area) times the LTC integral of the specular
+// over the face (Heitz et al. 2016: transformed into the cosine's space,
+// clipped to its horizon, integrated edge by edge), with the light's cone,
+// falloff, shape and shadow carried by the irradiance.
+fn face_light_specular(lamp: LocalLight, face: vec4<f32>, p: vec3<f32>, px: LtcPixel) -> vec3<f32> {
+    let centre = lamp.position_range.xyz - p;
+    // Only the emitting side shows.
+    if dot(centre, lamp.direction_outer.xyz) >= 0.0 { return vec3<f32>(0.0); }
+    let u = face.xyz;
+    let w = normalize(cross(lamp.direction_outer.xyz, u)) * select(face.w, length(u), face.w < 0.0);
+    // A rectangle's four corners, or a disc as the octagon of its area.
+    let disc = face.w < 0.0;
+    let count = select(4u, 8u, disc);
+    let area = select(4.0 * length(u) * face.w, PI * dot(u, u), disc);
+    let k = select(1.0, sqrt(PI / (2.0 * sqrt(2.0))), disc);
+    let c = px.m * centre;
+    let mu = px.m * u * k;
+    let mw = px.m * w * k;
+    var clip = LtcClip(0.0, vec3<f32>(0.0), false, vec3<f32>(0.0), false);
+    var prev = vec3<f32>(0.0);
+    for (var j = 0u; j <= count; j++) {
+        var q: vec3<f32>;
+        if disc {
+            let a = f32(j % 8u) * PI * 0.25;
+            q = c + mu * cos(a) + mw * sin(a);
+        } else {
+            let s = vec2<f32>(select(-1.0, 1.0, (j % 4u) == 1u || (j % 4u) == 2u), select(-1.0, 1.0, (j % 4u) >= 2u));
+            q = c + mu * s.x + mw * s.y;
+        }
+        if j > 0u { ltc_clipped_edge(&clip, prev, q); }
+        prev = q;
+    }
+    // A polygon that began below the horizon: its last exit closes along
+    // the horizon to its first entry.
+    if clip.open && clip.entered { clip.sum += ltc_edge(clip.left, clip.first_entry); }
+    let integral = abs(clip.sum) / (2.0 * PI);
+    let d2 = dot(centre, centre);
+    let spread = select(pow(max(d2, lamp.source.x), lamp.source.y * 0.5), max(d2, lamp.source.x), lamp.source.y == 2.0 || lamp.source.y == 0.0);
+    return px.albedo * (integral * spread / max(area, 1e-8));
+}
+
 fn clustered_radiance(p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, diffuse: vec3<f32>, rough: f32, f0: vec3<f32>) -> vec3<f32> {
     var result = vec3<f32>(0.0);
     let cell = clustered_cell(p);
     if cell == NO_CELL { return result; }
     let count = scene_tables[cell].x;
+    // The LTC's per-pixel part, looked up once for every face light.
+    var ltc: LtcPixel;
+    var have_ltc = false;
     for (var k = 0u; k < count; k++) {
         let i = clustered_index(cell, k);
         // One-sided, as headlight_radiance: skip lights behind the surface.
-        if dot(n, bitcast<vec4<f32>>(scene_tables[light_grid.offsets.w + i * 4u]).xyz - p) <= 0.0 { continue; }
+        if dot(n, bitcast<vec4<f32>>(scene_tables[light_grid.offsets.w + i * 5u]).xyz - p) <= 0.0 { continue; }
         let s = clustered_sample(i, p, n);
         if all(s.irradiance == vec3<f32>(0.0)) { continue; }
         // Bit 15 of source.w: diffuse only (a bounce light; no highlight).
-        let source_w = u32(bitcast<vec4<f32>>(scene_tables[light_grid.offsets.w + i * 4u + 3u]).w);
+        let source_w = u32(bitcast<vec4<f32>>(scene_tables[light_grid.offsets.w + i * 5u + 3u]).w);
         var spec = vec3<f32>(0.0);
-        if (source_w & 32768u) == 0u { spec = sphere_light_specular(clustered_lamp(i), p, n, v, s.direction, rough, f0); }
+        if (source_w & 32768u) == 0u {
+            let face = bitcast<vec4<f32>>(scene_tables[light_grid.offsets.w + i * 5u + 4u]);
+            if face.w != 0.0 {
+                if !have_ltc { ltc = ltc_pixel(n, v, rough, f0); have_ltc = true; }
+                spec = face_light_specular(clustered_lamp(i), face, p, ltc);
+            } else { spec = sphere_light_specular(clustered_lamp(i), p, n, v, s.direction, rough, f0); }
+        }
         result += s.irradiance * (diffuse * max(dot(n, s.direction), 0.0) + spec);
     }
     return result;
