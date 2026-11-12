@@ -397,6 +397,10 @@ impl Gg {
         self.sky.choice = choice;
         self.sky.live = None;
         self.apply_sky()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.vis.stadium.bake_in_background && matches!(choice, crate::sky::SkyChoice::Random | crate::sky::SkyChoice::Rounds(_)) {
+            crate::sky::prepare_round_skies();
+        }
         if let Some(s) = self.sky.applied.filter(|_| matches!(choice, crate::sky::SkyChoice::Cycle { .. })) {
             self.sky.live = Some(render::sky::LiveSky::starting(s, &serde_json::Value::Null));
         }

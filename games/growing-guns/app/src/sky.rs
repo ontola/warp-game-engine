@@ -176,12 +176,50 @@ pub fn cycle_sun(day: f32) -> SolarState {
     SolarState::from_degrees(24.0 - 36.0 * theta.cos(), 125.0 - 180.0 + theta.to_degrees()).unwrap()
 }
 
-/// A synchronous bake, shared by every match in the process (one atmosphere
-/// cache: the transmittance table survives sun changes of one weather).
+// All eighteen possible round skies fit in about 9 MiB. The pixels are shared by Arc.
+static ROUND_SKIES: Mutex<Vec<PreparedSky>> = Mutex::new(Vec::new());
+
+fn round_preset(time: DayTime, weather: WeatherLook) -> LiveSettings {
+    let s = LiveSettings::preset(time, weather);
+    if s.exposure() < MIN_EV100 { s.with_exposure(MIN_EV100) } else { s }
+}
+
+fn cached_sky(settings: LiveSettings) -> Option<PreparedSky> {
+    ROUND_SKIES.lock().unwrap().iter().find(|s| s.settings == settings).cloned()
+}
+
+fn remember_round_sky(sky: &PreparedSky) {
+    let mut skies = ROUND_SKIES.lock().unwrap();
+    if !skies.iter().any(|s| s.settings == sky.settings) { skies.push(sky.clone()); }
+}
+
+/// Prepare the finite set used by random and round skies while the current arena is playable.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn prepare_round_skies() {
+    static START: std::sync::Once = std::sync::Once::new();
+    START.call_once(|| {
+        std::thread::spawn(|| {
+            let mut cache = AtmosphereCache::default();
+            for weather in WeatherLook::ALL {
+                for time in DayTime::ALL {
+                    let s = round_preset(time, weather);
+                    if cached_sky(s).is_some() { continue; }
+                    if let Ok(sky) = bake_live(0, s, &mut cache, BakeQuality::default()) {
+                        remember_round_sky(&sky);
+                    }
+                }
+            }
+        });
+    });
+}
+
 pub fn bake(settings: LiveSettings) -> Result<PreparedSky, String> {
+    if let Some(sky) = cached_sky(settings) { return Ok(sky); }
     static CACHE: OnceLock<Mutex<AtmosphereCache>> = OnceLock::new();
     let mut cache = CACHE.get_or_init(Default::default).lock().map_err(|_| "sky cache lock poisoned")?;
-    bake_live(0, settings, &mut cache, BakeQuality::default())
+    let sky = bake_live(0, settings, &mut cache, BakeQuality::default())?;
+    if settings == round_preset(settings.time, settings.atmosphere) { remember_round_sky(&sky); }
+    Ok(sky)
 }
 
 /// The match's sky state: the choice, what is applied, and the live worker

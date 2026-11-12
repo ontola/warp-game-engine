@@ -11,7 +11,7 @@ The [interactive stadium playtest and review](warp-humans.md) use per-view GPU s
 
 ## Character animation
 
-GameNight sessions select Warp Humans for seated players and use their profile shirt and skin colours. Growing Guns layers two-bone wrist contacts over its third-person clips using the shared body crate. The headless grip review renders the authored and adjusted poses. Finger closure and pickup transitions are open. [Authoring and preview](animation.md)
+GameNight sessions select Warp Humans for seated players and use their profile shirt and skin colours. Growing Guns layers two-bone wrist contacts over its third-person clips using the shared body crate. The headless grip review renders the authored and adjusted poses. During a first-person pickup, the hands close in sequence and visible upgrades grow during the lift. Lava victims and nearby players see both hands rise as the body sinks. Individual finger curls remain open. [Authoring and preview](animation.md)
 
 ## Developer captures
 

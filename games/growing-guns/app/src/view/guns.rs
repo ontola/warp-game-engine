@@ -16,9 +16,10 @@ use render::Scene;
 #[derive(Clone, Copy, Default)]
 struct GunFeel { phase: f32, bob: f32, bump: f32, tilt: f32, kick: f32, inspect: f32, previous_inspect: f32 }
 
-// Finish lifting the unmodified rifle and returning the camera to aim before inspection.
-const PICKUP_LIFT_SECONDS: f32 = 0.40;
-const PICKUP_READY_SECONDS: f32 = 0.46;
+// Seconds from touchdown. The first wrist takes the weight and the second starts the morph.
+pub(super) const TRIGGER_GRIP: f32 = 0.18;
+pub(super) const SUPPORT_GRIP: f32 = 0.30;
+pub(super) const PICKUP_LIFT_SECONDS: f32 = 0.90;
 
 pub struct Guns {
     pub(crate) detail: gun::Detail,
@@ -93,6 +94,8 @@ impl Guns {
             super::pov_arms::Arms::reserve(scene, seed, i, colors.get(i).copied().unwrap_or_default())
         ).collect();
     }
+
+    pub(super) fn open_hand_meshes(&self, i: usize) -> Option<[usize; 2]> { self.arms.get(i).map(|arms| arms.open) }
 
     pub fn track(&mut self, player: usize, pose: Option<Affine3A>) {
         if let Some(p) = self.tracked.get_mut(player) { *p = pose; self.tracking[player] = true; }
@@ -190,16 +193,15 @@ impl Guns {
                 let previous = self.own[i].replace(owned);
                 // Leave the owner's last rifle on the floor, even if the
                 // previous round lent them another player's gun.
-                rig.set(previous.unwrap_or(if waiting { owned } else { target }));
+                let floor = previous.unwrap_or_else(|| Stats::weapon(&growing_guns::Weapon::with_gun(world.gun)));
+                rig.set(if waiting { floor } else { previous.unwrap_or(target) });
                 if !waiting && previous.is_some() { rig.grow_to(target); }
             }
             if !waiting {
                 if let Some((tick, _)) = self.pickups[i] {
                     let age = world.tick.saturating_sub(tick) as f32 * growing_guns::DT;
-                    if age >= PICKUP_READY_SECONDS {
-                        self.pickups[i] = None;
-                        rig.grow_to(target);
-                    }
+                    if age >= SUPPORT_GRIP && rig.shown != target { rig.grow_to(target); }
+                    if age >= PICKUP_LIFT_SECONDS { self.pickups[i] = None; }
                 } else {
                     rig.follow(target);
                 }
@@ -247,11 +249,11 @@ impl Guns {
         let (tick, floor) = self.pickups.get(i).copied().flatten()?;
         let ticks = world.tick.checked_sub(tick)?;
         let age = (ticks as f32 + alpha - 1.).max(0.) * growing_guns::DT;
-        (age < PICKUP_READY_SECONDS && world.players[i].alive && !self.tracking[i]).then_some((age, floor))
+        (age < PICKUP_LIFT_SECONDS && world.players[i].alive && !self.tracking[i]).then_some((age, floor))
     }
 
     pub(super) fn camera(&self, world: &World, i: usize, prev: &[crate::view::Pose], alpha: f32) -> render::Camera {
-        let dip = self.pickup(world, i, alpha).map_or(0., |(age, _)| 1. - super::pov_arms::ease(0.10, 0.45, age));
+        let dip = self.pickup(world, i, alpha).map_or(0., |(age, _)| 1. - super::pov_arms::ease(SUPPORT_GRIP, PICKUP_LIFT_SECONDS, age));
         let mut camera = super::entrance_camera(world, i, prev, alpha, dip);
         let lift = self.crowd_lift(i, world.entrance_flight_at(alpha));
         camera.pos.y += lift;
@@ -302,7 +304,7 @@ impl Guns {
             let ground_pose = ground.map(on_floor);
             let pickup = self.pickup(world, i, alpha).map(|(age, floor)| (age, on_floor(floor)));
             let fp = if let Some((age, floor)) = pickup {
-                let lift = super::pov_arms::ease(0.055, PICKUP_LIFT_SECONDS, age);
+                let lift = super::pov_arms::ease(TRIGGER_GRIP, PICKUP_LIFT_SECONDS, age);
                 super::pov_arms::blend_pose(floor, fp, lift)
             } else { fp };
             if self.local[i] && p.alive && !p.ghost && !self.tracking[i] {
@@ -821,15 +823,18 @@ mod xr_tests {
                 world.step(&[]);
                 guns.tick(&world, growing_guns::DT);
             }
-            // The floor pickup and the return to aim show the old shape.
-            for _ in 0..28 {
+            // Both hands take hold before growth starts, with the rifle still being lifted.
+            for _ in 0..(SUPPORT_GRIP * growing_guns::TICK_HZ as f32).ceil() as usize {
                 assert!(!guns.rigs[0].is_growing());
                 assert_eq!(guns.rigs[0].shown, source);
                 assert_eq!(guns.feel[0].inspect, 0.);
                 world.step(&[]); guns.tick(&world, growing_guns::DT);
             }
             assert!(guns.rigs[0].is_growing());
-            for _ in 0..60 { world.step(&[]); guns.tick(&world, growing_guns::DT); }
+            for _ in 0..16 { world.step(&[]); guns.tick(&world, growing_guns::DT); }
+            assert!(guns.pickup(&world, 0, 1.).is_some());
+            assert!(guns.rigs[0].build.barrel_length > original);
+            for _ in 0..44 { world.step(&[]); guns.tick(&world, growing_guns::DT); }
             let midway = guns.rigs[0].build.barrel_length;
             assert!(guns.feel[0].inspect > 0.95);
             assert!(!guns.rigs[1].is_growing() && guns.feel[1].inspect == 0.);
@@ -894,7 +899,7 @@ mod xr_tests {
         guns.tick(&world, 0.0);
         for _ in 0..164 { world.step(&[]); }
         let mut open_hands = [0; 4];
-        for (ticks, armed, raised) in [(0, false, false), (1, true, false), (26, true, true)] {
+        for (ticks, armed, raised) in [(0, false, false), (1, true, false), (55, true, true)] {
             for _ in 0..ticks {
                 world.step(&[]);
                 guns.tick(&world, growing_guns::DT);

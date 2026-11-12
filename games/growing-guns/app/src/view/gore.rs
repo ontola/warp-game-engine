@@ -41,6 +41,7 @@ pub struct Gore {
     character_shards: Vec<CharacterGore>,
     /// Fallback per player, per part, a few shatter layouts for primitive bodies.
     shards: Vec<[Vec<Vec<ShardMesh>>; 3]>,
+    cut: [usize; 3],
     blobs: [usize; 4],
     slots: Slots,
     pieces: Vec<Piece>,
@@ -59,7 +60,7 @@ pub fn part_xf(part: Part, pos: Vec3, yaw: f32) -> Affine3A {
 
 impl Gore {
     /// `parts[p]`: player p's fallback primitives; `characters`: loaded roster models.
-    pub fn reserve(scene: &mut Scene, parts: &[[Primitive; 3]], characters: &[Character], seed: u64) -> Self {
+    pub fn reserve(scene: &mut Scene, parts: &[[Primitive; 3]], characters: &[Character], seed: u64, cut: Option<[usize; 3]>) -> Self {
         // Flesh: Godot's cap colours run from deep to raw red.
         let flesh: Vec<u32> = [[0.45, 0.06, 0.05], [0.62, 0.11, 0.08], [0.82, 0.16, 0.11]]
             .map(|c| scene.add_material(Material { tint: c.map(|v: f32| v.powf(2.2)), layer: -1, roughness: 0.9, flags: 0, scale: 1.0, metal: 0.0 })).to_vec();
@@ -84,7 +85,8 @@ impl Gore {
             scene.add_mesh(&crate::blood::drop_mesh(m).mesh())
         });
         let slots = Slots::reserve(scene, MAX_PIECES);
-        Gore { character_shards, shards, blobs, slots, pieces: Vec::new(), rng: seed | 1 }
+        let cut = cut.unwrap_or_else(|| std::array::from_fn(|i| scene.add_mesh(&crate::stadium::gibs::unit_shard(flesh[i], i).mesh())));
+        Gore { cut, character_shards, shards, blobs, slots, pieces: Vec::new(), rng: seed | 1 }
     }
 
     fn f(&mut self) -> f32 {
@@ -109,6 +111,18 @@ impl Gore {
         let i = self.slots.instance(slot);
         scene.instances[i].flags |= NO_SHADOW;
         self.pieces.push(Piece { body, slot, mesh, scale, born: now, ink:(self.rng%3==0).then_some(vel) });
+    }
+
+    /// A small, directional burst from the head, using the audience's irregular cut meshes.
+    pub fn headshot(&mut self, scene: &mut Scene, phys: &mut Physics, head: Vec3, velocity: Vec3, direction: Vec3, now: f32) {
+        for i in 0..6 {
+            let radial = Vec3::new(self.range(-1., 1.), self.range(-0.4, 1.), self.range(-1., 1.)).normalize_or(Vec3::Y);
+            let size = Vec3::new(self.range(0.032, 0.063), self.range(0.04, 0.085), self.range(0.025, 0.05));
+            let pos = head + radial * self.range(0.025, 0.09);
+            let vel = velocity * 0.35 + direction * self.range(1.8, 3.5) + radial * self.range(0.8, 2.5) + Vec3::Y * 1.5;
+            let rotation = Quat::from_rotation_y(self.range(0., std::f32::consts::TAU));
+            self.spawn(scene, phys, self.cut[i % self.cut.len()], size, Shape::Box(size * 0.5), pos, rotation, vel, now);
+        }
     }
 
     /// Burst `parts` of player `p` (at `pos`, facing `yaw`). `dir` is the
@@ -402,18 +416,19 @@ mod tests {
         let characters = Characters::load_roster(3, 3, &[]).expect("roster characters load");
         let mut scene = Scene::default();
         let mut phys = Physics::new(Vec3::new(0.0, -9.81, 0.0), 60.0);
-        let mut gore = Gore::reserve(&mut scene, &[], characters.models(), 42);
+        let mut gore = Gore::reserve(&mut scene, &[], characters.models(), 42, None);
         assert_eq!(gore.character_shards.len(), characters.models().len());
         for cg in &gore.character_shards {
             assert!(cg.body.len() >= 8, "expected anatomical body chunks, got {}", cg.body.len());
             assert_eq!(cg.head.len(), 3, "expected 3 head chunks, got {}", cg.head.len());
         }
 
-        // Headshot burst spawns the 3 head chunks + blood blobs.
-        gore.burst(&mut scene, &mut phys, 0, &[Part::Head, Part::Eyes], Vec3::new(1.0, 2.0, 3.0), 0.5, Vec3::ZERO, Vec3::X, 0.5, 0.0);
-        let head_pieces: Vec<usize> = gore.pieces.iter().map(|p| p.mesh).collect();
-        for hs in &gore.character_shards[0].head {
-            assert!(head_pieces.contains(&hs.mesh), "headshot burst must spawn actual character head shard mesh");
+        let head = Vec3::new(1., 2., 3.);
+        gore.headshot(&mut scene, &mut phys, head, Vec3::ZERO, Vec3::X, 0.);
+        assert_eq!(gore.pieces.len(), 6);
+        for piece in &gore.pieces {
+            assert!(gore.cut.contains(&piece.mesh) && piece.scale.max_element() <= 0.085);
+            assert!(phys.pose(piece.body).unwrap().0.distance(head) <= 0.091);
         }
 
         // Full body overkill burst spawns the character's anatomical body + head chunks.
