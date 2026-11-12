@@ -106,7 +106,7 @@ fn fog_inject(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
     let jitter = fog_rand(cell.x ^ (cell.y << 8u) ^ (cell.z << 16u) ^ (frame * 0x9e3779b9u));
     // The sample: jittered across the cell in x and y too, so that over
     // frames the cell averages the air it holds.
-    let jxy = vec2<f32>(fog_rand(cell.x * 7919u ^ cell.y * 104729u ^ cell.z * 1299709u ^ (frame * 2654435761u)), fog_rand(cell.x * 15485863u ^ cell.y * 32452843u ^ cell.z * 49979687u ^ (frame * 40503u)));
+    let jxy = vec2<f32>(fog_rand((cell.x * 7919u) ^ (cell.y * 104729u) ^ (cell.z * 1299709u) ^ (frame * 2654435761u)), fog_rand((cell.x * 15485863u) ^ (cell.y * 32452843u) ^ (cell.z * 49979687u) ^ (frame * 40503u)));
     let uv = (vec2<f32>(cell.xy) + jxy) / vec2<f32>(FOG_GRID.xy);
     let start = fog_slice_depth(f32(cell.z));
     if start >= surface { textureStore(fog_out, cell, vec4<f32>(0.0, 0.0, 0.0, gi.fog.x)); return; }
@@ -190,7 +190,7 @@ fn fog_capture(origin: vec3<f32>, end: vec3<f32>, px: vec2<i32>) -> vec4<f32> {
     if len < 1e-4 { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
     let dir = seg / len;
     let step = len / f32(FOG_CAPTURE_STEPS);
-    let offset = fog_rand(u32(px.x) * 73856093u ^ u32(px.y) * 19349663u);
+    let offset = fog_rand((u32(px.x) * 73856093u) ^ (u32(px.y) * 19349663u));
     var light = vec3<f32>(0.0);
     var through = 1.0;
     for (var k = 0u; k < FOG_CAPTURE_STEPS; k++) {
