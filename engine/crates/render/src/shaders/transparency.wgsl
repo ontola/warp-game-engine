@@ -79,6 +79,9 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
             let column = fog_column(ray_length, view.cam.y, direction.y, light.fog.z);
             transmission = exp(-max(light.fog.y, 0.0) * column);
         }
+        // The froxel fog's medium in front absorbs it too (its in-scattering
+        // is already in the opaque image behind).
+        transmission *= froxel_fog_at(in.world).a;
         // With a texture layer the textured colour glows (signs, logos).
         let glow = select(m.tint, sample.rgb * m.tint, m.layer >= 0);
         return vec4<f32>(glow * abs(m.scale) * light.anim.y * transmission * alpha, alpha);
@@ -129,7 +132,10 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
         let transmission = (1.0 - alpha) * clamp(1.0 - (fresnel.r + fresnel.g + fresnel.b) / 3.0, 0.0, 1.0);
         let cover = 1.0 - transmission;
         let surface = rad * alpha + (1.0 - alpha) * spec_only;
-        let fogged = apply_distance_fog(surface / max(cover, 1e-4), distance(p, view.cam.xyz), -v) * cover;
+        // Fogged at the pane's own depth: the distance fog, then the froxel
+        // medium between the camera and the pane.
+        let froxel = froxel_fog_at(p);
+        let fogged = (apply_distance_fog(surface / max(cover, 1e-4), distance(p, view.cam.xyz), -v) * froxel.a + froxel.rgb) * cover;
         let ior = 1.0 + f32(tri.optics & 65535u) / 65535.0 * 2.0;
         let thickness_q = tri.optics >> 16u;
         let thickness = select(f32(thickness_q) * 1e-4, -1.0, thickness_q == 65535u);
@@ -145,6 +151,11 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
         return vec4<f32>(fogged + transmission * hue * behind.bent, cover);
     }
     rad = apply_distance_fog(rad, distance(p, view.cam.xyz), -v);
+    // The froxel medium in front of the pane (froxel_fog.wgsl), as shade
+    // fogs opaque surfaces: blended over the image behind, which holds the
+    // fog to its own depth, a pane gets it to the pane's.
+    let froxel = froxel_fog_at(p);
+    rad = rad * froxel.a + froxel.rgb;
     if light.sky.z > 0.5 && light.sky.z < 1.5 { rad = vec3<f32>(sky_vis) * 6000.0; }
     else if light.sky.z > 1.5 && light.sky.z < 2.5 { rad = base * 6000.0; }
     else if light.sky.z > 2.5 && light.sky.z < 3.5 { rad = direct; }

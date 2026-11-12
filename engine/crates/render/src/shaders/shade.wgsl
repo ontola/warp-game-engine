@@ -3675,8 +3675,14 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     rad = apply_distance_fog(rad, dist, dir);
     // Froxel fog: the surface seen through the medium, plus what it scatters.
     if fog_on() {
-        // View depth from the depth buffer (reversed infinite Z: near / depth).
-        let fw = froxel_fog(px, size, view.params.y / max(textureLoad(depth_tex, px, 0), 1e-9));
+        var fw: vec4<f32>;
+        if gi.fog.w > 2.5 {
+            // A probe capture: marched along the capture ray, to the grid's reach.
+            fw = fog_capture(view.cam.xyz, view.cam.xyz + dir * min(dist, gi.fog.z), px);
+        } else {
+            // View depth from the depth buffer (reversed infinite Z: near / depth).
+            fw = froxel_fog(px, size, view.params.y / max(textureLoad(depth_tex, px, 0), 1e-9));
+        }
         rad = rad * fw.a + fw.rgb;
     }
     // Component diagnostics retain the exact material, pose and lighting.
