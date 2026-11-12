@@ -16,17 +16,39 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::platform::web::{EventLoopExtWebSys, WindowAttributesExtWebSys};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
+thread_local! {
+    /// Lines the log box always shows above the rolling tail: the start-up
+    /// lines (GPU, limits) and the first GPU error, which later errors would
+    /// otherwise push out of the box.
+    static PINNED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static TAIL: RefCell<std::collections::VecDeque<String>> = const { RefCell::new(std::collections::VecDeque::new()) };
+}
+
 /// Write a line to the browser console and to the page's log element
-/// (`#warp-log`, when the page has one).
+/// (`#warp-log`, when the page has one), which shows the pinned lines
+/// ([`log_pinned`]) and the newest others.
 pub fn log(line: &str) {
     web_sys::console::log_1(&line.into());
-    if let Some(el) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id("warp-log")) {
-        // The newest lines: the box shows a few, and the cause of a
-        // failure comes after the start-up lines.
-        let text = el.text_content().unwrap_or_default();
-        let lines: Vec<&str> = text.lines().chain(line.lines()).collect();
-        el.set_text_content(Some(&(lines[lines.len().saturating_sub(16)..].join("\n") + "\n")));
-    }
+    TAIL.with(|t| {
+        let mut t = t.borrow_mut();
+        t.extend(line.lines().map(str::to_string));
+        while t.len() > 10 { t.pop_front(); }
+    });
+    show_log();
+}
+
+/// [`log`], kept in the box for good.
+pub fn log_pinned(line: &str) {
+    web_sys::console::log_1(&line.into());
+    PINNED.with(|p| p.borrow_mut().extend(line.lines().map(str::to_string)));
+    show_log();
+}
+
+fn show_log() {
+    let Some(el) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id("warp-log")) else { return };
+    let mut text = PINNED.with(|p| p.borrow().join("\n"));
+    TAIL.with(|t| for line in t.borrow().iter() { text.push('\n'); text.push_str(line); });
+    el.set_text_content(Some(&(text.trim_start().to_string() + "\n")));
 }
 
 /// Show loading progress in the page's `#warp-progress` box (a bar
@@ -138,14 +160,19 @@ impl Shell {
         wasm_bindgen_futures::spawn_local(async move {
             match setup(window.clone()).await {
                 Ok(l) => {
-                    log(&format!("GPU: {} ({:?}), {}x{}, {:?}", l.gpu.info.name, l.gpu.info.backend, l.config.width, l.config.height, l.config.format));
+                    log_pinned(&format!("GPU: {} ({:?}), {}x{}, {:?}", l.gpu.info.name, l.gpu.info.backend, l.config.width, l.config.height, l.config.format));
                     // Below the full renderer's limits it draws with its portable
                     // path (render::portable): terrain and sky only.
                     let limits = l.gpu.device.limits();
                     let (storage, textures) = (limits.max_storage_buffers_per_shader_stage, limits.max_sampled_textures_per_shader_stage);
-                    if render::portable::needed(&limits) { log(&format!("{storage} storage buffers, {textures} sampled textures per shader stage: portable renderer (terrain and sky only)")); }
-                    else if storage < 16 { log(&format!("{storage} storage buffers, {textures} sampled textures per shader stage: full renderer, no trees (they need 16 storage buffers)")); }
-                    else { log(&format!("{storage} storage buffers, {textures} sampled textures per shader stage: full renderer")); }
+                    let need = render::portable::full_sampled_textures();
+                    let line = if render::portable::needed(&limits) {
+                        let short = if textures < need { format!(" (the full renderer needs {need})") } else { String::new() };
+                        progress(Some(0.85), &format!("This device's WebGPU offers {textures} textures per shader{short}, too few for the full renderer"));
+                        format!("{storage} storage buffers, {textures} sampled textures per shader stage{short}: portable renderer (terrain and sky only)")
+                    } else if storage < 16 { format!("{storage} storage buffers, {textures} sampled textures per shader stage: full renderer, no trees (they need 16 storage buffers)") }
+                    else { format!("{storage} storage buffers, {textures} sampled textures per shader stage: full renderer") };
+                    log_pinned(&line);
                     *live.borrow_mut() = Some(l);
                     window.request_redraw();
                 }
@@ -242,15 +269,26 @@ async fn setup(window: Arc<Window>) -> Result<Live, String> {
     let size = window.inner_size();
     let (gpu, config, _adapter) = Gpu::for_surface_async(&instance, &surface, size.width.max(1), size.height.max(1)).await?;
     surface.configure(&gpu.device, &config);
-    // After a device loss every call fails with "is lost"; one such line
-    // is enough, so the loss reason stays readable.
+    // After a device loss every call fails with "is lost", and after one
+    // failed creation every use of the object fails "due to a previous
+    // error": the first error is pinned in the log, the follow-ups only
+    // counted, so the cause stays readable.
+    let first = std::sync::atomic::AtomicBool::new(false);
     let lost_said = std::sync::atomic::AtomicBool::new(false);
+    let follow_ups = std::sync::atomic::AtomicU32::new(0);
     gpu.device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+        use std::sync::atomic::Ordering::Relaxed;
         let text = error.to_string();
-        if text.contains("] is lost") && lost_said.swap(true, std::sync::atomic::Ordering::Relaxed) { return; }
-        log(&format!("GPU error: {text}"))
+        if text.contains("] is lost") && lost_said.swap(true, Relaxed) { return; }
+        if text.contains("previous error") || (text.contains(" is invalid") && first.load(Relaxed)) {
+            let n = follow_ups.fetch_add(1, Relaxed) + 1;
+            web_sys::console::log_1(&format!("GPU error: {text}").into());
+            if n == 1 || n.is_power_of_two() { log(&format!("{n} GPU errors follow from the first")); }
+            return;
+        }
+        if first.swap(true, Relaxed) { log(&format!("GPU error: {text}")) } else { log_pinned(&format!("First GPU error: {text}")) }
     }));
-    gpu.device.set_device_lost_callback(|reason, message| log(&format!("GPU device lost ({reason:?}): {message}")));
+    gpu.device.set_device_lost_callback(|reason, message| log_pinned(&format!("GPU device lost ({reason:?}): {message}")));
     let out = Output::new(&gpu, config.format.add_srgb_suffix())?;
     Ok(Live { surface, config, gpu, out, renderer: None })
 }
