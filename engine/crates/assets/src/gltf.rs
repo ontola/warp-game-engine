@@ -1,7 +1,8 @@
 //! Static glTF 2.0 models (.glb or .gltf with external .bin and images)
 //! into a scene: every mesh node, with the node hierarchy's transforms,
 //! becomes one clustered mesh in model space; materials map to Warp
-//! materials (base colour, roughness, metalness, double sided, alpha mask)
+//! materials (base colour, roughness, metalness, double sided, alpha mask
+//! and blend)
 //! with base-colour and normal textures. Skinning and animation are not
 //! read. FBX: convert to glTF first (Blender or FBX2glTF).
 //!
@@ -106,7 +107,11 @@ pub fn load(scene: &mut Scene, path: &Path) -> Result<Model, String> {
         let mut flags = 0;
         if m.double_sided() { flags |= TWO_SIDED; }
         if m.alpha_mode() == ::gltf::material::AlphaMode::Mask { flags |= ALPHA_TEST; }
-        materials.push(scene.add_material(Material { tint: [f[0], f[1], f[2]], layer, roughness: pbr.roughness_factor(), flags, scale: 1.0, metal: pbr.metallic_factor() }));
+        let id = scene.add_material(Material { tint: [f[0], f[1], f[2]], layer, roughness: pbr.roughness_factor(), flags, scale: 1.0, metal: pbr.metallic_factor() });
+        // Glass and other see-through surfaces: the sorted forward pass,
+        // never a shadow caster or light blocker in the room bake.
+        if m.alpha_mode() == ::gltf::material::AlphaMode::Blend { scene.set_material_blend(id, f[3], m.double_sided()); }
+        materials.push(id);
     }
     let fallback = scene.add_material(Material { tint: [0.8; 3], layer: -1, roughness: 0.8, flags: 0, scale: 1.0, metal: 0.0 });
     // Walk every scene's node tree with accumulated transforms.

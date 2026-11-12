@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["games/spaceracer/app", "engine/crates/xr", "games/growing-guns/quest", "games/spaceracer/sim", "engine/crates/kern", "engine/crates/render", "engine/crates/audio", "engine/crates/app", "engine/crates/physics", "engine/crates/assets", "engine/crates/body", "engine/crates/net", "engine/crates/script", "engine/crates/gamenight", "engine/crates/live", "engine/crates/warp", "games/sideways/determinism", "games/sideways/sim", "games/sideways/app", "games/growing-guns/sim", "games/growing-guns/app", "games/spellstorm/sim", "games/spellstorm/app", "lobbies/game-room", "lobbies/game-room/sim"]
+members = ["games/spaceracer/app", "engine/crates/xr", "games/growing-guns/quest", "games/spaceracer/sim", "engine/crates/kern", "engine/crates/render", "engine/crates/audio", "engine/crates/app", "engine/crates/physics", "engine/crates/assets", "engine/crates/architecture", "engine/crates/body", "engine/crates/net", "engine/crates/script", "engine/crates/gamenight", "engine/crates/live", "engine/crates/warp", "games/sideways/determinism", "games/sideways/sim", "games/sideways/app", "games/growing-guns/sim", "games/growing-guns/app", "games/spellstorm/sim", "games/spellstorm/app", "lobbies/game-room", "lobbies/game-room/sim"]
 
 [workspace.package]
 edition = "2024"

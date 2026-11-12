@@ -21,6 +21,7 @@ One Rust workspace, with Cargo.toml and Cargo.lock at the repository root.
 | `engine/crates/physics` | Rapier rigid bodies with enhanced determinism. |
 | `engine/crates/body` | Bodies that move without hand animation: a standard skeleton, built-in motion-captured clips (CC0), `Gait` (what to blend from what a body does, pace from leg length), rigs of rigid pieces. |
 | `engine/crates/assets` | Asset import for scenes. |
+| `engine/crates/architecture` | Buildings inside and out from glTF (AtomicBuildings, IFC via IfcConvert): room bake grid, room and outside shots. Guide `engine/docs/architecture.md`. |
 | `engine/crates/net` | Online play over iroh (QUIC). |
 | `engine/crates/gamenight` | Native Gamepad Party client (party host, seats, wire contract). |
 | `engine/crates/script` | Luau scripting host with hot reload. |
