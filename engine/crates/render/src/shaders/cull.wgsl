@@ -17,6 +17,7 @@ override CLUSTER_BUCKETS: bool = true;
 // depth); alpha-tested ones after it. Needs CLUSTER_BUCKETS.
 override RASTER_SPLIT: bool = false;
 override EARLY_GRASS_CULL: bool = true;
+override VIRTUAL_PARALLEL: bool = true;
 // Scene::voxel_far_distance_m; zero when the scene has no far trees.
 override VOXEL_FAR_M: f32 = 0.0;
 
@@ -380,9 +381,41 @@ fn cull_instance(id: u32, li: u32) {
     if !workgroupUniformLoad(&branch_keep) { return; }
     let start = inst.first_cluster >> 12u;
     let count = inst.first_cluster & 0xfffu;
+    if VIRTUAL_PARALLEL {
+        // One lane per template: a branch's members are small, and a serial
+        // member loop with barriers made a few large branches a long tail.
+        for (var k = li; k < count; k += 64u) {
+            let m = member_id(id,k);
+            cull_member_lane(m, compose_member(inst, instances[start + k]));
+        }
+        return;
+    }
     for (var k = 0u; k < count; k++) {
         cull_member(member_id(id,k), compose_member(inst, instances[start + k]), li);
         workgroupBarrier();
+    }
+}
+
+// cull_member's exact predicate for one lane: flat cluster scan, no
+// traversal (an acceleration only, so the selection is identical).
+fn cull_member_lane(id: u32, inst: Instance) {
+    let base_thr = select(view.params.x, 0.0, (inst.flags & 2u) != 0u);
+    let policy = instance_policy(id, inst);
+    if policy == 2u { atomicAdd(&cull_draw.counter[3], 1u); }
+    if policy != 1u { return; }
+    let wind_pad = cull_wind[member_slot(id)].z;
+    let radius = inst.sphere.w + wind_pad;
+    if !in_frustum(inst.sphere.xyz, radius) || hidden_by_camera_fog(inst.sphere.xyz, radius) { return; }
+    if tree_phase.x>1.5 {
+        atomicAdd(&cull_draw.counter[15],1u);
+        if tree_occluded(inst.sphere.xyz,radius) {atomicAdd(&cull_draw.counter[16],1u);return;}
+    }
+    let camera_groups=(spatial_header().w&1u)!=0u && view.params.z<0.5 && view.extra.y<1.5;
+    let sun_groups=(spatial_header().w&2u)!=0u && view.params.z>0.5;
+    let headlight_groups=(spatial_header().w&4u)!=0u && view.params.z<0.5 && view.extra.y>1.5;
+    if camera_groups || sun_groups || headlight_groups { atomicAdd(&cull_draw.counter[26],inst.cluster_count); }
+    for (var c = 0u; c < inst.cluster_count; c++) {
+        cull_cluster(id,inst,inst.first_cluster+c,base_thr,wind_pad);
     }
 }
 
