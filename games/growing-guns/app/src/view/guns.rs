@@ -16,6 +16,9 @@ use render::Scene;
 #[derive(Clone, Copy, Default)]
 struct GunFeel { phase: f32, bob: f32, bump: f32, tilt: f32, kick: f32, inspect: f32, previous_inspect: f32 }
 
+// Both the lift and any change in the rifle's shape finish at the ready pose.
+const PICKUP_LIFT_SECONDS: f32 = 0.40;
+
 pub struct Guns {
     pub(crate) detail: gun::Detail,
     parts: usize,
@@ -108,7 +111,12 @@ impl Guns {
     }
 
     /// A card pick: the gun grows into the new stats.
-    pub fn grow(&mut self, player: usize, p: &Player) { if let Some(r) = self.rigs.get_mut(player) { r.grow_to(Stats::of(p)); } }
+    pub fn grow(&mut self, player: usize, world: &World) {
+        let (Some(rig), Some(p)) = (self.rigs.get_mut(player), world.players.get(player)) else { return };
+        if world.awaiting_rifle(player) { return; }
+        self.own[player] = Some(Stats::weapon(&world.owned_weapon(player)));
+        rig.grow_to(Stats::of(p));
+    }
 
     pub fn jump(&mut self, player: usize) { if let Some(f) = self.feel.get_mut(player) { f.bump = 0.06; } }
 
@@ -141,16 +149,24 @@ impl Guns {
         }
         for (i, p) in world.players.iter().enumerate().take(self.rigs.len()) {
             let rig = &mut self.rigs[i];
+            let waiting = world.awaiting_rifle(i);
+            let target = Stats::of(p);
             if new_round || self.own[i].is_none() {
                 let owned = Stats::weapon(&world.owned_weapon(i));
-                let target = Stats::of(p);
-                if let Some(previous) = self.own[i] {
-                    rig.set(previous);
-                    rig.grow_to(target);
-                } else { rig.set(target); }
-                self.own[i] = Some(owned);
+                let previous = self.own[i].replace(owned);
+                // Leave the owner's last rifle on the floor, even if the
+                // previous round lent them another player's gun.
+                rig.set(previous.unwrap_or(if waiting { owned } else { target }));
+                if !waiting && previous.is_some() { rig.grow_to(target); }
             }
-            rig.follow(Stats::of(p));
+            if !waiting {
+                if self.pickups[i].is_some_and(|(tick, _)| tick == world.tick) {
+                    self.own[i] = Some(Stats::weapon(&world.owned_weapon(i)));
+                    rig.grow_to_over(target, PICKUP_LIFT_SECONDS);
+                } else {
+                    rig.follow(target);
+                }
+            }
             rig.update(dt);
             let f = &mut self.feel[i];
             let horiz = Vec3::new(p.vel.x, 0.0, p.vel.z).length();
@@ -231,7 +247,7 @@ impl Guns {
             let ground_pose = ground.map(on_floor);
             let pickup = self.pickup(world, i, alpha).map(|(age, floor)| (age, on_floor(floor)));
             let fp = if let Some((age, floor)) = pickup {
-                let lift = super::pov_arms::ease(0.055, 0.40, age);
+                let lift = super::pov_arms::ease(0.055, PICKUP_LIFT_SECONDS, age);
                 super::pov_arms::blend_pose(floor, fp, lift)
             } else { fp };
             if self.local[i] && p.alive && !p.ghost && !self.tracking[i] {
@@ -658,6 +674,7 @@ mod xr_tests {
         for detail in [gun::Detail::Full, gun::Detail::Low] {
         let mut world = World::new(7, &[false, false]);
         let _scripts = crate::scripts::attach(&mut world).unwrap();
+        world.release_cage();
         for (i, card) in [(0, "sniper"), (1, "uzi")] { let c = world.cards.find(card).unwrap(); world.give(i, c); }
         let own = Stats::weapon(&world.owned_weapon(0));
         let borrowed = world.owned_weapon(1);
@@ -690,6 +707,42 @@ mod xr_tests {
         guns.tick(&world, 0.0);
         assert!(guns.rigs[0].is_growing());
         assert_eq!(guns.rigs[0].shown, own, "the previous round's borrowed Uzi must not be the source");
+        }
+    }
+
+    #[test]
+    fn only_visible_upgrades_grow_during_the_lift() {
+        for detail in [gun::Detail::Full, gun::Detail::Low] {
+            let mut world = World::new_with(7, &[false, false], |w| w.modifier_chance = 0.);
+            let _scripts = crate::scripts::attach(&mut world).unwrap();
+            let mut guns = Guns::reserve_with_detail(&mut Scene::default(), 2, detail);
+            world.release_cage();
+            guns.tick(&world, 0.);
+            let original = guns.rigs[0].build.barrel_length;
+            let source = guns.rigs[0].shown;
+            for (i, id) in [(0, "sniper"), (1, "acrobat")] {
+                let card = world.cards.find(id).unwrap();
+                world.give(i, card);
+            }
+            world.next_round();
+            guns.tick(&world, 0.);
+            guns.grow(0, &world);
+            let target = Stats::of(&world.players[0]);
+            while world.awaiting_rifle(0) {
+                assert!(!guns.rigs[0].is_growing());
+                assert_eq!(guns.rigs[0].shown, source);
+                world.step(&[]);
+                guns.tick(&world, growing_guns::DT);
+            }
+            assert!(guns.rigs[0].is_growing());
+            assert!(!guns.rigs[1].is_growing());
+            for _ in 0..11 { world.step(&[]); guns.tick(&world, growing_guns::DT); }
+            let midway = guns.rigs[0].build.barrel_length;
+            for _ in 0..12 { world.step(&[]); guns.tick(&world, growing_guns::DT); }
+            assert!(original < midway && midway < guns.rigs[0].build.barrel_length);
+            assert!(!guns.rigs[0].is_growing());
+            assert_eq!(guns.rigs[0].shown, target);
+            assert_eq!(guns.own[0], Some(Stats::weapon(&world.owned_weapon(0))));
         }
     }
 

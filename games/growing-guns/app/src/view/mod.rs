@@ -396,7 +396,7 @@ impl Visuals {
     pub fn tracked_muzzle(&self, player: usize, pose: glam::Affine3A) -> Vec3 { self.guns.tracked_muzzle(player, pose) }
     pub fn gun_tracked(&self, player: usize) -> bool { self.guns.is_tracked(player) }
 
-    pub fn grow_gun(&mut self, i: usize, p: &growing_guns::Player) { self.guns.grow(i, p); }
+    pub fn grow_gun(&mut self, i: usize, world: &World) { self.guns.grow(i, world); }
 
     pub fn player_capacity(&self) -> usize { self.guns.capacity() }
 

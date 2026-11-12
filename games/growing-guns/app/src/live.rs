@@ -219,7 +219,7 @@ impl Ctx<'_> {
             let pl = &mut self.gg.world.players[p];
             pl.ammo = pl.ammo.min(pl.mag_size());
             if pl.alive { pl.health = pl.health.min(pl.max_health()); }
-            self.gg.vis.grow_gun(p, &self.gg.world.players[p]);
+            self.gg.vis.grow_gun(p, &self.gg.world);
         }
         Ok(vec![Content::Text(format!("{} for player{} {}; lasts until the round ends (weapons are rebuilt from cards)", done.join(", "),
             if who.len() == 1 { "" } else { "s" }, who.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")))])

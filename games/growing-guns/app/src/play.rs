@@ -1566,7 +1566,7 @@ impl app::Game for Gg {
                 let name = w.get(2).ok_or("remove P CARD")?.to_lowercase();
                 let card = self.world.cards.find(&name).ok_or(format!("unknown card {name}"))?;
                 if !self.world.remove_card(p, card) { return Ok(format!("player {p} has no {name}")); }
-                self.vis.grow_gun(p, &self.world.players[p]);
+                self.vis.grow_gun(p, &self.world);
                 Ok(format!("removed one {name} from player {p}"))
             }
             "give" => {
@@ -1577,7 +1577,7 @@ impl app::Game for Gg {
                 let pl = &mut self.world.players[p];
                 pl.ammo = pl.mag_size();
                 // The gun grows into the new card, as after a pick.
-                self.vis.grow_gun(p, &self.world.players[p]);
+                self.vis.grow_gun(p, &self.world);
                 let ids: Vec<&str> = self.world.players[p].cards.iter().map(|&c| self.world.cards.get(c).map_or("?", |d| d.id.as_str())).collect();
                 Ok(format!("player {p} has {ids:?}"))
             }
