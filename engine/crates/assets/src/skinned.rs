@@ -810,6 +810,9 @@ impl Character {
         scene.add_instance(mesh, transform);
         scene.instances[instance].flags |= SKINNED;
         let actor = scene.skinning.actors.len();
+        if let Some(face) = &self.face && material.is_none() {
+            scene.hair_grooms.push((actor, face.head, face.groom));
+        }
         scene.skinning.actors.push(skinning::Actor {
             first_vertex,
             vertex_count,

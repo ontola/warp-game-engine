@@ -79,7 +79,9 @@ impl EffectsView {
         let meshes = FxMeshes {
             spark: { let m = glow(scene, [1.0, 0.6, 0.2], 20000.0); cube(scene, m) },
             blood: { let m = material(scene, [0.45, 0.02, 0.02], 0.35); scene.add_mesh(&crate::blood::drop_mesh(m).mesh()) },
-            casing: { let m = scene.add_material(Material { tint: [0.75, 0.55, 0.2], layer: -1, roughness: 0.35, flags: 0, scale: 1.0, metal: 1.0 }); cube(scene, m) },
+            casing: { let m = scene.add_material(Material { tint: [0.75, 0.55, 0.2], layer: -1, roughness: 0.35, flags: 0, scale: 1.0, metal: 1.0 });
+                // Round brass casings on PC; the low/minimum profiles (and Quest) keep a cube.
+                if crate::graphics::get().simple_guns { cube(scene, m) } else { scene.add_mesh(&render::primitives::cylinder(m, 0.2, 0.23, 12).mesh()) } },
         };
         let particles = Particles::reserve(scene, crate::graphics::get().particles, seed | 1);
         let occ = Occupancy::new(Vec3::new(-OCC_HALF, -4.0, -OCC_HALF), Vec3::new(OCC_HALF, 30.0, OCC_HALF), OCC_VOXEL);

@@ -1,4 +1,5 @@
-//! Monsters (enemy.gd). Every kind is a row in KINDS; bosses are kinds with
+//! Monsters (enemy.gd). Every kind is a row of mods/base/monsters.luau
+//! ([`kinds`]); what each attack does is here. Bosses are kinds with
 //! `boss`. Ranged monsters fire bullet patterns ("shots", taken in turn),
 //! slams throw a ring of bullets, and bosses cycle through BOSS_PATTERNS.
 //! Bullets are slow and bright: the game is to walk, roll and swing through
@@ -13,6 +14,7 @@ use crate::spells::NovaN;
 use crate::world::{Id, MONSTERS, WIZARDS, World, flat, lerp_angle, signed_angle, yaw_rot};
 use glam::{Vec2, Vec3};
 use std::f32::consts::TAU;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Attack {
@@ -66,7 +68,7 @@ pub const BOSS_NOVA_R: f64 = 6.0;
 /// How far to each side of where it faces a melee blow reaches.
 pub const MELEE_ARC: f32 = 1.1;
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Kind {
     pub key: &'static str,
     pub name: &'static str,
@@ -111,534 +113,43 @@ pub struct Kind {
     pub nova: El,
 }
 
-const K: Kind = Kind {
-    key: "",
-    name: "",
-    model: None,
-    hp: 40.0,
-    speed: 3.0,
-    dmg: 9.0,
-    reach: 1.3,
-    keep: None,
-    el: El::Earth,
-    size: 1.0,
-    attack: Attack::Melee,
-    shots: &[Shot::Fan3],
-    wind: None,
-    ring: 0,
-    mass: 1.0,
-    undead: false,
-    resist: &[],
-    heals_from: None,
-    burst: None,
-    always_wet: false,
-    practice: false,
-    raise: None,
-    solo: false,
-    spawn: Spawn::Ahead,
-    dash: (0.0, 0.0),
-    trail: None,
-    pack: 1,
-    shield: false,
-    boss: false,
-    summon: &[],
-    nova: El::Void,
-};
+/// Every monster kind, in the order of mods/base/monsters.luau (or the
+/// list a mod installed), with a stand-in `none` last: `Enemy::default()`
+/// (the component lifted out while it steps) points at it.
+pub fn kinds() -> &'static [Kind] {
+    let p = INSTALLED.load(Ordering::Acquire);
+    if p.is_null() { crate::rules::builtin_kinds() } else { unsafe { &*p } }
+}
+
+static INSTALLED: AtomicPtr<Vec<Kind>> = AtomicPtr::new(std::ptr::null_mut());
+
+/// The kinds from now on (the stand-in `none` is added here); None goes
+/// back to the built-in ones. Each installed list is leaked: a reload
+/// replaces it, and monsters alive keep pointing at valid kinds.
+pub fn set_kinds(k: Option<Vec<Kind>>) {
+    let p = k.map(|mut k| {
+        k.push(none_kind());
+        Box::into_raw(Box::new(k))
+    });
+    INSTALLED.store(p.unwrap_or(std::ptr::null_mut()), Ordering::Release);
+}
+
+/// The stand-in kind: never spawned, so its numbers only need to be sane.
+pub fn none_kind() -> Kind {
+    Kind {
+        key: "none", name: "", model: None, hp: 40.0, speed: 3.0, dmg: 9.0, reach: 1.3, keep: None,
+        el: El::Earth, size: 1.0, attack: Attack::Melee, shots: &[Shot::Fan3], wind: None, ring: 0,
+        mass: 1.0, undead: false, resist: &[], heals_from: None, burst: None, always_wet: false,
+        practice: false, raise: None, solo: false, spawn: Spawn::Ahead, dash: (0.0, 0.0), trail: None,
+        pack: 1, shield: false, boss: false, summon: &[], nova: El::Void,
+    }
+}
 
 use El::*;
 
-const BONES: &[(El, f64)] = &[(Frost, 0.3), (Earth, -0.3), (Void, 0.5)];
-
-pub static KINDS: [Kind; 30] = [
-    Kind {
-        key: "ghoul",
-        name: "Ghoul",
-        hp: 40.0,
-        speed: 4.3,
-        dmg: 9.0,
-        reach: 1.3,
-        el: Earth,
-        size: 0.9,
-        ..K
-    },
-    Kind {
-        key: "skeleton",
-        name: "Skeleton",
-        hp: 50.0,
-        speed: 3.3,
-        dmg: 10.0,
-        reach: 1.4,
-        undead: true,
-        resist: BONES,
-        ..K
-    },
-    // A floating eye that keeps its distance and stares out fans of void.
-    Kind {
-        key: "watcher",
-        name: "Watcher",
-        hp: 34.0,
-        speed: 3.0,
-        dmg: 9.0,
-        reach: 10.0,
-        keep: Some(8.0),
-        el: Void,
-        attack: Attack::Ranged,
-        shots: &[Shot::Fan3],
-        resist: &[(Void, 0.6), (Lightning, -0.4)],
-        ..K
-    },
-    Kind {
-        key: "cultist",
-        name: "Cultist",
-        hp: 42.0,
-        speed: 3.0,
-        dmg: 11.0,
-        reach: 9.0,
-        keep: Some(7.0),
-        el: Fire,
-        attack: Attack::Ranged,
-        shots: &[Shot::Fan5, Shot::Ring10],
-        resist: &[(Fire, 0.6)],
-        ..K
-    },
-    Kind {
-        key: "bile",
-        name: "Bile Horror",
-        hp: 95.0,
-        speed: 2.1,
-        dmg: 12.0,
-        reach: 1.5,
-        el: Water,
-        size: 1.25,
-        mass: 2.0,
-        resist: &[(Water, 1.0), (Earth, 0.2)],
-        burst: Some(Mud),
-        ..K
-    },
-    Kind {
-        key: "imp",
-        name: "Imp",
-        hp: 30.0,
-        speed: 5.2,
-        dmg: 8.0,
-        reach: 7.0,
-        keep: Some(5.0),
-        el: Fire,
-        size: 0.7,
-        attack: Attack::Ranged,
-        shots: &[Shot::Burst3],
-        heals_from: Some(Fire),
-        resist: &[(Frost, -0.5), (Water, -0.5)],
-        ..K
-    },
-    Kind {
-        key: "brute",
-        name: "Brute",
-        hp: 240.0,
-        speed: 2.7,
-        dmg: 24.0,
-        reach: 2.2,
-        size: 1.7,
-        attack: Attack::Slam,
-        ring: 10,
-        mass: 3.5,
-        resist: &[(Earth, 0.3)],
-        ..K
-    },
-    Kind {
-        key: "frost_brute",
-        name: "Frost Brute",
-        hp: 260.0,
-        speed: 2.5,
-        dmg: 22.0,
-        reach: 2.2,
-        el: Frost,
-        size: 1.7,
-        attack: Attack::Slam,
-        ring: 10,
-        mass: 3.5,
-        resist: &[(Frost, 0.9), (Fire, -0.4)],
-        ..K
-    },
-    Kind {
-        key: "wraith",
-        name: "Wraith",
-        hp: 45.0,
-        speed: 3.8,
-        dmg: 10.0,
-        reach: 8.0,
-        keep: Some(6.0),
-        el: Frost,
-        attack: Attack::Ranged,
-        shots: &[Shot::Wave7],
-        undead: true,
-        resist: &[(Frost, 1.0), (Earth, 0.5)],
-        ..K
-    },
-    Kind {
-        key: "drowned",
-        name: "Drowned",
-        hp: 55.0,
-        speed: 3.1,
-        dmg: 11.0,
-        reach: 1.4,
-        el: Water,
-        resist: &[(Water, 1.0), (Fire, 0.4)],
-        always_wet: true,
-        ..K
-    },
-    Kind {
-        key: "demon",
-        name: "Demon",
-        hp: 130.0,
-        speed: 3.5,
-        dmg: 16.0,
-        reach: 1.7,
-        el: Fire,
-        size: 1.35,
-        mass: 2.0,
-        resist: &[(Fire, 1.0), (Frost, -0.3)],
-        ..K
-    },
-    // Hangs back among the graves and looses one fast arrow. Brittle bones:
-    // earth and life break it.
-    Kind {
-        key: "bone_archer",
-        name: "Bone Archer",
-        model: Some("skeleton"),
-        hp: 32.0,
-        speed: 3.2,
-        dmg: 14.0,
-        reach: 16.0,
-        keep: Some(11.0),
-        attack: Attack::Ranged,
-        shots: &[Shot::Snipe],
-        wind: Some(1.1),
-        undead: true,
-        resist: BONES,
-        spawn: Spawn::Far,
-        ..K
-    },
-    // The practice strip at the start of the first level: they stand
-    // still, shoot slowly and hit softly.
-    Kind {
-        key: "practice_archer",
-        name: "Bone Archer",
-        model: Some("skeleton"),
-        hp: 24.0,
-        speed: 0.0,
-        dmg: 5.0,
-        reach: 18.0,
-        keep: Some(11.0),
-        attack: Attack::Ranged,
-        shots: &[Shot::Snipe],
-        wind: Some(1.5),
-        undead: true,
-        practice: true,
-        ..K
-    },
-    Kind {
-        key: "practice_caster",
-        name: "Cultist",
-        model: Some("cultist"),
-        hp: 30.0,
-        speed: 0.0,
-        dmg: 4.0,
-        reach: 14.0,
-        keep: Some(9.0),
-        el: Fire,
-        attack: Attack::Ranged,
-        shots: &[Shot::Slow1],
-        practice: true,
-        ..K
-    },
-    // Keeps far back and raises skeletons; when it dies, everything it
-    // raised falls apart. Its robes burn.
-    Kind {
-        key: "necromancer",
-        name: "Necromancer",
-        hp: 60.0,
-        speed: 2.7,
-        dmg: 9.0,
-        reach: 12.0,
-        keep: Some(10.0),
-        el: Void,
-        attack: Attack::Ranged,
-        shots: &[Shot::Fan3],
-        raise: Some("skeleton"),
-        solo: true,
-        resist: &[(Void, 0.8), (Fire, -0.3)],
-        spawn: Spawn::Far,
-        ..K
-    },
-    // Tunnels under the floor where nothing hits it and bursts up under
-    // you. Chilled, frozen or bogged in mud it is stuck up top.
-    Kind {
-        key: "lurker",
-        name: "Lurker",
-        hp: 70.0,
-        speed: 3.4,
-        dmg: 12.0,
-        reach: 1.5,
-        size: 1.1,
-        attack: Attack::Burrow,
-        mass: 1.6,
-        resist: &[(Earth, 0.4), (Frost, -0.3)],
-        spawn: Spawn::Under,
-        ..K
-    },
-    // A spark that dashes straight through you; double damage if you are
-    // wet. Lightning feeds it, earth grounds it.
-    Kind {
-        key: "sprite",
-        name: "Storm Sprite",
-        hp: 26.0,
-        speed: 5.5,
-        dmg: 7.0,
-        reach: 6.5,
-        keep: Some(4.5),
-        el: Lightning,
-        size: 0.7,
-        attack: Attack::Dash,
-        dash: (15.0, 0.32),
-        wind: Some(0.5),
-        heals_from: Some(Lightning),
-        resist: &[(Earth, -0.6)],
-        ..K
-    },
-    // Squats in the water and lobs globs of bog where it saw you a moment
-    // ago, slowing you and leaving you soaked.
-    Kind {
-        key: "toad",
-        name: "Bog Toad",
-        hp: 55.0,
-        speed: 2.4,
-        dmg: 7.0,
-        reach: 12.0,
-        keep: Some(8.0),
-        el: Mud,
-        attack: Attack::Lob,
-        wind: Some(0.7),
-        resist: &[(Water, 1.0), (Earth, 0.3), (Fire, -0.4)],
-        always_wet: true,
-        spawn: Spawn::Water,
-        ..K
-    },
-    // A tower shield in front turns aside almost everything that hits it
-    // there. Get round it, arc lightning through the metal, or knock it
-    // aside with earth or a gust.
-    Kind {
-        key: "shieldbearer",
-        name: "Shieldbearer",
-        hp: 120.0,
-        speed: 2.4,
-        dmg: 14.0,
-        reach: 1.6,
-        size: 1.15,
-        mass: 2.5,
-        shield: true,
-        resist: &[(Lightning, -0.3)],
-        ..K
-    },
-    // Hunts in packs from behind or the side, leaping from a few metres and
-    // leaving fire where it pushed off.
-    Kind {
-        key: "hellhound",
-        name: "Hellhound",
-        hp: 38.0,
-        speed: 5.6,
-        dmg: 10.0,
-        reach: 5.5,
-        el: Fire,
-        size: 0.85,
-        attack: Attack::Dash,
-        dash: (13.0, 0.3),
-        wind: Some(0.55),
-        trail: Some(Fire),
-        resist: &[(Fire, 1.0), (Water, -0.5), (Frost, -0.3)],
-        pack: 3,
-        spawn: Spawn::Flank,
-        ..K
-    },
-    // Bosses: one per biome, in the arena at the end of its level.
-    Kind {
-        key: "gravekeeper",
-        name: "The Gravekeeper",
-        model: Some("skeleton"),
-        hp: 1100.0,
-        speed: 2.6,
-        dmg: 26.0,
-        reach: 2.6,
-        size: 2.3,
-        attack: Attack::Slam,
-        mass: 8.0,
-        undead: true,
-        resist: &[(Void, 0.8), (Frost, 0.3)],
-        boss: true,
-        ring: 16,
-        summon: &["skeleton", "skeleton", "watcher"],
-        nova: Void,
-        ..K
-    },
-    Kind {
-        key: "abbot",
-        name: "The Bloated Abbot",
-        model: Some("bile"),
-        hp: 1300.0,
-        speed: 2.0,
-        dmg: 26.0,
-        reach: 2.6,
-        el: Water,
-        size: 2.4,
-        attack: Attack::Slam,
-        mass: 8.0,
-        resist: &[(Water, 1.0)],
-        boss: true,
-        ring: 16,
-        summon: &["cultist", "ghoul", "ghoul"],
-        nova: Mud,
-        ..K
-    },
-    Kind {
-        key: "drowned_king",
-        name: "The Drowned King",
-        model: Some("drowned"),
-        hp: 1400.0,
-        speed: 2.6,
-        dmg: 26.0,
-        reach: 2.6,
-        el: Water,
-        size: 2.3,
-        attack: Attack::Slam,
-        mass: 8.0,
-        resist: &[(Water, 1.0), (Fire, 0.5)],
-        boss: true,
-        ring: 16,
-        summon: &["drowned", "drowned", "bile"],
-        nova: Water,
-        always_wet: true,
-        ..K
-    },
-    Kind {
-        key: "warden",
-        name: "The Frost Warden",
-        model: Some("frost_brute"),
-        hp: 1600.0,
-        speed: 2.4,
-        dmg: 30.0,
-        reach: 2.8,
-        el: Frost,
-        size: 2.4,
-        attack: Attack::Slam,
-        mass: 9.0,
-        resist: &[(Frost, 1.0), (Fire, -0.3)],
-        boss: true,
-        ring: 16,
-        summon: &["wraith", "wraith", "skeleton"],
-        nova: Ice,
-        ..K
-    },
-    Kind {
-        key: "pit_lord",
-        name: "The Pit Lord",
-        model: Some("demon"),
-        hp: 2200.0,
-        speed: 2.8,
-        dmg: 34.0,
-        reach: 3.0,
-        el: Fire,
-        size: 2.6,
-        attack: Attack::Slam,
-        mass: 10.0,
-        resist: &[(Fire, 1.0), (Frost, -0.3)],
-        boss: true,
-        ring: 16,
-        summon: &["imp", "imp", "demon"],
-        nova: Magma,
-        ..K
-    },
-    // The Drowned Caves' own (Warp, models in Godot's enemy.gd): bats in
-    // flocks that dive through you, toadstools that die in a cloud of
-    // poison, crabs shooting crystal shards, and the crabs' mother.
-    Kind {
-        key: "bat",
-        name: "Cave Bat",
-        hp: 16.0,
-        speed: 6.0,
-        dmg: 6.0,
-        reach: 5.0,
-        keep: Some(3.5),
-        el: Air,
-        size: 1.0,
-        attack: Attack::Dash,
-        dash: (14.0, 0.25),
-        wind: Some(0.45),
-        resist: &[(Air, 0.5), (Lightning, -0.4)],
-        pack: 4,
-        spawn: Spawn::Far,
-        ..K
-    },
-    Kind {
-        key: "shambler",
-        name: "Spore Shambler",
-        hp: 85.0,
-        speed: 2.0,
-        dmg: 11.0,
-        reach: 1.5,
-        el: Poison,
-        size: 1.15,
-        mass: 2.0,
-        burst: Some(Poison),
-        resist: &[(Poison, 1.0), (Fire, -0.5), (Water, 0.3)],
-        ..K
-    },
-    Kind {
-        key: "crawler",
-        name: "Crystal Crawler",
-        hp: 60.0,
-        speed: 2.6,
-        dmg: 9.0,
-        reach: 10.0,
-        keep: Some(7.0),
-        el: Ice,
-        attack: Attack::Ranged,
-        shots: &[Shot::Fan3, Shot::Burst3],
-        wind: Some(0.8),
-        mass: 1.6,
-        resist: &[(Frost, 1.0), (Ice, 1.0), (Earth, -0.4)],
-        ..K
-    },
-    Kind {
-        key: "crystal_mother",
-        name: "The Crystal Mother",
-        model: Some("crawler"),
-        hp: 1500.0,
-        speed: 2.4,
-        dmg: 26.0,
-        reach: 2.8,
-        el: Ice,
-        size: 2.5,
-        attack: Attack::Slam,
-        mass: 9.0,
-        resist: &[(Frost, 1.0), (Ice, 1.0), (Earth, -0.3)],
-        boss: true,
-        ring: 16,
-        summon: &["crawler", "bat", "bat"],
-        nova: Lightning,
-        ..K
-    },
-    // Not in Godot's table: a stand-in so `Enemy::default()` (the component
-    // lifted out while it steps) points at something.
-    Kind {
-        key: "none",
-        name: "",
-        ..K
-    },
-];
-
-/// The kind called `key` (an index into KINDS).
+/// The kind called `key` (an index into kinds()).
 pub fn kind(key: &str) -> usize {
-    KINDS
+    kinds()
         .iter()
         .position(|k| k.key == key)
         .unwrap_or_else(|| panic!("no monster kind {key}"))
@@ -784,7 +295,7 @@ pub struct Enemy {
 impl Default for Enemy {
     fn default() -> Enemy {
         Enemy {
-            kind: KINDS.len() - 1,
+            kind: kinds().len() - 1,
             elite: None,
             elite_name: String::new(),
             target: None,
@@ -830,7 +341,7 @@ impl Default for Enemy {
 
 impl Enemy {
     pub fn cfg(&self) -> &'static Kind {
-        &KINDS[self.kind]
+        &kinds()[self.kind]
     }
 
     pub fn affix(&self) -> Option<&'static Affix> {
@@ -873,7 +384,7 @@ impl Enemy {
         at: Vec3,
         rng: &mut impl Rand,
     ) -> (Actor, Enemy) {
-        let c = &KINDS[k];
+        let c = &kinds()[k];
         let speed = c.speed * rng.range(0.92, 1.08) as f64 * crate::knobs::monster_speed();
         let mut a = Actor::new(MONSTERS, at, c.hp * hp_scale, 0.42 * c.size, speed);
         a.mass = c.mass;
@@ -2037,3 +1548,4 @@ pub fn fuse_k(e: &Enemy) -> f32 {
         (e.fuse_t / e.fuse).min(1.0) as f32
     }
 }
+

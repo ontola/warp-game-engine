@@ -17,6 +17,15 @@ const VEGETATION_MENU:u32=100; const GRASS_MENU:u32=101; const TREES_MENU:u32=10
 
 enum ScriptEvent { Key(DebugKey), Pointer([f32;2]), Down, Up }
 
+/// Geometry LOD error in pixels. 2 px instead of 1 draws 40 % fewer view
+/// and 46 % fewer shadow triangles (6.4 M / 17.9 M -> 3.8 M / 9.7 M at
+/// 1440p) for 3-4 ms a frame on an M5 Pro, at 49.5 dB against 1 px.
+pub const DEFAULT_LOD_PIXELS: f32 = 2.0;
+/// Distant sun shadow casters may be as coarse as one camera pixel at their
+/// distance: 2 views 2.31 -> 1.66 ms shadow raster on the Mancave (4K DLSS-P),
+/// image diff limited to faint far shadow edges (2026-11-11).
+pub const SHADOW_DISTANCE_LOD: f32 = 1.0;
+
 pub struct EngineDebug {
     pub ui:DebugUi,
     pub options:DebugRenderOptions,
@@ -50,14 +59,14 @@ impl EngineDebug {
         let mut ui=DebugUi::default();ui.open=open;
         Ok(Self {ui,options:baseline.grass,baseline,gpu_unavailable:false,timing:TimingModel::new(32),
             model:Default::default(),model_at:None,cpu_start:None,cpu_execution:None,cutoff_frame:0,current_frame:0,
-            lod_pixels:1.0,exposure_offset:0.0,fog:true,
+            lod_pixels:DEFAULT_LOD_PIXELS,exposure_offset:0.0,fog:true,
             script:if let Some(path)=script {load_script(path)?}else{VecDeque::new()},changes:0,history_dirty:false,
             tree_pending:baseline.trees,tree_applied:baseline.trees,tree_apply_requested:false,
             tree_status:"Current stage. Apply rebuilds trees, shadows and collisions; car position is preserved.".into(),tree_report:Value::Null,
             environment:crate::debug_environment::EnvironmentDebug::new(Default::default())})
     }
     pub fn effective_light(&self,base:&Lighting)->Lighting {
-        let mut light=self.environment.effective_light(base);light.lod_pixels=self.lod_pixels;
+        let mut light=self.environment.effective_light(base);light.lod_pixels=self.lod_pixels;light.shadow_distance_lod=SHADOW_DISTANCE_LOD;
         light.ev100=(light.ev100+self.exposure_offset).clamp(-4.0,24.0);
         if !self.fog {light.fog_density=0.0;light.fog_height_m=base.fog_height_m.max(1.0);light.fog_culling=false;}
         light
@@ -181,7 +190,7 @@ impl EngineDebug {
                 EXPOSURE=>self.exposure_offset=value.clamp(-3.0,3.0) as f32,_=>return},
             DebugAction::Activate{id:TREE_APPLY}=>self.tree_apply_requested=self.tree_pending!=self.tree_applied,
             DebugAction::Activate{id:TREE_DISCARD}=>self.tree_pending=self.tree_applied,
-            DebugAction::ResetDefaults=>{self.options=self.baseline.grass;self.lod_pixels=1.0;self.exposure_offset=0.0;self.fog=true;
+            DebugAction::ResetDefaults=>{self.options=self.baseline.grass;self.lod_pixels=DEFAULT_LOD_PIXELS;self.exposure_offset=0.0;self.fog=true;
                 self.tree_pending=self.baseline.trees;self.tree_apply_requested=self.tree_applied!=self.tree_pending;},
             _=>return,
         }
@@ -344,7 +353,7 @@ fn parse_script(value:&Value)->Result<VecDeque<(u64,ScriptEvent)>,String> {
         ui.apply(DebugAction::SetNumber{id:GRASS_LOD,value:2.0});
         assert_eq!(ui.options.meadow_size_scale,2.0);assert_eq!(ui.options.meadow_density,0.0);
         assert_eq!(ui.options.meadow_color_multiplier,[1.0,1.0,1.5]);assert!(ui.options.validate().is_ok());
-        assert_eq!(ui.options.meadow_lod_pixels,2.0);assert_eq!(ui.lod_pixels,1.0);
+        assert_eq!(ui.options.meadow_lod_pixels,2.0);assert_eq!(ui.lod_pixels,DEFAULT_LOD_PIXELS);
         assert_eq!(ui.metadata()["grass_lod_pixels"],2.0);
         ui.apply(DebugAction::SetNumber{id:TREE_COUNT,value:50.0});
         assert!(ui.take_tree_apply().is_none());assert_eq!(ui.tree_applied.density,1.0);
@@ -374,6 +383,6 @@ fn parse_script(value:&Value)->Result<VecDeque<(u64,ScriptEvent)>,String> {
         assert_eq!(ui.take_tree_apply(),Some(baseline.trees));
         ui.tree_committed(baseline.trees,json!({}));assert_eq!(ui.applied_tree_settings(),baseline.trees);
         assert_eq!(ui.metadata()["saved_vegetation_baseline"]["grass_patch_count_fraction"],json!(0.55f32));
-        assert_eq!(ui.lod_pixels,1.0);assert_eq!(ui.exposure_offset,0.0);
+        assert_eq!(ui.lod_pixels,DEFAULT_LOD_PIXELS);assert_eq!(ui.exposure_offset,0.0);
     }
 }

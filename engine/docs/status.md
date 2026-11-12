@@ -7,7 +7,7 @@ to. Dated measurements and the reasoning behind decisions are in the
 
 ## Warp Humans
 
-The [interactive stadium playtest and review](warp-humans.md) use per-view GPU selection, a weighted full-body mesh, facial morphs and three textured hair meshes. A shared close page is prepared as the camera approaches. Growing Guns uses packed seating in desktop matches launched with `--warp-humans`. The earlier spacing is available with `--crowd-density standard`. Spectators receive the roof shadow and local stadium lighting across all detail levels. Shots and explosions act on shared GPU spectator state across views. Close spectators and players blink and shift gaze. Mouth expression and multi-page eviction remain open.
+The [interactive stadium playtest and review](warp-humans.md) use per-view GPU selection, a weighted full-body mesh, facial morphs and three fitted hairstyles with procedural close-up strands. A shared close page is prepared as the camera approaches. Desktop Growing Guns matches use seeded Warp Human players and packed Warp Human stands by default. The earlier spacing is available with `--crowd-density standard`. Spectators receive the roof shadow and local stadium lighting across all detail levels. Shots and explosions act on shared GPU spectator state across views. Close spectators and players blink and shift gaze. Mouth expression and multi-page eviction remain open.
 
 ## Character animation
 

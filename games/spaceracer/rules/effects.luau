@@ -1,4 +1,5 @@
 -- Artistic policy. Native code handles bulk mesh motion, collision and GPU work.
+-- When an edit applies: at the next race (read when its visuals are built).
 local config={
     camera={distance=16.5,height=4.6,speed_pullback=.004,boost_pullback=1,
         fov_base=72,fov_speed=8,fov_surge=8,fov_boost=12,shake=1.5},

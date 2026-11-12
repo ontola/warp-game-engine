@@ -77,6 +77,29 @@ fn pack_emission(rgb: Vec3) -> u32 {
     q.x | (q.y << 9) | (q.z << 18) | ((exponent as u32) << 27)
 }
 
+/// One axis of sky/sun transport in a word: three 9-bit mantissas with a
+/// shared 4-bit exponent (values 2^-23 to about 2, a constant ~0.2 %
+/// relative step) and the invalid flag (z above 1.5) in the top bit. A dark
+/// room lit only by light through a doorway has transport around 1e-5,
+/// where the earlier 10-bit square-root code stepped by 75 % from probe to
+/// probe (blocks on the walls once the eye adapts to the dark).
+pub fn pack_transport(v: Vec3) -> u32 {
+    let invalid = u32::from(v.z > 1.5) << 31;
+    let v = v.clamp(Vec3::ZERO, Vec3::splat(1.0));
+    let maximum = v.max_element();
+    let mut exponent = ((maximum.max(2f32.powi(-15)).log2().floor() as i32) + 15).clamp(0, 15);
+    let mut scale = 2f32.powi(exponent - 23);
+    if (maximum / scale).round() >= 512.0 && exponent < 15 { exponent += 1; scale *= 2.0; }
+    let q = (v / scale).round().min(Vec3::splat(511.0)).as_uvec3();
+    q.x | (q.y << 9) | (q.z << 18) | ((exponent as u32) << 27) | invalid
+}
+
+/// The shader's decode of [`pack_transport`].
+pub fn unpack_transport(word: u32) -> Vec3 {
+    let scale = 2f32.powi(((word >> 27) & 15) as i32 - 23);
+    Vec3::new((word & 511) as f32, ((word >> 9) & 511) as f32, ((word >> 18) & 511) as f32) * scale
+}
+
 /// Mode 7: sky/sun transport plus static RGB emission, in the existing 18
 /// words per probe. Optional planes use the spare third words of four axes.
 pub fn pack_sky_emission(grid: &Grid, sky: &[Probe], emission: &[Probe], planes: &[[f32;4]]) -> Result<Vec<u32>,String> {
@@ -89,8 +112,7 @@ pub fn pack_sky_emission(grid: &Grid, sky: &[Probe], emission: &[Probe], planes:
     for (i,p) in sky.iter().enumerate() {
         for (a,v) in p.axes.iter().enumerate() {
             let at=8+i*18+a*3;
-            let q=|x:f32| (x.clamp(0.0,1.0)*1023.0).round() as u32;
-            words[at]=q(v.x)|(q(v.y)<<10)|(q(v.z)<<20)|(u32::from(v.z>1.5)<<31);
+            words[at]=pack_transport(*v);
             words[at+1]=pack_emission(emission[i].axes[a]);
             words[at+2]=if a<4 && !planes.is_empty() { planes[i][a].to_bits() } else { 0 };
         }

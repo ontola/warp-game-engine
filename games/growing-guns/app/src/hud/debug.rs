@@ -193,7 +193,7 @@ impl DebugMenu {
                 v.push(Row::Head("MATCH".into()));
                 v.push(Row::Line(String::new(), vec![
                     Entry::run("NEXT ROUND", &cmds(&["round"], p), false),
-                    Entry::run("OPEN CAGE", &cmds(&["cage"], p), false),
+                    Entry::run("SKIP LAUNCH", &cmds(&["cage"], p), false),
                     Entry::run("REMATCH", &cmds(&["rematch"], p), false),
                 ]));
                 v.push(Row::Line(String::new(), vec![

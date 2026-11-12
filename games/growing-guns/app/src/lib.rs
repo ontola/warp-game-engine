@@ -46,6 +46,10 @@ mod view;
 use growing_guns::{Event, World, TICK_HZ};
 use render::Gpu;
 
+fn warp_humans_enabled() -> bool {
+    !std::env::args_os().any(|arg| arg == "--no-warp-humans")
+}
+
 pub struct Args { pub list: Vec<String> }
 
 impl Args {
@@ -214,8 +218,8 @@ fn script(args: &Args) -> Result<(), String> {
     let mut world = world;
     if args.flag("--start-in-stands") { stadium::start_in_stands(&mut world)?; }
     let mut game = play::Gg::new(world, session::Session::Local, (0..humans).collect());
-    // Scripts start in play; `--cage` keeps Godot's spawn cage.
-    if !args.flag("--cage") { game.world.release_cage(); }
+    // Headless scripts skip the entrance unless requested.
+    if !args.flag("--round-entrance") && !args.flag("--cage") { game.world.release_cage(); }
     game.set_sky(sky::Sky::from_args(args.value("--sky"))?)?;
     game.light_mut().taa = 0.0;
     for kv in args.list.windows(2).filter(|w| w[0] == "--set").map(|w| w[1].clone()) { game.light_mut().set(&kv)?; }

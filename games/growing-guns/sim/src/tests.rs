@@ -413,7 +413,7 @@ fn solo_humans_have_no_pick_timeout_and_bots_pick_after_a_beat() {
     let round = w.round;
     w.step(&[Input { pick: Some(1), ..Default::default() }, Input::default()]);
     assert_eq!(w.round, round + 1, "the next round starts at once");
-    assert!(w.players[0].frozen, "in the cage");
+    assert!(w.players[0].frozen, "still flying in");
     assert_eq!(w.cage_left().map(|t| (t * 60.0).round()), Some(164.0));
 }
 
@@ -653,13 +653,13 @@ fn coop_archetypes_follow_the_wave() {
     let mut rng = rng::Rng::new(1);
     let picks: Vec<Archetype> = (0..12).map(|k| Archetype::pick_for(8, k, &mut rng)).collect();
     assert_eq!((picks[0], picks[6], picks[5], picks[4]), (Archetype::Demolition, Archetype::Grenadier, Archetype::Sniper, Archetype::FlatFragger));
-    let g = Archetype::Grenadier.weapon(5);
+    let g = Archetype::Grenadier.weapon(5, Default::default());
     assert_eq!((g.max_hp_bonus, g.body_scale, g.explosive_damage), (60, 1.28, 43.0));
     assert!((g.explosive_radius - 4.0).abs() < 1e-6);
     let mut p = Player::new(true);
     p.weapon = g;
     assert_eq!(p.max_health(), 160);
-    assert_eq!(Archetype::Demolition.weapon(10).special, Special::ClusterGrenade);
+    assert_eq!(Archetype::Demolition.weapon(10, Default::default()).special, Special::ClusterGrenade);
     assert_eq!((coop::enemy_count(1, 1), coop::enemy_count(5, 3)), (3, 9));
 }
 
@@ -943,4 +943,52 @@ fn final_group_elimination_opens_picks_without_a_station() {
     assert_eq!(w.players[0].kills, 2);
     w.restart_match();
     assert_eq!(w.players[0].kills, 0);
+}
+
+#[test]
+fn crowd_launch_arcs_to_solid_ground_and_releases_on_contact() {
+    for island in [false, true] {
+        let mut w = World::new_with(3, &[false, false], |w| {
+            w.force_island = island;
+            w.modifier_chance = 0.0;
+        });
+        let start = w.players[0].pos;
+        assert!((w.arena.stadium.ground(start) + HALF_HEIGHT - start.y).abs() < 0.001);
+        idle(&mut w, 48);
+        assert_eq!(w.players[0].pos, start);
+        assert!(w.awaiting_rifle(0));
+        let mut remote = World::remote(w.arena.clone(), 2);
+        remote.apply(w.snapshot());
+        assert!(remote.awaiting_rifle(0));
+        w.step(&[]);
+        assert!(w.awaiting_rifle(0) && w.players[0].pos != start);
+        remote.apply(w.snapshot());
+        assert_eq!(remote.ground_rifle(0), w.ground_rifle(0));
+        assert!(remote.awaiting_rifle(0));
+        idle(&mut w, 38);
+        let mid = w.players[0].pos;
+        assert!(mid.y > start.y + 1.0 && mid.distance(start) > 5.0);
+        let late = w.add_bot();
+        assert!(w.players[late].frozen);
+        w.bots_paused = true;
+        let mut remote = World::remote(w.arena.clone(), w.players.len());
+        remote.apply(w.snapshot());
+        assert_eq!(remote.players[0].pos, mid);
+        while w.cage_left().is_some() {
+            w.step(&[Input { fire: true, ..Default::default() }]);
+            assert!(!w.events.iter().any(|e| matches!(e, Event::Shot { player: 0, .. })));
+        }
+        for p in &w.players {
+            assert!(!p.frozen && p.on_floor && p.vel == Vec3::ZERO);
+            assert!(w.arena.spawns.iter().any(|s| s.x == p.pos.x && s.z == p.pos.z));
+            let (height, _, _) = shape::raycast(&w.arena.grid, p.pos, Vec3::NEG_Y, 2.0).unwrap();
+            assert!((height - HALF_HEIGHT).abs() < 0.001);
+        }
+        assert!(w.players[late].pos.distance(w.players[0].pos) > 1.0);
+        remote.apply(w.snapshot());
+        assert_eq!(remote.cage_left(), None);
+        assert_eq!(remote.players[0].pos, w.players[0].pos);
+        w.step(&[Input { jump: true, ..Default::default() }]);
+        assert!(w.players[0].vel.y > 0.0);
+    }
 }

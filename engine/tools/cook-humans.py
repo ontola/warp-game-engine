@@ -102,7 +102,7 @@ def groom_edges(fitted,mat,atlas):
         across=np.array([np.cos(theta),0,-np.sin(theta)])
         root=xyz[i]+outward*.0007
         width=rng.uniform(.0008,.0025)
-        fall=rng.uniform(.0015,.004) * (0.6 if mat==21 else 1.)
+        fall=rng.uniform(.0015,.004)
         tip=root+[0,-fall,0]+across*width*rng.uniform(-1.3,1.3)
         first=len(verts)
         for point,tex in [(root+[0,.0045,0]-width*across,(.4,.4)),(root+[0,.0045,0]+width*across,(.6,.4)),(tip,(.51,.58))]:
@@ -115,7 +115,7 @@ def groom_edges(fitted,mat,atlas):
     tex=np.asarray(atlas.crop((atlas_x,atlas_y,atlas_x+tile,atlas_y+tile)))
     patches=[(u,v) for u in range(20,tile-20,12) for v in range(20,tile-20,12)
              if tex[v-10:v+11,u-10:u+11,3].min()>245]
-    u,v=min(patches,key=lambda q:abs(tex[q[1],q[0],:3].mean()-{20:25,21:115,22:18}[mat]))
+    u,v=min(patches,key=lambda q:abs(tex[q[1],q[0],:3].mean()-{20:25,22:18}[mat]))
     start=len(verts)
     sides,rings=(72,18) if mat==22 else (40,12)
     top=xyz[:,1].max()
@@ -125,7 +125,7 @@ def groom_edges(fitted,mat,atlas):
         alignment=np.cos(angle-theta)
         sector=np.flatnonzero(alignment>np.cos(.17))
         if len(sector)<12: sector=np.argsort(alignment)[-12:]
-        bottom=xyz[sector,1].min()+(.012 if mat==21 else .005)
+        bottom=xyz[sector,1].min()+.005
         for ring in range(rings):
             t=ring/rings
             y=bottom+(top-bottom)*t
@@ -157,6 +157,161 @@ def groom_edges(fitted,mat,atlas):
     return np.array(verts),np.array(uvs),tris,roots
 
 
+def rooted_bob(scalp,shapes,faces):
+    # Fit each root to a body triangle. The two guide layers have independent
+    # roots and different lengths. Their slots reuse the original bob field.
+    ids=np.array([[v for v,_ in f] for g,f in faces if g=="body"])
+    ids=ids[np.all(scalp[ids,1]>.89,axis=1)]
+    triangles=scalp[ids]
+    origin=np.array([0.,.937,.001])
+    e1=triangles[:,1]-triangles[:,0]
+    e2=triangles[:,2]-triangles[:,0]
+    offset=origin-triangles[:,0]
+    cross=np.cross(offset,e1)
+    def attach(target):
+        direction=target-origin
+        h=np.cross(direction,e2)
+        det=np.sum(e1*h,axis=1)
+        inv=np.divide(1.,det,out=np.zeros_like(det),where=abs(det)>1e-10)
+        u=np.sum(offset*h,axis=1)*inv
+        v=(cross@direction)*inv
+        t=np.sum(e2*cross,axis=1)*inv
+        hits=np.flatnonzero((u>=0)&(v>=0)&(u+v<=1)&(t>0))
+        if not len(hits): raise ValueError("Bob guide misses scalp")
+        i=hits[np.argmax(t[hits])]
+        w=np.array([1.-u[i]-v[i],u[i],v[i]])
+        return np.vstack((w@triangles[i],np.einsum("i,ijk->jk",w,shapes[ids[i]])))
+    guides=np.empty((64,16,5,3))
+    # Each sheet fans from the off-centre part over the skull toward one
+    # temple, then down toward the jaw. The sheets meet at the nape.
+    for k in range(64):
+        side=-1 if k<32 else 1
+        theta=np.pi*(k%32)/31
+        front=max(0.,np.cos(theta))
+        phi=side*(theta+(.46 if side>0 else .31)*np.exp(-(theta/.78)**2))
+        radial=np.array([np.sin(phi),0.,np.cos(phi)])
+        for layer in range(2):
+            root_dir=np.array([.014+.0012*np.sin(3*theta)+side*(.00015+.0009*layer),
+                               .048-.027*abs(np.cos(theta))**3,
+                               .074*np.cos(theta)-.004+.002*layer])
+            root_dir/=np.linalg.norm(root_dir)
+            root=attach(origin+.08*root_dir)
+            shoulder_dir=radial+np.array([0.,.09+.18*front**3,0.])
+            shoulder=attach(origin+.08*shoulder_dir)
+            radius_x=.063-.005*layer
+            radius_z=.070-.0045*layer
+            shoulder_pos=np.array([radius_x*np.sin(phi),.936+.015*front**3,
+                                   -.001+radius_z*np.cos(phi)])
+            if side<0: shoulder_pos[1]-=.012*front**4
+            outward=shoulder_pos-shoulder[0]
+            bend=.62
+            tip_y=.841+.083*front**5+.012*(1.-np.cos(theta))*.5+.0035*layer
+            tip_y+=.0027*np.sin(7.*theta+.8*side)+.0018*np.sin(13.*theta)
+            for j in range(8):
+                t=j/7
+                if t<=bend:
+                    w=t/bend
+                    ray=(1.-w)*root_dir+w*shoulder_dir
+                    ray/=np.linalg.norm(ray)
+                    point=attach(origin+.08*ray)
+                    smooth=w*w*(3.-2.*w)
+                    point[0]+=smooth*outward+ray*(.0003+(.009-.005*layer)*np.sin(np.pi*w))
+                else:
+                    w=(t-bend)/(1.-bend)
+                    end_angle=phi+side*(.48*front**5*w+.045*np.sin(4*theta+1.1)*np.sin(np.pi*w))
+                    fold=.0035*np.sin(np.pi*w)-.004*w*w
+                    point=shoulder.copy()
+                    point[0]=[(radius_x+fold)*np.sin(end_angle),
+                              (1.-w)*shoulder_pos[1]+w*tip_y,
+                              -.001+(radius_z+fold)*np.cos(end_angle)]
+                # Large waves carry neighbouring locks together. Vary the phase
+                # along the part to keep the ends from forming one regular comb.
+                roll=6.6*t+.85*np.sin(3*theta)+.42*np.sin(8*theta)+.6*side
+                lift=t*t*(3.-2.*t)
+                across=np.array([np.cos(phi),0.,-np.sin(phi)])
+                point[0]+=across*side*.0085*lift*np.sin(roll)
+                point[0]+=radial*lift*(.0050*np.cos(roll)+.0028*np.cos(9*theta+2.9*t))
+                point[0,1]+=.0038*lift*np.cos(5*theta+3*t)
+                guides[k,layer*8+j]=point
+    return guides
+
+
+def strand_field(fitted,morph):
+    # A periodic guide surface, ordered from hairline to crown. The GPU
+    # interpolates a different path over it for each individual hair.
+    xyz=fitted*.06+[0,.49,-.021]
+    angles=np.arctan2(xyz[:,0],xyz[:,2]-.002)
+    radius=np.hypot(xyz[:,0],xyz[:,2]-.002)
+    field=np.zeros((64,16,5,3))
+    for k in range(64):
+        angle=k*2*np.pi/64-np.pi
+        rank=np.cos(angles-angle)
+        sector=np.flatnonzero(rank>np.cos(.15))
+        if len(sector)<12: sector=np.argsort(rank)[-12:]
+        bottom=np.quantile(xyz[sector,1],.025)
+        top=xyz[:,1].max()
+        for j in range(16):
+            t=j/15
+            y=bottom+(top-bottom)*np.sin(t*np.pi/2)
+            near=sector[np.argsort(abs(xyz[sector,1]-y))[:10]]
+            r=np.quantile(radius[near],.85)*min(1.,(1.-t)*7.)
+            pt=np.array([r*np.sin(angle),y,.002+r*np.cos(angle)])
+            donor=near[np.argmin(np.linalg.norm(xyz[near]-pt,axis=1))]
+            field[k,j,0]=pt
+            field[k,j,1:]=morph[donor]*.06
+    for _ in range(2):
+        field=.5*field+.25*(np.roll(field,1,axis=0)+np.roll(field,-1,axis=0))
+    return pack_guides(field)
+
+
+def pack_guides(field):
+    packed=bytearray()
+    for sample in field.reshape(-1,5,3):
+        pos=np.rint((sample[0]-[0,.9,0])*(32767/.25)).astype(int)
+        packed.extend(struct.pack("<4h",*pos,0))
+        for d in sample[1:]:
+            packed.extend(struct.pack("<4b",*np.rint(np.clip(d/.055,-1,1)*127).astype(int),0))
+    return packed
+
+
+def bob_undercoat(guides,tile):
+    # The lower-density representation shares the strand guides and stops
+    # above their tips. Keep both sides of the part open at the forehead.
+    points=[]; tex=[]; tris=[]
+    rings=22
+    for col in range(64):
+        control=.4*guides[col,:8]+.6*guides[col,8:]
+        for row in range(rings):
+            t=row/(rings-1)*.92
+            v=t*7; j=min(int(v),6); f=v-j
+            p0,p1,p2,p3=control[[max(0,j-1),j,j+1,min(j+2,7)]]
+            b=.5*(p2-p0); e=.5*(p3-p1)
+            points.append(p1+f*(b+f*(3*(p2-p1)-2*b-e+f*(b+e-2*(p2-p1)))))
+            tex.append(((1+509*(col%32)/31)/512,(1+509*row/(rings-1))/512))
+            if col%32 and row:
+                q=col*rings+row
+                for ids in [(q-rings-1,q-rings,q),(q-rings-1,q,q-1)]:
+                    tri=ids if col>=32 else ids[::-1]
+                    tris.append(("",[(i,i) for i in tri]))
+    field=np.asarray(points)
+    # A dark, longitudinal undercoat supplies density between real fibres.
+    # Its tip mask tapers over different distances across neighbouring locks.
+    y,x=np.mgrid[0:tile,0:tile]/tile
+    phase=x+.008*np.sin(7*y+12*x)+.0025*np.sin(12*y+28*x)
+    tone=76+15*np.cos(2*np.pi*(phase*17))+10*np.cos(2*np.pi*(phase*67+.2*np.sin(y*8)))
+    tone+=14*np.sin(2*np.pi*(phase*173+.12*np.sin(y*6+37*x)))
+    tone*=.80+.20*np.sin(np.pi*y)
+    tips=.935+.036*np.cos(2*np.pi*phase*14)+.022*np.sin(2*np.pi*phase*103)
+    # Let rendered fibres own the border of the part and the face-framing
+    # locks. The colour falloff continues along the same comb direction.
+    border=.017+.010*np.sin(9*y)+.005*np.sin(38*y)
+    edge=np.clip((x-border)*27,0,1)
+    grain=np.sin(2*np.pi*phase*158)+.48*np.sin(2*np.pi*phase*73)
+    alpha=np.clip((tips-y)*52,0,1)*np.clip(2.3*edge-0.55+.48*grain,0,1)*255
+    rgba=np.uint8(np.stack((tone,tone,tone,alpha),axis=-1).clip(0,255))
+    return field,np.asarray(tex),tris,Image.fromarray(rgba)
+
+
 def cook(base_path,src,pack,dest):
     base,uv,faces=obj(base_path)
     # Narrow the neutral palpebral opening with the paired hm08 eyelid targets.
@@ -164,31 +319,41 @@ def cook(base_path,src,pack,dest):
         for section in (1,2,3):
             delta=np.loadtxt(src/f"{side}-eye-height{section}-decr.target")
             base[delta[:,0].astype(int)] += 0.85*delta[:,1:4]
-    weights=np.zeros((len(base),4))
+    # Include every facial joint below the skull (jaw, lips, lids and eyes).
+    rig=json.loads((src/"default.mhskel").read_text())["bones"]
+    def follows_head(bone):
+        while bone and bone!="head":
+            bone=rig[bone]["parent"]
+        return bone=="head"
+
+    weights=np.zeros((len(base),5))
     totals=np.zeros(len(base))
     for bone,values in json.loads((src/"default_weights.mhw").read_text())["weights"].items():
         fore=bone.startswith(("lowerarm","wrist","hand","finger","metacarpal"))
         shin=bone.startswith(("lowerleg","foot","toe"))
-        mask=[fore or bone.startswith("upperarm"),fore,shin or bone.startswith("upperleg"),shin]
+        mask=[fore or bone.startswith("upperarm"),fore,shin or bone.startswith("upperleg"),shin,follows_head(bone)]
         for i,w in values:
             weights[i]+=np.array(mask)*w
             totals[i]+=w
     weights/=np.maximum(totals,1e-9)[:,None]
-    # Four signed blend shapes with independent seed weights.
-    groups=[
-        [("nose-scale-horiz-incr",1.15),("nose-point-down",0.85),("nose-scale-depth-incr",0.95),("nose-curve-convex",0.7)],
-        [("mouth-scale-horiz-incr",1.15),("mouth-upperlip-volume-incr",0.85),("chin-width-incr",1.15),("chin-prominent-incr",0.85)],
-        [("eyebrows-angle-up",1.3),("forehead-temple-incr",-0.65),("l-cheek-bones-incr",1.2),("r-cheek-bones-incr",1.2)],
-        [("caucasian-male-young",0.5),("caucasian-female-young",-0.5)],
-    ]
-    shapes=np.zeros((len(base),4,3))
-    for channel,targets in enumerate(groups):
-        for name,strength in targets:
-            for line in (src/(name+".target")).read_text().splitlines():
-                w=line.split()
-                if w and w[0].isdigit():shapes[int(w[0]),channel]+=np.array(list(map(float,w[1:4])))*strength
-    # Macro shape is restricted to the head; clothes retain the fitted body shape.
-    shapes[:,3]*=np.clip((base[:,1]-5.45)/0.9,0,1)[:,None]
+    # Register whole authored heads at the eyeballs before fitting clothes,
+    # brows and hair. Macro targets also encode the height of the entire body.
+    eye_vertices=np.unique([i for g,tri in faces if g in ("helper-l-eye","helper-r-eye") for i,_ in tri])
+    neck=np.clip((base[:,1]-5.45)/.66,0.,1.)
+    neck=(neck*neck*(3.-2.*neck))[:,None]
+    def head(name):
+        rows=np.loadtxt(src/(name+"-young.target"))
+        delta=np.zeros_like(base)
+        delta[rows[:,0].astype(int)]=rows[:,1:4]
+        return (delta-delta[eye_vertices].mean(axis=0))*neck
+
+    # Four adult references, blended as whole faces at runtime. The modest
+    # shared component leaves room for variation at each corner of the blend.
+    references=np.stack([head(name) for name in (
+        "caucasian-male","asian-male","caucasian-female","african-female")],axis=1)
+    neutral=references.mean(axis=1)
+    base+=neutral
+    shapes=.85*(references-neutral[:,None,:])
     # A sparse fifth field closes the actual lid rings around the eyeball.
     closure=np.zeros_like(base)
     for side in ("left","right"):
@@ -226,7 +391,7 @@ def cook(base_path,src,pack,dest):
         face=img.crop(tuple(np.r_[lo*img.size,hi*img.size].round().astype(int))).convert("RGBA").resize((tile,tile),Image.Resampling.LANCZOS)
         face.putalpha(face_mask)
         atlas.paste(face,(idx*tile,0))
-    for idx,name in enumerate(["short01","bob02","afro01"],3):
+    for idx,name in [(3,"short01"),(5,"afro01")]:
         put(idx,Image.open(next((pack/"hair"/name).glob("*diffuse*.png"))))
     # Three grayscale fabric maps and sixteen print glyphs occupy the old outfit tile.
     # Geometry, colour swatches and text can vary independently without another texture.
@@ -276,8 +441,8 @@ def cook(base_path,src,pack,dest):
                         d=np.round(np.clip(blink[i]*.06/.012,-1,1)*127).astype(int)
                         if np.any(d): targets[4].extend(struct.pack("<H3b",seen[key],*d))
                     vertices.extend(struct.pack("<3h3h2H4BH",*signed(xyz/1.2),*signed(normals[i]),
-                        *np.round(np.clip(uvp,0,1)*65535).astype(int),*np.round(np.clip(skin[i],0,1)*255).astype(int),
-                        mat))
+                        *np.round(np.clip(uvp,0,1)*65535).astype(int),*np.round(np.clip(skin[i,:4],0,1)*255).astype(int),
+                        mat | (round(np.clip(skin[i,4],0,1)*255)<<8)))
                 indices.append(seen[key])
     # Bits 5..7 select fitted outfits. Zero marks geometry shared by all.
     def body_material(g,f):
@@ -306,7 +471,16 @@ def cook(base_path,src,pack,dest):
             return (14 if trouser else 12) | (mask<<5)
         return material
     pieces=[("clothes",name,12) for name in outfits]+[("clothes",shoes,3),("eyebrows","eyebrow001",13),("hair","short01",20),("hair","bob02",21),("hair","afro01",22)]
+    strand_fields=bytearray()
     for folder,name,mat in pieces:
+        if mat==21:
+            guides=rooted_bob(base*.06+[0,.49,-.021],shapes*.06,body)
+            strand_fields.extend(pack_guides(guides))
+            field,coord,tris,texture=bob_undercoat(guides,tile)
+            head_skin=np.zeros((len(field),5));head_skin[:,4]=1.
+            add((field[:,0]-[0,.49,-.021])/.06,coord,tris,head_skin,field[:,1:]/.06,lambda g,f:21)
+            put(4,texture)
+            continue
         path=pack/folder/name
         _,uv,faces=obj(path/(name+".obj"))
         refs,w,offset=fit(path/(name+".mhclo"),base)
@@ -318,6 +492,7 @@ def cook(base_path,src,pack,dest):
         # face in the match renderer. Use its fitted outline to build a curl mass.
         if mat!=22: add(fitted,uv,faces,skin,morph,material)
         if mat >= 20:
+            strand_fields.extend(strand_field(fitted,morph))
             locks,lock_uv,triangles,roots=groom_edges(fitted,mat,atlas)
             add(locks,lock_uv,triangles,skin[roots],morph[roots],material)
     put(5,curl_tile(tile))
@@ -325,11 +500,12 @@ def cook(base_path,src,pack,dest):
     assert len(vertices)%22==0 and len(vertices)//22 <= 65536
     model_tmp=dest/"person.bin.tmp"
     atlas_tmp=dest/"appearance.png.tmp"
-    model_tmp.write_bytes(struct.pack("<4s7I",b"WH03",len(vertices)//22,len(indices),*(len(t)//5 for t in targets))
+    model_tmp.write_bytes(struct.pack("<4s7I",b"WH04",len(vertices)//22,len(indices),*(len(t)//5 for t in targets))
                           +vertices+np.array(indices,dtype="<u2").tobytes()+b"".join(targets))
     atlas.save(atlas_tmp,format="PNG",optimize=True)
     model_tmp.replace(dest/"person.bin")
     atlas_tmp.replace(dest/"appearance.png")
+    (dest/"strand-guides.bin").write_bytes(strand_fields)
     print(len(vertices)//22,"vertices and",len(indices)//3,"triangles")
 
 if __name__=="__main__":

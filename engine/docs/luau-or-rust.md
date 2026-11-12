@@ -112,12 +112,65 @@ What the numbers say:
 - **Tables made in Rust are expensive.** A call that answers with a fresh
   table (`world.get`, `world.raycast`, `world.overlap`) costs over a
   microsecond. Ask for what you need once per tick and keep it, rather
-  than asking per entity per frame.
+  than asking per entity per frame. Most of that cost is the memory cap:
+  while it is set, mlua guards every allocating call, which makes building
+  a table from Rust about four times slower. Rust code that converts
+  arguments or results outside a hook (serde `to_value`, a hand-built
+  table) should do it inside `Host::unguarded` (or `script::unguarded`
+  within a `Host::run` closure), which lifts the cap for the conversion
+  only. SpaceRacer's rule calls do this.
 - **Vectors are cheap.** Luau's `vector` is a value type: use it for
   positions and velocities instead of `{x, y, z}` tables.
 - A rule of thumb for a 60 Hz game: **about 10,000 Luau-side operations
   (calls, table reads in a loop, engine calls) per tick cost a
   millisecond.** Keep a game's Luau under a millisecond or two per tick.
+
+## Live reload
+
+Every Warp game reloads its Luau the same way, so whoever tunes a game
+(a designer, a modder, an AI over the live tools) knows what an edit
+does without reading the code.
+
+1. **Knobs are a `-- @knobs` block in a Luau file.** A knob is one number
+   with a comment saying what it does, between `-- @knobs` and `-- @end`.
+   `script::knobs` reads and rewrites those lines (comments kept), so the
+   `knobs` and `set_knob` live tools work the same in every game:
+   Growing Guns' `mods/base/knobs.luau`, Spellstorm's
+   `mods/base/knobs.luau`, the explosion editor's block.
+2. **Content and rules are Luau modules that Rust validates.** A module
+   returns tables (cars, monsters, the gun, tomes) and Rust reads them
+   into typed structs and checks them: `script::data::read` for a plain
+   data file, a game's own reader when it has hooks too.
+3. **A value applies at once; a change of structure at a natural
+   boundary.** A knob or a number in an existing row applies on the next
+   frame. Anything that would change a round, a stage or a replay in the
+   middle (the list of monster kinds, a car, the base gun) waits for the
+   next round, stage, race or start. Each file says at the top which one.
+4. **A bad edit keeps the last good version** and shows the error where
+   the editor is looking: on screen or in the game log, and in the live
+   tools (`mods` / `command mods` and the reply to `write_file`).
+5. **One shared helper.** `script::Host` watches the folder and keeps the
+   last good module; `script::knobs` and `script::data` do the rest. A
+   game adds no reload code of its own beyond choosing the boundary.
+
+Where each game stands:
+
+| Game | File | Applies |
+|---|---|---|
+| Growing Guns | `mods/base/knobs.luau` | at once, mid-round too |
+| Growing Guns | `mods/base/cards.luau`, hooks | at once (weapons rebuild next round) |
+| Growing Guns | `mods/base/gun.luau` (the rifle before cards) | next round |
+| Spellstorm | `mods/base/knobs.luau` | next frame |
+| Spellstorm | `mods/base/spells.luau`, `tomes.luau`, hooks | at once |
+| Spellstorm | `mods/base/monsters.luau`, `biomes.luau` | numbers at once, a changed list at the next start |
+| Sideways | `data/cars.luau` | next stage (and GameNight Prepare) |
+| SpaceRacer | `rules/game.luau` | `balance` and `combat` at once, `track` and `environment` next race |
+| SpaceRacer | `rules/stages.luau`, `effects.luau`, `jets.luau` | next race |
+| SpaceRacer | `rules/party.luau` | next start |
+
+Growing Guns' sim also builds for the Quest without Luau, so its
+`weapon::Gun::default()` repeats the numbers in `gun.luau`; a test keeps
+the two equal. Elsewhere the Luau file is the only copy.
 
 ## Patterns
 
@@ -208,11 +261,14 @@ Start in Luau. Move when a profile says so, not before.
    advice to copy tuning into `Species::jeffrey_pine()`) lose hot reload
    for everyone after. Prefer the Luau or JSON file as the source and
    `include_str!` it as the built-in default.
-5. **Do not keep two copies of a rule.** Spellstorm's sim has the built-in
-   grammar in Rust and its port in `mods/base/spells.luau`, kept equal by
-   a test. That is double work for every rule change. When a rule lives in
-   Luau, ship the `.luau` file as the built-in default (Spellstorm already
-   embeds it as `BUILTIN`) and let tests run the Luau.
+5. **Do not keep two copies of a rule.** A Rust copy of a Luau rule, kept
+   equal by a test, doubles the work of every change. Ship the `.luau`
+   file as the built-in default with `include_str!` and let tests run it.
+   Spellstorm does this: its grammar, effects, tomes, monster kinds and
+   biomes exist only in `mods/base`, embedded as `BUILTIN` and read when
+   no rules are installed (`spellstorm::rules`). Content that objects
+   alive point into (monster kinds, levels) takes new values at once but
+   a changed list only at the next start.
 
 Going the other way, out of Rust into Luau, is worth it for any constant or
 rule you find yourself rebuilding to tune.
@@ -254,6 +310,9 @@ Known gaps, so nobody mistakes them for rules:
 - **The step budget's interrupt costs ~30 ns per loop iteration**
   (measured above). A cheaper counter would make tight Luau loops several
   times faster.
+- **The `warp` API builds its answer tables under the memory cap**
+  (`world.get`, `world.raycast`, `world.overlap`), so Luau games pay the
+  slow path described above on every query.
 - **Few batch calls.** The Luau world API is per entity (`world.move`,
   `world.get`); there is no call that moves or queries many entities at
   once.

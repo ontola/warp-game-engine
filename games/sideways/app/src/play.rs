@@ -266,6 +266,14 @@ fn args(args: &[String]) -> Result<Args, String> {
         sound: crate::audio_out::Mode::parse(&opt("--sound", if smoke_frames > 0 { "off" } else { "pulse" }))? })
 }
 
+/// What a first-round scene depends on besides the fixed seed: the race
+/// settings (stage length, cars, weather, land). Later rounds draw their
+/// stage from the running random stream, so they have no key.
+fn stage_key(race: &Race) -> Option<serde_json::Value> {
+    if race.round != 1 || race.frame != 0 {return None;}
+    serde_json::to_value(&race.settings).ok()
+}
+
 fn race(a: &Args) -> Race {
     let settings = Settings { vegetation:a.nature.vegetation, stage_km: a.km, bots: a.views, rivals: 0, weather: Some(a.weather.clone()), land: a.land.clone(), ..Default::default() };
     Race::new(a.seed, settings, sideways::spec::Cars::load(None).expect("bundled car specifications"))
@@ -355,9 +363,20 @@ struct StartupGpu {
     build:stage_loading::Startup,
 }
 
+/// Frames drawn hidden after a prepare (the third is close to steady state).
+const WARM_FRAMES: u8 = 3;
+
 struct App {
+    /// `stage_key` of the race `built` was made for.
+    built_for:Option<serde_json::Value>,
     debug:crate::engine_debug::EngineDebug,
     hidden_editor:Option<bool>,
+    /// The engine's F3 profiler window and F-key strip, as in other Warp games.
+    stats:app::stats::Stats,
+    hidden_stats:Option<bool>,
+    dev_bar:app::dev_bar::DevBar,
+    stats_frame_at:Option<Instant>,
+    shift_down:bool,
     alt_down:bool,
     upscale_error: Option<String>,
     gpu_profile: Option<std::io::BufWriter<std::fs::File>>,
@@ -407,6 +426,10 @@ struct App {
     deferred_host: Vec<Command>,
     /// A prepared session to report ready after its first rendered frame.
     ready_due: Option<String>,
+    /// Hidden warm-up frames still owed after a prepare: the first visible
+    /// frames otherwise create DLSS features, size targets and fill caches
+    /// (seconds at 2 views), after the player already pressed Play.
+    warm_frames: u8,
     smoke_stage_requested: bool,
     /// Interactive play only: render scale and grass reach follow the frame rate.
     quality: Option<crate::adaptive_quality::AdaptiveQuality>,
@@ -428,6 +451,19 @@ impl App {
             s.pause(self.paused || invisible);
             s.update(&self.race, &cams[..self.args.views.min(cams.len())], dt);
         }
+    }
+
+    /// The window's size once shown: the monitor when it will be fullscreen
+    /// (a party host always shows it fullscreen), else the window's own.
+    fn shown_size(&self) -> PhysicalSize<u32> {
+        let Some(window)=self.window.as_ref() else {return PhysicalSize::new(self.args.size.0,self.args.size.1);};
+        let fullscreen=window.fullscreen().is_some()||self.resume_fullscreen.is_some()||self.host.as_ref().is_some_and(|h|h.launched_by_daemon);
+        let inner=window.inner_size();
+        if fullscreen && let Some(monitor)=window.current_monitor().or_else(||window.primary_monitor()) {
+            let m=monitor.size();
+            if m.width>0 && m.height>0 {return m;}
+        }
+        if inner.width>0 && inner.height>0 {inner} else {PhysicalSize::new(self.args.size.0,self.args.size.1)}
     }
 
     fn invisible(&self) -> bool {
@@ -566,6 +602,7 @@ impl App {
         let ordered:Vec<_>=self.view_order.iter().filter_map(|i|cams.get(*i)).take(self.args.views).collect();
         let positions:Vec<_>=if ordered.is_empty(){cams.iter().take(self.args.views).map(|c|c.pos).collect()}else{ordered.iter().map(|c|c.pos).collect()};
         self.built = visuals::build_live(&self.race.stage, &poses, &positions, self.live_edit.looks())?;
+        self.built_for = stage_key(&self.race);
         self.built.scene.texture_streaming = self.args.capture.is_none() && self.args.smoke_frames == 0;
         let tree_settings=self.debug.applied_tree_settings();
         let baseline=crate::tree_tuning::Baseline::prepare_optional_stage(&mut self.built.scene,&mut self.race.phys,tree_settings)?;
@@ -766,7 +803,14 @@ impl App {
         if let Some(v)=values["weather"].as_str(){settings.weather=if v=="random"{None}else{Some(v.into())};}
         let seats=self.host.as_ref().map(|h|h.state.seats()).filter(|s|!s.is_empty()).unwrap_or_else(||self.seats.clone());
         let views=seats.len().clamp(1,4);settings.bots=views;
-        let request=stage_loading::Request {seed:stage_loading::Seed::next(&self.race,settings),seats,views,settings:values,
+        // data/cars.luau applies at a stage boundary; a broken edit keeps the cars before.
+        let mut seed=stage_loading::Seed::next(&self.race,settings);
+        match sideways::spec::Cars::load(None) {
+            Ok(cars)=>seed=seed.with_cars(cars),
+            Err(error)=>{eprintln!("sideways: {error} (keeping the cars from before)");
+                self.screenshot_toast=Some((format!("cars.luau: {error} (keeping the cars from before)"),Instant::now()+Duration::from_secs(10)));}
+        }
+        let request=stage_loading::Request {seed,seats,views,settings:values,
             looks:self.live_edit.looks().clone(),sky:self.sky_controls.applied_snapshot(),upscale:self.args.upscale,
             tree_settings:self.debug.applied_tree_settings()};
         let loading=stage_loading::Loading::new(request);
@@ -868,7 +912,7 @@ impl App {
             } else {match result {
                 Ok(loaded)=>{
                     let installing=Instant::now();
-                    self.race=loaded.race;self.built=loaded.built;self.light=loaded.light;self.sky_metadata=loaded.sky;
+                    self.race=loaded.race;self.built=loaded.built;self.built_for=stage_key(&self.race);self.light=loaded.light;self.sky_metadata=loaded.sky;
                     let tree_report=crate::tree_tuning::Baseline::stage_metadata(loaded.tree_baseline.as_ref(),loaded.tree_settings);
                     self.tree_baseline=loaded.tree_baseline;
                     self.debug.tree_committed(loaded.tree_settings,tree_report);
@@ -1006,17 +1050,28 @@ impl App {
                     self.seats=seats;self.args.views=self.seats.len().clamp(1,4);self.race.settings.bots=self.args.views;
                     self.apply_settings();
                     self.recorder=Default::default();
+                    // A preloaded game was built for exactly this stage and car
+                    // count: keep its scene and renderer (rebuilding them was
+                    // ~15 s on the Mancave, CPU scene + renderer + DLSS).
                     self.race=Race::new(self.args.seed,self.race.settings.clone(),sideways::spec::Cars::load(None).map_err(|e|e.to_string())?);
+                    let same_stage=self.graphics.is_some() && self.built_for.is_some() && stage_key(&self.race)==self.built_for;
                     self.exhaust=crate::exhaust_fx::ExhaustFx::new(self.args.seed);self.exhaust.step(&self.race);
                     self.wheel_effects=crate::wheel_effects::WheelEffects::new(self.args.seed);self.wheel_effects.step(&self.race);
                     self.ambient_clock=AmbientClock::new(self.args.smoke_frames>0);
                     let seats=self.seats.clone();self.profiles(&seats);self.paused=false;self.finished_round=0;self.reset_round_input();
-                    self.rebuild()?;
+                    if same_stage {
+                        // The fresh race has fresh physics: re-apply tree edits to it.
+                        if let Some(baseline)=&self.tree_baseline {baseline.apply_physics(&mut self.race.phys,self.debug.applied_tree_settings())?;}
+                        if let Some(g)=&self.graphics {g.renderer.reset_history();}
+                        self.last_frame=Instant::now();self.accumulator=0.0;
+                        eprintln!("prepare: same stage as the preloaded scene, renderer kept");
+                    } else {self.rebuild()?;}
                     let host=self.host.as_mut().unwrap();host.notify_participation(&session,false)?;
                     // Ready once a frame of this stage is rendered (offscreen
                     // while hidden): the host must not bring the game forward
                     // onto a loading screen; that work belongs behind the lobby.
                     self.ready_due=Some(session);
+                    self.warm_frames=WARM_FRAMES;
                 }
                 Command::Start{..}|Command::Resume{..}=>{self.paused=false;self.input_edges=[(0,false);4];self.accumulator=0.0;self.last_frame=Instant::now();self.managed_screen(true);}
                 Command::Pause{..}=>{self.accumulator=0.0;self.input_edges=[(0,false);4];self.managed_screen(false);}
@@ -1064,10 +1119,33 @@ impl App {
         Ok(true)
     }
 
+    /// F3: the engine profiler window (Shift+F3 cycles its detail).
+    fn toggle_stats(&mut self,shift:bool) {
+        self.hidden_stats=None;
+        if shift && self.stats.open() {self.stats.cycle_detail();} else {self.stats.toggle();}
+        self.stats_frame_at=None;
+    }
+    /// F1: hide every engine window, or bring back the ones F1 hid.
+    fn all_menus(&mut self) {
+        let before=self.debug.ui.open;
+        if self.hidden_editor.is_some() || self.hidden_stats.is_some() {
+            self.debug.ui.open=self.hidden_editor.take().unwrap_or(false);
+            let stats=self.hidden_stats.take().unwrap_or(false);
+            if stats!=self.stats.open() {self.stats.toggle();}
+        } else {
+            self.hidden_editor=Some(before);self.hidden_stats=Some(self.stats.open());
+            self.debug.ui.open=false;
+            if self.stats.open() {self.stats.set_visible(false);}
+        }
+        self.debug.cancel_interaction();
+        self.sync_debug_focus(before);
+    }
+
     fn drain_frame_gpu(&mut self,call_id:u64) {
         let Some(g)=&self.graphics else{return;};
         let drain=g.renderer.drain_gpu_profiles(&g.gpu);
         self.debug.ingest(&drain,self.rendered);
+        if self.stats.open() {self.stats.gpu(&drain.samples);self.stats.memory(&g.gpu);}
         let Some(profile)=&mut self.frame_profile else{return;};
         for sample in &drain.samples {
             let intervals:Vec<_>=sample.intervals.iter().map(|interval|serde_json::json!({
@@ -1110,7 +1188,12 @@ impl App {
         let (debug_start,debug_cadence)=self.debug.begin_frame();
         let rendered_before=self.rendered;
         let mut trace=self.frame_profile.as_mut().map(|p|p.begin());
-        if trace.is_some() || self.debug.ui.open {let call_id=trace.as_ref().map_or(0,|t|t.call_id);
+        if self.stats.open() {
+            let now=Instant::now();
+            if let Some(last)=self.stats_frame_at {self.stats.cpu((now-last).as_secs_f64()*1000.0,&[]);}
+            self.stats_frame_at=Some(now);
+        } else {self.stats_frame_at=None;}
+        if trace.is_some() || self.debug.ui.open || self.stats.open() {let call_id=trace.as_ref().map_or(0,|t|t.call_id);
             frame_profile::section(&mut trace,"gpu_profile_poll");self.drain_frame_gpu(call_id);
         }
         let presented_before=self.presented;
@@ -1125,6 +1208,12 @@ impl App {
                 "output_size":output_size,"requested_output_size":self.requested_output_size,"race_frame":self.race.frame,"round":self.race.round,
                 "paused":self.paused,"focused":self.focused,"hidden":self.invisible(),
                 "error":result.as_ref().err()});
+            // KERN_CPU_SPANS=1: the renderer's own CPU phases since the last
+            // read (per frame), to tell renderer work from submit/driver waits.
+            if let Some((spans,frames))=self.graphics.as_ref().and_then(|g|g.renderer.cpu_spans()) {
+                metadata["renderer_spans_ms"]=serde_json::json!(spans.into_iter().collect::<std::collections::BTreeMap<_,_>>());
+                metadata["renderer_span_frames"]=frames.into();
+            }
             if let Some(scenario)=&self.scenario {if let Some(frame)=scenario.config.frame(trace.frame_id.map(|id|id-1).unwrap_or(self.rendered)) {
                 metadata["scenario"]=scenario.config.name.clone().into();metadata["section"]=frame.section.name.clone().into();
                 metadata["section_frame"]=frame.local_frame.into();metadata["warmup"]=frame.warmup.into();metadata["target_tick"]=frame.target_tick.into();
@@ -1256,7 +1345,7 @@ impl App {
         // One exception: a prepared session reports ready only after a frame
         // of its stage is drawn, so that one frame is drawn, offscreen (below).
         // Skipping it too left every warm Sideways on "Preparing" forever.
-        if !running && self.ready_due.is_none() {if let Some(s)=&self.sound{s.pause(true);}self.trace(false);return Ok(());}
+        if !running && self.ready_due.is_none() && self.warm_frames==0 {if let Some(s)=&self.sound{s.pause(true);}self.trace(false);return Ok(());}
         let graphics_started=Instant::now();
         if let Some(q)=&mut self.quality {
             if !self.paused && self.focused && !rebuilt && q.frame(dt*1000.0,now) {println!("play: adaptive quality, {}",q.label());}
@@ -1270,7 +1359,9 @@ impl App {
         // window has not been minimised yet. The host owns the screen.
         let invisible = self.invisible() || !running;
         self.update_sound(&cams, dt as f32, invisible);
-        let size = self.window.as_ref().unwrap().inner_size();
+        // Hidden frames draw at the size the game will be shown at, so the
+        // first visible frame reuses their DLSS features and targets.
+        let size = if invisible && self.host.is_some() && self.args.smoke_frames==0 {self.shown_size()} else {self.window.as_ref().unwrap().inner_size()};
         if size.width == 0 || size.height == 0 { return Ok(()); }
         let render_light=self.debug.effective_light(&self.light);
         self.ambient_clock.advance(dt, self.race.frame, !invisible, running, self.paused);
@@ -1297,6 +1388,15 @@ impl App {
             let list=draw_list.get_or_insert_with(||render::hud::HudDrawList::new([size.width,size.height]));
             list.begin_overlay();
             self.debug.draw(list);
+        }
+        if self.stats.open() {
+            let list=draw_list.get_or_insert_with(||render::hud::HudDrawList::new([size.width,size.height]));
+            list.begin_overlay();
+            self.stats.draw(list,Vec::new);
+        }
+        if self.debug.ui.open || self.stats.open() {
+            let list=draw_list.get_or_insert_with(||render::hud::HudDrawList::new([size.width,size.height]));
+            self.dev_bar.draw_keys(list,|_|None,self.stats.open(),self.debug.ui.open);
         }
         let layout_ms=layout_started.elapsed().as_secs_f64()*1000.0;
         frame_profile::section(trace,"hud_prepare");
@@ -1362,7 +1462,7 @@ impl App {
         let stage_smoke_done=self.args.smoke_next_stage && self.last_stage_load["outcome"]=="ready";
         let scenario_capture=self.scenario.as_ref().and_then(|s|s.config.capture_path(self.rendered+1));
         let measure_capture=measure_profile || self.screenshot_pending || scenario_capture.is_some() || (self.args.smoke_frames>0 && (stage_smoke_done || self.rendered+1>=self.args.smoke_frames) && self.args.capture.is_some());
-        let want_gpu=(self.debug.ui.open || self.frame_profile.is_some()) && !self.debug.gpu_unavailable;
+        let want_gpu=(self.debug.ui.open || self.stats.open() || self.frame_profile.is_some()) && !self.debug.gpu_unavailable;
         if let Err(error)=g.renderer.set_async_gpu_profiling(&g.gpu,want_gpu) {
             eprintln!("debug: GPU timing unavailable: {error}; CPU timing continues");
             self.debug.gpu_unavailable=true;
@@ -1477,6 +1577,7 @@ impl App {
             if let Some(window)=&self.window {window.set_visible(true);window.request_redraw();}
             app::startup::ready();
         }
+        if ready_now && invisible && !running {self.warm_frames=self.warm_frames.saturating_sub(1);}
         if ready_now && let Some(session)=self.ready_due.take() && let Some(host)=self.host.as_mut() {
             if host.state.session==session {host.notify_ready(&session)?;}
         }
@@ -1714,16 +1815,29 @@ impl ApplicationHandler for App {
             }
         }
         if let WindowEvent::KeyboardInput { event, .. } = &event
+            && event.physical_key==PhysicalKey::Code(KeyCode::F3) {
+            if event.state==ElementState::Pressed && !event.repeat {self.toggle_stats(self.shift_down);}
+            return;
+        }
+        // The F-key strip (shown with the menus): F2 and F3 by mouse.
+        if let WindowEvent::MouseInput{state:ElementState::Pressed,button:MouseButton::Left,..}=&event
+            && (self.debug.ui.open || self.stats.open())
+            && let Some(key)=self.dev_bar.hit(self.cursor.map(|c|[c[0] as f32,c[1] as f32])) {
+            match key {
+                KeyCode::F3=>self.toggle_stats(false),
+                KeyCode::F2=>{self.hidden_editor=None;let before=self.debug.ui.open;self.debug.key(DebugKey::Toggle,[self.args.size.0,self.args.size.1]);self.sync_debug_focus(before);}
+                KeyCode::F1=>self.all_menus(),
+                _=>{}
+            }
+            if let Some(w)=&self.window {w.request_redraw();}
+            return;
+        }
+        if let WindowEvent::KeyboardInput { event, .. } = &event
             && let PhysicalKey::Code(code) = event.physical_key
             && let Some(action) = (if self.alt_down && code==KeyCode::Enter {Some(app::EngineShortcut::Fullscreen)} else if code==KeyCode::F12 {Some(app::EngineShortcut::Screenshot)} else {app::engine_shortcut(code)}) {
             if event.state == ElementState::Pressed && !event.repeat {
                 match action {
-                    app::EngineShortcut::AllMenus => {
-                        let before=self.debug.ui.open;
-                        self.debug.ui.open=self.hidden_editor.take().unwrap_or_else(||{self.hidden_editor=Some(before);false});
-                        self.debug.cancel_interaction();
-                        self.sync_debug_focus(before);
-                    }
+                    app::EngineShortcut::AllMenus => self.all_menus(),
                     app::EngineShortcut::DebugMenu => {
                         self.hidden_editor=None;
                         let before = self.debug.ui.open;
@@ -1745,7 +1859,7 @@ impl ApplicationHandler for App {
             }
             return;
         }
-        if let WindowEvent::ModifiersChanged(m)=&event {self.alt_down=m.state().alt_key();}
+        if let WindowEvent::ModifiersChanged(m)=&event {self.alt_down=m.state().alt_key();self.shift_down=m.state().shift_key();}
         if self.tree_loading.is_some() && matches!(&event,WindowEvent::KeyboardInput{..}|WindowEvent::CursorMoved{..}|WindowEvent::MouseInput{..}|WindowEvent::MouseWheel{..}) {
             self.debug.cancel_interaction();self.input.clear_keys();return;
         }
@@ -1914,7 +2028,8 @@ pub fn run(raw:&[String])->i32{
     let mut exhaust=crate::exhaust_fx::ExhaustFx::new(a.seed);exhaust.step(&race);
     let mut wheel_effects=crate::wheel_effects::WheelEffects::new(a.seed);wheel_effects.step(&race);
     let start_paused=a.start_paused;
-    let mut app=App{debug,hidden_editor:None,alt_down:false,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,manners:Default::default(),hud_stats:serde_json::Value::Null,hud_samples:vec![],recorder:Default::default(),point_picker:None,feedback_writer:None,feedback_requested_at:None,cursor:None,screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,outputs:[None,None],deferred_host:vec![],ready_due:None,smoke_stage_requested:false,quality:None};
+    let built_for=stage_key(&race);
+    let mut app=App{built_for,debug,hidden_editor:None,stats:app::stats::Stats::from_env(),hidden_stats:None,dev_bar:Default::default(),stats_frame_at:None,shift_down:false,alt_down:false,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,manners:Default::default(),hud_stats:serde_json::Value::Null,hud_samples:vec![],recorder:Default::default(),point_picker:None,feedback_writer:None,feedback_requested_at:None,cursor:None,screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,outputs:[None,None],deferred_host:vec![],ready_due:None,warm_frames:0,smoke_stage_requested:false,quality:None};
     app.startup_timing.mark("host_input_application_setup");
     let events=match EventLoop::new(){Ok(e)=>e,Err(e)=>{eprintln!("play event loop: {e}");return 1;}};
     app.startup_timing.mark("event_loop_creation");
@@ -2023,5 +2138,18 @@ mod ambient_clock_tests {
                 assert_eq!(metadata["wind"]["time_source"], "fixed");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod stage_key_tests {
+    use super::*;
+    #[test] fn equal_first_rounds_share_a_key_and_later_rounds_have_none() {
+        let settings=Settings{stage_km:2.0,bots:1,rivals:0,..Default::default()};
+        let cars=||sideways::spec::Cars::load(None).unwrap();
+        let a=Race::new(7,settings.clone(),cars());let b=Race::new(7,settings.clone(),cars());
+        assert!(stage_key(&a).is_some());assert_eq!(stage_key(&a),stage_key(&b));
+        let c=Race::new(7,Settings{bots:2,..settings},cars());assert_ne!(stage_key(&a),stage_key(&c));
+        let mut d=a;d.new_stage(&mut Default::default());assert_eq!(stage_key(&d),None);
     }
 }

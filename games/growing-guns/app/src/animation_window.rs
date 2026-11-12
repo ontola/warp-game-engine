@@ -20,6 +20,7 @@ struct Preview {
     rig: Rig,
     guns: Guns,
     large: Stats,
+    weapon: PreviewWeapon,
     actor: ActorHandle,
     model: Character,
     arms: TwoHandHold,
@@ -41,6 +42,33 @@ const ANIMATION_MENU: u32 = app::debug::GAME_IDS;
 const PAUSED: u32 = ANIMATION_MENU + 1;
 const BONES: u32 = ANIMATION_MENU + 2;
 const CLEAR_OFFSETS: u32 = ANIMATION_MENU + 3;
+
+const WEAPON: u32 = ANIMATION_MENU + 4;
+
+#[derive(Clone, Copy, PartialEq)]
+enum PreviewWeapon { Cycle, Stock, Sniper }
+
+impl PreviewWeapon {
+    const CHOICES: [Self; 3] = [Self::Cycle, Self::Stock, Self::Sniper];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Cycle => "Growth cycle",
+            Self::Stock => "Stock",
+            Self::Sniper => "Sniper",
+        }
+    }
+}
+
+impl Preview {
+    fn select_weapon(&mut self, weapon: PreviewWeapon) {
+        self.weapon = weapon;
+        if weapon == PreviewWeapon::Cycle {
+            self.tick = 0;
+        }
+        self.rig.set(if weapon == PreviewWeapon::Sniper { self.large } else { Stats::default() });
+    }
+}
 
 impl Game for Preview {
     fn debug(
@@ -71,6 +99,16 @@ impl Game for Preview {
             DebugValue::Toggle(self.inspector.bones.shown),
             "Display the editable joints.",
         );
+        menus.control(
+            ANIMATION_MENU,
+            WEAPON,
+            "Weapon",
+            DebugValue::Choice {
+                index: self.weapon as usize,
+                labels: PreviewWeapon::CHOICES.map(|choice| choice.label().to_owned()).into(),
+            },
+            "Compare weapons at the same pose or replay the growth cycle.",
+        );
         menus
             .control(
                 ANIMATION_MENU,
@@ -89,7 +127,13 @@ impl Game for Preview {
             SetToggle { id: PAUSED, value } => self.inspector.paused = value,
             SetToggle { id: BONES, value } => self.inspector.bones.shown = value,
             Activate { id: CLEAR_OFFSETS } => self.inspector.values.fill(0.),
+            SetChoice { id: WEAPON, index } => {
+                if let Some(&weapon) = PreviewWeapon::CHOICES.get(index) {
+                    self.select_weapon(weapon);
+                }
+            }
             ResetDefaults => {
+                self.select_weapon(PreviewWeapon::Cycle);
                 self.inspector.paused = false;
                 self.inspector.bones.shown = true;
                 self.inspector.values.fill(0.);
@@ -109,9 +153,9 @@ impl Game for Preview {
             return;
         }
         self.tick += 1;
-        match self.tick % 420 {
-            60 => self.rig.grow_to(self.large),
-            270 => self.rig.grow_to(Stats::default()),
+        match (self.weapon, self.tick % 420) {
+            (PreviewWeapon::Cycle, 60) => self.rig.grow_to(self.large),
+            (PreviewWeapon::Cycle, 270) => self.rig.grow_to(Stats::default()),
             _ => {}
         }
         self.rig.update(1.0 / 60.0);
@@ -128,6 +172,7 @@ impl Game for Preview {
     }
     fn state(&self) -> Option<String> {
         let mut state = self.inspector.snapshot();
+        state["weapon"] = self.weapon.label().into();
         state["tick"] = self.tick.into();
         state["model"] = self.model.name.clone().into();
         Some(state.to_string())
@@ -201,8 +246,7 @@ impl Game for Preview {
     }
 }
 
-pub fn run(args: &crate::Args) -> Result<(), String> {
-    let name = args.value("--model").unwrap_or("knight");
+fn load_preview(name: &str) -> Result<Preview, String> {
     if !["knight", "paladin", "ch10"].contains(&name) {
         return Err("unknown roster model".into());
     }
@@ -245,7 +289,7 @@ pub fn run(args: &crate::Args) -> Result<(), String> {
         .position(|j| j.name.ends_with("LeftArm"))
         .unwrap_or(0);
     let authored = crate::foregrip_pose::ForegripPose::bind(&model, &inspector.bones.editor)?;
-    let mut game = Preview {
+    Ok(Preview {
         mount,
         inspector,
         authored,
@@ -259,7 +303,12 @@ pub fn run(args: &crate::Args) -> Result<(), String> {
         script: HandAnimation::load()?,
         pose,
         tick: 0,
-    };
+        weapon: PreviewWeapon::Cycle,
+    })
+}
+
+pub fn run(args: &crate::Args) -> Result<(), String> {
+    let mut game = load_preview(args.value("--model").unwrap_or("knight"))?;
     app::run(
         Config {
             title: "Warp Animation | Growing Guns".into(),
@@ -272,4 +321,29 @@ pub fn run(args: &crate::Args) -> Result<(), String> {
         },
         &mut game,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use render::debug_ui::DebugAction::{SetChoice, SetToggle};
+
+    #[test]
+    fn paused_preview_changes_the_weapon_at_the_same_pose() {
+        let mut preview = load_preview("knight").unwrap();
+        for _ in 0..90 { preview.tick(&[]); }
+        assert!(preview.rig.is_growing());
+        preview.debug_action(SetToggle { id: PAUSED, value: true });
+        for (index, expected) in [(2, preview.large), (1, Stats::default())] {
+            preview.debug_action(SetChoice { id: WEAPON, index });
+            preview.tick(&[]);
+            assert_eq!(preview.rig.shown, expected);
+            assert!(!preview.rig.is_growing());
+            assert_eq!(preview.tick, 90);
+        }
+        preview.debug_action(SetChoice { id: WEAPON, index: 0 });
+        preview.debug_action(SetToggle { id: PAUSED, value: false });
+        for _ in 0..60 { preview.tick(&[]); }
+        assert!(preview.rig.is_growing());
+    }
 }

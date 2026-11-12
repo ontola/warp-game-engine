@@ -35,9 +35,6 @@ impl Party {
             app::Screen::Hidden
         }
     }
-    pub fn overlay(&self) {
-        let _ = self.client.request_overlay();
-    }
     pub fn poll(&mut self) -> Vec<Event> {
         let mut events = vec![];
         loop {

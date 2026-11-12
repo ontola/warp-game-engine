@@ -1242,11 +1242,11 @@ impl app::Game for Gg {
         // At night the floodlights are shadowed spots: falloff 1 and the
         // range window of Godot's lights (the sign), as the unshadowed ones.
         let blackout = self.vis.blackout;
-        let spots = if blackout { view::Visuals::flashlights(&self.world, &self.prev, alpha) } else { self.vis.flood_spots() };
+        let spots = if blackout { self.vis.flashlights() } else { self.vis.flood_spots() };
         r.set_spot_falloff(&vec![-1.0; spots.len()]);
         r.set_spot_softness(if spots.is_empty() { 0.0 } else { FLOOD_SOFTNESS });
         r.set_headlights(&spots)?;
-        if blackout { r.set_headlight_exclusions(&self.vis.flashlight_exclusions(&self.world)); }
+        if blackout { r.set_headlight_exclusions(&self.vis.flashlight_exclusions()); }
         r.set_volumetric_beams(&if self.light.volumetric.is_some() { self.vis.volumetric_beams(self.scatter) } else { Vec::new() })?;
         let start = matches!(self.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
         // Name tags over everyone not seated here (on the start screen, everyone).
@@ -1524,7 +1524,7 @@ impl app::Game for Gg {
                 if want != crate::graphics::get() { self.use_graphics(want); }
                 Ok(format!("graphics {}", want.name()))
             }
-            "cage" => { self.world.release_cage(); Ok("cage open".into()) }
+            "cage" => { self.world.release_cage(); Ok("round entrance skipped".into()) }
             "rematch" => { self.world.restart_match(); self.new_arena(); Ok("rematch".into()) }
             "extend" => { self.world.extend_match(); Ok(format!("first to {}", self.world.rounds_to_win)) }
             "lua" => {

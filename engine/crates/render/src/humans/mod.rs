@@ -1,6 +1,9 @@
 //! Seeded crowd rendering probe. One immutable instance table serves every view.
 //! The GPU buckets visible people by projected height and writes indirect draws.
 mod geometry;
+mod player_strands;
+pub use player_strands::Groom;
+pub(crate) use player_strands::PlayerStrands;
 pub use geometry::{BodyVertex, hand_frame};
 
 pub const APPEARANCE_ATLAS: &[u8] = include_bytes!("../../../../assets/humans/appearance.png");
@@ -79,6 +82,7 @@ pub struct Constraints {
     pub shirt: Option<[f32; 3]>,
 }
 impl Instance {
+    pub fn hair_style(&self) -> u32 { (self.identity[2] * 3.) as u32 }
     pub fn face_tile(&self) -> usize { (self.identity[3] * 3.) as usize }
     pub fn shirt_color(&self) -> [f32; 3] { unpack_color(self.color[0]) }
     pub fn trouser_color(&self) -> [f32; 3] { unpack_color(self.color[1]) }
@@ -209,9 +213,9 @@ impl Geometry {
 // Allocate the shared appearance atlas on first close demand.
 fn appearance(
     gpu: &Gpu,
-    render: &wgpu::RenderPipeline,
+    pipelines: [&wgpu::RenderPipeline; 2],
     image: &image::RgbaImage,
-) -> wgpu::BindGroup {
+) -> [wgpu::BindGroup; 2] {
     let extent = wgpu::Extent3d {
         width: image.width(),
         height: image.height(),
@@ -242,7 +246,7 @@ fn appearance(
         mag_filter: wgpu::FilterMode::Linear,
         ..Default::default()
     });
-    gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+    pipelines.map(|render| gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("human appearance"),
         layout: &render.get_bind_group_layout(1),
         entries: &[
@@ -257,7 +261,7 @@ fn appearance(
                 resource: wgpu::BindingResource::Sampler(&sampler),
             },
         ],
-    })
+    }))
 }
 
 const VISIBLE_SEAT_BYTES: u64 = 48;
@@ -265,6 +269,7 @@ const HUMAN_SHADER: &str = concat!(
     include_str!("../shaders/crowd_displacement.wgsl"), "\n",
     include_str!("../shaders/surface_fog.wgsl"), "\n",
     include_str!("../shaders/incident_lights.wgsl"), "\n",
+    include_str!("strands.wgsl"), "\n",
     include_str!("humans.wgsl"),
 );
 
@@ -277,7 +282,11 @@ pub struct ReviewRenderer {
     fog_layout: Option<wgpu::BindGroupLayout>,
     light_layout: Option<wgpu::BindGroupLayout>,
     drawing: wgpu::BindGroup,
-    appearance: wgpu::BindGroup,
+    appearance: [wgpu::BindGroup; 2],
+    strands: wgpu::RenderPipeline,
+    strand_group: wgpu::BindGroup,
+    strand_fog_groups: crate::frame::resource_cache::BindGroups<8>,
+    strand_fog_layout: Option<wgpu::BindGroupLayout>,
     camera: wgpu::Buffer,
     args: wgpu::Buffer,
     read: wgpu::Buffer,
@@ -391,20 +400,16 @@ impl ReviewRenderer {
                 cache: None,
             });
         let attrs = wgpu::vertex_attr_array![0=>Snorm16x4,1=>Snorm8x4,2=>Snorm16x4,3=>Uint8x4,4=>Unorm8x4,5=>Snorm8x4,6=>Snorm8x4,7=>Snorm8x4,8=>Snorm8x4];
-        let render = gpu
+        let pipeline = |entry, buffers: &[Option<wgpu::VertexBufferLayout>]| gpu
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("warp humans"),
                 layout: None,
                 vertex: wgpu::VertexState {
                     module: &shader,
-                    entry_point: Some("vs"),
+                    entry_point: Some(entry),
                     compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<geometry::PackedVertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &attrs,
-                    })],
+                    buffers,
                 },
                 primitive: Default::default(),
                 depth_stencil: Some(wgpu::DepthStencilState {
@@ -436,6 +441,12 @@ impl ReviewRenderer {
                 multiview_mask: None,
                 cache: None,
             });
+        let render = pipeline("vs",&[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<geometry::PackedVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &attrs,
+                    })]);
+        let strands = pipeline("crowd_strand",&[]);
         fn entry(binding: u32, b: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
             wgpu::BindGroupEntry {
                 binding,
@@ -463,6 +474,12 @@ impl ReviewRenderer {
                 entry(5, poses),
             ],
         });
+        let guides = player_strands::guide_buffer(gpu);
+        let strand_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("crowd strand sources"),
+            layout: &strands.get_bind_group_layout(0),
+            entries: &[entry(0,&camera),entry(1,&actors),entry(4,&ids),entry(5,poses),entry(8,&guides)],
+        });
         let meshes: Vec<_> = [
             geometry::stand(),
             geometry::person(1, far, false),
@@ -473,6 +490,7 @@ impl ReviewRenderer {
         .map(|m| Geometry::upload(gpu, m))
         .collect();
         let resident_buffer_bytes = meshes.iter().map(Geometry::bytes).sum::<u64>()
+            + guides.size()
             + actors.size()
             + ids.size()
             + args.size()
@@ -481,11 +499,13 @@ impl ReviewRenderer {
             + timer.as_ref().map_or(0, |t| t.1.size());
         let appearance = appearance(
             gpu,
-            &render,
+            [&render,&strands],
             &image::RgbaImage::from_pixel(1, 1, image::Rgba([255; 4])),
         );
         Ok(Self {
-            appearance,
+            strand_fog_layout: game.map(|_| strands.get_bind_group_layout(2)),
+            strand_fog_groups:Default::default(),
+            strands, strand_group, appearance,
             light_layout: game.map(|_| compute.get_bind_group_layout(1)),
             light_groups: Default::default(),
             fog_layout: game.map(|_| render.get_bind_group_layout(2)),
@@ -547,7 +567,7 @@ impl ReviewRenderer {
             self.resident_buffer_bytes - self.meshes[3].bytes() + head.bytes();
         self.meshes[3] = head;
         self.appearance_bytes = image.as_raw().len() as u64;
-        self.appearance = appearance(gpu, &self.render, &image);
+        self.appearance = appearance(gpu, [&self.render,&self.strands], &image);
         self.detail_ready = true;
     }
     // Queue writes to one uniform would make every split-screen draw use the last camera.
@@ -567,6 +587,7 @@ impl ReviewRenderer {
         atmosphere: &[(u32, wgpu::BindingResource)],
         color: &wgpu::TextureView,
         depth: &wgpu::TextureView,
+        broadcast: Option<&std::ops::Range<u32>>,
     ) {
         if !self.detail_ready {
             let nearest = self
@@ -595,12 +616,21 @@ impl ReviewRenderer {
         ]);
         u[28..31].copy_from_slice(&light.sun_dir.to_array());
         u[31] = light.shadow_strength.clamp(0., 1.);
+        let seats = broadcast.cloned().unwrap_or(0..self.count);
+        if broadcast.is_some() {
+            // The TV has its own short lens-to-subject distance and SDR exposure.
+            u[24] = 2.;
+            u[19] = crate::auto_exposure::exposure(light.ev100);
+            u[23] = seats.end as f32;
+            u[35] = seats.start as f32;
+        }
         u[40..56].copy_from_slice(bytemuck::cast_slice(shadow_vp));
         u[32..35].copy_from_slice(&light.sun_color.to_array());
         u[36..40].copy_from_slice(&[light.time, focal, self.far as u32 as f32, self.count as f32]);
         for (mesh, bin) in self.meshes.iter().zip([0, 1, 2, 4]) {
             words[56 + 5 * bin] = mesh.count;
         }
+        words[56+15] = if self.detail_ready && broadcast.is_none() { 1536*54 } else { 0 };
         let upload = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -612,7 +642,8 @@ impl ReviewRenderer {
         enc.copy_buffer_to_buffer(&upload, 224, &self.args, 0, 100);
         let lamps = self.light_groups.get(gpu, self.light_layout.as_ref().unwrap(), "human scene lights", lights);
         let fog = self.fog_groups.get(gpu, self.fog_layout.as_ref().unwrap(), "human scene fog", atmosphere);
-        self.encode_passes(enc, color, depth, Some((&lamps, &fog)));
+        let hair_fog=self.strand_fog_groups.get(gpu,self.strand_fog_layout.as_ref().unwrap(),"crowd strand atmosphere",atmosphere);
+        self.encode_passes(enc, color, depth, seats.len() as u32, Some((&lamps, &fog, &hair_fog)));
     }
 
     fn encode_passes(
@@ -620,7 +651,8 @@ impl ReviewRenderer {
         enc: &mut wgpu::CommandEncoder,
         cv: &wgpu::TextureView,
         dv: &wgpu::TextureView,
-        match_groups: Option<(&wgpu::BindGroup, &wgpu::BindGroup)>,
+        seat_count: u32,
+        match_groups: Option<(&wgpu::BindGroup, &wgpu::BindGroup, &wgpu::BindGroup)>,
     ) {
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -629,10 +661,10 @@ impl ReviewRenderer {
             });
             pass.set_pipeline(&self.compute);
             pass.set_bind_group(0, &self.selection, &[]);
-            if let Some((lights, _)) = match_groups {
+            if let Some((lights, _, _)) = match_groups {
                 pass.set_bind_group(1, lights, &[]);
             }
-            pass.dispatch_workgroups(self.count.div_ceil(64), 1, 1);
+            pass.dispatch_workgroups(seat_count.div_ceil(64), 1, 1);
         }
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -673,14 +705,21 @@ impl ReviewRenderer {
             });
             pass.set_pipeline(&self.render);
             pass.set_bind_group(0, &self.drawing, &[]);
-            pass.set_bind_group(1, &self.appearance, &[]);
-            if let Some((_, fog)) = match_groups {
+            pass.set_bind_group(1, &self.appearance[0], &[]);
+            if let Some((_, fog, _)) = match_groups {
                 pass.set_bind_group(2, fog, &[]);
             }
             for (mesh, bin) in self.meshes.iter().zip([0, 1, 2, 4]) {
                 pass.set_vertex_buffer(0, mesh.vertex.slice(..));
                 pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint16);
                 pass.draw_indexed_indirect(&self.args, bin * 20);
+            }
+            if self.detail_ready {
+                pass.set_pipeline(&self.strands);
+                pass.set_bind_group(0,&self.strand_group,&[]);
+                pass.set_bind_group(1,&self.appearance[1],&[]);
+                if let Some((_,_,fog))=match_groups {pass.set_bind_group(2,fog,&[]);}
+                pass.draw_indirect(&self.args,15*4);
             }
         }
     }
@@ -714,6 +753,7 @@ impl ReviewRenderer {
         for (mesh, bin) in self.meshes.iter().zip([0, 1, 2, 4]) {
             commands[bin * 5] = mesh.count;
         }
+        commands[15]=if self.detail_ready {1536*54} else {0};
         gpu.queue
             .write_buffer(&self.args, 0, bytemuck::cast_slice(&commands));
         let mut enc = gpu.device.create_command_encoder(&Default::default());
@@ -724,6 +764,7 @@ impl ReviewRenderer {
             &mut enc,
             &color.create_view(&Default::default()),
             &depth.create_view(&Default::default()),
+            self.count,
             None,
         );
         if let Some((q, b)) = &self.timer {

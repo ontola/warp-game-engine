@@ -1,5 +1,5 @@
-//! Turning Spellstorm while it runs. Always: `knobs.txt` (the sim's balance
-//! knobs, spellstorm::knobs) and the game's own `surface.wgsl` are read from
+//! Turning Spellstorm while it runs. Always: `mods/base/knobs.luau` (the
+//! sim's balance knobs, spellstorm::knobs) and the game's own `surface.wgsl` are read from
 //! the repository when it is there, and an edit of either applies on the
 //! next frame (a shader that does not compile keeps the last good one).
 //! With `play --live [PORT]`: MCP (engine/crates/live, docs in
@@ -37,7 +37,7 @@ fn stamp(p: &Path) -> Option<SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
-/// knobs.txt, watched.
+/// mods/base/knobs.luau (its `-- @knobs` block), watched.
 pub struct Tuning {
     pub path: Option<PathBuf>,
     seen: Option<SystemTime>,
@@ -45,14 +45,12 @@ pub struct Tuning {
     pub trial: bool,
 }
 
+const FILE: &str = "mods/base/knobs.luau";
+
 impl Tuning {
     pub fn new(dir: Option<&Path>) -> Tuning {
-        let mut t = Tuning { path: dir.map(|d| d.join("knobs.txt")), seen: None, trial: false };
-        if let Some(p) = &t.path {
-            if !p.exists() {
-                let _ = std::fs::write(p, knobs::file_text());
-            }
-        }
+        let path = dir.map(|d| d.join(FILE)).filter(|p| p.is_file());
+        let mut t = Tuning { path, seen: None, trial: false };
         t.scan();
         t
     }
@@ -68,10 +66,10 @@ impl Tuning {
         let text = std::fs::read_to_string(&p).ok()?;
         let errors = knobs::load(&text);
         self.trial = false;
-        Some(if errors.is_empty() { "knobs.txt: loaded".into() } else { format!("knobs.txt: loaded, but {}", errors.join("; ")) })
+        Some(if errors.is_empty() { "knobs.luau: loaded".into() } else { format!("knobs.luau: loaded, but {}", errors.join("; ")) })
     }
 
-    /// Set a knob; `persist` writes it into knobs.txt too.
+    /// Set a knob; `persist` writes it into knobs.luau too.
     pub fn set(&mut self, name: &str, value: f64, persist: bool) -> Result<String, String> {
         let old = knobs::value(name).ok_or_else(|| format!("no knob called {name} (knobs lists them)"))?;
         if !knobs::set(name, value) {
@@ -81,47 +79,34 @@ impl Tuning {
             self.trial = true;
             return Ok(format!("{name}: {old} -> {value} (only in the running game: keep saves it, revert undoes it)"));
         }
-        let p = self.path.clone().ok_or("no knobs.txt (the game runs outside the repository); use persist false")?;
-        let text = std::fs::read_to_string(&p).unwrap_or_else(|_| knobs::file_text());
-        let mut found = false;
-        let lines: Vec<String> = text
-            .lines()
-            .map(|l| {
-                let (body, note) = l.split_once('#').map_or((l, None), |(b, n)| (b, Some(n)));
-                if body.split_once('=').is_some_and(|(n, _)| n.trim() == name) {
-                    found = true;
-                    match note {
-                        Some(n) => format!("{name} = {value}  #{n}"),
-                        None => format!("{name} = {value}"),
-                    }
-                } else {
-                    l.to_string()
-                }
-            })
-            .collect();
-        let mut out = lines.join("\n") + "\n";
-        if !found {
-            let doc = knobs::LIST.iter().find(|k| k.0 == name).map_or("", |k| k.2.trim());
-            out += &format!("{name} = {value}  # {doc}\n");
-        }
-        std::fs::write(&p, out).map_err(|e| e.to_string())?;
-        self.seen = stamp(&p);
-        Ok(format!("{name}: {old} -> {value} (saved in knobs.txt)"))
+        self.write(&[name])?;
+        Ok(format!("{name}: {old} -> {value} (saved in {FILE})"))
     }
 
-    /// Save every value now (trials too) into knobs.txt.
+    /// Write the current values of `names` into the file, keeping its comments.
+    fn write(&mut self, names: &[&str]) -> Result<(), String> {
+        let p = self.path.clone().ok_or(format!("no {FILE} (the game runs outside the repository); use persist false"))?;
+        let mut text = std::fs::read_to_string(&p).map_err(|e| e.to_string())?;
+        for n in names {
+            let v = knobs::value(n).ok_or_else(|| format!("no knob called {n}"))?;
+            text = live::knobs::set(&text, n, &v.to_string())?;
+        }
+        std::fs::write(&p, text).map_err(|e| e.to_string())?;
+        self.seen = stamp(&p);
+        Ok(())
+    }
+
+    /// Save every value now (trials too) into knobs.luau.
     pub fn keep(&mut self) -> Result<String, String> {
         if !self.trial {
             return Ok("nothing temporary to keep".into());
         }
-        let p = self.path.clone().ok_or("no knobs.txt (the game runs outside the repository)")?;
-        std::fs::write(&p, knobs::file_text()).map_err(|e| e.to_string())?;
-        self.seen = stamp(&p);
+        self.write(knobs::NAMES)?;
         self.trial = false;
-        Ok("kept: knobs.txt holds the values now".into())
+        Ok(format!("kept: {FILE} holds the values now"))
     }
 
-    /// Back to knobs.txt as saved.
+    /// Back to knobs.luau as saved.
     pub fn revert(&mut self) -> String {
         if !self.trial {
             return "nothing temporary to undo".into();
@@ -135,10 +120,10 @@ impl Tuning {
 
     pub fn list(&self) -> String {
         let mut s = String::new();
-        for k in knobs::LIST {
-            let v = knobs::value(k.0).unwrap_or(k.1);
-            let mark = if v != k.1 { format!(" (default {})", k.1) } else { String::new() };
-            s += &format!("{} = {v}{mark}  # {}\n", k.0, k.2.trim());
+        for n in knobs::NAMES {
+            let (v, d) = (knobs::value(n).unwrap(), knobs::default(n).unwrap());
+            let mark = if v != d { format!(" (default {d})") } else { String::new() };
+            s += &format!("{n} = {v}{mark}  # {}\n", knobs::about(n).unwrap_or(""));
         }
         if self.trial {
             s += "(some values are temporary: keep saves them, revert undoes them)\n";
@@ -219,10 +204,10 @@ pub fn start(args: &[String], dir: Option<&Path>) -> Result<Option<SsLive>, Stri
     let Some(cfg) = live::Config::from_args("spellstorm", args)? else { return Ok(None) };
     let mut roots = Vec::new();
     if let Some(d) = dir {
-        roots.push(Root::new("game", d, Reload::Game, "games/spellstorm: knobs.txt (the balance knobs), app/src/surface.wgsl (the game's floor, stone and cloth shading) and app/src/fx.wgsl (the spell effects: fire, smoke, glows, ground fields, mist walls); a write applies on the next frame, a shader that does not compile keeps the last good one").extensions(&["txt", "wgsl", "md"]));
+        roots.push(Root::new("game", d, Reload::Game, "games/spellstorm: app/src/surface.wgsl (the game's floor, stone and cloth shading) and app/src/fx.wgsl (the spell effects: fire, smoke, glows, ground fields, mist walls); a write applies on the next frame, a shader that does not compile keeps the last good one").extensions(&["wgsl", "md"]));
     }
     if let Some(d) = spellstorm::rules::find_dir() {
-        roots.push(Root::new("mods", d, Reload::Game, "the spell rules in Luau (read README.md first): base/spells.luau (the grammar: which spell a queue and a form make, names, numbers; what each element does), base/tomes.luau (the shrines' tomes); new modules add hooks (cast, hit, tick). A write reloads at once and reports errors; a broken file keeps the last good version").extensions(&["luau", "md"]));
+        roots.push(Root::new("mods", d, Reload::Game, "the spell rules in Luau (read README.md first): base/spells.luau (the grammar: which spell a queue and a form make, names, numbers; what each element does), base/tomes.luau (the shrines' tomes), base/monsters.luau and base/biomes.luau (the monster kinds and the biomes: a changed list applies at the next start, changed numbers at once), base/knobs.luau (the balance knobs, its `-- @knobs` block: applies on the next frame); new modules add hooks (cast, hit, tick). A write reloads at once and reports errors; a broken file keeps the last good version").extensions(&["luau", "md"]));
     }
     let shaders = render::shaders::dir();
     if let Some(d) = &shaders {
@@ -234,11 +219,11 @@ pub fn start(args: &[String], dir: Option<&Path>) -> Result<Option<SsLive>, Stri
         about: "A co-op wizard roguelite on Warp (a port of the Godot game): up to 4 wizards combine elements into spells (RT cast, RB sword and nova, LS trap, RS enchant) through biomes of monsters, shrines of tomes and a boss each. 60 Hz deterministic Rust sim (hecs); the balance numbers are live knobs.".into(),
         guide: format!(
             "- Look first: `state`, `screenshot`, `knobs`, `logs`.\n\
-             - Balance: `knobs` lists them; `set_knob` changes one now and saves it in knobs.txt (`persist: false` only in the running game, then `keep` or `revert`). Walking and rolling speeds, cooldowns and reach, mana, damage and health scales, wave spacing, revives, tome time and the mist walls' rules (wards, ward_needs_tomes, practice).\n\
+             - Balance: `knobs` lists them; `set_knob` changes one now and saves it in mods/base/knobs.luau (`persist: false` only in the running game, then `keep` or `revert`). Walking and rolling speeds, cooldowns and reach, mana, damage and health scales, wave spacing, revives, tome time and the mist walls' rules (wards, ward_needs_tomes, practice).\n\
              - Runs: `new_run`, `start_at` (a biome from 0), `setting` (friendly_fire off|quarter|half|full, difficulty easy|normal|hard, unlocks earned|all), `command` (the same as a console line; `help`).\n\
              - Shading: edit `game/app/src/surface.wgsl` with write_file (Spellstorm's floor, stone and cloth, ported from Godot's shaders); it compiles on the next frame. The spell effects' looks (flames, smoke puffs, glows, puddles and other ground fields, the mist walls) are `game/app/src/fx.wgsl`, the same way. {}\n\
              - Spells are Luau in `mods/` (read mods/README.md): edit base/spells.luau or base/tomes.luau with write_file, or add a module like mods/live/my_idea.luau with `cast`, `hit` or `tick` hooks; it reloads at once and the next cast uses it. `run_luau` runs a line against the live world as `g` (g:nova(g:pos(g:wizards()[1]), 4, 'fire')); `command mods` shows the modules and their errors.\n\
-             - Monsters, levels and the rest of the sim are Rust (games/spellstorm/sim): they change with a rebuild.",
+             - The spells, tomes, monster kinds, biomes and knobs are Luau in mods/base (they reload while the game runs); levels and the rest of the sim are Rust (games/spellstorm/sim): they change with a rebuild.",
             if shaders.is_some() { "The engine's own shaders are in `shaders/` (reload_shaders)." } else { "Start with KERN_SHADER_DIR=engine/crates/render/src/shaders to edit the engine's shaders too." }
         ),
         tools: tools(),
@@ -255,10 +240,10 @@ fn obj(props: Value, required: &[&str]) -> Value {
 fn tools() -> Vec<ToolSpec> {
     vec![
         ToolSpec::new("knobs", "Every balance knob: name, value now (and its default when changed) and what it does.", obj(json!({}), &[])).read_only(),
-        ToolSpec::new("set_knob", "Set one knob now. With persist (the default) the value is saved in knobs.txt, ready to commit; with persist false only the running game changes (`keep` saves, `revert` undoes).",
+        ToolSpec::new("set_knob", "Set one knob now. With persist (the default) the value is saved in mods/base/knobs.luau, ready to commit; with persist false only the running game changes (`keep` saves, `revert` undoes).",
             obj(json!({ "name": { "type": "string" }, "value": { "type": "number" }, "persist": { "type": "boolean" } }), &["name", "value"])),
-        ToolSpec::new("keep", "Save the temporary knob values (set_knob with persist false) into knobs.txt.", obj(json!({}), &[])),
-        ToolSpec::new("revert", "Undo the temporary knob values: back to knobs.txt as saved.", obj(json!({}), &[])),
+        ToolSpec::new("keep", "Save the temporary knob values (set_knob with persist false) into mods/base/knobs.luau.", obj(json!({}), &[])),
+        ToolSpec::new("revert", "Undo the temporary knob values: back to mods/base/knobs.luau as saved.", obj(json!({}), &[])),
         ToolSpec::new("new_run", "Start a fresh run for everyone, at the first biome.", obj(json!({}), &[])),
         ToolSpec::new("start_at", "Start a run at a biome (0 the chapel; the state lists the run).", obj(json!({ "biome": { "type": "integer", "minimum": 0 } }), &["biome"])),
         ToolSpec::new("setting", "A party setting: friendly_fire off|quarter|half|full, difficulty easy|normal|hard, unlocks earned|all.",
@@ -309,7 +294,7 @@ impl Spellstorm {
                 self.world.set_option(k, v);
                 format!("{k} = {v}")
             }
-            "help" | "" => "knobs | knob NAME VALUE (saved in knobs.txt) | trial NAME VALUE (only the running game) | keep | revert | new_run | biome N | skip (this level's fights) | mods (the Luau modules) | lua CODE (against the world as g) | setting KEY VALUE".into(),
+            "help" | "" => "knobs | knob NAME VALUE (saved in mods/base/knobs.luau) | trial NAME VALUE (only the running game) | keep | revert | new_run | biome N | skip (this level's fights) | mods (the Luau modules) | lua CODE (against the world as g) | setting KEY VALUE".into(),
             _ => return Err(format!("unknown command {cmd} (help lists them)")),
         };
         Ok(out)
@@ -391,7 +376,7 @@ fn text(t: String) -> Reply {
 impl LiveGame for Ctx<'_> {
     fn state(&mut self) -> Result<Value, String> {
         let mut v = self.g.world.snapshot();
-        v["knobs"] = knobs::LIST.iter().map(|k| (k.0.to_string(), json!(knobs::value(k.0)))).collect::<serde_json::Map<_, _>>().into();
+        v["knobs"] = knobs::NAMES.iter().map(|n| (n.to_string(), json!(knobs::value(n)))).collect::<serde_json::Map<_, _>>().into();
         if let Some(e) = &self.g.shader.error {
             v["shader_error"] = json!(e);
         }
@@ -425,14 +410,14 @@ impl LiveGame for Ctx<'_> {
 
     fn file_written(&mut self, root: &str, path: &str) -> Option<String> {
         let g = &mut *self.g;
+        if path.ends_with("knobs.luau") {
+            let line = g.tuning.scan();
+            g.world.knobs_changed();
+            return line.or(Some("knobs.luau: unchanged".into()));
+        }
         if root == "mods" {
             let lines = spellstorm::rules::poll();
             return Some(if lines.is_empty() { format!("{path}: unchanged") } else { lines.join("\n") });
-        }
-        if path.ends_with("knobs.txt") {
-            let line = g.tuning.scan();
-            g.world.knobs_changed();
-            return line;
         }
         if path.ends_with("fx.wgsl") || path.ends_with("spells.wgsl") {
             return crate::effects::scan().or(Some("fx.wgsl: unchanged".into()));

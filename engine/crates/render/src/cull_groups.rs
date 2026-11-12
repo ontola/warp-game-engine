@@ -121,11 +121,13 @@ pub(crate) struct Resources {
 }
 impl Resources {
     pub fn new(gpu:&Gpu, instances:&[GpuInstance], instance_buffer:&wgpu::Buffer, wind:&wgpu::Buffer,
-        replacement:Option<&crate::source_replacement::Plan>)->Result<Self,String> {
+        replacement:Option<&crate::source_replacement::Plan>, default_on:bool)->Result<Self,String> {
+        // The scene's Graphics::instance_groups is the default; 1 or 0 overrides.
+        let flag=|name:&str|std::env::var(name).map_or(default_on,|v|v=="1");
         let enablement=Enablement {
-            camera:std::env::var("KERN_INSTANCE_GROUPS").as_deref()==Ok("1"),
-            sun:std::env::var("KERN_SUN_INSTANCE_GROUPS").as_deref()==Ok("1"),
-            headlight:std::env::var("KERN_HEADLIGHT_INSTANCE_GROUPS").as_deref()==Ok("1"),
+            camera:flag("KERN_INSTANCE_GROUPS"),
+            sun:flag("KERN_SUN_INSTANCE_GROUPS"),
+            headlight:flag("KERN_HEADLIGHT_INSTANCE_GROUPS"),
             replacement:replacement.is_some_and(|plan|plan.group_count>0),
         };
         let enabled=enablement.camera;

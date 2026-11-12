@@ -168,7 +168,7 @@ impl PlayersView {
     /// Player and tracer instances, rewritten every frame.
     pub(crate) fn reserve_dynamic(&mut self, scene: &mut Scene, players: usize, seed: u64, colors: &[crate::party::PlayerColors]) {
         let rigid = crate::graphics::get().rigid_characters;
-        let procedural = !colors.is_empty() || !rigid && std::env::args_os().any(|arg| arg == "--warp-humans");
+        let procedural = !colors.is_empty() || !rigid && crate::warp_humans_enabled();
         self.characters = if !crate::graphics::get().characters && !rigid {None}else{match Characters::load_roster(procedural.then_some((seed, players, colors))) {
             Ok(characters) => Some(characters),
             Err(error) => { eprintln!("characters: using primitive fallback: {error}"); None }
@@ -526,13 +526,11 @@ impl PlayersView {
     /// (`slots[k]` is drawn in view k). It still casts its shadow.
     pub fn hide_own(&mut self, scene: &mut Scene, slots: &[usize]) {
         for (i, m) in self.meshes.iter_mut().enumerate() {
-            m.own_views = 0;
-            for part in 0..PARTS { scene.instances[self.first + i * PARTS + part].hide_in_views(0); }
-        }
-        for (k, &s) in slots.iter().enumerate().take(8) {
-            let Some(m) = self.meshes.get_mut(s) else { continue };
-            m.own_views |= 1 << k;
-            for part in 0..PARTS { scene.instances[self.first + s * PARTS + part].hide_in_views(m.own_views); }
+            m.own_views = render::scene::PlayerViews::for_player(slots, i).hide_from_owner();
+            let first = self.first + i * PARTS;
+            for part in &mut scene.instances[first..first + PARTS] {
+                part.hide_in_views(m.own_views);
+            }
         }
     }
 

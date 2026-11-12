@@ -81,7 +81,7 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
         }
         // With a texture layer the textured colour glows (signs, logos).
         let glow = select(m.tint, sample.rgb * m.tint, m.layer >= 0);
-        return vec4<f32>(glow * m.scale * light.anim.y * transmission * alpha, alpha);
+        return vec4<f32>(glow * abs(m.scale) * light.anim.y * transmission * alpha, alpha);
     }
     let base = sample.rgb * m.tint;
     let p = in.world;
@@ -119,7 +119,7 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
     }
     direct += headlight_radiance(p,n,v,diffuse,rough,f0);
     var rad = direct + indirect + specular + car_lamp_emission(m.flags, base, instances[tri.owner], p) * light.anim.y;
-    if (m.flags & 1024u) != 0u { rad += m.tint * m.scale * light.anim.y; }
+    if (m.flags & 1024u) != 0u { rad += m.tint * abs(m.scale) * light.anim.y; }
     let diagnostic_view = light.sky.z > 0.5 && light.sky.z < 7.5;
     if refract_here && !diagnostic_view {
         // The surface layer keeps its diffuse/scattering share (alpha) and

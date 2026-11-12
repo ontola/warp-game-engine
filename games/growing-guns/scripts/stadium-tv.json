@@ -1,9 +1,24 @@
-{
-  "seed_note": "Run with --players 2 --seed 52 --sky noon. View 0 broadcasts; view 1 observes the east screen. Two captures prime then display the GPU feed.",
-  "size": [1600, 900],
-  "steps": [
-    {"cmd": ["bots pause", "menu none", "teleport 0 0 8 30", "aim 0 0 2 -10", "teleport 1 50 30 0", "aim 1 90.49 64.33 0", "health 0 50000", "health 1 50000"], "ticks": 1, "capture": "prime.png", "state": "state.json"},
-    {"expect": "/stadium/tv/screens", "equals": 4},
-    {"ticks": 2, "capture": "tv.png"}
+{"seed_note":"Run with --players 2 --seed 52 --sky noon. View 1 watches the east TV through a complete broadcast cycle. Each cut is rendered twice for the one-frame feed delay.",
+  "size":[1600,900],
+  "steps":[
+    {"cmd":["arena 52","bots pause","cage","menu none","health 0 50000","health 1 50000","teleport 0 0 8 0","aim 0 4 4 -9","teleport 1 59.3 43 0","aim 1 81.576 49.897 0"],"ticks":1,"capture":"prime.png"},
+    {"expect":"/stadium/tv/screens","equals":4},
+    {"ticks":2,"capture":"tv.png","state":"state.json"},
+    {"ticks":245},
+    {"cmd":["teleport 1 59.3 43 0","aim 1 81.576 49.897 0"],"ticks":1,"capture":"battle-prime.png"},
+    {"cmd":["teleport 1 59.3 43 0","aim 1 81.576 49.897 0"],"ticks":1,"capture":"battle.png","state":"battle.json"},
+    {"expect":"/stadium/tv/shot","equals":"battle overview"},
+    {"ticks":310},
+    {"cmd":["teleport 1 59.3 43 0","aim 1 81.576 49.897 0"],"ticks":1,"capture":"group-prime.png"},
+    {"cmd":["teleport 1 59.3 43 0","aim 1 81.576 49.897 0"],"ticks":1,"capture":"group.png","state":"group.json"},
+    {"expect":"/stadium/tv/shot","equals":"audience wide"},
+    {"ticks":170},
+    {"cmd":["teleport 1 59.3 43 0","aim 1 81.576 49.897 0"],"ticks":1,"capture":"close-prime.png"},
+    {"cmd":["teleport 1 59.3 43 0","aim 1 81.576 49.897 0"],"ticks":1,"capture":"close.png","state":"close.json"},
+    {"expect":"/stadium/tv/shot","equals":"audience close"},
+    {"ticks":163},
+    {"cmd":["teleport 1 59.3 43 0","aim 1 81.576 49.897 0"],"ticks":1,"capture":"back-prime.png"},
+    {"cmd":["teleport 1 59.3 43 0","aim 1 81.576 49.897 0"],"ticks":1,"capture":"back.png","state":"back.json"},
+    {"expect":"/stadium/tv/shot","equals":"player"}
   ]
 }

@@ -27,6 +27,9 @@ pub const THIN_FOLIAGE: u32 = 512;
 /// Self-lit surface (lava, lamps, tracers): adds `tint * scale` nits of
 /// radiance; `scale` is the emission, not a repeat. With a texture `layer`
 /// (uv-mapped) the textured colour glows instead: screens and signs.
+/// A negative `scale` emits `-scale` and marks a light's face
+/// (`light_face::LightFace::material`): screen-space reflections leave it to
+/// that light's own specular instead of counting its light twice.
 pub const EMISSIVE: u32 = 1024;
 /// Procedural rock (Growing Guns' rock_surface): world-space pits, cracks
 /// and moss on a block's faces, tinted by `tint`; `scale` 0..1 is damage
@@ -245,6 +248,28 @@ impl GeometryCategory {
     pub const fn exclusion_bit(self) -> u32 { 1 << self as u32 }
 }
 
+/// Camera views belonging to one player, including both eyes in stereo.
+#[derive(Clone, Copy)]
+pub struct PlayerViews(u8);
+
+impl PlayerViews {
+    pub fn for_player(view_players: &[usize], player: usize) -> Self {
+        let mut mask = 0;
+        for (view, &owner) in view_players.iter().take(u8::BITS as usize).enumerate() {
+            if owner == player {
+                mask |= 1 << view;
+            }
+        }
+        Self(mask)
+    }
+
+    /// Hidden views for first-person geometry.
+    pub fn hide_from_others(self) -> u8 { !self.0 }
+
+    /// Hidden views for the owner's world model.
+    pub fn hide_from_owner(self) -> u8 { self.0 }
+}
+
 impl GpuInstance {
     pub const fn category(&self) -> GeometryCategory {
         match (self.flags & INSTANCE_CATEGORY_MASK) >> INSTANCE_CATEGORY_SHIFT {
@@ -439,6 +464,24 @@ pub fn sibling_map(albedo: &std::path::Path, kinds: &[&str]) -> Option<std::path
     kinds.iter().flat_map(|k| ["jpg", "png"].map(|e| albedo.with_file_name(format!("{prefix}_{k}{suffix}.{e}")))).find(|p| p.exists())
 }
 
+/// Decode an albedo with its sibling normal and material maps.
+fn decode_texture(path: &std::path::Path, encoding: NormalEncoding) -> Result<TextureSource, String> {
+    // The normal map sits beside the albedo: x_albedo.jpg, x_normal.jpg
+    // (or .png), or Poly Haven's x_diff_1k.jpg, x_nor_gl_1k.jpg.
+    let normal_path = sibling_map(path, &["normal", "nor_gl"]);
+    let (img, normal, orm) = crate::par::scope(|s| {
+        let n = s.spawn(|| normal_path.and_then(|p| crate::files::open_image(p).ok()).map(|i| {
+            let mut normal = i.to_rgba8();
+            encoding.decode(&mut normal);
+            normal
+        }));
+        let orm = s.spawn(|| material_map_beside(path));
+        (crate::files::open_image(path), n.join().unwrap(), orm.join().unwrap())
+    });
+    let img = img.map_err(|e| format!("{}: {e}", path.display()))?.to_rgba8();
+    Ok(TextureSource { name: path.display().to_string(), rgba: img, normal, orm: orm? })
+}
+
 /// The material map beside an albedo (`sibling_map`): `orm` or `arm`
 /// (packed occlusion, roughness, metalness), else whichever of `ao`,
 /// `rough` and `metal` exist, packed into one (a missing one is white,
@@ -509,6 +552,11 @@ pub struct Graphics {
     /// per frame, some shadowed. Off by default; `KERN_CLUSTERED_LIGHTS`
     /// (1 or 0) overrides.
     pub clustered_lights: bool,
+    /// Hierarchical instance-group culling (cull_groups) for the camera, sun
+    /// and headlight passes: groups are tested before their instances.
+    /// `KERN_INSTANCE_GROUPS`, `KERN_SUN_INSTANCE_GROUPS` and
+    /// `KERN_HEADLIGHT_INSTANCE_GROUPS` (1 or 0) override per pass.
+    pub instance_groups: bool,
 }
 
 #[derive(Default)]
@@ -597,9 +645,14 @@ pub struct Scene {
     pub baked_animations: Option<crate::baked_animation::BakedAnimations>,
     /// Independent weighted character meshes, with caller-sampled palettes.
     pub skinning: crate::skinning::Skinning,
+    /// Skinned actor, head joint and fitted procedural strand descriptor.
+    pub hair_grooms: Vec<(usize, usize, crate::humans::Groom)>,
     /// Indoor irradiance probes in `aux` (`reserve_irradiance_volume`): the
     /// word offset of their header and the grid.
     pub irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
+    /// Per-probe visibility maps in `aux` (`reserve_probe_visibility`): the
+    /// offset of `room_bake::VISIBILITY_SIDE`^2 words per probe.
+    pub probe_visibility: Option<usize>,
     /// Bullet dents in ROCK surfaces (`reserve_dents`): word offset and capacity.
     pub dents: Option<(usize, usize)>,
     /// 3D unsigned Euclidean distance field for DFAO (`reserve_dfao`): word offset and grid.
@@ -659,7 +712,7 @@ impl Scene {
     /// runtime state on the same renderer. This does not compare textures or
     /// dynamic instance/material/auxiliary values; those still need restoring.
     pub fn same_reserved_geometry(&self, other: &Self) -> bool {
-        self.graphics.sharp_sprites == other.graphics.sharp_sprites
+        self.graphics.sharp_sprites == other.graphics.sharp_sprites && self.graphics.instance_groups == other.graphics.instance_groups
             && self.stage_sun == other.stage_sun && self.dynamic_instances == other.dynamic_instances
             && self.instances.len() == other.instances.len() && self.materials.len() == other.materials.len()
             && self.aux.len() == other.aux.len() && self.meshes.len() == other.meshes.len()
@@ -872,21 +925,18 @@ impl Scene {
     /// (`sibling_map`, `material_map_beside`) with explicit normal encoding.
     /// Only the normal RGB is decoded; albedo and normal alpha stay untouched.
     pub fn add_texture_with_normal_encoding(&mut self, path: &std::path::Path, encoding: NormalEncoding) -> Result<i32, String> {
-        // The normal map sits beside the albedo: x_albedo.jpg, x_normal.jpg
-        // (or .png), or Poly Haven's x_diff_1k.jpg, x_nor_gl_1k.jpg.
-        let normal_path = sibling_map(path, &["normal", "nor_gl"]);
-        let (img, normal, orm) = crate::par::scope(|s| {
-            let n = s.spawn(|| normal_path.and_then(|p| crate::files::open_image(p).ok()).map(|i| {
-                let mut normal = i.to_rgba8();
-                encoding.decode(&mut normal);
-                normal
-            }));
-            let orm = s.spawn(|| material_map_beside(path));
-            (crate::files::open_image(path), n.join().unwrap(), orm.join().unwrap())
-        });
-        let img = img.map_err(|e| format!("{}: {e}", path.display()))?.to_rgba8();
-        self.textures.push(TextureSource { name: path.display().to_string(), rgba: img, normal, orm: orm? });
+        self.textures.push(decode_texture(path, encoding)?);
         Ok((self.textures.len() - 1) as i32)
+    }
+
+    /// `add_texture_with_normal_encoding` for several textures, decoded on
+    /// parallel threads; layers are consecutive, in the order given.
+    pub fn add_textures(&mut self, paths: &[(&std::path::Path, NormalEncoding)]) -> Result<Vec<i32>, String> {
+        let decoded = crate::par::scope(|s| {
+            let jobs: Vec<_> = paths.iter().map(|&(path, encoding)| s.spawn(move || decode_texture(path, encoding))).collect();
+            jobs.into_iter().map(|job| job.join().unwrap()).collect::<Result<Vec<_>, _>>()
+        })?;
+        Ok(decoded.into_iter().map(|texture| { self.textures.push(texture); (self.textures.len() - 1) as i32 }).collect())
     }
 
     /// Add an already decoded image to the texture array; returns its layer.
@@ -925,6 +975,21 @@ impl Scene {
         if self.aux.len() + words.len() >= 1 << 24 { return Err("aux too large for an irradiance volume offset".into()); }
         self.irradiance_volume = Some((self.aux.len(), grid));
         self.aux.extend(words);
+        Ok(())
+    }
+
+    /// Reserve DDGI-style visibility maps for the irradiance volume's probes
+    /// (`room_bake::bake_visibility`, uploaded with
+    /// `Renderer::set_probe_visibility`). Shading then weights each probe by
+    /// whether it can see the shaded point, smoothly, instead of the
+    /// per-cell wall tests. Call after `reserve_irradiance_volume`.
+    pub fn reserve_probe_visibility(&mut self) -> Result<(), String> {
+        let (_, grid) = self.irradiance_volume.ok_or("reserve the irradiance volume first")?;
+        if self.probe_visibility.is_some() { return Err("probe visibility is already reserved".into()); }
+        let words = grid.count() * crate::room_bake::VISIBILITY_SIDE * crate::room_bake::VISIBILITY_SIDE;
+        if self.aux.len() + words >= 1 << 24 { return Err("aux too large for probe visibility".into()); }
+        self.probe_visibility = Some(self.aux.len());
+        self.aux.extend(std::iter::repeat_n(0u32, words));
         Ok(())
     }
 

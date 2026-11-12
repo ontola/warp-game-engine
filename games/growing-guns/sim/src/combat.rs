@@ -78,8 +78,8 @@ impl World {
         let w = &p.weapon;
         let last = p.ammo == 0;
         let scale = w.bullet_scale_for_shot(last);
-        let recoil_scale = scale * (w.recoil() / crate::weapon::BASE_RECOIL).clamp(0.2, 2.5);
-        let kick = (0.4 * (w.damage_for_shot(last) / crate::weapon::BASE_DAMAGE).powf(1.6)).clamp(0.1, 12.0);
+        let recoil_scale = scale * (w.recoil() / w.gun.recoil).clamp(0.2, 2.5);
+        let kick = (0.4 * (w.damage_for_shot(last) / w.gun.damage).powf(1.6)).clamp(0.1, 12.0);
         let shots = w.shots_per_trigger();
         let spread = self.effective_spread(i);
         let recoil = w.recoil();
@@ -287,7 +287,7 @@ impl World {
             }
         };
         // Arena chip, explosion, mine.
-        let ratio = (damage / crate::weapon::BASE_DAMAGE).max(0.2);
+        let ratio = (damage / w.gun.damage).max(0.2);
         if w.explosive_radius > 0.0 {
             self.carves.push(Carve { pos: at, radius: w.explosive_radius * 0.52, damage: if w.explosive_damage > 0.0 { w.explosive_damage } else { 30.0 } });
         } else {

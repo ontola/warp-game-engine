@@ -3,15 +3,15 @@
 //! level twice.
 
 use glam::Vec2;
-use spellstorm::biome::BIOMES;
+use spellstorm::biome::biomes;
 use spellstorm::level::Level;
 
 #[test]
 fn every_biome_builds() {
-    for b in 0..BIOMES.len() {
+    for b in 0..biomes().len() {
         for seed in [1u64, 7, 42, 1234] {
             let l = Level::build(b, seed);
-            let name = BIOMES[b].id;
+            let name = biomes()[b].id;
             assert!(l.length() > 60.0, "{name} {seed} length {}", l.length());
             assert_eq!(l.clearings.len(), 3, "{name} {seed}");
             assert!(

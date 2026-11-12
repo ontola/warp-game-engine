@@ -71,7 +71,7 @@ fn main() {
                     Some(b) => match biome_land::land(&b) { Ok(l) => Some(l), Err(e) => { eprintln!("shot: {e}"); std::process::exit(2); } },
                     None => None,
                 },
-                lod_pixels: opt("--lod", "1").parse().unwrap(),
+                lod_pixels: opt("--lod", &crate::engine_debug::DEFAULT_LOD_PIXELS.to_string()).parse().unwrap(),
                 picks: args
                     .iter()
                     .enumerate()
@@ -97,7 +97,7 @@ fn main() {
             gpu_run::run(&opt("--out", "gpu-out"), &opt("--jobs", &jobs.to_string_lossy()))
         },
         _ => {
-            eprintln!("usage: sideways play [--views 1..4] [--scenario case.toml]\n       sideways bench [--car ID] [--cars data/cars.toml]\n       sideways sim [--ticks 45000] [--seed 1] [--km 2] [--trace players.0.kmh,players.0.along] [--events]\n       sideways shot out.png [--seed N] [--km K]\n       sideways sound out.wav [--car ID]");
+            eprintln!("usage: sideways play [--views 1..4] [--scenario case.toml]\n       sideways bench [--car ID] [--cars data/cars.luau]\n       sideways sim [--ticks 45000] [--seed 1] [--km 2] [--trace players.0.kmh,players.0.along] [--events]\n       sideways shot out.png [--seed N] [--km K]\n       sideways sound out.wav [--car ID]");
             2
         }
     };

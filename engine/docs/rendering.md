@@ -195,7 +195,14 @@ to the headlights and local lights, which still work.
   redraw first, then the oldest tiles, at most
   `KERN_CLUSTERED_SHADOW_FACES` (12) a frame, so a caster that moves past a
   still lamp is a few frames late. `exclude` names the lamp's own
-  instances. 4-tap filtered, no soft penumbra yet.
+  instances. Lights with a `source_radius_m` of 0.3 m or more (a bounce
+  light standing in for a lit patch of floor) get soft shadows: PCSS, an
+  8-tap blocker search and 16 compare taps over the penumbra (source radius
+  times receiver minus blocker over blocker, at most 24 texels); smaller
+  lights keep a 4-tap filter. The source radius also sizes the specular
+  highlight (a sphere light, Karis 2013's representative point). Cookies,
+  angular profiles and light faces (the visible panel or bulb, derived from
+  the light): see `interior-light.md`.
 - Cost: the light records, shadow faces and cells live in the scene tables
   buffer (shade stays at 8 storage buffers); a uniform in bind group 2 holds
   the grid. Off, shade compiles none of it. Grass and opaque surfaces get
@@ -248,14 +255,20 @@ to the headlights and local lights, which still work.
   aspect)` reserves a shared layer for an `EMISSIVE | LIVE_SCREEN` material.
   After all views finish, the GPU copies the selected view before HUD into
   mip 2 (512 square) and generates smaller mips, at most 30 times per second.
-  Displays sample it on the next frame: no extra scene camera or CPU readback.
+  Displays sample the layer on the next frame.
   Split-view cropping, aspect fitting, gamma conversion and output resize are
   handled by `screen_feed`. The shared GPU pass is reported as `live screens`.
   The texture array still allocates a full layer; only update/sample cost is
   restricted to the smaller mips. First frame and missing source views are black.
   For headless captures render twice to prime the feed. Growing Guns' example
-  is `games/growing-guns/scripts/stadium-tv.json`. Ads and a separate TV camera
-  are game-level work, not part of this API.
+  is `games/growing-guns/scripts/stadium-tv.json`. A game can supply a
+  `BroadcastShot` for a live layer. Its camera renders a selected range of the match's
+  live spectators and simple depth-tested backdrop triangles into a small texture.
+  The sample number controls when the renderer refreshes it. All player views and
+  displays share the result. A scene shot uses the same output and draws the
+  current clustered geometry with a coarse LOD and a single forward lighting
+  pass. The GPU profile reports the whole alternate-camera pass as `TV audience`
+  or `TV battle`, separately from the final shared `live screens` blit.
 - **Characters:** weighted GPU skinning, evaluated once per frame before
   all views and shadow maps (`skinning.rs`), fed by `assets::skinned`.
 - **Effects:** CPU particles on slots (`particles`), explosions with fire,

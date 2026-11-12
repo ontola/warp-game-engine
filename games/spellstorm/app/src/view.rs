@@ -398,7 +398,7 @@ impl View {
             }
             self.wizard_pieces.insert(i, pieces);
         }
-        for k in spellstorm::enemy::KINDS.iter() {
+        for k in spellstorm::enemy::kinds().iter() {
             let name = format!("enemy/{}", k.key);
             look.pieces(&self.kits, &mut scene, &name);
             // What it shatters into, cut now: meshes added during play never
@@ -613,6 +613,19 @@ impl View {
                 }
             }
             let at = Mat4::from_rotation_translation(Quat::from_rotation_y(a.yaw), a.pos) * model;
+            // Coming in: it is built up from the floor, glowing as it forms,
+            // a ring of light running up it and motes drawn in (Joep).
+            let made = (ea.born / anim::MATERIALIZE).clamp(0.0, 1.0);
+            let at = if made < 1.0 && a.alive {
+                let up = 1.0 - (1.0 - made).powi(3);
+                let wide = 0.6 + 0.4 * (made * 1.6).min(1.0);
+                let h = 1.4 * e.cfg().size as f32 + 0.4;
+                self.fx.materialize(id.to_bits().get(), a.pos, h, made, e.cfg().el, dt);
+                at * Mat4::from_scale(Vec3::new(wide, up.max(0.02), wide))
+            } else {
+                at
+            };
+            let forming = if made < 1.0 { (1.0 - made).powf(0.7) * 1.2 } else { 0.0 };
             // Bodies that fall apart go to pieces once (a blow-up after its fuse).
             if let Some(t) = ea.dead_t.filter(|_| !ea.scattered) {
                 let c = e.cfg();
@@ -693,7 +706,7 @@ impl View {
                 // Its eyes swell while it winds up a blow (Enemy._tell).
                 let eyes = if e.wind > 0.0 { 1.0 + 1.5 * (1.0 - e.wind / e.wind_time()) as f32 } else { 1.0 };
                 // Frozen to death it stands white as ice until it shatters.
-                let flash = if e.how == Some(Death::Freeze) { 0.6 } else { hit_flash(&a) };
+                let flash = if e.how == Some(Death::Freeze) { 0.6 } else { hit_flash(&a).max(forming) };
                 let kind = e.cfg();
                 if self.skins.pose(&mut self.scene, id, kind, &a, &e, ea.dead_t, at, kit.base_scale, flash, dt) {
                     continue;
@@ -766,6 +779,7 @@ impl View {
             self.skins.flush(gpu, renderer)?;
         }
         self.follow(w, dt);
+        self.fx.tips = w.wizards.iter().zip(&gems).filter_map(|(id, g)| g.map(|g| (id.to_bits().get(), g))).collect();
         self.fx.update(w, dt);
         self.marks.update(w, &gems, self.fx.time, dt);
         self.marks.torches(&w.level.torches, self.camera.target, self.fx.time);
@@ -812,7 +826,7 @@ impl View {
             all.extend(self.lamps.iter().enumerate().map(|(i, l)| {
                 let k = 0.85 + 0.1 * (t * 9.0 + i as f32 * 1.7).sin() + 0.05 * (t * 23.0 + i as f32).sin();
                 ClusteredLight { light: LocalLight { intensity_cd: l.light.intensity_cd * k, ..l.light },
-                    shadow: Some(LightShadow { id: i as u64, exclude: Some(l.owner) }) }
+                    shadow: Some(LightShadow { id: i as u64, exclude: Some(l.owner) }), shape: Default::default() }
             }));
             all.truncate(render::clustered_lights::MAX_CLUSTERED_LIGHTS);
             renderer.set_clustered_lights(&all)?;

@@ -86,7 +86,7 @@ const GAIN_RAMP_SECONDS: f32 = 512.0 / 44_100.0;
 const BLOCK: usize = 64;
 /// Gains below this are Godot's -80 dB floor: silent.
 const SILENT_GAIN: f32 = 0.0001;
-/// `Weapon.BASE_DAMAGE`, for [`shot_duck`].
+/// A base round's damage (`Gun::default().damage`), for [`shot_duck`].
 const BASE_DAMAGE: f32 = 22.0;
 
 /// Duck for a gunshot of `damage` (`sfx.gd`): 0.18 for a base round, up to

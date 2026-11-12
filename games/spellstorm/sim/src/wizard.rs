@@ -46,7 +46,7 @@ pub const NOVA_HOLD: f64 = 0.45;
 /// R3 held this long shakes the staff empty; a tap enchants it.
 pub const SHAKE_HOLD: f64 = 0.4;
 /// How long a shake of the staff takes.
-pub const SHAKE_TIME: f64 = 0.45;
+pub const SHAKE_TIME: f64 = 0.6;
 
 /// What a wizard has done at least once (Wizard::used), for the HUD's
 /// hints: a hint shows until its move has been used.
@@ -57,6 +57,19 @@ pub mod used {
     pub const CAST: u32 = 8;
     pub const SHAKE: u32 = 16;
     pub const DEFLECT: u32 = 32;
+    /// Loaded an element; shot a bolt of one; cast a spell of two or more.
+    pub const LOAD: u32 = 64;
+    pub const BOLT_EL: u32 = 128;
+    pub const CAST2: u32 = 256;
+    /// Cast a nova (hold RB), planted (L3), enchanted (R3).
+    pub const NOVA: u32 = 512;
+    pub const PLANT: u32 = 1024;
+    pub const ENCHANT: u32 = 2048;
+    /// Cast a spell of only the first, or only the second, starting
+    /// element: both are taught, one after the other (Joep).
+    pub const CAST_FIRST: u32 = 4096;
+    pub const CAST_SECOND: u32 = 8192;
+    pub const CAST_PAIR: u32 = CAST_FIRST | CAST_SECOND;
 }
 pub const ROLL_TIME: f64 = 0.5;
 pub const ROLL_SPEED: f64 = 12.5;
@@ -68,13 +81,14 @@ pub const MAX_TRAPS: usize = 3;
 pub const SWORD_MAX: f32 = 3.0;
 pub const GEM_WARM: C = fx::rgb(1.0, 0.8, 0.55);
 
-/// Each wizard starts with two face elements that do not mix, a different
-/// pair per player, then the other two, then LB and its elements one by one.
+/// Every wizard starts with the same two face elements, Fire and Lightning
+/// (Joep: everyone learns the same lessons), then the other two, then LB
+/// and its elements one by one.
 pub const ELEMENT_ORDER: [[El; 4]; 4] = [
     [El::Fire, El::Lightning, El::Water, El::Poison],
-    [El::Water, El::Poison, El::Lightning, El::Fire],
-    [El::Lightning, El::Water, El::Fire, El::Poison],
-    [El::Poison, El::Fire, El::Water, El::Lightning],
+    [El::Fire, El::Lightning, El::Poison, El::Water],
+    [El::Fire, El::Lightning, El::Water, El::Poison],
+    [El::Fire, El::Lightning, El::Poison, El::Water],
 ];
 pub const LB_ORDER: [El; 4] = [El::Frost, El::Earth, El::Air, El::Void];
 /// The unlock ladder, one step at a level's first shrine and one at its
@@ -207,8 +221,10 @@ pub struct Wizard {
     pub rs_t: f64,
     /// The staff shaking its elements out, seconds left.
     pub shake_t: f64,
-    /// The moves done at least once (bits of `used`).
+    /// The moves done at least once (bits of `used`), and the elements
+    /// loaded at least once (bit El::idx).
     pub used: u32,
+    pub used_el: u32,
     save_t: [f64; 2],
     pub revive: f64,
     pub swing_t: f64,
@@ -605,11 +621,13 @@ impl World {
         w.staff_rx += (point * lift - w.staff_rx) * 12.0 * dt;
         w.staff_z += (0.18 + 0.25 * lift - w.staff_z) * 12.0 * dt;
         if w.shake_t > 0.0 {
-            // Shaken: the staff jerks up and down, hard at first.
+            // Shaken: a few firm shakes of the staff, easing out (Joep:
+            // calmer, it was frantic).
             let k = (w.shake_t / SHAKE_TIME) as f32;
-            let jerk = ((1.0 - k) * 7.0 * std::f32::consts::TAU).sin() * k;
-            w.staff_rx = 0.7 + 0.55 * jerk;
-            w.staff_z = 0.3 + 0.12 * jerk;
+            let ease = (k * std::f32::consts::PI).sin();
+            let jerk = ((1.0 - k) * 3.0 * std::f32::consts::TAU).sin() * ease;
+            w.staff_rx = 0.55 + 0.3 * jerk;
+            w.staff_z = 0.24 + 0.05 * jerk;
         }
         if w.swing_t > 0.0 {
             let sweep = 1.0 - (w.swing_t / SWING_COOLDOWN) as f32;
@@ -748,6 +766,9 @@ impl World {
 
     fn shoot(&mut self, id: Id, w: &mut Wizard) {
         w.used |= used::BOLT;
+        if !w.queue.is_empty() {
+            w.used |= used::BOLT_EL;
+        }
         let dir = yaw_rot(w.aim_dir, self.rng.range(-0.03, 0.03));
         // Fired steadily, the staff stays up instead of bobbing.
         w.cast_anim = w.cast_anim.max(1.0 / w.shot_rate() + 0.1);
@@ -1056,6 +1077,8 @@ impl World {
             return;
         }
         w.mana -= price;
+        w.used |= used::LOAD;
+        w.used_el |= 1 << e.idx();
         let front = w.queue.slots.first().copied();
         let what = w.queue.add(e);
         // A new or changed front element starts with a full charge.
@@ -1125,8 +1148,25 @@ impl World {
         }
         w.mana -= price;
         w.ammo = 0;
+        w.used |= match form {
+            Form::Nova => used::NOVA,
+            Form::Plant => used::PLANT,
+            Form::Enchant => used::ENCHANT,
+            Form::Cast => 0,
+        };
         if form == Form::Cast {
             w.used |= used::CAST;
+            if s.slots.len() >= 2 {
+                w.used |= used::CAST2;
+            }
+            let order = ELEMENT_ORDER[w.element_order % ELEMENT_ORDER.len()];
+            if let [e] = w.queue.slots[..s.slots.len().min(w.queue.slots.len())] {
+                if e == order[0] {
+                    w.used |= used::CAST_FIRST;
+                } else if e == order[1] {
+                    w.used |= used::CAST_SECOND;
+                }
+            }
         }
         // What the spell did not use stays loaded, front first.
         let used = s.slots.len();

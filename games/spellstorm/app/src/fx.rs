@@ -812,6 +812,12 @@ pub struct Fx {
     rng: u64,
     pub shake: f32,
     pub blasts: render::fx::Effects,
+    /// Each wizard's gem where the animated staff holds it (by id bits):
+    /// streams start there.
+    pub tips: std::collections::HashMap<u64, Vec3>,
+    /// Each water jet's far end, trailing its aim (by spell id bits): the
+    /// direction it points and when it was last drawn.
+    hose: HashMap<u64, (Vec3, f32)>,
     /// GPU sparks and embers for eruptions and bombs (opt-in: KERN_GPU_PARTICLES=1).
     pub sparks: render::gpu_particles::GpuParticles,
     /// Props broken this tick: where the blow came from and how hard, for
@@ -878,6 +884,8 @@ impl Default for Fx {
             rng: 0x9e37_79b9_7f4a_7c15,
             shake: 0.0,
             blasts,
+            tips: Default::default(),
+            hose: HashMap::new(),
             sparks,
             prop_hits: HashMap::new(),
             env_lights: Vec::new(),
@@ -1019,6 +1027,40 @@ impl Fx {
         p.gravity = Vec3::new(0.0, -6.0, 0.0);
         p.damp = (2.0, 4.0);
         self.shot(p, at, el, true);
+    }
+
+    /// A monster being made (`k` 0 just begun .. 1 done), `h` tall at
+    /// `at`: a ring of its element's light running up it, motes spiralling
+    /// in onto it, a glow on the floor under it.
+    pub fn materialize(&mut self, key: u64, at: Vec3, h: f32, k: f32, el: El, dt: f32) {
+        let c = el_c(el);
+        let c3 = linear3([c[0], c[1], c[2]]);
+        let fade = 1.0 - smooth(0.75, 1.0, k);
+        let up = 1.0 - (1.0 - k).powi(3);
+        let y = h * up;
+        let r = 0.55 + 0.35 * (1.0 - k);
+        self.live.push(flat_sprite(at + Vec3::Y * y, r, Cell::Ring, (c3 * 1.5 + Vec3::splat(0.6)) * fade));
+        self.live.push(flat_sprite(at + Vec3::Y * 0.04, 0.9, Cell::Patch, c3 * 0.6 * fade));
+        // Motes drawn in from round it to where it is being made.
+        let mut p = particles(c, 60, 0.45, 0.14);
+        p.cell = Cell::Spark;
+        p.glow = 2.2;
+        p.sphere = 1.4;
+        p.dir = Vec3::Y;
+        p.spread = 180.0;
+        p.v = (0.0, 0.3);
+        p.radial = (-9.0, -6.0);
+        p.gravity = Vec3::ZERO;
+        p.stretch = 0.05;
+        // (Emitted here, not streamed: a stream's carry is kept only for
+        // spells and fields.)
+        let due = 60.0 * fade * dt;
+        let n = due as u32 + (self.f() < due.fract()) as u32;
+        let _ = key;
+        if n > 0 {
+            self.emit(p, at + Vec3::Y * y.max(0.3), n);
+        }
+        self.light(at + Vec3::Y * y.max(0.4), c, 1.2 * fade, 4.0);
     }
 
     /// Fx.puff.
@@ -1666,9 +1708,10 @@ impl Fx {
             }
             Ev::Shake(a) => self.shake = self.shake.max(a),
             Ev::Summon { at } => {
+                // The monster itself is made in the view (materialize): only a
+                // ring and a breath of motes here, no ball of light.
                 let c = el_c(El::Void);
                 self.ring(at, c, 1.4, 0.9);
-                self.flash(at + Vec3::Y * 0.3, c, 2.0, 0.6);
                 let mut p = particles(c, 24, 0.9, 0.3);
                 p.dir = Vec3::Y;
                 p.spread = 20.0;
@@ -2397,6 +2440,7 @@ impl Fx {
         self.live.clear();
         self.live_lights.clear();
         let t = self.time;
+        self.hose.retain(|_, h| t - h.1 < 0.5);
         for &id in &w.fx {
             let key = id.to_bits().get();
             if let Ok(o) = w.ecs.get::<&spellstorm::spells::Overload>(id) {
@@ -2506,6 +2550,8 @@ impl Fx {
                     sp.depth_test = render::sprites::DepthTest::Source;
                 }
             } else if let Ok(s) = w.ecs.get::<&Spray>(id) {
+                // From the gem as the staff sways (Joep), not the sim's still pose.
+                let at = self.tips.get(&s.caster.to_bits().get()).copied().unwrap_or(s.at);
                 let e = s.spell.primary.unwrap_or(El::Fire);
                 let mut p = particles(el_c(e), 50, 0.45, 0.7);
                 p.dir = s.dir;
@@ -2566,7 +2612,7 @@ impl Fx {
                         sh.damp = base.damp;
                         sh.life = base.life * 0.9;
                         sh.gravity = Vec3::NEG_Y * 2.0;
-                        self.stream((key, 5), sh, s.at, dt);
+                        self.stream((key, 5), sh, at, dt);
                     } else {
                         // Wind lines streaming out, curling apart as they slow.
                         let base = p;
@@ -2587,42 +2633,79 @@ impl Fx {
                     puff.curve = [0.5, 1.1, 1.8];
                     let k = lerp_c(el_c(e), WHITE, 0.6);
                     puff.ramp = Ramp::new(&[rgba(k[0], k[1], k[2], 0.0), rgba(k[0], k[1], k[2], 0.3), rgba(k[0], k[1], k[2], 0.0)], &[0.0, 0.3, 1.0]);
-                    self.stream((key, 2), puff, s.at, dt);
+                    self.stream((key, 2), puff, at, dt);
                 }
+                let mut from = at;
                 if e == El::Water {
-                    // A hose: a dense white jet of water that sags a little
-                    // and breaks into spray at its end, not a blue haze (Joep).
-                    p.amount = 160;
-                    p.life = 0.4;
-                    p.spread = 3.5;
-                    p.v = (12.0, 15.0);
-                    p.damp = (0.5, 1.5);
-                    p.gravity = Vec3::NEG_Y * 5.0;
-                    p.size = 0.16;
-                    p.cell = Cell::Drop;
-                    p.glow = 0.7;
-                    p.solid = false;
-                    p.ramp = Ramp::new(&[rgba(1.0, 1.0, 1.0, 1.0), rgba(0.9, 0.96, 1.0, 0.95), rgba(0.75, 0.88, 1.0, 0.0)], &[0.0, 0.7, 1.0]);
-                    p.tint = (Vec3::ONE, Vec3::ONE);
-                    p.curve = [0.7, 1.0, 1.6];
-                    let mut mist = p;
-                    mist.amount = 24;
-                    mist.cell = Cell::Puff;
-                    mist.size = 0.45;
-                    mist.glow = 0.25;
-                    mist.spread = 9.0;
-                    mist.v = (8.0, 11.0);
-                    mist.ramp = Ramp::new(&[rgba(1.0, 1.0, 1.0, 0.0), rgba(0.95, 0.98, 1.0, 0.3), rgba(0.9, 0.95, 1.0, 0.0)], &[0.0, 0.5, 1.0]);
-                    self.stream((key, 2), mist, s.at, dt);
-                    // Its body: spells.wgsl `jet` on a shaft along the spray,
-                    // the drops and mist above flying off it.
+                    // A hose (Joep: one thing, not drops lagging behind an
+                    // instant beam): one body of water from the gem that
+                    // bends as you turn, its far end trailing the aim a
+                    // moment and sagging a little, only breaking into spray
+                    // and mist right where it ends.
                     let len = s.spell.n.range as f32;
-                    let mut body = Sprite::shaft(s.at + s.dir * len * 0.5, [0.55, len], s.dir, IMAGE, uv(Cell::Patch), Vec3::splat(0.7));
-                    body.additive = false;
-                    body.depth_bias = 0.3;
-                    body.effect = crate::effects::JET;
-                    body.params = [t, (key % 97) as f32, 0.0, 0.0];
-                    self.live.push(body);
+                    let follow = 1.0 - (-dt / 0.09).exp();
+                    let lag = self.hose.entry(key).or_insert((s.dir, t));
+                    lag.0 = (lag.0 + (s.dir - lag.0) * follow).normalize_or(s.dir);
+                    lag.1 = t;
+                    let end = lag.0;
+                    const SEGS: usize = 8;
+                    let mut pts = [at; SEGS + 1];
+                    for i in 1..=SEGS {
+                        let f = (i as f32 - 0.5) / SEGS as f32;
+                        let d = s.dir.lerp(end, f.powf(1.5)).normalize_or(s.dir);
+                        pts[i] = pts[i - 1] + d * len / SEGS as f32;
+                    }
+                    for (i, q) in pts.iter_mut().enumerate() {
+                        let f = i as f32 / SEGS as f32;
+                        q.y -= 0.35 * f * f;
+                    }
+                    let h = heft(&s.spell);
+                    for i in 0..SEGS {
+                        let (a, b) = (pts[i], pts[i + 1]);
+                        let axis = b - a;
+                        let l = axis.length();
+                        let mut body = Sprite::shaft((a + b) * 0.5, [0.55 * (1.0 + 0.3 * (h - 1.0)), l * 1.04], axis / l.max(1e-4), IMAGE, uv(Cell::Patch), Vec3::splat(0.75));
+                        body.additive = false;
+                        body.depth_bias = 0.3;
+                        body.effect = crate::effects::JET;
+                        body.params = [t, (key % 97) as f32, i as f32 / SEGS as f32, (i + 1) as f32 / SEGS as f32];
+                        self.live.push(body);
+                    }
+                    // Spray and mist where it breaks up, flung on the way it
+                    // was going and falling: short lived, so nothing trails.
+                    let tip = pts[SEGS];
+                    let dir = (pts[SEGS] - pts[SEGS - 1]).normalize_or(end);
+                    from = tip - dir * 0.3;
+                    p.amount = 70;
+                    p.life = 0.3;
+                    p.dir = dir;
+                    p.spread = 30.0;
+                    p.v = (2.5, 5.5);
+                    p.damp = (1.0, 2.0);
+                    p.gravity = Vec3::NEG_Y * 9.0;
+                    p.size = 0.06;
+                    p.stretch = 0.03;
+                    p.sphere = 0.15;
+                    p.cell = Cell::Drop;
+                    p.glow = 0.6;
+                    p.solid = false;
+                    p.ramp = Ramp::new(&[rgba(1.0, 1.0, 1.0, 0.9), rgba(0.85, 0.94, 1.0, 0.7), rgba(0.7, 0.86, 1.0, 0.0)], &[0.0, 0.6, 1.0]);
+                    p.tint = (Vec3::ONE, Vec3::ONE);
+                    p.curve = [1.0, 0.9, 0.6];
+                    let mut mist = p;
+                    mist.amount = 14;
+                    mist.life = 0.5;
+                    mist.cell = Cell::Puff;
+                    mist.size = 0.5;
+                    mist.stretch = 0.0;
+                    mist.glow = 0.2;
+                    mist.spread = 45.0;
+                    mist.v = (0.4, 1.4);
+                    mist.gravity = Vec3::NEG_Y * 0.5;
+                    mist.sphere = 0.2;
+                    mist.curve = [0.6, 1.0, 1.5];
+                    mist.ramp = Ramp::new(&[rgba(1.0, 1.0, 1.0, 0.0), rgba(0.92, 0.97, 1.0, 0.22), rgba(0.9, 0.95, 1.0, 0.0)], &[0.0, 0.4, 1.0]);
+                    self.stream((key, 2), mist, tip, dt);
                 }
                 // Two or three of it: a bigger, denser, wider stream.
                 let h = heft(&s.spell);
@@ -2638,12 +2721,12 @@ impl Fx {
                     q.spread = p.spread * 1.2;
                     q.v = p.v;
                     q.damp = p.damp;
-                    self.stream((key, 3 + i as u8), q, s.at, dt);
+                    self.stream((key, 3 + i as u8), q, from, dt);
                 }
-                self.stream((key, 0), p, s.at, dt);
+                self.stream((key, 0), p, from, dt);
                 if let Some(mut sm) = smoke {
                     sm.amount = (sm.amount as f32 * h) as u32;
-                    self.stream((key, 1), sm, s.at, dt);
+                    self.stream((key, 1), sm, from, dt);
                 }
                 let h_light = h;
                 if e == El::Fire {
@@ -2652,16 +2735,17 @@ impl Fx {
                     // less than the flames: a floor lit brighter than the
                     // fire washed the fire out against it.
                     let warm = rgba(1.0, 0.62, 0.22, 1.0);
-                    self.light(s.at + s.dir * 1.0, warm, 1.1 * h_light, 11.0 + 3.0 * (h_light - 1.0));
-                    self.light(s.at + s.dir * 4.0, warm, 0.85 * h_light, 9.0 + 3.0 * (h_light - 1.0));
+                    self.light(at + s.dir * 1.0, warm, 1.1 * h_light, 11.0 + 3.0 * (h_light - 1.0));
+                    self.light(at + s.dir * 4.0, warm, 0.85 * h_light, 9.0 + 3.0 * (h_light - 1.0));
                 } else {
-                    self.light(s.at + s.dir * 2.0, el_c(e), 1.2 * h_light, 6.0);
+                    self.light(at + s.dir * 2.0, el_c(e), 1.2 * h_light, 6.0);
                 }
             } else if let Ok(b) = w.ecs.get::<&Beam>(id) {
+                let from = self.tips.get(&b.caster.to_bits().get()).copied().unwrap_or(b.from);
                 let e = b.spell.primary.unwrap_or(El::Lightning);
                 let c = el_c(e);
                 let c3 = linear3([c[0], c[1], c[2]]);
-                let d = b.to - b.from;
+                let d = b.to - from;
                 let len = d.length();
                 if len > 0.05 {
                     // Its element crawling along it, not only a thin line:
@@ -2680,12 +2764,12 @@ impl Fx {
                     }
                     for i in 0..6u8 {
                         let k = (i as f32 + 0.5) / 6.0;
-                        self.stream((key, 30 + i), q, b.from.lerp(b.to, k), dt);
+                        self.stream((key, 30 + i), q, from.lerp(b.to, k), dt);
                     }
                 }
                 let h = heft(&b.spell);
                 if len > 0.05 {
-                    let mid = (b.from + b.to) * 0.5;
+                    let mid = (from + b.to) * 0.5;
                     let dir = d / len;
                     let wob = 1.0 + 0.15 * (t * 30.0).sin();
                     // Joep: a beam's strength trembles, never one steady
@@ -2727,7 +2811,7 @@ impl Fx {
                         q.sphere = 0.16 * h;
                         let pieces = ((len / 1.5) as usize).clamp(1, 8);
                         for j in 0..pieces {
-                            let at = b.from + d * ((j as f32 + 0.5) / pieces as f32);
+                            let at = from + d * ((j as f32 + 0.5) / pieces as f32);
                             self.stream((key, 10 + (i * 8 + j) as u8), q, at, dt);
                         }
                     }

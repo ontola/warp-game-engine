@@ -39,9 +39,9 @@ function robot(color) {
   box(g,[.18,.48,.2],[-.4,0,0],'#394c54');
   box(g,[.18,.48,.2],[.4,0,0],'#394c54');
   const legs = [box(g,[.22,.53,.24],[-.17,-.58,0],'#283b46'),box(g,[.22,.53,.24],[.17,-.58,0],'#283b46')];
-  box(g,[.13,.13,.65],[.35,.05,-.42],'#23323c');
-  box(g,[.14,.035,.24],[.35,.14,-.46],color);
-  scene.add(g); return {group:g,legs};
+  const barrel=box(g,[.13,.13,.65],[.35,.05,-.42],'#23323c');
+  const sight=box(g,[.14,.035,.24],[.35,.14,-.46],color);
+  scene.add(g); return {group:g,legs,barrel,sight,ground:gun(scene)};
 }
 function gun(parent) {
   const g = new THREE.Group(); parent.add(g);
@@ -205,6 +205,13 @@ function frame(time,xr) {
   const p=current.players[0];
   for(let i=0;i<robots.length;i++) {
     const r=robots[i], pl=current.players[i], old=previous.players[i];
+    r.barrel.visible=r.sight.visible=pl.armed;
+    r.ground.visible=!!pl.groundGun;
+    if(pl.groundGun) {
+      r.ground.position.fromArray(pl.groundGun);
+      r.ground.position.y+=.045;
+      r.ground.rotation.z=Math.PI/2;
+    }
     r.group.visible=pl.alive&&(i!==0||mode==='landing');
     r.group.position.fromArray(old.pos).lerp(new THREE.Vector3().fromArray(pl.pos),alpha);
     r.group.rotation.y=old.yaw+Math.atan2(Math.sin(pl.yaw-old.yaw),Math.cos(pl.yaw-old.yaw))*alpha;
@@ -234,6 +241,7 @@ function frame(time,xr) {
       rightHand.position.set(.25,.45,-.25); rightHand.quaternion.copy(camera.quaternion);
     }
   }
+  weapon.visible=p.armed;
   const scale=1+Math.min(p.cards,10)*.06; weapon.scale.setScalar(scale);
   // Preserve muzzle position when the weapon grows; the sim's .43m barrel end
   // and visible barrel stay together. Only width/height grow in this demo.
