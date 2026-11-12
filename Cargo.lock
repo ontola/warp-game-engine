@@ -3016,6 +3016,7 @@ dependencies = [
  "hyper-util",
  "image",
  "libc",
+ "script",
  "serde",
  "serde_json",
  "tokio",
@@ -5298,6 +5299,7 @@ name = "script"
 version = "0.1.0"
 dependencies = [
  "mlua",
+ "serde",
 ]
 
 [[package]]
