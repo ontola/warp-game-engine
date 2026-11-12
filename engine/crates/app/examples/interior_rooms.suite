@@ -37,3 +37,8 @@ r4_probe_shut  -6.0,1.65,-12.6           -1.5708    -0.4       1111 0 0 840,700,
 # Shadow edges: the flashlight past room 3's door jamb (Joep's F4 "jagged
 # shadow edges"): the jamb's edge on the green wall, the block's contact.
 flash_jamb     2.75,1.65,-9.9            0.12       -0.3       0000 0 1 840,460,240,135
+# Froxel fog (Lighting::froxel_fog): room 2 in smoke under the pendant, the
+# flashlight's beam in room 4, room 1 hazing towards the daylight door.
+r2_fog_shaft   -2.5,1.65,-5.0            -0.79      0.05       1111 0 0 900,500,240,135 fog
+flash_fog      -6.5,1.65,-13.5           1.5708     -0.05      0000 0 1 840,470,240,135 fog
+r1_fog_door    1.0,1.65,-2.0             3.1416     0.0        1111 0 0 900,450,240,135 fog

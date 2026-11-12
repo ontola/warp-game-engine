@@ -13,9 +13,9 @@
 use std::path::PathBuf;
 
 /// The built-in copies of every file that can be read from disk.
-pub(crate) const SHARED_NAMES: [&str; 24] = ["game_lighting_types.wgsl", "game_lighting.wgsl", "cloud_weather.wgsl", "game_surface.wgsl", "terrain_field.wgsl", "forest_field.wgsl", "terrain_surface.wgsl", "wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "meadow_canopy.wgsl", "foliage_volume.wgsl", "surface_fog.wgsl", "shade.wgsl",
-    "world_visibility.wgsl", "foliage_sun_pages.wgsl", "car_material.wgsl", "grass_lighting.wgsl", "incident_lights.wgsl", "headlights.wgsl", "clustered_lights.wgsl", "rsm.wgsl", "car_lamps.wgsl", "procedural_surface.wgsl"];
-const BUILT_IN: [(&str, &str); 28] = [
+pub(crate) const SHARED_NAMES: [&str; 25] = ["game_lighting_types.wgsl", "game_lighting.wgsl", "cloud_weather.wgsl", "game_surface.wgsl", "terrain_field.wgsl", "forest_field.wgsl", "terrain_surface.wgsl", "wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "meadow_canopy.wgsl", "foliage_volume.wgsl", "surface_fog.wgsl", "shade.wgsl",
+    "world_visibility.wgsl", "foliage_sun_pages.wgsl", "car_material.wgsl", "grass_lighting.wgsl", "incident_lights.wgsl", "headlights.wgsl", "clustered_lights.wgsl", "rsm.wgsl", "froxel_fog.wgsl", "car_lamps.wgsl", "procedural_surface.wgsl"];
+const BUILT_IN: [(&str, &str); 29] = [
     ("game_lighting_types.wgsl", include_str!("shaders/game_lighting_types.wgsl")),
     ("game_lighting.wgsl", include_str!("shaders/game_lighting.wgsl")),
     ("surface_fog.wgsl", include_str!("shaders/surface_fog.wgsl")),
@@ -40,6 +40,7 @@ const BUILT_IN: [(&str, &str); 28] = [
     ("headlights.wgsl", include_str!("shaders/headlights.wgsl")),
     ("clustered_lights.wgsl", include_str!("shaders/clustered_lights.wgsl")),
     ("rsm.wgsl", include_str!("shaders/rsm.wgsl")),
+    ("froxel_fog.wgsl", include_str!("shaders/froxel_fog.wgsl")),
     ("transparency.wgsl", include_str!("shaders/transparency.wgsl")),
     ("grass_transition.wgsl", include_str!("shaders/grass_transition.wgsl")),
     ("far_grass.wgsl", include_str!("shaders/far_grass.wgsl")),

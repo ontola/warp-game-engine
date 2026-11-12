@@ -28,10 +28,10 @@
 //!
 //! Q (or LB) toggles a flashlight: a shadowed spot right of and below the
 //! eye that lags the view a little; what it lights bounces live, as the
-//! pendant's does. Tab (or Select) toggles haze in rooms 2 and 4
-//! (`Lighting::volumetric` in its bounded mode, `set_volumetric_bounded`):
-//! the pendant's cone, the flashlight's beam and the lamp light through room
-//! 4's door show in it, shadowed by the walls, furniture and door.
+//! pendant's does. Tab (or Select) toggles smoke in the whole building
+//! (`Lighting::froxel_fog`, a camera froxel grid): every lamp, the flashlight
+//! and the daylight through the doors scatter in it, shadowed by the walls,
+//! furniture and door, and the far side of each room hazes.
 //! Shift sprints, Space jumps.
 //!
 //! HDR output is requested (`Game::hdr`): on an HDR screen the sky through
@@ -191,9 +191,6 @@ struct Rooms {
     cord: SlotId,
     shade: SlotId,
     door: SlotId,
-    /// Everything that blocks light in the fog (static boxes; the door is
-    /// added as it stands).
-    fog_occluders: Vec<Affine3A>,
     lamp_slots: Vec<SlotId>,
     lamp_on: [bool; 4],
     /// The static geometry without the door, and with it shut.
@@ -292,7 +289,6 @@ impl Rooms {
         for w in &walls { scene.add_instance(plaster, *w); }
         let roofs = [bx([-4.3, H, -16.9], [4.3, H + 0.3, 4.3]), bx([-9.3, H, -16.9], [-4.3, H + 0.3, -10.2])];
         for r in &roofs { scene.add_instance(plaster, *r); }
-        let mut fog_occluders: Vec<Affine3A> = walls.iter().chain(&roofs).copied().collect();
         // Coloured inner faces: thin panels on room 2 (blue) and 3 (green).
         for (m, b) in [
             (blue, bx([-4.0, 0.0, -10.2], [-3.98, H, -4.3])), (blue, bx([3.98, 0.0, -10.2], [4.0, H, -4.3])),
@@ -318,7 +314,6 @@ impl Rooms {
             (wood, bx([-8.9, 0.0, -13.5], [-8.5, 2.0, -11.0])), (cloth, bx([-6.5, 0.0, -14.8], [-5.5, 0.6, -13.8])),
         ];
         for (m, f) in &furniture { scene.add_instance(*m, *f); }
-        fog_occluders.extend(furniture.iter().map(|f| f.1));
         let footprint = |xf: &Affine3A| {
             let c = Vec3::from(xf.translation);
             let h = Vec3::new(xf.matrix3.x_axis.x, xf.matrix3.y_axis.y, xf.matrix3.z_axis.z) * 0.5;
@@ -355,7 +350,7 @@ impl Rooms {
         // ROOMS_LIGHT="gi=0,taa=0": Lighting::set keys, for checks.
         for kv in std::env::var("ROOMS_LIGHT").unwrap_or_default().split(',').filter(|s| !s.is_empty()) { light.set(kv).expect("ROOMS_LIGHT"); }
         let pos = Vec3::new(1.5, EYE, 12.0);
-        Rooms { scene, grid, solid, objects, bulb_mesh, cord_mesh, door_mesh, lamp_on_mesh, lamp_off_mesh, shade_mesh, bulb, cord, shade, door, fog_occluders, lamp_slots,
+        Rooms { scene, grid, solid, objects, bulb_mesh, cord_mesh, door_mesh, lamp_on_mesh, lamp_off_mesh, shade_mesh, bulb, cord, shade, door, lamp_slots,
             lamp_on: [true; 4], open_occluders, shut_occluders, shut: None, open: None, door_wanted: false, door_t: 0.0, hold_door: false, uploaded: None, visibility_shut: None, cut: false,
             fog: false, flashlight: false, flash_dir: Vec3::NEG_Z, flash_pose: None, pos, prev: pos, yaw: 0.12, pitch: 0.0, vy: 0.0, t: 0.0, light,
             ready: false, ev: None, hdr: None }
@@ -391,22 +386,6 @@ impl Rooms {
             inner_cos: 24f32.to_radians().cos(), outer_cos: 28f32.to_radians().cos(), source_radius_m: 0.02, falloff: 2.0 }
     }
 
-    /// What scatters in the fog: the pendant, the lit ceiling lamps (their
-    /// light through room 4's door) and the flashlight. The fog fills rooms
-    /// 2 and 4 only and is ray-marched with every light's visibility tested
-    /// against the walls, furniture and the door (`set_volumetric_bounded`).
-    fn beams(&self) -> (Vec<LocalLight>, Vec<LightShape>) {
-        let mut beams = vec![(self.pendant(), PENDANT_PROFILE)];
-        beams.extend((0..4).filter(|&i| self.lamp_on[i]).map(|i| (ceiling_lamp(i), DOWNLIGHT_PROFILE)));
-        if self.flashlight { beams.push((self.flashlight_light(), FLASH_COOKIE)); }
-        beams.into_iter().unzip()
-    }
-
-    /// The fog's rooms: 2 (the pendant) and 4 (the dark room).
-    fn fog_bounds() -> [(Vec3, Vec3); 2] {
-        [(Vec3::new(-4.0, 0.0, -10.2), Vec3::new(4.0, H, -4.3)), (Vec3::new(-9.0, 0.0, -16.6), Vec3::new(-4.3, H, -10.5))]
-    }
-
     fn lights(&self) -> Vec<ClusteredLight> {
         let pendant = self.pendant();
         // The light sits inside its bulb and shade: those and the cord (the
@@ -440,10 +419,12 @@ impl Rooms {
 
     fn set_fog(&mut self, on: bool) {
         self.fog = on;
-        // Haze in rooms 2 and 4 (`fog_bounds`): the pendant's cone, the
-        // flashlight's beam and the light through room 4's door show. It
-        // only adds light (no extinction).
-        self.light.volumetric = on.then(|| render::volumetric::Volumetric { density: 0.15, anisotropy: 0.5, intensity: 6.0, ..Default::default() });
+        // Smoke everywhere (`Lighting::froxel_fog`): every lamp, the
+        // flashlight and the daylight through the doors scatter in it, the
+        // walls and furniture shadow it, and the far side of a room hazes.
+        self.light.froxel_fog = on.then(|| render::froxel_fog::FroxelFog { density: 0.15, albedo: Vec3::splat(0.9), anisotropy: 0.4, far_m: 32.0,
+            // ROOMS_FOG_OUTSIDE=1: the smoke outdoors too (no bounds).
+            bounds: std::env::var_os("ROOMS_FOG_OUTSIDE").is_none().then_some((Vec3::new(-9.3, 0.0, -16.9), Vec3::new(4.3, H, 4.3))) });
     }
 
     /// The probes for the door at `open` and the lamps that are on: the two
@@ -583,13 +564,6 @@ impl Game for Rooms {
         renderer.set_clustered_lights(&self.lights())?;
         // One reflection probe per room: the engine captures them live.
         renderer.set_reflection_probes(&ROOM_PROBES)?;
-        let (beams, shapes) = if self.fog { self.beams() } else { (Vec::new(), Vec::new()) };
-        renderer.set_volumetric_beams_shaped(&beams, &shapes)?;
-        if self.fog {
-            let mut occluders = self.fog_occluders.clone();
-            occluders.push(door_xf(self.door_open()));
-            renderer.set_volumetric_bounded(&Self::fog_bounds(), &occluders, 1.0);
-        }
         self.objects.flush(frame.gpu, renderer, &self.scene)?;
         // The engine follows moved instances (the door, the pendant) itself.
         renderer.update_bounce_voxels(frame.gpu, &self.scene)?;
@@ -716,7 +690,9 @@ fn main() -> Result<(), String> {
                 game.flashlight = f[6] == "1";
                 game.flash_dir = game.forward();
                 // Optional ninth field: the flashlight held at x,y,z,yaw,pitch.
-                game.flash_pose = f.get(8).map(|s| s.split(',').filter_map(|v| v.parse::<f32>().ok()).collect::<Vec<_>>()).filter(|v| v.len() == 5)
+                // A field "fog": the spot in smoke (Lighting::froxel_fog).
+                if f.iter().any(|s| *s == "fog") != game.fog { game.set_fog(!game.fog); }
+                game.flash_pose = f.get(8).filter(|s| **s != "fog").map(|s| s.split(',').filter_map(|v| v.parse::<f32>().ok()).collect::<Vec<_>>()).filter(|v| v.len() == 5)
                     .map(|v| (Vec3::new(v[0], v[1], v[2]), Vec3::new(-v[3].sin() * v[4].cos(), v[4].sin(), -v[3].cos() * v[4].cos())));
                 game.cut = true;
                 let frames = 200u32;
