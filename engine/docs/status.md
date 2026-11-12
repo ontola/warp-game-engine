@@ -27,6 +27,8 @@ resolution, reconstruction mode, sample count and scene with a number.
 
 ## Renderer core
 
+Games can opt into [artist lighting and per-view image effects](materials.md#artist-lighting-and-image-effects). The Painted Meadow example uses both.
+
 - **Default:** cluster LOD, GPU culling, visibility buffer and compute
   shading, TAA, AgX ([rendering overview](rendering.md)).
 - **Render suite** (5 November): `engine/tools/render-suite.py` measures one

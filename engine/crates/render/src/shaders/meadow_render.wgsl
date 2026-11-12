@@ -162,7 +162,8 @@ fn meadow_color_with_geometric(in:MeadowVertex,geometric:vec3<f32>)->vec4<f32> {
     let env=mix(bounce/PI,environment(refl,rough,bounce),reflection_vis)*spec_contact;
     let response=thin_foliage_response(base,n,v,rough,1.0,sun_e,front_ambient,back_ambient,env);
     let direct=response.direct+meadow_headlights(p,n,v,base,rough);
-    var rad=apply_distance_fog(direct+response.indirect+response.specular,distance(p,view.cam.xyz),-v);
+    let style = styled_light(-1, 64u, p, n, base, direct+response.indirect+response.specular, shadow);
+    var rad=apply_distance_fog(style.radiance,distance(p,view.cam.xyz),-v);
     if light.sky.z>0.5 && light.sky.z<1.5 {rad=vec3<f32>(sky_vis)*6000.0;}
     else if light.sky.z>1.5 && light.sky.z<2.5 {rad=base*6000.0;}
     else if light.sky.z>2.5 && light.sky.z<3.5 {rad=direct;}

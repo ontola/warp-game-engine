@@ -1,3 +1,14 @@
+fn material_kind(m: Material) -> i32 {
+    return select(-1, -2 - m.layer, (m.flags & 32768u) != 0u && (m.flags & 2u) == 0u);
+}
+fn styled_light(kind: i32, flags: u32, p: vec3<f32>, n: vec3<f32>, base: vec3<f32>, rad: vec3<f32>, shadow: f32) -> StyledLight {
+    return game_lighting(LightingSample(kind, flags, p, n, base, rad, light.sun_dir.xyz, light.sun_dir.w, shadow, light.anim.x));
+}
+// Untagged sky and ordinary passes already write alpha 1. Half floats
+// represent integers through 2048 exactly. The finish restores reflection coverage.
+fn style_alpha(tag: u32) -> f32 {
+    return select(1.0, 1.0 + f32(min(tag, 2047u)), WRITE_STYLE_TAGS);
+}
 // Deferred shading from the visibility buffer: per pixel, find the
 // triangle, intersect the view ray with it for exact barycentrics, and
 // light the surface in physical units (lux, cd/m2). Output is linear HDR.
@@ -404,9 +415,10 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     let env = mix(bounce / PI, environment(refl, rough, bounce), sky_vis) * spec_contact;
     let response = thin_foliage_response(base, n, v, rough, leaf, sun_e, front, back, env);
     var rad = response.direct + response.indirect + response.specular;
-    rad = apply_distance_fog(rad, dist, dir);
+    let style = styled_light(-1, 512u, p, n, base, rad, shadow);
+    rad = apply_distance_fog(style.radiance, dist, dir);
     if light.sky.z > 1.5 && light.sky.z < 2.5 { rad = base * 6000.0; }
-    textureStore(out_hdr, px, vec4<f32>(min(rad, vec3<f32>(65504.0)), 1.0));
+    textureStore(out_hdr, px, vec4<f32>(min(rad, vec3<f32>(65504.0)), style_alpha(style.tag)));
 }
 // Coarse terrain material (TERRAIN_COARSE): field_surface once per 2x2
 // pixels, at each quad's centre, packed by terrain_coarse below. Where a
@@ -3632,6 +3644,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             rad += lava_albedo * sun_e * sun / PI;
         }
     }
+    let style = styled_light(material_kind(m), m.flags, p, n, base, rad, shadow);
+    rad = style.radiance;
     // Hit flash (instance bits 16..23): the body itself lights up white,
     // nearly evenly; a slight facing term keeps its form readable.
     let flash = f32((inst.flags >> 16u) & 0xffu) / 255.0;
@@ -3693,10 +3707,12 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         rad = select(vec3<f32>(0.0), vec3<f32>(ch.x / ch.w * 0.5 + 0.5, 0.5 - ch.y / ch.w * 0.5, mh.conf), mh.conf > 0.0) * 6000.0;
     }
     // fp16 target: a blast light next to a wall must saturate, not become inf.
-    // Alpha 0 marks a light's face (EMISSIVE, negative scale): reflections
-    // leave it out of last frame's image (reflection_mips.rs).
+    // Reflections exclude light faces (alpha 0). In the temporary finish
+    // input the sign preserves that mask alongside the integer part tag.
     let face = (m.flags & 1024u) != 0u && m.scale < 0.0;
-    textureStore(out_hdr, px, vec4<f32>(min(rad, vec3<f32>(65504.0)), select(1.0, 0.0, face)));
+    let alpha = style_alpha(style.tag);
+    let face_alpha = select(0.0, -alpha, WRITE_STYLE_TAGS);
+    textureStore(out_hdr, px, vec4<f32>(min(rad, vec3<f32>(65504.0)), select(alpha, face_alpha, face)));
 }
 
 // Sky transmittance cache (canopy.rs): for one canopy level, the
@@ -3769,10 +3785,12 @@ fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
     }
     if (m.flags&1024u)!=0u {rad+=base*abs(m.scale)*light.anim.y;}
     if (m.flags&4096u)!=0u {rad=base*m.scale*light.anim.y;}
+    let style = styled_light(material_kind(m), m.flags, p, n, base, rad, 1.0);
+    rad = style.radiance;
     let flash=f32((inst.flags>>16u)&255u)/255.0;
     rad=mix(rad,vec3<f32>(1.0,0.97,0.92)*light.anim.z*(0.8+0.2*max(dot(n,-dir),0.0)),flash*0.9);
     rad=apply_distance_fog(rad,distance(p,view.cam.xyz),dir);
     if light.sky.z==2.0 {rad=base*6000.0;}
     if light.sky.z==11.0 {rad=(n*0.5+0.5)*6000.0;}
-    textureStore(out_hdr,px,vec4<f32>(min(rad,vec3<f32>(65504.0)),1.0));
+    textureStore(out_hdr,px,vec4<f32>(min(rad,vec3<f32>(65504.0)),style_alpha(style.tag)));
 }

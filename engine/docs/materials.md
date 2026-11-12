@@ -66,6 +66,41 @@ game's surfaces apart. SpaceRacer and Spellstorm use it, and the `warp`
 runtime hot reloads it from a game's `surface.wgsl`. Its result then takes
 the weathering layers like any other material.
 
+## Artist lighting and image effects
+
+A game folder can contain either or both of these WGSL files. Warp reads
+them at game load. Relaunch the game after editing them. Rust scenes supply
+the same sources through `Scene::style`.
+
+- `lighting.wgsl` defines `fn game_lighting(s: LightingSample) -> StyledLight`.
+  The sample includes world position, shading normal, albedo, the engine's
+  lit HDR radiance, direction toward the sun, sun illuminance in lux,
+  shadow visibility (0–1), time in seconds, material flags and surface kind.
+  Return linear HDR radiance and an integer image-effect tag (0–2047).
+  Zero is the untagged group. Fog, hit flashes and exposure follow lighting.
+  Ordinary materials and engine terrain report kind -1. A Luau object's
+  `surface` supplies its kind. An untextured opaque glTF material can
+  declare the same kind with integer `extras.warpSurface` (0–255).
+- `finish.wgsl` defines `fn game_finish(pixel: vec2<i32>, center: FinishSample) -> vec3<f32>`.
+  Read neighbours using `scene_sample(pixel + offset)`. Each sample
+  contains HDR colour, the visible part's tag and reversed device depth
+  (nearer is larger, sky is zero). Reads clamp at the edges of the current
+  view. Return HDR colour. A finish uses one additional RGBA16F target at
+  render resolution per view. Games without a finish use the regular HDR target.
+
+Lighting runs on opaque meshes, terrain, visibility-buffer voxel crowns, grass cards, and
+procedural meadow blades, including the meadow's aggregate lighting path.
+The simple opaque lighting profile supplies shadow visibility 1. The finish
+runs after opaque shading and before separate vegetation, translucency,
+temporal reconstruction and tone mapping. Consequently a grass blade from
+a later pass covers finished ink naturally. Tags belong to the opaque
+image. Later volumetric vegetation and transparent layers keep their own
+compositing paths.
+
+[Painted Meadow](../../games/painted-meadow/README.md) supplies a working pair.
+The palette, shade bands, brush filter and rules for drawing ink all live
+in that game.
+
 ## Compression
 
 When the device has `TEXTURE_COMPRESSION_BC` (desktop GPUs; desktop

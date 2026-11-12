@@ -293,6 +293,7 @@ impl World {
     /// Ids, effects and every entity stay; the renderer is rebuilt.
     pub fn fresh_scene(&mut self) -> Result<(), String> {
         let mut w = World::new(&self.dir, self.slots.capacity());
+        w.scene.style = self.scene.style.clone();
         for (&id, e) in &self.entities {
             let (mesh, _) = w.mesh(&e.shape, &e.look)?;
             let mut e = e.clone();

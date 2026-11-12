@@ -350,6 +350,8 @@ matter, because the listeners follow them.
 
 ### Your own shader
 
+Optional `lighting.wgsl` and `finish.wgsl` files control the lit colour and the per-view opaque image. See [Artist lighting and image effects](materials.md#artist-lighting-and-image-effects) for the signatures and a playable example.
+
 A file `surface.wgsl` in the game folder is the game's own surface
 shader. An entity (or `world.warm` look) with `surface = N` is drawn by it,
 and `N` (0 to 255) tells its surfaces apart:

@@ -155,6 +155,20 @@ pub fn read_bytes(scene: &mut Scene, bytes: &[u8], path: &Path) -> Result<Docume
         let mut flags = 0;
         if m.double_sided() { flags |= TWO_SIDED; }
         if m.alpha_mode() == ::gltf::material::AlphaMode::Mask { flags |= ALPHA_TEST; }
+        // A game can assign an untextured opaque material the same surface
+        // kind used by Luau's world.spawn and by custom lighting.
+        if let Some(extras) = m.extras() {
+            let extras: serde_json::Value = serde_json::from_str(extras.get()).map_err(|e| e.to_string())?;
+            if let Some(kind) = extras.get("warpSurface") {
+                let kind = kind.as_u64().and_then(|n| u8::try_from(n).ok())
+                    .ok_or("material extras.warpSurface must be an integer from 0 to 255")?;
+                if layer >= 0 || m.alpha_mode() != ::gltf::material::AlphaMode::Opaque {
+                    return Err("warpSurface requires an untextured opaque material".into());
+                }
+                flags |= render::scene::SURFACE;
+                layer = -2 - i32::from(kind);
+            }
+        }
         let id = scene.add_material(Material { tint: [f[0], f[1], f[2]], layer, roughness: pbr.roughness_factor(), flags, scale: 1.0, metal: pbr.metallic_factor() });
         // Glass and other see-through surfaces: the sorted forward pass,
         // never a shadow caster or light blocker in the room bake.

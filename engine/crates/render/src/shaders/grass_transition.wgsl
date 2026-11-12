@@ -73,7 +73,8 @@ fn grass_color(in: GrassVertex) -> vec4<f32> {
     if (m.flags & 32u) != 0u || rough<0.55 { reflection_vis=reflected_visibility(p,n,refl); }
     let response=grass_leaf_response(base,height,v,sun_e,shadow,sky_vis,contact,rough);
     let direct=response.direct+headlight_grass_radiance(p,v,base,rough);let indirect=response.indirect;let specular=response.specular;
-    var rad = apply_distance_fog(direct+indirect+specular,distance(p,view.cam.xyz),-v);
+    let style = styled_light(material_kind(m), m.flags, p, n, base, direct+indirect+specular, shadow);
+    var rad = apply_distance_fog(style.radiance,distance(p,view.cam.xyz),-v);
     if light.sky.z>0.5 && light.sky.z<1.5 {rad=vec3<f32>(sky_vis)*6000.0;}
     else if light.sky.z>1.5 && light.sky.z<2.5 {rad=base*6000.0;}
     else if light.sky.z>2.5 && light.sky.z<3.5 {rad=direct;}
