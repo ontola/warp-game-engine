@@ -803,7 +803,14 @@ impl App {
         if let Some(v)=values["weather"].as_str(){settings.weather=if v=="random"{None}else{Some(v.into())};}
         let seats=self.host.as_ref().map(|h|h.state.seats()).filter(|s|!s.is_empty()).unwrap_or_else(||self.seats.clone());
         let views=seats.len().clamp(1,4);settings.bots=views;
-        let request=stage_loading::Request {seed:stage_loading::Seed::next(&self.race,settings),seats,views,settings:values,
+        // data/cars.luau applies at a stage boundary; a broken edit keeps the cars before.
+        let mut seed=stage_loading::Seed::next(&self.race,settings);
+        match sideways::spec::Cars::load(None) {
+            Ok(cars)=>seed=seed.with_cars(cars),
+            Err(error)=>{eprintln!("sideways: {error} (keeping the cars from before)");
+                self.screenshot_toast=Some((format!("cars.luau: {error} (keeping the cars from before)"),Instant::now()+Duration::from_secs(10)));}
+        }
+        let request=stage_loading::Request {seed,seats,views,settings:values,
             looks:self.live_edit.looks().clone(),sky:self.sky_controls.applied_snapshot(),upscale:self.args.upscale,
             tree_settings:self.debug.applied_tree_settings()};
         let loading=stage_loading::Loading::new(request);
