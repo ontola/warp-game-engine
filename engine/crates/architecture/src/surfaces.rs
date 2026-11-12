@@ -22,6 +22,14 @@ pub enum Surface {
     Frame,
     /// Upholstery and cabinets.
     Furniture,
+    /// Bare or screeded concrete, concrete block.
+    Concrete,
+    /// Aluminium and steel: curtain wall mullions, frames, railings.
+    Metal,
+    /// A planted (green) roof.
+    Grass,
+    /// Textile and upholstery fabric.
+    Fabric,
 }
 
 /// Texture size in pixels (square, tileable).
@@ -30,7 +38,8 @@ const SIZE: u32 = 512;
 impl Surface {
     /// Metres covered by one repeat of the texture.
     pub fn tile_metres(self) -> f32 {
-        match self { Surface::Plaster => 2.0, Surface::Brick => 1.0, Surface::Oak => 2.4, Surface::Tile => 1.2, Surface::Roof => 1.0, Surface::Frame | Surface::Furniture => 1.0 }
+        match self { Surface::Plaster => 2.0, Surface::Brick => 1.0, Surface::Oak => 2.4, Surface::Tile => 1.2, Surface::Roof => 1.0, Surface::Concrete => 2.0, Surface::Grass => 1.0,
+            Surface::Frame | Surface::Furniture | Surface::Metal | Surface::Fabric => 1.0 }
     }
 
     /// Add this surface's texture (if any) and material to `scene`, mapped
@@ -38,7 +47,30 @@ impl Surface {
     pub fn add(self, scene: &mut Scene) -> u32 { self.add_mapped(scene, false, false) }
 
     /// Does it have a texture (Frame and Furniture are plain)?
-    pub fn textured(self) -> bool { !matches!(self, Surface::Frame | Surface::Furniture) }
+    pub fn textured(self) -> bool { !matches!(self, Surface::Frame | Surface::Furniture | Surface::Metal | Surface::Fabric) }
+
+    /// The surface an IFC material (or surface style) name describes, in
+    /// English, Dutch or German, as BIM tools write them ("Brick, Common",
+    /// "Masonry - Brick", "Leichtbeton", "Holz", "Aluminium", "Wood -
+    /// Flooring"). `None` when the name says nothing about the finish
+    /// (insulation, air, studs, "Solid", "Default").
+    pub fn from_material_name(name: &str) -> Option<Surface> {
+        let n = name.to_lowercase();
+        let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
+        // Layers inside a build-up are never seen.
+        if has(&["stud", "insul", "isolat", "dämm", "air space", "air layer", "airspace", "luchtspouw", "spouw", "vapor", "vapour", "damp", "barrier", "sheathing", "lumber", "batt"]) || n.trim() == "air" { return None; }
+        Some(if has(&["glass", "glas", "glazing"]) { return None }
+            else if has(&["brick", "baksteen", "ziegel", "klinker", "metselwerk"]) { Surface::Brick }
+            else if has(&["plaster", "gypsum", "drywall", "stuc", "putz", "gips", "gipskarton"]) { Surface::Plaster }
+            else if has(&["tile", "tegel", "fliese", "ceramic", "keramik", "porcelain"]) { Surface::Tile }
+            else if has(&["grass", "gras", "sedum", "vegetat"]) { Surface::Grass }
+            else if has(&["alumin", "steel", "stahl", "staal", "metal", "chrome", "zink", "zinc"]) { Surface::Metal }
+            else if has(&["fabric", "textile", "stof", "stoff", "leather", "leder"]) { Surface::Fabric }
+            else if has(&["wood", "holz", "hout", "timber", "oak", "eiken", "eiche", "birch", "cherry", "mahogany", "lumber", "plywood", "laminate", "parquet", "parket"]) { Surface::Oak }
+            else if has(&["concrete", "beton", "screed", "cement", "masonry", "block", "kalkzandsteen", "porenbeton"]) { Surface::Concrete }
+            else if has(&["epdm", "bitumen", "roofing", "membrane", "dakbedekking", "gravel", "grind", "kies"]) { Surface::Roof }
+            else { return None })
+    }
 
     /// As `add`; `triplanar` maps the texture by world position instead of
     /// uv, for curved faces (a round window's reveal) where per-face uvs
@@ -48,6 +80,8 @@ impl Surface {
     pub fn add_mapped(self, scene: &mut Scene, triplanar: bool, two_sided: bool) -> u32 {
         let (tint, roughness, layer) = match self {
             Surface::Frame => ([0.08, 0.085, 0.09], 0.45, -1),
+            Surface::Metal => ([0.78, 0.79, 0.8], 0.35, -1),
+            Surface::Fabric => ([0.5, 0.47, 0.42], 0.95, -1),
             Surface::Furniture => ([0.55, 0.52, 0.48], 0.85, -1),
             _ => {
                 // One texture per surface per scene, however many houses.
@@ -61,13 +95,14 @@ impl Surface {
                         layer
                     }
                 };
-                let rough = match self { Surface::Oak => 0.45, Surface::Tile => 0.3, Surface::Plaster => 0.9, _ => 0.85 };
+                let rough = match self { Surface::Oak => 0.45, Surface::Tile => 0.3, Surface::Plaster => 0.9, Surface::Grass => 0.95, _ => 0.85 };
                 ([1.0; 3], rough, layer)
             }
         };
         let flags = if two_sided { TWO_SIDED } else { 0 } | if triplanar && layer >= 0 { TRIPLANAR } else { 0 };
         let scale = if flags & TRIPLANAR != 0 { self.tile_metres() } else { 1.0 };
-        scene.add_material(Material { tint, layer, roughness, flags, scale, metal: 0.0 })
+        let metal = if self == Surface::Metal { 1.0 } else { 0.0 };
+        scene.add_material(Material { tint, layer, roughness, flags, scale, metal })
     }
 
     /// Albedo (sRGB) and height-derived normal map.
@@ -155,7 +190,19 @@ impl Surface {
                 let g = 0.12 + fbm(u, v, 128, 2, 51) * 0.08;
                 ([g, g, g * 0.95], fbm(u, v, 128, 2, 51) * 0.004)
             }
-            Surface::Frame | Surface::Furniture => ([0.5; 3], 0.0),
+            Surface::Concrete => {
+                // Board-smooth concrete: soft mottling and a few pores.
+                let a = fbm(u, v, 6, 4, 61) * 0.06 + fbm(u, v, 48, 2, 63) * 0.02;
+                let pore = fbm(u, v, 160, 1, 67) < -0.42;
+                let c = 0.46 + a;
+                if pore { ([c * 0.7; 3], -0.001) } else { ([c, c * 0.99, c * 0.96], a * 0.0008) }
+            }
+            Surface::Grass => {
+                let a = fbm(u, v, 96, 3, 71);
+                let c = 0.09 + a * 0.05;
+                ([c * 0.9, c * 1.6 + 0.02, c * 0.55], a * 0.01)
+            }
+            Surface::Frame | Surface::Furniture | Surface::Metal | Surface::Fabric => ([0.5; 3], 0.0),
         }
     }
 }
