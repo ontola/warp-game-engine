@@ -162,14 +162,22 @@ struct LightState {
 }
 
 impl LightState {
-    fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3) -> Result<Self, String> {
+    /// The bounces on `gpu` (room_bake_gpu, the same transport), else on the CPU.
+    fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, gpu: Option<&render::Gpu>) -> Result<Self, String> {
         let settings = render::room_bake::Settings::default();
+        let lamp_settings = render::room_bake::Settings { bounces: 2, ..settings };
         let lamps: Vec<LocalLight> = (0..4).map(ceiling_lamp).collect();
         // Where the probes sit, once for every bake of this door state.
         let placed = render::room_bake::Placement::new(grid, occluders);
+        let (sky, lamps) = match gpu {
+            Some(gpu) => (render::room_bake_gpu::bake(gpu, grid, occluders, &placed, sun, &settings)?,
+                render::room_bake_gpu::bake_lights(gpu, grid, occluders, &placed, &lamps, &lamp_settings)?),
+            None => (render::room_bake::bake_placed(grid, occluders, &placed, sun, &settings)?,
+                render::room_bake::bake_lights_placed(grid, occluders, &placed, &lamps, &lamp_settings)?),
+        };
         Ok(LightState {
-            sky: render::room_bake::bake_placed(grid, occluders, &placed, sun, &settings)?,
-            lamps: render::room_bake::bake_lights_placed(grid, occluders, &placed, &lamps, &render::room_bake::Settings { bounces: 2, ..settings })?,
+            sky,
+            lamps,
             planes: render::room_bake::separation_planes_placed(grid, occluders, &placed),
             visibility: render::room_bake::bake_visibility_placed(grid, occluders, &placed),
             offsets: render::room_bake::pack_offsets(grid, &placed.positions),
@@ -552,9 +560,11 @@ impl Game for Rooms {
             let t = std::time::Instant::now();
             let sun = self.light.sun_dir;
             let (grid, shut_occ, open_occ) = (&self.grid, &self.shut_occluders, &self.open_occluders);
+            // The bounces on the GPU (ROOMS_CPU_BAKE=1: on the CPU, as before).
+            let gpu = std::env::var_os("ROOMS_CPU_BAKE").is_none().then_some(frame.gpu);
             let (shut, open) = std::thread::scope(|s| {
-                let shut = s.spawn(|| LightState::bake(grid, shut_occ, sun));
-                let open = LightState::bake(grid, open_occ, sun);
+                let shut = s.spawn(|| LightState::bake(grid, shut_occ, sun, gpu));
+                let open = LightState::bake(grid, open_occ, sun, gpu);
                 (shut.join().map_err(|_| "bake thread panicked".to_string()).and_then(|r| r), open)
             });
             self.shut = Some(shut?);
