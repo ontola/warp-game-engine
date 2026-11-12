@@ -3,48 +3,20 @@
 //! while it runs (mods/base/knobs.luau). Setting one rewrites the file; the
 //! mods reload it on the next poll.
 use live::knobs::{self, Knob};
-use std::path::{Path, PathBuf};
 
 /// Every knob with its file (relative to mods/), in path order.
 pub fn all() -> Vec<(String, Knob)> {
-    let Some(dir) = crate::scripts::find_dir() else { return Vec::new() };
-    let mut files = Vec::new();
-    collect(&dir, &mut files);
-    files.sort();
-    let mut out = Vec::new();
-    for path in files {
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
-        if !text.contains("-- @knobs") { continue; }
-        let rel = path.strip_prefix(&dir).unwrap_or(&path).to_string_lossy().replace('\\', "/");
-        out.extend(knobs::parse(&text).into_iter().map(|k| (rel.clone(), k)));
-    }
-    out
-}
-
-fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.is_dir() { collect(&p, out); } else if p.extension().is_some_and(|x| x == "luau") { out.push(p); }
-    }
+    crate::scripts::find_dir().map(|d| knobs::in_folder(&d)).unwrap_or_default()
 }
 
 /// `name = value  -- about  (file)` per knob.
 pub fn list() -> String {
-    let all = all();
-    if all.is_empty() { return knobs::list(&[]); }
-    all.iter().map(|(f, k)| format!("{}  ({f})", knobs::list(std::slice::from_ref(k)))).collect::<Vec<_>>().join("\n")
+    knobs::list_folder(&all())
 }
 
 /// Set knob `name` in its file; returns the file (relative to mods/).
 pub fn set(name: &str, value: &str) -> Result<String, String> {
-    let all = all();
-    let (rel, _) = all.iter().find(|(_, k)| k.name == name)
-        .ok_or_else(|| format!("no knob {name:?}; knobs: {}", all.iter().map(|(_, k)| k.name.as_str()).collect::<Vec<_>>().join(", ")))?;
-    let path = crate::scripts::find_dir().ok_or("no mods folder")?.join(rel);
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    std::fs::write(&path, knobs::set(&text, name, value)?).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(rel.clone())
+    knobs::set_in_folder(&crate::scripts::find_dir().ok_or("no mods folder")?, name, value)
 }
 
 /// A number knob as a GameNight setting: percent of its value, its range

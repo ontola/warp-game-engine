@@ -1,83 +1,89 @@
-//! The balance numbers that can be turned while the game runs: each is a
-//! function returning its value now (its default until a knobs file or the
-//! live tools set it). The app reads `knobs.txt` (`name = value  # what it
-//! does`), and `spellstorm play --live` sets them with set_knob, trial,
-//! keep and revert. Everything else stays a constant in the code.
+//! The balance and look numbers that can be turned while the game runs
+//! (mods/base/knobs.luau, a `-- @knobs` block): each is a function
+//! returning its value now. The file is the only copy of the defaults; the
+//! app watches it and `spellstorm play --live` sets them with set_knob,
+//! trial, keep and revert. Everything else stays a constant in the code.
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+
+/// The shipped knobs file, for runs outside the repository and the tests.
+pub const BUILT_IN: &str = include_str!("../../mods/base/knobs.luau");
 
 macro_rules! knobs {
-    ($($(#[doc = $doc:literal])* $name:ident = $default:expr;)*) => {
-        /// Every knob: name, default and what it does.
-        pub const LIST: &[(&str, f64, &str)] = &[$((stringify!($name), $default, concat!($($doc),*)),)*];
-        static VALUES: [AtomicU64; LIST.len()] = [$(AtomicU64::new(f64::to_bits($default)),)*];
-        $($(#[doc = $doc])* pub fn $name() -> f64 { get(index(stringify!($name)).unwrap()) })*
+    ($($name:ident;)*) => {
+        /// Every knob the sim reads, by name.
+        pub const NAMES: &[&str] = &[$(stringify!($name)),*];
+        static VALUES: [AtomicU64; NAMES.len()] = [$({ let _ = stringify!($name); AtomicU64::new(UNSET) },)*];
+        $(#[doc = concat!("The knob `", stringify!($name), "` (mods/base/knobs.luau).")] pub fn $name() -> f64 { get(index(stringify!($name)).unwrap()) })*
     };
 }
 
 knobs! {
-    /// Wizard walking speed, m/s.
-    wizard_speed = 5.2;
-    /// Dodge roll speed at its push off, m/s.
-    roll_speed = 12.5;
-    /// Seconds between two rolls.
-    roll_cooldown = 0.95;
-    /// Seconds after a sword swing before the next one.
-    swing_recover = 0.7;
-    /// The sword's reach, m.
-    swing_reach = 1.7;
-    /// Mana back per second.
-    mana_regen = 3.0;
-    /// Scales the damage of every wizard spell, bolt and sword hit.
-    spell_damage = 1.0;
-    /// Scales how bright the glow of a hit, shot or burst is (looks only).
-    flash_brightness = 0.5;
-    /// Scales how much light a hit, shot or burst throws around (looks only).
-    flash_light = 0.5;
-    /// Scales the damage numbers over whoever is hit (looks only).
-    number_size = 0.5;
-    /// How big the staff's light is, in metres, for its shadows: 0 hard,
-    /// larger softer, the more so the further from what casts them (looks only).
-    shadow_softness = 0.05;
-    /// Scales monster health (on top of the difficulty setting).
-    monster_hp = 1.0;
-    /// Scales the damage monsters do (on top of the difficulty setting).
-    monster_damage = 1.0;
-    /// Scales how many monsters a wave brings (on top of the difficulty setting).
-    monster_count = 1.0;
-    /// Scales monster walking speed.
-    monster_speed = 1.0;
-    /// Metres of path between two waves.
-    wave_gap = 30.0;
-    /// Metres before the first wave of a level.
-    first_wave = 8.0;
-    /// Metres before the first wave of a run's first level (a calm start).
-    first_calm = 22.0;
-    /// Revive progress needed to raise a fallen wizard.
-    revive_need = 40.0;
-    /// Revive progress per second for each friend at the grave.
-    revive_rate = 14.0;
-    /// Seconds standing in an altar's ring to take its tome.
-    tome_time = 0.9;
-    /// 1: walls of mist hold the way on until the fight there is done; 0: no walls.
-    wards = 1.0;
-    /// 1: a shrine's wall opens once every wizard took a tome; 0: as soon as the shrine rises.
-    ward_needs_tomes = 1.0;
-    /// 1: players who know nothing start on the practice strip; 0: never
-    /// (the default until its mist walls look as good as in Godot).
-    practice = 0.0;
+    wizard_speed;
+    roll_speed;
+    roll_cooldown;
+    swing_recover;
+    swing_reach;
+    mana_regen;
+    spell_damage;
+    flash_brightness;
+    flash_light;
+    number_size;
+    shadow_softness;
+    monster_hp;
+    monster_damage;
+    monster_count;
+    monster_speed;
+    wave_gap;
+    first_wave;
+    first_calm;
+    revive_need;
+    revive_rate;
+    tome_time;
+    wards;
+    ward_needs_tomes;
+    practice;
+}
+
+/// A value not set since the last reset: the built-in default answers.
+const UNSET: u64 = u64::MAX;
+
+/// Each knob's default and help, from BUILT_IN, in NAMES order.
+fn defaults() -> &'static [(f64, String)] {
+    static D: OnceLock<Vec<(f64, String)>> = OnceLock::new();
+    D.get_or_init(|| {
+        let parsed = script::knobs::parse(BUILT_IN);
+        NAMES.iter().map(|n| {
+            let k = parsed.iter().find(|k| k.name == *n).unwrap_or_else(|| panic!("mods/base/knobs.luau has no knob {n}"));
+            (k.number().unwrap_or_else(|| panic!("mods/base/knobs.luau: {n} is not a number")), k.about.clone())
+        }).collect()
+    })
 }
 
 pub fn index(name: &str) -> Option<usize> {
-    LIST.iter().position(|k| k.0 == name)
+    NAMES.iter().position(|k| *k == name)
 }
 
 fn get(i: usize) -> f64 {
-    f64::from_bits(VALUES[i].load(Ordering::Relaxed))
+    match VALUES[i].load(Ordering::Relaxed) {
+        UNSET => defaults()[i].0,
+        v => f64::from_bits(v),
+    }
 }
 
 /// The value of knob `name` now.
 pub fn value(name: &str) -> Option<f64> {
     index(name).map(get)
+}
+
+/// The shipped value of knob `name`.
+pub fn default(name: &str) -> Option<f64> {
+    index(name).map(|i| defaults()[i].0)
+}
+
+/// What knob `name` does (its comment in the file).
+pub fn about(name: &str) -> Option<&'static str> {
+    index(name).map(|i| defaults()[i].1.as_str())
 }
 
 /// Set knob `name`; false when there is no such knob or the value is not finite.
@@ -93,40 +99,23 @@ pub fn set(name: &str, v: f64) -> bool {
 
 /// Every knob back to its default.
 pub fn reset() {
-    for (i, k) in LIST.iter().enumerate() {
-        VALUES[i].store(k.1.to_bits(), Ordering::Relaxed);
+    for v in &VALUES {
+        v.store(UNSET, Ordering::Relaxed);
     }
 }
 
-/// Every knob with its value now, as `name = value  # what it does` lines.
-pub fn file_text() -> String {
-    let mut s = String::from("# Spellstorm's live knobs: `name = value  # what it does`. Read at start\n# and whenever this file changes; `spellstorm play --live` sets them too.\n");
-    for (i, k) in LIST.iter().enumerate() {
-        s += &format!("{} = {}  # {}\n", k.0, get(i), k.2.trim());
-    }
-    s
-}
-
-/// Apply a knobs file: every known `name = value` line. Returns the
-/// problems (unknown names, values that do not parse) as messages; the
-/// good lines are applied anyway, knobs it leaves out keep their default.
+/// Apply a knobs file (the `-- @knobs` block of mods/base/knobs.luau).
+/// Returns the problems (unknown names, values that are not numbers) as
+/// messages; the good lines apply anyway, knobs it leaves out keep their
+/// default.
 pub fn load(text: &str) -> Vec<String> {
     reset();
     let mut errors = vec![];
-    for (n, line) in text.lines().enumerate() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Some((name, v)) = line.split_once('=') else {
-            errors.push(format!("line {}: not `name = value`", n + 1));
-            continue;
-        };
-        let (name, v) = (name.trim(), v.trim());
-        match v.parse::<f64>() {
-            Ok(x) if set(name, x) => {}
-            Ok(_) => errors.push(format!("line {}: no knob called {name}", n + 1)),
-            Err(_) => errors.push(format!("line {}: {v} is not a number", n + 1)),
+    for k in script::knobs::parse(text) {
+        match k.number() {
+            Some(x) if set(&k.name, x) => {}
+            Some(_) => errors.push(format!("no knob called {}", k.name)),
+            None => errors.push(format!("{}: {} is not a number", k.name, k.value)),
         }
     }
     errors

@@ -5,4 +5,8 @@ version.workspace = true
 description = "Luau scripting for Warp games: sandboxed modules from a folder, hot reload, deterministic step budget"
 
 [dependencies]
-mlua = { version = "0.12", features = ["luau", "send"] }
+mlua = { version = "0.12", features = ["luau", "send", "serialize"] }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true, features = ["derive"] }

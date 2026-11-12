@@ -24,6 +24,8 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 mod imports;
+pub mod knobs;
+pub mod data;
 use std::collections::BTreeSet;
 pub use mlua;
 
