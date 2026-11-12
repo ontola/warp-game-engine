@@ -206,6 +206,8 @@ pub trait Game {
     fn text(&mut self, _event: TextEvent) {}
     /// Frame review needs fixed quality even when a slow seek misses its budget.
     fn fixed_quality(&self) -> bool { false }
+    /// Keep the authored effects at every quality level while adapting the 3D resolution.
+    fn adaptive_resolution_only(&self) -> bool { false }
     /// True while frame times say nothing about this game's own cost, such
     /// as the moments a lobby takes the screen back while the game that had
     /// it still renders: adaptive quality neither drops nor climbs then.
@@ -899,6 +901,7 @@ impl Shell<'_> {
         self.last = now;
         if let Some(q) = &mut self.quality {
             // A probe measures the top rung; adaptation resumes after it.
+            q.resolution_only = self.game.adaptive_resolution_only();
             q.set_enabled(self.debug.adaptive_quality() && !self.game.fixed_quality() && self.probe.is_none());
             let target = match self.debug.target_fps() {
                 Some(user) => user,

@@ -160,7 +160,7 @@ def analyze_run(stem, record=None, diagnostic=False):
         "four_alive_no_kills_no_fallback": all(r["alive_players"] == 4 for r in rows) and totals["kills"] == totals["fallback_targets"] == 0,
         "reset_flags_boolean": all(r["arena_resets"] in (0, 1) for r in rows),
         "bullets_no_reset": scenario != "bullets" or totals["arena_resets"] == 0,
-        "original_characters": "characters: original knight, paladin, ch10 with idle/run/jump" in log and "primitive fallback" not in log + err,
+        "warp_humans": "seeded Warp Humans, roster seed" in log and "primitive fallback" not in log + err,
         "seed_full_light": seed == "721077" and light == "full",
         "full_gpu_log_coverage": coverage == dict(samples=900, denominator=900, enabled=True, dropped=0, errors=0),
         "gpu_ids_match": set(passes) == set(ids),

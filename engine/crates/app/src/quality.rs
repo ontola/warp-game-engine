@@ -75,6 +75,7 @@ pub struct AdaptiveQuality {
     try_up: Duration,
     probing: Option<Instant>,
     enabled: bool,
+    pub(crate) resolution_only: bool,
     /// Since when frames have been slow on the lowest rung.
     starved_since: Option<Instant>,
 }
@@ -97,6 +98,7 @@ impl AdaptiveQuality {
             try_up: FIRST_TRY_UP,
             probing: None,
             enabled: true,
+            resolution_only: false,
             starved_since: None,
         })
     }
@@ -127,7 +129,8 @@ impl AdaptiveQuality {
     pub fn target_fps(&self) -> f32 { (1000.0 / self.target_ms) as f32 }
 
     pub fn rung(&self) -> Rung {
-        if self.enabled { LADDER[self.level] } else { LADDER[0] }
+        let rung = if self.enabled { LADDER[self.level] } else { LADDER[0] };
+        if self.resolution_only { Rung { scale: rung.scale, ..LADDER[0] } } else { rung }
     }
 
     pub fn level(&self) -> usize { self.level }
@@ -276,6 +279,7 @@ mod tests {
             try_up: FIRST_TRY_UP,
             probing: None,
             enabled: true,
+            resolution_only: false,
             starved_since: None,
         }
     }
@@ -355,6 +359,16 @@ mod tests {
         run(&mut q, &mut now, 25.0, 40);
         assert_eq!(q.level, 3);
         assert_eq!(q.try_up, FIRST_TRY_UP * 2);
+    }
+
+    #[test]
+    fn resolution_only_preserves_the_authored_effects_at_every_level() {
+        let mut q = quality(Instant::now());
+        q.resolution_only = true;
+        for (level, rung) in LADDER.iter().enumerate() {
+            q.level = level;
+            assert_eq!(q.rung(), Rung { scale: rung.scale, ..LADDER[0] });
+        }
     }
 
     #[test]

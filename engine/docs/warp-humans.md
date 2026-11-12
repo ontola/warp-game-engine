@@ -31,7 +31,7 @@ A single spectator hit emits twelve tumbling pieces from the GPU debris pool. Th
 
 The people render into the arena's HDR colour and depth buffers before transparency and post-processing.
 Each visible spectator receives the scene's sun shadow, floodlights and local lights at torso height during GPU detail selection. All detail levels share that sample; surface normals shape the response on faces, hair and clothing. Each visible surface samples the stadium's distance fog using its animated world position and the current camera. Shirts, faces and distant impostors take on the same atmospheric colour as adjacent masonry, including shadowed mist. The crowd does not cast individual shadows.
-Desktop matches use Warp Humans for spectators, players and bots by default. GameNight profile colours also select the procedural player roster. Use `--no-warp-humans` for the older crowd and the unprofiled desktop roster. The minimum graphics profile omits the stadium.
+Desktop matches use Warp Humans for spectators, players and bots by default. GameNight profile colours apply to the player roster. Use `--no-warp-humans` for the older spectator renderer. The minimum graphics profile omits the stadium.
 
 Launch the interactive desktop stadium viewer with:
 

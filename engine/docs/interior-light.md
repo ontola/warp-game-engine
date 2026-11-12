@@ -139,9 +139,9 @@ normal-biased point's distance against that map, read bilinearly, and a
 smooth backface term, instead of the separation planes. Probes behind a wall
 fade out smoothly rather than per cell. Cost in `interior_rooms` at 4K: the
 distance maps within run-to-run noise of the shade pass (under 0.6 ms); the
-relocation offsets and reach about 2 ms more (6.4 to 8.4 ms and 8.7 to
-11.1 ms at two views, RTX 5070 Ti, with eight loads per probe; the shipped
-four-load reach is not yet measured on an idle GPU). The bake takes about
+relocation offsets and reach about 1.5 ms more (6.4 to 7.6-8.2 ms and
+8.7 to 10.2 ms at two views, RTX 5070 Ti; the first, eight-load reach cost
+8.4 and 11.1 ms). The bake takes about
 23 s instead of 8 (relocation, reach, exact visibility in the gather).
 `ROOMS_NO_DDGI=1` turns it off there for comparison.
 

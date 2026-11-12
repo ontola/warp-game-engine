@@ -9,13 +9,11 @@ use assets::skinned::{ActorHandle, Character};
 use body::reach::TwoHandHold;
 use glam::{Affine3A, Mat4, Quat, Vec3};
 use render::{Camera, Lighting, Scene};
-use std::path::Path;
 
 use app::editor::PoseViewport;
 use body::pose_editor::PoseEditor;
 
 struct Preview {
-    authored: crate::foregrip_pose::ForegripPose,
     scene: Scene,
     rig: Rig,
     guns: Guns,
@@ -206,8 +204,6 @@ impl Game for Preview {
                 * characters::grip_rotation(pitch)
                 * Quat::from_rotation_x(roll + palm.to_radians()),
         );
-        self.authored
-            .set_extension(&mut self.inspector.bones.editor, contacts.extension);
         self.inspector.bones.editor.apply(&mut self.pose);
         let framing =
             Guns::held_transform(body.transform_point3(primary), 0.0, pitch, contacts.primary);
@@ -246,15 +242,46 @@ impl Game for Preview {
     }
 }
 
-fn load_preview(name: &str) -> Result<Preview, String> {
-    if !["knight", "paladin", "ch10"].contains(&name) {
-        return Err("unknown roster model".into());
+fn parent(name: &str) -> Option<String> {
+    let core = name.rsplit([':', '_']).next()?;
+    let prefix = &name[..name.len() - core.len()];
+    let center = match core {
+        "Spine" => "Hips",
+        "Spine1" => "Spine",
+        "Spine2" => "Spine1",
+        "Neck" => "Spine2",
+        "Head" => "Neck",
+        _ => "",
+    };
+    if !center.is_empty() {
+        return Some(format!("{prefix}{center}"));
     }
-    let model = Character::load(
-        &Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../assets/characters")
-            .join(format!("{name}.json")),
-    )?;
+    let side = ["Left", "Right"]
+        .into_iter()
+        .find(|s| core.starts_with(s))?;
+    let limb = &core[side.len()..];
+    let base = match limb {
+        "Shoulder" => return Some(format!("{prefix}Spine2")),
+        "Arm" => "Shoulder",
+        "ForeArm" => "Arm",
+        "Hand" => "ForeArm",
+        "UpLeg" => return Some(format!("{prefix}Hips")),
+        "Leg" => "UpLeg",
+        "Foot" => "Leg",
+        "ToeBase" => "Foot",
+        "Eye" => return Some(format!("{prefix}Head")),
+        n if n.starts_with("Hand") && n.ends_with('1') => "Hand",
+        n if n.starts_with("Hand") => {
+            let digit = n.chars().last()?.to_digit(10)?.checked_sub(1)?;
+            return Some(format!("{prefix}{side}{}{digit}", &n[..n.len() - 1]));
+        }
+        _ => return None,
+    };
+    Some(format!("{prefix}{side}{base}"))
+}
+
+fn load_preview(seed: u64) -> Result<Preview, String> {
+    let model = crate::view::characters::preview_model(seed)?;
     let mut scene = Scene::default();
     let guns = Guns::reserve(&mut scene, 1);
     let actor = model.add_actor(&mut scene, Affine3A::IDENTITY)?;
@@ -263,7 +290,7 @@ fn load_preview(name: &str) -> Result<Preview, String> {
     let _scripts = crate::scripts::attach(&mut world)?;
     let id = world.cards.find("sniper").ok_or("missing sniper card")?;
     world.give(0, id);
-    let arms = crate::view::characters::grip_arms(&model).ok_or("missing arm joints")?;
+    let arms = body::reach::TwoHandHold::bind(model.joints()).ok_or("missing arm joints")?;
     let pose = model.sample("pistol_idle", 0.0, true)?;
     let (index, (_, bind)) = model
         .joints()
@@ -271,7 +298,7 @@ fn load_preview(name: &str) -> Result<Preview, String> {
         .find(|(_, (name, _))| name.rsplit([':', '_']).next() == Some("RightHand"))
         .ok_or("missing right hand mount")?;
     let mount = body::reach::JointMount::new(index, bind, &pose);
-    let editor = PoseEditor::bind(model.joints(), crate::foregrip_pose::parent)?;
+    let editor = PoseEditor::bind(model.joints(), parent)?;
     let target = Vec3::new(0., 0., -0.12);
     let home = Camera {
         pos: target
@@ -288,11 +315,9 @@ fn load_preview(name: &str) -> Result<Preview, String> {
         .iter()
         .position(|j| j.name.ends_with("LeftArm"))
         .unwrap_or(0);
-    let authored = crate::foregrip_pose::ForegripPose::bind(&model, &inspector.bones.editor)?;
     Ok(Preview {
         mount,
         inspector,
-        authored,
         scene,
         rig,
         guns,
@@ -308,7 +333,7 @@ fn load_preview(name: &str) -> Result<Preview, String> {
 }
 
 pub fn run(args: &crate::Args) -> Result<(), String> {
-    let mut game = load_preview(args.value("--model").unwrap_or("knight"))?;
+    let mut game = load_preview(args.num("--seed", 3))?;
     app::run(
         Config {
             title: "Warp Animation | Growing Guns".into(),
@@ -330,7 +355,7 @@ mod tests {
 
     #[test]
     fn paused_preview_changes_the_weapon_at_the_same_pose() {
-        let mut preview = load_preview("knight").unwrap();
+        let mut preview = load_preview(3).unwrap();
         for _ in 0..90 { preview.tick(&[]); }
         assert!(preview.rig.is_growing());
         preview.debug_action(SetToggle { id: PAUSED, value: true });
