@@ -1,6 +1,6 @@
 title = "Painted Meadow"
 sky = "noon"
-max_entities = 40
+max_entities = 640
 players = 1
 split = false
 seed = 9417

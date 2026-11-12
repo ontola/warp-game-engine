@@ -41,24 +41,33 @@ for(let z=-72;z<12;z++) {
     const edge=(z,sign)=>ground(pathX(z)+sign*(.94+.16*Math.sin(z*.8)), z,.065);
     quad("#d2b884",edge(z,-1),edge(z+1,-1),edge(z+1,1),edge(z,1));
 }
-// The closest marks stand up in little fans so they can occlude the walker.
-for(let i=0;i<2500;i++) {
-    const x=range(-22,22), z=range(-26,7);
-    if(Math.abs(x-pathX(z))<1.1) continue;
-    const y=height(x,z), size=range(.14,.39);
-    for(let k=0;k<3;k++) {
-        const dx=range(-.12,.12), bx=x+dx, bz=z+range(-.06,.06);
-        tri(pick(["#7c9d56","#b6cc74","#cbd489"]),[bx-.026,y,bz],[bx+.031,y,bz],[bx+dx+.055,y+size*range(.6,1.3),bz-.03]);
+function flower(x, z, h, tint) {
+    const y = height(x,z);
+    const head = [x+.025,y+h,z];
+    tri("#728e45",[x-.009,y,z],[x+.009,y,z],head);
+    const turn = range(0,Math.PI*2), size = range(.040,.065);
+    for (let k=0;k<6;k++) {
+        const a=turn+k*Math.PI/3, dx=Math.cos(a), dz=Math.sin(a);
+        const point=(along,across,rise)=>[head[0]+size*(along*dx-across*dz),head[1]+size*rise,head[2]+size*(along*dz+across*dx)];
+        quad(tint,point(.09,0,0),point(.66,-.3,.08),point(1,.03,.15),point(.68,.31,.12));
     }
-    if(i%17===0) mound(pick(["#f5de8e","#ffefcd","#cf946f"]),x,y+size*.9,z,.06,.035,.045,5,3);
+    mound("#e8b74d",head[0],head[1]+.007,z,.018,.011,.018,6,3);
 }
-// A few tall foreground stems cross the cloak in the opening view.
-for(const [x,z,h] of [[-.23,.50,.65],[.31,.46,.54],[-.43,.72,.49],[.22,.83,.40]]) {
-    for(let n=0;n<4;n++){
-        const dx=range(-.13,.13),y=height(x,z);
-        tri("#729553",[x+dx-.018,y,z],[x+dx+.023,y,z],[x+dx*1.7+.05,y+h*range(.78,1),z-.12]);
+
+// Flowers gather in drifts, with occasional heads above the grass.
+seed = 3981;
+const nearDrifts = [[-1.9,1.2], [1.7,-1.2], [-3.4,-2.1], [.6,-5.9], [2.7,-7.2]];
+for (let drift=0; drift<65; drift++) {
+    const [cx,cz] = nearDrifts[drift] ?? [range(-20,20),range(-30,5)];
+    const count = Math.floor(range(13,28));
+    for (let i=0; i<count; i++) {
+        const x=cx+range(-2,2)*range(.2,1), z=cz+range(-1.2,1.2);
+        if (Math.abs(x-pathX(z))<1.18) continue;
+        flower(x,z,range(.28,.48),pick(["#fbefce","#fff5d0","#edd78b"]));
     }
 }
+// A separate layout seed keeps the village and trees in their original places.
+seed = 2559422081;
 function house(x,z,w) {
     const y=height(x,z)-.4,h=w*.72, d=w*.63;
     const p=(a,b,c)=>[x+a*w,y+b*h,z+c*d];
@@ -109,7 +118,7 @@ for(const [x,y,z,s] of [[-32,22,-98,1],[22,25,-107,1.35],[58,21,-93,.74],[-65,19
     }
 }
 
-save("meadow.glb");
+save("meadow.glb",new Map([[grass,40]]));
 groups.clear();
 smoothNormals.clear();
 
@@ -150,6 +159,32 @@ rings(bag,[[.81,.13,.084,-.02,.29],[.85,.20,.12,-.02,.29],[1.15,.21,.11,-.02,.28
 mound(flap,-.02,1.115,.376,.20,.095,.035,18,8);
 mound(buckle,-.02,1.06,.408,.026,.033,.009,10,5);
 save("traveller.glb",new Map([[skin,1],[hair,2],[cloak,3],[hem,3],[scarf,4],[straw,5],[band,5],[bag,6],[flap,6],[buckle,6]]));
+
+// Reuse this two-metre patch across the walkable slope. The ribbon curves
+// give each blade a rounded shoulder and a fine tip against the traveller.
+groups.clear();
+smoothNormals.clear();
+seed = 1789;
+const blades = ["#80ad49", "#93ba53", "#a1c35a", "#91ae4b"];
+for (let root = 0; root < 226; root++) {
+    const x = range(-1.03, 1.03), z = range(-1.03, 1.03);
+    const height = range(.17,.42), lean = range(-.8,.8);
+    for (let leaf = 0; leaf < 3; leaf++) {
+        const angle = range(0, 2*Math.PI);
+        const dx = Math.cos(angle), dz = Math.sin(angle);
+        const h = height * range(.65, 1.25), width = range(.012,.029);
+        const bendX = (lean*.45 + dx*.38)*h, bendZ = dz*.48*h;
+        const footX=x+.025*dx, footZ=z+.025*dz;
+        const edge = (t, halfWidth) => [
+            footX + bendX*t*t - dz*halfWidth, -.018 + h*t - .06*h*t*t, footZ + bendZ*t*t + dx*halfWidth
+        ];
+        const color = pick(blades);
+        const bl=edge(0,-width*.65), br=edge(0,width*.65), ml=edge(.53,-width), mr=edge(.53,width);
+        quad(color,bl,br,mr,ml);
+        tri(color,ml,mr,edge(1,0));
+    }
+}
+save("grass.glb",new Map(blades.map(color=>[color,41])));
 
 // glTF has one primitive per paint colour. Compute flat normals for the facets.
 function save(file, tags=new Map()) {

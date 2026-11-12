@@ -17,8 +17,7 @@ The walk is bounded to the near hillside. The village and mountains are scenery.
 - [Image finish](finish.wgsl) draws depth-aware lines on the traveller and
   smooths small patches of background colour. Either shader can be reused
   independently. Reload the game after editing a shader.
-- [Scenery](scenery.mjs) generates the two bundled meshes, including the
-  grass, buildings, hills, clouds, and the folds and trim of the cloak.
+- [Scenery](scenery.mjs) generates the meadow, traveller, and reusable grass patch. Each patch contains curved blades. Clusters of daisies grow above the canopy.
   Run `node games/painted-meadow/scenery.mjs` to regenerate them.
 - [Movement](main.luau) owns the traveller's gait and follow camera.
 

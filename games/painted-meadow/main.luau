@@ -22,14 +22,36 @@ local function pose()
     if player then camera.set(player.id,{pos=feet-forward*4.5+right*.68+v(0,2.05,0),target=target,fov=49}) end
 end
 
+-- Each draw reuses the same tuft mesh. Trim the outer patches into the path
+-- and lower the height as the close grass gives way to painted ground.
+local function plantMeadow()
+    for ix=-12,12 do
+        for iz=-16,7 do
+            local x = ix*1.86 + random.range(-.14,.14)
+            local z = iz*1.86 + random.range(-.14,.14)
+            local path = math.abs(x - (4.4+3.4*math.sin(z*.082)))
+            if path > 1.23 then
+                local width = math.clamp((path-.92)*.83,.15,1)
+                local hills = math.clamp((-z-16)/40,0,1)
+                local ground = z*.055+hills*(2.6*math.sin(x*.063+z*.03)+1.8*math.cos(z*.12))
+                local yaw = math.pi*.5*math.floor(random.range(0,4))
+                local height = random.range(.78,1.26)*math.clamp((z+32)/8,.15,1)
+                world.spawn("grass.glb",{pos=v(x,ground-.015,z),rot=v(0,yaw,0),
+                    size=v(width,height,width),solid=false})
+            end
+        end
+    end
+end
+
 local function init()
     world.spawn("meadow.glb",{solid=false})
+    plantMeadow()
     state.x,state.z,state.yaw,state.phase = 0,0,0,0
     state.body = {}
     for _,part in parts do
         table.insert(state.body,world.spawn(part[1],{surface=part[2],size=part[3],color=part[5],solid=false}))
     end
-    light.set({sun=v(-.52,.68,.50),sun_lux=43000,sky_lux=15000,exposure=12.7,fog_density=0})
+    light.set({sun=v(-.72,.67,-.28),sun_lux=43000,sky_lux=15000,exposure=12.7,fog_density=0})
     post.set({bloom=0,grain=0,vignette=0,saturation=1.16})
     pose()
 end
