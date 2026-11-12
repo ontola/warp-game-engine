@@ -564,3 +564,36 @@ mod tests {
         assert_eq!(Device::Pad(2).to_string(), "pad2");
     }
 }
+
+#[cfg(test)]
+mod touch_tests {
+    use super::*;
+    use winit::event::TouchPhase::*;
+
+    #[test]
+    fn stick_drag_and_tap() {
+        let size = [1000, 500];
+        let mut d = Devices::new(true);
+        // Left thumb pushed up by its full reach: walk forward.
+        let r = touch_stick_radius(500.0);
+        d.touch(1, Started, [100.0, 400.0], size);
+        d.touch(1, Moved, [100.0, 400.0 - 2.0 * r], size);
+        // Right finger dragged a quarter screen height to the right: turn.
+        d.touch(2, Started, [700.0, 250.0], size);
+        d.touch(2, Moved, [825.0, 250.0], size);
+        let c = d.controls(1, 1.0 / 60.0)[0];
+        assert!((c.mv[1] - 1.0).abs() < 1e-5 && c.mv[0].abs() < 1e-5, "{:?}", c.mv);
+        assert!((c.look[0] - 0.4).abs() < 1e-4 && c.look[1].abs() < 1e-6, "{:?}", c.look);
+        assert!(d.touch_stick(size).is_some());
+        d.touch(1, Ended, [100.0, 300.0], size);
+        d.touch(2, Ended, [825.0, 250.0], size);
+        assert!(d.touch_stick(size).is_none());
+        // A drag is not a tap; a still touch is.
+        assert!(!d.pointer().pressed);
+        d.touch(3, Started, [600.0, 200.0], size);
+        d.touch(3, Ended, [602.0, 201.0], size);
+        let p = d.pointer();
+        assert!(p.pressed && p.position == Some([602.0, 201.0]));
+        assert_eq!(d.controls(1, 1.0 / 60.0)[0].mv, [0.0, 0.0]);
+    }
+}

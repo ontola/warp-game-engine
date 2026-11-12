@@ -247,6 +247,14 @@ fn main() -> Result<(), String> {
         if v.len() != 6 { return Err("--cam px,py,pz,tx,ty,tz".into()); }
         view.look(Vec3::new(v[0], v[1], v[2]), Vec3::new(v[3], v[4], v[5]));
     }
+    // --tap x,y: a tap at those pixels of the 960x540 still, then walk there.
+    if let Some(t) = arg("--tap") {
+        let v: Vec<f32> = t.split(',').filter_map(|x| x.parse().ok()).collect();
+        if v.len() != 2 { return Err("--tap x,y".into()); }
+        let to = view.tapped([v[0], v[1]], [960, 540]).ok_or("the tap hits nothing")?;
+        println!("tap walks from {:.2?} to {:.2?}", view.pos, to);
+        view.pos = to;
+    }
     if let Some(out) = arg("--shot") {
         let gpu = render::Gpu::new()?;
         let rgba = app::capture(&mut view, &gpu, [960, 540], 30, TICK_HZ)?;
