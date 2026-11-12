@@ -11,16 +11,9 @@ use crate::player::Blow;
 use crate::{look_dir, shape, Blast, Carve, Delayed, Event, Projectile, ProjectileKind, Special, Strike, StrikeKind, World, DT, DT64};
 use glam::Vec3;
 
-pub const GRENADE_RELOAD: f64 = 3.0;
-pub const CLUSTER_RELOAD: f64 = 4.0;
-pub const AIR_STRIKE_RELOAD: f64 = 9.5;
-pub const ION_CANNON_RELOAD: f64 = 14.0;
-pub const MELEE_RELOAD: f64 = 0.5;
-pub const TELEPORT_RELOAD: f64 = 2.0;
 /// Ghost mines (unreachable in Godot: ghosts have 0 health and skip input).
 #[allow(dead_code)]
 pub const MINE_RELOAD: f64 = 2.5;
-pub const ECHO_DELAY: f64 = 0.16;
 
 pub const GRENADE_RADIUS: f32 = 0.2;
 const GRENADE_SPEED: f32 = 22.0;
@@ -33,18 +26,11 @@ const MINE_ARM: f64 = 0.7;
 const MINE_TRIGGER: f32 = 1.25;
 const DASH_BOMB_FUSE: f64 = 1.0;
 
-const TELEPORT_RANGE: f32 = 45.0;
 const TELEPORT_OFFSET: f32 = 0.8;
 const STRIKE_RANGE: f32 = 800.0;
 pub const AIR_STRIKE_TRAVEL: f64 = 2.3;
 pub const ION_CHARGE: f64 = 3.8;
-pub const AIR_STRIKE_RADIUS: f32 = 30.0;
-pub const AIR_STRIKE_DAMAGE: f32 = 165.0;
-pub const ION_RADIUS: f32 = 38.0;
-pub const ION_DAMAGE: f32 = 175.0;
 
-const MELEE_RANGE: f32 = 5.0;
-const MELEE_RADIUS: f32 = 1.2;
 const MELEE_BACKSTAB: i32 = 9999;
 
 impl ProjectileKind {
@@ -63,13 +49,20 @@ impl ProjectileKind {
 }
 
 impl World {
+    /// A strike's numbers: its caller's gun, or the match's for one nobody
+    /// called (a round modifier).
+    pub fn strike_specials(&self, owner: Option<usize>) -> crate::weapon::Specials {
+        owner.and_then(|o| self.players.get(o)).map_or(self.gun.specials, |p| p.weapon.gun.specials)
+    }
+
     /// Godot `_use_special`.
     pub(crate) fn use_special(&mut self, i: usize) {
         let p = &mut self.players[i];
         let mult = p.weapon.special_cooldown_mult as f64;
+        let sp = p.weapon.gun.specials;
         if p.air_strike_charges > 0 {
             p.air_strike_charges -= 1;
-            p.special_cd = AIR_STRIKE_RELOAD * mult;
+            p.special_cd = sp.air_strike_reload * mult;
             self.tactical_reload(i);
             self.events.push(Event::Special { player: i, special: Special::AirStrike });
             self.call_strike(i, StrikeKind::AirStrike);
@@ -77,18 +70,18 @@ impl World {
         }
         let special = p.weapon.special;
         p.special_cd = match special {
-            Special::ClusterGrenade => CLUSTER_RELOAD,
-            Special::AirStrike => AIR_STRIKE_RELOAD,
-            Special::IonCannon => ION_CANNON_RELOAD,
-            Special::Sword => MELEE_RELOAD,
-            Special::Teleport => TELEPORT_RELOAD,
-            Special::Zoom | Special::Grenade => GRENADE_RELOAD,
+            Special::ClusterGrenade => sp.cluster_reload,
+            Special::AirStrike => sp.air_strike_reload,
+            Special::IonCannon => sp.ion_cannon_reload,
+            Special::Sword => sp.sword_reload,
+            Special::Teleport => sp.teleport_reload,
+            Special::Zoom | Special::Grenade => sp.grenade_reload,
         } * mult;
         self.tactical_reload(i);
         self.events.push(Event::Special { player: i, special });
         self.special_effect(i);
         for k in 0..self.players[i].weapon.special_echo_count.max(0) {
-            self.later(ECHO_DELAY * (k + 1) as f64, Delayed::Echo { player: i });
+            self.later(sp.echo_delay * (k + 1) as f64, Delayed::Echo { player: i });
         }
     }
 
@@ -138,9 +131,10 @@ impl World {
     fn teleport(&mut self, i: usize) {
         let p = &self.players[i];
         let (eye, dir) = (p.eye(), p.forward());
-        let to = match self.ray_world(eye, dir, TELEPORT_RANGE, &[]) {
+        let range = p.weapon.gun.specials.teleport_range;
+        let to = match self.ray_world(eye, dir, range, &[]) {
             Some((t, n, _)) => eye + dir * t + n * TELEPORT_OFFSET,
-            None => eye + dir * TELEPORT_RANGE,
+            None => eye + dir * range,
         };
         let from = p.pos;
         let r = p.weapon.teleport_blast_radius;
@@ -182,8 +176,9 @@ impl World {
             match s.kind {
                 StrikeKind::AirStrike => {
                     let kb = s.owner.map_or(1.0, |o| self.players[o].weapon.knockback_mult);
-                    self.blast(s.target + Vec3::Y * 0.1, AIR_STRIKE_RADIUS, AIR_STRIKE_DAMAGE, s.owner, Blast::bullet(kb));
-                    self.carves.push(Carve { pos: s.target, radius: AIR_STRIKE_RADIUS * 0.52, damage: AIR_STRIKE_DAMAGE });
+                    let sp = self.strike_specials(s.owner);
+                    self.blast(s.target + Vec3::Y * 0.1, sp.air_strike_radius, sp.air_strike_damage, s.owner, Blast::bullet(kb));
+                    self.carves.push(Carve { pos: s.target, radius: sp.air_strike_radius * 0.52, damage: sp.air_strike_damage });
                 }
                 StrikeKind::IonCannon => self.ion_detonate(s.target, s.owner),
             }
@@ -193,7 +188,9 @@ impl World {
 
     /// The beam: a 38 m vertical column through any cover.
     fn ion_detonate(&mut self, target: Vec3, owner: Option<usize>) {
-        self.events.push(Event::Explosion { pos: target, radius: ION_RADIUS, owner: owner.unwrap_or(0), kind: crate::ExplosionKind::Ion });
+        let sp = self.strike_specials(owner);
+        let (ion_radius, ion_damage) = (sp.ion_radius, sp.ion_damage);
+        self.events.push(Event::Explosion { pos: target, radius: ion_radius, owner: owner.unwrap_or(0), kind: crate::ExplosionKind::Ion });
         let bottom = self.arena.lava_surface() - 20.0;
         let top = target.y + 880.0;
         for j in 0..self.players.len() {
@@ -202,9 +199,9 @@ impl World {
             if let Some(o) = owner && o != j && self.allied(j, o) { continue; }
             if p.pos.y < bottom || p.pos.y > top { continue; }
             let flat = glam::Vec2::new(p.pos.x - target.x, p.pos.z - target.z).length();
-            if flat > ION_RADIUS { continue; }
-            let falloff = 0.58 + (1.0 - 0.58) * (1.0 - flat / ION_RADIUS);
-            let mut dmg = (ION_DAMAGE * falloff) as i32;
+            if flat > ion_radius { continue; }
+            let falloff = 0.58 + (1.0 - 0.58) * (1.0 - flat / ion_radius);
+            let mut dmg = (ion_damage * falloff) as i32;
             if Some(j) == owner { dmg = (dmg as f32 * 0.5) as i32; }
             let away = p.pos - target;
             let dir = if away.length_squared() <= 0.001 { Vec3::Y } else { away.normalize() };
@@ -212,20 +209,20 @@ impl World {
             let impulse = dir * kb + Vec3::Y * kb * 0.25;
             if dmg > 0 {
                 let dmg = match owner { Some(o) => self.hooked_damage(j, o, dmg, false, true), None => dmg };
-                self.apply_damage(j, dmg, owner, Blow { pos: target, dir, head: false, blast_radius: ION_RADIUS, severity: falloff, env: false, lava: None });
+                self.apply_damage(j, dmg, owner, Blow { pos: target, dir, head: false, blast_radius: ion_radius, severity: falloff, env: false, lava: None });
                 if let Some(o) = owner && o != j { self.dealt_damage(o, dmg); }
             }
             self.knockback(j, impulse);
         }
-        self.carves.push(Carve { pos: target, radius: ION_RADIUS * 0.52, damage: ION_DAMAGE });
+        self.carves.push(Carve { pos: target, radius: ion_radius * 0.52, damage: ion_damage });
     }
 
     /// Godot `_melee_swung`: a capsule sweep along `dir` against the hit
     /// spheres; a strike from behind is a backstab.
     pub(crate) fn melee(&mut self, i: usize, origin: Vec3, dir: Vec3, damage_mult: f32, range_mult: f32) {
         let w = self.players[i].weapon.clone();
-        let range = MELEE_RANGE * w.melee_scale * range_mult;
-        let radius = MELEE_RADIUS * w.melee_scale * range_mult;
+        let range = w.gun.specials.sword_range * w.melee_scale * range_mult;
+        let radius = w.gun.specials.sword_radius * w.melee_scale * range_mult;
         let height = range.max(radius * 2.5);
         self.events.push(Event::Slash { player: i, from: origin, dir, range: height });
         let (a, b) = (origin + dir * radius, origin + dir * (height - radius).max(radius));
