@@ -99,6 +99,9 @@ pub struct Pilot {
     pub energy_refill_delay: f64,
     pub energy_previous: f64,
     pub on_pad: bool,
+    /// On a recharge strip and gaining energy this tick (presentation only).
+    #[serde(default)]
+    pub charging: bool,
     pub drifting: bool,
     pub airborne: bool,
     pub crashed: bool,
@@ -137,6 +140,7 @@ impl Default for Pilot {
             energy_refill_delay: 2.0,
             energy_previous: 100.0,
             on_pad: false,
+            charging: false,
             drifting: false,
             airborne: false,
             crashed: false,
@@ -329,6 +333,7 @@ impl Pilot {
             }
         }
         self.constrain(n);
+        self.charging = false;
         if n.zone == Zone::Repair
             && !self.airborne
             && !self.crashed
@@ -342,6 +347,7 @@ impl Pilot {
             && self.x <= n.width * 0.30
         {
             self.energy = (self.energy + 40.0 * dt).min(100.0);
+            self.charging = true;
         }
         self.distance += (self.speed * self.heading.cos() - side * self.heading.sin()) * dt;
         launch

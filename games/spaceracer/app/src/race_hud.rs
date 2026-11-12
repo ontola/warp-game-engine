@@ -69,6 +69,7 @@ impl Visor<'_> {
 pub fn draw(
     h: &mut HudDrawList,
     race: &Race,
+    next_ready: Option<bool>,
     i: usize,
     r: [f32; 4],
     cam: &Camera,
@@ -119,7 +120,15 @@ pub fn draw(
             );
             v.line([24., y + 24.], [294., y + 24.], 0.5, [0.3, 0.7, 0.8, 0.25]);
         }
-        v.text("Start · race menu", [24., 302.], 10., TextAlign::Left, dim);
+        match next_ready {
+            Some(true) => {
+                v.button("A", [31., 290.], white);
+                v.text("Next race", [44., 282.], 13., TextAlign::Left, white);
+            }
+            Some(false) => v.text("Preparing the next race…", [24., 282.], 12., TextAlign::Left, dim),
+            None => {}
+        }
+        v.text("Start · race menu", [24., 306.], 10., TextAlign::Left, dim);
         return;
     }
     if p.finished {
@@ -215,21 +224,31 @@ pub fn draw(
     );
     v.text("km/h", [w - 46., height - 61.], 10., TextAlign::Left, dim);
     let center = [w - 89., height - 96.];
+    // On a recharge strip a bright wave climbs the lit segments and the next
+    // segment blinks, so filling up reads at a glance.
+    let charging = p.charging && !p.airborne && !p.crashed;
+    let wave = race.clock as f32 * 3.;
     for k in 0..24 {
         let a = PI * (0.16 + 0.68 * k as f32 / 24.);
         let b = a + PI * 0.68 / 24. * 0.76;
         let lit = ((23 - k) as f64) < p.energy * 24. / 100.;
+        let filling = charging && !lit && ((23 - k) as f64) < p.energy * 24. / 100. + 1.;
         let color = if lit {
-            if p.energy < 25. {
+            if charging {
+                let pulse = (((23 - k) as f32 / 24. - wave).rem_euclid(1.) * PI * 2.).cos() * 0.5 + 0.5;
+                [0.35 + 0.45 * pulse, 1., 0.75 + 0.25 * pulse, 0.85 + 0.15 * pulse]
+            } else if p.energy < 25. {
                 [1., 0.32, 0.18, 0.85]
             } else {
                 cyan
             }
+        } else if filling {
+            [0.45, 1., 0.8, 0.35 + 0.5 * (wave * PI * 2.).sin().abs()]
         } else {
             [0.15, 0.35, 0.43, 0.23]
         };
         if lit {
-            v.arc(center, 76., a, b, 5., [color[0], color[1], color[2], 0.06]);
+            v.arc(center, 76., a, b, if charging { 8. } else { 5. }, [color[0], color[1], color[2], if charging { 0.14 } else { 0.06 }]);
         }
         v.arc(center, 76., a, b, 2.2, color);
     }
@@ -369,16 +388,27 @@ pub fn draw(
             white,
         );
     }
-    if let Some((owner, target, at)) = race.destroyed {
-        if owner == i && race.clock - at < 0.5 {
-            v.text(
-                &format!("DESTROYED {}", race.drivers[target].name),
-                [w * 0.5, height * 0.4],
-                18.,
-                TextAlign::Center,
-                white,
-            );
-        }
+    // Tell the shooter what their weapon did: a hit, or a kill (which wins).
+    let destroyed = race.destroyed.filter(|&(owner, _, at)| owner == i && race.clock - at < 1.6);
+    let hit = race.hit.filter(|&(owner, _, at)| owner == i && race.clock - at < 1.1);
+    if let Some((_, target, at)) = destroyed {
+        let pop = 1. + 0.35 * (1. - ((race.clock - at) as f32 / 0.18).min(1.));
+        v.text(
+            &format!("DESTROYED {}", race.drivers[target].name.to_uppercase()),
+            [w * 0.5, height * 0.4],
+            24. * pop,
+            TextAlign::Center,
+            [255, 150, 90, 245],
+        );
+    } else if let Some((_, target, at)) = hit {
+        let pop = 1. + 0.25 * (1. - ((race.clock - at) as f32 / 0.15).min(1.));
+        v.text(
+            &format!("HIT {}", race.drivers[target].name.to_uppercase()),
+            [w * 0.5, height * 0.4],
+            18. * pop,
+            TextAlign::Center,
+            [255, 225, 150, 235],
+        );
     }
     let preview = if d.item == Some(Weapon::GlideBomb)
         && d.active.is_none()

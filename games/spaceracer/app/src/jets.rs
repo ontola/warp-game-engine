@@ -26,6 +26,9 @@ pub struct Config {
     warp_world_pixels: f32, warp_view_pixels: f32,
     emp_spark_fade: f32, sentry_spark_life: f32,
     damage_smoke_energy: f32,
+    /// A weapon hit (energy lost at once, at least this much) sets a jet
+    /// burning for hit_fire_seconds. Bumps and sentry fire stay below it.
+    hit_fire_damage: f32, hit_fire_seconds: f32,
     respawn_light_power: f32,
     nozzle: [f32; 3],
     reverse: [f32; 3],
@@ -71,6 +74,7 @@ impl Config {
             c.boost_arc_spread,c.boost_arc_height,c.boost_width,c.boost_radiance,c.boost_release,c.engine_glare_pixels,
             c.warp_world_pixels,c.warp_view_pixels,c.emp_spark_fade,c.sentry_spark_life,
             c.damage_smoke_energy,
+            c.hit_fire_damage, c.hit_fire_seconds,
             c.respawn_light_power,
             c.idle_length,
             c.throttle_length,
@@ -88,6 +92,7 @@ impl Config {
             c.boost_heat_pixels,
         ];
         if values.iter().any(|v| !v.is_finite() || *v < 0.)
+            || c.hit_fire_damage<13. || c.hit_fire_seconds>3.
             || c.warp_view_pixels>64. || c.warp_world_pixels>64. || c.sentry_spark_life>0.25 || c.emp_spark_fade<=0.
             || c.boost_arc_start>40. || c.boost_arc_sustain>20. || c.boost_arc_spread>20. || c.boost_arc_height>12.
             || !(0.05..=1.).contains(&c.boost_arc_duration) || !(0.02..=0.5).contains(&c.boost_arc_width)
@@ -165,6 +170,8 @@ pub struct Jets {
     strike: u32,
     seen_shots: [u64; 6],
     impacts: VecDeque<Impact>,
+    /// Per racer: energy last frame, seconds of hit fire left, burning side.
+    hits: [(f64, f32, f32); 6],
     uploaded: bool,
 }
 fn smooth(a: f32, b: f32, x: f32) -> f32 {
@@ -240,6 +247,7 @@ impl Jets {
             strike: 0,
             seen_shots: [0; 6],
             impacts: VecDeque::with_capacity(24),
+            hits: [(100., 0., 1.); 6],
             uploaded: false,
         })
     }
@@ -347,6 +355,55 @@ impl Jets {
                     let mut smoke=glow(at,[size,size],Vec3::new(0.18,0.17,0.16),10);
                     smoke.additive=false;smoke.opacity=envelope*amount*0.42;
                     smoke.params=[k as f32,time,0.,0.];self.sprites.push(smoke);
+                }
+            }
+            // Charging on a recharge strip: a soft green-cyan glow under the hull
+            // and motes drawn up from the strip into the craft.
+            if p.charging && !p.airborne && !p.crashed {
+                let pulse=0.75+0.25*(time*9.).sin();
+                let energy=Vec3::new(0.3,1.,0.75);
+                self.sprites.push(glow(base.transform_point3(Vec3::new(0.,0.3,-0.3)),[10.,8.],energy*radiance*2.4*pulse,2));
+                for k in 0..14 {
+                    let age=(time*1.8+k as f32/14.).rem_euclid(1.);
+                    let x=(hash(i as u32*31+k)*2.-1.)*3.;
+                    let z=(hash(i as u32*31+k+100)*2.-1.)*3.;
+                    let at=base.transform_point3(Vec3::new(x*(1.-age*0.7),-0.2+age*1.6,z*(1.-age*0.7)));
+                    let fade=smooth(0.,0.2,age)*(1.-smooth(0.7,1.,age));
+                    self.sprites.push(glow(at,[0.9,0.9],energy*radiance*6.*fade,2));
+                }
+                self.lights.push(LocalLight{position:base.transform_point3(Vec3::new(0.,0.6,0.)),direction:pose.basis.y_axis,
+                    intensity_cd:energy*c.respawn_light_power*0.4*pulse,range_m:9.,inner_cos:1.,outer_cos:-1.,source_radius_m:1.,falloff:2.});
+            }
+            // A rocket, glide bomb or railgun hit sets one jet burning briefly:
+            // flickering flame at the nozzle under a short trail of dark smoke.
+            if let Some(hit)=self.hits.get_mut(i) {
+                if first || p.crashed || p.recovery>0. { hit.1=0.; }
+                else if hit.0-p.energy>=c.hit_fire_damage as f64 { hit.1=c.hit_fire_seconds; hit.2=if hash(self.strike.wrapping_add(i as u32*13))<0.5 {-1.}else{1.}; }
+                hit.0=p.energy;
+                hit.1=(hit.1-dt).max(0.);
+                if hit.1>0. {
+                    let fade=smooth(0.,0.45,hit.1)*(1.-smooth(c.hit_fire_seconds-0.08,c.hit_fire_seconds,hit.1));
+                    let side=hit.2;
+                    let trail=(p.speed as f32*0.06).min(10.);
+                    for k in 0..8 {
+                        let age=(time*3.1+k as f32/8.).rem_euclid(1.);
+                        let jitter=(k as f32*5.3+time*31.).sin()*0.25;
+                        let at=base.transform_point3(Vec3::new(side*2.45+jitter,-0.1+age*1.2,-3.7-age*(2.+trail*0.35)));
+                        let size=(2.2+age*2.)*(1.-age*0.45);
+                        let flicker=0.75+0.25*(time*47.+k as f32*2.1).sin();
+                        self.sprites.push(glow(at,[size,size*1.3],Vec3::new(1.,0.42,0.1)*radiance*4.*fade*flicker*(1.-age),2));
+                    }
+                    for k in 0..10 {
+                        let age=(time*1.6+k as f32/10.).rem_euclid(1.);
+                        let drift=(k as f32*7.19+age*3.).sin()*age;
+                        let at=base.transform_point3(Vec3::new(side*2.45+drift,0.4+age*3.5,-4.2-age*(3.+trail)));
+                        let size=1.4+age*4.;
+                        let mut smoke=glow(at,[size,size],Vec3::new(0.22,0.2,0.19),10);
+                        smoke.additive=false;smoke.opacity=fade*smooth(0.,0.15,age)*(1.-age)*0.8;
+                        smoke.params=[k as f32+20.,time,0.,0.];self.sprites.push(smoke);
+                    }
+                    self.lights.push(LocalLight{position:base.transform_point3(Vec3::new(side*2.45,0.4,-4.)),direction:pose.basis.y_axis,
+                        intensity_cd:Vec3::new(1.,0.45,0.12)*c.respawn_light_power*0.25*fade,range_m:10.,inner_cos:1.,outer_cos:-1.,source_radius_m:0.6,falloff:2.});
                 }
             }
 
@@ -961,6 +1018,20 @@ mod tests {
         assert!(dim<bright*0.2);
         race.pilots[0].emp_time=0.;race.pilots[0].boost=0.;jets.update(&race,&poses,2.3);
         assert!(!jets.sprites.iter().any(|s|s.effect==5));
+    }
+    #[test]
+    fn a_weapon_hit_sets_a_jet_burning_for_a_moment() {
+        let root=Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut jets=Jets::new(root).unwrap();let mut race=Race::new(31,"normal","city",1,3);
+        let poses:Vec<_>=(0..6).map(|i|race.pose(i)).collect();
+        jets.update(&race,&poses,1.);
+        race.pilots[0].energy=88.;jets.update(&race,&poses,1.05);
+        assert!(!jets.sprites.iter().any(|s|s.effect==10),"a bump does not burn");
+        race.pilots[0].energy=38.;jets.update(&race,&poses,1.1);
+        assert_eq!(jets.sprites.iter().filter(|s|s.effect==10).count(),10,"hit smoke");
+        assert!(jets.sprites.iter().filter(|s|s.effect==2).any(|s|s.radiance.x>s.radiance.z*5.),"hit flame");
+        for n in 1..=14 {jets.update(&race,&poses,1.1+n as f32*0.1);}
+        assert!(!jets.sprites.iter().any(|s|s.effect==10),"the fire dies down after a second or so");
     }
     #[test]
     fn wear_smoke_has_threshold_freezes_and_clears_during_reconstruction() {

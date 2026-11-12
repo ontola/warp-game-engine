@@ -170,7 +170,12 @@ pub struct Race {
     pub blasts: Vec<Blast>,
     pub beams: Vec<Beam>,
     pub destroyed: Option<(usize, usize, f64)>,
+    /// The latest weapon hit: (owner, target, clock), for the shooter's HUD.
+    pub hit: Option<(usize, usize, f64)>,
 }
+/// Damage at least this large in one go is a weapon hit worth announcing
+/// (rockets, glide bombs, railgun); bumps and sentry fire stay below it.
+pub const ANNOUNCED_HIT: f64 = 15.;
 /// The largest grid; seats beyond the humans fill with AI up to what the race asks for.
 pub const MAX_RACERS: usize = 6;
 impl Race {
@@ -303,6 +308,7 @@ impl Race {
             blasts: vec![],
             beams: vec![],
             destroyed: None,
+            hit: None,
         })
     }
     pub fn reload(&mut self) {
@@ -776,6 +782,9 @@ impl Race {
             || self.pilots[target].warp_time > 0.
         {
             return;
+        }
+        if owner != target && amount >= ANNOUNCED_HIT {
+            self.hit = Some((owner, target, self.clock));
         }
         let p = &mut self.pilots[target];
         p.energy = (p.energy - amount).max(0.);
