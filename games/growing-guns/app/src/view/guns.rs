@@ -188,7 +188,7 @@ impl Guns {
                 Affine3A::from_rotation_translation(rot * Quat::from_rotation_x(drawn.pitch),
                     pos + Vec3::Y * 0.05 + rot * Vec3::new(0.45, 0.0, -0.12))
             };
-            let visible = p.alive && (!self.tracking[i] || self.tracked[i].is_some());
+            let visible = p.alive && !world.in_audience(i) && (!self.tracking[i] || self.tracked[i].is_some());
             let exit = rig.muzzle_at(alpha);
             self.muzzles[i] = visible.then(|| [fp.transform_point3(exit), tp.transform_point3(exit)]);
             for (first, xf, drop) in [(self.fp[i], fp, reload.view_drop), (self.tp[i], tp, reload.hand_drop)] {
@@ -596,6 +596,27 @@ mod xr_tests {
         guns.tick(&world, 0.0);
         assert!(guns.rigs[0].is_growing());
         assert_eq!(guns.rigs[0].shown, own, "the previous round's borrowed Uzi must not be the source");
+        }
+    }
+
+    #[test]
+    fn rifle_appears_in_both_views_on_the_takeoff_tick() {
+        let mut world = World::new(3, &[false, false]);
+        let mut scene = Scene::default();
+        let mut guns = Guns::reserve_with_detail(&mut scene, 2, gun::Detail::Low);
+        let fx = EffectsView::reserve(&mut scene, 3);
+        guns.hide_own(&mut scene, &[0, 1]);
+        guns.tick(&world, 0.0);
+        for _ in 0..48 { world.step(&[]); }
+        for armed in [false, true] {
+            guns.pose(&mut scene, &world, &[], 1.0, &fx, &[]);
+            for i in 0..2 {
+                for first in [guns.fp[i], guns.tp[i]] {
+                    assert_eq!(scene.instances[first].cluster_count > 0, armed);
+                }
+                assert_eq!(guns.muzzle(i).is_some(), armed);
+            }
+            world.step(&[]);
         }
     }
 

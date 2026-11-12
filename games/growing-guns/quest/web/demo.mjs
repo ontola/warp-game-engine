@@ -234,6 +234,7 @@ function frame(time,xr) {
       rightHand.position.set(.25,.45,-.25); rightHand.quaternion.copy(camera.quaternion);
     }
   }
+  weapon.visible=p.armed;
   const scale=1+Math.min(p.cards,10)*.06; weapon.scale.setScalar(scale);
   // Preserve muzzle position when the weapon grows; the sim's .43m barrel end
   // and visible barrel stay together. Only width/height grow in this demo.
