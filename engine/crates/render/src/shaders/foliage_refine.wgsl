@@ -146,13 +146,26 @@ var<workgroup> seed_scan:array<vec4<u32>,256>;
   add_used(vec4<u32>(0u,sum.yz,0u));
  }
 }
-@compute @workgroup_size(1) fn start() {
- var count=0u;
- for(var group=0u;group<(view.counts.x+255u)/256u;group++) {
-  let at=32u+group*32u;let n=blocks[at].x;blocks[at].y=count;count+=n;
+var<workgroup> start_sums:array<u32,256>;
+// Exclusive scan of the per-block seed counts: each lane owns a contiguous
+// run of blocks, so one workgroup scans ~650 blocks in a few steps instead of
+// one thread walking them serially.
+@compute @workgroup_size(256) fn start(@builtin(local_invocation_index) li:u32) {
+ let groups=(view.counts.x+255u)/256u;let per=(groups+255u)/256u;
+ let first=min(li*per,groups);let last=min(first+per,groups);
+ var sum=0u;
+ for(var group=first;group<last;group++) {sum+=blocks[32u+group*32u].x;}
+ start_sums[li]=sum;workgroupBarrier();
+ for(var offset=1u;offset<256u;offset*=2u) {
+  var add=0u;if li>=offset {add=start_sums[li-offset];}
+  workgroupBarrier();start_sums[li]+=add;workgroupBarrier();
  }
- atomicStore(&state[3],count);atomicStore(&state[16],count);
- if atomicLoad(&state[1])>view.consumer_count.z || atomicLoad(&state[2])>view.consumer_count.w {atomicOr(&state[15],4u);}
+ var count=start_sums[li]-sum;
+ for(var group=first;group<last;group++) {let at=32u+group*32u;let n=blocks[at].x;blocks[at].y=count;count+=n;}
+ if li==255u {
+  atomicStore(&state[3],count);atomicStore(&state[16],count);
+  if atomicLoad(&state[1])>view.consumer_count.z || atomicLoad(&state[2])>view.consumer_count.w {atomicOr(&state[15],4u);}
+ }
 }
 @compute @workgroup_size(64) fn seed_scatter(@builtin(global_invocation_id) id:vec3<u32>) {
  let tree=id.x;if tree>=view.counts.x {return;}

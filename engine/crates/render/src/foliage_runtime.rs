@@ -593,12 +593,21 @@ impl Runtime {
     #[cfg(test)]
     pub(crate) fn test_rounds(&self,full:bool,hint:Option<u32>)->(u32,Option<u32>,u32) {let r=&self.selector.refiner;if full {r.test_full_rounds();}if let Some(h)=hint {r.test_hint(h);}let (e,u)=r.encoded_rounds();(e,u,2*(self.selector.levels+1))}
     pub(crate) fn encode_timed_depth(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::foliage_select::ConsumerView],first_owner:u32,time:Option<(&wgpu::QuerySet,u32)>,depth:Option<&[crate::foliage_seed_visibility::CameraDepth<'_>]>)->Result<(),String> {
+        self.encode_split(gpu,enc,views,first_owner,time,depth,None)
+    }
+    /// `split`: eight more encoder timestamps (seed classify, refine,
+    /// compact/finish, residency) inside "GPU forest selection residency".
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn encode_split(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[crate::foliage_select::ConsumerView],first_owner:u32,time:Option<(&wgpu::QuerySet,u32)>,depth:Option<&[crate::foliage_seed_visibility::CameraDepth<'_>]>,split:Option<(&wgpu::QuerySet,u32)>)->Result<(),String> {
+        let split=split.filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS));
         // All of these are encoder writes: untimed where the GPU lacks them
         // (Apple), or Metal rejects the submit.
         let time=time.filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS));
         if let Some((q,i))=time {enc.write_timestamp(q,i);}
-        self.selector.union_consumers_budget_depth(gpu,enc,views,self.error,self.slots,[self.raster_budget;2],&self.empty_depth,depth)?;
+        self.selector.union_consumers_marked(gpu,enc,views,self.error,self.slots,[self.raster_budget;2],&self.empty_depth,depth,split)?;
+        if let Some((q,i))=split {enc.write_timestamp(q,i+6);}
         self.residency.encode(enc);
+        if let Some((q,i))=split {enc.write_timestamp(q,i+7);}
         if let Some((q,i))=time {enc.write_timestamp(q,i+1);enc.write_timestamp(q,i+2);}
         let wind=*self.wind.lock().unwrap();
         let field=[wind.direction.x,wind.direction.y,wind.strength,(wind.time_seconds.rem_euclid(120.)/120.*std::f64::consts::TAU)as f32];

@@ -245,6 +245,15 @@ override FOREST_FLOOR_DARK: f32 = 0.85;
 // ones shade their gaps): a tree or a gap of sunlight per pixel. shade.wgsl
 // uses it where no sharp sun map reaches, instead of the coarse maps whose
 // stand shadows merged into large dark blobs. -1 where no forest stands.
+// forest_field ff_grows from the vertex attributes, with a pixel of slack so
+// stand edges stay crisp without aliasing: no trees on rock, scree, water,
+// snow or steep ground.
+fn ff_grows_soft(f: FieldAttr, footprint: f32) -> f32 {
+    let e = clamp(footprint * 0.02, 0.005, 0.05);
+    return (1.0 - smoothstep(0.3 - e, 0.3 + e, f.rock)) * (1.0 - smoothstep(0.3 - e, 0.3 + e, f.scree))
+        * (1.0 - smoothstep(0.01 - e * 0.2, 0.01 + e * 0.2, f.water)) * (1.0 - smoothstep(0.05 - e * 0.5, 0.05 + e * 0.5, f.snow))
+        * smoothstep(0.82 - e, 0.82 + e, f.up);
+}
 fn far_tree_cast(s: SurfaceIn) -> f32 {
     if s.scale >= 0.0 { return -1.0; }
     let params = far_forest_params(u32(-s.scale - 0.5));
@@ -260,7 +269,9 @@ fn far_tree_cast(s: SurfaceIn) -> f32 {
     let seed = u32(s.metal + 0.5);
     let site = ff_site(f.up, f.wet, params.slopes);
     let footprint = sqrt(length(s.dx) * length(s.dy));
-    let crowd = ff_share(s.p.x, s.p.z, seed, site, footprint) * params.density;
+    // Only where trees can stand: the drawn trees follow forest_field's
+    // site rules, so bare rock and steep slopes get no statistical shadows.
+    let crowd = ff_share(s.p.x, s.p.z, seed, site, footprint) * params.density * ff_grows_soft(f, footprint);
     if crowd <= 0.0 { return 0.0; }
     let r0 = params.style.crown.x * FAR_CROWN_SIZE;
     let len0 = max(params.style.far.w * min(sun_xz / sun.y, FAR_TREE_COT_MAX), 2.0 * r0);
@@ -279,10 +290,7 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     if fade <= 0.0 { return MeadowCanopy(ground, nn); }
     // forest_field ff_grows from the vertex attributes, with a pixel of
     // slack so stand edges stay crisp without aliasing.
-    let e = clamp(footprint * 0.02, 0.005, 0.05);
-    let grows = (1.0 - smoothstep(0.3 - e, 0.3 + e, f.rock)) * (1.0 - smoothstep(0.3 - e, 0.3 + e, f.scree))
-        * (1.0 - smoothstep(0.01 - e * 0.2, 0.01 + e * 0.2, f.water)) * (1.0 - smoothstep(0.05 - e * 0.5, 0.05 + e * 0.5, f.snow))
-        * smoothstep(0.82 - e, 0.82 + e, f.up);
+    let grows = ff_grows_soft(f, footprint);
     let seed = u32(s.metal + 0.5);
     let site = ff_site(f.up, f.wet, params.slopes);
     let sun = light.sun_dir.xyz;
