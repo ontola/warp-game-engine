@@ -195,7 +195,7 @@ pub fn build(part:&Part<'_>) -> Option<ClusterMesh> {
         for id in &mut mesh.cluster_verts[first_vert as usize..] {*id+=first_vertex;}
         for i in (0..vertices.len()as u32).step_by(3) {mesh.tris.push(i|((i+1)<<8)|((i+2)<<16));}
         mesh.clusters.push(GpuCluster {cull:mesh.sphere,parent:mesh.sphere,own:mesh.sphere,parent_error:f32::MAX,own_error:error,
-            first_tri,tri_count:(vertices.len()/3)as u32,first_vert,material:part.material,depth:errors.len()as u32,_pad:0});
+            first_tri,tri_count:(vertices.len()/3)as u32,first_vert,material:part.material,depth:errors.len()as u32,order:0});
         mesh.vertices.extend(vertices);errors.push(error);
     }
     if errors.len()==1 {return None;}
@@ -348,7 +348,7 @@ pub fn build_ribbon(part: &Part<'_>) -> Option<ClusterMesh> {
         mesh.clusters.push(GpuCluster { cull: mesh.sphere, parent: mesh.sphere,
             own: mesh.sphere, parent_error: f32::MAX, own_error: error,
             first_tri, tri_count: (vertices.len() / 3) as u32, first_vert,
-            material: part.material, depth: errors.len() as u32, _pad: 0 });
+            material: part.material, depth: errors.len() as u32, order: 0 });
         mesh.vertices.extend(vertices); errors.push(error);
     }
     for i in 0..mesh.clusters.len() - 1 {

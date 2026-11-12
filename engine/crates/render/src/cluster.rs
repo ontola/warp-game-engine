@@ -37,8 +37,14 @@ pub struct GpuCluster {
     pub first_vert: u32,
     pub material: u32,
     pub depth: u32,
-    pub _pad: u32,
+    /// Bit 0 (CLUSTERS_COARSE_FIRST): this mesh's clusters are sorted by
+    /// parent_error, coarsest first (`ClusterMesh::sort_coarse_first`), so the
+    /// cull may stop at the first cluster too fine to be needed.
+    pub order: u32,
 }
+
+/// GpuCluster::order bit 0: see there.
+pub const CLUSTERS_COARSE_FIRST: u32 = 1;
 
 /// A mesh part with one material.
 pub struct Part<'a> {
@@ -403,7 +409,7 @@ impl ClusterMesh {
                     first_vert,
                     material: part.material,
                     depth: 0,
-                    _pad: 0,
+                    order: 0,
                 });
             }
         }
@@ -550,7 +556,7 @@ impl ClusterMesh {
                     first_vert,
                     material: part.material,
                     depth: 0,
-                    _pad: 0,
+                    order: 0,
                 });
             }
         }
@@ -772,6 +778,23 @@ pub fn read_kmesh(bytes: &[u8]) -> Result<Vec<(String, Vec<Vertex>, Vec<u32>)>, 
 }
 
 impl ClusterMesh {
+    /// Sort the clusters coarsest first: by parent_error descending, the
+    /// DAG's roots (parent_error f32::MAX) at the front. Any cut is then
+    /// within the prefix whose parent_error exceeds the cut's threshold, so
+    /// the cull and the budget need only that prefix (a needle spray far away
+    /// draws 16 of its 244 clusters but was culled and booked at all 244).
+    /// Triangles and vertices are addressed per cluster and stay in place.
+    pub fn sort_coarse_first(&mut self) {
+        self.clusters.sort_by(|a, b| b.parent_error.total_cmp(&a.parent_error));
+        for cluster in &mut self.clusters { cluster.order |= CLUSTERS_COARSE_FIRST; }
+    }
+
+    /// Clusters a cut at `threshold` (mesh-local error) must look at when
+    /// sorted coarse first: those whose parent_error exceeds it.
+    pub fn coarse_prefix(&self, threshold: f32) -> usize {
+        self.clusters.partition_point(|c| c.parent_error > threshold)
+    }
+
     /// Triangles drawn when the whole mesh is far away (the DAG's roots).
     pub fn root_triangles(&self) -> usize {
         self.clusters.iter().filter(|c| c.parent_error > 1e30).map(|c| c.tri_count as usize).sum()
