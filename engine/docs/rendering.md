@@ -199,8 +199,10 @@ to the headlights and local lights, which still work.
   light standing in for a lit patch of floor) get soft shadows: PCSS, an
   8-tap blocker search and 16 compare taps over the penumbra (source radius
   times receiver minus blocker over blocker, at most 24 texels); smaller
-  lights keep a 4-tap filter. Cookies and angular profiles: see
-  `interior-light.md`.
+  lights keep a 4-tap filter. The source radius also sizes the specular
+  highlight (a sphere light, Karis 2013's representative point). Cookies,
+  angular profiles and light faces (the visible panel or bulb, derived from
+  the light): see `interior-light.md`.
 - Cost: the light records, shadow faces and cells live in the scene tables
   buffer (shade stays at 8 storage buffers); a uniform in bind group 2 holds
   the grid. Off, shade compiles none of it. Grass and opaque surfaces get

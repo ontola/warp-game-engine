@@ -272,7 +272,7 @@ fn fs(in: VOut) -> @location(0) u32 {
     let sky = view.lod_cams[0].w*(0.5+0.25*normal.y);
     let sun = view.lod_cams[1].rgb*max(dot(normal,view.lod_cams[0].xyz),0.);
     var lit = base*(0.25+(sky+sun)/3.14159);
-    if (m.flags & 1024u)!=0u { lit = base*max(0.4,m.scale*view.lod_cams[1].w); }
+    if (m.flags & 1024u)!=0u { lit = base*max(0.4,abs(m.scale)*view.lod_cams[1].w); }
     if (m.flags & 4096u)!=0u { lit=vec3f(1.8,0.42,0.055); }
     return vec4f(lit/(1.+lit),1.);
 }
