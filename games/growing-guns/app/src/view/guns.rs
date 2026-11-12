@@ -138,15 +138,22 @@ impl Guns {
         Affine3A::from_cols(right.into(), up.into(), (-fwd).into(), cam.pos.into())
     }
 
-    /// Standard first-person mount before inspection or the ground pickup is applied.
-    fn firing_mount(rig: &Rig, f: &GunFeel, reload: &gun::Reload) -> Affine3A {
-        let pull = ((rig.build.barrel_length - 0.5) * 0.3).clamp(0.0, 0.3);
+    /// Shared by the drawn rifle and the muzzle on the frame a shot interrupts inspection.
+    fn view_mount(rig: &Rig, f: &GunFeel, reload: &gun::Reload, contacts: gun::Contacts, inspect: f32) -> Affine3A {
+        let pull = ((rig.build.barrel_length - 0.5) * 0.10).clamp(0.0, 0.045);
         let at = Vec3::new(
-            0.3 + (f.phase * 0.5).sin() * 0.007 * f.bob,
-            -0.3 + f.phase.sin() * 0.012 * f.bob - f.bump,
-            -0.8 + f.kick + pull,
+            0.22 + (f.phase * 0.5).sin() * 0.007 * f.bob,
+            -0.20 + f.phase.sin() * 0.012 * f.bob - f.bump,
+            -0.73 + pull,
         ) + reload.lift;
-        Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, 0.0, reload.tilt, f.tilt), at)
+        let aim = Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, 0.0, reload.tilt, f.tilt), at);
+        let turn = Affine3A::from_rotation_translation(
+            Quat::from_euler(glam::EulerRot::YXZ, inspect, 0.12 * inspect, 0.08 * inspect),
+            Vec3::new(-0.19, 0.12, 0.12) * inspect,
+        );
+        let mut mount = super::pov_arms::within_reach(aim * turn, contacts, reload);
+        mount.translation.z += f.kick;
+        mount
     }
 
     /// Firing cancels inspection on this frame; the weapon can keep growing in the aiming pose.
@@ -163,7 +170,8 @@ impl Guns {
         f.kick = f.kick.max(0.08 * (p.weapon.recoil() / p.weapon.gun.recoil).clamp(0.2, 2.5));
         if interrupt && self.local[player] && !self.tracking[player] {
             // The last rendered muzzle may still point sideways or be on the floor.
-            let mount = Self::firing_mount(rig, f, &gun::Reload::sample(p, 1.));
+            let reload = gun::Reload::sample(p, 1.);
+            let mount = Self::view_mount(rig, f, &reload, rig.contacts_at(1.), 0.);
             let muzzle = mount.transform_point3(rig.muzzle_at(1.));
             let cam = fx.punched(world, player, self.camera(world, player, &[], 1.));
             return Some(Self::view_frame(cam).transform_point3(muzzle));
@@ -284,9 +292,8 @@ impl Guns {
             let cam = fx.punched(world, i, self.camera(world, i, prev, alpha));
             let view = Self::view_frame(cam);
             let s = f.previous_inspect + (f.inspect - f.previous_inspect) * alpha;
-            let fp = view * Self::firing_mount(rig, f, &reload)
-                * Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, s, 0.12 * s, 0.08 * s), Vec3::new(-0.18, 0.17, 0.19) * s);
-            let fp = self.tracked[i].unwrap_or(fp);
+            let contacts = rig.contacts_at(alpha);
+            let fp = self.tracked[i].unwrap_or_else(|| view * Self::view_mount(rig, f, &reload, contacts, s));
             let drawn = crate::view::pose(world, i, prev, alpha);
             let (pos, rot) = (drawn.pos, Quat::from_rotation_y(drawn.yaw));
             let tp = if let Some(mount) = hands.get(i).copied().flatten() {
@@ -302,15 +309,19 @@ impl Guns {
                 floor + Vec3::Y * rig.build.resting_height().max(0.03),
             );
             let ground_pose = ground.map(on_floor);
-            let pickup = self.pickup(world, i, alpha).map(|(age, floor)| (age, on_floor(floor)));
+            let pickup = self.pickup(world, i, alpha);
             let fp = if let Some((age, floor)) = pickup {
                 let lift = super::pov_arms::ease(TRIGGER_GRIP, PICKUP_LIFT_SECONDS, age);
-                super::pov_arms::blend_pose(floor, fp, lift)
+                // Carry the pickup along if the player runs or jumps during the grab.
+                let feet = pos - Vec3::Y * growing_guns::HALF_HEIGHT;
+                let travel = feet - floor;
+                let carried = on_floor(floor + travel - travel.clamp_length_max(0.10));
+                super::pov_arms::blend_pose(carried, fp, lift)
             } else { fp };
             if self.local[i] && p.alive && !p.ghost && !self.tracking[i] {
                 if let Some(arms) = self.arms.get(i) {
                     if held {
-                        arms.hold(scene, fp, rig.contacts_at(alpha), &reload, pickup.map(|(age, _)| (age, view)));
+                        arms.hold(scene, fp, contacts, &reload, view, pickup.map(|(age, _)| age));
                     } else {
                         // With hands by the hips, looking down reveals them. The
                         // flailing and reaching poses follow the view during flight.
@@ -332,7 +343,8 @@ impl Guns {
                 let weapon = ground_pose.unwrap_or(if self.local[i] { fp } else { tp });
                 weapon * Affine3A::from_translation(mount + LAMP_LENS)
             });
-            for (first, xf, drop) in [(self.fp[i], fp, reload.view_drop), (self.tp[i], tp, reload.hand_drop)] {
+            let fp_drop = if self.tracking[i] { reload.view_drop } else { reload.hand_drop };
+            for (first, xf, drop) in [(self.fp[i], fp, fp_drop), (self.tp[i], tp, reload.hand_drop)] {
                 let xf = ground_pose.unwrap_or(xf);
                 let children = rig.pose_at(drop, alpha).take(if visible { self.parts - 1 } else { 0 })
                     .map(|(part, local)| (self.mesh(part.shape, part.mat, i), local))
@@ -847,6 +859,23 @@ mod xr_tests {
     }
 
     #[test]
+    fn growing_and_inspecting_a_long_rifle_keeps_the_trigger_hand_in_frame() {
+        let mut rig = Rig::default();
+        let feel = GunFeel::default();
+        let reload = gun::Reload::default();
+        let half_fov = (super::super::FOV_Y * 0.5).tan();
+        for stats in [Stats::default(), Stats { spread: 0., mag: 90, damage_mult: 3., ..Stats::default() }] {
+            rig.set(stats);
+            let contacts = rig.contacts_at(1.);
+            for inspect in [0., 0.5, 1.] {
+                let mount = Guns::view_mount(&rig, &feel, &reload, contacts, inspect);
+                let wrist = mount.transform_point3(contacts.primary + Vec3::X * 0.028);
+                assert!(wrist.z < -0.30 && wrist.y.abs() < -wrist.z * half_fov, "{wrist:?}");
+            }
+        }
+    }
+
+    #[test]
     fn a_shot_cancels_the_lift_or_inspection_on_the_same_frame() {
         for during_lift in [true, false] {
             let mut world = World::new(3, &[false]);
@@ -918,7 +947,13 @@ mod xr_tests {
                 assert_eq!(near_floor, !raised);
                 for side in 0..2 {
                     let k = 2 * i + side;
-                    let hand = &scene.instances[arm_start + k];
+                    let start = arm_start + super::super::pov_arms::Arms::SLOTS * i + side;
+                    for part in [start + 2, start + 4] {
+                        let segment = &scene.instances[part];
+                        assert!(segment.cluster_count > 0);
+                        assert_eq!((segment.flags >> render::scene::HIDE_IN_VIEW_SHIFT) as u8, !(1 << i));
+                    }
+                    let hand = &scene.instances[start];
                     assert!(hand.cluster_count > 0);
                     assert_eq!((hand.flags >> render::scene::HIDE_IN_VIEW_SHIFT) as u8, !(1 << i));
                     if raised { assert_ne!(hand.first_cluster, open_hands[k]); }

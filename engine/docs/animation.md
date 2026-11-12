@@ -15,7 +15,7 @@ Each solve measures the upper and lower segment lengths in the current pose. It 
 
 For a right-handed prop use `TwoHandHold::bind(model.joints())` once and `hold.apply(palette, primary, secondary)` after sampling. Use `with_arm_proportions(upper, forearm)` at bind time for a character-specific held-pose correction. Both reach limits and mesh deformation use those factors along the bone axes. Place the prop at the returned primary wrist. The secondary hand reaches as far as the current skeleton allows.
 
-Growing Guns anchors the weapon to the animated right wrist, pitches around the grip and uses the left arm to hold the magazine and transfer onto the growing foregrip. The first-person hands follow the weapon sockets. For an identical-camera comparison of the sampled clip and corrected grip, run from the repository root:
+Growing Guns anchors the weapon to the animated right wrist, pitches around the grip and uses the left arm to hold the magazine and transfer onto the growing foregrip. In first person the fitted hands follow the weapon sockets, while the elbows bend from shoulders anchored beside the camera. The mount moves back along the sightline as either grip approaches full reach. If the foregrip is still too far forward, the support hand holds the magazine. For an identical-camera comparison of the sampled clip and corrected grip, run from the repository root:
 
 ```sh
 cargo run -p growing-guns-app -- gun-review --grip --seed 3 --card sniper --clip pistol_run --time 0.24 --pitch 12 --out build/grip-review
