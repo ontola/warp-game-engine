@@ -13,9 +13,9 @@
 use std::path::PathBuf;
 
 /// The built-in copies of every file that can be read from disk.
-pub(crate) const SHARED_NAMES: [&str; 21] = ["cloud_weather.wgsl", "game_surface.wgsl", "terrain_field.wgsl", "forest_field.wgsl", "terrain_surface.wgsl", "wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "meadow_canopy.wgsl", "foliage_volume.wgsl", "surface_fog.wgsl", "shade.wgsl",
-    "world_visibility.wgsl", "foliage_sun_pages.wgsl", "car_material.wgsl", "grass_lighting.wgsl", "incident_lights.wgsl", "headlights.wgsl", "clustered_lights.wgsl", "car_lamps.wgsl", "procedural_surface.wgsl"];
-const BUILT_IN: [(&str, &str); 25] = [
+pub(crate) const SHARED_NAMES: [&str; 22] = ["cloud_weather.wgsl", "game_surface.wgsl", "terrain_field.wgsl", "forest_field.wgsl", "terrain_surface.wgsl", "wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "meadow_canopy.wgsl", "foliage_volume.wgsl", "surface_fog.wgsl", "shade.wgsl",
+    "world_visibility.wgsl", "foliage_sun_pages.wgsl", "car_material.wgsl", "grass_lighting.wgsl", "incident_lights.wgsl", "headlights.wgsl", "clustered_lights.wgsl", "rsm.wgsl", "car_lamps.wgsl", "procedural_surface.wgsl"];
+const BUILT_IN: [(&str, &str); 26] = [
     ("surface_fog.wgsl", include_str!("shaders/surface_fog.wgsl")),
     ("cloud_weather.wgsl", include_str!("shaders/cloud_weather.wgsl")),
     ("terrain_field.wgsl", crate::terrain_field::WGSL),
@@ -37,6 +37,7 @@ const BUILT_IN: [(&str, &str); 25] = [
     ("incident_lights.wgsl", include_str!("shaders/incident_lights.wgsl")),
     ("headlights.wgsl", include_str!("shaders/headlights.wgsl")),
     ("clustered_lights.wgsl", include_str!("shaders/clustered_lights.wgsl")),
+    ("rsm.wgsl", include_str!("shaders/rsm.wgsl")),
     ("transparency.wgsl", include_str!("shaders/transparency.wgsl")),
     ("grass_transition.wgsl", include_str!("shaders/grass_transition.wgsl")),
     ("far_grass.wgsl", include_str!("shaders/far_grass.wgsl")),

@@ -436,6 +436,11 @@ struct Gi {
     // and x: on (a valid history this frame), y: roughness cut, z: reach (m).
     prev_view_proj: mat4x4<f32>,
     trace: vec4<f32>,
+    // Reflective shadow maps (rsm.wgsl): x the surface voxels' aux offset (0:
+    // none), y 0 off, 1 on, 2 on with last frame's gather, z the frame, w
+    // texels per light and pixel; and last frame's view-projection.
+    rsm: vec4<f32>,
+    rsm_prev: mat4x4<f32>,
 };
 // Last frame's resolved radiance (the TAA history), for traced reflections.
 @group(1) @binding(21) var reflection_history: texture_2d<f32>;
@@ -3505,6 +3510,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // Authored diffuse room return; retain crevice and contact occlusion.
         // z is irradiance in lux, independent of exposure and direct shadow bias.
         ambient += vec3<f32>(1.0,0.97,0.92)*light.fog_sampling.z*ao*contact.x;
+        // The live first bounce of clustered lights (rsm.wgsl), irradiance.
+        if FEATURE_CLUSTERED_LIGHTS { ambient += rsm_irradiance(px, p) * ao; }
         indirect=diffuse*ambient;
         specular=env*env_brdf(f0,rough,ndv)*ao;
         // Stochastic reflections: the resolve adds weight * reflection (the

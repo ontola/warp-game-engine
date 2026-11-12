@@ -22,7 +22,7 @@ struct FrameResources {
     near_shadow_off: resource_cache::TextureViews<1>,
     history: resource_cache::TextureViews<2>,
     result: resource_cache::TextureViews<2>,
-    shade: resource_cache::BindGroups<2>,
+    shade: resource_cache::BindGroups<8>,
     taa: resource_cache::BindGroups<2>,
     tone: resource_cache::BindGroups<2>,
     volume: resource_cache::BindGroups<1>,
@@ -398,6 +398,9 @@ struct GiUniform {
     prev_view_proj: [[f32; 4]; 4],
     /// x: on with a valid history, y: roughness cut, z: reach (m).
     trace: [f32; 4],
+    /// Reflective shadow maps (rsm.wgsl Gi.rsm) and last frame's view-projection.
+    rsm: [f32; 4],
+    rsm_prev: [[f32; 4]; 4],
 }
 
 #[repr(C)]
@@ -1187,6 +1190,15 @@ pub struct Renderer {
     clipmap_bases:std::sync::Mutex<Vec<usize>>,
     /// Coarse cached source maps must not shift steep leaf casters by metres.
     raster_far_sun_depth: Option<wgpu::RenderPipeline>,
+    /// Clustered shadow tiles with their reflective shadow maps.
+    raster_rsm: Option<wgpu::RenderPipeline>,
+    /// The live bounce of clustered lights (rsm.rs): its gather, per-view
+    /// targets, and the surface voxels in aux (offset, words) once uploaded.
+    rsm_gather: Option<crate::rsm::Pipelines>,
+    rsm: std::sync::Mutex<crate::rsm::Targets>,
+    bounce_voxels: Option<(usize, crate::rsm::VoxelBounds)>,
+    scene_voxels: std::sync::Mutex<Option<crate::rsm::SceneVoxels>>,
+    voxels_uploaded: std::sync::atomic::AtomicBool,
     sun_scene_bounds: Option<std::sync::Mutex<crate::stability::SunSceneBounds>>,
     sun_guard_bounds: Option<std::sync::Mutex<crate::stability::SunSceneBounds>>,
     sun_cache_guard_m: f32,
@@ -1756,6 +1768,20 @@ impl Renderer {
         Ok(())
     }
 
+    /// Bring the surface voxels reserved with `Scene::reserve_bounce_voxels`
+    /// up to `scene` (`rsm::SceneVoxels`): the first call voxelises every
+    /// instance, later ones only those that moved or changed their mesh.
+    /// Call it each frame after moving instances; returns whether it uploaded.
+    pub fn update_bounce_voxels(&self, gpu: &Gpu, scene: &crate::scene::Scene) -> Result<bool, String> {
+        let (offset, bounds) = self.bounce_voxels.ok_or("the scene reserved no bounce voxels")?;
+        let mut cell = self.scene_voxels.lock().unwrap();
+        let voxels = cell.get_or_insert_with(|| crate::rsm::SceneVoxels::new(bounds));
+        if !voxels.update(scene) && self.voxels_uploaded.load(std::sync::atomic::Ordering::Relaxed) { return Ok(false); }
+        self.scene_tables.write_aux(gpu, offset, &voxels.grid.pack())?;
+        self.voxels_uploaded.store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(true)
+    }
+
     /// Opt-in packed transport with a nearest-static-surface separation plane.
     pub fn set_sky_sun_separated(&self, gpu:&Gpu, probes:&[crate::irradiance_volume::Probe], planes:&[[f32;4]]) -> Result<(),String> {
         let (offset,grid)=self.irradiance_volume.ok_or("no reserved probe volume")?;
@@ -2155,6 +2181,12 @@ impl Renderer {
                 (20, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (21, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (22, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba32Uint, view_dimension: wgpu::TextureViewDimension::D2 }),
+                // Reflective shadow maps (rsm.wgsl): the tiles' surfaces, the gather's
+                // output, last frame's gather, and the gather shade reads.
+                (23, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false }),
+                (24, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }),
+                (25, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (26, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
             ],
         );
         let canopy = crate::canopy::CanopyClipmap::new(gpu, scene, &scene_layout)
@@ -2325,6 +2357,19 @@ impl Renderer {
             .then(|| raster_pipe(false, true,false));
         let raster_far_sun_depth=(far_sun.enabled || foliage_sun_pages.enabled).then(||raster_pipe(false,true,false));
         let raster_cached_sun=gpu_forest.as_ref().map(|_|raster_pipe(false,raster_sun_depth.is_some(),true));
+        // Clustered shadow tiles: depth as the shadow raster, plus the
+        // reflective shadow map (raster.wgsl fs_rsm, clustered_lights rsm).
+        let raster_rsm=clustered.rsm.as_ref().map(|_|gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("raster shadow and rsm"), layout: Some(&raster_pl),
+            vertex: wgpu::VertexState { module: &raster_mod, entry_point: Some("vs"), compilation_options: wgpu::PipelineCompilationOptions { constants: &raster_constants, ..Default::default() }, buffers: &[] },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(),
+                bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 } }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &raster_mod, entry_point: Some("fs_rsm"), compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: crate::clustered_lights::RSM_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
+            multiview_mask: None, cache: gpu.pipeline_cache() }));
         // The cached sun keeps one pipeline: its tile mask discards either way.
         let raster_opaque=raster_split.then(||[Some(raster_pipe_with(true,false,false,true,false)),Some(raster_pipe_with(false,false,false,true,false)),
             raster_sun_depth.as_ref().map(|_|raster_pipe_with(false,true,false,true,false)),raster_far_sun_depth.as_ref().map(|_|raster_pipe_with(false,true,false,true,false))]);
@@ -2385,6 +2430,13 @@ impl Renderer {
             label:Some("shade"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some(if simple_lighting {"shade_simple"} else {"shade"}),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
         });
+        // The live bounce of clustered lights (rsm.wgsl), before shade.
+        let rsm_pipe = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:Some(entry),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some(entry),
+            compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
+        });
+        let rsm_gather = (clustered.rsm.is_some() && !simple_lighting).then(|| crate::rsm::Pipelines {
+            gather: rsm_pipe("rsm_gather"), filters: [rsm_pipe("rsm_filter1"), rsm_pipe("rsm_filter2"), rsm_pipe("rsm_filter4")] });
         let voxel_depth_fallback = gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no voxel depth"),
             size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
             dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Depth32Float,
@@ -2608,6 +2660,8 @@ impl Renderer {
             raster_sun_depth,
             raster_cached_sun,sun_clipmap:sun_clipmap_requested() && shadow_damage.is_some() && static_sun.is_none(),clipmap_policy:std::sync::Mutex::new(None),clipmap_bases:std::sync::Mutex::new(Vec::new()),shadow_damage:std::sync::Mutex::new(shadow_damage),legacy_shadow_wind,
             raster_far_sun_depth,
+            raster_rsm,
+            rsm_gather, rsm: std::sync::Mutex::new(crate::rsm::Targets::new(gpu)), bounce_voxels: scene.bounce_voxels, scene_voxels: Default::default(), voxels_uploaded: Default::default(),
             sun_scene_bounds,
             sun_guard_bounds,
             sun_cache_guard_m,
@@ -3053,7 +3107,7 @@ impl Renderer {
         }
         let t = tw(ts);
         if t.is_some() {
-            names.push(if name=="occluder cull" {"occluder raster"} else if name=="remaining cull" {"remaining raster"} else if color.is_some() { "raster" } else if name == "near shadow cull" { "near shadow raster" }
+            names.push(if name=="occluder cull" {"occluder raster"} else if name=="remaining cull" {"remaining raster"} else if color.is_some() && !matches!(kind,RasterPass::Headlight) { "raster" } else if name == "near shadow cull" { "near shadow raster" }
                 else if name=="headlight shadow cull" {"headlight shadow raster"}
                 else if name=="clustered shadow cull" {"clustered shadow raster"}
                 else if matches!(kind,RasterPass::SunStatic(_)) {"static sun raster"}
@@ -3076,7 +3130,7 @@ impl Renderer {
             depth_slice: None,
             resolve_target: None,
             // Empty pixels read as u32::MAX.
-            ops: wgpu::Operations { load: if append {wgpu::LoadOp::Load} else if matches!(kind,RasterPass::Broadcast) {wgpu::LoadOp::Clear(wgpu::Color {r:0.12,g:0.17,b:0.22,a:1.})} else {wgpu::LoadOp::Clear(wgpu::Color { r: u32::MAX as f64, g: 0.0, b: 0.0, a: 0.0 })}, store: wgpu::StoreOp::Store },
+            ops: wgpu::Operations { load: if append || tile.is_some() {wgpu::LoadOp::Load} else if matches!(kind,RasterPass::Broadcast) {wgpu::LoadOp::Clear(wgpu::Color {r:0.12,g:0.17,b:0.22,a:1.})} else {wgpu::LoadOp::Clear(wgpu::Color { r: u32::MAX as f64, g: 0.0, b: 0.0, a: 0.0 })}, store: wgpu::StoreOp::Store },
         })];
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("raster"),
@@ -3096,7 +3150,8 @@ impl Renderer {
             RasterPass::Sun | RasterPass::SunStatic(_) | RasterPass::SunDynamic(_) => self.raster_sun_depth.as_ref().unwrap_or(&self.raster_depth),
             RasterPass::FarSun => self.raster_far_sun_depth.as_ref().expect("enabled far sun pipeline"),
             RasterPass::FoliagePage => self.raster_far_sun_depth.as_ref().expect("enabled foliage page pipeline"),
-            RasterPass::Headlight => &self.raster_depth,
+            // A clustered tile with its reflective shadow map.
+            RasterPass::Headlight => if tile.is_some() && color.is_some() {self.raster_rsm.as_ref().expect("rsm pipeline")} else {&self.raster_depth},
         }};
         // With RASTER_SPLIT the opaque records (args words 0..19) draw first
         // without `discard`, then the masked ones (words 20..39).
@@ -3105,7 +3160,7 @@ impl Renderer {
             RasterPass::Color => p[0].as_ref(),
             RasterPass::Sun | RasterPass::SunStatic(_) | RasterPass::SunDynamic(_) => if self.raster_sun_depth.is_some() {p[2].as_ref()} else {p[1].as_ref()},
             RasterPass::FarSun | RasterPass::FoliagePage => p[3].as_ref(),
-            RasterPass::Headlight => p[1].as_ref(),
+            RasterPass::Headlight => if color.is_some() {None} else {p[1].as_ref()},
         }}.unwrap_or(masked));
         // A shadow tile: clear only its rectangle, then draw into it.
         if let Some(t)=tile {
@@ -3527,7 +3582,7 @@ impl Renderer {
                     compilation_options: wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()},
                     cache: gpu.pipeline_cache(),
                 });
-                (make(if self.simple_lighting {"shade_simple"}else{"shade"}), make("classify"))
+                (make(if self.simple_lighting {"shade_simple"}else{"shade"}), make("classify"), self.rsm_gather.as_ref().map(|_| crate::rsm::Pipelines { gather: make("rsm_gather"), filters: [make("rsm_filter1"), make("rsm_filter2"), make("rsm_filter4")] }))
             }).map_err(|e| format!("opaque reload: {e}"))?)
         } else { None };
         // No live assignment above or below until all prepares have succeeded.
@@ -3542,7 +3597,7 @@ impl Renderer {
         let rebuilt = shade.is_some() || transparency.is_some() || grass.is_some() || far_grass.is_some() || voxel.is_some();
         snapshot.ensure_current()?;
         if !rebuilt { return Ok(false); }
-        if let Some((pipeline, classify)) = shade { self.shade = pipeline; self.shade_classify = classify; self.shade_text = sources.shade; *self.shade_unlit.lock().unwrap() = None; }
+        if let Some((pipeline, classify, gather)) = shade { self.shade = pipeline; self.shade_classify = classify; self.rsm_gather = gather; self.shade_text = sources.shade; *self.shade_unlit.lock().unwrap() = None; }
         if let Some(reload) = transparency { self.transparency.as_mut().unwrap().commit_reload(reload); }
         if let Some(reload) = grass { self.grass.as_mut().unwrap().commit_reload(reload); }
         if let Some(reload) = far_grass { self.far_grass.as_mut().unwrap().commit_reload(reload); }
@@ -3603,6 +3658,7 @@ impl Renderer {
         self.history.lock().unwrap().clear();
         self.auto_exposure.reset();
         self.sssr.reset();
+        self.rsm.lock().unwrap().reset();
         self.foliage_planners.lock().unwrap().clear();
         let mut up = self.upscaling.lock().unwrap();
         if let Some(motion) = &up.motion { motion.reset(); }
@@ -4966,9 +5022,12 @@ impl Renderer {
             if let Some((start,count))=draw.exclude {vu.grass[2]=start as f32;vu.grass[3]=count as f32;}
             gpu.queue.write_buffer(&target.uniform,0,bytemuck::bytes_of(&vu));
             let layer=self.headlights.layer(draw.layer());
+            // Its reflective shadow map beside the depth (clustered_lights rsm).
+            let rsm=self.clustered.rsm.as_ref().map(|t|t.create_view(&wgpu::TextureViewDescriptor {dimension:Some(wgpu::TextureViewDimension::D2),
+                base_array_layer:draw.rsm_layer(),array_layer_count:Some(1),..Default::default()}));
             // Timestamps only while the frame's query set has room.
             let timed=ts+8<TIMESTAMP_CAPACITY-128;
-            self.cull_and_raster_pass(&mut enc,gpu,target,None,&layer,&mut ts,&mut names,"clustered shadow cull",RasterPass::Headlight,None,false,None,
+            self.cull_and_raster_pass(&mut enc,gpu,target,rsm.as_ref(),&layer,&mut ts,&mut names,"clustered shadow cull",RasterPass::Headlight,None,false,None,
                 Some(RasterTile {rect:draw.rect(),timed}));
         }
         drop(clustered_targets);
@@ -5137,6 +5196,15 @@ impl Renderer {
             let sssr_on = std::env::var("KERN_SSSR").as_deref() != Ok("0");
             let trace_prev = (taa_on && self.traced_reflections && light.traced_reflections > 0.5 && !self.simple_lighting)
                 .then(|| histories[vi].as_ref().filter(|hh| hh.size == (w, h)).map(|hh| hh.prev_view_proj)).flatten();
+            // The live bounce of clustered lights (rsm.rs), while a light asks
+            // for it: this view's gather targets and last frame's camera.
+            // KERN_RSM=0 turns it off, KERN_RSM=open drops its visibility test (renderer-switches.md).
+            let rsm_frame = (self.rsm_gather.is_some() && light.gi > 0.0 && std::env::var("KERN_RSM").as_deref() != Ok("0")
+                && self.clustered.lights.lock().unwrap().iter().any(|l| l.bounce && l.shadow.is_some())).then(|| {
+                let vm = camera_view(*cam, camera_up_axes.get(vi).copied());
+                let pm = camera_projections.get(vi).copied().unwrap_or_else(|| Mat4::perspective_infinite_reverse_rh(cam.fov_y, view.w as f32 / view.h as f32, cam.near));
+                self.rsm.lock().unwrap().begin(gpu, vi, (w, h), pm * vm)
+            });
             let gi_u = GiUniform {
                 vol_origins: canopy.origins,
                 vol_anchors: canopy.anchors,
@@ -5152,6 +5220,10 @@ impl Renderer {
                 prev_view_proj: trace_prev.unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
                 // w: the probe visibility maps' aux offset (0: none).
                 trace: [if trace_prev.is_some() { if sssr_on { 2.0 } else { 1.0 } } else { 0.0 }, TRACE_ROUGHNESS_CUT, TRACE_REACH_M, if self.visibility_uploaded.load(std::sync::atomic::Ordering::Relaxed) { self.probe_visibility.map_or(0.0, |o| o as f32) } else { 0.0 }],
+                rsm: [if self.voxels_uploaded.load(std::sync::atomic::Ordering::Relaxed) && std::env::var("KERN_RSM").as_deref() != Ok("open") { self.bounce_voxels.map_or(0.0, |(o, _)| o as f32) } else { 0.0 },
+                    rsm_frame.as_ref().map_or(0.0, |f| if f.prev_view_proj.is_some() { 2.0 } else { 1.0 }),
+                    rsm_frame.as_ref().map_or(0.0, |f| (f.frame & 0xff_ffff) as f32), crate::rsm::TEXELS as f32],
+                rsm_prev: rsm_frame.as_ref().and_then(|f| f.prev_view_proj).unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
             };
             let gi_buf = self.view_uniform(gpu, vi, 0, "gi", bytemuck::bytes_of(&gi_u));
             // A rebuilt canopy level gets its sky transmittance baked now,
@@ -5477,7 +5549,11 @@ impl Renderer {
                 }
                 all[vi].clone().unwrap()
             });
-            let shade_bind_with = |resources: &mut FrameResources, coarse: &wgpu::TextureView| resources.shade.get(
+            // The live bounce: the gather writes `out` and reads `prev`; shade
+            // reads `out` (rsm.wgsl bindings 24..26).
+            let (rsm_store_fallback, rsm_fallback) = { let r = self.rsm.lock().unwrap(); (r.fallback_storage.clone(), r.fallback.clone()) };
+            let rsm_shade = [&rsm_store_fallback, &rsm_fallback, rsm_frame.as_ref().map_or(&rsm_fallback, |f| &f.filter[0])];
+            let shade_bind_with = |resources: &mut FrameResources, coarse: &wgpu::TextureView, rsm: [&wgpu::TextureView; 3]| resources.shade.get(
                 gpu,
                 &self.shade_layout,
                 "cached shade view",
@@ -5502,14 +5578,25 @@ impl Renderer {
                     (20, wgpu::BindingResource::TextureView(voxel_surface.as_ref().unwrap_or(&self.voxel_surface_fallback))),
                     (21, wgpu::BindingResource::TextureView(reflection_history.as_ref().unwrap_or(&self.history_fallback))),
                     (22, wgpu::BindingResource::TextureView(sssr_rays.as_ref().unwrap_or(&self.sssr.fallback))),
+                    (23, wgpu::BindingResource::TextureView(&self.clustered.rsm_array)),
+                    (24, wgpu::BindingResource::TextureView(rsm[0])),
+                    (25, wgpu::BindingResource::TextureView(rsm[1])),
+                    (26, wgpu::BindingResource::TextureView(rsm[2])),
                 ],
             );
-            let shade_bind = shade_bind_with(resources, coarse_target.as_ref().map_or(&self.terrain_coarse_fallback, |t| &t.1));
-            let coarse_binds = coarse_target.as_ref().map(|t| (shade_bind_with(resources, &self.terrain_coarse_fallback),
+            let shade_bind = shade_bind_with(resources, coarse_target.as_ref().map_or(&self.terrain_coarse_fallback, |t| &t.1), rsm_shade);
+            // The gather (out from prev), then the filter: out to a, a to b, b to a.
+            let rsm_binds = rsm_frame.as_ref().map(|f| [[&f.out, &f.prev], [&f.filter[0], &f.out], [&f.filter[1], &f.filter[0]], [&f.filter[0], &f.filter[1]]]
+                .map(|[w, r]| shade_bind_with(resources, &self.terrain_coarse_fallback, [w, r, &rsm_fallback])));
+            let coarse_binds = coarse_target.as_ref().map(|t| (shade_bind_with(resources, &self.terrain_coarse_fallback, rsm_shade),
                 gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("terrain coarse out"), layout: &self.terrain_coarse_layout,
                     entries: &[wgpu::BindGroupEntry { binding: 32, resource: wgpu::BindingResource::TextureView(&t.1) }] })));
             let mut passes: Vec<(&'static str, &wgpu::ComputePipeline, Vec<&wgpu::BindGroup>)> = Vec::new();
             if let (Some(coarse), Some((bind, out))) = (&self.terrain_coarse, &coarse_binds) { passes.push(("terrain coarse", coarse, vec![&self.scene_bind, bind, &self.empty_bind, out])); }
+            if let (Some(p), Some(binds)) = (&self.rsm_gather, &rsm_binds) {
+                passes.push(("rsm gather", &p.gather, vec![&self.scene_bind, &binds[0], &self.clustered.bind]));
+                for k in 0..3 { passes.push(("rsm filter", &p.filters[k], vec![&self.scene_bind, &binds[k + 1], &self.clustered.bind])); }
+            }
             let diagnostic = (light.debug != 0.0 && !self.simple_lighting).then(|| self.shade_diagnostic.get_or_init(|| {
                 let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade diagnostics"),
                     source: wgpu::ShaderSource::Wgsl(self.shade_text.as_str().into()) });
@@ -5593,7 +5680,8 @@ impl Renderer {
                     for (k, b) in bindings.iter().enumerate() { pass.set_bind_group(k as u32, *b, &[]); }
                     pass.set_pipeline(pipe);
                     // The coarse terrain pass runs one invocation per 2x2 pixels.
-                    let (dw, dh) = if label == "terrain coarse" { (w.div_ceil(2), h.div_ceil(2)) } else { (w, h) };
+                    let (dw, dh) = if label == "terrain coarse" { (w.div_ceil(2), h.div_ceil(2)) }
+                        else if label == "rsm gather" || label == "rsm filter" { (w.div_ceil(crate::rsm::scale(h)), h.div_ceil(crate::rsm::scale(h))) } else { (w, h) };
                     pass.dispatch_workgroups(dw.div_ceil(8), dh.div_ceil(8), 1);
                     drop(pass);
                 }
