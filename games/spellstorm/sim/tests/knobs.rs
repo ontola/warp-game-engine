@@ -11,9 +11,10 @@ static LOCK: Mutex<()> = Mutex::new(());
 #[test]
 fn a_knobs_file_round_trips_and_reports_bad_lines() {
     let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut text = file_text();
-    text = text.replace("wizard_speed = 5.2", "wizard_speed = 7");
-    text += "nope = 1\nroll_speed = fast\n";
+    assert!(BUILT_IN.contains("wizard_speed = 5.2,"));
+    let text = BUILT_IN
+        .replace("wizard_speed = 5.2,", "wizard_speed = 7,")
+        .replace("-- @end", "    nope = 1,\n    roll_speed = fast,\n-- @end");
     let errs = load(&text);
     assert_eq!(wizard_speed(), 7.0);
     assert_eq!(roll_speed(), 12.5);
@@ -22,14 +23,14 @@ fn a_knobs_file_round_trips_and_reports_bad_lines() {
     assert_eq!(wizard_speed(), 5.2);
 }
 
-/// One new player with the shipped knobs.txt: only the walls past the two
+/// One new player with the shipped mods/base/knobs.luau: only the walls past the two
 /// clearings' fights, no practice strip walls every ten metres, and they
 /// start with their first two elements. (Here, not in run.rs: loading the
 /// shipped knobs there changed them under the other tests' worlds.)
 #[test]
 fn a_new_player_meets_only_the_clearing_walls() {
     let _turn = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let errors = load(include_str!("../../knobs.txt"));
+    let errors = load(BUILT_IN);
     assert!(errors.is_empty(), "{errors:?}");
     let w = World::new(&[Seat::player(0, "Joep")], 7, Settings::default());
     assert!(w.run.practice.is_none());

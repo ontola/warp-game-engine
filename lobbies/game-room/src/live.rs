@@ -116,6 +116,12 @@ pub struct Lobby {
     pub show: Show,
     pub prompts: HashMap<String, Prompt>,
     pub prompt_active: HashMap<String, bool>,
+    /// Prompts shown to nobody in particular, to show new players what to
+    /// do (the TV before the first game, doors with a waiting profile):
+    /// they hop instead of bobbing.
+    pub nudges: std::collections::HashSet<String>,
+    /// A game has run since the room opened: the TV stops nudging.
+    pub started_once: bool,
     /// Each prompt's glow, easing towards lit while someone stands there.
     prompt_glow: HashMap<String, f32>,
     pub mood: Mood,
@@ -152,6 +158,8 @@ pub struct Lobby {
     pub(crate) featured_visible: bool,
     pub(crate) bumpers_visible: bool,
     display_active: Option<bool>,
+    /// When the host last handed the screen over or took it back.
+    display_at: std::time::Instant,
     pub(crate) quit: bool,
     pub(crate) web_tx: Sender<Web>,
     web_rx: Receiver<Web>,
@@ -228,12 +236,12 @@ impl Lobby {
         let (web_tx, web_rx) = std::sync::mpsc::channel();
         let mut lobby = Self {
             build, stage, actors_view: actors_view.expect("actor meshes"), world: World::new(7), host: Host::new(&lobby_id), client, profiles: vec![], actors: HashMap::new(),
-            next_order: 0, sheets_dirty: true, screen: None, show: Show::default(), prompts: HashMap::new(), prompt_active: HashMap::new(), prompt_glow: HashMap::new(),
+            next_order: 0, sheets_dirty: true, screen: None, show: Show::default(), prompts: HashMap::new(), prompt_active: HashMap::new(), nudges: Default::default(), started_once: false, prompt_glow: HashMap::new(),
             mood: Mood::default(), animated, time: 0.0, since_paint: 0.0, screens_dirty: true, local: vec![], bots: HashMap::new(), rng: Pcg::new(42), uploaded: false,
             props: props.expect("props"), board: board.expect("board"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
             bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), holds: HashMap::new(), station_cooldown: HashMap::new(),
             pickup_cooldown: 0.0, item_presses: HashMap::new(), pressed_flash: HashMap::new(), claims: HashMap::new(), pop_box: None, featured_visible: false,
-            bumpers_visible: false, display_active: None, quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, hud_size: [1920, 1080], mouse: Default::default(),
+            bumpers_visible: false, display_active: None, display_at: std::time::Instant::now(), quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, hud_size: [1920, 1080], mouse: Default::default(),
         };
         lobby.prompts = lobby.build.prompts.iter().map(|p| (p.name.clone(), Prompt {
             items: p.items.iter().map(|(k, t)| (k.clone(), t.clone(), true)).collect(), enabled: true, ..Default::default() })).collect();
@@ -457,6 +465,7 @@ impl Lobby {
     fn focus_changed(&mut self, active: bool) {
         if self.display_active == Some(active) { return; }
         self.display_active = Some(active);
+        self.display_at = std::time::Instant::now();
         self.suspend_input();
     }
 
@@ -530,6 +539,12 @@ impl Lobby {
         if ids != self.last_queue { self.last_queue = ids; }
     }
 
+    /// How far a prompt floats up now: a slow bob, or a hop while it nudges.
+    pub(crate) fn prompt_bob(&self, name: &str, x: f32) -> f32 {
+        // The doors hop lower than the TV: picking up is a gentler hint.
+        if self.nudges.contains(name) { (self.time * 3.2).sin().abs() * if name == "tv" { 0.22 } else { 0.1 } } else { (self.time * 2.2 + x).sin() * 0.05 }
+    }
+
     /// Room parts the lobby moves: prompts (shown, bobbing, glowing), the
     /// featured box and the shelf bumpers.
     fn pose_parts(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, delta: f32) -> Result<(), String> {
@@ -538,7 +553,7 @@ impl Lobby {
             let active = self.prompt_active.get(&p.name).copied().unwrap_or(false);
             let screen = self.build.screens.iter().find(|s| s.name == format!("prompt_{}", p.name));
             let stretch = screen.map_or(1.0, |s| PROMPT_WIDTH as f32 / s.size[0] as f32);
-            let bob = Vec3::new(0.0, (self.time * 2.2 + p.pos.x).sin() * 0.05, 0.0);
+            let bob = Vec3::new(0.0, self.prompt_bob(&p.name, p.pos.x), 0.0);
             let at = Affine3A::from_scale_rotation_translation(Vec3::new(stretch, 1.0, 1.0), Quat::IDENTITY, p.pos + bob);
             self.stage.room.dump.instances[p.instance].transform = glam::Mat4::from(at).to_cols_array();
             changed.push((p.instance, active));
@@ -604,6 +619,11 @@ impl Lobby {
                 *v = (*v - delta / 0.36).max(0.0);
                 animating = true;
                 if *v == 0.0 { p.pressed = None; }
+            }
+            if p.conceal != p.conceal_to {
+                let step = delta / 0.45;
+                p.conceal = if (p.conceal - p.conceal_to).abs() <= step { p.conceal_to } else { p.conceal + (p.conceal_to - p.conceal).signum() * step };
+                animating = true;
             }
         }
         for v in &mut self.show.bumper_presses { if *v > 0.0 { *v = (*v - delta / 0.36).max(0.0); animating = true; } }
@@ -696,7 +716,17 @@ impl Game for Lobby {
     fn pointer(&mut self, pointer: app::Pointer, size: [u32; 2]) { self.mouse_input(pointer, size); }
 
     /// Escape is the mouse's Start: the room never closes on it.
-    fn escape(&mut self) -> bool { self.mouse_escape(); true }
+    /// The game handing the screen back keeps rendering for a moment
+    /// (about 1.6 s before it hides): those frames are not the room's cost.
+    fn hold_quality(&self) -> bool { self.display_active == Some(false) || self.display_at.elapsed().as_secs_f32() < 3.0 }
+
+    fn escape(&mut self) -> bool {
+        // Escape belongs to the game in front; the one that closed it may
+        // still reach the room as it comes back, so ignore it for a moment.
+        let ours = self.display_active != Some(false) && self.display_at.elapsed().as_secs_f32() > 0.75;
+        if ours { self.mouse_escape(); }
+        true
+    }
 
     fn title(&self) -> Option<String> { Some("Gamepad Party Game Room".into()) }
 

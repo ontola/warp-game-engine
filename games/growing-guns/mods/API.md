@@ -12,6 +12,7 @@ A module returns a table of this type (every key optional):
 ```luau
 type Exports = {
 	cards: { Card }?,
+	gun: Gun?,
 	hit: ((g: Game, e: Hit) -> number?)?,
 	kill: ((g: Game, e: Kill) -> ())?,
 	tick: ((g: Game) -> ())?,
@@ -19,6 +20,7 @@ type Exports = {
 }
 ```
 
+- `gun`: The rifle before any card, every field required (mods/base/gun.luau; a later module wins). Weapons are rebuilt on it each round, so an edit applies at the next round; a broken one keeps the gun before.
 - `hit`: Before damage lands. Return the damage to deal (nil keeps it). Modules chain.
 - `kill`: A player died.
 - `tick`: End of every sim tick (60 per second). Keep it cheap.

@@ -19,11 +19,15 @@ struct GunFeel { phase: f32, bob: f32, bump: f32, tilt: f32, kick: f32, inspect:
 pub struct Guns {
     pub(crate) detail: gun::Detail,
     parts: usize,
+    arms: Vec<super::pov_arms::Arms>,
     /// Mesh per shape, then per material (barrel: one per player, each
     /// with its own material that follows the heat every frame).
     meshes: Vec<Vec<usize>>,
     /// First of the players' barrel materials (consecutive) and their values.
     barrel_first: u32,
+    lamp_mesh: usize,
+    /// Lens transform for the flashlight actually drawn on each rifle.
+    pub(super) lamps: Vec<Option<Affine3A>>,
     barrels: Vec<Material>,
     /// Each player's barrel exit this frame: first person, third person.
     muzzles: Vec<Option<[Vec3; 2]>>,
@@ -49,7 +53,7 @@ impl Guns {
     }
 
     fn reserve_with_detail(scene: &mut Scene, players: usize, detail: gun::Detail) -> Self {
-        let parts = detail.part_capacity();
+        let parts = detail.part_capacity() + 1; // blackout lamp
         let barrels: Vec<Material> = (0..players).map(|_| barrel_material(0.0)).collect();
         let barrel_first = scene.materials.len() as u32;
         for &m in &barrels { scene.add_material(m); }
@@ -74,7 +78,14 @@ impl Guns {
             fp.push(a);
             tp.push(Slots::reserve(scene, parts).first);
         }
-        Guns { detail, parts, meshes, barrel_first, barrels, muzzles: vec![None; players], local: vec![false; players], rigs: vec![Rig::with_detail(detail); players], feel: vec![GunFeel::default(); players], fp, tp, tilt: true, tracked: vec![None; players], tracking: vec![false; players], own: vec![None; players], round: None }
+        let lamp_mesh = flashlight_mesh(scene);
+        Guns { lamp_mesh, lamps: vec![None; players], detail, parts, arms: Vec::new(), meshes, barrel_first, barrels, muzzles: vec![None; players], local: vec![false; players], rigs: vec![Rig::with_detail(detail); players], feel: vec![GunFeel::default(); players], fp, tp, tilt: true, tracked: vec![None; players], tracking: vec![false; players], own: vec![None; players], round: None }
+    }
+
+    pub(super) fn reserve_arms(&mut self, scene: &mut Scene, seed: u64, colors: &[crate::party::PlayerColors]) {
+        self.arms = (0..self.rigs.len().min(8)).map(|i|
+            super::pov_arms::Arms::reserve(scene, seed, i, colors.get(i).copied().unwrap_or_default())
+        ).collect();
     }
 
     pub fn track(&mut self, player: usize, pose: Option<Affine3A>) {
@@ -82,7 +93,7 @@ impl Guns {
     }
     pub fn is_tracked(&self, player: usize) -> bool { self.tracked.get(player).is_some_and(Option::is_some) }
     pub fn tracked_muzzle(&self, player: usize, pose: Affine3A) -> Vec3 {
-        pose.transform_point3(self.rigs[player].build.muzzle)
+        pose.transform_point3(self.rigs[player].muzzle_at(1.0))
     }
 
     // Both the weapon mesh and the support wrist use the same placement.
@@ -111,7 +122,7 @@ impl Guns {
         let Some(rig) = self.rigs.get_mut(player) else { return };
         rig.fire(&Stats::of(p));
         let f = &mut self.feel[player];
-        f.kick = f.kick.max(0.08 * (p.weapon.recoil() / growing_guns::weapon::BASE_RECOIL).clamp(0.2, 2.5));
+        f.kick = f.kick.max(0.08 * (p.weapon.recoil() / p.weapon.gun.recoil).clamp(0.2, 2.5));
     }
 
     /// One tick of gun state: rigs follow their stats (morphs, heat, bolt,
@@ -154,8 +165,11 @@ impl Guns {
     /// camera, third person in the right hand, aimed with the head.
     pub fn pose(&mut self, scene: &mut Scene, world: &World, prev: &[crate::view::Pose], alpha: f32, fx: &EffectsView, hands: &[Option<Affine3A>]) {
         for i in 0..self.rigs.len() {
+            self.lamps[i] = None;
+            if let Some(arms) = self.arms.get(i) { arms.clear(scene); }
             // Slots past the players (a coop wave's enemies gone): empty.
             let Some(p) = world.players.get(i) else {
+                self.muzzles[i] = None;
                 for first in [self.fp[i], self.tp[i]] { empty(scene, first, 0, self.parts); }
                 continue;
             };
@@ -187,11 +201,38 @@ impl Guns {
                 Affine3A::from_rotation_translation(rot * Quat::from_rotation_x(drawn.pitch),
                     pos + Vec3::Y * 0.05 + rot * Vec3::new(0.45, 0.0, -0.12))
             };
-            let visible = p.alive && (!self.tracking[i] || self.tracked[i].is_some());
-            self.muzzles[i] = visible.then(|| [fp.transform_point3(rig.build.muzzle), tp.transform_point3(rig.build.muzzle)]);
+            let ground = world.ground_rifle(i);
+            let held = p.alive && !world.awaiting_rifle(i) && (!self.tracking[i] || self.tracked[i].is_some());
+            if self.local[i] && p.alive && !p.ghost && !self.tracking[i] {
+                if let Some(arms) = self.arms.get(i) {
+                    if held {
+                        arms.hold(scene, fp, rig.contacts_at(alpha), &reload);
+                    } else {
+                        arms.brace(scene, view, world.entrance_flight());
+                    }
+                }
+            }
+            let exit = rig.muzzle_at(alpha);
+            self.muzzles[i] = held.then(|| [fp.transform_point3(exit), tp.transform_point3(exit)]);
+            let ground_pose = ground.map(|floor| Affine3A::from_rotation_translation(
+                Quat::from_rotation_y(0.75) * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+                floor + Vec3::Y * rig.build.resting_height().max(0.03),
+            ));
+            let visible = held || ground_pose.is_some();
+            // The clamp attaches to the front underside of the growing receiver.
+            let lamp = (visible && world.modifier == Some(growing_guns::Modifier::Blackout)).then(|| {
+                let (_, receiver) = rig.pose_at(0., alpha).next().expect("rifle receiver");
+                Vec3::new(0., -0.5 * receiver.matrix3.y_axis.length(), -0.5 * receiver.matrix3.z_axis.length() + 0.012)
+            });
+            self.lamps[i] = lamp.map(|mount| {
+                let weapon = ground_pose.unwrap_or(if self.local[i] { fp } else { tp });
+                weapon * Affine3A::from_translation(mount + LAMP_LENS)
+            });
             for (first, xf, drop) in [(self.fp[i], fp, reload.view_drop), (self.tp[i], tp, reload.hand_drop)] {
-                let children = rig.pose_at(drop, alpha).take(if visible { self.parts } else { 0 })
-                    .map(|(part, local)| (self.mesh(part.shape, part.mat, i), local));
+                let xf = ground_pose.unwrap_or(xf);
+                let children = rig.pose_at(drop, alpha).take(if visible { self.parts - 1 } else { 0 })
+                    .map(|(part, local)| (self.mesh(part.shape, part.mat, i), local))
+                    .chain(lamp.map(|mount| (self.lamp_mesh, Affine3A::from_translation(mount))));
                 let n = scene.update_children(first, xf, children);
                 empty(scene, first, n, self.parts);
             }
@@ -262,20 +303,15 @@ impl Guns {
     /// Each local player sees only their own first-person gun, and not
     /// their own third-person one.
     pub fn hide_own(&mut self, scene: &mut Scene, slots: &[usize]) {
-        self.local.fill(false);
-        for (&tp, &fp) in self.tp.iter().zip(&self.fp) {
-            for n in 0..self.parts {
-                scene.instances[tp + n].hide_in_views(0);
-                scene.instances[fp + n].hide_in_views(0xff);
+        for (player, (&fp, &tp)) in self.fp.iter().zip(&self.tp).enumerate() {
+            let views = render::scene::PlayerViews::for_player(slots, player);
+            self.local[player] = views.hide_from_owner() != 0;
+            if let Some(arms) = self.arms.get(player) { arms.mask(scene, views.hide_from_others()); }
+            for part in &mut scene.instances[fp..fp + self.parts] {
+                part.hide_in_views(views.hide_from_others());
             }
-        }
-        for &s in slots { if let Some(l) = self.local.get_mut(s) { *l = true; } }
-        for &s in slots.iter().take(8) {
-            if s >= self.tp.len() { continue; }
-            for n in 0..self.parts {
-                let mask = slots.iter().enumerate().take(8).filter(|(_, slot)| **slot == s).fold(0u8, |m, (v, _)| m | (1 << v));
-                scene.instances[self.tp[s] + n].hide_in_views(mask);
-                scene.instances[self.fp[s] + n].hide_in_views(!mask);
+            for part in &mut scene.instances[tp..tp + self.parts] {
+                part.hide_in_views(views.hide_from_owner());
             }
         }
     }
@@ -283,10 +319,11 @@ impl Guns {
     /// Current tracked barrel end in VR; otherwise the last drawn barrel end
     /// in the local first-person view or the remote player's hand.
     pub fn muzzle(&self, i: usize) -> Option<Vec3> {
-        if self.tracking.get(i).copied().unwrap_or(false) {
+        let [fp, tp] = self.muzzles.get(i).copied().flatten()?;
+        if self.tracking[i] {
             return self.tracked[i].map(|pose|self.tracked_muzzle(i,pose));
         }
-        self.muzzles.get(i).copied().flatten().map(|[fp, tp]| if self.local[i] { fp } else { tp })
+        Some(if self.local[i] { fp } else { tp })
     }
 
     /// Upload the barrels' heat glow.
@@ -303,6 +340,29 @@ impl Guns {
         }
         unreachable!("listed material")
     }
+}
+
+// Lens centre in attachment space. Put the shadow camera just beyond the bezel.
+const LAMP_LENS: Vec3 = Vec3::new(0., -0.035, -0.120);
+
+fn flashlight_mesh(scene: &mut Scene) -> usize {
+    let metal = gun_material(scene, gun::Mat::Dark);
+    let bezel = gun_material(scene, gun::Mat::Bolt);
+    let lens = glow(scene, [1., 0.97, 0.88], 6000.);
+    let barrel = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+    let mut pieces = [
+        (primitives::cube(metal), Vec3::new(0.032, 0.025, 0.054), Quat::IDENTITY, Vec3::new(0., -0.009, 0.)),
+        (primitives::cylinder(metal, 1., 1., 16), Vec3::new(0.020, 0.14, 0.020), barrel, Vec3::new(0., -0.035, -0.024)),
+        (primitives::cylinder(bezel, 0.8, 1., 16), Vec3::new(0.029, 0.039, 0.029), barrel, Vec3::new(0., -0.035, -0.097)),
+        (primitives::cylinder(lens, 1., 1., 16), Vec3::new(0.023, 0.002, 0.023), barrel, LAMP_LENS + 0.003 * Vec3::Z),
+    ];
+    for (primitive, size, rotation, centre) in &mut pieces {
+        for v in &mut primitive.vertices {
+            v.pos = (*rotation * (*size * Vec3::from(v.pos)) + *centre).into();
+            v.normal = (*rotation * (Vec3::from(v.normal) / *size).normalize()).into();
+        }
+    }
+    scene.add_mesh(&render::cluster::ClusterMesh::build(&pieces.each_ref().map(|piece| piece.0.part())))
 }
 
 /// Same dimensions at both detail levels, so no joint or animation changes.
@@ -604,6 +664,49 @@ mod xr_tests {
     }
 
     #[test]
+    fn ground_rifle_becomes_held_in_both_views_on_touchdown() {
+        let mut world = World::new(3, &[false, false]);
+        let mut scene = Scene::default();
+        let mut guns = Guns::reserve_with_detail(&mut scene, 2, gun::Detail::Low);
+        let arm_start = scene.instances.len();
+        guns.reserve_arms(&mut scene, 3, &[]);
+        world.modifier = Some(growing_guns::Modifier::Blackout);
+        let fx = EffectsView::reserve(&mut scene, 3);
+        guns.hide_own(&mut scene, &[0, 1]);
+        guns.tick(&world, 0.0);
+        for _ in 0..164 { world.step(&[]); }
+        let mut open_hands = [0; 4];
+        for armed in [false, true] {
+            guns.pose(&mut scene, &world, &[], 1.0, &fx, &[]);
+            for i in 0..2 {
+                for first in [guns.fp[i], guns.tp[i]] {
+                    assert!(scene.instances[first].cluster_count > 0);
+                    if !armed {
+                        let centre = Vec3::from_slice(&scene.instances[first].sphere[..3]);
+                        assert!(centre.distance(world.ground_rifle(i).unwrap()) < 0.4);
+                    }
+                }
+                let lamp = guns.lamps[i].expect("equipped blackout lamp");
+                let near_floor = lamp.translation.y < world.players[i].pos.y - 0.5;
+                assert_eq!(near_floor, !armed);
+                for side in 0..2 {
+                    let k = 2 * i + side;
+                    let hand = &scene.instances[arm_start + k];
+                    assert!(hand.cluster_count > 0);
+                    assert_eq!((hand.flags >> render::scene::HIDE_IN_VIEW_SHIFT) as u8, !(1 << i));
+                    if armed { assert_ne!(hand.first_cluster, open_hands[k]); }
+                    else { open_hands[k] = hand.first_cluster; }
+                }
+                assert_eq!(guns.muzzle(i).is_some(), armed);
+            }
+            world.step(&[]);
+        }
+        world.modifier = None;
+        guns.pose(&mut scene, &world, &[], 1., &fx, &[]);
+        assert!(guns.lamps.iter().all(Option::is_none));
+    }
+
+    #[test]
     fn gun_box_preserves_mounting_dimensions_and_is_closed() {
         let mesh = gun_box(0);
         let mut edges = std::collections::BTreeMap::new();
@@ -637,6 +740,27 @@ mod xr_tests {
         assert_eq!(hidden(guns.tp[1]) & 3,0);
     }
     #[test]
+    fn split_screen_reassignment_updates_every_gun_part() {
+        let mut scene = Scene::default();
+        let mut guns = Guns::reserve_with_detail(&mut scene, 3, gun::Detail::Low);
+        for (slots, owners) in [
+            (&[2, 0][..], [2u8, 0, 1]),
+            (&[1, 1, 0][..], [4, 3, 0]),
+            (&[][..], [0, 0, 0]),
+        ] {
+            guns.hide_own(&mut scene, slots);
+            for (player, mask) in owners.into_iter().enumerate() {
+                assert_eq!(guns.local[player], mask != 0);
+                for (first, hidden) in [(guns.fp[player], !mask), (guns.tp[player], mask)] {
+                    for instance in &scene.instances[first..first + guns.parts] {
+                        assert_eq!((instance.flags >> render::scene::HIDE_IN_VIEW_SHIFT) as u8, hidden);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn low_guns_reduce_geometry_without_glass_or_mounting_changes() {
         use gun::{Detail, Look, Mat};
         let cases = [Stats::default(), Stats { poison: 0.7, cooling: 0.52, ..Default::default() },
@@ -661,7 +785,7 @@ mod xr_tests {
         let mut scene = Scene::default();
         let guns = Guns::reserve_with_detail(&mut scene, 2, Detail::Low);
         assert!(scene.blended_materials.is_empty());
-        assert_eq!(scene.instances.len(), 4 * Detail::Low.part_capacity());
+        assert_eq!(scene.instances.len(), 4 * (Detail::Low.part_capacity() + 1), "each view reserves one blackout lamp per rifle");
         guns.review_pose(&mut scene, &Rig::with_detail(Detail::Low));
         // Cylinder extrema still meet the unchanged sights and magazine mount.
         for shape in [gun::Shape::Box, gun::Shape::Cyl, gun::Shape::Drum] {

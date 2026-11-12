@@ -205,13 +205,20 @@ impl Lobby {
 fn path_part(s: &str) -> String { s.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')).collect() }
 
 /// Windows keeps a background process from taking focus unless the foreground
-/// app hands it over; the host ships a helper that does
-/// (GAMENIGHT_FOREGROUND_HELPER --allow-foreground).
+/// app hands it over. The lobby is in front, so it hands it over itself, in
+/// place, right before asking for a game. It used to start the host's helper
+/// (GAMENIGHT_FOREGROUND_HELPER --allow-foreground) and wait for it, which
+/// held every Y and Resume back by about a second on the Mancave.
 fn allow_game_foreground() {
-    if !cfg!(windows) { return; }
-    let Ok(helper) = std::env::var("GAMENIGHT_FOREGROUND_HELPER") else { return };
-    if helper.is_empty() || !std::path::Path::new(&helper).is_file() { return; }
-    let _ = std::process::Command::new(helper).arg("--allow-foreground").status();
+    #[cfg(windows)]
+    {
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn AllowSetForegroundWindow(process_id: u32) -> i32;
+        }
+        // ASFW_ANY: the game's process id is not known here.
+        unsafe { AllowSetForegroundWindow(u32::MAX); }
+    }
 }
 
 /// A tiny HTTP/1.1 client for the host's loopback web port (3 s timeout).

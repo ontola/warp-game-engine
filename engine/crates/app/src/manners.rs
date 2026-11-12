@@ -196,11 +196,19 @@ pub fn stamp() -> String {
 }
 
 /// Windows keeps a background process from taking focus unless the
-/// foreground app hands it over; the host ships a helper that does
-/// (GAMENIGHT_FOREGROUND_HELPER --allow-foreground).
+/// foreground app hands it over. This process is in front, so it hands it
+/// over itself, in place. It used to start the host's helper
+/// (GAMENIGHT_FOREGROUND_HELPER --allow-foreground) and wait for it: on the
+/// Mancave that took about a second, on every Back, with the game frozen on
+/// the TV in the meantime (Godot lobbies still need the helper).
 fn allow_foreground() {
-    if !cfg!(windows) { return; }
-    let Ok(helper) = std::env::var("GAMENIGHT_FOREGROUND_HELPER") else { return };
-    if helper.is_empty() || !std::path::Path::new(&helper).is_file() { return; }
-    let _ = std::process::Command::new(helper).arg("--allow-foreground").status();
+    #[cfg(windows)]
+    {
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn AllowSetForegroundWindow(process_id: u32) -> i32;
+        }
+        // ASFW_ANY: the lobby's process id is not known here.
+        unsafe { AllowSetForegroundWindow(u32::MAX); }
+    }
 }

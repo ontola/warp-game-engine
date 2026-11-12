@@ -442,18 +442,16 @@ impl Game for Racer {
     fn mouse_capture(&self) -> Option<bool> {
         Some(false)
     }
+    /// Escape works like Start: it opens and closes Space Racer's own menu,
+    /// also under the host. Only Back goes to the lobby.
     fn escape(&mut self) -> bool {
-        if let Some(p) = &self.party {
-            p.overlay();
-        } else {
-            if !self.race_started { return true; }
-            if self.menu.is_some() && self.settings_dirty {
-                if let Err(e) = self.start_new_race() {
-                    self.fatal = Some(e);
-                }
-            } else {
-                self.menu = if self.menu.is_some() { self.race_started=true; None } else { Some(0) };
+        if self.party.is_none() && !self.race_started { return true; }
+        if self.menu.is_some() && self.settings_dirty {
+            if let Err(e) = self.start_new_race() {
+                self.fatal = Some(e);
             }
+        } else {
+            self.menu = if self.menu.is_some() { self.race_started=true; None } else { Some(0) };
         }
         true
     }

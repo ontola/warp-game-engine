@@ -76,7 +76,7 @@ impl WizardAnim {
             let rest = kit.nodes[s].xf.w_axis.truncate();
             // Shaken (R3): it rattles side to side as well.
             let k = (w.shake_t / spellstorm::wizard::SHAKE_TIME) as f32;
-            let roll = if k > 0.0 { ((1.0 - k) * 9.0 * std::f32::consts::TAU).sin() * 0.45 * k } else { 0.0 };
+            let roll = if k > 0.0 { ((1.0 - k) * 3.0 * std::f32::consts::TAU).sin() * 0.18 * (k * std::f32::consts::PI).sin() } else { 0.0 };
             pose.insert(s, trs(Vec3::new(rest.x, rest.y, w.staff_z), euler(Vec3::new(w.staff_rx, 0.0, roll)), Vec3::ONE));
         }
         let k12 = 1.0 - (-12.0 * dt).exp();
@@ -160,7 +160,14 @@ pub struct EnemyAnim {
     /// Its motion-captured body (rig.rs), and the hurt_t it last saw.
     pub body: body::Gait,
     pub hurt_seen: f64,
+    /// Seconds since it came into the world: it is made before your eyes
+    /// for the first MATERIALIZE of them.
+    pub born: f32,
 }
+
+/// How long a monster takes to be made as it comes in (Joep: its mesh
+/// built up, not a purple ball).
+pub const MATERIALIZE: f32 = 0.9;
 
 /// How a monster's body goes (Enemy._death), by its model.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -216,6 +223,7 @@ impl EnemyAnim {
         if self.scale == 0.0 {
             self.scale = base;
         }
+        self.born += dt;
         let moving = a.vel.length() > 0.4;
         self.walk += dt * if moving { 8.0 } else { 0.0 } * a.speed as f32 / 3.0;
         if !a.alive {

@@ -297,7 +297,7 @@ impl World {
     pub fn start_at(&mut self, biome: i32) {
         use crate::rng::Rand;
         self.new_run();
-        let n = crate::biome::BIOMES.len();
+        let n = crate::biome::biomes().len();
         let b = if biome < 0 { self.rng.pick(n) } else { (biome as usize).min(n - 1) };
         if b > 0 {
             self.run.biome_index = b;
@@ -321,7 +321,7 @@ impl World {
         // moves: the value the host sends on connecting keeps the run.
         if key == "level" {
             let n: i32 = value.split(|c: char| !c.is_ascii_digit()).find(|t| !t.is_empty()).and_then(|t| t.parse().ok()).unwrap_or(1);
-            let b = (n - 1).clamp(0, crate::biome::BIOMES.len() as i32 - 1);
+            let b = (n - 1).clamp(0, crate::biome::biomes().len() as i32 - 1);
             if b != self.settings.level {
                 self.settings.level = b;
                 self.start_at(b);

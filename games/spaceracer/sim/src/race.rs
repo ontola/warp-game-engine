@@ -98,6 +98,8 @@ pub struct Driver {
     pub last_jink: f64,
     pub rail_preview:Option<crate::railgun::Trace>,
     pub rail_preview_at:f64,
+    /// Rival inside the rail circle, even when scenery blocks the shot.
+    pub rail_candidate:Option<usize>,
 }
 #[derive(Clone, Debug)]
 pub struct Pickup {
@@ -259,7 +261,7 @@ impl Race {
                 ai_style: style,
                 boost_ready: 4. + i as f64 * 0.7,
                 last_jink: -99.,
-                rail_preview:None,rail_preview_at:-1.,
+                rail_preview:None,rail_preview_at:-1.,rail_candidate:None,
             });
         }
         let mut pickups = vec![];
@@ -402,7 +404,10 @@ impl Race {
                 serde_json::json!({"ahead":ahead,"curve":v.curve,"hairpin":v.feature=="hairpin"})
             })
             .collect();
-        let mut args = serde_json::json!({"p":p,"node":{"curve":n.curve,"width":n.geometry.width,"zone":n.zone,"split_gap":n.split_gap,"route":n.preferred_route},"preview":preview,"hard":track.difficulty=="hard","boost_speed":BOOST_SPEED,"line":d.ai_line,"pace":d.ai_pace,"style":d.ai_style,"pickup":pickup,"next_curve":next.curve,"next_route":next.preferred_route,"boost_ready":boost_request,"missed":d.checkpoint.missed,"has_item":d.item.is_some() && (d.item != Some(Weapon::GlideBomb) || self.lob_ready(i)),"fire_tick":self.tick%120==i as u64*17,
+        // Only the pilot fields `ai` reads: converting the whole Pilot into a
+        // Luau table on every tick for every AI ship cost most of the sim.
+        let pilot = serde_json::json!({"airborne":p.airborne,"speed":p.speed,"x":p.x,"energy":p.energy,"slot":p.slot,"slide":p.slide,"heading":p.heading,"slip":p.slip,"lap":p.lap,"boost_cost":p.boost_cost,"boost":p.boost});
+        let mut args = serde_json::json!({"p":pilot,"node":{"curve":n.curve,"width":n.geometry.width,"zone":n.zone,"split_gap":n.split_gap,"route":n.preferred_route},"preview":preview,"hard":track.difficulty=="hard","boost_speed":BOOST_SPEED,"line":d.ai_line,"pace":d.ai_pace,"style":d.ai_style,"pickup":pickup,"next_curve":next.curve,"next_route":next.preferred_route,"boost_ready":boost_request,"missed":d.checkpoint.missed,"has_item":d.item.is_some() && (d.item != Some(Weapon::GlideBomb) || self.lob_ready(i)),"fire_tick":self.tick%120==i as u64*17,
             "near_jump":self.world.jump_distances.iter().any(|j|(j[0]-p.distance).rem_euclid(track.length)<500.),"at_jump":self.world.jump_distances.iter().any(|j|(j[0]-p.distance).rem_euclid(track.length)<180.)});
         if p.airborne {
             let (at, _, _) = track.project(d.motion.air.position, p.distance, track.length);
@@ -852,10 +857,11 @@ impl Race {
                 if self.clock>=self.drivers[i].rail_preview_at {
                     let aim=input.get(i).and_then(|c|c.rail_aim);
                     let quick=self.rail_trace(i,aim,false);
+                    self.drivers[i].rail_candidate=quick.target;
                     self.drivers[i].rail_preview=Some(if quick.target.is_some(){self.rail_trace(i,aim,true)}else{quick});
                     self.drivers[i].rail_preview_at=self.clock+0.075;
                 }
-            }else{self.drivers[i].rail_preview=None;self.drivers[i].rail_preview_at=-1.;}
+            }else{self.drivers[i].rail_preview=None;self.drivers[i].rail_preview_at=-1.;self.drivers[i].rail_candidate=None;}
             if self.pilots[i].crashed || self.pilots[i].finished {
                 continue;
             }

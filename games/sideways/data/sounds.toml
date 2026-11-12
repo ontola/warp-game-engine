@@ -2,7 +2,7 @@
 # pressures, delayed along their pipes, through engine-sim's synthesizer
 # and a recorded exhaust impulse response from assets/sound/ir. Read at
 # every run: change a number, render again (`sideways sound`), no rebuild.
-# Models are merged over [base], key by key, like cars.toml (a model's
+# Models are merged over [base], key by key, like the cars in cars.luau (a model's
 # [synth] table replaces the base one; missing keys take the defaults).
 
 # Every car in play and `sideways sound --race` gets this engine: the

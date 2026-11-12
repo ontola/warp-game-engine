@@ -3,6 +3,8 @@
 use glam::{Affine3A, Vec2, Vec3};
 use crate::{environment::Obstacle, race::{Race,Weapon}};
 pub const MUZZLE:Vec3=Vec3::new(0.,1.47,1.9);
+/// Metres the road may bulge over the shot line before it blocks it.
+pub const ROAD_CLEARANCE:f32=3.;
 #[derive(Clone,Copy,Debug,serde::Serialize,serde::Deserialize)]
 pub struct Aim {pub eye:[f32;3],pub forward:[f32;3],pub right:[f32;3],pub up:[f32;3],pub radius:f32}
 impl Aim {
@@ -74,36 +76,73 @@ impl Race {
         d.item==Some(Weapon::Railgun) && d.active.is_none() && !p.crashed && !p.finished
             && p.recovery<=0. && p.emp_time<=0. && p.warp_time<=0. && self.countdown<=0. && !self.over
     }
-    pub fn rail_trace(&self,i:usize,view:Option<Aim>,scenery:bool)->Trace {
-        let pose=self.pose(i);let from=pose.origin+pose.basis*MUZZLE;
-        let ahead=from+pose.basis.z_axis*200.;
-        let center=view.and_then(|v|v.project(ahead));
-        let mut to=from+pose.basis.z_axis*self.combat.rail_range;let mut best=1.000001;
-        for j in 0..self.pilots.len() {
-            let p=&self.pilots[j];
-            if j==i || p.crashed || p.finished || p.recovery>0. || p.warp_time>0. {continue;}
-            let body=self.pose(j);let point=body.origin+body.basis.y_axis*0.6;
-            let local=pose.basis.transpose()*(point-from);
-            if local.z<=0.01 || point.distance(from)>self.combat.rail_range {continue;}
-            let error=if let (Some(v),Some(c))=(view,center) {
-                v.project(point).map_or(f32::INFINITY,|q|q.distance(c)/v.radius)
-            } else {local.truncate().length()/(local.z*self.combat.rail_tangent)};
-            if error<best {best=error;to=point;}
+    /// Select an aim point within the guide. Obstructions are resolved along
+    /// the resulting straight ray, so a closer hull can intercept the shot.
+    fn rail_aim_point(&self, shooter: usize, from: Vec3, basis: glam::Mat3, view: Option<Aim>) -> Vec3 {
+        let ahead = from + basis.z_axis * 200.0;
+        let guide = view.and_then(|aim| aim.project(ahead).map(|center| (aim, center)));
+        let mut best_error = 1.000001;
+        let mut end = from + basis.z_axis * self.combat.rail_range;
+        for (index, pilot) in self.pilots.iter().enumerate() {
+            if index == shooter || pilot.crashed || pilot.finished || pilot.recovery > 0.0 || pilot.warp_time > 0.0 {
+                continue;
+            }
+            let body = self.pose(index);
+            let point = body.origin + body.basis.y_axis * 0.6;
+            let local = basis.transpose() * (point - from);
+            if local.z <= 0.01 || point.distance(from) > self.combat.rail_range {
+                continue;
+            }
+            let error = match guide {
+                Some((aim, center)) => aim.project(point)
+                    .map_or(f32::INFINITY, |projected| projected.distance(center) / aim.radius),
+                None => local.truncate().length() / (local.z * self.combat.rail_tangent),
+            };
+            if error < best_error {
+                best_error = error;
+                end = point;
+            }
         }
-        let end=to;let mut closest=1.00001;let mut target=None;
-        for j in 0..self.pilots.len() {
-            let p=&self.pilots[j];if j==i || p.crashed || p.finished {continue;}
-            let body=self.pose(j);
-            let hull=Obstacle::oriented(Vec3::new(-4.5,-0.7,-4.),Vec3::new(4.5,2.1,4.),Affine3A::from_mat3_translation(body.basis,body.origin));
-            if let Some((t,_))=hull.trace(from,end) {if t<closest {
-                closest=t;to=from.lerp(end,t);target=if p.warp_time<=0. && p.recovery<=0. {Some(j)}else{None};
-            }}
+        end
+    }
+
+    pub fn rail_trace(&self, shooter: usize, view: Option<Aim>, scenery: bool) -> Trace {
+        let pose = self.pose(shooter);
+        let from = pose.origin + pose.basis * MUZZLE;
+        let end = self.rail_aim_point(shooter, from, pose.basis, view);
+        let mut shot = Trace { from, to: end, target: None };
+        let mut closest = 1.00001;
+        for (index, pilot) in self.pilots.iter().enumerate() {
+            if index == shooter || pilot.crashed || pilot.finished {
+                continue;
+            }
+            let body = self.pose(index);
+            let hull = Obstacle::oriented(
+                Vec3::new(-4.5, -0.7, -4.0),
+                Vec3::new(4.5, 2.1, 4.0),
+                Affine3A::from_mat3_translation(body.basis, body.origin),
+            );
+            if let Some((fraction, _)) = hull.trace(from, end) {
+                if fraction < closest {
+                    closest = fraction;
+                    shot.to = from.lerp(end, fraction);
+                    shot.target = (pilot.warp_time <= 0.0 && pilot.recovery <= 0.0).then_some(index);
+                }
+            }
         }
         if scenery {
-            let wall=self.obstacles.iter().filter_map(|o|o.trace(from,to).map(|h|h.0)).min_by(f32::total_cmp);
-            let road=self.world.track.sweep_road(from,to).map(|h|h.t);
-            if let Some(t)=wall.into_iter().chain(road).min_by(f32::total_cmp) {to=from.lerp(to,t);target=None;}
+            let wall = self.obstacles.iter()
+                .filter_map(|obstacle| obstacle.trace(from, shot.to).map(|hit| hit.0))
+                .min_by(f32::total_cmp);
+            // The road only blocks when it rises well over the line, so a gentle
+            // crest between two hover racers does not eat a shot inside the circle.
+            let lift = pose.basis.y_axis * ROAD_CLEARANCE;
+            let road = self.world.track.sweep_road(from + lift, shot.to + lift).map(|hit| hit.t);
+            if let Some(fraction) = wall.into_iter().chain(road).min_by(f32::total_cmp) {
+                shot.to = from.lerp(shot.to, fraction);
+                shot.target = None;
+            }
         }
-        Trace{from,to,target}
+        shot
     }
 }

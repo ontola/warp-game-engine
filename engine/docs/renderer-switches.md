@@ -29,6 +29,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_TILED_POST` | Untiled tone mapping and post (same image). |
 | `KERN_SKY_VIS_CACHE` | No cached sky transmittance through the canopy. |
 | `KERN_TRACED_REFLECTIONS` | No traced reflections: glossy surfaces reflect only the sky and the heuristic ground bounce ([dynamic-gi.md](dynamic-gi.md)). |
+| `KERN_SSSR=0` | The single mirror-ray traced reflection instead of the stochastic one (sssr.rs): one ray per pixel blurred by mip, no spatial or temporal resolve ([dynamic-gi.md](dynamic-gi.md)). |
 | `KERN_CAMERA_SUN_OCCLUSION` | Solar haze ignores terrain between camera and sun ([camera sun fog](camera-sun-fog.md)). |
 | `KERN_CUTOUT_LINEAR_RGB` | Alpha-cutout textures mip in sRGB instead of linear RGB. |
 | `KERN_GRASS_LEAF_BRDF`, `KERN_GRASS_SUN_OCCLUSION` | Plain grass lighting, no grass self-shadow from the sun. |
@@ -99,9 +100,13 @@ note linked says why. They are candidates for removal from the code.
 | `KERN_CLUSTER_TRAVERSAL` | Top-down cluster traversal (`terrain_fly` turns it on unless set) | [r46](log/cluster-traversal-r46.md) |
 | `KERN_INSTANCE_BROADPHASE` | Compact colour-view instance selection | [broadphase](log/instance-broadphase.md) |
 | `KERN_STATIC_SUN_CACHE` | Static/dynamic split sun cache | [r45](log/static-sun-cache-r45.md) |
+| `KERN_SHADOW_DISTANCE_LOD` | `=F`: shared sun map casters may be F x coarser than one screen pixel of the nearest camera spans at their distance (2 is the candidate). Not with `KERN_STATIC_SUN_CACHE` | [Sideways GPU cost](log/2026-11-11-sideways-gpu-cost.md) |
 | `KERN_RECEIVER_SHADOW_DEMAND` | Receiver-driven shadow tiles | [r49](log/lod-shadow-demand-r49.md) |
 | `KERN_PAGED_FOLIAGE_SUN` | Paged foliage sun map (excludes the far sun map) | [world lighting](log/world-lighting.md), [distant tree light](log/distant-tree-lighting.md) |
 | `KERN_ASYNC_SHADOW_VALIDATION` | Asynchronous shadow cache validation, far-sun redraws included; on by default since 10 November, `=0` restores the explicit wait | [r61](log/frame-hitches-r61.md) |
+| `KERN_VIRTUAL_SERIAL_CULL` | `=1` restores the old serial per-template loop for virtual branch owners in the cull (the default gives each lane its own template; was ~10 ms at 1440p) | |
+| `KERN_SPLIT_CULL_TIMING` | `=1` times the camera cull's finalize and cluster scatter in their own passes (diagnostic) | |
+| `KERN_CULL_PROFILE` | `=1` prints the cull's owner, cluster and virtual branch distribution at startup | |
 | `KERN_SUN_RECEIVER_PLANE`, `KERN_SUN_TERRAIN_ERROR`, `KERN_SUN_SURFACE_SOURCE`, `KERN_ROCK_VARIATION` | Low-sun shadow and rock variants | [sun shadow diagnostics](log/sun-shadow-diagnostics.md) |
 | `KERN_OWNER_RANGE_INDEX` | Indexed owner ranges | [terrain forest streaming](log/terrain-forest-streaming-2026-11-03.md) |
 | `KERN_RASTER_LARGE_FIRST` | Raster large clusters first | [handoff log](log/handoff.md) |

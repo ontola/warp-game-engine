@@ -24,6 +24,8 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 mod imports;
+pub mod knobs;
+pub mod data;
 use std::collections::BTreeSet;
 pub use mlua;
 
@@ -310,6 +312,13 @@ impl Host {
         }
     }
 
+    /// Run Rust code that builds or reads Luau values (hook arguments, a
+    /// returned table) with the memory cap lifted; see [`unguarded`].
+    pub fn unguarded<R>(&self, f: impl FnOnce(&Lua) -> R) -> R { unguarded(&self.lua, self.limits.memory, f) }
+
+    /// The limits this host was made with.
+    pub fn limits(&self) -> Limits { self.limits }
+
     /// Steps left in the current call's budget.
     pub fn steps_left(&self) -> u32 { self.steps.load(Ordering::Relaxed) }
 
@@ -377,6 +386,20 @@ fn scan(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
 }
 
 fn err(e: mlua::Error) -> String { short(&e) }
+
+/// Run Rust code that builds or reads Luau values with the memory cap
+/// lifted, then put `cap` back. While a cap is set, mlua guards every
+/// allocating call against an out-of-memory error, which makes building a
+/// table from Rust about four times slower (engine/docs/luau-or-rust.md).
+/// The cap still holds for scripts as long as `f` runs no Luau: convert
+/// values here, call hooks outside.
+pub fn unguarded<R>(lua: &Lua, cap: usize, f: impl FnOnce(&Lua) -> R) -> R {
+    struct Restore<'a>(&'a Lua, usize);
+    impl Drop for Restore<'_> { fn drop(&mut self) { let _ = self.0.set_memory_limit(self.1); } }
+    let _ = lua.set_memory_limit(0);
+    let _restore = Restore(lua, cap);
+    f(lua)
+}
 
 /// The message without the Rust-side wrapping and the stack traceback.
 pub fn short(e: &mlua::Error) -> String {
@@ -518,5 +541,14 @@ mod tests {
         let mut h = host();
         let r = h.add_source("a.luau", "local s = string.rep('x', 1e8) return {}");
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn unguarded_puts_the_cap_back() {
+        let mut h = host();
+        let t = h.unguarded(|lua| lua.create_table_from((1..=100).map(|i| (i, i)))).unwrap();
+        assert_eq!(t.raw_len(), 100);
+        // The cap is back for scripts after the conversion.
+        assert!(h.add_source("b.luau", "local s = string.rep('x', 1e8) return {}").is_err());
     }
 }

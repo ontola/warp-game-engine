@@ -362,6 +362,7 @@ impl Hud {
         // World flashes belong beneath gameplay feedback and every interactive UI.
         if f.phoenix[0] > 0.003 { self.screen_tint(d,rect, [1.0, 1.0, 1.0, f.phoenix[0]], clip,false); }
         if f.flash[0] > 0.003 { self.screen_tint(d,rect, [1.0, 0.96, 0.88, f.flash[0]], clip,false); }
+        if world.awaiting_rifle(i) && p.offer.is_none() { return; }
         let picking = p.offer.is_some() || f.exit.is_some();
         // Artillery operators retain the normal scene colours.
         if !picking {
@@ -530,12 +531,13 @@ impl Hud {
         world.players.iter().enumerate().filter(|(_, p)| !p.bot && p.offer.is_some()).map(|(k, _)| self.name(k).to_string()).collect()
     }
 
-    /// World transition: white held 0.25 s, then faded over 0.45 s.
+    /// Fade the round transition while the player is still standing in the audience.
     /// Draw before the per-view HUD, death backdrop, cards and global menus.
     pub fn round_flash(&self, d: &mut HudDrawList) {
-        if self.round_age >= 0.7 { return; }
+        const FADE: f32 = 0.15;
+        if self.round_age >= FADE { return; }
         let clip = [0.0, 0.0, d.size[0] as f32, d.size[1] as f32];
-        let t = ((self.round_age - 0.25) / 0.45).clamp(0.0, 1.0);
+        let t = (self.round_age / FADE).clamp(0.0, 1.0);
         d.begin_overlay();
         self.screen_tint(d,clip, [1.0, 0.98, 0.94, (t * std::f32::consts::FRAC_PI_2).cos()], clip,false);
     }

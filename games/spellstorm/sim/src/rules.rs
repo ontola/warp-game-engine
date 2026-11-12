@@ -8,12 +8,15 @@
 //! - `compose(slots, form, mods) -> Spell`: the grammar (mods/base/spells.luau);
 //! - `effects`: element name -> { dmg, poison, push, burn, chill, wet, shock, slow };
 //! - `tomes`: the shrines' tomes (mods/base/tomes.luau), replacing the list;
+//! - `monsters`, `biomes`: every monster kind and every level
+//!   (mods/base/monsters.luau, biomes.luau), replacing the lists.
 //! - `cast(g, e)`, `hit(g, e)`, `tick(g)`: hooks the sim calls inline.
 //!
-//! Without installed rules (the sim's own tests) the built-in Rust grammar,
-//! effects and tomes stand in; the Luau base files are their exact port and
-//! a test keeps them so.
+//! The base files are the only copy: without installed rules (the sim's own
+//! tests, or inside a hook) the built-in files embedded in BUILTIN answer.
 use crate::el::{self, Effect, El, Kind};
+use crate::biome::Biome;
+use crate::enemy::Kind as Monster;
 use crate::grammar::{Form, Numbers, Shape, Spell, FORMS};
 use crate::relics::{Mod, Mods, Tome};
 use crate::world::{Id, World};
@@ -26,7 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 /// The base modules, for a binary run away from the repository.
-pub const BUILTIN: &[(&str, &str)] = &[("base/spells.luau", include_str!("../../mods/base/spells.luau")), ("base/tomes.luau", include_str!("../../mods/base/tomes.luau"))];
+pub const BUILTIN: &[(&str, &str)] = &[("base/biomes.luau", include_str!("../../mods/base/biomes.luau")), ("base/monsters.luau", include_str!("../../mods/base/monsters.luau")), ("base/spells.luau", include_str!("../../mods/base/spells.luau")), ("base/tomes.luau", include_str!("../../mods/base/tomes.luau"))];
 
 /// Methods on `g`, the live world during a hook: name, Luau signature, what
 /// it does (README.md lists them).
@@ -64,6 +67,10 @@ struct Rules {
     compose: Option<(usize, Function)>,
     cache: HashMap<String, Option<Spell>>,
     recent: Vec<String>,
+    /// This host installed its monster and biome lists (later ones keep their keys).
+    seen_lists: bool,
+    /// The built-in BASE rules: refresh never installs anything from them.
+    base: bool,
 }
 
 static RULES: Mutex<Option<Rules>> = Mutex::new(None);
@@ -106,7 +113,7 @@ pub fn install(dir: Option<&Path>) -> Result<Vec<String>, String> {
             }
         }
     }
-    let mut r = Rules { host, seen: u64::MAX, compose: None, cache: HashMap::new(), recent: vec![] };
+    let mut r = Rules { host, seen: u64::MAX, compose: None, cache: HashMap::new(), recent: vec![], seen_lists: false, base: false };
     let lines = r.refresh();
     *RULES.lock().unwrap() = Some(r);
     ACTIVE.store(true, Ordering::Relaxed);
@@ -120,8 +127,10 @@ pub fn uninstall() {
     for f in [&HIT, &CAST, &TICK] {
         f.store(false, Ordering::Relaxed);
     }
-    el::set_effects(el::EFFECT);
+    el::set_effects(None);
     crate::relics::set_tomes(None);
+    crate::enemy::set_kinds(None);
+    crate::biome::set_biomes(None);
 }
 
 pub fn installed() -> bool {
@@ -156,8 +165,10 @@ impl Rules {
             self.seen = self.host.generation();
             self.cache.clear();
             self.compose = None;
-            let mut effects = el::EFFECT;
+            let mut effects = builtin_effects();
             let mut tomes: Option<Vec<Tome>> = None;
+            let mut monsters: Option<Vec<Monster>> = None;
+            let mut biomes: Option<Vec<Biome>> = None;
             let mut errors = vec![];
             for (i, m) in self.host.modules().iter().enumerate() {
                 let Some(x) = m.exports.as_ref() else { continue };
@@ -169,6 +180,18 @@ impl Rules {
                         errors.push(format!("{}: effects: {e}", m.name));
                     }
                 }
+                if let Ok(Some(t)) = x.raw_get::<Option<Table>>("biomes") {
+                    match read_biomes(&t) {
+                        Ok(list) => biomes = Some(list),
+                        Err(e) => errors.push(format!("{}: biomes: {}", m.name, script::short(&e))),
+                    }
+                }
+                if let Ok(Some(t)) = x.raw_get::<Option<Table>>("monsters") {
+                    match read_monsters(&t) {
+                        Ok(list) => monsters = Some(list),
+                        Err(e) => errors.push(format!("{}: monsters: {}", m.name, script::short(&e))),
+                    }
+                }
                 if let Ok(Some(t)) = x.raw_get::<Option<Table>>("tomes") {
                     match read_tomes(&t) {
                         Ok(list) if !list.is_empty() => tomes = Some(list),
@@ -177,9 +200,32 @@ impl Rules {
                     }
                 }
             }
-            el::set_effects(effects);
+            el::set_effects(Some(effects));
             if tomes.is_some() {
                 crate::relics::set_tomes(tomes);
+            }
+            // Monsters and levels alive hold indices into these lists, so
+            // while the game runs only their values may change.
+            let kinds_now = crate::enemy::kinds();
+            let biomes_now = crate::biome::biomes();
+            let kinds_same = monsters.as_ref().is_none_or(|l| l.len() + 1 == kinds_now.len() && l.iter().zip(kinds_now).all(|(a, b)| a.key == b.key));
+            let biomes_same = biomes.as_ref().is_none_or(|l| l.len() == biomes_now.len() && l.iter().zip(biomes_now).all(|(a, b)| a.id == b.id));
+            if !self.seen_lists || (kinds_same && biomes_same) {
+                let with_none: Vec<Monster>;
+                let kinds_next: &[Monster] = match &monsters {
+                    Some(l) => { with_none = l.iter().cloned().chain([crate::enemy::none_kind()]).collect(); &with_none }
+                    None => kinds_now,
+                };
+                match check_biomes(biomes.as_deref().unwrap_or(biomes_now), kinds_next) {
+                    Ok(()) => {
+                        if monsters.is_some() { crate::enemy::set_kinds(monsters); }
+                        if biomes.is_some() { crate::biome::set_biomes(biomes); }
+                        self.seen_lists = true;
+                    }
+                    Err(e) => errors.push(format!("{e} (keeping the monsters and biomes before)")),
+                }
+            } else {
+                errors.push("monsters or biomes were added, removed or reordered: that takes effect at the next start (changed values still reload)".into());
             }
             HIT.store(self.host.has("hit"), Ordering::Relaxed);
             CAST.store(self.host.has("cast"), Ordering::Relaxed);
@@ -214,41 +260,71 @@ impl Rules {
             let t: Table = f.call((list, form.name(), mods_table(lua, mods)?))?;
             spell_from(&t, slots, form)
         });
-        if r.is_none() {
+        if r.is_none() && !self.base {
             self.refresh();
+        }
+        if r.is_none() && self.base {
+            self.recent.extend(self.host.drain_log());
         }
         r
     }
 }
 
-/// The spell `slots` and `form` make under the Luau rules, fitted like the
-/// built-in grammar; None without rules (or inside a hook), when the
-/// built-in grammar answers.
-pub(crate) fn compose(slots: &[El], form: Form, mods: &Mods) -> Option<Spell> {
-    if !installed() {
-        return None;
-    }
-    let mut g = RULES.try_lock().ok()?;
-    let r = g.as_mut()?;
-    if r.host.generation() != r.seen {
-        r.refresh();
-    }
-    let k = format!("{slots:?}{form:?}{mods:?}");
-    if let Some(s) = r.cache.get(&k) {
-        return s.clone();
-    }
-    let out = r.raw(slots, form, mods).map(|(mut s, fit)| {
-        if fit && s.n.has_rate && crate::balance::measured(&s) {
-            // The factor comes from the spell without tomes, so a tome
-            // still makes you stronger (grammar::numbers).
-            if let Some((mut base, _)) = r.raw(slots, form, &Mods::default()) {
-                s.n.rate *= crate::balance::fit(&mut base);
+/// The spell `slots` and `form` make, with its rate fitted
+/// (crate::balance): the installed rules' grammar, else the built-in
+/// mods/base/spells.luau. Inside a hook the installed host is busy, so the
+/// built-in grammar answers there too.
+pub(crate) fn compose(slots: &[El], form: Form, mods: &Mods) -> Spell {
+    if installed() {
+        if let Ok(mut g) = RULES.try_lock() {
+            if let Some(s) = g.as_mut().and_then(|r| r.compose_fitted(slots, form, mods)) {
+                return s;
             }
         }
-        s
-    });
-    r.cache.insert(k, out.clone());
-    out
+    }
+    let mut g = BASE.lock().unwrap();
+    let r = g.get_or_insert_with(Rules::base);
+    r.compose_fitted(slots, form, mods).unwrap_or_else(|| panic!("mods/base/spells.luau failed to compose {slots:?} {form:?}: {}", r.recent.join(" | ")))
+}
+
+/// The built-in rules (BUILTIN), never watched or installed: the grammar
+/// when no rules are installed and inside hooks.
+static BASE: Mutex<Option<Rules>> = Mutex::new(None);
+
+impl Rules {
+    fn base() -> Rules {
+        let mut host = Host::new(Limits::default(), api).expect("Luau host");
+        for (name, src) in BUILTIN {
+            host.add_source(name, src).unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+        let compose = host.modules().iter().enumerate().find_map(|(i, m)| m.exports.as_ref()?.raw_get::<Option<Function>>("compose").ok().flatten().map(|f| (i, f)));
+        assert!(compose.is_some(), "mods/base/spells.luau exports no compose");
+        Rules { seen: host.generation(), host, compose, cache: HashMap::new(), recent: vec![], seen_lists: true, base: true }
+    }
+
+    /// One composed spell, fitted; cached per generation. None when the
+    /// grammar failed (logged) or there is none.
+    fn compose_fitted(&mut self, slots: &[El], form: Form, mods: &Mods) -> Option<Spell> {
+        if self.host.generation() != self.seen {
+            self.refresh();
+        }
+        let k = format!("{slots:?}{form:?}{mods:?}");
+        if let Some(s) = self.cache.get(&k) {
+            return s.clone();
+        }
+        let out = self.raw(slots, form, mods).map(|(mut s, fit)| {
+            if fit && s.n.has_rate && crate::balance::measured(&s) {
+                // The factor comes from the spell without tomes, so a tome
+                // still makes you stronger.
+                if let Some((mut base, _)) = self.raw(slots, form, &Mods::default()) {
+                    s.n.rate *= crate::balance::fit(&mut base);
+                }
+            }
+            s
+        });
+        self.cache.insert(k, out.clone());
+        out
+    }
 }
 
 /// What the `cast` hooks made of a cast.
@@ -647,4 +723,251 @@ fn api(lua: &Lua, base: &Table) -> mlua::Result<()> {
         });
     })?;
     Ok(())
+}
+
+/// Read `what` from the built-in module `file`, once per process.
+fn builtin<T>(file: &str, what: &str, read: impl FnOnce(&Table) -> mlua::Result<T>) -> T {
+    let mut host = Host::new(Limits::default(), api).expect("Luau host");
+    let (name, src) = BUILTIN.iter().find(|(n, _)| *n == file).unwrap();
+    host.add_source(name, src).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let t: Table = host.modules()[0].exports.as_ref().unwrap().raw_get(what).unwrap_or_else(|e| panic!("{name}: {what}: {e}"));
+    read(&t).unwrap_or_else(|e| panic!("{name}: {what}: {}", script::short(&e)))
+}
+
+/// The monster kinds from the built-in mods/base/monsters.luau: what the
+/// game uses until rules with their own list are installed, and what the
+/// sim's tests use.
+pub fn builtin_kinds() -> &'static [Monster] {
+    static KINDS: std::sync::OnceLock<Vec<Monster>> = std::sync::OnceLock::new();
+    KINDS.get_or_init(|| {
+        let mut k = builtin("base/monsters.luau", "monsters", read_monsters);
+        k.push(crate::enemy::none_kind());
+        k
+    })
+}
+
+/// Every element's effect from the built-in mods/base/spells.luau.
+pub fn builtin_effects() -> [Effect; 13] {
+    static EFFECTS: std::sync::OnceLock<[Effect; 13]> = std::sync::OnceLock::new();
+    *EFFECTS.get_or_init(|| {
+        builtin("base/spells.luau", "effects", |t| {
+            let mut out = [Effect { dmg: f64::NAN, poison: 0.0, push: 0.0, burn: 0.0, chill: 0.0, wet: 0.0, shock: 0.0, slow: 0.0 }; 13];
+            read_effects(t, &mut out)?;
+            match el::ALL.iter().find(|e| out[e.idx()].dmg.is_nan()) {
+                Some(e) => Err(mlua::Error::runtime(format!("no effect for {}", key(*e)))),
+                None => Ok(out),
+            }
+        })
+    })
+}
+
+/// The tomes from the built-in mods/base/tomes.luau.
+pub fn builtin_tomes() -> Vec<Tome> {
+    static TOMES: std::sync::OnceLock<Vec<Tome>> = std::sync::OnceLock::new();
+    TOMES.get_or_init(|| builtin("base/tomes.luau", "tomes", read_tomes)).clone()
+}
+
+/// The biomes from the built-in mods/base/biomes.luau.
+pub fn builtin_biomes() -> &'static [Biome] {
+    static BIOMES: std::sync::OnceLock<Vec<Biome>> = std::sync::OnceLock::new();
+    BIOMES.get_or_init(|| builtin("base/biomes.luau", "biomes", read_biomes))
+}
+
+/// The `biomes` list.
+fn read_biomes(t: &Table) -> mlua::Result<Vec<Biome>> {
+    use crate::biome::WallStyle;
+    let mut out: Vec<Biome> = vec![];
+    for (i, row) in t.sequence_values::<Table>().enumerate() {
+        let row = row?;
+        let id: String = row.raw_get::<Option<String>>("id")?.ok_or_else(|| mlua::Error::runtime(format!("biome {} has no id", i + 1)))?;
+        let bad = |f: &str, why: &str| mlua::Error::runtime(format!("{id}: {f} {why}"));
+        let num = |f: &str| -> mlua::Result<f32> {
+            let v: Option<f64> = row.raw_get(f)?;
+            v.filter(|x| x.is_finite()).map(|x| x as f32).ok_or_else(|| bad(f, "must be a number"))
+        };
+        let flag = |f: &str| -> mlua::Result<bool> { Ok(row.raw_get::<Option<bool>>(f)?.unwrap_or(false)) };
+        let word = |f: &str| -> mlua::Result<String> { row.raw_get::<Option<String>>(f)?.ok_or_else(|| bad(f, "must be a name")) };
+        let rgb = |f: &str| -> mlua::Result<[f32; 3]> {
+            let c: Table = row.raw_get::<Option<Table>>(f)?.ok_or_else(|| bad(f, "must be { r, g, b }"))?;
+            let mut out = [0.0; 3];
+            for (j, o) in out.iter_mut().enumerate() {
+                let x: f64 = c.raw_get::<Option<f64>>(j + 1)?.ok_or_else(|| bad(f, "must be { r, g, b }"))?;
+                if !(0.0..=4.0).contains(&x) { return Err(bad(f, "channels go from 0 to 4")); }
+                *o = x as f32;
+            }
+            Ok(out)
+        };
+        let names_in = |t: Option<Table>, f: &str| -> mlua::Result<&'static [&'static str]> {
+            let mut v = vec![];
+            if let Some(t) = t {
+                for n in t.sequence_values::<String>() { v.push(leak(n?)); }
+            } else {
+                return Err(bad(f, "must be a list (or {})"));
+            }
+            Ok(Box::leak(v.into_boxed_slice()))
+        };
+        let names = |f: &str| names_in(row.raw_get::<Option<Table>>(f)?, f);
+        let zt: Table = row.raw_get::<Option<Table>>("zones")?.ok_or_else(|| bad("zones", "must be three lists of props"))?;
+        if zt.raw_len() != 3 { return Err(bad("zones", "must be three lists of props")); }
+        let zones = [names_in(zt.raw_get(1)?, "zones")?, names_in(zt.raw_get(2)?, "zones")?, names_in(zt.raw_get(3)?, "zones")?];
+        let mut enemies = vec![];
+        for e in row.raw_get::<Option<Table>>("enemies")?.ok_or_else(|| bad("enemies", "must be a list of { kind, count }"))?.sequence_values::<Table>() {
+            let e = e?;
+            let k: String = e.raw_get::<Option<String>>(1)?.ok_or_else(|| bad("enemies", "entries are { kind, count }"))?;
+            let n: f64 = e.raw_get::<Option<f64>>(2)?.ok_or_else(|| bad("enemies", "entries are { kind, count }"))?;
+            if !(1.0..=32.0).contains(&n) || n.fract() != 0.0 { return Err(bad("enemies", "counts are whole numbers from 1 to 32")); }
+            enemies.push((leak(k), n as u32));
+        }
+        if enemies.is_empty() { return Err(bad("enemies", "needs at least one kind")); }
+        let mut fields = vec![];
+        for e in row.raw_get::<Option<Table>>("fields")?.ok_or_else(|| bad("fields", "must be a list (or {})"))?.sequence_values::<String>() {
+            fields.push(el_of(&e?)?);
+        }
+        let wall_style = match word("wall_style")?.as_str() {
+            "masonry" => WallStyle::Masonry, "ossuary" => WallStyle::Ossuary, "rock" => WallStyle::Rock,
+            "castle" => WallStyle::Castle, "cliff" => WallStyle::Cliff,
+            w => return Err(bad("wall_style", &format!("{w:?} is not masonry, ossuary, rock, castle or cliff"))),
+        };
+        let path_style = num("path_style")?;
+        if !(0.0..=8.0).contains(&path_style) || path_style.fract() != 0.0 { return Err(bad("path_style", "must be a whole number from 0 to 8")); }
+        if out.iter().any(|b| b.id == id) { return Err(bad("id", "is used twice")); }
+        out.push(Biome {
+            name: leak(word("name")?),
+            moss: num("moss")?, moss_c: rgb("moss_c")?, zones,
+            floor_a: rgb("floor_a")?, floor_b: rgb("floor_b")?, tiles: num("tiles")?, wet: num("wet")?,
+            wall: rgb("wall")?, fog: rgb("fog")?, ambient: rgb("ambient")?, moon: rgb("moon")?,
+            moon_energy: num("moon_energy")?, mist: num("mist")?, mist_c: rgb("mist_c")?,
+            props: names("props")?, enemies: Box::leak(enemies.into_boxed_slice()), boss: leak(word("boss")?),
+            fields: Box::leak(fields.into_boxed_slice()), path_style: path_style as i32,
+            path_a: rgb("path_a")?, path_b: rgb("path_b")?, nave: flag("nave")?, corridor: flag("corridor")?,
+            outside: names("outside")?, wall_style, wall_props: names("wall_props")?, wall_every: num("wall_every")?,
+            isles: flag("isles")?, low_walls: flag("low_walls")?, water_props: names("water_props")?,
+            density: num("density")?, outside_lava: flag("outside_lava")?,
+            id: leak(id),
+        });
+    }
+    if out.is_empty() { return Err(mlua::Error::runtime("the list is empty")); }
+    Ok(out)
+}
+
+/// Every monster a biome names exists, and its boss is a boss.
+fn check_biomes(biomes: &[Biome], kinds: &[Monster]) -> Result<(), String> {
+    for b in biomes {
+        for (k, _) in b.enemies {
+            if !kinds.iter().any(|m| m.key == *k) { return Err(format!("{}: enemies: no monster called {k:?}", b.id)); }
+        }
+        match kinds.iter().find(|m| m.key == b.boss) {
+            Some(m) if m.boss => {}
+            Some(_) => return Err(format!("{}: boss: {:?} is not a boss (boss = true in monsters.luau)", b.id, b.boss)),
+            None => return Err(format!("{}: boss: no monster called {:?}", b.id, b.boss)),
+        }
+    }
+    Ok(())
+}
+
+fn leak(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+/// The `monsters` list: one table per kind, every field given (the base
+/// file fills them from its DEFAULT row).
+fn read_monsters(t: &Table) -> mlua::Result<Vec<Monster>> {
+    use crate::enemy::{Attack, Shot, Spawn};
+    let mut out: Vec<Monster> = vec![];
+    for (i, row) in t.sequence_values::<Table>().enumerate() {
+        let row = row?;
+        let key: String = row.raw_get::<Option<String>>("key")?.ok_or_else(|| mlua::Error::runtime(format!("monster {} has no key", i + 1)))?;
+        let bad = |f: &str, why: &str| mlua::Error::runtime(format!("{key}: {f} {why}"));
+        let num = |f: &str| -> mlua::Result<f64> {
+            let v: Option<f64> = row.raw_get(f)?;
+            v.filter(|x| x.is_finite()).ok_or_else(|| bad(f, "must be a number"))
+        };
+        let opt_num = |f: &str| -> mlua::Result<Option<f64>> {
+            match row.raw_get::<Value>(f)? { Value::Nil => Ok(None), v => v.as_number().or(v.as_integer().map(|i| i as f64)).filter(|x| x.is_finite()).map(Some).ok_or_else(|| bad(f, "must be a number or nil")) }
+        };
+        let flag = |f: &str| -> mlua::Result<bool> { Ok(row.raw_get::<Option<bool>>(f)?.unwrap_or(false)) };
+        let opt_str = |f: &str| -> mlua::Result<Option<String>> { row.raw_get::<Option<String>>(f) };
+        let el = |f: &str| -> mlua::Result<El> { el_of(&opt_str(f)?.ok_or_else(|| bad(f, "must be an element"))?) };
+        let opt_el = |f: &str| -> mlua::Result<Option<El>> { opt_str(f)?.map(|n| el_of(&n)).transpose() };
+        let count = |f: &str| -> mlua::Result<usize> {
+            let x = num(f)?;
+            if x < 0.0 || x.fract() != 0.0 || x > 64.0 { return Err(bad(f, "must be a whole number from 0 to 64")); }
+            Ok(x as usize)
+        };
+        let word = |f: &str| -> mlua::Result<String> { opt_str(f)?.ok_or_else(|| bad(f, "must be a name")) };
+        let attack = match word("attack")?.as_str() {
+            "melee" => Attack::Melee, "ranged" => Attack::Ranged, "slam" => Attack::Slam,
+            "burrow" => Attack::Burrow, "dash" => Attack::Dash, "lob" => Attack::Lob,
+            w => return Err(bad("attack", &format!("{w:?} is not melee, ranged, slam, burrow, dash or lob"))),
+        };
+        let spawn = match word("spawn")?.as_str() {
+            "ahead" => Spawn::Ahead, "far" => Spawn::Far, "under" => Spawn::Under, "flank" => Spawn::Flank, "water" => Spawn::Water,
+            w => return Err(bad("spawn", &format!("{w:?} is not ahead, far, under, flank or water"))),
+        };
+        let mut shots = vec![];
+        for s in row.raw_get::<Option<Table>>("shots")?.ok_or_else(|| bad("shots", "must be a list"))?.sequence_values::<String>() {
+            shots.push(match s?.as_str() {
+                "fan3" => Shot::Fan3, "fan5" => Shot::Fan5, "ring10" => Shot::Ring10, "burst3" => Shot::Burst3,
+                "wave7" => Shot::Wave7, "slow1" => Shot::Slow1, "snipe" => Shot::Snipe,
+                w => return Err(bad("shots", &format!("{w:?} is not fan3, fan5, ring10, burst3, wave7, slow1 or snipe"))),
+            });
+        }
+        if shots.is_empty() { return Err(bad("shots", "needs at least one pattern")); }
+        let mut resist = vec![];
+        if let Some(r) = row.raw_get::<Option<Table>>("resist")? {
+            for pair in r.pairs::<String, f64>() {
+                let (e, x) = pair?;
+                if !(-1.0..=1.0).contains(&x) { return Err(bad("resist", "values go from -1 to 1")); }
+                resist.push((el_of(&e)?, x));
+            }
+        }
+        resist.sort_by_key(|(e, _)| e.idx());
+        let mut summon = vec![];
+        if let Some(r) = row.raw_get::<Option<Table>>("summon")? {
+            for k in r.sequence_values::<String>() { summon.push(leak(k?)); }
+        }
+        let dash: Table = row.raw_get::<Option<Table>>("dash")?.ok_or_else(|| bad("dash", "must be { speed, seconds }"))?;
+        let (hp, speed, dmg, size, mass) = (num("hp")?, num("speed")?, num("dmg")?, num("size")?, num("mass")?);
+        if hp <= 0.0 || speed < 0.0 || dmg < 0.0 || size <= 0.0 || mass <= 0.0 { return Err(bad("hp, size and mass", "must be above 0, speed and dmg not below")); }
+        if out.iter().any(|k| k.key == key) { return Err(bad("key", "is used twice")); }
+        out.push(Monster {
+            name: leak(word("name")?),
+            model: opt_str("model")?.map(leak),
+            hp, speed, dmg,
+            reach: num("reach")? as f32,
+            keep: opt_num("keep")?.map(|x| x as f32),
+            el: el("el")?,
+            size: size as f32,
+            attack,
+            shots: Box::leak(shots.into_boxed_slice()),
+            wind: opt_num("wind")?,
+            ring: count("ring")?,
+            mass,
+            undead: flag("undead")?,
+            resist: Box::leak(resist.into_boxed_slice()),
+            heals_from: opt_el("heals_from")?,
+            burst: opt_el("burst")?,
+            always_wet: flag("always_wet")?,
+            practice: flag("practice")?,
+            raise: opt_str("raise")?.map(leak),
+            solo: flag("solo")?,
+            spawn,
+            dash: (dash.raw_get::<f64>(1)? as f32, dash.raw_get::<f64>(2)?),
+            trail: opt_el("trail")?,
+            pack: count("pack")?.max(1),
+            shield: flag("shield")?,
+            boss: flag("boss")?,
+            summon: Box::leak(summon.into_boxed_slice()),
+            nova: el("nova")?,
+            key: leak(key),
+        });
+    }
+    if out.is_empty() { return Err(mlua::Error::runtime("the list is empty")); }
+    // Names other kinds point at must exist.
+    for k in &out {
+        for other in k.summon.iter().chain(k.raise.iter()).chain(k.model.iter()) {
+            if !out.iter().any(|o| o.key == *other) { return Err(mlua::Error::runtime(format!("{}: no monster called {other:?}", k.key))); }
+        }
+    }
+    Ok(out)
 }

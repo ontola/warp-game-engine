@@ -33,11 +33,41 @@ fn clustered_lamp(i: u32) -> LocalLight {
         bitcast<vec4<f32>>(scene_tables[b + 2u]), bitcast<vec4<f32>>(scene_tables[b + 3u]));
 }
 
+// Cookies and angular profiles (light_shapes.rs): layers 0..14 cookies,
+// layer 15 one profile per row. source.w above the face count: cookie
+// (bits 3..6), profile (bits 7..14).
+@group(0) @binding(30) var light_shapes: texture_2d_array<f32>;
+
+// The light's shape towards `outward` (unit, from the lamp): its angular
+// profile times its cookie projected through the outer cone.
+fn light_shape(lamp: LocalLight, outward: vec3<f32>) -> f32 {
+    let packed = u32(lamp.source.w);
+    let cookie = (packed >> 3u) & 15u;
+    let profile = (packed >> 7u) & 255u;
+    let axis = lamp.direction_outer.xyz;
+    let c = dot(outward, axis);
+    var k = 1.0;
+    if profile > 0u {
+        let theta = acos(clamp(c, -1.0, 1.0)) * 0.31830989;
+        k *= textureSampleLevel(light_shapes, plant_samp, vec2<f32>(theta, (f32(profile - 1u) + 0.5) / 256.0), 15, 0.0).r;
+    }
+    if cookie > 0u {
+        let oc = lamp.direction_outer.w;
+        if c <= 0.05 || oc <= 0.05 { return 0.0; }
+        let t1 = normalize(select(cross(axis, vec3<f32>(0.0, 1.0, 0.0)), cross(axis, vec3<f32>(1.0, 0.0, 0.0)), abs(axis.y) > 0.9));
+        let t2 = cross(axis, t1);
+        let tan_outer = sqrt(max(1.0 - oc * oc, 0.0)) / oc;
+        let uv = vec2<f32>(dot(outward, t1), dot(outward, t2)) / (c * tan_outer) * 0.5 + 0.5;
+        k *= textureSampleLevel(light_shapes, plant_samp, uv, i32(cookie - 1u), 0.0).r;
+    }
+    return k;
+}
+
 // Visibility of the light from p through its shadow tile (1: lit).
 fn clustered_shadow(lamp: LocalLight, p: vec3<f32>, n: vec3<f32>) -> f32 {
     let d = p - lamp.position_range.xyz;
     var face = 0u;
-    if lamp.source.w > 1.5 {
+    if (u32(lamp.source.w) & 7u) > 1u {
         let a = abs(d);
         if a.x >= a.y && a.x >= a.z { face = select(1u, 0u, d.x > 0.0); }
         else if a.y >= a.z { face = select(3u, 2u, d.y > 0.0); }
@@ -67,6 +97,13 @@ fn clustered_shadow(lamp: LocalLight, p: vec3<f32>, n: vec3<f32>) -> f32 {
     let uv = rect.xy + local * rect.z;
     let o = 0.5 / atlas;
     let layer = i32(rect.w);
+    // A large source (a bounce light standing in for a lit patch of floor)
+    // casts soft shadows: percentage-closer soft shadows when the source
+    // is 30 cm or more across (small lamps keep the cheap 4-tap filter).
+    let radius = sqrt(lamp.source.x);
+    if radius >= 0.3 && radius / max(texel, 1e-5) > 1.5 {
+        return clustered_soft_shadow(uv, ndc.z, layer, rect, tile, atlas, edge, radius, dist, params, lamp.position_range.w, p);
+    }
     var lit = 0.0;
     lit += textureSampleCompareLevel(headlight_depth, shadow_samp, uv + vec2<f32>(-o, -o), layer, ndc.z);
     lit += textureSampleCompareLevel(headlight_depth, shadow_samp, uv + vec2<f32>(o, -o), layer, ndc.z);
@@ -75,11 +112,77 @@ fn clustered_shadow(lamp: LocalLight, p: vec3<f32>, n: vec3<f32>) -> f32 {
     return lit * 0.25;
 }
 
+// Distance from the light for a face's stored depth (perspective, 0 at the
+// near plane, 1 at `far`).
+fn clustered_linear(z: f32, near: f32, far: f32) -> f32 { return far * near / max(far - z * (far - near), 1e-6); }
+
+// PCSS for one shadow face: 8 taps find the average blocker within the
+// widest penumbra the source could cast, the penumbra is the source radius
+// times (receiver - blocker) / blocker, and 16 compare taps on a Vogel disc
+// of that width (turned per position) filter it. Widths are capped at 24
+// texels of the tile (a 256-texel face).
+fn clustered_soft_shadow(uv: vec2<f32>, z: f32, layer: i32, rect: vec4<f32>, tile: f32, atlas: f32, edge: f32,
+        radius: f32, dist: f32, params: vec4<f32>, far: f32, p: vec3<f32>) -> f32 {
+    let near = params.y;
+    let receiver = clustered_linear(z, near, far);
+    // Texels of this face per metre at the receiver.
+    let per_m = 1.0 / max(params.x * receiver, 1e-6);
+    let lo = rect.xy + vec2<f32>(edge * rect.z);
+    let hi = rect.xy + vec2<f32>((1.0 - edge) * rect.z);
+    let turn = fract(sin(dot(p, vec3<f32>(12.9898, 78.233, 37.719))) * 43758.5453) * 6.2831853;
+    // Blocker search over the penumbra a blocker at a quarter of the way
+    // would cast.
+    let search = clamp(radius * 3.0 * per_m, 1.0, 24.0) / atlas;
+    var blockers = 0.0;
+    var count = 0.0;
+    for (var k = 0; k < 8; k++) {
+        let a = turn + f32(k) * 2.3999632;
+        let r = sqrt((f32(k) + 0.5) / 8.0) * search;
+        let tap = clamp(uv + vec2<f32>(cos(a), sin(a)) * r, lo, hi);
+        let stored = textureLoad(headlight_depth, vec2<i32>(tap * atlas), layer, 0);
+        if stored < z {
+            blockers += clustered_linear(stored, near, far);
+            count += 1.0;
+        }
+    }
+    if count < 0.5 { return 1.0; }
+    let blocker = blockers / count;
+    let penumbra = clamp(radius * (receiver - blocker) / max(blocker, 1e-3) * per_m, 1.0, 24.0) / atlas;
+    var lit = 0.0;
+    for (var k = 0; k < 16; k++) {
+        let a = turn + f32(k) * 2.3999632;
+        let r = sqrt((f32(k) + 0.5) / 16.0) * penumbra;
+        let tap = clamp(uv + vec2<f32>(cos(a), sin(a)) * r, lo, hi);
+        lit += textureSampleCompareLevel(headlight_depth, shadow_samp, tap, layer, z);
+    }
+    return lit / 16.0;
+}
+
 fn clustered_sample(i: u32, p: vec3<f32>, bias_normal: vec3<f32>) -> HeadlightSample {
     let lamp = clustered_lamp(i);
     var s = local_light_at(lamp, p);
+    if u32(lamp.source.w) >= 8u && any(s.irradiance > vec3<f32>(0.0)) { s.irradiance *= light_shape(lamp, -s.direction); }
     if lamp.source.z > 0.5 && any(s.irradiance > vec3<f32>(0.0)) { s.irradiance *= clustered_shadow(lamp, p, bias_normal); }
     return s;
+}
+
+// Specular of a light with a source radius (Karis 2013, "representative
+// point"): the highlight comes from the point of the source sphere closest
+// to the mirror ray, and the lobe is widened by the source's angular size
+// with the energy renormalised by (a / a')^2. A point light's highlight is
+// only the GGX lobe of one direction, far smaller than a 0.5 m lamp panel.
+fn sphere_light_specular(lamp: LocalLight, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, centre: vec3<f32>, rough: f32, f0: vec3<f32>) -> vec3<f32> {
+    let radius = sqrt(max(lamp.source.x, 0.0));
+    if radius <= 0.0 { return ggx(n, v, centre, rough, f0); }
+    let to = lamp.position_range.xyz - p;
+    let dist = max(length(to), 1e-4);
+    let r = reflect(-v, n);
+    let to_ray = dot(to, r) * r - to;
+    let closest = to + to_ray * clamp(radius / max(length(to_ray), 1e-6), 0.0, 1.0);
+    let a = max(rough * rough, 2e-3);
+    let wide = min(a + radius / (2.0 * dist), 1.0);
+    let norm = (a / wide) * (a / wide);
+    return ggx(n, v, normalize(closest), rough, f0) * norm;
 }
 
 fn clustered_radiance(p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, diffuse: vec3<f32>, rough: f32, f0: vec3<f32>) -> vec3<f32> {
@@ -93,7 +196,11 @@ fn clustered_radiance(p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, diffuse: vec3<f3
         if dot(n, bitcast<vec4<f32>>(scene_tables[light_grid.offsets.w + i * 4u]).xyz - p) <= 0.0 { continue; }
         let s = clustered_sample(i, p, n);
         if all(s.irradiance == vec3<f32>(0.0)) { continue; }
-        result += s.irradiance * (diffuse * max(dot(n, s.direction), 0.0) + ggx(n, v, s.direction, rough, f0));
+        // Bit 15 of source.w: diffuse only (a bounce light; no highlight).
+        let source_w = u32(bitcast<vec4<f32>>(scene_tables[light_grid.offsets.w + i * 4u + 3u]).w);
+        var spec = vec3<f32>(0.0);
+        if (source_w & 32768u) == 0u { spec = sphere_light_specular(clustered_lamp(i), p, n, v, s.direction, rough, f0); }
+        result += s.irradiance * (diffuse * max(dot(n, s.direction), 0.0) + spec);
     }
     return result;
 }

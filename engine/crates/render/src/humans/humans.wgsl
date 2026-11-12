@@ -47,7 +47,9 @@ fn spectator_joints(a:Actor, time:f32, excitement:f32, fear:f32)->vec4<u32> {
     let wave=sin(vec2<f32>(beat,beat+1.2+seed));
     var shoulders=vec2<f32>(-0.10)-sides*cheer*(1.80+0.43*wave)
         +0.065*wave-vec2<f32>(0.57*fear);
-    var elbows=vec2<f32>(-0.25)-0.13*(wave+1.)-cheer*sides*(0.56-0.30*wave)-0.72*fear;
+    let lowered=1.-smoothstep(vec2f(0.18),vec2f(0.78),-shoulders);
+    let idle_bend=mix(0.25+0.13*(wave+1.),0.16+0.035*(wave+1.),lowered);
+    var elbows=-idle_bend-cheer*sides*(0.56-0.30*wave)-0.72*fear;
     var spine=vec2<f32>(0.042*shift+0.02*cheer*breath,0.10*shift+0.13*cheer*(2.*lead-1.));
     let glance=sin(beat*0.31+seed*12.0);
     var neck=vec2<f32>(0.30*glance+0.08*sin(beat*0.64),0.035*breath+0.10*cheer*sin(beat-0.45)+0.16*fear);
@@ -142,6 +144,18 @@ fn reserve_slot(a:Actor)->u32 {
     return bin*u32(camera.settings.w)+slot;
 }
 
+// Bin 3 is a per-view list of heads large enough to resolve individual hairs.
+fn store_seat(slot:u32, seat:SeatLight, a:Actor) {
+    visible[slot]=seat;
+    let count=u32(camera.settings.w);
+    if slot/count!=4u || camera.game.x==2. {return;}
+    let head=camera.vp*vec4<f32>(a.pos_yaw.xyz+vec3<f32>(0.,.94*a.size_phase.y,0.),1.);
+    if head.w>.08 && all(abs(head.xy)<vec2<f32>(head.w+.45)) && .22*camera.settings.y/head.w>70. {
+        let index=atomicAdd(&draws[16],1u);
+        visible[3u*count+index]=seat;
+    }
+}
+
 @compute @workgroup_size(64)
 fn select_lod(@builtin(global_invocation_id) gid:vec3<u32>) {
     if gid.x>=u32(camera.settings.w) {return;}
@@ -149,7 +163,7 @@ fn select_lod(@builtin(global_invocation_id) gid:vec3<u32>) {
     let slot=reserve_slot(a);
     if slot!=0xffffffffu {
         let joints=spectator_joints(a,camera.settings.x,0.45,0.);
-        visible[slot]=SeatLight(gid.x,0u,0u,0u,joints,spectator_legs(a,camera.settings.x,joints,0.,0.,0.));
+        store_seat(slot,SeatLight(gid.x,0u,0u,0u,joints,spectator_legs(a,camera.settings.x,joints,0.,0.,0.)),a);
     }
 }
 
@@ -167,8 +181,10 @@ fn spot_visibility(index:u32,uv:vec2<f32>,z:f32,lamp:Headlight,slope:vec2<f32>,w
 }
 @compute @workgroup_size(64)
 fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
-    if gid.x>=u32(camera.settings.w) {return;}
-    let a=actor(gid.x);
+    let seat_id=gid.x+u32(camera.sun_color.w);
+    if camera.game.x==2. && seat_id>=u32(camera.up.w) {return;}
+    if seat_id>=u32(camera.settings.w) {return;}
+    let a=actor(seat_id);
     let slot=reserve_slot(a);
     if slot==0xffffffffu {return;}
     // Match the collision pose's height reduction by bending the legs.
@@ -193,11 +209,11 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
     }
     let direction=moment/max(dot(energy,vec3<f32>(0.2126,0.7152,0.0722)),1e-5);
     energy=min(energy,vec3<f32>(65504.));
-    let escape=escapes[gid.x];
+    let escape=escapes[seat_id];
     let offset=displacement(escape,crowd_mood.x);
     let speed=abs(displacement(escape,crowd_mood.x+1./120.)-offset)*120.;
     let right=vec2<f32>(cos(a.pos_yaw.w),-sin(a.pos_yaw.w));
-    let travel=dot(a.pos_yaw.xz-actors[gid.x].pos_yaw.xz,right)/a.size_phase.x;
+    let travel=dot(a.pos_yaw.xz-actors[seat_id].pos_yaw.xz,right)/a.size_phase.x;
     let alarm=gesture_fear(crowd_mood.z,offset);
     var joints=spectator_joints(a,crowd_mood.x,crowd_mood.y,alarm);
     let step_weight=smoothstep(0.12,0.75,speed);
@@ -207,8 +223,8 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
         joints.z=pack2x16float(unpack2x16float(joints.z)+vec2<f32>(0.025,0.09)*counter);
     }
     let legs=spectator_legs(a,crowd_mood.x,joints,travel,speed,crouch);
-    visible[slot]=SeatLight(gid.x,pack2x16float(energy.rg),pack2x16float(vec2<f32>(energy.b,blast_turn_at(escape,crowd_mood.x))),
-        pack4x8snorm(vec4<f32>(direction,sun)),joints,legs);
+    store_seat(slot,SeatLight(seat_id,pack2x16float(energy.rg),pack2x16float(vec2<f32>(energy.b,blast_turn_at(escape,crowd_mood.x))),
+        pack4x8snorm(vec4<f32>(direction,sun)),joints,legs),a);
 }
 @group(0) @binding(4) var<storage,read> draw_ids:array<SeatLight>;
 @group(1) @binding(0) var atlas:texture_2d<f32>;
@@ -230,12 +246,15 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(atlas,atlas_sampler,(origin+local)/vec2<f32>(4.,2.),0.);
 }
 @vertex fn vs(@location(0) position:vec4<f32>,@location(1) direction:vec4<f32>,@location(2) pivot:vec4<f32>,
-    @location(3) tags:vec4<u32>,@location(4) bones:vec4<f32>,@location(5) nose:vec4<f32>,
-    @location(6) mouth:vec4<f32>,@location(7) brow:vec4<f32>,@location(8) adult:vec4<f32>,
+    @location(3) tags:vec4<u32>,@location(4) bones:vec4<f32>,@location(5) face0:vec4<f32>,
+    @location(6) face1:vec4<f32>,@location(7) face2:vec4<f32>,@location(8) face3:vec4<f32>,
     @builtin(instance_index) idx:u32)->V {
+    return pose_vertex(position,direction,pivot,tags,bones,face0,face1,face2,face3,draw_ids[tags.z*u32(camera.settings.w)+idx]);
+}
+fn pose_vertex(position:vec4<f32>,direction:vec4<f32>,pivot:vec4<f32>,tags:vec4<u32>,bones:vec4<f32>,
+    face0:vec4<f32>,face1:vec4<f32>,face2:vec4<f32>,face3:vec4<f32>,seat:SeatLight)->V {
     let rest=position.xyz*1.2; let normal=direction.xyz; let center=pivot.xyz;
     let tagged_mat=tags.x; let arm=f32(tags.y)-1.; let bin=tags.z;
-    let seat=draw_ids[bin*u32(camera.settings.w)+idx];
     let a=actor(seat.index);
     var p=rest; var n=normal; var anchor=center;
     let anatomical=bin==4u && center.z< -0.9;
@@ -255,37 +274,44 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
         let right_arm=select(arm>0.,rest.x>0.,anatomical);
         let angle=select(shoulders.x,shoulders.y,right_arm);
         let elbow_angle=select(elbows.x,elbows.y,right_arm);
+        // As each shoulder lowers, let the wrist settle beside the thigh.
+        let tuck=1.-smoothstep(0.18,0.78,-angle);
         let zones=1.-clamp(abs(vec3<f32>(rest.y)-vec3<f32>(0.78,0.57,0.48))/vec3<f32>(0.12,0.13,0.11),vec3<f32>(0.),vec3<f32>(1.));
         let width=1.+dot(zones*zones*(3.-2.*zones),vec3<f32>(0.13,0.12,0.10)*(2.*vec3<f32>(a.size_phase.zw,a.identity.x)-1.));
-        p.x*=width; n.x/=width; anchor.x*=width;
+        let head=select(smoothstep(0.825,0.860,select(rest.y,center.y,bin==1u)),face3.w,anatomical);
+        let breadth=mix(width,1.,head);
+        let skull=mix(1.,a.size_phase.y/a.size_phase.x,head);
+        p*=vec3<f32>(breadth*skull,1.,skull);
+        n/=vec3<f32>(breadth*skull,1.,skull);
+        anchor*=vec3<f32>(breadth*skull,1.,skull);
         if anatomical {
-            let weights=a.identity*2.-1.;
-            p+=0.055*(nose.xyz*weights.x+mouth.xyz*weights.z+brow.xyz*weights.y+adult.xyz*weights.w);
-            let closure=vec3<f32>(nose.w,mouth.w,brow.w);
+            let squared=a.identity*a.identity;
+            let raw=squared*squared+0.001;
+            let weights=raw/dot(raw,vec4<f32>(1.));
+            p+=vec3<f32>(breadth*skull,1.,skull)*0.055*(face0.xyz*weights.x+face1.xyz*weights.y+face2.xyz*weights.z+face3.xyz*weights.w);
+            let closure=vec3<f32>(face0.w,face1.w,face2.w);
             if any(closure!=vec3<f32>(0.)) {
                 let phase=fract(camera.settings.x/(3.1+1.8*a.identity.x)+a.identity.x);
                 let blink=smoothstep(0.,0.020,phase)*(1.-smoothstep(0.025,0.064,phase));
                 p+=0.012*closure*blink;
             }
-            if mat==21u {
-                let fringe=clamp((p.z-0.033)/0.027,0.,1.)*clamp(1.-abs(p.x-0.006)/0.052,0.,1.)*clamp((0.974-p.y)/0.032,0.,1.);
-                p+=vec3<f32>(-0.012,0.030,0.)*fringe;
-            }
             let side=sign(rest.x);
             let shoulder=vec3<f32>(side*0.1008,0.805,-0.012);
             let elbow=vec3<f32>(side*0.1878,0.6994,-0.0132);
-            let lower=rotate(elbow_angle);
+            // The anatomical bind already bends the forearm forward. Open that
+            // bend at rest and let the upper arm hang in the plane of the ribs.
+            let lower=rotate(elbow_angle+0.44*tuck);
             p=vec3<f32>(p.x,mix(p.yz,elbow.yz+lower*(p.yz-elbow.yz),bones.y));
             n=vec3<f32>(n.x,mix(n.yz,lower*n.yz,bones.y));
-            let relax=rotate(-0.61*side);
+            let relax=rotate(-(0.61-0.05*tuck)*side);
             let rest_arm=vec3<f32>(shoulder.xy+relax*(p.xy-shoulder.xy),p.z);
-            let swing=rotate(angle);
+            let swing=rotate(angle+0.27*tuck);
             p=mix(p,vec3<f32>(rest_arm.x,shoulder.yz+swing*(rest_arm.yz-shoulder.yz)),bones.x);
             let arm_normal=vec3<f32>(relax*n.xy,n.z);
             n=mix(n,vec3<f32>(arm_normal.x,swing*arm_normal.yz),bones.x);
         } else if arm!=0. {
             let pivot=vec3<f32>(arm*0.118,0.770,0.);
-            let rot=mat2x2<f32>(cos(angle),sin(angle),-sin(angle),cos(angle));
+            let rot=rotate(angle+0.09*tuck);
             if center.y<0.65 {
                 let elbow=vec3<f32>(arm*0.13,0.646,0.008);
                 let forearm=rotate(elbow_angle);
@@ -293,12 +319,24 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
                 e=anchor-elbow; anchor=elbow+vec3<f32>(e.x,forearm*e.yz);
                 n=vec3<f32>(n.x,forearm*n.yz);
             }
+            let inward=rotate(-0.040*tuck*arm);
+            p=vec3f(pivot.xy+inward*(p.xy-pivot.xy),p.z);
+            anchor=vec3f(pivot.xy+inward*(anchor.xy-pivot.xy),anchor.z);
+            n=vec3f(inward*n.xy,n.z);
             var d=p-pivot; p=pivot+vec3<f32>(d.x,rot*d.yz);
             d=anchor-pivot; anchor=pivot+vec3<f32>(d.x,rot*d.yz);
             n=vec3<f32>(n.x,rot*n.yz);
         }
         // Lift the collarbone with the raising arm about its inner end.
         let arm_weight=select(f32(arm!=0.),bones.x,anatomical);
+        // Settle the shoulder girdle into the upper chest, taking the outer
+        // shirt and sleeve with it. Keep the neck and middle of the collar fixed.
+        let shoulder_point=select(rest,center,bin==1u);
+        let outer_chest=smoothstep(0.032,0.104,abs(shoulder_point.x))
+            *smoothstep(0.70,0.78,shoulder_point.y)*(1.-smoothstep(0.81,0.85,shoulder_point.y));
+        let shoulder_drop=0.012*tuck*max(arm_weight,outer_chest);
+        p.y-=shoulder_drop;
+        anchor.y-=shoulder_drop;
         if arm_weight>0. {
             let side=select(-1.,1.,right_arm);
             let collar=vec2<f32>(0.025*side,0.79);
@@ -346,23 +384,24 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
             n=vec3<f32>(n.x,hip_pitch*(knee_pitch*(foot_pitch*n.yz)));
             n=vec3<f32>(hip_roll*n.xy,n.z);
         }
+        // The fitted mesh has a wide A-stance; the coarse mesh already stands
+        // nearly under the hips. Bring in each leg from hip to ankle, translating
+        // the entire sole equally so the planted shoe stays level.
+        let bind_y=select(rest.y,center.y,bin==1u);
+        let inset=select(0.005,0.036,anatomical)*leg*(1.-smoothstep(ankle.y,hip.y,bind_y));
+        let inward=select(inset,-inset,right_leg);
+        p.x+=inward;
+        anchor.x+=inward;
         let pelvis_shift=0.42*unpack2x16float(seat.joints.z).x;
         p.x+=pelvis_shift; anchor.x+=pelvis_shift;
         p.y-=drop; anchor.y-=drop;
-        if (anatomical && rest.y>0.83) || mat==7u || (mat==4u && rest.y>0.84) {
-            let jaw=1.+(a.identity.w-0.5)*0.28*(1.-smoothstep(0.87,0.92,p.y));
-            let cheek=(0.87+0.22*a.identity.x)*jaw;
-            p.x*=cheek; n.x/=cheek;
-            let depth=0.92+0.18*a.identity.z;
-            p.z*=depth; n.z/=depth;
-        }
         // Neck first, then the spine parent. Skin, eyes and hair share the
         // same head motion; the upper body carries both shoulder joints.
         let spine=unpack2x16float(seat.joints.z);
         let neck=unpack2x16float(seat.joints.w);
         let blast_turn=unpack2x16float(seat.blue_turn).y;
         let rest_height=select(rest.y,center.y,bin==1u);
-        let head_weight=smoothstep(0.81,0.87,rest_height);
+        let head_weight=select(smoothstep(0.81,0.87,rest_height),face3.w,anatomical);
         let chest_weight=max(smoothstep(0.46,0.70,rest_height),arm_weight);
         if head_weight>0. {
             let nod=rotate(neck.y*head_weight);
@@ -408,6 +447,19 @@ fn artifact_sample(tile:u32, uv:vec2<f32>) -> vec4<f32> {
     if mat==3u {dye=a.color.z;}
     o.color=unpack4x8unorm(u32(dye)).rgb;
     o.appearance=appearance; o.mat=select(mat,1u,!anatomical && arm!=0. && mat==4u && outfit!=1u && rest.y>0.558); o.identity=a.identity; o.disc=disc; return o;
+}
+@vertex fn crowd_strand(@builtin(vertex_index) id:u32,@builtin(instance_index) idx:u32)->V {
+    let seat=draw_ids[3u*u32(camera.settings.w)+idx];
+    let a=actor(seat.index); let sq=a.identity*a.identity;
+    let raw=sq*sq+.001; let w=raw/dot(raw,vec4<f32>(1.));
+    let style=u32(a.identity.z*3.);
+    let fibre=grow_strand(id,style,u32(a.identity.x*16777216.),w,camera.settings.x);
+    let zero=vec4<f32>(0.);
+    // Tag 7 applies the common head rig.
+    var v=pose_vertex(vec4<f32>((fibre.p+fibre.across*fibre.side*fibre.radius)/1.2,0.),vec4<f32>(fibre.normal,0.),vec4<f32>(0.,0.,-1.,0.),
+        vec4<u32>(7u,1u,4u,0u),zero,zero,zero,zero,vec4<f32>(0.,0.,0.,1.),seat);
+    v.mat=23u; v.uv.x=fibre.tint;
+    return v;
 }
 fn human_color(v:V, eye_dir:vec3<f32>)->vec4<f32>{
     if dot(v.disc,v.disc)>1. {discard;}
@@ -481,6 +533,7 @@ fn human_color(v:V, eye_dir:vec3<f32>)->vec4<f32>{
         specular=0.95; gloss=95.;
     }
     case 7u: {color=hair;}
+    case 23u: {color=hair*v.uv.x;}
     default: {}
     }
     let sun=select(normalize(vec3<f32>(-0.65,0.85,0.5)),camera.sun.xyz,camera.game.x>0.);
@@ -508,6 +561,11 @@ fn human_color(v:V, eye_dir:vec3<f32>)->vec4<f32>{
 }
 
 @fragment fn fs_match(v:V)->@location(0) vec4<f32> {
+    if camera.game.x==2. {
+        let radiance=human_color(v,normalize(cross(camera.right.xyz,camera.up.xyz))).rgb;
+        let exposed=max(radiance*camera.right.w,vec3f(0.));
+        return vec4f(exposed/(1.+exposed),1.);
+    }
     let ray = v.world - view.cam.xyz;
     let radiance = human_color(v,normalize(-ray)).rgb;
     let d = length(ray);

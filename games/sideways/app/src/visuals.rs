@@ -546,28 +546,36 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     let mut log = Vec::new();
     let t = std::time::Instant::now();
     let mut scene = Scene::default();
+    // Hierarchical instance-group culling: ~268k instances in ~4k groups.
+    // Mancave 4K DLSS-P (cc9e99aa): 2 views 11.9 -> 9.9 ms, 4 views 16.6 -> 12.9 ms,
+    // same image. KERN_*INSTANCE_GROUPS=0 restores flat culling.
+    scene.graphics.instance_groups = true;
     // The receiver escape contract is the SAME bound enforced by surface().
     // Grass and driving ground keep strict native-height occlusion.
     scene.terrain_visual_offset_m=CLIFF_VISUAL_OFFSET;
     let r = root();
     let tex = |scene: &mut Scene, rel: &str| scene.add_texture(&r.join(rel));
     // Terrain layers, in the order shade.wgsl blends them.
-    let t0 = tex(&mut scene, "assets/textures/forest_leaves_02_albedo.jpg")?; // moss
-    tex(&mut scene, "assets/textures/forrest_ground_03_albedo.jpg")?; // needles
-    tex(&mut scene, "assets/textures/grass_ground_albedo.jpg")?; // verge
-    tex(&mut scene, "assets/textures/forest_ground_04_albedo.jpg")?; // bare ground
-    tex(&mut scene, "assets/textures/rock_face_03_albedo.jpg")?; // rock
-    // This source normal was sRGB-transferred; all other normal assets remain
-    // linear data. Decode before the renderer resizes/builds its normal mips.
-    let gravel = scene.add_texture_with_normal_encoding(
-        &r.join("assets/textures/gravel_ground_01_albedo.jpg"),
-        render::scene::NormalEncoding::SrgbTransferred,
-    )?;
-    tex(&mut scene, "assets/textures/forest_ground_04_albedo.jpg")?;
-    let trunk_a = tex(&mut scene, "assets/trees/trunk_a_albedo.jpg")?;
-    let trunk_b = tex(&mut scene, "assets/trees/trunk_b_albedo.jpg")?;
-    let bark = tex(&mut scene, "assets/trees/bark_albedo.jpg")?;
-    let crown = tex(&mut scene, "assets/trees/authored_pine_albedo.png")?;
+    // Decoded on parallel threads: one by one this was ~2.5 s of startup.
+    use render::scene::NormalEncoding::{LinearUnorm, SrgbTransferred};
+    let files = [
+        ("assets/textures/forest_leaves_02_albedo.jpg", LinearUnorm), // moss
+        ("assets/textures/forrest_ground_03_albedo.jpg", LinearUnorm), // needles
+        ("assets/textures/grass_ground_albedo.jpg", LinearUnorm), // verge
+        ("assets/textures/forest_ground_04_albedo.jpg", LinearUnorm), // bare ground
+        ("assets/textures/rock_face_03_albedo.jpg", LinearUnorm), // rock
+        // This source normal was sRGB-transferred; all other normal assets remain
+        // linear data. Decode before the renderer resizes/builds its normal mips.
+        ("assets/textures/gravel_ground_01_albedo.jpg", SrgbTransferred),
+        ("assets/textures/forest_ground_04_albedo.jpg", LinearUnorm),
+        ("assets/trees/trunk_a_albedo.jpg", LinearUnorm),
+        ("assets/trees/trunk_b_albedo.jpg", LinearUnorm),
+        ("assets/trees/bark_albedo.jpg", LinearUnorm),
+        ("assets/trees/authored_pine_albedo.png", LinearUnorm),
+    ].map(|(rel, encoding)| (r.join(rel), encoding));
+    let layers = scene.add_textures(&files.iter().map(|(path, encoding)| (path.as_path(), *encoding)).collect::<Vec<_>>())?;
+    // Terrain layers, in the order shade.wgsl blends them.
+    let (t0, gravel, trunk_a, trunk_b, bark, crown) = (layers[0], layers[5], layers[7], layers[8], layers[9], layers[10]);
     scene.load_sky(&r.join("assets/sky/sky_2k.hdr"))?;
     let m = |tint: [f32; 3], layer: i32, flags: u32, scale: f32| Material { tint, layer, roughness: 0.9, flags, scale, metal: 0.0 };
     // A biome's ground colour (--biome), relative to Sideways' own.

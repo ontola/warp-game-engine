@@ -104,6 +104,19 @@ fn mirror(p: Vec3) -> Vec3 { Vec3::new(-p.x, p.y, -p.z) }
 pub const MAX_PIECES: usize = 16_384;
 
 impl Arena {
+    /// Randomised spectator seats, shared by the crowd layout and player simulation.
+    /// The eight player slots are spaced around the bowl at different rows.
+    pub fn audience_seat(&self, player: usize) -> Vec3 {
+        use crate::stadium::{Stadium, SEGMENTS};
+        let mut rng = crate::rng::Rng::new(self.seed);
+        let first = rng.below(SEGMENTS as u32) as usize;
+        let section = (first + player * (SEGMENTS / 8)) % SEGMENTS;
+        let mut seat_rng = crate::rng::Rng::new(self.seed ^ player as u64);
+        let row = 2 + seat_rng.below(5) as usize;
+        self.stadium.seat_position((section as f32 + 0.5) * Stadium::seg_ang(), row)
+    }
+
+
     /// No geometry (a world before its first round).
     pub fn empty() -> Self {
         Arena { seed: 0, size: 55.0, variant: Variant::Open, blocks: Vec::new(), chunks: Vec::new(), grid: BoxGrid::default(), stadium: crate::stadium::Stadium::new(55.0, false, WALL_HEIGHT), spawns: vec![Vec3::new(0.0, 1.0, 0.0)], lights: Vec::new(), hole: None, islands: Vec::new(), links: Vec::new() }

@@ -68,7 +68,7 @@ fn same_seed_same_run() {
 
 #[test]
 fn every_biome_survives_bots() {
-    for b in 0..spellstorm::biome::BIOMES.len() {
+    for b in 0..spellstorm::biome::biomes().len() {
         let mut w = bots(2, 3 + b as u64);
         w.run.biome_index = b;
         w.enter_level();
@@ -256,7 +256,7 @@ fn tomes_rise_on_the_path_clear_of_props() {
     // Joep: a shrine's tomes stood far out in the grass, one inside a
     // building, and the party took them for missing.
     let mut total = 0;
-    for b in 0..spellstorm::biome::BIOMES.len() {
+    for b in 0..spellstorm::biome::biomes().len() {
         for seed in 1u64..=std::env::var("TOME_SEEDS").ok().and_then(|v| v.parse().ok()).unwrap_or(12) {
             let mut w = bots(2, seed * 10 + b as u64);
             w.step();

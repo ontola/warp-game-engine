@@ -432,6 +432,32 @@ pub struct Prompt {
     pub enabled: bool,
     pub pressed: Option<(String, f32)>,
     pub hold: Option<(String, f32)>,
+    /// How far the buttons are tucked away (0 shown, 1 label only): a
+    /// nudge seen from afar shows just the words, and the button pops in
+    /// once someone stands there.
+    pub conceal: f32,
+    pub conceal_to: f32,
+}
+
+impl Prompt {
+    /// How much of a button shows: (width share, badge scale with overshoot).
+    pub fn reveal(&self) -> (f32, f32) {
+        // The word slides aside first, then the button pops into the room
+        // it made (and the other way round when it tucks away), so the two
+        // never overlap.
+        let t = (1.0 - self.conceal).clamp(0.0, 1.0);
+        let slide = (t / 0.55).min(1.0);
+        let pop = ((t - 0.45) / 0.55).clamp(0.0, 1.0);
+        let (c1, c3) = (1.70158, 2.70158);
+        let back = if pop > 0.0 { (1.0 + c3 * (pop - 1.0).powi(3) + c1 * (pop - 1.0).powi(2)).max(0.0) } else { 0.0 };
+        (slide * slide * (3.0 - 2.0 * slide), back)
+    }
+
+    /// Pixels the tucked-away buttons save on this row.
+    pub fn concealed_width(&self) -> f32 {
+        let (w, _) = self.reveal();
+        self.items.iter().filter(|(k, _, _)| k != "LB" && k != "RB").count() as f32 * 66.0 * (1.0 - w)
+    }
 }
 
 pub fn prompt(c: &mut Canvas, state: &Prompt) {
@@ -441,28 +467,34 @@ pub fn prompt(c: &mut Canvas, state: &Prompt) {
         let bumper_key = key == "LB" || key == "RB";
         let badge = if bumper_key { 150.0 } else { 96.0 };
         let tw = render::hud::measure(label, bold(), 44.0)[0];
-        c.style_box([x, 6.0, badge + tw + 16.0, h - 12.0], [h / 2.0 - 6.0; 4], crate::godot::rgba(0.03, 0.03, 0.06, 0.82), None);
+        let (w, scale) = if bumper_key { (1.0, 1.0) } else { state.reveal() };
+        let label_x = x + (badge - 6.0) * w + 24.0 * (1.0 - w);
+        let pill = label_x - x + tw + 22.0;
+        c.style_box([x, 6.0, pill, h - 12.0], [h / 2.0 - 6.0; 4], crate::godot::rgba(0.03, 0.03, 0.06, 0.82), None);
         let on = state.enabled && *item_on;
         let color = if on { match key.as_str() { "A" => Color::hex("5cb85c"), "B" => Color::hex("e2574c"), "X" => Color::hex("3b8eea"), "Y" => Color::hex("f8cd34"), _ => TEXT } } else { Color::hex("55516a") };
         let pressed = state.pressed.as_ref().filter(|p| &p.0 == key).map_or(0.0, |p| p.1);
         if bumper_key {
             bumper(c, [x + 12.0, 18.0, 122.0, 60.0], key, 0, pressed);
-        } else {
-            let center = [x + h / 2.0 - 4.0, h / 2.0];
-            c.circle(center, h / 2.0 - 13.0, color.darkened(0.65));
+        } else if scale > 0.02 {
+            let center = [x + (h / 2.0 - 4.0) * w + 24.0 * (1.0 - w), h / 2.0];
+            c.circle(center, (h / 2.0 - 13.0) * scale, color.darkened(0.65));
             if let Some((_, hold)) = state.hold.as_ref().filter(|p| &p.0 == key && p.1 > 0.0) {
                 c.arc(center, h / 2.0 - 4.0, -PI / 2.0, -PI / 2.0 + TAU * hold, 7.0, color.lightened(0.3));
             }
             // The badge squashes down when pressed; the label stays put.
             let squash = 1.0 - pressed * 0.18;
             let face_center = [center[0], center[1] + pressed * 10.0];
-            let r = h / 2.0 - 14.0;
+            let r = (h / 2.0 - 14.0) * scale;
             let points: Vec<[f32; 2]> = (0..48).map(|i| { let a = i as f32 / 48.0 * TAU; [face_center[0] + a.cos() * r, face_center[1] + a.sin() * r * squash] }).collect();
             c.polygon(&points, color.darkened(pressed * 0.12));
-            c.text(bold(), [x + 10.0, h / 2.0 + 17.0 + pressed * 10.0], key, TextAlign::Center, h - 28.0, 48.0, Color::hex("0b0b12"));
+            if scale > 0.5 {
+                let size = 48.0 * scale.min(1.15);
+                c.text(bold(), [center[0] - (h - 28.0) / 2.0, h / 2.0 + 17.0 * size / 48.0 + pressed * 10.0], key, TextAlign::Center, h - 28.0, size, Color::hex("0b0b12"));
+            }
         }
-        c.text(bold(), [x + badge - 6.0, h / 2.0 + 16.0], label, TextAlign::Left, -1.0, 44.0, if on { TEXT } else { DIM });
-        x += badge + tw + 36.0;
+        c.text(bold(), [label_x, h / 2.0 + 16.0], label, TextAlign::Left, -1.0, 44.0, if on { TEXT } else { DIM });
+        x += pill + 20.0;
     }
 }
 
@@ -503,7 +535,7 @@ pub fn paint(c: &mut Canvas, name: &str, show: &Show, prompts: &std::collections
             Some(p) => {
                 // The live lobby gives prompts a wider screen; centre the pills in it.
                 let items: Vec<(String, String)> = p.items.iter().map(|(k, t, _)| (k.clone(), t.clone())).collect();
-                let need = crate::room::prompt_size(&items)[0] as f32;
+                let need = crate::room::prompt_size(&items)[0] as f32 - p.concealed_width();
                 c.shift(((c.size[0] - need) / 2.0).max(0.0).floor());
                 prompt(c, p)
             }

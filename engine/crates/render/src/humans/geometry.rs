@@ -123,7 +123,7 @@ impl Mesh {
     pub(super) fn anatomical() -> Self {
         let bytes = include_bytes!("../../../../assets/humans/person.bin");
         let u32_at = |i| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
-        assert_eq!(&bytes[..4], b"WH03");
+        assert_eq!(&bytes[..4], b"WH04");
         let count = u32_at(4);
         let split = 32 + count * 22;
         let mut vertices: Vec<Vertex> = bytes[32..split]
@@ -136,9 +136,13 @@ impl Mesh {
                     normal: [6, 8, 10].map(signed),
                     center: [word(12) as f32 / 65535., word(14) as f32 / 65535., -1.],
                     bones: s[16..20].try_into().unwrap(),
-                    morphs: [[0; 4]; 4],
+                    morphs: {
+                        let mut fields = [[0; 4]; 4];
+                        fields[3][3] = (s[21] as f32 * (127. / 255.)).round() as i8;
+                        fields
+                    },
                     bin: 4,
-                    material: word(20) as u32,
+                    material: s[20] as u32,
                     arm: 0.,
                 }
             })
@@ -152,7 +156,7 @@ impl Mesh {
             let end = cursor + u32_at(12 + channel * 4) * 5;
             for entry in bytes[cursor..end].chunks_exact(5) {
                 let index = u16::from_le_bytes([entry[0], entry[1]]) as usize;
-                vertices[index].morphs[channel] = [entry[2] as i8, entry[3] as i8, entry[4] as i8, 0];
+                vertices[index].morphs[channel][..3].copy_from_slice(&[entry[2] as i8, entry[3] as i8, entry[4] as i8]);
             }
             cursor = end;
         }
@@ -175,6 +179,7 @@ pub struct BodyVertex {
     pub uv: [f32; 2],
     pub limb_weights: [f32; 4],
     pub lid_closure: Vec3,
+    pub head_weight: f32,
     pub material: u32,
 }
 
@@ -205,6 +210,14 @@ fn curled_hand(p: Vec3, n: Vec3, frame: glam::Quat) -> (Vec3, Vec3) {
 }
 
 impl super::Instance {
+    // Nonnegative weights keep every landmark inside the four registered
+    // reference heads. Squaring twice still allows distinctive individuals.
+    pub fn head_weights(&self) -> [f32; 4] {
+        let w = self.identity.map(|x| { let x2 = x * x; x2 * x2 + 0.001 });
+        let sum = w.iter().sum::<f32>();
+        w.map(|x| x / sum)
+    }
+
     // Shoulder breadth, waist and hips vary independently of overall height.
     fn width_at(&self, y: f32) -> f32 {
         let zone = |center: f32, span: f32| {
@@ -224,6 +237,7 @@ impl super::Instance {
         static BODY: std::sync::OnceLock<Mesh> = std::sync::OnceLock::new();
         let mesh = BODY.get_or_init(Mesh::anatomical);
         let hair = 20 + (self.identity[2] * 3.0) as u32;
+        let weights = self.head_weights();
         let mut vertices = Vec::new();
         let mut remap = vec![u32::MAX; mesh.vertices.len()];
         for (i, v) in mesh.vertices.iter().enumerate() {
@@ -235,43 +249,33 @@ impl super::Instance {
                 continue;
             }
             let mut p = Vec3::from(v.pos);
-            for (morph, weight) in v.morphs.iter().zip([
-                self.identity[0],
-                self.identity[2],
-                self.identity[1],
-                self.identity[3],
-            ]) {
+            for (morph, weight) in v.morphs.iter().zip(weights) {
                 let d = Vec3::new(morph[0] as f32, morph[1] as f32, morph[2] as f32);
-                p += d * (0.055 / 127.0 * (2.0 * weight - 1.0));
+                p += d * (0.055 / 127.0 * weight);
             }
-            // Local to the mandible, fading out at the ears, neck and lips.
-            let jaw = (1. - ((p.y - 0.882) / 0.036).abs()).clamp(0., 1.);
-            p.x *= 1. + (self.size_phase[3] - 0.5) * 0.30 * jaw * jaw;
             if material == 14 && p.y < 0.18 {
                 let cuff = (1. - ((p.y - 0.071) / 0.095).abs()).clamp(0., 1.);
                 let axis = p.x.signum() * (0.132 - (p.y - 0.043) * 0.16);
                 p.x += (p.x - axis) * 0.25 * cuff;
                 p.z += (p.z + 0.015) * 0.18 * cuff;
             }
-            if material == 21 { // Sweep the bob's front fringe clear of the eyes.
-                let front = ((p.z - 0.033) / 0.027).clamp(0., 1.);
-                let center = (1. - ((p.x - 0.006) / 0.052).abs()).clamp(0., 1.);
-                let fringe = front * center * ((0.974 - p.y) / 0.032).clamp(0., 1.);
-                p.y += 0.030 * fringe;
-                p.x -= 0.012 * fringe;
-            }
             let mut n = Vec3::from(v.normal);
             if gripping && material == 4 && v.bones[1] > 220 && p.x.abs() > 0.22 {
                 (p, n) = curled_hand(p, n, hands[usize::from(p.x > 0.)]);
             }
-            let width = self.width_at(p.y);
-            p.x *= width;
-            n.x /= width;
+            let head = v.morphs[3][3] as f32 / 127.;
+            let skull = 1. + head * (self.size_phase[1] / self.size_phase[0] - 1.);
+            let width = 1. + (1. - head) * (self.width_at(v.pos[1]) - 1.);
+            p.x *= width * skull;
+            p.z *= skull;
+            n.x /= width * skull;
+            n.z /= skull;
             remap[i] = vertices.len() as u32;
             vertices.push(BodyVertex {
                 position: p,
                 normal: n.normalize_or(Vec3::Y),
                 uv: [v.center[0], v.center[1]],
+                head_weight: head,
                 lid_closure: Vec3::from_array([0, 1, 2].map(|axis| v.morphs[axis][3] as f32 * (0.012 / 127.))),
                 limb_weights: v.bones.map(|w| w as f32 / 255.0),
                 material,
@@ -371,6 +375,34 @@ pub(super) fn person(bin: u32, far: Far, detailed: bool) -> Mesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn head_blend_is_bounded_and_independent_of_build() {
+        let mut slim = super::super::Instance::person(23, Vec3::ZERO, 0., &Default::default());
+        for identity in [[0.; 4], [1.; 4], [0., 1., 0., 0.], slim.identity] {
+            slim.identity = identity;
+            let weights = slim.head_weights();
+            assert!(weights.iter().all(|&w| (0.0..=1.0).contains(&w)));
+            assert!((weights.iter().sum::<f32>() - 1.).abs() < 1e-6);
+        }
+        slim.size_phase = [1.8 * 0.84, 1.8, 0., 0.];
+        let mut broad = slim;
+        broad.size_phase = [1.8 * 1.15, 1.8, 1., 1.];
+        let mut count = 0;
+        let mut lower_face = 0;
+        for (a, b) in slim.body_mesh().0.iter().zip(broad.body_mesh().0) {
+            if a.material == 11 && a.position.x.abs() < 0.012 && a.position.z > 0.065
+                && (0.856..0.905).contains(&a.position.y) {
+                assert!(a.head_weight > 0.95, "lower face must turn with the skull");
+                lower_face += 1;
+            }
+            if a.material == 11 && a.head_weight == 1. {
+                assert!((a.position * slim.body_scale()).distance(b.position * broad.body_scale()) < 1e-5);
+                count += 1;
+            }
+        }
+        assert!(count > 1000 && lower_face > 100);
+    }
 
     #[test]
     fn outfits_share_a_body_and_fit_the_crowd_budget() {

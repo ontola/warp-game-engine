@@ -203,7 +203,7 @@ Edit [`rules/game.luau`](rules/game.luau). No rebuild for:
 - `ai` and `plan`: steering/braking/boost decisions, racing line and pace changes;
   deterministic random samples and geometric observations come from Rust.
 - `pickup` and `activate`: rank-weighted items and weapon activation policies,
-  including glide bombs that lock on in the air and lob ~50 m ahead on the ground,
+  including glide bombs that lock on in the air and lob well ahead (`bomb_lob_distance`) on the ground,
   and no warp pickup for the leader.
 - `balance`: cooldowns, regeneration, weapon damage/duration, pickup density.
 - `menu`: navigation and settings changes.

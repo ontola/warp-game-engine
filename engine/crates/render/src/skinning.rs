@@ -286,6 +286,8 @@ impl SkinningRenderer {
         })
     }
 
+    pub(crate) fn palette_buffer(&self) -> &wgpu::Buffer { &self.palette }
+
     pub fn set_palette(&self, gpu: &Gpu, actor: usize, matrices: &[Mat4]) -> Result<(), String> {
         let &(offset, count) = self.actors.get(actor).ok_or("skinned actor out of range")?;
         if matrices.len() != count || matrices.iter().any(|m| !valid_matrix(*m)) {

@@ -197,7 +197,7 @@ pub struct Player {
     pub phoenix: Option<(Vec3, u32)>,
     /// Sky drop: falling at this speed until the floor.
     pub launching: Option<f32>,
-    /// In the spawn cage: no movement, no damage.
+    /// Scripted entrance or round pause: no player movement or damage.
     pub frozen: bool,
     pub lava_accum: f64,
     /// RMB cooldown (Godot `grenade_cooldown`).
@@ -225,7 +225,7 @@ impl Player {
             pos: Vec3::ZERO, vel: Vec3::ZERO, yaw: 0.0, pitch: 0.0, recoil_pitch: 0.0, on_floor: false, wall_normal: None,
             jumps_left: 2, wall_jump_cd: 0.0, dash_timer: 0.0, dash_dir: Vec3::ZERO,
             dash_charges: 0, dash_recharge: 0.0, health: MAX_HEALTH, alive: true, ghost: false, howitzer: None, siege_crossbow: false,
-            ammo: weapon::BASE_MAG_SIZE as u32, reloading: false, rifle_cd: 0.0, bloom: 0.0, score: 0, kills: 0, bot, since_shot: 9.0,
+            ammo: Weapon::default().mag_size(), reloading: false, rifle_cd: 0.0, bloom: 0.0, score: 0, kills: 0, bot, since_shot: 9.0,
             cards: Vec::new(), weapon: Weapon::default(), offer: None, offer_age: 0.0,
             iframes: 0.0, slow_mult: 1.0, slow_timer: 0.0, poison_left: 0.0, poison_dps: 0.0, poison_accum: 0.0, poison_from: None,
             phoenix_charges: 0, phoenix: None, launching: None, frozen: false, lava_accum: 0.0,
@@ -433,14 +433,14 @@ pub enum Gib {
 pub const OVERKILL_HEALTH: i32 = -50;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Snapshot {
+pub struct Snapshot<Spots = Vec<Vec3>> {
     pub tick: u64,
     pub round: u32,
     #[serde(default)]
     pub phase: Phase,
     #[serde(default)]
     pub modifier: Option<Modifier>,
-    /// Round-start cage countdown for remote presentation; clients never step.
+    /// Round entrance countdown for remote presentation; clients never step.
     #[serde(default)]
     pub cage_left: Option<f32>,
     pub players: Vec<Player>,
@@ -457,6 +457,8 @@ pub struct Snapshot {
     #[serde(default)]
     pub waves: Option<coop::Waves>,
     pub events: Vec<Event>,
+    #[serde(default)]
+    pub landing_spots: Spots,
 }
 
 /// Damage and knockback landing later (blast sound delay), and on-hit
@@ -486,6 +488,9 @@ pub struct World {
     pub modifier: Option<Modifier>,
     /// Chance a round rolls a modifier (Godot 0.30).
     pub modifier_chance: f32,
+    /// The rifle before cards (mods/base/gun.luau through the app's mods):
+    /// weapons are rebuilt on it, so a change applies at the next round.
+    pub gun: weapon::Gun,
     /// Party rules on top of the modifier (GameNight settings; 1 is Godot's game).
     pub rules: Rules,
     /// Seconds a picker has before a card is chosen for them (Godot 10).
@@ -537,7 +542,7 @@ impl World {
         let mut w = World {
             next_bullet_id:1,
             arena: Arena::empty(), players, bullets: Vec::new(), projectiles: Vec::new(), strikes: Vec::new(), pickups: Vec::new(),
-            tick: 0, round: 1, phase: Phase::Playing, rounds_to_win: flow::ROUNDS_TO_WIN, modifier: None, modifier_chance: flow::MODIFIER_CHANCE,
+            tick: 0, round: 1, phase: Phase::Playing, rounds_to_win: flow::ROUNDS_TO_WIN, modifier: None, modifier_chance: flow::MODIFIER_CHANCE, gun: weapon::Gun::default(),
             rules: Rules::default(), card_pick_seconds: flow::CARD_PICK_TIMEOUT,
             forced_modifier: None, next_modifier: None, force_island: false, coop: false, waves: coop::Waves::default(), lava: flow::LavaLeak::default(),
             events: Vec::new(), breakage: Breakage::default(), bots_paused: false,
@@ -658,14 +663,14 @@ impl World {
 
     /// The weapon from the owned cards alone (Godot `rebuild_weapon_from_cards`).
     pub fn rebuild_weapon(&mut self, player: usize) {
-        self.players[player].weapon = Weapon::default();
+        self.players[player].weapon = Weapon::with_gun(self.gun);
         for c in self.players[player].cards.clone() { self.apply_card_to(player, c); }
     }
 
     /// Owned loadout without borrowed guns or temporary round modifiers.
     /// Presentation caches this at round boundaries, not once per frame.
     pub fn owned_weapon(&self, player: usize) -> Weapon {
-        let mut weapon = Weapon::default();
+        let mut weapon = Weapon::with_gun(self.gun);
         for &card in &self.players[player].cards {
             let Some(def) = self.cards.get(card) else { continue };
             self.cards.apply(card, &mut weapon);
@@ -717,6 +722,7 @@ impl World {
             tick: self.tick, round: self.round, phase: self.phase, modifier: self.modifier, cage_left: self.cage_left(), players: self.players.clone(), bullets: self.bullets.clone(),
             projectiles: self.projectiles.clone(), strikes: self.strikes.clone(), pickups: self.pickups.clone(), lava: self.lava.clone(),
             waves: self.coop.then(|| self.waves.clone()), events: self.events.clone(),
+            landing_spots: if self.cage_left().is_some() { self.flow.landing_spots.clone() } else { Vec::new() },
         }
     }
 
@@ -727,6 +733,7 @@ impl World {
         self.phase = s.phase;
         self.modifier = s.modifier;
         self.apply_cage_left(s.cage_left);
+        self.flow.landing_spots = s.landing_spots;
         self.players = s.players;
         self.bullets = s.bullets;
         self.projectiles = s.projectiles;

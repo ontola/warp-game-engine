@@ -20,8 +20,9 @@ const KEYS: [KeyCode; 12] = [
     KeyCode::F12,
 ];
 
+/// Also used by alternate shells (Sideways) through [`DevBar::draw_keys`].
 #[derive(Default)]
-pub(crate) struct DevBar {
+pub struct DevBar {
     buttons: Vec<(KeyCode, EditorButton)>,
 }
 impl DevBar {
@@ -32,10 +33,21 @@ impl DevBar {
             .find(|(_, b)| b.contains(p))
             .map(|(key, _)| *key)
     }
-    pub fn draw(
+    pub(crate) fn draw(
         &mut self,
         hud: &mut HudDrawList,
         game: &dyn Game,
+        stats: bool,
+        graphics: bool,
+    ) {
+        self.draw_keys(hud, |n| game.editor_shortcut(n), stats, graphics);
+    }
+    /// The strip for a shell without a [`Game`]: `shortcut(n)` names F`n`
+    /// (5..=12) and whether its window is open, like [`Game::editor_shortcut`].
+    pub fn draw_keys(
+        &mut self,
+        hud: &mut HudDrawList,
+        shortcut: impl Fn(u8) -> Option<(&'static str, bool)>,
         stats: bool,
         graphics: bool,
     ) {
@@ -54,7 +66,7 @@ impl DevBar {
                 2 => ("Graphics", graphics),
                 3 => ("Profiler", stats),
                 4 => ("Screenshot", false),
-                _ => match game.editor_shortcut(n) {
+                _ => match shortcut(n) {
                     Some(item) => item,
                     None => continue,
                 },

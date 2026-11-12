@@ -294,13 +294,14 @@ impl Host {
                 quit, extra: if quit { "X quit".into() } else { String::new() }, ..Default::default() };
         }
         let Some(first) = queue.first() else {
-            return Station { label: "No queued games for this party".into(), short: "Start".into(), action: "next".into(), enabled: false, ..Default::default() };
+            return Station { label: "No queued games for this party".into(), short: "Play".into(), action: "next".into(), enabled: false, ..Default::default() };
         };
-        // Y waits until the first game has loaded; the TV shows how far it is.
+        // Y while the first game loads is remembered: the host starts it once
+        // it is ready (pending transition); the TV shows how far it is.
         if self.loading_session(&first.game).is_some() {
-            return Station { label: format!("Loading {}", first.title), short: "Start".into(), action: "next".into(), enabled: false, ..Default::default() };
+            return Station { label: format!("Loading {}", first.title), short: "Play".into(), action: "next".into(), enabled: true, loading: true, title: first.title.clone(), ..Default::default() };
         }
-        Station { label: format!("Start {}", first.title), short: "Start".into(), action: "next".into(), enabled: true, ..Default::default() }
+        Station { label: format!("Play {}", first.title), short: "Play".into(), action: "next".into(), enabled: true, ..Default::default() }
     }
 
     /// The queue cabinet always starts the next game, even while another is paused.
@@ -425,7 +426,7 @@ mod tests {
         assert_eq!(h.shortfall(&h.library()[0]), "Too many players");
         assert_eq!(h.shortfall(&h.library()[3]), "Needs 1 phones");
         // Nothing runs: the TV starts the first game and the cabinet shows what follows.
-        assert_eq!(h.tv_station().label, "Start Party");
+        assert_eq!(h.tv_station().label, "Play Party");
         assert!(h.cabinet_queue().is_empty());
         assert_eq!(h.queue_station().label, "Queue is empty");
     }

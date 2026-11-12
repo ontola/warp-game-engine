@@ -22,6 +22,13 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [handoff.md](handoff.md) is the running log of 23 October to 5 November
   2026, newest first.
 
+- [Stadium broadcast camera costs](2026-11-11-stadium-broadcast.md)
+- [SpaceRacer rule calls: where a sim tick went](2026-11-11-spaceracer-rule-calls.md)
+- [Sideways GPU cost: LOD error, culling switches, car shading, shadow distance LOD](2026-11-11-sideways-gpu-cost.md)
+- [Hair rendering in games and a scalp-rooted Warp experiment](2026-11-11-warp-humans-hair-research.md)
+- [The side-parted bob in three views](2026-11-11-warp-humans-bob-volume.md)
+- [Close hair guides and geometric fibres](2026-11-11-warp-humans-hair-guides.md)
+- [Keeping seeded facial proportions within adult reference heads](2026-11-11-warp-humans-proportions.md)
 - [Close faces, gaze and eyelids](2026-11-10-warp-humans-close-faces.md)
 - [Skin tone and seeded hair colour](2026-11-10-warp-humans-hair.md)
 - [Fitted player stance, face and sparse body asset](2026-11-10-warp-humans-fit.md)

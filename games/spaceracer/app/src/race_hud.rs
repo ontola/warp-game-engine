@@ -479,4 +479,33 @@ pub fn draw(
             }
         }
     }
+    // Railgun: a lock arrow above whoever is inside the circle, so the player
+    // sees who a tap will hit. Dim grey when scenery blocks the shot.
+    if race.rail_ready(i) {
+        let lock = rail_target.map(|j| (j, true))
+            .or(d.rail_candidate.map(|j| (j, false)));
+        if let Some((j, clear)) = lock {
+            let vp = Mat4::perspective_rh(cam.fov_y, r[2] / r[3], 0.15, 10000.)
+                * Mat4::look_at_rh(cam.pos, cam.target, up);
+            let pose = race.pose(j);
+            let q = vp * (pose.origin + pose.basis.y_axis * 3.5).extend(1.);
+            if q.w > 0. {
+                let q = q.truncate() / q.w;
+                let point = Vec2::new(q.x * 0.5, -q.y * 0.5);
+                let at = Vec2::splat(0.5) + point * (1. + curvature * point.length_squared() * 4.);
+                let tip = [at.x * w, at.y * height - 14.];
+                let c = if clear { [0.55, 1., 0.73, 0.95] } else { [0.6, 0.66, 0.72, 0.55] };
+                let bob = if clear { (race.clock as f32 * 6.).sin() * 2. } else { 0. };
+                let tip = [tip[0], tip[1] + bob];
+                let l = [tip[0] - 11., tip[1] - 13.];
+                let rr = [tip[0] + 11., tip[1] - 13.];
+                v.line(l, tip, 2.2, c);
+                v.line(rr, tip, 2.2, c);
+                v.line(l, rr, 1.2, c);
+                if clear {
+                    v.text("LOCK", [tip[0], tip[1] - 30.], 10., TextAlign::Center, [140, 255, 186, 235]);
+                }
+            }
+        }
+    }
 }

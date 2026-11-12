@@ -136,6 +136,9 @@ fn the_mouse_is_nobody_but_works_the_room() {
     assert_ne!(lobby.host.shelf_offset, offset, "the wheel browses the shelf");
 
     // Escape opens the room's own menu; clicking Quit twice quits GameNight.
+    // (Not in the first moments after taking the screen: that Escape may
+    // be the one that closed the game in front.)
+    std::thread::sleep(Duration::from_millis(800));
     assert!(app::Game::escape(&mut lobby), "Escape never closes the room");
     assert!(lobby.mouse_menu_open());
     let (_, rows) = game_room::hud::mouse_menu_rows(&lobby, size).unwrap();
@@ -144,4 +147,62 @@ fn the_mouse_is_nobody_but_works_the_room() {
     point(&mut lobby, at, true, 0.0);
     point(&mut lobby, at, true, 0.0);
     sent(&from_lobby, "quit_party");
+}
+
+#[test]
+fn new_rooms_show_where_to_start_and_where_scanned_profiles_wait() {
+    let party = json!({
+        "players": [],
+        "seats": [],
+        "library": [{"id": "spaceracer", "title": "Space Racer", "color": "#38d6ff"}],
+        "playlist": {"entries": [{"game": "spaceracer", "title": "Space Racer"}], "current": null},
+    });
+    let (url, to_lobby, _from_lobby) = fake_host(party);
+    let config = gamenight::lobby::Config { url, lobby_id: "game-room".into(), token: "secret".into(), links_base: String::new() };
+    let mut lobby = Lobby::connect_with(options(), config).unwrap();
+    run_until(&mut lobby, |l| l.accepts_input());
+    // An empty room nudges nobody, even with a profile waiting.
+    lobby.set_links(json!({"room": {"pending": [{"id": "w1", "profile": {"display_name": "Sanne"}}]}}));
+    for _ in 0..10 { lobby.update(1.0 / 60.0); }
+    assert!(lobby.nudges.is_empty() && !lobby.prompt_active["tv"], "nothing hops before someone joins");
+
+    // Someone joins and stands away from the TV and the doors.
+    to_lobby.send(json!({"type": "party_state", "party": {
+        "players": [{"id": "p0", "name": "Joep", "color": "#e36c76", "couch": 0}],
+        "seats": [{"index": 0, "occupant": {"kind": "local", "player_id": "p0"}, "controller": "pad-a"}],
+        "library": [{"id": "spaceracer", "title": "Space Racer", "color": "#38d6ff"}],
+        "playlist": {"entries": [{"game": "spaceracer", "title": "Space Racer"}], "current": null}}})).unwrap();
+    run_until(&mut lobby, |l| l.world.player("p0").is_some());
+    let p = lobby.world.player_mut("p0").unwrap();
+    p.x = -9.0;
+    for _ in 0..30 { tick(&mut lobby); }
+    run_until(&mut lobby, |l| l.nudges.contains("tv") && l.nudges.contains("door0"));
+    assert_eq!(lobby.prompts["tv"].items[0].1, "Play");
+    assert!(lobby.prompt_active["tv"], "before the first game, Play hops at the TV for nobody in particular");
+    assert!(lobby.prompt_active["door0"] && lobby.prompts["door0"].enabled, "a scanned profile's door shows Pick up");
+    assert!(!lobby.nudges.contains("door1"), "only doors with a profile waiting");
+    assert_eq!(lobby.prompts["tv"].conceal, 1.0, "from afar the nudge shows only its words");
+
+    // Walking up to the TV pops its button in and stops the hop.
+    lobby.world.player_mut("p0").unwrap().x = 0.0;
+    run_until(&mut lobby, |l| { tick(l); l.prompts["tv"].conceal == 0.0 });
+    assert!(!lobby.nudges.contains("tv") && lobby.prompt_active["tv"]);
+
+    // Once everyone has a profile, the doors stop hopping.
+    lobby.set_links(json!({"room": {"pending": [{"id": "w1", "profile": {"display_name": "Sanne"}}]}, "linked": {"p0": {}}}));
+    lobby.update(1.0 / 60.0);
+    assert!(!lobby.nudges.contains("door0"), "nobody left to pick a profile up");
+
+    // Once a game has run, the TV is no longer nudged.
+    to_lobby.send(json!({"type": "party_state", "party": {"players": [], "seats": [],
+        "library": [{"id": "spaceracer", "title": "Space Racer"}],
+        "active_session": {"game": "spaceracer", "phase": "running"},
+        "playlist": {"entries": [], "current": null}}})).unwrap();
+    run_until(&mut lobby, |l| l.started_once);
+    to_lobby.send(json!({"type": "party_state", "party": {"players": [], "seats": [],
+        "library": [{"id": "spaceracer", "title": "Space Racer"}],
+        "playlist": {"entries": [{"game": "spaceracer", "title": "Space Racer"}], "current": null}}})).unwrap();
+    run_until(&mut lobby, |l| l.host.current_game().is_none());
+    lobby.update(1.0 / 60.0);
+    assert!(!lobby.nudges.contains("tv"));
 }

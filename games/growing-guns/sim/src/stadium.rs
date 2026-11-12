@@ -124,6 +124,12 @@ impl Stadium {
         (dr * dr + dy * dy).sqrt()
     }
 
+    /// Standing body centre on a spectator row at this angle.
+    pub fn seat_position(self, angle: f32, row: usize) -> Vec3 {
+        let radius = (self.inner_r + (row as f32 + 0.5) * self.row_depth()) * sq(angle);
+        Vec3::new(angle.cos() * radius, self.base_y + row as f32 * self.row_rise() + crate::HALF_HEIGHT, angle.sin() * radius)
+    }
+
     /// The nearest point among the seats, toward `p` (where crowd reactions
     /// are heard from).
     pub fn ring_point_toward(&self, p: Vec3) -> Vec3 {

@@ -7,6 +7,10 @@ use std::time::Duration;
 use web_time::Instant;
 use wgpu::util::DeviceExt;
 
+#[path = "screen_feed_camera.rs"]
+mod camera;
+pub use camera::BroadcastShot;
+
 pub const BASE_MIP: u32 = 2;
 
 #[derive(Clone, Copy, Debug)]
@@ -40,6 +44,8 @@ struct Layer {
 }
 
 pub(crate) struct LiveScreens {
+    pub(crate) cutaway: camera::Cutaway,
+    broadcast_uniform: wgpu::Buffer,
     layers: Vec<Layer>,
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
@@ -47,6 +53,7 @@ pub(crate) struct LiveScreens {
     source: Option<(wgpu::Texture, Vec<wgpu::BindGroup>)>,
     last_update: Option<Instant>,
     last_layout: Vec<[u32; 4]>,
+    last_cut: Option<(u32,u64)>,
 }
 
 impl LiveScreens {
@@ -81,11 +88,24 @@ impl LiveScreens {
             let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("live screen crop"), size: 32, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
             Layer { feed, uniform, targets, mips }
         }).collect();
-        Self { layers, pipeline, layout, sampler, source: None, last_update: None, last_layout: Vec::new() }
+        Self { cutaway: camera::Cutaway::new(), broadcast_uniform: mip_params, layers, pipeline, layout, sampler, source: None, last_update: None, last_layout: Vec::new(), last_cut: None }
+    }
+
+    pub(crate) fn begin_cutaway(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder)
+        -> (&wgpu::TextureView, &wgpu::TextureView) {
+        self.cutaway.begin(gpu, enc, &self.layout, &self.sampler, &self.broadcast_uniform)
+    }
+
+    fn active_cut(&self) -> Option<(u32,u64)> {
+        let (layer,_,_) = self.cutaway.shot.as_ref()?;
+        self.cutaway.binding(*layer).map(|_| (*layer, self.cutaway.revision))
     }
 
     pub(crate) fn due(&self, views: &[ViewRect], source: &wgpu::Texture) -> bool {
-        self.last_update.is_none_or(|at| at.elapsed() >= Duration::from_secs_f64(1. / 30.))
+        let cut = self.active_cut();
+        self.last_cut != cut
+            || ((cut.is_none() || self.layers.len() > 1)
+                && self.last_update.is_none_or(|at| at.elapsed() >= Duration::from_secs_f64(1. / 30.)))
             || self.source.as_ref().is_none_or(|(old, _)| old != source)
             || self.last_layout.len() != views.len()
             || self.last_layout.iter().zip(views).any(|(a, v)| *a != [v.x, v.y, v.w, v.h])
@@ -111,11 +131,12 @@ impl LiveScreens {
                     depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
                 if view.is_some() {
                     pass.set_pipeline(&self.pipeline);
-                    pass.set_bind_group(0, if mip == 0 { &self.source.as_ref().unwrap().1[i] } else { &layer.mips[mip - 1] }, &[]);
+                    pass.set_bind_group(0, if mip == 0 { self.cutaway.binding(layer.feed.layer).unwrap_or(&self.source.as_ref().unwrap().1[i]) } else { &layer.mips[mip - 1] }, &[]);
                     pass.draw(0..3, 0..1);
                 }
             }
         }
+        self.last_cut = self.active_cut();
         self.last_update = Some(Instant::now());
         self.last_layout.clear();
         self.last_layout.extend(views.iter().map(|v| [v.x, v.y, v.w, v.h]));

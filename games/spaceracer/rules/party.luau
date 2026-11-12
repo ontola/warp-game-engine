@@ -1,4 +1,6 @@
 -- GameNight declarations and validation are game policy, not engine code.
+-- When an edit applies: at the next start of the game (the settings list is read
+-- once); each setting's label says when its value applies (live or next race).
 local specs={
  {key="laps",label="Laps (next race)",kind="number",default=3,min=1,max=5},
  {key="difficulty",label="Difficulty (next race)",kind="choice",default="normal",options={"easy","normal","hard"}},

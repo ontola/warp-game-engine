@@ -1,4 +1,4 @@
-//! Rounds and the match (Godot `game.gd`): the spawn cage, kills in the
+//! Rounds and the match (Godot `game.gd`): the crowd launch, kills in the
 //! order they happen, round wins, card offers with rarity, match end at
 //! ten wins, round modifiers, pickups, the lava leak and modifier strikes.
 use crate::player::SKY_DROP_HEIGHT;
@@ -12,10 +12,8 @@ pub const CARDS_PER_PICK: usize = 3;
 pub const CARD_PICK_TIMEOUT: f64 = 10.0;
 pub const BOT_PICK_DELAY: f64 = 1.2;
 pub const ROUND_WIN_TO_PICK: f64 = 0.35;
-pub const CAGE_SPAWN_HEIGHT: f32 = 45.0;
-pub const CAGE_DROP: f32 = 23.0;
-pub const CAGE_DESCEND: f64 = 2.6;
-pub const CAGE_RELEASE: f64 = 2.75;
+const SEAT_HOLD: f64 = 0.8;
+const ROUND_ENTRANCE: f64 = 2.75;
 pub const SPAWN_SPACING: f32 = 8.0;
 pub const LAVA_LEAK_START: f64 = 30.0;
 pub const LAVA_LEAK_SPREAD: f32 = 20.0;
@@ -99,8 +97,8 @@ pub(crate) struct State {
     pub winner: Option<usize>,
     /// Counting down to the card picks after a win.
     end_timer: Option<f64>,
-    cage: Option<f64>,
-    cage_targets: Vec<Vec3>,
+    entrance_elapsed: Option<f64>,
+    pub(super) landing_spots: Vec<Vec3>,
     round_elapsed: f64,
     pickup_timer: f64,
     air_timer: Option<f64>,
@@ -146,7 +144,7 @@ impl World {
         self.strikes.clear();
         if self.modifier == Some(Modifier::SupplyStorm) { self.spawn_pickup(); }
         if self.modifier == Some(Modifier::SuddenDeath) { self.start_lava_leak(); }
-        self.flow.cage = Some(0.0);
+        self.flow.entrance_elapsed = Some(0.0);
         if self.coop { self.coop_begin_wave(); }
         if self.modifier == Some(Modifier::AirStrikes) { self.flow.air_timer = Some(self.rng.range(0.5, 1.25) as f64); }
         if self.modifier == Some(Modifier::IonCannon) { self.flow.ion_timer = Some(self.rng.range(0.75, 1.5) as f64); }
@@ -163,7 +161,7 @@ impl World {
         for k in (1..n).rev() { let j = self.rng.below(k as u32 + 1) as usize; order.swap(k, j); }
         if order.iter().enumerate().all(|(k, &o)| k == o) { order = (0..n).map(|k| (k + 1) % n).collect(); }
         for i in 0..n {
-            self.players[i].weapon = crate::Weapon::default();
+            self.players[i].weapon = crate::Weapon::with_gun(self.gun);
             let book = self.cards.clone();
             for &c in &decks[order[i]] {
                 let def = book.get(c).cloned();
@@ -173,13 +171,13 @@ impl World {
         }
     }
 
-    /// Greedy spawn picks with spacing, each in the cage 45 m up.
+    /// Each player launches from the stand facing their assigned spawn.
     fn spawn_all(&mut self) {
         let mut spots = self.arena.spawns.clone();
         for k in (1..spots.len()).rev() { let j = self.rng.below(k as u32 + 1) as usize; spots.swap(k, j); }
         let mut used: Vec<Vec3> = Vec::new();
         for i in 0..self.players.len() {
-            let pick = pick_spawn(&spots, &used);
+            let pick = landing_spot(&self.arena, pick_spawn(&spots, &used));
             used.push(pick);
             let p = &mut self.players[i];
             let keep = (p.score, p.kills, std::mem::take(&mut p.cards), p.weapon.clone(), p.air_strike_charges, p.offer.take());
@@ -189,12 +187,11 @@ impl World {
             p.ammo = p.mag_size();
             p.phoenix_charges = p.weapon.phoenix_revives;
             p.jumps_left = 2 + p.weapon.extra_jumps;
-            p.pos = pick + Vec3::Y * CAGE_SPAWN_HEIGHT;
+            p.pos = self.arena.audience_seat(i);
             p.frozen = true;
-            let to = -Vec2::new(pick.x, pick.z);
-            p.yaw = if to.length_squared() > 1e-4 { (-to.x).atan2(-to.y) } else { 0.0 };
+            p.yaw = (p.pos.x - pick.x).atan2(p.pos.z - pick.z);
         }
-        self.flow.cage_targets = used;
+        self.flow.landing_spots = used;
     }
 
     /// Godot `report_kill`: deaths count in the order they happen.
@@ -284,7 +281,7 @@ impl World {
         self.start_round();
     }
 
-    /// Per tick: picks, the cage, the win pause, strikes, pickups, the leak.
+    /// Per tick: picks, the crowd launch, the win pause, strikes, pickups, the leak.
     pub(crate) fn flow_tick(&mut self, inputs: &[Input]) {
         let humans = self.players.iter().filter(|p| !p.bot).count();
         // A pick can start the next round, which in coop drops the wave's
@@ -308,19 +305,22 @@ impl World {
         // Coop: a wave's end where nobody got cards goes on here, at a point
         // where the enemies can be dropped.
         if self.coop { self.maybe_finish_picks(); }
-        if let Some(t) = self.flow.cage.as_mut() {
+        if let Some(t) = self.flow.entrance_elapsed.as_mut() {
             *t += DT64;
             let t = *t;
             for (i, p) in self.players.iter_mut().enumerate() {
-                let Some(&ground) = self.flow.cage_targets.get(i) else { continue };
-                if !p.frozen || self.phase == Phase::MatchOver { continue; }
-                let u = (t / CAGE_DESCEND).min(1.0) as f32;
-                p.pos = Vec3::new(ground.x, ground.y + CAGE_SPAWN_HEIGHT - CAGE_DROP * (1.0 - (1.0 - u) * (1.0 - u)), ground.z);
+                let Some(&ground) = self.flow.landing_spots.get(i) else { continue };
+                if !p.frozen || !p.alive || self.phase == Phase::MatchOver { continue; }
+                p.pos = entrance_position(&self.arena, ground, i, t);
+                if t + 1e-9 >= ROUND_ENTRANCE {
+                    p.pos = ground;
+                    p.vel = Vec3::ZERO;
+                    p.on_floor = true;
+                    p.frozen = false;
+                    self.events.push(Event::Landed { player: i, speed: 0.0 });
+                }
             }
-            if t + 1e-9 >= CAGE_RELEASE {
-                self.flow.cage = None;
-                for p in &mut self.players { p.frozen = false; }
-            }
+            if t + 1e-9 >= ROUND_ENTRANCE { self.flow.entrance_elapsed = None; }
         }
         if let Some(t) = self.flow.end_timer.as_mut() {
             *t -= DT64;
@@ -562,13 +562,50 @@ impl World {
     /// The round's winner so far (versus).
     pub fn round_winner(&self) -> Option<usize> { self.flow.winner }
 
-    /// Seconds left in the spawn cage, if it is closed.
-    pub fn cage_left(&self) -> Option<f32> { self.flow.cage.map(|t| (CAGE_RELEASE - t).max(0.0) as f32) }
-
-    /// Mirror the host's cage state for presentation (remote worlds never step).
-    pub(crate) fn apply_cage_left(&mut self, left: Option<f32>) {
-        self.flow.cage = left.filter(|t| t.is_finite()).map(|t| (CAGE_RELEASE - t as f64).clamp(0.0, CAGE_RELEASE));
+    /// The rifle stays on its landing spot for the entire entrance.
+    pub fn awaiting_rifle(&self, player: usize) -> bool {
+        self.flow.entrance_elapsed.is_some()
+            && self.players.get(player).is_some_and(|p| p.alive && p.frozen && !p.ghost)
     }
+
+    /// World-space surface directly beneath the owner's feet at touchdown.
+    pub fn ground_rifle(&self, player: usize) -> Option<Vec3> {
+        if !self.awaiting_rifle(player) { return None; }
+        self.flow.landing_spots.get(player).map(|spot| *spot - Vec3::Y * crate::HALF_HEIGHT)
+    }
+
+    /// Fraction of the flight from seat to floor, zero while seated.
+    pub fn entrance_flight(&self) -> f32 {
+        flight_fraction(self.flow.entrance_elapsed.unwrap_or(0.))
+    }
+
+    /// Time until the players land. The snapshot field retains its original wire name.
+    pub fn cage_left(&self) -> Option<f32> { self.flow.entrance_elapsed.map(|t| (ROUND_ENTRANCE - t).max(0.0) as f32) }
+
+    /// Mirror the host's entrance timer for presentation (remote worlds never step).
+    pub(crate) fn apply_cage_left(&mut self, left: Option<f32>) {
+        self.flow.entrance_elapsed = left.filter(|t| t.is_finite()).map(|t| (ROUND_ENTRANCE - t as f64).clamp(0.0, ROUND_ENTRANCE));
+    }
+}
+
+fn landing_spot(arena: &Arena, marker: Vec3) -> Vec3 {
+    // Land on the exposed surface at the marker, including island tops and
+    // any generated cover overlapping a floor marker.
+    let above = marker + Vec3::Y * 64.0;
+    let surface = shape::raycast(&arena.grid, above, Vec3::NEG_Y, 128.0)
+        .map_or(marker.y - 1.0, |(distance, _, _)| above.y - distance);
+    Vec3::new(marker.x, surface + crate::HALF_HEIGHT, marker.z)
+}
+
+fn flight_fraction(elapsed: f64) -> f32 {
+    ((elapsed - SEAT_HOLD) / (ROUND_ENTRANCE - SEAT_HOLD)).clamp(0.0, 1.0) as f32
+}
+
+fn entrance_position(arena: &Arena, target: Vec3, player: usize, elapsed: f64) -> Vec3 {
+    let seat = arena.audience_seat(player);
+    let u = flight_fraction(elapsed);
+    let lift = 10.0 + 0.12 * seat.distance(target);
+    seat.lerp(target, u) + Vec3::Y * (4.0 * u * (1.0 - u) * lift)
 }
 
 /// Godot `_pick_spawn`: as far from the others as possible, at similar
@@ -611,17 +648,33 @@ impl World {
             let to = -Vec2::new(pick.x, pick.z);
             p.yaw = if to.length_squared() > 1e-4 { (-to.x).atan2(-to.y) } else { 0.0 };
         }
-        self.flow.cage = None;
-        self.flow.cage_targets = used;
+        self.flow.entrance_elapsed = None;
+        self.flow.landing_spots = used;
     }
 
-    /// Open the spawn cage now and set everyone on their spawn (tests, debug).
+    /// Skip the entrance and place the participants on their spawns (tests, debug).
     pub fn release_cage(&mut self) {
-        self.flow.cage = None;
+        let landing = self.flow.entrance_elapsed.take().is_some();
         for (i, p) in self.players.iter_mut().enumerate() {
-            if let Some(&g) = self.flow.cage_targets.get(i) && p.frozen { p.pos = g; }
-            p.frozen = false;
+            if landing && p.alive && p.frozen && let Some(&ground) = self.flow.landing_spots.get(i) {
+                p.pos = ground;
+                p.vel = Vec3::ZERO;
+                p.on_floor = true;
+                p.frozen = false;
+            }
         }
+    }
+
+    /// Reserve the destination of each player who is still in flight.
+    fn free_spawn(&self, skip: Option<usize>) -> Vec3 {
+        let used: Vec<_> = self.players.iter().enumerate()
+            .filter(|(i, p)| Some(*i) != skip && p.alive)
+            .map(|(i, p)| {
+                if self.flow.entrance_elapsed.is_some() && p.frozen {
+                    self.flow.landing_spots.get(i).copied().unwrap_or(p.pos)
+                } else { p.pos }
+            }).collect();
+        pick_spawn(&self.arena.spawns, &used)
     }
 
     /// Hand slot `i` to a joining human: if the bot in that seat already died
@@ -631,8 +684,7 @@ impl World {
         let Some(p) = self.players.get_mut(i) else { return };
         p.bot = false;
         if self.phase == Phase::Playing && !self.round_over() && !self.players[i].alive {
-            let used: Vec<Vec3> = self.players.iter().enumerate().filter(|&(k, p)| k != i && p.alive).map(|(_, p)| p.pos).collect();
-            let pick = pick_spawn(&self.arena.spawns, &used);
+            let pick = self.free_spawn(Some(i));
             self.flow.eliminated.retain(|&x| x != i);
             self.flow.completed.retain(|&x| x != i);
             self.waves.downed.retain(|d| d.player != i);
@@ -646,10 +698,12 @@ impl World {
             p.jumps_left = 2 + p.weapon.extra_jumps;
             let to = -Vec2::new(pick.x, pick.z);
             p.yaw = if to.length_squared() > 1e-4 { (-to.x).atan2(-to.y) } else { 0.0 };
-            if self.flow.cage.is_some() {
-                p.pos = pick + Vec3::Y * CAGE_SPAWN_HEIGHT;
+            if let Some(elapsed) = self.flow.entrance_elapsed {
+                let pick = landing_spot(&self.arena, pick);
+                p.pos = entrance_position(&self.arena, pick, i, elapsed);
+                p.yaw = (p.pos.x - pick.x).atan2(p.pos.z - pick.z);
                 p.frozen = true;
-                if i < self.flow.cage_targets.len() { self.flow.cage_targets[i] = pick; }
+                if i < self.flow.landing_spots.len() { self.flow.landing_spots[i] = pick; }
             } else {
                 p.pos = pick;
                 p.frozen = false;
@@ -664,18 +718,19 @@ impl World {
     /// Add a computer player (or a fresh seat) on a free spawn, with its own AI brain.
     pub fn add_bot(&mut self) -> usize {
         let i = self.players.len();
-        let used: Vec<Vec3> = self.players.iter().filter(|p| p.alive).map(|p| p.pos).collect();
-        let pick = pick_spawn(&self.arena.spawns, &used);
+        let pick = self.free_spawn(None);
         let mut p = crate::Player::new(true);
         if let Some(m) = self.modifier { modifier_weapon(m, &mut p.weapon); }
         p.health = p.max_health();
         p.ammo = p.mag_size();
         let to = -Vec2::new(pick.x, pick.z);
         p.yaw = if to.length_squared() > 1e-4 { (-to.x).atan2(-to.y) } else { 0.0 };
-        if self.flow.cage.is_some() {
-            p.pos = pick + Vec3::Y * CAGE_SPAWN_HEIGHT;
+        if let Some(elapsed) = self.flow.entrance_elapsed {
+            let pick = landing_spot(&self.arena, pick);
+            p.pos = entrance_position(&self.arena, pick, i, elapsed);
+            p.yaw = (p.pos.x - pick.x).atan2(p.pos.z - pick.z);
             p.frozen = true;
-            self.flow.cage_targets.push(pick);
+            self.flow.landing_spots.push(pick);
         } else {
             p.pos = pick;
         }
@@ -692,7 +747,7 @@ impl World {
         if !self.players[last].bot || keep_slots.contains(&last) { return false; }
         self.players.pop();
         self.brains.truncate(last);
-        self.flow.cage_targets.truncate(last);
+        self.flow.landing_spots.truncate(last);
         self.flow.eliminated.retain(|&i| i < last);
         self.flow.completed.retain(|&i| i < last);
         if self.flow.winner == Some(last) { self.flow.winner = None; }

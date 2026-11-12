@@ -52,9 +52,30 @@ What remains (cone, range fade, HG phase and transmittance
 Gauss-Legendre. Against 50,000-step quadrature this is within 1% for
 omnis, spots, rays through the source and rays starting inside it.
 
-There is no occlusion term: local lights are unshadowed for surfaces too, so
-a shadow test in the air would have no map to read. A beam therefore passes
-through walls; the depth buffer only ends the ray at the first surface.
+In this (default) mode there is no occlusion term: a beam passes through
+walls; the depth buffer only ends the ray at the first surface.
+
+### Bounded, shadowed mode
+
+`Renderer::set_volumetric_bounded(bounds, occluders, sun)` restricts the
+medium to up to 8 axis-aligned boxes (rooms) and switches to a ray march
+there, with shadows from boxes:
+
+- `bounds`: where the medium is. Outside them nothing scatters.
+- `occluders`: unit boxes under transforms (walls, furniture, a door as it
+  stands; set them every frame for moving ones). Each bound keeps the list of
+  boxes within half a metre of it; a sample tests the segment to every light
+  against its own bound's list, so a lamp behind a wall casts no beam in
+  front of it and a doorway lets a shaft through.
+- `sun`: how much of the sun's irradiance scatters in the bounds, occluded
+  the same way (daylight through a door or window).
+
+The march takes 12 steps per pixel at quarter resolution, offset by a fixed
+4x4 Bayer pattern; the composite gathers 4x4 of the marched pixels (a tent),
+which averages the pattern. Cost at 4K on an RTX 5070 Ti, internal
+resolution 3840x2160, the `interior_rooms` example (pendant, four lamps,
+about 15 boxes per room): 2.6 ms for both passes, 0 with the fog off. Each
+step costs about 0.17 ms. `interior_rooms` (Tab) shows it.
 
 ## Passes
 
@@ -134,8 +155,12 @@ survive sky changes.
 
 ## Limits
 
-- No occlusion of the air: there are no shadows in the beams, and a lamp
-  behind a wall still glows in front of it if the ray reaches its sphere.
+- Unbounded mode: no occlusion of the air, so no shadows in the beams, and a
+  lamp behind a wall still glows in front of it if the ray reaches its
+  sphere. The bounded mode has shadows, but only from the boxes it is given,
+  not from the shadow maps.
+- Bounded mode: 12 steps show as a slight dither on bright beams close to
+  the camera (a flashlight).
 - Single scattering in a homogeneous medium, with no height falloff.
   Transmittance is approximate. The scene behind is dimmed only with
   `extinction`, by the opaque depth, so a blended surface in front of a wall

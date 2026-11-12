@@ -19,7 +19,7 @@
 pub mod clipboard;
 pub mod debug;
 pub mod editor;
-mod dev_bar;
+pub mod dev_bar;
 pub mod stats;
 pub mod input;
 pub mod text;
@@ -80,13 +80,17 @@ pub struct Frame<'a> {
     pub split: render::SplitLayout,
     /// The window has the keyboard focus (another app or game is not in front).
     pub focused: bool,
+    /// The display, when the window shows HDR output (fp16 scRGB/EDR);
+    /// `None` in SDR, headless and captures. The headroom in use is
+    /// `Renderer::hdr_headroom`.
+    pub hdr: Option<render::hdr::HdrDisplay>,
     renderer: &'a mut Option<Renderer>,
 }
 
 impl<'a> Frame<'a> {
     /// Frame access for an external presentation shell, including OpenXR.
     pub fn new(gpu: &'a Gpu, renderer: &'a mut Option<Renderer>, size: [u32; 2], dt: f32, alpha: f32) -> Self {
-        Self { gpu, renderer, size, dt, alpha, split: render::SplitLayout::SideBySide, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, focused: true }
+        Self { gpu, renderer, size, dt, alpha, split: render::SplitLayout::SideBySide, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, focused: true, hdr: None }
     }
 
     /// Upload a scene: creates the renderer, or replaces it.
@@ -202,6 +206,10 @@ pub trait Game {
     fn text(&mut self, _event: TextEvent) {}
     /// Frame review needs fixed quality even when a slow seek misses its budget.
     fn fixed_quality(&self) -> bool { false }
+    /// True while frame times say nothing about this game's own cost, such
+    /// as the moments a lobby takes the screen back while the game that had
+    /// it still renders: adaptive quality neither drops nor climbs then.
+    fn hold_quality(&self) -> bool { false }
     /// Hidden behind the lobby or another game (a warm game), the shell draws
     /// a scene only about once a second, so it leaves the GPU to the game on
     /// screen. True asks for the next frame anyway: a game that reports ready
@@ -540,7 +548,7 @@ impl<'g> Headless<'g> {
     pub fn render_at(&mut self, game: &mut dyn Game, alpha: f32) -> Result<profile::DrawTimings, String> {
         if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) { return Err("alpha must be in 0..1".into()); }
         let split = game.split();
-        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha, split, scene_fps: self.tick_hz, scene_worst_ms: 1000.0 / self.tick_hz, focused: true, renderer: &mut self.renderer };
+        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha, split, scene_fps: self.tick_hz, scene_worst_ms: 1000.0 / self.tick_hz, focused: true, hdr: None, renderer: &mut self.renderer };
         let started = Instant::now();
         let mut draw = game.draw(&mut frame)?;
         let game_ms = started.elapsed().as_secs_f64() * 1000.;
@@ -576,7 +584,7 @@ impl<'g> Headless<'g> {
     /// For developer captures: never count this frame in steady-frame timing.
     pub fn measure(&mut self, game: &mut dyn Game) -> Result<render::FrameStats, String> {
         let split = game.split();
-        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha: 1.0, split, scene_fps: self.tick_hz, scene_worst_ms: 1000.0 / self.tick_hz, focused: true, renderer: &mut self.renderer };
+        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha: 1.0, split, scene_fps: self.tick_hz, scene_worst_ms: 1000.0 / self.tick_hz, focused: true, hdr: None, renderer: &mut self.renderer };
         let draw = game.draw(&mut frame)?;
         let renderer = self.renderer.as_ref().ok_or("the game drew without a scene")?;
         let rects = render::split_rects_with(draw.cameras.len(), self.size[0], self.size[1], split);
@@ -900,7 +908,7 @@ impl Shell<'_> {
             // A hidden or parked window (a warm game behind the lobby) idles
             // at a few frames a second: that says nothing about the GPU, and
             // must not cut its resolution or content before it is shown.
-            let measuring = self.focused && !self.zero_size && !self.manners.offscreen();
+            let measuring = self.focused && !self.zero_size && !self.manners.offscreen() && !self.game.hold_quality();
             if !measuring { q.idle(); }
             if measuring && q.frame(f64::from(dt) * 1000.0, now) {
                 let line = format!("adaptive quality: {}", q.label());
@@ -984,7 +992,7 @@ impl Shell<'_> {
             self.scene_frames += 1;
         }
         self.loop_frames += 1;
-        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, scene_fps: self.fps, scene_worst_ms: self.rate.worst_ms(), focused: self.focused, renderer: &mut live.renderer };
+        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, scene_fps: self.fps, scene_worst_ms: self.rate.worst_ms(), focused: self.focused, hdr: live.hdr.then_some(live.display), renderer: &mut live.renderer };
         let draw_started=Instant::now();
         let mut draw = self.game.draw(&mut frame)?;
         draw.hud.begin_screen_space();
@@ -1703,8 +1711,12 @@ impl ApplicationHandler for Shell<'_> {
                 Ime::Commit(text) => { self.composing = false; if self.game.text_input() && !text.is_empty() { self.game.text(TextEvent::Insert(text)); } }
                 Ime::Enabled | Ime::Disabled => self.composing = false,
             },
-            WindowEvent::KeyboardInput { event, .. } => {
+            WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
+                // Keys still held when the window gains focus arrive as
+                // synthetic presses: the Escape that closed a game in front
+                // must not open this window's menu or quit it.
+                if is_synthetic && event.state == ElementState::Pressed { return; }
                 if matches!(code, KeyCode::ShiftLeft | KeyCode::ShiftRight) { self.shift_down = event.state == ElementState::Pressed; }
                 if self.crop.is_some() {
                     if code == KeyCode::Escape && event.state == ElementState::Pressed { self.end_crop("crop cancelled".into()); }

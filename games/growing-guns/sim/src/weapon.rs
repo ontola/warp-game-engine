@@ -4,24 +4,44 @@
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
-pub const BASE_DAMAGE: f32 = 22.0;
+/// The rifle before any card. The game reads it from mods/base/gun.luau
+/// (the app's mods, `gun`): an edit applies when weapons are next rebuilt
+/// from the cards, at the next round. `Gun::default()` is the same numbers
+/// for builds without Luau (the Quest adapter) and the sim tests; an app
+/// test keeps the two equal.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Gun {
+    pub damage: f32,
+    /// Seconds between triggers (f64 like Godot: it decides the tick).
+    pub fire_interval: f64,
+    pub mag_size: i32,
+    /// Seconds.
+    pub reload_time: f64,
+    /// Headshot damage multiplier.
+    pub headshot: f32,
+    /// Radians; random yaw and pitch offset per shot.
+    pub spread: f32,
+    pub recoil: f32,
+    /// m/s^2 downward on bullets.
+    pub bullet_drop: f32,
+    /// m/s.
+    pub bullet_speed: f32,
+}
+
+impl Default for Gun {
+    fn default() -> Self {
+        Gun { damage: 22.0, fire_interval: 0.22, mag_size: 5, reload_time: 1.2, headshot: 2.0, spread: 0.008, recoil: 0.018, bullet_drop: 30.0, bullet_speed: 165.0 }
+    }
+}
+
 pub const MIN_DAMAGE: f32 = 1.0;
-pub const BASE_FIRE_INTERVAL: f32 = 0.22;
-pub const BASE_MAG_SIZE: i32 = 5;
-pub const BASE_RELOAD_TIME: f32 = 1.2;
-pub const BASE_HEADSHOT_MULT: f32 = 2.0;
-/// Radians, about 0.46 degrees.
-pub const BASE_SPREAD: f32 = 0.008;
 pub const BASE_BULLET_COLOR: [f32; 3] = [1.0, 0.9, 0.3];
 pub const MAX_SHOTS_PER_TRIGGER: i32 = 16;
 pub const MAX_PROJECTILES_PER_SECOND: f32 = 240.0;
-pub const BASE_RECOIL: f32 = 0.018;
 pub const KNOCKBACK_PER_DAMAGE: f32 = 0.12;
 pub const BLAST_KNOCKBACK_MULT: f32 = 1.5;
 pub const REFERENCE_KNOCKBACK: f32 = 25.0 * KNOCKBACK_PER_DAMAGE;
-/// Matches the player's gravity: bullets fall like everything else.
-pub const BASE_BULLET_DROP: f32 = 30.0;
-pub const BASE_BULLET_SPEED: f32 = 165.0;
 
 /// The RMB ability.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,7 +66,7 @@ pub struct Weapon {
     pub fire_rate_mult: f32,
     /// > 1 is faster.
     pub reload_mult: f32,
-    /// On top of BASE_HEADSHOT_MULT.
+    /// On top of the gun's headshot multiplier.
     pub headshot_mult: f32,
     // Additive.
     pub mag_size_bonus: i32,
@@ -117,27 +137,32 @@ pub struct Weapon {
     pub dash_iframes: bool,
     pub dash_end_melee: bool,
     pub dash_spawn_bomb: bool,
+    /// The base numbers the getters scale (World::gun when built).
+    pub gun: Gun,
 }
 
 impl Default for Weapon {
-    fn default() -> Self {
-        Weapon {
-            damage_mult: 1.0, fire_rate_mult: 1.0, reload_mult: 1.0, headshot_mult: 1.0,
-            mag_size_bonus: 0, extra_projectiles: 0, ricochet_count: 0, body_ricochet_count: 0, last_shot_damage_mult: 1.0, silencer_stacks: 0,
-            spread: BASE_SPREAD, recoil_per_shot: BASE_RECOIL, lifesteal: 0.0, explosive_radius: 0.0, explosive_damage: 0.0,
-            move_speed_mult: 1.0, knockback_mult: 1.0, special_cooldown_mult: 1.0, melee_damage_mult: 1.0, melee_scale: 1.0,
-            homing: 0.0, damage_over_time: 0.0, dot_duration: 3.0, slow_on_hit: 1.0, slow_duration: 0.0, grow_damage_per_meter: 0.0,
-            ricochet_damage_mult: 1.0, reload_on_hit: 0, phoenix_revives: 0, world_pierce_count: 0, impact_mines: 0,
-            bullet_color: BASE_BULLET_COLOR, bullet_speed_mult: 1.0, bullet_scale: 1.0, bullet_drop: BASE_BULLET_DROP,
-            head_scale: 1.0, body_scale: 1.0, body_scale_axes: Vec3::ONE, bone_warps: Vec::new(), max_hp_bonus: 0, extra_jumps: 0,
-            special: Special::Grenade, special_echo_count: 0, special_reload_amount: 0, special_cooldown_refund_on_hit: 0.0, teleport_blast_radius: 0.0,
-            dash_iframes: false, dash_end_melee: false, dash_spawn_bomb: false,
-        }
-    }
+    fn default() -> Self { Weapon::with_gun(Gun::default()) }
 }
 
 impl Weapon {
-    pub fn damage(&self) -> f32 { (BASE_DAMAGE * self.damage_mult).max(MIN_DAMAGE) }
+    /// No cards yet, on top of `gun`.
+    pub fn with_gun(gun: Gun) -> Self {
+        Weapon {
+            damage_mult: 1.0, fire_rate_mult: 1.0, reload_mult: 1.0, headshot_mult: 1.0,
+            mag_size_bonus: 0, extra_projectiles: 0, ricochet_count: 0, body_ricochet_count: 0, last_shot_damage_mult: 1.0, silencer_stacks: 0,
+            spread: gun.spread, recoil_per_shot: gun.recoil, lifesteal: 0.0, explosive_radius: 0.0, explosive_damage: 0.0,
+            move_speed_mult: 1.0, knockback_mult: 1.0, special_cooldown_mult: 1.0, melee_damage_mult: 1.0, melee_scale: 1.0,
+            homing: 0.0, damage_over_time: 0.0, dot_duration: 3.0, slow_on_hit: 1.0, slow_duration: 0.0, grow_damage_per_meter: 0.0,
+            ricochet_damage_mult: 1.0, reload_on_hit: 0, phoenix_revives: 0, world_pierce_count: 0, impact_mines: 0,
+            bullet_color: BASE_BULLET_COLOR, bullet_speed_mult: 1.0, bullet_scale: 1.0, bullet_drop: gun.bullet_drop,
+            head_scale: 1.0, body_scale: 1.0, body_scale_axes: Vec3::ONE, bone_warps: Vec::new(), max_hp_bonus: 0, extra_jumps: 0,
+            special: Special::Grenade, special_echo_count: 0, special_reload_amount: 0, special_cooldown_refund_on_hit: 0.0, teleport_blast_radius: 0.0,
+            dash_iframes: false, dash_end_melee: false, dash_spawn_bomb: false, gun,
+        }
+    }
+
+    pub fn damage(&self) -> f32 { (self.gun.damage * self.damage_mult).max(MIN_DAMAGE) }
 
     pub fn damage_for_shot(&self, last_in_mag: bool) -> f32 {
         let d = self.damage();
@@ -146,26 +171,26 @@ impl Weapon {
 
     /// Seconds between triggers, in f64 like Godot (it decides the tick).
     pub fn fire_interval(&self) -> f64 {
-        let raw = 0.22f64 / (self.fire_rate_mult as f64).max(0.01);
+        let raw = self.gun.fire_interval / (self.fire_rate_mult as f64).max(0.01);
         let budget = self.shots_per_trigger() as f64 / MAX_PROJECTILES_PER_SECOND as f64;
         raw.max(budget)
     }
 
-    pub fn mag_size(&self) -> u32 { (BASE_MAG_SIZE + self.mag_size_bonus).max(1) as u32 }
-    pub fn reload_time(&self) -> f64 { 1.2f64 / (self.reload_mult as f64).max(0.01) }
-    pub fn headshot(&self) -> f32 { BASE_HEADSHOT_MULT * self.headshot_mult }
+    pub fn mag_size(&self) -> u32 { (self.gun.mag_size + self.mag_size_bonus).max(1) as u32 }
+    pub fn reload_time(&self) -> f64 { self.gun.reload_time / (self.reload_mult as f64).max(0.01) }
+    pub fn headshot(&self) -> f32 { self.gun.headshot * self.headshot_mult }
     pub fn spread(&self) -> f32 { self.spread.max(0.0) }
 
     /// Precise guns kick less: recoil scales with sqrt(spread / base), 0.15..1.
     pub fn recoil(&self) -> f32 {
-        let ratio = self.spread() / BASE_SPREAD;
+        let ratio = self.spread() / self.gun.spread;
         let m = ratio.max(0.0).sqrt().clamp(0.15, 1.0);
         (self.recoil_per_shot * m).max(0.0)
     }
 
     pub fn shots_per_trigger(&self) -> u32 { (1 + self.extra_projectiles).clamp(1, MAX_SHOTS_PER_TRIGGER) as u32 }
     pub fn projectiles_per_second(&self) -> f32 { (self.shots_per_trigger() as f64 / self.fire_interval().max(0.001)) as f32 }
-    pub fn bullet_speed(&self) -> f32 { BASE_BULLET_SPEED * self.bullet_speed_mult }
+    pub fn bullet_speed(&self) -> f32 { self.gun.bullet_speed * self.bullet_speed_mult }
 
     /// Visual size of the round, from damage (sqrt keeps it sane).
     pub fn bullet_scale(&self) -> f32 { self.bullet_scale * self.damage_mult.max(0.1).sqrt() }

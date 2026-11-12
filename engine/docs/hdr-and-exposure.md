@@ -107,6 +107,9 @@ Limits:
 - The minimum graphics profile (`forward` renderer) keeps the fixed exposure.
 - One view's sun or a white wall right in front of the camera does darken
   that view: raise `high` or lower `center` if that is too eager.
+- Exposure only follows what the lighting gives it: a room is only darker
+  than the field outside when it has its own light data. See
+  [interior-light.md](interior-light.md).
 
 ## HDR output
 

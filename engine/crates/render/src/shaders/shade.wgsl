@@ -603,21 +603,56 @@ fn dfao_visibility(p: vec3<f32>, n: vec3<f32>, refl: vec3<f32>) -> vec2<f32> {
 
 // Fast 4-tap Screen-Space Ambient Occlusion (SSAO) in reversed-Z hardware depth,
 // with thickness rejection so foreground edges never cast dark halos.
+// Horizon-based ambient occlusion (the idea of GTAO, as Call of Duty uses
+// it): along two screen directions, rotated per pixel and frame for TAA to
+// average, four depth samples each way within 0.6 m of p. Each side's
+// horizon is the steepest sample above the surface plane; its elevation
+// occludes. Samples further away than the radius fade out, so a silhouette
+// in front (a wall edge, the gun) does not darken what is behind it, and
+// flat surfaces never occlude themselves. Room corners, the floor under a
+// couch and creases darken; a three-way ceiling corner stays continuous.
 fn screen_space_ao(px: vec2<i32>, size: vec2<u32>, p: vec3<f32>, n: vec3<f32>, dist: f32) -> f32 {
     if gi.params.x < 0.5 || dist >= 48.0 { return 1.0; }
     let d0 = textureLoad(depth_tex, px, 0);
     if d0 <= 0.0001 { return 1.0; }
     let fade = 1.0 - smoothstep(30.0, 48.0, dist);
-    let r = i32(clamp(0.75 * view.cam.w / max(dist, 0.8), 2.0, 14.0));
+    let radius = 0.6;
+    let radius_px = min(radius * view.cam.w / max(dist, 0.3), 64.0);
+    if radius_px < 1.5 { return 1.0; }
     let max_px = vec2<i32>(size) - vec2<i32>(1);
-    let d_r = textureLoad(depth_tex, clamp(px + vec2<i32>(r, 0), vec2<i32>(0), max_px), 0) - d0;
-    let d_l = textureLoad(depth_tex, clamp(px + vec2<i32>(-r, 0), vec2<i32>(0), max_px), 0) - d0;
-    let d_u = textureLoad(depth_tex, clamp(px + vec2<i32>(0, -r), vec2<i32>(0), max_px), 0) - d0;
-    let d_d = textureLoad(depth_tex, clamp(px + vec2<i32>(0, r), vec2<i32>(0), max_px), 0) - d0;
-    let scale = dist * dist * 8.5;
-    let ox = clamp((d_r + d_l) * scale, 0.0, 1.0) * step(abs(d_r - d_l) * scale, 1.6);
-    let oy = clamp((d_u + d_d) * scale, 0.0, 1.0) * step(abs(d_u - d_d) * scale, 1.6);
-    return 1.0 - clamp((ox + oy) * 0.22 * fade, 0.0, 0.48);
+    let xi = trace_hash(px, light.fog_sampling.x * 16.0 + 7.0);
+    var occlusion = 0.0;
+    for (var dir_i = 0u; dir_i < 2u; dir_i++) {
+        let angle = (xi.x + f32(dir_i) * 0.5) * PI;
+        let dir = vec2<f32>(cos(angle), sin(angle));
+        for (var side = 0u; side < 2u; side++) {
+            let sign = select(-1.0, 1.0, side == 0u);
+            var horizon = 0.0;
+            for (var k = 0u; k < 4u; k++) {
+                // Steps jittered along the ray, denser near the pixel.
+                let t = (f32(k) + xi.y) / 4.0;
+                let offset = dir * sign * max(t * t * radius_px, 1.0);
+                let q_px = clamp(px + vec2<i32>(round(offset)), vec2<i32>(0), max_px);
+                let depth = textureLoad(depth_tex, q_px, 0);
+                if depth <= 0.0001 { continue; }
+                let ndc = (vec2<f32>(q_px) + 0.5) / vec2<f32>(size) * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+                let h = view.inv_view_proj * vec4<f32>(ndc, depth, 1.0);
+                let w = h.xyz / h.w - p;
+                let len = length(w);
+                if len < 1e-4 { continue; }
+                // sin of the sample's elevation above the surface plane, less
+                // a small bias against depth precision on flat ground.
+                let elevation = dot(n, w) / len - 0.1;
+                let falloff = clamp(1.0 - (len * len) / (radius * radius), 0.0, 1.0);
+                horizon = max(horizon, elevation * falloff);
+            }
+            occlusion += horizon;
+        }
+    }
+    // Four sides; sin^2 of the horizon is the share of the cosine-weighted
+    // hemisphere it hides, sin alone looks closer to the bake's softness.
+    let ao = 1.0 - clamp(occlusion * 0.25 * 1.1, 0.0, 1.0);
+    return mix(1.0, max(ao, 0.45), fade);
 }
 
 // Short directional contact shadow supplements the finite spotlight map.
@@ -896,8 +931,9 @@ fn environment(r: vec3<f32>, rough: f32, bounce: vec3<f32>) -> vec3<f32> {
 // reprojected position: whatever the frame shows, lit by everything, trees
 // and cars included. A ray that leaves the screen (it cannot come back: the
 // frustum is convex) returns confidence 0 and keeps the environment and its
-// heightfield occlusion. Rough surfaces jitter the ray by GGX, one sample
-// per pixel and frame, and TAA averages them. rgb: radiance, a: confidence.
+// heightfield occlusion. The ray is the mirror ray; rough surfaces blur the
+// hit's radiance over the lobe's footprint (rotated taps, TAA-averaged) and
+// the reflection fades out by roughness. rgb: radiance, a: confidence.
 fn trace_hash(px: vec2<i32>, salt: f32) -> vec2<f32> {
     // Interleaved gradient noise, shifted by the frame sequence.
     let q = vec2<f32>(px) + salt * vec2<f32>(5.588238, 5.588238);
@@ -933,14 +969,36 @@ fn trace_depth(c: vec2<i32>) -> f32 {
     return d;
 }
 
-fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, px: vec2<i32>, size: vec2<u32>, dist: f32) -> vec4<f32> {
-    if gi.trace.x < 0.5 || rough >= gi.trace.y { return vec4<f32>(0.0); }
-    var r = mirror;
-    if rough > 0.06 {
-        let jittered = trace_jitter(mirror, rough, trace_hash(px, light.fog_sampling.x * 16.0));
-        if dot(jittered, n) > 0.02 { r = jittered; }
-    }
-    if dot(r, n) <= 0.0 { return vec4<f32>(0.0); }
+// One level of the reflection mips at uv: one bilinear tap at level 0, a
+// tent of four bilinear taps half a texel apart above it, so a coarse
+// level's texels do not show as squares.
+fn reflection_level(uv: vec2<f32>, lod: f32) -> vec3<f32> {
+    if lod < 0.5 { return textureSampleLevel(reflection_history, canopy_sampler, uv, 0.0).rgb; }
+    let o = 0.5 / vec2<f32>(textureDimensions(reflection_history, i32(lod)));
+    return 0.25 * (textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(-o.x, -o.y), lod).rgb
+        + textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(o.x, -o.y), lod).rgb
+        + textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(-o.x, o.y), lod).rgb
+        + textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(o.x, o.y), lod).rgb);
+}
+
+// The result of marching one reflected ray through this frame's depth
+// buffer: the point it reached (or, for a ray that left through an opening,
+// a point in front of what it escaped into), the distance along the ray and
+// a confidence (0: no hit; fades at the screen edge and the reach).
+struct MarchHit { hit: vec3<f32>, t: f32, conf: f32 }
+
+// Whether the pixel shows a light's face: an EMISSIVE material with a
+// negative scale (scene.rs), whose emission an analytic light stands for.
+fn light_face_at(px: vec2<i32>) -> bool {
+    let id = textureLoad(vis_tex, px, 0).r;
+    if (id & 0x80000000u) != 0u { return false; }
+    let m = material(clusters[visible[id >> 7u].y].material);
+    return (m.flags & 1024u) != 0u && m.scale < 0.0;
+}
+
+fn march_hit(p: vec3<f32>, n: vec3<f32>, r: vec3<f32>, px: vec2<i32>, size: vec2<u32>, dist: f32) -> MarchHit {
+    var none: MarchHit;
+    if dot(r, n) <= 0.0 { return none; }
     let fsize = vec2<f32>(size);
     // Leave the surface by its depth precision and pixel footprint.
     let o = p + n * (0.02 + dist * 0.002);
@@ -949,6 +1007,7 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
     var lo = 0.0;
     var t = max(0.06, dist * 0.003) * (0.75 + 0.5 * jitter);
     var found = false;
+    var escape = 0.0;
     for (var k = 0; k < 40; k++) {
         let c = view.view_proj * vec4<f32>(o + r * t, 1.0);
         if c.w <= 1e-4 { break; }
@@ -956,52 +1015,163 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
         if abs(ndc.x) >= 1.0 || abs(ndc.y) >= 1.0 { break; }
         let sp = vec2<i32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize);
         let d = trace_depth(sp);
+        // The scene here is far beyond the ray (sky, or the field through a
+        // doorway): remember it. A ray that leaves through an opening then
+        // projects onto the wall around it and never hits; it reads what it
+        // escaped into instead.
+        if d < ndc.z * 0.66 { escape = t; }
         // Reversed infinite Z: depth is near / view depth, so the scene is in
         // front of the ray point when d > ndc.z; how far behind it, in metres:
         if d > ndc.z {
             let behind = c.w * (1.0 - ndc.z / d);
-            if behind < max(0.25, (t - lo) * 2.0 + c.w * 0.01) { found = true; break; }
+            if behind < max(0.1, (t - lo) * 1.2 + c.w * 0.005) { found = true; break; }
         }
         lo = t;
-        t += max(0.08, t * 0.2);
+        // 20 % per step: 40 steps reach past 250 m.
+        t += max(0.06, t * 0.2);
         if t > reach { break; }
     }
-    if !found { return vec4<f32>(0.0); }
-    // Bisect to the crossing.
     var hi = t;
-    for (var k = 0; k < 5; k++) {
-        let mid = 0.5 * (lo + hi);
-        let c = view.view_proj * vec4<f32>(o + r * mid, 1.0);
-        let ndc = c.xyz / c.w;
-        let sp = vec2<i32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize);
-        if trace_depth(sp) > ndc.z { hi = mid; } else { lo = mid; }
+    var hit = o + r * escape;
+    if found {
+        // Bisect to the crossing.
+        for (var k = 0; k < 6; k++) {
+            let mid = 0.5 * (lo + hi);
+            let cm = view.view_proj * vec4<f32>(o + r * mid, 1.0);
+            let nm = cm.xyz / cm.w;
+            let sm = vec2<i32>(vec2<f32>(nm.x * 0.5 + 0.5, 0.5 - nm.y * 0.5) * fsize);
+            if trace_depth(sm) > nm.z { hi = mid; } else { lo = mid; }
+        }
+        let ch = view.view_proj * vec4<f32>(o + r * hi, 1.0);
+        let nh = ch.xyz / ch.w;
+        let sp = clamp(vec2<i32>(vec2<f32>(nh.x * 0.5 + 0.5, 0.5 - nh.y * 0.5) * fsize), vec2<i32>(0), vec2<i32>(size) - 1);
+        let d = trace_depth(sp);
+        if d <= 0.0 { return none; }
+        // The surface the ray reached, as this frame's depth buffer places it.
+        let pc = (vec2<f32>(sp) + 0.5) / fsize;
+        let world = view.inv_view_proj * vec4<f32>(pc.x * 2.0 - 1.0, 1.0 - pc.y * 2.0, d, 1.0);
+        hit = world.xyz / world.w;
+        // A hit facing away from the ray (seen from behind) has no radiance here.
+        let back = ch.w * (1.0 - nh.z / d);
+        if back > max(0.2, hi * 0.03) { return none; }
+        // A light's face (EMISSIVE with negative scale): its light reaches
+        // this surface as that light's analytic specular, on screen or off,
+        // so the ray counts as a miss instead of adding it a second time.
+        if light_face_at(sp) { return none; }
+    } else if escape <= 0.0 {
+        return none;
+    } else {
+        hi = escape;
     }
     let c = view.view_proj * vec4<f32>(o + r * hi, 1.0);
     let ndc = c.xyz / c.w;
-    let sp = clamp(vec2<i32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize), vec2<i32>(0), vec2<i32>(size) - 1);
-    let d = trace_depth(sp);
-    if d <= 0.0 { return vec4<f32>(0.0); }
-    // The surface the ray reached, as this frame's depth buffer places it.
-    let pc = (vec2<f32>(sp) + 0.5) / fsize;
-    let world = view.inv_view_proj * vec4<f32>(pc.x * 2.0 - 1.0, 1.0 - pc.y * 2.0, d, 1.0);
-    let hit = world.xyz / world.w;
-    // A hit facing away from the ray (seen from behind) has no radiance here.
-    let back = c.w * (1.0 - ndc.z / d);
-    if back > max(0.6, hi * 0.06) { return vec4<f32>(0.0); }
-    let prev = gi.prev_view_proj * vec4<f32>(hit, 1.0);
+    // Fade at the screen's edges and near the reach.
+    var out: MarchHit;
+    out.hit = hit;
+    out.t = hi;
+    out.conf = (1.0 - smoothstep(0.82, 1.0, max(abs(ndc.x), abs(ndc.y)))) * (1.0 - smoothstep(reach * 0.7, reach, hi));
+    return out;
+}
+
+fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, px: vec2<i32>, size: vec2<u32>, dist: f32) -> vec4<f32> {
+    if gi.trace.x < 0.5 || rough >= gi.trace.y { return vec4<f32>(0.0); }
+    // One mirror ray; the roughness blur is applied at the hit instead, as a
+    // cone-traced reflection does. The stochastic path (sssr.wgsl) replaces
+    // this for the main surface when it is on; a clear coat keeps it.
+    let m = march_hit(p, n, mirror, px, size, dist);
+    if m.conf <= 0.0 { return vec4<f32>(0.0); }
+    let fsize = vec2<f32>(size);
+    let c = view.view_proj * vec4<f32>(m.hit, 1.0);
+    let prev = gi.prev_view_proj * vec4<f32>(m.hit, 1.0);
     if prev.w <= 1e-4 { return vec4<f32>(0.0); }
     let prev_ndc = prev.xy / prev.w;
     let edge = max(abs(prev_ndc.x), abs(prev_ndc.y));
     if edge >= 1.0 { return vec4<f32>(0.0); }
     let uv = vec2<f32>(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5);
-    let radiance = textureSampleLevel(reflection_history, canopy_sampler, uv, 0.0).rgb;
+    let footprint = 2.5 * rough * rough * m.t / max(c.w, 0.1) * 0.7 * fsize.y;
+    let levels = f32(textureNumLevels(reflection_history));
+    let lod = clamp(log2(max(footprint, 1.0)), 0.0, levels - 1.0);
+    let lo_lod = floor(lod);
+    var radiance = reflection_level(uv, lo_lod);
+    if lod > lo_lod { radiance = mix(radiance, reflection_level(uv, lo_lod + 1.0), lod - lo_lod); }
     if any(radiance != radiance) { return vec4<f32>(0.0); }
-    // Fade at the screen's edges, near the reach and towards the roughness cut.
-    let ndc_edge = max(abs(ndc.x), abs(ndc.y));
-    var confidence = 1.0 - smoothstep(0.82, 1.0, max(edge, ndc_edge));
-    confidence *= 1.0 - smoothstep(reach * 0.7, reach, hi);
-    confidence *= 1.0 - smoothstep(gi.trace.y * 0.6, gi.trace.y, rough);
+    var confidence = m.conf * (1.0 - smoothstep(0.82, 1.0, edge));
+    confidence *= 1.0 - smoothstep(gi.trace.y * 0.75, gi.trace.y, rough);
     return vec4<f32>(min(radiance, vec3<f32>(65504.0)), confidence);
+}
+
+// ---- Stochastic screen-space reflections (sssr.wgsl resolves them) ----
+// One ray per pixel and frame, sampled from the GGX distribution of visible
+// normals (Heitz 2018). The pixel's surface, specular weight, environment
+// fallback and the hit's screen position go to `sssr_out`; the resolve
+// pass reuses each ray for its neighbours, weighted by their BRDF over this
+// ray's pdf (Stachowiak 2015).
+@group(1) @binding(22) var sssr_out: texture_storage_2d<rgba32uint, write>;
+
+fn sssr_on() -> bool { return gi.trace.x > 1.5; }
+
+// PCG hash (Jarzynski and Olano, "Hash Functions for GPU Rendering", 2020).
+fn pcg_hash(v: u32) -> u32 {
+    let state = v * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// A GGX visible normal for view direction `v` (towards the eye) about `n`.
+fn sample_vndf(v: vec3<f32>, n: vec3<f32>, alpha: f32, xi: vec2<f32>) -> vec3<f32> {
+    let t1 = normalize(select(cross(n, vec3<f32>(0.0, 1.0, 0.0)), cross(n, vec3<f32>(1.0, 0.0, 0.0)), abs(n.y) > 0.9));
+    let t2 = cross(n, t1);
+    let vl = vec3<f32>(dot(v, t1), dot(v, t2), dot(v, n));
+    let vh = normalize(vec3<f32>(alpha * vl.x, alpha * vl.y, vl.z));
+    let lensq = vh.x * vh.x + vh.y * vh.y;
+    let b1 = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(-vh.y, vh.x, 0.0) / sqrt(max(lensq, 1e-12)), lensq > 0.0);
+    let b2 = cross(vh, b1);
+    let r = sqrt(xi.x);
+    let phi = 2.0 * PI * xi.y;
+    let s = 0.5 * (1.0 + vh.z);
+    let tx = r * cos(phi);
+    let ty = mix(sqrt(max(1.0 - tx * tx, 0.0)), r * sin(phi), s);
+    let nh = tx * b1 + ty * b2 + sqrt(max(0.0, 1.0 - tx * tx - ty * ty)) * vh;
+    let hl = normalize(vec3<f32>(alpha * nh.x, alpha * nh.y, max(0.0, nh.z)));
+    return normalize(t1 * hl.x + t2 * hl.y + n * hl.z);
+}
+
+// Shared-exponent RGB, as irradiance_volume's emission: 9-bit mantissas.
+fn pack_rgb9e5(c: vec3<f32>) -> u32 {
+    let m = max(max(c.x, c.y), max(c.z, 1e-9));
+    var e = clamp(i32(floor(log2(m))) + 16, 0, 31);
+    var scale = exp2(f32(e) - 24.0);
+    if round(m / scale) >= 512.0 && e < 31 { e += 1; scale *= 2.0; }
+    let q = vec3<u32>(clamp(round(c / scale), vec3<f32>(0.0), vec3<f32>(511.0)));
+    return q.x | (q.y << 9u) | (q.z << 18u) | (u32(e) << 27u);
+}
+
+// The ray for this pixel: march a VNDF sample and store the surface
+// (normal, roughness), its specular weight and environment fallback, and
+// the hit (its screen position this frame and the march's confidence).
+fn sssr_write(px: vec2<i32>, size: vec2<u32>, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, rough: f32, weight: vec3<f32>, env: vec3<f32>, dist: f32) {
+    let alpha = max(rough * rough, 1e-3);
+    // White noise per pixel and frame (PCG): interleaved gradient noise is
+    // correlated along diagonals, which the neighbour reuse turned into
+    // streaks; uncorrelated samples average out in the resolve and over time.
+    let seed = pcg_hash(u32(px.x) ^ pcg_hash(u32(px.y) ^ pcg_hash(u32(light.fog_sampling.x * 16.0) + 0x9e3779b9u)));
+    let xi = vec2<f32>(f32(seed >> 8u), f32(pcg_hash(seed) >> 8u)) / 16777216.0;
+    let h = sample_vndf(v, n, alpha, xi);
+    let l = reflect(-v, h);
+    let m = march_hit(p, n, l, px, size, dist);
+    var hit_uv = vec2<f32>(0.0);
+    var conf = 0.0;
+    if m.conf > 0.0 {
+        let c = view.view_proj * vec4<f32>(m.hit, 1.0);
+        hit_uv = clamp(vec2<f32>(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5), vec2<f32>(0.0), vec2<f32>(1.0));
+        conf = m.conf;
+    }
+    let e = oct_encode(n) * 0.5 + 0.5;
+    let packed_n = u32(round(e.x * 4095.0)) | (u32(round(e.y * 4095.0)) << 12u) | (u32(round(clamp(rough, 0.0, 1.0) * 255.0)) << 24u);
+    // Fade out at the roughness cut, as the single-ray path does.
+    let fade = 1.0 - smoothstep(gi.trace.y * 0.75, gi.trace.y, rough);
+    textureStore(sssr_out, px, vec4<u32>(packed_n, pack_rgb9e5(max(env, vec3<f32>(0.0))),
+        pack4x8unorm(vec4<f32>(clamp(weight, vec3<f32>(0.0), vec3<f32>(1.0)), conf * fade)), pack2x16unorm(hit_uv)));
 }
 
 fn vtx(i: u32) -> u32 {
@@ -1178,13 +1348,57 @@ fn probe_axis(base: u32, visibility: bool) -> vec3<f32> {
     return vec3<f32>(aux_f32(base),aux_f32(base+1u),aux_f32(base+2u));
 }
 fn unpack_sky_transport(word:u32)->vec3<f32> {
-    return vec3<f32>(f32(word&1023u),f32((word>>10u)&1023u),f32((word>>20u)&1023u))/1023.0;
+    // 9-bit mantissas, shared 4-bit exponent (irradiance_volume::pack_transport).
+    return vec3<f32>(f32(word&511u),f32((word>>9u)&511u),f32((word>>18u)&511u))*exp2(f32((word>>27u)&15u)-23.0);
 }
 struct IrradianceSample { value: vec4<f32>, emission: vec3<f32> }
+// The last visibility-tested lookup's coverage: the share of its trilinear
+// weight (over probes outside geometry) whose probes see the surface.
+var<private> irradiance_coverage: f32;
 fn unpack_emission(word: u32) -> vec3<f32> {
     return vec3<f32>(f32(word&511u),f32((word>>9u)&511u),f32((word>>18u)&511u))*exp2(f32(word>>27u)-24.0);
 }
-fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
+fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample { return irradiance_sample_at(p, p, n); }
+// DDGI-style probe visibility (room_bake::bake_visibility): per probe an
+// 8x8 octahedral map of the mean and mean squared distance to the nearest
+// surface, in aux at gi.trace.w (0: none). How much probe `index` at `probe`
+// sees the point `x`: 1 in front of the nearest surface along that
+// direction, falling off by Chebyshev's bound behind it (cubed, as DDGI).
+fn probe_sees(index: u32, probe: vec3<f32>, x: vec3<f32>) -> f32 {
+    let d = x - probe;
+    let dist = length(d);
+    if dist < 1e-4 { return 1.0; }
+    let dir = d / dist;
+    var e = dir.xy / (abs(dir.x) + abs(dir.y) + abs(dir.z));
+    if dir.z < 0.0 {
+        e = (1.0 - abs(e.yx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), e >= vec2<f32>(0.0));
+    }
+    // Bilinear over the 8x8 map (texel centres; clamped at its border): a
+    // nearest texel showed its facets as a sawtooth edge on the walls.
+    let st = clamp(e * 4.0 + 3.5, vec2<f32>(0.0), vec2<f32>(7.0));
+    let t0 = vec2<u32>(min(floor(st), vec2<f32>(6.0)));
+    let fr = st - vec2<f32>(t0);
+    let at = u32(gi.trace.w) + index * 64u + t0.y * 8u + t0.x;
+    let m = mix(mix(unpack2x16float(aux_word(at)), unpack2x16float(aux_word(at + 1u)), fr.x),
+        mix(unpack2x16float(aux_word(at + 8u)), unpack2x16float(aux_word(at + 9u)), fr.x), fr.y);
+    if m.x <= 0.0 { return 0.0; }
+    if dist <= m.x { return 1.0; }
+    let variance = abs(m.y - m.x * m.x) + 1e-4;
+    let behind = dist - m.x;
+    let p = variance / (variance + behind * behind);
+    return p * p * p;
+}
+
+
+// `irradiance_sample` with the trilinear weights taken at `p` and the wall
+// tests (backface, separation planes) at `surface`: a lookup point moved
+// along the surface (jitter) must not validate probes behind a wall the
+// move crossed.
+fn irradiance_sample_at(p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
+    // Plane tests blend over 15 cm, but only 2 cm for a moved lookup: its
+    // weights reach probes the blend would let through at a corner.
+    let soft=select(0.15,0.02,any(p!=surface));
+    let ddgi=gi.trace.w>0.5;
     let o = u32(gi.params.w);
     if !FEATURE_IRRADIANCE || o == 0u { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
     let transport = aux_word(o + 7u) >= 2u;
@@ -1204,52 +1418,64 @@ fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
     let n2 = n * n;
     let axis = vec3<u32>(select(1u, 0u, n.x >= 0.0), select(3u, 2u, n.y >= 0.0), select(5u, 4u, n.z >= 0.0)) * 3u;
     if visibility {
-        // Four-probe tetrahedral interpolation: continuous across cell faces,
-        // half the fetches of trilinear, scalar visibility only.
-        var high=0u; var low=0u;
-        if t.y>t.x { high=1u; } if t.z>t[high] { high=2u; }
-        if t.y<t.x { low=1u; } if t.z<t[low] { low=2u; }
-        // Resolve equal fractions deterministically to distinct axes.
-        if high==low { high=0u; low=2u; }
-        let middle=3u-high-low;
-        var corner=vec3<u32>(0u);
-        let weights=vec4<f32>(1.0-t[high],t[high]-t[middle],t[middle]-t[low],t[low]);
+        // Trilinear over the cell's eight probes. A probe counts only if it
+        // is on the shaded side: in front of the surface (backface weight,
+        // as DDGI does) and, with separation planes, on the same side of its
+        // nearest wall. Without that a point in a room's corner blends in
+        // the probes outside the walls and glows with outdoor light.
         var value=vec3<f32>(0.0);
         var emission=vec3<f32>(0.0);
         var valid_weight=0.0;
-        let trilinear=aux_word(o+7u)==6u;
-        for(var c=0u;c<select(4u,8u,trilinear);c++) {
-            if c==1u { corner[high]=1u; }
-            if c==2u { corner[middle]=1u; }
-            if c==3u { corner[low]=1u; }
-            var blend_weight=weights[min(c,3u)];
-            if trilinear {
-                corner=vec3<u32>(c&1u,(c>>1u)&1u,(c>>2u)&1u);
-                let w3=select(1.0-t,t,corner==vec3<u32>(1u));
-                blend_weight=w3.x*w3.y*w3.z;
-            }
+        // Without the separation planes, as a fallback: a gap behind
+        // furniture can have every probe across some plane.
+        var loose=vec3<f32>(0.0);
+        var loose_emission=vec3<f32>(0.0);
+        var loose_weight=0.0;
+        let mode=aux_word(o+7u);
+        for(var c=0u;c<8u;c++) {
+            let corner=vec3<u32>(c&1u,(c>>1u)&1u,(c>>2u)&1u);
+            let w3=select(1.0-t,t,corner==vec3<u32>(1u));
             let g=vec3<u32>(cell0)+corner;
+            let to_probe=origin+vec3<f32>(g)*cell-surface;
+            let facing=dot(to_probe,n)/max(length(to_probe),1e-4);
+            // Probes just behind the surface still count a little (a wall's
+            // own probes sit in it); far behind it they do not.
+            let backface=clamp(facing*2.0+1.0,0.0,1.0);
+            var blend_weight=w3.x*w3.y*w3.z*(backface*backface+1e-4);
             let base=o+8u+(g.x+g.y*dims.x+g.z*dims.x*dims.y)*18u;
-            if aux_word(o+7u)>=4u {
+            let index=g.x+g.y*dims.x+g.z*dims.x*dims.y;
+            if ddgi {
+                // DDGI: a smooth backface weight and the probe's own view of
+                // the (normal-biased) point instead of per-cell wall tests.
+                let wrap=(facing+1.0)*0.5;
+                blend_weight=w3.x*w3.y*w3.z*(wrap*wrap+0.2);
+            }
+            if mode>=4u {
                 var valid=select(1.0,0.0,(aux_word(base)&0x80000000u)!=0u);
-                if aux_word(o+7u)==5u {
+                let inside=valid;
+                if ddgi {
+                    valid*=probe_sees(index,origin+vec3<f32>(g)*cell,surface+n*(0.3*cell));
+                } else if mode==5u {
                     let plane=vec4<f32>(aux_f32(base+1u),aux_f32(base+2u),aux_f32(base+4u),aux_f32(base+5u));
                     // Zero plane passes through. Blend over 15 cm to avoid a hard edge.
-                    valid*=smoothstep(-0.15,0.0,dot(plane.xyz,p)+plane.w);
+                    valid*=smoothstep(-soft,0.0,dot(plane.xyz,surface)+plane.w);
                 }
-                if aux_word(o+7u)==7u {
+                if mode==7u {
                     let plane=vec4<f32>(aux_f32(base+2u),aux_f32(base+5u),aux_f32(base+8u),aux_f32(base+11u));
-                    valid*=smoothstep(-0.15,0.0,dot(plane.xyz,p)+plane.w);
+                    if !ddgi { valid*=smoothstep(-soft,0.0,dot(plane.xyz,surface)+plane.w); }
                     let e=unpack_emission(aux_word(base+axis.x+1u))*n2.x
                         +unpack_emission(aux_word(base+axis.y+1u))*n2.y
                         +unpack_emission(aux_word(base+axis.z+1u))*n2.z;
                     emission+=e*blend_weight*valid;
+                    loose_emission+=e*blend_weight*inside;
                 }
                 let v=unpack_sky_transport(aux_word(base+axis.x))*n2.x
                     +unpack_sky_transport(aux_word(base+axis.y))*n2.y
                     +unpack_sky_transport(aux_word(base+axis.z))*n2.z;
                 value+=v*blend_weight*valid;
                 valid_weight+=blend_weight*valid;
+                loose+=v*blend_weight*inside;
+                loose_weight+=blend_weight*inside;
                 continue;
             }
             let v=vec3<f32>(aux_f32(base+axis.x),aux_f32(base+axis.y),aux_f32(base+axis.z));
@@ -1266,7 +1492,17 @@ fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
             value+=vec3<f32>(dot(v,n2),bounce_value,sun_value)*blend_weight*valid;
             valid_weight+=blend_weight*valid;
         }
-        if valid_weight<1e-5 { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
+        irradiance_coverage=select(0.0,valid_weight/loose_weight,loose_weight>0.0);
+        if valid_weight<1e-3*max(loose_weight,1e-5) {
+            // Every probe is across a wall: use those merely outside
+            // geometry, and if none is, call the point unlit (inside a
+            // probe volume dark is the safe guess, open sky the worst).
+            // A moved (jittered) lookup says so instead (weight -1): the
+            // caller looks up the unmoved point, where the walls hold.
+            if any(p!=surface) { return IrradianceSample(vec4<f32>(0.0,0.0,0.0,-1.0),vec3<f32>(0.0)); }
+            if loose_weight<1e-5 { return IrradianceSample(vec4<f32>(0.0,0.0,0.0,weight),vec3<f32>(0.0)); }
+            value=loose; emission=loose_emission; valid_weight=loose_weight;
+        }
         value/=max(dot(n2,vec3<f32>(1.0)),1e-12)*valid_weight;
         return IrradianceSample(vec4<f32>(value,weight),emission/(max(dot(n2,vec3<f32>(1.0)),1e-12)*valid_weight));
     }
@@ -1285,6 +1521,69 @@ fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
 }
 
 fn irradiance_volume(p: vec3<f32>,n: vec3<f32>) -> vec4<f32> { return irradiance_sample(p,n).value; }
+
+// A per-pixel, per-frame offset of the probe lookup in the surface's plane,
+// up to 0.35 of a cell (with TAA only): trilinear interpolation over 0.5 m
+// probes shows the cells as steps and creases where neighbouring probes
+// differ; TAA averages the jittered lookups into a smooth, wider filter at
+// no extra fetches. The offset stays in the plane and well under the wall
+// thickness the probe layout asks for, and the wall tests in
+// irradiance_sample run at the offset point.
+// The jittered lookup: trilinear weights at the moved point, the wall tests
+// at the surface point. Near a corner the offset can cross into the
+// neighbouring wall; tested there, probes on that wall's far side (outdoors,
+// the next room) would pass and the edge showed as a bright dotted line.
+fn jittered_irradiance(p: vec3<f32>, px: vec2<i32>, visibility_n: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
+    // A move into another probe cell is kept only if none of that cell's
+    // probes is inside geometry; otherwise it stays in the plain point's
+    // cell (the same eight probes, only their weights move). At a corner the
+    // next cell holds the adjoining wall's probes and those beyond it, which
+    // showed as a bright dotted line along every edge of a room; in open
+    // space the move still blurs the cell steps.
+    var q = p + irradiance_jitter(px, visibility_n);
+    let o = u32(gi.params.w);
+    if FEATURE_IRRADIANCE && o != 0u && aux_word(o + 7u) >= 4u && gi.trace.w <= 0.5 {
+        let origin = vec3<f32>(aux_f32(o), aux_f32(o + 1u), aux_f32(o + 2u));
+        let cell = aux_f32(o + 3u);
+        let dims = vec3<u32>(aux_word(o + 4u), aux_word(o + 5u), aux_word(o + 6u));
+        let last = vec3<f32>(dims - vec3<u32>(1u));
+        let c = min(floor(clamp((p - origin) / cell, vec3<f32>(0.0), last)), last - 1.0);
+        let cq = min(floor(clamp((q - origin) / cell, vec3<f32>(0.0), last)), last - 1.0);
+        if any(cq != c) {
+            // Any probe inside geometry in the next cell: stay in this one.
+            var buried = false;
+            for (var k = 0u; k < 8u; k++) {
+                let g = vec3<u32>(cq) + vec3<u32>(k & 1u, (k >> 1u) & 1u, (k >> 2u) & 1u);
+                if (aux_word(o + 8u + (g.x + g.y * dims.x + g.z * dims.x * dims.y) * 18u) & 0x80000000u) != 0u { buried = true; }
+            }
+            if buried { q = origin + clamp((q - origin) / cell, c + 0.001, c + 0.999) * cell; }
+        }
+    }
+    irradiance_coverage = 1.0;
+    let moved = irradiance_sample_at(q, p, n);
+    if moved.value.w < 0.0 { return irradiance_sample(p, n); }
+    if gi.trace.w > 0.5 && any(q != p) {
+        // DDGI: the moved lookup speaks for p only with the share of its
+        // weight whose probes see p; renormalised, a move through a wall
+        // (a corner's next wall, the moved cell holding only the probes
+        // outdoors) would turn their faint visibility into full daylight.
+        // The rest comes from the unmoved lookup, chosen stochastically
+        // (TAA averages it). On an open wall the share is 1: the blur stays
+        // symmetric and cell boundaries leave no trace.
+        if trace_hash(px, light.fog_sampling.x * 16.0 + 29.0).x >= irradiance_coverage { return irradiance_sample(p, n); }
+    }
+    return moved;
+}
+
+fn irradiance_jitter(px: vec2<i32>, n: vec3<f32>) -> vec3<f32> {
+    let o = u32(gi.params.w);
+    if !FEATURE_IRRADIANCE || o == 0u || light.fog_sampling.y < 0.5 { return vec3<f32>(0.0); }
+    let cell = aux_f32(o + 3u);
+    let xi = trace_hash(px, light.fog_sampling.x * 16.0 + 11.0) * 2.0 - 1.0;
+    let t1 = normalize(select(cross(n, vec3<f32>(0.0, 1.0, 0.0)), cross(n, vec3<f32>(1.0, 0.0, 0.0)), abs(n.y) > 0.9));
+    let t2 = cross(n, t1);
+    return (t1 * xi.x + t2 * xi.y) * (0.35 * cell);
+}
 
 fn sky_irradiance(n: vec3<f32>) -> vec3<f32> {
     let c1 = 0.429043;
@@ -3121,7 +3420,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         let spec_contact=mix(contact.y,contact.x,smoothstep(0.08,0.6,rough));
         var env=mix(bounce/PI,environment(refl,rough,bounce),reflection_vis)*spec_contact;
         // Inside an indoor irradiance volume its probes replace sky and bounce.
-        let cached=irradiance_sample(p+visibility_n*0.05,n);
+        let cached=jittered_irradiance(p+visibility_n*0.05,px,visibility_n,n);
         let room=cached.value;
         if FEATURE_IRRADIANCE && room.w>0.0 {
           if aux_word(u32(gi.params.w)+7u) >= 1u {
@@ -3132,8 +3431,15 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
                 +light.sun_color.rgb*light.sun_dir.w*max(room.z,0.0);
             let corrected=(sky_irradiance(n)*sky_vis*meadow_ground_sky*meadow_edge.x*access
                 +bounce*(1.0-sky_vis)+returned+cached.emission*light.anim.y)*ao*contact.x;
+            // Reflections of the sky are as occluded as the diffuse sky:
+            // scale the environment by how much of the open-air ambient
+            // reaches this point (Call of Duty normalises its reflection
+            // probes by the baked lightmap the same way). A room then no
+            // longer mirrors daylight; traced hits below still show the room.
+            let open_air=dot(ambient,vec3<f32>(0.2126,0.7152,0.0722));
+            let reached=dot(corrected,vec3<f32>(0.2126,0.7152,0.0722));
+            env*=mix(1.0,clamp(reached/max(open_air,1e-4),0.0,1.0),room.w);
             ambient=mix(ambient,corrected,room.w);
-            // No blanket suppression of glossy reflections with diffuse AO.
           } else {
             ambient=mix(ambient,room.rgb*ao*contact.x,room.w);
             env=mix(env,irradiance_volume(p+visibility_n*0.05,refl).rgb/PI*spec_contact,room.w);
@@ -3141,7 +3447,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         }
         // Traced reflections replace the environment where they hit. Under
         // a clear coat only the coat traces (below): it shows the reflection.
-        if coat <= 0.0 && rough < gi.trace.y {
+        let stochastic = sssr_on() && coat <= 0.0 && rough < gi.trace.y;
+        if coat <= 0.0 && rough < gi.trace.y && !stochastic {
             let traced = traced_reflection(p, visibility_n, refl, rough, px, size, dist);
             env = mix(env, traced.rgb, traced.a);
         }
@@ -3160,6 +3467,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         ambient += vec3<f32>(1.0,0.97,0.92)*light.fog_sampling.z*ao*contact.x;
         indirect=diffuse*ambient;
         specular=env*env_brdf(f0,rough,ndv)*ao;
+        // Stochastic reflections: the resolve adds weight * reflection (the
+        // environment where rays miss), so shade leaves the term out.
+        if stochastic { sssr_write(px,size,p,visibility_n,v,rough,env_brdf(f0,rough,ndv)*ao,env,dist); specular=vec3<f32>(0.0); }
     }
     // Flake and swirl-mark glints sit under (or in) the coat. Non-car
     // materials retain a zero glint and their existing material coat.
@@ -3196,7 +3506,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     if FEATURE_CARS { rad += car_lamp_emission(m.flags, base, inst, p) * emit; }
     // EMISSIVE: a glowing surface, `scale` is its radiance in nits for white;
     // with a texture layer the picture glows (screens), else the tint.
-    if (m.flags & 1024u) != 0u { rad += select(m.tint, base, m.layer >= 0) * m.scale * emit; }
+    if (m.flags & 1024u) != 0u { rad += select(m.tint, base, m.layer >= 0) * abs(m.scale) * emit; }
     rad += surface_emit * emit;
     // LAVA: molten emission plus sunlight reflected by the cooler surface.
     // MOLTEN_DEBRIS shares bit 7 with part_wind's history epoch, which wind
@@ -3351,7 +3661,7 @@ fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
         let sample=incident_light_sample(index,p,n);
         rad+=base*sample.irradiance*max(dot(n,sample.direction),0.0)/PI;
     }
-    if (m.flags&1024u)!=0u {rad+=base*m.scale*light.anim.y;}
+    if (m.flags&1024u)!=0u {rad+=base*abs(m.scale)*light.anim.y;}
     if (m.flags&4096u)!=0u {rad=base*m.scale*light.anim.y;}
     let flash=f32((inst.flags>>16u)&255u)/255.0;
     rad=mix(rad,vec3<f32>(1.0,0.97,0.92)*light.anim.z*(0.8+0.2*max(dot(n,-dir),0.0)),flash*0.9);

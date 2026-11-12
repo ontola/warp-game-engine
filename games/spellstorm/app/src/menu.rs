@@ -8,7 +8,7 @@ use app::{Buttons, Controls};
 use glam::Vec2;
 use render::hud::{FontFace, HudDrawList, HudImage, ImageFilter, TextAlign, TextRun};
 use render::picture::Picture;
-use spellstorm::biome::BIOMES;
+use spellstorm::biome::biomes;
 use spellstorm::el::{self, El};
 use spellstorm::grammar::Form;
 use spellstorm::World;
@@ -196,7 +196,7 @@ impl Menu {
 
     fn change(&mut self, w: &mut World, row: Row, dx: i32) {
         match row {
-            Row::Level => self.biome = (self.biome + 1 + dx).rem_euclid(BIOMES.len() as i32 + 1) - 1,
+            Row::Level => self.biome = (self.biome + 1 + dx).rem_euclid(biomes().len() as i32 + 1) - 1,
             Row::FriendlyFire => {
                 let v = step(&["off", "quarter", "half", "full"], ff_name(w), dx);
                 w.set_option("friendly_fire", v);
@@ -236,7 +236,7 @@ impl Menu {
             Row::Start => ("Start", String::new()),
             Row::Resume => ("Resume", String::new()),
             Row::Restart => ("Start new run", String::new()),
-            Row::Level => ("Level", if self.biome < 0 { "Random".into() } else { BIOMES[self.biome as usize].name.into() }),
+            Row::Level => ("Level", if self.biome < 0 { "Random".into() } else { biomes()[self.biome as usize].name.into() }),
             Row::FriendlyFire => ("Friendly fire", cap(ff_name(w))),
             Row::Difficulty => ("Difficulty", cap(difficulty_name(w))),
             Row::Unlocks => ("Unlocks", if w.settings.unlock_all { "All".into() } else { "Earned".into() }),
@@ -268,7 +268,7 @@ impl Menu {
         if !self.title_mode {
             let b = w.level.biome();
             let found = w.grimoire.len();
-            let line = format!("{}   ·   Level {} of {}   ·   Grimoire: {} of {} spells discovered", b.name, w.run.biome_index + 1, BIOMES.len(), found, spellstorm::grammar::TOTAL);
+            let line = format!("{}   ·   Level {} of {}   ·   Grimoire: {} of {} spells discovered", b.name, w.run.biome_index + 1, biomes().len(), found, spellstorm::grammar::TOTAL);
             p.text(&line, vw * 0.5, top + 88.0, body(), 25.0, [0.9, 0.78, 0.45, 1.0], TextAlign::Center);
         }
         // Three panels: controls left, the menu in the middle, tomes right.
@@ -536,6 +536,12 @@ pub fn unlock_card(d: &mut HudDrawList, s: f32, cx: f32, y: f32, icon: CardIcon,
     }
 }
 
+/// One controller part (glyph) drawn at scale `s` round `c`, for text
+/// that names buttons (the HUD's hints): also "a", "b", "x", "y".
+pub fn pad_icon(d: &mut HudDrawList, s: f32, kind: &str, c: Vec2) {
+    glyph(&mut P { d, s }, kind, c);
+}
+
 /// One controller part, about 80 by 40 around `c` (Menu._glyph).
 fn glyph(p: &mut P, kind: &str, c: Vec2) {
     let f = title();
@@ -566,6 +572,18 @@ fn glyph(p: &mut P, kind: &str, c: Vec2) {
                 p.circle(q, 8.0, [col[0], col[1], col[2], 1.0]);
                 crate::hud::icon(&mut crate::hud::Painter { d: &mut *p.d, s: p.s }, e, q, 5.0, [0.06, 0.04, 0.04, 1.0]);
             }
+        }
+        "a" | "b" | "x" | "y" => {
+            // A face button in the pad's own colour, its letter on it.
+            let col = match kind {
+                "a" => [0.36, 0.72, 0.28, 1.0],
+                "b" => [0.86, 0.26, 0.2, 1.0],
+                "x" => [0.26, 0.5, 0.95, 1.0],
+                _ => [0.95, 0.78, 0.2, 1.0],
+            };
+            p.circle(c, 20.0, PAD_EDGE);
+            p.circle(c, 18.0, col);
+            p.text(&kind.to_uppercase(), c.x, c.y + 1.0, f, 24.0, [1.0, 1.0, 1.0, 1.0], TextAlign::Center);
         }
         "lb" | "rb" | "rb_hold" => {
             p.rect([c.x - 28.0, c.y - 10.0, 56.0, 20.0], if kind != "rb_hold" { PAD_LIT } else { PAD_EDGE });

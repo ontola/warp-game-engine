@@ -59,7 +59,7 @@ mod tests {
         for asset in ["meshes/fir_a_near.kmesh","meshes/fir_b_near.kmesh","meshes/fir_c_near.kmesh","trees/authored_pine_albedo.png","grass/grass_medium_01_alpha_2k.png","sky/sky_2k.hdr"] {
             assert!(game.join("assets").join(asset).is_file(),"missing {asset}");
         }
-        for name in ["cars.toml","car_materials.toml","sounds.toml"] {assert!(game.join("data").join(name).is_file(),"missing {name}");}
+        for name in ["cars.luau","car_materials.toml","sounds.toml"] {assert!(game.join("data").join(name).is_file(),"missing {name}");}
         assert_eq!(diagnostic_root(game.parent().unwrap().parent().unwrap()),game);
     }
 }

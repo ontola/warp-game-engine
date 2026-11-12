@@ -86,8 +86,8 @@ impl Archetype {
     }
 
     /// Godot `apply_enemy_archetype(arch, wave)`: a fresh weapon (no cards).
-    pub fn weapon(self, wave: u32) -> Weapon {
-        let mut w = Weapon::default();
+    pub fn weapon(self, wave: u32, gun: crate::weapon::Gun) -> Weapon {
+        let mut w = Weapon::with_gun(gun);
         self.body(&mut w);
         let wf = wave as f32;
         match self {
@@ -306,7 +306,7 @@ impl World {
     /// health, buried and rising.
     fn spawn_enemy(&mut self, inc: &Incoming) {
         let mut p = Player::new(true);
-        p.weapon = inc.archetype.weapon(self.waves.wave);
+        p.weapon = inc.archetype.weapon(self.waves.wave, self.gun);
         p.ammo = p.mag_size();
         p.jumps_left = 2 + p.weapon.extra_jumps;
         p.phoenix_charges = p.weapon.phoenix_revives;

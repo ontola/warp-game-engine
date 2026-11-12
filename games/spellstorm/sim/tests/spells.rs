@@ -125,9 +125,9 @@ fn every_reachable_spell() {
 #[test]
 fn tomes() {
     let mut tomed = [0; 13];
-    for r in relics::ALL {
+    for r in relics::all().iter() {
         assert!(r.text.len() <= 52, "{}", r.name);
-        for m in r.mods {
+        for m in &r.mods {
             if let relics::Mod::El(e, _) = m {
                 tomed[e.idx()] += 1;
             }
@@ -255,8 +255,8 @@ fn shrines_offer_only_tomes_you_can_use() {
             assert!(relics::usable(i, &has), "{}", relics::all()[i].name);
         }
     }
-    let poison_only = relics::ALL.iter().position(|r| r.name == "Tomb Dust").unwrap();
+    let poison_only = relics::all().iter().position(|r| r.name == "Tomb Dust").unwrap();
     assert!(!relics::usable(poison_only, &has));
-    let echo = relics::ALL.iter().position(|r| r.name == "Echo Stone").unwrap();
+    let echo = relics::all().iter().position(|r| r.name == "Echo Stone").unwrap();
     assert!(!relics::usable(echo, &has));
 }
