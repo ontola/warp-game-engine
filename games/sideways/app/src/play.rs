@@ -1865,7 +1865,7 @@ impl ApplicationHandler for App {
         }
         match event {
             WindowEvent::CloseRequested=>self.finish(event_loop,"window_closed"),
-            WindowEvent::Focused(focused)=>{self.focused=focused;self.last_frame=Instant::now();if !focused{self.debug.cancel_interaction();self.input.clear_keys();self.input_edges=[(0,false);4];self.accumulator=0.0;}else if let Some(host)=&self.host{let _=host.request_start();}}
+            WindowEvent::Focused(focused)=>{self.focused=focused;self.last_frame=Instant::now();if !focused{self.debug.cancel_interaction();self.input.clear_keys();self.input_edges=[(0,false);4];self.accumulator=0.0;}else if let Some(host)=self.host.as_ref().filter(|h|!h.state.is_running()){let _=host.request_start();}}
             WindowEvent::KeyboardInput{event,..}=>if let PhysicalKey::Code(code)=event.physical_key {
                 let pressed=event.state==ElementState::Pressed;
                 let key=match code {KeyCode::Escape=>Some(DebugKey::Close),
