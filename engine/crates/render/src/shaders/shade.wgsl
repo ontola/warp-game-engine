@@ -1097,6 +1097,13 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
 
 fn sssr_on() -> bool { return gi.trace.x > 1.5; }
 
+// PCG hash (Jarzynski and Olano, "Hash Functions for GPU Rendering", 2020).
+fn pcg_hash(v: u32) -> u32 {
+    let state = v * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
 // A GGX visible normal for view direction `v` (towards the eye) about `n`.
 fn sample_vndf(v: vec3<f32>, n: vec3<f32>, alpha: f32, xi: vec2<f32>) -> vec3<f32> {
     let t1 = normalize(select(cross(n, vec3<f32>(0.0, 1.0, 0.0)), cross(n, vec3<f32>(1.0, 0.0, 0.0)), abs(n.y) > 0.9));
@@ -1131,7 +1138,11 @@ fn pack_rgb9e5(c: vec3<f32>) -> u32 {
 // the hit (its screen position this frame and the march's confidence).
 fn sssr_write(px: vec2<i32>, size: vec2<u32>, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, rough: f32, weight: vec3<f32>, env: vec3<f32>, dist: f32) {
     let alpha = max(rough * rough, 1e-3);
-    let xi = trace_hash(px, light.fog_sampling.x * 16.0 + 5.0);
+    // White noise per pixel and frame (PCG): interleaved gradient noise is
+    // correlated along diagonals, which the neighbour reuse turned into
+    // streaks; uncorrelated samples average out in the resolve and over time.
+    let seed = pcg_hash(u32(px.x) ^ pcg_hash(u32(px.y) ^ pcg_hash(u32(light.fog_sampling.x * 16.0) + 0x9e3779b9u)));
+    let xi = vec2<f32>(f32(seed >> 8u), f32(pcg_hash(seed) >> 8u)) / 16777216.0;
     let h = sample_vndf(v, n, alpha, xi);
     let l = reflect(-v, h);
     let m = march_hit(p, n, l, px, size, dist);
