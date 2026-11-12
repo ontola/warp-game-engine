@@ -147,6 +147,44 @@ fetches per shaped light per pixel it lights; in `interior_rooms` (four
 profiled lamps over a whole view) about 0.3 ms of the shade pass at 4K, on
 an RTX 5070 Ti, within run-to-run noise. Not in Luau yet.
 
+## Light faces
+
+A lamp you can see is two things: the light (`LocalLight`) and the surface
+that emits it. `render::light_face::LightFace` (a `Rect`, `Disc` or
+`Sphere` of given size) ties them together, so a game declares only the
+shape:
+
+```rust
+const PANEL: LightFace = LightFace::Rect { width_m: 0.5, depth_m: 0.5 };
+let light = PANEL.apply(LocalLight { /* position on the panel, intensity */ .. });
+let mesh = scene.add_mesh(&PANEL.primitive(scene.add_material(PANEL.material(&light))).mesh());
+// place it with PANEL.transform(&light); exclude it from the light's shadow
+```
+
+- The face's radiance is the light's intensity over the face's area (a
+  Lambertian emitter of luminance L and area A sends L A candela along its
+  axis). A face given its own nits drifts away from its light: the
+  `interior_rooms` panels were 14 times brighter than the 450 cd their
+  lights send.
+- `apply` sets the light's source radius to the sphere of the face's
+  projected area. Clustered lights use it for their highlight
+  (`sphere_light_specular`, Karis 2013's representative point: the point of
+  the source sphere nearest the mirror ray, the lobe widened by the
+  source's angular size and renormalised), so the highlight of a 0.5 m
+  panel has the panel's size, not a point light's.
+- The face's material is marked as a light's face (EMISSIVE with a negative
+  `scale`). A reflection ray that reaches such a pixel counts as a miss
+  (`light_face_at` in `march_hit`): the light's own specular already
+  carries that light. Before, a lamp in view was reflected twice (its
+  specular plus its face in the reflection, as a long, noisy streak) and a
+  lamp out of view once; rays hitting the bright face were also nearly all
+  of the reflections' sparkle (18,431 isolated bright pixels on the room 3
+  floor at 4K before, 19 after; 5,235 during a fast turn before, 1 after).
+
+The highlight is that of a sphere; a rectangle's own highlight (stretched
+along the panel, LTC area lights, Heitz 2016) is not done yet. Cost in
+`interior_rooms` at 4K: the shade pass 7.75 to 7.93 ms.
+
 ## Cost
 
 The bake runs on the CPU's cooking threads: 3.2 s for the look scene

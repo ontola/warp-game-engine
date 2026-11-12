@@ -166,6 +166,25 @@ fn clustered_sample(i: u32, p: vec3<f32>, bias_normal: vec3<f32>) -> HeadlightSa
     return s;
 }
 
+// Specular of a light with a source radius (Karis 2013, "representative
+// point"): the highlight comes from the point of the source sphere closest
+// to the mirror ray, and the lobe is widened by the source's angular size
+// with the energy renormalised by (a / a')^2. A point light's highlight is
+// only the GGX lobe of one direction, far smaller than a 0.5 m lamp panel.
+fn sphere_light_specular(lamp: LocalLight, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, centre: vec3<f32>, rough: f32, f0: vec3<f32>) -> vec3<f32> {
+    let radius = sqrt(max(lamp.source.x, 0.0));
+    if radius <= 0.0 { return ggx(n, v, centre, rough, f0); }
+    let to = lamp.position_range.xyz - p;
+    let dist = max(length(to), 1e-4);
+    let r = reflect(-v, n);
+    let to_ray = dot(to, r) * r - to;
+    let closest = to + to_ray * clamp(radius / max(length(to_ray), 1e-6), 0.0, 1.0);
+    let a = max(rough * rough, 2e-3);
+    let wide = min(a + radius / (2.0 * dist), 1.0);
+    let norm = (a / wide) * (a / wide);
+    return ggx(n, v, normalize(closest), rough, f0) * norm;
+}
+
 fn clustered_radiance(p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, diffuse: vec3<f32>, rough: f32, f0: vec3<f32>) -> vec3<f32> {
     var result = vec3<f32>(0.0);
     let cell = clustered_cell(p);
@@ -179,8 +198,8 @@ fn clustered_radiance(p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, diffuse: vec3<f3
         if all(s.irradiance == vec3<f32>(0.0)) { continue; }
         // Bit 15 of source.w: diffuse only (a bounce light; no highlight).
         let source_w = u32(bitcast<vec4<f32>>(scene_tables[light_grid.offsets.w + i * 4u + 3u]).w);
-        var spec = ggx(n, v, s.direction, rough, f0);
-        if (source_w & 32768u) != 0u { spec = vec3<f32>(0.0); }
+        var spec = vec3<f32>(0.0);
+        if (source_w & 32768u) == 0u { spec = sphere_light_specular(clustered_lamp(i), p, n, v, s.direction, rough, f0); }
         result += s.irradiance * (diffuse * max(dot(n, s.direction), 0.0) + spec);
     }
     return result;

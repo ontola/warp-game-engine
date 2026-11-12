@@ -43,9 +43,10 @@ use render::clustered_lights::ClusteredLight;
 use render::headlights::LocalLight;
 use render::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 use render::irradiance_volume::{Grid, Probe};
+use render::light_face::LightFace;
 use render::light_shapes::LightShape;
 use render::room_bake::Occluders;
-use render::scene::{Material, EMISSIVE};
+use render::scene::Material;
 use render::slots::{SlotId, Slots};
 use render::{Camera, Lighting, Scene};
 
@@ -58,10 +59,21 @@ const CORD: f32 = 1.3;
 /// Switch room lamp positions (just under the ceiling).
 const LAMPS: [Vec3; 4] = [Vec3::new(-2.0, 2.9, -12.1), Vec3::new(2.0, 2.9, -12.1), Vec3::new(-2.0, 2.9, -15.1), Vec3::new(2.0, 2.9, -15.1)];
 const WARM: Vec3 = Vec3::new(1.0, 0.78, 0.55);
+/// Switch room lamps: candela straight down, and their face (a ceiling panel).
+const LAMP_CD: f32 = 450.0;
+const PANEL: LightFace = LightFace::Rect { width_m: 0.5, depth_m: 0.5 };
 /// Switch room lamp colours: warm, red, teal, blue.
 const LAMP_COLOURS: [Vec3; 4] = [WARM, Vec3::new(1.0, 0.22, 0.15), Vec3::new(0.2, 1.0, 0.8), Vec3::new(0.25, 0.4, 1.0)];
 /// The pendant: amber, against the teal and blue next door.
 const PENDANT: Vec3 = Vec3::new(1.0, 0.5, 0.12);
+/// Its bulb: the light's face.
+const BULB: LightFace = LightFace::Sphere { radius_m: 0.05 };
+
+/// The pendant's light at `position`, pointing `direction` (down its cord).
+fn pendant_light(position: Vec3, direction: Vec3) -> LocalLight {
+    BULB.apply(LocalLight { position, direction, intensity_cd: colour(PENDANT, 700.0), range_m: 9.0,
+        inner_cos: 25f32.to_radians().cos(), outer_cos: 40f32.to_radians().cos(), source_radius_m: 0.0, falloff: 2.0 })
+}
 /// Room 3 | 4 doorway in the x = -4.3..-4.0 wall, and the door's hinge.
 const DOOR_Z: [f32; 2] = [-12.4, -11.4];
 const DOOR_TOP: f32 = 2.1;
@@ -119,8 +131,9 @@ fn profile(f: impl Fn(f32) -> f32) -> Vec<f32> {
 
 fn ceiling_lamp(i: usize) -> LocalLight {
     // A wide downlight: most light down, some to the walls.
-    LocalLight { position: LAMPS[i] - Vec3::Y * 0.12, direction: Vec3::NEG_Y, intensity_cd: colour(LAMP_COLOURS[i], 450.0), range_m: 10.0,
-        inner_cos: 50f32.to_radians().cos(), outer_cos: 80f32.to_radians().cos(), source_radius_m: 0.12, falloff: 2.0 }
+    // On its panel (the light's face), which its shadow excludes.
+    PANEL.apply(LocalLight { position: LAMPS[i], direction: Vec3::NEG_Y, intensity_cd: colour(LAMP_COLOURS[i], LAMP_CD), range_m: 10.0,
+        inner_cos: 50f32.to_radians().cos(), outer_cos: 80f32.to_radians().cos(), source_radius_m: 0.0, falloff: 2.0 })
 }
 
 /// The door panel `open` (0 shut, 1 open) of the way round its hinge.
@@ -227,10 +240,14 @@ impl Rooms {
         let dark = mat(&mut scene, [0.05, 0.05, 0.05], 0.5, 0, 1.0);
         let door_mesh = mat(&mut scene, [0.35, 0.25, 0.18], 0.6, 0, 1.0);
         let bulb_mesh = {
-            let m = scene.add_material(Material { tint: PENDANT.to_array(), layer: -1, roughness: 1.0, flags: EMISSIVE, scale: 40_000.0, metal: 0.0 });
-            scene.add_mesh(&render::primitives::sphere(m, 8, 12).mesh())
+            let m = scene.add_material(BULB.material(&pendant_light(PIVOT, Vec3::NEG_Y)));
+            scene.add_mesh(&BULB.primitive(m).mesh())
         };
-        let lamp_on_mesh = LAMP_COLOURS.map(|c| mat(&mut scene, (c / c.max_element()).to_array(), 1.0, EMISSIVE, 25_000.0));
+        // Each lit panel is its light's face (render::light_face).
+        let lamp_on_mesh: [usize; 4] = std::array::from_fn(|i| {
+            let m = scene.add_material(PANEL.material(&ceiling_lamp(i)));
+            scene.add_mesh(&PANEL.primitive(m).mesh())
+        });
         let lamp_off_mesh = mat(&mut scene, [0.8, 0.8, 0.78], 0.5, 0, 1.0);
         let cord_mesh = dark;
         // The pendant's shade: an open-looking cone, narrow end up.
@@ -314,8 +331,7 @@ impl Rooms {
         let cord = objects.add(&mut scene, cord_mesh, Affine3A::IDENTITY).unwrap();
         let shade = objects.add(&mut scene, shade_mesh, Affine3A::IDENTITY).unwrap();
         let door = objects.add(&mut scene, door_mesh, door_xf(0.0)).unwrap();
-        let lamp_slots = LAMPS.iter().zip(lamp_on_mesh).map(|(p, mesh)| objects.add(&mut scene, mesh,
-            Affine3A::from_scale_rotation_translation(Vec3::new(0.5, 0.06, 0.5), Quat::IDENTITY, *p + Vec3::Y * 0.03)).unwrap()).collect();
+        let lamp_slots = (0..4).map(|i| objects.add(&mut scene, lamp_on_mesh[i], PANEL.transform(&ceiling_lamp(i))).unwrap()).collect();
         let mut light = Lighting::default();
         light.fog_start = 1000.0;
         light.fog_end = 2000.0;
@@ -353,10 +369,7 @@ impl Rooms {
 
     /// The pendant: a spot under its shade, pointing down the cord, so its
     /// cone swings with it.
-    fn pendant(&self) -> LocalLight {
-        LocalLight { position: self.bulb_at(), direction: self.cord_dir(), intensity_cd: colour(PENDANT, 700.0), range_m: 9.0,
-            inner_cos: 25f32.to_radians().cos(), outer_cos: 40f32.to_radians().cos(), source_radius_m: 0.04, falloff: 2.0 }
-    }
+    fn pendant(&self) -> LocalLight { pendant_light(self.bulb_at(), self.cord_dir()) }
 
     /// A little light out of the shade's top, so the ceiling is not black.
     fn uplight(&self) -> LocalLight {
@@ -472,7 +485,11 @@ impl Rooms {
         // The 40 degree cone: 1.47 sr, its lampshade profile about 0.8 of the peak.
         if let Some(b) = self.bounce(&pendant, pendant.direction, 30f32.to_radians(), 1.47 * 0.8, 0.05) { lights.push(ClusteredLight::shadowed(b, 2).with_shape(BOUNCE)); }
         for i in 0..4 {
-            if self.lamp_on[i] { lights.push(ClusteredLight::shadowed(ceiling_lamp(i), 10 + i as u64).with_shape(DOWNLIGHT_PROFILE)); }
+            if self.lamp_on[i] {
+                let mut lamp = ClusteredLight::shadowed(ceiling_lamp(i), 10 + i as u64).with_shape(DOWNLIGHT_PROFILE);
+                if let Some(s) = &mut lamp.shadow { s.exclude = Some((self.objects.instance(self.lamp_slots[i]) as u32, 1)); }
+                lights.push(lamp);
+            }
         }
         if self.flashlight {
             let flash = self.flashlight_light();
@@ -486,8 +503,7 @@ impl Rooms {
     fn toggle(&mut self, i: usize) {
         self.lamp_on[i] = !self.lamp_on[i];
         let mesh = if self.lamp_on[i] { self.lamp_on_mesh[i] } else { self.lamp_off_mesh };
-        self.objects.set(&mut self.scene, self.lamp_slots[i], mesh,
-            Affine3A::from_scale_rotation_translation(Vec3::new(0.5, 0.06, 0.5), Quat::IDENTITY, LAMPS[i] + Vec3::Y * 0.03));
+        self.objects.set(&mut self.scene, self.lamp_slots[i], mesh, PANEL.transform(&ceiling_lamp(i)));
     }
 
     fn set_fog(&mut self, on: bool) {
@@ -590,7 +606,8 @@ impl Game for Rooms {
         let bulb = self.bulb_at();
         let mid = (PIVOT + bulb) * 0.5;
         let rot = Quat::from_rotation_arc(Vec3::Y, (PIVOT - bulb).normalize());
-        self.objects.set(&mut self.scene, self.bulb, self.bulb_mesh, Affine3A::from_scale_rotation_translation(Vec3::splat(0.05), Quat::IDENTITY, bulb));
+        let face = BULB.transform(&self.pendant());
+        self.objects.set(&mut self.scene, self.bulb, self.bulb_mesh, face);
         // The shade over the bulb, its rim just above the bulb's bottom.
         let d = self.cord_dir();
         let shade = Affine3A::from_scale_rotation_translation(Vec3::new(0.22, 0.2, 0.22), Quat::from_rotation_arc(Vec3::Y, -d), bulb - d * 0.14);

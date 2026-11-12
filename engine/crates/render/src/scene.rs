@@ -27,6 +27,9 @@ pub const THIN_FOLIAGE: u32 = 512;
 /// Self-lit surface (lava, lamps, tracers): adds `tint * scale` nits of
 /// radiance; `scale` is the emission, not a repeat. With a texture `layer`
 /// (uv-mapped) the textured colour glows instead: screens and signs.
+/// A negative `scale` emits `-scale` and marks a light's face
+/// (`light_face::LightFace::material`): screen-space reflections leave it to
+/// that light's own specular instead of counting its light twice.
 pub const EMISSIVE: u32 = 1024;
 /// Procedural rock (Growing Guns' rock_surface): world-space pits, cracks
 /// and moss on a block's faces, tinted by `tint`; `scale` 0..1 is damage

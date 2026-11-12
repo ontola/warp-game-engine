@@ -987,6 +987,15 @@ fn reflection_level(uv: vec2<f32>, lod: f32) -> vec3<f32> {
 // a confidence (0: no hit; fades at the screen edge and the reach).
 struct MarchHit { hit: vec3<f32>, t: f32, conf: f32 }
 
+// Whether the pixel shows a light's face: an EMISSIVE material with a
+// negative scale (scene.rs), whose emission an analytic light stands for.
+fn light_face_at(px: vec2<i32>) -> bool {
+    let id = textureLoad(vis_tex, px, 0).r;
+    if (id & 0x80000000u) != 0u { return false; }
+    let m = material(clusters[visible[id >> 7u].y].material);
+    return (m.flags & 1024u) != 0u && m.scale < 0.0;
+}
+
 fn march_hit(p: vec3<f32>, n: vec3<f32>, r: vec3<f32>, px: vec2<i32>, size: vec2<u32>, dist: f32) -> MarchHit {
     var none: MarchHit;
     if dot(r, n) <= 0.0 { return none; }
@@ -1045,6 +1054,10 @@ fn march_hit(p: vec3<f32>, n: vec3<f32>, r: vec3<f32>, px: vec2<i32>, size: vec2
         // A hit facing away from the ray (seen from behind) has no radiance here.
         let back = ch.w * (1.0 - nh.z / d);
         if back > max(0.2, hi * 0.03) { return none; }
+        // A light's face (EMISSIVE with negative scale): its light reaches
+        // this surface as that light's analytic specular, on screen or off,
+        // so the ray counts as a miss instead of adding it a second time.
+        if light_face_at(sp) { return none; }
     } else if escape <= 0.0 {
         return none;
     } else {
@@ -3493,7 +3506,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     if FEATURE_CARS { rad += car_lamp_emission(m.flags, base, inst, p) * emit; }
     // EMISSIVE: a glowing surface, `scale` is its radiance in nits for white;
     // with a texture layer the picture glows (screens), else the tint.
-    if (m.flags & 1024u) != 0u { rad += select(m.tint, base, m.layer >= 0) * m.scale * emit; }
+    if (m.flags & 1024u) != 0u { rad += select(m.tint, base, m.layer >= 0) * abs(m.scale) * emit; }
     rad += surface_emit * emit;
     // LAVA: molten emission plus sunlight reflected by the cooler surface.
     // MOLTEN_DEBRIS shares bit 7 with part_wind's history epoch, which wind
@@ -3648,7 +3661,7 @@ fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
         let sample=incident_light_sample(index,p,n);
         rad+=base*sample.irradiance*max(dot(n,sample.direction),0.0)/PI;
     }
-    if (m.flags&1024u)!=0u {rad+=base*m.scale*light.anim.y;}
+    if (m.flags&1024u)!=0u {rad+=base*abs(m.scale)*light.anim.y;}
     if (m.flags&4096u)!=0u {rad=base*m.scale*light.anim.y;}
     let flash=f32((inst.flags>>16u)&255u)/255.0;
     rad=mix(rad,vec3<f32>(1.0,0.97,0.92)*light.anim.z*(0.8+0.2*max(dot(n,-dir),0.0)),flash*0.9);
