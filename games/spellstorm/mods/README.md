@@ -51,6 +51,10 @@ return {
   field_time, stun, interval) and `rate`, how hard it hits. The game fits
   `rate` so every spell is worth about the same; `n.fit = false` keeps yours.
 - `base/tomes.luau` lists the tomes; the comment at its top names the mods.
+- `base/knobs.luau` holds the balance knobs (walking speed, damage and
+  health scales, wave spacing, the mist walls' rules) in a `-- @knobs`
+  block, one number per line. The game reads it, not the module host: a
+  saved value applies on the next frame, and `set_knob` rewrites the line.
 - Effects: `dmg`, `poison`, `push`, `burn`, `chill`, `wet`, `shock`, `slow`
   per unit of the element. The fit counts them too, so more damage on an
   element makes its spells hit a little less often; the `spell_damage` knob
