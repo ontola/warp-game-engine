@@ -21,8 +21,8 @@
 //!   the surface times the transmittance, plus the in-scattered light.
 //!
 //! The game sets the medium (`Lighting::froxel_fog`): density, albedo and
-//! anisotropy; no boxes. Transparent surfaces drawn after shade do not get
-//! it yet.
+//! anisotropy; no boxes. Glass (drawn after shade) reads the volume at its
+//! own depth; reflection probe captures march the medium along their rays.
 use crate::Gpu;
 use glam::{Mat4, Vec3};
 

@@ -126,6 +126,28 @@ fn fog_inject(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
     let spx = min(vec2<u32>(uv * vec2<f32>(size)), size - 1u);
     let pd = textureLoad(depth_tex, vec2<i32>(spx), 0);
     let hidden = pd > 0.0 && w > view.params.y / pd;
+    var cur = fog_medium(p, to_eye);
+    if hidden { cur = vec4<f32>(0.0, 0.0, 0.0, cur.a); }
+    // Last frame's cell where this point was, 0.9 kept.
+    if gi.fog.w > 1.5 {
+        let pc = gi.fog_prev * vec4<f32>(p, 1.0);
+        if pc.w > 1e-4 {
+            let puv = vec2<f32>(pc.x / pc.w * 0.5 + 0.5, 0.5 - pc.y / pc.w * 0.5);
+            let pz = fog_depth_slice(pc.w) / f32(FOG_GRID.z);
+            if all(puv >= vec2<f32>(0.0)) && all(puv <= vec2<f32>(1.0)) && pz >= 0.0 && pz <= 1.0 {
+                let prev = textureSampleLevel(fog_prev, canopy_sampler, vec3<f32>(puv, pz), 0.0);
+                // A hidden sample leaves the history as it is: the cell averages
+                // its visible air, not its visible share of it.
+                cur = mix(prev, cur, select(0.1, 0.0, hidden));
+            }
+        }
+    }
+    textureStore(fog_out, cell, cur);
+}
+
+// The medium at p: rgb the light it scatters towards `to_eye` per metre,
+// a its extinction per metre.
+fn fog_medium(p: vec3<f32>, to_eye: vec3<f32>) -> vec4<f32> {
     let g = gi.fog.y;
     var lin = vec3<f32>(0.0);
     // Clustered lights, shadowed, with cookies and profiles.
@@ -150,33 +172,54 @@ fn fog_inject(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
     }
     // Ambient (isotropic): the mean radiance of the two hemispheres.
     lin += (fog_ambient_irradiance(p, vec3<f32>(0.0, 1.0, 0.0)) + fog_ambient_irradiance(p, vec3<f32>(0.0, -1.0, 0.0))) / (2.0 * PI);
-    if hidden { lin = vec3<f32>(0.0); }
     // The medium fills its bounds (all space when unbounded).
     let inside = gi.fog_bounds[0].w < 0.5 || (all(p >= gi.fog_bounds[0].xyz) && all(p <= gi.fog_bounds[1].xyz));
     let sigma_t = select(0.0, gi.fog.x, inside);
-    var cur = vec4<f32>(lin * gi.fog_albedo.rgb * sigma_t, sigma_t);
-    // Last frame's cell where this point was, 0.9 kept.
-    if gi.fog.w > 1.5 {
-        let pc = gi.fog_prev * vec4<f32>(p, 1.0);
-        if pc.w > 1e-4 {
-            let puv = vec2<f32>(pc.x / pc.w * 0.5 + 0.5, 0.5 - pc.y / pc.w * 0.5);
-            let pz = fog_depth_slice(pc.w) / f32(FOG_GRID.z);
-            if all(puv >= vec2<f32>(0.0)) && all(puv <= vec2<f32>(1.0)) && pz >= 0.0 && pz <= 1.0 {
-                let prev = textureSampleLevel(fog_prev, canopy_sampler, vec3<f32>(puv, pz), 0.0);
-                // A hidden sample leaves the history as it is: the cell averages
-                // its visible air, not its visible share of it.
-                cur = mix(prev, cur, select(0.1, 0.0, hidden));
-            }
-        }
+    return vec4<f32>(lin * gi.fog_albedo.rgb * sigma_t, sigma_t);
+}
+
+// A reflection probe's capture (gi.fog.w 3) has no froxel grid of its own:
+// the fog along each capture ray from the probe to the surface, marched in
+// FOG_CAPTURE_STEPS with the same medium the grid injects, offset per pixel
+// (the capture's prefilter averages the offsets). rgb in-scattered, a
+// transmittance, as `froxel_fog`.
+const FOG_CAPTURE_STEPS: u32 = 16u;
+fn fog_capture(origin: vec3<f32>, end: vec3<f32>, px: vec2<i32>) -> vec4<f32> {
+    let seg = end - origin;
+    let len = length(seg);
+    if len < 1e-4 { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+    let dir = seg / len;
+    let step = len / f32(FOG_CAPTURE_STEPS);
+    let offset = fog_rand(u32(px.x) * 73856093u ^ u32(px.y) * 19349663u);
+    var light = vec3<f32>(0.0);
+    var through = 1.0;
+    for (var k = 0u; k < FOG_CAPTURE_STEPS; k++) {
+        let m = fog_medium(origin + dir * (step * (f32(k) + offset)), -dir);
+        let sigma = max(m.a, 1e-7);
+        let st = exp(-sigma * step);
+        light += through * (m.rgb - m.rgb * st) / sigma;
+        through *= st;
     }
-    textureStore(fog_out, cell, cur);
+    return vec4<f32>(light, through);
 }
 
 // The fog in front of a pixel at view depth w: rgb the light scattered
 // towards the camera, a the transmittance.
 fn froxel_fog(px: vec2<i32>, size: vec2<u32>, w: f32) -> vec4<f32> {
     if !fog_on() { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
-    let uv = (vec2<f32>(px) + 0.5) / vec2<f32>(size);
+    return froxel_fog_uv((vec2<f32>(px) + 0.5) / vec2<f32>(size), w);
+}
+
+// The same at a world point: glass and other surfaces drawn after shade
+// (transparency.wgsl) read the volume at their own depth.
+fn froxel_fog_at(p: vec3<f32>) -> vec4<f32> {
+    if !fog_on() { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+    let c = view.view_proj * vec4<f32>(p, 1.0);
+    if c.w <= FOG_NEAR { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+    return froxel_fog_uv(vec2<f32>(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5), c.w);
+}
+
+fn froxel_fog_uv(uv: vec2<f32>, w: f32) -> vec4<f32> {
     // The integrated volume holds each slice's far side.
     let z = (fog_depth_slice(min(w, gi.fog.z)) - 0.5) / f32(FOG_GRID.z);
     let s = textureSampleLevel(fog_volume, canopy_sampler, vec3<f32>(uv, clamp(z, 0.0, 1.0)), 0.0);

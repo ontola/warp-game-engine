@@ -205,5 +205,12 @@ light.froxel_fog = Some(FroxelFog { density: 0.15, albedo: Vec3::splat(0.9), ani
   in-scattered light, trilinear, before TAA.
 - Cost, `interior_rooms`, RTX 5070 Ti, 4K: inject 0.60 ms, integrate under
   0.01 ms. `KERN_FROXEL_FOG=0` turns it off.
-- Not yet: transparent surfaces drawn after shade (glass) get no fog; the
-  reflection probes' captures have none.
+- Glass and other blended surfaces (drawn after shade, `transparency.wgsl`)
+  read the integrated volume at their own depth (`froxel_fog_at`): a pane
+  is dimmed and gets the light scattered in front of it, as an opaque
+  surface there would; emissive blends are only dimmed (their in-scattering
+  is already in the image behind).
+- Reflection probe captures have no grid of their own: shade marches each
+  capture ray from the probe to its surface in 16 steps through the same
+  medium (`fog_medium`, the light `fog_inject` puts in a cell), offset per
+  texel; the capture's prefilter averages the offsets.

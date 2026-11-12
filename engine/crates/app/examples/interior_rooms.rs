@@ -295,6 +295,14 @@ impl Rooms {
             (green, bx([-4.0, 0.0, -16.6], [-3.98, H, DOOR_Z[0]])), (green, bx([-4.0, 0.0, DOOR_Z[1]], [-3.98, H, -10.5])),
             (green, bx([-4.0, DOOR_TOP, DOOR_Z[0]], [-3.98, H, DOOR_Z[1]])), (green, bx([3.98, 0.0, -16.6], [4.0, H, -10.5])),
         ] { scene.add_instance(m, b); }
+        // A glass pane in room 1's window (blended: no depth, no shadow), which
+        // the smoke in the room fogs at its own depth.
+        let glass = {
+            let m = scene.add_material(Material { tint: [0.9, 0.95, 0.95], layer: -1, roughness: 0.05, flags: 0, scale: 1.0, metal: 0.0 });
+            scene.set_material_blend(m, 0.12, true);
+            scene.add_mesh(&render::primitives::cube(m).mesh())
+        };
+        scene.add_instance(glass, bx([-4.16, 0.9, -1.2], [-4.14, 2.2, 1.2]));
         scene.add_instance(wood, bx([-4.0, 0.0, -4.0], [4.0, 0.02, 4.0]));
         scene.add_instance(tiles, bx([-4.0, 0.0, -10.2], [4.0, 0.02, -4.3]));
         scene.add_instance(wood, bx([-4.0, 0.0, -16.6], [4.0, 0.02, -10.5]));

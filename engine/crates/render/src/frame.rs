@@ -1910,10 +1910,11 @@ impl Renderer {
         gi.rsm[1] = 0.0;
         gi.rsm_prev = Mat4::IDENTITY.to_cols_array_2d();
         gi.probes = [1.0, 0.0, 0.0, 0.0];
+        // Fog: no froxel grid for a capture; shade marches each capture ray
+        // through the same medium (froxel_fog.wgsl fog_capture).
+        if gi.fog[0] > 0.0 { gi.fog[3] = 3.0; }
         let gi_buf = self.view_uniform(gpu, UNIFORMS, 0, "probe gi", bytemuck::bytes_of(&gi));
         let (rsm_store, rsm_none) = { let r = self.rsm.lock().unwrap(); (r.fallback_storage.clone(), r.fallback.clone()) };
-        // No fog in a capture (its view would need its own froxels).
-        gi.fog = [0.0; 4];
         let (fog_store, fog_none) = { let f = self.froxels.lock().unwrap(); (f.fallback_storage.clone(), f.fallback.clone()) };
         for (face, targets) in all.iter().enumerate() {
         let mut u = view_uniform(crate::reflection_probes::face_view_proj(job.capture, face), job.capture, f * 0.5,
@@ -6107,6 +6108,8 @@ impl Renderer {
                             (13, wgpu::BindingResource::TextureView(&density_view)),
                             (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
                             (15, wgpu::BindingResource::TextureView(&near_view)),
+                            // The froxel fog (froxel_fog.wgsl), read at each pane's depth.
+                            (30, wgpu::BindingResource::TextureView(fog_shade[2])),
                         ], &hdr_v, &depth_v,
                             t.map(|(qs, i)| wgpu::RenderPassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }), motion_on,geometry_diagnostic.excluded_mask);
                     }

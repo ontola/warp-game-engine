@@ -373,6 +373,14 @@ impl Transparency {
                     wgpu::TextureViewDimension::D2Array,
                 ),
             ),
+            (
+                30,
+                // The integrated froxel fog (froxel_fog.wgsl fog_volume).
+                texture(
+                    wgpu::TextureSampleType::Float { filterable: true },
+                    wgpu::TextureViewDimension::D3,
+                ),
+            ),
         ];
         let view_layout = gpu
             .device
