@@ -37,6 +37,31 @@ fn cell_mass(cell:vec3<i32>,pitch:f32,centre:vec3<f32>,radii:vec3<f32>,fine:bool
     return sum*half_size.x*half_size.y*half_size.z;
 }
 
+// Share of a crown's mass kept at a level too coarse to resolve it (canopy.rs
+// clumping_on): a ray that meets the crown passes its whole chord, so the
+// field must carry the share of light the crown blocks, not its mean depth tau.
+// tau is the crown's mean chord (4V/S) times its mean density (0.4 of the
+// centre for the 1 - q^2 profile). Cells finer than a quarter of the
+// smallest radius resolve the crown and keep its full mass; the share fades
+// in up to a pitch of that radius.
+fn clump_share(radii:vec3<f32>,pitch:f32)->f32 {
+    if params.mass.w<0.5 {return 1.0;}
+    let a=radii.x;let b=radii.y;let c=radii.z;
+    let p=1.6075; // Thomsen's ellipsoid surface approximation
+    let surface=4.0*3.14159265359*pow((pow(a*b,p)+pow(a*c,p)+pow(b*c,p))/3.0,1.0/p);
+    let volume=(4.0/3.0)*3.14159265359*a*b*c;
+    let tau=params.mass.z*0.4*4.0*volume/surface;
+    if tau<1e-4 {return 1.0;}
+    // Its chords' mean transmittance, as a sphere of that mean depth: depth
+    // (15/8) tau u^1.5 at area fraction u from the rim (4-point Gauss).
+    let nodes=vec4<f32>(0.0694318442,0.3300094782,0.6699905218,0.9305681558);
+    let weights=vec4<f32>(0.1739274226,0.3260725774,0.3260725774,0.1739274226);
+    let through=dot(weights,exp(-1.875*tau*pow(nodes,vec4<f32>(1.5))));
+    let share=(1.0-through)/tau;
+    let r=min(a,min(b,c));
+    return mix(1.0,share,smoothstep(0.25*r,r,pitch));
+}
+
 // Monotone encoding lets zero-cleared atomicMax accumulate both upper bounds
 // and negated lower bounds, including below-datum trees. Empty cells have no mass.
 fn ordered_float(v:f32)->u32 {
@@ -90,7 +115,7 @@ fn main(@builtin(global_invocation_id) gid:vec3<u32>) {
             integral+=cell_mass(vec3<i32>(x,y,z),pitch,centre,radii,fine,support,compact);
         }}}
         if integral<=0.0 {continue;}
-        let factor=mass/integral;
+        let factor=mass*clump_share(radii,pitch)/integral;
         let write_lo=max(lo,resident);let write_hi=min(hi,resident+dims-vec3<i32>(1));
         for(var z=write_lo.z;z<=write_hi.z;z++) {for(var y=write_lo.y;y<=write_hi.y;y++) {for(var x=write_lo.x;x<=write_hi.x;x++) {
             let cell=vec3<i32>(x,y,z);
