@@ -385,6 +385,10 @@ impl Gg {
         // Also between ticks (debug commands, live tools): clients need it.
         self.session.mark_arena();
         self.vis.set_arena(&self.world);
+        // A round-selected sky belongs to the first view of its arena.
+        if matches!(self.sky.choice, crate::sky::SkyChoice::Rounds(_) | crate::sky::SkyChoice::Random) {
+            if let Err(e) = self.apply_sky() { eprintln!("round sky: {e}"); }
+        }
         self.prev = view::Pose::all(&self.world);
     }
 
@@ -393,7 +397,7 @@ impl Gg {
         self.sky.choice = choice;
         self.sky.live = None;
         self.apply_sky()?;
-        if let Some(s) = self.sky.applied.filter(|_| matches!(choice, crate::sky::SkyChoice::Cycle { .. } | crate::sky::SkyChoice::Rounds(_) | crate::sky::SkyChoice::Random)) {
+        if let Some(s) = self.sky.applied.filter(|_| matches!(choice, crate::sky::SkyChoice::Cycle { .. })) {
             self.sky.live = Some(render::sky::LiveSky::starting(s, &serde_json::Value::Null));
         }
         Ok(())
@@ -955,6 +959,7 @@ impl Gg {
 }
 
 impl app::Game for Gg {
+    fn adaptive_resolution_only(&self) -> bool { true }
     fn fixed_quality(&self) -> bool { self.replay.as_ref().is_some_and(|r| app::Game::fixed_quality(&**r)) || self.recorder.disabled }
     /// A severe, sustained fall at the lowest resolution: step the graphics
     /// profile down for the next round, this session only, and never
@@ -1739,7 +1744,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     if args.flag("--start-in-stands") && !session.is_client() { crate::stadium::start_in_stands(&mut world)?; }
     println!("seed {seed}, {} local, {} players", slots.len(), world.players.len());
     let mut game = Gg::new(world, session, slots);
-    // Round changes must not stall the frame (and the audio) on the sky bake.
+    // Start lighting preparation while the rest of the arena is being built.
     game.vis.stadium.bake_in_background = true;
     game.party = crate::party::Party::connect();
     if game.party.is_some() { println!("gamenight: waiting for the party host"); }
@@ -1832,6 +1837,20 @@ mod tests {
         g.ui.open(hud::menus::Screen::Play);
         g.hud.fb[0].burned = Some(2.4);
         assert_eq!(g.mouse_capture(), Some(false));
+    }
+
+    #[test]
+    fn round_sky_is_ready_before_drawing_the_new_arena() {
+        let world = World::new_with(5, &[false, true], |w| w.modifier_chance = 0.);
+        let mut game = Gg::new(world, Session::Local, vec![0]);
+        let choice = crate::sky::SkyChoice::parse("rounds:mist").unwrap();
+        game.set_sky(choice).unwrap();
+        let first = game.sky.applied;
+        game.command("round").unwrap();
+        assert_ne!(game.sky.applied, first);
+        assert_eq!(game.sky.applied, choice.for_arena(game.world.round, 0., game.world.arena.seed, false));
+        assert!(game.sky.live.is_none());
+        assert!(game.adaptive_resolution_only());
     }
 
     #[test]

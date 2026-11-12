@@ -168,8 +168,7 @@ impl PlayersView {
     /// Player and tracer instances, rewritten every frame.
     pub(crate) fn reserve_dynamic(&mut self, scene: &mut Scene, players: usize, seed: u64, colors: &[crate::party::PlayerColors]) {
         let rigid = crate::graphics::get().rigid_characters;
-        let procedural = !colors.is_empty() || !rigid && crate::warp_humans_enabled();
-        self.characters = if !crate::graphics::get().characters && !rigid {None}else{match Characters::load_roster(procedural.then_some((seed, players, colors))) {
+        self.characters = if !crate::graphics::get().characters && !rigid {None}else{match Characters::load_roster(seed, players, colors) {
             Ok(characters) => Some(characters),
             Err(error) => { eprintln!("characters: using primitive fallback: {error}"); None }
         }};
@@ -656,7 +655,7 @@ mod lava_sink_tests {
     use super::*;
     #[test]
     fn full_reserved_roster_keeps_actual_character_lava_twins() {
-        let mut scene=Scene::default();let mut characters=Characters::load().unwrap();
+        let mut scene=Scene::default();let mut characters=Characters::load_roster(3, 8, &[]).unwrap();
         for i in 0..8 {characters.reserve_actor(&mut scene,i).unwrap();}
         let material=super::super::arena::lava_material(&mut scene);
         characters.reserve_lava(&mut scene,material);

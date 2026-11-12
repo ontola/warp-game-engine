@@ -15,7 +15,7 @@
 3. Sample a fresh skin palette, solve any gameplay constraints, then call `viewport.bones.editor.apply(&mut palette)`. Upload that palette to the character. Read the final wrist here when attaching a prop.
 4. Render with `viewport.camera()`. Use `viewport.draw(output_size, model_to_scene, status)` for the HUD. The model transform must match the rendered actor. Return `viewport.snapshot()` through `Game::state` for F4; add your game-specific fields there.
 
-The shared viewport owns scaled logical hit regions, joint picking, drag controls, camera controls and capture field names. Growing Guns supplies its knight, hierarchy, grip sliders, Luau script and saved foregrip pose. SpellStorm can supply a different rig through the same Rust API. There is currently no standalone scene-editing application or Luau binding for this viewport.
+The shared viewport owns scaled logical hit regions, joint picking, drag controls, camera controls and capture field names. Growing Guns supplies a seeded Warp Human, its joint hierarchy, grip sliders and Luau script. SpellStorm can supply a different rig through the same Rust API. There is currently no standalone scene-editing application or Luau binding for this viewport.
 
 ## GUI conventions
 

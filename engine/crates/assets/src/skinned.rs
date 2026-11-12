@@ -18,17 +18,23 @@ use std::{
 
 #[derive(Deserialize)]
 struct Manifest {
-    version: u32,
-    name: String,
+    #[serde(flatten)]
+    rig: RigFile,
     mesh_file: String,
-    animation_file: String,
     vertex_count: usize,
     index_count: usize,
-    joint_count: usize,
     vertex_stride_bytes: usize,
     index_offset_bytes: usize,
-    matrix_stride_bytes: usize,
     surfaces: Vec<SurfaceFile>,
+}
+
+#[derive(Deserialize)]
+struct RigFile {
+    version: u32,
+    name: String,
+    animation_file: String,
+    joint_count: usize,
+    matrix_stride_bytes: usize,
     clips: Vec<ClipFile>,
     joints: Vec<JointFile>,
 }
@@ -209,34 +215,18 @@ impl Character {
     pub fn load(path: &Path) -> Result<Self, String> {
         let manifest: Manifest =
             serde_json::from_slice(&read(path)?).map_err(|e| format!("{}: {e}", path.display()))?;
-        if manifest.version != 1
-            || manifest.vertex_stride_bytes != 96
-            || manifest.matrix_stride_bytes != 48
+        if manifest.vertex_stride_bytes != 96
             || !(1..=200_000).contains(&manifest.vertex_count)
             || !(3..=1_200_000).contains(&manifest.index_count)
             || manifest.index_count % 3 != 0
-            || !(1..=skinning::MAX_JOINTS).contains(&manifest.joint_count)
             || manifest.surfaces.is_empty()
             || manifest.surfaces.len() > 128
-            || manifest.clips.is_empty()
-            || manifest.clips.len() > 32
         {
             return Err("unsupported character version, layout or count".into());
         }
-        if manifest.joints.len() != manifest.joint_count {
-            return Err("character joint metadata count mismatch".into());
-        }
-        let joints: Vec<_> = manifest
-            .joints
-            .into_iter()
-            .map(|j| (j.name, from_rows(j.inverse_bind_rows).inverse()))
-            .collect();
-        if joints.iter().any(|(_, m)| !skinning::valid_matrix(*m)) {
-            return Err("invalid inverse bind matrix".into());
-        }
+        let mut rig = Self::from_rig(path, manifest.rig)?;
         let base = path.parent().unwrap_or(Path::new("."));
         let mesh = read(&source_path(base, &manifest.mesh_file)?)?;
-        let animation = read(&source_path(base, &manifest.animation_file)?)?;
         if manifest.index_offset_bytes != manifest.vertex_count * 96
             || mesh.len() != manifest.index_offset_bytes + manifest.index_count * 4
         {
@@ -267,7 +257,7 @@ impl Character {
                 || influence
                     .joints
                     .iter()
-                    .any(|j| *j as usize >= manifest.joint_count)
+                    .any(|j| *j as usize >= rig.joint_count)
                 || influence.weights.iter().any(|w| !w.is_finite() || *w < 0.0)
                 || !sum.is_finite()
                 || (sum - 1.0).abs() > 0.001
@@ -383,6 +373,40 @@ impl Character {
         if next_vertex != vertices.len() || next_index != indices.len() {
             return Err("incomplete character surface coverage".into());
         }
+        rig.min = rig.min.min(min - Vec3::splat(0.001));
+        rig.max = rig.max.max(max + Vec3::splat(0.001));
+        rig.triangles = indices.len() / 3;
+        rig.surfaces = surfaces;
+        Ok(rig)
+    }
+
+    /// Load just the skeleton and animation clips for a procedurally fitted body.
+    pub fn load_animation_rig(path: &Path) -> Result<Self, String> {
+        let manifest = serde_json::from_slice(&read(path)?).map_err(|e| format!("{}: {e}", path.display()))?;
+        Self::from_rig(path, manifest)
+    }
+
+    fn from_rig(path: &Path, manifest: RigFile) -> Result<Self, String> {
+        if manifest.version != 1 || manifest.matrix_stride_bytes != 48
+            || !(1..=skinning::MAX_JOINTS).contains(&manifest.joint_count)
+            || !(1..=32).contains(&manifest.clips.len()) {
+            return Err("unsupported animation rig version, layout or count".into());
+        }
+        let base = path.parent().unwrap_or(Path::new("."));
+        let animation = read(&source_path(base, &manifest.animation_file)?)?;
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        if manifest.joints.len() != manifest.joint_count {
+            return Err("character joint metadata count mismatch".into());
+        }
+        let joints: Vec<_> = manifest
+            .joints
+            .into_iter()
+            .map(|j| (j.name, from_rows(j.inverse_bind_rows).inverse()))
+            .collect();
+        if joints.iter().any(|(_, m)| !skinning::valid_matrix(*m)) {
+            return Err("invalid inverse bind matrix".into());
+        }
         let mut clips = Vec::new();
         let mut names = std::collections::HashSet::new();
         for clip in manifest.clips {
@@ -456,8 +480,8 @@ impl Character {
             clips,
             min,
             max,
-            triangles: manifest.index_count / 3,
-            surfaces,
+            triangles: 0,
+            surfaces: Vec::new(),
             joints,
         })
     }

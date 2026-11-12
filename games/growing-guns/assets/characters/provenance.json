@@ -27,76 +27,12 @@
       "sha256": "4a2765f0365a2ca09f2d909b6056cb4c696f0ec23ec5f695acc57f9965f25618"
     },
     {
-      "path": "assets/models/ch10_0.png",
-      "sha256": "0174f2b5e1d0bf56348c579bbde1a214c3c678cad8fea461f39be6fe7308075c"
-    },
-    {
-      "path": "assets/models/ch10_1.png",
-      "sha256": "dfeb5641a73a607fa16918bc1daf28328d6aedb6ed6974f9d963faf96ad16306"
-    },
-    {
-      "path": "assets/models/ch10_2.png",
-      "sha256": "8497a362fe0b8b99f91617448873d46a7609c7baf9d508cb02f8e832cb1e9dd1"
-    },
-    {
-      "path": "assets/models/ch10_3.png",
-      "sha256": "bc123c473a900281faefcbeaf568ba26bbbe676058289c2b5cfc25a3f407b202"
-    },
-    {
-      "path": "assets/models/ch10_4.png",
-      "sha256": "84d9d24f27aad1778794eb09b5a8c587260ca05343a14e3c53fc8783a35e7db6"
-    },
-    {
-      "path": "assets/models/ch10_5.png",
-      "sha256": "cef233a4dbf2220fae856f34f231c858d1573377270561a4923cb4a83c4851d3"
-    },
-    {
-      "path": "assets/models/ch10_6.png",
-      "sha256": "a8d939b918faf8a6c2fef4e1d4c59b2e35a14238a79a57ad582e63771483be77"
-    },
-    {
-      "path": "assets/models/ch10_7.png",
-      "sha256": "44e5c4dcb04369f24a36331a65a585b1f9de818e96664d5691ef62608e2ebbf7"
-    },
-    {
-      "path": "assets/models/ch10.fbx",
-      "sha256": "7c2cd1ce153ec9ad264a57b66db9ae2952c386ed6206c24fdf3ad865c2fab0a2"
-    },
-    {
-      "path": "assets/models/ch10.fbx.import",
-      "sha256": "67f2497b06bedf9becbc1788029f6cb4bb942cf4d2d098578cee023d9db932c5"
-    },
-    {
-      "path": "assets/models/knight_0.png",
-      "sha256": "1f9a6e11c3835cdce2b53530e496c7d1a629bf41b740c982c0461d61ea4b8240"
-    },
-    {
       "path": "assets/models/knight.fbx",
       "sha256": "abd543d03bee4dce1d3d1d7c5b8c570d595b10283d0b65987950b7561e7fae81"
     },
     {
       "path": "assets/models/knight.fbx.import",
       "sha256": "f52bb7e99dcce475eca060a8bb7a835f822a13693d0c17e7a0030de751110cf9"
-    },
-    {
-      "path": "assets/models/paladin_0.png",
-      "sha256": "201d3bbdab4adae2d5549251395a0bd0f5b777157b9e633c5bc4a1f61cf33f19"
-    },
-    {
-      "path": "assets/models/paladin_1.png",
-      "sha256": "a63331b266c4d7153e2eeb35d2efaef7790ca2febcf50ff4db3f5af1cb6b4384"
-    },
-    {
-      "path": "assets/models/paladin_2.png",
-      "sha256": "68195afadb1415f3abeebca6cf3d980224755c962656a27a90f23d2e92e26a21"
-    },
-    {
-      "path": "assets/models/paladin.fbx",
-      "sha256": "1f6b1a68d817001e0bad088f639350f2a8740fafdbcd0b4d961054bb2d5ad39c"
-    },
-    {
-      "path": "assets/models/paladin.fbx.import",
-      "sha256": "853c9f949a306ae1dfa1e16daf44460c728137f2c2b8ce35c67f437aa55682b2"
     },
     {
       "path": "LICENSE",
@@ -119,72 +55,12 @@
   ],
   "generated_files": [
     {
-      "path": "ch10_0.png",
-      "sha256": "0174f2b5e1d0bf56348c579bbde1a214c3c678cad8fea461f39be6fe7308075c"
+      "path": "player-rig.json",
+      "sha256": "a197783d5cf543b143912f3912a1d93a0a5127f289d504a35a5fe8430fcb37c3"
     },
     {
-      "path": "ch10_1.png",
-      "sha256": "dfeb5641a73a607fa16918bc1daf28328d6aedb6ed6974f9d963faf96ad16306"
-    },
-    {
-      "path": "ch10_6.png",
-      "sha256": "a8d939b918faf8a6c2fef4e1d4c59b2e35a14238a79a57ad582e63771483be77"
-    },
-    {
-      "path": "ch10_7.png",
-      "sha256": "44e5c4dcb04369f24a36331a65a585b1f9de818e96664d5691ef62608e2ebbf7"
-    },
-    {
-      "path": "ch10.anim.bin",
-      "sha256": "88170013badad1807665add46d7a0ca4f83fb2ee0a080cbe8254bbfd7ade9d22"
-    },
-    {
-      "path": "ch10.json",
-      "sha256": "121bc473f0e511a32a33e161d5e107b9c006c3026d46c4cf723fa81e6a3164e5"
-    },
-    {
-      "path": "ch10.mesh.bin",
-      "sha256": "1eec0645beb0ecafab15fb9ab1e02a87ef3fe5a39247e809454068c22e18dc1b"
-    },
-    {
-      "path": "knight_0.png",
-      "sha256": "1f9a6e11c3835cdce2b53530e496c7d1a629bf41b740c982c0461d61ea4b8240"
-    },
-    {
-      "path": "knight.anim.bin",
+      "path": "player.anim.bin",
       "sha256": "c5248ed7bc92ffd637cfd934303633791b76049e930e1bef9a0c2da14724a27f"
-    },
-    {
-      "path": "knight.json",
-      "sha256": "5142227d25f1b343e5119eea9a4ad6d3d841bf7118474cc48787f105c51bf8a6"
-    },
-    {
-      "path": "knight.mesh.bin",
-      "sha256": "a1a870b8fbd96e64cdb37b0b0f4196b47100e96a99d007fa72208cad3d826bf9"
-    },
-    {
-      "path": "paladin_0.png",
-      "sha256": "201d3bbdab4adae2d5549251395a0bd0f5b777157b9e633c5bc4a1f61cf33f19"
-    },
-    {
-      "path": "paladin_2.png",
-      "sha256": "68195afadb1415f3abeebca6cf3d980224755c962656a27a90f23d2e92e26a21"
-    },
-    {
-      "path": "paladin.anim.bin",
-      "sha256": "991dd69edd6bb890468343d97e4869f91a849e5c4056100c123da0110567cd22"
-    },
-    {
-      "path": "paladin.json",
-      "sha256": "3924f85bd27ecc349ace80f14670194eab9122bcdaeea0c68a53bf2a9b564b13"
-    },
-    {
-      "path": "paladin.mesh.bin",
-      "sha256": "bc0d0f45b8a29a93da3ae791782de0868e1e40e92cfabc29579980fc3c78a492"
-    },
-    {
-      "path": "SOURCE-SOFTWARE-LICENSE.txt",
-      "sha256": "80ec9fd41dd0e263eaff56f24c7783f3ef3d01840df03653ba4b915eb62d6288"
     }
   ]
 }
