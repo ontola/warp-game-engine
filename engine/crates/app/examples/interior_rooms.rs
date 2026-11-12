@@ -643,6 +643,8 @@ fn main() -> Result<(), String> {
         game.door_wanted = door > 0.0;
         game.hold_door = true;
     }
+    // --debug N: a shade diagnostic (Lighting::debug; 26 the reflection ray's hit).
+    if let Some(d) = arg("--debug").and_then(|d| d.parse::<f32>().ok()) { game.light.debug = d; }
     if args.iter().any(|a| a == "--fog") { game.set_fog(true); }
     if args.iter().any(|a| a == "--flashlight") { game.flashlight = true; game.flash_dir = game.forward(); }
     if let Some(frames) = arg("--pan").and_then(|f| f.parse::<u32>().ok()) {

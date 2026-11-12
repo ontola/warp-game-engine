@@ -5435,7 +5435,7 @@ impl Renderer {
             let reflection_history = taa_pass.as_ref().filter(|_| trace_prev.is_some()).and_then(|_| hist.as_ref())
                 .map(|hh| {
                     let time = self.query.as_ref().map(|(qs, _, _)| { names.push("reflection mips"); (qs, timestamp_pair(&mut ts)) });
-                    self.reflection_mips.build(gpu, &mut enc, vi, &hh.tex[1 - hh.cur], time)
+                    self.reflection_mips.build(gpu, &mut enc, vi, &hh.tex[1 - hh.cur], &hdr_v, time)
                 });
             let sssr_rays = (sssr_on && reflection_history.is_some()).then(|| self.sssr.rays(gpu, &mut enc, vi, (w, h)));
             let bloom_strength=(debug_options.bloom_strength*light.bloom_boost.clamp(0.0,32.0)).min(2.0);

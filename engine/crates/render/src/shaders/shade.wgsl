@@ -977,13 +977,19 @@ fn trace_depth(c: vec2<i32>) -> f32 {
 // One level of the reflection mips at uv: one bilinear tap at level 0, a
 // tent of four bilinear taps half a texel apart above it, so a coarse
 // level's texels do not show as squares.
+// The mips hold colour times the share of each texel that is not a light's
+// face (reflection_mips.rs); dividing it out reads a face as what is around it.
 fn reflection_level(uv: vec2<f32>, lod: f32) -> vec3<f32> {
-    if lod < 0.5 { return textureSampleLevel(reflection_history, canopy_sampler, uv, 0.0).rgb; }
-    let o = 0.5 / vec2<f32>(textureDimensions(reflection_history, i32(lod)));
-    return 0.25 * (textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(-o.x, -o.y), lod).rgb
-        + textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(o.x, -o.y), lod).rgb
-        + textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(-o.x, o.y), lod).rgb
-        + textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(o.x, o.y), lod).rgb);
+    var s: vec4<f32>;
+    if lod < 0.5 { s = textureSampleLevel(reflection_history, canopy_sampler, uv, 0.0); }
+    else {
+        let o = 0.5 / vec2<f32>(textureDimensions(reflection_history, i32(lod)));
+        s = 0.25 * (textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(-o.x, -o.y), lod)
+            + textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(o.x, -o.y), lod)
+            + textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(-o.x, o.y), lod)
+            + textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(o.x, o.y), lod));
+    }
+    return select(vec3<f32>(0.0), s.rgb / s.a, s.a > 1e-4);
 }
 
 // The result of marching one reflected ray through this frame's depth
@@ -1001,6 +1007,26 @@ fn light_face_at(px: vec2<i32>) -> bool {
     return (m.flags & 1024u) != 0u && m.scale < 0.0;
 }
 
+// The depth buffer's surface at pixel c: its world position and view depth
+// (1e9 for the sky).
+fn trace_world(c: vec2<i32>, size: vec2<u32>) -> vec4<f32> {
+    let q = clamp(c, vec2<i32>(0), vec2<i32>(size) - 1);
+    let d = trace_depth(q);
+    if d <= 0.0 { return vec4<f32>(0.0, 0.0, 0.0, 1e9); }
+    let pc = (vec2<f32>(q) + 0.5) / vec2<f32>(size);
+    let h = view.inv_view_proj * vec4<f32>(pc.x * 2.0 - 1.0, 1.0 - pc.y * 2.0, d, 1.0);
+    let w = h.xyz / h.w;
+    return vec4<f32>(w, (view.view_proj * vec4<f32>(w, 1.0)).w);
+}
+
+fn trace_view_depth(c: vec2<i32>, size: vec2<u32>) -> f32 { return trace_world(c, size).w; }
+
+fn trace_screen(q: vec3<f32>, fsize: vec2<f32>) -> vec4<f32> {
+    let c = view.view_proj * vec4<f32>(q, 1.0);
+    let ndc = c.xyz / c.w;
+    return vec4<f32>(vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * fsize, ndc.z, c.w);
+}
+
 fn march_hit(p: vec3<f32>, n: vec3<f32>, r: vec3<f32>, px: vec2<i32>, size: vec2<u32>, dist: f32) -> MarchHit {
     var none: MarchHit;
     if dot(r, n) <= 0.0 { return none; }
@@ -1013,6 +1039,8 @@ fn march_hit(p: vec3<f32>, n: vec3<f32>, r: vec3<f32>, px: vec2<i32>, size: vec2
     var t = max(0.06, dist * 0.003) * (0.75 + 0.5 * jitter);
     var found = false;
     var escape = 0.0;
+    var hi = t;
+    var hit = vec3<f32>(0.0);
     for (var k = 0; k < 40; k++) {
         let c = view.view_proj * vec4<f32>(o + r * t, 1.0);
         if c.w <= 1e-4 { break; }
@@ -1025,48 +1053,70 @@ fn march_hit(p: vec3<f32>, n: vec3<f32>, r: vec3<f32>, px: vec2<i32>, size: vec2
         // projects onto the wall around it and never hits; it reads what it
         // escaped into instead.
         if d < ndc.z * 0.66 { escape = t; }
-        // Reversed infinite Z: depth is near / view depth, so the scene is in
-        // front of the ray point when d > ndc.z; how far behind it, in metres:
+        // Reversed infinite Z: the scene is in front of the ray point when
+        // d > ndc.z. A candidate: the ray went behind it during this step.
         if d > ndc.z {
             let behind = c.w * (1.0 - ndc.z / d);
-            if behind < max(0.1, (t - lo) * 1.2 + c.w * 0.005) { found = true; break; }
+            if behind < max(0.1, (t - lo) * 1.2 + c.w * 0.005) {
+                // Bisect to the crossing.
+                var a = lo;
+                var b = t;
+                for (var j = 0; j < 6; j++) {
+                    let mid = 0.5 * (a + b);
+                    let sm = trace_screen(o + r * mid, fsize);
+                    if trace_depth(vec2<i32>(sm.xy)) > sm.z { b = mid; } else { a = mid; }
+                }
+                // A hit only where the ray meets the depth buffer's surface:
+                // at a and b it lies within what the ray's own depth change,
+                // the surface's depth change across the pixels between them
+                // and the depth precision allow. Passing behind a nearer
+                // object (its silhouette in front of the ray) leaves a gap of
+                // the object's thickness and is no hit.
+                let sa = trace_screen(o + r * a, fsize);
+                let sb = trace_screen(o + r * b, fsize);
+                let cb = clamp(vec2<i32>(sb.xy), vec2<i32>(0), vec2<i32>(size) - 1);
+                let surf = trace_world(cb, size);
+                let w_surf = surf.w;
+                var slope = 0.0;
+                for (var e = 0; e < 4; e++) {
+                    let off = select(vec2<i32>(select(-1, 1, e == 1), 0), vec2<i32>(0, select(-1, 1, e == 3)), e >= 2);
+                    let wn = trace_view_depth(cb + off, size);
+                    if wn < 1e8 { slope = max(slope, abs(wn - w_surf)); }
+                }
+                let moved = length(sb.xy - sa.xy) + 1.0;
+                let allowed = abs(sb.w - sa.w) + slope * moved + w_surf * 2e-3;
+                let back = sb.w - w_surf;
+                let front = trace_view_depth(vec2<i32>(sa.xy), size) - sa.w;
+                // The surface must also face the ray (not be seen from behind).
+                var facing = true;
+                if w_surf < 1e8 {
+                    let ns = rsm_normal(cb, size, surf.xyz);
+                    facing = all(ns == vec3<f32>(0.0)) || dot(ns, r) < 0.0;
+                }
+                if back <= allowed && front <= allowed && w_surf < 1e8 && facing {
+                    found = true;
+                    hi = b;
+                    hit = surf.xyz;
+                    break;
+                }
+            }
         }
         lo = t;
         // 20 % per step: 40 steps reach past 250 m.
         t += max(0.06, t * 0.2);
         if t > reach { break; }
     }
-    var hi = t;
-    var hit = o + r * escape;
     if found {
-        // Bisect to the crossing.
-        for (var k = 0; k < 6; k++) {
-            let mid = 0.5 * (lo + hi);
-            let cm = view.view_proj * vec4<f32>(o + r * mid, 1.0);
-            let nm = cm.xyz / cm.w;
-            let sm = vec2<i32>(vec2<f32>(nm.x * 0.5 + 0.5, 0.5 - nm.y * 0.5) * fsize);
-            if trace_depth(sm) > nm.z { hi = mid; } else { lo = mid; }
-        }
-        let ch = view.view_proj * vec4<f32>(o + r * hi, 1.0);
-        let nh = ch.xyz / ch.w;
-        let sp = clamp(vec2<i32>(vec2<f32>(nh.x * 0.5 + 0.5, 0.5 - nh.y * 0.5) * fsize), vec2<i32>(0), vec2<i32>(size) - 1);
-        let d = trace_depth(sp);
-        if d <= 0.0 { return none; }
-        // The surface the ray reached, as this frame's depth buffer places it.
-        let pc = (vec2<f32>(sp) + 0.5) / fsize;
-        let world = view.inv_view_proj * vec4<f32>(pc.x * 2.0 - 1.0, 1.0 - pc.y * 2.0, d, 1.0);
-        hit = world.xyz / world.w;
-        // A hit facing away from the ray (seen from behind) has no radiance here.
-        let back = ch.w * (1.0 - nh.z / d);
-        if back > max(0.2, hi * 0.03) { return none; }
         // A light's face (EMISSIVE with negative scale): its light reaches
         // this surface as that light's analytic specular, on screen or off,
         // so the ray counts as a miss instead of adding it a second time.
-        if light_face_at(sp) { return none; }
+        let sh = trace_screen(o + r * hi, fsize);
+        if light_face_at(clamp(vec2<i32>(sh.xy), vec2<i32>(0), vec2<i32>(size) - 1)) { return none; }
     } else if escape <= 0.0 {
         return none;
     } else {
         hi = escape;
+        hit = o + r * escape;
     }
     let c = view.view_proj * vec4<f32>(o + r * hi, 1.0);
     let ndc = c.xyz / c.w;
@@ -3635,9 +3685,18 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     } else if light.sky.z > 24.5 && light.sky.z < 25.5 {
         let page=foliage_page_visibility(p,surface_n*sign(dot(surface_n,l)+1e-4),geo_n);
         rad=select(vec3<f32>(1.0,0.0,1.0),vec3<f32>(page.x),page.y>0.5)*6000.0;
+    } else if light.sky.z > 25.5 && light.sky.z < 26.5 {
+        // The reflection ray's hit: red, green its screen position, blue the
+        // march's confidence (black: no hit).
+        let mh = march_hit(p, visibility_n, refl, px, size, dist);
+        let ch = view.view_proj * vec4<f32>(mh.hit, 1.0);
+        rad = select(vec3<f32>(0.0), vec3<f32>(ch.x / ch.w * 0.5 + 0.5, 0.5 - ch.y / ch.w * 0.5, mh.conf), mh.conf > 0.0) * 6000.0;
     }
     // fp16 target: a blast light next to a wall must saturate, not become inf.
-    textureStore(out_hdr, px, vec4<f32>(min(rad, vec3<f32>(65504.0)), 1.0));
+    // Alpha 0 marks a light's face (EMISSIVE, negative scale): reflections
+    // leave it out of last frame's image (reflection_mips.rs).
+    let face = (m.flags & 1024u) != 0u && m.scale < 0.0;
+    textureStore(out_hdr, px, vec4<f32>(min(rad, vec3<f32>(65504.0)), select(1.0, 0.0, face)));
 }
 
 // Sky transmittance cache (canopy.rs): for one canopy level, the
