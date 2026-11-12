@@ -29,7 +29,7 @@ const T_ATM: f32 = 300.0;
 /// Heat released per kg of trapped air at stoichiometric fuel (J/kg).
 const Q_AIR: f32 = 2.9e6;
 
-/// Engine geometry, in data/sounds.toml under `[x.fluid]`.
+/// Engine geometry, in Sideways' data/sounds.luau under `x.fluid`.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Geometry {

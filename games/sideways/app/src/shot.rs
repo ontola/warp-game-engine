@@ -34,7 +34,7 @@ pub struct ShotArgs {
     /// `--lineup N`: N copies of car 0's model side by side, cars 0..N in
     /// the car material data, for comparing paints in one frame.
     pub lineup: usize,
-    /// Car material data instead of Sideways data/car_materials.toml.
+    /// Car material data instead of Sideways data/car_materials.luau.
     pub car_materials: Option<String>,
     /// `--car-set [N:][part.]key=value` car material overrides.
     pub car_sets: Vec<String>,
