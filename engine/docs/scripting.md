@@ -89,6 +89,12 @@ Save a file while the game runs and `poll()` reloads it.
   example `sub/m.luau:3: ...`.
 - A runtime error turns that module's hooks off until it changes again.
 
+What a game does with a reloaded file (at once, next round, next stage)
+follows one standard across Warp's games: [Luau or Rust, live
+reload](luau-or-rust.md#live-reload). `script::knobs` reads and rewrites
+`-- @knobs` blocks and `script::data::read` reads a data file into a Rust
+struct.
+
 ```luau
 -- state survives reloads: this counts how often the file was loaded
 state.loads = (state.loads or 0) + 1

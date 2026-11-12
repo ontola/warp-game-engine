@@ -125,6 +125,53 @@ What the numbers say:
   (calls, table reads in a loop, engine calls) per tick cost a
   millisecond.** Keep a game's Luau under a millisecond or two per tick.
 
+## Live reload
+
+Every Warp game reloads its Luau the same way, so whoever tunes a game
+(a designer, a modder, an AI over the live tools) knows what an edit
+does without reading the code.
+
+1. **Knobs are a `-- @knobs` block in a Luau file.** A knob is one number
+   with a comment saying what it does, between `-- @knobs` and `-- @end`.
+   `script::knobs` reads and rewrites those lines (comments kept), so the
+   `knobs` and `set_knob` live tools work the same in every game:
+   Growing Guns' `mods/base/knobs.luau`, Spellstorm's
+   `mods/base/knobs.luau`, the explosion editor's block.
+2. **Content and rules are Luau modules that Rust validates.** A module
+   returns tables (cars, monsters, the gun, tomes) and Rust reads them
+   into typed structs and checks them: `script::data::read` for a plain
+   data file, a game's own reader when it has hooks too.
+3. **A value applies at once; a change of structure at a natural
+   boundary.** A knob or a number in an existing row applies on the next
+   frame. Anything that would change a round, a stage or a replay in the
+   middle (the list of monster kinds, a car, the base gun) waits for the
+   next round, stage, race or start. Each file says at the top which one.
+4. **A bad edit keeps the last good version** and shows the error where
+   the editor is looking: on screen or in the game log, and in the live
+   tools (`mods` / `command mods` and the reply to `write_file`).
+5. **One shared helper.** `script::Host` watches the folder and keeps the
+   last good module; `script::knobs` and `script::data` do the rest. A
+   game adds no reload code of its own beyond choosing the boundary.
+
+Where each game stands:
+
+| Game | File | Applies |
+|---|---|---|
+| Growing Guns | `mods/base/knobs.luau` | at once, mid-round too |
+| Growing Guns | `mods/base/cards.luau`, hooks | at once (weapons rebuild next round) |
+| Growing Guns | `mods/base/gun.luau` (the rifle before cards) | next round |
+| Spellstorm | `mods/base/knobs.luau` | next frame |
+| Spellstorm | `mods/base/spells.luau`, `tomes.luau`, hooks | at once |
+| Spellstorm | `mods/base/monsters.luau`, `biomes.luau` | numbers at once, a changed list at the next start |
+| Sideways | `data/cars.luau` | next stage (and GameNight Prepare) |
+| SpaceRacer | `rules/game.luau` | `balance` and `combat` at once, `track` and `environment` next race |
+| SpaceRacer | `rules/stages.luau`, `effects.luau`, `jets.luau` | next race |
+| SpaceRacer | `rules/party.luau` | next start |
+
+Growing Guns' sim also builds for the Quest without Luau, so its
+`weapon::Gun::default()` repeats the numbers in `gun.luau`; a test keeps
+the two equal. Elsewhere the Luau file is the only copy.
+
 ## Patterns
 
 These are in the repository now; copy them.

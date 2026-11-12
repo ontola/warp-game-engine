@@ -1,4 +1,5 @@
 -- Stage recipes translated from SpaceRacer's MIT scenery.gd, city_layout.gd,
+-- When an edit applies: at the next race (the stage is built when it starts).
 -- city_accents.gd, forest.gd, cell.gd, desert.gd and ocean.gd.
 -- Geometry kernels, spatial queries and PCG stay native; composition lives here.
 local V=vector.create

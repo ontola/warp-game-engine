@@ -1,4 +1,8 @@
 -- Game decisions live here. Rust owns the 120 Hz movement integrators and geometry.
+-- When an edit applies: the game checks this folder every second. `balance` and
+-- `combat` apply at once; `track` and `environment` at the next race; the other
+-- hooks (ai, plan, pickup, ...) on their next call. A file with an error keeps
+-- the version before and shows the error.
 -- Inputs are snapshots; RNG samples and simulation time come from the native sim.
 local clamp = math.clamp
 local function track(c)
