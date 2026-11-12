@@ -15,11 +15,37 @@ use sideways::car::Car;
 use sideways::physics::Physics;
 use sideways::surfaces::Surface;
 
-/// Game presets belong to Sideways; the audio engine only parses supplied data.
+const BUILT_IN_SOUNDS: &str = include_str!("../../data/sounds.luau");
+
+/// The `sounds` table of a sounds.luau, in the audio crate's layout.
+pub fn parse_sounds(text: &str) -> Result<toml::Table, String> {
+    script::data::read("sounds.luau", text, "sounds")
+}
+
+/// Game presets belong to Sideways (data/sounds.luau); the audio engine only
+/// parses supplied data. Without `path`, a file with an error keeps the
+/// sounds last read (each stage reads it again).
 pub fn load_sounds(path: Option<&str>) -> Result<Sounds, String> {
+    static LAST: std::sync::Mutex<Option<toml::Table>> = std::sync::Mutex::new(None);
+    let read = |text: String| parse_sounds(&text);
     match path {
-        Some(path) => Sounds::load(path),
-        None => Sounds::parse(&sideways::game_assets::read_data("sounds.toml", include_str!("../../data/sounds.toml"))?),
+        Some(path) => std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}")).and_then(read).map(Sounds::from_table),
+        None => {
+            let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+            match sideways::game_assets::read_data("sounds.luau", BUILT_IN_SOUNDS).and_then(read) {
+                Ok(t) => {
+                    *last = Some(t.clone());
+                    Ok(Sounds::from_table(t))
+                }
+                Err(e) => match last.clone() {
+                    Some(t) => {
+                        eprintln!("sideways: {e} (keeping the sounds from before)");
+                        Ok(Sounds::from_table(t))
+                    }
+                    None => Err(e),
+                },
+            }
+        }
     }
 }
 
@@ -277,3 +303,4 @@ fn spectrogram_png(path: &str, x: &[f32], sr: f32, rpm: &[f32], firing_per_rpm: 
     }
     img.save(path).map_err(|e| format!("{path}: {e}"))
 }
+
