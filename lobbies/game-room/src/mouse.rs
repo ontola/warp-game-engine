@@ -18,8 +18,11 @@ pub const MOUSE: &str = "mouse";
 const IDLE: f32 = 5.0;
 /// World metres per prompt texture pixel (room.rs `prompt`).
 const PROMPT_PX: f32 = 0.0042;
-/// Stations the mouse can work: the doors and the exit are somebody's.
-const STATIONS: [&str; 4] = ["tv", "shelf", "queue", "music"];
+/// Stations the mouse can work. The doors are somebody's: picking up a
+/// profile needs a controller. The exit quits Gamepad Party for the mouse.
+const STATIONS: [&str; 5] = ["tv", "shelf", "queue", "music", "exit"];
+/// Seconds a first click on the exit's Quit waits for the second.
+const QUIT_CONFIRM: f32 = 3.0;
 
 #[derive(Default)]
 pub struct Mouse {
@@ -28,6 +31,8 @@ pub struct Mouse {
     moved_at: f32,
     /// What it points at, and which of that station's buttons.
     pub hover: Option<(Station, Option<String>)>,
+    /// Until when a second click on the exit's Quit quits.
+    pub quit_until: f32,
 }
 
 impl Lobby {
@@ -37,6 +42,16 @@ impl Lobby {
     }
 
     pub fn mouse_menu_open(&self) -> bool { self.menus.contains_key(MOUSE) }
+
+    /// The button the mouse hovers on prompt `name`, if any.
+    pub fn mouse_hover_key(&self, name: &str) -> Option<String> {
+        let (station, key) = self.mouse.hover.as_ref()?;
+        if self.mouse_station().is_none() || prompt_name(station) != name { return None; }
+        key.clone()
+    }
+
+    /// Whether the exit's Quit waits for its second click.
+    pub fn mouse_quit_armed(&self) -> bool { self.time < self.mouse.quit_until }
 
     /// The station the mouse points at, while it is being used.
     pub fn mouse_station(&self) -> Option<Station> {
@@ -89,6 +104,16 @@ impl Lobby {
                 self.browse(if key == "LB" { -1 } else { 1 });
             }
             ("music", "LB" | "RB") => self.skip_music_as(None, if key == "LB" { -1 } else { 1 }),
+            ("exit", _) => {
+                self.press_prompt("exit", "Y");
+                if self.mouse_quit_armed() {
+                    self.mouse.quit_until = 0.0;
+                    if self.client.as_ref().is_some_and(|c| c.connected) { self.command(serde_json::json!({"type": "quit_party"})); } else { self.quit = true; }
+                } else {
+                    self.mouse.quit_until = self.time + QUIT_CONFIRM;
+                }
+                self.screens_dirty = true;
+            }
             (_, "X") => self.use_station_as(None, station, true),
             (_, "Y") => self.use_station_as(None, station, false),
             _ => {}
@@ -134,7 +159,7 @@ impl Lobby {
         if t <= 0.0 { return None; }
         let hit = near + dir * t;
         if !(-0.2..=6.4).contains(&hit.y) { return None; }
-        self.host.station_at(hit.x as f64, None).map(|s| (s, None))
+        self.host.station_at(hit.x as f64, None).or_else(|| ((hit.x as f64 - l::EXIT_DOOR).abs() <= 0.6).then(exit_station)).map(|s| (s, None))
     }
 
     fn mouse_station_named(&self, name: &str) -> Option<Station> {
@@ -142,6 +167,7 @@ impl Lobby {
             "tv" => 0.0,
             "shelf" => (l::GAME_SHELF.0 + l::GAME_SHELF.1) / 2.0,
             "queue" => (l::UP_NEXT.0 + l::UP_NEXT.1) / 2.0,
+            "exit" => return Some(exit_station()),
             _ => l::JUKEBOX,
         };
         self.host.station_at(x, None)
@@ -168,5 +194,12 @@ impl Lobby {
         None
     }
 }
+
+fn exit_station() -> Station {
+    Station { id: "exit".into(), kind: "exit".into(), label: "Quit Gamepad Party".into(), enabled: true, ..Default::default() }
+}
+
+/// The prompt a station's buttons float on.
+pub fn prompt_name(station: &Station) -> &str { if station.kind == "music" { "music" } else { &station.id } }
 
 fn inside(r: [f32; 4], p: [f32; 2]) -> bool { p[0] >= r[0] && p[0] <= r[0] + r[2] && p[1] >= r[1] && p[1] <= r[1] + r[3] }

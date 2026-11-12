@@ -437,6 +437,10 @@ pub struct Prompt {
     /// once someone stands there.
     pub conceal: f32,
     pub conceal_to: f32,
+    /// Shown for the mouse (nobody stands there): a mouse instead of the
+    /// controller buttons, and the hovered button lit.
+    pub mouse: bool,
+    pub hover: Option<String>,
 }
 
 impl Prompt {
@@ -470,11 +474,23 @@ pub fn prompt(c: &mut Canvas, state: &Prompt) {
         let (w, scale) = if bumper_key { (1.0, 1.0) } else { state.reveal() };
         let label_x = x + (badge - 6.0) * w + 24.0 * (1.0 - w);
         let pill = label_x - x + tw + 22.0;
-        c.style_box([x, 6.0, pill, h - 12.0], [h / 2.0 - 6.0; 4], crate::godot::rgba(0.03, 0.03, 0.06, 0.82), None);
+        let hovered = state.mouse && state.hover.as_deref() == Some(key.as_str());
+        // The hovered button is the one a click works: lit, with a ring.
+        c.style_box([x, 6.0, pill, h - 12.0], [h / 2.0 - 6.0; 4], if hovered { crate::godot::rgba(0.22, 0.16, 0.42, 0.95) } else { crate::godot::rgba(0.03, 0.03, 0.06, 0.82) },
+            hovered.then(|| (4.0, Color::hex("f8cd34"))));
         let on = state.enabled && *item_on;
         let color = if on { match key.as_str() { "A" => Color::hex("5cb85c"), "B" => Color::hex("e2574c"), "X" => Color::hex("3b8eea"), "Y" => Color::hex("f8cd34"), _ => TEXT } } else { Color::hex("55516a") };
         let pressed = state.pressed.as_ref().filter(|p| &p.0 == key).map_or(0.0, |p| p.1);
-        if bumper_key {
+        if state.mouse {
+            // A mouse with its left button lit (the wheel for LB/RB), and an
+            // arrow for the way a bumper browses.
+            let cx = if bumper_key { x + 40.0 } else { x + h / 2.0 - 4.0 };
+            mouse_icon(c, [cx, h / 2.0 + pressed * 6.0], if on { Color::hex("f8cd34") } else { Color::hex("55516a") }, bumper_key);
+            if bumper_key {
+                let (ax, s) = (x + 102.0, if key == "LB" { -1.0 } else { 1.0 });
+                c.polygon(&[[ax - 14.0 * s, h / 2.0 - 16.0], [ax - 14.0 * s, h / 2.0 + 16.0], [ax + 14.0 * s, h / 2.0]], TEXT);
+            }
+        } else if bumper_key {
             bumper(c, [x + 12.0, 18.0, 122.0, 60.0], key, 0, pressed);
         } else if scale > 0.02 {
             let center = [x + (h / 2.0 - 4.0) * w + 24.0 * (1.0 - w), h / 2.0];
@@ -495,6 +511,23 @@ pub fn prompt(c: &mut Canvas, state: &Prompt) {
         }
         c.text(bold(), [label_x, h / 2.0 + 16.0], label, TextAlign::Left, -1.0, 44.0, if on { TEXT } else { DIM });
         x += pill + 20.0;
+    }
+}
+
+/// A mouse seen from above, centred at `at`: the left button (or the
+/// wheel) in `lit`.
+fn mouse_icon(c: &mut Canvas, at: [f32; 2], lit: Color, wheel: bool) {
+    let (w, h) = (40.0, 60.0);
+    let r = [at[0] - w / 2.0, at[1] - h / 2.0, w, h];
+    c.style_box(r, [w / 2.0; 4], Color::hex("e9e6f4"), None);
+    let split = r[1] + h * 0.42;
+    c.rect([r[0] + 4.0, split, w - 8.0, 3.0], Color::hex("0b0b12"));
+    if wheel {
+        c.rect([at[0] - 1.5, r[1] + 4.0, 3.0, split - r[1] - 4.0], Color::hex("0b0b12"));
+        c.style_box([at[0] - 5.0, r[1] + 8.0, 10.0, 16.0], [5.0; 4], lit, None);
+    } else {
+        c.style_box([r[0] + 3.0, r[1] + 3.0, w / 2.0 - 4.5, split - r[1] - 3.0], [w / 2.0 - 3.0, 2.0, 2.0, 2.0], lit, None);
+        c.rect([at[0] - 1.5, r[1] + 4.0, 3.0, split - r[1] - 4.0], Color::hex("0b0b12"));
     }
 }
 
