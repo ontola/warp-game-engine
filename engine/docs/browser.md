@@ -88,5 +88,12 @@ host serves it.
   decides whatever guards a barrier and shares it with
   `workgroupUniformLoad`. Other modules have not been checked the same way.
   Test in Chrome after changing a compute shader with barriers.
+- Tint also follows WGSL's grammar where naga is lenient: operators the
+  grammar keeps apart need parentheses (`(a * b) ^ c`, not `a * b ^ c`;
+  likewise `&` with `|`, a bitwise operator or shift with anything else,
+  chained comparisons, `&&` with `||`). One such expression in shade made
+  the whole lighting pass invalid in every browser. `render::wgsl_lint`
+  checks every `.wgsl` in the repository and the renderer's inline WGSL for
+  it in the normal test run (`cargo test -p render --lib wgsl_lint`).
 - Measurements and the feasibility check:
   [log entry](log/2026-11-05-browser-feasibility.md).

@@ -196,5 +196,8 @@ mod limit_tests {
         if std::env::var("KERN_PORTABLE").as_deref() != Ok("1") { assert!(!needed(&limits)); }
         limits.max_sampled_textures_per_shader_stage = n - 1;
         assert!(needed(&limits));
+        // WebGPU's guaranteed limits (16 sampled textures: phones, many
+        // browsers) take the portable path.
+        assert!(n > wgpu::Limits::default().max_sampled_textures_per_shader_stage && needed(&wgpu::Limits::default()));
     }
 }
