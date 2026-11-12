@@ -1,0 +1,14 @@
+[package]
+name = "architecture"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Warp Architecture: realistic building exteriors and interiors from glTF (AtomicBuildings exports, IFC converted to glTF)"
+
+[dependencies]
+render = { path = "../render" }
+assets = { path = "../assets" }
+glam = "0.31"
+gltf = { version = "1.4", default-features = false, features = ["utils", "names", "extras", "KHR_texture_transform", "allow_empty_texture", "extensions"] }
+serde_json.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

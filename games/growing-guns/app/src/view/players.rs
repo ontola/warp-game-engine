@@ -460,7 +460,8 @@ impl PlayersView {
                 continue;
             };
             let drawn = crate::view::pose(world, i, prev, alpha);
-            let (pos, rot) = (drawn.pos, Quat::from_rotation_y(drawn.yaw));
+            let pos = drawn.pos + Vec3::Y * guns.crowd_lift(i, world.entrance_flight_at(alpha));
+            let rot = Quat::from_rotation_y(drawn.yaw);
             let (body, head, eyes) = if m.skinned {
                 (if crate::graphics::get().rigid_characters {Affine3A::from_translation(HIDDEN)} else {characters::model_transform(pos, drawn.yaw)}, Affine3A::from_translation(HIDDEN), Affine3A::from_translation(HIDDEN))
             } else {
@@ -476,7 +477,7 @@ impl PlayersView {
         }
         if crate::graphics::get().rigid_characters && let Some(characters) = &mut self.characters {
             let hide: Vec<u8> = self.meshes.iter().map(|m| m.own_views).collect();
-            characters.pose_rigid(world, prev, alpha, &hide);
+            characters.pose_rigid(world, prev, alpha, &hide, guns);
         }
         self.pose_lava(scene, world, (world.tick as f32 - 1.0 + alpha) * growing_guns::DT);
         // Bullets, drawn where they are at this frame (between ticks), nose

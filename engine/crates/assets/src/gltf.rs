@@ -1,7 +1,8 @@
 //! Static glTF 2.0 models (.glb or .gltf with external .bin and images)
 //! into a scene: every mesh node, with the node hierarchy's transforms,
 //! becomes one clustered mesh in model space; materials map to Warp
-//! materials (base colour, roughness, metalness, double sided, alpha mask)
+//! materials (base colour, roughness, metalness, double sided, alpha mask
+//! and blend)
 //! with base-colour and normal textures. Skinning and animation are not
 //! read. FBX: convert to glTF first (Blender or FBX2glTF).
 //!
@@ -47,8 +48,49 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// One triangle primitive of a node, in world (model) space.
+pub struct Primitive {
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
+    /// The Warp material made for its glTF material (or the fallback).
+    pub material: u32,
+    /// The glTF material's name, if any.
+    pub material_name: Option<String>,
+}
+
+/// A glTF node with a mesh: name, `extras` as JSON text, primitives.
+pub struct Node {
+    pub name: Option<String>,
+    pub extras: Option<String>,
+    pub primitives: Vec<Primitive>,
+}
+
+/// A glTF file read node by node: its materials and textures are in the
+/// scene, its geometry is not (build meshes from `nodes` as needed).
+pub struct Document {
+    pub nodes: Vec<Node>,
+    /// Warp material per glTF material, in glTF order.
+    pub materials: Vec<u32>,
+}
+
 /// Load a glTF file into `scene` (materials, textures and one mesh).
 pub fn load(scene: &mut Scene, path: &Path) -> Result<Model, String> {
+    let doc = read(scene, path)?;
+    let (mut min, mut max) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+    let parts: Vec<Part> = doc.nodes.iter().flat_map(|n| &n.primitives).map(|p| {
+        for v in &p.vertices { min = min.min(Vec3::from(v.pos)); max = max.max(Vec3::from(v.pos)); }
+        Part { vertices: &p.vertices, indices: &p.indices, material: p.material }
+    }).collect();
+    if parts.is_empty() { return Err(format!("{}: no triangle meshes", path.display())); }
+    let triangles = parts.iter().map(|p| p.indices.len() / 3).sum();
+    let mesh = scene.add_mesh(&ClusterMesh::build(&parts));
+    Ok(Model { mesh, min, max, triangles, materials: doc.materials })
+}
+
+/// Read a glTF file node by node, adding its materials and textures to
+/// `scene`: every node with a mesh, in world space (the node hierarchy's
+/// transforms applied), in depth-first order.
+pub fn read(scene: &mut Scene, path: &Path) -> Result<Document, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let g = ::gltf::Gltf::from_slice_without_validation(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     let base = path.parent().unwrap_or(Path::new("."));
@@ -106,18 +148,22 @@ pub fn load(scene: &mut Scene, path: &Path) -> Result<Model, String> {
         let mut flags = 0;
         if m.double_sided() { flags |= TWO_SIDED; }
         if m.alpha_mode() == ::gltf::material::AlphaMode::Mask { flags |= ALPHA_TEST; }
-        materials.push(scene.add_material(Material { tint: [f[0], f[1], f[2]], layer, roughness: pbr.roughness_factor(), flags, scale: 1.0, metal: pbr.metallic_factor() }));
+        let id = scene.add_material(Material { tint: [f[0], f[1], f[2]], layer, roughness: pbr.roughness_factor(), flags, scale: 1.0, metal: pbr.metallic_factor() });
+        // Glass and other see-through surfaces: the sorted forward pass,
+        // never a shadow caster or light blocker in the room bake.
+        if m.alpha_mode() == ::gltf::material::AlphaMode::Blend { scene.set_material_blend(id, f[3], m.double_sided()); }
+        materials.push(id);
     }
     let fallback = scene.add_material(Material { tint: [0.8; 3], layer: -1, roughness: 0.8, flags: 0, scale: 1.0, metal: 0.0 });
     // Walk every scene's node tree with accumulated transforms.
     let mut stack: Vec<(::gltf::Node, Mat4)> = g.default_scene().or_else(|| g.scenes().next())
         .map(|s| s.nodes().map(|n| (n, Mat4::IDENTITY)).collect()).unwrap_or_default();
-    let mut owned: Vec<(Vec<Vertex>, Vec<u32>, u32)> = Vec::new();
-    let (mut min, mut max) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+    let mut nodes = Vec::new();
     while let Some((node, parent)) = stack.pop() {
         let world = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
         let normal_m = world.inverse().transpose();
         if let Some(mesh) = node.mesh() {
+            let mut primitives = Vec::new();
             for prim in mesh.primitives() {
                 if prim.mode() != ::gltf::mesh::Mode::Triangles { continue; }
                 let reader = prim.reader(|b| buffers.get(b.index()).map(|v| v.as_slice()));
@@ -125,26 +171,20 @@ pub fn load(scene: &mut Scene, path: &Path) -> Result<Model, String> {
                 let pos: Vec<[f32; 3]> = pos.collect();
                 let nrm: Vec<[f32; 3]> = reader.read_normals().map(|n| n.collect()).unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; pos.len()]);
                 let uv: Vec<[f32; 2]> = reader.read_tex_coords(0).map(|t| t.into_f32().collect()).unwrap_or_else(|| vec![[0.0; 2]; pos.len()]);
-                let mut idx: Vec<u32> = reader.read_indices().map(|i| i.into_u32().collect()).unwrap_or_else(|| (0..pos.len() as u32).collect());
+                let mut indices: Vec<u32> = reader.read_indices().map(|i| i.into_u32().collect()).unwrap_or_else(|| (0..pos.len() as u32).collect());
                 // A mirrored node flips winding.
-                if world.determinant() < 0.0 { for t in idx.chunks_exact_mut(3) { t.swap(1, 2); } }
-                let verts: Vec<Vertex> = pos.iter().zip(&nrm).zip(&uv).map(|((p, n), t)| {
-                    let p = world.transform_point3(Vec3::from(*p));
-                    min = min.min(p);
-                    max = max.max(p);
-                    Vertex { pos: p.to_array(), normal: normal_m.transform_vector3(Vec3::from(*n)).normalize_or(Vec3::Y).to_array(), uv: *t }
+                if world.determinant() < 0.0 { for t in indices.chunks_exact_mut(3) { t.swap(1, 2); } }
+                let vertices: Vec<Vertex> = pos.iter().zip(&nrm).zip(&uv).map(|((p, n), t)| {
+                    Vertex { pos: world.transform_point3(Vec3::from(*p)).to_array(), normal: normal_m.transform_vector3(Vec3::from(*n)).normalize_or(Vec3::Y).to_array(), uv: *t }
                 }).collect();
                 let material = prim.material().index().and_then(|i| materials.get(i).copied()).unwrap_or(fallback);
-                owned.push((verts, idx, material));
+                primitives.push(Primitive { vertices, indices, material, material_name: prim.material().name().map(str::to_string) });
             }
+            nodes.push(Node { name: node.name().map(str::to_string), extras: node.extras().as_ref().map(|r| r.get().to_string()), primitives });
         }
         for child in node.children() { stack.push((child, world)); }
     }
-    if owned.is_empty() { return Err(format!("{}: no triangle meshes", path.display())); }
-    let triangles = owned.iter().map(|p| p.1.len() / 3).sum();
-    let parts: Vec<Part> = owned.iter().map(|(v, i, m)| Part { vertices: v, indices: i, material: *m }).collect();
-    let mesh = scene.add_mesh(&ClusterMesh::build(&parts));
-    Ok(Model { mesh, min, max, triangles, materials })
+    Ok(Document { nodes, materials })
 }
 
 #[cfg(test)]

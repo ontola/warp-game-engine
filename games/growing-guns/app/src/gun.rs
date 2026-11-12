@@ -5,7 +5,7 @@
 //! 30), fire rate adds a vented shroud and at 5x turns it into a minigun,
 //! extra projectiles add barrels and explosive rounds put a launcher tube
 //! where the stock was. A card pick morphs the old gun into the new one over
-//! two seconds. Firing slams the bolt back, spins minigun barrels and heats
+//! 1.5 seconds. Firing slams the bolt back, spins minigun barrels and heats
 //! the barrels until they glow.
 //!
 //! Godot conventions: -Z forward, +Y up, the receiver centred on the origin.
@@ -273,7 +273,7 @@ impl Build {
 
 #[derive(Clone, Debug)]
 struct Morph {
-    from: Stats, to: Stats, elapsed: f32, duration: f32,
+    from: Stats, to: Stats, elapsed: f32, inspecting: bool,
     source: Build, target: Build,
     links: Vec<(Option<usize>, Option<usize>)>,
 }
@@ -636,7 +636,7 @@ impl Default for Rig {
     fn default() -> Self { Self::with_detail(Detail::Full) }
 }
 
-pub const GROW_SECONDS: f32 = 2.0;
+pub const GROW_SECONDS: f32 = 1.5;
 
 impl Rig {
     pub fn with_detail(detail: Detail) -> Self {
@@ -657,10 +657,6 @@ impl Rig {
 
     /// Morph from the currently visible model, including an interrupted morph.
     pub fn grow_to(&mut self, to: Stats) {
-        self.grow_to_over(to, GROW_SECONDS);
-    }
-
-    pub fn grow_to_over(&mut self, to: Stats, duration: f32) {
         if self.grow.as_ref().is_some_and(|g| g.to == to) { return; }
         let target = build_with_detail(&Look::of(&to), self.detail);
         if let Some(g) = &mut self.grow {
@@ -676,10 +672,16 @@ impl Rig {
             links.push((Some(i), found));
         }
         links.extend(used.iter().enumerate().filter(|(_, used)| !**used).map(|(j, _)| (None, Some(j))));
-        self.grow = Some(Morph { from: self.shown, to, elapsed: 0.0, duration, source, target, links });
+        self.grow = Some(Morph { from: self.shown, to, elapsed: 0.0, inspecting: true, source, target, links });
     }
 
     pub fn is_growing(&self) -> bool { self.grow.is_some() }
+
+    /// Turn towards the player, then return to aim before the growth finishes.
+    pub fn inspection(&self) -> f32 {
+        let Some(growth) = self.grow.as_ref().filter(|g| g.inspecting) else { return 0. };
+        grow_ease(growth.elapsed / 0.22) * grow_ease((GROW_SECONDS - growth.elapsed) / 0.24)
+    }
 
     /// Keep the target current: a morph retargets, otherwise a change snaps.
     pub fn follow(&mut self, target: Stats) {
@@ -690,6 +692,7 @@ impl Rig {
 
     /// A shot: bolt to the rear stop, barrels spin up, heat climbs.
     pub fn fire(&mut self, stats: &Stats) {
+        if let Some(growth) = &mut self.grow { growth.inspecting = false; }
         self.bolt_back = self.build.bolt_travel;
         self.bolt_cycle = stats.fire_interval();
         if self.build.minigun { self.spin_speed = (self.spin_speed + 12.0).min(45.0); }
@@ -702,10 +705,10 @@ impl Rig {
         let previous = self.grow.as_ref().map(|_| self.build.parts.iter().map(|p| ((p.key, p.shape, p.mat), p.xf)).collect::<std::collections::HashMap<_, _>>());
         if let Some(g) = &mut self.grow {
             g.elapsed += dt.min(0.05);
-            let t = grow_ease(g.elapsed / g.duration);
+            let t = grow_ease(g.elapsed / GROW_SECONDS);
             self.shown = Stats::lerp(&g.from, &g.to, t);
             self.build = g.at(t);
-            if g.elapsed + 1e-6 >= g.duration { self.shown = g.to; self.build = g.target.clone(); self.grow = None; }
+            if g.elapsed + 1e-6 >= GROW_SECONDS { self.shown = g.to; self.build = g.target.clone(); self.grow = None; }
         }
         self.previous_pose.clear();
         if let Some(previous) = previous {
@@ -859,7 +862,7 @@ mod tests {
         let end = Stats { spread: 0.0, damage_mult: 5.0, fire_rate_mult: 6.0, mag: 100, shots: 8, ..Default::default() };
         let mut relative_trigger = None;
         // Includes short receivers, the box-to-drum transition, large upgrades
-        // and intermediate shapes during the two-second morph.
+        // and intermediate shapes during the morph.
         for i in 0..=100 {
             let look = Look::of(&Stats::lerp(&start, &end, i as f32 / 100.0));
             let built = build(&look);
@@ -904,7 +907,7 @@ mod tests {
         let mut r = Rig::default();
         let to = Stats { spread: 0.0, ..Default::default() };
         r.grow_to(to);
-        for _ in 0..20 { r.update(0.05); }
+        for _ in 0..15 { r.update(0.05); }
         let mid = r.build.barrel_length;
         assert!(r.is_growing() && mid > 0.5 && mid < 1.3, "{mid}");
         for _ in 0..30 { r.update(0.05); }
