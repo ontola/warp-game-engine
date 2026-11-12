@@ -273,6 +273,23 @@ impl Upscaling {
 }
 
 
+/// KERN_CULL_PROFILE=1: where the camera cull's per-owner work goes. Each
+/// owner is one 64-lane workgroup looping its clusters, so a few huge owners
+/// serialise into a long tail.
+fn cull_profile(scene:&crate::scene::Scene) {
+    let n=scene.instances.len();
+    let mut sizes:Vec<(u32,usize,u32)>=scene.instances.iter().enumerate().map(|(k,i)|(i.cluster_count,k,i.flags)).collect();
+    let total:u64=sizes.iter().map(|s|s.0 as u64).sum();
+    let mut hist=[0u64;8];let mut clusters=[0u64;8];
+    for s in &sizes {let b=match s.0 {0=>0,1..=64=>1,65..=256=>2,257..=1024=>3,1025..=4096=>4,4097..=16384=>5,16385..=65536=>6,_=>7};hist[b]+=1;clusters[b]+=s.0 as u64;}
+    eprintln!("cull profile: {n} owners, {total} clusters");
+    for (b,l) in ["0","1-64","65-256","257-1k","1k-4k","4k-16k","16k-64k",">64k"].iter().enumerate() {
+        eprintln!("  owners with {l:>7} clusters: {:>8} owners, {:>10} clusters, {:>8} loop iterations",hist[b],clusters[b],if b==0 {0} else {clusters[b].div_ceil(64)});
+    }
+    sizes.sort_by(|a,b|b.0.cmp(&a.0));
+    for (c,k,f) in sizes.iter().take(12) {let i=&scene.instances[*k];eprintln!("  owner {k}: {c} clusters, first {}, flags {f:#x}, radius {:.1}",i.first_cluster,i.sphere[3]);}
+}
+
 fn split_cull_timing() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("KERN_SPLIT_CULL_TIMING").as_deref() == Ok("1"))
@@ -2634,6 +2651,7 @@ impl Renderer {
                     .map(|i| if i.cluster_count == 0 { largest } else { i.cluster_count as u64 }).sum::<u64>().clamp(1, MAX_VISIBLE as u64) as u32
             },
         };
+        if std::env::var("KERN_CULL_PROFILE").as_deref()==Ok("1") {cull_profile(scene);}
         let pipeline_cache=gpu.persist_pipeline_cache();
         startup.mark("pipeline_cache_persist");
         startup.pipeline_cache(pipeline_cache);
