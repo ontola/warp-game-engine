@@ -29,6 +29,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_TILED_POST` | Untiled tone mapping and post (same image). |
 | `KERN_SKY_VIS_CACHE` | No cached sky transmittance through the canopy. |
 | `KERN_TRACED_REFLECTIONS` | No traced reflections: glossy surfaces reflect only the sky and the heuristic ground bounce ([dynamic-gi.md](dynamic-gi.md)). |
+| `KERN_SSSR=0` | The single mirror-ray traced reflection instead of the stochastic one (sssr.rs): one ray per pixel blurred by mip, no spatial or temporal resolve ([dynamic-gi.md](dynamic-gi.md)). |
 | `KERN_CAMERA_SUN_OCCLUSION` | Solar haze ignores terrain between camera and sun ([camera sun fog](camera-sun-fog.md)). |
 | `KERN_CUTOUT_LINEAR_RGB` | Alpha-cutout textures mip in sRGB instead of linear RGB. |
 | `KERN_GRASS_LEAF_BRDF`, `KERN_GRASS_SUN_OCCLUSION` | Plain grass lighting, no grass self-shadow from the sun. |
