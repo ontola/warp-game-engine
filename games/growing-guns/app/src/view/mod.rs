@@ -197,7 +197,7 @@ impl Visuals {
         self.players.flush(gpu, renderer, &self.scene)?;
         self.guns.flush(gpu, renderer)?;
         self.stadium.apply_hits(&mut self.scene,&mut self.fx,self.clock)?;
-        self.stadium.poll_sky(&mut self.scene);
+        self.stadium.finish_arena_sky(&mut self.scene)?;
         self.stadium.flush(gpu, renderer, &self.scene, self.clock, light)?;
         self.fx.flush(gpu, renderer, &self.scene, self.clock)
     }

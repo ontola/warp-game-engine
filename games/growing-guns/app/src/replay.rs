@@ -367,6 +367,7 @@ fn mark_at_phase(phase: f64, frames: usize) -> Mark {
 }
 
 impl Game for Viewer {
+    fn adaptive_resolution_only(&self) -> bool { true }
     fn quit(&self) -> bool { self.exit }
     fn editor_shortcut(&self,key:u8)->Option<(&'static str,bool)> { (key==11).then_some(("Replay",self.overlay)) }
     fn editor_windows_open(&self) -> bool { self.overlay }

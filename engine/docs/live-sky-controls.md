@@ -42,8 +42,8 @@ Nothing in the module bakes per frame or per camera.
 Rendering only: the simulation never sees the sky, so replays, the network
 and the bots are unchanged. `games/growing-guns/app/src/sky.rs`:
 
-- `--sky godot` (default, also `GG_SKY`): Godot's gradient sky and fixed sun,
-  exactly as before, so the golden images hold.
+- `--sky random` (default) selects time and weather from the arena seed. `GG_SKY` can also select a sky.
+- `--sky godot` uses Godot's gradient sky and fixed sun.
 - `--sky TIME[:WEATHER]`, e.g. `noon`, `sunset:haze`, `night:mist` (a bare
   weather means noon).
 - `--sky rounds[:WEATHER]`: the time of day steps each round, from morning.
@@ -53,10 +53,10 @@ and the bots are unchanged. `games/growing-guns/app/src/sky.rs`:
   through MCP `command`. `state` reports `sky.choice` and `sky.applied`.
 
 A preset chosen with `--sky` or the `sky` command bakes synchronously (about
-0.2 s, see below) and updates the renderer in place; going back to `godot`
-rebuilds the scene. `rounds` and `cycle` bake through `LiveSky` in the
-background, so a round change never stalls the frame; the new sky appears a
-few frames later (150 ms debounce plus the bake). Exposure never goes below EV 11: the lava, beacons and
+0.2 s, see below) and updates the renderer in place. The default and `rounds` select the sky at
+the round boundary. The first view uses that sky and the new stadium's indirect
+lighting. An uncached bake can add time to the transition. The continuous
+`cycle` uses `LiveSky` for background updates during play. Exposure never goes below EV 11: the lava, beacons and
 tracers have fixed radiance tuned for Godot's day (EV 13.6) and wash out at
 the night preset's EV 6. The stadium floodlights carry the night instead:
 they scale from 1x in daylight to 16x below -4 deg of sun, so the floor, the

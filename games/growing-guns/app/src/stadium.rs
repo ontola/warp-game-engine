@@ -253,10 +253,9 @@ fn mark_surface(pieces: &[growing_guns::stadium::Piece], p: Vec3, radius: f32) -
 
 pub struct StadiumVisuals {
     enabled: bool,
-    /// Bake the sky cache on worker threads and keep the previous one until
-    /// it lands (play: a bake is 0.25 to 1.3 s, which stalled the frame and
-    /// the audio). Off for scripts and benches, so their captures stay exact.
+    /// Start the arena bake on a worker. Live changes to the sun can also bake in the background.
     pub bake_in_background: bool,
+    first_arena_frame: bool,
     sky_job: Option<std::sync::mpsc::Receiver<SkyBake>>,
     sun_job: Option<(Vec3, std::sync::mpsc::Receiver<Result<SunUpload, String>>)>,
     sky_boxes: Vec<Affine3A>,
@@ -401,7 +400,7 @@ impl StadiumVisuals {
         if !crate::graphics::get().stadium {
             let crowd = Crowd::reserve(scene, 0);
             scene.crowd = None; // no GPU crowd buffers or dispatch, not merely invisible seats
-            return Self { participant_seats: Vec::new(), enabled:false, bake_in_background:false, sky_job:None,sun_job:None,
+            return Self { participant_seats: Vec::new(), enabled:false, bake_in_background:false, first_arena_frame:false, sky_job:None,sun_job:None,
                 sky_boxes:Vec::new(),sky_planes:Vec::new(),sky_probes:Vec::new(),sky_emission:Vec::new(),sky_dirty:false,sky_reflectance:0.0,sky_sun:None,
                 stands:Slots::reserve(scene,0),roof:Slots::reserve(scene,0),tv:Slots::reserve(scene,0),tv_mesh:[0;2],broadcast:broadcast::Broadcast::new(0),
                 stone:[0;6],masonry:None,roof_stone:[0;6],wall_stone:[0;6],lamp:0,shaft:0,bank:0,looks:Vec::new(),
@@ -483,7 +482,7 @@ impl StadiumVisuals {
         for i in 0..MARKS { scene.instances[marks.first + i].flags |= NO_SHADOW; }
         let mut crowd = Crowd::reserve(scene, CROWD_MAX);
         if detailed { crowd.arm_pivot(0.655); }
-        StadiumVisuals { participant_seats: Vec::new(), enabled:true, bake_in_background: false, sky_job: None, sun_job: None, sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_emission: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], broadcast:broadcast::Broadcast::new(tv_layer as u32), stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
+        StadiumVisuals { participant_seats: Vec::new(), enabled:true, bake_in_background: false, first_arena_frame:false, sky_job: None, sun_job: None, sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_emission: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], broadcast:broadcast::Broadcast::new(tv_layer as u32), stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
 
             scorch, blood, blood_grid:Default::default(), gore, geo: Stadium::new(80.0, true, 12.0), mark_surfaces: Vec::new(), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
@@ -495,6 +494,8 @@ impl StadiumVisuals {
     pub fn set_arena(&mut self, scene: &mut Scene, world: &World) {
         if !self.enabled { self.geo=world.arena.stadium; return; }
         let a = &world.arena;
+        self.first_arena_frame = true;
+        self.sun_job = None;
         self.geo = a.stadium;
         self.broadcast.reset(a.seed);
         self.mark_surfaces = self.geo.pieces().into_iter().filter(|p| matches!(p.kind, PieceKind::Step | PieceKind::Facade | PieceKind::Wall)).collect();
@@ -839,17 +840,13 @@ impl StadiumVisuals {
         eprintln!("stadium sky cache: {} boxes, {} probes, {:.1} ms bake", self.sky_boxes.len(), self.sky_probes.len(), bake.ms);
     }
 
-    /// Take a finished background sky bake (`bake_in_background`).
-    pub fn poll_sky(&mut self, scene: &mut Scene) {
-        let Some(rx) = &self.sky_job else { return };
-        match rx.try_recv() {
-            Ok(bake) => {
-                self.sky_job = None;
-                if let Some((offset, grid)) = scene.irradiance_volume { self.apply_sky(scene, offset, grid, bake); }
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => { eprintln!("stadium sky bake failed"); self.sky_job = None; }
+    /// Install the arena's sky before presenting it. The worker runs during scene setup.
+    pub fn finish_arena_sky(&mut self, scene: &mut Scene) -> Result<(), String> {
+        if let Some(rx) = self.sky_job.take() {
+            let bake = rx.recv().map_err(|_| "stadium sky bake failed")?;
+            if let Some((offset, grid)) = scene.irradiance_volume { self.apply_sky(scene, offset, grid, bake); }
         }
+        Ok(())
     }
 
     pub fn invalidate_lighting(&mut self) { self.sky_dirty=true; }
@@ -902,7 +899,7 @@ impl StadiumVisuals {
                     eprintln!("stadium sun return: {:.1} ms bake+pack",start.elapsed().as_secs_f64()*1000.0);
                     Ok(upload)
                 };
-                if self.bake_in_background {
+                if self.bake_in_background && !self.first_arena_frame {
                     let (tx, rx) = std::sync::mpsc::channel();
                     std::thread::spawn(move || { let _ = tx.send(bake()); });
                     self.sun_job = Some((sun, rx));
@@ -912,6 +909,7 @@ impl StadiumVisuals {
                 }
             }
         }
+        self.first_arena_frame = false;
         self.stands.flush(gpu, renderer, scene)?;
         self.roof.flush(gpu, renderer, scene)?;
         self.tv.flush(gpu, renderer, scene)?;
