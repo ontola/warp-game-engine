@@ -125,6 +125,7 @@ fn the_mouse_is_nobody_but_works_the_room() {
     // A click does Y: start the next game.
     point(&mut lobby, tv, true, 0.0);
     sent(&from_lobby, "next");
+    assert!(lobby.prompts["tv"].mouse, "for the mouse the buttons show a mouse, not Y/X");
 
     // The wheel over the shelf browses it.
     let shelf_x = ((game_room_sim::layout::GAME_SHELF.0 + game_room_sim::layout::GAME_SHELF.1) / 2.0) as f32;
@@ -134,6 +135,17 @@ fn the_mouse_is_nobody_but_works_the_room() {
     let offset = lobby.host.shelf_offset;
     point(&mut lobby, shelf, false, -1.0);
     assert_ne!(lobby.host.shelf_offset, offset, "the wheel browses the shelf");
+
+    // The exit door quits for the mouse, on a second click.
+    let door = lobby.screen_point(glam::Vec3::new(game_room_sim::layout::EXIT_DOOR as f32, 1.5, -2.0), size).unwrap();
+    point(&mut lobby, door, false, 0.0);
+    assert!(lobby.prompt_active["exit"] && lobby.prompts["exit"].mouse);
+    assert_eq!(lobby.prompts["exit"].items[0].1, "Quit Gamepad Party");
+    point(&mut lobby, door, true, 0.0);
+    assert_eq!(lobby.prompts["exit"].items[0].1, "Click again to quit");
+    point(&mut lobby, door, true, 0.0);
+    sent(&from_lobby, "quit_party");
+    point(&mut lobby, tv, false, 0.0);
 
     // Escape opens the room's own menu; clicking Quit twice quits GameNight.
     // (Not in the first moments after taking the screen: that Escape may

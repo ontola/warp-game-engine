@@ -624,8 +624,11 @@ impl Lobby {
                 if !occupied.contains_key(&station.id) || station.enabled { occupied.insert(station.id.clone(), station); }
             }
         }
-        // The mouse lights what it points at, as if someone stood there.
+        // The mouse lights what it points at, as if someone stood there;
+        // where no player stands, the buttons show the mouse instead of Y/X.
+        let mut mouse_only = None;
         if let Some(station) = self.mouse_station() {
+            if !occupied.contains_key(&station.id) { mouse_only = Some(crate::mouse::prompt_name(&station).to_string()); }
             if !occupied.contains_key(&station.id) || station.enabled { occupied.insert(station.id.clone(), station); }
         }
         // Onboarding, once someone has joined: until the first game, the TV's
@@ -655,7 +658,13 @@ impl Lobby {
             vec![("LB", "Previous", true), ("Y", if playing { "Pause" } else { "Play" }, true), ("RB", "Next", true)]
         } else { vec![("Y", "Play", true)] };
         self.set_prompt("music", &music, true, occupied.contains_key("music1"));
-        self.set_prompt("exit", &[("Y", "Leave", true)], true, occupied.contains_key("exit"));
+        let exit = if mouse_only.as_deref() == Some("exit") { if self.mouse_quit_armed() { "Click again to quit" } else { "Quit Gamepad Party" } } else { "Leave" };
+        self.set_prompt("exit", &[("Y", exit, true)], true, occupied.contains_key("exit"));
+        for (name, p) in self.prompts.iter_mut() {
+            let mouse = mouse_only.as_deref() == Some(name.as_str());
+            let hover = if mouse { self.mouse.hover.as_ref().and_then(|h| h.1.clone()) } else { None };
+            if p.mouse != mouse || p.hover != hover { p.mouse = mouse; p.hover = hover; self.screens_dirty = true; }
+        }
         let waiting = self.host.pending_profiles().len();
         for i in 0..game_room_sim::layout::PROFILE_DOORS.len() {
             let key = format!("door{i}");
