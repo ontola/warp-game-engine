@@ -986,7 +986,9 @@ impl Scene {
     pub fn reserve_probe_visibility(&mut self) -> Result<(), String> {
         let (_, grid) = self.irradiance_volume.ok_or("reserve the irradiance volume first")?;
         if self.probe_visibility.is_some() { return Err("probe visibility is already reserved".into()); }
-        let words = grid.count() * crate::room_bake::VISIBILITY_SIDE * crate::room_bake::VISIBILITY_SIDE;
+        // The maps, then one word per probe: its offset (room_bake::pack_offsets),
+        // then its reach (room_bake::bake_reach).
+        let words = grid.count() * (crate::room_bake::VISIBILITY_SIDE * crate::room_bake::VISIBILITY_SIDE + 1 + crate::room_bake::REACH_WORDS);
         if self.aux.len() + words >= 1 << 24 { return Err("aux too large for probe visibility".into()); }
         self.probe_visibility = Some(self.aux.len());
         self.aux.extend(std::iter::repeat_n(0u32, words));

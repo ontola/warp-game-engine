@@ -152,6 +152,10 @@ struct LightState {
     planes: Vec<[f32; 4]>,
     /// DDGI-style probe visibility (`room_bake::bake_visibility`).
     visibility: Vec<[u32; render::room_bake::VISIBILITY_SIDE * render::room_bake::VISIBILITY_SIDE]>,
+    /// Where each probe was moved out of geometry (`room_bake::pack_offsets`).
+    offsets: Vec<u32>,
+    /// Which voxels around each probe it reaches through open space (`room_bake::bake_reach`).
+    reach: Vec<[u32; render::room_bake::REACH_WORDS]>,
 }
 
 impl LightState {
@@ -163,6 +167,8 @@ impl LightState {
             lamps: render::room_bake::bake_lights(grid, occluders, &lamps, &render::room_bake::Settings { bounces: 2, ..settings })?,
             planes: render::room_bake::separation_planes(grid, occluders),
             visibility: render::room_bake::bake_visibility(grid, occluders),
+            offsets: render::room_bake::pack_offsets(grid, &render::room_bake::probe_positions(grid, occluders)),
+            reach: render::room_bake::bake_reach(grid, occluders),
         })
     }
 }
@@ -202,6 +208,9 @@ struct Rooms {
     uploaded: Option<(f32, [bool; 4])>,
     /// Which door state's visibility maps are uploaded (true: shut).
     visibility_shut: Option<bool>,
+    /// Forget temporal history and exposure on the next frame (a cut: the
+    /// regression suite jumps between views).
+    cut: bool,
     /// Indoor fog (`Lighting::volumetric`).
     fog: bool,
     flashlight: bool,
@@ -271,14 +280,11 @@ impl Rooms {
             // Room 1 | 2, doorway x -0.5..0.5.
             bx([-4.0, 0.0, -4.3], [-0.5, H, -4.0]), bx([0.5, 0.0, -4.3], [4.0, H, -4.0]), bx([-0.5, 2.1, -4.3], [0.5, H, -4.0]),
             // Room 2 | 3, doorway x 2.2..3.2: no straight view from the front door.
-            // 0.6 m thick, so that it holds a probe layer (see room 4).
-            bx([-4.0, 0.0, -10.8], [2.2, H, -10.2]), bx([3.2, 0.0, -10.8], [4.0, H, -10.2]), bx([2.2, 2.1, -10.8], [3.2, H, -10.2]),
+            bx([-4.0, 0.0, -10.5], [2.2, H, -10.2]), bx([3.2, 0.0, -10.5], [4.0, H, -10.2]), bx([2.2, 2.1, -10.5], [3.2, H, -10.2]),
             // Back wall.
             bx([-4.3, 0.0, -16.9], [4.3, H, -16.6]),
-            // Room 4: north, south and west walls. Every outside wall holds a
-            // probe layer (0.5 m grid): a wall without one lets probes on its
-            // far side, in daylight, blend into the room.
-            bx([-9.3, 0.0, -10.8], [-4.3, H, -10.2]), bx([-9.3, 0.0, -16.9], [-4.3, H, -16.6]), bx([-9.3, 0.0, -16.9], [-9.0, H, -10.3]),
+            // Room 4: north, south and west walls.
+            bx([-9.3, 0.0, -10.5], [-4.3, H, -10.2]), bx([-9.3, 0.0, -16.9], [-4.3, H, -16.6]), bx([-9.3, 0.0, -16.9], [-9.0, H, -10.3]),
         ];
         for w in &walls { scene.add_instance(plaster, *w); }
         let roofs = [bx([-4.3, H, -16.9], [4.3, H + 0.3, 4.3]), bx([-9.3, H, -16.9], [-4.3, H + 0.3, -10.2])];
@@ -287,13 +293,13 @@ impl Rooms {
         // Coloured inner faces: thin panels on room 2 (blue) and 3 (green).
         for (m, b) in [
             (blue, bx([-4.0, 0.0, -10.2], [-3.98, H, -4.3])), (blue, bx([3.98, 0.0, -10.2], [4.0, H, -4.3])),
-            (green, bx([-4.0, 0.0, -16.6], [-3.98, H, DOOR_Z[0]])), (green, bx([-4.0, 0.0, DOOR_Z[1]], [-3.98, H, -10.8])),
-            (green, bx([-4.0, DOOR_TOP, DOOR_Z[0]], [-3.98, H, DOOR_Z[1]])), (green, bx([3.98, 0.0, -16.6], [4.0, H, -10.8])),
+            (green, bx([-4.0, 0.0, -16.6], [-3.98, H, DOOR_Z[0]])), (green, bx([-4.0, 0.0, DOOR_Z[1]], [-3.98, H, -10.5])),
+            (green, bx([-4.0, DOOR_TOP, DOOR_Z[0]], [-3.98, H, DOOR_Z[1]])), (green, bx([3.98, 0.0, -16.6], [4.0, H, -10.5])),
         ] { scene.add_instance(m, b); }
         scene.add_instance(wood, bx([-4.0, 0.0, -4.0], [4.0, 0.02, 4.0]));
         scene.add_instance(tiles, bx([-4.0, 0.0, -10.2], [4.0, 0.02, -4.3]));
-        scene.add_instance(wood, bx([-4.0, 0.0, -16.6], [4.0, 0.02, -10.8]));
-        scene.add_instance(wood, bx([-9.0, 0.0, -16.6], [-4.0, 0.02, -10.8]));
+        scene.add_instance(wood, bx([-4.0, 0.0, -16.6], [4.0, 0.02, -10.5]));
+        scene.add_instance(wood, bx([-9.0, 0.0, -16.6], [-4.0, 0.02, -10.5]));
         let furniture = [
             // Room 1: table and couch (against the wall: no gap behind it).
             (wood, bx([-3.0, 0.7, -3.2], [-1.2, 0.76, -2.2])), (wood, bx([-2.95, 0.0, -3.15], [-1.25, 0.7, -2.25])),
@@ -319,7 +325,9 @@ impl Rooms {
         // The window sill is low: keep it solid too.
         walls.retain(|w| w.translation.y < 2.0 || w.matrix3.y_axis.y > 2.0);
         let solid = walls.iter().chain(furniture.iter().map(|f| &f.1)).filter_map(footprint).collect();
-        let grid = Grid { origin: Vec3::new(-9.75, -0.25, -17.75), cell: 0.5, dims: [32, 9, 48] };
+        // Probes every 0.5 m over the building; those that land in a wall or on
+        // a surface are moved out (room_bake::probe_positions).
+        let grid = Grid::covering(Vec3::new(-9.3, 0.0, -16.9), Vec3::new(4.3, H + 0.3, 4.3), 0.5);
         scene.reserve_irradiance_volume(grid).expect("probe grid");
         if std::env::var_os("ROOMS_NO_DDGI").is_none() { scene.reserve_probe_visibility().expect("probe visibility"); }
         // The static geometry, before the moving pieces join the scene, with
@@ -342,7 +350,7 @@ impl Rooms {
         for kv in std::env::var("ROOMS_LIGHT").unwrap_or_default().split(',').filter(|s| !s.is_empty()) { light.set(kv).expect("ROOMS_LIGHT"); }
         let pos = Vec3::new(1.5, EYE, 12.0);
         Rooms { scene, grid, solid, objects, bulb_mesh, cord_mesh, door_mesh, lamp_on_mesh, lamp_off_mesh, shade_mesh, bulb, cord, shade, door, fog_occluders, lamp_slots,
-            lamp_on: [true; 4], open_occluders, shut_occluders, shut: None, open: None, door_wanted: false, door_t: 0.0, hold_door: false, uploaded: None, visibility_shut: None,
+            lamp_on: [true; 4], open_occluders, shut_occluders, shut: None, open: None, door_wanted: false, door_t: 0.0, hold_door: false, uploaded: None, visibility_shut: None, cut: false,
             fog: false, flashlight: false, flash_dir: Vec3::NEG_Z, flash_bounce: None, pos, prev: pos, yaw: 0.12, pitch: 0.0, vy: 0.0, t: 0.0, light,
             ready: false, ev: None, hdr: None }
     }
@@ -466,7 +474,7 @@ impl Rooms {
 
     /// The fog's rooms: 2 (the pendant) and 4 (the dark room).
     fn fog_bounds() -> [(Vec3, Vec3); 2] {
-        [(Vec3::new(-4.0, 0.0, -10.2), Vec3::new(4.0, H, -4.3)), (Vec3::new(-9.0, 0.0, -16.6), Vec3::new(-4.3, H, -10.8))]
+        [(Vec3::new(-4.0, 0.0, -10.2), Vec3::new(4.0, H, -4.3)), (Vec3::new(-9.0, 0.0, -16.6), Vec3::new(-4.3, H, -10.5))]
     }
 
     fn lights(&self) -> Vec<ClusteredLight> {
@@ -536,8 +544,8 @@ impl Rooms {
         // Visibility switches with the planes (the door is a wall until a
         // third open); 3.5 MB, so only when the state changes.
         if std::env::var_os("ROOMS_NO_DDGI").is_none() && self.visibility_shut != Some(k < 0.3) {
-            let maps = if k < 0.3 { &shut.visibility } else { &open.visibility };
-            frame.renderer().ok_or("no renderer")?.set_probe_visibility(frame.gpu, maps)?;
+            let state = if k < 0.3 { shut } else { open };
+            frame.renderer().ok_or("no renderer")?.set_probe_visibility(frame.gpu, &state.visibility, &state.offsets, &state.reach)?;
             self.visibility_shut = Some(k < 0.3);
         }
         self.uploaded = Some((k, self.lamp_on));
@@ -639,6 +647,11 @@ impl Game for Rooms {
             eprintln!("room bake: {} triangles, {} probes, two door states, {:.1} s", self.open_occluders.triangles(), self.grid.count(), t.elapsed().as_secs_f32());
         }
         if self.uploaded != Some((self.door_open(), self.lamp_on)) { self.upload_probes(frame)?; }
+        if std::mem::take(&mut self.cut) {
+            let renderer = frame.renderer().ok_or("no renderer")?;
+            renderer.reset_history();
+            renderer.reset_exposure();
+        }
         // The flashlight follows the view with a lag of about 80 ms.
         let k = 1.0 - (-frame.dt.max(0.0) / 0.08).exp();
         self.flash_dir = self.flash_dir.lerp(self.forward(), k).normalize_or(self.forward());
@@ -663,7 +676,7 @@ impl Game for Rooms {
             (x, _) if x < -4.15 => "4 dark (click: door)",
             (_, z) if z > 4.0 => "outside",
             (_, z) if z > -4.15 => "1 daylight",
-            (_, z) if z > -10.45 => "2 pendant",
+            (_, z) if z > -10.35 => "2 pendant",
             _ if self.at_door() => "3 switches (F: lamp, R: all, click: door)",
             _ => "3 switches (F: lamp, R: all)",
         };
@@ -738,6 +751,53 @@ fn main() -> Result<(), String> {
         let (ms, passes) = app::bench(&mut game, &gpu, [3840, 2160], frames, TICK_HZ)?;
         println!("bench: {ms:.3} ms per frame at 3840x2160 over {frames} frames");
         for (name, ms) in passes { println!("  {name}: {ms:.3} ms"); }
+        return Ok(());
+    }
+    if let Some(file) = arg("--suite") {
+        // Regression suite: one bake, then every spot in `file` (lines
+        // `name x,y,z yaw pitch lamps door flashlight`, lamps four 0/1
+        // digits, door 0..1, flashlight 0/1; # comments) rendered still and
+        // while turning fast into it (2 rad/s for the last second), as
+        // `<out>/<name>_still.png` and `<name>_turn.png`.
+        let out = std::path::PathBuf::from(arg("--out").unwrap_or_else(|| "build/suite".into()));
+        std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+        let [w, h] = arg("--size").and_then(|s| { let v: Vec<u32> = s.split('x').filter_map(|p| p.parse().ok()).collect(); (v.len() == 2).then(|| [v[0], v[1]]) }).unwrap_or([1920, 1080]);
+        let text = std::fs::read_to_string(&file).map_err(|e| format!("{file}: {e}"))?;
+        let gpu = render::Gpu::new()?;
+        let mut headless = app::Headless::new(&gpu, [w, h], TICK_HZ)?;
+        for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() < 7 { return Err(format!("suite line needs at least 7 fields: {line}")); }
+            let p: Vec<f32> = f[1].split(',').filter_map(|s| s.parse().ok()).collect();
+            let (yaw, pitch): (f32, f32) = (f[2].parse().map_err(|_| line.to_string())?, f[3].parse().map_err(|_| line.to_string())?);
+            let lamps: Vec<bool> = f[4].chars().map(|c| c == '1').collect();
+            let door: f32 = f[5].parse().map_err(|_| line.to_string())?;
+            for (k, turn) in [("still", 0.0f32), ("turn", 2.0)] {
+                game.pos = Vec3::new(p[0], p[1], p[2]);
+                game.prev = game.pos;
+                game.pitch = pitch;
+                game.yaw = yaw + turn;
+                for i in 0..4 { if game.lamp_on[i] != lamps.get(i).copied().unwrap_or(true) { game.toggle(i); } }
+                let (mut lo, mut hi) = (0.0f32, 1.0f32);
+                for _ in 0..30 { let m = 0.5 * (lo + hi); if ease(m) < door.clamp(0.0, 1.0) { lo = m; } else { hi = m; } }
+                game.door_t = 0.5 * (lo + hi);
+                game.door_wanted = door > 0.0;
+                game.hold_door = true;
+                game.flashlight = f[6] == "1";
+                game.flash_dir = game.forward();
+                game.cut = true;
+                let frames = 200u32;
+                let mut rgba = Vec::new();
+                for i in 0..frames {
+                    if i + TICK_HZ as u32 >= frames { game.yaw -= turn / TICK_HZ; }
+                    game.tick(&[Controls::default()]);
+                    rgba = headless.frame(&mut game)?;
+                }
+                let path = out.join(format!("{}_{k}.png", f[0]));
+                render::write_png(&path, w, h, &rgba)?;
+                println!("{} {k}: EV {:?}", f[0], game.ev.map(|e| e.0));
+            }
+        }
         return Ok(());
     }
     if let Some(out) = arg("--shot") {

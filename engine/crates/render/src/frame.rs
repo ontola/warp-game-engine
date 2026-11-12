@@ -1743,11 +1743,15 @@ impl Renderer {
     /// Upload the probe visibility maps reserved with
     /// `Scene::reserve_probe_visibility` (`room_bake::bake_visibility`); from
     /// then on shading weights probes by them.
-    pub fn set_probe_visibility(&self, gpu: &Gpu, maps: &[[u32; crate::room_bake::VISIBILITY_SIDE * crate::room_bake::VISIBILITY_SIDE]]) -> Result<(), String> {
+    pub fn set_probe_visibility(&self, gpu: &Gpu, maps: &[[u32; crate::room_bake::VISIBILITY_SIDE * crate::room_bake::VISIBILITY_SIDE]], offsets: &[u32], reach: &[[u32; crate::room_bake::REACH_WORDS]]) -> Result<(), String> {
         let offset = self.probe_visibility.ok_or("the scene reserved no probe visibility")?;
         let (_, grid) = self.irradiance_volume.ok_or("no reserved probe volume")?;
         if maps.len() != grid.count() { return Err("one visibility map per probe".into()); }
         self.scene_tables.write_aux(gpu, offset, bytemuck::cast_slice(maps))?;
+        if offsets.len() != grid.count() { return Err("one offset per probe (room_bake::pack_offsets)".into()); }
+        self.scene_tables.write_aux(gpu, offset + maps.len() * crate::room_bake::VISIBILITY_SIDE * crate::room_bake::VISIBILITY_SIDE, offsets)?;
+        if reach.len() != grid.count() { return Err("one reach mask per probe (room_bake::bake_reach)".into()); }
+        self.scene_tables.write_aux(gpu, offset + maps.len() * (crate::room_bake::VISIBILITY_SIDE * crate::room_bake::VISIBILITY_SIDE + 1), bytemuck::cast_slice(reach))?;
         self.visibility_uploaded.store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
