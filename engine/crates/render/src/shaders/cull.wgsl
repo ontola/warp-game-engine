@@ -46,7 +46,7 @@ struct Cluster {
     first_vert: u32,
     material: u32,
     depth: u32,
-    pad: u32,
+    order: u32, // bit 0: clusters sorted coarse first (cluster.rs)
 };
 
 struct Instance {
@@ -412,6 +412,32 @@ fn cull_instance(id: u32, li: u32) {
 
 // cull_member's exact predicate for one lane: flat cluster scan, no
 // traversal (an acceleration only, so the selection is identical).
+
+// Mesh-local parent_error at or below which no cluster of this member can be
+// drawn: cull_cluster rejects a cluster when its parent projects to at most
+// the threshold, and this bounds that projection from above for every
+// cluster at once (its parent sphere's centre lies in the member's bounding
+// sphere of radius R and its radius is under 2R, so it is at least
+// distance - 3R away). Meshes sorted coarse first (GpuCluster.order bit 0,
+// ClusterMesh::sort_coarse_first) stop at the first such cluster: a needle
+// spray far away visits 16 of its 244 clusters. -1: no stop.
+fn coarse_stop(id:u32,inst:Instance,base_thr:f32,wind_pad:f32)->f32 {
+    var thr=base_thr;
+    if view.params.z>0.5 && view.fog_cull.w>0.5 {return -1.0;}
+    if view.params.z>0.5 && view.fog_cull.z>0.0 {thr=min(thr,view.fog_cull.z*view.cam.w);}
+    let error_scale=inst.scale*(1.0+length(cull_wind[member_slot(id)].xy));
+    if error_scale<=0.0 {return -1.0;}
+    let aggregate_error=aggregate_triangle_error(id);
+    if aggregate_error>=0.0 {return aggregate_error/error_scale;}
+    if view.params.z>0.5 {return thr/(error_scale*view.cam.w);}
+    let d=max(distance(inst.sphere.xyz,view.cam.xyz)-3.0*inst.sphere.w-wind_pad,view.params.y);
+    return thr*d/(error_scale*view.cam.w);
+}
+fn past_coarse_stop(ci:u32,stop:f32)->bool {
+    let cl=clusters[ci];
+    return (cl.order&1u)!=0u && cl.parent_error<=stop;
+}
+
 fn cull_member_lane(id: u32, inst: Instance) {
     let base_thr = select(view.params.x, 0.0, (inst.flags & 2u) != 0u);
     let policy = instance_policy(id, inst);
@@ -428,7 +454,9 @@ fn cull_member_lane(id: u32, inst: Instance) {
     let sun_groups=(spatial_header().w&2u)!=0u && view.params.z>0.5;
     let headlight_groups=(spatial_header().w&4u)!=0u && view.params.z<0.5 && view.extra.y>1.5;
     if camera_groups || sun_groups || headlight_groups { atomicAdd(&cull_draw.counter[26],inst.cluster_count); }
+    let stop=coarse_stop(id,inst,base_thr,wind_pad);
     for (var c = 0u; c < inst.cluster_count; c++) {
+        if past_coarse_stop(inst.first_cluster+c,stop) {break;}
         cull_cluster(id,inst,inst.first_cluster+c,base_thr,wind_pad);
     }
 }
@@ -475,7 +503,9 @@ fn cull_member(id: u32, inst: Instance, li: u32) {
         cluster_traverse(id,inst,li,base_thr,wind_pad);
         return;
     }
+    let stop=coarse_stop(id,inst,base_thr,wind_pad);
     for (var c = li; c < inst.cluster_count; c += 64u) {
+        if past_coarse_stop(inst.first_cluster+c,stop) {break;}
         cull_cluster(id,inst,inst.first_cluster+c,base_thr,wind_pad);
     }
 }

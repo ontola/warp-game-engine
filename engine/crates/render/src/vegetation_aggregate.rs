@@ -68,6 +68,9 @@ pub struct Config {
     /// Conservative working-element estimate, including BTree node allowance;
     /// excludes caller-owned Assembly bytes and allocator implementation details.
     pub max_build_bytes: usize,
+    /// Coarse levels keep their children's mean transmittance instead of
+    /// adding their directional area (`gap_preserving_area`).
+    pub gap_mips: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -77,7 +80,7 @@ impl Default for Config {
             max_output_voxels: 24_576, max_axis_cells: 1024,
             max_placements: 4096, max_source_triangles: 4_000_000,
             max_samples: 32_000_000, max_diagnostic_steps: 20_000_000,
-            max_scratch_bytes: 8 * 1024 * 1024, max_build_bytes: 256 * 1024 * 1024 }
+            max_scratch_bytes: 8 * 1024 * 1024, max_build_bytes: 256 * 1024 * 1024, gap_mips: false }
     }
 }
 
@@ -500,10 +503,65 @@ fn add_run(cells: &mut Cells, (coord, mass): ([u32; 3], Mass), c: Config, stats:
     Ok(())
 }
 
-fn reduce(cells: Cells) -> Cells {
+fn reduce(cells: Cells, cell_size: f32, gaps: bool) -> Cells {
+    if !gaps { return reduce_additive(cells); }
+    // Children by parent, so each parent sees its own 2x2x2 block.
+    let mut children: BTreeMap<[u32; 3], [Option<[f64; 13]>; 8]> = BTreeMap::new();
+    for (coord, mass) in &cells {
+        let slot = (coord[0] & 1) + 2 * (coord[1] & 1) + 4 * (coord[2] & 1);
+        children.entry(coord.map(|v| v / 2)).or_insert([None; 8])[slot as usize] = Some(mass.directional);
+    }
+    let mut parents = reduce_additive(cells);
+    let s = f64::from(cell_size);
+    for (coord, parent) in parents.iter_mut() {
+        parent.directional = gap_preserving_area(&children[coord], s);
+    }
+    parents
+}
+
+fn reduce_additive(cells: Cells) -> Cells {
     let mut parents = Cells::new();
     for (coord, mass) in cells { parents.entry(coord.map(|v| v/2)).or_default().add(&mass); }
     parents
+}
+
+/// Leaves are clumped: a child cell's needles sit together, the next child
+/// along a ray may be empty. Adding the children's directional area spreads
+/// it over the whole parent as a uniform fog, and the coarse level then
+/// covers far more than its children (a sparse branch became a solid ball,
+/// a crown a closed cone: Joep's playtest, 12 November). Each of the 13
+/// directions instead keeps the children's mean transmittance: the parent's
+/// footprint along d splits into four columns of two children along d's
+/// dominant axis, each passing exp(-tau_a - tau_b), with a child's depth
+/// tau = A / (s^2 * L1(d)) over its mean chord s / L1(d) (the splat and the
+/// march read it so). The parent stores the area that gives the mean of those
+/// four along its own chord 2s / L1(d). Optically thin children keep their
+/// summed area exactly; overlapping opaque ones no longer double up.
+/// Config::gap_mips (recipe_forest turns it on; KERN_VOXEL_GAP_MIPS=0 off).
+fn gap_preserving_area(children: &[Option<[f64; 13]>; 8], s: f64) -> [f64; 13] {
+    std::array::from_fn(|k| {
+        let d = PROJECTION_DIRECTIONS[k].map(|v| f64::from(v).abs());
+        let l1 = d[0] + d[1] + d[2];
+        let axis = if d[0] >= d[1] && d[0] >= d[2] { 0 } else if d[1] >= d[2] { 1 } else { 2 };
+        let tau = |slot: usize| children[slot].map_or(0.0, |a| a[k] / (s * s * l1));
+        let mut through = 0.0;
+        for column in 0..4usize {
+            // The two other axes' bits of the column, the dominant axis 0 then 1.
+            let (u, v) = (column & 1, column >> 1);
+            let slot = |w: usize| -> usize {
+                let mut bits = [0usize; 3];
+                bits[axis] = w;
+                bits[(axis + 1) % 3] = u;
+                bits[(axis + 2) % 3] = v;
+                bits[0] + 2 * bits[1] + 4 * bits[2]
+            };
+            through += (-(tau(slot(0)) + tau(slot(1)))).exp();
+        }
+        let mean = (through / 4.0).max(1e-12);
+        // The additive sum is the optically thin limit: never exceed it.
+        let summed: f64 = children.iter().flatten().map(|a| a[k]).sum();
+        (-mean.ln() * 4.0 * s * s * l1).min(summed)
+    })
 }
 fn level(cells: &Cells, dimensions: [u32; 3], cell_size: f32) -> VoxelLevel {
     VoxelLevel { cell_size, dimensions, voxels: cells.iter().map(|(&p,m)|m.finish(p)).collect() }
@@ -1110,7 +1168,7 @@ pub(crate) fn cook_whole(cooker: &Cooker<'_>, levels: u32) -> Result<VoxelAsset,
     for _ in 0..levels {
         out.push(level(&current,dimensions,cell));
         if dimensions==[1;3] {break;}
-        current=reduce(current);dimensions=dimensions.map(|v|v.div_ceil(2));cell*=2.0;
+        current=reduce(current,cell,cooker.config.gap_mips);dimensions=dimensions.map(|v|v.div_ceil(2));cell*=2.0;
     }
     let stats=BakeStats {triangles:reference.stats.source_triangles,samples:reference.stats.quadrature_samples,
         closed_parts_checked:if cooker.source.projection_measure()==ProjectionMeasure::ClosedSurfaceEntries { reference.stats.unique_parts_validated as u64 } else { 0 },
@@ -1138,7 +1196,7 @@ fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_asse
     let mut level_dimensions=dimensions;
     while brick_count(&current)>config.max_bricks_per_level {
         if downsample>=1<<16 {return Err("aggregate cannot satisfy brick budget".into());}
-        current=reduce(current);downsample*=2;level_dimensions=level_dimensions.map(|v|v.div_ceil(2));
+        current=reduce(current,cell*downsample as f32,config.gap_mips);downsample*=2;level_dimensions=level_dimensions.map(|v|v.div_ceil(2));
     }
     stats.first_level_downsample=downsample;
     // Each placement's cut voxelized on its own and kept while its cut stays
@@ -1242,7 +1300,7 @@ fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_asse
             triangle_cut_triangles:triangle_count,triangle_cut_error_m:cell_size,directional_mass_relative_error:mass_error});
         levels.push(output);
         if level_dimensions==[1;3] || level_index+1==config.levels {break;}
-        current=reduce(current);downsample*=2;level_dimensions=level_dimensions.map(|v|v.div_ceil(2));
+        current=reduce(current,cell*downsample as f32,config.gap_mips);downsample*=2;level_dimensions=level_dimensions.map(|v|v.div_ceil(2));
     }
     let mut triangle_refinements=Vec::new();
     if config.triangle_refinements {
@@ -1350,6 +1408,34 @@ mod tests {
         // Most occupied cells survive.
         let shared=stamped.keys().filter(|k|exact.contains_key(*k)).count();
         assert!(shared as f64>0.6*exact.len() as f64,"{shared} of {} cells",exact.len());
+    }
+
+    #[test]
+    fn coarse_levels_keep_their_childrens_gaps() {
+        let s = 0.1f64;
+        let area = |tau: f64, k: usize| {
+            let d = PROJECTION_DIRECTIONS[k].map(|v| f64::from(v).abs());
+            tau * s * s * (d[0] + d[1] + d[2])
+        };
+        let opaque: [f64; 13] = std::array::from_fn(|k| area(6.0, k));
+        // One opaque child: its column blocks, the other three pass. The parent
+        // covers a quarter of its footprint along every direction, as the
+        // child does, where the summed area made it 1 - exp(-1.5) = 78 %.
+        let mut one = [None; 8];one[0] = Some(opaque);
+        let parent = gap_preserving_area(&one, s);
+        for k in 0..13 {
+            let d = PROJECTION_DIRECTIONS[k].map(|v| f64::from(v).abs());
+            let tau = parent[k] / (4.0 * s * s * (d[0] + d[1] + d[2]));
+            assert!(((1.0 - (-tau).exp()) - 0.25 * (1.0 - (-6.0f64).exp())).abs() < 1e-9, "direction {k}");
+        }
+        // Optically thin children keep their summed area.
+        let thin: [f64; 13] = std::array::from_fn(|k| area(1e-6, k));
+        let parent = gap_preserving_area(&[Some(thin); 8], s);
+        for k in 0..13 { assert!((parent[k] / (8.0 * thin[k]) - 1.0).abs() < 1e-5); }
+        // Two opaque children in one column along x shade each other.
+        let mut pair = [None; 8];pair[0] = Some(opaque);pair[1] = Some(opaque);
+        let parent = gap_preserving_area(&pair, s);
+        assert!(parent[0] < 0.6 * (2.0 * opaque[0]));
     }
 
     #[test]

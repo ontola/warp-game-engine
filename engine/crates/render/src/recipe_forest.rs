@@ -23,6 +23,8 @@ pub const PROXY_LEVELS: u32 = 6;
 
 /// The aggregate cook every recipe tree uses: each branch group also gets
 /// voxel levels.
+/// Coarse voxel levels keep their children's gaps (vegetation_aggregate
+/// gap_preserving_area); KERN_VOXEL_GAP_MIPS=0 adds their areas as before.
 /// KERN_BRANCH_CELL_M (experiment) sets the finest branch voxel cell: each
 /// halving below the default 7.5 cm adds a level (so the coarsest stays) and
 /// four times the total brick and voxel caps, so the cut can stay on voxels
@@ -31,7 +33,8 @@ pub const PROXY_LEVELS: u32 = 6;
 /// cells; larger ones start coarser, as before.
 pub fn aggregate_config() -> Config {
     let base = Config { max_placements: 8192, max_source_triangles: 40_000_000, max_samples: 150_000_000, triangle_refinements: true,
-        max_reference_voxels: 262_144, max_diagnostic_steps: 80_000_000, ..Default::default() };
+        max_reference_voxels: 262_144, max_diagnostic_steps: 80_000_000,
+        gap_mips: std::env::var("KERN_VOXEL_GAP_MIPS").as_deref() != Ok("0"), ..Default::default() };
     let cell = std::env::var("KERN_BRANCH_CELL_M").ok().and_then(|v| v.parse::<f32>().ok())
         .filter(|c| (0.01..base.reference_cell_size).contains(c));
     let Some(cell) = cell else { return base };

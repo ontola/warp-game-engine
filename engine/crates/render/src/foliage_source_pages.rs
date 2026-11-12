@@ -68,6 +68,34 @@ pub(crate) fn source_work(scene:&Scene,source:GpuInstance)->Result<SourceWork,St
     Ok(result)
 }
 
+/// Bins of the source work table: mesh error thresholds in the tree's local
+/// metres, SOURCE_TABLE_T0 * 2^k for k in 0..12 (0.25 mm .. 0.5 m).
+pub(crate) const SOURCE_TABLE_BINS:usize=12;
+pub(crate) const SOURCE_TABLE_T0:f32=0.00025;
+/// Clusters the cull visits for this source at each bin's threshold: per
+/// member, those whose parent_error (in the member's own units: the bin over
+/// its scale) exceeds it when its mesh is sorted coarse first
+/// (ClusterMesh::sort_coarse_first), all of them otherwise. Bin k bounds every
+/// cut at a threshold of at least t_k; foliage_refine books by it.
+pub(crate) fn source_work_table(scene:&Scene,source:GpuInstance)->Result<[u32;SOURCE_TABLE_BINS],String>{
+    let members=if source.cluster_count==0 && source.first_cluster!=0 && source.flags&crate::scene::PART_WIND!=0 {
+        let start=(source.first_cluster>>12)as usize;let count=(source.first_cluster&4095)as usize;
+        scene.instances.get(start..start+count).ok_or("source work templates outside catalog")?
+    }else{std::slice::from_ref(&source)};
+    let mut table=[0u32;SOURCE_TABLE_BINS];
+    for member in members {
+        let end=member.first_cluster.checked_add(member.cluster_count).ok_or("source work cluster range overflow")?;
+        let clusters=scene.clusters.get(member.first_cluster as usize..end as usize).ok_or("source work clusters outside catalog")?;
+        let sorted=!clusters.is_empty() && clusters.iter().all(|c|c.order&crate::cluster::CLUSTERS_COARSE_FIRST!=0);
+        for (k,slot) in table.iter_mut().enumerate() {
+            let t=SOURCE_TABLE_T0*(1u32<<k)as f32/member.scale.max(1e-12);
+            let count=if sorted {clusters.partition_point(|c|c.parent_error>t)as u32}else{member.cluster_count};
+            *slot=slot.checked_add(count).ok_or("source cluster work overflow")?;
+        }
+    }
+    Ok(table)
+}
+
 fn clusters(scene:&Scene,source:GpuInstance)->Result<BTreeSet<u32>,String>{
     let members=if source.cluster_count==0 && source.first_cluster!=0 && source.flags&32!=0 {
         let start=(source.first_cluster>>12)as usize;let count=(source.first_cluster&4095)as usize;

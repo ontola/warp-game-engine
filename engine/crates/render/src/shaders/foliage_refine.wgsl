@@ -57,16 +57,37 @@ fn mask(s:vec4<f32>)->u32 {
 fn limits()->vec4<u32> {return vec4<u32>(view.consumer_count.yzw,u32(view.pixels.w));}
 fn used_now()->vec4<u32> {return vec4<u32>(atomicLoad(&state[0]),atomicLoad(&state[1]),atomicLoad(&state[2]),atomicLoad(&state[69]));}
 fn used_snapshot()->vec4<u32> {return vec4<u32>(atomicLoad(&state[4]),atomicLoad(&state[5]),atomicLoad(&state[6]),atomicLoad(&state[70]));}
+// Source clusters one view's cull visits for this node (cull.wgsl
+// coarse_stop): its table (foliage_source_pages::source_work_table, stored
+// after the nodes) at the coarsest bin no coarser than the view's cut, at
+// the bound's nearest point. `pixels_per_m`: pixels per tree-local metre.
+// Cut at the camera's 1 px cluster target (Renderer lod_pixels, default 1),
+// one bin finer still for wind shear (the cull scales errors by up to
+// 1 + |shear|). A node too close for the finest bin books every cluster.
+const SOURCE_TABLE_T0:f32=0.00025;
+fn source_work_at(node:u32,pixels_per_m:f32)->u32 {
+ let full=nodes[node].links.w>>8u;
+ if !(pixels_per_m>0.0) || pixels_per_m>=1e29 {return full;}
+ let t=0.5/pixels_per_m;
+ if t<SOURCE_TABLE_T0 {return full;}
+ let k=min(u32(floor(log2(t/SOURCE_TABLE_T0))),11u);
+ let r=nodes[node+arrayLength(&nodes)/2u];
+ var table=array<u32,12>(bitcast<u32>(r.sphere.x),bitcast<u32>(r.sphere.y),bitcast<u32>(r.sphere.z),bitcast<u32>(r.sphere.w),
+  bitcast<u32>(r.error.x),bitcast<u32>(r.error.y),bitcast<u32>(r.error.z),bitcast<u32>(r.error.w),r.links.x,r.links.y,r.links.z,r.links.w);
+ return min(table[k],full);
+}
 fn work(tree:u32,node:u32,consumers:u32)->vec4<u32> {
  var cost=vec4<u32>(0u);
  if node==NONE {cost.y=u32(trees[tree].scale.z);cost.z=u32(trees[tree].scale.w);}
  else {let n=nodes[node];cost=vec4<u32>(select(1u,0u,(n.links.w&2u)!=0u),u32(n.error.z),u32(n.error.w),0u);}
  if node!=NONE && (nodes[node].links.w>>8u)!=0u {
-  var views=0u;let bound=sphere(trees[tree],nodes[node]);
+  var clusters=0u;let bound=sphere(trees[tree],nodes[node]);
   for(var i=0u;i<view.consumer_count.x;i++) {let c=view.consumers[i];
-   if (consumers&select(512u,256u,c.pixels.z==0.0))!=0u && visible_in(bound,c.vp) {views++;}
+   if (consumers&select(512u,256u,c.pixels.z==0.0))!=0u && visible_in(bound,c.vp) {
+    clusters+=source_work_at(node,error_in(bound,1.0,c.vp,c.pixels.xy)*trees[tree].scale.x);
+   }
   }
-  cost.w=(nodes[node].links.w>>8u)*views;
+  cost.w=clusters;
  }
  if (consumers&256u)==0u {cost.y=0u;}if (consumers&512u)==0u {cost.z=0u;}
  // Error cut: book splats for the part of the bound inside each class's
