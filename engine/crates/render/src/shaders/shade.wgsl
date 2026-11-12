@@ -3351,16 +3351,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // Traced reflections replace the environment where they hit. Under
         // a clear coat only the coat traces (below): it shows the reflection.
         if coat <= 0.0 && rough < gi.trace.y {
-            var traced = traced_reflection(p, visibility_n, refl, rough, px, size, dist);
-            // On a glossy (not mirror) surface a traced hit is capped at 8x
-            // the diffuse light level here: walls, furniture and a doorway's
-            // daylight keep their brightness, but a lamp's emissive panel
-            // (thousands of times brighter) is left to the light's own soft
-            // analytic highlight; traced, it drew the housing's hard outline.
-            let lum = vec3<f32>(0.2126, 0.7152, 0.0722);
-            let cap = 8.0 * max(dot(ambient, lum) / PI, dot(env, lum)) + 1e-4;
-            let bright = dot(traced.rgb, lum);
-            if rough > 0.06 && bright > cap { traced = vec4<f32>(traced.rgb * (cap / bright), traced.a); }
+            let traced = traced_reflection(p, visibility_n, refl, rough, px, size, dist);
             env = mix(env, traced.rgb, traced.a);
         }
         direct=diffuse*sun_e*sun+sun_e*back/PI+sun_e*ggx(n,v,l,rough,f0);
