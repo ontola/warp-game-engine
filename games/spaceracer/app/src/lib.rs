@@ -71,6 +71,17 @@ struct Racer {
     /// frozen frame in a headset is not acceptable).
     background_loading: bool,
     loading: Option<Loading>,
+    /// The next race, built in the background while the results show.
+    next: Option<Next>,
+    /// Ticks since the race ended; A continues only after a short beat.
+    over_ticks: u32,
+}
+/// Results stay on screen this long before A starts the next race (120 Hz).
+const CONTINUE_AFTER_TICKS: u32 = 240;
+/// A next race preloaded behind the results, with the grid it was built for.
+struct Next {
+    worker: std::thread::JoinHandle<Result<(Race, visuals::Visuals), String>>,
+    grid: (usize, usize),
 }
 /// A race being built on a worker thread.
 struct Loading {
@@ -181,6 +192,8 @@ impl Racer {
             menu_click: None,
             background_loading: false,
             loading: None,
+            next: None,
+            over_ticks: 0,
         })
     }
     /// The grid: the people here plus the AI racers. Auto is a full grid for
@@ -208,6 +221,8 @@ impl Racer {
         }
     }
     fn restart(&mut self) -> Result<(), String> {
+        // Whatever was preloaded was built for the old settings.
+        self.next = None;
         let spec = self.race_spec();
         if self.background_loading {
             visuals::progress(0);
@@ -239,7 +254,21 @@ impl Racer {
         self.menu = None;
         self.settings_dirty = false;
         self.race_started = true;
+        self.over_ticks = 0;
         Ok(())
+    }
+    /// Roll the next race's Random choices and build it behind the results.
+    fn preload_next(&mut self) -> Result<(), String> {
+        self.roll_random()?;
+        let spec = self.race_spec();
+        let grid = (spec.players, spec.racers);
+        self.next = Some(Next { worker: std::thread::spawn(move || spec.build()), grid });
+        Ok(())
+    }
+    /// Results hint: None while racing, else whether the next race is ready.
+    fn next_ready(&self) -> Option<bool> {
+        if !self.race.over || self.demo { return None; }
+        Some(self.over_ticks >= CONTINUE_AFTER_TICKS && self.next.as_ref().is_some_and(|n| n.worker.is_finished()))
     }
     /// Pick anew whatever is set to Random; the rest stays as chosen.
     fn roll_random(&mut self) -> Result<(), String> {
@@ -250,6 +279,20 @@ impl Racer {
         Ok(())
     }
     fn start_new_race(&mut self) -> Result<(), String> {
+        // The preloaded race already has its Random choices rolled; it shows
+        // a loading screen only if it is still building.
+        if let Some(next) = self.next.take() {
+            if !self.settings_dirty && next.grid == (self.players, self.racers()) {
+                if next.worker.is_finished() {
+                    let (race, visuals) = next.worker.join().map_err(|_| "race build panicked".to_string())??;
+                    return self.finish_restart(race, visuals);
+                }
+                visuals::progress(500);
+                self.menu = None;
+                self.loading = Some(Loading { worker: next.worker, started: std::time::Instant::now() });
+                return Ok(());
+            }
+        }
         self.roll_random()?;
         self.restart()
     }
@@ -568,6 +611,10 @@ impl Game for Racer {
                 self.menu = Some(0);
                 return;
             }
+            if self.next_ready() == Some(true) && menu.pressed.has(Buttons::SOUTH) {
+                if let Err(e) = self.start_new_race() { self.fatal = Some(e); }
+                return;
+            }
             party_inputs = Some(drive);
         } else {
             let c = controls.first().copied().unwrap_or_default();
@@ -577,6 +624,10 @@ impl Game for Racer {
             }
             if c.pressed.has(Buttons::START) {
                 self.menu = Some(0);
+                return;
+            }
+            if self.next_ready() == Some(true) && controls.iter().any(|c| c.pressed.has(Buttons::SOUTH)) {
+                if let Err(e) = self.start_new_race() { self.fatal = Some(e); }
                 return;
             }
         }
@@ -619,6 +670,10 @@ impl Game for Racer {
         if self.race.over {
             if let Some(p) = &mut self.party {
                 p.finished();
+            }
+            self.over_ticks = self.over_ticks.saturating_add(1);
+            if self.next.is_none() && !self.demo {
+                if let Err(e) = self.preload_next() { self.fatal = Some(e); }
             }
         }
     }
@@ -709,6 +764,7 @@ impl Game for Racer {
         let mut ups = vec![];
         let mut hud = HudDrawList::new(frame.size);
         let ui_scale = (frame.size[1] as f32 / 900.).max(1.);
+        let next_ready = self.next_ready();
         for i in 0..self.players {
             let p = &self.race.pilots[i];
             let current = self.race.pose(i);
@@ -769,6 +825,7 @@ impl Game for Racer {
                 race_hud::draw(
                     &mut hud,
                     &self.race,
+                    next_ready,
                     i,
                     rect,
                     &cams[i],
@@ -841,6 +898,7 @@ impl Game for Racer {
         ["energy",who,value]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let v:f64=value.parse().map_err(|_|"energy")?;if !v.is_finite() {return Err("invalid energy".into());}self.race.pilots.get_mut(i).ok_or("pilot index")?.energy=v.clamp(0.,100.);},
         ["reset",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;if i>=self.race.pilots.len(){return Err("pilot index".into());}self.race.reset(i);self.previous[i]=self.race.pose(i);},
         ["place",who,distance]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let distance:f64=distance.parse().map_err(|_|"distance")?;if !distance.is_finite() || distance.abs()>100000. {return Err("invalid distance".into());}let p=self.race.pilots.get_mut(i).ok_or("pilot index")?;p.distance=distance;p.x=0.;self.previous[i]=self.race.pose(i);},
+        ["place-recharge",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let at=self.race.world.recharge.first().ok_or("no recharge strip")?[0]+8.;let p=self.race.pilots.get_mut(i).ok_or("pilot index")?;p.distance=at;p.x=-4.;p.speed=60.;self.previous[i]=self.race.pose(i);},
         ["portrait","on"]=>self.portrait=true,["portrait","off"]=>self.portrait=false,
         ["blur","off"]=>self.blur_enabled=false,["blur","on"]=>self.blur_enabled=true,
         ["crash",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;if i>=self.race.pilots.len(){return Err("pilot index".into());}let pose=self.race.pose(i);self.race.drivers[i].motion.air.position=pose.origin;self.race.drivers[i].motion.air.frame=pose.basis;self.race.drivers[i].motion.crash(&mut self.race.pilots[i],glam::Vec3::Y);},
@@ -1087,6 +1145,28 @@ mod tests {
         assert!(game.fatal.is_none(),"{:?}",game.fatal);
         assert_eq!(game.seed,old_seed+1);
         assert!(game.race_started && !game.visuals.uploaded);
+    }
+    #[test]
+    fn the_next_race_preloads_behind_the_results_and_a_starts_it() {
+        let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut game=Racer::new(root,1,31,0,0,false).unwrap();
+        game.menu=None;game.race_started=true;game.random_biome=true;
+        game.race.over=true;
+        let south=Controls{pressed:Buttons(Buttons::SOUTH),..Default::default()};
+        game.tick(&[south]);
+        assert!(game.next.is_some(),"next race builds as soon as the race ends");
+        assert_eq!(game.next_ready(),Some(false),"A waits for a short beat on the results");
+        assert!(game.race.over,"an early A does not skip the results");
+        let start=std::time::Instant::now();
+        while game.next_ready()!=Some(true) {
+            assert!(start.elapsed().as_secs()<120,"next race built");
+            game.tick(&[Controls::default()]);
+        }
+        let biome=game.biome;
+        game.tick(&[south]);
+        assert!(game.fatal.is_none(),"{:?}",game.fatal);
+        assert!(!game.race.over && game.loading.is_none() && game.next.is_none(),"A starts the preloaded race at once");
+        assert_eq!(game.race.biome,BIOMES[biome]);
     }
     #[test]
     fn the_pointer_hovers_and_clicks_menu_rows() {

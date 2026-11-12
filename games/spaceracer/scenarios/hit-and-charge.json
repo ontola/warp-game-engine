@@ -1,0 +1,13 @@
+{
+  "size": [1920, 1080],
+  "steps": [
+    {"cmd": ["weapon-review railgun", "blur off", "energy 0 30", "place-recharge 0"], "ticks": 1, "capture": "before.png"},
+    {"ticks": 50, "capture": "charging.png"},
+    {"expect": "/pilots/0/charging", "equals": true},
+    {"cmd": ["weapon-review railgun", "fire 0"], "ticks": 2},
+    {"expect": "/pilots/1/energy", "max": 85},
+    {"cmd": "place 1 -400", "ticks": 60, "capture": "rail-hit.png"},
+    {"cmd": "energy 0 45", "ticks": 12, "capture": "own-hit-fire.png"},
+    {"ticks": 50, "capture": "own-hit-fading.png"}
+  ]
+}

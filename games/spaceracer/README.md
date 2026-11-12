@@ -272,8 +272,18 @@ difficulty, world, seed and pickup placement wait for the next race. Boost cost,
 energy regeneration and crash recovery apply live; duration affects the next
 boost. Graphics presets change LOD error, motion blur and nearby shadows, not
 resolution. The app's New race action races the settings again: seed 0 and the
-Random world pick anew, a fixed seed or world stays. Start opens the race menu
-in the game; only Back goes to the lobby.
+Random world pick anew, a fixed seed or world stays. World defaults to Random
+under the host too. Start opens the race menu in the game; only Back goes to
+the lobby.
+
+When a race ends the next one (Random fields rolled) builds on a worker thread
+behind the results. After two seconds, once it is built, the results show
+"A Next race" and A starts it at once; changing settings drops the preloaded
+race. The shooter sees "HIT name" for a weapon hit (rocket, glide bomb,
+railgun; 15+ energy at once) and "DESTROYED name" for a kill. A hit jet burns
+with flame and smoke for `hit_fire_seconds` (`rules/jets.luau`). On a recharge
+strip a wave climbs the energy bar and the craft glows green from below.
+`scenarios/hit-and-charge.json` captures the hit fire and charging.
 
 Register the packaged native build locally on Windows:
 
