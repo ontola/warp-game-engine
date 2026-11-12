@@ -3,7 +3,7 @@
 //! No image files: every texture is a function of its pixel, so the look is
 //! tuned here and nothing has to be downloaded or licensed.
 use image::{Rgba, RgbaImage};
-use render::scene::{Material, Scene, TWO_SIDED};
+use render::scene::{Material, Scene, TRIPLANAR, TWO_SIDED};
 
 /// What a surface is made of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -33,8 +33,19 @@ impl Surface {
         match self { Surface::Plaster => 2.0, Surface::Brick => 1.0, Surface::Oak => 2.4, Surface::Tile => 1.2, Surface::Roof => 1.0, Surface::Frame | Surface::Furniture => 1.0 }
     }
 
-    /// Add this surface's texture (if any) and material to `scene`.
-    pub fn add(self, scene: &mut Scene) -> u32 {
+    /// Add this surface's texture (if any) and material to `scene`, mapped
+    /// by the mesh's uv.
+    pub fn add(self, scene: &mut Scene) -> u32 { self.add_mapped(scene, false, false) }
+
+    /// Does it have a texture (Frame and Furniture are plain)?
+    pub fn textured(self) -> bool { !matches!(self, Surface::Frame | Surface::Furniture) }
+
+    /// As `add`; `triplanar` maps the texture by world position instead of
+    /// uv, for curved faces (a round window's reveal) where per-face uvs
+    /// would break the pattern at every facet. `two_sided` as the source
+    /// material says: a window frame from IFC is a closed solid whose outer
+    /// face lies on the wall's reveal, and drawing its back fights the reveal.
+    pub fn add_mapped(self, scene: &mut Scene, triplanar: bool, two_sided: bool) -> u32 {
         let (tint, roughness, layer) = match self {
             Surface::Frame => ([0.08, 0.085, 0.09], 0.45, -1),
             Surface::Furniture => ([0.55, 0.52, 0.48], 0.85, -1),
@@ -54,7 +65,9 @@ impl Surface {
                 ([1.0; 3], rough, layer)
             }
         };
-        scene.add_material(Material { tint, layer, roughness, flags: if self == Surface::Frame { TWO_SIDED } else { 0 }, scale: 1.0, metal: 0.0 })
+        let flags = if two_sided { TWO_SIDED } else { 0 } | if triplanar && layer >= 0 { TRIPLANAR } else { 0 };
+        let scale = if flags & TRIPLANAR != 0 { self.tile_metres() } else { 1.0 };
+        scene.add_material(Material { tint, layer, roughness, flags, scale, metal: 0.0 })
     }
 
     /// Albedo (sRGB) and height-derived normal map.

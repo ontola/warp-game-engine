@@ -12,3 +12,10 @@ glam = "0.31"
 gltf = { version = "1.4", default-features = false, features = ["utils", "names", "extras", "KHR_texture_transform", "allow_empty_texture", "extensions"] }
 serde_json.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[dev-dependencies]
+app = { path = "../app" }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Location", "Window"] }
