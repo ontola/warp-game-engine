@@ -671,7 +671,7 @@ fn entrance_camera(world: &World, i: usize, prev: &[Pose], alpha: f32, pickup_di
     let pitch = if reaching > 0. || glance > 0. {
         (drawn.pitch - glance * (1. - reaching) - 1.16 * reaching).clamp(-1.55, 1.55)
     } else { drawn.pitch };
-    let eye = eye - Vec3::Y * (0.51 * reaching);
+    let eye = eye - Vec3::Y * (0.88 * reaching);
     Camera { pos: eye, target: eye + growing_guns::look_dir(drawn.yaw, pitch), fov_y, near: 0.05 }
 }
 
