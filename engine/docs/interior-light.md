@@ -41,11 +41,8 @@ field and EV 10.1 in the room, almost six stops.
 ```rust
 use render::room_bake::{self, Occluders, Settings};
 
-// Probes every 0.5 m over the building, starting a quarter cell off the
-// walls and reaching below the floor (outside the grid the outdoor light
-// fades back in over half a cell).
-let grid = render::irradiance_volume::Grid {
-    origin: Vec3::new(-5.75, -0.25, -5.75), cell: 0.5, dims: [24, 9, 24] };
+// Probes every 0.5 m over the building (and a cell beyond it).
+let grid = render::irradiance_volume::Grid::covering(Vec3::new(-5.0, 0.0, -5.0), Vec3::new(5.0, 3.3, 5.0), 0.5);
 scene.reserve_irradiance_volume(grid)?;
 let renderer = Renderer::new(&gpu, &scene, &light);
 
@@ -58,16 +55,38 @@ renderer.set_sky_sun_separated(&gpu, &probes, &room_bake::separation_planes(&gri
 hundredths of the sphere, fewer rays make blotches), `bounce_rays` (512),
 `bounces` (3) and `reflectance` (0.5, the average albedo).
 
-Grid: a cell of 0.5 m. The grid must cover the room, its walls and a cell
-outside, and reach below the floor. Every wall between differently lit
-spaces (outside and in, a lit room and a dark one) and the ground under
-the floor must hold a probe layer: a probe inside the geometry, which the
-bake marks invalid. A wall thinner than the cell, or placed between two
-layers, does not; surfaces next to it then blend in the probes on its far
-side, and a dark room glows with the daylight or lamps next door. Make
-such walls 0.6 m thick or move them onto a layer, and make the ground slab
-reach below the lowest layer (a probe under a thin ground sees open sky
-below the world). One volume per scene, up to 65,536 probes.
+Grid: a cell of 0.5 m over the building's bounds, `Grid::covering(min,
+max, cell)`, which adds a cell on every side (the volume fades out over
+half a cell past its outer probes; that fade must lie outside, not on the
+floor). The geometry need not respect the grid: walls of any thickness, on
+or off a probe layer. The bake moves every probe that lands in geometry or
+on a surface out of it, by at most 0.45 of a cell per axis
+(`room_bake::probe_positions`, DDGI's probe relocation, Majercik et al.
+2021); a probe still inside after that stays invalid. With visibility on,
+shading uses the moved positions (`room_bake::pack_offsets`, one word per
+probe).
+
+A probe moved out of an outer wall sits just outside, in daylight, in the
+same cell as the wall's inner face. Two things keep it out of the room:
+
+- The bake's bounce gather weights the probes around each hit by an exact
+  ray test from the hit to the probe (`corners`), not just by facing:
+  without it such a probe lit a closed dark room with daylight through the
+  bounces.
+- Per probe, which voxels of its neighbourhood (the cells around its grid
+  point, four voxels per cell) open space joins it to without leaving the
+  neighbourhood: a flood fill across voxel faces no surface blocks
+  (`room_bake::bake_reach`, 16 words per probe). Shading weights a probe by
+  this reach at the point (`probe_reaches`, trilinear between voxel
+  centres, so it changes over 12.5 cm instead of switching), on top of the
+  distance-map visibility. The distance-map test alone left about 1e-4 of
+  the daylight behind a 0.3 m wall: a few lux, which a room metered at
+  EV -3 showed as a quilt of faint blobs. A probe next to a doorway still
+  reaches round the jamb; a closed door is baked into the reach of that
+  door state. The fallback for a point no probe sees uses only probes that
+  reach it.
+
+One volume per scene, up to 65,536 probes.
 
 Lamps: `room_bake::bake_lights` bakes each local light's bounce on its own;
 add the sets of the lit lamps into the emission when a switch flips
@@ -111,15 +130,20 @@ behind a corner's next wall into full daylight; this way their weight stays
 faint. On an open wall the share is 1 and the blur is symmetric.
 
 Probe visibility (DDGI): `Scene::reserve_probe_visibility` and
-`Renderer::set_probe_visibility` with `room_bake::bake_visibility` give
-every probe an 8x8 octahedral map of the mean and mean squared distance to
-the nearest surface (64 words per probe in aux; 3.5 MB for 13,824 probes).
+`Renderer::set_probe_visibility` with `room_bake::bake_visibility`,
+`pack_offsets` and `bake_reach` give every probe an 8x8 octahedral map of
+the mean and mean squared distance to the nearest surface, its offset and
+its reach (81 words per probe in aux; 4.6 MB for 14,260 probes).
 Shading then weights each of the eight probes by a Chebyshev test of the
 normal-biased point's distance against that map, read bilinearly, and a
 smooth backface term, instead of the separation planes. Probes behind a wall
-fade out smoothly rather than per cell. Cost in `interior_rooms` at 4K: within
-run-to-run noise of the shade pass (under 0.6 ms). `ROOMS_NO_DDGI=1` turns it
-off there for comparison.
+fade out smoothly rather than per cell. Cost in `interior_rooms` at 4K: the
+distance maps within run-to-run noise of the shade pass (under 0.6 ms); the
+relocation offsets and reach about 2 ms more (6.4 to 8.4 ms and 8.7 to
+11.1 ms at two views, RTX 5070 Ti, with eight loads per probe; the shipped
+four-load reach is not yet measured on an idle GPU). The bake takes about
+23 s instead of 8 (relocation, reach, exact visibility in the gather).
+`ROOMS_NO_DDGI=1` turns it off there for comparison.
 
 ## Light shapes: cookies and profiles
 

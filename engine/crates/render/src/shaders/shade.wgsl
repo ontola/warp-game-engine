@@ -1359,6 +1359,39 @@ fn unpack_emission(word: u32) -> vec3<f32> {
     return vec3<f32>(f32(word&511u),f32((word>>9u)&511u),f32((word>>18u)&511u))*exp2(f32(word>>27u)-24.0);
 }
 fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample { return irradiance_sample_at(p, p, n); }
+// How far open space joins the probe at grid point `at` to `x` within its
+// neighbourhood (room_bake::bake_reach: one bit per voxel of the cells
+// around the grid point, four voxels per cell, stored after the offsets),
+// interpolated trilinearly between voxel centres so the weight changes
+// over a voxel instead of switching at its face.
+fn probe_reaches(index: u32, at: vec3<f32>, x: vec3<f32>, dims: vec3<u32>, cell: f32) -> f32 {
+    let f = (x - at + cell) / (cell * 0.25) - 0.5;
+    let base = vec3<i32>(floor(f));
+    let t = f - floor(f);
+    let words = u32(gi.trace.w) + dims.x * dims.y * dims.z * 65u + index * 16u;
+    var sum = 0.0;
+    // A row of eight voxels along x is one byte of a word (bit x + 8 (y % 4),
+    // word y / 4 + 2 z): the two x neighbours come from one load.
+    for (var c = 0u; c < 4u; c++) {
+        let y = base.y + i32(c & 1u);
+        let z = base.z + i32(c >> 1u);
+        if y < 0 || y >= 8 || z < 0 || z >= 8 { continue; }
+        let row = (aux_word(words + u32(y / 4 + 2 * z)) >> (8u * u32(y % 4))) & 255u;
+        var r = 0.0;
+        if base.x >= 0 && base.x < 8 { r += f32((row >> u32(base.x)) & 1u) * (1.0 - t.x); }
+        if base.x + 1 >= 0 && base.x + 1 < 8 { r += f32((row >> u32(base.x + 1)) & 1u) * t.x; }
+        sum += r * select(1.0 - t.y, t.y, (c & 1u) != 0u) * select(1.0 - t.z, t.z, (c >> 1u) != 0u);
+    }
+    return sum;
+}
+// A probe's offset from its grid point (room_bake::pack_offsets), stored
+// after the visibility maps: three 10-bit signed fractions of half a cell.
+fn probe_offset(index: u32, dims: vec3<u32>, cell: f32) -> vec3<f32> {
+    let w = aux_word(u32(gi.trace.w) + dims.x * dims.y * dims.z * 64u + index);
+    let q = vec3<f32>(f32(w & 1023u), f32((w >> 10u) & 1023u), f32((w >> 20u) & 1023u));
+    return (q - 512.0) / 511.0 * (0.5 * cell);
+}
+
 // DDGI-style probe visibility (room_bake::bake_visibility): per probe an
 // 8x8 octahedral map of the mean and mean squared distance to the nearest
 // surface, in aux at gi.trace.w (0: none). How much probe `index` at `probe`
@@ -1436,7 +1469,10 @@ fn irradiance_sample_at(p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> Irrad
             let corner=vec3<u32>(c&1u,(c>>1u)&1u,(c>>2u)&1u);
             let w3=select(1.0-t,t,corner==vec3<u32>(1u));
             let g=vec3<u32>(cell0)+corner;
-            let to_probe=origin+vec3<f32>(g)*cell-surface;
+            // The probe where it was baked: its grid point, moved out of
+            // geometry (room_bake::probe_positions) when visibility is on.
+            let probe=origin+vec3<f32>(g)*cell+select(vec3<f32>(0.0),probe_offset(g.x+g.y*dims.x+g.z*dims.x*dims.y,dims,cell),ddgi);
+            let to_probe=probe-surface;
             let facing=dot(to_probe,n)/max(length(to_probe),1e-4);
             // Probes just behind the surface still count a little (a wall's
             // own probes sit in it); far behind it they do not.
@@ -1452,9 +1488,13 @@ fn irradiance_sample_at(p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> Irrad
             }
             if mode>=4u {
                 var valid=select(1.0,0.0,(aux_word(base)&0x80000000u)!=0u);
+                // With visibility, the fallback below uses only probes that reach
+                // the point through open space (a probe outdoors behind the wall
+                // must not light a room whatever else fails).
+                if ddgi { valid*=probe_reaches(index,origin+vec3<f32>(g)*cell,surface+n*(0.3*cell),dims,cell); }
                 let inside=valid;
                 if ddgi {
-                    valid*=probe_sees(index,origin+vec3<f32>(g)*cell,surface+n*(0.3*cell));
+                    valid*=probe_sees(index,probe,surface+n*(0.3*cell));
                 } else if mode==5u {
                     let plane=vec4<f32>(aux_f32(base+1u),aux_f32(base+2u),aux_f32(base+4u),aux_f32(base+5u));
                     // Zero plane passes through. Blend over 15 cm to avoid a hard edge.

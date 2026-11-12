@@ -231,30 +231,45 @@ fn probe_rotation(i: usize) -> glam::Quat {
     glam::Quat::from_xyzw(a * u2.sin(), a * u2.cos(), b * u3.sin(), b * u3.cos()).normalize()
 }
 
-/// A channel of `probes` at `p` on a surface facing `n`: trilinear over the
-/// valid probes in front of the surface, as the shader samples them.
-fn sample(grid: &Grid, probes: &[Probe], valid: &[bool], p: Vec3, n: Vec3, channel: usize) -> f32 {
+/// The probes that light the point `p` on a surface facing `n`, with their
+/// normalised weights: trilinear over the valid probes in front of the
+/// surface that see the point. The visibility is an exact ray test (what the
+/// shader approximates with the DDGI distance maps): without it a probe on
+/// the far side of a wall, moved there out of the wall by
+/// `probe_positions`, lit the room with daylight through the bounces.
+type Corners = [(u32, f32); 8];
+
+fn corners(grid: &Grid, pos: &[Vec3], valid: &[bool], occluders: &Occluders, p: Vec3, n: Vec3) -> Corners {
     let max = Vec3::new(grid.dims[0] as f32 - 1., grid.dims[1] as f32 - 1., grid.dims[2] as f32 - 1.);
     let f = ((p - grid.origin) / grid.cell).clamp(Vec3::ZERO, max);
     let base = f.floor().min(max - Vec3::ONE);
     let t = f - base;
-    let (mut value, mut weight) = (0., 0.);
+    let mut out = [(0u32, 0f32); 8];
+    let mut weight = 0.;
     for c in 0..8 {
         let o = [c & 1, (c >> 1) & 1, (c >> 2) & 1];
         let i = base.x as usize + o[0]
             + (base.y as usize + o[1]) * grid.dims[0] as usize
             + (base.z as usize + o[2]) * (grid.dims[0] * grid.dims[1]) as usize;
         if !valid[i] { continue; }
-        let to = grid.position(i) - p;
-        let facing = (to.dot(n) / to.length().max(1e-4) * 2. + 1.).clamp(0., 1.);
+        let to = pos[i] - p;
+        let d = to.length();
+        if d > 1e-4 && occluders.blocked(p, to / d, d) { continue; }
+        let facing = (to.dot(n) / d.max(1e-4) * 2. + 1.).clamp(0., 1.);
         let w = (if o[0] == 1 { t.x } else { 1. - t.x })
             * (if o[1] == 1 { t.y } else { 1. - t.y })
             * (if o[2] == 1 { t.z } else { 1. - t.z })
             * (facing * facing + 1e-4);
-        value += probes[i].irradiance(n)[channel] * w;
+        out[c] = (i as u32, w);
         weight += w;
     }
-    if weight > 1e-6 { value / weight } else { 0. }
+    for c in &mut out { c.1 = if weight > 1e-6 { c.1 / weight } else { 0. }; }
+    out
+}
+
+/// The irradiance `probes` give at a point with these `corners`, facing `n`.
+fn gather(corners: &Corners, probes: &[Probe], n: Vec3) -> Vec3 {
+    corners.iter().filter(|c| c.1 > 0.).map(|&(i, w)| probes[i as usize].irradiance(n) * w).sum()
 }
 
 /// Run `f(index, item)` over `items` on the cooking threads.
@@ -270,19 +285,19 @@ fn each<T: Send>(items: &mut [T], f: impl Fn(usize, &mut T) + Sync) {
 
 /// The 26 neighbours each valid probe sees directly (index, weight), for
 /// smoothing the bounces: never across a wall.
-fn visible_neighbours(grid: &Grid, occluders: &Occluders, valid: &[bool]) -> Vec<Vec<(usize, f32)>> {
+fn visible_neighbours(grid: &Grid, pos: &[Vec3], occluders: &Occluders, valid: &[bool]) -> Vec<Vec<(usize, f32)>> {
     let mut neighbours: Vec<Vec<(usize, f32)>> = vec![Vec::new(); grid.count()];
     each(&mut neighbours, |i, list| {
         if !valid[i] { return; }
         let [dx, dy, dz] = grid.dims.map(|d| d as i64);
         let (x, y, z) = (i as i64 % dx, (i as i64 / dx) % dy, i as i64 / (dx * dy));
-        let p = grid.position(i);
+        let p = pos[i];
         for ox in -1..=1i64 { for oy in -1..=1i64 { for oz in -1..=1i64 {
             let (nx, ny, nz) = (x + ox, y + oy, z + oz);
             if (ox, oy, oz) == (0, 0, 0) || nx < 0 || ny < 0 || nz < 0 || nx >= dx || ny >= dy || nz >= dz { continue; }
             let j = (nx + ny * dx + nz * dx * dy) as usize;
             if !valid[j] { continue; }
-            let d = grid.position(j) - p;
+            let d = pos[j] - p;
             if occluders.blocked(p, d.normalize(), d.length()) { continue; }
             list.push((j, 0.5f32.powi((ox.abs() + oy.abs() + oz.abs()) as i32)));
         }}}
@@ -310,10 +325,69 @@ fn smooth_bounce(light: &mut [Probe], neighbours: &[Vec<(usize, f32)>], valid: &
     });
 }
 
+/// Furthest a probe moves from its grid point, per axis, in cells: under
+/// half a cell, so each probe stays nearest its own grid point and the
+/// trilinear layout holds (DDGI's limit).
+pub const MAX_OFFSET_CELLS: f32 = 0.45;
+
+/// Where each probe sits: its grid point, moved out of geometry (probe
+/// relocation, Majercik et al. 2021, "Scaling Probe-Based Real-Time
+/// Dynamic Global Illumination for Production"). A probe that sees the back
+/// of a surface along a quarter of its rays is inside something: it moves
+/// through the nearest back face to just beyond it. A probe closer to a
+/// front face than a fifth of a cell moves away from it. At most
+/// `MAX_OFFSET_CELLS` per axis; a probe still inside after that stays
+/// invalid. Without this a wall thinner than a cell could hold a probe
+/// layer (lost) or none, and the scene had to be built around the grid.
+pub fn probe_positions(grid: &Grid, occluders: &Occluders) -> Vec<Vec3> {
+    // Rays start a little behind the probe: `Occluders::hit` skips the
+    // first 2 cm, so a probe on a surface (a grid layer on the ceiling)
+    // would not see it and would leave through the slab's far side.
+    const BEHIND: f32 = 0.03;
+    let dirs = sphere(256);
+    let near = 0.2 * grid.cell;
+    let max = Vec3::splat(MAX_OFFSET_CELLS * grid.cell);
+    let mut out = vec![Vec3::ZERO; grid.count()];
+    each(&mut out, |i, p| {
+        let base = grid.position(i);
+        let mut offset = Vec3::ZERO;
+        for _ in 0..4 {
+            let o = base + offset;
+            let (mut back, mut nearest_back, mut nearest_front) = (0usize, (f32::INFINITY, Vec3::ZERO), (f32::INFINITY, Vec3::ZERO));
+            for d in &dirs {
+                if let Some((t, n)) = occluders.hit(o - *d * BEHIND, *d).map(|(t, n)| ((t - BEHIND).max(0.0), n)) {
+                    if n.dot(*d) > 0.0 {
+                        back += 1;
+                        if t < nearest_back.0 { nearest_back = (t, *d); }
+                    } else if t < nearest_front.0 { nearest_front = (t, *d); }
+                }
+            }
+            let step = if back * 4 >= dirs.len() { nearest_back.1 * (nearest_back.0 + near) }
+                else if nearest_front.0 < near { -nearest_front.1 * (near - nearest_front.0) }
+                else { break };
+            offset = (offset + step).clamp(-max, max);
+        }
+        *p = base + offset;
+    });
+    out
+}
+
+/// The probes' offsets from their grid points for the shader (one word
+/// each, after the visibility maps): three 10-bit signed fractions of half
+/// a cell.
+pub fn pack_offsets(grid: &Grid, positions: &[Vec3]) -> Vec<u32> {
+    positions.iter().enumerate().map(|(i, p)| {
+        let f = ((*p - grid.position(i)) / (0.5 * grid.cell)).clamp(Vec3::splat(-1.0), Vec3::splat(1.0));
+        let q = |v: f32| ((v * 511.0).round() as i32 + 512) as u32 & 1023;
+        q(f.x) | (q(f.y) << 10) | (q(f.z) << 20)
+    }).collect()
+}
+
 /// Bake sky and sun transport for `grid` against `occluders` with the sun
 /// towards `sun`. Rebake when the sun moves or the geometry changes.
 pub fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, settings: &Settings) -> Result<Vec<Probe>, String> {
     grid.validate()?;
+    let pos = probe_positions(grid, occluders);
     let Settings { sky_rays, bounce_rays, bounces, reflectance } = *settings;
     if sky_rays < 16 || bounce_rays < 16 || !sun.is_finite() || sun.length_squared() < 0.5
         || !reflectance.is_finite() || !(0.0..=1.0).contains(&reflectance) {
@@ -330,7 +404,7 @@ pub fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, settings: &Settings) 
     {
         let mut both: Vec<(Probe, bool)> = vec![(Probe::default(), true); count];
         each(&mut both, |i, (p, ok)| {
-            let origin = grid.position(i);
+            let origin = pos[i];
             let rot = probe_rotation(i);
             let (mut v, mut denom, mut back) = ([0f32; 6], [0f32; 6], 0usize);
             for d in sky_dirs.iter().map(|d| rot * *d) {
@@ -349,10 +423,10 @@ pub fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, settings: &Settings) 
         for (i, (p, ok)) in both.into_iter().enumerate() { probes[i] = p; valid[i] = ok; }
     }
     // What each probe's bounce rays hit, with the sun on it: reused by every bounce.
-    let mut hits: Vec<Vec<(Vec3, Vec3, f32, [f32; 6])>> = vec![Vec::new(); count];
+    let mut hits: Vec<Vec<(Corners, Vec3, f32, [f32; 6])>> = vec![Vec::new(); count];
     each(&mut hits, |i, list| {
         if !valid[i] { return; }
-        let origin = grid.position(i);
+        let origin = pos[i];
         let rot = probe_rotation(i);
         let dirs: Vec<Vec3> = bounce_dirs.iter().map(|d| rot * *d).collect();
         let mut denom = [0f32; 6];
@@ -365,11 +439,11 @@ pub fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, settings: &Settings) 
                 let lit = n.dot(sun).max(0.);
                 let sun_e = if sun.y > 0. && lit > 0. && !occluders.blocked(at + n * 0.03, sun, f32::INFINITY) { lit } else { 0. };
                 let w: [f32; 6] = std::array::from_fn(|a| AXES[a].dot(*d).max(0.) / denom[a].max(1e-6));
-                list.push((at + n * 0.15, n, sun_e, w));
+                list.push((corners(grid, &pos, &valid, occluders, at + n * 0.15, n), n, sun_e, w));
             }
         }
     });
-    let neighbours = visible_neighbours(grid, occluders, &valid);
+    let neighbours = visible_neighbours(grid, &pos, occluders, &valid);
     // Gather: each bounce lights the surfaces with the previous one's probes.
     // y and z hold everything that has arrived so far.
     let mut light = probes;
@@ -378,9 +452,10 @@ pub fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, settings: &Settings) 
         each(&mut light, |i, p| {
             if !valid[i] { return; }
             let (mut sky, mut sunlit) = ([0f32; 6], [0f32; 6]);
-            for (at, n, sun_e, w) in &hits[i] {
-                let s = sample(grid, &previous, &valid, *at, *n, 0) + sample(grid, &previous, &valid, *at, *n, 1);
-                let z = sun_e + sample(grid, &previous, &valid, *at, *n, 2);
+            for (c, n, sun_e, w) in &hits[i] {
+                let g = gather(c, &previous, *n);
+                let s = g.x + g.y;
+                let z = sun_e + g.z;
                 for a in 0..6 { sky[a] += reflectance * s * w[a]; sunlit[a] += reflectance * z * w[a]; }
             }
             for a in 0..6 { p.axes[a].y = sky[a]; p.axes[a].z = sunlit[a]; }
@@ -412,6 +487,7 @@ pub fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, settings: &Settings) 
 /// `irradiance_volume::pack_sky_emission`. Rebake when a lamp moves.
 pub fn bake_lights(grid: &Grid, occluders: &Occluders, lights: &[crate::headlights::LocalLight], settings: &Settings) -> Result<Vec<Vec<Probe>>, String> {
     grid.validate()?;
+    let pos = probe_positions(grid, occluders);
     let Settings { bounce_rays, bounces, reflectance, .. } = *settings;
     if bounce_rays < 16 || !reflectance.is_finite() || !(0.0..=1.0).contains(&reflectance) {
         return Err("invalid light bake settings".into());
@@ -422,15 +498,15 @@ pub fn bake_lights(grid: &Grid, occluders: &Occluders, lights: &[crate::headligh
     let probe_dirs = sphere(256);
     let mut valid = vec![true; count];
     each(&mut valid, |i, ok| {
-        let o = grid.position(i);
+        let o = pos[i];
         let back = probe_dirs.iter().filter(|d| occluders.hit(o, **d).is_some_and(|(_, n)| n.dot(**d) > 0.0)).count();
         *ok = back * 4 < probe_dirs.len();
     });
     // Hits with each light's direct irradiance there (shadow-tested).
-    let mut hits: Vec<Vec<(Vec3, Vec3, Vec<Vec3>, [f32; 6])>> = vec![Vec::new(); count];
+    let mut hits: Vec<Vec<(Corners, Vec3, Vec<Vec3>, [f32; 6])>> = vec![Vec::new(); count];
     each(&mut hits, |i, list| {
         if !valid[i] { return; }
-        let origin = grid.position(i);
+        let origin = pos[i];
         let rot = probe_rotation(i);
         let dirs: Vec<Vec3> = dirs.iter().map(|d| rot * *d).collect();
         let mut denom = [0f32; 6];
@@ -448,30 +524,10 @@ pub fn bake_lights(grid: &Grid, occluders: &Occluders, lights: &[crate::headligh
                 e * cos
             }).collect();
             let w: [f32; 6] = std::array::from_fn(|a| AXES[a].dot(*d).max(0.) / denom[a].max(1e-6));
-            list.push((at + n * 0.15, n, direct, w));
+            list.push((corners(grid, &pos, &valid, occluders, at + n * 0.15, n), n, direct, w));
         }
     });
-    let sample_rgb = |probes: &[Probe], p: Vec3, n: Vec3| -> Vec3 {
-        let max = Vec3::new(grid.dims[0] as f32 - 1., grid.dims[1] as f32 - 1., grid.dims[2] as f32 - 1.);
-        let f = ((p - grid.origin) / grid.cell).clamp(Vec3::ZERO, max);
-        let base = f.floor().min(max - Vec3::ONE);
-        let t = f - base;
-        let (mut value, mut weight) = (Vec3::ZERO, 0.);
-        for c in 0..8 {
-            let o = [c & 1, (c >> 1) & 1, (c >> 2) & 1];
-            let i = base.x as usize + o[0] + (base.y as usize + o[1]) * grid.dims[0] as usize
-                + (base.z as usize + o[2]) * (grid.dims[0] * grid.dims[1]) as usize;
-            if !valid[i] { continue; }
-            let to = grid.position(i) - p;
-            let facing = (to.dot(n) / to.length().max(1e-4) * 2. + 1.).clamp(0., 1.);
-            let w = (if o[0] == 1 { t.x } else { 1. - t.x }) * (if o[1] == 1 { t.y } else { 1. - t.y })
-                * (if o[2] == 1 { t.z } else { 1. - t.z }) * (facing * facing + 1e-4);
-            value += probes[i].irradiance(n) * w;
-            weight += w;
-        }
-        if weight > 1e-6 { value / weight } else { Vec3::ZERO }
-    };
-    let neighbours = visible_neighbours(grid, occluders, &valid);
+    let neighbours = visible_neighbours(grid, &pos, occluders, &valid);
     let mut out = Vec::with_capacity(lights.len());
     for l in 0..lights.len() {
         let mut probes = vec![Probe::default(); count];
@@ -480,8 +536,8 @@ pub fn bake_lights(grid: &Grid, occluders: &Occluders, lights: &[crate::headligh
             each(&mut probes, |i, p| {
                 if !valid[i] { return; }
                 let mut axes = [Vec3::ZERO; 6];
-                for (at, n, direct, w) in &hits[i] {
-                    let leaving = reflectance * (direct[l] + sample_rgb(&previous, *at, *n));
+                for (c, n, direct, w) in &hits[i] {
+                    let leaving = reflectance * (direct[l] + gather(c, &previous, *n));
                     for a in 0..6 { axes[a] += leaving * w[a]; }
                 }
                 p.axes = axes;
@@ -513,6 +569,72 @@ pub fn octahedral_direction(uv: glam::Vec2) -> Vec3 {
     n.normalize()
 }
 
+/// Voxels per cell along each axis for `bake_reach`.
+pub const REACH_PER_CELL: usize = 4;
+/// Voxels per axis of a probe's neighbourhood: one cell either side of its
+/// grid point, all the points it lights.
+pub const REACH_SIDE: usize = 2 * REACH_PER_CELL;
+/// Words per probe: one bit per voxel.
+pub const REACH_WORDS: usize = REACH_SIDE * REACH_SIDE * REACH_SIDE / 32;
+
+/// Whether open space joins `a` and `b` (no surface between them, also one
+/// within `Occluders::hit`'s first 2 cm of `a`).
+fn open_between(occluders: &Occluders, a: Vec3, b: Vec3) -> bool {
+    const BEHIND: f32 = 0.03;
+    let to = b - a;
+    let len = to.length();
+    if len < 1e-6 { return true; }
+    let d = to / len;
+    !occluders.hit(a - d * BEHIND, d).is_some_and(|(t, _)| t - BEHIND < len)
+}
+
+/// Per probe, which voxels of its neighbourhood (the cells around its grid
+/// point, `REACH_PER_CELL` voxels per cell) it reaches through open space
+/// without leaving the neighbourhood: a flood fill from the probe's voxel
+/// across voxel faces that no surface blocks. The shader lets a probe light
+/// a point only if the point's voxel is reached. A probe the far side of a
+/// wall (moved there out of the wall by `probe_positions`, or simply
+/// outdoors) reaches a room only around the wall's end or through a door
+/// inside its neighbourhood; the distance-map test alone (`bake_visibility`)
+/// let a little daylight through a thin wall, which a dark room showed. A
+/// door's state is baked into it: rebake per state, as the visibility.
+pub fn bake_reach(grid: &Grid, occluders: &Occluders) -> Vec<[u32; REACH_WORDS]> {
+    let pos = probe_positions(grid, occluders);
+    let probe_dirs = sphere(256);
+    let voxel = grid.cell / REACH_PER_CELL as f32;
+    let s = REACH_SIDE as i32;
+    let mut out = vec![[0u32; REACH_WORDS]; grid.count()];
+    each(&mut out, |i, bits| {
+        let o = pos[i];
+        let back = probe_dirs.iter().filter(|d| occluders.hit(o, **d).is_some_and(|(_, n)| n.dot(**d) > 0.0)).count();
+        if back * 4 >= probe_dirs.len() { return; }
+        let corner = grid.position(i) - Vec3::splat(grid.cell);
+        let centre = |v: [i32; 3]| corner + (Vec3::new(v[0] as f32, v[1] as f32, v[2] as f32) + 0.5) * voxel;
+        let index = |v: [i32; 3]| (v[0] + v[1] * s + v[2] * s * s) as usize;
+        let mut seen = [false; REACH_SIDE * REACH_SIDE * REACH_SIDE];
+        let mut queue = Vec::with_capacity(seen.len());
+        // Start in the probe's voxel, if open space joins it to the centre.
+        let start = ((o - corner) / voxel).floor();
+        let start = [start.x as i32, start.y as i32, start.z as i32].map(|c| c.clamp(0, s - 1));
+        if open_between(occluders, o, centre(start)) { seen[index(start)] = true; queue.push(start); }
+        let mut head = 0;
+        while head < queue.len() {
+            let v = queue[head];
+            head += 1;
+            for (axis, step) in [(0, 1), (0, -1), (1, 1), (1, -1), (2, 1), (2, -1)] {
+                let mut w = v;
+                w[axis] += step;
+                if w[axis] < 0 || w[axis] >= s || seen[index(w)] { continue; }
+                if !open_between(occluders, centre(v), centre(w)) { continue; }
+                seen[index(w)] = true;
+                queue.push(w);
+            }
+        }
+        for (k, &on) in seen.iter().enumerate() { if on { bits[k / 32] |= 1 << (k % 32); } }
+    });
+    out
+}
+
 /// Per probe, DDGI-style visibility: an 8x8 octahedral map of the mean
 /// distance and mean squared distance to the nearest surface (4 rays per
 /// texel, capped at 1.5 cells), as two half floats per texel. The shader
@@ -521,12 +643,13 @@ pub fn octahedral_direction(uv: glam::Vec2) -> Vec3 {
 /// and the weight changes smoothly, not per cell. Probes inside geometry get
 /// zeros (no weight).
 pub fn bake_visibility(grid: &Grid, occluders: &Occluders) -> Vec<[u32; VISIBILITY_SIDE * VISIBILITY_SIDE]> {
+    let pos = probe_positions(grid, occluders);
     let max = grid.cell * 1.5;
     let side = VISIBILITY_SIDE;
     let mut out = vec![[0u32; VISIBILITY_SIDE * VISIBILITY_SIDE]; grid.count()];
     let probe_dirs = sphere(256);
     each(&mut out, |i, texels| {
-        let o = grid.position(i);
+        let o = pos[i];
         let back = probe_dirs.iter().filter(|d| occluders.hit(o, **d).is_some_and(|(_, n)| n.dot(**d) > 0.0)).count();
         if back * 4 >= probe_dirs.len() { return; }
         for ty in 0..side {
@@ -548,11 +671,12 @@ pub fn bake_visibility(grid: &Grid, occluders: &Occluders) -> Vec<[u32; VISIBILI
 }
 
 pub fn separation_planes(grid: &Grid, occluders: &Occluders) -> Vec<[f32; 4]> {
+    let pos = probe_positions(grid, occluders);
     let dirs: Vec<Vec3> = (-1..=1).flat_map(|x| (-1..=1).flat_map(move |y| (-1..=1).map(move |z| Vec3::new(x as f32, y as f32, z as f32))))
         .filter(|d| d.length_squared() > 0.0).map(|d| d.normalize()).collect();
     let mut planes = vec![[0f32; 4]; grid.count()];
     each(&mut planes, |i, plane| {
-        let p = grid.position(i);
+        let p = pos[i];
         let mut nearest = grid.cell * 1.75;
         for d in &dirs {
             if let Some((t, n)) = occluders.hit(p, *d) {
@@ -592,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn rooms_are_darker_than_outside_and_walls_are_invalid() {
+    fn rooms_are_darker_than_outside() {
         let grid = Grid { origin: Vec3::new(-3.75, 0.25, -3.75), cell: 0.5, dims: [16, 7, 16] };
         let occ = Occluders::from_boxes(&room());
         let probes = bake(&grid, &occ, Vec3::new(0.3, 0.8, 0.5), &Settings { sky_rays: 512, bounce_rays: 128, bounces: 2, reflectance: 0.5 }).unwrap();
@@ -602,13 +726,30 @@ mod tests {
         assert!(outside.x > 0.9, "outside sees the sky: {outside}");
         assert!(inside.x < 0.05, "inside sees little sky: {inside}");
         assert!(inside.y > 0.0 && inside.z > 0.0, "bounced sky and sun reach the room: {inside}");
-        // A probe in the 20 cm back wall (z = -2.1 is not on the grid; use the roof slab at y = 3.1).
-        let mut in_wall = 0;
+    }
+
+    /// A probe whose grid point lies in a wall thinner than a cell is moved
+    /// out of it (to the nearer side, within `MAX_OFFSET_CELLS`) and baked
+    /// as a valid probe there.
+    #[test]
+    fn probes_in_a_wall_move_out_of_it() {
+        let wall = Affine3A::from_scale_rotation_translation(Vec3::new(0.3, 6.0, 6.0), glam::Quat::IDENTITY, Vec3::new(0.05, 1.0, 0.0));
+        let occ = Occluders::from_boxes(&[wall]);
+        let grid = Grid { origin: Vec3::new(-1.0, 0.5, -1.0), cell: 0.5, dims: [5, 3, 5] };
+        let pos = probe_positions(&grid, &occ);
+        let probes = bake(&grid, &occ, Vec3::new(0.3, 0.8, 0.5), &Settings { sky_rays: 256, bounce_rays: 64, bounces: 1, reflectance: 0.5 }).unwrap();
+        let mut moved = 0;
         for i in 0..grid.count() {
-            let p = grid.position(i);
-            if p.x.abs() < 2.0 && p.z.abs() < 2.0 && (p.y - 3.1).abs() < 0.11 { assert_eq!(probes[i].axes[0].z, 2.0); in_wall += 1; }
+            let g = grid.position(i);
+            if g.x.abs() < 1e-4 {
+                // In the wall (x -0.1..0.2): out of it, on the near side.
+                assert!(pos[i].x < -0.1 || pos[i].x > 0.2, "probe {i} still in the wall at {}", pos[i]);
+                assert!((pos[i] - g).abs().max_element() <= MAX_OFFSET_CELLS * grid.cell + 1e-4);
+                assert_ne!(probes[i].axes[0].z, 2.0, "moved probe {i} is valid");
+                moved += 1;
+            }
         }
-        let _ = in_wall;
+        assert!(moved > 0);
     }
 
     #[test]

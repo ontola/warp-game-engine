@@ -27,6 +27,16 @@ pub struct Grid { pub origin: Vec3, pub cell: f32, pub dims: [u32; 3] }
 
 impl Grid {
     pub fn count(&self) -> usize { self.dims.iter().map(|&d| d as usize).product() }
+    /// The grid of `cell` spacing covering the box `min`..`max`, one cell
+    /// beyond it on every side: the volume fades out over half a cell past
+    /// its outer probes (shading's `weight`), and that fade must lie outside
+    /// what it covers, not on the floor. Probes may land in walls or on
+    /// surfaces: `room_bake::probe_positions` moves them out, so the grid
+    /// need not be placed around the geometry.
+    pub fn covering(min: Vec3, max: Vec3, cell: f32) -> Self {
+        let n = ((max - min) / cell).ceil() + 2.0;
+        Self { origin: min - Vec3::splat(cell), cell, dims: [n.x as u32 + 1, n.y as u32 + 1, n.z as u32 + 1] }
+    }
     pub fn position(&self, i: usize) -> Vec3 {
         let [x, y, _] = self.dims.map(|d| d as usize);
         self.origin + Vec3::new((i % x) as f32, ((i / x) % y) as f32, (i / (x * y)) as f32) * self.cell
