@@ -29,6 +29,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_TILED_POST` | Untiled tone mapping and post (same image). |
 | `KERN_SKY_VIS_CACHE` | No cached sky transmittance through the canopy. |
 | `KERN_CANOPY_CLUMPING` | Crowns as a uniform fog at the coarse canopy levels again (a forest floor far away then sees a fifth of its sky; `canopy.rs` clumping_on). |
+| `KERN_VOXEL_GAP_MIPS` | Coarse tree voxel levels add their children's leaf area again (a sparse branch cooks into a near-solid ball; `vegetation_aggregate.rs` gap_preserving_area). Part of the cook key, so it recooks. |
 | `KERN_TRACED_REFLECTIONS` | No traced reflections: glossy surfaces reflect only the sky and the heuristic ground bounce ([dynamic-gi.md](dynamic-gi.md)). |
 | `KERN_SSSR=0` | The single mirror-ray traced reflection instead of the stochastic one (sssr.rs): one ray per pixel blurred by mip, no spatial or temporal resolve ([dynamic-gi.md](dynamic-gi.md)). |
 | `KERN_RSM=0` | No live bounce for clustered lights marked `with_bounce` (rsm.rs); `KERN_RSM=open` keeps it but drops its visibility walk, so it passes walls ([interior-light.md](interior-light.md#live-bounce-of-moving-lights)). |
