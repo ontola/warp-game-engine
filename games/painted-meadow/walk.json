@@ -1,0 +1,32 @@
+{
+  "size": [
+    960,
+    540
+  ],
+  "steps": [
+    {
+      "ticks": 2
+    },
+    {
+      "expect": "/errors",
+      "equals": []
+    },
+    {
+      "capture": "meadow.png"
+    },
+    {
+      "ticks": 60,
+      "mv": [
+        0,
+        1
+      ]
+    },
+    {
+      "expect": "/state/z",
+      "max": -1
+    },
+    {
+      "capture": "walk.png"
+    }
+  ]
+}

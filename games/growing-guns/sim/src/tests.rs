@@ -16,6 +16,7 @@ fn flat_world() -> World {
     w.players[1].pos = Vec3::new(0.0, HALF_HEIGHT, -20.0);
     w.players[0].yaw = 0.0;
     w.players[1].yaw = 0.0;
+    for p in &mut w.players { p.pitch = 0.; }
     w.step(&[Input::default(); 2]);
     w
 }
@@ -237,6 +238,14 @@ fn phoenix_rises_and_drops_back() {
 }
 
 #[test]
+fn high_damage_headshots_keep_the_headshot_effect() {
+    let mut w = flat_world();
+    let blow = player::Blow { head: true, ..player::Blow::plain(w.players[1].eye()) };
+    w.apply_damage(1, 500, Some(0), blow);
+    assert!(w.events.iter().any(|e| matches!(e, Event::Kill { victim: 1, gib: Gib::Head, .. })));
+}
+
+#[test]
 fn invulnerability_blocks_damage() {
     let mut w = flat_world();
     w.players[1].iframes = 0.2;
@@ -332,6 +341,36 @@ fn eliminated_human_gets_stationary_howitzer_after_card_pick() {
     assert!(w.projectiles[0].vel.y>0.0);
     assert!(w.bullets.is_empty() && w.strikes.is_empty());
     w.next_round(); assert!(w.players[0].howitzer.is_none() && w.players[0].alive && !w.players[0].ghost);
+}
+
+#[test]
+fn crossbow_keeps_aim_and_zoom_until_the_next_spawn() {
+    let mut world = World::new_with(3, &[false, false, false], |w| w.modifier_chance = 0.);
+    world.cards = Arc::new(cards::test_book());
+    world.release_cage();
+    world.queue_damage(0, 1000, Some(2));
+    world.step(&[]);
+    world.step(&[Input { pick: Some(0), ..Default::default() }]);
+    world.step(&[]);
+    assert!(world.players[0].howitzer.is_some());
+    world.players[0].siege_crossbow = true;
+    world.queue_damage(1, 1000, Some(2));
+    let aim = Input { look: [0.01, 0.002], special: true, ..Default::default() };
+    for _ in 0..65 {
+        let previous = world.players[0].yaw;
+        let mut client = world.clone();
+        client.predict_player(0, aim);
+        world.step(&[aim]);
+        assert_eq!(world.phase, Phase::Picking);
+        assert!(world.players[0].zooming && world.players[0].yaw > previous);
+        assert_eq!(world.players[0].yaw, client.players[0].yaw);
+        assert_eq!(world.players[0].pitch, client.players[0].pitch);
+    }
+    world.step(&[aim, Input { pick: Some(0), ..Default::default() }]);
+    assert!(world.awaiting_rifle(0) && world.players[0].howitzer.is_none());
+    let previous = world.players[0].yaw;
+    world.step(&[aim]);
+    assert!(world.players[0].yaw > previous);
 }
 
 #[test]
@@ -952,6 +991,7 @@ fn crowd_launch_arcs_to_solid_ground_and_releases_on_contact() {
             w.force_island = island;
             w.modifier_chance = 0.0;
         });
+        for p in &w.players { assert!(p.forward().dot(-p.eye().normalize()) > 0.9999); }
         let start = w.players[0].pos;
         assert!((w.arena.stadium.ground(start) + HALF_HEIGHT - start.y).abs() < 0.001);
         for _ in 0..48 {
@@ -974,6 +1014,7 @@ fn crowd_launch_arcs_to_solid_ground_and_releases_on_contact() {
         assert!(mid.y > start.y + 1.0 && mid.distance(start) > 5.0);
         let late = w.add_bot();
         assert!(w.players[late].frozen);
+        assert!(w.players[late].forward().dot(-w.players[late].eye().normalize()) > 0.9999);
         w.bots_paused = true;
         let mut remote = World::remote(w.arena.clone(), w.players.len());
         remote.apply(w.snapshot());

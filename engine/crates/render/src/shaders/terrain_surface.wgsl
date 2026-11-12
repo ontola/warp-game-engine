@@ -618,7 +618,7 @@ fn field_ground(s: SurfaceIn) -> FieldGround {
 // the outer 30 % of the disc, where the cells thin out, on ground where
 // grass_cells would plant them (rock, scree, water, snow excluded).
 fn grass_proxy_hash(q: vec2<i32>) -> f32 {
-    var h = u32(q.x) * 0x8da6b343u ^ u32(q.y) * 0xd8163841u;
+    var h = (u32(q.x) * 0x8da6b343u) ^ (u32(q.y) * 0xd8163841u);
     h = (h ^ (h >> 15u)) * 0x2c1b3c6du;
     h = (h ^ (h >> 12u)) * 0x297a2d39u;
     return f32((h ^ (h >> 15u)) & 0xffffu) / 65535.0;

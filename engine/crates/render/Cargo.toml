@@ -8,6 +8,7 @@ description = "Kern's renderer: GPU-driven clusters with LOD, visibility buffer,
 dlss = ["dep:ash"]
 
 [dependencies]
+naga = { version = "30", features = ["wgsl-in"] }
 # std::time::Instant panics in a browser (wasm32); this is std's on native.
 web-time = "1.1"
 wgpu = "30"
@@ -32,9 +33,6 @@ serde_json.workspace = true
 
 [build-dependencies]
 cc = "1"
-
-[dev-dependencies]
-naga = { version = "30", features = ["wgsl-in"] }
 
 # DX12 compiles shaders with DXC, linked in. Without it wgpu falls back to
 # FXC, which rejects the cull pipeline (X3663: barriers after data-dependent

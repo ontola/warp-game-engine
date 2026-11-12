@@ -171,7 +171,7 @@ impl World {
         }
     }
 
-    /// Each player launches from the stand facing their assigned spawn.
+    /// Each player starts in the stands looking at the middle of the arena.
     fn spawn_all(&mut self) {
         let mut spots = self.arena.spawns.clone();
         for k in (1..spots.len()).rev() { let j = self.rng.below(k as u32 + 1) as usize; spots.swap(k, j); }
@@ -189,7 +189,7 @@ impl World {
             p.jumps_left = 2 + p.weapon.extra_jumps;
             p.pos = self.arena.audience_seat(i);
             p.frozen = true;
-            p.yaw = (p.pos.x - pick.x).atan2(p.pos.z - pick.z);
+            p.face_arena_center();
         }
         self.flow.landing_spots = used;
     }
@@ -712,7 +712,7 @@ impl World {
             if let Some(elapsed) = self.flow.entrance_elapsed {
                 let pick = landing_spot(&self.arena, pick);
                 p.pos = entrance_position(&self.arena, pick, i, elapsed);
-                p.yaw = (p.pos.x - pick.x).atan2(p.pos.z - pick.z);
+                p.face_arena_center();
                 p.frozen = true;
                 if i < self.flow.landing_spots.len() { self.flow.landing_spots[i] = pick; }
             } else {
@@ -739,7 +739,7 @@ impl World {
         if let Some(elapsed) = self.flow.entrance_elapsed {
             let pick = landing_spot(&self.arena, pick);
             p.pos = entrance_position(&self.arena, pick, i, elapsed);
-            p.yaw = (p.pos.x - pick.x).atan2(p.pos.z - pick.z);
+            p.face_arena_center();
             p.frozen = true;
             self.flow.landing_spots.push(pick);
         } else {

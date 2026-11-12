@@ -16,3 +16,21 @@ r4_dark_shut   -6.5,1.65,-13.5               0.0        0.05        0000 0 0 760
 r4_dark_open   -6.5,1.65,-13.5               0.0        0.05        0000 1 0 760,420,240,135
 flash_wall     3.4895108,1.65,-8.702916      -3.4241972 -0.10340211 0000 0 1 840,470,240,135
 flash_room3    -1.6097156,1.65,-11.771687    -0.37499815 -0.12100069 0000 0 1 840,470,240,135
+# The flashlight's live bounce (rsm): Joep's F4 of the white block in room 3,
+# lamps off; room 2's ceiling without the old uplight; the bounce must not
+# reach through a wall (room 3's ceiling by room 2, pendant on, lamps off).
+r3_flash_box   0.0,1.65,-11.9            0.0        -0.17      0000 0 1 840,470,240,135
+r2_ceiling     -2.0,1.65,-5.0            2.6        0.55       1111 0 0 840,300,240,135
+leak_r3_ceil   0.0,1.65,-12.8            3.1416     0.75       0000 0 0 840,300,240,135
+# Leak through the shut door: the flashlight held in room 3 on the door
+# (ninth field), the camera in dark room 4. And the flashlight on a wall
+# 2.5 m away: the ceiling above the spot against the spot.
+leak_door      -6.0,1.65,-11.9           -1.5708    -0.3       0000 0 1 840,470,240,135 -3.0,1.6,-11.9,1.5708,-0.3
+ceiling_wall   -6.5,1.65,-13.5           1.5708     0.0        0000 0 1 840,470,240,135
+# Reflections: the pendant over the table, room 3 dark beyond the doorway
+# (Joep's F4: the bulb smeared over the table and into room 3's floor).
+r2_pendant_table -1.5,1.65,-4.8          -0.6       -0.05      0000 0 0 840,470,240,135
+# Reflection probes: room 4's floor by the door as it opens and shuts
+# (room 3's lamps on beyond it).
+r4_probe_open  -6.0,1.65,-12.6           -1.5708    -0.4       1111 1 0 840,700,240,135
+r4_probe_shut  -6.0,1.65,-12.6           -1.5708    -0.4       1111 0 0 840,700,240,135

@@ -37,7 +37,7 @@ foreach ($relative in @('assets', 'data', 'engine/assets/sound/ir')) {
 }
 foreach ($relative in @('Sideways.exe', 'package.json', 'gamenight.json', 'CREDITS.md',
     'OFL-BarlowCondensed.txt', 'nvngx_dlss.dll', 'data/render-baseline.toml', 'data/cars.luau',
-    'data/car_materials.toml', 'data/sounds.toml', 'assets/meshes/fir_a_near.kmesh',
+    'data/car_materials.luau', 'data/sounds.luau', 'assets/meshes/fir_a_near.kmesh',
     'assets/meshes/fir_b_near.kmesh', 'assets/meshes/fir_c_near.kmesh',
     'assets/trees/authored_pine_albedo.png', 'assets/grass/grass_medium_01_alpha_2k.png',
     'assets/sky/sky_2k.hdr', 'engine/assets/sound/ir/mild_exhaust.wav')) {

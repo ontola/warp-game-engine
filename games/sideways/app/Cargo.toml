@@ -18,6 +18,7 @@ render = { path = "../../../engine/crates/render" }
 app = { path = "../../../engine/crates/app" }
 audio = { path = "../../../engine/crates/audio" }
 toml.workspace = true
+script = { path = "../../../engine/crates/script" }
 glam = "0.31"
 gltf = { version = "1.4", default-features = false, features = ["utils", "names", "KHR_texture_transform", "allow_empty_texture", "extensions"] }
 image = { version = "0.25", default-features = false, features = ["webp", "png", "jpeg"] }

@@ -54,8 +54,7 @@ and the bots are unchanged. `games/growing-guns/app/src/sky.rs`:
 
 A preset chosen with `--sky` or the `sky` command bakes synchronously (about
 0.2 s, see below) and updates the renderer in place. The default and `rounds` select the sky at
-the round boundary. The first view uses that sky and the new stadium's indirect
-lighting. An uncached bake can add time to the transition. The continuous
+the round boundary. Interactive matches prepare the round sky presets in memory during play. The first view uses the selected sky and direct light. Between rounds the renderer keeps its last complete indirect light volume while the next stadium’s volume is calculated in the background. The continuous
 `cycle` uses `LiveSky` for background updates during play. Exposure never goes below EV 11: the lava, beacons and
 tracers have fixed radiance tuned for Godot's day (EV 13.6) and wash out at
 the night preset's EV 6. The stadium floodlights carry the night instead:

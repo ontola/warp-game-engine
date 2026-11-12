@@ -159,11 +159,13 @@ Where each game stands:
 |---|---|---|
 | Growing Guns | `mods/base/knobs.luau` | at once, mid-round too |
 | Growing Guns | `mods/base/cards.luau`, hooks | at once (weapons rebuild next round) |
-| Growing Guns | `mods/base/gun.luau` (the rifle before cards) | next round |
+| Growing Guns | `mods/base/gun.luau` (the rifle before cards, and its specials) | next round |
 | Spellstorm | `mods/base/knobs.luau` | next frame |
 | Spellstorm | `mods/base/spells.luau`, `tomes.luau`, hooks | at once |
 | Spellstorm | `mods/base/monsters.luau`, `biomes.luau` | numbers at once, a changed list at the next start |
 | Sideways | `data/cars.luau` | next stage (and GameNight Prepare) |
+| Sideways | `data/car_materials.luau` | at once (a part's `match` or `kind` at the next start) |
+| Sideways | `data/sounds.luau` | next stage |
 | SpaceRacer | `rules/game.luau` | `balance` and `combat` at once, `track` and `environment` next race |
 | SpaceRacer | `rules/stages.luau`, `effects.luau`, `jets.luau` | next race |
 | SpaceRacer | `rules/party.luau` | next start |

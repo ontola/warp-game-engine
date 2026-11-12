@@ -68,6 +68,8 @@ pub mod screen_feed;
 pub mod sprites;
 pub mod irradiance_volume;
 pub mod room_bake;
+pub mod rsm;
+pub mod reflection_probes;
 pub mod sky_occlusion;
 pub mod hud_profile;
 pub mod present;

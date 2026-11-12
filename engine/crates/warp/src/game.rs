@@ -127,9 +127,11 @@ impl LuaGame {
         let sounds_dir = dir.join("sounds");
         let mut bank = Bank::new(sounds_dir.is_dir().then_some(sounds_dir));
         let lines = bank.scan();
+        let mut world = World::new(dir, cfg.max_entities);
+        world.scene.style = crate::surface::load_style(dir)?;
         let core: Shared = Arc::new(Mutex::new(Core {
             storage: if cfg.storage { Some(crate::storage::Storage::open(dir, &cfg.id, location).map_err(|e| format!("storage: {e}"))?) } else { None },
-            world: World::new(dir, cfg.max_entities),
+            world,
             plants: Default::default(),
             sounds: SoundOut::new(bank, sound),
             roster: Vec::new(),

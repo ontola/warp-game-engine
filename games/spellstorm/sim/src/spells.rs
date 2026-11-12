@@ -1200,14 +1200,24 @@ impl World {
         }
         let counts = s.counts.clone();
         self.touch(&counts, at, n.radius, Some(caster));
+        // A burning bolt sets where it strikes on fire (Joep): a patch of
+        // flames the caster's side can walk through.
+        let fire = counts.iter().find(|c| c.0 == El::Fire).map_or(0, |c| c.1);
+        if fire > 0 && s.primary != Some(El::Fire) {
+            let p = self.level.clamp_inside(at);
+            let f = self.add_field(p, El::Fire, (n.radius * 0.8).max(1.4) + 0.3 * fire as f64, 4.0 + 1.5 * fire as f64, Some(caster));
+            self.field_mut(f).friendly = true;
+        }
         let c = color(s);
         let width = 0.32 + 0.05 * s.power as f32 * STEP as f32;
+        let riders: Vec<El> = counts.iter().map(|c| c.0).filter(|&e| Some(e) != s.primary).collect();
         self.ev(Ev::Thunder {
             at,
             top,
             c,
             width,
             radius: n.radius as f32,
+            riders,
         });
         self.ev(Ev::Flash {
             at: at + Vec3::Y * 0.5,

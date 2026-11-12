@@ -748,3 +748,19 @@ fn luau_game_registers_nested_editor_pages_and_reloads_its_action() {
     g.debug_action(DebugAction::Activate { id: 1003 });
     assert_eq!(state(&g)["state"]["last"], 1003);
 }
+
+#[test]
+fn artist_files_validate_independently_at_game_load() {
+    let dir = folder("artist-files");
+    std::fs::write(dir.join("main.luau"), "return {}").unwrap();
+    std::fs::write(dir.join("finish.wgsl"),
+        "fn game_finish(p: vec2<i32>, s: FinishSample) -> vec3<f32> { return scene_sample(p).color; }").unwrap();
+    assert!(LuaGame::load(&dir, &Overrides::default(), None).is_ok());
+    std::fs::remove_file(dir.join("finish.wgsl")).unwrap();
+    std::fs::write(dir.join("lighting.wgsl"),
+        "fn game_lighting(s: LightingSample) -> StyledLight { return StyledLight(s.radiance, 1u); }").unwrap();
+    assert!(LuaGame::load(&dir, &Overrides::default(), None).is_ok());
+    std::fs::write(dir.join("lighting.wgsl"), "fn game_lighting() -> f32 { return 1.0; }").unwrap();
+    let error = LuaGame::load(&dir, &Overrides::default(), None).err().expect("wrong hook signature");
+    assert!(error.contains("lighting.wgsl"), "{error}");
+}

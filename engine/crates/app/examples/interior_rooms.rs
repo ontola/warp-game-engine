@@ -9,11 +9,10 @@
 //!    several bounces (`room_bake::bake`), sun shadows live.
 //! 2. Pendant room: one amber lamp under a shade, swinging on its cord: a
 //!    spot (25/40 degree cone) pointing down the cord, so the cone swings
-//!    with it, plus a dim uplight out of the shade's top. Direct light and
-//!    shadows are live (shadowed clustered lights); its bounce cannot be
-//!    baked, so a soft light sits over what the cone lands on (rays inside
-//!    the cone against the baked geometry) and shines back up (one virtual
-//!    point light, "instant radiosity").
+//!    with it. Direct light and shadows are live (shadowed clustered
+//!    lights); its bounce cannot be baked, so it is gathered live from its
+//!    shadow map (`ClusteredLight::with_bounce`, reflective shadow maps):
+//!    what the cone lands on lights the room and the ceiling.
 //! 3. Switch room: four ceiling lamps, warm, red, teal and blue. F toggles
 //!    the one you look at, R all. Direct light live and shadowed; each
 //!    lamp's bounce is baked on its own (`room_bake::bake_lights`) and the
@@ -28,8 +27,8 @@
 //!    adapts down to EV -3 over a few seconds.
 //!
 //! Q (or LB) toggles a flashlight: a shadowed spot right of and below the
-//! eye that lags the view a little, with one soft fake bounce light where
-//! its beam lands. Tab (or Select) toggles haze in rooms 2 and 4
+//! eye that lags the view a little; what it lights bounces live, as the
+//! pendant's does. Tab (or Select) toggles haze in rooms 2 and 4
 //! (`Lighting::volumetric` in its bounded mode, `set_volumetric_bounded`):
 //! the pendant's cone, the flashlight's beam and the lamp light through room
 //! 4's door show in it, shadowed by the walls, furniture and door.
@@ -81,8 +80,6 @@ const HINGE: Vec3 = Vec3::new(-4.15, 0.0, -12.4);
 /// How far the door swings (into room 4) and how long a swing takes.
 const DOOR_ANGLE: f32 = 1.75;
 const DOOR_SECONDS: f32 = 0.6;
-/// Diffuse reflectance assumed for the fake bounce lights.
-const BOUNCE_REFLECTANCE: f32 = 0.4;
 
 fn bx(min: [f32; 3], max: [f32; 3]) -> Affine3A {
     let (a, b) = (Vec3::from(min), Vec3::from(max));
@@ -99,8 +96,6 @@ fn colour(c: Vec3, cd: f32) -> Vec3 {
 /// pendant's lampshade profile, the ceiling lamps' downlight profile.
 const FLASH_COOKIE: LightShape = LightShape { cookie: 1, profile: 0, diffuse_only: false };
 const PENDANT_PROFILE: LightShape = LightShape { cookie: 0, profile: 1, diffuse_only: false };
-/// Bounce lights (a lit patch standing in as a light): diffuse only.
-const BOUNCE: LightShape = LightShape { cookie: 0, profile: 0, diffuse_only: true };
 const DOWNLIGHT_PROFILE: LightShape = LightShape { cookie: 0, profile: 2, diffuse_only: false };
 
 fn smooth(e0: f32, e1: f32, x: f32) -> f32 { let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) }
@@ -141,6 +136,14 @@ fn door_xf(open: f32) -> Affine3A {
     Affine3A::from_rotation_translation(Quat::from_rotation_y(-open * DOOR_ANGLE), HINGE)
         * Affine3A::from_scale_rotation_translation(Vec3::new(0.06, DOOR_TOP - 0.01, 0.98), Quat::IDENTITY, Vec3::new(0.0, DOOR_TOP * 0.5, 0.5))
 }
+
+/// Reflection probes, one per room: capture point and the room's inside.
+const ROOM_PROBES: [render::reflection_probes::ProbeBox; 4] = [
+    render::reflection_probes::ProbeBox { capture: Vec3::new(0.0, 1.5, 0.0), min: Vec3::new(-4.0, 0.0, -4.0), max: Vec3::new(4.0, H, 4.0) },
+    render::reflection_probes::ProbeBox { capture: Vec3::new(-1.5, 1.5, -6.0), min: Vec3::new(-4.0, 0.0, -10.2), max: Vec3::new(4.0, H, -4.3) },
+    render::reflection_probes::ProbeBox { capture: Vec3::new(0.0, 1.5, -13.5), min: Vec3::new(-4.0, 0.0, -16.6), max: Vec3::new(4.0, H, -10.5) },
+    render::reflection_probes::ProbeBox { capture: Vec3::new(-6.6, 1.5, -12.6), min: Vec3::new(-9.0, 0.0, -16.6), max: Vec3::new(-4.3, H, -10.5) },
+];
 
 /// Smoothstep: the door eases in and out.
 fn ease(t: f32) -> f32 { let t = t.clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) }
@@ -216,9 +219,9 @@ struct Rooms {
     flashlight: bool,
     /// The flashlight's direction, lagging the view (per drawn frame).
     flash_dir: Vec3,
-    /// The flashlight's fake bounce light, smoothed over ~120 ms (per drawn
-    /// frame) so it slides when the beam crosses an edge.
-    flash_bounce: Option<LocalLight>,
+    /// A flashlight held elsewhere than the eye (the suite's leak spots):
+    /// position and direction.
+    flash_pose: Option<(Vec3, Vec3)>,
     pos: Vec3,
     prev: Vec3,
     yaw: f32,
@@ -329,6 +332,9 @@ impl Rooms {
         // a surface are moved out (room_bake::probe_positions).
         let grid = Grid::covering(Vec3::new(-9.3, 0.0, -16.9), Vec3::new(4.3, H + 0.3, 4.3), 0.5);
         scene.reserve_irradiance_volume(grid).expect("probe grid");
+        // The surfaces as 10 cm voxels, which the live bounce of the pendant
+        // and the flashlight (rsm) is tested against: no bounce through walls.
+        scene.reserve_bounce_voxels(Vec3::new(-9.3, -0.3, -16.9), Vec3::new(4.3, H + 0.3, 4.3), 0.1).expect("bounce voxels");
         if std::env::var_os("ROOMS_NO_DDGI").is_none() { scene.reserve_probe_visibility().expect("probe visibility"); }
         // The static geometry, before the moving pieces join the scene, with
         // and without the shut door.
@@ -351,7 +357,7 @@ impl Rooms {
         let pos = Vec3::new(1.5, EYE, 12.0);
         Rooms { scene, grid, solid, objects, bulb_mesh, cord_mesh, door_mesh, lamp_on_mesh, lamp_off_mesh, shade_mesh, bulb, cord, shade, door, fog_occluders, lamp_slots,
             lamp_on: [true; 4], open_occluders, shut_occluders, shut: None, open: None, door_wanted: false, door_t: 0.0, hold_door: false, uploaded: None, visibility_shut: None, cut: false,
-            fog: false, flashlight: false, flash_dir: Vec3::NEG_Z, flash_bounce: None, pos, prev: pos, yaw: 0.12, pitch: 0.0, vy: 0.0, t: 0.0, light,
+            fog: false, flashlight: false, flash_dir: Vec3::NEG_Z, flash_pose: None, pos, prev: pos, yaw: 0.12, pitch: 0.0, vy: 0.0, t: 0.0, light,
             ready: false, ev: None, hdr: None }
     }
 
@@ -360,10 +366,6 @@ impl Rooms {
     }
 
     fn door_open(&self) -> f32 { ease(self.door_t) }
-
-    /// The geometry the fake bounce lights aim at: the door as it stands
-    /// (shut or not).
-    fn occluders(&self) -> &Occluders { if self.door_open() < 0.3 { &self.shut_occluders } else { &self.open_occluders } }
 
     /// The pendant's bulb position: a pendulum swinging in x and a little in z.
     fn bulb_at(&self) -> Vec3 {
@@ -379,84 +381,12 @@ impl Rooms {
     /// cone swings with it.
     fn pendant(&self) -> LocalLight { pendant_light(self.bulb_at(), self.cord_dir()) }
 
-    /// A little light out of the shade's top, so the ceiling is not black.
-    fn uplight(&self) -> LocalLight {
-        let d = self.cord_dir();
-        LocalLight { position: self.bulb_at() - d * 0.2, direction: -d, intensity_cd: colour(PENDANT, 20.0), range_m: 4.0,
-            inner_cos: 50f32.to_radians().cos(), outer_cos: 85f32.to_radians().cos(), source_radius_m: 0.05, falloff: 2.0 }
-    }
-
-    /// One virtual point light for `lamp`'s first bounce: where its light
-    /// in a cone of `half` (radians) around `dir` lands, averaged over 17
-    /// rays (a centre ray and rings at 0.4 and 0.85 of `half`) weighted by
-    /// the lamp's cone profile, so the average slides as rays move from a
-    /// table to the floor behind it instead of jumping, `back` metres off the
-    /// surface, shining away from it with a roughly cosine lobe. `flux_sr`:
-    /// the solid angle of the lamp's light in the cone. A Lambertian surface
-    /// reflecting flux F shines F / pi candela along its normal, falling off
-    /// with the angle (a soft cone, not a hemisphere cut off at the surface:
-    /// that showed as a blob with a hard edge).
-    fn bounce(&self, lamp: &LocalLight, dir: Vec3, half: f32, flux_sr: f32, back: f32) -> Option<LocalLight> {
-        let side = dir.any_orthonormal_vector();
-        let up = dir.cross(side);
-        let ring = |count: usize, frac: f32, turn: f32| (0..count).map(move |k| {
-            let a = (k as f32 + turn) * std::f32::consts::TAU / count as f32;
-            let (s, c) = (half * frac).sin_cos();
-            (dir * c + (side * a.cos() + up * a.sin()) * s).normalize()
-        });
-        let rays = std::iter::once(dir).chain(ring(6, 0.4, 0.0)).chain(ring(10, 0.85, 0.5));
-        let profile = |d: Vec3| {
-            let x = ((d.dot(lamp.direction) - lamp.outer_cos) / (lamp.inner_cos - lamp.outer_cos).max(1e-4)).clamp(0.0, 1.0);
-            x * x * (3.0 - 2.0 * x)
-        };
-        let (mut at, mut normal, mut hit, mut total) = (Vec3::ZERO, Vec3::ZERO, 0.0, 0.0);
-        for d in rays {
-            let w = profile(d).max(0.05);
-            total += w;
-            let Some((t, n)) = self.occluders().hit(lamp.position, d) else { continue };
-            at += (lamp.position + d * t) * w;
-            normal += (if n.dot(d) > 0.0 { -n } else { n }) * w;
-            hit += w;
-        }
-        if hit <= 0.0 { return None; }
-        let (at, n) = (at / hit, normal.normalize_or(-dir));
-        // On the lit surface (a few cm off it), shining out of it with a
-        // roughly cosine lobe; its large source radius keeps it soft.
-        Some(LocalLight { position: at + n * back, direction: n,
-            intensity_cd: lamp.intensity_cd * BOUNCE_REFLECTANCE * flux_sr * (hit / total) / std::f32::consts::PI, range_m: 7.0,
-            inner_cos: 0.999, outer_cos: 0.0, source_radius_m: 1.0, falloff: 2.0 })
-    }
-
-    /// Move the flashlight's bounce light towards where the beam lands now:
-    /// position, direction and intensity ease over ~120 ms, so crossing an
-    /// edge (a table in front of a wall) slides the light instead of
-    /// snapping it.
-    fn update_flash_bounce(&mut self, dt: f32) {
-        if !self.flashlight { self.flash_bounce = None; return; }
-        let flash = self.flashlight_light();
-        // The beam: 0.74 sr, its cookie averaging about 0.4 of the peak.
-        let target = self.bounce(&flash, flash.direction, 20f32.to_radians(), 0.74 * 0.4, 0.05);
-        let k = 1.0 - (-dt.max(0.0) / 0.12).exp();
-        self.flash_bounce = match (self.flash_bounce, target) {
-            (None, t) => t,
-            (Some(cur), None) => {
-                let faded = LocalLight { intensity_cd: cur.intensity_cd * (1.0 - k), ..cur };
-                (faded.intensity_cd.max_element() > 1e-3).then_some(faded)
-            }
-            (Some(cur), Some(t)) => Some(LocalLight {
-                position: cur.position.lerp(t.position, k),
-                direction: cur.direction.lerp(t.direction, k).normalize_or(t.direction),
-                intensity_cd: cur.intensity_cd.lerp(t.intensity_cd, k),
-                ..t
-            }),
-        };
-    }
-
     fn flashlight_light(&self) -> LocalLight {
         let f = self.forward();
         let right = f.cross(Vec3::Y).normalize_or_zero();
         let up = right.cross(f);
-        LocalLight { position: self.pos + right * 0.22 - up * 0.25, direction: self.flash_dir,
+        let (position, direction) = self.flash_pose.unwrap_or((self.pos + right * 0.22 - up * 0.25, self.flash_dir));
+        LocalLight { position, direction,
             intensity_cd: Vec3::new(0.92, 0.96, 1.0) * 2600.0, range_m: 25.0,
             inner_cos: 24f32.to_radians().cos(), outer_cos: 28f32.to_radians().cos(), source_radius_m: 0.02, falloff: 2.0 }
     }
@@ -482,16 +412,12 @@ impl Rooms {
         // The light sits inside its bulb and shade: those and the cord (the
         // first three slots) must not cast its shadow.
         let own = Some((self.objects.instance(self.bulb) as u32, 3));
-        let mut lit = ClusteredLight::shadowed(pendant, 1).with_shape(PENDANT_PROFILE).with_face(BULB);
+        // It moves, so its bounce (what the cone lands on lighting the room
+        // and the ceiling) is gathered live (rsm).
+        let mut lit = ClusteredLight::shadowed(pendant, 1).with_shape(PENDANT_PROFILE).with_face(BULB).with_bounce();
         if let Some(s) = &mut lit.shadow { s.exclude = own; }
-        let mut up = ClusteredLight::shadowed(self.uplight(), 3);
-        if let Some(s) = &mut up.shadow { s.exclude = own; }
-        let mut lights = vec![lit, up];
-        // Instant radiosity: what the cone lands on (the table, the floor)
-        // shines back. Rays inside the cone (30 degrees); the 40 degree
-        // outer cone holds 2 pi (1 - cos 40) = 1.47 sr.
-        // The 40 degree cone: 1.47 sr, its lampshade profile about 0.8 of the peak.
-        if let Some(b) = self.bounce(&pendant, pendant.direction, 30f32.to_radians(), 1.47 * 0.8, 0.05) { lights.push(ClusteredLight::shadowed(b, 2).with_shape(BOUNCE)); }
+        let mut lights = vec![lit];
+        // The ceiling lamps' bounces are baked (bake_lights).
         for i in 0..4 {
             if self.lamp_on[i] {
                 let mut lamp = ClusteredLight::shadowed(ceiling_lamp(i), 10 + i as u64).with_shape(DOWNLIGHT_PROFILE).with_face(PANEL);
@@ -501,9 +427,7 @@ impl Rooms {
         }
         if self.flashlight {
             let flash = self.flashlight_light();
-            lights.push(ClusteredLight::shadowed(flash, 20).with_shape(FLASH_COOKIE));
-            // The beam's cone (28 degrees half angle) is 0.74 sr.
-            if let Some(b) = self.flash_bounce { lights.push(ClusteredLight::unshadowed(b).with_shape(BOUNCE)); }
+            lights.push(ClusteredLight::shadowed(flash, 20).with_shape(FLASH_COOKIE).with_bounce());
         }
         lights
     }
@@ -655,9 +579,10 @@ impl Game for Rooms {
         // The flashlight follows the view with a lag of about 80 ms.
         let k = 1.0 - (-frame.dt.max(0.0) / 0.08).exp();
         self.flash_dir = self.flash_dir.lerp(self.forward(), k).normalize_or(self.forward());
-        self.update_flash_bounce(frame.dt);
         let renderer = frame.renderer().ok_or("no renderer")?;
         renderer.set_clustered_lights(&self.lights())?;
+        // One reflection probe per room: the engine captures them live.
+        renderer.set_reflection_probes(&ROOM_PROBES)?;
         let (beams, shapes) = if self.fog { self.beams() } else { (Vec::new(), Vec::new()) };
         renderer.set_volumetric_beams_shaped(&beams, &shapes)?;
         if self.fog {
@@ -666,6 +591,8 @@ impl Game for Rooms {
             renderer.set_volumetric_bounded(&Self::fog_bounds(), &occluders, 1.0);
         }
         self.objects.flush(frame.gpu, renderer, &self.scene)?;
+        // The engine follows moved instances (the door, the pendant) itself.
+        renderer.update_bounce_voxels(frame.gpu, &self.scene)?;
         self.ev = renderer.exposure_ev100(0).zip(renderer.metered_ev100(0));
         self.hdr = frame.hdr.map(|d| (d, renderer.hdr_headroom()));
         let eye = self.prev.lerp(self.pos, frame.alpha);
@@ -726,6 +653,8 @@ fn main() -> Result<(), String> {
         game.door_wanted = door > 0.0;
         game.hold_door = true;
     }
+    // --debug N: a shade diagnostic (Lighting::debug; 26 the reflection ray's hit).
+    if let Some(d) = arg("--debug").and_then(|d| d.parse::<f32>().ok()) { game.light.debug = d; }
     if args.iter().any(|a| a == "--fog") { game.set_fog(true); }
     if args.iter().any(|a| a == "--flashlight") { game.flashlight = true; game.flash_dir = game.forward(); }
     if let Some(frames) = arg("--pan").and_then(|f| f.parse::<u32>().ok()) {
@@ -755,8 +684,9 @@ fn main() -> Result<(), String> {
     }
     if let Some(file) = arg("--suite") {
         // Regression suite: one bake, then every spot in `file` (lines
-        // `name x,y,z yaw pitch lamps door flashlight`, lamps four 0/1
-        // digits, door 0..1, flashlight 0/1; # comments) rendered still and
+        // `name x,y,z yaw pitch lamps door flashlight crop [flash]`, lamps four
+        // 0/1 digits, door 0..1, flashlight 0/1, flash x,y,z,yaw,pitch to hold
+        // it away from the eye; # comments) rendered still and
         // while turning fast into it (2 rad/s for the last second), as
         // `<out>/<name>_still.png` and `<name>_turn.png`.
         let out = std::path::PathBuf::from(arg("--out").unwrap_or_else(|| "build/suite".into()));
@@ -785,6 +715,9 @@ fn main() -> Result<(), String> {
                 game.hold_door = true;
                 game.flashlight = f[6] == "1";
                 game.flash_dir = game.forward();
+                // Optional ninth field: the flashlight held at x,y,z,yaw,pitch.
+                game.flash_pose = f.get(8).map(|s| s.split(',').filter_map(|v| v.parse::<f32>().ok()).collect::<Vec<_>>()).filter(|v| v.len() == 5)
+                    .map(|v| (Vec3::new(v[0], v[1], v[2]), Vec3::new(-v[3].sin() * v[4].cos(), v[4].sin(), -v[3].cos() * v[4].cos())));
                 game.cut = true;
                 let frames = 200u32;
                 let mut rgba = Vec::new();

@@ -43,11 +43,39 @@ impl Sounds {
         Ok(Sounds { table: text.parse().map_err(|e| format!("sound configuration: {e}"))? })
     }
 
-    /// Read one explicit configuration file. No implicit game-data lookup or
+    /// Configuration the caller already parsed (from Luau, say): the same
+    /// layout as the TOML, `base`, `models` and `every_car`.
+    pub fn from_table(table: toml::Table) -> Sounds {
+        Sounds { table }
+    }
+
+    /// The `sounds` table a Luau file returns (Sideways' data/sounds.luau),
+    /// run sandboxed.
+    #[cfg(feature = "luau")]
+    pub fn parse_luau(name: &str, text: &str) -> Result<Sounds, String> {
+        use mlua::LuaSerdeExt;
+        let lua = mlua::Lua::new();
+        lua.sandbox(true).map_err(|e| e.to_string())?;
+        let t: mlua::Table = lua.load(text).set_name(format!("={name}")).eval().map_err(|e| e.to_string())?;
+        let v: mlua::Value = t.get("sounds").map_err(|e| e.to_string())?;
+        if v.is_nil() {
+            return Err(format!("{name}: returns no `sounds`"));
+        }
+        Ok(Sounds { table: lua.from_value(v).map_err(|e| format!("{name}: sounds: {e}"))? })
+    }
+
+    /// Read one explicit configuration file (TOML, or Luau returning
+    /// `sounds` with the `luau` feature). No implicit game-data lookup or
     /// fallback: the application decides whether a missing file is optional.
     pub fn load(path: impl AsRef<Path>) -> Result<Sounds, String> {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if path.extension().is_some_and(|e| e == "luau") {
+            #[cfg(feature = "luau")]
+            return Self::parse_luau(&path.display().to_string(), &text);
+            #[cfg(not(feature = "luau"))]
+            return Err(format!("{}: reading Luau needs the audio crate's luau feature", path.display()));
+        }
         Self::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
     }
 

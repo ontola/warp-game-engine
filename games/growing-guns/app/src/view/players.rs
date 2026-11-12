@@ -100,9 +100,25 @@ const SPLASH_SINK_S: f32 = 0.55;
 /// `surface` is where Godot's `_lava_surface_world_y` puts it: the pool
 /// under the floor (LAVA_POOL_Y) for every lava death, the leak's too; the
 /// lava floor (0.04 m) in an island arena, even under a risen leak.
-struct LavaCorpse { victim: usize, pos: Vec3, yaw: f32, pitch: f32, camera_look: [f32; 2], camera_prev: [f32; 2], birth: f32, fall: bool, surface: f32, twin: Option<(usize, usize)>, blobs: Vec<(SlotId, usize, Vec3, f32)>, splash: Option<SlotId> }
+struct LavaCorpse { victim: usize, pos: Vec3, yaw: f32, pitch: f32, camera_look: [f32; 2], camera_prev: [f32; 2], birth: f32, fall: bool, surface: f32, twin: Option<(usize, usize)>, hands: [Option<SlotId>; 2], blobs: Vec<(SlotId, usize, Vec3, f32)>, splash: Option<SlotId> }
 
 impl LavaCorpse {
+    /// Wrists in world space, shared by the victim's view and the sinking character.
+    fn wrists(&self, age: f32) -> [Affine3A; 2] {
+        let eye = self.pos.with_y(self.y(age) + growing_guns::EYE);
+        let body = Affine3A::from_rotation_translation(Quat::from_rotation_y(self.yaw), eye);
+        std::array::from_fn(|side| {
+            let sign = if side == 0 { 1. } else { -1. };
+            let phase = age * 8.5 + 2.3 * side as f32 + self.victim as f32;
+            let lift = super::pov_arms::ease(0.03 * side as f32, 0.34 + 0.06 * side as f32, age);
+            let at = Vec3::new(sign * (0.24 + 0.07 * lift * phase.cos()),
+                -0.20 + lift * (0.43 + 0.10 * phase.sin()), -0.42 + 0.06 * lift * phase.cos());
+            let palm = Quat::from_euler(glam::EulerRot::YXZ,
+                sign * (0.26 + 0.24 * phase.sin()), 0.65 + 0.26 * phase.cos(), sign * 0.32);
+            body * Affine3A::from_rotation_translation(palm, at)
+        })
+    }
+
     fn camera_direction(&self, t: f32, alpha: f32) -> Vec3 {
             let u = (t / 2.4).clamp(0.0, 1.0);
             let look = std::array::from_fn::<_, 2, _>(|i| self.camera_prev[i] + (self.camera_look[i] - self.camera_prev[i]) * alpha);
@@ -219,10 +235,10 @@ impl PlayersView {
     }
 
     /// Gib pieces shattered from the players' own meshes.
-    pub fn reserve_gore(&mut self, scene: &mut Scene, seed: u64) {
+    pub fn reserve_gore(&mut self, scene: &mut Scene, seed: u64, cut: Option<[usize; 3]>) {
         // The minimum renderer's rigid pieces use the plain gib meshes.
         let models = self.characters.as_ref().filter(|_| !crate::graphics::get().rigid_characters).map_or(&[][..], |c| c.models());
-        self.gore = Some(Gore::reserve(scene, &std::mem::take(&mut self.sources), models, seed));
+        self.gore = Some(Gore::reserve(scene, &std::mem::take(&mut self.sources), models, seed, cut));
     }
 
     fn gore(&mut self) -> &mut Gore { self.gore.as_mut().expect("reserve_gore") }
@@ -275,6 +291,19 @@ impl PlayersView {
             return;
         };
         let push = if dir.length_squared() > 1e-4 { dir } else { (v.pos - world.players[a].pos).with_y(0.0).normalize_or(Vec3::Y) };
+        if matches!(gib, Gib::Head) {
+            let head = v.hitboxes().into_iter().find(|(_, _, head)| *head).expect("head hitbox").0;
+            self.gore().headshot(scene, phys, head, v.vel, push.normalize_or(Vec3::Y), now);
+            fx.blasts.gib_mist(now, head, 0.42);
+            fx.particles.burst(scene, head, push + Vec3::Y * 0.3, &Burst { mesh: blood, count: 9, spread: 1.1, speed: [2.0, 5.0], ..crate::blood::spray() });
+            blood_splats(scene, arena, world, head, push, 3, 1.2);
+            if skinned {
+                if let Some(characters) = &mut self.characters {
+                    if let Err(error) = characters.kill(phys, victim, v, push, true) { eprintln!("ragdoll: {error}"); }
+                }
+            } else { self.ragdoll(scene, phys, victim, v, push, false); }
+            return;
+        }
         // A burst (overkill, explosions) shatters skinned bodies as well: no
         // corpse, so the character stays hidden while the chunks fly.
         // Rigid characters have no shards of their own: the old primitive
@@ -283,10 +312,7 @@ impl PlayersView {
         if skinned && (rigid || !matches!(gib, Gib::Burst { .. })) {
             // Drive the original textured skin from articulated limb bodies.
             if let Some(characters) = &mut self.characters {
-                if let Err(error) = characters.kill(phys, victim, v, push, matches!(gib, Gib::Head)) { eprintln!("ragdoll: {error}"); }
-            }
-            if matches!(gib, Gib::Head) && !rigid {
-                self.gore().burst(scene, phys, victim, &[gore::Part::Head, gore::Part::Eyes], v.pos, v.yaw, v.vel, push, 0.5, now);
+                if let Err(error) = characters.kill(phys, victim, v, push, false) { eprintln!("ragdoll: {error}"); }
             }
             fx.blasts.gib_mist(now, v.pos + Vec3::Y * 0.3, 0.8);
             fx.particles.burst(scene, v.pos, push + Vec3::Y * 0.5, &Burst { mesh: blood, count: 28, spread: 1.6, speed: [2.0, 8.0], ..crate::blood::spray() });
@@ -303,14 +329,7 @@ impl PlayersView {
                 fx.particles.burst(scene, v.pos, push + Vec3::Y * 0.5, &Burst { mesh: blood, count: 28, spread: 1.8, speed: [3.0, 10.0], ..crate::blood::spray() });
                 blood_splats(scene, arena, world, v.pos, push, (6.0 + chaos * 8.0) as usize, 1.6 + chaos * 1.4);
             }
-            Gib::Head => {
-                self.gore().burst(scene, phys, victim, &[gore::Part::Head, gore::Part::Eyes], v.pos, v.yaw, v.vel, push, 0.5, now);
-                fx.blasts.gib_mist(now, v.pos + Vec3::Y * 0.6, 0.8);
-                fx.particles.burst(scene, v.pos + Vec3::Y * 0.55, push + Vec3::Y * 0.4, &Burst { mesh: blood, count: 20, spread: 1.4, speed: [2.0, 8.0], ..crate::blood::spray() });
-                self.ragdoll(scene, phys, victim, v, push, false);
-                blood_splats(scene, arena, world, v.pos, push, 3, 1.2);
-            }
-            Gib::Lava { .. } => unreachable!("handled above"),
+            Gib::Head | Gib::Lava { .. } => unreachable!("handled above"),
             Gib::Ragdoll => {
                 fx.particles.burst(scene, v.pos, Vec3::Y, &Burst { mesh: blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..crate::blood::spray() });
                 self.ragdoll(scene, phys, victim, v, push, true);
@@ -331,7 +350,8 @@ impl PlayersView {
             }
         }
         let splash = if fall { self.corpses.add(scene, self.lava_meshes.splash, Affine3A::from_translation(HIDDEN)) } else { None };
-        let c = LavaCorpse { victim, pos: v.pos.with_y(surface + growing_guns::HALF_HEIGHT * 0.65), yaw: v.yaw, pitch: v.pitch, camera_look: [0.;2], camera_prev: [0.;2], birth: now, fall, surface, twin, blobs, splash };
+        let hands = std::array::from_fn(|_| self.corpses.add(scene, self.lava_meshes.head, Affine3A::from_translation(HIDDEN)));
+        let c = LavaCorpse { victim, pos: v.pos.with_y(surface + growing_guns::HALF_HEIGHT * 0.65), yaw: v.yaw, pitch: v.pitch, camera_look: [0.;2], camera_prev: [0.;2], birth: now, fall, surface, twin, hands, blobs, splash };
         self.lava.push(c);
     }
 
@@ -375,30 +395,47 @@ impl PlayersView {
         let Some(k) = self.lava.iter().position(|c| c.victim == victim) else { return };
         let c = self.lava.swap_remove(k);
         if let Some((instance, mesh)) = c.twin { pose_instance(scene, instance, mesh, Affine3A::from_translation(HIDDEN)); }
+        for slot in c.hands.into_iter().flatten() { self.corpses.remove(scene, slot); }
         for (slot, ..) in c.blobs { self.corpses.remove(scene, slot); }
         if let Some(slot) = c.splash { self.corpses.remove(scene, slot); }
     }
 
     /// Sinking lava bodies and their splashes at `clock` seconds.
-    fn pose_lava(&mut self, scene: &mut Scene, world: &World, clock: f32) {
-        let revived: Vec<usize> = self.lava.iter().map(|c| c.victim).filter(|&i| world.players.get(i).is_none_or(|p| p.alive)).collect();
-        for i in revived { self.end_lava(scene, i); }
+    fn pose_lava(&mut self, scene: &mut Scene, world: &World, clock: f32, guns: &super::guns::Guns) {
+        let finished: Vec<_> = self.lava.iter().filter(|c| clock - c.birth >= 2.4 || world.players.get(c.victim).is_none_or(|p| p.alive)).map(|c| c.victim).collect();
+        for i in finished { self.end_lava(scene, i); }
         let rot = Quat::from_rotation_y(0.0);
         for c in &mut self.lava {
             let t = (clock - c.birth).max(0.0);
             let at = Vec3::new(c.pos.x, c.y(t), c.pos.z);
+            let wrists = c.wrists(t);
+            let owner = if world.players[c.victim].howitzer.is_none() { self.meshes[c.victim].own_views } else { 0 };
+            if let Some(meshes) = guns.open_hand_meshes(c.victim) {
+                // Other views see the articulated body, or the same open hands on the simple body.
+                let hidden = if c.twin.is_some() { !owner } else { 0 };
+                for ((slot, mesh), wrist) in c.hands.iter().zip(meshes).zip(wrists) {
+                    if let Some(slot) = *slot {
+                        self.corpses.set(scene, slot, mesh, wrist);
+                        scene.instances[self.corpses.instance(slot)].hide_in_views(hidden);
+                    }
+                }
+            }
             if let Some((instance, mesh)) = c.twin {
-                pose_instance(scene, instance, mesh, characters::model_transform(at, c.yaw));
-                scene.instances[instance].hide_in_views(self.meshes[c.victim].own_views);
+                let body = characters::model_transform(at, c.yaw);
+                if let Some(characters) = &mut self.characters {
+                    characters.pose_lava_twin(c.victim, wrists.map(|w| body.inverse().transform_point3(w.translation.into())));
+                }
+                pose_instance(scene, instance, mesh, body);
+                scene.instances[instance].hide_in_views(owner);
             }
             for &(slot, mesh, scale, offset) in &c.blobs {
                 self.corpses.set(scene, slot, mesh, Affine3A::from_scale_rotation_translation(scale, Quat::from_rotation_y(c.yaw), at + Vec3::Y * offset));
             }
             for &(slot, ..) in &c.blobs {
-                scene.instances[self.corpses.instance(slot)].hide_in_views(self.meshes[c.victim].own_views);
+                scene.instances[self.corpses.instance(slot)].hide_in_views(owner);
             }
             if let Some(slot) = c.splash {
-                scene.instances[self.corpses.instance(slot)].hide_in_views(self.meshes[c.victim].own_views);
+                scene.instances[self.corpses.instance(slot)].hide_in_views(owner);
                 match c.splash_y(t) {
                     Some(y) => self.corpses.set(scene, slot, self.lava_meshes.splash, Affine3A::from_scale_rotation_translation(
                         Vec3::new(SPLASH_RADIUS, SPLASH_HEIGHT, SPLASH_RADIUS), rot, Vec3::new(c.pos.x, y, c.pos.z))),
@@ -426,6 +463,7 @@ impl PlayersView {
                 None => phys.remove(head),
             }
         }
+        for &(_, slot, ..) in &parts { scene.instances[self.corpses.instance(slot)].hide_in_views(0); }
         self.ragdolls.push(Ragdoll { torso, parts });
     }
 
@@ -478,7 +516,7 @@ impl PlayersView {
             let hide: Vec<u8> = self.meshes.iter().map(|m| m.own_views).collect();
             characters.pose_rigid(world, prev, alpha, &hide, guns);
         }
-        self.pose_lava(scene, world, (world.tick as f32 - 1.0 + alpha) * growing_guns::DT);
+        self.pose_lava(scene, world, (world.tick as f32 - 1.0 + alpha) * growing_guns::DT, guns);
         // Bullets, drawn where they are at this frame (between ticks), nose
         // first: the body and nose once clear of the muzzle, the streak
         // from the first metre on so a player's own never fills the screen.
@@ -666,7 +704,13 @@ mod lava_sink_tests {
     #[test]
     fn lava_body_sinks_slowly_from_the_surface_then_fully_submerges() {
         let c=LavaCorpse {victim:0,pos:Vec3::new(2.0,-3.0+growing_guns::HALF_HEIGHT*0.65,4.0),
-            yaw:0.0,pitch:0.0,camera_look:[0.;2],camera_prev:[0.;2],birth:0.0,fall:true,surface:-3.0,twin:None,blobs:vec![],splash:None};
+            yaw:0.0,pitch:0.0,camera_look:[0.;2],camera_prev:[0.;2],birth:0.0,fall:true,surface:-3.0,twin:None,hands:[None;2],blobs:vec![],splash:None};
+        let start = c.wrists(0.);
+        let raised = c.wrists(0.65);
+        for side in 0..2 {
+            assert!(raised[side].translation.y - c.y(0.65) > start[side].translation.y - c.y(0.) + 0.25);
+        }
+        assert!((raised[0].translation.y - raised[1].translation.y).abs() > 0.05);
         assert!((c.camera_direction(0.0, 1.0) - growing_guns::look_dir(c.yaw, c.pitch)).length() < 1e-6);
         assert!(c.camera_direction(2.2, 1.0).y > 0.7, "gaze rises during sinking");
         let mut controlled = LavaCorpse { camera_look: [0.3, -0.2], camera_prev: [0.0; 2], ..c };

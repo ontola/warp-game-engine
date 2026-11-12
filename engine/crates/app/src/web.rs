@@ -21,8 +21,11 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 pub fn log(line: &str) {
     web_sys::console::log_1(&line.into());
     if let Some(el) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id("warp-log")) {
+        // The newest lines: the box shows a few, and the cause of a
+        // failure comes after the start-up lines.
         let text = el.text_content().unwrap_or_default();
-        el.set_text_content(Some(&format!("{text}{line}\n")));
+        let lines: Vec<&str> = text.lines().chain(line.lines()).collect();
+        el.set_text_content(Some(&(lines[lines.len().saturating_sub(16)..].join("\n") + "\n")));
     }
 }
 
@@ -233,7 +236,14 @@ async fn setup(window: Arc<Window>) -> Result<Live, String> {
     let size = window.inner_size();
     let (gpu, config, _adapter) = Gpu::for_surface_async(&instance, &surface, size.width.max(1), size.height.max(1)).await?;
     surface.configure(&gpu.device, &config);
-    gpu.device.on_uncaptured_error(Arc::new(|error: wgpu::Error| log(&format!("GPU error: {error}"))));
+    // After a device loss every call fails with "is lost"; one such line
+    // is enough, so the loss reason stays readable.
+    let lost_said = std::sync::atomic::AtomicBool::new(false);
+    gpu.device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+        let text = error.to_string();
+        if text.contains("] is lost") && lost_said.swap(true, std::sync::atomic::Ordering::Relaxed) { return; }
+        log(&format!("GPU error: {text}"))
+    }));
     gpu.device.set_device_lost_callback(|reason, message| log(&format!("GPU device lost ({reason:?}): {message}")));
     let out = Output::new(&gpu, config.format.add_srgb_suffix())?;
     Ok(Live { surface, config, gpu, out, renderer: None })

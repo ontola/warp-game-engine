@@ -27,11 +27,49 @@ pub struct Gun {
     pub bullet_drop: f32,
     /// m/s.
     pub bullet_speed: f32,
+    /// The RMB specials' numbers.
+    pub specials: Specials,
 }
 
 impl Default for Gun {
     fn default() -> Self {
-        Gun { damage: 22.0, fire_interval: 0.22, mag_size: 5, reload_time: 1.2, headshot: 2.0, spread: 0.008, recoil: 0.018, bullet_drop: 30.0, bullet_speed: 165.0 }
+        Gun { damage: 22.0, fire_interval: 0.22, mag_size: 5, reload_time: 1.2, headshot: 2.0, spread: 0.008, recoil: 0.018, bullet_drop: 30.0, bullet_speed: 165.0, specials: Specials::default() }
+    }
+}
+
+/// The RMB specials (Godot's special constants): seconds to recharge each,
+/// and what the strikes, teleport and sword reach and deal. Timings tied to
+/// animations and sounds (an air strike's travel, the ion charge) and the
+/// grenade's flight stay in specials.rs.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Specials {
+    /// Grenade and zoom.
+    pub grenade_reload: f64,
+    pub cluster_reload: f64,
+    pub air_strike_reload: f64,
+    pub ion_cannon_reload: f64,
+    pub sword_reload: f64,
+    pub teleport_reload: f64,
+    /// Seconds between a special and each of its echoes.
+    pub echo_delay: f64,
+    /// Metres.
+    pub teleport_range: f32,
+    pub sword_range: f32,
+    pub sword_radius: f32,
+    pub air_strike_radius: f32,
+    pub air_strike_damage: f32,
+    pub ion_radius: f32,
+    pub ion_damage: f32,
+}
+
+impl Default for Specials {
+    fn default() -> Self {
+        Specials {
+            grenade_reload: 3.0, cluster_reload: 4.0, air_strike_reload: 9.5, ion_cannon_reload: 14.0, sword_reload: 0.5, teleport_reload: 2.0,
+            echo_delay: 0.16, teleport_range: 45.0, sword_range: 5.0, sword_radius: 1.2,
+            air_strike_radius: 30.0, air_strike_damage: 165.0, ion_radius: 38.0, ion_damage: 175.0,
+        }
     }
 }
 

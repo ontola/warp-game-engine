@@ -111,7 +111,7 @@ fn serve_under_live_control() {
     // Score a point through Luau, then edit main.luau: the score survives the reload.
     assert_eq!(text(&call("run_luau", json!({ "code": "state.runners[1].score = 41; return state.runners[1].score" }))), "41");
     let src = text(&call("read_file", json!({ "path": "game/main.luau" })));
-    let edited = src.replace("local SPEED = 6 ", "local SPEED = 9 ").replace("return {\n", "state.edited = true\nreturn {\n");
+    let edited = src.replace("local SPEED = 6 ", "state.edited = true\nlocal SPEED = 9 ");
     assert_ne!(src, edited);
     let w = text(&call("write_file", json!({ "path": "game/main.luau", "content": edited })));
     assert!(w.contains("main.luau: reloaded"), "{w}");
@@ -174,4 +174,51 @@ return {
     let s: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("out/s.json")).unwrap()).unwrap();
     assert!(s["state"]["spawn"].as_str().unwrap().contains("not in draw"), "{s}");
     assert!(s["state"]["random"].as_str().unwrap().contains("not in draw"), "{s}");
+}
+
+#[test]
+fn finish_reads_the_visible_part_and_clamps_samples_to_each_view() {
+    let dir = folder("game-finish");
+    std::fs::write(dir.join("game.toml"), "players = 2\nsky = \"gradient\"\n").unwrap();
+    std::fs::write(dir.join("main.luau"), r#"
+        local v = vector.create
+        return {init=function()
+            world.spawn("cube", {pos=v(0,0,0),size=v(40,20,.3),surface=1})
+            world.spawn("cube", {pos=v(0,0,1),size=v(1,10,.1)})
+            world.spawn("cube", {pos=v(100,0,0),size=v(40,20,.3),surface=2})
+            for i,p in players.list() do
+                local x=(i-1)*100
+                camera.set(p.id,{pos=v(x,0,4),target=v(x,0,0),fov=45})
+            end
+            post.set({bloom=0})
+        end}
+    "#).unwrap();
+    std::fs::write(dir.join("lighting.wgsl"), r#"
+        fn game_lighting(s: LightingSample) -> StyledLight {
+            let tag = select(select(0u, 1u, s.kind == 1), 2047u, s.kind == 2);
+            return StyledLight(s.radiance, tag);
+        }
+    "#).unwrap();
+    std::fs::write(dir.join("finish.wgsl"), r#"
+        fn game_finish(px: vec2<i32>, s: FinishSample) -> vec3<f32> {
+            let edge = scene_sample(vec2<i32>(-99999, px.y));
+            if s.depth == 0 || s.tag == 0u { return vec3<f32>(0,10000,0); }
+            if edge.tag != s.tag { return vec3<f32>(0); }
+            if s.tag == 2047u { return vec3<f32>(0,0,10000); }
+            return vec3<f32>(10000,0,0);
+        }
+    "#).unwrap();
+    let script = dir.join("capture.json");
+    std::fs::write(&script, r#"{"size":[401,219],"steps":[{"ticks":2},{"capture":"parts.png"}]}"#).unwrap();
+    let run = warp().arg("script").arg(&dir).arg(script).arg("--out").arg(&dir).output().unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    let image = image::open(dir.join("parts.png")).unwrap().to_rgb8();
+    let channel = |x, y, index: usize| {
+        let rgb = image.get_pixel(x, y).0.map(i32::from);
+        assert!(rgb[index] > rgb[(index+1)%3]+45 && rgb[index] > rgb[(index+2)%3]+45,
+            "pixel ({x},{y}) expected channel {index}, got {rgb:?}");
+    };
+    channel(90, 50, 0);   // First view's tagged wall.
+    channel(200, 50, 1);  // Untagged foreground covers that wall.
+    channel(200, 164, 2); // Second view reads its own left edge.
 }

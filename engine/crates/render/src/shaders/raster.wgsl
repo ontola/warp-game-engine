@@ -284,6 +284,32 @@ fn fs_opaque(in: VOut) -> @location(0) u32 {
     return in.id;
 }
 
+// Clustered shadow tiles with a reflective shadow map (Dachsbacher and
+// Stamminger 2005; clustered_lights.rs `rsm`): beside the depth, the
+// surface's diffuse albedo (RGB 565) and its normal facing the light
+// (octahedral 8:8). `view.cam` is the light. Emissive surfaces reflect as
+// their tint, as shade does not add their glow to the bounce.
+@fragment
+fn fs_rsm(in: VOut) -> @location(0) u32 {
+    let g = cross(dpdy(in.world), dpdx(in.world));
+    if alpha_cut(in) { discard; }
+    let m = material(in.material);
+    var base = m.tint;
+    if m.layer >= 0 && (m.flags & 16384u) == 0u {
+        let uv = select(in.uv, in.world.xz * m.scale, (m.flags & 16u) != 0u);
+        base *= textureSampleLevel(albedo, samp, uv, m.layer, max(2.0, albedo_lod_floor(m.layer))).rgb;
+    }
+    base *= 1.0 - clamp(m.pad, 0.0, 1.0);
+    let gn = g / max(length(g), 1e-12);
+    let n = select(-gn, gn, dot(gn, view.cam.xyz - in.world) >= 0.0);
+    let o = n.xy / (abs(n.x) + abs(n.y) + abs(n.z));
+    let e = select((1.0 - abs(o.yx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), o >= vec2<f32>(0.0)), o, n.z >= 0.0) * 0.5 + 0.5;
+    let a = clamp(base, vec3<f32>(0.0), vec3<f32>(1.0));
+    // Non-zero for any surface: 0 is the cleared "no surface".
+    let rgb = (u32(round(a.r * 31.0)) << 11u) | (u32(round(a.g * 63.0)) << 5u) | u32(round(a.b * 31.0));
+    return (rgb << 16u) | (u32(round(e.x * 255.0)) << 8u) | max(u32(round(e.y * 255.0)), 1u);
+}
+
 @fragment
 fn fs_depth(in: VOut) {
     if alpha_cut(in) {
