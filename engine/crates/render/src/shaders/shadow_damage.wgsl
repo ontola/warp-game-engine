@@ -70,6 +70,14 @@ fn mark_snapshot(s:Snapshot,voxel:bool) {
   if bound.w>=0. && (s.words[4].x!=0u || s.words[4].y!=0u) {mark_bounds(bound.xyz-vec3<f32>(bound.w),bound.xyz+vec3<f32>(bound.w));}
  }
 }
+// Procedural terrain patches are re-tessellated around the camera: their
+// sphere and cluster change with camera LOD while the surface stays the same
+// (within the LOD's own error). Counting that as a moved caster redrew most
+// sun clipmap tiles every frame in flight (~300 patches per frame, Mancave 12
+// November). Their history still follows, so a later real change compares
+// against the current patch. KERN_SUN_TERRAIN_LOD_DAMAGE=1: old behaviour.
+override TERRAIN_LOD_DAMAGE:bool=false;
+fn terrain_patch(s:Snapshot)->bool {let flags=s.words[4].w;return (flags&128u)!=0u && ((flags>>24u)&7u)==1u;}
 @compute @workgroup_size(64) fn track(@builtin(global_invocation_id) id:vec3<u32>) {
  let i=id.x;if i>=state.counts.x+state.counts.y {return;}
  let voxel=i>=state.counts.x;var now:Snapshot;
@@ -85,7 +93,8 @@ fn mark_snapshot(s:Snapshot,voxel:bool) {
  }
  let old=history[i];var changed=false;var first=8u;
  for(var k=0u;k<8u;k++){let differs=any(old.words[k]!=now.words[k]);if differs && first==8u {first=k;}changed=changed || differs;}
- if changed {
+ let retessellated=!TERRAIN_LOD_DAMAGE && !voxel && terrain_patch(now) && terrain_patch(old);
+ if changed && !retessellated {
   mark_snapshot(old,voxel);mark_snapshot(now,voxel);
   // Diagnostics (KERN_SUN_DAMAGE_REPORT): changed casters by kind and by
   // the first differing snapshot row, after the masks.

@@ -94,7 +94,8 @@ impl Damage {
             let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("shadow damage"),layout:&layout,entries:&[&uniform,sources,volumes,choices,&history,&mask].iter().enumerate().map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:b.as_entire_binding()}).collect::<Vec<_>>()});
             let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("shadow damage"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("shadow damage"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/shadow_damage.wgsl").into())});
-            let pipeline=|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
+            let terrain_lod=[("TERRAIN_LOD_DAMAGE",if std::env::var("KERN_SUN_TERRAIN_LOD_DAMAGE").as_deref()==Ok("1") {1.0} else {0.0})];
+            let pipeline=|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:wgpu::PipelineCompilationOptions {constants:&terrain_lod,..Default::default()},cache:gpu.pipeline_cache()});
             let clear_layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("shadow damage clear"),entries:&[wgpu::BindGroupLayoutEntry {binding:0,visibility:wgpu::ShaderStages::VERTEX,count:None,ty:wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None}}]});
             let clear_pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("shadow damage clear"),bind_group_layouts:&[Some(&clear_layout)],immediate_size:0});
             let clear_module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("shadow damage clear"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/shadow_damage_clear.wgsl").into())});
@@ -286,6 +287,13 @@ impl Damage {
             volume.bounds_min[3]=mode;gpu.queue.write_buffer(&volumes,0,bytemuck::bytes_of(&volume));
             assert_eq!(dirty(&run(Mat4::IDENTITY,1),48,32),changed,"shadow-only roots must invalidate old/new cached tiles; camera-only roots are not casters");
         }
+        // A procedural terrain patch re-tessellated by camera LOD is the same
+        // surface: no damage. Becoming a terrain patch is still a change.
+        source.flags=crate::procedural_terrain::PROCEDURAL|(crate::scene::GeometryCategory::Terrain as u32)<<crate::scene::INSTANCE_CATEGORY_SHIFT;
+        gpu.queue.write_buffer(&sources,0,bytemuck::bytes_of(&source));assert!(dirty(&run(Mat4::IDENTITY,1),32,32));
+        source.sphere[0]=-0.5;gpu.queue.write_buffer(&sources,0,bytemuck::bytes_of(&source));
+        assert!(run(Mat4::IDENTITY,1).iter().all(|&w|w==0),"terrain LOD patch moves must not damage cached sun tiles");
+        source.sphere[0]=0.;source.flags=0;gpu.queue.write_buffer(&sources,0,bytemuck::bytes_of(&source));run(Mat4::IDENTITY,1);
         source.sphere[3]=-1.;gpu.queue.write_buffer(&sources,0,bytemuck::bytes_of(&source));assert!(dirty(&run(Mat4::IDENTITY,1),32,32));
         assert!(run(Mat4::IDENTITY,2).iter().all(|&w|w==u32::MAX));
         assert!(run(Mat4::from_translation(glam::Vec3::X*0.1),2).iter().all(|&w|w==u32::MAX));
