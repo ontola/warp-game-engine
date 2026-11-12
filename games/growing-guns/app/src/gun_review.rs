@@ -154,13 +154,9 @@ fn apply_graphics(scene: &mut render::Scene) {
 }
 fn grip(args: &crate::Args) -> Result<(), String> {
     use crate::view::guns::Guns;
-    use assets::skinned::Character;
     use std::path::Path;
 
-    let name = args.value("--model").unwrap_or("knight");
-    if !["knight", "paladin", "ch10"].contains(&name) { return Err("unknown roster model".into()); }
-    let model = Character::load(&Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../assets/characters").join(format!("{name}.json")))?;
+    let model = crate::view::characters::preview_model(args.num("--seed", 3))?;
     let clip = args.value("--clip").unwrap_or("pistol_idle");
     let time = args.num("--time", 0.25f32);
     let pitch = args.num("--pitch", 0.0f32).to_radians();
@@ -168,7 +164,7 @@ fn grip(args: &crate::Args) -> Result<(), String> {
     let looped = clip != "pistol_jump";
     let palette = model.sample(clip, time, looped)?;
     let hand = model.sample_socket(clip, "RightHand", time, looped)?.w_axis.truncate();
-    let arms = crate::view::characters::grip_arms(&model).ok_or("model needs two complete arms")?;
+    let arms = body::reach::TwoHandHold::bind(model.joints()).ok_or("model needs two complete arms")?;
     let mut world = growing_guns::World::new(3, &[false]);
     let _scripts = crate::scripts::attach(&mut world)?;
     let base = crate::gun::Stats::of(&world.players[0]);

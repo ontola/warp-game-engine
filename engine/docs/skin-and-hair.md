@@ -47,20 +47,10 @@ actors:
 
 ## Growing Guns
 
-Opt-in with `GG_SKIN_HAIR=1` until checked on a real GPU. The zombie's bare
-body is skin; the paladin's face, scalp and ears are masked by
-`paladin_skin.png`, written by `games/growing-guns/tools/skin-masks.py` (they
-are hidden under his helmet in play). The knight is all armour.
-
-`growing-guns character-review --out build/character-review` renders each
-character close up from the front, three-quarter and backlit, and in full,
-with and without skin and hair. `--hair` lights the zombie as hair instead,
-to check the hair model.
+Warp Human players use the fitted skin and face materials. Use `growing-guns human-review --out build/human-review` to inspect generated people. See [Warp Humans](warp-humans.md) for the player and spectator rendering paths.
 
 ## Open
 
-- Strand or card hair geometry (beards, longer hair) and a hair shadow
-  term; no current character has visible hair.
+- Hair shading for beards and longer hairstyles.
 - Screen-space diffusion for skin (light spreading sideways across pores);
   only the wrap and transmission approximations exist.
-- A visual check on a real GPU before Growing Guns turns it on by default.

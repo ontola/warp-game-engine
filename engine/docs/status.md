@@ -173,8 +173,7 @@ Owned by the foliage work; its working checklist is
 - [Skin and hair](skin-and-hair.md) (8 November): `SKIN` and `HAIR` material
   flags in the shade pass (wrapped red-shifted diffuse, light through thin
   parts from the sun shadow map, two-lobe skin specular; strand highlights
-  for hair). Opt-in in Growing Guns (`GG_SKIN_HAIR=1`). **Open:** a check on
-  a real GPU, hair geometry, screen-space skin diffusion.
+  for hair). Growing Guns applies the skin material to its Warp Humans. **Open:** screen-space skin diffusion.
 
 ## Games
 

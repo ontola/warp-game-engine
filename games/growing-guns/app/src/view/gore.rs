@@ -399,7 +399,7 @@ mod tests {
 
     #[test]
     fn gore_builds_character_model_shards_and_spawns_head_and_body_pieces() {
-        let characters = Characters::load().expect("roster characters load");
+        let characters = Characters::load_roster(3, 3, &[]).expect("roster characters load");
         let mut scene = Scene::default();
         let mut phys = Physics::new(Vec3::new(0.0, -9.81, 0.0), 60.0);
         let mut gore = Gore::reserve(&mut scene, &[], characters.models(), 42);
