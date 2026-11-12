@@ -33,12 +33,14 @@ impl Baked {
     /// Bake it all (seconds on a many-core CPU).
     pub fn bake(grid: &Grid, occluders: &render::room_bake::Occluders, sun: Vec3, settings: &render::room_bake::Settings) -> Result<Baked, String> {
         use render::room_bake as rb;
+        // Where the probes sit, once for all the stages.
+        let placed = rb::Placement::new(grid, occluders);
         Ok(Baked {
-            probes: rb::bake(grid, occluders, sun, settings)?,
-            planes: rb::separation_planes(grid, occluders),
-            visibility: rb::bake_visibility(grid, occluders),
-            offsets: rb::pack_offsets(grid, &rb::probe_positions(grid, occluders)),
-            reach: rb::bake_reach(grid, occluders),
+            probes: rb::bake_placed(grid, occluders, &placed, sun, settings)?,
+            planes: rb::separation_planes_placed(grid, occluders, &placed),
+            visibility: rb::bake_visibility_placed(grid, occluders, &placed),
+            offsets: rb::pack_offsets(grid, &placed.positions),
+            reach: rb::bake_reach_placed(grid, occluders, &placed),
         })
     }
 

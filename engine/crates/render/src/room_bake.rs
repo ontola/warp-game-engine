@@ -382,6 +382,31 @@ pub fn probe_positions(grid: &Grid, occluders: &Occluders) -> Vec<Vec3> {
     out
 }
 
+/// Where the probes sit ([`probe_positions`]) and which are still inside
+/// geometry there (a quarter of 256 rays see a back face, DDGI's rule):
+/// what every bake of one geometry state shares. Make it once per state
+/// and pass it to the `*_placed` bakes; each plain bake makes its own.
+pub struct Placement { pub positions: Vec<Vec3>, pub inside: Vec<bool> }
+
+impl Placement {
+    pub fn new(grid: &Grid, occluders: &Occluders) -> Self {
+        let positions = probe_positions(grid, occluders);
+        let dirs = sphere(256);
+        let mut inside = vec![false; positions.len()];
+        each(&mut inside, |i, inside| {
+            let o = positions[i];
+            let back = dirs.iter().filter(|d| occluders.hit(o, **d).is_some_and(|(_, n)| n.dot(**d) > 0.0)).count();
+            *inside = back * 4 >= dirs.len();
+        });
+        Self { positions, inside }
+    }
+
+    fn positions(&self, grid: &Grid) -> Result<&[Vec3], String> {
+        if self.positions.len() != grid.count() || self.inside.len() != grid.count() { return Err("probe placement is for another grid".into()); }
+        Ok(&self.positions)
+    }
+}
+
 /// The probes' offsets from their grid points for the shader (one word
 /// each, after the visibility maps): three 10-bit signed fractions of half
 /// a cell.
@@ -397,7 +422,13 @@ pub fn pack_offsets(grid: &Grid, positions: &[Vec3]) -> Vec<u32> {
 /// towards `sun`. Rebake when the sun moves or the geometry changes.
 pub fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, settings: &Settings) -> Result<Vec<Probe>, String> {
     grid.validate()?;
-    let pos = probe_positions(grid, occluders);
+    bake_placed(grid, occluders, &Placement::new(grid, occluders), sun, settings)
+}
+
+/// [`bake`] with the probes already placed.
+pub fn bake_placed(grid: &Grid, occluders: &Occluders, placement: &Placement, sun: Vec3, settings: &Settings) -> Result<Vec<Probe>, String> {
+    grid.validate()?;
+    let pos = placement.positions(grid)?;
     let Settings { sky_rays, bounce_rays, bounces, reflectance } = *settings;
     if sky_rays < 16 || bounce_rays < 16 || !sun.is_finite() || sun.length_squared() < 0.5
         || !reflectance.is_finite() || !(0.0..=1.0).contains(&reflectance) {
@@ -497,7 +528,13 @@ pub fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, settings: &Settings) 
 /// `irradiance_volume::pack_sky_emission`. Rebake when a lamp moves.
 pub fn bake_lights(grid: &Grid, occluders: &Occluders, lights: &[crate::headlights::LocalLight], settings: &Settings) -> Result<Vec<Vec<Probe>>, String> {
     grid.validate()?;
-    let pos = probe_positions(grid, occluders);
+    bake_lights_placed(grid, occluders, &Placement::new(grid, occluders), lights, settings)
+}
+
+/// [`bake_lights`] with the probes already placed.
+pub fn bake_lights_placed(grid: &Grid, occluders: &Occluders, placement: &Placement, lights: &[crate::headlights::LocalLight], settings: &Settings) -> Result<Vec<Vec<Probe>>, String> {
+    grid.validate()?;
+    let pos = placement.positions(grid)?;
     let Settings { bounce_rays, bounces, reflectance, .. } = *settings;
     if bounce_rays < 16 || !reflectance.is_finite() || !(0.0..=1.0).contains(&reflectance) {
         return Err("invalid light bake settings".into());
@@ -505,13 +542,7 @@ pub fn bake_lights(grid: &Grid, occluders: &Occluders, lights: &[crate::headligh
     let count = grid.count();
     let dirs = sphere(bounce_rays);
     // Inside-wall probes, as `bake` finds them (fewer rays: only a test).
-    let probe_dirs = sphere(256);
-    let mut valid = vec![true; count];
-    each(&mut valid, |i, ok| {
-        let o = pos[i];
-        let back = probe_dirs.iter().filter(|d| occluders.hit(o, **d).is_some_and(|(_, n)| n.dot(**d) > 0.0)).count();
-        *ok = back * 4 < probe_dirs.len();
-    });
+    let valid: Vec<bool> = placement.inside.iter().map(|inside| !inside).collect();
     // Hits with each light's direct irradiance there (shadow-tested).
     let mut hits: Vec<Vec<(Corners, Vec3, Vec<Vec3>, [f32; 6])>> = vec![Vec::new(); count];
     each(&mut hits, |i, list| {
@@ -609,15 +640,18 @@ fn open_between(occluders: &Occluders, a: Vec3, b: Vec3) -> bool {
 /// let a little daylight through a thin wall, which a dark room showed. A
 /// door's state is baked into it: rebake per state, as the visibility.
 pub fn bake_reach(grid: &Grid, occluders: &Occluders) -> Vec<[u32; REACH_WORDS]> {
-    let pos = probe_positions(grid, occluders);
-    let probe_dirs = sphere(256);
+    bake_reach_placed(grid, occluders, &Placement::new(grid, occluders))
+}
+
+/// [`bake_reach`] with the probes already placed.
+pub fn bake_reach_placed(grid: &Grid, occluders: &Occluders, placement: &Placement) -> Vec<[u32; REACH_WORDS]> {
+    let pos = &placement.positions;
     let voxel = grid.cell / REACH_PER_CELL as f32;
     let s = REACH_SIDE as i32;
     let mut out = vec![[0u32; REACH_WORDS]; grid.count()];
     each(&mut out, |i, bits| {
         let o = pos[i];
-        let back = probe_dirs.iter().filter(|d| occluders.hit(o, **d).is_some_and(|(_, n)| n.dot(**d) > 0.0)).count();
-        if back * 4 >= probe_dirs.len() { return; }
+        if placement.inside[i] { return; }
         let corner = grid.position(i) - Vec3::splat(grid.cell);
         let centre = |v: [i32; 3]| corner + (Vec3::new(v[0] as f32, v[1] as f32, v[2] as f32) + 0.5) * voxel;
         let index = |v: [i32; 3]| (v[0] + v[1] * s + v[2] * s * s) as usize;
@@ -653,15 +687,18 @@ pub fn bake_reach(grid: &Grid, occluders: &Occluders) -> Vec<[u32; REACH_WORDS]>
 /// and the weight changes smoothly, not per cell. Probes inside geometry get
 /// zeros (no weight).
 pub fn bake_visibility(grid: &Grid, occluders: &Occluders) -> Vec<[u32; VISIBILITY_SIDE * VISIBILITY_SIDE]> {
-    let pos = probe_positions(grid, occluders);
+    bake_visibility_placed(grid, occluders, &Placement::new(grid, occluders))
+}
+
+/// [`bake_visibility`] with the probes already placed.
+pub fn bake_visibility_placed(grid: &Grid, occluders: &Occluders, placement: &Placement) -> Vec<[u32; VISIBILITY_SIDE * VISIBILITY_SIDE]> {
+    let pos = &placement.positions;
     let max = grid.cell * 1.5;
     let side = VISIBILITY_SIDE;
     let mut out = vec![[0u32; VISIBILITY_SIDE * VISIBILITY_SIDE]; grid.count()];
-    let probe_dirs = sphere(256);
     each(&mut out, |i, texels| {
         let o = pos[i];
-        let back = probe_dirs.iter().filter(|d| occluders.hit(o, **d).is_some_and(|(_, n)| n.dot(**d) > 0.0)).count();
-        if back * 4 >= probe_dirs.len() { return; }
+        if placement.inside[i] { return; }
         for ty in 0..side {
             for tx in 0..side {
                 let (mut sum, mut sum2) = (0.0f32, 0.0f32);
@@ -681,7 +718,12 @@ pub fn bake_visibility(grid: &Grid, occluders: &Occluders) -> Vec<[u32; VISIBILI
 }
 
 pub fn separation_planes(grid: &Grid, occluders: &Occluders) -> Vec<[f32; 4]> {
-    let pos = probe_positions(grid, occluders);
+    separation_planes_placed(grid, occluders, &Placement::new(grid, occluders))
+}
+
+/// [`separation_planes`] with the probes already placed.
+pub fn separation_planes_placed(grid: &Grid, occluders: &Occluders, placement: &Placement) -> Vec<[f32; 4]> {
+    let pos = &placement.positions;
     let dirs: Vec<Vec3> = (-1..=1).flat_map(|x| (-1..=1).flat_map(move |y| (-1..=1).map(move |z| Vec3::new(x as f32, y as f32, z as f32))))
         .filter(|d| d.length_squared() > 0.0).map(|d| d.normalize()).collect();
     let mut planes = vec![[0f32; 4]; grid.count()];

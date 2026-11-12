@@ -64,7 +64,11 @@ on a surface out of it, by at most 0.45 of a cell per axis
 (`room_bake::probe_positions`, DDGI's probe relocation, Majercik et al.
 2021); a probe still inside after that stays invalid. With visibility on,
 shading uses the moved positions (`room_bake::pack_offsets`, one word per
-probe).
+probe). Every bake of one geometry state shares that placement:
+`room_bake::Placement::new` once, then the `*_placed` bakes
+(`bake_placed`, `bake_lights_placed`, `bake_visibility_placed`,
+`bake_reach_placed`, `separation_planes_placed`); each plain bake places
+the probes itself.
 
 A probe moved out of an outer wall sits just outside, in daylight, in the
 same cell as the wall's inner face. Two things keep it out of the room:

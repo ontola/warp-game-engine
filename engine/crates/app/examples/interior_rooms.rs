@@ -165,13 +165,15 @@ impl LightState {
     fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3) -> Result<Self, String> {
         let settings = render::room_bake::Settings::default();
         let lamps: Vec<LocalLight> = (0..4).map(ceiling_lamp).collect();
+        // Where the probes sit, once for every bake of this door state.
+        let placed = render::room_bake::Placement::new(grid, occluders);
         Ok(LightState {
-            sky: render::room_bake::bake(grid, occluders, sun, &settings)?,
-            lamps: render::room_bake::bake_lights(grid, occluders, &lamps, &render::room_bake::Settings { bounces: 2, ..settings })?,
-            planes: render::room_bake::separation_planes(grid, occluders),
-            visibility: render::room_bake::bake_visibility(grid, occluders),
-            offsets: render::room_bake::pack_offsets(grid, &render::room_bake::probe_positions(grid, occluders)),
-            reach: render::room_bake::bake_reach(grid, occluders),
+            sky: render::room_bake::bake_placed(grid, occluders, &placed, sun, &settings)?,
+            lamps: render::room_bake::bake_lights_placed(grid, occluders, &placed, &lamps, &render::room_bake::Settings { bounces: 2, ..settings })?,
+            planes: render::room_bake::separation_planes_placed(grid, occluders, &placed),
+            visibility: render::room_bake::bake_visibility_placed(grid, occluders, &placed),
+            offsets: render::room_bake::pack_offsets(grid, &placed.positions),
+            reach: render::room_bake::bake_reach_placed(grid, occluders, &placed),
         })
     }
 }
