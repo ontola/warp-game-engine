@@ -22,25 +22,50 @@ history) at the hit's reprojected position, so a reflection shows whatever
 the frame showed there: lit terrain, trees, voxel crowns, cars, grass, with
 their shadows and their own reflections (a second bounce, one frame late).
 
-Every pixel traces its mirror ray, never jittered: one jittered ray per
-pixel hits and misses at random from pixel to pixel, a bright lamp most of
-all, which shows as grain TAA cannot average away. The roughness blur
-is prefiltered instead, as cone-traced reflections do: each frame the
-history is copied into a mip chain (`reflection_mips.rs`, level 0 full
-resolution, 0.10 ms at 4K on an RTX 5070 Ti), and the hit reads the level
-whose texels match the lobe's footprint (GGX alpha, roughness squared, times the ray length,
-in pixels at the hit), blending the two nearest. A ray that never hits but passed
-pixels showing something much farther than itself (sky, or the field through
-a doorway) reads the last of those: it escaped through the opening, and a
-door or window reflects bright, not as the room's darker environment. The traced
-reflection fades out between 0.75 and 1 of the roughness cut. The first level below full resolution is a
-luminance-weighted (Karis) average of the four texels above it, so one very
-bright pixel (a bulb) does not fill a coarse texel; the levels below it are
-plain averages, which keep a bright doorway's energy, and a level above the
-first is read with a tent of four taps, so its texels do not show as
-squares. The hit test allows the step just taken plus 0.5 % of the depth
-(at least 10 cm): a looser one took rays passing behind a thin frame for
-hits. Confidence
+**Stochastic reflections** (default; `sssr.rs`, `sssr.wgsl`), as
+Stachowiak's SIGGRAPH 2015 method. Shade traces one ray per pixel and frame,
+sampled from the GGX distribution of visible normals (Heitz 2018), and writes
+the pixel's normal, roughness, specular weight (the preintegrated BRDF times
+AO), environment fallback and the hit's screen position to a per-view ray
+target (rgba32uint) instead of mixing a reflection itself. Three passes
+follow shade:
+
+- Resolve: each pixel reuses the rays of eight neighbours (itself and a Vogel
+  disc of 6 px, turned per pixel and frame) on the same surface (within four
+  pixel sizes of its plane). A neighbour's hit lights the pixel along the
+  direction to it, weighted by the pixel's GGX BRDF times cosine over the pdf
+  the neighbour sampled it with; the weighted mean of the hits' radiance is
+  the reflection (the ratio estimator), mixed with the environment by the
+  share of rays that hit. Each hit reads last frame's image at the mip whose
+  texels match the solid angle the sample stands for, 1 / (8 pdf) (filtered
+  importance sampling).
+- Temporal: last frame's result at the reflection's virtual position (behind
+  the surface at the hit distance), clamped to the current 3x3 neighbourhood,
+  blended at 0.1.
+- Composite: the specular weight times the result, added onto the shaded
+  image (shade leaves that term out where it wrote a ray).
+
+A lamp's emissive panel is reflected like any other surface and averages
+into the lobe with the rest. A semi-rough floor (roughness 0.35, GGX alpha
+0.12) spreads a reflection over about 0.25 rad, so a door 4 m away
+reflects as a soft bright patch, not a sharp door. Cost at 4K on an RTX 5070
+Ti (`interior_rooms`, room 1): 1.19 ms for the three passes, plus 0.37 ms
+in shade. `KERN_SSSR=0` returns to the single mirror ray below.
+
+**Single mirror ray** (`KERN_SSSR=0`; also a clear coat's layer): the
+mirror ray, never jittered, with the roughness blur prefiltered: each frame
+the history is copied into a mip chain (`reflection_mips.rs`, level 0 full
+resolution, 0.10 ms at 4K), and the hit reads the level whose texels match
+the lobe's footprint, blending the two nearest.
+
+Both paths share the march. A ray that never hits but passed pixels showing
+something much farther than itself (sky, or the field through a doorway)
+reads the last of those: it escaped through the opening. The reflection
+fades out between 0.75 and 1 of the roughness cut. The first mip below full
+resolution is a luminance-weighted (Karis) average of the four texels above
+it; the levels below are plain averages, and a level above the first is read
+with a tent of four taps. The hit test allows the step just taken plus 0.5 %
+of the depth (at least 10 cm). Confidence
 fades towards the screen edge, the reach and the roughness cut; where it is
 below one the old environment term (sky above the horizon, a heuristic
 ground bounce below, heightfield and canopy occlusion along the ray) fills

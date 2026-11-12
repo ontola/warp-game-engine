@@ -1245,6 +1245,7 @@ pub struct Renderer {
     tone: wgpu::ComputePipeline,
     bloom: crate::bloom::Bloom,
     reflection_mips: crate::reflection_mips::ReflectionMips,
+    sssr: crate::sssr::Sssr,
     light_shapes: crate::light_shapes::LightShapes,
     auto_exposure: crate::auto_exposure::AutoExposureGpu,
     hdr_target: std::sync::Mutex<crate::hdr::HdrTarget>,
@@ -2122,6 +2123,7 @@ impl Renderer {
                 (19, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (20, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (21, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (22, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba32Uint, view_dimension: wgpu::TextureViewDimension::D2 }),
             ],
         );
         let canopy = crate::canopy::CanopyClipmap::new(gpu, scene, &scene_layout)
@@ -2166,6 +2168,7 @@ impl Renderer {
         let tone_mod = module("tonemap", include_str!("shaders/tonemap.wgsl"));
         let bloom=crate::bloom::Bloom::new(gpu);
         let reflection_mips=crate::reflection_mips::ReflectionMips::new(gpu);
+        let sssr=crate::sssr::Sssr::new(gpu);
         let auto_exposure=crate::auto_exposure::AutoExposureGpu::new(gpu);
         startup.mark("tone_shader_module");
         let pl = |layouts: &[&wgpu::BindGroupLayout]| {
@@ -2624,6 +2627,7 @@ impl Renderer {
             tone,
             bloom,
             reflection_mips,
+            sssr,
             light_shapes,
             auto_exposure,
             hdr_target: std::sync::Mutex::new(crate::hdr::HdrTarget::new()),
@@ -3537,6 +3541,7 @@ impl Renderer {
     pub fn reset_history(&self) {
         self.history.lock().unwrap().clear();
         self.auto_exposure.reset();
+        self.sssr.reset();
         self.foliage_planners.lock().unwrap().clear();
         let mut up = self.upscaling.lock().unwrap();
         if let Some(motion) = &up.motion { motion.reset(); }
@@ -4291,6 +4296,7 @@ impl Renderer {
         let debug_options = self.debug_options();
         self.bloom.set_view_count(views.len());
         self.reflection_mips.set_view_count(views.len());
+        self.sssr.set_view_count(views.len());
         let meadow_substrate_settings = self.meadow_substrate_settings.with_debug(debug_options);
         gpu.queue.write_buffer(&self.meadow_substrate_buffer, 0, bytemuck::bytes_of(&meadow_substrate_settings));
         let render_sequence = self.profile_sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -5062,6 +5068,8 @@ impl Renderer {
             let density_view = canopy.view;
             // Traced reflections read last frame's TAA history: on only with
             // one of this view's size (a fresh history holds no image yet).
+            // Stochastic reflections (sssr.rs) where traced reflections run; KERN_SSSR=0 keeps the single mirror ray.
+            let sssr_on = std::env::var("KERN_SSSR").as_deref() != Ok("0");
             let trace_prev = (taa_on && self.traced_reflections && light.traced_reflections > 0.5 && !self.simple_lighting)
                 .then(|| histories[vi].as_ref().filter(|hh| hh.size == (w, h)).map(|hh| hh.prev_view_proj)).flatten();
             let gi_u = GiUniform {
@@ -5078,7 +5086,7 @@ impl Renderer {
                     if light.gi > 0.0 { self.irradiance_volume.map_or(0.0, |(offset, _)| offset as f32) } else { 0.0 }],
                 prev_view_proj: trace_prev.unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
                 // w: the probe visibility maps' aux offset (0: none).
-                trace: [if trace_prev.is_some() { 1.0 } else { 0.0 }, TRACE_ROUGHNESS_CUT, TRACE_REACH_M, if self.visibility_uploaded.load(std::sync::atomic::Ordering::Relaxed) { self.probe_visibility.map_or(0.0, |o| o as f32) } else { 0.0 }],
+                trace: [if trace_prev.is_some() { if sssr_on { 2.0 } else { 1.0 } } else { 0.0 }, TRACE_ROUGHNESS_CUT, TRACE_REACH_M, if self.visibility_uploaded.load(std::sync::atomic::Ordering::Relaxed) { self.probe_visibility.map_or(0.0, |o| o as f32) } else { 0.0 }],
             };
             let gi_buf = self.view_uniform(gpu, vi, 0, "gi", bytemuck::bytes_of(&gi_u));
             // A rebuilt canopy level gets its sky transmittance baked now,
@@ -5292,6 +5300,7 @@ impl Renderer {
                     let time = self.query.as_ref().map(|(qs, _, _)| { names.push("reflection mips"); (qs, timestamp_pair(&mut ts)) });
                     self.reflection_mips.build(gpu, &mut enc, vi, &hh.tex[1 - hh.cur], time)
                 });
+            let sssr_rays = (sssr_on && reflection_history.is_some()).then(|| self.sssr.rays(gpu, &mut enc, vi, (w, h)));
             let bloom_strength=(debug_options.bloom_strength*light.bloom_boost.clamp(0.0,32.0)).min(2.0);
             let bloom_on=crate::bloom::active(debug_options.bloom_enabled,bloom_strength);
             let solar = solar_projection(cam, view_m, view.w as f32 / view.h as f32, light, sun_visibility);
@@ -5427,6 +5436,7 @@ impl Renderer {
                     (19, wgpu::BindingResource::TextureView(coarse)),
                     (20, wgpu::BindingResource::TextureView(voxel_surface.as_ref().unwrap_or(&self.voxel_surface_fallback))),
                     (21, wgpu::BindingResource::TextureView(reflection_history.as_ref().unwrap_or(&self.history_fallback))),
+                    (22, wgpu::BindingResource::TextureView(sssr_rays.as_ref().unwrap_or(&self.sssr.fallback))),
                 ],
             );
             let shade_bind = shade_bind_with(resources, coarse_target.as_ref().map_or(&self.terrain_coarse_fallback, |t| &t.1));
@@ -5523,6 +5533,12 @@ impl Renderer {
                     drop(pass);
                 }
                 if label == "shade" {
+                    if let (Some(_), Some(history), Some(prev)) = (&sssr_rays, &reflection_history, trace_prev) {
+                        let time = self.query.as_ref().map(|(qs, _, _)| { names.push("sssr resolve"); (qs, timestamp_pair(&mut ts)) });
+                        self.sssr.render(gpu, &mut enc, crate::sssr::ViewInput { index: vi, depth: &depth_v, history,
+                            history_levels: crate::reflection_mips::LEVELS.min(32 - w.max(h).leading_zeros()), hdr: &hdr_v,
+                            view_proj: vp, prev_view_proj: prev, camera: cam.pos, proj_scale: proj.y_axis.y, frame: frame as u32 }, time);
+                    }
                     let far_grass = self.far_grass.as_ref().filter(|_|geometry_diagnostic.grass_enabled()).map(|grass| {
                         let time = self.query.as_ref().map(|(qs,_,_)| {
                             let i=timestamp_pair(&mut ts); names.push("far grass volume"); (qs,i)

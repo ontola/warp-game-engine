@@ -981,14 +981,15 @@ fn reflection_level(uv: vec2<f32>, lod: f32) -> vec3<f32> {
         + textureSampleLevel(reflection_history, canopy_sampler, uv + vec2<f32>(o.x, o.y), lod).rgb);
 }
 
-fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, px: vec2<i32>, size: vec2<u32>, dist: f32) -> vec4<f32> {
-    if gi.trace.x < 0.5 || rough >= gi.trace.y { return vec4<f32>(0.0); }
-    // One mirror ray, never jittered: a jittered ray per pixel hits and
-    // misses at random from pixel to pixel (a bright lamp most of all), which
-    // shows as grain TAA cannot average away. The roughness blur is applied
-    // at the hit instead (below), as a cone-traced reflection does.
-    let r = mirror;
-    if dot(r, n) <= 0.0 { return vec4<f32>(0.0); }
+// The result of marching one reflected ray through this frame's depth
+// buffer: the point it reached (or, for a ray that left through an opening,
+// a point in front of what it escaped into), the distance along the ray and
+// a confidence (0: no hit; fades at the screen edge and the reach).
+struct MarchHit { hit: vec3<f32>, t: f32, conf: f32 }
+
+fn march_hit(p: vec3<f32>, n: vec3<f32>, r: vec3<f32>, px: vec2<i32>, size: vec2<u32>, dist: f32) -> MarchHit {
+    var none: MarchHit;
+    if dot(r, n) <= 0.0 { return none; }
     let fsize = vec2<f32>(size);
     // Leave the surface by its depth precision and pixel footprint.
     let o = p + n * (0.02 + dist * 0.002);
@@ -1007,17 +1008,13 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
         let d = trace_depth(sp);
         // The scene here is far beyond the ray (sky, or the field through a
         // doorway): remember it. A ray that leaves through an opening then
-        // projects onto the wall around it, never hits, and would fall back
-        // to the room's dark environment (a door reflected as a dark
-        // rectangle); it reads what it escaped into instead.
+        // projects onto the wall around it and never hits; it reads what it
+        // escaped into instead.
         if d < ndc.z * 0.66 { escape = t; }
         // Reversed infinite Z: depth is near / view depth, so the scene is in
         // front of the ray point when d > ndc.z; how far behind it, in metres:
         if d > ndc.z {
             let behind = c.w * (1.0 - ndc.z / d);
-            // Thickness: the step just taken plus a little: a looser test
-            // took rays passing behind a thin frame for hits (a door's
-            // reflection smeared into a column with a ragged end).
             if behind < max(0.1, (t - lo) * 1.2 + c.w * 0.005) { found = true; break; }
         }
         lo = t;
@@ -1026,8 +1023,6 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
         if t > reach { break; }
     }
     var hi = t;
-    // Escaped: the ray point in front of the far scene stands in for the
-    // hit (it projects onto the same pixel).
     var hit = o + r * escape;
     if found {
         // Bisect to the crossing.
@@ -1042,54 +1037,117 @@ fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, 
         let nh = ch.xyz / ch.w;
         let sp = clamp(vec2<i32>(vec2<f32>(nh.x * 0.5 + 0.5, 0.5 - nh.y * 0.5) * fsize), vec2<i32>(0), vec2<i32>(size) - 1);
         let d = trace_depth(sp);
-        if d <= 0.0 { return vec4<f32>(0.0); }
+        if d <= 0.0 { return none; }
         // The surface the ray reached, as this frame's depth buffer places it.
         let pc = (vec2<f32>(sp) + 0.5) / fsize;
         let world = view.inv_view_proj * vec4<f32>(pc.x * 2.0 - 1.0, 1.0 - pc.y * 2.0, d, 1.0);
         hit = world.xyz / world.w;
         // A hit facing away from the ray (seen from behind) has no radiance here.
         let back = ch.w * (1.0 - nh.z / d);
-        if back > max(0.2, hi * 0.03) { return vec4<f32>(0.0); }
+        if back > max(0.2, hi * 0.03) { return none; }
     } else if escape <= 0.0 {
-        return vec4<f32>(0.0);
+        return none;
     } else {
         hi = escape;
     }
     let c = view.view_proj * vec4<f32>(o + r * hi, 1.0);
     let ndc = c.xyz / c.w;
-    let prev = gi.prev_view_proj * vec4<f32>(hit, 1.0);
+    // Fade at the screen's edges and near the reach.
+    var out: MarchHit;
+    out.hit = hit;
+    out.t = hi;
+    out.conf = (1.0 - smoothstep(0.82, 1.0, max(abs(ndc.x), abs(ndc.y)))) * (1.0 - smoothstep(reach * 0.7, reach, hi));
+    return out;
+}
+
+fn traced_reflection(p: vec3<f32>, n: vec3<f32>, mirror: vec3<f32>, rough: f32, px: vec2<i32>, size: vec2<u32>, dist: f32) -> vec4<f32> {
+    if gi.trace.x < 0.5 || rough >= gi.trace.y { return vec4<f32>(0.0); }
+    // One mirror ray; the roughness blur is applied at the hit instead, as a
+    // cone-traced reflection does. The stochastic path (sssr.wgsl) replaces
+    // this for the main surface when it is on; a clear coat keeps it.
+    let m = march_hit(p, n, mirror, px, size, dist);
+    if m.conf <= 0.0 { return vec4<f32>(0.0); }
+    let fsize = vec2<f32>(size);
+    let c = view.view_proj * vec4<f32>(m.hit, 1.0);
+    let prev = gi.prev_view_proj * vec4<f32>(m.hit, 1.0);
     if prev.w <= 1e-4 { return vec4<f32>(0.0); }
     let prev_ndc = prev.xy / prev.w;
     let edge = max(abs(prev_ndc.x), abs(prev_ndc.y));
     if edge >= 1.0 { return vec4<f32>(0.0); }
     let uv = vec2<f32>(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5);
-    // The glossy lobe's footprint at the hit: a cone of about roughness^2
-    // (radians) over the ray length, as a diameter in pixels at the hit's
-    // depth. reflection_history is last frame's image with a prefiltered
-    // mip chain (reflection_mips.rs, level 0 full resolution): read the
-    // level whose texels match that footprint, blending the two nearest
-    // (the sampler picks one mip). Mirrors read level 0; no noise anywhere.
-    // GGX: the lobe is about alpha = roughness^2 radians wide, not the
-    // roughness (that blurred a bright doorway into the dark wall round it).
-    let footprint = 2.5 * rough * rough * hi / max(c.w, 0.1) * 0.7 * fsize.y;
+    let footprint = 2.5 * rough * rough * m.t / max(c.w, 0.1) * 0.7 * fsize.y;
     let levels = f32(textureNumLevels(reflection_history));
     let lod = clamp(log2(max(footprint, 1.0)), 0.0, levels - 1.0);
     let lo_lod = floor(lod);
     var radiance = reflection_level(uv, lo_lod);
-    if lod > lo_lod {
-        let next = reflection_level(uv, lo_lod + 1.0);
-        radiance = mix(radiance, next, lod - lo_lod);
-    }
+    if lod > lo_lod { radiance = mix(radiance, reflection_level(uv, lo_lod + 1.0), lod - lo_lod); }
     if any(radiance != radiance) { return vec4<f32>(0.0); }
-    // Fade at the screen's edges, near the reach and towards the roughness cut.
-    let ndc_edge = max(abs(ndc.x), abs(ndc.y));
-    var confidence = 1.0 - smoothstep(0.82, 1.0, max(edge, ndc_edge));
-    confidence *= 1.0 - smoothstep(reach * 0.7, reach, hi);
-    // Fade out just below the roughness cut: the prefiltered mips keep a
-    // semi-rough reflection noise-free, so it can show at full strength (an
-    // early fade let the darker environment term win over a bright doorway).
+    var confidence = m.conf * (1.0 - smoothstep(0.82, 1.0, edge));
     confidence *= 1.0 - smoothstep(gi.trace.y * 0.75, gi.trace.y, rough);
     return vec4<f32>(min(radiance, vec3<f32>(65504.0)), confidence);
+}
+
+// ---- Stochastic screen-space reflections (sssr.wgsl resolves them) ----
+// One ray per pixel and frame, sampled from the GGX distribution of visible
+// normals (Heitz 2018). The pixel's surface, specular weight, environment
+// fallback and the hit's screen position go to `sssr_out`; the resolve
+// pass reuses each ray for its neighbours, weighted by their BRDF over this
+// ray's pdf (Stachowiak 2015).
+@group(1) @binding(22) var sssr_out: texture_storage_2d<rgba32uint, write>;
+
+fn sssr_on() -> bool { return gi.trace.x > 1.5; }
+
+// A GGX visible normal for view direction `v` (towards the eye) about `n`.
+fn sample_vndf(v: vec3<f32>, n: vec3<f32>, alpha: f32, xi: vec2<f32>) -> vec3<f32> {
+    let t1 = normalize(select(cross(n, vec3<f32>(0.0, 1.0, 0.0)), cross(n, vec3<f32>(1.0, 0.0, 0.0)), abs(n.y) > 0.9));
+    let t2 = cross(n, t1);
+    let vl = vec3<f32>(dot(v, t1), dot(v, t2), dot(v, n));
+    let vh = normalize(vec3<f32>(alpha * vl.x, alpha * vl.y, vl.z));
+    let lensq = vh.x * vh.x + vh.y * vh.y;
+    let b1 = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(-vh.y, vh.x, 0.0) / sqrt(max(lensq, 1e-12)), lensq > 0.0);
+    let b2 = cross(vh, b1);
+    let r = sqrt(xi.x);
+    let phi = 2.0 * PI * xi.y;
+    let s = 0.5 * (1.0 + vh.z);
+    let tx = r * cos(phi);
+    let ty = mix(sqrt(max(1.0 - tx * tx, 0.0)), r * sin(phi), s);
+    let nh = tx * b1 + ty * b2 + sqrt(max(0.0, 1.0 - tx * tx - ty * ty)) * vh;
+    let hl = normalize(vec3<f32>(alpha * nh.x, alpha * nh.y, max(0.0, nh.z)));
+    return normalize(t1 * hl.x + t2 * hl.y + n * hl.z);
+}
+
+// Shared-exponent RGB, as irradiance_volume's emission: 9-bit mantissas.
+fn pack_rgb9e5(c: vec3<f32>) -> u32 {
+    let m = max(max(c.x, c.y), max(c.z, 1e-9));
+    var e = clamp(i32(floor(log2(m))) + 16, 0, 31);
+    var scale = exp2(f32(e) - 24.0);
+    if round(m / scale) >= 512.0 && e < 31 { e += 1; scale *= 2.0; }
+    let q = vec3<u32>(clamp(round(c / scale), vec3<f32>(0.0), vec3<f32>(511.0)));
+    return q.x | (q.y << 9u) | (q.z << 18u) | (u32(e) << 27u);
+}
+
+// The ray for this pixel: march a VNDF sample and store the surface
+// (normal, roughness), its specular weight and environment fallback, and
+// the hit (its screen position this frame and the march's confidence).
+fn sssr_write(px: vec2<i32>, size: vec2<u32>, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, rough: f32, weight: vec3<f32>, env: vec3<f32>, dist: f32) {
+    let alpha = max(rough * rough, 1e-3);
+    let xi = trace_hash(px, light.fog_sampling.x * 16.0 + 5.0);
+    let h = sample_vndf(v, n, alpha, xi);
+    let l = reflect(-v, h);
+    let m = march_hit(p, n, l, px, size, dist);
+    var hit_uv = vec2<f32>(0.0);
+    var conf = 0.0;
+    if m.conf > 0.0 {
+        let c = view.view_proj * vec4<f32>(m.hit, 1.0);
+        hit_uv = clamp(vec2<f32>(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5), vec2<f32>(0.0), vec2<f32>(1.0));
+        conf = m.conf;
+    }
+    let e = oct_encode(n) * 0.5 + 0.5;
+    let packed_n = u32(round(e.x * 4095.0)) | (u32(round(e.y * 4095.0)) << 12u) | (u32(round(clamp(rough, 0.0, 1.0) * 255.0)) << 24u);
+    // Fade out at the roughness cut, as the single-ray path does.
+    let fade = 1.0 - smoothstep(gi.trace.y * 0.75, gi.trace.y, rough);
+    textureStore(sssr_out, px, vec4<u32>(packed_n, pack_rgb9e5(max(env, vec3<f32>(0.0))),
+        pack4x8unorm(vec4<f32>(clamp(weight, vec3<f32>(0.0), vec3<f32>(1.0)), conf * fade)), pack2x16unorm(hit_uv)));
 }
 
 fn vtx(i: u32) -> u32 {
@@ -3350,7 +3408,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         }
         // Traced reflections replace the environment where they hit. Under
         // a clear coat only the coat traces (below): it shows the reflection.
-        if coat <= 0.0 && rough < gi.trace.y {
+        let stochastic = sssr_on() && coat <= 0.0 && rough < gi.trace.y;
+        if coat <= 0.0 && rough < gi.trace.y && !stochastic {
             let traced = traced_reflection(p, visibility_n, refl, rough, px, size, dist);
             env = mix(env, traced.rgb, traced.a);
         }
@@ -3369,6 +3428,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         ambient += vec3<f32>(1.0,0.97,0.92)*light.fog_sampling.z*ao*contact.x;
         indirect=diffuse*ambient;
         specular=env*env_brdf(f0,rough,ndv)*ao;
+        // Stochastic reflections: the resolve adds weight * reflection (the
+        // environment where rays miss), so shade leaves the term out.
+        if stochastic { sssr_write(px,size,p,visibility_n,v,rough,env_brdf(f0,rough,ndv)*ao,env,dist); specular=vec3<f32>(0.0); }
     }
     // Flake and swirl-mark glints sit under (or in) the coat. Non-car
     // materials retain a zero glint and their existing material coat.
