@@ -65,6 +65,16 @@ shattered a round window frame a few metres away. The ground sits at
 floor's plane. `ifc_to_glb.py` cuts slab holes (stairwells) out of room
 floors (needs shapely).
 
+Surfaces follow the file where it names them: `ifc_to_glb.py` writes
+`layers` (a build-up, outer to inner as IFC orders it; Revit's plain
+material lists on walls, slabs, roofs and coverings count as one) and
+`materials`. `Surface::from_material_name` reads English, Dutch and German
+names (brick, plaster, concrete, aluminium, wood, tile, grass, roofing;
+studs, insulation and air are skipped as unseen). A layered element's
+outer finish goes on faces looking out, its inner finish inside; a face
+whose front lies in a room volume (spaces carry `height`) is inside. Only
+where nothing is named does the old guess (brick out, plaster in) apply.
+
 `house_view --cam px,py,pz,tx,ty,tz --shot out.png` renders a fixed spot
 for regression stills.
 

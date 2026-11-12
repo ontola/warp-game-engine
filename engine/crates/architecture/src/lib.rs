@@ -111,6 +111,17 @@ impl House {
             }
         }
         let outside = Occluders::from_triangles(solid);
+        // Room volumes, where the file gives a space's height: a face whose
+        // front lies in a room is inside however its rays leave (a hall
+        // wall facing the front door is not a facade).
+        let rooms: Vec<(Vec<[Vec2; 3]>, f32, f32)> = doc.nodes.iter().zip(&tags).filter_map(|(node, t)| {
+            let height = t["height"].as_f64()? as f32;
+            if t["ifcClass"].as_str() != Some("IfcSpace") { return None; }
+            let tris: Vec<[Vec3; 3]> = node.primitives.iter().flat_map(|p| p.indices.as_chunks::<3>().0.iter().map(|tri| tri.map(|i| Vec3::from(p.vertices[i as usize].pos)))).collect();
+            let y = tris.iter().flatten().map(|p| p.y).fold(f32::INFINITY, f32::min);
+            Some((tris.iter().map(|t| t.map(|p| Vec2::new(p.x, p.z))).collect(), y - 0.01, y + height))
+        }).collect();
+        let in_room = |p: Vec3| rooms.iter().any(|(tris, lo, hi)| (*lo..=*hi).contains(&p.y) && tris.iter().any(|t| in_triangle(Vec2::new(p.x, p.z), t)));
         let mut materials: HashMap<(Surface, bool, bool), u32> = HashMap::new();
         let ghost = scene.add_material(Material { tint: [0.35, 0.6, 0.95], layer: -1, roughness: 0.3, flags: 0, scale: 1.0, metal: 0.0 });
         scene.set_material_blend(ghost, 0.35, true);
@@ -120,6 +131,7 @@ impl House {
             let ifc_class = t["ifcClass"].as_str().unwrap_or("").to_string();
             let name = node.name.clone().unwrap_or_else(|| ifc_class.clone());
             let usage = t["usage"].as_str().map(str::to_string);
+            let finish = Finish::from_tags(t);
             let review = review(t);
             let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
             // Triangles regrouped by Warp material, with metre-scale UVs.
@@ -145,9 +157,10 @@ impl House {
                 e.0 += *n * *area;
                 e.2 += *area;
                 let kind = node.primitives[*k].material_name.as_deref().unwrap_or("");
-                let walls = !matches!(kind, "glass" | "frame" | "furniture" | "floor") && !FURNITURE.contains(&ifc_class.as_str())
-                    && ifc_class != "IfcWindow" && ifc_class != "IfcDoor";
-                if walls && faces_outside(&outside, (pos[0] + pos[1] + pos[2]) / 3.0, *n) { e.1 += *area; }
+                let walls = !matches!(kind, "glass" | "frame" | "furniture" | "floor")
+                    && (finish.layered.is_some() || (!FURNITURE.contains(&ifc_class.as_str()) && ifc_class != "IfcWindow" && ifc_class != "IfcDoor"));
+                let c = (pos[0] + pos[1] + pos[2]) / 3.0;
+                if walls && !in_room(c + *n * 0.1) && faces_outside(&outside, c, *n) { e.1 += *area; }
             }
             for (i, (_, _, _, n, _)) in tris.iter().enumerate() {
                 let e = info.get_mut(&patch[i]).unwrap();
@@ -169,6 +182,15 @@ impl House {
                         let label = format!("{} {}", usage.as_deref().unwrap_or(""), name).to_lowercase();
                         Some(if TILED.iter().any(|w| label.contains(w)) { Surface::Tile } else { Surface::Oak })
                     }
+                    // What the file says it is made of: a layered build-up's
+                    // outer finish outside and inner finish inside, else the
+                    // surface style's name, else the element's materials.
+                    _ if finish.layered.is_some() => {
+                        let (outer, inner) = finish.layered.unwrap();
+                        Some(if out * 2.0 > area { outer } else { inner })
+                    }
+                    _ if Surface::from_material_name(kind).is_some() => Surface::from_material_name(kind),
+                    _ if finish.single.is_some() => finish.single,
                     _ if ifc_class == "IfcWindow" || ifc_class == "IfcDoor" => Some(Surface::Frame),
                     _ => Some(if out * 2.0 <= area { Surface::Plaster }
                         else if !curved && pn.y > 0.7 { Surface::Roof }
@@ -315,6 +337,40 @@ pub fn add_ground(scene: &mut Scene, center: Vec3, level: f32) {
     let m = scene.add_material(Material { tint: [0.16, 0.24, 0.09], layer: -1, roughness: 0.95, flags: 0, scale: 1.0, metal: 0.0 });
     let ground = scene.add_mesh(&primitives::cube(m).mesh());
     scene.add_instance(ground, Affine3A::from_scale_rotation_translation(Vec3::new(400.0, 0.2, 400.0), Quat::IDENTITY, Vec3::new(center.x, level - 0.1, center.z)));
+}
+
+/// The finishes an element's IFC materials name (extras `layers` and
+/// `materials`, from tools/ifc_to_glb.py).
+struct Finish {
+    /// (outer, inner) of a layered build-up: the first nameable layer from
+    /// each side. IFC orders layers from a reference side that is not
+    /// always the outside, so an inside-only finish (plaster, tiles, wood
+    /// flooring) found on the first side swaps them.
+    layered: Option<(Surface, Surface)>,
+    /// The first nameable material of anything else.
+    single: Option<Surface>,
+}
+
+impl Finish {
+    fn from_tags(t: &serde_json::Value) -> Finish {
+        let names = |k: &str| -> Vec<String> { t[k].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default() };
+        let layers: Vec<Surface> = names("layers").iter().filter_map(|n| Surface::from_material_name(n)).collect();
+        let layered = match (layers.first(), layers.last()) {
+            (Some(&a), Some(&b)) if layers.len() >= 2 => {
+                let inside_only = |s: Surface| matches!(s, Surface::Plaster | Surface::Tile | Surface::Oak);
+                Some(if inside_only(a) && !inside_only(b) { (b, a) } else { (a, b) })
+            }
+            _ => None,
+        };
+        let single = names("materials").iter().chain(&names("layers")).find_map(|n| Surface::from_material_name(n));
+        Finish { layered, single }
+    }
+}
+
+fn in_triangle(p: Vec2, t: &[Vec2; 3]) -> bool {
+    let side = |a: Vec2, b: Vec2| (b - a).perp_dot(p - a);
+    let (d0, d1, d2) = (side(t[0], t[1]), side(t[1], t[2]), side(t[2], t[0]));
+    (d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0) || (d0 <= 0.0 && d1 <= 0.0 && d2 <= 0.0)
 }
 
 fn bytemuck_bits(v: &Vertex) -> [u32; 8] {

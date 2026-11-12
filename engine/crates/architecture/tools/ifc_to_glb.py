@@ -6,8 +6,9 @@
 
 Every building element becomes one glTF node (world coordinates, IFC's
 Z-up turned into glTF's Y-up: (x, y, z) -> (x, z, -y)) with the extras the
-`architecture` crate reads: ifcClass, ifcGuid, name, and for spaces usage
-(the space's LongName). One primitive per surface style; a style that is
+`architecture` crate reads: ifcClass, ifcGuid, name, layers (a layered
+build-up's material names) or materials (other material names), and for
+spaces usage (the space's LongName) and height (of its volume). One primitive per surface style; a style that is
 more than 20 % transparent is named "glass" and blended. A space is
 exported as its floor only (its downward faces turned up, 2 mm above the
 slab), like the AtomicBuildings export, so rooms get a floor finish and a
@@ -23,6 +24,7 @@ import sys
 
 import ifcopenshell
 import ifcopenshell.geom
+import ifcopenshell.util.element
 import shapely
 from shapely.geometry import Polygon
 
@@ -63,7 +65,7 @@ def convert(src, dst):
             materials.append(m)
         return material_index[key]
 
-    def emit(element, cls, by_style):
+    def emit(element, cls, by_style, more=None):
         primitives = []
         for key, tris in by_style.items():
             flat = [c for t in tris for p in t for c in p]
@@ -88,6 +90,12 @@ def convert(src, dst):
         if primitives:
             meshes.append({"primitives": primitives})
             extras = {"ifcClass": cls, "ifcGuid": element.GlobalId}
+            layers, names = material_names(element)
+            if layers:
+                extras["layers"] = layers
+            elif names:
+                extras["materials"] = names
+            extras.update(more or {})
             if cls == "IfcSpace" and (element.LongName or element.Name):
                 extras["usage"] = element.LongName or element.Name
             nodes.append({"name": element.Name or cls, "mesh": len(meshes) - 1, "extras": extras})
@@ -114,9 +122,10 @@ def convert(src, dst):
             skipped += 1
         elif cls == "IfcSpace":
             floor = [[pos[k] for k in f] for f in faces]
+            ys = [p[1] for p in pos]
             floor = [t for t in floor if normal(t)[1] < -0.9]
             if floor:
-                spaces.append((element, floor))
+                spaces.append((element, floor, max(ys) - min(ys)))
         else:
             by_style = {}
             for f, mid in zip(faces, g.material_ids):
@@ -126,7 +135,7 @@ def convert(src, dst):
             emit(element, cls, by_style)
         if not it.next():
             break
-    for element, floor in spaces:
+    for element, floor, height in spaces:
         y = sum(p[1] for t in floor for p in t) / (3 * len(floor))
         outline = plan_outline(floor)
         for hole, lo, hi in holes:
@@ -137,7 +146,7 @@ def convert(src, dst):
             a, b, c = [(x, y + 0.002, z) for x, z in list(t.exterior.coords)[:3]]
             tris.append([a, b, c] if normal([a, b, c])[1] > 0 else [a, c, b])
         if tris:
-            emit(element, "IfcSpace", {"floor": tris})
+            emit(element, "IfcSpace", {"floor": tris}, {"height": round(height, 4)})
     doc = {"asset": {"version": "2.0", "generator": "warp architecture ifc_to_glb.py",
                      "extras": {"source": src.split("/")[-1], "schema": ifc.schema}},
            "scene": 0, "scenes": [{"nodes": list(range(len(nodes)))}], "nodes": nodes, "meshes": meshes,
@@ -151,6 +160,32 @@ def convert(src, dst):
         + struct.pack("<II", len(blob), 0x004E4942) + bytes(blob)
     open(dst, "wb").write(out)
     print(f"{dst}: {len(nodes)} elements, {len(materials)} materials, {skipped} skipped, {len(out) // 1024} KiB")
+
+
+def material_names(element):
+    """(layers, materials): a layered build-up's material names in IFC order
+    (from the layer set's reference side), else the element's other
+    material names (a list, constituents or a single material)."""
+    m = ifcopenshell.util.element.get_material(element)
+    if m is None:
+        return [], []
+    if m.is_a("IfcMaterialLayerSetUsage"):
+        m = m.ForLayerSet
+    if m.is_a("IfcMaterialLayerSet"):
+        return [l.Material.Name for l in m.MaterialLayers if l.Material and l.Material.Name], []
+    if m.is_a("IfcMaterial"):
+        return [], [m.Name] if m.Name else []
+    if m.is_a("IfcMaterialList"):
+        names = [x.Name for x in m.Materials if x.Name]
+        # Revit writes a wall's or slab's build-up as a plain list.
+        if element.is_a("IfcWall") or element.is_a("IfcSlab") or element.is_a("IfcRoof") or element.is_a("IfcCovering"):
+            return names, []
+        return [], names
+    if m.is_a("IfcMaterialConstituentSet"):
+        return [], [c.Material.Name for c in m.MaterialConstituents or [] if c.Material and c.Material.Name]
+    if m.is_a("IfcMaterialProfileSet"):
+        return [], [p.Material.Name for p in m.MaterialProfiles if p.Material and p.Material.Name]
+    return [], []
 
 
 def plan_outline(tris):
