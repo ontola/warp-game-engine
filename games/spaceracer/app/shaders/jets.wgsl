@@ -2,7 +2,7 @@
 // pass. Single axis-facing plumes avoid the intersecting opaque-looking fins.
 fn vapor_hash(cell: vec2<i32>) -> f32 {
     let bits=bitcast<vec2<u32>>(cell);
-    var h=bits.x*1597334677u ^ bits.y*3812015801u;
+    var h=(bits.x*1597334677u) ^ (bits.y*3812015801u);
     h=(h^(h>>16u))*2246822519u;h=(h^(h>>13u))*3266489917u;
     return f32((h^(h>>16u))>>8u)/16777215.;
 }

@@ -68,6 +68,7 @@ pub mod screen_feed;
 pub mod sprites;
 pub mod irradiance_volume;
 pub mod room_bake;
+pub mod wgsl_lint;
 pub mod rsm;
 pub mod froxel_fog;
 pub mod reflection_probes;
