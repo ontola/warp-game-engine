@@ -938,7 +938,10 @@ impl World {
             self.later_shot(id, e, wind, Pending::Boss { pattern, el, dmg });
         }
         if e.summon_t <= 0.0 {
-            e.summon_t = self.rng.range(10.0, 14.0) as f64 * rage;
+            // Alone, its help comes half as often again (Joep: solo was
+            // nearly impossible).
+            let alone = if self.wizards.len() <= 1 { 1.5 } else { 1.0 };
+            e.summon_t = self.rng.range(10.0, 14.0) as f64 * rage * alone;
             let pos = self.pos(id);
             for k in c.summon {
                 let off = Vec3::new(self.rng.range(-3.0, 3.0), 0.0, self.rng.range(-3.0, 3.0));
