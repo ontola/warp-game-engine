@@ -278,6 +278,33 @@ impl Upscaling {
 }
 
 
+/// KERN_CULL_PROFILE=1: where the camera cull's per-owner work goes. Each
+/// owner is one 64-lane workgroup looping its clusters, so a few huge owners
+/// serialise into a long tail.
+fn cull_profile(scene:&crate::scene::Scene) {
+    let n=scene.instances.len();
+    let mut sizes:Vec<(u32,usize,u32)>=scene.instances.iter().enumerate().map(|(k,i)|(i.cluster_count,k,i.flags)).collect();
+    let total:u64=sizes.iter().map(|s|s.0 as u64).sum();
+    let mut hist=[0u64;8];let mut clusters=[0u64;8];
+    for s in &sizes {let b=match s.0 {0=>0,1..=64=>1,65..=256=>2,257..=1024=>3,1025..=4096=>4,4097..=16384=>5,16385..=65536=>6,_=>7};hist[b]+=1;clusters[b]+=s.0 as u64;}
+    eprintln!("cull profile: {n} owners, {total} clusters");
+    for (b,l) in ["0","1-64","65-256","257-1k","1k-4k","4k-16k","16k-64k",">64k"].iter().enumerate() {
+        eprintln!("  owners with {l:>7} clusters: {:>8} owners, {:>10} clusters, {:>8} loop iterations",hist[b],clusters[b],if b==0 {0} else {clusters[b].div_ceil(64)});
+    }
+    let mut branches:Vec<(u32,usize)>=scene.instances.iter().enumerate().filter(|(_,i)|i.cluster_count==0 && i.first_cluster!=0 && i.flags&32!=0)
+        .map(|(k,i)|(i.first_cluster&0xfff,k)).collect();
+    let members:u64=branches.iter().map(|b|b.0 as u64).sum();
+    branches.sort_by(|a,b|b.0.cmp(&a.0));
+    eprintln!("  virtual branch owners: {} with {members} templates; largest {:?}",branches.len(),&branches[..branches.len().min(12)]);
+    sizes.sort_by(|a,b|b.0.cmp(&a.0));
+    for (c,k,f) in sizes.iter().take(12) {let i=&scene.instances[*k];eprintln!("  owner {k}: {c} clusters, first {}, flags {f:#x}, radius {:.1}",i.first_cluster,i.sphere[3]);}
+}
+
+fn split_cull_timing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KERN_SPLIT_CULL_TIMING").as_deref() == Ok("1"))
+}
+
 fn timestamp_pair(next: &mut u32) -> u32 {
     assert!(*next <= TIMESTAMP_CAPACITY - 2, "frame exceeds timestamp query capacity");
     let first = *next;
@@ -2220,7 +2247,8 @@ impl Renderer {
         let raster_split=cluster_buckets && !bounded_draws && !crate::shaders::has_game_mask()
             && std::env::var("KERN_RASTER_SPLIT").as_deref()!=Ok("0");
         let cull_constants = [("SMALL_CLUSTER_TRIANGLES",small_cluster_triangles as f64),("INSTANCE_COUNT",scene.instances.len() as f64),("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64),
-                              ("EARLY_GRASS_CULL", u8::from(early_grass_cull) as f64), ("VOXEL_FAR_M", far_trees), ("RASTER_SPLIT", u8::from(raster_split) as f64)];
+                              ("EARLY_GRASS_CULL", u8::from(early_grass_cull) as f64), ("VOXEL_FAR_M", far_trees), ("RASTER_SPLIT", u8::from(raster_split) as f64),
+                              ("VIRTUAL_PARALLEL", u8::from(std::env::var("KERN_VIRTUAL_SERIAL_CULL").as_deref()!=Ok("1")) as f64)];
         let raster_constants = [("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64), ("VOXEL_FAR_M", far_trees), ("DIRECT_BOUNDED",u8::from(bounded_draws)as f64)];
         let cull_compute = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some(entry), layout: Some(&cull_pl), module: &cull_mod, entry_point: Some(entry),
@@ -2471,9 +2499,10 @@ impl Renderer {
             far_sun_scene_bind,
             far_sun,
             foliage_sun_pages,
-            // Opt-in comparison: the same executable retains the original
-            // synchronous cache validation unless explicitly requested.
-            async_shadow_validation: (std::env::var("KERN_ASYNC_SHADOW_VALIDATION").as_deref()==Ok("1"))
+            // On by default (10 November): the synchronous check stalled the
+            // CPU on the GPU for every far-sun redraw and foliage page update
+            // (r61). KERN_ASYNC_SHADOW_VALIDATION=0 keeps the explicit wait.
+            async_shadow_validation: (std::env::var("KERN_ASYNC_SHADOW_VALIDATION").as_deref()!=Ok("0"))
                 .then(Default::default),
             foliage_sun_scene_bind,
             foliage_page_targets:Default::default(),
@@ -2678,6 +2707,7 @@ impl Renderer {
                     .map(|i| if i.cluster_count == 0 { largest } else { i.cluster_count as u64 }).sum::<u64>().clamp(1, MAX_VISIBLE as u64) as u32
             },
         };
+        if std::env::var("KERN_CULL_PROFILE").as_deref()==Ok("1") {cull_profile(scene);}
         let pipeline_cache=gpu.persist_pipeline_cache();
         startup.mark("pipeline_cache_persist");
         startup.pipeline_cache(pipeline_cache);
@@ -2904,6 +2934,8 @@ impl Renderer {
         }
         let cull_bind=phase_bind.unwrap_or(&v.cull_bind);
         let timed=tile.is_none_or(|t|t.timed) && !matches!(kind,RasterPass::Broadcast);
+        // KERN_SPLIT_CULL_TIMING=1 times the camera cull's finalize/scatter separately.
+        let split_timing=timed && matches!(kind,RasterPass::Color) && self.query.is_some() && split_cull_timing();
         let tw = |ts: &mut u32| {
             self.query.as_ref().filter(|_|timed).map(|(qs, _, _)| {
                 let i = timestamp_pair(ts);
@@ -2981,13 +3013,38 @@ impl Renderer {
                 let n=if self.simple_cull {n.div_ceil(64)} else {n};
                 pass.dispatch_workgroups(n.min(65535), n.div_ceil(65535), 1);
             }
-            pass.set_pipeline(&self.finalize);
-            pass.dispatch_workgroups(1, 1, 1);
-            if self.cluster_buckets {
-                pass.set_pipeline(&self.scatter);
-                // Bounded persistent grid: no full-capacity empty scan, no
-                // CPU count readback and no storage/indirect buffer alias.
-                pass.dispatch_workgroups(256, 1, 1);
+            if !split_timing {
+                pass.set_pipeline(&self.finalize);
+                pass.dispatch_workgroups(1, 1, 1);
+                if self.cluster_buckets {
+                    pass.set_pipeline(&self.scatter);
+                    // Bounded persistent grid: no full-capacity empty scan, no
+                    // CPU count readback and no storage/indirect buffer alias.
+                    pass.dispatch_workgroups(256, 1, 1);
+                }
+            }
+        }
+        if split_timing {
+            // Diagnostic: finalize and scatter in their own timed passes so
+            // their cost is not hidden behind the cull pass's end timestamp.
+            let (finalize_name, scatter_name) = match name {
+                "occluder cull" => ("occluder cull finalize", "occluder cluster scatter"),
+                "remaining cull" => ("remaining cull finalize", "remaining cluster scatter"),
+                _ => ("cull finalize", "cluster scatter"),
+            };
+            for (step, label) in [(0u32, finalize_name), (1, scatter_name)] {
+                if step == 1 && !self.cluster_buckets { continue; }
+                let t = tw(ts);
+                if t.is_some() { names.push(label); }
+                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some(label),
+                    timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
+                });
+                if let Some(mask)=damage {pass.set_bind_group(2,mask,&[]);}
+                pass.set_bind_group(0, cull_scene_bind, &[]);
+                pass.set_bind_group(1, cull_bind, &[]);
+                if step == 0 { pass.set_pipeline(&self.finalize); pass.dispatch_workgroups(1, 1, 1); }
+                else { pass.set_pipeline(&self.scatter); pass.dispatch_workgroups(256, 1, 1); }
             }
         }
         let t = tw(ts);
@@ -6024,11 +6081,16 @@ impl Renderer {
         }}
         let lamp_passes=headlight_targets.iter().take(headlights.len()).enumerate()
             .map(|(index,target)|solar_record("headlight",Some(index),target,self.instance_groups.headlight_enabled)).collect();
-        if readback==Readback::None && !far_updated && (page_plan.updates.is_empty() || async_pages) {
+        // A far-sun redraw validates its visible count asynchronously too,
+        // when a validation batch is free (the far map and pages exclude each other).
+        let async_far=far_updated && async_pages && shadow_validation.as_ref().is_some_and(|v|v.available())
+            && page_plan.updates.is_empty() && far_targets.is_some();
+        if readback==Readback::None && (!far_updated || async_far) && (page_plan.updates.is_empty() || async_pages) {
             cpu.mark("diagnostics");
-            let page_validation=if page_plan.updates.is_empty() {None}else{
-                let pages:Vec<_>=page_plan.updates.iter().zip(page_targets.iter())
+            let page_validation=if page_plan.updates.is_empty() && !async_far {None}else{
+                let mut pages:Vec<_>=page_plan.updates.iter().zip(page_targets.iter())
                     .map(|(page,(_,target))|(page.layer,page.capacity,&target.counter)).collect();
+                if async_far {pages.push((crate::shadow_validation::FAR_SUN,self.far_sun.capacity,&far_targets.as_ref().unwrap().counter));}
                 Some(shadow_validation.as_mut().unwrap().encode(gpu,&mut enc,&pages)
                     .ok_or("foliage page validation queue unexpectedly full")?)
             };
@@ -6037,6 +6099,7 @@ impl Renderer {
             if exposure_mirrored { self.auto_exposure.submitted(); }
             cpu.mark("submit");
             if let Some(ticket)=page_validation {shadow_validation.as_mut().unwrap().submitted(ticket);}
+            if far_updated {self.far_sun.submitted();}
             *self.sun_diagnostics.lock().unwrap()=crate::shadow_diagnostics::State {context:Some(profile_context),passes:solar_passes};
             *self.headlight_diagnostics.lock().unwrap()=crate::shadow_diagnostics::State {context:Some(profile_context),passes:lamp_passes};
             if let Some(meadow) = &self.meadow { meadow.group_cache_submitted(); }
