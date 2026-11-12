@@ -148,6 +148,8 @@ pub enum Ev {
         c: C,
         width: f32,
         radius: f32,
+        /// The bolt's other elements (a Burning Thunderbolt's fire).
+        riders: Vec<El>,
     },
     /// A nova's shockwave and its rings (NovaFx._ready).
     Nova {
