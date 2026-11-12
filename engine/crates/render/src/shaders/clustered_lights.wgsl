@@ -97,11 +97,12 @@ fn clustered_shadow(lamp: LocalLight, p: vec3<f32>, n: vec3<f32>) -> f32 {
     let uv = rect.xy + local * rect.z;
     let o = 0.5 / atlas;
     let layer = i32(rect.w);
-    // A large source (a bounce light standing in for a lit patch of floor)
-    // casts soft shadows: percentage-closer soft shadows when the source
-    // is 30 cm or more across (small lamps keep the cheap 4-tap filter).
+    // Soft shadows from the source's real size (percentage-closer soft
+    // shadows) for every light with a radius: the penumbra follows the
+    // geometry, and is never narrower than a texel and a half, so a shadow
+    // edge is filtered, not stepped. A point light keeps the 4-tap filter.
     let radius = sqrt(lamp.source.x);
-    if radius >= 0.3 && radius / max(texel, 1e-5) > 1.5 {
+    if radius > 0.0 {
         return clustered_soft_shadow(uv, ndc.z, layer, rect, tile, atlas, edge, radius, dist, params, lamp.position_range.w, p);
     }
     var lit = 0.0;
@@ -116,11 +117,13 @@ fn clustered_shadow(lamp: LocalLight, p: vec3<f32>, n: vec3<f32>) -> f32 {
 // near plane, 1 at `far`).
 fn clustered_linear(z: f32, near: f32, far: f32) -> f32 { return far * near / max(far - z * (far - near), 1e-6); }
 
-// PCSS for one shadow face: 8 taps find the average blocker within the
-// widest penumbra the source could cast, the penumbra is the source radius
-// times (receiver - blocker) / blocker, and 16 compare taps on a Vogel disc
-// of that width (turned per position) filter it. Widths are capped at 24
-// texels of the tile (a 256-texel face).
+// PCSS for one shadow face (every light with a source radius): 8 taps find
+// the average blocker within the widest penumbra the source could cast,
+// the penumbra is the source radius times (receiver - blocker) / blocker,
+// and 16 bilinear compare taps on a Vogel disc of that width (turned per
+// position) filter it. At least 1.5 texels wide, so an edge whose true
+// penumbra is narrower than a texel (a contact shadow) is filtered, not
+// stepped; at most 24 texels of the tile (a 256-texel face).
 fn clustered_soft_shadow(uv: vec2<f32>, z: f32, layer: i32, rect: vec4<f32>, tile: f32, atlas: f32, edge: f32,
         radius: f32, dist: f32, params: vec4<f32>, far: f32, p: vec3<f32>) -> f32 {
     let near = params.y;
@@ -147,7 +150,7 @@ fn clustered_soft_shadow(uv: vec2<f32>, z: f32, layer: i32, rect: vec4<f32>, til
     }
     if count < 0.5 { return 1.0; }
     let blocker = blockers / count;
-    let penumbra = clamp(radius * (receiver - blocker) / max(blocker, 1e-3) * per_m, 1.0, 24.0) / atlas;
+    let penumbra = clamp(radius * (receiver - blocker) / max(blocker, 1e-3) * per_m, 1.5, 24.0) / atlas;
     var lit = 0.0;
     for (var k = 0; k < 16; k++) {
         let a = turn + f32(k) * 2.3999632;

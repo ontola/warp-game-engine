@@ -34,3 +34,6 @@ r2_pendant_table -1.5,1.65,-4.8          -0.6       -0.05      0000 0 0 840,470,
 # (room 3's lamps on beyond it).
 r4_probe_open  -6.0,1.65,-12.6           -1.5708    -0.4       1111 1 0 840,700,240,135
 r4_probe_shut  -6.0,1.65,-12.6           -1.5708    -0.4       1111 0 0 840,700,240,135
+# Shadow edges: the flashlight past room 3's door jamb (Joep's F4 "jagged
+# shadow edges"): the jamb's edge on the green wall, the block's contact.
+flash_jamb     2.75,1.65,-9.9            0.12       -0.3       0000 0 1 840,460,240,135
