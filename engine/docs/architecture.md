@@ -64,7 +64,5 @@ The plan (hosts, import paths, milestones) is in the project's
 Open: per-element material choice from the app (only defaults now), IFC
 colours are replaced by the defaults (every IFC wall turns brick), pitched
 roofs get the flat-roof gravel, lamps, furniture assets, one probe grid per
-scene (coarse cells for a street). AtomicBuildings' export has no roof class, slabs follow
-the wall axes (dark seam between storeys) and walls end at their axes (a
-notch at outside corners shows plaster end faces); fix those in the
-exporter, not here.
+scene (coarse cells for a street). AtomicBuildings homes get a roof only
+when the app has an IfcRoof element (ontola/atomic-buildings).
