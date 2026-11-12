@@ -119,8 +119,13 @@ On an HDR screen the picture keeps its SDR look (the same AgX tone, contrast,
 saturation, vignette, grain and bloom) and only the highlights go brighter
 than SDR white: the sun and its glare, specular glints, lamps, emissive
 materials, explosions. Everything up to about the brightness of a white
-surface in the light is unchanged. Screenshots (F12), captures, video and
-live screens stay SDR.
+surface in the light is unchanged. Captures, video and live screens stay
+SDR. An F4 feedback capture on an HDR screen keeps the frame on screen as
+it was (HDR, the HUD at SDR white) while the point is picked, and saves
+`<name>-hdr.png` beside the SDR PNG: the HDR output without the HUD as a
+16-bit BT.2100 PQ PNG (BT.2020 primaries, `cICP` chunk), SDR white at the
+level the screen showed it (JSON: `capture.hdr_png`). Chrome and Windows
+Photos show it in HDR; the SDR PNG is what an SDR screen shows.
 
 ### Turning it on
 

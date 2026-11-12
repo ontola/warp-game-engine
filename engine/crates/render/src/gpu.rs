@@ -227,10 +227,25 @@ impl Gpu {
         let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
     }
 
+    /// Copy an `Rgba16Float` texture to memory: four half floats per texel
+    /// ([`crate::hdr::half_to_f32`]).
+    pub fn read_rgba16f(&self, tex: &wgpu::Texture) -> Vec<u16> {
+        let bytes = self.read_rows(tex, 8);
+        bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect()
+    }
+
     /// Copy an RGBA8 texture to memory.
     pub fn read_rgba8(&self, tex: &wgpu::Texture) -> Vec<u8> {
+        let mut out = self.read_rows(tex, 4);
+        if matches!(tex.format(), wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
+            for pixel in out.chunks_exact_mut(4) { pixel.swap(0, 2); }
+        }
+        out
+    }
+
+    fn read_rows(&self, tex: &wgpu::Texture, texel: u32) -> Vec<u8> {
         let (w, h) = (tex.width(), tex.height());
-        let row = (w * 4).div_ceil(256) * 256;
+        let row = (w * texel).div_ceil(256) * 256;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
             size: (row * h) as u64,
@@ -247,13 +262,10 @@ impl Gpu {
         buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         self.wait();
         let data = buf.slice(..).get_mapped_range().expect("mapped readback");
-        let mut out = Vec::with_capacity((w * h * 4) as usize);
+        let mut out = Vec::with_capacity((w * h * texel) as usize);
         for y in 0..h {
             let start = (y * row) as usize;
-            out.extend_from_slice(&data[start..start + (w * 4) as usize]);
-        }
-        if matches!(tex.format(), wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
-            for pixel in out.chunks_exact_mut(4) { pixel.swap(0, 2); }
+            out.extend_from_slice(&data[start..start + (w * texel) as usize]);
         }
         out
     }

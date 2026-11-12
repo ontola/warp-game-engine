@@ -95,6 +95,51 @@ pub fn configure_surface(config: &mut wgpu::SurfaceConfiguration, caps: &wgpu::S
     false
 }
 
+/// SMPTE ST 2084 (PQ): absolute luminance in nits to a 0..1 signal.
+pub fn pq_encode(nits: f32) -> f32 {
+    let (m1, m2) = (2610.0 / 16384.0, 2523.0 / 4096.0 * 128.0);
+    let (c1, c2, c3) = (3424.0 / 4096.0, 2413.0 / 4096.0 * 32.0, 2392.0 / 4096.0 * 32.0);
+    let y = (nits / 10000.0).clamp(0.0, 1.0).powf(m1);
+    ((c1 + c2 * y) / (1.0 + c3 * y)).powf(m2)
+}
+
+/// IEEE half to f32 (the HDR output's texels).
+pub fn half_to_f32(h: u16) -> f32 {
+    let sign = if h >> 15 == 1 { -1.0 } else { 1.0 };
+    let (exp, frac) = (((h >> 10) & 0x1f) as i32, (h & 0x3ff) as f32);
+    match exp {
+        0 => sign * frac * 2f32.powi(-24),
+        31 => if frac == 0.0 { sign * f32::INFINITY } else { f32::NAN },
+        e => sign * (1.0 + frac / 1024.0) * 2f32.powi(e - 15),
+    }
+}
+
+/// Write the HDR output ([`crate::Renderer::hdr_output`]: linear BT.709,
+/// 1.0 = SDR white; `rgba` its half-float texels) as a 16-bit PNG in BT.2100
+/// PQ (cICP: BT.2020 primaries, PQ, full range) with SDR white at
+/// `sdr_white_nits`, the level the screen showed it at. Chrome and Windows
+/// Photos show it in HDR.
+pub fn write_pq_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u16], sdr_white_nits: f32) -> Result<(), String> {
+    if rgba.len() != w as usize * h as usize * 4 { return Err("HDR frame size mismatch".into()); }
+    // BT.709 to BT.2020 primaries (ITU-R BT.2087).
+    const M: [[f32; 3]; 3] = [[0.627404, 0.329283, 0.043313], [0.069097, 0.919540, 0.011362], [0.016391, 0.088013, 0.895595]];
+    let mut out = Vec::with_capacity(w as usize * h as usize * 6);
+    for px in rgba.chunks_exact(4) {
+        let c = [px[0], px[1], px[2]].map(|v| { let v = half_to_f32(v); if v.is_finite() { v.max(0.0) } else { 0.0 } });
+        for row in M {
+            let v = pq_encode((row[0] * c[0] + row[1] * c[1] + row[2] * c[2]) * sdr_white_nits);
+            out.extend_from_slice(&((v * 65535.0).round() as u16).to_be_bytes());
+        }
+    }
+    let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Sixteen);
+    let mut wr = enc.write_header().map_err(|e| e.to_string())?;
+    wr.write_chunk(png::chunk::ChunkType(*b"cICP"), &[9, 16, 0, 1]).map_err(|e| e.to_string())?;
+    wr.write_image_data(&out).map_err(|e| e.to_string())
+}
+
 /// The renderer's HDR copy of the output.
 pub(crate) struct HdrTarget {
     pub headroom: f32,
@@ -135,6 +180,29 @@ impl HdrTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pq_signal_and_half_floats() {
+        assert!((pq_encode(10000.0) - 1.0).abs() < 1e-6);
+        // 100 nits is PQ code 520 of 1023 (BT.2100 reference).
+        assert!((pq_encode(100.0) * 1023.0 - 520.0).abs() < 1.0);
+        assert!(pq_encode(0.0) < 1e-6);
+        // 1.0, 0.5, 65504, the smallest subnormal, -2.
+        for (bits, v) in [(0x3c00u16, 1.0f32), (0x3800, 0.5), (0x7bff, 65504.0), (0x0001, 5.960_464_5e-8), (0xc000, -2.0)] {
+            assert_eq!(half_to_f32(bits), v);
+        }
+    }
+
+    #[test]
+    fn pq_png_has_its_colour_space_chunk() {
+        let path = std::env::temp_dir().join(format!("warp-pq-{}.png", std::process::id()));
+        write_pq_png(&path, 2, 1, &[0x3c00, 0x3c00, 0x3c00, 0x3c00, 0, 0, 0, 0x3c00], 203.0).unwrap();
+        let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&path).unwrap()));
+        let reader = decoder.read_info().unwrap();
+        let cicp = reader.info().coding_independent_code_points.unwrap();
+        assert_eq!((cicp.color_primaries, cicp.transfer_function, reader.info().bit_depth), (9, 16, png::BitDepth::Sixteen));
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn sdr_range_is_unchanged_and_white_reaches_the_headroom() {

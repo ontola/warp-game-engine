@@ -15,7 +15,7 @@ GameNight sessions select Warp Humans for seated players and use their profile s
 
 ## Developer captures
 
-The Warp desktop game shell opens a point-selection overlay on F4. Sideways uses the same overlay and also binds F12. Its captures support [fixed-tick driving comparisons, pixel inspection and single-effect lighting comparisons](warp-cli.md#sideways-feedback). Growing Guns feedback includes recent desktop inputs and live edits.
+The Warp desktop game shell opens a point-selection overlay on F4; the frozen frame stays where and as it was shown (in HDR on an HDR screen), and on an HDR screen the capture adds a PQ HDR PNG beside the SDR one ([HDR output](hdr-and-exposure.md)). Sideways uses the same overlay and also binds F12. Its captures support [fixed-tick driving comparisons, pixel inspection and single-effect lighting comparisons](warp-cli.md#sideways-feedback). Growing Guns feedback includes recent desktop inputs and live edits.
 
 ## Target
 
