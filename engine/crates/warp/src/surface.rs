@@ -62,3 +62,17 @@ impl GameSurface {
     /// Set the current source before the first renderer.
     pub fn install(&self) { render::set_game_surface(self.pending.as_deref().unwrap_or(&self.good)); }
 }
+
+pub fn load_style(dir: &std::path::Path) -> Result<render::scene::GameStyle, String> {
+    let read = |name| {
+        let path = dir.join(name);
+        match std::fs::read_to_string(&path) {
+            Ok(source) => Ok(Some(source)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!("{}: {error}", path.display())),
+        }
+    };
+    let style = render::scene::GameStyle { lighting: read("lighting.wgsl")?, finish: read("finish.wgsl")? };
+    style.validate()?;
+    Ok(style)
+}

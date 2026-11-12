@@ -18,6 +18,8 @@ pub use resource_cache::CacheStats as ResourceCacheStats;
 
 #[derive(Default)]
 struct FrameResources {
+    style_input: Option<(wgpu::Texture, wgpu::TextureView)>,
+    style_bind: resource_cache::BindGroups<1>,
     targets: [resource_cache::TextureViews<1>; 3],
     near_shadow_off: resource_cache::TextureViews<1>,
     history: resource_cache::TextureViews<2>,
@@ -32,7 +34,7 @@ impl FrameResources {
         let mut stats = ResourceCacheStats::default();
         for target in &self.targets { stats.add(target.stats()); }
         for other in [self.near_shadow_off.stats(), self.history.stats(), self.result.stats(),
-            self.shade.stats(), self.taa.stats(), self.tone.stats(), self.volume.stats()] { stats.add(other); }
+            self.style_bind.stats(), self.shade.stats(), self.taa.stats(), self.tone.stats(), self.volume.stats()] { stats.add(other); }
         stats
     }
 }
@@ -1267,6 +1269,8 @@ pub struct Renderer {
     /// Kept to rebuild `shade` when its source changes on disk.
     shade_pl: wgpu::PipelineLayout,
     shade_text: String,
+    style_lighting: Option<String>,
+    style_finish: Option<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
     shader_wind_text: String,
     shader_generation: u64,
     rock_variation: bool,
@@ -2226,7 +2230,9 @@ impl Renderer {
         startup.mark("cull_shader_module");
         let raster_mod = module("raster", &crate::grass::raster_source());
         startup.mark("raster_shader_module");
-        let shade_mod = module("shade", &crate::wind::shade_source());
+        let style_lighting = scene.style.lighting_module();
+        let shade_text = crate::wind::shade_source_with(style_lighting.as_deref());
+        let shade_mod = module("shade", &shade_text);
         startup.mark("shade_shader_module");
         let tone_mod = module("tonemap", include_str!("shaders/tonemap.wgsl"));
         let bloom=crate::bloom::Bloom::new(gpu);
@@ -2248,6 +2254,18 @@ impl Renderer {
                 cache: gpu.pipeline_cache(),
             })
         };
+        let style_finish = scene.style.finish.as_ref().map(|finish| {
+            let source = format!("{}\n{finish}", include_str!("shaders/game_finish.wgsl"));
+            let shader = module("game finish", &source);
+            let layout = layout(gpu, "game finish", &[
+                (0, float_tex(false)),
+                (1, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (2, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }),
+            ]);
+            (compute(&pl(&[&layout]), &shader, "apply_finish"), layout)
+        });
         let cull_pl = pl(&[&cull_scene_layout, &view_cull_layout]);
         // Constructor-time switches permit same-binary ABBA comparisons with
         // identical assets, LOD thresholds, lighting and camera inputs.
@@ -2395,7 +2413,7 @@ impl Renderer {
         // visibility buffer for shade (VOXEL_SURFACE).
         let voxel_surface = !simple_lighting && voxel_forest.as_ref().is_some_and(|f| f.casts_sun())
             && std::env::var("KERN_VOXEL_SURFACE").as_deref() != Ok("0");
-        shade_constants.push(("VOXEL_OCCLUSION", if voxel_forest.as_ref().is_some_and(|f| f.casts_sun()) && !voxel_surface {1.0} else {0.0}));
+        shade_constants.push(("VOXEL_OCCLUSION", if scene.style.finish.is_none() && voxel_forest.as_ref().is_some_and(|f| f.casts_sun()) && !voxel_surface {1.0} else {0.0}));
         shade_constants.push(("VOXEL_SURFACE", if voxel_surface {1.0} else {0.0}));
         // Voxel pixels in their own pass (KERN_VOXEL_PASS=0 keeps them in
         // shade): the big kernel's register footprint was the limit, not
@@ -2699,7 +2717,7 @@ impl Renderer {
             empty_bind,
             sky_vis_bake,
             shade_tiles: std::sync::Mutex::new(Vec::new()),
-            shade_text: crate::wind::shade_source(),
+            shade_text, style_lighting, style_finish,
             shader_wind_text: crate::wind::common_source(),
             shader_generation: 0,
             rock_variation,
@@ -3559,14 +3577,14 @@ impl Renderer {
         if snapshot.source("wind_common.wgsl") != self.shader_wind_text {
             return Err("wind_common.wgsl affects raster/cull/motion geometry; rebuild the renderer to change it".into());
         }
-        let sources = snapshot.lighting();
+        let sources = snapshot.lighting(self.style_lighting.as_deref());
         let shade = if sources.shade != self.shade_text {
             Some(crate::shaders::checked(gpu, || {
                 let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade"), source: wgpu::ShaderSource::Wgsl(sources.shade.as_str().into()) });
                 let mut constants = self.shade_features.constants(self.rock_variation,self.meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled()));
                 constants.push(("SKY_TILES", if self.sky_tiles {1.0} else {0.0}));
                 constants.push(("WORLD_TERRAIN_BAKED", if self.world_visibility.baked {1.0} else {0.0}));
-                constants.push(("VOXEL_OCCLUSION", if self.voxel_forest.as_ref().is_some_and(|f| f.casts_sun()) && !self.voxel_surface {1.0} else {0.0}));
+                constants.push(("VOXEL_OCCLUSION", if self.style_finish.is_none() && self.voxel_forest.as_ref().is_some_and(|f| f.casts_sun()) && !self.voxel_surface {1.0} else {0.0}));
                 constants.push(("VOXEL_SURFACE", if self.voxel_surface {1.0} else {0.0}));
                 constants.push(("VOXEL_PASS", if self.voxel_pass.is_some() {1.0} else {0.0}));
                 constants.push(("SHADE_CLASS", if self.terrain_shade.is_some() {2.0} else {0.0}));
@@ -5350,6 +5368,15 @@ impl Renderer {
                 }
             };
             let (vis_v, depth_v, hdr_v) = (resources.targets[0].get(&vis), resources.targets[1].get(&depth), resources.targets[2].get(&hdr));
+            let style_input = self.style_finish.as_ref().map(|_| {
+                if resources.style_input.as_ref().is_none_or(|(t, _)| t.width() != w || t.height() != h) {
+                    let tex = tex2d("game finish input", w, h, wgpu::TextureFormat::Rgba16Float,
+                        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING);
+                    let view = tex.create_view(&Default::default());
+                    resources.style_input = Some((tex, view));
+                }
+                resources.style_input.as_ref().unwrap().1.clone()
+            });
             cpu.mark("view lights and targets");
             // Reversed-Z infinite perspective.
             let view_m = camera_view(*cam,camera_up_axes.get(vi).copied());
@@ -5566,7 +5593,7 @@ impl Renderer {
                     (5, wgpu::BindingResource::TextureView(&shadow_v)),
                     (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
                     (7, wgpu::BindingResource::TextureView(&self.sky_view)),
-                    (8, wgpu::BindingResource::TextureView(&hdr_v)),
+                    (8, wgpu::BindingResource::TextureView(style_input.as_ref().unwrap_or(&hdr_v))),
                     (10, wgpu::BindingResource::TextureView(&self.heightfield)),
                     (11, gi_buf.as_entire_binding()),
                     (13, wgpu::BindingResource::TextureView(&density_view)),
@@ -5686,6 +5713,19 @@ impl Renderer {
                     drop(pass);
                 }
                 if label == "shade" {
+                    if let (Some((pipeline, layout)), Some(input)) = (&self.style_finish, &style_input) {
+                        let bind = resources.style_bind.get(gpu, layout, "game finish", &[
+                            (0, wgpu::BindingResource::TextureView(input)),
+                            (1, wgpu::BindingResource::TextureView(&depth_v)),
+                            (2, wgpu::BindingResource::TextureView(&hdr_v)),
+                        ]);
+                        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            label: Some("game finish"), timestamp_writes: None,
+                        });
+                        pass.set_pipeline(pipeline);
+                        pass.set_bind_group(0, &bind, &[]);
+                        pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+                    }
                     if let (Some(_), Some(history), Some(prev)) = (&sssr_rays, &reflection_history, trace_prev) {
                         let time = self.query.as_ref().map(|(qs, _, _)| { names.push("sssr resolve"); (qs, timestamp_pair(&mut ts)) });
                         self.sssr.render(gpu, &mut enc, crate::sssr::ViewInput { index: vi, depth: &depth_v, history,
