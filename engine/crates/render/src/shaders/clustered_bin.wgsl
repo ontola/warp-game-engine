@@ -25,7 +25,7 @@ fn bin(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_
     var packed = 0u;
     for (var first = 0u; first < lights; first += 64u) {
         workgroupBarrier();
-        if first + li < lights { chunk[li] = bitcast<vec4<f32>>(arena[grid.offsets.w + (first + li) * 4u]); }
+        if first + li < lights { chunk[li] = bitcast<vec4<f32>>(arena[grid.offsets.w + (first + li) * 5u]); }
         workgroupBarrier();
         let n = min(64u, lights - first);
         for (var j = 0u; j < n; j++) {

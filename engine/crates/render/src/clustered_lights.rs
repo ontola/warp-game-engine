@@ -37,7 +37,12 @@ const GUARD: f32 = 2.0;
 /// Lights further than this from every camera are dropped (metres beyond
 /// their range).
 pub const MAX_LIGHT_DISTANCE_M: f32 = 600.0;
-const LIGHT_STRIDE: u32 = 4;
+/// Vec4s per light: position and range, direction and outer cone,
+/// intensity and inner cone, source (radius squared, falloff, shadow faces,
+/// shape bits), face (`LightFace::gpu`).
+const LIGHT_STRIDE: u32 = 5;
+/// The LTC tables (`light_face`) sit ahead of the lights in the arena.
+const LTC_VEC4S: u32 = crate::light_face::LTC_VEC4S;
 const FACE_STRIDE: u32 = 6;
 const CELL_STRIDE: u32 = 8;
 
@@ -49,13 +54,19 @@ pub struct ClusteredLight {
     pub shadow: Option<LightShadow>,
     /// Cookie and angular profile (`light_shapes`); none by default.
     pub shape: crate::light_shapes::LightShape,
+    /// The light's visible face (`light_face`): its specular highlight is
+    /// that face's (an area light), its source radius the face's. None: a
+    /// sphere of `source_radius_m`.
+    pub face: Option<crate::light_face::LightFace>,
 }
 
 impl ClusteredLight {
-    pub fn unshadowed(light: LocalLight) -> Self { Self { light, shadow: None, shape: Default::default() } }
-    pub fn shadowed(light: LocalLight, id: u64) -> Self { Self { light, shadow: Some(LightShadow { id, exclude: None }), shape: Default::default() } }
+    pub fn unshadowed(light: LocalLight) -> Self { Self { light, shadow: None, shape: Default::default(), face: None } }
+    pub fn shadowed(light: LocalLight, id: u64) -> Self { Self { light, shadow: Some(LightShadow { id, exclude: None }), shape: Default::default(), face: None } }
     /// This light with a cookie and/or angular profile.
     pub fn with_shape(self, shape: crate::light_shapes::LightShape) -> Self { Self { shape, ..self } }
+    /// This light with a visible face (see `light_face`).
+    pub fn with_face(self, face: crate::light_face::LightFace) -> Self { Self { light: face.apply(self.light), face: Some(face), ..self } }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -368,7 +379,6 @@ pub(crate) struct Resources {
     uniform: wgpu::Buffer,
     /// The scene tables buffer and where the arena starts in it (bytes).
     arena: wgpu::Buffer,
-    base: u64,
     lights_at: u32,
     bin: Option<(wgpu::ComputePipeline, wgpu::BindGroup)>,
     pub clear_tile: Option<wgpu::RenderPipeline>,
@@ -387,14 +397,16 @@ pub fn budget(enabled: bool) -> ShadowBudget {
 /// Bytes the arena takes at the end of the scene tables.
 pub fn arena_bytes(enabled: bool, budget: ShadowBudget) -> u64 {
     if !enabled { return 0; }
-    (MAX_CLUSTERED_LIGHTS as u64 * LIGHT_STRIDE as u64 + budget.tiles() as u64 * FACE_STRIDE as u64 + MAX_CELLS as u64 * CELL_STRIDE as u64) * 16
+    (LTC_VEC4S as u64 + MAX_CLUSTERED_LIGHTS as u64 * LIGHT_STRIDE as u64 + budget.tiles() as u64 * FACE_STRIDE as u64 + MAX_CELLS as u64 * CELL_STRIDE as u64) * 16
 }
 
 impl Resources {
     /// `tables`: the scene tables buffer, with `arena_bytes` reserved from
     /// byte `base` (SceneTables::clustered).
     pub fn new(gpu: &Gpu, enabled: bool, budget: ShadowBudget, tables: &wgpu::Buffer, base: u64) -> Self {
-        let lights_at = (base / 16) as u32;
+        // The LTC tables first (written once), then the lights.
+        let lights_at = (base / 16) as u32 + LTC_VEC4S;
+        if enabled { gpu.queue.write_buffer(tables, base, bytemuck::cast_slice(&crate::light_face::ltc_words())); }
         let faces_offset = lights_at + MAX_CLUSTERED_LIGHTS as u32 * LIGHT_STRIDE;
         let cells_offset = faces_offset + budget.tiles() * FACE_STRIDE;
         let arena = tables.clone();
@@ -433,7 +445,7 @@ impl Resources {
                     depth_compare: Some(wgpu::CompareFunction::Always), stencil: Default::default(), bias: Default::default() }),
                 multisample: Default::default(), fragment: None, multiview_mask: None, cache: gpu.pipeline_cache() })
         });
-        Self { enabled, budget, layout, bind, uniform, arena, base, lights_at, bin, clear_tile, faces_offset, cells_offset,
+        Self { enabled, budget, layout, bind, uniform, arena, lights_at, bin, clear_tile, faces_offset, cells_offset,
             atlas: std::sync::Mutex::new(Atlas::new(budget)), lights: Default::default(), stats: Default::default() }
     }
 
@@ -451,9 +463,10 @@ impl Resources {
         let mut stats = Stats { lights: lights.len() as u32, shadowed: lights.iter().filter(|l| l.shadow.is_some()).count() as u32, ..Default::default() };
         let plan = if self.budget.layers > 0 { self.atlas.lock().unwrap().plan(&lights, cameras, self.budget.faces_per_frame) } else { Plan { records: vec![None; lights.len()], ..Default::default() } };
         if let Some(grid) = grid {
-            let mut words: Vec<[f32; 4]> = Vec::with_capacity(lights.len() * 4 + plan.faces.len() * 6);
+            let mut words: Vec<[f32; 4]> = Vec::with_capacity(lights.len() * LIGHT_STRIDE as usize + plan.faces.len() * 6);
             for (l, record) in lights.iter().zip(&plan.records) {
                 let shape = l.shape.packed();
+                let face = l.face.map_or([0.0; 4], |f| f.gpu(&l.light));
                 let l = &l.light;
                 let (first, count) = record.map_or((0.0, 0.0), |(f, c)| (f as f32 + 1.0, c as f32));
                 words.push(l.position.extend(l.range_m).to_array());
@@ -461,8 +474,9 @@ impl Resources {
                 words.push(l.intensity_cd.extend(l.inner_cos).to_array());
                 // w: shadow face count (0..7) plus the cookie and profile bits.
                 words.push([l.source_radius_m * l.source_radius_m, l.falloff, first, count + shape]);
+                words.push(face);
             }
-            gpu.queue.write_buffer(&self.arena, self.base, bytemuck::cast_slice(&words));
+            gpu.queue.write_buffer(&self.arena, self.lights_at as u64 * 16, bytemuck::cast_slice(&words));
             words.clear();
             for (face, tile, valid) in &plan.faces {
                 let draw = FaceDraw { tile: *tile, face: *face, position: Vec3::ZERO, exclude: None };

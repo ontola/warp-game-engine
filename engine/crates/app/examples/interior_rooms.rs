@@ -474,7 +474,7 @@ impl Rooms {
         // The light sits inside its bulb and shade: those and the cord (the
         // first three slots) must not cast its shadow.
         let own = Some((self.objects.instance(self.bulb) as u32, 3));
-        let mut lit = ClusteredLight::shadowed(pendant, 1).with_shape(PENDANT_PROFILE);
+        let mut lit = ClusteredLight::shadowed(pendant, 1).with_shape(PENDANT_PROFILE).with_face(BULB);
         if let Some(s) = &mut lit.shadow { s.exclude = own; }
         let mut up = ClusteredLight::shadowed(self.uplight(), 3);
         if let Some(s) = &mut up.shadow { s.exclude = own; }
@@ -486,7 +486,7 @@ impl Rooms {
         if let Some(b) = self.bounce(&pendant, pendant.direction, 30f32.to_radians(), 1.47 * 0.8, 0.05) { lights.push(ClusteredLight::shadowed(b, 2).with_shape(BOUNCE)); }
         for i in 0..4 {
             if self.lamp_on[i] {
-                let mut lamp = ClusteredLight::shadowed(ceiling_lamp(i), 10 + i as u64).with_shape(DOWNLIGHT_PROFILE);
+                let mut lamp = ClusteredLight::shadowed(ceiling_lamp(i), 10 + i as u64).with_shape(DOWNLIGHT_PROFILE).with_face(PANEL);
                 if let Some(s) = &mut lamp.shadow { s.exclude = Some((self.objects.instance(self.lamp_slots[i]) as u32, 1)); }
                 lights.push(lamp);
             }
