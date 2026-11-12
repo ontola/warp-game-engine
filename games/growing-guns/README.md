@@ -98,7 +98,9 @@ sky, force a modifier, start the lava leak, next round, pause the bots.
 
 For slower PCs, pass `--graphics low` or `--graphics minimum` (also `GG_GRAPHICS`). Desktop defaults to `full`, except base Apple chips (M1 to M4 without Pro, Max or Ultra), which default to `low`.
 Without those flags, Settings has GRAPHICS (AUTO, FULL, LOW, MINIMUM), remembered in settings.json
-(`graphics_choice`) and applied from the next round. Adaptive quality lowers resolution to chase the display
+(`graphics_choice`) and applied from the next round. Each arena opens with its selected sky and baked stadium lighting ready.
+During play and replay the automatic quality ladder adjusts only 3D resolution. Bloom, contact shadows and reflection occlusion follow the selected graphics settings throughout the round.
+Adaptive resolution targets the display refresh rate
 (up to 120 Hz); only when the lowest resolution stays below 45 fps for 5 seconds does AUTO lower the profile
 one step from the next round, for this session only and never automatically to MINIMUM. The console's
 `graphics PROFILE` switches at once. AUTO starts from a probe: once the start menu's stadium has settled,
