@@ -32,11 +32,8 @@ whose texels match the lobe's footprint (GGX alpha, roughness squared, times the
 in pixels at the hit), blending the two nearest. A ray that never hits but passed
 pixels showing something much farther than itself (sky, or the field through
 a doorway) reads the last of those: it escaped through the opening, and a
-door or window reflects bright, not as the room's darker environment. On
-glossy (not mirror) surfaces a traced hit is capped at 8x the diffuse light
-level there, so a lamp's emissive panel is left to the light's soft analytic
-highlight instead of drawing its housing; the traced reflection fades out
-between 0.75 and 1 of the roughness cut. The first level below full resolution is a
+door or window reflects bright, not as the room's darker environment. The traced
+reflection fades out between 0.75 and 1 of the roughness cut. The first level below full resolution is a
 luminance-weighted (Karis) average of the four texels above it, so one very
 bright pixel (a bulb) does not fill a coarse texel; the levels below it are
 plain averages, which keep a bright doorway's energy, and a level above the
