@@ -826,7 +826,7 @@ impl View {
             all.extend(self.lamps.iter().enumerate().map(|(i, l)| {
                 let k = 0.85 + 0.1 * (t * 9.0 + i as f32 * 1.7).sin() + 0.05 * (t * 23.0 + i as f32).sin();
                 ClusteredLight { light: LocalLight { intensity_cd: l.light.intensity_cd * k, ..l.light },
-                    shadow: Some(LightShadow { id: i as u64, exclude: Some(l.owner) }), shape: Default::default(), face: None }
+                    shadow: Some(LightShadow { id: i as u64, exclude: Some(l.owner) }), shape: Default::default(), face: None, bounce: false }
             }));
             all.truncate(render::clustered_lights::MAX_CLUSTERED_LIGHTS);
             renderer.set_clustered_lights(&all)?;

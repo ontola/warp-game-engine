@@ -143,6 +143,11 @@ Owned by the foliage work; its working checklist is
 - Physical units (lux, EV100, nits), procedural atmosphere with multiple
   scattering, height fog with a finite-distance aerosol layer, irradiance
   volumes for interiors, opt-in [volumetric light](volumetric-light.md).
+- Opt-in live first bounce of moving lights ([reflective shadow maps](interior-light.md#live-bounce-of-moving-lights),
+  `ClusteredLight::with_bounce`): a flashlight or swinging lamp lights the
+  room around what it hits, tested against a voxel grid of the scene so it
+  stays out of other rooms. About 1 ms at 4K. Open: leaks past a thin door
+  within 17 cm of the lit patch.
 - Opt-in [aerial perspective and volumetric clouds](atmosphere.md#aerial-perspective-and-clouds-lightingsky_volume)
   (`Lighting::sky_volume`, on in `terrain_fly`): froxel aerial perspective
   from the sky bake's LUTs, one raymarched cumulus layer with cloud shadows.
