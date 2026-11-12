@@ -415,11 +415,9 @@ impl Locomotion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     fn setup() -> (Character, Locomotion) {
-        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/characters/knight.json");
-        let model = Character::load(&p).unwrap();
+        let model = super::super::preview_model(3).unwrap();
         let rig = Locomotion::bind(&model).unwrap();
         (model, rig)
     }
@@ -456,7 +454,7 @@ mod tests {
     #[test]
     fn support_foot_matches_root_distance_in_both_directions() {
         let (model, rig) = setup();
-        let mut palette = model.sample(super::super::IDLE, 0., true).unwrap();
+        let mut palette = model.sample("pistol_idle", 0., true).unwrap();
         for (cycle, speed) in rig.cycles.iter().zip([1.2, 5., 14.]) {
             for (dir, turn, sign) in [
                 (Vec3::Z, 0., 1.),
