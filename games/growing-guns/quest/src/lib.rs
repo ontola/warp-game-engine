@@ -80,7 +80,7 @@ impl QuestGame {
             "revision": self.revision, "roomApplied": self.room_applied.to_array(), "cage": w.cage_left(),
             "winner": w.round_winner(), "lava": w.arena.lava_surface(),
             "players": w.players.iter().enumerate().map(|(i, p)| json!({
-                "armed": !w.in_audience(i),
+                "armed": !w.awaiting_rifle(i), "groundGun": w.ground_rifle(i).map(|p| p.to_array()),
                 "pos": p.pos.to_array(), "yaw": p.yaw, "pitch": p.pitch,
                 "alive": p.targetable(), "ghost": p.ghost,
                 "hp": p.health, "maxHp": p.max_health(), "ammo": p.ammo,

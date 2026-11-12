@@ -433,7 +433,7 @@ pub enum Gib {
 pub const OVERKILL_HEALTH: i32 = -50;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Snapshot {
+pub struct Snapshot<Spots = Vec<Vec3>> {
     pub tick: u64,
     pub round: u32,
     #[serde(default)]
@@ -457,6 +457,8 @@ pub struct Snapshot {
     #[serde(default)]
     pub waves: Option<coop::Waves>,
     pub events: Vec<Event>,
+    #[serde(default)]
+    pub landing_spots: Spots,
 }
 
 /// Damage and knockback landing later (blast sound delay), and on-hit
@@ -720,6 +722,7 @@ impl World {
             tick: self.tick, round: self.round, phase: self.phase, modifier: self.modifier, cage_left: self.cage_left(), players: self.players.clone(), bullets: self.bullets.clone(),
             projectiles: self.projectiles.clone(), strikes: self.strikes.clone(), pickups: self.pickups.clone(), lava: self.lava.clone(),
             waves: self.coop.then(|| self.waves.clone()), events: self.events.clone(),
+            landing_spots: if self.cage_left().is_some() { self.flow.landing_spots.clone() } else { Vec::new() },
         }
     }
 
@@ -730,6 +733,7 @@ impl World {
         self.phase = s.phase;
         self.modifier = s.modifier;
         self.apply_cage_left(s.cage_left);
+        self.flow.landing_spots = s.landing_spots;
         self.players = s.players;
         self.bullets = s.bullets;
         self.projectiles = s.projectiles;

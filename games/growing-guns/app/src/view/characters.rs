@@ -383,15 +383,10 @@ impl Characters {
                 .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters"))
         };
         let mut models = if let Some((seed, count, colors)) = humans {
-            use render::humans::{Constraints, Instance};
             let rig = Character::load(&dir.join("knight.json"))?;
             let models = (0..count).map(|slot| {
-                let identity = seed.wrapping_mul(0x9e3779b97f4a7c15) ^ slot as u64;
                 let profile = colors.get(slot).copied().unwrap_or_default();
-                let person = Instance::person(identity, Vec3::ZERO, 0., &Constraints {
-                    shirt: profile.shirt,
-                    height_m: Some(1.80),
-                });
+                let person = super::pov_arms::roster_person(seed, slot, profile);
                 rig.warp_human_player(&person, profile.skin)
             }).collect::<Result<Vec<_>, _>>()?;
             println!("characters: {} seeded Warp Humans, roster seed {seed}", models.len());
@@ -571,7 +566,7 @@ impl Characters {
             let body = model_transform(drawn.pos, drawn.yaw);
             if let Some(rig) = &self.locomotion { rig.look(&mut actor.palette, drawn.pitch); }
             model.pose_face(&mut actor.palette, (m.idle + (alpha - 1.) * DT).max(0.));
-            if world.in_audience(i) {
+            if world.awaiting_rifle(i) {
                 // Relax both wrists beside the hips before the rifle is handed over.
                 if let Some(arms) = &actor.arms {
                     arms.apply(&mut actor.palette, Vec3::new(-0.27, 0.88, 0.09), Vec3::new(0.27, 0.88, 0.09));

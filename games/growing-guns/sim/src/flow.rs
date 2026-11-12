@@ -98,7 +98,7 @@ pub(crate) struct State {
     /// Counting down to the card picks after a win.
     end_timer: Option<f64>,
     entrance_elapsed: Option<f64>,
-    landing_spots: Vec<Vec3>,
+    pub(super) landing_spots: Vec<Vec3>,
     round_elapsed: f64,
     pickup_timer: f64,
     air_timer: Option<f64>,
@@ -562,11 +562,21 @@ impl World {
     /// The round's winner so far (versus).
     pub fn round_winner(&self) -> Option<usize> { self.flow.winner }
 
-    /// The participant is still an unarmed spectator until the first moving tick.
-    /// The half-tick margin also covers rounding in remote countdown snapshots.
-    pub fn in_audience(&self, player: usize) -> bool {
-        self.flow.entrance_elapsed.is_some_and(|t| t < SEAT_HOLD + DT64 * 0.5)
+    /// The rifle stays on its landing spot for the entire entrance.
+    pub fn awaiting_rifle(&self, player: usize) -> bool {
+        self.flow.entrance_elapsed.is_some()
             && self.players.get(player).is_some_and(|p| p.alive && p.frozen && !p.ghost)
+    }
+
+    /// World-space surface directly beneath the owner's feet at touchdown.
+    pub fn ground_rifle(&self, player: usize) -> Option<Vec3> {
+        if !self.awaiting_rifle(player) { return None; }
+        self.flow.landing_spots.get(player).map(|spot| *spot - Vec3::Y * crate::HALF_HEIGHT)
+    }
+
+    /// Fraction of the flight from seat to floor, zero while seated.
+    pub fn entrance_flight(&self) -> f32 {
+        flight_fraction(self.flow.entrance_elapsed.unwrap_or(0.))
     }
 
     /// Time until the players land. The snapshot field retains its original wire name.
@@ -587,9 +597,13 @@ fn landing_spot(arena: &Arena, marker: Vec3) -> Vec3 {
     Vec3::new(marker.x, surface + crate::HALF_HEIGHT, marker.z)
 }
 
+fn flight_fraction(elapsed: f64) -> f32 {
+    ((elapsed - SEAT_HOLD) / (ROUND_ENTRANCE - SEAT_HOLD)).clamp(0.0, 1.0) as f32
+}
+
 fn entrance_position(arena: &Arena, target: Vec3, player: usize, elapsed: f64) -> Vec3 {
     let seat = arena.audience_seat(player);
-    let u = ((elapsed - SEAT_HOLD) / (ROUND_ENTRANCE - SEAT_HOLD)).clamp(0.0, 1.0) as f32;
+    let u = flight_fraction(elapsed);
     let lift = 10.0 + 0.12 * seat.distance(target);
     seat.lerp(target, u) + Vec3::Y * (4.0 * u * (1.0 - u) * lift)
 }
