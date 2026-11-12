@@ -27,7 +27,7 @@ pub(super) fn roster_person(seed: u64, slot: usize, profile: PlayerColors) -> In
 
 pub(super) struct Arms {
     first: usize,
-    open: [usize; 2],
+    pub(super) open: [usize; 2],
     seated: [usize; 2],
     grip: [usize; 2],
 }
@@ -126,12 +126,12 @@ impl Arms {
             let held = gun * Affine3A::from_translation(wrist);
             let (mesh, pose) = if let Some((age, view)) = pickup {
                 // The trigger hand takes the weight first; the other finds the magazine.
-                let close = if side == 0 { 0.095 } else { 0.15 };
+                let close = if side == 0 { super::guns::TRIGGER_GRIP } else { super::guns::SUPPORT_GRIP };
                 // A rifle on its side rolls into the grip. The wrist follows its
                 // socket, but the elbow still trails back towards the player's body.
                 let (_, view_rotation, _) = view.to_scale_rotation_translation();
                 let (_, gun_rotation, position) = held.to_scale_rotation_translation();
-                let turn = ease(0.19, 0.40, age);
+                let turn = ease(super::guns::SUPPORT_GRIP, super::guns::PICKUP_LIFT_SECONDS, age);
                 let socket = Affine3A::from_rotation_translation(
                     view_rotation.slerp(gun_rotation, turn),
                     position,

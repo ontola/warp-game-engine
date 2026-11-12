@@ -146,7 +146,7 @@ impl Visuals {
         guns.reserve_arms(&mut scene, seed, colors);
         let things = things::Things::reserve(&mut scene);
         // Gore lives in the dynamic range too: uploaded with it every frame.
-        players.reserve_gore(&mut scene, world.arena.seed);
+        players.reserve_gore(&mut scene, world.arena.seed, stadium.cut_meshes());
         // Shared geometry cache, reserved after all game-owned aux data.
         if crate::graphics::get().sky_occlusion && std::env::var("GG_SKY_OCCLUSION").as_deref() != Ok("0") {
             scene.reserve_irradiance_volume(render::irradiance_volume::Grid {

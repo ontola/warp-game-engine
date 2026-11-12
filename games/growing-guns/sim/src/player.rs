@@ -98,7 +98,7 @@ impl World {
         let event_len = self.events.len();
         let p = &self.players[i];
         if p.ghost {
-            if p.offer.is_none() && self.phase == Phase::Playing {
+            if p.offer.is_none() && p.howitzer.is_some() {
                 self.howitzer_aim(i, input);
                 self.cooldowns(i);
             } else {
@@ -141,11 +141,12 @@ impl World {
     fn ghost_tick(&mut self, i: usize, input: Input, _fire_edge: bool) {
         let round_over = self.round_over();
         let p = &mut self.players[i];
-        if p.bot || p.offer.is_some() || self.phase != Phase::Playing || round_over {
+        if p.bot || p.offer.is_some() {
             p.vel = Vec3::ZERO;
             return;
         }
         if p.howitzer.is_none() {
+            if self.phase != Phase::Playing || round_over { return; }
             let angle = crate::stadium::Stadium::seg_ang() * (self.rng.below(crate::stadium::SEGMENTS as u32) as f32 + 0.5);
             let row = 6 + self.rng.below(6) as usize;
             let at = self.arena.stadium.seat_position(angle, row);
@@ -162,7 +163,8 @@ impl World {
         self.howitzer_aim(i, input);
         self.cooldowns(i);
         self.decay_recoil(i);
-        if input.fire && self.players[i].special_cd <= 0.0 {
+        // The seat keeps tracking aim and zoom until respawn. Combat ends with the result.
+        if input.fire && !round_over && self.phase == Phase::Playing && self.players[i].special_cd <= 0.0 {
             let p = &mut self.players[i];
             p.special_cd = p.artillery_reload();
             p.since_shot = 0.0;
@@ -405,10 +407,10 @@ impl World {
         } else if blow.blast_radius > 0.0 {
             let severity = if overkill { ((-new + OVERKILL_HEALTH) as f32 / 50.0).clamp(0.4, 2.5) } else { 0.0 };
             Gib::Burst { severity: severity.max(blow.severity.clamp(0.4, 2.5)), blast: true }
-        } else if overkill {
-            Gib::Burst { severity: ((-new + OVERKILL_HEALTH) as f32 / 50.0).clamp(0.4, 2.5), blast: false }
         } else if blow.head {
             Gib::Head
+        } else if overkill {
+            Gib::Burst { severity: ((-new + OVERKILL_HEALTH) as f32 / 50.0).clamp(0.4, 2.5), blast: false }
         } else {
             Gib::Ragdoll
         };

@@ -18,7 +18,7 @@ use render::scene::{Material, EMISSIVE, LIVE_SCREEN, NO_SHADOW};
 use render::slots::{SlotId, Slots};
 use render::Scene;
 use std::f32::consts::{PI, TAU};
-mod gibs;
+pub(crate) mod gibs;
 mod broadcast;
 
 pub const CROWD_MAX: usize = 15_000;
@@ -255,7 +255,7 @@ pub struct StadiumVisuals {
     enabled: bool,
     /// Start the arena bake on a worker. Live changes to the sun can also bake in the background.
     pub bake_in_background: bool,
-    first_arena_frame: bool,
+    needs_initial_lighting: bool,
     sky_job: Option<std::sync::mpsc::Receiver<SkyBake>>,
     sun_job: Option<(Vec3, std::sync::mpsc::Receiver<Result<SunUpload, String>>)>,
     sky_boxes: Vec<Affine3A>,
@@ -386,9 +386,7 @@ pub(crate) fn start_in_stands(world: &mut World) -> Result<(), String> {
     let player = &mut world.players[0];
     player.pos = feet + Vec3::Y * growing_guns::HALF_HEIGHT;
     player.vel = Vec3::ZERO;
-    let toward = pair[0].pos - feet;
-    player.yaw = (-toward.x).atan2(-toward.z);
-    player.pitch = 0.0;
+    player.face_arena_center();
     Ok(())
 }
 
@@ -400,7 +398,7 @@ impl StadiumVisuals {
         if !crate::graphics::get().stadium {
             let crowd = Crowd::reserve(scene, 0);
             scene.crowd = None; // no GPU crowd buffers or dispatch, not merely invisible seats
-            return Self { participant_seats: Vec::new(), enabled:false, bake_in_background:false, first_arena_frame:false, sky_job:None,sun_job:None,
+            return Self { participant_seats: Vec::new(), enabled:false, bake_in_background:false, needs_initial_lighting:true, sky_job:None,sun_job:None,
                 sky_boxes:Vec::new(),sky_planes:Vec::new(),sky_probes:Vec::new(),sky_emission:Vec::new(),sky_dirty:false,sky_reflectance:0.0,sky_sun:None,
                 stands:Slots::reserve(scene,0),roof:Slots::reserve(scene,0),tv:Slots::reserve(scene,0),tv_mesh:[0;2],broadcast:broadcast::Broadcast::new(0),
                 stone:[0;6],masonry:None,roof_stone:[0;6],wall_stone:[0;6],lamp:0,shaft:0,bank:0,looks:Vec::new(),
@@ -482,7 +480,7 @@ impl StadiumVisuals {
         for i in 0..MARKS { scene.instances[marks.first + i].flags |= NO_SHADOW; }
         let mut crowd = Crowd::reserve(scene, CROWD_MAX);
         if detailed { crowd.arm_pivot(0.655); }
-        StadiumVisuals { participant_seats: Vec::new(), enabled:true, bake_in_background: false, first_arena_frame:false, sky_job: None, sun_job: None, sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_emission: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], broadcast:broadcast::Broadcast::new(tv_layer as u32), stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
+        StadiumVisuals { participant_seats: Vec::new(), enabled:true, bake_in_background: false, needs_initial_lighting:true, sky_job: None, sun_job: None, sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_emission: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], broadcast:broadcast::Broadcast::new(tv_layer as u32), stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
 
             scorch, blood, blood_grid:Default::default(), gore, geo: Stadium::new(80.0, true, 12.0), mark_surfaces: Vec::new(), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
@@ -494,7 +492,6 @@ impl StadiumVisuals {
     pub fn set_arena(&mut self, scene: &mut Scene, world: &World) {
         if !self.enabled { self.geo=world.arena.stadium; return; }
         let a = &world.arena;
-        self.first_arena_frame = true;
         self.sun_job = None;
         self.geo = a.stadium;
         self.broadcast.reset(a.seed);
@@ -806,6 +803,8 @@ impl StadiumVisuals {
         Ok(())
     }
 
+    pub(crate) fn cut_meshes(&self) -> Option<[usize; 3]> { self.enabled.then_some(self.gore.cut) }
+
     pub fn gore_mesh(&self) -> Option<usize> {
         self.enabled.then_some(self.gore.cut[0])
     }
@@ -840,16 +839,25 @@ impl StadiumVisuals {
         eprintln!("stadium sky cache: {} boxes, {} probes, {:.1} ms bake", self.sky_boxes.len(), self.sky_probes.len(), bake.ms);
     }
 
-    /// Install the arena's sky before presenting it. The worker runs during scene setup.
+    /// On a running renderer, keep drawing with the last complete light volume until
+    /// the new one is ready. Only a fresh renderer has no previous lighting to use.
     pub fn finish_arena_sky(&mut self, scene: &mut Scene) -> Result<(), String> {
         if let Some(rx) = self.sky_job.take() {
-            let bake = rx.recv().map_err(|_| "stadium sky bake failed")?;
+            let bake = if self.needs_initial_lighting {
+                rx.recv().map_err(|_| "stadium sky bake failed")?
+            } else {
+                match rx.try_recv() {
+                    Ok(bake) => bake,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => { self.sky_job = Some(rx); return Ok(()); }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => return Err("stadium sky bake failed".into()),
+                }
+            };
             if let Some((offset, grid)) = scene.irradiance_volume { self.apply_sky(scene, offset, grid, bake); }
         }
         Ok(())
     }
 
-    pub fn invalidate_lighting(&mut self) { self.sky_dirty=true; }
+    pub fn invalidate_lighting(&mut self) { self.sky_dirty=true; self.needs_initial_lighting=true; }
 
     fn upload_sun(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, upload: SunUpload) -> Result<(), String> {
         let start=std::time::Instant::now();
@@ -899,7 +907,7 @@ impl StadiumVisuals {
                     eprintln!("stadium sun return: {:.1} ms bake+pack",start.elapsed().as_secs_f64()*1000.0);
                     Ok(upload)
                 };
-                if self.bake_in_background && !self.first_arena_frame {
+                if self.bake_in_background && !self.needs_initial_lighting {
                     let (tx, rx) = std::sync::mpsc::channel();
                     std::thread::spawn(move || { let _ = tx.send(bake()); });
                     self.sun_job = Some((sun, rx));
@@ -909,7 +917,7 @@ impl StadiumVisuals {
                 }
             }
         }
-        self.first_arena_frame = false;
+        self.needs_initial_lighting = false;
         self.stands.flush(gpu, renderer, scene)?;
         self.roof.flush(gpu, renderer, scene)?;
         self.tv.flush(gpu, renderer, scene)?;
@@ -979,6 +987,27 @@ mod tests {
     }
 
     #[test]
+    fn a_running_renderer_can_draw_while_the_next_stadium_is_baking() {
+        let mut scene = Scene::default();
+        let blood = crate::blood::Splats::new(&mut scene);
+        let mut stadium = StadiumVisuals::reserve(&mut scene, blood);
+        stadium.needs_initial_lighting = false;
+        let (send, receive) = std::sync::mpsc::channel();
+        let (done, wait) = std::sync::mpsc::channel::<()>();
+        // Release the worker even if a regression blocks the render thread.
+        let worker = std::thread::spawn(move || {
+            let _ = wait.recv_timeout(std::time::Duration::from_secs(2));
+            drop(send);
+        });
+        stadium.sky_job = Some(receive);
+        let result = stadium.finish_arena_sky(&mut scene);
+        drop(done);
+        worker.join().unwrap();
+        result.unwrap();
+        assert!(stadium.sky_job.is_some());
+    }
+
+    #[test]
     fn scale_playtest_stands_at_eye_level_on_a_real_tread() {
         use growing_guns::shape::Boxes;
         let mut world = World::new(52, &[false, true, true, true]);
@@ -991,11 +1020,10 @@ mod tests {
         let seats = review_seats(&world);
         let neighbour = seats.iter().find(|s| {
             let delta = s.pos - player.pos;
-            let ahead = growing_guns::look_dir(player.yaw, 0.0);
-            delta.dot(ahead) > 1.0 && delta.dot(ahead) < 2.1
-                && delta.cross(ahead).y.abs() < 0.05 && (s.pos.y - feet).abs() < 0.01
+            (1.0..2.1).contains(&delta.x.hypot(delta.z)) && (s.pos.y - feet).abs() < 0.01
         }).unwrap();
         assert!((1.55..=1.95).contains(&neighbour.scale));
+        assert!(player.forward().dot(-player.eye().normalize()) > 0.9999);
     }
 
     #[test]

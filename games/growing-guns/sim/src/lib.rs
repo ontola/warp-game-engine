@@ -238,6 +238,12 @@ impl Player {
     }
     /// Camera height scales with the body cards.
     pub fn eye_height(&self) -> f32 { EYE * self.weapon.body_scale.max(0.1) * self.weapon.body_scale_axes.y.max(0.1) }
+    pub fn face_arena_center(&mut self) {
+        let eye = self.eye();
+        self.yaw = eye.x.atan2(eye.z);
+        self.pitch = (-eye.y).atan2(eye.x.hypot(eye.z));
+    }
+
     pub fn eye(&self) -> Vec3 { self.pos + Vec3::Y * self.eye_height() }
     /// Where the aim points, recoil included.
     pub fn forward(&self) -> Vec3 { look_dir(self.yaw, self.pitch + self.recoil_pitch) }
