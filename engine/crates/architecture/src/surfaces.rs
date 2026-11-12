@@ -39,9 +39,17 @@ impl Surface {
             Surface::Frame => ([0.08, 0.085, 0.09], 0.45, -1),
             Surface::Furniture => ([0.55, 0.52, 0.48], 0.85, -1),
             _ => {
-                let (albedo, normal) = self.draw();
-                let layer = scene.add_image(&format!("architecture/{self:?}"), albedo);
-                scene.textures[layer as usize].normal = Some(normal);
+                // One texture per surface per scene, however many houses.
+                let name = format!("architecture/{self:?}");
+                let layer = match scene.textures.iter().position(|t| t.name == name) {
+                    Some(l) => l as i32,
+                    None => {
+                        let (albedo, normal) = self.draw();
+                        let layer = scene.add_image(&name, albedo);
+                        scene.textures[layer as usize].normal = Some(normal);
+                        layer
+                    }
+                };
                 let rough = match self { Surface::Oak => 0.45, Surface::Tile => 0.3, Surface::Plaster => 0.9, _ => 0.85 };
                 ([1.0; 3], rough, layer)
             }

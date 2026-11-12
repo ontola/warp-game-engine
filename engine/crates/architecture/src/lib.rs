@@ -56,20 +56,41 @@ pub struct House {
     pub min: Vec3,
     pub max: Vec3,
     pub triangles: usize,
+    /// The opaque confirmed geometry, for ray tests.
+    pub solid: Occluders,
 }
 
 /// Eye height of a standing viewer (metres above the floor).
 pub const EYE: f32 = 1.6;
+
+/// IFC classes drawn as furniture.
+const FURNITURE: [&str; 4] = ["IfcFurnishingElement", "IfcFurniture", "IfcSystemFurnitureElement", "IfcSanitaryTerminal"];
 
 /// Rooms whose floor is tiled rather than oak, matched in their use or name
 /// (English and Dutch).
 const TILED: [&str; 12] = ["hall", "entr", "kitchen", "bath", "toilet", "wc", "utility", "gang", "hal", "keuken", "badkamer", "berging"];
 
 impl House {
-    /// Load a glTF building into `scene`, one mesh and instance per node.
-    /// Rejected elements are left out.
-    pub fn load(scene: &mut Scene, path: &Path) -> Result<House, String> {
-        let doc = assets::gltf::read(scene, path)?;
+    /// Load a glTF building into `scene`, one mesh and instance per node,
+    /// where the file puts it. Rejected elements are left out.
+    pub fn load(scene: &mut Scene, path: &Path) -> Result<House, String> { Self::load_at(scene, path, None, 0.0) }
+
+    /// Like [`House::load`], turned by `yaw` (radians, about +y) around the
+    /// middle of its footprint and, with `at`, moved so that middle is at
+    /// `at` (x, z). Heights are kept: files put the ground floor at 0.
+    pub fn load_at(scene: &mut Scene, path: &Path, at: Option<Vec2>, yaw: f32) -> Result<House, String> {
+        let mut doc = assets::gltf::read(scene, path)?;
+        let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+        for v in doc.nodes.iter().flat_map(|n| &n.primitives).flat_map(|p| &p.vertices) { lo = lo.min(Vec3::from(v.pos)); hi = hi.max(Vec3::from(v.pos)); }
+        let mid = Vec3::new((lo.x + hi.x) * 0.5, 0.0, (lo.z + hi.z) * 0.5);
+        let to = at.map_or(mid, |a| Vec3::new(a.x, 0.0, a.y));
+        let place = Affine3A::from_translation(to) * Affine3A::from_rotation_y(yaw) * Affine3A::from_translation(-mid);
+        if place != Affine3A::IDENTITY {
+            for v in doc.nodes.iter_mut().flat_map(|n| &mut n.primitives).flat_map(|p| &mut p.vertices) {
+                v.pos = place.transform_point3(Vec3::from(v.pos)).to_array();
+                v.normal = place.transform_vector3(Vec3::from(v.normal)).to_array();
+            }
+        }
         let tags: Vec<serde_json::Value> = doc.nodes.iter().map(|n| n.extras.as_deref().and_then(|e| serde_json::from_str(e).ok()).unwrap_or_default()).collect();
         let review = |t: &serde_json::Value| match t["reviewState"].as_str() {
             Some("proposed") => Review::Proposed, Some("confirmed") => Review::Confirmed, Some("rejected") => Review::Rejected, _ => Review::Unknown };
@@ -106,6 +127,7 @@ impl House {
                         "glass" => None,
                         "frame" => Some(Surface::Frame),
                         "furniture" => Some(Surface::Furniture),
+                        _ if FURNITURE.contains(&ifc_class.as_str()) => Some(Surface::Furniture),
                         "floor" => {
                             let label = format!("{} {}", usage.as_deref().unwrap_or(""), name).to_lowercase();
                             Some(if TILED.iter().any(|w| label.contains(w)) { Surface::Tile } else { Surface::Oak })
@@ -148,34 +170,23 @@ impl House {
             elements.push(element);
         }
         if triangles == 0 { return Err(format!("{}: nothing to draw", path.display())); }
-        Ok(House { elements, min, max, triangles })
+        Ok(House { elements, min, max, triangles, solid: outside })
     }
 
     pub fn spaces(&self) -> impl Iterator<Item = &Element> { self.elements.iter().filter(|e| e.ifc_class == "IfcSpace") }
 
     /// Probes every half metre over the building and a cell around it,
     /// a quarter cell off whole-metre walls so no probe sits in a wall face.
-    pub fn probe_grid(&self) -> Grid {
-        let cell = 0.5;
-        let lo = self.min - Vec3::splat(cell * 1.75);
-        let hi = self.max + Vec3::splat(cell * 1.5);
-        let lo = (lo / cell).floor() * cell + Vec3::splat(cell * 0.25);
-        let dims = ((hi - lo) / cell).ceil().max(Vec3::ONE);
-        Grid { origin: lo, cell, dims: [dims.x as u32, dims.y as u32, dims.z as u32] }
-    }
+    pub fn probe_grid(&self) -> Grid { probe_grid(self.min, self.max) }
 
     /// A grass-coloured ground under the house, 400 m across.
-    pub fn add_ground(&self, scene: &mut Scene) {
-        let m = scene.add_material(Material { tint: [0.16, 0.24, 0.09], layer: -1, roughness: 0.95, flags: 0, scale: 1.0, metal: 0.0 });
-        let ground = scene.add_mesh(&primitives::cube(m).mesh());
-        let c = self.center();
-        scene.add_instance(ground, Affine3A::from_scale_rotation_translation(Vec3::new(400.0, 0.2, 400.0), Quat::IDENTITY, Vec3::new(c.x, self.ground_level() - 0.1, c.z)));
-    }
+    pub fn add_ground(&self, scene: &mut Scene) { add_ground(scene, self.center(), self.ground_level()); }
 
-    /// The lowest floor: the top of the lowest space, else the model's base.
+    /// The ground floor: the floor of the space nearest height 0 (files put
+    /// the ground floor at 0; a basement is lower), else the model's base.
     pub fn ground_level(&self) -> f32 {
-        let floor = self.spaces().map(|s| s.max.y).fold(f32::INFINITY, f32::min);
-        if floor.is_finite() { floor } else { self.min.y }
+        let floor = self.spaces().map(|s| s.max.y).min_by(|a, b| a.abs().total_cmp(&b.abs()));
+        floor.unwrap_or(self.min.y)
     }
 
     pub fn center(&self) -> Vec3 { (self.min + self.max) * 0.5 }
@@ -200,19 +211,48 @@ impl House {
     /// One view per room: standing in the corner nearest the building's
     /// middle (inset 0.35 m), level, looking across to the far corner, where
     /// the outside walls and their windows are. Lens: 60 degrees vertical
-    /// (about 20 mm on full frame at 16:9).
+    /// (about 20 mm on full frame at 16:9). Spaces where a standing eye
+    /// has no ceiling within 6 m (roof terraces, low attics where the eye
+    /// ends up above the roof) get no shot.
     pub fn room_shots(&self) -> Vec<(String, Camera)> {
         let c = self.center();
-        self.spaces().filter(|s| s.mesh.is_some()).map(|s| {
+        self.spaces().filter(|s| s.mesh.is_some()).filter_map(|s| {
             let floor = s.max.y;
             let inset = 0.35;
             let (lo, hi) = (s.min + Vec3::splat(inset), s.max - Vec3::splat(inset));
             let x = if (lo.x - c.x).abs() < (hi.x - c.x).abs() { (lo.x, hi.x) } else { (hi.x, lo.x) };
             let z = if (lo.z - c.z).abs() < (hi.z - c.z).abs() { (lo.z, hi.z) } else { (hi.z, lo.z) };
             let pos = Vec3::new(x.0, floor + EYE, z.0);
-            (s.name.clone(), Camera { pos, target: Vec3::new(x.1, floor + EYE, z.1), fov_y: 60f32.to_radians(), near: 0.05 })
+            self.solid.hit(pos, Vec3::Y).filter(|(t, _)| *t < 6.0)?;
+            Some((s.name.clone(), Camera { pos, target: Vec3::new(x.1, floor + EYE, z.1), fov_y: 60f32.to_radians(), near: 0.05 }))
         }).collect()
     }
+}
+
+/// Probes every half metre over `min..max` and a cell around it, a quarter
+/// cell off whole-metre walls so no probe sits in a wall face. A scene has
+/// one probe grid of at most 65536 probes: for several buildings, pass the
+/// bounds of all of them, and the cell grows (0.75 m, 1 m, ...) until the
+/// grid fits.
+pub fn probe_grid(min: Vec3, max: Vec3) -> Grid {
+    let mut cell = 0.5;
+    loop {
+        let lo = min - Vec3::splat(cell * 1.75);
+        let hi = max + Vec3::splat(cell * 1.5);
+        let lo = (lo / cell).floor() * cell + Vec3::splat(cell * 0.25);
+        let dims = ((hi - lo) / cell).ceil().max(Vec3::splat(2.0));
+        let grid = Grid { origin: lo, cell, dims: [dims.x as u32, dims.y as u32, dims.z as u32] };
+        if grid.count() <= 65536 { return grid; }
+        cell += 0.25;
+    }
+}
+
+/// A grass-coloured ground with its top at `level`, 400 m across, centred
+/// under `center`.
+pub fn add_ground(scene: &mut Scene, center: Vec3, level: f32) {
+    let m = scene.add_material(Material { tint: [0.16, 0.24, 0.09], layer: -1, roughness: 0.95, flags: 0, scale: 1.0, metal: 0.0 });
+    let ground = scene.add_mesh(&primitives::cube(m).mesh());
+    scene.add_instance(ground, Affine3A::from_scale_rotation_translation(Vec3::new(400.0, 0.2, 400.0), Quat::IDENTITY, Vec3::new(center.x, level - 0.1, center.z)));
 }
 
 /// Does a face at `c` with normal `n` look out of the building? Four rays
