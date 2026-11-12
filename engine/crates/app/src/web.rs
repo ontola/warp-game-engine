@@ -195,7 +195,13 @@ impl Shell {
             return Ok(());
         }
         let mut frame = Frame { gpu: &live.gpu, size, dt, alpha, split, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0, focused: true, hdr: None, renderer: &mut live.renderer };
-        let draw: Draw = self.game.draw(&mut frame)?;
+        let mut draw: Draw = self.game.draw(&mut frame)?;
+        // The touch stick, while a thumb is on it.
+        if let Some((from, knob, r)) = self.devices.touch_stick(size) {
+            let clip = [0.0, 0.0, size[0] as f32, size[1] as f32];
+            draw.hud.circle(from, r, [1.0, 1.0, 1.0, 0.18], clip);
+            draw.hud.circle(knob, r * 0.42, [1.0, 1.0, 1.0, 0.5], clip);
+        }
         let Some(renderer) = live.renderer.as_ref() else { return Ok(()) };
         let texture = match live.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -271,6 +277,10 @@ impl ApplicationHandler for Shell {
             WindowEvent::Focused(false) => { self.capture_mouse(false); self.devices.cursor(None); }
             WindowEvent::CursorMoved { position, .. } => self.devices.cursor(Some([position.x as f32, position.y as f32])),
             WindowEvent::CursorLeft { .. } => self.devices.cursor(None),
+            WindowEvent::Touch(t) => {
+                let size = self.live.borrow().as_ref().map_or([1, 1], |l| [l.config.width, l.config.height]);
+                self.devices.touch(t.id, t.phase, [t.location.x as f32, t.location.y as f32], size);
+            }
             WindowEvent::MouseWheel { delta, .. } => self.devices.wheel(match delta {
                 winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                 winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,

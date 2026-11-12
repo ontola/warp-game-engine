@@ -1656,6 +1656,7 @@ impl ApplicationHandler for Shell<'_> {
                 self.devices.cursor(Some(p));
             }
             WindowEvent::CursorLeft { .. } => {self.cursor_position=None; self.devices.cursor(None);},
+            WindowEvent::Touch(t) => { let size = self.size(); self.devices.touch(t.id, t.phase, [t.location.x as f32, t.location.y as f32], size); }
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,

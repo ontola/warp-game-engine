@@ -1,7 +1,9 @@
 //! Walk through a house, natively or in a browser. Left/Right arrows jump
 //! between the outside views and one view per room; WASD and the mouse move
 //! and look (click to capture the mouse, Esc releases it), Up/Down change
-//! height, Shift moves faster.
+//! height, Shift moves faster. On a touch screen: a thumb on the left
+//! third walks (a stick from where it lands), dragging elsewhere looks, and
+//! tapping a floor or wall walks there.
 //!   cargo run --release -p architecture --example house_view -- HOUSE.glb [--shot out.png]
 //! In a browser (engine/tools/build-web.py --example house_view): the page
 //! fetches `assets/<name>.json` (glTF with an embedded buffer) or
@@ -15,6 +17,10 @@ use render::{primitives, Camera, Lighting, Scene};
 use std::path::Path;
 
 const TICK_HZ: f32 = 60.0;
+/// Vertical field of view, degrees.
+const FOV_DEG: f32 = 60.0;
+/// Eye height over the floor, metres.
+const EYE: f32 = 1.6;
 
 fn log(s: &str) {
     #[cfg(target_arch = "wasm32")]
@@ -37,6 +43,12 @@ struct View {
     name: String,
     /// One reflection box per room; the nearest the renderer can hold are set each frame.
     rooms: Vec<render::reflection_probes::ProbeBox>,
+    /// What a tap hits (the house's opaque triangles).
+    solid: render::room_bake::Occluders,
+    /// A tap waiting for the next tick: position and screen size, in pixels.
+    tap: Option<([f32; 2], [u32; 2])>,
+    /// Where a tap sent the eye; it glides there.
+    walk_to: Option<Vec3>,
 }
 
 impl View {
@@ -66,7 +78,8 @@ impl View {
         };
         let mut shots = house.exterior_shots();
         shots.extend(house.room_shots());
-        let mut view = View { scene, shots, shot: 0, pos: Vec3::ZERO, yaw: 0.0, pitch: 0.0, light, bake: Some((probes, planes)), uploaded: false, name: name.to_string(), rooms: house.reflection_boxes() };
+        let mut view = View { scene, shots, shot: 0, pos: Vec3::ZERO, yaw: 0.0, pitch: 0.0, light, bake: Some((probes, planes)), uploaded: false, name: name.to_string(), rooms: house.reflection_boxes(),
+            solid: house.solid, tap: None, walk_to: None };
         view.go(0);
         Ok(view)
     }
@@ -83,6 +96,31 @@ impl View {
         self.pos = cam.pos;
         self.yaw = (-d.x).atan2(-d.z);
         self.pitch = d.y.asin();
+    }
+
+    /// Where a tap at `at` (pixels on a `size` screen) sends the eye: onto
+    /// the floor it hits, or in front of the wall it hits, at eye height
+    /// over the floor there. None for the sky.
+    fn tapped(&self, at: [f32; 2], size: [u32; 2]) -> Option<Vec3> {
+        let [w, h] = size.map(|v| v.max(1) as f32);
+        let (x, y) = (at[0] / w * 2.0 - 1.0, 1.0 - at[1] / h * 2.0);
+        let half = (FOV_DEG.to_radians() * 0.5).tan();
+        let fwd = self.forward();
+        let right = fwd.cross(Vec3::Y).normalize_or(Vec3::X);
+        let up = right.cross(fwd);
+        let d = (fwd + right * x * half * w / h + up * y * half).normalize();
+        let (t, n) = self.solid.hit(self.pos, d)?;
+        let n = if n.dot(d) > 0.0 { -n } else { n };
+        let hit = self.pos + d * t;
+        // A floor: stand on it. Anything else: half a metre in front of it,
+        // on the floor below.
+        let spot = if n.y > 0.7 { hit } else {
+            let front = hit + Vec3::new(n.x, 0.0, n.z).normalize_or(-d) * 0.5;
+            let above = Vec3::new(front.x, front.y.max(self.pos.y - 0.5) + 0.1, front.z);
+            let (down, _) = self.solid.hit(above, Vec3::NEG_Y).filter(|(t, _)| *t < 4.0)?;
+            above - Vec3::Y * down
+        };
+        Some(spot + Vec3::Y * EYE)
     }
 
     fn forward(&self) -> Vec3 {
@@ -105,7 +143,21 @@ impl Game for View {
         let fwd = Vec3::new(-self.yaw.sin(), 0.0, -self.yaw.cos());
         let right = Vec3::new(self.yaw.cos(), 0.0, -self.yaw.sin());
         let up = if c.held.has(Buttons::UP) { 1.0 } else if c.held.has(Buttons::DOWN) { -1.0 } else { 0.0 };
-        self.pos += (right * c.mv[0] + fwd * c.mv[1] + Vec3::Y * up) * speed * dt;
+        let steer = right * c.mv[0] + fwd * c.mv[1] + Vec3::Y * up;
+        if steer != Vec3::ZERO || c.pressed.0 != 0 { self.walk_to = None; }
+        self.pos += steer * speed * dt;
+        if let Some((at, size)) = self.tap.take() { self.walk_to = self.tapped(at, size).or(self.walk_to); }
+        // Glide to a tapped spot: quick at first, settling at the end.
+        if let Some(to) = self.walk_to {
+            let d = to - self.pos;
+            let step = (d.length() * 4.0 * dt).max(1.2 * dt).min(d.length());
+            self.pos += d.normalize_or_zero() * step;
+            if d.length() < 0.01 { self.walk_to = None; }
+        }
+    }
+
+    fn pointer(&mut self, pointer: app::Pointer, size: [u32; 2]) {
+        if pointer.pressed && let Some(at) = pointer.position { self.tap = Some((at, size)); }
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
@@ -123,7 +175,7 @@ impl Game for View {
         near.sort_unstable();
         let boxes: Vec<_> = near.iter().map(|&i| self.rooms[i]).collect();
         frame.renderer().ok_or("no renderer")?.set_reflection_probes(&boxes)?;
-        let cam = Camera { pos: self.pos, target: self.pos + self.forward(), fov_y: 60f32.to_radians(), near: 0.05 };
+        let cam = Camera { pos: self.pos, target: self.pos + self.forward(), fov_y: FOV_DEG.to_radians(), near: 0.05 };
         let mut hud = HudDrawList::new(frame.size);
         let [w, h] = frame.size.map(|v| v as f32);
         let text = format!("{}: {} ({}/{})    Left/Right: views    WASD + mouse: move    Up/Down: height", self.name, self.shots[self.shot].0, self.shot + 1, self.shots.len());
