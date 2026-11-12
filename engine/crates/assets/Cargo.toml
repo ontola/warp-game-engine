@@ -9,7 +9,7 @@ description = "Asset import for Warp scenes: glTF models with materials and text
 render = { path = "../render" }
 glam = "0.31"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
-gltf = { version = "1.4", default-features = false, features = ["utils", "names", "KHR_texture_transform", "allow_empty_texture", "extensions"] }
+gltf = { version = "1.4", default-features = false, features = ["utils", "names", "extras", "KHR_texture_transform", "allow_empty_texture", "extensions"] }
 serde.workspace = true
 serde_json.workspace = true
 

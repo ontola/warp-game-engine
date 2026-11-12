@@ -283,6 +283,7 @@ pub struct StadiumVisuals {
     /// (body, arms) per look: colour x shade.
     looks: Vec<(usize, usize)>,
     pub crowd: Crowd,
+    participant_seats: Vec<(Seat, render::humans::Instance)>,
     pub sound: CrowdSound,
     marks: Slots,
     mark_ring: Vec<SlotId>,
@@ -400,7 +401,7 @@ impl StadiumVisuals {
         if !crate::graphics::get().stadium {
             let crowd = Crowd::reserve(scene, 0);
             scene.crowd = None; // no GPU crowd buffers or dispatch, not merely invisible seats
-            return Self { enabled:false, bake_in_background:false, sky_job:None,sun_job:None,
+            return Self { participant_seats: Vec::new(), enabled:false, bake_in_background:false, sky_job:None,sun_job:None,
                 sky_boxes:Vec::new(),sky_planes:Vec::new(),sky_probes:Vec::new(),sky_emission:Vec::new(),sky_dirty:false,sky_reflectance:0.0,sky_sun:None,
                 stands:Slots::reserve(scene,0),roof:Slots::reserve(scene,0),tv:Slots::reserve(scene,0),tv_mesh:[0;2],broadcast:broadcast::Broadcast::new(0),
                 stone:[0;6],masonry:None,roof_stone:[0;6],wall_stone:[0;6],lamp:0,shaft:0,bank:0,looks:Vec::new(),
@@ -482,7 +483,7 @@ impl StadiumVisuals {
         for i in 0..MARKS { scene.instances[marks.first + i].flags |= NO_SHADOW; }
         let mut crowd = Crowd::reserve(scene, CROWD_MAX);
         if detailed { crowd.arm_pivot(0.655); }
-        StadiumVisuals { enabled:true, bake_in_background: false, sky_job: None, sun_job: None, sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_emission: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], broadcast:broadcast::Broadcast::new(tv_layer as u32), stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
+        StadiumVisuals { participant_seats: Vec::new(), enabled:true, bake_in_background: false, sky_job: None, sun_job: None, sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_emission: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], broadcast:broadcast::Broadcast::new(tv_layer as u32), stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
 
             scorch, blood, blood_grid:Default::default(), gore, geo: Stadium::new(80.0, true, 12.0), mark_surfaces: Vec::new(), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
@@ -618,6 +619,14 @@ impl StadiumVisuals {
         let mut seats = seat_layout(&mut self.rng, self.geo, &self.looks);
         // The participant occupies this place in the crowd and leaves it empty at takeoff.
         let reserved: Vec<_> = (0..world.players.len()).map(|i| a.audience_seat(i) - Vec3::Y * growing_guns::HALF_HEIGHT).collect();
+        // Retain the motion of the seat nearest each participant before removing
+        // overlapping crowd meshes. Cache the phases for late joiners, too.
+        self.participant_seats = (0..world.players.len().max(8)).filter_map(|i| {
+            let feet = a.audience_seat(i) - Vec3::Y * growing_guns::HALF_HEIGHT;
+            let (index, seat) = seats.iter().enumerate().min_by(|(_, a), (_, b)|
+                a.pos.distance_squared(feet).total_cmp(&b.pos.distance_squared(feet)))?;
+            Some((*seat, render::humans::Instance::spectator(a.seed, index, seat)))
+        }).collect();
         seats.retain(|seat| reserved.iter().all(|feet| seat.pos.distance_squared(*feet) > 0.65 * 0.65));
         self.crowd.set_seats(scene, &seats, Vec2::ZERO);
         #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
@@ -625,6 +634,13 @@ impl StadiumVisuals {
             self.crowd.set_humans(a.seed, &seats);
         }
         self.sound.kickoff();
+    }
+
+    pub(crate) fn participant_pose(&self, player: usize, time: f32) -> Option<render::humans::StandingPose> {
+        let (seat, person) = self.participant_seats.get(player)?;
+        let humans = self.crowd.uses_humans();
+        let fear = if humans { self.sound.smoothed_fear() } else { self.sound.fear };
+        Some(person.standing_pose(seat, time, self.sound.enthusiasm, fear, humans))
     }
 
     /// The crowd reacts to this tick's events (Godot CrowdAudio +

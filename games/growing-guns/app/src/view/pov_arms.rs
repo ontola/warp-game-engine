@@ -28,6 +28,7 @@ pub(super) fn roster_person(seed: u64, slot: usize, profile: PlayerColors) -> In
 pub(super) struct Arms {
     first: usize,
     open: [usize; 2],
+    seated: [usize; 2],
     grip: [usize; 2],
 }
 
@@ -41,28 +42,36 @@ impl Arms {
             super::material(scene, skin, 0.6),
             super::material(scene, person.shirt_color(), 0.9),
         ];
-        let mut pair = |gripping| {
-            let (vertices, indices) = person.fitted_mesh(gripping);
+        let mut pair = |vertices: &[BodyVertex], indices: &[u32], gripping, seated| {
             [false, true].map(|left| {
                 let mesh = forearm(
-                    &vertices,
-                    &indices,
+                    vertices,
+                    indices,
                     materials,
                     person.body_scale(),
                     left,
                     gripping,
+                    seated,
                 );
                 scene.add_mesh(&mesh)
             })
         };
-        let open = pair(false);
-        let grip = pair(true);
+        let (relaxed_body, triangles) = person.fitted_mesh(false);
+        let seated = pair(&relaxed_body, &triangles, false, true);
+        let open = pair(&relaxed_body, &triangles, false, false);
+        let (gripping_body, triangles) = person.fitted_mesh(true);
+        let grip = pair(&gripping_body, &triangles, true, false);
         let first = Slots::reserve(scene, 2).first;
         for instance in &mut scene.instances[first..first + 2] {
             instance.hide_in_views(0xff);
             instance.flags |= render::scene::NO_SHADOW;
         }
-        Self { first, open, grip }
+        Self {
+            first,
+            open,
+            seated,
+            grip,
+        }
     }
 
     pub fn mask(&self, scene: &mut Scene, mask: u8) {
@@ -81,15 +90,20 @@ impl Arms {
     pub fn fly(
         &self,
         scene: &mut Scene,
-        player: usize,
         upright: Affine3A,
         view: Affine3A,
         flight: f32,
+        wrists: [Affine3A; 2],
+        in_crowd: bool,
     ) {
         let frame = blend_pose(upright, view, ease(0., 0.15, flight));
-        for side in 0..2 {
-            let wrist = flight_wrist(player, side, flight);
-            scene.update_instance(self.first + side, self.open[side], frame * wrist);
+        for (side, wrist) in wrists.into_iter().enumerate() {
+            let mesh = if in_crowd && flight < 0.04 {
+                self.seated[side]
+            } else {
+                self.open[side]
+            };
+            scene.update_instance(self.first + side, mesh, frame * wrist);
         }
     }
 
@@ -161,13 +175,27 @@ fn reaching_wrist(side: usize) -> Affine3A {
 // In eye space, +X is the player's right and -Z points into the arena.
 // The two arms catch the launch at different times, then make alternating
 // broad sweeps before both hands turn down to meet the rifle.
-pub(super) fn flight_wrist(player: usize, side: usize, flight: f32) -> Affine3A {
+pub(super) fn flight_wrist(
+    player: usize,
+    side: usize,
+    flight: f32,
+    seated: Option<Affine3A>,
+    eye_height: f32,
+) -> Affine3A {
     use std::f32::consts::TAU;
     let sign = if side == 0 { 1. } else { -1. };
     let rest = Affine3A::from_rotation_translation(
         Quat::from_euler(glam::EulerRot::YXZ, -sign * 0.12, -1.08, -sign * 0.22),
         Vec3::new(sign * 0.25, -0.66, -0.08),
     );
+    let rest = seated.map_or(rest, |wrist| {
+        let (.., rotation, position) = wrist.to_scale_rotation_translation();
+        let facing = Quat::from_rotation_y(std::f32::consts::PI);
+        Affine3A::from_rotation_translation(
+            facing * rotation * palm_rotation(side == 1, false).inverse(),
+            facing * (position * 1.8) - Vec3::Y * eye_height,
+        )
+    });
     let delay = if side == player % 2 { 0.012 } else { 0.047 };
     let throw = ease(delay, delay + 0.17, flight);
     let phase = TAU * (1.85 * flight + 0.43 * side as f32 + 0.10 * (player % 4) as f32);
@@ -195,20 +223,8 @@ pub(super) fn flight_wrist(player: usize, side: usize, flight: f32) -> Affine3A 
     )
 }
 
-/// Keep the original fingers, wrist contour and shirt silhouette. Fit the
-/// elbow towards the bottom of the view while preserving forearm cross sections.
-fn forearm(
-    body: &[BodyVertex],
-    triangles: &[u32],
-    materials: [u32; 2],
-    scale: Vec3,
-    left: bool,
-    gripping: bool,
-) -> ClusterMesh {
+fn palm_rotation(left: bool, gripping: bool) -> Quat {
     let side = if left { -1. } else { 1. };
-    let wrist = Vec3::new(-side * 0.259, 0.637, 0.084) * scale;
-    let elbow = Vec3::new(-side * 0.188, 0.699, -0.013) * scale;
-    let axis = (elbow - wrist).normalize();
     let fingers = if gripping {
         Vec3::NEG_Z
     } else {
@@ -220,14 +236,43 @@ fn forearm(
         Vec3::new(side * 0.34, 1., 0.)
     };
     let back = (back - fingers * fingers.dot(back)).normalize();
-    let palm = Quat::from_mat3(&Mat3::from_cols(fingers, back, fingers.cross(back)))
-        * humans::hand_frame(left).inverse();
-    let destination = if gripping && left {
-        Vec3::new(-0.58, -0.25, 0.52)
+    Quat::from_mat3(&Mat3::from_cols(fingers, back, fingers.cross(back)))
+        * humans::hand_frame(left).inverse()
+}
+
+/// Keep the original fingers, wrist contour and shirt silhouette. Fit the
+/// elbow towards the bottom of the view while preserving forearm cross sections.
+fn forearm(
+    body: &[BodyVertex],
+    triangles: &[u32],
+    materials: [u32; 2],
+    scale: Vec3,
+    left: bool,
+    gripping: bool,
+    seated: bool,
+) -> ClusterMesh {
+    let side = if left { -1. } else { 1. };
+    let wrist = Vec3::new(-side * 0.259, 0.637, 0.084) * scale;
+    let elbow = Vec3::new(-side * 0.188, 0.699, -0.013) * scale;
+    let axis = (elbow - wrist).normalize();
+    let palm = palm_rotation(left, gripping);
+    // When holding the rifle, keep a human-length forearm and fold the sleeve
+    // back from the elbow towards the shoulder. The palm stays on its socket.
+    let shoulder = Vec3::new(-side * 0.1008, 0.805, -0.012) * scale;
+    let upper_axis = (shoulder - elbow).normalize();
+    let destination = if gripping {
+        let direction = if left {
+            Vec3::new(-0.28, -0.19, 0.06)
+        } else {
+            Vec3::new(0.04, -0.19, 0.21)
+        };
+        direction.normalize() * wrist.distance(elbow)
     } else {
         Vec3::new(side * 0.22, -0.28, 0.42)
     };
     let bend = Quat::from_rotation_arc(palm * axis, destination.normalize());
+    let upper_direction = Vec3::new(if left { -0.19 } else { -0.095 }, 0.075, 0.26).normalize();
+    let upper = Quat::from_rotation_arc(bend * palm * upper_axis, upper_direction) * bend * palm;
     let mut vertices = Vec::new();
     let mut remap = vec![u32::MAX; body.len()];
     let mut surfaces = [Vec::new(), Vec::new()];
@@ -236,7 +281,8 @@ fn forearm(
         if !matches!(tag, 4 | 12)
             || !tri.iter().all(|&i| {
                 let v = &body[i as usize];
-                -side * v.position.x > 0.16 && v.limb_weights[0] > 0.75
+                -side * v.position.x > (if gripping { 0.087 } else { 0.16 })
+                    && v.limb_weights[0] > 0.75
             })
         {
             continue;
@@ -254,6 +300,19 @@ fn forearm(
                     Quat::IDENTITY.slerp(bend, blend * blend * (3. - 2. * blend)) * palm;
                 let pos = orientation * (offset - axis * distance)
                     + (palm * axis * distance).lerp(destination * t, blend);
+                // In the stands the whole forearm follows the spectator's actual elbow.
+                let (pos, orientation) = if seated {
+                    (palm * offset, palm)
+                } else if gripping {
+                    let sleeve = 1. - v.limb_weights[1];
+                    let upper_pos = destination + upper * (v.position * scale - elbow);
+                    (
+                        pos.lerp(upper_pos, sleeve),
+                        orientation.slerp(upper, sleeve),
+                    )
+                } else {
+                    (pos, orientation)
+                };
                 let normal = (orientation * (v.normal / scale)).normalize_or_zero();
                 *index = vertices.len() as u32;
                 vertices.push(Vertex {
