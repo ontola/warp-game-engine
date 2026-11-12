@@ -649,3 +649,30 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod coarse_first {
+    use crate::cluster::{ClusterMesh, Part, SimplificationPolicy};
+
+    #[test]
+    fn sorted_spray_cuts_lie_in_their_coarse_prefix() {
+        let (_, foliage) = super::needle_spray(0);
+        let mut mesh = ClusterMesh::build_with_policy(&[Part { vertices: &foliage.vertices, indices: &foliage.indices, material: 0 }], |_| SimplificationPolicy::ThinFoliage);
+        let cut = |m: &ClusterMesh, t: f32| -> Vec<(u32, u32)> {
+            let mut c: Vec<_> = m.clusters.iter().filter(|c| c.own_error <= t && c.parent_error > t).map(|c| (c.first_tri, c.tri_count)).collect();
+            c.sort_unstable(); c
+        };
+        let thresholds = [0.0f32, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 1e29];
+        let before: Vec<_> = thresholds.iter().map(|&t| cut(&mesh, t)).collect();
+        mesh.sort_coarse_first();
+        for (&t, expected) in thresholds.iter().zip(&before) {
+            // The same cut, and all of it within the prefix the cull visits.
+            assert_eq!(&cut(&mesh, t), expected);
+            let prefix = mesh.coarse_prefix(t);
+            assert!(mesh.clusters[prefix..].iter().all(|c| !(c.own_error <= t && c.parent_error > t)));
+        }
+        // Far away the cull visits a fraction of the 244 clusters (16 drawn at 5 cm).
+        assert_eq!(mesh.coarse_prefix(0.0), mesh.clusters.len());
+        assert!(mesh.coarse_prefix(0.05) * 4 < mesh.clusters.len(), "{} of {}", mesh.coarse_prefix(0.05), mesh.clusters.len());
+    }
+}

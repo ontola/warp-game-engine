@@ -25,7 +25,10 @@ pub struct Branch {
 pub struct Spec {
     pub page_budget:crate::foliage_pages::cache::Budget,
     pub source_budget:crate::foliage_pages::source::Budget,
-    pub nodes:Vec<Node>,pub roots:Vec<Instance>,branches:Vec<Branch>,representations:Vec<[u32;4]>,
+    pub nodes:Vec<Node>,
+    /// Per node: source clusters the cull visits per error bin (source_work_table).
+    pub source_tables:Vec<[u32;12]>,
+    pub roots:Vec<Instance>,branches:Vec<Branch>,representations:Vec<[u32;4]>,
     proxies:Vec<GpuTree>,templates:Vec<RootTemplate>,population:crate::foliage_population::Population,pub first_owner:u32,pub slots:u32,pub error:f32,pub raster_budget:u32,pub source_cluster_budget:u32,
 }
 impl Spec {
@@ -224,10 +227,12 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
     }
     for (rep,variant,group) in group_fixups {representations[rep][3]=group_records[&(variant,group)]+1;}
     let work=forest.raster_work_bounds()?;
+    let mut source_tables=Vec::with_capacity(nodes.len());
     for node in &mut nodes {
         let rep=representations[node.links[2]as usize];
         let branch=&branches[if rep[3]==0 {rep[0]} else {rep[3]-1}as usize];
         let source_work=if rep[1]==0 {crate::foliage_pages::source::source_work(scene,branch.source)?.clusters}else{0};
+        source_tables.push(if rep[1]==0 {crate::foliage_pages::source::source_work_table(scene,branch.source)?}else{[0;12]});
         if source_work>0x00ff_ffff {return Err("source cluster work exceeds node metadata range".into());}
         node.links[3]=(node.links[3]&3)|if rep[1]==0 {4}else{0}|(source_work<<8);
         let bound=representation_raster_work(rep,branch,&work)?;
@@ -282,7 +287,7 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
     // floor reserved 6.7M clusters and culling them took most of a 106 ms frame.
     let source_cluster_budget=env("KERN_SOURCE_CLUSTERS",2<<20).clamp(1,crate::foliage_select::DEFAULT_SOURCE_CLUSTER_BUDGET as u64)as u32;
     scene.voxel_forest=Some(forest);scene.voxel_proxies=trees.len()as u32*2;
-    scene.gpu_forest=Some(Spec {page_budget:Default::default(),source_budget:Default::default(),nodes,roots,branches,representations,proxies,templates,population,first_owner,slots,raster_budget,source_cluster_budget,error:policy.max_error_pixels.max(0.25)});
+    scene.gpu_forest=Some(Spec {page_budget:Default::default(),source_budget:Default::default(),nodes,source_tables,roots,branches,representations,proxies,templates,population,first_owner,slots,raster_budget,source_cluster_budget,error:policy.max_error_pixels.max(0.25)});
     Ok(())
 }
 
@@ -410,7 +415,7 @@ impl Runtime {
             return Err("GPU forest materialization exceeds dispatch capacity".into());
         }
         let records=spec.slots.saturating_mul(4).max(spec.roots.len()as u32).max(1024);
-        let selector=Selector::new(gpu,&spec.nodes,&spec.roots,records,records)?;
+        let selector=Selector::with_source_tables(gpu,&spec.nodes,&spec.source_tables,&spec.roots,records,records)?;
         selector.set_source_cluster_budget(spec.source_cluster_budget)?;
         let residency=Residency::new(gpu,&selector,spec.slots)?;
         crate::shaders::checked(gpu,|| {

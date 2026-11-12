@@ -139,13 +139,30 @@ pub struct Selector {
 impl Selector {
     pub(crate) fn dimensions(&self)->(u32,u32) {(self.capacity,self.count)}
     pub fn new(gpu:&Gpu,nodes:&[Node],instances:&[Instance],capacity:u32,deferred_capacity:u32)->Result<Self,String> {
+        Self::with_source_tables(gpu,nodes,&[],instances,capacity,deferred_capacity)
+    }
+    /// `source_tables[i]`: node i's source clusters per error bin
+    /// (foliage_source_pages::source_work_table). Empty books every source
+    /// node at its full count (links.w >> 8) in every bin.
+    pub fn with_source_tables(gpu:&Gpu,nodes:&[Node],source_tables:&[[u32;12]],instances:&[Instance],capacity:u32,deferred_capacity:u32)->Result<Self,String> {
         let work_capacity=(instances.len()as u32).saturating_mul(8).max(capacity.saturating_mul(4)).max(4096).min(1<<20).max(instances.len()as u32);
-        Self::with_work_capacity(gpu,nodes,instances,capacity,deferred_capacity,work_capacity)
+        Self::with_capacity_and_tables(gpu,nodes,source_tables,instances,capacity,deferred_capacity,work_capacity)
+    }
+    pub fn with_work_capacity(gpu:&Gpu,nodes:&[Node],instances:&[Instance],capacity:u32,deferred_capacity:u32,work_capacity:u32)->Result<Self,String> {
+        Self::with_capacity_and_tables(gpu,nodes,&[],instances,capacity,deferred_capacity,work_capacity)
     }
     /// Bounded frontier storage. Overflow publishes a complete resident root,
     /// never a partial cut. This is a memory budget, not a backend switch.
-    pub fn with_work_capacity(gpu:&Gpu,nodes:&[Node],instances:&[Instance],capacity:u32,deferred_capacity:u32,work_capacity:u32)->Result<Self,String> {
+    fn with_capacity_and_tables(gpu:&Gpu,nodes:&[Node],source_tables:&[[u32;12]],instances:&[Instance],capacity:u32,deferred_capacity:u32,work_capacity:u32)->Result<Self,String> {
         validate(nodes,instances,capacity)?;
+        if !source_tables.is_empty() && source_tables.len()!=nodes.len() {return Err("one source work table per foliage node".into());}
+        // The hierarchy buffer holds the nodes, then one table per node in a
+        // node-sized record (foliage_refine.wgsl source_work_at).
+        let mut uploaded=nodes.to_vec();
+        uploaded.extend(nodes.iter().enumerate().map(|(i,n)|{
+            let t=source_tables.get(i).copied().unwrap_or([n.links[3]>>8;12]);
+            bytemuck::cast::<[u32;12],Node>(t)
+        }));
         let limit=gpu.device.limits();
         let work_capacity=work_capacity.max((instances.len()as u32).checked_mul(2).ok_or("foliage consumer root capacity overflow")?);
         if work_capacity<(instances.len()as u32) || work_capacity.div_ceil(64)>limit.max_compute_workgroups_per_dimension
@@ -195,7 +212,7 @@ impl Selector {
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("foliage GPU selection"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_select.wgsl").into())});
             let make=|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
             Self {source_cluster_budget:std::sync::atomic::AtomicU32::new(DEFAULT_SOURCE_CLUSTER_BUDGET),seed_visibility:storage("foliage current seed visibility",instances.len()as u64*4),seed_classifier:crate::foliage_seed_visibility::Visibility::new(gpu),refiner:crate::foliage_refine::Refiner::new(gpu,work_capacity),asset_pages:upload("foliage asset publication",bytemuck::cast_slice(&asset_state)),asset_requests:storage("foliage compact asset demand",16+page_count as u64*16),asset_state:std::sync::Mutex::new(asset_state),pinned_pages,compact_assets:make("compact_asset_requests"),children:upload("shared foliage child spans",bytemuck::cast_slice(&children)),work:[storage("unused legacy frontier A",24),storage("unused legacy frontier B",24)],levels,
-                _nodes:upload("shared foliage hierarchy",bytemuck::cast_slice(nodes)),_instances:upload("persistent foliage instances",bytemuck::cast_slice(instances)),uniform,
+                _nodes:upload("shared foliage hierarchy",bytemuck::cast_slice(&uploaded)),_instances:upload("persistent foliage instances",bytemuck::cast_slice(instances)),uniform,
                 records:storage("selected foliage records",capacity as u64*16),record_consumers:storage("selected foliage consumers",capacity as u64*4),deferred:storage("deferred foliage subtrees",deferred_capacity as u64*8),
                 counters:storage("foliage selection counters",64),arguments:storage("foliage indirect arguments",24),fallback:storage("foliage root fallbacks",instances.len()as u64*4),
                 direct:storage("direct resident forest roots",instances.len()as u64*4),
