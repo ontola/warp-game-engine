@@ -63,8 +63,10 @@ export type Game = {
 
 export type Hit = { victim: number, attacker: number, damage: number, head: boolean, explosion: boolean }
 export type Kill = { victim: number, attacker: number? }
+export type Gun = { damage: number, fire_interval: number, mag_size: number, reload_time: number, headshot: number, spread: number, recoil: number, bullet_drop: number, bullet_speed: number }
 export type Exports = {
 	cards: { Card }?,
+	gun: Gun?,
 	hit: ((g: Game, e: Hit) -> number?)?,
 	kill: ((g: Game, e: Kill) -> ())?,
 	tick: ((g: Game) -> ())?,

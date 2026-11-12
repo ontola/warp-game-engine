@@ -10,9 +10,8 @@
 //!
 //! Godot conventions: -Z forward, +Y up, the receiver centred on the origin.
 use glam::{Affine3A, EulerRot, Quat, Vec3};
-use growing_guns::weapon::{BASE_FIRE_INTERVAL as FIRE_INTERVAL, BASE_MAG_SIZE, BASE_SPREAD as SPREAD};
+use growing_guns::weapon::Gun;
 use growing_guns::Player;
-const MAG_SIZE: u32 = BASE_MAG_SIZE as u32;
 use std::f32::consts::{PI, TAU};
 
 /// The weapon stats the look reads (Godot `_lerp_weapon` fields).
@@ -30,7 +29,7 @@ pub struct Stats {
 }
 
 impl Default for Stats {
-    fn default() -> Self { Stats { spread: SPREAD, bullet_scale: 1.0, damage_mult: 1.0, fire_rate_mult: 1.0, mag: MAG_SIZE, shots: 1, explosive_radius: 0.0, poison: 0.0, cooling: 0.0 } }
+    fn default() -> Self { let g = Gun::default(); Stats { spread: g.spread, bullet_scale: 1.0, damage_mult: 1.0, fire_rate_mult: 1.0, mag: g.mag_size as u32, shots: 1, explosive_radius: 0.0, poison: 0.0, cooling: 0.0 } }
 }
 
 impl Stats {
@@ -57,7 +56,7 @@ impl Stats {
         }
     }
 
-    pub fn fire_interval(&self) -> f32 { (FIRE_INTERVAL / self.fire_rate_mult.max(0.01)).max(self.shots as f32 / 240.0) }
+    pub fn fire_interval(&self) -> f32 { (Gun::default().fire_interval as f32 / self.fire_rate_mult.max(0.01)).max(self.shots as f32 / 240.0) }
     fn projectiles_per_second(&self) -> f32 { self.shots as f32 / self.fire_interval().max(0.001) }
 }
 

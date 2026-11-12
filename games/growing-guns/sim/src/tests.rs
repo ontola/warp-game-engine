@@ -653,13 +653,13 @@ fn coop_archetypes_follow_the_wave() {
     let mut rng = rng::Rng::new(1);
     let picks: Vec<Archetype> = (0..12).map(|k| Archetype::pick_for(8, k, &mut rng)).collect();
     assert_eq!((picks[0], picks[6], picks[5], picks[4]), (Archetype::Demolition, Archetype::Grenadier, Archetype::Sniper, Archetype::FlatFragger));
-    let g = Archetype::Grenadier.weapon(5);
+    let g = Archetype::Grenadier.weapon(5, Default::default());
     assert_eq!((g.max_hp_bonus, g.body_scale, g.explosive_damage), (60, 1.28, 43.0));
     assert!((g.explosive_radius - 4.0).abs() < 1e-6);
     let mut p = Player::new(true);
     p.weapon = g;
     assert_eq!(p.max_health(), 160);
-    assert_eq!(Archetype::Demolition.weapon(10).special, Special::ClusterGrenade);
+    assert_eq!(Archetype::Demolition.weapon(10, Default::default()).special, Special::ClusterGrenade);
     assert_eq!((coop::enemy_count(1, 1), coop::enemy_count(5, 3)), (3, 9));
 }
 

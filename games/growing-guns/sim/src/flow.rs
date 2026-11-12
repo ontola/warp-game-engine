@@ -161,7 +161,7 @@ impl World {
         for k in (1..n).rev() { let j = self.rng.below(k as u32 + 1) as usize; order.swap(k, j); }
         if order.iter().enumerate().all(|(k, &o)| k == o) { order = (0..n).map(|k| (k + 1) % n).collect(); }
         for i in 0..n {
-            self.players[i].weapon = crate::Weapon::default();
+            self.players[i].weapon = crate::Weapon::with_gun(self.gun);
             let book = self.cards.clone();
             for &c in &decks[order[i]] {
                 let def = book.get(c).cloned();

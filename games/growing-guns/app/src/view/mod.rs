@@ -317,7 +317,7 @@ impl Visuals {
                     let w = &p.weapon;
                     let last = p.ammo == 0;
                     if w.silencer_stacks <= 0 {
-                        let bright = ((w.damage_for_shot(last) / growing_guns::weapon::BASE_DAMAGE).powf(0.88) * 1.5).clamp(0.85, 8.0);
+                        let bright = ((w.damage_for_shot(last) / w.gun.damage).powf(0.88) * 1.5).clamp(0.85, 8.0);
                         self.fx.flash(now - growing_guns::DT, exit, dir, w.bullet_color, w.bullet_scale_for_shot(last), bright);
                     }
                     let (sy, cy) = p.yaw.sin_cos();
