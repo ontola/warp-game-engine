@@ -477,12 +477,17 @@ impl World {
     }
 
     /// How much tougher a boss comes in than its level alone makes it: a
-    /// little more to begin with, and more for each tome the wizards carry
-    /// on average.
+    /// third more in a party, a little less alone, and more for each tome
+    /// the wizards carry on average.
     pub fn boss_toughness(&self) -> f64 {
         let (n, tomes) = self.wizards.iter().filter_map(|&id| self.ecs.get::<&crate::wizard::Wizard>(id).ok().map(|w| w.relics.len())).fold((0usize, 0usize), |(n, t), r| (n + 1, t + r));
         let each = if n == 0 { 0.0 } else { tomes as f64 / n as f64 };
-        1.3 * (1.0 + 0.15 * each)
+        // In a party a boss is a third tougher (Joep: the Drowned King went
+        // down too easily); alone a little weaker than its level makes it
+        // (Joep: solo, the first boss was nearly impossible; two players
+        // felt right).
+        let base = if n <= 1 { 0.9 } else { 1.3 };
+        base * (1.0 + 0.15 * each)
     }
 
     /// The summoning is over: in it comes, unless the fight already ended.
