@@ -378,6 +378,7 @@ impl Visuals {
     pub fn pose(&mut self, world: &World, prev: &[Pose], alpha: f32, dt: f32) {
         self.clock = (world.tick as f32 - 1.0 + alpha) * growing_guns::DT;
         self.fx.update(world, self.clock, dt);
+        self.guns.sample_audience(&self.stadium, world, self.clock);
         self.players.pose(&mut self.scene, world, prev, alpha, &self.guns);
         self.guns.pose(&mut self.scene, world, prev, alpha, &self.fx, self.players.hands());
         self.things.pose(&mut self.scene, world, self.clock);

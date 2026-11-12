@@ -273,7 +273,7 @@ impl Build {
 
 #[derive(Clone, Debug)]
 struct Morph {
-    from: Stats, to: Stats, elapsed: f32, duration: f32,
+    from: Stats, to: Stats, elapsed: f32,
     source: Build, target: Build,
     links: Vec<(Option<usize>, Option<usize>)>,
 }
@@ -657,10 +657,6 @@ impl Rig {
 
     /// Morph from the currently visible model, including an interrupted morph.
     pub fn grow_to(&mut self, to: Stats) {
-        self.grow_to_over(to, GROW_SECONDS);
-    }
-
-    pub fn grow_to_over(&mut self, to: Stats, duration: f32) {
         if self.grow.as_ref().is_some_and(|g| g.to == to) { return; }
         let target = build_with_detail(&Look::of(&to), self.detail);
         if let Some(g) = &mut self.grow {
@@ -676,7 +672,7 @@ impl Rig {
             links.push((Some(i), found));
         }
         links.extend(used.iter().enumerate().filter(|(_, used)| !**used).map(|(j, _)| (None, Some(j))));
-        self.grow = Some(Morph { from: self.shown, to, elapsed: 0.0, duration, source, target, links });
+        self.grow = Some(Morph { from: self.shown, to, elapsed: 0.0, source, target, links });
     }
 
     pub fn is_growing(&self) -> bool { self.grow.is_some() }
@@ -702,10 +698,10 @@ impl Rig {
         let previous = self.grow.as_ref().map(|_| self.build.parts.iter().map(|p| ((p.key, p.shape, p.mat), p.xf)).collect::<std::collections::HashMap<_, _>>());
         if let Some(g) = &mut self.grow {
             g.elapsed += dt.min(0.05);
-            let t = grow_ease(g.elapsed / g.duration);
+            let t = grow_ease(g.elapsed / GROW_SECONDS);
             self.shown = Stats::lerp(&g.from, &g.to, t);
             self.build = g.at(t);
-            if g.elapsed + 1e-6 >= g.duration { self.shown = g.to; self.build = g.target.clone(); self.grow = None; }
+            if g.elapsed + 1e-6 >= GROW_SECONDS { self.shown = g.to; self.build = g.target.clone(); self.grow = None; }
         }
         self.previous_pose.clear();
         if let Some(previous) = previous {

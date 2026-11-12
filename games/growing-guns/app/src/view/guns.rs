@@ -16,13 +16,15 @@ use render::Scene;
 #[derive(Clone, Copy, Default)]
 struct GunFeel { phase: f32, bob: f32, bump: f32, tilt: f32, kick: f32, inspect: f32, previous_inspect: f32 }
 
-// Both the lift and any change in the rifle's shape finish at the ready pose.
+// Finish lifting the unmodified rifle and returning the camera to aim before inspection.
 const PICKUP_LIFT_SECONDS: f32 = 0.40;
+const PICKUP_READY_SECONDS: f32 = 0.46;
 
 pub struct Guns {
     pub(crate) detail: gun::Detail,
     parts: usize,
     arms: Vec<super::pov_arms::Arms>,
+    spectators: Vec<Option<render::humans::StandingPose>>,
     /// Mesh per shape, then per material (barrel: one per player, each
     /// with its own material that follows the heat every frame).
     meshes: Vec<Vec<usize>>,
@@ -83,7 +85,7 @@ impl Guns {
             tp.push(Slots::reserve(scene, parts).first);
         }
         let lamp_mesh = flashlight_mesh(scene);
-        Guns { pickups: vec![None; players], lamp_mesh, lamps: vec![None; players], detail, parts, arms: Vec::new(), meshes, barrel_first, barrels, muzzles: vec![None; players], local: vec![false; players], rigs: vec![Rig::with_detail(detail); players], feel: vec![GunFeel::default(); players], fp, tp, tilt: true, tracked: vec![None; players], tracking: vec![false; players], own: vec![None; players], round: None }
+        Guns { spectators: vec![None; players], pickups: vec![None; players], lamp_mesh, lamps: vec![None; players], detail, parts, arms: Vec::new(), meshes, barrel_first, barrels, muzzles: vec![None; players], local: vec![false; players], rigs: vec![Rig::with_detail(detail); players], feel: vec![GunFeel::default(); players], fp, tp, tilt: true, tracked: vec![None; players], tracking: vec![false; players], own: vec![None; players], round: None }
     }
 
     pub(super) fn reserve_arms(&mut self, scene: &mut Scene, seed: u64, colors: &[crate::party::PlayerColors]) {
@@ -115,7 +117,7 @@ impl Guns {
         let (Some(rig), Some(p)) = (self.rigs.get_mut(player), world.players.get(player)) else { return };
         if world.awaiting_rifle(player) { return; }
         self.own[player] = Some(Stats::weapon(&world.owned_weapon(player)));
-        rig.grow_to(Stats::of(p));
+        if self.pickups[player].is_none() { rig.grow_to(Stats::of(p)); }
     }
 
     pub fn jump(&mut self, player: usize) { if let Some(f) = self.feel.get_mut(player) { f.bump = 0.06; } }
@@ -129,7 +131,9 @@ impl Guns {
     /// A shot: bolt, spin and heat on the rig, recoil kick on the view model.
     pub fn shot(&mut self, player: usize, p: &Player) {
         let Some(rig) = self.rigs.get_mut(player) else { return };
-        self.pickups[player] = None; // An immediate shot brings the rifle straight to aim.
+        if self.pickups[player].take().is_some() {
+            rig.grow_to(Stats::of(p)); // Firing completes the lift immediately.
+        }
         rig.fire(&Stats::of(p));
         let f = &mut self.feel[player];
         f.kick = f.kick.max(0.08 * (p.weapon.recoil() / p.weapon.gun.recoil).clamp(0.2, 2.5));
@@ -144,6 +148,7 @@ impl Guns {
             if let growing_guns::Event::RifleCollected { player } = *event {
                 if let Some(pickup) = self.pickups.get_mut(player) {
                     *pickup = Some((world.tick, world.players[player].pos - Vec3::Y * growing_guns::HALF_HEIGHT));
+                    self.own[player] = Some(Stats::weapon(&world.owned_weapon(player)));
                 }
             }
         }
@@ -160,9 +165,12 @@ impl Guns {
                 if !waiting && previous.is_some() { rig.grow_to(target); }
             }
             if !waiting {
-                if self.pickups[i].is_some_and(|(tick, _)| tick == world.tick) {
-                    self.own[i] = Some(Stats::weapon(&world.owned_weapon(i)));
-                    rig.grow_to_over(target, PICKUP_LIFT_SECONDS);
+                if let Some((tick, _)) = self.pickups[i] {
+                    let age = world.tick.saturating_sub(tick) as f32 * growing_guns::DT;
+                    if age >= PICKUP_READY_SECONDS {
+                        self.pickups[i] = None;
+                        rig.grow_to(target);
+                    }
                 } else {
                     rig.follow(target);
                 }
@@ -186,16 +194,41 @@ impl Guns {
         self.round = Some(world.round);
     }
 
+    pub(super) fn sample_audience(&mut self, stadium: &crate::stadium::StadiumVisuals, world: &World, time: f32) {
+        for (i, pose) in self.spectators.iter_mut().enumerate() {
+            *pose = if world.awaiting_rifle(i) { stadium.participant_pose(i, time) } else { None };
+        }
+    }
+
+    pub(super) fn spectator(&self, i: usize) -> Option<render::humans::StandingPose> {
+        self.spectators.get(i).copied().flatten()
+    }
+
+    pub(super) fn crowd_lift(&self, i: usize, flight: f32) -> f32 {
+        self.spectator(i).map_or(0., |pose|
+            pose.lift * (1. - super::pov_arms::ease(0., 0.16, flight)))
+    }
+
+    pub(super) fn entrance_wrists(&self, world: &World, i: usize, flight: f32) -> [Affine3A; 2] {
+        let seated = self.spectator(i);
+        [0, 1].map(|side| super::pov_arms::flight_wrist(i, side, flight,
+            seated.map(|pose| pose.wrists[side]), world.players[i].eye_height() + growing_guns::HALF_HEIGHT))
+    }
+
     fn pickup(&self, world: &World, i: usize, alpha: f32) -> Option<(f32, Vec3)> {
         let (tick, floor) = self.pickups.get(i).copied().flatten()?;
         let ticks = world.tick.checked_sub(tick)?;
         let age = (ticks as f32 + alpha - 1.).max(0.) * growing_guns::DT;
-        (age < 0.46 && world.players[i].alive && !self.tracking[i]).then_some((age, floor))
+        (age < PICKUP_READY_SECONDS && world.players[i].alive && !self.tracking[i]).then_some((age, floor))
     }
 
     pub(super) fn camera(&self, world: &World, i: usize, prev: &[crate::view::Pose], alpha: f32) -> render::Camera {
         let dip = self.pickup(world, i, alpha).map_or(0., |(age, _)| 1. - super::pov_arms::ease(0.10, 0.45, age));
-        super::entrance_camera(world, i, prev, alpha, dip)
+        let mut camera = super::entrance_camera(world, i, prev, alpha, dip);
+        let lift = self.crowd_lift(i, world.entrance_flight_at(alpha));
+        camera.pos.y += lift;
+        camera.target.y += lift;
+        camera
     }
 
     /// Every rig into its two blocks: first person from the (punched)
@@ -228,7 +261,7 @@ impl Guns {
             let muzzle = Vec3::new(0.3 + (f.phase * 0.5).sin() * 0.007 * f.bob, -0.3 + f.phase.sin() * 0.012 * f.bob - f.bump, -0.8 + f.kick + pull) + reload.lift;
             let s = f.previous_inspect + (f.inspect - f.previous_inspect) * alpha;
             let fp = view * Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, 0.0, reload.tilt, f.tilt), muzzle)
-                * Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, s, 0.12 * s, 0.08 * s), Vec3::new(-0.14, 0.04, 0.14) * s);
+                * Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, s, 0.12 * s, 0.08 * s), Vec3::new(-0.18, 0.17, 0.19) * s);
             let fp = self.tracked[i].unwrap_or(fp);
             let drawn = crate::view::pose(world, i, prev, alpha);
             let (pos, rot) = (drawn.pos, Quat::from_rotation_y(drawn.yaw));
@@ -258,7 +291,8 @@ impl Guns {
                         // With hands by the hips, looking down reveals them. The
                         // flailing and reaching poses follow the view during flight.
                         let upright = Affine3A::from_rotation_translation(rot, cam.pos);
-                        arms.fly(scene, i, upright, view, world.entrance_flight_at(alpha));
+                        let flight = world.entrance_flight_at(alpha);
+                        arms.fly(scene, upright, view, flight, self.entrance_wrists(world, i, flight), self.spectator(i).is_some());
                     }
                 }
             }
@@ -711,7 +745,38 @@ mod xr_tests {
     }
 
     #[test]
-    fn only_visible_upgrades_grow_during_the_lift() {
+    fn entrance_tracks_the_seat_phase_until_takeoff() {
+        use render::{crowd::Seat, humans::Instance};
+        let world = World::new(3, &[false]);
+        let mut scene = Scene::default();
+        let mut guns = Guns::reserve_with_detail(&mut scene, 1, gun::Detail::Low);
+        let seat = Seat { pos: Vec3::ZERO, yaw: 0., scale: 1.8, width: 0.9,
+            phase: 0.25, tempo: 0.75, hop: 0.4, body: 0, arms: 0 };
+        let person = Instance::spectator(3, 0, &seat);
+        let airborne = guns.entrance_wrists(&world, 0, 0.5);
+        let mut raised = [f32::MIN; 2];
+        let mut lowered = [f32::MAX; 2];
+        for frame in 0..240 {
+            let pose = person.standing_pose(&seat, frame as f32 / 30., 1., 0., true);
+            guns.spectators[0] = Some(pose);
+            assert_eq!(guns.crowd_lift(0, 0.), pose.lift);
+            assert_eq!(guns.crowd_lift(0, 0.5), 0.);
+            let seated = guns.entrance_wrists(&world, 0, 0.);
+            for side in 0..2 {
+                let height = pose.wrists[side].translation.y;
+                raised[side] = raised[side].max(height);
+                lowered[side] = lowered[side].min(height);
+                let expected = height * 1.8 - world.players[0].eye_height() - growing_guns::HALF_HEIGHT;
+                assert!((seated[side].translation.y - expected).abs() < 1e-5);
+                let flying = guns.entrance_wrists(&world, 0, 0.5)[side];
+                assert!(flying.abs_diff_eq(airborne[side], 1e-5));
+            }
+        }
+        assert!((0..2).any(|side| raised[side] > 0.82 && lowered[side] < 0.62));
+    }
+
+    #[test]
+    fn only_visible_upgrades_inspect_after_the_rifle_is_in_hand() {
         for detail in [gun::Detail::Full, gun::Detail::Low] {
             let mut world = World::new_with(7, &[false, false], |w| w.modifier_chance = 0.);
             let _scripts = crate::scripts::attach(&mut world).unwrap();
@@ -734,11 +799,19 @@ mod xr_tests {
                 world.step(&[]);
                 guns.tick(&world, growing_guns::DT);
             }
+            // The floor pickup and the return to aim show the old shape.
+            for _ in 0..28 {
+                assert!(!guns.rigs[0].is_growing());
+                assert_eq!(guns.rigs[0].shown, source);
+                assert_eq!(guns.feel[0].inspect, 0.);
+                world.step(&[]); guns.tick(&world, growing_guns::DT);
+            }
             assert!(guns.rigs[0].is_growing());
-            assert!(!guns.rigs[1].is_growing());
-            for _ in 0..11 { world.step(&[]); guns.tick(&world, growing_guns::DT); }
+            for _ in 0..60 { world.step(&[]); guns.tick(&world, growing_guns::DT); }
             let midway = guns.rigs[0].build.barrel_length;
-            for _ in 0..12 { world.step(&[]); guns.tick(&world, growing_guns::DT); }
+            assert!(guns.feel[0].inspect > 0.95);
+            assert!(!guns.rigs[1].is_growing() && guns.feel[1].inspect == 0.);
+            for _ in 0..60 { world.step(&[]); guns.tick(&world, growing_guns::DT); }
             assert!(original < midway && midway < guns.rigs[0].build.barrel_length);
             assert!(!guns.rigs[0].is_growing());
             assert_eq!(guns.rigs[0].shown, target);
