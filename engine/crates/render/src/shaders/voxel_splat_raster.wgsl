@@ -80,6 +80,22 @@ fn kept(in: Out) -> bool {
     let p = vec2<u32>(in.position.xy);
     return f32(hash(p.x ^ hash(p.y ^ hash(in.key))) >> 8u) / 16777216.0 < in.alpha * keep;
 }
+// Sun maps: the coverage pattern is anchored to the splat (an 8x8 grid over
+// its disc), not to the map's texels. The sun clipmap scrolls with the
+// camera and redraws tiles, and a texel-anchored pattern then moved across
+// the ground under every partly covered crown edge (Joep, flying, 12
+// November). KERN_SUN_DITHER_TEXEL=1 restores the texel pattern.
+override SUN_DITHER_ANCHORED: bool = true;
+fn kept_sun(in: Out) -> bool {
+    if !SUN_DITHER_ANCHORED { return kept(in); }
+    let r2 = dot(in.disc, in.disc);
+    if r2 > 1.0 { return false; }
+    let radius_px = 1.0 / max(fwidth(in.disc.x), 1e-4);
+    let wide = smoothstep(1.5, 4.0, radius_px);
+    let keep = mix(0.76, 1.0 - 0.75 * smoothstep(0.3, 1.0, r2), wide);
+    let q = vec2<u32>(clamp((in.disc + 1.0) * 4.0, vec2<f32>(0.0), vec2<f32>(7.0)));
+    return f32(hash(q.x ^ hash(q.y ^ hash(in.key))) >> 8u) / 16777216.0 < in.alpha * keep;
+}
 @fragment fn fs(in: Out) -> @location(0) u32 {
     if !kept(in) { discard; }
     return in.splat;
@@ -93,7 +109,7 @@ struct MainOut { @location(0) visibility: u32, @location(1) splat: u32 };
 }
 // Sun map: depth only.
 @fragment fn fs_depth(in: Out) {
-    if !kept(in) { discard; }
+    if !kept_sun(in) { discard; }
 }
 
 // Cached sun maps: 64x64 tiles of the map size in header row 11.y.
@@ -102,5 +118,5 @@ struct MainOut { @location(0) visibility: u32, @location(1) splat: u32 };
  let xy=vec2<u32>(in.position.xy)/max(splats[11].y/64u,1u);let tile=xy.y*64u+xy.x;
  let word=shadow_damage_mask[tile>>7u][(tile>>5u)&3u];
  if (word&(1u<<(tile&31u)))==0u {discard;}
- if !kept(in) {discard;}
+ if !kept_sun(in) {discard;}
 }

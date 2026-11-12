@@ -518,6 +518,8 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
                 Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Uint, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
         multiview_mask: None, cache: gpu.pipeline_cache(),
     });
+    // KERN_SUN_DITHER_TEXEL=1: the old texel-anchored sun coverage pattern.
+    let sun_dither=[("SUN_DITHER_ANCHORED", if std::env::var("KERN_SUN_DITHER_TEXEL").as_deref()==Ok("1") {0.0} else {1.0})];
     // Like the scene's sun raster: ordinary Z with the same bias.
     let sun_raster = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("voxel sun splat raster"), layout: Some(&pipeline_layout),
@@ -527,7 +529,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
             depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(),
             bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 } }),
         multisample: Default::default(),
-        fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs_depth"), compilation_options: Default::default(), targets: &[] }),
+        fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs_depth"), compilation_options: wgpu::PipelineCompilationOptions { constants: &sun_dither, ..Default::default() }, targets: &[] }),
         multiview_mask: None, cache: gpu.pipeline_cache(),
     });
     let cached_mask_layout=crate::shadow_damage::mask_layout(gpu);
@@ -540,7 +542,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
             depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(),
             bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 } }),
         multisample: Default::default(),
-        fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs_cached_depth"), compilation_options: Default::default(), targets: &[] }),
+        fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs_cached_depth"), compilation_options: wgpu::PipelineCompilationOptions { constants: &sun_dither, ..Default::default() }, targets: &[] }),
         multiview_mask: None, cache: gpu.pipeline_cache(),
     });
     let empty_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxel sun splats"), entries: &[] });
