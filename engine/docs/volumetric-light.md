@@ -171,3 +171,39 @@ survive sky changes.
   field unevenly.
 - Dark haze gradients can show 1-LSB banding after tonemapping, because
   there is no dither.
+
+## Froxel fog
+
+`Lighting::froxel_fog` (`render::froxel_fog`) is a participating medium in
+a camera-aligned grid of 160x90x64 cells (froxels; Wronski 2014, Hillaire
+2015), slices spaced exponentially from 0.1 m to `far_m` of view depth. The
+game sets density (extinction per metre), albedo, anisotropy and,
+optionally, the box the medium fills; nothing else, no fog boxes per light.
+
+```rust
+light.froxel_fog = Some(FroxelFog { density: 0.15, albedo: Vec3::splat(0.9), anisotropy: 0.4,
+    far_m: 32.0, bounds: None });
+```
+
+- `fog_inject` (compiled with shade, so the air is lit as surfaces are), one
+  workgroup per column of cells: each cell, at a point jittered across it
+  every frame, gets the light scattered towards the camera (Henyey-Greenstein)
+  from every clustered light with its shadow (one filtered compare), cookie
+  and profile, from the sun through its shadow maps, and the room's ambient
+  light (the irradiance volume's two hemispheres, the sky through openings
+  included), times the scattering coefficient; and the extinction. It is
+  blended with last frame's cell where the point was (reprojected, 0.9 kept).
+- Air the camera cannot see does not reach the fog it can: a column skips
+  cells behind its farthest visible surface (the least depth in its tile,
+  found by the workgroup), and a sample that lies behind the depth buffer at
+  its own pixel (above a ceiling, outside a wall, in a column that also shows
+  the far side of the room) leaves the cell's history as it is, so the cell
+  averages its visible air. Without this a cell straddling a wall took the
+  outdoor sky and sun into the room's smoke (a bright band along a ceiling).
+- `integrate`: per column, front to back, Hillaire's energy-conserving step;
+  shade dims each pixel by the transmittance to its depth and adds the
+  in-scattered light, trilinear, before TAA.
+- Cost, `interior_rooms`, RTX 5070 Ti, 4K: inject 0.60 ms, integrate under
+  0.01 ms. `KERN_FROXEL_FOG=0` turns it off.
+- Not yet: transparent surfaces drawn after shade (glass) get no fog; the
+  reflection probes' captures have none.

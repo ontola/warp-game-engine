@@ -407,6 +407,14 @@ struct GiUniform {
     /// y the box count; then per box capture (w 1 when complete), min, max.
     probes: [f32; 4],
     probe_boxes: [[f32; 4]; 3 * crate::reflection_probes::MAX_PROBES],
+    /// Froxel fog (froxel_fog.wgsl): density, anisotropy, far, 0 off / 1 on /
+    /// 2 on with last frame's cells; albedo and the frame; last frame's
+    /// unjittered view-projection.
+    fog: [f32; 4],
+    fog_albedo: [f32; 4],
+    fog_prev: [[f32; 4]; 4],
+    /// Where the medium is: min (w 1 when bounded), max.
+    fog_bounds: [[f32; 4]; 2],
 }
 
 #[repr(C)]
@@ -594,6 +602,10 @@ pub struct Lighting {
     /// Opt-in in-scattering from local lights with a scatter weight
     /// (`Renderer::set_local_lights_scattering`); `None` adds no pass.
     pub volumetric: Option<crate::volumetric::Volumetric>,
+    /// A participating medium in a camera froxel grid, lit by every
+    /// clustered light (shadowed), the sun and the room's ambient light
+    /// (`froxel_fog`); `None` (default) for none.
+    pub froxel_fog: Option<crate::froxel_fog::FroxelFog>,
     /// Opt-in aerial perspective and volumetric clouds (`sky_volume`): the
     /// air integrated with the sky bake's atmosphere instead of the shade
     /// pass's distance fog, a cumulus layer and its shadows. `None` adds no pass.
@@ -735,6 +747,7 @@ impl Default for Lighting {
             wetness: 0.0,
             snow: 0.0,
             volumetric: None,
+            froxel_fog: None,
             sky_volume: None,
             water: std::env::var("KERN_WATER").as_deref() == Ok("1"),
         }
@@ -1201,6 +1214,9 @@ pub struct Renderer {
     /// The live bounce of clustered lights (rsm.rs): its gather, per-view
     /// targets, and the surface voxels in aux (offset, words) once uploaded.
     rsm_gather: Option<crate::rsm::Pipelines>,
+    /// Froxel fog: its injection (compiled with shade) and per-view volumes.
+    fog_inject: Option<wgpu::ComputePipeline>,
+    froxels: std::sync::Mutex<crate::froxel_fog::FroxelVolumes>,
     /// Live reflection probes (reflection_probes.rs): their cube arrays, and
     /// the capture view's cull and raster targets.
     probes: crate::reflection_probes::Probes,
@@ -1466,6 +1482,11 @@ fn shade_layout_bindings() -> Vec<(u32, wgpu::BindingType)> {
                 (26, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 // Reflection probes (reflection_probes.rs), prefiltered.
                 (27, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::CubeArray, multisampled: false }),
+                // Froxel fog (froxel_fog.wgsl): the injected cells (written),
+                // last frame's cells, the integrated volume shade reads.
+                (28, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D3 }),
+                (29, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false }),
+                (30, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false }),
     ]
 }
 
@@ -1891,6 +1912,9 @@ impl Renderer {
         gi.probes = [1.0, 0.0, 0.0, 0.0];
         let gi_buf = self.view_uniform(gpu, UNIFORMS, 0, "probe gi", bytemuck::bytes_of(&gi));
         let (rsm_store, rsm_none) = { let r = self.rsm.lock().unwrap(); (r.fallback_storage.clone(), r.fallback.clone()) };
+        // No fog in a capture (its view would need its own froxels).
+        gi.fog = [0.0; 4];
+        let (fog_store, fog_none) = { let f = self.froxels.lock().unwrap(); (f.fallback_storage.clone(), f.fallback.clone()) };
         for (face, targets) in all.iter().enumerate() {
         let mut u = view_uniform(crate::reflection_probes::face_view_proj(job.capture, face), job.capture, f * 0.5,
             [light.lod_pixels, NEAR, 0.0, CAPACITY as f32], [f, f, 1.0 / f, 1.0 / f], light.alpha_cut);
@@ -1926,6 +1950,9 @@ impl Renderer {
             (25, wgpu::BindingResource::TextureView(&rsm_none)),
             (26, wgpu::BindingResource::TextureView(&rsm_none)),
             (27, wgpu::BindingResource::TextureView(&self.probes.view)),
+            (28, wgpu::BindingResource::TextureView(&fog_store)),
+            (29, wgpu::BindingResource::TextureView(&fog_none)),
+            (30, wgpu::BindingResource::TextureView(&fog_none)),
         ]);
         let binds = [&self.scene_bind, &shade_bind, &self.clustered.bind];
         let t = self.query.as_ref().map(|(qs, _, _)| { names.push("probe shade"); (qs, timestamp_pair(ts)) });
@@ -2582,6 +2609,7 @@ impl Renderer {
             label:Some(entry),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some(entry),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
         });
+        let fog_inject = (!simple_lighting).then(|| rsm_pipe("fog_inject"));
         let rsm_gather = (clustered.rsm.is_some() && !simple_lighting).then(|| crate::rsm::Pipelines {
             gather: rsm_pipe("rsm_gather"), filters: [rsm_pipe("rsm_filter1"), rsm_pipe("rsm_filter2"), rsm_pipe("rsm_filter4")] });
         let voxel_depth_fallback = gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no voxel depth"),
@@ -2809,6 +2837,7 @@ impl Renderer {
             raster_far_sun_depth,
             raster_rsm,
             probes: crate::reflection_probes::Probes::new(gpu), probe_view: std::sync::OnceLock::new(),
+            fog_inject, froxels: std::sync::Mutex::new(crate::froxel_fog::FroxelVolumes::new(gpu)),
             rsm_gather, rsm: std::sync::Mutex::new(crate::rsm::Targets::new(gpu)), bounce_voxels: scene.bounce_voxels, scene_voxels: Default::default(), voxels_uploaded: Default::default(),
             sun_scene_bounds,
             sun_guard_bounds,
@@ -3730,7 +3759,7 @@ impl Renderer {
                     compilation_options: wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()},
                     cache: gpu.pipeline_cache(),
                 });
-                (make(if self.simple_lighting {"shade_simple"}else{"shade"}), make("classify"), self.rsm_gather.as_ref().map(|_| crate::rsm::Pipelines { gather: make("rsm_gather"), filters: [make("rsm_filter1"), make("rsm_filter2"), make("rsm_filter4")] }))
+                (make(if self.simple_lighting {"shade_simple"}else{"shade"}), make("classify"), self.rsm_gather.as_ref().map(|_| crate::rsm::Pipelines { gather: make("rsm_gather"), filters: [make("rsm_filter1"), make("rsm_filter2"), make("rsm_filter4")] }), self.fog_inject.as_ref().map(|_| make("fog_inject")))
             }).map_err(|e| format!("opaque reload: {e}"))?)
         } else { None };
         // No live assignment above or below until all prepares have succeeded.
@@ -3745,7 +3774,7 @@ impl Renderer {
         let rebuilt = shade.is_some() || transparency.is_some() || grass.is_some() || far_grass.is_some() || voxel.is_some();
         snapshot.ensure_current()?;
         if !rebuilt { return Ok(false); }
-        if let Some((pipeline, classify, gather)) = shade { self.shade = pipeline; self.shade_classify = classify; self.rsm_gather = gather; self.shade_text = sources.shade; *self.shade_unlit.lock().unwrap() = None; }
+        if let Some((pipeline, classify, gather, fog)) = shade { self.shade = pipeline; self.shade_classify = classify; self.rsm_gather = gather; self.fog_inject = fog; self.shade_text = sources.shade; *self.shade_unlit.lock().unwrap() = None; }
         if let Some(reload) = transparency { self.transparency.as_mut().unwrap().commit_reload(reload); }
         if let Some(reload) = grass { self.grass.as_mut().unwrap().commit_reload(reload); }
         if let Some(reload) = far_grass { self.far_grass.as_mut().unwrap().commit_reload(reload); }
@@ -3807,6 +3836,7 @@ impl Renderer {
         self.auto_exposure.reset();
         self.sssr.reset();
         self.rsm.lock().unwrap().reset();
+        self.froxels.lock().unwrap().reset();
         self.foliage_planners.lock().unwrap().clear();
         let mut up = self.upscaling.lock().unwrap();
         if let Some(motion) = &up.motion { motion.reset(); }
@@ -5359,6 +5389,14 @@ impl Renderer {
                 let pm = camera_projections.get(vi).copied().unwrap_or_else(|| Mat4::perspective_infinite_reverse_rh(cam.fov_y, view.w as f32 / view.h as f32, cam.near));
                 self.rsm.lock().unwrap().begin(gpu, vi, (w, h), pm * vm)
             });
+            // Froxel fog (froxel_fog.rs): this view's cell volumes and last
+            // frame's camera, while the lighting has a medium.
+            let fog_frame = light.froxel_fog.filter(|f| f.density > 0.0 && !self.simple_lighting && std::env::var("KERN_FROXEL_FOG").as_deref() != Ok("0"))
+                .and_then(|f| f.validated().ok()).map(|f| {
+                let vm = camera_view(*cam, camera_up_axes.get(vi).copied());
+                let pm = camera_projections.get(vi).copied().unwrap_or_else(|| Mat4::perspective_infinite_reverse_rh(cam.fov_y, view.w as f32 / view.h as f32, cam.near));
+                (f, self.froxels.lock().unwrap().begin(gpu, vi, pm * vm, (1.0 / pm.x_axis.x, 1.0 / pm.y_axis.y), f.far_m))
+            });
             let gi_u = GiUniform {
                 vol_origins: canopy.origins,
                 vol_anchors: canopy.anchors,
@@ -5380,6 +5418,10 @@ impl Renderer {
                 rsm_prev: rsm_frame.as_ref().and_then(|f| f.prev_view_proj).unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
                 probes: [0.0, probe_count as f32, 0.0, 0.0],
                 probe_boxes,
+                fog: fog_frame.as_ref().map_or([0.0; 4], |(m, f)| [m.density, m.anisotropy, m.far_m, if f.prev_view_proj.is_some() { 2.0 } else { 1.0 }]),
+                fog_albedo: fog_frame.as_ref().map_or([0.0; 4], |(m, f)| m.albedo.extend((f.frame & 0xff_ffff) as f32).to_array()),
+                fog_prev: fog_frame.as_ref().and_then(|(_, f)| f.prev_view_proj).unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
+                fog_bounds: fog_frame.as_ref().and_then(|(m, _)| m.bounds).map_or([[0.0; 4]; 2], |(lo, hi)| [lo.extend(1.0).to_array(), hi.extend(0.0).to_array()]),
             };
             let gi_buf = self.view_uniform(gpu, vi, 0, "gi", bytemuck::bytes_of(&gi_u));
             // A rebuilt canopy level gets its sky transmittance baked now,
@@ -5717,8 +5759,10 @@ impl Renderer {
             // The live bounce: the gather writes `out` and reads `prev`; shade
             // reads `out` (rsm.wgsl bindings 24..26).
             let (rsm_store_fallback, rsm_fallback) = { let r = self.rsm.lock().unwrap(); (r.fallback_storage.clone(), r.fallback.clone()) };
-            let rsm_shade = [&rsm_store_fallback, &rsm_fallback, rsm_frame.as_ref().map_or(&rsm_fallback, |f| &f.filter[0])];
-            let shade_bind_with = |resources: &mut FrameResources, coarse: &wgpu::TextureView, rsm: [&wgpu::TextureView; 3]| resources.shade.get(
+            let (fog_store_fallback, fog_fallback) = { let f = self.froxels.lock().unwrap(); (f.fallback_storage.clone(), f.fallback.clone()) };
+            let fog_shade = [&fog_store_fallback, &fog_fallback, fog_frame.as_ref().map_or(&fog_fallback, |(_, f)| &f.integrated)];
+            let rsm_shade = [&rsm_store_fallback, &rsm_fallback, rsm_frame.as_ref().map_or(&rsm_fallback, |f| &f.filter[0]), fog_shade[0], fog_shade[1], fog_shade[2]];
+            let shade_bind_with = |resources: &mut FrameResources, coarse: &wgpu::TextureView, rsm: [&wgpu::TextureView; 6]| resources.shade.get(
                 gpu,
                 &self.shade_layout,
                 "cached shade view",
@@ -5748,12 +5792,18 @@ impl Renderer {
                     (25, wgpu::BindingResource::TextureView(rsm[1])),
                     (26, wgpu::BindingResource::TextureView(rsm[2])),
                     (27, wgpu::BindingResource::TextureView(&self.probes.view)),
+                    (28, wgpu::BindingResource::TextureView(rsm[3])),
+                    (29, wgpu::BindingResource::TextureView(rsm[4])),
+                    (30, wgpu::BindingResource::TextureView(rsm[5])),
                 ],
             );
             let shade_bind = shade_bind_with(resources, coarse_target.as_ref().map_or(&self.terrain_coarse_fallback, |t| &t.1), rsm_shade);
             // The gather (out from prev), then the filter: out to a, a to b, b to a.
             let rsm_binds = rsm_frame.as_ref().map(|f| [[&f.out, &f.prev], [&f.filter[0], &f.out], [&f.filter[1], &f.filter[0]], [&f.filter[0], &f.filter[1]]]
-                .map(|[w, r]| shade_bind_with(resources, &self.terrain_coarse_fallback, [w, r, &rsm_fallback])));
+                .map(|[w, r]| shade_bind_with(resources, &self.terrain_coarse_fallback, [w, r, &rsm_fallback, fog_shade[0], fog_shade[1], fog_shade[2]])));
+            // Froxel fog: the cells written, last frame's read.
+            let fog_bind = fog_frame.as_ref().map(|(_, f)| shade_bind_with(resources, &self.terrain_coarse_fallback,
+                [&rsm_store_fallback, &rsm_fallback, &rsm_fallback, &f.cells_out, &f.cells_prev, &fog_fallback]));
             let coarse_binds = coarse_target.as_ref().map(|t| (shade_bind_with(resources, &self.terrain_coarse_fallback, rsm_shade),
                 gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("terrain coarse out"), layout: &self.terrain_coarse_layout,
                     entries: &[wgpu::BindGroupEntry { binding: 32, resource: wgpu::BindingResource::TextureView(&t.1) }] })));
@@ -5763,6 +5813,7 @@ impl Renderer {
                 passes.push(("rsm gather", &p.gather, vec![&self.scene_bind, &binds[0], &self.clustered.bind]));
                 for k in 0..3 { passes.push(("rsm filter", &p.filters[k], vec![&self.scene_bind, &binds[k + 1], &self.clustered.bind])); }
             }
+            if let (Some(p), Some(bind)) = (&self.fog_inject, &fog_bind) { passes.push(("fog inject", p, vec![&self.scene_bind, bind, &self.clustered.bind])); }
             let diagnostic = (light.debug != 0.0 && !self.simple_lighting).then(|| self.shade_diagnostic.get_or_init(|| {
                 let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade diagnostics"),
                     source: wgpu::ShaderSource::Wgsl(self.shade_text.as_str().into()) });
@@ -5848,8 +5899,15 @@ impl Renderer {
                     // The coarse terrain pass runs one invocation per 2x2 pixels.
                     let (dw, dh) = if label == "terrain coarse" { (w.div_ceil(2), h.div_ceil(2)) }
                         else if label == "rsm gather" || label == "rsm filter" { (w.div_ceil(crate::rsm::scale(h)), h.div_ceil(crate::rsm::scale(h))) } else { (w, h) };
-                    pass.dispatch_workgroups(dw.div_ceil(8), dh.div_ceil(8), 1);
+                    if label == "fog inject" {
+                        let g = crate::froxel_fog::GRID;
+                        pass.dispatch_workgroups(g[0], g[1], 1);
+                    } else { pass.dispatch_workgroups(dw.div_ceil(8), dh.div_ceil(8), 1); }
                     drop(pass);
+                    if label == "fog inject" {
+                        let t = self.query.as_ref().map(|(qs, _, _)| { names.push("fog integrate"); (qs, timestamp_pair(&mut ts)) });
+                        self.froxels.lock().unwrap().integrate(&mut enc, &fog_frame.as_ref().unwrap().1, t);
+                    }
                 }
                 if label == "shade" {
                     if let (Some((pipeline, layout)), Some(input)) = (&self.style_finish, &style_input) {

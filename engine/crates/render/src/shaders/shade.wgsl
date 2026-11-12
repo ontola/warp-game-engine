@@ -457,6 +457,13 @@ struct Gi {
     // capture, y the box count; per box capture (w 1 once complete), min, max.
     probes: vec4<f32>,
     probe_boxes: array<vec4<f32>, 24>,
+    // Froxel fog (froxel_fog.wgsl): density, anisotropy, far, 0 off / 1 on /
+    // 2 with last frame's cells; albedo and the frame; last frame's camera.
+    fog: vec4<f32>,
+    fog_albedo: vec4<f32>,
+    fog_prev: mat4x4<f32>,
+    // Where the medium is: min (w 1 when bounded), max.
+    fog_bounds: array<vec4<f32>, 2>,
 };
 // Last frame's resolved radiance (the TAA history), for traced reflections.
 @group(1) @binding(21) var reflection_history: texture_2d<f32>;
@@ -3666,6 +3673,12 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         rad = mix(rad, white, clamp(flash * 0.9, 0.0, 1.0));
     }
     rad = apply_distance_fog(rad, dist, dir);
+    // Froxel fog: the surface seen through the medium, plus what it scatters.
+    if fog_on() {
+        // View depth from the depth buffer (reversed infinite Z: near / depth).
+        let fw = froxel_fog(px, size, view.params.y / max(textureLoad(depth_tex, px, 0), 1e-9));
+        rad = rad * fw.a + fw.rgb;
+    }
     // Component diagnostics retain the exact material, pose and lighting.
     if !SHADE_DIAGNOSTICS {} else if light.sky.z > 0.5 && light.sky.z < 1.5 {
         rad = vec3<f32>(sky_vis) * 6000.0;

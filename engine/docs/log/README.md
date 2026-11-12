@@ -149,6 +149,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [Reflections: light faces out of the mips, 12 November](2026-11-12-reflections-light-faces.md)
 - [Live reflection probes, 12 November](2026-11-12-reflection-probes.md)
 - [Thin bounce voxels, whole-probe captures, shade's texture count, 12 November](2026-11-12-thin-voxels-probe-frames.md)
+- [Froxel fog, 12 November](2026-11-12-froxel-fog.md)
 - [Traced reflections, stage 1, 8 November](2026-11-08-traced-reflections.md)
 - [Low-sun shadow diagnostics, 24 October](sun-shadow-diagnostics.md)
 - [World visibility and cached lighting, 24 October](world-lighting.md)

@@ -145,6 +145,10 @@ Owned by the foliage work; its working checklist is
 - Physical units (lux, EV100, nits), procedural atmosphere with multiple
   scattering, height fog with a finite-distance aerosol layer, irradiance
   volumes for interiors, opt-in [volumetric light](volumetric-light.md).
+- Opt-in [froxel fog](volumetric-light.md#froxel-fog) (`Lighting::froxel_fog`):
+  a medium in a camera froxel grid lit by every shadowed clustered light, the
+  sun and the irradiance volume, temporally filtered, applied in shade. About
+  0.6 ms at 4K. Not yet on glass or in reflection probe captures.
 - Opt-in live reflection probes for rooms ([dynamic-gi.md](dynamic-gi.md#reflection-probes),
   `Renderer::set_reflection_probes`): one box per room, captured by the
   renderer a cube face per frame, box-projected where screen-space
