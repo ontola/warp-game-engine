@@ -30,3 +30,7 @@ ceiling_wall   -6.5,1.65,-13.5           1.5708     0.0        0000 0 1 840,470,
 # Reflections: the pendant over the table, room 3 dark beyond the doorway
 # (Joep's F4: the bulb smeared over the table and into room 3's floor).
 r2_pendant_table -1.5,1.65,-4.8          -0.6       -0.05      0000 0 0 840,470,240,135
+# Reflection probes: room 4's floor by the door as it opens and shuts
+# (room 3's lamps on beyond it).
+r4_probe_open  -6.0,1.65,-12.6           -1.5708    -0.4       1111 1 0 840,700,240,135
+r4_probe_shut  -6.0,1.65,-12.6           -1.5708    -0.4       1111 0 0 840,700,240,135

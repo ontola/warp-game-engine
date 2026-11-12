@@ -39,13 +39,15 @@ host serves it.
   binding); optional features keep their own bind group. Check a change with
   `KERN_WEBGPU_LIMITS=spec` ([renderer switches](renderer-switches.md)).
 - Where it stands: shade, raster and cull fit 8 (cull leaves out the
-  opt-in receiver shadow demand, which adds a ninth); shade needs 20
-  sampled textures (spec 16, but 98 % of Macs and 92 % of all WebGPU
+  opt-in receiver shadow demand, which adds a ninth); shade needs 24
+  sampled textures (the live bounce of clustered lights and the reflection
+  probes added three; they belong in a bind group or texture array of
+  their own before a browser build) (spec 16, but 98 % of Macs and 92 % of all WebGPU
   devices offer 44 or more, web3dsurvey.com, November 2026). The GPU forest
   (trees) still needs 16 storage buffers. Storage buffers on macOS: 94 %
   offer 10 or more, 29 % 16; Firefox (Zen) gives 9, Chrome's software
   adapter (SwiftShader) 10 with 16 textures.
-- With fewer than 8 storage buffers or 21 sampled textures
+- With fewer than 8 storage buffers or 24 sampled textures
   (`render::portable::needed`) the renderer switches to its portable path
   (`render::portable`, `KERN_PORTABLE=1` forces it natively): the
   procedural terrain drawn straight from its patch pool, textured with a

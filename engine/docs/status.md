@@ -145,6 +145,10 @@ Owned by the foliage work; its working checklist is
 - Physical units (lux, EV100, nits), procedural atmosphere with multiple
   scattering, height fog with a finite-distance aerosol layer, irradiance
   volumes for interiors, opt-in [volumetric light](volumetric-light.md).
+- Opt-in live reflection probes for rooms ([dynamic-gi.md](dynamic-gi.md#reflection-probes),
+  `Renderer::set_reflection_probes`): one box per room, captured by the
+  renderer a cube face per frame, box-projected where screen-space
+  reflections miss. Doors and lamps show in them within a fifth of a second.
 - Opt-in live first bounce of moving lights ([reflective shadow maps](interior-light.md#live-bounce-of-moving-lights),
   `ClusteredLight::with_bounce`): a flashlight or swinging lamp lights the
   room around what it hits, tested against a voxel grid of the scene so it

@@ -31,10 +31,10 @@ just past the doorway, under the bulb on screen.
 
 ## Measurements (4K)
 
-| pass | before | after |
-| --- | --- | --- |
-| reflection mips | | 0.15 ms |
-| sssr resolve | | 0.88 ms |
+| pass | after |
+| --- | --- |
+| reflection mips | 0.15 ms |
+| sssr resolve | 0.88 ms |
 
 `--pan 240` at r2_pendant_table: mean frame-to-frame change 0.212 (before
 0.221). Suite: r2_pendant_table and r2_box clean (the table and cabinet
