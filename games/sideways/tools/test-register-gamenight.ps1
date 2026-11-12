@@ -21,7 +21,7 @@ try {
     }
     New-Item -ItemType Directory -Path $dataRoot | Out-Null
     foreach ($relative in @('Sideways.exe', 'CREDITS.md', 'OFL-BarlowCondensed.txt', 'nvngx_dlss.dll',
-        'data/render-baseline.toml', 'data/cars.toml', 'data/car_materials.toml', 'data/sounds.toml',
+        'data/render-baseline.toml', 'data/cars.luau', 'data/car_materials.toml', 'data/sounds.toml',
         'assets/meshes/fir_a_near.kmesh', 'assets/meshes/fir_b_near.kmesh', 'assets/meshes/fir_c_near.kmesh',
         'assets/trees/authored_pine_albedo.png', 'assets/grass/grass_medium_01_alpha_2k.png',
         'assets/sky/sky_2k.hdr', 'engine/assets/sound/ir/mild_exhaust.wav')) {

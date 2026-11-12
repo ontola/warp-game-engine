@@ -23,7 +23,7 @@ pub fn load_sounds(path: Option<&str>) -> Result<Sounds, String> {
     }
 }
 
-/// The sound model id of a car spec (cars.toml model ids).
+/// The sound model id of a car spec (cars.luau model ids).
 pub fn sound_id(car: &Car) -> &'static str {
     let m = &car.spec.model;
     sideways::spec::GRID.iter().copied().find(|g| m.contains(g)).unwrap_or("base")

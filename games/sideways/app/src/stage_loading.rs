@@ -17,6 +17,8 @@ impl Seed {
         Self {settings,rng:race.rng,cars:race.cars.clone(),round:race.round,frame:race.frame,
             stats:race.stats.clone(),events:race.events.clone()}
     }
+    /// The next stage drives these cars (data/cars.luau read again).
+    pub fn with_cars(mut self,cars:Cars)->Self {self.cars=cars;self}
     fn shell(self)->Race {
         // A tiny placeholder uses its own RNG. The real stream is preserved
         // bit-for-bit and new_stage consumes it once, just as the old path did.

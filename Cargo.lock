@@ -5505,9 +5505,9 @@ dependencies = [
  "gdcompat",
  "kern",
  "rapier3d",
+ "script",
  "serde",
  "serde_json",
- "toml",
 ]
 
 [[package]]

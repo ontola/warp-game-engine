@@ -1,6 +1,6 @@
 //! CPU-only, deterministic tyre-tuning comparison on flat gravel.
 //!
-//! Run: cargo run --locked -p sideways --example handling_probe -- [cars.toml] [car ids...]
+//! Run: cargo run --locked -p sideways --example handling_probe -- [cars.luau] [car ids...]
 //! With no arguments, load normal game data and compare Asti and MV6.
 //! Each maneuver settles an original-spec car for 360 ticks before applying
 //! tuning and initializing the same body, wheel and engine speeds. No window,
@@ -356,9 +356,9 @@ mod tests {
     }
 
     fn compare_car(id: &str) {
-        let cars = Cars::load(Some(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/cars.toml"))).unwrap();
+        let cars = Cars::load(Some(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/cars.luau"))).unwrap();
         let source = cars.get(id).unwrap();
-        // Explicit comparisons stay independent of the current cars.toml tune.
+        // Explicit comparisons stay independent of the current cars.luau tune.
         let original = Tuning { name: "original", grip: 1.0, lateral_peak: 1.0 };
         let candidate = Tuning { name: "candidate", grip: 1.12, lateral_peak: 0.80 };
         for maneuver in [Maneuver::LateralImpulse, Maneuver::SteerCountersteer] {

@@ -187,11 +187,12 @@ Controls: left stick steers, RT accelerates, LT brakes/reverses, A handbrake,
 X reset, Y camera, right stick look around, Start menu.
 
 The [r60 handling trial](docs/history/handling-grip-r60.md) selects
-`tyre_grip_scale = 1.12` and `lateral_peak_scale = 0.80` in the `[base]` section
-of [`data/cars.toml`](data/cars.toml), for more grip and earlier lateral bite.
+`tyre_grip_scale = 1.12` and `lateral_peak_scale = 0.80` in the `base` car
+of [`data/cars.luau`](data/cars.luau), for more grip and earlier lateral bite.
 Both accept finite values from 0.5 to 1.5; `1.0/1.0` restores the original
-tuning. With an r60-capable executable, edit the game's data copy and relaunch
-through Gamepad Party to apply changes; New Stage does not reload the file.
+tuning. Edit the game's data copy: the next stage (N, or the end of this one)
+and Gamepad Party Prepare read it again; a file with an error keeps the cars
+from before and says why on screen.
 Flat-gravel tests show about 10% less sideways travel, with subjective driving
 acceptance still pending. Physics remains 120 Hz with four substeps.
 
