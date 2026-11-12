@@ -66,7 +66,7 @@ impl IonFx {
             }
             // Past motes are also registered when joining a charge midway;
             // the GPU samples their current age, rather than restarting them.
-            let mut motes = charge_motes(position, birth, seed(key));
+            let mut motes = charge_motes(position, birth, seed(key), world.strike_specials(strike.owner).ion_radius);
             ground_motes(&mut motes, &world.arena);
             for &mote in &motes {
                 if mote.birth + mote.life > now {
@@ -108,7 +108,7 @@ impl IonFx {
             Some(i) => self.charges.remove(i).motes,
             // A direct debug explosion or snapshot arriving at impact has no
             // observed charge. Reconstruct the same kind of field in that case.
-            None => charge_motes(position, now - CHARGE, burst_seed),
+            None => charge_motes(position, now - CHARGE, burst_seed, radius),
         };
         for streak in detonation_streaks(&motes, now, burst_seed) {
             effects.streak(streak).expect("valid ion detonation streak recipe");
@@ -188,7 +188,7 @@ fn charge_columns(position: Vec3, birth: f32) -> [AdditiveColumn; 1] {
         bottom_radius_scale: 1.0 }]
 }
 
-fn charge_motes(position: Vec3, birth: f32, seed: u64) -> Vec<AdditiveMote> {
+fn charge_motes(position: Vec3, birth: f32, seed: u64, radius: f32) -> Vec<AdditiveMote> {
     let mut rng = Rng(seed);
     let mut motes = Vec::with_capacity(1000);
     for tick in 0..=(CHARGE / MOTE_INTERVAL) as u32 {
@@ -199,7 +199,7 @@ fn charge_motes(position: Vec3, birth: f32, seed: u64) -> Vec<AdditiveMote> {
             let at = tick as f32 * MOTE_INTERVAL + rng.range(0.0, if tick == 0 { 0.45 } else { MOTE_INTERVAL });
             if CHARGE - at < 0.8 { continue; }
             let angle = rng.range(0.0, std::f32::consts::TAU);
-            let dist = rng.unit().sqrt() * growing_guns::ION_RADIUS as f32;
+            let dist = rng.unit().sqrt() * radius;
             let start = position + Vec3::new(angle.cos() * dist, 0.0, angle.sin() * dist);
             let life = CHARGE - at;
             // Appearance and lift-off have independent clocks. Some grains
@@ -307,9 +307,10 @@ mod tests {
 
     #[test]
     fn charge_motes_fade_in_accelerate_and_end_without_rushing_late_births() {
-        let motes = charge_motes(Vec3::ZERO, 10.0, 5);
+        let radius = growing_guns::weapon::Specials::default().ion_radius;
+        let motes = charge_motes(Vec3::ZERO, 10.0, 5, radius);
         assert!((900..1050).contains(&motes.len()));
-        let outer=motes.iter().filter(|m| m.position.length()>growing_guns::ION_RADIUS as f32*0.7).count();
+        let outer=motes.iter().filter(|m| m.position.length()>radius*0.7).count();
         assert!(outer>motes.len()/3, "the whole disc receives motes");
         assert!(motes.windows(2).any(|m| (m[0].birth - m[1].birth).abs() > 0.01));
         let early: Vec<_> = motes.iter().filter(|m| m.birth < 10.45).collect();
