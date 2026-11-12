@@ -315,20 +315,23 @@ impl Characters {
         }).collect();
     }
 
-    /// Turn player `i`'s corpse to lava: its twin takes the death pose.
+    /// Select the lava twin that follows the sinking player.
     /// Returns the twin's instance and mesh (to place), None without room
     /// for one.
     pub fn lava_twin(&mut self, i: usize) -> Option<(usize, usize)> {
-        let actor = self.actors.get_mut(i)?;
-        let twin = self.lava.get_mut(i)?.as_mut()?;
-        // The pose of the current simulated animation (as `kill`), even
-        // when no frame was drawn since the last tick.
-        let model = &self.models[i % self.models.len()];
-        let m = &actor.motion;
-        m.sample(&self.locomotion, 1., &mut twin.palette);
-        model.pose_face(&mut twin.palette, m.idle);
+        let twin = self.lava.get(i)?.as_ref()?;
         self.hands[i] = None;
         Some((twin.handle.instance, twin.handle.mesh))
+    }
+
+    pub(super) fn pose_lava_twin(&mut self, i: usize, [right, left]: [Vec3; 2]) {
+        let Some(twin) = self.lava.get_mut(i).and_then(Option::as_mut) else { return };
+        let actor = &self.actors[i];
+        actor.motion.sample(&self.locomotion, 1., &mut twin.palette);
+        if let Some(arms) = &actor.arms {
+            arms.apply(&mut twin.palette, right, left);
+        }
+        self.models[i % self.models.len()].pose_face(&mut twin.palette, actor.motion.idle);
     }
 
     /// Instance and mesh of every lava twin (to hide).

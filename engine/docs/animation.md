@@ -21,7 +21,7 @@ Growing Guns anchors the weapon to the animated right wrist, pitches around the 
 cargo run -p growing-guns-app -- gun-review --grip --seed 3 --card sniper --clip pistol_run --time 0.24 --pitch 12 --out build/grip-review
 ```
 
-Inspect `clip.png` and `grip.png`. Use `--seed` to inspect another civilian. Omit the card for the base gun. Change time to sample the clip in seconds and pitch to aim in degrees. The support palm turns inward against the attachment. Individual finger closure and a timed reach-to-pick-up action remain separate authoring tasks.
+Inspect `clip.png` and `grip.png`. Use `--seed` to inspect another civilian. Omit the card for the base gun. Change time to sample the clip in seconds and pitch to aim in degrees. The support palm turns inward against the attachment. In the game, the trigger hand takes the floor rifle first and the support hand follows. The pickup switches between open and gripping hand meshes. Individual finger curls remain an authoring task.
 
 Add `--growth --card sniper` to the grip review to capture 25 frames over the two-second weapon morph. The camera stays fixed relative to the character, and clip time stays fixed so the images isolate the grip response.
 

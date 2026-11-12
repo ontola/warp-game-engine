@@ -11,7 +11,7 @@ The [interactive stadium playtest and review](warp-humans.md) use per-view GPU s
 
 ## Character animation
 
-GameNight sessions select Warp Humans for seated players and use their profile shirt and skin colours. Growing Guns layers two-bone wrist contacts over its third-person clips using the shared body crate. The headless grip review renders the authored and adjusted poses. Finger closure and pickup transitions are open. [Authoring and preview](animation.md)
+GameNight sessions select Warp Humans for seated players and use their profile shirt and skin colours. Growing Guns layers two-bone wrist contacts over its third-person clips using the shared body crate. The headless grip review renders the authored and adjusted poses. During a first-person pickup, the hands close in sequence and visible upgrades grow during the lift. Lava victims and nearby players see both hands rise as the body sinks. Individual finger curls remain open. [Authoring and preview](animation.md)
 
 ## Developer captures
 
@@ -26,6 +26,8 @@ Growing Guns' arena are much cheaper (see its README). Always report the real
 resolution, reconstruction mode, sample count and scene with a number.
 
 ## Renderer core
+
+Games can opt into [artist lighting and per-view image effects](materials.md#artist-lighting-and-image-effects). The Painted Meadow example uses both.
 
 - **Default:** cluster LOD, GPU culling, visibility buffer and compute
   shading, TAA, AgX ([rendering overview](rendering.md)).
@@ -143,6 +145,15 @@ Owned by the foliage work; its working checklist is
 - Physical units (lux, EV100, nits), procedural atmosphere with multiple
   scattering, height fog with a finite-distance aerosol layer, irradiance
   volumes for interiors, opt-in [volumetric light](volumetric-light.md).
+- Opt-in live reflection probes for rooms ([dynamic-gi.md](dynamic-gi.md#reflection-probes),
+  `Renderer::set_reflection_probes`): one box per room, captured by the
+  renderer a cube face per frame, box-projected where screen-space
+  reflections miss. Doors and lamps show in them within a fifth of a second.
+- Opt-in live first bounce of moving lights ([reflective shadow maps](interior-light.md#live-bounce-of-moving-lights),
+  `ClusteredLight::with_bounce`): a flashlight or swinging lamp lights the
+  room around what it hits, tested against a voxel grid of the scene so it
+  stays out of other rooms. About 1 ms at 4K. Open: leaks past a thin door
+  within 17 cm of the lit patch.
 - Opt-in [aerial perspective and volumetric clouds](atmosphere.md#aerial-perspective-and-clouds-lightingsky_volume)
   (`Lighting::sky_volume`, on in `terrain_fly`): froxel aerial perspective
   from the sky bake's LUTs, one raymarched cumulus layer with cloud shadows.

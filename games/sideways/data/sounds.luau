@@ -1,0 +1,156 @@
+-- How each car's engine sounds (engine/crates/audio, after engine-sim):
+-- runner pressures, delayed along their pipes, through engine-sim's
+-- synthesizer and a recorded exhaust impulse response from assets/sound/ir.
+--
+-- When an edit applies: at the next stage (the game's sound starts again
+-- with every stage), and `sideways sound` reads it at every run (no cargo
+-- build). A file with an error keeps the sound from before and says why.
+--
+-- Each model is `base` with its own keys on top, key by key (a model's
+-- `synth` or `fluid` table replaces the base one; missing keys take the
+-- defaults).
+
+return {
+	sounds = {
+		-- Every car in play and `sideways sound --race` gets this engine: the
+		-- engine-sim reference (Subaru EJ 3, models.ej3 below). Empty: each car
+		-- its own model.
+		every_car = "ej3",
+
+		-- A Rally2-like 1.6 l turbo inline four.
+		base = {
+			name = "Rally2 inline 4 turbo",
+			cylinders = 4,
+			firing_order = {1, 3, 4, 2},
+			headers = {0.62, 0.60, 0.60, 0.62}, -- m, equal-ish 4-1
+			pipe = 2.9,
+			roughness = {0.14, 0.05},
+			turbo = true,
+			whistle = {1800.0, 7800.0},
+			gear_teeth = 23.0,
+			pops = 0.18,
+			exhaust = 0.8,
+			-- Synthetic layers on top of the exhaust (intake roar, valve ticks, gear
+			-- whine, turbo whistle and blow-off). Off: engine-sim has none, and in play
+			-- they read as stray tones. Turn one up here to try it.
+			intake = 0.0,
+			mechanical = 0.0,
+			whine = 0.0,
+			turbo_level = 0.0,
+			gain = 1.0,
+			-- Runner low-pass (Hz), standing in for engine-sim's 0D runner volume. In
+			-- the fluid model it also keeps the headers' standing waves (about 1 kHz in
+			-- a 0.55 m header) from ringing at idle. Fitted on the ej3 reference.
+			runner_cutoff = 150.0,
+			-- The fluid model's runner pressures run higher: this lines its levels up
+			-- with the pulse model's.
+			fluid_level = 0.6,
+
+			fluid = {
+				runner_cutoff = 150.0,
+			},
+
+			synth = { -- engine-sim's AudioParameters; see crates/audio/src/es.rs
+				-- The impulse response of the reference (ej3). minimal_muffling_03 has a
+				-- hole at 1.6 to 2.5 kHz and a peak at 3 to 4 kHz: hollow and hissy.
+				impulse_response = "minimal_muffling_02.wav",
+				-- Bar of runner pressure to synth units. The leveler only turns down, so
+				-- this sets how much quieter idle is than full throttle (about 12 dB here).
+				input_scale = 2.5,
+				ir_volume = 0.01,
+				noise = 1.0,
+				-- engine-sim's sample jitter: random sub-sample read offsets, which the
+				-- derivative path lifts by 6 dB per octave. It is where the highs come
+				-- from, and they are noise in the reference too. Fitted on the reference's
+				-- 1/3-octave balance at full throttle: 0.8 matches it (within 2 dB up to
+				-- 6 kHz), 0.6 sits about 2 dB under it above 1.2 kHz, 0.05 is 20 dB under.
+				jitter = 0.6,
+				hf_gain = 0.01,
+			},
+		},
+		models = {
+			-- Lancia-like: the classic 2.0 l turbo four, a hard edge at full throttle.
+			asti = {
+				name = "Asti Stradale inline 4 turbo",
+				headers = {0.55, 0.58, 0.58, 0.55},
+				pipe = 3.3,
+			},
+
+			-- Quattro-like five: 1-2-4-5-3, a firing every 144 degrees, the warble of
+			-- half orders (2.5 per revolution), and a lot of anti-lag.
+			mv6 = {
+				name = "MV6 inline 5 turbo",
+				cylinders = 5,
+				firing_order = {1, 2, 4, 5, 3},
+				headers = {0.52, 0.56, 0.60, 0.56, 0.52},
+				pipe = 2.7,
+				roughness = {0.16, 0.06},
+				pops = 0.32,
+				whistle = {1600.0, 7000.0},
+			},
+
+			-- Not minimal_muffling_01: its 2.3 kHz resonance rings ~0.1 s after every
+			-- pulse, a high whistle in play. The base response (02) it is.
+
+			-- Impreza-like flat four: even firing, but 1-3-2-4 into unequal headers,
+			-- so the pulses reach the collector unevenly: the boxer burble.
+			toyama = {
+				name = "Toyama XR flat 4 turbo",
+				firing_order = {1, 3, 2, 4},
+				headers = {0.48, 0.48, 0.98, 0.98},
+				pipe = 3.1,
+				pops = 0.14,
+			},
+
+			-- engine-sim's Subaru EJ25 uses mild_exhaust, but here that is 20 dB
+			-- under the reference above 2 kHz: muffled. The base response it is.
+
+			-- The reference: engine-sim's "Subaru EJ 3" (3_cylinder_boxer.mr), a flat
+			-- four with one cylinder missing. It fires at 0, 180 and 360 degrees, then
+			-- waits 360. Primary pipes of 2, 3 and 4 in plus a 40 in exhaust, with
+			-- per-cylinder sound attenuation 0.9 / 1.0 / 1.1 and minimal_muffling_02.
+			ej3 = {
+				name = "Subaru EJ 3 (engine-sim reference)",
+				cylinders = 3,
+				firing_order = {1, 2, 3},
+				firing_gaps = {180.0, 180.0, 360.0},
+				headers = {0.0508, 0.0762, 0.1016},
+				pipe = 1.016,
+				attenuation = {0.9, 1.0, 1.1},
+				turbo = false,
+				pops = 0.0,
+				intake = 0.0,
+				mechanical = 0.0,
+				whine = 0.0,
+				turbo_level = 0.0,
+				-- Fitted to the reference recording (ej3 analysis: 1/3-octave bands, order
+				-- spectrum, harmonic-to-noise ratio over idle and four full-throttle speeds).
+				runner_cutoff = 150.0,
+
+				synth = {
+					impulse_response = "minimal_muffling_02.wav",
+					-- engine-sim: 1600 * dp[Pa] * audio_volume (2.1) / 3 cylinders / length^2,
+					-- against a leveler target of 30000 (here 0.9): about 2800 per bar.
+					input_scale = 2800.0,
+					jitter = 0.5,
+				},
+
+				fluid = {
+					displacement = 1.84,
+					bore_stroke = 1.26,
+					compression = 11.0,
+					header_diameter = 0.048,
+					pipe_diameter = 0.055,
+					turbine_area = 1.0,
+					collector = 0.3,
+					spark_advance = 30.0,
+					exhaust_open = 125.0,
+					exhaust_duration = 250.0,
+					intake_open = 345.0,
+					intake_duration = 250.0,
+					runner_cutoff = 300.0,
+				},
+			},
+		},
+	},
+}

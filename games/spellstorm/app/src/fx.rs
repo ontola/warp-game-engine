@@ -1650,8 +1650,30 @@ impl Fx {
             }
             // Where lightning strikes: a few sparks and sand thrown up, no
             // ring on the floor (Joep).
-            Ev::Thunder { at, top, c, width, radius } => {
+            Ev::Thunder { at, top, c, width, radius, ref riders } => {
+                let hot = riders.contains(&El::Fire);
                 self.zap(top, at, c, width.max(0.2), 1.2, 1.2, 0.18);
+                if hot {
+                    // A Burning Thunderbolt (Joep: it looked like plain
+                    // thunder): a second, fiery bolt wound round the first,
+                    // embers raining off its length, and a burst of flame
+                    // where it lands that leaves the ground burning.
+                    let fire = el_c(El::Fire);
+                    self.zap(top, at, fire, width.max(0.2) * 1.8, 1.6, 1.0, 0.3);
+                    self.zap(top + Vec3::new(0.4, 0.0, -0.3), at, rgba(1.0, 0.8, 0.35, 1.0), width.max(0.2) * 0.9, 1.4, 1.1, 0.24);
+                    let mut em = bits(El::Fire, 1.0);
+                    em.dir = Vec3::Y;
+                    em.spread = 180.0;
+                    em.v = (0.5, 2.5);
+                    em.sphere = 0.25;
+                    for i in 1..8 {
+                        let f = i as f32 / 8.0;
+                        self.emit(em, top.lerp(at, f), 5);
+                    }
+                    self.crash(at, radius.max(1.4), El::Fire, 1.0, false);
+                    self.flash(at + Vec3::Y * 0.6, fire, radius * 2.0, 0.4);
+                    self.light_pop(at, rgba(1.0, 0.55, 0.2, 1.0), 7.0, radius * 3.5, 0.6);
+                }
                 self.flash(at + Vec3::Y * 0.5, c, radius * 1.6, 0.25);
                 self.light_pop(at, c, 6.0, radius * 3.0, 0.3);
                 self.burst(at, c, 8, 6.0, 0.35, Some(El::Lightning));

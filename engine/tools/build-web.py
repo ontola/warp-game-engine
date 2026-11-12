@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Build terrain_fly for the browser (wasm32 + WebGPU) into build/web.
+"""Build terrain_fly (or another example: --example) for the browser
+(wasm32 + WebGPU) into build/web.
 
 Needs the wasm32-unknown-unknown target (rustup target add
 wasm32-unknown-unknown), clang (for meshoptimizer's C++) and wasm-bindgen-cli
 at the wasm-bindgen version in Cargo.lock (the script says which). --serve
 then serves build/web on http://localhost:8790 (WebGPU needs localhost or
 HTTPS). See engine/docs/browser.md.
+
+    build-web.py --package architecture --example house_view --glb fzk-haus.glb --glb house.glb
+builds the house viewer with those GLBs in assets/ (open ?house=fzk-haus).
 """
 import argparse
 import os
@@ -26,6 +30,9 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.R
 parser.add_argument('--serve', action='store_true', help='serve build/web after building')
 parser.add_argument('--no-build', action='store_true', help='only serve what is there')
 parser.add_argument('--port', type=int, default=8790)
+parser.add_argument('--package', default='app', help='crate of the example (default app)')
+parser.add_argument('--example', default='terrain_fly', help='example to build (default terrain_fly)')
+parser.add_argument('--glb', action='append', default=[], help='a GLB to copy into assets/, with its NAME.light.bin when present (house_view)')
 args = parser.parse_args()
 
 if not args.no_build:
@@ -36,17 +43,27 @@ if not args.no_build:
     if found != version:
         sys.exit(f'wasm-bindgen {version} is needed (found {found}): cargo install wasm-bindgen-cli --version {version} --locked')
     env = dict(os.environ, RUSTFLAGS='--cfg getrandom_backend="wasm_js"')
-    subprocess.run(['cargo', 'build', '--release', '--target', 'wasm32-unknown-unknown', '-p', 'app', '--example', 'terrain_fly'], cwd=ROOT, env=env, check=True)
+    subprocess.run(['cargo', 'build', '--release', '--target', 'wasm32-unknown-unknown', '-p', args.package, '--example', args.example], cwd=ROOT, env=env, check=True)
     OUT.mkdir(parents=True, exist_ok=True)
-    wasm = ROOT / 'target/wasm32-unknown-unknown/release/examples/terrain_fly.wasm'
+    wasm = ROOT / f'target/wasm32-unknown-unknown/release/examples/{args.example}.wasm'
     subprocess.run([bindgen, '--target', 'web', '--no-typescript', '--out-dir', str(OUT / 'pkg'), str(wasm)], check=True)
-    shutil.copy(ROOT / 'engine/crates/app/web/index.html', OUT / 'index.html')
+    page = (ROOT / 'engine/crates/app/web/index.html').read_text().replace('terrain_fly', args.example)
+    (OUT / 'index.html').write_text(page)
     (OUT / 'assets').mkdir(exist_ok=True)
-    for name in TEXTURES:
-        for kind in ('albedo', 'normal'):
-            shutil.copy(ROOT / f'games/sideways/assets/textures/{name}_{kind}.jpg', OUT / 'assets')
-    size = (OUT / 'pkg/terrain_fly_bg.wasm').stat().st_size / 1e6
-    print(f'build/web: terrain_fly_bg.wasm {size:.1f} MB')
+    if args.example == 'terrain_fly':
+        for name in TEXTURES:
+            for kind in ('albedo', 'normal'):
+                shutil.copy(ROOT / f'games/sideways/assets/textures/{name}_{kind}.jpg', OUT / 'assets')
+    for glb in args.glb:
+        shutil.copy(glb, OUT / 'assets')
+        # Its light baked ahead (house_view --bake-out NAME.light.bin), so
+        # the tab doesn't bake on one thread. Hosts that serve no binary
+        # files take base64 NAME.light.txt instead (base64 -w0).
+        light = Path(glb).with_suffix('.light.bin')
+        if light.exists():
+            shutil.copy(light, OUT / 'assets')
+    size = (OUT / f'pkg/{args.example}_bg.wasm').stat().st_size / 1e6
+    print(f'build/web: {args.example}_bg.wasm {size:.1f} MB')
 
 if args.serve:
     class Handler(SimpleHTTPRequestHandler):

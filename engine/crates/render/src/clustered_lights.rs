@@ -45,6 +45,8 @@ const LIGHT_STRIDE: u32 = 5;
 const LTC_VEC4S: u32 = crate::light_face::LTC_VEC4S;
 const FACE_STRIDE: u32 = 6;
 const CELL_STRIDE: u32 = 8;
+/// Reflective shadow map texels (see `Resources::rsm`).
+pub const RSM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
 /// A clustered light: the same light model as `set_local_lights`, plus an
 /// optional shadow.
@@ -58,11 +60,17 @@ pub struct ClusteredLight {
     /// that face's (an area light), its source radius the face's. None: a
     /// sphere of `source_radius_m`.
     pub face: Option<crate::light_face::LightFace>,
+    /// Its first diffuse bounce is gathered live from its shadow tiles
+    /// (reflective shadow maps, see `rsm`). For a light whose bounce is not
+    /// baked into an irradiance volume; it needs a shadow.
+    pub bounce: bool,
 }
 
 impl ClusteredLight {
-    pub fn unshadowed(light: LocalLight) -> Self { Self { light, shadow: None, shape: Default::default(), face: None } }
-    pub fn shadowed(light: LocalLight, id: u64) -> Self { Self { light, shadow: Some(LightShadow { id, exclude: None }), shape: Default::default(), face: None } }
+    pub fn unshadowed(light: LocalLight) -> Self { Self { light, shadow: None, shape: Default::default(), face: None, bounce: false } }
+    pub fn shadowed(light: LocalLight, id: u64) -> Self { Self { light, shadow: Some(LightShadow { id, exclude: None }), shape: Default::default(), face: None, bounce: false } }
+    /// This light with its live first bounce (see `bounce`).
+    pub fn with_bounce(self) -> Self { Self { bounce: true, ..self } }
     /// This light with a cookie and/or angular profile.
     pub fn with_shape(self, shape: crate::light_shapes::LightShape) -> Self { Self { shape, ..self } }
     /// This light with a visible face (see `light_face`).
@@ -225,6 +233,8 @@ pub struct FaceDraw {
 
 impl FaceDraw {
     pub fn layer(&self) -> u32 { crate::headlights::MAX_LIGHTS as u32 + self.tile / TILES_PER_LAYER }
+    /// Its layer in the reflective shadow maps.
+    pub fn rsm_layer(&self) -> u32 { self.tile / TILES_PER_LAYER }
     /// Texel rectangle (x, y, size) in its layer.
     pub fn rect(&self) -> [u32; 3] {
         let per_row = SHADOW_SIZE / TILE;
@@ -382,6 +392,11 @@ pub(crate) struct Resources {
     lights_at: u32,
     bin: Option<(wgpu::ComputePipeline, wgpu::BindGroup)>,
     pub clear_tile: Option<wgpu::RenderPipeline>,
+    /// Reflective shadow maps beside the shadow tiles: per texel the
+    /// surface's albedo (RGB 565) and normal (octahedral 8:8), one layer
+    /// per clustered shadow layer (see `rsm`).
+    pub rsm: Option<wgpu::Texture>,
+    pub rsm_array: wgpu::TextureView,
     faces_offset: u32,
     cells_offset: u32,
     pub atlas: std::sync::Mutex<Atlas>,
@@ -443,9 +458,20 @@ impl Resources {
                 primitive: Default::default(),
                 depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true),
                     depth_compare: Some(wgpu::CompareFunction::Always), stencil: Default::default(), bias: Default::default() }),
-                multisample: Default::default(), fragment: None, multiview_mask: None, cache: gpu.pipeline_cache() })
+                multisample: Default::default(),
+                // The reflective shadow map clears to no surface (0).
+                fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs"), compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format: RSM_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
+                multiview_mask: None, cache: gpu.pipeline_cache() })
         });
-        Self { enabled, budget, layout, bind, uniform, arena, lights_at, bin, clear_tile, faces_offset, cells_offset,
+        let rsm = (enabled && budget.layers > 0).then(|| gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("reflective shadow maps"),
+            size: wgpu::Extent3d { width: SHADOW_SIZE, height: SHADOW_SIZE, depth_or_array_layers: budget.layers }, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format: RSM_FORMAT, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }));
+        let rsm_array = rsm.clone().unwrap_or_else(|| gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no reflective shadow maps"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format: RSM_FORMAT, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }))
+            .create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
+        Self { enabled, budget, layout, bind, uniform, arena, lights_at, bin, clear_tile, rsm, rsm_array,faces_offset, cells_offset,
             atlas: std::sync::Mutex::new(Atlas::new(budget)), lights: Default::default(), stats: Default::default() }
     }
 
@@ -465,7 +491,8 @@ impl Resources {
         if let Some(grid) = grid {
             let mut words: Vec<[f32; 4]> = Vec::with_capacity(lights.len() * LIGHT_STRIDE as usize + plan.faces.len() * 6);
             for (l, record) in lights.iter().zip(&plan.records) {
-                let shape = l.shape.packed();
+                // Bit 16: its bounce is gathered from its shadow tiles (rsm).
+                let shape = l.shape.packed() + if l.bounce && record.is_some() { 65536.0 } else { 0.0 };
                 let face = l.face.map_or([0.0; 4], |f| f.gpu(&l.light));
                 let l = &l.light;
                 let (first, count) = record.map_or((0.0, 0.0), |(f, c)| (f as f32 + 1.0, c as f32));
@@ -515,7 +542,8 @@ impl Resources {
 const CLEAR_TILE: &str = "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;
     return vec4<f32>(p, 1.0, 1.0);
-}";
+}
+@fragment fn fs() -> @location(0) u32 { return 0u; }";
 
 #[cfg(test)]
 mod tests {

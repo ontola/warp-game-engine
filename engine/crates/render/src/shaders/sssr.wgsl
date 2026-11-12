@@ -173,7 +173,10 @@ fn resolve(@builtin(global_invocation_id) id: vec3<u32>) {
         let texel_m = 2.0 * max(prev.w, 1e-3) / (u.params.x * u.size.y);
         let texel_sr = (texel_m / len) * (texel_m / len);
         let lod = clamp(0.5 * log2(sample_sr / max(texel_sr, 1e-12)), 0.0, u.params.y - 1.0);
-        let radiance = textureSampleLevel(history, samp, puv, lod).rgb;
+        // The mips hold colour times the share that is not a light's face
+        // (reflection_mips.rs): divided out, a face reads as its surroundings.
+        let hs = textureSampleLevel(history, samp, puv, lod);
+        let radiance = select(vec3<f32>(0.0), hs.rgb / hs.a, hs.a > 1e-4);
         if any(radiance != radiance) { continue; }
         sum += radiance * w;
         weight += w;

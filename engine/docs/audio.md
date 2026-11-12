@@ -166,8 +166,8 @@ the next block. Nodes whose inputs are all constant this block (random
 values, parameters, values derived from them) are computed once.
 
 `engine` units find their car in the tables given to
-`synth::register_engines(&audio::Sounds)` (a `sounds.toml`, as Sideways
-uses), so a patch can wrap a car's engine with its own layers and filters.
+`synth::register_engines(&audio::Sounds)` (Sideways' `data/sounds.luau`,
+or a TOML file with the same tables), so a patch can wrap a car's engine with its own layers and filters.
 
 ### The mixer
 
@@ -310,7 +310,7 @@ is `audio::cli`):
   spectrogram, so a sound can be judged without listening (by a person or
   a model);
 - `check FILES` validates patches; `units` lists units and helpers;
-- `--engines sounds.toml` registers cars for `engine` units (by default
+- `--engines sounds.luau` (or a .toml) registers cars for `engine` units (by default
   Sideways' table when run from the repository).
 
 `warp-audio render` prepares its selected patch once, including when

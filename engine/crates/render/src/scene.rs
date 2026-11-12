@@ -559,8 +559,46 @@ pub struct Graphics {
     pub instance_groups: bool,
 }
 
+/// Optional game-authored WGSL, installed with this scene.
+#[derive(Clone, Debug, Default)]
+pub struct GameStyle {
+    pub lighting: Option<String>,
+    pub finish: Option<String>,
+}
+impl GameStyle {
+    /// Check a game's shader contracts without opening a window or a GPU.
+    pub fn validate(&self) -> Result<(), String> {
+        fn validate(name: &str, source: &str) -> Result<(), String> {
+            use naga::valid::{Capabilities, ValidationFlags, Validator};
+            let module = naga::front::wgsl::parse_str(source)
+                .map_err(|e| format!("{name}: {}", e.emit_to_string(source)))?;
+            Validator::new(ValidationFlags::all(), Capabilities::default()).validate(&module)
+                .map_err(|e| format!("{name}: {}", e.emit_to_string(source)))?;
+            Ok(())
+        }
+        if let Some(source) = self.lighting_module() {
+            let types = include_str!("shaders/game_lighting_types.wgsl");
+            let probe = "fn check_hook(s: LightingSample) -> StyledLight { return game_lighting(s); }";
+            validate("lighting.wgsl", &format!("{types}\n{source}\n{probe}"))?;
+        }
+        if let Some(source) = &self.finish {
+            let entry = include_str!("shaders/game_finish.wgsl");
+            validate("finish.wgsl", &format!("{entry}\n{source}"))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn lighting_module(&self) -> Option<String> {
+        self.lighting.as_ref().map(|source| {
+            format!("const WRITE_STYLE_TAGS = {};
+{source}", self.finish.is_some())
+        })
+    }
+}
+
 #[derive(Default)]
 pub struct Scene {
+    pub style: GameStyle,
     /// Characters for the minimum renderer (see [`RigidModel`]).
     pub rigid_models: Vec<RigidModel>,
     pub graphics: Graphics,
@@ -653,6 +691,9 @@ pub struct Scene {
     /// Per-probe visibility maps in `aux` (`reserve_probe_visibility`): the
     /// offset of `room_bake::VISIBILITY_SIDE`^2 words per probe.
     pub probe_visibility: Option<usize>,
+    /// The surface voxels a light's live bounce is tested against
+    /// (`reserve_bounce_voxels`, `rsm`): word offset in `aux` and bounds.
+    pub bounce_voxels: Option<(usize, crate::rsm::VoxelBounds)>,
     /// Bullet dents in ROCK surfaces (`reserve_dents`): word offset and capacity.
     pub dents: Option<(usize, usize)>,
     /// 3D unsigned Euclidean distance field for DFAO (`reserve_dfao`): word offset and grid.
@@ -975,6 +1016,21 @@ impl Scene {
         if self.aux.len() + words.len() >= 1 << 24 { return Err("aux too large for an irradiance volume offset".into()); }
         self.irradiance_volume = Some((self.aux.len(), grid));
         self.aux.extend(words);
+        Ok(())
+    }
+
+    /// Reserve a voxel grid of the scene's surfaces over `min..max`
+    /// (`rsm::SceneVoxels`, kept current by `Renderer::update_bounce_voxels`):
+    /// the live bounce of clustered lights (`ClusteredLight::with_bounce`)
+    /// only travels through open space, not through walls. 0.1 m voxels
+    /// keep a 0.3 m wall three voxels thick.
+    pub fn reserve_bounce_voxels(&mut self, min: glam::Vec3, max: glam::Vec3, voxel: f32) -> Result<(), String> {
+        if self.bounce_voxels.is_some() { return Err("bounce voxels are already reserved".into()); }
+        let words = crate::rsm::Voxels::words_for(min, max, voxel);
+        if self.aux.is_empty() { self.aux.push(0); }
+        if self.aux.len() + words >= 1 << 24 { return Err("aux too large for bounce voxels".into()); }
+        self.bounce_voxels = Some((self.aux.len(), crate::rsm::VoxelBounds { min, max, voxel }));
+        self.aux.extend(crate::rsm::Voxels::new(min, max, voxel).pack());
         Ok(())
     }
 

@@ -63,7 +63,8 @@ export type Game = {
 
 export type Hit = { victim: number, attacker: number, damage: number, head: boolean, explosion: boolean }
 export type Kill = { victim: number, attacker: number? }
-export type Gun = { damage: number, fire_interval: number, mag_size: number, reload_time: number, headshot: number, spread: number, recoil: number, bullet_drop: number, bullet_speed: number }
+export type Gun = { damage: number, fire_interval: number, mag_size: number, reload_time: number, headshot: number, spread: number, recoil: number, bullet_drop: number, bullet_speed: number, specials: Specials }
+export type Specials = { grenade_reload: number, cluster_reload: number, air_strike_reload: number, ion_cannon_reload: number, sword_reload: number, teleport_reload: number, echo_delay: number, teleport_range: number, sword_range: number, sword_radius: number, air_strike_radius: number, air_strike_damage: number, ion_radius: number, ion_damage: number }
 export type Exports = {
 	cards: { Card }?,
 	gun: Gun?,

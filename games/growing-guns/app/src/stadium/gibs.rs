@@ -121,7 +121,7 @@ fn volume(mesh: &Primitive) -> f32 {
         .abs()
 }
 
-pub(super) fn unit_shard(material: u32, variant: usize) -> Primitive {
+pub(crate) fn unit_shard(material: u32, variant: usize) -> Primitive {
     let mut mesh = hewn_block(material, 2, 0.30, 0.17, 9 + variant as u32 * 37);
     let shear = [-0.24, 0.16, 0.36][variant];
     for v in &mut mesh.vertices {

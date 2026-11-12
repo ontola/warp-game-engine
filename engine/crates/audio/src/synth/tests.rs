@@ -262,8 +262,8 @@ fn the_godot_master_compresses_hot_mixes() {
 #[cfg(feature = "luau")]
 #[test]
 fn engines_and_tyres_play_as_units() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../games/sideways/data/sounds.toml");
-    let Ok(sounds) = crate::Sounds::load(path) else { return };
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../games/sideways/data/sounds.luau");
+    let sounds = crate::Sounds::load(path).unwrap();
     register_engines(&sounds);
     let car = sounds.ids()[0].clone();
     let src = format!("loop() local rpm = param('rpm', 3000) local thr = param('throttle', 0.8) return engine('{car}', rpm, thr, 0.6) + tyres(20, 4, 1, 1) * 0.25");

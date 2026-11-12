@@ -389,15 +389,12 @@ fn shader(gpu: &Gpu, label: &str, source: String) -> wgpu::ShaderModule {
             source: wgpu::ShaderSource::Wgsl(source.into()),
         })
 }
+fn meadow_draw_source(lighting: Option<&str>, tail: &str) -> String {
+    [crate::wind::shade_source_with(lighting).as_str(), include_str!("shaders/meadow_common.wgsl"),
+        include_str!("shaders/meadow_transition.wgsl"), include_str!("shaders/meadow_render.wgsl"), tail].join("\n")
+}
 pub fn shader_source() -> String {
-    format!(
-        "{}\n{}\n{}\n{}\n{}",
-        crate::wind::shade_source(),
-        include_str!("shaders/meadow_common.wgsl"),
-        include_str!("shaders/meadow_transition.wgsl"),
-        include_str!("shaders/meadow_render.wgsl"),
-        include_str!("shaders/meadow_aggregate.wgsl")
-    )
+    meadow_draw_source(None, include_str!("shaders/meadow_aggregate.wgsl"))
 }
 pub fn generate_source() -> String {
     format!(
@@ -408,14 +405,7 @@ pub fn generate_source() -> String {
     )
 }
 pub fn aggregate_resolve_source() -> String {
-    format!(
-        "{}\n{}\n{}\n{}\n{}",
-        crate::wind::shade_source(),
-        include_str!("shaders/meadow_common.wgsl"),
-        include_str!("shaders/meadow_transition.wgsl"),
-        include_str!("shaders/meadow_render.wgsl"),
-        include_str!("shaders/meadow_aggregate_resolve.wgsl")
-    )
+    meadow_draw_source(None, include_str!("shaders/meadow_aggregate_resolve.wgsl"))
 }
 fn upload_atlas(
     gpu: &Gpu,
@@ -799,7 +789,7 @@ impl MeadowRenderer {
             ],
             wgpu::ShaderStages::VERTEX_FRAGMENT,
         );
-        let skip_hidden_shade=std::env::var("KERN_MEADOW_SKIP_HIDDEN_SHADE").as_deref()==Ok("1");
+        let skip_hidden_shade=scene.style.finish.is_none() && std::env::var("KERN_MEADOW_SKIP_HIDDEN_SHADE").as_deref()==Ok("1");
         if skip_hidden_shade && std::env::var("KERN_MEADOW_VISIBILITY").as_deref()!=Ok("1") {
             return Err("KERN_MEADOW_SKIP_HIDDEN_SHADE requires KERN_MEADOW_VISIBILITY=1".into());
         }
@@ -836,7 +826,7 @@ impl MeadowRenderer {
                 bind_group_layouts: &[Some(scene_layout), Some(&view_layout), Some(&draw_layout)],
                 immediate_size: 0,
             });
-        let ds = shader(gpu, "meadow source draw", shader_source());
+        let ds = shader(gpu, "meadow source draw", meadow_draw_source(scene.style.lighting_module().as_deref(), include_str!("shaders/meadow_aggregate.wgsl")));
         let aggregate_dl = gpu
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -970,7 +960,7 @@ impl MeadowRenderer {
             let rpl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label:Some("meadow aggregate illumination"),bind_group_layouts:&[Some(scene_layout),Some(&view_layout),Some(&resolve_layout)],immediate_size:0,
             });
-            let rs=shader(gpu,"meadow aggregate illumination",aggregate_resolve_source());
+            let rs=shader(gpu,"meadow aggregate illumination", meadow_draw_source(scene.style.lighting_module().as_deref(), include_str!("shaders/meadow_aggregate_resolve.wgsl")));
             let resolve=gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label:Some("meadow aggregate illumination"),layout:Some(&rpl),
                 vertex:wgpu::VertexState {module:&rs,entry_point:Some("meadow_resolve_vs"),compilation_options:Default::default(),buffers:&[]},

@@ -460,7 +460,7 @@ pub fn api_types() -> String {
         let (args, ret) = sig.split_once("):").map(|(a, r)| (format!("{a})"), r.trim().to_string())).unwrap_or((sig.to_string(), "()".into()));
         s += &format!("\t-- {doc}\n\t{k}: {} -> {ret},\n", args.replacen("self", "self: Game", 1));
     }
-    s += "}\n\nexport type Hit = { victim: number, attacker: number, damage: number, head: boolean, explosion: boolean }\nexport type Kill = { victim: number, attacker: number? }\nexport type Gun = { damage: number, fire_interval: number, mag_size: number, reload_time: number, headshot: number, spread: number, recoil: number, bullet_drop: number, bullet_speed: number }\n";
+    s += "}\n\nexport type Hit = { victim: number, attacker: number, damage: number, head: boolean, explosion: boolean }\nexport type Kill = { victim: number, attacker: number? }\nexport type Gun = { damage: number, fire_interval: number, mag_size: number, reload_time: number, headshot: number, spread: number, recoil: number, bullet_drop: number, bullet_speed: number, specials: Specials }\nexport type Specials = { grenade_reload: number, cluster_reload: number, air_strike_reload: number, ion_cannon_reload: number, sword_reload: number, teleport_reload: number, echo_delay: number, teleport_range: number, sword_range: number, sword_radius: number, air_strike_radius: number, air_strike_damage: number, ion_radius: number, ion_damage: number }\n";
     s += &format!("export {}", exports_type());
     s += "export type Card = { id: string, name: string?, text: string?, color: { number }?, firepower: boolean?, mul: { [string]: number }?, add: { [string]: number }?, pick: ((g: Game, p: number) -> ())? }\n";
     s

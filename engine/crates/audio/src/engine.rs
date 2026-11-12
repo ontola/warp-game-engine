@@ -26,7 +26,7 @@ const EXHAUST_LEN: f32 = 250.0;
 const IVO: f32 = 350.0;
 const INTAKE_LEN: f32 = 230.0;
 
-/// How an engine sounds: one table per car in data/sounds.toml.
+/// How an engine sounds: one table per car in Sideways' data/sounds.luau.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EngineSound {

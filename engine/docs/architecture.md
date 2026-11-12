@@ -55,8 +55,50 @@ houses grows its cell from 0.5 m until it fits (1 m for four houses on a
 cargo run --release -p architecture --example street -- out/ house.glb fzk-haus.glb duplex.glb:90 [--rooms 2]
 ```
 
+Surfaces are chosen per patch (triangles sharing edges with normals within
+30 degrees), so a wall face cut around a window stays one surface; curved
+patches (round reveals) get smooth normals and triplanar textures. Meshes
+are welded and built with `SimplificationPolicy::TexturedGeometry`: loose
+triangles made the LOD simplifier fall back to sloppy clustering, which
+shattered a round window frame a few metres away. The ground sits at
+`House::grade`, the underside of the ground floor's slab, never in a
+floor's plane. `ifc_to_glb.py` cuts slab holes (stairwells) out of room
+floors (needs shapely).
+
+Surfaces follow the file where it names them: `ifc_to_glb.py` writes
+`layers` (a build-up, outer to inner as IFC orders it; Revit's plain
+material lists on walls, slabs, roofs and coverings count as one) and
+`materials`. `Surface::from_material_name` reads English, Dutch and German
+names (brick, plaster, concrete, aluminium, wood, tile, grass, roofing;
+studs, insulation and air are skipped as unseen). A layered element's
+outer finish goes on faces looking out, its inner finish inside; a face
+whose front lies in a room volume (spaces carry `height`) is inside. Only
+where nothing is named does the old guess (brick out, plaster in) apply.
+
+`house_view --cam px,py,pz,tx,ty,tz --shot out.png` renders a fixed spot
+for regression stills.
+
 Room shots skip spaces where a standing eye has no ceiling within 6 m
 (roof terraces, the eye above an attic's roof).
+
+## Walking through, natively and in a browser
+
+`house_view` shows one house: Left/Right jump between four outside views
+and one per room, WASD and the mouse move, Up/Down change height.
+
+```sh
+cargo run --release -p architecture --example house_view -- house.glb [--shot out.png] [--view N]
+# bake the light once, on a machine with cores, and ship it with the model
+cargo run --release -p architecture --example house_view -- house.glb --bake-out house.light.bin
+python3 tools/build-web.py --package architecture --example house_view --glb house.glb
+```
+
+The page loads `?house=NAME` or `#NAME` from `assets/NAME.json` (glTF with
+an embedded buffer) or `NAME.glb`, and its light from `NAME.light.bin`
+(`architecture::baked`, checked against the grid and sun), else base64
+`NAME.light.txt` for hosts that serve no binary files. Without either the
+tab bakes on its one thread: minutes for an IFC house (26 to 88 s on four
+native cores at 2048 rays), so always ship the bake.
 
 The plan (hosts, import paths, milestones) is in the project's
 "Warp Architecture: plan" document.

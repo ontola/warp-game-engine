@@ -45,7 +45,17 @@ impl Occluders {
     pub fn from_scene(scene: &Scene, keep: impl Fn(&GpuInstance) -> bool) -> Self {
         let mut tris = Vec::new();
         for inst in &scene.instances {
-            if inst.flags & (FOLIAGE | SKINNED) != 0 || !keep(inst) { continue; }
+            if keep(inst) { instance_triangles(scene, inst, &mut tris); }
+        }
+        Self::from_triangles(tris)
+    }
+}
+
+/// One instance's opaque triangles at full detail, at its transform now
+/// (what `Occluders::from_scene` and `rsm::SceneVoxels` take). Foliage,
+/// grass, alpha-tested, blended and skinned geometry are left out.
+pub(crate) fn instance_triangles(scene: &Scene, inst: &GpuInstance, tris: &mut Vec<[Vec3; 3]>) {
+            if inst.flags & (FOLIAGE | SKINNED) != 0 { return; }
             let r = inst.rows;
             let xf = |p: [f32; 3]| Vec3::new(
                 r[0][0] * p[0] + r[0][1] * p[1] + r[0][2] * p[2] + r[0][3],
@@ -70,10 +80,9 @@ impl Occluders {
                     tris.push(t);
                 }
             }
-        }
-        Self::from_triangles(tris)
-    }
+}
 
+impl Occluders {
     /// Unit cubes under `boxes` (the boxes `sky_occlusion` takes).
     pub fn from_boxes(boxes: &[Affine3A]) -> Self {
         let mut tris = Vec::new();
@@ -103,6 +112,7 @@ impl Occluders {
     }
 
     pub fn triangles(&self) -> usize { self.tris.len() }
+
 
     /// These triangles and `other`'s: a scene with and without a door, say.
     pub fn merged(&self, other: &Occluders) -> Self {

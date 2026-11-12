@@ -13,9 +13,11 @@
 use std::path::PathBuf;
 
 /// The built-in copies of every file that can be read from disk.
-pub(crate) const SHARED_NAMES: [&str; 21] = ["cloud_weather.wgsl", "game_surface.wgsl", "terrain_field.wgsl", "forest_field.wgsl", "terrain_surface.wgsl", "wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "meadow_canopy.wgsl", "foliage_volume.wgsl", "surface_fog.wgsl", "shade.wgsl",
-    "world_visibility.wgsl", "foliage_sun_pages.wgsl", "car_material.wgsl", "grass_lighting.wgsl", "incident_lights.wgsl", "headlights.wgsl", "clustered_lights.wgsl", "car_lamps.wgsl", "procedural_surface.wgsl"];
-const BUILT_IN: [(&str, &str); 25] = [
+pub(crate) const SHARED_NAMES: [&str; 24] = ["game_lighting_types.wgsl", "game_lighting.wgsl", "cloud_weather.wgsl", "game_surface.wgsl", "terrain_field.wgsl", "forest_field.wgsl", "terrain_surface.wgsl", "wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "meadow_canopy.wgsl", "foliage_volume.wgsl", "surface_fog.wgsl", "shade.wgsl",
+    "world_visibility.wgsl", "foliage_sun_pages.wgsl", "car_material.wgsl", "grass_lighting.wgsl", "incident_lights.wgsl", "headlights.wgsl", "clustered_lights.wgsl", "rsm.wgsl", "car_lamps.wgsl", "procedural_surface.wgsl"];
+const BUILT_IN: [(&str, &str); 28] = [
+    ("game_lighting_types.wgsl", include_str!("shaders/game_lighting_types.wgsl")),
+    ("game_lighting.wgsl", include_str!("shaders/game_lighting.wgsl")),
     ("surface_fog.wgsl", include_str!("shaders/surface_fog.wgsl")),
     ("cloud_weather.wgsl", include_str!("shaders/cloud_weather.wgsl")),
     ("terrain_field.wgsl", crate::terrain_field::WGSL),
@@ -37,6 +39,7 @@ const BUILT_IN: [(&str, &str); 25] = [
     ("incident_lights.wgsl", include_str!("shaders/incident_lights.wgsl")),
     ("headlights.wgsl", include_str!("shaders/headlights.wgsl")),
     ("clustered_lights.wgsl", include_str!("shaders/clustered_lights.wgsl")),
+    ("rsm.wgsl", include_str!("shaders/rsm.wgsl")),
     ("transparency.wgsl", include_str!("shaders/transparency.wgsl")),
     ("grass_transition.wgsl", include_str!("shaders/grass_transition.wgsl")),
     ("far_grass.wgsl", include_str!("shaders/far_grass.wgsl")),
@@ -79,10 +82,17 @@ impl Snapshot {
         &self.files[BUILT_IN.iter().position(|(n, _)| *n == name).expect("registered shader")]
     }
     pub(crate) fn shade(&self) -> String {
-        format!("{}\n{}", include_str!("shaders/virtual_member.wgsl"), SHARED_NAMES.map(|name| self.source(name)).join("\n"))
+        self.shade_with(None)
     }
-    pub(crate) fn lighting(&self) -> LightingSources {
-        let shade = self.shade();
+    pub(crate) fn shade_with(&self, lighting: Option<&str>) -> String {
+        let files = SHARED_NAMES.map(|name| match lighting {
+            Some(source) if name == "game_lighting.wgsl" => source,
+            _ => self.source(name),
+        });
+        format!("{}\n{}", include_str!("shaders/virtual_member.wgsl"), files.join("\n"))
+    }
+    pub(crate) fn lighting(&self, lighting: Option<&str>) -> LightingSources {
+        let shade = self.shade_with(lighting);
         let grass_common = include_str!("shaders/grass_common.wgsl");
         LightingSources {
             transparency: format!("{shade}\n{}", self.source("transparency.wgsl")),
@@ -259,12 +269,12 @@ mod tests {
     #[test]
     fn lighting_snapshot_propagates_every_shared_dependency_to_every_consumer() {
         let original = Snapshot::read(None).unwrap();
-        let baseline = original.lighting();
+        let baseline = original.lighting(None);
         for name in ["shade.wgsl", "car_material.wgsl", "car_lamps.wgsl", "grass_lighting.wgsl", "incident_lights.wgsl", "headlights.wgsl", "foliage_volume.wgsl"] {
             let mut changed = original.clone();
             let index = BUILT_IN.iter().position(|(n, _)| *n == name).unwrap();
             changed.files[index].push_str("\n// reload generation marker\n");
-            let next = changed.lighting();
+            let next = changed.lighting(None);
             for (old, new) in consumers(&baseline).into_iter().zip(consumers(&next)) {
                 assert_ne!(old, new, "{name} was omitted from a material consumer");
                 assert!(new.starts_with(&next.shade));
@@ -275,12 +285,12 @@ mod tests {
     #[test]
     fn lighting_snapshot_entrypoint_edits_have_explicit_dependencies() {
         let original = Snapshot::read(None).unwrap();
-        let baseline = original.lighting();
+        let baseline = original.lighting(None);
         for (name, consumer) in [("transparency.wgsl", 1), ("grass_transition.wgsl", 2), ("far_grass.wgsl", 4), ("voxel_forest.wgsl", 5)] {
             let mut changed = original.clone();
             let index = BUILT_IN.iter().position(|(n, _)| *n == name).unwrap();
             changed.files[index].push_str("\n// entrypoint edit\n");
-            let next = changed.lighting();
+            let next = changed.lighting(None);
             for (i, (old, new)) in consumers(&baseline).into_iter().zip(consumers(&next)).enumerate() {
                 assert_eq!(old != new, i == consumer, "{name} dependency {i}");
             }

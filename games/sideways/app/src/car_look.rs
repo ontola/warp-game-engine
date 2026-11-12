@@ -1,11 +1,11 @@
-//! Car materials from Sideways' `data/car_materials.toml`, read at run time:
+//! Car materials from Sideways' `data/car_materials.luau`, read at run time:
 //! paint finish and colours, wear and grime per car, and the other car
 //! parts (tyres, rims, chrome, plastic) by glTF material name. The shader
 //! side is render/src/shaders/car_material.wgsl.
 //!
-//! One car's paint is the `[paint.<name>]` preset it picks, overridden in
-//! turn by `[all]`, `[model.<id>]`, `[car.<index>]` and `--car-set`.
-//! A part (`[part.<name>]`, chosen by `match`) takes the car's grime keys
+//! One car's paint is the `paint.<name>` preset it picks, overridden in
+//! turn by `all`, `model.<id>`, `car[index + 1]` and `--car-set`.
+//! A part (`part.<name>`, chosen by `match`) takes the car's grime keys
 //! and then its own. `--car-set [N:][part.]key=value` changes one key for
 //! all cars, or car N, or one part.
 
@@ -14,7 +14,17 @@ use std::path::{Path, PathBuf};
 use toml::{Table, Value};
 
 /// The checked-in copy, used when the file is not on disk.
-const BUILT_IN: &str = include_str!("../../data/car_materials.toml");
+const BUILT_IN: &str = include_str!("../../data/car_materials.luau");
+
+/// The `materials` table of a car_materials.luau. Its `car` list (car[1]
+/// is car 0) becomes a table keyed "0", "1", ... like `model`.
+pub fn parse(text: &str) -> Result<Table, String> {
+    let mut doc: Table = script::data::read("car_materials.luau", text, "materials")?;
+    if let Some(cars) = doc.get("car").and_then(Value::as_array).cloned() {
+        doc.insert("car".into(), Value::Table(cars.into_iter().enumerate().map(|(i, c)| (i.to_string(), c)).collect()));
+    }
+    Ok(doc)
+}
 
 /// The kinds car_material.wgsl knows (its CAR_* constants).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -70,16 +80,16 @@ pub struct Looks {
 }
 
 impl Looks {
-    /// `path`, or data/car_materials.toml in the game bundle/checkout, or the
+    /// `path`, or data/car_materials.luau in the game bundle/checkout, or the
     /// built-in copy. `overrides` are `--car-set` values.
     pub fn load(path: Option<&Path>, overrides: Vec<String>) -> Result<Looks, String> {
-        let default = sideways::game_assets::data("car_materials.toml");
+        let default = sideways::game_assets::data("car_materials.luau");
         let path = path.map(Path::to_path_buf).or(Some(default).filter(|p| p.exists() || std::env::var_os("SIDEWAYS_GAME_ROOT").is_some()));
         let text = match &path {
             Some(p) => std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?,
             None => BUILT_IN.to_owned(),
         };
-        let looks = Looks { doc: text.parse::<Table>().map_err(|e| format!("car materials: {e}"))?, overrides, path };
+        let looks = Looks { doc: parse(&text)?, overrides, path };
         for o in &looks.overrides {
             looks.parse_override(o)?;
         }
@@ -330,7 +340,7 @@ mod tests {
 
     #[test]
     fn checked_in_file_resolves_for_every_car_and_part() {
-        let looks = Looks { doc: BUILT_IN.parse().unwrap(), overrides: vec![], path: None };
+        let looks = Looks { doc: parse(BUILT_IN).unwrap(), overrides: vec![], path: None };
         let parts: Vec<String> = looks.table(&["part"]).unwrap().keys().cloned().collect();
         for car in 0..8 {
             for part in &parts {

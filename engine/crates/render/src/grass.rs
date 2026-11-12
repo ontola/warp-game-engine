@@ -68,10 +68,12 @@ pub(crate) fn raster_source() -> String {
         concat!(include_str!("shaders/virtual_member.wgsl"), "\n", include_str!("shaders/raster.wgsl"))
     )
 }
-pub(crate) fn shader_source() -> String {
+#[cfg(test)]
+pub(crate) fn shader_source() -> String { shader_source_with(None) }
+fn shader_source_with(lighting: Option<&str>) -> String {
     format!(
         "{}\n{}\n{}",
-        crate::wind::shade_source(),
+        crate::wind::shade_source_with(lighting),
         include_str!("shaders/grass_common.wgsl"),
         crate::shaders::source("grass_transition.wgsl")
     )
@@ -247,7 +249,7 @@ impl GrassRenderer {
                 bind_group_layouts: &[Some(scene_layout), Some(&view_layout), Some(&range_layout),Some(&compact.draw_layout)],
                 immediate_size: 0,
             });
-        let source = shader_source();
+        let source = shader_source_with(scene.style.lighting_module().as_deref());
         // Accepted four-view 4K-output DLSS Quality ABBA comparison. Both
         // paths retain the exact same compacted draw order and coverage;
         // constructor-only opt-out preserves the original measurement path.
@@ -684,7 +686,7 @@ mod tests {
     fn grass_depth_entry_has_only_photo_material_dependencies() {
         // An inexpensive visibility prepass must not accidentally call shared
         // lighting helpers when a shader reload changes the material chain.
-        for source in [shader_source(),crate::shaders::Snapshot::load().unwrap().lighting().grass] {
+        for source in [shader_source(),crate::shaders::Snapshot::load().unwrap().lighting(None).grass] {
             let module=naga::front::wgsl::parse_str(&source).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));
             let info=naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all())
                 .validate(&module).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));
@@ -724,7 +726,7 @@ mod tests {
     }
     #[test]
     fn grass_selection_entrypoint_and_layout_fit_portable_storage_budget() {
-        let sources=[compact_source(),crate::shaders::Snapshot::load().unwrap().lighting().grass_selection];
+        let sources=[compact_source(),crate::shaders::Snapshot::load().unwrap().lighting(None).grass_selection];
         for source in sources {
             let module=naga::front::wgsl::parse_str(&source).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));
             let info=naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all())
