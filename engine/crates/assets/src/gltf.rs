@@ -35,7 +35,7 @@ fn read_uri(base: &Path, uri: &str) -> Result<Vec<u8>, String> {
     std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
+pub fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
     let val = |c: u8| -> Option<u32> { Some(match c { b'A'..=b'Z' => c - b'A', b'a'..=b'z' => c - b'a' + 26, b'0'..=b'9' => c - b'0' + 52, b'+' | b'-' => 62, b'/' | b'_' => 63, _ => return None } as u32) };
     let mut out = Vec::with_capacity(s.len() * 3 / 4);
     let (mut acc, mut bits) = (0u32, 0);
@@ -92,7 +92,14 @@ pub fn load(scene: &mut Scene, path: &Path) -> Result<Model, String> {
 /// transforms applied), in depth-first order.
 pub fn read(scene: &mut Scene, path: &Path) -> Result<Document, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let g = ::gltf::Gltf::from_slice_without_validation(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    read_bytes(scene, &bytes, path)
+}
+
+/// [`read`] from the file's bytes (a GLB fetched by a web page): `path`
+/// names it (texture keys, errors) and its directory holds any external
+/// buffers and images (a GLB has none).
+pub fn read_bytes(scene: &mut Scene, bytes: &[u8], path: &Path) -> Result<Document, String> {
+    let g = ::gltf::Gltf::from_slice_without_validation(bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     let base = path.parent().unwrap_or(Path::new("."));
     let mut buffers = Vec::new();
     for b in g.buffers() {

@@ -2417,7 +2417,7 @@ fn rock_surface(l: i32, p: vec3<f32>, n: vec3<f32>, tw: vec3<f32>) -> RockSurfac
 struct Bark { albedo: vec3<f32>, normal: vec3<f32>, rough: f32, ao: f32 }
 
 fn bark_hash(p: vec3<i32>) -> f32 {
-    var x = bitcast<u32>(p.x) * 0x8da6b343u ^ bitcast<u32>(p.y) * 0xd8163841u ^ bitcast<u32>(p.z) * 0xcb1ab31fu;
+    var x = (bitcast<u32>(p.x) * 0x8da6b343u) ^ (bitcast<u32>(p.y) * 0xd8163841u) ^ (bitcast<u32>(p.z) * 0xcb1ab31fu);
     x = (x ^ (x >> 16u)) * 0x7feb352du;
     x = (x ^ (x >> 15u)) * 0x846ca68bu;
     return f32(x >> 8u) / 16777216.0;

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """IFC to glTF (GLB) for Warp Architecture.
 
-    pip install ifcopenshell
+    pip install ifcopenshell shapely
     python3 ifc_to_glb.py house.ifc house.glb
 
 Every building element becomes one glTF node (world coordinates, IFC's
@@ -11,7 +11,8 @@ Z-up turned into glTF's Y-up: (x, y, z) -> (x, z, -y)) with the extras the
 more than 20 % transparent is named "glass" and blended. A space is
 exported as its floor only (its downward faces turned up, 2 mm above the
 slab), like the AtomicBuildings export, so rooms get a floor finish and a
-camera without their volume hiding everything. Openings, the site and other
+camera without their volume hiding everything; holes in the slab under it
+(stairwells) are cut out of that floor. Openings, the site and other
 non-physical entities are left out.
 """
 import json
@@ -22,6 +23,8 @@ import sys
 
 import ifcopenshell
 import ifcopenshell.geom
+import shapely
+from shapely.geometry import Polygon
 
 SKIP = {"IfcOpeningElement", "IfcSite", "IfcAnnotation", "IfcVirtualElement", "IfcGrid", "IfcSpatialZone"}
 
@@ -60,59 +63,81 @@ def convert(src, dst):
             materials.append(m)
         return material_index[key]
 
+    def emit(element, cls, by_style):
+        primitives = []
+        for key, tris in by_style.items():
+            flat = [c for t in tris for p in t for c in p]
+            nrm = [c for t in tris for c in normal(t) * 3]
+            count = len(flat) // 3
+            lo = [min(flat[i::3]) for i in range(3)]
+            hi = [max(flat[i::3]) for i in range(3)]
+            accessors.append({"bufferView": add_view(struct.pack(f"<{len(flat)}f", *flat), 34962), "componentType": 5126,
+                              "count": count, "type": "VEC3", "min": lo, "max": hi})
+            p_acc = len(accessors) - 1
+            accessors.append({"bufferView": add_view(struct.pack(f"<{len(nrm)}f", *nrm), 34962), "componentType": 5126,
+                              "count": count, "type": "VEC3"})
+            prim = {"attributes": {"POSITION": p_acc, "NORMAL": len(accessors) - 1}}
+            if key == "floor":
+                if "floor" not in material_index:
+                    material_index["floor"] = len(materials)
+                    materials.append({"name": "floor", "pbrMetallicRoughness": {"baseColorFactor": [0.6, 0.45, 0.3, 1], "metallicFactor": 0, "roughnessFactor": 0.6}})
+                prim["material"] = material_index["floor"]
+            elif key is not None:
+                prim["material"] = key
+            primitives.append(prim)
+        if primitives:
+            meshes.append({"primitives": primitives})
+            extras = {"ifcClass": cls, "ifcGuid": element.GlobalId}
+            if cls == "IfcSpace" and (element.LongName or element.Name):
+                extras["usage"] = element.LongName or element.Name
+            nodes.append({"name": element.Name or cls, "mesh": len(meshes) - 1, "extras": extras})
+
     skipped = 0
+    # Holes in slabs (stairwells) as plan outlines with their height range,
+    # and spaces' floors: a floor is the space's footprint minus the holes
+    # of the slab it stands on, else it covers the stairwell.
+    holes, spaces = [], []
     while True:
         shape = it.get()
         element = ifc.by_id(shape.id)
         cls = element.is_a()
+        g = shape.geometry
+        v = g.verts
+        pos = [(v[i], v[i + 2], -v[i + 1]) for i in range(0, len(v), 3)]
+        faces = [tuple(g.faces[i:i + 3]) for i in range(0, len(g.faces), 3)]
+        if cls == "IfcOpeningElement" and any(r.RelatingBuildingElement.is_a("IfcSlab") for r in element.VoidsElements):
+            outline = plan_outline([[pos[k] for k in f] for f in faces])
+            if outline is not None:
+                ys = [p[1] for p in pos]
+                holes.append((outline, min(ys), max(ys)))
         if cls in SKIP:
             skipped += 1
+        elif cls == "IfcSpace":
+            floor = [[pos[k] for k in f] for f in faces]
+            floor = [t for t in floor if normal(t)[1] < -0.9]
+            if floor:
+                spaces.append((element, floor))
         else:
-            g = shape.geometry
-            v = g.verts
-            pos = [(v[i], v[i + 2], -v[i + 1]) for i in range(0, len(v), 3)]
-            faces = [tuple(g.faces[i:i + 3]) for i in range(0, len(g.faces), 3)]
             by_style = {}
             for f, mid in zip(faces, g.material_ids):
                 tri = [pos[k] for k in f]
-                if cls == "IfcSpace":
-                    n = normal(tri)
-                    if n[1] > -0.9:
-                        continue  # only the floor
-                    tri = [(p[0], p[1] + 0.002, p[2]) for p in reversed(tri)]
-                    key = "floor"
-                else:
-                    key = material(g.materials[mid]) if mid >= 0 and mid < len(g.materials) else None
+                key = material(g.materials[mid]) if mid >= 0 and mid < len(g.materials) else None
                 by_style.setdefault(key, []).append(tri)
-            primitives = []
-            for key, tris in by_style.items():
-                flat = [c for t in tris for p in t for c in p]
-                nrm = [c for t in tris for c in normal(t) * 3]
-                count = len(flat) // 3
-                lo = [min(flat[i::3]) for i in range(3)]
-                hi = [max(flat[i::3]) for i in range(3)]
-                accessors.append({"bufferView": add_view(struct.pack(f"<{len(flat)}f", *flat), 34962), "componentType": 5126,
-                                  "count": count, "type": "VEC3", "min": lo, "max": hi})
-                p_acc = len(accessors) - 1
-                accessors.append({"bufferView": add_view(struct.pack(f"<{len(nrm)}f", *nrm), 34962), "componentType": 5126,
-                                  "count": count, "type": "VEC3"})
-                prim = {"attributes": {"POSITION": p_acc, "NORMAL": len(accessors) - 1}}
-                if key == "floor":
-                    if "floor" not in material_index:
-                        material_index["floor"] = len(materials)
-                        materials.append({"name": "floor", "pbrMetallicRoughness": {"baseColorFactor": [0.6, 0.45, 0.3, 1], "metallicFactor": 0, "roughnessFactor": 0.6}})
-                    prim["material"] = material_index["floor"]
-                elif key is not None:
-                    prim["material"] = key
-                primitives.append(prim)
-            if primitives:
-                meshes.append({"primitives": primitives})
-                extras = {"ifcClass": cls, "ifcGuid": element.GlobalId}
-                if cls == "IfcSpace" and (element.LongName or element.Name):
-                    extras["usage"] = element.LongName or element.Name
-                nodes.append({"name": element.Name or cls, "mesh": len(meshes) - 1, "extras": extras})
+            emit(element, cls, by_style)
         if not it.next():
             break
+    for element, floor in spaces:
+        y = sum(p[1] for t in floor for p in t) / (3 * len(floor))
+        outline = plan_outline(floor)
+        for hole, lo, hi in holes:
+            if lo - 0.3 <= y <= hi + 0.3:
+                outline = outline.difference(hole)
+        tris = []
+        for t in shapely.constrained_delaunay_triangles(outline).geoms if not outline.is_empty else []:
+            a, b, c = [(x, y + 0.002, z) for x, z in list(t.exterior.coords)[:3]]
+            tris.append([a, b, c] if normal([a, b, c])[1] > 0 else [a, c, b])
+        if tris:
+            emit(element, "IfcSpace", {"floor": tris})
     doc = {"asset": {"version": "2.0", "generator": "warp architecture ifc_to_glb.py",
                      "extras": {"source": src.split("/")[-1], "schema": ifc.schema}},
            "scene": 0, "scenes": [{"nodes": list(range(len(nodes)))}], "nodes": nodes, "meshes": meshes,
@@ -126,6 +151,13 @@ def convert(src, dst):
         + struct.pack("<II", len(blob), 0x004E4942) + bytes(blob)
     open(dst, "wb").write(out)
     print(f"{dst}: {len(nodes)} elements, {len(materials)} materials, {skipped} skipped, {len(out) // 1024} KiB")
+
+
+def plan_outline(tris):
+    """The union of triangles seen from above, as a shapely (multi)polygon in (x, z)."""
+    parts = [Polygon([(p[0], p[2]) for p in t]) for t in tris]
+    parts = [q for q in parts if q.is_valid and q.area > 1e-8]
+    return shapely.unary_union(parts).buffer(0) if parts else None
 
 
 def normal(t):

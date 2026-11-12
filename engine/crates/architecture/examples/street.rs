@@ -39,7 +39,9 @@ fn main() -> Result<(), String> {
         houses.push((name, house));
     }
     let (min, max) = houses.iter().fold((Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)), |(a, b), (_, h)| (a.min(h.min), b.max(h.max)));
-    architecture::add_ground(&mut scene, (min + max) * 0.5, 0.0);
+    // One ground for the street, under the lowest slab so no floor meets it.
+    let grade = houses.iter().map(|(_, h)| h.grade()).fold(0.0f32, f32::min);
+    architecture::add_ground(&mut scene, (min + max) * 0.5, grade);
     let grid = architecture::probe_grid(min, max);
     scene.reserve_irradiance_volume(grid)?;
     println!("street {:.0} m, probes {:?} ({})", max.x - min.x, grid.dims, grid.count());

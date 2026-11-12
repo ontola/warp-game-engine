@@ -241,12 +241,15 @@ dependencies = [
 name = "architecture"
 version = "0.1.0"
 dependencies = [
+ "app",
  "assets",
  "glam 0.31.1",
  "gltf",
  "image",
  "render",
  "serde_json",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
