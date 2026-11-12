@@ -96,7 +96,7 @@ python3 tools/build-web.py --package architecture --example house_view --glb hou
 The page loads `?house=NAME` or `#NAME` from `assets/NAME.json` (glTF with
 an embedded buffer) or `NAME.glb`, and its light from `NAME.light.bin`
 (`architecture::baked`, checked against the grid and sun), else base64
-`NAME.light.txt` for hosts that serve no binary files. Without either the
+`NAME.light.txt` for hosts that serve no binary files. The bake file holds the sky and sun transport, separation planes, DDGI visibility maps, probe offsets and reach (version 2, `architecture::baked::Baked`): without visibility, light leaked along every wall and ceiling edge of thin IFC walls. Without either the
 tab bakes on its one thread: minutes for an IFC house (26 to 88 s on four
 native cores at 2048 rays), so always ship the bake.
 

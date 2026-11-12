@@ -12,7 +12,7 @@ use app::{Buttons, Controls, Draw, Frame, Game};
 use architecture::{sun::Site, House};
 use glam::Vec3;
 use render::hud::{FontFace, HudDrawList, TextAlign, TextRun};
-use render::irradiance_volume::{Grid, Probe};
+use render::irradiance_volume::Grid;
 use render::{primitives, Camera, Lighting, Scene};
 use std::path::Path;
 
@@ -38,7 +38,7 @@ struct View {
     pitch: f32,
     light: Lighting,
     /// The room bake, made before the window opens, uploaded on the first frame.
-    bake: Option<(Vec<Probe>, Vec<[f32; 4]>)>,
+    bake: Option<architecture::baked::Baked>,
     uploaded: bool,
     name: String,
     /// One reflection box per room; the nearest the renderer can hold are set each frame.
@@ -62,6 +62,9 @@ impl View {
         house.add_ground(&mut scene);
         let grid: Grid = house.probe_grid();
         scene.reserve_irradiance_volume(grid)?;
+        // DDGI visibility, probes moved out of walls and per-probe reach:
+        // without them light leaks through thin IFC walls and slabs.
+        scene.reserve_probe_visibility()?;
         let mut light = Lighting::default();
         light.fog_start = 1000.0;
         light.fog_end = 2000.0;
@@ -69,16 +72,15 @@ impl View {
         light.sun_dir = Site { latitude: 52.37, longitude: 4.9, north_deg: 180.0 }.sun_dir(105, 9.5);
         light.auto_exposure = Some(render::AutoExposure { min_ev100: 0.0, max_ev100: 16.0, ..Default::default() });
         let occluders = render::room_bake::Occluders::from_scene(&scene, |_| true);
-        let shipped = shipped.map(|b| architecture::baked::from_bytes(b, &grid, light.sun_dir));
+        let shipped = shipped.map(|b| architecture::baked::Baked::from_bytes(b, &grid, light.sun_dir));
         if let Some(Err(e)) = &shipped { log(&format!("{name}: shipped light not used ({e}), baking")); }
-        let (probes, planes) = match shipped {
-            Some(Ok(b)) => (b.probes, b.planes),
-            _ => (render::room_bake::bake(&grid, &occluders, light.sun_dir, &render::room_bake::Settings { sky_rays: rays, ..Default::default() })?,
-                  render::room_bake::separation_planes(&grid, &occluders)),
+        let baked = match shipped {
+            Some(Ok(b)) => b,
+            _ => architecture::baked::Baked::bake(&grid, &occluders, light.sun_dir, &render::room_bake::Settings { sky_rays: rays, ..Default::default() })?,
         };
         let mut shots = house.exterior_shots();
         shots.extend(house.room_shots());
-        let mut view = View { scene, shots, shot: 0, pos: Vec3::ZERO, yaw: 0.0, pitch: 0.0, light, bake: Some((probes, planes)), uploaded: false, name: name.to_string(), rooms: house.reflection_boxes(),
+        let mut view = View { scene, shots, shot: 0, pos: Vec3::ZERO, yaw: 0.0, pitch: 0.0, light, bake: Some(baked), uploaded: false, name: name.to_string(), rooms: house.reflection_boxes(),
             solid: house.solid, tap: None, walk_to: None };
         view.go(0);
         Ok(view)
@@ -163,8 +165,10 @@ impl Game for View {
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
         if !std::mem::replace(&mut self.uploaded, true) {
             frame.set_scene(&self.scene, &self.light);
-            if let Some((probes, planes)) = self.bake.take() {
-                frame.renderer().ok_or("no renderer")?.set_sky_sun_separated(frame.gpu, &probes, &planes)?;
+            if let Some(b) = self.bake.take() {
+                let renderer = frame.renderer().ok_or("no renderer")?;
+                renderer.set_sky_sun_separated(frame.gpu, &b.probes, &b.planes)?;
+                renderer.set_probe_visibility(frame.gpu, &b.visibility, &b.offsets, &b.reach)?;
             }
         }
         // Live reflection probes for the rooms nearest the eye.
@@ -235,9 +239,9 @@ fn main() -> Result<(), String> {
     let shipped = arg("--bake-in").map(|p| std::fs::read(&p).map_err(|e| format!("{p}: {e}"))).transpose()?;
     let mut view = View::new(&bytes, &name, 2048, shipped.as_deref())?;
     if let Some(out) = arg("--bake-out") {
-        let (probes, planes) = view.bake.as_ref().ok_or("no bake")?;
+        let b = view.bake.as_ref().ok_or("no bake")?;
         let grid = view.scene.irradiance_volume.map(|(_, g)| g).ok_or("no grid")?;
-        std::fs::write(&out, architecture::baked::to_bytes(&grid, view.light.sun_dir, probes, planes)).map_err(|e| format!("{out}: {e}"))?;
+        std::fs::write(&out, b.to_bytes(&grid, view.light.sun_dir)).map_err(|e| format!("{out}: {e}"))?;
         if arg("--shot").is_none() { return Ok(()); }
     }
     if let Some(n) = arg("--view").and_then(|v| v.parse().ok()) { view.go(n); }
