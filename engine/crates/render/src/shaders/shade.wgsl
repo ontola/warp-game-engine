@@ -1339,6 +1339,9 @@ fn unpack_sky_transport(word:u32)->vec3<f32> {
     return vec3<f32>(f32(word&511u),f32((word>>9u)&511u),f32((word>>18u)&511u))*exp2(f32((word>>27u)&15u)-23.0);
 }
 struct IrradianceSample { value: vec4<f32>, emission: vec3<f32> }
+// The last visibility-tested lookup's coverage: the share of its trilinear
+// weight (over probes outside geometry) whose probes see the surface.
+var<private> irradiance_coverage: f32;
 fn unpack_emission(word: u32) -> vec3<f32> {
     return vec3<f32>(f32(word&511u),f32((word>>9u)&511u),f32((word>>18u)&511u))*exp2(f32(word>>27u)-24.0);
 }
@@ -1476,6 +1479,7 @@ fn irradiance_sample_at(p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> Irrad
             value+=vec3<f32>(dot(v,n2),bounce_value,sun_value)*blend_weight*valid;
             valid_weight+=blend_weight*valid;
         }
+        irradiance_coverage=select(0.0,valid_weight/loose_weight,loose_weight>0.0);
         if valid_weight<1e-3*max(loose_weight,1e-5) {
             // Every probe is across a wall: use those merely outside
             // geometry, and if none is, call the point unlit (inside a
@@ -1525,7 +1529,7 @@ fn jittered_irradiance(p: vec3<f32>, px: vec2<i32>, visibility_n: vec3<f32>, n: 
     // space the move still blurs the cell steps.
     var q = p + irradiance_jitter(px, visibility_n);
     let o = u32(gi.params.w);
-    if FEATURE_IRRADIANCE && o != 0u && aux_word(o + 7u) >= 4u {
+    if FEATURE_IRRADIANCE && o != 0u && aux_word(o + 7u) >= 4u && gi.trace.w <= 0.5 {
         let origin = vec3<f32>(aux_f32(o), aux_f32(o + 1u), aux_f32(o + 2u));
         let cell = aux_f32(o + 3u);
         let dims = vec3<u32>(aux_word(o + 4u), aux_word(o + 5u), aux_word(o + 6u));
@@ -1542,8 +1546,19 @@ fn jittered_irradiance(p: vec3<f32>, px: vec2<i32>, visibility_n: vec3<f32>, n: 
             if buried { q = origin + clamp((q - origin) / cell, c + 0.001, c + 0.999) * cell; }
         }
     }
+    irradiance_coverage = 1.0;
     let moved = irradiance_sample_at(q, p, n);
     if moved.value.w < 0.0 { return irradiance_sample(p, n); }
+    if gi.trace.w > 0.5 && any(q != p) {
+        // DDGI: the moved lookup speaks for p only with the share of its
+        // weight whose probes see p; renormalised, a move through a wall
+        // (a corner's next wall, the moved cell holding only the probes
+        // outdoors) would turn their faint visibility into full daylight.
+        // The rest comes from the unmoved lookup, chosen stochastically
+        // (TAA averages it). On an open wall the share is 1: the blur stays
+        // symmetric and cell boundaries leave no trace.
+        if trace_hash(px, light.fog_sampling.x * 16.0 + 29.0).x >= irradiance_coverage { return irradiance_sample(p, n); }
+    }
     return moved;
 }
 
