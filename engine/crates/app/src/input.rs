@@ -148,6 +148,27 @@ fn shape(v: f32, t: &Tuning) -> f32 {
 #[derive(Default)]
 struct Keyboard { keys: HashSet<KeyCode>, mouse: u32, look: [f64; 2], pressed: u32 }
 
+/// Touch screens, for first-person walking: a touch that starts in the
+/// left 40 % of the screen is a thumb stick (it moves, from where the
+/// thumb landed), any other touch drags the view, and a short touch that
+/// barely moves is a tap: a pointer press at that spot (tap to walk,
+/// buttons). Several fingers at once: one stick, any number of drags.
+#[derive(Default)]
+struct Touches {
+    /// (finger, where it landed, where it is now).
+    stick: Option<(u64, [f32; 2], [f32; 2])>,
+    /// Look drags: finger, last position, landed at, landed when, moved too far for a tap.
+    drags: Vec<(u64, [f32; 2], [f32; 2], web_time::Instant, bool)>,
+    /// Drag since the last tick, in pixels.
+    look: [f32; 2],
+    /// Screen height and short side in pixels, for the look rate and the stick's reach.
+    height: f32,
+    short: f32,
+}
+
+/// The thumb stick's reach in pixels on a screen whose short side is `short`.
+pub fn touch_stick_radius(short: f32) -> f32 { (short * 0.09).max(40.0) }
+
 pub struct Devices {
     pub tuning: Tuning,
     pub keyboard_enabled: bool,
@@ -158,6 +179,7 @@ pub struct Devices {
     pub mouse_captured: bool,
     pointer: Pointer,
     kb: Keyboard,
+    touches: Touches,
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     gilrs: Option<Gilrs>,
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
@@ -173,7 +195,7 @@ impl Devices {
         let gilrs = Gilrs::new().map_err(|e| eprintln!("gamepads unavailable: {e}")).ok();
         #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
         let pads = gilrs.as_ref().map_or(Vec::new(), |g| g.gamepads().map(|(id, _)| (id, 0)).collect());
-        Self { tuning: Tuning::default(), keyboard_enabled, pointer_enabled: false, mouse_captured: false, pointer: Pointer::default(), kb: Keyboard::default(),
+        Self { tuning: Tuning::default(), keyboard_enabled, pointer_enabled: false, mouse_captured: false, pointer: Pointer::default(), kb: Keyboard::default(), touches: Touches::default(),
             #[cfg(not(any(target_os = "android", target_arch = "wasm32")))] gilrs,
             #[cfg(not(any(target_os = "android", target_arch = "wasm32")))] pads,
             #[cfg(not(any(target_os = "android", target_arch = "wasm32")))] rumble: Default::default() }
@@ -241,6 +263,53 @@ impl Devices {
 
     pub fn mouse_motion(&mut self, dx: f64, dy: f64) {
         if self.mouse_captured { self.kb.look[0] += dx; self.kb.look[1] += dy; }
+    }
+
+    /// A finger on a touch screen (`id` per finger) at `pos` in physical
+    /// pixels on a `size` screen. See [`Touches`]: the stick and drags reach
+    /// the keyboard player's `mv` and `look`, a tap the pointer.
+    pub fn touch(&mut self, id: u64, phase: winit::event::TouchPhase, pos: [f32; 2], size: [u32; 2]) {
+        use winit::event::TouchPhase::*;
+        let t = &mut self.touches;
+        t.height = size[1].max(1) as f32;
+        t.short = size[0].min(size[1]).max(1) as f32;
+        let slop = (size[0].min(size[1]) as f32 * 0.02).max(8.0);
+        match phase {
+            Started => {
+                if t.stick.is_none() && pos[0] < size[0] as f32 * 0.4 { t.stick = Some((id, pos, pos)); }
+                else { t.drags.push((id, pos, pos, web_time::Instant::now(), false)); }
+            }
+            Moved => {
+                if let Some(s) = t.stick.as_mut().filter(|s| s.0 == id) { s.2 = pos; }
+                if let Some(d) = t.drags.iter_mut().find(|d| d.0 == id) {
+                    t.look[0] += pos[0] - d.1[0];
+                    t.look[1] += pos[1] - d.1[1];
+                    d.1 = pos;
+                    d.4 |= (pos[0] - d.2[0]).hypot(pos[1] - d.2[1]) > slop;
+                }
+            }
+            Ended | Cancelled => {
+                if t.stick.is_some_and(|s| s.0 == id) { t.stick = None; }
+                if let Some(i) = t.drags.iter().position(|d| d.0 == id) {
+                    let d = t.drags.remove(i);
+                    if phase == Ended && !d.4 && d.3.elapsed().as_secs_f32() < 0.35 {
+                        self.pointer.moved |= self.pointer.position != Some(pos);
+                        self.pointer.position = Some(pos);
+                        self.pointer.pressed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The touch stick to draw, if a thumb is on it: where it landed, where
+    /// the knob is (within reach), and the reach, in physical pixels.
+    pub fn touch_stick(&self, size: [u32; 2]) -> Option<([f32; 2], [f32; 2], f32)> {
+        let (_, from, to) = self.touches.stick?;
+        let r = touch_stick_radius(size[0].min(size[1]) as f32);
+        let d = [to[0] - from[0], to[1] - from[1]];
+        let k = (d[0].hypot(d[1]) / r).max(1.0);
+        Some((from, [from[0] + d[0] / k, from[1] + d[1] / k], r))
     }
 
     /// The mouse wheel in lines (positive up). Also while the mouse is
@@ -327,9 +396,21 @@ impl Devices {
             let mut mv = [key(KeyCode::KeyD) - key(KeyCode::KeyA), key(KeyCode::KeyW) - key(KeyCode::KeyS)];
             let len = (mv[0] * mv[0] + mv[1] * mv[1]).sqrt();
             if len > 1.0 { mv = [mv[0] / len, mv[1] / len]; }
+            // Touch: the stick adds to WASD, drags to the mouse. A drag
+            // across the screen's height turns the view 1.6 radians.
+            let touch = &mut self.touches;
+            if let Some((_, from, to)) = touch.stick {
+                let r = touch_stick_radius(touch.short);
+                let d = [(to[0] - from[0]) / r, (from[1] - to[1]) / r];
+                mv = [(mv[0] + d[0]).clamp(-1.0, 1.0), (mv[1] + d[1]).clamp(-1.0, 1.0)];
+                let len = (mv[0] * mv[0] + mv[1] * mv[1]).sqrt();
+                if len > 1.0 { mv = [mv[0] / len, mv[1] / len]; }
+            }
+            let rate = 1.6 / touch.height.max(1.0);
+            let drag = std::mem::take(&mut touch.look);
             devices.push((Device::Keyboard, Controls {
                 mv,
-                look: [k.look[0] as f32 * t.mouse, -k.look[1] as f32 * t.mouse],
+                look: [k.look[0] as f32 * t.mouse + drag[0] * rate, -k.look[1] as f32 * t.mouse - drag[1] * rate],
                 aim: [0.0; 2],
                 triggers: [f32::from(held & Buttons::LEFT_TRIGGER != 0), f32::from(held & Buttons::RIGHT_TRIGGER != 0)],
                 held: Buttons(held),
@@ -434,7 +515,7 @@ mod tests {
     #[test]
     fn pointer_edges_are_consumed_once_and_menu_clicks_do_not_fire() {
         let mut d = Devices { tuning: Tuning::default(), keyboard_enabled: true, pointer_enabled: false, mouse_captured: false,
-            pointer: Pointer::default(), kb: Keyboard::default(), gilrs: None, pads: vec![], rumble: Default::default() };
+            pointer: Pointer::default(), kb: Keyboard::default(), touches: Touches::default(), gilrs: None, pads: vec![], rumble: Default::default() };
         d.cursor(Some([30.0, 40.0]));
         d.mouse_button(MouseButton::Left, ElementState::Pressed);
         d.mouse_button(MouseButton::Left, ElementState::Released);
