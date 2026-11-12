@@ -362,7 +362,7 @@ impl Hud {
         // World flashes belong beneath gameplay feedback and every interactive UI.
         if f.phoenix[0] > 0.003 { self.screen_tint(d,rect, [1.0, 1.0, 1.0, f.phoenix[0]], clip,false); }
         if f.flash[0] > 0.003 { self.screen_tint(d,rect, [1.0, 0.96, 0.88, f.flash[0]], clip,false); }
-        if world.in_audience(i) && p.offer.is_none() { return; }
+        if world.awaiting_rifle(i) && p.offer.is_none() { return; }
         let picking = p.offer.is_some() || f.exit.is_some();
         // Artillery operators retain the normal scene colours.
         if !picking {

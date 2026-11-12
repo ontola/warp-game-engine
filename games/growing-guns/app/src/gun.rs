@@ -201,6 +201,19 @@ pub struct Build { pub parts: Vec<Part>, pub bolt_travel: f32, pub minigun: bool
 pub struct Contacts { pub primary: Vec3, pub magazine: Vec3, pub foregrip: Vec3, pub extension: f32 }
 
 impl Build {
+    /// Clearance below the receiver when resting on the gun's left side.
+    pub fn resting_height(&self) -> f32 {
+        self.parts.iter().map(|p| {
+            let m = p.xf.matrix3;
+            let radius = match p.shape {
+                Shape::Box => 0.5 * (m.x_axis.x.abs() + m.y_axis.x.abs() + m.z_axis.x.abs()),
+                Shape::Grip | Shape::GripPanel => 0.023,
+                _ => m.x_axis.x.hypot(m.z_axis.x) + 0.5 * m.y_axis.x.abs(),
+            };
+            radius - p.xf.translation.x
+        }).fold(0.0, f32::max)
+    }
+
     /// Gun-space wrists. The primary wrist sits behind the pistol grip. The
     /// support wrist follows the visible magazine and transfers onto the foregrip.
     pub fn wrist_contacts(&self) -> Contacts {

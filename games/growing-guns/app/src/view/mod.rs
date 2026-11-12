@@ -5,6 +5,7 @@
 //! (crate::stadium). This module owns the scene and the physics they share,
 //! routes each tick's events, and sets the lighting and cameras.
 mod dust;
+mod pov_arms;
 mod arena;
 pub(crate) mod characters;
 mod character_ragdoll;
@@ -43,8 +44,6 @@ pub const COOP_VIEW_PLAYERS: usize = 24;
 const MAX_LIGHTS: usize = render::headlights::MAX_LOCAL_LIGHTS;
 /// Of those, the most that ion strikes and blasts take, so the floodlights
 /// and the lava keep theirs.
-/// The flashlight's place from the eye: left and down (Godot `FLASHLIGHT_OFFSET`).
-const FLASHLIGHT_OFFSET: [f32; 2] = [0.32, -0.18];
 /// Flashlight strength, candela (`GG_FLASHLIGHT` overrides).
 const FLASHLIGHT_CD: f32 = 60_000.0;
 fn flashlight_cd() -> f32 { std::env::var("GG_FLASHLIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(FLASHLIGHT_CD) }
@@ -143,7 +142,8 @@ impl Visuals {
         // so players joining or bot counts changing never rebuild the GPU renderer.
         let drawn = world.players.len().max(if world.coop { COOP_VIEW_PLAYERS } else { 8 });
         players.reserve_dynamic(&mut scene, drawn, seed, colors);
-        let guns = Guns::reserve(&mut scene, drawn);
+        let mut guns = Guns::reserve(&mut scene, drawn);
+        guns.reserve_arms(&mut scene, seed, colors);
         let things = things::Things::reserve(&mut scene);
         // Gore lives in the dynamic range too: uploaded with it every frame.
         players.reserve_gore(&mut scene, world.arena.seed);
@@ -494,21 +494,17 @@ impl Visuals {
         }).collect()
     }
 
-    pub fn flashlight_exclusions(&self, world: &World) -> Vec<(u32,u32)> {
-        flashlight_owner_ranges(world, self.players.first)
+    pub fn flashlight_exclusions(&self) -> Vec<(u32,u32)> {
+        flashlight_owner_ranges(&self.guns.lamps, self.players.first)
     }
 
-    /// Every living player's flashlight in a blackout round (Godot
-    /// `player.gd _build_flashlight`): a narrow shadowed beam from the off
-    /// hand, low and to the left of the eye, along the aim.
-    pub fn flashlights(world: &World, prev: &[Pose], alpha: f32) -> Vec<render::headlights::SpotLight> {
-        world.players.iter().enumerate().filter(|(_, p)| p.alive).take(render::headlights::MAX_LIGHTS).map(|(i, p)| {
-            let at = pose(world, i, prev, alpha).pos + Vec3::Y * p.eye_height();
-            let dir = growing_guns::look_dir(p.yaw, p.pitch);
-            let side = dir.cross(Vec3::Y).normalize_or(Vec3::X);
-            let up = side.cross(dir);
+    /// The same warm beam follows the lens from the floor to the player's rifle.
+    pub fn flashlights(&self) -> Vec<render::headlights::SpotLight> {
+        self.guns.lamps.iter().flatten().take(render::headlights::MAX_LIGHTS).map(|lens| {
             render::headlights::SpotLight {
-                position: at - side * FLASHLIGHT_OFFSET[0] + up * FLASHLIGHT_OFFSET[1], direction: dir, up,
+                position: lens.translation.into(),
+                direction: lens.transform_vector3(Vec3::NEG_Z).normalize(),
+                up: lens.transform_vector3(Vec3::Y).normalize(),
                 intensity_cd: Vec3::new(1.0, 0.97, 0.88) * flashlight_cd(), range_m: 40.0,
                 inner_angle_radians: 12f32.to_radians(), outer_angle_radians: 20f32.to_radians(),
             }
@@ -661,11 +657,17 @@ pub fn camera(world: &World, i: usize, prev: &[Pose], alpha: f32) -> Camera {
     }
     // Sniper zoom (Godot FOV 30 instead of 75).
     let fov_y = if p.zooming { 30f32.to_radians() } else { FOV_Y };
-    Camera { pos: eye, target: eye + growing_guns::look_dir(drawn.yaw, drawn.pitch), fov_y, near: 0.05 }
+    // Follow the landing place on the way down. Manual look stays additive and
+    // the camera is back on the player's aim when firing becomes available.
+    let pitch = if world.awaiting_rifle(i) {
+        let glance = (std::f32::consts::PI * world.entrance_flight().powf(1.6)).sin();
+        (drawn.pitch - 0.72 * glance).clamp(-1.55, 1.55)
+    } else { drawn.pitch };
+    Camera { pos: eye, target: eye + growing_guns::look_dir(drawn.yaw, pitch), fov_y, near: 0.05 }
 }
 
-fn flashlight_owner_ranges(world: &World, first: usize) -> Vec<(u32, u32)> {
-    world.players.iter().enumerate().filter(|(_, p)| p.alive)
+fn flashlight_owner_ranges(lamps: &[Option<glam::Affine3A>], first: usize) -> Vec<(u32, u32)> {
+    lamps.iter().enumerate().filter(|(_, lens)| lens.is_some())
         .take(render::headlights::MAX_LIGHTS)
         .map(|(i, _)| ((first + i * players::PARTS) as u32, players::PARTS as u32)).collect()
 }
@@ -676,16 +678,11 @@ mod camera_tests {
 
     #[test]
     fn flashlight_owners_keep_player_indices_when_dead_players_are_skipped() {
-        let mut world = World::new(3, &[false; 4]);
-        for p in &mut world.players { p.alive = true; }
-        world.players[1].alive = false;
-        world.players[1].ghost = true;
-        let ranges = flashlight_owner_ranges(&world, 100);
+        let lens = Some(glam::Affine3A::IDENTITY);
+        let ranges = flashlight_owner_ranges(&[lens, None, lens, lens], 100);
         let part_count = players::PARTS as u32;
         assert_eq!(ranges, vec![(100, part_count), (100 + 2 * part_count, part_count), (100 + 3 * part_count, part_count)]);
-        assert_eq!(ranges.len(), Visuals::flashlights(&world, &[], 1.0).len());
-        for p in &mut world.players { p.alive = false; }
-        assert!(flashlight_owner_ranges(&world, 100).is_empty());
+        assert!(flashlight_owner_ranges(&[None; 4], 100).is_empty());
     }
 
     #[test]

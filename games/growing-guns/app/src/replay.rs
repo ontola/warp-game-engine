@@ -10,7 +10,7 @@ use std::{collections::VecDeque, io::{Read, Write}, path::{Path, PathBuf}, sync:
 // a time budget, not 120 arbitrarily expensive ticks in a single UI frame.
 const SEEK_BUDGET: std::time::Duration = std::time::Duration::from_millis(6);
 const SCRUB_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(80);
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const CHUNK_TICKS: usize = 300;
 const MAX_CHUNKS: usize = 64; // Guard against rapid arena-reset commands.
 const MAX_TICKS: usize = 2400; // 35–40 seconds, including visual warmup.
@@ -132,17 +132,30 @@ impl Tape {
         for (k, c) in self.chunks.iter().enumerate() { if i < c.frames.len() { return Ok((k, i)); } i -= c.frames.len(); }
         Err(format!("Frame {index} is outside this replay ({} frames)", self.len()))
     }
-    fn sample(&self, index: usize) -> Result<Sample, String> { let (c, f) = self.locate(index)?; decode(&self.chunks[c].frames[f]) }
+    fn sample(&self, index: usize) -> Result<Sample, String> { let (c, f) = self.locate(index)?; self.decode_frame(&self.chunks[c].frames[f]) }
     fn arena(&self, index: usize) -> Result<Arena, String> { let (c, _) = self.locate(index)?; decode(&self.chunks[c].arena) }
+    fn decode_frame(&self, bytes: &[u8]) -> Result<Sample, String> {
+        if self.version == 2 {
+            // V2 placed the breakage record immediately after the snapshot.
+            // Insert an empty length-prefixed list at that boundary.
+            let (_, tail) = postcard::take_from_bytes::<Snapshot<()>>(bytes).map_err(|e| e.to_string())?;
+            let mut frame = bytes[..bytes.len() - tail.len()].to_vec();
+            frame.extend(encode(&Vec::<glam::Vec3>::new())?);
+            frame.extend_from_slice(tail);
+            return decode(&frame);
+        }
+        decode(bytes)
+    }
+
     fn validate(&self) -> Result<(), String> {
-        if self.version != VERSION || self.tick_hz != TICK_HZ { return Err("Unsupported replay version or tick rate".into()); }
+        if !(2..=VERSION).contains(&self.version) || self.tick_hz != TICK_HZ { return Err("Unsupported replay version or tick rate".into()); }
         if self.chunks.is_empty() || self.len() > MAX_TICKS || self.chunks.len() > MAX_CHUNKS || self.chunks.iter().any(|c| c.frames.is_empty() || c.frames.len() > CHUNK_TICKS) { return Err("Invalid replay history".into()); }
         self.validate_mark(self.mark)?;
         if self.size.iter().any(|v| *v == 0 || *v > 8192) { return Err("Invalid replay resolution".into()); }
         for c in &self.chunks {
             let _: Arena = decode(&c.arena)?;
             for f in &c.frames {
-                let s: Sample = decode(f)?;
+                let s = self.decode_frame(f)?;
                 if s.slots.is_empty() || s.slots.len() > 4 || s.slots.iter().any(|i| *i >= s.state.players.len()) { return Err("Invalid replay player views".into()); }
                 crate::sky::SkyChoice::parse(&s.sky)?;
             }
@@ -600,6 +613,25 @@ mod tests {
         let mut bad = saved.clone(); bad.version += 1; assert!(bad.validate().is_err());
         assert!(saved.validate_mark(Mark { frame: saved.len(), alpha: 1.0 }).is_err());
         assert!(saved.validate_mark(Mark { frame: 0, alpha: f32::NAN }).is_err());
+    }
+
+    #[test]
+    fn v2_replay_keeps_the_fields_after_the_snapshot() {
+        let mut world = World::new(3, &[false, true]);
+        world.release_cage();
+        let mut recorder = Recorder::default();
+        recorder.push(&world, &[1, 0], "noon", true);
+        let mut tape = recorder.tape(1., [960, 540]).unwrap();
+        let sample = tape.sample(0).unwrap();
+        let mut legacy = encode(&sample.state).unwrap();
+        // In V3 an empty landing_spots takes one byte at the end of the snapshot.
+        assert_eq!(legacy.pop(), Some(0));
+        legacy.extend(encode(&(sample.broken, sample.slots, sample.sky, sample.tilt)).unwrap());
+        tape.version = 2;
+        let restored = tape.decode_frame(&legacy).unwrap();
+        assert_eq!(restored.slots, [1, 0]);
+        assert_eq!(restored.sky, "noon");
+        assert_eq!(encode(&restored.state).unwrap(), encode(&world.snapshot()).unwrap());
     }
 
     #[test]
