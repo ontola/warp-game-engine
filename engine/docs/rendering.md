@@ -195,11 +195,12 @@ to the headlights and local lights, which still work.
   redraw first, then the oldest tiles, at most
   `KERN_CLUSTERED_SHADOW_FACES` (12) a frame, so a caster that moves past a
   still lamp is a few frames late. `exclude` names the lamp's own
-  instances. Lights with a `source_radius_m` of 0.3 m or more (a bounce
-  light standing in for a lit patch of floor) get soft shadows: PCSS, an
-  8-tap blocker search and 16 compare taps over the penumbra (source radius
-  times receiver minus blocker over blocker, at most 24 texels); smaller
-  lights keep a 4-tap filter. The source radius also sizes the specular
+  instances. Every light with a `source_radius_m` gets soft shadows from
+  its real size: PCSS, an 8-tap blocker search and 16 bilinear compare taps
+  over the penumbra (source radius times receiver minus blocker over
+  blocker, between 1.5 and 24 texels: a contact shadow is filtered, not
+  stepped); a point light keeps a 4-tap filter. A 2 cm flashlight's
+  shadow of a door jamb 1 m away on a wall 4 m away is 6 cm soft. The source radius also sizes the specular
   highlight (a sphere light, Karis 2013's representative point); a light
   with a rectangle or disc face integrates it over the face (LTC area
   light). Cookies,
