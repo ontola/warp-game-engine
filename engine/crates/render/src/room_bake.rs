@@ -21,12 +21,13 @@ use glam::{Affine3A, Vec3};
 
 /// World-space triangles in a bounding volume hierarchy, for baking only.
 pub struct Occluders {
-    tris: Vec<[Vec3; 3]>,
-    nodes: Vec<Node>,
+    // room_bake_gpu.rs uploads both.
+    pub(crate) tris: Vec<[Vec3; 3]>,
+    pub(crate) nodes: Vec<Node>,
 }
 
 #[derive(Clone, Copy)]
-struct Node { lo: Vec3, hi: Vec3, first: u32, count: u32 }
+pub(crate) struct Node { pub lo: Vec3, pub hi: Vec3, pub first: u32, pub count: u32 }
 
 const LEAF: usize = 4;
 
@@ -216,7 +217,7 @@ impl Default for Settings {
 /// Fibonacci sphere directions. Every probe uses the same set: a small
 /// opening is then missed or hit alike by neighbouring probes and the light
 /// changes smoothly between them; per-probe rotations make blotches.
-fn sphere(rays: usize) -> Vec<Vec3> {
+pub(crate) fn sphere(rays: usize) -> Vec<Vec3> {
     (0..rays).map(|i| {
         let y = 1. - 2. * (i as f32 + 0.5) / rays as f32;
         let a = i as f32 * 2.3999632;
@@ -232,7 +233,7 @@ const AXES: [Vec3; 6] = [Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y, Vec3::Z, Ve
 /// bright things (a doorway, a sun patch) together, which showed as blotches
 /// at the probe spacing. Rotated sets turn that into independent noise the
 /// smoothing passes average away.
-fn probe_rotation(i: usize) -> glam::Quat {
+pub(crate) fn probe_rotation(i: usize) -> glam::Quat {
     let mut h = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03;
     let mut next = || { h ^= h >> 33; h = h.wrapping_mul(0xFF51_AFD7_ED55_8CCD); h ^= h >> 29; (h >> 40) as f32 / (1u64 << 24) as f32 };
     // Shoemake's uniform random unit quaternion.

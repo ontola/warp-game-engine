@@ -232,6 +232,18 @@ The bake runs on the CPU's cooking threads: 3.2 s for the look scene
 (5,184 probes, 2,048 + 512 rays, 3 bounces) on 4 cloud cores. Shading reads
 eight probes per pixel inside the grid.
 
+The transport (sky and sun, and the lamps' bounce) also runs on the GPU,
+`room_bake_gpu::bake` and `bake_lights` with a `Placement`: the same BVH,
+ray sets, per-probe rotations, gathers and smoothing as compute passes
+(`shaders/room_bake.wgsl`, eight storage buffers), agreeing with the CPU
+bake to 1e-7 of the brightest value (`room_bake_gpu` test). A first pass
+traces, per probe and bounce ray, which of the eight probes around its hit
+see it and whether the sun and each lamp do, into one word (4 bytes per
+probe and ray); every bounce and lamp then traces only the ray itself.
+14,000 probes, 2,048 + 512 rays, 3 bounces: 0.16 s on an RTX 5070 Ti
+against 1.3 s on the CPU. `interior_rooms` bakes its two door states this
+way (`ROOMS_CPU_BAKE=1` for the CPU).
+
 ## Look scene
 
 ```
@@ -245,8 +257,8 @@ Other variants (`none`, `vis`, `diffuse`, `sun`, `sep`) show the older
 
 ## Not yet
 
-- The bake is on the CPU and takes seconds; a GPU bake would make it
-  interactive and allow larger buildings.
+- Probe placement, visibility maps, reach and separation planes are still
+  baked on the CPU (about 4 s of `interior_rooms`' 5 s startup bake).
 - No Luau call yet: games written in Luau cannot ask for a room bake.
 - Probes are 0.5 m apart, so the bake has no contact darkening of its own.
   Corners, creases and the floor under furniture darken through the
