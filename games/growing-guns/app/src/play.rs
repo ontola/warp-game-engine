@@ -1524,7 +1524,7 @@ impl app::Game for Gg {
                 if want != crate::graphics::get() { self.use_graphics(want); }
                 Ok(format!("graphics {}", want.name()))
             }
-            "cage" => { self.world.release_cage(); Ok("cage open".into()) }
+            "cage" => { self.world.release_cage(); Ok("round entrance skipped".into()) }
             "rematch" => { self.world.restart_match(); self.new_arena(); Ok("rematch".into()) }
             "extend" => { self.world.extend_match(); Ok(format!("first to {}", self.world.rounds_to_win)) }
             "lua" => {

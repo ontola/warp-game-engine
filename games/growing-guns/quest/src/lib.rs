@@ -53,7 +53,7 @@ pub struct QuestGame { world: World, revision: u32, room_applied: Vec3 }
 impl QuestGame {
     #[wasm_bindgen(constructor)]
     pub fn new(seed: u32) -> Self {
-        let mut world = World::new_with(seed as u64, &[false, true, true, true], |w| {
+        let world = World::new_with(seed as u64, &[false, true, true, true], |w| {
             w.cards = Arc::new(deck());
             w.modifier_chance = 0.;
             w.rounds_to_win = 3;
@@ -61,7 +61,6 @@ impl QuestGame {
             // Pickups with unrepresented special visuals are outside the demo.
             w.rules.pickup_rate = 0.;
         });
-        world.release_cage();
         Self { world, revision: 1, room_applied: Vec3::ZERO }
     }
 
@@ -112,7 +111,6 @@ impl QuestGame {
     pub fn restart(&mut self) {
         self.room_applied = Vec3::ZERO;
         self.world.restart_match();
-        self.world.release_cage();
         self.revision += 1;
     }
 }
@@ -165,6 +163,7 @@ mod tests {
     #[test]
     fn tracked_shot_uses_hand_not_head_and_desktop_path_resets_it() {
         let mut g = QuestGame::new(3);
+        g.world.release_cage();
         g.world.bots_paused = true;
         let p = &mut g.world.players[0];
         p.pos = Vec3::new(0.,60.,0.); p.yaw = 0.; p.pitch = 0.;
@@ -181,6 +180,7 @@ mod tests {
     #[test]
     fn controller_cannot_fire_from_the_far_side_of_cover() {
         let mut g = QuestGame::new(3);
+        g.world.release_cage();
         g.world.bots_paused = true;
         g.world.players[0].pos = Vec3::new(0.,60.,0.);
         g.world.arena.grid = kern::collide::BoxGrid::new(vec![
@@ -195,6 +195,7 @@ mod tests {
     fn invalid_controller_pose_does_not_poison_the_simulation() {
         for direction in [Vec3::ZERO, Vec3::splat(f32::NAN), Vec3::splat(f32::MAX)] {
             let mut g = QuestGame::new(3);
+            g.world.release_cage();
             g.world.players[0].pos = Vec3::new(0.,60.,0.);
             g.world.step_tracked(&[Input { fire: true, ..Default::default() }],
                 &[Some(TrackedAim { offset: Vec3::ZERO, direction })]);
@@ -204,6 +205,7 @@ mod tests {
     #[test]
     fn no_tracked_input_preserves_desktop_simulation() {
         let mut a = QuestGame::new(12).world;
+        a.release_cage();
         let mut b = a.clone();
         for _ in 0..120 {
             a.step(&[Input { fire: true, ..Default::default() }]);

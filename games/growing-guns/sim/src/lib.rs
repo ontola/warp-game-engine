@@ -197,7 +197,7 @@ pub struct Player {
     pub phoenix: Option<(Vec3, u32)>,
     /// Sky drop: falling at this speed until the floor.
     pub launching: Option<f32>,
-    /// In the spawn cage: no movement, no damage.
+    /// Scripted entrance or round pause: no player movement or damage.
     pub frozen: bool,
     pub lava_accum: f64,
     /// RMB cooldown (Godot `grenade_cooldown`).
@@ -440,7 +440,7 @@ pub struct Snapshot {
     pub phase: Phase,
     #[serde(default)]
     pub modifier: Option<Modifier>,
-    /// Round-start cage countdown for remote presentation; clients never step.
+    /// Round entrance countdown for remote presentation; clients never step.
     #[serde(default)]
     pub cage_left: Option<f32>,
     pub players: Vec<Player>,

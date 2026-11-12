@@ -6,7 +6,6 @@
 //! routes each tick's events, and sets the lighting and cameras.
 mod dust;
 mod arena;
-mod cages;
 pub(crate) mod characters;
 mod character_ragdoll;
 pub(crate) mod effects;
@@ -97,7 +96,6 @@ pub struct Visuals {
     fx: EffectsView,
     pub(crate) blast_look: crate::explosion_editor::BlastLook,
     players: PlayersView,
-    cages: cages::Cages,
     guns: Guns,
     things: things::Things,
     ion: ion::IonFx,
@@ -145,7 +143,6 @@ impl Visuals {
         // so players joining or bot counts changing never rebuild the GPU renderer.
         let drawn = world.players.len().max(if world.coop { COOP_VIEW_PLAYERS } else { 8 });
         players.reserve_dynamic(&mut scene, drawn, seed, colors);
-        let cages = cages::Cages::reserve(&mut scene, drawn);
         let guns = Guns::reserve(&mut scene, drawn);
         let things = things::Things::reserve(&mut scene);
         // Gore lives in the dynamic range too: uploaded with it every frame.
@@ -156,7 +153,7 @@ impl Visuals {
                 origin: Vec3::new(-192.0, -6.0, -192.0), cell: 6.0, dims: [65, 13, 65],
             }).expect("stadium sky grid");
         }
-        let mut v = Visuals { blast_look:Default::default(), scene, first_dynamic, phys, arena, fx, players, cages, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, blackout: false, sprite_images: false, air_targets: Vec::new(), air_impact: f32::NEG_INFINITY, artillery_seats: Vec::new(), sprites: Vec::new() };
+        let mut v = Visuals { blast_look:Default::default(), scene, first_dynamic, phys, arena, fx, players, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, blackout: false, sprite_images: false, air_targets: Vec::new(), air_impact: f32::NEG_INFINITY, artillery_seats: Vec::new(), sprites: Vec::new() };
         v.set_arena(world);
         v
     }
@@ -169,7 +166,6 @@ impl Visuals {
         self.ion.reset();
         self.fx.blasts.clear();
         self.players.clear(&mut self.scene, &mut self.phys);
-        self.cages.reset(&mut self.scene, world);
         self.phys.clear_bodies();
         let t = std::time::Instant::now();
         self.arena.set(&mut self.scene, &mut self.phys, &mut self.fx, world);
@@ -232,7 +228,6 @@ impl Visuals {
             }
         }
         let now = world.tick as f32 * growing_guns::DT;
-        self.cages.sync(world);
         self.ion.sync(world, &mut self.fx.blasts, now);
         // Minimum keeps the rocket and its plume, not the lingering trail smoke.
         if !crate::graphics::get().minimal_forward { things::airstrike::smoke(&world.strikes, world.tick, now, &mut self.fx.blasts); }
@@ -384,7 +379,6 @@ impl Visuals {
         self.clock = (world.tick as f32 - 1.0 + alpha) * growing_guns::DT;
         self.fx.update(world, self.clock, dt);
         self.players.pose(&mut self.scene, world, prev, alpha, &self.guns);
-        self.cages.pose(&mut self.scene, world, prev, alpha, self.clock);
         self.guns.pose(&mut self.scene, world, prev, alpha, &self.fx, self.players.hands());
         self.things.pose(&mut self.scene, world, self.clock);
         self.sprites.clear();

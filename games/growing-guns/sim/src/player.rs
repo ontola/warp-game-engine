@@ -148,9 +148,7 @@ impl World {
         if p.howitzer.is_none() {
             let angle = crate::stadium::Stadium::seg_ang() * (self.rng.below(crate::stadium::SEGMENTS as u32) as f32 + 0.5);
             let row = 6 + self.rng.below(6) as usize;
-            let stadium = self.arena.stadium;
-            let radius = (stadium.inner_r + (row as f32 + 0.5) * stadium.row_depth()) * crate::stadium::sq(angle);
-            let at = Vec3::new(angle.cos()*radius, stadium.base_y + row as f32*stadium.row_rise() + crate::HALF_HEIGHT, angle.sin()*radius);
+            let at = self.arena.stadium.seat_position(angle, row);
             let p = &mut self.players[i];
             p.howitzer = Some(at);
             p.siege_crossbow = self.rng.below(2) == 1;
