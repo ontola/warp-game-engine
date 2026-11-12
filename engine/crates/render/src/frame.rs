@@ -403,6 +403,10 @@ struct GiUniform {
     /// Reflective shadow maps (rsm.wgsl Gi.rsm) and last frame's view-projection.
     rsm: [f32; 4],
     rsm_prev: [[f32; 4]; 4],
+    /// Reflection probes (reflection_probes.rs): x 1 in a probe's capture,
+    /// y the box count; then per box capture (w 1 when complete), min, max.
+    probes: [f32; 4],
+    probe_boxes: [[f32; 4]; 3 * crate::reflection_probes::MAX_PROBES],
 }
 
 #[repr(C)]
@@ -1197,6 +1201,10 @@ pub struct Renderer {
     /// The live bounce of clustered lights (rsm.rs): its gather, per-view
     /// targets, and the surface voxels in aux (offset, words) once uploaded.
     rsm_gather: Option<crate::rsm::Pipelines>,
+    /// Live reflection probes (reflection_probes.rs): their cube arrays, and
+    /// the capture view's cull and raster targets.
+    probes: crate::reflection_probes::Probes,
+    probe_view: std::sync::OnceLock<ViewTargets>,
     rsm: std::sync::Mutex<crate::rsm::Targets>,
     bounce_voxels: Option<(usize, crate::rsm::VoxelBounds)>,
     scene_voxels: std::sync::Mutex<Option<crate::rsm::SceneVoxels>>,
@@ -1772,6 +1780,96 @@ impl Renderer {
         Ok(())
     }
 
+    /// Reflection probes, one box per room (`reflection_probes::ProbeBox`):
+    /// the renderer captures them itself, a cube face per frame, and glossy
+    /// surfaces inside a box reflect it where screen-space reflections miss.
+    /// An empty list turns them off. A moved box is captured anew.
+    pub fn set_reflection_probes(&self, boxes: &[crate::reflection_probes::ProbeBox]) -> Result<(), String> { self.probes.set(boxes) }
+
+    /// Draw one probe face: cull, raster and shade as a view, with view 0's
+    /// lights, shadow maps and gi, no temporal state; then into the cubes.
+    #[allow(clippy::too_many_arguments)]
+    fn render_probe_face(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, job: &crate::reflection_probes::Job, light: &Lighting,
+            light_buf: &wgpu::Buffer, shadow_v: &wgpu::TextureView, near_view: &wgpu::TextureView, density_view: &wgpu::TextureView,
+            mut gi: GiUniform, excluded: f32, ts: &mut u32, names: &mut Vec<&'static str>) {
+        use crate::reflection_probes::{FACE, NEAR};
+        const CAPACITY: u32 = 1 << 18;
+        // view_uniform's slots for the capture (past any player view).
+        const UNIFORMS: usize = 63;
+        let targets = self.probe_view.get_or_init(|| self.view_targets_capacity(gpu, "reflection probe", CAPACITY, RasterPass::Color, false));
+        let (vis, depth, hdr, scratch, indirect) = self.probes.targets(gpu);
+        let f = FACE as f32;
+        let mut u = view_uniform(job.view_proj, job.capture, f * 0.5, [light.lod_pixels, NEAR, 0.0, CAPACITY as f32], [f, f, 1.0 / f, 1.0 / f], light.alpha_cut);
+        u.fog_cull = camera_fog_cull(light);
+        u.fog_cull[2] = if self.camera_sun_occlusion && light.sun_lux > 0.0 {
+            crate::terrain_visibility::camera_sun_visibility(&self.hf, job.capture, light.sun_dir) } else { 1.0 };
+        u.fog_cull[3] = excluded;
+        gpu.queue.write_buffer(&targets.uniform, 0, bytemuck::bytes_of(&u));
+        self.cull_and_raster(enc, gpu, targets, Some(vis), depth, ts, names, "probe cull", RasterPass::Color);
+        // No traced reflections, live bounce or probes inside a capture.
+        gi.trace[0] = 0.0;
+        gi.prev_view_proj = Mat4::IDENTITY.to_cols_array_2d();
+        gi.rsm[1] = 0.0;
+        gi.rsm_prev = Mat4::IDENTITY.to_cols_array_2d();
+        gi.probes = [1.0, 0.0, 0.0, 0.0];
+        let gi_buf = self.view_uniform(gpu, UNIFORMS, 0, "probe gi", bytemuck::bytes_of(&gi));
+        let (rsm_store, rsm_none) = { let r = self.rsm.lock().unwrap(); (r.fallback_storage.clone(), r.fallback.clone()) };
+        let shade_bind = bind(gpu, &self.shade_layout, &[
+            (0, targets.uniform.as_entire_binding()),
+            (1, targets.visible.as_entire_binding()),
+            (2, light_buf.as_entire_binding()),
+            (3, wgpu::BindingResource::TextureView(vis)),
+            (4, wgpu::BindingResource::TextureView(depth)),
+            (5, wgpu::BindingResource::TextureView(shadow_v)),
+            (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
+            (7, wgpu::BindingResource::TextureView(&self.sky_view)),
+            (8, wgpu::BindingResource::TextureView(hdr)),
+            (10, wgpu::BindingResource::TextureView(&self.heightfield)),
+            (11, gi_buf.as_entire_binding()),
+            (13, wgpu::BindingResource::TextureView(density_view)),
+            (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
+            (15, wgpu::BindingResource::TextureView(near_view)),
+            (16, scratch.as_entire_binding()),
+            (18, wgpu::BindingResource::TextureView(&self.voxel_depth_fallback)),
+            (19, wgpu::BindingResource::TextureView(&self.terrain_coarse_fallback)),
+            (20, wgpu::BindingResource::TextureView(&self.voxel_surface_fallback)),
+            (21, wgpu::BindingResource::TextureView(&self.history_fallback)),
+            (22, wgpu::BindingResource::TextureView(&self.sssr.fallback)),
+            (23, wgpu::BindingResource::TextureView(&self.clustered.rsm_array)),
+            (24, wgpu::BindingResource::TextureView(&rsm_store)),
+            (25, wgpu::BindingResource::TextureView(&rsm_none)),
+            (26, wgpu::BindingResource::TextureView(&rsm_none)),
+            (27, wgpu::BindingResource::TextureView(&self.probes.view)),
+        ]);
+        let binds = [&self.scene_bind, &shade_bind, &self.clustered.bind];
+        let t = self.query.as_ref().map(|(qs, _, _)| { names.push("probe shade"); (qs, timestamp_pair(ts)) });
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("probe shade"),
+            timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
+        for (k, b) in binds.iter().enumerate() { pass.set_bind_group(k as u32, *b, &[]); }
+        let groups = FACE.div_ceil(8);
+        if let Some(terrain) = &self.terrain_shade { pass.set_pipeline(terrain); pass.dispatch_workgroups(groups, groups, 1); }
+        if let Some(voxels) = &self.voxel_pass { pass.set_pipeline(voxels); pass.dispatch_workgroups(groups, groups, 1); }
+        if self.sky_tiles {
+            pass.set_pipeline(&self.shade_classify);
+            pass.dispatch_workgroups(groups, groups, 1);
+            drop(pass);
+            enc.copy_buffer_to_buffer(scratch, crate::shade_scratch::TILES, indirect, 0, 16);
+            let t = self.query.as_ref().map(|(qs, _, _)| { names.push("probe shade tiles"); (qs, timestamp_pair(ts)) });
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("probe shade tiles"),
+                timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
+            for (k, b) in binds.iter().enumerate() { pass.set_bind_group(k as u32, *b, &[]); }
+            pass.set_pipeline(&self.shade);
+            pass.dispatch_workgroups_indirect(indirect, 0);
+            drop(pass);
+        } else {
+            pass.set_pipeline(&self.shade);
+            pass.dispatch_workgroups(groups, groups, 1);
+            drop(pass);
+        }
+        let t = self.query.as_ref().map(|(qs, _, _)| { names.push("probe filter"); (qs, timestamp_pair(ts)) });
+        self.probes.finish(gpu, enc, job, t);
+    }
+
     /// Bring the surface voxels reserved with `Scene::reserve_bounce_voxels`
     /// up to `scene` (`rsm::SceneVoxels`): the first call voxelises every
     /// instance, later ones only those that moved or changed their mesh.
@@ -2191,6 +2289,8 @@ impl Renderer {
                 (24, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }),
                 (25, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (26, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                // Reflection probes (reflection_probes.rs), prefiltered.
+                (27, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::CubeArray, multisampled: false }),
             ],
         );
         let canopy = crate::canopy::CanopyClipmap::new(gpu, scene, &scene_layout)
@@ -2679,6 +2779,7 @@ impl Renderer {
             raster_cached_sun,sun_clipmap:sun_clipmap_requested() && shadow_damage.is_some() && static_sun.is_none(),clipmap_policy:std::sync::Mutex::new(None),clipmap_bases:std::sync::Mutex::new(Vec::new()),shadow_damage:std::sync::Mutex::new(shadow_damage),legacy_shadow_wind,
             raster_far_sun_depth,
             raster_rsm,
+            probes: crate::reflection_probes::Probes::new(gpu), probe_view: std::sync::OnceLock::new(),
             rsm_gather, rsm: std::sync::Mutex::new(crate::rsm::Targets::new(gpu)), bounce_voxels: scene.bounce_voxels, scene_voxels: Default::default(), voxels_uploaded: Default::default(),
             sun_scene_bounds,
             sun_guard_bounds,
@@ -3125,7 +3226,7 @@ impl Renderer {
         }
         let t = tw(ts);
         if t.is_some() {
-            names.push(if name=="occluder cull" {"occluder raster"} else if name=="remaining cull" {"remaining raster"} else if color.is_some() && !matches!(kind,RasterPass::Headlight) { "raster" } else if name == "near shadow cull" { "near shadow raster" }
+            names.push(if name=="occluder cull" {"occluder raster"} else if name=="remaining cull" {"remaining raster"} else if name=="probe cull" {"probe raster"} else if color.is_some() && !matches!(kind,RasterPass::Headlight) { "raster" } else if name == "near shadow cull" { "near shadow raster" }
                 else if name=="headlight shadow cull" {"headlight shadow raster"}
                 else if name=="clustered shadow cull" {"clustered shadow raster"}
                 else if matches!(kind,RasterPass::SunStatic(_)) {"static sun raster"}
@@ -5187,6 +5288,12 @@ impl Renderer {
         let mut keep = Vec::new(); // per view: targets and textures, alive until the readback
         let mut frame_resources = self.frame_resources.lock().unwrap();
         frame_resources.resize_with(views.len(), FrameResources::default);
+        // Reflection probes: their boxes for shade, and this frame's face
+        // drawn after the views with view 0's lights and shadows.
+        // KERN_REFLECTION_PROBES=0 turns them off (renderer-switches.md).
+        let probes_on = std::env::var("KERN_REFLECTION_PROBES").as_deref() != Ok("0");
+        let (probe_boxes, probe_count) = if probes_on { self.probes.uniform() } else { ([[0.0; 4]; 3 * crate::reflection_probes::MAX_PROBES], 0) };
+        let mut probe_ctx: Option<(wgpu::Buffer, wgpu::TextureView, wgpu::TextureView, wgpu::TextureView, GiUniform)> = None;
         for (vi, view) in views.iter().enumerate() {
             let resources = &mut frame_resources[vi];
             let timing_start = names.len();
@@ -5242,6 +5349,8 @@ impl Renderer {
                     rsm_frame.as_ref().map_or(0.0, |f| if f.prev_view_proj.is_some() { 2.0 } else { 1.0 }),
                     rsm_frame.as_ref().map_or(0.0, |f| (f.frame & 0xff_ffff) as f32), crate::rsm::TEXELS as f32],
                 rsm_prev: rsm_frame.as_ref().and_then(|f| f.prev_view_proj).unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
+                probes: [0.0, probe_count as f32, 0.0, 0.0],
+                probe_boxes,
             };
             let gi_buf = self.view_uniform(gpu, vi, 0, "gi", bytemuck::bytes_of(&gi_u));
             // A rebuilt canopy level gets its sky transmittance baked now,
@@ -5609,6 +5718,7 @@ impl Renderer {
                     (24, wgpu::BindingResource::TextureView(rsm[0])),
                     (25, wgpu::BindingResource::TextureView(rsm[1])),
                     (26, wgpu::BindingResource::TextureView(rsm[2])),
+                    (27, wgpu::BindingResource::TextureView(&self.probes.view)),
                 ],
             );
             let shade_bind = shade_bind_with(resources, coarse_target.as_ref().map_or(&self.terrain_coarse_fallback, |t| &t.1), rsm_shade);
@@ -6159,9 +6269,13 @@ impl Renderer {
                 pass.set_bind_group(0, &tone_bind, &[]);
                 pass.dispatch_workgroups(view.w.div_ceil(8), view.h.div_ceil(8), 1);
             }
+            if vi == 0 { probe_ctx = Some((light_buf.clone(), shadow_v.clone(), near_view.clone(), density_view.clone(), gi_u)); }
             keep.push((main, vis, depth, hdr));
             timing_views.push((vi as u32, timing_start..names.len()));
             cpu.mark("view effects, bloom, tonemap");
+        }
+        if let (Some(job), Some((lb, sv, nv, dv, gi))) = ((!self.simple_lighting && probes_on).then(|| self.probes.next()).flatten(), probe_ctx.as_ref()) {
+            self.render_probe_face(gpu, &mut enc, &job, light, lb, sv, nv, dv, *gi, geometry_diagnostic.excluded_mask as f32, &mut ts, &mut names);
         }
         if let Some(motion) = &up.motion { motion.finish_frame(&mut enc); }
         let exposure_mirrored = auto_exposure.is_some() && self.auto_exposure.copy_for_cpu(&mut enc, views.len());

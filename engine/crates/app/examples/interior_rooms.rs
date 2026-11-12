@@ -137,6 +137,14 @@ fn door_xf(open: f32) -> Affine3A {
         * Affine3A::from_scale_rotation_translation(Vec3::new(0.06, DOOR_TOP - 0.01, 0.98), Quat::IDENTITY, Vec3::new(0.0, DOOR_TOP * 0.5, 0.5))
 }
 
+/// Reflection probes, one per room: capture point and the room's inside.
+const ROOM_PROBES: [render::reflection_probes::ProbeBox; 4] = [
+    render::reflection_probes::ProbeBox { capture: Vec3::new(0.0, 1.5, 0.0), min: Vec3::new(-4.0, 0.0, -4.0), max: Vec3::new(4.0, H, 4.0) },
+    render::reflection_probes::ProbeBox { capture: Vec3::new(-1.5, 1.5, -6.0), min: Vec3::new(-4.0, 0.0, -10.2), max: Vec3::new(4.0, H, -4.3) },
+    render::reflection_probes::ProbeBox { capture: Vec3::new(0.0, 1.5, -13.5), min: Vec3::new(-4.0, 0.0, -16.6), max: Vec3::new(4.0, H, -10.5) },
+    render::reflection_probes::ProbeBox { capture: Vec3::new(-6.6, 1.5, -12.6), min: Vec3::new(-9.0, 0.0, -16.6), max: Vec3::new(-4.3, H, -10.5) },
+];
+
 /// Smoothstep: the door eases in and out.
 fn ease(t: f32) -> f32 { let t = t.clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) }
 
@@ -573,6 +581,8 @@ impl Game for Rooms {
         self.flash_dir = self.flash_dir.lerp(self.forward(), k).normalize_or(self.forward());
         let renderer = frame.renderer().ok_or("no renderer")?;
         renderer.set_clustered_lights(&self.lights())?;
+        // One reflection probe per room: the engine captures them live.
+        renderer.set_reflection_probes(&ROOM_PROBES)?;
         let (beams, shapes) = if self.fog { self.beams() } else { (Vec::new(), Vec::new()) };
         renderer.set_volumetric_beams_shaped(&beams, &shapes)?;
         if self.fog {

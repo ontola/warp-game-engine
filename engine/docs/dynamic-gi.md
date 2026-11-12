@@ -108,6 +108,52 @@ Known limits of the screen trace:
 - The depth buffer has no thickness: a ray passing within a pixel's depth
   change behind a thin object (a pole, a branch) can still count as a hit.
 
+## Reflection probes
+
+Indoors, what the frame does not show (the wall behind the camera, the
+room seen past a doorway's edge) comes from live reflection probes: the
+game gives one box per room, the renderer keeps them current itself.
+
+```rust
+renderer.set_reflection_probes(&[ProbeBox { capture: Vec3::new(0.0, 1.5, -13.5),
+    min: Vec3::new(-4.0, 0.0, -16.6), max: Vec3::new(4.0, 3.0, -10.5) }])?;
+```
+
+- Capture (`reflection_probes.rs`, `Renderer::render_probe_face`): each
+  frame, after the players' views, one cube face (128x128, 90 degrees) of
+  one probe, round robin (four probes: all fresh within 24 frames, 0.2 s at
+  120 Hz). It is a view of its own: cull, raster and shade with view 0's
+  lights, shadow maps, irradiance volume and live bounce settings, and no
+  TAA, exposure, tone mapping, bloom, traced reflections or live bounce of
+  its own. No player state changes (shadow fit, LOD, grass detail, split
+  screen). Its radiance is shade's, before exposure, so a probe reads the
+  same in a dark room and a lit one. Light faces stay dark in it: their
+  light reaches glossy surfaces as the light's own analytic specular.
+  An opened door or a switched lamp shows in the reflections a few frames
+  later, with nothing baked.
+- Two cube arrays (8 probes, 8 mips, Rgba16Float, 6 MB each): the raw
+  captures with box-filtered mips, and their GGX prefilter per mip
+  (roughness = mip / 7, 64 samples, filtered importance sampling: each
+  sample reads the raw mip that matches its share of the lobe).
+- Shade: in a box (within 2 cm: a wall's face lies on its room's bounds),
+  the reflected ray is box-projected (where it leaves the room, seen from
+  the capture point) and read at the roughness's mip, times the specular
+  occlusion; it replaces the sky and irradiance-volume environment there.
+  Outside every box (a doorway, the wall between rooms) the boxes within
+  0.5 m that the ray heads into blend, fading to 0 at 0.5 m: no seam in a
+  doorway, and a shut door's face shows its own room, not the one behind
+  it. Screen-space reflections go over it where they hit.
+- Cost, 4K, RTX 5070 Ti, `interior_rooms`: the capture's passes 0.02 to
+  0.03 ms a frame by their timestamps (cull, raster, shade of 16k pixels,
+  mips and prefilter); shade reading the probes about 0.3 ms (11.0 against
+  10.7 ms, `KERN_REFLECTION_PROBES=0`).
+- Open: a moving object is captured face by face at different times (the
+  swinging pendant can show twice, a few frames apart, in a mirror-like
+  floor). The capture has no live bounce of its own. Probes are for rooms:
+  outdoors the sky and the irradiance volume stay the fallback.
+- `Lighting::debug` 27 shows the probes' reflection, 28 the same as a
+  mirror (magenta: no box).
+
 ## Open stages
 
 **Stage 2: terrain surface cache.** A camera-centred 2D clipmap of the

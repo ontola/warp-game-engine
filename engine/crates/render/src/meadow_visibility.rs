@@ -263,11 +263,13 @@ mod tests {
             if matches!(module.types[global.ty].inner,naga::TypeInner::Image{class:naga::ImageClass::Sampled{..}|naga::ImageClass::Depth{..},..}) {textures+=1;}
         }
         assert!(buffers<=16,"hidden shade exceeds storage binding budget: {buffers}");
-        // 23: the device asks for up to 32 sampled textures per stage (gpu.rs);
+        // 24: the device asks for up to 32 sampled textures per stage (gpu.rs);
         // the noise field is the 17th, then voxel depth, the coarse terrain,
         // the voxel surface, the reflection history, the light shapes and the live
-        // bounce (rsm.wgsl rsm_in).
-        assert!(textures<=23,"hidden shade exceeds texture binding budget: {textures}");
+        // bounce (rsm.wgsl rsm_in) and the reflection probes (reflection_probes.rs).
+        // WebGPU guarantees only 16: a browser build must move these into a
+        // bind group or array of their own (engine/docs/browser.md).
+        assert!(textures<=24,"hidden shade exceeds texture binding budget: {textures}");
         for name in ["meadow_visibility_vs","meadow_visibility_fs","meadow_visibility_resolve_fs","meadow_visibility_resolve_motion_fs"] {
             assert!(module.entry_points.iter().any(|e|e.name==name));
         }

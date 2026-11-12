@@ -453,6 +453,10 @@ struct Gi {
     // texels per light and pixel; and last frame's view-projection.
     rsm: vec4<f32>,
     rsm_prev: mat4x4<f32>,
+    // Reflection probes (reflection_probes.rs): x 1 inside a probe's
+    // capture, y the box count; per box capture (w 1 once complete), min, max.
+    probes: vec4<f32>,
+    probe_boxes: array<vec4<f32>, 24>,
 };
 // Last frame's resolved radiance (the TAA history), for traced reflections.
 @group(1) @binding(21) var reflection_history: texture_2d<f32>;
@@ -3555,6 +3559,11 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // Traced reflections replace the environment where they hit. Under
         // a clear coat only the coat traces (below): it shows the reflection.
         let stochastic = sssr_on() && coat <= 0.0 && rough < gi.trace.y;
+        // Reflection probes where a box holds the point: the room's live
+        // capture, box-projected, at the roughness's mip, with the specular
+        // occlusion; screen-space reflections replace it where they hit.
+        let probe = probe_reflection(p, refl, rough);
+        if probe.a > 0.0 { env = mix(env, probe.rgb * spec_contact, probe.a); }
         if coat <= 0.0 && rough < gi.trace.y && !stochastic {
             let traced = traced_reflection(p, visibility_n, refl, rough, px, size, dist);
             env = mix(env, traced.rgb, traced.a);
@@ -3615,7 +3624,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     if FEATURE_CARS { rad += car_lamp_emission(m.flags, base, inst, p) * emit; }
     // EMISSIVE: a glowing surface, `scale` is its radiance in nits for white;
     // with a texture layer the picture glows (screens), else the tint.
-    if (m.flags & 1024u) != 0u { rad += select(m.tint, base, m.layer >= 0) * abs(m.scale) * emit; }
+    // A light's face (negative scale) stays dark in a reflection probe's
+    // capture: its light reaches glossy surfaces as its analytic specular.
+    if (m.flags & 1024u) != 0u && !(gi.probes.x > 0.5 && m.scale < 0.0) { rad += select(m.tint, base, m.layer >= 0) * abs(m.scale) * emit; }
     rad += surface_emit * emit;
     // LAVA: molten emission plus sunlight reflected by the cooler surface.
     // MOLTEN_DEBRIS shares bit 7 with part_wind's history epoch, which wind
@@ -3705,6 +3716,11 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         let mh = march_hit(p, visibility_n, refl, px, size, dist);
         let ch = view.view_proj * vec4<f32>(mh.hit, 1.0);
         rad = select(vec3<f32>(0.0), vec3<f32>(ch.x / ch.w * 0.5 + 0.5, 0.5 - ch.y / ch.w * 0.5, mh.conf), mh.conf > 0.0) * 6000.0;
+    } else if light.sky.z > 26.5 && light.sky.z < 28.5 {
+        // 27: the reflection probes' reflection here (magenta: no box); 28:
+        // the same as a mirror.
+        let pr = probe_reflection(p, refl, select(rough, 0.0, light.sky.z > 27.5));
+        rad = select(vec3<f32>(1.0, 0.0, 1.0), pr.rgb, pr.a > 0.0);
     }
     // fp16 target: a blast light next to a wall must saturate, not become inf.
     // Reflections exclude light faces (alpha 0). In the temporary finish
