@@ -201,6 +201,30 @@ impl Locomotion {
         palette[h] = about(palette[h].transform_point3(head), 0.65) * palette[h];
     }
 
+    /// Carry the chest, gaze and knee flexion of the spectator into this player's rig.
+    pub(super) fn cheer(&self, palette: &mut [Mat4], pose: render::humans::StandingPose, weight: f32) {
+        if weight <= 0. { return; }
+        let pivot = |at: Vec3, q: Quat| Mat4::from_rotation_translation(q, at - q * at);
+        let hips = self.rig.rest[Bone::Pelvis as usize].unwrap();
+        let pelvis = Mat4::from_translation(pose.pelvis * (1.8 * weight));
+        let chest = pelvis * pivot(hips, Quat::IDENTITY.slerp(pose.chest, weight));
+        let undo_chest = chest.inverse();
+        for part in &mut *palette { *part = chest * *part; }
+        let neck = pivot(self.neck.1, Quat::IDENTITY.slerp(pose.glance, weight));
+        for joint in [self.neck.0, self.head.0] { palette[joint] = chest * neck * undo_chest * palette[joint]; }
+        for side in [1, 5] {
+            let joint = |offset: usize| self.rig.rest[LEGS[side + offset].0 as usize].unwrap();
+            let bend = pose.knee_bend * weight;
+            let thigh = pelvis * pivot(joint(0), Quat::from_rotation_x(-bend));
+            let shin = thigh * pivot(joint(1), Quat::from_rotation_x(2. * bend));
+            let foot = shin * pivot(joint(2), Quat::from_rotation_x(-bend));
+            for (offset, xf) in [thigh, shin, foot, foot].into_iter().enumerate() {
+                let joint = self.joints[side + offset];
+                palette[joint] = xf * undo_chest * palette[joint];
+            }
+        }
+    }
+
     pub(super) fn advance(
         &self,
         s: &mut Stride,

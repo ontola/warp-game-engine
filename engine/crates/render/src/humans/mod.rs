@@ -1,6 +1,8 @@
 //! Seeded crowd rendering probe. One immutable instance table serves every view.
 //! The GPU buckets visible people by projected height and writes indirect draws.
 mod geometry;
+mod standing;
+pub use standing::StandingPose;
 mod player_strands;
 pub use player_strands::Groom;
 pub(crate) use player_strands::PlayerStrands;

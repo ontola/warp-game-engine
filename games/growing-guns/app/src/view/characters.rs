@@ -461,12 +461,12 @@ impl Characters {
 
     /// This frame's rigid characters, after `pose`: `hide` holds each player's
     /// views to hide them in (their own body).
-    pub fn pose_rigid(&mut self, world: &World, prev: &[crate::view::Pose], alpha: f32, hide: &[u8]) {
+    pub fn pose_rigid(&mut self, world: &World, prev: &[crate::view::Pose], alpha: f32, hide: &[u8], guns: &super::guns::Guns) {
         self.rigid_frame.clear();
         for (i, (model, actor)) in self.pieces.iter().zip(&self.actors).enumerate() {
             let body = world.players.get(i).and_then(|p| if p.alive && !p.ghost {
                 let drawn = crate::view::pose(world, i, prev, alpha);
-                Some(model_transform(drawn.pos, drawn.yaw))
+                Some(model_transform(drawn.pos + Vec3::Y * guns.crowd_lift(i, world.entrance_flight_at(alpha)), drawn.yaw))
             } else { actor.corpse_transform });
             let Some(transform) = body else { continue };
             self.rigid_frame.push(render::scene::RigidActor { model: *model, transform, palette: actor.palette.clone(), hidden_views: hide.get(i).copied().unwrap_or(0) });
@@ -529,7 +529,8 @@ impl Characters {
             m.idle += DT;
             let jumped = world.events.iter().any(|e| matches!(e, Event::Jump { player } if *player == i));
             if let Some(locomotion) = &self.locomotion {
-                locomotion.advance(&mut m.stride, p.pos, p.yaw, p.vel.y, p.on_floor, jumped);
+                let in_stands = world.awaiting_rifle(i) && world.entrance_flight() == 0.;
+                locomotion.advance(&mut m.stride, p.pos, p.yaw, p.vel.y, p.on_floor || in_stands, jumped);
                 continue;
             }
             let speed = Vec3::new(p.vel.x, 0.0, p.vel.z).length();
@@ -564,13 +565,19 @@ impl Characters {
                 .expect("validated locomotion and hand socket");
             let drawn = crate::view::pose(world, i, prev, alpha);
             let body = model_transform(drawn.pos, drawn.yaw);
-            if let Some(rig) = &self.locomotion { rig.look(&mut actor.palette, drawn.pitch); }
+            if let Some(rig) = &self.locomotion {
+                if let Some(pose) = guns.and_then(|guns| guns.spectator(i)) {
+                    let weight = 1. - super::pov_arms::ease(0., 0.16, world.entrance_flight_at(alpha));
+                    rig.cheer(&mut actor.palette, pose, weight);
+                }
+                rig.look(&mut actor.palette, drawn.pitch);
+            }
             model.pose_face(&mut actor.palette, (m.idle + (alpha - 1.) * DT).max(0.));
             if world.awaiting_rifle(i) {
-                if let Some(arms) = &actor.arms {
-                    let flight = world.entrance_flight_at(alpha);
-                    let [right, left] = [0, 1].map(|side| {
-                        let offset = super::pov_arms::flight_wrist(i, side, flight).translation;
+                if let (Some(arms), Some(guns)) = (&actor.arms, guns) {
+                    let wrists = guns.entrance_wrists(world, i, world.entrance_flight_at(alpha));
+                    let [right, left] = wrists.map(|wrist| {
+                        let offset = wrist.translation;
                         Vec3::new(-offset.x, p.eye_height() + growing_guns::HALF_HEIGHT + offset.y, -offset.z)
                     });
                     arms.apply(&mut actor.palette, right, left);
