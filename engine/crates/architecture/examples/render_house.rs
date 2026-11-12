@@ -1,6 +1,8 @@
 //! Render a glTF house headless: four views from outside and one per room,
 //! with the room bake so rooms get their own (darker) light.
-//!   cargo run --release -p architecture --example render_house -- HOUSE.glb OUT_DIR [--rays 2048] [--size 1280x720]
+//!   cargo run --release -p architecture --example render_house -- HOUSE.glb OUT_DIR
+//!     [--rays 2048] [--size 1280x720] [--site LAT,LON,NORTH_DEG] [--when DAY_OF_YEAR,UTC_HOURS]
+//! Defaults: Amsterdam with the plan's up to the south (front in the sun), 15 April 09:30 UTC.
 use architecture::House;
 use render::{primitives, Gpu, Lighting, Renderer, Scene};
 use std::path::Path;
@@ -20,15 +22,18 @@ fn main() -> Result<(), String> {
     house.add_ground(&mut scene);
     let grid = house.probe_grid();
     scene.reserve_irradiance_volume(grid)?;
-    println!("{path}: {} triangles, {} elements, {} spaces, probes {:?}", house.model.triangles, house.elements.len(), house.spaces().count(), grid.dims);
+    println!("{path}: {} triangles, {} elements, {} spaces, probes {:?}", house.triangles, house.elements.len(), house.spaces().count(), grid.dims);
 
     let mut light = Lighting::default();
     light.fog_start = 1000.0;
     light.fog_end = 2000.0;
     light.fog_density = 0.0;
-    // Late morning, sun in front and to the left (the front faces -z).
-    let (az, el) = (200f32.to_radians(), 35f32.to_radians());
-    light.sun_dir = glam::Vec3::new(az.sin() * el.cos(), el.sin(), az.cos() * el.cos());
+    let nums = |k: &str| arg(k).map(|v| v.split(',').filter_map(|x| x.parse::<f32>().ok()).collect::<Vec<_>>());
+    let site = nums("--site").filter(|v| v.len() == 3).map_or(architecture::sun::Site { latitude: 52.37, longitude: 4.9, north_deg: 180.0 },
+        |v| architecture::sun::Site { latitude: v[0], longitude: v[1], north_deg: v[2] });
+    let when = nums("--when").filter(|v| v.len() == 2).unwrap_or(vec![105.0, 9.5]);
+    light.sun_dir = site.sun_dir(when[0] as u32, when[1]);
+    println!("sun {:.2?} (elevation {:.0} deg)", light.sun_dir, light.sun_dir.y.asin().to_degrees());
     light.auto_exposure = Some(render::AutoExposure { min_ev100: 0.0, max_ev100: 16.0, speed_light: 0.0, speed_dark: 0.0, ..Default::default() });
 
     let gpu = Gpu::new()?;
