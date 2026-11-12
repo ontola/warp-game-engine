@@ -269,7 +269,7 @@ mod tests {
         // bounce (rsm.wgsl rsm_in) and the reflection probes (reflection_probes.rs).
         // WebGPU guarantees only 16: a browser build must move these into a
         // bind group or array of their own (engine/docs/browser.md).
-        assert!(textures<=24,"hidden shade exceeds texture binding budget: {textures}");
+        assert!(textures<=crate::frame::shade_sampled_textures(),"hidden shade uses {textures} textures, more than its layouts bind");
         for name in ["meadow_visibility_vs","meadow_visibility_fs","meadow_visibility_resolve_fs","meadow_visibility_resolve_motion_fs"] {
             assert!(module.entry_points.iter().any(|e|e.name==name));
         }

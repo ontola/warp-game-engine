@@ -21,6 +21,8 @@
 @group(1) @binding(25) var rsm_prev: texture_2d<f32>;
 @group(1) @binding(26) var rsm_in: texture_2d<f32>;
 
+// Voxels per brick edge (rsm.rs BRICK).
+const BRICK: u32 = 4u;
 // The gather's resolution divisor (rsm.rs `scale`): 4, or 8 from 1600 lines.
 fn rsm_scale(size: vec2<u32>) -> i32 { return select(4, 8, size.y > 1600u); }
 
@@ -91,12 +93,15 @@ fn rsm_open(xp: vec3<f32>, np: vec3<f32>, p: vec3<f32>, n: vec3<f32>) -> bool {
     if o == 0u { return true; }
     let origin = vec3<f32>(aux_f32(o), aux_f32(o + 1u), aux_f32(o + 2u));
     let voxel = aux_f32(o + 3u);
-    let skip = voxel * 1.7320508;
+    // A surface's voxels have their centres within half a voxel of it along
+    // its dominant axis (rsm.rs triangle_box): their corners reach half a
+    // voxel plus half a diagonal off it.
+    let skip = voxel * 0.5 * (1.0 + 1.7320508);
     let a = xp + np * skip;
     let b = p + n * skip;
     let dims = vec3<i32>(i32(aux_word(o + 4u)), i32(aux_word(o + 5u)), i32(aux_word(o + 6u)));
     let bricks_at = o + aux_word(o + 7u);
-    let bdims = (dims + 3) / 4;
+    let bdims = (dims + i32(BRICK) - 1) / i32(BRICK);
     let seg = b - a;
     let len = length(seg);
     if len < 1e-4 { return true; }
@@ -105,7 +110,7 @@ fn rsm_open(xp: vec3<f32>, np: vec3<f32>, p: vec3<f32>, n: vec3<f32>) -> bool {
     let step = vec3<i32>(select(vec3<i32>(-1), vec3<i32>(1), dir >= vec3<f32>(0.0)));
     let pos = dir >= vec3<f32>(0.0);
     // Bricks first: one step across an empty one.
-    let bsize = voxel * 4.0;
+    let bsize = voxel * f32(BRICK);
     let fb = (a - origin) / bsize;
     var cb = vec3<i32>(floor(fb));
     var tb = select(fb - floor(fb), 1.0 - (fb - floor(fb)), pos) * inv * bsize;
@@ -130,7 +135,7 @@ fn rsm_open(xp: vec3<f32>, np: vec3<f32>, p: vec3<f32>, n: vec3<f32>) -> bool {
             var tm = t + select(f - floor(f), 1.0 - (f - floor(f)), pos) * inv * voxel;
             let td = inv * voxel;
             var tv = t;
-            for (var k = 0; k < 16; k++) {
+            for (var k = 0; k < 3 * i32(BRICK); k++) {
                 if tv >= t_out || tv > len { break; }
                 var solid = false;
                 if all(c >= vec3<i32>(0)) && all(c < dims) {

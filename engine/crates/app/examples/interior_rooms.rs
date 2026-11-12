@@ -332,9 +332,9 @@ impl Rooms {
         // a surface are moved out (room_bake::probe_positions).
         let grid = Grid::covering(Vec3::new(-9.3, 0.0, -16.9), Vec3::new(4.3, H + 0.3, 4.3), 0.5);
         scene.reserve_irradiance_volume(grid).expect("probe grid");
-        // The surfaces as 10 cm voxels, which the live bounce of the pendant
+        // The surfaces as voxels, which the live bounce of the pendant
         // and the flashlight (rsm) is tested against: no bounce through walls.
-        scene.reserve_bounce_voxels(Vec3::new(-9.3, -0.3, -16.9), Vec3::new(4.3, H + 0.3, 4.3), 0.1).expect("bounce voxels");
+        scene.reserve_bounce_voxels(Vec3::new(-9.3, -0.3, -16.9), Vec3::new(4.3, H + 0.3, 4.3)).expect("bounce voxels");
         if std::env::var_os("ROOMS_NO_DDGI").is_none() { scene.reserve_probe_visibility().expect("probe visibility"); }
         // The static geometry, before the moving pieces join the scene, with
         // and without the shut door.

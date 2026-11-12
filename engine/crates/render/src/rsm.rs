@@ -18,7 +18,7 @@
 use glam::Vec3;
 
 /// Texels per light, pixel and frame.
-pub const TEXELS: u32 = 16;
+pub const TEXELS: u32 = 8;
 /// The gather's resolution divisor for a view `height` pixels tall (rsm.wgsl
 /// `rsm_scale`): a quarter, an eighth from 1600 lines, so the gather stays
 /// near 480x270 to 640x360 (the bounce has no fine detail).
@@ -191,7 +191,13 @@ pub fn triangle_box(centre: Vec3, half: Vec3, t: [Vec3; 3]) -> bool {
     };
     for edge in e { for axis in [Vec3::X, Vec3::Y, Vec3::Z] { if separated(axis.cross(edge)) { return false; } } }
     for axis in [Vec3::X, Vec3::Y, Vec3::Z] { if separated(axis) { return false; } }
-    !separated(e[0].cross(e[1]))
+    // The plane: thin (6-separating, Schwarz and Seidel 2010): the voxel's
+    // centre within half a voxel of it along its dominant axis, so a flat
+    // surface fills one layer of voxels, not two or three. A walk that steps
+    // face to face still cannot pass between them.
+    let nrm = e[0].cross(e[1]);
+    let d = v[0].dot(nrm);
+    d.abs() <= half.max_element() * nrm.abs().max_element()
 }
 
 #[cfg(test)]
@@ -296,4 +302,15 @@ impl Targets {
 pub(crate) struct Pipelines {
     pub gather: wgpu::ComputePipeline,
     pub filters: [wgpu::ComputePipeline; 3],
+}
+
+/// Voxels the engine allows the bounce's visibility grid (`voxel_size`):
+/// 1 MiB of bits on the GPU, 16 MiB of triangle counts on the CPU.
+pub const VOXEL_BUDGET: f32 = (1u32 << 23) as f32;
+
+/// The finest voxel that keeps a grid over `min..max` within
+/// [`VOXEL_BUDGET`], and no finer than 2 cm.
+pub fn voxel_size(min: Vec3, max: Vec3) -> f32 {
+    let e = (max - min).max(Vec3::splat(1e-3));
+    (e.x * e.y * e.z / VOXEL_BUDGET).cbrt().max(0.02)
 }

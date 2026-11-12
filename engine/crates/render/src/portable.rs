@@ -32,16 +32,19 @@ pub(crate) struct Portable {
     targets: Vec<Target>,
 }
 
-/// Storage buffers per stage and sampled textures per stage the full
-/// renderer needs without trees (every pass fits 8, shade needs 21
-/// textures; browser.md). The GPU forest still needs 16 storage buffers.
+/// Storage buffers per stage the full renderer needs without trees (every
+/// pass fits 8; browser.md). The GPU forest still needs 16 storage buffers.
 pub const FULL_STORAGE_BUFFERS: u32 = 8;
-pub const FULL_SAMPLED_TEXTURES: u32 = 24;
+
+/// Sampled textures per stage the full renderer needs: what shade's bind
+/// group layouts make visible to their busiest stage
+/// (`frame::shade_sampled_textures`), counted from the layouts themselves.
+pub fn full_sampled_textures() -> u32 { crate::frame::shade_sampled_textures() }
 
 /// Whether a device with these limits needs the portable renderer.
 pub fn needed(limits: &wgpu::Limits) -> bool {
     limits.max_storage_buffers_per_shader_stage < FULL_STORAGE_BUFFERS
-        || limits.max_sampled_textures_per_shader_stage < FULL_SAMPLED_TEXTURES
+        || limits.max_sampled_textures_per_shader_stage < full_sampled_textures()
         || std::env::var("KERN_PORTABLE").as_deref() == Ok("1")
 }
 
@@ -175,5 +178,23 @@ impl Portable {
         }
         gpu.queue.submit([enc.finish()]);
         stats
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    #[test]
+    fn the_full_renderer_needs_what_shade_layouts_bind() {
+        // Shade's layouts as created (frame.rs): a device one texture short
+        // takes the portable path, one with exactly enough the full one.
+        let n = full_sampled_textures();
+        assert!(n >= 20 && n <= 32, "shade binds {n} sampled textures per stage; gpu.rs asks for at most 32");
+        let mut limits = wgpu::Limits { max_storage_buffers_per_shader_stage: FULL_STORAGE_BUFFERS, ..wgpu::Limits::default() };
+        limits.max_sampled_textures_per_shader_stage = n;
+        if std::env::var("KERN_PORTABLE").as_deref() != Ok("1") { assert!(!needed(&limits)); }
+        limits.max_sampled_textures_per_shader_stage = n - 1;
+        assert!(needed(&limits));
     }
 }

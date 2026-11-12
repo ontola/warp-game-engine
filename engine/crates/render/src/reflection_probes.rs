@@ -3,14 +3,15 @@
 //! a face at a time, so an opened door or a switched lamp shows in the
 //! reflections a fraction of a second later with nothing baked.
 //!
-//! Each frame, after the players' views, the renderer draws one cube face
-//! (128x128, 90 degrees) of one probe with its own cull, raster and shade
+//! Each frame, after the players' views, the renderer draws the six cube
+//! faces (128x128, 90 degrees) of one probe with its own cull, raster and shade
 //! (`frame.rs`): the frame's shadow maps and lights, no TAA, exposure,
 //! tone mapping or bloom, and nothing of the players' per-view state
-//! changes. The face is linear radiance in absolute units (shade's output
+//! changes. The faces are linear radiance in absolute units (shade's output
 //! before exposure), with light faces dark: their light reaches a glossy
-//! surface as the light's own analytic specular. Faces go round robin
-//! over the probes (4 probes: each fresh within 24 frames).
+//! surface as the light's own analytic specular. Probes go round robin (4
+//! probes: each fresh within 4 frames); all six faces in one frame, so a
+//! moving object (a swinging lamp) shows once, not at six moments.
 //!
 //! Two cube arrays: `raw` holds the captures with box-filtered mips, and
 //! `filtered` the GGX prefilter of `raw` per mip (roughness = mip / (levels
@@ -159,12 +160,13 @@ pub(crate) struct Probes {
     down: wgpu::ComputePipeline,
     prefilter: wgpu::ComputePipeline,
     sampler: wgpu::Sampler,
-    params: wgpu::Buffer,
+    /// Per face: which face and layer the mips and prefilter write.
+    params: [wgpu::Buffer; 6],
     capture: std::sync::OnceLock<Capture>,
 }
 
 /// The face to draw this frame.
-pub(crate) struct Job { pub probe: usize, pub face: usize, pub view_proj: Mat4, pub capture: Vec3 }
+pub(crate) struct Job { pub probe: usize, pub capture: Vec3 }
 
 impl Probes {
     pub fn new(gpu: &Gpu) -> Self {
@@ -189,8 +191,8 @@ impl Probes {
             entry_point: Some(entry), compilation_options: Default::default(), cache: gpu.pipeline_cache() });
         let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor { label: Some("reflection probes"),
             mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, mipmap_filter: wgpu::MipmapFilterMode::Linear, ..Default::default() });
-        let params = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("reflection probe face"), size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let params = std::array::from_fn(|_| gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("reflection probe face"), size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
         Self { boxes: Default::default(), captured: Default::default(), view: cube_view(&filtered), raw_view: cube_view(&raw), raw, filtered,
             down: pipe("down"), prefilter: pipe("prefilter"), layout, sampler, params, capture: std::sync::OnceLock::new() }
     }
@@ -211,15 +213,15 @@ impl Probes {
         Ok(())
     }
 
-    /// The face to capture this frame, if any probes are set.
+    /// The probe to capture this frame (all six faces, so a moving object
+    /// is in one place in all of them), round robin; none without probes.
     pub fn next(&self) -> Option<Job> {
         let boxes = self.boxes.lock().unwrap();
         if boxes.is_empty() { return None; }
         let mut c = self.captured.lock().unwrap();
-        let k = c.1 % (boxes.len() * 6);
-        c.1 = k + 1;
-        let (probe, face) = (k / 6, k % 6);
-        Some(Job { probe, face, view_proj: face_view_proj(boxes[probe].capture, face), capture: boxes[probe].capture })
+        let probe = c.1 % boxes.len();
+        c.1 = probe + 1;
+        Some(Job { probe, capture: boxes[probe].capture })
     }
 
     /// Shade's view of the boxes: per probe capture (w 1 once all six faces
@@ -258,52 +260,65 @@ impl Probes {
         (&c.vis, &c.depth, &c.hdr_view, &c.scratch, &c.indirect)
     }
 
-    /// After shade drew `job`'s face: copy it in, rebuild its mips and its
-    /// prefiltered levels.
-    pub fn finish(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, job: &Job, timestamps: Option<(&wgpu::QuerySet, u32)>) {
+    /// After shade drew a face of `probe` into the radiance target: copy it
+    /// into the raw cubes.
+    pub fn copy_face(&self, enc: &mut wgpu::CommandEncoder, probe: usize, face: usize) {
         let c = self.capture.get().expect("probe targets");
-        let layer = (job.probe * 6 + job.face) as u32;
         enc.copy_texture_to_texture(c.hdr.as_image_copy(), wgpu::TexelCopyTextureInfo { texture: &self.raw, mip_level: 0,
-            origin: wgpu::Origin3d { x: 0, y: 0, z: layer }, aspect: wgpu::TextureAspect::All },
+            origin: wgpu::Origin3d { x: 0, y: 0, z: (probe * 6 + face) as u32 }, aspect: wgpu::TextureAspect::All },
             wgpu::Extent3d { width: FACE, height: FACE, depth_or_array_layers: 1 });
-        gpu.queue.write_buffer(&self.params, 0, bytemuck::cast_slice(&[job.face as u32, layer, LEVELS, SAMPLES]));
-        let level = |t: &wgpu::Texture, mip: u32| t.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2),
+    }
+
+    /// After all six faces of `probe` are in: their mips, then their
+    /// prefiltered levels (each face's lobe reads its neighbours, captured
+    /// in the same frame).
+    pub fn finish(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, probe: usize, timestamps: Option<(&wgpu::QuerySet, u32)>) {
+        let c = self.capture.get().expect("probe targets");
+        for face in 0..6 {
+            gpu.queue.write_buffer(&self.params[face], 0, bytemuck::cast_slice(&[face as u32, (probe * 6 + face) as u32, LEVELS, SAMPLES]));
+        }
+        let level = |t: &wgpu::Texture, mip: u32, layer: u32| t.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2),
             base_mip_level: mip, mip_level_count: Some(1), base_array_layer: layer, array_layer_count: Some(1), ..Default::default() });
-        let bind = |src: &wgpu::TextureView, dst: &wgpu::TextureView, raw: &wgpu::TextureView| gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind = |face: usize, src: &wgpu::TextureView, dst: &wgpu::TextureView, raw: &wgpu::TextureView| gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("reflection probe"), layout: &self.layout, entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.params.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: self.params[face].as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(dst) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(raw) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ] });
-        // A raw view without the level being written: the source mips only.
+        // Bindings a pass does not read: any view of another texture.
         let unused = c.hdr_view.clone();
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("reflection probe mips"),
                 timestamp_writes: timestamps.map(|(query_set, i)| wgpu::ComputePassTimestampWrites { query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: None }) });
             pass.set_pipeline(&self.down);
-            for mip in 1..LEVELS {
-                // The cube binding is unused here; any cube view of another texture would do.
-                let g = bind(&level(&self.raw, mip - 1), &level(&self.raw, mip), &self.view);
-                pass.set_bind_group(0, &g, &[]);
-                let s = (FACE >> mip).max(1);
-                pass.dispatch_workgroups(s.div_ceil(8), s.div_ceil(8), 1);
+            for face in 0..6 {
+                let layer = (probe * 6 + face) as u32;
+                for mip in 1..LEVELS {
+                    let g = bind(face, &level(&self.raw, mip - 1, layer), &level(&self.raw, mip, layer), &self.view);
+                    pass.set_bind_group(0, &g, &[]);
+                    let s = (FACE >> mip).max(1);
+                    pass.dispatch_workgroups(s.div_ceil(8), s.div_ceil(8), 1);
+                }
             }
         }
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("reflection probe prefilter"),
                 timestamp_writes: timestamps.map(|(query_set, i)| wgpu::ComputePassTimestampWrites { query_set, beginning_of_pass_write_index: None, end_of_pass_write_index: Some(i + 1) }) });
             pass.set_pipeline(&self.prefilter);
-            for mip in 0..LEVELS {
-                let g = bind(&unused, &level(&self.filtered, mip), &self.raw_view);
-                pass.set_bind_group(0, &g, &[]);
-                let s = (FACE >> mip).max(1);
-                pass.dispatch_workgroups(s.div_ceil(8), s.div_ceil(8), 1);
+            for face in 0..6 {
+                let layer = (probe * 6 + face) as u32;
+                for mip in 0..LEVELS {
+                    let g = bind(face, &unused, &level(&self.filtered, mip, layer), &self.raw_view);
+                    pass.set_bind_group(0, &g, &[]);
+                    let s = (FACE >> mip).max(1);
+                    pass.dispatch_workgroups(s.div_ceil(8), s.div_ceil(8), 1);
+                }
             }
         }
         let mut captured = self.captured.lock().unwrap();
-        if let Some(m) = captured.0.get_mut(job.probe) { *m |= 1 << job.face; }
+        if let Some(m) = captured.0.get_mut(probe) { *m = 63; }
     }
 }
 
