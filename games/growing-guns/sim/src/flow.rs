@@ -306,11 +306,15 @@ impl World {
         // where the enemies can be dropped.
         if self.coop { self.maybe_finish_picks(); }
         if let Some(t) = self.flow.entrance_elapsed.as_mut() {
+            let was_seated = *t <= SEAT_HOLD + 1e-9;
             *t += DT64;
             let t = *t;
             for (i, p) in self.players.iter_mut().enumerate() {
                 let Some(&ground) = self.flow.landing_spots.get(i) else { continue };
                 if !p.frozen || !p.alive || self.phase == Phase::MatchOver { continue; }
+                if was_seated && t > SEAT_HOLD + 1e-9 {
+                    self.events.push(Event::CrowdLaunched { player: i });
+                }
                 p.pos = entrance_position(&self.arena, ground, i, t);
                 if t + 1e-9 >= ROUND_ENTRANCE {
                     p.pos = ground;
@@ -318,6 +322,7 @@ impl World {
                     p.on_floor = true;
                     p.frozen = false;
                     self.events.push(Event::Landed { player: i, speed: 0.0 });
+                    self.events.push(Event::RifleCollected { player: i });
                 }
             }
             if t + 1e-9 >= ROUND_ENTRANCE { self.flow.entrance_elapsed = None; }
@@ -577,6 +582,12 @@ impl World {
     /// Fraction of the flight from seat to floor, zero while seated.
     pub fn entrance_flight(&self) -> f32 {
         flight_fraction(self.flow.entrance_elapsed.unwrap_or(0.))
+    }
+
+    /// Flight progress at the same render time as the interpolated player position.
+    pub fn entrance_flight_at(&self, alpha: f32) -> f32 {
+        let elapsed = self.flow.entrance_elapsed.unwrap_or(0.);
+        flight_fraction(elapsed - f64::from(1. - alpha.clamp(0., 1.)) * DT64)
     }
 
     /// Time until the players land. The snapshot field retains its original wire name.

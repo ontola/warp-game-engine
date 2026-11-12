@@ -78,24 +78,29 @@ impl Arms {
         }
     }
 
-    pub fn brace(&self, scene: &mut Scene, view: Affine3A, flight: f32) {
-        let rise = (flight * std::f32::consts::PI).sin();
-        for (side, sign) in [1., -1.].into_iter().enumerate() {
-            let wrist = Vec3::new(
-                sign * (0.27 + 0.04 * rise),
-                -0.285 + 0.105 * rise,
-                -0.47 - 0.05 * rise,
-            );
-            let lift = Quat::from_rotation_x(0.08 + 0.38 * rise);
-            scene.update_instance(
-                self.first + side,
-                self.open[side],
-                view * Affine3A::from_rotation_translation(lift, wrist),
-            );
+    pub fn fly(
+        &self,
+        scene: &mut Scene,
+        player: usize,
+        upright: Affine3A,
+        view: Affine3A,
+        flight: f32,
+    ) {
+        let frame = blend_pose(upright, view, ease(0., 0.15, flight));
+        for side in 0..2 {
+            let wrist = flight_wrist(player, side, flight);
+            scene.update_instance(self.first + side, self.open[side], frame * wrist);
         }
     }
 
-    pub fn hold(&self, scene: &mut Scene, gun: Affine3A, contacts: Contacts, reload: &Reload) {
+    pub fn hold(
+        &self,
+        scene: &mut Scene,
+        gun: Affine3A,
+        contacts: Contacts,
+        reload: &Reload,
+        pickup: Option<(f32, Affine3A)>,
+    ) {
         let support = contacts
             .magazine
             .lerp(contacts.foregrip, contacts.extension)
@@ -104,13 +109,90 @@ impl Arms {
             .into_iter()
             .enumerate()
         {
-            scene.update_instance(
-                self.first + side,
-                self.grip[side],
-                gun * Affine3A::from_translation(wrist),
-            );
+            let held = gun * Affine3A::from_translation(wrist);
+            let (mesh, pose) = if let Some((age, view)) = pickup {
+                // The trigger hand takes the weight first; the other finds the magazine.
+                let close = if side == 0 { 0.095 } else { 0.15 };
+                // A rifle on its side rolls into the grip. The wrist follows its
+                // socket, but the elbow still trails back towards the player's body.
+                let (_, view_rotation, _) = view.to_scale_rotation_translation();
+                let (_, gun_rotation, position) = held.to_scale_rotation_translation();
+                let turn = ease(0.19, 0.40, age);
+                let socket = Affine3A::from_rotation_translation(
+                    view_rotation.slerp(gun_rotation, turn),
+                    position,
+                );
+                let reach = blend_pose(view * reaching_wrist(side), socket, ease(0., close, age));
+                (
+                    if age < close {
+                        self.open[side]
+                    } else {
+                        self.grip[side]
+                    },
+                    reach,
+                )
+            } else {
+                (self.grip[side], held)
+            };
+            scene.update_instance(self.first + side, mesh, pose);
         }
     }
+}
+
+pub(super) fn ease(start: f32, end: f32, value: f32) -> f32 {
+    let t = ((value - start) / (end - start)).clamp(0., 1.);
+    t * t * (3. - 2. * t)
+}
+
+pub(super) fn blend_pose(from: Affine3A, to: Affine3A, t: f32) -> Affine3A {
+    let (_, a, p) = from.to_scale_rotation_translation();
+    let (_, b, q) = to.to_scale_rotation_translation();
+    Affine3A::from_rotation_translation(a.slerp(b, t), p.lerp(q, t))
+}
+
+fn reaching_wrist(side: usize) -> Affine3A {
+    let sign = if side == 0 { 1. } else { -1. };
+    Affine3A::from_rotation_translation(
+        Quat::from_euler(glam::EulerRot::YXZ, sign * 0.15, -0.55, -sign * 0.45),
+        Vec3::new(0.09 + 0.14 * sign, -0.20, -0.45 - 0.06 * side as f32),
+    )
+}
+
+// In eye space, +X is the player's right and -Z points into the arena.
+// The two arms catch the launch at different times, then make alternating
+// broad sweeps before both hands turn down to meet the rifle.
+pub(super) fn flight_wrist(player: usize, side: usize, flight: f32) -> Affine3A {
+    use std::f32::consts::TAU;
+    let sign = if side == 0 { 1. } else { -1. };
+    let rest = Affine3A::from_rotation_translation(
+        Quat::from_euler(glam::EulerRot::YXZ, -sign * 0.12, -1.08, -sign * 0.22),
+        Vec3::new(sign * 0.25, -0.66, -0.08),
+    );
+    let delay = if side == player % 2 { 0.012 } else { 0.047 };
+    let throw = ease(delay, delay + 0.17, flight);
+    let phase = TAU * (1.85 * flight + 0.43 * side as f32 + 0.10 * (player % 4) as f32);
+    let beat = phase.sin();
+    let wrist = Vec3::new(
+        sign * (0.32 + 0.087 * phase.cos()),
+        -0.045 + 0.115 * beat,
+        -0.42 - 0.090 * (phase + 0.48).cos(),
+    );
+    let twist = Quat::from_euler(
+        glam::EulerRot::YXZ,
+        sign * (0.20 + 0.40 * beat),
+        0.35 + 0.50 * beat,
+        sign * (0.22 + 0.52 * phase.cos()),
+    );
+    let flail = blend_pose(
+        rest,
+        Affine3A::from_rotation_translation(twist, wrist),
+        throw,
+    );
+    blend_pose(
+        flail,
+        reaching_wrist(side),
+        ease(0.73 + delay, 0.985, flight),
+    )
 }
 
 /// Keep the original fingers, wrist contour and shirt silhouette. Fit the

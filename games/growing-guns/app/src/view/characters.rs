@@ -567,9 +567,13 @@ impl Characters {
             if let Some(rig) = &self.locomotion { rig.look(&mut actor.palette, drawn.pitch); }
             model.pose_face(&mut actor.palette, (m.idle + (alpha - 1.) * DT).max(0.));
             if world.awaiting_rifle(i) {
-                // Relax both wrists beside the hips before the rifle is handed over.
                 if let Some(arms) = &actor.arms {
-                    arms.apply(&mut actor.palette, Vec3::new(-0.27, 0.88, 0.09), Vec3::new(0.27, 0.88, 0.09));
+                    let flight = world.entrance_flight_at(alpha);
+                    let [right, left] = [0, 1].map(|side| {
+                        let offset = super::pov_arms::flight_wrist(i, side, flight).translation;
+                        Vec3::new(-offset.x, p.eye_height() + growing_guns::HALF_HEIGHT + offset.y, -offset.z)
+                    });
+                    arms.apply(&mut actor.palette, right, left);
                 }
                 self.hands[i] = None;
                 continue;

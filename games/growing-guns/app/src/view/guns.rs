@@ -2,7 +2,7 @@
 //! drawn in first person in that player's own view and in third person in
 //! everyone else's, with Godot's first-person gun feel.
 use super::effects::EffectsView;
-use super::{camera, glow, material, srgb_to_linear};
+use super::{glow, material, srgb_to_linear};
 use crate::gun::{self, Rig, Stats};
 use glam::{Affine3A, Quat, Vec3};
 use growing_guns::{Player, World};
@@ -35,6 +35,7 @@ pub struct Guns {
     local: Vec<bool>,
     rigs: Vec<Rig>,
     feel: Vec<GunFeel>,
+    pickups: Vec<Option<(u64, Vec3)>>,
     /// First instance of each player's first-person and third-person block.
     fp: Vec<usize>,
     tp: Vec<usize>,
@@ -79,7 +80,7 @@ impl Guns {
             tp.push(Slots::reserve(scene, parts).first);
         }
         let lamp_mesh = flashlight_mesh(scene);
-        Guns { lamp_mesh, lamps: vec![None; players], detail, parts, arms: Vec::new(), meshes, barrel_first, barrels, muzzles: vec![None; players], local: vec![false; players], rigs: vec![Rig::with_detail(detail); players], feel: vec![GunFeel::default(); players], fp, tp, tilt: true, tracked: vec![None; players], tracking: vec![false; players], own: vec![None; players], round: None }
+        Guns { pickups: vec![None; players], lamp_mesh, lamps: vec![None; players], detail, parts, arms: Vec::new(), meshes, barrel_first, barrels, muzzles: vec![None; players], local: vec![false; players], rigs: vec![Rig::with_detail(detail); players], feel: vec![GunFeel::default(); players], fp, tp, tilt: true, tracked: vec![None; players], tracking: vec![false; players], own: vec![None; players], round: None }
     }
 
     pub(super) fn reserve_arms(&mut self, scene: &mut Scene, seed: u64, colors: &[crate::party::PlayerColors]) {
@@ -120,6 +121,7 @@ impl Guns {
     /// A shot: bolt, spin and heat on the rig, recoil kick on the view model.
     pub fn shot(&mut self, player: usize, p: &Player) {
         let Some(rig) = self.rigs.get_mut(player) else { return };
+        self.pickups[player] = None; // An immediate shot brings the rifle straight to aim.
         rig.fire(&Stats::of(p));
         let f = &mut self.feel[player];
         f.kick = f.kick.max(0.08 * (p.weapon.recoil() / p.weapon.gun.recoil).clamp(0.2, 2.5));
@@ -129,7 +131,14 @@ impl Guns {
     /// spin) and the first-person feel eases (bob, bump, tilt, kick).
     pub fn tick(&mut self, world: &World, dt: f32) {
         let new_round = self.round != Some(world.round);
-        if new_round { self.reset_heat(); }
+        if new_round { self.reset_heat(); self.pickups.fill(None); }
+        for event in &world.events {
+            if let growing_guns::Event::RifleCollected { player } = *event {
+                if let Some(pickup) = self.pickups.get_mut(player) {
+                    *pickup = Some((world.tick, world.players[player].pos - Vec3::Y * growing_guns::HALF_HEIGHT));
+                }
+            }
+        }
         for (i, p) in world.players.iter().enumerate().take(self.rigs.len()) {
             let rig = &mut self.rigs[i];
             if new_round || self.own[i].is_none() {
@@ -161,6 +170,18 @@ impl Guns {
         self.round = Some(world.round);
     }
 
+    fn pickup(&self, world: &World, i: usize, alpha: f32) -> Option<(f32, Vec3)> {
+        let (tick, floor) = self.pickups.get(i).copied().flatten()?;
+        let ticks = world.tick.checked_sub(tick)?;
+        let age = (ticks as f32 + alpha - 1.).max(0.) * growing_guns::DT;
+        (age < 0.46 && world.players[i].alive && !self.tracking[i]).then_some((age, floor))
+    }
+
+    pub(super) fn camera(&self, world: &World, i: usize, prev: &[crate::view::Pose], alpha: f32) -> render::Camera {
+        let dip = self.pickup(world, i, alpha).map_or(0., |(age, _)| 1. - super::pov_arms::ease(0.10, 0.45, age));
+        super::entrance_camera(world, i, prev, alpha, dip)
+    }
+
     /// Every rig into its two blocks: first person from the (punched)
     /// camera, third person in the right hand, aimed with the head.
     pub fn pose(&mut self, scene: &mut Scene, world: &World, prev: &[crate::view::Pose], alpha: f32, fx: &EffectsView, hands: &[Option<Affine3A>]) {
@@ -183,7 +204,7 @@ impl Guns {
             let reload = gun::Reload::sample(p, alpha);
             // Long barrels pull the gun back against the shoulder.
             let pull = ((rig.build.barrel_length - 0.5) * 0.3).clamp(0.0, 0.3);
-            let cam = fx.punched(world, i, camera(world, i, prev, alpha));
+            let cam = fx.punched(world, i, self.camera(world, i, prev, alpha));
             let fwd = (cam.target - cam.pos).normalize_or(Vec3::NEG_Z);
             let right = fwd.cross(Vec3::Y).normalize_or(Vec3::X);
             let up = right.cross(fwd);
@@ -203,21 +224,30 @@ impl Guns {
             };
             let ground = world.ground_rifle(i);
             let held = p.alive && !world.awaiting_rifle(i) && (!self.tracking[i] || self.tracked[i].is_some());
+            let on_floor = |floor: Vec3| Affine3A::from_rotation_translation(
+                Quat::from_rotation_y(0.75) * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+                floor + Vec3::Y * rig.build.resting_height().max(0.03),
+            );
+            let ground_pose = ground.map(on_floor);
+            let pickup = self.pickup(world, i, alpha).map(|(age, floor)| (age, on_floor(floor)));
+            let fp = if let Some((age, floor)) = pickup {
+                let lift = super::pov_arms::ease(0.055, 0.40, age);
+                super::pov_arms::blend_pose(floor, fp, lift)
+            } else { fp };
             if self.local[i] && p.alive && !p.ghost && !self.tracking[i] {
                 if let Some(arms) = self.arms.get(i) {
                     if held {
-                        arms.hold(scene, fp, rig.contacts_at(alpha), &reload);
+                        arms.hold(scene, fp, rig.contacts_at(alpha), &reload, pickup.map(|(age, _)| (age, view)));
                     } else {
-                        arms.brace(scene, view, world.entrance_flight());
+                        // With hands by the hips, looking down reveals them. The
+                        // flailing and reaching poses follow the view during flight.
+                        let upright = Affine3A::from_rotation_translation(rot, cam.pos);
+                        arms.fly(scene, i, upright, view, world.entrance_flight_at(alpha));
                     }
                 }
             }
             let exit = rig.muzzle_at(alpha);
             self.muzzles[i] = held.then(|| [fp.transform_point3(exit), tp.transform_point3(exit)]);
-            let ground_pose = ground.map(|floor| Affine3A::from_rotation_translation(
-                Quat::from_rotation_y(0.75) * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
-                floor + Vec3::Y * rig.build.resting_height().max(0.03),
-            ));
             let visible = held || ground_pose.is_some();
             // The clamp attaches to the front underside of the growing receiver.
             let lamp = (visible && world.modifier == Some(growing_guns::Modifier::Blackout)).then(|| {
@@ -676,7 +706,11 @@ mod xr_tests {
         guns.tick(&world, 0.0);
         for _ in 0..164 { world.step(&[]); }
         let mut open_hands = [0; 4];
-        for armed in [false, true] {
+        for (ticks, armed, raised) in [(0, false, false), (1, true, false), (26, true, true)] {
+            for _ in 0..ticks {
+                world.step(&[]);
+                guns.tick(&world, growing_guns::DT);
+            }
             guns.pose(&mut scene, &world, &[], 1.0, &fx, &[]);
             for i in 0..2 {
                 for first in [guns.fp[i], guns.tp[i]] {
@@ -688,18 +722,18 @@ mod xr_tests {
                 }
                 let lamp = guns.lamps[i].expect("equipped blackout lamp");
                 let near_floor = lamp.translation.y < world.players[i].pos.y - 0.5;
-                assert_eq!(near_floor, !armed);
+                assert_eq!(near_floor, !raised);
                 for side in 0..2 {
                     let k = 2 * i + side;
                     let hand = &scene.instances[arm_start + k];
                     assert!(hand.cluster_count > 0);
                     assert_eq!((hand.flags >> render::scene::HIDE_IN_VIEW_SHIFT) as u8, !(1 << i));
-                    if armed { assert_ne!(hand.first_cluster, open_hands[k]); }
-                    else { open_hands[k] = hand.first_cluster; }
+                    if raised { assert_ne!(hand.first_cluster, open_hands[k]); }
+                    else if !armed { open_hands[k] = hand.first_cluster; }
+                    else { assert_eq!(hand.first_cluster, open_hands[k]); }
                 }
                 assert_eq!(guns.muzzle(i).is_some(), armed);
             }
-            world.step(&[]);
         }
         world.modifier = None;
         guns.pose(&mut scene, &world, &[], 1., &fx, &[]);

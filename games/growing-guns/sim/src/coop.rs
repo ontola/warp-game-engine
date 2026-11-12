@@ -549,7 +549,7 @@ pub(crate) fn event_players(e: &Event) -> Vec<usize> {
     match *e {
         Event::Shot { player, .. } | Event::Jump { player } | Event::Dash { player } | Event::Special { player, .. } | Event::Slash { player, .. }
         | Event::Teleport { player, .. } | Event::Phoenix { player } | Event::PickedUp { player, .. } | Event::Picked { player, .. }
-        | Event::Landed { player, .. } | Event::Reload { player, .. } | Event::Empty { player } | Event::Lava { player, .. } | Event::MinePlanted { player, .. } => vec![player],
+        | Event::CrowdLaunched { player } | Event::RifleCollected { player } | Event::Landed { player, .. } | Event::Reload { player, .. } | Event::Empty { player } | Event::Lava { player, .. } | Event::MinePlanted { player, .. } => vec![player],
         Event::Explosion { owner, .. } => vec![owner],
         Event::Hit { victim, attacker, .. } => vec![victim, attacker],
         Event::Kill { victim, attacker, .. } => vec![victim, attacker.unwrap_or(victim)],

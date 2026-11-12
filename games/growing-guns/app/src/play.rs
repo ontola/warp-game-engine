@@ -1266,7 +1266,7 @@ impl app::Game for Gg {
             let rects = frame.rects(self.slots.len());
             for (k, (rect, &s)) in rects.iter().zip(&self.slots).enumerate() {
                 // Under the HUD (Godot's flare overlay sits below the crosshair).
-                let cam = self.vis.punched(&self.world, s, view::camera(&self.world, s, &self.prev, alpha));
+                let cam = self.vis.player_camera(&self.world, s, &self.prev, alpha);
                 self.vis.airstrike_flare(&mut list, *rect, &cam, &self.world);
                 let flash = self.vis.ion_flash(self.world.players[s].eye());
                 let pad = k > 0 || self.no_kbm;
@@ -1282,7 +1282,7 @@ impl app::Game for Gg {
                 if self.can_join() && self.slots.len() < 4 { hud::menus::join_prompt(&mut list); } else if self.hint_visible() { hud::menus::splitscreen_hint(&mut list); }
             }
             if let Some((k, m)) = &self.player_menu && let Some(&s) = self.slots.get(*k) { hud::menus::player_menu(&mut list, self.hud.name(s), m.focus); }
-            self.slots.iter().map(|&s| self.vis.punched(&self.world, s, view::camera(&self.world, s, &self.prev, alpha))).collect()
+            self.slots.iter().map(|&s| self.vis.player_camera(&self.world, s, &self.prev, alpha)).collect()
         };
         list.begin_overlay();
         let ticket = self.session.ticket().map(str::to_string);

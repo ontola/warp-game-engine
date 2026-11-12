@@ -408,6 +408,18 @@ impl Sounds {
                     let g = self.from(world, player, from, -6.0, 12.0);
                     self.named(world, "melee", &[("pitch_ratio", (50.0 / damage.max(1.0)).clamp(0.5, 1.2))], g.spl(90.0));
                 }
+                Event::CrowdLaunched { player } => {
+                    let g = self.from(world, player, world.players[player].pos, -9., 8.);
+                    self.named(world, "crowd_launch", &[], g.no_tail().spl(86.));
+                    if local(player) {
+                        let wind = self.ui_for(player, -12.);
+                        self.named(world, "flight_wind", &[], wind.no_tail().spl(82.));
+                    }
+                }
+                Event::RifleCollected { player } => {
+                    let g = self.from(world, player, world.players[player].pos, -7., 8.);
+                    self.named(world, "rifle_collect", &[], g.no_tail().spl(85.));
+                }
                 Event::Jump { player } => {
                     let at = world.players[player].pos;
                     for (db, lo, hi) in [(-7.5, 1.02, 1.12), (-10.5, 0.55, 0.65)] {
