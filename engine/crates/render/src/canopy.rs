@@ -39,6 +39,20 @@ const MAX_CROWN_CELLS: u64 = 32_768;
 const MAX_FOLIAGE: usize = 1_048_575;
 const RENDER_REACH: f32 = 1000.0;
 const RAY_GUARD: f32 = 60.0;
+/// Extinction per metre of unit canopy density (`shade.wgsl` `transmittance`
+/// and `reflected_visibility` multiply `foliage` by the same 0.9).
+pub const CROWN_EXTINCTION: f32 = 0.9;
+
+/// Crowns are clumps: light passes between them. A cell coarser than a crown
+/// holds its mass as a uniform fog, and the mean of exp(-tau) through
+/// separate crowns is far above exp(-mean tau). At the 6 m and coarse levels
+/// a forest floor saw a fifth to a seventh of its true sky (Monte Carlo
+/// against exact crowns, 12 November). `canopy_fill.wgsl` therefore scales an
+/// unresolved crown's mass by (1 - t) / tau: tau its mean chord depth, t the
+/// mean transmittance of its chords. A uniform fog then has the gap fraction
+/// of a Poisson forest of those crowns (within 2 % in the test below, the
+/// plain fog 3-17x too dark). KERN_CANOPY_CLUMPING=0 keeps the old fog for A/B.
+fn clumping_on() -> bool { std::env::var("KERN_CANOPY_CLUMPING").as_deref() != Ok("0") }
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -496,7 +510,7 @@ impl CanopyClipmap {
         }
         if dirty != 0 {
             let fill_uniform = FillUniform { origins: layout.origins, dims: [128, 48, 128, 0],
-                mass: [self.mass_scale, 1.0 / self.mass_scale, 0.0, 0.0], state: [dirty, instance_count, self.source_crowns.ids.len() as u32,
+                mass: [self.mass_scale, 1.0 / self.mass_scale, CROWN_EXTINCTION, clumping_on() as u32 as f32], state: [dirty, instance_count, self.source_crowns.ids.len() as u32,
                     self.source_bounds as u32 | ((self.compact_support as u32)<<1)] };
             gpu.queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&fill_uniform));
             for level in 0..3 {
@@ -792,6 +806,82 @@ mod tests {
         for source in [include_str!("shaders/canopy_fill.wgsl"), include_str!("shaders/canopy_filter.wgsl")] {
             let module = naga::front::wgsl::parse_str(source).unwrap();
             naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap();
+        }
+    }
+
+    // canopy_fill.wgsl clump_share, for the unresolved limit (weight 1).
+    fn clump_share(r: [f64; 3]) -> f64 {
+        let (a, b, c) = (r[0], r[1], r[2]);
+        let p = 1.6075;
+        let surface = 4.0 * std::f64::consts::PI * (((a*b).powf(p) + (a*c).powf(p) + (b*c).powf(p)) / 3.0).powf(1.0 / p);
+        let tau = f64::from(CROWN_EXTINCTION) * 0.4 * 4.0 * (4.0 / 3.0 * std::f64::consts::PI * a * b * c) / surface;
+        // Mean transmittance over the crown's chords, as a sphere of that
+        // mean depth: depth (15/8) tau u^1.5 at area fraction u from the rim.
+        let nodes: [f64; 4] = [0.0694318442, 0.3300094782, 0.6699905218, 0.9305681558];
+        let weights: [f64; 4] = [0.1739274226, 0.3260725774, 0.3260725774, 0.1739274226];
+        let through: f64 = nodes.iter().zip(weights).map(|(u, w)| w * (-(15.0 / 8.0) * tau * u.powf(1.5)).exp()).sum();
+        (1.0 - through) / tau
+    }
+
+    #[test]
+    fn clumped_crowns_let_through_the_sky_a_uniform_fog_blocks() {
+        // A Poisson forest of the fill's proxy crowns (sphere radius 8-14 m),
+        // cosine-weighted rays from the floor, exact chord integrals of the
+        // 1 - q^2 profile. Each ray's own crowns against the same mass as
+        // a uniform layer (a cell much coarser than a crown) with and
+        // without clump_share.
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rnd = move || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; (seed >> 11) as f64 / (1u64 << 53) as f64 };
+        let side = 400.0;
+        let ext = f64::from(CROWN_EXTINCTION);
+        for cover in [0.3, 0.6, 0.9] {
+            let mut crowns = Vec::new();
+            let mut covered = 0.0;
+            while covered < cover * side * side {
+                let r = 8.0 + 6.0 * rnd();
+                let radii = [0.38 * r, 0.62 * r, 0.38 * r];
+                crowns.push(([rnd() * side, 1.25 * r, rnd() * side], radii));
+                covered += std::f64::consts::PI * radii[0] * radii[2];
+            }
+            let mut exact = 0.0;
+            let rays = 4000;
+            for _ in 0..rays {
+                let o = [100.0 + 200.0 * rnd(), 0.2, 100.0 + 200.0 * rnd()];
+                let (u, phi) = (rnd(), std::f64::consts::TAU * rnd());
+                let d = [u.sqrt() * phi.cos(), (1.0 - u).sqrt(), u.sqrt() * phi.sin()];
+                let mut tau = 0.0;
+                for (c, r) in &crowns {
+                    let oc: Vec<f64> = (0..3).map(|i| (o[i] - c[i]) / r[i]).collect();
+                    let dd: Vec<f64> = (0..3).map(|i| d[i] / r[i]).collect();
+                    let a: f64 = dd.iter().map(|v| v * v).sum();
+                    let b: f64 = 2.0 * (0..3).map(|i| oc[i] * dd[i]).sum::<f64>();
+                    let cc: f64 = oc.iter().map(|v| v * v).sum::<f64>() - 1.0;
+                    let disc = b * b - 4.0 * a * cc;
+                    if disc <= 0.0 { continue; }
+                    let t0 = ((-b - disc.sqrt()) / (2.0 * a)).max(0.0);
+                    let t1 = (-b + disc.sqrt()) / (2.0 * a);
+                    if t1 <= t0 { continue; }
+                    let f = |t: f64| -(a * t * t * t / 3.0 + b * t * t / 2.0 + cc * t);
+                    tau += ext * (f(t1) - f(t0));
+                }
+                exact += (-tau).exp();
+            }
+            // The same mass as a uniform layer: its column depth over the slant path.
+            let (mut mean_tau, mut mean_share) = (0.0, 0.0);
+            let mass = |r: &[f64; 3]| 8.0 * std::f64::consts::PI / 15.0 * r[0] * r[1] * r[2];
+            let column: f64 = crowns.iter().map(|(_, r)| mass(r)).sum::<f64>() / (side * side);
+            let column_share: f64 = crowns.iter().map(|(_, r)| mass(r) * clump_share(*r)).sum::<f64>() / (side * side);
+            for _ in 0..rays {
+                let mu = (1.0 - rnd()).sqrt().max(0.05);
+                mean_tau += (-ext * column / mu).exp();
+                mean_share += (-ext * column_share / mu).exp();
+            }
+            let fog = mean_tau / rays as f64;
+            let clumped = mean_share / rays as f64;
+            let exact = exact / rays as f64;
+            assert!(fog < 0.5 * exact, "cover {cover}: a uniform fog should block far more sky ({fog:.3} vs {exact:.3})");
+            eprintln!("cover {cover}: fog {fog:.3} clumped {clumped:.3} exact {exact:.3}");
+            assert!((clumped / exact - 1.0).abs() < 0.1, "cover {cover}: clumped {clumped:.3} vs exact {exact:.3}");
         }
     }
 }
