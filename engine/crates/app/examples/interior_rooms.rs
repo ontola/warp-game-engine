@@ -726,15 +726,21 @@ fn main() -> Result<(), String> {
     if let Some(out) = arg("--shot") {
         let frames = arg("--frames").and_then(|f| f.parse().ok()).unwrap_or(30);
         // Render every tick, so auto exposure adapts and TAA settles as in play.
+        // --size WxH (default 960x540); --turn R: yaw R rad/s during the
+        // last second, so the shot shows the camera moving as in play.
+        let [w, h] = arg("--size").and_then(|s| { let v: Vec<u32> = s.split('x').filter_map(|p| p.parse().ok()).collect(); (v.len() == 2).then(|| [v[0], v[1]]) }).unwrap_or([960, 540]);
+        let turn: f32 = arg("--turn").and_then(|t| t.parse().ok()).unwrap_or(0.0);
         let gpu = render::Gpu::new()?;
-        let mut headless = app::Headless::new(&gpu, [960, 540], TICK_HZ)?;
+        let mut headless = app::Headless::new(&gpu, [w, h], TICK_HZ)?;
         let mut rgba = Vec::new();
-        for _ in 0..frames.max(1) {
+        let frames = frames.max(1);
+        for i in 0..frames {
+            if i + TICK_HZ as u32 >= frames { game.yaw -= turn / TICK_HZ; }
             game.tick(&[Controls::default()]);
             rgba = headless.frame(&mut game)?;
         }
         eprintln!("shot: exposure EV {:?}, meter EV {:?}", game.ev.map(|e| e.0), game.ev.map(|e| e.1));
-        return render::write_png(std::path::Path::new(&out), 960, 540, &rgba);
+        return render::write_png(std::path::Path::new(&out), w, h, &rgba);
     }
     app::run(app::Config { title: "Warp: four rooms".into(), tick_hz: TICK_HZ, ..Default::default() }, &mut game)
 }

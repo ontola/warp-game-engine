@@ -9,7 +9,8 @@ use crate::Gpu;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
-/// Resolve radius in pixels: neighbours within it share their rays.
+/// Resolve radius in pixels at 1080 lines (scaled with the view height):
+/// neighbours within it share their rays.
 pub const RADIUS_PX: f32 = 6.0;
 
 #[repr(C)]
@@ -118,7 +119,7 @@ impl Sssr {
             prev_view_proj: v.prev_view_proj.to_cols_array_2d(),
             cam: v.camera.extend(v.frame as f32).to_array(),
             size: [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32],
-            params: [v.proj_scale, v.history_levels as f32, RADIUS_PX, if t.frames > 0 { 1.0 } else { 0.0 }],
+            params: [v.proj_scale, v.history_levels as f32, RADIUS_PX * h as f32 / 1080.0, if t.frames > 0 { 1.0 } else { 0.0 }],
         };
         gpu.queue.write_buffer(&t.uniform, 0, bytemuck::bytes_of(&u));
         let (prev, next) = (t.cur, 1 - t.cur);

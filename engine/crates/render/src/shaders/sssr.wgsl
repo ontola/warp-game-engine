@@ -102,11 +102,10 @@ fn brdf_cos(v: vec3<f32>, n: vec3<f32>, a: f32, l: vec3<f32>) -> f32 {
     return ggx_d(max(dot(n, h), 0.0), a) * smith_g1(nv, a) * smith_g1(nl, a) / (4.0 * nv);
 }
 
-fn hash2(p: vec2<i32>, salt: f32) -> vec2<f32> {
-    let q = vec2<f32>(p) + salt * vec2<f32>(5.588238, 5.588238);
-    let a = fract(52.9829189 * fract(dot(q, vec2<f32>(0.06711056, 0.00583715))));
-    let b = fract(52.9829189 * fract(dot(q + vec2<f32>(47.0, 17.0), vec2<f32>(0.00583715, 0.06711056))));
-    return vec2<f32>(a, b);
+fn pcg(v: u32) -> u32 {
+    let state = v * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
 }
 
 @compute @workgroup_size(8, 8)
@@ -123,7 +122,8 @@ fn resolve(@builtin(global_invocation_id) id: vec3<u32>) {
     let a = max(c.rough * c.rough, 1e-3);
     // World size of one pixel at this depth (for the plane test below).
     let pixel_m = 2.0 * length(u.cam.xyz - p) / (u.params.x * u.size.y);
-    let turn = hash2(px, u.cam.w).x * 2.0 * PI;
+    // Rotation of the reuse pattern: white noise per pixel and frame.
+    let turn = f32(pcg(u32(px.x) ^ pcg(u32(px.y) ^ pcg(u32(u.cam.w)))) >> 8u) / 16777216.0 * 2.0 * PI;
     var sum = vec3<f32>(0.0);
     var weight = 0.0;
     var hit_dist = 0.0;
@@ -200,15 +200,24 @@ fn temporal(@builtin(global_invocation_id) id: vec3<u32>) {
     if any(px >= size) { return; }
     let cur = textureLoad(resolved_in, px, 0);
     if !surface(px).valid { textureStore(temporal_out, px, vec4<f32>(0.0)); return; }
-    var lo = cur.rgb;
-    var hi = cur.rgb;
+    // Variance clipping (Salvi 2016): the history is clamped to the 3x3
+    // neighbourhood's mean plus or minus one standard deviation, which a
+    // single noisy pixel moves far less than it moves a min/max box.
+    var m1 = vec3<f32>(0.0);
+    var m2 = vec3<f32>(0.0);
+    var n = 0.0;
     for (var k = 0; k < 9; k++) {
         let q = clamp(px + vec2<i32>(k % 3 - 1, k / 3 - 1), vec2<i32>(0), size - 1);
         if !surface(q).valid { continue; }
         let s = textureLoad(resolved_in, q, 0).rgb;
-        lo = min(lo, s);
-        hi = max(hi, s);
+        m1 += s;
+        m2 += s * s;
+        n += 1.0;
     }
+    let mean = m1 / max(n, 1.0);
+    let sigma = sqrt(max(m2 / max(n, 1.0) - mean * mean, vec3<f32>(0.0)));
+    let lo = mean - sigma;
+    let hi = mean + sigma;
     var out = cur.rgb;
     if u.params.w > 0.5 {
         let d = textureLoad(depth_tex, px, 0);
