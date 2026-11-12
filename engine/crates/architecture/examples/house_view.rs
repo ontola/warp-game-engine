@@ -35,6 +35,8 @@ struct View {
     bake: Option<(Vec<Probe>, Vec<[f32; 4]>)>,
     uploaded: bool,
     name: String,
+    /// One reflection box per room; the nearest the renderer can hold are set each frame.
+    rooms: Vec<render::reflection_probes::ProbeBox>,
 }
 
 impl View {
@@ -64,7 +66,7 @@ impl View {
         };
         let mut shots = house.exterior_shots();
         shots.extend(house.room_shots());
-        let mut view = View { scene, shots, shot: 0, pos: Vec3::ZERO, yaw: 0.0, pitch: 0.0, light, bake: Some((probes, planes)), uploaded: false, name: name.to_string() };
+        let mut view = View { scene, shots, shot: 0, pos: Vec3::ZERO, yaw: 0.0, pitch: 0.0, light, bake: Some((probes, planes)), uploaded: false, name: name.to_string(), rooms: house.reflection_boxes() };
         view.go(0);
         Ok(view)
     }
@@ -113,6 +115,14 @@ impl Game for View {
                 frame.renderer().ok_or("no renderer")?.set_sky_sun_separated(frame.gpu, &probes, &planes)?;
             }
         }
+        // Live reflection probes for the rooms nearest the eye.
+        let mut near: Vec<usize> = (0..self.rooms.len()).collect();
+        let gap = |b: &render::reflection_probes::ProbeBox| (self.pos.clamp(b.min, b.max) - self.pos).length();
+        near.sort_by(|&a, &b| gap(&self.rooms[a]).total_cmp(&gap(&self.rooms[b])));
+        near.truncate(render::reflection_probes::MAX_PROBES);
+        near.sort_unstable();
+        let boxes: Vec<_> = near.iter().map(|&i| self.rooms[i]).collect();
+        frame.renderer().ok_or("no renderer")?.set_reflection_probes(&boxes)?;
         let cam = Camera { pos: self.pos, target: self.pos + self.forward(), fov_y: 60f32.to_radians(), near: 0.05 };
         let mut hud = HudDrawList::new(frame.size);
         let [w, h] = frame.size.map(|v| v as f32);

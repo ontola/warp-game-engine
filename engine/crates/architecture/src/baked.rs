@@ -23,7 +23,7 @@ pub fn to_bytes(grid: &Grid, sun: Vec3, probes: &[Probe], planes: &[[f32; 4]]) -
     let mut u = |v: u32| out.extend_from_slice(&v.to_le_bytes());
     u(VERSION);
     let head: Vec<f32> = [grid.origin.to_array().as_slice(), &[grid.cell]].concat();
-    let mut f = |out: &mut Vec<u8>, v: f32| out.extend_from_slice(&v.to_le_bytes());
+    let f = |out: &mut Vec<u8>, v: f32| out.extend_from_slice(&v.to_le_bytes());
     for v in head { f(&mut out, v); }
     for d in grid.dims { out.extend_from_slice(&d.to_le_bytes()); }
     for v in sun.to_array() { f(&mut out, v); }
