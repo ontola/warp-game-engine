@@ -286,6 +286,11 @@ fn cull_profile(scene:&crate::scene::Scene) {
     for (b,l) in ["0","1-64","65-256","257-1k","1k-4k","4k-16k","16k-64k",">64k"].iter().enumerate() {
         eprintln!("  owners with {l:>7} clusters: {:>8} owners, {:>10} clusters, {:>8} loop iterations",hist[b],clusters[b],if b==0 {0} else {clusters[b].div_ceil(64)});
     }
+    let mut branches:Vec<(u32,usize)>=scene.instances.iter().enumerate().filter(|(_,i)|i.cluster_count==0 && i.first_cluster!=0 && i.flags&32!=0)
+        .map(|(k,i)|(i.first_cluster&0xfff,k)).collect();
+    let members:u64=branches.iter().map(|b|b.0 as u64).sum();
+    branches.sort_by(|a,b|b.0.cmp(&a.0));
+    eprintln!("  virtual branch owners: {} with {members} templates; largest {:?}",branches.len(),&branches[..branches.len().min(12)]);
     sizes.sort_by(|a,b|b.0.cmp(&a.0));
     for (c,k,f) in sizes.iter().take(12) {let i=&scene.instances[*k];eprintln!("  owner {k}: {c} clusters, first {}, flags {f:#x}, radius {:.1}",i.first_cluster,i.sphere[3]);}
 }
@@ -2199,7 +2204,8 @@ impl Renderer {
         let raster_split=cluster_buckets && !bounded_draws && !crate::shaders::has_game_mask()
             && std::env::var("KERN_RASTER_SPLIT").as_deref()!=Ok("0");
         let cull_constants = [("SMALL_CLUSTER_TRIANGLES",small_cluster_triangles as f64),("INSTANCE_COUNT",scene.instances.len() as f64),("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64),
-                              ("EARLY_GRASS_CULL", u8::from(early_grass_cull) as f64), ("VOXEL_FAR_M", far_trees), ("RASTER_SPLIT", u8::from(raster_split) as f64)];
+                              ("EARLY_GRASS_CULL", u8::from(early_grass_cull) as f64), ("VOXEL_FAR_M", far_trees), ("RASTER_SPLIT", u8::from(raster_split) as f64),
+                              ("VIRTUAL_PARALLEL", u8::from(std::env::var("KERN_VIRTUAL_SERIAL_CULL").as_deref()!=Ok("1")) as f64)];
         let raster_constants = [("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64), ("VOXEL_FAR_M", far_trees), ("DIRECT_BOUNDED",u8::from(bounded_draws)as f64)];
         let cull_compute = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some(entry), layout: Some(&cull_pl), module: &cull_mod, entry_point: Some(entry),
