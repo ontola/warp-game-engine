@@ -212,7 +212,7 @@ impl CookedPlant {
                 let sweep = if material.layer < 0 && material.flags & crate::scene::THIN_FOLIAGE != 0 {
                     crate::vegetation_clod::build(&part)
                 } else { None };
-                let (mesh, policy) = if let Some(mesh) = sweep {
+                let (mut mesh, policy) = if let Some(mesh) = sweep {
                     (mesh, PrimitivePolicy::ClosedSweep)
                 } else if thin_source {
                     (ClusterMesh::build_with_policy(&[part], |_| SimplificationPolicy::ThinFoliage),
@@ -221,6 +221,9 @@ impl CookedPlant {
                     (ClusterMesh::build_with_policy(&[part], |_| SimplificationPolicy::TexturedGeometry),
                         PrimitivePolicy::TexturedGeometry)
                 };
+                // Coarse first: the cull and the source budget then stop at
+                // the first cluster too fine for the distance.
+                mesh.sort_coarse_first();
                 stats.primitive_vertices += mesh.vertices.len();
                 stats.primitive_triangles += mesh.leaf_triangles();
                 stats.primitive_bytes += mesh_bytes(&mesh);

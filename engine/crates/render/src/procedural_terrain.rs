@@ -304,7 +304,7 @@ pub fn reserve(scene: &mut Scene, capacity: u32, material: u32, seed: u32, style
         scene.clusters.push(GpuCluster {
             cull: hidden, parent: hidden, own: hidden,
             parent_error: f32::MAX, own_error: 0.0,
-            first_tri, tri_count: (CELLS * CELLS * 2) as u32, first_vert, material, depth: 0, _pad: 0,
+            first_tri, tri_count: (CELLS * CELLS * 2) as u32, first_vert, material, depth: 0, order: 0,
         });
         scene.instances.push(GpuInstance {
             rows: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
