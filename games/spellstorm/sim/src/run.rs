@@ -457,10 +457,6 @@ impl World {
         let champ = (self.run.rng.f() as f64) < 0.06 + 0.03 * depth;
         // A boss must stay a fight however many tomes the party has stacked
         // (Joep: the Drowned King went down too easily).
-        // A boss gets tougher per player than the rest: alone you face all of
-        // it and nobody raises you (Joep: two players was right, one nearly
-        // impossible). Alone 0.6, four players the same 2.05 as before.
-        let hp_scale = if kinds()[k].boss { hp_scale / (1.0 + 0.35 * (players - 1.0)) * (0.6 + 0.483 * (players - 1.0)) } else { hp_scale };
         let hp_scale = if kinds()[k].boss { hp_scale * self.boss_toughness() } else { hp_scale };
         if telegraph {
             self.summon_circle(at);
