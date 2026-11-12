@@ -181,6 +181,9 @@ mod tests {
         c.reserve_actor(&mut scene, 0).unwrap();
         let mut world = World::new(52, &[false, true]);
         let mut guns = Guns::reserve(&mut scene, 2);
+        c.pose(&world, &[], 1., Some(&guns));
+        assert!(c.hands[0].is_none(), "the spectator is not gripping a rifle");
+        world.release_cage();
         guns.tick(&world, DT);
         for duration_scale in [1., 2.] {
             let p = &mut world.players[0];
@@ -298,6 +301,7 @@ mod tests {
         let mut scene = Scene::default();
         c.reserve_actor(&mut scene, 0).unwrap();
         let mut world = World::new(3, &[false, true, true]);
+        world.release_cage();
         let mut physics = Physics::new(Vec3::new(0.0, -20.0, 0.0), 60.0);
         world.players[0].alive = false;
         c.kill(&mut physics, 0, &world.players[0], Vec3::X, false).unwrap();
@@ -385,7 +389,7 @@ impl Characters {
                 let identity = seed.wrapping_mul(0x9e3779b97f4a7c15) ^ slot as u64;
                 let profile = colors.get(slot).copied().unwrap_or_default();
                 let person = Instance::person(identity, Vec3::ZERO, 0., &Constraints {
-                    shirt: Some(profile.shirt.unwrap_or(super::PLAYER_COLORS[slot % super::PLAYER_COLORS.len()])),
+                    shirt: profile.shirt,
                     height_m: Some(1.80),
                 });
                 rig.warp_human_player(&person, profile.skin)
@@ -567,6 +571,14 @@ impl Characters {
             let body = model_transform(drawn.pos, drawn.yaw);
             if let Some(rig) = &self.locomotion { rig.look(&mut actor.palette, drawn.pitch); }
             model.pose_face(&mut actor.palette, (m.idle + (alpha - 1.) * DT).max(0.));
+            if world.in_audience(i) {
+                // Relax both wrists beside the hips before the rifle is handed over.
+                if let Some(arms) = &actor.arms {
+                    arms.apply(&mut actor.palette, Vec3::new(-0.27, 0.88, 0.09), Vec3::new(0.27, 0.88, 0.09));
+                }
+                self.hands[i] = None;
+                continue;
+            }
             let hand = body.transform_point3(socket.w_axis.truncate());
             self.hands[i] = Some(if let (Some(arms), Some(contacts)) = (&actor.arms, guns.and_then(|g| g.contacts(i, alpha))) {
                 let (support, roll) = self.animation.pose(contacts, (world.tick as f32 + alpha) * DT);

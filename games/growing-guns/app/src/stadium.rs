@@ -615,7 +615,10 @@ impl StadiumVisuals {
                 self.tv.add(scene, self.tv_mesh[1], box_xf(leg, Vec3::new(0.9, leg_height, 0.9), 0.0));
             }
         }
-        let seats = seat_layout(&mut self.rng, self.geo, &self.looks);
+        let mut seats = seat_layout(&mut self.rng, self.geo, &self.looks);
+        // The participant occupies this place in the crowd and leaves it empty at takeoff.
+        let reserved: Vec<_> = (0..world.players.len()).map(|i| a.audience_seat(i) - Vec3::Y * growing_guns::HALF_HEIGHT).collect();
+        seats.retain(|seat| reserved.iter().all(|feet| seat.pos.distance_squared(*feet) > 0.65 * 0.65));
         self.crowd.set_seats(scene, &seats, Vec2::ZERO);
         #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
         if crate::warp_humans_enabled() {

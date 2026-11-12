@@ -12,7 +12,7 @@ pub const CARDS_PER_PICK: usize = 3;
 pub const CARD_PICK_TIMEOUT: f64 = 10.0;
 pub const BOT_PICK_DELAY: f64 = 1.2;
 pub const ROUND_WIN_TO_PICK: f64 = 0.35;
-const SEAT_HOLD: f64 = 0.3;
+const SEAT_HOLD: f64 = 0.8;
 const ROUND_ENTRANCE: f64 = 2.75;
 pub const SPAWN_SPACING: f32 = 8.0;
 pub const LAVA_LEAK_START: f64 = 30.0;
@@ -187,10 +187,9 @@ impl World {
             p.ammo = p.mag_size();
             p.phoenix_charges = p.weapon.phoenix_revives;
             p.jumps_left = 2 + p.weapon.extra_jumps;
-            p.pos = entrance_position(self.arena.stadium, pick, i, 0.0);
+            p.pos = self.arena.audience_seat(i);
             p.frozen = true;
-            let to = -Vec2::new(pick.x, pick.z);
-            p.yaw = if to.length_squared() > 1e-4 { (-to.x).atan2(-to.y) } else { 0.0 };
+            p.yaw = (p.pos.x - pick.x).atan2(p.pos.z - pick.z);
         }
         self.flow.landing_spots = used;
     }
@@ -312,7 +311,7 @@ impl World {
             for (i, p) in self.players.iter_mut().enumerate() {
                 let Some(&ground) = self.flow.landing_spots.get(i) else { continue };
                 if !p.frozen || !p.alive || self.phase == Phase::MatchOver { continue; }
-                p.pos = entrance_position(self.arena.stadium, ground, i, t);
+                p.pos = entrance_position(&self.arena, ground, i, t);
                 if t + 1e-9 >= ROUND_ENTRANCE {
                     p.pos = ground;
                     p.vel = Vec3::ZERO;
@@ -563,6 +562,13 @@ impl World {
     /// The round's winner so far (versus).
     pub fn round_winner(&self) -> Option<usize> { self.flow.winner }
 
+    /// The participant is still an unarmed spectator until the first moving tick.
+    /// The half-tick margin also covers rounding in remote countdown snapshots.
+    pub fn in_audience(&self, player: usize) -> bool {
+        self.flow.entrance_elapsed.is_some_and(|t| t < SEAT_HOLD + DT64 * 0.5)
+            && self.players.get(player).is_some_and(|p| p.alive && p.frozen && !p.ghost)
+    }
+
     /// Time until the players land. The snapshot field retains its original wire name.
     pub fn cage_left(&self) -> Option<f32> { self.flow.entrance_elapsed.map(|t| (ROUND_ENTRANCE - t).max(0.0) as f32) }
 
@@ -581,15 +587,8 @@ fn landing_spot(arena: &Arena, marker: Vec3) -> Vec3 {
     Vec3::new(marker.x, surface + crate::HALF_HEIGHT, marker.z)
 }
 
-fn entrance_position(stadium: crate::stadium::Stadium, target: Vec3, player: usize, elapsed: f64) -> Vec3 {
-    let angle = if target.x == 0.0 && target.z == 0.0 {
-        player as f32 * std::f32::consts::FRAC_PI_2
-    } else {
-        target.z.atan2(target.x)
-    };
-    let segment = crate::stadium::Stadium::seg_ang();
-    let seat_angle = ((angle / segment).floor() + 0.5) * segment;
-    let seat = stadium.seat_position(seat_angle, 3 + player % 3);
+fn entrance_position(arena: &Arena, target: Vec3, player: usize, elapsed: f64) -> Vec3 {
+    let seat = arena.audience_seat(player);
     let u = ((elapsed - SEAT_HOLD) / (ROUND_ENTRANCE - SEAT_HOLD)).clamp(0.0, 1.0) as f32;
     let lift = 10.0 + 0.12 * seat.distance(target);
     seat.lerp(target, u) + Vec3::Y * (4.0 * u * (1.0 - u) * lift)
@@ -687,7 +686,8 @@ impl World {
             p.yaw = if to.length_squared() > 1e-4 { (-to.x).atan2(-to.y) } else { 0.0 };
             if let Some(elapsed) = self.flow.entrance_elapsed {
                 let pick = landing_spot(&self.arena, pick);
-                p.pos = entrance_position(self.arena.stadium, pick, i, elapsed);
+                p.pos = entrance_position(&self.arena, pick, i, elapsed);
+                p.yaw = (p.pos.x - pick.x).atan2(p.pos.z - pick.z);
                 p.frozen = true;
                 if i < self.flow.landing_spots.len() { self.flow.landing_spots[i] = pick; }
             } else {
@@ -713,7 +713,8 @@ impl World {
         p.yaw = if to.length_squared() > 1e-4 { (-to.x).atan2(-to.y) } else { 0.0 };
         if let Some(elapsed) = self.flow.entrance_elapsed {
             let pick = landing_spot(&self.arena, pick);
-            p.pos = entrance_position(self.arena.stadium, pick, i, elapsed);
+            p.pos = entrance_position(&self.arena, pick, i, elapsed);
+            p.yaw = (p.pos.x - pick.x).atan2(p.pos.z - pick.z);
             p.frozen = true;
             self.flow.landing_spots.push(pick);
         } else {
