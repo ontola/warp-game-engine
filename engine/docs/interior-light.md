@@ -98,7 +98,17 @@ no valid probe at all (a corner) the lookup is repeated unmoved, rather
 than falling back to probes that ignore the walls. A move into the next
 probe cell is kept only if none of that cell's probes is inside geometry;
 otherwise it stays in the surface point's cell, so at a room's edges it cannot
-reach the probes beyond the adjoining wall.
+reach the probes beyond the adjoining wall. With probe visibility (below)
+that cell rule is off: it clamped every move along a wall at the cell
+boundary (the next cell always holds the wall's buried probes), so pixels
+just either side of a boundary averaged only one way and the wall showed a
+step of the gradient times the mean offset at every cell (about 7 % on the
+room 2 wall). Instead a moved lookup counts for the surface point with the share of its
+trilinear weight whose probes see that point (`irradiance_coverage`); for the rest
+the unmoved lookup is used, chosen per pixel and frame. Renormalising the
+moved lookup alone would turn the faint Chebyshev visibility of probes
+behind a corner's next wall into full daylight; this way their weight stays
+faint. On an open wall the share is 1 and the blur is symmetric.
 
 Probe visibility (DDGI): `Scene::reserve_probe_visibility` and
 `Renderer::set_probe_visibility` with `room_bake::bake_visibility` give
