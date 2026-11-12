@@ -514,6 +514,14 @@ pub fn prompt(c: &mut Canvas, state: &Prompt) {
     }
 }
 
+/// Where a prompt's row starts on its screen: centred, except at the exit,
+/// which sits by the screen's left edge, so its row starts over the door
+/// and reads to the right.
+pub fn prompt_left(name: &str, width: f32, need: f32) -> f32 {
+    let centred = ((width - need) / 2.0).max(0.0).floor();
+    if name == "exit" { centred.max((width / 2.0 - 64.0).floor()) } else { centred }
+}
+
 /// A mouse seen from above, centred at `at`: the left button (or the
 /// wheel) in `lit`.
 fn mouse_icon(c: &mut Canvas, at: [f32; 2], lit: Color, wheel: bool) {
@@ -569,7 +577,7 @@ pub fn paint(c: &mut Canvas, name: &str, show: &Show, prompts: &std::collections
                 // The live lobby gives prompts a wider screen; centre the pills in it.
                 let items: Vec<(String, String)> = p.items.iter().map(|(k, t, _)| (k.clone(), t.clone())).collect();
                 let need = crate::room::prompt_size(&items)[0] as f32 - p.concealed_width();
-                c.shift(((c.size[0] - need) / 2.0).max(0.0).floor());
+                c.shift(prompt_left(&name["prompt_".len()..], c.size[0], need));
                 prompt(c, p)
             }
             None => return false,
