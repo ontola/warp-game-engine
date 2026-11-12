@@ -27,3 +27,6 @@ leak_r3_ceil   0.0,1.65,-12.8            3.1416     0.75       0000 0 0 840,300,
 # 2.5 m away: the ceiling above the spot against the spot.
 leak_door      -6.0,1.65,-11.9           -1.5708    -0.3       0000 0 1 840,470,240,135 -3.0,1.6,-11.9,1.5708,-0.3
 ceiling_wall   -6.5,1.65,-13.5           1.5708     0.0        0000 0 1 840,470,240,135
+# Reflections: the pendant over the table, room 3 dark beyond the doorway
+# (Joep's F4: the bulb smeared over the table and into room 3's floor).
+r2_pendant_table -1.5,1.65,-4.8          -0.6       -0.05      0000 0 0 840,470,240,135
