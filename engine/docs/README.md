@@ -54,6 +54,7 @@ and session notes are in the [development log](log/README.md).
 | [Live sky: time of day and weather](live-sky-controls.md) | `render::sky`: presets, the background bake, Sideways' pause menu and Growing Guns' `--sky` and `sky` command. |
 | [Exposure and HDR output](hdr-and-exposure.md) | Automatic exposure and HDR output on HDR screens: when to use them, how to turn them on, authoring for HDR. |
 | [Light in rooms](interior-light.md) | Baking sky and sun light for buildings so rooms are darker than outside: multi-bounce probes from the scene's triangles, no leaks through walls, dimmed reflections. |
+| [Buildings](architecture.md) | Homes inside and out from glTF (AtomicBuildings, IFC via IfcConvert): the `architecture` crate, room bake grid, room and outside shots. |
 | [Skin and hair](skin-and-hair.md) | Skin and hair lighting for characters: what the SKIN and HAIR materials do, masking a character, the Growing Guns review. |
 | [Temporal upscaling](temporal-upscaling.md) | The portable upscaler and DLSS modes, motion vectors for skinning and wind. |
 | [Motion blur](motion-blur.md) | Opt-in per-view motion vectors, fixed shutter, split-screen isolation and limitations. |
