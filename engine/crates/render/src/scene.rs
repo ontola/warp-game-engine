@@ -1022,10 +1022,13 @@ impl Scene {
     /// Reserve a voxel grid of the scene's surfaces over `min..max`
     /// (`rsm::SceneVoxels`, kept current by `Renderer::update_bounce_voxels`):
     /// the live bounce of clustered lights (`ClusteredLight::with_bounce`)
-    /// only travels through open space, not through walls. 0.1 m voxels
-    /// keep a 0.3 m wall three voxels thick.
-    pub fn reserve_bounce_voxels(&mut self, min: glam::Vec3, max: glam::Vec3, voxel: f32) -> Result<(), String> {
+    /// only travels through open space, not through walls. The engine picks
+    /// the voxel size: the finest that fits `rsm::VOXEL_BUDGET` voxels over
+    /// the bounds (`rsm::voxel_size`), since the bounce can pass a wall or
+    /// door only within about a voxel of a lit patch.
+    pub fn reserve_bounce_voxels(&mut self, min: glam::Vec3, max: glam::Vec3) -> Result<(), String> {
         if self.bounce_voxels.is_some() { return Err("bounce voxels are already reserved".into()); }
+        let voxel = crate::rsm::voxel_size(min, max);
         let words = crate::rsm::Voxels::words_for(min, max, voxel);
         if self.aux.is_empty() { self.aux.push(0); }
         if self.aux.len() + words >= 1 << 24 { return Err("aux too large for bounce voxels".into()); }

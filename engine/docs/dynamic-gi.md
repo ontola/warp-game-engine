@@ -120,9 +120,10 @@ renderer.set_reflection_probes(&[ProbeBox { capture: Vec3::new(0.0, 1.5, -13.5),
 ```
 
 - Capture (`reflection_probes.rs`, `Renderer::render_probe_face`): each
-  frame, after the players' views, one cube face (128x128, 90 degrees) of
-  one probe, round robin (four probes: all fresh within 24 frames, 0.2 s at
-  120 Hz). It is a view of its own: cull, raster and shade with view 0's
+  frame, after the players' views, the six cube faces (128x128, 90
+  degrees) of one probe, round robin (four probes: all fresh within 4
+  frames). All six in one frame, so a moving object (the swinging pendant)
+  is in one place in all of them. It is a view of its own: cull, raster and shade with view 0's
   lights, shadow maps, irradiance volume and live bounce settings, and no
   TAA, exposure, tone mapping, bloom, traced reflections or live bounce of
   its own. No player state changes (shadow fit, LOD, grass detail, split
@@ -147,9 +148,7 @@ renderer.set_reflection_probes(&[ProbeBox { capture: Vec3::new(0.0, 1.5, -13.5),
   0.03 ms a frame by their timestamps (cull, raster, shade of 16k pixels,
   mips and prefilter); shade reading the probes about 0.3 ms (11.0 against
   10.7 ms, `KERN_REFLECTION_PROBES=0`).
-- Open: a moving object is captured face by face at different times (the
-  swinging pendant can show twice, a few frames apart, in a mirror-like
-  floor). The capture has no live bounce of its own. Probes are for rooms:
+- Open: the capture has no live bounce of its own. Probes are for rooms:
   outdoors the sky and the irradiance volume stay the fallback.
 - `Lighting::debug` 27 shows the probes' reflection, 28 the same as a
   mirror (magenta: no box).

@@ -148,12 +148,11 @@ Owned by the foliage work; its working checklist is
 - Opt-in live reflection probes for rooms ([dynamic-gi.md](dynamic-gi.md#reflection-probes),
   `Renderer::set_reflection_probes`): one box per room, captured by the
   renderer a cube face per frame, box-projected where screen-space
-  reflections miss. Doors and lamps show in them within a fifth of a second.
+  reflections miss. Doors and lamps show in them within four frames.
 - Opt-in live first bounce of moving lights ([reflective shadow maps](interior-light.md#live-bounce-of-moving-lights),
   `ClusteredLight::with_bounce`): a flashlight or swinging lamp lights the
   room around what it hits, tested against a voxel grid of the scene so it
-  stays out of other rooms. About 1 ms at 4K. Open: leaks past a thin door
-  within 17 cm of the lit patch.
+  stays out of other rooms, past a shut 4 cm door too.
 - Opt-in [aerial perspective and volumetric clouds](atmosphere.md#aerial-perspective-and-clouds-lightingsky_volume)
   (`Lighting::sky_volume`, on in `terrain_fly`): froxel aerial perspective
   from the sky bake's LUTs, one raymarched cumulus layer with cloud shadows.

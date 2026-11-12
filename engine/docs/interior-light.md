@@ -262,9 +262,10 @@ flashlight. The ceiling lamps' bounces are baked (`bake_lights`), so they
 leave it off.
 
 ```rust
-// Once, before the renderer: the surfaces as 10 cm voxels, which the
-// bounce is tested against so it does not pass through walls.
-scene.reserve_bounce_voxels(min, max, 0.1)?;
+// Once, before the renderer: the surfaces over min..max as voxels, which
+// the bounce is tested against so it does not pass through walls. The
+// engine picks the voxel size.
+scene.reserve_bounce_voxels(min, max)?;
 // Each frame, after moving instances: the engine voxelises what moved.
 renderer.update_bounce_voxels(&gpu, &scene)?;
 renderer.set_clustered_lights(&[ClusteredLight::shadowed(torch, 20).with_bounce()])?;
@@ -275,18 +276,24 @@ renderer.set_clustered_lights(&[ClusteredLight::shadowed(torch, 20).with_bounce(
   shadow layer).
 - `rsm_gather` runs before shade at a quarter of the view's resolution (an
   eighth from 1600 lines: 480x270 at 4K). Per pixel and bouncing light it
-  takes 16 texels a frame, half uniformly over the tile and half on a disc
+  takes 8 texels a frame, half uniformly over the tile and half on a disc
   around the pixel's own projection (density 1/r, where the 1/d^2 of near
   patches is), weighted by the mixture's pdf. A texel reflects albedo x
   (the light's irradiance there at normal incidence, as shade computes it,
   cookie and profile included) x d^2 x (its solid angle); the patch lights
   the pixel as a disc, E = L A cos cos / (r^2 + A / pi). No gain is tuned.
 - Visibility: an exact walk (Amanatides and Woo) through `rsm::SceneVoxels`,
-  a bit grid of the scene's opaque triangles (conservative triangle-box
-  voxelisation, a brick level of 4^3 voxels skipped when empty). The walk
-  starts and ends a voxel diagonal out along both normals; a solid run it
-  starts or ends in, no longer than a voxel diagonal, counts as the
-  neighbouring surface in a corner. The engine keeps the grid current: per
+  a bit grid of the scene's opaque triangles, with a brick level of 4^3
+  voxels skipped when empty. The voxelisation is thin (6-separating,
+  Schwarz and Seidel 2010): a voxel whose centre lies within half a voxel
+  of a triangle's plane along its dominant axis, so a flat surface fills one
+  layer and a step from voxel face to voxel face cannot pass it. The voxel
+  size is the engine's (`rsm::voxel_size`): the finest that keeps the grid
+  within 8.4 million voxels (1 MiB of bits on the GPU, 16 MiB of counts on
+  the CPU), at least 2 cm; 5 cm over `interior_rooms`. The walk starts and
+  ends half a voxel plus half a voxel diagonal out along both normals, clear
+  of the two surfaces' own voxels; a solid run it starts or ends in, no
+  longer than that, counts as the neighbouring surface in a corner. The engine keeps the grid current: per
   voxel a count of triangles, so an instance that moved or changed mesh
   (the door, the pendant) takes its old triangles out and adds its new ones.
   Walks for texels worth less than the mean so far are taken with
@@ -298,15 +305,17 @@ renderer.set_clustered_lights(&[ClusteredLight::shadowed(torch, 20).with_bounce(
   each tap lies off the centre's plane. Shade adds it to the diffuse
   ambient through a depth-aware 2x2 upsample.
 - Cost, `interior_rooms`, RTX 5070 Ti, 4K, flashlight on the white block in
-  room 3: gather 0.70 ms, filter 0.18 ms. The `--pan` flicker test matches
+  room 3: gather 0.70 ms, filter 0.18 ms with 16 texels on the first 10 cm
+  grid; 8 texels on the 5 cm thin grid measured the same or less relative
+  to shade, under load (log 2026-11-12-thin-voxels-probe-frames). The `--pan` flicker test matches
   the bounce off (mean frame-to-frame change 0.028 against 0.029).
 - Checks (`interior_rooms.suite`): `leak_r3_ceil`, room 3's ceiling by the
   wall to room 2 with the pendant on, meters EV -2.6 as with the bounce off
   (-0.1 without the visibility walk). `ceiling_wall`: the flashlight on a
   wall 2.5 m away lights the ceiling above the spot to 3.6 % of the spot
   (linear, after tone mapping).
-- Open: light still passes a 4 cm door where the lit patch lies within a
-  voxel diagonal (17 cm) of it, as on the door's jamb (`leak_door`: 30 % of
-  the leak without visibility). A thin (6-separating) voxelisation, which
-  keeps a surface one voxel thick, would let the walk start half as far out.
+- `leak_door` (the flashlight in room 3 on the shut 4 cm door, the camera
+  in dark room 4): 3 % of the leak without visibility (0.0025 against
+  0.090 mean display luminance; 30 % with the first, conservative 10 cm
+  grid). What remains comes from patches within 7 cm of the door.
 - `KERN_RSM=0` turns it off, `KERN_RSM=open` drops the visibility walk.

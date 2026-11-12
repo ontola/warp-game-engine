@@ -1204,7 +1204,7 @@ pub struct Renderer {
     /// Live reflection probes (reflection_probes.rs): their cube arrays, and
     /// the capture view's cull and raster targets.
     probes: crate::reflection_probes::Probes,
-    probe_view: std::sync::OnceLock<ViewTargets>,
+    probe_view: std::sync::OnceLock<Vec<ViewTargets>>,
     rsm: std::sync::Mutex<crate::rsm::Targets>,
     bounce_voxels: Option<(usize, crate::rsm::VoxelBounds)>,
     scene_voxels: std::sync::Mutex<Option<crate::rsm::SceneVoxels>>,
@@ -1401,6 +1401,87 @@ struct SkyVisBake {
     inputs: wgpu::BindGroupLayout,
     output: wgpu::BindGroupLayout,
     levels: [wgpu::Buffer; 3],
+}
+
+/// The scene bind group's bindings (group 0 of shade and the passes that
+/// light like it).
+fn scene_layout_bindings() -> Vec<(u32, wgpu::BindingType)> {
+    let tex_array = wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false };
+    vec![
+                (0, storage(true)),
+                (3, storage(true)),
+                (4, storage(true)),
+                (5, storage(true)),
+                (6, tex_array),
+                (7, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+                (9, tex_array),
+                (10, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+                (12, storage(true)),
+                (13, uniform()),
+                (14, wgpu::BindingType::Texture { sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false }),
+                (15, wgpu::BindingType::Texture { sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false }),
+                (16, wgpu::BindingType::Texture { sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false }),
+                (17, uniform()),
+                (18, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Depth,view_dimension:wgpu::TextureViewDimension::D2Array,multisampled:false}),
+                (20, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
+                (21, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Sint,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
+                (22, uniform()),
+                (23, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Depth,view_dimension:wgpu::TextureViewDimension::D2Array,multisampled:false}),
+                (25, uniform()),
+                (27, uniform()),
+                (28, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (29, storage(true)),
+                (30, tex_array),
+    ]
+}
+
+/// Shade's per-view bindings (group 1).
+fn shade_layout_bindings() -> Vec<(u32, wgpu::BindingType)> {
+    vec![
+                (0, uniform()),
+                (1, storage(true)),
+                (2, uniform()),
+                (3, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (4, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (5, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (6, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison)),
+                (7, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (8, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }),
+                (10, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (11, uniform()),
+                (13, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false }),
+                (14, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+                (15, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false }),
+                (16, storage(false)),
+                (18, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (19, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (20, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (21, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (22, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba32Uint, view_dimension: wgpu::TextureViewDimension::D2 }),
+                // Reflective shadow maps (rsm.wgsl): the tiles' surfaces, the gather's
+                // output, last frame's gather, and the gather shade reads.
+                (23, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false }),
+                (24, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }),
+                (25, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (26, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                // Reflection probes (reflection_probes.rs), prefiltered.
+                (27, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::CubeArray, multisampled: false }),
+    ]
+}
+
+/// Sampled textures shade's pipeline layout binds in its busiest stage:
+/// scene (group 0) and view (group 1) as `layout_entries` gives them
+/// visibility (group 2, the clustered light grid, is a uniform). A device
+/// must offer this many per stage for the full renderer
+/// (`portable::needed`); WebGPU counts every texture a layout makes visible
+/// to a stage, used or not.
+pub(crate) fn shade_sampled_textures() -> u32 {
+    let mut scene = layout_entries(&scene_layout_bindings());
+    for entry in &mut scene { if entry.binding == 29 { entry.visibility = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE; } }
+    let all: Vec<wgpu::BindGroupLayoutEntry> = scene.into_iter().chain(layout_entries(&shade_layout_bindings())).collect();
+    [wgpu::ShaderStages::VERTEX, wgpu::ShaderStages::FRAGMENT, wgpu::ShaderStages::COMPUTE].iter()
+        .map(|&stage| all.iter().filter(|e| e.visibility.contains(stage) && matches!(e.ty, wgpu::BindingType::Texture { .. })).count() as u32)
+        .max().unwrap_or(0)
 }
 
 fn layout(gpu: &Gpu, label: &str, entries: &[(u32, wgpu::BindingType)]) -> wgpu::BindGroupLayout {
@@ -1786,8 +1867,10 @@ impl Renderer {
     /// An empty list turns them off. A moved box is captured anew.
     pub fn set_reflection_probes(&self, boxes: &[crate::reflection_probes::ProbeBox]) -> Result<(), String> { self.probes.set(boxes) }
 
-    /// Draw one probe face: cull, raster and shade as a view, with view 0's
-    /// lights, shadow maps and gi, no temporal state; then into the cubes.
+    /// Draw one probe's six faces: cull, raster and shade as views, with
+    /// view 0's lights, shadow maps and gi, no temporal state; then into
+    /// the cubes. All six in one frame, so a moving object (a swinging lamp)
+    /// sits in one place in all of them.
     #[allow(clippy::too_many_arguments)]
     fn render_probe_face(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, job: &crate::reflection_probes::Job, light: &Lighting,
             light_buf: &wgpu::Buffer, shadow_v: &wgpu::TextureView, near_view: &wgpu::TextureView, density_view: &wgpu::TextureView,
@@ -1796,16 +1879,10 @@ impl Renderer {
         const CAPACITY: u32 = 1 << 18;
         // view_uniform's slots for the capture (past any player view).
         const UNIFORMS: usize = 63;
-        let targets = self.probe_view.get_or_init(|| self.view_targets_capacity(gpu, "reflection probe", CAPACITY, RasterPass::Color, false));
+        // One set of cull targets per face: each holds its own view uniform.
+        let all = self.probe_view.get_or_init(|| (0..6).map(|_| self.view_targets_capacity(gpu, "reflection probe", CAPACITY, RasterPass::Color, false)).collect());
         let (vis, depth, hdr, scratch, indirect) = self.probes.targets(gpu);
         let f = FACE as f32;
-        let mut u = view_uniform(job.view_proj, job.capture, f * 0.5, [light.lod_pixels, NEAR, 0.0, CAPACITY as f32], [f, f, 1.0 / f, 1.0 / f], light.alpha_cut);
-        u.fog_cull = camera_fog_cull(light);
-        u.fog_cull[2] = if self.camera_sun_occlusion && light.sun_lux > 0.0 {
-            crate::terrain_visibility::camera_sun_visibility(&self.hf, job.capture, light.sun_dir) } else { 1.0 };
-        u.fog_cull[3] = excluded;
-        gpu.queue.write_buffer(&targets.uniform, 0, bytemuck::bytes_of(&u));
-        self.cull_and_raster(enc, gpu, targets, Some(vis), depth, ts, names, "probe cull", RasterPass::Color);
         // No traced reflections, live bounce or probes inside a capture.
         gi.trace[0] = 0.0;
         gi.prev_view_proj = Mat4::IDENTITY.to_cols_array_2d();
@@ -1814,6 +1891,15 @@ impl Renderer {
         gi.probes = [1.0, 0.0, 0.0, 0.0];
         let gi_buf = self.view_uniform(gpu, UNIFORMS, 0, "probe gi", bytemuck::bytes_of(&gi));
         let (rsm_store, rsm_none) = { let r = self.rsm.lock().unwrap(); (r.fallback_storage.clone(), r.fallback.clone()) };
+        for (face, targets) in all.iter().enumerate() {
+        let mut u = view_uniform(crate::reflection_probes::face_view_proj(job.capture, face), job.capture, f * 0.5,
+            [light.lod_pixels, NEAR, 0.0, CAPACITY as f32], [f, f, 1.0 / f, 1.0 / f], light.alpha_cut);
+        u.fog_cull = camera_fog_cull(light);
+        u.fog_cull[2] = if self.camera_sun_occlusion && light.sun_lux > 0.0 {
+            crate::terrain_visibility::camera_sun_visibility(&self.hf, job.capture, light.sun_dir) } else { 1.0 };
+        u.fog_cull[3] = excluded;
+        gpu.queue.write_buffer(&targets.uniform, 0, bytemuck::bytes_of(&u));
+        self.cull_and_raster(enc, gpu, targets, Some(vis), depth, ts, names, "probe cull", RasterPass::Color);
         let shade_bind = bind(gpu, &self.shade_layout, &[
             (0, targets.uniform.as_entire_binding()),
             (1, targets.visible.as_entire_binding()),
@@ -1866,8 +1952,10 @@ impl Renderer {
             pass.dispatch_workgroups(groups, groups, 1);
             drop(pass);
         }
+        self.probes.copy_face(enc, job.probe, face);
+        }
         let t = self.query.as_ref().map(|(qs, _, _)| { names.push("probe filter"); (qs, timestamp_pair(ts)) });
-        self.probes.finish(gpu, enc, job, t);
+        self.probes.finish(gpu, enc, job.probe, t);
     }
 
     /// Bring the surface voxels reserved with `Scene::reserve_bounce_voxels`
@@ -2000,33 +2088,7 @@ impl Renderer {
             anisotropy_clamp: 16,
             ..Default::default()
         });
-        let tex_array = wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false };
-        let scene_bindings = [
-                (0, storage(true)),
-                (3, storage(true)),
-                (4, storage(true)),
-                (5, storage(true)),
-                (6, tex_array),
-                (7, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
-                (9, tex_array),
-                (10, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
-                (12, storage(true)),
-                (13, uniform()),
-                (14, wgpu::BindingType::Texture { sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false }),
-                (15, wgpu::BindingType::Texture { sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false }),
-                (16, wgpu::BindingType::Texture { sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false }),
-                (17, uniform()),
-                (18, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Depth,view_dimension:wgpu::TextureViewDimension::D2Array,multisampled:false}),
-                (20, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
-                (21, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Sint,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
-                (22, uniform()),
-                (23, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Depth,view_dimension:wgpu::TextureViewDimension::D2Array,multisampled:false}),
-                (25, uniform()),
-                (27, uniform()),
-                (28, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
-                (29, storage(true)),
-                (30, tex_array),
-            ];
+        let scene_bindings = scene_layout_bindings();
         let mut scene_entries = layout_entries(&scene_bindings);
         for entry in &mut scene_entries {
             if entry.binding == 29 { entry.visibility = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE; }
@@ -2259,40 +2321,7 @@ impl Renderer {
         let mut view_raster_entries = layout_entries(&[(0, uniform()), (1, storage(true)), (2, storage(true)), (4, storage(true))]);
         for entry in &mut view_raster_entries { if entry.binding != 0 { entry.visibility = wgpu::ShaderStages::VERTEX; } }
         let view_raster_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("view raster"), entries: &view_raster_entries });
-        let shade_layout = layout(
-            gpu,
-            "shade",
-            &[
-                (0, uniform()),
-                (1, storage(true)),
-                (2, uniform()),
-                (3, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
-                (4, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
-                (5, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
-                (6, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison)),
-                (7, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
-                (8, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }),
-                (10, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
-                (11, uniform()),
-                (13, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false }),
-                (14, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
-                (15, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false }),
-                (16, storage(false)),
-                (18, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
-                (19, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
-                (20, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
-                (21, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
-                (22, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba32Uint, view_dimension: wgpu::TextureViewDimension::D2 }),
-                // Reflective shadow maps (rsm.wgsl): the tiles' surfaces, the gather's
-                // output, last frame's gather, and the gather shade reads.
-                (23, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false }),
-                (24, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }),
-                (25, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
-                (26, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
-                // Reflection probes (reflection_probes.rs), prefiltered.
-                (27, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::CubeArray, multisampled: false }),
-            ],
-        );
+        let shade_layout = layout(gpu, "shade", &shade_layout_bindings());
         let canopy = crate::canopy::CanopyClipmap::new(gpu, scene, &scene_layout)
             .expect("scene exceeds the bounded canopy representation");
         startup.mark("scene_bindings_canopy_resources");

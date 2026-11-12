@@ -148,6 +148,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [Live bounce of moving lights (reflective shadow maps), 12 November](2026-11-12-live-bounce-rsm.md)
 - [Reflections: light faces out of the mips, 12 November](2026-11-12-reflections-light-faces.md)
 - [Live reflection probes, 12 November](2026-11-12-reflection-probes.md)
+- [Thin bounce voxels, whole-probe captures, shade's texture count, 12 November](2026-11-12-thin-voxels-probe-frames.md)
 - [Traced reflections, stage 1, 8 November](2026-11-08-traced-reflections.md)
 - [Low-sun shadow diagnostics, 24 October](sun-shadow-diagnostics.md)
 - [World visibility and cached lighting, 24 October](world-lighting.md)
