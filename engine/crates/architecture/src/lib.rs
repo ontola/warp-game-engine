@@ -49,6 +49,8 @@ pub struct Element {
     /// Scene mesh and instance (rejected elements have none).
     pub mesh: Option<usize>,
     pub instance: Option<usize>,
+    /// A space's height (`extras.height`), when the file gives it.
+    pub height: Option<f32>,
 }
 
 pub struct House {
@@ -222,7 +224,8 @@ impl House {
                     idx.push(at);
                 }
             }
-            let mut element = Element { name, ifc_class, review, usage, min: lo, max: hi, mesh: None, instance: None };
+            let height = t["height"].as_f64().map(|h| h as f32);
+            let mut element = Element { name, ifc_class, review, usage, min: lo, max: hi, mesh: None, instance: None, height };
             if review != Review::Rejected && !parts.is_empty() {
                 let list: Vec<Part> = parts.iter().map(|(m, (v, i, _))| Part { vertices: v, indices: i, material: *m }).collect();
                 triangles += list.iter().map(|p| p.indices.len() / 3).sum::<usize>();
@@ -309,6 +312,25 @@ impl House {
             let pos = Vec3::new(x.0, floor + EYE, z.0);
             self.solid.hit(pos, Vec3::Y).filter(|(t, _)| *t < 6.0)?;
             Some((s.name.clone(), Camera { pos, target: Vec3::new(x.1, floor + EYE, z.1), fov_y: 60f32.to_radians(), near: 0.05 }))
+        }).collect()
+    }
+}
+
+impl House {
+    /// One reflection box per room (`Renderer::set_reflection_probes`):
+    /// the space's footprint bounds from its floor to its height (or the
+    /// ceiling straight above its middle), captured from the middle at
+    /// eye height. The renderer takes at most
+    /// `render::reflection_probes::MAX_PROBES`; a viewer picks the nearest.
+    pub fn reflection_boxes(&self) -> Vec<render::reflection_probes::ProbeBox> {
+        self.spaces().filter(|s| s.mesh.is_some()).filter_map(|s| {
+            let floor = s.max.y;
+            let mid = Vec3::new((s.min.x + s.max.x) * 0.5, floor + 0.1, (s.min.z + s.max.z) * 0.5);
+            let height = s.height.filter(|h| *h > 0.5).or_else(|| self.solid.hit(mid, Vec3::Y).map(|(t, _)| t + 0.1).filter(|h| *h < 6.0))?;
+            let (min, max) = (Vec3::new(s.min.x, floor, s.min.z), Vec3::new(s.max.x, floor + height, s.max.z));
+            if (max - min).min_element() < 0.3 { return None; }
+            let capture = Vec3::new(mid.x, floor + EYE.min(height * 0.6), mid.z);
+            Some(render::reflection_probes::ProbeBox { capture, min, max })
         }).collect()
     }
 }
