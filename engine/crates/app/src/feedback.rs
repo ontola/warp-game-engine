@@ -12,17 +12,28 @@ pub struct Picker {
     selection: Option<Ticket>,
     hdr_overlay: Option<(render::present::Presenter, wgpu::Texture)>,
     displayed: Option<[u32; 2]>,
+    hdr: Option<HdrFrame>,
 }
 
+/// The frame as an HDR screen showed it: the renderer's HDR output (copied),
+/// the game's HUD over it, and the SDR white it was shown at.
+pub struct HdrFrame {
+    pub texture: wgpu::Texture,
+    pub hud: HudDrawList,
+    pub sdr_white_nits: f32,
+    pub peak_nits: Option<f32>,
+}
+
+/// Where the frozen frame is shown: where it was, filling the window as the
+/// game did (the hint is drawn over it), so F4 does not move or rescale it.
 fn image_rect(size: [u32; 2], frame: [u32; 2]) -> [f32; 4] {
     let [w, h] = size.map(|v| v as f32);
-    let header = 32.0_f32.min(h / 3.0);
-    let scale = (w / frame[0] as f32).min((h - header) / frame[1] as f32);
+    let scale = (w / frame[0] as f32).min(h / frame[1] as f32);
     let (iw, ih) = (
         (frame[0] as f32 * scale).round(),
         (frame[1] as f32 * scale).round(),
     );
-    [(w - iw) * 0.5, header + (h - header - ih) * 0.5, iw, ih]
+    [(w - iw) * 0.5, (h - ih) * 0.5, iw, ih]
 }
 
 /// The presenter scales the complete game image to the physical window. Scale
@@ -56,7 +67,15 @@ impl Picker {
             displayed: None,
             selection: None,
             hdr_overlay: None,
+            hdr: None,
         }
+    }
+
+    /// On an HDR screen: show the frozen frame as it was shown (its HDR
+    /// output under the game's HUD) and save it as an HDR file too.
+    pub fn with_hdr(mut self, frame: HdrFrame) -> Self {
+        self.hdr = Some(frame);
+        self
     }
 
     pub(crate) fn read_rgba(&self, gpu: &Gpu) -> Vec<u8> {
@@ -144,6 +163,8 @@ impl Picker {
         let mut hud = HudDrawList::new(size);
         let [w, h] = size.map(|v| v as f32);
         let clip = [0., 0., w, h];
+        // Over the frame, which stays where it was: a band to read it on.
+        hud.rect([0., 0., w, 32.0_f32.min(h / 3.0)], [0., 0., 0., 0.6], clip);
         hud.text.push(TextRun {
             id: u64::MAX - 52,
             text: "Click or tap the problem   |   Esc to skip".into(),
@@ -206,13 +227,27 @@ impl Picker {
             )?);
         }
         let hud = hud.as_mut().unwrap();
-        hud.prepare(gpu, &Self::hud(size))?;
+        let hint = Self::hud(size);
+        match &self.hdr {
+            Some(frame) if presenter.is_hdr() => {
+                // The game's HUD as it was, the hint over it.
+                let mut list = frame.hud.clone();
+                list.begin_overlay();
+                list.text.extend(hint.text);
+                hud.prepare(gpu, &list)?
+            }
+            _ => hud.prepare(gpu, &hint)?,
+        };
         match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                 let target = frame.texture.create_view(&Default::default());
                 let rect = image_rect(size, self.frame_size());
-                if presenter.is_hdr() {
+                if let (true, Some(frame)) = (presenter.is_hdr(), &self.hdr) {
+                    // As the live frame was presented: the HDR output, the
+                    // HUD at SDR white.
+                    presenter.present_hdr(gpu, &self.texture, Some(&frame.texture), &target, Some(hud), None)?;
+                } else if presenter.is_hdr() {
                     // First compose the picker in SDR, then display it at the HUD's SDR white.
                     let format = render::present::HDR_HUD_FORMAT;
                     if self
@@ -305,12 +340,30 @@ struct Job {
     replay: Result<Option<serde_json::Value>, String>,
     annotate: Attachment,
     point: Arc<std::sync::OnceLock<[u32; 2]>>,
+    /// On an HDR screen: its HDR output, SDR white and peak (nits).
+    hdr: Option<(wgpu::Texture, f32, Option<f32>)>,
+}
+
+/// Beside `png` (the SDR picture): `<name>-hdr.png`, the frame as the HDR
+/// screen showed it, in BT.2100 PQ.
+fn save_hdr(gpu: &Gpu, png: &Path, (texture, white, peak): &(wgpu::Texture, f32, Option<f32>), meta: &mut serde_json::Value) -> Result<(), String> {
+    let stem = png.file_stem().and_then(|s| s.to_str()).unwrap_or("screenshot");
+    let path = png.with_file_name(format!("{stem}-hdr.png"));
+    render::hdr::write_pq_png(&path, texture.width(), texture.height(), &gpu.read_rgba16f(texture), *white)?;
+    meta["capture"]["hdr_png"] = serde_json::json!({
+        "png": path, "size": [texture.width(), texture.height()],
+        "encoding": "16-bit PNG, BT.2100 PQ, BT.2020 primaries (cICP 9/16/0/1), no HUD",
+        "sdr_white_nits": white, "display_peak_nits": peak,
+    });
+    meta["capture"]["pixels"] = serde_json::json!("the frame's SDR tonemap including the HUD (what an SDR screen shows; the HDR screen showed hdr_png), sRGB RGBA8");
+    Ok(())
 }
 
 impl Job {
     fn save(self) -> Result<Saved, String> {
         let size = [self.texture.width(), self.texture.height()];
         let rgba = self.gpu.read_rgba8(&self.texture);
+        let (gpu, hdr) = (self.gpu.clone(), self.hdr);
         screenshot::save_at(
             self.destination,
             screenshot::Shot {
@@ -321,7 +374,8 @@ impl Job {
             },
             |_| self.replay,
             |png, meta| {
-                let result = (self.annotate)(&self.gpu, png, meta);
+                let hdr_result = hdr.as_ref().map_or(Ok(()), |h| save_hdr(&gpu, png, h, meta));
+                let result = (self.annotate)(&self.gpu, png, meta).and(hdr_result);
                 if let Some(p) = self.point.get() {
                     meta["player_point"] = serde_json::json!(p);
                 }
@@ -404,6 +458,7 @@ impl Writer {
                     replay,
                     annotate: Box::new(annotate),
                     point: point.clone(),
+                    hdr: picker.hdr.as_ref().map(|f| (f.texture.clone(), f.sdr_white_nits, f.peak_nits)),
                 },
                 reply,
             ))
@@ -608,11 +663,11 @@ mod tests {
         let touch = WindowEvent::Touch(winit::event::Touch {
             device_id: winit::event::DeviceId::dummy(),
             phase: winit::event::TouchPhase::Started,
-            location: winit::dpi::PhysicalPosition::new(12., 30.),
+            location: winit::dpi::PhysicalPosition::new(12., 20.),
             force: None,
             id: 1,
         });
-        let expected = pixel([12., 30.], [24, 44], [24, 12]).unwrap();
+        let expected = pixel([12., 20.], [24, 44], [24, 12]).unwrap();
         assert!(matches!(
             first.input(&touch, None, [24, 44]),
             Input::Close(_)
@@ -622,7 +677,27 @@ mod tests {
         assert_eq!(crop.saved.metadata["replay"]["tick"], 123);
         assert_eq!(crop.size, [24, 12]);
         let (_open, unmarked) = shot("Open");
+        // On an HDR screen: the HDR output saved beside the SDR picture.
+        let hdr = gpu.device.create_texture(&wgpu::TextureDescriptor { label: None,
+            size: wgpu::Extent3d { width: 24, height: 12, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
+        // 4.0 (a highlight at four times SDR white) in every channel.
+        gpu.queue.write_texture(hdr.as_image_copy(), &[0x00u8, 0x44].repeat(24 * 12 * 4),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(24 * 8), rows_per_image: None }, hdr.size());
+        let mut picker = Picker::new(render::Renderer::output_texture(&gpu, 24, 12))
+            .with_hdr(HdrFrame { texture: hdr, hud: HudDrawList::new([24, 12]), sdr_white_nits: 200.0, peak_nits: Some(1000.0) });
+        let mut hdr_json = None;
+        writer.submit(&mut picker, &gpu, "Hdr", serde_json::json!({}), |png| { hdr_json = Some(png.with_extension("json")); Ok(None) }, |_, _, _| Ok(())).unwrap();
         drop(writer);
+        let meta: serde_json::Value = serde_json::from_slice(&fs::read(hdr_json.unwrap()).unwrap()).unwrap();
+        let hdr_png = meta["capture"]["hdr_png"]["png"].as_str().unwrap();
+        let bytes = fs::read(hdr_png).unwrap();
+        assert!(bytes.windows(8).any(|w| w == b"cICP\x09\x10\x00\x01"), "BT.2020 PQ full-range cICP chunk");
+        let image::DynamicImage::ImageRgb16(pixels) = image::load_from_memory(&bytes).unwrap() else { panic!("16-bit RGB") };
+        // 4 x 200 nits = 800 nits, grey stays grey through the primaries.
+        let code = pixels.get_pixel(0, 0)[0] as f32 / 65535.0;
+        assert!((code - render::hdr::pq_encode(800.0)).abs() < 1e-3, "{code}");
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(saved["player_point"], serde_json::json!(expected));
         assert_eq!(saved["extra"], true);
@@ -643,10 +718,17 @@ mod tests {
     fn selects_original_pixels_after_letterboxing() {
         let size = [120, 132];
         let frame = [200, 100];
-        assert_eq!(pixel([0., 52.], size, frame), Some([0, 0]));
-        assert_eq!(pixel([119.99, 111.99], size, frame), Some([199, 99]));
-        assert_eq!(pixel([60., 82.], size, frame), Some([100, 50]));
+        assert_eq!(pixel([0., 36.], size, frame), Some([0, 0]));
+        assert_eq!(pixel([119.99, 95.99], size, frame), Some([199, 99]));
+        assert_eq!(pixel([60., 66.], size, frame), Some([100, 50]));
         assert_eq!(pixel([60., 20.], size, frame), None);
-        assert_eq!(pixel([60., 112.], size, frame), None);
+        assert_eq!(pixel([60., 96.], size, frame), None);
+    }
+
+    #[test]
+    fn frozen_frame_stays_where_the_game_drew_it() {
+        assert_eq!(image_rect([1920, 1080], [1920, 1080]), [0., 0., 1920., 1080.]);
+        // A capped render height is shown scaled to the window, as live.
+        assert_eq!(image_rect([3840, 2160], [1920, 1080]), [0., 0., 3840., 2160.]);
     }
 }

@@ -1165,13 +1165,30 @@ impl Shell<'_> {
             let mut picker = if live.hdr {
                 let format = render::present::HDR_HUD_FORMAT;
                 let sdr = Presenter::new(&live.gpu, format);
-                feedback::Picker::new(sdr.freeze_sdr(
+                let picker = feedback::Picker::new(sdr.freeze_sdr(
                     &live.gpu,
                     picture,
                     size,
                     format,
                     Some(&live.out.hud),
-                )?)
+                )?);
+                // The frame as the HDR screen shows it, held while the
+                // player marks the point and saved as an HDR file.
+                match renderer.hdr_output().filter(|t| t.size() == picture.size()) {
+                    Some(hdr) => {
+                        let copy = live.gpu.device.create_texture(&wgpu::TextureDescriptor {
+                            label: Some("frozen HDR feedback frame"), size: hdr.size(), mip_level_count: 1, sample_count: 1,
+                            dimension: wgpu::TextureDimension::D2, format: hdr.format(),
+                            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+                            view_formats: &[] });
+                        let mut enc = live.gpu.device.create_command_encoder(&Default::default());
+                        enc.copy_texture_to_texture(hdr.as_image_copy(), copy.as_image_copy(), hdr.size());
+                        live.gpu.queue.submit([enc.finish()]);
+                        picker.with_hdr(feedback::HdrFrame { texture: copy, hud: draw.hud.clone(),
+                            sdr_white_nits: live.display.white_scale * 80.0, peak_nits: live.display.peak_nits })
+                    }
+                    None => picker,
+                }
             } else {
                 feedback::Picker::new(live.out.presenter.freeze_sdr(
                     &live.gpu,
