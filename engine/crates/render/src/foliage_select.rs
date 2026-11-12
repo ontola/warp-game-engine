@@ -273,11 +273,20 @@ impl Selector {
     /// Current seed depth must use these camera projections and current scene geometry.
     /// All camera consumers must contribute; omitted cameras are not safely occluded.
     pub(crate) fn union_consumers_budget_depth(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[ConsumerView],error:f32,branch_budget:u32,raster_budget:[u32;2],empty_depth:&wgpu::TextureView,current:Option<&[crate::foliage_seed_visibility::CameraDepth<'_>]>)->Result<(),String> {
+        self.union_consumers_marked(gpu,enc,views,error,branch_budget,raster_budget,empty_depth,current,None)
+    }
+    /// `marks`: six encoder timestamps from index i: seed classify, refine and
+    /// compact/finish begin and end (diagnostic split of the selection cost).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn union_consumers_marked(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,views:&[ConsumerView],error:f32,branch_budget:u32,raster_budget:[u32;2],empty_depth:&wgpu::TextureView,current:Option<&[crate::foliage_seed_visibility::CameraDepth<'_>]>,marks:Option<(&wgpu::QuerySet,u32)>)->Result<(),String> {
+        let mark=|enc:&mut wgpu::CommandEncoder,k:u32|if let Some((q,i))=marks {enc.write_timestamp(q,i+k);};
+        mark(enc,0);
         if let Some(cameras)=current {
             let expected=views.iter().filter(|v|v.kind==ConsumerKind::Camera).collect::<Vec<_>>();
             if cameras.len()!=expected.len() || cameras.iter().zip(expected).any(|(a,b)|a.projection!=b.projection.view_projection) {return Err("foliage seed depth must match every camera consumer".into());}
             self.seed_classifier.encode(gpu,enc,self,cameras)?;
         }
+        mark(enc,1);
         if branch_budget==0 || branch_budget>self.capacity || views.is_empty() || views.len()>32 || !error.is_finite() || error<=0. {return Err("invalid foliage consumer union".into());}
         let mut consumers=[Consumer::zeroed();32];
         for (dst,v) in consumers.iter_mut().zip(views) {
@@ -287,11 +296,14 @@ impl Selector {
             vp:views[0].projection.view_projection.to_cols_array(),previous_vp:views[0].projection.view_projection.to_cols_array(),pixels:[0.,0.,error,self.source_cluster_budget.load(std::sync::atomic::Ordering::Relaxed) as f32],counts:[self.count,self.capacity,self.deferred_capacity,u32::from(current.is_some())]}));
         enc.clear_buffer(&self.counters,0,None);enc.clear_buffer(&self.fallback,0,None);enc.clear_buffer(&self.direct,0,None);enc.clear_buffer(&self.record_consumers,0,None);
         let binds=[self.bind_work(gpu,empty_depth,0),self.bind_work(gpu,empty_depth,1)];
+        mark(enc,2);
         self.refiner.encode(gpu,enc,self);
+        mark(enc,3);mark(enc,4);
         enc.clear_buffer(&self.asset_requests,0,Some(16));
         {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);pass.set_pipeline(&self.compact_assets);pass.dispatch_workgroups((self.pinned_pages.len()as u32).div_ceil(64),1,1);}
         {let mut pass=enc.begin_compute_pass(&Default::default());pass.set_bind_group(0,&binds[0],&[]);
          pass.set_pipeline(&self.finish);pass.dispatch_workgroups(1,1,1);}
+        mark(enc,5);
         enc.copy_buffer_to_buffer(&self.counters,48,&self.arguments,12,12);Ok(())
     }
     /// Appends recovered records. This prototype requires final consumption after

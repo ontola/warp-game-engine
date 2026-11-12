@@ -4858,6 +4858,10 @@ impl Renderer {
             let time=self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS))
                 .map(|(qs,_,_)| {let first=timestamp_pair(&mut ts);timestamp_pair(&mut ts);timestamp_pair(&mut ts);(qs,first)});
             if time.is_some(){names.extend(["GPU forest selection residency","GPU forest shared poses","GPU forest materialize"]);}
+            // KERN_SPLIT_SELECTION_TIMING=1: the selection's parts, timed separately.
+            let split=time.filter(|_|std::env::var("KERN_SPLIT_SELECTION_TIMING").as_deref()==Ok("1")).map(|(qs,_)| {
+                let first=timestamp_pair(&mut ts);for _ in 0..3 {timestamp_pair(&mut ts);}
+                names.extend(["GPU forest seed classify","GPU forest refine","GPU forest compact and finish","GPU forest residency"]);(qs,first)});
             // Cameras were appended first; all following consumers are shadow
             // maps (including perspective headlights). Do not infer roles from VP.
             let mut consumers=part_animation_views.iter().copied().enumerate().map(|(i,v)| {
@@ -4873,7 +4877,7 @@ impl Renderer {
             // A camera cut needs deeper refinement than last frame's readback
             // says; encode the full round bound until the GPU reports again.
             forest.note_cameras(&views.iter().map(|v|(v.cam.pos,(v.cam.target-v.cam.pos).normalize_or_zero(),v.cam.fov_y)).collect::<Vec<_>>());
-            forest.encode_timed_depth(gpu,&mut enc,&consumers,*first_owner,time,Some(&current))?;
+            forest.encode_split(gpu,&mut enc,&consumers,*first_owner,time,Some(&current),split)?;
             enc.copy_buffer_to_buffer(&forest.choices,forest.choice_table_bytes(),&shadow_t.foliage_selection,0,forest.choice_table_bytes());
         }
         // Actual updated instance/branch spheres and wind bounds, once shared
