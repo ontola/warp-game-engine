@@ -395,6 +395,8 @@ pub enum Event {
     BulletPath { from: Vec3, to: Vec3, damage: f32 },
     /// Stable projectile identity across clipped segments. Keep BulletPath for recorded frames.
     TrackedBulletPath { id:u64, from:Vec3, to:Vec3, damage:f32 },
+    CrowdLaunched { player: usize },
+    RifleCollected { player: usize },
 }
 
 /// Presentation identity, independent of damage radius. Older recordings

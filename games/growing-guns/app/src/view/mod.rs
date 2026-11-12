@@ -425,7 +425,10 @@ impl Visuals {
 
     pub fn ion_glow(&self) -> f32 { self.ion.glow(self.clock) }
 
-    /// A player's camera with the explosion punch applied.
+    pub fn player_camera(&self, world: &World, i: usize, prev: &[Pose], alpha: f32) -> Camera {
+        self.punched(world, i, self.guns.camera(world, i, prev, alpha))
+    }
+
     pub fn lava_look(&mut self, player: usize, look: [f32; 2]) { self.players.lava_look(player, look); }
 
     pub fn punched(&self, world: &World, i: usize, cam: Camera) -> Camera {
@@ -635,6 +638,10 @@ pub fn pose(world: &World, i: usize, prev: &[Pose], alpha: f32) -> Pose {
 }
 
 pub fn camera(world: &World, i: usize, prev: &[Pose], alpha: f32) -> Camera {
+    entrance_camera(world, i, prev, alpha, 0.)
+}
+
+fn entrance_camera(world: &World, i: usize, prev: &[Pose], alpha: f32, pickup_dip: f32) -> Camera {
     let p = &world.players[i];
     let drawn = pose(world, i, prev, alpha);
     let pos = drawn.pos;
@@ -657,12 +664,14 @@ pub fn camera(world: &World, i: usize, prev: &[Pose], alpha: f32) -> Camera {
     }
     // Sniper zoom (Godot FOV 30 instead of 75).
     let fov_y = if p.zooming { 30f32.to_radians() } else { FOV_Y };
-    // Follow the landing place on the way down. Manual look stays additive and
-    // the camera is back on the player's aim when firing becomes available.
-    let pitch = if world.awaiting_rifle(i) {
-        let glance = (std::f32::consts::PI * world.entrance_flight().powf(1.6)).sin();
-        (drawn.pitch - 0.72 * glance).clamp(-1.55, 1.55)
+    // Bend to meet the rifle, then follow it up. Look input stays additive.
+    let flight = world.entrance_flight_at(alpha);
+    let reaching = if world.awaiting_rifle(i) { pov_arms::ease(0.68, 0.98, flight) } else { pickup_dip };
+    let glance = 0.72 * (std::f32::consts::PI * flight.powf(1.6)).sin();
+    let pitch = if reaching > 0. || glance > 0. {
+        (drawn.pitch - glance * (1. - reaching) - 1.16 * reaching).clamp(-1.55, 1.55)
     } else { drawn.pitch };
+    let eye = eye - Vec3::Y * (0.51 * reaching);
     Camera { pos: eye, target: eye + growing_guns::look_dir(drawn.yaw, pitch), fov_y, near: 0.05 }
 }
 

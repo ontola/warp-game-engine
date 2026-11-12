@@ -8,6 +8,7 @@
     {"ticks": 24, "capture": "arc.png", "state": "arc.json"},
     {"ticks": 84, "capture": "approach.png"},
     {"ticks": 8, "capture": "landed.png", "state": "landed.json"},
-    {"ticks": 5, "state": "playing.json"}
+    {"ticks": 9, "capture": "lifting.png"},
+    {"ticks": 18, "capture": "ready.png", "state": "playing.json", "audio": "entrance.wav"}
   ]
 }

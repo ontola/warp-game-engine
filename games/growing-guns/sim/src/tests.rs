@@ -954,7 +954,10 @@ fn crowd_launch_arcs_to_solid_ground_and_releases_on_contact() {
         });
         let start = w.players[0].pos;
         assert!((w.arena.stadium.ground(start) + HALF_HEIGHT - start.y).abs() < 0.001);
-        idle(&mut w, 48);
+        for _ in 0..48 {
+            w.step(&[]);
+            assert!(!w.events.iter().any(|e| matches!(e, Event::CrowdLaunched { .. })));
+        }
         assert_eq!(w.players[0].pos, start);
         assert!(w.awaiting_rifle(0));
         let mut remote = World::remote(w.arena.clone(), 2);
@@ -962,6 +965,7 @@ fn crowd_launch_arcs_to_solid_ground_and_releases_on_contact() {
         assert!(remote.awaiting_rifle(0));
         w.step(&[]);
         assert!(w.awaiting_rifle(0) && w.players[0].pos != start);
+        assert!(w.events.contains(&Event::CrowdLaunched { player: 0 }));
         remote.apply(w.snapshot());
         assert_eq!(remote.ground_rifle(0), w.ground_rifle(0));
         assert!(remote.awaiting_rifle(0));
@@ -978,6 +982,7 @@ fn crowd_launch_arcs_to_solid_ground_and_releases_on_contact() {
             w.step(&[Input { fire: true, ..Default::default() }]);
             assert!(!w.events.iter().any(|e| matches!(e, Event::Shot { player: 0, .. })));
         }
+        assert_eq!(w.events.iter().filter(|e| matches!(e, Event::RifleCollected { .. })).count(), w.players.len());
         for p in &w.players {
             assert!(!p.frozen && p.on_floor && p.vel == Vec3::ZERO);
             assert!(w.arena.spawns.iter().any(|s| s.x == p.pos.x && s.z == p.pos.z));
