@@ -530,12 +530,13 @@ impl Hud {
         world.players.iter().enumerate().filter(|(_, p)| !p.bot && p.offer.is_some()).map(|(k, _)| self.name(k).to_string()).collect()
     }
 
-    /// World transition: white held 0.25 s, then faded over 0.45 s.
+    /// Fade the round transition while the player is still standing in the audience.
     /// Draw before the per-view HUD, death backdrop, cards and global menus.
     pub fn round_flash(&self, d: &mut HudDrawList) {
-        if self.round_age >= 0.7 { return; }
+        const FADE: f32 = 0.15;
+        if self.round_age >= FADE { return; }
         let clip = [0.0, 0.0, d.size[0] as f32, d.size[1] as f32];
-        let t = ((self.round_age - 0.25) / 0.45).clamp(0.0, 1.0);
+        let t = (self.round_age / FADE).clamp(0.0, 1.0);
         d.begin_overlay();
         self.screen_tint(d,clip, [1.0, 0.98, 0.94, (t * std::f32::consts::FRAC_PI_2).cos()], clip,false);
     }

@@ -1,0 +1,10 @@
+{
+  "seed_note": "Run with --players 2 --seed 3 --round-entrance --sky noon.",
+  "size": [960, 540],
+  "steps": [
+    {"cmd": "bots pause", "ticks": 1, "capture": "stands.png", "state": "stands.json"},
+    {"ticks": 72, "capture": "arc.png", "state": "arc.json"},
+    {"ticks": 92, "capture": "landed.png", "state": "landed.json"},
+    {"ticks": 5, "state": "playing.json"}
+  ]
+}

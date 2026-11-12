@@ -32,7 +32,6 @@ impl NativeGame {
         if game.scripts.is_none() {return Err("Growing Guns card scripts did not load".into());}
         game.xr_stereo=true;game.no_kbm=true;game.ui.tilt=false;
         game.lan_hosts=net::lan::Listener::start(&String::from_utf8_lossy(crate::net::ALPN)).map_err(|e|eprintln!("LAN listener: {e}")).ok();
-        game.world.release_cage();
         // VR supplies an unjittered projection. Camera shake/zoom never changes it.
         game.light_mut().taa=0.0;
         game.light_mut().near_shadows=0.0;
