@@ -308,11 +308,10 @@ impl Visuals {
                 Event::Jump { player } => self.guns.jump(player),
                 Event::Shot { player, from, dir } => {
                     let p = &world.players[player];
-                    self.guns.shot(player, p);
                     // Bullets and flash leave the barrel as drawn (the sim's
                     // muzzle is the receiver): the bullets' offset fades out
                     // over their first metres (Godot aims muzzle to crosshair).
-                    let exit = self.guns.muzzle(player).unwrap_or(from + dir * 0.8);
+                    let exit = self.guns.shot(player, world, &self.fx).unwrap_or(from + dir * 0.8);
                     self.players.shot_from(player, exit - from);
                     let w = &p.weapon;
                     let last = p.ammo == 0;
