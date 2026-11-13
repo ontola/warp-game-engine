@@ -82,7 +82,7 @@ pub type PackedSourceTable=[u32;SOURCE_TABLE_BINS/2];
 pub const FULL_SOURCE_TABLE:PackedSourceTable=[SOURCE_TABLE_FULL|SOURCE_TABLE_FULL<<16;SOURCE_TABLE_BINS/2];
 /// Clusters the cull visits for this source at each bin's threshold: per
 /// member, those whose parent_error (in the member's own units: the bin over
-/// its scale) exceeds it when its mesh is sorted coarse first
+/// its scale and its largest wind refinement) exceeds it when its mesh is sorted coarse first
 /// (ClusterMesh::sort_coarse_first), all of them otherwise. Bin k bounds every
 /// cut at a threshold of at least t_k; foliage_refine books by it.
 pub(crate) fn source_work_table(scene:&Scene,source:GpuInstance)->Result<PackedSourceTable,String>{
@@ -95,8 +95,12 @@ pub(crate) fn source_work_table(scene:&Scene,source:GpuInstance)->Result<PackedS
         let end=member.first_cluster.checked_add(member.cluster_count).ok_or("source work cluster range overflow")?;
         let clusters=scene.clusters.get(member.first_cluster as usize..end as usize).ok_or("source work clusters outside catalog")?;
         let sorted=!clusters.is_empty() && clusters.iter().all(|c|c.order&crate::cluster::CLUSTERS_COARSE_FIRST!=0);
+        // The cull refines by 1 + |wind shear| (cull.wgsl coarse_stop), at
+        // most the largest shear this member's category can get.
+        let grass=crate::scene::LIVE_GRASS|crate::scene::WIND_GRASS;
+        let shear=if (member.flags|source.flags)&grass!=0 {crate::wind::MAX_GRASS_SHEAR} else {crate::wind::MAX_TREE_SHEAR};
         for (k,slot) in table.iter_mut().enumerate() {
-            let t=source_table_threshold(k)/member.scale.max(1e-12);
+            let t=source_table_threshold(k)/(member.scale.max(1e-12)*(1.0+shear));
             let count=if sorted {clusters.partition_point(|c|c.parent_error>t)as u32}else{member.cluster_count};
             *slot=slot.checked_add(count).ok_or("source cluster work overflow")?;
         }
