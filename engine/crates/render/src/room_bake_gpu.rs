@@ -210,8 +210,7 @@ pub fn bake_with(kernels: &Kernels, gpu: &Gpu, grid: &Grid, occluders: &Occluder
     let cx = Context::new(gpu, kernels, grid, occluders, placement, settings.sky_rays, settings.bounce_rays, &[])?;
     let r = settings.reflectance;
     // Buffer 1 holds the light after each step: sky_direct writes it, a
-    // bounce writes 0 and its smoothing 1 again; the last two smoothings
-    // go 1 -> 0 -> 1.
+    // bounce writes 0 and its smoothing 1 again.
     let mut probes = cx.run(|enc| {
         cx.pass(enc, PREPARE, 0, sun, r, [0, 0, 0]);
         cx.pass(enc, SKY_DIRECT, 0, sun, r, [0, 0, 0]);
@@ -220,8 +219,6 @@ pub fn bake_with(kernels: &Kernels, gpu: &Gpu, grid: &Grid, occluders: &Occluder
             cx.pass(enc, BOUNCE_SKY, 1, sun, r, [0, 0, 0]);
             cx.pass(enc, SMOOTH, 0, sun, r, [0, 0, 0]);
         }
-        if std::env::var_os("TMP_NOSMOOTH").is_none() { cx.pass(enc, SMOOTH, 1, sun, r, [0, 0, 1]);
-        cx.pass(enc, SMOOTH, 0, sun, r, [0, 0, 1]); }
     }, 1)?;
     // Inside-wall probes light nothing (z = 2), as the CPU bake marks them.
     let valid = read_valid(&cx)?;
@@ -315,15 +312,13 @@ pub fn bake_lights_with(kernels: &Kernels, gpu: &Gpu, grid: &Grid, occluders: &O
         let slots = (lights.len() - first).min(LAMPS_PER_PASS);
         let (first, n) = (first as u32, slots as u32);
         // Buffer 0 holds the light (zero at first): a bounce writes 1, its
-        // smoothing 0; the last two smoothings go 0 -> 1 -> 0.
+        // smoothing 0.
         cx.clear_probes();
         let all = cx.run(|enc| {
             for _ in 0..settings.bounces.max(1) {
                 cx.pass(enc, BOUNCE_LAMP, 0, Vec3::new(n as f32, 0.0, 0.0), r, [first, 0, 0]);
                 cx.pass(enc, SMOOTH, 1, Vec3::Y, r, [n, 0, 1]);
             }
-            if std::env::var_os("TMP_NOSMOOTH").is_none() { cx.pass(enc, SMOOTH, 0, Vec3::Y, r, [n, 0, 1]);
-            cx.pass(enc, SMOOTH, 1, Vec3::Y, r, [n, 0, 1]); }
         }, 0)?;
         out.extend(all.chunks_exact(grid.count()).take(slots).map(|set| set.to_vec()));
     }

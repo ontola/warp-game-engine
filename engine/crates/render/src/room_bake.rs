@@ -507,13 +507,12 @@ pub fn bake_placed(grid: &Grid, occluders: &Occluders, placement: &Placement, su
         // neighbours each probe sees, never across a wall.
         smooth_bounce(&mut light, &neighbours, &valid, false);
     }
-    // Two more passes on the result, the direct sky included: sky seen
-    // through a doorway (or two in a row) or bounced off a sun patch next
-    // door reaches a probe along a few rays only. A few probes then stand
-    // out from their neighbours, and trilinear shading draws each as a
-    // square at the probe spacing on the wall opposite the doorway. Real
-    // light through a door is a wide soft patch at that distance anyway.
-    for _ in 0..2 { smooth_bounce(&mut light, &neighbours, &valid, true); }
+    // No more smoothing after the last bounce: averaging probes with their
+    // neighbours carried light from a sunny room through a doorway into the
+    // next (room 2 of interior_rooms 1.75x too bright in bounced sky, 4.7x in
+    // bounced sun against `reference_probe`). Shading's gradient
+    // interpolation (irradiance_volume::pack_gradients) keeps the probe
+    // spacing from showing instead.
     for (i, p) in light.iter_mut().enumerate() {
         if !valid[i] { for a in &mut p.axes { *a = Vec3::new(0., 0., 2.); } }
     }
@@ -586,8 +585,6 @@ pub fn bake_lights_placed(grid: &Grid, occluders: &Occluders, placement: &Placem
             });
             smooth_bounce(&mut probes, &neighbours, &valid, true);
         }
-        // As in `bake`: two more passes against blotches at the probe spacing.
-        for _ in 0..2 { smooth_bounce(&mut probes, &neighbours, &valid, true); }
         out.push(probes);
     }
     Ok(out)
@@ -805,6 +802,34 @@ mod tests {
         assert!(moved > 0);
     }
 
+    /// The bake against brute-force paths (`reference_probe`): the bounced
+    /// sky and sun of the probes inside a room lit through its door, on
+    /// average. The final smoothing passes this bake once had made them
+    /// 1.75x and 4.7x too bright in `interior_rooms`.
+    #[test]
+    fn bake_matches_reference_paths() {
+        let grid = Grid { origin: Vec3::new(-3.75, 0.25, -3.75), cell: 0.5, dims: [16, 7, 16] };
+        let occ = Occluders::from_boxes(&room());
+        let sun = Vec3::new(0.3, 0.8, 0.5);
+        let settings = Settings { sky_rays: 1024, bounce_rays: 256, bounces: 3, reflectance: 0.5 };
+        let placed = Placement::new(&grid, &occ);
+        let baked = bake_placed(&grid, &occ, &placed, sun, &settings).unwrap();
+        let (mut b, mut r, mut n) = (Vec3::ZERO, Vec3::ZERO, 0.0);
+        for i in 0..grid.count() {
+            let p = placed.positions[i];
+            // Inside the room, away from its walls; every fourth probe.
+            if i % 4 != 0 || placed.inside[i] || p.x.abs() > 1.6 || p.z.abs() > 1.6 || !(0.4..2.6).contains(&p.y) { continue; }
+            let reference = reference_probe(&occ, p, sun, settings.reflectance, settings.bounces, 1500, i as u64);
+            for a in 0..6 { b += baked[i].axes[a]; r += reference.axes[a]; }
+            n += 6.0;
+        }
+        let (b, r) = (b / n, r / n);
+        eprintln!("bake {b} against reference {r} over {} probe axes", n as u32);
+        for (ch, name) in [(0, "direct sky"), (1, "bounced sky"), (2, "bounced sun")] {
+            assert!((b[ch] - r[ch]).abs() <= 0.15 * r[ch] + 1e-4, "{name}: bake {} reference {}", b[ch], r[ch]);
+        }
+    }
+
     #[test]
     fn scene_triangles_match_boxes() {
         let mut scene = Scene::default();
@@ -848,4 +873,53 @@ pub fn neighbour_masks(grid: &Grid, occluders: &Occluders, placement: &Placement
             crate::irradiance_volume::neighbour_bit([(jx - x) as i32, (jy - y) as i32, (jz - z) as i32])
         }).fold(0, |a, b| a | b)
     }).collect()
+}
+
+/// A brute-force reference for one probe: per axis, cosine-sampled paths of
+/// up to `bounces` diffuse bounces (uniform `reflectance`) against the same
+/// geometry, in [`bake`]'s units (x the sky seen directly, y the sky after
+/// bounces per unit horizontal sky illuminance, z the sun after bounces per
+/// unit sun illuminance). No probes, no gathers, no smoothing: what the bake
+/// approximates, for checking it.
+pub fn reference_probe(occluders: &Occluders, p: Vec3, sun: Vec3, reflectance: f32, bounces: usize, samples: usize, seed: u64) -> Probe {
+    let sun = sun.normalize();
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut rnd = move || { state ^= state << 13; state ^= state >> 7; state ^= state << 17; (state >> 40) as f32 / (1u64 << 24) as f32 };
+    let mut cosine = |n: Vec3| -> Vec3 {
+        let (u1, u2) = (rnd(), rnd());
+        let r = u1.sqrt();
+        let phi = std::f32::consts::TAU * u2;
+        let (t, b) = n.any_orthonormal_pair();
+        (t * (r * phi.cos()) + b * (r * phi.sin()) + n * (1.0 - u1).max(0.0).sqrt()).normalize()
+    };
+    let mut probe = Probe::default();
+    for a in 0..6 {
+        let (mut x, mut y, mut z) = (0.0f64, 0.0f64, 0.0f64);
+        for _ in 0..samples {
+            let mut d = cosine(AXES[a]);
+            let mut o = p;
+            let mut through = 1.0f32;
+            for depth in 0..=bounces {
+                match occluders.hit(o, d) {
+                    None => {
+                        if depth == 0 { x += 1.0; } else { y += through as f64; }
+                        break;
+                    }
+                    Some((t, n)) => {
+                        if depth == bounces { break; }
+                        let n = if n.dot(d) > 0.0 { -n } else { n };
+                        let at = o + d * t;
+                        let lit = n.dot(sun);
+                        if sun.y > 0.0 && lit > 0.0 && !occluders.blocked(at + n * 0.03, sun, f32::INFINITY) { z += (through * reflectance * lit) as f64; }
+                        through *= reflectance;
+                        o = at + n * 0.03;
+                        d = cosine(n);
+                    }
+                }
+            }
+        }
+        let s = samples as f64;
+        probe.axes[a] = Vec3::new((x / s) as f32, (y / s) as f32, (z / s) as f32);
+    }
+    probe
 }
