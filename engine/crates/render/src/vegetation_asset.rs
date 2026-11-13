@@ -215,7 +215,7 @@ impl CookedPlant {
                 let (mut mesh, policy) = if let Some(mesh) = sweep {
                     (mesh, PrimitivePolicy::ClosedSweep)
                 } else if thin_source {
-                    (ClusterMesh::build_with_policy(&[part], |_| SimplificationPolicy::ThinFoliage),
+                    (ClusterMesh::build_with_policy(&[part], |_| crate::cluster::thin_source_policy()),
                         PrimitivePolicy::ThinFoliage)
                 } else {
                     (ClusterMesh::build_with_policy(&[part], |_| SimplificationPolicy::TexturedGeometry),
@@ -1132,7 +1132,9 @@ fn fnv64(hash: u64, bytes: &[u8]) -> u64 {
 pub fn cook_key(what: &str) -> u64 {
     static CODE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     let code = *CODE.get_or_init(|| COOK_SOURCES.iter().fold(0xcbf29ce484222325, |h, s| fnv64(h, s.split("\n#[cfg(test)]").next().unwrap_or(s).as_bytes())));
-    fnv64(fnv64(code, &COOK_FILE_VERSION.to_le_bytes()), what.as_bytes())
+    // Environment switches that change cooked meshes (renderer-switches.md).
+    let policy = format!("{:?}", crate::cluster::thin_source_policy());
+    fnv64(fnv64(fnv64(code, &COOK_FILE_VERSION.to_le_bytes()), policy.as_bytes()), what.as_bytes())
 }
 
 impl CookedPlant {

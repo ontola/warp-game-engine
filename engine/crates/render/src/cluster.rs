@@ -65,6 +65,10 @@ pub enum SimplificationPolicy {
     /// Opaque thin leaves/needles: preserve authored orientation and attributes,
     /// and carry projected-area loss through the DAG. No alpha-test assumption.
     ThinFoliage,
+    /// ThinFoliage made of many alike separate pieces (needles, leaves):
+    /// each level keeps half of them, widened (piece_levels). Parts that are
+    /// not made that way fall back to ThinFoliage.
+    ThinPieces,
     /// Smooth terrain normals and bounded road-distance material coordinates.
     Terrain,
 }
@@ -334,6 +338,133 @@ fn protect_card_coverage(vertices: &[Vertex], groups: &mut [[f32; 5]], pending: 
     }
 }
 
+/// Thin foliage built from many small separate pieces (needles, leaves) has
+/// no edge collapse that keeps its look: merging two needles makes one bent
+/// sliver (protect_surface_orientation then charges half its edge), so a
+/// spruce brush jumped from all 896 triangles straight to 8 cm of error and
+/// stayed at full detail to ~90 m (Joep's near-tree voxel balls, 13 November:
+/// the source budget held a handful of trees). These parts thin by pieces
+/// instead, as foliage LODs do: each level keeps a spatially even half of
+/// the small pieces (Morton order, nested, so pieces never come back) and
+/// widens them across their long axis so the projected area stays the same.
+/// The error is how far coverage moves: the RMS distance from each piece to
+/// the nearest kept one, or how far a kept piece's side grows.
+/// The policy for thin plant sources (cook_source and the aggregate cook):
+/// ThinPieces, or ThinFoliage's edge collapse with KERN_THIN_PIECES=0.
+pub fn thin_source_policy() -> SimplificationPolicy {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| std::env::var("KERN_THIN_PIECES").as_deref() != Ok("0")) {
+        SimplificationPolicy::ThinPieces
+    } else {
+        SimplificationPolicy::ThinFoliage
+    }
+}
+
+/// Fewer small pieces than this keep edge collapse.
+const MIN_THIN_PIECES: usize = 32;
+
+/// Per level: the triangles (indices into the part's vertices, before the
+/// level's widening), the widening and the error. Level 0 is the part itself.
+struct PieceLevel { pieces: Vec<usize>, widen: f32, error: f32 }
+
+struct Piece { tris: Vec<u32>, verts: Vec<u32>, centre: glam::Vec3, axis: glam::Vec3, side: f32, length: f32 }
+
+fn pieces_of(part: &Part<'_>) -> Vec<Piece> {
+    let n = part.vertices.len();
+    let mut parent: Vec<u32> = (0..n as u32).collect();
+    fn find(p: &mut [u32], mut x: u32) -> u32 { while p[x as usize] != x { p[x as usize] = p[p[x as usize] as usize]; x = p[x as usize]; } x }
+    for tri in part.indices.chunks_exact(3) {
+        let a = find(&mut parent, tri[0]);
+        for &v in &tri[1..] { let b = find(&mut parent, v); parent[b as usize] = a; }
+    }
+    let mut index = std::collections::HashMap::<u32, usize>::new();
+    let mut pieces: Vec<(Vec<u32>, Vec<u32>)> = Vec::new();
+    for tri in part.indices.chunks_exact(3) {
+        let root = find(&mut parent, tri[0]);
+        let k = *index.entry(root).or_insert_with(|| { pieces.push(Default::default()); pieces.len() - 1 });
+        pieces[k].0.extend_from_slice(tri);
+        for &v in tri { if !pieces[k].1.contains(&v) { pieces[k].1.push(v); } }
+    }
+    pieces.into_iter().map(|(tris, verts)| {
+        let at = |v: u32| glam::Vec3::from(part.vertices[v as usize].pos);
+        let centre = verts.iter().map(|&v| at(v)).sum::<glam::Vec3>() / verts.len() as f32;
+        let far = |from: glam::Vec3| verts.iter().map(|&v| at(v)).max_by(|a, b| a.distance_squared(from).total_cmp(&b.distance_squared(from))).unwrap();
+        let a = far(centre);
+        let b = far(a);
+        let axis = (b - a).normalize_or(glam::Vec3::Y);
+        let side = verts.iter().map(|&v| { let d = at(v) - centre; (d - axis * d.dot(axis)).length() }).fold(0.0f32, f32::max);
+        Piece { tris, verts, centre, axis, side, length: a.distance(b) }
+    }).collect()
+}
+
+/// A piece's surface area with its sides pushed `w` times further from its axis.
+fn piece_surface(part: &Part<'_>, piece: &Piece, w: f32) -> f32 {
+    let at = |v: u32| {
+        let d = glam::Vec3::from(part.vertices[v as usize].pos) - piece.centre;
+        let along = piece.axis * d.dot(piece.axis);
+        piece.centre + along + (d - along) * w
+    };
+    piece.tris.chunks_exact(3).map(|t| (at(t[1]) - at(t[0])).cross(at(t[2]) - at(t[0])).length() * 0.5).sum()
+}
+
+fn pieces_median(pieces: &[Piece]) -> f32 {
+    let mut l: Vec<f32> = pieces.iter().map(|p| p.length).collect();
+    l.sort_by(f32::total_cmp);
+    l[l.len() / 2]
+}
+
+fn piece_levels(part: &Part<'_>) -> Option<(Vec<Piece>, Vec<PieceLevel>)> {
+    let pieces = pieces_of(part);
+    if pieces.len() < MIN_THIN_PIECES { return None; }
+    let median = pieces_median(&pieces);
+    let mut tris: Vec<usize> = pieces.iter().map(|p| p.tris.len() / 3).collect();
+    tris.sort_unstable();
+    // Needles and leaves: many alike pieces of a few triangles each.
+    if tris[tris.len() / 2] > 16 || !(median > 0.0) { return None; }
+    // Stalks and twigs (much longer than the typical piece) are structure:
+    // every level keeps them as they are.
+    let small: Vec<usize> = (0..pieces.len()).filter(|&i| pieces[i].length <= 2.0 * median).collect();
+    let structure: Vec<usize> = (0..pieces.len()).filter(|&i| pieces[i].length > 2.0 * median).collect();
+    if small.len() < MIN_THIN_PIECES { return None; }
+    let (lo, hi) = small.iter().fold((glam::Vec3::splat(f32::MAX), glam::Vec3::splat(f32::MIN)), |(lo, hi), &i| (lo.min(pieces[i].centre), hi.max(pieces[i].centre)));
+    let span = (hi - lo).max(glam::Vec3::splat(1e-9));
+    let morton = |p: glam::Vec3| -> u64 {
+        let q = ((p - lo) / span * 1023.0).round().clamp(glam::Vec3::ZERO, glam::Vec3::splat(1023.0)).as_uvec3();
+        (0..10).fold(0u64, |m, b| m | (((q.x >> b) & 1) as u64) << (3 * b) | (((q.y >> b) & 1) as u64) << (3 * b + 1) | (((q.z >> b) & 1) as u64) << (3 * b + 2))
+    };
+    let mut order = small.clone();
+    order.sort_by_key(|&i| morton(pieces[i].centre));
+    let mut levels = vec![PieceLevel { pieces: (0..pieces.len()).collect(), widen: 1.0, error: 0.0 }];
+    let mut step = 1usize;
+    // Halve until a handful of pieces is left: then the root is cheap.
+    while order.len() / (step * 2) >= 4 {
+        step *= 2;
+        let kept: Vec<usize> = order.iter().copied().step_by(step).collect();
+        // Widen until the kept pieces' surface (so their mean projected area,
+        // Cauchy) matches all of them: about order/kept for slivers, less once
+        // the widened ends show.
+        let surface = |pieces_in: &[usize], w: f32| pieces_in.iter().map(|&i| piece_surface(part, &pieces[i], w)).sum::<f32>();
+        let target = surface(&order, 1.0);
+        let (mut lo_w, mut hi_w) = (1.0f32, order.len() as f32 / kept.len() as f32);
+        for _ in 0..32 { let mid = 0.5 * (lo_w + hi_w); if surface(&kept, mid) < target { lo_w = mid } else { hi_w = mid } }
+        let widen = 0.5 * (lo_w + hi_w);
+        let mut error = levels.last().unwrap().error;
+        // How far coverage moves, as the RMS over the thinned pieces: a
+        // needle is sub-pixel long before its level is chosen, so what shows
+        // is where the brush's coverage sits on average. Its maximum (an
+        // isolated needle whose neighbour went, ~6x the mean) kept every
+        // brush at full detail to ~45 m.
+        let moves = order.iter().map(|&i| kept.iter().map(|&k| pieces[k].centre.distance_squared(pieces[i].centre)).fold(f32::MAX, f32::min));
+        error = error.max((moves.sum::<f32>() / order.len() as f32).sqrt());
+        for &k in &kept { error = error.max((widen - 1.0) * pieces[k].side); }
+        // Strictly increasing, so exactly one level matches any threshold.
+        let error = error.max(levels.last().unwrap().error * 1.0001 + 1e-9);
+        levels.push(PieceLevel { pieces: structure.iter().copied().chain(kept).collect(), widen, error });
+    }
+    if levels.len() < 2 { return None; }
+    Some((pieces, levels))
+}
+
 /// Cluster data for a mesh, ready to append to the scene buffers. Indices
 /// in `clusters` are local to these arrays; the scene rebases them.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -447,6 +578,14 @@ impl ClusterMesh {
             if part.indices.is_empty() {
                 continue;
             }
+            let mut selected_policy = policy(part);
+            if selected_policy == SimplificationPolicy::ThinPieces {
+                if let Some(levels) = locked.is_none().then(|| piece_levels(part)).flatten() {
+                    out.append_piece_levels(part, &levels);
+                    continue;
+                }
+                selected_policy = SimplificationPolicy::ThinFoliage;
+            }
             let base = out.vertices.len() as u32;
             out.vertices.extend_from_slice(part.vertices);
             let positions: &[u8] = bytemuck::cast_slice(part.vertices);
@@ -457,7 +596,6 @@ impl ClusterMesh {
             // Keep this storage alive for the synchronous clod_build callback.
             let attributes: Vec<f32>;
             let mut vertex_locks = Vec::new();
-            let selected_policy=policy(part);
             let thin_foliage=selected_policy == SimplificationPolicy::ThinFoliage;
             let coverage=selected_policy == SimplificationPolicy::AlphaCards || thin_foliage;
             let terrain=selected_policy == SimplificationPolicy::Terrain;
@@ -562,6 +700,63 @@ impl ClusterMesh {
         }
         out.sphere = bounding_sphere(&out.vertices);
         out
+    }
+
+    /// One discrete level per PieceLevel (piece_levels): every cluster of a
+    /// level shares the part's sphere for its LOD test, so a whole level
+    /// switches at once, without gaps or double draws.
+    fn append_piece_levels(&mut self, part: &Part<'_>, (pieces, levels): &(Vec<Piece>, Vec<PieceLevel>)) {
+        const MAX_VERTS: usize = 256;
+        let first_cluster = self.clusters.len();
+        let first_vertex = self.vertices.len();
+        let median = pieces_median(pieces);
+        for (k, level) in levels.iter().enumerate() {
+            // Each level owns its vertices: widened pieces move.
+            let mut remap = std::collections::HashMap::<u32, u32>::new();
+            let mut tris = Vec::new();
+            for &p in &level.pieces {
+                let piece = &pieces[p];
+                // Structure pieces (stalks) are not thinned and keep their width.
+                let w = if k > 0 && piece.length <= 2.0 * median { level.widen } else { 1.0 };
+                for &v in &piece.verts {
+                    let mut vertex = part.vertices[v as usize];
+                    let d = glam::Vec3::from(vertex.pos) - piece.centre;
+                    let along = piece.axis * d.dot(piece.axis);
+                    vertex.pos = (piece.centre + along + (d - along) * w).to_array();
+                    remap.insert(v, self.vertices.len() as u32);
+                    self.vertices.push(vertex);
+                }
+                tris.extend(piece.tris.iter().map(|v| remap[v]));
+            }
+            let own_error = level.error;
+            let parent_error = levels.get(k + 1).map(|l| l.error).unwrap_or(f32::MAX);
+            let mut at = 0;
+            while at < tris.len() {
+                let first_vert = self.cluster_verts.len() as u32;
+                let first_tri = self.tris.len() as u32;
+                let mut local = std::collections::HashMap::<u32, u32>::with_capacity(MAX_VERTS);
+                while at < tris.len() && self.tris.len() - (first_tri as usize) < MAX_TRIS {
+                    let triangle = &tris[at..at + 3];
+                    let added = triangle.iter().enumerate().filter(|&(j, index)| !local.contains_key(index) && !triangle[..j].contains(index)).count();
+                    if local.len() + added > MAX_VERTS { break; }
+                    let mut packed = 0;
+                    for (j, &index) in triangle.iter().enumerate() {
+                        let next = local.len() as u32;
+                        let cluster_index = *local.entry(index).or_insert_with(|| { self.cluster_verts.push(index); next });
+                        packed |= cluster_index << (j * 8);
+                    }
+                    self.tris.push(packed);
+                    at += 3;
+                }
+                let used: Vec<Vertex> = self.cluster_verts[first_vert as usize..].iter().map(|&v| self.vertices[v as usize]).collect();
+                let cull = bounding_sphere(&used);
+                self.clusters.push(GpuCluster { cull, parent: cull, own: cull, parent_error, own_error, first_tri,
+                    tri_count: self.tris.len() as u32 - first_tri, first_vert, material: part.material, depth: k as u32, order: 0 });
+            }
+        }
+        let sphere = bounding_sphere(&self.vertices[first_vertex..]);
+        for c in &mut self.clusters[first_cluster..] { c.parent = sphere; c.own = sphere; }
+        self.levels = self.levels.max(levels.len() as u32);
     }
 
     /// Triangles at full detail (the DAG's leaves).
@@ -798,6 +993,106 @@ impl ClusterMesh {
     /// Triangles drawn when the whole mesh is far away (the DAG's roots).
     pub fn root_triangles(&self) -> usize {
         self.clusters.iter().filter(|c| c.parent_error > 1e30).map(|c| c.tri_count as usize).sum()
+    }
+}
+
+#[cfg(test)]
+mod thin_piece_tests {
+    use super::*;
+
+    /// `count` closed needle slivers (three-sided base, one tip) in a 0.4 m
+    /// brush, plus two long stalks: a spruce brush's make-up.
+    fn brush(count: usize) -> (Vec<Vertex>, Vec<u32>) {
+        let (mut vertices, mut indices) = (Vec::new(), Vec::new());
+        let mut seed = 0x9e37_79b9u32;
+        let mut unit = move || { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; seed as f32 / u32::MAX as f32 };
+        let mut sliver = |vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, root: glam::Vec3, axis: glam::Vec3, length: f32, width: f32| {
+            let side = axis.any_orthonormal_vector();
+            let up = axis.cross(side);
+            let b = vertices.len() as u32;
+            for k in 0..3 {
+                let a = k as f32 / 3.0 * std::f32::consts::TAU;
+                let out = side * a.cos() + up * a.sin();
+                vertices.push(Vertex { pos: (root + out * width).to_array(), normal: out.to_array(), uv: [0.0, 0.0] });
+            }
+            vertices.push(Vertex { pos: (root + axis * length).to_array(), normal: axis.to_array(), uv: [0.5, 1.0] });
+            indices.extend_from_slice(&[b, b + 2, b + 1, b, b + 1, b + 3, b + 1, b + 2, b + 3, b + 2, b, b + 3]);
+        };
+        for _ in 0..count {
+            let root = glam::Vec3::new(unit() - 0.5, unit() - 0.5, unit() - 0.5) * 0.4;
+            let axis = glam::Vec3::new(unit() - 0.5, unit() - 0.5, unit() - 0.5).normalize_or(glam::Vec3::Y);
+            sliver(&mut vertices, &mut indices, root, axis, 0.02 + 0.01 * unit(), 0.0008);
+        }
+        for x in [-0.1f32, 0.1] { sliver(&mut vertices, &mut indices, glam::Vec3::new(x, -0.2, 0.0), glam::Vec3::Y, 0.4, 0.004); }
+        (vertices, indices)
+    }
+
+    fn area(mesh: &ClusterMesh, keep: impl Fn(&GpuCluster) -> bool) -> (usize, glam::Vec3) {
+        let mut total = (0, glam::Vec3::ZERO);
+        for c in mesh.clusters.iter().filter(|c| keep(c)) {
+            for packed in &mesh.tris[c.first_tri as usize..(c.first_tri + c.tri_count) as usize] {
+                let p: [glam::Vec3; 3] = std::array::from_fn(|k| glam::Vec3::from(mesh.vertices[mesh.cluster_verts[(c.first_vert + ((packed >> (8 * k)) & 255)) as usize] as usize].pos));
+                total.0 += 1;
+                total.1 += (p[1] - p[0]).cross(p[2] - p[0]).abs() * 0.5;
+            }
+        }
+        total
+    }
+
+    #[test]
+    fn needle_brushes_thin_by_needles_and_keep_their_area() {
+        let (vertices, indices) = brush(222);
+        let mesh = ClusterMesh::build_with_policy(&[Part { vertices: &vertices, indices: &indices, material: 3 }], |_| SimplificationPolicy::ThinPieces);
+        assert!(mesh.levels >= 5, "levels {}", mesh.levels);
+        let full = area(&mesh, |c| c.own_error == 0.0);
+        assert_eq!(full.0, indices.len() / 3, "level 0 is the source");
+        // Every threshold selects exactly one whole level: one depth, and the
+        // stalks in it unchanged.
+        let mut errors: Vec<f32> = mesh.clusters.iter().map(|c| c.own_error).collect();
+        errors.sort_by(f32::total_cmp);
+        errors.dedup();
+        assert_eq!(errors.len() as u32, mesh.levels, "one error per level");
+        for pair in errors.windows(2) { assert!(pair[1] > pair[0]); }
+        let mut previous = usize::MAX;
+        for &t in &errors {
+            let cut = |c: &GpuCluster| c.own_error <= t && c.parent_error > t;
+            let depths: std::collections::BTreeSet<u32> = mesh.clusters.iter().filter(|c| cut(c)).map(|c| c.depth).collect();
+            assert_eq!(depths.len(), 1, "threshold {t} mixes levels {depths:?}");
+            // All clusters of a level share one LOD sphere: they switch together.
+            let spheres: std::collections::BTreeSet<[u32; 4]> = mesh.clusters.iter().filter(|c| cut(c)).map(|c| c.own.map(f32::to_bits)).collect();
+            assert_eq!(spheres.len(), 1);
+            let (tris, a) = area(&mesh, cut);
+            assert!(tris < previous, "each level is cheaper");
+            previous = tris;
+            assert!(tris >= 2 * 12, "the stalks stay");
+            // Projected area per axis within 15% of the source (widened needles).
+            for k in 0..3 { assert!((a[k] / full.1[k] - 1.0).abs() < 0.15, "level at {t}: axis {k} area {}", a[k] / full.1[k]); }
+        }
+    }
+
+    #[test]
+    fn spruce_brushes_thin_far_nearer_than_edge_collapse() {
+        // The spruce's own needle brushes: edge collapse merged needles into
+        // bent slivers and charged ~8 cm at once, so a tree stayed at full
+        // detail to ~90 m. Thinning errors follow the needles' spacing.
+        let parts = crate::plant_growth_assembly::Parts::for_look(&crate::plant_growth_assembly::Look::norway_spruce());
+        for tuft in &parts.tufts {
+            let part = [Part { vertices: &tuft.vertices, indices: &tuft.indices, material: 0 }];
+            let first = |m: &ClusterMesh| m.clusters.iter().filter(|c| c.own_error > 0.0).map(|c| c.own_error).fold(f32::MAX, f32::min);
+            let (pieces, collapse) = (ClusterMesh::build_with_policy(&part, |_| SimplificationPolicy::ThinPieces), ClusterMesh::build_with_policy(&part, |_| SimplificationPolicy::ThinFoliage));
+            assert!(first(&pieces) * 4.0 < first(&collapse), "first thinned level at {} m, edge collapse at {} m", first(&pieces), first(&collapse));
+            assert!(pieces.levels >= 5);
+        }
+    }
+
+    #[test]
+    fn few_pieces_keep_edge_collapse() {
+        let (vertices, indices) = brush(12);
+        let part = [Part { vertices: &vertices, indices: &indices, material: 3 }];
+        let pieces = ClusterMesh::build_with_policy(&part, |_| SimplificationPolicy::ThinPieces);
+        let collapse = ClusterMesh::build_with_policy(&part, |_| SimplificationPolicy::ThinFoliage);
+        assert_eq!(bytemuck::cast_slice::<GpuCluster, u8>(&pieces.clusters), bytemuck::cast_slice::<GpuCluster, u8>(&collapse.clusters));
+        assert_eq!(pieces.tris, collapse.tris);
     }
 }
 
