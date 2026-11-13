@@ -130,6 +130,83 @@ pub fn pack_sky_emission(grid: &Grid, sky: &[Probe], emission: &[Probe], planes:
     Ok(words)
 }
 
+/// Words per probe of [`pack_gradients`]: per axis (6) the gradient (x, y,
+/// z per metre) of the sky transport's three channels and the emission's
+/// three, as half floats (6 * 6 * 3 halves).
+pub const GRADIENT_WORDS: usize = 54;
+
+/// The bit of `room_bake` neighbour masks (26 neighbours, x outermost, then
+/// y, then z, the probe itself left out) for the neighbour at `o`.
+pub fn neighbour_bit(o: [i32; 3]) -> u32 {
+    let k = (o[0] + 1) * 9 + (o[1] + 1) * 3 + (o[2] + 1);
+    1 << (if k > 13 { k - 1 } else { k })
+}
+
+/// Per probe, how the sky transport and the emission change along x, y and
+/// z, from the neighbours it sees (`neighbours`, the bake's masks): the
+/// monotonized central difference where it sees both, the one-sided one
+/// where it sees one, none where it sees neither or is invalid. Shading continues each probe's value along its
+/// gradient towards the shaded point and blends with C1 weights, so the
+/// light has no kinks at the probe spacing (shade.wgsl
+/// `irradiance_sample_at`). A header word (1), then GRADIENT_WORDS per probe.
+pub fn pack_gradients(grid: &Grid, sky: &[Probe], emission: &[Probe], neighbours: &[u32]) -> Result<Vec<u32>, String> {
+    let n = grid.count();
+    if sky.len() != n || emission.len() != n || neighbours.len() != n { return Err("one sky probe, emission probe and neighbour mask per probe".into()); }
+    let [dx, dy, _] = grid.dims.map(|d| d as i32);
+    let mut out = vec![0u32; 1 + n * GRADIENT_WORDS];
+    out[0] = 1;
+    let value = |i: usize, a: usize| -> [f32; 6] { let s = sky[i].axes[a]; let e = emission[i].axes[a]; [s.x, s.y, s.z, e.x, e.y, e.z] };
+    for i in 0..n {
+        if sky[i].axes[0].z >= 1.5 { continue; }
+        let (x, y, z) = (i as i32 % dx, (i as i32 / dx) % dy, i as i32 / (dx * dy));
+        let at = |o: [i32; 3]| ((x + o[0]) + (y + o[1]) * dx + (z + o[2]) * dx * dy) as usize;
+        let mut halves = [0u16; GRADIENT_WORDS * 2];
+        for d in 0..3 {
+            let mut plus = [0; 3];
+            plus[d] = 1;
+            let minus = plus.map(|v| -v);
+            let sees = |o: [i32; 3]| neighbours[i] & neighbour_bit(o) != 0;
+            let (p, m) = (sees(plus), sees(minus));
+            for a in 0..6 {
+                let f = value(i, a);
+                // Monotonized central (van Leer's MC limiter): the central
+                // difference where the values run one way, at most twice
+                // either one-sided slope, none at a local extreme. With one
+                // neighbour seen (a corner, a wall), that side's slope.
+                let g: [f32; 6] = match (p, m) {
+                    (true, true) => {
+                        let (fp, fm) = (value(at(plus), a), value(at(minus), a));
+                        std::array::from_fn(|q| {
+                            let (up, down) = ((fp[q] - f[q]) / grid.cell, (f[q] - fm[q]) / grid.cell);
+                            if up * down <= 0.0 { 0.0 } else { up.signum() * (0.5 * (up + down)).abs().min(2.0 * up.abs()).min(2.0 * down.abs()) }
+                        })
+                    }
+                    (true, false) => { let fp = value(at(plus), a); std::array::from_fn(|q| (fp[q] - f[q]) / grid.cell) }
+                    (false, true) => { let fm = value(at(minus), a); std::array::from_fn(|q| (f[q] - fm[q]) / grid.cell) }
+                    (false, false) => [0.0; 6],
+                };
+                for q in 0..6 { halves[(a * 6 + q) * 3 + d] = f16_signed(g[q]); }
+            }
+        }
+        for w in 0..GRADIENT_WORDS { out[1 + i * GRADIENT_WORDS + w] = halves[2 * w] as u32 | ((halves[2 * w + 1] as u32) << 16); }
+    }
+    Ok(out)
+}
+
+/// IEEE half bits of a finite value, rounded to nearest; tiny values flush
+/// to zero, large ones saturate at 65504.
+fn f16_signed(v: f32) -> u16 {
+    let v = if v.is_finite() { v.clamp(-65504.0, 65504.0) } else { 0.0 };
+    let sign = if v < 0.0 { 0x8000u16 } else { 0 };
+    let a = v.abs();
+    if a < 6.1e-5 { return sign; }
+    let bits = a.to_bits();
+    let exponent = ((bits >> 23) & 255) as i32 - 127 + 15;
+    let mantissa = (bits & 0x7f_ffff) + 0x1000;
+    let (exponent, mantissa) = if mantissa & 0x80_0000 != 0 { (exponent + 1, 0) } else { (exponent, mantissa >> 13) };
+    sign | ((exponent.clamp(1, 30) as u16) << 10) | (mantissa & 0x3ff) as u16
+}
+
 /// Trilinear lookup on the CPU (the shade pass does the same).
 pub fn sample(grid: &Grid, probes: &[Probe], p: Vec3, n: Vec3) -> Vec3 {
     let f = ((p - grid.origin) / grid.cell).clamp(Vec3::ZERO, Vec3::new(grid.dims[0] as f32 - 1.0, grid.dims[1] as f32 - 1.0, grid.dims[2] as f32 - 1.0));
