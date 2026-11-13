@@ -126,3 +126,4 @@ note linked says why. They are candidates for removal from the code.
 | `KERN_MEADOW_VISIBILITY` (+ `KERN_MEADOW_SKIP_HIDDEN_SHADE`) | Meadow visibility pass | [r47](log/meadow-work-r47.md) |
 | `KERN_MEADOW_SPATIAL_FILTER`, `KERN_MEADOW_CONTACT_AO`, `KERN_MEADOW_EDGE_SHADOW` | Grass filtering and contact shading | [r59](log/meadow-contact-ao-r59.md), [r64](log/meadow-edge-grain-r64.md) |
 | `KERN_DIRECT_DRAWS`, `KERN_SKY_TILES`, `KERN_NEAR_SUN_SOURCE`, `KERN_SOURCE_CROWN_BOUNDS`, `KERN_CANOPY_COMPACT_SUPPORT`, `KERN_LEGACY_LIGHT_LOOKAHEAD`, `KERN_VOXEL_ANTIPODAL_NORMALS` | Direct draw arguments, tiled sky light, near sun from source geometry, crown bounds, legacy headlight lookahead, voxel normals | No note describes these; read the code before relying on them. |
+| `KERN_LIGHT_DEBUG` (terrain_fly) | Lighting debug view for crops: 1 sky visibility, 2 albedo, 3 direct, 4 indirect, 5 specular | terrain_fly.rs `draw` |
