@@ -31,7 +31,7 @@ fn main() -> Result<(), String> {
     println!("dist m | px/m | booked clusters (table) | median cell px");
     for d in [5.0f32, 10., 20., 30., 45., 60., 90., 120.] {
         let ppm = ppm_at(d);
-        let t = 0.5 / ppm;
+        let t = 1.0 / ppm; // foliage_refine: sqrt(2)/error_in, error_in = sqrt(2) ppm
         use render::foliage_pages::source::{unpack_source_table, SOURCE_TABLE_FULL, SOURCE_TABLE_T0};
         let k = if t < SOURCE_TABLE_T0 { None } else { Some(((2.0 * (t / SOURCE_TABLE_T0).log2()).floor() as usize).min(23)) };
         let booked: u64 = sources.iter().map(|&i| { let full = spec.nodes[i].links[3] >> 8; match k { None => full as u64, Some(k) => { let v = unpack_source_table(&spec.source_tables[i])[k]; if v == SOURCE_TABLE_FULL { full as u64 } else { v.min(full) as u64 } } } }).sum();
