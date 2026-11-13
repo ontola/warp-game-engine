@@ -372,6 +372,15 @@ fn neighbours(@builtin(global_invocation_id) gid: vec3<u32>) {
     seen[i] = bits;
 }
 
+// A probe's bounce rays: u.mode.z (from u.mode.x in `dirs`) where `sky_flag`
+// marked it and the pass has them (the sky bounce), else u.counts.y (from
+// u.mode.w). Masks hold the larger set per probe.
+fn bounce_set(i: u32) -> vec2<u32> {
+    if u.mode.z > 0u && (seen[i] & (1u << 30u)) != 0u { return vec2<u32>(u.mode.z, u.mode.x); }
+    return vec2<u32>(u.counts.y, u.mode.w);
+}
+fn mask_stride() -> u32 { return max(u.counts.y, u.mode.z); }
+
 // Per bounce ray, what stays the same through every pass and light (the
 // shadow rays that dominated a pass): which corners see its hit (bits 0-7),
 // whether the sun does (bit 8) and light l (bit 9 + l).
@@ -381,8 +390,9 @@ fn prepare(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_inde
     if i >= probe_count() { return; }
     let o = pos[i].xyz;
     let q = dirs[u.counts.w + i];
-    for (var r = li; r < u.counts.y; r += 64u) {
-        let d = rotate(q, dirs[u.mode.w + r].xyz);
+    let rays = bounce_set(i);
+    for (var r = li; r < rays.x; r += 64u) {
+        let d = rotate(q, dirs[rays.y + r].xyz);
         let h = hit(o, d);
         var mask = 0u;
         if h.w >= 0.0 {
@@ -399,7 +409,7 @@ fn prepare(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_inde
                 if !blocked(at + n * 0.03, to, far - max(lights[l * 4u + 2u].w, 0.05)) { mask |= 1u << (9u + l); }
             }
         }
-        masks[i * u.counts.y + r] = mask;
+        masks[i * mask_stride() + r] = mask;
     }
 }
 
@@ -419,15 +429,16 @@ fn bounce(i: u32, li: u32) {
     // 24-29 sum c, 30-35 sum c^2.
     for (var k = 0u; k < 36u; k++) { red[k][li] = 0.0; }
     if valid {
-        for (var r = li; r < u.counts.y; r += 64u) {
-            let d = rotate(q, dirs[u.mode.w + r].xyz);
+        let rays = bounce_set(j);
+        for (var r = li; r < rays.x; r += 64u) {
+            let d = rotate(q, dirs[rays.y + r].xyz);
             var c: array<f32, 6>;
             for (var a = 0u; a < 6u; a++) { c[a] = max(dot(AXES[a], d), 0.0); red[24u + a][li] += c[a]; red[30u + a][li] += c[a] * c[a]; }
             let h = hit(o, d);
             if h.w < 0.0 { continue; }
             let n = select(h.xyz, -h.xyz, dot(h.xyz, d) > 0.0);
             let at = o + d * h.w;
-            let mask = masks[i * u.counts.y + r];
+            let mask = masks[i * mask_stride() + r];
             let g = gather(at + n * 0.15, n, mask, 0u);
             let sun = u.sun.xyz;
             let lit = max(dot(n, sun), 0.0);
@@ -538,7 +549,7 @@ fn bounce_lamp(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_
             if h.w < 0.0 { continue; }
             let n = select(h.xyz, -h.xyz, dot(h.xyz, d) > 0.0);
             let at = o + d * h.w;
-            let mask = masks[i * u.counts.y + r];
+            let mask = masks[i * mask_stride() + r];
             for (var s = 0u; s < slots; s++) {
                 let l = u.mode.x + s;
                 var to = vec3<f32>(0.0);

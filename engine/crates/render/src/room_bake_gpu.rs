@@ -66,6 +66,8 @@ struct Context<'a> {
     base: Uniform,
     /// Where the second direct-sky estimate's rays start in `dirs`, and how many.
     refine: (u32, u32),
+    /// Where the refined bounce rays start in `dirs`, and how many (0: none).
+    refined: (u32, u32),
     count: u32,
 }
 
@@ -100,7 +102,7 @@ fn storage(gpu: &Gpu, label: &str, contents: &[u8]) -> wgpu::Buffer {
 
 impl<'a> Context<'a> {
     fn new(gpu: &'a Gpu, kernels: &'a Kernels, grid: &Grid, occluders: &Occluders, placement: &Placement, sky_rays: usize, bounce_rays: usize,
-        lights: &[crate::headlights::LocalLight]) -> Result<Self, String> {
+        lights: &[crate::headlights::LocalLight], refined_bounce: usize) -> Result<Self, String> {
         grid.validate()?;
         if placement.positions.len() != grid.count() || placement.inside.len() != grid.count() { return Err("probe placement is for another grid".into()); }
         let count = grid.count() as u32;
@@ -122,6 +124,9 @@ impl<'a> Context<'a> {
         // Then the second direct-sky estimate's rays (sky_refine).
         let refine = (dirs.len() as u32, (sky_rays * SKY_REFINE_FACTOR) as u32);
         dirs.extend(crate::room_bake::sphere(sky_rays * SKY_REFINE_FACTOR).iter().map(|d| d.extend(0.0).to_array()));
+        // Then the bounce rays of the probes near sky (0: none).
+        let refined = (dirs.len() as u32, refined_bounce as u32);
+        dirs.extend(crate::room_bake::sphere(refined_bounce).iter().map(|d| d.extend(0.0).to_array()));
         let pos: Vec<[f32; 4]> = placement.positions.iter().zip(&placement.inside).map(|(p, inside)| [p.x, p.y, p.z, if *inside { 0.0 } else { 1.0 }]).collect();
         let mut light_words: Vec<[f32; 4]> = lights.iter().flat_map(|l| [l.position.extend(l.range_m).to_array(), l.direction.extend(l.falloff).to_array(),
             l.intensity_cd.extend(l.source_radius_m).to_array(), [l.inner_cos, l.outer_cos, 0.0, 0.0]]).collect();
@@ -130,7 +135,7 @@ impl<'a> Context<'a> {
         let slots = lights.len().clamp(1, LAMPS_PER_PASS);
         let probes_bytes = vec![0u8; grid.count() * 6 * 16 * slots];
         // One word per probe and bounce ray (prepare).
-        let mask_bytes = (grid.count() * bounce_rays * 4) as u64;
+        let mask_bytes = (grid.count() * bounce_rays.max(refined_bounce) * 4) as u64;
         if mask_bytes > u64::from(gpu.limits.max_storage_buffer_binding_size) { return Err(format!("room bake on the GPU needs {} MB per binding, the device allows {} MB", mask_bytes >> 20, gpu.limits.max_storage_buffer_binding_size >> 20)); }
         if lights.len() > 23 { return Err("room bake on the GPU takes at most 23 lights per bake".into()); }
         Ok(Self {
@@ -144,7 +149,7 @@ impl<'a> Context<'a> {
             masks: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("room bake ray masks"), size: mask_bytes, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false }),
             base: Uniform { origin: grid.origin.extend(grid.cell).to_array(), dims: [grid.dims[0], grid.dims[1], grid.dims[2], count],
                 sun: [0.0, 1.0, 0.0, 0.5], counts: [sky_rays as u32, bounce_rays as u32, tri_base, rot_base], mode: [0, lights.len() as u32, 0, bounce_base] },
-            count, refine,
+            count, refine, refined,
         })
     }
 
@@ -210,24 +215,26 @@ pub fn bake(gpu: &Gpu, grid: &Grid, occluders: &Occluders, placement: &Placement
 pub fn bake_with(kernels: &Kernels, gpu: &Gpu, grid: &Grid, occluders: &Occluders, placement: &Placement, sun: Vec3, settings: &Settings) -> Result<Vec<Probe>, String> {
     check(settings, Some(sun))?;
     let sun = sun.normalize();
-    let cx = Context::new(gpu, kernels, grid, occluders, placement, settings.sky_rays, settings.bounce_rays, &[])?;
+    let cx = Context::new(gpu, kernels, grid, occluders, placement, settings.sky_rays, settings.bounce_rays, &[], settings.bounce_rays * crate::room_bake::BOUNCE_REFINE_FACTOR)?;
     let r = settings.reflectance;
     // `cur`: the probe buffer holding the light. sky_direct writes 1; the
     // second estimate (sky_refine) 0; each bounce and denoise pass flips it.
     let cur = std::cell::Cell::new(1usize);
     let step = |enc: &mut wgpu::CommandEncoder, kernel: usize, mode: [u32; 3]| { cx.pass(enc, kernel, cur.get(), sun, r, mode); cur.set(1 - cur.get()); };
     let mut probes = cx.run(|enc| {
-        cx.pass(enc, PREPARE, 0, sun, r, [0, 0, 0]);
         cx.pass(enc, SKY_DIRECT, 0, sun, r, [0, 0, 0]);
         cx.pass(enc, NEIGHBOURS, 0, sun, r, [0, 0, 0]);
         // The direct sky again with many more rays near the probes that saw
         // any, out to SKY_HOPS steps of open space.
         for k in 0..=SKY_HOPS { cx.pass(enc, SKY_FLAG, 1, sun, r, [0, 0, k]); }
         step(enc, SKY_REFINE, [cx.refine.0, 0, cx.refine.1]);
+        // What each bounce ray sees, once; probes near sky trace
+        // BOUNCE_REFINE_FACTOR times the rays (their own set).
+        cx.pass(enc, PREPARE, 0, sun, r, [cx.refined.0, 0, cx.refined.1]);
         // Each bounce denoised by its estimates' variance before the next
         // gathers it.
         for _ in 0..settings.bounces.max(1) {
-            step(enc, BOUNCE_SKY, [0, 0, 0]);
+            step(enc, BOUNCE_SKY, [cx.refined.0, 0, cx.refined.1]);
             for _ in 0..DENOISE_PASSES { step(enc, DENOISE, [0, 0, 0]); }
         }
     }, (1 + 1 + settings.bounces.max(1) * (1 + DENOISE_PASSES)) % 2)?;
@@ -285,7 +292,7 @@ pub fn bake_geometry_with(kernels: &Kernels, gpu: &Gpu, grid: &Grid, occluders: 
     // The grid points to start from; the 256 placement directions as the
     // sky rays; a mask stride of a visibility map and a reach per probe.
     let start = Placement { positions: (0..grid.count()).map(|i| grid.position(i)).collect(), inside: vec![false; grid.count()] };
-    let cx = Context::new(gpu, kernels, grid, occluders, &start, 256, VIS + REACH_W, &[])?;
+    let cx = Context::new(gpu, kernels, grid, occluders, &start, 256, VIS + REACH_W, &[], 0)?;
     let mut enc = gpu.device.create_command_encoder(&Default::default());
     for kernel in [PLACE, VISIBILITY, PLANES, REACH, NEIGHBOURS] { cx.pass(&mut enc, kernel, 0, Vec3::Y, 0.5, [0, 0, 0]); }
     gpu.queue.submit([enc.finish()]);
@@ -311,7 +318,7 @@ pub fn bake_lights(gpu: &Gpu, grid: &Grid, occluders: &Occluders, placement: &Pl
 /// [`bake_lights`] with kernels compiled once.
 pub fn bake_lights_with(kernels: &Kernels, gpu: &Gpu, grid: &Grid, occluders: &Occluders, placement: &Placement, lights: &[crate::headlights::LocalLight], settings: &Settings) -> Result<Vec<Vec<Probe>>, String> {
     check(&Settings { sky_rays: 16, ..*settings }, None)?;
-    let cx = Context::new(gpu, kernels, grid, occluders, placement, 16, settings.bounce_rays, lights)?;
+    let cx = Context::new(gpu, kernels, grid, occluders, placement, 16, settings.bounce_rays, lights, 0)?;
     let r = settings.reflectance;
     let mut out = Vec::with_capacity(lights.len());
     // Valid probes are the placement's (not inside); seen once for all lights.

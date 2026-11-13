@@ -264,6 +264,8 @@ Its noise is removed where it comes from:
   window is a tiny solid angle that 2,048 rays hit a few times; that noise
   spread through every bounce's gathers as blotches no later filter could
   tell from light.
+- Those probes also gather each bounce with twice the rays (their own
+  set): bounced sky and sun reach them through the same openings.
 - Each bounce (sky and sun, and each lamp) records the variance of its
   estimate per probe and axis (the rays' weighted variance times
   sum c^2 / (sum c)^2) and is filtered three times over the neighbours a

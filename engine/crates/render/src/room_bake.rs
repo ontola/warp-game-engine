@@ -324,6 +324,8 @@ fn half(v: f32) -> f32 { crate::hdr::half_to_f32(f16_bits(v) as u16) }
 pub const SKY_HOPS: usize = 4;
 /// Rays of that second estimate, per first-estimate ray.
 pub const SKY_REFINE_FACTOR: usize = 8;
+/// Bounce rays of the probes near sky, per bounce ray.
+pub const BOUNCE_REFINE_FACTOR: usize = 2;
 /// Iterations of the variance-guided filter after each sky bounce.
 pub const DENOISE_PASSES: usize = 3;
 
@@ -533,6 +535,9 @@ pub fn bake_placed(grid: &Grid, occluders: &Occluders, placement: &Placement, su
         each(&mut near_sky, |i, on| { if !*on && valid[i] { *on = neighbours[i].iter().any(|&(j, _)| previous[j]); } });
     }
     let refine_dirs = sphere(sky_rays * SKY_REFINE_FACTOR);
+    // Bounce rays: BOUNCE_REFINE_FACTOR times as many (their own set) for the
+    // probes near sky, whose bounced sky and sun come through openings too.
+    let refined_dirs = sphere(bounce_rays * BOUNCE_REFINE_FACTOR);
     each(&mut probes, |i, p| {
         if !near_sky[i] { return; }
         let origin = pos[i];
@@ -550,7 +555,7 @@ pub fn bake_placed(grid: &Grid, occluders: &Occluders, placement: &Placement, su
         if !valid[i] { return; }
         let origin = pos[i];
         let rot = probe_rotation(i);
-        let dirs: Vec<Vec3> = bounce_dirs.iter().map(|d| rot * *d).collect();
+        let dirs: Vec<Vec3> = (if near_sky[i] { &refined_dirs } else { &bounce_dirs }).iter().map(|d| rot * *d).collect();
         let mut denom = [0f32; 6];
         for d in &dirs { for a in 0..6 { denom[a] += AXES[a].dot(*d).max(0.); } }
         for d in &dirs {
@@ -570,7 +575,7 @@ pub fn bake_placed(grid: &Grid, occluders: &Occluders, placement: &Placement, su
         if !valid[i] { return; }
         let rot = probe_rotation(i);
         let (mut sum, mut sum2) = ([0f32; 6], [0f32; 6]);
-        for d in bounce_dirs.iter().map(|d| rot * *d) { for a in 0..6 { let c = AXES[a].dot(d).max(0.); sum[a] += c; sum2[a] += c * c; } }
+        for d in (if near_sky[i] { &refined_dirs } else { &bounce_dirs }).iter().map(|d| rot * *d) { for a in 0..6 { let c = AXES[a].dot(d).max(0.); sum[a] += c; sum2[a] += c * c; } }
         for a in 0..6 { share[a] = sum2[a] / (sum[a] * sum[a]).max(1e-12); }
     });
     // Gather: each bounce lights the surfaces with the previous one's probes.

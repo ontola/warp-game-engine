@@ -67,3 +67,15 @@ shut door's gaps).
   (through the door) 17.36 against 17.21.
 - GPU and CPU bakes agree to 8.7e-5 of the brightest value (half-float
   standard deviations in the filter).
+
+## The last patch
+
+With the variance filter a soft light patch stayed on room 2's back wall
+(`r2_box`). A reference row across it (24 points, 20,000 paths each)
+shows it is real: bounced daylight through the doorway from room 1, sky
+bounce about 0.0010-0.0014 opposite the door against 0.0003 at the ends;
+the bake follows it, a little wider at the 0.5 m spacing. The noise
+around it went with twice the bounce rays for the probes near sky (probe
+volume only, RSM off, fixed EV: 1x cloudy, 2x and 4x clean; startup bake
+5.6 / 6.4 / 9.0 s). Kept 2x. Startup bake 6.3 s with the demo window on
+the same GPU.
