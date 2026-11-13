@@ -428,3 +428,174 @@ fn smooth_light(@builtin(global_invocation_id) gid: vec3<u32>) {
         out[i * 6u + a] = vec4<f32>(select(own.x, s.x, u.mode.z == 1u), s.y, s.z, 0.0);
     }
 }
+
+// ---- Probe geometry (room_bake_gpu::bake_geometry): placement, visibility
+// maps, reach, separation planes. A geometry bake's sky rays are the 256
+// placement directions and its mask stride (u.counts.y) holds a probe's
+// visibility map (64 words) and reach (16 words).
+
+// Where probe i sits and whether it is still inside (room_bake.rs
+// `probe_positions` and `Placement::new`): xyz, w 1 when not inside.
+@compute @workgroup_size(64)
+fn place(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x + gid.y * 65535u * 64u;
+    if i >= probe_count() { return; }
+    let behind = 0.03;
+    let near = 0.2 * u.origin.w;
+    let most = vec3<f32>(0.45 * u.origin.w);
+    let base = grid_position(i);
+    var offset = vec3<f32>(0.0);
+    for (var it = 0; it < 4; it++) {
+        let o = base + offset;
+        var back = 0u;
+        var nb = vec4<f32>(0.0, 0.0, 0.0, 1e30);
+        var nf = vec4<f32>(0.0, 0.0, 0.0, 1e30);
+        for (var r = 0u; r < u.counts.x; r++) {
+            let d = dirs[r].xyz;
+            let h = hit(o - d * behind, d);
+            if h.w < 0.0 { continue; }
+            let t = max(h.w - behind, 0.0);
+            if dot(h.xyz, d) > 0.0 {
+                back += 1u;
+                if t < nb.w { nb = vec4<f32>(d, t); }
+            } else if t < nf.w { nf = vec4<f32>(d, t); }
+        }
+        var step: vec3<f32>;
+        if back * 4u >= u.counts.x { step = nb.xyz * (nb.w + near); }
+        else if nf.w < near { step = -nf.xyz * (near - nf.w); }
+        else { break; }
+        offset = clamp(offset + step, -most, most);
+    }
+    let p = base + offset;
+    var back = 0u;
+    for (var r = 0u; r < u.counts.x; r++) {
+        let d = dirs[r].xyz;
+        let h = hit(p, d);
+        if h.w >= 0.0 && dot(h.xyz, d) > 0.0 { back += 1u; }
+    }
+    pos[i] = vec4<f32>(p, select(1.0, 0.0, back * 4u >= u.counts.x));
+}
+
+// IEEE half bits of a finite non-negative value, as room_bake.rs `f16_bits`
+// rounds it (to nearest; tiny values flush to zero).
+fn f16_bits(value: f32) -> u32 {
+    let v = clamp(value, 0.0, 65504.0);
+    if v < 6.1e-5 { return 0u; }
+    let bits = bitcast<u32>(v);
+    var e = i32((bits >> 23u) & 255u) - 127 + 15;
+    var m = (bits & 0x7fffffu) + 0x1000u;
+    if (m & 0x800000u) != 0u { e += 1; m = 0u; } else { m = m >> 13u; }
+    return (u32(clamp(e, 1, 30)) << 10u) | (m & 0x3ffu);
+}
+
+// DDGI's octahedral direction (room_bake.rs `octahedral_direction`).
+fn octahedral(uv: vec2<f32>) -> vec3<f32> {
+    let f = uv * 2.0 - 1.0;
+    var n = vec3<f32>(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
+    if n.z < 0.0 {
+        let x = n.x;
+        let y = n.y;
+        n.x = (1.0 - abs(y)) * select(-1.0, 1.0, x >= 0.0);
+        n.y = (1.0 - abs(x)) * select(-1.0, 1.0, y >= 0.0);
+    }
+    return normalize(n);
+}
+
+// One texel of probe i's 8x8 visibility map per thread: mean and mean
+// squared distance to the nearest surface over 4 rays, capped at 1.5 cells.
+@compute @workgroup_size(64)
+fn visibility_map(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    let i = probe_index(wid);
+    if i >= probe_count() { return; }
+    let q = pos[i];
+    var word = 0u;
+    if q.w > 0.5 {
+        let cap = u.origin.w * 1.5;
+        let tx = f32(li % 8u);
+        let ty = f32(li / 8u);
+        var sum = 0.0;
+        var sum2 = 0.0;
+        for (var s = 0u; s < 4u; s++) {
+            let jitter = vec2<f32>(0.25 + 0.5 * f32(s & 1u), 0.25 + 0.5 * f32(s >> 1u));
+            let d = octahedral((vec2<f32>(tx, ty) + jitter) / 8.0);
+            let h = hit(q.xyz, d);
+            let t = select(cap, min(h.w, cap), h.w >= 0.0);
+            sum += t;
+            sum2 += t * t;
+        }
+        word = f16_bits(sum / 4.0) | (f16_bits(sum2 / 4.0) << 16u);
+    }
+    masks[i * u.counts.y + li] = word;
+}
+
+// The plane of the nearest surface probe i faces along 26 directions, in
+// out[i * 6] (room_bake.rs `separation_planes`).
+@compute @workgroup_size(64)
+fn planes(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x + gid.y * 65535u * 64u;
+    if i >= probe_count() { return; }
+    let p = pos[i].xyz;
+    var nearest = u.origin.w * 1.75;
+    var plane = vec4<f32>(0.0);
+    for (var x = -1; x <= 1; x++) { for (var y = -1; y <= 1; y++) { for (var z = -1; z <= 1; z++) {
+        if x == 0 && y == 0 && z == 0 { continue; }
+        let d = normalize(vec3<f32>(f32(x), f32(y), f32(z)));
+        let h = hit(p, d);
+        if h.w < 0.0 { continue; }
+        let n = select(h.xyz, -h.xyz, dot(h.xyz, d) > 0.0);
+        if h.w < nearest {
+            nearest = h.w;
+            plane = vec4<f32>(n, -dot(n, p + d * h.w));
+        }
+    }}}
+    out[i * 6u] = plane;
+}
+
+// Open space between a and b (room_bake.rs `open_between`).
+fn open_between(a: vec3<f32>, b: vec3<f32>) -> bool {
+    let to = b - a;
+    let len = length(to);
+    if len < 1e-6 { return true; }
+    let d = to / len;
+    return !blocked(a - d * 0.03, d, len + 0.03);
+}
+
+// Which voxels of probe i's neighbourhood (one cell either side, 4 voxels
+// per cell) it reaches through open space: a flood fill from its own voxel
+// (room_bake.rs `bake_reach`), 16 words after its visibility map.
+@compute @workgroup_size(64)
+fn reach(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x + gid.y * 65535u * 64u;
+    if i >= probe_count() { return; }
+    var bits: array<u32, 16>;
+    for (var k = 0u; k < 16u; k++) { bits[k] = 0u; }
+    let q = pos[i];
+    if q.w > 0.5 {
+        let voxel = u.origin.w / 4.0;
+        let corner = grid_position(i) - vec3<f32>(u.origin.w);
+        let start = clamp(vec3<i32>(floor((q.xyz - corner) / voxel)), vec3<i32>(0), vec3<i32>(7));
+        var stack: array<u32, 512>;
+        var top = 0u;
+        let s0 = u32(start.x) + u32(start.y) * 8u + u32(start.z) * 64u;
+        if open_between(q.xyz, corner + (vec3<f32>(start) + 0.5) * voxel) { bits[s0 / 32u] |= 1u << (s0 % 32u); stack[0] = s0; top = 1u; }
+        while top > 0u {
+            top -= 1u;
+            let v = stack[top];
+            let vi = vec3<i32>(i32(v % 8u), i32((v / 8u) % 8u), i32(v / 64u));
+            let from_c = corner + (vec3<f32>(vi) + 0.5) * voxel;
+            for (var k = 0; k < 6; k++) {
+                var w = vi;
+                let step = select(-1, 1, (k & 1) == 0);
+                if k < 2 { w.x += step; } else if k < 4 { w.y += step; } else { w.z += step; }
+                if any(w < vec3<i32>(0)) || any(w > vec3<i32>(7)) { continue; }
+                let wi = u32(w.x) + u32(w.y) * 8u + u32(w.z) * 64u;
+                if (bits[wi / 32u] & (1u << (wi % 32u))) != 0u { continue; }
+                if !open_between(from_c, corner + (vec3<f32>(w) + 0.5) * voxel) { continue; }
+                bits[wi / 32u] |= 1u << (wi % 32u);
+                stack[top] = wi;
+                top += 1u;
+            }
+        }
+    }
+    for (var k = 0u; k < 16u; k++) { masks[i * u.counts.y + 64u + k] = bits[k]; }
+}

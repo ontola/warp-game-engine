@@ -30,7 +30,7 @@ struct Uniform {
 struct Context<'a> {
     gpu: &'a Gpu,
     layout: wgpu::BindGroupLayout,
-    pipelines: [wgpu::ComputePipeline; 6],
+    pipelines: [wgpu::ComputePipeline; 10],
     geo: wgpu::Buffer,
     dirs: wgpu::Buffer,
     pos: wgpu::Buffer,
@@ -48,6 +48,10 @@ const BOUNCE_SKY: usize = 2;
 const BOUNCE_LAMP: usize = 3;
 const SMOOTH: usize = 4;
 const PREPARE: usize = 5;
+const PLACE: usize = 6;
+const VISIBILITY: usize = 7;
+const PLANES: usize = 8;
+const REACH: usize = 9;
 
 fn storage(gpu: &Gpu, label: &str, contents: &[u8]) -> wgpu::Buffer {
     gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents,
@@ -98,14 +102,14 @@ impl<'a> Context<'a> {
         if mask_bytes > u64::from(gpu.limits.max_storage_buffer_binding_size) { return Err(format!("room bake on the GPU needs {} MB per binding, the device allows {} MB", mask_bytes >> 20, gpu.limits.max_storage_buffer_binding_size >> 20)); }
         if lights.len() > 23 { return Err("room bake on the GPU takes at most 23 lights per bake".into()); }
         Ok(Self {
-            gpu, pipelines: ["sky_direct", "neighbours", "bounce_sky", "bounce_lamp", "smooth_light", "prepare"].map(pipeline), layout,
+            gpu, pipelines: ["sky_direct", "neighbours", "bounce_sky", "bounce_lamp", "smooth_light", "prepare", "place", "visibility_map", "planes", "reach"].map(pipeline), layout,
             geo: storage(gpu, "room bake geometry", bytemuck::cast_slice(&geo)),
             dirs: storage(gpu, "room bake rays", bytemuck::cast_slice(&dirs)),
             pos: storage(gpu, "room bake probes", bytemuck::cast_slice(&pos)),
             probes: [storage(gpu, "room bake light a", &probes_bytes), storage(gpu, "room bake light b", &probes_bytes)],
             seen: storage(gpu, "room bake neighbours", &vec![0u8; grid.count() * 4]),
             lights: storage(gpu, "room bake lights", bytemuck::cast_slice(&light_words)),
-            masks: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("room bake ray masks"), size: mask_bytes, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false }),
+            masks: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("room bake ray masks"), size: mask_bytes, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false }),
             base: Uniform { origin: grid.origin.extend(grid.cell).to_array(), dims: [grid.dims[0], grid.dims[1], grid.dims[2], count],
                 sun: [0.0, 1.0, 0.0, 0.5], counts: [sky_rays as u32, bounce_rays as u32, tri_base, rot_base], mode: [0, lights.len() as u32, 0, bounce_base] },
             count,
@@ -126,7 +130,7 @@ impl<'a> Context<'a> {
         pass.set_pipeline(&self.pipelines[kernel]);
         pass.set_bind_group(0, &bind, &[]);
         // Workgroup-per-probe kernels, or a thread per probe.
-        let groups = if kernel == NEIGHBOURS || kernel == SMOOTH { self.count.div_ceil(64) } else { self.count };
+        let groups = if matches!(kernel, NEIGHBOURS | SMOOTH | PLACE | PLANES | REACH) { self.count.div_ceil(64) } else { self.count };
         pass.dispatch_workgroups(groups.min(65535), groups.div_ceil(65535), 1);
     }
 
@@ -190,21 +194,60 @@ pub fn bake(gpu: &Gpu, grid: &Grid, occluders: &Occluders, placement: &Placement
     Ok(probes)
 }
 
-fn read_valid(cx: &Context) -> Result<Vec<bool>, String> {
-    let size = cx.pos.size();
-    let readback = cx.gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("room bake valid"), size,
+/// Submit `enc` and read `buffer` back as words.
+fn read<T: bytemuck::Pod>(gpu: &Gpu, mut enc: wgpu::CommandEncoder, buffer: &wgpu::Buffer, bytes: u64) -> Result<Vec<T>, String> {
+    let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("room bake readback"), size: bytes,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
-    let mut enc = cx.gpu.device.create_command_encoder(&Default::default());
-    enc.copy_buffer_to_buffer(&cx.pos, 0, &readback, 0, size);
-    let submission = cx.gpu.queue.submit([enc.finish()]);
+    enc.copy_buffer_to_buffer(buffer, 0, &readback, 0, bytes);
+    let submission = gpu.queue.submit([enc.finish()]);
     let (tx, rx) = std::sync::mpsc::channel();
     readback.slice(..).map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-    cx.gpu.device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(std::time::Duration::from_secs(60)) })
+    gpu.device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(std::time::Duration::from_secs(120)) })
         .map_err(|e| format!("room bake GPU wait: {e:?}"))?;
     rx.recv().map_err(|e| e.to_string())?.map_err(|e| format!("room bake readback: {e:?}"))?;
-    let words: Vec<[f32; 4]> = bytemuck::cast_slice(&readback.slice(..).get_mapped_range().map_err(|e| format!("{e:?}"))?).to_vec();
+    let words: Vec<T> = bytemuck::cast_slice(&readback.slice(..).get_mapped_range().map_err(|e| format!("{e:?}"))?).to_vec();
     readback.unmap();
+    Ok(words)
+}
+
+fn read_valid(cx: &Context) -> Result<Vec<bool>, String> {
+    let words: Vec<[f32; 4]> = read(cx.gpu, cx.gpu.device.create_command_encoder(&Default::default()), &cx.pos, cx.pos.size())?;
     Ok(words.iter().map(|p| p[3] > 0.5).collect())
+}
+
+/// What every bake of one geometry state shares, on the GPU: the probes'
+/// placement ([`Placement`]), their visibility maps, reach and separation
+/// planes, as `room_bake`'s `Placement::new`, `bake_visibility_placed`,
+/// `bake_reach_placed` and `separation_planes_placed` bake them.
+pub struct Geometry {
+    pub placement: Placement,
+    pub visibility: Vec<[u32; crate::room_bake::VISIBILITY_SIDE * crate::room_bake::VISIBILITY_SIDE]>,
+    pub reach: Vec<[u32; crate::room_bake::REACH_WORDS]>,
+    pub planes: Vec<[f32; 4]>,
+}
+
+pub fn bake_geometry(gpu: &Gpu, grid: &Grid, occluders: &Occluders) -> Result<Geometry, String> {
+    grid.validate()?;
+    const VIS: usize = crate::room_bake::VISIBILITY_SIDE * crate::room_bake::VISIBILITY_SIDE;
+    const REACH_W: usize = crate::room_bake::REACH_WORDS;
+    debug_assert!(VIS == 64 && REACH_W == 16);
+    // The grid points to start from; the 256 placement directions as the
+    // sky rays; a mask stride of a visibility map and a reach per probe.
+    let start = Placement { positions: (0..grid.count()).map(|i| grid.position(i)).collect(), inside: vec![false; grid.count()] };
+    let cx = Context::new(gpu, grid, occluders, &start, 256, VIS + REACH_W, &[])?;
+    let mut enc = gpu.device.create_command_encoder(&Default::default());
+    for kernel in [PLACE, VISIBILITY, PLANES, REACH] { cx.pass(&mut enc, kernel, 0, Vec3::Y, 0.5, [0, 0, 0]); }
+    gpu.queue.submit([enc.finish()]);
+    let pos: Vec<[f32; 4]> = read(gpu, gpu.device.create_command_encoder(&Default::default()), &cx.pos, cx.pos.size())?;
+    let masks: Vec<u32> = read(gpu, gpu.device.create_command_encoder(&Default::default()), &cx.masks, cx.masks.size())?;
+    let planes: Vec<[f32; 4]> = read(gpu, gpu.device.create_command_encoder(&Default::default()), &cx.probes[1], cx.probes[1].size())?;
+    let stride = VIS + REACH_W;
+    Ok(Geometry {
+        placement: Placement { positions: pos.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect(), inside: pos.iter().map(|p| p[3] < 0.5).collect() },
+        visibility: masks.chunks_exact(stride).map(|m| std::array::from_fn(|k| m[k])).collect(),
+        reach: masks.chunks_exact(stride).map(|m| std::array::from_fn(|k| m[VIS + k])).collect(),
+        planes: planes.chunks_exact(6).map(|p| p[0]).collect(),
+    })
 }
 
 /// [`crate::room_bake::bake_lights_placed`] on the GPU.
@@ -319,5 +362,50 @@ mod speed {
         let t = std::time::Instant::now();
         crate::room_bake::bake_placed(&grid, &occ, &placed, Vec3::new(0.3, 0.8, 0.5), &settings).unwrap();
         eprintln!("cpu bake {:.3} s", t.elapsed().as_secs_f32());
+    }
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+    use crate::room_bake;
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_geometry_matches_cpu() {
+        let gpu = Gpu::new().unwrap();
+        let grid = Grid { origin: Vec3::new(-3.75, 0.25, -3.75), cell: 0.5, dims: [16, 7, 16] };
+        let boxes = [
+            ([-50.0, -0.2, -50.0], [50.0, 0.0, 50.0]), ([-2.2, 0.0, -2.2], [2.2, 3.0, -2.0]), ([-2.2, 0.0, -2.0], [-2.0, 3.0, 2.0]),
+            ([2.0, 0.0, -2.0], [2.2, 3.0, 2.0]), ([-2.2, 0.0, 2.0], [-0.5, 3.0, 2.2]), ([0.5, 0.0, 2.0], [2.2, 3.0, 2.2]),
+            ([-0.5, 2.1, 2.0], [0.5, 3.0, 2.2]), ([-2.2, 3.0, -2.2], [2.2, 3.2, 2.2]), ([0.0, 0.0, -0.1], [0.12, 2.0, 1.3]),
+        ].map(|(a, b): ([f32; 3], [f32; 3])| { let (a, b) = (Vec3::from(a), Vec3::from(b)); glam::Affine3A::from_scale_rotation_translation(b - a, glam::Quat::IDENTITY, (a + b) * 0.5) });
+        let occ = Occluders::from_boxes(&boxes);
+        let t = std::time::Instant::now();
+        let cpu = room_bake::Placement::new(&grid, &occ);
+        let vis = room_bake::bake_visibility_placed(&grid, &occ, &cpu);
+        let reach = room_bake::bake_reach_placed(&grid, &occ, &cpu);
+        let planes = room_bake::separation_planes_placed(&grid, &occ, &cpu);
+        let cpu_s = t.elapsed().as_secs_f32();
+        let t = std::time::Instant::now();
+        let g = bake_geometry(&gpu, &grid, &occ).unwrap();
+        eprintln!("geometry: cpu {cpu_s:.3} s, gpu {:.3} s", t.elapsed().as_secs_f32());
+        let moved = cpu.positions.iter().zip(&g.placement.positions).map(|(a, b)| a.distance(*b)).fold(0f32, f32::max);
+        assert!(moved < 1e-4, "positions differ by {moved}");
+        assert_eq!(cpu.inside, g.placement.inside);
+        let half = |w: u32| crate::hdr::half_to_f32(w as u16);
+        let vis_diff = vis.iter().zip(&g.visibility).flat_map(|(a, b)| a.iter().zip(b))
+            .map(|(a, b)| (half(*a & 0xffff) - half(*b & 0xffff)).abs().max((half(*a >> 16) - half(*b >> 16)).abs())).fold(0f32, f32::max);
+        assert!(vis_diff < 2e-3, "visibility maps differ by {vis_diff}");
+        let reach_diff: u32 = reach.iter().zip(&g.reach).flat_map(|(a, b)| a.iter().zip(b)).map(|(a, b)| (a ^ b).count_ones()).sum();
+        let reach_total: u32 = reach.iter().flatten().map(|w| w.count_ones()).sum();
+        assert!(reach_diff * 1000 <= reach_total, "reach differs in {reach_diff} of {reach_total} voxels");
+        // A ray along a box edge meets two faces at the same distance; float
+        // rounding may pick the other one. Rare, and either is that surface.
+        let plane_diffs: Vec<usize> = (0..planes.len()).filter(|&i| (0..4).any(|k| (planes[i][k] - g.planes[i][k]).abs() > 1e-4)).collect();
+        for &i in plane_diffs.iter().take(4) { eprintln!("plane {i}: cpu {:?} gpu {:?} at {}", planes[i], g.planes[i], cpu.positions[i]); }
+        let plane_diff = plane_diffs.len();
+        assert!(plane_diff * 100 <= planes.len(), "{plane_diff} of {} planes differ", planes.len());
+        eprintln!("geometry agrees: positions {moved:.1e}, visibility {vis_diff:.1e}, reach {reach_diff}/{reach_total}, {plane_diff} planes picked the other of two equally near surfaces");
     }
 }

@@ -167,17 +167,21 @@ impl LightState {
         let settings = render::room_bake::Settings::default();
         let lamp_settings = render::room_bake::Settings { bounces: 2, ..settings };
         let lamps: Vec<LocalLight> = (0..4).map(ceiling_lamp).collect();
+        if let Some(gpu) = gpu {
+            // Where the probes sit and what they see, then the light.
+            let g = render::room_bake_gpu::bake_geometry(gpu, grid, occluders)?;
+            return Ok(LightState {
+                sky: render::room_bake_gpu::bake(gpu, grid, occluders, &g.placement, sun, &settings)?,
+                lamps: render::room_bake_gpu::bake_lights(gpu, grid, occluders, &g.placement, &lamps, &lamp_settings)?,
+                offsets: render::room_bake::pack_offsets(grid, &g.placement.positions),
+                planes: g.planes, visibility: g.visibility, reach: g.reach,
+            });
+        }
         // Where the probes sit, once for every bake of this door state.
         let placed = render::room_bake::Placement::new(grid, occluders);
-        let (sky, lamps) = match gpu {
-            Some(gpu) => (render::room_bake_gpu::bake(gpu, grid, occluders, &placed, sun, &settings)?,
-                render::room_bake_gpu::bake_lights(gpu, grid, occluders, &placed, &lamps, &lamp_settings)?),
-            None => (render::room_bake::bake_placed(grid, occluders, &placed, sun, &settings)?,
-                render::room_bake::bake_lights_placed(grid, occluders, &placed, &lamps, &lamp_settings)?),
-        };
         Ok(LightState {
-            sky,
-            lamps,
+            sky: render::room_bake::bake_placed(grid, occluders, &placed, sun, &settings)?,
+            lamps: render::room_bake::bake_lights_placed(grid, occluders, &placed, &lamps, &lamp_settings)?,
             planes: render::room_bake::separation_planes_placed(grid, occluders, &placed),
             visibility: render::room_bake::bake_visibility_placed(grid, occluders, &placed),
             offsets: render::room_bake::pack_offsets(grid, &placed.positions),
