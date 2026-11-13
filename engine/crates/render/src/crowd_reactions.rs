@@ -103,7 +103,7 @@ pub(super) struct Reactions {
     bind: wgpu::BindGroup,
 }
 pub(super) const REACT: &str = concat!(
-    include_str!("shaders/crowd_displacement.wgsl"), "\n",
+    include_str!("shaders/crowd_jump.wgsl"), "\n", include_str!("shaders/crowd_displacement.wgsl"), "\n",
     include_str!("shaders/crowd_pose.wgsl"),
     "\n",
     include_str!("shaders/crowd_react.wgsl")

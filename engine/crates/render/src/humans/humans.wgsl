@@ -82,15 +82,15 @@ fn leg_to(x:f32,forward:f32,lift:f32,drop:f32)->vec2<u32> {
     let hip=-atan2(forward,plane)-atan2(shin*sin(knee),thigh+shin*cos(knee));
     return pack_leg(hip,knee,atan2(x,down),drop);
 }
-fn stepping_leg(cycle:f32, stride:f32, weight:f32, drop:f32, swing_start:f32, shift:f32, forward:f32)->vec2<u32> {
+fn stepping_leg(cycle:f32, stride:f32, weight:f32, drop:f32, swing_start:f32, shift:f32, forward:f32, tuck:f32)->vec2<u32> {
     let phase=fract(cycle);
     let swing=smoothstep(swing_start,swing_start+0.42,phase);
     // During stance, adding the moving root back to x gives a fixed footfall.
     let x=(swing-phase)*stride*weight;
     let lift=0.074*weight*4.*swing*(1.-swing);
-    return leg_to(x-shift,forward,lift,drop);
+    return leg_to(x-shift,forward,lift+tuck,drop);
 }
-fn spectator_legs(a:Actor,time:f32,joints:vec4<u32>,travel:f32,speed:f32,crouch:f32)->vec4<u32> {
+fn spectator_legs(a:Actor,time:f32,joints:vec4<u32>,travel:f32,speed:f32,crouch:f32,tuck:f32)->vec4<u32> {
     let arm=unpack2x16float(joints.x);
     let shift=0.42*unpack2x16float(joints.z).x;
     let stagger=(a.size_phase.z-0.5)*0.065;
@@ -99,15 +99,15 @@ fn spectator_legs(a:Actor,time:f32,joints:vec4<u32>,travel:f32,speed:f32,crouch:
     let bend=0.12+0.24*activity*(0.5+0.5*sin(phase));
     let drop=0.004+0.481*(1.-cos(bend));
     if speed<=0.015 {
-        return vec4<u32>(leg_to(-shift,stagger,0.,drop+crouch),leg_to(-shift,-stagger,0.,drop+crouch));
+        return vec4<u32>(leg_to(-shift,stagger,tuck,drop+crouch),leg_to(-shift,-stagger,tuck,drop+crouch));
     }
     let weight=smoothstep(0.015,0.65,speed);
     let stride=0.32+0.05*a.size_phase.w;
     let cycle=travel/stride;
     // Lower the hips enough to reach the planted foot as the other one swings.
     let pelvis=mix(drop,0.051,weight)+crouch;
-    let left=stepping_leg(cycle,stride,weight,pelvis,0.54,shift,stagger);
-    let right=stepping_leg(cycle,stride,weight,pelvis,0.04,shift,-stagger);
+    let left=stepping_leg(cycle,stride,weight,pelvis,0.54,shift,stagger,tuck);
+    let right=stepping_leg(cycle,stride,weight,pelvis,0.04,shift,-stagger,tuck);
     return vec4<u32>(left,right);
 }
 struct Actor { pos_yaw:vec4<f32>, size_phase:vec4<f32>, color:vec4<f32>, identity:vec4<f32> }
@@ -163,7 +163,7 @@ fn select_lod(@builtin(global_invocation_id) gid:vec3<u32>) {
     let slot=reserve_slot(a);
     if slot!=0xffffffffu {
         let joints=spectator_joints(a,camera.settings.x,0.45,0.);
-        store_seat(slot,SeatLight(gid.x,0u,0u,0u,joints,spectator_legs(a,camera.settings.x,joints,0.,0.,0.)),a);
+        store_seat(slot,SeatLight(gid.x,0u,0u,0u,joints,spectator_legs(a,camera.settings.x,joints,0.,0.,0.,0.)),a);
     }
 }
 
@@ -173,6 +173,7 @@ fn select_lod(@builtin(global_invocation_id) gid:vec3<u32>) {
 @group(1) @binding(17) var<uniform> headlights:Headlights;
 // First vec4 of the existing crowd pose uniform: time, excitement, fear, pivot.
 @group(1) @binding(19) var<uniform> crowd_mood:vec4<f32>;
+@group(1) @binding(21) var<storage,read> crowd_seats:array<Seat>;
 @group(1) @binding(20) var<storage,read> escapes:array<Reaction>;
 @group(1) @binding(18) var headlight_depth:texture_depth_2d_array;
 
@@ -216,13 +217,16 @@ fn select_match(@builtin(global_invocation_id) gid:vec3<u32>) {
     let travel=dot(a.pos_yaw.xz-actors[seat_id].pos_yaw.xz,right)/a.size_phase.x;
     let alarm=gesture_fear(crowd_mood.z,offset);
     var joints=spectator_joints(a,crowd_mood.x,crowd_mood.y,alarm);
+    let stride=min(abs(displacement(escape,crowd_mood.x+0.016)-offset)*24.,1.);
+    let jump=cheer_jump(crowd_seats[seat_id].params,crowd_mood.x,crowd_mood.yz,stride);
+    joints.x=pack2x16float(max(vec2f(-2.85),unpack2x16float(joints.x)+jump.arm_swing));
     let step_weight=smoothstep(0.12,0.75,speed);
     if step_weight>0. {
         let counter=sin(travel*2.*PI/(0.32+0.05*a.size_phase.w))*step_weight;
         joints.x=pack2x16float(unpack2x16float(joints.x)+vec2<f32>(0.15,-0.15)*counter);
         joints.z=pack2x16float(unpack2x16float(joints.z)+vec2<f32>(0.025,0.09)*counter);
     }
-    let legs=spectator_legs(a,crowd_mood.x,joints,travel,speed,crouch);
+    let legs=spectator_legs(a,crowd_mood.x,joints,travel,speed,crouch+jump.compression,jump.tuck);
     store_seat(slot,SeatLight(seat_id,pack2x16float(energy.rg),pack2x16float(vec2<f32>(energy.b,blast_turn_at(escape,crowd_mood.x))),
         pack4x8snorm(vec4<f32>(direction,sun)),joints,legs),a);
 }

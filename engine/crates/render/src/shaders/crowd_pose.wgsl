@@ -3,16 +3,6 @@
 // clock and the mood. Cheer waves raise the arms and hop the figure,
 // excitement double-times the wave, panic crouches and trembles, blasts
 // scatter nearby spectators along their row and they walk back after.
-struct Seat {
-    // position, yaw
-    pos_yaw: vec4<f32>,
-    // scale, phase, tempo, hop amplitude
-    params: vec4<f32>,
-    // body first cluster, count; arms first cluster, count
-    meshes: vec4<u32>,
-    // shoulder width relative to the height, unused x3
-    shape: vec4<f32>,
-};
 struct Instance { r0: vec4<f32>, r1: vec4<f32>, r2: vec4<f32>, sphere: vec4<f32>, first_cluster: u32, cluster_count: u32, scale: f32, flags: u32 };
 struct Uniform {
     // time, excitement, panic, optional local shoulder pivot height
@@ -40,9 +30,13 @@ fn body_pose(s:Seat,r:Reaction,time:f32,mood:vec2<f32>)->BodyPose {
     let stride=min(abs(displacement(r,time+0.016)-displacement(r,time))*24.,1.);
     // Rigged spectators shift weight in place while watching. Only a cheer
     // lifts them off the step. The hit test uses this same root position.
-    let cheering=select(1.,smoothstep(0.28,0.85,mood.x),u.counts.z!=0u);
+    if u.counts.z!=0u {
+        let jump=cheer_jump(s.params,time,mood,stride);
+        let origin=s.pos_yaw.xyz+vec3<f32>(disp.x,jump.height*s.params.x,disp.y);
+        return BodyPose(origin,up,1.-mood.y*0.22-jump.compression,0.);
+    }
     let legacy_step=abs(sin(time*10.5+s.params.y*41.))*0.17*stride;
-    let lift=select(up*hop*0.4+legacy_step,up*hop*cheering*(1.-stride)*0.4,u.counts.z!=0u)*s.params.x;
+    let lift=(up*hop*0.4+legacy_step)*s.params.x;
     return BodyPose(s.pos_yaw.xyz+vec3<f32>(disp.x,lift,disp.y),up,1.-mood.y*0.22,
         sin(t*0.6)*0.035+mood.y*sin(time*21.+s.params.y*47.)*0.045);
 }

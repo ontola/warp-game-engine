@@ -6097,6 +6097,7 @@ impl Renderer {
                             (18, wgpu::BindingResource::TextureView(&self.headlights.sampled)),
                             (19, crowd.pose_uniform().as_entire_binding()),
                             (20, crowd.reaction_state().as_entire_binding()),
+                            (21, crowd.seat_buffer().as_entire_binding()),
                         ];
                         let atmosphere = &[
                             (0, main.uniform.as_entire_binding()),

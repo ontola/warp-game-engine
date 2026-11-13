@@ -307,6 +307,8 @@ impl CrowdRenderer {
 
     pub(crate) fn reaction_state(&self) -> &wgpu::Buffer { &self.reactions.state }
 
+    pub(crate) fn seat_buffer(&self) -> &wgpu::Buffer { &self.seats }
+
     pub(crate) fn pose_uniform(&self) -> &wgpu::Buffer { &self.uniform }
 
     pub fn contains_owner_range(&self, first: usize, count: usize) -> bool {
@@ -339,7 +341,7 @@ impl CrowdRenderer {
     }
 }
 
-pub const SHADER: &str = concat!(include_str!("shaders/crowd_displacement.wgsl"),"\n",include_str!("shaders/crowd_pose.wgsl"),"\n",include_str!("shaders/crowd.wgsl"));
+pub const SHADER: &str = concat!(include_str!("shaders/crowd_jump.wgsl"), "\n", include_str!("shaders/crowd_displacement.wgsl"),"\n",include_str!("shaders/crowd_pose.wgsl"),"\n",include_str!("shaders/crowd.wgsl"));
 
 #[cfg(test)]
 mod tests {
