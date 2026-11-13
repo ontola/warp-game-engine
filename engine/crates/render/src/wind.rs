@@ -13,6 +13,12 @@ use wgpu::util::DeviceExt;
 
 const PERIOD: f64 = 120.0;
 
+/// Largest shear a tree (and a grass) part can get from any valid wind
+/// state: wind.wgsl scales the amplitude by at most 1. The cull refines by
+/// 1 + |shear| (cluster_traversal.wgsl), so budgets bound it with these.
+pub const MAX_TREE_SHEAR: f32 = 0.08;
+pub const MAX_GRASS_SHEAR: f32 = 0.6;
+
 /// World-space wind direction is X/Z. Shear is horizontal metres per vertical
 /// metre above the instance root. Strength zero preserves legacy rendering.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -35,8 +41,8 @@ impl WindState {
             || self.direction.length_squared() < 1e-12
             || !self.direction.length_squared().is_finite()
             || !self.strength.is_finite() || !(0.0..=1.0).contains(&self.strength)
-            || !self.tree_shear.is_finite() || !(0.0..=0.08).contains(&self.tree_shear)
-            || !self.grass_shear.is_finite() || !(0.0..=0.6).contains(&self.grass_shear) {
+            || !self.tree_shear.is_finite() || !(0.0..=MAX_TREE_SHEAR).contains(&self.tree_shear)
+            || !self.grass_shear.is_finite() || !(0.0..=MAX_GRASS_SHEAR).contains(&self.grass_shear) {
             return Err("wind requires finite time, a nonzero direction, strength 0..1, tree shear 0..0.08 and grass shear 0..0.6".into());
         }
         Ok(Self { direction: self.direction.normalize(), ..*self })
