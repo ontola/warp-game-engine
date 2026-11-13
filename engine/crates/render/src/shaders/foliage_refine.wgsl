@@ -710,8 +710,11 @@ fn fast_set_args(count:u32) {
  atomicStore(&state[8],(count+63u)/64u);atomicStore(&state[9],1u);atomicStore(&state[10],1u);
 }
 @compute @workgroup_size(1) fn fast_mode() {atomicStore(&state[80],1u);}
-@compute @workgroup_size(1) fn fast_begin() {fast_set_args(atomicLoad(&state[3]));atomicStore(&state[7],0u);}
-// Each round runs twice (state[88] the phase). First the camera and the
+@compute @workgroup_size(1) fn fast_begin() {
+ let count=atomicLoad(&state[3]);fast_set_args(count);atomicStore(&state[7],0u);
+ atomicStore(&state[89],(max(count,atomicLoad(&state[29]))+63u)/64u);atomicStore(&state[90],1u);atomicStore(&state[91],1u);
+}
+// Each round runs twice (fast_round, then fast_round_late). First the camera and the
 // shadow tasks of trees whose shadow reserved this deep last frame, then the
 // other shadow tasks. The shadow splat cap is full in a forest (~37k refusals
 // per frame): racing for it re-dealt ~3.5k trees' shadow mips every frame and
@@ -720,11 +723,15 @@ fn fast_set_args(count:u32) {
 fn fast_shadow_retained(task:vec4<u32>)->bool {
  return (demand[task.x+view.counts.x].bucket>>16u)>atomicLoad(&state[87]);
 }
-@compute @workgroup_size(64) fn fast_round(@builtin(global_invocation_id) id:vec3<u32>) {
- let at=id.x;if at>=atomicLoad(&state[3]) {return;}
+// The phase is the entry point, not a state word: a one-thread dispatch
+// that flipped it cost two extra serial dispatches per round.
+@compute @workgroup_size(64) fn fast_round(@builtin(global_invocation_id) id:vec3<u32>) {fast_round_phase(id.x,false);}
+@compute @workgroup_size(64) fn fast_round_late(@builtin(global_invocation_id) id:vec3<u32>) {fast_round_phase(id.x,true);}
+fn fast_round_phase(at:u32,phase_late:bool) {
+ if at>=atomicLoad(&state[3]) {return;}
  let task=current[at];if task.z==0u {return;}
  let late=task.z==512u && !fast_shadow_retained(task);
- if late!=(atomicLoad(&state[88])!=0u) {return;}
+ if late!=phase_late {return;}
  cut_scale=fast_scale(task.z);
  // Hysteresis: a tree the camera saw in detail last frame (more than one
  // record) keeps it down to CUT_HYSTERESIS times less error, so a small
@@ -792,12 +799,14 @@ fn fast_shadow_retained(task:vec4<u32>)->bool {
   child=nodes[child].links.y;
  }
 }
-@compute @workgroup_size(1) fn fast_phase() {atomicXor(&state[88],1u);}
 @compute @workgroup_size(1) fn fast_advance() {
  atomicAdd(&state[87],1u);
  let count=min(atomicLoad(&state[7]),arrayLength(&next));atomicStore(&state[7],0u);
  if count!=0u {atomicAdd(&state[68],1u);}
  fast_set_args(count);
+ // The drain after the last round covers the live frontier (and any parked
+ // tasks), not the whole work capacity: state[89..92] are its indirect args.
+ atomicStore(&state[89],(max(count,atomicLoad(&state[29]))+63u)/64u);atomicStore(&state[90],1u);atomicStore(&state[91],1u);
 }
 // After the drain: compare the reserved totals with their caps. Coarsen fast
 // when a cap refused work or is nearly full, refine back slowly when slack.
