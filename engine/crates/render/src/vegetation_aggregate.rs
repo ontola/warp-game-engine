@@ -965,7 +965,7 @@ impl<'a> Cooker<'a> {
             // closed sweeps first, then the appropriate generic policy.
             let sweep=if thin {crate::vegetation_clod::build(&part)} else {None};
             let mesh=sweep.unwrap_or_else(||ClusterMesh::build_with_policy(&[part], |_|if thin {
-                SimplificationPolicy::ThinFoliage } else { SimplificationPolicy::TexturedGeometry }));
+                crate::cluster::thin_source_policy() } else { SimplificationPolicy::TexturedGeometry }));
             clod_bytes=clod_bytes.checked_add(mesh.vertices.len()*std::mem::size_of::<Vertex>()
                 +(mesh.cluster_verts.len()+mesh.tris.len())*4
                 +mesh.clusters.len()*std::mem::size_of::<crate::cluster::GpuCluster>())

@@ -27,7 +27,7 @@ pub struct Spec {
     pub source_budget:crate::foliage_pages::source::Budget,
     pub nodes:Vec<Node>,
     /// Per node: source clusters the cull visits per error bin (source_work_table).
-    pub source_tables:Vec<[u32;12]>,
+    pub source_tables:Vec<crate::foliage_pages::source::PackedSourceTable>,
     pub roots:Vec<Instance>,branches:Vec<Branch>,representations:Vec<[u32;4]>,
     proxies:Vec<GpuTree>,templates:Vec<RootTemplate>,population:crate::foliage_population::Population,pub first_owner:u32,pub slots:u32,pub error:f32,pub raster_budget:u32,pub source_cluster_budget:u32,
 }
