@@ -176,8 +176,7 @@ pub fn vegetation_style(scene: &mut Scene, material: u32, style: &vegetation_sty
     let first = style_block(scene, material);
     let forest: [Material; 2] = bytemuck::cast(style.forest);
     let ground: [Material; 4] = bytemuck::cast(style.ground);
-    // The region palette pointer (region_ground) lives in the ground's
-    // reserved word; a new palette keeps it.
+    // A palette update keeps the region pointer set by region_ground.
     let regions = scene.materials[first + 6].roughness;
     scene.materials[first..first + 2].copy_from_slice(&forest);
     scene.materials[first + 3..first + 7].copy_from_slice(&ground);
@@ -190,7 +189,7 @@ pub fn vegetation_style(scene: &mut Scene, material: u32, style: &vegetation_sty
 /// (terrain_surface.wgsl region_ground). Replaces the single palette of
 /// `vegetation_style` wherever the regions' grid reaches (its edge holds
 /// beyond). The data goes into materials after the style block; the
-/// GroundStyle's reserved.x points at it (first + 1, 0 for none).
+/// GroundStyle's region_palette points at it (first + 1, 0 for none).
 pub fn region_ground(scene: &mut Scene, material: u32, regions: &crate::regions::Regions, grounds: &[vegetation_style::GroundStyle]) {
     let first = style_block(scene, material);
     let words = regions.surface_words(bytemuck::cast_slice(grounds), 32);

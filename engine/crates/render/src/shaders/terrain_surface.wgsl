@@ -525,7 +525,7 @@ struct FieldGround {
     gravel: vec4<f32>,
     rock: vec4<f32>,
     snow: vec4<f32>,
-    reserved: vec4<f32>,
+    cover: vec4<f32>, // region pointer, sand, leaf litter, valley snowpack
 };
 // Direct sun the painted forest keeps (shade.wgsl's sun term). Past the
 // sun maps a drawn forest shades its ground through the GI canopy volume
@@ -551,7 +551,7 @@ fn field_ground_at(at: u32) -> FieldGround {
 
 fn field_ground_add(acc: FieldGround, g: FieldGround, w: f32) -> FieldGround {
     return FieldGround(acc.grass_dry + g.grass_dry * w, acc.grass_lush + g.grass_lush * w, acc.moor + g.moor * w, acc.soil + g.soil * w,
-        acc.gravel + g.gravel * w, acc.rock + g.rock * w, acc.snow + g.snow * w, acc.reserved + g.reserved * w);
+        acc.gravel + g.gravel * w, acc.rock + g.rock * w, acc.snow + g.snow * w, acc.cover + g.cover * w);
 }
 
 // Ground colours per region (procedural_terrain.rs region_ground,
@@ -604,11 +604,11 @@ fn region_ground(p: vec2<f32>, base: u32) -> FieldGround {
 }
 
 // The style block's GroundStyle, after its ForestStyle and far forest
-// params; per region when its reserved.x points at region colours.
+// params; per region when cover.x points at region colours.
 fn field_ground(s: SurfaceIn) -> FieldGround {
     if s.scale >= 0.0 { return FIELD_GROUND_DEFAULT; }
     let g = field_ground_at(u32(-s.scale - 0.5) + 3u);
-    if FEATURE_FIELD_REGIONS && g.reserved.x >= 0.5 { return region_ground(s.p.xz, u32(g.reserved.x - 0.5)); }
+    if FEATURE_FIELD_REGIONS && g.cover.x >= 0.5 { return region_ground(s.p.xz, u32(g.cover.x - 0.5)); }
     return g;
 }
 
@@ -731,6 +731,39 @@ fn steep_layer(l: i32, p: vec3<f32>, n: vec3<f32>, scale: f32, mapping: TerrainM
     return mix(flat_map, triplanar(l, p, tw, scale, rot, 0.0), steep);
 }
 
+fn lying_snow(amount: f32, up: f32, water: f32, mottle: f32, broad: f32) -> f32 {
+    let cover = amount * smoothstep(0.6, 0.85, up) * (1.0 - water * 4.0);
+    return smoothstep(0.3, 0.7, cover + (mottle - 0.5) * 0.4 + (broad - 0.5) * 0.3);
+}
+
+// Both mesh and field terrain bind the same photographed materials in different
+// slots. Use the fine aggregate for sand, and leaves over soil for the jungle.
+// The weights are shares, so regional transitions can mix any of these covers.
+fn biome_ground(ground: MeadowCanopy, g: FieldGround, p: vec3<f32>, n: vec3<f32>, up: f32, water: f32,
+        broad: f32, mottle: f32, mapping: TerrainMapping, gravel: i32, leaves: i32, soil: i32) -> MeadowCanopy {
+    let w = g.cover.yz;
+    var c = ground.albedo * max(0.0, 1.0 - w.x - w.y);
+    var nn = ground.normal * max(0.0, 1.0 - w.x - w.y);
+    if w.x > 0.0 {
+        c += w.x * terrain_layer(gravel, p.xz, 0.42, mapping) * g.soil.rgb * (0.85 + 0.3 * broad);
+        nn += w.x * perturb_xz(n, terrain_layer_normal(gravel, p.xz, 0.42, mapping) * 0.18);
+    }
+    if w.y > 0.0 {
+        let blanket = smoothstep(0.25, 0.65, broad + (mottle - 0.5) * 0.4) * smoothstep(0.65, 0.9, up);
+        let clay = terrain_layer(soil, p.xz, 3.0, mapping) * g.soil.rgb;
+        let litter = terrain_layer(leaves, p.xz, 1.8, mapping) * g.moor.rgb;
+        c += w.y * mix(clay, litter, blanket);
+        nn += w.y * perturb_xz(n, mix(terrain_layer_normal(soil, p.xz, 3.0, mapping),
+            terrain_layer_normal(leaves, p.xz, 1.8, mapping), blanket));
+    }
+    if g.cover.w > 0.0 {
+        let snow = lying_snow(g.cover.w, up, water, mottle, broad);
+        c = mix(c, g.snow.rgb * (0.93 + 0.1 * mottle), snow);
+        nn = mix(nn, n, snow * 0.8);
+    }
+    return MeadowCanopy(c, normalize(nn));
+}
+
 fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     let f = field_attr(s);
     let g = field_ground(s);
@@ -791,6 +824,12 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     c = grass_proxy(c, s, f, meadow_w, footprint);
     nn = canopy.normal;
 
+    if any(g.cover.yzw > vec3<f32>(0.0)) {
+        let cover = biome_ground(MeadowCanopy(c, nn), g, p, n, f.up, f.water, broad, mottle, mapping, layer + 4, layer + 1, layer + 2);
+        c = cover.albedo;
+        nn = cover.normal;
+    }
+
     // Past the trees the forest is part of the ground (forest_field).
     // At a glancing view a pixel is long and narrow: the forest filters by
     // its mean width, so clumps and gaps survive towards the horizon.
@@ -820,7 +859,7 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         let bare0 = hex_triplanar(layer + 3, p, tw, 7.0);
         let bare = mix(vec3<f32>(dot(bare0, vec3<f32>(0.3, 0.59, 0.11))), bare0, g.rock.w) * g.rock.rgb * (0.85 + 0.3 * broad);
         let mossy = triplanar(layer + 5, p, tw, 3.5, rot, 0.37);
-        let m_moss = smoothstep(0.55, 0.9, n.y) * (0.5 + 0.5 * f.moor) * smoothstep(0.3, 0.7, broad);
+        let m_moss = smoothstep(0.55, 0.9, n.y) * (0.5 + 0.5 * f.moor) * smoothstep(0.3, 0.7, broad) * (1.0 - g.cover.y);
         let rc = mix(bare, mossy, m_moss);
         let bare_n = hex_triplanar_n(layer + 3, p, n, tw, 7.0);
         let rn = normalize(mix(bare_n, triplanar_n(layer + 5, p, n, tw, 3.5, rot, 0.37), m_moss));
@@ -914,8 +953,7 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     // Seasonal snow (biome.rs Environment, GroundStyle snow.w) on open
     // ground: thinning on slopes and in patches as the cover falls.
     if g.snow.w > 0.0 {
-        let cover = g.snow.w * smoothstep(0.6, 0.85, f.up) * (1.0 - f.water * 4.0);
-        m_snow = max(m_snow, smoothstep(0.3, 0.7, cover + (mottle - 0.5) * 0.4 + (broad - 0.5) * 0.3));
+        m_snow = max(m_snow, lying_snow(g.snow.w, f.up, f.water, mottle, broad));
     }
     if m_snow > 0.0 {
         c = mix(c, g.snow.rgb * (0.93 + 0.1 * mottle), m_snow);

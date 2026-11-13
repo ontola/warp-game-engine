@@ -245,6 +245,7 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
             "wheels": p.wheels.iter().map(|w| serde_json::json!({"anchor": w.anchor.to_array(), "compression": w.compression, "steer": w.steer, "spin": w.spin})).collect::<Vec<_>>()
         })).collect::<Vec<_>>()
     });
+    metadata["biome"]=race.stage.land.as_ref().map_or(crate::biome_land::FINLAND, |l| l.biome).into();
     metadata["exhaust"]=exhaust.metadata();metadata["exhaust_disabled_for_lineup"]=(a.lineup>0).into();
     metadata["local_lights"]=crate::play::local_lights_metadata(&local_lights,vehicle_local_light_count);
     metadata["exhaust_local_lights_disabled_for_lineup"]=(a.lineup>0).into();

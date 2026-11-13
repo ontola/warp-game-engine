@@ -83,7 +83,7 @@ fn unpack(uv: vec2<f32>) -> array<f32, 7> {
 }
 
 // terrain_surface.wgsl FieldGround: colours (rgb) and a per-layer amount (w).
-struct Ground { grass_dry: vec4<f32>, grass_lush: vec4<f32>, moor: vec4<f32>, soil: vec4<f32>, gravel: vec4<f32>, rock: vec4<f32>, snow: vec4<f32>, reserved: vec4<f32> };
+struct Ground { grass_dry: vec4<f32>, grass_lush: vec4<f32>, moor: vec4<f32>, soil: vec4<f32>, gravel: vec4<f32>, rock: vec4<f32>, snow: vec4<f32>, cover: vec4<f32> };
 const DEFAULT_GROUND = Ground(vec4<f32>(0.43, 0.55, 0.23, 0.3), vec4<f32>(0.32, 0.69, 0.28, 0.0),
     vec4<f32>(0.6, 0.72, 0.7, 0.8), vec4<f32>(0.85, 0.8, 0.75, 0.35), vec4<f32>(0.95, 0.97, 1.0, 0.5),
     vec4<f32>(1.0, 1.04, 1.1, 0.35), vec4<f32>(0.84, 0.87, 0.92, 0.0), vec4<f32>(0.0, 0.0, 0.0, 0.0));
@@ -184,6 +184,18 @@ fn tone(c: vec3<f32>) -> vec4<f32> {
     let m_soil = clamp(smoothstep(0.9, 0.75, up) * 0.35 + smoothstep(0.7, 0.85, mottle) * 0.25, 0.0, 1.0);
     if m_soil > 0.0 { c = mix(c, triplanar(l + 2, p, n, 3.0) * g.soil.rgb, m_soil); }
     c *= 0.82 + 0.3 * broad;
+    let w = g.cover.yz;
+    c *= max(0.0, 1.0 - w.x - w.y);
+    if w.x > 0.0 { c += w.x * flat_layer(l + 4, p, 0.42) * g.soil.rgb * (0.85 + 0.3 * broad); }
+    if w.y > 0.0 {
+        let blanket = smoothstep(0.25, 0.65, broad + (mottle - 0.5) * 0.4) * smoothstep(0.65, 0.9, up);
+        c += w.y * mix(flat_layer(l + 2, p, 3.0) * g.soil.rgb, flat_layer(l + 1, p, 1.8) * g.moor.rgb, blanket);
+    }
+    if g.cover.w > 0.0 {
+        let amount = g.cover.w * smoothstep(0.6, 0.85, up) * (1.0 - water * 4.0);
+        let cover = smoothstep(0.3, 0.7, amount + (mottle - 0.5) * 0.4 + (broad - 0.5) * 0.3);
+        c = mix(c, g.snow.rgb * (0.93 + 0.1 * mottle), cover);
+    }
     let m_scree = smoothstep(0.2, 0.7, scree + (mottle - 0.5) * 0.4);
     if m_scree > 0.0 {
         let gravel = flat_layer(l + 4, p, 1.8);
@@ -193,7 +205,7 @@ fn tone(c: vec3<f32>) -> vec4<f32> {
     if m_rock > 0.0 {
         let bare = triplanar(l + 3, p, n, 7.0);
         let stone = mix(vec3<f32>(dot(bare, vec3<f32>(0.3, 0.59, 0.11))), bare, g.rock.w) * g.rock.rgb * (0.85 + 0.3 * broad);
-        let m_moss = smoothstep(0.55, 0.9, n.y) * (0.5 + 0.5 * moor) * smoothstep(0.3, 0.7, broad);
+        let m_moss = smoothstep(0.55, 0.9, n.y) * (0.5 + 0.5 * moor) * smoothstep(0.3, 0.7, broad) * (1.0 - w.x);
         c = mix(c, mix(stone, triplanar(l + 5, p, n, 3.5), m_moss), m_rock);
     }
     let m_snow = smoothstep(0.3, 0.7, snow + (mottle - 0.5) * 0.3);

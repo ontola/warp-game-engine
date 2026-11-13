@@ -3136,10 +3136,12 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // The zero legacy encoding falls back to the old authored normal.
         let up = select(n.y, clamp(uv.y - 1.0, 0.0, 1.0), uv.y >= 1.0);
         let m_rock = smoothstep(0.72, 0.5, up + (fbm(wuv / 3.0) - 0.5) * 0.15);
+        var palette = FIELD_GROUND_DEFAULT;
+        if m.scale < 0.0 { palette = field_ground_at(u32(-m.scale - 0.5) + 3u); }
         var c = vec3<f32>(0.0);
         // A fully exposed rock face has no soil contribution. Reusing the
         // terrain material must not also sample four invisible soil layers.
-        if m_rock < 1.0 {
+        if m_rock < 1.0 && palette.cover.y + palette.cover.z < 1.0 {
             let moss = terrain_layer(m.layer, wuv, 3.2, mapping) * vec3<f32>(0.78, 0.86, 0.7);
             let needles = terrain_layer(m.layer + 1, wuv, 2.8, mapping) * vec3<f32>(0.72, 0.66, 0.6);
             let verge = terrain_layer(m.layer + 2, wuv, 2.6, mapping) * vec3<f32>(0.68, 0.94, 0.70);
@@ -3202,6 +3204,15 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
                 meadow_substrate.control.y, grassy * (1.0 - m_rock));
             c = canopy.albedo;
             nn = canopy.normal;
+        }
+        if m_rock < 1.0 && any(palette.cover.yzw > vec3<f32>(0.0)) {
+            let footprint = max(length(fp.dx), length(fp.dy));
+            let broad = field_fbm(wuv / 37.0 + 4.0, footprint / 37.0);
+            let mottle = field_fbm(wuv / 4.3 + 11.0, footprint / 4.3);
+            let cover = biome_ground(MeadowCanopy(c, nn), palette, p, n, up, 0.0, broad, mottle,
+                mapping, m.layer + 5, m.layer, m.layer + 3);
+            c = cover.albedo;
+            nn = cover.normal;
         }
         if m_rock > 0.0 {
             var tw = pow(abs(n), vec3<f32>(4.0));

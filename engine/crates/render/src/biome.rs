@@ -53,11 +53,10 @@ impl Flora {
 }
 
 /// Every preset, for menus and tests.
-pub const NAMES: [&str; 7] = ["swiss", "temperate", "alpine", "lowland", "polder", "tundra", "desert"];
+pub const NAMES: [&str; 9] = ["swiss", "temperate", "alpine", "lowland", "polder", "tundra", "desert", "norway", "rainforest"];
 
 impl Biome {
-    /// A preset: temperate (the engine's default), alpine, lowland, polder,
-    /// tundra, desert. "default" is temperate.
+    /// An authored land from `NAMES`. "default" is temperate.
     pub fn named(name: &str) -> Option<Self> {
         let base = VegetationStyle::default();
         let terrain = Style::default();
@@ -118,10 +117,39 @@ impl Biome {
                     moor: 0.0, grass: 0.0, snow_line: 4000.0, dunes: 1.0, ..terrain },
                 vegetation: VegetationStyle {
                     ground: GroundStyle { grass_dry: [1.25, 0.95, 0.55, 0.0], grass_lush: [1.15, 0.9, 0.55, 0.0],
-                        soil: [1.1, 0.85, 0.6, 0.1], gravel: [1.1, 0.95, 0.8, 0.6], rock: [1.15, 0.95, 0.8, 0.6], ..base.ground },
+                        sand: 1.0, soil: [1.75, 1.42, 1.05, 0.1], gravel: [1.1, 0.95, 0.8, 0.6], rock: [1.15, 0.95, 0.8, 0.6], ..base.ground },
                     meadow_dry_season: 1.0, ..base },
                 tree_density: 0.0, deciduous: 0.0,
-                flora: Flora { trees: [NONE; 4], shrubs: [("desert_shrub", 1.0), NONE], shrub_density: 0.04, ..Flora::TEMPERATE } },
+                flora: Flora { trees: [NONE; 4], shrubs: [("desert_shrub", 0.55), ("saltbush", 0.45)], shrub_density: 0.025, ..Flora::TEMPERATE } },
+            // A snowy Norwegian upland stage: rounded fells, exposed dark
+            // rock and winter snow on the wooded valley floor. Lying snow
+            // is a ground cover; lowering the tree line would remove the woods.
+            "norway" => Biome { name: "norway",
+                terrain: Style { mountains: 0.60, peaks: 0.62, hills: 0.85, snow_line: 1050.0,
+                    rivers: 0.65, streams: 0.5, ponds: 0.24, rocks: 0.75, boulders: 1.2,
+                    moor: 0.65, grass: 0.06, ..terrain },
+                vegetation: VegetationStyle {
+                    ground: GroundStyle { snowpack: 0.88, snow: [0.83, 0.88, 0.95, 0.0], soil: [0.67, 0.63, 0.57, 0.38],
+                        rock: [0.66, 0.70, 0.77, 0.22], gravel: [0.74, 0.79, 0.85, 0.26], ..base.ground },
+                    forest: ForestStyle { needles: [0.032, 0.064, 0.049, 0.45], far: [0.095, 0.11, 0.088, 13.0],
+                        crown: [2.7, 0.35, 1.6, 0.20], ..base.forest }, meadow_dry_season: 0.8 },
+                tree_density: 0.53, deciduous: 0.20,
+                flora: Flora { trees: [("spruce", 0.55), ("pine", 0.25), ("mountain_birch", 0.20), NONE], tree_scale: 0.84,
+                    shrubs: [("juniper", 0.6), ("dwarf_birch", 0.4)], shrub_density: 0.025, tree_rows: false } },
+            // Central African lowland rainforest: river valleys, damp red
+            // clay and broadleaf litter below a canopy of mahogany and kapok.
+            "rainforest" | "congo" => Biome { name: "rainforest",
+                terrain: Style { mountains: 0.12, peaks: 0.0, hills: 1.2, rivers: 1.0, streams: 0.9,
+                    ponds: 0.45, rocks: 0.18, boulders: 0.35, moor: 0.0, grass: 0.25, snow_line: 5000.0, ..terrain },
+                vegetation: VegetationStyle {
+                    ground: GroundStyle { leaf_litter: 1.0, soil: [1.18, 0.65, 0.42, 0.42],
+                        moor: [0.72, 0.78, 0.52, 0.0], grass_dry: [0.45, 0.65, 0.28, 0.0],
+                        grass_lush: [0.30, 0.74, 0.31, 0.0], ..base.ground },
+                    forest: ForestStyle { needles: [0.039, 0.115, 0.046, 0.40], floor: [0.035, 0.027, 0.014, 0.34],
+                        far: [0.065, 0.15, 0.05, 13.0], crown: [3.3, 0.42, 0.75, 0.0] }, meadow_dry_season: 0.05 },
+                tree_density: 0.6, deciduous: 0.0,
+                flora: Flora { trees: [("african_mahogany", 0.78), ("kapok", 0.22), NONE, NONE], tree_scale: 0.92,
+                    shrubs: [("forest_coffee", 1.0), NONE], shrub_density: 0.035, tree_rows: false } },
             _ => return None,
         })
     }
@@ -146,6 +174,31 @@ impl Biome {
 /// The rule id of a biome's shrubs (placement::TREE are its trees).
 pub const SHRUB: u32 = 16;
 
+impl Flora {
+    /// The tree or shrub selected by a roll in [0, 1), indexing the
+    /// tree-then-shrub catalogue returned by `Biome::species`.
+    pub fn tree_variant(&self, roll: f32) -> Option<usize> {
+        Self::pick(&self.trees, roll)
+    }
+
+    pub fn shrub_variant(&self, roll: f32) -> Option<usize> {
+        let first = self.trees.iter().filter(|e| e.1 > 0.0).count();
+        Self::pick(&self.shrubs, roll).map(|variant| first + variant)
+    }
+
+    fn pick(list: &[(&str, f32)], roll: f32) -> Option<usize> {
+        let total: f32 = list.iter().map(|e| e.1).sum();
+        let mut acc = 0.0;
+        let mut last = None;
+        for (i, &(_, weight)) in list.iter().filter(|e| e.1 > 0.0).enumerate() {
+            acc += weight / total;
+            if roll < acc { return Some(i); }
+            last = Some(i);
+        }
+        last
+    }
+}
+
 fn smooth(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -165,20 +218,8 @@ impl Biome {
     pub fn rules(&self) -> Vec<crate::placement::Rule> {
         use crate::placement::{Rule, Shape, TREE};
         let flora = self.flora;
-        let pick = |list: &[(&'static str, f32)], first: u32, roll: f32| -> u32 {
-            let total: f32 = list.iter().map(|e| e.1).sum();
-            let mut acc = 0.0;
-            let mut index = first;
-            for e in list.iter().filter(|e| e.1 > 0.0) {
-                acc += e.1 / total.max(1e-6);
-                if roll < acc { return index; }
-                index += 1;
-            }
-            index.saturating_sub(1)
-        };
-        let trees = flora.trees.iter().filter(|e| e.1 > 0.0).count() as u32;
         let mut rules = Vec::new();
-        if trees > 0 && self.tree_density > 0.0 {
+        if self.tree_density > 0.0 && flora.trees.iter().any(|e| e.1 > 0.0) {
             let mut tree = crate::placement::tree_rule(self.tree_density);
             let density = self.tree_density;
             if flora.tree_rows {
@@ -195,7 +236,7 @@ impl Biome {
             tree.shape = Box::new(move |s| {
                 let width = (0.75 + 0.5 * s.cell.hash(4)) * scale;
                 Shape { yaw: s.cell.hash(6) * std::f32::consts::TAU, scale: glam::Vec3::new(width, width * (0.9 + 0.25 * s.cell.hash(5)), width),
-                    variant: pick(&flora.trees, 0, s.cell.hash(7)), lift: -0.2 }
+                    variant: flora.tree_variant(s.cell.hash(7)).unwrap() as u32, lift: -0.2 }
             });
             rules.push(tree);
         }
@@ -211,7 +252,7 @@ impl Biome {
                 shape: Box::new(move |s| {
                     let size = 0.6 + 0.8 * s.cell.hash(4);
                     Shape { yaw: s.cell.hash(6) * std::f32::consts::TAU, scale: glam::Vec3::new(size, size * (0.8 + 0.4 * s.cell.hash(5)), size),
-                        variant: pick(&flora.shrubs, trees, s.cell.hash(7)), lift: -0.05 }
+                        variant: flora.shrub_variant(s.cell.hash(7)).unwrap() as u32, lift: -0.05 }
                 }),
                 avoid: vec![(TREE, 1.5)] });
         }
@@ -314,6 +355,8 @@ impl Environment {
     /// deciduous canopy colours in autumn and stands grey-brown in winter.
     pub fn vegetation(&self) -> VegetationStyle {
         let mut v = self.biome.vegetation;
+        // Equatorial forest stays green through the northern autumn and winter.
+        if self.biome.name == "rainforest" { return v; }
         let (cold, fall, spring) = (self.season.cold(), self.season.fall(), self.season.spring());
         let g = &mut v.ground;
         g.grass_dry = mix3(g.grass_dry, [0.32, 0.62, 0.2], 0.5 * spring);

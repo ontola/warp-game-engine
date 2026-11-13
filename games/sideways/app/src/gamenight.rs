@@ -462,12 +462,14 @@ fn configure_stream(stream: &TcpStream) -> Result<(), String> {
 }
 
 pub fn settings() -> Value {
+    let biomes: Vec<_> = std::iter::once(crate::biome_land::FINLAND).chain(render::biome::NAMES).collect();
     json!([
         {"key":"gearbox","label":"Gearbox","kind":"choice","default":"automatic","options":["automatic","manual"]},
         {"key":"stage_km","label":"Stage length km (next stage)","kind":"number","default":3,"min":2,"max":8},
         {"key":"rivals","label":"AI rivals (next stage)","kind":"number","default":1,"min":0,"max":3},
         {"key":"contact","label":"Car contact (next stage)","kind":"toggle","default":true},
         {"key":"weather","label":"Road weather (next stage)","kind":"choice","default":"random","options":["random","clear","overcast","mist","wet"]},
+        {"key":"biome","label":"Biome (next stage)","kind":"choice","default":crate::biome_land::FINLAND,"options":biomes},
         {"key":"sky_time","label":"Time of day (live)","kind":"choice","default":"noon","options":["current","sunrise","morning","noon","afternoon","sunset","night"]},
         {"key":"sky_weather","label":"Atmosphere (live)","kind":"choice","default":"clear","options":["clear","haze","mist"]},
         {"key":"upscale","label":"Upscaling (temporal works on every GPU; DLSS needs an NVIDIA GPU and runtime)","kind":"choice","default":"native","options":["native","temporal-quality","temporal-balanced","temporal-performance","dlss-quality","dlss-balanced","dlss-performance"]}

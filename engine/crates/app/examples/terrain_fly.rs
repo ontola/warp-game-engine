@@ -32,6 +32,7 @@
 //! articulated wind and bounded source/voxel residency.
 use app::{Buttons, Controls, Draw, Frame, Game, Pointer};
 use glam::{Vec2, Vec3};
+use render::biome::{Biome, NAMES as STYLES};
 use render::debug_ui::{DebugAction, DebugControl, DebugMenu, DebugValue};
 use render::recipe_forest;
 use render::vegetation_asset::CookedPlant;
@@ -53,10 +54,11 @@ use std::sync::mpsc::{Receiver, channel};
 // (procedural_terrain build_budget).
 const POOL: u32 = 24576;
 const TICK_HZ: f32 = 60.0;
-/// The biomes (render::biome), as F12/F11/F10 and F6 step through them.
-/// Swiss (last, so the F keys keep their biomes) is the default look.
-const STYLES: [&str; 7] = ["default", "lowland", "alpine", "polder", "tundra", "desert", "swiss"];
-const DEFAULT_STYLE: usize = 6;
+/// Resolve aliases too, including "default" (temperate) in old captures.
+fn style_index(name: &str) -> Result<usize, String> {
+    Biome::named(name).and_then(|b| STYLES.iter().position(|&s| s == b.name))
+        .ok_or_else(|| format!("unknown biome {name}; one of {}", STYLES.join(", ")))
+}
 
 /// The season and hour from --season (spring|summer|autumn|winter|0..1)
 /// and --hour (0..24); without --hour the sun stands as it always did.
@@ -194,7 +196,7 @@ impl Fly {
             track: std::env::args().any(|a| a == "--track"), regions: None, town: std::env::args().any(|a| a == "--town"), constraints: None,
             upscale: Default::default() };
         if let Some(name) = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--regions").map(|w| w[1].clone()) {
-            fly.regions = Some(STYLES.iter().position(|n| *n == name).ok_or_else(|| format!("unknown biome {name}; one of {}", STYLES.join(", ")))?);
+            fly.regions = Some(style_index(&name)?);
         }
         fly.bake_track();
         if let Some((start, yaw)) = fly.track_start() { fly.pos = start; fly.yaw = yaw; fly.pitch = -0.05; }
@@ -205,7 +207,7 @@ impl Fly {
             let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?).map_err(|e| format!("{path}: {e}"))?;
             let st = v.get("state").unwrap_or(&v);
             let f = |k: &str| st.get(k).and_then(|x| x.as_f64()).map(|x| x as f32);
-            if let Some(name) = st.get("style").and_then(|x| x.as_str()) { fly.style = STYLES.iter().position(|n| *n == name).ok_or("unknown style")?; }
+            if let Some(name) = st.get("style").and_then(|x| x.as_str()) { fly.style = style_index(name)?; }
             if let Some(seed) = st.get("seed").and_then(|x| x.as_u64()) { fly.seed = seed as u32; }
             if let Some(p) = st.get("pos").and_then(|x| x.as_array()) {
                 let c: Vec<f32> = p.iter().filter_map(|x| x.as_f64()).map(|x| x as f32).collect();
@@ -401,12 +403,20 @@ impl Game for Fly {
     }
 
     fn editor_shortcut(&self,key:u8)->Option<(&'static str,bool)> {
-        Some(match key {11=>("Lowland",self.style==1),10=>("Alpine",self.style==2),9=>("Seed",false),8=>("Jump",false),7=>("Hug",self.hug.is_some()),6=>("Biome",false),12=>("Default",self.style==0),_=>return None})
+        let style = STYLES[self.style];
+        Some(match key {11=>("Lowland",style=="lowland"),10=>("Alpine",style=="alpine"),9=>("Seed",false),8=>("Jump",false),7=>("Hug",self.hug.is_some()),6=>("Biome",false),12=>("Default",style=="temperate"),_=>return None})
     }
     fn function_key(&mut self, n: u8) -> bool {
-        let style = match n { 12 => Some(0), 11 => Some(1), 10 => Some(2), 6 => Some((self.style + 1) % STYLES.len()), _ => None };
         let result = match n {
-            12 | 11 | 10 | 6 => { self.style = style.unwrap(); self.rebuild() }
+            12 | 11 | 10 | 6 => {
+                self.style = match n {
+                    12 => style_index("temperate").unwrap(),
+                    11 => style_index("lowland").unwrap(),
+                    10 => style_index("alpine").unwrap(),
+                    _ => (self.style + 1) % STYLES.len(),
+                };
+                self.rebuild()
+            }
             9 => { self.seed += 1; self.rebuild() }
             8 => { self.jump(); Ok(()) }
             7 => { self.hug = match self.hug { Some(_) => None, None => Some(1.7) }; Ok(()) }
@@ -559,7 +569,7 @@ impl Game for Fly {
         let w = &self.world;
         let t = &self.terrain_settings;
         (menu, vec![
-            toggle(TREES, "Trees", w.trees, "Spruce forest around the camera."),
+            toggle(TREES, "Trees and shrubs", w.trees, "Grow the selected biome's woody plants around the camera."),
             number(TREE_DENSITY, "Tree density", f64::from(w.tree_density) * 100.0, (5.0, 100.0, 5.0, 0), "%", "Share of forest ground that grows a tree."),
             number(BRANCH_SLOTS, "GPU branch budget", f64::from(w.branch_slots), (256.0, 131072.0, 1024.0, 0), "", "Shared resident branch capacity; the GPU selects detail for all trees."),
             number(TREE_RADIUS, "Tree radius", f64::from(w.tree_radius), (200.0, 3000.0, 100.0, 0), "m", "Trees are placed this far around the camera."),
@@ -618,7 +628,7 @@ impl Game for Fly {
     fn command(&mut self, cmd: &str) -> Result<String, String> {
         let parts: Vec<&str> = cmd.split_whitespace().collect();
         match parts.as_slice() {
-            ["help"] => Ok("teleport X Z [HEIGHT_ABOVE] | look YAW PITCH | style default|lowland|alpine | seed N".into()),
+            ["help"] => Ok(format!("teleport X Z [HEIGHT_ABOVE] | look YAW PITCH | style {} | seed N", STYLES.join("|"))),
             ["teleport", x, z, rest @ ..] => {
                 let (x, z): (f32, f32) = (x.parse().map_err(|_| "x")?, z.parse().map_err(|_| "z")?);
                 let above: f32 = rest.first().map(|h| h.parse().map_err(|_| "height")).transpose()?.unwrap_or(60.0);
@@ -632,7 +642,7 @@ impl Game for Fly {
                 Ok("ok".into())
             }
             ["style", name] => {
-                self.style = STYLES.iter().position(|s| s == name).ok_or("no such style")?;
+                self.style = style_index(name)?;
                 self.rebuild()?;
                 Ok("ok".into())
             }
@@ -1165,8 +1175,9 @@ fn main() {
         let hash = web_sys::window().and_then(|w| w.location().hash().ok()).unwrap_or_default();
         let words: Vec<&str> = hash.trim_start_matches('#').split('-').collect();
         let seed = param("seed").and_then(|s| s.parse().ok()).unwrap_or(1);
-        let style = param("style").or_else(|| words.iter().find(|w| STYLES.contains(w)).map(|w| w.to_string()))
-            .and_then(|s| STYLES.iter().position(|n| *n == s)).unwrap_or(DEFAULT_STYLE);
+        let style = param("style").and_then(|s| style_index(&s).ok())
+            .or_else(|| words.iter().find_map(|s| style_index(s).ok()))
+            .unwrap_or_else(|| style_index("swiss").unwrap());
         // Trees are opt-in here: without threads or the native cook cache,
         // preparing them blocks the page for minutes.
         let trees = param("trees").as_deref() == Some("1") || words.contains(&"trees");
@@ -1213,7 +1224,7 @@ fn main() -> Result<(), String> {
         if std::env::var_os("WARP_RENDER_HEIGHT").is_none() { unsafe { std::env::set_var("WARP_RENDER_HEIGHT", "720"); } }
     }
     let seed = arg("--seed").map(|s| s.parse().map_err(|_| "--seed N")).transpose()?.unwrap_or(1);
-    let style = arg("--style").map(|s| STYLES.iter().position(|n| *n == s).ok_or("--style swiss|default|lowland|alpine|polder|tundra|desert")).transpose()?.unwrap_or(DEFAULT_STYLE);
+    let style = style_index(arg("--style").as_deref().unwrap_or("swiss"))?;
     let world = World { trees: !args.iter().any(|a| a == "--no-trees"), grass: args.iter().any(|a| a == "--grass"),
         tree_radius: arg("--tree-radius").map(|n| n.parse().map_err(|_| "--tree-radius M")).transpose()?.unwrap_or(World::default().tree_radius),
         branch_slots: arg("--branch-slots").map(|n|n.parse().map_err(|_|"--branch-slots N")).transpose()?.unwrap_or(if low {512}else{World::default().branch_slots}), ..World::default() };

@@ -31,8 +31,14 @@ pub struct GroundStyle {
     pub rock: [f32; 4],
     /// Lying snow; w: seasonal snow on open ground, 0..1 (biome.rs).
     pub snow: [f32; 4],
-    /// Unused, keeps the layout a whole number of data materials.
-    pub reserved: [f32; 4],
+    /// Regional palette pointer, filled by procedural_terrain::region_ground.
+    pub region_palette: f32,
+    /// Share of the ground covered in sand (fine aggregate).
+    pub sand: f32,
+    /// Share covered in broad leaves and exposed clay.
+    pub leaf_litter: f32,
+    /// Snowpack lying below the tree line, shown beneath the distant canopy.
+    pub snowpack: f32,
 }
 
 impl Default for GroundStyle {
@@ -45,7 +51,7 @@ impl Default for GroundStyle {
             gravel: [0.95, 0.97, 1.0, 0.5],
             rock: [1.0, 1.04, 1.1, 0.35],
             snow: [0.84, 0.87, 0.92, 0.0],
-            reserved: [0.0; 4],
+            region_palette: 0.0, sand: 0.0, leaf_litter: 0.0, snowpack: 0.0,
         }
     }
 }

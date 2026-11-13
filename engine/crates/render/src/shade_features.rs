@@ -56,7 +56,7 @@ pub fn field_style_blocks(scene: &Scene) -> Vec<usize> {
     blocks
 }
 
-/// Region ground pointer of a style block (its GroundStyle's reserved.x).
+/// Region ground pointer of a style block (its GroundStyle's region_palette).
 pub const REGION_WORD: usize = 6;
 /// Road data pointer of a style block (its far forest params' metal).
 pub const ROAD_WORD: usize = 2;

@@ -78,7 +78,7 @@ impl Recorder {
         });
     }
 
-    pub fn capture(&self, race: &Race, biome: Option<&str>) -> Value {
+    pub fn capture(&self, race: &Race) -> Value {
         let Some((stream, settings, start)) = &race.stage_origin else {
             return Value::Null;
         };
@@ -88,7 +88,8 @@ impl Recorder {
         {
             return json!({"unavailable":"no complete input history for this stage"});
         }
-        json!({"version":1,"hz":120,"stream":stream.stream_state(),"settings":settings,"biome":biome,
+        json!({"version":1,"hz":120,"stream":stream.stream_state(),"settings":settings,"biome":settings.land.as_ref().map(|l| l.biome),
+            "land_layout": settings.land.as_ref().map(|l| l.layout).unwrap_or_default(),
             "round":race.round,"start":start,"end":race.frame,"stage_seeds":[race.stage.noise_seed,race.stage.detail_seed],
             "digest":kern::digest_of(race),"runs":self.runs})
     }
@@ -101,6 +102,8 @@ struct Tape {
     stream: u64,
     settings: Settings,
     biome: Option<String>,
+    #[serde(default)]
+    land_layout: sideways::stage::LandLayout,
     round: u32,
     start: u64,
     end: u64,
@@ -110,6 +113,12 @@ struct Tape {
 }
 
 impl Tape {
+    fn restore_land(&mut self) -> Result<(), String> {
+        self.settings.land = self.biome.as_deref()
+            .map(|name| crate::biome_land::land_for_layout(name, self.land_layout)).transpose()?;
+        Ok(())
+    }
+
     fn validate(&self) -> Result<(), String> {
         let ticks = self
             .end
@@ -158,13 +167,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let mut tape = capture.drive;
     tape.validate()?;
+    tape.restore_land()?;
     let out = Path::new(&args[1]);
     fs::create_dir(out).map_err(|e| format!("fresh replay directory {}: {e}", out.display()))?;
-    tape.settings.land = tape
-        .biome
-        .as_deref()
-        .map(crate::biome_land::land)
-        .transpose()?;
     let mut race = Race::from_stage_stream(
         gdcompat::Pcg::from_stream_state(tape.stream),
         tape.settings,
@@ -400,6 +405,7 @@ mod tests {
             stage_km: 0.2,
             bots: 2,
             rivals: 0,
+            land: Some(crate::biome_land::land("desert").unwrap()),
             ..Default::default()
         };
         let mut race = Race::new(17, settings, Cars::load(None).unwrap());
@@ -422,8 +428,14 @@ mod tests {
             recorder.record(&race, &controls, Default::default(), false);
             race.step_with_inputs(&mut timings, &controls);
         }
-        let json = serde_json::to_vec(&recorder.capture(&race, None)).unwrap();
-        let tape: Tape = serde_json::from_slice(&json).unwrap();
+        let mut capture = recorder.capture(&race);
+        let mut tape: Tape = serde_json::from_value(capture.clone()).unwrap();
+        tape.restore_land().unwrap();
+        assert!(!tape.settings.land.as_ref().unwrap().flowing_water);
+        capture.as_object_mut().unwrap().remove("land_layout");
+        let mut old: Tape = serde_json::from_value(capture).unwrap();
+        old.restore_land().unwrap();
+        assert!(old.settings.land.unwrap().flowing_water);
         tape.validate().unwrap();
         assert!(tape.runs.len() < 10);
         let mut replay = Race::from_stage_stream(

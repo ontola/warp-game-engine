@@ -140,6 +140,7 @@ pub fn terrain_chunk(s: &Stage, c: (i32, i32)) -> Chunk {
     // What grows on this land, relative to Sideways' own forest; the RNG
     // draws stay the same, only the odds change.
     let (tree_odds, grass_odds, fern_odds) = s.land.as_ref().map_or((1.0, 1.0, 1.0), |l| (l.trees as f64, l.grass as f64, l.ferns as f64));
+    let tree_scale = s.land.as_ref().map_or(1.0, |l| l.tree_scale);
     for j in 0..n {
         for i in 0..n {
             let k = (j + 1) * m + (i + 1);
@@ -184,7 +185,7 @@ pub fn terrain_chunk(s: &Stage, c: (i32, i32)) -> Chunk {
                     let sy = sc * rng.randf_range_f32(0.9, 1.15);
                     let phenotype = s.vegetation.tree(s.noise_seed as u64, tx as f32, tz as f32);
                     trees.push(Spot { pos: v3(tx as f32, (foot - 0.25) as f32, tz as f32).into(), yaw,
-                        scale: sc * phenotype.scale[0], scale_y: sy * phenotype.scale[1] });
+                        scale: sc * phenotype.scale[0] * tree_scale, scale_y: sy * phenotype.scale[1] * tree_scale });
                 } else if clear > 4.0 && !steep && rng.randf() < 0.004 {
                     let sy = s.height(tx, tz);
                     let ss = rng.randf_range_f32(0.8, 1.3);
