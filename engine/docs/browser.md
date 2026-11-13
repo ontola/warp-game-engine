@@ -43,7 +43,9 @@ host serves it.
   textures as its bind group layouts make visible to a stage
   (`frame::shade_sampled_textures`, counted from the layouts; the live bounce of clustered lights and the reflection
   probes added three; they belong in a bind group or texture array of
-  their own before a browser build) (spec 16, but 98 % of Macs and 92 % of all WebGPU
+  their own before a browser build) Storage textures stay within 4 per stage, the
+  default every device gets (`frame::shade_storage_textures` over every
+  pipeline layout built from shade's module, checked by a test); (spec 16, but 98 % of Macs and 92 % of all WebGPU
   devices offer 44 or more, web3dsurvey.com, November 2026). The GPU forest
   (trees) still needs 16 storage buffers. Storage buffers on macOS: 94 %
   offer 10 or more, 29 % 16; Firefox (Zen) gives 9, Chrome's software

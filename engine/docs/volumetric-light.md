@@ -193,6 +193,9 @@ light.froxel_fog = Some(FroxelFog { density: 0.15, albedo: Vec3::splat(0.9), ani
   light (the irradiance volume's two hemispheres, the sky through openings
   included), times the scattering coefficient; and the extinction. It is
   blended with last frame's cell where the point was (reprojected, 0.9 kept).
+  The cells it writes are its own bind group (group 3): shade's view group
+  already carries three storage textures, and a stage may see four
+  (`frame::shade_storage_textures`, checked by a test).
 - Air the camera cannot see does not reach the fog it can: a column skips
   cells behind its farthest visible surface (the least depth in its tile,
   found by the workgroup), and a sample that lies behind the depth buffer at
