@@ -229,7 +229,7 @@ fn light_at(l: u32, p: vec3<f32>, to: ptr<function, vec3<f32>>) -> vec3<f32> {
 
 fn probe_index(wid: vec3<u32>) -> u32 { return wid.x + wid.y * 65535u; }
 
-var<workgroup> red: array<array<f32, 64>, 24>;
+var<workgroup> red: array<array<f32, 64>, 36>;
 
 fn reduce(li: u32, values: u32) {
     for (var s = 32u; s > 0u; s >>= 1u) {
@@ -330,70 +330,108 @@ fn prepare(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_inde
     }
 }
 
-// One gather of bounced light: every bounce ray's hit lit by the previous
-// pass's probes (and the sun, or light u.mode.x, directly), weighted per
-// axis. Sky mode writes y (sky) and z (sun), keeping x; lamp mode rgb.
-fn bounce(i: u32, li: u32, lamp: bool) {
+// One gather of bounced sky and sun: every bounce ray's hit lit by the
+// previous pass's probes and the sun directly, weighted per axis: y (sky)
+// and z (sun), x kept. Its w carries the standard deviation of y's and z's
+// estimates (two halves): each axis's value is a weighted mean of the rays'
+// values (weights c, cosine to the axis), whose variance is the rays'
+// weighted variance times sum c^2 / (sum c)^2. `denoise` weighs neighbours
+// by it.
+fn bounce(i: u32, li: u32) {
     let valid = i < probe_count() && pos[i].w > 0.5;
     let j = min(i, probe_count() - 1u);
     let o = pos[j].xyz;
     let q = dirs[u.counts.w + j];
-    for (var k = 0u; k < 24u; k++) { red[k][li] = 0.0; }
+    // Rows: 0-5 sum c y, 6-11 sum c z, 12-17 sum c y^2, 18-23 sum c z^2,
+    // 24-29 sum c, 30-35 sum c^2.
+    for (var k = 0u; k < 36u; k++) { red[k][li] = 0.0; }
     if valid {
         for (var r = li; r < u.counts.y; r += 64u) {
             let d = rotate(q, dirs[u.mode.w + r].xyz);
             var c: array<f32, 6>;
-            for (var a = 0u; a < 6u; a++) { c[a] = max(dot(AXES[a], d), 0.0); red[18u + a][li] += c[a]; }
+            for (var a = 0u; a < 6u; a++) { c[a] = max(dot(AXES[a], d), 0.0); red[24u + a][li] += c[a]; red[30u + a][li] += c[a] * c[a]; }
             let h = hit(o, d);
             if h.w < 0.0 { continue; }
             let n = select(h.xyz, -h.xyz, dot(h.xyz, d) > 0.0);
             let at = o + d * h.w;
             let mask = masks[i * u.counts.y + r];
             let g = gather(at + n * 0.15, n, mask, 0u);
-            if lamp {
-                var to = vec3<f32>(0.0);
-                var direct = light_at(u.mode.x, at, &to);
-                let cosine = dot(n, to);
-                if cosine <= 0.0 { direct = vec3<f32>(0.0); }
-                if (mask & (1u << (9u + u.mode.x))) == 0u { direct = vec3<f32>(0.0); }
-                let leaving = u.sun.w * (direct * max(cosine, 0.0) + g);
-                for (var a = 0u; a < 6u; a++) {
-                    red[a * 3u][li] += leaving.x * c[a];
-                    red[a * 3u + 1u][li] += leaving.y * c[a];
-                    red[a * 3u + 2u][li] += leaving.z * c[a];
-                }
-            } else {
-                let sun = u.sun.xyz;
-                let lit = max(dot(n, sun), 0.0);
-                var sun_e = 0.0;
-                if sun.y > 0.0 && lit > 0.0 && (mask & 256u) != 0u { sun_e = lit; }
-                let s = g.x + g.y;
-                let z = sun_e + g.z;
-                for (var a = 0u; a < 6u; a++) {
-                    red[a][li] += u.sun.w * s * c[a];
-                    red[6u + a][li] += u.sun.w * z * c[a];
-                }
+            let sun = u.sun.xyz;
+            let lit = max(dot(n, sun), 0.0);
+            var sun_e = 0.0;
+            if sun.y > 0.0 && lit > 0.0 && (mask & 256u) != 0u { sun_e = lit; }
+            let vy = u.sun.w * (g.x + g.y);
+            let vz = u.sun.w * (sun_e + g.z);
+            for (var a = 0u; a < 6u; a++) {
+                red[a][li] += vy * c[a];
+                red[6u + a][li] += vz * c[a];
+                red[12u + a][li] += vy * vy * c[a];
+                red[18u + a][li] += vz * vz * c[a];
             }
         }
     }
     workgroupBarrier();
-    reduce(li, 24u);
+    reduce(li, 36u);
     if li == 0u && i < probe_count() {
         for (var a = 0u; a < 6u; a++) {
             let p = prev[i * 6u + a];
             if !valid { out[i * 6u + a] = p; continue; }
-            let den = max(red[18u + a][0], 1e-6);
-            if lamp {
-                out[i * 6u + a] = vec4<f32>(red[a * 3u][0], red[a * 3u + 1u][0], red[a * 3u + 2u][0], 0.0) / den;
-            } else {
-                out[i * 6u + a] = vec4<f32>(p.x, red[a][0] / den, red[6u + a][0] / den, 0.0);
-            }
+            let den = max(red[24u + a][0], 1e-6);
+            let my = red[a][0] / den;
+            let mz = red[6u + a][0] / den;
+            let share = red[30u + a][0] / (den * den);
+            let sd = sqrt(max(vec2<f32>(red[12u + a][0] / den - my * my, red[18u + a][0] / den - mz * mz), vec2<f32>(0.0)) * share);
+            out[i * 6u + a] = vec4<f32>(p.x, my, mz, bitcast<f32>(pack2x16float(sd)));
         }
     }
 }
 
+// Joint filter of the bounced light over the probe grid (SVGF's edge-
+// stopping, Schied et al. 2017, on probes): each valid probe averages with
+// the neighbours it sees, each weighted by 0.5 per step and by how far its
+// value lies from this probe's in units of the two estimates' standard
+// deviations, exp(-d^2 / (2 * 2^2 * (sd_i^2 + sd_j^2))): neighbours that
+// differ by noise blend in, real differences (light through a doorway) do
+// not. The standard deviations propagate (sum w^2 sd^2) / (sum w)^2 for the
+// next iteration. y and z only; x is the direct sky, traced with many rays.
 @compute @workgroup_size(64)
-fn bounce_sky(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index) li: u32) { bounce(probe_index(wid), li, false); }
+fn denoise(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x + gid.y * 65535u * 64u;
+    if i >= probe_count() { return; }
+    if pos[i].w < 0.5 { for (var a = 0u; a < 6u; a++) { out[i * 6u + a] = prev[i * 6u + a]; } return; }
+    let x = i32(i % u.dims.x);
+    let y = i32((i / u.dims.x) % u.dims.y);
+    let z = i32(i / (u.dims.x * u.dims.y));
+    let bits = seen[i];
+    for (var a = 0u; a < 6u; a++) {
+        let own = prev[i * 6u + a];
+        let sd_i = unpack2x16float(bitcast<u32>(own.w));
+        var sum = own.yz;
+        var weight = vec2<f32>(1.0);
+        var var_sum = sd_i * sd_i;
+        var bit = 0u;
+        for (var ox = -1; ox <= 1; ox++) { for (var oy = -1; oy <= 1; oy++) { for (var oz = -1; oz <= 1; oz++) {
+            if ox == 0 && oy == 0 && oz == 0 { continue; }
+            let b = bit;
+            bit += 1u;
+            if (bits & (1u << b)) == 0u { continue; }
+            let j = u32(x + ox) + u32(y + oy) * u.dims.x + u32(z + oz) * u.dims.x * u.dims.y;
+            let other = prev[j * 6u + a];
+            let sd_j = unpack2x16float(bitcast<u32>(other.w));
+            let diff = other.yz - own.yz;
+            let noise = 8.0 * (sd_i * sd_i + sd_j * sd_j) + 1e-12;
+            let w = pow(0.5, f32(abs(ox) + abs(oy) + abs(oz))) * exp(-diff * diff / noise);
+            sum += other.yz * w;
+            weight += w;
+            var_sum += w * w * sd_j * sd_j;
+        }}}
+        let sd = sqrt(var_sum) / weight;
+        out[i * 6u + a] = vec4<f32>(own.x, sum / weight, bitcast<f32>(pack2x16float(sd)));
+    }
+}
+
+@compute @workgroup_size(64)
+fn bounce_sky(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index) li: u32) { bounce(probe_index(wid), li); }
 
 // Up to LAMPS_PER_PASS lamps' bounce in one pass (u.mode.x the first,
 // u.sun.x how many): each bounce ray is traced once for all of them; lamp s

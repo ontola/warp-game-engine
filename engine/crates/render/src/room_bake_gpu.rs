@@ -29,7 +29,7 @@ struct Uniform {
 /// number of bakes on one device (the `*_with` functions).
 pub struct Kernels {
     layout: wgpu::BindGroupLayout,
-    pipelines: [wgpu::ComputePipeline; 10],
+    pipelines: [wgpu::ComputePipeline; 11],
 }
 
 impl Kernels {
@@ -47,7 +47,7 @@ impl Kernels {
         let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("room bake"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipeline = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(entry), layout: Some(&pipeline_layout),
             module: &module, entry_point: Some(entry), compilation_options: Default::default(), cache: gpu.pipeline_cache() });
-        Self { layout, pipelines: ["sky_direct", "neighbours", "bounce_sky", "bounce_lamp", "smooth_light", "prepare", "place", "visibility_map", "planes", "reach"].map(pipeline) }
+        Self { layout, pipelines: ["sky_direct", "neighbours", "bounce_sky", "bounce_lamp", "smooth_light", "prepare", "place", "visibility_map", "planes", "reach", "denoise"].map(pipeline) }
     }
 }
 
@@ -77,6 +77,10 @@ const PLACE: usize = 6;
 const VISIBILITY: usize = 7;
 const PLANES: usize = 8;
 const REACH: usize = 9;
+const DENOISE: usize = 10;
+/// Iterations of the variance-guided filter after the last sky bounce
+/// (room_bake.wgsl `denoise`): each over the 26 neighbours a probe sees.
+const DENOISE_PASSES: usize = 3;
 /// Lamps baked in one pass (room_bake.wgsl LAMPS_PER_PASS).
 const LAMPS_PER_PASS: usize = 8;
 
@@ -160,7 +164,7 @@ impl<'a> Context<'a> {
         pass.set_bind_group(0, &bind, &[]);
         // Workgroup-per-probe kernels, or a thread per probe.
         let groups = if kernel == SMOOTH { (self.count * mode[0].max(1)).div_ceil(64) }
-            else if matches!(kernel, NEIGHBOURS | PLACE | PLANES | REACH) { self.count.div_ceil(64) } else { self.count };
+            else if matches!(kernel, NEIGHBOURS | PLACE | PLANES | REACH | DENOISE) { self.count.div_ceil(64) } else { self.count };
         pass.dispatch_workgroups(groups.min(65535), groups.div_ceil(65535), 1);
     }
 
@@ -210,16 +214,20 @@ pub fn bake_with(kernels: &Kernels, gpu: &Gpu, grid: &Grid, occluders: &Occluder
     let cx = Context::new(gpu, kernels, grid, occluders, placement, settings.sky_rays, settings.bounce_rays, &[])?;
     let r = settings.reflectance;
     // Buffer 1 holds the light after each step: sky_direct writes it, a
-    // bounce writes 0 and its smoothing 1 again.
+    // bounce writes 0 and its smoothing 1 again. The last bounce is not
+    // smoothed but denoised (DENOISE_PASSES, by its estimates' variance):
+    // 1 -> 0, then 0 -> 1 -> 0 -> 1.
     let mut probes = cx.run(|enc| {
         cx.pass(enc, PREPARE, 0, sun, r, [0, 0, 0]);
         cx.pass(enc, SKY_DIRECT, 0, sun, r, [0, 0, 0]);
         cx.pass(enc, NEIGHBOURS, 0, sun, r, [0, 0, 0]);
-        for _ in 0..settings.bounces.max(1) {
+        for _ in 1..settings.bounces.max(1) {
             cx.pass(enc, BOUNCE_SKY, 1, sun, r, [0, 0, 0]);
             cx.pass(enc, SMOOTH, 0, sun, r, [0, 0, 0]);
         }
-    }, 1)?;
+        cx.pass(enc, BOUNCE_SKY, 1, sun, r, [0, 0, 0]);
+        for k in 0..DENOISE_PASSES { cx.pass(enc, DENOISE, k % 2, sun, r, [0, 0, 0]); }
+    }, DENOISE_PASSES % 2)?;
     // Inside-wall probes light nothing (z = 2), as the CPU bake marks them.
     let valid = read_valid(&cx)?;
     for (p, ok) in probes.iter_mut().zip(valid) { if !ok { p.axes = [Vec3::new(0.0, 0.0, 2.0); 6]; } }
