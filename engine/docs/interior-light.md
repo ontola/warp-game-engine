@@ -244,9 +244,18 @@ probe and ray); every bounce and lamp then traces only the ray itself.
 against 1.3 s on the CPU. `room_bake_gpu::bake_geometry` places the probes
 and bakes their visibility maps, reach and separation planes the same way
 (positions to 1e-7 m, maps and reach bit for bit; a plane may take the
-other of two equally near surfaces). `interior_rooms` bakes both door
-states this way, 3.5 s at startup with the demo window running
-(`ROOMS_CPU_BAKE=1`: the CPU, 22 s).
+other of two equally near surfaces). Up to eight lamps share one pass
+(each bounce ray traced once for all of them, a probe set per lamp), and
+`room_bake_gpu::Kernels` compiles the passes once for several bakes (the
+`*_with` functions). `interior_rooms` bakes both door states this way,
+2.2 s at startup with the demo window running (`ROOMS_CPU_BAKE=1`: the
+CPU, 22 s).
+
+More rays do not replace the two smoothing passes at the end. With four
+times the rays (8,192 + 2,048) the result changes about as much as between
+two runs; without the passes, with either ray count, a step at the probe
+spacing shows on walls (`r2_bands`) and rooms get darker. They stay for
+now, but they hide a fault in the lookup rather than ray noise (Not yet).
 
 ## Look scene
 
@@ -261,9 +270,11 @@ Other variants (`none`, `vis`, `diffuse`, `sun`, `sep`) show the older
 
 ## Not yet
 
-- The GPU bake compiles its kernels per call (about 0.3 s each) and bakes
-  each lamp in its own passes; the lamps are most of its time.
 - No Luau call yet: games written in Luau cannot ask for a room bake.
+- The bake's two final smoothing passes hide a step at the probe spacing
+  that shading's eight-probe lookup makes on walls (`r2_bands` without
+  them); a weight in the lookup switches per cell or voxel, probably the
+  reach test ([log](log/2026-11-13-gpu-room-bake.md#open-the-step-at-the-probe-spacing)).
 - Probes are 0.5 m apart, so the bake has no contact darkening of its own.
   Corners, creases and the floor under furniture darken through the
   horizon-based screen-space AO in `shade.wgsl` (GTAO's idea, as Call of
