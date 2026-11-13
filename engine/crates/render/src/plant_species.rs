@@ -4,16 +4,18 @@
 use crate::plant_recipe::{CrownProfile, FoliageKind, WoodyRecipe};
 
 mod growth;
-pub use growth::{grown, GrownSpecies};
+mod shoots;
+pub use growth::{grown, GrownSpecies, GROWN_NAMES};
 
 const NEEDLE: [f32; 3] = [0.065, 0.135, 0.045];
 const LEAF: [f32; 3] = [0.11, 0.20, 0.055];
 const BARK: [f32; 3] = [0.16, 0.105, 0.062];
 
-/// Every species by name.
-pub const NAMES: [&str; 17] = [
+/// Names accepted by the older woody recipe builder, `named`.
+pub const NAMES: [&str; 20] = [
     "spruce", "pine", "birch", "broadleaf", "willow", "juniper", "shrub", "dwarf_birch", "desert_shrub",
     "saltbush", "upland_spruce", "scots_pine", "mountain_birch", "kapok", "african_mahogany", "forest_coffee", "raffia_palm",
+    "woolly_willow", "white_broom", "forest_dracaena",
 ];
 
 /// A species' recipe by name.
@@ -78,6 +80,13 @@ pub fn named(name: &str) -> Option<WoodyRecipe> {
         "raffia_palm" => WoodyRecipe { crown_base: 0.78, branches_per_tier: 8, spray_axial_bias: 0.15,
             ..shrub(0x5241_4646_4941, 0.65, 0.11, 2.1, CrownProfile::Spreading, 1, 0.34, 0.038,
                 FoliageKind::Broadleaf, 12, 0.77, [0.111, 0.204, 0.054], [0.17, 0.14, 0.069]) },
+        "woolly_willow" => shrub(0x574f_4f4c_4c59, 0.70, 0.024, 0.68, CrownProfile::Spreading, 3, 0.40, 0.014,
+            FoliageKind::Broadleaf, 14, 0.43, [0.26, 0.32, 0.21], [0.20, 0.128, 0.078]),
+        "white_broom" => shrub(0x5245_5441_4d41, 1.75, 0.042, 1.0, CrownProfile::Rounded, 4, 0.61, 0.012,
+            FoliageKind::Needle, 16, 0.52, [0.165, 0.207, 0.103], [0.207, 0.153, 0.085]),
+        "forest_dracaena" => WoodyRecipe { branches_per_tier: 2,
+            ..shrub(0x4452_4143_4145, 1.65, 0.018, 0.52, CrownProfile::Columnar, 3, 0.78, 0.012,
+                FoliageKind::Broadleaf, 7, 0.53, [0.062, 0.164, 0.069], [0.139, 0.153, 0.085]) },
         _ => return None,
     })
 }

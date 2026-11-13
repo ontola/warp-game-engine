@@ -16,7 +16,7 @@ const NEEDLE_FOLIAGE: u64 = 0x5753_4e46_4f4c_0300;
 const LEAF_WOOD: u64 = 0x5753_4c57_4f44_0100;
 const LEAF_FOLIAGE: u64 = 0x5753_4c46_4f4c_0100;
 
-fn unit(variant: u32, channel: u32, index: u32) -> f32 {
+pub(crate) fn unit(variant: u32, channel: u32, index: u32) -> f32 {
     let mut h = (variant as u64 + 1).wrapping_mul(0x9e3779b97f4a7c15)
         ^ (channel as u64).wrapping_mul(0xd1b54a32d192ed03)
         ^ (index as u64).wrapping_mul(0x94d049bb133111eb);
@@ -86,14 +86,14 @@ fn connect_rings(triangles: &mut Vec<[usize; 3]>, a: usize, b: usize, sides: usi
 }
 
 #[derive(Clone, Copy)]
-struct Shoot {
-    root: Vec3,
-    delta: Vec3,
-    bend: Vec3,
-    radius: f32,
+pub(crate) struct Shoot {
+    pub(crate) root: Vec3,
+    pub(crate) delta: Vec3,
+    pub(crate) bend: Vec3,
+    pub(crate) radius: f32,
 }
 impl Shoot {
-    fn point(self, t: f32) -> Vec3 {
+    pub(crate) fn point(self, t: f32) -> Vec3 {
         self.root + self.delta * t + self.bend * (4.0 * t * (1.0 - t))
     }
     fn tangent(self, t: f32) -> Vec3 {
@@ -104,7 +104,7 @@ impl Shoot {
     }
 }
 
-fn tube(part: &mut PartGeometry, shoot: Shoot, segments: usize, sides: usize) {
+pub(crate) fn tube(part: &mut PartGeometry, shoot: Shoot, segments: usize, sides: usize) {
     let mut positions = Vec::new();
     let mut uv = Vec::new();
     let mut triangles = Vec::new();
@@ -172,7 +172,7 @@ fn needle(
 
 /// Closed ovate blade with four curved, six-sided sections and two pointed
 /// ends: 26 vertices, 48 triangles. Real centimetre-scale foliage, not a card.
-fn leaf(
+pub(crate) fn leaf(
     part: &mut PartGeometry,
     root: Vec3,
     direction: Vec3,
@@ -496,6 +496,21 @@ mod tests {
                 .all(|&(count, direction)| count == 2 && direction == 0),
             "each component must be closed with consistently oriented edges"
         );
+    }
+
+    #[test]
+    fn grown_botanical_parts_are_closed_solids_with_distinct_stable_ids() {
+        use crate::plant_species::grown;
+        let mut ids = BTreeSet::new();
+        for name in ["woolly_willow", "white_broom", "forest_dracaena", "kapok", "raffia_palm"] {
+            let model = grown(name).unwrap();
+            let parts = model.parts();
+            for (part, repeat) in parts.tufts.iter().zip(model.parts().tufts) {
+                check_solid(part);
+                same(part, &repeat);
+                assert!(ids.insert(part.id), "{name} reuses another shoot");
+            }
+        }
     }
 
     #[test]

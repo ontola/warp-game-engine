@@ -207,14 +207,13 @@ declare lights: {
 }
 
 declare plants: {
-	-- A grown plant (a Jeffrey pine unless `species` changes its rules): its
-	-- age in years sets how many shoots, limbs and needle brushes it has, not
-	-- its scale. It cooks on a background thread and appears when done.
-	-- `species` and `look` override fields of plants.defaults() (unknown
-	-- names are an error). `full` also cooks the voxel levels and proxies
-	-- (LOD and far views; minutes for an old tree); without it a preview of
-	-- the source meshes takes a fraction of a second. Returns the plant's id.
-	grow: (opts: { age: number, seed: number?, pos: Vec?, yaw: number?, full: boolean?, species: { [string]: any }?, look: { [string]: any }? }) -> number,
+	-- Species names accepted by grow, in catalogue order.
+	catalog: () -> { string },
+	-- A preset supplies growth rules, foliage parts, colours, age and seed.
+	-- Without a preset, supply age in years to grow a Jeffrey pine.
+	-- `species` and `look` override individual fields. `full` also cooks
+	-- branch and whole-plant voxel levels. The source preview appears first.
+	grow: (opts: { preset: string?, age: number?, seed: number?, pos: Vec?, yaw: number?, full: boolean?, species: { [string]: any }?, look: { [string]: any }? }) -> number,
 	remove: (id: number) -> boolean,
 	clear: () -> (),
 	-- Plants placed, shown, still cooking with nothing to show, failed (and the

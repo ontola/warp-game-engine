@@ -64,7 +64,27 @@ Use `--from FILE` alone to restore the original world and camera.
 | `norway` | Sheltered snow drifts, soil on exposed shoulders and compacted snow between wheel tracks | Norway spruce, open-crowned Scots pine and pale mountain birch, with juniper and dwarf birch below |
 | `rainforest` | Rolling Central African lowlands with damp leaf litter and red clay on open ground and tracks | Kapok spreads its upper limbs above the mahogany canopy. Forest coffee and young raffia palms with arching fronds grow in its shade. |
 
-![The desert, Norwegian and rainforest species at their authored sizes, with an enlarged view of the understory](images/biome-flora.jpg)
+Three local plant communities are selectable in both games. Use
+`--style desert-broom` in terrain_fly or `--biome desert-broom` in Sideways
+to see dry-season white broom and saltbush. In `norway-willow`, woolly willow
+grows with dwarf birch. In `rainforest-dracaena`, forest dracaena and young
+raffia grow beneath the canopy. Each swaps one understory species at the
+parent biome's existing sites and weights.
+
+To inspect the actual source meshes at another age or seed:
+
+```sh
+cargo run --release -p render --example plant_catalog_preview -- --list
+cargo run --release -p render --example plant_catalog_preview -- --out build/plants --seed 24 white_broom woolly_willow forest_dracaena kapok raffia_palm
+```
+
+The preview writes a full specimen, an attached shoot close-up and physical
+scale metadata for each. To place a catalogue plant in a Luau game, see
+[the plants API](warp-cli.md).
+
+The [Sideways biome atlas](https://sideways-biome-atlas.joepio.chatgpt.site/#plantenoverzicht) shows all fourteen grown plants and their shoots. The earlier eleven-species study below records the previous growth recipes.
+
+![Earlier study of eleven desert, Norwegian and rainforest plants, with an enlarged view of the understory](images/biome-flora.jpg)
 
 Games can look up `render::biome::Biome::named(name)` and take its terrain,
 ground palette and weighted flora together. `Biome::species()` resolves the

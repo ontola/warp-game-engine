@@ -138,7 +138,7 @@ mod tests {
             assert_eq!(land.tree_scale, 1.0);
             assert_eq!(land.ferns, land.trees.min(1.0));
         }
-        for name in ["desert", "norway", "rainforest", "congo"] {
+        for name in ["desert", "norway", "rainforest", "congo", "desert-broom", "norway-willow", "rainforest-dracaena"] {
             assert_eq!(land(name).unwrap().layout, LandLayout::BiomeFlora, "{name}");
         }
     }

@@ -196,6 +196,15 @@ keyboard mapping is in `app::input`.
 | `light` | `set({sun, sun_lux, sky_lux, exposure, exposure_min, exposure_max, exposure_bias, adapt_speed, fog_start, fog_end, fog_density})`, `reset()` |
 | `random` | `float()`, `range(lo, hi)`, `int(lo, hi)`, `chance(p)`, `seed(n)` |
 | `game` | `tick()`, `time()`, `dt()`, `players()`, `title()`, `finish()`, `log(text)` |
+| `plants` | `catalog() -> names`, `grow(opts) -> id`, `remove(id)`, `clear()`, `status()`, `defaults()`, `save(name, value)`, `load(name)` |
+
+`plants.grow({preset = "white_broom", pos = vector.create(4, 0, 8), full = true})`
+uses the engine catalogue's age, seed, growth rules, foliage parts and colours.
+`plants.catalog()` lists the available names. Pass `age`, `seed` or individual
+`species` and `look` fields to override the preset. A call without `preset`
+uses Jeffrey pine and requires `age` in years. The default preview draws the
+source meshes. With `full = true`, it displays those meshes while the branch
+and whole-plant voxels cook. Placements with the same growth settings share a cook.
 
 - **Parenting**: pass a parent ID as the third argument of `world.spawn`. Move a subtree with `world.place`, change its parent with `world.set_parent` and read `world.get(id).world_pos`. See [parenting](parenting.md) for coordinates, collisions and lifetime.
 - **Entities**: `world.spawn` takes a shape (`"cube"`, `"sphere"`,

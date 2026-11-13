@@ -40,6 +40,26 @@ fn the_repo_copy_of_hello_warp_is_the_starter() {
 }
 
 #[test]
+fn a_luau_game_can_discover_and_place_a_catalogue_preset() {
+    let dir = folder("plant-catalogue");
+    std::fs::write(dir.join("main.luau"), r#"
+        return {init = function()
+            state.names = plants.catalog()
+            state.id = plants.grow({preset = "white_broom", pos = vector.create(4,0,8)})
+        end, tick = function() end, draw = function() end}
+    "#).unwrap();
+    let game = game(&dir);
+    let state = state(&game);
+    assert_eq!(state["errors"], json!([]), "{state}");
+    assert_eq!(state["state"]["names"], json!(render::plant_species::GROWN_NAMES));
+    let id = state["state"]["id"].as_u64().unwrap() as u32;
+    let core = game.core();
+    let p = &core.plants.plants[&id];
+    let broom = render::plant_species::grown("white_broom").unwrap();
+    assert_eq!((p.preset, p.age, p.seed, p.pos.to_array()), ("white_broom", broom.age, broom.seed, [4.0, 0.0, 8.0]));
+}
+
+#[test]
 fn warp_new_writes_a_game_that_plays() {
     let dir = folder("new").join("my-game");
     let files = warp::starter::write(&dir, "My Game").unwrap();

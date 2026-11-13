@@ -472,15 +472,14 @@ fn short_json<T: serde::Serialize>(v: &T) -> mlua::Result<serde_json::Value> {
     serde_json::from_str(&serde_json::to_string(v).map_err(rt)?).map_err(rt)
 }
 
-fn merged<T: serde::Serialize + serde::de::DeserializeOwned>(base: &T, over: &Value, what: &str) -> mlua::Result<T> {
+fn merged<T: Copy + serde::Serialize + serde::de::DeserializeOwned>(base: &T, over: &Value, what: &str) -> mlua::Result<T> {
+    if over.is_nil() { return Ok(*base); }
     let mut j = short_json(base)?;
-    if !over.is_nil() {
-        let serde_json::Value::Object(o) = crate::luajson::to_json(over) else { return Err(rt(format!("{what}: expected a table of fields"))) };
-        let m = j.as_object_mut().expect("a struct");
-        for (k, v) in o {
-            if !m.contains_key(&k) { return Err(rt(format!("{what}: unknown field {k:?} (fields: {})", m.keys().cloned().collect::<Vec<_>>().join(", ")))); }
-            m.insert(k, v);
-        }
+    let serde_json::Value::Object(o) = crate::luajson::to_json(over) else { return Err(rt(format!("{what}: expected a table of fields"))) };
+    let m = j.as_object_mut().expect("a struct");
+    for (k, v) in o {
+        if !m.contains_key(&k) { return Err(rt(format!("{what}: unknown field {k:?} (fields: {})", m.keys().cloned().collect::<Vec<_>>().join(", ")))); }
+        m.insert(k, v);
     }
     serde_json::from_value(j).map_err(|e| rt(format!("{what}: {e}")))
 }
@@ -489,6 +488,44 @@ fn merged<T: serde::Serialize + serde::de::DeserializeOwned>(base: &T, over: &Va
 fn data_file(c: &Core, name: &str) -> mlua::Result<std::path::PathBuf> {
     if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') { return Err(rt(format!("{name:?}: a name of letters, digits, - and _"))); }
     Ok(c.world.dir().join(format!("{name}.json")))
+}
+
+fn plant_options(opts: &Table) -> mlua::Result<crate::plants::Plant> {
+    use render::plant_species::{grown, GROWN_NAMES};
+    let o = options(opts, &["preset", "age", "seed", "pos", "yaw", "full", "species", "look"], "plants.grow")?;
+    let get = |k: &str| o.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap_or(Value::Nil);
+    let preset = match get("preset") {
+        Value::Nil => None,
+        Value::String(s) => {
+            let name = s.to_str()?;
+            Some(GROWN_NAMES.iter().copied().find(|&n| n == &*name)
+                .ok_or_else(|| rt(format!("plants.grow: unknown preset {name:?} (see plants.catalog())")))?)
+        }
+        _ => return Err(rt("plants.grow: preset must be a species name")),
+    };
+    let name = preset.unwrap_or("pine");
+    let form = grown(name).ok_or_else(|| rt(format!("plants.grow: missing growth rules for {name}")))?;
+    let age = match get("age") {
+        Value::Nil if preset.is_some() => form.age as f32,
+        value => num(&value).ok_or_else(|| rt("plants.grow: needs age (years)"))?,
+    };
+    if !(0.0..=2000.0).contains(&age) { return Err(rt("plants.grow: age 0 to 2000 years")); }
+    let pos = match get("pos") { Value::Nil => Vec3::ZERO, v => vec3(&v, "plants.grow pos")? };
+    Ok(crate::plants::Plant {
+        preset: name,
+        species: merged(&form.rules, &get("species"), "plants.grow species")?,
+        look: merged(&form.look, &get("look"), "plants.grow look")?,
+        age: age.round() as u32,
+        // Luau numbers can represent integer seeds exactly up to 2^53.
+        seed: match get("seed") {
+            Value::Integer(i) => i.max(0) as u64,
+            Value::Number(x) => x.max(0.0) as u64,
+            _ => form.seed,
+        },
+        pos,
+        yaw: num(&get("yaw")).unwrap_or(0.0),
+        full: matches!(get("full"), Value::Boolean(true)),
+    })
 }
 
 pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
@@ -504,21 +541,9 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     }
 
     table("plants", vec![
+        ("catalog", lua.create_function(|lua, ()| lua.create_sequence_from(render::plant_species::GROWN_NAMES.iter().copied()))?),
         ("grow", f!(core, move |_, opts: Table| {
-            let o = options(&opts, &["age", "seed", "pos", "yaw", "full", "species", "look"], "plants.grow")?;
-            let get = |k: &str| o.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap_or(Value::Nil);
-            let age = num(&get("age")).ok_or_else(|| rt("plants.grow: needs age (years)"))?;
-            if !(0.0..=2000.0).contains(&age) { return Err(rt("plants.grow: age 0 to 2000 years")); }
-            let pos = match get("pos") { Value::Nil => Vec3::ZERO, v => vec3(&v, "plants.grow pos")? };
-            let p = crate::plants::Plant {
-                species: merged(&render::plant_growth::Species::jeffrey_pine(), &get("species"), "plants.grow species")?,
-                look: merged(&render::plant_growth_assembly::Look::jeffrey_pine(), &get("look"), "plants.grow look")?,
-                age: age.round() as u32,
-                seed: num(&get("seed")).map_or(1, |s| s.max(0.0) as u64),
-                pos,
-                yaw: num(&get("yaw")).unwrap_or(0.0),
-                full: matches!(get("full"), Value::Boolean(true)),
-            };
+            let p = plant_options(&opts)?;
             let mut c = lock(&core);
             sim(&c, "plants.grow")?;
             Ok(c.plants.grow(p))
@@ -906,6 +931,27 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plant_presets_use_catalogue_defaults_and_keep_explicit_overrides() {
+        let lua = Lua::new();
+        let parse = |s: &str| plant_options(&lua.load(s).eval::<Table>().unwrap());
+        let form = render::plant_species::grown("mountain_birch").unwrap();
+        let plant = parse("{preset='mountain_birch', pos=vector.create(1,2,3), full=true}").unwrap();
+        assert_eq!((plant.age, plant.seed, plant.pos, plant.full), (form.age, form.seed, Vec3::new(1.0, 2.0, 3.0), true));
+        assert_eq!(short_json(&plant.species).unwrap(), short_json(&form.rules).unwrap());
+        assert_eq!(short_json(&plant.look).unwrap(), short_json(&form.look).unwrap());
+        let explicit_seed = parse(&format!("{{preset='mountain_birch', seed={}}}", form.seed)).unwrap();
+        assert_eq!(explicit_seed.seed, plant.seed);
+        let changed = parse("{preset='mountain_birch', age=2, seed=31, species={height=5}, look={wood={0.1,0.2,0.3}}}").unwrap();
+        assert_eq!((changed.age, changed.seed, changed.species.height, changed.look.wood), (2, 31, 5.0, [0.1, 0.2, 0.3]));
+        assert_eq!(changed.look.needles, form.look.needles);
+        assert!(parse("{}").is_err());
+        assert!(parse("{preset='missing', age=5}").is_err());
+        assert!(parse("{preset='mountain_birch', age='young'}").is_err());
+        let raw = parse("{age=3.5, look={twigs=3}}").unwrap();
+        assert_eq!((raw.preset, raw.age, raw.seed, raw.look.twigs), ("pine", 4, 1, 3));
+    }
 
     #[test]
     fn colours_vectors_and_random() {

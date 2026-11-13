@@ -1,11 +1,9 @@
 //! Growth rules and source foliage shared by the terrain viewer and games.
+use super::shoots::ShootRecipe;
 use crate::{
-    foliage_assembly::PartGeometry,
     plant_growth::Species,
     plant_growth_assembly::{Look, Parts},
-    plant_spray,
 };
-use glam::Vec3;
 
 #[derive(Clone, Copy, Debug)]
 pub struct GrownSpecies {
@@ -14,60 +12,39 @@ pub struct GrownSpecies {
     /// Representative stand age, in years.
     pub age: u32,
     pub seed: u64,
-    /// Width, length along the shoot and depth of the metre-long leafy spray. Conifers use
-    /// the original pine-lab needle brushes designed for their growth rules.
-    leaf_spray: Option<[f32; 3]>,
+    /// None selects the native conifer brush supplied by the growth lab.
+    shoot: Option<ShootRecipe>,
 }
 
 impl GrownSpecies {
     pub fn parts(&self) -> Parts {
         let mut parts = Parts::for_look(&self.look);
-        if let Some(scale) = self.leaf_spray {
-            parts.tufts = (0..3).map(|v| leafy_shoot(v, Vec3::from(scale))).collect();
+        if let Some(recipe) = self.shoot {
+            parts.tufts = (0..3).map(|v| recipe.build(v)).collect();
         }
         parts
     }
 }
 
-// Assembly puts each foliage part on a growing shoot tip. Keep the spray's
-// young green stalk and petioles with its closed leaf blades in one part so
-// the leaves remain connected, including in the voxel representation.
-fn leafy_shoot(variant: u32, scale: Vec3) -> PartGeometry {
-    let (mut shoot, blades) = plant_spray::broadleaf_spray(variant);
-    let offset = shoot.vertices.len() as u32;
-    shoot.vertices.extend(blades.vertices);
-    shoot.indices.extend(blades.indices.into_iter().map(|i| offset + i));
-    for (i, v) in shoot.vertices.iter_mut().enumerate() {
-        let mut pos = Vec3::from(v.pos) * scale;
-        let normal = (Vec3::from(v.normal) / scale).normalize();
-        if i < offset as usize {
-            // Retain a fine, solid green stalk when the metre spray is
-            // shortened for dwarf shrubs (particularly its tiny petioles).
-            pos += normal * 0.0004;
-        }
-        v.pos = pos.to_array();
-        v.normal = normal.to_array();
-    }
-    // The grown asset cache uses part IDs rather than hashing its geometry.
-    // Editing a blade, its attachment or our transform must invalidate
-    // that cook even when the source triangle counts stay the same.
-    let vertex_bits = shoot.vertices.iter()
-        .flat_map(|v| v.pos.into_iter().chain(v.normal).chain(v.uv)).map(f32::to_bits);
-    shoot.id = vertex_bits.chain(shoot.indices.iter().copied())
-        .fold(0x4752_4f57_4c45_4146u64, |h, bits| (h ^ u64::from(bits)).wrapping_mul(0x100_0000_01b3));
-    shoot
-}
+/// Keys accepted by the architectural growth and voxel assembly route.
+pub const GROWN_NAMES: [&str; 15] = [
+    "pine", "upland_spruce", "scots_pine", "juniper", "mountain_birch", "dwarf_birch",
+    "desert_shrub", "saltbush", "kapok", "african_mahogany", "forest_coffee", "raffia_palm",
+    "woolly_willow", "white_broom", "forest_dracaena",
+];
 
 /// Architectural rules for the woody species used by the desert, Norwegian
 /// uplands and African rainforest. The explicit pine and spruce models
 /// also supply the reference conifers used by the terrain flight demo.
 pub fn grown(name: &str) -> Option<GrownSpecies> {
     let recipe = super::named(name)?;
-    let native = |rules, look, age| GrownSpecies { rules, look, age, seed: 1, leaf_spray: None };
-    let leafy = |rules, age, scale| GrownSpecies {
-        rules, age, seed: recipe.id, leaf_spray: Some(scale),
-        look: Look { needles: recipe.foliage_colour, wood: recipe.wood_colour, ..Look::default() },
+    let (seed, foliage, wood) = (recipe.id, recipe.foliage_colour, recipe.wood_colour);
+    let native = |rules, look, age| GrownSpecies { rules, look, age, seed: 1, shoot: None };
+    let authored = |rules, age, shoot| GrownSpecies {
+        rules, age, seed, shoot: Some(shoot),
+        look: Look { needles: foliage, wood, ..Look::default() },
     };
+    let leafy = |rules, age, scale| authored(rules, age, ShootRecipe::Broadleaf(scale));
     // A woody broadleaf keeps recent tips in leaf; lateral growth and the
     // rate at which its lower limbs are shed determine the crown.
     let broadleaf = Species {
@@ -94,7 +71,7 @@ pub fn grown(name: &str) -> Option<GrownSpecies> {
             needle_years: 4, live_crown: 0.55, lift_years: 28.0, dead_years: 7,
             ..Species::jeffrey_pine()
         }, Look {
-            needles: recipe.foliage_colour, wood: recipe.wood_colour,
+            needles: foliage, wood,
             needle_length: 0.135, needle_width: 0.0022, brush_reach: 0.19,
             brush_needles: 65, tip_spread: 0.55, ..Look::jeffrey_pine()
         }, 28),
@@ -103,7 +80,7 @@ pub fn grown(name: &str) -> Option<GrownSpecies> {
             height: 1.25, pace: 6.5, limb_step: 0.15, angle: [1.3, 1.55], rise: 0.015,
             needle_years: 4, ..shrub
         }, Look {
-            wood: recipe.wood_colour, needles: recipe.foliage_colour, brush_needles: 44,
+            wood, needles: foliage, brush_needles: 44,
             needle_length: 0.028, brush_reach: 0.075, needle_width: 0.0009,
             ball: 1.4, ..Look::norway_spruce()
         }, 9),
@@ -125,11 +102,11 @@ pub fn grown(name: &str) -> Option<GrownSpecies> {
         }, 8, [0.33, 0.23, 0.33]),
         // The emergent sets its first scaffold limbs high on a clean bole.
         // Its spreading crown overtops the shorter, darker mahogany.
-        "kapok" => leafy(Species {
-            height: 33.0, pace: 17.0, first_whorl: 9, whorl: [2, 3],
-            limb_step: 1.12, angle: [1.47, 1.55], rise: 0.055, droop: 0.025,
+        "kapok" => authored(Species {
+            height: 34.0, pace: 17.0, first_whorl: 9, whorl: [2, 3],
+            limb_step: 1.155, angle: [1.47, 1.55], rise: 0.055, droop: 0.025,
             wood: 0.017, live_crown: 0.38, lift_years: 18.0, dead_years: 4, ..broadleaf
-        }, 17, [1.55, 1.32, 1.55]),
+        }, 17, ShootRecipe::Kapok),
         "african_mahogany" => leafy(Species {
             height: 22.0, pace: 17.0, first_whorl: 4, whorl: [1, 3],
             limb_step: 0.48, laterals: 1.1, wood: 0.015,
@@ -141,12 +118,29 @@ pub fn grown(name: &str) -> Option<GrownSpecies> {
         }, 9, [0.65, 0.47, 0.65]),
         // Young fronds rise from the crown; as their axes extend they bend
         // down. The leaflets on a frond sit close to one plane.
-        "raffia_palm" => leafy(Species {
-            height: 1.18, pace: 9.0, first_whorl: 7, whorl: [2, 3], max_order: 1,
-            limb_step: 0.42, angle: [0.67, 1.10], rise: -0.20, droop: 0.14,
-            needle_years: 3, limb_wood: 0.19, wood: 0.012, plumes: 1.0,
-            live_crown: 0.4, lift_years: 12.0, ..shrub
-        }, 12, [0.75, 1.02, 0.28]),
+        "raffia_palm" => authored(Species {
+            height: 0.92, pace: 8.0, first_whorl: 4, whorl: [1, 2], max_order: 1,
+            limb_step: 0.135, angle: [1.20, 1.25], rise: 0.02, droop: 0.022,
+            needle_years: 1, limb_wood: 0.23, wood: 0.012, plumes: 1.0,
+            live_crown: 0.80, lift_years: 12.0, ..shrub
+        }, 11, ShootRecipe::Raffia),
+        "woolly_willow" => authored(Species {
+            height: 0.48, pace: 5.6, first_whorl: 1, whorl: [2, 3], limb_step: 0.094,
+            angle: [1.21, 1.37], rise: 0.062, laterals: 0.65, needle_years: 3,
+            tip_radius: 0.0016, wood: 0.0017, ..shrub
+        }, 9, ShootRecipe::WoollyWillow),
+        "white_broom" => authored(Species {
+            height: 1.42, pace: 7.2, first_whorl: 1, whorl: [2, 3], limb_step: 0.185,
+            angle: [0.58, 0.76], rise: -0.035, droop: 0.034, laterals: 0.86,
+            side_length: 0.73, needle_years: 4, tip_radius: 0.00125, wood: 0.0028,
+            ..shrub
+        }, 11, ShootRecipe::Broom),
+        "forest_dracaena" => authored(Species {
+            height: 1.77, pace: 8.0, first_whorl: 1, whorl: [1, 1], limb_step: 0.145,
+            angle: [0.67, 0.79], rise: 0.045, max_order: 2, laterals: 0.21,
+            side_length: 0.58, tip_radius: 0.0019, wood: 0.0013, needle_years: 4,
+            ..shrub
+        }, 9, ShootRecipe::Dracaena),
         _ => return None,
     })
 }
@@ -170,7 +164,7 @@ mod tests {
                     &plant, &parts, s.look, s.seed, plant_growth_assembly::limits(),
                 ).unwrap_or_else(|e| panic!("{name}: {e}"));
                 assert!(placed.tufts > 0 && placed.stems > 0, "{name}");
-                if s.leaf_spray.is_some() {
+                if s.shoot.is_some() {
                     for p in &parts.tufts {
                         assert!(leaf_ids.insert(p.id), "{name}: reused shoot identity");
                         assert!(p.vertices.iter().all(|v| v.uv[1] >= 0.0), "{name}: needle brush");
@@ -188,6 +182,44 @@ mod tests {
         assert!(span("raffia_palm") > 1.6 * height("raffia_palm"));
         assert!(height("desert_shrub") > 2.0 * height("saltbush"));
         assert!(span("desert_shrub") > 1.5 * height("desert_shrub"), "scrub branches out close to the ground");
+    }
+
+    #[test]
+    fn all_catalog_names_resolve_and_biome_undergrowth_grows_between_ages_and_varies_by_seed() {
+        let known: BTreeSet<_> = super::super::NAMES.into_iter().filter(|name| grown(name).is_some()).collect();
+        assert_eq!(known, GROWN_NAMES.into_iter().collect());
+        assert_eq!(known.len(), GROWN_NAMES.len());
+        for name in ["woolly_willow", "white_broom", "forest_dracaena"] {
+            let model = grown(name).unwrap();
+            for seed in [3, 19, 27] {
+                let juvenile = plant_growth::grow(&model.rules, 2, seed);
+                let mature = plant_growth::grow(&model.rules, model.age, seed);
+                assert!(juvenile.height() < mature.height() && juvenile.tufts.len() < mature.tufts.len(), "{name}");
+                assert_ne!(mature.segments, plant_growth::grow(&model.rules, model.age, seed + 1).segments);
+            }
+        }
+    }
+
+    #[test]
+    fn broom_and_palm_keep_their_lowest_foliage_above_the_roots() {
+        for name in ["white_broom", "raffia_palm"] {
+            let model = grown(name).unwrap();
+            let parts = model.parts();
+            for seed in [model.seed, 13, 65, 74, 91] {
+                let grown = plant_growth::grow(&model.rules, model.age, seed);
+                let (assembly, _) = plant_growth_assembly::assemble(&grown, &parts, model.look, seed,
+                    plant_growth_assembly::limits()).unwrap();
+                let branches = assembly.branch_transforms().unwrap();
+                for instance in &assembly.instances {
+                    let part = &assembly.parts[instance.part as usize];
+                    if parts.tufts.iter().any(|tip| tip.id == part.id) {
+                        let transform = branches[instance.branch as usize] * instance.rest;
+                        assert!(part.vertices.iter().all(|v| transform.transform_point3(v.pos.into()).y >= 0.0),
+                            "{name} seed {seed}: foliage under the roots");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

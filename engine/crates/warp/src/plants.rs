@@ -8,7 +8,7 @@
 //! tuning. `full` cooks the voxel levels and proxies as well (minutes for an
 //! old tree), so LOD, voxels and far views can be judged.
 //!
-//! Every distinct (rules, look, age, seed, quality) is one cooked variant,
+//! Every distinct (preset, rules, look, age, seed, quality) is one cooked variant,
 //! kept in memory (full cooks also on disk, build/cook-cache), so changing
 //! one parameter only re-cooks the plants that use it. Any change rebuilds
 //! the scene and the renderer on the next frame (a short stall, fine for a
@@ -27,8 +27,10 @@ use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, OnceLock};
 
 /// One placed plant.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Plant {
+    /// Catalogue entry supplying the foliage parts. Custom pine rules use `pine`.
+    pub preset: &'static str,
     pub species: Species,
     pub look: Look,
     pub age: u32,
@@ -42,19 +44,26 @@ pub struct Plant {
 
 impl Plant {
     fn key(&self) -> String {
-        serde_json::json!({ "species": self.species, "look": self.look, "age": self.age, "seed": self.seed, "full": self.full }).to_string()
+        serde_json::json!({ "preset": self.preset, "species": self.species, "look": self.look, "age": self.age, "seed": self.seed, "full": self.full }).to_string()
     }
 
     /// The preview variant: what shows at once, and stands in for a full cook.
     fn preview_key(&self) -> String {
-        Plant { full: false, ..self.clone() }.key()
+        Plant { full: false, ..*self }.key()
+    }
+
+    fn parts(&self) -> Result<Parts, String> {
+        let mut form = render::plant_species::grown(self.preset)
+            .ok_or_else(|| format!("unknown grown plant {:?}", self.preset))?;
+        form.look = self.look;
+        Ok(form.parts())
     }
 }
 
 /// Full cooks take seconds to minutes and gigabytes each, so they run one at
 /// a time on one worker, oldest request first; a request whose plant is gone
 /// by its turn is skipped.
-struct FullJob { key: String, species: Species, look: Look, age: u32, seed: u64, done: std::sync::mpsc::Sender<Done> }
+struct FullJob { key: String, plant: Plant, done: std::sync::mpsc::Sender<Done> }
 
 /// What the full-cook worker sends for a request it skipped.
 const SKIPPED: &str = "skipped: no longer placed";
@@ -71,7 +80,7 @@ fn full_worker() -> &'static std::sync::Mutex<std::sync::mpsc::Sender<FullJob>> 
         std::thread::spawn(move || {
             for job in rx {
                 let still = wanted().lock().unwrap_or_else(|p| p.into_inner()).contains(&job.key);
-                let done = if still { cook(job.species, job.look, job.age, job.seed, true) } else { Err(SKIPPED.into()) };
+                let done = if still { cook(job.plant) } else { Err(SKIPPED.into()) };
                 let _ = job.done.send(done);
             }
         });
@@ -96,9 +105,9 @@ struct Preview {
     triangles: usize,
 }
 
-fn preview(species: &Species, look: Look, age: u32, seed: u64) -> Result<Preview, String> {
+fn preview(species: &Species, look: Look, parts: &Parts, age: u32, seed: u64) -> Result<Preview, String> {
     let plant = render::plant_growth::grow(species, age, seed);
-    let (assembly, _) = render::plant_growth_assembly::assemble(&plant, parts(&look), look, seed, preview_limits())?;
+    let (assembly, _) = render::plant_growth_assembly::assemble(&plant, parts, look, seed, preview_limits())?;
     let branches = assembly.branch_transforms()?;
     let mut index: HashMap<(u32, u32), usize> = HashMap::new();
     let mut out = Preview { meshes: Vec::new(), instances: Vec::with_capacity(assembly.instances.len()), triangles: 0 };
@@ -124,15 +133,16 @@ fn preview(species: &Species, look: Look, age: u32, seed: u64) -> Result<Preview
     Ok(out)
 }
 
-fn cook(species: Species, look: Look, age: u32, seed: u64, full: bool) -> Done {
+fn cook(plant: Plant) -> Done {
     let started = std::time::Instant::now();
-    if !full {
-        let p = preview(&species, look, age, seed)?;
+    let parts = plant.parts()?;
+    if !plant.full {
+        let p = preview(&plant.species, plant.look, &parts, plant.age, plant.seed)?;
         let what = format!("{} parts, {} placed, {} triangles", p.meshes.len(), p.instances.len(), p.triangles);
         return Ok((Cooked::Preview(Arc::new(p)), false, started.elapsed().as_secs_f64() * 1000.0, what));
     }
     let cache = cache_dir();
-    let c = render::recipe_forest::cook_grown(&[(species, age, seed)], parts(&look), look, Some(&cache))?.pop().ok_or("nothing cooked")?;
+    let c = render::recipe_forest::cook_grown(&[(plant.species, plant.age, plant.seed)], &parts, plant.look, Some(&cache))?.pop().ok_or("nothing cooked")?;
     let s = c.plant.stats();
     let what = format!("{} branches, {} placements", s.branches, s.placements);
     Ok((Cooked::Full(Arc::new(c.plant)), c.loaded, c.millis, what))
@@ -157,14 +167,6 @@ fn preview_limits() -> render::foliage_assembly::Limits {
     render::foliage_assembly::Limits { max_instances: 1 << 20, max_vertices: u32::MAX as usize / 4, max_indices: u32::MAX as usize / 4, max_source_bytes: usize::MAX / 4, ..render::plant_growth_assembly::limits() }
 }
 
-/// The parts for a look's brushes, made once per needle count and length.
-fn parts(look: &Look) -> &'static Parts {
-    static PARTS: OnceLock<std::sync::Mutex<HashMap<[u32; 6], &'static Parts>>> = OnceLock::new();
-    let mut map = PARTS.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
-    *map.entry([look.brush_needles, look.needle_length.to_bits(), look.brush_spread.to_bits(), look.brush_reach.to_bits(), look.needle_width.to_bits(), look.brush_round.to_bits()])
-        .or_insert_with(|| Box::leak(Box::new(Parts::for_look(look))))
-}
-
 fn cache_dir() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache") }
 
 impl Plants {
@@ -174,8 +176,7 @@ impl Plants {
         let key = p.preview_key();
         if !self.cooked.contains_key(&key) && !self.pending.contains_key(&key) && !self.failed.contains_key(&key) {
             let (tx, rx) = channel();
-            let (species, look, age, seed) = (p.species, p.look, p.age, p.seed);
-            std::thread::spawn(move || { let _ = tx.send(cook(species, look, age, seed, false)); });
+            std::thread::spawn(move || { let _ = tx.send(cook(Plant { full: false, ..p })); });
             self.pending.insert(key, rx);
         }
         if p.full {
@@ -183,7 +184,7 @@ impl Plants {
             wanted().lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone());
             if !self.cooked.contains_key(&key) && !self.pending.contains_key(&key) && !self.failed.contains_key(&key) {
                 let (tx, rx) = channel();
-                let job = FullJob { key: key.clone(), species: p.species, look: p.look, age: p.age, seed: p.seed, done: tx };
+                let job = FullJob { key: key.clone(), plant: p, done: tx };
                 let _ = full_worker().lock().unwrap_or_else(|e| e.into_inner()).send(job);
                 self.pending.insert(key, rx);
             }
@@ -328,7 +329,29 @@ mod tests {
     use super::*;
 
     fn pine(age: u32, x: f32) -> Plant {
-        Plant { species: Species::jeffrey_pine(), look: Look::jeffrey_pine(), age, seed: 1, pos: Vec3::new(x, 0.0, 0.0), yaw: 0.0, full: false }
+        Plant { preset: "pine", species: Species::jeffrey_pine(), look: Look::jeffrey_pine(), age, seed: 1, pos: Vec3::new(x, 0.0, 0.0), yaw: 0.0, full: false }
+    }
+
+    #[test]
+    fn preset_placements_share_the_catalogue_source_geometry() {
+        let form = render::plant_species::grown("mountain_birch").unwrap();
+        let p = Plant { preset: "mountain_birch", species: form.rules, look: form.look, age: 5, seed: form.seed, ..pine(5, 0.0) };
+        let expected = form.parts();
+        let other_root = Plant { pos: Vec3::X, yaw: 1.0, full: true, ..p };
+        assert_eq!(p.key(), other_root.preview_key());
+        assert_ne!(p.key(), other_root.key());
+        assert_ne!(p.key(), Plant { preset: "pine", ..p }.key());
+        let (Cooked::Preview(preview), ..) = cook(p).unwrap() else { panic!("expected source meshes") };
+        let foliage: Vec<_> = preview.meshes.iter().filter(|(_, m, _)| m.flags & render::scene::THIN_FOLIAGE != 0).collect();
+        assert!(!foliage.is_empty());
+        for (id, material, _) in foliage {
+            assert!(expected.tufts.iter().any(|part| part.id == *id));
+            assert_eq!(material.tint, form.look.needles);
+        }
+        let mut pine = pine(6, 0.0);
+        let ordinary = pine.parts().unwrap().tufts[0].id;
+        pine.look.twigs += 1;
+        assert_ne!(ordinary, pine.parts().unwrap().tufts[0].id);
     }
 
     #[test]
@@ -363,7 +386,8 @@ mod limits {
     fn a_crowded_preview_has_no_placement_budget() {
         let species = Species { crowding: 60, needle_years: 7, ..Species::jeffrey_pine() };
         let started = std::time::Instant::now();
-        let p = preview(&species, Look::jeffrey_pine(), 31, 4).unwrap();
+        let look = Look::jeffrey_pine();
+        let p = preview(&species, look, &Parts::for_look(&look), 31, 4).unwrap();
         println!("crowded 31 y: {} placed, {} triangles, {} ms", p.instances.len(), p.triangles, started.elapsed().as_millis());
     }
 }
