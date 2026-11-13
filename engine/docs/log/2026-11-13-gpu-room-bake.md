@@ -37,10 +37,46 @@ near surfaces (a ray along a box edge).
 Benchmark without the demo window (`gpu_bake_speed`, 14,000 probes, 288
 triangles, default settings): GPU 0.16 s, CPU 1.33 s.
 
-## Not done
+## Lamps in one pass, kernels once, more rays
 
-- Kernels compile per call (three contexts per state, about 0.3 s each).
-- Lamps are baked one after another, each with its own readback.
-- The smoothing passes are the CPU bake's, kept so the two agree. With rays
-  now cheap, more of them may make the two extra passes against probe-
-  spacing blotches unnecessary; not tried.
+Up to eight lamps share a pass (each bounce ray traced once for all, a
+probe set per lamp; three lamps at once agree with the CPU bake to 3.5e-7),
+and the passes compile once per startup instead of three times per door
+state: startup bake 3.5 s -> 2.2 s.
+
+More rays against the two final smoothing passes, the whole suite (29 spots,
+mean luminance difference per spot, 0..255):
+
+| Variant | Startup bake | Against |
+| --- | --- | --- |
+| A: 2,048 + 512 rays, 2 passes (default) | 3.8 s | |
+| B: 8,192 + 2,048 rays, 2 passes | 14.0 s | A: 0.03 to 3.8 |
+| C: 8,192 + 2,048 rays, no passes | 14.2 s | B: 0.09 to 22.8 |
+| D: 8,192 + 2,048 rays, 1 pass | 14.1 s | B: 0.05 to 8.5 |
+| E: 2,048 + 512 rays, no passes | 3.1 s | A: 0.1 to 22.8 |
+
+(A to E before lamps shared a pass.) Four times the rays move the result
+about as much as noise; dropping the passes moves it a lot with either ray
+count (C against B as E against A), most in dark room 4 (22.8) and on room
+2's walls. In the 4x crop of `r2_bands` a step at the probe spacing comes
+back without them, and rooms get darker: they spread light that trilinear
+interpolation would show cell by cell, not ray noise. Kept, as the rays.
+
+## Open: the step at the probe spacing
+
+The two passes hide an engine fault rather than fix it: without them a wall
+in room 2 (`r2_bands`) shows a step at the probe spacing, the same kind of
+cell edge Joep saw on a wall before. Smoothing the probes makes neighbouring
+probes alike, so the step's height shrinks; the lookup that makes a step at
+all is unchanged. The interpolation in shading should be continuous whatever
+the probes hold.
+
+Best guess for the cause, not yet measured: a weight in the eight-probe
+lookup that switches per cell or per voxel instead of varying smoothly, most
+likely the reach test (a probe counts for a point only if the point's voxel
+of its 8x8x8 reach map is set: on or off at voxel and cell boundaries),
+possibly the separation-plane fallback. Next: a debug view of each probe's
+weight at `r2_bands` with the passes off, to see which term jumps at the
+step; then make that term continuous (for reach: the fraction of reached
+voxels around the point, trilinear over the map, instead of the one voxel
+it falls in), and drop the passes once the suite's crops show no step.

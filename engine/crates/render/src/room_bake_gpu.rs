@@ -25,12 +25,37 @@ struct Uniform {
     mode: [u32; 4],
 }
 
-/// One bake's GPU state: the geometry, rays and probes uploaded, the
-/// pipelines, two probe buffers in turn.
-struct Context<'a> {
-    gpu: &'a Gpu,
+/// The bake's compute pipelines, compiled once ([`Kernels::new`]) for any
+/// number of bakes on one device (the `*_with` functions).
+pub struct Kernels {
     layout: wgpu::BindGroupLayout,
     pipelines: [wgpu::ComputePipeline; 10],
+}
+
+impl Kernels {
+    pub fn new(gpu: &Gpu) -> Self {
+        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("room bake"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/room_bake.wgsl").into()) });
+        let entry = |binding, read_only: Option<bool>| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE, count: None,
+            ty: match read_only {
+                None => wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                Some(read_only) => wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None },
+            } };
+        let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("room bake"), entries: &[
+            entry(0, None), entry(1, Some(true)), entry(2, Some(true)), entry(3, Some(false)), entry(4, Some(true)),
+            entry(5, Some(false)), entry(6, Some(false)), entry(7, Some(true)), entry(8, Some(false))] });
+        let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("room bake"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pipeline = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(entry), layout: Some(&pipeline_layout),
+            module: &module, entry_point: Some(entry), compilation_options: Default::default(), cache: gpu.pipeline_cache() });
+        Self { layout, pipelines: ["sky_direct", "neighbours", "bounce_sky", "bounce_lamp", "smooth_light", "prepare", "place", "visibility_map", "planes", "reach"].map(pipeline) }
+    }
+}
+
+/// One bake's GPU state: the geometry, rays and probes uploaded, two probe
+/// buffers in turn.
+struct Context<'a> {
+    gpu: &'a Gpu,
+    kernels: &'a Kernels,
     geo: wgpu::Buffer,
     dirs: wgpu::Buffer,
     pos: wgpu::Buffer,
@@ -52,6 +77,8 @@ const PLACE: usize = 6;
 const VISIBILITY: usize = 7;
 const PLANES: usize = 8;
 const REACH: usize = 9;
+/// Lamps baked in one pass (room_bake.wgsl LAMPS_PER_PASS).
+const LAMPS_PER_PASS: usize = 8;
 
 fn storage(gpu: &Gpu, label: &str, contents: &[u8]) -> wgpu::Buffer {
     gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents,
@@ -59,7 +86,7 @@ fn storage(gpu: &Gpu, label: &str, contents: &[u8]) -> wgpu::Buffer {
 }
 
 impl<'a> Context<'a> {
-    fn new(gpu: &'a Gpu, grid: &Grid, occluders: &Occluders, placement: &Placement, sky_rays: usize, bounce_rays: usize,
+    fn new(gpu: &'a Gpu, kernels: &'a Kernels, grid: &Grid, occluders: &Occluders, placement: &Placement, sky_rays: usize, bounce_rays: usize,
         lights: &[crate::headlights::LocalLight]) -> Result<Self, String> {
         grid.validate()?;
         if placement.positions.len() != grid.count() || placement.inside.len() != grid.count() { return Err("probe placement is for another grid".into()); }
@@ -96,13 +123,15 @@ impl<'a> Context<'a> {
         let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("room bake"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipeline = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(entry), layout: Some(&pipeline_layout),
             module: &module, entry_point: Some(entry), compilation_options: Default::default(), cache: gpu.pipeline_cache() });
-        let probes_bytes = vec![0u8; grid.count() * 6 * 16];
+        // Room for every lamp of one pass (bounce_lamp): a probe set per slot.
+        let slots = lights.len().clamp(1, LAMPS_PER_PASS);
+        let probes_bytes = vec![0u8; grid.count() * 6 * 16 * slots];
         // One word per probe and bounce ray (prepare).
         let mask_bytes = (grid.count() * bounce_rays * 4) as u64;
         if mask_bytes > u64::from(gpu.limits.max_storage_buffer_binding_size) { return Err(format!("room bake on the GPU needs {} MB per binding, the device allows {} MB", mask_bytes >> 20, gpu.limits.max_storage_buffer_binding_size >> 20)); }
         if lights.len() > 23 { return Err("room bake on the GPU takes at most 23 lights per bake".into()); }
         Ok(Self {
-            gpu, pipelines: ["sky_direct", "neighbours", "bounce_sky", "bounce_lamp", "smooth_light", "prepare", "place", "visibility_map", "planes", "reach"].map(pipeline), layout,
+            gpu, kernels,
             geo: storage(gpu, "room bake geometry", bytemuck::cast_slice(&geo)),
             dirs: storage(gpu, "room bake rays", bytemuck::cast_slice(&dirs)),
             pos: storage(gpu, "room bake probes", bytemuck::cast_slice(&pos)),
@@ -123,14 +152,15 @@ impl<'a> Context<'a> {
         u.mode = [mode[0], self.base.mode[1], mode[2], self.base.mode[3]];
         let uniform = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("room bake pass"), contents: bytemuck::bytes_of(&u), usage: wgpu::BufferUsages::UNIFORM });
         fn e(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> { wgpu::BindGroupEntry { binding, resource: buffer.as_entire_binding() } }
-        let bind = self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("room bake"), layout: &self.layout, entries: &[
+        let bind = self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("room bake"), layout: &self.kernels.layout, entries: &[
             e(0, &uniform), e(1, &self.geo), e(2, &self.dirs), e(3, &self.pos), e(4, &self.probes[from]), e(5, &self.probes[1 - from]),
             e(6, &self.seen), e(7, &self.lights), e(8, &self.masks)] });
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("room bake"), timestamp_writes: None });
-        pass.set_pipeline(&self.pipelines[kernel]);
+        pass.set_pipeline(&self.kernels.pipelines[kernel]);
         pass.set_bind_group(0, &bind, &[]);
         // Workgroup-per-probe kernels, or a thread per probe.
-        let groups = if matches!(kernel, NEIGHBOURS | SMOOTH | PLACE | PLANES | REACH) { self.count.div_ceil(64) } else { self.count };
+        let groups = if kernel == SMOOTH { (self.count * mode[0].max(1)).div_ceil(64) }
+            else if matches!(kernel, NEIGHBOURS | PLACE | PLANES | REACH) { self.count.div_ceil(64) } else { self.count };
         pass.dispatch_workgroups(groups.min(65535), groups.div_ceil(65535), 1);
     }
 
@@ -170,9 +200,14 @@ fn check(settings: &Settings, sun: Option<Vec3>) -> Result<(), String> {
 
 /// [`crate::room_bake::bake_placed`] on the GPU.
 pub fn bake(gpu: &Gpu, grid: &Grid, occluders: &Occluders, placement: &Placement, sun: Vec3, settings: &Settings) -> Result<Vec<Probe>, String> {
+    bake_with(&Kernels::new(gpu), gpu, grid, occluders, placement, sun, settings)
+}
+
+/// [`bake`] with kernels compiled once.
+pub fn bake_with(kernels: &Kernels, gpu: &Gpu, grid: &Grid, occluders: &Occluders, placement: &Placement, sun: Vec3, settings: &Settings) -> Result<Vec<Probe>, String> {
     check(settings, Some(sun))?;
     let sun = sun.normalize();
-    let cx = Context::new(gpu, grid, occluders, placement, settings.sky_rays, settings.bounce_rays, &[])?;
+    let cx = Context::new(gpu, kernels, grid, occluders, placement, settings.sky_rays, settings.bounce_rays, &[])?;
     let r = settings.reflectance;
     // Buffer 1 holds the light after each step: sky_direct writes it, a
     // bounce writes 0 and its smoothing 1 again; the last two smoothings
@@ -227,6 +262,11 @@ pub struct Geometry {
 }
 
 pub fn bake_geometry(gpu: &Gpu, grid: &Grid, occluders: &Occluders) -> Result<Geometry, String> {
+    bake_geometry_with(&Kernels::new(gpu), gpu, grid, occluders)
+}
+
+/// [`bake_geometry`] with kernels compiled once.
+pub fn bake_geometry_with(kernels: &Kernels, gpu: &Gpu, grid: &Grid, occluders: &Occluders) -> Result<Geometry, String> {
     grid.validate()?;
     const VIS: usize = crate::room_bake::VISIBILITY_SIDE * crate::room_bake::VISIBILITY_SIDE;
     const REACH_W: usize = crate::room_bake::REACH_WORDS;
@@ -234,7 +274,7 @@ pub fn bake_geometry(gpu: &Gpu, grid: &Grid, occluders: &Occluders) -> Result<Ge
     // The grid points to start from; the 256 placement directions as the
     // sky rays; a mask stride of a visibility map and a reach per probe.
     let start = Placement { positions: (0..grid.count()).map(|i| grid.position(i)).collect(), inside: vec![false; grid.count()] };
-    let cx = Context::new(gpu, grid, occluders, &start, 256, VIS + REACH_W, &[])?;
+    let cx = Context::new(gpu, kernels, grid, occluders, &start, 256, VIS + REACH_W, &[])?;
     let mut enc = gpu.device.create_command_encoder(&Default::default());
     for kernel in [PLACE, VISIBILITY, PLANES, REACH] { cx.pass(&mut enc, kernel, 0, Vec3::Y, 0.5, [0, 0, 0]); }
     gpu.queue.submit([enc.finish()]);
@@ -252,8 +292,13 @@ pub fn bake_geometry(gpu: &Gpu, grid: &Grid, occluders: &Occluders) -> Result<Ge
 
 /// [`crate::room_bake::bake_lights_placed`] on the GPU.
 pub fn bake_lights(gpu: &Gpu, grid: &Grid, occluders: &Occluders, placement: &Placement, lights: &[crate::headlights::LocalLight], settings: &Settings) -> Result<Vec<Vec<Probe>>, String> {
+    bake_lights_with(&Kernels::new(gpu), gpu, grid, occluders, placement, lights, settings)
+}
+
+/// [`bake_lights`] with kernels compiled once.
+pub fn bake_lights_with(kernels: &Kernels, gpu: &Gpu, grid: &Grid, occluders: &Occluders, placement: &Placement, lights: &[crate::headlights::LocalLight], settings: &Settings) -> Result<Vec<Vec<Probe>>, String> {
     check(&Settings { sky_rays: 16, ..*settings }, None)?;
-    let cx = Context::new(gpu, grid, occluders, placement, 16, settings.bounce_rays, lights)?;
+    let cx = Context::new(gpu, kernels, grid, occluders, placement, 16, settings.bounce_rays, lights)?;
     let r = settings.reflectance;
     let mut out = Vec::with_capacity(lights.len());
     // Valid probes are the placement's (not inside); seen once for all lights.
@@ -261,18 +306,22 @@ pub fn bake_lights(gpu: &Gpu, grid: &Grid, occluders: &Occluders, placement: &Pl
     cx.pass(&mut enc, PREPARE, 0, Vec3::Y, r, [0, 0, 0]);
     cx.pass(&mut enc, NEIGHBOURS, 0, Vec3::Y, r, [0, 0, 0]);
     cx.gpu.queue.submit([enc.finish()]);
-    for l in 0..lights.len() as u32 {
+    // Up to LAMPS_PER_PASS lamps at once, one probe set (slot) each.
+    for first in (0..lights.len()).step_by(LAMPS_PER_PASS) {
+        let slots = (lights.len() - first).min(LAMPS_PER_PASS);
+        let (first, n) = (first as u32, slots as u32);
         // Buffer 0 holds the light (zero at first): a bounce writes 1, its
         // smoothing 0; the last two smoothings go 0 -> 1 -> 0.
         cx.clear_probes();
-        out.push(cx.run(|enc| {
+        let all = cx.run(|enc| {
             for _ in 0..settings.bounces.max(1) {
-                cx.pass(enc, BOUNCE_LAMP, 0, Vec3::Y, r, [l, 0, 0]);
-                cx.pass(enc, SMOOTH, 1, Vec3::Y, r, [l, 0, 1]);
+                cx.pass(enc, BOUNCE_LAMP, 0, Vec3::new(n as f32, 0.0, 0.0), r, [first, 0, 0]);
+                cx.pass(enc, SMOOTH, 1, Vec3::Y, r, [n, 0, 1]);
             }
-            cx.pass(enc, SMOOTH, 0, Vec3::Y, r, [l, 0, 1]);
-            cx.pass(enc, SMOOTH, 1, Vec3::Y, r, [l, 0, 1]);
-        }, 0)?);
+            cx.pass(enc, SMOOTH, 0, Vec3::Y, r, [n, 0, 1]);
+            cx.pass(enc, SMOOTH, 1, Vec3::Y, r, [n, 0, 1]);
+        }, 0)?;
+        out.extend(all.chunks_exact(grid.count()).take(slots).map(|set| set.to_vec()));
     }
     Ok(out)
 }
@@ -334,11 +383,17 @@ mod tests {
         assert!(max < 1e-3 && mean < 1e-5, "sky bake differs: max {max}, mean {mean}");
         let lamp = crate::headlights::LocalLight { position: Vec3::new(0.0, 2.8, 0.0), direction: Vec3::NEG_Y, intensity_cd: Vec3::splat(800.0),
             range_m: 12.0, inner_cos: 0.2, outer_cos: 0.0, source_radius_m: 0.05, falloff: 2.0 };
-        let cpu = room_bake::bake_lights_placed(&grid, &occ, &placed, &[lamp], &settings).unwrap();
-        let on_gpu = bake_lights(&gpu, &grid, &occ, &placed, &[lamp], &settings).unwrap();
-        let (max, mean) = compare(&cpu[0], &on_gpu[0]);
-        eprintln!("lamp bake: max diff {max:.2e}, mean {mean:.2e}");
-        assert!(max < 1e-3 && mean < 1e-5, "lamp bake differs: max {max}, mean {mean}");
+        // Three lamps in one pass (each its own slot), one of them red.
+        let lamps = [lamp, crate::headlights::LocalLight { position: Vec3::new(1.5, 2.0, 1.5), intensity_cd: Vec3::new(500.0, 50.0, 20.0), inner_cos: 0.9, outer_cos: -0.5, ..lamp },
+            crate::headlights::LocalLight { position: Vec3::new(-1.5, 0.5, -1.5), direction: Vec3::Y, ..lamp }];
+        let cpu = room_bake::bake_lights_placed(&grid, &occ, &placed, &lamps, &settings).unwrap();
+        let on_gpu = bake_lights(&gpu, &grid, &occ, &placed, &lamps, &settings).unwrap();
+        assert_eq!(on_gpu.len(), 3);
+        for l in 0..3 {
+            let (max, mean) = compare(&cpu[l], &on_gpu[l]);
+            eprintln!("lamp {l} bake: max diff {max:.2e}, mean {mean:.2e}");
+            assert!(max < 1e-3 && mean < 1e-5, "lamp {l} bake differs: max {max}, mean {mean}");
+        }
     }
 }
 

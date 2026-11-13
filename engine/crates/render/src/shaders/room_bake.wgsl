@@ -149,6 +149,7 @@ fn blocked(o: vec3<f32>, d: vec3<f32>, far: f32) -> bool {
 }
 
 fn irradiance(i: u32, n: vec3<f32>) -> vec3<f32> {
+    // i: a probe, plus its light's slot times the probe count.
     let n2 = n * n;
     let x = prev[i * 6u + select(1u, 0u, n.x >= 0.0)].xyz;
     let y = prev[i * 6u + select(3u, 2u, n.y >= 0.0)].xyz;
@@ -160,7 +161,7 @@ fn irradiance(i: u32, n: vec3<f32>) -> vec3<f32> {
 // the valid probes in front of it that see it (room_bake.rs `corners` and
 // `gather`).
 // `seen`: bit c set where corner c sees p (`corner_mask`).
-fn gather(p: vec3<f32>, n: vec3<f32>, seen_by: u32) -> vec3<f32> {
+fn gather(p: vec3<f32>, n: vec3<f32>, seen_by: u32, slot: u32) -> vec3<f32> {
     let dims = vec3<f32>(u.dims.xyz);
     let maxc = dims - 1.0;
     let f = clamp((p - u.origin.xyz) / u.origin.w, vec3<f32>(0.0), maxc);
@@ -178,7 +179,7 @@ fn gather(p: vec3<f32>, n: vec3<f32>, seen_by: u32) -> vec3<f32> {
         let facing = clamp(dot(to, n) / max(d, 1e-4) * 2.0 + 1.0, 0.0, 1.0);
         let w = select(1.0 - t.x, t.x, o.x == 1u) * select(1.0 - t.y, t.y, o.y == 1u) * select(1.0 - t.z, t.z, o.z == 1u)
             * (facing * facing + 1e-4);
-        sum += irradiance(i, n) * w;
+        sum += irradiance(slot * probe_count() + i, n) * w;
         weight += w;
     }
     return select(vec3<f32>(0.0), sum / weight, weight > 1e-6);
@@ -348,7 +349,7 @@ fn bounce(i: u32, li: u32, lamp: bool) {
             let n = select(h.xyz, -h.xyz, dot(h.xyz, d) > 0.0);
             let at = o + d * h.w;
             let mask = masks[i * u.counts.y + r];
-            let g = gather(at + n * 0.15, n, mask);
+            let g = gather(at + n * 0.15, n, mask, 0u);
             if lamp {
                 var to = vec3<f32>(0.0);
                 var direct = light_at(u.mode.x, at, &to);
@@ -394,18 +395,78 @@ fn bounce(i: u32, li: u32, lamp: bool) {
 @compute @workgroup_size(64)
 fn bounce_sky(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index) li: u32) { bounce(probe_index(wid), li, false); }
 
+// Up to LAMPS_PER_PASS lamps' bounce in one pass (u.mode.x the first,
+// u.sun.x how many): each bounce ray is traced once for all of them; lamp s
+// reads and writes probe slot s (s times the probe count onwards).
+const LAMPS_PER_PASS: u32 = 8u;
+
 @compute @workgroup_size(64)
-fn bounce_lamp(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index) li: u32) { bounce(probe_index(wid), li, true); }
+fn bounce_lamp(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    let i = probe_index(wid);
+    let slots = min(u32(u.sun.x), LAMPS_PER_PASS);
+    let valid = i < probe_count() && pos[i].w > 0.5;
+    let j = min(i, probe_count() - 1u);
+    let o = pos[j].xyz;
+    let q = dirs[u.counts.w + j];
+    var acc: array<f32, 144>;
+    var den: array<f32, 6>;
+    for (var k = 0u; k < 144u; k++) { acc[k] = 0.0; }
+    for (var a = 0u; a < 6u; a++) { den[a] = 0.0; }
+    if valid {
+        for (var r = li; r < u.counts.y; r += 64u) {
+            let d = rotate(q, dirs[u.mode.w + r].xyz);
+            var c: array<f32, 6>;
+            for (var a = 0u; a < 6u; a++) { c[a] = max(dot(AXES[a], d), 0.0); den[a] += c[a]; }
+            let h = hit(o, d);
+            if h.w < 0.0 { continue; }
+            let n = select(h.xyz, -h.xyz, dot(h.xyz, d) > 0.0);
+            let at = o + d * h.w;
+            let mask = masks[i * u.counts.y + r];
+            for (var s = 0u; s < slots; s++) {
+                let l = u.mode.x + s;
+                var to = vec3<f32>(0.0);
+                var direct = light_at(l, at, &to);
+                let cosine = dot(n, to);
+                if cosine <= 0.0 || (mask & (1u << (9u + l))) == 0u { direct = vec3<f32>(0.0); }
+                let leaving = u.sun.w * (direct * max(cosine, 0.0) + gather(at + n * 0.15, n, mask, s));
+                for (var a = 0u; a < 6u; a++) {
+                    acc[s * 18u + a * 3u] += leaving.x * c[a];
+                    acc[s * 18u + a * 3u + 1u] += leaving.y * c[a];
+                    acc[s * 18u + a * 3u + 2u] += leaving.z * c[a];
+                }
+            }
+        }
+    }
+    // One reduction per lamp through the shared rows.
+    for (var s = 0u; s < slots; s++) {
+        for (var k = 0u; k < 18u; k++) { red[k][li] = acc[s * 18u + k]; }
+        for (var a = 0u; a < 6u; a++) { red[18u + a][li] = den[a]; }
+        workgroupBarrier();
+        reduce(li, 24u);
+        if li == 0u && i < probe_count() {
+            let at = (s * probe_count() + i) * 6u;
+            for (var a = 0u; a < 6u; a++) {
+                if !valid { out[at + a] = prev[at + a]; continue; }
+                out[at + a] = vec4<f32>(red[a * 3u][0], red[a * 3u + 1u][0], red[a * 3u + 2u][0], 0.0) / max(red[18u + a][0], 1e-6);
+            }
+        }
+        workgroupBarrier();
+    }
+}
 
 // Average each valid probe's bounced channels (and with u.mode.z the direct
-// sky) with the neighbours it sees: room_bake.rs `smooth_bounce`.
+// sky) with the neighbours it sees: room_bake.rs `smooth_bounce`. Over
+// max(u.mode.x, 1) light slots.
 @compute @workgroup_size(64)
 fn smooth_light(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x + gid.y * 65535u * 64u;
-    if i >= probe_count() { return; }
-    if pos[i].w < 0.5 { for (var a = 0u; a < 6u; a++) { out[i * 6u + a] = prev[i * 6u + a]; } return; }
+    let index = gid.x + gid.y * 65535u * 64u;
+    if index >= probe_count() * max(u.mode.x, 1u) { return; }
+    let i = index % probe_count();
+    // Probe i of this slot, and the slot's first probe.
+    let slot = index - i;
+    if pos[i].w < 0.5 { for (var a = 0u; a < 6u; a++) { out[index * 6u + a] = prev[index * 6u + a]; } return; }
     var sum: array<vec3<f32>, 6>;
-    for (var a = 0u; a < 6u; a++) { sum[a] = prev[i * 6u + a].xyz; }
+    for (var a = 0u; a < 6u; a++) { sum[a] = prev[index * 6u + a].xyz; }
     var weight = 1.0;
     let x = i32(i % u.dims.x);
     let y = i32((i / u.dims.x) % u.dims.y);
@@ -419,13 +480,13 @@ fn smooth_light(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (bits & (1u << b)) == 0u { continue; }
         let j = u32(x + ox) + u32(y + oy) * u.dims.x + u32(z + oz) * u.dims.x * u.dims.y;
         let w = pow(0.5, f32(abs(ox) + abs(oy) + abs(oz)));
-        for (var a = 0u; a < 6u; a++) { sum[a] += prev[j * 6u + a].xyz * w; }
+        for (var a = 0u; a < 6u; a++) { sum[a] += prev[(slot + j) * 6u + a].xyz * w; }
         weight += w;
     }}}
     for (var a = 0u; a < 6u; a++) {
         let s = sum[a] / weight;
-        let own = prev[i * 6u + a];
-        out[i * 6u + a] = vec4<f32>(select(own.x, s.x, u.mode.z == 1u), s.y, s.z, 0.0);
+        let own = prev[index * 6u + a];
+        out[index * 6u + a] = vec4<f32>(select(own.x, s.x, u.mode.z == 1u), s.y, s.z, 0.0);
     }
 }
 

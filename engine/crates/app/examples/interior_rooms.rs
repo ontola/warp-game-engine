@@ -163,16 +163,16 @@ struct LightState {
 
 impl LightState {
     /// The bounces on `gpu` (room_bake_gpu, the same transport), else on the CPU.
-    fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, gpu: Option<&render::Gpu>) -> Result<Self, String> {
+    fn bake(grid: &Grid, occluders: &Occluders, sun: Vec3, gpu: Option<(&render::Gpu, &render::room_bake_gpu::Kernels)>) -> Result<Self, String> {
         let settings = render::room_bake::Settings::default();
         let lamp_settings = render::room_bake::Settings { bounces: 2, ..settings };
         let lamps: Vec<LocalLight> = (0..4).map(ceiling_lamp).collect();
-        if let Some(gpu) = gpu {
+        if let Some((gpu, kernels)) = gpu {
             // Where the probes sit and what they see, then the light.
-            let g = render::room_bake_gpu::bake_geometry(gpu, grid, occluders)?;
+            let g = render::room_bake_gpu::bake_geometry_with(kernels, gpu, grid, occluders)?;
             return Ok(LightState {
-                sky: render::room_bake_gpu::bake(gpu, grid, occluders, &g.placement, sun, &settings)?,
-                lamps: render::room_bake_gpu::bake_lights(gpu, grid, occluders, &g.placement, &lamps, &lamp_settings)?,
+                sky: render::room_bake_gpu::bake_with(kernels, gpu, grid, occluders, &g.placement, sun, &settings)?,
+                lamps: render::room_bake_gpu::bake_lights_with(kernels, gpu, grid, occluders, &g.placement, &lamps, &lamp_settings)?,
                 offsets: render::room_bake::pack_offsets(grid, &g.placement.positions),
                 planes: g.planes, visibility: g.visibility, reach: g.reach,
             });
@@ -565,7 +565,8 @@ impl Game for Rooms {
             let sun = self.light.sun_dir;
             let (grid, shut_occ, open_occ) = (&self.grid, &self.shut_occluders, &self.open_occluders);
             // The bounces on the GPU (ROOMS_CPU_BAKE=1: on the CPU, as before).
-            let gpu = std::env::var_os("ROOMS_CPU_BAKE").is_none().then_some(frame.gpu);
+            let kernels = std::env::var_os("ROOMS_CPU_BAKE").is_none().then(|| render::room_bake_gpu::Kernels::new(frame.gpu));
+            let gpu = kernels.as_ref().map(|k| (frame.gpu, k));
             let (shut, open) = std::thread::scope(|s| {
                 let shut = s.spawn(|| LightState::bake(grid, shut_occ, sun, gpu));
                 let open = LightState::bake(grid, open_occ, sun, gpu);
