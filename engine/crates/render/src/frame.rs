@@ -1292,6 +1292,8 @@ pub struct Renderer {
     shade_tiles: std::sync::Mutex<Vec<Option<(wgpu::Buffer, wgpu::Buffer)>>>,
     /// Kept to rebuild `shade` when its source changes on disk.
     shade_pl: wgpu::PipelineLayout,
+    fog_inject_pl: wgpu::PipelineLayout,
+    fog_out_layout: wgpu::BindGroupLayout,
     shade_text: String,
     style_lighting: Option<String>,
     style_finish: Option<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
@@ -1482,9 +1484,9 @@ fn shade_layout_bindings() -> Vec<(u32, wgpu::BindingType)> {
                 (26, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 // Reflection probes (reflection_probes.rs), prefiltered.
                 (27, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::CubeArray, multisampled: false }),
-                // Froxel fog (froxel_fog.wgsl): the injected cells (written),
-                // last frame's cells, the integrated volume shade reads.
-                (28, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D3 }),
+                // Froxel fog (froxel_fog.wgsl): last frame's cells, the
+                // integrated volume shade reads (the cells it writes are
+                // fog_inject's own group 3, `fog_out_bindings`).
                 (29, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false }),
                 (30, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false }),
     ]
@@ -1503,6 +1505,53 @@ pub(crate) fn shade_sampled_textures() -> u32 {
     [wgpu::ShaderStages::VERTEX, wgpu::ShaderStages::FRAGMENT, wgpu::ShaderStages::COMPUTE].iter()
         .map(|&stage| all.iter().filter(|e| e.visibility.contains(stage) && matches!(e.ty, wgpu::BindingType::Texture { .. })).count() as u32)
         .max().unwrap_or(0)
+}
+
+fn storage_3d_out(binding: u32) -> (u32, wgpu::BindingType) {
+    (binding, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D3 })
+}
+
+/// Group 3 of `terrain_coarse` (shade.wgsl): the coarse terrain it writes.
+fn terrain_coarse_out_bindings() -> Vec<(u32, wgpu::BindingType)> {
+    vec![(32, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba32Uint, view_dimension: wgpu::TextureViewDimension::D2 })]
+}
+
+/// Group 3 of `fog_inject` (froxel_fog.wgsl): the cells it writes. Its own
+/// group, so that shade's view group does not carry a storage texture that
+/// only the fog writes.
+fn fog_out_bindings() -> Vec<(u32, wgpu::BindingType)> { vec![storage_3d_out(28)] }
+
+/// Groups 1 and 3 of `bake_sky_visibility` (shade.wgsl).
+fn sky_vis_bindings() -> [Vec<(u32, wgpu::BindingType)>; 2] {
+    [vec![
+        (10, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+        (11, uniform()),
+        (13, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false }),
+        (14, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+    ], vec![storage_3d_out(30), (31, uniform())]]
+}
+
+/// Every compute pipeline layout built from shade's module, by its groups'
+/// bindings (the clustered light group, 2, holds buffers only).
+fn shade_compute_layouts() -> Vec<(&'static str, Vec<Vec<(u32, wgpu::BindingType)>>)> {
+    let [sky_in, sky_out] = sky_vis_bindings();
+    vec![
+        ("shade, classify, rsm, voxels", vec![scene_layout_bindings(), shade_layout_bindings()]),
+        ("terrain coarse", vec![scene_layout_bindings(), shade_layout_bindings(), vec![], terrain_coarse_out_bindings()]),
+        ("fog inject", vec![scene_layout_bindings(), shade_layout_bindings(), vec![], fog_out_bindings()]),
+        ("bake sky visibility", vec![vec![], sky_in, vec![], sky_out]),
+    ]
+}
+
+/// The most storage textures any of shade's pipeline layouts makes visible
+/// to one stage. WebGPU counts every one a layout binds, used or not;
+/// wgpu's default (and portable) limit is 4.
+pub(crate) fn shade_storage_textures() -> u32 {
+    shade_compute_layouts().iter().flat_map(|(_, groups)| {
+        let all: Vec<wgpu::BindGroupLayoutEntry> = groups.iter().flat_map(|g| layout_entries(g)).collect();
+        [wgpu::ShaderStages::VERTEX, wgpu::ShaderStages::FRAGMENT, wgpu::ShaderStages::COMPUTE].map(|stage|
+            all.iter().filter(|e| e.visibility.contains(stage) && matches!(e.ty, wgpu::BindingType::StorageTexture { .. })).count() as u32)
+    }).max().unwrap_or(0)
 }
 
 fn layout(gpu: &Gpu, label: &str, entries: &[(u32, wgpu::BindingType)]) -> wgpu::BindGroupLayout {
@@ -1930,7 +1979,7 @@ impl Renderer {
         if gi.fog[0] > 0.0 { gi.fog[3] = 3.0; }
         let gi_buf = self.view_uniform(gpu, UNIFORMS, 0, "probe gi", bytemuck::bytes_of(&gi));
         let (rsm_store, rsm_none) = { let r = self.rsm.lock().unwrap(); (r.fallback_storage.clone(), r.fallback.clone()) };
-        let (fog_store, fog_none) = { let f = self.froxels.lock().unwrap(); (f.fallback_storage.clone(), f.fallback.clone()) };
+        let fog_none = self.froxels.lock().unwrap().fallback.clone();
         for (face, targets) in all.iter().enumerate() {
         let mut u = view_uniform(crate::reflection_probes::face_view_proj(job.capture, face), job.capture, f * 0.5,
             [light.lod_pixels, NEAR, 0.0, CAPACITY as f32], [f, f, 1.0 / f, 1.0 / f], light.alpha_cut);
@@ -1966,7 +2015,6 @@ impl Renderer {
             (25, wgpu::BindingResource::TextureView(&rsm_none)),
             (26, wgpu::BindingResource::TextureView(&rsm_none)),
             (27, wgpu::BindingResource::TextureView(&self.probes.view)),
-            (28, wgpu::BindingResource::TextureView(&fog_store)),
             (29, wgpu::BindingResource::TextureView(&fog_none)),
             (30, wgpu::BindingResource::TextureView(&fog_none)),
         ]);
@@ -2625,7 +2673,13 @@ impl Renderer {
             label:Some(entry),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some(entry),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
         });
-        let fog_inject = (!simple_lighting).then(|| rsm_pipe("fog_inject"));
+        // Froxel fog injection: shade's groups and its own group 3 (the cells).
+        let fog_out_layout = layout(gpu, "fog inject out", &fog_out_bindings());
+        let fog_inject_pl = pl(&[&scene_layout, &shade_layout, &clustered.layout, &fog_out_layout]);
+        let fog_inject = (!simple_lighting).then(|| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:Some("fog_inject"),layout:Some(&fog_inject_pl),module:&shade_mod,entry_point:Some("fog_inject"),
+            compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
+        }));
         let rsm_gather = (clustered.rsm.is_some() && !simple_lighting).then(|| crate::rsm::Pipelines {
             gather: rsm_pipe("rsm_gather"), filters: [rsm_pipe("rsm_filter1"), rsm_pipe("rsm_filter2"), rsm_pipe("rsm_filter4")] });
         let voxel_depth_fallback = gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no voxel depth"),
@@ -2634,8 +2688,7 @@ impl Renderer {
             usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }).create_view(&Default::default());
         let empty_layout = layout(gpu, "empty", &[]);
         let empty_bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("empty"), layout: &empty_layout, entries: &[] });
-        let terrain_coarse_layout = layout(gpu, "terrain coarse out", &[(32, wgpu::BindingType::StorageTexture {
-            access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba32Uint, view_dimension: wgpu::TextureViewDimension::D2 })]);
+        let terrain_coarse_layout = layout(gpu, "terrain coarse out", &terrain_coarse_out_bindings());
         let terrain_coarse = terrain_coarse_on.then(|| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label:Some("terrain coarse"),layout:Some(&pl(&[&scene_layout, &shade_layout, &empty_layout, &terrain_coarse_layout])),module:&shade_mod,entry_point:Some("terrain_coarse"),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
@@ -2661,16 +2714,9 @@ impl Renderer {
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
         });
         let sky_vis_bake = (std::env::var("KERN_SKY_VIS_CACHE").as_deref() != Ok("0")).then(|| {
-            let inputs = layout(gpu, "sky transmittance inputs", &[
-                (10, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
-                (11, uniform()),
-                (13, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false }),
-                (14, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
-            ]);
-            let output = layout(gpu, "sky transmittance output", &[
-                (30, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D3 }),
-                (31, uniform()),
-            ]);
+            let [sky_in, sky_out] = sky_vis_bindings();
+            let inputs = layout(gpu, "sky transmittance inputs", &sky_in);
+            let output = layout(gpu, "sky transmittance output", &sky_out);
             let empty = layout(gpu, "empty", &[]);
             let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("bake sky transmittance"), layout: Some(&pl(&[&empty, &inputs, &empty, &output])), module: &shade_mod,
@@ -2866,6 +2912,7 @@ impl Renderer {
             camera_sun_occlusion: std::env::var("KERN_CAMERA_SUN_OCCLUSION").as_deref()!=Ok("0"),
             shade,
             shade_pl,
+            fog_inject_pl, fog_out_layout,
             sky_tiles,
             shade_classify,
             voxel_depth_fallback,
@@ -3775,7 +3822,9 @@ impl Renderer {
                     compilation_options: wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()},
                     cache: gpu.pipeline_cache(),
                 });
-                (make(if self.simple_lighting {"shade_simple"}else{"shade"}), make("classify"), self.rsm_gather.as_ref().map(|_| crate::rsm::Pipelines { gather: make("rsm_gather"), filters: [make("rsm_filter1"), make("rsm_filter2"), make("rsm_filter4")] }), self.fog_inject.as_ref().map(|_| make("fog_inject")))
+                (make(if self.simple_lighting {"shade_simple"}else{"shade"}), make("classify"), self.rsm_gather.as_ref().map(|_| crate::rsm::Pipelines { gather: make("rsm_gather"), filters: [make("rsm_filter1"), make("rsm_filter2"), make("rsm_filter4")] }), self.fog_inject.as_ref().map(|_| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("fog_inject"), layout: Some(&self.fog_inject_pl), module: &module, entry_point: Some("fog_inject"),
+                    compilation_options: wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()}, cache: gpu.pipeline_cache() })))
             }).map_err(|e| format!("opaque reload: {e}"))?)
         } else { None };
         // No live assignment above or below until all prepares have succeeded.
@@ -5775,10 +5824,10 @@ impl Renderer {
             // The live bounce: the gather writes `out` and reads `prev`; shade
             // reads `out` (rsm.wgsl bindings 24..26).
             let (rsm_store_fallback, rsm_fallback) = { let r = self.rsm.lock().unwrap(); (r.fallback_storage.clone(), r.fallback.clone()) };
-            let (fog_store_fallback, fog_fallback) = { let f = self.froxels.lock().unwrap(); (f.fallback_storage.clone(), f.fallback.clone()) };
-            let fog_shade = [&fog_store_fallback, &fog_fallback, fog_frame.as_ref().map_or(&fog_fallback, |(_, f)| &f.integrated)];
-            let rsm_shade = [&rsm_store_fallback, &rsm_fallback, rsm_frame.as_ref().map_or(&rsm_fallback, |f| &f.filter[0]), fog_shade[0], fog_shade[1], fog_shade[2]];
-            let shade_bind_with = |resources: &mut FrameResources, coarse: &wgpu::TextureView, rsm: [&wgpu::TextureView; 6]| resources.shade.get(
+            let fog_fallback = self.froxels.lock().unwrap().fallback.clone();
+            let fog_shade = [&fog_fallback, fog_frame.as_ref().map_or(&fog_fallback, |(_, f)| &f.integrated)];
+            let rsm_shade = [&rsm_store_fallback, &rsm_fallback, rsm_frame.as_ref().map_or(&rsm_fallback, |f| &f.filter[0]), fog_shade[0], fog_shade[1]];
+            let shade_bind_with = |resources: &mut FrameResources, coarse: &wgpu::TextureView, rsm: [&wgpu::TextureView; 5]| resources.shade.get(
                 gpu,
                 &self.shade_layout,
                 "cached shade view",
@@ -5808,18 +5857,19 @@ impl Renderer {
                     (25, wgpu::BindingResource::TextureView(rsm[1])),
                     (26, wgpu::BindingResource::TextureView(rsm[2])),
                     (27, wgpu::BindingResource::TextureView(&self.probes.view)),
-                    (28, wgpu::BindingResource::TextureView(rsm[3])),
-                    (29, wgpu::BindingResource::TextureView(rsm[4])),
-                    (30, wgpu::BindingResource::TextureView(rsm[5])),
+                    (29, wgpu::BindingResource::TextureView(rsm[3])),
+                    (30, wgpu::BindingResource::TextureView(rsm[4])),
                 ],
             );
             let shade_bind = shade_bind_with(resources, coarse_target.as_ref().map_or(&self.terrain_coarse_fallback, |t| &t.1), rsm_shade);
             // The gather (out from prev), then the filter: out to a, a to b, b to a.
             let rsm_binds = rsm_frame.as_ref().map(|f| [[&f.out, &f.prev], [&f.filter[0], &f.out], [&f.filter[1], &f.filter[0]], [&f.filter[0], &f.filter[1]]]
-                .map(|[w, r]| shade_bind_with(resources, &self.terrain_coarse_fallback, [w, r, &rsm_fallback, fog_shade[0], fog_shade[1], fog_shade[2]])));
+                .map(|[w, r]| shade_bind_with(resources, &self.terrain_coarse_fallback, [w, r, &rsm_fallback, fog_shade[0], fog_shade[1]])));
             // Froxel fog: the cells written, last frame's read.
-            let fog_bind = fog_frame.as_ref().map(|(_, f)| shade_bind_with(resources, &self.terrain_coarse_fallback,
-                [&rsm_store_fallback, &rsm_fallback, &rsm_fallback, &f.cells_out, &f.cells_prev, &fog_fallback]));
+            let fog_bind = fog_frame.as_ref().map(|(_, f)| (shade_bind_with(resources, &self.terrain_coarse_fallback,
+                [&rsm_store_fallback, &rsm_fallback, &rsm_fallback, &f.cells_prev, &fog_fallback]),
+                gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("fog inject out"), layout: &self.fog_out_layout,
+                    entries: &[wgpu::BindGroupEntry { binding: 28, resource: wgpu::BindingResource::TextureView(&f.cells_out) }] })));
             let coarse_binds = coarse_target.as_ref().map(|t| (shade_bind_with(resources, &self.terrain_coarse_fallback, rsm_shade),
                 gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("terrain coarse out"), layout: &self.terrain_coarse_layout,
                     entries: &[wgpu::BindGroupEntry { binding: 32, resource: wgpu::BindingResource::TextureView(&t.1) }] })));
@@ -5829,7 +5879,7 @@ impl Renderer {
                 passes.push(("rsm gather", &p.gather, vec![&self.scene_bind, &binds[0], &self.clustered.bind]));
                 for k in 0..3 { passes.push(("rsm filter", &p.filters[k], vec![&self.scene_bind, &binds[k + 1], &self.clustered.bind])); }
             }
-            if let (Some(p), Some(bind)) = (&self.fog_inject, &fog_bind) { passes.push(("fog inject", p, vec![&self.scene_bind, bind, &self.clustered.bind])); }
+            if let (Some(p), Some((bind, out))) = (&self.fog_inject, &fog_bind) { passes.push(("fog inject", p, vec![&self.scene_bind, bind, &self.clustered.bind, out])); }
             let diagnostic = (light.debug != 0.0 && !self.simple_lighting).then(|| self.shade_diagnostic.get_or_init(|| {
                 let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade diagnostics"),
                     source: wgpu::ShaderSource::Wgsl(self.shade_text.as_str().into()) });
@@ -6124,7 +6174,7 @@ impl Renderer {
                             (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
                             (15, wgpu::BindingResource::TextureView(&near_view)),
                             // The froxel fog (froxel_fog.wgsl), read at each pane's depth.
-                            (30, wgpu::BindingResource::TextureView(fog_shade[2])),
+                            (30, wgpu::BindingResource::TextureView(fog_shade[1])),
                         ], &hdr_v, &depth_v,
                             t.map(|(qs, i)| wgpu::RenderPassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }), motion_on,geometry_diagnostic.excluded_mask);
                     }

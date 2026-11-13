@@ -200,4 +200,14 @@ mod limit_tests {
         // browsers) take the portable path.
         assert!(n > wgpu::Limits::default().max_sampled_textures_per_shader_stage && needed(&wgpu::Limits::default()));
     }
+
+    #[test]
+    fn shade_layouts_stay_within_the_storage_texture_limit() {
+        // Every device runs these pipelines (the full and the portable path
+        // ask for no more storage textures), and gpu.rs requests the
+        // default: a fifth one in any stage fails pipeline creation.
+        let limit = wgpu::Limits::default().max_storage_textures_per_shader_stage;
+        let n = crate::frame::shade_storage_textures();
+        assert!(n <= limit, "a shade pipeline layout binds {n} storage textures in one stage, the limit is {limit}");
+    }
 }

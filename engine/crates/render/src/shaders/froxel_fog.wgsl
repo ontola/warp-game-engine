@@ -9,7 +9,7 @@
 // (froxel_fog.rs) sums the cells front to back; shade dims every pixel by
 // the transmittance to it and adds the light scattered in front of it.
 
-@group(1) @binding(28) var fog_out: texture_storage_3d<rgba16float, write>;
+@group(3) @binding(28) var fog_out: texture_storage_3d<rgba16float, write>;
 @group(1) @binding(29) var fog_prev: texture_3d<f32>;
 @group(1) @binding(30) var fog_volume: texture_3d<f32>;
 

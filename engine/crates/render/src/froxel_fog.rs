@@ -119,8 +119,7 @@ pub(crate) struct Frame {
 pub(crate) struct FroxelVolumes {
     integrate: wgpu::ComputePipeline,
     views: Vec<Option<View>>,
-    /// Bound where a view has no fog: a 3D storage target and a sampled one.
-    pub fallback_storage: wgpu::TextureView,
+    /// Bound where a view has no fog.
     pub fallback: wgpu::TextureView,
 }
 
@@ -137,7 +136,6 @@ impl FroxelVolumes {
             module: &module, entry_point: Some("integrate"), compilation_options: Default::default(), cache: gpu.pipeline_cache() });
         let rw = wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING;
         Self { integrate, views: Vec::new(),
-            fallback_storage: volume(gpu, "no froxel fog out", [1, 1, 1], wgpu::TextureUsages::STORAGE_BINDING).create_view(&Default::default()),
             fallback: volume(gpu, "no froxel fog", [1, 1, 1], rw).create_view(&Default::default()) }
     }
 
