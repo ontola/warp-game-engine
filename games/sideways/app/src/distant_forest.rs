@@ -125,10 +125,16 @@ impl Ground<'_> {
     }
     fn uncached_height(&self, x: f32, z: f32) -> f32 {
         if let Some(h) = self.native_height(x, z) { return h; }
+        let height = self.stage.height(x as f64, z as f64) as f32;
+        // The selected terrain supplies its own dunes, ridges or hills
+        // all the way to the horizon.
+        if self.stage.land.as_ref().is_some_and(|land| land.layout == sideways::stage::LandLayout::BiomeFlora) {
+            return height;
+        }
         let blend = smooth(self.border_distance(x, z) / FOOTHILL_WIDTH);
         let seed = self.stage.noise_seed as u32;
         let hills = skyline_relief(x, z, seed);
-        self.stage.height(x as f64, z as f64) as f32 + hills * blend
+        height + hills * blend
     }
     fn vertex(&self, x: f32, z: f32) -> Vertex {
         let n = Vec3::new(self.height(x - 2.0, z) - self.height(x + 2.0, z), 4.0,
@@ -389,12 +395,8 @@ fn tree_mesh(variant:u32, crown:u32, bark:u32) -> ClusterMesh {
     ClusterMesh::build(&[Part{vertices:&verts[0],indices:&indices[0],material:crown},Part{vertices:&verts[1],indices:&indices[1],material:bark}])
 }
 
-pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,source_tree_meshes:&[usize],mesh_names:&mut Vec<String>,config:Config,mixed_species:bool)->Result<String,String>{
+pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,source_tree_meshes:&[usize],mesh_names:&mut Vec<String>,config:Config,biome:Option<&render::biome::Biome>)->Result<String,String>{
     let started=Instant::now();
-    if mixed_species && (source_tree_meshes.len()!=crate::plant_population::TREE_IDS.len()
-        || std::env::var("SIDEWAYS_GENERIC_VOXEL_TREES").as_deref()==Ok("1")) {
-        return Err("mixed distant forest requires the four matching modular tree sources".into());
-    }
     if chunks.is_empty() || stage.points.is_empty(){return Err("no native terrain to attach background to".into());}
     if (scene.heightfield.cell-2.0).abs()>1e-6{return Err("background requires the native 2 m heightfield".into());}
     let ground=Ground::new(stage,chunks.iter().map(|c|(c.cell,c)).collect());
@@ -410,11 +412,14 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,so
         let id=scene.add_mesh(&mesh);scene.add_classified_instance(id,Affine3A::IDENTITY,GeometryCategory::Terrain);mesh_names.push(format!("vista terrain {:?}",tile.key));
     }
     scene.heightfield=hf;
+    if native.trees == 0 {
+        return Ok(format!("distant terrain: {} tiles, {terrain_triangles} tris, {radius:.0} m radius; no trees", tiles.len()));
+    }
     let mut tree_ids=Vec::new();let mut tree_triangles=0;let mut tree_roots=0;let mut tree_lods=Vec::new();
     // Preserve species, crown height and lighting in the live game. The
     // original generic voxel pines remain an explicit geometry experiment;
     // a future voxel LOD must be derived from these same source trees.
-    let generic_voxels=std::env::var("SIDEWAYS_GENERIC_VOXEL_TREES").as_deref()==Ok("1");
+    let generic_voxels=biome.is_none() && std::env::var("SIDEWAYS_GENERIC_VOXEL_TREES").as_deref()==Ok("1");
     if !generic_voxels && !source_tree_meshes.is_empty() {
         tree_ids.extend_from_slice(source_tree_meshes);
     } else {
@@ -454,14 +459,15 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,so
     let mut families=[0usize;3];let mut juveniles=0usize;
     for &TreePlacement{x,y,z,key,..} in &trees{
         let phenotype=stage.vegetation.tree(stage.noise_seed as u64,x,z);
-        let scale=crate::tree_assets::scale_from_units(unit(key.rotate_left(7)),unit(key.rotate_left(19)),phenotype);
+        let scale=crate::tree_assets::scale_from_units(unit(key.rotate_left(7)),unit(key.rotate_left(19)),phenotype)
+            * biome.map_or(1.0, |b| b.flora.tree_scale);
         let transform=Affine3A::from_scale_rotation_translation(scale,Quat::from_rotation_y(unit(key.rotate_left(3))*std::f32::consts::TAU),Vec3::new(x,y-0.12,z));
         let family=phenotype.archetype.index();
-        let species=if mixed_species {crate::plant_population::stage_index(stage,x,z)}else{family};
-        scene.add_classified_instance(tree_ids[species%tree_ids.len()],transform,GeometryCategory::Trees);scene.mark_foliage();
+        let species=biome.map_or(family, |b| crate::plant_population::biome_tree(stage, &b.flora, x, z));
+        scene.add_classified_instance(tree_ids[species],transform,GeometryCategory::Trees);scene.mark_foliage();
         families[family]+=1;juveniles+=usize::from(phenotype.juvenile);
     }
-    let representation=if mixed_species {format!("matching modular species / 4 reused near-tree CLOD meshes with shared world-grove selection; {juveniles} juveniles")}
+    let representation=if let Some(biome) = biome {format!("{} biome recipe trees, shared roadside species and CLOD meshes; {juveniles} juveniles",biome.name)}
         else if !generic_voxels && !source_tree_meshes.is_empty(){format!("matching source trees / {} reused near-tree cluster LOD meshes, {} canopy / {} tapered conifer / {} stout trunk, {juveniles} juveniles",tree_ids.len(),families[0],families[1],families[2])}else{format!("experimental generic voxel trees / 3 shared meshes ({tree_triangles} leaf / {tree_roots} root tris total; {})",tree_lods.join("; "))};
     let far_density=if habitat_m2>0.0{trees.len() as f64/habitat_m2}else{0.0};
     let parity=if trees.len()==requested{"matched count"}else if requested>budget{"LIMITED BY INSTANCE BUDGET"}else{"LIMITED BY FOREST CANDIDATES"};
@@ -471,7 +477,8 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,so
     let native_steep_percent=100.0*native.steep_m2/(chunks.len() as f64*(TILE*TILE) as f64);
     let instance_bytes=(trees.len()+tiles.len())*std::mem::size_of::<render::scene::GpuInstance>();
     let height_bytes=scene.heightfield.heights.len()*std::mem::size_of::<f32>();
-    Ok(format!("distant forest: {} {representation}, {} terrain tiles / {terrain_triangles} tris ({outer_tiles} outer tiles at 16 m, inner terrain 8 m, stitched native edges 2 m), radius {radius:.0} m / requested {:.0} m, high rounded skyline / {FOOTHILL_WIDTH:.0} m foothills, seed {}, 2 m heightfield {} samples / {height_bytes} bytes (hard cap {}), background instance payload {instance_bytes} bytes (excludes renderer copies/CLOD traversal; extra trees remain shadow casters), {:.0} ms; habitat density native {:.1} trees/ha ({} actual trees / {:.0} horizontal m2 at 2 m sampling; {native_steep_percent:.1}% steep), far {:.1} trees/ha ({habitat_m2:.0} horizontal m2 at 4 m sampling; {eligible_percent:.1}% eligible, {steep_m2:.0} m2 steep and {wet_m2:.0} m2 wet excluded), requested {requested} / candidates {candidates} / instance budget {budget}: {parity}; background has no new driving collision",trees.len(),tiles.len(),config.radius,stage.noise_seed,scene.heightfield.heights.len(),MAX_HEIGHT_SAMPLES*4,started.elapsed().as_secs_f64()*1000.0,native.per_m2()*10_000.0,native.trees,native.habitat_m2,far_density*10_000.0))
+    let relief = biome.map_or("Finnish foothills", |b| b.name);
+    Ok(format!("distant forest: {} {representation}, {} terrain tiles / {terrain_triangles} tris ({outer_tiles} outer tiles at 16 m, inner terrain 8 m, stitched native edges 2 m), radius {radius:.0} m / requested {:.0} m, {relief} relief, seed {}, 2 m heightfield {} samples / {height_bytes} bytes (hard cap {}), background instance payload {instance_bytes} bytes (excludes renderer copies/CLOD traversal; extra trees remain shadow casters), {:.0} ms; habitat density native {:.1} trees/ha ({} actual trees / {:.0} horizontal m2 at 2 m sampling; {native_steep_percent:.1}% steep), far {:.1} trees/ha ({habitat_m2:.0} horizontal m2 at 4 m sampling; {eligible_percent:.1}% eligible, {steep_m2:.0} m2 steep and {wet_m2:.0} m2 wet excluded), requested {requested} / candidates {candidates} / instance budget {budget}: {parity}; background has no new driving collision",trees.len(),tiles.len(),config.radius,stage.noise_seed,scene.heightfield.heights.len(),MAX_HEIGHT_SAMPLES*4,started.elapsed().as_secs_f64()*1000.0,native.per_m2()*10_000.0,native.trees,native.habitat_m2,far_density*10_000.0))
 }
 
 #[cfg(test)]

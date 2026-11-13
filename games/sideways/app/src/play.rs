@@ -26,7 +26,6 @@ use render::debug_ui::DebugKey;
 #[derive(Clone)]
 struct Args {
     /// --biome: the ground stages are laid on (None: Sideways' own noise).
-    biome: Option<String>,
     land: Option<sideways::stage::Land>,
     upscale: render::upscale::UpscaleMode,
     nature: crate::nature::Nature,
@@ -256,10 +255,9 @@ fn args(args: &[String]) -> Result<Args, String> {
         return Err("HUD profiling needs --smoke-render 1..4096 and fewer warmup frames than rendered frames".into());
     }
     // --biome NAME (or SIDEWAYS_BIOME): stages on the engine's terrain of that biome.
-    let biome=value("--biome").or_else(||std::env::var("SIDEWAYS_BIOME").ok());
-    let land=match biome.as_ref() {Some(b)=>Some(crate::biome_land::land(&b)?),None=>None};
+    let land=crate::biome_land::from_args(args)?;
     let hud=match opt("--hud","on").as_str(){"on"=>true,"off"=>false,_=>return Err("hud must be on or off".into())};
-    Ok(Args { feedback, biome, land, upscale:crate::upscale::parse(args)?,nature:crate::nature::Nature::parse(args)?,gpu_profile,gpu_warmup,frame_profile,seed: parse("--seed", "1")?, km, views, size: (size[0], size[1]), weather: opt("--weather", "clear"), smoke_next_stage, smoke_frames, smoke_ticks: parse("--smoke-ticks", "0")?, capture: value("--capture"), state_out: value("--state-out"), trace: value("--state-trace"), fullscreen: app::startup::fullscreen(args), hud,hud_profile,hud_warmup,autoplay:args.iter().any(|a|a=="--autoplay"),
+    Ok(Args { feedback, land, upscale:crate::upscale::parse(args)?,nature:crate::nature::Nature::parse(args)?,gpu_profile,gpu_warmup,frame_profile,seed: parse("--seed", "1")?, km, views, size: (size[0], size[1]), weather: opt("--weather", "clear"), smoke_next_stage, smoke_frames, smoke_ticks: parse("--smoke-ticks", "0")?, capture: value("--capture"), state_out: value("--state-out"), trace: value("--state-trace"), fullscreen: app::startup::fullscreen(args), hud,hud_profile,hud_warmup,autoplay:args.iter().any(|a|a=="--autoplay"),
         debug_ui:args.iter().any(|a|a=="--debug-ui"),debug_ui_script:value("--debug-ui-script"),
         start_paused:args.iter().any(|a|a=="--start-paused"),
         // Hidden smoke runs stay silent unless asked.
@@ -271,7 +269,19 @@ fn args(args: &[String]) -> Result<Args, String> {
 /// stage from the running random stream, so they have no key.
 fn stage_key(race: &Race) -> Option<serde_json::Value> {
     if race.round != 1 || race.frame != 0 {return None;}
-    serde_json::to_value(&race.settings).ok()
+    // The sim skips the ground closure when serialising Settings.
+    Some(serde_json::json!([race.settings, race.stage.land.as_ref().map(|l| l.biome)]))
+}
+
+fn stage_settings(settings: &mut Settings, values: &serde_json::Value) -> Result<(),String> {
+    if let Some(km)=values["stage_km"].as_f64(){settings.stage_km=km.clamp(2.0,8.0);}
+    if let Some(v)=values["contact"].as_bool(){settings.contact=v;}
+    if let Some(v)=values["rivals"].as_u64(){settings.rivals=(v as usize).min(3);}
+    if let Some(v)=values["weather"].as_str(){settings.weather=if v=="random"{None}else{Some(v.into())};}
+    if let Some(name) = values["biome"].as_str() {
+        settings.land = crate::biome_land::select(name)?;
+    }
+    Ok(())
 }
 
 fn race(a: &Args) -> Race {
@@ -641,14 +651,6 @@ impl App {
         if self.view_order!=old_order {if let Some(g)=&self.graphics {g.renderer.reset_history();}}
     }
 
-    fn apply_settings(&mut self) {
-        self.active_settings=self.pending_settings.clone();
-        if let Some(km)=self.active_settings["stage_km"].as_f64(){self.race.settings.stage_km=km.clamp(2.0,8.0);}
-        if let Some(v)=self.active_settings["contact"].as_bool(){self.race.settings.contact=v;}
-        if let Some(v)=self.active_settings["rivals"].as_u64(){self.race.settings.rivals=(v as usize).min(3);}
-        if let Some(v)=self.active_settings["weather"].as_str(){self.race.settings.weather=if v=="random"{None}else{Some(v.into())};}
-    }
-
     fn request_sky_setting(&mut self,key:&str,value:&serde_json::Value,now:Instant)->Result<(),String> {
         let settings=self.sky_controls.desired().changed(key,value)?;
         self.sky_controls.request(settings,now)?;
@@ -797,10 +799,7 @@ impl App {
         if self.loading.is_some(){return Ok(());}
         let mut settings=self.race.settings.clone();
         let values=self.pending_settings.clone();
-        if let Some(km)=values["stage_km"].as_f64(){settings.stage_km=km.clamp(2.0,8.0);}
-        if let Some(v)=values["contact"].as_bool(){settings.contact=v;}
-        if let Some(v)=values["rivals"].as_u64(){settings.rivals=(v as usize).min(3);}
-        if let Some(v)=values["weather"].as_str(){settings.weather=if v=="random"{None}else{Some(v.into())};}
+        stage_settings(&mut settings, &values)?;
         let seats=self.host.as_ref().map(|h|h.state.seats()).filter(|s|!s.is_empty()).unwrap_or_else(||self.seats.clone());
         let views=seats.len().clamp(1,4);settings.bots=views;
         // data/cars.luau applies at a stage boundary; a broken edit keeps the cars before.
@@ -1043,12 +1042,14 @@ impl App {
                         if let Some(setting)=settings.as_array_mut().and_then(|s|s.iter_mut().find(|s|s["key"]==key)){setting["default"]=value.into();}
                     }
                     if let Some(setting)=settings.as_array_mut().and_then(|s|s.iter_mut().find(|s|s["key"]=="upscale")) {setting["default"]=serde_json::json!(self.args.upscale.as_str());}
+                    if let Some(setting)=settings.as_array_mut().and_then(|s|s.iter_mut().find(|s|s["key"]=="biome")) {setting["default"]=self.pending_settings["biome"].clone();}
                     let host=self.host.as_ref().unwrap();host.declare_settings(settings)?;host.declare_actions(crate::gamenight::actions())?;
                 }
                 Command::Prepare{session,seats}=>{
                     self.managed_screen(false);
                     self.seats=seats;self.args.views=self.seats.len().clamp(1,4);self.race.settings.bots=self.args.views;
-                    self.apply_settings();
+                    stage_settings(&mut self.race.settings, &self.pending_settings)?;
+                    self.active_settings=self.pending_settings.clone();
                     self.recorder=Default::default();
                     // A preloaded game was built for exactly this stage and car
                     // count: keep its scene and renderer (rebuilding them was
@@ -1101,6 +1102,10 @@ impl App {
                                 if let Some(host)=&self.host {host.room_log(&message)?;}
                             }
                         }
+                        continue;
+                    }
+                    if key == "biome" && !value.as_str().is_some_and(|s| s == crate::biome_land::FINLAND || render::biome::NAMES.contains(&s)) {
+                        eprintln!("unknown stage biome {value}");
                         continue;
                     }
                     self.pending_settings[&key]=value.clone();
@@ -1658,7 +1663,7 @@ impl App {
                 if self.args.feedback {
                     let png=Path::new(path);
                     let mut meta=serde_json::json!({"capture":{"size":[size.width,size.height],"png":png},
-                        "drive":self.recorder.capture(&self.race,self.args.biome.as_deref())});
+                        "drive":self.recorder.capture(&self.race)});
                     crate::drive_capture::save_visibility(png,&mut meta,capture_stats.as_ref().unwrap(),&self.built)?;
                     std::fs::write(png.with_extension("json"),serde_json::to_vec(&meta).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
                 }
@@ -1705,7 +1710,7 @@ impl App {
                     "taa":render_light.taa,"lod_pixels":render_light.lod_pixels,"gi":render_light.gi,"contact_occlusion":render_light.contact_occlusion,
                     "reflection_occlusion":render_light.reflection_occlusion,"near_shadows":render_light.near_shadows,"debug":render_light.debug},
             });
-            metadata["drive"]=self.recorder.capture(&self.race,self.args.biome.as_deref());
+            metadata["drive"]=self.recorder.capture(&self.race);
             metadata["render"]["engine_debug"]=self.debug.metadata();
             metadata["render"]["adaptive_quality"]=self.quality.as_ref().map_or(serde_json::Value::Null,|q|q.metadata());
             metadata["render"]["local_lights"]=local_lights_metadata(&local_lights,vehicle_local_light_count);
@@ -2021,7 +2026,7 @@ pub fn run(raw:&[String])->i32{
     if a.smoke_next_stage && host.is_some(){eprintln!("--smoke-next-stage is standalone validation only");return 2;}
     let seats:Vec<_>=(0..a.views).map(|i|Seat{index:i,player_id:format!("standalone-{i}"),name:format!("Player {}",i+1),color:String::new(),controller:String::new(),ai:false,couch:Some(i as i64)}).collect();
     let sky_controls=crate::procedural_sky::LiveSky::new(&sky_metadata,&light);
-    let settings=serde_json::json!({"gearbox":"automatic","stage_km":a.km,"rivals":0,"contact":true,"weather":a.weather,"upscale":a.upscale.as_str(),"sky_time":sky_controls.desired().time_key(),"sky_weather":"clear"});
+    let settings=serde_json::json!({"gearbox":"automatic","stage_km":a.km,"rivals":0,"contact":true,"weather":a.weather,"biome":a.land.as_ref().map_or(crate::biome_land::FINLAND,|l|l.biome),"upscale":a.upscale.as_str(),"sky_time":sky_controls.desired().time_key(),"sky_weather":"clear"});
     let view_order=(0..a.views).collect();
     let resume_fullscreen=if a.fullscreen{Some(Fullscreen::Borderless(None))}else{None};
     let ambient_clock=AmbientClock::new(a.smoke_frames>0||scenario.is_some());
@@ -2151,5 +2156,18 @@ mod stage_key_tests {
         assert!(stage_key(&a).is_some());assert_eq!(stage_key(&a),stage_key(&b));
         let c=Race::new(7,Settings{bots:2,..settings},cars());assert_ne!(stage_key(&a),stage_key(&c));
         let mut d=a;d.new_stage(&mut Default::default());assert_eq!(stage_key(&d),None);
+    }
+
+    #[test]
+    fn lobby_biome_switch_rebuilds_the_preloaded_stage() {
+        let mut settings = Settings { stage_km: 0.2, bots: 1, rivals: 0, ..Default::default() };
+        let cars = sideways::spec::Cars::load(None).unwrap();
+        let native = Race::new(7, settings.clone(), cars.clone());
+        stage_settings(&mut settings, &serde_json::json!({"biome":"norway"})).unwrap();
+        let snow = Race::new(7, settings.clone(), cars);
+        assert_eq!(snow.stage.land.as_ref().unwrap().biome, "norway");
+        assert_ne!(stage_key(&native), stage_key(&snow));
+        stage_settings(&mut settings, &serde_json::json!({"biome":"finland"})).unwrap();
+        assert!(settings.land.is_none());
     }
 }

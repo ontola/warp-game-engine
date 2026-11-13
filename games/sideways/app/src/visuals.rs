@@ -555,6 +555,9 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     scene.terrain_visual_offset_m=CLIFF_VISUAL_OFFSET;
     let r = root();
     let tex = |scene: &mut Scene, rel: &str| scene.add_texture(&r.join(rel));
+    let biome = stage.land.as_ref().filter(|l| l.layout == sideways::stage::LandLayout::BiomeFlora)
+        .map(|l| render::biome::Biome::named(l.biome)
+        .ok_or_else(|| format!("unknown stage biome {}", l.biome))).transpose()?;
     // Terrain layers, in the order shade.wgsl blends them.
     // Decoded on parallel threads: one by one this was ~2.5 s of startup.
     use render::scene::NormalEncoding::{LinearUnorm, SrgbTransferred};
@@ -573,20 +576,29 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         ("assets/trees/bark_albedo.jpg", LinearUnorm),
         ("assets/trees/authored_pine_albedo.png", LinearUnorm),
     ].map(|(rel, encoding)| (r.join(rel), encoding));
+    // Recipe plants bring their own atlases; only native stages use the
+    // four Finnish trunk and pine layers after the seven terrain layers.
+    let files = if biome.is_some() { &files[..7] } else { &files[..] };
     let layers = scene.add_textures(&files.iter().map(|(path, encoding)| (path.as_path(), *encoding)).collect::<Vec<_>>())?;
     // Terrain layers, in the order shade.wgsl blends them.
-    let (t0, gravel, trunk_a, trunk_b, bark, crown) = (layers[0], layers[5], layers[7], layers[8], layers[9], layers[10]);
+    let (t0, gravel) = (layers[0], layers[5]);
     scene.load_sky(&r.join("assets/sky/sky_2k.hdr"))?;
     let m = |tint: [f32; 3], layer: i32, flags: u32, scale: f32| Material { tint, layer, roughness: 0.9, flags, scale, metal: 0.0 };
-    // A biome's ground colour (--biome), relative to Sideways' own.
     let terrain_mat = scene.add_material(m(stage.vegetation.land_tint, t0, TERRAIN, 4.0));
+    let biome_style = biome.map(|b| b.vegetation);
+    if let Some(style) = biome_style.filter(|s|
+        s.ground.sand > 0.0 || s.ground.leaf_litter > 0.0 || s.ground.snowpack > 0.0) {
+        // The shared palette supplies the substrate colour for these layers.
+        scene.materials[terrain_mat as usize].tint = [1.0; 3];
+        render::procedural_terrain::vegetation_style(&mut scene, terrain_mat, &style);
+    }
     let road_mat = scene.add_material(m([1.9, 1.85, 1.8], gravel, ROAD, 3.0));
-    let trunk_a_mat = scene.add_material(m([1.0, 1.0, 1.0], trunk_a, 0, 1.0));
-    let trunk_b_mat = scene.add_material(m([1.0, 1.0, 1.0], trunk_b, 0, 1.0));
-    let bark_mat = scene.add_material(m([1.0, 1.0, 1.0], bark, 0, 1.0));
-    // Godot's foliage.gdshader tint.
-    let pine_tint = stage.vegetation.pine_tint();
-    let crown_mat = scene.add_material(m([0.62 * pine_tint[0], 0.66 * pine_tint[1], 0.55 * pine_tint[2]], crown, ALPHA_TEST | TWO_SIDED, 1.0));
+    let native_materials = layers.get(7..11).map(|tree| {
+        let [a, b, bark] = [tree[0], tree[1], tree[2]].map(|layer| scene.add_material(m([1.0; 3], layer, 0, 1.0)));
+        let tint = stage.vegetation.pine_tint();
+        let crown = scene.add_material(m([0.62 * tint[0], 0.66 * tint[1], 0.55 * tint[2]], tree[3], ALPHA_TEST | TWO_SIDED, 1.0));
+        (a, b, bark, crown)
+    });
     log.push(format!("vegetation: {:?}, growth {:.3}, phenotype seed {}, stage construction only; evergreen pine / grass tint and stature", stage.vegetation.season, stage.vegetation.growth(), stage.vegetation.seed));
     let barrier_mat = scene.add_material(m([0.55, 0.56, 0.57], -1, 0, 1.0));
     log.push(format!("textures and sky: {:.0} ms", t.elapsed().as_secs_f64() * 1e3));
@@ -645,11 +657,12 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     scene.add_classified_instance(road, Affine3A::IDENTITY, GeometryCategory::Terrain);
     log.push(format!("terrain + road clusters: {:.0} ms", t.elapsed().as_secs_f64() * 1e3));
 
-    // Three shared evergreen archetypes, used unchanged by every distance LOD.
+    // A named biome supplies its own tree and shrub recipes. The native
+    // forest keeps its three evergreen assets and opt-in mixed experiment.
     let t = std::time::Instant::now();
     let tree_fullness = crate::tree_assets::configured_fullness()?;
-    let mixed_species = crate::plant_population::configured()?;
-    if !mixed_species {
+    let mixed_species = crate::plant_population::configured()? && biome.is_none();
+    if !mixed_species && biome.is_none() {
         log.push(format!("tree crown source: fullness={tree_fullness:.3}, stem-anchored frond expansion; shared near/far source, unchanged tree counts, wood/colliders, triangle counts and alpha"));
     }
     let mut tree_meshes = Vec::new();
@@ -658,7 +671,10 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         let (log, pool) = crate::plant_population::plant_forest(&mut scene, stage, &chunks, cameras)?;
         (Some(log), Some(pool))
     } else { (None, None) };
-    if recipe_forest.is_none() {
+    if let Some(biome) = &biome {
+        tree_meshes = crate::plant_population::biome_meshes(&mut scene, biome, &mut mesh_names)?;
+    } else if recipe_forest.is_none() {
+    let (trunk_a_mat, trunk_b_mat, bark_mat, crown_mat) = native_materials.expect("native tree layers");
     for archetype in sideways::vegetation::TreeArchetype::ALL {
         let surfaces = crate::tree_assets::load_with_fullness(&r, archetype, tree_fullness)?;
         let crown_fronds = crate::tree_assets::crown_frond_count(&surfaces)?;
@@ -693,17 +709,15 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         mesh_names.push(format!("evergreen {}", archetype.label()));
     }
     }
-    let tree_source = recipe_forest.clone().unwrap_or_else(|| serde_json::json!({"fullness":tree_fullness,
-        "recipe":"stem_anchored_frond_expansion_v1","source_archetypes":tree_source_archetypes,
-        "shared_near_far":true,"alpha_modified":false,"wood_modified_by_fullness":false}));
     let mut trees = 0;
     let mut families = [0usize; 3]; let mut juveniles = 0usize;
-    let mut species_counts = [0usize; 4];
+    let mut species_counts = vec![0usize; tree_meshes.len()];
     for c in chunks.iter().filter(|_| !mixed_species) {
         for spot in &c.trees {
             let phenotype = stage.vegetation.tree(stage.noise_seed as u64, spot.pos.0, spot.pos.2);
             let family = phenotype.archetype.index();
-            let variant = if mixed_species { crate::plant_population::stage_index(stage, spot.pos.0, spot.pos.2) } else { family };
+            let variant = biome.as_ref().map_or(family, |b|
+                crate::plant_population::biome_tree(stage, &b.flora, spot.pos.0, spot.pos.2));
             let xf = Affine3A::from_scale_rotation_translation(
                 crate::tree_assets::native_scale(spot),
                 Quat::from_rotation_y(spot.yaw),
@@ -715,16 +729,25 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
             families[family] += 1; species_counts[variant] += 1; juveniles += usize::from(phenotype.juvenile);
         }
     }
-    if let Some(forest) = &recipe_forest {
+    let tree_source = if let Some(biome) = &biome {
+        let shrubs = crate::plant_population::add_shrubs(&mut scene, stage, &chunks, &biome.flora, &tree_meshes);
+        let species: Vec<_> = biome.species().into_iter().map(|(name, _)| name).collect();
+        log.push(format!("{}: {trees} native trees, {shrubs} roadside shrubs ({})", biome.name, species.join(", ")));
+        serde_json::json!({"route":"render::plant_mesh_lod::PlantCards","biome":biome.name,"species":species,
+            "native_tree_counts":species_counts,"shrubs":shrubs,"shared_near_far":true})
+    } else if let Some(forest) = recipe_forest {
         log.push(format!("recipe forest: {forest}"));
+        forest
     } else {
         log.push(format!("trees: {trees} instances, {} canopy / {} tapered conifer / {} stout trunk; {juveniles} juveniles; 3 shared evergreen source archetypes, {:.0} ms", families[0], families[1], families[2], t.elapsed().as_secs_f64() * 1e3));
-    }
+        serde_json::json!({"fullness":tree_fullness,"recipe":"stem_anchored_frond_expansion_v1",
+            "source_archetypes":tree_source_archetypes,"shared_near_far":true,"alpha_modified":false,"wood_modified_by_fullness":false})
+    };
 
     // World-fixed trees extend the forested horizon, using the same source
     // models and LOD as the near forest. Native road/physics are retained.
     if !mixed_species && std::env::var("SIDEWAYS_DISTANT_FOREST").as_deref() != Ok("0") {
-        match crate::distant_forest::add(&mut scene, stage, &chunks, terrain_mat, &tree_meshes, &mut mesh_names, Default::default(), mixed_species) {
+        match crate::distant_forest::add(&mut scene, stage, &chunks, terrain_mat, &tree_meshes, &mut mesh_names, Default::default(), biome.as_ref()) {
             Ok(summary) => log.push(summary),
             Err(reason) => log.push(format!("distant forest unavailable: {reason}")),
         }
@@ -733,15 +756,18 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     // twelve-overlay route used a second geometry/normal field and caused
     // visibly different short spans even when it shared the material ID.
 
-    if let Some(summary)=crate::voxel_tree_patch::attach(&mut scene,&tree_meshes,crown_mat,cameras,&r)? {
+    if let Some((_, _, _, crown_mat)) = native_materials
+        && let Some(summary)=crate::voxel_tree_patch::attach(&mut scene,&tree_meshes,crown_mat,cameras,&r)? {
         log.push(summary);
     }
 
-    // Land without grass (a --biome desert) draws no ground cover at all.
-    let bare=stage.land.as_ref().is_some_and(|l|l.grass<0.05);
-    let (live_cover,ground_cover)=(live_cover&&!bare,ground_cover&&!bare);
-    let meadow_field=crate::grass_field::enabled()&&!bare;
-    let procedural_patch=if meadow_field||bare {None} else {
+    // These renderers scatter a Finnish meadow. Where snow lies thick or
+    // litter carpets the forest, the biome's recipe shrubs form the understory.
+    let meadow = !stage.land.as_ref().is_some_and(|l| l.grass < 0.05)
+        && !biome_style.is_some_and(|s| s.ground.snowpack > 0.5 || s.ground.leaf_litter > 0.5);
+    let (live_cover,ground_cover)=(live_cover&&meadow,ground_cover&&meadow);
+    let meadow_field=crate::grass_field::enabled()&&meadow;
+    let procedural_patch=if meadow_field||!meadow {None} else {
         crate::grass_voxel_asset::attach_procedural_patch(&mut scene,stage,&chunks,cameras,&mut mesh_names)?
     };
     let excluded=procedural_patch.as_ref().map(|patch|patch.excluded);

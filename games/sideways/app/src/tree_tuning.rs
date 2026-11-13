@@ -87,13 +87,14 @@ impl Baseline {
             || !scene.foliage_source_groups.is_empty() || !scene.part_wind.is_empty() || !scene.part_attachments.is_empty()
     }
 
-    /// An explicit neutral preset can leave experimental fixtures untouched.
-    /// Any non-neutral edit still fails; never tune source while keeping stale
-    /// voxel/branch assets or collision resources.
+    /// A treeless stage has no tree settings to apply. In an experimental
+    /// voxel/branch scene only a neutral preset can leave its assets untouched.
     pub fn prepare_optional_stage(scene:&mut Scene,physics:&mut Physics,settings:Settings)->Result<Option<Self>,String> {
         settings.validate()?;
         let no_trees=!scene.instances.iter().any(|i|i.category()==GeometryCategory::Trees && i.cluster_count>0);
-        if settings==Settings::default() && (Self::unsupported_scene(scene)||no_trees) {return Ok(None);}
+        if Self::unsupported_scene(scene) {
+            if settings == Settings::default() { return Ok(None); }
+        } else if no_trees { return Ok(None); }
         Self::prepare_stage(scene,physics,settings).map(Some)
     }
 
@@ -102,7 +103,7 @@ impl Baseline {
             Some(baseline)=>{let mut value=baseline.metadata(settings);value["editing_available"]=true.into();value},
             None=>serde_json::json!({"editing_available":false,"size_scale":settings.size_scale,
                 "population_fraction":settings.density,"leaf_rgb_multiplier":settings.color_multiplier,
-                "scope":"Explicit authored preset: experimental or tree-free scene retained without tree edits; Apply requires editable source trees."}),
+                "scope":"No editable source trees in this scene."}),
         }
     }
 
@@ -324,6 +325,8 @@ mod tests {
         assert!(Baseline::prepare_optional_stage(&mut scene,&mut physics,Settings{size_scale:1.5,..Default::default()}).is_err());
         for (a,b) in scene.instances.iter().zip(&original) {assert_eq!(a.rows,b.rows);assert_eq!(a.sphere,b.sphere);assert_eq!(a.cluster_count,b.cluster_count);}
         assert!(Baseline::prepare_optional_stage(&mut Scene::default(),&mut Physics::new(),Settings::default()).unwrap().is_none());
+        let settings = Settings { size_scale: 1.5, density: 0.45, ..Settings::default() };
+        assert!(Baseline::prepare_optional_stage(&mut Scene::default(),&mut Physics::new(),settings).unwrap().is_none());
     }
 
     #[test]

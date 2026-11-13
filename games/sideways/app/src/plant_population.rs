@@ -1,12 +1,10 @@
-//! Game-owned species selection for the live mixed forest, planted through
-//! the engine's recipe forest (full assemblies near the cameras, whole-plant
-//! voxel proxies elsewhere).
+//! Shared biome recipes at Sideways' existing roadside and background roots.
+//! The optional mixed forest on a native stage uses the moving recipe pool.
 use glam::{Affine3A, Quat, Vec3};
-use render::{Scene, scene::GeometryCategory};
-use sideways::{builder::Chunk, stage::Stage};
+use render::{biome::{Biome, Flora}, Scene, scene::GeometryCategory};
+use sideways::{builder::{Chunk, N}, stage::{Stage, GRID}};
 
 pub const TREE_IDS: [&str; 4] = ["spruce", "pine", "birch", "broadleaf"];
-const SHRUB_IDS: [&str; 2] = ["juniper", "shrub"];
 const MAX_SHRUBS: usize = 512;
 
 pub fn mode(value: Option<&str>) -> Result<bool, String> {
@@ -33,13 +31,16 @@ fn root_key(seed: u64, x: f32, z: f32) -> u64 {
 
 /// A dominant species per 40 m grove, with a stable minority of companions.
 /// This consumes no simulation RNG and has no camera/season/growth input.
-pub fn tree_index(seed: u64, x: f32, z: f32) -> usize {
+fn grove_key(seed: u64, x: f32, z: f32) -> u64 {
     let gx = (x / 40.0).floor() as i32;
     let gz = (z / 40.0).floor() as i32;
     let grove = mix(seed ^ u64::from(gx as u32) ^ (u64::from(gz as u32) << 32));
     let local = root_key(seed ^ 0xa034_b2ad_71a6_f951, x, z);
-    let identity = if local % 5 == 0 { local >> 8 } else { grove };
-    identity as usize % TREE_IDS.len()
+    if local % 5 == 0 { local >> 8 } else { grove }
+}
+
+pub fn tree_index(seed: u64, x: f32, z: f32) -> usize {
+    grove_key(seed, x, z) as usize % TREE_IDS.len()
 }
 
 pub fn stage_index(stage: &Stage, x: f32, z: f32) -> usize {
@@ -48,6 +49,39 @@ pub fn stage_index(stage: &Stage, x: f32, z: f32) -> usize {
         x,
         z,
     )
+}
+
+fn unit(key: u64) -> f32 { (key >> 40) as f32 / 16_777_216.0 }
+
+/// Near and distant trees share grove membership, age and species. Every
+/// placed tree (including its collider) keeps the scale from stage construction.
+pub fn biome_tree(stage: &Stage, flora: &Flora, x: f32, z: f32) -> usize {
+    let seed = stage.noise_seed as u64 ^ stage.vegetation.seed.rotate_left(23);
+    flora.tree_variant(unit(grove_key(seed, x, z))).expect("placed tree in biome with no trees")
+}
+
+/// Cook the engine's leaf cards and woody branches once per species. Use a
+/// normal, editable Sideways tree instance for every root and every CLOD cut.
+pub fn biome_meshes(scene: &mut Scene, biome: &Biome, names: &mut Vec<String>) -> Result<Vec<usize>, String> {
+    let species = biome.species();
+    let recipes: Vec<_> = species.iter().map(|(_, recipe)| (*recipe, 1)).collect();
+    let cache = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
+    let cards = render::recipe_forest::cook_cards(&recipes, Some(&cache))?;
+    // Species reuse the spray library: recipes with the same baked alpha
+    // atlas only need one texture layer. Their pigments stay in materials.
+    let mut atlases: Vec<usize> = Vec::new();
+    Ok(cards.into_iter().zip(species).map(|(mut cards, (name, _))| {
+        let label = format!("biome plant {name}");
+        let layer = atlases.iter().copied().find(|&i| scene.textures[i].rgba == cards.atlas)
+            .map(|i| i as i32).unwrap_or_else(|| {
+                let layer = scene.add_image(&label, std::mem::take(&mut cards.atlas));
+                atlases.push(layer as usize);
+                layer
+            });
+        let materials: Vec<_> = cards.materials(layer).into_iter().map(|m| scene.add_material(m)).collect();
+        names.push(label);
+        scene.add_mesh(&cards.mesh_with_materials(&materials))
+    }).collect())
 }
 
 /// The live mixed forest on the engine's recipe forest
@@ -92,12 +126,17 @@ pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras:
         "total_ms":started.elapsed().as_secs_f64() * 1e3}), pool))
 }
 
-/// Reuse game-authored decorative fern habitat instead of inventing CPU
-/// streaming or placing plants on roads. A fixed population cap is explicit.
-pub fn add_shrubs(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], meshes: &[usize]) -> usize {
+/// Sample Sideways' off-road fern sites in the visible verge, spreading the
+/// bounded understory along the whole route independently of camera position.
+pub fn add_shrubs(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], flora: &Flora, meshes: &[usize]) -> usize {
     let mut candidates: Vec<_> = chunks
         .iter()
-        .flat_map(|c| &c.ferns)
+        .flat_map(|c| c.ferns.iter().filter(move |spot| {
+            let cell = |d: f64| ((d / GRID).round() as usize).min(N - 1);
+            let i = cell(f64::from(spot.pos.0) - c.x0);
+            let j = cell(f64::from(spot.pos.2) - c.z0);
+            (3.0..40.0).contains(&c.road_d[j * N + i])
+        }))
         .map(|spot| {
             (
                 root_key(stage.vegetation.seed, spot.pos.0, spot.pos.2),
@@ -114,7 +153,7 @@ pub fn add_shrubs(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], meshes: &[
             Vec3::new(spot.pos.0, spot.pos.1, spot.pos.2),
         );
         scene.add_classified_instance(
-            meshes[*key as usize % meshes.len()],
+            meshes[flora.shrub_variant(unit(mix(*key))).expect("placed shrub in biome with no shrubs")],
             transform,
             GeometryCategory::Other,
         );
@@ -140,5 +179,46 @@ mod tests {
         assert!(!mode(None).unwrap());
         assert!(mode(Some("mixed")).unwrap());
         assert!(mode(Some("unknown")).is_err());
+    }
+
+    #[test]
+    fn native_roots_use_the_same_weighted_biome_species_at_any_distance() {
+        let stage = Stage::generate(&mut gdcompat::Pcg::new(19), 500.0);
+        let rainforest = Biome::named("rainforest").unwrap();
+        let species = rainforest.species();
+        let mut counts = std::collections::BTreeMap::new();
+        for i in 0..2000 {
+            let (x, z) = (i as f32 * 49.0, i as f32 * -1.7);
+            let index = biome_tree(&stage, &rainforest.flora, x, z);
+            assert_eq!(index, biome_tree(&stage, &rainforest.flora, x, z));
+            *counts.entry(species[index].0).or_insert(0) += 1;
+        }
+        assert_eq!(counts.len(), 2);
+        assert!(counts["african_mahogany"] > 2 * counts["kapok"]);
+
+        // Use actual roadside sites and the normal scene instance path.
+        // Stand-in mesh ids distinguish species without cooking an atlas.
+        let desert = Biome::named("desert").unwrap();
+        assert!(desert.flora.tree_variant(0.5).is_none());
+        let chunks: Vec<_> = (-1..=1).flat_map(|x| (-2..=0).map(move |z| (x, z)))
+            .map(|cell| sideways::builder::terrain_chunk(&stage, cell)).collect();
+        let mut scene = Scene::default();
+        let cube = render::primitives::cube(0).mesh();
+        let meshes: Vec<_> = desert.species().iter().map(|_| scene.add_mesh(&cube)).collect();
+        let count = add_shrubs(&mut scene, &stage, &chunks, &desert.flora, &meshes);
+        assert!(count > 0 && count <= MAX_SHRUBS);
+        assert_eq!(scene.instances.len(), count);
+        for mesh in meshes {
+            assert!(scene.instances.iter().any(|i| i.first_cluster == scene.meshes[mesh].first_cluster));
+        }
+        for i in &scene.instances {
+            assert_eq!(i.category(), GeometryCategory::Other);
+            let p = gdcompat::math::v3(i.rows[0][3], i.rows[1][3], i.rows[2][3]);
+            let road = stage.locate(p, -1);
+            // Past the end of the ribbon, distance to its infinite tangent
+            // line can be zero. Check the actual road at the clamped station.
+            let centre = stage.point_at(road.along);
+            assert!((p.x - centre.x).hypot(p.z - centre.z) as f64 > stage.width_at(road.along));
+        }
     }
 }

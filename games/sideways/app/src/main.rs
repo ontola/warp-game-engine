@@ -67,10 +67,7 @@ fn main() {
                 frames: opt("--frames", "400").parse().unwrap(),
                 size: (size[0], size[1]),
                 weather: args.iter().position(|a| a == "--weather").map(|i| args[i + 1].clone()),
-                land: match args.iter().position(|a| a == "--biome").map(|i| args[i + 1].clone()).or_else(|| std::env::var("SIDEWAYS_BIOME").ok()) {
-                    Some(b) => match biome_land::land(&b) { Ok(l) => Some(l), Err(e) => { eprintln!("shot: {e}"); std::process::exit(2); } },
-                    None => None,
-                },
+                land: match biome_land::from_args(&args) { Ok(l) => l, Err(e) => { eprintln!("shot: {e}"); std::process::exit(2); } },
                 lod_pixels: opt("--lod", &crate::engine_debug::DEFAULT_LOD_PIXELS.to_string()).parse().unwrap(),
                 picks: args
                     .iter()
@@ -97,7 +94,7 @@ fn main() {
             gpu_run::run(&opt("--out", "gpu-out"), &opt("--jobs", &jobs.to_string_lossy()))
         },
         _ => {
-            eprintln!("usage: sideways play [--views 1..4] [--scenario case.toml]\n       sideways bench [--car ID] [--cars data/cars.luau]\n       sideways sim [--ticks 45000] [--seed 1] [--km 2] [--trace players.0.kmh,players.0.along] [--events]\n       sideways shot out.png [--seed N] [--km K]\n       sideways sound out.wav [--car ID]");
+            eprintln!("usage: sideways play [--views 1..4] [--scenario case.toml] [--biome NAME]\n       sideways bench [--car ID] [--cars data/cars.luau]\n       sideways sim [--ticks 45000] [--seed 1] [--km 2] [--biome NAME] [--trace players.0.kmh,players.0.along] [--events]\n       sideways shot out.png [--seed N] [--km K] [--biome NAME]\n       sideways sound out.wav [--car ID]\nbiomes: {}, {}", biome_land::FINLAND, render::biome::NAMES.join(", "));
             2
         }
     };
@@ -160,9 +157,7 @@ fn sim(args: &[String]) -> i32 {
     if args.iter().any(|a| a == "--weather") {
         settings.weather = Some(opt("--weather", "clear"));
     }
-    if args.iter().any(|a| a == "--biome") {
-        settings.land = match biome_land::land(&opt("--biome", "temperate")) { Ok(l) => Some(l), Err(e) => { eprintln!("sim: {e}"); return 2; } };
-    }
+    settings.land = match biome_land::from_args(args) { Ok(l) => l, Err(e) => { eprintln!("sim: {e}"); return 2; } };
     let cars = match sideways::spec::Cars::load(args.iter().position(|a| a == "--cars").map(|i| args[i + 1].as_str())) {
         Ok(c) => c,
         Err(e) => {

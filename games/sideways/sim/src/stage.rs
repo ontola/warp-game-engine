@@ -17,6 +17,16 @@ pub const CORRIDOR: f64 = 230.0;
 pub const RUNOUT: f64 = 140.0;
 pub const RIVER_STEP: f64 = 4.0;
 
+/// Captures made before the named flora used a common pine forest on every
+/// terrain. Its placement odds affect simulation RNG and trunk collisions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LandLayout {
+    #[default]
+    Original,
+    BiomeFlora,
+}
+
 /// The natural ground a stage is laid on, when it is not Sideways' own
 /// noise: a biome of the engine's procedural terrain (the app supplies it).
 /// `ground` is called with the stage's noise seed, so each stage runs
@@ -25,17 +35,26 @@ pub const RIVER_STEP: f64 = 4.0;
 /// Sideways' own forest (1 each).
 #[derive(Clone)]
 pub struct Land {
+    /// Canonical name of the shared biome used to build this stage.
+    pub biome: &'static str,
+    pub layout: LandLayout,
     pub ground: std::sync::Arc<dyn Fn(u32, f64, f64) -> f64 + Send + Sync>,
     pub trees: f32,
+    pub tree_scale: f32,
     pub grass: f32,
     pub ferns: f32,
+    /// A dry climate keeps the beds of seasonal watercourses.
+    pub flowing_water: bool,
     /// Grass and ground colour relative to Sideways' own.
     pub tint: [f32; 3],
 }
 
 impl std::fmt::Debug for Land {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Land {{ trees: {}, grass: {}, ferns: {}, tint: {:?} }}", self.trees, self.grass, self.ferns, self.tint)
+        f.debug_struct("Land").field("biome", &self.biome).field("layout", &self.layout).field("trees", &self.trees)
+            .field("tree_scale", &self.tree_scale).field("grass", &self.grass)
+            .field("ferns", &self.ferns).field("flowing_water", &self.flowing_water)
+            .field("tint", &self.tint).finish_non_exhaustive()
     }
 }
 
@@ -448,6 +467,9 @@ impl Stage {
 
     /// Water surface height at (x, z), or -inf where it is dry.
     pub fn water_level(&self, x: f64, z: f64) -> f64 {
+        if self.land.as_ref().is_some_and(|land| !land.flowing_water) {
+            return f64::NEG_INFINITY;
+        }
         match self.river_near(x, z, 12.0) {
             Some((ri, k, d, level)) => {
                 let r = &self.rivers[ri];

@@ -18,6 +18,23 @@ games/sideways/tools/play-dev-windows.ps1 -BuildOnly
 cargo run --release -p cli -- sim --ticks 45000 --seed 1 --km 2
 ```
 
+Choose **Biome (next stage)** in Gamepad Party, or pass a biome on launch:
+
+```sh
+cargo run --release -p cli -- play --biome desert
+cargo run --release -p cli -- play --biome norway
+cargo run --release -p cli -- play --biome rainforest
+```
+
+Finland is the original rally stage and remains the default. Desert, Norway
+and rainforest use Warp's ground covers and woody plant recipes. Sideways
+lays the gravel road, places collision trunks and keeps road weather as a
+separate stage setting. The older rally presets keep their original stands.
+`shot` and `sim` accept the same `--biome` option.
+[Warp's biome presets](../../engine/docs/terrain.md#biome-presets)
+
+![The same rally route through dunes, snowy uplands and rainforest](../../engine/docs/images/sideways-biomes.jpg)
+
 The launcher builds while an owned playtest runs, then restarts it after a
 successful build. Logs and executable manifests live in this game's
 `build/dev-runs/`. F4 or F12 opens Warp’s point overlay on a frozen frame and captures its source geometry and driving inputs. Click or tap the problem, or press Esc to resume without a point. Use `warp inspect` for pixel picking and `warp compare` to repeat a drive after a physics or rendering change. [Sideways feedback guide](../../engine/docs/warp-cli.md#sideways-feedback).
