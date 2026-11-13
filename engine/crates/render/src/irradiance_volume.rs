@@ -143,9 +143,9 @@ pub fn neighbour_bit(o: [i32; 3]) -> u32 {
 }
 
 /// Per probe, how the sky transport and the emission change along x, y and
-/// z: central differences to the neighbours it sees (`neighbours`, the
-/// bake's masks), one-sided where it sees one of the two, none where it sees
-/// neither or is invalid. Shading continues each probe's value along its
+/// z, from the neighbours it sees (`neighbours`, the bake's masks): the
+/// monotonized central difference where it sees both, the one-sided one
+/// where it sees one, none where it sees neither or is invalid. Shading continues each probe's value along its
 /// gradient towards the shaded point and blends with C1 weights, so the
 /// light has no kinks at the probe spacing (shade.wgsl
 /// `irradiance_sample_at`). A header word (1), then GRADIENT_WORDS per probe.
@@ -169,8 +169,18 @@ pub fn pack_gradients(grid: &Grid, sky: &[Probe], emission: &[Probe], neighbours
             let (p, m) = (sees(plus), sees(minus));
             for a in 0..6 {
                 let f = value(i, a);
+                // Monotonized central (van Leer's MC limiter): the central
+                // difference where the values run one way, at most twice
+                // either one-sided slope, none at a local extreme. With one
+                // neighbour seen (a corner, a wall), that side's slope.
                 let g: [f32; 6] = match (p, m) {
-                    (true, true) => { let (fp, fm) = (value(at(plus), a), value(at(minus), a)); std::array::from_fn(|q| (fp[q] - fm[q]) / (2.0 * grid.cell)) }
+                    (true, true) => {
+                        let (fp, fm) = (value(at(plus), a), value(at(minus), a));
+                        std::array::from_fn(|q| {
+                            let (up, down) = ((fp[q] - f[q]) / grid.cell, (f[q] - fm[q]) / grid.cell);
+                            if up * down <= 0.0 { 0.0 } else { up.signum() * (0.5 * (up + down)).abs().min(2.0 * up.abs()).min(2.0 * down.abs()) }
+                        })
+                    }
                     (true, false) => { let fp = value(at(plus), a); std::array::from_fn(|q| (fp[q] - f[q]) / grid.cell) }
                     (false, true) => { let fm = value(at(minus), a); std::array::from_fn(|q| (f[q] - fm[q]) / grid.cell) }
                     (false, false) => [0.0; 6],
