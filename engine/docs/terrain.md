@@ -94,6 +94,15 @@ scale metadata for each. To place a catalogue plant in a Luau game, see
 
 The [Sideways biome atlas](https://sideways-biome-atlas.joepio.chatgpt.site/#plantenbibliotheek) shows the grown plants and their shoots. The earlier eleven-species study below records the previous growth recipes.
 
+#### Norwegian field reference targets
+
+The [Lofoten juniper comparison](https://sideways-biome-atlas.joepio.chatgpt.site/#jeneverbes-veldstudie) pairs the six-year source model (0.25 m tall and 0.46 m across, or 0.25 by 0.44 m at the alternate seed) with Simo Räsänen’s field photograph. The age and dimensions of the photographed plant are unknown. For an older model, compare the lengths of separate ground-hugging basal limbs and the gaps between their upturned sprays. W.carter’s Gåseberg twig in the atlas shows exposed wood between dense lateral shoots. Keep the six-year specimen as a separate control.
+
+For Scots pine, compare the repeated branch tiers of the 28-year model with the uneven lateral reach and connected foliage groups in Ryan Hodnett’s Kristiansand photograph. For robusta coffee, compare leaf retention along lateral shoots: the nine-year model leaves much of each axis bare before the terminal leaf cluster. Timothy A. Gonsalves’s Coorg plant is younger-looking and its age is unknown, so it supplies a foliage reference, not a target mature height.
+
+The proposed Norwegian crowberry (*Empetrum nigrum*) reference is Arnstein Rønning’s [Blefjell photograph](https://commons.wikimedia.org/wiki/File:Empetrum_nigrum.JPG) (CC BY 3.0). The broad neighbouring leaves belong to other plants. Model the crowded, narrow leaves at 4–8 mm with rolled-under margins; the small black fruits sit among the leaves. [Burke Herbarium species description](https://www.burkeherbarium.org/imagecollection/taxon.php?Taxon=Empetrum+nigrum).
+
+
 ![Earlier study of eleven desert, Norwegian and rainforest plants, with an enlarged view of the understory](images/biome-flora.jpg)
 
 Games can look up `render::biome::Biome::named(name)` and take its terrain,
