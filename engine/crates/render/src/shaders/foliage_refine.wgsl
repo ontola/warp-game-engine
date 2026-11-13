@@ -756,10 +756,16 @@ fn fast_shadow_retained(task:vec4<u32>)->bool {
  }
  // Missing pages keep the complete parent; ready() has requested them.
  if !resident {atomicAdd(&state[73],1u);publish(task);return;}
- // Into source leaves only past the coarser source cut.
- if (task.z&256u)!=0u && source_leaves && task.y!=NONE && (n.links.w&1u)==0u && scale.x<1e29 {
+ // Into source leaves only past the coarser source cut. The step is judged
+ // at the whole tree's nearest point (its root bound encloses every branch),
+ // so a tree turns to needles as one: per branch, the far side of a near
+ // crown and the branches that lost the budget race stayed 4-16 px voxel
+ // balls among needles (Joep, 13 November). KERN_SOURCE_PER_TREE=0: per branch.
+ var step=scale.x;
+ if SOURCE_PER_TREE {step=max(step,projected(t,nodes[t.info.x],task.z).x);}
+ if (task.z&256u)!=0u && source_leaves && task.y!=NONE && (n.links.w&1u)==0u && step<1e29 {
   let s=fast_source_scale()/select(1.0,CUT_HYSTERESIS,detailed);
-  if scale.x*n.error.x<=view.pixels.z*s && scale.x*n.error.y<=s {publish(task);return;}
+  if step*n.error.x<=view.pixels.z*s && step*n.error.y<=s {publish(task);return;}
  }
  // Shadows stay voxel: source leaves in shadow maps cost hundreds of
  // millions of triangles (hill view) that no slot or splat cap measures.

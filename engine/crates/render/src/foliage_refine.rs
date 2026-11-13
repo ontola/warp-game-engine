@@ -33,7 +33,8 @@ pub const CUT_HYSTERESIS: f32 = 1.25;
 fn refine_source() -> String {
     let floor = std::env::var("KERN_CAMERA_CUT_FLOOR").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite() && *v >= 1.0).unwrap_or(CAMERA_CUT_FLOOR);
     let hysteresis = std::env::var("KERN_CUT_HYSTERESIS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite() && *v >= 1.0).unwrap_or(CUT_HYSTERESIS);
-    format!("const CAMERA_CUT_FLOOR: f32 = {floor:?};\nconst CUT_HYSTERESIS: f32 = {hysteresis:?};\n{}", include_str!("shaders/foliage_refine.wgsl"))
+    let per_tree = std::env::var("KERN_SOURCE_PER_TREE").as_deref() != Ok("0");
+    format!("const CAMERA_CUT_FLOOR: f32 = {floor:?};\nconst CUT_HYSTERESIS: f32 = {hysteresis:?};\nconst SOURCE_PER_TREE: bool = {per_tree};\n{}", include_str!("shaders/foliage_refine.wgsl"))
 }
 struct Rounds {cameras:Vec<(glam::Vec3,glam::Vec3,f32)>,stale:u64,full:bool,used:Option<u32>,hint:Option<u32>,encoded:u32,frame:u64,newest:u64,slots:Vec<RoundSlot>}
 struct RoundSlot {buffer:wgpu::Buffer,encoded:u32,frame:u64,pending:Option<std::sync::mpsc::Receiver<Result<(),wgpu::BufferAsyncError>>>}
