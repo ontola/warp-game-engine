@@ -216,6 +216,12 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
 }
 
 impl Biome {
+    /// These terrains grow their woody plants with the production growth
+    /// rules. Established terrains keep their original species forms.
+    pub fn grown_flora(&self) -> bool {
+        matches!(self.name, "desert" | "norway" | "rainforest")
+    }
+
     /// The species that grow here (plant_species recipes): its trees, then
     /// its shrubs. A placed object's `variant` indexes this list.
     pub fn species(&self) -> Vec<(&'static str, crate::plant_recipe::WoodyRecipe)> {
@@ -283,13 +289,18 @@ impl Lands {
     /// The terrain styles, in kind order, for `regions::Regions`.
     pub fn styles(&self) -> Vec<Style> { self.biomes.iter().map(|b| b.terrain).collect() }
 
-    /// Every species any biome grows, each once (by name), in first-seen
-    /// order. Placed objects' variants index this list.
+    /// Species in first-seen order. Regions share a variant when both the
+    /// name and source agree (e.g. a grown pine differs from a recipe pine).
     pub fn species(&self) -> Vec<(&'static str, crate::plant_recipe::WoodyRecipe)> {
-        let mut out: Vec<(&'static str, crate::plant_recipe::WoodyRecipe)> = Vec::new();
+        self.species_sources().into_iter().map(|(name, recipe, _)| (name, recipe)).collect()
+    }
+
+    pub(crate) fn species_sources(&self) -> Vec<(&'static str, crate::plant_recipe::WoodyRecipe, bool)> {
+        let mut out = Vec::new();
         for b in &self.biomes {
+            let grown = b.grown_flora();
             for (name, recipe) in b.species() {
-                if !out.iter().any(|(n, _)| *n == name) { out.push((name, recipe)); }
+                if !out.iter().any(|(n, _, g)| *n == name && *g == grown) { out.push((name, recipe, grown)); }
             }
         }
         out
@@ -298,9 +309,9 @@ impl Lands {
     /// Every biome's rules, scaled by its region's share (placement::regional).
     /// One biome alone gives exactly `Biome::rules`.
     pub fn rules(&self) -> Vec<crate::placement::Rule> {
-        let all = self.species();
+        let all = self.species_sources();
         let map: Vec<Vec<u32>> = self.biomes.iter().map(|b| b.species().iter()
-            .map(|(n, _)| all.iter().position(|(m, _)| m == n).expect("species listed") as u32).collect()).collect();
+            .map(|(n, _)| all.iter().position(|(m, _, g)| m == n && *g == b.grown_flora()).expect("species listed") as u32).collect()).collect();
         let map = std::sync::Arc::new(map);
         crate::placement::regional(self.biomes.iter().map(|b| b.rules()).collect(),
             move |kind, v| map[kind as usize].get(v as usize).copied().unwrap_or(v))

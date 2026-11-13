@@ -87,7 +87,8 @@ as one more table by kind id, without touching the regions or the GPU layout.
   thin out across a border instead of stopping at a line. Rule ids carry the
   kind (`kind_rule`, `base_rule`, `rule_kind`), salts differ per kind.
 - `biome::Lands` is a list of biomes, one per kind: `styles()` for the
-  regions, `species()` (shared, deduplicated) and `rules()` for flora.
+  regions, `species()` and `rules()` for flora. Regions share a species entry
+  when they use the same botanical name and the same source model.
 - Ground colours: `procedural_terrain::region_ground` appends the grid and a
   `GroundStyle` per kind to the scene's material data and points the
   terrain's ground style at it; `region_ground` in `terrain_surface.wgsl`

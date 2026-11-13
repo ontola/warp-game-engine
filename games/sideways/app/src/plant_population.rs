@@ -1,7 +1,7 @@
 //! Shared biome recipes at Sideways' existing roadside and background roots.
 //! The optional mixed forest on a native stage uses the moving recipe pool.
-use glam::{Affine3A, Quat, Vec3};
-use render::{biome::{Biome, Flora}, Scene, scene::GeometryCategory};
+use glam::Vec3;
+use render::{biome::{Biome, Flora}, Scene, foliage_runtime::RootPlacement, foliage_population::WorldRoot};
 use sideways::{builder::{Chunk, N}, stage::{Stage, GRID}};
 use std::collections::HashMap;
 
@@ -61,29 +61,41 @@ pub fn biome_tree(stage: &Stage, flora: &Flora, x: f32, z: f32) -> usize {
     flora.tree_variant(unit(grove_key(seed, x, z))).expect("placed tree in biome with no trees")
 }
 
-/// Cook the engine's leaf cards and woody branches once per species. Use a
-/// normal, editable Sideways tree instance for every root and every CLOD cut.
-pub fn biome_meshes(scene: &mut Scene, biome: &Biome, names: &mut Vec<String>) -> Result<Vec<usize>, String> {
-    let species = biome.species();
-    let recipes: Vec<_> = species.iter().map(|(_, recipe)| (*recipe, 1)).collect();
-    let cache = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
-    let cards = render::recipe_forest::cook_cards(&recipes, Some(&cache))?;
-    // Species reuse the spray library: recipes with the same baked alpha
-    // atlas only need one texture layer. Their pigments stay in materials.
-    let mut atlases: Vec<usize> = Vec::new();
-    cards.into_iter().zip(species).map(|(mut cards, (name, recipe))| {
-        let label = format!("biome plant {name}");
-        let layer = atlases.iter().copied().find(|&i| scene.textures[i].rgba == cards.atlas)
-            .map(|i| i as i32).unwrap_or_else(|| {
-                let layer = scene.add_image(&label, std::mem::take(&mut cards.atlas));
-                atlases.push(layer as usize);
-                layer
-            });
-        let materials: Vec<_> = cards.materials(layer).into_iter().map(|m| scene.add_material(m)).collect();
-        names.push(label);
-        let mesh = cards.woody_mesh(&materials, &recipe, 1)?;
-        Ok(scene.add_mesh(&mesh))
-    }).collect()
+/// Exact world identity for the stable GPU population.
+pub fn tree_root_id(x: f32, z: f32) -> u64 {
+    (u64::from(x.to_bits()) << 32) | u64::from(z.to_bits())
+}
+
+pub fn tree_root(stage: &Stage, biome: &Biome, pos: Vec3, yaw: f32, width: f32) -> WorldRoot {
+    WorldRoot { id: tree_root_id(pos.x, pos.z), placement: RootPlacement {
+        pos, up: Vec3::Y, yaw, scale: width, variant: biome_tree(stage, &biome.flora, pos.x, pos.z),
+    } }
+}
+
+/// Publish one set of world roots to Warp's source/voxel forest. The sun
+/// and all split-screen cameras share the same roots and species assets.
+pub fn plant_biome(scene: &mut Scene, biome: Biome, roots: &[WorldRoot]) -> Result<serde_json::Value, String> {
+    let catalogue = render::recipe_forest::BiomePlants::new(&render::biome::Lands { biomes: vec![biome] });
+    let mut counts = vec![0usize; catalogue.len()];
+    for root in roots {
+        *counts.get_mut(root.placement.variant).ok_or("biome root has an unknown species")? += 1;
+    }
+    let mut slots = 0;
+    if !roots.is_empty() {
+        let cache = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
+        let plants: Vec<_> = catalogue.cook(Some(&cache))?.into_iter().map(|c| c.plant).collect();
+        // terrain_fly's shared forest budget. A small planting needs no more
+        // slots than the total number of branches it could actually admit.
+        let possible: usize = counts.iter().zip(&plants).map(|(n, plant)| n * plant.stats().branches).sum();
+        slots = possible.clamp(1, 65536) as u32;
+        render::foliage_runtime::plant_population(scene, &plants, roots, roots.len(), slots,
+            render::recipe_forest::BiomePlants::quality_policy())?;
+    }
+    let variants = catalogue.variants();
+    Ok(serde_json::json!({"route":"render::foliage_runtime::plant_species_population","biome":biome.name,
+        "species":variants.iter().map(|(name,_)|name).collect::<Vec<_>>(),"species_counts":counts,
+        "variants":variants,"roots":roots.len(),"branch_slots":slots,"shared_near_far":true,
+        "hierarchy_nodes":scene.gpu_forest.as_ref().map_or(0, |f| f.nodes.len())}))
 }
 
 /// The live mixed forest on the engine's recipe forest
@@ -130,7 +142,7 @@ pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras:
 
 /// Sample Sideways' off-road fern sites in the visible verge, spreading the
 /// bounded understory along the whole route independently of camera position.
-pub fn add_shrubs(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], biome: &Biome, meshes: &[usize]) -> usize {
+pub fn shrubs(stage: &Stage, chunks: &[Chunk], biome: &Biome) -> Vec<WorldRoot> {
     let flora = &biome.flora;
     // Use the crowns of the actual stage trees, including trees across a chunk
     // boundary. The painted forest supplies the crown radius in world metres.
@@ -166,20 +178,12 @@ pub fn add_shrubs(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], biome: &Bi
         .collect();
     candidates.sort_by_key(|(key, _)| *key);
     candidates.truncate(MAX_SHRUBS);
-    for (key, spot) in &candidates {
-        let transform = Affine3A::from_scale_rotation_translation(
-            Vec3::new(spot.scale, spot.scale_y, spot.scale),
-            Quat::from_rotation_y(spot.yaw),
-            Vec3::new(spot.pos.0, spot.pos.1, spot.pos.2),
-        );
-        scene.add_classified_instance(
-            meshes[flora.shrub_variant(unit(mix(*key))).expect("placed shrub in biome with no shrubs")],
-            transform,
-            GeometryCategory::Other,
-        );
-        scene.mark_foliage();
-    }
-    candidates.len()
+    candidates.into_iter().filter_map(|(key, spot)| {
+        let variant = flora.shrub_variant(unit(mix(key)))?;
+        let pos = Vec3::new(spot.pos.0, spot.pos.1, spot.pos.2);
+        Some(WorldRoot { id: tree_root_id(pos.x, pos.z) ^ 0x5352_5542_0000_0000,
+            placement: RootPlacement { pos, up: Vec3::Y, yaw: spot.yaw, scale: spot.scale, variant } })
+    }).collect()
 }
 
 #[cfg(test)]
@@ -216,24 +220,20 @@ mod tests {
         assert_eq!(counts.len(), 2);
         assert!(counts["african_mahogany"] > 2 * counts["kapok"]);
 
-        // Use actual roadside sites and the normal scene instance path.
-        // Stand-in mesh ids distinguish species without cooking an atlas.
+        // Inspect actual roadside roots before committing the GPU population.
         let desert = Biome::named("desert").unwrap();
         assert!(desert.flora.tree_variant(0.5).is_none());
         let chunks: Vec<_> = (-1..=1).flat_map(|x| (-2..=0).map(move |z| (x, z)))
             .map(|cell| sideways::builder::terrain_chunk(&stage, cell)).collect();
-        let mut scene = Scene::default();
-        let cube = render::primitives::cube(0).mesh();
-        let meshes: Vec<_> = desert.species().iter().map(|_| scene.add_mesh(&cube)).collect();
-        let count = add_shrubs(&mut scene, &stage, &chunks, &desert, &meshes);
-        assert!(count > 0 && count <= MAX_SHRUBS);
-        assert_eq!(scene.instances.len(), count);
-        for mesh in meshes {
-            assert!(scene.instances.iter().any(|i| i.first_cluster == scene.meshes[mesh].first_cluster));
+        let roots = shrubs(&stage, &chunks, &desert);
+        assert!(!roots.is_empty() && roots.len() <= MAX_SHRUBS);
+        assert_eq!(roots, shrubs(&stage, &chunks, &desert));
+        for i in 0..desert.species().len() {
+            assert!(roots.iter().any(|r| r.placement.variant == i));
         }
-        for i in &scene.instances {
-            assert_eq!(i.category(), GeometryCategory::Other);
-            let p = gdcompat::math::v3(i.rows[0][3], i.rows[1][3], i.rows[2][3]);
+        for r in roots {
+            let pos = r.placement.pos;
+            let p = gdcompat::math::v3(pos.x, pos.y, pos.z);
             let road = stage.locate(p, -1);
             // Past the end of the ribbon, distance to its infinite tangent
             // line can be zero. Check the actual road at the clamped station.

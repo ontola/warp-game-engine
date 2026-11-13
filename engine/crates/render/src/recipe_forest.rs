@@ -59,6 +59,62 @@ pub struct Cooked {
     pub millis: f64,
 }
 
+/// Catalogue shared by terrain flight and rally stages, in placement variant
+/// order. Each grown species shares one representative plant across its roots.
+pub struct BiomePlants {
+    species: Vec<BiomePlant>,
+}
+
+struct BiomePlant {
+    name: &'static str,
+    recipe: WoodyRecipe,
+    growth: Option<crate::plant_species::GrownSpecies>,
+}
+
+impl BiomePlants {
+    pub fn new(lands: &crate::biome::Lands) -> Self {
+        let species = lands.species_sources().into_iter().map(|(name, recipe, grown)| {
+            let growth = grown.then(|| crate::plant_species::grown(name)
+                .expect("every growth biome species must define its grown form"));
+            BiomePlant { name, recipe, growth }
+        }).collect();
+        Self { species }
+    }
+
+    /// Number of GPU plant variants. Grass variants follow these.
+    pub fn len(&self) -> usize { self.species.len() }
+
+    pub fn is_empty(&self) -> bool { self.species.is_empty() }
+
+    pub fn cook(&self, cache: Option<&Path>) -> Result<Vec<Cooked>, String> {
+        if self.species.iter().all(|s| s.growth.is_none()) {
+            let recipes: Vec<_> = self.species.iter().map(|s| (s.recipe, 1)).collect();
+            return cook_variants(&recipes, cache);
+        }
+        let mut cooked = Vec::with_capacity(self.len());
+        for s in &self.species {
+            let variants = if let Some(g) = &s.growth {
+                cook_grown(&[(g.rules, g.age, g.seed)], &g.parts(), g.look, cache)
+            } else {
+                cook_variants(&[(s.recipe, 1)], cache)
+            }.map_err(|e| format!("{}: {e}", s.name))?;
+            cooked.extend(variants);
+        }
+        Ok(cooked)
+    }
+
+    /// In GPU variant order, for identifying the actual source of a capture.
+    pub fn variants(&self) -> Vec<(&'static str, Option<u32>)> {
+        self.species.iter().map(|s| (s.name, s.growth.as_ref().map(|g| g.age))).collect()
+    }
+
+    /// Match the source/branch/whole-plant cuts across games.
+    pub fn quality_policy() -> Policy {
+        Policy { max_error_pixels: 1.0, allow_sampled_optics: true, measured_source_cuts: false,
+            proxy_pixels: 1.0, proxy_pixels_from: 0.0, ..Default::default() }
+    }
+}
+
 /// Cook each (recipe, seed) variant in parallel, each with its whole-plant
 /// proxy. With `cache`, a variant cooked before with the same recipe, seed,
 /// configs and engine cook code loads from disk instead.
@@ -604,6 +660,23 @@ pub fn game_policy() -> Policy {
 mod streaming_tests {
     use super::*;
     use bytemuck::Zeroable;
+
+    #[test]
+    fn regional_catalog_preserves_growth_source_and_placement_order() {
+        use crate::biome::{Biome, Lands};
+        for name in ["desert", "norway", "rainforest"] {
+            let land = Biome::named(name).unwrap();
+            let variants = BiomePlants::new(&Lands { biomes: vec![land] }).variants();
+            assert!(variants.iter().all(|(_, age)| age.is_some_and(|age| age > 0)));
+            assert_eq!(variants.iter().map(|v| v.0).collect::<Vec<_>>(),
+                land.species().into_iter().map(|v| v.0).collect::<Vec<_>>());
+        }
+        let lands = Lands { biomes: ["temperate", "norway"].map(|n| Biome::named(n).unwrap()).to_vec() };
+        let variants = BiomePlants::new(&lands).variants();
+        let pine: Vec<_> = variants.iter().filter(|v| v.0 == "pine").collect();
+        assert_eq!(pine.len(), 2);
+        assert!(pine[0].1.is_none() && pine[1].1.is_some());
+    }
 
     #[test]
     fn relocated_proxy_keeps_local_samples_owner_and_asset() {

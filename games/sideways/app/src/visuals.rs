@@ -674,9 +674,7 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         let (log, pool) = crate::plant_population::plant_forest(&mut scene, stage, &chunks, cameras)?;
         (Some(log), Some(pool))
     } else { (None, None) };
-    if let Some(biome) = &biome {
-        tree_meshes = crate::plant_population::biome_meshes(&mut scene, biome, &mut mesh_names)?;
-    } else if recipe_forest.is_none() {
+    if biome.is_none() && recipe_forest.is_none() {
     let (trunk_a_mat, trunk_b_mat, bark_mat, crown_mat) = native_materials.expect("native tree layers");
     for archetype in sideways::vegetation::TreeArchetype::ALL {
         let surfaces = crate::tree_assets::load_with_fullness(&r, archetype, tree_fullness)?;
@@ -714,30 +712,47 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     }
     let mut trees = 0;
     let mut families = [0usize; 3]; let mut juveniles = 0usize;
-    let mut species_counts = vec![0usize; tree_meshes.len()];
+    let mut biome_roots = Vec::new();
     for c in chunks.iter().filter(|_| !mixed_species) {
         for spot in &c.trees {
+            let pos = Vec3::new(spot.pos.0, spot.pos.1, spot.pos.2);
+            trees += 1;
+            if let Some(b) = &biome {
+                biome_roots.push(crate::plant_population::tree_root(stage, b, pos, spot.yaw, spot.scale));
+                continue;
+            }
             let phenotype = stage.vegetation.tree(stage.noise_seed as u64, spot.pos.0, spot.pos.2);
             let family = phenotype.archetype.index();
-            let variant = biome.as_ref().map_or(family, |b|
-                crate::plant_population::biome_tree(stage, &b.flora, spot.pos.0, spot.pos.2));
             let xf = Affine3A::from_scale_rotation_translation(
                 crate::tree_assets::native_scale(spot),
                 Quat::from_rotation_y(spot.yaw),
-                Vec3::new(spot.pos.0, spot.pos.1, spot.pos.2),
+                pos,
             );
-            scene.add_classified_instance(tree_meshes[variant], xf, GeometryCategory::Trees);
+            scene.add_classified_instance(tree_meshes[family], xf, GeometryCategory::Trees);
             scene.mark_foliage();
-            trees += 1;
-            families[family] += 1; species_counts[variant] += 1; juveniles += usize::from(phenotype.juvenile);
+            families[family] += 1; juveniles += usize::from(phenotype.juvenile);
         }
     }
-    let tree_source = if let Some(biome) = &biome {
-        let shrubs = crate::plant_population::add_shrubs(&mut scene, stage, &chunks, biome, &tree_meshes);
-        let species: Vec<_> = biome.species().into_iter().map(|(name, _)| name).collect();
-        log.push(format!("{}: {trees} native trees, {shrubs} roadside shrubs ({})", biome.name, species.join(", ")));
-        serde_json::json!({"route":"render::plant_mesh_lod::PlantCards","biome":biome.name,"species":species,
-            "native_tree_counts":species_counts,"shrubs":shrubs,"shared_near_far":true})
+    // World-fixed trees extend the forested horizon, using the same source
+    // models and LOD as the near forest. Native road/physics are retained.
+    if !mixed_species && std::env::var("SIDEWAYS_DISTANT_FOREST").as_deref() != Ok("0") {
+        match crate::distant_forest::add(&mut scene, stage, &chunks, terrain_mat, &tree_meshes, &mut mesh_names, Default::default(), biome.as_ref(), &mut biome_roots) {
+            Ok(summary) => log.push(summary),
+            Err(reason) => log.push(format!("distant forest unavailable: {reason}")),
+        }
+    }
+    let tree_source = if let Some(biome) = biome {
+        let shrubs = crate::plant_population::shrubs(stage, &chunks, &biome);
+        let shrub_count = shrubs.len();
+        let distant = biome_roots.len() - trees;
+        biome_roots.extend(shrubs);
+        let mut source = crate::plant_population::plant_biome(&mut scene, biome, &biome_roots)?;
+        source["native_trees"] = trees.into();
+        source["distant_trees"] = distant.into();
+        source["shrubs"] = shrub_count.into();
+        mesh_names.resize_with(scene.meshes.len(), || "GPU vegetation".into());
+        log.push(format!("GPU biome vegetation: {source}"));
+        source
     } else if let Some(forest) = recipe_forest {
         log.push(format!("recipe forest: {forest}"));
         forest
@@ -746,15 +761,6 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         serde_json::json!({"fullness":tree_fullness,"recipe":"stem_anchored_frond_expansion_v1",
             "source_archetypes":tree_source_archetypes,"shared_near_far":true,"alpha_modified":false,"wood_modified_by_fullness":false})
     };
-
-    // World-fixed trees extend the forested horizon, using the same source
-    // models and LOD as the near forest. Native road/physics are retained.
-    if !mixed_species && std::env::var("SIDEWAYS_DISTANT_FOREST").as_deref() != Ok("0") {
-        match crate::distant_forest::add(&mut scene, stage, &chunks, terrain_mat, &tree_meshes, &mut mesh_names, Default::default(), biome.as_ref()) {
-            Ok(summary) => log.push(summary),
-            Err(reason) => log.push(format!("distant forest unavailable: {reason}")),
-        }
-    }
     // Rock detail is part of the native terrain source mesh. The retired
     // twelve-overlay route used a second geometry/normal field and caused
     // visibly different short spans even when it shared the material ID.

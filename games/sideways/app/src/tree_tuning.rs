@@ -64,7 +64,7 @@ fn mix(mut v:u64)->u64 {
     v=(v^(v>>27)).wrapping_mul(0x94d049bb133111eb);
     v^(v>>31)
 }
-fn root_rank(root:[f32;3])->f64 {
+pub(crate) fn root_rank(root:[f32;3])->f64 {
     let key=(root[0].to_bits() as u64)^((root[2].to_bits() as u64)<<32)^0x7e55_1a8d_0ea4_6c39;
     (mix(key)>>11) as f64 / 9_007_199_254_740_992.0
 }
@@ -91,6 +91,9 @@ impl Baseline {
     /// voxel/branch scene only a neutral preset can leave its assets untouched.
     pub fn prepare_optional_stage(scene:&mut Scene,physics:&mut Physics,settings:Settings)->Result<Option<Self>,String> {
         settings.validate()?;
+        // These plants have cooked source, optical voxels and species-shaped
+        // gameplay trunks. The saved mesh-forest preset belongs to other stages.
+        if scene.gpu_forest.is_some() { return Ok(None); }
         let no_trees=!scene.instances.iter().any(|i|i.category()==GeometryCategory::Trees && i.cluster_count>0);
         if Self::unsupported_scene(scene) {
             if settings == Settings::default() { return Ok(None); }
@@ -101,9 +104,9 @@ impl Baseline {
     pub fn stage_metadata(baseline:Option<&Self>,settings:Settings)->serde_json::Value {
         match baseline {
             Some(baseline)=>{let mut value=baseline.metadata(settings);value["editing_available"]=true.into();value},
-            None=>serde_json::json!({"editing_available":false,"size_scale":settings.size_scale,
-                "population_fraction":settings.density,"leaf_rgb_multiplier":settings.color_multiplier,
-                "scope":"No editable source trees in this scene."}),
+            None=>serde_json::json!({"editing_available":false,"size_scale":1.0,
+                "population_fraction":1.0,"leaf_rgb_multiplier":[1.0,1.0,1.0],"saved_mesh_preset":settings,
+                "scope":"This stage uses its authored vegetation. Tree editing requires a source mesh forest."}),
         }
     }
 

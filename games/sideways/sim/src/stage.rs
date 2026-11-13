@@ -27,6 +27,15 @@ pub enum LandLayout {
     BiomeFlora,
 }
 
+/// The lower, drivable part of a species' bole in its local metre units.
+#[derive(Clone, Copy, Debug)]
+pub struct TrunkShape {
+    pub tip: [f32; 3],
+    pub radius: f32,
+}
+
+pub type TrunkProfile = std::sync::Arc<dyn Fn(&Stage, f32, f32) -> TrunkShape + Send + Sync>;
+
 /// The natural ground a stage is laid on, when it is not Sideways' own
 /// noise: a biome of the engine's procedural terrain (the app supplies it).
 /// `ground` is called with the stage's noise seed, so each stage runs
@@ -39,6 +48,7 @@ pub struct Land {
     pub biome: &'static str,
     pub layout: LandLayout,
     pub ground: std::sync::Arc<dyn Fn(u32, f64, f64) -> f64 + Send + Sync>,
+    pub trunk_profile: Option<TrunkProfile>,
     pub trees: f32,
     pub tree_scale: f32,
     pub grass: f32,

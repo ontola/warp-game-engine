@@ -44,6 +44,11 @@ impl Recorder {
         let Some((_, _, start)) = &race.stage_origin else {
             return;
         };
+        // F10's saved mesh-forest settings can carry across stages. A grown
+        // biome races with its authored population and per-species trunks.
+        let trees = if race.stage.land.as_ref().is_some_and(|l| l.trunk_profile.is_some()) {
+            tree_tuning::Settings::default()
+        } else { trees };
         let stage = (race.round, *start);
         if self.stage != Some(stage) {
             self.runs.clear();
@@ -90,6 +95,7 @@ impl Recorder {
         }
         json!({"version":1,"hz":120,"stream":stream.stream_state(),"settings":settings,"biome":settings.land.as_ref().map(|l| l.biome),
             "land_layout": settings.land.as_ref().map(|l| l.layout).unwrap_or_default(),
+            "grown_trunks": settings.land.as_ref().is_some_and(|l| l.trunk_profile.is_some()),
             "round":race.round,"start":start,"end":race.frame,"stage_seeds":[race.stage.noise_seed,race.stage.detail_seed],
             "digest":kern::digest_of(race),"runs":self.runs})
     }
@@ -104,6 +110,8 @@ struct Tape {
     biome: Option<String>,
     #[serde(default)]
     land_layout: sideways::stage::LandLayout,
+    #[serde(default)]
+    grown_trunks: bool,
     round: u32,
     start: u64,
     end: u64,
@@ -116,6 +124,9 @@ impl Tape {
     fn restore_land(&mut self) -> Result<(), String> {
         self.settings.land = self.biome.as_deref()
             .map(|name| crate::biome_land::land_for_layout(name, self.land_layout)).transpose()?;
+        if !self.grown_trunks {
+            if let Some(land) = &mut self.settings.land { land.trunk_profile = None; }
+        }
         Ok(())
     }
 
@@ -155,6 +166,35 @@ impl Tape {
     }
 }
 
+/// Recordings from the first biome-flora stages used a common native trunk
+/// cylinder and the mesh editor's subset. Replay their original collision
+/// geometry without coupling it to the renderer's current plant assets.
+struct RecordedTrunks {
+    colliders: sideways::physics::TreeColliderBaseline,
+    ranks: Vec<f64>,
+}
+
+impl RecordedTrunks {
+    fn capture(race: &Race) -> Result<Self, String> {
+        use sideways::{builder, physics::{TreeColliderBaseline, TreeColliderSource}};
+        let mut sources = Vec::new();
+        for cell in builder::chunk_cells(&race.stage) {
+            let chunk = builder::terrain_chunk(&race.stage, cell);
+            sources.extend(chunk.trees.iter().map(|spot| TreeColliderSource {
+                root: [spot.pos.0, spot.pos.1, spot.pos.2], scale: [spot.scale, spot.scale_y],
+            }));
+        }
+        let colliders = TreeColliderBaseline::capture(&race.phys, &sources)?;
+        let ranks = sources.iter().map(|s| tree_tuning::root_rank(s.root)).collect();
+        Ok(Self { colliders, ranks })
+    }
+
+    fn apply(&self, race: &mut Race, settings: tree_tuning::Settings) -> Result<(), String> {
+        let enabled: Vec<_> = self.ranks.iter().map(|rank| *rank < f64::from(settings.density)).collect();
+        self.colliders.apply(&mut race.phys, settings.size_scale, &enabled)
+    }
+}
+
 pub fn run(args: &[String]) -> Result<(), String> {
     if !(args.len() == 2 || (args.len() == 3 && args[2] == "--state-only")) {
         return Err("usage: sideways replay-drive F12.json FRESH_DIR [--state-only]".into());
@@ -182,18 +222,24 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     let views = race.settings.bots;
     let mut rest = Default::default();
-    let poses = play::poses(&race);
-    let cams = play::cameras(&race, &poses, &[0.0; 4], &[false; 4], &mut rest);
-    let looks = crate::car_look::Looks::load(None, vec![])?;
-    let mut built = visuals::build_live(
-        &race.stage,
-        &poses,
-        &cams.iter().take(views).map(|c| c.pos).collect::<Vec<_>>(),
-        &looks,
-    )?;
+    // Biome trunks are part of the simulation. A state-only replay does not
+    // need to cook the visual plant assets to reconstruct them.
+    let mut built = if args.len() == 2 || tape.land_layout != sideways::stage::LandLayout::BiomeFlora {
+        let poses = play::poses(&race);
+        let cams = play::cameras(&race, &poses, &[0.0; 4], &[false; 4], &mut rest);
+        let looks = crate::car_look::Looks::load(None, vec![])?;
+        Some(visuals::build_live(&race.stage, &poses,
+            &cams.iter().take(views).map(|c| c.pos).collect::<Vec<_>>(), &looks)?)
+    } else { None };
     let mut trees = tape.runs[0].trees;
-    let baseline =
-        tree_tuning::Baseline::prepare_optional_stage(&mut built.scene, &mut race.phys, trees)?;
+    let old_biome_trunks = if tape.land_layout == sideways::stage::LandLayout::BiomeFlora && !tape.grown_trunks {
+        let previous = RecordedTrunks::capture(&race)?;
+        previous.apply(&mut race, trees)?;
+        Some(previous)
+    } else { None };
+    let baseline = if let (None, Some(visuals)) = (&old_biome_trunks, &mut built) {
+        tree_tuning::Baseline::prepare_optional_stage(&mut visuals.scene, &mut race.phys, trees)?
+    } else { None };
     let gpu = if args.len() == 2 {
         Some(render::Gpu::new()?)
     } else {
@@ -206,11 +252,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut timings = Timings::default();
     for run in tape.runs {
         if run.trees != trees {
-            let base = baseline
-                .as_ref()
-                .ok_or("unsupported tree edit in recorded stage")?;
-            base.apply_scene(&mut built.scene, run.trees)?;
-            base.apply_physics(&mut race.phys, run.trees)?;
+            if let Some(previous) = &old_biome_trunks {
+                previous.apply(&mut race, run.trees)?;
+            } else {
+                let base = baseline.as_ref().ok_or("unsupported tree edit in recorded stage")?;
+                base.apply_scene(&mut built.as_mut().ok_or("missing source mesh forest")?.scene, run.trees)?;
+                base.apply_physics(&mut race.phys, run.trees)?;
+            }
             trees = run.trees;
             renderer = None;
         }
@@ -241,6 +289,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 if (tape.end - race.frame) % 8 != 0 {
                     continue;
                 }
+                let built = built.as_mut().ok_or("missing replay scene")?;
                 let poses = play::poses(&race);
                 let cams = play::cameras(&race, &poses, &[0.0; 4], &[false; 4], &mut rest);
                 let positions = cams.iter().take(views).map(|c| c.pos).collect::<Vec<_>>();
@@ -302,6 +351,13 @@ pub struct VisibilitySource {
     actor_parts: BTreeMap<u32, (u32, u32)>,
 }
 
+/// Shared GPU branch owners encode their primitive member in the low 12
+/// bits (render/shaders/virtual_member.wgsl). Their posed transform lives
+/// on the GPU; indexing the static scene with that encoded ID is invalid.
+pub(crate) fn virtual_plant_member(id: u32) -> Option<(u32,u32)> {
+    (id & 0x8000_0000 != 0).then_some(((id >> 12) & 0x7ffff, id & 0xfff))
+}
+
 impl VisibilitySource {
     pub fn snapshot(built: &visuals::Built) -> Self {
         let meshes: BTreeMap<_, _> = built
@@ -355,7 +411,10 @@ impl VisibilitySource {
         let mut clusters = BTreeMap::new();
         for v in captures {
             for &[owner, cluster] in &v.visible {
-                if let Some(i) = self.instances.get(owner as usize) {
+                if let Some((slot, member)) = virtual_plant_member(owner) {
+                    owners.entry(owner).or_insert_with(|| json!({"category":"Trees",
+                        "hierarchy":{"kind":"gpu_plant_member","branch_owner":slot,"member":member}}));
+                } else if let Some(i) = self.instances.get(owner as usize) {
                     owners.entry(owner).or_insert_with(|| {
                         let mut info = json!({"mesh":self.meshes.get(&i.first_cluster),
                         "category":format!("{:?}",i.category()),"transform":i.rows});
@@ -425,13 +484,19 @@ mod tests {
                 }),
                 None,
             ];
-            recorder.record(&race, &controls, Default::default(), false);
+            recorder.record(&race, &controls, tree_tuning::Settings{density:0.45,..Default::default()}, false);
             race.step_with_inputs(&mut timings, &controls);
         }
         let mut capture = recorder.capture(&race);
         let mut tape: Tape = serde_json::from_value(capture.clone()).unwrap();
         tape.restore_land().unwrap();
+        assert!(tape.grown_trunks);
+        assert!(tape.runs.iter().all(|r|r.trees==tree_tuning::Settings::default()));
         assert!(!tape.settings.land.as_ref().unwrap().flowing_water);
+        capture.as_object_mut().unwrap().remove("grown_trunks");
+        let mut recorded: Tape = serde_json::from_value(capture.clone()).unwrap();
+        recorded.restore_land().unwrap();
+        assert!(recorded.settings.land.unwrap().trunk_profile.is_none());
         capture.as_object_mut().unwrap().remove("land_layout");
         let mut old: Tape = serde_json::from_value(capture).unwrap();
         old.restore_land().unwrap();

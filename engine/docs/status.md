@@ -92,8 +92,9 @@ Games can opt into [artist lighting and per-view image effects](materials.md#art
 - Procedural terrain from one height function with CPU and WGSL copies,
   GPU patches by projected error ([terrain](terrain.md)).
 - The [biome presets](terrain.md#biome-presets) include desert, snowy Norway
-  and Central African rainforest. Sideways offers the shared presets in its
-  stage settings and uses their ground covers and plant recipes.
+  and Central African rainforest. Sideways and `terrain_fly` use the same
+  growth rules, foliage parts and GPU source/branch/whole-plant voxel renderer
+  for these three presets.
 - Done on 5 November: [regions](terrain-regions.md) (step 1 of the
   constrained-generation roadmap), [zones and footprints](terrain-zones.md)
   (step 2), [world overrides](world-overrides.md) (step 3, CPU only).

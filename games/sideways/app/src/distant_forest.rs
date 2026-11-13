@@ -1,6 +1,5 @@
-//! Bounded background forest over a continuous terrain extension. The live
-//! scene reuses native tree meshes and measures native habitat density; the
-//! original voxel crowns remain an explicit alternative geometry experiment.
+//! Bounded background forest over a continuous terrain extension. Native and
+//! distant trees share the stage's habitat density and species assets.
 
 use glam::{Affine3A, Quat, Vec3};
 use render::cluster::{ClusterMesh, Part, Vertex};
@@ -395,7 +394,8 @@ fn tree_mesh(variant:u32, crown:u32, bark:u32) -> ClusterMesh {
     ClusterMesh::build(&[Part{vertices:&verts[0],indices:&indices[0],material:crown},Part{vertices:&verts[1],indices:&indices[1],material:bark}])
 }
 
-pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,source_tree_meshes:&[usize],mesh_names:&mut Vec<String>,config:Config,biome:Option<&render::biome::Biome>)->Result<String,String>{
+pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,source_tree_meshes:&[usize],mesh_names:&mut Vec<String>,config:Config,
+    biome:Option<&render::biome::Biome>,biome_roots:&mut Vec<render::foliage_population::WorldRoot>)->Result<String,String>{
     let started=Instant::now();
     if chunks.is_empty() || stage.points.is_empty(){return Err("no native terrain to attach background to".into());}
     if (scene.heightfield.cell-2.0).abs()>1e-6{return Err("background requires the native 2 m heightfield".into());}
@@ -422,7 +422,7 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,so
     let generic_voxels=biome.is_none() && std::env::var("SIDEWAYS_GENERIC_VOXEL_TREES").as_deref()==Ok("1");
     if !generic_voxels && !source_tree_meshes.is_empty() {
         tree_ids.extend_from_slice(source_tree_meshes);
-    } else {
+    } else if biome.is_none() {
       let bark=scene.add_material(Material{tint:[0.07,0.047,0.025],layer:-1,roughness:0.98,flags:0,scale:1.0,metal:0.0});
       for variant in 0..3{
         let base=[[0.034,0.071,0.029],[0.043,0.080,0.035],[0.029,0.060,0.034]][variant as usize];
@@ -461,13 +461,18 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,so
         let phenotype=stage.vegetation.tree(stage.noise_seed as u64,x,z);
         let scale=crate::tree_assets::scale_from_units(unit(key.rotate_left(7)),unit(key.rotate_left(19)),phenotype)
             * biome.map_or(1.0, |b| b.flora.tree_scale);
-        let transform=Affine3A::from_scale_rotation_translation(scale,Quat::from_rotation_y(unit(key.rotate_left(3))*std::f32::consts::TAU),Vec3::new(x,y-0.12,z));
+        let yaw=unit(key.rotate_left(3))*std::f32::consts::TAU;
+        let pos=Vec3::new(x,y-0.12,z);
         let family=phenotype.archetype.index();
-        let species=biome.map_or(family, |b| crate::plant_population::biome_tree(stage, &b.flora, x, z));
-        scene.add_classified_instance(tree_ids[species],transform,GeometryCategory::Trees);scene.mark_foliage();
+        if let Some(b) = biome {
+            biome_roots.push(crate::plant_population::tree_root(stage, b, pos, yaw, scale.x));
+        } else {
+            let transform=Affine3A::from_scale_rotation_translation(scale,Quat::from_rotation_y(yaw),pos);
+            scene.add_classified_instance(tree_ids[family],transform,GeometryCategory::Trees);scene.mark_foliage();
+        }
         families[family]+=1;juveniles+=usize::from(phenotype.juvenile);
     }
-    let representation=if let Some(biome) = biome {format!("{} biome recipe trees, shared roadside species and CLOD meshes; {juveniles} juveniles",biome.name)}
+    let representation=if let Some(biome) = biome {format!("{} grown trees sharing roadside source and voxel assets",biome.name)}
         else if !generic_voxels && !source_tree_meshes.is_empty(){format!("matching source trees / {} reused near-tree cluster LOD meshes, {} canopy / {} tapered conifer / {} stout trunk, {juveniles} juveniles",tree_ids.len(),families[0],families[1],families[2])}else{format!("experimental generic voxel trees / 3 shared meshes ({tree_triangles} leaf / {tree_roots} root tris total; {})",tree_lods.join("; "))};
     let far_density=if habitat_m2>0.0{trees.len() as f64/habitat_m2}else{0.0};
     let parity=if trees.len()==requested{"matched count"}else if requested>budget{"LIMITED BY INSTANCE BUDGET"}else{"LIMITED BY FOREST CANDIDATES"};
@@ -475,7 +480,10 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,so
     let eligible_percent=if total_m2>0.0{100.0*habitat_m2/total_m2}else{0.0};
     let outer_tiles=tiles.values().filter(|tile|tile.step==OUTER_STEP).count();
     let native_steep_percent=100.0*native.steep_m2/(chunks.len() as f64*(TILE*TILE) as f64);
-    let instance_bytes=(trees.len()+tiles.len())*std::mem::size_of::<render::scene::GpuInstance>();
+    let terrain_instance_bytes = tiles.len() * std::mem::size_of::<render::scene::GpuInstance>();
+    let tree_instance_bytes = if biome.is_some() { std::mem::size_of::<render::foliage_population::WorldRoot>() }
+        else { std::mem::size_of::<render::scene::GpuInstance>() };
+    let instance_bytes = terrain_instance_bytes + trees.len() * tree_instance_bytes;
     let height_bytes=scene.heightfield.heights.len()*std::mem::size_of::<f32>();
     let relief = biome.map_or("Finnish foothills", |b| b.name);
     Ok(format!("distant forest: {} {representation}, {} terrain tiles / {terrain_triangles} tris ({outer_tiles} outer tiles at 16 m, inner terrain 8 m, stitched native edges 2 m), radius {radius:.0} m / requested {:.0} m, {relief} relief, seed {}, 2 m heightfield {} samples / {height_bytes} bytes (hard cap {}), background instance payload {instance_bytes} bytes (excludes renderer copies/CLOD traversal; extra trees remain shadow casters), {:.0} ms; habitat density native {:.1} trees/ha ({} actual trees / {:.0} horizontal m2 at 2 m sampling; {native_steep_percent:.1}% steep), far {:.1} trees/ha ({habitat_m2:.0} horizontal m2 at 4 m sampling; {eligible_percent:.1}% eligible, {steep_m2:.0} m2 steep and {wet_m2:.0} m2 wet excluded), requested {requested} / candidates {candidates} / instance budget {budget}: {parity}; background has no new driving collision",trees.len(),tiles.len(),config.radius,stage.noise_seed,scene.heightfield.heights.len(),MAX_HEIGHT_SAMPLES*4,started.elapsed().as_secs_f64()*1000.0,native.per_m2()*10_000.0,native.trees,native.habitat_m2,far_density*10_000.0))

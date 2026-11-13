@@ -1,8 +1,10 @@
-//! The engine's plant species: recipes (plant_recipe::WoodyRecipe) a game
-//! can grow without authoring its own. The trees and shrubs follow
-//! Sideways' approved recipes (copied, as the engine does not depend on a
-//! game). Biomes select from this catalogue for both trees and understory.
+//! Shared tree and shrub species. `grown` provides architectural growth
+//! rules, stand age and foliage parts for the desert, Norway and rainforest.
+//! `named` provides the woody recipes used by the established landscapes.
 use crate::plant_recipe::{CrownProfile, FoliageKind, WoodyRecipe};
+
+mod growth;
+pub use growth::{grown, GrownSpecies};
 
 const NEEDLE: [f32; 3] = [0.065, 0.135, 0.045];
 const LEAF: [f32; 3] = [0.11, 0.20, 0.055];

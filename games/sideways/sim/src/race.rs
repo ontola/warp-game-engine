@@ -151,7 +151,11 @@ pub fn build_colliders(stage: &Stage) -> (Physics, usize, usize) {
     for c in chunks.iter().flatten() {
         phys.add_chunk(c);
         for t in &c.trees {
-            phys.add_trunk(t);
+            if let Some(profile) = stage.land.as_ref().and_then(|l| l.trunk_profile.as_ref()) {
+                phys.add_grown_trunk(t, profile(stage, t.pos.0, t.pos.2));
+            } else {
+                phys.add_trunk(t);
+            }
         }
         trees += c.trees.len();
     }

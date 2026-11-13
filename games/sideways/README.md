@@ -29,8 +29,9 @@ cargo run --release -p cli -- play --biome rainforest
 ```
 
 Finland is the original rally stage and remains the default. Desert, Norway
-and rainforest use Warp's ground covers and woody plant recipes. Sideways
-lays the gravel road, places collision trunks and keeps road weather as a
+and rainforest use Warp's ground covers and growth-model trees and shrubs.
+They use the same source meshes and branch and whole-plant voxels as
+`terrain_fly`. Sideways lays the gravel road, places collision trunks and keeps road weather as a
 separate stage setting. The older rally presets keep their original stands.
 `shot` and `sim` accept the same `--biome` option.
 [Warp's biome presets](../../engine/docs/terrain.md#biome-presets)

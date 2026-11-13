@@ -35,10 +35,7 @@ pub fn from_args(args: &[String]) -> Result<Option<Land>, String> {
 /// shifted so its start lies at height 0.
 pub fn land(name: &str) -> Result<Land, String> {
     let biome = named(name)?;
-    let layout = match biome.name {
-        "desert" | "norway" | "rainforest" => LandLayout::BiomeFlora,
-        _ => LandLayout::Original,
-    };
+    let layout = if biome.grown_flora() { LandLayout::BiomeFlora } else { LandLayout::Original };
     Ok(make_land(biome, layout))
 }
 
@@ -47,7 +44,31 @@ fn named(name: &str) -> Result<Biome, String> {
 }
 
 pub fn land_for_layout(name: &str, layout: LandLayout) -> Result<Land, String> {
-    Ok(make_land(named(name)?, layout))
+    let biome = named(name)?;
+    if layout == LandLayout::BiomeFlora && !biome.grown_flora() {
+        return Err(format!("{} has no biome-flora stage layout", biome.name));
+    }
+    Ok(make_land(biome, layout))
+}
+
+fn trunk_profile(biome: &Biome) -> sideways::stage::TrunkProfile {
+    // The asset cook and driving physics use the same growth rules, age and
+    // seed. Grow once per species, then reuse the lower bole at every root.
+    let flora = biome.flora;
+    let shapes: Vec<_> = flora.trees.iter().filter(|(_, weight)| *weight > 0.0).map(|&(name, _)| {
+        let form = render::plant_species::grown(name).expect("grown biome tree");
+        let plant = render::plant_growth::grow(&form.rules, form.age, form.seed);
+        let mut tip = glam::Vec3::ZERO;
+        for stem in plant.segments.iter().filter(|s| s.order == 0) {
+            if stem.to.y >= 5.5 {
+                tip = stem.from.lerp(stem.to, (5.5 - stem.from.y) / (stem.to.y - stem.from.y));
+                break;
+            }
+            tip = stem.to;
+        }
+        sideways::stage::TrunkShape { tip: tip.to_array(), radius: plant.trunk_radius() }
+    }).collect();
+    Arc::new(move |stage, x, z| shapes[crate::plant_population::biome_tree(stage, &flora, x, z)])
 }
 
 fn make_land(biome: Biome, layout: LandLayout) -> Land {
@@ -85,7 +106,8 @@ fn make_land(biome: Biome, layout: LandLayout) -> Land {
         });
         (terrain_field::eval(x as f32 + ox, z as f32 + oz, 0.0, 1, &style).pos.y - base) as f64
     });
-    Land { biome: biome.name, layout, ground, trees, tree_scale, grass, ferns, flowing_water, tint }
+    let trunk_profile = (layout == LandLayout::BiomeFlora).then(|| trunk_profile(&biome));
+    Land { biome: biome.name, layout, ground, trunk_profile, trees, tree_scale, grass, ferns, flowing_water, tint }
 }
 
 #[cfg(test)]
@@ -111,11 +133,40 @@ mod tests {
         for name in ["temperate", "swiss", "alpine", "lowland", "polder", "tundra"] {
             let land = land(name).unwrap();
             assert_eq!(land.layout, LandLayout::Original, "{name}");
+            assert!(land.trunk_profile.is_none());
+            assert!(land_for_layout(name, LandLayout::BiomeFlora).is_err());
             assert_eq!(land.tree_scale, 1.0);
             assert_eq!(land.ferns, land.trees.min(1.0));
         }
         for name in ["desert", "norway", "rainforest", "congo"] {
             assert_eq!(land(name).unwrap().layout, LandLayout::BiomeFlora, "{name}");
+        }
+    }
+
+    #[test]
+    fn native_colliders_take_their_size_and_lean_from_the_rendered_growth_species() {
+        use sideways::{builder::{Spot, V3Ser}, physics::Physics};
+        for name in ["norway", "rainforest"] {
+            let stage=Stage::generate_on(&mut Pcg::new(1),200.0,Some(land(name).unwrap()));
+            let biome=Biome::named(name).unwrap();
+            let profiles=stage.land.as_ref().unwrap().trunk_profile.as_ref().unwrap();
+            let spot=Spot{pos:V3Ser(17.0,8.5,-70.0),scale:1.2,scale_y:1.08,yaw:1.3};
+            let foot=glam::Vec3::new(spot.pos.0,spot.pos.1,spot.pos.2);
+            let root=crate::plant_population::tree_root(&stage,&biome,foot,spot.yaw,spot.scale);
+            let species=biome.species()[root.placement.variant].0;
+            let form=render::plant_species::grown(species).unwrap();
+            let plant=render::plant_growth::grow(&form.rules,form.age,form.seed);
+            let profile=profiles(&stage,foot.x,foot.z);
+            let mut physics=Physics::new();
+            physics.add_grown_trunk(&spot,profile);
+            let (_,collider)=physics.world.colliders.iter().next().unwrap();
+            let cylinder=collider.shape().as_cylinder().unwrap();
+            assert_eq!(cylinder.radius,plant.trunk_radius()*root.placement.scale);
+            let mid=glam::Vec3::from_array(collider.translation().to_array());
+            let up=glam::Quat::from_array(collider.rotation().to_array())*glam::Vec3::Y;
+            assert!((mid-up*cylinder.half_height).abs_diff_eq(foot,1e-5));
+            let top=foot+glam::Quat::from_rotation_y(spot.yaw)*glam::Vec3::from_array(profile.tip)*spot.scale;
+            assert!((mid+up*cylinder.half_height).abs_diff_eq(top,1e-5));
         }
     }
 

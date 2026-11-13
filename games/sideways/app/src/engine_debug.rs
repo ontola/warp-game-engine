@@ -82,7 +82,7 @@ impl EngineDebug {
     pub fn applied_tree_settings(&self)->crate::tree_tuning::Settings {self.tree_applied}
     pub fn tree_committed(&mut self,settings:crate::tree_tuning::Settings,report:Value) {
         self.tree_applied=settings;self.tree_pending=settings;self.tree_apply_requested=false;self.tree_report=report;
-        self.tree_status=if self.tree_report["editing_available"]==false {"Authored scene retained; tree editing is unavailable for this experimental or tree-free scene.".into()}
+        self.tree_status=if self.tree_report["editing_available"]==false {"This stage uses its authored vegetation.".into()}
             else{format!("Applied: {} / {} trees; shadows and native trunk collisions rebuilt.",
                 self.tree_report["selected_source_trees"],self.tree_report["total_source_trees"])};self.refresh(true);
     }
@@ -113,6 +113,8 @@ impl EngineDebug {
         if !force && self.model_at.is_some_and(|at|at.elapsed()<Duration::from_millis(250)){return;}
         let snap=self.timing.snapshot(self.current_frame);
         let mut controls=Vec::new();
+        let editable = self.tree_report["editing_available"] != false;
+        let displayed_trees = if editable { self.tree_pending } else { Default::default() };
         let mut toggle=|id,label:&str,value,help:&str|controls.push(DebugControl {id,label:label.into(),value:DebugValue::Toggle(value),enabled:true,menu:Some(match id {GRASS=>GRASS_MENU,HEADLIGHTS=>105,_=>ADVANCED_MENU}),advanced:false,help:help.into()});
         toggle(GRASS,"Grass",self.options.meadow_enabled,"Skips procedural grass rendering; restores source and distant layers together.");
         toggle(HEADLIGHTS,"Vehicle lights",self.options.headlights_enabled,"Skips headlight shadows and illumination plus tail, brake and reverse illumination. Exhaust flashes have their own switch.");
@@ -120,7 +122,7 @@ impl EngineDebug {
         toggle(EXHAUST,"Exhaust",self.options.exhaust_enabled,"Skips exhaust smoke, fire and heat-distortion rendering.");
         toggle(PARTICLES,"Wheel particles",self.options.wheel_particles_enabled,"Skips the wheel debris and dust draw pass.");
         let mut number=|id,label:&str,value,min,max,step,decimals,unit:&str,help:&str|controls.push(DebugControl {id,label:label.into(),
-            value:DebugValue::Number {value,min,max,step,decimals,unit:unit.into()},enabled:true,
+            value:DebugValue::Number {value,min,max,step,decimals,unit:unit.into()},enabled:editable || !(TREE_SIZE..=TREE_BLUE).contains(&id),
             menu:match id {EXPOSURE=>Some(105),LOD=>Some(ADVANCED_MENU),TREE_SIZE..=TREE_BLUE=>Some(TREES_MENU),_=>Some(GRASS_MENU)},advanced:false,help:help.into()});
         number(DISTANCE,"Grass draw distance",f64::from(self.options.meadow_distance_scale)*100.0,10.0,100.0,5.0,0,"%","Scales both grass representations within allocated range. 100% = 80 m source / 180 m far. Density is unchanged.");
         number(LOD,"Geometry LOD error",f64::from(self.lod_pixels),0.5,4.0,0.25,2,"px","Larger error permits simpler tree, rock and other cluster meshes. Grass uses its separate source LOD.");
@@ -131,12 +133,12 @@ impl EngineDebug {
             number(id,label,f64::from(self.options.meadow_color_multiplier[i])*100.0,0.0,200.0,5.0,0,"%","Live linear-albedo multiplier shared by close grass, distant grass and substrate. 100% keeps the source color.");
         }
         number(GRASS_LOD,"Grass LOD error",f64::from(self.options.meadow_lod_pixels),0.5,4.0,0.25,2,"px","Higher error selects simpler blade meshes sooner. It does not reduce patch count or change the source-to-distant transition.");
-        number(TREE_SIZE,"Tree size",f64::from(self.tree_pending.size_scale)*100.0,50.0,150.0,5.0,0,"%","Staged: scales trees around their roots, including trunk collisions. Press Apply tree changes.");
-        number(TREE_COUNT,"Tree count",f64::from(self.tree_pending.density)*100.0,0.0,100.0,5.0,0,"%","Staged: stable subset of the existing forest, near and far. 100% restores all authored trees.");
+        number(TREE_SIZE,"Tree size",f64::from(displayed_trees.size_scale)*100.0,50.0,150.0,5.0,0,"%","Staged: scales trees around their roots, including trunk collisions. Press Apply tree changes.");
+        number(TREE_COUNT,"Tree count",f64::from(displayed_trees.density)*100.0,0.0,100.0,5.0,0,"%","Staged: stable subset of the existing forest, near and far. 100% restores all authored trees.");
         for (id,label,i) in [(TREE_RED,"Crown tint red",0),(TREE_GREEN,"Crown tint green",1),(TREE_BLUE,"Crown tint blue",2)] {
-            number(id,label,f64::from(self.tree_pending.color_multiplier[i])*100.0,25.0,200.0,5.0,0,"%","Staged leaf/needle albedo multiplier for the shared near/far source. Bark retains its original color.");
+            number(id,label,f64::from(displayed_trees.color_multiplier[i])*100.0,25.0,200.0,5.0,0,"%","Staged leaf/needle albedo multiplier for the shared near/far source. Bark retains its original color.");
         }
-        let dirty=self.tree_pending!=self.tree_applied;
+        let dirty=editable && self.tree_pending!=self.tree_applied;
         controls.push(DebugControl{id:TREE_APPLY,label:if dirty {"Apply tree changes *"}else{"Apply tree changes"}.into(),value:DebugValue::Button,enabled:dirty,menu:Some(TREES_MENU),advanced:false,help:self.tree_status.clone()});
         controls.push(DebugControl{id:TREE_DISCARD,label:"Discard pending changes".into(),value:DebugValue::Button,enabled:dirty,menu:Some(TREES_MENU),advanced:false,help:"Restore the fields to the currently rendered tree settings, without rebuilding.".into()});
         controls.push(DebugControl {id:FOG,label:"Distance fog".into(),value:DebugValue::Toggle(self.fog),enabled:true,menu:Some(104),advanced:false,help:"Disables distance extinction and its visibility culling. The procedural sky remains.".into()});
@@ -149,7 +151,7 @@ impl EngineDebug {
         let mut menus=vec![
             DebugMenu{id:VEGETATION_MENU,parent:None,label:"Vegetation".into(),help:"Separate grass and tree controls. Grass edits are live; tree edits require Apply.".into()},
             DebugMenu{id:GRASS_MENU,parent:Some(VEGETATION_MENU),label:"Grass - live".into(),help:"Size, patch count and color update live across near and distant grass.".into()},
-            DebugMenu{id:TREES_MENU,parent:Some(VEGETATION_MENU),label:"Trees - apply changes".into(),help:"Apply rebuilds trees and collisions. Applied values carry to new stages; Reset restores the saved Sideways baseline.".into()},
+            DebugMenu{id:TREES_MENU,parent:Some(VEGETATION_MENU),label:if editable {"Trees - apply changes"} else {"Trees - authored"}.into(),help:if editable {"Apply rebuilds trees and collisions. Applied values carry to new stages; Reset restores the saved Sideways baseline.".into()} else {self.tree_status.clone()}},
             DebugMenu{id:ADVANCED_MENU,parent:None,label:"Advanced rendering".into(),help:"Feature switches and geometry detail diagnostics.".into()},
         ];
         menus.extend(crate::debug_environment::EnvironmentDebug::menus());
@@ -162,6 +164,9 @@ impl EngineDebug {
         self.model_at=Some(Instant::now());
     }
     fn apply(&mut self,action:DebugAction) {
+        let tree_editable = self.tree_report["editing_available"] != false;
+        if !tree_editable && matches!(action, DebugAction::SetNumber{id:TREE_SIZE..=TREE_BLUE,..}
+            |DebugAction::Activate{id:TREE_APPLY|TREE_DISCARD}) {return;}
         if matches!(action,DebugAction::ResetDefaults) {self.environment.reset_lighting();}
         match self.environment.apply(action) {
             Ok(crate::debug_environment::Change::Unhandled)=>{},
@@ -191,7 +196,7 @@ impl EngineDebug {
             DebugAction::Activate{id:TREE_APPLY}=>self.tree_apply_requested=self.tree_pending!=self.tree_applied,
             DebugAction::Activate{id:TREE_DISCARD}=>self.tree_pending=self.tree_applied,
             DebugAction::ResetDefaults=>{self.options=self.baseline.grass;self.lod_pixels=DEFAULT_LOD_PIXELS;self.exposure_offset=0.0;self.fog=true;
-                self.tree_pending=self.baseline.trees;self.tree_apply_requested=self.tree_applied!=self.tree_pending;},
+                if tree_editable {self.tree_pending=self.baseline.trees;self.tree_apply_requested=self.tree_applied!=self.tree_pending;}},
             _=>return,
         }
         self.changes+=1;
@@ -233,6 +238,9 @@ impl EngineDebug {
     pub fn draw(&mut self,list:&mut HudDrawList) {self.refresh(false);self.ui.draw(list,&self.model);}
     pub fn metadata(&self)->Value {
         let timing=self.timing.snapshot(self.current_frame);
+        let (applied, pending) = if self.tree_report["editing_available"] == false {
+            (crate::tree_tuning::Settings::default(), crate::tree_tuning::Settings::default())
+        } else { (self.tree_applied, self.tree_pending) };
         let mut metadata=json!({"open":self.ui.open,"changes":self.changes,"meadow":self.options.meadow_enabled,
             "menu":self.ui.current_menu(),
             "headlights":self.options.headlights_enabled,"transparency":self.options.transparency_enabled,
@@ -241,8 +249,7 @@ impl EngineDebug {
             "grass_lod_pixels":self.options.meadow_lod_pixels,
             "grass_size_scale":self.options.meadow_size_scale,"grass_patch_count_fraction":self.options.meadow_density,
             "grass_color_multiplier":self.options.meadow_color_multiplier,
-            "tree_pending":{"size_scale":self.tree_pending.size_scale,"density":self.tree_pending.density,"color_multiplier":self.tree_pending.color_multiplier},
-            "tree_applied":{"size_scale":self.tree_applied.size_scale,"density":self.tree_applied.density,"color_multiplier":self.tree_applied.color_multiplier},
+            "tree_pending":pending,"tree_applied":applied,
             "tree_report":self.tree_report,"tree_status":self.tree_status,
             "saved_vegetation_baseline":{"source":self.baseline.origin.label(),"tree_size_scale":self.baseline.trees.size_scale,
                 "tree_population_fraction":self.baseline.trees.density,"tree_leaf_rgb":self.baseline.trees.color_multiplier,
@@ -384,5 +391,19 @@ fn parse_script(value:&Value)->Result<VecDeque<(u64,ScriptEvent)>,String> {
         ui.tree_committed(baseline.trees,json!({}));assert_eq!(ui.applied_tree_settings(),baseline.trees);
         assert_eq!(ui.metadata()["saved_vegetation_baseline"]["grass_patch_count_fraction"],json!(0.55f32));
         assert_eq!(ui.lod_pixels,DEFAULT_LOD_PIXELS);assert_eq!(ui.exposure_offset,0.0);
+    }
+
+    #[test]fn authored_biome_keeps_mesh_controls_inactive_and_carries_the_previous_preset() {
+        let mut ui=neutral(true);
+        let saved=crate::tree_tuning::Settings{density:0.45,..Default::default()};
+        ui.tree_committed(saved,crate::tree_tuning::Baseline::stage_metadata(None,saved));
+        assert!(ui.model.controls.iter().filter(|c|(TREE_SIZE..=TREE_DISCARD).contains(&c.id)).all(|c|!c.enabled));
+        ui.apply(DebugAction::SetNumber{id:TREE_COUNT,value:80.0});
+        ui.apply(DebugAction::Activate{id:TREE_APPLY});
+        ui.apply(DebugAction::ResetDefaults);
+        assert!(ui.take_tree_apply().is_none());
+        assert_eq!(ui.applied_tree_settings(),saved);
+        assert_eq!(ui.tree_report["population_fraction"],1.0);
+        assert_eq!(ui.metadata()["tree_applied"]["density"],1.0);
     }
 }

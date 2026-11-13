@@ -35,6 +35,7 @@ use glam::{Vec2, Vec3};
 use render::biome::{Biome, NAMES as STYLES};
 use render::debug_ui::{DebugAction, DebugControl, DebugMenu, DebugValue};
 use render::recipe_forest;
+use render::recipe_forest::BiomePlants;
 use render::vegetation_asset::CookedPlant;
 use render::foliage_population::WorldRoot;
 use render::foliage_runtime::RootPlacement;
@@ -209,11 +210,23 @@ impl Fly {
             let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).map_err(|e| format!("{path}: {e}"))?).map_err(|e| format!("{path}: {e}"))?;
             let st = v.get("state").unwrap_or(&v);
             let f = |k: &str| st.get(k).and_then(|x| x.as_f64()).map(|x| x as f32);
-            if let Some(name) = st.get("style").and_then(|x| x.as_str()) { fly.style = style_index(name)?; }
+            let saved_style = st.get("style").and_then(|x| x.as_str()).map(style_index).transpose()?;
+            let compare_style = value("--style").is_some() && saved_style.is_some_and(|s| s != fly.style);
+            if value("--style").is_none() {
+                if let Some(style) = saved_style { fly.style = style; }
+            }
             if let Some(seed) = st.get("seed").and_then(|x| x.as_u64()) { fly.seed = seed as u32; }
             if let Some(p) = st.get("pos").and_then(|x| x.as_array()) {
                 let c: Vec<f32> = p.iter().filter_map(|x| x.as_f64()).map(|x| x as f32).collect();
-                if c.len() == 3 { fly.pos = Vec3::new(c[0], c[1], c[2]); fly.prev = fly.pos; }
+                if c.len() == 3 {
+                    fly.pos = Vec3::new(c[0], c[1], c[2]);
+                    if compare_style && let Some(above) = f("above_ground_m") {
+                        fly.shown = (fly.seed, fly.style);
+                        fly.bake_track();
+                        fly.pos.y = fly.ground(c[0], c[2]) + above;
+                    }
+                    fly.prev = fly.pos;
+                }
             }
             if let Some(y) = f("yaw_deg") { fly.yaw = y.to_radians(); }
             if let Some(p) = f("pitch_deg") { fly.pitch = p.to_radians(); }
@@ -627,9 +640,13 @@ impl Game for Fly {
 
     fn state(&self) -> Option<String> {
         let g = self.sample(self.pos.x, self.pos.z);
+        let shown_biomes = std::iter::once(self.shown.1).chain(self.regions)
+            .map(|k| environment(k).biome).collect();
+        let woody = woody_variants(&render::biome::Lands { biomes: shown_biomes }, self.built_world.trees);
         Some(serde_json::json!({
-            "style": STYLES[self.style], "seed": self.seed, "pos": self.pos.to_array(),
+            "style": STYLES[self.shown.1], "seed": self.shown.0, "pos": self.pos.to_array(),
             "trees": self.built_world.trees, "grass": self.built_world.grass, "tree_density": self.world.tree_density, "tree_radius_m": self.world.tree_radius, "branch_slots": self.world.branch_slots, "vegetation_backend": "gpu",
+            "woody_variants": woody,
             "yaw_deg": self.yaw.to_degrees(), "pitch_deg": self.pitch.to_degrees(),
             "above_ground_m": self.pos.y - g.pos.y, "speed": self.speed, "ground_hug": self.hug, "fps": self.fps,
             "terrain": {"patches": self.stats.patches, "overflow": self.stats.overflow, "finest_level": self.stats.finest_level, "lod_scale": self.stats.lod_scale},
@@ -725,18 +742,30 @@ fn buildings(scene: &mut Scene, world: &Constraints, seed: u32, style: &Style) {
 }
 
 fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &render::biome::Environment, palette: &VegetationStyle, sun: (f32, f32), centre: Vec3, world: World, track: Option<Arc<Constraints>>) -> Built {
-    // A forest of grown pines paints its far part with their measured crowns
-    // (cover, height, colour) instead of the biome's generic canopy.
-    let measured;
-    let palette = match (pine_forest().is_some() || pine_ages(), cooked_flora(lands)) {
-        (true, Ok(plants)) if std::env::var("KERN_FAR_FOREST_MEASURED").map_or(true, |v| v != "0") => {
+    // Project the same grown crowns onto the horizon beyond individual
+    // tree roots. Understory never contributes to the height of the canopy.
+    let mut palette = *palette;
+    if world.trees && world.tree_density > 0.0 && std::env::var("KERN_FAR_FOREST_MEASURED").as_deref() != Ok("0") {
+        if pine_forest().is_some() || pine_ages() {
+            let plants = cooked_flora(lands)?;
             let proxies: Vec<_> = plants.iter().filter_map(|p| p.proxy()).collect();
-            measured = VegetationStyle { forest: palette.forest.measured(&proxies), ..*palette };
-            eprintln!("far forest from grown pines: {:?}", measured.forest);
-            &measured
+            palette.forest = palette.forest.measured(&proxies);
+        } else if env.biome.grown_flora() {
+            let catalog = BiomePlants::new(lands);
+            let canopy: Vec<_> = catalog.variants().iter().enumerate()
+                .filter(|(_, (name, age))| age.is_some() && env.biome.flora.trees.iter().any(|(n, w)| n == name && *w > 0.0))
+                .map(|(i, _)| i).collect();
+            if !canopy.is_empty() {
+                let plants = cooked_flora(lands)?;
+                let proxies: Vec<_> = canopy.into_iter().filter_map(|i| plants[i].proxy()).collect();
+                palette.forest = palette.forest.measured(&proxies);
+                let scale = env.biome.flora.tree_scale;
+                palette.forest.far[3] *= scale;
+                palette.forest.crown[0] *= scale;
+                palette.forest.crown[1] *= scale * scale;
+            }
         }
-        _ => palette,
-    };
+    }
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/sideways/assets");
     let root = assets.join("textures");
     let mut scene = Scene::default();
@@ -755,7 +784,7 @@ fn build_scene(seed: u32, style: Style, lands: &render::biome::Lands, env: &rend
     let mut pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
     // Beyond the trees the terrain draws the same forest as colour, out to
     // the horizon.
-    procedural_terrain::vegetation_style(&mut scene, material, palette);
+    procedural_terrain::vegetation_style(&mut scene, material, &palette);
     // --regions: each region's ground in its own biome's colours.
     if let Some(regions) = track.as_ref().and_then(|w| w.regions.as_ref()) {
         let grounds: Vec<_> = lands.biomes.iter().map(|b| render::biome::Environment { biome: *b, ..*env }.vegetation().ground).collect();
@@ -853,14 +882,21 @@ fn pine_forest() -> Option<PathBuf> {
 }
 fn spruce_forest() -> bool { std::env::args().any(|a| a == "--spruce-forest") }
 
-/// How many tree and shrub variants the forest uses (grass follows them).
-fn flora_count(lands: &render::biome::Lands) -> usize {
-    if pine_ages() { PINE_AGES.len() } else if pine_forest().is_some() { FOREST_AGES.len() } else { lands.species().len() }
+/// Camera feedback and CPU validation list the same woody sources as the GPU
+/// catalogue. A null age identifies the older fixed recipe.
+fn woody_variants(lands: &render::biome::Lands, trees: bool) -> Vec<(&'static str, Option<u32>)> {
+    if !trees { return Vec::new(); }
+    if pine_forest().is_some() {
+        let name = if spruce_forest() { "norway_spruce" } else { "jeffrey_pine" };
+        return forest_ages().into_iter().map(|age| (name, Some(age))).collect();
+    }
+    if pine_ages() { return PINE_AGES.into_iter().map(|age| ("jeffrey_pine", Some(age))).collect(); }
+    BiomePlants::new(lands).variants()
 }
 
-fn cooked_flora(lands: &render::biome::Lands) -> Result<&'static Vec<CookedPlant>, String> {
+fn cooked_flora(lands: &render::biome::Lands) -> Result<Arc<Vec<CookedPlant>>, String> {
     if let Some(path) = pine_forest() {
-        static FOREST: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
+        static FOREST: std::sync::OnceLock<Result<Arc<Vec<CookedPlant>>, String>> = std::sync::OnceLock::new();
         let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
         return FOREST.get_or_init(|| {
             let (mut species, mut look) = if spruce_forest() {
@@ -884,11 +920,11 @@ fn cooked_flora(lands: &render::biome::Lands) -> Result<&'static Vec<CookedPlant
                 eprintln!("pine forest age {age}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
             }
             eprintln!("pine forest: {} variants in {:.1} s", cooked.len(), started.elapsed().as_secs_f64());
-            Ok(cooked.into_iter().map(|c| c.plant).collect())
-        }).as_ref().map_err(|e| e.clone());
+            Ok(Arc::new(cooked.into_iter().map(|c| c.plant).collect()))
+        }).clone();
     }
     if pine_ages() {
-        static GROWN: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
+        static GROWN: std::sync::OnceLock<Result<Arc<Vec<CookedPlant>>, String>> = std::sync::OnceLock::new();
         let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
         return GROWN.get_or_init(|| {
             let species = render::plant_growth::Species::jeffrey_pine();
@@ -898,30 +934,27 @@ fn cooked_flora(lands: &render::biome::Lands) -> Result<&'static Vec<CookedPlant
             for (c, age) in cooked.iter().zip(PINE_AGES) {
                 eprintln!("jeffrey pine age {age}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
             }
-            Ok(cooked.into_iter().map(|c| c.plant).collect())
-        }).as_ref().map_err(|e| e.clone());
+            Ok(Arc::new(cooked.into_iter().map(|c| c.plant).collect()))
+        }).clone();
     }
-    type Flora = Vec<CookedPlant>;
-    static COOKED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, &'static Flora>>> = std::sync::OnceLock::new();
-    let mut map = COOKED.get_or_init(Default::default).lock().unwrap();
+    // Keep the current catalogue for rebuilds. F6 can visit every grown
+    // forest in one session; older catalogues are reloadable from disk.
+    type Flora = (String, Arc<Vec<CookedPlant>>);
+    static COOKED: std::sync::Mutex<Option<Flora>> = std::sync::Mutex::new(None);
+    let mut cached = COOKED.lock().unwrap();
     let key = lands.biomes.iter().map(|b| b.name).collect::<Vec<_>>().join("+");
-    if let Some(&flora) = map.get(&key) { return Ok(flora); }
+    if let Some((name, flora)) = cached.as_ref() && *name == key { return Ok(Arc::clone(flora)); }
+    *cached = None;
     let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
-    let species = lands.species();
-    let recipes: Vec<_> = species.iter().map(|(_, r)| (*r, 1)).collect();
-    let cooked = recipe_forest::cook_variants(&recipes, Some(&cache))?;
-    for (c, (name, _)) in cooked.iter().zip(&species) {
-        eprintln!("{name}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
+    let catalog = BiomePlants::new(lands);
+    let cooked = catalog.cook(Some(&cache))?;
+    for (c, (name, age)) in cooked.iter().zip(catalog.variants()) {
+        let form = age.map(|a| format!(" grown age {a}")).unwrap_or_default();
+        eprintln!("{name}{form}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
     }
-    let flora: &'static Flora = Box::leak(Box::new(cooked.into_iter().map(|c| c.plant).collect()));
-    map.insert(key, flora);
+    let flora = Arc::new(cooked.into_iter().map(|c| c.plant).collect());
+    *cached = Some((key, Arc::clone(&flora)));
     Ok(flora)
-}
-
-// Quality is a rendering requirement, not a performance pressure valve.
-fn vegetation_quality_policy()->render::aggregate_lod::Policy {
-    render::aggregate_lod::Policy {max_error_pixels:1.,allow_sampled_optics:true,
-        measured_source_cuts:false,proxy_pixels:1.,proxy_pixels_from:0.,..Default::default()}
 }
 
 fn recipe_spruces(scene:&mut Scene,lands:&render::biome::Lands,season:f32,world:World,roots:&[WorldRoot],branch_slots:u32)->Result<(),String> {
@@ -931,9 +964,9 @@ fn recipe_spruces(scene:&mut Scene,lands:&render::biome::Lands,season:f32,world:
     for (i,c) in grass.iter().enumerate() {
         eprintln!("grass cell {i}: {} in {:.1} ms, {} placements, {} branches, {} mesh bindings",if c.loaded {"loaded"} else {"cooked"},c.millis,c.plant.stats().placements,c.plant.stats().branches,c.plant.stats().primitive_meshes);
     }
-    let species=cooked.into_iter().flat_map(|c|c.iter()).map(|plant|render::foliage_runtime::Species {plant,category:render::scene::GeometryCategory::Trees,deformation:render::foliage_runtime::Deformation::Rigid})
+    let species=cooked.iter().flat_map(|c|c.iter()).map(|plant|render::foliage_runtime::Species {plant,category:render::scene::GeometryCategory::Trees,deformation:render::foliage_runtime::Deformation::Rigid})
         .chain(grass.iter().map(|c|render::foliage_runtime::Species {plant:&c.plant,category:render::scene::GeometryCategory::Grass,deformation:render::foliage_runtime::Deformation::BasalShear})).collect::<Vec<_>>();
-    let policy=vegetation_quality_policy();
+    let policy=BiomePlants::quality_policy();
     if std::env::args().any(|a|a=="--validate-world") {
         for (index,species) in species.iter().enumerate() {
             println!("vegetation selection evidence {index}: {}",serde_json::to_string(&species.plant.selection_evidence(policy)).map_err(|e|e.to_string())?);
@@ -1042,7 +1075,7 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
         }).collect()
     } else {woody};
     if !world.grass {return woody;}
-    let offset=if world.trees {flora_count(lands)} else {0};
+    let offset=if !world.trees {0} else if pine_ages() {PINE_AGES.len()} else if pine_forest().is_some() {FOREST_AGES.len()} else {lands.species().len()};
     let mut roots=woody;
     let started=web_time::Instant::now();
     let cells=grass_cells(seed,&land,|x,z|land.style_at(x,z).grass,c,offset,GRASS_RADIUS);
@@ -1257,6 +1290,7 @@ fn main() -> Result<(), String> {
         let forest=scene.gpu_forest.as_ref();
         if world.grass && scene.meadow.is_some() {return Err("terrain grass used legacy meadow".into());}
         println!("{}",serde_json::json!({"validation":"normal_scene_cpu_only","grass":world.grass,"trees":world.trees,
+            "style":STYLES[game.style],"camera":game.pos.to_array(),"woody_variants":woody_variants(&game.lands(),world.trees),
             "legacy_meadow":scene.meadow.is_some(),"roots_reserved":forest.map(|f|f.roots.len()).unwrap_or(0),
             "roots_active":forest.map(|f|f.roots.iter().filter(|r|r.info[3]==0).count()).unwrap_or(0),
             "branch_slots":forest.map(|f|f.slots).unwrap_or(0),"hierarchy_nodes":forest.map(|f|f.nodes.len()).unwrap_or(0),
@@ -1434,7 +1468,7 @@ fn main() -> Result<(), String> {
 mod vegetation_tests {
     #[test]
     fn vegetation_policy_does_not_relax_pixel_error_with_distance() {
-        let p=super::vegetation_quality_policy();
+        let p=super::BiomePlants::quality_policy();
         assert_eq!(p.max_error_pixels,1.);assert_eq!(p.proxy_pixels,1.);assert_eq!(p.proxy_pixels_from,0.);
     }
 

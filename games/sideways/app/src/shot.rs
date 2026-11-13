@@ -396,14 +396,36 @@ fn frame(a: &ShotArgs, setup: &Setup, gpu: &Gpu, renderer: &Renderer) -> i32 {
     }
     let (px, stats) = match renderer.try_render_views(&gpu, &views, &light, w, h, &a.picks) {Ok(frame)=>frame,Err(e)=>{eprintln!("shot render: {e}");return 1;}};
     let mut metadata = setup.metadata.clone();
+    if setup.scene.gpu_forest.is_some() {
+        let diagnostics = renderer.gpu_forest_diagnostics(gpu).and_then(|forest| {
+            let forest = forest.ok_or("missing GPU forest diagnostics")?;
+            metadata["gpu_forest_diagnostics"] = serde_json::json!(forest);
+            if let Some(views) = renderer.voxel_diagnostics(gpu)? {
+                metadata["voxel_views"] = views.iter().map(|v| serde_json::json!({
+                    "raster_splats": v.raster_splats, "raster_vertices": v.raster_vertices,
+                    "raster_capacity": v.raster_capacity, "traced_rays": v.traced_rays,
+                })).collect::<Vec<_>>().into();
+            }
+            Ok(())
+        });
+        if let Err(error) = diagnostics {
+            eprintln!("shot vegetation diagnostics: {error}");
+            return 1;
+        }
+    }
     metadata["upscale"] = crate::upscale::metadata(a.upscale,&renderer.upscale_status());
     metadata["taa_enabled"] = serde_json::json!(a.upscale==render::upscale::UpscaleMode::Native && a.taa_frames>1 && light.taa>0.5);
     metadata["temporal_reconstruction"] = serde_json::json!(if a.upscale==render::upscale::UpscaleMode::Native {"native_taa_setting"} else {"dlss"});
     for (k, p) in stats.picks.iter().enumerate() {
         let (x, y) = a.picks[k];
         match p {
+            None if setup.scene.voxel_forest.is_some() => println!("pick {x},{y}: sky or voxel"),
             None => println!("pick {x},{y}: sky"),
             Some((inst, cluster, tri)) => {
+                if let Some((slot, member)) = crate::drive_capture::virtual_plant_member(*inst) {
+                    println!("pick {x},{y}: GPU plant branch {slot} member {member} cluster {cluster} tri {tri}");
+                    continue;
+                }
                 let i = &setup.scene.instances[*inst as usize];
                 let c = &setup.scene.clusters[*cluster as usize];
                 let mesh = setup.scene.meshes.iter().position(|m| m.first_cluster == i.first_cluster).unwrap_or(usize::MAX);

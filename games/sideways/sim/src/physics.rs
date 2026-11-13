@@ -167,6 +167,15 @@ impl Physics {
         self.world.colliders.insert(c);
     }
 
+    pub fn add_grown_trunk(&mut self, spot: &builder::Spot, profile: crate::stage::TrunkShape) {
+        let root = Vec3::new(spot.pos.0, spot.pos.1, spot.pos.2);
+        let bole = Quat::from_rotation_y(spot.yaw) * Vec3::from_array(profile.tip) * spot.scale;
+        let pose = Pose3::from_parts(root + 0.5 * bole, Quat::from_rotation_arc(Vec3::Y, bole.normalize()));
+        let collider = ColliderBuilder::cylinder(0.5 * bole.length(), profile.radius * spot.scale)
+            .position(pose).user_data(Surface::Dirt as u128).collision_groups(Self::world_groups()).build();
+        self.world.colliders.insert(collider);
+    }
+
     pub fn add_block(&mut self, b: &Block) {
         // Godot's looking_at: local -Z along the direction.
         let rot = Quat::from_rotation_arc(Vec3::NEG_Z, g(b.along).normalize_or(Vec3::NEG_Z));

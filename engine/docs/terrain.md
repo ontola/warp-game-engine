@@ -54,6 +54,9 @@ seasonal snow, sun position).
 The flight demo starts in the Swiss Alps. Pass `--style NAME` or press F6
 to change biome. Omit the species overrides to see the biome's own trees
 and shrubs. Sideways reads the same presets with `--biome NAME`.
+To compare landscapes from a saved F4 view, pass `--style NAME --from FILE`.
+This keeps the camera's horizontal position, height above ground and heading.
+Use `--from FILE` alone to restore the original world and camera.
 
 | Preset | Ground | Vegetation |
 | --- | --- | --- |
@@ -68,13 +71,18 @@ ground palette and weighted flora together. `Biome::species()` resolves the
 recipes in the order used by `Biome::rules()`. A game with its own plant
 locations can use `Flora::tree_variant` and `shrub_variant` with a stable
 roll at each location. `Flora::shrub_habitat` gives the planting probability
-multiplier for the local canopy cover. All species use the existing woody plant generator.
+multiplier for the local canopy cover.
 
-Sideways cooks one card mesh per species. `PlantCards::woody_mesh` pairs
-the existing foliage cuts with a simpler distant trunk and branches derived
-from the same recipe and seed. The coarse wood retains the base of the
-trunk and the endpoints of each primary branch. The projected silhouette
-error determines when the renderer selects it.
+The desert, Norway and rainforest species use `plant_growth::grow`. Annual
+growth sets the stem, branching, crown and live shoots. Norway uses the
+spruce and Jeffrey pine rules and needle brushes from the flight demo.
+Broadleaf plants use leafy shoots with stems and individual leaf blades.
+
+`recipe_forest::BiomePlants` cooks each species once into branch source
+meshes, branch voxels and a whole-plant voxel pyramid. Pass that catalogue
+and the world's plant roots to `foliage_runtime::plant_species_population`.
+The GPU selects detail for each view by projected error. Sideways supplies
+the plants beside its road and on the distant hills to the same population.
 
 ## Mesh: GPU patches by projected error
 
