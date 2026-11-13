@@ -56,8 +56,8 @@ impl Flora {
 }
 
 /// Every preset, for menus and tests.
-pub const NAMES: [&str; 12] = ["swiss", "temperate", "alpine", "lowland", "polder", "tundra", "desert", "norway", "rainforest",
-    "desert-broom", "norway-willow", "rainforest-dracaena"];
+pub const NAMES: [&str; 14] = ["swiss", "temperate", "alpine", "lowland", "polder", "tundra", "desert", "norway", "rainforest",
+    "desert-broom", "norway-willow", "rainforest-dracaena", "desert-grass", "rainforest-fern"];
 
 impl Biome {
     /// A local plant community occupying the same sites as the parent biome.
@@ -124,8 +124,10 @@ impl Biome {
                 flora: Flora { trees: [("spruce", 0.7), ("birch", 0.3), NONE, NONE], tree_scale: 0.55,
                     shrubs: [("dwarf_birch", 0.8), ("juniper", 0.2)], shrub_density: 0.35, ..Flora::TEMPERATE } },
             "desert-broom" => return Self::understory("desert", "desert-broom", "white_broom"),
+            "desert-grass" => return Self::understory("desert", "desert-grass", "dune_grass"),
             "norway-willow" => return Self::understory("norway", "norway-willow", "woolly_willow"),
             "rainforest-dracaena" => return Self::understory("rainforest", "rainforest-dracaena", "forest_dracaena"),
+            "rainforest-fern" => return Self::understory("rainforest", "rainforest-fern", "forest_fern"),
             // A sand sea: dunes over low rolling ground, rocky outcrops, no
             // water, no grass.
             "desert" => Biome { name: "desert",
@@ -229,10 +231,11 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
 }
 
 impl Biome {
-    /// These terrains grow their woody plants with the production growth
+    /// These terrains grow their plants with the production growth
     /// rules. Established terrains keep their original species forms.
     pub fn grown_flora(&self) -> bool {
-        matches!(self.name, "desert" | "norway" | "rainforest" | "desert-broom" | "norway-willow" | "rainforest-dracaena")
+        matches!(self.name, "desert" | "norway" | "rainforest" | "desert-broom" | "norway-willow" | "rainforest-dracaena"
+            | "desert-grass" | "rainforest-fern")
     }
 
     /// The species that grow here (plant_species recipes): its trees, then
@@ -390,7 +393,7 @@ impl Environment {
     pub fn vegetation(&self) -> VegetationStyle {
         let mut v = self.biome.vegetation;
         // Equatorial forest stays green through the northern autumn and winter.
-        if matches!(self.biome.name, "rainforest" | "rainforest-dracaena") { return v; }
+        if matches!(self.biome.name, "rainforest" | "rainforest-dracaena" | "rainforest-fern") { return v; }
         let (cold, fall, spring) = (self.season.cold(), self.season.fall(), self.season.spring());
         let g = &mut v.ground;
         g.grass_dry = mix3(g.grass_dry, [0.32, 0.62, 0.2], 0.5 * spring);
@@ -485,8 +488,10 @@ mod tests {
     fn understory_presets_replace_one_species_at_the_same_sites() {
         for (base, preset, shrub) in [
             ("desert", "desert-broom", "white_broom"),
+            ("desert", "desert-grass", "dune_grass"),
             ("norway", "norway-willow", "woolly_willow"),
             ("rainforest", "rainforest-dracaena", "forest_dracaena"),
+            ("rainforest", "rainforest-fern", "forest_fern"),
         ] {
             let base = Biome::named(base).unwrap();
             let variant = Biome::named(preset).unwrap();
@@ -519,7 +524,7 @@ mod tests {
             eprintln!("FLORA {name}: {} trees, {} shrubs, species {:?}", count(crate::placement::TREE), count(SHRUB),
                 species.iter().map(|s| s.0).collect::<Vec<_>>());
             match name {
-                "desert" | "desert-broom" => assert!(count(crate::placement::TREE) == 0 && count(SHRUB) > 20),
+                "desert" | "desert-broom" | "desert-grass" => assert!(count(crate::placement::TREE) == 0 && count(SHRUB) > 20),
                 "tundra" => assert!(count(SHRUB) > 1000),
                 "polder" => assert!(count(crate::placement::TREE) > 20),
                 _ => assert!(count(crate::placement::TREE) > 100),

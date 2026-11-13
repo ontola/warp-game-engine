@@ -64,18 +64,24 @@ Use `--from FILE` alone to restore the original world and camera.
 | `norway` | Sheltered snow drifts, soil on exposed shoulders and compacted snow between wheel tracks | Norway spruce, open-crowned Scots pine and pale mountain birch, with juniper and dwarf birch below |
 | `rainforest` | Rolling Central African lowlands with damp leaf litter and red clay on open ground and tracks | Kapok spreads its upper limbs above the mahogany canopy. Forest coffee and young raffia palms with arching fronds grow in its shade. |
 
-Three local plant communities are selectable in both games. Use
-`--style desert-broom` in terrain_fly or `--biome desert-broom` in Sideways
-to see dry-season white broom and saltbush. In `norway-willow`, woolly willow
-grows with dwarf birch. In `rainforest-dracaena`, forest dracaena and young
-raffia grow beneath the canopy. Each swaps one understory species at the
-parent biome's existing sites and weights.
+Both games offer local plant communities using the parent biome's existing
+understory sites and species weights. `desert-broom` pairs white broom with
+saltbush, and `desert-grass` pairs drinn grass (*Stipagrostis pungens*) with
+saltbush. `norway-willow` grows woolly willow alongside dwarf birch. Beneath
+the rainforest canopy, `rainforest-dracaena` grows forest dracaena and
+`rainforest-fern` grows giant sword fern (*Nephrolepis biserrata*). Both
+share the forest floor with young raffia palms.
+
+```sh
+cargo run --release -p app --example terrain_fly -- --style desert-grass
+cargo run --release -p cli --bin sideways -- --biome rainforest-fern
+```
 
 To inspect the actual source meshes at another age or seed:
 
 ```sh
 cargo run --release -p render --example plant_catalog_preview -- --list
-cargo run --release -p render --example plant_catalog_preview -- --out build/plants --seed 24 white_broom woolly_willow forest_dracaena forest_coffee african_mahogany
+cargo run --release -p render --example plant_catalog_preview -- --out build/plants --seed 24 dune_grass forest_fern
 ```
 
 The preview writes a full specimen, an attached shoot close-up and physical
@@ -93,10 +99,12 @@ locations can use `Flora::tree_variant` and `shrub_variant` with a stable
 roll at each location. `Flora::shrub_habitat` gives the planting probability
 multiplier for the local canopy cover.
 
-The desert, Norway and rainforest species use `plant_growth::grow`. Annual
-growth sets the stem, branching, crown and live shoots. Norway uses the
-flight demo’s spruce and a Scots pine that sheds its lower whorls and bears
-shorter needles on ascending limbs. The explicit `--pine-forest` in the
+The desert, Norway and rainforest trees and shrubs use `plant_growth::grow`.
+Annual growth sets the stem, branching, crown and live shoots. Drinn grass
+and giant sword fern grow their tillers and fronds from basal crowns. Luau
+games can scale either clump with `species.height` in `plants.grow`.
+Norway uses the flight demo's spruce and a Scots pine that sheds its lower
+whorls and bears shorter needles on ascending limbs. The explicit `--pine-forest` in the
 flight demo selects Jeffrey pine.
 In the rainforest, forest dracaena grows clusters of pointed leaves on slender
 ascending canes, and robusta coffee carries opposite simple leaves. The leaflets

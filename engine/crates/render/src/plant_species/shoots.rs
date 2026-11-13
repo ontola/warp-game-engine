@@ -8,19 +8,33 @@ use crate::{
 use glam::Vec3;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
+#[path = "leaf_arrangement.rs"]
+pub(super) mod arrangement;
+#[path = "grass.rs"]
+mod grass;
+
+pub(super) use arrangement::paired_sites;
+use arrangement::{OppositeShoot, PalmateShoot, PinnateShoot};
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum ShootRecipe {
     Broadleaf([f32; 3]),
     WoollyWillow,
     Broom,
     Dracaena,
-    Coffee,
-    Kapok,
-    Mahogany,
+    Opposite(&'static OppositeShoot),
+    Palmate(&'static PalmateShoot),
+    Pinnate(&'static PinnateShoot),
+    Fern,
+    Drinn,
     Raffia,
 }
 
 impl ShootRecipe {
+    pub(super) const COFFEE: Self = Self::Opposite(&arrangement::COFFEE);
+    pub(super) const KAPOK: Self = Self::Palmate(&arrangement::KAPOK);
+    pub(super) const MAHOGANY: Self = Self::Pinnate(&arrangement::MAHOGANY);
+
     pub(super) fn build(self, variant: u32) -> PartGeometry {
         let mut part = PartGeometry {
             id: 0,
@@ -33,9 +47,11 @@ impl ShootRecipe {
             Self::WoollyWillow => willow(&mut part, v),
             Self::Broom => broom(&mut part, v),
             Self::Dracaena => dracaena(&mut part, v),
-            Self::Coffee => coffee(&mut part, v),
-            Self::Kapok => kapok(&mut part, v),
-            Self::Mahogany => mahogany(&mut part, v),
+            Self::Opposite(recipe) => recipe.build(&mut part, v),
+            Self::Palmate(recipe) => recipe.build(&mut part, v),
+            Self::Pinnate(recipe) => recipe.build(&mut part, v),
+            Self::Fern => super::fern::frond(&mut part, v),
+            Self::Drinn => grass::drinn(&mut part, v),
             Self::Raffia => raffia(&mut part, v),
         }
         identify(&mut part);
@@ -82,7 +98,7 @@ fn identify(shoot: &mut PartGeometry) {
         });
 }
 
-fn stalk(
+pub(super) fn stalk(
     part: &mut PartGeometry,
     root: Vec3,
     delta: Vec3,
@@ -102,13 +118,13 @@ fn stalk(
 
 // Blade points along delta; facing is its preferred face normal. A rolled
 // leaflet uses a different face orientation while staying on the same axis.
-fn blade(part: &mut PartGeometry, root: Vec3, delta: Vec3, facing: Vec3, width: f32, curl: f32) {
+pub(super) fn blade(part: &mut PartGeometry, root: Vec3, delta: Vec3, facing: Vec3, width: f32, curl: f32) {
     let dir = delta.normalize();
     let across = facing.cross(dir).normalize();
     leaf(part, root, dir, across, delta.length(), width, curl);
 }
 
-fn radial(angle: f32) -> Vec3 {
+pub(super) fn radial(angle: f32) -> Vec3 {
     Vec3::new(angle.cos(), 0.0, angle.sin())
 }
 
@@ -171,58 +187,6 @@ fn broom(part: &mut PartGeometry, v: u32) {
     }
 }
 
-// Coffea canephora: the lateral shoot carries two ranks of opposite, simple
-// leaves. Each pair attaches at one node; the newest pair is still unfolding.
-fn coffee(part: &mut PartGeometry, v: u32) {
-    let pairs = 3 + v;
-    let length = 0.075 * pairs as f32 + 0.03;
-    let stem = stalk(
-        part,
-        Vec3::ZERO,
-        Vec3::new(0.02, length, -0.025),
-        Vec3::new(-0.012, 0.0, 0.018),
-        0.0026,
-        6,
-    );
-    for node in 0..pairs {
-        let t = (node as f32 + 0.65) / pairs as f32;
-        let origin = stem.point(t);
-        let azimuth = -0.35 * v as f32 + 0.32 * (unit(v, node, 11) - 0.5);
-        let across = radial(azimuth);
-        let face = radial(azimuth + FRAC_PI_2);
-        let apical = node + 1 == pairs;
-        for (side, sign) in [(0, -1.0), (1, 1.0)] {
-            let out = across * sign;
-            let vigor = unit(v, node, 12 + side);
-            let opening = if apical { 0.90 } else { 0.19 };
-            let petiole_dir = (out + Vec3::Y * (opening + 0.34 * vigor)).normalize();
-            let petiole = stalk(
-                part,
-                origin,
-                petiole_dir * (0.010 + 0.008 * vigor),
-                Vec3::ZERO,
-                0.0012,
-                2,
-            );
-            let blade_m = if apical {
-                0.080 + 0.045 * vigor
-            } else {
-                0.17 + 0.075 * vigor
-            };
-            let width = blade_m * (0.36 + 0.08 * unit(v, node, 14 + side));
-            // Mature blades hang out of the shoot plane. The short young
-            // pair still points forwards and cups the growing tip.
-            let hang = if apical { -0.10 } else { 0.17 + 0.42 * vigor };
-            let axis = (petiole_dir - face * hang).normalize();
-            let roll = 0.88 * (unit(v, node, 16 + side) - 0.5);
-            let facing = face * roll.cos() + Vec3::Y * roll.sin();
-            let base = petiole.point(1.0);
-            let curl = -blade_m * (0.18 + 0.17 * vigor);
-            blade(part, base, axis * blade_m, facing, width, curl);
-        }
-    }
-}
-
 fn dracaena(part: &mut PartGeometry, v: u32) {
     // Thin canes end in loose clusters of three or four long elliptic blades.
     // The leaf bases spiral within one short section of the cane.
@@ -250,105 +214,6 @@ fn dracaena(part: &mut PartGeometry, v: u32) {
             length * 0.32,
             -0.025,
         );
-    }
-}
-
-fn kapok(part: &mut PartGeometry, v: u32) {
-    // A compound leaf shares a single point among five to seven leaflets.
-    // Several such long petioles alternate along the short end of the twig.
-    let axis = stalk(
-        part,
-        Vec3::ZERO,
-        Vec3::new(0.03, 0.39, 0.01),
-        Vec3::Z * 0.021,
-        0.0045,
-        6,
-    );
-    for i in 0..6 {
-        let t = 0.10 + 0.17 * i as f32;
-        let out = radial(2.4 * i as f32 + 0.54 * v as f32);
-        let across = out.cross(Vec3::Y);
-        let petiole = stalk(
-            part,
-            axis.point(t),
-            (out + Vec3::Y * 0.48) * (0.11 + 0.036 * unit(v, 1, i)),
-            Vec3::Y * 0.012,
-            0.0019,
-            3,
-        );
-        let count = if (i + v) % 3 == 0 { 7 } else { 5 };
-        for j in 0..count {
-            let f = 2.0 * j as f32 / (count - 1) as f32 - 1.0;
-            let angle = f * (1.40 + 0.07 * unit(v, 2, i));
-            let dir = (out * angle.cos() + across * angle.sin() - Vec3::Y * 0.12).normalize();
-            let length = (0.162 + 0.020 * unit(v, 3, i * 8 + j)) * (1.0 - 0.41 * f.abs().powi(2));
-            blade(
-                part,
-                petiole.point(1.0),
-                dir * length,
-                Vec3::Y,
-                length * 0.31,
-                -0.023,
-            );
-        }
-    }
-}
-
-// Khaya anthotheca. Compound leaves spiral around the end of a shoot.
-// Each leaf finishes in an opposite pair, with a bare petiole below its lowest pair.
-fn mahogany(part: &mut PartGeometry, v: u32) {
-    let shoot = stalk(
-        part,
-        Vec3::ZERO,
-        Vec3::new(0.014, 0.23, 0.008),
-        Vec3::Z * 0.006,
-        0.0038,
-        5,
-    );
-    for leaf in 0..4 {
-        let out = radial(2.40 * leaf as f32 + 0.60 * v as f32);
-        let across = out.cross(Vec3::Y);
-        let length = 0.19 + 0.052 * unit(v, 1, leaf);
-        // Upper leaves are newly expanded; the lower petioles arch out and down.
-        let axis = (out + Vec3::Y * (-0.44 + 0.27 * leaf as f32)).normalize();
-        let midrib = stalk(
-            part,
-            shoot.point(0.32 + 0.22 * leaf as f32),
-            axis * length,
-            Vec3::Y * 0.031,
-            0.0018,
-            5,
-        );
-        let pairs = 3 + (v + leaf) % 3;
-        let petiole = 0.048 + 0.012 * unit(v, 2, leaf);
-        for pair in 0..pairs {
-            let f = pair as f32 / (pairs - 1) as f32;
-            let t = f + (1.0 - f) * petiole / length;
-            let node = midrib.point(t);
-            for (index, side) in [-1.0, 1.0].into_iter().enumerate() {
-                let key = leaf * 10 + pair * 2 + index as u32;
-                let dir = (across * side + out * (0.38 + 0.43 * f)
-                    - Vec3::Y * (0.24 + 0.27 * unit(v, 3, key)))
-                .normalize();
-                let stalklet = stalk(
-                    part,
-                    node,
-                    dir * (0.007 + 0.003 * unit(v, 4, key)),
-                    Vec3::ZERO,
-                    0.0009,
-                    1,
-                );
-                let blade_len = (0.10 + 0.040 * f) * (0.95 + 0.10 * unit(v, 5, key));
-                blade(
-                    part,
-                    stalklet.point(1.0),
-                    dir * blade_len,
-                    Vec3::Y + out * (0.20 + 0.50 * unit(v, 6, key)),
-                    blade_len * 0.41,
-                    -0.018,
-                );
-            }
-        }
     }
 }
 

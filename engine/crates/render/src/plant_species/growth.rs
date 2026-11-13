@@ -1,8 +1,9 @@
 //! Growth rules and source foliage shared by the terrain viewer and games.
-use super::shoots::ShootRecipe;
+use super::{basal, shoots::ShootRecipe};
 use crate::{
+    foliage_assembly::{Assembly, Limits},
     plant_growth::Species,
-    plant_growth_assembly::{Look, Parts},
+    plant_growth_assembly::{self, Counts, Look, Parts},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -14,6 +15,7 @@ pub struct GrownSpecies {
     pub seed: u64,
     /// None selects the native conifer brush supplied by the growth lab.
     shoot: Option<ShootRecipe>,
+    pub(crate) basal: Option<basal::BasalHabit>,
 }
 
 impl GrownSpecies {
@@ -24,13 +26,22 @@ impl GrownSpecies {
         }
         parts
     }
+
+    /// Build the same source assembly for the viewer, game previews and voxel cooks.
+    pub fn assemble(&self, parts: &Parts, age: u32, seed: u64, limits: Limits) -> Result<(Assembly, Counts), String> {
+        if let Some(habit) = self.basal {
+            return habit.assemble(&self.rules, self.look, parts, age, seed, limits);
+        }
+        let plant = crate::plant_growth::grow(&self.rules, age, seed);
+        plant_growth_assembly::assemble(&plant, parts, self.look, seed, limits)
+    }
 }
 
 /// Keys accepted by the architectural growth and voxel assembly route.
-pub const GROWN_NAMES: [&str; 15] = [
+pub const GROWN_NAMES: [&str; 17] = [
     "pine", "upland_spruce", "scots_pine", "juniper", "mountain_birch", "dwarf_birch",
     "desert_shrub", "saltbush", "kapok", "african_mahogany", "forest_coffee", "raffia_palm",
-    "woolly_willow", "white_broom", "forest_dracaena",
+    "woolly_willow", "white_broom", "forest_dracaena", "dune_grass", "forest_fern",
 ];
 
 /// Architectural rules for the woody species used by the desert, Norwegian
@@ -39,12 +50,16 @@ pub const GROWN_NAMES: [&str; 15] = [
 pub fn grown(name: &str) -> Option<GrownSpecies> {
     let recipe = super::named(name)?;
     let (seed, foliage, wood) = (recipe.id, recipe.foliage_colour, recipe.wood_colour);
-    let native = |rules, look, age| GrownSpecies { rules, look, age, seed: 1, shoot: None };
+    let native = |rules, look, age| GrownSpecies { rules, look, age, seed: 1, shoot: None, basal: None };
     let authored = |rules, age, shoot| GrownSpecies {
-        rules, age, seed, shoot: Some(shoot),
+        rules, age, seed, shoot: Some(shoot), basal: None,
         look: Look { needles: foliage, wood, ..Look::default() },
     };
     let leafy = |rules, age, scale| authored(rules, age, ShootRecipe::Broadleaf(scale));
+    let herb = |habit: basal::BasalHabit, pace, shape, age, shoot| GrownSpecies {
+        basal: Some(habit),
+        ..authored(Species { height: habit.height_m, pace, shape, ..Species::default() }, age, shoot)
+    };
     // A woody broadleaf keeps recent tips in leaf; lateral growth and the
     // rate at which its lower limbs are shed determine the crown.
     let broadleaf = Species {
@@ -106,17 +121,17 @@ pub fn grown(name: &str) -> Option<GrownSpecies> {
             height: 34.0, pace: 17.0, first_whorl: 9, whorl: [2, 3],
             limb_step: 1.155, angle: [1.47, 1.55], rise: 0.055, droop: 0.025,
             wood: 0.017, live_crown: 0.38, lift_years: 18.0, dead_years: 4, ..broadleaf
-        }, 17, ShootRecipe::Kapok),
+        }, 17, ShootRecipe::KAPOK),
         "african_mahogany" => authored(Species {
             height: 22.0, pace: 17.0, first_whorl: 4, whorl: [1, 3],
             limb_step: 0.60, laterals: 1.1, wood: 0.015,
             needle_years: 3, ..broadleaf
-        }, 17, ShootRecipe::Mahogany),
+        }, 17, ShootRecipe::MAHOGANY),
         "forest_coffee" => authored(Species {
             height: 2.9, pace: 7.5, whorl: [2, 2], limb_step: 0.16,
             angle: [1.37, 1.54], rise: -0.03, droop: 0.09, needle_years: 4,
             wood: 0.0036, ..shrub
-        }, 9, ShootRecipe::Coffee),
+        }, 9, ShootRecipe::COFFEE),
         // Young fronds rise from the crown; as their axes extend they bend
         // down. The leaflets on a frond sit close to one plane.
         "raffia_palm" => authored(Species {
@@ -150,6 +165,8 @@ pub fn grown(name: &str) -> Option<GrownSpecies> {
             wood: 0.0013, needle_years: 5,
             ..shrub
         }, 9, ShootRecipe::Dracaena),
+        "dune_grass" => herb(basal::DRINN, 1.65, 1.0, 5, ShootRecipe::Drinn),
+        "forest_fern" => herb(basal::SWORD_FERN, 1.35, 1.07, 4, ShootRecipe::Fern),
         _ => return None,
     })
 }

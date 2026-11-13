@@ -1,8 +1,10 @@
-//! Shared tree and shrub species. `grown` provides architectural growth
+//! Shared trees, shrubs and herbs. `grown` provides architectural growth
 //! rules, stand age and foliage parts for the desert, Norway and rainforest.
 //! `named` provides the woody recipes used by the established landscapes.
 use crate::plant_recipe::{CrownProfile, FoliageKind, WoodyRecipe};
 
+mod basal;
+mod fern;
 mod growth;
 mod shoots;
 pub use growth::{grown, GrownSpecies, GROWN_NAMES};
@@ -12,10 +14,10 @@ const LEAF: [f32; 3] = [0.11, 0.20, 0.055];
 const BARK: [f32; 3] = [0.16, 0.105, 0.062];
 
 /// Names accepted by the older woody recipe builder, `named`.
-pub const NAMES: [&str; 20] = [
+pub const NAMES: [&str; 22] = [
     "spruce", "pine", "birch", "broadleaf", "willow", "juniper", "shrub", "dwarf_birch", "desert_shrub",
     "saltbush", "upland_spruce", "scots_pine", "mountain_birch", "kapok", "african_mahogany", "forest_coffee", "raffia_palm",
-    "woolly_willow", "white_broom", "forest_dracaena",
+    "woolly_willow", "white_broom", "forest_dracaena", "dune_grass", "forest_fern",
 ];
 
 /// A species' recipe by name.
@@ -87,6 +89,10 @@ pub fn named(name: &str) -> Option<WoodyRecipe> {
         "forest_dracaena" => WoodyRecipe { branches_per_tier: 2,
             ..shrub(0x4452_4143_4145, 1.65, 0.018, 0.52, CrownProfile::Columnar, 3, 0.78, 0.012,
                 FoliageKind::Broadleaf, 7, 0.53, [0.062, 0.164, 0.069], [0.139, 0.153, 0.085]) },
+        "dune_grass" => shrub(0x4452_494e_4e, 0.85, 0.006, 0.55, CrownProfile::Spreading, 2, 0.76, 0.003,
+            FoliageKind::Needle, 6, 0.35, [0.26, 0.295, 0.145], [0.31, 0.235, 0.13]),
+        "forest_fern" => shrub(0x4645_524e, 1.0, 0.012, 0.85, CrownProfile::Spreading, 2, 0.54, 0.006,
+            FoliageKind::Broadleaf, 8, 0.48, [0.095, 0.235, 0.045], [0.21, 0.15, 0.075]),
         _ => return None,
     })
 }

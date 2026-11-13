@@ -3,13 +3,12 @@
 use glam::{Mat3, Mat4, Vec2, Vec3};
 use render::{
     foliage_assembly::{Assembly, PartInstance},
-    plant_growth,
     plant_growth_assembly::{self as growth_assembly, Parts},
     plant_species, scene,
 };
 use std::{env, fs, path::Path};
 
-const HELP: &str = "plant_catalog_preview [--out DIR] [--age YEARS] [--seed N] SPECIES...\n  --list         list species that use the growth model\n  --out DIR      default: build/plant-catalog\n  --age, --seed  default: species' stand age and seed\nWrites transparent habit/shoot PNGs and a JSON scale record for each species.";
+const HELP: &str = "plant_catalog_preview [--out DIR] [--age YEARS] [--seed N] SPECIES...\n  --list         list species that use the growth model\n  --out DIR      default: build/plant-catalog\n  --detail-2x    render the shoot close-up at 1440 pixels\n  --age, --seed  default: species' stand age and seed\nWrites transparent habit/shoot PNGs and a JSON scale record for each species.";
 const SIDE: usize = 720;
 const SUPERSAMPLE: usize = 2;
 
@@ -87,6 +86,26 @@ fn shoot_detail(assembly: &Assembly, parts: &Parts, world: &[Mat4]) -> (Vec<usiz
     }
     let (indices, is_leaf) = if let Some((_, shoot, support)) = best {
         (vec![shoot, support], true)
+    } else if let Some((i, _)) = assembly
+        .instances
+        .iter()
+        .enumerate()
+        .filter(|(_, inst)| {
+            assembly.materials[inst.material as usize].flags & scene::THIN_FOLIAGE != 0
+        })
+        .map(|(i, instance)| {
+            let part = &assembly.parts[instance.part as usize];
+            let length_sq = part
+                .vertices
+                .iter()
+                .map(|v| world[i].transform_vector3(v.pos.into()).length_squared())
+                .fold(0.0, f32::max);
+            (i, length_sq)
+        })
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
+    {
+        // Basal organs carry their own culm or stipe as part of the source mesh.
+        (vec![i], true)
     } else {
         let wood = stems
             .iter()
@@ -235,15 +254,15 @@ impl Specimen<'_> {
         depth
     }
 
-    fn save(&self, frame: &Frame, path: &Path) -> Result<(), String> {
+    fn save(&self, frame: &Frame, path: &Path, pixels_per_side: usize) -> Result<(), String> {
         let toward_eye = frame.view.transpose() * Vec3::Z;
         let sun = frame.view.transpose() * Vec3::new(-0.46, 0.72, 0.48).normalize();
         let light = Frame::fit(self.geometry, self.indices, self.world, view(sun));
         let shadow = Shadow {
-            depth: self.rasterize(&light, SIDE, |_, _, _, _| {}),
+            depth: self.rasterize(&light, pixels_per_side, |_, _, _, _| {}),
             frame: light,
         };
-        let side = SIDE * SUPERSAMPLE;
+        let side = pixels_per_side * SUPERSAMPLE;
         let mut samples = vec![[0u8; 4]; side * side];
         self.rasterize(frame, side, |i, instance, v, weights| {
             let mat = &self.geometry.materials[instance.material as usize];
@@ -256,7 +275,7 @@ impl Specimen<'_> {
                 n = -n;
             }
             let cosine = n.dot(sun);
-            let lit = shadow.visibility(interpolate(v.map(|v| v.world)), SIDE);
+            let lit = shadow.visibility(interpolate(v.map(|v| v.world)), pixels_per_side);
             let direct = cosine.max(0.0) + if leaf { 0.18 * (-cosine).max(0.0) } else { 0.0 };
             let light = 0.41
                 + 0.11 * n.dot(frame.view.transpose() * Vec3::Y).max(0.0)
@@ -272,9 +291,9 @@ impl Specimen<'_> {
             });
             samples[i] = [rgb[0], rgb[1], rgb[2], 255];
         });
-        let mut pixels = Vec::with_capacity(SIDE * SIDE * 4);
-        for y in 0..SIDE {
-            for x in 0..SIDE {
+        let mut pixels = Vec::with_capacity(pixels_per_side * pixels_per_side * 4);
+        for y in 0..pixels_per_side {
+            for x in 0..pixels_per_side {
                 let mut rgba = [0u32; 4];
                 for dy in 0..SUPERSAMPLE {
                     for dx in 0..SUPERSAMPLE {
@@ -289,19 +308,28 @@ impl Specimen<'_> {
                 pixels.push((rgba[3] / (SUPERSAMPLE * SUPERSAMPLE) as u32) as u8);
             }
         }
-        render::write_png(path, SIDE as u32, SIDE as u32, &pixels)
+        render::write_png(
+            path,
+            pixels_per_side as u32,
+            pixels_per_side as u32,
+            &pixels,
+        )
     }
 }
 
-fn export(name: &str, age: Option<u32>, seed: Option<u64>, directory: &Path) -> Result<(), String> {
+fn export(
+    name: &str,
+    age: Option<u32>,
+    seed: Option<u64>,
+    directory: &Path,
+    detail_2x: bool,
+) -> Result<(), String> {
     let recipe = plant_species::grown(name)
         .ok_or_else(|| format!("unknown grown species {name:?}, see --list"))?;
     let age = age.unwrap_or(recipe.age);
     let seed = seed.unwrap_or(recipe.seed);
     let parts = recipe.parts();
-    let plant = plant_growth::grow(&recipe.rules, age, seed);
-    let (geometry, counts) =
-        growth_assembly::assemble(&plant, &parts, recipe.look, seed, growth_assembly::limits())?;
+    let (geometry, counts) = recipe.assemble(&parts, age, seed, growth_assembly::limits())?;
     let bones = geometry.branch_transforms()?;
     let world: Vec<_> = geometry
         .instances
@@ -321,13 +349,17 @@ fn export(name: &str, age: Option<u32>, seed: Option<u64>, directory: &Path) -> 
         indices: &all,
         world: &world,
     }
-    .save(&habit, &path("-habit.png"))?;
+    .save(&habit, &path("-habit.png"), SIDE)?;
     Specimen {
         geometry: &geometry,
         indices: &detail,
         world: &world,
     }
-    .save(&shoot, &path("-shoot.png"))?;
+    .save(
+        &shoot,
+        &path("-shoot.png"),
+        if detail_2x { 2 * SIDE } else { SIDE },
+    )?;
     let [lo, hi] = geometry.bounds()?;
     let size = Vec3::from(hi) - Vec3::from(lo);
     let record = serde_json::json!({
@@ -335,7 +367,7 @@ fn export(name: &str, age: Option<u32>, seed: Option<u64>, directory: &Path) -> 
         "height_m": size.y, "span_m": size.x.max(size.z), "instances": all.len(),
         "placed_tufts": counts.tufts, "dropped_tufts": counts.tufts_dropped,
         "habit_frame_m": habit.width, "shoot_frame_m": shoot.width,
-        "detail": if leaf { "shoot_and_support" } else { "woody_axis" },
+        "detail": if !leaf { "woody_axis" } else if counts.stems == 0 { "basal_shoot" } else { "shoot_and_support" },
     });
     fs::write(path(".json"), record.to_string()).map_err(|e| e.to_string())?;
     println!(
@@ -352,6 +384,7 @@ fn main() -> Result<(), String> {
     let mut age = None;
     let mut seed = None;
     let mut names = Vec::new();
+    let mut detail_2x = false;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -366,6 +399,7 @@ fn main() -> Result<(), String> {
                 return Ok(());
             }
             "--out" => directory = args.next().ok_or("--out requires a directory")?.into(),
+            "--detail-2x" => detail_2x = true,
             "--age" => {
                 let years = args
                     .next()
@@ -389,7 +423,7 @@ fn main() -> Result<(), String> {
     }
     fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     for name in names {
-        export(&name, age, seed, &directory)?;
+        export(&name, age, seed, &directory, detail_2x)?;
     }
     Ok(())
 }

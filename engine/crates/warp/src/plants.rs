@@ -1,6 +1,6 @@
 //! Grown plants a Luau game places (`plants.grow`): a species' growth rules
 //! and an age, cooked on background threads into Nanite-style vegetation
-//! (render::plant_growth, render::recipe_forest::cook_grown) and attached to
+//! (render::plant_species, render::recipe_forest::cook_catalog) and attached to
 //! the world's scene as one GPU forest.
 //!
 //! Two qualities. `preview` (the default) grows and assembles the plant and
@@ -20,6 +20,7 @@ use render::foliage_population::WorldRoot;
 use render::foliage_runtime::RootPlacement;
 use render::plant_growth::Species;
 use render::plant_growth_assembly::{Look, Parts};
+use render::plant_species::GrownSpecies;
 use render::vegetation_asset::CookedPlant;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -52,11 +53,12 @@ impl Plant {
         Plant { full: false, ..*self }.key()
     }
 
-    fn parts(&self) -> Result<Parts, String> {
+    fn form(&self) -> Result<GrownSpecies, String> {
         let mut form = render::plant_species::grown(self.preset)
             .ok_or_else(|| format!("unknown grown plant {:?}", self.preset))?;
+        form.rules = self.species;
         form.look = self.look;
-        Ok(form.parts())
+        Ok(form)
     }
 }
 
@@ -105,9 +107,8 @@ struct Preview {
     triangles: usize,
 }
 
-fn preview(species: &Species, look: Look, parts: &Parts, age: u32, seed: u64) -> Result<Preview, String> {
-    let plant = render::plant_growth::grow(species, age, seed);
-    let (assembly, _) = render::plant_growth_assembly::assemble(&plant, parts, look, seed, preview_limits())?;
+fn preview(form: &GrownSpecies, parts: &Parts, age: u32, seed: u64) -> Result<Preview, String> {
+    let (assembly, _) = form.assemble(parts, age, seed, preview_limits())?;
     let branches = assembly.branch_transforms()?;
     let mut index: HashMap<(u32, u32), usize> = HashMap::new();
     let mut out = Preview { meshes: Vec::new(), instances: Vec::with_capacity(assembly.instances.len()), triangles: 0 };
@@ -135,14 +136,15 @@ fn preview(species: &Species, look: Look, parts: &Parts, age: u32, seed: u64) ->
 
 fn cook(plant: Plant) -> Done {
     let started = std::time::Instant::now();
-    let parts = plant.parts()?;
+    let form = plant.form()?;
+    let parts = form.parts();
     if !plant.full {
-        let p = preview(&plant.species, plant.look, &parts, plant.age, plant.seed)?;
+        let p = preview(&form, &parts, plant.age, plant.seed)?;
         let what = format!("{} parts, {} placed, {} triangles", p.meshes.len(), p.instances.len(), p.triangles);
         return Ok((Cooked::Preview(Arc::new(p)), false, started.elapsed().as_secs_f64() * 1000.0, what));
     }
     let cache = cache_dir();
-    let c = render::recipe_forest::cook_grown(&[(plant.species, plant.age, plant.seed)], &parts, plant.look, Some(&cache))?.pop().ok_or("nothing cooked")?;
+    let c = render::recipe_forest::cook_catalog(&form, plant.age, plant.seed, &parts, Some(&cache))?;
     let s = c.plant.stats();
     let what = format!("{} branches, {} placements", s.branches, s.placements);
     Ok((Cooked::Full(Arc::new(c.plant)), c.loaded, c.millis, what))
@@ -349,9 +351,30 @@ mod tests {
             assert_eq!(material.tint, form.look.needles);
         }
         let mut pine = pine(6, 0.0);
-        let ordinary = pine.parts().unwrap().tufts[0].id;
+        let ordinary = pine.form().unwrap().parts().tufts[0].id;
         pine.look.twigs += 1;
-        assert_ne!(ordinary, pine.parts().unwrap().tufts[0].id);
+        assert_ne!(ordinary, pine.form().unwrap().parts().tufts[0].id);
+    }
+
+    #[test]
+    fn basal_previews_preserve_catalogue_placements_with_game_overrides() {
+        for name in ["dune_grass", "forest_fern"] {
+            let mut expected = render::plant_species::grown(name).unwrap();
+            expected.rules.height *= 1.6;
+            expected.look.needles = [0.16, 0.24, 0.13];
+            let p = Plant { preset: name, species: expected.rules, look: expected.look, age: expected.age,
+                seed: 24, ..pine(5, 0.0) };
+            let parts = expected.parts();
+            let (source, _) = expected.assemble(&parts, p.age, p.seed, preview_limits()).unwrap();
+            let branches = source.branch_transforms().unwrap();
+            let (Cooked::Preview(preview), ..) = cook(p).unwrap() else { panic!("expected source meshes") };
+            assert_eq!(preview.instances.len(), source.instances.len(), "{name}");
+            assert!(preview.meshes.iter().any(|(_, m, _)| m.tint == p.look.needles), "{name}");
+            for ((mesh, world), instance) in preview.instances.iter().zip(&source.instances) {
+                assert_eq!(preview.meshes[*mesh].0, source.parts[instance.part as usize].id);
+                assert_eq!(*world, branches[instance.branch as usize] * instance.rest);
+            }
+        }
     }
 
     #[test]
@@ -384,10 +407,11 @@ mod limits {
 
     #[test]
     fn a_crowded_preview_has_no_placement_budget() {
-        let species = Species { crowding: 60, needle_years: 7, ..Species::jeffrey_pine() };
         let started = std::time::Instant::now();
-        let look = Look::jeffrey_pine();
-        let p = preview(&species, look, &Parts::for_look(&look), 31, 4).unwrap();
+        let mut form = render::plant_species::grown("pine").unwrap();
+        form.rules.crowding = 60;
+        form.rules.needle_years = 7;
+        let p = preview(&form, &form.parts(), 31, 4).unwrap();
         println!("crowded 31 y: {} placed, {} triangles, {} ms", p.instances.len(), p.triangles, started.elapsed().as_millis());
     }
 }

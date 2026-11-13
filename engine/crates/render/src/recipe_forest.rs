@@ -94,7 +94,7 @@ impl BiomePlants {
         let mut cooked = Vec::with_capacity(self.len());
         for s in &self.species {
             let variants = if let Some(g) = &s.growth {
-                cook_grown(&[(g.rules, g.age, g.seed)], &g.parts(), g.look, cache)
+                cook_catalog(g, g.age, g.seed, &g.parts(), cache).map(|plant| vec![plant])
             } else {
                 cook_variants(&[(s.recipe, 1)], cache)
             }.map_err(|e| format!("{}: {e}", s.name))?;
@@ -147,6 +147,37 @@ pub fn cook_variants(variants: &[(WoodyRecipe, u64)], cache: Option<&Path>) -> R
 /// Bump when plant_growth or plant_growth_assembly change what they build:
 /// the cook cache key holds their inputs, not their code.
 const GROWN_ASSEMBLY_VERSION: u32 = 13;
+
+/// A library preset uses the same source as its inspection and scripting APIs.
+/// Existing woody entries retain their cache identity. Basal herbs include
+/// their recruitment and orientation rules in their own cache identity.
+pub fn cook_catalog(form: &crate::plant_species::GrownSpecies, age: u32, seed: u64,
+    parts: &crate::plant_growth_assembly::Parts, cache: Option<&Path>) -> Result<Cooked, String> {
+    let Some(basal) = form.basal else {
+        return cook_grown(&[(form.rules, age, seed)], parts, form.look, cache)?
+            .pop().ok_or_else(|| "empty grown cook".into());
+    };
+    let started = web_time::Instant::now();
+    let limits = crate::plant_growth_assembly::limits();
+    let config = grown_config(aggregate_config());
+    let proxy = grown_config(proxy_config());
+    let cook = || {
+        let (assembly, _) = form.assemble(parts, age, seed, limits)?;
+        let mut plant = CookedPlant::cook_aggregate(&assembly, config)?;
+        plant.cook_proxy(&assembly, proxy, PROXY_LEVELS)?;
+        Ok(plant)
+    };
+    let (plant, loaded) = match cache {
+        Some(dir) => {
+            let ids: Vec<_> = parts.tufts.iter().map(|p| p.id).collect();
+            let key = format!("basal v1 {basal:?} {:?} {:?} {age} {seed} {ids:?} {config:?} {proxy:?} {PROXY_LEVELS} {limits:?}",
+                form.rules, form.look);
+            CookedPlant::cached(dir, &key, cook)?
+        }
+        None => (cook()?, false),
+    };
+    Ok(Cooked { plant, loaded, millis: started.elapsed().as_secs_f64() * 1000.0 })
+}
 
 /// A grown limb holds many more parts than a recipe branch: sixteen times
 /// the reference cells, scratch and samples, and 4 GiB of build memory per group.

@@ -46,6 +46,7 @@ fn a_luau_game_can_discover_and_place_a_catalogue_preset() {
         return {init = function()
             state.names = plants.catalog()
             state.id = plants.grow({preset = "white_broom", pos = vector.create(4,0,8)})
+            state.fern = plants.grow({preset = "forest_fern", seed = 24, species = {height = 1.2}})
         end, tick = function() end, draw = function() end}
     "#).unwrap();
     let game = game(&dir);
@@ -57,6 +58,8 @@ fn a_luau_game_can_discover_and_place_a_catalogue_preset() {
     let p = &core.plants.plants[&id];
     let broom = render::plant_species::grown("white_broom").unwrap();
     assert_eq!((p.preset, p.age, p.seed, p.pos.to_array()), ("white_broom", broom.age, broom.seed, [4.0, 0.0, 8.0]));
+    let fern = &core.plants.plants[&(state["state"]["fern"].as_u64().unwrap() as u32)];
+    assert_eq!((fern.preset, fern.seed, fern.species.height), ("forest_fern", 24, 1.2));
 }
 
 #[test]
