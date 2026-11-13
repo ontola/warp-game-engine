@@ -1,12 +1,12 @@
 //! Foliage recipes in the growth tip's local frame. Distances are metres.
 //! Define another shoot by supplying a preset of its botanical arrangement.
-use super::{blade, radial, stalk};
+use super::{blade, radial, stalk, update_normals};
 use crate::{
     foliage_assembly::PartGeometry,
-    plant_spray::{Shoot, unit},
+    plant_spray::{Shoot, tube, unit},
 };
 use glam::Vec3;
-use std::f32::consts::FRAC_PI_2;
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 /// Two ranks on the same axis. A stagger of zero puts both members at each node.
 /// At 0.5 the second rank falls between the first rank's nodes. The interval
@@ -104,6 +104,8 @@ pub(crate) struct OppositeBlade {
     pub length_m: Variation,
     pub lift: f32,
     pub hang: Variation,
+    /// Axial tip drop, in blade lengths, as the pair expands.
+    pub tip_drop: Variation,
 }
 /// A simple blade on each of two opposing petioles, with a separate young tip pair.
 #[derive(Clone, Copy, Debug)]
@@ -118,7 +120,8 @@ pub(crate) struct OppositeShoot {
     pub petiole_m: Variation,
     pub petiole_radius_m: f32,
     pub width_ratio: Variation,
-    pub curl_ratio: Variation,
+    /// Transverse folds, in blade widths, from nearly flat to deeply waved.
+    pub edge_relief: Variation,
 }
 pub(super) const COFFEE: OppositeShoot = OppositeShoot {
     twig: Twig {
@@ -132,19 +135,52 @@ pub(super) const COFFEE: OppositeShoot = OppositeShoot {
     variant_turn_rad: -0.35,
     mature: OppositeBlade {
         length_m: Variation(0.17, 0.075),
-        lift: 0.19,
+        lift: 0.12,
         hang: Variation(0.17, 0.42),
+        tip_drop: Variation(0.35, 0.26),
     },
     apical: OppositeBlade {
         length_m: Variation(0.080, 0.045),
         lift: 0.90,
         hang: Variation(-0.10, 0.0),
+        tip_drop: Variation(0.06, 0.12),
     },
     petiole_m: Variation(0.010, 0.008),
     petiole_radius_m: 0.0012,
     width_ratio: Variation(0.36, 0.08),
-    curl_ratio: Variation(-0.18, -0.17),
+    edge_relief: Variation(0.023, 0.033),
 };
+
+/// A closed elliptic blade with a tapered drip tip and a wavy, entire margin.
+/// The folds cross the midrib obliquely and fade at both ends of the lamina.
+fn undulate_blade(
+    part: &mut PartGeometry, base: Vec3, dir: Vec3, facing: Vec3,
+    length: f32, width: f32, drop: f32, edge_relief: f32, phase: f32,
+) {
+    const SECTIONS: usize = 16;
+    let side = facing.cross(dir).normalize();
+    let upper = dir.cross(side);
+    let start = part.vertices.len();
+    let indices = part.indices.len();
+    let axis = Shoot { root: base, delta: dir * length, bend: Vec3::ZERO, radius: 0.00065 };
+    tube(part, axis, SECTIONS, 4);
+    for v in &mut part.vertices[start..] {
+        let t = v.uv[1];
+        let (depth, lateral) = (v.uv[0] * TAU).sin_cos();
+        let elliptic = (PI * (t + 0.065 * (PI * t).sin())).sin().max(0.0);
+        let shoulder = if t > 0.87 { (1.0 - t) / 0.13 } else { 1.0 };
+        let breadth = 0.020 + 0.98 * elliptic.powf(0.79) * shoulder;
+        let edge = lateral.abs();
+        let wave = ((t * 4.25 - edge * 0.28) * TAU + phase + 0.30 * lateral).sin();
+        let half_width = 0.5 * width * breadth * (1.0 + 0.047 * wave);
+        let fold = breadth * width * edge * (0.075 + edge_relief * wave);
+        let along = t + edge * 0.027 * elliptic;
+        v.pos = (base + dir * (along * length) - Vec3::Y * (drop * t * t)
+            + side * (lateral * half_width) + upper * (fold + depth * axis.radius))
+            .to_array();
+    }
+    update_normals(part, start, indices);
+}
 
 impl OppositeShoot {
     pub(super) fn build(self, part: &mut PartGeometry, v: u32) {
@@ -179,13 +215,16 @@ impl OppositeShoot {
             let roll = 0.88 * (unit(v, node, 16 + rank) - 0.5);
             let facing = face * roll.cos() + Vec3::Y * roll.sin();
             let width = length * self.width_ratio.at(unit(v, node, 14 + rank));
-            blade(
+            undulate_blade(
                 part,
                 petiole.point(1.0),
-                axis * length,
+                axis,
                 facing,
+                length,
                 width,
-                length * self.curl_ratio.at(vigor),
+                length * leaf.tip_drop.at(vigor),
+                self.edge_relief.at(vigor),
+                TAU * unit(v, node, 18 + rank),
             );
         }
     }
@@ -289,6 +328,10 @@ pub(crate) struct PinnateShoot {
     pub leaflet_m: Variation,
     pub width_ratio: f32,
     pub curl_m: f32,
+    /// Axial staggering of opposite margins near the leaflet's insertion.
+    pub base_skew: f32,
+    /// Carries the upper shoulder outward before its short terminal point.
+    pub distal_shoulder: f32,
 }
 pub(super) const MAHOGANY: PinnateShoot = PinnateShoot {
     shoot: SpiralShoot {
@@ -317,6 +360,8 @@ pub(super) const MAHOGANY: PinnateShoot = PinnateShoot {
     leaflet_m: Variation(0.10, 0.040),
     width_ratio: 0.41,
     curl_m: -0.018,
+    base_skew: 0.085,
+    distal_shoulder: 0.045,
 };
 impl PinnateShoot {
     pub(super) fn build(self, part: &mut PartGeometry, v: u32) {
@@ -353,6 +398,8 @@ impl PinnateShoot {
                 );
                 let length = self.leaflet_m.at(site.fraction) * (0.95 + 0.10 * unit(v, 5, key));
                 let facing = Vec3::Y + out * (0.20 + 0.50 * unit(v, 6, key));
+                let start = part.vertices.len();
+                let first_index = part.indices.len();
                 blade(
                     part,
                     stalklet.point(1.0),
@@ -361,6 +408,14 @@ impl PinnateShoot {
                     length * self.width_ratio,
                     self.curl_m,
                 );
+                for vertex in &mut part.vertices[start..] {
+                    let [u, t] = vertex.uv;
+                    let lateral = (u - 0.5) * 2.0;
+                    let basal = self.base_skew * site.side * lateral * (1.0 - t).powi(2);
+                    let shoulder = self.distal_shoulder * t * lateral.abs();
+                    vertex.pos = (Vec3::from(vertex.pos) + dir * length * (basal + shoulder)).to_array();
+                }
+                update_normals(part, start, first_index);
             }
         }
     }

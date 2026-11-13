@@ -25,22 +25,22 @@ struct Tuft {
 }
 
 #[derive(Clone, Copy)]
-struct Ground {
-    height: f32,
+pub(crate) struct Ground {
+    pub(crate) height: f32,
     road_d: f32,
-    up: f32,
+    pub(crate) normal: Vec3,
 }
 
-struct Field<'a> {
+pub(crate) struct Field<'a> {
     chunks: HashMap<(i32, i32), &'a Chunk>,
 }
 
 impl<'a> Field<'a> {
-    fn new(chunks: &'a [Chunk]) -> Self {
+    pub(crate) fn new(chunks: &'a [Chunk]) -> Self {
         Self { chunks: chunks.iter().map(|c| (c.cell, c)).collect() }
     }
 
-    fn sample(&self, p: Vec2) -> Option<Ground> {
+    pub(crate) fn sample(&self, p: Vec2) -> Option<Ground> {
         let cell = ((p.x / CHUNK as f32).floor() as i32, (p.y / CHUNK as f32).floor() as i32);
         let c = self.chunks.get(&cell)?;
         let q = (p - Vec2::new(c.x0 as f32, c.z0 as f32)) / GRID as f32;
@@ -59,7 +59,8 @@ impl<'a> Field<'a> {
         let road_d = (0..3).map(|k| c.road_d[indices[k]] * weights[k]).sum();
         let dx = if x + z <= 1.0 { c.heights[a + 1] - c.heights[a] } else { c.heights[a + N + 1] - c.heights[a + N] } / GRID as f32;
         let dz = if x + z <= 1.0 { c.heights[a + N] - c.heights[a] } else { c.heights[a + N + 1] - c.heights[a + 1] } / GRID as f32;
-        Some(Ground { height, road_d, up: 1.0 / (1.0 + dx * dx + dz * dz).sqrt() })
+        let up = 1.0 / (1.0 + dx * dx + dz * dz).sqrt();
+        Some(Ground { height, road_d, normal: Vec3::new(-dx * up, up, -dz * up) })
     }
 }
 
@@ -123,7 +124,7 @@ fn scatter(field: &Field<'_>, cameras: &[Vec3]) -> (Vec<Tuft>, usize) {
         // shoulder. Check its surrounding footprint as well, so a centre on
         // the verge cannot leave blades sticking through the racing surface.
         let clearance = WIDTH * 0.5 * tuft.scale;
-        if g.road_d < 0.9 + clearance || g.up <= 0.7 { continue; }
+        if g.road_d < 0.9 + clearance || g.normal.y <= 0.7 { continue; }
         let safe = [Vec2::X, -Vec2::X, Vec2::Y, -Vec2::Y].iter().all(|axis| field.sample(xz + *axis * clearance).is_some_and(|s| s.road_d >= 0.9));
         if !safe { continue; }
         let verge = smooth(0.5, 1.4, g.road_d) * (1.0 - smooth(10.0, 22.0, g.road_d));
@@ -131,7 +132,7 @@ fn scatter(field: &Field<'_>, cameras: &[Vec3]) -> (Vec<Tuft>, usize) {
         // A single broad falloff has no concentric mesh/scale switch lines.
         // Whole tufts are selected by a fixed world hash, never pixel dither.
         let range = (1.0 - smooth(12.0, radius, d)).powi(2);
-        let coverage = verge.max(wood) * smooth(0.7, 0.82, g.up) * range * density;
+        let coverage = verge.max(wood) * smooth(0.7, 0.82, g.normal.y) * range * density;
         if random(id, 43) >= coverage { continue; }
         tuft.pos.y = g.height - 0.025;
         tufts.push(tuft);
@@ -233,8 +234,12 @@ mod tests {
         c.heights[N + 1] = 10.0;
         let chunks = [c];
         let f = Field::new(&chunks);
-        assert!((f.sample(Vec2::new(0.5, 0.5)).unwrap().height - 1.5).abs() < 1e-6);
-        assert!((f.sample(Vec2::new(1.5, 1.5)).unwrap().height - 6.5).abs() < 1e-6);
+        let first = f.sample(Vec2::new(0.5, 0.5)).unwrap();
+        let second = f.sample(Vec2::new(1.5, 1.5)).unwrap();
+        assert!((first.height - 1.5).abs() < 1e-6);
+        assert!((second.height - 6.5).abs() < 1e-6);
+        assert!(first.normal.abs_diff_eq(Vec3::new(-1.0, 1.0, -2.0).normalize(), 1e-6));
+        assert!(second.normal.abs_diff_eq(Vec3::new(-3.0, 1.0, -4.0).normalize(), 1e-6));
         assert!(f.sample(Vec2::new(-0.1, 1.0)).is_none());
     }
 

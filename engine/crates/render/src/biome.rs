@@ -56,8 +56,8 @@ impl Flora {
 }
 
 /// Every preset, for menus and tests.
-pub const NAMES: [&str; 14] = ["swiss", "temperate", "alpine", "lowland", "polder", "tundra", "desert", "norway", "rainforest",
-    "desert-broom", "norway-willow", "rainforest-dracaena", "desert-grass", "rainforest-fern"];
+pub const NAMES: [&str; 15] = ["swiss", "temperate", "alpine", "lowland", "polder", "tundra", "desert", "norway", "rainforest",
+    "desert-broom", "norway-willow", "rainforest-dracaena", "desert-grass", "rainforest-fern", "norway-dryas"];
 
 impl Biome {
     /// A local plant community occupying the same sites as the parent biome.
@@ -126,6 +126,7 @@ impl Biome {
             "desert-broom" => return Self::understory("desert", "desert-broom", "white_broom"),
             "desert-grass" => return Self::understory("desert", "desert-grass", "dune_grass"),
             "norway-willow" => return Self::understory("norway", "norway-willow", "woolly_willow"),
+            "norway-dryas" => return Self::understory("norway", "norway-dryas", "dryas"),
             "rainforest-dracaena" => return Self::understory("rainforest", "rainforest-dracaena", "forest_dracaena"),
             "rainforest-fern" => return Self::understory("rainforest", "rainforest-fern", "forest_fern"),
             // A sand sea: dunes over low rolling ground, rocky outcrops, no
@@ -235,7 +236,7 @@ impl Biome {
     /// rules. Established terrains keep their original species forms.
     pub fn grown_flora(&self) -> bool {
         matches!(self.name, "desert" | "norway" | "rainforest" | "desert-broom" | "norway-willow" | "rainforest-dracaena"
-            | "desert-grass" | "rainforest-fern")
+            | "desert-grass" | "rainforest-fern" | "norway-dryas")
     }
 
     /// The species that grow here (plant_species recipes): its trees, then
@@ -243,6 +244,11 @@ impl Biome {
     pub fn species(&self) -> Vec<(&'static str, crate::plant_recipe::WoodyRecipe)> {
         self.flora.trees.iter().chain(&self.flora.shrubs).filter(|(n, w)| *w > 0.0 && !n.is_empty())
             .map(|(n, _)| (*n, crate::plant_species::named(n).expect("biome species"))).collect()
+    }
+
+    /// Catalogue indices of plants whose runners lie on the soil surface.
+    pub fn creeping_variants(&self) -> Vec<usize> {
+        creeping_indices(self.species().into_iter().map(|(name, _)| (name, self.grown_flora())))
     }
 
     /// The biome's placement rules: its trees (in the forest's stands, or in
@@ -275,6 +281,7 @@ impl Biome {
         }
         if flora.shrub_density > 0.0 && flora.shrubs.iter().any(|e| e.1 > 0.0) {
             let d = flora.shrub_density;
+            let mats = self.creeping_variants();
             rules.push(Rule { id: SHRUB, name: "shrub", cell: 3.0, salt: 0x5348_5255, cap: d,
                 density: Box::new(move |s| {
                     let g = &s.ground;
@@ -283,13 +290,20 @@ impl Biome {
                 }),
                 shape: Box::new(move |s| {
                     let size = 0.6 + 0.8 * s.cell.hash(4);
+                    let variant = flora.shrub_variant(s.cell.hash(7)).unwrap();
                     Shape { yaw: s.cell.hash(6) * std::f32::consts::TAU, scale: glam::Vec3::new(size, size * (0.8 + 0.4 * s.cell.hash(5)), size),
-                        variant: flora.shrub_variant(s.cell.hash(7)).unwrap() as u32, lift: -0.05 }
+                        variant: variant as u32, lift: if mats.contains(&variant) { 0.0 } else { -0.05 } }
                 }),
                 avoid: vec![(TREE, 1.5)] });
         }
         rules
     }
+}
+
+fn creeping_indices(sources: impl Iterator<Item = (&'static str, bool)>) -> Vec<usize> {
+    sources.enumerate().filter_map(|(i, (name, grown))| {
+        (grown && crate::plant_species::grown(name).is_some_and(|plant| plant.creeping_mat())).then_some(i)
+    }).collect()
 }
 
 /// Several biomes as the kinds of one world's regions (crate::regions):
@@ -320,6 +334,11 @@ impl Lands {
             }
         }
         out
+    }
+
+    /// Ground-following variants in the merged regional catalogue order.
+    pub fn creeping_variants(&self) -> Vec<usize> {
+        creeping_indices(self.species_sources().into_iter().map(|(name, _, grown)| (name, grown)))
     }
 
     /// Every biome's rules, scaled by its region's share (placement::regional).
@@ -490,6 +509,7 @@ mod tests {
             ("desert", "desert-broom", "white_broom"),
             ("desert", "desert-grass", "dune_grass"),
             ("norway", "norway-willow", "woolly_willow"),
+            ("norway", "norway-dryas", "dryas"),
             ("rainforest", "rainforest-dracaena", "forest_dracaena"),
             ("rainforest", "rainforest-fern", "forest_fern"),
         ] {
@@ -502,9 +522,23 @@ mod tests {
             assert_eq!(env(base).vegetation(), env(variant).vegetation());
             let roots = |b: &Biome| crate::placement::place(&b.rules(), &Land(*b), glam::Vec2::ZERO, 300.0);
             let regional = roots(&variant);
-            assert_eq!(roots(&base), regional, "{preset} changed the established sites or species weights");
+            let mats = variant.creeping_variants();
+            let mut expected = roots(&base);
+            for root in &mut expected {
+                if mats.contains(&(root.variant as usize)) {
+                    use crate::placement::World;
+                    root.pos.y = Land(base).ground(root.pos.x, root.pos.z).pos.y;
+                }
+            }
+            assert_eq!(expected, regional, "{preset} changed the established sites or species weights");
             let lands = Lands { biomes: vec![base, variant] };
             let sources = crate::recipe_forest::BiomePlants::new(&lands).variants();
+            if shrub == "dryas" {
+                assert_eq!(mats.len(), 1);
+                let merged = lands.creeping_variants();
+                assert_eq!(merged.len(), 1);
+                assert_eq!(sources[merged[0]], ("dryas", Some(6)));
+            }
             assert_eq!(sources.len(), base.species().len() + 1);
             let form = crate::plant_species::grown(shrub).unwrap();
             assert!(sources.contains(&(shrub, Some(form.age))));

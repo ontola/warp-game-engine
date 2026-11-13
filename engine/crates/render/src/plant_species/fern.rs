@@ -1,6 +1,9 @@
 //! A sterile frond of Nephrolepis biserrata. Local +Z points out of the crown.
-use super::shoots::{blade, paired_sites, stalk};
-use crate::{foliage_assembly::PartGeometry, plant_spray::unit};
+use super::shoots::{paired_sites, stalk, update_normals};
+use crate::{
+    foliage_assembly::PartGeometry,
+    plant_spray::{Shoot, tube, unit},
+};
 use glam::Vec3;
 
 pub(super) fn frond(part: &mut PartGeometry, variant: u32) {
@@ -29,6 +32,74 @@ pub(super) fn frond(part: &mut PartGeometry, variant: u32) {
         let length = size * 0.124 * basal * taper * (0.94 + 0.09 * unit(variant, 2, site.index));
         let width = size * 0.023 * basal * taper.sqrt();
         let droop = 0.10 + 0.16 * unit(variant, 4, site.index);
-        blade(part, rachis.point(site.t), dir * length, upper, width, -droop * length);
+        pinna(
+            part,
+            rachis.point(site.t),
+            dir,
+            upper,
+            length,
+            width,
+            droop,
+            site.side,
+        );
     }
+}
+
+/// The asymmetric blade attaches directly to the rachis. Its nearly truncate
+/// base and long parallel margins are distinct from the ovate broadleaf part.
+fn pinna(
+    part: &mut PartGeometry,
+    root: Vec3,
+    dir: Vec3,
+    up: Vec3,
+    length: f32,
+    width: f32,
+    droop: f32,
+    side: f32,
+) {
+    let across = up.cross(dir).normalize();
+    let upper = dir.cross(across);
+    let first = part.vertices.len();
+    let first_index = part.indices.len();
+    let axis = Shoot {
+        root,
+        delta: dir * length,
+        bend: Vec3::ZERO,
+        radius: width * 0.50,
+    };
+    // Preserve the long parallel-sided lamina and narrowing, slightly
+    // undulating tip with seven closed sections per leaflet.
+    const SECTIONS: [(f32, f32); 7] = [
+        (0.00, 0.20),
+        (0.035, 0.91),
+        (0.25, 1.00),
+        (0.61, 0.91),
+        (0.77, 0.78),
+        (0.83, 0.57),
+        (1.00, 0.085),
+    ];
+    tube(part, axis, SECTIONS.len() - 1, 4);
+    for (ring, vertices) in part.vertices[first..].chunks_exact_mut(4).enumerate() {
+        let (t, breadth) = SECTIONS[ring];
+        let turn = 0.16 * side * t.powi(3);
+        let tangent = (dir - upper * (2.0 * droop * t) - across * (4.0 * turn)).normalize();
+        let face = tangent.cross(across);
+        let centre = root + (dir * t - upper * (droop * t * t) - across * (turn * t)) * length;
+        for (v, (x, z)) in
+            vertices
+                .iter_mut()
+                .zip([(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)])
+        {
+            // A short asymmetrical attachment, with the acroscopic corner
+            // swept towards the frond apex. Both sides meet the same solid axis.
+            let skew = width * side * (0.18 * (1.0 - t).powi(6) + 0.37 * t.powi(4)) * breadth;
+            let half_depth = (0.00029 + 0.00011 * (1.0 - t)) * breadth.sqrt();
+            let vpos = centre
+                + across * (width * breadth * 0.5 * x)
+                + tangent * (x * skew)
+                + face * (half_depth * z);
+            v.pos = vpos.to_array();
+        }
+    }
+    update_normals(part, first, first_index);
 }

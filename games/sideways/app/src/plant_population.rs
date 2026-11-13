@@ -178,11 +178,19 @@ pub fn shrubs(stage: &Stage, chunks: &[Chunk], biome: &Biome) -> Vec<WorldRoot> 
         .collect();
     candidates.sort_by_key(|(key, _)| *key);
     candidates.truncate(MAX_SHRUBS);
+    let mats = biome.creeping_variants();
+    let terrain = (!mats.is_empty()).then(|| crate::ground_cover::Field::new(chunks));
     candidates.into_iter().filter_map(|(key, spot)| {
         let variant = flora.shrub_variant(unit(mix(key)))?;
-        let pos = Vec3::new(spot.pos.0, spot.pos.1, spot.pos.2);
+        let mut pos = Vec3::new(spot.pos.0, spot.pos.1, spot.pos.2);
+        let mut up = Vec3::Y;
+        if mats.contains(&variant) {
+            let ground = terrain.as_ref()?.sample(glam::Vec2::new(pos.x, pos.z))?;
+            pos.y = ground.height;
+            up = ground.normal;
+        }
         Some(WorldRoot { id: tree_root_id(pos.x, pos.z) ^ 0x5352_5542_0000_0000,
-            placement: RootPlacement { pos, up: Vec3::Y, yaw: spot.yaw, scale: spot.scale, variant } })
+            placement: RootPlacement { pos, up, yaw: spot.yaw, scale: spot.scale, variant } })
     }).collect()
 }
 
@@ -203,6 +211,35 @@ mod tests {
         assert!(!mode(None).unwrap());
         assert!(mode(Some("mixed")).unwrap());
         assert!(mode(Some("unknown")).is_err());
+    }
+
+    #[test]
+    fn roadside_mountain_avens_follow_the_rendered_ground_at_norways_shrub_sites() {
+        let biome = Biome::named("norway-dryas").unwrap();
+        let stage = Stage::generate_on(&mut gdcompat::Pcg::new(19), 500.0,
+            Some(crate::biome_land::land("norway-dryas").unwrap()));
+        let chunks: Vec<_> = (-1..=1).flat_map(|x| (-2..=0).map(move |z| (x, z)))
+            .map(|cell| sideways::builder::terrain_chunk(&stage, cell)).collect();
+        let field = crate::ground_cover::Field::new(&chunks);
+        let base: HashMap<_, _> = shrubs(&stage, &chunks, &Biome::named("norway").unwrap())
+            .into_iter().map(|r| (r.id, r.placement)).collect();
+        let roots = shrubs(&stage, &chunks, &biome);
+        let species = biome.species();
+        let mut mats_on_slopes = 0;
+        for root in roots {
+            let p = root.placement;
+            let old = base[&root.id];
+            assert_eq!((p.pos.x, p.pos.z, p.yaw, p.scale, p.variant),
+                (old.pos.x, old.pos.z, old.yaw, old.scale, old.variant));
+            if species[p.variant].0 == "dryas" {
+                let ground = field.sample(glam::Vec2::new(p.pos.x, p.pos.z)).unwrap();
+                assert_eq!((p.pos.y, p.up), (ground.height, ground.normal));
+                mats_on_slopes += u32::from(p.up.y < 0.999);
+            } else {
+                assert_eq!(p, old);
+            }
+        }
+        assert!(mats_on_slopes > 0);
     }
 
     #[test]

@@ -149,11 +149,11 @@ pub fn cook_variants(variants: &[(WoodyRecipe, u64)], cache: Option<&Path>) -> R
 const GROWN_ASSEMBLY_VERSION: u32 = 13;
 
 /// A library preset uses the same source as its inspection and scripting APIs.
-/// Existing woody entries retain their cache identity. Basal herbs include
-/// their recruitment and orientation rules in their own cache identity.
+/// Traditional woody entries retain their cache identity. Shoots with multiple
+/// materials, basal crowns and creeping mats include their recipe in the key.
 pub fn cook_catalog(form: &crate::plant_species::GrownSpecies, age: u32, seed: u64,
     parts: &crate::plant_growth_assembly::Parts, cache: Option<&Path>) -> Result<Cooked, String> {
-    let Some(basal) = form.basal else {
+    let Some(habit_key) = form.custom_cook_key() else {
         return cook_grown(&[(form.rules, age, seed)], parts, form.look, cache)?
             .pop().ok_or_else(|| "empty grown cook".into());
     };
@@ -170,7 +170,7 @@ pub fn cook_catalog(form: &crate::plant_species::GrownSpecies, age: u32, seed: u
     let (plant, loaded) = match cache {
         Some(dir) => {
             let ids: Vec<_> = parts.tufts.iter().map(|p| p.id).collect();
-            let key = format!("basal v1 {basal:?} {:?} {:?} {age} {seed} {ids:?} {config:?} {proxy:?} {PROXY_LEVELS} {limits:?}",
+            let key = format!("{habit_key} {:?} {:?} {age} {seed} {ids:?} {config:?} {proxy:?} {PROXY_LEVELS} {limits:?}",
                 form.rules, form.look);
             CookedPlant::cached(dir, &key, cook)?
         }

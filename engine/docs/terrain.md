@@ -65,10 +65,14 @@ Use `--from FILE` alone to restore the original world and camera.
 | `rainforest` | Rolling Central African lowlands with damp leaf litter and red clay on open ground and tracks | Kapok spreads its upper limbs above the mahogany canopy. Forest coffee and young raffia palms with arching fronds grow in its shade. |
 
 Both games offer local plant communities using the parent biome's existing
-understory sites and species weights. `desert-broom` pairs white broom with
+understory sites and species weights. The grown desert shrubs use
+*Nitraria retusa* for `desert_shrub` and *Atriplex halimus* for `saltbush`.
+`desert-broom` pairs white broom with
 saltbush, and `desert-grass` pairs drinn grass (*Stipagrostis pungens*) with
-saltbush. `norway-willow` grows woolly willow alongside dwarf birch. Beneath
-the rainforest canopy, `rainforest-dracaena` grows forest dracaena and
+saltbush. In Norway, `norway-willow` grows woolly willow alongside dwarf
+birch. Select `norway-dryas` for low flowering mats of mountain avens
+(*Dryas octopetala*) alongside dwarf birch. Their creeping stems follow the
+local slope. Beneath the rainforest canopy, `rainforest-dracaena` grows forest dracaena and
 `rainforest-fern` grows giant sword fern (*Nephrolepis biserrata*). Both
 share the forest floor with young raffia palms.
 
@@ -81,7 +85,7 @@ To inspect the actual source meshes at another age or seed:
 
 ```sh
 cargo run --release -p render --example plant_catalog_preview -- --list
-cargo run --release -p render --example plant_catalog_preview -- --out build/plants --seed 24 dune_grass forest_fern
+cargo run --release -p render --example plant_catalog_preview -- --out build/plants --seed 24 dune_grass forest_fern dryas
 ```
 
 The preview writes a full specimen, an attached shoot close-up and physical
@@ -99,7 +103,7 @@ locations can use `Flora::tree_variant` and `shrub_variant` with a stable
 roll at each location. `Flora::shrub_habitat` gives the planting probability
 multiplier for the local canopy cover.
 
-The desert, Norway and rainforest trees and shrubs use `plant_growth::grow`.
+The upright desert, Norway and rainforest trees and shrubs use `plant_growth::grow`.
 Annual growth sets the stem, branching, crown and live shoots. Drinn grass
 and giant sword fern grow their tillers and fronds from basal crowns. Luau
 games can scale either clump with `species.height` in `plants.grow`.

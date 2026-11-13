@@ -4,8 +4,11 @@
 use crate::plant_recipe::{CrownProfile, FoliageKind, WoodyRecipe};
 
 mod basal;
+mod creeping;
+mod dryas;
 mod fern;
 mod growth;
+mod scots_pine;
 mod shoots;
 pub use growth::{grown, GrownSpecies, GROWN_NAMES};
 
@@ -14,10 +17,10 @@ const LEAF: [f32; 3] = [0.11, 0.20, 0.055];
 const BARK: [f32; 3] = [0.16, 0.105, 0.062];
 
 /// Names accepted by the older woody recipe builder, `named`.
-pub const NAMES: [&str; 22] = [
+pub const NAMES: [&str; 23] = [
     "spruce", "pine", "birch", "broadleaf", "willow", "juniper", "shrub", "dwarf_birch", "desert_shrub",
     "saltbush", "upland_spruce", "scots_pine", "mountain_birch", "kapok", "african_mahogany", "forest_coffee", "raffia_palm",
-    "woolly_willow", "white_broom", "forest_dracaena", "dune_grass", "forest_fern",
+    "woolly_willow", "white_broom", "forest_dracaena", "dune_grass", "forest_fern", "dryas",
 ];
 
 /// A species' recipe by name.
@@ -48,7 +51,7 @@ pub fn named(name: &str) -> Option<WoodyRecipe> {
         // Tundra: knee-high, spreading, small dark leaves.
         "dwarf_birch" => shrub(0x4457_4152_4642, 0.6, 0.03, 0.7, CrownProfile::Spreading, 3, 0.25, 0.01, FoliageKind::Broadleaf, 18, 0.45,
             [0.09, 0.13, 0.05], [0.25, 0.17, 0.12]),
-        // Desert: a sparse open bush of grey-olive twigs (creosote, saltbush).
+        // Grey-olive desert scrub. The grown Nitraria has fleshy leaves on short shoots.
         "desert_shrub" => shrub(0x4445_5345_5254, 1.3, 0.04, 0.9, CrownProfile::Rounded, 4, 0.6, 0.012, FoliageKind::Needle, 10, 0.5,
             [0.16, 0.17, 0.09], [0.3, 0.25, 0.18]),
         // Pale low mats on the sand. Short upright sprays at the ends of
@@ -93,6 +96,10 @@ pub fn named(name: &str) -> Option<WoodyRecipe> {
             FoliageKind::Needle, 6, 0.35, [0.26, 0.295, 0.145], [0.31, 0.235, 0.13]),
         "forest_fern" => shrub(0x4645_524e, 1.0, 0.012, 0.85, CrownProfile::Spreading, 2, 0.54, 0.006,
             FoliageKind::Broadleaf, 8, 0.48, [0.095, 0.235, 0.045], [0.21, 0.15, 0.075]),
+        // Catalogue identity and colours. The woody builder accepts heights from 30 cm.
+        // The living mat and its actual dimensions come from grown("dryas").
+        "dryas" => shrub(0x4452_5941_53, 0.30, 0.005, 0.22, CrownProfile::Spreading, 2, 0.06, 0.002,
+            FoliageKind::Broadleaf, 6, 0.15, [0.075, 0.15, 0.046], [0.17, 0.11, 0.066]),
         _ => return None,
     })
 }

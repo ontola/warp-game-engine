@@ -502,7 +502,9 @@ mod tests {
     fn grown_botanical_parts_are_closed_solids_with_distinct_stable_ids() {
         use crate::plant_species::grown;
         let mut ids = BTreeSet::new();
-        for name in ["woolly_willow", "white_broom", "forest_dracaena", "forest_coffee", "african_mahogany", "kapok", "raffia_palm"] {
+        for name in ["woolly_willow", "white_broom", "forest_dracaena", "forest_coffee", "african_mahogany",
+            "kapok", "raffia_palm", "scots_pine", "juniper", "mountain_birch", "dwarf_birch",
+            "saltbush", "desert_shrub", "dryas", "forest_fern", "dune_grass"] {
             let model = grown(name).unwrap();
             let parts = model.parts();
             for (part, repeat) in parts.tufts.iter().zip(model.parts().tufts) {

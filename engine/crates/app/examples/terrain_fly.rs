@@ -1036,6 +1036,7 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
     }
     let edits=OVERRIDES.get().filter(|o|!o.is_empty());
     let edited=|placed:Vec<placement::Instance>,rules:&[placement::Rule],radius:f32|match edits {Some(o)=>o.apply(placed,rules,&land,c,radius),None=>placed};
+    let mats = lands.creeping_variants();
     let woody=if world.trees {edited(placement::place(&trees, &land, c, world.tree_radius),&trees,world.tree_radius).into_iter()
         .filter(|t| edits.is_some_and(|o|o.edits.contains_key(&t.id)) || render::forest_field::handover_keep(t.pos, c, start, end))
         // A grown forest (--pine-forest, --spruce-forest) makes every root a
@@ -1043,7 +1044,11 @@ fn forest(seed: u32, style: &Style, lands: &render::biome::Lands, centre: Vec3, 
         // SHRUB_RADIUS of the forest centre, and each recentre popped whole
         // trees in and out at 250-550 m (Joep's playtest, 9 November).
         .chain(if pine_forest().is_some() {Vec::new()} else {edited(placement::place(&shrubs, &land, c, world.tree_radius.min(SHRUB_RADIUS)),&shrubs,world.tree_radius.min(SHRUB_RADIUS))})
-        .map(|t|WorldRoot {id:t.id,placement:RootPlacement {up:Vec3::Y,pos:t.pos,yaw:t.yaw,scale:t.scale.y,variant:t.variant as usize}}).collect()} else {Vec::new()};
+        .map(|t| {
+            let variant = t.variant as usize;
+            let up = if mats.contains(&variant) { terrain_up(&land, t.pos.x, t.pos.z) } else { Vec3::Y };
+            WorldRoot { id: t.id, placement: RootPlacement { up, pos: t.pos, yaw: t.yaw, scale: t.scale.y, variant } }
+        }).collect()} else {Vec::new()};
     // One pine per age in a row 30 m north of the start, spaced by size.
     let woody:Vec<WorldRoot>=if world.trees && pine_ages() {
         // Anchored where the first build put it: the forest centre follows the
@@ -1104,6 +1109,12 @@ fn handover_band(world: World) -> (f32, f32) {
 /// Seeds of the cooked meadow cell variants (recipe_forest::cook_meadow_cells).
 const GRASS_VARIANT_SEEDS: [u64; 4] = [47, 83, 131, 197];
 
+fn terrain_up(land: &impl render::placement::World, x: f32, z: f32) -> Vec3 {
+    let dx = land.ground(x + 0.5, z).pos.y - land.ground(x - 0.5, z).pos.y;
+    let dz = land.ground(x, z + 0.5).pos.y - land.ground(x, z - 0.5).pos.y;
+    Vec3::new(-dx, 1.0, -dz).normalize()
+}
+
 fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f32)->f32,centre:Vec2,variant_offset:usize,radius:f32)->Vec<WorldRoot> {
     use render::placement::Cell;
     let cell=recipe_forest::MEADOW_CELL_SIZE;
@@ -1126,12 +1137,10 @@ fn grass_cells(seed:u32,land:&impl render::placement::World,grass:impl Fn(f32,f3
         let s=land.ground(x,z);
         let sparse=0.5+0.8*terrain_field::noised(Vec2::new(x,z)/40.,seed.wrapping_add(31)).x>grass(x,z);
         if sparse || s.scree>0.8 || s.water>0.02 || land.clearance(x,z)<cell {continue;}
-        let dx=land.ground(x+0.5,z).pos.y-land.ground(x-0.5,z).pos.y;
-        let dz=land.ground(x,z+0.5).pos.y-land.ground(x,z-0.5).pos.y;
         // The cell tilts with the ground, so along the fall line it covers
         // only cos(slope) of the grid step: a bare strip per row on a slope
         // (Mancave, 28 degrees: 0.18 m). Scaled by 1/up.y it meets the next row.
-        let up=Vec3::new(-dx,1.,-dz).normalize();
+        let up=terrain_up(land,x,z);
         // Rock and snow thin the grass out by a per-cell hash, not at one value.
         // (Letting grass onto mossy, up-facing rock put it over outcrops.)
         let smooth=|v:f32,a:f32,b:f32|((v-a)/(b-a)).clamp(0.,1.);

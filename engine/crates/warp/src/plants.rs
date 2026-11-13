@@ -357,8 +357,8 @@ mod tests {
     }
 
     #[test]
-    fn basal_previews_preserve_catalogue_placements_with_game_overrides() {
-        for name in ["dune_grass", "forest_fern"] {
+    fn custom_growth_previews_preserve_catalogue_placements_with_game_overrides() {
+        for name in ["dune_grass", "forest_fern", "dryas", "juniper"] {
             let mut expected = render::plant_species::grown(name).unwrap();
             expected.rules.height *= 1.6;
             expected.look.needles = [0.16, 0.24, 0.13];
@@ -370,8 +370,19 @@ mod tests {
             let (Cooked::Preview(preview), ..) = cook(p).unwrap() else { panic!("expected source meshes") };
             assert_eq!(preview.instances.len(), source.instances.len(), "{name}");
             assert!(preview.meshes.iter().any(|(_, m, _)| m.tint == p.look.needles), "{name}");
+            if name == "juniper" {
+                // Each needle-bearing tip also draws its woody axis and pale stomatal bands.
+                let needle = preview.instances.iter().find(|(mesh, _)| preview.meshes[*mesh].1.tint == p.look.needles).unwrap();
+                let companions: Vec<_> = preview.instances.iter().filter(|(_, world)| *world == needle.1)
+                    .map(|(mesh, _)| &preview.meshes[*mesh].1).collect();
+                assert!(companions.iter().any(|m| m.flags & render::scene::THIN_FOLIAGE == 0));
+                assert!(companions.iter().any(|m| m.flags & render::scene::THIN_FOLIAGE != 0
+                    && m.tint.into_iter().zip(p.look.needles).all(|(band, needle)| band > needle)));
+            }
             for ((mesh, world), instance) in preview.instances.iter().zip(&source.instances) {
-                assert_eq!(preview.meshes[*mesh].0, source.parts[instance.part as usize].id);
+                let (part_id, material, _) = &preview.meshes[*mesh];
+                assert_eq!(*part_id, source.parts[instance.part as usize].id);
+                assert_eq!(material.tint, source.materials[instance.material as usize].tint);
                 assert_eq!(*world, branches[instance.branch as usize] * instance.rest);
             }
         }

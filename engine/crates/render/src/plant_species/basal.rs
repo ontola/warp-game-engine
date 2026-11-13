@@ -48,6 +48,18 @@ pub(crate) const SWORD_FERN: BasalHabit = BasalHabit {
     variant_maturity: [0.0, 0.33, 0.56],
     edge_lean: [0.0; 3],
 };
+/// One young Raphia laurentii crown. Intertwined petiole bases conceal its
+/// stem; a handful of outer fronds arch away from younger erect foliage.
+pub(crate) const RAFFIA: BasalHabit = BasalHabit {
+    height_m: 2.9,
+    radius_m: 0.11,
+    mature_shoots: 9,
+    tilt: [0.04, 0.52],
+    emerging_scale: 0.78,
+    dry_fraction: 0.0,
+    variant_maturity: [0.0, 0.25, 0.40],
+    edge_lean: [0.05, 0.08, 0.12],
+};
 
 impl BasalHabit {
     pub(crate) fn assemble(
@@ -75,14 +87,7 @@ impl BasalHabit {
         if parts.tufts.len() != self.variant_maturity.len() {
             return Err("basal shoot library and variant thresholds disagree".into());
         }
-        let unit = |i: u32, channel: u32| {
-            let mut h = seed
-                ^ u64::from(i).wrapping_mul(0x9e37_79b9_7f4a_7c15)
-                ^ u64::from(channel).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-            ((h ^ (h >> 31)) >> 40) as f32 / 16_777_216.0
-        };
+        let unit = |i, channel| super::growth::seed_unit(seed, i, channel);
         let count = 1
             + (self.mature_shoots as f32 * maturity.powf(1.5) * (0.85 + 0.22 * unit(0, 0))).round()
                 as u32;

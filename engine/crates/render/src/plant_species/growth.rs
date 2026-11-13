@@ -1,10 +1,26 @@
 //! Growth rules and source foliage shared by the terrain viewer and games.
-use super::{basal, shoots::ShootRecipe};
+use super::{basal, creeping, shoots::ShootRecipe};
 use crate::{
     foliage_assembly::{Assembly, Limits},
     plant_growth::Species,
     plant_growth_assembly::{self, Counts, Look, Parts},
 };
+
+pub(super) fn seed_unit(seed: u64, index: u32, channel: u32) -> f32 {
+    let mut h = seed
+        ^ u64::from(index).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        ^ u64::from(channel).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    ((h ^ (h >> 31)) >> 40) as f32 / 16_777_216.0
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Habit {
+    Woody,
+    Basal(basal::BasalHabit),
+    Creeping(creeping::MatHabit),
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct GrownSpecies {
@@ -13,15 +29,23 @@ pub struct GrownSpecies {
     /// Representative stand age, in years.
     pub age: u32,
     pub seed: u64,
-    /// None selects the native conifer brush supplied by the growth lab.
+    /// A woody species without an authored shoot uses the growth lab's needle brush.
     shoot: Option<ShootRecipe>,
-    pub(crate) basal: Option<basal::BasalHabit>,
+    pub(crate) habit: Habit,
 }
 
 impl GrownSpecies {
     pub fn parts(&self) -> Parts {
         let mut parts = Parts::for_look(&self.look);
-        if let Some(recipe) = self.shoot {
+        if matches!(self.shoot, Some(ShootRecipe::Juniper)) {
+            let a = super::shoots::juniper::shoot(0);
+            let b = super::shoots::juniper::shoot(1);
+            parts.tufts = vec![a.needles, b.needles, a.wood, a.bands, b.bands];
+        } else if matches!(self.shoot, Some(ShootRecipe::ScotsPine)) {
+            parts.tufts = super::scots_pine::parts(&self.look);
+        } else if matches!(self.habit, Habit::Creeping(_)) {
+            parts.tufts = creeping::dryas_parts();
+        } else if let Some(recipe) = self.shoot {
             parts.tufts = (0..3).map(|v| recipe.build(v)).collect();
         }
         parts
@@ -29,19 +53,56 @@ impl GrownSpecies {
 
     /// Build the same source assembly for the viewer, game previews and voxel cooks.
     pub fn assemble(&self, parts: &Parts, age: u32, seed: u64, limits: Limits) -> Result<(Assembly, Counts), String> {
-        if let Some(habit) = self.basal {
-            return habit.assemble(&self.rules, self.look, parts, age, seed, limits);
+        match self.habit {
+            Habit::Basal(habit) => habit.assemble(&self.rules, self.look, parts, age, seed, limits),
+            Habit::Creeping(habit) => habit.assemble(&self.rules, self.look, parts, age, seed, limits),
+            Habit::Woody => {
+                let plant = crate::plant_growth::grow(&self.rules, age, seed);
+                use crate::scene::{Material, THIN_FOLIAGE, TWO_SIDED};
+                let stripe = [Material { tint: JUNIPER_BAND, layer: -1, roughness: 0.88,
+                    flags: THIN_FOLIAGE | TWO_SIDED, scale: 1.0, metal: 0.0 }];
+                let layers = match self.shoot {
+                    Some(ShootRecipe::Juniper) => Some(plant_growth_assembly::ShootLayers {
+                        variants: &[&[(2, 2), (3, 3)], &[(2, 2), (4, 3)]], materials: &stripe,
+                    }),
+                    Some(ShootRecipe::ScotsPine) => Some(plant_growth_assembly::ShootLayers {
+                        variants: &[&[(2, 2)], &[(3, 2)]], materials: &[],
+                    }),
+                    _ => None,
+                };
+                plant_growth_assembly::assemble_shoots(&plant, parts, self.look, seed, limits, layers)
+            }
         }
-        let plant = crate::plant_growth::grow(&self.rules, age, seed);
-        plant_growth_assembly::assemble(&plant, parts, self.look, seed, limits)
+    }
+
+    pub fn creeping_mat(&self) -> bool {
+        matches!(self.habit, Habit::Creeping(_))
+    }
+
+    pub fn layered_shoot(&self) -> bool {
+        self.creeping_mat() || matches!(self.shoot, Some(ShootRecipe::Juniper | ShootRecipe::ScotsPine))
+    }
+
+    /// Keep existing woody and basal cook identities. Custom recipes also
+    /// hash their parts; their placement rules belong in the same key.
+    pub(crate) fn custom_cook_key(&self) -> Option<String> {
+        match self.habit {
+            Habit::Woody if matches!(self.shoot, Some(ShootRecipe::Juniper)) => Some(format!("juniper v1 {JUNIPER_BAND:?}")),
+            Habit::Woody if matches!(self.shoot, Some(ShootRecipe::ScotsPine)) => Some("paired pine v1".into()),
+            Habit::Woody => None,
+            Habit::Basal(habit) => Some(format!("basal v1 {habit:?}")),
+            Habit::Creeping(habit) => Some(format!("creeping v1 {habit:?}")),
+        }
     }
 }
 
+const JUNIPER_BAND: [f32; 3] = [0.40, 0.46, 0.40];
+
 /// Keys accepted by the architectural growth and voxel assembly route.
-pub const GROWN_NAMES: [&str; 17] = [
+pub const GROWN_NAMES: [&str; 18] = [
     "pine", "upland_spruce", "scots_pine", "juniper", "mountain_birch", "dwarf_birch",
     "desert_shrub", "saltbush", "kapok", "african_mahogany", "forest_coffee", "raffia_palm",
-    "woolly_willow", "white_broom", "forest_dracaena", "dune_grass", "forest_fern",
+    "woolly_willow", "white_broom", "forest_dracaena", "dune_grass", "forest_fern", "dryas",
 ];
 
 /// Architectural rules for the woody species used by the desert, Norwegian
@@ -50,14 +111,15 @@ pub const GROWN_NAMES: [&str; 17] = [
 pub fn grown(name: &str) -> Option<GrownSpecies> {
     let recipe = super::named(name)?;
     let (seed, foliage, wood) = (recipe.id, recipe.foliage_colour, recipe.wood_colour);
-    let native = |rules, look, age| GrownSpecies { rules, look, age, seed: 1, shoot: None, basal: None };
+    let native = |rules, look, age| GrownSpecies { rules, look, age, seed: 1, shoot: None, habit: Habit::Woody };
     let authored = |rules, age, shoot| GrownSpecies {
-        rules, age, seed, shoot: Some(shoot), basal: None,
+        rules, age, seed, shoot: Some(shoot), habit: Habit::Woody,
         look: Look { needles: foliage, wood, ..Look::default() },
     };
-    let leafy = |rules, age, scale| authored(rules, age, ShootRecipe::Broadleaf(scale));
+    let leafy = |rules, age, twig| authored(rules, age, ShootRecipe::LeafyTwig(twig));
+    use super::shoots::leafy_twigs::{DWARF_BIRCH, MOUNTAIN_BIRCH, NITRARIA, SALTBUSH};
     let herb = |habit: basal::BasalHabit, pace, shape, age, shoot| GrownSpecies {
-        basal: Some(habit),
+        habit: Habit::Basal(habit),
         ..authored(Species { height: habit.height_m, pace, shape, ..Species::default() }, age, shoot)
     };
     // A woody broadleaf keeps recent tips in leaf; lateral growth and the
@@ -80,41 +142,61 @@ pub fn grown(name: &str) -> Option<GrownSpecies> {
         "pine" => native(Species::jeffrey_pine(), Look::jeffrey_pine(), 28),
         // Scots pine sheds its lower whorls, leaving a copper-brown bole
         // beneath ascending limbs with short blue-green needles.
-        "scots_pine" => native(Species {
+        "scots_pine" => GrownSpecies { shoot: Some(ShootRecipe::ScotsPine), ..native(Species {
             height: 31.0, pace: 36.0, shape: 1.55, whorl: [2, 4],
-            limb_step: 0.31, side_length: 0.67, angle: [1.26, 1.48], rise: 0.065,
-            needle_years: 4, live_crown: 0.55, lift_years: 28.0, dead_years: 7,
+            limb_step: 0.31, side_length: 0.69, angle: [1.36, 1.66], rise: 0.038,
+            needle_years: 4, live_crown: 0.56, lift_years: 28.0, dead_years: 7,
+            tip_radius: 0.0021, order_wood: [0.53, 0.31, 0.19, 0.10],
             ..Species::jeffrey_pine()
         }, Look {
             needles: foliage, wood,
-            needle_length: 0.135, needle_width: 0.0022, brush_reach: 0.19,
-            brush_needles: 65, tip_spread: 0.55, ..Look::jeffrey_pine()
-        }, 28),
+            needle_length: 0.056, needle_width: 0.00115, brush_reach: 0.165,
+            brush_needles: 160, tip_spread: 0.51, brush_spread: 1.36, ..Look::jeffrey_pine()
+        }, 28) },
         "upland_spruce" => native(Species::norway_spruce(), Look::norway_spruce(), 18),
-        "juniper" => native(Species {
-            height: 1.25, pace: 6.5, limb_step: 0.15, angle: [1.3, 1.55], rise: 0.015,
-            needle_years: 4, ..shrub
-        }, Look {
-            wood, needles: foliage, brush_needles: 44,
-            needle_length: 0.028, brush_reach: 0.075, needle_width: 0.0009,
-            ball: 1.4, ..Look::norway_spruce()
-        }, 9),
+        // Low Norwegian common juniper: long basal limbs spread sideways,
+        // then divide into short ascending sprays that stay green near the ground.
+        "juniper" => GrownSpecies {
+            rules: Species {
+                height: 0.22, pace: 8.2, shape: 1.6, first_whorl: 1, whorl: [3, 4],
+                limb_step: 0.041, side_length: 0.60, angle: [1.38, 1.38], rise: 0.18,
+                droop: 0.015, laterals: 0.84, max_order: 2, needle_years: 6,
+                shade: 0.016, crowding: 38, plumes: 1.13, tip_radius: 0.00058,
+                wood: 0.00062, limb_wood: 0.66, order_wood: [0.72, 0.39, 0.22, 0.0],
+                ..shrub
+            },
+            look: Look { wood: [0.125, 0.085, 0.065], needles: [0.037, 0.095, 0.060],
+                         ..Look::default() },
+            shoot: Some(ShootRecipe::Juniper), habit: Habit::Woody, age: 6, seed: 1,
+        },
         "mountain_birch" => leafy(Species {
-            height: 9.0, pace: 13.0, limb_step: 0.26, laterals: 0.67,
-            angle: [0.72, 1.05], live_crown: 0.62, ..broadleaf
-        }, 18, [0.73, 0.66, 0.73]),
+            height: 5.9, pace: 13.5, shape: 2.3, first_whorl: 1, whorl: [2, 3],
+            limb_step: 0.35, laterals: 0.85, side_length: 0.64, crowding: 18,
+            angle: [0.64, 0.97], rise: 0.045, live_crown: 0.85, plumes: 2.0,
+            tip_radius: 0.002, wood: 0.0052, order_wood: [0.72, 0.35, 0.0, 0.0],
+            ..broadleaf
+        }, 18, &MOUNTAIN_BIRCH),
         "dwarf_birch" => leafy(Species {
-            height: 0.62, pace: 5.0, limb_step: 0.10, rise: 0.015,
-            angle: [1.40, 1.50], ..shrub
-        }, 8, [0.28, 0.23, 0.28]),
+            height: 0.23, pace: 4.6, shape: 1.95, first_whorl: 1, whorl: [3, 4],
+            limb_step: 0.071, side_length: 0.44, limb_life: [5, 10], angle: [1.04, 1.12],
+            rise: 0.09, droop: 0.001, laterals: 1.12, needle_years: 4, shade: 0.008,
+            crowding: 26, plumes: 2.0, tip_radius: 0.0009, wood: 0.0011,
+            order_wood: [0.61, 0.26, 0.0, 0.0], ..shrub
+        }, 7, &DWARF_BIRCH),
         "desert_shrub" => leafy(Species {
-            height: 1.36, pace: 5.8, whorl: [1, 2], laterals: 0.45, limb_step: 0.19,
-            angle: [1.30, 1.38], rise: 0.04, wood: 0.004, needle_years: 1, ..shrub
-        }, 9, [0.23, 0.27, 0.23]),
+            height: 0.74, pace: 5.3, shape: 2.12, first_whorl: 1, whorl: [2, 4],
+            laterals: 0.88, limb_step: 0.185, side_length: 0.49, limb_life: [8, 16],
+            angle: [1.06, 1.21], rise: 0.078, droop: 0.006, shade: 0.013,
+            crowding: 21, wood: 0.0024, tip_radius: 0.0012, needle_years: 5,
+            order_wood: [0.65, 0.31, 0.0, 0.0], ..shrub
+        }, 9, &NITRARIA),
         "saltbush" => leafy(Species {
-            height: 0.44, pace: 5.0, limb_step: 0.13, angle: [1.46, 1.60],
-            rise: 0.02, ..shrub
-        }, 8, [0.33, 0.23, 0.33]),
+            height: 0.48, pace: 6.5, shape: 1.65, first_whorl: 1, whorl: [3, 4],
+            limb_step: 0.077, side_length: 0.30, limb_life: [6, 13], angle: [0.80, 0.98],
+            rise: 0.20, droop: 0.001, laterals: 1.12, shade: 0.013, crowding: 26,
+            plumes: 1.8, needle_years: 3, wood: 0.0013, tip_radius: 0.001,
+            order_wood: [0.60, 0.27, 0.0, 0.0], ..shrub
+        }, 6, &SALTBUSH),
         // The emergent sets its first scaffold limbs high on a clean bole.
         // Its spreading crown overtops the shorter, darker mahogany.
         "kapok" => authored(Species {
@@ -132,14 +214,7 @@ pub fn grown(name: &str) -> Option<GrownSpecies> {
             angle: [1.37, 1.54], rise: -0.03, droop: 0.09, needle_years: 4,
             wood: 0.0036, ..shrub
         }, 9, ShootRecipe::COFFEE),
-        // Young fronds rise from the crown; as their axes extend they bend
-        // down. The leaflets on a frond sit close to one plane.
-        "raffia_palm" => authored(Species {
-            height: 0.92, pace: 8.0, first_whorl: 4, whorl: [1, 2], max_order: 1,
-            limb_step: 0.135, angle: [1.20, 1.25], rise: 0.02, droop: 0.022,
-            needle_years: 1, limb_wood: 0.23, wood: 0.012, plumes: 1.0,
-            live_crown: 0.80, lift_years: 12.0, ..shrub
-        }, 11, ShootRecipe::Raffia),
+        "raffia_palm" => herb(basal::RAFFIA, 3.9, 1.2, 11, ShootRecipe::Raffia),
         // Short early leader growth sets several stout limbs near the ground.
         // Older low limbs carry leafy side shoots into the outer crown.
         "woolly_willow" => authored(Species {
@@ -167,6 +242,11 @@ pub fn grown(name: &str) -> Option<GrownSpecies> {
         }, 9, ShootRecipe::Dracaena),
         "dune_grass" => herb(basal::DRINN, 1.65, 1.0, 5, ShootRecipe::Drinn),
         "forest_fern" => herb(basal::SWORD_FERN, 1.35, 1.07, 4, ShootRecipe::Fern),
+        "dryas" => GrownSpecies {
+            rules: Species { height: creeping::DRYAS.height_m, pace: 4.5, shape: 1.12, ..shrub },
+            look: Look { needles: foliage, wood, ..Look::default() },
+            age: 6, seed, shoot: None, habit: Habit::Creeping(creeping::DRYAS),
+        },
         _ => return None,
     })
 }
@@ -185,15 +265,16 @@ mod tests {
             for (name, _) in Biome::named(region).unwrap().species() {
                 let s = grown(name).unwrap_or_else(|| panic!("{region}: no grown {name}"));
                 let parts = s.parts();
-                let plant = plant_growth::grow(&s.rules, s.age, s.seed);
-                let (assembly, placed) = plant_growth_assembly::assemble(
-                    &plant, &parts, s.look, s.seed, plant_growth_assembly::limits(),
-                ).unwrap_or_else(|e| panic!("{name}: {e}"));
-                assert!(placed.tufts > 0 && placed.stems > 0, "{name}");
+                let (assembly, placed) = s.assemble(&parts, s.age, s.seed, plant_growth_assembly::limits())
+                    .unwrap_or_else(|e| panic!("{name}: {e}"));
+                assert!(placed.tufts > 0, "{name}");
+                assert_eq!(placed.stems == 0, matches!(s.habit, Habit::Basal(_)), "{name}");
                 if s.shoot.is_some() {
                     for p in &parts.tufts {
                         assert!(leaf_ids.insert(p.id), "{name}: reused shoot identity");
-                        assert!(p.vertices.iter().all(|v| v.uv[1] >= 0.0), "{name}: needle brush");
+                        if !matches!(s.shoot, Some(ShootRecipe::ScotsPine)) {
+                            assert!(p.vertices.iter().all(|v| v.uv[1] >= 0.0), "{name}: needle brush");
+                        }
                     }
                 }
                 let [lo, hi] = assembly.bounds().unwrap();
@@ -245,9 +326,7 @@ mod tests {
             let model = grown(name).unwrap();
             let parts = model.parts();
             for seed in [model.seed, 13, 65, 74, 91] {
-                let grown = plant_growth::grow(&model.rules, model.age, seed);
-                let (assembly, _) = plant_growth_assembly::assemble(&grown, &parts, model.look, seed,
-                    plant_growth_assembly::limits()).unwrap();
+                let (assembly, _) = model.assemble(&parts, model.age, seed, plant_growth_assembly::limits()).unwrap();
                 let branches = assembly.branch_transforms().unwrap();
                 for instance in &assembly.instances {
                     let part = &assembly.parts[instance.part as usize];

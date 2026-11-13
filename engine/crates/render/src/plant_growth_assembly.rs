@@ -343,6 +343,24 @@ fn runs(plant: &Plant, reach: f32) -> Vec<(u32, Vec3, Vec3, f32, f32, bool)> {
 /// to `limits.max_branches`); everything else rides the trunk's. Twig runs grow
 /// and tufts thin only as far as `limits.max_instances` demands.
 pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Limits) -> Result<(Assembly, Counts), String> {
+    assemble_shoots(plant, parts, look, seed, limits, None)
+}
+
+/// Optional coloured source components at the same attachment as each leaf
+/// mesh. Part indices are relative to Parts::tufts. The first variants.len()
+/// meshes are the randomly selectable base foliage, the rest are companions.
+pub(crate) struct ShootLayers<'a> {
+    pub variants: &'a [&'a [(usize, usize)]],
+    pub materials: &'a [Material],
+}
+
+pub(crate) fn assemble_shoots(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Limits,
+    layers: Option<ShootLayers<'_>>) -> Result<(Assembly, Counts), String> {
+    let variants = layers.as_ref().map_or(parts.tufts.len().max(1), |l| l.variants.len());
+    let members = 1 + layers.as_ref().and_then(|l| l.variants.iter().map(|m| m.len()).max()).unwrap_or(0);
+    if layers.is_some() && (variants == 0 || variants > parts.tufts.len()) {
+        return Err("invalid grown shoot library".into());
+    }
     let n = plant.segments.len();
     // The limb each segment belongs to: the first order-1 segment on its way up.
     let mut limb = vec![u32::MAX; n];
@@ -411,7 +429,7 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
         usize::from(r.3 > JOINT_RADIUS && (r.5 && plant.segments[r.0 as usize].order > 0 || !r.5)) + usize::from(!continues(i) && r.4 > JOINT_RADIUS)
             + usize::from(r.5 && plant.segments[r.0 as usize].order == 0 && r.3 > JOINT_RADIUS)
     }).sum();
-    let room = limits.max_instances.saturating_sub(stems.len() + collars);
+    let room = limits.max_instances.saturating_sub(stems.len() + collars) / members;
     let keep = (room as f32 / plant.tufts.len().max(1) as f32).min(1.0);
     let mut instances = Vec::with_capacity(limits.max_instances);
     for (i, &(segment, from, to, radius, end, first)) in stems.iter().enumerate() {
@@ -458,7 +476,7 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     let mut wanted = vec![0usize; branches.len()];
     for t in &plant.tufts { wanted[bone_of(t.segment) as usize] += 1; }
     let branch_keep: Vec<f32> = (0..branches.len()).map(|b| {
-        let room = MAX_BRANCH_MEMBERS.saturating_sub(on_branch[b]) as f32;
+        let room = (MAX_BRANCH_MEMBERS.saturating_sub(on_branch[b]) / members) as f32;
         (room / (wanted[b] as f32 * keep).max(1.0)).min(1.0)
     }).collect();
     let mut placed = 0;
@@ -467,17 +485,27 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
         let kept = keep * branch_keep[b as usize];
         // Kept at random to spread the thinning; the draw can overshoot the
         // room by chance, so stop at the limits instead of failing the plant.
-        if unit(seed, i as u64, 9) >= kept || instances.len() >= limits.max_instances || on_branch[b as usize] >= MAX_BRANCH_MEMBERS {
+        if unit(seed, i as u64, 9) >= kept || instances.len() + members > limits.max_instances || on_branch[b as usize] + members > MAX_BRANCH_MEMBERS {
             continue;
         }
-        on_branch[b as usize] += 1;
         // Kept tufts grow to cover for the ones the limits leave out.
         // Grow a little for the left-out ones, not into balls.
         let size = (0.75 + 0.45 * t.fullness) * (1.0 / kept.sqrt()).min(1.15);
         let twist = Quat::from_axis_angle(Vec3::Y, unit(seed, i as u64, 10) * TAU);
         let world = Mat4::from_scale_rotation_translation(Vec3::splat(size), along(Vec3::ZERO, t.axis) * twist, t.at);
-        let part = 9 + (unit(seed, i as u64, 11) * parts.tufts.len() as f32) as u32 % parts.tufts.len().max(1) as u32;
-        instances.push(PartInstance { id: seed ^ (0x5446 << 40) ^ i as u64, part, branch: b, rest: affine(inverse[b as usize] * world), material: 1 });
+        let variant = (unit(seed, i as u64, 11) * variants as f32) as usize % variants;
+        let first = (parts.stems.len() + 1) as u32;
+        let rest = affine(inverse[b as usize] * world);
+        let id = seed ^ (0x5446 << 40) ^ i as u64;
+        instances.push(PartInstance { id, part: first + variant as u32, branch: b, rest, material: 1 });
+        on_branch[b as usize] += 1;
+        if let Some(layers) = &layers {
+            for (index, &(part, material)) in layers.variants[variant].iter().enumerate() {
+                instances.push(PartInstance { id: id ^ ((index as u64 + 1) << 56), part: first + part as u32,
+                    branch: b, rest, material: material as u32 });
+                on_branch[b as usize] += 1;
+            }
+        }
         placed += 1;
     }
     let counts = Counts { bones: branches.len(), stems: stems.len() + collars, tufts: placed, tufts_dropped: plant.tufts.len() - placed };
@@ -495,7 +523,11 @@ pub fn assemble(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Lim
     let needles = Material { tint: look.needles, layer: -1, roughness: 0.8, flags: THIN_FOLIAGE | TWO_SIDED, scale: 1.0, metal: 0.0 };
     let geometry = parts.stems.iter().chain(std::iter::once(&parts.collar)).chain(&parts.tufts).cloned().collect();
     let parameters = Parameters { seed, archetype: Archetype::ConiferTwig, growth: 1.0, season: 0.5, density: placed.max(1) as u32 };
-    let assembly = Assembly::from_parts(parameters, geometry, branches, instances, vec![bark(0.10), needles, bark(0.0)], limits)?;
+    let mut materials = vec![bark(0.10), needles, bark(0.0)];
+    if let Some(layers) = layers {
+        materials.extend_from_slice(layers.materials);
+    }
+    let assembly = Assembly::from_parts(parameters, geometry, branches, instances, materials, limits)?;
     Ok((assembly, counts))
 }
 

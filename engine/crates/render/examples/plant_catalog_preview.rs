@@ -53,7 +53,7 @@ impl Frame {
 
 // Show a real attached shoot and its supporting wood. For a leafless specimen,
 // show its longest woody axis. Keep both world matrices (including scale).
-fn shoot_detail(assembly: &Assembly, parts: &Parts, world: &[Mat4]) -> (Vec<usize>, Mat3, bool) {
+fn shoot_detail(assembly: &Assembly, parts: &Parts, world: &[Mat4], layered: bool) -> (Vec<usize>, Mat3, bool) {
     let mut stems = vec![Vec::new(); assembly.branches.len()];
     for (i, instance) in assembly.instances.iter().enumerate() {
         let part = assembly.parts[instance.part as usize].id;
@@ -84,9 +84,9 @@ fn shoot_detail(assembly: &Assembly, parts: &Parts, world: &[Mat4]) -> (Vec<usiz
             }
         }
     }
-    let (indices, is_leaf) = if let Some((_, shoot, support)) = best {
+    let (mut indices, is_leaf) = if let Some((_, shoot, support)) = best {
         (vec![shoot, support], true)
-    } else if let Some((i, _)) = assembly
+    } else if let Some((i, _, _)) = assembly
         .instances
         .iter()
         .enumerate()
@@ -100,11 +100,15 @@ fn shoot_detail(assembly: &Assembly, parts: &Parts, world: &[Mat4]) -> (Vec<usiz
                 .iter()
                 .map(|v| world[i].transform_vector3(v.pos.into()).length_squared())
                 .fold(0.0, f32::max);
-            (i, length_sq)
+            // A mat can carry both sterile and flowering shoots. Inspect a
+            // real flower when present, even if a sterile runner is longer.
+            let group_size = if layered {
+                assembly.instances.iter().filter(|other| other.branch == instance.branch && other.rest == instance.rest).count()
+            } else { 1 };
+            (i, group_size, length_sq)
         })
-        .max_by(|(_, a), (_, b)| a.total_cmp(b))
+        .max_by(|(_, a, u), (_, b, v)| a.cmp(b).then_with(|| u.total_cmp(v)))
     {
-        // Basal organs carry their own culm or stipe as part of the source mesh.
         (vec![i], true)
     } else {
         let wood = stems
@@ -120,6 +124,16 @@ fn shoot_detail(assembly: &Assembly, parts: &Parts, world: &[Mat4]) -> (Vec<usiz
             .unwrap_or(0);
         (vec![wood], false)
     };
+    if layered && is_leaf {
+        let i = indices[0];
+        let base = &assembly.instances[i];
+        // A layered organ includes its own woody twig. Keep all of its
+        // materials together and frame the actual organ without a long limb.
+        indices.truncate(1);
+        indices.extend(assembly.instances.iter().enumerate().filter_map(|(j, other)| {
+            (j != i && base.branch == other.branch && base.rest == other.rest).then_some(j)
+        }));
+    }
     let (_, rotation, _) = world[indices[0]].to_scale_rotation_translation();
     // Choose the view that exposes the greatest projected surface area.
     // A palmate leaf opens across the shoot while a palm frond opens along it.
@@ -340,9 +354,12 @@ fn export(
     if all.is_empty() {
         return Err(format!("{name} produced no geometry"));
     }
-    let habit = Frame::fit(&geometry, &all, &world, view(Vec3::new(0.86, 0.12, 0.49)));
-    let (detail, axes, leaf) = shoot_detail(&geometry, &parts, &world);
-    let shoot = Frame::fit(&geometry, &detail[..1], &world, axes);
+    // The leaf layer and flowers of a prostrate mat are visible from above.
+    let elevation = if recipe.creeping_mat() { 0.73 } else { 0.12 };
+    let habit = Frame::fit(&geometry, &all, &world, view(Vec3::new(0.86, elevation, 0.49)));
+    let (detail, axes, leaf) = shoot_detail(&geometry, &parts, &world, recipe.layered_shoot());
+    let frame_parts = if recipe.layered_shoot() { &detail[..] } else { &detail[..1] };
+    let shoot = Frame::fit(&geometry, frame_parts, &world, axes);
     let path = |suffix| directory.join(format!("{name}{suffix}"));
     Specimen {
         geometry: &geometry,
@@ -362,13 +379,32 @@ fn export(
     )?;
     let [lo, hi] = geometry.bounds()?;
     let size = Vec3::from(hi) - Vec3::from(lo);
-    let record = serde_json::json!({
+    let mut record = serde_json::json!({
         "species": name, "age_years": age, "seed": seed.to_string(),
         "height_m": size.y, "span_m": size.x.max(size.z), "instances": all.len(),
         "placed_tufts": counts.tufts, "dropped_tufts": counts.tufts_dropped,
         "habit_frame_m": habit.width, "shoot_frame_m": shoot.width,
-        "detail": if !leaf { "woody_axis" } else if counts.stems == 0 { "basal_shoot" } else { "shoot_and_support" },
+        "detail": if recipe.creeping_mat() { "runner" } else if !leaf { "woody_axis" } else if counts.stems == 0 { "basal_shoot" } else { "shoot_and_support" },
     });
+    // For the native forest reference conifers a brush is a single clump of
+    // needles. Show the whole articulated limb as well, with every attached
+    // source instance and its existing transform.
+    if matches!(name, "pine" | "upland_spruce") {
+        let mut load = vec![0usize; geometry.branches.len()];
+        for inst in &geometry.instances {
+            load[inst.branch as usize] += 1;
+        }
+        if let Some((branch, _)) = load.iter().enumerate().skip(1).filter(|(_, n)| **n > 0).max_by_key(|(_, n)| *n) {
+            let limb: Vec<_> = all.iter().copied().filter(|&i| geometry.instances[i].branch as usize == branch).collect();
+            let lateral_view = (bones[branch].transform_point3(Vec3::ZERO)
+                - world[*limb.last().unwrap()].transform_point3(Vec3::ZERO)).cross(Vec3::Y);
+            let toward = lateral_view.normalize_or(Vec3::X) + Vec3::Y * 0.38;
+            let frame = Frame::fit(&geometry, &limb, &world, view(toward));
+            Specimen { geometry: &geometry, indices: &limb, world: &world }
+                .save(&frame, &path("-branch.png"), if detail_2x { 2 * SIDE } else { SIDE })?;
+            record["branch_frame_m"] = frame.width.into();
+        }
+    }
     fs::write(path(".json"), record.to_string()).map_err(|e| e.to_string())?;
     println!(
         "{name}: {} years, {:.2} m high, {:.2} m wide",
