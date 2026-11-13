@@ -69,15 +69,23 @@ pub(crate) fn source_work(scene:&Scene,source:GpuInstance)->Result<SourceWork,St
 }
 
 /// Bins of the source work table: mesh error thresholds in the tree's local
-/// metres, SOURCE_TABLE_T0 * 2^k for k in 0..12 (0.25 mm .. 0.5 m).
-pub(crate) const SOURCE_TABLE_BINS:usize=12;
-pub(crate) const SOURCE_TABLE_T0:f32=0.00025;
+/// metres, SOURCE_TABLE_T0 * 2^(k/2) for k in 0..24 (0.25 mm .. 0.7 m). Half
+/// octaves: a cut books the bin at or below its threshold, and whole octaves
+/// lost up to one LOD level there (thinned needle brushes step ~1.6x).
+pub const SOURCE_TABLE_BINS:usize=24;
+pub const SOURCE_TABLE_T0:f32=0.00025;
+/// A packed bin at this value means "every cluster" (the node's full count).
+pub const SOURCE_TABLE_FULL:u32=0xffff;
+/// A node's table as stored on the GPU: two 16-bit bins per word, bin 2i
+/// low. Counts that do not fit 16 bits store SOURCE_TABLE_FULL.
+pub type PackedSourceTable=[u32;SOURCE_TABLE_BINS/2];
+pub const FULL_SOURCE_TABLE:PackedSourceTable=[SOURCE_TABLE_FULL|SOURCE_TABLE_FULL<<16;SOURCE_TABLE_BINS/2];
 /// Clusters the cull visits for this source at each bin's threshold: per
 /// member, those whose parent_error (in the member's own units: the bin over
 /// its scale) exceeds it when its mesh is sorted coarse first
 /// (ClusterMesh::sort_coarse_first), all of them otherwise. Bin k bounds every
 /// cut at a threshold of at least t_k; foliage_refine books by it.
-pub(crate) fn source_work_table(scene:&Scene,source:GpuInstance)->Result<[u32;SOURCE_TABLE_BINS],String>{
+pub(crate) fn source_work_table(scene:&Scene,source:GpuInstance)->Result<PackedSourceTable,String>{
     let members=if source.cluster_count==0 && source.first_cluster!=0 && source.flags&crate::scene::PART_WIND!=0 {
         let start=(source.first_cluster>>12)as usize;let count=(source.first_cluster&4095)as usize;
         scene.instances.get(start..start+count).ok_or("source work templates outside catalog")?
@@ -88,13 +96,18 @@ pub(crate) fn source_work_table(scene:&Scene,source:GpuInstance)->Result<[u32;SO
         let clusters=scene.clusters.get(member.first_cluster as usize..end as usize).ok_or("source work clusters outside catalog")?;
         let sorted=!clusters.is_empty() && clusters.iter().all(|c|c.order&crate::cluster::CLUSTERS_COARSE_FIRST!=0);
         for (k,slot) in table.iter_mut().enumerate() {
-            let t=SOURCE_TABLE_T0*(1u32<<k)as f32/member.scale.max(1e-12);
+            let t=source_table_threshold(k)/member.scale.max(1e-12);
             let count=if sorted {clusters.partition_point(|c|c.parent_error>t)as u32}else{member.cluster_count};
             *slot=slot.checked_add(count).ok_or("source cluster work overflow")?;
         }
     }
-    Ok(table)
+    let bin=|k:usize|table[k].min(SOURCE_TABLE_FULL);
+    Ok(std::array::from_fn(|i|bin(2*i)|bin(2*i+1)<<16))
 }
+/// Bin k's threshold in the tree's local metres.
+pub fn source_table_threshold(k:usize)->f32 {SOURCE_TABLE_T0*(k as f32*0.5).exp2()}
+/// The bins of a packed table (SOURCE_TABLE_FULL where every cluster counts).
+pub fn unpack_source_table(t:&PackedSourceTable)->[u32;SOURCE_TABLE_BINS] {std::array::from_fn(|k|(t[k/2]>>(16*(k%2)))&0xffff)}
 
 fn clusters(scene:&Scene,source:GpuInstance)->Result<BTreeSet<u32>,String>{
     let members=if source.cluster_count==0 && source.first_cluster!=0 && source.flags&32!=0 {

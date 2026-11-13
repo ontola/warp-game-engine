@@ -144,7 +144,7 @@ impl Selector {
     /// `source_tables[i]`: node i's source clusters per error bin
     /// (foliage_source_pages::source_work_table). Empty books every source
     /// node at its full count (links.w >> 8) in every bin.
-    pub fn with_source_tables(gpu:&Gpu,nodes:&[Node],source_tables:&[[u32;12]],instances:&[Instance],capacity:u32,deferred_capacity:u32)->Result<Self,String> {
+    pub fn with_source_tables(gpu:&Gpu,nodes:&[Node],source_tables:&[crate::foliage_pages::source::PackedSourceTable],instances:&[Instance],capacity:u32,deferred_capacity:u32)->Result<Self,String> {
         let work_capacity=(instances.len()as u32).saturating_mul(8).max(capacity.saturating_mul(4)).max(4096).min(1<<20).max(instances.len()as u32);
         Self::with_capacity_and_tables(gpu,nodes,source_tables,instances,capacity,deferred_capacity,work_capacity)
     }
@@ -153,14 +153,14 @@ impl Selector {
     }
     /// Bounded frontier storage. Overflow publishes a complete resident root,
     /// never a partial cut. This is a memory budget, not a backend switch.
-    fn with_capacity_and_tables(gpu:&Gpu,nodes:&[Node],source_tables:&[[u32;12]],instances:&[Instance],capacity:u32,deferred_capacity:u32,work_capacity:u32)->Result<Self,String> {
+    fn with_capacity_and_tables(gpu:&Gpu,nodes:&[Node],source_tables:&[crate::foliage_pages::source::PackedSourceTable],instances:&[Instance],capacity:u32,deferred_capacity:u32,work_capacity:u32)->Result<Self,String> {
         validate(nodes,instances,capacity)?;
         if !source_tables.is_empty() && source_tables.len()!=nodes.len() {return Err("one source work table per foliage node".into());}
         // The hierarchy buffer holds the nodes, then one table per node in a
         // node-sized record (foliage_refine.wgsl source_work_at).
         let mut uploaded=nodes.to_vec();
-        uploaded.extend(nodes.iter().enumerate().map(|(i,n)|{
-            let t=source_tables.get(i).copied().unwrap_or([n.links[3]>>8;12]);
+        uploaded.extend((0..nodes.len()).map(|i|{
+            let t=source_tables.get(i).copied().unwrap_or(crate::foliage_pages::source::FULL_SOURCE_TABLE);
             bytemuck::cast::<[u32;12],Node>(t)
         }));
         let limit=gpu.device.limits();
