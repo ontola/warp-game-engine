@@ -196,13 +196,21 @@ light.froxel_fog = Some(FroxelFog { density: 0.15, albedo: Vec3::splat(0.9), ani
   The cells it writes are its own bind group (group 3): shade's view group
   already carries three storage textures, and a stage may see four
   (`frame::shade_storage_textures`, checked by a test).
-- Air the camera cannot see does not reach the fog it can: a column skips
-  cells behind its farthest visible surface (the least depth in its tile,
-  found by the workgroup), and a sample that lies behind the depth buffer at
-  its own pixel (above a ceiling, outside a wall, in a column that also shows
-  the far side of the room) leaves the cell's history as it is, so the cell
-  averages its visible air. Without this a cell straddling a wall took the
-  outdoor sky and sun into the room's smoke (a bright band along a ceiling).
+- Air the camera cannot see does not reach the fog it can. A column marks
+  the cells behind its farthest visible surface (the least depth in its
+  tile, found by the workgroup) as holding no air it sees (alpha -1,
+  carried through the integration), and every lookup of the volumes (shade,
+  glass, last frame's cells) filters trilinearly over the unmarked cells
+  only. A cell it cuts samples only in front of that surface; a sample that
+  lies behind the depth buffer at its own pixel (above a ceiling, outside a
+  wall, in a column that also shows the far side of the room) moves to the
+  ray of the tile's farthest pixel, which sees past the whole cell. Without
+  the first a cell straddling a wall took the outdoor sky and sun into the
+  room's smoke (a bright band along a ceiling); with dark air stored in the
+  marked cells instead, a pixel next to a nearer column read that air: a
+  dark wedge on the grass beside a building's edge and a dark, flickering
+  band just below the horizon, where each row of cells sees farther than
+  the row beneath it.
 - `integrate`: per column, front to back, Hillaire's energy-conserving step;
   shade dims each pixel by the transmittance to its depth and adds the
   in-scattered light, trilinear, before TAA.

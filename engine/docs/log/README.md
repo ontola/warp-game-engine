@@ -154,6 +154,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [The room bake on the GPU, 13 November](2026-11-13-gpu-room-bake.md)
 - [Room bake: bias of the smoothing, noise of small openings, kinks, 13 November](2026-11-13-probe-noise-bias.md)
 - [Five storage textures in one stage: terrain_fly would not start, 13 November](2026-11-13-storage-texture-limit.md)
+- [Froxel fog: dark edges, a flickering horizon, flicker under a lamp, 13 November](2026-11-13-fog-edges-flicker.md)
 - [Traced reflections, stage 1, 8 November](2026-11-08-traced-reflections.md)
 - [Low-sun shadow diagnostics, 24 October](sun-shadow-diagnostics.md)
 - [World visibility and cached lighting, 24 October](world-lighting.md)
