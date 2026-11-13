@@ -268,7 +268,7 @@ fn appearance(
 
 const VISIBLE_SEAT_BYTES: u64 = 48;
 const HUMAN_SHADER: &str = concat!(
-    include_str!("../shaders/crowd_displacement.wgsl"), "\n",
+    include_str!("../shaders/crowd_jump.wgsl"), "\n", include_str!("../shaders/crowd_displacement.wgsl"), "\n",
     include_str!("../shaders/surface_fog.wgsl"), "\n",
     include_str!("../shaders/incident_lights.wgsl"), "\n",
     include_str!("strands.wgsl"), "\n",

@@ -30,6 +30,35 @@ fn alarm_pulse(clock: f32, salt: u32) -> f32 {
     strength * smooth(0., attack, clock.fract()) * (1. - smooth(attack + 0.1, 0.90, clock.fract()))
 }
 
+#[derive(Default)]
+struct CheerJump {
+    height: f32,
+    compression: f32,
+    tuck: f32,
+    arm_swing: f32,
+}
+
+// Match the GPU's cheer_jump for a player on a stationary seat.
+fn cheer_jump(seat: &Seat, time: f32, excitement: f32, fear: f32) -> CheerJump {
+    let energy = smooth(0.05, 0.90, excitement);
+    let strength = (seat.hop * (0.55 + 0.45 * energy) + 0.07 * energy) * (1. - fear);
+    let peak = 0.32 * strength;
+    let flight = (8. * peak * seat.scale / 9.81).sqrt().max(0.05);
+    let period = 2.0 - 0.86 * seat.tempo;
+    let t = (time / period + seat.phase).rem_euclid(1.) * period - 0.24;
+    let arc = (t / flight).clamp(0., 1.);
+    let air = 4. * arc * (1. - arc);
+    let load = smooth(-0.24, -0.10, t) * (1. - smooth(-0.10, 0., t));
+    let landing = smooth(0., 0.09, t - flight) * (1. - smooth(0.09, 0.30, t - flight));
+    let reach = smooth(-0.10, 0.09, t) * (1. - smooth(0.28 * flight, flight + 0.16, t));
+    CheerJump {
+        height: peak * air,
+        compression: strength * (0.16 * load + 0.21 * landing),
+        tuck: 0.085 * strength * air * air,
+        arm_swing: strength * (0.60 * load - 2.4 * reach),
+    }
+}
+
 impl Instance {
     pub fn standing_pose(
         &self,
@@ -45,12 +74,8 @@ impl Instance {
             .max(0.)
             .max((t * 1.93 + 1.7).sin().max(0.) * excitement);
         let hop = (seat.hop + excitement * 0.22) * (1. + excitement * 0.8) * (1. - fear);
-        let cheer_lift = if humans {
-            smooth(0.28, 0.85, excitement)
-        } else {
-            1.
-        };
-        let lift = up * hop * 0.4 * seat.scale * cheer_lift;
+        let jump = if humans { cheer_jump(seat, time, excitement, fear) } else { CheerJump::default() };
+        let lift = (if humans { jump.height } else { up * hop * 0.4 }) * seat.scale;
         let seed = self.size_phase[2];
         let tempo = self.size_phase[3];
         let beat = time * (2. + 1.4 * tempo) + 6.2832 * seed;
@@ -106,7 +131,9 @@ impl Instance {
                 shoulder += alarm * (-0.72 - reach_weight * (1.45 + 0.72 * reach) - shoulder);
                 elbow += alarm * (-1.28 + reach_weight * (0.28 + 0.65 * reach) - elbow);
             }
-            if !humans {
+            if humans {
+                shoulder = (shoulder + jump.arm_swing).max(-2.85);
+            } else {
                 shoulder = -2.4 * (1. - fear) * up;
                 elbow = -0.18;
             }
@@ -129,7 +156,8 @@ impl Instance {
         });
         let phase = time * (2. + tempo) + 6.2832 * seed;
         let knee_bend = 0.12 + 0.24 * smooth(0.20, 1.6, raised) * (0.5 + 0.5 * phase.sin());
-        let drop = 0.004 + 0.481 * (1. - knee_bend.cos()) + 0.22 * fear;
+        let drop = 0.004 + 0.481 * (1. - knee_bend.cos()) + 0.22 * fear + jump.compression;
+        let knee_bend = (knee_bend.cos() - (jump.compression + jump.tuck) / 0.481).clamp(-1., 1.).acos();
         let pelvis = Vec3::new(0.42 * lean, -drop, 0.);
         let waist = Vec3::Y * 0.49;
         let torso = Affine3A::from_rotation_translation(chest, pelvis + waist - chest * waist);
