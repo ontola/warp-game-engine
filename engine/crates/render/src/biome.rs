@@ -137,7 +137,7 @@ impl Biome {
                     forest: ForestStyle { needles: [0.032, 0.064, 0.049, 0.45], far: [0.095, 0.11, 0.088, 13.0],
                         crown: [2.7, 0.35, 1.6, 0.20], ..base.forest }, meadow_dry_season: 0.8 },
                 tree_density: 0.53, deciduous: 0.20,
-                flora: Flora { trees: [("upland_spruce", 0.67), ("pine", 0.13), ("mountain_birch", 0.20), NONE], tree_scale: 0.84,
+                flora: Flora { trees: [("upland_spruce", 0.67), ("scots_pine", 0.13), ("mountain_birch", 0.20), NONE], tree_scale: 0.84,
                     shrubs: [("juniper", 0.6), ("dwarf_birch", 0.4)], shrub_density: 0.025, ..Flora::TEMPERATE } },
             // Central African lowland rainforest: river valleys, damp red
             // clay and broadleaf litter below a canopy of mahogany and kapok.

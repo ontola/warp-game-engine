@@ -11,9 +11,9 @@ const LEAF: [f32; 3] = [0.11, 0.20, 0.055];
 const BARK: [f32; 3] = [0.16, 0.105, 0.062];
 
 /// Every species by name.
-pub const NAMES: [&str; 16] = [
+pub const NAMES: [&str; 17] = [
     "spruce", "pine", "birch", "broadleaf", "willow", "juniper", "shrub", "dwarf_birch", "desert_shrub",
-    "saltbush", "upland_spruce", "mountain_birch", "kapok", "african_mahogany", "forest_coffee", "raffia_palm",
+    "saltbush", "upland_spruce", "scots_pine", "mountain_birch", "kapok", "african_mahogany", "forest_coffee", "raffia_palm",
 ];
 
 /// A species' recipe by name.
@@ -56,6 +56,8 @@ pub fn named(name: &str) -> Option<WoodyRecipe> {
         // The terminal sprays point along the boughs and remain blue-green.
         "upland_spruce" => tree(0x5550_5350_5255, 11.0, 0.10, 3.35, CrownProfile::Conical, 7, 3, -0.29, 0.063, 0.73,
             FoliageKind::Needle, 40, 1.28, 0.65, [0.035, 0.089, 0.061], [0.13, 0.088, 0.06]),
+        "scots_pine" => tree(0x5359_4c56_4553, 12.0, 0.46, 3.1, CrownProfile::Umbrella, 5, 4, 0.29, 0.071, 0.65,
+            FoliageKind::Needle, 54, 0.85, 0.55, [0.082, 0.153, 0.114], [0.23, 0.125, 0.072]),
         // Shorter and wider than the temperate birch, with an open, light crown.
         "mountain_birch" => tree(0x4d54_4249_5243, 7.7, 0.28, 2.1, CrownProfile::Rounded, 4, 3, 0.73, 0.048, 0.49,
             FoliageKind::Broadleaf, 19, 0.83, 0.41, [0.16, 0.205, 0.088], [0.51, 0.46, 0.39]),

@@ -60,9 +60,9 @@ Use `--from FILE` alone to restore the original world and camera.
 
 | Preset | Ground | Vegetation |
 | --- | --- | --- |
-| `desert` | Fine dune sand with patches of darker gravel on exposed slopes and dry streambeds | Low silver saltbush and taller twiggy scrub, with open sand between them |
-| `norway` | Sheltered snow drifts, soil on exposed shoulders and compacted snow between wheel tracks | Upland spruce with low drooping branches, pine and pale mountain birch, with juniper and dwarf birch below |
-| `rainforest` | Rolling Central African lowlands with damp leaf litter and red clay on open ground and tracks | Kapok rises above spreading mahogany crowns. Forest coffee and juvenile raffia palms favor their shade. |
+| `desert` | Fine dune sand with patches of darker gravel on exposed slopes and dry streambeds | Low silver saltbush and taller scrub that spreads out close to the ground, with open sand between plants |
+| `norway` | Sheltered snow drifts, soil on exposed shoulders and compacted snow between wheel tracks | Norway spruce, open-crowned Scots pine and pale mountain birch, with juniper and dwarf birch below |
+| `rainforest` | Rolling Central African lowlands with damp leaf litter and red clay on open ground and tracks | Kapok spreads its upper limbs above the mahogany canopy. Forest coffee and young raffia palms with arching fronds grow in its shade. |
 
 ![The desert, Norwegian and rainforest species at their authored sizes, with an enlarged view of the understory](images/biome-flora.jpg)
 
@@ -75,7 +75,9 @@ multiplier for the local canopy cover.
 
 The desert, Norway and rainforest species use `plant_growth::grow`. Annual
 growth sets the stem, branching, crown and live shoots. Norway uses the
-spruce and Jeffrey pine rules and needle brushes from the flight demo.
+flight demo’s spruce and a Scots pine that sheds its lower whorls and bears
+shorter needles on ascending limbs. The explicit `--pine-forest` in the
+flight demo selects Jeffrey pine.
 Broadleaf plants use leafy shoots with stems and individual leaf blades.
 
 `recipe_forest::BiomePlants` cooks each species once into branch source

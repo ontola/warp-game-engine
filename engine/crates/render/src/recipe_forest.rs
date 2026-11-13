@@ -673,9 +673,11 @@ mod streaming_tests {
         }
         let lands = Lands { biomes: ["temperate", "norway"].map(|n| Biome::named(n).unwrap()).to_vec() };
         let variants = BiomePlants::new(&lands).variants();
-        let pine: Vec<_> = variants.iter().filter(|v| v.0 == "pine").collect();
-        assert_eq!(pine.len(), 2);
-        assert!(pine[0].1.is_none() && pine[1].1.is_some());
+        let junipers: Vec<_> = variants.iter().filter(|v| v.0 == "juniper").collect();
+        assert_eq!(junipers.len(), 2);
+        assert!(junipers[0].1.is_none() && junipers[1].1.is_some());
+        assert!(variants.contains(&("pine", None)));
+        assert!(variants.contains(&("scots_pine", Some(28))));
     }
 
     #[test]
