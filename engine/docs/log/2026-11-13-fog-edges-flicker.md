@@ -1,4 +1,4 @@
-# Froxel fog: dark edges, a flickering horizon, flicker under a lamp, 13 November
+# Froxel fog: dark edges, a flickering horizon, flicker under a lamp, rooms, 13 November
 
 Mancave (RTX 5070 Ti, Windows), `interior_rooms`, 1920x1080, fixed
 exposure (`ROOMS_LIGHT=auto_exposure=0,ev100=N`), fog on. Joep's F4
@@ -85,3 +85,24 @@ within 0.26, and the cone under the pendant loses its grain while turning
 still differ by up to 3.8 (`r3_lamps_still`) and far more in their turn
 shots: dynamic resolution follows the GPU, which the demo window shared,
 so those differences are run to run, not the change.
+
+## The haze beside room 4, and the flicker without fog
+
+The fog's one bounds box covered the yard in the L of the house. The
+medium now takes the rooms the scene declares for its reflection probes
+(`FogBounds::Rooms`), with the probes' own fade: one definition of a room
+(`room_presence`, rsm.wgsl). The demo's room boxes stopped at the walls'
+faces, so a doorway lay in no box; they now reach through each door to the
+middle of its wall, as `architecture` builds rooms. The haze in Joep's
+first F4 is gone; the smoke runs on through the doorways.
+
+The flicker without fog (0.34 / 2.2 under the pendant) is not lighting:
+`gi=0`, or the irradiance volume alone off, floods the room with the open
+sky and the frame clips to white at EV 6, so its 0 meant nothing. Between
+two frames 97.7 % of the pixels change by at most one step of 255; the
+rest are the bulb's and the shade's edges (bloom and TAA on the bright
+bulb), not visible at 1x. Left as it is.
+
+The gradient interpolation's shading cost could not be measured: with the
+demo window on the same GPU, shade took 23-34 ms per 4K frame from run to
+run (8-10 ms on an idle GPU).
