@@ -44,3 +44,10 @@ flash_fog      -6.5,1.65,-13.5           1.5708     -0.05      0000 0 1 840,470,
 r1_fog_door    1.0,1.65,-2.0             3.1416     0.0        1111 0 0 900,450,240,135 fog
 # Froxel fog on glass: room 1's window pane seen through the smoke.
 r1_glass_fog   1.5,1.65,0.0              1.5708     0.0        1111 0 0 840,400,240,135 fog
+# Froxel fog at depth edges (Joep's F4, 13 November, EV 16 outside): the
+# grass beside the building's edge and the horizon past it (a dark wedge
+# and a dark, flickering band under the horizon), and the horizon through
+# room 1's door. Flicker: --shot at the same spot with --flicker 16 --crop.
+out_fog_wall   -0.6652915,1.65,6.8274508 -5.211798  -0.1122    1111 0 0 700,440,340,135 fog
+out_fog_wedge  4.216977,1.65,8.459584    -6.5824    -0.088     1111 0 0 740,460,240,135 fog
+r1_fog_horizon 0.3,1.65,1.5              3.1416     -0.05      1111 0 0 840,420,240,135 fog

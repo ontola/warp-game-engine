@@ -760,6 +760,46 @@ fn main() -> Result<(), String> {
             rgba = headless.frame(&mut game)?;
         }
         eprintln!("shot: exposure EV {:?}, meter EV {:?}", game.ev.map(|e| e.0), game.ev.map(|e| e.1));
+        // --flicker N: N more frames standing still; the mean and 99th
+        // percentile frame-to-frame change of luma (sRGB 0..255) per pixel,
+        // over the whole frame or --crop x,y,w,h, and every frame written
+        // as <out>_<k>.png.
+        if let Some(n) = arg("--flicker").and_then(|f| f.parse::<u32>().ok()) {
+            let crop: Vec<u32> = arg("--crop").map(|c| c.split(',').filter_map(|v| v.parse().ok()).collect()).unwrap_or_default();
+            let (cx, cy, cw, ch) = if crop.len() == 4 { (crop[0], crop[1], crop[2], crop[3]) } else { (0, 0, w, h) };
+            let luma = |img: &[u8]| -> Vec<f32> {
+                let mut v = Vec::with_capacity((cw * ch) as usize);
+                for y in cy..(cy + ch).min(h) { for x in cx..(cx + cw).min(w) {
+                    let i = ((y * w + x) * 4) as usize;
+                    v.push(0.2126 * img[i] as f32 + 0.7152 * img[i + 1] as f32 + 0.0722 * img[i + 2] as f32);
+                } }
+                v
+            };
+            let stem = out.trim_end_matches(".png").to_string();
+            let mut last = luma(&rgba);
+            let mut diffs: Vec<f32> = Vec::new();
+            // The pendant held: its swing is not flicker.
+            let held = game.t;
+            for k in 0..n {
+                game.t = held - 1.0 / TICK_HZ;
+                game.tick(&[Controls::default()]);
+                rgba = headless.frame(&mut game)?;
+                render::write_png(std::path::Path::new(&format!("{stem}_{k}.png")), w, h, &rgba)?;
+                let cur = luma(&rgba);
+                diffs.extend(cur.iter().zip(&last).map(|(a, b)| (a - b).abs()));
+                last = cur;
+            }
+            // Where it changes: the largest step per pixel over the frames, x16.
+            let mut most = vec![0u8; diffs.len() / n.max(1) as usize];
+            let len = most.len().max(1);
+            for (i, d) in diffs.iter().enumerate() { let m = &mut most[i % len]; *m = (*m).max((d * 16.0).min(255.0) as u8); }
+            let img: Vec<u8> = most.iter().flat_map(|&m| [m, m, m, 255]).collect();
+            render::write_png(std::path::Path::new(&format!("{stem}_diff.png")), cw.min(w - cx), ch.min(h - cy), &img)?;
+            let mean = diffs.iter().sum::<f32>() / diffs.len().max(1) as f32;
+            diffs.sort_by(|a, b| a.total_cmp(b));
+            let p99 = diffs.get(diffs.len() * 99 / 100).copied().unwrap_or(0.0);
+            println!("flicker: mean {mean:.3}, p99 {p99:.2} luma steps per frame over {n} frames");
+        }
         return render::write_png(std::path::Path::new(&out), w, h, &rgba);
     }
     app::run(app::Config { title: "Warp: four rooms".into(), tick_hz: TICK_HZ, ..Default::default() }, &mut game)

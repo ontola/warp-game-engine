@@ -15,6 +15,29 @@
 
 const FOG_NEAR: f32 = 0.1;
 const FOG_GRID: vec3<u32> = vec3<u32>(160u, 90u, 64u);
+// A cell's alpha when it lies wholly behind its column's farthest surface
+// (froxel_fog.rs's integration carries it through).
+const FOG_BEHIND: f32 = -1.0;
+
+// Trilinear filter of a fog volume at texel coordinate t (texel centres at
+// integers) over the cells that are not marked FOG_BEHIND; a < 0 when all
+// eight are.
+fn fog_filtered(tex: texture_3d<f32>, t: vec3<f32>) -> vec4<f32> {
+    let hi = vec3<i32>(FOG_GRID) - 1;
+    let tc = clamp(t, vec3<f32>(0.0), vec3<f32>(hi));
+    let base = vec3<i32>(floor(tc));
+    let f = tc - vec3<f32>(base);
+    var sum = vec4<f32>(0.0);
+    var weight = 0.0;
+    for (var k = 0; k < 8; k++) {
+        let o = vec3<i32>(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+        let c = textureLoad(tex, min(base + o, hi), 0);
+        let wk = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1) * select(1.0 - f.z, f.z, o.z == 1);
+        if c.a >= 0.0 { sum += c * wk; weight += wk; }
+    }
+    if weight <= 0.0 { return vec4<f32>(0.0, 0.0, 0.0, FOG_BEHIND); }
+    return sum / weight;
+}
 
 fn fog_on() -> bool { return gi.fog.x > 0.0; }
 
@@ -76,6 +99,7 @@ fn fog_rand(seed: u32) -> f32 {
 }
 
 var<workgroup> fog_tile_depth: array<f32, 64>;
+var<workgroup> fog_tile_pixel: array<u32, 64>;
 
 // One workgroup per column of cells, one thread per slice. The threads first
 // find the column's farthest visible surface (the least depth in its tile of
@@ -90,15 +114,21 @@ fn fog_inject(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
     let lo = cell.xy * size / FOG_GRID.xy;
     let hi = max(min((cell.xy + 1u) * size / FOG_GRID.xy, size), lo + 1u);
     let count = (hi - lo).x * (hi - lo).y;
-    var least = 1.0;
+    var least = 2.0;
+    var at = 0u;
     for (var k = li; k < count; k += 64u) {
         let q = lo + vec2<u32>(k % (hi - lo).x, k / (hi - lo).x);
-        least = min(least, textureLoad(depth_tex, vec2<i32>(q), 0));
+        let d = textureLoad(depth_tex, vec2<i32>(q), 0);
+        if d < least { least = d; at = k; }
     }
     fog_tile_depth[li] = least;
+    fog_tile_pixel[li] = at;
     workgroupBarrier();
     for (var s = 32u; s > 0u; s >>= 1u) {
-        if li < s { fog_tile_depth[li] = min(fog_tile_depth[li], fog_tile_depth[li + s]); }
+        if li < s && fog_tile_depth[li + s] < fog_tile_depth[li] {
+            fog_tile_depth[li] = fog_tile_depth[li + s];
+            fog_tile_pixel[li] = fog_tile_pixel[li + s];
+        }
         workgroupBarrier();
     }
     let surface = select(1e9, view.params.y / fog_tile_depth[0], fog_tile_depth[0] > 0.0);
@@ -107,10 +137,26 @@ fn fog_inject(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
     // The sample: jittered across the cell in x and y too, so that over
     // frames the cell averages the air it holds.
     let jxy = vec2<f32>(fog_rand((cell.x * 7919u) ^ (cell.y * 104729u) ^ (cell.z * 1299709u) ^ (frame * 2654435761u)), fog_rand((cell.x * 15485863u) ^ (cell.y * 32452843u) ^ (cell.z * 49979687u) ^ (frame * 40503u)));
-    let uv = (vec2<f32>(cell.xy) + jxy) / vec2<f32>(FOG_GRID.xy);
+    var uv = (vec2<f32>(cell.xy) + jxy) / vec2<f32>(FOG_GRID.xy);
     let start = fog_slice_depth(f32(cell.z));
-    if start >= surface { textureStore(fog_out, cell, vec4<f32>(0.0, 0.0, 0.0, gi.fog.x)); return; }
+    // A cell wholly behind the column's farthest surface holds no air any
+    // pixel of this column sees. It is marked (a < 0) rather than filled:
+    // dark air there, read by the filtering of a neighbouring column that
+    // sees farther (past a wall's edge, the ground towards the horizon),
+    // darkened that column's fog; the lookups leave marked cells out.
+    if start >= surface { textureStore(fog_out, cell, vec4<f32>(0.0, 0.0, 0.0, FOG_BEHIND)); return; }
     let w = min(fog_slice_depth(f32(cell.z) + jitter), mix(start, surface, 0.999));
+    // Air the camera cannot see (behind the surface at the sample's own
+    // pixel: above a ceiling, outside a wall in a tile that also shows the
+    // far side of a room) is not the cell's: such a sample moves to the
+    // ray of the tile's farthest pixel, which sees past the whole cell
+    // (w is in front of it), so every frame adds visible air.
+    let spx = min(vec2<u32>(uv * vec2<f32>(size)), size - 1u);
+    let pd = textureLoad(depth_tex, vec2<i32>(spx), 0);
+    if pd > 0.0 && w > view.params.y / pd {
+        let k = fog_tile_pixel[0];
+        uv = (vec2<f32>(lo + vec2<u32>(k % (hi - lo).x, k / (hi - lo).x)) + 0.5) / vec2<f32>(size);
+    }
     // The cell's ray from the camera, at view depth w (along the axis).
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     let hn = view.inv_view_proj * vec4<f32>(ndc, 1.0, 1.0);
@@ -119,15 +165,7 @@ fn fog_inject(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
     let forward = normalize(hc.xyz / hc.w - view.cam.xyz);
     let p = view.cam.xyz + dir * (w / max(dot(dir, forward), 1e-3));
     let to_eye = normalize(view.cam.xyz - p);
-    // Air the camera cannot see (behind the surface at the sample's own
-    // pixel: above a ceiling, outside a wall in a tile that also shows the
-    // far side of a room) scatters nothing into what it can: the cell
-    // averages only its visible air.
-    let spx = min(vec2<u32>(uv * vec2<f32>(size)), size - 1u);
-    let pd = textureLoad(depth_tex, vec2<i32>(spx), 0);
-    let hidden = pd > 0.0 && w > view.params.y / pd;
     var cur = fog_medium(p, to_eye);
-    if hidden { cur = vec4<f32>(0.0, 0.0, 0.0, cur.a); }
     // Last frame's cell where this point was, 0.9 kept.
     if gi.fog.w > 1.5 {
         let pc = gi.fog_prev * vec4<f32>(p, 1.0);
@@ -135,10 +173,10 @@ fn fog_inject(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
             let puv = vec2<f32>(pc.x / pc.w * 0.5 + 0.5, 0.5 - pc.y / pc.w * 0.5);
             let pz = fog_depth_slice(pc.w) / f32(FOG_GRID.z);
             if all(puv >= vec2<f32>(0.0)) && all(puv <= vec2<f32>(1.0)) && pz >= 0.0 && pz <= 1.0 {
-                let prev = textureSampleLevel(fog_prev, canopy_sampler, vec3<f32>(puv, pz), 0.0);
-                // A hidden sample leaves the history as it is: the cell averages
-                // its visible air, not its visible share of it.
-                cur = mix(prev, cur, select(0.1, 0.0, hidden));
+                // Last frame's cells behind a surface are left out (none:
+                // newly seen air, no history).
+                let prev = fog_filtered(fog_prev, vec3<f32>(puv, pz) * vec3<f32>(FOG_GRID) - 0.5);
+                if prev.a >= 0.0 { cur = mix(prev, cur, 0.1); }
             }
         }
     }
@@ -221,8 +259,11 @@ fn froxel_fog_at(p: vec3<f32>) -> vec4<f32> {
 
 fn froxel_fog_uv(uv: vec2<f32>, w: f32) -> vec4<f32> {
     // The integrated volume holds each slice's far side.
-    let z = (fog_depth_slice(min(w, gi.fog.z)) - 0.5) / f32(FOG_GRID.z);
-    let s = textureSampleLevel(fog_volume, canopy_sampler, vec3<f32>(uv, clamp(z, 0.0, 1.0)), 0.0);
+    // Filtered over the cells that hold air the pixel's neighbours see:
+    // a column whose surface is nearer than w has no air there.
+    let z = fog_depth_slice(min(w, gi.fog.z)) - 1.0;
+    var s = fog_filtered(fog_volume, vec3<f32>(uv * vec2<f32>(FOG_GRID.xy) - 0.5, z));
+    if s.a < 0.0 { s = vec4<f32>(0.0, 0.0, 0.0, 1.0); }
     // In front of the first slice's far side: scale towards nothing.
     let first = fog_slice_depth(1.0);
     if w < first { let f = max(w - FOG_NEAR, 0.0) / (first - FOG_NEAR); return vec4<f32>(s.rgb * f, mix(1.0, s.a, f)); }

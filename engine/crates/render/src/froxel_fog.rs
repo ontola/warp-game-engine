@@ -85,6 +85,9 @@ fn integrate(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var z = 0u; z < dims.z; z++) {
         let w1 = slice_depth(f32(z + 1u));
         let c = textureLoad(cells, vec3<u32>(id.xy, z), 0);
+        // Behind the column's farthest surface (froxel_fog.wgsl's FOG_BEHIND):
+        // marked on, for the lookups to leave out.
+        if c.a < 0.0 { textureStore(out, vec3<u32>(id.xy, z), vec4<f32>(light, c.a)); w0 = slice_depth(f32(z + 1u)); continue; }
         let ds = (w1 - w0) * along;
         let sigma = max(c.a, 1e-7);
         let step = exp(-sigma * ds);
