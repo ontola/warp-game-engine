@@ -61,16 +61,16 @@ fn used_snapshot()->vec4<u32> {return vec4<u32>(atomicLoad(&state[4]),atomicLoad
 // coarse_stop): its table (foliage_source_pages::source_work_table, stored
 // after the nodes) at the coarsest bin no coarser than the view's cut, at
 // the bound's nearest point. `pixels_per_m`: pixels per tree-local metre.
-// Cut at the camera's 1 px cluster target (Renderer lod_pixels, default 1),
-// one bin finer still for wind shear (the cull scales errors by up to
-// 1 + |shear|). error_in measures length(dx,dy), sqrt(2) times the pixels
-// per metre along one axis, hence 0.5*sqrt(2). A node too close for the
-// finest bin books every cluster.
+// Cut at the camera's 1 px cluster target (Renderer lod_pixels, default 1).
+// error_in measures length(dx,dy), sqrt(2) times the pixels per metre along
+// one axis. The table already allows for wind shear (the cull refines by
+// 1 + |shear|, at most wind::MAX_TREE_SHEAR for trees). A node too close for
+// the finest bin books every cluster.
 const SOURCE_TABLE_T0:f32=0.00025;
 fn source_work_at(node:u32,pixels_per_m:f32)->u32 {
  let full=nodes[node].links.w>>8u;
  if !(pixels_per_m>0.0) || pixels_per_m>=1e29 {return full;}
- let t=0.70710678/pixels_per_m;
+ let t=1.41421356/pixels_per_m;
  if t<SOURCE_TABLE_T0 {return full;}
  // Half-octave bins, two 16-bit counts per word (foliage_source_pages).
  let k=min(u32(floor(2.0*log2(t/SOURCE_TABLE_T0))),23u);
@@ -756,10 +756,16 @@ fn fast_shadow_retained(task:vec4<u32>)->bool {
  }
  // Missing pages keep the complete parent; ready() has requested them.
  if !resident {atomicAdd(&state[73],1u);publish(task);return;}
- // Into source leaves only past the coarser source cut.
- if (task.z&256u)!=0u && source_leaves && task.y!=NONE && (n.links.w&1u)==0u && scale.x<1e29 {
+ // Into source leaves only past the coarser source cut. The step is judged
+ // at the whole tree's nearest point (its root bound encloses every branch),
+ // so a tree turns to needles as one: per branch, the far side of a near
+ // crown and the branches that lost the budget race stayed 4-16 px voxel
+ // balls among needles (Joep, 13 November). KERN_SOURCE_PER_TREE=0: per branch.
+ var step=scale.x;
+ if SOURCE_PER_TREE {step=max(step,projected(t,nodes[t.info.x],task.z).x);}
+ if (task.z&256u)!=0u && source_leaves && task.y!=NONE && (n.links.w&1u)==0u && step<1e29 {
   let s=fast_source_scale()/select(1.0,CUT_HYSTERESIS,detailed);
-  if scale.x*n.error.x<=view.pixels.z*s && scale.x*n.error.y<=s {publish(task);return;}
+  if step*n.error.x<=view.pixels.z*s && step*n.error.y<=s {publish(task);return;}
  }
  // Shadows stay voxel: source leaves in shadow maps cost hundreds of
  // millions of triangles (hill view) that no slot or splat cap measures.

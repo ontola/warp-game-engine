@@ -407,6 +407,27 @@ fn rsm_filter4(@builtin(global_invocation_id) gid: vec3<u32>) { rsm_filter(vec2<
 // ---- Reflection probes (reflection_probes.rs) ----
 @group(1) @binding(27) var probe_cube: texture_cube_array<f32>;
 
+// A room (reflection_probes.rs ProbeBox, the boxes rooms declare for their
+// probes): how far p lies outside box i (0 inside), and how much p belongs
+// to any room, 1 within 2 cm of a box (a wall's face lies on its room's
+// bounds) and fading to 0 at reflection_probes::FADE_M outside every box.
+// Shared by the probes' reflections and the froxel fog's bounds, so both
+// have one idea of where a room is.
+const ROOM_FADE_M: f32 = 0.5;
+fn room_box_out(i: u32, p: vec3<f32>) -> f32 {
+    let lo = gi.probe_boxes[3u * i + 1u].xyz;
+    let hi = gi.probe_boxes[3u * i + 2u].xyz;
+    return length(max(lo - p, vec3<f32>(0.0)) + max(p - hi, vec3<f32>(0.0)));
+}
+fn room_presence(p: vec3<f32>) -> f32 {
+    var w = 0.0;
+    for (var i = 0u; i < min(u32(gi.probes.y), 8u); i++) {
+        let out = room_box_out(i, p);
+        w = max(w, select(1.0 - smoothstep(0.0, ROOM_FADE_M, out), 1.0, out <= 0.02));
+    }
+    return w;
+}
+
 // The probes' reflection of direction r at p: the ray box-projected (where
 // it leaves the room, seen from the capture point), read at the roughness's
 // mip. Boxes that hold p (within 2 cm: a wall's face lies on its room's
@@ -415,7 +436,7 @@ fn rsm_filter4(@builtin(global_invocation_id) gid: vec3<u32>) { rsm_filter(vec2<
 // that the reflected ray heads into, each fading to 0 at that distance. rgb the mean, a the weight (at most 1).
 fn probe_reflection(p: vec3<f32>, r: vec3<f32>, rough: f32) -> vec4<f32> {
     let count = u32(gi.probes.y);
-    if count == 0u || gi.probes.x > 0.5 { return vec4<f32>(0.0); }
+    if count == 0u || gi.probes.x > 0.5 || gi.probes.z < 0.5 { return vec4<f32>(0.0); }
     let levels = f32(textureNumLevels(probe_cube));
     var inside = vec4<f32>(0.0);
     var near = vec4<f32>(0.0);
@@ -424,8 +445,8 @@ fn probe_reflection(p: vec3<f32>, r: vec3<f32>, rough: f32) -> vec4<f32> {
         if cap.w < 0.5 { continue; }
         let lo = gi.probe_boxes[3u * i + 1u].xyz;
         let hi = gi.probe_boxes[3u * i + 2u].xyz;
-        let out = length(max(lo - p, vec3<f32>(0.0)) + max(p - hi, vec3<f32>(0.0)));
-        if out >= 0.5 { continue; }
+        let out = room_box_out(i, p);
+        if out >= ROOM_FADE_M { continue; }
         // Outside the box, only where the reflected ray heads into it: a
         // door's face sees its own room, not the room behind the door.
         if out > 0.02 {
@@ -442,7 +463,7 @@ fn probe_reflection(p: vec3<f32>, r: vec3<f32>, rough: f32) -> vec4<f32> {
         let t = min(ts.x, min(ts.y, ts.z));
         let c = textureSampleLevel(probe_cube, canopy_sampler, q + r * max(t, 0.0) - cap.xyz, i32(i), rough * (levels - 1.0)).rgb;
         if out <= 0.02 { inside += vec4<f32>(c, 1.0); }
-        else { let w = 1.0 - smoothstep(0.0, 0.5, out); near += vec4<f32>(c * w, w); }
+        else { let w = 1.0 - smoothstep(0.0, ROOM_FADE_M, out); near += vec4<f32>(c * w, w); }
     }
     if inside.a > 0.0 { return vec4<f32>(inside.rgb / inside.a, 1.0); }
     if near.a <= 0.0 { return vec4<f32>(0.0); }

@@ -31,6 +31,21 @@ pub const GRID: [u32; 3] = [160, 90, 64];
 /// The first slice's near plane (keep equal to FOG_NEAR).
 pub const NEAR: f32 = 0.1;
 
+/// Where a [`FroxelFog`] medium is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FogBounds {
+    Everywhere,
+    /// One box (min, max).
+    Box(Vec3, Vec3),
+    /// The rooms the scene declares: the boxes of its reflection probes
+    /// (`Renderer::set_reflection_probes`), fading out over
+    /// `reflection_probes::FADE_M` beyond them, as the probes' reflections
+    /// do. Rooms joined by a door must reach through the opening (to the
+    /// door's leaf, as `architecture` builds them), or the doorway between
+    /// the two boxes holds no smoke. Everywhere when no box is declared.
+    Rooms,
+}
+
 /// `Lighting::froxel_fog`: a homogeneous medium.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FroxelFog {
@@ -43,14 +58,13 @@ pub struct FroxelFog {
     /// How far the grid reaches (view depth, metres); beyond it the last
     /// slice holds.
     pub far_m: f32,
-    /// Where the medium is (min, max); `None`: everywhere. A building's
-    /// inside keeps the outdoor sky and sun out of its smoke where a froxel
-    /// straddles a wall or ceiling.
-    pub bounds: Option<(Vec3, Vec3)>,
+    /// Where the medium is. A building's inside keeps the outdoor sky and
+    /// sun out of its smoke where a froxel straddles a wall or ceiling.
+    pub bounds: FogBounds,
 }
 
 impl Default for FroxelFog {
-    fn default() -> Self { Self { density: 0.05, albedo: Vec3::splat(0.9), anisotropy: 0.3, far_m: 48.0, bounds: None } }
+    fn default() -> Self { Self { density: 0.05, albedo: Vec3::splat(0.9), anisotropy: 0.3, far_m: 48.0, bounds: FogBounds::Everywhere } }
 }
 
 impl FroxelFog {
@@ -85,6 +99,9 @@ fn integrate(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var z = 0u; z < dims.z; z++) {
         let w1 = slice_depth(f32(z + 1u));
         let c = textureLoad(cells, vec3<u32>(id.xy, z), 0);
+        // Behind the column's farthest surface (froxel_fog.wgsl's FOG_BEHIND):
+        // marked on, for the lookups to leave out.
+        if c.a < 0.0 { textureStore(out, vec3<u32>(id.xy, z), vec4<f32>(light, c.a)); w0 = slice_depth(f32(z + 1u)); continue; }
         let ds = (w1 - w0) * along;
         let sigma = max(c.a, 1e-7);
         let step = exp(-sigma * ds);
