@@ -34,6 +34,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_SSSR=0` | The single mirror-ray traced reflection instead of the stochastic one (sssr.rs): one ray per pixel blurred by mip, no spatial or temporal resolve ([dynamic-gi.md](dynamic-gi.md)). |
 | `KERN_RSM=0` | No live bounce for clustered lights marked `with_bounce` (rsm.rs); `KERN_RSM=open` keeps it but drops its visibility walk, so it passes walls ([interior-light.md](interior-light.md#live-bounce-of-moving-lights)). |
 | `KERN_FROXEL_FOG=0` | No froxel fog even where `Lighting::froxel_fog` is set ([volumetric-light.md](volumetric-light.md#froxel-fog)). |
+| `KERN_PROBE_GRADIENTS=0` | Interior probes interpolate trilinearly even where gradients were uploaded (`Renderer::set_probe_gradients`, [interior-light.md](interior-light.md#noise-without-blur)). |
 | `KERN_REFLECTION_PROBES=0` | No live reflection probes (`Renderer::set_reflection_probes`, reflection_probes.rs): no capture, glossy surfaces fall back to the sky and irradiance volume where screen-space reflections miss ([dynamic-gi.md](dynamic-gi.md#reflection-probes)). |
 | `KERN_CAMERA_SUN_OCCLUSION` | Solar haze ignores terrain between camera and sun ([camera sun fog](camera-sun-fog.md)). |
 | `KERN_CUTOUT_LINEAR_RGB` | Alpha-cutout textures mip in sRGB instead of linear RGB. |

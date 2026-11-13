@@ -1882,6 +1882,21 @@ impl Renderer {
         Ok(())
     }
 
+    /// Upload the probes' gradients (`irradiance_volume::pack_gradients`, for
+    /// the probes last given to `set_sky_sun_emission`) into the region
+    /// `Scene::reserve_probe_visibility` reserved after the reach masks. From
+    /// then on shading continues each probe along its gradient and blends
+    /// with C1 weights (no kinks at the probe spacing).
+    pub fn set_probe_gradients(&self, gpu: &Gpu, words: &[u32]) -> Result<(), String> {
+        let offset = self.probe_visibility.ok_or("the scene reserved no probe visibility")?;
+        let (_, grid) = self.irradiance_volume.ok_or("no reserved probe volume")?;
+        if words.len() != 1 + grid.count() * crate::irradiance_volume::GRADIENT_WORDS { return Err("gradients for another grid".into()); }
+        let at = offset + grid.count() * (crate::room_bake::VISIBILITY_SIDE * crate::room_bake::VISIBILITY_SIDE + 1 + crate::room_bake::REACH_WORDS);
+        // KERN_PROBE_GRADIENTS=0: off (the header word 0), for comparisons.
+        if std::env::var("KERN_PROBE_GRADIENTS").as_deref() == Ok("0") { return self.scene_tables.write_aux(gpu, at, &[0]); }
+        self.scene_tables.write_aux(gpu, at, words)
+    }
+
     /// Reflection probes, one box per room (`reflection_probes::ProbeBox`):
     /// the renderer captures them itself, a cube face per frame, and glossy
     /// surfaces inside a box reflect it where screen-space reflections miss.

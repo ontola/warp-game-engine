@@ -316,24 +316,82 @@ fn visible_neighbours(grid: &Grid, pos: &[Vec3], occluders: &Occluders, valid: &
     neighbours
 }
 
-/// Average the bounced channels (y, z), and with `sky` also the direct sky
-/// (x), of each valid probe with the neighbours it sees directly
-/// (`neighbours`: index and weight).
-fn smooth_bounce(light: &mut [Probe], neighbours: &[Vec<(usize, f32)>], valid: &[bool], sky: bool) {
-    let gathered = light.to_vec();
-    each(light, |i, p| {
+/// Rounded through an IEEE half, as the GPU bake stores standard deviations.
+fn half(v: f32) -> f32 { crate::hdr::half_to_f32(f16_bits(v) as u16) }
+
+/// Steps of open space from a probe that saw sky within which the bake
+/// estimates the direct sky again.
+pub const SKY_HOPS: usize = 4;
+/// Rays of that second estimate, per first-estimate ray.
+pub const SKY_REFINE_FACTOR: usize = 8;
+/// Bounce rays of the probes near sky, per bounce ray.
+pub const BOUNCE_REFINE_FACTOR: usize = 2;
+/// Iterations of the variance-guided filter after each sky bounce.
+pub const DENOISE_PASSES: usize = 3;
+
+/// One iteration of the bounced light's joint filter (SVGF's edge-stopping,
+/// Schied et al. 2017, on probes): each valid probe averages y and z with
+/// the neighbours it sees, each weighted 0.5 per step and by how far its
+/// value lies from this probe's in units of both estimates' standard
+/// deviations, exp(-d^2 / (2 * 2^2 * (sd_i^2 + sd_j^2))): noise blends in,
+/// real differences (light through a doorway) do not. The standard
+/// deviations propagate. As room_bake.wgsl `denoise`.
+fn denoise_bounce(light: &mut [Probe], spread: &mut [[[f32; 2]; 6]], neighbours: &[Vec<(usize, f32)>], valid: &[bool]) {
+    let (before, sd_before) = (light.to_vec(), spread.to_vec());
+    let mut out: Vec<(Probe, [[f32; 2]; 6])> = before.iter().copied().zip(sd_before.iter().copied()).collect();
+    each(&mut out, |i, (p, sd)| {
         if !valid[i] { return; }
-        let mut sum = gathered[i].axes;
-        let mut weight = 1.0;
-        for &(j, w) in &neighbours[i] {
-            for a in 0..6 { sum[a] += gathered[j].axes[a] * w; }
-            weight += w;
-        }
         for a in 0..6 {
-            let s = sum[a] / weight;
-            p.axes[a] = Vec3::new(if sky { s.x } else { p.axes[a].x }, s.y, s.z);
+            let own = [before[i].axes[a].y, before[i].axes[a].z];
+            let si = sd_before[i][a];
+            let (mut sum, mut weight, mut var) = (own, [1f32; 2], [si[0] * si[0], si[1] * si[1]]);
+            for &(j, w0) in &neighbours[i] {
+                let other = [before[j].axes[a].y, before[j].axes[a].z];
+                let sj = sd_before[j][a];
+                for k in 0..2 {
+                    let d = other[k] - own[k];
+                    let w = w0 * (-d * d / (8.0 * (si[k] * si[k] + sj[k] * sj[k]) + 1e-12)).exp();
+                    sum[k] += other[k] * w;
+                    weight[k] += w;
+                    var[k] += w * w * sj[k] * sj[k];
+                }
+            }
+            p.axes[a].y = sum[0] / weight[0];
+            p.axes[a].z = sum[1] / weight[1];
+            sd[a] = [half(var[0].sqrt() / weight[0]), half(var[1].sqrt() / weight[1])];
         }
     });
+    for (i, (p, sd)) in out.into_iter().enumerate() { light[i] = p; spread[i] = sd; }
+}
+
+const LUMINANCE: Vec3 = Vec3::new(0.2126, 0.7152, 0.0722);
+
+/// [`denoise_bounce`] for a lamp's bounce (RGB, its luminance's standard
+/// deviation): neighbours weighted by how far their luminance lies from
+/// this probe's in units of both estimates'. As room_bake.wgsl `denoise_lamp`.
+fn denoise_lamp(light: &mut [Probe], spread: &mut [[f32; 6]], neighbours: &[Vec<(usize, f32)>], valid: &[bool]) {
+    let (before, sd_before) = (light.to_vec(), spread.to_vec());
+    let mut out: Vec<(Probe, [f32; 6])> = before.iter().copied().zip(sd_before.iter().copied()).collect();
+    each(&mut out, |i, (p, sd)| {
+        if !valid[i] { return; }
+        for a in 0..6 {
+            let own = before[i].axes[a];
+            let (si, lum) = (sd_before[i][a], own.dot(LUMINANCE));
+            let (mut sum, mut weight, mut var) = (own, 1.0f32, si * si);
+            for &(j, w0) in &neighbours[i] {
+                let other = before[j].axes[a];
+                let sj = sd_before[j][a];
+                let d = other.dot(LUMINANCE) - lum;
+                let w = w0 * (-d * d / (8.0 * (si * si + sj * sj) + 1e-12)).exp();
+                sum += other * w;
+                weight += w;
+                var += w * w * sj * sj;
+            }
+            p.axes[a] = sum / weight;
+            sd[a] = var.sqrt() / weight;
+        }
+    });
+    for (i, (p, sd)) in out.into_iter().enumerate() { light[i] = p; spread[i] = sd; }
 }
 
 /// Furthest a probe moves from its grid point, per axis, in cells: under
@@ -464,13 +522,40 @@ pub fn bake_placed(grid: &Grid, occluders: &Occluders, placement: &Placement, su
         });
         for (i, (p, ok)) in both.into_iter().enumerate() { probes[i] = p; valid[i] = ok; }
     }
+    let neighbours = visible_neighbours(grid, &pos, occluders, &valid);
+    // The direct sky again, with SKY_REFINE_FACTOR times the rays, for the
+    // probes within SKY_HOPS steps of open space of one that saw any: sky
+    // seen only through a small opening (a door, then a window) is hit by
+    // few of the first rays, and that noise spread as blotches through
+    // every bounce's gathers. Independent rays: the estimate replaces the
+    // first without bias.
+    let mut near_sky: Vec<bool> = (0..count).map(|i| valid[i] && probes[i].axes.iter().any(|v| v.x > 0.0)).collect();
+    for _ in 0..SKY_HOPS {
+        let previous = near_sky.clone();
+        each(&mut near_sky, |i, on| { if !*on && valid[i] { *on = neighbours[i].iter().any(|&(j, _)| previous[j]); } });
+    }
+    let refine_dirs = sphere(sky_rays * SKY_REFINE_FACTOR);
+    // Bounce rays: BOUNCE_REFINE_FACTOR times as many (their own set) for the
+    // probes near sky, whose bounced sky and sun come through openings too.
+    let refined_dirs = sphere(bounce_rays * BOUNCE_REFINE_FACTOR);
+    each(&mut probes, |i, p| {
+        if !near_sky[i] { return; }
+        let origin = pos[i];
+        let rot = probe_rotation(i);
+        let (mut v, mut denom) = ([0f32; 6], [0f32; 6]);
+        for d in refine_dirs.iter().map(|d| rot * *d) {
+            let open = occluders.hit(origin, d).is_none();
+            for a in 0..6 { let c = AXES[a].dot(d).max(0.); denom[a] += c; if open { v[a] += c; } }
+        }
+        for a in 0..6 { p.axes[a].x = v[a] / denom[a].max(1e-6); }
+    });
     // What each probe's bounce rays hit, with the sun on it: reused by every bounce.
     let mut hits: Vec<Vec<(Corners, Vec3, f32, [f32; 6])>> = vec![Vec::new(); count];
     each(&mut hits, |i, list| {
         if !valid[i] { return; }
         let origin = pos[i];
         let rot = probe_rotation(i);
-        let dirs: Vec<Vec3> = bounce_dirs.iter().map(|d| rot * *d).collect();
+        let dirs: Vec<Vec3> = (if near_sky[i] { &refined_dirs } else { &bounce_dirs }).iter().map(|d| rot * *d).collect();
         let mut denom = [0f32; 6];
         for d in &dirs { for a in 0..6 { denom[a] += AXES[a].dot(*d).max(0.); } }
         for d in &dirs {
@@ -485,35 +570,49 @@ pub fn bake_placed(grid: &Grid, occluders: &Occluders, placement: &Placement, su
             }
         }
     });
-    let neighbours = visible_neighbours(grid, &pos, occluders, &valid);
+    let mut shares = vec![[0f32; 6]; count];
+    each(&mut shares, |i, share| {
+        if !valid[i] { return; }
+        let rot = probe_rotation(i);
+        let (mut sum, mut sum2) = ([0f32; 6], [0f32; 6]);
+        for d in (if near_sky[i] { &refined_dirs } else { &bounce_dirs }).iter().map(|d| rot * *d) { for a in 0..6 { let c = AXES[a].dot(d).max(0.); sum[a] += c; sum2[a] += c * c; } }
+        for a in 0..6 { share[a] = sum2[a] / (sum[a] * sum[a]).max(1e-12); }
+    });
     // Gather: each bounce lights the surfaces with the previous one's probes.
     // y and z hold everything that has arrived so far.
     let mut light = probes;
     for _ in 0..bounces.max(1) {
         let previous = light.clone();
-        each(&mut light, |i, p| {
+        // Each bounce's estimate is denoised by its own variance
+        // (`denoise_bounce`, sum c^2 / (sum c)^2 times the rays' weighted
+        // variance) before the next gathers it.
+        let mut next: Vec<(Probe, [[f32; 2]; 6])> = light.iter().map(|p| (*p, [[0f32; 2]; 6])).collect();
+        each(&mut next, |i, (p, sd)| {
             if !valid[i] { return; }
-            let (mut sky, mut sunlit) = ([0f32; 6], [0f32; 6]);
+            let (mut sky, mut sunlit, mut sky2, mut sun2) = ([0f32; 6], [0f32; 6], [0f32; 6], [0f32; 6]);
             for (c, n, sun_e, w) in &hits[i] {
                 let g = gather(c, &previous, *n);
-                let s = g.x + g.y;
-                let z = sun_e + g.z;
-                for a in 0..6 { sky[a] += reflectance * s * w[a]; sunlit[a] += reflectance * z * w[a]; }
+                let s = reflectance * (g.x + g.y);
+                let z = reflectance * (sun_e + g.z);
+                for a in 0..6 { sky[a] += s * w[a]; sunlit[a] += z * w[a]; sky2[a] += s * s * w[a]; sun2[a] += z * z * w[a]; }
             }
-            for a in 0..6 { p.axes[a].y = sky[a]; p.axes[a].z = sunlit[a]; }
+            for a in 0..6 {
+                p.axes[a].y = sky[a];
+                p.axes[a].z = sunlit[a];
+                let var = |m2: f32, m: f32| ((m2 - m * m).max(0.0) * shares[i][a]).sqrt();
+                sd[a] = [half(var(sky2[a], sky[a])), half(var(sun2[a], sunlit[a]))];
+            }
         });
-        // Bounced light is smooth; a finite gather is not (a sun patch is hit
-        // by a few rays more or less from probe to probe). Average with the
-        // neighbours each probe sees, never across a wall.
-        smooth_bounce(&mut light, &neighbours, &valid, false);
+        let mut spread = vec![[[0f32; 2]; 6]; count];
+        for (i, (p, sd)) in next.into_iter().enumerate() { light[i] = p; spread[i] = sd; }
+        for _ in 0..DENOISE_PASSES { denoise_bounce(&mut light, &mut spread, &neighbours, &valid); }
     }
-    // Two more passes on the result, the direct sky included: sky seen
-    // through a doorway (or two in a row) or bounced off a sun patch next
-    // door reaches a probe along a few rays only. A few probes then stand
-    // out from their neighbours, and trilinear shading draws each as a
-    // square at the probe spacing on the wall opposite the doorway. Real
-    // light through a door is a wide soft patch at that distance anyway.
-    for _ in 0..2 { smooth_bounce(&mut light, &neighbours, &valid, true); }
+    // No plain smoothing: averaging probes with their neighbours carried
+    // light from a sunny room through a doorway into the next (room 2 of
+    // interior_rooms 1.75x too bright in bounced sky, 4.7x in bounced sun
+    // against `reference_probe`). Shading's gradient interpolation
+    // (irradiance_volume::pack_gradients) keeps the probe spacing from
+    // showing instead.
     for (i, p) in light.iter_mut().enumerate() {
         if !valid[i] { for a in &mut p.axes { *a = Vec3::new(0., 0., 2.); } }
     }
@@ -571,23 +670,37 @@ pub fn bake_lights_placed(grid: &Grid, occluders: &Occluders, placement: &Placem
     });
     let neighbours = visible_neighbours(grid, &pos, occluders, &valid);
     let mut out = Vec::with_capacity(lights.len());
+    // Per probe and axis sum c^2 / (sum c)^2 over its bounce rays (as `bake`).
+    let mut shares = vec![[0f32; 6]; count];
+    each(&mut shares, |i, share| {
+        if !valid[i] { return; }
+        let rot = probe_rotation(i);
+        let (mut sum, mut sum2) = ([0f32; 6], [0f32; 6]);
+        for d in dirs.iter().map(|d| rot * *d) { for a in 0..6 { let c = AXES[a].dot(d).max(0.); sum[a] += c; sum2[a] += c * c; } }
+        for a in 0..6 { share[a] = sum2[a] / (sum[a] * sum[a]).max(1e-12); }
+    });
     for l in 0..lights.len() {
         let mut probes = vec![Probe::default(); count];
         for _ in 0..bounces.max(1) {
             let previous = probes.clone();
-            each(&mut probes, |i, p| {
+            // Each bounce denoised by its estimate's variance (the leaving
+            // light's luminance) before the next gathers it, as the sky.
+            let mut next: Vec<(Probe, [f32; 6])> = probes.iter().map(|p| (*p, [0f32; 6])).collect();
+            each(&mut next, |i, (p, sd)| {
                 if !valid[i] { return; }
-                let mut axes = [Vec3::ZERO; 6];
+                let (mut axes, mut y2) = ([Vec3::ZERO; 6], [0f32; 6]);
                 for (c, n, direct, w) in &hits[i] {
                     let leaving = reflectance * (direct[l] + gather(c, &previous, *n));
-                    for a in 0..6 { axes[a] += leaving * w[a]; }
+                    let y = leaving.dot(LUMINANCE);
+                    for a in 0..6 { axes[a] += leaving * w[a]; y2[a] += y * y * w[a]; }
                 }
                 p.axes = axes;
+                for a in 0..6 { let m = axes[a].dot(LUMINANCE); sd[a] = ((y2[a] - m * m).max(0.0) * shares[i][a]).sqrt(); }
             });
-            smooth_bounce(&mut probes, &neighbours, &valid, true);
+            let mut spread = vec![[0f32; 6]; count];
+            for (i, (p, sd)) in next.into_iter().enumerate() { probes[i] = p; spread[i] = sd; }
+            for _ in 0..DENOISE_PASSES { denoise_lamp(&mut probes, &mut spread, &neighbours, &valid); }
         }
-        // As in `bake`: two more passes against blotches at the probe spacing.
-        for _ in 0..2 { smooth_bounce(&mut probes, &neighbours, &valid, true); }
         out.push(probes);
     }
     Ok(out)
@@ -805,6 +918,34 @@ mod tests {
         assert!(moved > 0);
     }
 
+    /// The bake against brute-force paths (`reference_probe`): the bounced
+    /// sky and sun of the probes inside a room lit through its door, on
+    /// average. The final smoothing passes this bake once had made them
+    /// 1.75x and 4.7x too bright in `interior_rooms`.
+    #[test]
+    fn bake_matches_reference_paths() {
+        let grid = Grid { origin: Vec3::new(-3.75, 0.25, -3.75), cell: 0.5, dims: [16, 7, 16] };
+        let occ = Occluders::from_boxes(&room());
+        let sun = Vec3::new(0.3, 0.8, 0.5);
+        let settings = Settings { sky_rays: 1024, bounce_rays: 256, bounces: 3, reflectance: 0.5 };
+        let placed = Placement::new(&grid, &occ);
+        let baked = bake_placed(&grid, &occ, &placed, sun, &settings).unwrap();
+        let (mut b, mut r, mut n) = (Vec3::ZERO, Vec3::ZERO, 0.0);
+        for i in 0..grid.count() {
+            let p = placed.positions[i];
+            // Inside the room, away from its walls; every fourth probe.
+            if i % 4 != 0 || placed.inside[i] || p.x.abs() > 1.6 || p.z.abs() > 1.6 || !(0.4..2.6).contains(&p.y) { continue; }
+            let reference = reference_probe(&occ, p, sun, settings.reflectance, settings.bounces, 1500, i as u64);
+            for a in 0..6 { b += baked[i].axes[a]; r += reference.axes[a]; }
+            n += 6.0;
+        }
+        let (b, r) = (b / n, r / n);
+        eprintln!("bake {b} against reference {r} over {} probe axes", n as u32);
+        for (ch, name) in [(0, "direct sky"), (1, "bounced sky"), (2, "bounced sun")] {
+            assert!((b[ch] - r[ch]).abs() <= 0.15 * r[ch] + 1e-4, "{name}: bake {} reference {}", b[ch], r[ch]);
+        }
+    }
+
     #[test]
     fn scene_triangles_match_boxes() {
         let mut scene = Scene::default();
@@ -833,4 +974,107 @@ fn f16_bits(v: f32) -> u32 {
     let mantissa = (bits & 0x7f_ffff) + 0x1000; // round the 13 dropped bits
     let (exponent, mantissa) = if mantissa & 0x80_0000 != 0 { (exponent + 1, 0) } else { (exponent, mantissa >> 13) };
     ((exponent.clamp(1, 30) as u32) << 10) | (mantissa & 0x3ff)
+}
+
+/// Per probe the 26 neighbours it sees directly, both outside geometry (one
+/// bit each, `irradiance_volume::neighbour_bit`): what
+/// `irradiance_volume::pack_gradients` differences across.
+pub fn neighbour_masks(grid: &Grid, occluders: &Occluders, placement: &Placement) -> Vec<u32> {
+    let valid: Vec<bool> = placement.inside.iter().map(|inside| !inside).collect();
+    let [dx, dy, _] = grid.dims.map(|d| d as i64);
+    visible_neighbours(grid, &placement.positions, occluders, &valid).iter().enumerate().map(|(i, list)| {
+        let (x, y, z) = (i as i64 % dx, (i as i64 / dx) % dy, i as i64 / (dx * dy));
+        list.iter().map(|&(j, _)| {
+            let (jx, jy, jz) = (j as i64 % dx, (j as i64 / dx) % dy, j as i64 / (dx * dy));
+            crate::irradiance_volume::neighbour_bit([(jx - x) as i32, (jy - y) as i32, (jz - z) as i32])
+        }).fold(0, |a, b| a | b)
+    }).collect()
+}
+
+/// A brute-force reference for one probe: per axis, cosine-sampled paths of
+/// up to `bounces` diffuse bounces (uniform `reflectance`) against the same
+/// geometry, in [`bake`]'s units (x the sky seen directly, y the sky after
+/// bounces per unit horizontal sky illuminance, z the sun after bounces per
+/// unit sun illuminance). No probes, no gathers, no smoothing: what the bake
+/// approximates, for checking it.
+pub fn reference_probe(occluders: &Occluders, p: Vec3, sun: Vec3, reflectance: f32, bounces: usize, samples: usize, seed: u64) -> Probe {
+    let sun = sun.normalize();
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut rnd = move || { state ^= state << 13; state ^= state >> 7; state ^= state << 17; (state >> 40) as f32 / (1u64 << 24) as f32 };
+    let mut cosine = |n: Vec3| -> Vec3 {
+        let (u1, u2) = (rnd(), rnd());
+        let r = u1.sqrt();
+        let phi = std::f32::consts::TAU * u2;
+        let (t, b) = n.any_orthonormal_pair();
+        (t * (r * phi.cos()) + b * (r * phi.sin()) + n * (1.0 - u1).max(0.0).sqrt()).normalize()
+    };
+    let mut probe = Probe::default();
+    for a in 0..6 {
+        let (mut x, mut y, mut z) = (0.0f64, 0.0f64, 0.0f64);
+        for _ in 0..samples {
+            let mut d = cosine(AXES[a]);
+            let mut o = p;
+            let mut through = 1.0f32;
+            for depth in 0..=bounces {
+                match occluders.hit(o, d) {
+                    None => {
+                        if depth == 0 { x += 1.0; } else { y += through as f64; }
+                        break;
+                    }
+                    Some((t, n)) => {
+                        if depth == bounces { break; }
+                        let n = if n.dot(d) > 0.0 { -n } else { n };
+                        let at = o + d * t;
+                        let lit = n.dot(sun);
+                        if sun.y > 0.0 && lit > 0.0 && !occluders.blocked(at + n * 0.03, sun, f32::INFINITY) { z += (through * reflectance * lit) as f64; }
+                        through *= reflectance;
+                        o = at + n * 0.03;
+                        d = cosine(n);
+                    }
+                }
+            }
+        }
+        let s = samples as f64;
+        probe.axes[a] = Vec3::new((x / s) as f32, (y / s) as f32, (z / s) as f32);
+    }
+    probe
+}
+
+/// [`reference_probe`] for a lamp's bounce (what [`bake_lights`] bakes): per
+/// axis the RGB irradiance arriving after one to `bounces` diffuse bounces of
+/// `light`'s direct light, without the direct part.
+pub fn reference_lamp_probe(occluders: &Occluders, p: Vec3, light: &crate::headlights::LocalLight, reflectance: f32, bounces: usize, samples: usize, seed: u64) -> Probe {
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut rnd = move || { state ^= state << 13; state ^= state >> 7; state ^= state << 17; (state >> 40) as f32 / (1u64 << 24) as f32 };
+    let mut cosine = |n: Vec3| -> Vec3 {
+        let (u1, u2) = (rnd(), rnd());
+        let r = u1.sqrt();
+        let phi = std::f32::consts::TAU * u2;
+        let (t, b) = n.any_orthonormal_pair();
+        (t * (r * phi.cos()) + b * (r * phi.sin()) + n * (1.0 - u1).max(0.0).sqrt()).normalize()
+    };
+    let mut probe = Probe::default();
+    for a in 0..6 {
+        let mut sum = Vec3::ZERO;
+        for _ in 0..samples {
+            let mut d = cosine(AXES[a]);
+            let mut o = p;
+            let mut through = 1.0f32;
+            for _ in 0..bounces {
+                let Some((t, n)) = occluders.hit(o, d) else { break };
+                let n = if n.dot(d) > 0.0 { -n } else { n };
+                let at = o + d * t;
+                if let Some((to, e)) = crate::sprites::light_at(light, at) {
+                    let cos = n.dot(to);
+                    let far = light.position.distance(at);
+                    if cos > 0.0 && !occluders.blocked(at + n * 0.03, to, far - light.source_radius_m.max(0.05)) { sum += e * (cos * through * reflectance); }
+                }
+                through *= reflectance;
+                o = at + n * 0.03;
+                d = cosine(n);
+            }
+        }
+        probe.axes[a] = sum / samples as f32;
+    }
+    probe
 }
