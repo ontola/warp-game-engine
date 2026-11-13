@@ -21,7 +21,8 @@
 //! the speed. F12 default, F11 lowland, F10 alpine (F2 opens the debug
 //! overlay), F9 the next seed, F8 jumps somewhere new, F7 hugs the ground,
 //! F5 cycles upscaling (native, then Warp's portable temporal upscaler at
-//! quality, balanced and performance; --upscale MODE picks one at start),
+//! quality, balanced and performance; --upscale MODE picks one at start; the
+//! window starts at temporal-quality, headless captures at native),
 //! F4 saves a screenshot with its position and terrain stats for feedback,
 //! F2 opens the debug menu (engine render/light switches plus trees, grass
 //! and terrain LOD under "Terrain fly").
@@ -1407,6 +1408,10 @@ fn main() -> Result<(), String> {
         return render::write_png(std::path::Path::new(&out), w, h, &rgba);
     }
     let frames = arg("--frames").map(|s| s.parse().map_err(|_| "--frames N")).transpose()?.unwrap_or(0);
+    // Playing: temporal-quality upscaling unless --upscale says otherwise
+    // (Joep, 13 November: 4-7 ms GPU at 1440p for slightly softer needles).
+    // Headless captures above stay native, so look reports compare like for like.
+    if arg("--upscale").is_none() { game.upscale = render::upscale::UpscaleMode::TemporalQuality; }
     app::run(app::Config { title: "Terrain fly".into(), tick_hz: TICK_HZ, fullscreen: args.iter().any(|a| a == "--fullscreen"), frames,
         // Shading dominates at 5K; WARP_RENDER_HEIGHT=0 renders native.
         max_render_height: Some(1440), ..Default::default() }, &mut game)
