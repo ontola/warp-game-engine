@@ -75,14 +75,14 @@ To inspect the actual source meshes at another age or seed:
 
 ```sh
 cargo run --release -p render --example plant_catalog_preview -- --list
-cargo run --release -p render --example plant_catalog_preview -- --out build/plants --seed 24 white_broom woolly_willow forest_dracaena kapok raffia_palm
+cargo run --release -p render --example plant_catalog_preview -- --out build/plants --seed 24 white_broom woolly_willow forest_dracaena forest_coffee african_mahogany
 ```
 
 The preview writes a full specimen, an attached shoot close-up and physical
 scale metadata for each. To place a catalogue plant in a Luau game, see
 [the plants API](warp-cli.md).
 
-The [Sideways biome atlas](https://sideways-biome-atlas.joepio.chatgpt.site/#plantenoverzicht) shows all fourteen grown plants and their shoots. The earlier eleven-species study below records the previous growth recipes.
+The [Sideways biome atlas](https://sideways-biome-atlas.joepio.chatgpt.site/#plantenbibliotheek) shows the grown plants and their shoots. The earlier eleven-species study below records the previous growth recipes.
 
 ![Earlier study of eleven desert, Norwegian and rainforest plants, with an enlarged view of the understory](images/biome-flora.jpg)
 
@@ -98,7 +98,11 @@ growth sets the stem, branching, crown and live shoots. Norway uses the
 flight demo’s spruce and a Scots pine that sheds its lower whorls and bears
 shorter needles on ascending limbs. The explicit `--pine-forest` in the
 flight demo selects Jeffrey pine.
-Broadleaf plants use leafy shoots with stems and individual leaf blades.
+In the rainforest, forest dracaena grows clusters of pointed leaves on slender
+ascending canes, and robusta coffee carries opposite simple leaves. The leaflets
+of African mahogany grow in pairs along a midrib, while those of kapok radiate
+from the tip of a single petiole. The dry-season white broom has arching green
+shoots on upright limbs. The woolly willow branches close to the soil.
 
 `recipe_forest::BiomePlants` cooks each species once into branch source
 meshes, branch voxels and a whole-plant voxel pyramid. Pass that catalogue

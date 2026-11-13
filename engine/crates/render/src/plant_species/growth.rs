@@ -107,15 +107,16 @@ pub fn grown(name: &str) -> Option<GrownSpecies> {
             limb_step: 1.155, angle: [1.47, 1.55], rise: 0.055, droop: 0.025,
             wood: 0.017, live_crown: 0.38, lift_years: 18.0, dead_years: 4, ..broadleaf
         }, 17, ShootRecipe::Kapok),
-        "african_mahogany" => leafy(Species {
+        "african_mahogany" => authored(Species {
             height: 22.0, pace: 17.0, first_whorl: 4, whorl: [1, 3],
-            limb_step: 0.48, laterals: 1.1, wood: 0.015,
+            limb_step: 0.60, laterals: 1.1, wood: 0.015,
             needle_years: 3, ..broadleaf
-        }, 17, [1.1, 1.08, 1.1]),
-        "forest_coffee" => leafy(Species {
+        }, 17, ShootRecipe::Mahogany),
+        "forest_coffee" => authored(Species {
             height: 2.9, pace: 7.5, whorl: [2, 2], limb_step: 0.16,
-            angle: [1.32, 1.47], needle_years: 3, ..shrub
-        }, 9, [0.65, 0.47, 0.65]),
+            angle: [1.37, 1.54], rise: -0.03, droop: 0.09, needle_years: 4,
+            wood: 0.0036, ..shrub
+        }, 9, ShootRecipe::Coffee),
         // Young fronds rise from the crown; as their axes extend they bend
         // down. The leaflets on a frond sit close to one plane.
         "raffia_palm" => authored(Species {
@@ -124,21 +125,29 @@ pub fn grown(name: &str) -> Option<GrownSpecies> {
             needle_years: 1, limb_wood: 0.23, wood: 0.012, plumes: 1.0,
             live_crown: 0.80, lift_years: 12.0, ..shrub
         }, 11, ShootRecipe::Raffia),
+        // Short early leader growth sets several stout limbs near the ground.
+        // Older low limbs carry leafy side shoots into the outer crown.
         "woolly_willow" => authored(Species {
-            height: 0.48, pace: 5.6, first_whorl: 1, whorl: [2, 3], limb_step: 0.094,
-            angle: [1.21, 1.37], rise: 0.062, laterals: 0.65, needle_years: 3,
-            tip_radius: 0.0016, wood: 0.0017, ..shrub
+            height: 1.14, pace: 5.6, shape: 2.25, first_whorl: 1, whorl: [3, 4],
+            limb_step: 0.10, angle: [1.27, 1.39], rise: 0.15, side_length: 0.69,
+            laterals: 0.78, needle_years: 5, plumes: 1.14, crowding: 13,
+            tip_radius: 0.0016, wood: 0.0019, limb_wood: 0.78, ..shrub
         }, 9, ShootRecipe::WoollyWillow),
+        // A short basal axis gives way to several nearly co-dominant ascending
+        // scaffolds. The youngest green branchlets arch from their outer limbs.
         "white_broom" => authored(Species {
-            height: 1.42, pace: 7.2, first_whorl: 1, whorl: [2, 3], limb_step: 0.185,
-            angle: [0.58, 0.76], rise: -0.035, droop: 0.034, laterals: 0.86,
-            side_length: 0.73, needle_years: 4, tip_radius: 0.00125, wood: 0.0028,
+            height: 1.05, pace: 6.1, shape: 1.95, first_whorl: 1, whorl: [1, 2],
+            limb_step: 0.224, angle: [0.60, 0.60], rise: 0.035, droop: 0.024,
+            laterals: 1.28, side_length: 0.85, needle_years: 5, crowding: 10,
+            tip_radius: 0.00125, wood: 0.0032, order_wood: [0.88, 0.34, 0.0, 0.0],
             ..shrub
         }, 11, ShootRecipe::Broom),
         "forest_dracaena" => authored(Species {
-            height: 1.77, pace: 8.0, first_whorl: 1, whorl: [1, 1], limb_step: 0.145,
-            angle: [0.67, 0.79], rise: 0.045, max_order: 2, laterals: 0.21,
-            side_length: 0.58, tip_radius: 0.0019, wood: 0.0013, needle_years: 4,
+            // The short first internode divides into slender ascending canes.
+            height: 2.29, pace: 6.7, shape: 1.92, first_whorl: 1, whorl: [2, 3],
+            limb_step: 0.138, angle: [0.52, 0.84], rise: 0.065, max_order: 2,
+            laterals: 0.44, side_length: 0.59, limb_wood: 0.84, tip_radius: 0.0019,
+            wood: 0.0013, needle_years: 5,
             ..shrub
         }, 9, ShootRecipe::Dracaena),
         _ => return None,
@@ -201,6 +210,19 @@ mod tests {
     }
 
     #[test]
+    fn white_broom_forks_at_the_base_into_several_woody_scaffolds() {
+        let broom = grown("white_broom").unwrap();
+        for seed in [broom.seed, 3, 19, 74, 91] {
+            let plant = plant_growth::grow(&broom.rules, broom.age, seed);
+            let primary = plant.segments.iter().filter(|stem| stem.order == 1
+                && stem.parent.is_some_and(|parent| plant.segments[parent as usize].order == 0));
+            let basal: Vec<_> = primary.filter(|stem| stem.from.y < 0.20).collect();
+            assert!(basal.len() >= 3 && basal.iter().any(|stem| stem.from.y < 0.06), "seed {seed}");
+            assert!(basal.iter().any(|stem| stem.radius[0] > 0.6 * plant.trunk_radius()), "seed {seed}");
+        }
+    }
+
+    #[test]
     fn broom_and_palm_keep_their_lowest_foliage_above_the_roots() {
         for name in ["white_broom", "raffia_palm"] {
             let model = grown(name).unwrap();
@@ -219,6 +241,19 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn mature_woolly_willow_forks_low_and_keeps_leafy_lower_limbs() {
+        let model = grown("woolly_willow").unwrap();
+        for seed in [model.seed, 3, 19, 47, 91] {
+            let plant = plant_growth::grow(&model.rules, model.age, seed);
+            let basal_limbs = plant.segments.iter().filter(|s| s.order == 1 && s.from.y < 0.10
+                && s.parent.is_some_and(|p| plant.segments[p as usize].order == 0)).count();
+            assert!(basal_limbs >= 3, "seed {seed}: too few basal limbs");
+            assert!(plant.tufts.iter().any(|t| t.at.y < plant.height() * 0.25),
+                "seed {seed}: bare lower quarter of the bush");
         }
     }
 
