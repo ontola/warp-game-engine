@@ -61,12 +61,20 @@ and shrubs. Sideways reads the same presets with `--biome NAME`.
 | `norway` | Sheltered snow drifts, soil on exposed shoulders and compacted snow between wheel tracks | Upland spruce with low drooping branches, pine and pale mountain birch, with juniper and dwarf birch below |
 | `rainforest` | Rolling Central African lowlands with damp leaf litter and red clay on open ground and tracks | Kapok rises above spreading mahogany crowns. Forest coffee and juvenile raffia palms favor their shade. |
 
+![The desert, Norwegian and rainforest species at their authored sizes, with an enlarged view of the understory](images/biome-flora.jpg)
+
 Games can look up `render::biome::Biome::named(name)` and take its terrain,
 ground palette and weighted flora together. `Biome::species()` resolves the
 recipes in the order used by `Biome::rules()`. A game with its own plant
 locations can use `Flora::tree_variant` and `shrub_variant` with a stable
 roll at each location. `Flora::shrub_habitat` gives the planting probability
 multiplier for the local canopy cover. All species use the existing woody plant generator.
+
+Sideways cooks one card mesh per species. `PlantCards::woody_mesh` pairs
+the existing foliage cuts with a simpler distant trunk and branches derived
+from the same recipe and seed. The coarse wood retains the base of the
+trunk and the endpoints of each primary branch. The projected silhouette
+error determines when the renderer selects it.
 
 ## Mesh: GPU patches by projected error
 

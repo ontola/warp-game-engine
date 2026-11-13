@@ -76,9 +76,8 @@ impl Section {
 fn wood(assembly: &Assembly, material: u32) -> Result<(Primitive, f32), String> {
     let poses = assembly.branch_transforms()?;
     let mut wood = Primitive { material, ..Default::default() };
-    // First section is the lower trunk of a woody recipe. Copy its original
-    // vertices: the bark at ground level and the full collision-bearing waist
-    // retain their exact radius, collar, embedding and material.
+    // Copy the original lower trunk: the bark at ground level and the full
+    // collision-bearing waist retain their radius, collar, embedding and material.
     let stem = assembly.instances.iter().find(|i| i.part == plant_recipe::STEM)
         .ok_or("woody recipe has no lower trunk")?;
     let base = &assembly.parts[stem.part as usize];
@@ -154,6 +153,23 @@ mod tests {
     }
 
     #[test]
+    fn card_only_mesh_and_material_aliases_need_no_replacement_wood() {
+        let recipe = crate::plant_species::named("saltbush").unwrap();
+        let assembly = plant_recipe::build(&recipe, BuildOptions::new(1), plant_recipe::recipe_limits()).unwrap();
+        let mut cards = PlantCards::cook(&assembly, recipe_forest::CARD_WOOD_ERROR_M).unwrap();
+        let all_one = vec![7; cards.materials(0).len()];
+        assert!(cards.woody_mesh(&[], &recipe, 1).is_err());
+        let distinct: Vec<_> = (0..all_one.len() as u32).collect();
+        let separate = cards.woody_mesh(&distinct, &recipe, 1).unwrap();
+        let aliased = cards.woody_mesh(&all_one, &recipe, 1).unwrap();
+        assert_eq!(aliased.root_triangles(), separate.root_triangles());
+        assert!(aliased.clusters.iter().all(|c| c.material == 7));
+        cards.mesh.clusters.retain(|c| c.material as usize >= cards.wood.len());
+        let unchanged = cards.woody_mesh(&all_one, &recipe, 1).unwrap();
+        assert_eq!(cards.mesh.root_triangles(), unchanged.root_triangles());
+    }
+
+    #[test]
     fn biome_wood_cuts_keep_the_canopy_waist_and_height_at_lower_cost() {
         let cache = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
         for biome in ["desert", "norway", "rainforest"] {
@@ -191,7 +207,14 @@ mod tests {
                         assert!((recipe.trunk_radius..=recipe.trunk_radius*1.04).contains(&r), "{name}: trunk waist at {y}");
                     }
                 }
-                assert!(result.root_triangles() * 4 < source.root_triangles(), "{name}: distant wood budget");
+                // No more than the source base stem, two upper trunk runs and
+                // one tapered four-sided cylinder per limb (16 triangles each),
+                // plus the existing far cards. Counts must actually improve.
+                let card_tris: usize = source.clusters.iter().filter(|c| far_card(c)).map(|c| c.tri_count as usize).sum();
+                let stem_tris = plant_recipe::primitive_library()[plant_recipe::STEM as usize].indices.len() / 3;
+                let wood_budget = stem_tris + 16 * (2 + (recipe.tiers * recipe.branches_per_tier) as usize);
+                assert!(result.root_triangles() <= card_tris + wood_budget, "{name}: distant wood budget");
+                assert!(result.root_triangles() < source.root_triangles(), "{name}: distant geometry reduction");
                 eprintln!("{name}: {} -> {} coarsest triangles", source.root_triangles(), result.root_triangles());
             }
         }
