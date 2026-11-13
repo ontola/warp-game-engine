@@ -61,16 +61,16 @@ fn used_snapshot()->vec4<u32> {return vec4<u32>(atomicLoad(&state[4]),atomicLoad
 // coarse_stop): its table (foliage_source_pages::source_work_table, stored
 // after the nodes) at the coarsest bin no coarser than the view's cut, at
 // the bound's nearest point. `pixels_per_m`: pixels per tree-local metre.
-// Cut at the camera's 1 px cluster target (Renderer lod_pixels, default 1),
-// one bin finer still for wind shear (the cull scales errors by up to
-// 1 + |shear|). error_in measures length(dx,dy), sqrt(2) times the pixels
-// per metre along one axis, hence 0.5*sqrt(2). A node too close for the
-// finest bin books every cluster.
+// Cut at the camera's 1 px cluster target (Renderer lod_pixels, default 1).
+// error_in measures length(dx,dy), sqrt(2) times the pixels per metre along
+// one axis. The table already allows for wind shear (the cull refines by
+// 1 + |shear|, at most wind::MAX_TREE_SHEAR for trees). A node too close for
+// the finest bin books every cluster.
 const SOURCE_TABLE_T0:f32=0.00025;
 fn source_work_at(node:u32,pixels_per_m:f32)->u32 {
  let full=nodes[node].links.w>>8u;
  if !(pixels_per_m>0.0) || pixels_per_m>=1e29 {return full;}
- let t=0.70710678/pixels_per_m;
+ let t=1.41421356/pixels_per_m;
  if t<SOURCE_TABLE_T0 {return full;}
  // Half-octave bins, two 16-bit counts per word (foliage_source_pages).
  let k=min(u32(floor(2.0*log2(t/SOURCE_TABLE_T0))),23u);
