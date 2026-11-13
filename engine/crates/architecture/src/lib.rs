@@ -327,8 +327,21 @@ impl House {
             let floor = s.max.y;
             let mid = Vec3::new((s.min.x + s.max.x) * 0.5, floor + 0.1, (s.min.z + s.max.z) * 0.5);
             let height = s.height.filter(|h| *h > 0.5).or_else(|| self.solid.hit(mid, Vec3::Y).map(|(t, _)| t + 0.1).filter(|h| *h < 6.0))?;
-            let (min, max) = (Vec3::new(s.min.x, floor, s.min.z), Vec3::new(s.max.x, floor + height, s.max.z));
+            let (mut min, mut max) = (Vec3::new(s.min.x, floor, s.min.z), Vec3::new(s.max.x, floor + height, s.max.z));
             if (max - min).min_element() < 0.3 { return None; }
+            // A space ends at its walls' faces, so a door's reveal (jambs,
+            // head, sill) belongs to no box, and a point there took the
+            // probe of whatever room its reflected ray heads into: the
+            // bright room behind a closed door. The room reaches through its
+            // door openings up to the leaf (the door's middle).
+            for d in self.elements.iter().filter(|e| e.ifc_class == "IfcDoor") {
+                let size = d.max - d.min;
+                let (a, b) = if size.x < size.z { (0, 2) } else { (2, 0) };
+                if d.max[b] <= min[b] || d.min[b] >= max[b] || d.min.y >= max.y || d.max.y <= min.y { continue; }
+                let mid = (d.min[a] + d.max[a]) * 0.5;
+                if mid < min[a] && min[a] - mid < 0.4 { min[a] = mid; }
+                if mid > max[a] && mid - max[a] < 0.4 { max[a] = mid; }
+            }
             let capture = Vec3::new(mid.x, floor + EYE.min(height * 0.6), mid.z);
             Some(render::reflection_probes::ProbeBox { capture, min, max })
         }).collect()
