@@ -834,3 +834,18 @@ fn f16_bits(v: f32) -> u32 {
     let (exponent, mantissa) = if mantissa & 0x80_0000 != 0 { (exponent + 1, 0) } else { (exponent, mantissa >> 13) };
     ((exponent.clamp(1, 30) as u32) << 10) | (mantissa & 0x3ff)
 }
+
+/// Per probe the 26 neighbours it sees directly, both outside geometry (one
+/// bit each, `irradiance_volume::neighbour_bit`): what
+/// `irradiance_volume::pack_gradients` differences across.
+pub fn neighbour_masks(grid: &Grid, occluders: &Occluders, placement: &Placement) -> Vec<u32> {
+    let valid: Vec<bool> = placement.inside.iter().map(|inside| !inside).collect();
+    let [dx, dy, _] = grid.dims.map(|d| d as i64);
+    visible_neighbours(grid, &placement.positions, occluders, &valid).iter().enumerate().map(|(i, list)| {
+        let (x, y, z) = (i as i64 % dx, (i as i64 / dx) % dy, i as i64 / (dx * dy));
+        list.iter().map(|&(j, _)| {
+            let (jx, jy, jz) = (j as i64 % dx, (j as i64 / dx) % dy, j as i64 / (dx * dy));
+            crate::irradiance_volume::neighbour_bit([(jx - x) as i32, (jy - y) as i32, (jz - z) as i32])
+        }).fold(0, |a, b| a | b)
+    }).collect()
+}

@@ -220,8 +220,8 @@ pub fn bake_with(kernels: &Kernels, gpu: &Gpu, grid: &Grid, occluders: &Occluder
             cx.pass(enc, BOUNCE_SKY, 1, sun, r, [0, 0, 0]);
             cx.pass(enc, SMOOTH, 0, sun, r, [0, 0, 0]);
         }
-        cx.pass(enc, SMOOTH, 1, sun, r, [0, 0, 1]);
-        cx.pass(enc, SMOOTH, 0, sun, r, [0, 0, 1]);
+        if std::env::var_os("TMP_NOSMOOTH").is_none() { cx.pass(enc, SMOOTH, 1, sun, r, [0, 0, 1]);
+        cx.pass(enc, SMOOTH, 0, sun, r, [0, 0, 1]); }
     }, 1)?;
     // Inside-wall probes light nothing (z = 2), as the CPU bake marks them.
     let valid = read_valid(&cx)?;
@@ -259,6 +259,8 @@ pub struct Geometry {
     pub visibility: Vec<[u32; crate::room_bake::VISIBILITY_SIDE * crate::room_bake::VISIBILITY_SIDE]>,
     pub reach: Vec<[u32; crate::room_bake::REACH_WORDS]>,
     pub planes: Vec<[f32; 4]>,
+    /// Per probe the 26 neighbours it sees (bit order: irradiance_volume::neighbour_bit).
+    pub neighbours: Vec<u32>,
 }
 
 pub fn bake_geometry(gpu: &Gpu, grid: &Grid, occluders: &Occluders) -> Result<Geometry, String> {
@@ -276,17 +278,19 @@ pub fn bake_geometry_with(kernels: &Kernels, gpu: &Gpu, grid: &Grid, occluders: 
     let start = Placement { positions: (0..grid.count()).map(|i| grid.position(i)).collect(), inside: vec![false; grid.count()] };
     let cx = Context::new(gpu, kernels, grid, occluders, &start, 256, VIS + REACH_W, &[])?;
     let mut enc = gpu.device.create_command_encoder(&Default::default());
-    for kernel in [PLACE, VISIBILITY, PLANES, REACH] { cx.pass(&mut enc, kernel, 0, Vec3::Y, 0.5, [0, 0, 0]); }
+    for kernel in [PLACE, VISIBILITY, PLANES, REACH, NEIGHBOURS] { cx.pass(&mut enc, kernel, 0, Vec3::Y, 0.5, [0, 0, 0]); }
     gpu.queue.submit([enc.finish()]);
     let pos: Vec<[f32; 4]> = read(gpu, gpu.device.create_command_encoder(&Default::default()), &cx.pos, cx.pos.size())?;
     let masks: Vec<u32> = read(gpu, gpu.device.create_command_encoder(&Default::default()), &cx.masks, cx.masks.size())?;
     let planes: Vec<[f32; 4]> = read(gpu, gpu.device.create_command_encoder(&Default::default()), &cx.probes[1], cx.probes[1].size())?;
+    let neighbours: Vec<u32> = read(gpu, gpu.device.create_command_encoder(&Default::default()), &cx.seen, cx.seen.size())?;
     let stride = VIS + REACH_W;
     Ok(Geometry {
         placement: Placement { positions: pos.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect(), inside: pos.iter().map(|p| p[3] < 0.5).collect() },
         visibility: masks.chunks_exact(stride).map(|m| std::array::from_fn(|k| m[k])).collect(),
         reach: masks.chunks_exact(stride).map(|m| std::array::from_fn(|k| m[VIS + k])).collect(),
         planes: planes.chunks_exact(6).map(|p| p[0]).collect(),
+        neighbours,
     })
 }
 
@@ -318,8 +322,8 @@ pub fn bake_lights_with(kernels: &Kernels, gpu: &Gpu, grid: &Grid, occluders: &O
                 cx.pass(enc, BOUNCE_LAMP, 0, Vec3::new(n as f32, 0.0, 0.0), r, [first, 0, 0]);
                 cx.pass(enc, SMOOTH, 1, Vec3::Y, r, [n, 0, 1]);
             }
-            cx.pass(enc, SMOOTH, 0, Vec3::Y, r, [n, 0, 1]);
-            cx.pass(enc, SMOOTH, 1, Vec3::Y, r, [n, 0, 1]);
+            if std::env::var_os("TMP_NOSMOOTH").is_none() { cx.pass(enc, SMOOTH, 0, Vec3::Y, r, [n, 0, 1]);
+            cx.pass(enc, SMOOTH, 1, Vec3::Y, r, [n, 0, 1]); }
         }, 0)?;
         out.extend(all.chunks_exact(grid.count()).take(slots).map(|set| set.to_vec()));
     }

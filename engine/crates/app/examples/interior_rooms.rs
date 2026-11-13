@@ -159,6 +159,8 @@ struct LightState {
     offsets: Vec<u32>,
     /// Which voxels around each probe it reaches through open space (`room_bake::bake_reach`).
     reach: Vec<[u32; render::room_bake::REACH_WORDS]>,
+    /// The neighbours each probe sees (`room_bake::neighbour_masks`), for gradients.
+    neighbours: Vec<u32>,
 }
 
 impl LightState {
@@ -174,7 +176,7 @@ impl LightState {
                 sky: render::room_bake_gpu::bake_with(kernels, gpu, grid, occluders, &g.placement, sun, &settings)?,
                 lamps: render::room_bake_gpu::bake_lights_with(kernels, gpu, grid, occluders, &g.placement, &lamps, &lamp_settings)?,
                 offsets: render::room_bake::pack_offsets(grid, &g.placement.positions),
-                planes: g.planes, visibility: g.visibility, reach: g.reach,
+                planes: g.planes, visibility: g.visibility, reach: g.reach, neighbours: g.neighbours,
             });
         }
         // Where the probes sit, once for every bake of this door state.
@@ -186,6 +188,7 @@ impl LightState {
             visibility: render::room_bake::bake_visibility_placed(grid, occluders, &placed),
             offsets: render::room_bake::pack_offsets(grid, &placed.positions),
             reach: render::room_bake::bake_reach_placed(grid, occluders, &placed),
+            neighbours: render::room_bake::neighbour_masks(grid, occluders, &placed),
         })
     }
 }
@@ -468,6 +471,12 @@ impl Rooms {
         // it is a third of the way open.
         let planes = if k < 0.3 { &shut.planes } else { &open.planes };
         frame.renderer().ok_or("no renderer")?.set_sky_sun_emission(frame.gpu, &sky, &emission, planes)?;
+        // The probes' gradients for this light, across the neighbours each sees
+        // in the door state the visibility uses.
+        if std::env::var_os("ROOMS_NO_DDGI").is_none() {
+            let state = if k < 0.3 { shut } else { open };
+            frame.renderer().ok_or("no renderer")?.set_probe_gradients(frame.gpu, &render::irradiance_volume::pack_gradients(&self.grid, &sky, &emission, &state.neighbours)?)?;
+        }
         // Visibility switches with the planes (the door is a wall until a
         // third open); 3.5 MB, so only when the state changes.
         if std::env::var_os("ROOMS_NO_DDGI").is_none() && self.visibility_shut != Some(k < 0.3) {

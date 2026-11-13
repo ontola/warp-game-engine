@@ -1462,6 +1462,25 @@ fn probe_reaches(index: u32, at: vec3<f32>, x: vec3<f32>, dims: vec3<u32>, cell:
     }
     return sum;
 }
+// How probe `index`'s three values (q0 0: the sky transport, 3: the
+// emission) change over `dp` from its grid point, for the three axes the
+// normal picks (`axis`, three words per axis) weighted by n2: its gradients
+// (irradiance_volume::pack_gradients, half floats, 54 words per probe).
+fn probe_slope(gradients: u32, index: u32, axis: vec3<u32>, q0: u32, n2: vec3<f32>, dp: vec3<f32>) -> vec3<f32> {
+    let base = gradients + 1u + index * 54u;
+    var out = vec3<f32>(0.0);
+    for (var k = 0u; k < 3u; k++) {
+        let a = axis[k] / 3u;
+        var r = vec3<f32>(0.0);
+        for (var j = 0u; j < 9u; j++) {
+            let h = (a * 6u + q0) * 3u + j;
+            let pair = unpack2x16float(aux_word(base + h / 2u));
+            r[j / 3u] += select(pair.x, pair.y, (h & 1u) == 1u) * dp[j % 3u];
+        }
+        out += r * n2[k];
+    }
+    return out;
+}
 // A probe's offset from its grid point (room_bake::pack_offsets), stored
 // after the visibility maps: three 10-bit signed fractions of half a cell.
 fn probe_offset(index: u32, dims: vec3<u32>, cell: f32) -> vec3<f32> {
@@ -1543,9 +1562,16 @@ fn irradiance_sample_at(p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> Irrad
         var loose_emission=vec3<f32>(0.0);
         var loose_weight=0.0;
         let mode=aux_word(o+7u);
+        // Probe gradients (irradiance_volume::pack_gradients), after the
+        // reach masks: header 1 when uploaded.
+        let gradients=u32(gi.trace.w)+dims.x*dims.y*dims.z*81u;
+        let smooth_weights=ddgi&&aux_word(gradients)==1u;
+        let ts=t*t*(3.0-2.0*t);
         for(var c=0u;c<8u;c++) {
             let corner=vec3<u32>(c&1u,(c>>1u)&1u,(c>>2u)&1u);
-            let w3=select(1.0-t,t,corner==vec3<u32>(1u));
+            // With gradients C1 weights (each probe's value is continued
+            // along its gradient, below), else trilinear.
+            let w3=select(1.0-select(t,ts,smooth_weights),select(t,ts,smooth_weights),corner==vec3<u32>(1u));
             let g=vec3<u32>(cell0)+corner;
             // The probe where it was baked: its grid point, moved out of
             // geometry (room_bake::probe_positions) when visibility is on.
@@ -1581,15 +1607,17 @@ fn irradiance_sample_at(p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> Irrad
                 if mode==7u {
                     let plane=vec4<f32>(aux_f32(base+2u),aux_f32(base+5u),aux_f32(base+8u),aux_f32(base+11u));
                     if !ddgi { valid*=smoothstep(-soft,0.0,dot(plane.xyz,surface)+plane.w); }
-                    let e=unpack_emission(aux_word(base+axis.x+1u))*n2.x
+                    var e=unpack_emission(aux_word(base+axis.x+1u))*n2.x
                         +unpack_emission(aux_word(base+axis.y+1u))*n2.y
                         +unpack_emission(aux_word(base+axis.z+1u))*n2.z;
+                    if smooth_weights { e+=probe_slope(gradients,index,axis,3u,n2,p-(origin+vec3<f32>(g)*cell)); }
                     emission+=e*blend_weight*valid;
                     loose_emission+=e*blend_weight*inside;
                 }
-                let v=unpack_sky_transport(aux_word(base+axis.x))*n2.x
+                var v=unpack_sky_transport(aux_word(base+axis.x))*n2.x
                     +unpack_sky_transport(aux_word(base+axis.y))*n2.y
                     +unpack_sky_transport(aux_word(base+axis.z))*n2.z;
+                if smooth_weights { v+=probe_slope(gradients,index,axis,0u,n2,p-(origin+vec3<f32>(g)*cell)); }
                 value+=v*blend_weight*valid;
                 valid_weight+=blend_weight*valid;
                 loose+=v*blend_weight*inside;
