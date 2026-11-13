@@ -29,7 +29,7 @@ struct Uniform {
 /// number of bakes on one device (the `*_with` functions).
 pub struct Kernels {
     layout: wgpu::BindGroupLayout,
-    pipelines: [wgpu::ComputePipeline; 11],
+    pipelines: [wgpu::ComputePipeline; 14],
 }
 
 impl Kernels {
@@ -47,7 +47,7 @@ impl Kernels {
         let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("room bake"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipeline = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(entry), layout: Some(&pipeline_layout),
             module: &module, entry_point: Some(entry), compilation_options: Default::default(), cache: gpu.pipeline_cache() });
-        Self { layout, pipelines: ["sky_direct", "neighbours", "bounce_sky", "bounce_lamp", "smooth_light", "prepare", "place", "visibility_map", "planes", "reach", "denoise"].map(pipeline) }
+        Self { layout, pipelines: ["sky_direct", "neighbours", "bounce_sky", "bounce_lamp", "smooth_light", "prepare", "place", "visibility_map", "planes", "reach", "denoise", "sky_flag", "sky_refine", "denoise_lamp"].map(pipeline) }
     }
 }
 
@@ -64,6 +64,8 @@ struct Context<'a> {
     lights: wgpu::Buffer,
     masks: wgpu::Buffer,
     base: Uniform,
+    /// Where the second direct-sky estimate's rays start in `dirs`, and how many.
+    refine: (u32, u32),
     count: u32,
 }
 
@@ -78,9 +80,16 @@ const VISIBILITY: usize = 7;
 const PLANES: usize = 8;
 const REACH: usize = 9;
 const DENOISE: usize = 10;
-/// Iterations of the variance-guided filter after the last sky bounce
-/// (room_bake.wgsl `denoise`): each over the 26 neighbours a probe sees.
-const DENOISE_PASSES: usize = 3;
+const SKY_FLAG: usize = 11;
+const SKY_REFINE: usize = 12;
+const DENOISE_LAMP: usize = 13;
+// As the CPU bake (even hops: the flag ends in bit 30).
+const SKY_HOPS: u32 = crate::room_bake::SKY_HOPS as u32;
+const SKY_REFINE_FACTOR: usize = crate::room_bake::SKY_REFINE_FACTOR;
+const _: () = assert!(SKY_HOPS % 2 == 0);
+/// Iterations of the variance-guided filter after each sky bounce
+/// (room_bake.wgsl `denoise`), as the CPU bake.
+const DENOISE_PASSES: usize = crate::room_bake::DENOISE_PASSES;
 /// Lamps baked in one pass (room_bake.wgsl LAMPS_PER_PASS).
 const LAMPS_PER_PASS: usize = 8;
 
@@ -110,23 +119,13 @@ impl<'a> Context<'a> {
         dirs.extend(crate::room_bake::sphere(bounce_rays).iter().map(|d| d.extend(0.0).to_array()));
         let rot_base = dirs.len() as u32;
         dirs.extend((0..grid.count()).map(|i| crate::room_bake::probe_rotation(i).to_array()));
+        // Then the second direct-sky estimate's rays (sky_refine).
+        let refine = (dirs.len() as u32, (sky_rays * SKY_REFINE_FACTOR) as u32);
+        dirs.extend(crate::room_bake::sphere(sky_rays * SKY_REFINE_FACTOR).iter().map(|d| d.extend(0.0).to_array()));
         let pos: Vec<[f32; 4]> = placement.positions.iter().zip(&placement.inside).map(|(p, inside)| [p.x, p.y, p.z, if *inside { 0.0 } else { 1.0 }]).collect();
         let mut light_words: Vec<[f32; 4]> = lights.iter().flat_map(|l| [l.position.extend(l.range_m).to_array(), l.direction.extend(l.falloff).to_array(),
             l.intensity_cd.extend(l.source_radius_m).to_array(), [l.inner_cos, l.outer_cos, 0.0, 0.0]]).collect();
         if light_words.is_empty() { light_words.push([0.0; 4]); }
-        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("room bake"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/room_bake.wgsl").into()) });
-        let entry = |binding, read_only: Option<bool>| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE, count: None,
-            ty: match read_only {
-                None => wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                Some(read_only) => wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None },
-            } };
-        let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("room bake"), entries: &[
-            entry(0, None), entry(1, Some(true)), entry(2, Some(true)), entry(3, Some(false)), entry(4, Some(true)),
-            entry(5, Some(false)), entry(6, Some(false)), entry(7, Some(true)), entry(8, Some(false))] });
-        let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("room bake"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
-        let pipeline = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(entry), layout: Some(&pipeline_layout),
-            module: &module, entry_point: Some(entry), compilation_options: Default::default(), cache: gpu.pipeline_cache() });
         // Room for every lamp of one pass (bounce_lamp): a probe set per slot.
         let slots = lights.len().clamp(1, LAMPS_PER_PASS);
         let probes_bytes = vec![0u8; grid.count() * 6 * 16 * slots];
@@ -145,7 +144,7 @@ impl<'a> Context<'a> {
             masks: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("room bake ray masks"), size: mask_bytes, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false }),
             base: Uniform { origin: grid.origin.extend(grid.cell).to_array(), dims: [grid.dims[0], grid.dims[1], grid.dims[2], count],
                 sun: [0.0, 1.0, 0.0, 0.5], counts: [sky_rays as u32, bounce_rays as u32, tri_base, rot_base], mode: [0, lights.len() as u32, 0, bounce_base] },
-            count,
+            count, refine,
         })
     }
 
@@ -163,8 +162,8 @@ impl<'a> Context<'a> {
         pass.set_pipeline(&self.kernels.pipelines[kernel]);
         pass.set_bind_group(0, &bind, &[]);
         // Workgroup-per-probe kernels, or a thread per probe.
-        let groups = if kernel == SMOOTH { (self.count * mode[0].max(1)).div_ceil(64) }
-            else if matches!(kernel, NEIGHBOURS | PLACE | PLANES | REACH | DENOISE) { self.count.div_ceil(64) } else { self.count };
+        let groups = if kernel == SMOOTH || kernel == DENOISE_LAMP { (self.count * mode[0].max(1)).div_ceil(64) }
+            else if matches!(kernel, NEIGHBOURS | PLACE | PLANES | REACH | DENOISE | SKY_FLAG) { self.count.div_ceil(64) } else { self.count };
         pass.dispatch_workgroups(groups.min(65535), groups.div_ceil(65535), 1);
     }
 
@@ -213,21 +212,26 @@ pub fn bake_with(kernels: &Kernels, gpu: &Gpu, grid: &Grid, occluders: &Occluder
     let sun = sun.normalize();
     let cx = Context::new(gpu, kernels, grid, occluders, placement, settings.sky_rays, settings.bounce_rays, &[])?;
     let r = settings.reflectance;
-    // Buffer 1 holds the light after each step: sky_direct writes it, a
-    // bounce writes 0 and its smoothing 1 again. The last bounce is not
-    // smoothed but denoised (DENOISE_PASSES, by its estimates' variance):
-    // 1 -> 0, then 0 -> 1 -> 0 -> 1.
+    // `cur`: the probe buffer holding the light. sky_direct writes 1; the
+    // second estimate (sky_refine) 0; each bounce and denoise pass flips it.
+    let cur = std::cell::Cell::new(1usize);
+    let step = |enc: &mut wgpu::CommandEncoder, kernel: usize, mode: [u32; 3]| { cx.pass(enc, kernel, cur.get(), sun, r, mode); cur.set(1 - cur.get()); };
     let mut probes = cx.run(|enc| {
         cx.pass(enc, PREPARE, 0, sun, r, [0, 0, 0]);
         cx.pass(enc, SKY_DIRECT, 0, sun, r, [0, 0, 0]);
         cx.pass(enc, NEIGHBOURS, 0, sun, r, [0, 0, 0]);
-        for _ in 1..settings.bounces.max(1) {
-            cx.pass(enc, BOUNCE_SKY, 1, sun, r, [0, 0, 0]);
-            cx.pass(enc, SMOOTH, 0, sun, r, [0, 0, 0]);
+        // The direct sky again with many more rays near the probes that saw
+        // any, out to SKY_HOPS steps of open space.
+        for k in 0..=SKY_HOPS { cx.pass(enc, SKY_FLAG, 1, sun, r, [0, 0, k]); }
+        step(enc, SKY_REFINE, [cx.refine.0, 0, cx.refine.1]);
+        // Each bounce denoised by its estimates' variance before the next
+        // gathers it.
+        for _ in 0..settings.bounces.max(1) {
+            step(enc, BOUNCE_SKY, [0, 0, 0]);
+            for _ in 0..DENOISE_PASSES { step(enc, DENOISE, [0, 0, 0]); }
         }
-        cx.pass(enc, BOUNCE_SKY, 1, sun, r, [0, 0, 0]);
-        for k in 0..DENOISE_PASSES { cx.pass(enc, DENOISE, k % 2, sun, r, [0, 0, 0]); }
-    }, DENOISE_PASSES % 2)?;
+    }, (1 + 1 + settings.bounces.max(1) * (1 + DENOISE_PASSES)) % 2)?;
+    debug_assert_eq!(cur.get(), (1 + 1 + settings.bounces.max(1) * (1 + DENOISE_PASSES)) % 2);
     // Inside-wall probes light nothing (z = 2), as the CPU bake marks them.
     let valid = read_valid(&cx)?;
     for (p, ok) in probes.iter_mut().zip(valid) { if !ok { p.axes = [Vec3::new(0.0, 0.0, 2.0); 6]; } }
@@ -320,14 +324,14 @@ pub fn bake_lights_with(kernels: &Kernels, gpu: &Gpu, grid: &Grid, occluders: &O
         let slots = (lights.len() - first).min(LAMPS_PER_PASS);
         let (first, n) = (first as u32, slots as u32);
         // Buffer 0 holds the light (zero at first): a bounce writes 1, its
-        // smoothing 0.
+        // DENOISE_PASSES (odd) filtering 0 again.
         cx.clear_probes();
         let all = cx.run(|enc| {
             for _ in 0..settings.bounces.max(1) {
                 cx.pass(enc, BOUNCE_LAMP, 0, Vec3::new(n as f32, 0.0, 0.0), r, [first, 0, 0]);
-                cx.pass(enc, SMOOTH, 1, Vec3::Y, r, [n, 0, 1]);
+                for k in 0..DENOISE_PASSES { cx.pass(enc, DENOISE_LAMP, 1 - k % 2, Vec3::Y, r, [n, 0, 0]); }
             }
-        }, 0)?;
+        }, (1 + DENOISE_PASSES) % 2)?;
         out.extend(all.chunks_exact(grid.count()).take(slots).map(|set| set.to_vec()));
     }
     Ok(out)
@@ -469,5 +473,100 @@ mod geometry_tests {
         let plane_diff = plane_diffs.len();
         assert!(plane_diff * 100 <= planes.len(), "{plane_diff} of {} planes differ", planes.len());
         eprintln!("geometry agrees: positions {moved:.1e}, visibility {vis_diff:.1e}, reach {reach_diff}/{reach_total}, {plane_diff} planes picked the other of two equally near surfaces");
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+    use crate::room_bake;
+    use glam::{Affine3A, Quat};
+
+    fn bx(min: [f32; 3], max: [f32; 3]) -> Affine3A {
+        let (a, b) = (Vec3::from(min), Vec3::from(max));
+        Affine3A::from_scale_rotation_translation(b - a, Quat::IDENTITY, (a + b) * 0.5)
+    }
+
+    /// Two 4 m rooms in a row on open ground: the first with a window the
+    /// sun shines through onto its floor, a door between them; the second
+    /// sees the sky only through the door and then the window (the case
+    /// that showed as blotches before `sky_refine`).
+    pub(super) fn two_rooms() -> Vec<Affine3A> {
+        vec![
+            bx([-50.0, -0.2, -50.0], [50.0, 0.0, 50.0]),
+            // Outer walls: x -2.2..2.2, z -6.2..2.2, 3 m high, roof.
+            bx([-2.2, 0.0, 2.0], [2.2, 3.0, 2.2]),
+            bx([-2.2, 0.0, -6.2], [2.2, 3.0, -6.0]),
+            bx([-2.2, 0.0, -6.0], [-2.0, 3.0, 2.0]),
+            // East wall with a window in room 1 (z 0..1.2, y 1..2.2).
+            bx([2.0, 0.0, -6.0], [2.2, 3.0, 0.0]), bx([2.0, 0.0, 1.2], [2.2, 3.0, 2.0]),
+            bx([2.0, 0.0, 0.0], [2.2, 1.0, 1.2]), bx([2.0, 2.2, 0.0], [2.2, 3.0, 1.2]),
+            bx([-2.2, 3.0, -6.2], [2.2, 3.2, 2.2]),
+            // Between the rooms at z -2, a door x -0.5..0.5, 2.1 high.
+            bx([-2.0, 0.0, -2.1], [-0.5, 3.0, -1.9]), bx([0.5, 0.0, -2.1], [2.0, 3.0, -1.9]), bx([-0.5, 2.1, -2.1], [0.5, 3.0, -1.9]),
+        ]
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_bake_matches_reference_paths() {
+        let gpu = Gpu::new().unwrap();
+        let grid = Grid { origin: Vec3::new(-2.75, 0.25, -6.75), cell: 0.5, dims: [12, 7, 20] };
+        let occ = Occluders::from_boxes(&two_rooms());
+        let sun = Vec3::new(0.8, 0.45, 0.3).normalize();
+        let settings = Settings::default();
+        let placed = room_bake::Placement::new(&grid, &occ);
+        let baked = bake(&gpu, &grid, &occ, &placed, sun, &settings).unwrap();
+        for (name, zs) in [("room 1 (window)", -1.6f32..1.6), ("room 2 (door only)", -5.6..-2.4)] {
+            let (mut b, mut r, mut dev, mut n) = (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, 0.0);
+            for i in 0..grid.count() {
+                let p = placed.positions[i];
+                if placed.inside[i] || p.x.abs() > 1.6 || !zs.contains(&p.z) || !(0.4..2.6).contains(&p.y) { continue; }
+                let reference = room_bake::reference_probe(&occ, p, sun, settings.reflectance, settings.bounces, 4000, i as u64);
+                for a in 0..6 { b += baked[i].axes[a]; r += reference.axes[a]; dev += (baked[i].axes[a] - reference.axes[a]).abs(); }
+                n += 6.0;
+            }
+            let (b, r, dev) = (b / n, r / n, dev / n);
+            eprintln!("{name}: bake {b} reference {r}, mean per-probe deviation {dev} over {} probe axes", n as u32);
+            for (ch, what) in [(0, "direct sky"), (1, "bounced sky"), (2, "bounced sun")] {
+                assert!((b[ch] - r[ch]).abs() <= 0.15 * r[ch] + 2e-4, "{name} {what}: bake {} reference {}", b[ch], r[ch]);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod lamp_reference_tests {
+    use super::*;
+    use crate::room_bake;
+
+    /// A lamp in the first of two rooms joined by a door: the second room's
+    /// probes get its bounce only through the door, from the few surfaces
+    /// near it the lamp lights. Bake (2 bounces) against brute-force paths.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gpu_lamp_bake_matches_reference_paths() {
+        let gpu = Gpu::new().unwrap();
+        let grid = Grid { origin: Vec3::new(-2.75, 0.25, -6.75), cell: 0.5, dims: [12, 7, 20] };
+        let occ = Occluders::from_boxes(&super::reference_tests::two_rooms());
+        let lamp = crate::headlights::LocalLight { position: Vec3::new(0.8, 2.6, 0.5), direction: Vec3::NEG_Y, intensity_cd: Vec3::splat(1500.0),
+            range_m: 20.0, inner_cos: 0.3, outer_cos: -0.2, source_radius_m: 0.05, falloff: 2.0 };
+        let settings = Settings { bounces: 2, ..Settings::default() };
+        let placed = room_bake::Placement::new(&grid, &occ);
+        let baked = bake_lights(&gpu, &grid, &occ, &placed, &[lamp], &settings).unwrap();
+        let cpu = room_bake::bake_lights_placed(&grid, &occ, &placed, &[lamp], &settings).unwrap();
+        for (name, zs) in [("room 1 (lamp)", -1.6f32..1.6), ("room 2 (through the door)", -5.6..-2.4)] {
+            let (mut b, mut c, mut r, mut n) = (0.0, 0.0, 0.0, 0.0);
+            for i in 0..grid.count() {
+                let p = placed.positions[i];
+                if placed.inside[i] || p.x.abs() > 1.6 || !zs.contains(&p.z) || !(0.4..2.6).contains(&p.y) || i % 2 != 0 { continue; }
+                let reference = room_bake::reference_lamp_probe(&occ, p, &lamp, settings.reflectance, settings.bounces, 2000, i as u64);
+                for a in 0..6 { b += baked[0][i].axes[a].element_sum(); c += cpu[0][i].axes[a].element_sum(); r += reference.axes[a].element_sum(); }
+                n += 6.0;
+            }
+            let (b, c, r) = (b / n, c / n, r / n);
+            eprintln!("{name}: gpu bake {b:.4} cpu bake {c:.4} reference {r:.4} over {} probe axes", n as u32);
+            assert!((b - r).abs() <= 0.15 * r + 1e-3, "{name}: bake {b} reference {r}");
+        }
     }
 }

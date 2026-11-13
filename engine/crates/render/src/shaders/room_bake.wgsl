@@ -238,6 +238,79 @@ fn reduce(li: u32, values: u32) {
     }
 }
 
+// A second, larger estimate of the direct sky (u.mode.z rays from
+// u.mode.x in `dirs`) where the first is unreliable: probes near ones that
+// saw sky (`sky_flag`). Sky seen only through a small
+// opening (a door, then a window) is hit by few of `sky_direct`'s rays, and
+// that noise spread as blotches through every bounce's gathers. The new
+// estimate replaces the first (independent rays: no bias); elsewhere the
+// probe is copied.
+@compute @workgroup_size(64)
+fn sky_refine(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    let i = probe_index(wid);
+    let inside = i >= probe_count();
+    let j = min(i, probe_count() - 1u);
+    // Marked by `sky_flag`: within SKY_HOPS steps of a probe that saw sky.
+    let flag = !inside && pos[j].w > 0.5 && (seen[j] & (1u << 30u)) != 0u;
+    let rays = select(0u, u.mode.z, flag);
+    let o = pos[j].xyz;
+    let q = dirs[u.counts.w + j];
+    for (var k = 0u; k < 12u; k++) { red[k][li] = 0.0; }
+    for (var r = li; r < rays; r += 64u) {
+        let d = rotate(q, dirs[u.mode.x + r].xyz);
+        let h = hit(o, d);
+        for (var a = 0u; a < 6u; a++) {
+            let c = max(dot(AXES[a], d), 0.0);
+            red[6u + a][li] += c;
+            if h.w < 0.0 { red[a][li] += c; }
+        }
+    }
+    workgroupBarrier();
+    reduce(li, 12u);
+    if li == 0u && !inside {
+        for (var a = 0u; a < 6u; a++) {
+            let p = prev[i * 6u + a];
+            out[i * 6u + a] = select(p, vec4<f32>(red[a][0] / max(red[6u + a][0], 1e-6), p.yzw), flag);
+        }
+    }
+}
+
+// Which probes `sky_refine` estimates again: those that saw any sky in the
+// first estimate (u.mode.z 0: bit 30 of `seen`), then, per further pass
+// u.mode.z = k, those next to a marked probe they see (from bit 30 + (k+1)
+// % 2 into bit 30 + k % 2): open space within that many steps of sky, a
+// geometric reach a probe that by chance saw none still gets. The 26
+// neighbour bits are kept.
+@compute @workgroup_size(64)
+fn sky_flag(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x + gid.y * 65535u * 64u;
+    if i >= probe_count() { return; }
+    let word = seen[i] & 0x3ffffffu;
+    if u.mode.z == 0u {
+        var hi = 0.0;
+        for (var a = 0u; a < 6u; a++) { hi = max(hi, prev[i * 6u + a].x); }
+        seen[i] = word | select(0u, 1u << 30u, hi > 0.0 && pos[i].w > 0.5);
+        return;
+    }
+    let src = 30u + (u.mode.z + 1u) % 2u;
+    let dst = 30u + u.mode.z % 2u;
+    var on = (seen[i] & (1u << src)) != 0u;
+    let x = i32(i % u.dims.x);
+    let y = i32((i / u.dims.x) % u.dims.y);
+    let z = i32(i / (u.dims.x * u.dims.y));
+    var bit = 0u;
+    for (var ox = -1; ox <= 1; ox++) { for (var oy = -1; oy <= 1; oy++) { for (var oz = -1; oz <= 1; oz++) {
+        if ox == 0 && oy == 0 && oz == 0 { continue; }
+        let b = bit;
+        bit += 1u;
+        if (word & (1u << b)) == 0u { continue; }
+        let k = u32(x + ox) + u32(y + oy) * u.dims.x + u32(z + oz) * u.dims.x * u.dims.y;
+        if (seen[k] & (1u << src)) != 0u { on = true; }
+    }}}
+    // Keep the source bit (others read it this pass), set the destination.
+    seen[i] = (seen[i] & ~(1u << dst)) | select(0u, 1u << dst, on);
+}
+
 // Direct sky per axis and whether the probe is inside something (a quarter
 // of its sky rays see a back face): `bake`'s first step.
 @compute @workgroup_size(64)
@@ -447,14 +520,20 @@ fn bounce_lamp(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_
     let o = pos[j].xyz;
     let q = dirs[u.counts.w + j];
     var acc: array<f32, 144>;
+    // Per lamp and axis sum c Y^2 (Y the leaving light's luminance), and per
+    // axis sum c and sum c^2: the variance of each axis's estimate, as the
+    // sky bounce (`denoise_lamp` weighs neighbours by it).
+    var acc2: array<f32, 48>;
     var den: array<f32, 6>;
+    var den2: array<f32, 6>;
     for (var k = 0u; k < 144u; k++) { acc[k] = 0.0; }
-    for (var a = 0u; a < 6u; a++) { den[a] = 0.0; }
+    for (var k = 0u; k < 48u; k++) { acc2[k] = 0.0; }
+    for (var a = 0u; a < 6u; a++) { den[a] = 0.0; den2[a] = 0.0; }
     if valid {
         for (var r = li; r < u.counts.y; r += 64u) {
             let d = rotate(q, dirs[u.mode.w + r].xyz);
             var c: array<f32, 6>;
-            for (var a = 0u; a < 6u; a++) { c[a] = max(dot(AXES[a], d), 0.0); den[a] += c[a]; }
+            for (var a = 0u; a < 6u; a++) { c[a] = max(dot(AXES[a], d), 0.0); den[a] += c[a]; den2[a] += c[a] * c[a]; }
             let h = hit(o, d);
             if h.w < 0.0 { continue; }
             let n = select(h.xyz, -h.xyz, dot(h.xyz, d) > 0.0);
@@ -467,10 +546,12 @@ fn bounce_lamp(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_
                 let cosine = dot(n, to);
                 if cosine <= 0.0 || (mask & (1u << (9u + l))) == 0u { direct = vec3<f32>(0.0); }
                 let leaving = u.sun.w * (direct * max(cosine, 0.0) + gather(at + n * 0.15, n, mask, s));
+                let y = dot(leaving, LUMINANCE);
                 for (var a = 0u; a < 6u; a++) {
                     acc[s * 18u + a * 3u] += leaving.x * c[a];
                     acc[s * 18u + a * 3u + 1u] += leaving.y * c[a];
                     acc[s * 18u + a * 3u + 2u] += leaving.z * c[a];
+                    acc2[s * 6u + a] += y * y * c[a];
                 }
             }
         }
@@ -478,17 +559,62 @@ fn bounce_lamp(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_
     // One reduction per lamp through the shared rows.
     for (var s = 0u; s < slots; s++) {
         for (var k = 0u; k < 18u; k++) { red[k][li] = acc[s * 18u + k]; }
-        for (var a = 0u; a < 6u; a++) { red[18u + a][li] = den[a]; }
+        for (var a = 0u; a < 6u; a++) { red[18u + a][li] = den[a]; red[24u + a][li] = acc2[s * 6u + a]; red[30u + a][li] = den2[a]; }
         workgroupBarrier();
-        reduce(li, 24u);
+        reduce(li, 36u);
         if li == 0u && i < probe_count() {
             let at = (s * probe_count() + i) * 6u;
             for (var a = 0u; a < 6u; a++) {
                 if !valid { out[at + a] = prev[at + a]; continue; }
-                out[at + a] = vec4<f32>(red[a * 3u][0], red[a * 3u + 1u][0], red[a * 3u + 2u][0], 0.0) / max(red[18u + a][0], 1e-6);
+                let d = max(red[18u + a][0], 1e-6);
+                let m = vec3<f32>(red[a * 3u][0], red[a * 3u + 1u][0], red[a * 3u + 2u][0]) / d;
+                let y = dot(m, LUMINANCE);
+                let sd = sqrt(max(red[24u + a][0] / d - y * y, 0.0) * red[30u + a][0] / (d * d));
+                out[at + a] = vec4<f32>(m, sd);
             }
         }
         workgroupBarrier();
+    }
+}
+
+const LUMINANCE = vec3<f32>(0.2126, 0.7152, 0.0722);
+
+// `denoise` for a lamp's bounce (rgb, its luminance's standard deviation in
+// w), over max(u.mode.x, 1) lamp slots: neighbours weighted by how far
+// their luminance lies from this probe's in units of both estimates'
+// standard deviations.
+@compute @workgroup_size(64)
+fn denoise_lamp(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let index = gid.x + gid.y * 65535u * 64u;
+    if index >= probe_count() * max(u.mode.x, 1u) { return; }
+    let i = index % probe_count();
+    let slot = index - i;
+    if pos[i].w < 0.5 { for (var a = 0u; a < 6u; a++) { out[index * 6u + a] = prev[index * 6u + a]; } return; }
+    let x = i32(i % u.dims.x);
+    let y = i32((i / u.dims.x) % u.dims.y);
+    let z = i32(i / (u.dims.x * u.dims.y));
+    let bits = seen[i];
+    for (var a = 0u; a < 6u; a++) {
+        let own = prev[index * 6u + a];
+        let lum = dot(own.xyz, LUMINANCE);
+        var sum = own.xyz;
+        var weight = 1.0;
+        var var_sum = own.w * own.w;
+        var bit = 0u;
+        for (var ox = -1; ox <= 1; ox++) { for (var oy = -1; oy <= 1; oy++) { for (var oz = -1; oz <= 1; oz++) {
+            if ox == 0 && oy == 0 && oz == 0 { continue; }
+            let b = bit;
+            bit += 1u;
+            if (bits & (1u << b)) == 0u { continue; }
+            let j = u32(x + ox) + u32(y + oy) * u.dims.x + u32(z + oz) * u.dims.x * u.dims.y;
+            let other = prev[(slot + j) * 6u + a];
+            let d = dot(other.xyz, LUMINANCE) - lum;
+            let w = pow(0.5, f32(abs(ox) + abs(oy) + abs(oz))) * exp(-d * d / (8.0 * (own.w * own.w + other.w * other.w) + 1e-12));
+            sum += other.xyz * w;
+            weight += w;
+            var_sum += w * w * other.w * other.w;
+        }}}
+        out[index * 6u + a] = vec4<f32>(sum / weight, sqrt(var_sum) / weight);
     }
 }
 

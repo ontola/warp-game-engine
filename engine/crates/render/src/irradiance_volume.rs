@@ -152,7 +152,7 @@ pub fn neighbour_bit(o: [i32; 3]) -> u32 {
 pub fn pack_gradients(grid: &Grid, sky: &[Probe], emission: &[Probe], neighbours: &[u32]) -> Result<Vec<u32>, String> {
     let n = grid.count();
     if sky.len() != n || emission.len() != n || neighbours.len() != n { return Err("one sky probe, emission probe and neighbour mask per probe".into()); }
-    let [dx, dy, dz] = grid.dims.map(|d| d as i32);
+    let [dx, dy, _] = grid.dims.map(|d| d as i32);
     let mut out = vec![0u32; 1 + n * GRADIENT_WORDS];
     out[0] = 1;
     let value = |i: usize, a: usize| -> [f32; 6] { let s = sky[i].axes[a]; let e = emission[i].axes[a]; [s.x, s.y, s.z, e.x, e.y, e.z] };

@@ -248,14 +248,40 @@ other of two equally near surfaces). Up to eight lamps share one pass
 (each bounce ray traced once for all of them, a probe set per lamp), and
 `room_bake_gpu::Kernels` compiles the passes once for several bakes (the
 `*_with` functions). `interior_rooms` bakes both door states this way,
-2.2 s at startup with the demo window running (`ROOMS_CPU_BAKE=1`: the
-CPU, 22 s).
+about 5 s at startup with the demo window running.
 
-More rays do not replace the two smoothing passes at the end. With four
-times the rays (8,192 + 2,048) the result changes about as much as between
-two runs; without the passes, with either ray count, a step at the probe
-spacing shows on walls (`r2_bands`) and rooms get darker. They stay for
-now, but they hide a fault in the lookup rather than ray noise (Not yet).
+### Noise without blur
+
+The bake does not average probes with their neighbours: that carried
+light from a sunny room through a doorway into the next (room 2 of
+`interior_rooms` 1.75x too bright in bounced sky, 4.7x in bounced sun).
+Its noise is removed where it comes from:
+
+- The direct sky is estimated a second time with eight times the rays
+  for every probe within four steps of open space of one that saw any sky
+  (a flag spread between neighbours that see each other, so a probe that
+  by chance saw none still gets it). Sky seen through a door and then a
+  window is a tiny solid angle that 2,048 rays hit a few times; that noise
+  spread through every bounce's gathers as blotches no later filter could
+  tell from light.
+- Each bounce (sky and sun, and each lamp) records the variance of its
+  estimate per probe and axis (the rays' weighted variance times
+  sum c^2 / (sum c)^2) and is filtered three times over the neighbours a
+  probe sees, each weighted by how far it lies from the probe in units of
+  both estimates' standard deviations (SVGF's edge-stopping): differences
+  within the noise blend, light through a doorway does not.
+- Against brute-force paths (`room_bake::reference_probe` and
+  `reference_lamp_probe`, the same reflectance and bounces): within 1-7%
+  per channel in a room with a window and sun patch, a room lit only
+  through a door, and a lamp's bounce through a door (tests in
+  `room_bake` and `room_bake_gpu`).
+
+Shading continues each probe along its gradient (`irradiance_volume::
+pack_gradients`: per probe and axis the monotonized-central difference to
+the neighbours it sees, half floats after the reach masks;
+`Renderer::set_probe_gradients`) and blends the eight probes with C1
+weights, so the light has no kink at the probe spacing where it curves.
+`KERN_PROBE_GRADIENTS=0` turns it off.
 
 ## Look scene
 
@@ -271,10 +297,10 @@ Other variants (`none`, `vis`, `diffuse`, `sun`, `sep`) show the older
 ## Not yet
 
 - No Luau call yet: games written in Luau cannot ask for a room bake.
-- The bake's two final smoothing passes hide a step at the probe spacing
-  that shading's eight-probe lookup makes on walls (`r2_bands` without
-  them); a weight in the lookup switches per cell or voxel, probably the
-  reach test ([log](log/2026-11-13-gpu-room-bake.md#open-the-step-at-the-probe-spacing)).
+- The CPU bake (web, baked files) is slower with the direct sky's second
+  estimate: 1.3 s -> 5 s for 14,000 probes on this machine.
+- Gradients are uploaded only with probe visibility (DDGI); grids without
+  it interpolate trilinearly and now show the unsmoothed probes.
 - Probes are 0.5 m apart, so the bake has no contact darkening of its own.
   Corners, creases and the floor under furniture darken through the
   horizon-based screen-space AO in `shade.wgsl` (GTAO's idea, as Call of
