@@ -92,6 +92,25 @@ fn fog_ambient_irradiance(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     return mix(open, inside, room.w);
 }
 
+// The mean of a lamp's inverse square (1 / max(d^2, source.x), the plain
+// inverse-square falloff of local_light_at) over the segment a..b, divided
+// by its value at p: 1 for a point, or for other falloffs.
+fn fog_inverse_square_mean(lamp: LocalLight, p: vec3<f32>, a: vec3<f32>, b: vec3<f32>) -> f32 {
+    if !(lamp.source.y == 2.0 || lamp.source.y == 0.0) { return 1.0; }
+    let ab = b - a;
+    let len = length(ab);
+    if len < 1e-4 { return 1.0; }
+    let d = ab / len;
+    let la = lamp.position_range.xyz - a;
+    let t0 = dot(la, d);
+    // Distance of the line from the lamp, no nearer than the falloff's floor.
+    let h2 = max(dot(la, la) - t0 * t0, lamp.source.x);
+    let h = sqrt(max(h2, 1e-12));
+    let mean = (atan((len - t0) / h) - atan(-t0 / h)) / (h * len);
+    let pd = p - lamp.position_range.xyz;
+    return mean * max(dot(pd, pd), lamp.source.x);
+}
+
 fn fog_rand(seed: u32) -> f32 {
     var s = seed * 747796405u + 2891336453u;
     s = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
@@ -133,10 +152,13 @@ fn fog_inject(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
     }
     let surface = select(1e9, view.params.y / fog_tile_depth[0], fog_tile_depth[0] > 0.0);
     let frame = u32(gi.fog_albedo.w);
-    let jitter = fog_rand(cell.x ^ (cell.y << 8u) ^ (cell.z << 16u) ^ (frame * 0x9e3779b9u));
+    // Blue-ish across cells (interleaved gradient noise, Jimenez 2014, over
+    // the cell and its slice), stratified over frames (golden-ratio steps).
+    let ign = fract(52.9829189 * fract(0.06711056 * (f32(cell.x) + 5.588238 * f32(cell.z)) + 0.00583715 * (f32(cell.y) + 3.217 * f32(cell.z))));
+    let jitter = fract(ign + f32(frame % 4096u) * 0.618034);
     // The sample: jittered across the cell in x and y too, so that over
     // frames the cell averages the air it holds.
-    let jxy = vec2<f32>(fog_rand((cell.x * 7919u) ^ (cell.y * 104729u) ^ (cell.z * 1299709u) ^ (frame * 2654435761u)), fog_rand((cell.x * 15485863u) ^ (cell.y * 32452843u) ^ (cell.z * 49979687u) ^ (frame * 40503u)));
+    let jxy = fract(vec2<f32>(fog_rand(cell.x ^ (cell.y << 8u) ^ (cell.z << 16u)), fog_rand((cell.x * 7919u) ^ (cell.y * 104729u) ^ (cell.z * 1299709u))) + f32(frame % 4096u) * vec2<f32>(0.7548777, 0.5698403));
     var uv = (vec2<f32>(cell.xy) + jxy) / vec2<f32>(FOG_GRID.xy);
     let start = fog_slice_depth(f32(cell.z));
     // A cell wholly behind the column's farthest surface holds no air any
@@ -165,10 +187,21 @@ fn fog_inject(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
     let forward = normalize(hc.xyz / hc.w - view.cam.xyz);
     let p = view.cam.xyz + dir * (w / max(dot(dir, forward), 1e-3));
     let to_eye = normalize(view.cam.xyz - p);
-    var cur = fog_medium(p, to_eye);
-    // Last frame's cell where this point was, 0.9 kept.
+    // The cell's stretch of that ray (in front of the surface), over which
+    // the lights' inverse square is averaged.
+    let along = 1.0 / max(dot(dir, forward), 1e-3);
+    let w_end = min(fog_slice_depth(f32(cell.z) + 1.0), mix(start, surface, 0.999));
+    var cur = fog_medium(p, to_eye, view.cam.xyz + dir * (start * along), view.cam.xyz + dir * (w_end * along));
+    // Last frame's value where the cell's centre was, 0.9 kept. The centre,
+    // not the jittered sample: history read at the sample's point blends
+    // in a random share of the neighbouring cells every frame, a random
+    // walk that showed as cells flickering under a lamp.
     if gi.fog.w > 1.5 {
-        let pc = gi.fog_prev * vec4<f32>(p, 1.0);
+        let cuv = (vec2<f32>(cell.xy) + 0.5) / vec2<f32>(FOG_GRID.xy);
+        let ch = view.inv_view_proj * vec4<f32>(cuv.x * 2.0 - 1.0, 1.0 - cuv.y * 2.0, 1.0, 1.0);
+        let cdir = normalize(ch.xyz / ch.w - view.cam.xyz);
+        let centre = view.cam.xyz + cdir * (fog_slice_depth(f32(cell.z) + 0.5) / max(dot(cdir, forward), 1e-3));
+        let pc = gi.fog_prev * vec4<f32>(centre, 1.0);
         if pc.w > 1e-4 {
             let puv = vec2<f32>(pc.x / pc.w * 0.5 + 0.5, 0.5 - pc.y / pc.w * 0.5);
             let pz = fog_depth_slice(pc.w) / f32(FOG_GRID.z);
@@ -184,8 +217,12 @@ fn fog_inject(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
 }
 
 // The medium at p: rgb the light it scatters towards `to_eye` per metre,
-// a its extinction per metre.
-fn fog_medium(p: vec3<f32>, to_eye: vec3<f32>) -> vec4<f32> {
+// a its extinction per metre. p is one point of the segment seg_a..seg_b
+// whose mean the caller wants (a froxel cell's stretch of its ray, a step
+// of a capture march): a clustered light's inverse square, which varies
+// most along it near the lamp, is replaced by its exact mean over the
+// segment, and the rest (cone, profile, shadow, phase) is taken at p.
+fn fog_medium(p: vec3<f32>, to_eye: vec3<f32>, seg_a: vec3<f32>, seg_b: vec3<f32>) -> vec4<f32> {
     let g = gi.fog.y;
     var lin = vec3<f32>(0.0);
     // Clustered lights, shadowed, with cookies and profiles.
@@ -198,6 +235,7 @@ fn fog_medium(p: vec3<f32>, to_eye: vec3<f32>) -> vec4<f32> {
             if all(s.irradiance == vec3<f32>(0.0)) { continue; }
             if u32(lamp.source.w) >= 8u { s.irradiance *= light_shape(lamp, -s.direction); }
             if lamp.source.z > 0.5 { s.irradiance *= fog_light_shadow(lamp, p); }
+            s.irradiance *= fog_inverse_square_mean(lamp, p, seg_a, seg_b);
             lin += s.irradiance * fog_hg(dot(-s.direction, to_eye), g);
         }
     }
@@ -232,7 +270,7 @@ fn fog_capture(origin: vec3<f32>, end: vec3<f32>, px: vec2<i32>) -> vec4<f32> {
     var light = vec3<f32>(0.0);
     var through = 1.0;
     for (var k = 0u; k < FOG_CAPTURE_STEPS; k++) {
-        let m = fog_medium(origin + dir * (step * (f32(k) + offset)), -dir);
+        let m = fog_medium(origin + dir * (step * (f32(k) + offset)), -dir, origin + dir * (step * f32(k)), origin + dir * (step * f32(k + 1u)));
         let sigma = max(m.a, 1e-7);
         let st = exp(-sigma * step);
         light += through * (m.rgb - m.rgb * st) / sigma;

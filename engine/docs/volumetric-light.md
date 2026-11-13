@@ -187,12 +187,20 @@ light.froxel_fog = Some(FroxelFog { density: 0.15, albedo: Vec3::splat(0.9), ani
 
 - `fog_inject` (compiled with shade, so the air is lit as surfaces are), one
   workgroup per column of cells: each cell, at a point jittered across it
-  every frame, gets the light scattered towards the camera (Henyey-Greenstein)
+  every frame (golden-ratio steps per cell, so a cell's samples spread over
+  it; along the slice from interleaved gradient noise, so neighbouring cells
+  sample different depths), gets the light scattered towards the camera (Henyey-Greenstein)
   from every clustered light with its shadow (one filtered compare), cookie
   and profile, from the sun through its shadow maps, and the room's ambient
   light (the irradiance volume's two hemispheres, the sky through openings
-  included), times the scattering coefficient; and the extinction. It is
-  blended with last frame's cell where the point was (reprojected, 0.9 kept).
+  included), times the scattering coefficient; and the extinction. A
+  clustered light's inverse square, which changes most along a cell near
+  the lamp, is its exact mean over the cell's stretch of the ray (the rest
+  of the light, cone, profile, shadow and phase, at the point). The result
+  is blended with last frame's value at the cell's centre (reprojected, 0.9
+  kept): the centre, since history read at the jittered point mixes a
+  random share of the neighbouring cells into the cell every frame, which
+  flickered under a lamp.
   The cells it writes are its own bind group (group 3): shade's view group
   already carries three storage textures, and a stage may see four
   (`frame::shade_storage_textures`, checked by a test).

@@ -40,3 +40,48 @@ bounds box (one box over the L-shaped house includes the outdoor corner
 by room 4).
 
 Suite: `out_fog_wall`, `out_fog_wedge`, `r1_fog_horizon`.
+
+## Flicker under a lamp
+
+Room 2 under the pendant (the pendant held still), crop 760,480,320,320:
+0.683 / 5.14 with fog, 0.336 / 2.21 without (TAA and shading), 0.444 /
+2.35 with the fog's jitter frozen. The jitter's variance, taken apart:
+
+| change | mean / p99 |
+| --- | --- |
+| main (after the edge fix) | 0.683 / 5.14 |
+| the lamp's inverse square as its exact mean along the cell | 0.640 / 4.86 |
+| without the lamp's shadow in the fog (diagnostic) | 0.633 / 4.86 |
+| no xy jitter (diagnostic) | 0.575 / 3.86 |
+| each cell's light split into up to 8 parts along it near a lamp | 0.596 / 4.07 |
+| history read at the cell's centre, not the jittered point | 0.479 / 2.93 |
+| the same without the split | 0.492 / 3.07 |
+| and the jitter stratified: golden-ratio steps per cell, interleaved gradient noise along the slice | 0.468 / 2.93 |
+
+The blocks in the difference images were cells: the history was read
+trilinearly at the jittered sample point, so every frame each cell took a
+random share of its neighbours, a random walk. Kept: history at the
+cell's centre, the inverse-square mean (exact, one atan pair per lamp) and
+the stratified jitter; the split, which bought 0.013 for up to 8 light evaluations, was dropped.
+
+| spot (EV) | main | after |
+| --- | --- | --- |
+| room 2, pendant crop (6) | 0.683 / 5.14 | 0.468 / 2.93 |
+| room 2, whole frame (6) | 0.181 / 1.79 | 0.158 / 1.21 |
+| room 3, ceiling lamps (6) | 0.132 / 1.00 | 0.118 / 1.00 |
+| room 4, flashlight beam (6) | 0.053 / 1.00 | 0.010 / 0.72 |
+| outside, wall and horizon (16) | 0.032 / 0.93 | 0.009 / 0.28 |
+
+What is left at the pendant (0.47 against 0.44 with the jitter frozen) is
+mostly the frame's own (0.34 without fog).
+
+That 0.34 without fog goes to 0.002 with `gi=0` and does not change with
+traced reflections, TAA, contact or reflection occlusion, near shadows or
+the live bounce (`KERN_RSM=0`) off: it is in the GI term, next to find.
+
+Suite against main (mean luma difference, 0..255): the fog spots' stills
+within 0.26, and the cone under the pendant loses its grain while turning
+(`r2_fog_shaft_turn`). Spots without fog, which this change cannot touch,
+still differ by up to 3.8 (`r3_lamps_still`) and far more in their turn
+shots: dynamic resolution follows the GPU, which the demo window shared,
+so those differences are run to run, not the change.
