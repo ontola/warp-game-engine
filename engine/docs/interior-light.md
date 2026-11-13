@@ -241,8 +241,12 @@ traces, per probe and bounce ray, which of the eight probes around its hit
 see it and whether the sun and each lamp do, into one word (4 bytes per
 probe and ray); every bounce and lamp then traces only the ray itself.
 14,000 probes, 2,048 + 512 rays, 3 bounces: 0.16 s on an RTX 5070 Ti
-against 1.3 s on the CPU. `interior_rooms` bakes its two door states this
-way (`ROOMS_CPU_BAKE=1` for the CPU).
+against 1.3 s on the CPU. `room_bake_gpu::bake_geometry` places the probes
+and bakes their visibility maps, reach and separation planes the same way
+(positions to 1e-7 m, maps and reach bit for bit; a plane may take the
+other of two equally near surfaces). `interior_rooms` bakes both door
+states this way, 3.5 s at startup with the demo window running
+(`ROOMS_CPU_BAKE=1`: the CPU, 22 s).
 
 ## Look scene
 
@@ -257,8 +261,8 @@ Other variants (`none`, `vis`, `diffuse`, `sun`, `sep`) show the older
 
 ## Not yet
 
-- Probe placement, visibility maps, reach and separation planes are still
-  baked on the CPU (about 4 s of `interior_rooms`' 5 s startup bake).
+- The GPU bake compiles its kernels per call (about 0.3 s each) and bakes
+  each lamp in its own passes; the lamps are most of its time.
 - No Luau call yet: games written in Luau cannot ask for a room bake.
 - Probes are 0.5 m apart, so the bake has no contact darkening of its own.
   Corners, creases and the floor under furniture darken through the

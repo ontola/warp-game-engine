@@ -151,6 +151,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [Thin bounce voxels, whole-probe captures, shade's texture count, 12 November](2026-11-12-thin-voxels-probe-frames.md)
 - [Froxel fog, 12 November](2026-11-12-froxel-fog.md)
 - [Grain in the traced reflections of a moving surface (open), 12 November](2026-11-12-moving-reflector-grain.md)
+- [The room bake on the GPU, 13 November](2026-11-13-gpu-room-bake.md)
 - [Traced reflections, stage 1, 8 November](2026-11-08-traced-reflections.md)
 - [Low-sun shadow diagnostics, 24 October](sun-shadow-diagnostics.md)
 - [World visibility and cached lighting, 24 October](world-lighting.md)
