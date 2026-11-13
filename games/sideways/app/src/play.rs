@@ -691,6 +691,10 @@ impl App {
         match self.pause_menu.navigate(axis,confirm,now) {
             Some(MenuAction::Resume)=>self.paused=false,
             Some(MenuAction::NewStage)=>{self.next_stage()?;self.paused=false;},
+            Some(MenuAction::Biome(delta))=>{
+                let current=self.pending_settings["biome"].as_str().unwrap_or(crate::biome_land::FINLAND);
+                self.pending_settings["biome"]=crate::biome_land::step(current,delta).into();
+            }
             Some(MenuAction::Time(delta))=>{
                 let time=self.sky_controls.desired().time.step(delta);
                 if let Err(error)=self.request_sky_setting("sky_time",&time.key().into(),now) {self.sky_controls.failed(error);}
@@ -1383,7 +1387,8 @@ impl App {
         let mut draw_list=if self.paused && self.host.is_none() {
             let settings=self.sky_controls.desired();
             Some(crate::hud::live_pause_menu([size.width,size.height],self.pause_menu.selected,
-                settings.time_label(),settings.atmosphere.label(),self.sky_controls.status()))
+                settings.time_label(),settings.atmosphere.label(),
+                self.pending_settings["biome"].as_str().unwrap_or(crate::biome_land::FINLAND),self.sky_controls.status()))
         } else if self.args.hud {
             Some(crate::hud::build(&self.race,&self.view_order,&render::split_rects(self.args.views,size.width,size.height).into_iter().map(|(x,y,w,h)|[x,y,w,h]).collect::<Vec<_>>(),
                 &self.race.players.iter().map(|p|p.name.clone()).collect::<Vec<_>>(),self.paused,[size.width,size.height]))

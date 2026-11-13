@@ -3,6 +3,7 @@
 use glam::{Affine3A, Quat, Vec3};
 use render::{biome::{Biome, Flora}, Scene, scene::GeometryCategory};
 use sideways::{builder::{Chunk, N}, stage::{Stage, GRID}};
+use std::collections::HashMap;
 
 pub const TREE_IDS: [&str; 4] = ["spruce", "pine", "birch", "broadleaf"];
 const MAX_SHRUBS: usize = 512;
@@ -70,7 +71,7 @@ pub fn biome_meshes(scene: &mut Scene, biome: &Biome, names: &mut Vec<String>) -
     // Species reuse the spray library: recipes with the same baked alpha
     // atlas only need one texture layer. Their pigments stay in materials.
     let mut atlases: Vec<usize> = Vec::new();
-    Ok(cards.into_iter().zip(species).map(|(mut cards, (name, _))| {
+    cards.into_iter().zip(species).map(|(mut cards, (name, recipe))| {
         let label = format!("biome plant {name}");
         let layer = atlases.iter().copied().find(|&i| scene.textures[i].rgba == cards.atlas)
             .map(|i| i as i32).unwrap_or_else(|| {
@@ -80,8 +81,9 @@ pub fn biome_meshes(scene: &mut Scene, biome: &Biome, names: &mut Vec<String>) -
             });
         let materials: Vec<_> = cards.materials(layer).into_iter().map(|m| scene.add_material(m)).collect();
         names.push(label);
-        scene.add_mesh(&cards.mesh_with_materials(&materials))
-    }).collect())
+        let mesh = cards.woody_mesh(&materials, &recipe, 1)?;
+        Ok(scene.add_mesh(&mesh))
+    }).collect()
 }
 
 /// The live mixed forest on the engine's recipe forest
@@ -128,7 +130,23 @@ pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras:
 
 /// Sample Sideways' off-road fern sites in the visible verge, spreading the
 /// bounded understory along the whole route independently of camera position.
-pub fn add_shrubs(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], flora: &Flora, meshes: &[usize]) -> usize {
+pub fn add_shrubs(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], biome: &Biome, meshes: &[usize]) -> usize {
+    let flora = &biome.flora;
+    // Use the crowns of the actual stage trees, including trees across a chunk
+    // boundary. The painted forest supplies the crown radius in world metres.
+    let radius = biome.vegetation.forest.crown[0];
+    let cell = |d: f32| (d / radius).floor() as i32;
+    let mut crowns: HashMap<_, Vec<_>> = HashMap::new();
+    for tree in chunks.iter().flat_map(|c| &c.trees) {
+        let (x, z) = (tree.pos.0, tree.pos.2);
+        let r = radius * tree.scale;
+        if r <= 0.0 { continue; }
+        for iz in cell(z - r)..=cell(z + r) {
+            for ix in cell(x - r)..=cell(x + r) {
+                crowns.entry((ix, iz)).or_default().push((x, z, r));
+            }
+        }
+    }
     let mut candidates: Vec<_> = chunks
         .iter()
         .flat_map(|c| c.ferns.iter().filter(move |spot| {
@@ -137,11 +155,13 @@ pub fn add_shrubs(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], flora: &Fl
             let j = cell(f64::from(spot.pos.2) - c.z0);
             (3.0..40.0).contains(&c.road_d[j * N + i])
         }))
-        .map(|spot| {
-            (
-                root_key(stage.vegetation.seed, spot.pos.0, spot.pos.2),
-                spot,
-            )
+        .filter_map(|spot| {
+            let (x, z) = (spot.pos.0, spot.pos.2);
+            let key = root_key(stage.vegetation.seed, x, z);
+            let cover = crowns.get(&(cell(x), cell(z))).into_iter().flatten()
+                .map(|&(cx, cz, r)| 1.0 - ((cx - x).powi(2) + (cz - z).powi(2)) / (r * r))
+                .fold(0.0, f32::max);
+            (unit(mix(key ^ 0x5348_4144_4500)) < flora.shrub_habitat(cover)).then_some((key, spot))
         })
         .collect();
     candidates.sort_by_key(|(key, _)| *key);
@@ -205,7 +225,7 @@ mod tests {
         let mut scene = Scene::default();
         let cube = render::primitives::cube(0).mesh();
         let meshes: Vec<_> = desert.species().iter().map(|_| scene.add_mesh(&cube)).collect();
-        let count = add_shrubs(&mut scene, &stage, &chunks, &desert.flora, &meshes);
+        let count = add_shrubs(&mut scene, &stage, &chunks, &desert, &meshes);
         assert!(count > 0 && count <= MAX_SHRUBS);
         assert_eq!(scene.instances.len(), count);
         for mesh in meshes {

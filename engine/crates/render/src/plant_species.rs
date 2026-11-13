@@ -9,9 +9,9 @@ const LEAF: [f32; 3] = [0.11, 0.20, 0.055];
 const BARK: [f32; 3] = [0.16, 0.105, 0.062];
 
 /// Every species by name.
-pub const NAMES: [&str; 14] = [
+pub const NAMES: [&str; 16] = [
     "spruce", "pine", "birch", "broadleaf", "willow", "juniper", "shrub", "dwarf_birch", "desert_shrub",
-    "saltbush", "mountain_birch", "kapok", "african_mahogany", "forest_coffee",
+    "saltbush", "upland_spruce", "mountain_birch", "kapok", "african_mahogany", "forest_coffee", "raffia_palm",
 ];
 
 /// A species' recipe by name.
@@ -45,21 +45,35 @@ pub fn named(name: &str) -> Option<WoodyRecipe> {
         // Desert: a sparse open bush of grey-olive twigs (creosote, saltbush).
         "desert_shrub" => shrub(0x4445_5345_5254, 1.3, 0.04, 0.9, CrownProfile::Rounded, 4, 0.6, 0.012, FoliageKind::Needle, 10, 0.5,
             [0.16, 0.17, 0.09], [0.3, 0.25, 0.18]),
-        // Low silvery pads of small leaves, below the desert's taller twiggy shrubs.
-        "saltbush" => shrub(0x5341_4c54_4255, 0.55, 0.03, 0.72, CrownProfile::Spreading, 3, 0.12, 0.012, FoliageKind::Broadleaf, 14, 0.41,
-            [0.29, 0.31, 0.20], [0.28, 0.22, 0.15]),
+        // Pale low mats on the sand. Short upright sprays at the ends of
+        // widely spreading stems distinguish these from the taller dry scrub.
+        "saltbush" => WoodyRecipe { branches_per_tier: 4, spray_axial_bias: 0.30,
+            ..shrub(0x5341_4c54_4255, 0.42, 0.03, 0.95, CrownProfile::Spreading, 2, 0.22, 0.017,
+                FoliageKind::Broadleaf, 12, 0.42, [0.30, 0.32, 0.225], [0.22, 0.17, 0.105]) },
+        // A skirt of low, downturned boughs tapering to a narrow leader.
+        // The terminal sprays point along the boughs and remain blue-green.
+        "upland_spruce" => tree(0x5550_5350_5255, 11.0, 0.10, 3.35, CrownProfile::Conical, 7, 3, -0.29, 0.063, 0.73,
+            FoliageKind::Needle, 40, 1.28, 0.65, [0.035, 0.089, 0.061], [0.13, 0.088, 0.06]),
         // Shorter and wider than the temperate birch, with an open, light crown.
-        "mountain_birch" => tree(0x4d54_4249_5243, 8.0, 0.37, 2.25, CrownProfile::Rounded, 5, 4, 0.59, 0.042, 0.49,
-            FoliageKind::Broadleaf, 23, 0.82, 0.54, [0.14, 0.19, 0.077], [0.51, 0.44, 0.35]),
-        // Young kapok: clear bole, high umbrella of heavy lateral limbs.
-        "kapok" => tree(0x4b41_504f_4b, 16.5, 0.68, 4.3, CrownProfile::Umbrella, 5, 4, 0.10, 0.12, 0.77,
-            FoliageKind::Broadleaf, 41, 1.3, 0.66, [0.075, 0.19, 0.064], [0.19, 0.18, 0.135]),
-        // The lower forest canopy: close-set, rounded crowns of deep green leaves.
-        "african_mahogany" => tree(0x4b48_4159_41, 13.0, 0.46, 3.35, CrownProfile::Rounded, 5, 5, 0.39, 0.085, 0.66,
-            FoliageKind::Broadleaf, 43, 1.14, 0.63, [0.055, 0.155, 0.052], [0.19, 0.105, 0.07]),
-        // Shade-tolerant understory with low horizontal tiers of broad leaves.
-        "forest_coffee" => shrub(0x434f_4646_4545, 1.85, 0.045, 0.95, CrownProfile::Conical, 4, 0.06, 0.016,
-            FoliageKind::Broadleaf, 9, 0.85, [0.045, 0.14, 0.052], [0.12, 0.095, 0.055]),
+        "mountain_birch" => tree(0x4d54_4249_5243, 7.7, 0.28, 2.1, CrownProfile::Rounded, 4, 3, 0.73, 0.048, 0.49,
+            FoliageKind::Broadleaf, 19, 0.83, 0.41, [0.16, 0.205, 0.088], [0.51, 0.46, 0.39]),
+        // An emergent kapok: a clear grey bole with an elevated, wide crown.
+        // Most of its limbs carry leaves in the top quarter of the tree.
+        "kapok" => tree(0x4b41_504f_4b, 20.5, 0.69, 5.4, CrownProfile::Umbrella, 3, 4, 0.22, 0.16, 0.77,
+            FoliageKind::Broadleaf, 42, 1.48, 0.56, [0.073, 0.18, 0.057], [0.17, 0.15, 0.105]),
+        // Mahogany foliage starts much lower, on spreading scaffold limbs.
+        // Its dark rounded crown closes the gap under the kapok canopy.
+        "african_mahogany" => tree(0x4b48_4159_41, 12.8, 0.32, 4.25, CrownProfile::Rounded, 4, 4, 0.21, 0.105, 0.66,
+            FoliageKind::Broadleaf, 39, 1.40, 0.39, [0.043, 0.148, 0.061], [0.15, 0.083, 0.054]),
+        // Coffee forms a lower, rounded thicket with broad horizontal sprays.
+        "forest_coffee" => WoodyRecipe { branches_per_tier: 3, spray_axial_bias: 0.34,
+            ..shrub(0x434f_4646_4545, 1.9, 0.045, 1.12, CrownProfile::Rounded, 3, 0.06, 0.022,
+                FoliageKind::Broadleaf, 11, 0.89, [0.04, 0.13, 0.041], [0.10, 0.078, 0.045]) },
+        // A juvenile raffia palm: one whorl of long radial fronds close
+        // to the ground, the leaflet sprays spreading laterally along each rachis.
+        "raffia_palm" => WoodyRecipe { crown_base: 0.78, branches_per_tier: 8, spray_axial_bias: 0.15,
+            ..shrub(0x5241_4646_4941, 0.65, 0.11, 2.1, CrownProfile::Spreading, 1, 0.34, 0.038,
+                FoliageKind::Broadleaf, 12, 0.77, [0.111, 0.204, 0.054], [0.17, 0.14, 0.069]) },
         _ => return None,
     })
 }
@@ -76,5 +90,24 @@ mod tests {
             plant_recipe::build(&recipe, BuildOptions::new(1), plant_recipe::recipe_limits()).unwrap_or_else(|e| panic!("{name}: {e}"));
         }
         assert!(super::named("baobab").is_none());
+    }
+
+    #[test]
+    fn rainforest_recipes_fill_distinct_canopy_and_understory_layers() {
+        use crate::plant_recipe::{build, recipe_limits, BuildOptions};
+        for seed in [1, 7, 31] {
+            let dimensions = |name| {
+                let plant = build(&super::named(name).unwrap(), BuildOptions::new(seed), recipe_limits()).unwrap();
+                let [lo, hi] = plant.bounds().unwrap();
+                ((hi[0] - lo[0]).max(hi[2] - lo[2]), hi[1] - lo[1])
+            };
+            let (_, emergent) = dimensions("kapok");
+            let (_, canopy) = dimensions("african_mahogany");
+            let (_, coffee) = dimensions("forest_coffee");
+            let (span, palm) = dimensions("raffia_palm");
+            assert!(emergent > canopy * 1.4);
+            assert!(canopy > coffee * 4.0);
+            assert!(span > palm * 1.6, "young palm has a low fan of fronds");
+        }
     }
 }

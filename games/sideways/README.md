@@ -18,7 +18,9 @@ games/sideways/tools/play-dev-windows.ps1 -BuildOnly
 cargo run --release -p cli -- sim --ticks 45000 --seed 1 --km 2
 ```
 
-Choose **Biome (next stage)** in Gamepad Party, or pass a biome on launch:
+In standalone play, press **Start** or **Esc**, change **Next biome** with the
+D-pad or arrow keys, then select **New stage**. In Gamepad Party, choose
+**Biome (next stage)** in the host settings. You can also select it on launch.
 
 ```sh
 cargo run --release -p cli -- play --biome desert

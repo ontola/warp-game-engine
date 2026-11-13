@@ -186,15 +186,21 @@ fn tone(c: vec3<f32>) -> vec4<f32> {
     c *= 0.82 + 0.3 * broad;
     let w = g.cover.yz;
     c *= max(0.0, 1.0 - w.x - w.y);
-    if w.x > 0.0 { c += w.x * flat_layer(l + 4, p, 0.42) * g.soil.rgb * (0.85 + 0.3 * broad); }
+    if w.x > 0.0 {
+        let exposure = broad + (mottle - 0.5) * 0.48 - 0.45 * dot(n.xz, vec2<f32>(0.8, 0.6));
+        let scour = smoothstep(0.52, 0.70, exposure);
+        let sand = mix(vec3<f32>(0.31, 0.235, 0.165), flat_layer(l + 4, p, 0.30), 0.22) * g.soil.rgb;
+        c += w.x * mix(sand * (0.86 + 0.28 * mottle), flat_layer(l + 4, p, 1.35) * g.gravel.rgb, scour * 0.72);
+    }
     if w.y > 0.0 {
-        let blanket = smoothstep(0.25, 0.65, broad + (mottle - 0.5) * 0.4) * smoothstep(0.65, 0.9, up);
-        c += w.y * mix(flat_layer(l + 2, p, 3.0) * g.soil.rgb, flat_layer(l + 1, p, 1.8) * g.moor.rgb, blanket);
+        let blanket = smoothstep(0.33, 0.60, broad + (mottle - 0.5) * 0.85) * smoothstep(0.65, 0.9, up);
+        c += w.y * mix(flat_layer(l + 2, p, 3.0) * g.soil.rgb, flat_layer(l + 1, p, 2.8) * g.moor.rgb, blanket);
     }
     if g.cover.w > 0.0 {
-        let amount = g.cover.w * smoothstep(0.6, 0.85, up) * (1.0 - water * 4.0);
+        let exposed = smoothstep(0.48, 0.72, broad - dot(n.xz, vec2<f32>(0.8, 0.6)) * 0.5);
+        let amount = g.cover.w * (1.0 - 0.53 * exposed) * smoothstep(0.6, 0.85, up) * (1.0 - water * 4.0);
         let cover = smoothstep(0.3, 0.7, amount + (mottle - 0.5) * 0.4 + (broad - 0.5) * 0.3);
-        c = mix(c, g.snow.rgb * (0.93 + 0.1 * mottle), cover);
+        c = mix(c, g.snow.rgb * (0.83 + 0.23 * mottle), cover);
     }
     let m_scree = smoothstep(0.2, 0.7, scree + (mottle - 0.5) * 0.4);
     if m_scree > 0.0 {

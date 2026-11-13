@@ -57,15 +57,16 @@ and shrubs. Sideways reads the same presets with `--biome NAME`.
 
 | Preset | Ground | Vegetation |
 | --- | --- | --- |
-| `desert` | Warm sand on dunes, with exposed gravel and rock | Low silver saltbush and taller twiggy scrub, with open sand between them |
-| `norway` | Snow-covered valley floors below rocky fells, with exposed stone on steeper slopes | Spruce, pine and mountain birch, with juniper and dwarf birch below |
-| `rainforest` | Rolling Central African lowlands with leaf litter and patches of red clay | African mahogany, scattered kapok crowns and forest coffee in the understory |
+| `desert` | Fine dune sand with patches of darker gravel on exposed slopes and dry streambeds | Low silver saltbush and taller twiggy scrub, with open sand between them |
+| `norway` | Sheltered snow drifts, soil on exposed shoulders and compacted snow between wheel tracks | Upland spruce with low drooping branches, pine and pale mountain birch, with juniper and dwarf birch below |
+| `rainforest` | Rolling Central African lowlands with damp leaf litter and red clay on open ground and tracks | Kapok rises above spreading mahogany crowns. Forest coffee and juvenile raffia palms favor their shade. |
 
 Games can look up `render::biome::Biome::named(name)` and take its terrain,
 ground palette and weighted flora together. `Biome::species()` resolves the
 recipes in the order used by `Biome::rules()`. A game with its own plant
 locations can use `Flora::tree_variant` and `shrub_variant` with a stable
-roll at each location. All species use the existing woody plant generator.
+roll at each location. `Flora::shrub_habitat` gives the planting probability
+multiplier for the local canopy cover. All species use the existing woody plant generator.
 
 ## Mesh: GPU patches by projected error
 

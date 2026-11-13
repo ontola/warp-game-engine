@@ -592,7 +592,10 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         scene.materials[terrain_mat as usize].tint = [1.0; 3];
         render::procedural_terrain::vegetation_style(&mut scene, terrain_mat, &style);
     }
-    let road_mat = scene.add_material(m([1.9, 1.85, 1.8], gravel, ROAD, 3.0));
+    // A negative scale points at the ground palette shared with the verge.
+    let terrain_scale = scene.materials[terrain_mat as usize].scale;
+    let road_scale = if terrain_scale < 0.0 { terrain_scale } else { 3.0 };
+    let road_mat = scene.add_material(m([1.9, 1.85, 1.8], gravel, ROAD, road_scale));
     let native_materials = layers.get(7..11).map(|tree| {
         let [a, b, bark] = [tree[0], tree[1], tree[2]].map(|layer| scene.add_material(m([1.0; 3], layer, 0, 1.0)));
         let tint = stage.vegetation.pine_tint();
@@ -730,7 +733,7 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         }
     }
     let tree_source = if let Some(biome) = &biome {
-        let shrubs = crate::plant_population::add_shrubs(&mut scene, stage, &chunks, &biome.flora, &tree_meshes);
+        let shrubs = crate::plant_population::add_shrubs(&mut scene, stage, &chunks, biome, &tree_meshes);
         let species: Vec<_> = biome.species().into_iter().map(|(name, _)| name).collect();
         log.push(format!("{}: {trees} native trees, {shrubs} roadside shrubs ({})", biome.name, species.join(", ")));
         serde_json::json!({"route":"render::plant_mesh_lod::PlantCards","biome":biome.name,"species":species,

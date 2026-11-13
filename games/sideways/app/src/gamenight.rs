@@ -462,7 +462,7 @@ fn configure_stream(stream: &TcpStream) -> Result<(), String> {
 }
 
 pub fn settings() -> Value {
-    let biomes: Vec<_> = std::iter::once(crate::biome_land::FINLAND).chain(render::biome::NAMES).collect();
+    let biomes: Vec<_> = crate::biome_land::choices().collect();
     json!([
         {"key":"gearbox","label":"Gearbox","kind":"choice","default":"automatic","options":["automatic","manual"]},
         {"key":"stage_km","label":"Stage length km (next stage)","kind":"number","default":3,"min":2,"max":8},

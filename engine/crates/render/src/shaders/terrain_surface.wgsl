@@ -745,23 +745,49 @@ fn biome_ground(ground: MeadowCanopy, g: FieldGround, p: vec3<f32>, n: vec3<f32>
     var c = ground.albedo * max(0.0, 1.0 - w.x - w.y);
     var nn = ground.normal * max(0.0, 1.0 - w.x - w.y);
     if w.x > 0.0 {
-        c += w.x * terrain_layer(gravel, p.xz, 0.42, mapping) * g.soil.rgb * (0.85 + 0.3 * broad);
-        nn += w.x * perturb_xz(n, terrain_layer_normal(gravel, p.xz, 0.42, mapping) * 0.18);
+        // Fine sand buries most of the stones. Windward, scoured patches
+        // expose the darker coarse gravel; lee slopes carry clean sand.
+        let exposure = broad + (mottle - 0.5) * 0.48 - 0.45 * dot(n.xz, vec2<f32>(0.8, 0.6));
+        let scour = smoothstep(0.52, 0.70, exposure);
+        let sand = mix(vec3<f32>(0.31, 0.235, 0.165), terrain_layer(gravel, p.xz, 0.30, mapping), 0.22) * g.soil.rgb;
+        var grain = terrain_layer_normal(gravel, p.xz, 0.30, mapping) * 0.10;
+        var surface = sand * (0.86 + 0.28 * mottle);
+        if scour > 0.0 {
+            surface = mix(surface, terrain_layer(gravel, p.xz, 1.35, mapping) * g.gravel.rgb, scour * 0.72);
+            grain = mix(grain, terrain_layer_normal(gravel, p.xz, 1.35, mapping) * 0.45, scour);
+        }
+        c += w.x * surface;
+        nn += w.x * perturb_xz(n, grain);
     }
     if w.y > 0.0 {
-        let blanket = smoothstep(0.25, 0.65, broad + (mottle - 0.5) * 0.4) * smoothstep(0.65, 0.9, up);
+        let blanket = smoothstep(0.33, 0.60, broad + (mottle - 0.5) * 0.85) * smoothstep(0.65, 0.9, up);
         let clay = terrain_layer(soil, p.xz, 3.0, mapping) * g.soil.rgb;
-        let litter = terrain_layer(leaves, p.xz, 1.8, mapping) * g.moor.rgb;
+        let litter = terrain_layer(leaves, p.xz, 2.8, mapping) * g.moor.rgb;
         c += w.y * mix(clay, litter, blanket);
         nn += w.y * perturb_xz(n, mix(terrain_layer_normal(soil, p.xz, 3.0, mapping),
-            terrain_layer_normal(leaves, p.xz, 1.8, mapping), blanket));
+            terrain_layer_normal(leaves, p.xz, 2.8, mapping), blanket));
     }
     if g.cover.w > 0.0 {
-        let snow = lying_snow(g.cover.w, up, water, mottle, broad);
-        c = mix(c, g.snow.rgb * (0.93 + 0.1 * mottle), snow);
+        // Snow survives in the lee. On exposed shoulders heather and soil
+        // break through; sheltered flats still read as continuous snow.
+        let exposed = smoothstep(0.48, 0.72, broad - dot(n.xz, vec2<f32>(0.8, 0.6)) * 0.5);
+        let snow = lying_snow(g.cover.w * (1.0 - 0.53 * exposed), up, water, mottle, broad);
+        c = mix(c, g.snow.rgb * (0.83 + 0.23 * mottle), snow);
         nn = mix(nn, n, snow * 0.8);
     }
     return MeadowCanopy(c, normalize(nn));
+}
+
+// The surface between wheel lines and the exposed shoulder, shared by a
+// road drawn into the field and a game's road mesh. Existing ruts expose
+// the aggregate beneath packed snow or sand; bare jungle roads expose clay.
+fn biome_track(base: vec3<f32>, g: FieldGround, rut: f32, shoulder: f32) -> vec3<f32> {
+    let exposed = clamp(rut, 0.0, 1.0);
+    var c = base * mix(vec3<f32>(1.0), g.soil.rgb, g.cover.y * (0.72 - 0.40 * exposed));
+    c *= mix(vec3<f32>(1.0), g.soil.rgb, g.cover.z * (0.75 + 0.22 * exposed));
+    let packed = g.cover.w * mix(0.74 - 0.56 * exposed, 0.94, shoulder);
+    let grain = clamp(dot(base, vec3<f32>(0.30, 0.59, 0.11)), 0.0, 1.0);
+    return mix(c, g.snow.rgb * (0.62 + 0.48 * grain), packed);
 }
 
 fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
@@ -930,6 +956,7 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         c = mix(c, stone * (0.95 + 0.3 * (pebble - 0.5)), m_shoulder * (1.0 - m_road) * 0.8);
         // A little of the land's own colour: dust from the verges.
         rc = mix(rc, c * 0.85, 0.2);
+        if any(g.cover.yzw > vec3<f32>(0.0)) { rc = biome_track(rc, g, rut, m_shoulder); }
         c = mix(c, rc, m_road);
         let rn = perturb_xz(n, mix(terrain_layer_normal(layer + 4, wuv, 1.3, mapping), terrain_layer_normal(layer + 4, wuv + vec2<f32>(0.37, 0.71), 0.45, mapping), 0.5) * (1.0 - 0.75 * rut));
         nn = normalize(mix(nn, rn, max(m_road, m_shoulder * 0.6)));

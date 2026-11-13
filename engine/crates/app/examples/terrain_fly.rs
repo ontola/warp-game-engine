@@ -195,16 +195,18 @@ impl Fly {
             building: None, building_for: (seed, style), building_started: web_time::Instant::now(), shown: (seed, style), lift_on_swap: false, gpu: None, stale: false, world, built_world: world, world_at: None, sun_building:None, forest_at:None, forest_building:None, forest_material:None, terrain_settings: Settings::default(), terrain: None, light: Lighting::default(), stats: Stats::default(), last_updates: [0.0;2], jumps: 0, fps: 0.0, worst_ms: 0.0, ticks: 0,
             track: std::env::args().any(|a| a == "--track"), regions: None, town: std::env::args().any(|a| a == "--town"), constraints: None,
             upscale: Default::default() };
-        if let Some(name) = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--regions").map(|w| w[1].clone()) {
-            fly.regions = Some(style_index(&name)?);
+        let args: Vec<String> = std::env::args().collect();
+        let value = |key: &str| args.windows(2).find(|w| w[0] == key).map(|w| w[1].as_str());
+        if let Some(name) = value("--regions") {
+            fly.regions = Some(style_index(name)?);
         }
         fly.bake_track();
         if let Some((start, yaw)) = fly.track_start() { fly.pos = start; fly.yaw = yaw; fly.pitch = -0.05; }
         if fly.track_start().is_none() { fly.pos = Vec3::new(0.0, fly.ground(0.0, 0.0) + 60.0, 0.0); }
         fly.prev = fly.pos;
         // --from: a JSON written by F4 (or just its "state"), to stand where the playtester stood.
-        if let Some(path) = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--from").map(|w| w[1].clone()) {
-            let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?).map_err(|e| format!("{path}: {e}"))?;
+        if let Some(path) = value("--from") {
+            let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).map_err(|e| format!("{path}: {e}"))?).map_err(|e| format!("{path}: {e}"))?;
             let st = v.get("state").unwrap_or(&v);
             let f = |k: &str| st.get(k).and_then(|x| x.as_f64()).map(|x| x as f32);
             if let Some(name) = st.get("style").and_then(|x| x.as_str()) { fly.style = style_index(name)?; }
@@ -216,6 +218,17 @@ impl Fly {
             if let Some(y) = f("yaw_deg") { fly.yaw = y.to_radians(); }
             if let Some(p) = f("pitch_deg") { fly.pitch = p.to_radians(); }
             if let Some(s) = f("speed") { fly.speed = s; }
+        }
+        // The first forest and shadow field must surround the requested camera.
+        // --at overrides a saved camera, on the terrain selected by --from.
+        fly.shown = (fly.seed, fly.style);
+        if let Some(at) = value("--at") {
+            let at = at.split(',').map(|n| n.parse::<f32>().map_err(|_| "--at X,Z,ABOVE,YAW,PITCH")).collect::<Result<Vec<_>, _>>()?;
+            let &[x, z, above, yaw, pitch] = at.as_slice() else { return Err("--at X,Z,ABOVE,YAW,PITCH".into()); };
+            fly.bake_track();
+            fly.pos = Vec3::new(x, fly.ground(x, z) + above, z);
+            fly.prev = fly.pos;
+            (fly.yaw, fly.pitch) = (yaw, pitch);
         }
         fly.rebuild()?;
         Ok(fly)
@@ -1230,13 +1243,6 @@ fn main() -> Result<(), String> {
         branch_slots: arg("--branch-slots").map(|n|n.parse().map_err(|_|"--branch-slots N")).transpose()?.unwrap_or(if low {512}else{World::default().branch_slots}), ..World::default() };
     let mut game = Fly::new(seed, style, world)?;
     game.upscale = arg("--upscale").unwrap_or_else(|| "native".into()).parse()?;
-    if let Some(at) = arg("--at") {
-        let at = at.split(',').map(|n| n.parse::<f32>().map_err(|_| "--at X,Z,ABOVE,YAW,PITCH")).collect::<Result<Vec<_>, _>>()?;
-        let &[x, z, above, yaw, pitch] = at.as_slice() else { return Err("--at X,Z,ABOVE,YAW,PITCH".into()); };
-        game.pos = Vec3::new(x, game.ground(x, z) + above, z);
-        game.prev = game.pos;
-        (game.yaw, game.pitch) = (yaw, pitch);
-    }
     // Explicit speed overrides captured camera state in interactive runs too.
     if let Some(speed) = arg("--speed") {
         let speed = speed.parse::<f32>().map_err(|_| "--speed needs metres per second")?;
@@ -1246,7 +1252,8 @@ fn main() -> Result<(), String> {
     // Build the exact normal world/catalog without acquiring an adapter or
     // opening a window. Useful while another game owns the GPU.
     if args.iter().any(|a|a=="--validate-world") {
-        let (_,scene,_,_,_)=game.building.take().ok_or("no scene build pending")?.recv().map_err(|e|e.to_string())??;
+        let (_,scene,_,_,centre)=game.building.take().ok_or("no scene build pending")?.recv().map_err(|e|e.to_string())??;
+        if centre != Some(game.pos) { return Err("initial scene is not centred on the requested camera".into()); }
         let forest=scene.gpu_forest.as_ref();
         if world.grass && scene.meadow.is_some() {return Err("terrain grass used legacy meadow".into());}
         println!("{}",serde_json::json!({"validation":"normal_scene_cpu_only","grass":world.grass,"trees":world.trees,

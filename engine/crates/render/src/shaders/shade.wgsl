@@ -3221,6 +3221,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             let rl = m.layer + 4;
             let sampled = rock_surface(rl, p, n, tw);
             var rock = sampled.color * vec3<f32>(0.62, 0.63, 0.62);
+            if m.scale < 0.0 { rock *= palette.rock.rgb; }
             // Restrained continuous weathering, never alternating rock types
             // or green soil patches caused by a detailed face pointing up.
             rock *= 0.94 + 0.12 * fbm(rp / 31.0 + 11.0);
@@ -3229,7 +3230,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         }
         let join = 1.0 - smoothstep(1.0, 2.2, uv.x + (vnoise(wuv / 1.1) - 0.5) * 0.18);
         if join > 0.0 {
-            c = mix(c, shoulder_soil(m.layer + 3, p, mapping), join);
+            var soil = shoulder_soil(m.layer + 3, p, mapping);
+            if m.scale < 0.0 { soil = biome_track(soil, palette, 0.0, 1.0); }
+            c = mix(c, soil, join);
             nn = safe_normalize(mix(nn, perturb_xz(n, terrain_layer_normal(m.layer + 3, wuv, 3.0, mapping)), join));
         }
         base = c * mix(1.0, 0.7, light.fog.w) * m.tint;
@@ -3245,6 +3248,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         let earth = select(0.0, 1.0, surf == 3u) * firm;
         let muddy = select(0.0, 1.0, surf == 6u) * firm;
         let asphalt = select(0.0, 1.0, surf == 5u) * firm;
+        var road_palette = FIELD_GROUND_DEFAULT;
+        if m.scale < 0.0 { road_palette = field_ground_at(u32(-m.scale - 0.5) + 3u); }
         let road_wet = mix(light.fog.w, max(light.fog.w, 0.55), muddy);
         let rut = exp(-pow((a - 0.25) / 0.085, 2.0));
         let ridge = max(exp(-pow(uv.x / 0.07, 2.0)), exp(-pow((a - 0.8) / 0.08, 2.0)));
@@ -3280,6 +3285,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         asphalt_col *= mix(1.0, 0.88, worn) * mix(1.0, 0.7, light.fog.w);
         c = mix(c, asphalt_col, asphalt);
         base = c * m.tint;
+        if m.scale < 0.0 { base = mix(biome_track(base, road_palette, worn, edge), base, asphalt); }
         // Gravel relief, fading with distance; mud and asphalt are smoother.
         var rn = mix(nrm_xz(m.layer, wuv / aggregate, aggregate), nrm_xz(m.layer, wuv / 11.0, 11.0), 0.3);
         rn = mix(rn, nrm_xz(m.layer + 1, wuv / 2.2, 2.2), max(edge, shoulder));
@@ -3291,7 +3297,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             let mapping = terrain_mapping(p);
             // m.tint boosts the driving lane, but must not boost only one
             // side of an otherwise identical terrain/shoulder junction.
-            base = mix(base, shoulder_soil(m.layer + 1, p, mapping) * mix(1.0, 0.7, light.fog.w), join);
+            var soil = shoulder_soil(m.layer + 1, p, mapping);
+            if m.scale < 0.0 { soil = biome_track(soil, road_palette, 0.0, 1.0); }
+            base = mix(base, soil * mix(1.0, 0.7, light.fog.w), join);
             nn = safe_normalize(mix(nn, perturb_xz(n, terrain_layer_normal(m.layer + 1, wuv, 3.0, mapping)), join));
         }
     } else if FEATURE_GRASS && (m.flags & 64u) != 0u {

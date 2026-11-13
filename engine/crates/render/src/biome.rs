@@ -41,15 +41,18 @@ pub struct Flora {
     /// Trees along ditches and banks instead of in stands (polder rows).
     pub tree_rows: bool,
     pub shrubs: [(&'static str, f32); 2],
-    /// Share of open ground cells (3 m) with a shrub.
+    /// Maximum share of suitable cells (3 m) with a shrub.
     pub shrub_density: f32,
+    /// Shrub preference from -1 (clearings only) through 0 (no preference)
+    /// to 1 (under a closed canopy only).
+    pub shrub_shade: f32,
 }
 
 const NONE: (&str, f32) = ("", 0.0);
 
 impl Flora {
     const TEMPERATE: Flora = Flora { trees: [("spruce", 0.55), ("pine", 0.15), ("birch", 0.15), ("broadleaf", 0.15)], tree_scale: 1.0,
-        tree_rows: false, shrubs: [("shrub", 0.6), ("juniper", 0.4)], shrub_density: 0.03 };
+        tree_rows: false, shrubs: [("shrub", 0.6), ("juniper", 0.4)], shrub_density: 0.03, shrub_shade: -0.7 };
 }
 
 /// Every preset, for menus and tests.
@@ -117,7 +120,7 @@ impl Biome {
                     moor: 0.0, grass: 0.0, snow_line: 4000.0, dunes: 1.0, ..terrain },
                 vegetation: VegetationStyle {
                     ground: GroundStyle { grass_dry: [1.25, 0.95, 0.55, 0.0], grass_lush: [1.15, 0.9, 0.55, 0.0],
-                        sand: 1.0, soil: [1.75, 1.42, 1.05, 0.1], gravel: [1.1, 0.95, 0.8, 0.6], rock: [1.15, 0.95, 0.8, 0.6], ..base.ground },
+                        sand: 1.0, soil: [1.92, 1.37, 0.88, 0.1], gravel: [0.80, 0.68, 0.55, 0.4], rock: [1.10, 0.78, 0.55, 0.6], ..base.ground },
                     meadow_dry_season: 1.0, ..base },
                 tree_density: 0.0, deciduous: 0.0,
                 flora: Flora { trees: [NONE; 4], shrubs: [("desert_shrub", 0.55), ("saltbush", 0.45)], shrub_density: 0.025, ..Flora::TEMPERATE } },
@@ -134,22 +137,22 @@ impl Biome {
                     forest: ForestStyle { needles: [0.032, 0.064, 0.049, 0.45], far: [0.095, 0.11, 0.088, 13.0],
                         crown: [2.7, 0.35, 1.6, 0.20], ..base.forest }, meadow_dry_season: 0.8 },
                 tree_density: 0.53, deciduous: 0.20,
-                flora: Flora { trees: [("spruce", 0.55), ("pine", 0.25), ("mountain_birch", 0.20), NONE], tree_scale: 0.84,
-                    shrubs: [("juniper", 0.6), ("dwarf_birch", 0.4)], shrub_density: 0.025, tree_rows: false } },
+                flora: Flora { trees: [("upland_spruce", 0.67), ("pine", 0.13), ("mountain_birch", 0.20), NONE], tree_scale: 0.84,
+                    shrubs: [("juniper", 0.6), ("dwarf_birch", 0.4)], shrub_density: 0.025, ..Flora::TEMPERATE } },
             // Central African lowland rainforest: river valleys, damp red
             // clay and broadleaf litter below a canopy of mahogany and kapok.
             "rainforest" | "congo" => Biome { name: "rainforest",
                 terrain: Style { mountains: 0.12, peaks: 0.0, hills: 1.2, rivers: 1.0, streams: 0.9,
                     ponds: 0.45, rocks: 0.18, boulders: 0.35, moor: 0.0, grass: 0.25, snow_line: 5000.0, ..terrain },
                 vegetation: VegetationStyle {
-                    ground: GroundStyle { leaf_litter: 1.0, soil: [1.18, 0.65, 0.42, 0.42],
-                        moor: [0.72, 0.78, 0.52, 0.0], grass_dry: [0.45, 0.65, 0.28, 0.0],
+                    ground: GroundStyle { leaf_litter: 1.0, soil: [1.40, 0.58, 0.34, 0.42],
+                        moor: [0.57, 0.43, 0.34, 0.0], grass_dry: [0.45, 0.65, 0.28, 0.0],
                         grass_lush: [0.30, 0.74, 0.31, 0.0], ..base.ground },
                     forest: ForestStyle { needles: [0.039, 0.115, 0.046, 0.40], floor: [0.035, 0.027, 0.014, 0.34],
                         far: [0.065, 0.15, 0.05, 13.0], crown: [3.3, 0.42, 0.75, 0.0] }, meadow_dry_season: 0.05 },
                 tree_density: 0.6, deciduous: 0.0,
                 flora: Flora { trees: [("african_mahogany", 0.78), ("kapok", 0.22), NONE, NONE], tree_scale: 0.92,
-                    shrubs: [("forest_coffee", 1.0), NONE], shrub_density: 0.035, tree_rows: false } },
+                    shrubs: [("forest_coffee", 0.62), ("raffia_palm", 0.38)], shrub_density: 0.035, shrub_shade: 0.6, tree_rows: false } },
             _ => return None,
         })
     }
@@ -175,6 +178,14 @@ impl Biome {
 pub const SHRUB: u32 = 16;
 
 impl Flora {
+    /// Share of the biome's shrub density retained at this forest cover (0..1).
+    pub fn shrub_habitat(&self, forest: f32) -> f32 {
+        let canopy = smooth(0.3, 0.8, forest);
+        let preference = self.shrub_shade.clamp(-1.0, 1.0);
+        if preference > 0.0 { 1.0 - preference * (1.0 - canopy) }
+        else { 1.0 + preference * canopy }
+    }
+
     /// The tree or shrub selected by a roll in [0, 1), indexing the
     /// tree-then-shrub catalogue returned by `Biome::species`.
     pub fn tree_variant(&self, roll: f32) -> Option<usize> {
@@ -246,8 +257,7 @@ impl Biome {
                 density: Box::new(move |s| {
                     let g = &s.ground;
                     if g.water > 0.01 || g.snow > 0.3 || g.up < 0.8 { return 0.0; }
-                    // Open ground and forest edges; little in the stands' shade.
-                    d * (1.0 - smooth(0.2, 0.6, g.rock)) * (1.0 - 0.7 * smooth(0.3, 0.8, s.field("forest"))) * crate::placement::off_road(s, 0.5)
+                    d * (1.0 - smooth(0.2, 0.6, g.rock)) * flora.shrub_habitat(s.field("forest")) * crate::placement::off_road(s, 0.5)
                 }),
                 shape: Box::new(move |s| {
                     let size = 0.6 + 0.8 * s.cell.hash(4);
@@ -413,6 +423,37 @@ mod tests {
                 "grows" => f32::from(u8::from(grows)),
                 _ => 0.0,
             }
+        }
+    }
+
+    #[test]
+    fn rainforest_shrubs_favor_shelter_and_stay_off_flooded_ground() {
+        use crate::placement::{place, World};
+        use crate::terrain_field::Sample;
+        // Identical seeded cells and terrain for both trials. Flood the northern
+        // half to check that even a fully sheltered site cannot grow underwater.
+        struct Plot { forest: f32 }
+        impl World for Plot {
+            fn seed(&self) -> u32 { 37 }
+            fn field(&self, name: &str, _: f32, _: f32, _: &Sample) -> f32 {
+                if name == "forest" { self.forest } else { 0.0 }
+            }
+            fn ground(&self, x: f32, z: f32) -> Sample {
+                Sample { pos: glam::Vec3::new(x, 0.0, z), up: 1.0, rock: 0.0, scree: 0.0, wet: 0.0,
+                    water: if z > 0.0 { 1.0 } else { 0.0 }, film: 0.0, moor: 0.0, snow: 0.0, amp: 0.0, tors: 0.0 }
+            }
+        }
+        let rainforest = Biome::named("rainforest").unwrap();
+        let shrubs: Vec<_> = rainforest.rules().into_iter().filter(|r| r.id == SHRUB).collect();
+        let grow = |forest| place(&shrubs, &Plot { forest }, glam::Vec2::ZERO, 180.0);
+        let open = grow(0.0);
+        let sheltered = grow(1.0);
+        assert!(!open.is_empty() && sheltered.len() > open.len() * 2);
+        assert_eq!(sheltered, grow(1.0));
+        assert!(sheltered.iter().all(|plant| plant.pos.z <= 0.0));
+        let temperate = Biome::named("temperate").unwrap().flora;
+        for forest in [0.0, 0.35, 0.5, 0.7, 1.0] {
+            assert_eq!(temperate.shrub_habitat(forest), 1.0 - 0.7 * smooth(0.3, 0.8, forest));
         }
     }
 

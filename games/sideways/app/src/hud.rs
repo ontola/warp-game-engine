@@ -13,24 +13,25 @@ const PLATE: [f32; 4] = [0.025, 0.032, 0.045, 0.70];
 
 /// One compact, translucent standalone menu; leave the world and sky visible
 /// during live lighting adjustments, including split-screen play.
-pub fn live_pause_menu(size:[u32;2],selected:usize,time:&str,atmosphere:&str,status:&str)->HudDrawList {
+pub fn live_pause_menu(size:[u32;2],selected:usize,time:&str,atmosphere:&str,biome:&str,status:&str)->HudDrawList {
     let mut draw=HudDrawList::new(size);let [w,h]=size.map(|v|v as f32);
-    let s=(h/1080.0).clamp(0.55,2.0).min(w/700.0);let x=32.0*s;let y=(h-370.0*s)*0.5;
+    let s=(h/1080.0).clamp(0.55,2.0).min(w/700.0);let x=32.0*s;let y=(h-419.0*s)*0.5;
     let width=430.0*s;let clip=[0.0,0.0,w,h];
-    draw.rect([x,y,width,370.0*s],[0.025,0.032,0.045,0.80],clip);
+    draw.rect([x,y,width,419.0*s],[0.025,0.032,0.045,0.80],clip);
     let text=|draw:&mut HudDrawList,id:u64,value:String,top:f32,size:f32,color|draw.text.push(TextRun {
         id:u64::MAX-100-id,text:value,position:[x+20.0*s,y+top*s],bounds:clip,font_size:size*s,color,
         font:FontFace::Body,align:TextAlign::Left,width:390.0*s});
     text(&mut draw,0,"PAUSED".into(),18.0,32.0,WHITE);
-    let rows=["Resume".to_owned(),format!("Time of day   < {time} >"),format!("Atmosphere   < {atmosphere} >"),"New stage".to_owned()];
+    let rows=["Resume".to_owned(),format!("Time of day   < {time} >"),format!("Atmosphere   < {atmosphere} >"),
+        format!("Next biome   < {biome} >"),"New stage".to_owned()];
     for (i,row) in rows.into_iter().enumerate() {
         let top=72.0+i as f32*49.0;
         if i==selected {draw.rect([x+12.0*s,y+(top-5.0)*s,width-24.0*s,42.0*s],[0.16,0.21,0.27,0.9],clip);}
         text(&mut draw,1+i as u64,row,top,25.0,if i==selected {AMBER}else{WHITE});
     }
-    text(&mut draw,6,status.into(),280.0,19.0,MUTED);
-    text(&mut draw,7,"D-pad / arrows: adjust   A / Enter: select".into(),316.0,17.0,MUTED);
-    text(&mut draw,8,"Start / Esc: resume".into(),341.0,17.0,MUTED);
+    text(&mut draw,6,status.into(),329.0,19.0,MUTED);
+    text(&mut draw,7,"D-pad / arrows: adjust   A / Enter: select".into(),365.0,17.0,MUTED);
+    text(&mut draw,8,"Start / Esc: resume".into(),390.0,17.0,MUTED);
     draw
 }
 
@@ -327,9 +328,10 @@ mod tests {
     #[test]
     fn live_pause_controls_are_one_compact_panel_with_visible_world_behind() {
         for size in [[1280,720],[3840,2160],[768,432]] {
-            let draw=live_pause_menu(size,1,"Sunset","Mist","Updating sky...");
+            let draw=live_pause_menu(size,3,"Sunset","Mist","rainforest","Updating sky...");
             assert_eq!(draw.text.iter().filter(|t|t.text=="PAUSED").count(),1);
             assert!(draw.text.iter().any(|t|t.text.contains("Time of day")));
+            assert!(draw.text.iter().any(|t|t.text=="Next biome   < rainforest >" && t.color==AMBER));
             assert!(draw.text.iter().any(|t|t.text=="Updating sky..."));
             assert!(draw.vertices.iter().all(|v|v.position[0]<size[0] as f32*0.7&&v.color[3]<1.0),"menu must leave world visible");
             assert!(draw.text.iter().all(|t|t.position[0]>=0.0&&t.position[1]>=0.0&&t.position[1]+t.font_size<size[1] as f32));

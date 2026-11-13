@@ -74,7 +74,7 @@ fn apply(config: Config, cache: &mut AtmosphereCache, quality: BakeQuality, scen
 #[derive(Default)]
 pub struct PauseMenu {pub selected:usize,axis:[i8;2],next_repeat:Option<Instant>,confirm_held:bool}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum MenuAction {Resume,NewStage,Time(i8),Atmosphere(i8)}
+pub enum MenuAction {Resume,NewStage,Time(i8),Atmosphere(i8),Biome(i8)}
 impl PauseMenu {
     pub fn opened(&mut self,axis:[i8;2],confirm:bool) {self.selected=0;self.axis=axis;self.confirm_held=confirm;self.next_repeat=None;}
     /// Consume held input while an overlay owns focus, retaining selection.
@@ -84,14 +84,15 @@ impl PauseMenu {
         let confirm_edge=confirm&&!self.confirm_held;self.confirm_held=confirm;
         if fire {
             self.next_repeat=Some(now+Duration::from_millis(if axis==self.axis {200}else{380}));
-            if axis[1]!=0 {self.selected=(self.selected as i32+axis[1] as i32).rem_euclid(4) as usize;}
+            if axis[1]!=0 {self.selected=(self.selected as i32+axis[1] as i32).rem_euclid(5) as usize;}
         } else if axis==[0,0] {self.next_repeat=None;}
         self.axis=axis;
         let delta=if fire {axis[0]}else{0};
         match self.selected {
-            0 if confirm_edge=>Some(MenuAction::Resume),3 if confirm_edge=>Some(MenuAction::NewStage),
+            0 if confirm_edge=>Some(MenuAction::Resume),4 if confirm_edge=>Some(MenuAction::NewStage),
             1 if delta!=0||confirm_edge=>Some(MenuAction::Time(if delta!=0 {delta}else{1})),
-            2 if delta!=0||confirm_edge=>Some(MenuAction::Atmosphere(if delta!=0 {delta}else{1})),_=>None
+            2 if delta!=0||confirm_edge=>Some(MenuAction::Atmosphere(if delta!=0 {delta}else{1})),
+            3 if delta!=0||confirm_edge=>Some(MenuAction::Biome(if delta!=0 {delta}else{1})),_=>None
         }
     }
 }
@@ -99,6 +100,21 @@ impl PauseMenu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pause_menu_can_select_a_biome_and_start_its_stage() {
+        let now = Instant::now();
+        let mut menu = PauseMenu::default();
+        menu.opened([0, 0], false);
+        menu.navigate([0, -1], false, now); // Resume wraps to New stage.
+        menu.navigate([0, 0], false, now);
+        menu.navigate([0, -1], false, now);
+        assert_eq!(menu.navigate([-1, 0], false, now), Some(MenuAction::Biome(-1)));
+        menu.navigate([0, 0], false, now);
+        assert_eq!(menu.navigate([0, 0], true, now), Some(MenuAction::Biome(1)));
+        menu.navigate([0, 1], false, now);
+        assert_eq!(menu.navigate([0, 0], true, now), Some(MenuAction::NewStage));
+    }
 
     #[test]
     fn overlay_suspension_preserves_menu_selection_and_consumes_held_input() {

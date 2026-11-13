@@ -194,6 +194,10 @@ fn stem() -> PartGeometry {
     part
 }
 
+pub(crate) const STEM: u32 = 0;
+pub(crate) const SEGMENT: u32 = 13;
+pub(crate) const SEGMENT_TIP: f32 = 0.70;
+
 /// Smooth tapered segment; joints are overlapped by a small collar. Used for
 /// curved upper trunks and branch axes, while part zero protects the collider.
 fn segment() -> PartGeometry {
@@ -205,7 +209,7 @@ fn segment() -> PartGeometry {
     let sides = 12;
     for i in 0..sides {
         let a = i as f32 * std::f32::consts::TAU / sides as f32;
-        for (y, r) in [(0.0, 1.0), (1.0, 0.70)] {
+        for (y, r) in [(0.0, 1.0), (1.0, SEGMENT_TIP)] {
             let normal = Vec3::new(a.cos(), 0.30, a.sin()).normalize();
             part.vertices.push(Vertex {
                 pos: [r * a.cos(), y, r * a.sin()],
@@ -232,8 +236,8 @@ fn segment() -> PartGeometry {
         triangle(
             &mut part,
             Vec3::Y,
-            ring((i + 1) % sides, 1.0, 0.70),
-            ring(i, 1.0, 0.70),
+            ring((i + 1) % sides, 1.0, SEGMENT_TIP),
+            ring(i, 1.0, SEGMENT_TIP),
         );
     }
     part
@@ -323,7 +327,7 @@ pub fn build(
     }];
     let mut instances = vec![PartInstance {
         id: identity(2, 0),
-        part: 0,
+        part: STEM,
         branch: 0,
         rest: Mat4::from_scale_rotation_translation(
             Vec3::new(trunk_radius, lower_length, trunk_radius),
@@ -340,10 +344,10 @@ pub fn build(
         let a = trunk_point(join_y + (height - join_y) * t);
         let b = trunk_point(join_y + (height - join_y) * next);
         let delta = b - a;
-        let radius = trunk_radius * 0.70f32.powi(j as i32);
+        let radius = trunk_radius * SEGMENT_TIP.powi(j as i32);
         instances.push(PartInstance {
             id: identity(31, j),
-            part: 13,
+            part: SEGMENT,
             branch: 0,
             material: 0,
             rest: Mat4::from_scale_rotation_translation(
@@ -405,7 +409,7 @@ pub fn build(
                 let v = (section + 1) as f32 / 4.0;
                 let a = curve(u);
                 let delta = curve(v) - a;
-                let r = radius * 0.70f32.powi(section as i32);
+                let r = radius * SEGMENT_TIP.powi(section as i32);
                 let (pose, offset) = if section >= 2 {
                     (tip_branch, tip_pivot)
                 } else {
@@ -413,7 +417,7 @@ pub fn build(
                 };
                 instances.push(PartInstance {
                     id: identity(32, u64::from(i) * 4 + section),
-                    part: 13,
+                    part: SEGMENT,
                     branch: pose,
                     material: 0,
                     rest: Mat4::from_scale_rotation_translation(

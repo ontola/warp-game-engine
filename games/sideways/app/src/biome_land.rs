@@ -9,6 +9,17 @@ use std::sync::{Arc, Mutex};
 /// Sideways' original Finnish stage has its own terrain generator.
 pub const FINLAND: &str = "finland";
 
+pub fn choices() -> impl Iterator<Item = &'static str> {
+    std::iter::once(FINLAND).chain(render::biome::NAMES)
+}
+
+pub fn step(current: &str, delta: i8) -> &'static str {
+    let count = render::biome::NAMES.len() + 1;
+    let current = choices().position(|name| name == current).unwrap_or(0);
+    let next = (current as isize + isize::from(delta)).rem_euclid(count as isize);
+    choices().nth(next as usize).expect("wrapped biome index")
+}
+
 pub fn select(name: &str) -> Result<Option<Land>, String> {
     if name == FINLAND { Ok(None) } else { land(name).map(Some) }
 }
@@ -82,6 +93,18 @@ mod tests {
     use super::*;
     use gdcompat::Pcg;
     use sideways::{stage::Stage, surfaces::Surface};
+
+    #[test]
+    fn all_lobby_choices_are_playable_from_the_standalone_menu() {
+        let mut name = FINLAND;
+        for expected in choices().skip(1).chain(std::iter::once(FINLAND)) {
+            let next = step(name, 1);
+            assert_eq!(next, expected);
+            assert_eq!(step(next, -1), name);
+            assert!(select(next).is_ok());
+            name = next;
+        }
+    }
 
     #[test]
     fn established_rally_stages_keep_their_original_layout() {

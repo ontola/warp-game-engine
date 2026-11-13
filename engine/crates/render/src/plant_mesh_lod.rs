@@ -25,6 +25,9 @@ use crate::scene::{Material, ALPHA_TEST, THIN_FOLIAGE, TWO_SIDED};
 use glam::{Mat3, Vec2, Vec3};
 use std::collections::HashMap;
 
+#[path = "plant_wood_lod.rs"]
+mod wood_lod;
+
 /// The atlas: one square layer of the scene's texture array.
 pub const ATLAS_SIZE: u32 = 2048;
 /// Parts smaller than this (part space, metres) become cards whatever their
