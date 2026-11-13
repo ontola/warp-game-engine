@@ -34,7 +34,8 @@ fn refine_source() -> String {
     let floor = std::env::var("KERN_CAMERA_CUT_FLOOR").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite() && *v >= 1.0).unwrap_or(CAMERA_CUT_FLOOR);
     let hysteresis = std::env::var("KERN_CUT_HYSTERESIS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite() && *v >= 1.0).unwrap_or(CUT_HYSTERESIS);
     let per_tree = std::env::var("KERN_SOURCE_PER_TREE").as_deref() != Ok("0");
-    format!("const CAMERA_CUT_FLOOR: f32 = {floor:?};\nconst CUT_HYSTERESIS: f32 = {hysteresis:?};\nconst SOURCE_PER_TREE: bool = {per_tree};\n{}", include_str!("shaders/foliage_refine.wgsl"))
+    let wave = std::env::var("KERN_REFINE_WAVE_PUBLISH").as_deref() != Ok("0");
+    format!("const CAMERA_CUT_FLOOR: f32 = {floor:?};\nconst CUT_HYSTERESIS: f32 = {hysteresis:?};\nconst SOURCE_PER_TREE: bool = {per_tree};\nconst WAVE_PUBLISH: bool = {wave};\n{}", include_str!("shaders/foliage_refine.wgsl"))
 }
 struct Rounds {cameras:Vec<(glam::Vec3,glam::Vec3,f32)>,stale:u64,full:bool,used:Option<u32>,hint:Option<u32>,encoded:u32,frame:u64,newest:u64,slots:Vec<RoundSlot>}
 struct RoundSlot {buffer:wgpu::Buffer,encoded:u32,frame:u64,pending:Option<std::sync::mpsc::Receiver<Result<(),wgpu::BufferAsyncError>>>}
@@ -107,7 +108,10 @@ impl Refiner {
                 slot.pending=Some(rx);slot.encoded=encoded;slot.frame=frame;
             }
         }
-        r.frame+=1;r.encoded=r.count(bound);r.encoded
+        // KERN_REFINE_ROUNDS=N (diagnostic): encode exactly N rounds (even,
+        // at most the bound), to see what a round costs.
+        let fixed=std::env::var("KERN_REFINE_ROUNDS").ok().and_then(|v|v.parse::<u32>().ok()).map(|n|(n+(n&1)).clamp(2,bound));
+        r.frame+=1;r.encoded=fixed.unwrap_or_else(||r.count(bound));r.encoded
     }
     /// A camera that jumps, turns fast or zooms needs refinement the last
     /// readback did not see: go back to the full bound, and ignore readbacks

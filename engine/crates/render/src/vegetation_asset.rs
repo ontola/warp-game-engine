@@ -349,6 +349,10 @@ impl CookedPlant {
     pub fn stats(&self) -> CookStats {
         self.stats
     }
+    /// Every branch and geometry voxel asset (diagnostics: cook statistics per level).
+    pub fn voxel_assets(&self) -> impl Iterator<Item = &VoxelAsset> {
+        self.branches.iter().filter_map(|b| b.volume.as_ref()).chain(self.geometry.iter().filter_map(|g| g.volume.as_ref()))
+    }
 
     /// Stable source placement ID and its branch ID; not scene buffer indices.
     pub fn source_ids(&self) -> impl Iterator<Item = (u64, u64)> + '_ {

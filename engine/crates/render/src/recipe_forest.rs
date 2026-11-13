@@ -632,3 +632,37 @@ mod streaming_tests {
         }}
     }
 }
+
+#[cfg(test)]
+mod fine_cell_probe {
+    /// Cook statistics of a young swiss spruce's branch voxels per level, at
+    /// the default finest cell and at KERN_BRANCH_CELL_M (diagnostic, prints):
+    /// KERN_BRANCH_CELL_M=0.0375 cargo test --release -p render --lib fine_cell_probe -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn branch_voxel_levels() {
+        let parts = crate::plant_growth_assembly::Parts::for_look(&crate::plant_growth_assembly::Look::norway_spruce());
+        let (plant, ms) = super::cook_grown_stages(crate::plant_growth::Species::norway_spruce(), 12, 1, &parts,
+            crate::plant_growth_assembly::Look::norway_spruce()).unwrap();
+        println!("cell env {:?}, cook ms {ms:?}", std::env::var("KERN_BRANCH_CELL_M").ok());
+        let mut rows: std::collections::BTreeMap<u32, (f32, usize, f64, f64, f64, f64, usize)> = Default::default();
+        for asset in plant.voxel_assets() {
+            for level in &asset.levels {
+                let key = (level.cell_size * 1e5).round() as u32;
+                let row = rows.entry(key).or_insert((level.cell_size, 0, 0.0, 0.0, 0.0, 0.0, 0));
+                row.6 += 1;
+                for v in &level.voxels {
+                    let a = f64::from(v.surface_area);
+                    let luma = 0.2126 * f64::from(v.albedo[0]) + 0.7152 * f64::from(v.albedo[1]) + 0.0722 * f64::from(v.albedo[2]);
+                    row.1 += 1; row.2 += a; row.3 += luma * a;
+                    row.4 += f64::from(v.directional_area.iter().copied().fold(0.0f32, f32::max)) / f64::from(level.cell_size).powi(3);
+                    row.5 += f64::from(v.leaf_fraction);
+                }
+            }
+        }
+        for (_, (cell, n, area, luma, sigma, leaf, assets)) in rows {
+            println!("cell {cell:.4} m: assets {assets:4} voxels {n:8} area {area:9.2} m2 albedo luma {:.4} mean max-sigma {:.1}/m leaf {:.3}",
+                luma / area.max(1e-12), sigma / n.max(1) as f64, leaf / n.max(1) as f64);
+        }
+    }
+}
