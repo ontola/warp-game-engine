@@ -177,12 +177,18 @@ survive sky changes.
 `Lighting::froxel_fog` (`render::froxel_fog`) is a participating medium in
 a camera-aligned grid of 160x90x64 cells (froxels; Wronski 2014, Hillaire
 2015), slices spaced exponentially from 0.1 m to `far_m` of view depth. The
-game sets density (extinction per metre), albedo, anisotropy and,
-optionally, the box the medium fills; nothing else, no fog boxes per light.
+game sets density (extinction per metre), albedo, anisotropy and where the
+medium is (`FogBounds`): everywhere, one box, or `Rooms`, the rooms the
+scene already declares for its reflection probes (their boxes, fading out
+over 0.5 m as the probes' reflections do, through `room_presence` in
+rsm.wgsl, the one definition of a room both use). Rooms joined by a door
+must reach through the opening to the door's leaf, as `architecture`
+builds them; otherwise the doorway between two boxes holds no smoke.
+Nothing else: no fog boxes per light or per wing.
 
 ```rust
 light.froxel_fog = Some(FroxelFog { density: 0.15, albedo: Vec3::splat(0.9), anisotropy: 0.4,
-    far_m: 32.0, bounds: None });
+    far_m: 32.0, bounds: FogBounds::Rooms });
 ```
 
 - `fog_inject` (compiled with shade, so the air is lit as surfaces are), one

@@ -248,9 +248,17 @@ fn fog_medium(p: vec3<f32>, to_eye: vec3<f32>, seg_a: vec3<f32>, seg_b: vec3<f32
     }
     // Ambient (isotropic): the mean radiance of the two hemispheres.
     lin += (fog_ambient_irradiance(p, vec3<f32>(0.0, 1.0, 0.0)) + fog_ambient_irradiance(p, vec3<f32>(0.0, -1.0, 0.0))) / (2.0 * PI);
-    // The medium fills its bounds (all space when unbounded).
-    let inside = gi.fog_bounds[0].w < 0.5 || (all(p >= gi.fog_bounds[0].xyz) && all(p <= gi.fog_bounds[1].xyz));
-    let sigma_t = select(0.0, gi.fog.x, inside);
+    // The medium fills its bounds: everywhere (w 0), a box (w 1), or the
+    // rooms the scene declares (w 2, room_presence: the reflection probes'
+    // boxes, fading out over ROOM_FADE_M; everywhere when it declares none).
+    var inside = 1.0;
+    let mode = gi.fog_bounds[0].w;
+    if mode > 1.5 {
+        if u32(gi.probes.y) > 0u { inside = room_presence(p); }
+    } else if mode > 0.5 {
+        inside = select(0.0, 1.0, all(p >= gi.fog_bounds[0].xyz) && all(p <= gi.fog_bounds[1].xyz));
+    }
+    let sigma_t = gi.fog.x * inside;
     return vec4<f32>(lin * gi.fog_albedo.rgb * sigma_t, sigma_t);
 }
 

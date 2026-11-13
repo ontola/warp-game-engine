@@ -454,7 +454,8 @@ struct Gi {
     rsm: vec4<f32>,
     rsm_prev: mat4x4<f32>,
     // Reflection probes (reflection_probes.rs): x 1 inside a probe's
-    // capture, y the box count; per box capture (w 1 once complete), min, max.
+    // capture, y the box count, z 1 when they reflect; per box capture (w 1
+    // once complete), min, max.
     probes: vec4<f32>,
     probe_boxes: array<vec4<f32>, 24>,
     // Froxel fog (froxel_fog.wgsl): density, anisotropy, far, 0 off / 1 on /
@@ -462,7 +463,7 @@ struct Gi {
     fog: vec4<f32>,
     fog_albedo: vec4<f32>,
     fog_prev: mat4x4<f32>,
-    // Where the medium is: min (w 1 when bounded), max.
+    // Where the medium is: min (w 1 a box, 2 the probes' room boxes), max.
     fog_bounds: array<vec4<f32>, 2>,
 };
 // Last frame's resolved radiance (the TAA history), for traced reflections.

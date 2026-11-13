@@ -39,7 +39,12 @@ pub const NEAR: f32 = 0.05;
 const SAMPLES: u32 = 64;
 
 /// A probe: where it is captured and the box its reflections are projected
-/// into (a room's inside bounds).
+/// into (a room's inside bounds). The boxes are also where the scene's rooms
+/// are for the froxel fog (`FogBounds::Rooms`). A room joined to another by
+/// a door reaches through the opening to the door's leaf (the middle of the
+/// wall), as `architecture` builds them; ending at the wall's face leaves
+/// the doorway in no room: no smoke there, and its reveal takes the probe
+/// of the room behind.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProbeBox {
     pub capture: Vec3,

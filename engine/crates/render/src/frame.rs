@@ -413,7 +413,7 @@ struct GiUniform {
     fog: [f32; 4],
     fog_albedo: [f32; 4],
     fog_prev: [[f32; 4]; 4],
-    /// Where the medium is: min (w 1 when bounded), max.
+    /// Where the medium is: min (w 1 a box, 2 the probes' room boxes), max.
     fog_bounds: [[f32; 4]; 2],
 }
 
@@ -1973,7 +1973,7 @@ impl Renderer {
         gi.prev_view_proj = Mat4::IDENTITY.to_cols_array_2d();
         gi.rsm[1] = 0.0;
         gi.rsm_prev = Mat4::IDENTITY.to_cols_array_2d();
-        gi.probes = [1.0, 0.0, 0.0, 0.0];
+        gi.probes[0] = 1.0;
         // Fog: no froxel grid for a capture; shade marches each capture ray
         // through the same medium (froxel_fog.wgsl fog_capture).
         if gi.fog[0] > 0.0 { gi.fog[3] = 3.0; }
@@ -5416,7 +5416,10 @@ impl Renderer {
         // drawn after the views with view 0's lights and shadows.
         // KERN_REFLECTION_PROBES=0 turns them off (renderer-switches.md).
         let probes_on = std::env::var("KERN_REFLECTION_PROBES").as_deref() != Ok("0");
-        let (probe_boxes, probe_count) = if probes_on { self.probes.uniform() } else { ([[0.0; 4]; 3 * crate::reflection_probes::MAX_PROBES], 0) };
+        // The boxes go up with the probes off too: they are where the scene's
+        // rooms are (the froxel fog's FogBounds::Rooms); z says whether the
+        // probes reflect.
+        let (probe_boxes, probe_count) = self.probes.uniform();
         let mut probe_ctx: Option<(wgpu::Buffer, wgpu::TextureView, wgpu::TextureView, wgpu::TextureView, GiUniform)> = None;
         for (vi, view) in views.iter().enumerate() {
             let resources = &mut frame_resources[vi];
@@ -5481,12 +5484,16 @@ impl Renderer {
                     rsm_frame.as_ref().map_or(0.0, |f| if f.prev_view_proj.is_some() { 2.0 } else { 1.0 }),
                     rsm_frame.as_ref().map_or(0.0, |f| (f.frame & 0xff_ffff) as f32), crate::rsm::TEXELS as f32],
                 rsm_prev: rsm_frame.as_ref().and_then(|f| f.prev_view_proj).unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
-                probes: [0.0, probe_count as f32, 0.0, 0.0],
+                probes: [0.0, probe_count as f32, if probes_on { 1.0 } else { 0.0 }, 0.0],
                 probe_boxes,
                 fog: fog_frame.as_ref().map_or([0.0; 4], |(m, f)| [m.density, m.anisotropy, m.far_m, if f.prev_view_proj.is_some() { 2.0 } else { 1.0 }]),
                 fog_albedo: fog_frame.as_ref().map_or([0.0; 4], |(m, f)| m.albedo.extend((f.frame & 0xff_ffff) as f32).to_array()),
                 fog_prev: fog_frame.as_ref().and_then(|(_, f)| f.prev_view_proj).unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
-                fog_bounds: fog_frame.as_ref().and_then(|(m, _)| m.bounds).map_or([[0.0; 4]; 2], |(lo, hi)| [lo.extend(1.0).to_array(), hi.extend(0.0).to_array()]),
+                fog_bounds: match fog_frame.as_ref().map(|(m, _)| m.bounds) {
+                    Some(crate::froxel_fog::FogBounds::Box(lo, hi)) => [lo.extend(1.0).to_array(), hi.extend(0.0).to_array()],
+                    Some(crate::froxel_fog::FogBounds::Rooms) => [[0.0, 0.0, 0.0, 2.0], [0.0; 4]],
+                    _ => [[0.0; 4]; 2],
+                },
             };
             let gi_buf = self.view_uniform(gpu, vi, 0, "gi", bytemuck::bytes_of(&gi_u));
             // A rebuilt canopy level gets its sky transmittance baked now,

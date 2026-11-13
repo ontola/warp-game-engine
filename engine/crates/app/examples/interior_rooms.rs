@@ -137,12 +137,15 @@ fn door_xf(open: f32) -> Affine3A {
         * Affine3A::from_scale_rotation_translation(Vec3::new(0.06, DOOR_TOP - 0.01, 0.98), Quat::IDENTITY, Vec3::new(0.0, DOOR_TOP * 0.5, 0.5))
 }
 
-/// Reflection probes, one per room: capture point and the room's inside.
+/// Reflection probes, one per room: capture point and the room's inside,
+/// reaching through each door opening to the middle of its wall (the leaf),
+/// as `architecture` builds them: the probes and the smoke
+/// (`FogBounds::Rooms`) then have no gap in a doorway.
 const ROOM_PROBES: [render::reflection_probes::ProbeBox; 4] = [
-    render::reflection_probes::ProbeBox { capture: Vec3::new(0.0, 1.5, 0.0), min: Vec3::new(-4.0, 0.0, -4.0), max: Vec3::new(4.0, H, 4.0) },
-    render::reflection_probes::ProbeBox { capture: Vec3::new(-1.5, 1.5, -6.0), min: Vec3::new(-4.0, 0.0, -10.2), max: Vec3::new(4.0, H, -4.3) },
-    render::reflection_probes::ProbeBox { capture: Vec3::new(0.0, 1.5, -13.5), min: Vec3::new(-4.0, 0.0, -16.6), max: Vec3::new(4.0, H, -10.5) },
-    render::reflection_probes::ProbeBox { capture: Vec3::new(-6.6, 1.5, -12.6), min: Vec3::new(-9.0, 0.0, -16.6), max: Vec3::new(-4.3, H, -10.5) },
+    render::reflection_probes::ProbeBox { capture: Vec3::new(0.0, 1.5, 0.0), min: Vec3::new(-4.0, 0.0, -4.15), max: Vec3::new(4.0, H, 4.15) },
+    render::reflection_probes::ProbeBox { capture: Vec3::new(-1.5, 1.5, -6.0), min: Vec3::new(-4.0, 0.0, -10.35), max: Vec3::new(4.0, H, -4.15) },
+    render::reflection_probes::ProbeBox { capture: Vec3::new(0.0, 1.5, -13.5), min: Vec3::new(-4.15, 0.0, -16.6), max: Vec3::new(4.0, H, -10.35) },
+    render::reflection_probes::ProbeBox { capture: Vec3::new(-6.6, 1.5, -12.6), min: Vec3::new(-9.0, 0.0, -16.6), max: Vec3::new(-4.15, H, -10.5) },
 ];
 
 /// Smoothstep: the door eases in and out.
@@ -448,8 +451,8 @@ impl Rooms {
         // flashlight and the daylight through the doors scatter in it, the
         // walls and furniture shadow it, and the far side of a room hazes.
         self.light.froxel_fog = on.then(|| render::froxel_fog::FroxelFog { density: 0.15, albedo: Vec3::splat(0.9), anisotropy: 0.4, far_m: 32.0,
-            // ROOMS_FOG_OUTSIDE=1: the smoke outdoors too (no bounds).
-            bounds: std::env::var_os("ROOMS_FOG_OUTSIDE").is_none().then_some((Vec3::new(-9.3, 0.0, -16.9), Vec3::new(4.3, H, 4.3))) });
+            // In the rooms (their probe boxes); ROOMS_FOG_OUTSIDE=1: outdoors too.
+            bounds: if std::env::var_os("ROOMS_FOG_OUTSIDE").is_some() { render::froxel_fog::FogBounds::Everywhere } else { render::froxel_fog::FogBounds::Rooms } });
     }
 
     /// The probes for the door at `open` and the lamps that are on: the two
