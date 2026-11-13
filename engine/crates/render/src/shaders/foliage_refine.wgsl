@@ -725,13 +725,57 @@ fn fast_shadow_retained(task:vec4<u32>)->bool {
 }
 // The phase is the entry point, not a state word: a one-thread dispatch
 // that flipped it cost two extra serial dispatches per round.
-@compute @workgroup_size(64) fn fast_round(@builtin(global_invocation_id) id:vec3<u32>) {fast_round_phase(id.x,false);}
-@compute @workgroup_size(64) fn fast_round_late(@builtin(global_invocation_id) id:vec3<u32>) {fast_round_phase(id.x,true);}
-fn fast_round_phase(at:u32,phase_late:bool) {
- if at>=atomicLoad(&state[3]) {return;}
- let task=current[at];if task.z==0u {return;}
+@compute @workgroup_size(64) fn fast_round(@builtin(global_invocation_id) id:vec3<u32>,@builtin(local_invocation_index) lane:u32) {fast_round_wave(id.x,lane,false);}
+@compute @workgroup_size(64) fn fast_round_late(@builtin(global_invocation_id) id:vec3<u32>,@builtin(local_invocation_index) lane:u32) {fast_round_wave(id.x,lane,true);}
+// Most tasks of a round keep their node (every far tree in round 0) and
+// publish it. One global atomic per published record (counters[0], [7] for
+// direct roots, [4] tested nodes) serialized ~160k adds on three words;
+// a workgroup now reserves its records with one add each (WAVE_PUBLISH,
+// KERN_REFINE_WAVE_PUBLISH=0 publishes per task as before).
+var<workgroup> wave_counts:array<atomic<u32>,3>;
+var<workgroup> wave_base:u32;
+fn fast_round_wave(at:u32,lane:u32,phase_late:bool) {
+ if !WAVE_PUBLISH {let task=fast_round_phase(at,phase_late);publish(task);return;}
+ if lane<3u {atomicStore(&wave_counts[lane],0u);}
+ workgroupBarrier();
+ let task=fast_round_phase(at,phase_late);
+ let slot=publish_reserve(task);
+ workgroupBarrier();
+ if lane==0u {
+  wave_base=atomicAdd(&counters[0],atomicLoad(&wave_counts[0]));
+  let direct_roots=atomicLoad(&wave_counts[1]);if direct_roots!=0u {atomicAdd(&counters[7],direct_roots);}
+  let tested=atomicLoad(&wave_counts[2]);if tested!=0u {atomicAdd(&counters[4],tested);}
+ }
+ workgroupBarrier();
+ if slot!=NONE {publish_write(task,wave_base+slot);}
+}
+// publish() in two halves: everything but the record slot, which the
+// workgroup reserves at once; then the record write.
+fn publish_reserve(task:vec4<u32>)->u32 {
+ if task.z==0u {return NONE;}
+ if task.y==NONE {atomicOr(&fallback[task.x],task.z);return NONE;}
+ let n=nodes[task.y];let resident=ready(n.links.z);
+ if !resident {atomicOr(&fallback[task.x],task.z);return NONE;}
+ if (n.links.w&2u)!=0u {
+  let publication=task.x+select(0u,view.counts.x,task.z==512u);
+  demand[publication].prefix=n.links.z+1u;
+  if task.z==256u || (demand[task.x].bucket&256u)==0u {direct[task.x]=n.links.z+1u;}
+  atomicAdd(&wave_counts[1],1u);return NONE;
+ }
+ atomicAdd(&demand[task.x+select(0u,view.counts.x,task.z==512u)].count,1u);
+ return atomicAdd(&wave_counts[0],1u);
+}
+fn publish_write(task:vec4<u32>,at:u32) {
+ if at<view.counts.y {records[at]=vec4<u32>(task.x,task.y,nodes[task.y].links.z,trees[task.x].info.y);record_consumers[at]=task.z;}
+ else {atomicOr(&fallback[task.x],1u);atomicAdd(&counters[3],1u);}
+}
+// Returns the task to publish (z 0: none). Children that are leaves still
+// publish directly (few: near trees only).
+fn fast_round_phase(at:u32,phase_late:bool)->vec4<u32> {
+ if at>=atomicLoad(&state[3]) {return vec4<u32>(0u);}
+ let task=current[at];if task.z==0u {return vec4<u32>(0u);}
  let late=task.z==512u && !fast_shadow_retained(task);
- if late!=phase_late {return;}
+ if late!=phase_late {return vec4<u32>(0u);}
  cut_scale=fast_scale(task.z);
  // Hysteresis: a tree the camera saw in detail last frame (more than one
  // record) keeps it down to CUT_HYSTERESIS times less error, so a small
@@ -740,10 +784,10 @@ fn fast_round_phase(at:u32,phase_late:bool) {
  let detailed=(task.z&256u)!=0u && atomicLoad(&demand[task.x].failed)>1u;
  if detailed {cut_scale=cut_scale/CUT_HYSTERESIS;}
  let t=trees[task.x];let node_id=select(task.y,t.info.x,task.y==NONE);let n=nodes[node_id];
- atomicAdd(&counters[4],1u);
+ if WAVE_PUBLISH {atomicAdd(&wave_counts[2],1u);} else {atomicAdd(&counters[4],1u);}
  let scale=projected(t,n,task.z);
  let wanted=task.y==NONE || (n.links.x!=NONE && ((n.links.w&1u)!=0u || scale.x>=1e29 || scale.x*n.error.x>view.pixels.z*cut_scale || scale.x*n.error.y>cut_scale));
- if !wanted {publish(task);return;}
+ if !wanted {return task;}
  var first=node_id;var end=node_id+1u;
  if task.y!=NONE {first=n.links.x;end=n.links.y;}
  var replacement=vec4<u32>(0u);var resident=true;var branching=0u;var child=first;var source_leaves=false;
@@ -762,7 +806,7 @@ fn fast_round_phase(at:u32,phase_late:bool) {
   child=nodes[child].links.y;
  }
  // Missing pages keep the complete parent; ready() has requested them.
- if !resident {atomicAdd(&state[73],1u);publish(task);return;}
+ if !resident {atomicAdd(&state[73],1u);return task;}
  // Into source leaves only past the coarser source cut. The step is judged
  // at the whole tree's nearest point (its root bound encloses every branch),
  // so a tree turns to needles as one: per branch, the far side of a near
@@ -772,20 +816,20 @@ fn fast_round_phase(at:u32,phase_late:bool) {
  if SOURCE_PER_TREE {step=max(step,projected(t,nodes[t.info.x],task.z).x);}
  if (task.z&256u)!=0u && source_leaves && task.y!=NONE && (n.links.w&1u)==0u && step<1e29 {
   let s=fast_source_scale()/select(1.0,CUT_HYSTERESIS,detailed);
-  if step*n.error.x<=view.pixels.z*s && step*n.error.y<=s {publish(task);return;}
+  if step*n.error.x<=view.pixels.z*s && step*n.error.y<=s {return task;}
  }
  // Shadows stay voxel: source leaves in shadow maps cost hundreds of
  // millions of triangles (hill view) that no slot or splat cap measures.
- if (task.z&256u)==0u && source_leaves {publish(task);return;}
+ if (task.z&256u)==0u && source_leaves {return task;}
  let old=work(task.x,task.y,task.z);
  let shadow=(task.z&256u)==0u;
- if !fast_reserve(replacement-min(replacement,old),shadow) {atomicAdd(&state[17],1u);atomicAdd(&state[select(select(75u,76u,(task.z&256u)!=0u),86u,!shadow && source_leaves)],1u);publish(task);return;}
+ if !fast_reserve(replacement-min(replacement,old),shadow) {atomicAdd(&state[17],1u);atomicAdd(&state[select(select(75u,76u,(task.z&256u)!=0u),86u,!shadow && source_leaves)],1u);return task;}
  if shadow {atomicMax(&demand[task.x+view.counts.x].failed,atomicLoad(&state[87])+1u);}
  let offset=atomicAdd(&state[7],branching);let capacity=arrayLength(&next);
  if offset>capacity || branching>capacity-offset {
   // Queue overflow: keep the parent and blank the claimed in-range entries.
   for(var i=offset;i<min(offset+branching,capacity);i++) {next[i]=vec4<u32>(0u,NONE,0u,0u);}
-  fast_refund(replacement-min(replacement,old),shadow);atomicOr(&state[15],8u);publish(task);return;
+  fast_refund(replacement-min(replacement,old),shadow);atomicOr(&state[15],8u);return task;
  }
  fast_refund(old-min(old,replacement),shadow);
  var out=offset;child=first;
@@ -798,6 +842,7 @@ fn fast_round_phase(at:u32,phase_late:bool) {
   }
   child=nodes[child].links.y;
  }
+ return vec4<u32>(0u);
 }
 @compute @workgroup_size(1) fn fast_advance() {
  atomicAdd(&state[87],1u);
