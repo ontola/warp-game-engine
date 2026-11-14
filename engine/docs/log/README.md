@@ -156,6 +156,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [Five storage textures in one stage: terrain_fly would not start, 13 November](2026-11-13-storage-texture-limit.md)
 - [Froxel fog: dark edges, a flickering horizon, flicker under a lamp, rooms, 13 November](2026-11-13-fog-edges-flicker.md)
 - [What the probes' gradients cost in shade, 14 November](2026-11-14-gradient-cost.md)
+- [The grain on the swinging pendant's shade, checked again, 14 November](2026-11-14-pendant-shade-grain.md)
 - [Traced reflections, stage 1, 8 November](2026-11-08-traced-reflections.md)
 - [Low-sun shadow diagnostics, 24 October](sun-shadow-diagnostics.md)
 - [World visibility and cached lighting, 24 October](world-lighting.md)

@@ -508,6 +508,8 @@ impl Game for Rooms {
         let c = c[0];
         let dt = 1.0 / TICK_HZ;
         self.t += dt;
+        // ROOMS_HOLD_T=s: the pendant held at its pose at s seconds (checks).
+        if let Some(t) = std::env::var("ROOMS_HOLD_T").ok().and_then(|s| s.parse().ok()) { self.t = t; }
         self.prev = self.pos;
         self.yaw -= c.look[0];
         self.pitch = (self.pitch + c.look[1]).clamp(-1.4, 1.4);
