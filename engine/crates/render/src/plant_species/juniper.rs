@@ -8,6 +8,46 @@ use crate::{
 use glam::Vec3;
 use std::f32::consts::{FRAC_PI_3, TAU};
 
+/// Older scaffold limbs settle along the rock while fine shoots retain their
+/// growing directions. Work in parent order so every fork stays attached.
+pub(crate) fn settle_limbs(plant: &mut crate::plant_growth::Plant, seed: u64) {
+    let mature = 1.0 - (-(plant.age.saturating_sub(6) as f32) / 6.0).exp();
+    if mature == 0.0 {
+        return;
+    }
+    let mut reach = vec![1.0; plant.segments.len()];
+    // Each tuft belongs to the segment in its original, upright frame.
+    let original = plant.segments.clone();
+    for (i, segment) in original.iter().enumerate() {
+        let from = segment.parent.map_or(Vec3::ZERO, |p| plant.segments[p as usize].to);
+        let mut step = segment.to - segment.from;
+        if segment.order == 0 {
+            step.y *= 1.0 - 0.83 * mature;
+        } else if segment.order == 1 {
+            let parent = segment.parent.unwrap() as usize;
+            reach[i] = if original[parent].order == 0 {
+                0.68 + 0.84 * super::super::growth::seed_unit(seed, i as u32, 17)
+            } else {
+                reach[parent]
+            };
+            let horizontal = Vec3::new(step.x, 0.0, step.z).normalize_or_zero();
+            let flat = horizontal * step.length() * reach[i] + Vec3::Y * step.y * 0.16;
+            step = step.lerp(flat, mature);
+        }
+        plant.segments[i].from = from;
+        plant.segments[i].to = from + step;
+    }
+    for tuft in &mut plant.tufts {
+        let i = tuft.segment as usize;
+        let old = original[i];
+        let new = plant.segments[i];
+        let axis = old.to - old.from;
+        let fraction = ((tuft.at - old.from).dot(axis) / axis.length_squared()).clamp(0.0, 1.0);
+        tuft.at = new.from.lerp(new.to, fraction);
+        tuft.axis = glam::Quat::from_rotation_arc(axis.normalize(), (new.to - new.from).normalize()) * tuft.axis;
+    }
+}
+
 pub(crate) struct ShootParts {
     pub wood: PartGeometry,
     pub needles: PartGeometry,

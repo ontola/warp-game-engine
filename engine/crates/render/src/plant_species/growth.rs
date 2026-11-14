@@ -57,7 +57,10 @@ impl GrownSpecies {
             Habit::Basal(habit) => habit.assemble(&self.rules, self.look, parts, age, seed, limits),
             Habit::Creeping(habit) => habit.assemble(&self.rules, self.look, parts, age, seed, limits),
             Habit::Woody => {
-                let plant = crate::plant_growth::grow(&self.rules, age, seed);
+                let mut plant = crate::plant_growth::grow(&self.rules, age, seed);
+                if matches!(self.shoot, Some(ShootRecipe::Juniper)) {
+                    super::shoots::juniper::settle_limbs(&mut plant, seed);
+                }
                 use crate::scene::{Material, THIN_FOLIAGE, TWO_SIDED};
                 let stripe = [Material { tint: JUNIPER_BAND, layer: -1, roughness: 0.88,
                     flags: THIN_FOLIAGE | TWO_SIDED, scale: 1.0, metal: 0.0 }];
@@ -87,7 +90,7 @@ impl GrownSpecies {
     /// hash their parts; their placement rules belong in the same key.
     pub(crate) fn custom_cook_key(&self) -> Option<String> {
         match self.habit {
-            Habit::Woody if matches!(self.shoot, Some(ShootRecipe::Juniper)) => Some(format!("juniper v1 {JUNIPER_BAND:?}")),
+            Habit::Woody if matches!(self.shoot, Some(ShootRecipe::Juniper)) => Some(format!("juniper v2 {JUNIPER_BAND:?}")),
             Habit::Woody if matches!(self.shoot, Some(ShootRecipe::ScotsPine)) => Some("paired pine v1".into()),
             Habit::Woody => None,
             Habit::Basal(habit) => Some(format!("basal v1 {habit:?}")),
@@ -143,9 +146,9 @@ pub fn grown(name: &str) -> Option<GrownSpecies> {
         // Scots pine sheds its lower whorls, leaving a copper-brown bole
         // beneath ascending limbs with short blue-green needles.
         "scots_pine" => GrownSpecies { shoot: Some(ShootRecipe::ScotsPine), ..native(Species {
-            height: 31.0, pace: 36.0, shape: 1.55, whorl: [2, 4],
-            limb_step: 0.31, side_length: 0.69, angle: [1.36, 1.66], rise: 0.038,
-            needle_years: 4, live_crown: 0.56, lift_years: 28.0, dead_years: 7,
+            height: 31.0, pace: 36.0, shape: 1.55, whorl: [1, 4],
+            limb_step: 0.34, angle: [1.36, 1.66], rise: 0.038,
+            side_length: 0.76, laterals: 1.25, needle_years: 5, live_crown: 0.56, lift_years: 28.0, dead_years: 7,
             tip_radius: 0.0021, order_wood: [0.53, 0.31, 0.19, 0.10],
             ..Species::jeffrey_pine()
         }, Look {
@@ -211,7 +214,7 @@ pub fn grown(name: &str) -> Option<GrownSpecies> {
         }, 17, ShootRecipe::MAHOGANY),
         "forest_coffee" => authored(Species {
             height: 2.9, pace: 7.5, whorl: [2, 2], limb_step: 0.16,
-            angle: [1.37, 1.54], rise: -0.03, droop: 0.09, needle_years: 4,
+            angle: [1.37, 1.54], rise: -0.03, droop: 0.09, needle_years: 6, plumes: 1.35,
             wood: 0.0036, ..shrub
         }, 9, ShootRecipe::COFFEE),
         "raffia_palm" => herb(basal::RAFFIA, 3.9, 1.2, 11, ShootRecipe::Raffia),
