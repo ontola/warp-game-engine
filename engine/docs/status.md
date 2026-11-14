@@ -167,7 +167,7 @@ Owned by the foliage work; its working checklist is
   and lit by last frame's image. Open: off-screen hits (terrain surface
   cache), dynamic diffuse bounce (world probes), trees in the trace, grain
   on the inside of the swinging pendant's shade with the fog off
-  ([log](log/2026-11-14-fog-cone-staircase.md)).
+  ([log](log/2026-11-14-shade-grain-ssr.md)).
 - **Opt-in static/dynamic sun split:** retains GPU source and voxel tree
   casters; exact split/full depth oracle covers still, wind, removal and
   restoration. Does not yet skip forest cull/splat work on unchanged pages.
