@@ -283,6 +283,9 @@ pack_gradients`: per probe and axis the monotonized-central difference to
 the neighbours it sees, half floats after the reach masks;
 `Renderer::set_probe_gradients`) and blends the eight probes with C1
 weights, so the light has no kink at the probe spacing where it curves.
+A probe's gradient is read only along the axes the normal faces and only
+for probes that count (not those behind a wall): shade +1.4 ms at 4K
+(`interior_rooms`, room 2, RTX 5070 Ti: 10.4 against 11.9 ms).
 `KERN_PROBE_GRADIENTS=0` turns it off.
 
 ## Look scene
