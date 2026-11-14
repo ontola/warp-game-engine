@@ -733,6 +733,9 @@ fn main() -> Result<(), String> {
                 if f.iter().any(|s| *s == "fog") != game.fog { game.set_fog(!game.fog); }
                 game.flash_pose = f.get(8).filter(|s| **s != "fog").map(|s| s.split(',').filter_map(|v| v.parse::<f32>().ok()).collect::<Vec<_>>()).filter(|v| v.len() == 5)
                     .map(|v| (Vec3::new(v[0], v[1], v[2]), Vec3::new(-v[3].sin() * v[4].cos(), v[4].sin(), -v[3].cos() * v[4].cos())));
+                // A field "t=S": the pendant's clock set to S seconds at the
+                // spot's start, so it swings to the same pose every run.
+                if let Some(t) = f.iter().find_map(|s| s.strip_prefix("t=")).and_then(|s| s.parse::<f32>().ok()) { game.t = t; }
                 game.cut = true;
                 let frames = 200u32;
                 let mut rgba = Vec::new();
