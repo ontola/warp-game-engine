@@ -23,6 +23,9 @@ struct Uniform {
     cam: vec4<f32>,
     // width, height, 1 / width, 1 / height.
     size: vec4<f32>,
+    // x 1 when group 1 holds last frame's instances (motion.rs), else the
+    // current ones twice.
+    motion: vec4<f32>,
     // x projection scale (proj[1][1]), y history levels, z resolve radius in
     // pixels, w 1 when the temporal history is valid.
     params: vec4<f32>,
@@ -38,8 +41,61 @@ struct Uniform {
 @group(0) @binding(7) var temporal_prev: texture_2d<f32>;
 @group(0) @binding(8) var temporal_out: texture_storage_2d<rgba16float, write>;
 
+// Which surface a pixel shows and how it moved since last frame (motion.rs:
+// the visibility id, the visible clusters, the instances' rows and wind now
+// and a frame ago). Temporal only.
+struct Instance {
+    r0: vec4<f32>, r1: vec4<f32>, r2: vec4<f32>, sphere: vec4<f32>,
+    first_cluster: u32, cluster_count: u32, scale: f32, flags: u32,
+};
+@group(1) @binding(0) var visibility: texture_2d<u32>;
+@group(1) @binding(1) var<storage, read> visible: array<vec2<u32>>;
+@group(1) @binding(2) var<storage, read> current_instances: array<Instance>;
+@group(1) @binding(3) var<storage, read> previous_instances: array<Instance>;
+@group(1) @binding(4) var<storage, read> current_wind: array<vec4<f32>>;
+@group(1) @binding(5) var<storage, read> previous_wind: array<vec4<u32>>;
+
+fn rows_apply(r0: vec4<f32>, r1: vec4<f32>, r2: vec4<f32>, p: vec3<f32>) -> vec3<f32> {
+    let v = vec4<f32>(p, 1.0);
+    return vec3<f32>(dot(r0, v), dot(r1, v), dot(r2, v));
+}
+
+// Where the surface point p at px was last frame: its rigid instance's
+// point under last frame's rows (w 1), p itself when the instance has not
+// moved (w 2), or unknown (w 0: skinned, a virtual member, a voxel, wind
+// that changed, the rows' basis not invertible).
+fn surface_previous(px: vec2<i32>, p: vec3<f32>) -> vec4<f32> {
+    if u.motion.x < 0.5 { return vec4<f32>(0.0); }
+    let id = textureLoad(visibility, px, 0).r;
+    if (id & 0x80000000u) != 0u { return vec4<f32>(0.0); }
+    let slot = id >> 7u;
+    if slot >= arrayLength(&visible) { return vec4<f32>(0.0); }
+    let owner = visible[slot].x;
+    if (owner & 0x80000000u) != 0u || owner >= arrayLength(&current_instances) || owner >= arrayLength(&previous_instances)
+        || owner >= arrayLength(&current_wind) || owner >= arrayLength(&previous_wind) { return vec4<f32>(0.0); }
+    let a = current_instances[owner];
+    let b = previous_instances[owner];
+    if (a.flags & 64u) != 0u || a.flags != b.flags || a.first_cluster != b.first_cluster { return vec4<f32>(0.0); }
+    if any(current_wind[owner].xy != bitcast<vec4<f32>>(previous_wind[owner]).xy) || any(current_wind[owner].xy != vec2<f32>(0.0)) { return vec4<f32>(0.0); }
+    if all(a.r0 == b.r0) && all(a.r1 == b.r1) && all(a.r2 == b.r2) { return vec4<f32>(p, 2.0); }
+    // The point in the instance's own space (cofactor inverse of the rows'
+    // basis, as motion.wgsl), then under last frame's rows.
+    let rest = p - vec3<f32>(a.r0.w, a.r1.w, a.r2.w);
+    let co0 = cross(a.r1.xyz, a.r2.xyz);
+    let co1 = cross(a.r2.xyz, a.r0.xyz);
+    let co2 = cross(a.r0.xyz, a.r1.xyz);
+    let det = dot(a.r0.xyz, co0);
+    if !(abs(det) > 1e-12 && abs(det) < 1e20) { return vec4<f32>(0.0); }
+    let local = (co0 * rest.x + co1 * rest.y + co2 * rest.z) / det;
+    return vec4<f32>(rows_apply(b.r0, b.r1, b.r2, local), 1.0);
+}
+
 const PI: f32 = 3.14159265;
 const SAMPLES: u32 = 8u;
+// The most frames the temporal pass averages (see `temporal`), and once the
+// box moves the history or the surface's motion is unknown (a tenth).
+const LONG_FRAMES: f32 = 32.0;
+const SHORT_FRAMES: f32 = 9.0;
 
 fn oct_decode(e: vec2<f32>) -> vec3<f32> {
     var n = vec3<f32>(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
@@ -222,21 +278,38 @@ fn temporal(@builtin(global_invocation_id) id: vec3<u32>) {
     let lo = mean - sigma;
     let hi = mean + sigma;
     var out = cur.rgb;
+    // How many frames the history holds (its alpha): one more each frame
+    // up to LONG_FRAMES on a surface whose motion is known (still, or a
+    // rigid instance followed to where it was) while the history stays
+    // inside this frame's box, else up to SHORT_FRAMES (the box moved it:
+    // the reflection changed, as on a still floor under a swinging lamp;
+    // or the motion is unknown). The blend is their mean. With a tenth per
+    // frame everywhere the noise stayed as a slow grain (a lampshade's
+    // inside lit by its bulb).
+    var frames = 0.0;
     if u.params.w > 0.5 {
         let d = textureLoad(depth_tex, px, 0);
         let p = world_at((vec2<f32>(px) + 0.5) * u.size.zw, d);
         let ray = p - u.cam.xyz;
-        let virtual_p = u.cam.xyz + ray * ((length(ray) + cur.a) / max(length(ray), 1e-4));
-        let prev = u.prev_view_proj * vec4<f32>(virtual_p, 1.0);
+        let was = surface_previous(px, p);
+        // A still or unknown surface: last frame's result where the
+        // reflection was (through the virtual point behind the surface at
+        // the hit distance). A moving instance: where its surface point
+        // was, whose reflection changes as it turns (the box limits that).
+        var at = u.cam.xyz + ray * ((length(ray) + cur.a) / max(length(ray), 1e-4));
+        if was.w == 1.0 { at = was.xyz; }
+        let prev = u.prev_view_proj * vec4<f32>(at, 1.0);
         if prev.w > 1e-4 {
             let puv = vec2<f32>(prev.x / prev.w * 0.5 + 0.5, 0.5 - prev.y / prev.w * 0.5);
             if all(puv >= vec2<f32>(0.0)) && all(puv <= vec2<f32>(1.0)) {
-                let h = clamp(textureSampleLevel(temporal_prev, samp, puv, 0.0).rgb, lo, hi);
-                out = mix(h, cur.rgb, 0.1);
+                let prev_s = textureSampleLevel(temporal_prev, samp, puv, 0.0);
+                let h = clamp(prev_s.rgb, lo, hi);
+                frames = min(prev_s.a + 1.0, select(SHORT_FRAMES, LONG_FRAMES, was.w > 0.0 && all(h == prev_s.rgb)));
+                out = mix(h, cur.rgb, 1.0 / (frames + 1.0));
             }
         }
     }
-    textureStore(temporal_out, px, vec4<f32>(out, cur.a));
+    textureStore(temporal_out, px, vec4<f32>(out, frames));
 }
 
 // Composite: added onto the shaded image (additive blend). Shade left the

@@ -51,3 +51,27 @@ pass for opaque surfaces, tried on 12 November for the reprojection only)
 to keep long histories on still surfaces and short ones on moving ones; or
 temporal moments per pixel (SVGF) for the box instead of the noisy 3x3 of
 this frame.
+
+## The reflector's motion in the temporal pass (kept)
+
+The temporal pass now reads which instance a pixel shows (visibility
+target, visible clusters) and its rows now and last frame (the motion
+pass's `previous_instances`, its own bind group: five storage buffers). A
+rigid instance that moved is reprojected by its surface point; the history
+holds up to 32 frames while the surface's motion is known and the box
+leaves the history alone, and falls to the old tenth once the box moves
+it or the motion is unknown.
+
+| grain | main | kept |
+| --- | --- | --- |
+| fog off, held | 1.07 | 0.84 |
+| fog off, swinging | 1.21 | 0.90 |
+| fog on, held | 0.66 | 0.57 |
+| fog on, swinging | 1.17 | 1.06 |
+| flicker of the held shade (mean / p99) | 0.35 / 2.64 | 0.24 / 1.72 |
+
+A still surface reflecting the swinging lamp (camera 0.6,1.65,-5.6, pitch
+-0.75), swinging against held at the same pose: table 0.369 -> 0.380,
+floor 0.105 -> 0.106 (no lag added; the box still clamps a changed
+reflection). The shade's grain is less, not gone (0.90 against 0.60 for 96
+frames averaged).

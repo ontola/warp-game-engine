@@ -6000,7 +6000,9 @@ impl Renderer {
                         let time = self.query.as_ref().map(|(qs, _, _)| { names.push("sssr resolve"); (qs, timestamp_pair(&mut ts)) });
                         self.sssr.render(gpu, &mut enc, crate::sssr::ViewInput { index: vi, depth: &depth_v, history,
                             history_levels: crate::reflection_mips::LEVELS.min(32 - w.max(h).leading_zeros()), hdr: &hdr_v,
-                            view_proj: vp, prev_view_proj: prev, camera: cam.pos, proj_scale: proj.y_axis.y, frame: frame as u32 }, time);
+                            view_proj: vp, prev_view_proj: prev, camera: cam.pos, proj_scale: proj.y_axis.y, frame: frame as u32,
+                            motion: crate::sssr::Motion { visibility: &vis_v, visible: &main.visible, instances: &self.instance_buffer, wind: self.wind.buffer(),
+                                previous: up.motion.as_ref().filter(|m| m.snapshot_valid() && !layout_changed).map(|m| (m.previous_instances(), m.previous_wind())) } }, time);
                     }
                     let far_grass = self.far_grass.as_ref().filter(|_|geometry_diagnostic.grass_enabled()).map(|grass| {
                         let time = self.query.as_ref().map(|(qs,_,_)| {
