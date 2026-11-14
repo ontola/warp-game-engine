@@ -119,6 +119,7 @@ note linked says why. They are candidates for removal from the code.
 | `KERN_OWNER_RANGE_INDEX` | Indexed owner ranges | [terrain forest streaming](log/terrain-forest-streaming-2026-11-03.md) |
 | `KERN_RASTER_LARGE_FIRST` | Raster large clusters first | [handoff log](log/handoff.md) |
 | `KERN_SPLAT_BRICK_HZB` | Two-pass Hi-Z culling of voxel splat bricks; on by default since 9 November, `=0` turns it off | [voxel brick culling](log/voxel-brick-culling-2026-11-09.md) |
+| `KERN_SPLAT_SUBGROUP_APPEND` | `=1` reserves surviving camera splats together per subgroup in the first brick pass on devices supporting subgroup operations. Defaults to scalar reservations. | `voxel_forest.rs` |
 | `KERN_VOXEL_BRICK_VISIBILITY`, `KERN_VOXEL_GLOBAL_INTERVALS` | Voxel brick visibility stream | [brick visibility](log/vegetation-brick-visibility.md) |
 | `KERN_BRICK_EMPTY_SKIP`, `KERN_BRICK_EMPTY_JUMP`, `KERN_BRICK_SMOOTH_MIPS` | Optical brick empty-space skipping and mips | [r47](log/meadow-work-r47.md), [r48](log/render-traversal-r48.md), [r49](log/lod-shadow-demand-r49.md) |
 | `KERN_MEADOW_AGGREGATE` (+ `_HALF_RES`, `_SAMPLE_PRUNE`), `KERN_MEADOW_SUBSTRATE` | Distant grass aggregate and its substrate | [r39](log/meadow-distance-r39.md), [r57](log/meadow-half-resolution-r57.md), [r58](log/meadow-sampling-r58.md) |

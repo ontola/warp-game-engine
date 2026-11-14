@@ -17,7 +17,8 @@ const CANDIDATES: u32 = 64;
 const DRAW_OFFSET: u64 = 88;
 // Then brick culling's words (voxel_forest.wgsl VOLUME_CULL_WORD): second
 // draw arguments, queue length, first-pass splats, second-pass dispatch.
-const CULL_OFFSET: u64 = DRAW_OFFSET + 16;
+const INDEXED_DRAW_BYTES: u64 = std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
+const CULL_OFFSET: u64 = DRAW_OFFSET + INDEXED_DRAW_BYTES;
 const COUNTER_BYTES: u64 = CULL_OFFSET + 40;
 // Additional opt-in scratch, per view, beyond the existing tile worklist.
 const INTERVAL_STREAM_BYTES:u64=32*1024*1024;
@@ -52,22 +53,35 @@ struct IntegratorOptions {
     brick_visibility: bool,
     /// Opaque stochastic voxel rasterization instead of ray integration.
     raster: bool,
+    subgroup_append: bool,
 }
 impl Default for IntegratorOptions {
-    fn default() -> Self { Self { empty_ceiling: true, antipodal_normals: false,global_intervals:false,brick_visibility:false,raster:false } }
+    fn default() -> Self { Self { empty_ceiling: true, antipodal_normals: false,global_intervals:false,brick_visibility:false,raster:false,subgroup_append:false } }
 }
 impl IntegratorOptions {
-    fn from_environment() -> Self {
+    fn from_environment(features: wgpu::Features) -> Self {
         Self {
             empty_ceiling: std::env::var("KERN_VOXEL_EMPTY_CEILING").map_or(true, |value| value != "0"),
             antipodal_normals: std::env::var("KERN_VOXEL_ANTIPODAL_NORMALS").is_ok_and(|value| value == "1"),
             brick_visibility: std::env::var("KERN_VOXEL_BRICK_VISIBILITY").is_ok_and(|v|v=="1"),
             global_intervals: std::env::var("KERN_VOXEL_GLOBAL_INTERVALS").is_ok_and(|value|value=="1"),
             raster: std::env::var("KERN_VOXEL_RASTER").is_ok_and(|value|value=="1"),
+            subgroup_append: features.contains(wgpu::Features::SUBGROUP)
+                && std::env::var("KERN_SPLAT_SUBGROUP_APPEND").as_deref() == Ok("1"),
         }
     }
     fn specialize(self, source: &str) -> Result<String, String> {
         let mut result = source.to_owned();
+        if self.subgroup_append {
+            // Device feature gate: even unused subgroup operations are invalid on
+            // a device without the capability, so specialize before module creation.
+            let scalar = "// VOLUME_PACKET_RESERVATION\n    volume_splat_append(record);";
+            let source = result.replace("\r\n", "\n");
+            if source.matches(scalar).count() != 1 {
+                return Err("expected one voxel packet reservation".into());
+            }
+            result = source.replacen(scalar, include_str!("shaders/voxel_splat_subgroup.wgsl"), 1);
+        }
         let changes = [
             (self.brick_visibility, "const VOLUME_BRICK_VISIBILITY: bool = false;", "const VOLUME_BRICK_VISIBILITY: bool = true;"),
             (self.empty_ceiling, "const VOLUME_EMPTY_CEILING: bool = false;", "const VOLUME_EMPTY_CEILING: bool = true;"),
@@ -210,7 +224,11 @@ pub struct VoxelViewDiagnostics {
     pub interval_stream_records:u32,
     /// Actual indirect splat draw arguments, including rejected/overlapping cells.
     pub raster_splats:u32,
+    /// Distinct input vertices (four per indexed quad, six index references).
+    /// This counts requested quads, not measured vertex-shader invocations.
     pub raster_vertices:u64,
+    /// Submitted index references (two triangles per requested quad).
+    pub raster_indices:u64,
     pub raster_capacity:u64,
 
 }
@@ -229,6 +247,7 @@ struct SplatRaster {
     /// Into the scene's visibility buffer and depth (Stage::Splats with
     /// the scene's targets), plus the splat id the surface pass reads.
     main_pipeline: wgpu::RenderPipeline,
+    quad_indices: wgpu::Buffer,
     cells: wgpu::Buffer,
     /// Splat records per view (splat_capacity).
     capacity: u64,
@@ -301,17 +320,12 @@ fn splat_cells_bricked(forest: &crate::foliage_volume_data::GpuForest) -> Result
     let mut result = vec![[0; 2]; levels * 2];
     for level in 0..levels {
         let [first, count] = source[level];
-        let mut groups = std::collections::BTreeMap::<u32, Vec<[u32; 2]>>::new();
-        for cell in &source[first as usize..(first+count) as usize] {
-            let c = cell[1];
-            let key = (c & 1023 & !3) | (((c >> 10) & 1023 & !3) << 10) | (((c >> 20) & 1023 & !3) << 20);
-            groups.entry(key).or_default().push(*cell);
-        }
+        let groups = crate::foliage_pages::group_splat_bricks(&source[first as usize..(first+count) as usize]);
         let first_cell = result.len() as u32;
         let mut bricks = Vec::new();
-        for (coord, cells) in groups {
+        for (bounds, cells) in groups {
             bricks.push([result.len() as u32, cells.len() as u32]);
-            bricks.push([coord, 0]);
+            bricks.push(bounds);
             result.extend(cells);
         }
         result[level] = [first_cell, count];
@@ -334,6 +348,30 @@ fn splat_capacity(forest: &crate::foliage_volume_data::GpuForest, cells: &[[u32;
 /// must never reserve more records than a target can actually store.
 pub(crate) fn bounded_splat_capacity(requested:u64,trees:u64,byte_limit:u64)->u64 {
     requested.min((byte_limit/16).saturating_sub(12u64.saturating_add(trees.saturating_mul(4))))
+}
+
+// Match volume_cull_queue_capacity: the tail can contain brick descriptors,
+// even if the append counter goes past the end of the cell records.
+fn camera_record_capacity(slots: u64, brick_hzb: bool) -> u64 {
+    if brick_hzb { slots - slots / 8 } else { slots }
+}
+
+fn winning_splats(ids: &[u8], stored: usize) -> Result<(u64, u64), String> {
+    let mut seen = vec![0u64; stored.div_ceil(64)];
+    let mut pixels = 0;
+    let mut winners = 0;
+    for bytes in ids.chunks_exact(4) {
+        let id = u32::from_le_bytes(bytes.try_into().unwrap()) as usize;
+        if id == 0 { continue; }
+        let index = id - 1;
+        if index >= stored { return Err(format!("visible splat id {id} exceeds {stored} stored records")); }
+        let word = &mut seen[index / 64];
+        let bit = 1u64 << (index % 64);
+        winners += u64::from(*word & bit == 0);
+        *word |= bit;
+        pixels += 1;
+    }
+    Ok((winners, pixels))
 }
 struct Targets {
     hzb: Option<crate::depth_pyramid::PyramidTarget>,
@@ -494,6 +532,9 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
         label: Some("voxel splat raster"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("voxel splat raster"),
         source: wgpu::ShaderSource::Wgsl(include_str!("shaders/voxel_splat_raster.wgsl").into()) });
+    let quad_indices = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("voxel disc indices"), contents: bytemuck::cast_slice(&[0u16, 1, 2, 0, 2, 3]), usage: wgpu::BufferUsages::INDEX,
+    });
     let pipeline = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("voxel splat raster"), layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
@@ -554,7 +595,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
     let sun_cached_splats=sun_splat_pipeline(gpu,&sun_cached_layout,source,true);
     let cells_buffer = cells_override.cloned().unwrap_or_else(||gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("voxel splat cells"), contents: bytemuck::cast_slice(cells), usage: wgpu::BufferUsages::STORAGE }));
-    SplatRaster { main_pipeline, cells: cells_buffer, capacity, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_cached_layout, sun_cached_splats, sun_raster, sun_cached_raster,
+    SplatRaster { main_pipeline, quad_indices, cells: cells_buffer, capacity, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_cached_layout, sun_cached_splats, sun_raster, sun_cached_raster,
         sun_target: Mutex::new(Vec::new()) }
 }
 fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool,global_intervals:bool,cull:Option<bool>) -> [wgpu::ComputePipeline; 8] {
@@ -832,7 +873,7 @@ impl VoxelRenderer {
                 immediate_size: 0,
             });
         let source = shader_source();
-        let mut integrator_options = IntegratorOptions::from_environment();
+        let mut integrator_options = IntegratorOptions::from_environment(gpu.features);
         if page_cache.is_some(){integrator_options.brick_visibility=false;}
         // Far trees exist only as rasterized voxels; aggregate plants use them
         // too unless KERN_VOXEL_RASTER=0 asks for the ray integrator.
@@ -1194,18 +1235,18 @@ impl VoxelRenderer {
             ];
         // Splat resources; one-texel stand-ins when rasterization is off.
         let raster_size = if self.raster.is_some() { size } else { (1, 1) };
-        let texture = |label, format| gpu.device.create_texture(&wgpu::TextureDescriptor {
+        let texture = |label, format, extra_usage| gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label), size: wgpu::Extent3d { width: raster_size.0, height: raster_size.1, depth_or_array_layers: 1 },
             mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | extra_usage, view_formats: &[],
         }).create_view(&Default::default());
-        let splat_id = texture("voxel splat id", wgpu::TextureFormat::R32Uint);
+        let splat_id = texture("voxel splat id", wgpu::TextureFormat::R32Uint, wgpu::TextureUsages::COPY_SRC);
         let gbuffer = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("voxel surface"), size: wgpu::Extent3d { width: raster_size.0, height: raster_size.1, depth_or_array_layers: 1 },
             mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Uint,
             usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
         }).create_view(&Default::default());
-        let splat_depth = texture("voxel splat depth", wgpu::TextureFormat::Depth32Float);
+        let splat_depth = texture("voxel splat depth", wgpu::TextureFormat::Depth32Float, wgpu::TextureUsages::empty());
         let splat_capacity = self.raster.as_ref().map_or(0, |r| bounded_splat_capacity(r.capacity,u64::from(self.count),u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size)));
         let splat_records = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel splats"), size: (12 + 4 * u64::from(self.count) + splat_capacity) * 16,
@@ -1346,7 +1387,7 @@ impl VoxelRenderer {
         }
         if let (Some(raster), Some(splat)) = (&self.raster, &target.splat) {
             if !splats_done {
-            encoder.clear_buffer(&splat.draw, DRAW_OFFSET, Some(16));
+            encoder.clear_buffer(&splat.draw, DRAW_OFFSET, Some(INDEXED_DRAW_BYTES));
             let selection=temporal_pipelines.and_then(|p|p.selection.as_ref()).or(self.selection.as_ref());
             if let Some(p)=selection {
                 if let Some((q,i))=times[0].filter(|_|encoder_times) {encoder.write_timestamp(q,i);}
@@ -1377,7 +1418,7 @@ impl VoxelRenderer {
                         pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind, &[]);
                         pass.set_pipeline(&helpers[1]); pass.dispatch_workgroups(1, 1, 1);
                     }
-                    encoder.copy_buffer_to_buffer(&target.counters, CULL_OFFSET + 24, &target.indirect, 0, 12);
+                    encoder.copy_buffer_to_buffer(&target.counters, CULL_OFFSET + INDEXED_DRAW_BYTES + 8, &target.indirect, 0, 12);
                     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                         label: Some("voxel brick second pass"), timestamp_writes: times[6].map(|(query_set,i)| wgpu::ComputePassTimestampWrites {
                             query_set, beginning_of_pass_write_index:(!encoder_times).then_some(i),end_of_pass_write_index:Some(i+1) }) });
@@ -1407,7 +1448,8 @@ impl VoxelRenderer {
                 });
                 pass.set_pipeline(if scene_targets.is_some() { &raster.main_pipeline } else { &raster.pipeline });
                 pass.set_bind_group(0, &splat.bind, &[]);
-                pass.draw_indirect(&splat.draw, if phase == 0 { DRAW_OFFSET } else { CULL_OFFSET });
+                pass.set_index_buffer(raster.quad_indices.slice(..), wgpu::IndexFormat::Uint16);
+                pass.draw_indexed_indirect(&splat.draw, if phase == 0 { DRAW_OFFSET } else { CULL_OFFSET });
             }
             }
             }
@@ -1534,7 +1576,7 @@ impl VoxelRenderer {
         header[10] = [sun.direction.x, sun.direction.y, sun.direction.z, sun.texel_m];
         header[11][1] = f32::from_bits(sun.map_size);
         gpu.queue.write_buffer(&splat.records, 0, bytemuck::cast_slice(&header));
-        encoder.clear_buffer(&splat.draw, DRAW_OFFSET, Some(16));
+        encoder.clear_buffer(&splat.draw, DRAW_OFFSET, Some(INDEXED_DRAW_BYTES));
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel sun splats"),
                 timestamp_writes: times[0].map(|(query_set, i)| wgpu::ComputePassTimestampWrites {
@@ -1555,14 +1597,14 @@ impl VoxelRenderer {
         pass.set_pipeline(if sun.damage.is_some(){&raster.sun_cached_raster}else{&raster.sun_raster});
         if let Some(mask)=sun.damage {pass.set_bind_group(1,mask,&[]);}
         pass.set_bind_group(0, &splat.bind, &[]);
-        pass.draw_indirect(&splat.draw, DRAW_OFFSET);
+        pass.set_index_buffer(raster.quad_indices.slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed_indirect(&splat.draw, DRAW_OFFSET);
         Ok(())
     }
     pub(crate) fn motion_layer(&self,index:usize)->Option<(wgpu::TextureView,wgpu::TextureView)> {
         let targets=self.targets.lock().unwrap();let target=targets.get(index)?.as_ref()?;
         Some((target.layer.create_view(&Default::default()),target.motion.as_ref()?.create_view(&Default::default())))
     }
-    /// Explicit offline readback only. Normal frames never map or wait here.
     /// Explicit offline readback, never called by frame selection or rendering.
     /// Reports only stored records; overflowing requests have no readable payload.
     pub(crate) fn raster_profile(&self,gpu:&Gpu)->Result<Vec<serde_json::Value>,String> {
@@ -1571,6 +1613,8 @@ impl VoxelRenderer {
         for (target,d) in targets.iter().filter_map(Option::as_ref).zip(diagnostics) {
             let Some(splat)=&target.splat else {continue;};
             let count=u64::from(d.raster_splats).min(d.raster_capacity);
+            let id_pixels = gpu.read_rows(splat.id.texture(), 4);
+            let (winners, covered_pixels) = winning_splats(&id_pixels, count as usize)?;
             let words=12+4*u64::from(self.count)+count;let size=words*16;
             let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("offline splat profile"),size,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
             let mut enc=gpu.device.create_command_encoder(&Default::default());enc.copy_buffer_to_buffer(&splat.records,0,&read,0,size);gpu.queue.submit([enc.finish()]);
@@ -1591,7 +1635,7 @@ impl VoxelRenderer {
                 let centre=glam::Vec3::new(rows[0].dot(local),rows[1].dot(local),rows[2].dot(local));
                 let scale=glam::Vec3::new(rows[0].x,rows[1].x,rows[2].x).length();
                 // alpha/64 in 16 bits (VOLUME_SPLAT_ALPHA_RANGE); above 1 a thinned sub-pixel splat drawn larger.
-                let alpha=(record[3]&65535)as f32/65535.*64.;let half=0.688*grid.w*scale*alpha.max(0.25).sqrt();
+                let alpha=(record[3]&65535)as f32/65535.*64.;let half=1.15*0.688*grid.w*scale*alpha.max(0.25).sqrt();
                 let a=vp*(centre-right*half-up*half).extend(1.);let b=vp*(centre+right*half+up*half).extend(1.);
                 let diameter=if a.w<=0. || b.w<=0. {behind+=1;f32::INFINITY}else{let delta=(a.truncate()/a.w-b.truncate()/b.w).abs();(delta.x*target.size.0 as f32*0.5).max(delta.y*target.size.1 as f32*0.5)};
                 let bin=[0.5,1.,2.,4.,8.,16.,32.,64.,128.].iter().position(|&edge|diameter<=edge).unwrap_or(9);
@@ -1603,7 +1647,7 @@ impl VoxelRenderer {
                 }
                 let kind=usize::from(index>=self.count.saturating_sub(self.proxies)as usize);bins[kind][bin]+=1;
             }
-            output.push(serde_json::json!({"viewport":target.size,"requested_splats":d.raster_splats,"stored_splats":count,"capacity":d.raster_capacity,"missing_records":u64::from(d.raster_splats).saturating_sub(count),"unique_stored_volumes":unique.len(),"diameter_bin_upper_px":[0.5,1.,2.,4.,8.,16.,32.,64.,128.,null],"largest_submitted_cells":largest.into_iter().map(|(_,v)|v).collect::<Vec<_>>(),"articulated_group_bins":bins[0],"whole_root_bins":bins[1],"near_plane_crossings":behind,"scope":"stored records only; screen-aligned diameter excludes sub-cell jitter; explicit offline readback"}));
+            output.push(serde_json::json!({"viewport":target.size,"requested_splats":d.raster_splats,"stored_splats":count,"winning_splats":winners,"covered_pixels":covered_pixels,"capacity":d.raster_capacity,"missing_records":u64::from(d.raster_splats).saturating_sub(count),"unique_stored_volumes":unique.len(),"diameter_bin_upper_px":[0.5,1.,2.,4.,8.,16.,32.,64.,128.,null],"largest_submitted_cells":largest.into_iter().map(|(_,v)|v).collect::<Vec<_>>(),"articulated_group_bins":bins[0],"whole_root_bins":bins[1],"near_plane_crossings":behind,"scope":"winning splats are distinct IDs in the final camera splat target; covered pixels count nonzero IDs; diameter excludes sub-cell jitter; explicit offline readback"}));
         }
         Ok(output)
     }
@@ -1614,7 +1658,8 @@ impl VoxelRenderer {
         if targets.is_empty() {
             return Ok(Vec::new());
         }
-        let stride=COUNTER_BYTES+24;
+        // Two optional interval-stream counters follow the primary GPU counters.
+        let stride=COUNTER_BYTES+8;
         let size = stride * targets.len() as u64;
         let read = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel diagnostics readback"),
@@ -1631,9 +1676,6 @@ impl VoxelRenderer {
                 i as u64 * stride,
                 COUNTER_BYTES,
             );
-            if let Some(splat)=&target.splat {
-                encoder.copy_buffer_to_buffer(&splat.draw,DRAW_OFFSET,&read,i as u64*stride+COUNTER_BYTES+8,16);
-            }
             if let Some(stream)=target.interval_stream {
                 encoder.copy_buffer_to_buffer(&target.jobs,(u64::from(stream.header_word)+1)*4,
                     &read,i as u64*stride+COUNTER_BYTES,8);
@@ -1684,11 +1726,13 @@ impl VoxelRenderer {
                         volume_samples: diagnostic_u64(bytes, 16),
                         occupied_cell_samples: diagnostic_u64(bytes, 18),
                         aabb_interval_tests: diagnostic_u64(bytes, 20),
-                        interval_stream_overflow_rays:value(22),
-                        interval_stream_records:value(23),
-                        raster_splats:value((COUNTER_BYTES/4+3)as usize),
-                        raster_vertices:u64::from(value((COUNTER_BYTES/4+2)as usize))*u64::from(value((COUNTER_BYTES/4+3)as usize)),
-                        raster_capacity:targets[target_index].splat.as_ref().map_or(0,|s|s.records.size()/16-12-4*u64::from(self.count)),
+                        interval_stream_overflow_rays:value((COUNTER_BYTES/4)as usize),
+                        interval_stream_records:value((COUNTER_BYTES/4+1)as usize),
+                        // Both camera passes append to the first draw's instance count.
+                        raster_splats:value((DRAW_OFFSET/4+1)as usize),
+                        raster_vertices:4*u64::from(value((DRAW_OFFSET/4+1)as usize)),
+                        raster_indices:u64::from(value((DRAW_OFFSET/4)as usize))*u64::from(value((DRAW_OFFSET/4+1)as usize)),
+                        raster_capacity:targets[target_index].splat.as_ref().map_or(0,|s|camera_record_capacity(s.records.size()/16-12-4*u64::from(self.count), targets[target_index].hzb.is_some())),
                     }
                 })
                 .collect()
@@ -1771,7 +1815,22 @@ impl VoxelRenderer {
 }
 
 #[cfg(test)]
+#[path = "voxel_splat_append_tests.rs"]
+mod splat_append_tests;
+
+#[cfg(test)]
 mod tests {
+    #[test]
+    fn splat_profile_counts_unique_visible_ids_and_excludes_the_retest_queue() {
+        let capacity = super::camera_record_capacity(73, true);
+        assert_eq!(capacity, 64);
+        assert_eq!(super::camera_record_capacity(73, false), 73);
+        let pixels: Vec<_> = [0u32, 1, 1, 64, 0, 64].into_iter().flat_map(u32::to_le_bytes).collect();
+        assert_eq!(super::winning_splats(&pixels, capacity as usize).unwrap(), (2, 4));
+        assert!(super::winning_splats(&65u32.to_le_bytes(), capacity as usize).is_err());
+        assert_eq!(super::winning_splats(&0u32.to_le_bytes(), 0).unwrap(), (0, 0));
+    }
+
     #[test]
     fn volume_bins_match_inclusive_tile_overlap_at_edges_and_near_plane() {
         // Independent reference: intersect every tile's closed pixel rectangle.
@@ -1860,10 +1919,15 @@ mod tests {
         let [first,n]=grouped[1];let mut covered=0;
         for brick in 0..n {
             let [begin,len]=grouped[(first+brick*2)as usize];
-            let packed=grouped[(first+brick*2+1)as usize][0];
+            let [packed,trim]=grouped[(first+brick*2+1)as usize];
             assert!(len>0 && len<=64);covered+=len;
-            for cell in &grouped[begin as usize..(begin+len)as usize] {
-                for shift in [0,10,20] {assert_eq!(((cell[1]>>shift)&1023)&!3,(packed>>shift)&1023);}
+            let cells=&grouped[begin as usize..(begin+len)as usize];
+            for (axis,shift) in [0,10,20].into_iter().enumerate() {
+                let lo=(packed>>shift)&1023;
+                let hi=lo+3-((trim>>(axis*2))&3);
+                let coords=cells.iter().map(|s|(s[1]>>shift)&1023);
+                assert_eq!((Some(lo),Some(hi)),(coords.clone().min(),coords.max()));
+                assert_eq!(lo&!3,hi&!3);
             }
         }
         assert_eq!(covered,count);
@@ -1876,13 +1940,17 @@ mod tests {
         use glam::{Mat3,Vec3};
         for matrix in [Mat3::IDENTITY,Mat3::from_diagonal(Vec3::new(4.0,0.02,0.1)),
             Mat3::from_cols(Vec3::new(2.0,0.3,0.0),Vec3::new(4.0,0.1,1.0),Vec3::new(-2.0,1.0,3.0))] {
-            let padding=1.5*matrix.x_axis.length();
-            let half=(matrix.x_axis.abs()+matrix.y_axis.abs()+matrix.z_axis.abs())*1.5+Vec3::splat(padding);
-            for x in 0..4 {for y in 0..4 {for z in 0..4 {
-                let centre=matrix*(Vec3::new(x as f32,y as f32,z as f32)-Vec3::splat(1.5));
-                // Every camera-facing billboard point fits this spherical bound.
-                let radius=2f32.sqrt()*(0.688+0.25)*matrix.x_axis.length();
-                assert!((centre.abs()+Vec3::splat(radius)).cmple(half+Vec3::splat(1e-5)).all());
+            let scale=matrix.x_axis.length();
+            // Ordinary discs include radius growth for rim thinning and jitter.
+            // For subpixel area thinning the shader pads the HZB rectangle as well.
+            let radius=2f32.sqrt()*(1.15*0.688+0.25)*scale;
+            for sx in 0..4 {for sy in 0..4 {for sz in 0..4 {
+                let half_span=Vec3::new(sx as f32,sy as f32,sz as f32)*0.5;
+                let half=matrix.abs()*half_span+Vec3::splat(2.0*scale);
+                for x in [0,sx] {for y in [0,sy] {for z in [0,sz] {
+                    let centre=matrix*(Vec3::new(x as f32,y as f32,z as f32)-half_span);
+                    assert!((centre.abs()+Vec3::splat(radius)).cmple(half+Vec3::splat(1e-5)).all());
+                }}}
             }}}
         }
     }
@@ -2149,21 +2217,24 @@ mod tests {
             // Reduced scene: instances, wind, terrain hierarchy, foliage pages.
             assert_eq!(count + 4, if temporal { 16 } else { 15 });
         }
-        assert!(super::shader_source().contains("const VOLUME_MASK_WORD: u32 = 36u;"));
-        assert!(super::shader_source().contains("const VOLUME_CULL_WORD: u32 = 26u;"));
-        assert_eq!(super::CULL_OFFSET / 4, 26);
-        assert_eq!(super::COUNTER_BYTES / 4, 36);
+        assert!(super::shader_source().contains("const VOLUME_MASK_WORD: u32 = 37u;"));
+        assert!(super::shader_source().contains("const VOLUME_CULL_WORD: u32 = 27u;"));
+        assert_eq!(super::CULL_OFFSET / 4, 27);
+        assert_eq!(super::COUNTER_BYTES / 4, 37);
     }
 
     #[test]
     fn brick_cull_variant_validates_and_raster_reads_both_draws() {
-        for (temporal,paged) in [(false,false),(true,false),(false,true)] {
-            let source=super::IntegratorOptions::default().specialize(&super::temporal_source(&super::shader_source(),temporal).unwrap()).unwrap()
+        for (temporal,paged,subgroup_append) in [(false,false,false),(true,false,false),(false,true,false),(false,true,true),(true,true,true)] {
+            let options=super::IntegratorOptions {subgroup_append,..Default::default()};
+            let source=options.specialize(&super::temporal_source(&super::shader_source(),temporal).unwrap()).unwrap()
                 .replace("override VOXEL_BRICK_CULL: bool = false;","override VOXEL_BRICK_CULL: bool = true;")
                 .replace("override VOXEL_PAGED_BRICKS: bool = false;",&format!("override VOXEL_PAGED_BRICKS: bool = {paged};"))
                 .replace("override VOXEL_COMPACT: bool = false;","override VOXEL_COMPACT: bool = true;");
             let module=naga::front::wgsl::parse_str(&source).unwrap();
-            naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();
+            let mut caps=naga::valid::Capabilities::all();
+            caps.set(naga::valid::Capabilities::SUBGROUP,subgroup_append);
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(),caps).validate(&module).unwrap();
             for entry in ["voxel_splats","voxel_splat_retest","voxel_splat_cull_base","voxel_splat_cull_rest","voxel_splat_tree_list"] {
                 assert!(module.entry_points.iter().any(|e|e.name==entry),"{entry}");
             }
@@ -2523,7 +2594,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<super::Config>(), 64);
         assert_eq!(std::mem::offset_of!(super::Config, proxy), 48);
         assert_eq!(std::mem::offset_of!(super::Config, dispatch), 32);
-        assert_eq!(super::COUNTER_BYTES, (14 + 4 * 2 + 4 + 10) * 4);
+        assert_eq!(super::COUNTER_BYTES, (14 + 4 * 2 + 5 + 10) * 4);
         assert_eq!(3840u64 * 2160 * 8, 66_355_200);
         let candidates = 3840u64.div_ceil(16) * 2160u64.div_ceil(16) * 65 * 4;
         assert_eq!(candidates, 8_424_000);

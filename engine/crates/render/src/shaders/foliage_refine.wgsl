@@ -234,7 +234,7 @@ fn projected(t:Tree,n:Node,roles:u32)->vec2<f32> {
 // A unary chain represents the same complete support at several LODs.
 // Intermediate occupancy need not be monotonic: inspect through expensive or
 // nonresident intermediate levels, but publish only a resident affordable end.
-fn candidate(tree:u32,start:u32,request_pages:bool,roles:u32)->u32 {
+fn candidate(tree:u32,start:u32,request_pages:bool,roles:u32,keep_source_step:bool)->u32 {
  let t=trees[tree];var at=start;var best=start;
  let budget=work(tree,start,mask(sphere(t,nodes[start]))&roles);
  loop {
@@ -242,6 +242,9 @@ fn candidate(tree:u32,start:u32,request_pages:bool,roles:u32)->u32 {
   let scale=projected(t,n,roles);
   if at==best && (n.links.w&1u)==0u && scale.x<1e29 && scale.x*n.error.x<=view.pixels.z*cut_scale && (n.error.y==0.0 || scale.x*n.error.y<=cut_scale) {break;}
   let child=n.links.x;let c=nodes[child];if c.links.y!=n.links.y {break;}
+  // The error cut decides whether to enter source at the final voxel parent,
+  // even if the source would fit for free in this unary cost comparison.
+  if keep_source_step && (c.links.w&4u)!=0u {break;}
   let cost=work(tree,child,mask(sphere(t,c))&roles);
   if all(cost<=budget) {
    var resident=pages[c.links.z].resident!=0u;
@@ -328,7 +331,7 @@ fn complete_endpoint(tree:u32,node:u32,old:vec4<u32>,used:vec4<u32>,request_page
  if refine {
   loop {
    if child==NONE || child>=end {break;}
-   let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
+   let selected=candidate(task.x,child,true,task.z,false);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
    if consumers!=0u {
     let resident=ready(c.links.z);refine=refine&&resident;
     p.replacement=plus(p.replacement,work(task.x,selected,consumers));
@@ -500,7 +503,7 @@ fn state_park_index(at:u32,p:Proposal)->u32 {
  if task.y!=NONE {child=nodes[task.y].links.x;end=nodes[task.y].links.y;}
  loop {
   if child==NONE || child>=end {break;}
-  let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
+  let selected=candidate(task.x,child,true,task.z,false);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
   if consumers!=0u {
    let replacement=vec4<u32>(task.x,selected,consumers,0u);
    if c.links.x==NONE {publish(replacement);}else{next[offset]=replacement;offset++;}
@@ -602,7 +605,7 @@ fn audit_camera_limit(tree:u32,node:u32,camera_scale:f32) {
  let t=trees[tree];var replacement=vec4<u32>(0u);var missing=false;var child=n.links.x;
  loop {
   if child==NONE || child>=n.links.y {break;}
-  let selected=candidate(tree,child,false,256u);let c=nodes[selected];let consumers=mask(sphere(t,c))&256u;
+  let selected=candidate(tree,child,false,256u,atomicLoad(&state[80])!=0u);let c=nodes[selected];let consumers=mask(sphere(t,c))&256u;
   if consumers!=0u {replacement=plus(replacement,work(tree,selected,consumers));missing=missing||pages[c.links.z].resident==0u;}
   child=nodes[child].links.y;
  }
@@ -720,6 +723,42 @@ fn fast_set_args(count:u32) {
 fn fast_shadow_retained(task:vec4<u32>)->bool {
  return (demand[task.x+view.counts.x].bucket>>16u)>atomicLoad(&state[87]);
 }
+fn fast_wants_children(n:Node,scale:f32)->bool {
+ return n.links.x!=NONE && ((n.links.w&1u)!=0u || scale>=1e29 || scale*n.error.x>view.pixels.z*cut_scale || scale*n.error.y>cut_scale);
+}
+// Shadow consumers keep their voxel cut. An admitted camera cut must have
+// enough projected error to justify source geometry. Test that before ready()
+// requests or touches streaming pages, including pages already resident.
+fn fast_wants_source(task:vec4<u32>,t:Tree,n:Node,scale:f32,detailed:bool)->bool {
+ if (task.z&256u)==0u {return false;}
+ if task.y==NONE || (n.links.w&1u)!=0u {return true;}
+ // KERN_SOURCE_PER_TREE uses the whole tree's nearest point so the far side
+ // of a close crown can refine with the near side.
+ var step=scale;
+ if SOURCE_PER_TREE {step=max(step,projected(t,nodes[t.info.x],task.z).x);}
+ let s=fast_source_scale()/select(1.0,CUT_HYSTERESIS,detailed);
+ return step>=1e29 || step*n.error.x>view.pixels.z*s || step*n.error.y>s;
+}
+// Only a chain of mips of the same support can be replaced by one source
+// leaf. A branching subtree must preserve all its visible siblings.
+fn fast_unary_source(task:vec4<u32>,t:Tree,n:Node,detailed:bool)->u32 {
+ if task.y==NONE || n.links.x==NONE || (n.links.w&4u)!=0u {return NONE;}
+ let end=n.links.y;
+ let source=end-1u;
+ let leaf=nodes[source];
+ if leaf.links.x!=NONE || (leaf.links.w&4u)==0u || source<=task.y+1u {return NONE;}
+ // A normal descent would stop at any mip whose error meets the target,
+ // even if the tree-wide source threshold would admit the final leaf.
+ for(var at=n.links.x;at<source;at++) {
+  let mip=nodes[at];
+  if mip.links.y!=end {return NONE;}
+  let scale=projected(t,mip,task.z).x;
+  if scale==0.0 || !fast_wants_children(mip,scale) {return NONE;}
+  if at+1u==source && !fast_wants_source(task,t,mip,scale,detailed) {return NONE;}
+ }
+ if (mask(sphere(t,leaf))&task.z)==0u {return NONE;}
+ return source;
+}
 @compute @workgroup_size(64) fn fast_round(@builtin(global_invocation_id) id:vec3<u32>) {
  let at=id.x;if at>=atomicLoad(&state[3]) {return;}
  let task=current[at];if task.z==0u {return;}
@@ -735,7 +774,7 @@ fn fast_shadow_retained(task:vec4<u32>)->bool {
  let t=trees[task.x];let node_id=select(task.y,t.info.x,task.y==NONE);let n=nodes[node_id];
  atomicAdd(&counters[4],1u);
  let scale=projected(t,n,task.z);
- let wanted=task.y==NONE || (n.links.x!=NONE && ((n.links.w&1u)!=0u || scale.x>=1e29 || scale.x*n.error.x>view.pixels.z*cut_scale || scale.x*n.error.y>cut_scale));
+ let wanted=task.y==NONE || fast_wants_children(n,scale.x);
  if !wanted {publish(task);return;}
  var first=node_id;var end=node_id+1u;
  if task.y!=NONE {first=n.links.x;end=n.links.y;}
@@ -745,34 +784,48 @@ fn fast_shadow_retained(task:vec4<u32>)->bool {
  request_urgency=u32(clamp(min(scale.x,1e8)*n.error.x*16.0*select(1.0,4.0,(task.z&256u)!=0u),1.0,1e9));
  loop {
   if child==NONE || child>=end {break;}
-  let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
+  let selected=candidate(task.x,child,true,task.z,true);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
   if consumers!=0u {
+   if (c.links.w&4u)!=0u && !source_leaves {
+    if !fast_wants_source(task,t,n,scale.x,detailed) {publish(task);return;}
+    source_leaves=true;
+   }
    resident=ready(c.links.z)&&resident;
    replacement=plus(replacement,work(task.x,selected,consumers));
    if c.links.x!=NONE {branching++;}
-   if (c.links.w&4u)!=0u {source_leaves=true;}
   }
   child=nodes[child].links.y;
  }
  // Missing pages keep the complete parent; ready() has requested them.
  if !resident {atomicAdd(&state[73],1u);publish(task);return;}
- // Into source leaves only past the coarser source cut. The step is judged
- // at the whole tree's nearest point (its root bound encloses every branch),
- // so a tree turns to needles as one: per branch, the far side of a near
- // crown and the branches that lost the budget race stayed 4-16 px voxel
- // balls among needles (Joep, 13 November). KERN_SOURCE_PER_TREE=0: per branch.
- var step=scale.x;
- if SOURCE_PER_TREE {step=max(step,projected(t,nodes[t.info.x],task.z).x);}
- if (task.z&256u)!=0u && source_leaves && task.y!=NONE && (n.links.w&1u)==0u && step<1e29 {
-  let s=fast_source_scale()/select(1.0,CUT_HYSTERESIS,detailed);
-  if step*n.error.x<=view.pixels.z*s && step*n.error.y<=s {publish(task);return;}
- }
- // Shadows stay voxel: source leaves in shadow maps cost hundreds of
- // millions of triangles (hill view) that no slot or splat cap measures.
- if (task.z&256u)==0u && source_leaves {publish(task);return;}
  let old=work(task.x,task.y,task.z);
  let shadow=(task.z&256u)==0u;
- if !fast_reserve(replacement-min(replacement,old),shadow) {atomicAdd(&state[17],1u);atomicAdd(&state[select(select(75u,76u,(task.z&256u)!=0u),86u,!shadow && source_leaves)],1u);publish(task);return;}
+ let delta=replacement-min(replacement,old);
+ if !fast_reserve(delta,shadow) {
+  // A dense intermediate voxel mip can exceed the camera's splat budget
+  // while its more detailed mesh costs zero splats. Try the same support's
+  // source leaf directly, subject to the normal LOD, residency and budgets.
+  if !shadow && !source_leaves && delta.y!=0u {
+   let source=fast_unary_source(task,t,n,detailed);
+   if source!=NONE {
+    let cost=work(task.x,source,task.z);
+    let source_delta=cost-min(cost,old);
+    // An impossible source must not evict useful pages. A cold, affordable
+    // source may be requested without taking resources from any other cut.
+    if all(source_delta<=fast_limits()) {
+     if !ready(nodes[source].links.z) {
+      atomicAdd(&state[73],1u);publish(task);return;
+     }
+     if fast_reserve(source_delta,false) {
+      fast_refund(old-min(old,cost),false);
+      publish(vec4<u32>(task.x,source,task.z,0u));return;
+     }
+    }
+    source_leaves=true;
+   }
+  }
+  atomicAdd(&state[17],1u);atomicAdd(&state[select(select(75u,76u,(task.z&256u)!=0u),86u,!shadow && source_leaves)],1u);publish(task);return;
+ }
  if shadow {atomicMax(&demand[task.x+view.counts.x].failed,atomicLoad(&state[87])+1u);}
  let offset=atomicAdd(&state[7],branching);let capacity=arrayLength(&next);
  if offset>capacity || branching>capacity-offset {
@@ -784,7 +837,7 @@ fn fast_shadow_retained(task:vec4<u32>)->bool {
  var out=offset;child=first;
  loop {
   if child==NONE || child>=end {break;}
-  let selected=candidate(task.x,child,true,task.z);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
+  let selected=candidate(task.x,child,false,task.z,true);let c=nodes[selected];let consumers=mask(sphere(t,c))&task.z;
   if consumers!=0u {
    let replacement_task=vec4<u32>(task.x,selected,consumers,0u);
    if c.links.x==NONE {publish(replacement_task);}else{next[out]=replacement_task;out++;}

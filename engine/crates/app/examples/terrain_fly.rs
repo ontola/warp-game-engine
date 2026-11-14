@@ -1380,7 +1380,7 @@ fn main() -> Result<(), String> {
         if let Some(path) = arg("--fly-stats") {
             let stats=headless.measure(&mut game)?;
             let renderer=headless.renderer().ok_or("no renderer to measure")?;
-            let voxels=renderer.voxel_diagnostics(&gpu)?.unwrap_or_default().iter().map(|s|serde_json::json!({"splats":s.raster_splats,"vertices":s.raster_vertices,"capacity":s.raster_capacity})).collect::<Vec<_>>();
+            let voxels=renderer.voxel_diagnostics(&gpu)?.unwrap_or_default().iter().map(|s|serde_json::json!({"splats":s.raster_splats,"vertices":s.raster_vertices,"indices":s.raster_indices,"capacity":s.raster_capacity})).collect::<Vec<_>>();
             let cache=renderer.resource_cache_stats();
             let memory=gpu.device.generate_allocator_report().map(|report| {
                 let mut named=std::collections::BTreeMap::<String,(u64,u32)>::new();
@@ -1401,7 +1401,7 @@ fn main() -> Result<(), String> {
         }
         if let Some(renderer)=headless.renderer() {
             if args.iter().any(|a|a=="--voxel-raster-profile") {println!("Voxel raster profile: {}",serde_json::to_string(&renderer.voxel_raster_profile(&gpu)?).map_err(|e|e.to_string())?);}
-            if let Some(stats)=renderer.voxel_diagnostics(&gpu)? {for (view,s) in stats.iter().enumerate(){println!("Voxel raster final: {}",serde_json::json!({"view":view,"splats":s.raster_splats,"vertices":s.raster_vertices,"capacity":s.raster_capacity}));}}
+            if let Some(stats)=renderer.voxel_diagnostics(&gpu)? {for (view,s) in stats.iter().enumerate(){println!("Voxel raster final: {}",serde_json::json!({"view":view,"splats":s.raster_splats,"vertices":s.raster_vertices,"indices":s.raster_indices,"capacity":s.raster_capacity}));}}
             if let Some(stats)=renderer.foliage_page_stats(){println!("GPU voxel page cache: {}",serde_json::to_string(&stats).map_err(|e|e.to_string())?);}
             if let Some(stats)=renderer.gpu_forest_diagnostics(&gpu)? {println!("GPU forest final: {}",serde_json::to_string(&stats).map_err(|e|e.to_string())?);
             let d=renderer.debug_tree_occlusion(&gpu,0,None)?;

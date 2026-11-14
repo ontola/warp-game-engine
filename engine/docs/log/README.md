@@ -22,6 +22,7 @@ current defaults, in [renderer switches](../renderer-switches.md).
 - [handoff.md](handoff.md) is the running log of 23 October to 5 November
   2026, newest first.
 
+- [Rainforest camera selection and splat raster](2026-11-13-rainforest-voxel-cut.md)
 - [Stadium broadcast camera costs](2026-11-11-stadium-broadcast.md)
 - [SpaceRacer rule calls: where a sim tick went](2026-11-11-spaceracer-rule-calls.md)
 - [Sideways GPU cost: LOD error, culling switches, car shading, shadow distance LOD](2026-11-11-sideways-gpu-cost.md)

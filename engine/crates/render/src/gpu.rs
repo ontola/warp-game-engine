@@ -126,7 +126,8 @@ impl Gpu {
         let info = adapter.get_info();
         let optional = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS | wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::PIPELINE_CACHE | wgpu::Features::PRIMITIVE_INDEX
             // BC7 albedo, normal and material arrays (texture_stream.rs).
-            | wgpu::Features::TEXTURE_COMPRESSION_BC;
+            | wgpu::Features::TEXTURE_COMPRESSION_BC
+            | wgpu::Features::SUBGROUP;
         let features = adapter.features() & optional;
         let mut limits = wgpu::Limits::default().using_resolution(adapter.limits());
         let al = adapter.limits();
@@ -243,7 +244,7 @@ impl Gpu {
         out
     }
 
-    fn read_rows(&self, tex: &wgpu::Texture, texel: u32) -> Vec<u8> {
+    pub(crate) fn read_rows(&self, tex: &wgpu::Texture, texel: u32) -> Vec<u8> {
         let (w, h) = (tex.width(), tex.height());
         let row = (w * texel).div_ceil(256) * 256;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {

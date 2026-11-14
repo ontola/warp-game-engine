@@ -50,8 +50,9 @@ fn hash(x: u32) -> u32 {
     // leaf edges (and every disc evenly when it is tiny), losing ~24 % of
     // the area; the larger disc keeps the cell's coverage.
     let half = 1.15 * 0.688 * grid.w * scale * sqrt(solid);
-    let corners = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
-    let corner = corners[vertex % 6u];
+    // BL, BR, TR, TL; indexed [0,1,2,0,2,3] to preserve primitive and depth ties.
+    let corners = array<vec2<f32>, 4>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
+    let corner = corners[vertex];
     let view_proj = mat4x4<f32>(bitcast<vec4<f32>>(splats[0]), bitcast<vec4<f32>>(splats[1]), bitcast<vec4<f32>>(splats[2]), bitcast<vec4<f32>>(splats[3]));
     let right = normalize(vec3<f32>(view_proj[0].x, view_proj[1].x, view_proj[2].x));
     let up = normalize(vec3<f32>(view_proj[0].y, view_proj[1].y, view_proj[2].y));

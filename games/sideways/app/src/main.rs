@@ -60,6 +60,7 @@ fn main() {
             shot::run(&shot::ShotArgs {
                 nature,
                 upscale,
+                voxel_raster_profile: args.iter().any(|a| a == "--voxel-raster-profile"),
                 out: args.get(1).cloned().unwrap_or("shot.png".into()),
                 seed: opt("--seed", "1").parse().unwrap(),
                 km: opt("--km", "2").parse().unwrap(),
@@ -94,7 +95,7 @@ fn main() {
             gpu_run::run(&opt("--out", "gpu-out"), &opt("--jobs", &jobs.to_string_lossy()))
         },
         _ => {
-            eprintln!("usage: sideways play [--views 1..4] [--scenario case.toml] [--biome NAME]\n       sideways bench [--car ID] [--cars data/cars.luau]\n       sideways sim [--ticks 45000] [--seed 1] [--km 2] [--biome NAME] [--trace players.0.kmh,players.0.along] [--events]\n       sideways shot out.png [--seed N] [--km K] [--biome NAME]\n       sideways sound out.wav [--car ID]\nbiomes: {}, {}", biome_land::FINLAND, render::biome::NAMES.join(", "));
+            eprintln!("usage: sideways play [--views 1..4] [--scenario case.toml] [--biome NAME]\n       sideways bench [--car ID] [--cars data/cars.luau]\n       sideways sim [--ticks 45000] [--seed 1] [--km 2] [--biome NAME] [--trace players.0.kmh,players.0.along] [--events]\n       sideways shot out.png [--seed N] [--km K] [--biome NAME] [--voxel-raster-profile]\n       sideways sound out.wav [--car ID]\nbiomes: {}, {}", biome_land::FINLAND, render::biome::NAMES.join(", "));
             2
         }
     };

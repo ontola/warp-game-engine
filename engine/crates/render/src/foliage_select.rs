@@ -372,6 +372,123 @@ mod tests {
   let roots=read(&gpu,&selector.demand);assert_eq!((roots[2],roots[6]),(1,1),"missing child preserves a complete resident ancestor for each consumer");assert_eq!(read(&gpu,&selector.counters)[0],0);
  }
  #[test]
+ #[ignore="GPU error-cut camera raster bottleneck"]
+ fn gpu_error_cut_can_replace_an_expensive_unary_voxel_with_source() {
+  let gpu=Gpu::new().unwrap();
+  let (_,mut trees)=fixture(1);
+  trees[0].scale[2]=1.;
+  trees[0].scale[3]=1.;
+  let node=|first,id,flags,error,splats|Node {
+   sphere:[0.,0.,0.5,0.2],error:[error,0.,splats,splats],links:[first,4,id,flags]
+  };
+  let nodes=[node(1,0,2,1.,1.),node(2,1,0,0.6,200.),node(3,2,0,0.5,200.),node(NONE,3,4|(3<<8),0.,0.)];
+  let selector=Selector::new(&gpu,&nodes,&trees,8,8).unwrap();
+  selector.refiner.set_error_cut(true);
+  selector.set_source_cluster_budget(3).unwrap();
+  selector.publish_asset_pages(&gpu,&[(3,false,1)]).unwrap();
+  let empty=depth(&gpu,0.);
+  let projection=|size|crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[size;2]};
+  let frame=|source_scale:f32| {
+   gpu.queue.write_buffer(&selector.refiner.state,85*4,bytemuck::bytes_of(&source_scale));
+   // The replacement voxel alone would need 200 camera splats. A shadow
+   // sees the same root at one pixel, so its complete voxel fits its budget.
+   let views=[ConsumerView::camera(projection(128)),ConsumerView::shadow(projection(1))];
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union_consumers_budget(&gpu,&mut enc,&views,1.,8,[6;2],&empty).unwrap();
+   gpu.queue.submit([enc.finish()]);
+   let req=read(&gpu,&selector.asset_requests);
+   let wants_source=req[4..4+req[0]as usize*4].chunks_exact(4).any(|p|p[0]==3);
+   let state=read(&gpu,&selector.refiner.state);
+   let roots=read(&gpu,&selector.demand);
+   assert_eq!(state[15],0);
+   assert_eq!(roots[6],1,"shadow retains the root");
+   (wants_source,state,roots[2],read(&gpu,&selector.counters)[0])
+  };
+  let (wants,state,root,count)=frame(1000.);
+  assert!(!wants,"a splat limit must not override the source error cut");
+  assert_eq!((root,count,state[69]),(1,0,0));
+  // Even if a later mip exceeds the error target, a normal descent would
+  // stop at an earlier mip that meets it. Preserve that camera cut.
+  let mut acceptable=nodes[1];
+  acceptable.error[0]=0.001;
+  acceptable.error[2]=2048.; // Remains over budget after subpixel thinning.
+  let mip_offset=std::mem::size_of::<Node>() as u64;
+  gpu.queue.write_buffer(&selector._nodes,mip_offset,bytemuck::bytes_of(&acceptable));
+  let (wants,state,root,count)=frame(1.);
+  assert!(!wants,"do not jump across a mip that meets the camera target");
+  assert_eq!((root,count,state[69]),(1,0,0));
+  gpu.queue.write_buffer(&selector._nodes,mip_offset,bytemuck::bytes_of(&nodes[1]));
+  selector.set_source_cluster_budget(2).unwrap();
+  let (wants,state,root,count)=frame(1.);
+  assert!(!wants,"keep a source that exceeds the cap out of streaming demand");
+  assert_eq!((root,count,state[69]),(1,0,0));
+  selector.set_source_cluster_budget(3).unwrap();
+  let (wants,state,root,count)=frame(1.);
+  assert!(wants,"the affordable source is requested past the expensive voxel");
+  assert_eq!((root,count,state[69]),(1,0,0),"missing source retains and charges only the parent");
+  selector.publish_asset_pages(&gpu,&[(3,true,2)]).unwrap();
+  let (_,state,root,count)=frame(1.);
+  assert_eq!((root,count),(0,1));
+  assert_eq!(&read(&gpu,&selector.records)[..3],&[0,3,3]);
+  assert_eq!((state[0],state[1],state[2],state[69]),(1,0,1,3),"reserve the source and refund the old camera voxel");
+  // Actual source work must fit even if its geometry is already resident.
+  selector.set_source_cluster_budget(2).unwrap();
+  let (_,state,root,count)=frame(1.);
+  assert_eq!((root,count,state[0],state[69]),(1,0,0,0));
+  // Split the same preorder range into two visible siblings. The last
+  // source would cover only one sibling, so retain the complete parent.
+  let mut sibling=nodes[1];
+  sibling.links=[NONE,2,1,0];
+  gpu.queue.write_buffer(&selector._nodes,mip_offset,bytemuck::bytes_of(&sibling));
+  selector.set_source_cluster_budget(3).unwrap();
+  selector.publish_asset_pages(&gpu,&[(3,false,3)]).unwrap();
+  let (wants,state,root,count)=frame(1.);
+  assert!(!wants,"one source cannot replace a branching subtree");
+  assert_eq!((root,count,state[69]),(1,0,0));
+ }
+ #[test]
+ #[ignore="GPU source page demand and consumer cut"]
+ fn gpu_source_pages_follow_the_selected_camera_cut() {
+  let gpu=Gpu::new().unwrap();
+  let (_,trees)=fixture(1);
+  let root=Node {sphere:[0.,0.,0.5,0.2],error:[1.,0.,1.,1.],links:[1,3,0,2]};
+  let leaf=|end,rep|Node {sphere:root.sphere,error:[0.;4],links:[NONE,end,rep,4|(1<<8)]};
+  let selector=Selector::new(&gpu,&[root,leaf(2,1),leaf(3,2)],&trees,8,8).unwrap();
+  selector.refiner.set_error_cut(true);
+  selector.publish_asset_pages(&gpu,&[(1,false,1),(2,false,1)]).unwrap();
+  let empty=depth(&gpu,0.);
+  let projection=crate::part_wind::AnimationView {view_projection:Mat4::IDENTITY,viewport:[128;2]};
+  let camera=ConsumerView::camera(projection);
+  let shadow=ConsumerView::shadow(projection);
+  let frame=|views:&[ConsumerView],source_scale:f32| {
+   gpu.queue.write_buffer(&selector.refiner.state,85*4,bytemuck::bytes_of(&source_scale));
+   let mut enc=gpu.device.create_command_encoder(&Default::default());
+   selector.union_consumers_budget(&gpu,&mut enc,views,1.,8,[100;2],&empty).unwrap();
+   gpu.queue.submit([enc.finish()]);
+   let requests=read(&gpu,&selector.asset_requests);
+   let mut source_ids=requests[4..4+requests[0]as usize*4].chunks_exact(4)
+       .map(|page|page[0]).filter(|&rep|rep!=0).collect::<Vec<_>>();
+   source_ids.sort();
+   let state=read(&gpu,&selector.refiner.state);
+   assert_eq!(state[15],0,"selection fault");
+   (source_ids,state[73],read(&gpu,&selector.counters)[0],read(&gpu,&selector.demand))
+  };
+  for (views,source_scale) in [(&[shadow][..],1.),(&[camera,shadow][..],1000.)] {
+   let (requested,waiting,records,_)=frame(views,source_scale);
+   assert!(requested.is_empty(),"a retained voxel must not keep source payload in demand: {requested:?}");
+   assert_eq!((waiting,records),(0,0));
+  }
+  let (requested,waiting,records,roots)=frame(&[camera,shadow],1.);
+  assert_eq!(requested,[1,2],"request both missing visible source siblings");
+  assert_eq!(waiting,1,"only the camera is waiting for source");
+  assert_eq!(records,0);
+  assert_eq!((roots[2],roots[6]),(1,1),"complete root coverage while streaming");
+  selector.publish_asset_pages(&gpu,&[(1,true,2),(2,true,2)]).unwrap();
+  let (_,waiting,records,roots)=frame(&[camera,shadow],1.);
+  assert_eq!((waiting,records),(0,2));
+  assert_eq!((roots[2],roots[6]),(0,1),"resident camera sources, voxel shadow");
+ }
+ #[test]
  #[ignore="exclusive GPU error-driven cut oracle"]
  fn gpu_error_cut_refines_by_error_and_coarsens_when_a_cap_binds() {
   let gpu=Gpu::new().unwrap();let (_,mut trees)=fixture(1);trees[0].scale[2]=1.;trees[0].scale[3]=1.;

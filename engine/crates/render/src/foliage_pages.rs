@@ -49,16 +49,12 @@ impl VoxelPage {
         Ok(page)
     }
     /// Group occupied cells once per asset page, not per world instance.
-    /// Entries are local cell-range start/count and packed 4x4x4 origin.
+    /// Entries are local cell-range start/count and the occupied cell bounds.
     fn group_splats(&mut self) {
-        let mut groups=BTreeMap::<u32,Vec<[u32;2]>>::new();
-        for &cell in &self.splats {
-            let c=cell[1];let key=(c&1023&!3)|(((c>>10)&1023&!3)<<10)|(((c>>20)&1023&!3)<<20);
-            groups.entry(key).or_default().push(cell);
-        }
+        let groups=group_splat_bricks(&self.splats);
         self.splats.clear();self.splat_bricks.clear();
-        for (origin,cells) in groups {
-            self.splat_bricks.push([self.splats.len()as u32,cells.len()as u32,origin,0]);
+        for ([first_coord,trim],cells) in groups {
+            self.splat_bricks.push([self.splats.len()as u32,cells.len()as u32,first_coord,trim]);
             self.splats.extend(cells);
         }
     }
@@ -80,6 +76,30 @@ impl VoxelPage {
         let splats=self.splats.iter().map(|s|[s[0]+cell_base,s[1]]).collect();
         Ok((level,indices,splats))
     }
+}
+
+/// Bounds of the occupied cell centres in each 4³ brick. The second word packs
+/// (3 - span) in two bits per axis, so the previous [brick_origin, 0]
+/// descriptor still decodes to the complete brick. Page residency moves cell
+/// addresses, never coordinates. Both raster catalogues use this encoding.
+pub(crate) fn group_splat_bricks(splats: &[[u32; 2]]) -> impl Iterator<Item = ([u32; 2], Vec<[u32; 2]>)> + use<> {
+    const BRICK_ORIGIN_MASK: u32 = 1020 | (1020 << 10) | (1020 << 20);
+    let mut groups = BTreeMap::<u32, Vec<[u32; 2]>>::new();
+    for &cell in splats {
+        groups.entry(cell[1] & BRICK_ORIGIN_MASK).or_default().push(cell);
+    }
+    groups.into_iter().map(|(origin, cells)| {
+        let mut lo = glam::UVec3::splat(3);
+        let mut hi = glam::UVec3::ZERO;
+        for &[_, coord] in &cells {
+            let offset = glam::UVec3::new(coord & 3, (coord >> 10) & 3, (coord >> 20) & 3);
+            lo = lo.min(offset);
+            hi = hi.max(offset);
+        }
+        let first = origin | lo.x | (lo.y << 10) | (lo.z << 20);
+        let trim = glam::UVec3::splat(3) - (hi - lo);
+        ([first, trim.x | (trim.y << 2) | (trim.z << 4)], cells)
+    })
 }
 
 /// Physical range arena. A failed allocation has no side effects. Handles are
@@ -150,12 +170,13 @@ mod tests {
         let mut page=VoxelPage::cook(&forest,0).unwrap();let mut expected=page.splats.clone();expected.sort();
         page.group_splats();let mut actual=page.splats.clone();actual.sort();assert_eq!(actual,expected);
         let mut visited=vec![0u32;page.splats.len()];
-        for &[first,count,origin,_] in &page.splat_bricks {
+        for &[first,count,first_coord,trim] in &page.splat_bricks {
             assert!(count>0 && count<=64);
-            let base=[origin&1023,(origin>>10)&1023,origin>>20];
+            let lo=[first_coord&1023,(first_coord>>10)&1023,first_coord>>20];
+            let hi: [u32;3]=std::array::from_fn(|axis|lo[axis]+3-((trim>>(axis*2))&3));
             for at in first..first+count {
                 visited[at as usize]+=1;let packed=page.splats[at as usize][1];let c=[packed&1023,(packed>>10)&1023,packed>>20];
-                assert!((0..3).all(|i|c[i]>=base[i] && c[i]<base[i]+4));
+                assert!((0..3).all(|i|c[i]>=lo[i] && c[i]<=hi[i]));
             }
         }
         assert!(visited.iter().all(|&n|n==1));

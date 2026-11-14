@@ -26,6 +26,8 @@ pub struct ShotArgs {
     pub views: usize,
     /// Frames rendered for TAA to converge (the camera holds still); 1: no TAA.
     pub taa_frames: u32,
+    /// Read back final camera splat winners and projected sizes after the shot.
+    pub voxel_raster_profile: bool,
     /// Photographed grass; false is a matched no-cover performance baseline.
     pub ground_cover: bool,
     /// `--cam yaw=DEG,dist=M,height=M,car=N,fov=DEG`: a close camera on a
@@ -402,9 +404,12 @@ fn frame(a: &ShotArgs, setup: &Setup, gpu: &Gpu, renderer: &Renderer) -> i32 {
             metadata["gpu_forest_diagnostics"] = serde_json::json!(forest);
             if let Some(views) = renderer.voxel_diagnostics(gpu)? {
                 metadata["voxel_views"] = views.iter().map(|v| serde_json::json!({
-                    "raster_splats": v.raster_splats, "raster_vertices": v.raster_vertices,
+                    "raster_splats": v.raster_splats, "raster_vertices": v.raster_vertices, "raster_indices": v.raster_indices,
                     "raster_capacity": v.raster_capacity, "traced_rays": v.traced_rays,
                 })).collect::<Vec<_>>().into();
+            }
+            if a.voxel_raster_profile {
+                metadata["voxel_raster_profile"] = renderer.voxel_raster_profile(gpu)?.into();
             }
             Ok(())
         });

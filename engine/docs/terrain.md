@@ -58,6 +58,19 @@ To compare landscapes from a saved F4 view, pass `--style NAME --from FILE`.
 This keeps the camera's horizontal position, height above ground and heading.
 Use `--from FILE` alone to restore the original world and camera.
 
+Use `--voxel-raster-profile` with a terrain flight capture or a Sideways
+rally shot to inspect the final camera cut. For example:
+
+```sh
+sideways shot forest.png --biome rainforest --seed 1 --km 1 --at 120 --size 2560x1440 --taa 8 --voxel-raster-profile
+```
+
+In `forest.png.json`, `voxel_raster_profile` reports how many splats fit in
+the camera buffer, how many distinct splats won at least one pixel, and how
+many pixels they cover in each view. Disc-size bins describe all stored
+splats. Use a held camera and compare equal frame counts. Check residency
+before interpreting a capture as steady state.
+
 | Preset | Ground | Vegetation |
 | --- | --- | --- |
 | `desert` | Fine dune sand with patches of darker gravel on exposed slopes and dry streambeds | Low silver saltbush and taller scrub that spreads out close to the ground, with open sand between plants |

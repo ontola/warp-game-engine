@@ -128,6 +128,9 @@ Owned by the foliage work; its working checklist is
   32768 branch slots. Sub-pixel camera splats are thinned by area (kept with
   probability = disc area, drawn larger), and splat booking is calibrated
   against the splats the raster stored last frame. No CPU near-tree pool.
+  The shared camera raster tests occupied bounds within each 4×4×4 brick.
+  Sideways can report the number of submitted splats that reach the final
+  camera splat target with `shot --voxel-raster-profile`.
   `KERN_FOLIAGE_CUT=budget` restores the old budgeted admission.
 - **Measured** (6 November evening, RTX 5070 Ti, Vulkan): lowland+grass 720p
   12.2 ms GPU (27.1 ms this morning); render suite at 1440p after streaming

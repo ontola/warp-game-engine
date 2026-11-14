@@ -40,7 +40,7 @@ fn selection_unpack(w:u32)->vec4<u32> {
 // Deduplication words follow the 22 diagnostic words in volume_stats.
 // Sharing this allocation keeps the temporal pipeline within 16 storage bindings.
 const VOLUME_DRAW_WORD: u32 = 22u;
-const VOLUME_MASK_WORD: u32 = 36u;
+const VOLUME_MASK_WORD: u32 = 37u;
 const VOLUME_BRICK_VISIBILITY: bool = false;
 const VOLUME_TILE: u32 = 16u;
 const VOLUME_CANDIDATES: u32 = 64u;
@@ -1062,9 +1062,9 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
 // level origin and cell, as f32 bits), then one record per splat: tree, cell
 // index, packed coord, 16-bit alpha | faces << 16 | appearance seed << 19.
 @group(2) @binding(15) var<storage,read_write> volume_splats: array<vec4<u32>>;
-// Indirect draw arguments: vertex count, instance count, first vertex, first instance.
-// Draw arguments share volume_stats[22..26] (brick culling's second draw
-// 26..30), leaving a binding for choices.
+// Indexed indirect draw: index count, instance count, first index, base vertex, first instance.
+// Draw arguments share volume_stats[22..27] (brick culling's second draw
+// 27..32), leaving a binding for choices.
 @group(2) @binding(17) var volume_splat_id: texture_2d<u32>;
 @group(2) @binding(18) var volume_splat_depth: texture_depth_2d;
 // Splats drawn into the main visibility buffer (voxel_forest Stage::Splats
@@ -1075,8 +1075,8 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
 @group(2) @binding(19) var volume_gbuffer: texture_storage_2d<rgba32uint,write>;
 const VOLUME_SPLAT_HEADER: u32 = 12u;
 const VOLUME_SPLAT_NONE: u32 = 0xffffffffu;
-// One quad per splat (voxel_splat_raster.wgsl).
-const VOLUME_SPLAT_VERTICES: u32 = 6u;
+// Two triangles sharing four vertex indices per splat.
+const VOLUME_SPLAT_INDEX_COUNT: u32 = 6u;
 // Splats fainter than this are thinned (volume_splat_append). 0.5 instead
 // of 0.25 halved the camera splat raster (terrain_fly high60 14 -> 7.6 ms,
 // Sideways' mixed forest likewise) with no visible change after TAA.
@@ -1200,7 +1200,8 @@ fn volume_camera_texel(p:vec3<f32>)->f32 {
     if w<=1e-4 {return 0.0;}
     return w/max(0.5*f32(volume_config.size_count.y)*length(row_y),1e-8);
 }
-fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:vec3<f32>,texel:f32) {
+// Empty records have w == 0. Every kept splat encodes positive opacity.
+fn volume_splat_record(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:vec3<f32>,texel:f32)->vec4<u32> {
     let stable=volume_trees[index].bounds_max.w;
     let appearance=select(index,u32(max(stable-1.0,0.0)),stable>0.0);
     // Area thinning below keeps a cell with probability at most
@@ -1212,33 +1213,47 @@ fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:
         let side=cell.size*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x))/texel;
         area_one=1.48711*side*side;
         area_draw=f32(volume_splat_hash((appearance*0x85ebca6bu)^(cell_ref.y*0xc2b2ae35u)^0x27d4eb2fu)>>8u)/16777216.0;
-        if area_one<VOLUME_SPLAT_AREA_TARGET && area_draw>=max(area_one/VOLUME_SPLAT_AREA_TARGET,1.0/VOLUME_SPLAT_ALPHA_RANGE) {return;}
+        if area_one<VOLUME_SPLAT_AREA_TARGET && area_draw>=max(area_one/VOLUME_SPLAT_AREA_TARGET,1.0/VOLUME_SPLAT_ALPHA_RANGE) {return vec4<u32>(0u);}
     }
     // Optical depth of the mean chord through this cell along the view.
     let sigma=volume_sigma(unpack_volume_cell(volume_cells[cell_ref.x]),volume_direction(toward));
     let alpha=1.0-exp(-sigma*cell.size/max(dot(abs(toward),vec3<f32>(1.0)),1.0));
-    if alpha<1.0/255.0 {return;}
+    if alpha<1.0/255.0 {return vec4<u32>(0u);}
     // Faint cells are thinned to VOLUME_SPLAT_MIN_ALPHA: kept with
     // probability alpha/min by a hash stable per tree and cell (no flicker),
     // so expected coverage holds while the raster draws far fewer quads.
     var kept_alpha=alpha;
     if alpha<VOLUME_SPLAT_MIN_ALPHA {
         let h=volume_splat_hash((appearance*0x9e3779b9u)^cell_ref.y);
-        if f32(h>>8u)/16777216.0>=alpha/VOLUME_SPLAT_MIN_ALPHA {return;}
+        if f32(h>>8u)/16777216.0>=alpha/VOLUME_SPLAT_MIN_ALPHA {return vec4<u32>(0u);}
         kept_alpha=VOLUME_SPLAT_MIN_ALPHA;
     }
     if texel>0.0 {
         let area=area_one*kept_alpha;
         if area<VOLUME_SPLAT_AREA_TARGET {
             let keep=max(area/VOLUME_SPLAT_AREA_TARGET,kept_alpha/VOLUME_SPLAT_ALPHA_RANGE);
-            if area_draw>=keep {return;}
+            if area_draw>=keep {return vec4<u32>(0u);}
             kept_alpha/=keep;
         }
     }
     let faces=select(0u,1u,toward.x>0.0)|select(0u,2u,toward.y>0.0)|select(0u,4u,toward.z>0.0);
-    let slot=volume_splat_first()+atomicAdd(&volume_stats[VOLUME_DRAW_WORD+1],1u);
-    if slot>=volume_splat_limit() {return;}
-    volume_splats[slot]=vec4<u32>(index,cell_ref.x,cell_ref.y,u32(min(kept_alpha/VOLUME_SPLAT_ALPHA_RANGE,1.0)*65535.0+0.5)|(faces<<16u)|((volume_splat_hash(appearance)&8191u)<<19u));
+    return vec4<u32>(index,cell_ref.x,cell_ref.y,u32(min(kept_alpha/VOLUME_SPLAT_ALPHA_RANGE,1.0)*65535.0+0.5)|(faces<<16u)|((volume_splat_hash(appearance)&8191u)<<19u));
+}
+fn volume_splat_store(record:vec4<u32>, ordinal:u32) {
+    let first=volume_splat_first();
+    let limit=volume_splat_limit();
+    if first<limit && ordinal<limit-first {
+        volume_splats[first+ordinal]=record;
+    }
+}
+fn volume_splat_append(record:vec4<u32>) {
+    if record.w!=0u {
+        volume_splat_store(record,atomicAdd(&volume_stats[VOLUME_DRAW_WORD+1],1u));
+    }
+}
+fn volume_splat_append_packet(record:vec4<u32>,lane:u32) {
+    // VOLUME_PACKET_RESERVATION
+    volume_splat_append(record);
 }
 
 // Brick occlusion culling (KERN_SPLAT_BRICK_HZB=1), two passes as in Nanite.
@@ -1258,9 +1273,9 @@ override VOXEL_COMPACT: bool = false;
 // level headers, but it points at four-word descriptors in volume_indices.
 override VOXEL_PAGED_BRICKS: bool = false;
 @group(2) @binding(20) var volume_brick_hzb: texture_2d<f32>;
-// volume_stats words: 26-29 pass 2 draw arguments, 30 queued bricks,
-// 31 pass 1 splat count, 32-34 pass 2 dispatch.
-const VOLUME_CULL_WORD: u32 = 26u;
+// volume_stats words: 27-31 pass 2 indexed draw, 32 queued bricks,
+// 33 pass 1 splat count, 34-36 pass 2 dispatch.
+const VOLUME_CULL_WORD: u32 = 27u;
 const VOLUME_HZB_VIEW: u32 = 4u;
 // An eighth of the record space holds the queue (one record per brick).
 fn volume_cull_queue_capacity()->u32 {
@@ -1272,35 +1287,36 @@ fn volume_splat_limit()->u32 {return arrayLength(&volume_splats)-volume_cull_que
 fn volume_splat_brick_table(index:u32,level:u32)->vec2<u32> {
     return volume_splat_cells[arrayLength(&volume_levels)+volume_trees[index].identity.y+level];
 }
-// Brick b of a table: its cells (first, count in volume_splat_cells) and its
-// packed origin coordinate.
-fn volume_splat_brick(table:vec2<u32>,b:u32)->vec3<u32> {
+// First cell record, count, packed minimum occupied coordinate and span trim.
+fn volume_splat_brick(table:vec2<u32>,b:u32)->vec4<u32> {
     if VOXEL_PAGED_BRICKS {
         let at=table.x+b*4u;
-        return vec3<u32>(volume_indices[at],volume_indices[at+1u],volume_indices[at+2u]);
+        return vec4<u32>(volume_indices[at],volume_indices[at+1u],volume_indices[at+2u],volume_indices[at+3u]);
     }
-    let range=volume_splat_cells[table.x+b*2u];
-    return vec3<u32>(range.x,range.y,volume_splat_cells[table.x+b*2u+1u].x);
+    return vec4<u32>(volume_splat_cells[table.x+b*2u],volume_splat_cells[table.x+b*2u+1u]);
 }
 fn volume_hzb_view()->mat4x4<f32> {
     return mat4x4<f32>(bitcast<vec4<f32>>(volume_splats[VOLUME_HZB_VIEW]),bitcast<vec4<f32>>(volume_splats[VOLUME_HZB_VIEW+1u]),
         bitcast<vec4<f32>>(volume_splats[VOLUME_HZB_VIEW+2u]),bitcast<vec4<f32>>(volume_splats[VOLUME_HZB_VIEW+3u]));
 }
 
-fn volume_brick_hidden(index:u32, level:u32, packed:u32, view_proj:mat4x4<f32>)->bool {
+fn volume_brick_hidden(index:u32, level:u32, bounds:vec2<u32>, view_proj:mat4x4<f32>)->bool {
     let tree=volume_trees[index];
     let grid=volume_levels[tree.identity.y+level].origin_cell;
+    let packed=bounds.x;
     let coord=vec3<f32>(f32(packed&1023u),f32((packed>>10u)&1023u),f32(packed>>20u));
+    let trim=vec3<u32>(bounds.y,bounds.y>>2u,bounds.y>>4u)&vec3<u32>(3u);
+    let half_span=0.5*vec3<f32>(vec3<u32>(3u)-trim);
     // Transform the envelope of cell centres, then add the billboard's
     // WORLD-space support. Local padding is unsafe for nonuniform/sheared trees.
     let owner=instances[tree.identity.x];
-    let centre=vec4<f32>(grid.xyz+(coord+2.0)*grid.w,1.0);
+    let centre=vec4<f32>(grid.xyz+(coord+0.5+half_span)*grid.w,1.0);
     let world_centre=vec3<f32>(dot(owner.r0,centre),dot(owner.r1,centre),dot(owner.r2,centre));
     // Raster half-width <= 1.15*.688 cells up to alpha 1, jitter <= .25
     // per screen axis: sqrt(2)*(.79+.25) < 2. Thinned sub-pixel splats grow
     // past that but stay under a pixel, inside the pyramid's 2-texel margin.
     let padding=2.0*grid.w*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x));
-    let half=1.5*grid.w*vec3<f32>(dot(abs(owner.r0.xyz),vec3<f32>(1.0)),dot(abs(owner.r1.xyz),vec3<f32>(1.0)),dot(abs(owner.r2.xyz),vec3<f32>(1.0)))+padding;
+    let half=grid.w*vec3<f32>(dot(abs(owner.r0.xyz),half_span),dot(abs(owner.r1.xyz),half_span),dot(abs(owner.r2.xyz),half_span))+padding;
     var ndc_min=vec2<f32>(1e30);var ndc_max=vec2<f32>(-1e30);var nearest=0.0;
     for(var i=0u;i<8u;i++) {
         let world=vec4<f32>(world_centre+select(-half,half,vec3<bool>((i&1u)!=0u,(i&2u)!=0u,(i&4u)!=0u)),1.0);
@@ -1310,10 +1326,12 @@ fn volume_brick_hidden(index:u32, level:u32, packed:u32, view_proj:mat4x4<f32>)-
         let ndc=clip.xyz/clip.w;
         ndc_min=min(ndc_min,ndc.xy);ndc_max=max(ndc_max,ndc.xy);nearest=max(nearest,ndc.z);
     }
-    if any(ndc_min>vec2<f32>(1.0)) || any(ndc_max<vec2<f32>(-1.0)) {return true;}
     let size=textureDimensions(volume_brick_hzb,0);
-    let low=clamp(vec2<f32>(ndc_min.x*0.5+0.5,0.5-ndc_max.y*0.5)*vec2<f32>(size)-2.0,vec2<f32>(0.0),vec2<f32>(size-1u));
-    let high=clamp(vec2<f32>(ndc_max.x*0.5+0.5,0.5-ndc_min.y*0.5)*vec2<f32>(size)+2.0,vec2<f32>(0.0),vec2<f32>(size-1u));
+    let pixel_min=vec2<f32>(ndc_min.x*0.5+0.5,0.5-ndc_max.y*0.5)*vec2<f32>(size)-2.0;
+    let pixel_max=vec2<f32>(ndc_max.x*0.5+0.5,0.5-ndc_min.y*0.5)*vec2<f32>(size)+2.0;
+    if any(pixel_min>vec2<f32>(size)) || any(pixel_max<vec2<f32>(0.0)) {return true;}
+    let low=clamp(pixel_min,vec2<f32>(0.0),vec2<f32>(size-1u));
+    let high=clamp(pixel_max,vec2<f32>(0.0),vec2<f32>(size-1u));
     let extent=max(high.x-low.x+1.0,high.y-low.y+1.0);
     let mip=min(u32(max(ceil(log2(max(extent,1.0)))-1.0,0.0)),textureNumLevels(volume_brick_hzb)-1u);
     let dims=textureDimensions(volume_brick_hzb,mip);
@@ -1355,13 +1373,17 @@ fn volume_splat_eye(index:u32)->vec3<f32> {
     return vec3<f32>(dot(tree.inverse[0],eye),dot(tree.inverse[1],eye),dot(tree.inverse[2],eye));
 }
 // Cells first..first+count of the splat catalog that pass the frustum.
+fn volume_camera_record(index:u32,level:u32,at:u32,eye_local:vec3<f32>)->vec4<u32> {
+    let cell_ref=volume_splat_cells[at];
+    let cell=volume_splat_cell(index,level,cell_ref.y);
+    for(var p=0u;p<6u;p++) {
+        if volume_splat_outside(cell,view.planes[p]) {return vec4<u32>(0u);}
+    }
+    return volume_splat_record(index,cell_ref,cell,normalize(eye_local-cell.local),volume_camera_texel(cell.centre));
+}
 fn volume_splat_range(index:u32,level:u32,range:vec2<u32>,eye_local:vec3<f32>,first:u32,step:u32) {
     for(var i=first;i<range.y;i+=step) {
-        let cell_ref=volume_splat_cells[range.x+i];
-        let cell=volume_splat_cell(index,level,cell_ref.y);
-        var inside=true;
-        for(var p=0u;p<6u;p++) {inside=inside&&!volume_splat_outside(cell,view.planes[p]);}
-        if inside {volume_splat_append(index,cell_ref,cell,normalize(eye_local-cell.local),volume_camera_texel(cell.centre));}
+        volume_splat_append(volume_camera_record(index,level,range.x+i,eye_local));
     }
 }
 
@@ -1381,7 +1403,7 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
             for(var c=0u;c<4u;c++) {volume_splats[c]=bitcast<vec4<u32>>(view.view_proj[c]);}
             // w: the first queue record, which the raster never reads as a splat.
             volume_splats[11]=vec4<u32>(volume_config.size_count.w,0u,0u,select(0u,volume_splat_limit(),VOXEL_BRICK_CULL));
-            atomicStore(&volume_stats[VOLUME_DRAW_WORD+0],VOLUME_SPLAT_VERTICES);
+            atomicStore(&volume_stats[VOLUME_DRAW_WORD+0],VOLUME_SPLAT_INDEX_COUNT);
         }
         var level=VOLUME_SPLAT_NONE;
         if index<volume_config.size_count.w {
@@ -1409,8 +1431,8 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
             if b<bricks.y {
                 let brick=volume_splat_brick(bricks,b);
                 var draw=true;
-                if history && volume_brick_hidden(index,level,brick.z,previous) {
-                    let queued=atomicAdd(&volume_stats[VOLUME_CULL_WORD+4u],1u);
+                if history && volume_brick_hidden(index,level,brick.zw,previous) {
+                    let queued=atomicAdd(&volume_stats[VOLUME_CULL_WORD+5u],1u);
                     if queued<volume_cull_queue_capacity() {volume_splats[volume_splat_limit()+queued]=vec4<u32>(index,level,b,0u);draw=false;}
                 }
                 if draw {volume_brick_ranges[atomicAdd(&volume_brick_visible,1u)]=brick.xy;}
@@ -1423,12 +1445,17 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
             }
             let total=workgroupUniformLoad(&volume_brick_cells_shared);
             let n=volume_brick_count_shared;
-            for(var j=lane;j<total;j+=64u) {
-                // Last brick starting at or before j.
-                var low=0u;var high=n;
-                while high-low>1u {let mid=(low+high)/2u;if volume_brick_starts[mid]<=j {low=mid;} else {high=mid;}}
-                let range=volume_brick_ranges[low];
-                volume_splat_range(index,level,vec2<u32>(range.x+j-volume_brick_starts[low],1u),eye_local,0u,1u);
+            // Even the last partial packet must enter its reservation together.
+            for(var start=0u;start<total;start+=64u) {
+                let j=start+lane;
+                var record=vec4<u32>(0u);
+                if j<total {
+                    var low=0u;var high=n;
+                    while high-low>1u {let mid=(low+high)/2u;if volume_brick_starts[mid]<=j {low=mid;} else {high=mid;}}
+                    let at=volume_brick_ranges[low].x+j-volume_brick_starts[low];
+                    record=volume_camera_record(index,level,at,eye_local);
+                }
+                volume_splat_append_packet(record,lane);
             }
             workgroupBarrier();
         }
@@ -1441,34 +1468,35 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
 @compute @workgroup_size(1)
 fn voxel_splat_cull_base() {
     let splats=atomicLoad(&volume_stats[VOLUME_DRAW_WORD+1u]);
-    atomicStore(&volume_stats[VOLUME_CULL_WORD+5u],splats);
+    atomicStore(&volume_stats[VOLUME_CULL_WORD+6u],splats);
     volume_splats[11].z=splats;
-    let groups=(min(atomicLoad(&volume_stats[VOLUME_CULL_WORD+4u]),volume_cull_queue_capacity())+63u)/64u;
-    atomicStore(&volume_stats[VOLUME_CULL_WORD+6u],min(groups,65535u));
-    atomicStore(&volume_stats[VOLUME_CULL_WORD+7u],(groups+65534u)/65535u);
-    atomicStore(&volume_stats[VOLUME_CULL_WORD+8u],1u);
+    let groups=(min(atomicLoad(&volume_stats[VOLUME_CULL_WORD+5u]),volume_cull_queue_capacity())+63u)/64u;
+    atomicStore(&volume_stats[VOLUME_CULL_WORD+7u],min(groups,65535u));
+    atomicStore(&volume_stats[VOLUME_CULL_WORD+8u],(groups+65534u)/65535u);
+    atomicStore(&volume_stats[VOLUME_CULL_WORD+9u],1u);
 }
 // Pass 2: one thread per queued brick, against this frame's pyramid.
 @compute @workgroup_size(64)
 fn voxel_splat_retest(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
     let i=(group.x+group.y*65535u)*64u+lane;
-    if i>=min(atomicLoad(&volume_stats[VOLUME_CULL_WORD+4u]),volume_cull_queue_capacity()) {return;}
+    if i>=min(atomicLoad(&volume_stats[VOLUME_CULL_WORD+5u]),volume_cull_queue_capacity()) {return;}
     let queued=volume_splats[volume_splat_limit()+i];
     let index=queued.x;let level=queued.y;
     let brick=volume_splat_brick(volume_splat_brick_table(index,level),queued.z);
-    if volume_brick_hidden(index,level,brick.z,view.view_proj) {return;}
+    if volume_brick_hidden(index,level,brick.zw,view.view_proj) {return;}
     volume_splat_range(index,level,brick.xy,volume_splat_eye(index),0u,1u);
 }
 // After pass 2, one thread: its draw arguments, and this frame's
 // view-projection for the pyramid next frame tests against.
 @compute @workgroup_size(1)
 fn voxel_splat_cull_rest() {
-    let base=atomicLoad(&volume_stats[VOLUME_CULL_WORD+5u]);
+    let base=atomicLoad(&volume_stats[VOLUME_CULL_WORD+6u]);
     let total=atomicLoad(&volume_stats[VOLUME_DRAW_WORD+1u]);
-    atomicStore(&volume_stats[VOLUME_CULL_WORD],VOLUME_SPLAT_VERTICES);
+    atomicStore(&volume_stats[VOLUME_CULL_WORD],VOLUME_SPLAT_INDEX_COUNT);
     atomicStore(&volume_stats[VOLUME_CULL_WORD+1u],total-base);
     atomicStore(&volume_stats[VOLUME_CULL_WORD+2u],0u);
     atomicStore(&volume_stats[VOLUME_CULL_WORD+3u],0u);
+    atomicStore(&volume_stats[VOLUME_CULL_WORD+4u],0u);
     for(var c=0u;c<4u;c++) {volume_splats[VOLUME_HZB_VIEW+c]=volume_splats[c];}
     volume_splats[VOLUME_HZB_VIEW+4u]=vec4<u32>(1u,0u,0u,0u);
 }
@@ -1483,7 +1511,7 @@ fn volume_sun_splats_impl(index:u32,lane:u32,damaged:bool) {
         if index==0u {
             // Keep y: the cached map size every workgroup reads.
             volume_splats[11]=vec4<u32>(volume_config.size_count.w,volume_splats[11].y,0u,0u);
-            atomicStore(&volume_stats[VOLUME_DRAW_WORD+0],VOLUME_SPLAT_VERTICES);
+            atomicStore(&volume_stats[VOLUME_DRAW_WORD+0],VOLUME_SPLAT_INDEX_COUNT);
         }
         var level=VOLUME_SPLAT_NONE;
         if index<volume_config.size_count.w && damaged {
@@ -1518,7 +1546,7 @@ fn volume_sun_splats_impl(index:u32,lane:u32,damaged:bool) {
         for(var p=0u;p<6u;p++) {inside=inside&&!volume_splat_outside(cell,volume_splat_header(4u+p));}
         // No area thinning into the sun maps: filtered depth turned it into grain
         // and lost tree shadow density.
-        if inside {volume_splat_append(index,cell_ref,cell,toward,0.0);}
+        if inside {volume_splat_append(volume_splat_record(index,cell_ref,cell,toward,0.0));}
     }
 }
 

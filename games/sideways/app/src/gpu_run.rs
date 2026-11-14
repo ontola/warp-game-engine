@@ -103,6 +103,7 @@ fn stage_frame(gpu: &render::Gpu, job: &toml::Value, size: (u32, u32), out: &Pat
         Some(v) => v.as_bool().ok_or("taa must be a boolean")?,
     };
     let args = crate::shot::ShotArgs {
+        voxel_raster_profile: false,
         upscale: job.get("upscale").map(|v|v.as_str().ok_or("upscale must be a string")).transpose()?.unwrap_or("native").parse()?,
         // Preserve existing frozen GPU-job baselines unless wind is explicit.
         nature: crate::nature::Nature { vegetation: sideways::vegetation::Vegetation::new(

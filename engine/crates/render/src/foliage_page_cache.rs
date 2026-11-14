@@ -78,7 +78,7 @@ impl Cache {
         let Some(splat)=self.splat.allocate(page.splats.len()as u32) else{self.index.release(index)?;self.cell.release(cell)?;return Ok(());};
         let (level,mut indices,splats)=page.relocate(index.range.start,cell.range.start)?;
         let first=2*self.pages.len()as u32+splat.range.start;
-        for brick in &page.splat_bricks {indices.extend_from_slice(&[first+brick[0],brick[1],brick[2],0]);}
+        for brick in &page.splat_bricks {indices.extend_from_slice(&[first+brick[0],brick[1],brick[2],brick[3]]);}
         self.pending=Some(Pending {id,resident:Resident {index,cell,splat,last_used:self.frame},level,indices,splats,cells:crate::foliage_volume_data::packed_cells(&page.cells),cursor:0});Ok(())
     }
     fn advance(&mut self,gpu:&Gpu,budget:u64)->Result<u64,String> {
@@ -254,7 +254,7 @@ mod tests {
             let splat:[u32;2]=bytemuck::pod_read_unaligned(&raw[header[0]as usize*8..][..8]);assert_eq!(splat,[index-1,0]);
             let group:[u32;2]=bytemuck::pod_read_unaligned(&raw[(forest.levels.len()+target)*8..][..8]);assert_eq!(group[1],1);
             let raw=read(&cache.buffers[1]);let descriptor:[u32;4]=bytemuck::pod_read_unaligned(&raw[group[0]as usize*4..][..16]);
-            assert_eq!(descriptor,[header[0],1,0,0],"reloaded brick range must address this page's current splat allocation");
+            assert_eq!(descriptor,[header[0],1,0,63],"reloaded single-cell brick must address this page's current splat allocation");
         }
         assert!(cache.stats().evictions>=2);assert!(cache.publication[1].1>2);
         assert!(Cache::new(&gpu,&forest,vec![vec![0]],vec![true,true,true],budget).is_err());

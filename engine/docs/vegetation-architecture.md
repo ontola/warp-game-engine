@@ -1,6 +1,6 @@
 # Warp vegetation: implementation checklist
 
-Updated 6 November 2026. **This is the single authoritative checklist.**
+Updated 13 November 2026. **This is the single authoritative checklist.**
 Older reports and `engine/docs/log/handoff.md` contain supporting history, not separate
 plans. Architecture first; no interactive playtest until requested.
 
@@ -10,6 +10,37 @@ plans. Architecture first; no interactive playtest until requested.
 paging, shared poses and shadow caching are integrated. Requested detail,
 upstream two-phase visibility, independent consumer detail and target performance
 are still unaccepted. There is no CPU near-tree pool.
+
+## Camera foliage in Sideways and terrain_fly
+
+Both clients use the same GPU cut over the cooked plant hierarchy. A close
+camera can select source triangles for a twig. The shadow view can keep the
+same twig as voxels. The error cut checks whether a consumer wants source
+geometry before requesting its page. While a requested child is missing,
+the resident parent continues to cover the branch. When an intermediate
+voxel would exhaust the camera splat budget, a single-child chain may
+advance directly to its resident mesh. Every skipped voxel must still
+exceed its projected error target. The mesh must fit the source-cluster
+and slot budgets. Branch points require a complete visible set of children.
+
+The camera groups occupied voxel cells into 4×4×4 bricks. The first pass
+tests their projected bounds against the previous depth pyramid. A second
+pass retests deferred bricks against the current depth before discarding
+them. Each brick stores its occupied minimum and three spans inside the
+existing descriptor. The projection includes the raster footprint and the
+screen-space margin. Camera and sun rasterize surviving splats with one
+shared six-index quad and four distinct corners per instance.
+
+On devices with subgroup operations, `KERN_SPLAT_SUBGROUP_APPEND=1` lets
+the first camera pass reserve buffer space for a packet of surviving cells
+with one global atomic per nonempty subgroup. The default is one atomic per
+survivor. Both paths use the same capacity and record format.
+
+Use `sideways shot --voxel-raster-profile` for an offline count of stored
+splats, distinct splats winning at least one camera pixel, and covered
+pixels. Compare the same pose, viewport, TAA sample count and streaming
+warmup. The difference between stored and winning counts includes splats
+that miss every sample as well as splats hidden by other geometry.
 
 ## 6 November (evening): near-pixel splats, urgent streaming
 
