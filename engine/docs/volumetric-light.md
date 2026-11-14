@@ -177,32 +177,54 @@ survive sky changes.
 `Lighting::froxel_fog` (`render::froxel_fog`) is a participating medium in
 a camera-aligned grid of 160x90x64 cells (froxels; Wronski 2014, Hillaire
 2015), slices spaced exponentially from 0.1 m to `far_m` of view depth. The
-game sets density (extinction per metre), albedo, anisotropy and,
-optionally, the box the medium fills; nothing else, no fog boxes per light.
+game sets density (extinction per metre), albedo, anisotropy and where the
+medium is (`FogBounds`): everywhere, one box, or `Rooms`, the rooms the
+scene already declares for its reflection probes (their boxes, fading out
+over 0.5 m as the probes' reflections do, through `room_presence` in
+rsm.wgsl, the one definition of a room both use). Rooms joined by a door
+must reach through the opening to the door's leaf, as `architecture`
+builds them; otherwise the doorway between two boxes holds no smoke.
+Nothing else: no fog boxes per light or per wing.
 
 ```rust
 light.froxel_fog = Some(FroxelFog { density: 0.15, albedo: Vec3::splat(0.9), anisotropy: 0.4,
-    far_m: 32.0, bounds: None });
+    far_m: 32.0, bounds: FogBounds::Rooms });
 ```
 
 - `fog_inject` (compiled with shade, so the air is lit as surfaces are), one
   workgroup per column of cells: each cell, at a point jittered across it
-  every frame, gets the light scattered towards the camera (Henyey-Greenstein)
+  every frame (golden-ratio steps per cell, so a cell's samples spread over
+  it; along the slice from interleaved gradient noise, so neighbouring cells
+  sample different depths), gets the light scattered towards the camera (Henyey-Greenstein)
   from every clustered light with its shadow (one filtered compare), cookie
   and profile, from the sun through its shadow maps, and the room's ambient
   light (the irradiance volume's two hemispheres, the sky through openings
-  included), times the scattering coefficient; and the extinction. It is
-  blended with last frame's cell where the point was (reprojected, 0.9 kept).
+  included), times the scattering coefficient; and the extinction. A
+  clustered light's inverse square, which changes most along a cell near
+  the lamp, is its exact mean over the cell's stretch of the ray (the rest
+  of the light, cone, profile, shadow and phase, at the point). The result
+  is blended with last frame's value at the cell's centre (reprojected, 0.9
+  kept): the centre, since history read at the jittered point mixes a
+  random share of the neighbouring cells into the cell every frame, which
+  flickered under a lamp.
   The cells it writes are its own bind group (group 3): shade's view group
   already carries three storage textures, and a stage may see four
   (`frame::shade_storage_textures`, checked by a test).
-- Air the camera cannot see does not reach the fog it can: a column skips
-  cells behind its farthest visible surface (the least depth in its tile,
-  found by the workgroup), and a sample that lies behind the depth buffer at
-  its own pixel (above a ceiling, outside a wall, in a column that also shows
-  the far side of the room) leaves the cell's history as it is, so the cell
-  averages its visible air. Without this a cell straddling a wall took the
-  outdoor sky and sun into the room's smoke (a bright band along a ceiling).
+- Air the camera cannot see does not reach the fog it can. A column marks
+  the cells behind its farthest visible surface (the least depth in its
+  tile, found by the workgroup) as holding no air it sees (alpha -1,
+  carried through the integration), and every lookup of the volumes (shade,
+  glass, last frame's cells) filters trilinearly over the unmarked cells
+  only. A cell it cuts samples only in front of that surface; a sample that
+  lies behind the depth buffer at its own pixel (above a ceiling, outside a
+  wall, in a column that also shows the far side of the room) moves to the
+  ray of the tile's farthest pixel, which sees past the whole cell. Without
+  the first a cell straddling a wall took the outdoor sky and sun into the
+  room's smoke (a bright band along a ceiling); with dark air stored in the
+  marked cells instead, a pixel next to a nearer column read that air: a
+  dark wedge on the grass beside a building's edge and a dark, flickering
+  band just below the horizon, where each row of cells sees farther than
+  the row beneath it.
 - `integrate`: per column, front to back, Hillaire's energy-conserving step;
   shade dims each pixel by the transmittance to its depth and adds the
   in-scattered light, trilinear, before TAA.

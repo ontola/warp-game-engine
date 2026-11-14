@@ -15,6 +15,29 @@
 
 const FOG_NEAR: f32 = 0.1;
 const FOG_GRID: vec3<u32> = vec3<u32>(160u, 90u, 64u);
+// A cell's alpha when it lies wholly behind its column's farthest surface
+// (froxel_fog.rs's integration carries it through).
+const FOG_BEHIND: f32 = -1.0;
+
+// Trilinear filter of a fog volume at texel coordinate t (texel centres at
+// integers) over the cells that are not marked FOG_BEHIND; a < 0 when all
+// eight are.
+fn fog_filtered(tex: texture_3d<f32>, t: vec3<f32>) -> vec4<f32> {
+    let hi = vec3<i32>(FOG_GRID) - 1;
+    let tc = clamp(t, vec3<f32>(0.0), vec3<f32>(hi));
+    let base = vec3<i32>(floor(tc));
+    let f = tc - vec3<f32>(base);
+    var sum = vec4<f32>(0.0);
+    var weight = 0.0;
+    for (var k = 0; k < 8; k++) {
+        let o = vec3<i32>(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+        let c = textureLoad(tex, min(base + o, hi), 0);
+        let wk = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1) * select(1.0 - f.z, f.z, o.z == 1);
+        if c.a >= 0.0 { sum += c * wk; weight += wk; }
+    }
+    if weight <= 0.0 { return vec4<f32>(0.0, 0.0, 0.0, FOG_BEHIND); }
+    return sum / weight;
+}
 
 fn fog_on() -> bool { return gi.fog.x > 0.0; }
 
@@ -69,6 +92,25 @@ fn fog_ambient_irradiance(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     return mix(open, inside, room.w);
 }
 
+// The mean of a lamp's inverse square (1 / max(d^2, source.x), the plain
+// inverse-square falloff of local_light_at) over the segment a..b, divided
+// by its value at p: 1 for a point, or for other falloffs.
+fn fog_inverse_square_mean(lamp: LocalLight, p: vec3<f32>, a: vec3<f32>, b: vec3<f32>) -> f32 {
+    if !(lamp.source.y == 2.0 || lamp.source.y == 0.0) { return 1.0; }
+    let ab = b - a;
+    let len = length(ab);
+    if len < 1e-4 { return 1.0; }
+    let d = ab / len;
+    let la = lamp.position_range.xyz - a;
+    let t0 = dot(la, d);
+    // Distance of the line from the lamp, no nearer than the falloff's floor.
+    let h2 = max(dot(la, la) - t0 * t0, lamp.source.x);
+    let h = sqrt(max(h2, 1e-12));
+    let mean = (atan((len - t0) / h) - atan(-t0 / h)) / (h * len);
+    let pd = p - lamp.position_range.xyz;
+    return mean * max(dot(pd, pd), lamp.source.x);
+}
+
 fn fog_rand(seed: u32) -> f32 {
     var s = seed * 747796405u + 2891336453u;
     s = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
@@ -76,6 +118,7 @@ fn fog_rand(seed: u32) -> f32 {
 }
 
 var<workgroup> fog_tile_depth: array<f32, 64>;
+var<workgroup> fog_tile_pixel: array<u32, 64>;
 
 // One workgroup per column of cells, one thread per slice. The threads first
 // find the column's farthest visible surface (the least depth in its tile of
@@ -90,27 +133,52 @@ fn fog_inject(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
     let lo = cell.xy * size / FOG_GRID.xy;
     let hi = max(min((cell.xy + 1u) * size / FOG_GRID.xy, size), lo + 1u);
     let count = (hi - lo).x * (hi - lo).y;
-    var least = 1.0;
+    var least = 2.0;
+    var at = 0u;
     for (var k = li; k < count; k += 64u) {
         let q = lo + vec2<u32>(k % (hi - lo).x, k / (hi - lo).x);
-        least = min(least, textureLoad(depth_tex, vec2<i32>(q), 0));
+        let d = textureLoad(depth_tex, vec2<i32>(q), 0);
+        if d < least { least = d; at = k; }
     }
     fog_tile_depth[li] = least;
+    fog_tile_pixel[li] = at;
     workgroupBarrier();
     for (var s = 32u; s > 0u; s >>= 1u) {
-        if li < s { fog_tile_depth[li] = min(fog_tile_depth[li], fog_tile_depth[li + s]); }
+        if li < s && fog_tile_depth[li + s] < fog_tile_depth[li] {
+            fog_tile_depth[li] = fog_tile_depth[li + s];
+            fog_tile_pixel[li] = fog_tile_pixel[li + s];
+        }
         workgroupBarrier();
     }
     let surface = select(1e9, view.params.y / fog_tile_depth[0], fog_tile_depth[0] > 0.0);
     let frame = u32(gi.fog_albedo.w);
-    let jitter = fog_rand(cell.x ^ (cell.y << 8u) ^ (cell.z << 16u) ^ (frame * 0x9e3779b9u));
+    // Blue-ish across cells (interleaved gradient noise, Jimenez 2014, over
+    // the cell and its slice), stratified over frames (golden-ratio steps).
+    let ign = fract(52.9829189 * fract(0.06711056 * (f32(cell.x) + 5.588238 * f32(cell.z)) + 0.00583715 * (f32(cell.y) + 3.217 * f32(cell.z))));
+    let jitter = fract(ign + f32(frame % 4096u) * 0.618034);
     // The sample: jittered across the cell in x and y too, so that over
     // frames the cell averages the air it holds.
-    let jxy = vec2<f32>(fog_rand((cell.x * 7919u) ^ (cell.y * 104729u) ^ (cell.z * 1299709u) ^ (frame * 2654435761u)), fog_rand((cell.x * 15485863u) ^ (cell.y * 32452843u) ^ (cell.z * 49979687u) ^ (frame * 40503u)));
-    let uv = (vec2<f32>(cell.xy) + jxy) / vec2<f32>(FOG_GRID.xy);
+    let jxy = fract(vec2<f32>(fog_rand(cell.x ^ (cell.y << 8u) ^ (cell.z << 16u)), fog_rand((cell.x * 7919u) ^ (cell.y * 104729u) ^ (cell.z * 1299709u))) + f32(frame % 4096u) * vec2<f32>(0.7548777, 0.5698403));
+    var uv = (vec2<f32>(cell.xy) + jxy) / vec2<f32>(FOG_GRID.xy);
     let start = fog_slice_depth(f32(cell.z));
-    if start >= surface { textureStore(fog_out, cell, vec4<f32>(0.0, 0.0, 0.0, gi.fog.x)); return; }
+    // A cell wholly behind the column's farthest surface holds no air any
+    // pixel of this column sees. It is marked (a < 0) rather than filled:
+    // dark air there, read by the filtering of a neighbouring column that
+    // sees farther (past a wall's edge, the ground towards the horizon),
+    // darkened that column's fog; the lookups leave marked cells out.
+    if start >= surface { textureStore(fog_out, cell, vec4<f32>(0.0, 0.0, 0.0, FOG_BEHIND)); return; }
     let w = min(fog_slice_depth(f32(cell.z) + jitter), mix(start, surface, 0.999));
+    // Air the camera cannot see (behind the surface at the sample's own
+    // pixel: above a ceiling, outside a wall in a tile that also shows the
+    // far side of a room) is not the cell's: such a sample moves to the
+    // ray of the tile's farthest pixel, which sees past the whole cell
+    // (w is in front of it), so every frame adds visible air.
+    let spx = min(vec2<u32>(uv * vec2<f32>(size)), size - 1u);
+    let pd = textureLoad(depth_tex, vec2<i32>(spx), 0);
+    if pd > 0.0 && w > view.params.y / pd {
+        let k = fog_tile_pixel[0];
+        uv = (vec2<f32>(lo + vec2<u32>(k % (hi - lo).x, k / (hi - lo).x)) + 0.5) / vec2<f32>(size);
+    }
     // The cell's ray from the camera, at view depth w (along the axis).
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     let hn = view.inv_view_proj * vec4<f32>(ndc, 1.0, 1.0);
@@ -119,26 +187,29 @@ fn fog_inject(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
     let forward = normalize(hc.xyz / hc.w - view.cam.xyz);
     let p = view.cam.xyz + dir * (w / max(dot(dir, forward), 1e-3));
     let to_eye = normalize(view.cam.xyz - p);
-    // Air the camera cannot see (behind the surface at the sample's own
-    // pixel: above a ceiling, outside a wall in a tile that also shows the
-    // far side of a room) scatters nothing into what it can: the cell
-    // averages only its visible air.
-    let spx = min(vec2<u32>(uv * vec2<f32>(size)), size - 1u);
-    let pd = textureLoad(depth_tex, vec2<i32>(spx), 0);
-    let hidden = pd > 0.0 && w > view.params.y / pd;
-    var cur = fog_medium(p, to_eye);
-    if hidden { cur = vec4<f32>(0.0, 0.0, 0.0, cur.a); }
-    // Last frame's cell where this point was, 0.9 kept.
+    // The cell's stretch of that ray (in front of the surface), over which
+    // the lights' inverse square is averaged.
+    let along = 1.0 / max(dot(dir, forward), 1e-3);
+    let w_end = min(fog_slice_depth(f32(cell.z) + 1.0), mix(start, surface, 0.999));
+    var cur = fog_medium(p, to_eye, view.cam.xyz + dir * (start * along), view.cam.xyz + dir * (w_end * along));
+    // Last frame's value where the cell's centre was, 0.9 kept. The centre,
+    // not the jittered sample: history read at the sample's point blends
+    // in a random share of the neighbouring cells every frame, a random
+    // walk that showed as cells flickering under a lamp.
     if gi.fog.w > 1.5 {
-        let pc = gi.fog_prev * vec4<f32>(p, 1.0);
+        let cuv = (vec2<f32>(cell.xy) + 0.5) / vec2<f32>(FOG_GRID.xy);
+        let ch = view.inv_view_proj * vec4<f32>(cuv.x * 2.0 - 1.0, 1.0 - cuv.y * 2.0, 1.0, 1.0);
+        let cdir = normalize(ch.xyz / ch.w - view.cam.xyz);
+        let centre = view.cam.xyz + cdir * (fog_slice_depth(f32(cell.z) + 0.5) / max(dot(cdir, forward), 1e-3));
+        let pc = gi.fog_prev * vec4<f32>(centre, 1.0);
         if pc.w > 1e-4 {
             let puv = vec2<f32>(pc.x / pc.w * 0.5 + 0.5, 0.5 - pc.y / pc.w * 0.5);
             let pz = fog_depth_slice(pc.w) / f32(FOG_GRID.z);
             if all(puv >= vec2<f32>(0.0)) && all(puv <= vec2<f32>(1.0)) && pz >= 0.0 && pz <= 1.0 {
-                let prev = textureSampleLevel(fog_prev, canopy_sampler, vec3<f32>(puv, pz), 0.0);
-                // A hidden sample leaves the history as it is: the cell averages
-                // its visible air, not its visible share of it.
-                cur = mix(prev, cur, select(0.1, 0.0, hidden));
+                // Last frame's cells behind a surface are left out (none:
+                // newly seen air, no history).
+                let prev = fog_filtered(fog_prev, vec3<f32>(puv, pz) * vec3<f32>(FOG_GRID) - 0.5);
+                if prev.a >= 0.0 { cur = mix(prev, cur, 0.1); }
             }
         }
     }
@@ -146,8 +217,12 @@ fn fog_inject(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
 }
 
 // The medium at p: rgb the light it scatters towards `to_eye` per metre,
-// a its extinction per metre.
-fn fog_medium(p: vec3<f32>, to_eye: vec3<f32>) -> vec4<f32> {
+// a its extinction per metre. p is one point of the segment seg_a..seg_b
+// whose mean the caller wants (a froxel cell's stretch of its ray, a step
+// of a capture march): a clustered light's inverse square, which varies
+// most along it near the lamp, is replaced by its exact mean over the
+// segment, and the rest (cone, profile, shadow, phase) is taken at p.
+fn fog_medium(p: vec3<f32>, to_eye: vec3<f32>, seg_a: vec3<f32>, seg_b: vec3<f32>) -> vec4<f32> {
     let g = gi.fog.y;
     var lin = vec3<f32>(0.0);
     // Clustered lights, shadowed, with cookies and profiles.
@@ -160,6 +235,7 @@ fn fog_medium(p: vec3<f32>, to_eye: vec3<f32>) -> vec4<f32> {
             if all(s.irradiance == vec3<f32>(0.0)) { continue; }
             if u32(lamp.source.w) >= 8u { s.irradiance *= light_shape(lamp, -s.direction); }
             if lamp.source.z > 0.5 { s.irradiance *= fog_light_shadow(lamp, p); }
+            s.irradiance *= fog_inverse_square_mean(lamp, p, seg_a, seg_b);
             lin += s.irradiance * fog_hg(dot(-s.direction, to_eye), g);
         }
     }
@@ -172,9 +248,17 @@ fn fog_medium(p: vec3<f32>, to_eye: vec3<f32>) -> vec4<f32> {
     }
     // Ambient (isotropic): the mean radiance of the two hemispheres.
     lin += (fog_ambient_irradiance(p, vec3<f32>(0.0, 1.0, 0.0)) + fog_ambient_irradiance(p, vec3<f32>(0.0, -1.0, 0.0))) / (2.0 * PI);
-    // The medium fills its bounds (all space when unbounded).
-    let inside = gi.fog_bounds[0].w < 0.5 || (all(p >= gi.fog_bounds[0].xyz) && all(p <= gi.fog_bounds[1].xyz));
-    let sigma_t = select(0.0, gi.fog.x, inside);
+    // The medium fills its bounds: everywhere (w 0), a box (w 1), or the
+    // rooms the scene declares (w 2, room_presence: the reflection probes'
+    // boxes, fading out over ROOM_FADE_M; everywhere when it declares none).
+    var inside = 1.0;
+    let mode = gi.fog_bounds[0].w;
+    if mode > 1.5 {
+        if u32(gi.probes.y) > 0u { inside = room_presence(p); }
+    } else if mode > 0.5 {
+        inside = select(0.0, 1.0, all(p >= gi.fog_bounds[0].xyz) && all(p <= gi.fog_bounds[1].xyz));
+    }
+    let sigma_t = gi.fog.x * inside;
     return vec4<f32>(lin * gi.fog_albedo.rgb * sigma_t, sigma_t);
 }
 
@@ -194,7 +278,7 @@ fn fog_capture(origin: vec3<f32>, end: vec3<f32>, px: vec2<i32>) -> vec4<f32> {
     var light = vec3<f32>(0.0);
     var through = 1.0;
     for (var k = 0u; k < FOG_CAPTURE_STEPS; k++) {
-        let m = fog_medium(origin + dir * (step * (f32(k) + offset)), -dir);
+        let m = fog_medium(origin + dir * (step * (f32(k) + offset)), -dir, origin + dir * (step * f32(k)), origin + dir * (step * f32(k + 1u)));
         let sigma = max(m.a, 1e-7);
         let st = exp(-sigma * step);
         light += through * (m.rgb - m.rgb * st) / sigma;
@@ -221,8 +305,11 @@ fn froxel_fog_at(p: vec3<f32>) -> vec4<f32> {
 
 fn froxel_fog_uv(uv: vec2<f32>, w: f32) -> vec4<f32> {
     // The integrated volume holds each slice's far side.
-    let z = (fog_depth_slice(min(w, gi.fog.z)) - 0.5) / f32(FOG_GRID.z);
-    let s = textureSampleLevel(fog_volume, canopy_sampler, vec3<f32>(uv, clamp(z, 0.0, 1.0)), 0.0);
+    // Filtered over the cells that hold air the pixel's neighbours see:
+    // a column whose surface is nearer than w has no air there.
+    let z = fog_depth_slice(min(w, gi.fog.z)) - 1.0;
+    var s = fog_filtered(fog_volume, vec3<f32>(uv * vec2<f32>(FOG_GRID.xy) - 0.5, z));
+    if s.a < 0.0 { s = vec4<f32>(0.0, 0.0, 0.0, 1.0); }
     // In front of the first slice's far side: scale towards nothing.
     let first = fog_slice_depth(1.0);
     if w < first { let f = max(w - FOG_NEAR, 0.0) / (first - FOG_NEAR); return vec4<f32>(s.rgb * f, mix(1.0, s.a, f)); }

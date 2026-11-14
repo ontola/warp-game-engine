@@ -137,12 +137,15 @@ fn door_xf(open: f32) -> Affine3A {
         * Affine3A::from_scale_rotation_translation(Vec3::new(0.06, DOOR_TOP - 0.01, 0.98), Quat::IDENTITY, Vec3::new(0.0, DOOR_TOP * 0.5, 0.5))
 }
 
-/// Reflection probes, one per room: capture point and the room's inside.
+/// Reflection probes, one per room: capture point and the room's inside,
+/// reaching through each door opening to the middle of its wall (the leaf),
+/// as `architecture` builds them: the probes and the smoke
+/// (`FogBounds::Rooms`) then have no gap in a doorway.
 const ROOM_PROBES: [render::reflection_probes::ProbeBox; 4] = [
-    render::reflection_probes::ProbeBox { capture: Vec3::new(0.0, 1.5, 0.0), min: Vec3::new(-4.0, 0.0, -4.0), max: Vec3::new(4.0, H, 4.0) },
-    render::reflection_probes::ProbeBox { capture: Vec3::new(-1.5, 1.5, -6.0), min: Vec3::new(-4.0, 0.0, -10.2), max: Vec3::new(4.0, H, -4.3) },
-    render::reflection_probes::ProbeBox { capture: Vec3::new(0.0, 1.5, -13.5), min: Vec3::new(-4.0, 0.0, -16.6), max: Vec3::new(4.0, H, -10.5) },
-    render::reflection_probes::ProbeBox { capture: Vec3::new(-6.6, 1.5, -12.6), min: Vec3::new(-9.0, 0.0, -16.6), max: Vec3::new(-4.3, H, -10.5) },
+    render::reflection_probes::ProbeBox { capture: Vec3::new(0.0, 1.5, 0.0), min: Vec3::new(-4.0, 0.0, -4.15), max: Vec3::new(4.0, H, 4.15) },
+    render::reflection_probes::ProbeBox { capture: Vec3::new(-1.5, 1.5, -6.0), min: Vec3::new(-4.0, 0.0, -10.35), max: Vec3::new(4.0, H, -4.15) },
+    render::reflection_probes::ProbeBox { capture: Vec3::new(0.0, 1.5, -13.5), min: Vec3::new(-4.15, 0.0, -16.6), max: Vec3::new(4.0, H, -10.35) },
+    render::reflection_probes::ProbeBox { capture: Vec3::new(-6.6, 1.5, -12.6), min: Vec3::new(-9.0, 0.0, -16.6), max: Vec3::new(-4.15, H, -10.5) },
 ];
 
 /// Smoothstep: the door eases in and out.
@@ -448,8 +451,8 @@ impl Rooms {
         // flashlight and the daylight through the doors scatter in it, the
         // walls and furniture shadow it, and the far side of a room hazes.
         self.light.froxel_fog = on.then(|| render::froxel_fog::FroxelFog { density: 0.15, albedo: Vec3::splat(0.9), anisotropy: 0.4, far_m: 32.0,
-            // ROOMS_FOG_OUTSIDE=1: the smoke outdoors too (no bounds).
-            bounds: std::env::var_os("ROOMS_FOG_OUTSIDE").is_none().then_some((Vec3::new(-9.3, 0.0, -16.9), Vec3::new(4.3, H, 4.3))) });
+            // In the rooms (their probe boxes); ROOMS_FOG_OUTSIDE=1: outdoors too.
+            bounds: if std::env::var_os("ROOMS_FOG_OUTSIDE").is_some() { render::froxel_fog::FogBounds::Everywhere } else { render::froxel_fog::FogBounds::Rooms } });
     }
 
     /// The probes for the door at `open` and the lamps that are on: the two
@@ -760,6 +763,46 @@ fn main() -> Result<(), String> {
             rgba = headless.frame(&mut game)?;
         }
         eprintln!("shot: exposure EV {:?}, meter EV {:?}", game.ev.map(|e| e.0), game.ev.map(|e| e.1));
+        // --flicker N: N more frames standing still; the mean and 99th
+        // percentile frame-to-frame change of luma (sRGB 0..255) per pixel,
+        // over the whole frame or --crop x,y,w,h, and every frame written
+        // as <out>_<k>.png.
+        if let Some(n) = arg("--flicker").and_then(|f| f.parse::<u32>().ok()) {
+            let crop: Vec<u32> = arg("--crop").map(|c| c.split(',').filter_map(|v| v.parse().ok()).collect()).unwrap_or_default();
+            let (cx, cy, cw, ch) = if crop.len() == 4 { (crop[0], crop[1], crop[2], crop[3]) } else { (0, 0, w, h) };
+            let luma = |img: &[u8]| -> Vec<f32> {
+                let mut v = Vec::with_capacity((cw * ch) as usize);
+                for y in cy..(cy + ch).min(h) { for x in cx..(cx + cw).min(w) {
+                    let i = ((y * w + x) * 4) as usize;
+                    v.push(0.2126 * img[i] as f32 + 0.7152 * img[i + 1] as f32 + 0.0722 * img[i + 2] as f32);
+                } }
+                v
+            };
+            let stem = out.trim_end_matches(".png").to_string();
+            let mut last = luma(&rgba);
+            let mut diffs: Vec<f32> = Vec::new();
+            // The pendant held: its swing is not flicker.
+            let held = game.t;
+            for k in 0..n {
+                game.t = held - 1.0 / TICK_HZ;
+                game.tick(&[Controls::default()]);
+                rgba = headless.frame(&mut game)?;
+                render::write_png(std::path::Path::new(&format!("{stem}_{k}.png")), w, h, &rgba)?;
+                let cur = luma(&rgba);
+                diffs.extend(cur.iter().zip(&last).map(|(a, b)| (a - b).abs()));
+                last = cur;
+            }
+            // Where it changes: the largest step per pixel over the frames, x16.
+            let mut most = vec![0u8; diffs.len() / n.max(1) as usize];
+            let len = most.len().max(1);
+            for (i, d) in diffs.iter().enumerate() { let m = &mut most[i % len]; *m = (*m).max((d * 16.0).min(255.0) as u8); }
+            let img: Vec<u8> = most.iter().flat_map(|&m| [m, m, m, 255]).collect();
+            render::write_png(std::path::Path::new(&format!("{stem}_diff.png")), cw.min(w - cx), ch.min(h - cy), &img)?;
+            let mean = diffs.iter().sum::<f32>() / diffs.len().max(1) as f32;
+            diffs.sort_by(|a, b| a.total_cmp(b));
+            let p99 = diffs.get(diffs.len() * 99 / 100).copied().unwrap_or(0.0);
+            println!("flicker: mean {mean:.3}, p99 {p99:.2} luma steps per frame over {n} frames");
+        }
         return render::write_png(std::path::Path::new(&out), w, h, &rgba);
     }
     app::run(app::Config { title: "Warp: four rooms".into(), tick_hz: TICK_HZ, ..Default::default() }, &mut game)
