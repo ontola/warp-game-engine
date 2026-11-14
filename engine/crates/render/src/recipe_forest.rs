@@ -146,7 +146,7 @@ pub fn cook_variants(variants: &[(WoodyRecipe, u64)], cache: Option<&Path>) -> R
 
 /// Bump when plant_growth or plant_growth_assembly change what they build:
 /// the cook cache key holds their inputs, not their code.
-const GROWN_ASSEMBLY_VERSION: u32 = 13;
+const GROWN_ASSEMBLY_VERSION: u32 = 14;
 
 /// A library preset uses the same source as its inspection and scripting APIs.
 /// Traditional woody entries retain their cache identity. Shoots with multiple
@@ -170,7 +170,7 @@ pub fn cook_catalog(form: &crate::plant_species::GrownSpecies, age: u32, seed: u
     let (plant, loaded) = match cache {
         Some(dir) => {
             let ids: Vec<_> = parts.tufts.iter().map(|p| p.id).collect();
-            let key = format!("{habit_key} {:?} {:?} {age} {seed} {ids:?} {config:?} {proxy:?} {PROXY_LEVELS} {limits:?}",
+            let key = format!("grown v{GROWN_ASSEMBLY_VERSION} {habit_key} {:?} {:?} {age} {seed} {ids:?} {config:?} {proxy:?} {PROXY_LEVELS} {limits:?}",
                 form.rules, form.look);
             CookedPlant::cached(dir, &key, cook)?
         }

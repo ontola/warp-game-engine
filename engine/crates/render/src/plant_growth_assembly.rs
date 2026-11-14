@@ -305,13 +305,16 @@ fn along(from: Vec3, to: Vec3) -> Quat {
 
 /// Long stem runs from year segments: consecutive shoots of one axis merge
 /// until `reach` metres, so a tree is tens of trunk pieces, not one a year.
-fn runs(plant: &Plant, reach: f32) -> Vec<(u32, Vec3, Vec3, f32, f32, bool)> {
+fn runs(plant: &Plant, reach: f32, preserve_curves: bool) -> Vec<(u32, Vec3, Vec3, f32, f32, bool)> {
     let n = plant.segments.len();
     let mut next = vec![None; n];
+    let mut forks = vec![false; n];
     for (i, s) in plant.segments.iter().enumerate() {
         if let Some(p) = s.parent {
             if plant.segments[p as usize].order == s.order {
                 next[p as usize] = Some(i);
+            } else {
+                forks[p as usize] = true;
             }
         }
     }
@@ -322,13 +325,32 @@ fn runs(plant: &Plant, reach: f32) -> Vec<(u32, Vec3, Vec3, f32, f32, bool)> {
             continue;
         }
         let (mut start, mut radius, mut last, mut at) = (s.from, s.radius[0], i, i);
-        while let Some(n) = next[at] {
-            at = n;
-            if plant.segments[at].to.distance(start) >= reach {
+        let mut points = vec![(s.to, s.radius[1])];
+        while let Some(next_segment) = next[at] {
+            let end = plant.segments[next_segment].to;
+            let chord = end - start;
+            let chord_length = chord.length_squared();
+            // A straight run may replace annual wood only while its centreline
+            // stays inside the original stem. Keep lateral attachment nodes.
+            let bends = points.iter().any(|&(point, radius)| {
+                let t = ((point - start).dot(chord) / chord_length.max(1e-12)).clamp(0.0, 1.0);
+                point.distance_squared(start + chord * t) > (radius * 0.5).powi(2)
+            });
+            if preserve_curves && (forks[at] || bends) {
                 out.push((last as u32, start, plant.segments[at].to, radius, plant.segments[at].radius[1], last == i));
                 start = plant.segments[at].to;
-                radius = plant.segments[at].radius[0];
+                radius = plant.segments[at].radius[1];
+                last = next_segment;
+                points.clear();
+            }
+            at = next_segment;
+            points.push((end, plant.segments[at].radius[1]));
+            if end.distance(start) >= reach {
+                out.push((last as u32, start, end, radius, plant.segments[at].radius[1], last == i));
+                start = end;
+                radius = plant.segments[at].radius[1];
                 last = at;
+                points.clear();
             }
         }
         let end = plant.segments[at].to;
@@ -356,6 +378,12 @@ pub(crate) struct ShootLayers<'a> {
 
 pub(crate) fn assemble_shoots(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Limits,
     layers: Option<ShootLayers<'_>>) -> Result<(Assembly, Counts), String> {
+    assemble_shoots_with_curves(plant, parts, look, seed, limits, layers, false)
+}
+
+/// Retain the centreline and branch junctions for small articulated shrubs.
+pub(crate) fn assemble_shoots_with_curves(plant: &Plant, parts: &Parts, look: Look, seed: u64, limits: Limits,
+    layers: Option<ShootLayers<'_>>, preserve_curves: bool) -> Result<(Assembly, Counts), String> {
     let variants = layers.as_ref().map_or(parts.tufts.len().max(1), |l| l.variants.len());
     let members = 1 + layers.as_ref().and_then(|l| l.variants.iter().map(|m| m.len()).max()).unwrap_or(0);
     if layers.is_some() && (variants == 0 || variants > parts.tufts.len()) {
@@ -403,7 +431,7 @@ pub(crate) fn assemble_shoots(plant: &Plant, parts: &Parts, look: Look, seed: u6
 
     let mut reach = 0.6;
     let stems = loop {
-        let r = runs(plant, reach);
+        let r = runs(plant, reach, preserve_curves);
         if r.len() * 3 <= limits.max_instances || reach > 64.0 {
             break r;
         }
@@ -533,6 +561,30 @@ pub(crate) fn assemble_shoots(plant: &Plant, parts: &Parts, look: Look, seed: u6
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stem_runs_keep_bends_and_forks_but_merge_straight_wood() {
+        use crate::plant_growth::{Plant, Segment};
+        let axis = |points: &[Vec3]| Plant {
+            age: 4,
+            segments: points.windows(2).enumerate().map(|(i, p)| Segment {
+                from: p[0], to: p[1], radius: [0.002; 2], order: 0,
+                born: i as u32, parent: i.checked_sub(1).map(|p| p as u32), alive: true,
+            }).collect(),
+            tufts: vec![],
+        };
+        let straight = axis(&[Vec3::ZERO, Vec3::X * 0.1, Vec3::X * 0.2, Vec3::X * 0.3]);
+        assert_eq!(super::runs(&straight, 0.6, true).len(), 1);
+        let mut bent = axis(&[Vec3::ZERO, Vec3::X * 0.1, Vec3::new(0.2, 0.0, 0.04), Vec3::new(0.3, 0.0, 0.02)]);
+        assert_eq!(super::runs(&bent, 0.6, true).len(), 3);
+        bent = straight.clone();
+        let junction = bent.segments[0].to;
+        bent.segments.push(Segment { from: junction, to: junction + Vec3::Z * 0.1,
+            radius: [0.001; 2], order: 1, born: 2, parent: Some(0), alive: true });
+        let runs = super::runs(&bent, 0.6, true);
+        assert!(runs.iter().any(|r| r.2 == junction));
+        assert!(runs.iter().filter(|r| r.1 == junction).count() >= 2);
+    }
+
     #[test]
     fn needle_base_uvs_decode_to_their_direction() {
         // The decode in raster.wgsl needle_widen.

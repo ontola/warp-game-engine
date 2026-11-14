@@ -65,7 +65,14 @@ impl GrownSpecies {
                     // on its supporting wood while the leafy tips turn up.
                     let bearing = seed_unit(seed, 0, 21) * std::f32::consts::TAU;
                     let trail = glam::Vec3::new(bearing.cos(), 0.21, bearing.sin());
-                    let prostrate = |p: glam::Vec3| glam::Vec3::new(p.x, 0.0, p.z) + trail * p.y;
+                    let across = glam::Vec3::new(-bearing.sin(), 0.0, bearing.cos());
+                    let prostrate = |p: glam::Vec3| {
+                        let base = glam::Vec3::new(p.x, 0.0, p.z) + trail * p.y;
+                        let distance = base.dot(across);
+                        let along = base.dot(glam::Vec3::new(bearing.cos(), 0.0, bearing.sin()));
+                        base + across * (0.045 * (along * 14.0).sin() * along.abs().min(0.15) / 0.15)
+                            + glam::Vec3::Y * (0.009 * (distance * 19.0).sin())
+                    };
                     for s in &mut plant.segments {
                         s.from = prostrate(s.from);
                         s.to = prostrate(s.to);
@@ -87,7 +94,8 @@ impl GrownSpecies {
                     }),
                     _ => None,
                 };
-                plant_growth_assembly::assemble_shoots(&plant, parts, self.look, seed, limits, layers)
+                plant_growth_assembly::assemble_shoots_with_curves(&plant, parts, self.look, seed, limits, layers,
+                    matches!(self.shoot, Some(ShootRecipe::Crowberry)))
             }
         }
     }
@@ -106,7 +114,7 @@ impl GrownSpecies {
         match self.habit {
             Habit::Woody if matches!(self.shoot, Some(ShootRecipe::Juniper)) => Some(format!("juniper v2 {JUNIPER_BAND:?}")),
             Habit::Woody if matches!(self.shoot, Some(ShootRecipe::ScotsPine)) => Some("paired pine v1".into()),
-            Habit::Woody if matches!(self.shoot, Some(ShootRecipe::Crowberry)) => Some("crowberry trailing axes v1".into()),
+            Habit::Woody if matches!(self.shoot, Some(ShootRecipe::Crowberry)) => Some("crowberry curved trailing axes v2".into()),
             Habit::Woody => None,
             Habit::Basal(habit) => Some(format!("basal v1 {habit:?}")),
             Habit::Creeping(habit) => Some(format!("creeping v1 {habit:?}")),
