@@ -21,6 +21,7 @@ struct Uniform {
     prev_view_proj: [[f32; 4]; 4],
     cam: [f32; 4],
     size: [f32; 4],
+    motion: [f32; 4],
     params: [f32; 4],
 }
 
@@ -55,6 +56,20 @@ pub(crate) struct ViewInput<'a> {
     pub camera: Vec3,
     pub proj_scale: f32,
     pub frame: u32,
+    /// The temporal pass's surface motion (sssr.wgsl group 1).
+    pub motion: Motion<'a>,
+}
+
+/// What the temporal pass reads to tell how the surface under a pixel moved:
+/// the view's visibility target and visible clusters, the instances and
+/// wind now and, once motion.rs holds them, last frame's. Without those
+/// every surface counts as one whose motion is unknown.
+pub(crate) struct Motion<'a> {
+    pub visibility: &'a wgpu::TextureView,
+    pub visible: &'a wgpu::Buffer,
+    pub instances: &'a wgpu::Buffer,
+    pub wind: &'a wgpu::Buffer,
+    pub previous: Option<(&'a wgpu::Buffer, &'a wgpu::Buffer)>,
 }
 
 fn texture(gpu: &Gpu, label: &str, (w, h): (u32, u32), format: wgpu::TextureFormat, usage: wgpu::TextureUsages) -> wgpu::Texture {
@@ -119,6 +134,7 @@ impl Sssr {
             prev_view_proj: v.prev_view_proj.to_cols_array_2d(),
             cam: v.camera.extend(v.frame as f32).to_array(),
             size: [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32],
+            motion: [if v.motion.previous.is_some() { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
             params: [v.proj_scale, v.history_levels as f32, RADIUS_PX * h as f32 / 1080.0, if t.frames > 0 { 1.0 } else { 0.0 }],
         };
         gpu.queue.write_buffer(&t.uniform, 0, bytemuck::bytes_of(&u));
@@ -131,7 +147,11 @@ impl Sssr {
         let temporal_bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("sssr temporal"), layout: &self.temporal.get_bind_group_layout(0), entries: &[
             e(0, t.uniform.as_entire_binding()), e(1, tv(&t.rays_view)), e(2, tv(v.depth)), e(4, wgpu::BindingResource::Sampler(&self.sampler)),
             e(6, tv(&t.resolved_view)), e(7, tv(&t.temporal_views[prev])), e(8, tv(&t.temporal_views[next]))] });
-        let composite_bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("sssr composite"), layout: &self.composite.get_bind_group_layout(0), entries: &[
+        let (previous_instances, previous_wind) = v.motion.previous.unwrap_or((v.motion.instances, v.motion.wind));
+        let motion_bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("sssr temporal motion"), layout: &self.temporal.get_bind_group_layout(1), entries: &[
+            e(0, tv(v.motion.visibility)), e(1, v.motion.visible.as_entire_binding()), e(2, v.motion.instances.as_entire_binding()),
+            e(3, previous_instances.as_entire_binding()), e(4, v.motion.wind.as_entire_binding()), e(5, previous_wind.as_entire_binding())] });
+        let composite_bind =gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("sssr composite"), layout: &self.composite.get_bind_group_layout(0), entries: &[
             e(1, tv(&t.rays_view)), e(6, tv(&t.temporal_views[next]))] });
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("sssr resolve"),
@@ -141,6 +161,7 @@ impl Sssr {
             pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
             pass.set_pipeline(&self.temporal);
             pass.set_bind_group(0, &temporal_bind, &[]);
+            pass.set_bind_group(1, &motion_bind, &[]);
             pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
         }
         {
