@@ -227,7 +227,11 @@ light.froxel_fog = Some(FroxelFog { density: 0.15, albedo: Vec3::splat(0.9), ani
   the row beneath it.
 - `integrate`: per column, front to back, Hillaire's energy-conserving step;
   shade dims each pixel by the transmittance to its depth and adds the
-  in-scattered light, trilinear, before TAA.
+  in-scattered light, trilinear, before TAA, each pixel up to half a cell
+  off its own spot, differently every frame (interleaved gradient noise):
+  TAA turns an edge of the light that crosses the cells diagonally (a
+  lamp's cone just in front of the camera, a cell 12 pixels wide at
+  1080p) into a gradient instead of the cells' staircase.
 - Cost, `interior_rooms`, RTX 5070 Ti, 4K: inject 0.60 ms, integrate under
   0.01 ms. `KERN_FROXEL_FOG=0` turns it off.
 - Glass and other blended surfaces (drawn after shade, `transparency.wgsl`)
