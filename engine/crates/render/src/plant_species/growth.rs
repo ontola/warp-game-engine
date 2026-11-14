@@ -60,6 +60,20 @@ impl GrownSpecies {
                 let mut plant = crate::plant_growth::grow(&self.rules, age, seed);
                 if matches!(self.shoot, Some(ShootRecipe::Juniper)) {
                     super::shoots::juniper::settle_limbs(&mut plant, seed);
+                } else if matches!(self.shoot, Some(ShootRecipe::Crowberry)) {
+                    // The oldest axis trails along the ground. Keep every attachment
+                    // on its supporting wood while the leafy tips turn up.
+                    let bearing = seed_unit(seed, 0, 21) * std::f32::consts::TAU;
+                    let trail = glam::Vec3::new(bearing.cos(), 0.21, bearing.sin());
+                    let prostrate = |p: glam::Vec3| glam::Vec3::new(p.x, 0.0, p.z) + trail * p.y;
+                    for s in &mut plant.segments {
+                        s.from = prostrate(s.from);
+                        s.to = prostrate(s.to);
+                    }
+                    for tip in &mut plant.tufts {
+                        tip.at = prostrate(tip.at);
+                        tip.axis = (tip.axis + glam::Vec3::Y * 1.35).normalize();
+                    }
                 }
                 use crate::scene::{Material, THIN_FOLIAGE, TWO_SIDED};
                 let stripe = [Material { tint: JUNIPER_BAND, layer: -1, roughness: 0.88,
@@ -92,6 +106,7 @@ impl GrownSpecies {
         match self.habit {
             Habit::Woody if matches!(self.shoot, Some(ShootRecipe::Juniper)) => Some(format!("juniper v2 {JUNIPER_BAND:?}")),
             Habit::Woody if matches!(self.shoot, Some(ShootRecipe::ScotsPine)) => Some("paired pine v1".into()),
+            Habit::Woody if matches!(self.shoot, Some(ShootRecipe::Crowberry)) => Some("crowberry trailing axes v1".into()),
             Habit::Woody => None,
             Habit::Basal(habit) => Some(format!("basal v1 {habit:?}")),
             Habit::Creeping(habit) => Some(format!("creeping v1 {habit:?}")),
@@ -102,10 +117,10 @@ impl GrownSpecies {
 const JUNIPER_BAND: [f32; 3] = [0.40, 0.46, 0.40];
 
 /// Keys accepted by the architectural growth and voxel assembly route.
-pub const GROWN_NAMES: [&str; 18] = [
+pub const GROWN_NAMES: [&str; 19] = [
     "pine", "upland_spruce", "scots_pine", "juniper", "mountain_birch", "dwarf_birch",
     "desert_shrub", "saltbush", "kapok", "african_mahogany", "forest_coffee", "raffia_palm",
-    "woolly_willow", "white_broom", "forest_dracaena", "dune_grass", "forest_fern", "dryas",
+    "woolly_willow", "white_broom", "forest_dracaena", "dune_grass", "forest_fern", "dryas", "crowberry",
 ];
 
 /// Architectural rules for the woody species used by the desert, Norwegian
@@ -172,6 +187,13 @@ pub fn grown(name: &str) -> Option<GrownSpecies> {
                          ..Look::default() },
             shoot: Some(ShootRecipe::Juniper), habit: Habit::Woody, age: 6, seed: 1,
         },
+        "crowberry" => authored(Species {
+            height: 0.12, pace: 6.8, shape: 1.8, first_whorl: 1, whorl: [3, 5],
+            limb_step: 0.039, side_length: 0.68, angle: [1.48, 1.68], rise: 0.075,
+            laterals: 1.02, max_order: 3, needle_years: 6, crowding: 28, plumes: 2.45,
+            tip_radius: 0.00050, wood: 0.00038, order_wood: [0.71, 0.44, 0.28, 0.0],
+            ..shrub
+        }, 8, ShootRecipe::Crowberry),
         "mountain_birch" => leafy(Species {
             height: 5.9, pace: 13.5, shape: 2.3, first_whorl: 1, whorl: [2, 3],
             limb_step: 0.35, laterals: 0.85, side_length: 0.64, crowding: 18,
@@ -259,6 +281,24 @@ mod tests {
     use super::*;
     use crate::{biome::Biome, plant_growth, plant_growth_assembly};
     use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn crowberry_keeps_a_low_mature_mat_and_attached_juvenile_foliage() {
+        let species = grown("crowberry").unwrap();
+        let parts = species.parts();
+        for seed in [species.seed, 24] {
+            for age in [1, species.age] {
+                let (mat, counts) = species.assemble(&parts, age, seed, plant_growth_assembly::limits()).unwrap();
+                let [lo, hi] = mat.bounds().unwrap();
+                let height = hi[1] - lo[1];
+                let width = (hi[0] - lo[0]).max(hi[2] - lo[2]);
+                assert!(counts.tufts > 0 && counts.tufts_dropped == 0);
+                if age == species.age {
+                    assert!(height < 0.16 && width > 3.0 * height);
+                }
+            }
+        }
+    }
 
     #[test]
     fn regional_growth_assemblies_build_with_distinct_foliage_and_canopy_layers() {

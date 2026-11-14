@@ -24,6 +24,7 @@ use arrangement::{OppositeShoot, PalmateShoot, PinnateShoot};
 pub(super) enum ShootRecipe {
     LeafyTwig(&'static leafy_twigs::Twig),
     WoollyWillow,
+    Crowberry,
     Juniper,
     ScotsPine,
     Broom,
@@ -53,6 +54,7 @@ impl ShootRecipe {
             Self::WoollyWillow => willow(&mut part, v),
             Self::Juniper => return juniper::shoot(v % 2).needles,
             Self::ScotsPine => unreachable!("paired pine needles and their wood are built together"),
+            Self::Crowberry => crowberry(&mut part, v),
             Self::Broom => broom(&mut part, v),
             Self::Dracaena => dracaena(&mut part, v),
             Self::Opposite(recipe) => recipe.build(&mut part, v),
@@ -110,6 +112,37 @@ pub(super) fn blade(part: &mut PartGeometry, root: Vec3, delta: Vec3, facing: Ve
 
 pub(super) fn radial(angle: f32) -> Vec3 {
     Vec3::new(angle.cos(), 0.0, angle.sin())
+}
+
+/// An evergreen Empetrum extension shoot. Alternate, blunt, revolute leaves
+/// crowd the apex. All dimensions are metres (Blefjell reference, Burke flora).
+fn crowberry(part: &mut PartGeometry, v: u32) {
+    let axis = stalk(part, Vec3::ZERO, Vec3::new(0.002, 0.031 + 0.004 * v as f32, 0.001),
+        Vec3::X * 0.0015, 0.00085, 5);
+    for i in 0..25 {
+        let f = (i as f32 + 0.6) / 25.0;
+        let t = 1.0 - (1.0 - f).powf(1.22);
+        let out = radial(2.40 * i as f32 + v as f32 + 0.22 * unit(v, 1, i));
+        let dir = (out + Vec3::Y * (0.48 + 1.45 * t)).normalize();
+        let length = (0.0052 + 0.0025 * unit(v, 2, i)) * (1.0 - 0.19 * t);
+        let side = Vec3::Y.cross(dir).normalize();
+        let upper = dir.cross(side);
+        let leaf = Shoot { root: axis.point(t), delta: dir * length,
+            bend: upper * length * 0.055, radius: 0.00062 };
+        let start = part.vertices.len();
+        let indices = part.indices.len();
+        tube(part, leaf, 4, 8);
+        for vertex in &mut part.vertices[start..] {
+            let y = vertex.uv[1];
+            let width = [0.60, 0.91, 1.0, 0.94, 0.60][(4.0 * y).round() as usize];
+            let (sin, cos) = (TAU * vertex.uv[0]).sin_cos();
+            // Inset the lower centre between the two rolled margins.
+            let groove = if sin < -0.9 && y > 0.0 && y < 1.0 { 0.00031 } else { 0.0 };
+            vertex.pos = (leaf.point(y) + width *
+                (side * cos * 0.00068 + upper * (sin * 0.00044 + groove))).to_array();
+        }
+        update_normals(part, start, indices);
+    }
 }
 
 fn willow(part: &mut PartGeometry, v: u32) {
