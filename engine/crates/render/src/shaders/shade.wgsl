@@ -1471,6 +1471,8 @@ fn probe_slope(gradients: u32, index: u32, axis: vec3<u32>, q0: u32, n2: vec3<f3
     let base = gradients + 1u + index * 54u;
     var out = vec3<f32>(0.0);
     for (var k = 0u; k < 3u; k++) {
+        // An axis the normal does not face adds nothing (a wall faces one).
+        if n2[k] <= 0.0 { continue; }
         let a = axis[k] / 3u;
         var r = vec3<f32>(0.0);
         for (var j = 0u; j < 9u; j++) {
@@ -1611,14 +1613,15 @@ fn irradiance_sample_at(p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> Irrad
                     var e=unpack_emission(aux_word(base+axis.x+1u))*n2.x
                         +unpack_emission(aux_word(base+axis.y+1u))*n2.y
                         +unpack_emission(aux_word(base+axis.z+1u))*n2.z;
-                    if smooth_weights { e+=probe_slope(gradients,index,axis,3u,n2,p-(origin+vec3<f32>(g)*cell)); }
+                    if smooth_weights && blend_weight*inside > 0.0 { e+=probe_slope(gradients,index,axis,3u,n2,p-(origin+vec3<f32>(g)*cell)); }
                     emission+=e*blend_weight*valid;
                     loose_emission+=e*blend_weight*inside;
                 }
                 var v=unpack_sky_transport(aux_word(base+axis.x))*n2.x
                     +unpack_sky_transport(aux_word(base+axis.y))*n2.y
                     +unpack_sky_transport(aux_word(base+axis.z))*n2.z;
-                if smooth_weights { v+=probe_slope(gradients,index,axis,0u,n2,p-(origin+vec3<f32>(g)*cell)); }
+                // Only for a probe that counts (those behind a wall do not).
+                if smooth_weights && blend_weight*inside > 0.0 { v+=probe_slope(gradients,index,axis,0u,n2,p-(origin+vec3<f32>(g)*cell)); }
                 value+=v*blend_weight*valid;
                 valid_weight+=blend_weight*valid;
                 loose+=v*blend_weight*inside;
