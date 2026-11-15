@@ -247,6 +247,57 @@ struct SplatRaster {
     /// One splat target per (selection, depth map): each map's header is
     /// written with queue.write_buffer, so two maps in one submit must not share it.
     sun_target: Mutex<Vec<((wgpu::Buffer, wgpu::TextureView), Targets)>>,
+    /// KERN_SPLAT_COMPUTE=1: small discs by compute (voxel_splat_raster.wgsl).
+    compute: Option<ComputeRaster>,
+}
+/// The compute raster's pipelines: per brick-cull phase (instance count word
+/// 23 or 27) args, nearest depth and winning id, then the merge into the
+/// raster targets (scene: visibility + id, else id) with the depth test.
+struct ComputeRaster {
+    layout: wgpu::BindGroupLayout,
+    merge_layout: wgpu::BindGroupLayout,
+    phases: [[wgpu::ComputePipeline; 3]; 2],
+    merge_main: wgpu::RenderPipeline,
+    merge: wgpu::RenderPipeline,
+}
+fn splat_compute_enabled() -> bool { std::env::var("KERN_SPLAT_COMPUTE").as_deref() == Ok("1") }
+/// KERN_SPLAT_COMPUTE_PX: disc radius in pixels below which the compute
+/// raster draws it (1.5).
+fn splat_compute_px() -> f64 {
+    std::env::var("KERN_SPLAT_COMPUTE_PX").ok().and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite() && *v >= 0.0).unwrap_or(1.5)
+}
+fn compute_raster(gpu: &Gpu, module: &wgpu::ShaderModule, raster_layout: &wgpu::BindGroupLayout) -> ComputeRaster {
+    let storage = |binding, read_only, visibility| wgpu::BindGroupLayoutEntry { binding, visibility,
+        ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None }, count: None };
+    let c = wgpu::ShaderStages::COMPUTE;
+    let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxel splat compute raster"), entries: &[
+        storage(0, true, c), storage(1, false, c), storage(2, false, c),
+        wgpu::BindGroupLayoutEntry { binding: 3, visibility: c, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth,
+            view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+        storage(4, false, c)] });
+    let f = wgpu::ShaderStages::FRAGMENT;
+    let merge_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxel splat compute merge"), entries: &[
+        storage(1, true, f), storage(2, true, f),
+        wgpu::BindGroupLayoutEntry { binding: 3, visibility: f, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }] });
+    let compute_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("voxel splat compute raster"),
+        bind_group_layouts: &[Some(raster_layout), Some(&layout)], immediate_size: 0 });
+    let phases = [23.0, 27.0].map(|word| ["voxel_splat_compute_args", "voxel_splat_compute_depth", "voxel_splat_compute_id"].map(|entry|
+        gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(entry), layout: Some(&compute_layout), module, entry_point: Some(entry),
+            compilation_options: wgpu::PipelineCompilationOptions { constants: &[("COUNT_WORD", word), ("SMALL_PX", splat_compute_px())], ..Default::default() }, cache: gpu.pipeline_cache() })));
+    let merge_pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("voxel splat compute merge"),
+        bind_group_layouts: &[Some(&merge_layout)], immediate_size: 0 });
+    let target = Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Uint, blend: None, write_mask: wgpu::ColorWrites::ALL });
+    let merge_pipeline = |entry: &str, targets: &[Option<wgpu::ColorTargetState>]| gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("voxel splat compute merge"), layout: Some(&merge_pipeline_layout),
+        vertex: wgpu::VertexState { module, entry_point: Some("vs_merge"), compilation_options: Default::default(), buffers: &[] },
+        primitive: Default::default(),
+        depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Greater), stencil: Default::default(), bias: Default::default() }),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState { module, entry_point: Some(entry), compilation_options: Default::default(), targets }),
+        multiview_mask: None, cache: gpu.pipeline_cache() });
+    ComputeRaster { merge_main: merge_pipeline("fs_merge_main", &[target.clone(), target.clone()]), merge: merge_pipeline("fs_merge", &[target]),
+        layout, merge_layout, phases }
 }
 /// Where render_sun draws: the sun map's depth, view and texel size.
 pub(crate) struct SunSplatView<'a> {
@@ -274,7 +325,13 @@ struct SplatTargets {
     id: wgpu::TextureView,
     depth: wgpu::TextureView,
     bind: wgpu::BindGroup,
+    /// Compute raster (KERN_SPLAT_COMPUTE=1): nearest depth and winning id
+    /// per pixel, its dispatch arguments and the merge's bind group.
+    compute: Option<SplatCompute>,
 }
+/// `dispatch` is written by the args pass and copied to `args` (a buffer
+/// bound for writing cannot also feed an indirect dispatch in that pass).
+struct SplatCompute { nearest: wgpu::Buffer, winner: wgpu::Buffer, dispatch: wgpu::Buffer, args: wgpu::Buffer, merge: wgpu::BindGroup }
 /// Per packed level its range of occupied cells (first, count), then the
 /// cells: cell index, coordinate packed ten bits per axis. Trees sharing an
 /// asset share its levels, so this does not grow with the tree count.
@@ -487,16 +544,18 @@ fn sun_splat_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, ca
 }
 fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgpu::BindGroupLayout, data_layout: &wgpu::BindGroupLayout, source: &str, cells_override:Option<&wgpu::Buffer>) -> SplatRaster {
     let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxel splat raster"),
-        entries: &[0].map(|binding| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+        entries: &[0].map(|binding| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
             count: None }) });
     let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("voxel splat raster"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("voxel splat raster"),
         source: wgpu::ShaderSource::Wgsl(include_str!("shaders/voxel_splat_raster.wgsl").into()) });
+    let compute = splat_compute_enabled().then(|| compute_raster(gpu, &module, &layout));
+    let compute_small = [("COMPUTE_SMALL", if compute.is_some() { 1.0 } else { 0.0 }), ("SMALL_PX", splat_compute_px())];
     let pipeline = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("voxel splat raster"), layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+        vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: wgpu::PipelineCompilationOptions { constants: &compute_small, ..Default::default() }, buffers: &[] },
         primitive: Default::default(),
         // Reversed Z, like the scene.
         depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true),
@@ -508,7 +567,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
     });
     let main_pipeline = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("voxel splat raster (scene)"), layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+        vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: wgpu::PipelineCompilationOptions { constants: &compute_small, ..Default::default() }, buffers: &[] },
         primitive: Default::default(),
         depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true),
             depth_compare: Some(wgpu::CompareFunction::Greater), stencil: Default::default(), bias: Default::default() }),
@@ -555,7 +614,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
     let cells_buffer = cells_override.cloned().unwrap_or_else(||gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("voxel splat cells"), contents: bytemuck::cast_slice(cells), usage: wgpu::BufferUsages::STORAGE }));
     SplatRaster { main_pipeline, cells: cells_buffer, capacity, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_cached_layout, sun_cached_splats, sun_raster, sun_cached_raster,
-        sun_target: Mutex::new(Vec::new()) }
+        sun_target: Mutex::new(Vec::new()), compute }
 }
 fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool,global_intervals:bool,cull:Option<bool>) -> [wgpu::ComputePipeline; 8] {
     let mut splat_constants = brick_cull_constants(cull);
@@ -1228,6 +1287,20 @@ impl VoxelRenderer {
             bind: gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("voxel splat raster"), layout: &raster.layout,
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: splat_records.as_entire_binding() }] }),
             gbuffer: gbuffer.clone(), records: splat_records.clone(), draw: splat_draw.clone(), id: splat_id.clone(), depth: splat_depth.clone(),
+            compute: raster.compute.as_ref().map(|compute| {
+                let pixels = u64::from(raster_size.0) * u64::from(raster_size.1) * 4;
+                let buffer = |label, size, usage| gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
+                let nearest = buffer("voxel splat compute depth", pixels, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+                let winner = buffer("voxel splat compute id", pixels, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+                let dispatch = buffer("voxel splat compute dispatch", 16, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
+                let args = buffer("voxel splat compute args", 16, wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST);
+                let size = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("voxel splat compute size"),
+                    contents: bytemuck::cast_slice(&[raster_size.0, raster_size.1, 0, 0]), usage: wgpu::BufferUsages::UNIFORM });
+                let merge = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("voxel splat compute merge"), layout: &compute.merge_layout,
+                    entries: &[wgpu::BindGroupEntry { binding: 1, resource: nearest.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: winner.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 3, resource: size.as_entire_binding() }] });
+                SplatCompute { nearest, winner, dispatch, args, merge }
+            }),
         });
         if let Some((_,previous))=temporal {
             entries.push(wgpu::BindGroupEntry {binding:10,resource:wgpu::BindingResource::TextureView(motion_view.as_ref().unwrap())});
@@ -1408,6 +1481,42 @@ impl VoxelRenderer {
                 pass.set_pipeline(if scene_targets.is_some() { &raster.main_pipeline } else { &raster.pipeline });
                 pass.set_bind_group(0, &splat.bind, &[]);
                 pass.draw_indirect(&splat.draw, if phase == 0 { DRAW_OFFSET } else { CULL_OFFSET });
+            }
+            // Small discs by compute, merged into the same targets before the
+            // brick pyramid reads them (KERN_SPLAT_COMPUTE=1).
+            if let (Some(compute), Some(buffers)) = (&raster.compute, &splat.compute) {
+                if phase == 0 { encoder.clear_buffer(&buffers.nearest, 0, None); encoder.clear_buffer(&buffers.winner, 0, None); }
+                let depth_view = scene_targets.map_or(&splat.depth, |(_, d)| d);
+                let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("voxel splat compute raster"), layout: &compute.layout, entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: splat.draw.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: buffers.nearest.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: buffers.winner.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(depth_view) },
+                    wgpu::BindGroupEntry { binding: 4, resource: buffers.dispatch.as_entire_binding() }] });
+                let pipelines = &compute.phases[phase];
+                {
+                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel splat compute raster"), timestamp_writes: None });
+                    pass.set_bind_group(0, &splat.bind, &[]); pass.set_bind_group(1, &bind, &[]);
+                    pass.set_pipeline(&pipelines[0]); pass.dispatch_workgroups(1, 1, 1);
+                }
+                encoder.copy_buffer_to_buffer(&buffers.dispatch, 0, &buffers.args, 0, 12);
+                for pipeline in &pipelines[1..] {
+                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel splat compute raster"), timestamp_writes: None });
+                    pass.set_bind_group(0, &splat.bind, &[]); pass.set_bind_group(1, &bind, &[]);
+                    pass.set_pipeline(pipeline); pass.dispatch_workgroups_indirect(&buffers.args, 0);
+                }
+                let keep = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
+                let id = Some(wgpu::RenderPassColorAttachment { view: &splat.id, depth_slice: None, resolve_target: None, ops: keep });
+                let colors = match scene_targets {
+                    Some((vis, _)) => vec![Some(wgpu::RenderPassColorAttachment { view: vis, depth_slice: None, resolve_target: None, ops: keep }), id],
+                    None => vec![id],
+                };
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("voxel splat compute merge"), color_attachments: &colors,
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: depth_view, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
+                    timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
+                pass.set_pipeline(if scene_targets.is_some() { &compute.merge_main } else { &compute.merge });
+                pass.set_bind_group(0, &buffers.merge, &[]);
+                pass.draw(0..3, 0..1);
             }
             }
             }

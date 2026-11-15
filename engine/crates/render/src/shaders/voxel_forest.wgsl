@@ -1380,7 +1380,8 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
         if work==0u {
             for(var c=0u;c<4u;c++) {volume_splats[c]=bitcast<vec4<u32>>(view.view_proj[c]);}
             // w: the first queue record, which the raster never reads as a splat.
-            volume_splats[11]=vec4<u32>(volume_config.size_count.w,0u,0u,select(0u,volume_splat_limit(),VOXEL_BRICK_CULL));
+            // y: the render height, for the raster's disc size in pixels (voxel_splat_raster.wgsl radius_px).
+            volume_splats[11]=vec4<u32>(volume_config.size_count.w,volume_config.size_count.y,0u,select(0u,volume_splat_limit(),VOXEL_BRICK_CULL));
             atomicStore(&volume_stats[VOLUME_DRAW_WORD+0],VOLUME_SPLAT_VERTICES);
         }
         var level=VOLUME_SPLAT_NONE;
