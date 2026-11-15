@@ -166,7 +166,10 @@ Owned by the foliage work; its working checklist is
   surfaces reflect what the frame shows, traced through the depth buffer
   and lit by last frame's image. Open: off-screen hits (terrain surface
   cache), dynamic diffuse bounce (world probes), trees in the trace, grain
-  on the inside of the swinging pendant's shade with the fog off
+  on the inside of the swinging pendant's shade: with the reflector's
+  motion in the temporal pass 0.90 against 0.60 for 96 frames averaged
+  (fog off); next: temporal moments per pixel (SVGF) for the box instead
+  of this frame's noisy 3x3, then more reuse samples where few rays hit
   ([log](log/2026-11-14-shade-grain-ssr.md)).
 - **Opt-in static/dynamic sun split:** retains GPU source and voxel tree
   casters; exact split/full depth oracle covers still, wind, removal and
