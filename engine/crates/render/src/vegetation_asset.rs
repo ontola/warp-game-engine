@@ -440,6 +440,18 @@ pub struct AttachLimits {
     pub pack: PackLimits,
 }
 
+impl AttachLimits {
+    /// Size the CPU volume pack to what these plants hold, at least the
+    /// defaults. Fine branch cells (KERN_BRANCH_CELL_M) hold several times
+    /// the default 1M cells; the GPU only sees the pages the cache streams in.
+    pub fn fit_voxels<'a>(&mut self, plants: impl Iterator<Item = &'a CookedPlant>) {
+        let (cells, dense) = plants.flat_map(|c| c.voxel_assets()).flat_map(|a| &a.levels)
+            .fold((0usize, 0usize), |(c, d), l| (c + l.voxels.len(), d + l.dimensions.iter().map(|&v| v as usize).product::<usize>()));
+        self.pack.max_sparse_cells = self.pack.max_sparse_cells.max(cells + cells / 8);
+        self.pack.max_dense_indices = self.pack.max_dense_indices.max(dense + dense / 8);
+    }
+}
+
 impl Default for AttachLimits {
     fn default() -> Self {
         Self {
@@ -1023,7 +1035,7 @@ impl<'a> SceneVegetation<'a> {
         let mut forest=if self.bindings.is_empty() {foliage_volume_data::GpuForest::default()} else {
             crate::aggregate_lod::validate(&selection)?;
             let mut forest=foliage_volume_data::pack(&self.assets,&self.bindings,&self.scene.instances,self.limits.pack)?;
-            foliage_volume_data::pack_bricks(&mut forest,128)?;
+            foliage_volume_data::pack_bricks(&mut forest,foliage_volume_data::MAX_PACKED_BRICKS_PER_LEVEL)?;
             forest
         };
         // Whole-plant proxies follow, densely indexed: they are larger than

@@ -35,6 +35,12 @@ pub fn aggregate_config() -> Config {
     let base = Config { max_placements: 8192, max_source_triangles: 40_000_000, max_samples: 150_000_000, triangle_refinements: true,
         max_reference_voxels: 262_144, max_diagnostic_steps: 80_000_000,
         gap_mips: std::env::var("KERN_VOXEL_GAP_MIPS").as_deref() != Ok("0"), ..Default::default() };
+    // KERN_BRANCH_BRICKS (experiment, up to 4096): bricks a branch group's
+    // level may hold. At 128 only a third of the spruce groups got 3.75 cm
+    // cells; the rest started at 7.5 cm (recipe_forest fine_cell_probe).
+    let bricks = std::env::var("KERN_BRANCH_BRICKS").ok().and_then(|v| v.parse::<usize>().ok())
+        .filter(|b| (1..=crate::foliage_volume_data::MAX_PACKED_BRICKS_PER_LEVEL).contains(b)).unwrap_or(base.max_bricks_per_level);
+    let base = Config { max_bricks_per_level: bricks, max_total_bricks: base.max_total_bricks * bricks.div_ceil(base.max_bricks_per_level), ..base };
     let cell = std::env::var("KERN_BRANCH_CELL_M").ok().and_then(|v| v.parse::<f32>().ok())
         .filter(|c| (0.01..base.reference_cell_size).contains(c));
     let Some(cell) = cell else { return base };
@@ -282,6 +288,7 @@ fn limits(variants: &[CookedPlant], full: usize) -> AttachLimits {
     // of six species needs more than the default 256.
     let assets: usize = variants.iter().map(|c| c.stats().volume_assets + 1).sum();
     limits.pack.max_assets = limits.pack.max_assets.max(assets);
+    limits.fit_voxels(variants.iter());
     limits
 }
 
@@ -642,9 +649,9 @@ mod fine_cell_probe {
     #[ignore]
     fn branch_voxel_levels() {
         let parts = crate::plant_growth_assembly::Parts::for_look(&crate::plant_growth_assembly::Look::norway_spruce());
-        let (plant, ms) = super::cook_grown_stages(crate::plant_growth::Species::norway_spruce(), 12, 1, &parts,
+        let (plant, ms) = super::cook_grown_stages(crate::plant_growth::Species::norway_spruce(), std::env::var("KERN_PROBE_AGE").ok().and_then(|a| a.parse().ok()).unwrap_or(12), 1, &parts,
             crate::plant_growth_assembly::Look::norway_spruce()).unwrap();
-        println!("cell env {:?}, cook ms {ms:?}", std::env::var("KERN_BRANCH_CELL_M").ok());
+        println!("cell env {:?} bricks {:?}, cook ms {ms:?}", std::env::var("KERN_BRANCH_CELL_M").ok(), std::env::var("KERN_BRANCH_BRICKS").ok());
         let mut rows: std::collections::BTreeMap<u32, (f32, usize, f64, f64, f64, f64, usize)> = Default::default();
         for asset in plant.voxel_assets() {
             for level in &asset.levels {

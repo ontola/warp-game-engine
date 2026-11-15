@@ -153,6 +153,7 @@ pub fn plant_species_population(scene:&mut Scene,species:&[Species<'_>],world:&[
     limits.pack.max_assets=poses+plants.len();// The packed branch catalog is bounded independently of world roots.
     // append_proxy uses the asset-only catalog and is not a branch group.
     limits.pack.max_instances=poses;
+    limits.fit_voxels(plants.iter().copied());
     let mut builder=SceneVegetation::new(scene,limits)?;
     let mut handles=Vec::new();
     for (i,p) in plants.iter().enumerate() {handles.push(builder.append(p,PlantInstance {id:i as u64+1,generation:0,root:Mat4::IDENTITY,category:species[i].category})?);}

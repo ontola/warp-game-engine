@@ -239,7 +239,7 @@ fn validate_config(c: Config) -> Result<(), String> {
     if !c.reference_cell_size.is_finite() || !(0.001..=10.0).contains(&c.reference_cell_size)
         || !(1..=8).contains(&c.levels) || !(1..=4).contains(&c.samples_per_cell)
         || !(2..=64).contains(&c.diagnostic_resolution)
-        || !(1..=128).contains(&c.max_bricks_per_level) || c.max_total_bricks == 0
+        || !(1..=crate::foliage_volume_data::MAX_PACKED_BRICKS_PER_LEVEL).contains(&c.max_bricks_per_level) || c.max_total_bricks == 0
         || c.max_reference_voxels == 0 || c.max_output_voxels == 0 || c.max_axis_cells == 0
         || c.max_axis_cells > 65_536 || c.max_placements == 0 || c.max_source_triangles == 0
         || c.max_samples == 0 || c.max_diagnostic_steps == 0 || c.max_scratch_bytes == 0
@@ -1553,7 +1553,7 @@ mod tests {
         for c in [Config {max_source_triangles:1,..config()},
             Config {max_reference_voxels:1,..config()},Config {max_scratch_bytes:1,..config()},
             Config {max_samples:1,..config()},Config {max_diagnostic_steps:1,..config()},
-            Config {max_build_bytes:1,..config()},Config {max_bricks_per_level:129,..config()}] {
+            Config {max_build_bytes:1,..config()},Config {max_bricks_per_level:crate::foliage_volume_data::MAX_PACKED_BRICKS_PER_LEVEL+1,..config()}] {
             assert!(cook(&source,&[0],Mat4::IDENTITY,c).is_err());
         }
     }

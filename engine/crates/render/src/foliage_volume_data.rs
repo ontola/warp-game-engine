@@ -263,8 +263,13 @@ pub(crate) fn cell_index(forest:&GpuForest,level:&GpuLevel,c:[u32;3])->Option<u3
 
 /// Convert only an aggregate provider after packing. Every level is bounded
 /// independently; failure leaves the original provider unchanged.
+/// Most bricks one packed level may hold. The splat pass walks a level's
+/// bricks 64 at a time in one workgroup, so this bounds that loop, not a
+/// GPU structure; cooks keep 128 (MAX_BRICKS_PER_LEVEL) unless
+/// KERN_BRANCH_BRICKS raises it for fine branch cells.
+pub const MAX_PACKED_BRICKS_PER_LEVEL: usize = 4096;
 pub fn pack_bricks(forest:&mut GpuForest,max_bricks_per_level:usize)->Result<Vec<usize>,String> {
-    if max_bricks_per_level==0||max_bricks_per_level>128 {return Err("aggregate brick limit must be1..128".into());}
+    if max_bricks_per_level==0||max_bricks_per_level>MAX_PACKED_BRICKS_PER_LEVEL {return Err("aggregate brick limit must be 1..MAX_PACKED_BRICKS_PER_LEVEL".into());}
     let mut indices=Vec::new();let mut levels=forest.levels.clone();let mut counts=Vec::new();
     for level in &mut levels {
         let dims=[level.dims_offset[0],level.dims_offset[1],level.dims_offset[2]];
@@ -294,7 +299,7 @@ pub fn pack_bricks(forest:&mut GpuForest,max_bricks_per_level:usize)->Result<Vec
                 cells[(cx+4*cy+16*cz)as usize]=reference;
             }}}
             if cells.iter().all(|v|*v==0){continue;}
-            occupied+=1;if occupied>max_bricks_per_level {return Err("aggregate level exceeds128-brick cluster budget".into());}
+            occupied+=1;if occupied>max_bricks_per_level {return Err("aggregate level exceeds its brick budget".into());}
             if indices.len().checked_add(64).is_none_or(|end|end>=BRICK_INDIRECTION as usize) {
                 return Err("brick payload exceeds31bit addressing".into());
             }
@@ -808,7 +813,7 @@ mod tests {
     #[test]
     fn pack_bricks_failure_rolls_back_completed_levels_and_all_original_payloads() {
         let original=brick_fixture();
-        for cap in [0,1,129] {
+        for cap in [0,1,MAX_PACKED_BRICKS_PER_LEVEL+1] {
             let mut forest=original.clone();
             assert!(pack_bricks(&mut forest,cap).is_err());
             assert_same_forest(&original,&forest);
