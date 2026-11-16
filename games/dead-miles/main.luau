@@ -55,6 +55,8 @@ local KNOBS = {
 	moon = 6, -- moonlight at night, lux
 	night_ev = 4.5, -- how far the eye adapts to the dark (EV100 floor; lower is brighter)
 	density = 1, -- zombie count multiplier
+	day_alert = 1.8, -- how much further the dead see in daylight
+	day_speed = 1.3, -- how much faster they move in daylight
 	trap = 12, -- seconds inside a building before the dead outside close in on it
 	encounters = 0.35, -- chance of an encounter in a chunk
 	autopilot = 0, -- 1: bots drive the people too (demos, store clips, tests)
@@ -99,7 +101,10 @@ local STRANGER_SHIRTS = { "#7a7a6a", "#6a5a7a", "#8a6a4a", "#4a6a6a" }
 
 -- The light through a day: a short grey morning, a long dusk and night.
 -- Index by chunk within the day (0 is the camp).
-local TIMES = { [1] = "sunrise:mist", [2] = "morning:mist", [3] = "afternoon:haze", [4] = "sunset:mist", [5] = "night:mist", [6] = "night:clear", [7] = "night:mist", [0] = "night:clear" }
+-- The group walks by night: by day the dead are alert and quick. Each
+-- leg starts at dusk, runs through the night and ends in a dash through
+-- the first daylight to a shelter, where they sit out the day.
+local TIMES = { [1] = "sunset:mist", [2] = "night:mist", [3] = "night:clear", [4] = "night:clear", [5] = "night:mist", [6] = "sunrise:mist", [7] = "morning:haze", [0] = "morning:haze" }
 
 -- What a container holds, by kind: { weight, item, min, max }.
 local LOOT = {
@@ -753,6 +758,11 @@ local function current_time()
 end
 
 local function dark() return s.time_now ~= nil and s.time_now:sub(1, 5) == "night" end
+-- Broad daylight: the dead see further and move faster.
+local function daylight()
+	local t = s.time_now or ""
+	return t:sub(1, 7) == "morning" or t:sub(1, 4) == "noon" or t:sub(1, 9) == "afternoon"
+end
 
 local function look_of_hour()
 	local t = current_time()
@@ -1310,7 +1320,7 @@ local function make_camp()
 	s.camp_short = short
 	s.pressure = 0
 	s.dir = { mode = "calm", t = 20, spawn_t = 8 }
-	game.log("Dead Miles: night " .. s.day .. ", " .. math.floor(s.front - s.start_x) .. " m, " .. s.food .. " food left")
+	game.log("Dead Miles: shelter " .. s.day .. ", " .. math.floor(s.front - s.start_x) .. " m, " .. s.food .. " food left")
 	s.day += 1
 	s.camp_used = s.camp
 	s.camp = nil
@@ -1544,12 +1554,14 @@ local function zkey(p) return cell_key(math.floor(p.x / 1.5), math.floor(p.z / 1
 local function noticed_at(spec, u)
 	local k = 1
 	if dark() then k = if (u.torch and s.battery > 0) or u.in_light then 1.35 else 0.55 end
+	if daylight() then k = KNOBS.day_alert end
 	return spec.sense * k
 end
 
 local function zombie_step(z, dt)
 	local spec = ZOMBIES[z.kind]
 	local speed = if z.kind == "runner" then KNOBS.runner else KNOBS.shambler
+	if daylight() then speed *= KNOBS.day_speed end
 	z.t -= dt
 	if z.state == "dead" then
 		if z.t <= 0 then remove_zombie_body(z) elseif z.fig then body.fall(z.fig, dt) end
