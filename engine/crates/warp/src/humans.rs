@@ -247,6 +247,7 @@ pub struct Humans {
     palettes: Vec<Vec<Mat4>>,
     /// The first actor's skinning index (0 unless the scene had others).
     first_actor: usize,
+    error: Option<String>,
 }
 
 /// The facing of a human with `yaw`: 0 faces +z, a quarter turn faces +x.
@@ -360,13 +361,26 @@ impl Humans {
         }).collect();
         let wanted: u64 = self.pools.iter().map(|(name, p)| per[name] * p.cfg.count as u64).sum();
         let room = (budget / 100 * 95).saturating_sub(taken);
+        // The renderer's own limits on skinned actors and vertices count too.
+        let actors_free = render::skinning::MAX_ACTORS.saturating_sub(scene.skinning.actors.len()) as u64;
+        let verts_free = (render::skinning::MAX_VERTICES.saturating_sub(taken as usize / render::skinning::VERTEX_BYTES)) as u64;
+        let slots: u64 = self.pools.values().map(|p| p.cfg.count as u64).sum();
+        // The share of every pool that fits, in thousandths.
+        let mut share = 1000u64;
+        if wanted > room { share = share.min(room * 1000 / wanted.max(1)); }
+        if slots > actors_free { share = share.min(actors_free * 1000 / slots.max(1)); }
+        let wanted_verts = wanted / render::skinning::VERTEX_BYTES as u64;
+        if wanted_verts > verts_free { share = share.min(verts_free * 1000 / wanted_verts.max(1)); }
         let mut note = None;
+        let mut total = 0u64;
         for (name, pool) in &mut self.pools {
-            pool.cap = if wanted <= room { pool.cfg.count } else { ((pool.cfg.count as u64 * room / wanted.max(1)) as usize).max(1) };
+            pool.cap = if share >= 1000 { pool.cfg.count } else { ((pool.cfg.count as u64 * share / 1000) as usize).max(1) };
+            total += pool.cap as u64;
             if pool.cap < pool.cfg.count {
-                note = Some(format!("humans: this device holds {} MB of skinned people, so pools are cut to fit (e.g. {name}: {} of {})", room >> 20, pool.cap, pool.cfg.count));
+                note = Some(format!("humans: this device or renderer holds fewer skinned people than the pools ask ({} MB, {} actors), so every pool is cut to fit (e.g. {name}: {} of {})", room >> 20, actors_free, pool.cap, pool.cfg.count));
             }
         }
+        if total > actors_free { return Err(format!("{total} people do not fit in the renderer's {actors_free} free skinned actors")); }
         for pool in self.pools.values_mut() {
             pool.actors.clear();
             for k in 0..pool.cap {
@@ -386,8 +400,13 @@ impl Humans {
 
     pub fn attached(&self) -> bool { self.attached }
 
+    /// Why the people could not join the scene, if they could not.
+    pub fn error(&self) -> Option<&str> { self.error.as_deref() }
+
+    pub fn set_error(&mut self, e: Option<String>) { self.error = e; }
+
     /// The scene was rebuilt without the actors: add them again.
-    pub fn detach(&mut self) { self.attached = false; }
+    pub fn detach(&mut self) { self.attached = false; self.error = None; }
 
     /// Pose everyone `alpha` of the way from the last tick to this one and
     /// move their actors; then the palettes go to the renderer.
@@ -531,6 +550,26 @@ fn pose(rig: &Rig, p: &Person, zombie: bool, alpha: f32, palette: &mut [Mat4]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_crowd_fits_the_renderer() {
+        // Dead Miles asks for 66; more than the old 64-actor limit.
+        let mut cfg = BTreeMap::new();
+        cfg.insert("a".to_string(), HumanPool { count: 50, variety: 1, style: "zombie".into(), ..Default::default() });
+        cfg.insert("b".to_string(), HumanPool { count: 16, variety: 1, ..Default::default() });
+        let mut h = Humans::new(&cfg);
+        let mut scene = render::Scene::default();
+        assert_eq!(h.attach(&mut scene, 1 << 31).unwrap(), None);
+        assert_eq!(scene.skinning.actors.len(), 66);
+        // A small device cuts every pool instead of failing.
+        let mut h = Humans::new(&cfg);
+        let mut scene = render::Scene::default();
+        let note = h.attach(&mut scene, 64 << 20).unwrap().expect("a note that pools were cut");
+        assert!(note.contains("cut"), "{note}");
+        let (free, total) = h.room("a").unwrap();
+        assert!(total < 50 && free == total, "{free} of {total}");
+        assert!(scene.skinning.actors.len() < 66);
+    }
 
     #[test]
     fn the_rig_loads_and_walks() {
