@@ -333,7 +333,7 @@ end
 
 local function new_survivor(p, i)
 	local u = { id = p.id, name = p.name, color = p.color, bot = p.bot, lives = 3, aim = v(1, 0, 0) }
-	give_body(u, collide(v(s.min_x + 4 + (i - 1) * 0.9, 0, (i % 2 == 0 and 1.2 or -1.2)), RADIUS))
+	give_body(u, collide(v(s.min_x + 4 + (i - 1) * 0.9, 0, (i % 2 == 0 and 0.5 or -0.5)), RADIUS))
 	hold_weapon(u)
 	return u
 end
@@ -395,10 +395,6 @@ local function noise(pos, radius, amount)
 		end
 	end
 	s.pressure = math.min(1.3, s.pressure + (amount or 0))
-	-- A brief, thin ring shows how far a loud noise carries.
-	if radius >= 10 then
-		fx.ring(v(pos.x, 0.06, pos.z), { radius = radius, life = 0.3, color = "#e8dfc4", emissive = 0.05, width = 0.03, segments = 48 })
-	end
 end
 
 local NO_GLOW = { color = "#1a1a1a", emissive = 0 }

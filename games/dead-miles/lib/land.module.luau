@@ -573,13 +573,13 @@ function M.chunk(index, day, in_day)
 		end
 		-- Wrecks on the path, now and then a police car.
 		if biome ~= "forest" and random.chance(0.6) then
-			car(c, random.range(x0 + 3, x1 - 3), (if random.chance(0.5) then -1 else 1) * random.range(0.6, 1.6), biome == "city" and random.chance(0.25), true)
+			car(c, random.range(x0 + 3, x1 - 3), (if random.chance(0.5) then -1 else 1) * random.range(1.75, 2.2), biome == "city" and random.chance(0.25), true)
 		end
 		-- The city is a ruin: burnt wrecks, collapsed slabs and rubble in
 		-- the street, paper blowing about.
 		if biome == "city" then
 			if random.chance(0.5) then
-				car(c, random.range(x0 + 3, x1 - 3), (if random.chance(0.5) then -1 else 1) * random.range(1.2, 2), false, random.chance(0.7), true)
+				car(c, random.range(x0 + 3, x1 - 3), (if random.chance(0.5) then -1 else 1) * random.range(1.8, 2.3), false, random.chance(0.7), true)
 			end
 			for _ = 1, random.int(2, 4) do
 				local side = if random.chance(0.5) then -1 else 1
@@ -605,18 +605,20 @@ function M.chunk(index, day, in_day)
 		if biome == "forest" and random.chance(0.4) then
 			-- A fallen tree across part of the trail.
 			local x = random.range(x0 + 3, x1 - 3)
-			local z = if random.chance(0.5) then -1.3 else 1.3
-			box(c, x - 0.3, z - 2.2, x + 0.3, z + 2.2, 0.5, { color = "#5a4632" })
+			local z = if random.chance(0.5) then -2.5 else 2.5
+			box(c, x - 0.3, z - 1.6, x + 0.3, z + 1.6, 0.5, { color = "#5a4632" })
 		end
 		-- Dead cars along the kerbs and now and then a barricade, in town.
+		-- Nothing solid goes in the middle 1.6 m of the path: the way east
+		-- is always open.
 		if biome == "suburb" or biome == "city" or biome == "farm" then
 			for _ = 1, random.int(1, if biome == "city" then 3 else 2) do
 				local side = if random.chance(0.5) then -1 else 1
-				wreck(c, random.range(x0 + 3, x1 - 3), side * random.range(1.6, 2.2))
+				wreck(c, random.range(x0 + 3, x1 - 3), side * random.range(2.0, 2.4))
 			end
 			if random.chance(if biome == "city" then 0.35 else 0.15) then
 				local side = if random.chance(0.5) then -1 else 1
-				barricade(c, random.range(x0 + 4, x1 - 4), side * 3.4, side * random.range(0.4, 1.2))
+				barricade(c, random.range(x0 + 4, x1 - 4), side * 3.4, side * random.range(1.0, 1.6))
 			end
 		end
 		for _ = 1, 3 do table.insert(c.outside, v(random.range(x0, x1), 0, random.range(-3, 3))) end
