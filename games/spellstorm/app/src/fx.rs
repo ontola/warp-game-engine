@@ -1039,14 +1039,11 @@ impl Fx {
         // The ring sits where the body is being built (view.rs builds the
         // parts below it), from its toes to the top of its head.
         let y = h * crate::anim::build_front(k).clamp(0.0, 1.0);
-        let r = 0.5 + 0.15 * (1.0 - k);
-        let hot = c3 * 1.6 + Vec3::splat(0.7);
+        let r = 0.65 + 0.15 * (1.0 - k);
+        let hot = c3 * 2.2 + Vec3::splat(0.9);
         self.live.push(flat_sprite(at + Vec3::Y * y, r, Cell::Ring, hot * fade));
         self.live.push(flat_sprite(at + Vec3::Y * y, r * 1.5, Cell::Ring, c3 * 0.7 * fade));
-        // A faint column of its light it is made in, and the glow under it.
-        let mut col = Sprite::shaft(at + Vec3::Y * h * 0.5, [r * 1.6, h * 1.1], Vec3::Y, IMAGE, uv(Cell::Patch), c3 * 0.35 * fade);
-        col.depth_bias = 0.2;
-        self.live.push(col);
+        // The glow under it (no column: it read as a stripe).
         self.live.push(flat_sprite(at + Vec3::Y * 0.04, 0.9, Cell::Patch, c3 * 0.6 * fade));
         // Sparks shed off the ring as it rises, drifting up and out.
         let mut sp = particles(lerp_c(c, WHITE, 0.4), 40, 0.5, 0.06);
