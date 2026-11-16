@@ -201,7 +201,7 @@ fn new_rooms_show_where_to_start_and_where_scanned_profiles_wait() {
     assert!(!lobby.nudges.contains("tv") && lobby.prompt_active["tv"]);
 
     // Once everyone has a profile, the doors stop hopping.
-    lobby.set_links(json!({"room": {"pending": [{"id": "w1", "profile": {"display_name": "Sanne"}}]}, "linked": {"p0": {}}}));
+    lobby.set_links(json!({"room": {"pending": [{"id": "w1", "profile": {"display_name": "Sanne"}}]}, "linked": ["p0"]}));
     lobby.update(1.0 / 60.0);
     assert!(!lobby.nudges.contains("door0"), "nobody left to pick a profile up");
 

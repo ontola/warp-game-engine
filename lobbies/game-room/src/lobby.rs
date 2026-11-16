@@ -39,7 +39,7 @@ impl MenuItem {
 pub struct Toast { pub text: String, pub color: Color, pub until: f32 }
 
 /// What came back from the host's web port on a worker thread.
-pub enum Web { Links(Value), PickupRefused }
+pub enum Web { Links(Value), PickupRefused(String) }
 
 fn monotonic() -> f64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
@@ -363,7 +363,7 @@ impl Lobby {
                     let path = format!("/api/room-pickup/{}/{}", path_part(&pending), path_part(&player));
                     if let Err(e) = gamenight::lobby::http(&base, "POST", &path, &headers) {
                         eprintln!("game-room: pickup refused: {e}");
-                        let _ = tx.send(Web::PickupRefused);
+                        let _ = tx.send(Web::PickupRefused(e));
                     }
                 });
                 // Instant: the character becomes the profile and the door empties now.
@@ -403,7 +403,7 @@ impl Lobby {
         // Hosts that predate couch positions don't send them.
         if self.profile(id).is_some_and(|p| p.couch.is_some()) { items.insert(1, MenuItem::new("Couch position", "couch")); }
         if !self.host.update_ready().is_empty() { items.insert(0, MenuItem::new("Update Gamepad Party now", "update")); }
-        if self.host.links["linked"].get(id).is_some() { items.insert(1, MenuItem::new("Unlink my phone profile", "unlink")); }
+        if self.host.is_linked(id) { items.insert(1, MenuItem::new("Unlink my phone profile", "unlink")); }
         if self.profiles.len() > 1 { items.push(MenuItem::new("Remove a player", "remove_page")); }
         if self.host.party["lobbies"].as_array().is_some_and(|l| l.len() > 1) { items.push(MenuItem::new("Switch lobby", "lobbies")); }
         items.push(MenuItem::new("Quit Gamepad Party", "quit"));
@@ -637,7 +637,7 @@ impl Lobby {
         self.nudges.clear();
         let joined = !self.world.players.is_empty();
         // Pick up only nudges while someone still plays without a profile.
-        let unlinked = self.world.players.iter().any(|p| self.host.links["linked"].get(&p.id).is_none() && !self.claims.contains_key(&p.id));
+        let unlinked = self.world.players.iter().any(|p| !self.host.is_linked(&p.id) && !self.claims.contains_key(&p.id));
         if self.host.current_game().is_some() { self.started_once = true; }
         let tv = self.host.tv_station();
         let tv_items: Vec<(&str, &str, bool)> = if tv.quit { vec![("Y", &tv.short, true), ("X", "Quit", true)] } else { vec![("Y", &tv.short, true)] };
