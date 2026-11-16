@@ -33,6 +33,13 @@ local LOOKS = {
 }
 local CAR_COLORS = { "#6b2b2b", "#2f4d6b", "#5d6650", "#8a8478", "#3a3a40", "#7a5a2a" }
 local BURNT = { color = "#2a2624", roughness = 0.9 }
+local RUST = { "#6a4030", "#5a4a3a", "#4a5048", "#6a5a48" } -- wrecks left to rot
+local ROOFS = { "#3a3632", "#4a4640", "#433c36", "#2e2c2a" }
+-- Set dressing (not solid), by name: every look is warmed in M.warm.
+local PROP = {
+	plank = "#6b4e37", board = "#8b6b4a", dark = "#161618", sandbag = "#8a7a5a", bag = "#1d1d1f",
+	dumpster = "#2f4a3a", barrel = "#6a3a2a", hedge = "#2f4a26", fence = "#8a8478", tyre = "#1a1a1a",
+}
 local DEBRIS = { "#5f5a55", "#7a7470", "#4a4640", "#3a3632" }
 local CROP = { "#7d8a3a", "#8f8a40", "#6a7a32" }
 
@@ -48,6 +55,14 @@ function M.warm()
 	end
 	for _, c in CAR_COLORS do world.warm("cube", { color = c, roughness = 0.4, metal = 0.3 }) end
 	world.warm("cube", BURNT)
+	for _, c in RUST do world.warm("cube", { color = c, roughness = 0.9 }) end
+	for _, c in ROOFS do world.warm("cube", { color = c, roughness = 0.95 }) end
+	for _, c in PROP do
+		world.warm("cube", { color = c, roughness = 0.9 })
+		world.warm("cube", { color = c, roughness = 0.95 })
+		world.warm("sphere", { color = c, roughness = 0.9 })
+	end
+
 	for _, c in CROP do world.warm("cube", { color = c, roughness = 0.95 }) end
 	for _, c in { "#2a2624", "#d8d0a0", "#4a3a2a", "#5a4632", "#202024", "#e8e8f0", "#1d3a8a", "#8b6b4a", "#6b4e37", "#7a7470", "#5f5a55", "#c9b25a", "#3a3632" } do
 		world.warm("cube", { color = c, roughness = 0.9 })
@@ -318,16 +333,127 @@ local function building(c, x0, w, d, cols, rows, side, look, kinds, sleepers)
 	return b
 end
 
+-- A building you cannot enter: a solid block with a roof, its doors
+-- boarded up and its windows dark or nailed shut. main.luau hides it (and
+-- shows a low cut-away in its place) when it would hide a survivor from
+-- the camera.
+local function closed(c, x0, w, d, side, look, h)
+	local zn = side * 4.6
+	local zf = side * (4.6 + d)
+	local z0, z1 = math.min(zn, zf), math.max(zn, zf)
+	local x1 = x0 + w
+	local color = look.walls[random.int(1, #look.walls)]
+	local blk = { x0 = x0, x1 = x1, z0 = z0, z1 = z1, h = h, parts = {}, rooms = {}, doors = {} }
+	local function part(id) table.insert(blk.parts, id) return id end
+	local r = box(c, x0, z0, x1, z1, h, { color = color })
+	part(r.id)
+	-- The roof: a darker slab, a parapet edge and things on top.
+	local roof = ROOFS[random.int(1, #ROOFS)]
+	part(deco(c, "cube", v((x0 + x1) / 2, h + 0.03, (z0 + z1) / 2), v(w - 0.5, 0.06, d - 0.5), roof, { roughness = 0.95 }))
+	for _ = 1, random.int(1, 3) do
+		local s = random.range(0.6, 1.4)
+		part(deco(c, "cube", v(random.range(x0 + 1, x1 - 1), h + s * 0.35, random.range(z0 + 1, z1 - 1)), v(s, s * 0.7, s * random.range(0.7, 1.3)), PROP.fence))
+	end
+	if random.chance(look.ruin * 2) then
+		-- Part of the roof fell in: rubble on top.
+		for _ = 1, 4 do
+			local s = random.range(0.25, 0.6)
+			part(deco(c, "cube", v(random.range(x0 + 0.8, x1 - 0.8), h + s * 0.3, random.range(z0 + 0.8, z1 - 0.8)), v(s * 1.6, s * 0.6, s), color,
+				{ roughness = 0.95, rot = v(random.range(-0.4, 0.4), random.range(-math.pi, math.pi), 0) }))
+		end
+	end
+	-- The face towards the path: a boarded-up door and dark windows.
+	local fz = zn - side * 0.02
+	local dx = random.range(x0 + 1, x1 - 2)
+	part(deco(c, "cube", v(dx + 0.6, 1.05, fz), v(1.2, 2.1, 0.06), PROP.dark))
+	for k = 0, 2 do
+		part(deco(c, "cube", v(dx + 0.6, 0.5 + k * 0.6, fz - side * 0.04), v(1.5, 0.18, 0.05), if k % 2 == 0 then PROP.plank else PROP.board,
+			{ rot = v(0, 0, random.range(-0.25, 0.25)) }))
+	end
+	local floors = math.max(1, math.floor(h / 3))
+	for f = 0, floors - 1 do
+		for x = x0 + 1, x1 - 1.4, 2.6 do
+			if math.abs(x - dx) > 1.6 or f > 0 then
+				local y = 1.7 + f * 3
+				part(deco(c, "cube", v(x + 0.5, y, fz), v(1, 1.1, 0.05), PROP.dark))
+				if random.chance(0.4) then
+					part(deco(c, "cube", v(x + 0.5, y, fz - side * 0.04), v(1.2, 0.16, 0.05), PROP.plank, { rot = v(0, 0, random.range(-0.5, 0.5)) }))
+				end
+			end
+		end
+	end
+	-- Junk against the wall.
+	if random.chance(0.6) then
+		local x, z = random.range(x0 + 0.8, x1 - 0.8), zn - side * 0.6
+		if random.chance(0.5) then
+			box(c, x - 0.9, z - 0.5, x + 0.9, z + 0.5, 1.2, { color = PROP.dumpster, roughness = 0.9 })
+		else
+			for _ = 1, random.int(3, 6) do
+				deco(c, "sphere", v(x + random.range(-0.7, 0.7), 0.2, z + random.range(-0.3, 0.3)), random.range(0.3, 0.5), PROP.bag)
+			end
+		end
+	end
+	-- What main.luau shows instead when the block is in the way.
+	blk.cut = add(c, world.spawn("cube", { pos = v((x0 + x1) / 2, 0.45, (z0 + z1) / 2), size = v(w, 0.9, d), color = color, roughness = 0.95, solid = false, tag = "deco", visible = false }))
+	table.insert(c.blocks, blk)
+	table.insert(c.buildings, blk)
+	return blk
+end
+
+-- A dead car: rusted or burnt, parked crooked, sometimes on its roof.
+local function wreck(c, x, z)
+	local yaw = random.range(-0.35, 0.35) + (if random.chance(0.5) then 0 else math.pi)
+	local burnt = random.chance(0.35)
+	local col = if burnt then BURNT.color else RUST[random.int(1, #RUST)]
+	local flipped = not burnt and random.chance(0.15)
+	local h = if flipped then 0.9 else 1.0
+	-- Solid as a box around it; the look is turned.
+	local r = box(c, x - 2.2, z - 1.1, x + 2.2, z + 1.1, h, { color = col, roughness = 0.9 })
+	world.set(r.id, { rot = v(0, yaw, 0), size = v(4.0, h, 1.8) })
+	if not flipped then
+		deco(c, "cube", v(x, h + 0.25, z), v(1.9, 0.5, 1.5), if burnt then "#3a3632" else PROP.dark, { rot = v(0, yaw, 0) })
+	end
+	if random.chance(0.4) then deco(c, "sphere", v(x + random.range(-3, 3), 0.15, z + random.range(-1.6, 1.6)), 0.55, PROP.tyre) end
+	if not burnt and random.chance(0.5) then
+		table.insert(c.containers, { kind = "car", x = x, z = z, rect = r, id = r.id, searched = false })
+	end
+end
+
+-- A barricade someone built and left: sandbags or planks on trestles,
+-- across part of the street.
+local function barricade(c, x, z0, z1)
+	if z0 > z1 then z0, z1 = z1, z0 end
+	if random.chance(0.5) then
+		box(c, x - 0.35, z0, x + 0.35, z1, 0.7, { color = PROP.sandbag })
+		for z = z0 + 0.3, z1 - 0.3, 0.55 do
+			deco(c, "cube", v(x + random.range(-0.05, 0.05), 0.78, z), v(0.5, 0.18, 0.5), PROP.sandbag, { rot = v(0, random.range(-0.3, 0.3), 0) })
+		end
+	else
+		box(c, x - 0.15, z0, x + 0.15, z1, 1.0, { color = PROP.plank })
+		for z = z0 + 0.4, z1 - 0.4, 1.4 do
+			deco(c, "cube", v(x, 0.5, z), v(0.9, 1.0, 0.08), PROP.board, { rot = v(0, 0, random.range(-0.2, 0.2)) })
+		end
+	end
+end
+
 ----------------------------------------------------------------------------
 -- One chunk per biome
 
 local function lot(c, side, x0, x1, look, biome)
 	local span = x1 - x0
 	if biome == "suburb" then
-		if random.chance(0.75) then
-			local w = math.min(random.range(8, 11), span - 1)
-			local bx = random.range(x0 + 0.5, x1 - w - 0.5)
+		local w = math.min(random.range(8, 11), span - 1)
+		local bx = random.range(x0 + 0.5, x1 - w - 0.5)
+		if random.chance(0.3) then
 			building(c, bx, w, random.range(6.5, 8.5), 2, if random.chance(0.5) then 1 else 2, side, look, { "kitchen", "closet", "closet" }, 1)
+		else
+			closed(c, bx, w, random.range(6, 8), side, look, random.range(3.6, 5.2))
+		end
+		-- A front hedge or fence, gapped, and trees behind.
+		if random.chance(0.5) then
+			local g = random.range(x0 + 1, x1 - 3)
+			box(c, x0 + 0.3, side * 4.25 - 0.2, g, side * 4.25 + 0.2, 0.9, { color = PROP.hedge })
+			box(c, g + 2, side * 4.25 - 0.2, x1 - 0.3, side * 4.25 + 0.2, 0.9, { color = PROP.hedge })
 		end
 		for _ = 1, random.int(0, 2) do tree(c, random.range(x0 + 1, x1 - 1), side * random.range(12.4, 13.5)) end
 	elseif biome == "forest" then
@@ -344,19 +470,25 @@ local function lot(c, side, x0, x1, look, biome)
 			for _ = 1, random.int(0, 2) do rock(c, random.range(x0, x1), side * random.range(3.6, 13)) end
 		end
 	elseif biome == "city" then
-		if random.chance(0.85) then
-			local w = math.min(random.range(11, 16), span - 1)
-			local bx = random.range(x0 + 0.5, x1 - w - 0.5)
+		local w = math.min(random.range(11, 16), span - 1)
+		local bx = random.range(x0 + 0.5, x1 - w - 0.5)
+		if random.chance(0.25) then
 			local roll = random.float()
 			local kinds = if roll < 0.2 then { "pharmacy", "office" } elseif roll < 0.5 then { "shop", "shop", "office" } elseif roll < 0.6 then { "police", "office" } else { "office", "kitchen", "closet" }
 			building(c, bx, w, random.range(7.5, 9.5), 3, 2, side, look, kinds, 2)
+		else
+			closed(c, bx, w, random.range(7, 9.4), side, look, random.range(6, 12))
 		end
 	else -- farm
 		local r = random.float()
 		if r < 0.4 then
 			local w = math.min(random.range(9, 12), span - 1)
 			local bx = random.range(x0 + 0.5, x1 - w - 0.5)
-			building(c, bx, w, random.range(7, 9), 2, 1, side, look, { "barn", "barn", "kitchen" }, 2)
+			if random.chance(0.5) then
+				building(c, bx, w, random.range(7, 9), 2, 1, side, look, { "barn", "barn", "kitchen" }, 2)
+			else
+				closed(c, bx, w, random.range(7, 9), side, look, random.range(4.5, 6.5))
+			end
 		else
 			-- Crop rows behind a fence with a gap.
 			local crop = CROP[random.int(1, #CROP)]
@@ -398,7 +530,7 @@ function M.chunk(index, day, in_day)
 	local x1 = x0 + M.CHUNK
 	local biome = M.biome(day)
 	local look = LOOKS[biome]
-	local c = { index = index, x0 = x0, x1 = x1, biome = biome, ents = {}, rects = {}, containers = {}, buildings = {}, weapons = {}, inside = {}, outside = {}, lamps = {} }
+	local c = { index = index, x0 = x0, x1 = x1, biome = biome, ents = {}, rects = {}, containers = {}, buildings = {}, blocks = {}, weapons = {}, inside = {}, outside = {}, lamps = {} }
 	local HZ = M.HALF_Z
 	add(c, world.spawn("cube", { pos = v((x0 + x1) / 2, -0.5, 0), size = v(M.CHUNK, 1, HZ * 2 + 30), color = look.ground, roughness = 1, solid = false, tag = "ground" }))
 	if biome == "city" then
@@ -476,7 +608,28 @@ function M.chunk(index, day, in_day)
 			local z = if random.chance(0.5) then -1.3 else 1.3
 			box(c, x - 0.3, z - 2.2, x + 0.3, z + 2.2, 0.5, { color = "#5a4632" })
 		end
+		-- Dead cars along the kerbs and now and then a barricade, in town.
+		if biome == "suburb" or biome == "city" or biome == "farm" then
+			for _ = 1, random.int(1, if biome == "city" then 3 else 2) do
+				local side = if random.chance(0.5) then -1 else 1
+				wreck(c, random.range(x0 + 3, x1 - 3), side * random.range(1.6, 2.2))
+			end
+			if random.chance(if biome == "city" then 0.35 else 0.15) then
+				local side = if random.chance(0.5) then -1 else 1
+				barricade(c, random.range(x0 + 4, x1 - 4), side * 3.4, side * random.range(0.4, 1.2))
+			end
+		end
 		for _ = 1, 3 do table.insert(c.outside, v(random.range(x0, x1), 0, random.range(-3, 3))) end
+		-- Nobody waits inside a solid block.
+		for i = #c.outside, 1, -1 do
+			local p = c.outside[i]
+			for _, b in c.blocks do
+				if p.x > b.x0 - 1 and p.x < b.x1 + 1 and p.z > b.z0 - 1 and p.z < b.z1 + 1 then
+					c.outside[i] = v(p.x, 0, random.range(-3, 3))
+					break
+				end
+			end
+		end
 		if random.chance(0.45) then
 			local kinds = if day >= 2 then { "pipe", "bat", "machete", "axe" } else { "pipe", "pipe", "bat" }
 			table.insert(c.weapons, { kind = kinds[random.int(1, #kinds)], pos = v(random.range(x0 + 1, x1 - 1), 0, random.range(-3, 3)) })
