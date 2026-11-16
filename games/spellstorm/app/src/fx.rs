@@ -818,6 +818,10 @@ pub struct Fx {
     /// Each water jet's far end, trailing its aim (by spell id bits): the
     /// direction it points and when it was last drawn.
     hose: HashMap<u64, (Vec3, f32)>,
+    /// Sprites drawn from the view before `live` runs (monsters being made):
+    /// kept here, since `live` starts its list afresh.
+    early: Vec<Sprite>,
+    early_lights: Vec<LocalLight>,
     /// GPU sparks and embers for eruptions and bombs (opt-in: KERN_GPU_PARTICLES=1).
     pub sparks: render::gpu_particles::GpuParticles,
     /// Props broken this tick: where the blow came from and how hard, for
@@ -886,6 +890,8 @@ impl Default for Fx {
             blasts,
             tips: Default::default(),
             hose: HashMap::new(),
+            early: Vec::new(),
+            early_lights: Vec::new(),
             sparks,
             prop_hits: HashMap::new(),
             env_lights: Vec::new(),
@@ -1033,55 +1039,42 @@ impl Fx {
     /// `at`: a ring of its element's light running up it, motes spiralling
     /// in onto it, a glow on the floor under it.
     pub fn materialize(&mut self, key: u64, at: Vec3, h: f32, k: f32, el: El, dt: f32) {
-        let c = el_c(el);
+        // Forged rather than scanned (Joep: less digital): an ember gold
+        // with a touch of its element, so a pale monster gets a clear one.
+        let c = lerp_c(el_c(el), rgba(1.0, 0.55, 0.15, 1.0), 0.6);
         let c3 = linear3([c[0], c[1], c[2]]);
-        let fade = 1.0 - smooth(0.8, 1.0, k);
-        // The ring sits where the body is being built (view.rs builds the
-        // parts below it), from its toes to the top of its head.
+        let fade = 1.0 - smooth(0.85, 1.0, k);
+        // The plane it is made at (view.rs builds the parts below it), from
+        // its toes to the top of its head: a glowing disc with a bright rim,
+        // tight round the body so it reads from the top-down camera.
         let y = h * crate::anim::build_front(k).clamp(0.0, 1.0);
-        let r = 0.65 + 0.15 * (1.0 - k);
-        let hot = c3 * 2.2 + Vec3::splat(0.9);
-        self.live.push(flat_sprite(at + Vec3::Y * y, r, Cell::Ring, hot * fade));
-        self.live.push(flat_sprite(at + Vec3::Y * y, r * 1.5, Cell::Ring, c3 * 0.7 * fade));
-        // The glow under it (no column: it read as a stripe).
-        self.live.push(flat_sprite(at + Vec3::Y * 0.04, 0.9, Cell::Patch, c3 * 0.6 * fade));
-        // Sparks shed off the ring as it rises, drifting up and out.
-        let mut sp = particles(lerp_c(c, WHITE, 0.4), 40, 0.5, 0.06);
+        let r = 0.5;
+        self.early.push(flat_sprite(at + Vec3::Y * y, r * 1.2, Cell::Patch, c3 * 0.6 * fade));
+        self.early.push(flat_sprite(at + Vec3::Y * y, r, Cell::Ring, c3 * 1.8 * fade));
+        self.early.push(flat_sprite(at + Vec3::Y * 0.04, 0.6, Cell::Patch, c3 * 0.3 * fade));
+        // Embers coming off the edge as it rises, close to the body.
+        let mut sp = particles(lerp_c(c, WHITE, 0.3), 40, 0.35, 0.05);
         sp.cell = Cell::Spark;
-        sp.glow = 2.4;
+        sp.glow = 2.6;
         sp.dir = Vec3::Y;
-        sp.spread = 70.0;
-        sp.v = (0.6, 1.8);
-        sp.flat = 0.0;
-        sp.gravity = Vec3::Y * 0.5;
-        sp.stretch = 0.03;
-        let due = 70.0 * fade * dt;
-        let n = due as u32 + (self.f() < due.fract()) as u32;
-        for _ in 0..n {
-            let a = self.range(0.0, std::f32::consts::TAU);
-            let q = at + Vec3::new(a.cos() * r, y, a.sin() * r);
-            self.emit(sp, q, 1);
-        }
-        // Motes drawn in from round it to where it is being made.
-        let mut p = particles(c, 60, 0.45, 0.14);
-        p.cell = Cell::Spark;
-        p.glow = 2.2;
-        p.sphere = 1.4;
-        p.dir = Vec3::Y;
-        p.spread = 180.0;
-        p.v = (0.0, 0.3);
-        p.radial = (-9.0, -6.0);
-        p.gravity = Vec3::ZERO;
-        p.stretch = 0.05;
-        // (Emitted here, not streamed: a stream's carry is kept only for
-        // spells and fields.)
-        let due = 60.0 * fade * dt;
+        sp.spread = 25.0;
+        sp.v = (0.8, 2.0);
+        sp.damp = (2.0, 3.0);
+        sp.gravity = Vec3::ZERO;
+        sp.stretch = 0.04;
+        let due = 90.0 * fade * dt;
         let n = due as u32 + (self.f() < due.fract()) as u32;
         let _ = key;
-        if n > 0 {
-            self.emit(p, at + Vec3::Y * y.max(0.3), n);
+        for _ in 0..n {
+            let a = self.range(0.0, std::f32::consts::TAU);
+            let rr = r * self.range(0.5, 1.0);
+            let q = at + Vec3::new(a.cos() * rr, y, a.sin() * rr);
+            self.emit(sp, q, 1);
         }
-        self.light(at + Vec3::Y * y.max(0.4), c, 1.2 * fade, 4.0);
+        self.light(at + Vec3::Y * y.max(0.4), c, 1.6 * fade, 4.0);
+        if let Some(l) = self.live_lights.pop() {
+            self.early_lights.push(l);
+        }
     }
 
     /// Fx.puff.
@@ -2481,7 +2474,9 @@ impl Fx {
         use spellstorm::pickups::{Bullet, Globe, Soul};
         use spellstorm::spells::{Beam, Bolt as SBolt, Projectile, Sentry, Spray, Trap};
         self.live.clear();
+        self.live.append(&mut self.early);
         self.live_lights.clear();
+        self.live_lights.append(&mut self.early_lights);
         let t = self.time;
         self.hose.retain(|_, h| t - h.1 < 0.5);
         for &id in &w.fx {
