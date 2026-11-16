@@ -201,10 +201,17 @@ declare post: {
 	reset: () -> (),
 }
 
--- Coloured point lights without shadows, at most 32. intensity is about
+-- Coloured point lights without shadows, at most 32 (`set`), and shadowed
+-- spotlights, at most 8 (`spots`). intensity is about
 -- lux at 1 m (a few hundred under the night sky), range in metres.
 declare lights: {
 	set: (list: { { pos: Vec, color: Color?, intensity: number?, range: number? } }) -> (),
+	-- Spotlights that cast shadows, at most 8 (torches, headlights, a lamp
+	-- over a door): dir is where the beam points, angle the outer half-angle
+	-- in degrees (2 to 74, default 30), inner where it starts to fade (default
+	-- 0.6 of angle), intensity in candela (default 1000, falls off with the
+	-- square of distance), range in metres (default 15). Replaces the list.
+	spots: (list: { { pos: Vec, dir: Vec?, color: Color?, intensity: number?, range: number?, angle: number?, inner: number? } }) -> (),
 	clear: () -> (),
 }
 
