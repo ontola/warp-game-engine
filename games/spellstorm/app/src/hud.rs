@@ -127,10 +127,10 @@ const HINT_GONE: f32 = 1.2;
 
 /// The moves taught by a hint under a wizard until they have been used, in
 /// the order they are taught, a step at a time (Joep): one element loaded,
-/// shot, cast, then the same for the other starting element; dodging and
-/// the sword; shaking. New skills first once learned: two elements
+/// cleared again, shot, cast, then the same for the other starting element;
+/// dodging and the sword. New skills first once learned: two elements
 /// together as soon as a second slot opens.
-const HINTS: [u32; 13] = [NEW_ELEMENT, used::CAST2, used::NOVA, used::PLANT, used::ENCHANT, used::LOAD, used::BOLT_EL, used::CAST, used::CAST_PAIR, used::ROLL, used::SWING, used::DEFLECT, used::SHAKE];
+const HINTS: [u32; 13] = [NEW_ELEMENT, used::CAST2, used::NOVA, used::PLANT, used::ENCHANT, used::LOAD, used::SHAKE, used::BOLT_EL, used::CAST, used::CAST_PAIR, used::ROLL, used::SWING, used::DEFLECT];
 /// Not a move: an element learned and never loaded yet. After a new skill's
 /// card, its hint stays until it has been used (Joep).
 const NEW_ELEMENT: u32 = 1 << 30;
@@ -182,7 +182,7 @@ fn hint_text(bit: u32, wz: &spellstorm::wizard::Wizard, mods: &spellstorm::relic
             let b = open.get(1).copied().unwrap_or(order[1]);
             format!("New: {} {} and {} {}, then {{rt}} casts {}", button_of(a), a.name(), button_of(b), b.name(), name(&[a, b]))
         }
-        used::SHAKE => "Elements loaded? Hold {rs} in to shake them out".into(),
+        used::SHAKE => "Hold {rs} to clear elements".into(),
         _ => String::new(),
     }
 }
@@ -360,7 +360,8 @@ impl Hud {
                 used::CAST_PAIR => h.used & used::CAST != 0,
                 // Taught as soon as a second slot opens (Joep), after its card.
                 used::CAST2 => !cards && wz.queue.size >= 2 && h.used & used::CAST != 0,
-                used::SHAKE => !wz.queue.is_empty() && h.used & used::CAST != 0,
+                // One of the first steps (Joep), once something is loaded.
+                used::SHAKE => !wz.queue.is_empty() && h.used & used::LOAD != 0,
                 _ => true,
             };
             h.now = HINTS.iter().copied().find(|&bit| !done(bit, h.used, h.used_el) && ready(bit)).map(|bit| (bit, 0.0));

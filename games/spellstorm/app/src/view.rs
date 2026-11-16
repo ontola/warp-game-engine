@@ -615,17 +615,17 @@ impl View {
             let at = Mat4::from_rotation_translation(Quat::from_rotation_y(a.yaw), a.pos) * model;
             // Coming in: it is built up from the floor, glowing as it forms,
             // a ring of light running up it and motes drawn in (Joep).
+            // Each part of it is made in turn from its toes to the top of
+            // its head (Joep), glowing hot as it forms under a ring of
+            // light running up it.
             let made = (ea.born / anim::MATERIALIZE).clamp(0.0, 1.0);
-            let at = if made < 1.0 && a.alive {
-                let up = 1.0 - (1.0 - made).powi(3);
-                let wide = 0.6 + 0.4 * (made * 1.6).min(1.0);
-                let h = 1.4 * e.cfg().size as f32 + 0.4;
-                self.fx.materialize(id.to_bits().get(), a.pos, h, made, e.cfg().el, dt);
-                at * Mat4::from_scale(Vec3::new(wide, up.max(0.02), wide))
-            } else {
-                at
-            };
-            let forming = if made < 1.0 { (1.0 - made).powf(0.7) * 1.2 } else { 0.0 };
+            let building = made < 1.0 && a.alive;
+            let tall = 1.4 * e.cfg().size as f32 + 0.4;
+            let front = anim::build_front(made);
+            if building {
+                self.fx.materialize(id.to_bits().get(), a.pos, tall, made, e.cfg().el, dt);
+            }
+            let forming = if building { (1.0 - made).powf(0.7) * 1.2 } else { 0.0 };
             // Bodies that fall apart go to pieces once (a blow-up after its fuse).
             if let Some(t) = ea.dead_t.filter(|_| !ea.scattered) {
                 let c = e.cfg();
@@ -708,15 +708,27 @@ impl View {
                 // Frozen to death it stands white as ice until it shatters.
                 let flash = if e.how == Some(Death::Freeze) { 0.6 } else { hit_flash(&a).max(forming) };
                 let kind = e.cfg();
-                if self.skins.pose(&mut self.scene, id, kind, &a, &e, ea.dead_t, at, kit.base_scale, flash, dt) {
+                let build = building.then_some(front);
+                if self.skins.pose(&mut self.scene, id, kind, &a, &e, ea.dead_t, at, kit.base_scale, flash, build, dt) {
                     continue;
                 }
-                marked.push((out.len()..out.len() + pieces.len(), flash, 0.0));
+                let flash = if building { hit_flash(&a) } else { flash };
                 for p in &pieces {
                     let mut xf = at * part(p.node);
                     if eyes != 1.0 && kit.eyes.contains(&p.node) {
                         xf *= Mat4::from_scale(Vec3::splat(eyes));
                     }
+                    let mut hot = flash;
+                    if building {
+                        // Grown in place round its own middle.
+                        let sp = self.scene.meshes[p.mesh].sphere;
+                        let c = Vec3::new(sp[0], sp[1], sp[2]);
+                        let y = ((xf.transform_point3(c).y - a.pos.y) / tall).clamp(0.0, 1.0);
+                        let k = anim::built(front, y).max(0.001);
+                        xf = xf * Mat4::from_translation(c) * Mat4::from_scale(Vec3::splat(k)) * Mat4::from_translation(-c);
+                        hot = hot.max(anim::forming_glow(front, y));
+                    }
+                    marked.push((out.len()..out.len() + 1, hot, 0.0));
                     out.push((p.mesh, look::affine(xf), p.shadow));
                 }
             }

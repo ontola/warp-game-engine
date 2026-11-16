@@ -167,7 +167,32 @@ pub struct EnemyAnim {
 
 /// How long a monster takes to be made as it comes in (Joep: its mesh
 /// built up, not a purple ball).
-pub const MATERIALIZE: f32 = 0.9;
+pub const MATERIALIZE: f32 = 1.1;
+
+/// How high up a monster being made is built (0 its toes, 1 the top of its
+/// head), `made` 0..1 through MATERIALIZE: from toe to head (Joep), a little
+/// past either end so the first and last parts form too.
+pub fn build_front(made: f32) -> f32 {
+    let m = made.clamp(0.0, 1.0);
+    let e = m * m * (3.0 - 2.0 * m);
+    e * 1.3 - 0.12
+}
+
+/// How far a part at height `at` (0..1 of the body) is formed when the
+/// build is at `front`: 0 not yet, 1 whole.
+pub fn built(front: f32, at: f32) -> f32 {
+    let t = ((front - at) / 0.14).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// How hot (glowing) a part at height `at` is: bright as it forms, cooling
+/// as the build goes on past it.
+pub fn forming_glow(front: f32, at: f32) -> f32 {
+    if front < at {
+        return 0.0;
+    }
+    (1.0 - (front - at) / 0.4).clamp(0.0, 1.0) * 1.1
+}
 
 /// How a monster's body goes (Enemy._death), by its model.
 #[derive(Clone, Copy, Debug, PartialEq)]
