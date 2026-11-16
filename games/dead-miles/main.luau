@@ -52,6 +52,7 @@ local KNOBS = {
 	fov = 33, -- camera field of view, degrees
 	torch = 2000, -- torch brightness, candela
 	lamp = 1000, -- street light brightness, candela
+	moon = 6, -- moonlight at night, lux
 	night_ev = 4.5, -- how far the eye adapts to the dark (EV100 floor; lower is brighter)
 	density = 1, -- zombie count multiplier
 	encounters = 0.35, -- chance of an encounter in a chunk
@@ -754,9 +755,12 @@ local function look_of_hour()
 	s.time_now = t
 	sky.set(t)
 	if dark() then
-		light.set({ fog_start = 8, fog_end = 38, exposure = "auto", exposure_min = KNOBS.night_ev, exposure_max = 9, exposure_bias = -0.6 })
+		-- A faint moon from the south-west, so the ruins still show
+		-- away from the torches and lamps.
+		light.set({ sun = v(-0.35, 0.8, 0.5), sun_lux = KNOBS.moon, fog_start = 8, fog_end = 38, exposure = "auto", exposure_min = KNOBS.night_ev, exposure_max = 9, exposure_bias = -0.6 })
 		post.set({ vignette = 0.6, grain = 0.14, saturation = 0.7, contrast = 1.12 })
 	else
+		light.reset()
 		light.set({ fog_start = 12, fog_end = 48 })
 		post.set({ vignette = 0.45, grain = 0.1, saturation = 0.72, contrast = 1.08 })
 	end
