@@ -141,6 +141,21 @@ and runs its normal reload hook. A missing library, a cycle or a bad edit
 reports a load error and keeps the last working exports. Fixing the library
 retries the load. One-file games remain self-contained.
 
+For content collections, where each new file is a new entry (cards,
+encounters, levels), `libraries("content/cards")` returns the names of the
+libraries in that folder, sorted, so a game can load them all without a
+list to keep up to date:
+
+```lua
+local CARDS = {}
+for _, name in libraries("content/cards") do
+	table.insert(CARDS, require(name))
+end
+```
+
+[Dead Miles](../../games/dead-miles/content/encounters) loads its
+encounters this way.
+
 ## The Luau API
 
 The complete reference is

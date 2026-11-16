@@ -89,6 +89,7 @@ impl Libraries {
                 let result = (|| {
                     let globals = env(lua, base, &lua.create_table()?)?;
                     globals.raw_set("require", functions.raw_get::<Function>("require")?)?;
+                    globals.raw_set("libraries", functions.raw_get::<Function>("libraries")?)?;
                     lua.load(src.as_str())
                         .set_name(format!("@{name}.module.luau"))
                         .set_environment(globals)
@@ -99,8 +100,16 @@ impl Libraries {
                 cache.raw_set(name, exports.clone())?;
                 Ok(exports)
             })?;
+            // The libraries in a folder, sorted: content collections where a
+            // new file is a new entry (`for _, name in libraries("content/cards")`).
+            let libraries = scope.create_function(|lua, folder: String| {
+                let prefix = format!("{}/", folder.trim_end_matches('/'));
+                lua.create_sequence_from(self.0.keys().filter(|name| name.starts_with(&prefix)).cloned())
+            })?;
             functions.raw_set("require", require.clone())?;
+            functions.raw_set("libraries", libraries.clone())?;
             entry.raw_set("require", require)?;
+            entry.raw_set("libraries", libraries)?;
             lua.load(source)
                 .set_name(format!("@{name}"))
                 .set_environment(entry.clone())
