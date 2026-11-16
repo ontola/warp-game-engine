@@ -47,10 +47,10 @@ local KNOBS = {
 	ghost = 12, -- seconds as a ghost before a new survivor arrives
 	revive = 2, -- seconds a teammate holds A to revive
 	search = 1.2, -- seconds to search a container
-	cam_height = 17, -- camera height over the group, m
-	cam_back = 11, -- camera distance behind (south of) the group, m
-	fov = 42, -- camera field of view, degrees
-	torch = 1400, -- torch brightness, candela
+	cam_height = 22, -- camera height over the group, m
+	cam_back = 7, -- camera distance behind (south of) the group, m
+	fov = 33, -- camera field of view, degrees
+	torch = 2000, -- torch brightness, candela
 	lamp = 1000, -- street light brightness, candela
 	night_ev = 4.5, -- how far the eye adapts to the dark (EV100 floor; lower is brighter)
 	density = 1, -- zombie count multiplier
@@ -754,10 +754,10 @@ local function look_of_hour()
 	s.time_now = t
 	sky.set(t)
 	if dark() then
-		light.set({ fog_start = 6, fog_end = 34, exposure = "auto", exposure_min = KNOBS.night_ev, exposure_max = 9, exposure_bias = -0.6 })
+		light.set({ fog_start = 8, fog_end = 38, exposure = "auto", exposure_min = KNOBS.night_ev, exposure_max = 9, exposure_bias = -0.6 })
 		post.set({ vignette = 0.6, grain = 0.14, saturation = 0.7, contrast = 1.12 })
 	else
-		light.set({ fog_start = 10, fog_end = 55 })
+		light.set({ fog_start = 12, fog_end = 48 })
 		post.set({ vignette = 0.45, grain = 0.1, saturation = 0.72, contrast = 1.08 })
 	end
 end
@@ -2049,7 +2049,9 @@ local function torches()
 			if u.torch and s.battery > 0 and dark() and not flicker then
 				local f = dir(u.yaw)
 				local down = if u.state == "down" then 0.05 else 0.22
-				table.insert(spots, { pos = v(u.pos.x + f.x * 0.45, 1.35, u.pos.z + f.z * 0.45), dir = v(f.x, -down, f.z), color = "#ffe6c0", intensity = KNOBS.torch, range = 18, angle = 24, inner = 10 })
+				-- Out past the arms and the weapon: a Warp Human's own body
+				-- would shadow a torch held at the chest.
+				table.insert(spots, { pos = v(u.pos.x + f.x * 0.85, 1.3, u.pos.z + f.z * 0.85), dir = v(f.x, -down, f.z), color = "#ffe6c0", intensity = KNOBS.torch, range = 18, angle = 28, inner = 12 })
 				table.insert(list, { pos = v(u.pos.x + f.x * 0.6, 1.6, u.pos.z + f.z * 0.6), color = "#ffe6c0", intensity = KNOBS.torch * 0.012, range = 3 })
 			end
 			if u.flash then table.insert(list, { pos = v(u.pos.x, 1.4, u.pos.z), color = "#ffd27a", intensity = 900, range = 14 }) end

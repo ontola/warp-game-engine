@@ -17,17 +17,21 @@ local M = {}
 M.CHUNK = 24 -- metres of land per chunk
 M.HALF_Z = 14 -- the strip runs from z -14 to 14
 M.DAY_CHUNKS = 7 -- chunks of walking per day, then the camp
-local WALL_H, WALL_T = 1.35, 0.25
+local WALL_T = 0.25
 
 M.BIOMES = { "suburb", "forest", "city", "farm" }
 
 local LOOKS = {
-	suburb = { ground = "#55623f", path = "#2c2c2e", edge = "#8c8984", walls = { "#c9b79c", "#b7c2b0", "#d6c4a8", "#a9b4bf", "#c7a88f" }, floors = { "#7a5a3e", "#8b6b4a", "#9a8f80" } },
-	forest = { ground = "#3f4a2e", path = "#6b5a42", edge = "#4d4433", walls = { "#6f5a44", "#7a644b" }, floors = { "#5e4a36" } },
-	city = { ground = "#4a4846", path = "#2a2a2c", edge = "#6e6b66", walls = { "#8e8a84", "#a39c90", "#7c8088", "#9a8a7a" }, floors = { "#5c5a56", "#6b665e", "#4e5056" } },
-	farm = { ground = "#6b6a3c", path = "#7b6646", edge = "#5d5032", walls = { "#8a3a2a", "#a0503a", "#c9b79c" }, floors = { "#6b5a3e", "#7a6a48" } },
+	-- height: wall tops vary between these (m); ruin: share of wall pieces
+	-- fallen to a stub with rubble around it.
+	suburb = { ground = "#55623f", path = "#2c2c2e", edge = "#8c8984", walls = { "#a8998a", "#9aa294", "#b0a08a", "#8d97a0", "#a38c78" }, floors = { "#6a4e36", "#7a5e42", "#827868" }, height = { 2.5, 3 }, ruin = 0.12 },
+	forest = { ground = "#3f4a2e", path = "#6b5a42", edge = "#4d4433", walls = { "#5f4c3a", "#6a5640" }, floors = { "#4e3e2e" }, height = { 2.3, 2.7 }, ruin = 0.15 },
+	city = { ground = "#3e3c3a", path = "#262628", edge = "#5e5b56", walls = { "#6e6a64", "#7a7268", "#5f636a", "#7a6c5e", "#585450" }, floors = { "#4c4a46", "#57534c", "#404248" }, height = { 3.2, 4.6 }, ruin = 0.32 },
+	farm = { ground = "#6b6a3c", path = "#7b6646", edge = "#5d5032", walls = { "#7a3a2c", "#8a4a38", "#a8998a" }, floors = { "#5e4e36", "#6a5c40" }, height = { 2.6, 3.4 }, ruin = 0.15 },
 }
 local CAR_COLORS = { "#6b2b2b", "#2f4d6b", "#5d6650", "#8a8478", "#3a3a40", "#7a5a2a" }
+local BURNT = { color = "#2a2624", roughness = 0.9 }
+local DEBRIS = { "#5f5a55", "#7a7470", "#4a4640", "#3a3632" }
 local CROP = { "#7d8a3a", "#8f8a40", "#6a7a32" }
 
 function M.biome(day) return M.BIOMES[(day - 1) % #M.BIOMES + 1] end
@@ -41,8 +45,9 @@ function M.warm()
 		for _, c in l.floors do world.warm("cube", { color = c, roughness = 0.95 }) end
 	end
 	for _, c in CAR_COLORS do world.warm("cube", { color = c, roughness = 0.4, metal = 0.3 }) end
+	world.warm("cube", BURNT)
 	for _, c in CROP do world.warm("cube", { color = c, roughness = 0.95 }) end
-	for _, c in { "#d8d0a0", "#4a3a2a", "#5a4632", "#202024", "#e8e8f0", "#1d3a8a", "#8b6b4a", "#6b4e37", "#7a7470", "#5f5a55", "#c9b25a", "#3a3632" } do
+	for _, c in { "#2a2624", "#d8d0a0", "#4a3a2a", "#5a4632", "#202024", "#e8e8f0", "#1d3a8a", "#8b6b4a", "#6b4e37", "#7a7470", "#5f5a55", "#c9b25a", "#3a3632" } do
 		world.warm("cube", { color = c, roughness = 0.9 })
 		world.warm("cube", { color = c, roughness = 0.8 })
 		world.warm("cube", { color = c, roughness = 0.95 })
@@ -114,8 +119,14 @@ local function rock(c, x, z)
 	box(c, x - s / 2, z - s / 2, x + s / 2, z + s / 2, s * 0.6, { color = "#7a7470" })
 end
 
-local function car(c, x, z, police, yaw_x)
+local function car(c, x, z, police, yaw_x, burnt)
 	local color = if police then "#e8e8f0" else CAR_COLORS[random.int(1, #CAR_COLORS)]
+	if burnt then
+		-- A burnt-out wreck: black shell, no glass, nothing left inside.
+		if yaw_x then box(c, x - 2.1, z - 0.92, x + 2.1, z + 0.92, 1.0, BURNT) else box(c, x - 0.92, z - 2.1, x + 0.92, z + 2.1, 1.0, BURNT) end
+		deco(c, "cube", v(x, 1.15, z), if yaw_x then v(1.8, 0.3, 1.5) else v(1.5, 0.3, 1.8), "#3a3632")
+		return
+	end
 	local r
 	if yaw_x then
 		r = box(c, x - 2.1, z - 0.92, x + 2.1, z + 0.92, 1.15, { color = color, roughness = 0.4, metal = 0.3 })
@@ -126,6 +137,39 @@ local function car(c, x, z, police, yaw_x)
 	end
 	if police then deco(c, "cube", v(x, 1.8, z), v(0.6, 0.12, 0.6), "#1d3a8a") end
 	table.insert(c.containers, { kind = if police then "police" else "car", x = x, z = z, rect = r, id = r.id, searched = false })
+end
+
+-- Rubble: a few tumbled blocks of a wall's colour around a point.
+local function rubble(c, x, z, spread, look, n)
+	for _ = 1, n do
+		local s = random.range(0.15, 0.45)
+		deco(c, "cube", v(x + random.range(-spread, spread), s * 0.35, z + random.range(-spread, spread)), v(s * random.range(1, 2.2), s * 0.7, s), look.color,
+			{ roughness = 0.95, rot = v(random.range(-0.4, 0.4), random.range(-math.pi, math.pi), random.range(-0.4, 0.4)) })
+	end
+end
+
+-- A run of wall from a0 to a1 along x (at z = at) or along z (at x = at),
+-- in pieces of different heights: an abandoned building with no roof and
+-- broken tops. Some pieces have fallen to a stub, rubble at their feet.
+local function wall_run(c, a0, a1, at, along_x, look, wall)
+	local a = a0
+	while a1 - a > 0.05 do
+		local len = math.min(a1 - a, random.range(0.9, 2.2))
+		if a1 - (a + len) < 0.5 then len = a1 - a end
+		local fallen = random.chance(look.ruin)
+		local h = if fallen then random.range(0.45, 1.1) else random.range(look.height[1], look.height[2])
+		if along_x then
+			box(c, a, at - WALL_T / 2, a + len, at + WALL_T / 2, h, wall)
+		else
+			box(c, at - WALL_T / 2, a, at + WALL_T / 2, a + len, h, wall)
+		end
+		if fallen then
+			local m = a + len / 2
+			local side = if random.chance(0.5) then 1 else -1
+			if along_x then rubble(c, m, at + side * 0.5, len / 2, wall, 4) else rubble(c, at + side * 0.5, m, len / 2, wall, 4) end
+		end
+		a += len
+	end
 end
 
 -- A building: a w x d footprint split into cols x rows rooms. Every room
@@ -180,19 +224,19 @@ local function building(c, x0, w, d, cols, rows, side, look, kinds, sleepers)
 	-- Walls along x (constant z) and along z (constant x), with gaps.
 	local function wall_x(xa, xb, z, gap)
 		if gap then
-			if gap[1] - xa > 0.05 then box(c, xa, z - WALL_T / 2, gap[1], z + WALL_T / 2, WALL_H, wall) end
-			if xb - gap[2] > 0.05 then box(c, gap[2], z - WALL_T / 2, xb, z + WALL_T / 2, WALL_H, wall) end
+			if gap[1] - xa > 0.05 then wall_run(c, xa, gap[1], z, true, look, wall) end
+			if xb - gap[2] > 0.05 then wall_run(c, gap[2], xb, z, true, look, wall) end
 		else
-			box(c, xa, z - WALL_T / 2, xb, z + WALL_T / 2, WALL_H, wall)
+			wall_run(c, xa, xb, z, true, look, wall)
 		end
 	end
 	local function wall_z(za, zb, x, gap)
 		if za > zb then za, zb = zb, za end
 		if gap then
-			if gap[1] - za > 0.05 then box(c, x - WALL_T / 2, za, x + WALL_T / 2, gap[1], WALL_H, wall) end
-			if zb - gap[2] > 0.05 then box(c, x - WALL_T / 2, gap[2], x + WALL_T / 2, zb, WALL_H, wall) end
+			if gap[1] - za > 0.05 then wall_run(c, za, gap[1], x, false, look, wall) end
+			if zb - gap[2] > 0.05 then wall_run(c, gap[2], zb, x, false, look, wall) end
 		else
-			box(c, x - WALL_T / 2, za, x + WALL_T / 2, zb, WALL_H, wall)
+			wall_run(c, za, zb, x, false, look, wall)
 		end
 	end
 	-- The front wall: one door in a random front room.
@@ -245,8 +289,16 @@ local function building(c, x0, w, d, cols, rows, side, look, kinds, sleepers)
 			end
 		end
 	end
-	-- A cupboard in a corner of most rooms, sleepers in some.
+	-- A cupboard in a corner of most rooms, sleepers in some; rubble and
+	-- junk on the floors.
 	for _, r in b.rooms do
+		if random.chance(0.6) then
+			rubble(c, random.range(r.x0 + 0.6, r.x1 - 0.6), random.range(r.z0 + 0.6, r.z1 - 0.6), 0.6, wall, random.int(2, 5))
+		end
+		for _ = 1, random.int(0, 2) do
+			local x, z = random.range(r.x0 + 0.3, r.x1 - 0.6), random.range(r.z0 + 0.3, r.z1 - 0.6)
+			flat(c, x, z, x + random.range(0.2, 0.5), z + random.range(0.15, 0.4), 0.016, "#d8d0a0")
+		end
 		if random.chance(0.75) then
 			local east = random.chance(0.5)
 			local deep = random.chance(0.5)
@@ -335,10 +387,10 @@ end
 
 -- A street light: a pole and a lamp. Most are dead; a few still burn
 -- (main.luau lights them at night), and some flicker.
-local function lamp(c, x, side)
+local function lamp(c, x, side, city)
 	local z = side * 3.45
 	box(c, x - 0.09, z - 0.09, x + 0.09, z + 0.09, 4.2, { color = "#3a3d42", roughness = 0.6, metal = 0.6 })
-	local lit = random.chance(0.45)
+	local lit = random.chance(if city then 0.25 else 0.45)
 	deco(c, "cube", v(x, 4.15, z - side * 0.5), v(0.5, 0.14, 0.3), if lit then "#fff0c8" else "#4a4640", if lit then { emissive = 1.5 } else nil)
 	if lit then table.insert(c.lamps, { pos = v(x, 4, z - side * 0.5), flicker = random.chance(0.3), seed = random.range(0, 10) }) end
 end
@@ -382,12 +434,39 @@ function M.chunk(index, day, in_day)
 		-- Street lights in town.
 		if biome == "suburb" or biome == "city" then
 			for x = x0 + 4, x1 - 4, 16 do
-				if random.chance(0.8) then lamp(c, x + random.range(-2, 2), if random.chance(0.5) then -1 else 1) end
+				if random.chance(0.8) then lamp(c, x + random.range(-2, 2), if random.chance(0.5) then -1 else 1, biome == "city") end
 			end
 		end
 		-- Wrecks on the path, now and then a police car.
 		if biome ~= "forest" and random.chance(0.6) then
 			car(c, random.range(x0 + 3, x1 - 3), (if random.chance(0.5) then -1 else 1) * random.range(0.6, 1.6), biome == "city" and random.chance(0.25), true)
+		end
+		-- The city is a ruin: burnt wrecks, collapsed slabs and rubble in
+		-- the street, paper blowing about.
+		if biome == "city" then
+			if random.chance(0.5) then
+				car(c, random.range(x0 + 3, x1 - 3), (if random.chance(0.5) then -1 else 1) * random.range(1.2, 2), false, random.chance(0.7), true)
+			end
+			for _ = 1, random.int(2, 4) do
+				local side = if random.chance(0.5) then -1 else 1
+				local x, z = random.range(x0 + 1, x1 - 1), side * random.range(2.6, 3.8)
+				local look_ = { color = DEBRIS[random.int(1, #DEBRIS)] }
+				if random.chance(0.4) then
+					-- A fallen slab of facade, solid.
+					local w = random.range(1, 2.2)
+					box(c, x - w / 2, z - 0.35, x + w / 2, z + 0.35, random.range(0.3, 0.6), look_)
+				end
+				rubble(c, x, z, 0.9, look_, random.int(3, 7))
+			end
+			for _ = 1, random.int(3, 6) do
+				local x, z = random.range(x0, x1), random.range(-HZ + 1, HZ - 1)
+				flat(c, x, z, x + random.range(0.2, 0.5), z + random.range(0.2, 0.4), 0.012, "#d8d0a0")
+			end
+			-- Cracks in the asphalt.
+			for _ = 1, random.int(1, 3) do
+				local x, z = random.range(x0, x1 - 3), random.range(-2.5, 2.5)
+				flat(c, x, z, x + random.range(1, 3), z + 0.06, 0.006, "#202024")
+			end
 		end
 		if biome == "forest" and random.chance(0.4) then
 			-- A fallen tree across part of the trail.
