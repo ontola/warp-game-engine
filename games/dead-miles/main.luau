@@ -395,8 +395,9 @@ local function noise(pos, radius, amount)
 		end
 	end
 	s.pressure = math.min(1.3, s.pressure + (amount or 0))
+	-- A brief, thin ring shows how far a loud noise carries.
 	if radius >= 10 then
-		fx.ring(v(pos.x, 0.06, pos.z), { radius = radius, life = 0.7, color = "#e8dfc4", emissive = 0.05, width = 0.07, segments = 48 })
+		fx.ring(v(pos.x, 0.06, pos.z), { radius = radius, life = 0.3, color = "#e8dfc4", emissive = 0.05, width = 0.03, segments = 48 })
 	end
 end
 
