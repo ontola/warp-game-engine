@@ -55,6 +55,7 @@ local KNOBS = {
 	moon = 6, -- moonlight at night, lux
 	night_ev = 4.5, -- how far the eye adapts to the dark (EV100 floor; lower is brighter)
 	density = 1, -- zombie count multiplier
+	trap = 12, -- seconds inside a building before the dead outside close in on it
 	encounters = 0.35, -- chance of an encounter in a chunk
 	autopilot = 0, -- 1: bots drive the people too (demos, store clips, tests)
 }
@@ -102,12 +103,13 @@ local TIMES = { [1] = "sunrise:mist", [2] = "morning:mist", [3] = "afternoon:haz
 
 -- What a container holds, by kind: { weight, item, min, max }.
 local LOOT = {
-	kitchen = { { 30, "food", 1, 2 }, { 8, "meds", 1, 1 }, { 8, "battery", 1, 1 }, { 6, "ammo", 1, 1 }, { 48, nil } },
-	closet = { { 25, "weapon" }, { 10, "ammo", 1, 2 }, { 10, "meds", 1, 1 }, { 12, "battery", 1, 1 }, { 43, nil } },
-	car = { { 16, "food", 1, 1 }, { 18, "battery", 1, 1 }, { 10, "ammo", 1, 2 }, { 56, nil } },
+	kitchen = { { 42, "food", 1, 2 }, { 10, "meds", 1, 1 }, { 8, "battery", 1, 1 }, { 8, "ammo", 1, 1 }, { 32, nil } },
+	closet = { { 25, "weapon" }, { 14, "ammo", 1, 2 }, { 12, "meds", 1, 1 }, { 14, "battery", 1, 1 }, { 10, "food", 1, 1 }, { 25, nil } },
+	-- Cars are picked over: the real supplies are indoors.
+	car = { { 6, "food", 1, 1 }, { 14, "battery", 1, 1 }, { 4, "ammo", 1, 1 }, { 76, nil } },
 	police = { { 60, "ammo", 2, 4 }, { 30, "shotgun" }, { 10, "meds", 1, 1 } },
 	shop = { { 40, "food", 1, 3 }, { 15, "battery", 1, 1 }, { 45, nil } },
-	office = { { 10, "meds", 1, 1 }, { 10, "battery", 1, 1 }, { 5, "ammo", 1, 1 }, { 75, nil } },
+	office = { { 14, "meds", 1, 1 }, { 14, "battery", 1, 1 }, { 8, "ammo", 1, 1 }, { 10, "food", 1, 1 }, { 54, nil } },
 	pharmacy = { { 55, "meds", 1, 2 }, { 45, nil } },
 	cabin = { { 30, "food", 1, 2 }, { 25, "weapon" }, { 15, "ammo", 1, 2 }, { 30, nil } },
 	barn = { { 35, "weapon" }, { 25, "food", 1, 2 }, { 40, nil } },
@@ -874,6 +876,14 @@ local function chasing(u, target, dt)
 end
 
 -- A bot: revive, fight what is close, search what is near, walk on.
+-- Is this container in a building the dead are closing in on?
+local function trapped_at(c)
+	for _, b in s.buildings do
+		if b.closed_in and c.x > b.x0 and c.x < b.x1 and c.z > b.z0 and c.z < b.z1 then return true end
+	end
+	return false
+end
+
 local function bot_intent(u)
 	local dt = 1 / 60
 	local it = { mx = 0, mz = 0, ax = 0, az = 0 }
@@ -972,7 +982,7 @@ local function bot_intent(u)
 	if s.pressure < 0.85 then
 		local best, bd = nil, 16
 		for _, c in s.containers do
-			if not c.searched and (c.claim == nil or c.claim == u.id) and c.x > s.min_x + 3 and not (u.ignore and u.ignore[c]) then
+			if not c.searched and (c.claim == nil or c.claim == u.id) and c.x > s.min_x + 3 and not (u.ignore and u.ignore[c]) and not trapped_at(c) then
 				local dd = dist(v(c.x, 0, c.z), u.pos)
 				if dd < bd then best, bd = c, dd end
 			end
@@ -1825,6 +1835,57 @@ local function camera_step(dt)
 	end
 end
 
+-- Going in for supplies is a gamble: stay inside a building too long and
+-- the dead outside hear it. They wake, more come down the street, and they
+-- make for the front door, so the way out fills up. A groan and a warning
+-- come first; a back door, if the building has one, is the way out.
+local function front_door(b)
+	for _, d in b.doors do
+		if d.a == 0 then return d end
+	end
+	return nil
+end
+
+local function buildings_step(dt)
+	for _, b in s.buildings do
+		if #b.rooms > 0 and not b.closed_in then
+			local inside = nil
+			for _, u in s.survivors do
+				if in_body(u) and u.pos and room_of(b, u.pos) > 0 then inside = u break end
+			end
+			if inside then
+				b.inside_t = (b.inside_t or 0) + dt
+			else
+				b.inside_t = math.max(0, (b.inside_t or 0) - dt * 0.5)
+			end
+			local door = front_door(b)
+			if inside and door and b.inside_t > KNOBS.trap then
+				b.closed_in = true
+				count("closed_in")
+				local at = door.pa
+				sfx("groan", at, { pitch = 0.7, db = 4 })
+				game.log("The dead are closing in on a building")
+				for _, u in s.survivors do
+					if in_body(u) and u.pos and room_of(b, u.pos) > 0 then popup(u, "they heard you, get out", "#ff6a4a") end
+				end
+				-- The dead nearby make for the door...
+				for _, z in s.zombies do
+					if z.state ~= "dead" and dist(z.pos, at) < 30 then wake(z, flat(at)) end
+				end
+				-- ...and more come down the street from both sides.
+				local n = math.floor((2 + math.ceil(s.day / 2) + random.int(0, 2)) * KNOBS.density)
+				s.pressure = math.min(1.3, s.pressure + 0.3)
+				for i = 1, n do
+					local side = if i % 2 == 0 then 1 else -1
+					local p = v(at.x + side * random.range(9, 15), 0, at.z + random.range(-2, 2) - (if at.z > 0 then 3 else -3))
+					local z = spawn_zombie(if random.chance(0.15 + 0.05 * s.day) then "runner" else "shambler", p, "investigate", flat(at))
+					if z then z.goal = flat(at) end
+				end
+			end
+		end
+	end
+end
+
 -- A closed building that stands between the camera and a survivor (or
 -- just in front of one) gets out of the way: it hides and a low cut-away
 -- shows its footprint, until nobody is behind it any more.
@@ -1981,6 +2042,7 @@ local function tick(dt, input)
 
 	camera_step(dt)
 	if game.tick() % 4 == 0 then blocks_step() end
+	buildings_step(dt)
 	stream_land()
 	look_of_hour()
 
