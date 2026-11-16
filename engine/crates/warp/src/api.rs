@@ -919,6 +919,12 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         })),
         ("remove", f!(core, move |_, id: u32| { let mut c = lock(&core); sim(&c, "humans.remove")?; Ok(c.humans.remove(id)) })),
         ("head", f!(core, move |_, id: u32| Ok(lock(&core).humans.head(id).map(vector).unwrap_or(Value::Nil)))),
+        ("joint", f!(core, move |_, (id, name): (u32, String)| {
+            if !crate::humans::JOINT_NAMES.iter().any(|(n, _)| *n == name) {
+                return Err(rt(format!("humans.joint: {name:?} (one of {})", crate::humans::JOINT_NAMES.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", "))));
+            }
+            Ok(lock(&core).humans.joint(id, &name).map(vector).unwrap_or(Value::Nil))
+        })),
         ("room", f!(core, move |_, pool: String| {
             let (free, all) = lock(&core).humans.room(&pool).ok_or_else(|| rt(format!("humans.room: no pool {pool:?}")))?;
             Ok((free, all))

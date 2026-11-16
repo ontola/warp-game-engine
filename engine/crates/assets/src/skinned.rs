@@ -212,6 +212,9 @@ fn frame_pair(frames: usize, duration: f32, seconds: f32, looping: bool) -> (usi
 }
 
 impl Character {
+    /// Skinned vertices one actor of this character adds to a scene.
+    pub fn vertex_count(&self) -> usize { self.surfaces.iter().map(|s| s.influences.len()).sum() }
+
     pub fn load(path: &Path) -> Result<Self, String> {
         let manifest: Manifest =
             serde_json::from_slice(&read(path)?).map_err(|e| format!("{}: {e}", path.display()))?;

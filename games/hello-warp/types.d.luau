@@ -224,6 +224,8 @@ declare humans: {
 	set: (id: number, opts: { pos: Vec?, yaw: number?, pose: string?, t: number? }) -> boolean,
 	remove: (id: number) -> boolean,
 	head: (id: number) -> Vec?,
+	-- head, neck, chest, hips, shoulder_l/r, elbow_l/r, hand_l/r, knee_l/r, foot_l/r
+	joint: (id: number, name: string) -> Vec?,
 	room: (pool: string) -> (number, number),
 }
 

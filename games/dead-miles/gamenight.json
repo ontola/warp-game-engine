@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/ontola/gamepad-party/main/catalog/schema.json",
   "id": "dead-miles",
   "title": "Dead Miles",
-  "tagline": "Scrounge, run, drive on. Don't stop for long.",
+  "tagline": "Scrounge, run, walk on. Don't stop for long.",
   "developer": "Joep Meindertsma",
   "players": {
     "min": 1,

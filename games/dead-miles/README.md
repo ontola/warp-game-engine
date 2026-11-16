@@ -95,6 +95,10 @@ player), `hostile` (they shove and run) and `text`.
   Each chunk has a biome, a path, buildings made of a grid of rooms with
   doors (a spanning tree plus a few extra doors), containers in the rooms,
   trees, cars, street lights and weapons.
+- `lib/body.module.luau`: a body for anyone, a Warp Human from one of
+  game.toml's `[humans.*]` pools when one is free, else a box figure. The
+  dead in view, survivors and strangers get humans; far zombies are boxes
+  and swap to humans as they come near.
 - `lib/figure.module.luau`: people built from boxes with arms and legs on
   pivots, a walk cycle and poses (reach, wind-up, swing, aim, shove, lying).
 - `content/encounters/`: who you meet.
@@ -107,7 +111,5 @@ dropped behind; the left edge follows the group 13 m back.
 
 ## Not yet
 
-Torches as shadowed spotlights (they are point lights now), Warp Humans
-for people and zombies, more encounters, more zombie kinds, raiders,
-phone screens, Gamepad Party settings (the knobs stand in), the store
+More encounters, more zombie kinds, raiders, phone screens, Gamepad Party settings (the knobs stand in), the store
 clip.

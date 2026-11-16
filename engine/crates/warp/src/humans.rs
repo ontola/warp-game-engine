@@ -192,6 +192,11 @@ impl Rig {
     fn rest(&self, b: Bone) -> Vec3 { self.bind[b as usize] }
 }
 
+/// The joints a game can ask where they are (`humans.joint`).
+pub const JOINT_NAMES: &[(&str, Bone)] = &[("head", Bone::Head), ("neck", Bone::Neck), ("chest", Bone::Spine3), ("hips", Bone::Pelvis),
+    ("shoulder_l", Bone::UpperArmL), ("shoulder_r", Bone::UpperArmR), ("elbow_l", Bone::LowerArmL), ("elbow_r", Bone::LowerArmR),
+    ("hand_l", Bone::HandL), ("hand_r", Bone::HandR), ("knee_l", Bone::CalfL), ("knee_r", Bone::CalfR), ("foot_l", Bone::FootL), ("foot_r", Bone::FootR)];
+
 /// The poses a game can ask for (`humans.set(id, {pose = ...})`).
 pub const POSES: &[&str] = &["walk", "idle", "reach", "raise", "strike", "aim", "shove", "attack", "punch", "jab", "hit", "hit_head", "dead", "down", "cast", "roll"];
 
@@ -227,6 +232,9 @@ struct Pool {
     /// One actor per slot, in the scene's skinning order.
     actors: Vec<ActorHandle>,
     used: Vec<bool>,
+    /// Slots that have an actor: all of them, unless the device could not
+    /// hold that many (then the first `cap`).
+    cap: usize,
 }
 
 #[derive(Default)]
@@ -253,7 +261,7 @@ fn hash(a: u64, b: u64) -> u64 {
 
 impl Humans {
     pub fn new(cfg: &BTreeMap<String, HumanPool>) -> Self {
-        let pools = cfg.iter().map(|(name, c)| (name.clone(), Pool { zombie: c.style == "zombie", cfg: c.clone(), models: Vec::new(), actors: Vec::new(), used: vec![false; c.count] })).collect();
+        let pools = cfg.iter().map(|(name, c)| (name.clone(), Pool { zombie: c.style == "zombie", cfg: c.clone(), models: Vec::new(), actors: Vec::new(), used: vec![false; c.count], cap: c.count })).collect();
         Humans { pools, next: 1, ..Default::default() }
     }
 
@@ -265,7 +273,7 @@ impl Humans {
             return Err(format!("humans.spawn: no pool {pool:?} (game.toml has {})", if names.is_empty() { "none: add [humans.NAME]".into() } else { names.join(", ") }));
         }
         let p = self.pools.get_mut(pool).unwrap();
-        let Some(slot) = p.used.iter().position(|u| !u) else { return Ok(None) };
+        let Some(slot) = p.used[..p.cap].iter().position(|u| !u) else { return Ok(None) };
         p.used[slot] = true;
         let id = self.next;
         self.next += 1;
@@ -286,7 +294,7 @@ impl Humans {
 
     /// Free and total slots of a pool.
     pub fn room(&self, pool: &str) -> Option<(usize, usize)> {
-        self.pools.get(pool).map(|p| (p.used.iter().filter(|u| !**u).count(), p.used.len()))
+        self.pools.get(pool).map(|p| (p.used[..p.cap].iter().filter(|u| !**u).count(), p.cap))
     }
 
     /// A simulation tick has run: the legs advance by how far each person moved.
@@ -321,9 +329,11 @@ impl Humans {
     }
 
     /// Fit the people and add every actor to `scene` (once; again after the
-    /// scene is rebuilt from scratch).
-    pub fn attach(&mut self, scene: &mut Scene) -> Result<(), String> {
-        if self.pools.is_empty() { return Ok(()); }
+    /// scene is rebuilt from scratch). `budget` is the most skinned-vertex
+    /// bytes the device binds at once; pools shrink evenly to fit it, and the
+    /// answer then says so.
+    pub fn attach(&mut self, scene: &mut Scene, budget: u64) -> Result<Option<String>, String> {
+        if self.pools.is_empty() { return Ok(None); }
         let rig = Rig::shared()?;
         self.first_actor = scene.skinning.actors.len();
         let first_instance = scene.instances.len();
@@ -340,8 +350,26 @@ impl Humans {
                     pool.models.push(rig.character.warp_human_with_skin(&person, skin)?);
                 }
             }
+        }
+        // What every slot would cost, against what the device holds.
+        let bytes = |n: usize| (n * render::skinning::VERTEX_BYTES) as u64;
+        let taken: u64 = scene.skinning.actors.iter().map(|a| bytes(a.influences.len())).sum();
+        let per: BTreeMap<String, u64> = self.pools.iter().map(|(name, p)| {
+            let verts: usize = p.models.iter().map(|m| m.vertex_count()).sum::<usize>() / p.models.len().max(1);
+            (name.clone(), bytes(verts))
+        }).collect();
+        let wanted: u64 = self.pools.iter().map(|(name, p)| per[name] * p.cfg.count as u64).sum();
+        let room = (budget / 100 * 95).saturating_sub(taken);
+        let mut note = None;
+        for (name, pool) in &mut self.pools {
+            pool.cap = if wanted <= room { pool.cfg.count } else { ((pool.cfg.count as u64 * room / wanted.max(1)) as usize).max(1) };
+            if pool.cap < pool.cfg.count {
+                note = Some(format!("humans: this device holds {} MB of skinned people, so pools are cut to fit (e.g. {name}: {} of {})", room >> 20, pool.cap, pool.cfg.count));
+            }
+        }
+        for pool in self.pools.values_mut() {
             pool.actors.clear();
-            for k in 0..pool.cfg.count {
+            for k in 0..pool.cap {
                 let model = &pool.models[k % pool.models.len()];
                 // Falls and reaches go outside the walking bounds.
                 let handle = model.add_actor_with_bounds(scene, model_transform(HIDDEN, 0.0), model.min.min(Vec3::new(-2.2, -0.3, -2.2)), model.max.max(Vec3::new(2.2, 2.4, 2.2)))?;
@@ -353,7 +381,7 @@ impl Humans {
         if end > first_instance { scene.dynamic_instances.push(first_instance..end); }
         self.palettes = palettes;
         self.attached = true;
-        Ok(())
+        Ok(note)
     }
 
     pub fn attached(&self) -> bool { self.attached }
@@ -375,6 +403,7 @@ impl Humans {
         }
         for p in self.people.values() {
             let Some(pool) = self.pools.get(&p.pool) else { continue };
+            if p.slot >= pool.actors.len() { continue; }
             let k = index[&p.pool] + p.slot;
             let model = &pool.models[p.slot % pool.models.len()];
             let pos = p.prev_pos.lerp(p.pos, alpha);
@@ -408,14 +437,19 @@ impl Humans {
     }
 
     /// Where a person's head is now, from the rig alone (no renderer needed).
-    pub fn head(&self, id: u32) -> Option<Vec3> {
+    pub fn head(&self, id: u32) -> Option<Vec3> { self.joint(id, "head") }
+
+    /// Where one of a person's joints is now (`JOINT_NAMES`), in the world.
+    pub fn joint(&self, id: u32, name: &str) -> Option<Vec3> {
+        let bone = JOINT_NAMES.iter().find(|(n, _)| *n == name)?.1;
         let p = self.people.get(&id)?;
         let rig = Rig::shared().ok()?;
         let zombie = self.pools.get(&p.pool).is_some_and(|pool| pool.zombie);
         let mut palette = vec![Mat4::IDENTITY; rig.character.joint_count];
         pose(rig, p, zombie, 1.0, &mut palette);
-        let head = rig.joint[Bone::Head as usize];
-        let local = (palette[head] * Mat4::from_translation(rig.rest(Bone::Head))).transform_point3(Vec3::new(0.0, 0.08, 0.0));
+        let j = rig.joint[bone as usize];
+        let lift = if bone == Bone::Head { 0.08 } else { 0.0 };
+        let local = palette[j].transform_point3(rig.rest(bone) + Vec3::new(0.0, lift, 0.0));
         Some(model_transform(p.pos, p.yaw).transform_point3(local))
     }
 }

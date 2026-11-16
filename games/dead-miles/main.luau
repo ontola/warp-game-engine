@@ -18,6 +18,7 @@
 -- (traders, strangers, caches) are content files in content/encounters.
 
 local figure = require("lib/figure")
+local body = require("lib/body")
 local land = require("lib/land")
 local v = vector.create
 
@@ -304,7 +305,7 @@ local function standing(u) return u.state == "ok" end
 local function in_body(u) return u.state == "ok" or u.state == "down" end
 
 local function hold_weapon(u)
-	figure.hold(u.fig, if u.melee ~= "fists" then u.melee else nil, HELD)
+	body.hold(u.fig, if u.melee ~= "fists" then u.melee else nil, HELD)
 end
 
 local function give_body(u, pos, look)
@@ -322,7 +323,7 @@ local function give_body(u, pos, look)
 	u.torch = true
 	u.skin = (look and look.skin) or pick(SKINS)
 	u.pants = (look and look.pants) or pick(PANTS)
-	u.fig = figure.build(pos, u.yaw, { shirt = u.color, skin = u.skin, pants = u.pants })
+	u.fig = body.build(pos, u.yaw, { shirt = u.color, skin = u.skin, pants = u.pants }, "survivor")
 	if u.ghost_ent then
 		world.remove(u.ghost_ent)
 		u.ghost_ent = nil
@@ -343,6 +344,12 @@ end
 ----------------------------------------------------------------------------
 -- Zombies
 
+-- Warp Humans go to the dead the camera can see (game.toml's zombie and
+-- runner pools); the rest are box figures until they come near.
+local function near_view(p)
+	return s.cam == nil or math.abs(p.x - s.cam.x) < 26
+end
+
 local function spawn_zombie(kind, pos, mode, goal)
 	local z = {
 		kind = kind,
@@ -357,8 +364,9 @@ local function spawn_zombie(kind, pos, mode, goal)
 		side = 0,
 	}
 	local shirt = if kind == "runner" then "#6e3a36" else pick(ZOMBIE_SHIRTS)
-	z.fig = figure.build(z.pos, z.yaw, { shirt = shirt, skin = pick(ZOMBIE_SKIN), pants = pick(ZOMBIE_PANTS), eyes = "#1a1a1a" })
-	if z.state == "sleep" then figure.lie(z.fig, z.pos, z.yaw, true) end
+	z.fig = body.build(z.pos, z.yaw, { shirt = shirt, skin = pick(ZOMBIE_SKIN), pants = pick(ZOMBIE_PANTS), eyes = "#1a1a1a" }, if near_view(z.pos) then kind else nil)
+	z.pool = kind
+	if z.state == "sleep" then body.lie(z.fig, z.pos, z.yaw, true) end
 	table.insert(s.zombies, z)
 	return z
 end
@@ -396,8 +404,8 @@ local NO_GLOW = { color = "#1a1a1a", emissive = 0 }
 local function kill_zombie(z)
 	z.state = "dead"
 	z.t = 15
-	figure.eyes(z.fig, false, NO_GLOW)
-	figure.lie(z.fig, z.pos, z.yaw, true)
+	body.eyes(z.fig, false, NO_GLOW)
+	body.lie(z.fig, z.pos, z.yaw, true, true)
 	fx.burst(v(z.pos.x, 0.8, z.pos.z), { color = "#5a1e18", count = 10, speed = 3, life = 0.5, size = 0.1, gravity = 9 })
 	sfx("splat", z.pos, { pitch = random.range(0.85, 1.15) })
 	count("kills")
@@ -423,13 +431,13 @@ local function hurt_zombie(z, dmg, from, knock)
 		z.state = "stagger"
 		z.t = 0.35
 	end
-	figure.eyes(z.fig, false, NO_GLOW)
+	body.eyes(z.fig, false, NO_GLOW)
 	fx.burst(v(z.pos.x, 1.1, z.pos.z), { color = "#6a2a20", count = 5, speed = 2.5, life = 0.35, size = 0.08, gravity = 9 })
 end
 
 local function remove_zombie_body(z)
 	if z.fig then
-		figure.remove(z.fig)
+		body.remove(z.fig)
 		z.fig = nil
 	end
 end
@@ -468,7 +476,7 @@ end
 
 local function place_stranger(e, pos, chunk)
 	local look = e.look or {}
-	local fig = figure.build(pos, random.range(-math.pi, math.pi), { shirt = look.shirt or pick(STRANGER_SHIRTS), skin = look.skin or pick(SKINS), pants = look.pants or pick(PANTS) })
+	local fig = body.build(pos, random.range(-math.pi, math.pi), { shirt = look.shirt or pick(STRANGER_SHIRTS), skin = look.skin or pick(SKINS), pants = look.pants or pick(PANTS) }, "stranger")
 	local st = { file = e.file, pos = pos, fig = fig, chunk = chunk, done = false, yaw = 0 }
 	-- A hidden temperament, rolled once: what the content's results may depend on.
 	if e.temperament then
@@ -485,7 +493,7 @@ local function place_stranger(e, pos, chunk)
 		end
 		st.temperament = st.temperament or keys[#keys]
 	end
-	if e.held then figure.hold(fig, e.held, HELD) end
+	if e.held then body.hold(fig, e.held, HELD) end
 	table.insert(s.strangers, st)
 	return st
 end
@@ -531,7 +539,7 @@ local function recruit(st, u)
 	r.dur = MELEE[r.melee].dur
 	hold_weapon(r)
 	table.insert(s.survivors, r)
-	figure.remove(st.fig)
+	body.remove(st.fig)
 	st.fig = nil
 	count("recruits")
 	game.log("Someone joined the group")
@@ -704,7 +712,7 @@ local function drop_chunk(c)
 	end)
 	s.strangers = filter(s.strangers, function(st)
 		if st.pos.x > c.x1 then return true end
-		if st.fig then figure.remove(st.fig) end
+		if st.fig then body.remove(st.fig) end
 		return false
 	end)
 end
@@ -758,6 +766,14 @@ end
 -- A run
 
 local function new_run()
+	-- Warp Humans outlive world.clear: give them back to their pools.
+	if state.s then
+		for _, list in { state.s.zombies, state.s.survivors, state.s.strangers, state.s.corpses or {} } do
+			for _, o in list do
+				if o.fig then body.remove(o.fig) end
+			end
+		end
+	end
 	world.clear()
 	warm_all()
 	local old = state.s
@@ -772,6 +788,7 @@ local function new_run()
 		zombies = {},
 		pickups = {},
 		strangers = {},
+		corpses = {},
 		chunks = {},
 		rects = {},
 		containers = {},
@@ -1011,7 +1028,7 @@ local function hurt(u, from)
 	u.state = "down"
 	u.t = KNOBS.downed
 	u.revive_t = 0
-	figure.lie(u.fig, u.pos, u.yaw, true)
+	body.lie(u.fig, u.pos, u.yaw, true, true)
 	sfx("down", u.pos)
 	count("downs")
 	game.log(u.name .. " is down")
@@ -1035,8 +1052,10 @@ end
 
 local function die(u)
 	drop_melee(u)
-	world.set(u.fig.torso, figure.CORPSE)
-	figure.hold(u.fig, nil, HELD)
+	body.hold(u.fig, nil, HELD)
+	body.tint(u.fig, figure.CORPSE)
+	-- The body stays a while; a human goes back to its pool later.
+	table.insert(s.corpses, { fig = u.fig, t = 20 })
 	u.fig = nil
 	count("deaths")
 	if u.recruit then
@@ -1049,7 +1068,7 @@ local function die(u)
 			u.pos, u.yaw, u.fig, u.melee, u.dur, u.injured = r.pos, r.yaw, r.fig, r.melee, r.dur, r.injured
 			u.state, u.invul, u.t = "ok", 1.5, 0
 			u.search_t, u.revive_t = 0, 0
-			world.set(u.fig.torso, { color = u.color, roughness = 0.9 })
+			body.tint(u.fig, { color = u.color, roughness = 0.9 })
 			table.remove(s.survivors, i)
 			count("takeovers")
 			sfx("revive", u.pos, { pitch = 0.8 })
@@ -1173,7 +1192,7 @@ local function shove(u)
 				z.knock = to / d * 6
 				z.state = "stagger"
 				z.t = 0.8
-				figure.eyes(z.fig, false, NO_GLOW)
+				body.eyes(z.fig, false, NO_GLOW)
 			end
 		end
 	end
@@ -1256,7 +1275,7 @@ local function make_camp()
 		if u.state == "down" then
 			u.state = "ok"
 			u.injured = true
-			figure.lie(u.fig, u.pos, u.yaw, false)
+			body.lie(u.fig, u.pos, u.yaw, false)
 		elseif u.state == "ghost" then
 			u.t = 0
 		end
@@ -1328,7 +1347,8 @@ local function act(u, it, dt)
 		u.t -= dt
 		u.pos = collide(u.pos + mv * 0.6 * dt, RADIUS)
 		u.pos = v(math.max(u.pos.x, s.min_x), 0, u.pos.z)
-		figure.lie(u.fig, u.pos, u.yaw, true)
+		body.place(u.fig, u.pos, u.yaw)
+		body.fall(u.fig, dt)
 		if u.t <= 0 then die(u) end
 		return
 	end
@@ -1349,8 +1369,8 @@ local function act(u, it, dt)
 				u.talk = nil
 			end
 			u.talk_age = (u.talk_age or 0) + dt
-			figure.place(u.fig, u.pos, u.yaw)
-			figure.animate(u.fig, dt, 0, "swing")
+			body.place(u.fig, u.pos, u.yaw)
+			body.animate(u.fig, dt, 0, "swing")
 			return
 		end
 	end
@@ -1380,7 +1400,7 @@ local function act(u, it, dt)
 					o.state = "ok"
 					o.injured = true
 					o.invul = 1.5
-					figure.lie(o.fig, o.pos, o.yaw, false)
+					body.lie(o.fig, o.pos, o.yaw, false)
 					u.revive_t = 0
 					sfx("revive", o.pos)
 					count("revives")
@@ -1483,16 +1503,16 @@ local function act(u, it, dt)
 		u.stuck = 0
 	end
 
-	figure.place(u.fig, u.pos, u.yaw)
+	body.place(u.fig, u.pos, u.yaw)
 	local moved = dist(before, u.pos) / dt
 	if u.cd_melee > 0 and u.swing > 0 then
-		figure.animate(u.fig, dt, moved, "swing_r", 1 - u.cd_melee / MELEE[u.melee].cd)
+		body.animate(u.fig, dt, moved, "swing_r", 1 - u.cd_melee / MELEE[u.melee].cd)
 	elseif u.shove_t > 0 then
-		figure.animate(u.fig, dt, moved, "shove")
+		body.animate(u.fig, dt, moved, "shove")
 	elseif it.fire or u.cd_gun > 0.2 then
-		figure.animate(u.fig, dt, moved, "aim")
+		body.animate(u.fig, dt, moved, "aim")
 	else
-		figure.animate(u.fig, dt, moved * (if u.injured then 0.7 else 1), "swing")
+		body.animate(u.fig, dt, moved * (if u.injured then 0.7 else 1), "swing")
 	end
 end
 
@@ -1514,7 +1534,7 @@ local function zombie_step(z, dt)
 	local speed = if z.kind == "runner" then KNOBS.runner else KNOBS.shambler
 	z.t -= dt
 	if z.state == "dead" then
-		if z.t <= 0 then remove_zombie_body(z) end
+		if z.t <= 0 then remove_zombie_body(z) elseif z.fig then body.fall(z.fig, dt) end
 		return
 	end
 	if not z.fig then return end
@@ -1537,7 +1557,7 @@ local function zombie_step(z, dt)
 	local arms = "reach"
 	if z.state == "rise" then
 		if z.t <= 0 then
-			figure.lie(z.fig, z.pos, z.yaw, false)
+			body.lie(z.fig, z.pos, z.yaw, false)
 			z.state = if target then "chase" else "investigate"
 		end
 		return
@@ -1552,7 +1572,7 @@ local function zombie_step(z, dt)
 			z.state = "strike"
 			z.t = spec.strike
 			z.hit = false
-			figure.eyes(z.fig, false, NO_GLOW)
+			body.eyes(z.fig, false, NO_GLOW)
 			if z.kind == "runner" then count("lunges") end
 		end
 	elseif z.state == "strike" then
@@ -1594,7 +1614,7 @@ local function zombie_step(z, dt)
 				z.state = "windup"
 				z.t = spec.windup
 				z.target = target
-				figure.eyes(z.fig, true)
+				body.eyes(z.fig, true)
 				fx.ring(v(z.pos.x, 0.05, z.pos.z), { radius = if z.kind == "runner" then 1.2 else spec.reach, life = spec.windup, color = "#ff3a2a", emissive = 0.25, width = 0.06, segments = 24 })
 				if random.chance(0.4) then sfx("groan", z.pos, { pitch = random.range(1.1, 1.3) }) end
 			else
@@ -1669,8 +1689,8 @@ local function zombie_step(z, dt)
 			z.stuck = 0
 		end
 	end
-	figure.place(z.fig, z.pos, z.yaw)
-	figure.animate(z.fig, dt, dist(before, z.pos) / dt, arms)
+	body.place(z.fig, z.pos, z.yaw)
+	body.animate(z.fig, dt, dist(before, z.pos) / dt, arms)
 end
 
 local function spawn_edge(kind, mode, goal, behind)
@@ -1856,6 +1876,30 @@ local function zombies_tick(dt)
 		end
 	end
 	for _, z in s.zombies do zombie_step(z, dt) end
+	-- A few times a second: humans for the dead in view, boxes for the rest.
+	-- A full pool takes the human of the oldest corpse first.
+	if game.tick() % 15 == 0 and s.cam then
+		for _, z in s.zombies do
+			if z.fig and body.is_human(z.fig) and not near_view(z.pos + v(if z.pos.x > s.cam.x then -8 else 8, 0, 0)) then
+				body.demote(z.fig)
+			end
+		end
+		for _, z in s.zombies do
+			if z.fig and not body.is_human(z.fig) and z.state ~= "dead" and near_view(z.pos) then
+				z.fig.pool = z.pool
+				if not body.promote(z.fig) then
+					local oldest = nil
+					for _, o in s.zombies do
+						if o.state == "dead" and o.pool == z.pool and o.fig and body.is_human(o.fig) and (oldest == nil or o.t < oldest.t) then oldest = o end
+					end
+					if oldest then
+						body.demote(oldest.fig)
+						body.promote(z.fig)
+					end
+				end
+			end
+		end
+	end
 end
 
 local function tick(dt, input)
@@ -1919,10 +1963,10 @@ local function tick(dt, input)
 			if st.fleeing then
 				st.fleeing -= dt
 				st.pos = collide(st.pos + v(0, 0, if st.pos.z > 0 then 4 else -4) * dt + v(3, 0, 0) * dt, RADIUS)
-				figure.place(st.fig, st.pos, yaw_of(v(1, 0, if st.pos.z > 0 then 1 else -1)))
-				figure.animate(st.fig, dt, 4, "swing")
+				body.place(st.fig, st.pos, yaw_of(v(1, 0, if st.pos.z > 0 then 1 else -1)))
+				body.animate(st.fig, dt, 4, "swing")
 				if st.fleeing <= 0 then
-					figure.remove(st.fig)
+					body.remove(st.fig)
 					st.fig = nil
 				end
 			else
@@ -1931,9 +1975,20 @@ local function tick(dt, input)
 					if in_body(u) and dist(u.pos, st.pos) < 6 then near = u end
 				end
 				if near then st.yaw = yaw_of(near.pos - st.pos) end
-				figure.place(st.fig, st.pos, st.yaw)
-				figure.animate(st.fig, dt, 0, "swing")
+				body.place(st.fig, st.pos, st.yaw)
+				body.animate(st.fig, dt, 0, "swing")
 			end
+		end
+	end
+
+	-- A fallen survivor lies as a human for a while, then as boxes.
+	for i = #s.corpses, 1, -1 do
+		local c = s.corpses[i]
+		body.fall(c.fig, dt)
+		c.t -= dt
+		if c.t <= 0 or not body.is_human(c.fig) then
+			body.demote(c.fig)
+			table.remove(s.corpses, i)
 		end
 	end
 
@@ -2130,7 +2185,7 @@ local function player_left(p)
 	s = state.s
 	for i, u in s.survivors do
 		if u.id == p.id then
-			if u.fig then figure.remove(u.fig) end
+			if u.fig then body.remove(u.fig) end
 			if u.ghost_ent then world.remove(u.ghost_ent) end
 			table.remove(s.survivors, i)
 			return
@@ -2146,7 +2201,7 @@ local function players_changed()
 				u.name = p.name
 				if u.color ~= p.color then
 					u.color = p.color
-					if u.fig then world.set(u.fig.torso, { color = p.color, roughness = 0.9 }) end
+					if u.fig then body.tint(u.fig, { color = p.color, roughness = 0.9 }) end
 				end
 			end
 		end
@@ -2160,7 +2215,7 @@ local debug = {
 		s = state.s
 		for _, u in s.survivors do
 			if u.pos then u.pos = collide(u.pos + v(m, 0, 0), RADIUS) end
-			if u.fig then figure.place(u.fig, u.pos, u.yaw) end
+			if u.fig then body.place(u.fig, u.pos, u.yaw) end
 		end
 		return "walked " .. m
 	end,
