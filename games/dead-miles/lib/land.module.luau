@@ -26,7 +26,9 @@ local LOOKS = {
 	-- fallen to a stub with rubble around it.
 	suburb = { ground = "#55623f", path = "#2c2c2e", edge = "#8c8984", walls = { "#a8998a", "#9aa294", "#b0a08a", "#8d97a0", "#a38c78" }, floors = { "#6a4e36", "#7a5e42", "#827868" }, height = { 2.5, 3 }, ruin = 0.12 },
 	forest = { ground = "#3f4a2e", path = "#6b5a42", edge = "#4d4433", walls = { "#5f4c3a", "#6a5640" }, floors = { "#4e3e2e" }, height = { 2.3, 2.7 }, ruin = 0.15 },
-	city = { ground = "#3e3c3a", path = "#262628", edge = "#5e5b56", walls = { "#6e6a64", "#7a7268", "#5f636a", "#7a6c5e", "#585450" }, floors = { "#4c4a46", "#57534c", "#404248" }, height = { 3.2, 4.6 }, ruin = 0.32 },
+	-- The city in colours apart: dark asphalt, pale pavement, dusty lots,
+	-- brick, ochre and cream plaster, soot.
+	city = { ground = "#4a4236", path = "#1f1f22", edge = "#8a857c", walls = { "#7a4a3a", "#9a845e", "#a89c86", "#5a524a", "#6e7a72", "#8a5a44" }, floors = { "#6a5440", "#5a5446", "#7a6a52" }, height = { 3.2, 4.6 }, ruin = 0.32 },
 	farm = { ground = "#6b6a3c", path = "#7b6646", edge = "#5d5032", walls = { "#7a3a2c", "#8a4a38", "#a8998a" }, floors = { "#5e4e36", "#6a5c40" }, height = { 2.6, 3.4 }, ruin = 0.15 },
 }
 local CAR_COLORS = { "#6b2b2b", "#2f4d6b", "#5d6650", "#8a8478", "#3a3a40", "#7a5a2a" }
@@ -349,10 +351,6 @@ local function lot(c, side, x0, x1, look, biome)
 			local kinds = if roll < 0.2 then { "pharmacy", "office" } elseif roll < 0.5 then { "shop", "shop", "office" } elseif roll < 0.6 then { "police", "office" } else { "office", "kitchen", "closet" }
 			building(c, bx, w, random.range(7.5, 9.5), 3, 2, side, look, kinds, 2)
 		end
-		for _ = 1, random.int(1, 3) do
-			local x, z = random.range(x0, x1), side * random.range(1.8, 2.5)
-			box(c, x - 0.4, z - 0.3, x + 0.4, z + 0.3, 0.35, { color = "#5f5a55" })
-		end
 	else -- farm
 		local r = random.float()
 		if r < 0.4 then
@@ -404,9 +402,13 @@ function M.chunk(index, day, in_day)
 	local HZ = M.HALF_Z
 	add(c, world.spawn("cube", { pos = v((x0 + x1) / 2, -0.5, 0), size = v(M.CHUNK, 1, HZ * 2 + 30), color = look.ground, roughness = 1, solid = false, tag = "ground" }))
 	if biome == "city" then
-		flat(c, x0, -HZ, x1, HZ, 0.004, look.path)
-		flat(c, x0, -3.2, x1, -2.9, 0.008, look.edge)
-		flat(c, x0, 2.9, x1, 3.2, 0.008, look.edge)
+		-- Asphalt, a faded centre line and pavements up to the buildings.
+		flat(c, x0, -3.2, x1, 3.2, 0.004, look.path)
+		flat(c, x0, -4.4, x1, -3.2, 0.008, look.edge)
+		flat(c, x0, 3.2, x1, 4.4, 0.008, look.edge)
+		for x = x0, x1 - 2, 4 do
+			if random.chance(0.7) then flat(c, x, -0.06, x + 2, 0.06, 0.009, "#c9b25a") end
+		end
 	else
 		flat(c, x0, -2.6, x1, 2.6, 0.004, look.path)
 		if biome == "suburb" then
