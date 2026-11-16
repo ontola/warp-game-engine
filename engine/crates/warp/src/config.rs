@@ -37,11 +37,37 @@ pub struct GameToml {
     pub steps: u32,
     /// Luau memory cap in MiB.
     pub memory_mb: usize,
+    /// Warp Humans reserved up front, by pool name (`[humans.zombie]`):
+    /// `humans.spawn("zombie", ...)` takes one from that pool.
+    pub humans: std::collections::BTreeMap<String, HumanPool>,
+}
+
+/// A pool of Warp Humans (`[humans.NAME]` in game.toml).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct HumanPool {
+    /// How many can be alive at once.
+    pub count: usize,
+    /// How many different people (faces, builds, clothes) the pool cycles
+    /// through. Each is fitted once at load.
+    pub variety: usize,
+    /// "person", or "zombie": a stooped shamble with the arms reaching.
+    pub style: String,
+    /// sRGB skin and shirt colours ("#7d8f6a"); default: seeded.
+    pub skin: Option<String>,
+    pub shirt: Option<String>,
+    /// Standing height range in metres.
+    pub height: [f32; 2],
+    pub seed: u64,
+}
+
+impl Default for HumanPool {
+    fn default() -> Self { HumanPool { count: 8, variety: 4, style: "person".into(), skin: None, shirt: None, height: [1.6, 1.9], seed: 1 } }
 }
 
 impl Default for GameToml {
     fn default() -> Self {
-        GameToml { title: "Warp game".into(), id: String::new(), storage: false, tick_rate: 60.0, players: 1, split: true, bots: 0, min_players: 1, seed: 1, max_entities: 1024, size: [1280, 720], sky: "gradient".into(), steps: 200_000, memory_mb: 64 }
+        GameToml { title: "Warp game".into(), id: String::new(), storage: false, tick_rate: 60.0, players: 1, split: true, bots: 0, min_players: 1, seed: 1, max_entities: 1024, size: [1280, 720], sky: "gradient".into(), steps: 200_000, memory_mb: 64, humans: Default::default() }
     }
 }
 
@@ -111,6 +137,18 @@ impl GameToml {
         if !(1..=65536).contains(&self.max_entities) { return Err(format!("game.toml: max_entities {} (1 to 65536)", self.max_entities)); }
         if self.size[0] < 64 || self.size[1] < 64 { return Err("game.toml: size is at least [64, 64]".into()); }
         crate::sky::SkyChoice::parse(&self.sky).map_err(|e| format!("game.toml: {e}"))?;
+        let mut total = 0;
+        for (name, p) in &self.humans {
+            if !(1..=256).contains(&p.count) { return Err(format!("game.toml: humans.{name}.count {} (1 to 256)", p.count)); }
+            if !(1..=16).contains(&p.variety) { return Err(format!("game.toml: humans.{name}.variety {} (1 to 16)", p.variety)); }
+            if p.style != "person" && p.style != "zombie" { return Err(format!("game.toml: humans.{name}.style {:?} (\"person\" or \"zombie\")", p.style)); }
+            if !(p.height[0] >= 1.0 && p.height[0] <= p.height[1] && p.height[1] <= 2.3) { return Err(format!("game.toml: humans.{name}.height {:?} (1 to 2.3 m, low first)", p.height)); }
+            for c in [&p.skin, &p.shirt].into_iter().flatten() {
+                crate::humans::parse_rgb(c).ok_or_else(|| format!("game.toml: humans.{name}: colour {c:?} (\"#rrggbb\")"))?;
+            }
+            total += p.count;
+        }
+        if total > 256 { return Err(format!("game.toml: {total} humans in all (at most 256)")); }
         Ok(())
     }
 }
