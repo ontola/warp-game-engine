@@ -147,6 +147,10 @@ pub fn blend_palette_into(a: &[Mat4], b: &[Mat4], blend: f32, out: &mut [Mat4]) 
     Ok(())
 }
 
+/// GPU bytes each skinned vertex takes: the scene's skinned vertices times
+/// this must fit in one storage binding.
+pub const VERTEX_BYTES: usize = std::mem::size_of::<Source>();
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Source {

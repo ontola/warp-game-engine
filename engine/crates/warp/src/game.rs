@@ -985,7 +985,10 @@ impl Game for LuaGame {
         // Warp Humans join the scene before its first renderer.
         if !c.humans.is_empty() && !c.humans.attached() {
             let c = &mut *c;
-            if let Err(e) = c.humans.attach(&mut c.world.scene) { late = Some(format!("humans: {e}")); }
+            match c.humans.attach(&mut c.world.scene, u64::from(frame.gpu.limits.max_storage_buffer_binding_size)) {
+                Ok(note) => if let Some(note) = note { late = Some(note); },
+                Err(e) => late = Some(format!("humans: {e}")),
+            }
             c.world.rebuild = true;
         }
         if std::mem::take(&mut c.world.rebuild) || frame.renderer().is_none() {

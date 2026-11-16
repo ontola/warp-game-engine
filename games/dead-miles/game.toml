@@ -15,3 +15,34 @@ max_entities = 8000
 # The horde and the bots run in Luau every tick.
 steps = 4000000
 memory_mb = 128
+
+# Warp Humans for the dead in view (the rest are box figures until they
+# come near): shamblers and the faster runners in red.
+[humans.shambler]
+count = 40
+variety = 6
+style = "zombie"
+skin = "#7d8f6a"
+height = [1.55, 1.85]
+
+[humans.runner]
+count = 10
+variety = 3
+style = "zombie"
+skin = "#8a9178"
+shirt = "#6e3a36"
+height = [1.6, 1.9]
+seed = 2
+
+# The living: survivors (players and recruits) and strangers.
+[humans.survivor]
+count = 10
+variety = 8
+height = [1.6, 1.9]
+seed = 3
+
+[humans.stranger]
+count = 6
+variety = 6
+height = [1.6, 1.9]
+seed = 4
