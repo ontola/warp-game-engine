@@ -92,7 +92,9 @@ player), `hostile` (they shove and run) and `text`.
 - `main.luau`: the rules. Survivors, health, torches, zombies, the
   director, encounters, recruits, bots, the camp, the HUD.
 - `lib/land.module.luau`: the land in 24 m chunks, seven a day and a camp.
-  Each chunk has a biome, a path, buildings made of a grid of rooms with
+  Each chunk has a biome, a path, closed buildings (solid, with roofs,
+  boarded doors; they hide when they would block the view of a survivor),
+  a few open ruins made of a grid of rooms with
   doors (a spanning tree plus a few extra doors), containers in the rooms,
   trees, cars, street lights and weapons.
 - `lib/body.module.luau`: a body for anyone, a Warp Human from one of

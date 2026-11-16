@@ -662,17 +662,22 @@ local function add_chunk()
 	end
 	for _, k in c.containers do table.insert(s.containers, k) end
 	for _, b in c.buildings do table.insert(s.buildings, b) end
+	for _, b in c.blocks or {} do table.insert(s.blocks, b) end
 	for _, w in c.weapons do place_weapon(w.kind, w.pos) end
 	if c.camp then s.camp = c.camp end
 	if index > 1 and in_day > 0 then populate(c, day, in_day) end
 	-- An encounter: in a room of a building, on the path or at the camp.
 	if index > 1 and (in_day == 0 or random.chance(KNOBS.encounters)) then
-		local where = if in_day == 0 then "camp" elseif #c.buildings > 0 and random.chance(0.6) then "room" else "path"
+		local open = {}
+		for _, b in c.buildings do
+			if #b.rooms > 0 then table.insert(open, b) end
+		end
+		local where = if in_day == 0 then "camp" elseif #open > 0 and random.chance(0.6) then "room" else "path"
 		local e = choose_encounter(where, c.biome, day)
 		if e then
 			local pos
 			if where == "room" then
-				local b = pick(c.buildings)
+				local b = pick(open)
 				local r = b.rooms[random.int(1, #b.rooms)]
 				pos = v((r.x0 + r.x1) / 2, 0, (r.z0 + r.z1) / 2)
 			elseif where == "camp" then
@@ -706,6 +711,7 @@ local function drop_chunk(c)
 	end
 	s.containers = filter(s.containers, function(k) return k.x > c.x1 end)
 	s.buildings = filter(s.buildings, function(b) return b.x1 > c.x1 end)
+	s.blocks = filter(s.blocks, function(b) return b.x1 > c.x1 end)
 	s.pickups = filter(s.pickups, function(p)
 		if p.pos.x > c.x1 then return true end
 		world.remove(p.ent)
@@ -794,6 +800,7 @@ local function new_run()
 		pickups = {},
 		strangers = {},
 		corpses = {},
+		blocks = {},
 		chunks = {},
 		rects = {},
 		containers = {},
@@ -1808,6 +1815,7 @@ local function camera_step(dt)
 	local k = 1 + math.max(0, s.spread - 5) * 0.04
 	local target = v(s.cam.x, 0.5, s.cam.z)
 	local pos = target + v(0, KNOBS.cam_height * k, KNOBS.cam_back * k)
+	s.eye = pos
 	local any = false
 	for _, p in players.list() do
 		if p.human then
@@ -1818,6 +1826,50 @@ local function camera_step(dt)
 	if not any then
 		local first = players.list()[1]
 		if first then camera.set(first.id, { pos = pos, target = target, fov = KNOBS.fov }) end
+	end
+end
+
+-- A closed building that stands between the camera and a survivor (or
+-- just in front of one) gets out of the way: it hides and a low cut-away
+-- shows its footprint, until nobody is behind it any more.
+local function seg_hits_box(a, b, x0, x1, y0, y1, z0, z1)
+	local t0, t1 = 0, 1
+	for _, ax in { { a.x, b.x - a.x, x0, x1 }, { a.y, b.y - a.y, y0, y1 }, { a.z, b.z - a.z, z0, z1 } } do
+		local o, d, lo, hi = ax[1], ax[2], ax[3], ax[4]
+		if math.abs(d) < 1e-6 then
+			if o < lo or o > hi then return false end
+		else
+			local p, q = (lo - o) / d, (hi - o) / d
+			if p > q then p, q = q, p end
+			t0, t1 = math.max(t0, p), math.min(t1, q)
+			if t0 > t1 then return false end
+		end
+	end
+	return true
+end
+
+local function blocks_step()
+	local eye = s.eye
+	if not eye then return end
+	for _, b in s.blocks do
+		local hide = false
+		if math.abs((b.x0 + b.x1) / 2 - eye.x) < 30 then
+			for _, u in s.survivors do
+				if in_body(u) and u.pos then
+					-- A little around each survivor, so the view clears early.
+					for _, off in { v(0, 0, 0), v(-1.5, 0, -1.5), v(1.5, 0, -1.5) } do
+						local p = v(u.pos.x + off.x, 1.2, u.pos.z + off.z)
+						if seg_hits_box(eye, p, b.x0, b.x1, 0, b.h, b.z0, b.z1) then hide = true break end
+					end
+				end
+				if hide then break end
+			end
+		end
+		if hide ~= (b.hidden or false) then
+			b.hidden = hide
+			for _, id in b.parts do world.set(id, { visible = not hide }) end
+			world.set(b.cut, { visible = hide })
+		end
 	end
 end
 
@@ -1846,6 +1898,8 @@ function warm_all()
 	world.warm("outline16", { color = "#f2e6b0", emissive = 0.12 })
 	for _, w in HELD do world.warm("cube", { color = w.color, metal = w.metal, roughness = w.roughness or 0.6 }) end
 	for _, c in { "#5a1e18", "#6a2a20", "#8a1a14" } do world.warm("cube", { color = c, emissive = 0.06 }) end
+	-- A breaking weapon bursts into bits of its own colour.
+	for _, w in HELD do world.warm("cube", { color = w.color, emissive = 0.06 }) end
 	world.warm("cube", { color = "#fff2c0", emissive = 0.6 })
 	world.warm("cube", { color = "#ffd27a", emissive = 1.2 })
 	world.warm("cube", { color = "#e8dfc4", emissive = 0.05 })
@@ -1930,6 +1984,7 @@ local function tick(dt, input)
 	end
 
 	camera_step(dt)
+	if game.tick() % 4 == 0 then blocks_step() end
 	stream_land()
 	look_of_hour()
 
