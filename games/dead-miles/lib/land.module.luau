@@ -587,6 +587,31 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 			else
 				flat(c, x0 + M.TURN, zc + half, x0 + M.TURN + 1.2, zc_prev + half, 0.008, look.edge)
 			end
+			-- And on the near side, past where the old path comes in.
+			if zc > zc_prev then
+				flat(c, x0 - 1.2, zc_prev + half, x0, hi + half, 0.008, look.edge)
+			else
+				flat(c, x0 - 1.2, lo - half, x0, zc_prev - half, 0.008, look.edge)
+			end
+			-- Unmarked asphalt reads as a hole at night: a centre line,
+			-- patches, and a lit lamp on the corner.
+			local mx = x0 + M.TURN / 2
+			local dash = if biome == "city" then "#c9b25a" else "#d8d0a0"
+			for z = lo - half + 1, hi + half - 2, 4 do
+				if math.abs(z + 1 - zc) > half and math.abs(z + 1 - zc_prev) > half then
+					flat(c, mx - 0.07, z, mx + 0.07, z + 2, 0.009, dash)
+				end
+			end
+			for _ = 1, 3 do
+				local px, pz = random.range(x0 + 0.5, x0 + M.TURN - 2), random.range(lo, hi)
+				flat(c, px, pz, px + random.range(1, 2.2), pz + random.range(0.8, 2), 0.006, "#3a3a3c")
+			end
+			local lz = (zc + zc_prev) / 2
+			local lx = x0 + M.TURN + 0.6
+			box(c, lx - 0.09, lz - 0.09, lx + 0.09, lz + 0.09, 4.2, { color = "#3a3d42", roughness = 0.6, metal = 0.6 })
+			deco(c, "cube", v(lx - 0.5, 4.15, lz), v(0.3, 0.14, 0.5), "#fff0c8", { emissive = 1.5 })
+			-- shift() below moves recorded z by zc; this one is already placed.
+			table.insert(c.lamps, { pos = v(lx - 0.5, 4, lz - zc), flicker = false, seed = random.range(0, 10) })
 		end
 	end
 	ZC = zc

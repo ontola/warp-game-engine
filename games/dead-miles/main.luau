@@ -292,7 +292,11 @@ local function waypoint(p, goal)
 	for _, b in s.buildings do
 		if hi > b.x0 - 1 and lo < b.x1 + 1 then
 			local a, g = room_of(b, p), room_of(b, goal)
-			if a == 0 and g == 0 and crosses(p, goal, b.x0 - 0.3, b.x1 + 0.3, b.z0 - 0.3, b.z1 + 0.3) then
+			-- Keep a little room off the walls, unless already that close
+			-- (pressed into a corner by a post): then only the wall counts.
+			local m = 0.3
+			if p.x > b.x0 - m and p.x < b.x1 + m and p.z > b.z0 - m and p.z < b.z1 + m then m = 0.02 end
+			if a == 0 and g == 0 and crosses(p, goal, b.x0 - m, b.x1 + m, b.z0 - m, b.z1 + m) then
 				local c = around(b, p, goal)
 				if c then return c end
 			end
@@ -978,6 +982,9 @@ local function bot_intent(u)
 		if hit and hit.distance < d - 0.3 then z = nil end
 	end
 	if z and d > 2.6 and z.pos.x < u.pos.x - 1 and z.kind ~= "runner" then z = nil end
+	-- One it could not reach for a while (behind a wreck): leave it be
+	-- until it comes within a swing.
+	if z and u.ignore and u.ignore[z] and d > MELEE[u.melee].range + 0.4 then z = nil end
 	if z then
 		local to = z.pos - u.pos
 		it.ax, it.az = to.x, to.z
@@ -992,7 +999,7 @@ local function bot_intent(u)
 			it.melee = true
 		elseif s.ammo > 0 and ((z.kind == "runner" and d < 7) or (close >= 4 and s.ammo > 2)) then
 			it.fire = true
-		elseif d < 4 then
+		elseif d < 4 and chasing(u, z, dt) then
 			it.mx, it.mz = to.x / d, to.z / d
 		end
 		if close >= 6 and u.injured then
