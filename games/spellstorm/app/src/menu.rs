@@ -550,9 +550,9 @@ fn glyph(p: &mut P, kind: &str, c: Vec2) {
             // One plain disc with its letter (Joep: no layers of borders):
             // lit when it is clicked, with arrows round it when pushed.
             let click = kind == "rs" || kind == "rs_hold" || kind == "ls";
-            p.circle(c, 17.0, if click { PAD_LIT } else { [0.3, 0.27, 0.24, 1.0] });
+            p.circle(c, 17.0, if click { PAD_LIT } else { [0.9, 0.86, 0.78, 1.0] });
             let l = if kind == "lstick" || kind == "ls" { "L" } else { "R" };
-            p.text(l, c.x, c.y + 1.0, f, 22.0, if click { INK } else { PAD_LIT }, TextAlign::Center);
+            p.text(l, c.x, c.y + 1.0, f, 22.0, INK, TextAlign::Center);
             if !click {
                 for a in 0..4 {
                     let d = Vec2::from_angle(a as f32 * PI * 0.5).rotate(Vec2::NEG_Y);
