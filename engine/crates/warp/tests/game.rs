@@ -525,6 +525,12 @@ local function init()
     state.too_many = tostring(select(2, pcall(lights.set, many)))
     table.remove(many)
     lights.set(many)
+    local spots = {}
+    for i = 1, 9 do spots[i] = { pos = vector.create(i, 3, 0), dir = vector.create(0, -1, 0), angle = 40 } end
+    state.too_many_spots = tostring(select(2, pcall(lights.spots, spots)))
+    state.zero_dir = tostring(select(2, pcall(lights.spots, { { pos = vector.create(0, 1, 0), dir = vector.create(0, 0, 0) } })))
+    table.remove(spots)
+    lights.spots(spots)
 end
 local function tick(dt, input)
     world.place(state.box, vector.create(2, 0, 3), 1.5)
@@ -544,6 +550,8 @@ fn effects_fly_out_and_are_gone_after_their_life() {
     assert_eq!((s["state"]["parts"].clone(), s["state"]["rings"].clone(), s["state"]["fx"].clone()), (json!(20), json!(1), json!(32)), "{s}");
     assert!(s["state"]["typo"].as_str().unwrap().contains("unknown option \"colour\""), "{s}");
     assert!(s["state"]["too_many"].as_str().unwrap().contains("at most 32 lights"), "{s}");
+    assert!(s["state"]["too_many_spots"].as_str().unwrap().contains("at most 8 spots"), "{s}");
+    assert!(s["state"]["zero_dir"].as_str().unwrap().contains("dir must not be zero"), "{s}");
     assert_eq!(g.core().lamps.len(), 32);
     let post = g.core().post.clone();
     assert_eq!((post.bloom, post.vignette, post.bloom_wide), (Some(0.5), 0.5, false));

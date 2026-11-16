@@ -122,6 +122,13 @@ pub struct Lamp { pub pos: Vec3, pub color: [f32; 3], pub intensity: f32, pub ra
 
 pub const MAX_LAMPS: usize = render::headlights::MAX_LOCAL_LIGHTS;
 
+/// A spotlight that casts shadows (`lights.spots`): torches, headlights,
+/// a lamp over a door. `angle` is the outer half-angle in radians.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spot { pub pos: Vec3, pub dir: Vec3, pub color: [f32; 3], pub intensity: f32, pub range: f32, pub angle: f32, pub inner: f32 }
+
+pub const MAX_SPOTS: usize = render::headlights::MAX_LIGHTS;
+
 /// Which hook is running: `draw` may not change the game.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase { Sim, Draw }
@@ -161,6 +168,7 @@ pub struct Core {
     pub light: LightOverride,
     pub post: Post,
     pub lamps: Vec<Lamp>,
+    pub spots: Vec<Spot>,
     pub tick: u64,
     pub tick_rate: f32,
     pub title: String,
@@ -846,7 +854,33 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             lock(&core).lamps = lamps;
             Ok(())
         })),
-        ("clear", f!(core, move |_, ()| { lock(&core).lamps.clear(); Ok(()) })),
+        ("spots", f!(core, move |_, list: Table| {
+            let mut spots = Vec::new();
+            for item in list.sequence_values::<Table>() {
+                let t = item?;
+                let mut l = Spot { pos: Vec3::ZERO, dir: Vec3::NEG_Y, color: [1.0; 3], intensity: 1000.0, range: 15.0, angle: 30f32.to_radians(), inner: -1.0 };
+                for (k, v) in options(&t, &["pos", "dir", "color", "intensity", "range", "angle", "inner"], "lights.spots")? {
+                    match k.as_str() {
+                        "pos" => l.pos = vec3(&v, "spot pos")?,
+                        "dir" => l.dir = vec3(&v, "spot dir")?,
+                        "color" => { let c = color(&v, "spot color")?; l.color = [c[0], c[1], c[2]]; }
+                        "intensity" => l.intensity = number(&v, "intensity")?.clamp(0.0, 1_000_000.0),
+                        "range" => l.range = number(&v, "range")?.clamp(1.0, 500.0),
+                        "angle" => l.angle = number(&v, "angle")?.clamp(2.0, 74.0).to_radians(),
+                        "inner" => l.inner = number(&v, "inner")?.max(0.0).to_radians(),
+                        _ => unreachable!(),
+                    }
+                }
+                if l.dir.length_squared() < 1e-8 { return Err(rt("lights.spots: dir must not be zero".to_string())); }
+                l.dir = l.dir.normalize();
+                l.inner = if l.inner < 0.0 { l.angle * 0.6 } else { l.inner.min(l.angle * 0.98) };
+                if spots.len() == MAX_SPOTS { return Err(rt(format!("lights.spots: at most {MAX_SPOTS} spots"))); }
+                spots.push(l);
+            }
+            lock(&core).spots = spots;
+            Ok(())
+        })),
+        ("clear", f!(core, move |_, ()| { let mut c = lock(&core); c.lamps.clear(); c.spots.clear(); Ok(()) })),
     ])?;
 
     table("random", vec![

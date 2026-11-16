@@ -143,6 +143,7 @@ impl LuaGame {
             light: Default::default(),
             post: Default::default(),
             lamps: Vec::new(),
+            spots: Vec::new(),
             tick: 0,
             tick_rate: cfg.tick_rate,
             title: cfg.title.clone(),
@@ -256,6 +257,7 @@ impl LuaGame {
             c.light = Default::default();
             c.post = Default::default();
             c.lamps.clear();
+            c.spots.clear();
             for p in &mut c.roster { p.cam = Cam::default(); }
         }
         self.menu = None;
@@ -849,7 +851,7 @@ impl LuaGame {
 }
 
 /// Bloom and the scripts' lamps onto the renderer (cheap when unchanged).
-fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp]) -> Result<(), String> {
+fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp], spots: &[api::Spot]) -> Result<(), String> {
     let mut o = r.debug_options();
     let before = o;
     if let Some(b) = p.bloom {
@@ -873,7 +875,22 @@ fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp]) -> Result<(), 
             falloff: 1.5,
         }
     }).collect();
-    r.set_local_lights(&lights)
+    r.set_local_lights(&lights)?;
+    let spots: Vec<render::headlights::SpotLight> = spots.iter().map(|l| {
+        let lin = l.color.map(|c| c.clamp(0.0, 1.0).powf(2.2));
+        // Any up that is not along the beam.
+        let up = if l.dir.y.abs() > 0.9 { glam::Vec3::Z } else { glam::Vec3::Y };
+        render::headlights::SpotLight {
+            position: l.pos,
+            direction: l.dir,
+            up,
+            intensity_cd: glam::Vec3::from(lin) * l.intensity,
+            range_m: l.range,
+            inner_angle_radians: l.inner,
+            outer_angle_radians: l.angle,
+        }
+    }).collect();
+    r.set_headlights(&spots)
 }
 
 impl Game for LuaGame {
@@ -989,7 +1006,7 @@ impl Game for LuaGame {
         }
         let r = frame.renderer().ok_or("no renderer")?;
         c.world.flush_at(frame.gpu, r, frame.alpha)?;
-        post(r, &c.post, &c.lamps)?;
+        post(r, &c.post, &c.lamps, &c.spots)?;
         let mut seen: Vec<(usize, Cam)> = c.roster.iter().filter_map(|p| p.view.map(|v| (v, p.cam_prev.towards(&p.cam, frame.alpha)))).collect();
         seen.sort_by_key(|(v, _)| *v);
         if seen.is_empty() { seen.push((0, Cam::default())); }

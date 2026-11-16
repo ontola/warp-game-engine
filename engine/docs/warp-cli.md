@@ -206,7 +206,7 @@ keyboard mapping is in `app::input`.
 | `sound` | `play(name, {at, db, pitch, <param> = value}) -> handle`, `set_param(handle, param, value)`, `stop(handle)`, `list()` |
 | `hud` | `text(text, x, y, {size, color, align, width})`, `box(x, y, w, h, color)`, `size() -> w, h`, `view(player) -> x, y, w, h`, `project(pos, player?) -> x, y or nil` |
 | `post` | `set({bloom, bloom_radius, bloom_threshold, bloom_wide, contrast, saturation, vignette, grain, aberration})`, `reset()` |
-| `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `clear()` |
+| `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `spots({{pos, dir, color, intensity, range, angle, inner}, ...})` (at most 8, with shadows), `clear()` |
 | `sky` | `set(name)`, `get()` |
 | `light` | `set({sun, sun_lux, sky_lux, exposure, exposure_min, exposure_max, exposure_bias, adapt_speed, fog_start, fog_end, fog_density})`, `reset()` |
 | `random` | `float()`, `range(lo, hi)`, `int(lo, hi)`, `chance(p)`, `seed(n)` |
@@ -284,7 +284,14 @@ keyboard mapping is in `app::input`.
   1) and `aberration` (pixels of red and blue apart at the corners).
   `lights.set` replaces the coloured point lights (no shadows): `intensity`
   is roughly lux at 1 m, `range` in metres. Under the `night` sky a few
-  hundred lights a dark floor well. Both are looks only, allowed in `draw`
+  hundred lights a dark floor well. `lights.spots` replaces up to eight
+  spotlights that cast shadows (torches, headlights, a street lamp):
+  `dir` is the beam, `angle` its outer half-angle in degrees (2 to 74),
+  `inner` where the edge starts to fade, `intensity` in candela with
+  inverse-square falloff (a hand torch is about 1500), `range` in metres.
+  Each spot renders a 1024-square shadow map every frame, so use the ones
+  that matter (Dead Miles: one per survivor's torch, then the street lights
+  nearest the view). All three are looks only, allowed in `draw`
   too, and reset on restart. Neon Trails shows a neon look: deep colours
   at a low emissive (0.03) with soft wide bloom, a glossy dark deck and a
   lamp over each player. Neon Siege is Geometry Wars style: outlines at

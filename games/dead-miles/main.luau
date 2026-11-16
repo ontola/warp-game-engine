@@ -49,8 +49,9 @@ local KNOBS = {
 	cam_height = 17, -- camera height over the group, m
 	cam_back = 11, -- camera distance behind (south of) the group, m
 	fov = 42, -- camera field of view, degrees
-	torch = 420, -- torch brightness
-	lamp = 260, -- street light brightness
+	torch = 1400, -- torch brightness, candela
+	lamp = 1000, -- street light brightness, candela
+	night_ev = 4.5, -- how far the eye adapts to the dark (EV100 floor; lower is brighter)
 	density = 1, -- zombie count multiplier
 	encounters = 0.35, -- chance of an encounter in a chunk
 	autopilot = 0, -- 1: bots drive the people too (demos, store clips, tests)
@@ -745,7 +746,7 @@ local function look_of_hour()
 	s.time_now = t
 	sky.set(t)
 	if dark() then
-		light.set({ fog_start = 6, fog_end = 34, exposure = "auto", exposure_min = 3, exposure_max = 9, exposure_bias = -0.6 })
+		light.set({ fog_start = 6, fog_end = 34, exposure = "auto", exposure_min = KNOBS.night_ev, exposure_max = 9, exposure_bias = -0.6 })
 		post.set({ vignette = 0.6, grain = 0.14, saturation = 0.7, contrast = 1.12 })
 	else
 		light.set({ fog_start = 10, fog_end = 55 })
@@ -1981,27 +1982,40 @@ local function bar(x, y, w, h, frac, color)
 	hud.box(x, y, w * math.clamp(frac, 0, 1), h, color)
 end
 
+-- Torches and street lights are shadowed spotlights (at most 8: torches
+-- first, then the lamps nearest the view); the fire, muzzle flashes and a
+-- little spill around each torch are point lights.
 local function torches()
 	local list = {}
+	local spots = {}
 	local flicker = s.battery < 15 and math.floor(game.time() * 13) % 5 == 0
 	for _, u in s.survivors do
 		if in_body(u) and u.pos then
 			if u.torch and s.battery > 0 and dark() and not flicker then
 				local f = dir(u.yaw)
-				table.insert(list, { pos = v(u.pos.x + f.x * 3, 1.4, u.pos.z + f.z * 3), color = "#ffe6c0", intensity = KNOBS.torch, range = 10 })
-				table.insert(list, { pos = v(u.pos.x + f.x * 0.6, 1.6, u.pos.z + f.z * 0.6), color = "#ffe6c0", intensity = KNOBS.torch * 0.2, range = 4 })
+				local down = if u.state == "down" then 0.05 else 0.22
+				table.insert(spots, { pos = v(u.pos.x + f.x * 0.45, 1.35, u.pos.z + f.z * 0.45), dir = v(f.x, -down, f.z), color = "#ffe6c0", intensity = KNOBS.torch, range = 18, angle = 24, inner = 10 })
+				table.insert(list, { pos = v(u.pos.x + f.x * 0.6, 1.6, u.pos.z + f.z * 0.6), color = "#ffe6c0", intensity = KNOBS.torch * 0.012, range = 3 })
 			end
 			if u.flash then table.insert(list, { pos = v(u.pos.x, 1.4, u.pos.z), color = "#ffd27a", intensity = 900, range = 14 }) end
 		end
 	end
 	-- Street lights that still work, nearest the view first.
 	if dark() then
+		local near = {}
 		for _, ch in s.chunks do
 			for _, l in ch.lamps or {} do
 				local off = l.flicker and math.sin(game.time() * 7 + l.seed) + math.sin(game.time() * 23 + l.seed * 3) > 1.2
-				if not off and math.abs(l.pos.x - s.cam.x) < 30 then
-					table.insert(list, { pos = l.pos, color = "#ffd9a0", intensity = KNOBS.lamp, range = 11 })
-				end
+				local d = math.abs(l.pos.x - s.cam.x)
+				if not off and d < 30 then table.insert(near, { l = l, d = d }) end
+			end
+		end
+		table.sort(near, function(a, b) return a.d < b.d end)
+		for _, n in near do
+			if #spots < 8 then
+				table.insert(spots, { pos = n.l.pos, dir = v(0, -1, 0), color = "#ffd9a0", intensity = KNOBS.lamp, range = 12, angle = 62, inner = 35 })
+			else
+				table.insert(list, { pos = n.l.pos, color = "#ffd9a0", intensity = KNOBS.lamp * 0.25, range = 11 })
 			end
 		end
 	end
@@ -2012,6 +2026,7 @@ local function torches()
 	end
 	while #list > 32 do table.remove(list) end
 	if #list > 0 then lights.set(list) else lights.clear() end
+	lights.spots(spots)
 end
 
 local function draw()
