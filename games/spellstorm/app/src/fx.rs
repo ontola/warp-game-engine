@@ -1043,7 +1043,8 @@ impl Fx {
         // with a touch of its element, so a pale monster gets a clear one.
         let c = lerp_c(el_c(el), rgba(1.0, 0.55, 0.15, 1.0), 0.6);
         let c3 = linear3([c[0], c[1], c[2]]);
-        let fade = 1.0 - smooth(0.85, 1.0, k);
+        // Gone once the head is made, not hanging over it.
+        let fade = 1.0 - smooth(0.95, 1.12, crate::anim::build_front(k));
         // The plane it is made at (view.rs builds the parts below it), from
         // its toes to the top of its head: a glowing disc with a bright rim,
         // tight round the body so it reads from the top-down camera.
@@ -1051,7 +1052,6 @@ impl Fx {
         let r = 0.5;
         self.early.push(flat_sprite(at + Vec3::Y * y, r * 1.2, Cell::Patch, c3 * 0.6 * fade));
         self.early.push(flat_sprite(at + Vec3::Y * y, r, Cell::Ring, c3 * 1.8 * fade));
-        self.early.push(flat_sprite(at + Vec3::Y * 0.04, 0.6, Cell::Patch, c3 * 0.3 * fade));
         // Embers coming off the edge as it rises, close to the body.
         let mut sp = particles(lerp_c(c, WHITE, 0.3), 40, 0.35, 0.05);
         sp.cell = Cell::Spark;
@@ -1071,7 +1071,7 @@ impl Fx {
             let q = at + Vec3::new(a.cos() * rr, y, a.sin() * rr);
             self.emit(sp, q, 1);
         }
-        self.light(at + Vec3::Y * y.max(0.4), c, 1.6 * fade, 4.0);
+        self.light(at + Vec3::Y * y.max(0.4), c, 0.9 * fade, 2.2);
         if let Some(l) = self.live_lights.pop() {
             self.early_lights.push(l);
         }
