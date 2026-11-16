@@ -487,6 +487,23 @@ fn stack_together_shares_a_well_with_a_bot() {
     assert_eq!(run()["state"], s["state"]);
 }
 
+#[test]
+fn dead_miles_bot_searches_and_fights() {
+    let run = || {
+        let mut g = LuaGame::load(&repo().join("games/dead-miles"), &Overrides::default(), None).unwrap();
+        g.echo = false;
+        for _ in 0..3600 { g.tick(&[Controls::default()]); }
+        state(&g)
+    };
+    let s = run();
+    assert_eq!(s["errors"], json!([]), "{s}");
+    assert_eq!(s["cameras"].as_array().unwrap().len(), 1, "one shared view");
+    let counts = &s["state"]["s"]["counts"];
+    assert!(counts["searches"].as_u64().unwrap_or(0) >= 1, "the bot searches the street: {counts}");
+    assert!(counts["swings"].as_u64().unwrap_or(0) >= 1, "someone swings a weapon: {counts}");
+    assert_eq!(run()["state"], s["state"], "the same seed plays out the same way");
+}
+
 const FX_GAME: &str = r##"
 local function init()
     world.warm("cube", { color = "#ff00ff", emissive = 0.06 })

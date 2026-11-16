@@ -1,0 +1,27 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ontola/gamepad-party/main/catalog/schema.json",
+  "id": "dead-miles",
+  "title": "Dead Miles",
+  "tagline": "Scrounge, run, drive on. Don't stop for long.",
+  "developer": "Joep Meindertsma",
+  "players": {
+    "min": 1,
+    "max": 4,
+    "best": 4
+  },
+  "match_minutes": 30,
+  "price": "free",
+  "tags": [
+    "co-op",
+    "survival",
+    "zombies",
+    "roguelite",
+    "warp",
+    "luau"
+  ],
+  "integration": {
+    "level": "integrated",
+    "protocol": 1
+  },
+  "links": {}
+}
