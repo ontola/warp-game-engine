@@ -6,8 +6,10 @@ farmland) and decides which buildings to enter. Buildings have rooms
 behind doors, with cupboards, closets and shelves to search, and
 sometimes somebody inside. The dead gather behind you, so lingering
 costs. Melee weapons wear out and break, there is almost no ammo, guns
-are loud, and most of each day is dusk and night: torches eat batteries,
-and a lit torch is seen from further away.
+are loud, and the group walks by night, because by day the dead see
+further and move faster: each leg starts at dusk and ends with a dash
+through the first daylight to a shelter. Torches eat batteries, and a lit
+torch is seen from further away.
 
 A hit leaves a survivor injured (slower, until a first aid kit), a second
 hit puts them down. Down players can be revived and stay injured. A dead
