@@ -191,7 +191,7 @@ pub fn forming_glow(front: f32, at: f32) -> f32 {
     if front < at {
         return 0.0;
     }
-    (1.0 - (front - at) / 0.4).clamp(0.0, 1.0) * 1.1
+    (1.0 - (front - at) / 0.22).clamp(0.0, 1.0)
 }
 
 /// How a monster's body goes (Enemy._death), by its model.
