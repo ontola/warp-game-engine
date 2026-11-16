@@ -1,0 +1,17 @@
+# Dead Miles (working name): a co-op zombie road trip on the warp runtime.
+title = "Dead Miles"
+id = "dead-miles"
+tick_rate = 60
+# One shared view over the street; the camera follows the group.
+split = false
+# Co-op: on your own, a bot survives with you.
+players = 1
+bots = 1
+min_players = 2
+seed = 11
+sky = "morning:haze"
+# A street, up to a few hundred zombies of twelve boxes each, effects.
+max_entities = 8000
+# The horde and the bots run in Luau every tick.
+steps = 4000000
+memory_mb = 128
