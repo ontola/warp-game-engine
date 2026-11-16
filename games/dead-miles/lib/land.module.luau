@@ -36,6 +36,7 @@ function M.biome(day) return M.BIOMES[(day - 1) % #M.BIOMES + 1] end
 function M.warm()
 	for _, l in LOOKS do
 		for _, c in { l.ground, l.path, l.edge } do world.warm("cube", { color = c, roughness = 0.95 }) end
+		world.warm("cube", { color = l.ground, roughness = 1 })
 		for _, c in l.walls do world.warm("cube", { color = c, roughness = 0.95 }) end
 		for _, c in l.floors do world.warm("cube", { color = c, roughness = 0.95 }) end
 	end
@@ -48,7 +49,7 @@ function M.warm()
 	end
 	for _, c in { "#3c5a2c", "#2f4a26", "#26401f", "#4a6a32" } do world.warm("sphere", { color = c, roughness = 0.9 }) end
 	world.warm("sphere", { color = "#7a7470", roughness = 0.9 })
-	world.warm("sphere", { color = "#ff9a3a", emissive = 1.2 })
+	world.warm("sphere", { color = "#ff9a3a", emissive = 1.2, roughness = 0.9 })
 	world.warm("cube", { color = "#3a3d42", roughness = 0.6, metal = 0.6 })
 	world.warm("cube", { color = "#fff0c8", roughness = 0.9, emissive = 1.5 })
 	world.warm("cube", { color = "#4a4640", roughness = 0.9 })

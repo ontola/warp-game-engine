@@ -215,6 +215,18 @@ declare lights: {
 	clear: () -> (),
 }
 
+-- Warp Humans from game.toml's [humans.NAME] pools: spawn returns nil when
+-- the pool is full. Set pos (feet) and yaw each tick; the legs follow.
+-- pose: walk, idle, reach, raise, strike, aim, shove, attack, punch, jab,
+-- hit, hit_head, cast, roll, dead, down; t is its progress, 0 to 1.
+declare humans: {
+	spawn: (pool: string, opts: { pos: Vec?, yaw: number? }?) -> number?,
+	set: (id: number, opts: { pos: Vec?, yaw: number?, pose: string?, t: number? }) -> boolean,
+	remove: (id: number) -> boolean,
+	head: (id: number) -> Vec?,
+	room: (pool: string) -> (number, number),
+}
+
 declare plants: {
 	-- A grown plant (a Jeffrey pine unless `species` changes its rules): its
 	-- age in years sets how many shoots, limbs and needle brushes it has, not

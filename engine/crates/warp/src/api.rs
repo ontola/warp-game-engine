@@ -169,6 +169,8 @@ pub struct Core {
     pub post: Post,
     pub lamps: Vec<Lamp>,
     pub spots: Vec<Spot>,
+    /// Warp Humans (game.toml `[humans.NAME]` pools).
+    pub humans: crate::humans::Humans,
     pub tick: u64,
     pub tick_rate: f32,
     pub title: String,
@@ -881,6 +883,46 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             Ok(())
         })),
         ("clear", f!(core, move |_, ()| { let mut c = lock(&core); c.lamps.clear(); c.spots.clear(); Ok(()) })),
+    ])?;
+
+    table("humans", vec![
+        ("spawn", f!(core, move |_, (pool, opts): (String, Option<Table>)| {
+            let mut c = lock(&core);
+            sim(&c, "humans.spawn")?;
+            let (mut pos, mut yaw) = (Vec3::ZERO, 0.0);
+            if let Some(t) = opts {
+                for (k, v) in options(&t, &["pos", "yaw"], "humans.spawn")? {
+                    match k.as_str() { "pos" => pos = vec3(&v, "humans.spawn pos")?, "yaw" => yaw = number(&v, "humans.spawn yaw")?, _ => unreachable!() }
+                }
+            }
+            c.humans.spawn(&pool, pos, yaw).map_err(rt)
+        })),
+        ("set", f!(core, move |_, (id, opts): (u32, Table)| {
+            let mut c = lock(&core);
+            sim(&c, "humans.set")?;
+            let o = options(&opts, &["pos", "yaw", "pose", "t"], "humans.set")?;
+            let Some(p) = c.humans.people.get_mut(&id) else { return Ok(false) };
+            for (k, v) in o {
+                match k.as_str() {
+                    "pos" => p.pos = vec3(&v, "humans.set pos")?,
+                    "yaw" => p.yaw = number(&v, "humans.set yaw")?,
+                    "t" => p.t = number(&v, "humans.set t")?.clamp(0.0, 1.0),
+                    "pose" => {
+                        let name = match &v { Value::String(s) => s.to_str()?.to_string(), _ => return Err(rt("humans.set pose: expected a string".to_string())) };
+                        if !crate::humans::POSES.contains(&name.as_str()) { return Err(rt(format!("humans.set: pose {name:?} (one of {})", crate::humans::POSES.join(", ")))); }
+                        p.pose = name;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            Ok(true)
+        })),
+        ("remove", f!(core, move |_, id: u32| { let mut c = lock(&core); sim(&c, "humans.remove")?; Ok(c.humans.remove(id)) })),
+        ("head", f!(core, move |_, id: u32| Ok(lock(&core).humans.head(id).map(vector).unwrap_or(Value::Nil)))),
+        ("room", f!(core, move |_, pool: String| {
+            let (free, all) = lock(&core).humans.room(&pool).ok_or_else(|| rt(format!("humans.room: no pool {pool:?}")))?;
+            Ok((free, all))
+        })),
     ])?;
 
     table("random", vec![

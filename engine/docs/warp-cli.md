@@ -113,6 +113,7 @@ my-game/
 | `size` | `[1280, 720]` | Window size in pixels. |
 | `steps` | 200000 | Luau step budget per hook call (see [scripting](scripting.md#limits)). |
 | `memory_mb` | 64 | Luau memory cap. |
+| `[humans.NAME]` | none | A pool of Warp Humans: `count` (1 to 256 alive at once), `variety` (different people fitted at load, 1 to 16, default 4), `style` (`"person"` or `"zombie"`), `skin` and `shirt` (`"#rrggbb"`, default seeded), `height` (`[1.6, 1.9]` m), `seed`. At most 256 in all. |
 
 Regular scripts outside `sounds/`, `assets/` and `scripts/` run their hooks
 in path order. Type definitions (`*.d.luau`) are skipped.
@@ -206,6 +207,7 @@ keyboard mapping is in `app::input`.
 | `sound` | `play(name, {at, db, pitch, <param> = value}) -> handle`, `set_param(handle, param, value)`, `stop(handle)`, `list()` |
 | `hud` | `text(text, x, y, {size, color, align, width})`, `box(x, y, w, h, color)`, `size() -> w, h`, `view(player) -> x, y, w, h`, `project(pos, player?) -> x, y or nil` |
 | `post` | `set({bloom, bloom_radius, bloom_threshold, bloom_wide, contrast, saturation, vignette, grain, aberration})`, `reset()` |
+| `humans` | `spawn(pool, {pos, yaw})` → id or nil when the pool is full, `set(id, {pos, yaw, pose, t})`, `remove(id)`, `head(id)` → vector, `room(pool)` → free, total |
 | `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `spots({{pos, dir, color, intensity, range, angle, inner}, ...})` (at most 8, with shadows), `clear()` |
 | `sky` | `set(name)`, `get()` |
 | `light` | `set({sun, sun_lux, sky_lux, exposure, exposure_min, exposure_max, exposure_bias, adapt_speed, fog_start, fog_end, fog_density})`, `reset()` |
@@ -296,6 +298,21 @@ keyboard mapping is in `app::input`.
   at a low emissive (0.03) with soft wide bloom, a glossy dark deck and a
   lamp over each player. Neon Siege is Geometry Wars style: outlines at
   emissive 0.14 under a tight bloom, a camera straight down, no sky light.
+- **Humans**: Warp Humans, the engine's skinned people, from pools that
+  game.toml reserves (`[humans.zombie] count = 40, style = "zombie"`), so
+  spawning never rebuilds the renderer. Set each one's feet `pos` and
+  `yaw` (0 faces +z, a quarter turn +x) every tick: the legs walk, jog or
+  stand from how far it moved. `pose` lays an action over that: `walk`
+  (the default), `idle`, `reach` and `raise` (arms ahead, arms over the
+  head), `strike` (from raised to low over `t`), `aim`, `shove`,
+  `attack`, `punch`, `jab`, `hit`, `hit_head`, `cast`, `roll` (captures
+  played by `t`, 0 to 1), `dead` (the fall over `t`) and `down` (lying).
+  The `zombie` style stoops, lolls its head and holds its arms out.
+  `head(id)` is where the head is now (for glowing eyes or a hit test).
+  Looks only: they never collide, and the game keeps its own positions.
+  Each human is a full skinned mesh skinned every frame, so keep pools to
+  the crowd that is on screen. The rig is in `engine/assets/humans/rig`;
+  the captures are the `body` crate's.
 - **Random**: SplitMix64 from the game's seed. `restart` reseeds it.
 
 ### Players
@@ -538,7 +555,7 @@ KERN_ADAPTER=software warp script games/hello-warp games/hello-warp/scripts/smok
 
 ## Not yet
 
-- Skinned and animated glTF, local lights, physics bodies
+- Skinned and animated glTF (Warp Humans aside), physics bodies
   (the `physics` crate) and terrain are not exposed to Luau yet.
 - No online play. The determinism rules are meant to make lockstep or
   host-authoritative play possible later.

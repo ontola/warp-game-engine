@@ -10,6 +10,7 @@
 pub mod api;
 pub mod config;
 pub mod game;
+pub mod humans;
 mod editor_menus;
 pub use live::knobs;
 pub mod luajson;

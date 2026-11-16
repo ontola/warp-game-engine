@@ -144,6 +144,7 @@ impl LuaGame {
             post: Default::default(),
             lamps: Vec::new(),
             spots: Vec::new(),
+            humans: crate::humans::Humans::new(&cfg.humans),
             tick: 0,
             tick_rate: cfg.tick_rate,
             title: cfg.title.clone(),
@@ -258,6 +259,7 @@ impl LuaGame {
             c.post = Default::default();
             c.lamps.clear();
             c.spots.clear();
+            c.humans.clear();
             for p in &mut c.roster { p.cam = Cam::default(); }
         }
         self.menu = None;
@@ -668,7 +670,7 @@ impl LuaGame {
                 c.plants.dirty = false;
                 let c = &mut *c;
                 let started = std::time::Instant::now();
-                let shown = c.world.fresh_scene().and_then(|_| c.plants.attach(&mut c.world.scene));
+                let shown = c.world.fresh_scene().and_then(|_| { c.humans.detach(); c.plants.attach(&mut c.world.scene) });
                 match shown {
                     Ok(n) => lines.push(format!("plants: {n} attached in {:.0} ms", started.elapsed().as_secs_f64() * 1000.0)),
                     Err(e) => lines.push(format!("plants: not shown: {e}")),
@@ -938,6 +940,7 @@ impl Game for LuaGame {
         {
             let mut c = self.core();
             c.world.step_fx(dt);
+            c.humans.tick(dt);
             c.tick += 1;
         }
         self.ears();
@@ -979,6 +982,12 @@ impl Game for LuaGame {
         let mut surface_line = None;
         let added = std::mem::take(&mut c.world.added);
         let mut late = None;
+        // Warp Humans join the scene before its first renderer.
+        if !c.humans.is_empty() && !c.humans.attached() {
+            let c = &mut *c;
+            if let Err(e) = c.humans.attach(&mut c.world.scene) { late = Some(format!("humans: {e}")); }
+            c.world.rebuild = true;
+        }
         if std::mem::take(&mut c.world.rebuild) || frame.renderer().is_none() {
             // A look first seen after the start stalls the game while the
             // renderer is rebuilt: name it so it can be warmed in init.
@@ -1007,6 +1016,10 @@ impl Game for LuaGame {
         let r = frame.renderer().ok_or("no renderer")?;
         c.world.flush_at(frame.gpu, r, frame.alpha)?;
         post(r, &c.post, &c.lamps, &c.spots)?;
+        {
+            let c = &mut *c;
+            c.humans.draw(frame.gpu, r, &mut c.world.scene, frame.alpha)?;
+        }
         let mut seen: Vec<(usize, Cam)> = c.roster.iter().filter_map(|p| p.view.map(|v| (v, p.cam_prev.towards(&p.cam, frame.alpha)))).collect();
         seen.sort_by_key(|(v, _)| *v);
         if seen.is_empty() { seen.push((0, Cam::default())); }
@@ -1027,6 +1040,15 @@ impl Game for LuaGame {
     fn state(&self) -> Option<String> { Some(self.state_json().to_string()) }
 
     fn command(&mut self, cmd: &str) -> Result<String, String> { self.command_line(cmd) }
+
+    /// A script's `knob NAME VALUE` changes only the running game (like
+    /// `trial`): a scripted or headless run never edits main.luau.
+    fn script_command(&mut self, cmd: &str) -> Result<String, String> {
+        match cmd.trim_start().strip_prefix("knob ") {
+            Some(rest) => self.command_line(&format!("trial {rest}")),
+            None => self.command_line(cmd),
+        }
+    }
 
     fn wants_capture(&self) -> bool { self.live.as_ref().is_some_and(|l| l.wants_capture()) }
 

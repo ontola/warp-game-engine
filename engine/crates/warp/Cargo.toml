@@ -17,6 +17,7 @@ script = { path = "../script" }
 live = { path = "../live" }
 gamenight = { path = "../gamenight" }
 assets = { path = "../assets" }
+body = { path = "../body" }
 kern.workspace = true
 glam = "0.31"
 bytemuck = "1"
