@@ -1,51 +1,67 @@
--- Dead Miles (working name): a co-op road trip through the end of the
--- world. One to four survivors stop in a generated street, search houses
--- and cars for food, fuel and the very little ammo left, and get back to
--- the car before the street fills up. Melee weapons wear out, guns are
--- loud, and a director swings the dead from a quiet street to a siege.
--- A survivor who goes down can be revived; one who dies comes back in
--- seconds as a ghost and then as a new survivor at the car. The run ends
--- only when nobody is standing.
+-- Dead Miles (working name): a co-op walk east through the end of the
+-- world. One to four survivors cross a scrolling land, a biome a day
+-- (suburb, forest, ruined city, farmland), and choose which buildings
+-- to search on the way. The dead gather behind you, so lingering is the
+-- risk. Melee weapons wear out, ammo is nearly gone, guns are loud, and
+-- the nights are long: torches eat batteries. A hit leaves you injured
+-- (you limp until a first aid kit), a second hit puts you down; a dead
+-- survivor comes back in seconds as a ghost and then as a new survivor.
+-- The run ends only when nobody is standing.
 --
--- Controls: left stick moves, right stick aims, RT fires the gun, X
--- swings the melee weapon, B shoves, A (hold) searches, picks up, revives
--- and drives off at the car, Y uses a medkit. Keyboard: WASD, left mouse
--- fires, R swings, Shift shoves, Space uses, F heals.
+-- Controls: left stick moves, right stick aims, RT fires, X swings, B
+-- shoves, A (hold) searches, picks up, revives and talks to strangers,
+-- Y uses a first aid kit, LB switches the torch. Keyboard: WASD, left
+-- mouse fires, R swings, Shift shoves, Space uses, F heals, Q torch.
 --
 -- Design: the "Zombie road-trip co-op: design" doc. The rules live here;
--- the street is lib/street, the people lib/figure.
+-- the land is lib/land, the people lib/figure, and the encounters
+-- (traders, strangers, caches) are content files in content/encounters.
 
 local figure = require("lib/figure")
-local street = require("lib/street")
+local land = require("lib/land")
 local v = vector.create
+
+-- Every encounter file in content/encounters, in name order.
+local ENCOUNTERS = {}
+for _, name in libraries("content/encounters") do
+	local e = require(name)
+	e.file = name
+	table.insert(ENCOUNTERS, e)
+end
 
 -- @knobs
 local KNOBS = {
 	walk = 4.3, -- survivor speed, m/s
+	limp = 0.72, -- share of that speed while injured
 	shambler = 1.25, -- shambler speed, m/s
 	runner = 4.4, -- runner speed, m/s
-	start_ammo = 6, -- rounds at the start of a run
+	start_ammo = 5, -- rounds at the start of a run
 	start_food = 4, -- food at the start of a run
-	start_fuel = 2, -- fuel at the start of a run
+	start_battery = 100, -- torch battery at the start, percent
+	drain = 0.22, -- battery percent per second for each lit torch
 	pressure = 0.006, -- how fast the director's pressure rises per second
-	peak = 12, -- seconds of a director peak (a horde from the edge)
+	peak = 12, -- seconds of a director peak (a horde from behind)
 	calm = 25, -- seconds of calm after a peak
 	downed = 8, -- seconds a downed survivor can wait for a revive
 	ghost = 12, -- seconds as a ghost before a new survivor arrives
 	revive = 2, -- seconds a teammate holds A to revive
 	search = 1.2, -- seconds to search a container
 	cam_height = 17, -- camera height over the group, m
-	cam_back = 12, -- camera distance behind (south of) the group, m
-	fov = 40, -- camera field of view, degrees
-	torch = 380, -- torch brightness at night
+	cam_back = 11, -- camera distance behind (south of) the group, m
+	fov = 42, -- camera field of view, degrees
+	torch = 420, -- torch brightness
+	lamp = 260, -- street light brightness
 	density = 1, -- zombie count multiplier
+	encounters = 0.35, -- chance of an encounter in a chunk
 	autopilot = 0, -- 1: bots drive the people too (demos, store clips, tests)
 }
 -- @end
 
-local HX, HZ = street.HALF_X, street.HALF_Z
+local HZ = land.HALF_Z
+local CHUNK = land.CHUNK
 local RADIUS = 0.32 -- survivor and zombie collision radius, m
 local LEASH = 13 -- how far a survivor may stray from the group, m
+local BEHIND = 13 -- how far behind the group the left edge of the world is
 
 local MELEE = {
 	fists = { dmg = 0.6, range = 1.3, arc = 0.5, cd = 0.38, noise = 2, cleave = 1, knock = 2 },
@@ -67,30 +83,38 @@ local HELD = {
 }
 
 local ZOMBIES = {
-	shambler = { hp = 3, sense = 9, reach = 1.35, windup = 0.55, strike = 0.2, recover = 0.8 },
-	runner = { hp = 2, sense = 13, reach = 3.6, windup = 0.6, strike = 0.35, recover = 1.1, lunge = 8.5 },
+	shambler = { hp = 3, sense = 8, reach = 1.35, windup = 0.55, strike = 0.2, recover = 0.8 },
+	runner = { hp = 2, sense = 12, reach = 3.6, windup = 0.6, strike = 0.35, recover = 1.1, lunge = 8.5 },
 }
 local ZOMBIE_SKIN = { "#7d8f6a", "#8a9178", "#6f7f66", "#93977f" }
 local ZOMBIE_SHIRTS = { "#5b5148", "#4d5560", "#6a4f45", "#56604a", "#6b6458", "#3f4650" }
 local ZOMBIE_PANTS = { "#2f3238", "#3b3530", "#2a2f2a" }
 local SKINS = { "#f1c9a5", "#d9a37e", "#b97d56", "#8d5a3a", "#5e3b26" }
 local PANTS = { "#2b3a55", "#3a3a3a", "#4a3d2e", "#2e3f33" }
+local STRANGER_SHIRTS = { "#7a7a6a", "#6a5a7a", "#8a6a4a", "#4a6a6a" }
 
--- The time of day for each stop in a cycle of six; the first night is stop 5.
-local TIMES = { "morning:haze", "noon:clear", "afternoon:haze", "sunset:haze", "night:clear", "night:mist" }
+-- The light through a day: a short grey morning, a long dusk and night.
+-- Index by chunk within the day (0 is the camp).
+local TIMES = { [1] = "sunrise:mist", [2] = "morning:mist", [3] = "afternoon:haze", [4] = "sunset:mist", [5] = "night:mist", [6] = "night:clear", [7] = "night:mist", [0] = "night:clear" }
 
 -- What a container holds, by kind: { weight, item, min, max }.
 local LOOT = {
-	kitchen = { { 32, "food", 1, 2 }, { 10, "meds", 1, 1 }, { 8, "ammo", 1, 1 }, { 50, nil } },
-	closet = { { 28, "weapon" }, { 12, "ammo", 1, 2 }, { 12, "meds", 1, 1 }, { 8, "food", 1, 1 }, { 40, nil } },
-	car = { { 32, "fuel", 1, 1 }, { 16, "food", 1, 1 }, { 10, "ammo", 1, 2 }, { 42, nil } },
+	kitchen = { { 30, "food", 1, 2 }, { 8, "meds", 1, 1 }, { 8, "battery", 1, 1 }, { 6, "ammo", 1, 1 }, { 48, nil } },
+	closet = { { 25, "weapon" }, { 10, "ammo", 1, 2 }, { 10, "meds", 1, 1 }, { 12, "battery", 1, 1 }, { 43, nil } },
+	car = { { 16, "food", 1, 1 }, { 18, "battery", 1, 1 }, { 10, "ammo", 1, 2 }, { 56, nil } },
 	police = { { 60, "ammo", 2, 4 }, { 30, "shotgun" }, { 10, "meds", 1, 1 } },
-	shed = { { 45, "weapon" }, { 30, "fuel", 1, 1 }, { 25, nil } },
+	shop = { { 40, "food", 1, 3 }, { 15, "battery", 1, 1 }, { 45, nil } },
+	office = { { 10, "meds", 1, 1 }, { 10, "battery", 1, 1 }, { 5, "ammo", 1, 1 }, { 75, nil } },
+	pharmacy = { { 55, "meds", 1, 2 }, { 45, nil } },
+	cabin = { { 30, "food", 1, 2 }, { 25, "weapon" }, { 15, "ammo", 1, 2 }, { 30, nil } },
+	barn = { { 35, "weapon" }, { 25, "food", 1, 2 }, { 40, nil } },
+	hay = { { 15, "weapon" }, { 10, "food", 1, 1 }, { 75, nil } },
 }
-local ITEM_COLORS = { ammo = "#e0b84a", food = "#7fc25a", fuel = "#e0573a", meds = "#f2f2f2" }
+local ITEM_COLORS = { ammo = "#e0b84a", food = "#7fc25a", battery = "#7ab8e8", meds = "#f2f2f2" }
+local BATTERY = 40 -- percent in one battery
 
 local s -- the run: state.s
-local warm_all -- defined with the hooks, used when a stop is built
+local warm_all -- defined with the hooks, used when the world is built
 local grid = {} -- rect indices per 4 m cell, rebuilt from s.rects
 
 ----------------------------------------------------------------------------
@@ -110,31 +134,35 @@ local function sfx(name, at, opts)
 	sound.play(name, opts)
 end
 local function pick(list) return list[random.int(1, #list)] end
+local function rumble(u, k, t)
+	if not u.recruit then players.rumble(u.id, k, t) end
+end
 
 ----------------------------------------------------------------------------
--- Collision against the street's boxes (a grid of 4 m cells)
+-- Collision against the land's boxes (a grid of 4 m cells)
 
 local CELL = 4
-local function cell_key(cx, cz) return (cx + 100) * 1000 + (cz + 100) end
+local function cell_key(cx, cz) return (cx + 10000) * 1000 + (cz + 100) end
 
-local function build_grid()
-	grid = {}
-	for i, r in s.rects do
-		for cx = math.floor((r.x0 - RADIUS) / CELL), math.floor((r.x1 + RADIUS) / CELL) do
-			for cz = math.floor((r.z0 - RADIUS) / CELL), math.floor((r.z1 + RADIUS) / CELL) do
-				local k = cell_key(cx, cz)
-				local list = grid[k]
-				if not list then
-					list = {}
-					grid[k] = list
-				end
-				table.insert(list, i)
+local function grid_add(i, r)
+	for cx = math.floor((r.x0 - RADIUS) / CELL), math.floor((r.x1 + RADIUS) / CELL) do
+		for cz = math.floor((r.z0 - RADIUS) / CELL), math.floor((r.z1 + RADIUS) / CELL) do
+			local k = cell_key(cx, cz)
+			local list = grid[k]
+			if not list then
+				list = {}
+				grid[k] = list
 			end
+			table.insert(list, i)
 		end
 	end
 end
 
--- Push a circle out of every box it overlaps; returns the new position.
+local function build_grid()
+	grid = {}
+	for i, r in s.rects do grid_add(i, r) end
+end
+
 local function collide(p, r)
 	local x, z = p.x, p.z
 	for _ = 1, 2 do
@@ -142,66 +170,126 @@ local function collide(p, r)
 		if list then
 			for _, i in list do
 				local b = s.rects[i]
-				if not b.gone then
-					local cx = math.clamp(x, b.x0, b.x1)
-					local cz = math.clamp(z, b.z0, b.z1)
-					local dx, dz = x - cx, z - cz
-					local d2 = dx * dx + dz * dz
-					if d2 < r * r then
-						if d2 > 1e-8 then
-							local d = math.sqrt(d2)
-							x += dx / d * (r - d)
-							z += dz / d * (r - d)
-						else
-							-- Inside the box: out along the shortest side.
-							local l, rr, t, bt = x - b.x0, b.x1 - x, z - b.z0, b.z1 - z
-							local m = math.min(l, rr, t, bt)
-							if m == l then x = b.x0 - r elseif m == rr then x = b.x1 + r elseif m == t then z = b.z0 - r else z = b.z1 + r end
-						end
+				local cx = math.clamp(x, b.x0, b.x1)
+				local cz = math.clamp(z, b.z0, b.z1)
+				local dx, dz = x - cx, z - cz
+				local d2 = dx * dx + dz * dz
+				if d2 < r * r then
+					if d2 > 1e-8 then
+						local d = math.sqrt(d2)
+						x += dx / d * (r - d)
+						z += dz / d * (r - d)
+					else
+						local l, rr, t, bt = x - b.x0, b.x1 - x, z - b.z0, b.z1 - z
+						local m = math.min(l, rr, t, bt)
+						if m == l then x = b.x0 - r elseif m == rr then x = b.x1 + r elseif m == t then z = b.z0 - r else z = b.z1 + r end
 					end
 				end
 			end
 		end
 	end
-	x = math.clamp(x, -HX + 0.5, HX - 0.5)
 	z = math.clamp(z, -HZ + 0.5, HZ - 0.5)
 	return v(x, 0, z)
 end
 
--- Distance from a point to a box in the ground plane.
 local function to_rect(p, b)
 	local dx = math.max(b.x0 - p.x, 0, p.x - b.x1)
 	local dz = math.max(b.z0 - p.z, 0, p.z - b.z1)
 	return math.sqrt(dx * dx + dz * dz)
 end
 
--- How far a shot along d from p travels before a wall.
 local function wall_distance(p, d, max)
 	local hit = world.raycast(v(p.x, 1.1, p.z), d, max, { tag = "wall" })
 	return if hit then hit.distance else max
 end
 
--- Walkers find their way through front doors and the gap in the inner
--- wall: the next point to walk to on the way from p to goal.
-local function room(h, p)
-	if p.x < h.x0 or p.x > h.x1 or p.z < h.z0 or p.z > h.z1 then return 0 end
-	return if (p.z - h.zi) * h.side < 0 then 1 else 2
+-- Walkers find their way through buildings by their doors: the room a
+-- point is in (0 outside), and the next point on the way to a goal.
+local function room_of(b, p)
+	if p.x < b.x0 or p.x > b.x1 or p.z < b.z0 or p.z > b.z1 then return 0 end
+	for i, r in b.rooms do
+		if p.x >= r.x0 and p.x <= r.x1 and p.z >= r.z0 and p.z <= r.z1 then return i end
+	end
+	return 0
+end
+
+local function first_door(b, from, to)
+	-- Breadth first over rooms (0 is outside); returns the first door.
+	local prev = { [from] = -1 }
+	local via = {}
+	local queue = { from }
+	local head = 1
+	while head <= #queue do
+		local r = queue[head]
+		head += 1
+		if r == to then break end
+		for _, d in b.doors do
+			local n = if d.a == r then d.b elseif d.b == r then d.a else nil
+			if n and prev[n] == nil then
+				prev[n] = r
+				via[n] = d
+				table.insert(queue, n)
+			end
+		end
+	end
+	if prev[to] == nil then return nil end
+	local r = to
+	while prev[r] ~= from do
+		if prev[r] == -1 then return nil end
+		r = prev[r]
+	end
+	return via[r], r
+end
+
+-- Does the segment p..q cross the box (slab test)?
+local function crosses(p, q, x0, x1, z0, z1)
+	local t0, t1 = 0, 1
+	local dx, dz = q.x - p.x, q.z - p.z
+	for _, slab in { { p.x, dx, x0, x1 }, { p.z, dz, z0, z1 } } do
+		local o, d, lo, hi = slab[1], slab[2], slab[3], slab[4]
+		if math.abs(d) < 1e-6 then
+			if o < lo or o > hi then return false end
+		else
+			local a, b = (lo - o) / d, (hi - o) / d
+			if a > b then a, b = b, a end
+			t0, t1 = math.max(t0, a), math.min(t1, b)
+			if t0 > t1 then return false end
+		end
+	end
+	return true
+end
+
+-- Outside a building with the goal on its far side: walk round a corner.
+local function around(b, p, goal)
+	local m = 0.7
+	local best, bd = nil, math.huge
+	for _, c in { v(b.x0 - m, 0, b.z0 - m), v(b.x1 + m, 0, b.z0 - m), v(b.x0 - m, 0, b.z1 + m), v(b.x1 + m, 0, b.z1 + m) } do
+		if dist(p, c) > 0.3 and not crosses(p, c, b.x0 + 0.02, b.x1 - 0.02, b.z0 + 0.02, b.z1 - 0.02) then
+			local d = dist(p, c) + dist(c, goal)
+			if d < bd then best, bd = c, d end
+		end
+	end
+	return best
 end
 
 local function waypoint(p, goal)
-	for _, h in s.houses do
-		local a, b = room(h, p), room(h, goal)
-		if a ~= b then
-			if a == 0 then
-				-- Outside, going in: to the door, then through it.
-				if dist(p, h.door_out) > 0.8 and (p.z - h.zn) * h.side < -0.3 then return h.door_out end
-				if b == 2 then return h.gap_front end
-				return h.door_in
-			elseif a == 1 then
-				if b == 2 then return if dist(p, h.gap_front) > 0.6 then h.gap_front else h.gap_back end
-				return if dist(p, h.door_in) > 0.6 then h.door_in else h.door_out
-			else
-				return if dist(p, h.gap_back) > 0.6 then h.gap_back else h.gap_front
+	local lo, hi = math.min(p.x, goal.x), math.max(p.x, goal.x)
+	for _, b in s.buildings do
+		if hi > b.x0 - 1 and lo < b.x1 + 1 then
+			local a, g = room_of(b, p), room_of(b, goal)
+			if a == 0 and g == 0 and crosses(p, goal, b.x0 - 0.3, b.x1 + 0.3, b.z0 - 0.3, b.z1 + 0.3) then
+				local c = around(b, p, goal)
+				if c then return c end
+			end
+			if a ~= g then
+				local d = first_door(b, a, g)
+				if d then
+					local near, far = d.pa, d.pb
+					if d.b == a then near, far = d.pb, d.pa end
+					-- Once at the near side, or already in the doorway, go through.
+					if dist(p, near) > 0.55 and dist(p, far) > dist(near, far) - 0.1 then return near end
+					return far
+				end
 			end
 		end
 	end
@@ -214,25 +302,26 @@ end
 local function standing(u) return u.state == "ok" end
 local function in_body(u) return u.state == "ok" or u.state == "down" end
 
-local function survivor_look(u)
-	return { shirt = u.color, skin = u.skin, pants = u.pants }
+local function hold_weapon(u)
+	figure.hold(u.fig, if u.melee ~= "fists" then u.melee else nil, HELD)
 end
 
-local function give_body(u, pos)
+local function give_body(u, pos, look)
 	u.pos = pos
 	u.yaw = -math.pi / 2
 	u.vel = v(0, 0, 0)
-	u.hp, u.maxhp = 3, 3
+	u.injured = false
 	u.state = "ok"
 	u.t = 0
 	u.melee, u.dur = "fists", nil
 	u.gun, u.gun_dur = "pistol", nil
 	u.cd_melee, u.cd_gun, u.cd_shove, u.swing, u.shove_t = 0, 0, 0, 0, 0
 	u.invul = 1
-	u.search_t, u.revive_t, u.depart_t = 0, 0, 0
-	u.skin = pick(SKINS)
-	u.pants = pick(PANTS)
-	u.fig = figure.build(pos, u.yaw, survivor_look(u))
+	u.search_t, u.revive_t = 0, 0
+	u.torch = true
+	u.skin = (look and look.skin) or pick(SKINS)
+	u.pants = (look and look.pants) or pick(PANTS)
+	u.fig = figure.build(pos, u.yaw, { shirt = u.color, skin = u.skin, pants = u.pants })
 	if u.ghost_ent then
 		world.remove(u.ghost_ent)
 		u.ghost_ent = nil
@@ -240,34 +329,18 @@ local function give_body(u, pos)
 end
 
 local function new_survivor(p, i)
-	local u = {
-		id = p.id,
-		name = p.name,
-		color = p.color,
-		bot = p.bot,
-		lives = 3,
-		aim = v(1, 0, 0),
-		popup = nil,
-	}
-	local c = s.car_pos
-	give_body(u, collide(v(c.x + 3 + (i - 1) * 0.9, 0, c.z + (if i % 2 == 0 then 1.6 else -1.6)), RADIUS))
+	local u = { id = p.id, name = p.name, color = p.color, bot = p.bot, lives = 3, aim = v(1, 0, 0) }
+	give_body(u, collide(v(s.min_x + 4 + (i - 1) * 0.9, 0, (i % 2 == 0 and 1.2 or -1.2)), RADIUS))
+	hold_weapon(u)
 	return u
 end
 
-local function hold_weapon(u)
-	figure.hold(u.fig, if u.melee ~= "fists" then u.melee else nil, HELD)
-end
-
 local function popup(u, text, color)
-	u.popup = { text = text, t = 1.6, color = color or "#ffffff" }
+	u.popup = { text = text, t = 1.8, color = color or "#ffffff" }
 end
 
 ----------------------------------------------------------------------------
 -- Zombies
-
-local function zombie_look(z)
-	return { shirt = z.shirt, skin = z.skin, pants = z.pants, eyes = "#1a1a1a" }
-end
 
 local function spawn_zombie(kind, pos, mode, goal)
 	local z = {
@@ -279,14 +352,11 @@ local function spawn_zombie(kind, pos, mode, goal)
 		t = random.range(0, 3),
 		goal = goal,
 		knock = v(0, 0, 0),
-		skin = pick(ZOMBIE_SKIN),
-		shirt = pick(ZOMBIE_SHIRTS),
-		pants = pick(ZOMBIE_PANTS),
 		stuck = 0,
 		side = 0,
 	}
-	if kind == "runner" then z.shirt = "#6e3a36" end
-	z.fig = figure.build(z.pos, z.yaw, zombie_look(z))
+	local shirt = if kind == "runner" then "#6e3a36" else pick(ZOMBIE_SHIRTS)
+	z.fig = figure.build(z.pos, z.yaw, { shirt = shirt, skin = pick(ZOMBIE_SKIN), pants = pick(ZOMBIE_PANTS), eyes = "#1a1a1a" })
 	if z.state == "sleep" then figure.lie(z.fig, z.pos, z.yaw, true) end
 	table.insert(s.zombies, z)
 	return z
@@ -304,17 +374,13 @@ local function wake(z, goal)
 	end
 end
 
--- A sound in the street: zombies within the radius walk to it, sleepers
--- close enough wake up, and the director's pressure rises.
 local function noise(pos, radius, amount)
 	count("noises")
 	for _, z in s.zombies do
 		if z.state ~= "dead" then
 			local d = dist(z.pos, pos)
-			if d < radius then
-				if z.state ~= "sleep" or d < radius * 0.6 or radius >= 20 then
-					wake(z, flat(pos))
-				end
+			if d < radius and (z.state ~= "sleep" or d < radius * 0.6 or radius >= 20) then
+				wake(z, flat(pos))
 			end
 		end
 	end
@@ -324,10 +390,12 @@ local function noise(pos, radius, amount)
 	end
 end
 
-local function kill_zombie(z, from)
+local NO_GLOW = { color = "#1a1a1a", emissive = 0 }
+
+local function kill_zombie(z)
 	z.state = "dead"
 	z.t = 15
-	figure.eyes(z.fig, false, { color = "#1a1a1a", emissive = 0 })
+	figure.eyes(z.fig, false, NO_GLOW)
 	figure.lie(z.fig, z.pos, z.yaw, true)
 	fx.burst(v(z.pos.x, 0.8, z.pos.z), { color = "#5a1e18", count = 10, speed = 3, life = 0.5, size = 0.1, gravity = 9 })
 	sfx("splat", z.pos, { pitch = random.range(0.85, 1.15) })
@@ -342,7 +410,7 @@ local function hurt_zombie(z, dmg, from, knock)
 	local d = vector.magnitude(away)
 	away = if d > 0.01 then away / d else v(1, 0, 0)
 	if z.hp <= 0 then
-		kill_zombie(z, from)
+		kill_zombie(z)
 		return
 	end
 	z.knock = away * (knock or 2)
@@ -354,48 +422,86 @@ local function hurt_zombie(z, dmg, from, knock)
 		z.state = "stagger"
 		z.t = 0.35
 	end
-	figure.eyes(z.fig, false, { color = "#1a1a1a", emissive = 0 })
+	figure.eyes(z.fig, false, NO_GLOW)
 	fx.burst(v(z.pos.x, 1.1, z.pos.z), { color = "#6a2a20", count = 5, speed = 2.5, life = 0.35, size = 0.08, gravity = 9 })
 end
 
-----------------------------------------------------------------------------
--- Building a stop
-
-local function stop_band(stop)
-	local r = random.float()
-	if stop == 1 then return if r < 0.6 then "quiet" else "busy" end
-	local horde = math.min(0.4, 0.15 + 0.04 * stop)
-	if r < horde then return "horde" end
-	if r < horde + 0.45 then return "busy" end
-	return "quiet"
+local function remove_zombie_body(z)
+	if z.fig then
+		figure.remove(z.fig)
+		z.fig = nil
+	end
 end
 
-local BAND = {
-	quiet = { min = 6, max = 12, sleep = 0.5 },
-	busy = { min = 18, max = 32, sleep = 0.55 },
-	horde = { min = 48, max = 80, sleep = 0.8 },
-}
+----------------------------------------------------------------------------
+-- Encounters: content files describe who you meet and what you can do.
 
-local function night() return s.time_of_day:sub(1, 5) == "night" end
+local function encounter_fits(e, where, biome, day)
+	if e.where ~= where then return false end
+	if (e.min_day or 1) > day then return false end
+	if e.biomes then
+		local ok = false
+		for _, b in e.biomes do
+			if b == biome then ok = true end
+		end
+		if not ok then return false end
+	end
+	return true
+end
 
-local function populate()
-	local band = BAND[s.band]
-	local scale = KNOBS.density * (1 + 0.08 * (s.stop - 1)) * (if night() then 1.3 else 1)
-	local n = math.floor(random.int(band.min, band.max) * scale)
-	local runners = math.min(0.35, 0.08 * (s.stop - 1))
-	local spots = {}
-	for _, p in s.layout.inside do table.insert(spots, { p = p, inside = true }) end
-	for _, p in s.layout.outside do table.insert(spots, { p = p, inside = false }) end
-	for i = 1, n do
-		local spot = spots[(i - 1) % #spots + 1]
-		local p = spot.p + v(random.range(-2, 2), 0, random.range(-2, 2))
-		-- Keep the car clear at the start.
-		if dist(p, s.car_pos) > 12 then
-			local kind = if random.chance(runners) then "runner" else "shambler"
-			local mode = if spot.inside or random.chance(band.sleep) then "sleep" else (if random.chance(0.5) then "idle" else "wander")
-			spawn_zombie(kind, p, mode)
+local function choose_encounter(where, biome, day)
+	local total = 0
+	for _, e in ENCOUNTERS do
+		if encounter_fits(e, where, biome, day) then total += e.weight or 1 end
+	end
+	if total <= 0 then return nil end
+	local r = random.range(0, total)
+	for _, e in ENCOUNTERS do
+		if encounter_fits(e, where, biome, day) then
+			r -= e.weight or 1
+			if r <= 0 then return e end
 		end
 	end
+	return nil
+end
+
+local function place_stranger(e, pos, chunk)
+	local look = e.look or {}
+	local fig = figure.build(pos, random.range(-math.pi, math.pi), { shirt = look.shirt or pick(STRANGER_SHIRTS), skin = look.skin or pick(SKINS), pants = look.pants or pick(PANTS) })
+	local st = { file = e.file, pos = pos, fig = fig, chunk = chunk, done = false, yaw = 0 }
+	-- A hidden temperament, rolled once: what the content's results may depend on.
+	if e.temperament then
+		local total = 0
+		for _, w in e.temperament do total += w end
+		local r = random.range(0, total)
+		-- Walk the names in a fixed order so the same seed picks the same way.
+		local keys = {}
+		for name in e.temperament do table.insert(keys, name) end
+		table.sort(keys)
+		for _, name in keys do
+			r -= e.temperament[name]
+			if r <= 0 and not st.temperament then st.temperament = name end
+		end
+		st.temperament = st.temperament or keys[#keys]
+	end
+	if e.held then figure.hold(fig, e.held, HELD) end
+	table.insert(s.strangers, st)
+	return st
+end
+
+local function encounter_of(st)
+	for _, e in ENCOUNTERS do
+		if e.file == st.file then return e end
+	end
+	return nil
+end
+
+local function has(cost)
+	if not cost then return true end
+	for item, n in cost do
+		if (s[item] or 0) < n then return false end
+	end
+	return true
 end
 
 local function place_weapon(kind, pos, dur)
@@ -406,85 +512,287 @@ local function place_weapon(kind, pos, dur)
 	table.insert(s.pickups, { kind = kind, pos = flat(pos), dur = dur or MELEE[kind].dur, ent = ent, ring = ring })
 end
 
-local function look_of_day()
-	sky.set(s.time_of_day)
-	if night() then
-		light.set({ fog_start = 8, fog_end = 45 })
-		post.set({ vignette = 0.55, grain = 0.12, saturation = 0.8, contrast = 1.08 })
-	else
-		lights.clear()
-		post.set({ vignette = 0.35, grain = 0.08, saturation = 0.85, contrast = 1.05 })
+-- A stranger who joins: a recruit the bots' code drives, and the body a
+-- player takes over when theirs dies.
+local function recruit(st, u)
+	s.recruits += 1
+	local r = {
+		id = 1000 + s.recruits,
+		name = "Stranger",
+		color = v(0.55, 0.55, 0.5),
+		bot = true,
+		recruit = true,
+		lives = 1,
+		aim = v(1, 0, 0),
+	}
+	give_body(r, st.pos)
+	r.melee = (encounter_of(st) or {}).held or "fists"
+	r.dur = MELEE[r.melee].dur
+	hold_weapon(r)
+	table.insert(s.survivors, r)
+	figure.remove(st.fig)
+	st.fig = nil
+	count("recruits")
+	game.log("Someone joined the group")
+end
+
+local function apply_result(u, st, res)
+	for item, n in res.gain or {} do
+		s[item] = (s[item] or 0) + n
+		count("gained_" .. item, n)
+	end
+	for item, n in res.lose or {} do s[item] = math.max(0, (s[item] or 0) - n) end
+	if res.weapon then place_weapon(res.weapon, st.pos + v(0.8, 0, 0)) end
+	if res.noise then noise(st.pos, res.noise, 0.1) end
+	if res.injure and in_body(u) then u.injured = true end
+	if res.heal then
+		for _, o in s.survivors do o.injured = false end
+	end
+	if res.join then
+		recruit(st, u)
+	elseif res.hostile then
+		-- They turn on you: a shove, and they run off with what they took.
+		u.vel = (u.pos - st.pos) / math.max(0.1, dist(u.pos, st.pos)) * 5
+		st.fleeing = 4
+		sfx("shove", st.pos)
+	end
+	if res.text then popup(u, res.text, res.color or "#e8e0c8") end
+	count("encounter_choices")
+end
+
+local function choose(u, st, choice)
+	local e = encounter_of(st)
+	if not e then return end
+	if not has(choice.cost) then
+		popup(u, "not enough", "#ff8a6a")
+		sfx("click", u.pos)
+		return
+	end
+	for item, n in choice.cost or {} do s[item] -= n end
+	local results = choice.results or { choice }
+	-- Results may depend on the stranger's hidden temperament.
+	local pool = {}
+	local total = 0
+	for _, r in results do
+		if r.temperament == nil or r.temperament == st.temperament then
+			table.insert(pool, r)
+			total += r.weight or 1
+		end
+	end
+	local roll = random.range(0, total)
+	local res = pool[#pool]
+	for _, r in pool do
+		roll -= r.weight or 1
+		if roll <= 0 then
+			res = r
+			break
+		end
+	end
+	if res then apply_result(u, st, res) end
+	if e.on_choice then e.on_choice(st, choice, res) end
+	if not (choice.stay or (res and res.stay)) then st.done = true end
+	sfx("pickup", st.pos, { pitch = 0.9 })
+	u.talk = nil
+end
+
+----------------------------------------------------------------------------
+-- The land, a chunk at a time
+
+local function chunk_day(index)
+	local cycle = land.DAY_CHUNKS + 1
+	local day = (index - 1) // cycle + 1
+	local pos = (index - 1) % cycle + 1
+	return day, if pos <= land.DAY_CHUNKS then pos else 0
+end
+
+local BAND = {
+	quiet = { inside = 0.4, outside = { 1, 3 }, sleep = 0.5 },
+	busy = { inside = 0.75, outside = { 4, 8 }, sleep = 0.55 },
+	horde = { inside = 1, outside = { 12, 20 }, sleep = 0.85 },
+}
+
+local function roll_band(day, index)
+	if index <= 2 then return "quiet" end
+	local r = random.float()
+	local horde = math.min(0.3, 0.06 + 0.04 * day)
+	if r < horde then return "horde" end
+	if r < horde + 0.45 then return "busy" end
+	return "quiet"
+end
+
+local function populate(c, day, in_day)
+	local band = BAND[c.band]
+	local scale = KNOBS.density * (1 + 0.15 * (day - 1)) * (if in_day >= 5 then 1.3 else 1)
+	local runners = math.min(0.35, 0.05 + 0.07 * (day - 1))
+	for _, p in c.inside do
+		if random.chance(math.min(1, band.inside * scale)) then
+			spawn_zombie(if random.chance(runners) then "runner" else "shambler", p, "sleep")
+		end
+	end
+	local n = math.floor(random.int(band.outside[1], band.outside[2]) * scale)
+	for i = 1, n do
+		local spot = c.outside[(i - 1) % #c.outside + 1]
+		local p = spot + v(random.range(-3, 3), 0, random.range(-2, 2))
+		local mode = if random.chance(band.sleep) then "sleep" else (if random.chance(0.5) then "idle" else "wander")
+		spawn_zombie(if random.chance(runners) then "runner" else "shambler", p, mode)
 	end
 end
 
-local function build_stop()
-	world.clear()
-	warm_all()
-	s.time_of_day = TIMES[(s.stop - 1) % #TIMES + 1]
-	s.day = math.floor((s.stop - 1) / #TIMES) + 1
-	s.layout = street.build(s.stop)
-	s.rects = s.layout.rects
-	s.houses = s.layout.houses
-	s.containers = s.layout.containers
-	s.car_pos = s.layout.car
-	local car, rect = street.car(s.car_pos)
-	s.car = car
-	table.insert(s.rects, rect)
-	build_grid()
-	s.zombies = {}
-	s.pickups = {}
-	for _, w in s.layout.weapons do place_weapon(w.kind, w.pos) end
-	populate()
-	for i, u in s.survivors do
-		local was = u.state
-		u.fig = nil
-		local melee, dur, gun, gun_dur, hp = u.melee, u.dur, u.gun, u.gun_dur, u.hp
-		give_body(u, collide(v(s.car_pos.x + 3 + (i - 1) * 0.9, 0, s.car_pos.z + (if i % 2 == 0 then 1.6 else -1.6)), RADIUS))
-		if was == "ok" or was == "down" then
-			-- The same survivor gets out, with their gear and wounds.
-			u.melee, u.dur, u.gun, u.gun_dur = melee or "fists", dur, gun or "pistol", gun_dur
-			u.hp = math.max(1, hp or 3)
-		end
-		if u.hungry then
-			u.hp = math.max(1, u.hp - 1)
-			u.hungry = false
-		end
-		hold_weapon(u)
+local function add_chunk()
+	local index = s.next_chunk
+	s.next_chunk += 1
+	local day, in_day = chunk_day(index)
+	local c = land.chunk(index, day, in_day)
+	c.day, c.in_day = day, in_day
+	c.band = roll_band(day, index)
+	for _, r in c.rects do
+		table.insert(s.rects, r)
+		grid_add(#s.rects, r)
 	end
-	s.pressure = 0.1
-	s.dir = { mode = "build", t = 0, spawn_t = 6 }
-	s.stop_time = 0
-	s.cam = nil
-	s.phase = "play"
-	look_of_day()
+	for _, k in c.containers do table.insert(s.containers, k) end
+	for _, b in c.buildings do table.insert(s.buildings, b) end
+	for _, w in c.weapons do place_weapon(w.kind, w.pos) end
+	if c.camp then s.camp = c.camp end
+	if index > 1 and in_day > 0 then populate(c, day, in_day) end
+	-- An encounter: in a room of a building, on the path or at the camp.
+	if index > 1 and (in_day == 0 or random.chance(KNOBS.encounters)) then
+		local where = if in_day == 0 then "camp" elseif #c.buildings > 0 and random.chance(0.6) then "room" else "path"
+		local e = choose_encounter(where, c.biome, day)
+		if e then
+			local pos
+			if where == "room" then
+				local b = pick(c.buildings)
+				local r = b.rooms[random.int(1, #b.rooms)]
+				pos = v((r.x0 + r.x1) / 2, 0, (r.z0 + r.z1) / 2)
+			elseif where == "camp" then
+				pos = c.camp + v(2.5, 0, -2.8)
+			else
+				pos = v(random.range(c.x0 + 4, c.x1 - 4), 0, random.range(-2, 2))
+			end
+			place_stranger(e, collide(pos, RADIUS), index)
+			count("encounters")
+		end
+	end
+	table.insert(s.chunks, c)
 end
+
+local function drop_chunk(c)
+	for _, id in c.ents do world.remove(id) end
+	local gone = {}
+	for _, r in c.rects do gone[r] = true end
+	local keep = {}
+	for _, r in s.rects do
+		if not gone[r] then table.insert(keep, r) end
+	end
+	s.rects = keep
+	build_grid()
+	local function filter(list, test)
+		local out = {}
+		for _, x in list do
+			if test(x) then table.insert(out, x) end
+		end
+		return out
+	end
+	s.containers = filter(s.containers, function(k) return k.x > c.x1 end)
+	s.buildings = filter(s.buildings, function(b) return b.x1 > c.x1 end)
+	s.pickups = filter(s.pickups, function(p)
+		if p.pos.x > c.x1 then return true end
+		world.remove(p.ent)
+		world.remove(p.ring)
+		return false
+	end)
+	s.strangers = filter(s.strangers, function(st)
+		if st.pos.x > c.x1 then return true end
+		if st.fig then figure.remove(st.fig) end
+		return false
+	end)
+end
+
+local function stream_land()
+	while (s.next_chunk - 1) * CHUNK < s.front + 60 do add_chunk() end
+	while #s.chunks > 0 and s.chunks[1].x1 < s.min_x - 18 do
+		drop_chunk(s.chunks[1])
+		table.remove(s.chunks, 1)
+	end
+	-- The dead far behind the group are gone for good.
+	if game.tick() % 30 == 0 then
+		local keep = {}
+		for _, z in s.zombies do
+			if z.pos.x < s.min_x - 22 then
+				remove_zombie_body(z)
+			elseif z.state ~= "dead" or z.fig then
+				table.insert(keep, z)
+			end
+		end
+		s.zombies = keep
+	end
+end
+
+----------------------------------------------------------------------------
+-- The look of the hour
+
+local function current_time()
+	local index = math.max(1, math.floor((s.center or v(0, 0, 0)).x / CHUNK) + 1)
+	local _, in_day = chunk_day(index)
+	return TIMES[in_day], in_day
+end
+
+local function dark() return s.time_now ~= nil and s.time_now:sub(1, 5) == "night" end
+
+local function look_of_hour()
+	local t = current_time()
+	if t == s.time_now then return end
+	s.time_now = t
+	sky.set(t)
+	if dark() then
+		light.set({ fog_start = 6, fog_end = 34, exposure = "auto", exposure_min = 3, exposure_max = 9, exposure_bias = -0.6 })
+		post.set({ vignette = 0.6, grain = 0.14, saturation = 0.7, contrast = 1.12 })
+	else
+		light.set({ fog_start = 10, fog_end = 55 })
+		post.set({ vignette = 0.45, grain = 0.1, saturation = 0.72, contrast = 1.08 })
+	end
+end
+
+----------------------------------------------------------------------------
+-- A run
 
 local function new_run()
+	world.clear()
+	warm_all()
+	local old = state.s
 	state.s = {
-		stop = 1,
-		day = 1,
 		ammo = KNOBS.start_ammo,
 		food = KNOBS.start_food,
-		fuel = KNOBS.start_fuel,
 		meds = 1,
+		battery = KNOBS.start_battery,
 		kills = 0,
+		day = 1,
 		survivors = {},
+		zombies = {},
+		pickups = {},
+		strangers = {},
+		chunks = {},
+		rects = {},
+		containers = {},
+		buildings = {},
 		counts = {},
+		next_chunk = 1,
+		min_x = 0,
+		front = 0,
+		start_x = 4,
 		phase = "play",
-		pressure = 0,
-		band = "quiet",
-		time_of_day = TIMES[1],
-		best = (state.s and state.s.best) or 0,
-		runs = ((state.s and state.s.runs) or 0) + 1,
+		pressure = 0.1,
+		dir = { mode = "build", t = 0, spawn_t = 8 },
+		recruits = 0,
+		best = (old and old.best) or 0,
+		runs = ((old and old.runs) or 0) + 1,
 	}
 	s = state.s
-	s.band = stop_band(1)
-	-- A first layout so survivors have somewhere to stand.
-	s.car_pos = v(-HX + 6, 0, 1.8)
-	for i, p in players.list() do
-		table.insert(s.survivors, { id = p.id, name = p.name, color = p.color, bot = p.bot, lives = 3, aim = v(1, 0, 0), state = "ghost" })
-	end
-	build_stop()
+	grid = {}
+	stream_land()
+	for i, p in players.list() do table.insert(s.survivors, new_survivor(p, i)) end
+	s.time_now = nil
+	look_of_hour()
 end
 
 ----------------------------------------------------------------------------
@@ -496,7 +804,9 @@ local function from_input(i)
 		mx = i.move_x, mz = -i.move_y, ax = i.aim_x, az = -i.aim_y,
 		fire = i.held.right_trigger, melee = i.held.west or i.held.right_shoulder,
 		shove = i.pressed.east, use = i.held.south, use_pressed = i.pressed.south,
-		med = i.pressed.north,
+		med = i.pressed.north, torch = i.pressed.left_shoulder,
+		up = i.pressed.up, down = i.pressed.down, back = i.pressed.east,
+		stick_y = i.move_y,
 	}
 end
 
@@ -522,28 +832,38 @@ local function steer(u, goal)
 	return mx, mz
 end
 
-local function near_car(p, extra)
-	return to_rect(p, s.rects[#s.rects]) < (extra or 1.6)
+-- A bot gives up on a target (a weapon, a cupboard) it has chased for
+-- six seconds without getting there: it is behind a wall it cannot route.
+local function chasing(u, target, dt)
+	u.ignore = u.ignore or {}
+	if u.chase ~= target then u.chase, u.chase_t = target, 0 end
+	u.chase_t += dt
+	if u.chase_t > 6 then
+		u.ignore[target] = true
+		u.chase = nil
+		count("gave_up")
+		return false
+	end
+	return true
 end
 
--- A bot: revive, fight what is close, search the street, then drive on.
+-- A bot: revive, fight what is close, search what is near, walk on.
 local function bot_intent(u)
+	local dt = 1 / 60
 	local it = { mx = 0, mz = 0, ax = 0, az = 0 }
 	local humans = {}
 	for _, o in s.survivors do
 		if not o.bot and KNOBS.autopilot ~= 1 and in_body(o) then table.insert(humans, o) end
 	end
 	if u.state == "ghost" then
-		-- Drift near a teammate and moan to pull zombies off them.
 		local friend = humans[1] or s.survivors[1]
-		if friend and friend ~= u and friend.pos then
-			it.mx, it.mz = steer(u, friend.pos + v(4, 0, 3))
-		end
+		if friend and friend ~= u and friend.pos then it.mx, it.mz = steer(u, friend.pos + v(4, 0, 3)) end
 		local z, d = nearest_zombie(u.pos, 6, true)
 		it.use_pressed = z ~= nil and d < 6 and random.chance(0.05)
 		return it
 	end
 	if u.state == "down" then return it end
+	it.torch = dark() ~= u.torch and s.battery > 0
 
 	-- Stay with the people.
 	if #humans > 0 then
@@ -554,10 +874,14 @@ local function bot_intent(u)
 				if d < hd then h, hd = o, d end
 			end
 		end
-		if h and hd > 14 then
+		if h and hd > 12 then
 			it.mx, it.mz = steer(u, h.pos)
 			return it
 		end
+	elseif s.center and dist(u.pos, s.center) > 9 and not nearest_zombie(u.pos, 2.5, true) then
+		-- Only bots: keep the group within a few steps.
+		it.mx, it.mz = steer(u, s.center)
+		return it
 	end
 
 	-- Revive a downed teammate.
@@ -579,8 +903,11 @@ local function bot_intent(u)
 		end
 	end
 
-	-- Fight.
+	if u.injured and s.meds > 0 then it.med = true end
+
+	-- Fight what is close or in the way; walk away from the rest.
 	local z, d = nearest_zombie(u.pos, 7, true)
+	if z and d > 2.6 and z.pos.x < u.pos.x - 1 and z.kind ~= "runner" then z = nil end
 	if z then
 		local to = z.pos - u.pos
 		it.ax, it.az = to.x, to.z
@@ -596,80 +923,62 @@ local function bot_intent(u)
 		elseif s.ammo > 0 and ((z.kind == "runner" and d < 7) or (close >= 4 and s.ammo > 2)) then
 			it.fire = true
 		elseif d < 4 then
-			-- Step in to swing.
 			it.mx, it.mz = to.x / d, to.z / d
 		end
-		if close >= 6 and u.hp <= 1 then
-			-- Too many: back off towards the car.
-			it.mx, it.mz = steer(u, s.car_pos)
+		if close >= 6 and u.injured then
+			-- Too many and hurt: keep walking east, away from them.
+			it.mx, it.mz = steer(u, u.pos + v(8, 0, -u.pos.z * 0.3))
 			it.fire = s.ammo > 0
 		end
-		if u.hp <= 1 and s.meds > 0 then it.med = true end
 		if it.melee or it.fire or it.shove or it.mx ~= 0 then return it end
 	end
 
 	-- A better weapon nearby.
 	for _, p in s.pickups do
-		if RANK[p.kind] > RANK[u.melee] and dist(p.pos, u.pos) < 9 then
-			if dist(p.pos, u.pos) < 0.9 then
-				it.use_pressed = true
+		if RANK[p.kind] > RANK[u.melee] and dist(p.pos, u.pos) < 9 and not (u.ignore and u.ignore[p]) and chasing(u, p, dt) then
+			if dist(p.pos, u.pos) < 0.9 then it.use_pressed = true else it.mx, it.mz = steer(u, p.pos) end
+			return it
+		end
+	end
+
+	-- The nearest unsearched container near the group, nobody else on it,
+	-- unless the dead are gathering (then walk on).
+	if s.pressure < 0.85 then
+		local best, bd = nil, 16
+		for _, c in s.containers do
+			if not c.searched and (c.claim == nil or c.claim == u.id) and c.x > s.min_x + 3 and not (u.ignore and u.ignore[c]) then
+				local dd = dist(v(c.x, 0, c.z), u.pos)
+				if dd < bd then best, bd = c, dd end
+			end
+		end
+		if best and not chasing(u, best, dt) then
+			best.claim = nil
+			best = nil
+		end
+		if best then
+			best.claim = u.id
+			if to_rect(u.pos, best.rect) < 0.75 then
+				u.chase_t = 0
+				it.use = true
 			else
-				it.mx, it.mz = steer(u, p.pos)
+				local cpos = v(best.x, 0, best.z)
+				local toward = if best.stand then best.stand - cpos else v(0, 0, -best.z)
+				local m = vector.magnitude(toward)
+				local goal = if m > 0.01 then cpos + toward / m * 0.9 else cpos
+				it.mx, it.mz = steer(u, goal)
 			end
 			return it
 		end
 	end
 
-	-- Leave when the street is searched, the clock runs, or the people wait at the car.
-	-- A person holding A at the car calls everyone back.
-	local called = false
-	for _, h in humans do
-		if h.calling then called = true end
+	-- Walk on: east along the path, or to the camp fire.
+	if s.camp and s.camp.x > u.pos.x - 6 and s.camp.x < u.pos.x + 30 then
+		it.mx, it.mz = steer(u, s.camp + v(if u.id % 2 == 0 then 1.2 else -1.2, 0, 1.2))
+		return it
 	end
-	local leaving = (s.stop_time > 110 or called) and s.fuel > 0
-	if not leaving then
-		-- The nearest unsearched container nobody else is on.
-		local best, bd = nil, math.huge
-		for ci, c in s.containers do
-			if not c.searched and (c.claim == nil or c.claim == u.id) then
-				local dd = dist(v(c.x, 0, c.z), u.pos)
-				if dd < bd then best, bd = ci, dd end
-			end
-		end
-		if best then
-			local c = s.containers[best]
-			c.claim = u.id
-			if to_rect(u.pos, c.rect) < 0.75 then
-				it.use = true
-			else
-				-- Walk to the side of the box that faces the room.
-				local goal = v(c.x, 0, c.z)
-				local cx = (c.rect.x0 + c.rect.x1) / 2
-				local w = c.rect.x1 - c.rect.x0
-				local dz = c.rect.z1 - c.rect.z0
-				if w < dz then
-					-- Against a side wall: stand beside it in the room.
-					local inside = 0
-					for _, h in s.houses do
-						if room(h, goal) ~= 0 then inside = if math.abs(cx - h.x0) < math.abs(cx - h.x1) then 1 else -1 end
-					end
-					goal = v(cx + inside * (w / 2 + 0.5), 0, c.z)
-				else
-					goal = v(c.x, 0, c.z + (if c.z > 0 then -1 else 1) * (dz / 2 + 0.5))
-				end
-				it.mx, it.mz = steer(u, goal)
-			end
-			return it
-		end
-		leaving = s.fuel > 0
-	end
-	if leaving then
-		if near_car(u.pos, 1.2) then
-			it.use = #humans == 0
-		else
-			it.mx, it.mz = steer(u, s.car_pos + v(1.5, 0, if u.pos.z > s.car_pos.z then 1.6 else -1.6))
-		end
-	end
+	local ahead = v(u.pos.x + 6, 0, (u.id % 3 - 1) * 1.2)
+	if #humans > 0 then ahead = v(math.max(u.pos.x, humans[1].pos.x) + 2, 0, ahead.z) end
+	it.mx, it.mz = steer(u, ahead)
 	return it
 end
 
@@ -684,24 +993,27 @@ local function hurt(u, from)
 		sfx("hurt", u.pos, { pitch = 0.8 })
 		return
 	end
-	u.hp -= 1
 	u.invul = 0.8
-	u.search_t, u.revive_t, u.depart_t = 0, 0, 0
+	u.search_t, u.revive_t = 0, 0
+	u.talk = nil
 	local away = u.pos - from
 	local d = vector.magnitude(away)
 	if d > 0.01 then u.vel = away / d * 4 end
-	players.rumble(u.id, 0.5, 0.25)
+	rumble(u, 0.5, 0.25)
 	sfx("hurt", u.pos)
 	fx.burst(v(u.pos.x, 1.1, u.pos.z), { color = "#8a1a14", count = 6, speed = 2.5, life = 0.35, size = 0.08, gravity = 9 })
-	if u.hp <= 0 then
-		u.state = "down"
-		u.t = KNOBS.downed
-		u.revive_t = 0
-		figure.lie(u.fig, u.pos, u.yaw, true)
-		sfx("down", u.pos)
-		count("downs")
-		game.log(u.name .. " is down")
+	if not u.injured then
+		u.injured = true
+		count("injuries")
+		return
 	end
+	u.state = "down"
+	u.t = KNOBS.downed
+	u.revive_t = 0
+	figure.lie(u.fig, u.pos, u.yaw, true)
+	sfx("down", u.pos)
+	count("downs")
+	game.log(u.name .. " is down")
 end
 
 local function drop_melee(u)
@@ -709,39 +1021,47 @@ local function drop_melee(u)
 	u.melee, u.dur = "fists", nil
 end
 
-local function die(u)
-	drop_melee(u)
-	-- The body stays where it fell, dark and still.
-	for _, id in { u.fig.torso } do world.set(id, figure.CORPSE) end
-	u.corpse = u.fig
-	u.fig = nil
-	count("deaths")
-	local alone = #s.survivors == 1
-	if alone then
-		u.lives -= 1
-		u.state = "ghost"
-		u.t = 0.5
-	else
-		u.state = "ghost"
-		u.t = KNOBS.ghost
-	end
-	u.ghost_ent = world.spawn("sphere", { pos = v(u.pos.x, 1.4, u.pos.z), size = 0.55, color = "#cfe6ff", emissive = 0.35, solid = false, tag = "ghost" })
-	u.cd_moan = 0
-	sfx("moan", u.pos, { pitch = 1.3 })
-end
-
 local function respawn(u)
-	-- A new survivor walks out from beside the car.
-	local c = s.car_pos
-	give_body(u, collide(v(c.x + 2.5, 0, c.z + random.range(-2, 2)), RADIUS))
-	if random.chance(0.4) then
-		u.melee, u.dur = "pipe", MELEE.pipe.dur
-	end
+	-- A new survivor walks in from the west edge.
+	give_body(u, collide(v(s.min_x + 1, 0, random.range(-2, 2)), RADIUS))
+	if random.chance(0.4) then u.melee, u.dur = "pipe", MELEE.pipe.dur end
 	hold_weapon(u)
 	count("respawns")
 	u.invul = 2
 	sfx("pickup", u.pos, { pitch = 0.7 })
 	fx.ring(v(u.pos.x, 0.05, u.pos.z), { radius = 1.5, life = 0.5, color = u.color, emissive = 0.2 })
+end
+
+local function die(u)
+	drop_melee(u)
+	world.set(u.fig.torso, figure.CORPSE)
+	figure.hold(u.fig, nil, HELD)
+	u.fig = nil
+	count("deaths")
+	if u.recruit then
+		u.state = "gone"
+		return
+	end
+	-- A player takes over a recruit's body if the group has one.
+	for i, r in s.survivors do
+		if r.recruit and standing(r) then
+			u.pos, u.yaw, u.fig, u.melee, u.dur, u.injured = r.pos, r.yaw, r.fig, r.melee, r.dur, r.injured
+			u.state, u.invul, u.t = "ok", 1.5, 0
+			u.search_t, u.revive_t = 0, 0
+			world.set(u.fig.torso, { color = u.color, roughness = 0.9 })
+			table.remove(s.survivors, i)
+			count("takeovers")
+			sfx("revive", u.pos, { pitch = 0.8 })
+			return
+		end
+	end
+	local alone = #s.survivors == 1
+	if alone then u.lives -= 1 end
+	u.state = "ghost"
+	u.t = if alone then 0.5 else KNOBS.ghost
+	u.ghost_ent = world.spawn("sphere", { pos = v(u.pos.x, 1.4, u.pos.z), size = 0.55, color = "#cfe6ff", emissive = 0.35, solid = false, tag = "ghost" })
+	u.cd_moan = 0
+	sfx("moan", u.pos, { pitch = 1.3 })
 end
 
 local function swing(u)
@@ -774,7 +1094,6 @@ local function swing(u)
 		if u.dur then
 			u.dur -= 1
 			if u.dur <= 0 then
-				-- It breaks: a crack and the pieces fly.
 				fx.burst(v(u.pos.x + f.x * 0.8, 1, u.pos.z + f.z * 0.8), { color = HELD[u.melee].color, count = 9, speed = 3.5, life = 0.5, size = 0.07, gravity = 9 })
 				sfx("crack", u.pos)
 				popup(u, u.melee .. " broke", "#ff9a7a")
@@ -797,7 +1116,6 @@ local function shoot(u)
 	s.ammo -= 1
 	count("shots")
 	local base = u.yaw
-	-- Aim help: towards the nearest awake zombie within 22 degrees.
 	local f = dir(u.yaw)
 	local best, bd = nil, g.range
 	for _, z in s.zombies do
@@ -809,8 +1127,7 @@ local function shoot(u)
 	end
 	if best then base = yaw_of(best.pos - u.pos) end
 	for _ = 1, g.pellets do
-		local a = base + random.range(-g.spread, g.spread)
-		local d = dir(a)
+		local d = dir(base + random.range(-g.spread, g.spread))
 		local maxd = wall_distance(u.pos, d, g.range)
 		local target, td = nil, maxd
 		for _, z in s.zombies do
@@ -824,12 +1141,13 @@ local function shoot(u)
 			end
 		end
 		if target then hurt_zombie(target, g.dmg, u.pos, 3) end
-		-- A tracer: a thin bright streak along the shot.
 		fx.burst(v(u.pos.x + d.x * td, 1.1, u.pos.z + d.z * td), { color = "#fff2c0", emissive = 0.6, count = 3, speed = 2, life = 0.12, size = 0.05 })
 	end
 	fx.burst(v(u.pos.x + f.x * 0.6, 1.2, u.pos.z + f.z * 0.6), { color = "#ffd27a", emissive = 1.2, count = 5, speed = 3, life = 0.08, size = 0.07 })
+	-- The muzzle flash lights the street for a moment.
+	u.flash = 0.06
 	sfx(if u.gun == "shotgun" then "shotgun" else "gun", u.pos)
-	players.rumble(u.id, 0.35, 0.1)
+	rumble(u, 0.35, 0.1)
 	noise(u.pos, g.noise, if u.gun == "shotgun" then 0.14 else 0.09)
 	if u.gun_dur then
 		u.gun_dur -= 1
@@ -854,7 +1172,7 @@ local function shove(u)
 				z.knock = to / d * 6
 				z.state = "stagger"
 				z.t = 0.8
-				figure.eyes(z.fig, false, { color = "#1a1a1a", emissive = 0 })
+				figure.eyes(z.fig, false, NO_GLOW)
 			end
 		end
 	end
@@ -863,15 +1181,15 @@ local function shove(u)
 end
 
 local function roll(kind)
-	local table_ = LOOT[kind]
+	local t = LOOT[kind] or LOOT.closet
 	local total = 0
-	for _, e in table_ do total += e[1] end
+	for _, e in t do total += e[1] end
 	local r = random.range(0, total)
-	for _, e in table_ do
+	for _, e in t do
 		r -= e[1]
 		if r <= 0 then return e end
 	end
-	return table_[#table_]
+	return t[#t]
 end
 
 local function search_done(u, c)
@@ -887,17 +1205,21 @@ local function search_done(u, c)
 		return
 	end
 	if item == "weapon" then
-		local kinds = if s.stop >= 3 then { "pipe", "bat", "machete", "axe" } else { "pipe", "bat", "machete" }
+		local kinds = if s.day >= 2 then { "pipe", "bat", "machete", "axe" } else { "pipe", "bat", "machete" }
 		place_weapon(pick(kinds), u.pos + (v(c.x, 0, c.z) - u.pos) * 0.5)
 		popup(u, "a weapon", "#f2e6b0")
 	elseif item == "shotgun" then
 		u.gun, u.gun_dur = "shotgun", GUNS.shotgun.dur
 		popup(u, "shotgun", "#e0b84a")
 		count("shotguns")
+	elseif item == "battery" then
+		s.battery = math.min(100, s.battery + BATTERY)
+		popup(u, "batteries", ITEM_COLORS.battery)
+		count("found_battery")
 	else
 		local n = random.int(e[3], e[4])
 		s[item] += n
-		popup(u, "+" .. n .. " " .. item, ITEM_COLORS[item])
+		popup(u, "+" .. n .. " " .. (if item == "meds" then "first aid" else item), ITEM_COLORS[item])
 		count("found_" .. item, n)
 	end
 	fx.burst(at, { color = ITEM_COLORS[item] or "#f2e6b0", emissive = 0.3, count = 6, speed = 1.5, life = 0.4, size = 0.08 })
@@ -912,29 +1234,56 @@ local function standing_count()
 	return n
 end
 
-local function depart()
-	count("stops")
-	s.score = s.stop
-	s.best = math.max(s.best, s.stop)
-	sfx("car", s.car_pos)
-	game.log("Dead Miles: left stop " .. s.stop .. " with " .. s.ammo .. " ammo, " .. s.food .. " food, " .. (s.fuel - 1) .. " fuel")
-	-- The road: fuel and food for the leg.
-	s.fuel -= 1
-	local mouths = #s.survivors
+-- Night camp: everyone at the fire. Eat, the dead wander off, a new day.
+local function make_camp()
+	count("camps")
+	local mouths = 0
+	for _, u in s.survivors do
+		if u.state ~= "gone" then mouths += 1 end
+	end
 	local short = math.max(0, mouths - s.food)
 	s.food = math.max(0, s.food - mouths)
 	local hungry = 0
 	for i = #s.survivors, 1, -1 do
 		local u = s.survivors[i]
-		if hungry < short then
-			u.hungry = true
+		if hungry < short and in_body(u) then
+			u.injured = true
 			hungry += 1
 		end
 	end
-	s.stop += 1
-	s.band = stop_band(s.stop)
-	s.phase = "road"
-	s.road = { t = 3, short = short }
+	for _, u in s.survivors do
+		if u.state == "down" then
+			u.state = "ok"
+			u.injured = true
+			figure.lie(u.fig, u.pos, u.yaw, false)
+		elseif u.state == "ghost" then
+			u.t = 0
+		end
+	end
+	for _, z in s.zombies do
+		if z.state ~= "dead" and z.state ~= "sleep" and math.abs(z.pos.x - s.camp.x) < 45 then
+			remove_zombie_body(z)
+			z.state = "dead"
+			z.t = 0
+		end
+	end
+	s.phase = "camp"
+	s.camp_t = 4
+	s.camp_short = short
+	s.pressure = 0
+	s.dir = { mode = "calm", t = 20, spawn_t = 8 }
+	game.log("Dead Miles: night " .. s.day .. ", " .. math.floor(s.front - s.start_x) .. " m, " .. s.food .. " food left")
+	s.day += 1
+	s.camp_used = s.camp
+	s.camp = nil
+	sfx("revive", s.camp_used, { pitch = 0.7 })
+end
+
+local function nearest_stranger(u)
+	for _, st in s.strangers do
+		if st.fig and not st.done and not st.fleeing and dist(st.pos, u.pos) < 1.6 then return st end
+	end
+	return nil
 end
 
 local function act(u, it, dt)
@@ -943,21 +1292,24 @@ local function act(u, it, dt)
 	u.cd_gun = math.max(0, u.cd_gun - dt)
 	u.cd_shove = math.max(0, u.cd_shove - dt)
 	u.shove_t = math.max(0, u.shove_t - dt)
+	if u.flash then
+		u.flash -= dt
+		if u.flash <= 0 then u.flash = nil end
+	end
 	if u.side_t then u.side_t -= dt end
 	if u.popup then
 		u.popup.t -= dt
 		if u.popup.t <= 0 then u.popup = nil end
 	end
+	if u.state == "gone" then return end
 
 	if u.state == "ghost" then
 		u.t -= dt
 		u.cd_moan = math.max(0, (u.cd_moan or 0) - dt)
-		local m = v(it.mx, 0, it.mz)
-		u.pos = u.pos + m * 5 * dt
-		u.pos = v(math.clamp(u.pos.x, -HX, HX), 0, math.clamp(u.pos.z, -HZ, HZ))
+		u.pos = u.pos + v(it.mx, 0, it.mz) * 5 * dt
+		u.pos = v(math.max(u.pos.x, s.min_x), 0, math.clamp(u.pos.z, -HZ, HZ))
 		world.place(u.ghost_ent, v(u.pos.x, 1.4 + math.sin(game.time() * 3) * 0.15, u.pos.z))
 		if it.use_pressed and u.cd_moan <= 0 then
-			-- A moan pulls the dead nearby away from the living.
 			u.cd_moan = 3
 			sfx("moan", u.pos, { pitch = random.range(0.9, 1.1) })
 			noise(u.pos, 9, 0)
@@ -973,14 +1325,35 @@ local function act(u, it, dt)
 
 	if u.state == "down" then
 		u.t -= dt
-		-- Crawl, slowly.
 		u.pos = collide(u.pos + mv * 0.6 * dt, RADIUS)
+		u.pos = v(math.max(u.pos.x, s.min_x), 0, u.pos.z)
 		figure.lie(u.fig, u.pos, u.yaw, true)
 		if u.t <= 0 then die(u) end
 		return
 	end
 
-	-- Aim: the right stick, else the way you walk.
+	-- Talking to a stranger: the stick picks a choice, A takes it, B walks away.
+	if u.talk then
+		local st = u.talk
+		local e = encounter_of(st)
+		if not e or st.done or dist(st.pos, u.pos) > 2.5 then
+			u.talk = nil
+		else
+			local n = #e.choices
+			if it.up then u.talk_i = (u.talk_i - 2) % n + 1 end
+			if it.down then u.talk_i = u.talk_i % n + 1 end
+			if it.use_pressed and (u.talk_age or 0) > 0.25 then
+				choose(u, st, e.choices[u.talk_i])
+			elseif it.back then
+				u.talk = nil
+			end
+			u.talk_age = (u.talk_age or 0) + dt
+			figure.place(u.fig, u.pos, u.yaw)
+			figure.animate(u.fig, dt, 0, "swing")
+			return
+		end
+	end
+
 	local am = it.ax * it.ax + it.az * it.az
 	if am > 0.09 then
 		u.aim = v(it.ax, 0, it.az)
@@ -991,17 +1364,20 @@ local function act(u, it, dt)
 	local dy = (want - u.yaw + math.pi) % (2 * math.pi) - math.pi
 	u.yaw += math.clamp(dy, -14 * dt, 14 * dt)
 
-	-- Searching, reviving and departing hold you still.
+	if it.torch then
+		u.torch = not u.torch
+		sfx("click", u.pos, { pitch = 1.6 })
+	end
+
 	local busy = false
 	if it.use then
-		-- Revive first.
 		for _, o in s.survivors do
 			if o ~= u and o.state == "down" and dist(o.pos, u.pos) < 1.3 then
 				busy = true
 				u.revive_t += dt
 				if u.revive_t >= KNOBS.revive then
 					o.state = "ok"
-					o.hp = 1
+					o.injured = true
 					o.invul = 1.5
 					figure.lie(o.fig, o.pos, o.yaw, false)
 					u.revive_t = 0
@@ -1022,44 +1398,32 @@ local function act(u, it, dt)
 			if best then
 				busy = true
 				u.search_t += dt
-				u.searching = best
 				if u.search_t >= KNOBS.search then
 					u.search_t = 0
 					search_done(u, best)
 				end
 			end
 		end
-		if not busy and near_car(u.pos) then
-			busy = true
-			u.calling = true
-			local all = true
-			for _, o in s.survivors do
-				if standing(o) and not near_car(o.pos, 5) then all = false end
-			end
-			if s.fuel <= 0 then
-				u.depart_t = 0
-				if not u.fuel_warned then
-					popup(u, "no fuel", ITEM_COLORS.fuel)
-					u.fuel_warned = true
+	end
+	if not busy then u.search_t, u.revive_t = 0, 0 end
+
+	if it.use_pressed and not busy then
+		local st = nearest_stranger(u)
+		if st and not u.bot then
+			u.talk, u.talk_i, u.talk_age = st, 1, 0
+			sfx("search", st.pos, { pitch = 1.3 })
+			count("talks")
+			return
+		elseif st and u.bot and KNOBS.autopilot == 1 then
+			-- Autopilot bots take the first choice they can pay for.
+			local e = encounter_of(st)
+			for _, ch in e.choices do
+				if has(ch.cost) then
+					choose(u, st, ch)
+					break
 				end
-			elseif all then
-				u.depart_t += dt
-				if u.depart_t >= 1 then
-					depart()
-					return
-				end
-			else
-				u.depart_t = 0
 			end
 		end
-	else
-		u.fuel_warned = false
-	end
-	if not busy then u.search_t, u.revive_t, u.depart_t = 0, 0, 0 end
-	if not (it.use and near_car(u.pos)) then u.calling = false end
-
-	-- Pick up a weapon from the ground.
-	if it.use_pressed then
 		for i, p in s.pickups do
 			if dist(p.pos, u.pos) < 1.1 then
 				local old, old_dur = u.melee, u.dur
@@ -1076,9 +1440,9 @@ local function act(u, it, dt)
 		end
 	end
 
-	if it.med and s.meds > 0 and u.hp < u.maxhp then
+	if it.med and s.meds > 0 and u.injured then
 		s.meds -= 1
-		u.hp = math.min(u.maxhp, u.hp + 2)
+		u.injured = false
 		sfx("revive", u.pos, { pitch = 1.3 })
 		popup(u, "patched up", ITEM_COLORS.meds)
 		count("meds_used")
@@ -1094,12 +1458,10 @@ local function act(u, it, dt)
 		end
 	end
 
-	-- Move: slower while swinging, still while busy.
-	local speed = KNOBS.walk * (if busy then 0 else (if u.cd_melee > 0.2 then 0.6 else 1))
+	local speed = KNOBS.walk * (if busy then 0 else (if u.cd_melee > 0.2 then 0.6 else 1)) * (if u.injured then KNOBS.limp else 1)
 	local go = mv * speed + u.vel
 	u.vel = u.vel * math.max(0, 1 - 10 * dt)
 	local np = u.pos + go * dt
-	-- The leash: nobody walks out of the shared view.
 	if s.center then
 		local away = np - s.center
 		local d = math.sqrt(away.x * away.x + away.z * away.z)
@@ -1107,9 +1469,10 @@ local function act(u, it, dt)
 			np = s.center + away / d * math.max(LEASH, dist(u.pos, s.center))
 		end
 	end
+	-- No way back west: the land behind is gone.
+	np = v(math.max(np.x, s.min_x), 0, np.z)
 	local before = u.pos
 	u.pos = collide(np, RADIUS)
-	-- Bots that walk into a wall step sideways for a moment.
 	if u.bot and m > 0.5 and dist(before, u.pos) < speed * dt * 0.2 then
 		u.stuck = (u.stuck or 0) + dt
 		if u.stuck > 0.5 then
@@ -1119,18 +1482,16 @@ local function act(u, it, dt)
 		u.stuck = 0
 	end
 
-	-- The body.
 	figure.place(u.fig, u.pos, u.yaw)
 	local moved = dist(before, u.pos) / dt
 	if u.cd_melee > 0 and u.swing > 0 then
-		local w = MELEE[u.melee]
-		figure.animate(u.fig, dt, moved, "swing_r", 1 - u.cd_melee / w.cd)
+		figure.animate(u.fig, dt, moved, "swing_r", 1 - u.cd_melee / MELEE[u.melee].cd)
 	elseif u.shove_t > 0 then
 		figure.animate(u.fig, dt, moved, "shove")
 	elseif it.fire or u.cd_gun > 0.2 then
 		figure.animate(u.fig, dt, moved, "aim")
 	else
-		figure.animate(u.fig, dt, moved, "swing")
+		figure.animate(u.fig, dt, moved * (if u.injured then 0.7 else 1), "swing")
 	end
 end
 
@@ -1140,17 +1501,22 @@ end
 local zcells = {}
 local function zkey(p) return cell_key(math.floor(p.x / 1.5), math.floor(p.z / 1.5)) end
 
+-- How far a zombie notices a survivor: further when a torch shines.
+local function noticed_at(spec, u)
+	local k = 1
+	if dark() then k = if (u.torch and s.battery > 0) or u.in_light then 1.35 else 0.55 end
+	return spec.sense * k
+end
+
 local function zombie_step(z, dt)
 	local spec = ZOMBIES[z.kind]
 	local speed = if z.kind == "runner" then KNOBS.runner else KNOBS.shambler
 	z.t -= dt
 	if z.state == "dead" then
-		if z.t <= 0 and z.fig then
-			figure.remove(z.fig)
-			z.fig = nil
-		end
+		if z.t <= 0 then remove_zombie_body(z) end
 		return
 	end
+	if not z.fig then return end
 	if z.state == "sleep" then
 		for _, u in s.survivors do
 			if in_body(u) and dist(u.pos, z.pos) < 2.2 then wake(z, flat(u.pos)) end
@@ -1158,12 +1524,11 @@ local function zombie_step(z, dt)
 		return
 	end
 
-	-- Who to go for: the nearest survivor in a body within its senses.
-	local target, td = nil, spec.sense * (if night() then 1.2 else 1)
+	local target, td = nil, math.huge
 	for _, u in s.survivors do
 		if in_body(u) then
 			local d = dist(u.pos, z.pos)
-			if d < td then target, td = u, d end
+			if d < noticed_at(spec, u) and d < td then target, td = u, d end
 		end
 	end
 
@@ -1181,23 +1546,17 @@ local function zombie_step(z, dt)
 		if z.t <= 0 then z.state = if target then "chase" else "investigate" end
 	elseif z.state == "windup" then
 		arms = "raise"
-		if z.target then
-			local to = z.target.pos - z.pos
-			z.yaw = yaw_of(to)
-		end
+		if z.target and z.target.pos then z.yaw = yaw_of(z.target.pos - z.pos) end
 		if z.t <= 0 then
 			z.state = "strike"
 			z.t = spec.strike
 			z.hit = false
-			figure.eyes(z.fig, false, { color = "#1a1a1a", emissive = 0 })
+			figure.eyes(z.fig, false, NO_GLOW)
 			if z.kind == "runner" then count("lunges") end
 		end
 	elseif z.state == "strike" then
-		arms = "reach"
 		local f = dir(z.yaw)
-		if z.kind == "runner" then
-			move = f * spec.lunge
-		end
+		if z.kind == "runner" then move = f * spec.lunge end
 		if not z.hit then
 			for _, u in s.survivors do
 				if in_body(u) then
@@ -1218,7 +1577,6 @@ local function zombie_step(z, dt)
 			z.t = spec.recover
 		end
 	elseif z.state == "recover" then
-		arms = "reach"
 		move = z.knock
 		z.knock = z.knock * 0.9
 		if z.t <= 0 then z.state = if target then "chase" else "investigate" end
@@ -1231,28 +1589,22 @@ local function zombie_step(z, dt)
 		if z.state == "chase" then
 			if not target then
 				z.state = "investigate"
+			elseif td < spec.reach and z.t <= 0 then
+				z.state = "windup"
+				z.t = spec.windup
+				z.target = target
+				figure.eyes(z.fig, true)
+				fx.ring(v(z.pos.x, 0.05, z.pos.z), { radius = if z.kind == "runner" then 1.2 else spec.reach, life = spec.windup, color = "#ff3a2a", emissive = 0.25, width = 0.06, segments = 24 })
+				if random.chance(0.4) then sfx("groan", z.pos, { pitch = random.range(1.1, 1.3) }) end
 			else
-				local reach = spec.reach
-				if td < reach and z.t <= 0 then
-					-- The tell: arms up, eyes lit, a ring on the ground.
-					z.state = "windup"
-					z.t = spec.windup
-					z.target = target
-					figure.eyes(z.fig, true)
-					fx.ring(v(z.pos.x, 0.05, z.pos.z), { radius = if z.kind == "runner" then 1.2 else reach, life = spec.windup, color = "#ff3a2a", emissive = 0.25, width = 0.06, segments = 24 })
-					if random.chance(0.4) then sfx("groan", z.pos, { pitch = random.range(1.1, 1.3) }) end
-				else
-					local goal = waypoint(z.pos, target.pos)
-					local to = goal - z.pos
-					local d = math.sqrt(to.x * to.x + to.z * to.z)
-					if d > 0.05 then move = to / d * speed end
-				end
+				local to = waypoint(z.pos, target.pos) - z.pos
+				local d = math.sqrt(to.x * to.x + to.z * to.z)
+				if d > 0.05 then move = to / d * speed end
 			end
 		end
 		if z.state == "investigate" then
 			if z.goal and dist(z.goal, z.pos) > 1 then
-				local goal = waypoint(z.pos, z.goal)
-				local to = goal - z.pos
+				local to = waypoint(z.pos, z.goal) - z.pos
 				local d = math.sqrt(to.x * to.x + to.z * to.z)
 				if d > 0.05 then move = to / d * speed * 0.8 end
 			else
@@ -1281,7 +1633,6 @@ local function zombie_step(z, dt)
 		end
 	end
 
-	-- Keep apart from the others in the same and nearby cells.
 	local push = v(0, 0, 0)
 	local cx, cz = math.floor(z.pos.x / 1.5), math.floor(z.pos.z / 1.5)
 	for ox = -1, 1 do
@@ -1302,12 +1653,10 @@ local function zombie_step(z, dt)
 		end
 	end
 	local before = z.pos
-	local wanted = move + push
-	z.pos = collide(z.pos + wanted * dt, RADIUS)
+	z.pos = collide(z.pos + (move + push) * dt, RADIUS)
 	local mv = vector.magnitude(move)
 	if mv > 0.3 and z.state ~= "strike" then
 		z.yaw = yaw_of(move)
-		-- Stuck on a wall: try sliding one way for a second.
 		if dist(before, z.pos) < mv * dt * 0.25 then
 			z.stuck += dt
 			if z.stuck > 0.6 and z.side == 0 then
@@ -1323,66 +1672,68 @@ local function zombie_step(z, dt)
 	figure.animate(z.fig, dt, dist(before, z.pos) / dt, arms)
 end
 
-local function spawn_edge(kind, mode, goal)
-	-- A point on the edge of the lot, far from everyone.
+local function spawn_edge(kind, mode, goal, behind)
 	for _ = 1, 8 do
 		local p
-		local side = random.int(1, 4)
-		if side == 1 then p = v(HX - 1, 0, random.range(-HZ + 2, HZ - 2))
-		elseif side == 2 then p = v(random.range(-HX + 12, HX - 2), 0, -HZ + 1)
-		elseif side == 3 then p = v(random.range(-HX + 12, HX - 2), 0, HZ - 1)
-		else p = v(random.range(-HX + 14, HX - 2), 0, if random.chance(0.5) then -3 else 3) end
+		if behind then
+			p = v(s.min_x - random.range(2, 6), 0, random.range(-HZ + 2, HZ - 2))
+		elseif random.chance(0.5) then
+			p = v(s.front + random.range(20, 26), 0, random.range(-HZ + 2, HZ - 2))
+		else
+			p = v(s.center.x + random.range(-8, 18), 0, (if random.chance(0.5) then -1 else 1) * (HZ - 0.8))
+		end
 		local ok = true
 		for _, u in s.survivors do
-			if u.pos and dist(u.pos, p) < 16 then ok = false end
+			if u.pos and dist(u.pos, p) < 14 then ok = false end
 		end
 		if ok then return spawn_zombie(kind, p, mode, goal) end
 	end
 	return nil
 end
 
--- The director: pressure rises with time and noise; at the top a horde
--- comes from the edge, then a calm. A hurt group gets breathing room.
+-- The director: pressure rises with time and noise; at the top the dead
+-- come from behind, then a calm. A hurt group gets breathing room.
 local function director(dt)
 	local d = s.dir
 	d.t -= dt
-	local awake, hp, maxhp = 0, 0, 0
+	local awake, hurt_n, n = 0, 0, 0
 	for _, z in s.zombies do
 		if z.state ~= "dead" and z.state ~= "sleep" then awake += 1 end
 	end
 	for _, u in s.survivors do
-		maxhp += 3
-		if in_body(u) then hp += u.hp end
+		if u.state ~= "gone" then
+			n += 1
+			if not standing(u) or u.injured then hurt_n += 1 end
+		end
 	end
-	local relief = maxhp > 0 and hp / maxhp < 0.35
+	local relief = n > 0 and hurt_n / n > 0.6
 	s.relief = relief
 	if d.mode == "calm" then
 		if d.t <= 0 then d.mode = "build" end
 		return
 	end
-	s.pressure = math.min(1.3, s.pressure + dt * KNOBS.pressure * (1 + 0.15 * s.stop) * (if relief then 0.4 else 1))
+	s.pressure = math.min(1.3, s.pressure + dt * KNOBS.pressure * (1 + 0.15 * s.day) * (if relief then 0.4 else 1))
 	if d.mode == "build" then
 		d.spawn_t -= dt
-		local cap = 14 + 5 * s.stop
 		if d.spawn_t <= 0 then
 			d.spawn_t = 9 - 6 * math.min(1, s.pressure) + random.range(-1, 1)
-			if awake < cap and not relief then
-				local kind = if random.chance(math.min(0.3, 0.06 * s.stop)) then "runner" else "shambler"
-				spawn_edge(kind, "investigate", s.center)
+			if awake < 14 + 5 * s.day and not relief then
+				local kind = if random.chance(math.min(0.3, 0.06 * s.day)) then "runner" else "shambler"
+				spawn_edge(kind, "investigate", s.center, random.chance(0.6))
 				count("trickle")
 			end
 		end
 		if s.pressure >= 1 and not relief then
 			d.mode = "peak"
 			d.t = KNOBS.peak
-			d.peak_left = 6 + 2 * s.stop
+			d.peak_left = 6 + 3 * s.day
 			count("peaks")
-			sfx("scream", s.center or v(0, 0, 0))
+			sfx("scream", v(s.min_x, 0, 0))
 		end
 	elseif d.mode == "peak" then
 		if (d.peak_left or 0) > 0 and game.tick() % 20 == 0 then
-			local kind = if random.chance(math.min(0.45, 0.1 + 0.05 * s.stop)) then "runner" else "shambler"
-			if spawn_edge(kind, "investigate", s.center) then d.peak_left -= 1 end
+			local kind = if random.chance(math.min(0.45, 0.1 + 0.05 * s.day)) then "runner" else "shambler"
+			if spawn_edge(kind, "investigate", s.center, random.chance(0.8)) then d.peak_left -= 1 end
 		end
 		if d.t <= 0 then
 			d.mode = "calm"
@@ -1393,29 +1744,29 @@ local function director(dt)
 end
 
 ----------------------------------------------------------------------------
--- The camera and the night
+-- The camera
 
 local function group_center()
 	local sum, n = v(0, 0, 0), 0
 	for _, u in s.survivors do
-		if standing(u) then
+		if standing(u) and not u.recruit then
 			sum = sum + u.pos
 			n += 1
 		end
 	end
 	if n == 0 then
 		for _, u in s.survivors do
-			if u.pos then
+			if u.pos and u.state ~= "gone" then
 				sum = sum + u.pos
 				n += 1
 			end
 		end
 	end
-	if n == 0 then return s.car_pos, 0 end
+	if n == 0 then return v(s.min_x + 4, 0, 0), 0 end
 	local c = sum / n
 	local spread = 0
 	for _, u in s.survivors do
-		if standing(u) then spread = math.max(spread, dist(u.pos, c)) end
+		if standing(u) and not u.recruit then spread = math.max(spread, dist(u.pos, c)) end
 	end
 	return c, spread
 end
@@ -1423,10 +1774,12 @@ end
 local function camera_step(dt)
 	local c, spread = group_center()
 	s.center = c
+	s.front = math.max(s.front, c.x)
+	s.min_x = math.max(s.min_x, c.x - BEHIND)
 	if not s.cam then s.cam = c end
-	s.cam = s.cam + (c - s.cam) * math.min(1, dt * 3)
+	s.cam = s.cam + (v(c.x + 2, 0, c.z * 0.5) - s.cam) * math.min(1, dt * 3)
 	s.spread = (s.spread or spread) + (spread - (s.spread or spread)) * math.min(1, dt * 2)
-	local k = 1 + math.max(0, s.spread - 5) * 0.045
+	local k = 1 + math.max(0, s.spread - 5) * 0.04
 	local target = v(s.cam.x, 0.5, s.cam.z)
 	local pos = target + v(0, KNOBS.cam_height * k, KNOBS.cam_back * k)
 	local any = false
@@ -1446,89 +1799,49 @@ end
 -- Hooks
 
 function warm_all()
-	street.warm()
-	for _, c in ZOMBIE_SKIN do figure.warm({ shirt = c, skin = c, pants = c }) end
-	for _, c in ZOMBIE_SHIRTS do figure.warm({ shirt = c, skin = c, pants = c }) end
-	for _, c in ZOMBIE_PANTS do figure.warm({ shirt = c, skin = c, pants = c }) end
+	land.warm()
+	for _, list in { ZOMBIE_SKIN, ZOMBIE_SHIRTS, ZOMBIE_PANTS, SKINS, PANTS, STRANGER_SHIRTS } do
+		for _, c in list do figure.warm({ shirt = c, skin = c, pants = c }) end
+	end
 	figure.warm({ shirt = "#6e3a36", skin = "#6e3a36", pants = "#6e3a36" })
-	for _, c in SKINS do figure.warm({ shirt = c, skin = c, pants = c }) end
-	for _, c in PANTS do figure.warm({ shirt = c, skin = c, pants = c }) end
-	for _, p in players.list() do figure.warm({ shirt = p.color, skin = p.color, pants = p.color }) end
+	for _, e in ENCOUNTERS do
+		if e.look then figure.warm({ shirt = e.look.shirt or "#777777", skin = e.look.skin or "#777777", pants = e.look.pants or "#777777" }) end
+	end
+	for _, p in players.list() do
+		figure.warm({ shirt = p.color, skin = p.color, pants = p.color })
+		world.warm("cube", { color = p.color, emissive = 0.2 })
+	end
+	figure.warm({ shirt = v(0.55, 0.55, 0.5), skin = "#777777", pants = "#777777" })
 	world.warm("cube", figure.EYE_GLOW)
-	world.warm("cube", { color = "#1a1a1a", emissive = 0 })
+	world.warm("cube", NO_GLOW)
 	world.warm("cube", figure.CORPSE)
 	world.warm("sphere", { color = "#cfe6ff", emissive = 0.35 })
-	world.warm("cube", { color = "#3b3631", roughness = 0.8 })
+	world.warm("cube", { color = "#3b3631", roughness = 0.8, metal = 0, emissive = 0 })
 	world.warm("outline16", { color = "#f2e6b0", emissive = 0.12 })
-	for _, w in HELD do
-		world.warm("cube", { color = w.color, metal = w.metal, roughness = w.roughness or 0.6 })
-	end
-	-- Effects: bursts and rings in exactly the looks they spawn with.
+	for _, w in HELD do world.warm("cube", { color = w.color, metal = w.metal, roughness = w.roughness or 0.6 }) end
 	for _, c in { "#5a1e18", "#6a2a20", "#8a1a14" } do world.warm("cube", { color = c, emissive = 0.06 }) end
 	world.warm("cube", { color = "#fff2c0", emissive = 0.6 })
 	world.warm("cube", { color = "#ffd27a", emissive = 1.2 })
 	world.warm("cube", { color = "#e8dfc4", emissive = 0.05 })
 	world.warm("cube", { color = "#ff3a2a", emissive = 0.25 })
 	world.warm("cube", { color = "#f2e6b0", emissive = 0.3 })
-	world.warm("cube", { color = "#3b3631", roughness = 0.8, metal = 0, emissive = 0 })
 	for _, c in ITEM_COLORS do world.warm("cube", { color = c, emissive = 0.3 }) end
-	for _, p in players.list() do world.warm("cube", { color = p.color, emissive = 0.2 }) end
 end
 
 local function init()
-	warm_all()
 	new_run()
 end
 
 local function reload()
 	s = state.s
 	if s and s.rects then build_grid() end
-	if s then look_of_day() end
+	if s then
+		s.time_now = nil
+		look_of_hour()
+	end
 end
 
-local function tick(dt, input)
-	s = state.s
-	if s.phase == "road" then
-		s.road.t -= dt
-		if s.road.t <= 0 then build_stop() end
-		return
-	end
-	if s.phase == "over" then
-		s.over_t -= dt
-		-- The dead keep shuffling behind the result.
-		zcells = {}
-		for _, z in s.zombies do
-			if z.state ~= "dead" then
-				local k = zkey(z.pos)
-				local list = zcells[k]
-				if not list then
-					list = {}
-					zcells[k] = list
-				end
-				table.insert(list, z)
-			end
-		end
-		for _, z in s.zombies do zombie_step(z, dt) end
-		local again = s.over_t <= 0
-		for _, u in s.survivors do
-			local i = not u.bot and input[u.id]
-			if i and i.pressed.south and s.over_t < 3 then again = true end
-		end
-		if again then
-			new_run()
-		end
-		return
-	end
-
-	s.stop_time += dt
-	camera_step(dt)
-
-	for _, u in s.survivors do
-		local it = if u.bot or KNOBS.autopilot == 1 then bot_intent(u) else from_input(input[u.id])
-		act(u, it, dt)
-		if s.phase ~= "play" then return end
-	end
-
+local function zombies_tick(dt)
 	zcells = {}
 	for _, z in s.zombies do
 		if z.state ~= "dead" then
@@ -1542,37 +1855,121 @@ local function tick(dt, input)
 		end
 	end
 	for _, z in s.zombies do zombie_step(z, dt) end
-	-- Drop spent corpses from the list now and then.
-	if game.tick() % 120 == 0 then
-		local keep = {}
-		for _, z in s.zombies do
-			if z.state ~= "dead" or z.fig then table.insert(keep, z) end
+end
+
+local function tick(dt, input)
+	s = state.s
+	if s.phase == "camp" then
+		s.camp_t -= dt
+		if s.camp_t <= 0 then
+			s.phase = "play"
+			s.time_now = nil
 		end
-		s.zombies = keep
+		return
 	end
+	if s.phase == "over" then
+		s.over_t -= dt
+		zombies_tick(dt)
+		local again = s.over_t <= 0
+		for _, u in s.survivors do
+			local i = not u.bot and input[u.id]
+			if i and i.pressed.south and s.over_t < 3 then again = true end
+		end
+		if again then new_run() end
+		return
+	end
+
+	camera_step(dt)
+	stream_land()
+	look_of_hour()
+
+	-- Standing under a street light that works: the dead see you from afar.
+	for _, u in s.survivors do
+		u.in_light = false
+		if u.pos and dark() then
+			for _, ch in s.chunks do
+				for _, l in ch.lamps or {} do
+					local dx, dz = l.pos.x - u.pos.x, l.pos.z - u.pos.z
+					if dx * dx + dz * dz < 25 then u.in_light = true end
+				end
+			end
+		end
+	end
+
+	-- The battery drains for every lit torch at night.
+	if dark() then
+		for _, u in s.survivors do
+			if in_body(u) and u.torch then s.battery = math.max(0, s.battery - KNOBS.drain * dt) end
+		end
+	end
+
+	for _, u in s.survivors do
+		local it = if u.bot or KNOBS.autopilot == 1 then bot_intent(u) else from_input(input[u.id])
+		act(u, it, dt)
+	end
+	-- Drop recruits that died.
+	for i = #s.survivors, 1, -1 do
+		if s.survivors[i].state == "gone" then table.remove(s.survivors, i) end
+	end
+
+	-- Strangers face the nearest survivor; a robber runs off.
+	for _, st in s.strangers do
+		if st.fig then
+			if st.fleeing then
+				st.fleeing -= dt
+				st.pos = collide(st.pos + v(0, 0, if st.pos.z > 0 then 4 else -4) * dt + v(3, 0, 0) * dt, RADIUS)
+				figure.place(st.fig, st.pos, yaw_of(v(1, 0, if st.pos.z > 0 then 1 else -1)))
+				figure.animate(st.fig, dt, 4, "swing")
+				if st.fleeing <= 0 then
+					figure.remove(st.fig)
+					st.fig = nil
+				end
+			else
+				local near = nil
+				for _, u in s.survivors do
+					if in_body(u) and dist(u.pos, st.pos) < 6 then near = u end
+				end
+				if near then st.yaw = yaw_of(near.pos - st.pos) end
+				figure.place(st.fig, st.pos, st.yaw)
+				figure.animate(st.fig, dt, 0, "swing")
+			end
+		end
+	end
+
+	zombies_tick(dt)
 	director(dt)
 
-	-- A groan now and then from someone close.
 	if game.tick() % 50 == 0 then
-		local z = nearest_zombie(s.center or s.car_pos, 12, true)
+		local z = nearest_zombie(s.center, 12, true)
 		if z then sfx("groan", z.pos, { pitch = random.range(0.75, 1.1), db = -6 }) end
 	end
 
-	-- The run ends only when nobody is standing at once.
+	-- Camp: everyone standing is at the fire.
+	if s.camp then
+		local all, any = true, false
+		for _, u in s.survivors do
+			if standing(u) then
+				any = true
+				if dist(u.pos, s.camp) > 4.5 then all = false end
+			end
+		end
+		if any and all then make_camp() end
+	end
+
 	local alone = #s.survivors == 1 and s.survivors[1].lives > 0
 	if standing_count() == 0 and #s.survivors > 0 and not alone then
-		-- Nobody stands, so nobody can revive: the run is over.
 		s.phase = "over"
 		s.over_t = 7
-		s.best = math.max(s.best, s.stop - 1)
+		s.walked = math.floor(s.front - s.start_x)
+		s.best = math.max(s.best, s.walked)
 		count("wipes")
-		sfx("down", s.center or s.car_pos, { pitch = 0.6 })
-		game.log("Dead Miles: overrun at stop " .. s.stop .. ", " .. s.kills .. " dead put down")
+		sfx("down", s.center, { pitch = 0.6 })
+		game.log("Dead Miles: overrun after " .. s.walked .. " m on day " .. s.day .. ", " .. s.kills .. " dead put down")
 	end
 end
 
 ----------------------------------------------------------------------------
--- The HUD: stocks in a corner, health and wear under each survivor.
+-- The HUD: stocks in a corner, injuries and wear under each survivor.
 
 local function icon(x, y, k, color, n)
 	hud.box(x, y + 4 * k, 16 * k, 16 * k, color)
@@ -1584,60 +1981,80 @@ local function bar(x, y, w, h, frac, color)
 	hud.box(x, y, w * math.clamp(frac, 0, 1), h, color)
 end
 
-local function draw()
-	s = state.s
-	if not s then return end
-	local W, H = hud.size()
-	local k = H / 720
-
-	-- Torches at night: a light ahead of every standing survivor, the car's lamps.
-	if night() then
-		local list = {}
-		for _, u in s.survivors do
-			if in_body(u) and u.pos then
+local function torches()
+	local list = {}
+	local flicker = s.battery < 15 and math.floor(game.time() * 13) % 5 == 0
+	for _, u in s.survivors do
+		if in_body(u) and u.pos then
+			if u.torch and s.battery > 0 and dark() and not flicker then
 				local f = dir(u.yaw)
-				table.insert(list, { pos = v(u.pos.x + f.x * 2.2, 1.7, u.pos.z + f.z * 2.2), color = "#ffe2b0", intensity = KNOBS.torch, range = 11 })
-				table.insert(list, { pos = v(u.pos.x, 2.2, u.pos.z), color = "#ffe2b0", intensity = KNOBS.torch * 0.25, range = 5 })
+				table.insert(list, { pos = v(u.pos.x + f.x * 3, 1.4, u.pos.z + f.z * 3), color = "#ffe6c0", intensity = KNOBS.torch, range = 10 })
+				table.insert(list, { pos = v(u.pos.x + f.x * 0.6, 1.6, u.pos.z + f.z * 0.6), color = "#ffe6c0", intensity = KNOBS.torch * 0.2, range = 4 })
+			end
+			if u.flash then table.insert(list, { pos = v(u.pos.x, 1.4, u.pos.z), color = "#ffd27a", intensity = 900, range = 14 }) end
+		end
+	end
+	-- Street lights that still work, nearest the view first.
+	if dark() then
+		for _, ch in s.chunks do
+			for _, l in ch.lamps or {} do
+				local off = l.flicker and math.sin(game.time() * 7 + l.seed) + math.sin(game.time() * 23 + l.seed * 3) > 1.2
+				if not off and math.abs(l.pos.x - s.cam.x) < 30 then
+					table.insert(list, { pos = l.pos, color = "#ffd9a0", intensity = KNOBS.lamp, range = 11 })
+				end
 			end
 		end
-		if s.car_pos then
-			table.insert(list, { pos = v(s.car_pos.x + 4, 0.8, s.car_pos.z), color = "#fff0c8", intensity = 260, range = 12 })
-		end
-		lights.set(list)
 	end
+	for _, c in { s.camp, s.camp_used } do
+		if c and math.abs(c.x - s.cam.x) < 40 then
+			table.insert(list, { pos = v(c.x, 0.8, c.z), color = "#ff9a4a", intensity = 500 + math.sin(game.time() * 9) * 60, range = 12 })
+		end
+	end
+	while #list > 32 do table.remove(list) end
+	if #list > 0 then lights.set(list) else lights.clear() end
+end
 
-	if s.phase == "road" then
-		hud.box(0, 0, W, H, { 0.02, 0.02, 0.03, 0.92 })
-		hud.text("STOP " .. s.stop, 0, H * 0.38, { size = 64 * k, align = "center", width = W, color = "#f4efe6" })
-		local band = if s.band == "horde" then "a horde street" elseif s.band == "busy" then "a busy street" else "a quiet street"
-		hud.text(band, 0, H * 0.38 + 78 * k, { size = 26 * k, align = "center", width = W, color = "#b8b0a0" })
-		if s.road.short > 0 then
+local function draw()
+	s = state.s
+	if not s or not s.cam then return end
+	local W, H = hud.size()
+	local k = H / 720
+	torches()
+
+	if s.phase == "camp" then
+		hud.box(0, 0, W, H, { 0.02, 0.02, 0.03, 0.85 })
+		hud.text("NIGHT " .. (s.day - 1), 0, H * 0.38, { size = 64 * k, align = "center", width = W, color = "#f4efe6" })
+		hud.text(math.floor(s.front - s.start_x) .. " m walked", 0, H * 0.38 + 78 * k, { size = 26 * k, align = "center", width = W, color = "#b8b0a0" })
+		if s.camp_short > 0 then
 			hud.text("not enough food", 0, H * 0.38 + 118 * k, { size = 22 * k, align = "center", width = W, color = "#ff8a6a" })
 		end
 		return
 	end
 
-	-- Stocks, top left.
 	local x, y = 24 * k, 18 * k
 	hud.box(x - 10 * k, y - 8 * k, 330 * k, 44 * k, { 0, 0, 0, 0.4 })
 	icon(x, y, k, ITEM_COLORS.ammo, s.ammo)
 	icon(x + 70 * k, y, k, ITEM_COLORS.food, s.food)
-	icon(x + 140 * k, y, k, ITEM_COLORS.fuel, s.fuel)
-	icon(x + 210 * k, y, k, ITEM_COLORS.meds, s.meds)
-	hud.text("STOP " .. s.stop, W - 200 * k, y, { size = 22 * k, width = 180 * k, align = "right", color = "#f4efe6" })
+	icon(x + 140 * k, y, k, ITEM_COLORS.meds, s.meds)
+	-- The battery as a bar.
+	hud.box(x + 210 * k, y + 4 * k, 16 * k, 16 * k, ITEM_COLORS.battery)
+	bar(x + 234 * k, y + 8 * k, 70 * k, 8 * k, s.battery / 100, if s.battery < 15 then "#ff6a4a" else ITEM_COLORS.battery)
+	hud.text("DAY " .. s.day .. "   " .. math.max(0, math.floor(s.front - s.start_x)) .. " m", W - 260 * k, y, { size = 22 * k, width = 240 * k, align = "right", color = "#f4efe6" })
 
-	-- Each survivor: health pips and weapon wear under their feet.
 	for _, u in s.survivors do
-		if u.pos then
+		if u.pos and u.state ~= "gone" then
 			local px, py = hud.project(v(u.pos.x, 0, u.pos.z))
 			if px then
 				local c = { u.color.x, u.color.y, u.color.z, 1 }
 				if u.state == "ok" then
-					for i = 1, u.maxhp do
-						hud.box(px - 22 * k + (i - 1) * 16 * k, py + 10 * k, 12 * k, 6 * k, if i <= u.hp then c else { 0.15, 0.15, 0.15, 0.8 })
+					-- A colour tag under the feet, a red cross when injured.
+					hud.box(px - 14 * k, py + 10 * k, 28 * k, 4 * k, c)
+					if u.injured then
+						hud.box(px + 18 * k, py + 4 * k, 12 * k, 4 * k, "#e8382a")
+						hud.box(px + 22 * k, py, 4 * k, 12 * k, "#e8382a")
 					end
-					if u.dur then bar(px - 22 * k, py + 20 * k, 44 * k, 3 * k, u.dur / MELEE[u.melee].dur, "#e8e0c8") end
-					local prog = math.max(u.search_t / KNOBS.search, u.revive_t / KNOBS.revive, u.depart_t)
+					if u.dur then bar(px - 14 * k, py + 18 * k, 28 * k, 3 * k, u.dur / MELEE[u.melee].dur, "#e8e0c8") end
+					local prog = math.max(u.search_t / KNOBS.search, u.revive_t / KNOBS.revive)
 					if prog > 0 then bar(px - 30 * k, py - 110 * k, 60 * k, 6 * k, prog, c) end
 				elseif u.state == "down" then
 					bar(px - 30 * k, py + 12 * k, 60 * k, 6 * k, u.t / KNOBS.downed, "#ff4a3a")
@@ -1646,35 +2063,52 @@ local function draw()
 					if gx then bar(gx - 24 * k, gy + 26 * k, 48 * k, 4 * k, 1 - u.t / KNOBS.ghost, c) end
 				end
 				if u.popup then
-					local a = math.min(1, u.popup.t * 2)
-					local col = u.popup.color
-					hud.text(u.popup.text, px - 100 * k, py - 140 * k - (1.6 - u.popup.t) * 20 * k, { size = 20 * k, align = "center", width = 200 * k, color = col })
+					hud.text(u.popup.text, px - 100 * k, py - 140 * k - (1.8 - u.popup.t) * 20 * k, { size = 20 * k, align = "center", width = 200 * k, color = u.popup.color })
+				end
+				-- The talk card: who it is, what they say, the choices.
+				if u.talk then
+					local e = encounter_of(u.talk)
+					if e then
+						local cw = 420 * k
+						local lines = #e.choices
+						local ch = (64 + 30 * lines) * k
+						local cx = math.clamp(px - cw / 2, 10 * k, W - cw - 10 * k)
+						local cy = math.clamp(py - 150 * k - ch, 10 * k, H - ch - 10 * k)
+						hud.box(cx, cy, cw, ch, { 0.05, 0.05, 0.06, 0.88 })
+						hud.box(cx, cy, 4 * k, ch, c)
+						hud.text(e.says or e.title or "", cx + 16 * k, cy + 10 * k, { size = 19 * k, width = cw - 28 * k, color = "#e8e0d0" })
+						for i, choice in e.choices do
+							local yy = cy + (44 + 30 * (i - 1)) * k
+							local sel = i == u.talk_i
+							if sel then hud.box(cx + 8 * k, yy - 2 * k, cw - 16 * k, 26 * k, { 1, 1, 1, 0.1 }) end
+							local afford = has(choice.cost)
+							hud.text(choice.label, cx + 18 * k, yy, { size = 19 * k, width = cw - 30 * k, color = if not afford then "#7a746c" elseif sel then "#ffffff" else "#c8c0b4" })
+						end
+					end
 				end
 			end
 		end
 	end
 
-	-- An empty tank shows over the car.
-	if s.fuel <= 0 and s.car_pos then
-		local cx, cy = hud.project(v(s.car_pos.x, 2, s.car_pos.z))
-		if cx and math.floor(game.time() * 2) % 2 == 0 then
-			hud.box(cx - 10 * k, cy - 10 * k, 20 * k, 20 * k, ITEM_COLORS.fuel)
+	-- A stranger you can talk to shows a small mark.
+	for _, st in s.strangers do
+		if st.fig and not st.done and not st.fleeing then
+			local sx, sy = hud.project(v(st.pos.x, 2.1, st.pos.z))
+			if sx then hud.box(sx - 4 * k, sy - 4 * k, 8 * k, 8 * k, "#f2e6b0") end
 		end
 	end
 
 	if s.phase == "over" then
 		hud.box(0, H * 0.34, W, 150 * k, { 0, 0, 0, 0.6 })
 		hud.text("OVERRUN", 0, H * 0.34 + 22 * k, { size = 58 * k, align = "center", width = W, color = "#ff6a4a" })
-		hud.text("reached stop " .. s.stop .. "   best " .. math.max(s.best, s.stop), 0, H * 0.34 + 94 * k, { size = 24 * k, align = "center", width = W, color = "#e8e0d0" })
+		hud.text((s.walked or 0) .. " m, day " .. s.day .. "   best " .. s.best .. " m", 0, H * 0.34 + 94 * k, { size = 24 * k, align = "center", width = W, color = "#e8e0d0" })
 	end
 end
 
 local function player_joined(p)
 	s = state.s
 	figure.warm({ shirt = p.color, skin = p.color, pants = p.color })
-	local u = new_survivor(p, #s.survivors + 1)
-	hold_weapon(u)
-	table.insert(s.survivors, u)
+	table.insert(s.survivors, new_survivor(p, #s.survivors + 1))
 end
 
 local function player_left(p)
@@ -1697,22 +2131,23 @@ local function players_changed()
 				u.name = p.name
 				if u.color ~= p.color then
 					u.color = p.color
-					if u.fig then world.set(u.fig.torso, { color = p.color }) end
+					if u.fig then world.set(u.fig.torso, { color = p.color, roughness = 0.9 }) end
 				end
 			end
 		end
 	end
 end
 
--- Console helpers: debug.stop(4) jumps to stop 4, debug.peak() starts a
--- horde, debug.ammo(20) hands out rounds.
+-- Console helpers: debug.walk(200) moves everyone 200 m east, debug.peak()
+-- starts a horde, debug.ammo(20) hands out rounds.
 local debug = {
-	stop = function(n)
+	walk = function(m)
 		s = state.s
-		s.stop = n
-		s.band = stop_band(n)
-		build_stop()
-		return "stop " .. n .. ", " .. s.band
+		for _, u in s.survivors do
+			if u.pos then u.pos = collide(u.pos + v(m, 0, 0), RADIUS) end
+			if u.fig then figure.place(u.fig, u.pos, u.yaw) end
+		end
+		return "walked " .. m
 	end,
 	peak = function()
 		s = state.s

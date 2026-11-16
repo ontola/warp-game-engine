@@ -490,16 +490,20 @@ fn stack_together_shares_a_well_with_a_bot() {
 #[test]
 fn dead_miles_bot_searches_and_fights() {
     let run = || {
-        let mut g = LuaGame::load(&repo().join("games/dead-miles"), &Overrides::default(), None).unwrap();
+        let mut g = LuaGame::load(&repo().join("games/dead-miles"), &Overrides { bots: Some(3), ..Default::default() }, None).unwrap();
         g.echo = false;
-        for _ in 0..3600 { g.tick(&[Controls::default()]); }
+        // The person walks east for fifteen seconds, then waits for the bots.
+        for t in 0..3600 {
+            let c = Controls { mv: if t < 900 { [0.6, 0.0] } else { [0.0, 0.0] }, ..Default::default() };
+            g.tick(&[c]);
+        }
         state(&g)
     };
     let s = run();
     assert_eq!(s["errors"], json!([]), "{s}");
     assert_eq!(s["cameras"].as_array().unwrap().len(), 1, "one shared view");
     let counts = &s["state"]["s"]["counts"];
-    assert!(counts["searches"].as_u64().unwrap_or(0) >= 1, "the bot searches the street: {counts}");
+    assert!(counts["searches"].as_u64().unwrap_or(0) >= 1, "the bots search buildings: {counts}");
     assert!(counts["swings"].as_u64().unwrap_or(0) >= 1, "someone swings a weapon: {counts}");
     assert_eq!(run()["state"], s["state"], "the same seed plays out the same way");
 }
@@ -679,6 +683,23 @@ fn nested_local_libraries_reload_their_consumers_and_keep_the_last_good_version(
     assert_eq!(state(&g)["errors"], json!([]));
     assert_eq!(state(&g)["state"]["n"], 35);
     assert_eq!(state(&g)["state"]["reloads"], 2);
+}
+
+#[test]
+fn libraries_lists_a_content_folder_in_order() {
+    let dir = folder("content-libraries");
+    std::fs::create_dir_all(dir.join("content/cards")).unwrap();
+    write(&dir.join("content/cards/b.module.luau"), "return { name = 'bee' }");
+    write(&dir.join("content/cards/a.module.luau"), "return { name = 'ant' }");
+    write(&dir.join("content/other.module.luau"), "return { name = 'other' }");
+    write(&dir.join("main.luau"), r#"
+        local names = {}
+        for _, lib in libraries("content/cards") do table.insert(names, require(lib).name) end
+        return { init = function() state.names = names end }
+    "#);
+    let g = game(&dir);
+    assert_eq!(state(&g)["errors"], json!([]));
+    assert_eq!(state(&g)["state"]["names"], json!(["ant", "bee"]));
 }
 
 #[test]

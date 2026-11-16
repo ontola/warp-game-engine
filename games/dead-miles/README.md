@@ -1,17 +1,23 @@
 # Dead Miles (working name)
 
-A co-op zombie road trip for one to four people on one screen. Each stop
-is a generated street: search the houses and cars for food, fuel, medkits
-and the very little ammo left, then get everyone back to the car before
-the street fills up. Melee weapons wear out and break, guns are loud and
-every shot draws the dead, and a director swings the street from quiet to
-a siege and back. Down players can be revived; a dead player is a ghost
-for a few seconds and then walks out of the car as a new survivor. The run
-ends only when nobody is standing.
+A co-op zombie walk for one to four people on one screen. The group walks
+east through a land that changes every day (suburb, forest, ruined city,
+farmland) and decides which buildings to enter. Buildings have rooms
+behind doors, with cupboards, closets and shelves to search, and
+sometimes somebody inside. The dead gather behind you, so lingering
+costs. Melee weapons wear out and break, there is almost no ammo, guns
+are loud, and most of each day is dusk and night: torches eat batteries,
+and a lit torch is seen from further away.
+
+A hit leaves a survivor injured (slower, until a first aid kit), a second
+hit puts them down. Down players can be revived and stay injured. A dead
+player is a ghost for a few seconds, then walks back in as a new
+survivor, or takes over a stranger who joined the group. At the end of a
+day the group reaches a camp fire: everyone eats, the downed get up, and
+the next day starts. The run ends only when nobody is standing.
 
 A Luau game on the `warp` runtime. The design is the "Zombie road-trip
-co-op: design" doc; this is its first playable (one kind of stop, two
-kinds of zombie, no strangers or events yet).
+co-op: design" doc.
 
 | | |
 | --- | --- |
@@ -20,14 +26,15 @@ kinds of zombie, no strangers or events yet).
 | RT / left mouse (held) | fire the gun (shared ammo; aim help within about 20 degrees) |
 | X, RB / R | swing the melee weapon |
 | B / Shift | shove: pushes zombies back and breaks their wind-up |
-| A / Space (hold) | search, pick up a weapon, revive, and at the car drive on |
-| Y / F | use a medkit |
+| A / Space (hold) | search, pick up a weapon, revive, talk to a stranger |
+| Y / F | use a first aid kit |
+| LB / Q | torch on or off |
+| D-pad up and down, A, B | pick an answer when talking, confirm, walk away |
 | As a ghost, A | moan: pulls nearby zombies towards you |
 
 Every zombie attack is telegraphed: arms go up, the eyes light red and a
 red ring shows its reach on the ground. Hitting or shoving it first
-cancels the attack. Shamblers swipe; runners (from stop 2) lunge about
-three metres.
+cancels the attack. Shamblers swipe; runners lunge about three metres.
 
 ```sh
 warp run . --bots 3                 # you and three bots
@@ -37,29 +44,70 @@ cargo test --release -p warp --test game dead_miles
 ```
 
 Set the `autopilot` knob to 1 to let bots drive the people too (demos,
-store clips, long headless runs). Other tuning (speeds, starting stocks,
-director pressure, peak and calm lengths, downed and ghost time, camera,
-density) is in the `-- @knobs` block at the top of main.luau.
+store clips, long headless runs). Other tuning (speeds, limp, starting
+stocks, battery drain, encounter chance, director pressure, downed and
+ghost time, camera, density) is in the `-- @knobs` block at the top of
+main.luau.
+
+## Writing an encounter
+
+Every file in `content/encounters/` is one encounter; the game loads them
+all with `libraries("content/encounters")`, so a new file is a new
+encounter. A file returns a table:
+
+```lua
+return {
+	id = "trader",
+	title = "Trader",                 -- shown on the talk card
+	says = "Easy. I trade, I don't fight.",
+	where = "room",                   -- "room" (inside a building), "path" or "camp"
+	biomes = { "suburb", "city" },    -- optional: only in these biomes
+	min_day = 2,                      -- optional: not before this day
+	weight = 3,                       -- optional: how often, against the others (1)
+	look = { shirt = "#5a6a4a" },     -- optional: shirt, skin, pants colours
+	held = "pipe",                    -- optional: what they carry (and fight with if they join)
+	temperament = { honest = 4, thief = 1 }, -- optional: a hidden roll, once per stranger
+	choices = {
+		{
+			label = "2 food for 3 rounds",
+			cost = { food = 2 },          -- greyed out answer if the group cannot pay
+			results = {                   -- one is picked by weight, among those whose
+				{ gain = { ammo = 3 }, text = "+3 ammo" }, -- temperament matches (or has none)
+			},
+			stay = true,                  -- optional: they stay to talk again
+		},
+	},
+	on_choice = function(stranger, choice, result) end, -- optional hook
+}
+```
+
+Items are `food`, `ammo`, `meds` (first aid kits) and `battery` (percent).
+A result can have `gain`, `lose`, `weapon` (drops a pipe, bat, machete or
+axe), `noise` (metres the dead hear it), `injure`, `heal` (the whole
+group), `join` (they become a survivor bots drive, and a body for a dead
+player), `hostile` (they shove and run) and `text`.
 
 ## How it is built
 
-- `main.luau`: the rules. Survivors, zombies, the director, bots, the HUD.
-- `lib/street.module.luau`: one generated street: road, houses with a
-  front door, an inner wall and cupboards and closets, sheds, trees,
-  parked cars (sometimes a police car), the group's car.
+- `main.luau`: the rules. Survivors, health, torches, zombies, the
+  director, encounters, recruits, bots, the camp, the HUD.
+- `lib/land.module.luau`: the land in 24 m chunks, seven a day and a camp.
+  Each chunk has a biome, a path, buildings made of a grid of rooms with
+  doors (a spanning tree plus a few extra doors), containers in the rooms,
+  trees, cars, street lights and weapons.
 - `lib/figure.module.luau`: people built from boxes with arms and legs on
   pivots, a walk cycle and poses (reach, wind-up, swing, aim, shove, lying).
+- `content/encounters/`: who you meet.
 
-Collision is the game's own: circles against the street's boxes in a 4 m
+Collision is the game's own: circles against the land's boxes in a 4 m
 grid, and zombies keep apart in a 1.5 m grid. Shots use `world.raycast`
-against walls. Bots and zombies walk through front doors and the gap in
-the inner wall (`waypoint`).
-
-Cost: about 1.5 ms a tick on a cloud CPU with 160 zombies (mostly asleep)
-and four survivors. Moving the horde to Rust is phase 2 of the design.
+against walls. Bots and zombies route through doors with a search over
+each building's rooms (`waypoint`). Chunks stream in ahead and are
+dropped behind; the left edge follows the group 13 m back.
 
 ## Not yet
 
-The route map, night camp, strangers and recruits, events, raiders, more
-stop types and zombie kinds, phone screens, Gamepad Party settings
-(the knobs stand in), animated `body` characters, the store clip.
+Torches as shadowed spotlights (they are point lights now), Warp Humans
+for people and zombies, more encounters, more zombie kinds, raiders,
+phone screens, Gamepad Party settings (the knobs stand in), the store
+clip.

@@ -17,6 +17,8 @@
 --   player_left(p)       a player left mid-game
 --   players_changed()    names, colours or seats changed (after joins and leaves too)
 -- Folder games: local lib = require("lib/name") loads lib/name.module.luau at module load time.
+-- libraries("content/cards") lists the libraries in a folder, sorted, for content
+-- collections: `for _, name in libraries("content/cards") do local card = require(name) end`.
 -- Modules run their hooks in path order. `state` is a table per module that
 -- survives reloads; main.luau's `state` is the game's JSON state (`/state`).
 --
