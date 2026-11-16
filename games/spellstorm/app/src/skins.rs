@@ -127,7 +127,11 @@ impl Skins {
     /// Pose monster `id` (at `xf`, `scale` times its body's size) in its
     /// skin. False: it has none, draw it the old way.
     #[allow(clippy::too_many_arguments)]
-    pub fn pose(&mut self, scene: &mut Scene, id: Id, kind: &Kind, a: &Actor, e: &Enemy, dead_t: Option<f32>, xf: Mat4, scale: f32, flash: f32, dt: f32) -> bool {
+    /// `build`: while it is being made, how far up (anim::build_front) its
+    /// body is built; each joint's flesh grows in round it as the build
+    /// passes it (Joep: from toe to head).
+    #[allow(clippy::too_many_arguments)]
+    pub fn pose(&mut self, scene: &mut Scene, id: Id, kind: &Kind, a: &Actor, e: &Enemy, dead_t: Option<f32>, xf: Mat4, scale: f32, flash: f32, build: Option<f32>, dt: f32) -> bool {
         let Some(body) = self.body_of(kind) else { return false };
         let i = match self.worn.get(&id) {
             Some(&i) => i,
@@ -161,6 +165,17 @@ impl Skins {
                 }
                 for (out, m) in s.palette.iter_mut().zip(&s.layer) {
                     *out += *m * (l.w / total);
+                }
+            }
+            if let Some(front) = build {
+                let (lo, hi) = (b.character.min.y, b.character.max.y.max(b.character.min.y + 0.01));
+                for ((_, rest), m) in b.character.joints().zip(s.palette.iter_mut()) {
+                    let y = ((rest.w_axis.y - lo) / (hi - lo)).clamp(0.0, 1.0);
+                    let k = crate::anim::built(front, y).max(0.001);
+                    if k < 1.0 {
+                        let p = (*m * rest).transform_point3(Vec3::ZERO);
+                        *m = Mat4::from_translation(p) * Mat4::from_scale(Vec3::splat(k)) * Mat4::from_translation(-p) * *m;
+                    }
                 }
             }
         }

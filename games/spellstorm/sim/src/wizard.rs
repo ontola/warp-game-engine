@@ -81,15 +81,10 @@ pub const MAX_TRAPS: usize = 3;
 pub const SWORD_MAX: f32 = 3.0;
 pub const GEM_WARM: C = fx::rgb(1.0, 0.8, 0.55);
 
-/// Every wizard starts with the same two face elements, Fire and Lightning
-/// (Joep: everyone learns the same lessons), then the other two, then LB
-/// and its elements one by one.
-pub const ELEMENT_ORDER: [[El; 4]; 4] = [
-    [El::Fire, El::Lightning, El::Water, El::Poison],
-    [El::Fire, El::Lightning, El::Poison, El::Water],
-    [El::Fire, El::Lightning, El::Water, El::Poison],
-    [El::Fire, El::Lightning, El::Poison, El::Water],
-];
+/// Every wizard gets the same elements in the same order (Joep: the same
+/// for every player): Fire and Lightning, then Water, then Poison, then LB
+/// and its elements one by one. One row per seat, kept for the callers.
+pub const ELEMENT_ORDER: [[El; 4]; 4] = [[El::Fire, El::Lightning, El::Water, El::Poison]; 4];
 pub const LB_ORDER: [El; 4] = [El::Frost, El::Earth, El::Air, El::Void];
 /// The unlock ladder, one step at a level's first shrine and one at its
 /// boss, so it runs over five of the six levels (Joep: not all at once).
