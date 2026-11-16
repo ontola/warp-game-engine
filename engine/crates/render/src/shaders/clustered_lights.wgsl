@@ -84,7 +84,9 @@ fn clustered_shadow(lamp: LocalLight, p: vec3<f32>, n: vec3<f32>) -> f32 {
     // Receiver bias in texels of this face at this distance: along the
     // normal (slopes) and toward the light (acne on flat receivers).
     let texel = params.x * dist;
-    let biased = p + n * (texel * 1.5 + 0.004) - d / max(dist, 1e-4) * (texel + 0.002);
+    // Two texels toward the light: one left the rounded backs of moving
+    // characters crawling with acne as the texels grew with distance.
+    let biased = p + n * (texel * 1.5 + 0.004) - d / max(dist, 1e-4) * (texel * 2.0 + 0.002);
     let clip = m * vec4<f32>(biased, 1.0);
     if clip.w <= 0.0 { return 1.0; }
     let ndc = clip.xyz / clip.w;
@@ -143,8 +145,12 @@ fn clustered_soft_shadow(uv: vec2<f32>, z: f32, layer: i32, rect: vec4<f32>, til
         let r = sqrt((f32(k) + 0.5) / 8.0) * search;
         let tap = clamp(uv + vec2<f32>(cos(a), sin(a)) * r, lo, hi);
         let stored = textureLoad(headlight_depth, vec2<i32>(tap * atlas), layer, 0);
-        if stored < z {
-            blockers += clustered_linear(stored, near, far);
+        // A blocker must stand clear of the receiver by a few texels: the
+        // receiver's own curved surface in the neighbouring texels is not
+        // one (it flickered on a character's back, lit from behind).
+        let b = clustered_linear(stored, near, far);
+        if stored < z && receiver - b > 3.0 * params.x * receiver {
+            blockers += b;
             count += 1.0;
         }
     }
