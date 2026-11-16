@@ -15,7 +15,13 @@ local v = vector.create
 local M = {}
 
 M.CHUNK = 24 -- metres of land per chunk
-M.HALF_Z = 14 -- the strip runs from z -14 to 14
+M.HALF_Z = 18 -- the strip runs 18 m either side of the path
+M.TURN = 7 -- metres at the west end of a chunk for a street that turns north or south
+
+-- Each chunk's path runs at its own z (its centre): when it differs from
+-- the chunk before, a street at the west end climbs or drops to it. The
+-- helpers below place everything at z + ZC; chunk() sets ZC.
+local ZC = 0
 M.DAY_CHUNKS = 7 -- chunks of walking per day, then the camp
 local WALL_T = 0.25
 
@@ -88,6 +94,8 @@ end
 local function box(c, x0, z0, x1, z1, h, look, tag)
 	if x1 < x0 then x0, x1 = x1, x0 end
 	if z1 < z0 then z0, z1 = z1, z0 end
+	z0 += ZC
+	z1 += ZC
 	local id = add(c, world.spawn("cube", {
 		pos = v((x0 + x1) / 2, h / 2, (z0 + z1) / 2),
 		size = v(x1 - x0, h, z1 - z0),
@@ -103,7 +111,7 @@ end
 
 local function flat(c, x0, z0, x1, z1, y, color)
 	return add(c, world.spawn("cube", {
-		pos = v((x0 + x1) / 2, y, (z0 + z1) / 2),
+		pos = v((x0 + x1) / 2, y, (z0 + z1) / 2 + ZC),
 		size = v(math.abs(x1 - x0), 0.02, math.abs(z1 - z0)),
 		color = color,
 		roughness = 0.95,
@@ -113,7 +121,7 @@ local function flat(c, x0, z0, x1, z1, y, color)
 end
 
 local function deco(c, shape, pos, size, color, extra)
-	local o = { pos = pos, size = size, color = color, roughness = 0.9, solid = false, tag = "deco" }
+	local o = { pos = pos + v(0, 0, ZC), size = size, color = color, roughness = 0.9, solid = false, tag = "deco" }
 	if extra then
 		for k, x in extra do o[k] = x end
 	end
@@ -394,7 +402,7 @@ local function closed(c, x0, w, d, side, look, h)
 		end
 	end
 	-- What main.luau shows instead when the block is in the way.
-	blk.cut = add(c, world.spawn("cube", { pos = v((x0 + x1) / 2, 0.45, (z0 + z1) / 2), size = v(w, 0.9, d), color = color, roughness = 0.95, solid = false, tag = "deco", visible = false }))
+	blk.cut = add(c, world.spawn("cube", { pos = v((x0 + x1) / 2, 0.45, (z0 + z1) / 2 + ZC), size = v(w, 0.9, d), color = color, roughness = 0.95, solid = false, tag = "deco", visible = false }))
 	table.insert(c.blocks, blk)
 	table.insert(c.buildings, blk)
 	return blk
@@ -444,8 +452,10 @@ local function lot(c, side, x0, x1, look, biome)
 	if biome == "suburb" then
 		local w = math.min(random.range(8, 11), span - 1)
 		local bx = random.range(x0 + 0.5, x1 - w - 0.5)
-		if random.chance(0.3) then
-			building(c, bx, w, random.range(6.5, 8.5), 2, if random.chance(0.5) then 1 else 2, side, look, { "kitchen", "closet", "closet" }, 1)
+		if span >= 15 and random.chance(0.35) then
+			-- A big house: most of the lot, two floors' worth of rooms.
+			local bw = math.min(random.range(13, 18), span - 1)
+			building(c, x0 + (span - bw) / 2, bw, random.range(9, 11.5), 3, 2, side, look, { "kitchen", "closet", "closet", "kitchen" }, 1)
 		else
 			closed(c, bx, w, random.range(6, 8), side, look, random.range(3.6, 5.2))
 		end
@@ -472,10 +482,12 @@ local function lot(c, side, x0, x1, look, biome)
 	elseif biome == "city" then
 		local w = math.min(random.range(11, 16), span - 1)
 		local bx = random.range(x0 + 0.5, x1 - w - 0.5)
-		if random.chance(0.25) then
+		if span >= 15 and random.chance(0.3) then
+			-- A big open ruin: a store, a clinic, offices; three rows deep.
 			local roll = random.float()
 			local kinds = if roll < 0.2 then { "pharmacy", "office" } elseif roll < 0.5 then { "shop", "shop", "office" } elseif roll < 0.6 then { "police", "office" } else { "office", "kitchen", "closet" }
-			building(c, bx, w, random.range(7.5, 9.5), 3, 2, side, look, kinds, 2)
+			local bw = math.min(random.range(17, 22), span - 1)
+			building(c, x0 + (span - bw) / 2, bw, random.range(11, 13.5), 4, 3, side, look, kinds, 2)
 		else
 			closed(c, bx, w, random.range(7, 9.4), side, look, random.range(6, 12))
 		end
@@ -485,7 +497,7 @@ local function lot(c, side, x0, x1, look, biome)
 			local w = math.min(random.range(9, 12), span - 1)
 			local bx = random.range(x0 + 0.5, x1 - w - 0.5)
 			if random.chance(0.5) then
-				building(c, bx, w, random.range(7, 9), 2, 1, side, look, { "barn", "barn", "kitchen" }, 2)
+				building(c, bx, w, random.range(8, 11), 3, 2, side, look, { "barn", "barn", "kitchen" }, 2)
 			else
 				closed(c, bx, w, random.range(7, 9), side, look, random.range(4.5, 6.5))
 			end
@@ -525,14 +537,59 @@ local function lamp(c, x, side, city)
 	if lit then table.insert(c.lamps, { pos = v(x, 4, z - side * 0.5), flicker = random.chance(0.3), seed = random.range(0, 10) }) end
 end
 
-function M.chunk(index, day, in_day)
+-- Everything recorded in local z moves to the chunk's centre.
+local function shift(c, dz)
+	local function p(q) return if q then q + v(0, 0, dz) else nil end
+	for _, k in c.containers do
+		k.z += dz
+		k.stand = p(k.stand)
+	end
+	for _, b in c.buildings do
+		b.z0 += dz
+		b.z1 += dz
+		for _, rm in b.rooms do
+			rm.z0 += dz
+			rm.z1 += dz
+		end
+		for _, d in b.doors do
+			d.pa, d.pb = p(d.pa), p(d.pb)
+		end
+	end
+	for i, q in c.inside do c.inside[i] = p(q) end
+	for i, q in c.outside do c.outside[i] = p(q) end
+	for _, l in c.lamps do l.pos = p(l.pos) end
+	for _, w in c.weapons do w.pos = p(w.pos) end
+	c.camp = p(c.camp)
+end
+
+-- zc: this chunk's path centre; zc_prev: the one before (a turn between).
+function M.chunk(index, day, in_day, zc, zc_prev)
+	zc = zc or 0
+	zc_prev = zc_prev or zc
 	local x0 = (index - 1) * M.CHUNK
 	local x1 = x0 + M.CHUNK
 	local biome = M.biome(day)
 	local look = LOOKS[biome]
-	local c = { index = index, x0 = x0, x1 = x1, biome = biome, ents = {}, rects = {}, containers = {}, buildings = {}, blocks = {}, weapons = {}, inside = {}, outside = {}, lamps = {} }
+	local c = { index = index, x0 = x0, x1 = x1, biome = biome, ents = {}, rects = {}, containers = {}, buildings = {}, blocks = {}, weapons = {}, inside = {}, outside = {}, lamps = {}, zc = zc, zc_prev = zc_prev }
 	local HZ = M.HALF_Z
-	add(c, world.spawn("cube", { pos = v((x0 + x1) / 2, -0.5, 0), size = v(M.CHUNK, 1, HZ * 2 + 30), color = look.ground, roughness = 1, solid = false, tag = "ground" }))
+	local turn = zc ~= zc_prev
+	ZC = 0
+	local lo, hi = math.min(zc, zc_prev), math.max(zc, zc_prev)
+	add(c, world.spawn("cube", { pos = v((x0 + x1) / 2, -0.5, (lo + hi) / 2), size = v(M.CHUNK, 1, hi - lo + HZ * 2 + 30), color = look.ground, roughness = 1, solid = false, tag = "ground" }))
+	if turn then
+		-- The street that turns: from the old centre to the new one.
+		local half = if biome == "city" then 3.2 else 2.6
+		flat(c, x0, lo - half, x0 + M.TURN, hi + half, 0.004, look.path)
+		if biome == "city" or biome == "suburb" then
+			-- The kerb on the far side, up to where the new path leaves.
+			if zc > zc_prev then
+				flat(c, x0 + M.TURN, zc_prev - half, x0 + M.TURN + 1.2, zc - half, 0.008, look.edge)
+			else
+				flat(c, x0 + M.TURN, zc + half, x0 + M.TURN + 1.2, zc_prev + half, 0.008, look.edge)
+			end
+		end
+	end
+	ZC = zc
 	if biome == "city" then
 		-- Asphalt, a faded centre line and pavements up to the buildings.
 		flat(c, x0, -3.2, x1, 3.2, 0.004, look.path)
@@ -551,17 +608,21 @@ function M.chunk(index, day, in_day)
 	end
 	if in_day == 0 then
 		camp(c, x0)
+		shift(c, zc)
+		ZC = 0
 		return c
 	end
 	-- The first chunk of a run stays clear: the group starts there.
 	if index > 1 then
 		for _, side in { -1, 1 } do
-			-- One or two lots per side.
-			if random.chance(0.4) then
-				lot(c, side, x0, x0 + 12, look, biome)
-				lot(c, side, x0 + 12, x1, look, biome)
+			-- One or two lots per side; after a turn the street takes the
+			-- west end.
+			local a = if turn then x0 + M.TURN + 1.4 else x0
+			if not turn and random.chance(0.3) then
+				lot(c, side, a, a + 12, look, biome)
+				lot(c, side, a + 12, x1, look, biome)
 			else
-				lot(c, side, x0, x1, look, biome)
+				lot(c, side, a, x1, look, biome)
 			end
 			table.insert(c.outside, v(random.range(x0, x1), 0, side * random.range(4, HZ - 1)))
 		end
@@ -639,7 +700,28 @@ function M.chunk(index, day, in_day)
 	elseif day == 1 then
 		table.insert(c.weapons, { kind = "pipe", pos = v(x0 + 14, 0, 1.2) })
 	end
+	shift(c, zc)
+	ZC = 0
 	return c
+end
+
+-- Where the path runs at x, and how far north and south walkers may go,
+-- from the chunks' centres (zcs[index]).
+function M.center(zcs, x)
+	zcs = zcs or {}
+	local index = math.floor(x / M.CHUNK) + 1
+	return zcs[index] or zcs[index - 1] or 0
+end
+
+function M.zrange(zcs, x)
+	zcs = zcs or {}
+	local index = math.floor(x / M.CHUNK) + 1
+	local zc = zcs[index] or zcs[index - 1] or 0
+	local prev = zcs[index - 1] or zc
+	if x - (index - 1) * M.CHUNK < M.TURN + 1 then
+		return math.min(zc, prev) - M.HALF_Z, math.max(zc, prev) + M.HALF_Z
+	end
+	return zc - M.HALF_Z, zc + M.HALF_Z
 end
 
 return M

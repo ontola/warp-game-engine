@@ -58,6 +58,7 @@ local KNOBS = {
 	day_alert = 1.8, -- how much further the dead see in daylight
 	day_speed = 1.3, -- how much faster they move in daylight
 	trap = 12, -- seconds inside a building before the dead outside close in on it
+	turns = 0.35, -- chance the way turns north or south at a chunk
 	encounters = 0.35, -- chance of an encounter in a chunk
 	autopilot = 0, -- 1: bots drive the people too (demos, store clips, tests)
 }
@@ -173,6 +174,9 @@ local function build_grid()
 	for i, r in s.rects do grid_add(i, r) end
 end
 
+-- Where the path runs at x (it turns north or south now and then).
+local function path_z(x) return land.center(s.zcs, x) end
+
 local function collide(p, r)
 	local x, z = p.x, p.z
 	for _ = 1, 2 do
@@ -198,7 +202,8 @@ local function collide(p, r)
 			end
 		end
 	end
-	z = math.clamp(z, -HZ + 0.5, HZ - 0.5)
+	local lo, hi = land.zrange(s.zcs, x)
+	z = math.clamp(z, lo + 0.5, hi - 0.5)
 	return v(x, 0, z)
 end
 
@@ -340,7 +345,8 @@ end
 
 local function new_survivor(p, i)
 	local u = { id = p.id, name = p.name, color = p.color, bot = p.bot, lives = 3, aim = v(1, 0, 0) }
-	give_body(u, collide(v(s.min_x + 4 + (i - 1) * 0.9, 0, (i % 2 == 0 and 0.5 or -0.5)), RADIUS))
+	local x = s.min_x + 4 + (i - 1) * 0.9
+	give_body(u, collide(v(x, 0, path_z(x) + (i % 2 == 0 and 0.5 or -0.5)), RADIUS))
 	hold_weapon(u)
 	return u
 end
@@ -656,7 +662,17 @@ local function add_chunk()
 	local index = s.next_chunk
 	s.next_chunk += 1
 	local day, in_day = chunk_day(index)
-	local c = land.chunk(index, day, in_day)
+	-- Now and then the way turns north or south, never right after the
+	-- start or into a camp.
+	local prev = s.zcs[index - 1] or 0
+	local zc = prev
+	if index > 2 and in_day > 0 and in_day < 7 and random.chance(KNOBS.turns) then
+		local dz = random.range(12, 22) * (if random.chance(0.5) then 1 else -1)
+		if math.abs(prev + dz) > 60 then dz = -dz end
+		zc = prev + dz
+	end
+	s.zcs[index] = zc
+	local c = land.chunk(index, day, in_day, zc, prev)
 	c.day, c.in_day = day, in_day
 	c.band = roll_band(day, index)
 	for _, r in c.rects do
@@ -686,7 +702,7 @@ local function add_chunk()
 			elseif where == "camp" then
 				pos = c.camp + v(2.5, 0, -2.8)
 			else
-				pos = v(random.range(c.x0 + 4, c.x1 - 4), 0, random.range(-2, 2))
+				pos = v(random.range(c.x0 + land.TURN + 2, c.x1 - 4), 0, c.zc + random.range(-2, 2))
 			end
 			place_stranger(e, collide(pos, RADIUS), index)
 			count("encounters")
@@ -815,6 +831,7 @@ local function new_run()
 		buildings = {},
 		counts = {},
 		next_chunk = 1,
+		zcs = {},
 		min_x = 0,
 		front = 0,
 		start_x = 4,
@@ -953,6 +970,13 @@ local function bot_intent(u)
 
 	-- Fight what is close or in the way; walk away from the rest.
 	local z, d = nearest_zombie(u.pos, 7, true)
+	-- Not through a wall: one in the next room is no fight yet.
+	if z and d > 1.4 then
+		local to = z.pos - u.pos
+		-- Low enough to catch fallen wall stubs, which still block.
+		local hit = world.raycast(v(u.pos.x, 0.3, u.pos.z), to / d, d, { tag = "wall" })
+		if hit and hit.distance < d - 0.3 then z = nil end
+	end
 	if z and d > 2.6 and z.pos.x < u.pos.x - 1 and z.kind ~= "runner" then z = nil end
 	if z then
 		local to = z.pos - u.pos
@@ -973,7 +997,7 @@ local function bot_intent(u)
 		end
 		if close >= 6 and u.injured then
 			-- Too many and hurt: keep walking east, away from them.
-			it.mx, it.mz = steer(u, u.pos + v(8, 0, -u.pos.z * 0.3))
+			it.mx, it.mz = steer(u, u.pos + v(8, 0, (path_z(u.pos.x) - u.pos.z) * 0.3))
 			it.fire = s.ammo > 0
 		end
 		if it.melee or it.fire or it.shove or it.mx ~= 0 then return it end
@@ -1008,7 +1032,7 @@ local function bot_intent(u)
 				it.use = true
 			else
 				local cpos = v(best.x, 0, best.z)
-				local toward = if best.stand then best.stand - cpos else v(0, 0, -best.z)
+				local toward = if best.stand then best.stand - cpos else v(0, 0, path_z(best.x) - best.z)
 				local m = vector.magnitude(toward)
 				local goal = if m > 0.01 then cpos + toward / m * 0.9 else cpos
 				it.mx, it.mz = steer(u, goal)
@@ -1022,7 +1046,10 @@ local function bot_intent(u)
 		it.mx, it.mz = steer(u, s.camp + v(if u.id % 2 == 0 then 1.2 else -1.2, 0, 1.2))
 		return it
 	end
-	local ahead = v(u.pos.x + 6, 0, (u.id % 3 - 1) * 1.2)
+	-- Where the way turns, go along the turning street first.
+	local pz = path_z(u.pos.x)
+	local ahead = v(u.pos.x + 6, 0, pz + (u.id % 3 - 1) * 1.2)
+	if math.abs(u.pos.z - pz) > 2.2 then ahead = v(u.pos.x + 0.6, 0, pz + (u.id % 3 - 1) * 0.8) end
 	if #humans > 0 then ahead = v(math.max(u.pos.x, humans[1].pos.x) + 2, 0, ahead.z) end
 	it.mx, it.mz = steer(u, ahead)
 	return it
@@ -1069,7 +1096,7 @@ end
 
 local function respawn(u)
 	-- A new survivor walks in from the west edge.
-	give_body(u, collide(v(s.min_x + 1, 0, random.range(-2, 2)), RADIUS))
+	give_body(u, collide(v(s.min_x + 1, 0, path_z(s.min_x + 1) + random.range(-2, 2)), RADIUS))
 	if random.chance(0.4) then u.melee, u.dur = "pipe", MELEE.pipe.dur end
 	hold_weapon(u)
 	count("respawns")
@@ -1355,7 +1382,8 @@ local function act(u, it, dt)
 		u.t -= dt
 		u.cd_moan = math.max(0, (u.cd_moan or 0) - dt)
 		u.pos = u.pos + v(it.mx, 0, it.mz) * 5 * dt
-		u.pos = v(math.max(u.pos.x, s.min_x), 0, math.clamp(u.pos.z, -HZ, HZ))
+		local lo, hi = land.zrange(s.zcs, u.pos.x)
+		u.pos = v(math.max(u.pos.x, s.min_x), 0, math.clamp(u.pos.z, lo, hi))
 		world.place(u.ghost_ent, v(u.pos.x, 1.4 + math.sin(game.time() * 3) * 0.15, u.pos.z))
 		if it.use_pressed and u.cd_moan <= 0 then
 			u.cd_moan = 3
@@ -1727,11 +1755,14 @@ local function spawn_edge(kind, mode, goal, behind)
 	for _ = 1, 8 do
 		local p
 		if behind then
-			p = v(s.min_x - random.range(2, 6), 0, random.range(-HZ + 2, HZ - 2))
+			local x = s.min_x - random.range(2, 6)
+			p = v(x, 0, path_z(x) + random.range(-HZ + 2, HZ - 2))
 		elseif random.chance(0.5) then
-			p = v(s.front + random.range(20, 26), 0, random.range(-HZ + 2, HZ - 2))
+			local x = s.front + random.range(20, 26)
+			p = v(x, 0, path_z(x) + random.range(-HZ + 2, HZ - 2))
 		else
-			p = v(s.center.x + random.range(-8, 18), 0, (if random.chance(0.5) then -1 else 1) * (HZ - 0.8))
+			local x = s.center.x + random.range(-8, 18)
+			p = v(x, 0, path_z(x) + (if random.chance(0.5) then -1 else 1) * (HZ - 0.8))
 		end
 		local ok = true
 		for _, u in s.survivors do
@@ -1828,7 +1859,7 @@ local function camera_step(dt)
 	s.front = math.max(s.front, c.x)
 	s.min_x = math.max(s.min_x, c.x - BEHIND)
 	if not s.cam then s.cam = c end
-	s.cam = s.cam + (v(c.x + 2, 0, c.z * 0.5) - s.cam) * math.min(1, dt * 3)
+	s.cam = s.cam + (v(c.x + 2, 0, c.z) - s.cam) * math.min(1, dt * 3)
 	s.spread = (s.spread or spread) + (spread - (s.spread or spread)) * math.min(1, dt * 2)
 	local k = 1 + math.max(0, s.spread - 5) * 0.04
 	local target = v(s.cam.x, 0.5, s.cam.z)
@@ -1889,7 +1920,7 @@ local function buildings_step(dt)
 				s.pressure = math.min(1.3, s.pressure + 0.3)
 				for i = 1, n do
 					local side = if i % 2 == 0 then 1 else -1
-					local p = v(at.x + side * random.range(9, 15), 0, at.z + random.range(-2, 2) - (if at.z > 0 then 3 else -3))
+					local p = v(at.x + side * random.range(9, 15), 0, at.z + random.range(-2, 2) - (if at.z > path_z(at.x) then 3 else -3))
 					local z = spawn_zombie(if random.chance(0.15 + 0.05 * s.day) then "runner" else "shambler", p, "investigate", flat(at))
 					if z then z.goal = flat(at) end
 				end
@@ -2092,8 +2123,8 @@ local function tick(dt, input)
 		if st.fig then
 			if st.fleeing then
 				st.fleeing -= dt
-				st.pos = collide(st.pos + v(0, 0, if st.pos.z > 0 then 4 else -4) * dt + v(3, 0, 0) * dt, RADIUS)
-				body.place(st.fig, st.pos, yaw_of(v(1, 0, if st.pos.z > 0 then 1 else -1)))
+				st.pos = collide(st.pos + v(0, 0, if st.pos.z > path_z(st.pos.x) then 4 else -4) * dt + v(3, 0, 0) * dt, RADIUS)
+				body.place(st.fig, st.pos, yaw_of(v(1, 0, if st.pos.z > path_z(st.pos.x) then 1 else -1)))
 				body.animate(st.fig, dt, 4, "swing")
 				if st.fleeing <= 0 then
 					body.remove(st.fig)
