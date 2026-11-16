@@ -481,6 +481,7 @@ impl LuaGame {
         let mut out: Vec<String> = self.host.modules().iter().filter_map(|m| m.error.clone().or_else(|| m.broken.then(|| format!("{}: a hook failed; its hooks are off until the file changes (see logs)", m.name)))).collect();
         out.extend(self.core().sounds.bank.errors.iter().map(|(f, e)| match f.strip_prefix("inline:") { Some(n) => format!("sound {n}: {e}"), None => format!("sounds/{f}: {e}") }));
         out.extend(self.surface.error.clone());
+        out.extend(self.core().humans.error().map(String::from));
         if self.host.modules().is_empty() { out.push("no Luau modules loaded".into()); }
         out
     }
@@ -983,11 +984,12 @@ impl Game for LuaGame {
         let added = std::mem::take(&mut c.world.added);
         let mut late = None;
         // Warp Humans join the scene before its first renderer.
-        if !c.humans.is_empty() && !c.humans.attached() {
+        if !c.humans.is_empty() && !c.humans.attached() && c.humans.error().is_none() {
             let c = &mut *c;
             match c.humans.attach(&mut c.world.scene, u64::from(frame.gpu.limits.max_storage_buffer_binding_size)) {
                 Ok(note) => if let Some(note) = note { late = Some(note); },
-                Err(e) => late = Some(format!("humans: {e}")),
+                // Shown in errors (and so failing script checks), tried no more.
+                Err(e) => c.humans.set_error(Some(format!("humans: {e}"))),
             }
             c.world.rebuild = true;
         }
