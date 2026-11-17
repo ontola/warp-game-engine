@@ -1005,7 +1005,8 @@ local function bot_intent(u)
 	if u.state == "down" then return it end
 	it.torch = dark() ~= u.torch and s.battery > 0
 
-	-- Stay with the people.
+	-- A sidekick: stays near its person, a step behind, and lets them lead.
+	local lead = nil
 	if #humans > 0 then
 		local h, hd = nil, math.huge
 		for _, o in humans do
@@ -1014,7 +1015,8 @@ local function bot_intent(u)
 				if d < hd then h, hd = o, d end
 			end
 		end
-		if h and hd > 12 then
+		lead = h
+		if h and hd > 7 then
 			it.mx, it.mz = steer(u, h.pos)
 			return it
 		end
@@ -1046,7 +1048,7 @@ local function bot_intent(u)
 	if u.injured and s.meds > 0 then it.med = true end
 
 	-- Fight what is close or in the way; walk away from the rest.
-	local z, d = nearest_zombie(u.pos, 7, true)
+	local z, d = nearest_zombie(u.pos, if lead then 4.5 else 7, true)
 	-- Not through a wall: one in the next room is no fight yet.
 	if z and d > 0.6 then
 		local to = z.pos - u.pos
@@ -1088,7 +1090,7 @@ local function bot_intent(u)
 
 	-- A better weapon nearby.
 	for _, p in s.pickups do
-		if RANK[p.kind] > RANK[held_kind(u) or "fists"] and dist(p.pos, u.pos) < 9 and not (u.ignore and u.ignore[p]) and chasing(u, p, dt) then
+		if RANK[p.kind] > RANK[held_kind(u) or "fists"] and dist(p.pos, u.pos) < 9 and (not lead or dist(p.pos, lead.pos) < 6) and not (u.ignore and u.ignore[p]) and chasing(u, p, dt) then
 			if dist(p.pos, u.pos) < 0.9 then it.use_pressed = true else it.mx, it.mz = steer(u, p.pos) end
 			return it
 		end
@@ -1099,7 +1101,8 @@ local function bot_intent(u)
 	if s.pressure < 0.85 then
 		local best, bd = nil, 16
 		for _, c in s.containers do
-			if not c.searched and (c.claim == nil or c.claim == u.id) and c.x > s.min_x + 3 and not (u.ignore and u.ignore[c]) and not trapped_at(c) then
+			if not c.searched and (c.claim == nil or c.claim == u.id) and c.x > s.min_x + 3 and not (u.ignore and u.ignore[c]) and not trapped_at(c)
+				and (not lead or (dist(v(c.x, 0, c.z), lead.pos) < 6 and c.x < lead.pos.x + 2)) then
 				local dd = dist(v(c.x, 0, c.z), u.pos)
 				if dd < bd then best, bd = c, dd end
 			end
@@ -1125,7 +1128,7 @@ local function bot_intent(u)
 	end
 
 	-- Walk on: east along the path, or to the camp fire.
-	if s.camp and s.camp.x > u.pos.x - 6 and s.camp.x < u.pos.x + 30 then
+	if s.camp and s.camp.x > u.pos.x - 6 and s.camp.x < u.pos.x + 30 and (not lead or dist(lead.pos, s.camp) < 10) then
 		it.mx, it.mz = steer(u, s.camp + v(if u.id % 2 == 0 then 1.2 else -1.2, 0, 1.2))
 		return it
 	end
@@ -1133,7 +1136,12 @@ local function bot_intent(u)
 	local pz = path_z(u.pos.x)
 	local ahead = v(u.pos.x + 6, 0, pz + (u.id % 3 - 1) * 1.2)
 	if math.abs(u.pos.z - pz) > 2.2 then ahead = v(u.pos.x + 0.6, 0, pz + (u.id % 3 - 1) * 0.8) end
-	if #humans > 0 then ahead = v(math.max(u.pos.x, humans[1].pos.x) + 2, 0, ahead.z) end
+	if lead then
+		-- A step or two behind the person, off to one side.
+		local side = if u.id % 2 == 0 then 1.4 else -1.4
+		ahead = v(lead.pos.x - 1.8, 0, lead.pos.z + side)
+		if dist(u.pos, ahead) < 0.8 then return it end
+	end
 	it.mx, it.mz = steer(u, ahead)
 	return it
 end
