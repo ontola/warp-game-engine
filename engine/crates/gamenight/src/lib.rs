@@ -14,6 +14,7 @@ use tungstenite::{Message, stream::MaybeTlsStream};
 
 pub mod lobby;
 pub mod artwork;
+pub mod party;
 
 const STALE: Duration = Duration::from_millis(250);
 const BUTTON_MASK: u16 = 0x3fff;

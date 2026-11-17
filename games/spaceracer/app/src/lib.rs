@@ -316,7 +316,7 @@ impl Racer {
             for (i, seat) in p.seats.iter().enumerate().take(self.race.drivers.len()) {
                 self.race.drivers[i].name = seat.name.clone();
                 self.race.drivers[i].bot = seat.ai;
-                if let Some(profile) = p.client.state.player(&seat.player_id) {
+                if let Some(profile) = p.host.client.state.player(&seat.player_id) {
                     self.visuals
                         .faces
                         .update(&mut self.visuals.scene, i, profile);
@@ -505,7 +505,7 @@ impl Game for Racer {
     }
     fn loading(&mut self, percent: u32, step: &str) {
         if let Some(p) = &mut self.party {
-            p.client.loading(percent, step);
+            p.host.loading(percent, step);
         }
     }
     fn tick(&mut self, controls: &[Controls]) {
@@ -591,7 +591,7 @@ impl Game for Racer {
                 self.party.as_mut().unwrap().ready();
                 self.ready = false;
             }
-            if !self.party.as_ref().unwrap().running {
+            if !self.party.as_ref().unwrap().running() {
                 return;
             }
         }
@@ -678,7 +678,7 @@ impl Game for Racer {
         }
     }
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
-        let frozen = self.menu.is_some() || self.party.as_ref().is_some_and(|p| !p.running);
+        let frozen = self.menu.is_some() || self.party.as_ref().is_some_and(|p| !p.running());
         let alpha = if frozen { 1. } else { frame.alpha };
         self.visuals.update(&self.race, &self.previous, alpha)?;
         let mut light = self.visuals.light(&self.race);
@@ -876,7 +876,7 @@ impl Game for Racer {
         })
     }
     fn state(&self) -> Option<String> {
-        Some(json!({"menu_random":{"world":self.random_biome,"difficulty":self.random_difficulty,"seed":self.random_seed},"track_type":spaceracer::generation::Recipe::name_for_seed(self.seed),"active_track_type":self.race.world.centreline.recipe.name,"stage_shadow_cache":self.visuals.scene.stage_sun,"flight_state":self.race.drivers.iter().map(|d|json!({"position":d.motion.air.position,"velocity":d.motion.air.velocity,"frame":d.motion.air.frame.to_cols_array(),"time":d.motion.air.time})).collect::<Vec<_>>(),"weapon_state":self.race.drivers.iter().map(|d|json!({"item":d.item,"active":d.active,"remaining":d.active_time,"shots":d.shot_count,"target":d.sentry_target,"warp_fx":d.warp_fx})).collect::<Vec<_>>(),"projectiles":self.race.projectiles.iter().map(|p|json!({"target":p.target,"locked":p.locked,"terminal":p.terminal,"position":p.position,"age":p.time})).collect::<Vec<_>>(),"victory_age":self.race.drivers.iter().map(|d|d.victory.as_ref().map(|v|v.age)).collect::<Vec<_>>(),"seed":self.seed,"biome":BIOMES[self.biome],"difficulty":DIFFICULTIES[self.difficulty],"players":self.players,"clock":self.race.clock,"countdown":self.race.countdown,"paused":self.menu.is_some(),"pilots":self.race.pilots,"inputs":self.race.drivers.iter().map(|d|d.input).collect::<Vec<_>>(),"stage":self.visuals.stage.counts,"debris":self.visuals.crash_fx.active_pieces(),"face_revisions":self.visuals.faces.revisions,"settings":self.preferences.values,"active_laps":self.race.laps,"pickup_count":self.race.pickups.len(),"pilot_names":self.race.drivers.iter().map(|d|&d.name).collect::<Vec<_>>(),"host_seats":self.party.as_ref().map(|p|p.seats.iter().map(|s|s.index).collect::<Vec<_>>()),"bots":self.race.drivers.iter().map(|d|d.bot).collect::<Vec<_>>(),"live_settings":{"refill":self.race.balance.refill_rate,"recovery":self.race.balance.respawn_seconds},"host_phase":self.party.as_ref().map(|p|p.client.state.phase.as_str()),"script_error":self.race.script_error,"error":self.fatal}).to_string())
+        Some(json!({"menu_random":{"world":self.random_biome,"difficulty":self.random_difficulty,"seed":self.random_seed},"track_type":spaceracer::generation::Recipe::name_for_seed(self.seed),"active_track_type":self.race.world.centreline.recipe.name,"stage_shadow_cache":self.visuals.scene.stage_sun,"flight_state":self.race.drivers.iter().map(|d|json!({"position":d.motion.air.position,"velocity":d.motion.air.velocity,"frame":d.motion.air.frame.to_cols_array(),"time":d.motion.air.time})).collect::<Vec<_>>(),"weapon_state":self.race.drivers.iter().map(|d|json!({"item":d.item,"active":d.active,"remaining":d.active_time,"shots":d.shot_count,"target":d.sentry_target,"warp_fx":d.warp_fx})).collect::<Vec<_>>(),"projectiles":self.race.projectiles.iter().map(|p|json!({"target":p.target,"locked":p.locked,"terminal":p.terminal,"position":p.position,"age":p.time})).collect::<Vec<_>>(),"victory_age":self.race.drivers.iter().map(|d|d.victory.as_ref().map(|v|v.age)).collect::<Vec<_>>(),"seed":self.seed,"biome":BIOMES[self.biome],"difficulty":DIFFICULTIES[self.difficulty],"players":self.players,"clock":self.race.clock,"countdown":self.race.countdown,"paused":self.menu.is_some(),"pilots":self.race.pilots,"inputs":self.race.drivers.iter().map(|d|d.input).collect::<Vec<_>>(),"stage":self.visuals.stage.counts,"debris":self.visuals.crash_fx.active_pieces(),"face_revisions":self.visuals.faces.revisions,"settings":self.preferences.values,"active_laps":self.race.laps,"pickup_count":self.race.pickups.len(),"pilot_names":self.race.drivers.iter().map(|d|&d.name).collect::<Vec<_>>(),"host_seats":self.party.as_ref().map(|p|p.seats.iter().map(|s|s.index).collect::<Vec<_>>()),"bots":self.race.drivers.iter().map(|d|d.bot).collect::<Vec<_>>(),"live_settings":{"refill":self.race.balance.refill_rate,"recovery":self.race.balance.respawn_seconds},"host_phase":self.party.as_ref().map(|p|p.host.client.state.phase.as_str()),"script_error":self.race.script_error,"error":self.fatal}).to_string())
     }
     fn command(&mut self, cmd: &str) -> Result<String, String> {
         let args: Vec<_> = cmd.split_whitespace().collect();

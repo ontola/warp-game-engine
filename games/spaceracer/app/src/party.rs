@@ -8,37 +8,28 @@ pub enum Event {
     Setting(String, Value),
 }
 pub struct Party {
-    pub client: Client,
-    pub session: String,
+    pub host: gamenight::party::Party,
     pub seats: Vec<Seat>,
-    pub running: bool,
     pub declarations: Value,
-    finished: bool,
 }
 impl Party {
     pub fn connect(declarations: Value) -> Result<Option<Self>, String> {
         Ok(Client::connect_from_env("spaceracer")?.map(|client| Self {
-            client,
-            session: String::new(),
+            host: gamenight::party::Party::new(client),
             seats: vec![],
-            running: false,
-            finished: false,
             declarations,
         }))
     }
+    pub fn running(&self) -> bool {
+        self.host.running()
+    }
     pub fn screen(&self) -> app::Screen {
-        if !self.client.launched_by_daemon {
-            app::Screen::Normal
-        } else if self.running {
-            app::Screen::Fullscreen
-        } else {
-            app::Screen::Hidden
-        }
+        app::Screen::for_party(self.host.client.launched_by_daemon, self.host.running())
     }
     pub fn poll(&mut self) -> Vec<Event> {
         let mut events = vec![];
         loop {
-            let commands = self.client.poll();
+            let commands = self.host.client.poll();
             if commands.is_empty() {
                 break;
             }
@@ -48,31 +39,31 @@ impl Party {
             for cmd in commands {
                 match cmd {
                     Command::Connected => {
-                        let _ = self.client.declare_settings(self.declarations.clone());
-                        let _ = self.client.declare_actions(
+                        let _ = self.host.client.declare_settings(self.declarations.clone());
+                        let _ = self.host.client.declare_actions(
                             json!([{"key":"new_race","label":"New race","confirm":true}]),
                         );
                     }
                     Command::Prepare { session, mut seats } => {
                         seats.sort_by_key(|s| (s.ai, s.index));
-                        self.session = session;
+                        self.host.prepare(session);
                         self.seats = seats;
-                        self.running = false;
-                        self.finished = false;
-                        let _ = self.client.notify_participation(&self.session, false);
+                        let _ = self.host.client.notify_participation(&self.host.session, false);
                         events.push(Event::Prepare);
                     }
-                    Command::Start { session } | Command::Resume { session }
-                        if session == self.session =>
-                    {
-                        self.running = true
+                    Command::Start { session } => {
+                        self.host.start(&session);
                     }
-                    Command::Pause { session } if session == self.session => self.running = false,
-                    Command::Dispose { session } if session == self.session => {
-                        self.running = false;
-                        self.session.clear();
+                    Command::Resume { session } => {
+                        self.host.resume(&session);
                     }
-                    Command::Disconnected(_) => self.running = false,
+                    Command::Pause { session } => {
+                        self.host.pause(&session);
+                    }
+                    Command::Dispose { session } => {
+                        self.host.dispose(&session);
+                    }
+                    Command::Disconnected(_) => self.host.disconnected(),
                     Command::Action { key, .. } if key == "new_race" => events.push(Event::NewRace),
                     Command::Setting { key, value } => events.push(Event::Setting(key, value)),
                     Command::PlayersUpdated { mut seats } | Command::Roster { mut seats } => {
@@ -83,7 +74,7 @@ impl Party {
                             if let Some(new) = seats
                                 .iter()
                                 .filter(|s| {
-                                    s.ai || self.client.state.player(&s.player_id).is_some()
+                                    s.ai || self.host.client.state.player(&s.player_id).is_some()
                                 })
                                 .find(|s| {
                                     if old.player_id.is_empty() {
@@ -111,24 +102,24 @@ impl Party {
         events
     }
     pub fn ready(&mut self) {
-        if !self.session.is_empty() {
-            let _ = self.client.notify_ready(&self.session);
+        if !self.host.session.is_empty() {
+            let _ = self.host.client.notify_ready(&self.host.session);
         }
     }
     pub fn new_race(&mut self) {
-        self.finished = false;
+        self.host.finished = false;
     }
     pub fn finished(&mut self) {
-        if !self.finished {
-            let _ = self.client.notify_finished(&self.session);
-            self.finished = true;
+        if !self.host.finished {
+            let _ = self.host.client.notify_finished(&self.host.session);
+            self.host.finished = true;
         }
     }
     /// Driving input per seat, plus every human seat's pad merged into one
     /// menu pad. Start opens the in-game race menu; Back never reaches the
     /// game (the host keeps it for the lobby).
     pub fn controls(&mut self) -> (Vec<Controls>, app::Controls) {
-        let _ = self.client.report_activity();
+        let _ = self.host.client.report_activity();
         let now = std::time::Instant::now();
         let mut menu = app::Controls::default();
         let drive = self
@@ -138,7 +129,7 @@ impl Party {
                 let p = if seat.ai {
                     gamenight::Pad::default()
                 } else {
-                    self.client.state.pad_for_seat(seat.index, now, false)
+                    self.host.client.state.pad_for_seat(seat.index, now, false)
                 };
                 let l = p.stick(0);
                 let r = p.stick(1);
@@ -264,11 +255,8 @@ mod tests {
         })
         .unwrap();
         let mut p = Party {
-            client,
-            session: String::new(),
+            host: gamenight::party::Party::new(client),
             seats: vec![],
-            running: false,
-            finished: false,
             declarations: json!([]),
         };
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -282,7 +270,7 @@ mod tests {
                 }
             }
             match stage {
-                0 if p.running => {
+                0 if p.running() => {
                     let (c, _) = p.controls();
                     if c.len() == 2 && c[1].drive.throttle > 0.99 {
                         assert!(
@@ -293,16 +281,16 @@ mod tests {
                         ack_tx.send(()).unwrap();
                     }
                 }
-                1 if !p.running => {
+                1 if !p.running() => {
                     stage = 2;
                     ack_tx.send(()).unwrap();
                 }
-                2 if p.running => {
+                2 if p.running() => {
                     stage = 3;
                     ack_tx.send(()).unwrap();
                 }
-                3 if p.session.is_empty() => {
-                    assert!(!p.running);
+                3 if p.host.session.is_empty() => {
+                    assert!(!p.running());
                     ack_tx.send(()).unwrap();
                     stage = 4;
                     break;
