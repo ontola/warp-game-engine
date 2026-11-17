@@ -3,7 +3,7 @@
 use std::sync::OnceLock;
 pub(crate) fn contains(sorted: &[usize], first: usize, count: usize) -> bool {
     static INDEXED: OnceLock<bool> = OnceLock::new();
-    if *INDEXED.get_or_init(||std::env::var("KERN_OWNER_RANGE_INDEX").as_deref()==Ok("1")) {
+    if *INDEXED.get_or_init(||crate::switches::OWNER_RANGE_INDEX.on()) {
         indexed(sorted,first,count)
     } else {
         let end=first.saturating_add(count);

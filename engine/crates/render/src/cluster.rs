@@ -353,7 +353,7 @@ fn protect_card_coverage(vertices: &[Vertex], groups: &mut [[f32; 5]], pending: 
 /// ThinPieces, or ThinFoliage's edge collapse with KERN_THIN_PIECES=0.
 pub fn thin_source_policy() -> SimplificationPolicy {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *ON.get_or_init(|| std::env::var("KERN_THIN_PIECES").as_deref() != Ok("0")) {
+    if *ON.get_or_init(|| !crate::switches::THIN_PIECES.off()) {
         SimplificationPolicy::ThinPieces
     } else {
         SimplificationPolicy::ThinFoliage

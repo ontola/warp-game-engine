@@ -94,7 +94,7 @@ impl Damage {
             let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("shadow damage"),layout:&layout,entries:&[&uniform,sources,volumes,choices,&history,&mask].iter().enumerate().map(|(i,b)|wgpu::BindGroupEntry {binding:i as u32,resource:b.as_entire_binding()}).collect::<Vec<_>>()});
             let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("shadow damage"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
             let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("shadow damage"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/shadow_damage.wgsl").into())});
-            let terrain_lod=[("TERRAIN_LOD_DAMAGE",if std::env::var("KERN_SUN_TERRAIN_LOD_DAMAGE").as_deref()==Ok("1") {1.0} else {0.0})];
+            let terrain_lod=[("TERRAIN_LOD_DAMAGE",if crate::switches::SUN_TERRAIN_LOD_DAMAGE.on() {1.0} else {0.0})];
             let pipeline=|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some(entry),layout:Some(&pl),module:&module,entry_point:Some(entry),compilation_options:wgpu::PipelineCompilationOptions {constants:&terrain_lod,..Default::default()},cache:gpu.pipeline_cache()});
             let clear_layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("shadow damage clear"),entries:&[wgpu::BindGroupLayoutEntry {binding:0,visibility:wgpu::ShaderStages::VERTEX,count:None,ty:wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None}}]});
             let clear_pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("shadow damage clear"),bind_group_layouts:&[Some(&clear_layout)],immediate_size:0});
@@ -143,7 +143,7 @@ impl Damage {
     /// (its masked tiles must be cleared and redrawn this frame).
     pub fn encode_maps(&mut self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,epoch:u64,maps:&[MapRequest<'_>])->Result<Vec<bool>,String> {
         static REPORT:std::sync::OnceLock<bool>=std::sync::OnceLock::new();
-        let report=*REPORT.get_or_init(||std::env::var("KERN_SUN_DAMAGE_REPORT").as_deref()==Ok("1"));
+        let report=*REPORT.get_or_init(||crate::switches::SUN_DAMAGE_REPORT.on());
         if let Some((staging,slots))=self.report.take() {
             let (tx,rx)=std::sync::mpsc::channel();
             staging.slice(..).map_async(wgpu::MapMode::Read,move|r|{let _=tx.send(r);});

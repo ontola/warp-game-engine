@@ -45,7 +45,7 @@ pub fn full_sampled_textures() -> u32 { crate::frame::shade_sampled_textures() }
 pub fn needed(limits: &wgpu::Limits) -> bool {
     limits.max_storage_buffers_per_shader_stage < FULL_STORAGE_BUFFERS
         || limits.max_sampled_textures_per_shader_stage < full_sampled_textures()
-        || std::env::var("KERN_PORTABLE").as_deref() == Ok("1")
+        || crate::switches::PORTABLE.on()
 }
 
 pub(crate) fn wanted(gpu: &Gpu) -> bool { needed(&gpu.limits) }
@@ -193,7 +193,7 @@ mod limit_tests {
         assert!(n >= 20 && n <= 32, "shade binds {n} sampled textures per stage; gpu.rs asks for at most 32");
         let mut limits = wgpu::Limits { max_storage_buffers_per_shader_stage: FULL_STORAGE_BUFFERS, ..wgpu::Limits::default() };
         limits.max_sampled_textures_per_shader_stage = n;
-        if std::env::var("KERN_PORTABLE").as_deref() != Ok("1") { assert!(!needed(&limits)); }
+        if !crate::switches::PORTABLE.on() { assert!(!needed(&limits)); }
         limits.max_sampled_textures_per_shader_stage = n - 1;
         assert!(needed(&limits));
         // WebGPU's guaranteed limits (16 sampled textures: phones, many
