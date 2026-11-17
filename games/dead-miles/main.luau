@@ -66,7 +66,7 @@ local KNOBS = {
 	day_alert = 1.8, -- how much further the dead see in daylight
 	day_speed = 1.3, -- how much faster they move in daylight
 	trap = 0, -- seconds inside a building before the dead outside close in on it (0: off; noise does it)
-	turns = 0.35, -- chance the way turns north or south at a chunk
+	turns = 0.55, -- chance the way turns north or south at a chunk
 	encounters = 0.35, -- chance of an encounter in a chunk
 	autopilot = 0, -- 1: bots drive the people too (demos, store clips, tests)
 }
@@ -705,8 +705,9 @@ local function add_chunk()
 	local prev = s.zcs[index - 1] or 0
 	local zc = prev
 	if index > 2 and in_day > 0 and in_day < 7 and random.chance(KNOBS.turns) then
-		local dz = random.range(12, 22) * (if random.chance(0.5) then 1 else -1)
-		if math.abs(prev + dz) > 60 then dz = -dz end
+		-- Long enough to feel like walking up or down the screen for a while.
+		local dz = random.range(24, 54) * (if random.chance(0.5) then 1 else -1)
+		if math.abs(prev + dz) > 160 then dz = -dz end
 		zc = prev + dz
 	end
 	s.zcs[index] = zc
@@ -909,6 +910,7 @@ local function new_run()
 		zcs = {},
 		min_x = 0,
 		front = 0,
+		route = 0, -- metres walked along the way, turns included
 		start_x = 4,
 		phase = "play",
 		pressure = 0.1,
@@ -1468,7 +1470,7 @@ local function make_camp()
 	s.camp_short = short
 	s.pressure = 0
 	s.dir = { mode = "calm", t = 20, spawn_t = 8 }
-	game.log("Dead Miles: shelter " .. s.day .. ", " .. math.floor(s.front - s.start_x) .. " m, " .. s.food .. " food left")
+	game.log("Dead Miles: shelter " .. s.day .. ", " .. math.floor(s.route) .. " m, " .. s.food .. " food left")
 	s.day += 1
 	s.camp_used = s.camp
 	s.camp = nil
@@ -2023,6 +2025,16 @@ local function camera_step(dt)
 	local c, spread = group_center()
 	s.center = c
 	s.front = math.max(s.front, c.x)
+	-- Along the way: east, plus every street walked up or down.
+	local i = math.floor(s.front / CHUNK) + 1
+	local r = s.front - s.start_x
+	for j = 2, i - 1 do r += math.abs((s.zcs[j] or 0) - (s.zcs[j - 1] or 0)) end
+	local zc, prev = s.zcs[i] or 0, s.zcs[i - 1] or 0
+	if zc ~= prev then
+		local done = if s.front - (i - 1) * CHUNK > land.TURN then 1 else math.clamp((c.z - prev) / (zc - prev), 0, 1)
+		r += math.abs(zc - prev) * done
+	end
+	s.route = math.max(s.route, r)
 	s.min_x = math.max(s.min_x, c.x - BEHIND)
 	if not s.cam then s.cam = c end
 	s.cam = s.cam + (v(c.x + 2, 0, c.z) - s.cam) * math.min(1, dt * 3)
@@ -2435,7 +2447,7 @@ local function tick(dt, input)
 	if standing_count() == 0 and #s.survivors > 0 and not alone then
 		s.phase = "over"
 		s.over_t = 7
-		s.walked = math.floor(s.front - s.start_x)
+		s.walked = math.floor(s.route)
 		s.best = math.max(s.best, s.walked)
 		count("wipes")
 		sfx("down", s.center, { pitch = 0.6 })
@@ -2564,7 +2576,7 @@ local function draw()
 	if s.phase == "camp" then
 		hud.box(0, 0, W, H, { 0.02, 0.02, 0.03, 0.85 })
 		hud.text("NIGHT " .. (s.day - 1), 0, H * 0.38, { size = 64 * k, align = "center", width = W, color = "#f4efe6" })
-		hud.text(math.floor(s.front - s.start_x) .. " m walked", 0, H * 0.38 + 78 * k, { size = 26 * k, align = "center", width = W, color = "#b8b0a0" })
+		hud.text(math.floor(s.route) .. " m walked", 0, H * 0.38 + 78 * k, { size = 26 * k, align = "center", width = W, color = "#b8b0a0" })
 		if s.camp_short > 0 then
 			hud.text("not enough food", 0, H * 0.38 + 118 * k, { size = 22 * k, align = "center", width = W, color = "#ff8a6a" })
 		end
@@ -2579,7 +2591,7 @@ local function draw()
 	-- The battery as a bar.
 	hud.box(x + 210 * k, y + 4 * k, 16 * k, 16 * k, ITEM_COLORS.battery)
 	bar(x + 234 * k, y + 8 * k, 70 * k, 8 * k, s.battery / 100, if s.battery < 15 then "#ff6a4a" else ITEM_COLORS.battery)
-	hud.text("DAY " .. s.day .. "   " .. math.max(0, math.floor(s.front - s.start_x)) .. " m", W - 260 * k, y, { size = 22 * k, width = 240 * k, align = "right", color = "#f4efe6" })
+	hud.text("DAY " .. s.day .. "   " .. math.max(0, math.floor(s.route)) .. " m", W - 260 * k, y, { size = 22 * k, width = 240 * k, align = "right", color = "#f4efe6" })
 
 	for _, u in s.survivors do
 		if u.pos and u.state ~= "gone" then

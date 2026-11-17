@@ -452,6 +452,70 @@ local function barricade(c, x, z0, z1)
 	end
 end
 
+-- What stops you at a closed-off street: sandbags or planks in town, a
+-- fallen trunk out of it. axis "x": a line along x at z = at, from a to b;
+-- "z": across the road at x = at.
+local function blockade(c, biome, axis, at, a, b)
+	if axis == "z" and (biome == "city" or biome == "suburb" or biome == "farm") then
+		barricade(c, at, a, b)
+		return
+	end
+	local town = biome == "city" or biome == "suburb"
+	local look = if town then { color = PROP.sandbag } else { color = "#5a4632" }
+	local h = if town then 0.7 else 0.55
+	if axis == "x" then
+		box(c, a, at - 0.35, b, at + 0.35, h, look)
+		if town then
+			for x = a + 0.3, b - 0.3, 0.55 do
+				deco(c, "cube", v(x, 0.78, at + random.range(-0.05, 0.05)), v(0.5, 0.18, 0.5), PROP.sandbag, { rot = v(0, random.range(-0.3, 0.3), 0) })
+			end
+		end
+	else
+		box(c, at - 0.3, a, at + 0.3, b, h, look)
+	end
+end
+
+-- A band beside a street that runs north or south, from z0 to z1: near is
+-- the x of its edge by the street, side -1 west of it, 1 east.
+local function side_fill(c, biome, look, near, side, z0, z1)
+	if z1 - z0 < 2 then return end
+	local function x(d) return near + side * d end
+	if biome == "city" then
+		-- Shells of blocks with gaps of rubble between.
+		local z = z0
+		while z < z1 - 1 do
+			local len = math.min(random.range(6, 12), z1 - z)
+			if random.chance(0.8) then
+				box(c, x(0.4), z + 0.2, x(random.range(8, 12)), z + len - 0.2, random.range(5, 11), { color = look.walls[random.int(1, #look.walls)] })
+			else
+				rubble(c, x(2), z + len / 2, 1.4, { color = DEBRIS[random.int(1, #DEBRIS)] }, random.int(4, 8))
+				box(c, x(2.5), z + 0.2, x(12), z + len - 0.2, random.range(0.6, 1.4), { color = DEBRIS[random.int(1, #DEBRIS)] })
+			end
+			z += len
+		end
+	elseif biome == "suburb" then
+		-- Hedges along the pavement, sheds and gardens behind.
+		box(c, x(0.4), z0 + 0.3, x(0.8), z1 - 0.3, 0.9, { color = PROP.hedge })
+		local z = z0
+		while z < z1 - 4 do
+			local len = math.min(random.range(7, 11), z1 - z)
+			if random.chance(0.5) then
+				box(c, x(3), z + 1, x(random.range(7, 9)), z + len - 1, random.range(2.6, 3.4), { color = look.walls[random.int(1, #look.walls)] })
+			end
+			tree(c, x(random.range(9, 12)), z + len / 2)
+			z += len
+		end
+	elseif biome == "forest" then
+		for _ = 1, math.floor((z1 - z0) / 1.6) do tree(c, x(random.range(1.2, 12)), random.range(z0, z1), true) end
+		for _ = 1, math.floor((z1 - z0) / 8) do rock(c, x(random.range(1.5, 10)), random.range(z0, z1)) end
+	else -- farm
+		box(c, x(0.4), z0, x(0.52), z1, 0.7, { color = "#8b6b4a" })
+		local crop = CROP[random.int(1, #CROP)]
+		for xd = 2, 11, 1.4 do flat(c, x(xd), z0 + 0.5, x(xd + 0.6), z1 - 0.5, 0.03, crop) end
+		if random.chance(0.4) then tree(c, x(random.range(4, 11)), random.range(z0, z1)) end
+	end
+end
+
 ----------------------------------------------------------------------------
 -- One chunk per biome
 
@@ -585,22 +649,41 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 	local lo, hi = math.min(zc, zc_prev), math.max(zc, zc_prev)
 	add(c, world.spawn("cube", { pos = v((x0 + x1) / 2, -0.5, (lo + hi) / 2), size = v(M.CHUNK, 1, hi - lo + HZ * 2 + 30), color = look.ground, roughness = 1, solid = false, tag = "ground" }))
 	if turn then
-		-- The street that turns: from the old centre to the new one.
+		-- The street that turns: from the old centre to the new one. Now
+		-- and then it is a crossroads: the street goes on past the corner
+		-- and the old road on past the turn, both closed off.
 		local half = if biome == "city" then 3.2 else 2.6
+		local dir = if zc > zc_prev then 1 else -1
+		local far = zc + dir * half
+		local cross = random.chance(if biome == "forest" then 0.3 else 0.55)
+		local town = biome == "city" or biome == "suburb"
+		local n0 = #c.containers
 		flat(c, x0, lo - half, x0 + M.TURN, hi + half, 0.004, look.path)
-		if biome == "city" or biome == "suburb" then
-			-- The kerb on the far side, up to where the new path leaves.
-			if zc > zc_prev then
-				flat(c, x0 + M.TURN, zc_prev - half, x0 + M.TURN + 1.2, zc - half, 0.008, look.edge)
+		if cross then
+			flat(c, x0, far, x0 + M.TURN, far + dir * 12, 0.004, look.path)
+			flat(c, x0 + M.TURN, zc_prev - half, x0 + M.TURN + 13, zc_prev + half, 0.004, look.path)
+			blockade(c, biome, "x", far + dir * 3, x0 - 0.4, x0 + M.TURN + 0.4)
+			blockade(c, biome, "z", x0 + M.TURN + 0.9, zc_prev - half - 0.3, zc_prev + half + 0.3)
+			if biome ~= "forest" then
+				-- A pile of dead cars behind each, for good.
+				wreck(c, x0 + 2.2, far + dir * 8)
+				wreck(c, x0 + M.TURN - 2.2, far + dir * 9.5)
+				wreck(c, x0 + M.TURN + 6, zc_prev + random.range(-1, 1))
 			else
-				flat(c, x0 + M.TURN, zc + half, x0 + M.TURN + 1.2, zc_prev + half, 0.008, look.edge)
+				for _ = 1, 4 do tree(c, x0 + random.range(0.5, M.TURN - 0.5), far + dir * random.range(6, 11), true) end
+			end
+		end
+		if town then
+			-- The kerb on the far side, up to where the new path leaves
+			-- (cut where the old road goes on).
+			if cross then
+				flat(c, x0 + M.TURN, zc_prev + dir * half, x0 + M.TURN + 1.2, zc - dir * half, 0.008, look.edge)
+				flat(c, x0 + M.TURN, far, x0 + M.TURN + 1.2, far + dir * 12, 0.008, look.edge)
+			else
+				flat(c, x0 + M.TURN, zc_prev - dir * half, x0 + M.TURN + 1.2, zc - dir * half, 0.008, look.edge)
 			end
 			-- And on the near side, past where the old path comes in.
-			if zc > zc_prev then
-				flat(c, x0 - 1.2, zc_prev + half, x0, hi + half, 0.008, look.edge)
-			else
-				flat(c, x0 - 1.2, lo - half, x0, zc_prev - half, 0.008, look.edge)
-			end
+			flat(c, x0 - 1.2, zc_prev + dir * half, x0, far + (if cross then dir * 12 else 0), 0.008, look.edge)
 			-- Unmarked asphalt reads as a hole at night: a centre line,
 			-- patches, and a lit lamp on the corner.
 			local mx = x0 + M.TURN / 2
@@ -614,13 +697,29 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 				local px, pz = random.range(x0 + 0.5, x0 + M.TURN - 2), random.range(lo, hi)
 				flat(c, px, pz, px + random.range(1, 2.2), pz + random.range(0.8, 2), 0.006, "#3a3a3c")
 			end
-			local lz = (zc + zc_prev) / 2
-			local lx = x0 + M.TURN + 0.6
-			box(c, lx - 0.09, lz - 0.09, lx + 0.09, lz + 0.09, 4.2, { color = "#3a3d42", roughness = 0.6, metal = 0.6 })
-			deco(c, "cube", v(lx - 0.5, 4.15, lz), v(0.3, 0.14, 0.5), "#fff0c8", { emissive = 1.5 })
-			-- shift() below moves recorded z by zc; this one is already placed.
-			table.insert(c.lamps, { pos = v(lx - 0.5, 4, lz - zc), flicker = false, seed = random.range(0, 10) })
+			for lz = lo + 8, hi - 4, 16 do
+				local lx = x0 + M.TURN + 0.6
+				box(c, lx - 0.09, lz - 0.09, lx + 0.09, lz + 0.09, 4.2, { color = "#3a3d42", roughness = 0.6, metal = 0.6 })
+				deco(c, "cube", v(lx - 0.5, 4.15, lz), v(0.3, 0.14, 0.5), "#fff0c8", { emissive = 1.5 })
+				-- shift() below moves recorded z by zc; this one is already placed.
+				table.insert(c.lamps, { pos = v(lx - 0.5, 4, lz - zc), flicker = false, seed = random.range(0, 10) })
+			end
 		end
+		-- Both sides of the street, where neither road's lots are: ground
+		-- to the west, and houses, ruins, trees or fields along it.
+		add(c, world.spawn("cube", { pos = v(x0 - 7, -0.51, (lo + hi) / 2), size = v(14, 1, hi - lo + HZ * 2), color = look.ground, roughness = 1, solid = false, tag = "ground" }))
+		local ea, eb = zc_prev - dir * HZ, zc - dir * HZ
+		if cross then
+			side_fill(c, biome, look, x0 + M.TURN + 1.2, 1, math.min(ea, zc_prev - dir * (half + 0.5)), math.max(ea, zc_prev - dir * (half + 0.5)))
+			side_fill(c, biome, look, x0 + M.TURN + 1.2, 1, math.min(eb, zc_prev + dir * (half + 0.5)), math.max(eb, zc_prev + dir * (half + 0.5)))
+		else
+			side_fill(c, biome, look, x0 + M.TURN + 1.2, 1, math.min(ea, eb), math.max(ea, eb))
+		end
+		local wa, wb = zc_prev + dir * HZ, zc + dir * HZ
+		side_fill(c, biome, look, x0 - 1.2, -1, math.min(wa, wb), math.max(wa, wb))
+		-- Somewhere for the dead to come from, and searched cars stay put.
+		for _ = 1, 2 do table.insert(c.outside, v(x0 + random.range(1, M.TURN - 1), 0, random.range(lo, hi) - zc)) end
+		for i = n0 + 1, #c.containers do c.containers[i].z -= zc end
 	end
 	ZC = zc
 	if biome == "city" then
