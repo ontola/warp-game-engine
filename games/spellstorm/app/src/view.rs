@@ -639,8 +639,8 @@ impl View {
             let edge_y = a.pos.y + tall * front;
             let glow = {
                 let c = crate::fx::el_c(e.cfg().el);
-                let ember = Vec3::new(1.0, 0.45, 0.1);
-                ember.lerp(crate::look::linear3([c[0], c[1], c[2]]), 0.25)
+                let ember = Vec3::new(1.0, 0.1, 0.0);
+                ember.lerp(crate::look::linear3([c[0], c[1], c[2]]), 0.1)
             };
             // Bodies that fall apart go to pieces once (a blow-up after its fuse).
             if let Some(t) = ea.dead_t.filter(|_| !ea.scattered) {

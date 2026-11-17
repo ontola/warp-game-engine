@@ -1,12 +1,18 @@
-fn game_glow(p: vec3<f32>, instance: u32, material: u32) -> vec3<f32> {
+fn game_glow(p: vec3<f32>, instance: u32, material: u32) -> vec4<f32> {
     let b = mk_record(instance);
-    if b == 0u { return vec3<f32>(0.0); }
+    if b == 0u { return vec4<f32>(0.0); }
     let d = mk_depth(p, b);
-    if d < 0.0 { return vec3<f32>(0.0); }
+    if d < 0.0 { return vec4<f32>(0.0); }
     let c = vec3<f32>(bitcast<f32>(aux_word(b + 5u)), bitcast<f32>(aux_word(b + 6u)), bitcast<f32>(aux_word(b + 7u)));
-    // A thin white-hot edge, then its colour cooling over a forearm's length.
-    // Wide enough to read from the game's high camera (Mancave shots).
-    let edge = 1.0 - smoothstep(0.0, 0.06, d);
-    let warm = 1.0 - smoothstep(0.0, 0.6, d);
-    return (c * (warm * warm * 1.1 + edge * 1.2) + vec3<f32>(1.0, 0.75, 0.4) * edge * 0.5) * light.anim.z;
+    // The build front is molten: the bone there is replaced by a saturated
+    // ember band (adding light only washed the pale bone out to cream), a
+    // hot core right at the edge, then it cools back to bone over 0.5 m.
+    let edge = 1.0 - smoothstep(0.0, 0.18, d);
+    let cool = 1.0 - smoothstep(0.0, 0.5, d);
+    let core = 1.0 - smoothstep(0.0, 0.04, d);
+    let a = clamp(edge * 0.95 + cool * 0.3, 0.0, 1.0);
+    // The crypt grade turns plain orange to tan; a red-heavy ember reads
+    // as orange on screen, and the core goes hotter towards yellow.
+    let hot = c * (edge * 0.65 + cool * 0.12) + vec3<f32>(1.0, 0.3, 0.02) * core * 0.8;
+    return vec4<f32>(hot * light.anim.z, a);
 }
