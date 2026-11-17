@@ -7,12 +7,13 @@ fn game_glow(p: vec3<f32>, instance: u32, material: u32) -> vec4<f32> {
     // The build front is molten: the bone there is replaced by a saturated
     // ember band (adding light only washed the pale bone out to cream), a
     // hot core right at the edge, then it cools back to bone over 0.5 m.
-    let edge = 1.0 - smoothstep(0.0, 0.18, d);
+    let edge = 1.0 - smoothstep(0.0, 0.13, d);
     let cool = 1.0 - smoothstep(0.0, 0.5, d);
-    let core = 1.0 - smoothstep(0.0, 0.04, d);
+    let core = 1.0 - smoothstep(0.0, 0.03, d);
     let a = clamp(edge * 0.95 + cool * 0.3, 0.0, 1.0);
     // The crypt grade turns plain orange to tan; a red-heavy ember reads
     // as orange on screen, and the core goes hotter towards yellow.
-    let hot = c * (edge * 0.65 + cool * 0.12) + vec3<f32>(1.0, 0.3, 0.02) * core * 0.8;
+    // The core is well above white so it blooms into a thin molten line.
+    let hot = c * (edge * 0.9 + cool * 0.12) + vec3<f32>(1.0, 0.28, 0.03) * core * 3.0;
     return vec4<f32>(hot * light.anim.z, a);
 }
