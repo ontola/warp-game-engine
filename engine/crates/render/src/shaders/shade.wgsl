@@ -3327,8 +3327,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let car = (m.flags >> 16u) & 0x3fffu;
     var rough_m = m.roughness * orm.y;
     // Procedural bark (scene.rs BARK_LAYER): scale is the plate size in metres.
+    // Not a game surface: their layer -2 - kind is -3 for kind 1.
     var bark_ao = 1.0;
-    if m.layer == -3 && (m.flags & 4608u) == 0u {
+    if m.layer == -3 && (m.flags & (4608u | 32768u)) == 0u {
         let b = bark_surface(p, n, m.scale);
         base = b.albedo;
         rough_m = b.rough;

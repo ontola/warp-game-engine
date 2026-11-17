@@ -110,6 +110,14 @@ player), `hostile` (they shove and run) and `text`.
   and swap to humans as they come near.
 - `lib/figure.module.luau`: people built from boxes with arms and legs on
   pivots, a walk cycle and poses (reach, wind-up, swing, aim, shove, lying).
+- `lib/mat.module.luau` and `surface.wgsl`: materials. Everything is a box
+  or a ball; its colour picks a material kind (`mat.BY_COLOR`), and
+  `surface.wgsl` draws it as asphalt, paving, grass, brick, plaster,
+  concrete, wood, metal, rust, tar roof, roof tiles, leaves, cloth, rubber,
+  glass, car paint, logs or bark around that colour, with a bump from its
+  height. The land and the props spawn and warm through `mat.spawn` and
+  `mat.warm`, so a new colour needs an entry there (and a warm).
+  `debug.go("car")` puts the group by the next car, to look at things.
 - `content/encounters/`: who you meet.
 
 Collision is the game's own: circles against the land's boxes in a 4 m

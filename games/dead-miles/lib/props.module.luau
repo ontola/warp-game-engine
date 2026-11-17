@@ -5,6 +5,7 @@
 -- the solid box; warm() readies every look so nothing stalls mid-game.
 
 local v = vector.create
+local mat = require("lib/mat")
 
 local M = {}
 
@@ -178,7 +179,7 @@ end
 
 function M.warm()
 	for _, d in M.DEFS do
-		for _, t in d.parts do world.warm(t.shape, look(t)) end
+		for _, t in d.parts do mat.warm(t.shape, look(t)) end
 	end
 end
 
@@ -191,18 +192,18 @@ function M.build(name, pos, yaw)
 	if not d then error("props: no prop " .. tostring(name)) end
 	yaw = yaw or 0
 	local ents = {}
-	local root = world.spawn("cube", { pos = pos, rot = v(0, yaw, 0), size = 0.05, visible = false, solid = false })
+	local root = mat.spawn("cube", { pos = pos, rot = v(0, yaw, 0), size = 0.05, visible = false, solid = false })
 	table.insert(ents, root)
 	for _, t in d.parts do
 		local o = look(t)
 		o.pos, o.size, o.rot, o.solid, o.tag = t.pos, t.size, t.rot, false, "deco"
-		world.spawn(t.shape, o, root) -- goes with the root
+		mat.spawn(t.shape, o, root) -- goes with the root
 	end
 	-- The footprint, turned to the nearest quarter.
 	local w, dd, h = d.foot[1], d.foot[2], d.foot[3]
 	local quarter = math.floor(yaw / (math.pi / 2) + 0.5) % 2 == 1
 	if quarter then w, dd = dd, w end
-	local wall = world.spawn("cube", { pos = v(pos.x, h / 2, pos.z), size = v(w, h, dd), visible = false, tag = "wall" })
+	local wall = mat.spawn("cube", { pos = v(pos.x, h / 2, pos.z), size = v(w, h, dd), visible = false, tag = "wall" })
 	table.insert(ents, wall)
 	local rect = { x0 = pos.x - w / 2, x1 = pos.x + w / 2, z0 = pos.z - dd / 2, z1 = pos.z + dd / 2, h = h, id = wall }
 	return { ents = ents, rect = rect, root = root }

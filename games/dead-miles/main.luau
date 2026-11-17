@@ -1727,6 +1727,9 @@ local function search_done(u, c)
 	-- A car is loud to go through: doors, glass, the boot. Cupboards less so.
 	if c.kind == "car" or c.kind == "police" then noise(v(c.x, 0, c.z), KNOBS.car_noise, 0.05) else noise(v(c.x, 0, c.z), 3, 0) end
 	world.set(c.id, { color = "#3b3631", roughness = 0.8, metal = 0, emissive = 0 })
+	if c.reveal then
+		for _, id in c.reveal do world.set(id, { visible = true }) end
+	end
 	count("searches")
 	local e = roll(c.kind)
 	local item = e[2]
@@ -3426,13 +3429,35 @@ end
 -- Console helpers: debug.walk(200) moves everyone 200 m east, debug.peak()
 -- starts a horde, debug.ammo(20) hands out rounds.
 local debug = {
+	-- debug.knob("cam_height", 8): change a knob while it runs.
+	knob = function(name, value)
+		if KNOBS[name] == nil then return "no knob " .. tostring(name) end
+		KNOBS[name] = value
+		return name .. " = " .. tostring(value)
+	end,
 	walk = function(m)
 		s = state.s
 		for _, u in s.survivors do
-			if u.pos then u.pos = collide(u.pos + v(m, 0, 0), RADIUS) end
+			if u.pos then u.pos = collide(v(u.pos.x + m, 0, path_z(u.pos.x + m) + (u.pos.z - path_z(u.pos.x))), RADIUS) end
 			if u.fig then body.place(u.fig, u.pos, u.yaw) end
 		end
 		return "walked " .. m
+	end,
+	-- debug.go("car"): the survivors to the nearest container of that kind
+	-- ahead (any kind without one), to look at it.
+	go = function(kind)
+		s = state.s
+		local u = s.survivors[1]
+		local best = nil
+		for _, c in s.containers do
+			if (kind == nil or c.kind == kind) and c.x > u.pos.x and (best == nil or c.x < best.x) then best = c end
+		end
+		if not best then return "none" end
+		for i, o in s.survivors do
+			if o.pos then o.pos = collide(v(best.x - 1, 0, best.z + 2 + i * 0.6), RADIUS) end
+			if o.fig then body.place(o.fig, o.pos, o.yaw) end
+		end
+		return "at " .. best.kind .. " " .. math.floor(best.x)
 	end,
 	peak = function()
 		s = state.s
