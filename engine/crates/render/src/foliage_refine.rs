@@ -31,10 +31,10 @@ pub const CAMERA_CUT_FLOOR: f32 = 4.0;
 pub const CUT_HYSTERESIS: f32 = 1.25;
 
 fn refine_source() -> String {
-    let floor = std::env::var("KERN_CAMERA_CUT_FLOOR").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite() && *v >= 1.0).unwrap_or(CAMERA_CUT_FLOOR);
-    let hysteresis = std::env::var("KERN_CUT_HYSTERESIS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite() && *v >= 1.0).unwrap_or(CUT_HYSTERESIS);
-    let per_tree = std::env::var("KERN_SOURCE_PER_TREE").as_deref() != Ok("0");
-    let wave = std::env::var("KERN_REFINE_WAVE_PUBLISH").as_deref() != Ok("0");
+    let floor = crate::switches::CAMERA_CUT_FLOOR.parse::<f32>().filter(|v| v.is_finite() && *v >= 1.0).unwrap_or(CAMERA_CUT_FLOOR);
+    let hysteresis = crate::switches::CUT_HYSTERESIS.parse::<f32>().filter(|v| v.is_finite() && *v >= 1.0).unwrap_or(CUT_HYSTERESIS);
+    let per_tree = !crate::switches::SOURCE_PER_TREE.off();
+    let wave = !crate::switches::REFINE_WAVE_PUBLISH.off();
     format!("const CAMERA_CUT_FLOOR: f32 = {floor:?};\nconst CUT_HYSTERESIS: f32 = {hysteresis:?};\nconst SOURCE_PER_TREE: bool = {per_tree};\nconst WAVE_PUBLISH: bool = {wave};\n{}", include_str!("shaders/foliage_refine.wgsl"))
 }
 struct Rounds {cameras:Vec<(glam::Vec3,glam::Vec3,f32)>,stale:u64,full:bool,used:Option<u32>,hint:Option<u32>,encoded:u32,frame:u64,newest:u64,slots:Vec<RoundSlot>}
@@ -77,7 +77,7 @@ impl Refiner {
             rounds:std::sync::Mutex::new(Rounds {cameras:Vec::new(),stale:0,full:false,used:None,hint:None,encoded:0,frame:0,newest:0,slots:(0..2).map(|_|RoundSlot {buffer:gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("foliage refinement rounds readback"),size:4,usage:wgpu::BufferUsages::MAP_READ|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false}),encoded:0,frame:0,pending:None}).collect()})}
     }
     /// Tests keep the budgeted admission unless they ask for the error cut.
-    fn default_fast()->bool {!cfg!(test) && std::env::var("KERN_FOLIAGE_CUT").map_or(true,|v|v!="budget")}
+    fn default_fast()->bool {!cfg!(test) && !crate::switches::FOLIAGE_CUT.is("budget")}
     pub(crate) fn set_error_cut(&self,on:bool) {self.fast.store(on,std::sync::atomic::Ordering::Relaxed);}
     pub(crate) fn error_cut(&self)->bool {self.fast.load(std::sync::atomic::Ordering::Relaxed)}
     /// Reads finished round counts without waiting, starts a readback of the
@@ -110,7 +110,7 @@ impl Refiner {
         }
         // KERN_REFINE_ROUNDS=N (diagnostic): encode exactly N rounds (even,
         // at most the bound), to see what a round costs.
-        let fixed=std::env::var("KERN_REFINE_ROUNDS").ok().and_then(|v|v.parse::<u32>().ok()).map(|n|(n+(n&1)).clamp(2,bound));
+        let fixed=crate::switches::REFINE_ROUNDS.parse::<u32>().map(|n|(n+(n&1)).clamp(2,bound));
         r.frame+=1;r.encoded=fixed.unwrap_or_else(||r.count(bound));r.encoded
     }
     /// A camera that jumps, turns fast or zooms needs refinement the last

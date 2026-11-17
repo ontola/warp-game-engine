@@ -217,6 +217,8 @@ empty_metadata:empty(gpu,wgpu::TextureFormat::Rg32Uint,8),
     /// `finish_frame`, after every view has consumed the old snapshot.
     pub(crate) fn previous_instances(&self)->&wgpu::Buffer {&self.previous_instances}
     pub(crate) fn snapshot_valid(&self)->bool {self.history.lock().unwrap().snapshot_valid}
+    /// Last frame's wind per slot (then the skin table), with `previous_instances`.
+    pub(crate) fn previous_wind(&self)->&wgpu::Buffer {&self.previous_wind}
 
     pub fn render(&self,gpu:&Gpu,encoder:&mut wgpu::CommandEncoder,index:usize,view:MotionView,
         inputs:MotionInputs<'_>,timestamp:Option<(&wgpu::QuerySet,u32)>)->Result<MotionOutput,String> {

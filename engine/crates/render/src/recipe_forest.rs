@@ -34,14 +34,14 @@ pub const PROXY_LEVELS: u32 = 6;
 pub fn aggregate_config() -> Config {
     let base = Config { max_placements: 8192, max_source_triangles: 40_000_000, max_samples: 150_000_000, triangle_refinements: true,
         max_reference_voxels: 262_144, max_diagnostic_steps: 80_000_000,
-        gap_mips: std::env::var("KERN_VOXEL_GAP_MIPS").as_deref() != Ok("0"), ..Default::default() };
+        gap_mips: !crate::switches::VOXEL_GAP_MIPS.off(), ..Default::default() };
     // KERN_BRANCH_BRICKS (experiment, up to 4096): bricks a branch group's
     // level may hold. At 128 only a third of the spruce groups got 3.75 cm
     // cells; the rest started at 7.5 cm (recipe_forest fine_cell_probe).
-    let bricks = std::env::var("KERN_BRANCH_BRICKS").ok().and_then(|v| v.parse::<usize>().ok())
+    let bricks = crate::switches::BRANCH_BRICKS.parse::<usize>()
         .filter(|b| (1..=crate::foliage_volume_data::MAX_PACKED_BRICKS_PER_LEVEL).contains(b)).unwrap_or(base.max_bricks_per_level);
     let base = Config { max_bricks_per_level: bricks, max_total_bricks: base.max_total_bricks * bricks.div_ceil(base.max_bricks_per_level), ..base };
-    let cell = std::env::var("KERN_BRANCH_CELL_M").ok().and_then(|v| v.parse::<f32>().ok())
+    let cell = crate::switches::BRANCH_CELL_M.parse::<f32>()
         .filter(|c| (0.01..base.reference_cell_size).contains(c));
     let Some(cell) = cell else { return base };
     let extra = (base.reference_cell_size / cell).log2().ceil().max(0.0) as u32;
@@ -108,7 +108,7 @@ fn grown_config(base: Config) -> Config {
         max_reference_voxels: base.max_reference_voxels * 16, max_scratch_bytes: base.max_scratch_bytes * 16,
         max_samples: base.max_samples * 16, max_source_triangles: base.max_source_triangles * 4,
         max_diagnostic_steps: base.max_diagnostic_steps * 16, max_build_bytes: base.max_build_bytes.max(4 << 30),
-        estimated_errors: std::env::var("KERN_MEASURED_ERRORS").map_or(true, |v| v == "0"), ..base }
+        estimated_errors: crate::switches::MEASURED_ERRORS.var().map_or(true, |v| v == "0"), ..base }
 }
 
 /// One grown plant without the cache, and the milliseconds of each stage:
@@ -266,7 +266,7 @@ static VIRTUAL_MEMBERS: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// Full plants as virtual members (vegetation_asset AttachLimits): a game's
 /// choice (set_virtual_members), or KERN_VIRTUAL_MEMBERS=1/0 to force it.
 pub fn virtual_members() -> bool {
-    match std::env::var("KERN_VIRTUAL_MEMBERS").as_deref() {
+    match crate::switches::VIRTUAL_MEMBERS.var().as_deref() {
         Ok("1") => true,
         Ok("0") => false,
         _ => VIRTUAL_MEMBERS.load(std::sync::atomic::Ordering::Relaxed),
@@ -649,9 +649,9 @@ mod fine_cell_probe {
     #[ignore]
     fn branch_voxel_levels() {
         let parts = crate::plant_growth_assembly::Parts::for_look(&crate::plant_growth_assembly::Look::norway_spruce());
-        let (plant, ms) = super::cook_grown_stages(crate::plant_growth::Species::norway_spruce(), std::env::var("KERN_PROBE_AGE").ok().and_then(|a| a.parse().ok()).unwrap_or(12), 1, &parts,
+        let (plant, ms) = super::cook_grown_stages(crate::plant_growth::Species::norway_spruce(), crate::switches::PROBE_AGE.parse().unwrap_or(12), 1, &parts,
             crate::plant_growth_assembly::Look::norway_spruce()).unwrap();
-        println!("cell env {:?} bricks {:?}, cook ms {ms:?}", std::env::var("KERN_BRANCH_CELL_M").ok(), std::env::var("KERN_BRANCH_BRICKS").ok());
+        println!("cell env {:?} bricks {:?}, cook ms {ms:?}", crate::switches::BRANCH_CELL_M.get(), crate::switches::BRANCH_BRICKS.get());
         let mut rows: std::collections::BTreeMap<u32, (f32, usize, f64, f64, f64, f64, usize)> = Default::default();
         for asset in plant.voxel_assets() {
             for level in &asset.levels {

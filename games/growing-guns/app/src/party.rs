@@ -7,7 +7,8 @@
 //! party's settings (Godot's `gamenight_settings.gd`) set the match and the
 //! next round's rules.
 use app::{Buttons, Controls};
-use gamenight::{button, Client, Command, Pad, Seat};
+use gamenight::{button, Command, Pad, Seat};
+use gamenight::party::hex_strict;
 use growing_guns::{Modifier, Rules, World, MODIFIERS};
 use serde_json::{json, Value};
 use std::time::Instant;
@@ -98,9 +99,6 @@ impl Settings {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Phase { Idle, Warm, Running, Paused }
-
 /// Profile colours from GameNight, in sRGB.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct PlayerColors {
@@ -109,13 +107,7 @@ pub(crate) struct PlayerColors {
 }
 impl PlayerColors {
     pub fn of(seat: &Seat) -> Self {
-        fn rgb(s: &str) -> Option<[f32; 3]> {
-            let s = s.strip_prefix('#')?;
-            if s.len() != 6 || !s.bytes().all(|v| v.is_ascii_hexdigit()) { return None; }
-            let n = u32::from_str_radix(s, 16).ok()?;
-            Some([16, 8, 0].map(|shift| ((n >> shift) & 255u32) as f32 / 255.))
-        }
-        Self { shirt: rgb(&seat.color), skin: rgb(&seat.skin_color) }
+        Self { shirt: hex_strict(&seat.color), skin: hex_strict(&seat.skin_color) }
     }
 }
 
@@ -132,13 +124,10 @@ pub enum Ev {
 }
 
 pub struct Party {
-    client: Client,
+    host: gamenight::party::Party,
     pub settings: Settings,
-    pub session: String,
-    pub phase: Phase,
     /// The seated humans, in slot order.
     seats: Vec<Seat>,
-    finished: bool,
     triggers: Vec<u32>,
     /// Live control for the session assistant: its description and token file.
     live: Option<(String, std::path::PathBuf)>,
@@ -151,30 +140,29 @@ pub struct Party {
 impl Party {
     /// When launched by a party host (GAMENIGHT=1) or pointed at one (GAMENIGHT_ADDR).
     pub fn connect() -> Option<Party> {
-        match Client::connect_from_env("growing-guns") {
-            Ok(Some(client)) => Some(Party { client, settings: Settings::default(), session: String::new(), phase: Phase::Idle, seats: Vec::new(), finished: false, triggers: Vec::new(), live: None, next_modifier: None, sticks: Default::default() }),
-            Ok(None) => None,
-            Err(e) => { eprintln!("gamenight: {e}"); None }
-        }
+        gamenight::party::Party::connect("growing-guns").map(Party::new)
+    }
+
+    fn new(host: gamenight::party::Party) -> Party {
+        Party { host, settings: Settings::default(), seats: Vec::new(), triggers: Vec::new(), live: None, next_modifier: None, sticks: Default::default() }
     }
 
     /// Under a daemon the window stays minimised until a match starts.
     pub fn screen(&self) -> app::Screen {
-        if !self.client.launched_by_daemon { return app::Screen::Normal; }
-        if self.phase == Phase::Running { app::Screen::Fullscreen } else { app::Screen::Hidden }
+        app::Screen::for_party(self.host.client.launched_by_daemon, self.host.running())
     }
 
     /// Startup progress for the host's loading screen ([`app::Game::loading`]).
-    pub fn loading(&mut self, percent: u32, step: &str) { self.client.loading(percent, step); }
+    pub fn loading(&mut self, percent: u32, step: &str) { self.host.loading(percent, step); }
 
-    pub fn running(&self) -> bool { self.phase == Phase::Running }
+    pub fn running(&self) -> bool { self.host.running() }
 
     fn humans(seats: &[Seat]) -> Vec<Seat> { seats.iter().filter(|s| !s.ai).take(4).cloned().collect() }
 
     pub fn poll(&mut self) -> Vec<Ev> {
         let mut out = Vec::new();
         loop {
-            let cmds = self.client.poll();
+            let cmds = self.host.client.poll();
             if cmds.is_empty() { break; }
             for c in cmds {
                 match c {
@@ -197,26 +185,22 @@ impl Party {
                     }
                     Command::Prepare { session, seats } => {
                         println!("[gamenight] prepare {session} ({} seats)", seats.len());
-                        let _ = self.client.notify_progress(&session, 85, "setting up the match");
+                        self.host.setting_up(&session);
                         self.seats = Self::humans(&seats);
                         // Versus needs two: bots fill the gap (Godot `_configure_meta_from_seats`).
                         let ai = seats.iter().filter(|s| s.ai).count();
                         let bots = ai.max(2usize.saturating_sub(self.seats.len()));
                         out.push(Ev::Prepare { humans: self.seats.clone(), bots });
                         out.push(self.sticks_ev());
-                        self.session = session;
-                        self.phase = Phase::Warm;
-                        self.finished = false;
+                        self.host.prepare(session);
                     }
-                    Command::Start { session } if session == self.session => { println!("[gamenight] start {session}"); self.phase = Phase::Running; }
-                    Command::Pause { session } if session == self.session => self.phase = Phase::Paused,
-                    Command::Resume { session } if session == self.session => self.phase = Phase::Running,
-                    Command::Dispose { session } if session == self.session => {
-                        self.session.clear();
-                        self.phase = Phase::Idle;
+                    Command::Start { session } => if self.host.start(&session) { println!("[gamenight] start {session}"); },
+                    Command::Pause { session } => { self.host.pause(&session); }
+                    Command::Resume { session } => { self.host.resume(&session); }
+                    Command::Dispose { session } => if self.host.dispose(&session) {
                         self.seats.clear();
                         out.push(Ev::Dispose);
-                    }
+                    },
                     Command::Roster { seats } | Command::PlayersUpdated { seats } => {
                         // Names and colours follow the lobby; the seats driving the match stay.
                         let named = Self::humans(&seats);
@@ -229,7 +213,7 @@ impl Party {
                         }
                         out.push(Ev::Profiles(self.seats.clone()));
                     }
-                    Command::Disconnected(e) => { eprintln!("gamenight: {e}"); self.phase = Phase::Idle; }
+                    Command::Disconnected(e) => { eprintln!("gamenight: {e}"); self.host.disconnected(); }
                     Command::Error(e) => eprintln!("gamenight: {e}"),
                     _ => {}
                 }
@@ -246,21 +230,21 @@ impl Party {
         for k in crate::knobs::settings() {
             all.push(json!({"key": k.key, "label": k.label, "kind": "number", "default": k.value, "min": k.min, "max": k.max}));
         }
-        let _ = self.client.declare_settings(Value::Array(all));
-        if let Some((description, file)) = &self.live && let Err(e) = self.client.declare_commands(description, &[], Some(file)) { eprintln!("gamenight: {e}"); }
+        let _ = self.host.client.declare_settings(Value::Array(all));
+        if let Some((description, file)) = &self.live && let Err(e) = self.host.client.declare_commands(description, &[], Some(file)) { eprintln!("gamenight: {e}"); }
     }
 
     /// Let the session assistant change the game through live control.
     pub fn offer_live(&mut self, description: String, token_file: std::path::PathBuf) {
         self.live = Some((description, token_file));
-        if self.client.state.connected { self.declare(); }
+        if self.host.client.state.connected { self.declare(); }
     }
 
     /// A knob changed in the game (live tools, console): the app's slider follows.
     pub fn knob_changed(&mut self, name: &str, value: &str) {
         let Ok(v) = value.trim().parse::<f64>() else { return };
         let key = format!("{}{name}", crate::knobs::SETTING_PREFIX);
-        if let Err(e) = self.client.send_json(json!({"type": "set_setting", "key": key, "value": (v * 100.0).round() as i64})) { eprintln!("gamenight: {e}"); }
+        if let Err(e) = self.host.client.send_json(json!({"type": "set_setting", "key": key, "value": (v * 100.0).round() as i64})) { eprintln!("gamenight: {e}"); }
     }
 
     fn sticks_ev(&self) -> Ev {
@@ -274,43 +258,35 @@ impl Party {
         if self.sticks.get(&seat.player_id).is_some_and(|&old| (old - v).abs() < 0.005) { return; }
         self.sticks.insert(seat.player_id.clone(), v);
         let msg = json!({"type": "set_player_setting", "player_id": seat.player_id, "key": STICK, "value": (v * 100.0).round() as i64});
-        if let Err(e) = self.client.send_json(msg) { eprintln!("gamenight: {e}"); }
+        if let Err(e) = self.host.client.send_json(msg) { eprintln!("gamenight: {e}"); }
     }
 
     /// The picked round has started: the app's buttons go back to Random.
     pub fn next_modifier_used(&mut self) {
-        if self.next_modifier.take().is_some() && let Err(e) = self.client.send_json(json!({"type": "set_setting", "key": NEXT_MODIFIER, "value": RANDOM})) { eprintln!("gamenight: {e}"); }
+        if self.next_modifier.take().is_some() && let Err(e) = self.host.client.send_json(json!({"type": "set_setting", "key": NEXT_MODIFIER, "value": RANDOM})) { eprintln!("gamenight: {e}"); }
     }
 
     /// Change setting `k` from the game's own menu (Godot `_gn_open_advanced`):
     /// here at once, and through GameNight so the phones and lobby show it.
     pub fn set(&mut self, k: usize, value: i64) {
         let Some(key) = self.settings.0.get(k).map(|e| e.0.clone()) else { return };
-        if self.settings.change(&key, &json!(value)) && let Err(e) = self.client.send_json(json!({"type": "set_setting", "key": key, "value": value})) { eprintln!("gamenight: {e}"); }
+        if self.settings.change(&key, &json!(value)) && let Err(e) = self.host.client.send_json(json!({"type": "set_setting", "key": key, "value": value})) { eprintln!("gamenight: {e}"); }
     }
 
     /// The match is built: tell the host, then wait frozen for `start`.
-    pub fn ready(&mut self) {
-        let session = self.session.clone();
-        let _ = self.client.notify_progress(&session, 100, "ready");
-        if let Err(e) = self.client.notify_ready(&session) { eprintln!("gamenight: {e}"); }
-    }
+    pub fn ready(&mut self) { self.host.ready(); }
 
     /// The match is over (once per session).
-    pub fn finished(&mut self) {
-        if self.finished || self.session.is_empty() { return; }
-        self.finished = true;
-        let _ = self.client.notify_finished(&self.session);
-    }
+    pub fn finished(&mut self) { self.host.finished(); }
 
     /// Controls for each seated player this tick, from the party's controllers.
     pub fn controls(&mut self, players: usize, dt: f32) -> Vec<Controls> {
         let now = Instant::now();
-        let _ = self.client.report_activity();
+        let _ = self.host.client.report_activity();
         self.triggers.resize(players, 0);
         (0..players).map(|k| {
             let Some(seat) = self.seats.get(k) else { return Controls::default() };
-            let pad = self.client.state.pad_for_seat(seat.index, now, false);
+            let pad = self.host.client.state.pad_for_seat(seat.index, now, false);
             let c = to_controls(&pad, self.triggers[k], dt);
             self.triggers[k] = c.held.0 & (Buttons::LEFT_TRIGGER | Buttons::RIGHT_TRIGGER);
             c
@@ -339,6 +315,7 @@ pub fn to_controls(pad: &Pad, prev_triggers: u32, dt: f32) -> Controls {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gamenight::Client;
 
     /// The README's status (games/growing-guns/README.md) names what the
     /// game has: every round modifier, party setting and live knob, the
@@ -441,7 +418,7 @@ mod tests {
             }
         });
         let client = Client::connect(gamenight::Config { url: format!("ws://{address}"), game_id: "growing-guns".into(), token: String::new(), launched_by_daemon: true }).unwrap();
-        let mut party = Party { client, settings: Settings::default(), session: String::new(), phase: Phase::Idle, seats: Vec::new(), finished: false, triggers: Vec::new(), live: None, next_modifier: None, sticks: Default::default() };
+        let mut party = Party::new(gamenight::party::Party::new(client));
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         let (mut prepared, mut fired, mut stick, mut recolored) = (None, false, None, false);
         assert_eq!(party.screen(), app::Screen::Hidden);

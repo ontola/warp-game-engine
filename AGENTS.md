@@ -89,6 +89,28 @@ mountain shadows are baked (`procedural_terrain::sun_heightfield` into
 `Scene::terrain_sun`); keep heightfield heights at the -1e9 sentinel for
 procedural terrain, real coarse heights black out pixels in GI/transmittance.
 
+## Checkouts and build output on shared machines
+
+Mancave (Windows, RTX) is shared by many sessions and its disks are nearly
+full. Keep one clone per repository and reuse it:
+
+- `C:\dev\warp-gg` is the only Warp clone. Do not clone again; add a worktree
+  for your task with `git -C C:\dev\warp-gg worktree add C:\dev\wt\<topic>`.
+  Reuse an existing worktree for the same topic. When your task is done (its
+  commits pushed), remove it with `git worktree remove` in the same session.
+- Do not copy a checkout into a dated folder as a baseline; use a worktree at
+  that commit and remove it afterwards.
+- Rust: crate sources are already shared in `%USERPROFILE%\.cargo`. Compiled
+  dependencies are shared through sccache (`RUSTC_WRAPPER=sccache`, cache in
+  `E:\sccache`, 30 GB cap), so a new worktree's first build reuses them. Each
+  worktree keeps its own `target/`; never set a shared `CARGO_TARGET_DIR`,
+  parallel builds would block on its lock and overwrite each other's binaries.
+- Captures and measurements go to `C:\dev\perf\<YYYY-MM-DD-topic>`. Keep only
+  what a log entry needs (a few JPEGs and the numbers; large sequences go to
+  the project's shared files) and delete the rest when the task is done.
+- Delete only folders your task created. Anything else needs the owner's
+  approval.
+
 ## Rules
 
 Preserve attribution, licenses and unrelated work. Never reset or stash another
@@ -156,3 +178,6 @@ Docs describe how things work now; the log records how we got there.
 - `engine/HANDOFF.md` is retired; its history is `engine/docs/log/handoff.md`.
   Do not recreate it.
 - A new `KERN_*` switch gets a row in `engine/docs/renderer-switches.md`.
+  The renderer declares every switch it reads in `render/src/switches.rs` and
+  reads it only through that module; a test there fails on a raw
+  `var("KERN_...")` or on a declared switch missing from the docs.

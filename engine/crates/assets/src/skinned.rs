@@ -212,6 +212,9 @@ fn frame_pair(frames: usize, duration: f32, seconds: f32, looping: bool) -> (usi
 }
 
 impl Character {
+    /// Skinned vertices one actor of this character adds to a scene.
+    pub fn vertex_count(&self) -> usize { self.surfaces.iter().map(|s| s.influences.len()).sum() }
+
     pub fn load(path: &Path) -> Result<Self, String> {
         let manifest: Manifest =
             serde_json::from_slice(&read(path)?).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -386,14 +389,31 @@ impl Character {
         Self::from_rig(path, manifest)
     }
 
-    fn from_rig(path: &Path, manifest: RigFile) -> Result<Self, String> {
+    /// [`Character::load_animation_rig`] from memory: the rig manifest and
+    /// its animation file (for a rig built into the executable).
+    pub fn animation_rig_from_bytes(manifest: &[u8], animation: &[u8]) -> Result<Self, String> {
+        let manifest: RigFile = serde_json::from_slice(manifest).map_err(|e| format!("animation rig: {e}"))?;
+        Self::check_rig(&manifest)?;
+        Self::rig_from(manifest, animation)
+    }
+
+    fn check_rig(manifest: &RigFile) -> Result<(), String> {
         if manifest.version != 1 || manifest.matrix_stride_bytes != 48
             || !(1..=skinning::MAX_JOINTS).contains(&manifest.joint_count)
             || !(1..=32).contains(&manifest.clips.len()) {
             return Err("unsupported animation rig version, layout or count".into());
         }
+        Ok(())
+    }
+
+    fn from_rig(path: &Path, manifest: RigFile) -> Result<Self, String> {
+        Self::check_rig(&manifest)?;
         let base = path.parent().unwrap_or(Path::new("."));
         let animation = read(&source_path(base, &manifest.animation_file)?)?;
+        Self::rig_from(manifest, &animation)
+    }
+
+    fn rig_from(manifest: RigFile, animation: &[u8]) -> Result<Self, String> {
         let mut min = Vec3::splat(f32::INFINITY);
         let mut max = Vec3::splat(f32::NEG_INFINITY);
         if manifest.joints.len() != manifest.joint_count {

@@ -196,7 +196,7 @@ fn run_steps(game: &mut dyn Game, mut headless: Option<&mut Headless>, script: &
         if device.is_none() && step.player >= players.max(1) && has_controls { return Err(format!("step {i}: player {} of {players}", step.player)); }
         let mut replies = Vec::new();
         for c in &step.cmd {
-            match game.command(c) {
+            match game.script_command(c) {
                 Ok(r) => replies.push(json!({ "cmd": c, "ok": true, "reply": r })),
                 Err(e) => { failed += 1; replies.push(json!({ "cmd": c, "ok": false, "error": e })); }
             }

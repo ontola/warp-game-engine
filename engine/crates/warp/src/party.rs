@@ -7,12 +7,12 @@
 //! (`players_updated`); a seat that joins or leaves mid-session joins or
 //! leaves the game without a restart.
 use app::{Buttons, Controls};
-use gamenight::{button, Client, Command, Pad, Seat};
+use gamenight::party::hex;
+use gamenight::{button, Command, Pad, Seat};
 use std::path::PathBuf;
 use std::time::Instant;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Phase { Idle, Warm, Running, Paused }
+pub use gamenight::party::Phase;
 
 /// A seated person or AI seat, as the game sees it.
 #[derive(Clone, Debug, PartialEq)]
@@ -33,10 +33,7 @@ pub enum Ev {
 }
 
 pub struct Party {
-    client: Client,
-    pub session: String,
-    pub phase: Phase,
-    finished: bool,
+    host: gamenight::party::Party,
     triggers: Vec<u32>,
     /// Live control to offer the session assistant: what it can change and
     /// the token file. Declared again after every (re)connect.
@@ -46,57 +43,52 @@ pub struct Party {
 impl Party {
     /// When launched by a party host (GAMENIGHT=1) or pointed at one (GAMENIGHT_ADDR).
     pub fn connect(game_id: &str) -> Option<Party> {
-        match Client::connect_from_env(game_id) {
-            Ok(Some(client)) => Some(Party::new(client)),
-            Ok(None) => None,
-            Err(e) => { eprintln!("gamenight: {e}"); None }
-        }
+        gamenight::party::Party::connect(game_id).map(Party::from_host)
     }
 
-    pub fn new(client: Client) -> Party { Party { client, session: String::new(), phase: Phase::Idle, finished: false, triggers: Vec::new(), live: None } }
+    pub fn new(client: gamenight::Client) -> Party { Party::from_host(gamenight::party::Party::new(client)) }
+
+    fn from_host(host: gamenight::party::Party) -> Party { Party { host, triggers: Vec::new(), live: None } }
+
+    pub fn phase(&self) -> Phase { self.host.phase }
 
     /// Under a daemon the window is on screen only while the match runs: a
     /// pause from the host (Back, Alt+Tab) hands the screen to the lobby.
     /// The game's own Start menu is not a host pause and stays on screen.
     pub fn screen(&self) -> app::Screen {
-        if !self.client.launched_by_daemon { return app::Screen::Normal; }
-        if self.phase == Phase::Running { app::Screen::Fullscreen } else { app::Screen::Hidden }
+        app::Screen::for_party(self.host.client.launched_by_daemon, self.host.running())
     }
 
-    pub fn running(&self) -> bool { self.phase == Phase::Running }
+    pub fn running(&self) -> bool { self.host.running() }
 
     /// Startup progress for the host's loading screen ([`app::Game::loading`]).
-    pub fn loading(&mut self, percent: u32, step: &str) { self.client.loading(percent, step); }
+    pub fn loading(&mut self, percent: u32, step: &str) { self.host.loading(percent, step); }
 
     fn seats(seats: &[Seat]) -> Vec<SeatInfo> { seats.iter().map(SeatInfo::from).collect() }
 
     pub fn poll(&mut self) -> Vec<Ev> {
         let mut out = Vec::new();
         loop {
-            let cmds = self.client.poll();
+            let cmds = self.host.client.poll();
             if cmds.is_empty() { break; }
             for c in cmds {
                 match c {
                     Command::Prepare { session, seats } => {
                         println!("{} [gamenight] prepare {session} ({} seats)", app::manners::stamp(), seats.len());
-                        let _ = self.client.notify_progress(&session, 85, "setting up the match");
+                        self.host.setting_up(&session);
                         out.push(Ev::Prepare(Self::seats(&seats)));
-                        self.session = session;
-                        self.phase = Phase::Warm;
-                        self.finished = false;
+                        self.host.prepare(session);
                     }
-                    Command::Start { session } if session == self.session => { println!("{} [gamenight] start {session}", app::manners::stamp()); self.phase = Phase::Running; }
-                    Command::Pause { session } if session == self.session => { println!("{} [gamenight] pause", app::manners::stamp()); self.phase = Phase::Paused; }
-                    Command::Resume { session } if session == self.session => { println!("{} [gamenight] resume", app::manners::stamp()); self.phase = Phase::Running; }
-                    Command::Dispose { session } if session == self.session => {
+                    Command::Start { session } => if self.host.start(&session) { println!("{} [gamenight] start {session}", app::manners::stamp()); },
+                    Command::Pause { session } => if self.host.pause(&session) { println!("{} [gamenight] pause", app::manners::stamp()); },
+                    Command::Resume { session } => if self.host.resume(&session) { println!("{} [gamenight] resume", app::manners::stamp()); },
+                    Command::Dispose { session } => if self.host.dispose(&session) {
                         println!("{} [gamenight] dispose", app::manners::stamp());
-                        self.session.clear();
-                        self.phase = Phase::Idle;
                         out.push(Ev::Dispose);
-                    }
-                    Command::Roster { seats } | Command::PlayersUpdated { seats } if !self.session.is_empty() => out.push(Ev::Seats(Self::seats(&seats))),
+                    },
+                    Command::Roster { seats } | Command::PlayersUpdated { seats } if !self.host.session.is_empty() => out.push(Ev::Seats(Self::seats(&seats))),
                     Command::Connected => self.declare_live(),
-                    Command::Disconnected(e) => { eprintln!("gamenight: {e}"); self.phase = Phase::Idle; }
+                    Command::Disconnected(e) => { eprintln!("gamenight: {e}"); self.host.disconnected(); }
                     Command::Error(e) => eprintln!("gamenight: {e}"),
                     _ => {}
                 }
@@ -106,55 +98,39 @@ impl Party {
     }
 
     /// The game is built: tell the host, then wait frozen for `start`.
-    pub fn ready(&mut self) {
-        let session = self.session.clone();
-        let _ = self.client.notify_progress(&session, 100, "ready");
-        if let Err(e) = self.client.notify_ready(&session) { eprintln!("gamenight: {e}"); }
-    }
+    pub fn ready(&mut self) { self.host.ready(); }
 
     /// The match is over (once per session): the host moves on.
-    pub fn finished(&mut self) {
-        if self.finished || self.session.is_empty() { return; }
-        self.finished = true;
-        let _ = self.client.notify_finished(&self.session);
-    }
+    pub fn finished(&mut self) { self.host.finished(); }
 
     /// Let the session assistant change the game through live control.
     pub fn offer_live(&mut self, description: String, token_file: PathBuf) {
         self.live = Some((description, token_file));
-        if self.client.state.connected { self.declare_live(); }
+        if self.host.client.state.connected { self.declare_live(); }
     }
 
     fn declare_live(&self) {
         let Some((description, file)) = &self.live else { return };
-        if let Err(e) = self.client.declare_commands(description, &[], Some(file)) { eprintln!("gamenight: {e}"); }
+        if let Err(e) = self.host.client.declare_commands(description, &[], Some(file)) { eprintln!("gamenight: {e}"); }
     }
 
-    pub fn room_log(&self, text: &str) { let _ = self.client.room_log(text); }
+    pub fn room_log(&self, text: &str) { let _ = self.host.client.room_log(text); }
 
-    pub fn rumble(&mut self, seat: usize, weak: f64, strong: f64, seconds: f64) { let _ = self.client.rumble(seat, weak, strong, seconds); }
+    pub fn rumble(&mut self, seat: usize, weak: f64, strong: f64, seconds: f64) { let _ = self.host.client.rumble(seat, weak, strong, seconds); }
 
     /// Controls for each seat in `seats` this tick. `any_phase` also reads
     /// them while paused (the game's own menu).
     pub fn controls(&mut self, seats: &[usize], dt: f32, any_phase: bool) -> Vec<Controls> {
         let now = Instant::now();
-        if self.running() { let _ = self.client.report_activity(); }
+        if self.running() { let _ = self.host.client.report_activity(); }
         self.triggers.resize(seats.len(), 0);
         seats.iter().enumerate().map(|(k, &seat)| {
-            let pad = self.client.state.pad_for_seat(seat, now, any_phase);
+            let pad = self.host.client.state.pad_for_seat(seat, now, any_phase);
             let c = to_controls(&pad, self.triggers[k], dt);
             self.triggers[k] = c.held.0 & (Buttons::LEFT_TRIGGER | Buttons::RIGHT_TRIGGER);
             c
         }).collect()
     }
-}
-
-/// `#rrggbb` as sRGB 0..1.
-fn hex(s: &str) -> Option<[f32; 3]> {
-    let h = s.trim().trim_start_matches('#');
-    if h.len() < 6 { return None; }
-    let b = |i: usize| u8::from_str_radix(h.get(i..i + 2)?, 16).ok().map(|v| v as f32 / 255.0);
-    Some([b(0)?, b(2)?, b(4)?])
 }
 
 /// A controller frame as the shell's pad input (same buttons, sticks and

@@ -12,7 +12,7 @@ pub struct Config {
     pub transparency_present: bool,
 }
 impl Config {
-    pub fn from_environment()->Result<Self,String> {match std::env::var("KERN_DIAGNOSTIC_HIDE") {
+    pub fn from_environment()->Result<Self,String> {match crate::switches::DIAGNOSTIC_HIDE.var() {
         Ok(value)=>Self::parse(Some(&value)),Err(std::env::VarError::NotPresent)=>Self::parse(None),
         Err(_)=>Err("KERN_DIAGNOSTIC_HIDE must be valid UTF-8 category names".into()),
     }}

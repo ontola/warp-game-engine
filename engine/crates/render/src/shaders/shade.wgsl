@@ -454,7 +454,8 @@ struct Gi {
     rsm: vec4<f32>,
     rsm_prev: mat4x4<f32>,
     // Reflection probes (reflection_probes.rs): x 1 inside a probe's
-    // capture, y the box count; per box capture (w 1 once complete), min, max.
+    // capture, y the box count, z 1 when they reflect; per box capture (w 1
+    // once complete), min, max.
     probes: vec4<f32>,
     probe_boxes: array<vec4<f32>, 24>,
     // Froxel fog (froxel_fog.wgsl): density, anisotropy, far, 0 off / 1 on /
@@ -462,7 +463,7 @@ struct Gi {
     fog: vec4<f32>,
     fog_albedo: vec4<f32>,
     fog_prev: mat4x4<f32>,
-    // Where the medium is: min (w 1 when bounded), max.
+    // Where the medium is: min (w 1 a box, 2 the probes' room boxes), max.
     fog_bounds: array<vec4<f32>, 2>,
 };
 // Last frame's resolved radiance (the TAA history), for traced reflections.
@@ -1470,6 +1471,8 @@ fn probe_slope(gradients: u32, index: u32, axis: vec3<u32>, q0: u32, n2: vec3<f3
     let base = gradients + 1u + index * 54u;
     var out = vec3<f32>(0.0);
     for (var k = 0u; k < 3u; k++) {
+        // An axis the normal does not face adds nothing (a wall faces one).
+        if n2[k] <= 0.0 { continue; }
         let a = axis[k] / 3u;
         var r = vec3<f32>(0.0);
         for (var j = 0u; j < 9u; j++) {
@@ -1610,14 +1613,15 @@ fn irradiance_sample_at(p: vec3<f32>, surface: vec3<f32>, n: vec3<f32>) -> Irrad
                     var e=unpack_emission(aux_word(base+axis.x+1u))*n2.x
                         +unpack_emission(aux_word(base+axis.y+1u))*n2.y
                         +unpack_emission(aux_word(base+axis.z+1u))*n2.z;
-                    if smooth_weights { e+=probe_slope(gradients,index,axis,3u,n2,p-(origin+vec3<f32>(g)*cell)); }
+                    if smooth_weights && blend_weight*inside > 0.0 { e+=probe_slope(gradients,index,axis,3u,n2,p-(origin+vec3<f32>(g)*cell)); }
                     emission+=e*blend_weight*valid;
                     loose_emission+=e*blend_weight*inside;
                 }
                 var v=unpack_sky_transport(aux_word(base+axis.x))*n2.x
                     +unpack_sky_transport(aux_word(base+axis.y))*n2.y
                     +unpack_sky_transport(aux_word(base+axis.z))*n2.z;
-                if smooth_weights { v+=probe_slope(gradients,index,axis,0u,n2,p-(origin+vec3<f32>(g)*cell)); }
+                // Only for a probe that counts (those behind a wall do not).
+                if smooth_weights && blend_weight*inside > 0.0 { v+=probe_slope(gradients,index,axis,0u,n2,p-(origin+vec3<f32>(g)*cell)); }
                 value+=v*blend_weight*valid;
                 valid_weight+=blend_weight*valid;
                 loose+=v*blend_weight*inside;
@@ -3700,6 +3704,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         let white = vec3<f32>(1.0, 0.97, 0.92) * light.anim.z * (0.8 + 0.2 * facing);
         rad = mix(rad, white, clamp(flash * 0.9, 0.0, 1.0));
     }
+    // A game's own glow on any surface (set_game_surface's game_glow).
+    let glow = game_glow(p, vis.x, cl.material);
+    rad = rad * (1.0 - glow.a) + glow.rgb;
     rad = apply_distance_fog(rad, dist, dir);
     // Froxel fog: the surface seen through the medium, plus what it scatters.
     if fog_on() {
@@ -3852,6 +3859,7 @@ fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
     rad = style.radiance;
     let flash=f32((inst.flags>>16u)&255u)/255.0;
     rad=mix(rad,vec3<f32>(1.0,0.97,0.92)*light.anim.z*(0.8+0.2*max(dot(n,-dir),0.0)),flash*0.9);
+    let glow=game_glow(p,vis.x,cl.material);rad=rad*(1.0-glow.a)+glow.rgb;
     rad=apply_distance_fog(rad,distance(p,view.cam.xyz),dir);
     if light.sky.z==2.0 {rad=base*6000.0;}
     if light.sky.z==11.0 {rad=(n*0.5+0.5)*6000.0;}

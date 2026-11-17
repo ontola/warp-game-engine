@@ -1,0 +1,13 @@
+{ "size": [1280, 720],
+  "steps": [
+    { "ticks": 2 },
+    { "expect": "/errors", "equals": [] },
+    { "expect": "/state/s/phase", "equals": "play" },
+    { "ticks": 240, "mv": [0.8, 0.1], "note": "walk east along the path" },
+    { "capture": "path.png", "state": "path.json" },
+    { "ticks": 60, "hold": ["WEST"], "note": "swing" },
+    { "ticks": 600, "mv": [0.2, -0.6], "hold": ["RIGHT_TRIGGER"], "note": "walk north and fire" },
+    { "expect": "/errors", "equals": [] },
+    { "capture": "path-later.png" },
+    { "audio": "path.wav" }
+  ] }

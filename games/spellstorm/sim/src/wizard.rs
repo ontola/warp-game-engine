@@ -81,15 +81,10 @@ pub const MAX_TRAPS: usize = 3;
 pub const SWORD_MAX: f32 = 3.0;
 pub const GEM_WARM: C = fx::rgb(1.0, 0.8, 0.55);
 
-/// Every wizard starts with the same two face elements, Fire and Lightning
-/// (Joep: everyone learns the same lessons), then the other two, then LB
-/// and its elements one by one.
-pub const ELEMENT_ORDER: [[El; 4]; 4] = [
-    [El::Fire, El::Lightning, El::Water, El::Poison],
-    [El::Fire, El::Lightning, El::Poison, El::Water],
-    [El::Fire, El::Lightning, El::Water, El::Poison],
-    [El::Fire, El::Lightning, El::Poison, El::Water],
-];
+/// Every wizard gets the same elements in the same order (Joep: the same
+/// for every player): Fire and Lightning, then Water, then Poison, then LB
+/// and its elements one by one. One row per seat, kept for the callers.
+pub const ELEMENT_ORDER: [[El; 4]; 4] = [[El::Fire, El::Lightning, El::Water, El::Poison]; 4];
 pub const LB_ORDER: [El; 4] = [El::Frost, El::Earth, El::Air, El::Void];
 /// The unlock ladder, one step at a level's first shrine and one at its
 /// boss, so it runs over five of the six levels (Joep: not all at once).
@@ -764,6 +759,12 @@ impl World {
         w.bloom = 1.0;
     }
 
+    /// A plain staff bolt's flare on the gem: a small one (Joep).
+    fn muzzle_plain(w: &mut Wizard, c: C) {
+        w.flash_c = c;
+        w.bloom = w.bloom.max(0.3);
+    }
+
     fn shoot(&mut self, id: Id, w: &mut Wizard) {
         w.used |= used::BOLT;
         if !w.queue.is_empty() {
@@ -779,8 +780,13 @@ impl World {
         let bs = w.bolt_spell();
         let at = staff_tip(self.pos(id), w) + dir * 0.1;
         let c = bs.primary.map(fx::el_c).unwrap_or(fx::WHITE);
+        let plain = w.queue.is_empty();
         self.fire_bolt(Bolt::new(id, bs, dir, at, Vec::new(), 1.0, true));
-        World::muzzle(w, c);
+        if plain {
+            World::muzzle_plain(w, c);
+        } else {
+            World::muzzle(w, c);
+        }
         if !w.queue.is_empty() {
             w.ammo -= 1;
             if w.ammo <= 0 {

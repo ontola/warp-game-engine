@@ -248,9 +248,17 @@ fn fog_medium(p: vec3<f32>, to_eye: vec3<f32>, seg_a: vec3<f32>, seg_b: vec3<f32
     }
     // Ambient (isotropic): the mean radiance of the two hemispheres.
     lin += (fog_ambient_irradiance(p, vec3<f32>(0.0, 1.0, 0.0)) + fog_ambient_irradiance(p, vec3<f32>(0.0, -1.0, 0.0))) / (2.0 * PI);
-    // The medium fills its bounds (all space when unbounded).
-    let inside = gi.fog_bounds[0].w < 0.5 || (all(p >= gi.fog_bounds[0].xyz) && all(p <= gi.fog_bounds[1].xyz));
-    let sigma_t = select(0.0, gi.fog.x, inside);
+    // The medium fills its bounds: everywhere (w 0), a box (w 1), or the
+    // rooms the scene declares (w 2, room_presence: the reflection probes'
+    // boxes, fading out over ROOM_FADE_M; everywhere when it declares none).
+    var inside = 1.0;
+    let mode = gi.fog_bounds[0].w;
+    if mode > 1.5 {
+        if u32(gi.probes.y) > 0u { inside = room_presence(p); }
+    } else if mode > 0.5 {
+        inside = select(0.0, 1.0, all(p >= gi.fog_bounds[0].xyz) && all(p <= gi.fog_bounds[1].xyz));
+    }
+    let sigma_t = gi.fog.x * inside;
     return vec4<f32>(lin * gi.fog_albedo.rgb * sigma_t, sigma_t);
 }
 
@@ -283,7 +291,18 @@ fn fog_capture(origin: vec3<f32>, end: vec3<f32>, px: vec2<i32>) -> vec4<f32> {
 // towards the camera, a the transmittance.
 fn froxel_fog(px: vec2<i32>, size: vec2<u32>, w: f32) -> vec4<f32> {
     if !fog_on() { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
-    return froxel_fog_uv((vec2<f32>(px) + 0.5) / vec2<f32>(size), w);
+    // Each pixel reads the volume up to half a cell off its own spot, a
+    // different way each frame (interleaved gradient noise moved per frame,
+    // Jimenez 2014), and TAA averages it: an edge of the light that crosses
+    // the cells diagonally (a lamp's cone just in front of the camera,
+    // where a cell spans 12 pixels at 1080p) shows as a gradient instead of
+    // the cells' staircase.
+    let f = f32(u32(gi.fog_albedo.w) % 64u) * 5.588238;
+    let q = vec2<f32>(px) + f;
+    let n = vec2<f32>(fract(52.9829189 * fract(dot(q, vec2<f32>(0.06711056, 0.00583715)))),
+        fract(52.9829189 * fract(dot(q + vec2<f32>(113.0, 47.0), vec2<f32>(0.06711056, 0.00583715)))));
+    let uv = (vec2<f32>(px) + 0.5) / vec2<f32>(size) + (n - 0.5) / vec2<f32>(FOG_GRID.xy);
+    return froxel_fog_uv(uv, w);
 }
 
 // The same at a world point: glass and other surfaces drawn after shade

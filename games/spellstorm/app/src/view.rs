@@ -29,6 +29,11 @@ const LIGHT: f32 = PI;
 /// A biome's mist (FogVolume density 1) as even fog density per metre.
 const MIST_DEPTH: f32 = 0.02;
 
+/// Where the table of monsters being made starts in `aux`, and its records
+/// (making.wgsl MK_AT, MK_N).
+const MK_AT: usize = 1;
+const MK_N: usize = 16;
+
 /// Godot's ZONE_TINTS: the level's three zones, front to back.
 const ZONE_TINTS: [[f32; 3]; 3] = [[1.0, 1.0, 1.0], [0.82, 0.92, 0.8], [1.08, 0.93, 0.88]];
 
@@ -239,6 +244,8 @@ impl View {
     /// Build the scene for the world's level.
     pub fn build(&mut self, w: &World) -> Result<(), String> {
         let mut scene = Scene::default();
+        // The table of monsters being made (making.wgsl), first in aux.
+        scene.aux = vec![0; MK_AT + MK_N * 8];
         // Every lamp shadowed, every spell light lit (checked on an RTX 5070
         // Ti, 2026-11-09: chapel frame 5.94 -> 5.54 ms). KERN_CLUSTERED_LIGHTS=0
         // goes back to the 32 nearest lights.
@@ -482,6 +489,9 @@ impl View {
         let mut out: Vec<(usize, Affine3A, bool)> = Vec::new();
         // Bodies that flash white from a hit or are bloodied: (out range, flash, wounds).
         let mut marked: Vec<(std::ops::Range<usize>, f32, f32)> = Vec::new();
+        // Monsters being made: pool range (or skinned instance), floor, edge
+        // height, height, glow colour (making.wgsl).
+        let mut making: Vec<(Option<std::ops::Range<usize>>, Option<usize>, f32, f32, f32, Vec3)> = Vec::new();
         let time = w.time as f32;
         self.wizard_hurt.resize(w.wizards.len(), 0.0);
         self.blade_len.resize(w.wizards.len(), STEEL_LEN);
@@ -615,17 +625,23 @@ impl View {
             let at = Mat4::from_rotation_translation(Quat::from_rotation_y(a.yaw), a.pos) * model;
             // Coming in: it is built up from the floor, glowing as it forms,
             // a ring of light running up it and motes drawn in (Joep).
+            // Each part of it is made in turn from its toes to the top of
+            // its head (Joep), glowing hot as it forms under a ring of
+            // light running up it.
             let made = (ea.born / anim::MATERIALIZE).clamp(0.0, 1.0);
-            let at = if made < 1.0 && a.alive {
-                let up = 1.0 - (1.0 - made).powi(3);
-                let wide = 0.6 + 0.4 * (made * 1.6).min(1.0);
-                let h = 1.4 * e.cfg().size as f32 + 0.4;
-                self.fx.materialize(id.to_bits().get(), a.pos, h, made, e.cfg().el, dt);
-                at * Mat4::from_scale(Vec3::new(wide, up.max(0.02), wide))
-            } else {
-                at
+            let building = made < 1.0 && a.alive;
+            let tall = 1.4 * e.cfg().size as f32 + 0.4;
+            let front = anim::build_front(made);
+            if building {
+                self.fx.materialize(id.to_bits().get(), a.pos, tall, made, e.cfg().el, dt);
+            }
+            let forming = 0.0;
+            let edge_y = a.pos.y + tall * front;
+            let glow = {
+                let c = crate::fx::el_c(e.cfg().el);
+                let ember = Vec3::new(1.0, 0.1, 0.0);
+                ember.lerp(crate::look::linear3([c[0], c[1], c[2]]), 0.1)
             };
-            let forming = if made < 1.0 { (1.0 - made).powf(0.7) * 1.2 } else { 0.0 };
             // Bodies that fall apart go to pieces once (a blow-up after its fuse).
             if let Some(t) = ea.dead_t.filter(|_| !ea.scattered) {
                 let c = e.cfg();
@@ -708,15 +724,23 @@ impl View {
                 // Frozen to death it stands white as ice until it shatters.
                 let flash = if e.how == Some(Death::Freeze) { 0.6 } else { hit_flash(&a).max(forming) };
                 let kind = e.cfg();
-                if self.skins.pose(&mut self.scene, id, kind, &a, &e, ea.dead_t, at, kit.base_scale, flash, dt) {
+                let build = building.then_some(front);
+                let _ = build;
+                if self.skins.pose(&mut self.scene, id, kind, &a, &e, ea.dead_t, at, kit.base_scale, flash, None, dt) {
+                    if building {
+                        making.push((None, self.skins.instance_of(id), a.pos.y, edge_y, tall, glow));
+                    }
                     continue;
                 }
-                marked.push((out.len()..out.len() + pieces.len(), flash, 0.0));
+                if building {
+                    making.push((Some(out.len()..out.len() + pieces.len()), None, a.pos.y, edge_y, tall, glow));
+                }
                 for p in &pieces {
                     let mut xf = at * part(p.node);
                     if eyes != 1.0 && kit.eyes.contains(&p.node) {
                         xf *= Mat4::from_scale(Vec3::splat(eyes));
                     }
+                    marked.push((out.len()..out.len() + 1, flash, 0.0));
                     out.push((p.mesh, look::affine(xf), p.shadow));
                 }
             }
@@ -750,6 +774,23 @@ impl View {
                 let inst = &mut self.scene.instances[first + i];
                 inst.set_hit_flash(flash);
                 inst.set_wounds(wounds);
+            }
+        }
+        // The monsters being made, for making.wgsl.
+        if self.scene.aux.len() >= MK_AT + MK_N * 8 {
+            let mut table = [0u32; MK_N * 8];
+            for (k, (pool, skin, floor, edge, tall, c)) in making.iter().take(MK_N).enumerate() {
+                let (lo, hi) = match (pool, skin) {
+                    (Some(r), _) => ((first + r.start.min(POOL)) as u32, (first + r.end.min(POOL)) as u32),
+                    (None, Some(i)) => (*i as u32, *i as u32 + 1),
+                    _ => (0, 0),
+                };
+                let rec = [lo, hi, floor.to_bits(), edge.to_bits(), tall.to_bits(), c.x.to_bits(), c.y.to_bits(), c.z.to_bits()];
+                table[k * 8..k * 8 + 8].copy_from_slice(&rec);
+            }
+            if self.scene.aux[MK_AT..MK_AT + MK_N * 8] != table[..] || !making.is_empty() {
+                self.scene.aux[MK_AT..MK_AT + MK_N * 8].copy_from_slice(&table);
+                renderer.update_aux_words(gpu, MK_AT, &self.scene.aux[MK_AT..MK_AT + MK_N * 8])?;
             }
         }
         // Props broken since the scene was made disappear.
@@ -908,7 +949,12 @@ impl View {
         self.cam_center = self.cam_center.lerp(center, k);
         self.cam_height += (want_h - self.cam_height) * k;
         let c = self.cam_center + Vec3::new(0.0, 0.0, -1.5);
-        self.camera = Camera { pos: c + Vec3::new(0.0, self.cam_height, self.cam_height * 0.55), target: c, fov_y: 42f32.to_radians(), near: 0.1 };
+        // SPELLSTORM_ZOOM=0.3: the camera that much as high (a close look,
+        // for shots of effects).
+        let zoom = std::env::var("SPELLSTORM_ZOOM").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0).clamp(0.05, 4.0);
+        let h = self.cam_height * zoom;
+        let c = if zoom < 1.0 { c.lerp(self.cam_center + Vec3::new(0.0, 0.0, -5.0), 1.0 - zoom) } else { c };
+        self.camera = Camera { pos: c + Vec3::new(0.0, h, h * 0.55), target: c, fov_y: 42f32.to_radians(), near: 0.1 };
     }
 }
 

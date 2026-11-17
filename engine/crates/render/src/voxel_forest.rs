@@ -59,11 +59,11 @@ impl Default for IntegratorOptions {
 impl IntegratorOptions {
     fn from_environment() -> Self {
         Self {
-            empty_ceiling: std::env::var("KERN_VOXEL_EMPTY_CEILING").map_or(true, |value| value != "0"),
-            antipodal_normals: std::env::var("KERN_VOXEL_ANTIPODAL_NORMALS").is_ok_and(|value| value == "1"),
-            brick_visibility: std::env::var("KERN_VOXEL_BRICK_VISIBILITY").is_ok_and(|v|v=="1"),
-            global_intervals: std::env::var("KERN_VOXEL_GLOBAL_INTERVALS").is_ok_and(|value|value=="1"),
-            raster: std::env::var("KERN_VOXEL_RASTER").is_ok_and(|value|value=="1"),
+            empty_ceiling: !crate::switches::VOXEL_EMPTY_CEILING.off(),
+            antipodal_normals: crate::switches::VOXEL_ANTIPODAL_NORMALS.on(),
+            brick_visibility: crate::switches::VOXEL_BRICK_VISIBILITY.on(),
+            global_intervals: crate::switches::VOXEL_GLOBAL_INTERVALS.on(),
+            raster: crate::switches::VOXEL_RASTER.on(),
         }
     }
     fn specialize(self, source: &str) -> Result<String, String> {
@@ -260,11 +260,11 @@ struct ComputeRaster {
     merge_main: wgpu::RenderPipeline,
     merge: wgpu::RenderPipeline,
 }
-fn splat_compute_enabled() -> bool { std::env::var("KERN_SPLAT_COMPUTE").as_deref() == Ok("1") }
+fn splat_compute_enabled() -> bool { crate::switches::SPLAT_COMPUTE.on() }
 /// KERN_SPLAT_COMPUTE_PX: disc radius in pixels below which the compute
 /// raster draws it (1.5).
 fn splat_compute_px() -> f64 {
-    std::env::var("KERN_SPLAT_COMPUTE_PX").ok().and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite() && *v >= 0.0).unwrap_or(1.5)
+    crate::switches::SPLAT_COMPUTE_PX.parse::<f64>().filter(|v| v.is_finite() && *v >= 0.0).unwrap_or(1.5)
 }
 fn compute_raster(gpu: &Gpu, module: &wgpu::ShaderModule, raster_layout: &wgpu::BindGroupLayout) -> ComputeRaster {
     let storage = |binding, read_only, visibility| wgpu::BindGroupLayoutEntry { binding, visibility,
@@ -380,7 +380,7 @@ fn splat_cells_bricked(forest: &crate::foliage_volume_data::GpuForest) -> Result
 /// Two-pass brick occlusion culling of the camera splats, on by default
 /// (Mancave 9 November: identical image, 1440p voxel forest 8.8 -> 5.8 ms,
 /// valley 4K 11.1 -> 9.8 ms). KERN_SPLAT_BRICK_HZB=0 turns it off.
-fn brick_hzb_enabled() -> bool { std::env::var("KERN_SPLAT_BRICK_HZB").as_deref() != Ok("0") }
+fn brick_hzb_enabled() -> bool { !crate::switches::SPLAT_BRICK_HZB.off() }
 
 /// Splat records one view may hold: every tree at its finest level, capped.
 fn splat_capacity(forest: &crate::foliage_volume_data::GpuForest, cells: &[[u32; 2]]) -> u64 {
@@ -527,7 +527,7 @@ fn second_splat_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str,
             constants: &constants, ..Default::default() }, cache: gpu.pipeline_cache() })
 }
 fn surface_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> wgpu::ComputePipeline {
-    let coarser: Vec<(&str, f64)> = std::env::var("KERN_VOXEL_SELF_SHADOW_COARSER").ok().and_then(|v| v.parse().ok())
+    let coarser: Vec<(&str, f64)> = crate::switches::VOXEL_SELF_SHADOW_COARSER.parse()
         .map(|v: f64| ("VOXEL_SELF_SHADOW_COARSER", v)).into_iter().collect();
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("voxel surface"), source: wgpu::ShaderSource::Wgsl(source.into()) });
@@ -578,7 +578,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
         multiview_mask: None, cache: gpu.pipeline_cache(),
     });
     // KERN_SUN_DITHER_TEXEL=1: the old texel-anchored sun coverage pattern.
-    let sun_dither=[("SUN_DITHER_ANCHORED", if std::env::var("KERN_SUN_DITHER_TEXEL").as_deref()==Ok("1") {0.0} else {1.0})];
+    let sun_dither=[("SUN_DITHER_ANCHORED", if crate::switches::SUN_DITHER_TEXEL.on() {0.0} else {1.0})];
     // Like the scene's sun raster: ordinary Z with the same bias.
     let sun_raster = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("voxel sun splat raster"), layout: Some(&pipeline_layout),
@@ -896,7 +896,7 @@ impl VoxelRenderer {
         // Far trees exist only as rasterized voxels; aggregate plants use them
         // too unless KERN_VOXEL_RASTER=0 asks for the ray integrator.
         integrator_options.raster |= far > 0.0 || proxies > 0
-            || (scene.aggregate_lod.is_some() && std::env::var("KERN_VOXEL_RASTER").as_deref() != Ok("0"));
+            || (scene.aggregate_lod.is_some() && !crate::switches::VOXEL_RASTER.off());
         let mut catalog_words=vec![0u32;4];
         let mut bin_count=forest.instances.len() as u32;
         if integrator_options.brick_visibility {

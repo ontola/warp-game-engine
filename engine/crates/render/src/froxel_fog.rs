@@ -31,6 +31,21 @@ pub const GRID: [u32; 3] = [160, 90, 64];
 /// The first slice's near plane (keep equal to FOG_NEAR).
 pub const NEAR: f32 = 0.1;
 
+/// Where a [`FroxelFog`] medium is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FogBounds {
+    Everywhere,
+    /// One box (min, max).
+    Box(Vec3, Vec3),
+    /// The rooms the scene declares: the boxes of its reflection probes
+    /// (`Renderer::set_reflection_probes`), fading out over
+    /// `reflection_probes::FADE_M` beyond them, as the probes' reflections
+    /// do. Rooms joined by a door must reach through the opening (to the
+    /// door's leaf, as `architecture` builds them), or the doorway between
+    /// the two boxes holds no smoke. Everywhere when no box is declared.
+    Rooms,
+}
+
 /// `Lighting::froxel_fog`: a homogeneous medium.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FroxelFog {
@@ -43,14 +58,13 @@ pub struct FroxelFog {
     /// How far the grid reaches (view depth, metres); beyond it the last
     /// slice holds.
     pub far_m: f32,
-    /// Where the medium is (min, max); `None`: everywhere. A building's
-    /// inside keeps the outdoor sky and sun out of its smoke where a froxel
-    /// straddles a wall or ceiling.
-    pub bounds: Option<(Vec3, Vec3)>,
+    /// Where the medium is. A building's inside keeps the outdoor sky and
+    /// sun out of its smoke where a froxel straddles a wall or ceiling.
+    pub bounds: FogBounds,
 }
 
 impl Default for FroxelFog {
-    fn default() -> Self { Self { density: 0.05, albedo: Vec3::splat(0.9), anisotropy: 0.3, far_m: 48.0, bounds: None } }
+    fn default() -> Self { Self { density: 0.05, albedo: Vec3::splat(0.9), anisotropy: 0.3, far_m: 48.0, bounds: FogBounds::Everywhere } }
 }
 
 impl FroxelFog {

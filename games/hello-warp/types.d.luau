@@ -17,6 +17,8 @@
 --   player_left(p)       a player left mid-game
 --   players_changed()    names, colours or seats changed (after joins and leaves too)
 -- Folder games: local lib = require("lib/name") loads lib/name.module.luau at module load time.
+-- libraries("content/cards") lists the libraries in a folder, sorted, for content
+-- collections: `for _, name in libraries("content/cards") do local card = require(name) end`.
 -- Modules run their hooks in path order. `state` is a table per module that
 -- survives reloads; main.luau's `state` is the game's JSON state (`/state`).
 --
@@ -199,11 +201,37 @@ declare post: {
 	reset: () -> (),
 }
 
--- Coloured point lights without shadows, at most 32. intensity is about
+-- Coloured point lights without shadows, at most 32 (`set`), and shadowed
+-- spotlights, at most 8 (`spots`). intensity is about
 -- lux at 1 m (a few hundred under the night sky), range in metres.
 declare lights: {
 	set: (list: { { pos: Vec, color: Color?, intensity: number?, range: number? } }) -> (),
+	-- Spotlights that cast shadows, at most 8 (torches, headlights, a lamp
+	-- over a door): dir is where the beam points, angle the outer half-angle
+	-- in degrees (2 to 74, default 30), inner where it starts to fade (default
+	-- 0.6 of angle), intensity in candela (default 1000, falls off with the
+	-- square of distance), range in metres (default 15). Replaces the list.
+	spots: (list: { { pos: Vec, dir: Vec?, color: Color?, intensity: number?, range: number?, angle: number?, inner: number? } }) -> (),
 	clear: () -> (),
+}
+
+-- Warp Humans from game.toml's [humans.NAME] pools: spawn returns nil when
+-- the pool is full. Set pos (feet) and yaw each tick; the legs follow.
+-- pose: walk, idle, crouch, wave, reach, raise, strike, aim, shove, attack, punch, jab,
+-- hit, hit_head, cast, roll, dead, down; t is its progress, 0 to 1.
+declare humans: {
+	spawn: (pool: string, opts: { pos: Vec?, yaw: number? }?) -> number?,
+	-- tired 0..1: bent over, out of breath, over any pose
+	set: (id: number, opts: { pos: Vec?, yaw: number?, pose: string?, t: number?, tired: number? }) -> boolean,
+	-- A blow along dir (its length the strength, ~1 heavy): the upper body jolts and sways back
+	hit: (id: number, dir: Vec) -> boolean,
+	-- Limp from the pose it stands in, thrown by push (m/s); up again with any pose but dead/down
+	ragdoll: (id: number, push: Vec?) -> boolean,
+	remove: (id: number) -> boolean,
+	head: (id: number) -> Vec?,
+	-- head, neck, chest, hips, shoulder_l/r, elbow_l/r, hand_l/r, knee_l/r, foot_l/r
+	joint: (id: number, name: string) -> Vec?,
+	room: (pool: string) -> (number, number),
 }
 
 declare plants: {

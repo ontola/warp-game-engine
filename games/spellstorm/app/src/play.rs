@@ -86,7 +86,8 @@ impl Spellstorm {
         let dir = crate::live::game_dir();
         let tuning = crate::live::Tuning::new(dir.as_deref());
         let shader = crate::live::Shader::new(dir.as_deref());
-        render::set_game_surface(&shader.good);
+        render::set_game_surface(&crate::live::surface(&shader.good));
+        crate::live::install_mask();
         crate::effects::watch(dir.as_deref());
         // The spell rules in Luau, from the repository's mods (watched) or
         // the copy built in.
@@ -255,7 +256,7 @@ impl app::Game for Spellstorm {
     /// Esc: the host's overlay in a party, else the menu.
     fn escape(&mut self) -> bool {
         match &self.party {
-            Some(p) if !p.session.is_empty() => p.overlay(),
+            Some(p) if !p.session().is_empty() => p.overlay(),
             _ => self.menu.escape(&self.world),
         }
         true

@@ -46,8 +46,14 @@ follow shade:
   texels match the solid angle the sample stands for, 1 / (8 pdf) (filtered
   importance sampling).
 - Temporal: last frame's result at the reflection's virtual position (behind
-  the surface at the hit distance), clamped to the current 3x3 neighbourhood,
-  blended at 0.1.
+  the surface at the hit distance) or, on a rigid instance that moved, where
+  its surface point was (its rows now and a frame ago, the motion pass's
+  `previous_instances`), clamped to the current 3x3 neighbourhood. The
+  blend is the mean of the frames the history holds: up to 32 while the
+  surface's motion is known (still, or a rigid instance) and the clamp
+  leaves the history as it is, up to 9 (a tenth) once the clamp moves it
+  (the reflected content changed) or the motion is unknown (skinned, wind,
+  a virtual member, a voxel).
 - Composite: the specular weight times the result, added onto the shaded
   image (shade leaves that term out where it wrote a ray).
 

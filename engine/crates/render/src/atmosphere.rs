@@ -225,7 +225,9 @@ impl BakedSky {
 #[derive(Default)]
 pub struct AtmosphereCache {
     lut:Option<TransmittanceLut>,
-    baked:Option<(Atmosphere,SolarState,BakeQuality,Arc<BakedSky>)>,
+    /// The last few skies (a game that cycles through a handful of times of
+    /// day bakes each once: a bake takes a few hundred ms of CPU).
+    baked:Vec<(Atmosphere,SolarState,BakeQuality,Arc<BakedSky>)>,
     pub transmittance_bakes:u64,pub sky_bakes:u64,
 }
 impl AtmosphereCache {
@@ -233,7 +235,9 @@ impl AtmosphereCache {
     pub fn get_or_bake(&mut self,model:&Atmosphere,solar:SolarState,quality:BakeQuality)->Result<Arc<BakedSky>,String> {
         model.validate()?;quality.validate()?;
         let solar=SolarState::from_degrees(solar.elevation_degrees,solar.azimuth_degrees)?;
-        if let Some((m,s,q,result))=&self.baked {if *m==*model&&*s==solar&&*q==quality {return Ok(result.clone());}}
+        if let Some(i)=self.baked.iter().position(|(m,s,q,_)|*m==*model&&*s==solar&&*q==quality) {
+            let hit=self.baked.remove(i);let result=hit.3.clone();self.baked.push(hit);return Ok(result);
+        }
         let key=(quality.transmittance_width,quality.transmittance_height,quality.transmittance_steps);
         if !self.lut.as_ref().is_some_and(|lut|lut.model==*model&&lut.key==key) {
             self.lut=Some(TransmittanceLut::new(*model,key));self.transmittance_bakes+=1;
@@ -241,7 +245,9 @@ impl AtmosphereCache {
         let lut=self.lut.as_mut().unwrap();
         if model.multiple_scattering && lut.multi.is_none() {lut.multi=Some(MultiScatterLut::new(lut));}
         let result=Arc::new(bake_sky(model,solar,quality,self.lut.as_ref().unwrap())?);
-        self.sky_bakes+=1;self.baked=Some((*model,solar,quality,result.clone()));Ok(result)
+        self.sky_bakes+=1;
+        if self.baked.len()>=8 {self.baked.remove(0);}
+        self.baked.push((*model,solar,quality,result.clone()));Ok(result)
     }
 }
 
