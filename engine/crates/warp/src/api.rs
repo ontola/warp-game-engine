@@ -773,6 +773,13 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             Ok(())
         })),
         ("get", f!(core, move |_, ()| Ok(lock(&core).sky.name()))),
+        // Bake a sky the game will switch to later, in the background, so
+        // the switch does not stall a frame (a bake is a few hundred ms).
+        ("warm", f!(core, move |_, name: String| {
+            let _ = &core;
+            crate::game::warm_sky(SkyChoice::parse(&name).map_err(rt)?);
+            Ok(())
+        })),
     ])?;
 
     table("light", vec![

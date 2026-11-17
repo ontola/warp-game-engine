@@ -2147,6 +2147,12 @@ end
 
 function warm_all()
 	land.warm()
+	-- Bake the skies of the day in the background: switching to one that
+	-- is not baked yet stalls a frame for a few hundred ms.
+	local skies = {}
+	for _, t in TIMES do
+		if not skies[t] then skies[t] = true sky.warm(t) end
+	end
 	for _, list in { ZOMBIE_SKIN, ZOMBIE_SHIRTS, ZOMBIE_PANTS, SKINS, PANTS, STRANGER_SHIRTS } do
 		for _, c in list do figure.warm({ shirt = c, skin = c, pants = c }) end
 	end

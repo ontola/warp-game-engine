@@ -210,7 +210,7 @@ keyboard mapping is in `app::input`.
 | `post` | `set({bloom, bloom_radius, bloom_threshold, bloom_wide, contrast, saturation, vignette, grain, aberration})`, `reset()` |
 | `humans` | `spawn(pool, {pos, yaw})` → id or nil when the pool is full, `set(id, {pos, yaw, pose, t})`, `remove(id)`, `head(id)` and `joint(id, name)` → vector, `room(pool)` → free, total |
 | `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `spots({{pos, dir, color, intensity, range, angle, inner}, ...})` (at most 8, with shadows), `clear()` |
-| `sky` | `set(name)`, `get()` |
+| `sky` | `set(name)`, `get()`, `warm(name)` (bake a sky you will switch to later in the background, so the switch does not stall a frame) |
 | `light` | `set({sun, sun_lux, sky_lux, exposure, exposure_min, exposure_max, exposure_bias, adapt_speed, fog_start, fog_end, fog_density})`, `reset()` |
 | `random` | `float()`, `range(lo, hi)`, `int(lo, hi)`, `chance(p)`, `seed(n)` |
 | `game` | `tick()`, `time()`, `dt()`, `players()`, `title()`, `finish()`, `log(text)` |
