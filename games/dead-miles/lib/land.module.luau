@@ -61,6 +61,7 @@ function M.warm()
 		for _, c in l.floors do world.warm("cube", { color = c, roughness = 0.95 }) end
 	end
 	for _, c in CAR_COLORS do world.warm("cube", { color = c, roughness = 0.4, metal = 0.3 }) end
+	world.warm("cube", { color = "#e8e8f0", roughness = 0.4, metal = 0.3 })
 	world.warm("cube", BURNT)
 	for _, c in RUST do world.warm("cube", { color = c, roughness = 0.9 }) end
 	for _, c in ROOFS do world.warm("cube", { color = c, roughness = 0.95 }) end

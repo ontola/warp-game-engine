@@ -32,6 +32,22 @@ const POLL_TICKS: u64 = 15;
 /// Seconds of play before Start opens the menu (under a party host).
 const START_GRACE: f32 = 1.0;
 
+/// The baked skies, shared by every game in the process (`sky.warm` fills
+/// it in the background so a later `sky.set` does not stall a frame).
+pub(crate) fn sky_cache() -> &'static Mutex<AtmosphereCache> {
+    static CACHE: std::sync::OnceLock<Mutex<AtmosphereCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// Bake a sky preset into the shared cache on a background thread.
+pub(crate) fn warm_sky(choice: SkyChoice) {
+    let SkyChoice::Preset(settings) = choice else { return };
+    std::thread::spawn(move || {
+        let mut cache = sky_cache().lock().unwrap_or_else(|p| p.into_inner());
+        let _ = bake_live(0, settings, &mut cache, BakeQuality::default());
+    });
+}
+
 /// Options from the command line that override `game.toml`.
 #[derive(Clone, Debug, Default)]
 pub struct Overrides {
@@ -697,8 +713,7 @@ impl LuaGame {
                 self.sky_upload = None;
             }
             SkyChoice::Preset(settings) => {
-                static CACHE: std::sync::OnceLock<Mutex<AtmosphereCache>> = std::sync::OnceLock::new();
-                let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
+                let mut cache = sky_cache().lock().unwrap_or_else(|p| p.into_inner());
                 match bake_live(0, settings, &mut cache, BakeQuality::default()) {
                     Ok(p) => {
                         let mut light = Lighting::default();
