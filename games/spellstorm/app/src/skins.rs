@@ -189,6 +189,11 @@ impl Skins {
         true
     }
 
+    /// The scene instance `id`'s body is drawn with, if it has one.
+    pub fn instance_of(&self, id: Id) -> Option<usize> {
+        self.worn.get(&id).map(|&i| self.slots[i].handle.instance)
+    }
+
     /// Whoever is gone (not in `seen`) gives its body back.
     pub fn release(&mut self, scene: &mut Scene, seen: &[Id]) {
         let slots = &mut self.slots;
