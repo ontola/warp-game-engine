@@ -2099,20 +2099,8 @@ local function groups_step()
 		end
 	end
 	for _, g in groups do g.center, g.spread = group_center(g.members) end
-	-- The parts stack top to bottom: north first when the groups are apart
-	-- up and down the screen, else west first.
-	local x0, x1, z0, z1 = math.huge, -math.huge, math.huge, -math.huge
-	for _, g in groups do
-		if g.center then
-			x0, x1 = math.min(x0, g.center.x), math.max(x1, g.center.x)
-			z0, z1 = math.min(z0, g.center.z), math.max(z1, g.center.z)
-		end
-	end
-	local by_z = #groups > 1 and (z1 - z0) * 1.6 > x1 - x0
-	local function key(g)
-		if not g.center then return 0 end
-		return if by_z then g.center.z else g.center.x
-	end
+	-- West to east: left to right on the screen.
+	local function key(g) return if g.center then g.center.x else 0 end
 	table.sort(groups, function(a, b) return key(a) < key(b) end)
 	local views = {}
 	for n, g in groups do
