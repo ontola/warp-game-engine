@@ -9,7 +9,8 @@ players = 1
 bots = 1
 min_players = 2
 seed = 11
-sky = "sunrise:mist"
+sky = "night:clear"
+hdr = true
 # A few chunks of land, up to a few hundred zombies of twelve boxes each, effects.
 max_entities = 8000
 # The horde and the bots run in Luau every tick.

@@ -53,7 +53,7 @@ local KNOBS = {
 	torch = 2000, -- torch brightness, candela
 	lamp = 1000, -- street light brightness, candela
 	moon = 6, -- moonlight at night, lux
-	night_ev = 4.5, -- how far the eye adapts to the dark (EV100 floor; lower is brighter)
+	night_ev = 5.1, -- exposure at night (EV100; lower is brighter)
 	density = 1, -- zombie count multiplier
 	day_alert = 1.8, -- how much further the dead see in daylight
 	day_speed = 1.3, -- how much faster they move in daylight
@@ -105,7 +105,9 @@ local STRANGER_SHIRTS = { "#7a7a6a", "#6a5a7a", "#8a6a4a", "#4a6a6a" }
 -- The group walks by night: by day the dead are alert and quick. Each
 -- leg starts at dusk, runs through the night and ends in a dash through
 -- the first daylight to a shelter, where they sit out the day.
-local TIMES = { [1] = "sunset:mist", [2] = "night:mist", [3] = "night:clear", [4] = "night:clear", [5] = "night:mist", [6] = "sunrise:mist", [7] = "morning:haze", [0] = "morning:haze" }
+-- The leg starts in the blue hour: the night sky, with the last light
+-- fading in the west (light_step), so there is no cut from a sunset sky.
+local TIMES = { [1] = "night:clear", [2] = "night:clear", [3] = "night:clear", [4] = "night:clear", [5] = "night:clear", [6] = "sunrise:clear", [7] = "morning:clear", [0] = "morning:clear" }
 
 -- What a container holds, by kind: { weight, item, min, max }.
 local LOOT = {
@@ -792,13 +794,48 @@ local function look_of_hour()
 	if dark() then
 		-- A faint moon from the south-west, so the ruins still show
 		-- away from the torches and lamps.
-		light.set({ sun = v(-0.35, 0.8, 0.5), sun_lux = KNOBS.moon, fog_start = 8, fog_end = 38, exposure = "auto", exposure_min = KNOBS.night_ev, exposure_max = 9, exposure_bias = -0.6 })
+		-- The camera is over 20 m up: fog that starts nearer greys the whole
+		-- view instead of hiding the distance. The dark limits sight.
+		light.reset()
+		light.set({ fog_start = 30, fog_end = 70, fog_density = 0 })
 		post.set({ vignette = 0.6, grain = 0.14, saturation = 0.7, contrast = 1.12 })
 	else
 		light.reset()
-		light.set({ fog_start = 12, fog_end = 48 })
+		light.set({ fog_start = 34, fog_end = 90, fog_density = 0 })
 		post.set({ vignette = 0.45, grain = 0.1, saturation = 0.72, contrast = 1.08 })
 	end
+end
+
+-- Exposure and the last and first light, every tick, along the walk. A
+-- fixed exposure that eases towards a curve: no metering, so nothing jumps
+-- when a torch swings past the camera, and no cut when the sky changes.
+local function lerp(a, b, t) return a + (b - a) * math.clamp(t, 0, 1) end
+local function smooth(t) t = math.clamp(t, 0, 1) return t * t * (3 - 2 * t) end
+local function light_step(dt)
+	local x = (s.center or v(0, 0, 0)).x
+	local index = math.max(1, math.floor(x / CHUNK) + 1)
+	local _, in_day = chunk_day(index)
+	local u = (if in_day == 0 then land.DAY_CHUNKS else in_day - 1) + (x % CHUNK) / CHUNK
+	local ev, sun, lux
+	if in_day >= 1 and in_day <= 5 then
+		-- Blue hour fading to night over the first chunk and a half.
+		local t = smooth(u / 1.5)
+		ev = lerp(7.2, KNOBS.night_ev, t)
+		lux = KNOBS.moon * (30 ^ (1 - t))
+		local d = v(-0.9 + 0.55 * t, lerp(0.22, 0.8, t), lerp(0.25, 0.5, t))
+		sun = d / vector.magnitude(d)
+	elseif in_day == 6 then
+		-- First light: the sunrise sky, its sun coming up.
+		local t = smooth(u - 5)
+		ev = lerp(KNOBS.night_ev + 1.5, 10.5, t)
+		lux = 60 * (50 ^ t)
+	else
+		ev = lerp(10.5, 12.5, smooth((u - 6) * 2))
+	end
+	s.ev = if s.ev then s.ev + (ev - s.ev) * (1 - math.exp(-dt * 1.5)) else ev
+	light.set({ exposure = s.ev })
+	if lux then light.set({ sun_lux = lux }) end
+	if sun then light.set({ sun = sun }) end
 end
 
 ----------------------------------------------------------------------------
@@ -851,7 +888,9 @@ local function new_run()
 	stream_land()
 	for i, p in players.list() do table.insert(s.survivors, new_survivor(p, i)) end
 	s.time_now = nil
+	s.ev = nil
 	look_of_hour()
+	light_step(0)
 end
 
 ----------------------------------------------------------------------------
@@ -2025,6 +2064,7 @@ local function reload()
 	if s then
 		s.time_now = nil
 		look_of_hour()
+		light_step(0)
 	end
 end
 
@@ -2095,6 +2135,7 @@ local function tick(dt, input)
 	buildings_step(dt)
 	stream_land()
 	look_of_hour()
+	light_step(dt)
 
 	-- Standing under a street light that works: the dead see you from afar.
 	for _, u in s.survivors do
