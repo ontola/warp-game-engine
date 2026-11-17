@@ -24,6 +24,7 @@ co-op: design" doc.
 | | |
 | --- | --- |
 | Left stick / WASD | move |
+| LT / right mouse (held) | run: faster, but the dead hear your footsteps |
 | Right stick | aim (melee and guns follow it; else you face where you walk) |
 | RT / left mouse (held) | fire the gun (shared ammo; aim help within about 20 degrees) |
 | X, RB / R | swing the melee weapon |
@@ -44,6 +45,12 @@ warp check . --ticks 6000           # bots play without a GPU
 warp script . scripts/smoke.json --out /tmp/dead-miles
 cargo test --release -p warp --test game dead_miles
 ```
+
+The dead come to sound. A gunshot carries 25 to 35 metres, rummaging
+through a car about 9, running about 6, a swing or a shove a few. Enough
+noise and a horde comes for the last loud thing it heard; keep quiet and
+it settles. There is no clock that sends them otherwise: stragglers
+wander in, and they head for a noise when there was one.
 
 Set the `autopilot` knob to 1 to let bots drive the people too (demos,
 store clips, long headless runs). Other tuning (speeds, limp, starting
