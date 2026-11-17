@@ -8,10 +8,11 @@
 -- survivor comes back in seconds as a ghost and then as a new survivor.
 -- The run ends only when nobody is standing.
 --
--- Controls: left stick moves, right stick aims, RT fires, X swings, B
--- shoves, A (hold) searches, picks up, revives and talks to strangers,
--- Y uses a first aid kit, LB switches the torch. Keyboard: WASD, left
--- mouse fires, R swings, Shift shoves, Space uses, F heals, Q torch.
+-- Controls: left stick moves, right stick aims, RT attacks with what is in
+-- the hand (fires a gun, else swings), LT runs, A (hold) searches, picks
+-- up, revives and talks to strangers, Y uses a first aid kit, LB switches
+-- the torch. Keyboard: WASD, left mouse attacks, right mouse runs, Space
+-- uses, F heals, Q torch.
 --
 -- Design: the "Zombie road-trip co-op: design" doc. The rules live here;
 -- the land is lib/land, the people lib/figure, and the encounters
@@ -33,6 +34,8 @@ end
 -- @knobs
 local KNOBS = {
 	walk = 4.3, -- survivor speed, m/s
+	stamina = 1, -- stamina scale: a swing costs 0.12 (fists) to 0.45 (axe) of an average person's
+	breath = 0.3, -- stamina back per second while not swinging (of an average person's)
 	run = 1.45, -- running (hold LT) is this much faster
 	run_noise = 6, -- how far the dead hear you run, m
 	car_noise = 9, -- how far they hear you rummage through a car, m
@@ -76,13 +79,13 @@ local LEASH = 13 -- how far a survivor may stray from the group, m
 local BEHIND = 13 -- how far behind the group the left edge of the world is
 
 local MELEE = {
-	fists = { dmg = 0.6, range = 1.3, arc = 0.5, cd = 0.38, noise = 2, cleave = 1, knock = 2 },
-	pipe = { dmg = 1, range = 1.6, arc = 0.35, cd = 0.45, dur = 25, noise = 6, cleave = 2, knock = 3 },
-	bat = { dmg = 1.5, range = 1.75, arc = 0.25, cd = 0.52, dur = 30, noise = 6, cleave = 3, knock = 4 },
-	machete = { dmg = 2, range = 1.55, arc = 0.35, cd = 0.38, dur = 20, noise = 5, cleave = 2, knock = 2 },
-	axe = { dmg = 3, range = 1.75, arc = 0.3, cd = 0.72, dur = 15, noise = 7, cleave = 3, knock = 3.5 },
+	fists = { dmg = 0.6, range = 1.3, arc = 0.5, cd = 0.38, noise = 2, cleave = 1, knock = 2, stamina = 0.12 },
+	pipe = { dmg = 1, range = 1.6, arc = 0.35, cd = 0.45, dur = 25, noise = 6, cleave = 2, knock = 3, stamina = 0.24 },
+	bat = { dmg = 1.5, range = 1.75, arc = 0.25, cd = 0.52, dur = 30, noise = 6, cleave = 3, knock = 4, stamina = 0.32 },
+	machete = { dmg = 2, range = 1.55, arc = 0.35, cd = 0.38, dur = 20, noise = 5, cleave = 2, knock = 2, stamina = 0.2 },
+	axe = { dmg = 3, range = 1.75, arc = 0.3, cd = 0.72, dur = 15, noise = 7, cleave = 3, knock = 3.5, stamina = 0.45 },
 }
-local RANK = { fists = 0, pipe = 1, bat = 2, machete = 3, axe = 4 }
+local RANK = { fists = 0, pipe = 1, bat = 2, pistol = 2.5, machete = 3, shotgun = 3.5, axe = 4 }
 local GUNS = {
 	pistol = { dmg = 2, cd = 0.42, pellets = 1, spread = 0.025, range = 20, noise = 25 },
 	shotgun = { dmg = 1.6, cd = 0.95, pellets = 5, spread = 0.14, range = 11, noise = 35, dur = 40 },
@@ -92,6 +95,8 @@ local HELD = {
 	bat = { len = 0.85, w = 0.08, color = "#a8784a" },
 	machete = { len = 0.6, w = 0.06, color = "#c8ccd0", metal = 0.9, roughness = 0.3 },
 	axe = { len = 0.75, w = 0.08, color = "#7a4a2a" },
+	pistol = { len = 0.28, w = 0.07, color = "#2a2a2c", metal = 0.6, roughness = 0.5 },
+	shotgun = { len = 0.85, w = 0.07, color = "#4a3a2c", metal = 0.3, roughness = 0.6 },
 }
 
 local ZOMBIES = {
@@ -328,8 +333,10 @@ end
 local function standing(u) return u.state == "ok" end
 local function in_body(u) return u.state == "ok" or u.state == "down" end
 
+-- One thing in the hand: a gun, a melee weapon, or nothing.
+local function held_kind(u) return u.gun or (if u.melee ~= "fists" then u.melee else nil) end
 local function hold_weapon(u)
-	body.hold(u.fig, if u.melee ~= "fists" then u.melee else nil, HELD)
+	body.hold(u.fig, held_kind(u), HELD)
 end
 
 local function give_body(u, pos, look)
@@ -340,7 +347,10 @@ local function give_body(u, pos, look)
 	u.state = "ok"
 	u.t = 0
 	u.melee, u.dur = "fists", nil
-	u.gun, u.gun_dur = "pistol", nil
+	u.gun, u.gun_dur = nil, nil
+	-- Some people last longer than others.
+	u.stamina_max = KNOBS.stamina * pick({ 0.75, 0.9, 1, 1, 1.15, 1.35 })
+	u.stamina = u.stamina_max
 	u.cd_melee, u.cd_gun, u.cd_shove, u.swing, u.shove_t = 0, 0, 0, 0, 0
 	u.invul = 1
 	u.search_t, u.revive_t = 0, 0
@@ -358,6 +368,8 @@ local function new_survivor(p, i)
 	local u = { id = p.id, name = p.name, color = p.color, bot = p.bot, lives = 3, aim = v(1, 0, 0) }
 	local x = s.min_x + 4 + (i - 1) * 0.9
 	give_body(u, collide(v(x, 0, path_z(x) + (i % 2 == 0 and 0.5 or -0.5)), RADIUS))
+	-- The group has one pistol between them at the start.
+	if i == 1 then u.melee, u.dur, u.gun = "fists", nil, "pistol" end
 	hold_weapon(u)
 	return u
 end
@@ -547,12 +559,15 @@ local function has(cost)
 	return true
 end
 
+local GLOW = "#f2e6b0"
 local function place_weapon(kind, pos, dur)
 	local w = HELD[kind]
 	if not w then return end
 	local ent = world.spawn("cube", { pos = v(pos.x, 0.06, pos.z), rot = v(0, random.range(0, math.pi), 0), size = v(w.w, w.w, w.len), color = w.color, metal = w.metal, roughness = w.roughness or 0.6, solid = false, tag = "pickup" })
-	local ring = world.spawn("outline16", { pos = v(pos.x, 0.03, pos.z), size = 1.1, color = "#f2e6b0", emissive = 0.12, solid = false, tag = "pickup" })
-	table.insert(s.pickups, { kind = kind, pos = flat(pos), dur = dur or MELEE[kind].dur, ent = ent, ring = ring })
+	-- A faint glow under it, so it stands out a little in the dark.
+	local ring = world.spawn("sphere", { pos = v(pos.x, 0.02, pos.z), size = v(0.75, 0.02, 0.75), color = GLOW, emissive = 0.35, roughness = 1, solid = false, tag = "pickup" })
+	local d = dur or (if MELEE[kind] then MELEE[kind].dur else GUNS[kind].dur)
+	table.insert(s.pickups, { kind = kind, pos = flat(pos), dur = d, ent = ent, ring = ring })
 end
 
 -- A stranger who joins: a recruit the bots' code drives, and the body a
@@ -806,6 +821,9 @@ end
 local function look_of_hour()
 	local t = current_time()
 	if t == s.time_now then return end
+	-- A new sky brings its own light: the exposure jumps with it rather
+	-- than easing from the old one through a white or black flash.
+	if s.time_now ~= nil then s.ev = nil end
 	s.time_now = t
 	sky.set(t)
 	if dark() then
@@ -842,12 +860,11 @@ local function light_step(dt)
 		local d = v(-0.9 + 0.55 * t, lerp(0.22, 0.8, t), lerp(0.25, 0.5, t))
 		sun = d / vector.magnitude(d)
 	elseif in_day == 6 then
-		-- First light: the sunrise sky, its sun coming up.
-		local t = smooth(u - 5)
-		ev = lerp(KNOBS.night_ev + 1.5, 10.5, t)
-		lux = 60 * (50 ^ t)
+		-- First light: the sunrise sky with its own sun and sky light, so
+		-- its own exposure (a night exposure here washes the screen white).
+		ev = lerp(10.6, 11, smooth(u - 5))
 	else
-		ev = lerp(10.5, 12.5, smooth((u - 6) * 2))
+		ev = lerp(12, 12.8, smooth((u - 6) * 2))
 	end
 	s.ev = if s.ev then s.ev + (ev - s.ev) * (1 - math.exp(-dt * 1.5)) else ev
 	light.set({ exposure = s.ev })
@@ -917,8 +934,8 @@ local function from_input(i)
 	if not i then return { mx = 0, mz = 0, ax = 0, az = 0 } end
 	return {
 		mx = i.move_x, mz = -i.move_y, ax = i.aim_x, az = -i.aim_y,
-		fire = i.held.right_trigger, melee = i.held.west or i.held.right_shoulder,
-		shove = i.pressed.east, use = i.held.south, use_pressed = i.pressed.south,
+		attack = i.held.right_trigger or i.held.west or i.held.right_shoulder,
+		use = i.held.south, use_pressed = i.pressed.south,
 		med = i.pressed.north, torch = i.pressed.left_shoulder, run = i.held.left_trigger,
 		up = i.pressed.up, down = i.pressed.down, back = i.pressed.east,
 		stick_y = i.move_y,
@@ -1049,26 +1066,29 @@ local function bot_intent(u)
 		for _, o in s.zombies do
 			if o.state ~= "dead" and o.state ~= "sleep" and dist(o.pos, u.pos) < 5 then close += 1 end
 		end
-		if d < 1.8 and z.state == "windup" and u.cd_shove <= 0 then
-			it.shove = true
-		elseif d < w.range - 0.1 then
-			it.melee = true
-		elseif s.ammo > 0 and ((z.kind == "runner" and d < 7) or (close >= 4 and s.ammo > 2)) then
+		local gun = u.gun and s.ammo > 0
+		local tired = (u.stamina or 1) < w.stamina * KNOBS.stamina
+		if gun and (d < 2 or (z.kind == "runner" and d < 7) or (close >= 4 and s.ammo > 2)) then
 			it.fire = true
+		elseif d < w.range - 0.1 and not gun and not tired then
+			it.melee = true
+		elseif tired and d < 2.5 then
+			-- Out of breath: step back from it.
+			it.mx, it.mz = -to.x / d, -to.z / d
 		elseif d < 4 and chasing(u, z, dt) then
 			it.mx, it.mz = to.x / d, to.z / d
 		end
 		if close >= 6 and u.injured then
 			-- Too many and hurt: keep walking east, away from them.
 			it.mx, it.mz = steer(u, u.pos + v(8, 0, (path_z(u.pos.x) - u.pos.z) * 0.3))
-			it.fire = s.ammo > 0
+			it.fire = u.gun ~= nil and s.ammo > 0
 		end
 		if it.melee or it.fire or it.shove or it.mx ~= 0 then return it end
 	end
 
 	-- A better weapon nearby.
 	for _, p in s.pickups do
-		if RANK[p.kind] > RANK[u.melee] and dist(p.pos, u.pos) < 9 and not (u.ignore and u.ignore[p]) and chasing(u, p, dt) then
+		if RANK[p.kind] > RANK[held_kind(u) or "fists"] and dist(p.pos, u.pos) < 9 and not (u.ignore and u.ignore[p]) and chasing(u, p, dt) then
 			if dist(p.pos, u.pos) < 0.9 then it.use_pressed = true else it.mx, it.mz = steer(u, p.pos) end
 			return it
 		end
@@ -1153,8 +1173,10 @@ local function hurt(u, from)
 end
 
 local function drop_melee(u)
-	if u.melee ~= "fists" then place_weapon(u.melee, u.pos + v(random.range(-0.4, 0.4), 0, random.range(-0.4, 0.4)), u.dur) end
-	u.melee, u.dur = "fists", nil
+	local at = u.pos + v(random.range(-0.4, 0.4), 0, random.range(-0.4, 0.4))
+	if u.gun then place_weapon(u.gun, at, u.gun_dur) end
+	if u.melee ~= "fists" then place_weapon(u.melee, at, u.dur) end
+	u.melee, u.dur, u.gun, u.gun_dur = "fists", nil, nil, nil
 end
 
 local function respawn(u)
@@ -1204,6 +1226,19 @@ end
 
 local function swing(u)
 	local w = MELEE[u.melee]
+	-- Swinging is hard work: heavy things wear you out fast.
+	if not u.stamina_max then u.stamina_max = KNOBS.stamina u.stamina = u.stamina_max end
+	if u.stamina < w.stamina * KNOBS.stamina then
+		if (u.winded_t or 0) <= 0 then
+			popup(u, "out of breath", "#c8c0b4")
+			sfx("swing", u.pos, { pitch = 0.6, db = -8 })
+			u.winded_t = 1.2
+		end
+		u.cd_melee = 0.3
+		return
+	end
+	u.stamina -= w.stamina * KNOBS.stamina
+	u.breath_t = 0.7
 	u.cd_melee = w.cd
 	u.swing = 0.0001
 	count("swings")
@@ -1292,7 +1327,8 @@ local function shoot(u)
 		if u.gun_dur <= 0 then
 			popup(u, "shotgun broke", "#ff9a7a")
 			sfx("crack", u.pos)
-			u.gun, u.gun_dur = "pistol", nil
+			u.gun, u.gun_dur = nil, nil
+			hold_weapon(u)
 		end
 	end
 end
@@ -1345,14 +1381,14 @@ local function search_done(u, c)
 		return
 	end
 	if item == "weapon" then
-		local kinds = if s.day >= 2 then { "pipe", "bat", "machete", "axe" } else { "pipe", "bat", "machete" }
+		local kinds = if s.day >= 2 then { "pipe", "bat", "machete", "axe", "pistol" } else { "pipe", "bat", "machete", "pipe" }
 		place_weapon(pick(kinds), u.pos + (v(c.x, 0, c.z) - u.pos) * 0.5)
 		popup(u, "a weapon", "#f2e6b0")
 		tip(u, "take", { { "A", "pick it up" } })
 	elseif item == "shotgun" then
-		u.gun, u.gun_dur = "shotgun", GUNS.shotgun.dur
-		popup(u, "shotgun", "#e0b84a")
-		tip(u, "shotgun", { { "RT", "fire" }, { "RS", "aim" } })
+		place_weapon("shotgun", u.pos + (v(c.x, 0, c.z) - u.pos) * 0.5)
+		popup(u, "a shotgun", "#e0b84a")
+		tip(u, "take", { { "A", "pick it up" } })
 		count("shotguns")
 	elseif item == "battery" then
 		s.battery = math.min(100, s.battery + BATTERY)
@@ -1584,14 +1620,19 @@ local function act(u, it, dt)
 		end
 		for i, p in s.pickups do
 			if dist(p.pos, u.pos) < 1.1 then
-				local old, old_dur = u.melee, u.dur
-				u.melee, u.dur = p.kind, p.dur
 				world.remove(p.ent)
 				world.remove(p.ring)
 				table.remove(s.pickups, i)
-				if old ~= "fists" then place_weapon(old, u.pos, old_dur) end
+				-- One thing in the hand: what you held goes down here.
+				drop_melee(u)
+				if GUNS[p.kind] then
+					u.gun, u.gun_dur = p.kind, p.dur
+					tip(u, "gun", { { "RT", "fire" }, { "RS", "aim" } })
+				else
+					u.melee, u.dur = p.kind, p.dur
+					tip(u, "melee", { { "RT", "swing (tiring)" } })
+				end
 				hold_weapon(u)
-				tip(u, "melee", { { "X", "swing" }, { "B", "shove" } })
 				sfx("pickup", u.pos, { pitch = 1.2 })
 				count("pickups")
 				break
@@ -1607,15 +1648,17 @@ local function act(u, it, dt)
 		count("meds_used")
 	end
 
-	if not busy then
-		if it.shove and u.cd_shove <= 0 then
-			shove(u)
-		elseif it.melee and u.cd_melee <= 0 then
+	-- One attack: fire what is in the hand, or swing it (a gun without
+	-- rounds is swung like a fist). Bots ask with fire or melee.
+	if not busy and (it.attack or it.fire or it.melee) then
+		if u.gun and s.ammo > 0 then
+			if u.cd_gun <= 0 then shoot(u) end
+		elseif u.cd_melee <= 0 then
 			swing(u)
-		elseif it.fire and u.cd_gun <= 0 then
-			shoot(u)
 		end
 	end
+	u.winded_t = math.max(0, (u.winded_t or 0) - dt)
+	u.breath_t = math.max(0, (u.breath_t or 0) - dt)
 
 	-- Hands on you: every one of the dead within reach drags at you.
 	local grabs = 0
@@ -1625,7 +1668,13 @@ local function act(u, it, dt)
 			if dx * dx + dz * dz < 1.6 * 1.6 then grabs += 1 end
 		end
 	end
-	local running = it.run and not busy and m > 0.5
+	if not u.stamina_max then u.stamina_max = KNOBS.stamina u.stamina = u.stamina_max end
+	local running = it.run and not busy and m > 0.5 and u.stamina > 0.02
+	if running then
+		u.stamina = math.max(0, u.stamina - dt * 0.12 * KNOBS.stamina)
+	elseif u.breath_t <= 0 then
+		u.stamina = math.min(u.stamina_max, u.stamina + dt * KNOBS.breath * KNOBS.stamina)
+	end
 	local speed = KNOBS.walk * (if busy then 0 else (if u.cd_melee > 0.2 then 0.6 else 1)) * (if u.injured then KNOBS.limp else 1) / (1 + KNOBS.grab * grabs) * (if running then KNOBS.run else 1)
 	-- Running is heard: footfalls every so often.
 	u.run_t = (u.run_t or 0) - dt
@@ -2196,6 +2245,7 @@ function warm_all()
 	for _, c in { "#5a1e18", "#6a2a20", "#8a1a14" } do world.warm("cube", { color = c, emissive = 0.06 }) end
 	-- A breaking weapon bursts into bits of its own colour.
 	for _, w in HELD do world.warm("cube", { color = w.color, emissive = 0.06 }) end
+	world.warm("sphere", { color = GLOW, emissive = 0.35, roughness = 1 })
 	world.warm("cube", { color = "#fff2c0", emissive = 0.6 })
 	world.warm("cube", { color = "#ffd27a", emissive = 1.2 })
 	world.warm("cube", { color = "#e8dfc4", emissive = 0.05 })
@@ -2536,6 +2586,11 @@ local function draw()
 						hud.box(px + 22 * k, py, 4 * k, 12 * k, "#e8382a")
 					end
 					if u.dur then bar(px - 14 * k, py + 18 * k, 28 * k, 3 * k, u.dur / MELEE[u.melee].dur, "#e8e0c8") end
+					-- Stamina, as long as the person's stamina is: some last longer.
+					if u.stamina and u.stamina_max and u.stamina < u.stamina_max - 0.01 then
+						local w = 30 * k * u.stamina_max / KNOBS.stamina
+						bar(px - w / 2, py + 24 * k, w, 4 * k, u.stamina / u.stamina_max, if u.stamina < 0.15 * KNOBS.stamina then "#e8603a" else "#f0d060")
+					end
 					local prog = math.max(u.search_t / KNOBS.search, u.revive_t / KNOBS.revive)
 					if prog > 0 then bar(px - 30 * k, py - 110 * k, 60 * k, 6 * k, prog, c) end
 				elseif u.state == "down" then
