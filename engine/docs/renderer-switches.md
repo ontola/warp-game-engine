@@ -96,6 +96,7 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_FOREST_FLOOR_DARK` | 0.85 | How strongly the painted far ground darkens under forest stands (`terrain_surface.wgsl`). |
 | `KERN_NEEDLE_BRUSH_OWN` | 0.42 | The share of the sun a drawn needle crown keeps (`shade.wgsl`). |
 | `KERN_VOXEL_OWN_IN_CLIPMAP` | 0 | Share of a voxel cell's own sun march kept where the sun clipmap covers it; 1 keeps all of it (`shade.wgsl`). |
+| `KERN_VOXEL_LEAF_PARITY` | 1 | Voxel leaves take the needle brushes' own shade (`KERN_NEEDLE_BRUSH_OWN`) on sun and sky and read sky visibility at the surface, like mesh needles; 0 = the old voxel lighting (`shade.wgsl`). |
 | `KERN_FAR_CROWN` | unset | Comma-separated look values for the painted far forest in the order base, area, sun_loss, sky_loss, opacity, filter, gap, size, shadow_opacity, shadow_size; any may be left empty (`frame.rs`, `terrain_surface.wgsl`). |
 | `KERN_GRASS_PROXY` | 0.6,0.85,0.5 | `r,g,b` colour the ground takes past the grass disc in `terrain_fly`. |
 

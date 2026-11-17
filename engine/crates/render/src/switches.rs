@@ -173,6 +173,7 @@ pub const VOXEL_EMPTY_CEILING: Switch = Switch::new("KERN_VOXEL_EMPTY_CEILING");
 pub const VOXEL_GAP_MIPS: Switch = Switch::new("KERN_VOXEL_GAP_MIPS");
 pub const VOXEL_GLOBAL_INTERVALS: Switch = Switch::new("KERN_VOXEL_GLOBAL_INTERVALS");
 pub const VOXEL_OWN_IN_CLIPMAP: Switch = Switch::new("KERN_VOXEL_OWN_IN_CLIPMAP");
+pub const VOXEL_LEAF_PARITY: Switch = Switch::new("KERN_VOXEL_LEAF_PARITY");
 pub const VOXEL_PASS: Switch = Switch::new("KERN_VOXEL_PASS");
 pub const VOXEL_RASTER: Switch = Switch::new("KERN_VOXEL_RASTER");
 pub const VOXEL_SELF_SHADOW_COARSER: Switch = Switch::new("KERN_VOXEL_SELF_SHADOW_COARSER");
@@ -320,6 +321,7 @@ pub const ALL: &[&Switch] = &[
     &VOXEL_GAP_MIPS,
     &VOXEL_GLOBAL_INTERVALS,
     &VOXEL_OWN_IN_CLIPMAP,
+    &VOXEL_LEAF_PARITY,
     &VOXEL_PASS,
     &VOXEL_RASTER,
     &VOXEL_SELF_SHADOW_COARSER,
