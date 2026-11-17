@@ -933,6 +933,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             sim(&c, "humans.set")?;
             let o = options(&opts, &["pos", "yaw", "pose", "t", "tired"], "humans.set")?;
             let Some(p) = c.humans.people.get_mut(&id) else { return Ok(false) };
+            let mut up = false;
             for (k, v) in o {
                 match k.as_str() {
                     "pos" => p.pos = vec3(&v, "humans.set pos")?,
@@ -942,12 +943,20 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
                     "pose" => {
                         let name = match &v { Value::String(s) => s.to_str()?.to_string(), _ => return Err(rt("humans.set pose: expected a string".to_string())) };
                         if !crate::humans::POSES.contains(&name.as_str()) { return Err(rt(format!("humans.set: pose {name:?} (one of {})", crate::humans::POSES.join(", ")))); }
+                        up |= !matches!(name.as_str(), "dead" | "down");
                         p.pose = name;
                     }
                     _ => unreachable!(),
                 }
             }
+            if up { c.humans.stand(id); }
             Ok(true)
+        })),
+        ("ragdoll", f!(core, move |_, (id, push): (u32, Option<Value>)| {
+            let mut c = lock(&core);
+            sim(&c, "humans.ragdoll")?;
+            let push = match push { Some(v) => vec3(&v, "humans.ragdoll push")?, None => Vec3::ZERO };
+            c.humans.ragdoll(id, push).map_err(rt)
         })),
         ("remove", f!(core, move |_, id: u32| { let mut c = lock(&core); sim(&c, "humans.remove")?; Ok(c.humans.remove(id)) })),
         ("hit", f!(core, move |_, (id, dir): (u32, Value)| {

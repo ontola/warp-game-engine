@@ -266,6 +266,8 @@ pub struct Humans {
     /// The first actor's skinning index (0 unless the scene had others).
     first_actor: usize,
     error: Option<String>,
+    /// The limp (`humans.ragdoll`), by person.
+    dolls: crate::ragdoll::Dolls,
 }
 
 /// The facing of a human with `yaw`: 0 faces +z, a quarter turn faces +x.
@@ -301,6 +303,7 @@ impl Humans {
     }
 
     pub fn remove(&mut self, id: u32) -> bool {
+        self.dolls.remove(id);
         let Some(p) = self.people.remove(&id) else { return false };
         if let Some(pool) = self.pools.get_mut(&p.pool) { pool.used[p.slot] = false; }
         true
@@ -309,6 +312,7 @@ impl Humans {
     pub fn clear(&mut self) {
         for p in self.pools.values_mut() { p.used.fill(false); }
         self.people.clear();
+        self.dolls.clear();
     }
 
     /// Free and total slots of a pool.
@@ -359,7 +363,26 @@ impl Humans {
             p.age += dt;
             p.fresh = false;
         }
+        self.dolls.tick(dt);
     }
+
+    /// Person `id` goes limp as it stands, thrown by `push` (world, m/s):
+    /// a ragdoll until it gets up (any pose but `dead` or `down`) or goes.
+    pub fn ragdoll(&mut self, id: u32, push: Vec3) -> Result<bool, String> {
+        let Some(p) = self.people.get(&id) else { return Ok(false) };
+        let rig = Rig::shared()?;
+        let zombie = self.pools.get(&p.pool).is_some_and(|pool| pool.zombie);
+        let mut palette = vec![Mat4::IDENTITY; rig.character.joint_count];
+        pose(rig, p, zombie, 1.0, &mut palette);
+        self.dolls.fall(id, &rig.joint, &rig.bind, &palette, model_transform(p.pos, p.yaw), push)?;
+        Ok(true)
+    }
+
+    /// Up again: the ragdoll goes, the poses take over.
+    pub fn stand(&mut self, id: u32) { self.dolls.remove(id); }
+
+    /// Ragdolls still moving.
+    pub fn falling(&self) -> usize { self.dolls.active() }
 
     /// Fit the people and add every actor to `scene` (once; again after the
     /// scene is rebuilt from scratch). `budget` is the most skinned-vertex
@@ -452,7 +475,7 @@ impl Humans {
             index.insert(name.clone(), at);
             at += pool.actors.len();
         }
-        for p in self.people.values() {
+        for (id, p) in &self.people {
             let Some(pool) = self.pools.get(&p.pool) else { continue };
             if p.slot >= pool.actors.len() { continue; }
             let k = index[&p.pool] + p.slot;
@@ -460,10 +483,12 @@ impl Humans {
             let pos = p.prev_pos.lerp(p.pos, alpha);
             let turn = (p.yaw - p.prev_yaw + PI).rem_euclid(TAU) - PI;
             let yaw = p.prev_yaw + turn * alpha;
-            pose(rig, p, pool.zombie, alpha, &mut self.palettes[k]);
+            let limp = doll_pose(rig, &self.dolls, *id, alpha, &mut self.palettes[k]);
+            if limp.is_none() { pose(rig, p, pool.zombie, alpha, &mut self.palettes[k]); }
             model.pose_face(&mut self.palettes[k], p.age);
             let h = pool.actors[p.slot];
-            scene.update_instance(h.instance, h.mesh, model_transform(pos, yaw));
+            let at = model_transform(pos, yaw) * Affine3A::from_translation(limp.unwrap_or(Vec3::ZERO));
+            scene.update_instance(h.instance, h.mesh, at);
             shown[k] = true;
         }
         // Unused actors wait below the world.
@@ -508,12 +533,28 @@ impl Humans {
         let rig = Rig::shared().ok()?;
         let zombie = self.pools.get(&p.pool).is_some_and(|pool| pool.zombie);
         let mut palette = vec![Mat4::IDENTITY; rig.character.joint_count];
-        pose(rig, p, zombie, 1.0, &mut palette);
+        let limp = doll_pose(rig, &self.dolls, id, 1.0, &mut palette);
+        if limp.is_none() { pose(rig, p, zombie, 1.0, &mut palette); }
         let j = rig.joint[bone as usize];
         let lift = if bone == Bone::Head { 0.08 } else { 0.0 };
-        let local = palette[j].transform_point3(rig.rest(bone) + Vec3::new(0.0, lift, 0.0));
+        let local = palette[j].transform_point3(rig.rest(bone) + Vec3::new(0.0, lift, 0.0)) + limp.unwrap_or(Vec3::ZERO);
         Some(model_transform(p.pos, p.yaw).transform_point3(local))
     }
+}
+
+/// A ragdoll's palette, centred under its hips (for the culling bounds):
+/// the answer is that centre, in model space. None when standing.
+fn doll_pose(rig: &Rig, dolls: &crate::ragdoll::Dolls, id: u32, alpha: f32, palette: &mut [Mat4]) -> Option<Vec3> {
+    let deltas = dolls.deltas(id, alpha)?;
+    let doll = dolls.dolls.get(&id)?;
+    let hips = rig.joint[Bone::Pelvis as usize];
+    let centre = (deltas[0] * doll.palette[hips]).transform_point3(rig.rest(Bone::Pelvis)).with_y(0.0);
+    let back = Mat4::from_translation(-centre);
+    for (bone, _) in JOINTS {
+        let j = rig.joint[bone as usize];
+        palette[j] = back * deltas[crate::ragdoll::part(bone)] * doll.palette[j];
+    }
+    Some(centre)
 }
 
 /// Walk and jog weights for a speed in m/s.
@@ -654,6 +695,39 @@ mod tests {
         let (free, total) = h.room("a").unwrap();
         assert!(total < 50 && free == total, "{free} of {total}");
         assert!(scene.skinning.actors.len() < 66);
+    }
+
+    #[test]
+    fn a_ragdoll_falls_where_it_stood_along_the_blow_and_settles() {
+        let mut cfg = BTreeMap::new();
+        cfg.insert("z".to_string(), HumanPool { count: 2, style: "zombie".into(), ..Default::default() });
+        let mut h = Humans::new(&cfg);
+        let a = h.spawn("z", Vec3::new(3.0, 0.0, 2.0), 0.6).unwrap().unwrap();
+        h.tick(1.0 / 60.0);
+        let names = ["head", "hips", "hand_l", "foot_r", "knee_l"];
+        let before: Vec<Vec3> = names.iter().map(|n| h.joint(a, n).unwrap()).collect();
+        assert!(h.ragdoll(a, Vec3::new(4.0, 0.0, 0.0)).unwrap());
+        // The fall starts from the pose it stood in.
+        for (n, b) in names.iter().zip(&before) {
+            let now = h.joint(a, n).unwrap();
+            assert!(now.distance(*b) < 0.02, "{n} jumped from {b} to {now}");
+        }
+        for _ in 0..30 { h.tick(1.0 / 60.0); }
+        assert!(h.falling() == 1);
+        for _ in 0..330 { h.tick(1.0 / 60.0); }
+        assert_eq!(h.falling(), 0, "settled and frozen");
+        let head = h.joint(a, "head").unwrap();
+        let hips = h.joint(a, "hips").unwrap();
+        assert!(head.y < 0.5 && head.y > -0.1, "the head lies on the ground: {head}");
+        assert!(hips.y < 0.45 && hips.y > -0.1, "hips {hips}");
+        assert!(head.x > before[0].x + 0.3, "fell along the blow: {head} from {}", before[0]);
+        for n in names { assert!(h.joint(a, n).unwrap().is_finite()); }
+        // Getting up (any other pose) ends it; removing frees everything.
+        h.stand(a);
+        assert!(h.joint(a, "head").unwrap().y > 1.2);
+        h.ragdoll(a, Vec3::Z).unwrap();
+        assert!(h.remove(a));
+        assert_eq!(h.falling(), 0);
     }
 
     #[test]

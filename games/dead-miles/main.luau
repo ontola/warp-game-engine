@@ -499,9 +499,11 @@ end
 local function kill_zombie(z, away, strength)
 	z.state = "dead"
 	z.t = 15
-	body.eyes(z.fig, false, NO_GLOW)
-	body.lie(z.fig, z.pos, z.yaw, true, true)
 	away = away or v(1, 0, 0)
+	body.eyes(z.fig, false, NO_GLOW)
+	-- Thrown by the blow: limp, the way it was hit.
+	body.ragdoll(z.fig, away * (2.2 + 1.6 * (strength or 1)))
+	body.lie(z.fig, z.pos, z.yaw, true, true)
 	blood_splat(z.pos, away, 1.6 + (strength or 1) * 0.4)
 	fx.burst(v(z.pos.x, 0.8, z.pos.z), { color = "#5a1e18", count = 10, speed = 3, life = 0.5, size = 0.1, gravity = 9 })
 	sfx("splat", z.pos, { pitch = random.range(0.85, 1.15) })
