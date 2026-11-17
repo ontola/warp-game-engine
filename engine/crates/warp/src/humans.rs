@@ -127,6 +127,9 @@ pub struct Rig {
     walk: Cycle,
     jog: Cycle,
     idle: usize,
+    /// Crouched: walking low, and waiting low (kneeling by someone).
+    crouch: Cycle,
+    crouch_idle: usize,
     clips: BTreeMap<&'static str, usize>,
 }
 
@@ -181,11 +184,13 @@ impl Rig {
         let walk = Cycle::fit(&lib, &bound, find("Walk_Loop")?)?;
         let jog = Cycle::fit(&lib, &bound, find("Jog_Fwd_Loop")?)?;
         let idle = find("Idle_Loop")?;
+        let crouch = Cycle::fit(&lib, &bound, find("Crouch_Fwd_Loop")?)?;
+        let crouch_idle = find("Crouch_Idle_Loop")?;
         let mut clips = BTreeMap::new();
         for (pose, clip) in [("attack", "Sword_Attack"), ("punch", "Punch_Cross"), ("jab", "Punch_Jab"), ("hit", "Hit_Chest"), ("hit_head", "Hit_Head"), ("dead", "Death01"), ("down", "Death01"), ("cast", "Spell_Simple_Shoot"), ("roll", "Roll")] {
             clips.insert(pose, find(clip)?);
         }
-        Ok(Rig { character, lib, bound, joint, bind, to_rest, walk, jog, idle, clips })
+        Ok(Rig { character, lib, bound, joint, bind, to_rest, walk, jog, idle, crouch, crouch_idle, clips })
     }
 
     /// A bone's rig bind position (what the palette moves).
@@ -198,7 +203,7 @@ pub const JOINT_NAMES: &[(&str, Bone)] = &[("head", Bone::Head), ("neck", Bone::
     ("hand_l", Bone::HandL), ("hand_r", Bone::HandR), ("knee_l", Bone::CalfL), ("knee_r", Bone::CalfR), ("foot_l", Bone::FootL), ("foot_r", Bone::FootR)];
 
 /// The poses a game can ask for (`humans.set(id, {pose = ...})`).
-pub const POSES: &[&str] = &["walk", "idle", "reach", "raise", "strike", "aim", "shove", "attack", "punch", "jab", "hit", "hit_head", "dead", "down", "cast", "roll"];
+pub const POSES: &[&str] = &["walk", "idle", "crouch", "wave", "reach", "raise", "strike", "aim", "shove", "attack", "punch", "jab", "hit", "hit_head", "dead", "down", "cast", "roll"];
 
 /// A person's gait between two ticks.
 #[derive(Clone, Copy, Default, Debug)]
@@ -329,7 +334,7 @@ impl Humans {
                 // Walking backwards plays the cycle backwards.
                 let sign = if back { -1.0 } else { 1.0 };
                 let [w, j] = blend(p.to.speed);
-                let metres = rig.walk.metres * w + rig.jog.metres * j;
+                let metres = if p.pose == "crouch" { rig.crouch.metres } else { rig.walk.metres * w + rig.jog.metres * j };
                 // A zombie drags shorter steps at the same pace.
                 let stride = if zombie { 0.7 } else { 1.0 };
                 p.to.phase += sign * distance / (metres * stride * (p.to.speed / 0.85).clamp(0.2, 1.0).sqrt()).max(0.05);
@@ -503,11 +508,15 @@ fn pose(rig: &Rig, p: &Person, zombie: bool, alpha: f32, palette: &mut [Mat4]) {
     let t = (p.prev_t + (p.t - p.prev_t) * alpha).clamp(0.0, 1.0);
     let moving = (g.speed / 0.6).clamp(0.0, 1.0);
     let [w, j] = blend(g.speed);
-    let mut layers = vec![
-        Layer { clip: rig.idle, t: p.age, looped: true, w: 1.0 - moving },
-        rig.walk.layer(g.phase, moving * w),
-        rig.jog.layer(g.phase, moving * j),
-    ];
+    let mut layers = if p.pose == "crouch" {
+        vec![Layer { clip: rig.crouch_idle, t: p.age, looped: true, w: 1.0 - moving }, rig.crouch.layer(g.phase, moving)]
+    } else {
+        vec![
+            Layer { clip: rig.idle, t: p.age, looped: true, w: 1.0 - moving },
+            rig.walk.layer(g.phase, moving * w),
+            rig.jog.layer(g.phase, moving * j),
+        ]
+    };
     // A clip pose takes over the whole body: attacks, hits, falls.
     if let Some(&clip) = rig.clips.get(p.pose.as_str()) {
         let length = rig.lib.get(clip).length;
@@ -560,6 +569,8 @@ fn pose(rig: &Rig, p: &Person, zombie: bool, alpha: f32, palette: &mut [Mat4]) {
         "reach" => { raise(palette, true, 1.35, 0.05); raise(palette, false, 1.35, 0.05); }
         "shove" => { let a = 1.2 + 0.3 * (t * PI).sin(); raise(palette, true, a, -0.1); raise(palette, false, a, -0.1); }
         "aim" => raise(palette, false, 1.45, -0.05),
+        // Over here: the right hand high, waving side to side.
+        "wave" => raise(palette, false, 2.6, 0.15 + 0.35 * (p.age * 7.0).sin()),
         _ if reach > 0.0 => {
             // The zombie's arms hang forward, swaying out of step.
             let s = (g.phase * TAU).sin() * 0.12;

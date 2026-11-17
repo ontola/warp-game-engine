@@ -605,8 +605,8 @@ local function lamp(c, x, side, city)
 	local z = side * 3.45
 	box(c, x - 0.09, z - 0.09, x + 0.09, z + 0.09, 4.2, { color = "#3a3d42", roughness = 0.6, metal = 0.6 })
 	local lit = random.chance(if city then 0.25 else 0.45)
-	deco(c, "cube", v(x, 4.15, z - side * 0.5), v(0.5, 0.14, 0.3), if lit then "#fff0c8" else "#4a4640", if lit then { emissive = 1.5 } else nil)
-	if lit then table.insert(c.lamps, { pos = v(x, 4, z - side * 0.5), flicker = random.chance(0.3), seed = random.range(0, 10) }) end
+	local bulb = deco(c, "cube", v(x, 4.15, z - side * 0.5), v(0.5, 0.14, 0.3), if lit then "#fff0c8" else "#4a4640", if lit then { emissive = 1.5 } else nil)
+	if lit then table.insert(c.lamps, { pos = v(x, 4, z - side * 0.5), flicker = random.chance(0.3), seed = random.range(0, 10), bulb = bulb }) end
 end
 
 -- Everything recorded in local z moves to the chunk's centre.
@@ -700,9 +700,9 @@ function M.chunk(index, day, in_day, zc, zc_prev)
 			for lz = lo + 8, hi - 4, 16 do
 				local lx = x0 + M.TURN + 0.6
 				box(c, lx - 0.09, lz - 0.09, lx + 0.09, lz + 0.09, 4.2, { color = "#3a3d42", roughness = 0.6, metal = 0.6 })
-				deco(c, "cube", v(lx - 0.5, 4.15, lz), v(0.3, 0.14, 0.5), "#fff0c8", { emissive = 1.5 })
+				local bulb = deco(c, "cube", v(lx - 0.5, 4.15, lz), v(0.3, 0.14, 0.5), "#fff0c8", { emissive = 1.5 })
 				-- shift() below moves recorded z by zc; this one is already placed.
-				table.insert(c.lamps, { pos = v(lx - 0.5, 4, lz - zc), flicker = false, seed = random.range(0, 10) })
+				table.insert(c.lamps, { pos = v(lx - 0.5, 4, lz - zc), flicker = false, seed = random.range(0, 10), bulb = bulb })
 			end
 		end
 		-- Both sides of the street, where neither road's lots are: ground
