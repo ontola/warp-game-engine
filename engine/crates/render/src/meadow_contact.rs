@@ -66,7 +66,7 @@ impl Renderer {
     pub(super) fn new(gpu: &Gpu, field: &MeadowField, ground: &wgpu::Buffer,
         recipe: &wgpu::Buffer, generation_layout: &wgpu::BindGroupLayout,
         view_layout: &wgpu::BindGroupLayout) -> Option<Self> {
-        if std::env::var("KERN_MEADOW_EDGE_SHADOW").as_deref() != Ok("1") { return None; }
+        if !crate::switches::MEADOW_EDGE_SHADOW.on() { return None; }
         // Extend the fixed anchor footprint into the immediately adjacent
         // ground. Recipes too wide for the bounded scan disable this model.
         let radius = contact_radius(field.geometry.max_anchor_radius);

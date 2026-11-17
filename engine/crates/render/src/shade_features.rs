@@ -65,7 +65,7 @@ impl ShadeFeatures {
     pub const ALL: Self = Self { cars: true, grass: true, grass_shade: true, tracks: true, world_terrain: true, foliage_pages: true, meadow: true, terrain: true, foliage: true, procedural: true, irradiance: true, field_regions: true, field_roads: true, skin_hair: true };
 
     pub fn for_scene(scene: &Scene, world_terrain: bool, foliage_pages: bool, meadow: bool) -> Self {
-        if std::env::var("KERN_SHADE_FEATURES").as_deref() == Ok("all") { return Self::ALL; }
+        if crate::switches::SHADE_FEATURES.is("all") { return Self::ALL; }
         let any = |mask: u32| scene.materials.iter().any(|m| m.flags & mask != 0);
         Self {
             cars: !scene.car_materials.is_empty() || any(CAR_MASK),

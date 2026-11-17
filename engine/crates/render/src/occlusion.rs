@@ -69,12 +69,12 @@ impl Resources {
         // tested against the Hi-Z of what was visible last frame.
         // KERN_OCCLUSION=0 (or the older KERN_TREE_OCCLUSION=0) turns it off.
         let _=gpu_forest;
-        let off=|name|std::env::var(name).as_deref()==Ok("0");
-        let requested = !off("KERN_OCCLUSION") && !off("KERN_TREE_OCCLUSION");
+        let off=|s:&crate::switches::Switch|s.off();
+        let requested = !off(&crate::switches::OCCLUSION) && !off(&crate::switches::TREE_OCCLUSION);
         let history_first=requested && bucketed;
         let enabled = requested && bucketed;
         let rejection_enabled = enabled
-            && !off("KERN_OCCLUSION_REJECT") && !off("KERN_TREE_OCCLUSION_REJECT");
+            && !off(&crate::switches::OCCLUSION_REJECT) && !off(&crate::switches::TREE_OCCLUSION_REJECT);
         let disabled_reason = if requested && !bucketed { Some("cluster_buckets_required") }
             else if !requested { Some("not_requested") } else { None };
         let control = |phase: f32| gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

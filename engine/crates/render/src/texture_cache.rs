@@ -48,8 +48,8 @@ const BLOCKS_MAGIC:&[u8;8]=b"WRPBLK01";
 pub(crate) struct Cache { directory:Option<PathBuf> }
 impl Cache {
     pub fn from_env()->Self {
-        let enabled=std::env::var("KERN_TEXTURE_CACHE").as_deref()!=Ok("0");
-        let directory=if !enabled {None} else if let Some(path)=std::env::var_os("KERN_TEXTURE_CACHE_DIR").filter(|p|!p.is_empty()) {
+        let enabled=!crate::switches::TEXTURE_CACHE.off();
+        let directory=if !enabled {None} else if let Some(path)=crate::switches::TEXTURE_CACHE_DIR.os().filter(|p|!p.is_empty()) {
             Some(PathBuf::from(path))
         } else if cfg!(target_os="windows") {
             std::env::var_os("LOCALAPPDATA").map(|p|PathBuf::from(p).join("Warp/Cache/texture-mips-v1"))

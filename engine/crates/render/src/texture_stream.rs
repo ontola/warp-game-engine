@@ -29,7 +29,7 @@ pub(crate) enum Encoding { Rgba8, Bc7 }
 
 /// Whether this device and environment compress the texture arrays.
 pub(crate) fn compression(gpu: &Gpu) -> Encoding {
-    let on = std::env::var("KERN_TEXTURE_COMPRESSION").as_deref() != Ok("0");
+    let on = !crate::switches::TEXTURE_COMPRESSION.off();
     if on && gpu.features.contains(wgpu::Features::TEXTURE_COMPRESSION_BC) { Encoding::Bc7 } else { Encoding::Rgba8 }
 }
 

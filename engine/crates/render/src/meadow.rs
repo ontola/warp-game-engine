@@ -498,10 +498,10 @@ impl MeadowRenderer {
         // Tall nonlinear ribbons use real geometry at distance, as in the
         // reference. A patch-wide rest atlas turns their conservative sweep
         // into enormous overlapping fragments and cannot preserve coverage.
-        let aggregate_enabled = !windswept && std::env::var("KERN_MEADOW_AGGREGATE").as_deref() == Ok("1");
-        let aggregate_half = aggregate_enabled && std::env::var("KERN_MEADOW_AGGREGATE_HALF_RES").as_deref() == Ok("1");
-        let aggregate_sample_prune = aggregate_enabled && std::env::var("KERN_MEADOW_AGGREGATE_SAMPLE_PRUNE").as_deref() == Ok("1");
-        let groups_enabled = std::env::var("KERN_MEADOW_GROUP_CACHE").as_deref() == Ok("1");
+        let aggregate_enabled = !windswept && crate::switches::MEADOW_AGGREGATE.on();
+        let aggregate_half = aggregate_enabled && crate::switches::MEADOW_AGGREGATE_HALF_RES.on();
+        let aggregate_sample_prune = aggregate_enabled && crate::switches::MEADOW_AGGREGATE_SAMPLE_PRUNE.on();
+        let groups_enabled = crate::switches::MEADOW_GROUP_CACHE.on();
         if groups_enabled && windswept {
             return Err("windswept blades require KERN_MEADOW_GROUP_CACHE=0: world-page pose certificates support rigid branch wind only".into());
         }
@@ -511,14 +511,14 @@ impl MeadowRenderer {
         if aggregate_sample_prune && groups_enabled {
             return Err("KERN_MEADOW_AGGREGATE_SAMPLE_PRUNE does not support KERN_MEADOW_GROUP_CACHE".into());
         }
-        if std::env::var("KERN_MEADOW_GROUP_REPLACE").as_deref() == Ok("1") && !groups_enabled {
+        if crate::switches::MEADOW_GROUP_REPLACE.on() && !groups_enabled {
             return Err("KERN_MEADOW_GROUP_REPLACE requires KERN_MEADOW_GROUP_CACHE=1".into());
         }
         if groups_enabled && !aggregate_enabled {
             return Err("KERN_MEADOW_GROUP_CACHE requires KERN_MEADOW_AGGREGATE=1".into());
         }
         let index_streams = crate::meadow_index::MeadowIndices::build(&field.geometry)?;
-        let indexed = std::env::var("KERN_MEADOW_INDEXED").as_deref() != Ok("0");
+        let indexed = !crate::switches::MEADOW_INDEXED.off();
         if field.width < 2
             || field.height < 2
             || field.samples.len() != field.width as usize * field.height as usize
@@ -685,7 +685,7 @@ impl MeadowRenderer {
                 20.0,
                 50.0,
                 1.0,
-                if std::env::var("KERN_MEADOW_OCCLUSION").as_deref() == Ok("0") {
+                if crate::switches::MEADOW_OCCLUSION.off() {
                     0.0
                 } else {
                     1.0
@@ -789,11 +789,11 @@ impl MeadowRenderer {
             ],
             wgpu::ShaderStages::VERTEX_FRAGMENT,
         );
-        let skip_hidden_shade=scene.style.finish.is_none() && std::env::var("KERN_MEADOW_SKIP_HIDDEN_SHADE").as_deref()==Ok("1");
-        if skip_hidden_shade && std::env::var("KERN_MEADOW_VISIBILITY").as_deref()!=Ok("1") {
+        let skip_hidden_shade=scene.style.finish.is_none() && crate::switches::MEADOW_SKIP_HIDDEN_SHADE.on();
+        if skip_hidden_shade && !crate::switches::MEADOW_VISIBILITY.on() {
             return Err("KERN_MEADOW_SKIP_HIDDEN_SHADE requires KERN_MEADOW_VISIBILITY=1".into());
         }
-        let visibility = if std::env::var("KERN_MEADOW_VISIBILITY").as_deref() == Ok("1") {
+        let visibility = if crate::switches::MEADOW_VISIBILITY.on() {
             Some(visibility::Renderer::new(gpu, scene_layout, &view_layout, &draw_layout)?)
         } else { None };
         let aggregate_draw_layout = layout(
@@ -1059,7 +1059,7 @@ impl MeadowRenderer {
         } else {None};
         let edge_shadow = contact::Renderer::new(gpu, field, &ground, &recipe,
             &generate_layout, &generate_view_layout);
-        let spatial_filter_requested = std::env::var("KERN_MEADOW_SPATIAL_FILTER").as_deref() == Ok("1");
+        let spatial_filter_requested = crate::switches::MEADOW_SPATIAL_FILTER.on();
         let spatial_filter = if spatial_filter_requested && aggregate.is_none() {
             spatial_filter::source_dimensions(&field.geometry).map(|dimensions| spatial_filter::Filter::new(gpu,dimensions))
         } else {None};

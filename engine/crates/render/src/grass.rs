@@ -253,7 +253,7 @@ impl GrassRenderer {
         // Accepted four-view 4K-output DLSS Quality ABBA comparison. Both
         // paths retain the exact same compacted draw order and coverage;
         // constructor-only opt-out preserves the original measurement path.
-        let prepass=!std::env::var("KERN_GRASS_DEPTH_PREPASS").is_ok_and(|v|v=="0");
+        let prepass=!crate::switches::GRASS_DEPTH_PREPASS.off();
         let (pipelines, depth_pipeline) = transition_pipelines(gpu, &layout, &source, prepass);
         let pipeline_layout = layout;
         let selection_scene_layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

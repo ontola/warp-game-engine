@@ -2,8 +2,10 @@
 
 The renderer reads `KERN_*` environment variables at construction. They exist
 for A/B comparisons and for experiments that never became the default. This
-page lists every one the code reads (checked against the source on
-5 November 2026), what it does by default, and what the switch changes. Common
+page lists every one the code reads (a test in `render/src/switches.rs`
+checks that every variable declared there appears here or in
+[Building and running](building-and-running.md#environment-variables)), what it
+does by default, and what the switch changes. Common
 developer variables (`KERN_ADAPTER`, `KERN_SHADER_DIR`, `WARP_HDR`, game
 variables) are in [Building and running](building-and-running.md#environment-variables).
 
@@ -23,6 +25,9 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_CLUSTER_BUCKETS` | Draws clusters without size buckets. Occlusion needs buckets, so this also disables it. |
 | `KERN_RASTER_SPLIT` | Draws opaque clusters through the alpha-tested pipeline again (`discard` everywhere, no early depth). Also off with a game mask and with bounded draws. |
 | `KERN_EARLY_GRASS_CULL` | Skips the early grass cull. |
+| `KERN_FAR_TREE_SHADOWS` | The coarse maps shade the far forest ground instead of per-tree ground shadows (`shade.wgsl`). |
+| `KERN_VOXEL_STAMPS` | Voxel cooks sample every thin-foliage placement instead of reusing one stamp per part and material (`vegetation_aggregate.rs`). |
+| `KERN_FAR_FOREST_MEASURED` | `terrain_fly` paints the far part of a pine forest with the generic biome canopy instead of the grown pines' measured crowns. |
 | `KERN_SHADE_CLASSES` | One shade pipeline for terrain and everything else. |
 | `KERN_SHADE_UNLIT` | Frames without spot or local lights keep the full shade pipelines instead of the ones built without the local light loop. |
 | `KERN_TERRAIN_COARSE` | Turns off the coarse terrain footprint in shading. `KERN_COARSE_FOOTPRINT_M=<m>` sets its size. |
@@ -81,6 +86,17 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_SUN_CACHE_GUARD_METRES` | 0 | Guard band around the cached sun map (0 to 128 m). |
 | `KERN_FOLIAGE_SUN_LOD`, `KERN_FOLIAGE_SUN_PAGE_METRES` | 0.5, fine pages | Paged foliage sun (only with `KERN_PAGED_FOLIAGE_SUN=1`). |
 | `KERN_VOXEL_SELF_SHADOW_COARSER` | unset | Coarser voxel self-shadow mip. |
+| `KERN_CUT_HYSTERESIS` | 1.25 | How much less error a tree the camera drew in detail last frame keeps that detail down to, so the cut does not flip each frame (`foliage_refine.rs`; values below 1 are ignored, 1 disables it). |
+| `KERN_RASTER_FLOOR` | 8388608 | Lowest raster budget for the GPU forest (`foliage_runtime.rs`); the budget is the larger of this and the sum of the proxies' work, at most 16777216. |
+| `KERN_SOURCE_CLUSTERS` | 2097152 | Source cluster budget that bounds the camera cut in a GPU forest (`foliage_runtime.rs`), at least 1. |
+| `KERN_BRANCH_CELL_M` | 0.075 | Finest branch voxel cell in metres for aggregate cooks (accepted from 0.01 up to the default); each halving adds a level and quadruples the brick and voxel caps (`recipe_forest.rs`). |
+| `KERN_FAR_TREE_SHADOW_FROM` | 0.35 | Where in the shared sun map (its clip-space radius) per-tree ground shadows start to take over (`shade.wgsl`). |
+| `KERN_FAR_TREE_SHADOW_MIN_M` | 800 | Metres from the camera within which per-tree ground shadows never draw (`shade.wgsl`). |
+| `KERN_FOREST_FLOOR_DARK` | 0.85 | How strongly the painted far ground darkens under forest stands (`terrain_surface.wgsl`). |
+| `KERN_NEEDLE_BRUSH_OWN` | 0.42 | The share of the sun a drawn needle crown keeps (`shade.wgsl`). |
+| `KERN_VOXEL_OWN_IN_CLIPMAP` | 0 | Share of a voxel cell's own sun march kept where the sun clipmap covers it; 1 keeps all of it (`shade.wgsl`). |
+| `KERN_FAR_CROWN` | unset | Comma-separated look values for the painted far forest in the order base, area, sun_loss, sky_loss, opacity, filter, gap, size, shadow_opacity, shadow_size; any may be left empty (`frame.rs`, `terrain_surface.wgsl`). |
+| `KERN_GRASS_PROXY` | 0.6,0.85,0.5 | `r,g,b` colour the ground takes past the grass disc in `terrain_fly`. |
 
 ## Diagnostics
 
@@ -89,6 +105,8 @@ Use these to compare against the old path. All of them are the normal route.
 | `KERN_CPU_SPANS=1`, `KERN_STARTUP_PROFILE=1` | CPU time per frame phase; renderer construction profile. |
 | `KERN_DIAGNOSTIC_HIDE` | Hide geometry categories in captures. |
 | `KERN_SUN_DAMAGE_REPORT=1` | Prints, every frame, how many of the 4096 tiles of each cached sun map were marked changed, and how many casters changed by snapshot row (blocking readback). |
+| `KERN_FAR_CROWN_DEBUG` | Debug colours on the painted far forest: `1` red for the averaged share and green for single-crown cover, `2` white noise in 2 m world cells, `3` red where the stand field reaches the ground (`terrain_surface.wgsl`). |
+| `KERN_SPLIT_SELECTION_TIMING=1` | Times the GPU forest selection's parts (seed classify, refine, compact and finish, residency) separately (`frame.rs`). |
 | `KERN_MEADOW_CAPTURE_RAW=1` | Sideways: raw meadow buffers in the capture JSON. |
 | `KERN_PORTABLE=1` | Draw with the portable renderer (`render::portable`: procedural terrain, sky and haze, three storage buffers per stage) as a device below 8 storage buffers or below the sampled textures shade's layouts bind per stage (`frame::shade_sampled_textures`) does (`render::portable::needed`). Default off; such a device always uses it. See [Running in a browser](browser.md). |
 | `KERN_WEBGPU_LIMITS=spec`, `=browser`, `=mac` | Native device with only what a browser's WebGPU gives: the timestamp and first-instance features, and the spec's default limits (`spec`), what about 80 % of WebGPU devices offer (`browser`: 16 storage buffers and 32 sampled textures per stage, 1 GiB buffers) or `browser` with the 10 storage buffers most Macs offer (`mac`), never above the adapter. GPU errors are printed once each and do not stop the run, so one run lists every layout over the limits. For checking a [browser build](log/2026-11-05-browser-feasibility.md) without a browser. |
@@ -121,7 +139,10 @@ note linked says why. They are candidates for removal from the code.
 | `KERN_SPLAT_BRICK_HZB` | Two-pass Hi-Z culling of voxel splat bricks; on by default since 9 November, `=0` turns it off | [voxel brick culling](log/voxel-brick-culling-2026-11-09.md) |
 | `KERN_VOXEL_BRICK_VISIBILITY`, `KERN_VOXEL_GLOBAL_INTERVALS` | Voxel brick visibility stream | [brick visibility](log/vegetation-brick-visibility.md) |
 | `KERN_BRICK_EMPTY_SKIP`, `KERN_BRICK_EMPTY_JUMP`, `KERN_BRICK_SMOOTH_MIPS` | Optical brick empty-space skipping and mips | [r47](log/meadow-work-r47.md), [r48](log/render-traversal-r48.md), [r49](log/lod-shadow-demand-r49.md) |
-| `KERN_MEADOW_AGGREGATE` (+ `_HALF_RES`, `_SAMPLE_PRUNE`), `KERN_MEADOW_SUBSTRATE` | Distant grass aggregate and its substrate | [r39](log/meadow-distance-r39.md), [r57](log/meadow-half-resolution-r57.md), [r58](log/meadow-sampling-r58.md) |
+| `KERN_MEADOW_AGGREGATE`, `KERN_MEADOW_AGGREGATE_HALF_RES`, `KERN_MEADOW_AGGREGATE_SAMPLE_PRUNE`, `KERN_MEADOW_SUBSTRATE` | Distant grass aggregate and its substrate | [r39](log/meadow-distance-r39.md), [r57](log/meadow-half-resolution-r57.md), [r58](log/meadow-sampling-r58.md) |
+| `KERN_SUN_DITHER_TEXEL` | `=1` anchors the sun map's coverage pattern for voxel splats to the map's texels instead of to each splat (`voxel_splat_raster.wgsl`) | |
+| `KERN_SUN_TERRAIN_LOD_DAMAGE` | `=1` lets terrain LOD changes mark cached sun clipmap tiles as changed again (`shadow_damage.wgsl`) | |
+| `KERN_MEASURED_ERRORS` | Any value but `0` measures grown plants' voxel errors with rays instead of estimating them, which takes minutes for an old tree (`recipe_forest.rs`) | |
 | `KERN_MEADOW_GROUP_CACHE` (+ `KERN_MEADOW_GROUP_REPLACE`) | Meadow world-page cache | [r45](log/meadow-group-cache-r45.md) |
 | `KERN_MEADOW_VISIBILITY` (+ `KERN_MEADOW_SKIP_HIDDEN_SHADE`) | Meadow visibility pass | [r47](log/meadow-work-r47.md) |
 | `KERN_MEADOW_SPATIAL_FILTER`, `KERN_MEADOW_CONTACT_AO`, `KERN_MEADOW_EDGE_SHADOW` | Grass filtering and contact shading | [r59](log/meadow-contact-ao-r59.md), [r64](log/meadow-edge-grain-r64.md) |
