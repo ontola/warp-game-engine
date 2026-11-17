@@ -105,9 +105,9 @@ impl ShadowBudget {
     /// The defaults, or `KERN_CLUSTERED_SHADOW_LAYERS` /
     /// `KERN_CLUSTERED_SHADOW_FACES` (renderer-switches.md).
     pub fn configured() -> Self {
-        let read = |name: &str, default: u32, max: u32| std::env::var(name).ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(default).min(max);
+        let read = |switch: &crate::switches::Switch, default: u32, max: u32| switch.parse::<u32>().unwrap_or(default).min(max);
         let d = Self::default();
-        Self { layers: read("KERN_CLUSTERED_SHADOW_LAYERS", d.layers, 16), faces_per_frame: read("KERN_CLUSTERED_SHADOW_FACES", d.faces_per_frame, 96) }
+        Self { layers: read(&crate::switches::CLUSTERED_SHADOW_LAYERS, d.layers, 16), faces_per_frame: read(&crate::switches::CLUSTERED_SHADOW_FACES, d.faces_per_frame, 96) }
     }
     pub fn tiles(self) -> u32 { self.layers * TILES_PER_LAYER }
 }
@@ -115,7 +115,7 @@ impl ShadowBudget {
 /// Whether a scene uses clustered lights: `KERN_CLUSTERED_LIGHTS` (1 or 0)
 /// over `Graphics::clustered_lights`.
 pub fn enabled(scene_wants: bool) -> bool {
-    match std::env::var("KERN_CLUSTERED_LIGHTS").as_deref() {
+    match crate::switches::CLUSTERED_LIGHTS.var().as_deref() {
         Ok("1") => true,
         Ok("0") => false,
         _ => scene_wants,
