@@ -18,6 +18,7 @@ live = { path = "../live" }
 gamenight = { path = "../gamenight" }
 assets = { path = "../assets" }
 body = { path = "../body" }
+physics = { path = "../physics" }
 kern.workspace = true
 glam = "0.31"
 bytemuck = "1"

@@ -144,6 +144,12 @@ function M.hit(b, push)
 	if b.human then humans.hit(b.human, push) end
 end
 
+-- Gone limp along `push` (m/s): a ragdoll that settles where it falls
+-- (humans only; a box figure just falls). Call before M.lie.
+function M.ragdoll(b, push)
+	if b.human then humans.ragdoll(b.human, push) end
+end
+
 -- Lying down (sleeping, downed) or getting up. `fall` plays the fall.
 function M.lie(b, pos, yaw, down, fall)
 	b.pos, b.yaw = pos, yaw

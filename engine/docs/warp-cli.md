@@ -209,7 +209,7 @@ keyboard mapping is in `app::input`.
 | `sound` | `play(name, {at, db, pitch, <param> = value}) -> handle`, `set_param(handle, param, value)`, `stop(handle)`, `list()` |
 | `hud` | `text(text, x, y, {size, color, align, width})`, `box(x, y, w, h, color)`, `size() -> w, h`, `view(player) -> x, y, w, h`, `project(pos, player?) -> x, y or nil` |
 | `post` | `set({bloom, bloom_radius, bloom_threshold, bloom_wide, contrast, saturation, vignette, grain, aberration})`, `reset()` |
-| `humans` | `spawn(pool, {pos, yaw})` → id or nil when the pool is full, `set(id, {pos, yaw, pose, t, tired})`, `hit(id, dir)`, `remove(id)`, `head(id)` and `joint(id, name)` → vector, `room(pool)` → free, total |
+| `humans` | `spawn(pool, {pos, yaw})` → id or nil when the pool is full, `set(id, {pos, yaw, pose, t, tired})`, `hit(id, dir)`, `ragdoll(id, push)`, `remove(id)`, `head(id)` and `joint(id, name)` → vector, `room(pool)` → free, total |
 | `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `spots({{pos, dir, color, intensity, range, angle, inner}, ...})` (at most 8, with shadows), `clear()` |
 | `sky` | `set(name)`, `get()`, `warm(name)` (bake a sky you will switch to later in the background, so the switch does not stall a frame) |
 | `light` | `set({sun, sun_lux, sky_lux, exposure, exposure_min, exposure_max, exposure_bias, adapt_speed, fog_start, fog_end, fog_density})`, `reset()` |
@@ -313,7 +313,14 @@ keyboard mapping is in `app::input`.
   `tired` (0 to 1) bends anyone over, out of breath, over any pose: the
   chest heaves and the arms hang. `hit(id, dir)` jolts the upper body
   along a blow (`dir` in the world, its length the strength, about 1 for
-  a heavy hit): the chest and head swing that way and spring back. The `zombie` style stoops, lolls its head and holds its arms out.
+  a heavy hit): the chest and head swing that way and spring back.
+  `ragdoll(id, push)` lets it go limp from the pose it stands in, thrown
+  by `push` (m/s, in the world): eleven jointed capsules with loose
+  anatomical limits fall onto the ground under it (only that: no walls)
+  and freeze where they settle, within four seconds. It stays down through
+  `dead` and `down`; any other pose gets it up again. Up to 24 move at
+  once (the oldest freezes); it steps with the simulation, so replays
+  match. The `zombie` style stoops, lolls its head and holds its arms out.
   `head(id)` is where the head is now (for glowing eyes or a hit test);
   `joint(id, name)` any of `head`, `neck`, `chest`, `hips`, `shoulder_l`,
   `elbow_l`, `hand_l`, `knee_l`, `foot_l` (and `_r`), say to put a weapon

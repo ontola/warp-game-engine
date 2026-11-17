@@ -6625,6 +6625,7 @@ dependencies = [
  "kern",
  "live",
  "mlua",
+ "physics",
  "render",
  "rusqlite",
  "script",
