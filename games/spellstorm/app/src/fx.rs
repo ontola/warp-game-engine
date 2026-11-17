@@ -1065,6 +1065,11 @@ impl Fx {
             let q = at + Vec3::new(a.cos() * rr, y, a.sin() * rr);
             self.emit(sp, q, 1);
         }
+        // A soft halo round the front so it glows rather than looks painted.
+        let start = self.live.len();
+        self.halo(at + Vec3::Y * y.max(0.15), rgba(1.0, 0.42, 0.08, 1.0), 0.8, 0.4 * fade);
+        let made: Vec<_> = self.live.drain(start..).collect();
+        self.early.extend(made);
         self.light(at + Vec3::Y * y.max(0.4), c, 0.7 * fade, 2.0);
         if let Some(l) = self.live_lights.pop() {
             self.early_lights.push(l);
