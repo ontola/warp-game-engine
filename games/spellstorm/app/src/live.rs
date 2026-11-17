@@ -13,6 +13,18 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 pub const SURFACE: &str = include_str!("surface.wgsl");
+/// A monster being made (making.wgsl): its glow, added to the surface shader.
+pub const MAKING: &str = include_str!("making.wgsl");
+
+/// The game surface: surface.wgsl and the making glow after it.
+pub fn surface(source: &str) -> String {
+    format!("{source}\n{MAKING}\n{}", include_str!("making_glow.wgsl"))
+}
+
+/// The game mask: a monster being made is cut off above its edge.
+pub fn install_mask() {
+    render::set_game_mask(&format!("{MAKING}\n{}", include_str!("making_mask.wgsl")));
+}
 
 /// games/spellstorm in the repository: SPELLSTORM_DIR, else found from the
 /// working directory or the program upward (a build in target/ finds it).
@@ -175,7 +187,7 @@ impl Shader {
     /// one goes back in. Returns a log line.
     pub fn apply(&mut self, mut reload: impl FnMut() -> Result<(), String>) -> Option<String> {
         let new = self.pending.take()?;
-        render::set_game_surface(&new);
+        render::set_game_surface(&surface(&new));
         match reload() {
             Ok(()) => {
                 self.good = new;
@@ -183,7 +195,7 @@ impl Shader {
                 Some("surface.wgsl: compiled".into())
             }
             Err(e) => {
-                render::set_game_surface(&self.good);
+                render::set_game_surface(&surface(&self.good));
                 let line = format!("surface.wgsl: {e}");
                 self.error = Some(line.clone());
                 if let Err(e) = reload() {
