@@ -363,6 +363,16 @@ local function popup(u, text, color)
 	u.popup = { text = text, t = 1.8, color = color or "#ffffff" }
 end
 
+-- How to use what you just got, the first two times per person: a row of
+-- { button, what } under the popup.
+local function tip(u, key, row)
+	if u.bot then return end
+	u.tips = u.tips or {}
+	u.tips[key] = (u.tips[key] or 0) + 1
+	if u.tips[key] > 2 then return end
+	u.tip = { row = row, t = 3.5 }
+end
+
 ----------------------------------------------------------------------------
 -- Zombies
 
@@ -1331,18 +1341,24 @@ local function search_done(u, c)
 		local kinds = if s.day >= 2 then { "pipe", "bat", "machete", "axe" } else { "pipe", "bat", "machete" }
 		place_weapon(pick(kinds), u.pos + (v(c.x, 0, c.z) - u.pos) * 0.5)
 		popup(u, "a weapon", "#f2e6b0")
+		tip(u, "take", { { "A", "pick it up" } })
 	elseif item == "shotgun" then
 		u.gun, u.gun_dur = "shotgun", GUNS.shotgun.dur
 		popup(u, "shotgun", "#e0b84a")
+		tip(u, "shotgun", { { "RT", "fire" }, { "RS", "aim" } })
 		count("shotguns")
 	elseif item == "battery" then
 		s.battery = math.min(100, s.battery + BATTERY)
 		popup(u, "batteries", ITEM_COLORS.battery)
+		tip(u, "battery", { { "LB", "torch on/off" } })
 		count("found_battery")
 	else
 		local n = random.int(e[3], e[4])
 		s[item] += n
 		popup(u, "+" .. n .. " " .. (if item == "meds" then "first aid" else item), ITEM_COLORS[item])
+		if item == "meds" then tip(u, "meds", { { "Y", "patch up when hurt" } })
+		elseif item == "ammo" then tip(u, "ammo", { { "RT", "fire" }, { "RS", "aim" } })
+		elseif item == "food" then tip(u, "food", { { "", "eaten at the camp fire" } }) end
 		count("found_" .. item, n)
 	end
 	fx.burst(at, { color = ITEM_COLORS[item] or "#f2e6b0", emissive = 0.3, count = 6, speed = 1.5, life = 0.4, size = 0.08 })
@@ -1426,6 +1442,10 @@ local function act(u, it, dt)
 		if u.flash <= 0 then u.flash = nil end
 	end
 	if u.side_t then u.side_t -= dt end
+	if u.tip then
+		u.tip.t -= dt
+		if u.tip.t <= 0 then u.tip = nil end
+	end
 	if u.popup then
 		u.popup.t -= dt
 		if u.popup.t <= 0 then u.popup = nil end
@@ -1564,6 +1584,7 @@ local function act(u, it, dt)
 				table.remove(s.pickups, i)
 				if old ~= "fists" then place_weapon(old, u.pos, old_dur) end
 				hold_weapon(u)
+				tip(u, "melee", { { "X", "swing" }, { "B", "shove" } })
 				sfx("pickup", u.pos, { pitch = 1.2 })
 				count("pickups")
 				break
@@ -2345,6 +2366,55 @@ local function icon(x, y, k, color, n)
 	hud.text(tostring(n), x + 22 * k, y, { size = 22 * k, color = if n == 0 then "#ff6a4a" else "#f4efe6" })
 end
 
+-- Gamepad buttons as plain, high-contrast chips: { { "A", "search" }, ... }
+-- centred on x.
+local BUTTON_COLORS = { A = "#3fae4a", B = "#d8433a", X = "#3a7bd8", Y = "#e0b330" }
+local function button_row(cx, y, row, k, alpha)
+	alpha = alpha or 1
+	local size = 18 * k
+	local widths, total = {}, 0
+	for i, e in row do
+		local chip = if e[1] ~= "" then (if #e[1] == 1 then 24 else 34) * k else 0
+		local w = chip + (if chip > 0 then 6 * k else 0) + #e[2] * size * 0.52
+		widths[i] = { chip, w }
+		total += w + (if i > 1 then 16 * k else 0)
+	end
+	local x = cx - total / 2
+	hud.box(x - 8 * k, y - 5 * k, total + 16 * k, 34 * k, { 0, 0, 0, 0.62 * alpha })
+	for i, e in row do
+		local chip, w = widths[i][1], widths[i][2]
+		if chip > 0 then
+			hud.box(x, y, chip, 24 * k, BUTTON_COLORS[e[1]] or "#e8e0d0")
+			hud.text(e[1], x, y + 1 * k, { size = 17 * k, width = chip, align = "center", color = if BUTTON_COLORS[e[1]] then "#ffffff" else "#111111" })
+		end
+		hud.text(e[2], x + chip + (if chip > 0 then 6 * k else 0), y + 1 * k, { size = size, width = w + 20 * k, color = { 1, 1, 1, alpha } })
+		x += w + 16 * k
+	end
+end
+
+-- What A does here for this person, and where: a downed friend, a
+-- cupboard, a weapon on the ground, a stranger.
+local function prompt_of(u)
+	for _, o in s.survivors do
+		if o ~= u and o.state == "down" and dist(o.pos, u.pos) < 1.3 then return { { "A", "hold: revive" } }, o.pos end
+	end
+	local best, bd = nil, 0.85
+	for _, c in s.containers do
+		if not c.searched then
+			local d = to_rect(u.pos, c.rect)
+			if d < bd then best, bd = c, d end
+		end
+	end
+	if best then return { { "A", "hold: search" } }, v(best.x, 0, best.z) end
+	for _, p in s.pickups do
+		if dist(p.pos, u.pos) < 1.1 then return { { "A", "take the " .. p.kind } }, p.pos end
+	end
+	local st = nearest_stranger(u)
+	if st then return { { "A", "talk" } }, st.pos end
+	if u.injured and s.meds > 0 then return { { "Y", "first aid" } }, nil end
+	return nil
+end
+
 local function bar(x, y, w, h, frac, color)
 	hud.box(x - 1, y - 1, w + 2, h + 2, { 0, 0, 0, 0.55 })
 	hud.box(x, y, w * math.clamp(frac, 0, 1), h, color)
@@ -2449,6 +2519,21 @@ local function draw()
 				end
 				if u.popup then
 					hud.text(u.popup.text, px - 100 * k, py - 140 * k - (1.8 - u.popup.t) * 20 * k, { size = 20 * k, align = "center", width = 200 * k, color = u.popup.color })
+				end
+				if not u.bot and u.state == "ok" and not u.talk then
+					if u.tip then
+						button_row(px, py - 112 * k, u.tip.row, k, math.min(1, u.tip.t * 2))
+					else
+						local row, at = prompt_of(u)
+						if row then
+							local qx, qy = px, py - 112 * k
+							if at then
+								local ax, ay = hud.project(v(at.x, 1.6, at.z))
+								if ax then qx, qy = ax, ay - 30 * k end
+							end
+							button_row(qx, qy, row, k)
+						end
+					end
 				end
 				-- The talk card: who it is, what they say, the choices.
 				if u.talk then

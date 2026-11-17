@@ -212,6 +212,10 @@ pub struct Person {
     pub yaw: f32,
     prev_pos: Vec3,
     prev_yaw: f32,
+    /// The legs' turn from the facing towards where they walk (radians):
+    /// strafing walks the legs sideways under a body that keeps aiming.
+    legs: f32,
+    prev_legs: f32,
     from: Gait,
     to: Gait,
     pub pose: String,
@@ -278,7 +282,7 @@ impl Humans {
         p.used[slot] = true;
         let id = self.next;
         self.next += 1;
-        self.people.insert(id, Person { pool: pool.to_string(), slot, pos, yaw, prev_pos: pos, prev_yaw: yaw, from: Gait::default(), to: Gait::default(), pose: "walk".into(), t: 0.0, prev_t: 0.0, age: (hash(id as u64, 7) % 1000) as f32 * 0.01, fresh: true });
+        self.people.insert(id, Person { pool: pool.to_string(), slot, pos, yaw, prev_pos: pos, prev_yaw: yaw, legs: 0.0, prev_legs: 0.0, from: Gait::default(), to: Gait::default(), pose: "walk".into(), t: 0.0, prev_t: 0.0, age: (hash(id as u64, 7) % 1000) as f32 * 0.01, fresh: true });
         Ok(Some(id))
     }
 
@@ -311,10 +315,19 @@ impl Humans {
             let distance = if teleport { 0.0 } else { moved.length() };
             let speed = distance / dt.max(1e-4);
             p.to.speed += (speed - p.to.speed) * (1.0 - (-dt / 0.08).exp());
+            // Where the legs go, against where the body faces: sideways turns
+            // the hips and legs that way (up to 75 degrees), further round
+            // walks backwards with the legs turned the other way.
+            let ahead = Vec3::new(p.yaw.sin(), 0.0, p.yaw.cos());
+            let right = Vec3::new(p.yaw.cos(), 0.0, -p.yaw.sin());
+            let a = if distance > 1e-4 && speed > 0.3 { moved.dot(right).atan2(moved.dot(ahead)) } else { 0.0 };
+            let back = a.abs() > 1.75;
+            let want = if back { a - PI * a.signum() } else { a }.clamp(-1.3, 1.3);
+            p.prev_legs = p.legs;
+            p.legs += (want - p.legs) * (1.0 - (-dt / 0.12).exp());
             if distance > 1e-5 {
                 // Walking backwards plays the cycle backwards.
-                let ahead = Vec3::new(p.yaw.sin(), 0.0, p.yaw.cos());
-                let sign = if moved.dot(ahead) < -0.3 * distance { -1.0 } else { 1.0 };
+                let sign = if back { -1.0 } else { 1.0 };
                 let [w, j] = blend(p.to.speed);
                 let metres = rig.walk.metres * w + rig.jog.metres * j;
                 // A zombie drags shorter steps at the same pace.
@@ -505,6 +518,16 @@ fn pose(rig: &Rig, p: &Person, zombie: bool, alpha: f32, palette: &mut [Mat4]) {
     }
     let pose = rig.bound.pose(&rig.lib, &layers);
     for (bone, _) in JOINTS { palette[rig.joint[bone as usize]] = pose[bone as usize] * rig.to_rest[bone as usize]; }
+    let legs = p.prev_legs + (p.legs - p.prev_legs) * alpha;
+    if legs.abs() > 0.01 && !matches!(p.pose.as_str(), "dead" | "down") {
+        // Strafing: the hips and legs turn towards the walk, the waist
+        // takes part of the twist, the chest keeps facing ahead.
+        let hips = palette[rig.joint[Bone::Pelvis as usize]].transform_point3(rig.rest(Bone::Pelvis));
+        let lower: Vec<usize> = [Bone::Pelvis, Bone::ThighL, Bone::CalfL, Bone::FootL, Bone::BallL, Bone::ThighR, Bone::CalfR, Bone::FootR, Bone::BallR].iter().map(|b| rig.joint[*b as usize]).collect();
+        turn(palette, &lower, hips, Quat::from_rotation_y(legs));
+        let waist = palette[rig.joint[Bone::Spine1 as usize]].transform_point3(rig.rest(Bone::Spine1));
+        turn(palette, &[rig.joint[Bone::Spine1 as usize]], waist, Quat::from_rotation_y(legs * 0.45));
+    }
 
     let at = |b: Bone, palette: &[Mat4]| palette[rig.joint[b as usize]].transform_point3(rig.rest(b));
     let arm = |left: bool| if left { [Bone::UpperArmL, Bone::LowerArmL, Bone::HandL] } else { [Bone::UpperArmR, Bone::LowerArmR, Bone::HandR] }.map(|b| rig.joint[b as usize]);
@@ -569,6 +592,28 @@ mod tests {
         let (free, total) = h.room("a").unwrap();
         assert!(total < 50 && free == total, "{free} of {total}");
         assert!(scene.skinning.actors.len() < 66);
+    }
+
+    #[test]
+    fn strafing_turns_the_legs_not_the_body() {
+        let mut cfg = BTreeMap::new();
+        cfg.insert("p".to_string(), HumanPool { count: 1, ..Default::default() });
+        let mut h = Humans::new(&cfg);
+        let a = h.spawn("p", Vec3::ZERO, 0.0).unwrap().unwrap();
+        let walk = |h: &mut Humans, step: Vec3| for _ in 0..60 { let p = h.people.get_mut(&a).unwrap(); p.pos += step / 60.0; h.tick(1.0 / 60.0); };
+        // Facing +z, walking +x: the legs turn right, the cycle runs forward.
+        walk(&mut h, Vec3::X * 1.3);
+        let p = &h.people[&a];
+        assert!(p.legs > 1.0, "legs {}", p.legs);
+        let phase = p.to.phase;
+        // Straight back: no turn, the cycle runs backwards.
+        walk(&mut h, -Vec3::Z * 1.3);
+        let p = &h.people[&a];
+        assert!(p.legs.abs() < 0.1, "legs {}", p.legs);
+        assert!(p.to.phase < phase, "backwards: {} after {}", p.to.phase, phase);
+        // Standing still: the legs come back under the body.
+        walk(&mut h, Vec3::ZERO);
+        assert!(h.people[&a].legs.abs() < 0.05);
     }
 
     #[test]
