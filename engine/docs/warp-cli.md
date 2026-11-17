@@ -112,6 +112,7 @@ my-game/
 | `max_entities` | 1024 | Entities alive at once (render slots reserved up front). |
 | `size` | `[1280, 720]` | Window size in pixels. |
 | `hdr` | unset | `true` asks for HDR output on an HDR screen (highlights brighter than SDR white), `false` refuses it; unset follows `WARP_HDR`. F10 overrides it. See [hdr-and-exposure](hdr-and-exposure.md). |
+| `split_layout` | `"stacked"` | How two views share the screen: `"stacked"` (top and bottom) or `"side"` (left and right). |
 | `steps` | 200000 | Luau step budget per hook call (see [scripting](scripting.md#limits)). |
 | `memory_mb` | 64 | Luau memory cap. |
 | `[humans.NAME]` | none | A pool of Warp Humans: `count` (1 to 256 alive at once), `variety` (different people fitted at load, 1 to 16, default 4), `style` (`"person"` or `"zombie"`), `skin` and `shirt` (`"#rrggbb"`, default seeded), `height` (`[1.6, 1.9]` m), `seed`. At most 256 in all. Each one costs about 2 MB of GPU skinning memory, so on a device that binds less than all pools need (128 MB on some), every pool is cut by the same share and a line in the log says so. |

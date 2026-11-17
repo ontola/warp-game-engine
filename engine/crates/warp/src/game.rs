@@ -923,6 +923,9 @@ fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp], spots: &[api::
 
 impl Game for LuaGame {
     fn hdr(&self) -> Option<bool> { self.cfg.hdr }
+    fn split(&self) -> render::SplitLayout {
+        if self.cfg.split_layout.as_deref() == Some("side") { render::SplitLayout::SideBySide } else { render::SplitLayout::Stacked }
+    }
 
     fn debug(&self) -> (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>) {
         self.editor_pages.clone()

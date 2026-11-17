@@ -4,6 +4,8 @@ id = "dead-miles"
 tick_rate = 60
 # One shared view; the camera follows the group east.
 split = false
+# When people walk apart the screen splits left and right.
+split_layout = "side"
 # Co-op: on your own, a bot survives with you.
 players = 1
 bots = 1
