@@ -618,6 +618,10 @@ impl World {
         let c = e.cfg();
         e.cool = if c.attack != Attack::Slam {
             self.rng.range(1.2, 1.8) as f64
+        } else if c.boss {
+            // A boss slams less often (Joep: next to it you were done for,
+            // and the pickups lie round it).
+            3.4
         } else {
             2.2
         };
@@ -700,9 +704,13 @@ impl World {
                 let at = pos + (self.pos(t) - pos).normalize_or_zero() * 1.2;
                 self.burst(at, fx::rgb(0.5, 0.4, 0.3), 20, 5.0, 0.15, None);
                 self.shake(if c.boss { 0.6 } else { 0.3 });
+                // A boss's slam and its ring hurt less up close (Joep: far too
+                // strong; you could not grab what lay round it).
+                let close = if c.boss { 0.55 } else { 1.0 };
+                let scale = scale * close;
                 if c.ring > 0 {
                     let off = self.rng.f() * TAU;
-                    self.ring_shot(id, c.ring, 6.0, el, dmg * 0.6, off, 0.24);
+                    self.ring_shot(id, c.ring, 6.0, el, dmg * 0.6 * if c.boss { 0.6 } else { 1.0 }, off, 0.24);
                 }
                 for w in self.wizards.clone() {
                     let to = flat(self.pos(w) - pos);

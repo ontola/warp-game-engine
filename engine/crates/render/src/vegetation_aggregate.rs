@@ -389,7 +389,7 @@ fn triangle(cells: &mut Cells, vertices: [Vertex; 3], material: &Material, origi
 /// Voxel stamps (KERN_VOXEL_STAMPS=0 turns them off).
 fn stamps_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("KERN_VOXEL_STAMPS").map_or(true, |v| v != "0"))
+    *ON.get_or_init(|| !crate::switches::VOXEL_STAMPS.off())
 }
 
 /// The surface of one stamp cell as rotation-ready moments: area-weighted

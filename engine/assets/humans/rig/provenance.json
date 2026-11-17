@@ -1,0 +1,66 @@
+{
+  "format_version": 1,
+  "source_project": "Growing Guns",
+  "source_files": [
+    {
+      "path": "assets/animations/Pistol Idle.fbx",
+      "sha256": "60253b696d75788cc6f9f633eebba6a98b5a139c49e90de1f3a2629980a1bb23"
+    },
+    {
+      "path": "assets/animations/Pistol Idle.fbx.import",
+      "sha256": "8c6f89d05bf1ce81cb160fb225aa6220cf3ad31f21c444217b858a79a0bfcc29"
+    },
+    {
+      "path": "assets/animations/Pistol Jump.fbx",
+      "sha256": "eda49ca57521a2d697aef23b410e46d21d4d35faaf62a8a2216ebbfe2700c43d"
+    },
+    {
+      "path": "assets/animations/Pistol Jump.fbx.import",
+      "sha256": "cbc56f03519c4f619028a88a533a07a9db3598f16400ca3d8d47d112111d4c03"
+    },
+    {
+      "path": "assets/animations/Pistol Run.fbx",
+      "sha256": "3930966dbf1bd7472cd89bfc87150c90062994980c488bead5543702451bc9a7"
+    },
+    {
+      "path": "assets/animations/Pistol Run.fbx.import",
+      "sha256": "4a2765f0365a2ca09f2d909b6056cb4c696f0ec23ec5f695acc57f9965f25618"
+    },
+    {
+      "path": "assets/models/knight.fbx",
+      "sha256": "abd543d03bee4dce1d3d1d7c5b8c570d595b10283d0b65987950b7561e7fae81"
+    },
+    {
+      "path": "assets/models/knight.fbx.import",
+      "sha256": "f52bb7e99dcce475eca060a8bb7a835f822a13693d0c17e7a0030de751110cf9"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "80ec9fd41dd0e263eaff56f24c7783f3ef3d01840df03653ba4b915eb62d6288"
+    },
+    {
+      "path": "scripts/character_visual.gd",
+      "sha256": "75e15b58b539be75fb3e951679ff0b85f6ac3c4f5d58e700cb45cabaf4e16883"
+    }
+  ],
+  "exporter_files": [
+    {
+      "path": "export-characters.gd",
+      "sha256": "9eef5208ae0af1fb2d333bcd35b0c245290a6dc1dcf6b013d88b85f7e7800b55"
+    },
+    {
+      "path": "export-characters.ps1",
+      "sha256": "b5c10049bd11c299f1b020929dd18377f616f53c1d27c9e092167046051c530b"
+    }
+  ],
+  "generated_files": [
+    {
+      "path": "player-rig.json",
+      "sha256": "a197783d5cf543b143912f3912a1d93a0a5127f289d504a35a5fe8430fcb37c3"
+    },
+    {
+      "path": "player.anim.bin",
+      "sha256": "c5248ed7bc92ffd637cfd934303633791b76049e930e1bef9a0c2da14724a27f"
+    }
+  ]
+}

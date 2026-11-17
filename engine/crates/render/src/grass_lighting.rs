@@ -37,8 +37,8 @@ pub(crate) struct Resources {
 }
 impl Resources {
     pub fn new(gpu:&Gpu,field:Option<(&FarGrassField,&FarGrassRenderer)>,terrain_visual_offset_m:f32)->Self {
-        let flags=u32::from(std::env::var("KERN_GRASS_LEAF_BRDF").as_deref()!=Ok("0"))
-            | (u32::from(std::env::var("KERN_GRASS_SUN_OCCLUSION").as_deref()!=Ok("0"))<<1);
+        let flags=u32::from(!crate::switches::GRASS_LEAF_BRDF.off())
+            | (u32::from(!crate::switches::GRASS_SUN_OCCLUSION.off())<<1);
         let mut values=Uniform::zeroed();values.dims[3]=flags;
         let (terrain,coverage,tiles)=if let Some((field,renderer))=field {
             values=Uniform {grid:[field.origin[0],field.origin[1],field.cell,field.max_height],

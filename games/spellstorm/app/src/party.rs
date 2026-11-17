@@ -5,19 +5,13 @@
 //! again. Names follow the lobby live, the party's settings set friendly
 //! fire, difficulty and unlocks, and a phone's "New run" starts one.
 use app::{Buttons, Controls};
-use gamenight::{button, Client, Command, Pad, Seat};
+use gamenight::party::hex;
+use gamenight::{button, Command, Pad, Seat};
 use serde_json::json;
 use std::time::Instant;
 
 pub const GAME_ID: &str = "spellstorm";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Phase {
-    Idle,
-    Warm,
-    Running,
-    Paused,
-}
 
 /// What the game should do after a poll.
 #[derive(Debug, PartialEq)]
@@ -41,21 +35,8 @@ pub struct Seated {
 }
 
 pub struct Party {
-    client: Client,
-    pub session: String,
-    pub phase: Phase,
-    finished: bool,
+    host: gamenight::party::Party,
     triggers: Vec<u32>,
-}
-
-/// `#rrggbb` as sRGB 0..1.
-fn hex(s: &str) -> Option<[f32; 3]> {
-    let h = s.trim().trim_start_matches('#');
-    if h.len() < 6 {
-        return None;
-    }
-    let b = |i: usize| u8::from_str_radix(h.get(i..i + 2)?, 16).ok().map(|v| v as f32 / 255.0);
-    Some([b(0)?, b(2)?, b(4)?])
 }
 
 fn seated(seats: &[Seat]) -> Vec<Seated> {
@@ -66,48 +47,42 @@ impl Party {
     /// When launched by a party host (GAMENIGHT=1) or pointed at one
     /// (GAMENIGHT_ADDR).
     pub fn connect() -> Option<Party> {
-        match Client::connect_from_env(GAME_ID) {
-            Ok(Some(client)) => Some(Party::new(client)),
-            Ok(None) => None,
-            Err(e) => {
-                eprintln!("gamenight: {e}");
-                None
-            }
-        }
+        gamenight::party::Party::connect(GAME_ID).map(Party::new)
     }
 
-    pub fn new(client: Client) -> Party {
-        Party { client, session: String::new(), phase: Phase::Idle, finished: false, triggers: vec![] }
+    pub fn new(host: gamenight::party::Party) -> Party {
+        Party { host, triggers: vec![] }
+    }
+
+    pub fn session(&self) -> &str {
+        &self.host.session
     }
 
     /// Under a daemon the window stays minimised until a run starts.
     pub fn screen(&self) -> app::Screen {
-        if !self.client.launched_by_daemon {
-            return app::Screen::Normal;
-        }
         // A host pause (Back, Alt+Tab) hands the screen to the lobby; staying
         // fullscreen made the lobby and the game fight over the screen.
-        if self.phase == Phase::Running { app::Screen::Fullscreen } else { app::Screen::Hidden }
+        app::Screen::for_party(self.host.client.launched_by_daemon, self.host.running())
     }
 
     /// Startup progress for the host's loading screen ([`app::Game::loading`]).
-    pub fn loading(&mut self, percent: u32, step: &str) { self.client.loading(percent, step); }
+    pub fn loading(&mut self, percent: u32, step: &str) { self.host.loading(percent, step); }
 
     pub fn running(&self) -> bool {
-        self.phase == Phase::Running
+        self.host.running()
     }
 
     /// main.gd _declare.
     fn declare(&self) {
         // Joep: jump straight to a level from the settings.
         let levels: Vec<String> = spellstorm::biome::biomes().iter().enumerate().map(|(i, b)| format!("{}. {}", i + 1, b.name)).collect();
-        let _ = self.client.declare_settings(json!([
+        let _ = self.host.client.declare_settings(json!([
             {"key": "level", "label": "Level", "kind": "choice", "default": levels[0], "options": levels},
             {"key": "friendly_fire", "label": "Friendly fire", "kind": "choice", "default": "quarter", "options": ["off", "quarter", "half", "full"]},
             {"key": "difficulty", "label": "Difficulty", "kind": "choice", "default": "normal", "options": ["easy", "normal", "hard"]},
             {"key": "unlocks", "label": "Unlocks", "kind": "choice", "default": "earned", "options": ["earned", "all"]},
         ]));
-        let _ = self.client.declare_actions(json!([
+        let _ = self.host.client.declare_actions(json!([
             {"key": "new_run", "label": "New run", "description": "Ends this run for everyone and starts a fresh one.", "confirm": true},
         ]));
     }
@@ -115,7 +90,7 @@ impl Party {
     pub fn poll(&mut self) -> Vec<Ev> {
         let mut out = vec![];
         loop {
-            let cmds = self.client.poll();
+            let cmds = self.host.client.poll();
             if cmds.is_empty() {
                 break;
             }
@@ -124,31 +99,32 @@ impl Party {
                     Command::Connected => self.declare(),
                     Command::Prepare { session, seats } => {
                         println!("[gamenight] prepare {session} ({} seats)", seats.len());
-                        let _ = self.client.notify_progress(&session, 85, "setting up the match");
+                        self.host.setting_up(&session);
                         out.push(Ev::Prepare(seated(&seats)));
-                        self.session = session;
-                        self.phase = Phase::Warm;
-                        self.finished = false;
+                        self.host.prepare(session);
                     }
-                    Command::Start { session } if session == self.session => {
-                        println!("[gamenight] start {session}");
-                        self.phase = Phase::Running;
+                    Command::Start { session } => {
+                        if self.host.start(&session) {
+                            println!("[gamenight] start {session}");
+                        }
                     }
-                    Command::Resume { session } if session == self.session => {
-                        println!("[gamenight] resume {session}");
-                        self.phase = Phase::Running;
+                    Command::Resume { session } => {
+                        if self.host.resume(&session) {
+                            println!("[gamenight] resume {session}");
+                        }
                     }
-                    Command::Pause { session } if session == self.session => {
-                        println!("[gamenight] pause {session}");
-                        self.phase = Phase::Paused;
+                    Command::Pause { session } => {
+                        if self.host.pause(&session) {
+                            println!("[gamenight] pause {session}");
+                        }
                     }
-                    Command::Dispose { session } if session == self.session => {
-                        println!("[gamenight] dispose {session}");
-                        self.session.clear();
-                        self.phase = Phase::Idle;
-                        out.push(Ev::Dispose);
+                    Command::Dispose { session } => {
+                        if self.host.dispose(&session) {
+                            println!("[gamenight] dispose {session}");
+                            out.push(Ev::Dispose);
+                        }
                     }
-                    Command::PlayersUpdated { seats } | Command::Roster { seats } if !self.session.is_empty() => {
+                    Command::PlayersUpdated { seats } | Command::Roster { seats } if !self.host.session.is_empty() => {
                         out.push(Ev::Names(seats.iter().filter(|s| !s.player_id.is_empty()).map(|s| (s.player_id.clone(), s.name.clone())).collect()));
                     }
                     Command::Setting { key, value } => {
@@ -159,7 +135,7 @@ impl Party {
                     Command::Action { key, .. } if key == "new_run" => out.push(Ev::NewRun),
                     Command::Disconnected(e) => {
                         app::startup::note(&format!("gamenight disconnected: {e}"));
-                        self.phase = Phase::Idle;
+                        self.host.disconnected();
                     }
                     Command::Error(e) => eprintln!("gamenight: {e}"),
                     _ => {}
@@ -171,31 +147,21 @@ impl Party {
 
     /// The run is built: tell the host, then wait frozen for `start`.
     pub fn ready(&mut self) {
-        let s = self.session.clone();
-        let _ = self.client.notify_progress(&s, 100, "ready");
-        if let Err(e) = self.client.notify_ready(&s) {
-            eprintln!("gamenight: {e}");
-        }
+        self.host.ready();
     }
 
     /// The run is over (once per session).
     pub fn finished(&mut self) {
-        if self.finished || self.session.is_empty() {
-            return;
-        }
-        self.finished = true;
-        let _ = self.client.notify_finished(&self.session);
+        self.host.finished();
     }
 
     pub fn room_log(&self, text: &str) {
-        if !self.session.is_empty() {
-            let _ = self.client.room_log(text);
-        }
+        self.host.room_log(text);
     }
 
     /// Esc: the host's overlay.
     pub fn overlay(&self) {
-        let _ = self.client.request_overlay();
+        let _ = self.host.client.request_overlay();
     }
 
     /// Controls for each party seat this tick; `any_phase` reads them while
@@ -203,14 +169,14 @@ impl Party {
     pub fn controls(&mut self, seats: &[usize], dt: f32, any_phase: bool) -> Vec<Controls> {
         let now = Instant::now();
         if self.running() {
-            let _ = self.client.report_activity();
+            let _ = self.host.client.report_activity();
         }
         self.triggers.resize(seats.len(), 0);
         seats
             .iter()
             .enumerate()
             .map(|(k, &seat)| {
-                let pad = self.client.state.pad_for_seat(seat, now, any_phase);
+                let pad = self.host.client.state.pad_for_seat(seat, now, any_phase);
                 let c = to_controls(&pad, self.triggers[k], dt);
                 self.triggers[k] = c.held.0 & (Buttons::LEFT_TRIGGER | Buttons::RIGHT_TRIGGER);
                 c
@@ -255,6 +221,7 @@ pub fn to_controls(pad: &Pad, prev_triggers: u32, _dt: f32) -> Controls {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gamenight::Client;
     use serde_json::Value;
 
     /// A fake party host on loopback: settings, prepare one couch seat and
@@ -289,7 +256,7 @@ mod tests {
             }
         });
         let client = Client::connect(gamenight::Config { url: format!("ws://{address}"), game_id: GAME_ID.into(), token: String::new(), launched_by_daemon: true }).unwrap();
-        let mut party = Party::new(client);
+        let mut party = Party::new(gamenight::party::Party::new(client));
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         let (mut prepared, mut setting, mut aimed) = (None, None, false);
         assert_eq!(party.screen(), app::Screen::Hidden);

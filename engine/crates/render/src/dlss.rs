@@ -72,7 +72,7 @@ mod native {
     struct Paths { runtime: Vec<u16>, logs: Vec<u16> }
     impl Paths {
         fn new() -> Result<Self, String> {
-            let runtime = std::env::var_os("KERN_DLSS_RUNTIME_DIR").map(PathBuf::from)
+            let runtime = crate::switches::DLSS_RUNTIME_DIR.os().map(PathBuf::from)
                 .or_else(|| std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)))
                 .ok_or("cannot locate the DLSS runtime directory")?;
             if !runtime.join("nvngx_dlss.dll").is_file() {

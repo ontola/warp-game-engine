@@ -133,7 +133,8 @@ HDR output is off unless something asks for it, in this order:
 
 1. **F10, Rendering, HDR output** (developer override for the session).
 2. The game: `fn hdr(&self) -> Option<bool>` on `app::Game`, for a settings
-   menu toggle. `None` defers to the next step.
+   menu toggle. `None` defers to the next step. A Luau game sets `hdr = true` in
+   game.toml.
 3. `WARP_HDR=1` in the environment (`WARP_HDR=0` refuses it).
 
 It switches live: the window's surface is reconfigured and the presenter and

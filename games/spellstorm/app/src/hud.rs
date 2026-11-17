@@ -121,16 +121,18 @@ struct Hints {
     text: String,
     /// A hint just done: its words, ticked off and fading (Joep).
     gone: Option<(String, f32)>,
+    /// How long something newly learned has waited behind a basic hint.
+    learned_wait: f32,
 }
 /// Seconds a done hint shows its tick while it fades.
 const HINT_GONE: f32 = 1.2;
 
 /// The moves taught by a hint under a wizard until they have been used, in
 /// the order they are taught, a step at a time (Joep): one element loaded,
-/// shot, cast, then the same for the other starting element; dodging and
-/// the sword; shaking. New skills first once learned: two elements
+/// cleared again, shot, cast, then the same for the other starting element;
+/// dodging and the sword. New skills first once learned: two elements
 /// together as soon as a second slot opens.
-const HINTS: [u32; 13] = [NEW_ELEMENT, used::CAST2, used::NOVA, used::PLANT, used::ENCHANT, used::LOAD, used::BOLT_EL, used::CAST, used::CAST_PAIR, used::ROLL, used::SWING, used::DEFLECT, used::SHAKE];
+const HINTS: [u32; 13] = [NEW_ELEMENT, used::CAST2, used::NOVA, used::PLANT, used::ENCHANT, used::LOAD, used::SHAKE, used::BOLT_EL, used::CAST, used::CAST_PAIR, used::ROLL, used::SWING, used::DEFLECT];
 /// Not a move: an element learned and never loaded yet. After a new skill's
 /// card, its hint stays until it has been used (Joep).
 const NEW_ELEMENT: u32 = 1 << 30;
@@ -182,7 +184,7 @@ fn hint_text(bit: u32, wz: &spellstorm::wizard::Wizard, mods: &spellstorm::relic
             let b = open.get(1).copied().unwrap_or(order[1]);
             format!("New: {} {} and {} {}, then {{rt}} casts {}", button_of(a), a.name(), button_of(b), b.name(), name(&[a, b]))
         }
-        used::SHAKE => "Elements loaded? Hold {rs} in to shake them out".into(),
+        used::SHAKE => "Hold {rs} to clear elements".into(),
         _ => String::new(),
     }
 }
@@ -331,13 +333,47 @@ impl Hud {
             h.used |= wz.used;
             h.used_el |= wz.used_el;
             let done = |bit: u32, used: u32, used_el: u32| if bit == NEW_ELEMENT { new_element(&wz, used_el).is_none() } else { used & bit == bit };
+            // A new skill's hint waits for its card to go (Joep).
+            let cards = !self.unlocks.is_empty();
+            let u = h.used;
+            let ready = |bit: u32| match bit {
+                // Only something learned later: the first elements are the
+                // basics' own hints.
+                NEW_ELEMENT => !cards && u & used::CAST != 0,
+                used::NOVA => !cards && wz.form_open(Form::Nova),
+                used::PLANT => !cards && wz.form_open(Form::Plant),
+                used::ENCHANT => !cards && wz.form_open(Form::Enchant),
+                used::ROLL | used::SWING => fight,
+                used::DEFLECT => shots && u & used::SWING != 0,
+                used::CAST_PAIR => u & used::CAST != 0,
+                // Taught as soon as a second slot opens (Joep), after its card.
+                used::CAST2 => !cards && wz.queue.size >= 2 && u & used::CAST != 0,
+                // One of the first steps (Joep), once something is loaded.
+                used::SHAKE => !wz.queue.is_empty() && u & used::LOAD != 0,
+                _ => true,
+            };
+            // Something just learned (a new element, a new move) comes before
+            // whatever basic is showing, a while after its card (Joep: "press
+            // X to load it" under the player too, until they do).
+            const NEW: [u32; 5] = [NEW_ELEMENT, used::CAST2, used::NOVA, used::PLANT, used::ENCHANT];
+            let learned = NEW.iter().copied().find(|&bit| !done(bit, h.used, h.used_el) && ready(bit));
             if let Some((bit, t)) = &mut h.now {
                 *t += dt;
                 if done(*bit, h.used, h.used_el) {
                     h.gone = Some((std::mem::take(&mut h.text), 0.0));
                     h.now = None;
                     h.wait = 0.0;
+                } else if let Some(l) = learned.filter(|_| !NEW.contains(bit)) {
+                    h.learned_wait += dt;
+                    if h.learned_wait >= HINT_WAIT {
+                        h.now = Some((l, 0.0));
+                        h.learned_wait = 0.0;
+                        h.text = hint_text(l, &wz, &w.a(id).mods, h.used_el);
+                    } else {
+                        h.text = hint_text(*bit, &wz, &w.a(id).mods, h.used_el);
+                    }
                 } else {
+                    h.learned_wait = 0.0;
                     h.text = hint_text(*bit, &wz, &w.a(id).mods, h.used_el);
                 }
                 continue;
@@ -346,23 +382,6 @@ impl Hud {
             if h.wait < HINT_WAIT {
                 continue;
             }
-            // A new skill's hint waits for its card to go (Joep).
-            let cards = !self.unlocks.is_empty();
-            let ready = |bit: u32| match bit {
-                // Only something learned later: the first elements are the
-                // basics' own hints.
-                NEW_ELEMENT => !cards && h.used & used::CAST != 0,
-                used::NOVA => !cards && wz.form_open(Form::Nova),
-                used::PLANT => !cards && wz.form_open(Form::Plant),
-                used::ENCHANT => !cards && wz.form_open(Form::Enchant),
-                used::ROLL | used::SWING => fight,
-                used::DEFLECT => shots && h.used & used::SWING != 0,
-                used::CAST_PAIR => h.used & used::CAST != 0,
-                // Taught as soon as a second slot opens (Joep), after its card.
-                used::CAST2 => !cards && wz.queue.size >= 2 && h.used & used::CAST != 0,
-                used::SHAKE => !wz.queue.is_empty() && h.used & used::CAST != 0,
-                _ => true,
-            };
             h.now = HINTS.iter().copied().find(|&bit| !done(bit, h.used, h.used_el) && ready(bit)).map(|bit| (bit, 0.0));
             if let Some((bit, _)) = h.now {
                 h.text = hint_text(bit, &wz, &w.a(id).mods, h.used_el);
@@ -504,14 +523,15 @@ impl Hud {
             }
             let x = (c.x / c.w * 0.5 + 0.5) * size[0] as f32 / s;
             let y = (0.5 - c.y / c.w * 0.5) * size[1] as f32 / s;
-            p.text(&wz.name, x, y + 14.0, body(), 26.0, lighten(wz.robe, 0.4), TextAlign::Center, 9.0);
+            // Smaller than they were (Joep), the bar as big as a monster's.
+            p.text(&wz.name, x, y + 12.0, body(), 19.0, lighten(wz.robe, 0.4), TextAlign::Center, 7.0);
             // Health under the name (Joep): red on a dark sleeve, gone
             // while down.
             if a.alive && a.max_hp > 0.0 {
                 let k = (a.hp / a.max_hp).clamp(0.0, 1.0) as f32;
-                let (bw, by) = (96.0, y + 50.0);
-                p.rect([x - bw * 0.5 - 2.0, by - 2.0, bw + 4.0, 11.0], [0.0, 0.0, 0.0, 0.7]);
-                p.rect([x - bw * 0.5, by, bw * k, 7.0], [0.8, 0.12, 0.08, 1.0]);
+                let (bw, by) = (64.0, y + 30.0);
+                p.rect([x - bw * 0.5 - 2.0, by - 2.0, bw + 4.0, 9.0], [0.0, 0.0, 0.0, 0.7]);
+                p.rect([x - bw * 0.5, by, bw * k, 5.0], [0.8, 0.12, 0.08, 1.0]);
             }
             let key = if wz.player_id.is_empty() { format!("seat{}", wz.seat) } else { wz.player_id.clone() };
             let shown = self.hints.get(&key).filter(|_| a.alive && wz.bot.is_none());
@@ -519,12 +539,12 @@ impl Hud {
                 if let Some((_, t)) = h.now.filter(|_| !h.text.is_empty()) {
                     // In softly, then a slow pulse so it is noticed.
                     let a = (t / 0.4).min(1.0) * (0.8 + 0.2 * (t * 3.0).sin());
-                    hint_line(&mut p, &h.text, x, y + 84.0, a, None);
+                    hint_line(&mut p, &h.text, x, y + 62.0, a, None);
                 } else if let Some((text, t)) = h.gone.as_ref().filter(|g| !g.0.is_empty()) {
                     // Done (Joep): a tick in front, then it fades and rises.
                     let k = (t / HINT_GONE).clamp(0.0, 1.0);
                     let a = 1.0 - smooth01(((k - 0.35) / 0.65).clamp(0.0, 1.0));
-                    hint_line(&mut p, text, x, y + 84.0 - 10.0 * k * k, a, Some((t / 0.2).min(1.0)));
+                    hint_line(&mut p, text, x, y + 62.0 - 10.0 * k * k, a, Some((t / 0.2).min(1.0)));
                 }
             }
         }
@@ -545,7 +565,8 @@ impl Hud {
             let a = if *t < 4.0 { 1.0 } else { 1.0 - (t - 4.0) };
             p.text(text, sw * 0.5, 20.0 + 18.0 + k as f32 * 34.0, body(), 26.0, alpha(*c, a), TextAlign::Center, 8.0);
         }
-        if let Some(u) = self.unlocks.first() {
+        // Close-up shots (SPELLSTORM_ZOOM) leave the middle of the screen free.
+        if let Some(u) = self.unlocks.first().filter(|_| std::env::var_os("SPELLSTORM_ZOOM").is_none()) {
             unlock_card(&mut p, u, self.unlock_t, sw);
         }
         // Banner.
@@ -933,12 +954,11 @@ fn unlock_card(p: &mut Painter, u: &Unlock, t: f32, sw: f32) {
 /// left, with its icon).
 fn ball(p: &mut Painter, e: El, c: Vec2, r: f32, dim: f32) {
     let col = el_c(e);
-    let base = alpha(darken(col, 0.25), dim.min(1.0));
-    p.circle(c, r, alpha(darken(col, 0.55), dim.min(1.0)));
-    p.circle(c, r * 0.92, base);
-    p.circle(c + Vec2::new(-r * 0.15, -r * 0.18), r * 0.62, alpha(lighten(col, 0.1 * dim), dim.min(1.0)));
-    p.circle(c + Vec2::new(-r * 0.32, -r * 0.36), r * 0.22, [1.0, 1.0, 1.0, 0.25 * dim.min(1.0)]);
-    icon(p, e, c, r * 0.6, [0.05, 0.03, 0.03, 0.85 * dim.min(1.0)]);
+    // Its own bright colour with a dark icon on it (Joep: more contrast).
+    let k = dim.min(1.0);
+    p.circle(c, r, alpha(lighten(col, 0.1 * (dim - 1.0).max(0.0) * 4.0), k));
+    p.circle(c + Vec2::new(-r * 0.3, -r * 0.34), r * 0.24, [1.0, 1.0, 1.0, 0.3 * k]);
+    icon(p, e, c, r * 0.66, [0.04, 0.02, 0.02, k]);
 }
 
 /// Icons.draw: each element as simple shapes.
@@ -1151,7 +1171,7 @@ fn panel(p: &mut Painter, w: &World, id: spellstorm::world::Id, at: Vec2, mirror
         p.text("Stand at the grave", if mirrored { x(16.0) } else { x(16.0) }, y(80.0), bf, 13.0, [0.85, 0.3, 0.25, 1.0], align, 0.0);
         return;
     }
-    buttons(p, &wz, Vec2::new(x(222.0), y(36.0)));
+    buttons(p, &wz, Vec2::new(x(226.0), y(40.0)));
     // What each cast button makes of the queue, two by two.
     if !slots.is_empty() {
         let names: Vec<(&str, String)> = FORMS.iter().filter(|f| wz.form_open(f.1)).map(|f| (f.0, wz.preview(f.1).name)).collect();
@@ -1159,8 +1179,8 @@ fn panel(p: &mut Painter, w: &World, id: spellstorm::world::Id, at: Vec2, mirror
             let cx = 14.0 + (i % 2) as f32 * 146.0;
             let cy = 70.0 + (i / 2) as f32 * 19.0;
             let chip_x = x(cx) - if mirrored { 22.0 } else { 0.0 };
-            p.round_rect([chip_x, y(cy), 22.0, 14.0], 4.0, [0.85, 0.75, 0.55, 0.85]);
-            p.text(b, chip_x + 11.0, y(cy + 7.0), bf, 10.0, [0.08, 0.05, 0.03, 1.0], TextAlign::Center, 0.0);
+            p.round_rect([chip_x, y(cy), 22.0, 14.0], 4.0, [1.0, 0.84, 0.48, 1.0]);
+            p.text(b, chip_x + 11.0, y(cy + 7.5), title(), 11.0, [0.04, 0.03, 0.02, 1.0], TextAlign::Center, 0.0);
             let tx = if mirrored { chip_x - 4.0 } else { chip_x + 27.0 };
             p.text(name, tx, y(cy + 7.0), bf, 11.0, [0.92, 0.86, 0.74, 0.9], align, 0.0);
         }
@@ -1184,18 +1204,20 @@ fn channel_left(w: &World, ch: Option<spellstorm::world::Id>) -> Option<(f32, C)
 /// it conjures; holding LB flips them to their pairs.
 fn buttons(p: &mut Painter, wz: &spellstorm::wizard::Wizard, c: Vec2) {
     let flip = wz.pad.down(Pad::LB) && wz.lb_open();
-    let places = [(el::PAIR_Y, Pad::Y, Vec2::new(0.0, -15.0)), (el::PAIR_X, Pad::X, Vec2::new(-15.0, 0.0)), (el::PAIR_B, Pad::B, Vec2::new(15.0, 0.0)), (el::PAIR_A, Pad::A, Vec2::new(0.0, 15.0))];
+    // Bigger than they were and on a dark plate (Joep: hard to read).
+    let d = 20.0;
+    let places = [(el::PAIR_Y, Pad::Y, Vec2::new(0.0, -d)), (el::PAIR_X, Pad::X, Vec2::new(-d, 0.0)), (el::PAIR_B, Pad::B, Vec2::new(d, 0.0)), (el::PAIR_A, Pad::A, Vec2::new(0.0, d))];
+    p.circle(c, d + 13.0, [0.02, 0.015, 0.015, 0.75]);
     for (pair, bit, off) in places {
         let e = pair[if flip { 1 } else { 0 }];
         let q = c + off;
         let held = wz.pad.down(bit);
-        let r = if held { 9.0 } else { 7.5 };
-        p.circle(q, r + 1.5, [0.04, 0.03, 0.03, 1.0]);
+        let r = if held { 11.5 } else { 10.0 };
         if !wz.element_open(e) {
-            p.circle(q, 6.0, [0.22, 0.2, 0.19, 1.0]);
+            p.circle(q, 5.0, [0.3, 0.28, 0.26, 1.0]);
             continue;
         }
-        ball(p, e, q, r, if held { 1.15 } else { 0.85 });
+        ball(p, e, q, r, if held { 1.25 } else { 1.0 });
         if wz.learned.contains(&e) && wz.learned_t > 0.0 {
             let pulse = 0.5 + 0.5 * (wz.learned_t as f32 * 7.0).sin();
             p.arc(q, r + 3.5 + pulse * 2.0, 0.0, TAU, 1.6, lighten(el_c(e), 0.4));

@@ -13,8 +13,9 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
-// Eight playable seats plus their burning corpse counterparts.
-pub const MAX_ACTORS: usize = 64;
+// Eight playable seats plus their burning corpse counterparts, or a crowd
+// of Warp Humans (the shader has no per-actor limit; vertices and storage do).
+pub const MAX_ACTORS: usize = 256;
 pub const MAX_JOINTS: usize = 256;
 pub const MAX_VERTICES: usize = 1_600_000;
 
@@ -146,6 +147,10 @@ pub fn blend_palette_into(a: &[Mat4], b: &[Mat4], blend: f32, out: &mut [Mat4]) 
     }
     Ok(())
 }
+
+/// GPU bytes each skinned vertex takes: the scene's skinned vertices times
+/// this must fit in one storage binding.
+pub const VERTEX_BYTES: usize = std::mem::size_of::<Source>();
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]

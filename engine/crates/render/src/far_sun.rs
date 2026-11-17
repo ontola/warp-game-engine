@@ -109,14 +109,14 @@ impl Resources {
         let explicit=!scene.static_sun_instances.is_empty();
         let stage=scene.stage_sun || explicit;
         let min_extent=if explicit{128.}else{1024.};
-        let paged=std::env::var("KERN_PAGED_FOLIAGE_SUN").as_deref()==Ok("1");
-        let setting=std::env::var("KERN_FAR_SUN_SHADOW");
+        let paged=crate::switches::PAGED_FOLIAGE_SUN.on();
+        let setting=crate::switches::FAR_SUN_SHADOW.var();
         // A streamed GPU forest world gets a camera-anchored map by default.
         // KERN_SUN_CLIPMAP: the clipmap's outer levels cover this reach.
         let anchored=!stage && scene.gpu_forest.is_some() && !paged && setting.as_deref()!=Ok("0") && !crate::frame::sun_clipmap_requested();
         let enabled=anchored || match setting.as_deref(){Ok("0")=>false,Ok("1")=>true,_=>stage && !paged};
-        let reach=std::env::var("KERN_FAR_SUN_REACH").ok().and_then(|v|v.parse::<f32>().ok()).filter(|v|v.is_finite()&&*v>=256.).unwrap_or(1024.);
-        let lod_pixels=configured_lod(std::env::var("KERN_FAR_SUN_LOD").ok().as_deref());
+        let reach=crate::switches::FAR_SUN_REACH.parse::<f32>().filter(|v|v.is_finite()&&*v>=256.).unwrap_or(1024.);
+        let lod_pixels=configured_lod(crate::switches::FAR_SUN_LOD.get().as_deref());
         let mut owners=if enabled {owners(scene,stage,anchored)}else{Vec::new()};
         if enabled && explicit {owners.fill(false);for &id in &scene.static_sun_instances {if let Some(owner)=owners.get_mut(id as usize){*owner=eligible(&scene.instances[id as usize],true);}}}
         let sources:Vec<_>=scene.instances.iter().zip(&owners).map(|(&i,&owner)|if owner{i}else{hidden(i)}).collect();

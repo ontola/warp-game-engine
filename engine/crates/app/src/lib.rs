@@ -136,6 +136,9 @@ pub trait Game {
     /// `teleport 0 1 2 3`): set up scenarios without playing up to them.
     /// `help` should list what the game understands.
     fn command(&mut self, cmd: &str) -> Result<String, String> { Err(format!("this game has no commands ({cmd})")) }
+    /// A `cmd` step of a `script` run. Defaults to [`Game::command`]; a game
+    /// may keep a scripted run from writing to its source files.
+    fn script_command(&mut self, cmd: &str) -> Result<String, String> { self.command(cmd) }
     /// How the window should be: the shell follows changes every frame
     /// (a party host keeps a warm game hidden until its match starts).
     fn screen(&self) -> Screen { Screen::Normal }
@@ -341,6 +344,14 @@ pub enum Screen {
     Hidden,
     /// Shown, borderless fullscreen and focused.
     Fullscreen,
+}
+
+impl Screen {
+    /// A game under a party host: on screen only while the session runs, and
+    /// only when a daemon launched it; standalone it is as configured.
+    pub fn for_party(launched_by_daemon: bool, running: bool) -> Screen {
+        if !launched_by_daemon { Screen::Normal } else if running { Screen::Fullscreen } else { Screen::Hidden }
+    }
 }
 
 #[derive(Clone, Debug)]

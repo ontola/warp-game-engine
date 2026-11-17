@@ -122,6 +122,13 @@ pub struct Lamp { pub pos: Vec3, pub color: [f32; 3], pub intensity: f32, pub ra
 
 pub const MAX_LAMPS: usize = render::headlights::MAX_LOCAL_LIGHTS;
 
+/// A spotlight that casts shadows (`lights.spots`): torches, headlights,
+/// a lamp over a door. `angle` is the outer half-angle in radians.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spot { pub pos: Vec3, pub dir: Vec3, pub color: [f32; 3], pub intensity: f32, pub range: f32, pub angle: f32, pub inner: f32 }
+
+pub const MAX_SPOTS: usize = render::headlights::MAX_LIGHTS;
+
 /// Which hook is running: `draw` may not change the game.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase { Sim, Draw }
@@ -161,6 +168,9 @@ pub struct Core {
     pub light: LightOverride,
     pub post: Post,
     pub lamps: Vec<Lamp>,
+    pub spots: Vec<Spot>,
+    /// Warp Humans (game.toml `[humans.NAME]` pools).
+    pub humans: crate::humans::Humans,
     pub tick: u64,
     pub tick_rate: f32,
     pub title: String,
@@ -435,8 +445,11 @@ fn player(c: &Core, p: Option<i64>) -> mlua::Result<usize> {
     })
 }
 
-/// With one shared view, the player whose camera it is; else `i`.
+/// The player whose camera `i` looks through: the first one in the roster
+/// on the same view (players can share one, `camera.views`), with one
+/// shared view the first with a view; else `i`.
 fn viewer(c: &Core, i: usize) -> usize {
+    if let Some(v) = c.roster[i].view { return c.roster.iter().position(|p| p.view == Some(v)).unwrap_or(i); }
     if !c.shared_view { return i; }
     c.roster.iter().position(|p| p.view.is_some()).unwrap_or(i)
 }
@@ -680,6 +693,27 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             c.roster[i].cam = cam;
             Ok(())
         })),
+        // Who looks through which part of the screen: {[player id] = view},
+        // views numbered from 1. Players on the same view share its camera
+        // (the first of them in players.list() is the one camera.set moves);
+        // the screen splits into as many parts as there are views. Players
+        // left out keep theirs. A game splits the screen when its players
+        // walk apart and joins it again when they come together.
+        ("views", f!(core, move |_, t: Table| {
+            let mut c = lock(&core);
+            for pair in t.pairs::<i64, i64>() {
+                let (id, n) = pair?;
+                let i = player(&c, Some(id))?;
+                if n < 1 || n > 8 { return Err(rt(format!("camera.views: view {n} for player {id} (1 to 8)"))); }
+                c.roster[i].view = Some(n as usize - 1);
+            }
+            // Number the views 0.. in order, without gaps.
+            let mut used: Vec<usize> = c.roster.iter().filter_map(|p| p.view).collect();
+            used.sort_unstable();
+            used.dedup();
+            for p in &mut c.roster { if let Some(v) = p.view { p.view = used.iter().position(|u| *u == v); } }
+            Ok(())
+        })),
         ("get", f!(core, move |lua, p: Option<i64>| {
             let c = lock(&core);
             let cam = c.roster[viewer(&c, player(&c, p)?)].cam;
@@ -763,6 +797,13 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             Ok(())
         })),
         ("get", f!(core, move |_, ()| Ok(lock(&core).sky.name()))),
+        // Bake a sky the game will switch to later, in the background, so
+        // the switch does not stall a frame (a bake is a few hundred ms).
+        ("warm", f!(core, move |_, name: String| {
+            let _ = &core;
+            crate::game::warm_sky(SkyChoice::parse(&name).map_err(rt)?);
+            Ok(())
+        })),
     ])?;
 
     table("light", vec![
@@ -846,7 +887,95 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             lock(&core).lamps = lamps;
             Ok(())
         })),
-        ("clear", f!(core, move |_, ()| { lock(&core).lamps.clear(); Ok(()) })),
+        ("spots", f!(core, move |_, list: Table| {
+            let mut spots = Vec::new();
+            for item in list.sequence_values::<Table>() {
+                let t = item?;
+                let mut l = Spot { pos: Vec3::ZERO, dir: Vec3::NEG_Y, color: [1.0; 3], intensity: 1000.0, range: 15.0, angle: 30f32.to_radians(), inner: -1.0 };
+                for (k, v) in options(&t, &["pos", "dir", "color", "intensity", "range", "angle", "inner"], "lights.spots")? {
+                    match k.as_str() {
+                        "pos" => l.pos = vec3(&v, "spot pos")?,
+                        "dir" => l.dir = vec3(&v, "spot dir")?,
+                        "color" => { let c = color(&v, "spot color")?; l.color = [c[0], c[1], c[2]]; }
+                        "intensity" => l.intensity = number(&v, "intensity")?.clamp(0.0, 1_000_000.0),
+                        "range" => l.range = number(&v, "range")?.clamp(1.0, 500.0),
+                        "angle" => l.angle = number(&v, "angle")?.clamp(2.0, 74.0).to_radians(),
+                        "inner" => l.inner = number(&v, "inner")?.max(0.0).to_radians(),
+                        _ => unreachable!(),
+                    }
+                }
+                if l.dir.length_squared() < 1e-8 { return Err(rt("lights.spots: dir must not be zero".to_string())); }
+                l.dir = l.dir.normalize();
+                l.inner = if l.inner < 0.0 { l.angle * 0.6 } else { l.inner.min(l.angle * 0.98) };
+                if spots.len() == MAX_SPOTS { return Err(rt(format!("lights.spots: at most {MAX_SPOTS} spots"))); }
+                spots.push(l);
+            }
+            lock(&core).spots = spots;
+            Ok(())
+        })),
+        ("clear", f!(core, move |_, ()| { let mut c = lock(&core); c.lamps.clear(); c.spots.clear(); Ok(()) })),
+    ])?;
+
+    table("humans", vec![
+        ("spawn", f!(core, move |_, (pool, opts): (String, Option<Table>)| {
+            let mut c = lock(&core);
+            sim(&c, "humans.spawn")?;
+            let (mut pos, mut yaw) = (Vec3::ZERO, 0.0);
+            if let Some(t) = opts {
+                for (k, v) in options(&t, &["pos", "yaw"], "humans.spawn")? {
+                    match k.as_str() { "pos" => pos = vec3(&v, "humans.spawn pos")?, "yaw" => yaw = number(&v, "humans.spawn yaw")?, _ => unreachable!() }
+                }
+            }
+            c.humans.spawn(&pool, pos, yaw).map_err(rt)
+        })),
+        ("set", f!(core, move |_, (id, opts): (u32, Table)| {
+            let mut c = lock(&core);
+            sim(&c, "humans.set")?;
+            let o = options(&opts, &["pos", "yaw", "pose", "t", "tired"], "humans.set")?;
+            let Some(p) = c.humans.people.get_mut(&id) else { return Ok(false) };
+            let mut up = false;
+            for (k, v) in o {
+                match k.as_str() {
+                    "pos" => p.pos = vec3(&v, "humans.set pos")?,
+                    "yaw" => p.yaw = number(&v, "humans.set yaw")?,
+                    "t" => p.t = number(&v, "humans.set t")?.clamp(0.0, 1.0),
+                    "tired" => p.tired = number(&v, "humans.set tired")?.clamp(0.0, 1.0),
+                    "pose" => {
+                        let name = match &v { Value::String(s) => s.to_str()?.to_string(), _ => return Err(rt("humans.set pose: expected a string".to_string())) };
+                        if !crate::humans::POSES.contains(&name.as_str()) { return Err(rt(format!("humans.set: pose {name:?} (one of {})", crate::humans::POSES.join(", ")))); }
+                        up |= !matches!(name.as_str(), "dead" | "down");
+                        p.pose = name;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            if up { c.humans.stand(id); }
+            Ok(true)
+        })),
+        ("ragdoll", f!(core, move |_, (id, push): (u32, Option<Value>)| {
+            let mut c = lock(&core);
+            sim(&c, "humans.ragdoll")?;
+            let push = match push { Some(v) => vec3(&v, "humans.ragdoll push")?, None => Vec3::ZERO };
+            c.humans.ragdoll(id, push).map_err(rt)
+        })),
+        ("remove", f!(core, move |_, id: u32| { let mut c = lock(&core); sim(&c, "humans.remove")?; Ok(c.humans.remove(id)) })),
+        ("hit", f!(core, move |_, (id, dir): (u32, Value)| {
+            let mut c = lock(&core);
+            sim(&c, "humans.hit")?;
+            let d = vec3(&dir, "humans.hit dir")?;
+            Ok(c.humans.hit(id, d))
+        })),
+        ("head", f!(core, move |_, id: u32| Ok(lock(&core).humans.head(id).map(vector).unwrap_or(Value::Nil)))),
+        ("joint", f!(core, move |_, (id, name): (u32, String)| {
+            if !crate::humans::JOINT_NAMES.iter().any(|(n, _)| *n == name) {
+                return Err(rt(format!("humans.joint: {name:?} (one of {})", crate::humans::JOINT_NAMES.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", "))));
+            }
+            Ok(lock(&core).humans.joint(id, &name).map(vector).unwrap_or(Value::Nil))
+        })),
+        ("room", f!(core, move |_, pool: String| {
+            let (free, all) = lock(&core).humans.room(&pool).ok_or_else(|| rt(format!("humans.room: no pool {pool:?}")))?;
+            Ok((free, all))
+        })),
     ])?;
 
     table("random", vec![

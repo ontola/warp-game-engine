@@ -487,6 +487,27 @@ fn stack_together_shares_a_well_with_a_bot() {
     assert_eq!(run()["state"], s["state"]);
 }
 
+#[test]
+fn dead_miles_bot_searches_and_fights() {
+    let run = || {
+        let mut g = LuaGame::load(&repo().join("games/dead-miles"), &Overrides { bots: Some(3), ..Default::default() }, None).unwrap();
+        g.echo = false;
+        // The person walks east for fifteen seconds, then waits for the bots.
+        for t in 0..3600 {
+            let c = Controls { mv: if t < 900 { [0.6, 0.0] } else { [0.0, 0.0] }, ..Default::default() };
+            g.tick(&[c]);
+        }
+        state(&g)
+    };
+    let s = run();
+    assert_eq!(s["errors"], json!([]), "{s}");
+    assert_eq!(s["cameras"].as_array().unwrap().len(), 1, "one shared view");
+    let counts = &s["state"]["s"]["counts"];
+    assert!(counts["searches"].as_u64().unwrap_or(0) >= 1, "the bots search buildings: {counts}");
+    assert!(counts["swings"].as_u64().unwrap_or(0) >= 1, "someone swings a weapon: {counts}");
+    assert_eq!(run()["state"], s["state"], "the same seed plays out the same way");
+}
+
 const FX_GAME: &str = r##"
 local function init()
     world.warm("cube", { color = "#ff00ff", emissive = 0.06 })
@@ -504,6 +525,12 @@ local function init()
     state.too_many = tostring(select(2, pcall(lights.set, many)))
     table.remove(many)
     lights.set(many)
+    local spots = {}
+    for i = 1, 9 do spots[i] = { pos = vector.create(i, 3, 0), dir = vector.create(0, -1, 0), angle = 40 } end
+    state.too_many_spots = tostring(select(2, pcall(lights.spots, spots)))
+    state.zero_dir = tostring(select(2, pcall(lights.spots, { { pos = vector.create(0, 1, 0), dir = vector.create(0, 0, 0) } })))
+    table.remove(spots)
+    lights.spots(spots)
 end
 local function tick(dt, input)
     world.place(state.box, vector.create(2, 0, 3), 1.5)
@@ -523,6 +550,8 @@ fn effects_fly_out_and_are_gone_after_their_life() {
     assert_eq!((s["state"]["parts"].clone(), s["state"]["rings"].clone(), s["state"]["fx"].clone()), (json!(20), json!(1), json!(32)), "{s}");
     assert!(s["state"]["typo"].as_str().unwrap().contains("unknown option \"colour\""), "{s}");
     assert!(s["state"]["too_many"].as_str().unwrap().contains("at most 32 lights"), "{s}");
+    assert!(s["state"]["too_many_spots"].as_str().unwrap().contains("at most 8 spots"), "{s}");
+    assert!(s["state"]["zero_dir"].as_str().unwrap().contains("dir must not be zero"), "{s}");
     assert_eq!(g.core().lamps.len(), 32);
     let post = g.core().post.clone();
     assert_eq!((post.bloom, post.vignette, post.bloom_wide), (Some(0.5), 0.5, false));
@@ -662,6 +691,23 @@ fn nested_local_libraries_reload_their_consumers_and_keep_the_last_good_version(
     assert_eq!(state(&g)["errors"], json!([]));
     assert_eq!(state(&g)["state"]["n"], 35);
     assert_eq!(state(&g)["state"]["reloads"], 2);
+}
+
+#[test]
+fn libraries_lists_a_content_folder_in_order() {
+    let dir = folder("content-libraries");
+    std::fs::create_dir_all(dir.join("content/cards")).unwrap();
+    write(&dir.join("content/cards/b.module.luau"), "return { name = 'bee' }");
+    write(&dir.join("content/cards/a.module.luau"), "return { name = 'ant' }");
+    write(&dir.join("content/other.module.luau"), "return { name = 'other' }");
+    write(&dir.join("main.luau"), r#"
+        local names = {}
+        for _, lib in libraries("content/cards") do table.insert(names, require(lib).name) end
+        return { init = function() state.names = names end }
+    "#);
+    let g = game(&dir);
+    assert_eq!(state(&g)["errors"], json!([]));
+    assert_eq!(state(&g)["state"]["names"], json!(["ant", "bee"]));
 }
 
 #[test]

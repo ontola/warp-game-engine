@@ -444,7 +444,15 @@ impl Lobby {
         while let Ok(reply) = self.web_rx.try_recv() {
             match reply {
                 Web::Links(links) => self.set_links(links),
-                Web::PickupRefused => { self.drop_claims(); self.toast("That profile could not be picked up. Try again.", crate::lobby::PINK); }
+                Web::PickupRefused(why) => {
+                    self.drop_claims();
+                    // 409: the character already is someone (hold Y to swap),
+                    // or that profile sits on another character.
+                    let text = if why.contains("409") { "That profile or character is already taken. Hold Y at the door to swap." }
+                        else if why.contains("410") { "That profile left the door. Scan the code again." }
+                        else { "That profile could not be picked up. Try again." };
+                    self.toast(text, crate::lobby::PINK);
+                }
             }
         }
         // The room QR code, its join code and the profiles waiting at the doors.

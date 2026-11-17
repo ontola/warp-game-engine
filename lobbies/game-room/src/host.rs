@@ -369,13 +369,23 @@ impl Host {
         for (i, entry) in pending.iter().enumerate().take(l::PROFILE_DOORS.len()) {
             if (x - l::PROFILE_DOORS[i]).abs() <= l::DOOR_HALF {
                 // Already someone else: swapping drops that profile, so it takes a hold.
-                let linked = self.links["linked"].get(id).is_some();
+                let linked = self.is_linked(id);
                 let name = get(&entry["profile"], "display_name", "Player");
                 return Some(Station { id: format!("door{i}"), kind: "door".into(), pending: get(entry, "id", ""),
                     label: if linked { format!("Hold Y to become {name}") } else { format!("Pick up {name}") }, enabled: true, hold: linked, ..Default::default() });
             }
         }
         None
+    }
+
+    /// Whether character `id` already is a phone profile. The host sends
+    /// `linked` as a list of player ids (older builds: an object by id).
+    pub fn is_linked(&self, id: &str) -> bool {
+        match &self.links["linked"] {
+            Value::Array(ids) => ids.iter().any(|v| v.as_str() == Some(id)),
+            Value::Object(map) => map.contains_key(id),
+            _ => false,
+        }
     }
 
     /// Profiles waiting at the doors, in arrival order; with more waiting
@@ -458,7 +468,7 @@ mod tests {
     #[test]
     fn stations_follow_where_the_player_appears() {
         let mut h = host(json!({"seats": seats(1), "library": [{"id": "a", "title": "Alpha"}]}));
-        h.links = json!({"room": {"pending": [{"id": "x", "profile": {"display_name": "Sanne"}}]}, "linked": {"p0": {}}});
+        h.links = json!({"room": {"pending": [{"id": "x", "profile": {"display_name": "Sanne"}}]}, "linked": ["p0"]});
         let mut w = game_room_sim::world::World::new(1);
         w.ensure_player("p0", 0);
         let mut at = |x: f64| { let p = w.players.iter_mut().next().unwrap(); p.x = x; p.y = 0.0; p.grounded = true; h.station_for(p).map(|s| (s.id, s.label, s.hold)) };

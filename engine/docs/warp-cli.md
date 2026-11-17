@@ -111,8 +111,11 @@ my-game/
 | `sky` | `gradient` | The sky at start. `--sky` overrides it; scripts call `sky.set`. |
 | `max_entities` | 1024 | Entities alive at once (render slots reserved up front). |
 | `size` | `[1280, 720]` | Window size in pixels. |
+| `hdr` | unset | `true` asks for HDR output on an HDR screen (highlights brighter than SDR white), `false` refuses it; unset follows `WARP_HDR`. F10 overrides it. See [hdr-and-exposure](hdr-and-exposure.md). |
+| `split_layout` | `"stacked"` | How two views share the screen: `"stacked"` (top and bottom) or `"side"` (left and right). |
 | `steps` | 200000 | Luau step budget per hook call (see [scripting](scripting.md#limits)). |
 | `memory_mb` | 64 | Luau memory cap. |
+| `[humans.NAME]` | none | A pool of Warp Humans: `count` (1 to 256 alive at once), `variety` (different people fitted at load, 1 to 16, default 4), `style` (`"person"` or `"zombie"`), `skin` and `shirt` (`"#rrggbb"`, default seeded), `height` (`[1.6, 1.9]` m), `seed`. At most 256 in all. Each one costs about 2 MB of GPU skinning memory, so on a device that binds less than all pools need (128 MB on some), every pool is cut by the same share and a line in the log says so. |
 
 Regular scripts outside `sounds/`, `assets/` and `scripts/` run their hooks
 in path order. Type definitions (`*.d.luau`) are skipped.
@@ -140,6 +143,21 @@ library reloads every dependent hook script, including indirect dependents,
 and runs its normal reload hook. A missing library, a cycle or a bad edit
 reports a load error and keeps the last working exports. Fixing the library
 retries the load. One-file games remain self-contained.
+
+For content collections, where each new file is a new entry (cards,
+encounters, levels), `libraries("content/cards")` returns the names of the
+libraries in that folder, sorted, so a game can load them all without a
+list to keep up to date:
+
+```lua
+local CARDS = {}
+for _, name in libraries("content/cards") do
+	table.insert(CARDS, require(name))
+end
+```
+
+[Dead Miles](../../games/dead-miles/content/encounters) loads its
+encounters this way.
 
 ## The Luau API
 
@@ -187,12 +205,13 @@ keyboard mapping is in `app::input`.
 | `world` | `spawn(shape, opts, parent?) -> id`, `set_parent(id, parent?)`, `set(id, opts)`, `place(id, pos, yaw?)`, `warm(shape, look)`, `get(id) -> entity or nil`, `exists(id)`, `remove(id)`, `clear()`, `find(tag) -> ids`, `count()`, `raycast(origin, dir, max?, query?) -> hit or nil`, `overlap(center, radius, query?) -> ids`, `move(id, vel, dt, query?) -> vel, grounded` |
 | `fx` | `burst(pos, {color, emissive, shape, count, speed, life, size, stretch, gravity, flat})`, `ring(pos, {color, emissive, radius, life, width, segments})`, `count() -> particles, rings` |
 | `players` | `list() -> players`, `get(id) -> player or nil`, `count()`, `rumble(id, strength, seconds?)` |
-| `camera` | `set(player, {pos, target, fov})`, `get(player)` |
+| `camera` | `set(player, {pos, target, fov})`, `get(player)`, `views({[player] = view})` (who shares which part of a split screen; views from 1, so a game can split when players walk apart) |
 | `sound` | `play(name, {at, db, pitch, <param> = value}) -> handle`, `set_param(handle, param, value)`, `stop(handle)`, `list()` |
 | `hud` | `text(text, x, y, {size, color, align, width})`, `box(x, y, w, h, color)`, `size() -> w, h`, `view(player) -> x, y, w, h`, `project(pos, player?) -> x, y or nil` |
 | `post` | `set({bloom, bloom_radius, bloom_threshold, bloom_wide, contrast, saturation, vignette, grain, aberration})`, `reset()` |
-| `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `clear()` |
-| `sky` | `set(name)`, `get()` |
+| `humans` | `spawn(pool, {pos, yaw})` → id or nil when the pool is full, `set(id, {pos, yaw, pose, t, tired})`, `hit(id, dir)`, `ragdoll(id, push)`, `remove(id)`, `head(id)` and `joint(id, name)` → vector, `room(pool)` → free, total |
+| `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `spots({{pos, dir, color, intensity, range, angle, inner}, ...})` (at most 8, with shadows), `clear()` |
+| `sky` | `set(name)`, `get()`, `warm(name)` (bake a sky you will switch to later in the background, so the switch does not stall a frame) |
 | `light` | `set({sun, sun_lux, sky_lux, exposure, exposure_min, exposure_max, exposure_bias, adapt_speed, fog_start, fog_end, fog_density})`, `reset()` |
 | `random` | `float()`, `range(lo, hi)`, `int(lo, hi)`, `chance(p)`, `seed(n)` |
 | `game` | `tick()`, `time()`, `dt()`, `players()`, `title()`, `finish()`, `log(text)` |
@@ -269,11 +288,47 @@ keyboard mapping is in `app::input`.
   1) and `aberration` (pixels of red and blue apart at the corners).
   `lights.set` replaces the coloured point lights (no shadows): `intensity`
   is roughly lux at 1 m, `range` in metres. Under the `night` sky a few
-  hundred lights a dark floor well. Both are looks only, allowed in `draw`
+  hundred lights a dark floor well. `lights.spots` replaces up to eight
+  spotlights that cast shadows (torches, headlights, a street lamp):
+  `dir` is the beam, `angle` its outer half-angle in degrees (2 to 74),
+  `inner` where the edge starts to fade, `intensity` in candela with
+  inverse-square falloff (a hand torch is about 1500), `range` in metres.
+  Each spot renders a 1024-square shadow map every frame, so use the ones
+  that matter (Dead Miles: one per survivor's torch, then the street lights
+  nearest the view). All three are looks only, allowed in `draw`
   too, and reset on restart. Neon Trails shows a neon look: deep colours
   at a low emissive (0.03) with soft wide bloom, a glossy dark deck and a
   lamp over each player. Neon Siege is Geometry Wars style: outlines at
   emissive 0.14 under a tight bloom, a camera straight down, no sky light.
+- **Humans**: Warp Humans, the engine's skinned people, from pools that
+  game.toml reserves (`[humans.zombie] count = 40, style = "zombie"`), so
+  spawning never rebuilds the renderer. Set each one's feet `pos` and
+  `yaw` (0 faces +z, a quarter turn +x) every tick: the legs walk, jog,
+  sprint (above about 5 m/s) or stand from how far it moved. `pose` lays an action over that: `walk`
+  (the default), `idle`, `crouch` (low: waiting on one knee, or walking
+  crouched when it moves), `wave` (the right hand high, waving), `reach` and `raise` (arms ahead, arms over the
+  head), `strike` (from raised to low over `t`), `aim`, `shove`,
+  `attack`, `punch`, `jab`, `hit`, `hit_head`, `cast`, `roll` (captures
+  played by `t`, 0 to 1), `dead` (the fall over `t`) and `down` (lying).
+  `tired` (0 to 1) bends anyone over, out of breath, over any pose: the
+  chest heaves and the arms hang. `hit(id, dir)` jolts the upper body
+  along a blow (`dir` in the world, its length the strength, about 1 for
+  a heavy hit): the chest and head swing that way and spring back.
+  `ragdoll(id, push)` lets it go limp from the pose it stands in, thrown
+  by `push` (m/s, in the world): eleven jointed capsules with loose
+  anatomical limits fall onto the ground under it (only that: no walls)
+  and freeze where they settle, within four seconds. It stays down through
+  `dead` and `down`; any other pose gets it up again. Up to 24 move at
+  once (the oldest freezes); it steps with the simulation, so replays
+  match. The `zombie` style stoops, lolls its head and holds its arms out.
+  `head(id)` is where the head is now (for glowing eyes or a hit test);
+  `joint(id, name)` any of `head`, `neck`, `chest`, `hips`, `shoulder_l`,
+  `elbow_l`, `hand_l`, `knee_l`, `foot_l` (and `_r`), say to put a weapon
+  in a hand.
+  Looks only: they never collide, and the game keeps its own positions.
+  Each human is a full skinned mesh skinned every frame, so keep pools to
+  the crowd that is on screen. The rig is in `engine/assets/humans/rig`;
+  the captures are the `body` crate's.
 - **Random**: SplitMix64 from the game's seed. `restart` reseeds it.
 
 ### Players
@@ -324,6 +379,19 @@ confirms, B or Start closes. Scripts and agents use the console:
 
 `state` shows `players` and `phase` (`standalone`, `waiting`, `ready`,
 `running` or `paused`).
+
+The session lifecycle is shared by every Rust game that a party host
+launches (Growing Guns, Spellstorm, Spaceracer and `warp`):
+`gamenight::party::Party` holds the client, the session id, the `Phase`
+(`Idle`, `Warm`, `Running`, `Paused`) and the finished flag. It applies
+`prepare`, `start`, `pause`, `resume` and `dispose` (only for the current
+session), `ready` (progress, then ready), `finished` (once per session),
+`room_log` and `loading`, and parses profile colours (`hex`, lenient;
+`hex_strict`, exactly `#rrggbb`). `app::Screen::for_party` picks the window
+state from the phase. A game wraps `Party` with what is its own: its
+settings and specs, which events it emits for a poll, its seats, and the
+mapping of a controller frame to `app::Controls` (`to_controls`, which
+differs per game in buttons and look rate).
 
 ### State
 
@@ -516,7 +584,7 @@ KERN_ADAPTER=software warp script games/hello-warp games/hello-warp/scripts/smok
 
 ## Not yet
 
-- Skinned and animated glTF, local lights, physics bodies
+- Skinned and animated glTF (Warp Humans aside), physics bodies
   (the `physics` crate) and terrain are not exposed to Luau yet.
 - No online play. The determinism rules are meant to make lockstep or
   host-authoritative play possible later.

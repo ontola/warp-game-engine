@@ -32,6 +32,22 @@ const POLL_TICKS: u64 = 15;
 /// Seconds of play before Start opens the menu (under a party host).
 const START_GRACE: f32 = 1.0;
 
+/// The baked skies, shared by every game in the process (`sky.warm` fills
+/// it in the background so a later `sky.set` does not stall a frame).
+pub(crate) fn sky_cache() -> &'static Mutex<AtmosphereCache> {
+    static CACHE: std::sync::OnceLock<Mutex<AtmosphereCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// Bake a sky preset into the shared cache on a background thread.
+pub(crate) fn warm_sky(choice: SkyChoice) {
+    let SkyChoice::Preset(settings) = choice else { return };
+    std::thread::spawn(move || {
+        let mut cache = sky_cache().lock().unwrap_or_else(|p| p.into_inner());
+        let _ = bake_live(0, settings, &mut cache, BakeQuality::default());
+    });
+}
+
 /// Options from the command line that override `game.toml`.
 #[derive(Clone, Debug, Default)]
 pub struct Overrides {
@@ -143,6 +159,8 @@ impl LuaGame {
             light: Default::default(),
             post: Default::default(),
             lamps: Vec::new(),
+            spots: Vec::new(),
+            humans: crate::humans::Humans::new(&cfg.humans),
             tick: 0,
             tick_rate: cfg.tick_rate,
             title: cfg.title.clone(),
@@ -256,6 +274,8 @@ impl LuaGame {
             c.light = Default::default();
             c.post = Default::default();
             c.lamps.clear();
+            c.spots.clear();
+            c.humans.clear();
             for p in &mut c.roster { p.cam = Cam::default(); }
         }
         self.menu = None;
@@ -312,7 +332,13 @@ impl LuaGame {
         if k == 0 && let Some(p) = c.roster.first_mut() { p.view = Some(0); }
     }
 
-    fn views(&self) -> usize { self.core().roster.iter().filter(|p| p.view.is_some()).count().max(1) }
+    fn views(&self) -> usize {
+        let c = self.core();
+        let mut v: Vec<usize> = c.roster.iter().filter_map(|p| p.view).collect();
+        v.sort_unstable();
+        v.dedup();
+        v.len().max(1)
+    }
 
     /// The party's seats changed mid-session: names and colours follow,
     /// a new seat joins (`player_joined(p)`), a gone seat leaves
@@ -477,6 +503,7 @@ impl LuaGame {
         let mut out: Vec<String> = self.host.modules().iter().filter_map(|m| m.error.clone().or_else(|| m.broken.then(|| format!("{}: a hook failed; its hooks are off until the file changes (see logs)", m.name)))).collect();
         out.extend(self.core().sounds.bank.errors.iter().map(|(f, e)| match f.strip_prefix("inline:") { Some(n) => format!("sound {n}: {e}"), None => format!("sounds/{f}: {e}") }));
         out.extend(self.surface.error.clone());
+        out.extend(self.core().humans.error().map(String::from));
         if self.host.modules().is_empty() { out.push("no Luau modules loaded".into()); }
         out
     }
@@ -488,9 +515,13 @@ impl LuaGame {
         let c = self.core();
         let mut tags = std::collections::BTreeMap::<&str, u32>::new();
         for e in c.world.entities.values() { *tags.entry(e.tag.as_str()).or_default() += 1; }
-        let cams: Vec<Json> = c.roster.iter().filter(|p| p.view.is_some()).map(|p| p.cam).map(|k| json!({ "pos": k.pos.to_array(), "target": k.target.to_array(), "fov": k.fov })).collect();
+        // One per part of the screen: the first player's on each view.
+        let mut seen: Vec<(usize, Cam)> = c.roster.iter().filter_map(|p| p.view.map(|v| (v, p.cam))).collect();
+        seen.sort_by_key(|(v, _)| *v);
+        seen.dedup_by_key(|(v, _)| *v);
+        let cams: Vec<Json> = seen.into_iter().map(|(_, k)| json!({ "pos": k.pos.to_array(), "target": k.target.to_array(), "fov": k.fov })).collect();
         let players: Vec<Json> = c.roster.iter().map(|p| json!({ "id": p.id, "name": p.name, "color": p.color, "bot": p.bot, "seat": p.seat, "couch": p.couch, "view": p.view })).collect();
-        let phase = match self.party.as_ref().map(|p| p.phase) {
+        let phase = match self.party.as_ref().map(|p| p.phase()) {
             None => "standalone", Some(party::Phase::Idle) => "waiting", Some(party::Phase::Warm) => "ready", Some(party::Phase::Running) => "running", Some(party::Phase::Paused) => "paused",
         };
         let menu = self.menu.map(|i| json!({ "items": self.menu_items().iter().map(|m| m.label()).collect::<Vec<_>>(), "selected": i }));
@@ -666,7 +697,7 @@ impl LuaGame {
                 c.plants.dirty = false;
                 let c = &mut *c;
                 let started = std::time::Instant::now();
-                let shown = c.world.fresh_scene().and_then(|_| c.plants.attach(&mut c.world.scene));
+                let shown = c.world.fresh_scene().and_then(|_| { c.humans.detach(); c.plants.attach(&mut c.world.scene) });
                 match shown {
                     Ok(n) => lines.push(format!("plants: {n} attached in {:.0} ms", started.elapsed().as_secs_f64() * 1000.0)),
                     Err(e) => lines.push(format!("plants: not shown: {e}")),
@@ -692,8 +723,7 @@ impl LuaGame {
                 self.sky_upload = None;
             }
             SkyChoice::Preset(settings) => {
-                static CACHE: std::sync::OnceLock<Mutex<AtmosphereCache>> = std::sync::OnceLock::new();
-                let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
+                let mut cache = sky_cache().lock().unwrap_or_else(|p| p.into_inner());
                 match bake_live(0, settings, &mut cache, BakeQuality::default()) {
                     Ok(p) => {
                         let mut light = Lighting::default();
@@ -849,7 +879,7 @@ impl LuaGame {
 }
 
 /// Bloom and the scripts' lamps onto the renderer (cheap when unchanged).
-fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp]) -> Result<(), String> {
+fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp], spots: &[api::Spot]) -> Result<(), String> {
     let mut o = r.debug_options();
     let before = o;
     if let Some(b) = p.bloom {
@@ -873,10 +903,30 @@ fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp]) -> Result<(), 
             falloff: 1.5,
         }
     }).collect();
-    r.set_local_lights(&lights)
+    r.set_local_lights(&lights)?;
+    let spots: Vec<render::headlights::SpotLight> = spots.iter().map(|l| {
+        let lin = l.color.map(|c| c.clamp(0.0, 1.0).powf(2.2));
+        // Any up that is not along the beam.
+        let up = if l.dir.y.abs() > 0.9 { glam::Vec3::Z } else { glam::Vec3::Y };
+        render::headlights::SpotLight {
+            position: l.pos,
+            direction: l.dir,
+            up,
+            intensity_cd: glam::Vec3::from(lin) * l.intensity,
+            range_m: l.range,
+            inner_angle_radians: l.inner,
+            outer_angle_radians: l.angle,
+        }
+    }).collect();
+    r.set_headlights(&spots)
 }
 
 impl Game for LuaGame {
+    fn hdr(&self) -> Option<bool> { self.cfg.hdr }
+    fn split(&self) -> render::SplitLayout {
+        if self.cfg.split_layout.as_deref() == Some("side") { render::SplitLayout::SideBySide } else { render::SplitLayout::Stacked }
+    }
+
     fn debug(&self) -> (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>) {
         self.editor_pages.clone()
     }
@@ -921,6 +971,7 @@ impl Game for LuaGame {
         {
             let mut c = self.core();
             c.world.step_fx(dt);
+            c.humans.tick(dt);
             c.tick += 1;
         }
         self.ears();
@@ -962,6 +1013,16 @@ impl Game for LuaGame {
         let mut surface_line = None;
         let added = std::mem::take(&mut c.world.added);
         let mut late = None;
+        // Warp Humans join the scene before its first renderer.
+        if !c.humans.is_empty() && !c.humans.attached() && c.humans.error().is_none() {
+            let c = &mut *c;
+            match c.humans.attach(&mut c.world.scene, u64::from(frame.gpu.limits.max_storage_buffer_binding_size)) {
+                Ok(note) => if let Some(note) = note { late = Some(note); },
+                // Shown in errors (and so failing script checks), tried no more.
+                Err(e) => c.humans.set_error(Some(format!("humans: {e}"))),
+            }
+            c.world.rebuild = true;
+        }
         if std::mem::take(&mut c.world.rebuild) || frame.renderer().is_none() {
             // A look first seen after the start stalls the game while the
             // renderer is rebuilt: name it so it can be warmed in init.
@@ -989,9 +1050,15 @@ impl Game for LuaGame {
         }
         let r = frame.renderer().ok_or("no renderer")?;
         c.world.flush_at(frame.gpu, r, frame.alpha)?;
-        post(r, &c.post, &c.lamps)?;
+        post(r, &c.post, &c.lamps, &c.spots)?;
+        {
+            let c = &mut *c;
+            c.humans.draw(frame.gpu, r, &mut c.world.scene, frame.alpha)?;
+        }
         let mut seen: Vec<(usize, Cam)> = c.roster.iter().filter_map(|p| p.view.map(|v| (v, p.cam_prev.towards(&p.cam, frame.alpha)))).collect();
+        // Players sharing a view: the first one's camera.
         seen.sort_by_key(|(v, _)| *v);
+        seen.dedup_by_key(|(v, _)| *v);
         if seen.is_empty() { seen.push((0, Cam::default())); }
         let cameras = seen.into_iter().map(|(_, k)| k).map(|k| Camera { pos: k.pos, target: k.target, fov_y: k.fov.to_radians(), near: 0.05 }).collect();
         drop(c);
@@ -1010,6 +1077,15 @@ impl Game for LuaGame {
     fn state(&self) -> Option<String> { Some(self.state_json().to_string()) }
 
     fn command(&mut self, cmd: &str) -> Result<String, String> { self.command_line(cmd) }
+
+    /// A script's `knob NAME VALUE` changes only the running game (like
+    /// `trial`): a scripted or headless run never edits main.luau.
+    fn script_command(&mut self, cmd: &str) -> Result<String, String> {
+        match cmd.trim_start().strip_prefix("knob ") {
+            Some(rest) => self.command_line(&format!("trial {rest}")),
+            None => self.command_line(cmd),
+        }
+    }
 
     fn wants_capture(&self) -> bool { self.live.as_ref().is_some_and(|l| l.wants_capture()) }
 

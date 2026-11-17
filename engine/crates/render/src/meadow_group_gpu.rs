@@ -202,7 +202,7 @@ impl GpuGroups {
         generate_layout: &wgpu::BindGroupLayout,
         generate_view_layout: &wgpu::BindGroupLayout,
     ) -> Result<Self, String> {
-        let replacement = std::env::var("KERN_MEADOW_GROUP_REPLACE").as_deref() == Ok("1");
+        let replacement = crate::switches::MEADOW_GROUP_REPLACE.on();
         if std::mem::size_of::<Table>() as u64 > gpu.limits.max_uniform_buffer_binding_size
             || gpu.limits.max_texture_array_layers < 256
         {

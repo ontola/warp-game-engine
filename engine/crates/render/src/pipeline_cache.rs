@@ -60,7 +60,7 @@ pub(crate) struct Cache {
 }
 impl Cache {
     pub fn new(device: &wgpu::Device, info: &wgpu::AdapterInfo) -> Self {
-        let enabled = std::env::var("KERN_PIPELINE_CACHE").as_deref() != Ok("0");
+        let enabled = !crate::switches::PIPELINE_CACHE.off();
         let key = compatibility_key(info, implementation_fingerprint());
         let supported = key.is_some() && device.features().contains(wgpu::Features::PIPELINE_CACHE);
         let directory = if enabled && supported { cache_directory() } else { None };
@@ -143,7 +143,7 @@ impl Cache {
 }
 
 fn cache_directory() -> Option<PathBuf> {
-    if let Some(path)=std::env::var_os("KERN_PIPELINE_CACHE_DIR").filter(|p|!p.is_empty()) {return Some(path.into());}
+    if let Some(path)=crate::switches::PIPELINE_CACHE_DIR.os().filter(|p|!p.is_empty()) {return Some(path.into());}
     if cfg!(target_os="windows") {
         std::env::var_os("LOCALAPPDATA").map(|p|PathBuf::from(p).join("Warp/Cache/pipelines-v1"))
     } else {
