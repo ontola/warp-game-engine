@@ -15,7 +15,7 @@
 //! the positions are kept (`warp check`, tests).
 use assets::skinned::{ActorHandle, Character};
 use body::{Bone, Bound, Layer, Library, BONES};
-use glam::{Affine3A, Mat4, Quat, Vec3};
+use glam::{Affine3A, Mat4, Quat, Vec2, Vec3};
 use render::Scene;
 use std::collections::BTreeMap;
 use std::f32::consts::{PI, TAU};
@@ -227,6 +227,15 @@ pub struct Person {
     /// Progress through the pose, 0..1 (an attack's swing, a fall).
     pub t: f32,
     prev_t: f32,
+    /// Out of breath, 0..1, over any pose: bent over, the chest heaving,
+    /// the arms hanging (`humans.set(id, {tired = ...})`).
+    pub tired: f32,
+    prev_tired: f32,
+    /// A blow's jolt on the upper body (pitch, roll in radians) and its
+    /// spring's speed: `humans.hit` kicks it, it swings back by itself.
+    jolt: Vec2,
+    prev_jolt: Vec2,
+    jolt_v: Vec2,
     /// Seconds alive (idle sway, the zombie lurch).
     age: f32,
     /// Moved since the last tick.
@@ -287,7 +296,7 @@ impl Humans {
         p.used[slot] = true;
         let id = self.next;
         self.next += 1;
-        self.people.insert(id, Person { pool: pool.to_string(), slot, pos, yaw, prev_pos: pos, prev_yaw: yaw, legs: 0.0, prev_legs: 0.0, from: Gait::default(), to: Gait::default(), pose: "walk".into(), t: 0.0, prev_t: 0.0, age: (hash(id as u64, 7) % 1000) as f32 * 0.01, fresh: true });
+        self.people.insert(id, Person { pool: pool.to_string(), slot, pos, yaw, prev_pos: pos, prev_yaw: yaw, legs: 0.0, prev_legs: 0.0, from: Gait::default(), to: Gait::default(), pose: "walk".into(), t: 0.0, prev_t: 0.0, tired: 0.0, prev_tired: 0.0, jolt: Vec2::ZERO, prev_jolt: Vec2::ZERO, jolt_v: Vec2::ZERO, age: (hash(id as u64, 7) % 1000) as f32 * 0.01, fresh: true });
         Ok(Some(id))
     }
 
@@ -342,6 +351,11 @@ impl Humans {
             p.prev_pos = p.pos;
             p.prev_yaw = p.yaw;
             p.prev_t = p.t;
+            p.prev_tired = p.tired;
+            // The jolt springs back, overshooting once: a sway, not a snap.
+            p.prev_jolt = p.jolt;
+            p.jolt_v += (-p.jolt * 140.0 - p.jolt_v * 11.0) * dt;
+            p.jolt = (p.jolt + p.jolt_v * dt).clamp(Vec2::splat(-0.9), Vec2::splat(0.9));
             p.age += dt;
             p.fresh = false;
         }
@@ -473,6 +487,17 @@ impl Humans {
         Ok(())
     }
 
+    /// A blow from `dir` (world, its length the strength, ~1 a heavy hit):
+    /// the upper body jolts that way and swings back.
+    pub fn hit(&mut self, id: u32, dir: Vec3) -> bool {
+        let Some(p) = self.people.get_mut(&id) else { return false };
+        let ahead = Vec3::new(p.yaw.sin(), 0.0, p.yaw.cos());
+        let right = Vec3::new(p.yaw.cos(), 0.0, -p.yaw.sin());
+        // Pushed ahead tips the chest forward (+pitch); pushed right rolls it right (-z).
+        p.jolt_v += Vec2::new(dir.dot(ahead), -dir.dot(right)) * 9.0;
+        true
+    }
+
     /// Where a person's head is now, from the rig alone (no renderer needed).
     pub fn head(&self, id: u32) -> Option<Vec3> { self.joint(id, "head") }
 
@@ -552,6 +577,32 @@ fn pose(rig: &Rig, p: &Person, zombie: bool, alpha: f32, palette: &mut [Mat4]) {
         let neck = at(Bone::Neck, palette);
         let sway = (p.age * 0.7).sin() * 0.15;
         turn(palette, &[rig.joint[Bone::Neck as usize], rig.joint[Bone::Head as usize]], neck, Quat::from_rotation_z(0.25 + sway) * Quat::from_rotation_x(0.15));
+    }
+
+    // Out of breath: bent forward from the waist, the chest heaving with
+    // each breath, the head up to see ahead, the arms heavy.
+    let tired = (p.prev_tired + (p.tired - p.prev_tired) * alpha).clamp(0.0, 1.0);
+    if tired > 0.01 && !lying {
+        let waist = at(Bone::Spine1, palette);
+        let breath = (p.age * 5.5).sin();
+        let upper: Vec<usize> = [Bone::Spine2, Bone::Spine3, Bone::Neck, Bone::Head, Bone::ClavicleL, Bone::UpperArmL, Bone::LowerArmL, Bone::HandL, Bone::ClavicleR, Bone::UpperArmR, Bone::LowerArmR, Bone::HandR].iter().map(|b| rig.joint[*b as usize]).collect();
+        turn(palette, &upper, waist, Quat::from_rotation_x(tired * (0.42 + 0.05 * breath)));
+        let chest = at(Bone::Spine3, palette);
+        let shoulders: Vec<usize> = [Bone::ClavicleL, Bone::UpperArmL, Bone::LowerArmL, Bone::HandL, Bone::ClavicleR, Bone::UpperArmR, Bone::LowerArmR, Bone::HandR].iter().map(|b| rig.joint[*b as usize]).collect();
+        turn(palette, &shoulders, chest, Quat::from_rotation_x(-tired * 0.06 * breath));
+        let neck = at(Bone::Neck, palette);
+        turn(palette, &[rig.joint[Bone::Neck as usize], rig.joint[Bone::Head as usize]], neck, Quat::from_rotation_x(-tired * 0.3));
+    }
+
+    // A blow: the upper body jolts along it from the waist, the head
+    // whips further, and both swing back.
+    let jolt = p.prev_jolt + (p.jolt - p.prev_jolt) * alpha;
+    if jolt.length_squared() > 1e-5 && !lying {
+        let waist = at(Bone::Spine1, palette);
+        let upper: Vec<usize> = [Bone::Spine2, Bone::Spine3, Bone::Neck, Bone::Head, Bone::ClavicleL, Bone::UpperArmL, Bone::LowerArmL, Bone::HandL, Bone::ClavicleR, Bone::UpperArmR, Bone::LowerArmR, Bone::HandR].iter().map(|b| rig.joint[*b as usize]).collect();
+        turn(palette, &upper, waist, Quat::from_rotation_x(jolt.x) * Quat::from_rotation_z(jolt.y));
+        let neck = at(Bone::Neck, palette);
+        turn(palette, &[rig.joint[Bone::Neck as usize], rig.joint[Bone::Head as usize]], neck, Quat::from_rotation_x(jolt.x * 0.6) * Quat::from_rotation_z(jolt.y * 0.6));
     }
 
     // Arm poses: the arms swing up about the shoulders (model +z is ahead).
