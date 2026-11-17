@@ -759,6 +759,12 @@ impl World {
         w.bloom = 1.0;
     }
 
+    /// A plain staff bolt's flare on the gem: a small one (Joep).
+    fn muzzle_plain(w: &mut Wizard, c: C) {
+        w.flash_c = c;
+        w.bloom = w.bloom.max(0.3);
+    }
+
     fn shoot(&mut self, id: Id, w: &mut Wizard) {
         w.used |= used::BOLT;
         if !w.queue.is_empty() {
@@ -774,8 +780,13 @@ impl World {
         let bs = w.bolt_spell();
         let at = staff_tip(self.pos(id), w) + dir * 0.1;
         let c = bs.primary.map(fx::el_c).unwrap_or(fx::WHITE);
+        let plain = w.queue.is_empty();
         self.fire_bolt(Bolt::new(id, bs, dir, at, Vec::new(), 1.0, true));
-        World::muzzle(w, c);
+        if plain {
+            World::muzzle_plain(w, c);
+        } else {
+            World::muzzle(w, c);
+        }
         if !w.queue.is_empty() {
             w.ammo -= 1;
             if w.ammo <= 0 {
