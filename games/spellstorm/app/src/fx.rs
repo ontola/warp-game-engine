@@ -329,7 +329,7 @@ fn lerp_c(a: C, b: C, t: f32) -> C {
 
 const WHITE: C = [1.0, 1.0, 1.0, 1.0];
 
-fn el_c(e: El) -> C {
+pub fn el_c(e: El) -> C {
     let c = e.color();
     [c[0], c[1], c[2], 1.0]
 }
@@ -1039,39 +1039,32 @@ impl Fx {
     /// `at`: a ring of its element's light running up it, motes spiralling
     /// in onto it, a glow on the floor under it.
     pub fn materialize(&mut self, key: u64, at: Vec3, h: f32, k: f32, el: El, dt: f32) {
-        // Forged rather than scanned (Joep: less digital): an ember gold
-        // with a touch of its element, so a pale monster gets a clear one.
+        // The body itself is built up with a glowing edge (making.wgsl);
+        // here only embers coming off that edge, and its warm light.
         let c = lerp_c(el_c(el), rgba(1.0, 0.55, 0.15, 1.0), 0.6);
-        let c3 = linear3([c[0], c[1], c[2]]);
-        // Gone once the head is made, not hanging over it.
-        let fade = 1.0 - smooth(0.95, 1.12, crate::anim::build_front(k));
-        // The plane it is made at (view.rs builds the parts below it), from
-        // its toes to the top of its head: a glowing disc with a bright rim,
-        // tight round the body so it reads from the top-down camera.
-        let y = h * crate::anim::build_front(k).clamp(0.0, 1.0);
-        let r = 0.5;
-        self.early.push(flat_sprite(at + Vec3::Y * y, r * 1.2, Cell::Patch, c3 * 0.6 * fade));
-        self.early.push(flat_sprite(at + Vec3::Y * y, r, Cell::Ring, c3 * 1.8 * fade));
-        // Embers coming off the edge as it rises, close to the body.
-        let mut sp = particles(lerp_c(c, WHITE, 0.3), 40, 0.35, 0.05);
+        let front = crate::anim::build_front(k);
+        let fade = 1.0 - smooth(0.95, 1.12, front);
+        let y = h * front.clamp(0.0, 1.0);
+        let r = 0.35;
+        let mut sp = particles(lerp_c(c, WHITE, 0.3), 30, 0.4, 0.04);
         sp.cell = Cell::Spark;
-        sp.glow = 2.6;
+        sp.glow = 2.4;
         sp.dir = Vec3::Y;
-        sp.spread = 25.0;
-        sp.v = (0.8, 2.0);
+        sp.spread = 30.0;
+        sp.v = (0.5, 1.4);
         sp.damp = (2.0, 3.0);
         sp.gravity = Vec3::ZERO;
-        sp.stretch = 0.04;
-        let due = 90.0 * fade * dt;
+        sp.stretch = 0.03;
+        let due = 45.0 * fade * dt;
         let n = due as u32 + (self.f() < due.fract()) as u32;
         let _ = key;
         for _ in 0..n {
             let a = self.range(0.0, std::f32::consts::TAU);
-            let rr = r * self.range(0.5, 1.0);
+            let rr = r * self.range(0.4, 1.0);
             let q = at + Vec3::new(a.cos() * rr, y, a.sin() * rr);
             self.emit(sp, q, 1);
         }
-        self.light(at + Vec3::Y * y.max(0.4), c, 0.9 * fade, 2.2);
+        self.light(at + Vec3::Y * y.max(0.4), c, 0.7 * fade, 2.0);
         if let Some(l) = self.live_lights.pop() {
             self.early_lights.push(l);
         }

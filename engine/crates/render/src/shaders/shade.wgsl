@@ -3704,6 +3704,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         let white = vec3<f32>(1.0, 0.97, 0.92) * light.anim.z * (0.8 + 0.2 * facing);
         rad = mix(rad, white, clamp(flash * 0.9, 0.0, 1.0));
     }
+    // A game's own glow on any surface (set_game_surface's game_glow).
+    rad += game_glow(p, vis.x, cl.material);
     rad = apply_distance_fog(rad, dist, dir);
     // Froxel fog: the surface seen through the medium, plus what it scatters.
     if fog_on() {

@@ -77,6 +77,8 @@ impl Snapshot {
         if let Some(game) = GAME_SURFACE.lock().unwrap().clone() {
             files[BUILT_IN.iter().position(|(n, _)| *n == "game_surface.wgsl").unwrap()] = game;
         }
+        let at = BUILT_IN.iter().position(|(n, _)| *n == "game_surface.wgsl").unwrap();
+        files[at] = with_glow(std::mem::take(&mut files[at]));
         Ok(Self { directory, files })
     }
     pub(crate) fn source(&self, name: &str) -> &str {
@@ -117,9 +119,20 @@ static GAME_SURFACE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(No
 
 /// Replace game_surface.wgsl (material flag SURFACE) with a game's own
 /// `fn game_surface(s: SurfaceIn) -> SurfaceOut`. Call it before creating
-/// the renderer; it wins over `KERN_SHADER_DIR`.
+/// the renderer; it wins over `KERN_SHADER_DIR`. It may also define
+/// `fn game_glow(p: vec3<f32>, instance: u32, material: u32) -> vec3<f32>`:
+/// radiance added to every opaque surface after lighting (any material; it
+/// may read `aux`), e.g. the glowing edge of a body being built.
 pub fn set_game_surface(source: &str) {
     *GAME_SURFACE.lock().unwrap() = Some(source.to_owned());
+}
+
+/// A game surface without its own `game_glow` gets the one that adds none.
+fn with_glow(mut source: String) -> String {
+    if !source.contains("fn game_glow(") {
+        source.push_str("\nfn game_glow(p: vec3<f32>, instance: u32, material: u32) -> vec3<f32> { return vec3<f32>(0.0); }\n");
+    }
+    source
 }
 
 /// The override directory, if `KERN_SHADER_DIR` names one.
@@ -136,12 +149,12 @@ pub(crate) fn built_in(name: &str) -> &'static str {
 pub(crate) fn source(name: &str) -> String {
     if name == "game_surface.wgsl" {
         if let Some(game) = GAME_SURFACE.lock().unwrap().clone() {
-            return game;
+            return with_glow(game);
         }
     }
     if let Some(path) = dir().map(|d| d.join(name)) {
         if let Ok(text) = std::fs::read_to_string(&path) {
-            return text;
+            return if name == "game_surface.wgsl" { with_glow(text) } else { text };
         }
     }
     built_in(name).to_owned()

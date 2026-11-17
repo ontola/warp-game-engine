@@ -86,7 +86,8 @@ impl Spellstorm {
         let dir = crate::live::game_dir();
         let tuning = crate::live::Tuning::new(dir.as_deref());
         let shader = crate::live::Shader::new(dir.as_deref());
-        render::set_game_surface(&shader.good);
+        render::set_game_surface(&crate::live::surface(&shader.good));
+        crate::live::install_mask();
         crate::effects::watch(dir.as_deref());
         // The spell rules in Luau, from the repository's mods (watched) or
         // the copy built in.
