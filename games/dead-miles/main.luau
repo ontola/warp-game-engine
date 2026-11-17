@@ -54,7 +54,9 @@ local KNOBS = {
 	lamp = 1000, -- street light brightness, candela
 	moon = 6, -- moonlight at night, lux
 	night_ev = 5.1, -- exposure at night (EV100; lower is brighter)
-	density = 1, -- zombie count multiplier
+	density = 0.55, -- zombie count multiplier
+	toughness = 2, -- zombie health multiplier
+	grab = 0.3, -- how much each zombie within reach slows you (0.3: two of them, half speed)
 	day_alert = 1.8, -- how much further the dead see in daylight
 	day_speed = 1.3, -- how much faster they move in daylight
 	trap = 12, -- seconds inside a building before the dead outside close in on it
@@ -90,8 +92,8 @@ local HELD = {
 }
 
 local ZOMBIES = {
-	shambler = { hp = 3, sense = 8, reach = 1.35, windup = 0.55, strike = 0.2, recover = 0.8 },
-	runner = { hp = 2, sense = 12, reach = 3.6, windup = 0.6, strike = 0.35, recover = 1.1, lunge = 8.5 },
+	shambler = { hp = 3, sense = 8, reach = 1.35, windup = 1.0, strike = 0.25, recover = 1.0 },
+	runner = { hp = 2, sense = 12, reach = 3.6, windup = 0.9, strike = 0.35, recover = 1.2, lunge = 8.5 },
 }
 local ZOMBIE_SKIN = { "#7d8f6a", "#8a9178", "#6f7f66", "#93977f" }
 local ZOMBIE_SHIRTS = { "#5b5148", "#4d5560", "#6a4f45", "#56604a", "#6b6458", "#3f4650" }
@@ -375,7 +377,7 @@ local function spawn_zombie(kind, pos, mode, goal)
 		kind = kind,
 		pos = collide(pos, RADIUS),
 		yaw = random.range(-math.pi, math.pi),
-		hp = ZOMBIES[kind].hp,
+		hp = ZOMBIES[kind].hp * KNOBS.toughness,
 		state = mode or "idle",
 		t = random.range(0, 3),
 		goal = goal,
@@ -1014,7 +1016,7 @@ local function bot_intent(u)
 	-- Fight what is close or in the way; walk away from the rest.
 	local z, d = nearest_zombie(u.pos, 7, true)
 	-- Not through a wall: one in the next room is no fight yet.
-	if z and d > 1.4 then
+	if z and d > 0.6 then
 		local to = z.pos - u.pos
 		-- Low enough to catch fallen wall stubs, which still block.
 		local hit = world.raycast(v(u.pos.x, 0.3, u.pos.z), to / d, d, { tag = "wall" })
@@ -1372,7 +1374,13 @@ local function make_camp()
 			hungry += 1
 		end
 	end
+	s.camp_wait = 0
 	for _, u in s.survivors do
+		-- Stragglers find their way in by morning.
+		if u.state == "ok" and dist(u.pos, s.camp) > 4.5 then
+			u.pos = s.camp + v(random.range(-2.5, 2.5), 0, random.range(1.5, 3))
+			body.place(u.fig, u.pos, u.yaw)
+		end
 		if u.state == "down" then
 			u.state = "ok"
 			u.injured = true
@@ -1581,7 +1589,15 @@ local function act(u, it, dt)
 		end
 	end
 
-	local speed = KNOBS.walk * (if busy then 0 else (if u.cd_melee > 0.2 then 0.6 else 1)) * (if u.injured then KNOBS.limp else 1)
+	-- Hands on you: every one of the dead within reach drags at you.
+	local grabs = 0
+	for _, z in s.zombies do
+		if z.state ~= "dead" and z.state ~= "sleep" then
+			local dx, dz = z.pos.x - u.pos.x, z.pos.z - u.pos.z
+			if dx * dx + dz * dz < 1.6 * 1.6 then grabs += 1 end
+		end
+	end
+	local speed = KNOBS.walk * (if busy then 0 else (if u.cd_melee > 0.2 then 0.6 else 1)) * (if u.injured then KNOBS.limp else 1) / (1 + KNOBS.grab * grabs)
 	local go = mv * speed + u.vel
 	u.vel = u.vel * math.max(0, 1 - 10 * dt)
 	local np = u.pos + go * dt
@@ -1599,7 +1615,12 @@ local function act(u, it, dt)
 	if u.bot and m > 0.5 and dist(before, u.pos) < speed * dt * 0.2 then
 		u.stuck = (u.stuck or 0) + dt
 		if u.stuck > 0.5 then
-			u.side_t, u.side_dir, u.stuck = 0.8, if random.chance(0.5) then 1 else -1, 0
+			-- Stuck again soon after a sidestep: keep going the same way and
+			-- for longer, to get round a long hedge or a wreck.
+			local again = u.side_at and game.tick() - u.side_at < 240
+			u.side_len = if again then math.min(4, (u.side_len or 0.8) * 2) else 0.8
+			if not again then u.side_dir = if random.chance(0.5) then 1 else -1 end
+			u.side_t, u.stuck, u.side_at = u.side_len, 0, game.tick()
 		end
 	else
 		u.stuck = 0
@@ -1845,7 +1866,7 @@ local function director(dt)
 		d.spawn_t -= dt
 		if d.spawn_t <= 0 then
 			d.spawn_t = 9 - 6 * math.min(1, s.pressure) + random.range(-1, 1)
-			if awake < 14 + 5 * s.day and not relief then
+			if awake < (14 + 5 * s.day) * KNOBS.density and not relief then
 				local kind = if random.chance(math.min(0.3, 0.06 * s.day)) then "runner" else "shambler"
 				spawn_edge(kind, "investigate", s.center, random.chance(0.6))
 				count("trickle")
@@ -1854,7 +1875,7 @@ local function director(dt)
 		if s.pressure >= 1 and not relief then
 			d.mode = "peak"
 			d.t = KNOBS.peak
-			d.peak_left = 6 + 3 * s.day
+			d.peak_left = math.ceil((6 + 3 * s.day) * KNOBS.density)
 			count("peaks")
 			sfx("scream", v(s.min_x, 0, 0))
 		end
@@ -2211,14 +2232,15 @@ local function tick(dt, input)
 
 	-- Camp: everyone standing is at the fire.
 	if s.camp then
-		local all, any = true, false
+		local all, here = true, false
 		for _, u in s.survivors do
 			if standing(u) then
-				any = true
-				if dist(u.pos, s.camp) > 4.5 then all = false end
+				if dist(u.pos, s.camp) > 4.5 then all = false else here = true end
 			end
 		end
-		if any and all then make_camp() end
+		-- Somebody waits at the fire; a straggler gets a while to come in.
+		s.camp_wait = if here then (s.camp_wait or 0) + dt else 0
+		if here and (all or s.camp_wait > 15) then make_camp() end
 	end
 
 	local alone = #s.survivors == 1 and s.survivors[1].lives > 0
