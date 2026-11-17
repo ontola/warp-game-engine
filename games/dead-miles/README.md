@@ -26,9 +26,7 @@ co-op: design" doc.
 | Left stick / WASD | move |
 | LT / right mouse (held) | run: faster, but the dead hear your footsteps |
 | Right stick | aim (melee and guns follow it; else you face where you walk) |
-| RT / left mouse (held) | fire the gun (shared ammo; aim help within about 20 degrees) |
-| X, RB / R | swing the melee weapon |
-| B / Shift | shove: pushes zombies back and breaks their wind-up |
+| RT / left mouse (also X, RB, R) | attack with what is in your hand: fire the gun (shared ammo; aim help within about 20 degrees), or swing (costs stamina: the bar under you; heavy weapons cost more, some people have more) |
 | A / Space (hold) | search, pick up a weapon, revive, talk to a stranger |
 | Y / F | use a first aid kit |
 | LB / Q | torch on or off |
@@ -36,7 +34,7 @@ co-op: design" doc.
 | As a ghost, A | moan: pulls nearby zombies towards you |
 
 Every zombie attack is telegraphed: the arms go up for a second and the
-eyes light red (no ring on the ground: the body shows it). Hitting or shoving it first
+eyes light red (no ring on the ground: the body shows it). Hitting it first
 cancels the attack. Shamblers swipe; runners lunge about three metres.
 
 ```sh
@@ -47,7 +45,7 @@ cargo test --release -p warp --test game dead_miles
 ```
 
 The dead come to sound. A gunshot carries 25 to 35 metres, rummaging
-through a car about 9, running about 6, a swing or a shove a few. Enough
+through a car about 9, running about 6, a swing a few. Enough
 noise and a horde comes for the last loud thing it heard; keep quiet and
 it settles. There is no clock that sends them otherwise: stragglers
 wander in, and they head for a noise when there was one.
