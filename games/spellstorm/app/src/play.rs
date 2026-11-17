@@ -256,7 +256,7 @@ impl app::Game for Spellstorm {
     /// Esc: the host's overlay in a party, else the menu.
     fn escape(&mut self) -> bool {
         match &self.party {
-            Some(p) if !p.session.is_empty() => p.overlay(),
+            Some(p) if !p.session().is_empty() => p.overlay(),
             _ => self.menu.escape(&self.world),
         }
         true
