@@ -296,7 +296,7 @@ pub struct Runtime {
     selector:Selector,residency:Residency,uniform:wgpu::Buffer,bind:wgpu::BindGroup,
     pose_dispatch:wgpu::ComputePipeline,pose_dispatch_bind:wgpu::BindGroup,pose_args:wgpu::Buffer,
     pipeline:wgpu::ComputePipeline,pose_pipelines:[wgpu::ComputePipeline;3],pose_cache:wgpu::Buffer,pose_work:wgpu::Buffer,pose_depth:u32,branch_count:u32,empty_depth:wgpu::TextureView,
-    pub choices:wgpu::Buffer,slots:u32,trees:u32,error:f32,raster_budget:u32,
+    pub choices:wgpu::Buffer,slots:u32,trees:u32,error:f32,raster_budget:u32,source_cluster_budget:u32,
     wind:std::sync::Mutex<crate::wind::WindState>,
     population:std::sync::Mutex<std::sync::Arc<crate::foliage_population::Population>>,templates:std::sync::Arc<Vec<RootTemplate>>,publish_pipeline:wgpu::ComputePipeline,publish_layout:wgpu::BindGroupLayout,source_buffer:wgpu::Buffer,proxy_buffer:wgpu::Buffer,proxy_owners:std::sync::Arc<Vec<u32>>,
 }
@@ -456,7 +456,7 @@ impl Runtime {
             let publish_pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("forest population publish"),bind_group_layouts:&[Some(&publish_layout)],immediate_size:0});
             let publish_module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("forest population publish"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/foliage_publish.wgsl").into())});
             let publish_pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {label:Some("forest population publish"),layout:Some(&publish_pl),module:&publish_module,entry_point:Some("publish"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
-            Self {pose_dispatch,pose_dispatch_bind,pose_args,pose_pipelines,pose_cache,pose_work,pose_depth:max_depth,branch_count:spec.branches.len()as u32,publish_pipeline,publish_layout,source_buffer:instances.clone(),population:std::sync::Mutex::new(std::sync::Arc::new(spec.population.clone())),templates:std::sync::Arc::new(spec.templates.clone()),proxy_owners:std::sync::Arc::new(spec.proxies.iter().map(|v|v.meta[0]).collect()),proxy_buffer:proxies,selector,residency,uniform,bind,pipeline,empty_depth,choices,slots:spec.slots,trees:spec.roots.len()as u32,error:spec.error,raster_budget,wind:Default::default()}
+            Self {pose_dispatch,pose_dispatch_bind,pose_args,pose_pipelines,pose_cache,pose_work,pose_depth:max_depth,branch_count:spec.branches.len()as u32,publish_pipeline,publish_layout,source_buffer:instances.clone(),population:std::sync::Mutex::new(std::sync::Arc::new(spec.population.clone())),templates:std::sync::Arc::new(spec.templates.clone()),proxy_owners:std::sync::Arc::new(spec.proxies.iter().map(|v|v.meta[0]).collect()),proxy_buffer:proxies,selector,residency,uniform,bind,pipeline,empty_depth,choices,slots:spec.slots,trees:spec.roots.len()as u32,error:spec.error,raster_budget,source_cluster_budget:spec.source_cluster_budget,wind:Default::default()}
         })
     }
     pub fn set_wind(&self,state:&crate::wind::WindState)->Result<(),String>{*self.wind.lock().unwrap()=state.validated()?;Ok(())}
@@ -610,7 +610,11 @@ impl Runtime {
         // (Apple), or Metal rejects the submit.
         let time=time.filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS));
         if let Some((q,i))=time {enc.write_timestamp(q,i);}
-        self.selector.union_consumers_marked(gpu,enc,views,self.error,self.slots,[self.raster_budget;2],&self.empty_depth,depth,split)?;
+        // The machine's vegetation tier tightens the cut's budgets (never the
+        // buffers): it can change between frames when the app steps it down.
+        let (error,slots,splats,source)=crate::vegetation_quality::apply(crate::vegetation_quality::tier(gpu).budgets(),self.error,self.slots,self.raster_budget,self.source_cluster_budget);
+        self.selector.set_source_cluster_budget(source)?;
+        self.selector.union_consumers_marked(gpu,enc,views,error,slots,[splats;2],&self.empty_depth,depth,split)?;
         if let Some((q,i))=split {enc.write_timestamp(q,i+6);}
         self.residency.encode(enc);
         if let Some((q,i))=split {enc.write_timestamp(q,i+7);}
