@@ -303,8 +303,8 @@ keyboard mapping is in `app::input`.
 - **Humans**: Warp Humans, the engine's skinned people, from pools that
   game.toml reserves (`[humans.zombie] count = 40, style = "zombie"`), so
   spawning never rebuilds the renderer. Set each one's feet `pos` and
-  `yaw` (0 faces +z, a quarter turn +x) every tick: the legs walk, jog or
-  stand from how far it moved. `pose` lays an action over that: `walk`
+  `yaw` (0 faces +z, a quarter turn +x) every tick: the legs walk, jog,
+  sprint (above about 5 m/s) or stand from how far it moved. `pose` lays an action over that: `walk`
   (the default), `idle`, `crouch` (low: waiting on one knee, or walking
   crouched when it moves), `wave` (the right hand high, waving), `reach` and `raise` (arms ahead, arms over the
   head), `strike` (from raised to low over `t`), `aim`, `shove`,

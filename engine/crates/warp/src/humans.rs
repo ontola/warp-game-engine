@@ -126,6 +126,8 @@ pub struct Rig {
     to_rest: [Mat4; BONES],
     walk: Cycle,
     jog: Cycle,
+    /// Flat out: above jogging speed the legs and arms pump.
+    sprint: Cycle,
     idle: usize,
     /// Crouched: walking low, and waiting low (kneeling by someone).
     crouch: Cycle,
@@ -183,6 +185,7 @@ impl Rig {
         let find = |n: &str| lib.clip(n).ok_or_else(|| format!("humans: no capture {n}"));
         let walk = Cycle::fit(&lib, &bound, find("Walk_Loop")?)?;
         let jog = Cycle::fit(&lib, &bound, find("Jog_Fwd_Loop")?)?;
+        let sprint = Cycle::fit(&lib, &bound, find("Sprint_Loop")?)?;
         let idle = find("Idle_Loop")?;
         let crouch = Cycle::fit(&lib, &bound, find("Crouch_Fwd_Loop")?)?;
         let crouch_idle = find("Crouch_Idle_Loop")?;
@@ -190,7 +193,7 @@ impl Rig {
         for (pose, clip) in [("attack", "Sword_Attack"), ("punch", "Punch_Cross"), ("jab", "Punch_Jab"), ("hit", "Hit_Chest"), ("hit_head", "Hit_Head"), ("dead", "Death01"), ("down", "Death01"), ("cast", "Spell_Simple_Shoot"), ("roll", "Roll")] {
             clips.insert(pose, find(clip)?);
         }
-        Ok(Rig { character, lib, bound, joint, bind, to_rest, walk, jog, idle, crouch, crouch_idle, clips })
+        Ok(Rig { character, lib, bound, joint, bind, to_rest, walk, jog, sprint, idle, crouch, crouch_idle, clips })
     }
 
     /// A bone's rig bind position (what the palette moves).
@@ -346,8 +349,8 @@ impl Humans {
             if distance > 1e-5 {
                 // Walking backwards plays the cycle backwards.
                 let sign = if back { -1.0 } else { 1.0 };
-                let [w, j] = blend(p.to.speed);
-                let metres = if p.pose == "crouch" { rig.crouch.metres } else { rig.walk.metres * w + rig.jog.metres * j };
+                let [w, j, r] = blend(p.to.speed);
+                let metres = if p.pose == "crouch" { rig.crouch.metres } else { rig.walk.metres * w + rig.jog.metres * j + rig.sprint.metres * r };
                 // A zombie drags shorter steps at the same pace.
                 let stride = if zombie { 0.7 } else { 1.0 };
                 p.to.phase += sign * distance / (metres * stride * (p.to.speed / 0.85).clamp(0.2, 1.0).sqrt()).max(0.05);
@@ -557,10 +560,11 @@ fn doll_pose(rig: &Rig, dolls: &crate::ragdoll::Dolls, id: u32, alpha: f32, pale
     Some(centre)
 }
 
-/// Walk and jog weights for a speed in m/s.
-fn blend(speed: f32) -> [f32; 2] {
+/// Walk, jog and sprint weights for a speed in m/s.
+fn blend(speed: f32) -> [f32; 3] {
     let jog = ramp(1.6, 4.6, speed);
-    [1.0 - jog, jog]
+    let sprint = ramp(4.8, 6.2, speed);
+    [1.0 - jog, jog * (1.0 - sprint), sprint]
 }
 
 /// Turn `joints` of `palette` by `q` about `at` (model space).
@@ -573,7 +577,7 @@ fn pose(rig: &Rig, p: &Person, zombie: bool, alpha: f32, palette: &mut [Mat4]) {
     let g = Gait { phase: p.from.phase + (p.to.phase - p.from.phase) * alpha, speed: p.from.speed + (p.to.speed - p.from.speed) * alpha };
     let t = (p.prev_t + (p.t - p.prev_t) * alpha).clamp(0.0, 1.0);
     let moving = (g.speed / 0.6).clamp(0.0, 1.0);
-    let [w, j] = blend(g.speed);
+    let [w, j, r] = blend(g.speed);
     let mut layers = if p.pose == "crouch" {
         vec![Layer { clip: rig.crouch_idle, t: p.age, looped: true, w: 1.0 - moving }, rig.crouch.layer(g.phase, moving)]
     } else {
@@ -581,6 +585,7 @@ fn pose(rig: &Rig, p: &Person, zombie: bool, alpha: f32, palette: &mut [Mat4]) {
             Layer { clip: rig.idle, t: p.age, looped: true, w: 1.0 - moving },
             rig.walk.layer(g.phase, moving * w),
             rig.jog.layer(g.phase, moving * j),
+            rig.sprint.layer(g.phase, moving * r),
         ]
     };
     // A clip pose takes over the whole body: attacks, hits, falls.

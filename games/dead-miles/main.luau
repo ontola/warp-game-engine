@@ -9,7 +9,7 @@
 -- The run ends only when nobody is standing.
 --
 -- Controls: left stick moves, right stick aims, RT attacks with what is in
--- the hand (fires a gun, else swings), LT runs, A (hold) searches, picks
+-- the hand (fires a gun, else swings), LT sprints (short; it costs stamina), A (hold) searches, picks
 -- up, revives and talks to strangers, Y uses a first aid kit, LB switches
 -- the torch. Keyboard: WASD, left mouse attacks, right mouse runs, Space
 -- uses, F heals, Q torch.
@@ -35,10 +35,12 @@ end
 
 -- @knobs
 local KNOBS = {
-	walk = 4.3, -- survivor speed, m/s
+	walk = 3.4, -- survivor jog, m/s (the everyday pace)
 	stamina = 1, -- stamina scale: a swing costs 0.12 (fists) to 0.45 (axe) of an average person's
 	breath = 0.3, -- stamina back per second while not swinging (of an average person's)
-	run = 1.45, -- running (hold LT) is this much faster
+	run = 1.75, -- sprinting (hold LT) is this much faster than the jog
+	sprint_cost = 0.33, -- stamina a second of sprinting costs (of an average person's: about 3 s flat out)
+	blown = 0.3, -- after sprinting yourself empty, the stamina you need back before you can sprint again
 	run_noise = 6, -- how far the dead hear you run, m
 	car_noise = 9, -- how far they hear you rummage through a car, m
 	limp = 0.72, -- share of that speed while injured
@@ -1253,6 +1255,8 @@ local function bot_intent(u)
 		lead = h
 		if h and hd > 7 then
 			it.mx, it.mz = steer(u, h.pos)
+			-- Left behind: a short sprint to catch up, with breath to spare.
+			it.run = hd > 10 and (u.stamina or 1) > 0.5 * (u.stamina_max or 1)
 			return it
 		end
 	elseif s.center and dist(u.pos, s.center) > 9 and not nearest_zombie(u.pos, 2.5, true) then
@@ -1971,13 +1975,35 @@ local function act(u, it, dt)
 		end
 	end
 	if not u.stamina_max then u.stamina_max = KNOBS.stamina u.stamina = u.stamina_max end
-	local running = it.run and not busy and m > 0.5 and u.stamina > 0.02
+	if not u.bot and grabs == 0 and (u.tips == nil or (u.tips.sprint or 0) < 2) then
+		for _, z in s.zombies do
+			if z.kind == "runner" and z.state == "chase" and dist(z.pos, u.pos) < 12 then
+				tip(u, "sprint", { { "LT", "sprint (short, tiring)" } })
+				break
+			end
+		end
+	end
+	-- Sprinting is short: it burns stamina fast, and once you are blown
+	-- you jog until you have your breath back.
+	if u.blown and u.stamina >= KNOBS.blown * u.stamina_max then u.blown = nil end
+	local running = it.run and not busy and not u.injured and m > 0.5 and not u.blown and u.cd_melee <= 0
 	if running then
-		u.stamina = math.max(0, u.stamina - dt * 0.12 * KNOBS.stamina)
+		u.stamina = math.max(0, u.stamina - dt * KNOBS.sprint_cost * KNOBS.stamina)
+		u.breath_t = math.max(u.breath_t, 0.5)
+		if u.stamina <= 0 then
+			u.blown = true
+			if (u.winded_t or 0) <= 0 then
+				popup(u, "out of breath", "#c8c0b4")
+				u.winded_t = 1.2
+			end
+			sfx("swing", u.pos, { pitch = 0.55, db = -10 })
+		end
 	elseif u.breath_t <= 0 then
 		u.stamina = math.min(u.stamina_max, u.stamina + dt * KNOBS.breath * KNOBS.stamina)
 	end
-	local speed = KNOBS.walk * (if busy then 0 else (if u.cd_melee > 0.2 then 0.5 else 1)) * (if u.injured then KNOBS.limp else 1) / (1 + KNOBS.grab * grabs) * (if running then KNOBS.run else 1)
+	-- Worn out, even the jog drags.
+	local worn = 1 - 0.25 * math.clamp((tiredness(u) - 0.6) / 0.4, 0, 1)
+	local speed = KNOBS.walk * worn * (if busy then 0 else (if u.cd_melee > 0.2 then 0.5 else 1)) * (if u.injured then KNOBS.limp else 1) / (1 + KNOBS.grab * grabs) * (if running then KNOBS.run else 1)
 	-- Running is heard: footfalls every so often.
 	u.run_t = (u.run_t or 0) - dt
 	if running and u.run_t <= 0 then
