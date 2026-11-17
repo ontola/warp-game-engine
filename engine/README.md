@@ -13,6 +13,7 @@ reverse: a game supplies its simulation, assets, tuning and integration.
 | `physics` | Rigid bodies on Rapier with enhanced determinism |
 | `body` | Bodies that move without hand animation: standard skeleton, motion-captured clips, gaits, rigs |
 | `assets` | glTF import with materials and textures; baked weighted characters |
+| `architecture` | Buildings inside and out from glTF (AtomicBuildings, IFC): room light bake, room and outside shots |
 | `net` | Online play over iroh: typed host/client messages |
 | `gamenight` | Native Gamepad Party client: party host, seats, wire contract |
 | `script` | Luau modules: sandbox, hot reload, deterministic step budget |
