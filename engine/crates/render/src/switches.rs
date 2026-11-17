@@ -164,6 +164,7 @@ pub const TILED_POST: Switch = Switch::new("KERN_TILED_POST");
 pub const TRACED_REFLECTIONS: Switch = Switch::new("KERN_TRACED_REFLECTIONS");
 pub const TREE_OCCLUSION: Switch = Switch::new("KERN_TREE_OCCLUSION");
 pub const TREE_OCCLUSION_REJECT: Switch = Switch::new("KERN_TREE_OCCLUSION_REJECT");
+pub const VEGETATION_QUALITY: Switch = Switch::new("KERN_VEGETATION_QUALITY");
 pub const VIRTUAL_MEMBERS: Switch = Switch::new("KERN_VIRTUAL_MEMBERS");
 pub const VIRTUAL_SERIAL_CULL: Switch = Switch::new("KERN_VIRTUAL_SERIAL_CULL");
 pub const VOXEL_ANTIPODAL_NORMALS: Switch = Switch::new("KERN_VOXEL_ANTIPODAL_NORMALS");
@@ -310,6 +311,7 @@ pub const ALL: &[&Switch] = &[
     &TRACED_REFLECTIONS,
     &TREE_OCCLUSION,
     &TREE_OCCLUSION_REJECT,
+    &VEGETATION_QUALITY,
     &VIRTUAL_MEMBERS,
     &VIRTUAL_SERIAL_CULL,
     &VOXEL_ANTIPODAL_NORMALS,

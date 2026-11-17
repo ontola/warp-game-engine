@@ -89,6 +89,7 @@ pub mod plant_growth;
 pub mod plant_growth_assembly;
 pub mod plant_mesh_lod;
 pub mod vegetation_style;
+pub mod vegetation_quality;
 pub mod biome;
 pub mod noise_field;
 pub mod stone_surface;
