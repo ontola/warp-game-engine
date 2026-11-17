@@ -41,7 +41,7 @@ mod inline {
 
 /// Workers for cooking work: the machine's threads, or KERN_COOK_THREADS.
 pub fn workers() -> usize {
-    std::env::var("KERN_COOK_THREADS").ok().and_then(|v| v.parse().ok()).filter(|&n: &usize| n > 0)
+    crate::switches::COOK_THREADS.parse().filter(|&n: &usize| n > 0)
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
 }
 

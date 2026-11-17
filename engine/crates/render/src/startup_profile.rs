@@ -94,7 +94,7 @@ pub(crate) struct Trace {
 }
 impl Trace {
     pub fn new() -> Self {
-        let start=(std::env::var("KERN_STARTUP_PROFILE").as_deref()==Ok("1")).then(Instant::now);
+        let start=(crate::switches::STARTUP_PROFILE.on()).then(Instant::now);
         Self {start,last:start,profile:StartupProfile::default()}
     }
     pub fn enabled(&self)->bool {self.start.is_some()}

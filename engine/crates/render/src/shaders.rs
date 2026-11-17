@@ -140,7 +140,7 @@ fn with_glow(mut source: String) -> String {
 
 /// The override directory, if `KERN_SHADER_DIR` names one.
 pub fn dir() -> Option<PathBuf> {
-    std::env::var_os("KERN_SHADER_DIR").map(PathBuf::from).filter(|d| d.is_dir())
+    crate::switches::SHADER_DIR.os().map(PathBuf::from).filter(|d| d.is_dir())
 }
 
 /// The built-in source of `name` (one of the files above).

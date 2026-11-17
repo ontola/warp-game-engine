@@ -52,7 +52,7 @@ pub const CROWN_EXTINCTION: f32 = 0.9;
 /// mean transmittance of its chords. A uniform fog then has the gap fraction
 /// of a Poisson forest of those crowns (within 2 % in the test below, the
 /// plain fog 3-17x too dark). KERN_CANOPY_CLUMPING=0 keeps the old fog for A/B.
-fn clumping_on() -> bool { std::env::var("KERN_CANOPY_CLUMPING").as_deref() != Ok("0") }
+fn clumping_on() -> bool { !crate::switches::CANOPY_CLUMPING.off() }
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -287,8 +287,8 @@ pub(crate) struct ProxyBudget {
 
 impl CanopyClipmap {
     pub fn new(gpu: &Gpu, scene: &Scene, scene_layout: &wgpu::BindGroupLayout) -> Result<Self, String> {
-        let source_bounds = std::env::var("KERN_SOURCE_CROWN_BOUNDS").as_deref()==Ok("1");
-        let compact_support = std::env::var("KERN_CANOPY_COMPACT_SUPPORT").as_deref()==Ok("1");
+        let source_bounds = crate::switches::SOURCE_CROWN_BOUNDS.on();
+        let compact_support = crate::switches::CANOPY_COMPACT_SUPPORT.on();
         let source_crowns = Arc::new(if source_bounds || compact_support {
             SourceCrowns::new(scene)
         } else { SourceCrowns {ids:Vec::new(),bounds:vec![CrownBounds::default()]} });
