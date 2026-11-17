@@ -1235,7 +1235,8 @@ impl Fx {
         let k = (0.6 + size * 0.5).clamp(0.5, 1.6);
         let at = if at.y < 0.1 { at + Vec3::Y * 0.1 } else { at };
         let Some(e) = el else {
-            self.burst(at, rgba(1.0, 0.95, 0.85, 1.0), (6.0 * k) as u32, 3.0, 0.08, None);
+            // A plain staff bolt: a few small sparks, no more (Joep).
+            self.burst(at, rgba(1.0, 0.9, 0.7, 1.0), (3.0 * k) as u32 + 1, 2.0, 0.05, None);
             return;
         };
         let c = el_c(e);
@@ -2172,11 +2173,12 @@ impl Fx {
         let back = -dir;
         let ph = (key % 97) as f32;
         let Some(e) = el else {
-            // A plain bolt: a warm spark and a short trail.
-            self.halo(pos, rgba(1.0, 0.85, 0.5, 1.0), 0.9 * size + 0.3, 0.4);
-            self.live.push(glow_sprite(pos, 0.35 * size, Cell::Spark, linear3([1.0, 0.95, 0.8]) * 2.4));
-            let mut tr = bits(El::Fire, size);
-            tr.amount = 8;
+            // A plain bolt: a small warm spark and a short trail (Joep: a
+            // subtle little flash, not a big impact).
+            self.halo(pos, rgba(1.0, 0.85, 0.5, 1.0), 0.45 * size + 0.15, 0.2);
+            self.live.push(glow_sprite(pos, 0.2 * size, Cell::Spark, linear3([1.0, 0.95, 0.8]) * 1.4));
+            let mut tr = bits(El::Fire, size * 0.7);
+            tr.amount = 5;
             tr.dir = back;
             tr.spread = 30.0;
             tr.v = (0.3, 1.0);
@@ -2930,14 +2932,20 @@ impl Fx {
                         let q = at + Vec3::new(self.range(-0.5, 0.5), 0.6, self.range(-0.5, 0.5)) * r;
                         self.smoke(q + Vec3::Y * 0.6, 0.5 + r * 0.3, [0.16, 0.14, 0.13], 0.35 * fade);
                     }
-                    let mut p = particles(c, (1.2 * r * r) as u32 + 3, 1.1, 0.5);
+                    // Many small fast tongues streaming up, as the flamethrower's
+                    // (Joep: a few big blobs rising looked wrong).
+                    let mut p = particles(c, (30.0 * r * r) as u32 + 24, 0.5, 0.2);
+                    let sm = style(&mut p, f.kind, true);
                     p.dir = Vec3::Y;
-                    p.sphere = r * 0.8;
-                    p.v = (0.6, 1.8);
+                    p.spread = 14.0;
+                    p.sphere = r * 0.75;
+                    p.v = (2.2, 3.6);
+                    p.damp = (3.0, 4.0);
                     p.gravity = Vec3::Y * 1.5;
                     p.flat = 0.0;
-                    let sm = style(&mut p, f.kind, true);
-                    let fl = at + Vec3::Y * 0.3;
+                    p.curve = [0.4, 1.0, 1.4];
+                    p.stretch = 0.04;
+                    let fl = at + Vec3::Y * 0.1;
                     self.stream((key, 0), p, fl, dt);
                     if let Some(sm) = sm {
                         self.stream((key, 1), sm, fl, dt);
